@@ -7,13 +7,14 @@ battle animation keeps playing:
     table). Budget: FIELD.BIN's file table loads exactly 7072 bytes (LBA 126841): the LZS-compressed file must not grow;
     per-part u8 vertex/polygon counts; GPU packet bytes (28 per G3) <= Cloud's.
     The 10 special-scene BSX files that carry their own copy of Cloud's mesh (e.g. CLSIN2_1, LAS4_4) are left as they are.
-  * battle: ENEMY6/CLOUD.LZS (read_battle_model; 24 bones). Section 0 (skeleton + meshes) is rebuilt with Gouraud
-    triangles (20 B, colours, GPU code 0x30); animations, settings, the TIM and the weapons are copied unchanged.
+  * battle: ENEMY6/CLOUD.LZS (read_battle_model; 24 bones). Section 0 keeps textured donor faces as native textured
+    triangles and uses Gouraud polygons for flat colours. The TIM keeps its allocation and upload coordinates;
+    animations, settings and untextured weapons are copied unchanged.
     Compressed size <= the original file (66694 bytes).
 Pipeline: Cloud posed in his standing frame -> target skeleton (joint per body role, ground, head height) ->
-gbox.sm64_swap.load_rig + retarget -> Blender decimate until it fits -> textures baked into per-corner colours (PS1
-Gouraud) -> LZS (own encoder) -> sectors of a raw copy of the disc rewritten in place (gbox.psxdisc.RawBin, EDC/ECC)
--> file mod cache/mods/<game_id>/ff7_<slug> (launch_game mod=...). Discs 1-3 share the layout.
+gbox.sm64_swap.load_rig + retarget -> Blender decimate until it fits -> native polygons (field textures baked into
+per-corner colours; battle textures retained) -> LZS -> sectors of a raw copy of the disc rewritten in place
+(gbox.psxdisc.RawBin, EDC/ECC) -> versioned immutable file mod. Discs 1-3 share the layout.
 
   python -m gbox.ff7_swap build <disc.chd|.bin> <character dir (meta.json)> <out dir> [--no-battle]
 """
@@ -25,6 +26,7 @@ import re
 import shutil
 import struct
 import time
+import uuid
 from pathlib import Path
 
 import numpy as np
@@ -36,6 +38,7 @@ GAME_IDS = {"6703ee6f461a2ea5": "Final Fantasy VII (USA) (Disc 1)", "52d73a58e6b
 C = np.diag([1.0, -1.0, -1.0])                     # PSX (y down) <-> y up
 FIELD_NORMALS_AT = 0x3F520                         # FIELD.BIN (gunzipped): 240 x (s16 x, y, z, 0), 4096 = 1
 NORMALS = 240
+CACHE_VERSION = 2  # Safe quad culling and native battle textures; never reuse legacy ff7_<slug> builds.
 FIELD_FIT_HEIGHT = 1.0                             # x Cloud's height (whole figure), then at most HEIGHT_MAX
 HEIGHT_MAX = 1.12
 FIELD_ROLES = {"hip": 1, "chest": 2, "head": 3, "armA": (6, 7, 8), "armB": (11, 12, 13), "legA": (15, 16, 17),
@@ -155,7 +158,85 @@ def _corner_colour(p: dict, i: int) -> tuple[int, int, int]:
     return tuple(int(c) for c in np.clip(px[:3].astype(float) * col / 255.0, 0, 255))
 
 
-def bone_geometry(tgt: dict, prims: list[dict], bones_ok: set[int]) -> dict[int, dict]:
+class BattleAtlas:
+    """Keep donor texture interiors in Cloud's existing 4-bit TIM allocation.
+
+    Cloud's weapons use untextured polygons. Refuse other layouts rather than
+    silently repainting weapon textures or extending the native upload region.
+    """
+    def __init__(self, bm: dict, prims: list[dict]):
+        from PIL import Image
+        tim = bm['tim']
+        if tim['bpp'] != 4 or tim['clut'] is None or tim['clut']['rows'].shape[1] != 16:
+            raise ValueError('FF7 battle texture replacement requires a 4-bit TIM with 16-colour palettes')
+        if any(w['mesh']['tt'] or w['mesh']['tq'] for w in bm['weapons']):
+            raise ValueError('FF7 battle weapon textures share the TIM; preserve them before replacing it')
+        height, width = tim['idx'].shape
+        self.page = tim['x'] // 64 | (tim['y'] // 256) << 4
+        self.clut = tim['clut']['x'] // 16 | tim['clut']['y'] << 6
+        self.rects = {}
+        canvas = np.zeros((height, width, 4), np.uint8)
+        x = y = row_height = 0
+        for p in prims:
+            if p['tex'] is None:
+                continue
+            key = self.key(p)
+            if key in self.rects:
+                continue
+            image = np.asarray(p['tex'], dtype=np.uint8)
+            h, w = image.shape[:2]
+            if w > width or h > height:
+                raise ValueError('FF7 battle donor texture exceeds the native TIM allocation')
+            if x+w > width:
+                x = 0
+                y += row_height
+                row_height = 0
+            if y+h > height:
+                raise ValueError('FF7 battle donor textures do not fit the native TIM allocation')
+            patch = canvas[y:y+h, x:x+w]
+            patch[..., :3] = np.clip(image[..., :3].astype(float) * np.asarray(p['color'][:3]) / 255, 0, 255)
+            patch[..., 3] = image[..., 3] if image.shape[2] == 4 else 255
+            self.rects[key] = (x, y, w, h)
+            x += w
+            row_height = max(row_height, h)
+        # Quantize only occupied opaque texels, so unused VRAM cannot consume a
+        # palette entry. Index zero remains transparent; opaque black is 0x8000.
+        mask = canvas[..., 3] >= 128
+        if not mask.any():
+            raise ValueError('FF7 battle donor textures have no opaque pixels')
+        colours = Image.fromarray(canvas[..., :3][mask].reshape(1, -1, 3)).quantize(colors=15)
+        palette = colours.getpalette() + [0] * 45
+        indices = np.zeros((height, width), np.uint8)
+        indices[mask] = np.asarray(colours).ravel() + 1
+        rows = np.array(tim['clut']['rows'], copy=True)
+        rows[0] = 0
+        for i in range(15):
+            r, g, b = (int(c) >> 3 for c in palette[3*i:3*i+3])
+            rows[0, i+1] = (r | g << 5 | b << 10) or 0x8000
+        packed = indices[:, 0::2] | (indices[:, 1::2] << 4)
+        self.tim = (struct.pack('<II', 0x10, 8)
+                    + struct.pack('<I4H', 12+rows.nbytes, tim['clut']['x'], tim['clut']['y'], 16, len(rows))
+                    + rows.astype('<u2').tobytes()
+                    + struct.pack('<I4H', 12+packed.nbytes, tim['x'], tim['y'], width//4, height)
+                    + packed.tobytes())
+        self.origin = ((tim['x'] % 64)*4, tim['y'] % 256)
+        if self.origin[0]+width > 256 or self.origin[1]+height > 256:
+            raise ValueError('FF7 battle TIM crosses a texture-page boundary')
+
+    @staticmethod
+    def key(p):
+        import hashlib
+        image = np.asarray(p['tex'])
+        return (image.shape, hashlib.sha256(image.tobytes()).digest(), tuple(p['color'][:3]))
+
+    def uv(self, p, ids):
+        x, y, w, h = self.rects[self.key(p)]
+        ox, oy = self.origin
+        return [(ox+x+min(int(max(float(p['uv'][i][0]), 0)*w), w-1),
+                 oy+y+min(int(max(float(p['uv'][i][1]), 0)*h), h-1)) for i in ids]
+
+
+def bone_geometry(tgt: dict, prims: list[dict], bones_ok: set[int], atlas: BattleAtlas | None = None) -> dict[int, dict]:
     """read_rigged prims -> {bone: {"verts": [(x, y, z) local PSX ints], "nrm": [unit local], "tris": [((a, b, c),
     (col a, col b, col c))]}} with PSX winding (glTF CCW (a, b, c) -> (a, c, b)), vertices welded per bone."""
     out: dict[int, dict] = {}
@@ -165,7 +246,7 @@ def bone_geometry(tgt: dict, prims: list[dict], bones_ok: set[int]) -> dict[int,
             b = int(np.bincount(p["jid"][t]).argmax())
             if b not in bones_ok:
                 b = min(bones_ok, key=lambda k: np.linalg.norm(tgt["T"][k] - p["pos"][t].mean(0)))
-            g = out.setdefault(b, {"verts": [], "nacc": [], "weld": {}, "tris": []})
+            g = out.setdefault(b, {"verts": [], "nacc": [], "weld": {}, "tris": [], "tex_tris": []})
             ids, cols = [], []
             for i in t:
                 pg = (p["pos"][i] @ tgt["B"]) @ C.T          # canonical -> y-up -> PSX
@@ -182,16 +263,34 @@ def bone_geometry(tgt: dict, prims: list[dict], bones_ok: set[int]) -> dict[int,
                 ids.append(vi)
                 cols.append(_corner_colour(p, i))
             if len(set(ids)) == 3:
-                g["tris"].append(((ids[0], ids[2], ids[1]), (cols[0], cols[2], cols[1])))
+                if atlas is not None and p['tex'] is not None:
+                    uv = atlas.uv(p, (t[0], t[2], t[1]))
+                    g['tex_tris'].append(((ids[0], ids[2], ids[1]), uv, atlas.clut))
+                    g['texture_page'] = atlas.page
+                else:
+                    g["tris"].append(((ids[0], ids[2], ids[1]), (cols[0], cols[2], cols[1])))
     for g in out.values():
         g["nrm"] = [n / (np.linalg.norm(n) or 1) for n in g["nacc"]]
-        g["quads"], g["tris"] = pair_quads(g["tris"])
+        g["quads"], g["tris"] = pair_quads(g["tris"], g["verts"])
     return out
 
 
-def pair_quads(tris: list) -> tuple[list, list]:
-    """Merge triangle pairs sharing an edge into PS1 quads (v0 v1 v2 + v1 v3 v2 = exactly the same two triangles):
-    20 bytes + a 36-byte GPU packet instead of 32 + 56."""
+def pair_quads(tris: list, verts: list) -> tuple[list, list]:
+    """Merge coplanar triangles with matching edge colours into PS1 quads.
+
+    FF7 culls the whole quad using only its first triangle. Folding a pair around
+    an edge can therefore hide a front-facing triangle with its back-facing
+    neighbour. Require exact coplanarity of the final integer vertices: no
+    geometric tolerance can guarantee matching facing at silhouette angles.
+    Shared corners also need identical colours; one quad cannot retain a seam.
+    """
+    # Cross-products of s16-coordinate differences can overflow int64 when
+    # comparing the resulting normals. Use Python integers for exact tests.
+    points = [tuple(map(int, p)) for p in verts]
+    def sub(a, b):
+        return tuple(x-y for x, y in zip(a, b))
+    def cross(a, b):
+        return (a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0])
     edge = {}
     for k, ((a, b, c), _cols) in enumerate(tris):
         for e in ((a, b), (b, c), (c, a)):
@@ -211,8 +310,14 @@ def pair_quads(tris: list) -> tuple[list, list]:
                 for s in range(3):                          # tri j as (v2, v1, d)
                     w = (x, y, z)[s:] + (x, y, z)[:s]
                     if w[0] == v[2] and w[1] == v[1]:
-                        d, cd = w[2], (cj[s:] + cj[:s])[2]
-                        if d not in v:
+                        wc = cj[s:] + cj[:s]
+                        d, cd = w[2], wc[2]
+                        a0, b0, c0, d0 = (points[i] for i in (*v, d))
+                        n1 = cross(sub(b0, a0), sub(c0, a0))
+                        n2 = cross(sub(d0, b0), sub(c0, b0))
+                        same_plane = any(n1) and any(n2) and not any(cross(n1, n2)) and sum(x*y for x,y in zip(n1,n2)) > 0
+                        same_colour = tuple(cv[1]) == tuple(wc[1]) and tuple(cv[2]) == tuple(wc[0])
+                        if d not in v and same_plane and same_colour:
                             quads.append(((v[0], v[1], v[2], d), (cv[0], cv[1], cv[2], cd)))
                             used |= {k, j}
                             done = True
@@ -344,8 +449,8 @@ def battle_target(bm: dict, anim: int = 0) -> dict:
     return make_target(W, verts, BATTLE_ROLES, FIELD_FIT_HEIGHT)
 
 
-def write_battle(bm: dict, geo: dict[int, dict]) -> tuple[bytes, dict]:
-    """Section 0 rebuilt (same bones, new meshes: Gouraud triangles only), every other section copied."""
+def write_battle(bm: dict, geo: dict[int, dict], tim: bytes | None = None) -> tuple[bytes, dict]:
+    """Rebuild section 0 and optionally the same-size TIM; preserve animations, settings and weapons."""
     u, offs = bm["raw"], bm["sections"]
     ns = len(offs)
     base = offs[0]
@@ -360,7 +465,11 @@ def write_battle(bm: dict, geo: dict[int, dict]) -> tuple[bytes, dict]:
         mesh = bytearray(struct.pack("<I", 8 * len(g["verts"])))
         for v in g["verts"]:
             mesh += struct.pack("<hhhh", *v, 0)
-        mesh += struct.pack("<HH", 0, 0) * 2                 # no textured triangles / quads
+        mesh += struct.pack('<HH', len(g.get('tex_tris', [])), g.get('texture_page', 0))
+        for ids, uv, clut in g.get('tex_tris', []):
+            mesh += struct.pack('<4H', *(8*j for j in ids), 0)
+            mesh += struct.pack('<BBH4B', *uv[0], clut, *uv[1], *uv[2])
+        mesh += struct.pack('<HH', 0, 0)                     # no textured quads
         mesh += struct.pack("<HH", len(g["tris"]), 0)
         for (a, b, c), cols in g["tris"]:
             mesh += struct.pack("<4H", 8 * a, 8 * b, 8 * c, 0)
@@ -378,10 +487,21 @@ def write_battle(bm: dict, geo: dict[int, dict]) -> tuple[bytes, dict]:
     for k in range(1, ns):
         end = offs[k + 1] if k + 1 < ns else len(u)
         new.append(new[0] + len(body))
-        body += u[offs[k]:end]
+        section = u[offs[k]:end]
+        if tim is not None and len(section) >= 8 and struct.unpack_from('<II', section) in ((0x10, 8), (0x10, 9)):
+            if len(tim) != len(section):
+                raise ValueError('FF7 replacement TIM must preserve the native upload size')
+            section = tim
+        body += section
     out = struct.pack(f"<I{ns}I", ns, *new) + bytes(body)
     return out, {"bytes": len(out), "budget_bytes": len(u),
-                 "triangles": sum(len(g["tris"]) + 2 * len(g["quads"]) for g in geo.values()),
+                 "gpu_buffer": sum(28*len(g['tris']) + 36*len(g['quads']) + 32*len(g.get('tex_tris', []))
+                                   for g in geo.values()),
+                 "budget_gpu_buffer": sum(sum(len(b['mesh'][k])*size for k, size in
+                                               (('tt', 32), ('tq', 40), ('ct', 28), ('cq', 36)))
+                                          for b in bm['bones'] if b['mesh']),
+                 "triangles": sum(len(g["tris"]) + 2 * len(g["quads"]) + len(g.get('tex_tris', [])) for g in geo.values()),
+                 "textured_triangles": sum(len(g.get('tex_tris', [])) for g in geo.values()),
                  "quads": sum(len(g["quads"]) for g in geo.values()), "verts": sum(len(g["verts"]) for g in geo.values())}
 
 
@@ -468,13 +588,15 @@ def build(disc: Path, model_path: Path, roles: dict, work: Path, name: str, out_
         bbones = {i for i, b in enumerate(bm["bones"]) if b["mesh"]}
 
         def make_battle(rp):
-            geo = bone_geometry(btgt, rp, bbones)
-            raw, r = write_battle(bm, geo)
+            atlas = BattleAtlas(bm, rp) if any(p['tex'] is not None for p in rp) else None
+            geo = bone_geometry(btgt, rp, bbones, atlas)
+            raw, r = write_battle(bm, geo, atlas.tim if atlas else None)
             comp = lzs_encode(raw)
             r["compressed"] = len(comp)
             r["budget_compressed"] = bsize
-            ok = len(comp) <= bsize and r["bytes"] <= r["budget_bytes"]
-            return comp, r, ok, min(bsize / len(comp), r["budget_bytes"] / r["bytes"])
+            ok = len(comp) <= bsize and r["bytes"] <= r["budget_bytes"] and r['gpu_buffer'] <= r['budget_gpu_buffer']
+            return comp, r, ok, min(bsize / len(comp), r["budget_bytes"] / r["bytes"],
+                                   r['budget_gpu_buffer'] / max(r['gpu_buffer'], 1))
         blz, brep, brig = _fit_loop("ff7_battle", btgt, model_path, roles, work, blender, make_battle, 2000, progress,
                                     scale, props)
         F.read_battle_model(blz)
@@ -501,32 +623,39 @@ def image_name(meta: dict, gid: str) -> str:
     return "Final Fantasy VII - " + re.sub(r"[^\w .()'-]+", "", meta["name"]).strip() + f" (USA) (Disc {disc}).bin"
 
 
+def mod_name(meta: dict) -> str:
+    return f"ff7_{meta['slug']}_v{CACHE_VERSION}"
+
+
 def build_mod(cfg, meta: dict, game: dict, progress=lambda p, m: None, root: Path | None = None) -> dict:
     from . import characters as Cm
     from . import filemods
     from .pe_swap import base_bin
     root = root or Cm.library_root(cfg)
-    gid, name = game["game_id"], f"ff7_{meta['slug']}"
+    gid, name = game["game_id"], mod_name(meta)
     roles = (meta.get("rig") or {}).get("roles") or {}
     if "hip" not in roles:
         raise ValueError(f"{meta['name']} has no body roles (rig.roles in meta.json): can't map it onto Cloud's bones")
     base = base_bin(cfg, game, progress)
-    work = Path(cfg.cache) / "characters_build" / meta["slug"] / "ff7"
-    shutil.rmtree(work, ignore_errors=True)
     d = filemods.mod_dir(cfg, gid, name)
     if d.exists():
-        shutil.rmtree(d)
+        name += '_' + uuid.uuid4().hex[:12]
+        d = filemods.mod_dir(cfg, gid, name)
+    d.mkdir(parents=True, exist_ok=False)
+    work = Path(cfg.cache) / "characters_build" / name
+    work.mkdir(parents=True, exist_ok=False)
     img = image_name(meta, gid)
     b = build(base, root / meta["slug"] / meta["model"], roles, work, meta["name"], d / img, base, battle=True,
               blender=Cm._blender(cfg), progress=progress, scale=(meta.get("rig") or {}).get("scale"),
               props=[p["node"] for p in meta.get("props") or []])
     progress(88, "Rendering a preview of the model on Cloud's skeleton")
-    tdir = root / meta["slug"] / "targets"
-    tdir.mkdir(parents=True, exist_ok=True)
+    tdir = root / meta["slug"] / "targets" / name
+    tdir.mkdir(parents=True, exist_ok=False)
     shutil.copy2(b["rigged_field"], tdir / "ff7_cloud_field.gltf")
     prev = Cm.render_preview(tdir / "ff7_cloud_field.gltf", tdir / "ff7_preview.png")
     cue = Path(b["cue"]).name
     mj = {"name": name, "game_id": gid, "image": cue, "built": time.time(), "character": meta["slug"],
+          "writer_version": CACHE_VERSION,
           "files": ["FIELD/CLOUD.BCX (field model)", "ENEMY6/CLOUD.LZS (battle model)"], "source": meta["model"],
           "field": b["field"], "battle": b.get("battle")}
     (d / ".gbox-mod.json").write_text(json.dumps(mj, default=str))
@@ -535,10 +664,10 @@ def build_mod(cfg, meta: dict, game: dict, progress=lambda p, m: None, root: Pat
 
 
 def use(ctx, meta: dict, game: dict, inp) -> dict:
-    """characters op=use for FF7: build ff7_<slug> (control plane) if missing, record it, launch it."""
+    """Build/reuse the current writer version; an explicit rebuild creates a new immutable output."""
     from . import characters as Cm
     from .sm64_swap import _have_mod, _wait
-    gid, name = game["game_id"], f"ff7_{meta['slug']}"
+    gid, name = game["game_id"], mod_name(meta)
     if meta.get("source", {}).get("game_id") in GAME_IDS and meta["slug"] in ("cloud", "ff7_cloud") \
             and not meta.get("variant_of"):
         return {"status": "native", "message": f"{meta['name']} is FF7's own player: launch the game without a mod."}
@@ -548,11 +677,12 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
     if inp.rebuild or not _have_mod(ctx, gid, name):
         if Cm.library_root(ctx.config).is_dir():
             built = build_mod(ctx.config, meta, game, ctx.progress)
+            name = built['mod']
             Cm._api(ctx, "POST", f"/api/characters/{meta['slug']}/targets",
                     json={"game_id": gid, "slot": "player", "mod": name, "nodes": [Cm.HOST_OS],
                           "notes": f"replaces Cloud: field model {built['report']['field']['triangles']} triangles, battle "
                                    f"model {(built['report']['battle'] or {}).get('triangles')} triangles (his animations); "
-                                   "preview targets/ff7_preview.png"})
+                                   f"preview targets/{name}/ff7_preview.png"})
         else:
             cp = next((w["id"] for w in Cm._api(ctx, "GET", "/api/workers") if w.get("os") == "linux"), None)
             ctx.progress(10, "Building the FF7 mod on the control-plane node (the collection lives there)")
@@ -562,6 +692,7 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
             if j.get("state") != "succeeded" or r.get("status") not in ("built", "ready"):
                 return {"status": "failed", "mod": name, "error": r.get("error") or j.get("error") or r}
             built = r.get("build")
+            name = r['mod']
     res = {"mod": name, "build": built, "replaces": "Cloud Strife (field + battle models; his skeletons and animations stay)"}
     if not inp.launch:
         return res | {"status": "built" if built else "ready"}

@@ -578,22 +578,27 @@ cutscene, the opera entrance and the lobby and hall, walking. Mod `pe_mario`, ca
 
 ## 11. Final Fantasy VII (PS1): any character as Cloud, field + battle, built into gBox (`gbox/ff7_swap.py`, 2026-10-07)
 
-Status: **works, checked in game on the Spark**. Mario walked in the Sector 1 station with Barret and fought the first MP
-battle (attacking with the Buster Sword). Mod `ff7_mario`, card "FF7: Mario as Cloud".
+Status: **Mario field and first-battle repair checked in game on i9-NUC**. The legacy `ff7_mario` build had missing
+field surfaces and lost battle texture detail (#1819). Versioned `ff7_mario_v2` repairs those paths; matched real
+frames, native-file checks and remaining limits are in [the evidence record](evidence/ff7-mario-1819/README.md).
 
-- `characters op=use character=<name> game="Final Fantasy VII"` builds `ff7_<slug>` for Disc 1, 2 or 3.
+- `characters op=use character=<name> game="Final Fantasy VII"` builds `ff7_<slug>_v2` for Disc 1, 2 or 3.
+  Rebuilds preserve existing output under a new suffix. Live verification here covers US Disc 1 and Mario only.
 - **Field model** `FIELD/CLOUD.BCX`. The format was reverse-engineered here and is documented in
   `gbox/ff7_models.py` `read_field_model`: 22 bones, 15 parts, Gouraud polygons with a per-vertex lighting normal index.
   The normal table is FIELD.BIN, gunzipped, at 0x3F520, 240 entries.
   - **Budget:** FIELD.BIN's file table loads exactly 7072 bytes for this file, so the LZS stream must not grow
     (gBox has its own LZS encoder). The decompressed file stays at or under Cloud's size, with 255 vertices or polygons
     per part and GPU packets no larger than Cloud's.
-  - **Result:** about 430 triangles, as quads where two triangles share an edge.
+  - **Result:** Mario has 359 triangles. Only exactly coplanar pairs with matching edge colours become quads;
+    FF7 culls an entire quad using its first triangle, so merging folded surfaces caused the missing pieces.
   - 10 special-scene BSX files (e.g. CLSIN2_1, LAS4_4) carry their own copy of Cloud's mesh and are not patched.
-- **Battle model** `ENEMY6/CLOUD.LZS`. Section 0 (skeleton + meshes) is rebuilt as Gouraud triangles and quads.
-  Animations, settings, the TIM and the weapons (the Buster Sword) are copied unchanged. The compressed size must not
-  exceed the original 66694 bytes. Mario keeps all 752 triangles.
-- **Textures:** baked into per-corner colours, since the PS1 field and battle bodies are Gouraud.
+- **Battle model** `ENEMY6/CLOUD.LZS`. Section 0 keeps textured donor faces as native textured triangles and flat
+  colours as Gouraud polygons. Animations, settings and all 16 weapons remain byte-identical. The compressed size,
+  decompressed size and GPU packet allocation must stay within stock limits. Mario keeps all 752 triangles.
+- **Textures:** field textures remain baked into per-corner colours. Battle texture interiors are retained in the
+  existing 240x64 4-bit TIM allocation, with unchanged upload coordinates. Larger donor atlases and shared weapon
+  textures require further work; they are refused rather than silently losing detail or repainting weapons.
 - **Rip side:** `read_field_model` + `field_to_gltf` extract every party field model, and `ff7_swap.field_spec` derives
   body roles from the skeleton topology. In the collection: `ff7_cloud_field`, `ff7_tifa_field`, `ff7_ballet_field`
   (Barret), `ff7_earith_field` (Aerith), `ff7_red_field`, `ff7_cid_field`, `ff7_vincent_field`. `ff7_yufi_field` and
