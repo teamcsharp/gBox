@@ -30,10 +30,11 @@ def memory_mb(value):
 
 
 class Sampler:
-    def __init__(self):
+    def __init__(self, cache=None):
         self.lock = threading.Lock()
         self.value = {}
         self.primed = False
+        self.cache = cache
 
     def snapshot(self):
         with self.lock:
@@ -50,9 +51,18 @@ class Sampler:
             if self.primed:
                 result['cpu_percent'] = percent(cpu)
             self.primed = True
-            result.update(memory_percent=percent(memory.percent), memory_available_bytes=memory.available)
+            result.update(memory_percent=percent(memory.percent), memory_available_bytes=memory.available,
+                          memory_total_bytes=getattr(memory, 'total', None))
         except (ImportError, OSError, RuntimeError) as error:
             result['cpu_error'] = type(error).__name__
+        if self.cache:
+            try:
+                from pathlib import Path
+                path = Path(self.cache)
+                while not path.exists() and path != path.parent: path = path.parent
+                result['cache_free_bytes'] = shutil.disk_usage(path).free
+            except OSError:
+                result['cache_free_bytes'] = None
         binary = shutil.which('nvidia-smi')
         if binary:
             try:

@@ -108,6 +108,7 @@ class WorkerInfo(BaseModel):
     pending_results: int = 0       # executed once; delivery is unresolved, so maintenance must wait
     features: list[str] = []
     resources: dict[str, Any] = {}  # measured CPU/GPU/RAM; empty means unknown, never zero load
+    build_sources: dict[str, str] = {}  # immutable process-start writer hashes; changed code needs a safe refresh
     # builds in this machine's own cache (gbox.filemods.local_builds: {game_id, name, built, staged_of?}), newest first;
     # the Builds view lists them with the Spark's collection (a staged copy maps to the build it mirrors)
     local_builds: list[dict] = []

@@ -2253,7 +2253,11 @@ def create_app(config: Config) -> FastAPI:
                         continue
                     from . import background_testing
                     if background_testing.requires_admission(j):
-                        reason = background_testing.guarded_reason(store, w)
+                        if (j.get('origin') or {}).get('inspection_run'):
+                            from .inspection_builds import claim_reason
+                            reason = claim_reason(store, w, j)
+                        else:
+                            reason = background_testing.guarded_reason(store, w)
                         if reason:
                             waiting = {'worker': w['name'], 'reason': reason}
                             if j.get('admission_wait') != waiting:
@@ -4932,6 +4936,11 @@ def create_app(config: Config) -> FastAPI:
     from . import live_controls_api
     live_controls_api.routes(app, store, auth, submit, JobRequest,
         create_request=lambda body: req_create(RequestIn(**body), 'operator'), investigate=_lf_investigate)
+
+    from . import inspection_builds
+    inspection_builds.routes(app, store, auth,
+        submit=lambda body, key: submit(JobRequest(**body), 'gbox-inspection', {'via':'inspection', 'inspection_run':key}),
+        workers=workers)
 
     from . import custom_build_unlocks
     app.state.reconcile_build_unlocks = custom_build_unlocks.routes(

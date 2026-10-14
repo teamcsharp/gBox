@@ -354,6 +354,17 @@
       <button class="act" type="button" data-bv="retention-save">Apply limit and clean up</button>
       <small class="mut">Keeps newest local builds. Running builds and saves are protected. Spark copies stay available.</small></div>`;
   }
+  function inspectionHTML(data) {
+    if(!data)return '';
+    const p=data.policy;
+    return `<details class="bv-inspection" style="border:1px solid var(--line,#444);border-radius:7px;padding:10px;margin:10px 0" open>
+      <summary><b>Continuous inspection builds</b> · ${ESC(p.node)} · ${p.enabled?'enabled':'paused'}</summary>
+      <div class="bv-bar" style="margin-top:8px"><label><input type="checkbox" data-bv-inspection-enabled${p.enabled?' checked':''}> Keep building reviewed changes</label>
+      <label>RAM reserved per build <input type="number" data-bv-inspection-memory min="1" max="64" step="1" value="${p.memory_gib}" style="width:60px"> GiB</label>
+      <button type="button" class="act" data-bv="inspection-save">Apply</button></div>
+      <small class="mut">One build at a time · ${p.builds_per_hour}/hour · ${p.max_memory_percent}% RAM admission ceiling · ${p.reserve_gib} GiB kept free. This reserves headroom; it is not an OS memory cap. Builds do not auto-launch. Existing per-game storage limits still apply.</small>
+      ${(data.plans||[]).map(x=>`<p><b>${ESC(x.title||x.game_id)}</b> · ${ESC(String(x.state||'waiting').replaceAll('_',' '))}${x.build?' · '+ESC(x.build):''}${x.reason?'<br><small>'+ESC(x.reason)+'</small>':''}</p>`).join('')||'<p class="mut">Waiting for the agent to publish a reviewed build recipe. New feedback must be addressed before another build runs.</p>'}</details>`;
+  }
   function toolbarHTML(st, f) {
     const opt = (v, l, sel) => `<option value="${ESC(v)}"${v === sel ? " selected" : ""}>${ESC(l)}</option>`;
     return `<div class="bv-bar"><h2 style="margin:0">Builds</h2>
@@ -362,7 +373,7 @@
       <select data-bv-f="kind">${opt("", "All kinds", st.kind)}${f.kinds.map(k => opt(k.kind, `${k.label} (${k.count})`, st.kind)).join("")}</select>
       <label class="bv-favf" title="Only the builds you starred (★)"><input type="checkbox" data-bv-f="fav"${st.fav ? " checked" : ""}> ★ Favorites${f.favorites ? ` (${f.favorites})` : ""}</label>
       <button class="act" type="button" data-bv="refresh" title="Re-read the build folders">Refresh</button><span class="mut" data-bv-sum></span></div>
-      <div data-bv-retention></div>
+      <div data-bv-retention></div><div data-bv-inspection></div>
       <section class="bv-section bv-builds"><h3>Custom builds <span class="mut" data-bv-count></span></h3>
         <div class="bv-head mut" data-bv-head>${sortHeadersHTML(st)}</div>
         <div data-bv-list></div><div data-bv-more></div></section>
@@ -690,6 +701,30 @@
     const jobs = () => new Map([...(st.sched?.jobs || []), ...(st.sched?.recent || [])].map(j => [j.id, j]));
     const findJob = id => jobs().get(id);
     st.retention = null;
+    let inspectionAt=0, inspectionBusy=false, inspectionRead=false;
+    function drawInspection() {
+      const el=part('[data-bv-inspection]');
+      if(el) el.innerHTML=inspectionHTML(st.inspection);
+    }
+    async function loadInspection() {
+      if(inspectionBusy || inspectionRead || stopped) return;
+      inspectionRead=true;
+      inspectionAt=Date.now();
+      try { const value=await env.api('/api/inspection-builds'); if(stopped)return; st.inspection=value; }
+      catch { return; }
+      finally {inspectionRead=false;}
+      const el=part('[data-bv-inspection]');
+      if(!el?.contains?.(doc?.activeElement))drawInspection();
+    }
+    async function saveInspection() {
+      if(inspectionBusy || !st.inspection) return;
+      const enabled=part('[data-bv-inspection-enabled]')?.checked, memory=Number(part('[data-bv-inspection-memory]')?.value);
+      if(!Number.isInteger(memory) || memory<1 || memory>64) {toast('Choose a build RAM reservation from 1 to 64 GiB.');return;}
+      inspectionBusy=true;
+      try { st.inspection=await env.api('/api/inspection-builds',{enabled,memory_gib:memory},'POST');if(stopped)return;drawInspection();toast(enabled?'Continuous inspection builds enabled.':'Continuous inspection builds paused; running work may finish.'); }
+      catch(e) {toast('Could not save continuous builds: '+e.message);}
+      finally {inspectionBusy=false;}
+    }
     function drawRetention() {
       const el = part('[data-bv-retention]');
       if (el) el.innerHTML = retentionHTML(st, env.here);
@@ -715,6 +750,7 @@
       host.innerHTML = `<style>${CSS}${BA()?.WHAT_CSS || ""}.bv-act{padding-left:6px;padding-right:6px}.bv-del:hover{background:#7a2b2b;color:#fff}.bv-main .ba-what{margin:2px 0}</style>` + toolbarHTML(st, facets(fullItems()));
       built = true;
       drawRetention();
+      drawInspection();
     }
     function drawList() {
       if (stopped) return;
@@ -925,6 +961,7 @@
         return;
       }
       if (act === "retention-save") return saveRetention();
+      if (act === "inspection-save") return saveInspection();
       if (act === "refresh") { try { await env.api("/api/mods/built/refresh", {}); } catch {} st.listSig = ""; await loadList(true); await loadSched(); return; }
       if (act === "launchopt") { const bb = find(a.dataset.key); return launch(bb, (bb?.launch_options || []).find(o => o.id === a.dataset.opt)); }
       const bk = b || (a?.dataset?.key ? find(a.dataset.key) : null);   // the options row sits under its build's row
@@ -1000,6 +1037,7 @@
     async function tick() {
       if (env.visible && !env.visible()) { stop(); return; }   // the view was left: free the viewers and the polls
       const tasks = [loadSched()];
+      if(Date.now()-inspectionAt>=15000)tasks.push(loadInspection());
       if (Date.now() - listAt >= (busy() ? 5000 : LIST_EVERY)) tasks.push(loadList());
       if (st.local && Date.now() - localAt >= 20000) {          // this PC's copies (its heartbeat) every 20 s
         localAt = Date.now();
@@ -1011,7 +1049,7 @@
     async function start() {
       shell(); drawList(); drawSched();
       localAt = Date.now();
-      await Promise.all([loadList(), loadSched(), st.local?.refresh(), loadRetention()]);
+      await Promise.all([loadList(), loadSched(), st.local?.refresh(), loadRetention(), loadInspection()]);
       if (stopped) return ctl;
       await Promise.all([...st.open].map(key => find(key)).filter(Boolean).map(openDetails));
       if (stopped) return ctl;
@@ -1039,7 +1077,7 @@
 
   const api = { filterBuilds, facets, rowHTML, optionsHTML, detailsHTML, filesHTML, charactersHTML, codesHTML, turntableHTML, jobHTML,
     scheduledHTML, editorHTML, readEdits, editableFields, investigateHTML, flowOf, flowTextHTML, launchCall, optLabel, defaultOption,
-    createTurntables, createFlows, mount, retentionHTML, fmtSize, fmtAge, fmtEta, KINDS, TICK, SPIN };
+    createTurntables, createFlows, mount, retentionHTML, inspectionHTML, fmtSize, fmtAge, fmtEta, KINDS, TICK, SPIN };
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.GBoxBuilds = api;
 })(typeof window !== "undefined" ? window : globalThis);

@@ -315,6 +315,12 @@ def _prompt(item, playing=None):
     header = (f"Assigned queue task: request #{item['number']} ({rid}). Work ONLY this request; "
               "the dispatcher has reserved it. Read get_request and get_dispatch_feedback first. "
               "Do not select a different ticket from list_requests. ")
+    header += ('For game-build changes, keep supplying reviewed native inspection plans through the '
+               'inspection_builds tool: op=plan for request revisions and reports, then implement the change and '
+               'op=publish a launch:false cast_swap recipe with change_id, relevant writer dependencies, '
+               'requests_ack and feedback_ack. Never acknowledge unread feedback or produce unchanged failures. '
+               'The local build queue handles debounce, memory/disk headroom and safe worker admission; '
+               'compile success is not gameplay verification. ')
     if playing:
         header += ('The operator is playing ' + ', '.join(playing) + ' on this machine right now. Do not start an '
                    'emulator here (no local Dolphin, RetroArch, PCSX2 or other game runs, no large parallel builds); '
