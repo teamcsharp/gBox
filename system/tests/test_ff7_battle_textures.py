@@ -57,6 +57,19 @@ def test_textured_native_roundtrip_preserves_animation_settings_and_weapon():
     assert report['textured_triangles'] == report['triangles'] == 1
     assert report['gpu_buffer'] == 32
     assert report['budget_gpu_buffer'] == 0  # the synthetic stock mesh contains no draw primitives
+    # Native battle renderer (0x80 model flag) reads the fourth index WORD as
+    # texture brightness, not another vertex or padding. 0x80 is neutral PS1
+    # texture modulation; zero turns even a white/red texel black.
+    section = rebuilt['sections'][0]
+    mesh_offset = struct.unpack_from('<I', raw, section + 8)[0]
+    vertex_bytes = struct.unpack_from('<I', raw, section + mesh_offset)[0]
+    polygon = section + mesh_offset + 4 + vertex_bytes + 4
+    attributes = struct.unpack_from('<H', raw, polygon + 6)[0]
+    brightness = attributes & 255
+    source_texel = F.tim_rgba(rebuilt['tim'], 0)[1, 1, :3].astype(int)
+    rendered = np.clip(source_texel * brightness // 128, 0, 255)
+    assert tuple(rendered) == (255, 0, 0)
+    assert attributes == 0x80  # no per-face packet/texture-page override bits
     ends = rebuilt['sections'][1:] + [len(raw)]
     for i in (1, 2, 4):
         assert raw[rebuilt['sections'][i]:ends[i]] == original[i]

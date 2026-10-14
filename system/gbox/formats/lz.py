@@ -308,6 +308,50 @@ def lzss_compress(data: bytes) -> bytes:
     return bytes(out)
 
 
+def lzss_compress_optimal(data: bytes) -> bytes:
+    """Exact byte-cost parsing for small fixed-allocation Okumura assets.
+
+    Includes each eight-token flag byte in the cost, rather than greedily taking
+    the longest match. Same format/window as lzss_compress; limited to 1 MiB to
+    bound its dynamic-programming table. No initial zero-window references.
+    """
+    from array import array
+    from collections import deque
+    n=len(data)
+    if n>1_048_576:raise ValueError('Optimal LZSS input exceeds one MiB')
+    lengths=array('B',[0])*n;offsets=array('H',[0])*n;heads={}
+    for i in range(n):
+        if i+3>n:break
+        key=data[i:i+3];positions=heads.setdefault(key,deque())
+        while positions and positions[0]<i-4078:positions.popleft()
+        best=0
+        for j in reversed(positions):
+            size=3
+            while size<18 and i+size<n and data[j+size]==data[i+size]:size+=1
+            if size>best:
+                best=size;offsets[i]=(j+0xFEE)&0xFFF
+                if best==18:break
+        lengths[i]=best;positions.append(i)
+    cost=array('I',[0])*(8*(n+1))
+    for i in range(n-1,-1,-1):
+        for slot in range(8):
+            nxt=(slot+1)&7
+            best=1+cost[(i+1)*8+nxt]
+            for size in range(3,lengths[i]+1):best=min(best,2+cost[(i+size)*8+nxt])
+            cost[i*8+slot]=best+(slot==0)
+    out=bytearray();i=slot=0;flag=0
+    while i<n:
+        if slot==0:flag=len(out);out.append(0)
+        nxt=(slot+1)&7;want=cost[i*8+slot]-(slot==0);take=0
+        for size in range(lengths[i],2,-1):
+            if 2+cost[(i+size)*8+nxt]==want:take=size;break
+        if take:
+            offset=offsets[i];out.extend((offset&255,((offset>>4)&0xF0)|(take-3)));i+=take
+        else:out[flag]|=1<<slot;out.append(data[i]);i+=1
+        slot=nxt
+    return bytes(out)
+
+
 def prs_decompress(data: bytes) -> bytes:
     out, pos, ctrl, bits = bytearray(), 0, 0, 0
 

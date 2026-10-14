@@ -12,6 +12,10 @@ def test_rebuild_preserves_old_builds_and_their_previews(tmp_path, monkeypatch):
     old = cfg.cache/'mods'/game['game_id']/'ff7_mario'
     old.mkdir(parents=True)
     (old/'original.bin').write_bytes(b'legacy game')
+    prior = old.with_name('ff7_mario_v2')
+    prior.mkdir()
+    (prior/'original.bin').write_bytes(b'version 2 game')
+    third=old.with_name('ff7_mario_v3');third.mkdir();(third/'original.bin').write_bytes(b'version 3 game')
     preview = root/'mario/targets/ff7_preview.png'
     preview.parent.mkdir(parents=True)
     preview.write_bytes(b'legacy preview')
@@ -33,11 +37,13 @@ def test_rebuild_preserves_old_builds_and_their_previews(tmp_path, monkeypatch):
     first_dir = cfg.cache/'mods'/game['game_id']/first['mod']
     before = {p.name: p.read_bytes() for p in first_dir.iterdir()}
     second = S.build_mod(cfg, meta, game, root=root)
-    assert first['mod'] == 'ff7_mario_v2'
+    assert first['mod'] == 'ff7_mario_v4'
     assert second['mod'].startswith(first['mod']+'_')
     assert second['mod'] != first['mod']
     assert {p.name: p.read_bytes() for p in first_dir.iterdir()} == before
     assert (old/'original.bin').read_bytes() == b'legacy game'
+    assert (prior/'original.bin').read_bytes() == b'version 2 game'
+    assert (third/'original.bin').read_bytes()==b'version 3 game'
     assert preview.read_bytes() == b'legacy preview'
     assert (root/'mario/targets'/game['game_id']/first['mod']/'ff7_cloud_field.gltf').is_file()
     assert (root/'mario/targets'/game['game_id']/second['mod']/'ff7_cloud_field.gltf').is_file()
