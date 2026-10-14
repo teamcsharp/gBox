@@ -220,6 +220,8 @@ def build(gdi, donors: dict[str, Path], out_dir, plan: dict[str, list[tuple[str,
     if not verification["ok"]:
         raise AssertionError(f"verification failed: {verification['problems'][:5]}")
     summary = check_plan(plan)
+    from .cast_swap import mario_side
+    mario_source, mario_title = mario_side(s for s in summary["donors"] if franchise(s) == "SM64DS")
     roster = [{"fighter": f, "name": names.get(f, f), "character": plan[f][0][1], "franchise": franchise(plan[f][0][1]),
                "render_slot": where[f][plan[f][0][0]][0],
                "pool": [{"costume": c, "render_costume": where[f][c][1], "character": s, "franchise": franchise(s)}
@@ -232,9 +234,9 @@ def build(gdi, donors: dict[str, Path], out_dir, plan: dict[str, list[tuple[str,
               "character": ",".join(summary["donors"]), "files": list(changes), "report": report,
               "writer_sha256": S.writer_fingerprint(), "profile_digest": S.profiles_digest(reports),
               "gameplay_verified": False, "roster": roster,
-              "title": "Dead or Alive 2 - Limited Edition (Japan): Sonic Adventure 2 vs Super Mario 64 DS, random "
+              "title": f"Dead or Alive 2 - Limited Edition (Japan): Sonic Adventure 2 vs {mario_title}, random "
                        "donor on every selection",
-              "cast_source": "Sonic Adventure 2 (USA) + Super Mario 64 DS (USA)", "cast_mapping": "mixed_random",
+              "cast_source": f"Sonic Adventure 2 (USA) + {mario_source}", "cast_mapping": "mixed_random",
               "random_select": {"patch": "gbox.doa2_random_select", "hook": f"{RS.HOOK:#010x}",
                                 "pool_word": f"{RS.POOL_WORD:#010x}", "routine_sha256": select["routine_sha256"],
                                 "pools": {str(k): v for k, v in pools.items()}},

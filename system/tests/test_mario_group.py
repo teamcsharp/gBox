@@ -119,3 +119,26 @@ def test_builders_upgrade_the_mario_side_from_a_library_folder(tmp_path):
 @pytest.mark.parametrize("spec", ["mario", "Mario characters", "mario hd"])
 def test_mario_group_aliases(spec):
     assert CS.resolve_source(spec, collection())["best_per_character"] == ["mario"]
+
+
+def test_hd_builds_name_the_mario_group_in_their_markers():
+    """#1748: a build whose Mario side holds HD / SM64 models says so in its title, and its cast_source maps back to
+    source=mario (special_builds.source_spec); the SM64 DS builds keep their wording."""
+    from gbox import special_builds as SB
+    src, words = CS.mario_side(["mario_hd", "sm64ds_ukiki"])
+    assert src == CS.GROUPS["mario"]["label"] and "HD" in words
+    assert SB.source_spec(f"Sonic Adventure 2 (USA) + {src}") == "Sonic Adventure 2 (USA), mario"
+    assert CS.mario_side(["sm64_yoshi"])[0] == src
+    assert CS.mario_side(["sm64ds_mario", "sm64ds_ukiki"]) == ("Super Mario 64 DS (USA)", "Super Mario 64 DS")
+    # SoulCalibur DC marker
+    plan = [{"fighter": "MIT", "name": "Mitsurugi", "costume": 0, "entry": 0, "character": "sonic"},
+            {"fighter": "MIT", "name": "Mitsurugi", "costume": 1, "entry": 1, "character": "mario_hd"}]
+    res = {"image": "x.gdi", "reports": [], "failures": [], "verification": {"ok": True}, "random_select": None}
+    assert SC.marker("m", "g", Path("x.gdi"), plan, res, "t")["cast_source"] == f"Sonic Adventure 2 (USA) + {src}"
+    plan[1]["character"] = "sm64ds_mario"
+    assert SC.marker("m", "g", Path("x.gdi"), plan, res, "t")["cast_source"] == \
+        "Sonic Adventure 2 (USA) + Super Mario 64 DS (USA)"
+    # Soul Calibur II description
+    assert "Super Mario HD" in SC2.random_desc({("mitsurugi", 0): "sonic", ("mitsurugi", 1): "peach_hd"})
+    assert SC2.random_desc({("mitsurugi", 0): "sa2_rouge", ("mitsurugi", 1): "sm64ds_peach"}) == \
+        "Soul Calibur II: Sonic Adventure 2 vs Super Mario 64 DS, a random costume per selection"

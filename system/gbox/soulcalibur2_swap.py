@@ -487,6 +487,14 @@ def verify_image(image: Path, expected: dict[int, str] | None = None, random_sel
     return out
 
 
+def random_desc(plan: dict) -> str:
+    """The random build's description, naming the Mario side it was built from (SM64 DS, or the HD group)."""
+    from .cast_swap import mario_side
+    slugs = {d if isinstance(d, str) else d.slug for d in plan.values()}
+    mario = mario_side(s for s in slugs if not s.startswith("sa2_") and s != "sonic")[1]
+    return f"Soul Calibur II: Sonic Adventure 2 vs {mario}, a random costume per selection"
+
+
 def write_marker(out_dir: Path, game_id: str, name: str, image: str, report: dict, plan: dict, desc: str,
                  pools: dict | None = None) -> dict:
     rec = {"name": name, "game_id": game_id, "image": image, "files": ["root.olk", "main.dol"] if
@@ -697,8 +705,7 @@ def main(argv=None) -> int:
     rep = build_image(Path(a.image), Path(a.out), {k: donors[s] for k, s in plan.items()}, rs, prog,
                       getattr(a, "image_name", None))
     rec = write_marker(Path(a.out), getattr(a, "game_id", "201629ad498aba7b"), name, Path(rep["image"]).name, rep,
-                       plan, "Soul Calibur II: Sonic Adventure 2 vs Super Mario 64 DS, a random costume per selection"
-                       if a.cmd == "random" else f"Soul Calibur II {name}", pools)
+                       plan, random_desc(plan) if a.cmd == "random" else f"Soul Calibur II {name}", pools)
     print(json.dumps({"image": rep["image"], "verify_ok": rep["verify"]["ok"], "random_select": rs,
                       "slots": {k: (v["status"], v.get("donor"), v.get("reason")) for k, v in rep["slots"].items()},
                       "marker": rec["name"]}, indent=1))

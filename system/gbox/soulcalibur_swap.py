@@ -951,12 +951,14 @@ def marker(name: str, game_id: str, image: Path, plan: list[dict], result: dict,
         v["character"] = v["pool"][0]["character"]
         v["franchise"] = v["pool"][0]["franchise"]
     chars = sorted({r["character"] for r in plan})
+    from .cast_swap import mario_side
     return {"name": name, "game_id": game_id, "image": Path(image).name, "character": ",".join(chars),
             "files": [D.HUMAN, "1ST_READ.BIN"] if result.get("random_select") else [D.HUMAN],
             "report": {"costumes": result["reports"], "failures": result["failures"], "gameplay_verified": False},
             "writer_sha256": writer_fingerprint(), "profile_digest": "", "gameplay_verified": False,
             "roster": list(roster.values()), "title": title,
-            "cast_source": "Sonic Adventure 2 (USA) + Super Mario 64 DS (USA)", "cast_mapping": "mixed_random",
+            "cast_source": "Sonic Adventure 2 (USA) + " + mario_side(c for c in chars if franchise(c) == "SM64DS")[0],
+            "cast_mapping": "mixed_random",
             "random_select": ({"patch": "gbox.soulcalibur_swap.patch_random_costume", "hook": f"0x{LOADER_SITE:08x}",
                                "caves": [f"0x{CAVE_A:08x}", f"0x{CAVE_B:08x}"],
                                "rule": "costume 0 or 1 -> bit 0 of TCNT0 ^ TCNT0>>8 ^ TCNT0>>16 at each fighter load; "
@@ -1103,8 +1105,8 @@ def main(argv=None) -> int:
     b.add_argument("--no-random", action="store_true")
     b.add_argument("--mario-group", action="store_true",
                    help="Mario-side donors from cast_swap's 'mario' group: the best model per character (HD > SM64 > DS)")
-    b.add_argument("--title", default="SoulCalibur (USA): Sonic Adventure 2 vs Super Mario 64 DS, random costume on "
-                                      "every fighter load")
+    b.add_argument("--title", default=None, help="default: SoulCalibur (USA): Sonic Adventure 2 vs <the Mario side>, "
+                                                   "random costume on every fighter load")
     a = ap.parse_args(argv)
     from .gdrom import GDRom
     human = GDRom(a.gdi).read(D.HUMAN)
@@ -1112,7 +1114,11 @@ def main(argv=None) -> int:
     plan = plan_costumes(human, assignments)
     res = build_roster(a.gdi, a.donors, a.out, a.name, plan, random_select=not a.no_random,
                        progress=lambda p, m: print(f"{p:5.1f}% {m}", flush=True))
-    _write_marker(Path(a.out), a.name, a.game_id, plan, res, a.title)
+    from .cast_swap import mario_side
+    title = a.title or ("SoulCalibur (USA): Sonic Adventure 2 vs "
+                        f"{mario_side(r['character'] for r in plan if franchise(r['character']) == 'SM64DS')[1]}, "
+                        "random costume on every fighter load")
+    _write_marker(Path(a.out), a.name, a.game_id, plan, res, title)
     print(json.dumps({"image": str(res["image"]), "built": len(res["reports"]), "failed": res["failures"],
                       "ok": res["verification"]["ok"]}, default=str))
     return 0 if res["verification"]["ok"] and not res["failures"] else 1
