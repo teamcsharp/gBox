@@ -50,15 +50,43 @@
     return s < 60 ? `~${Math.max(1, Math.round(s))} s left` : s < 3600 ? `~${Math.round(s / 60)} min left` : `~${(s / 3600).toFixed(1)} h left`;
   }
   const sizeOf = b => b.size == null ? null : (b.own_size || b.size);
+  const SORTS = { name: "Name", game: "Game", kind: "Kind", built: "Built", size: "Size", where: "Lives on" };
+  const firstDirection = key => key === "built" || key === "size" ? "desc" : "asc";
+  const textOrder = (a, b) => String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: "base" });
+  function sortValue(b, key) {
+    switch (key) {
+      case "name": return b.label || b.name || "";
+      case "game": return b.game_title || b.game_id || "";
+      case "kind": return (b.kinds || [b.kind]).map(k => KINDS[k] || k || "").join(", ");
+      case "built": return b.built || null;
+      case "size": return b.local_only ? null : sizeOf(b);
+      case "where": return (b.where || []).map(w => w.label || "").sort(textOrder).join(", ");
+    }
+  }
+  function compareBuilds(a, b, sort, direction) {
+    if (!Object.hasOwn(SORTS, sort)) return (+!!b.favorite - +!!a.favorite) || (b.built || 0) - (a.built || 0);
+    const av = sortValue(a, sort), bv = sortValue(b, sort);
+    // Unknown dates / sizes stay at the bottom in either direction.
+    if (av == null || bv == null) return av == null ? (bv == null ? 0 : 1) : -1;
+    const order = typeof av === "number" && typeof bv === "number" ? av - bv : textOrder(av, bv);
+    return order * (direction === "desc" ? -1 : 1) || textOrder(a.key || a.name || "", b.key || b.name || "");
+  }
+  function sortHeadersHTML(st) {
+    return '<span></span><span></span>' + Object.entries(SORTS).map(([key, label]) => {
+      const active = st.sort === key, next = active ? (st.direction === "asc" ? "desc" : "asc") : firstDirection(key);
+      const current = active ? `, sorted ${st.direction === "asc" ? "ascending" : "descending"}` : "";
+      return `<button type="button" class="bv-sort${active ? " on" : ""}" data-bv="sort" data-sort="${key}" aria-pressed="${active}" aria-label="${label}${current}. Sort ${next === "asc" ? "ascending" : "descending"}" title="Sort ${label}: ${next === "asc" ? "ascending" : "descending"}">${label}<span aria-hidden="true">${active ? (st.direction === "asc" ? "↑" : "↓") : "↕"}</span></button>`;
+    }).join("") + '<span></span>';
+  }
 
   // ---------------------------------------------------------------- filtering
   // favorites (★) first, then newest; fav: only the favorites
-  function filterBuilds(items, { q = "", game = "", kind = "", fav = false } = {}) {
+  function filterBuilds(items, { q = "", game = "", kind = "", fav = false, sort = "", direction = firstDirection(sort) } = {}) {
     const words = String(q || "").toLowerCase().split(/\s+/).filter(Boolean);
     const hay = b => [b.name, b.label, b.original_title, b.game_id, b.game_title, b.writer, ...(b.kinds || []).map(k => KINDS[k] || k),
       ...(b.changes || []).map(r => `${r.donor} ${r.slot}`), ...(b.tickets || []).map(t => `#${t.number}`)].join(" ").toLowerCase();
     return (items || []).filter(b => (!game || b.game_id === game) && (!kind || (b.kinds || [b.kind]).includes(kind)) && (!fav || b.favorite) && words.every(w => hay(b).includes(w)))
-      .sort((a, b) => (+!!b.favorite - +!!a.favorite) || (b.built || 0) - (a.built || 0));
+      .sort((a, b) => compareBuilds(a, b, sort, direction));
   }
   function facets(items) {
     const games = new Map(), kinds = new Map();
@@ -335,8 +363,8 @@
       <label class="bv-favf" title="Only the builds you starred (★)"><input type="checkbox" data-bv-f="fav"${st.fav ? " checked" : ""}> ★ Favorites${f.favorites ? ` (${f.favorites})` : ""}</label>
       <button class="act" type="button" data-bv="refresh" title="Re-read the build folders">Refresh</button><span class="mut" data-bv-sum></span></div>
       <div data-bv-retention></div>
-      <section class="bv-section"><h3>Custom builds <span class="mut" data-bv-count></span></h3>
-        <div class="bv-head mut"><span></span><span></span><span>Name</span><span>Game</span><span>Kind</span><span>Built</span><span>Size</span><span>Lives on</span><span></span></div>
+      <section class="bv-section bv-builds"><h3>Custom builds <span class="mut" data-bv-count></span></h3>
+        <div class="bv-head mut" data-bv-head>${sortHeadersHTML(st)}</div>
         <div data-bv-list></div><div data-bv-more></div></section>
       <section class="bv-section"><h3>Scheduled &amp; running <span class="mut" data-bv-scount></span></h3><div data-bv-sched></div></section>`;
   }
@@ -345,6 +373,11 @@
     .bv-section{margin:0 0 18px}.bv-section h3{margin:6px 0;font-size:15px}
     .bv-head,.bv-row{display:grid;grid-template-columns:22px 56px minmax(160px,2.4fr) minmax(90px,1.1fr) minmax(90px,1fr) 80px 72px minmax(90px,1fr) auto;gap:8px;align-items:center}
     .bv-head{font-size:11px;padding:0 6px}.bv-row{padding:6px;border-bottom:1px solid var(--line,#2a2c33)}.bv-row:hover{background:#ffffff08}.bv-row.open{background:#ffffff0c}
+    .bv-sort{display:flex;align-items:center;gap:5px;background:none;border:0;padding:6px 0;color:inherit;font:inherit;text-align:left;cursor:pointer}
+    .bv-sort span{opacity:.5}.bv-sort:hover,.bv-sort.on{color:var(--accent,#aab3ff)}.bv-sort.on span{opacity:1}.bv-sort:focus-visible{outline:2px solid var(--accent,#aab3ff);outline-offset:2px}
+    @media (min-width:901px){.bv-builds{display:grid;grid-template-columns:22px 56px minmax(160px,2.4fr) minmax(90px,1.1fr) minmax(90px,1fr) 80px 72px minmax(90px,1fr) auto;column-gap:8px}
+      .bv-builds>*{grid-column:1/-1}.bv-builds>.bv-head,.bv-builds>[data-bv-list],.bv-builds .bv-row{grid-template-columns:subgrid}
+      .bv-builds>[data-bv-list]{display:grid}.bv-builds>[data-bv-list]>*{grid-column:1/-1}}
     .bv-tri{background:none;border:0;color:inherit;cursor:pointer;font-size:14px;padding:0}
     .bv-thumb{width:56px;height:42px;object-fit:cover;border-radius:4px;background:#111}.bv-nothumb{display:flex;align-items:center;justify-content:center;color:#777;font-size:12px;text-transform:uppercase}
     .bv-main{min-width:0}.bv-name{font-weight:600;cursor:text;overflow-wrap:anywhere}.bv-rename{width:100%;font:inherit;font-weight:600}
@@ -613,7 +646,7 @@
   //   visible() -> bool, launch?(gid, x) (the shell's launch + loader), confirm?(text) -> bool, toast?(text),
   //   loadThree?() -> {THREE, GLTFLoader}, IntersectionObserver?, document?, raf?, caf?, now? }
   function mount(host, env) {
-    const st = { q: env.q || "", game: env.game || "", kind: env.kind || "", fav: !!env.fav, data: null, sched: null, open: new Set(), details: new Map(),
+    const st = { q: env.q || "", game: env.game || "", kind: env.kind || "", fav: !!env.fav, sort: "", direction: "asc", data: null, sched: null, open: new Set(), details: new Map(),
                  renaming: null, opts: null, msg: new Map(), jobOpen: new Set(), inv: new Map(), editing: null, jmsg: new Map(),
                  listSig: "", schedSig: "", page: 1, shot: new Map() };   // shot: row key -> the 📷 choice it offers
     const PAGE = 60;
@@ -851,6 +884,15 @@
       }
       if (st.local?.menu && !t.closest?.("[data-bl-menu]")) { st.local.menu = null; drawList(); if (!act) return; }
       if (act === "more") { st.page++; drawList(); return; }
+      if (act === "sort" && Object.hasOwn(SORTS, a.dataset.sort)) {
+        const key = a.dataset.sort;
+        st.direction = st.sort === key ? (st.direction === "asc" ? "desc" : "asc") : firstDirection(key);
+        st.sort = key; st.page = 1;
+        const head = part('[data-bv-head]'); if (head) head.innerHTML = sortHeadersHTML(st);
+        drawList();
+        part(`[data-sort="${key}"]`)?.focus?.();
+        return;
+      }
       if (act === "retention-save") return saveRetention();
       if (act === "refresh") { try { await env.api("/api/mods/built/refresh", {}); } catch {} st.listSig = ""; await loadList(true); await loadSched(); return; }
       if (act === "launchopt") { const bb = find(a.dataset.key); return launch(bb, (bb?.launch_options || []).find(o => o.id === a.dataset.opt)); }
