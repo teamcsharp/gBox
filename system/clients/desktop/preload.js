@@ -43,6 +43,8 @@ contextBridge.exposeInMainWorld("gbox", {
   recChunk: buf => ipcRenderer.invoke("rec:chunk", buf),
   recStop: () => ipcRenderer.invoke("rec:stop"),
   recFit: (file, o) => ipcRenderer.invoke("rec:fit", file, o),
+  recPreferences: () => ipcRenderer.invoke('rec:preferences'),
+  saveRecPreferences: p => ipcRenderer.invoke('rec:preferences-save', p),
   recOpen: file => ipcRenderer.invoke("rec:open", file),
   exportPdf: (html, name) => ipcRenderer.invoke("export:pdf", html, name),
   clipImage: dataUrl => ipcRenderer.invoke("clip:image", dataUrl),

@@ -30,6 +30,7 @@ function cleanupSessions(sync) {
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const recordingExport = require('./recording-export.cjs');
 
 app.setPath("userData", STANDALONE ? path.join(STANDALONE, ".tools", "desktop-profile")       // standalone: own profile + single-instance lock
                                   : path.join(app.getPath("appData"), "gbox-desktop"));   // keep settings where they were (productName = gBox)
@@ -47,6 +48,8 @@ const DEFAULTS = {
   autoStartWorker: true,
   volume: 30,
 };
+// Managed LAN desktops share exports; each desktop profile can override this folder.
+const RECORDING_DEFAULTS = { ...recordingExport.DEFAULTS, exportDir: STANDALONE ? '' : '\\\\10.89.1.246\\spark_ext\\samples_grabbed\\user\\gBox' };
 if (STANDALONE) Object.assign(DEFAULTS, { sshHost: "", apiUrl: process.env.GBOX_API_URL || "http://127.0.0.1:8765",
   repoLocal: path.join(STANDALONE, "system"), repoShare: path.join(STANDALONE, "system"), repoRemote: "" });
 // Every API call reads the settings (#712): parse the file only when it changed, not 2-3 times per request.
@@ -223,7 +226,16 @@ app.on("will-quit", () => { hotkeys.release(); try { globalShortcut.unregisterAl
 
 // ---------------- IPC ----------------
 ipcMain.handle("settings:get", () => settings());
-ipcMain.handle("settings:save", (_e, s) => { fs.mkdirSync(path.dirname(SETTINGS), { recursive: true }); fs.writeFileSync(SETTINGS, JSON.stringify({ ...settings(), ...s }, null, 1)); settingsStamp = null; cachedToken = null; return settings(); });
+function saveSettings(s) {
+  const next = { ...settings(), ...s };
+  if (Object.hasOwn(s, 'recording')) next.recording = recordingExport.preferences(s.recording);
+  fs.mkdirSync(path.dirname(SETTINGS), { recursive: true });
+  fs.writeFileSync(SETTINGS, JSON.stringify(next, null, 1)); settingsStamp = null; cachedToken = null;
+  return settings();
+}
+ipcMain.handle("settings:save", (_e, s) => saveSettings(s));
+ipcMain.handle('rec:preferences', () => recordingExport.preferences({ ...RECORDING_DEFAULTS, ...settings().recording }));
+ipcMain.handle('rec:preferences-save', (_e, p) => saveSettings({ recording: recordingExport.preferences(p) }).recording);
 ipcMain.handle("token", () => token());
 ipcMain.handle("settings:reset-token", () => { cachedToken = null; return true; });
 // Pick whip pause hold (gbox/pickwhip.py): the renderer pauses the game through POST /api/pickwhip/{sid}/hold. Main
@@ -510,31 +522,45 @@ const runExe = (exe, args) => new Promise((res, rej) => {
   p.on("close", code => { procs.delete("rec-fit"); taskDone("rec-fit", code);
     code === 0 ? res() : rej(new Error(`${path.basename(exe)} exit ${code}: ${err.split("\n").slice(-3).join(" ")}`)); });
 });
-ipcMain.handle("rec:fit", async (_e, file, o) => {
-  const target = (o.targetMB || 10) * 1048576, size = fs.statSync(file).size;
-  if (size <= target) return { file, bytes: size, compressed: false };
-  const dur = Math.max(1, o.seconds || 1), preset = { fast: "veryfast", balanced: "medium", best: "slow" }[o.speed] || "medium";
+let recFitBusy = false;
+ipcMain.handle("rec:fit", async (_e, file, options) => {
+  if (recFitBusy) throw Error('Another recording is being processed; this original is still saved locally');
+  recFitBusy = true;
+  let temporary;
+  try {
+  file = await recordingExport.ownedOriginal(file, REC_DIR);
+  const o = recordingExport.preferences({ ...RECORDING_DEFAULTS, ...settings().recording, ...options });
+  const originalStamp = await recordingExport.fingerprint(file);
+  const target = o.targetMB * 1048576, size = fs.statSync(file).size;
+  const finish = candidate => recordingExport.finish({ original: file, candidate, exportDir: o.exportDir, keep: o.keep, originalStamp });
+  if (!target || size <= target) return { ...await finish(file), bytes: size, compressed: false };
+  const dur = Math.max(1, Number.isFinite(options?.seconds) ? options.seconds : 1), preset = { fast: "veryfast", balanced: "medium", best: "slow" }[o.speed] || "medium";
   const hb = findExe("HandBrakeCLI.exe"), ff = findExe("ffmpeg.exe");
   if (!hb && !ff) throw new Error("neither HandBrakeCLI nor ffmpeg is installed (winget install HandBrake.HandBrake.CLI)");
   const audioKbps = 128;
   let kbps = Math.max(120, Math.floor(target * 8 * 0.92 / 1000 / dur) - audioKbps);
   for (let attempt = 0; attempt < 3; attempt++) {
     const h = kbps >= 3500 ? 1080 : kbps >= 1800 ? 720 : kbps >= 900 ? 540 : kbps >= 450 ? 360 : 240, fps = kbps < 900 ? 30 : 60;
-    const out = file.replace(/\.(mp4|webm)$/i, "") + `-${o.targetMB}MB.mp4`;
+    const out = temporary = path.join(REC_DIR, `.gbox-fit-${require('crypto').randomUUID()}.mp4`);
     send("task", "rec", `compressing ${path.basename(file)} to ≤${o.targetMB} MB: ${kbps} kbps, ${h}p, ${fps} fps (${hb ? "HandBrake" : "ffmpeg"})\n`);
     if (hb) await runExe(hb, ["-i", file, "-o", out, "-e", "x264", "--encoder-preset", preset, "-b", String(kbps), "--multi-pass", "--turbo",
                               "--maxHeight", String(h), "-r", String(fps), "--pfr", "-a", "1", "-E", "av_aac", "-B", String(audioKbps), "-O"]);
     else await runExe(ff, ["-y", "-i", file, "-map", "0:v:0", "-map", "0:a:0?", "-c:a", "aac", "-b:a", `${audioKbps}k`, "-vf", `scale=-2:'min(${h},ih)'`, "-r", String(fps), "-c:v", "libx264", "-preset", preset,
                            "-b:v", `${kbps}k`, "-maxrate", `${kbps}k`, "-bufsize", `${kbps * 2}k`, "-movflags", "+faststart", out]);
     const got = fs.statSync(out).size;
-    if (got <= target) {
-      let final = out;
-      if (!o.keep) { fs.unlinkSync(file); final = file.replace(/\.webm$/i, ".mp4"); fs.renameSync(out, final); }
-      return { file: final, bytes: got, compressed: true, original: size, kbps, height: h, tool: hb ? "HandBrake" : "ffmpeg" };
+    if (!got) throw Error('The encoder produced an empty recording; original retained');
+    if (got > 0 && got <= target) {
+      const name = path.basename(file).replace(/\.(mp4|webm)$/i, '') + `-${o.targetMB}MB.mp4`;
+      const local = await recordingExport.publish(out, REC_DIR, name);
+      return { ...await finish(local), bytes: got, compressed: true, original: size, kbps, height: h, tool: hb ? "HandBrake" : "ffmpeg" };
     }
     fs.unlinkSync(out); kbps = Math.max(80, Math.floor(kbps * target / got * 0.9));   // overshot: aim lower and retry
   }
   throw new Error(`couldn't get ${path.basename(file)} under ${o.targetMB} MB`);
+  } finally {
+    if (temporary) await fs.promises.unlink(temporary).catch(() => {});
+    recFitBusy = false;
+  }
 });
 // chat export: printable HTML -> PDF (Save dialog); a PNG data URL -> the system clipboard as an image
 ipcMain.handle("export:pdf", async (_e, html, name) => {

@@ -106,7 +106,7 @@
   #top-volume svg { width:17px; height:17px; flex:none; }
   #top-volume input { width:90px; margin:0; accent-color:var(--acc); cursor:pointer; }
   #top-volume output { width:30px; text-align:right; font-variant-numeric:tabular-nums; }
-  #recmenu { display:none; position:fixed; z-index:70; top:34px; width:250px; padding:10px 12px; background:var(--bg); border:1px solid var(--line);
+  #recmenu { display:none; position:fixed; z-index:70; top:34px; width:min(360px,calc(100vw - 32px)); max-height:calc(100vh - 64px); overflow:auto; padding:10px 12px; background:var(--bg); border:1px solid var(--line);
     border-radius:8px; box-shadow:0 10px 30px #0009; font-size:13px; -webkit-app-region:no-drag; } #recmenu.on { display:block; }
   #recmenu label { display:flex; justify-content:space-between; align-items:center; gap:8px; margin:6px 0; }
   #recmenu select { font:inherit; font-size:12px; padding:3px 6px; background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:5px; }
@@ -1011,7 +1011,7 @@ window.taskVizCreate = canvas => {
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/></svg>Capture</button>
     <button id="tb-pick" title="System eyedropper: pick any element (window, panel, button, row…) and report on it">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m2 22 1-1h3l9-9"/><path d="M3 21v-3l9-9"/><path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z"/></svg>Eyedropper</button>
-    <button id="tb-rec" title="Record the app with playback audio (click to stop). Right-click: replay the last minutes of gameplay (background ring)">
+    <button id="tb-rec" title="Record gameplay with playback audio (click to stop). Recording preferences: adjacent arrow. Right-click: replay">
       <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><circle id="tb-rec-dot" cx="12" cy="12" r="4.5" fill="#ff3b3b"/></svg><span id="tb-rec-t"></span></button>
     <button id="tb-recopt" title="Recording size limit and compression" style="min-width:0;padding:0 4px">▾</button>
     <button id="tb-mini" hidden title="Mini mode: shrink gBox to a resizable game window (keeps the game's aspect ratio)">
@@ -6192,8 +6192,25 @@ document.querySelector('aside button[data-s="bevy"]').addEventListener("click", 
 // ---------------- screen recording (MP4 streamed to disk) ----------------
 const REC = { mr: null, t0: 0, timer: null, file: null };
 gbox.onRecordingCancelled(() => { REC.cancelled = true; if (REC.mr?.state === "recording") REC.mr.stop(); });
-// Over the selected size limit, the file is re-encoded with HandBrake to fit.
-const recOpts = () => { try { return { targetMB: 20, speed: "balanced", keep: false, ...JSON.parse(localStorage.getItem("gbox_rec") || "{}") }; } catch { return { targetMB: 20, speed: "balanced", keep: false }; } };
+// These preferences belong to this desktop profile, independent of the shared server and other PCs.
+let recordingPrefs = { targetMB: 20, speed: 'balanced', keep: true, capture: 'gameplay', exportDir: '' };
+let recordingPrefsSave = Promise.resolve();
+const recOpts = () => ({ ...recordingPrefs });
+function recordingTitle() {
+  $('#tb-rec').title = `Record ${recordingPrefs.capture === 'app' ? 'application' : 'gameplay only'} with playback audio (click to stop). Preferences: adjacent arrow. Right-click: replay`;
+}
+const recordingPrefsReady = (async () => {
+  const s = await gbox.settings();
+  recordingPrefs = await gbox.recPreferences();
+  if (!s.recording) {
+    // Retain the old size/speed choices; gameplay and original preservation use the new safe defaults.
+    let old = {}; try { old = JSON.parse(localStorage.getItem('gbox_rec') || '{}'); } catch {}
+    for (const key of ['targetMB','speed']) if (old[key] !== undefined) recordingPrefs[key] = old[key];
+    recordingPrefs = await gbox.saveRecPreferences(recordingPrefs);
+  }
+  recordingTitle();
+})();
+recordingPrefsReady.catch(e => console.error('Recording preferences:', e.message));
 document.body.insertAdjacentHTML("beforeend", `<div id="recmenu"><button class="act" id="rec-app" style="width:100%">Record application + audio</button>
   <button class="act" id="rec-game" style="width:100%;margin:6px 0">Record gameplay only + audio</button>
   <div class="mut" style="font-size:11px;margin-bottom:8px">Includes PC playback audio. Microphone is excluded.</div><b>Recording size</b>
@@ -6201,24 +6218,52 @@ document.body.insertAdjacentHTML("beforeend", `<div id="recmenu"><button class="
   <input id="rec-target" type="range" min="0" max="100" step="1" value="20" aria-label="Recording size limit in megabytes; zero means no limit">
   <div class="mut" style="font-size:11px;text-align:right">0 = no limit · 100 MB maximum</div>
   <label>Compression <select id="rec-speed"><option value="fast">Fast</option><option value="balanced">Balanced</option><option value="best">Best quality (slower)</option></select></label>
-  <label title="When a recording is downsized to the limit, the full-size original is kept next to it">Also keep my full-size original <input type="checkbox" id="rec-keep"></label>
+  <label>Record icon captures <select id="rec-capture"><option value="gameplay">Gameplay only</option><option value="app">Whole application</option></select></label>
+  <label title="Disable only to delete the original after a successful, verified export">Keep full-size original locally <input type="checkbox" id="rec-keep" checked></label>
+  <label for="rec-export">Export folder (this gBox instance)</label>
+  <input id="rec-export" type="text" style="width:100%;box-sizing:border-box" placeholder="Choose a folder or network share">
+  <button class="act" id="rec-browse" style="margin-top:6px">Choose export folder...</button>
+  <div class="mut" style="font-size:11px">Originals stay in the current recordings folder. Exports are verified before optional original deletion. An empty export folder keeps processed videos locally.</div>
   <div class="mut" style="font-size:11px">Recordings over the limit are re-encoded with HandBrake (bitrate and resolution lowered to fit).</div>
-  <button class="act" id="rec-folder" style="width:100%;margin-top:6px">📂 Open recordings folder</button></div>`);
+  <p id="rec-pref-status" role="status" style="font-size:11px"></p>
+  <button class="act" id="rec-export-folder" style="width:100%;margin-top:6px">Open export folder</button>
+  <button class="act" id="rec-folder" style="width:100%;margin-top:6px">Open originals folder</button></div>`);
 $("#rec-folder").onclick = () => { gbox.recOpen(null); $("#recmenu").classList.remove("on"); };
-const openRecMenu = e => { e.stopPropagation(); const m = $("#recmenu"), o = recOpts(), b = $("#tb-recopt").getBoundingClientRect();
+const openRecMenu = async e => { e.stopPropagation();
+  try { await recordingPrefsReady; await recordingPrefsSave; recordingPrefs = await gbox.recPreferences(); }
+  catch (err) { toast('Could not load recording preferences: ' + err.message, 8000); return; }
+  const m = $("#recmenu"), o = recOpts(), b = $("#tb-recopt").getBoundingClientRect();
   $("#rec-target").value = String(Math.max(0, Math.min(100, Number(o.targetMB) || 0)));
   $("#rec-target-value").value = +$("#rec-target").value ? `${$("#rec-target").value} MB` : "No limit";
   $("#rec-speed").value = o.speed; $("#rec-keep").checked = o.keep;
-  m.style.left = Math.min(innerWidth - 262, b.left - 120) + "px"; m.classList.toggle("on"); };
+  $('#rec-capture').value = o.capture; $('#rec-export').value = o.exportDir;
+  recordingTitle();
+  m.style.left = Math.max(4, Math.min(innerWidth - 390, b.left - 240)) + "px"; m.classList.toggle("on"); };
 $("#tb-recopt").onclick = openRecMenu;
 $("#tb-rec").oncontextmenu = e => { e.preventDefault(); e.stopPropagation(); ringPopOpen(e); };   // the replay ring (#1084)
 $("#rec-app").onclick = () => recordAction("app");
 $("#rec-game").onclick = () => recordAction("gameplay");
 const saveRecOpts = () => { const n = +$("#rec-target").value;
   $("#rec-target-value").value = n ? `${n} MB` : "No limit";
-  try { localStorage.setItem("gbox_rec", JSON.stringify({ targetMB: n, speed: $("#rec-speed").value, keep: $("#rec-keep").checked })); } catch {} };
+  const p = { targetMB: n, speed: $('#rec-speed').value, keep: $('#rec-keep').checked,
+              capture: $('#rec-capture').value, exportDir: $('#rec-export').value.trim() };
+  recordingPrefs = p; recordingTitle(); $('#rec-pref-status').textContent = 'Saving...';
+  recordingPrefsSave = recordingPrefsSave.catch(() => {}).then(() => gbox.saveRecPreferences(p));
+  recordingPrefsSave.then(() => { $('#rec-pref-status').textContent = 'Saved for this gBox instance'; },
+    e => { $('#rec-pref-status').textContent = 'Not saved: ' + e.message; });
+  return recordingPrefsSave;
+};
 $("#rec-target").oninput = saveRecOpts;
 $("#recmenu").onchange = saveRecOpts;
+$('#rec-browse').onclick = async () => {
+  try { const folder = await gbox.pickFolder({ title: 'Export processed recordings', defaultPath: $('#rec-export').value });
+    if (folder) { $('#rec-export').value = folder; await saveRecOpts(); } }
+  catch (e) { $('#rec-pref-status').textContent = e.message; }
+};
+$('#rec-export-folder').onclick = async () => {
+  try { await saveRecOpts(); if (recOpts().exportDir) await gbox.openPath(recOpts().exportDir); else await gbox.recOpen(null); }
+  catch (e) { $('#rec-pref-status').textContent = e.message; }
+};
 document.addEventListener("mousedown", e => { if (!e.target.closest("#recmenu, #tb-recopt, #tb-rec")) $("#recmenu").classList.remove("on"); });
 // clicking anywhere outside a pop-up closes it (its own opener toggles it instead, so it isn't closed-then-reopened)
 const POPS = [["#busysteps", "#chatbusy"], ["#taskpanel", "#tb-tasks"], ["#auditpanel", "#sb-audit"], ["#svcpanel", "#statusbar"], ["#whipmenu", null],
@@ -6252,7 +6297,7 @@ async function gameplayRecordingRect() {
   if (!r || r.y < 0 || r.y + r.h > o.height || r.x < 0 || r.x + r.w > o.width) throw new Error("Keep the gameplay picture fully visible before recording");
   return { x: o.left + r.x, y: o.top + r.y, w: r.w, h: r.h };
 }
-async function toggleRecording(mode = "app") {
+async function toggleRecording(mode = "gameplay") {
   const btn = $("#tb-rec");
   if (REC.mr) { if (REC.mr.state === "recording") REC.mr.stop(); return; }
   if (REC.starting) return;
@@ -6301,12 +6346,17 @@ async function toggleRecording(mode = "app") {
     REC.mr = null; btn.classList.remove("recording"); $("#tb-rec-t").textContent = "";
     if (!res) return;
     let out = res; const o = recOpts(), secs = (Date.now() - REC.t0) / 1000;
-    if (o.targetMB && res.bytes > o.targetMB * 1048576) {
-      $("#tb-rec-t").textContent = "compressing…"; toast(`Compressing the recording to ≤${o.targetMB} MB…`, 60000);
+    if (o.exportDir || (o.targetMB && res.bytes > o.targetMB * 1048576)) {
+      REC.processing = true;
+      const compress = o.targetMB && res.bytes > o.targetMB * 1048576;
+      $("#tb-rec-t").textContent = compress ? 'compressing...' : 'exporting...';
+      toast(compress ? `Compressing the recording to ≤${o.targetMB} MB…` : 'Exporting recording...', 60000);
       try { out = await gbox.recFit(res.file, { ...o, seconds: secs });
-            toast(`Recording ${(out.bytes / 2 ** 20).toFixed(1)} MB (was ${(out.original / 2 ** 20).toFixed(1)} MB, ${out.height}p)`, 8000); }
-      catch (err) { toast("⚠ Compression failed: " + err.message, 10000); }
+            toast(out.compressed ? `Recording ${(out.bytes / 2 ** 20).toFixed(1)} MB (was ${(out.original / 2 ** 20).toFixed(1)} MB, ${out.height}p)` : 'Recording exported', 8000);
+            if (out.warning) toast(out.warning, 10000); }
+      catch (err) { con.textContent += '\nRecording processing failed: ' + err.message + '\n'; toast('Recording processing failed: ' + err.message, 10000); }
       $("#tb-rec-t").textContent = "";
+      REC.processing = false;
     }
     con.textContent += `\nrecording saved: ${out.file} (${(out.bytes / 2 ** 20).toFixed(1)} MB${out.compressed ? `, compressed from ${(out.original / 2 ** 20).toFixed(1)} MB with ${out.tool}` : ""})\n`;
     gbox.recOpen(out.file);
@@ -6324,11 +6374,15 @@ async function toggleRecording(mode = "app") {
     throw e;
   } finally { REC.starting = false; }
 }
-function recordAction(mode) {
+async function recordAction(mode) {
   $("#recmenu").classList.remove("on");
-  toggleRecording(mode).catch(e => { alert("Recording failed: " + e.message); });
+  // Stopping must work even if an export preference is invalid or still being saved.
+  if (REC.mr) { await toggleRecording(); return; }
+  if (REC.processing) { toast('Finishing the current recording export...', 5000); return; }
+  try { await recordingPrefsReady; await recordingPrefsSave; await toggleRecording(mode || recOpts().capture); }
+  catch(e) { alert("Recording failed: " + e.message); }
 }
-$("#tb-rec").onclick = () => recordAction("app");
+$("#tb-rec").onclick = () => recordAction();
 
 // ---------------- replay ring pop-up (#1084) ----------------
 // Right-click the record icon: the running game's background gameplay ring (gbox/ring_record.py records while the controller is in use).
