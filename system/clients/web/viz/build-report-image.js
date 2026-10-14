@@ -38,6 +38,8 @@
   function open(build, env = {}) {
     if (!build.session_id) return Promise.reject(new Error('This build is not the active game. Select its running session to capture a report.'));
     const doc = env.document || root.document, previous = doc.activeElement;
+    const existing = doc.querySelector('.bri-modal');
+    if (existing?._reportResult) return existing._reportResult; // also covers a pending, hidden capture
     const wrap = doc.createElement('div'); wrap.className = 'bri-modal';
     wrap.innerHTML = `<style>${css}</style><section class="bri-box" role="dialog" aria-modal="true" aria-label="Annotate build report" tabindex="-1">
       <h2>Show what is wrong with this build</h2><p class="bri-sub">${esc(build.game_title)} · ${esc(build.runtime_mod || build.name)}</p>
@@ -48,12 +50,16 @@
       <label>Reference images (optional, up to 3)<input class="bri-file" data-files type="file" accept="image/png,image/jpeg,image/webp" multiple></label>
       <p class="bri-sub">Choose, paste or drop a character image for comparison. The original frame, marked image and references go with your build report.</p>
       <div class="bri-refs"></div><div class="bri-buttons"><button type="button" data-send disabled>Submit report</button><button type="button" data-cancel>Cancel</button><span class="bri-status" role="status" aria-live="polite">Capturing game frame…</span></div></section>`;
+    // Native/compositor capture must never photograph this report form.
+    // Hide before mounting, then keep it hidden until the captured frame arrives.
+    wrap.style.setProperty('visibility','hidden','important');
     doc.body.appendChild(wrap);
     const q = s => wrap.querySelector(s), canvas = q('canvas'), ctx = canvas.getContext('2d');
-    let original = '', frame = null, shapes = [], draft = null, tool = 'box', refs = [], busy = false, reading = false, closed = false;
+    let original = '', frame = null, shapes = [], draft = null, tool = 'box', refs = [], busy = false, reading = false, closed = false, capturing = false;
     let resolve; const result = new Promise(r => { resolve = r; });
+    wrap._reportResult = result;
     const status = text => { q('[role=status]').textContent = text; };
-    const available = () => { q('[data-send]').disabled = busy || reading || !frame; };
+    const available = () => { q('[data-send]').disabled = busy || reading || capturing || !frame; };
     const close = value => { if (closed) return; closed = true; doc.removeEventListener('keydown', key, true); wrap.remove(); previous?.focus?.(); resolve(value); };
     const key = e => {
       e.stopPropagation();
@@ -64,15 +70,22 @@
         e.preventDefault(); all[next]?.focus();
       }
     };
-    doc.addEventListener('keydown', key, true); q('section').focus();
+    doc.addEventListener('keydown', key, true);
     function redraw() {
       if (!frame) return;
       ctx.drawImage(frame,0,0,canvas.width,canvas.height);
       [...shapes,...(draft ? [draft] : [])].forEach((s,i) => mark(ctx,s,i+1,Math.max(1,canvas.width/1000)));
     }
     async function capture() {
+      if (closed || capturing) return;
+      capturing = true; available();
+      const focus = doc.activeElement;
+      wrap.style.setProperty('visibility','hidden','important');
       q('[data-retry]').hidden = true; status('Capturing game frame…');
       try {
+        const raf = root.requestAnimationFrame?.bind(root) || (fn => setTimeout(fn,16));
+        await new Promise(yes => raf(() => raf(yes)));
+        if (closed) return;
         const captured = await env.api(`/api/sessions/${encodeURIComponent(build.session_id)}/report-frame`, {}, 'POST');
         const image = new root.Image();
         await new Promise((yes,no) => { image.onload = yes; image.onerror = () => no(new Error('The game frame could not be displayed.')); image.src = 'data:image/png;base64,'+captured.image_b64; });
@@ -81,6 +94,13 @@
         canvas.style.width = `min(100%, ${40 * canvas.width / canvas.height}vh)`;
         canvas.hidden = false; redraw(); available(); status('Ready to mark and report.');
       } catch (err) { if (!closed) { status('Capture failed: '+err.message); q('[data-retry]').hidden = false; } }
+      finally {
+        capturing = false;
+        if (!closed) {
+          wrap.style.removeProperty('visibility'); available();
+          (wrap.contains(focus) && focus.isConnected ? focus : q('section')).focus();
+        }
+      }
     }
     canvas.addEventListener('pointerdown', e => { if (!frame || busy || e.button !== 0) return; e.preventDefault();
       const a = point(e,canvas); draft = {tool,a,b:a}; canvas.setPointerCapture(e.pointerId); });
