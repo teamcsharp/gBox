@@ -341,6 +341,8 @@ def create_app(config: Config) -> FastAPI:
         if jj["state"] != "succeeded":
             raise HTTPException(409, f"couldn't capture the game: {jj.get('error') or jj['state']}")
         o = jj["output"]
+        if o.get('capture_source') == 'desktop-compositor' and (o.get('covered') or 0) > 0:
+            raise HTTPException(409, 'Another window covers part of the game. Close the overlay and retry the capture.')
         if o.get("mean_luma") is not None and o["mean_luma"] < 6:   # None = the luma probe gave up, not a black screen
             raise HTTPException(409, "the game screen is black right now: try again once it's showing")
         return normalize(store.read_artifact(o["sha256"]) or b"")
