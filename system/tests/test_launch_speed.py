@@ -5,6 +5,7 @@ cached game re-read the whole file for its SHA-1 (147 MiB/s: ~51 s for Metroid: 
 at ~9.5 MB/s (read 8 MiB, write it, read the next) and then re-read the copy for the hash; the Metroid launch was
 still copying after 9 minutes when the app gave up."""
 import hashlib
+import json
 import os
 import sys
 import threading
@@ -183,3 +184,37 @@ def test_launch_reports_where_its_time_went(tmp_path, monkeypatch):
     finally:
         for sid in list(tools.SESSIONS):
             tools.session_op(tools.SessionIn(session_id=sid, op="stop_game"), Ctx(cfg, job_id="s2", worker="w1"))
+
+
+def test_complete_local_build_launch_never_probes_the_base_share(tmp_path, monkeypatch):
+    """Local build works with its original library offline; no network stat or download."""
+    from gbox import filemods
+    cfg = cfg_for(tmp_path)
+    cfg.libraries.append(Library(id="lib", paths={"windows": str(tmp_path / "offline"), "linux": str(tmp_path / "offline")}))
+    cfg.emulators["dreamcast"] = EmulatorConfig(adapter="command", executable=sys.executable,
+                                                args=["-c", "import time; time.sleep(30)", "{rom}"])
+    game = CatalogEntry(game_id="g", title="Local game", platform="dreamcast", library="lib", rel_path="base.chd",
+                        source_paths=[], hashes={}, size=0, format="chd", runtimes={}, profile_id="g")
+    folder = filemods.mod_dir(cfg, "g", "custom")
+    folder.mkdir(parents=True)
+    image = folder / "custom.gdi"
+    image.write_text("fixture")
+    (folder / ".gbox-mod.json").write_text(json.dumps({"image": image.name}))
+    real_stat = type(image).stat
+
+    def stat(path, *args, **kw):
+        if "offline" in path.parts:
+            pytest.fail("complete local build probed the network library")
+        return real_stat(path, *args, **kw)
+
+    monkeypatch.setattr(type(image), "stat", stat)
+    monkeypatch.setattr(tools, "SESSIONS", {})
+    monkeypatch.setattr(tools, "track_emulator", lambda *a, **kw: None)
+    monkeypatch.setattr(filemods, "stage", lambda *a, **kw: pytest.fail("downloaded a complete local build"))
+    try:
+        out = tools._launch_game(tools.LaunchIn(game=game, mod="custom"), Ctx(cfg, job_id="local", worker="test"))
+        assert tools.SESSIONS[out["session_id"]][1]["_rom_path"] == str(image)
+        assert out["detail"]["mod"] == "custom"
+    finally:
+        for sid in list(tools.SESSIONS):
+            tools.session_op(tools.SessionIn(session_id=sid, op="stop_game"), Ctx(cfg, job_id="stop", worker="test"))

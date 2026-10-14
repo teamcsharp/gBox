@@ -554,10 +554,20 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         detail = ad.launch_game(g.launch["emulator"], g.launch["name"])
     else:
         src = rom_path(g, ctx.config)
-        if not src.exists():
+        # A complete mod is its own game copy. Do not wake/stat the library
+        # share just to obtain a base ROM that this launch will never read.
+        local_mod = None
+        if inp.mod:
+            from . import filemods
+            folder = filemods.mod_dir(ctx.config, g.game_id, inp.mod)
+            if (folder / ".gbox-mod.json").is_file():
+                candidate = filemods.launch_path(ctx.config, g.game_id, src, inp.mod)
+                if candidate.is_file():
+                    local_mod = candidate
+        if local_mod is None and not src.exists():
             raise FileNotFoundError(f"ROM not reachable from this node: {src}")
         lap("rom_s")
-        if isinstance(ad, adapters.RPCS3Adapter) and g.launch.get("kind") == "attract":
+        if local_mod is None and isinstance(ad, adapters.RPCS3Adapter) and g.launch.get("kind") == "attract":
             eboot = catalog.ps3_stub_eboot(src)            # HyperSpin .txt stub -> its disc folder's EBOOT.BIN (#1093)
             if not eboot:
                 raise FileNotFoundError(f"no PS3_GAME/USRDIR/EBOOT.BIN in the folder for {src.name} under {src.parent}")
@@ -577,8 +587,8 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
             if not (filemods.mod_dir(ctx.config, g.game_id, inp.mod) / ".gbox-mod.json").exists() and ctx.server:
                 ctx.progress(20, f"Fetching mod {inp.mod} from the central collection (Spark)")
                 launch_mod = filemods.stage(ctx.config, ctx.server, ctx.headers, g.game_id, inp.mod, ctx.progress)
-            src = filemods.launch_path(ctx.config, g.game_id, src, launch_mod)
-            ctx.progress(28, f"Mod: {launch_mod}")
+            src = local_mod or filemods.launch_path(ctx.config, g.game_id, src, launch_mod)
+            ctx.progress(28, f"Using local build: {launch_mod}")
             diag["staged_mod"] = launch_mod
         lap("mod_s")
         emu = ctx.config.emulators.get(g.platform)
