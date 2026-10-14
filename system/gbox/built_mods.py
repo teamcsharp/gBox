@@ -656,6 +656,38 @@ def launch_index(sessions: list[dict], jobs: list[dict]) -> dict:
     return out
 
 
+def play_counts(store, sessions: list[dict]) -> dict:
+    """Recorded player starts per collection build, excluding failed launches and agent tests."""
+    labels = {r.get('session_id'): r.get('owner') for r in _fields(store, 'slabel', ('session_id', 'owner'))}
+    try:
+        with store.lock:
+            rows = store.db.execute("SELECT json_extract(body,'$.id'), json_extract(body,'$.output.session_id') "
+                                    "FROM docs WHERE kind='job' AND json_extract(body,'$.tool')='launch_game' "
+                                    "AND json_extract(body,'$.agent_use')=1").fetchall()
+        agent_jobs = {r[0] for r in rows}
+        agent_sessions = {r[1] for r in rows if r[1]}
+    except Exception:  # alternate store implementations
+        jobs = [j for j in store.all('job') if j.get('tool') == 'launch_game' and j.get('agent_use')]
+        agent_jobs = {j.get('id') for j in jobs}
+        agent_sessions = {(j.get('output') or {}).get('session_id') for j in jobs}
+    out, seen = {}, set()
+    for session in sessions:
+        sid = session.get('session_id')
+        if not sid or sid in seen or not session.get('started') or session.get('state') not in ('running', 'paused', 'ended', 'stopped', 'completed'):
+            continue
+        seen.add(sid)
+        owner = labels.get(sid)
+        if owner != 'you' and (owner == 'agent' or sid in agent_sessions or sid.split('-', 1)[-1] in agent_jobs):
+            continue
+        mod = str(session.get('collection_mod') or session.get('mod') or '').split(STAGED_SEP)[0]
+        if not mod:
+            continue
+        row = out.setdefault((session.get('game_id') or '', mod), {'play_count': 0, 'last_played': 0})
+        row['play_count'] += 1
+        row['last_played'] = max(row['last_played'], session['started'])
+    return out
+
+
 def donor_previews(changes: list[dict], library: Path | None) -> list[dict]:
     out, seen = [], set()
     if not library:
@@ -971,6 +1003,7 @@ def gallery(store, config, records: list[dict] | None = None, *, register: bool 
             except ValueError:
                 pass
     launches = launch_index(sessions, _failed_launches(store))
+    plays = play_counts(store, sessions)
     names = display_names(store)
     favs, reported = favorites(store), build_reports(store)
     broken = {r['key']: r for r in _fields(store, 'build_broken', ('key', 'state', 'number', 'request_id', 'built', 'error'))}
@@ -998,6 +1031,7 @@ def gallery(store, config, records: list[dict] | None = None, *, register: bool 
                            launch_report=reports.get((gid, rec["name"])),
                            favorite=f"{gid}/{rec['name']}" in favs, reported=reported.get(f"{gid}/{rec['name']}")))
         items[-1]['unlocks'] = badge(store, rec)
+        items[-1].update(plays.get((gid, rec['name']), {'play_count': 0, 'last_played': 0}))
     for item in items:
         flag = broken.get(item['key'])
         if flag and flag.get('state') != 'deleted' and (not flag.get('built') or item.get('built') == flag['built']):

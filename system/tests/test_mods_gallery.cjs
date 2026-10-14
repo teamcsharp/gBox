@@ -68,8 +68,8 @@ test('card: carousel, escaped title, badges, donor -> slot rows with the per-slo
   assert.match(html, /<img class="mg-img" loading="lazy"[^>]*data-i="0" src="\/api\/artifacts\/a{64}\?token=t"/);
   assert.match(html, /data-mg="prev"[\s\S]*data-mg="next"/);
   assert.match(html, /in-game · 1 \/ 3/);
-  assert.match(html, /<b>ramar<\/b> → enemy:gobooma <span class="mg-st mg-failed">failed<\/span> <span class="mut">too many triangles/);
-  assert.match(html, /<b>hucast<\/b> → enemy:booma <span class="mg-st mg-built">built/);
+  assert.match(html, /<b><button[^>]*data-slug="ramar"[^>]*>ramar<\/button><\/b> → enemy:gobooma <span class="mg-st mg-failed">failed<\/span> <span class="mut">too many triangles/);
+  assert.match(html, /<b><button[^>]*data-slug="hucast"[^>]*>hucast<\/button><\/b> → enemy:booma <span class="mg-st mg-built">built/);
   assert.match(html, /1\.0 MB \(3\.00 GB with shared files\)/);
   assert.match(html, /built just now/); assert.match(html, /never launched/);
   assert.match(html, /data-mg="play">Play</);
@@ -421,7 +421,7 @@ test('while the server indexes: "indexing…" in the summary and on unsized card
 
 test('favorites (★) list first, the ★ Favorites filter and its count', () => {
   const all = [VR, { ...PSO, favorite: true }, CF];
-  assert.deepEqual(MG.filterMods(all).map(m => m.name), ['cast_pso_ult', 'cf_hucast_taffy', 'mgsvr_hucast'], 'favorite first, then newest');
+  assert.deepEqual(MG.filterMods(all, {sort:'favorites'}).map(m => m.name), ['cast_pso_ult', 'cf_hucast_taffy', 'mgsvr_hucast'], 'explicit favorites sort');
   assert.deepEqual(MG.filterMods(all, { fav: true }).map(m => m.name), ['cast_pso_ult']);
   assert.equal(MG.facets(all).favorites, 1);
   const bar = MG.toolbarHTML({ q: '', game: '', writer: '', node: '', fav: true }, MG.facets(all));
@@ -525,7 +525,9 @@ test('☆/★ toggles a favorite (PUT), the card moves first, the filter shows o
     assert.ok(h.grid().indexOf('cf3/') < h.grid().indexOf('mgsvr/'), 'newest first while nothing is starred');
     await h.fire('click', target({ key: VR.key, mg: 'fav' }));
     assert.deepEqual(env.sent[0], ['PUT', '/api/builds/mgsvr/mgsvr_hucast/favorite', { favorite: true }]);
-    assert.ok(h.grid().indexOf('mgsvr/') < h.grid().indexOf('cf3/'), 'the favorite moves first');
+    assert.ok(h.grid().indexOf('cf3/') < h.grid().indexOf('mgsvr/'), 'newest remains first after favoriting');
+    ctl.onInput({target:{dataset:{mgF:'sort'},value:'favorites'}});
+    assert.ok(h.grid().indexOf('mgsvr/') < h.grid().indexOf('cf3/'), 'explicit favorites sort moves it first');
     assert.match(h.grid(), /class="mg-card mg-fav" data-key="mgsvr\/mgsvr_hucast"/);
     assert.match(h.host.innerHTML, /★ Favorites \(1\)/);
     ctl.onInput({ target: { dataset: { mgF: 'fav' }, type: 'checkbox', checked: true } });
@@ -571,7 +573,7 @@ test('both clients have a Mods view wired to the shared gallery', () => {
   assert.match(desktop, /openImages: \(list, i, at\) => texPopOpen\(list, i, at\)/);
   assert.match(desktop, /return modPlay\(m\.mod_title \? \{ \.\.\.card, title: m\.mod_title \} : card, moment && card\.state_slot != null \? "moment" : "play"\)/);
   assert.match(web, /const tabs = \{ Library: library, Mods: modsView,/);
-  assert.match(web, /<script src="\/live-poll\.js"><\/script>\r?\n<script src="\/viz\/mods-gallery\.js"><\/script>/);
+  assert.match(web, /<script src="\/live-poll\.js"><\/script>\r?\n(?:<script src="\/viz\/character-popup\.js"><\/script>\r?\n)?<script src="\/viz\/mods-gallery\.js"><\/script>/);
   assert.match(web, /openImages: \(list, i\) => lbOpen\(null, list, i\)/);
   assert.match(web, /poll: window\.GBoxLivePoll/);
   for (const f of [desktop, web]) assert.ok(!/[^\r]\n/.test(f), 'CRLF line endings kept');
