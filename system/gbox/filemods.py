@@ -568,6 +568,11 @@ def delete_build(cfg, game_id: str, name: str, in_use=()) -> dict:
     for n in names:
         out = mod_dir(cfg, game_id, n)
         try:
+            from .build_retention import linked
+            root = Path(cfg.cache).resolve() / 'mods'
+            if (linked(root) or linked(out.parent) or linked(out) or not out.resolve().is_relative_to(root.resolve())
+                    or any(linked(p) for p in out.rglob('*'))):
+                raise OSError('refusing deletion through a linked build path')
             shutil.rmtree(out)
             removed.append(n)
         except FileNotFoundError:

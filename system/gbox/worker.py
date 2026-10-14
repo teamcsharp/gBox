@@ -290,6 +290,7 @@ def run(server: str, token: str, config: Config, name: str | None = None,
         threading.Thread(target=_heartbeat_loop, args=(stop, current_info, active, server, h), daemon=True).start()
         threading.Thread(target=_result_delivery_loop, args=(stop, outbox, active, active_agent, server, h), daemon=True).start()
         described = time.time()
+        cleanup_job = None
         while not stop.is_set():
             if time.time() - described > REDESCRIBE_S:
                 try:
@@ -300,7 +301,7 @@ def run(server: str, token: str, config: Config, name: str | None = None,
                     print(f"worker registration retry: {exc}", flush=True)
                     stop.wait(poll_s * 5)
                     continue
-            if len(active) >= MAX_PARALLEL:
+            if len(active) >= MAX_PARALLEL or cleanup_job in active:
                 stop.wait(poll_s)
                 continue
             try:
@@ -324,6 +325,12 @@ def run(server: str, token: str, config: Config, name: str | None = None,
                 stop.wait(poll_s * 5)
                 continue
             job = r.json()
+            if job.get('tool') == 'file_mod' and job.get('input', {}).get('op') == 'delete_build':
+                # Cleanup runs between jobs, never during a build/download/launch.
+                while active and not stop.is_set():
+                    stop.wait(0.1)
+                if stop.is_set(): break
+                cleanup_job = job['id']
             active.add(job["id"])
             if job.get("agent_use"):
                 active_agent.add(job["id"])

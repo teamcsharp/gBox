@@ -892,6 +892,8 @@ def routes(app, store, config, auth, *, submit, workers, file_report=None):
     """submit({tool, input, require_os, require_worker, parent_request_id, agent_use}, actor) -> job (the server's own
     POST /api/jobs); workers() -> [worker + online]."""
     cache = {"titles": {}, "lock": threading.Lock()}
+    from . import build_retention
+    build_retention.routes(app, store, auth, submit, workers)
 
     def gallery(fresh: bool = False):
         index = getattr(app.state, "built_mods", None)
