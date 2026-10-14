@@ -4,18 +4,19 @@
   const esc=s=>String(s??'').replace(/[&<>"']/g,c=>`&#${c.charCodeAt(0)};`);
   let active=null;
   const workspaceJobs=new Map();
-  async function workspace(input,env,host){
-    const key=JSON.stringify(input),doc=host.ownerDocument;
+  async function workspace(input,env,host,tool='mesh_workspace'){
+    if(!['mesh_workspace','hops_workspace'].includes(tool))throw Error('Unknown workspace tool');
+    const key=JSON.stringify([tool,input]),doc=host.ownerDocument;
     host.textContent='Preparing editable Blender workspace...';
     let id=workspaceJobs.get(key);
-    if(!id){const job=await env.api('/api/jobs',{tool:'mesh_workspace',input},'POST');id=job.id;workspaceJobs.set(key,id);}
+    if(!id){const job=await env.api('/api/jobs',{tool,input},'POST');id=job.id;workspaceJobs.set(key,id);}
     for(let attempt=0;attempt<450;attempt++){
       if(!host.isConnected)return;
       const job=await env.api('/api/jobs/'+encodeURIComponent(id));
       if(job.state==='succeeded'){
         const result=job.output?.result;
         if(!/^[0-9a-f]{64}$/.test(result?.sha256||''))throw Error('Workspace job returned no downloadable .blend');
-        const link=doc.createElement('a');link.textContent='Download editable .blend';link.download='geometry-review.blend';link.href=env.assetUrl('/api/artifacts/'+result.sha256);
+        const link=doc.createElement('a');link.textContent='Download '+(result.topology?.mode?result.topology.mode+' ':'')+'editable .blend';link.download='geometry-review.blend';link.href=env.assetUrl('/api/artifacts/'+result.sha256);
         host.replaceChildren(link);host.append(' - edit the donor and return a variant; original preserved.');return;
       }
       if(!['queued','running'].includes(job.state)){workspaceJobs.delete(key);throw Error('Blender workspace '+job.state+': '+(job.error||'No model changed.'));}
@@ -34,7 +35,7 @@
       <details><summary>Why was reduction needed? Measured limits</summary><pre data-limits></pre></details><p class="mut">Before shows the fitted mesh before reduction. Colours distinguish geometry; these views do not verify textures, animation or gameplay. Drag to orbit; scroll to zoom.</p>
       <label>What went wrong?<textarea data-note maxlength="4000" placeholder="For example: the eye surface disappeared; the chest opened up. Mark the affected areas in the comparison."></textarea></label>
       <p><label><input data-original type="checkbox" checked> Preserve the original mesh wherever possible</label></p>
-      <div class="gmr-actions"><button data-mark disabled>Mark problems on this view…</button><button data-submit>Submit note</button><button data-workspace>Editable Blender workspace</button></div><p data-workspace-status></p><p class="gmr-status" role="status"></p></section>`;
+      <div class="gmr-actions"><button data-mark disabled>Mark problems on this view…</button><button data-submit>Submit note</button><select data-workspace-mode aria-label="Blender topology workflow"><option value="none">Original editable mesh</option value="2d">Local HOps 2D node cuts</option value="3d">Local HOps 3D node cuts</option value="voxel_study">Experimental voxel study</option></select><button data-workspace>Editable Blender workspace</button></div><p data-workspace-status></p><p class="gmr-status" role="status"></p></section>`;
     doc.body.append(modal);
     const q=s=>modal.querySelector(s),views=[],notes=new Map();let closed=false,sequence=0,rows=[],current=null,busy=false,syncing=false;
     const disposeViews=()=>{views.forEach(v=>v?.dispose());views.length=0;};
@@ -44,9 +45,10 @@
     const status=s=>q('[role=status]').textContent=s;
     q('[data-workspace]').onclick=async()=>{
       if(!current)return;const button=q('[data-workspace]');button.disabled=true;
-      try{await workspace({source_job:jobId,model:current.key},env,q('[data-workspace-status]'));}
+      const mode=q('[data-workspace-mode]').value;q('[data-workspace-mode]').disabled=true;
+      try{await workspace({source_job:jobId,model:current.key,...(mode!=='none'?{mode}:{})},env,q('[data-workspace-status]'),mode==='none'?'mesh_workspace':'hops_workspace');}
       catch(e){q('[data-workspace-status]').textContent=e.message;}
-      finally{button.disabled=false;}
+      finally{button.disabled=false;q('[data-workspace-mode]').disabled=false;}
     };
     async function send(note,evidence){
       if(!note.trim())throw Error('Describe the mesh problem before submitting.');

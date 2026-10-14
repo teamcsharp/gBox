@@ -47,6 +47,9 @@ def load(name, filename, reference=False):
     old = set(bpy.data.objects)
     bpy.ops.import_scene.gltf(filepath=str(directory/filename))
     objects = set(bpy.data.objects)-old
+    # Blender 5.x imports an auxiliary Icosphere for bone display. It is not donor geometry.
+    shapes={bone.custom_shape for obj in objects if obj.type=='ARMATURE' for bone in obj.pose.bones if bone.custom_shape}
+    objects-=shapes
     for obj in objects:
         for c in list(obj.users_collection): c.objects.unlink(obj)
         collection.objects.link(obj)
@@ -88,6 +91,12 @@ for name,z in [('GROUND - move to intended sole contact',low),('LEFT_SHOE_TOP - 
     obj=bpy.data.objects.new(name,None);guides.objects.link(obj);obj.empty_display_type='CIRCLE'
     obj.empty_display_size=max(height*.4,.1);obj.location.z=z;obj['gbox_reference']=True
     obj['notice']='Guide only. Save matching shoe/ground controls in gBox before a rebuild.'
+if info.get('topology'):
+    import importlib.util
+    spec=importlib.util.spec_from_file_location('gbox_workspace_topology',info['topology']['helper'])
+    helper=importlib.util.module_from_spec(spec);spec.loader.exec_module(helper)
+    info['topology_report']=helper.attach(objects,info['topology'])
+    (directory/'workspace.json').write_text(json.dumps(info,indent=2))
 text=bpy.data.texts.new('START HERE - geometry review')
 text.write(info['instructions']+'\n\nSource and measured fit context:\n'+json.dumps(info.get('context',{}),indent=2))
 bpy.context.scene['gbox_workspace']=json.dumps(info.get('context',{}))
@@ -164,11 +173,19 @@ def prepare(ctx, inp, directory):
       timeout_s=420,artifacts=['geometry-review.blend','workspace.json'])
 def mesh_workspace(inp:WorkspaceIn,ctx):
     """Export an editable .blend donor with preserved references, optional exact fit pair and disabled reduction controls. No build or game input."""
+    return create_workspace(inp,ctx)
+
+
+def create_workspace(inp,ctx,topology=None,blender_exe=None):
     from .blender_copy import find_blender
-    exe=find_blender()
+    exe=blender_exe or find_blender()
     with tempfile.TemporaryDirectory(prefix='gbox-mesh-workspace-') as temp:
         directory=Path(temp);ctx.progress(5,'Collecting the rigged donor and exact saved fitting geometry')
         info=prepare(ctx,inp,directory)
+        if topology:
+            info['topology']=topology
+            info['instructions']+='\n\nLocal HOps node workspace: select DICE GRID and change X/Z cut counts for 2D; add Y cuts for 3D. Move/rotate the grid to control placement. The KNIFE and weight/UV transfer modifiers stay editable. Voxel studies are separate hidden objects with remesh disabled; enable deliberately, then inspect detail and skinning. Export only the reviewed EDIT character with Apply Modifiers enabled. No native game approval is implied.\n'
+            (directory/'workspace.json').write_text(json.dumps(info,indent=2))
         script=directory/'workspace.py';script.write_text(SCRIPT)
         output=directory/'geometry-review.blend'
         ctx.progress(35,'Creating the editable Blender workspace (original geometry preserved)')
@@ -178,9 +195,11 @@ def mesh_workspace(inp:WorkspaceIn,ctx):
         line=next((s for s in result.stdout.splitlines() if s.startswith('GBOX_WORKSPACE ')),None)
         if result.returncode or not line or not output.is_file():
             raise RuntimeError('Blender workspace failed: '+(result.stdout+result.stderr)[-1000:])
+        info=json.loads((directory/'workspace.json').read_text())
         if output.stat().st_size>256<<20:raise ValueError('Workspace exceeds 256 MB')
         ctx.artifact('geometry-review.blend',output.read_bytes(),'application/x-blender',**info['context'])
         ctx.artifact('workspace.json',json.dumps(info,indent=2).encode(),'application/json')
         ctx.progress(100,'Editable .blend ready; no donor or ROM was changed')
         return {'result':{'workspace':'geometry-review.blend','sha256':hashlib.sha256(output.read_bytes()).hexdigest(),'context':info['context'],
-                          'blender':json.loads(line[len('GBOX_WORKSPACE '):]),'notice':'Edit the source donor, return a variant, and review native budgets before building.'}}
+                          'blender':json.loads(line[len('GBOX_WORKSPACE '):]),'topology':info.get('topology_report'),
+                          'notice':'Edit the source donor, return a variant, and review native budgets before building.'}}

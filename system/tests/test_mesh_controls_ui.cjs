@@ -27,3 +27,17 @@ test('workspace download follows the same job and does not send emulator input',
   assert.equal(data.calls.some(c=>/sessions|launch|rebuild/.test(c.p)),false);
  });
 });
+
+test('topology workflows submit distinct jobs and name the resulting download',async()=>{
+ await withPage(async evaluate=>{
+  await evaluate(fs.readFileSync(path.join(__dirname,'../clients/web/viz/decimation-review.js'),'utf8'));
+  const result=await evaluate(`(async()=>{
+   const host=document.createElement('p');document.body.append(host);const calls=[];
+   const env={assetUrl:u=>u,api:async(p,body)=>{if(body){calls.push(body);return {id:body.input.mode};}return {state:'succeeded',output:{result:{sha256:'b'.repeat(64),topology:{mode:p.split('/').at(-1)}}}};}};
+   for(const mode of ['2d','3d','voxel_study'])await GBoxDecimationReview.workspace({character:'amy',mode},env,host,'hops_workspace');
+   return {calls,text:host.textContent};
+  })()`);
+  assert.deepEqual(result.calls.map(c=>[c.tool,c.input.mode]),[['hops_workspace','2d'],['hops_workspace','3d'],['hops_workspace','voxel_study']]);
+  assert.match(result.text,/voxel_study editable/);
+ });
+});

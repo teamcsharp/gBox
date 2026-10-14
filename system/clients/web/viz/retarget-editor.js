@@ -121,7 +121,7 @@
             <label>Left shoe top (% of source body height)<input type="range" min="0" max="0.5" step="0.005" value="0.15" data-rt-shoe="l"><output data-shoe-value="l">15%</output></label>
             <label>Right shoe top (% of source body height)<input type="range" min="0" max="0.5" step="0.005" value="0.15" data-rt-shoe="r"><output data-shoe-value="r">15%</output></label>
             <p class="mut">This assigns same-side leg vertices below the plane to the foot; foot vertices above it return to the shin. Preview walking and crouching before approving. This does not change game collision or implement foot IK.</p></div>
-          <div class="rt-sec"><b>Geometry approval</b><label><input type="checkbox" data-rt-preserve> No automatic geometry reduction</label><p class="mut">JGR/shared Ninja, SC2, DOA2 and FF7 try the edited mesh intact and stop with the allocation error if it cannot fit. Other writers may still reduce geometry.</p><button class="act" data-rt-go="workspace">Editable Blender workspace</button><p data-rt-workspace-status></p></div>
+          <div class="rt-sec"><b>Geometry approval</b><label><input type="checkbox" data-rt-preserve> No automatic geometry reduction</label><p class="mut">JGR/shared Ninja, SC2, DOA2 and FF7 try the edited mesh intact and stop with the allocation error if it cannot fit. Other writers may still reduce geometry.</p><label>Blender topology workspace<select data-rt-topology><option value="none">Original editable mesh</option><option value="2d">Local HOps 2D node cuts</option><option value="3d">Local HOps 3D node cuts</option><option value="voxel_study">Experimental voxel study</option></select></label><p class="mut">Node cuts require this PC's HOps asset and Blender 4.5+. Voxel copies start hidden and disabled; inspect skin weights and UVs before using a result.</p><button class="act" data-rt-go="workspace">Editable Blender workspace</button><p data-rt-workspace-status></p></div>
           <div class="rt-sec"><b>Proportions</b><div data-rt-part-slot="globals"></div></div>
           <div class="rt-sec" data-rt-part-slot="part"></div>
           <div class="rt-sec" data-rt-fit-history hidden></div>
@@ -771,7 +771,8 @@
       try {
         if(what==='workspace'){
           if(!window.GBoxDecimationReview?.workspace)throw Error('Blender workspace control is unavailable; reload gBox.');
-          go.disabled=true;try{await window.GBoxDecimationReview.workspace({character:c.state.slug},{api:io.api,assetUrl:io.url},q('[data-rt-workspace-status]'));}finally{go.disabled=false;}return;
+          const selector=q('[data-rt-topology]'),mode=selector.value;go.disabled=true;selector.disabled=true;
+          try{await window.GBoxDecimationReview.workspace({character:c.state.slug,...(mode!=='none'?{mode}:{})},{api:io.api,assetUrl:io.url},q('[data-rt-workspace-status]'),mode==='none'?'mesh_workspace':'hops_workspace');}finally{go.disabled=false;selector.disabled=false;}return;
         }
         if (what === "close") { if (c.state.dirty && io.confirm && !io.confirm("Close without saving the retarget changes?")) return; dispose(); return; }
         if(what === "shape-reset"){const profile={...c.state.profile};delete profile.lattice;c.state.profile=H.normalize(profile);c.state.dirty=true;schedule();return;}
