@@ -32,7 +32,8 @@
         frame.style.cssText='position:fixed;left:0;right:0;top:80px;bottom:30px;width:100%;height:calc(100% - 110px);border:0;z-index:59;background:#070b18';
         document.body.append(frame);
       }
-    }catch{hide();}finally{busy=false;if(!disposed)timer=setTimeout(poll,10000);}
+    }catch{/* The child panel marks stale data and retries. Keep it visible on a transient API failure. */}
+    finally{busy=false;if(!disposed)timer=setTimeout(poll,10000);}
   }
   addEventListener('pagehide',()=>{disposed=true;clearTimeout(timer);hide();});
   root.GBoxBackgroundDisplay={poll,hide};

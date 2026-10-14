@@ -39,6 +39,17 @@ telemetry at low quality and at most 20 rendered frames per second. Hidden pages
 stop rendering; unavailable 3D leaves readable operation data. Polling never
 creates work. A completed tool and a captured frame are not goal acceptance.
 
+The desktop main process requests `prevent-display-sleep` while a Windows PC is
+opted into background work and is executing a job, running an agent-owned game,
+or idle for five minutes with its status display available. The request also
+works when the renderer is minimized; it does not restore windows, steal focus,
+or alter the Windows power plan. Pausing background work, human-owned gameplay,
+or closing gBox releases it. A brief API outage retains the last valid request
+for at most 60 seconds; persistent uncertainty restores normal power policy.
+The existing diagnostics panel stays visible during transient status failures
+and marks its own data stale. Updated `main.js` needs a desktop restart to take
+effect; updating the worker or web page alone is insufficient.
+
 Every live Sessions view now watches presentation status independently of the
 video backend. Server-confirmed ended/missing sessions retire the live view,
 including native windows that have no MJPEG stream. Offline workers, covered

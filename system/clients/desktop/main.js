@@ -1,7 +1,7 @@
 // gBox desktop manager (Electron main process).
 // Manages: the Spark control plane (over SSH: install/update, start/stop, logs), the local Windows worker,
 // dependency setup on both nodes, and hosts the gBox web UI with the API token injected.
-const { app, BrowserWindow, ipcMain, shell, desktopCapturer, session, screen, dialog, clipboard, nativeImage, globalShortcut, Menu, nativeTheme, Notification } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, desktopCapturer, session, screen, dialog, clipboard, nativeImage, globalShortcut, Menu, nativeTheme, Notification, powerSaveBlocker } = require("electron");
 const { spawn, execFile, execFileSync } = require("child_process");
 const embedGeometry = require("./embed-geometry");
 // The shell and its guest are one dark app, including native controls and first paint.
@@ -76,7 +76,8 @@ app.on("gpu-info-update", () => { try { fs.writeFileSync(path.join(app.getPath("
 const venvPython = () => STANDALONE ? path.join(STANDALONE, ".venv", "Scripts", "python.exe")
                                    : path.join(process.env.LOCALAPPDATA, "gbox", "venv", "Scripts", "python.exe");
 
-let win, worker = null, workerStopRequested = false;
+let win, worker = null, workerStopRequested = false, backgroundPower = null;
+ipcMain.handle('background:power', () => backgroundPower?.snapshot() || {active:false,reason:'Display policy not started'});
 const procs = new Map();                              // id -> child process (streamed tasks)
 const taskLogs = new Map();                           // recent app commands and their streamed output
 // console output of the whole app (main process, renderer + gBox webview, worker / task streams) for issue reports
@@ -921,6 +922,9 @@ app.whenReady().then(() => {
     win.setAppDetails({ appId: "com.gbox.desktop", relaunchDisplayName: "gBox", appIconPath: path.join(__dirname, "..", "..", "assets", "brand", "gbox.ico"),
                         relaunchCommand: `"${process.execPath}" "${app.getAppPath()}"` });
   win.loadFile(path.join(__dirname, "index.html"));
+  backgroundPower = require('./background-power').create({powerSaveBlocker,
+    status:()=>api('/api/background/workers/'+encodeURIComponent(settings().workerName)+'/status')});
+  backgroundPower.start();
   win.webContents.on("did-start-navigation", (_e, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) pickHoldReleaseAll("window reloaded"); });
   win.on("closed", () => pickHoldReleaseAll("window closed"));
   startPadWatcher();
@@ -944,6 +948,7 @@ app.whenReady().then(() => {
 });
 let sessionsShutDown = false;
 function shutdownSessions() {
+  backgroundPower?.dispose();
   pickHoldReleaseAll("gBox quitting");
   if (sessionsShutDown) return;
   sessionsShutDown = true;
