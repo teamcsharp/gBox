@@ -6,6 +6,8 @@ import hashlib
 import io
 import json
 import os
+import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Literal
@@ -21,7 +23,7 @@ class TextureIn(BaseModel):
     character: str
     size: Literal[1024, 2048, 4096] = 1024
     preset: Literal['conservative', 'smooth', 'detail'] = 'conservative'
-    backend: Literal['ai', 'resample'] = 'ai'
+    backend: Literal['ai', 'cpu_ai', 'resample'] = 'ai'
     model: str = 'RealESRGAN_x4plus.safetensors'
     maps: list[int] = Field(default_factory=list,max_length=128)
 
@@ -113,6 +115,23 @@ def enhance(image, settings, upscale):
     return result
 
 
+def cpu_upscale(image, config):
+    """Run the configured local model on two CPU threads, independent of the GPU queue."""
+    from PIL import Image
+    python=Path(config.texture_cpu_python);model=Path(config.texture_cpu_model)
+    if not python.is_absolute() or not python.is_file() or not model.is_absolute() or not model.is_file():
+        raise Unsupported('Local CPU AI is not configured. Set texture_cpu_python and texture_cpu_model to installed files.')
+    with tempfile.TemporaryDirectory(prefix='gbox-texture-ai-') as directory:
+        source=Path(directory)/'source.png';target=Path(directory)/'candidate.png'
+        source.write_bytes(png(image.convert('RGB')))
+        run=subprocess.run([str(python),'-I',str(Path(__file__).with_name('texture_cpu.py')),
+            '--model',str(model),'--input',str(source),'--output',str(target)],
+            capture_output=True,text=True,timeout=600,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        if run.returncode or not target.is_file():
+            raise RuntimeError('Local CPU AI failed; original unchanged: '+(run.stderr or run.stdout)[-600:])
+        result=Image.open(target);result.load();return result.convert('RGB')
+
+
 def prepare(src, settings, upscale, emit, progress=lambda *_:None):
     from PIL import Image
     from . import attachments as A
@@ -177,8 +196,20 @@ def texture_review(inp,ctx):
     def emit(name,data,kind):
         ctx.artifact(name,data,kind,texture_review=True,character=inp.character)
         return hashlib.sha256(data).hexdigest()
-    result=prepare(src,inp,lambda im:ai_upscale(im,base,inp.model,lambda msg:ctx.progress(20,msg)),emit,
+    engine=None
+    if inp.backend=='cpu_ai':
+        model=Path(ctx.config.texture_cpu_model)
+        if not model.is_file():raise Unsupported('Local CPU AI model is not configured or missing')
+        inp=inp.model_copy(update={'model':model.name})
+        engine={'name':'spandrel_cpu','threads':2,'model_sha256':hashlib.sha256(model.read_bytes()).hexdigest()}
+    upscale=(lambda im:cpu_upscale(im,ctx.config)) if inp.backend=='cpu_ai' else (
+        lambda im:ai_upscale(im,base,inp.model,lambda msg:ctx.progress(20,msg)))
+    result=prepare(src,inp,upscale,emit,
                    lambda k,n,msg:ctx.progress(5+85*k/n,msg))
+    if engine:
+        if hashlib.sha256(model.read_bytes()).hexdigest()!=engine['model_sha256']:
+            raise RuntimeError('AI model changed during preview; generate a fresh candidate')
+        result['engine']=engine
     return {'result':result|{'character':inp.character,'name':meta['name']}}
 
 
@@ -269,7 +300,8 @@ def register(app,auth,store,chars,submit,JobRequest):
                         new.pop(key,None)
                     new.update(slug=variant,name=meta['name']+f" · {result['settings']['size']//1024}K texture review",model='model.glb',texture_base_name=meta.get('texture_base_name',meta['name']),
                                variant_of=slug,texture_approval={'job':job_id,'source_sha256':result['source_sha256'],
-                               'candidate':result['candidate'],'settings':result['settings'],'by':str(actor),'at':time.time()},
+                               'candidate':result['candidate'],'settings':result['settings'],
+                               **({'engine':result['engine']} if result.get('engine') else {}),'by':str(actor),'at':time.time()},
                                verification={'status':'unverified','reason':'Approved texture maps; requires in-game verification'})
                     new['files']=['model.glb']
                     preview=Path(root)/slug/'preview.png'

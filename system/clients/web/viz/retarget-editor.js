@@ -374,7 +374,7 @@
       onChange: () => schedule(),
     });
     const c = controller(ui, opts);
-    const textures=root.GBoxTextureReview?.mount(q('[data-rt-textures]'),{api:io.api,url:u=>io.url?io.url(u):u},{slug:opts.slug,
+    const textures=root.GBoxTextureReview?.mount(q('[data-rt-textures]'),{api:io.api,url:u=>io.url?io.url(u):u},{slug:opts.slug,onPreview:showTextureCandidate,
       onPending:on=>{c.state.texturePending=on;},onAccepted:result=>{const draft=H.normalize(c.state.profile),slot=c.state.slot;dispose();open(doc,io,{...opts,slug:result.variant,name:result.name,slot,draftProfile:draft});}});
     el.dataset.mode = c.state.mode;
     let raf = 0;
@@ -385,6 +385,40 @@
     let THREE = null, Loader = null, donor = null, target = null, R = null, donorRest = {}, donorPos = {}, fit = null, lfit = null,
       cageBounds = null, shapeKey = null, cageSlice=1, pivots = {}, tPos = {}, tGround = 0, dGround = 0, Hd = 1, jointsKey = null, donorScene = null, refHolder = null;
     let previewMeshes = [], posedMeshes = [], drag = null;
+    let textureCandidate=null,textureRequest=0;
+    function disposeCandidateScene(scene) {
+      const textures=new Set();
+      scene.traverse(o=>{
+        o.geometry?.dispose();for(const m of [].concat(o.material||[])){
+          for(const value of Object.values(m))if(value?.isTexture)textures.add(value);m.dispose();
+        }
+      });
+      for(const texture of textures)texture.dispose();
+    }
+    function disposeTextureCandidate(){if(textureCandidate)disposeCandidateScene(textureCandidate.scene);textureCandidate=null;}
+    async function showTextureCandidate(result) {
+      const request=++textureRequest;
+      if(!donor||!Loader||!previewMeshes.length)throw Error('Wait for the character model to finish loading');
+      if(result && textureCandidate?.sha!==result.candidate){
+        const path='/api/artifacts/'+encodeURIComponent(result.candidate);
+        const response=await fetch(io.url?io.url(path):path);
+        if(!response.ok)throw Error('Candidate download returned '+response.status);
+        const gltf=await new Loader().parseAsync(await response.arrayBuffer(),'');
+        if(dead||request!==textureRequest){disposeCandidateScene(gltf.scene);return;}
+        const model=readModel(THREE,gltf);
+        if(model.meshes.length!==donor.meshes.length || model.meshes.some((m,i)=>m.pos.length!==donor.meshes[i].pos.length)){
+          disposeCandidateScene(gltf.scene);throw Error('Candidate meshes do not match the original donor');
+        }
+        disposeTextureCandidate();textureCandidate={sha:result.candidate,scene:gltf.scene,model};
+      }
+      if(dead||request!==textureRequest)return;
+      previewMeshes.forEach((pm,i)=>{
+        const source=result?textureCandidate.model.meshes[i].material:pm.src.material;
+        const material=source?[].concat(source)[0].clone():new THREE.MeshStandardMaterial({color:0x8fe6a8,side:THREE.DoubleSide});
+        pm.mesh.material.dispose();pm.mesh.material=material;
+      });
+      c.state.texturePreview=result?'candidate':'original';schedule();
+    }
     function rolePositions(model, roles, rot) {
       const out = {};
       for (const [role, bone] of Object.entries(roles || {})) {
@@ -720,11 +754,12 @@
     });
     const ro = typeof ResizeObserver === "function" ? new ResizeObserver(() => schedule()) : null;
     function dispose() {
-      dead = true; textures?.dispose(); if (ro) ro.disconnect();
+      dead = true;textureRequest++;textures?.dispose(); if (ro) ro.disconnect();
       for (const v of Object.values(views)) if (v && v.renderer) {
         v.scene.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material) [].concat(o.material).forEach(m => m.dispose()); });
         v.renderer.dispose();
       }
+      disposeTextureCandidate();
       el.remove();
     }
 
@@ -787,7 +822,8 @@
             const pm = { src: m, geo, attr, mesh }; previewMeshes.push(pm);
             const pgeo = new THREE.BufferGeometry(), pattr = new THREE.BufferAttribute(new Float32Array(m.pos.length), 3);
             pgeo.setAttribute("position", pattr); if (m.index) pgeo.setIndex(Array.from(m.index));
-            const pmesh = new THREE.Mesh(pgeo, new THREE.MeshStandardMaterial({ color: 0xb8c2d2, transparent: true, opacity: 0.55, side: THREE.DoubleSide, depthWrite: false }));
+            if(m.uv)pgeo.setAttribute('uv',new THREE.BufferAttribute(new Float32Array(m.uv),2));
+            const pmesh = new THREE.Mesh(pgeo,m.material?[].concat(m.material)[0].clone():new THREE.MeshStandardMaterial({color:0x8fe6a8,side:THREE.DoubleSide}));
             views.donor.posed.add(pmesh); posedMeshes.push({ src: pm, geo: pgeo, attr: pattr, mesh: pmesh });
           }
           refit();
@@ -796,7 +832,7 @@
       }
       schedule();
     })().catch(err => ui.status("✗ " + String(err.message || err).slice(0, 300)));
-    return { el, controller: c, dispose, views };            // views: each stage's circles / mapping (diagnostics, tests)
+    return { el, controller: c, dispose, views, previewTexture:showTextureCandidate }; // diagnostics and tests
   }
 
   const api = { controller, open, rolesHTML, globalsHTML, partHTML, headerHTML, frameHTML, readModel, COLORS, tabsHTML, jointHTML,

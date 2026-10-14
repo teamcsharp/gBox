@@ -195,6 +195,8 @@ class Config(BaseModel):
     steam_root: Path | None = None
     cache_dir: Path | None = None     # default: data_dir/cache
     texture_comfy_url: str = "http://127.0.0.1:8188" # local experimental texture upscaler; no external image API
+    texture_cpu_python: str = ""       # optional inference environment with torch, spandrel and Pillow
+    texture_cpu_model: str = ""        # installed RGB upscaler; no automatic downloads
     cache_dirs: dict[str, str] = {}   # os -> fast local disk for staged titles (overrides cache_dir per node)
     cache_limit_gb: float = 20.0
     cache_limits_gb: dict[str, float] = {}   # os -> size cap for that node's cache
