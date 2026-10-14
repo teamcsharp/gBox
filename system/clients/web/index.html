@@ -417,7 +417,7 @@ let tok = ""; try { tok = localStorage.getItem("gbox_tok") || ""; } catch {}
 const HASH = new URLSearchParams(location.hash.slice(1));      // deep links: #token=…&session=<sid>&mode=inspect
 if (HASH.get("token")) { tok = HASH.get("token"); try { localStorage.setItem("gbox_tok", tok); } catch {} }
 if (new URLSearchParams(location.search).has("embedded") && HASH.get("worker")) {
-  window.GBOX_LOCAL = { worker: HASH.get("worker"), incidentCapture: true };
+  window.GBOX_LOCAL = { worker: HASH.get("worker"), incidentCapture: true, offline: HASH.get("offline") === "1" };
 }
 // Keep credentials out of the visible URL and subsequent issue-report context.
 if (HASH.has("token")) {
@@ -1084,7 +1084,9 @@ const PNAMES = { arcade: "Arcade (MAME)", arcade_fbneo: "Arcade (FBNeo)", arcade
   naomi: "NAOMI / Atomiswave", psx: "PlayStation", ps2: "PlayStation 2", psp: "PSP", pce: "PC Engine", pcecd: "PC Engine CD", windows_native: "PC / Windows",
   computer_misc: "Other computers", unknown: "Unsorted" };
 const queryParams = (offset) => new URLSearchParams({ q: L.q, platform: L.plats.size ? [...L.plats].join(",") + "," : L.platform, system: L.system,
-  offset, limit: L.limit, sort: L.sort, favorites: L.fav, recent: L.recent, local: L.local ? (window.GBOX_LOCAL?.worker || "") : "", letter: L.letter,
+  offset, limit: L.limit, sort: L.sort, favorites: L.fav, recent: L.recent,
+  local: L.local && !window.GBOX_LOCAL?.offline ? (window.GBOX_LOCAL?.worker || "") : "",
+  library: L.local && window.GBOX_LOCAL?.offline ? "offline-cache" : "", letter: L.letter,
   exclude_platforms: CAR.hidden.join(",") });
 // ---- Mods: every modded build the Spark made (viz/mods-gallery.js over GET /api/mods/built; the desktop shell's Mods view too) ----
 // pictures open in the #lbox pop-up; Play launches through the mod cards' @launch path on this PC or the PC picked in the bar
@@ -1373,13 +1375,13 @@ library.after = () => {
 function card(g) {
   // best available art from the drive: box art, else snap, else wheel logo, else cart art (resolved server-side)
   const art = g.media && Object.keys(g.media).length ? `<img loading="lazy" alt="" src="/api/media/${g.game_id}/best?w=360&${tq()}" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'no artwork'}))">` : `<span>no artwork</span>`;
-  const where = g.core ? `Spark · ${g.core}` : (g.launch && g.launch.kind === "attract" ? "Windows node" : "no runtime");
+  const where = g.core ? `${window.GBOX_LOCAL?.offline ? "This PC" : "Spark"} · ${g.core}` : (g.launch && g.launch.kind === "attract" ? "Windows node" : "no runtime");
   return `<div class="card" data-gid="${esc(g.game_id)}" data-title="${esc(g.title)}">${bootBadgeHTML(g.game_id)}<button class="fav" title="${g.favorite ? "Remove from favorites" : "Add to favorites"}" onclick='toggleFav(${JSON.stringify(g.game_id)}, this)'>${g.favorite ? "★" : "☆"}</button><div class="art">${art}</div><div class="meta">
     <div class="t">${esc(g.title)}</div>
     <div class="s">${esc(g.system || g.platform)}${g.year ? " · " + esc(g.year) : ""}${g.manufacturer ? " · " + esc(g.manufacturer) : ""}</div>
     <div class="s">${g.size ? (g.size / 2 ** 20).toFixed(g.size > 2 ** 30 ? 0 : 1) + " MB · " : ""}${g.last_played ? "played " + new Date(g.last_played * 1000).toLocaleDateString() + " · " : ""}${(g.cached_on || []).length ? "cached · " : ""}${esc(where)} · <span class="${/failed/.test(g.playable) ? "bad" : /launches/.test(g.playable) ? "ok" : ""}">${esc(g.playable)}</span>${launchReportBadge(g)}</div>
     <div class="row"><button class="act pri" title="${window.GBOX_LOCAL?.worker && g.core ? "Play natively on this PC (full FPS)" : "Play"}" onclick='play(${JSON.stringify(g.game_id)})'>Play</button>
-      ${g.core && window.GBOX_LOCAL?.worker ? (WHERE === "local"
+      ${g.core && window.GBOX_LOCAL?.worker && !window.GBOX_LOCAL?.offline ? (WHERE === "local"
           ? `<button class="act" title="Run on the DGX Spark GPU and stream it here" onclick='play(${JSON.stringify(g.game_id)},"linux")'>Spark</button>`
           : `<button class="act" title="Run natively on this PC (full FPS)" onclick='play(${JSON.stringify(g.game_id)},window.GBOX_LOCAL.worker)'>This PC</button>`) : ""}
       <button class="act" onclick='details(${JSON.stringify(g.game_id)})'>Info</button></div></div></div>`;
@@ -1396,8 +1398,10 @@ async function scan() { await api("/api/jobs", { tool: "scan_library", input: {}
   addEventListener("keydown", e => { if ((e.ctrlKey && e.key === "f") || (e.key === "/" && document.activeElement === document.body)) { e.preventDefault(); gs.focus(); gs.select(); } });
 })();
 let WHERE = "local"; try { WHERE = localStorage.getItem("gbox_where") || "local"; } catch {}
+if (window.GBOX_LOCAL?.offline) WHERE = "local";
 function paintWhere() {
   const w = $("#where"); if (!w) return;
+  w.querySelector('[data-w="spark"]').hidden = !!window.GBOX_LOCAL?.offline;
   w.style.display = window.GBOX_LOCAL?.worker ? "inline-flex" : "none";
   w.querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.w === WHERE));
 }
@@ -1461,6 +1465,7 @@ async function play(id, node, debug, boot) {
   boot = boot || bootGet(id);
   // default from the toggle: THIS PC (native, full FPS, zero input lag) when the system has a core, else the Spark
   // PS3 has no libretro core but runs natively here (RPCS3): keep it on this PC instead of whichever worker answers first
+  if (window.GBOX_LOCAL?.offline) node = window.GBOX_LOCAL.worker;
   if (!node && WHERE === "local" && window.GBOX_LOCAL?.worker && (g.core || g.platform === "ps3")) node = window.GBOX_LOCAL.worker;
   if (!node && WHERE === "spark" && g.core) node = "linux";
   if (debug) node = "linux";

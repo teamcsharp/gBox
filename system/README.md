@@ -6,6 +6,13 @@ A universal game laboratory. One control plane on the **NVIDIA DGX Spark** index
 
 ## Using it
 
+The Windows desktop automatically uses this PC when Spark does not answer at startup. It opens the normal interface,
+indexes locally cached games first, and runs them with the installed emulators. Reachable configured libraries are
+indexed in the background. The status bar says **This PC · local play**. Spark-only services (including its AI models)
+remain unavailable until Spark returns. Close and reopen gBox to reconnect to Spark; an offline session never switches
+servers during gameplay. Local library preferences and history live in the desktop profile's `offline-data` directory;
+the Spark database and connection settings are preserved. Installed emulator saves remain on this PC.
+
 - **Desktop app** (Windows): Start Menu or Desktop → **gBox**.
   - **Play & Library**: search all 63,728 games with box art, then click Play.
   - **Sessions**: watch and control running games, or reopen any past game.

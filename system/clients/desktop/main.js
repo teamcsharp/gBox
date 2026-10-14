@@ -20,7 +20,8 @@ const CLEANUP_PS = STANDALONE ? `$me=$PID; $root=${psq(STANDALONE + "\\")}; Get-
   ForEach-Object { "$($_.ProcessId) $($_.Name)"; Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`
   : `$me=$PID; Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $me -and (
   ($_.ExecutablePath -and $_.ExecutablePath -like '*\\gBox\\runtime\\*') -or
-  ($_.CommandLine -match '-m gbox .*\\bworker\\b' -or $_.CommandLine -match 'winembed\\.py') ) } |
+  ($_.CommandLine -match '-m gbox .*\\bworker\\b' -or $_.CommandLine -match 'winembed\\.py' -or
+   ($_.CommandLine -match '-m gbox\\.offline\\b' -and $_.CommandLine.IndexOf(${psq(require("path").join(app.getPath("appData"), "gbox-desktop", "offline-data"))}, [StringComparison]::OrdinalIgnoreCase) -ge 0)) ) } |
   ForEach-Object { "$($_.ProcessId) $($_.Name)"; Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
 function cleanupSessions(sync) {
   const args = ["-NoProfile", "-NonInteractive", "-Command", CLEANUP_PS];
@@ -50,14 +51,18 @@ const DEFAULTS = {
 if (STANDALONE) Object.assign(DEFAULTS, { sshHost: "", apiUrl: process.env.GBOX_API_URL || "http://127.0.0.1:8765",
   repoLocal: path.join(STANDALONE, "system"), repoShare: path.join(STANDALONE, "system"), repoRemote: "" });
 // Every API call reads the settings (#712): parse the file only when it changed, not 2-3 times per request.
-let settingsCache = null, settingsStamp = null;
-const settings = () => {
+let settingsCache = null, settingsStamp = null, localConnection = null;
+const configuredSettings = () => {
   let stamp = "none";
   try { const st = fs.statSync(SETTINGS); stamp = `${st.mtimeMs}:${st.size}`; } catch {}
   if (settingsCache && stamp === settingsStamp) return { ...settingsCache };
   settingsCache = readSettings(); settingsStamp = stamp;
   return { ...settingsCache };
 };
+const settings = () => ({ ...configuredSettings(), ...(localConnection ? {
+  apiUrl: localConnection.apiUrl, token: localConnection.token, connectionMode: "local",
+  configuredApiUrl: configuredSettings().apiUrl,
+} : { connectionMode: STANDALONE ? "standalone" : "remote" }) });
 const readSettings = () => {
   const s = { ...DEFAULTS, ...(fs.existsSync(SETTINGS) ? JSON.parse(fs.readFileSync(SETTINGS, "utf8")) : {}) };
   // layout migration: everything moved under <root>/system (root = gBox.exe + system/)
@@ -77,6 +82,56 @@ const venvPython = () => STANDALONE ? path.join(STANDALONE, ".venv", "Scripts", 
                                    : path.join(process.env.LOCALAPPDATA, "gbox", "venv", "Scripts", "python.exe");
 
 let win, worker = null, workerStopRequested = false;
+let localServer = null, startupCleanup = Promise.resolve();
+const connect = require("./offline-connection").createConnection({
+  configured: configuredSettings, standalone: !!STANDALONE,
+  probe: async url => {
+    try {
+      const r = await fetch(url + "/api/health", { signal: AbortSignal.timeout(2500) });
+      return r.ok && (await r.json()).ok === true;
+    } catch { return false; }
+  },
+  startLocal: async s => {
+    await startupCleanup;
+    if (!fs.existsSync(venvPython())) throw new Error("Install this PC's Windows node to play locally.");
+    const port = await new Promise((resolve, reject) => {
+      const listener = require("net").createServer();
+      listener.once("error", reject);
+      listener.listen(0, "127.0.0.1", () => { const port = listener.address().port; listener.close(() => resolve(port)); });
+    });
+    const apiUrl = `http://127.0.0.1:${port}`, localToken = require("crypto").randomBytes(32).toString("hex");
+    const child = spawn(venvPython(), ["-P", "-m", "gbox.offline", "--config", path.join(s.repoLocal, "gbox.toml"),
+      "--data-dir", path.join(app.getPath("userData"), "offline-data"), "--port", String(port), "--name", s.workerName],
+      { cwd: s.repoLocal, windowsHide: true, env: { ...process.env, PYTHONPATH: s.repoLocal,
+        GBOX_TOKEN: localToken, PYTHONUNBUFFERED: "1" } });
+    localServer = child;
+    let failure = null, tail = "";
+    const output = d => { tail = (tail + d).slice(-8000); send("task", "local-server", d.toString()); };
+    child.stdout.on("data", output); child.stderr.on("data", output);
+    child.on("error", e => { failure = e; });
+    child.on("close", code => {
+      failure = new Error(`Local gBox exited (${code}): ${workerExitReason(tail)}`);
+      if (localServer === child) localServer = null;
+      send("worker", false);
+    });
+    for (let i = 0; i < 120; i++) {
+      if (failure) throw failure;
+      try {
+        const r = await fetch(apiUrl + "/api/catalog/facets", {
+          headers: { authorization: `Bearer ${localToken}` }, signal: AbortSignal.timeout(500) });
+        if (r.ok) {
+          localConnection = { apiUrl, token: localToken };
+          ETAGS.clear();
+          send("task", "local-server", "Spark unavailable. Playing from this PC.\n");
+          return localConnection;
+        }
+      } catch {}
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    child.kill();
+    throw new Error(`Local gBox did not start: ${workerExitReason(tail)}`);
+  },
+});
 const procs = new Map();                              // id -> child process (streamed tasks)
 const taskLogs = new Map();                           // recent app commands and their streamed output
 // console output of the whole app (main process, renderer + gBox webview, worker / task streams) for issue reports
@@ -138,6 +193,8 @@ function ssh(cmd, timeout = 20000) {
 
 let cachedToken = null;
 async function token() {
+  await connect();
+  if (localConnection) return localConnection.token;
   // Pairing order: pasted token -> Spark share file -> SSH. Cached for the session.
   const s = settings();
   if (s.token) return s.token;
@@ -192,7 +249,7 @@ function startAudioVolumeHelper() {
 ipcMain.handle("audio:volume", (_e, value) => {
   if (value != null) {
     const volume = volumePercent(value);
-    const s = settings();
+    const s = configuredSettings();
     fs.mkdirSync(path.dirname(SETTINGS), { recursive: true });
     fs.writeFileSync(SETTINGS, JSON.stringify({ ...s, volume }, null, 1)); settingsStamp = null;
     audioVolumeFailures = 0;
@@ -221,8 +278,16 @@ async function keepMoments(limitMs = 7000) {
 app.on("will-quit", () => { hotkeys.release(); try { globalShortcut.unregisterAll(); } catch {} });   // no key stays taken
 
 // ---------------- IPC ----------------
-ipcMain.handle("settings:get", () => settings());
-ipcMain.handle("settings:save", (_e, s) => { fs.mkdirSync(path.dirname(SETTINGS), { recursive: true }); fs.writeFileSync(SETTINGS, JSON.stringify({ ...settings(), ...s }, null, 1)); settingsStamp = null; cachedToken = null; return settings(); });
+ipcMain.handle("settings:get", async () => { await connect(); return settings(); });
+ipcMain.handle("settings:save", (_e, s) => {
+  const saved = { ...s };
+  delete saved.connectionMode; delete saved.configuredApiUrl;
+  if (localConnection && saved.apiUrl === localConnection.apiUrl) delete saved.apiUrl;
+  if (localConnection && (!saved.token || saved.token === localConnection.token)) delete saved.token;
+  fs.mkdirSync(path.dirname(SETTINGS), { recursive: true });
+  fs.writeFileSync(SETTINGS, JSON.stringify({ ...configuredSettings(), ...saved }, null, 1));
+  settingsStamp = null; cachedToken = null; return settings();
+});
 ipcMain.handle("token", () => token());
 ipcMain.handle("settings:reset-token", () => { cachedToken = null; return true; });
 // Pick whip pause hold (gbox/pickwhip.py): the renderer pauses the game through POST /api/pickwhip/{sid}/hold. Main
@@ -252,6 +317,12 @@ ipcMain.handle("api:tagged", async (_e, p, have) => {
 });
 
 ipcMain.handle("spark:status", async () => {
+  await connect();
+  if (localConnection) {
+    let healthy = false;
+    try { healthy = (await api("/api/health")).ok === true; } catch {}
+    return { api: healthy, mode: "local", ssh: false, service: "local", error: "Spark unavailable; using this PC" };
+  }
   const s = settings();
   const r = await ssh("systemctl is-active gbox.service; mountpoint -q /mnt/gbox/hyperspin && echo mounted || echo unmounted; " +
                       "uptime -p; df -h --output=avail ~ | tail -1; nvidia-smi --query-gpu=utilization.gpu,temperature.gpu --format=csv,noheader 2>/dev/null | head -1");
@@ -319,6 +390,8 @@ async function startWorker(options = {}) {
   try { return await workerStarting; } finally { workerStarting = null; }
 }
 async function startWorkerInner(options) {
+  await connect();
+  if (localConnection) return { running: !!localServer, started: false, mode: "local" };
   const s = settings();
   if (worker) return { running: true };
   if (!fs.existsSync(venvPython())) return { running: false, error: "Windows node not installed yet — run 'Install / update Windows node'" };
@@ -361,7 +434,7 @@ ipcMain.handle("win:worker", (_e, op) => {
   if (op === "start") return startWorker();
   if (op === "stop" && worker) { workerStopRequested = true; execFile("taskkill", ["/T", "/F", "/PID", String(worker.pid)]); return { running: false }; }
   if (op === "restart") return restartWorker();
-  return { running: !!worker, lastExit: workerLastExit };
+  return { running: !!(worker || localServer), lastExit: workerLastExit };
 });
 
 ipcMain.handle("pad:devices", () => new Promise(resolve => {
@@ -936,9 +1009,10 @@ app.whenReady().then(() => {
     e.preventDefault();
     keepMoments().finally(() => { if (win && !win.isDestroyed()) win.close(); });
   });
-  cleanupSessions(false).then(out => {                        // leftovers from a previous run, before this run's worker starts
+  startupCleanup = cleanupSessions(false);
+  startupCleanup.then(out => {                        // leftovers from a previous run, before this run's worker starts
     if (out.trim()) send("task", "win-worker", "closed leftover gBox processes:\n" + out);
-    if (settings().autoStartWorker) startWorker();
+    if (settings().autoStartWorker) startWorker().catch(e => send("task", "win-worker", e.message));
   });
   startAudioVolumeHelper();
 });
@@ -955,6 +1029,7 @@ function shutdownSessions() {
   try { embedder && embedder.stdin.write(JSON.stringify({ op: "detach" }) + "\n"); } catch {}
   for (const p of procs.values()) p.kill();
   workerStopRequested = true;
+  if (localServer) { try { execFileSync("taskkill", ["/T", "/F", "/PID", String(localServer.pid)], { windowsHide: true, timeout: 8000 }); } catch {} }
   if (worker) { try { execFileSync("taskkill", ["/T", "/F", "/PID", String(worker.pid)], { windowsHide: true, timeout: 8000 }); } catch {} }
   cleanupSessions(true);                                       // every game this PC was running for gBox closes with it
 }

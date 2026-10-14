@@ -122,7 +122,10 @@ def scan_library(inp: ScanIn, ctx: Ctx):
             problems.append(f"library {lib.id}: path not reachable on this node: {root}")
             continue
         t = time.time()
-        if lib.kind == "attract":
+        if lib.kind == "local-cache":
+            from .offline import cache_entries
+            e, p, stats = [CatalogEntry(**row) for row in cache_entries(cfg)], [], {}
+        elif lib.kind == "attract":
             e, p, stats = catalog.scan_attract(root, lib.id, cache)
         else:
             e, p = catalog.scan([root], {}, cache, lib_id=lib.id, do_hash=lib.hash,

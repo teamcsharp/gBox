@@ -2305,7 +2305,7 @@ const kv = (el, rows) => el.innerHTML = rows.map(([k, v]) => `<span>${esc(k)}</s
 const dot = (id, cls) => $(id).className = "dot " + cls;
 async function refresh() {
   const st = await gbox.sparkStatus();
-  dot("#d-api", st.api ? "ok" : "bad"); dot("#d-svc", st.service === "active" ? "ok" : st.ssh ? "warn" : "bad");
+  dot("#d-api", st.api ? "ok" : "bad"); dot("#d-svc", (st.service === "active" || st.mode === "local" && st.api) ? "ok" : st.ssh ? "warn" : "bad");
   kv($("#spark-kv"), [["ssh", st.ssh ? "connected" : `<span style="color:var(--bad)">${esc(st.error || "unreachable")}</span>`],
     ["service", esc(st.service || "–")], ["API", st.api ? `up · ${esc(S.apiUrl)}` : "down"], ["NAS mount", esc(st.mount || "–")],
     ["uptime", esc(st.uptime || "–")], ["free disk", esc(st.free || "–")], ["GPU util/temp", esc(st.gpu || "–")]]);
@@ -2327,13 +2327,14 @@ function loadPlay() {
   playLoadPromise = Promise.resolve().then(async () => {
     const panel = $("#playhost"), message = $("#playmessage"), retry = $("#playretry");
     const status = (text, failed = false) => { panel.hidden = false; message.textContent = text; retry.hidden = !failed; };
-    status("Connecting to the Spark…");
+    status(S.connectionMode === "local" ? "Opening local games on this PC..." : "Connecting to gBox...");
     retry.onclick = () => { playLoaded = false; loadPlay(); };
     const tok = await gbox.token();
     if (!tok) { status("No API token: add it in Settings, or restore the Spark share/SSH connection.", true); return; }
     const url = new URL(S.apiUrl);
     url.searchParams.set("embedded", "1");
     url.hash = new URLSearchParams({ token: tok, worker: S.workerName }).toString();
+    if (S.connectionMode === "local") url.hash += "&offline=1";
     if (typeof EMB !== "undefined" && EMB.sid) url.hash += "&session=" + encodeURIComponent(EMB.sid);
     const wv = document.createElement("webview");
     wv.id = "wv"; wv.dataset.ready = "false"; wv.setAttribute("allowpopups", "");
@@ -2351,7 +2352,7 @@ function loadPlay() {
     wv.addEventListener("dom-ready", async () => {
       const revision = generation;
       try {
-        await wv.executeJavaScript(`(async () => { document.documentElement.dataset.embedded = "true"; document.documentElement.style.colorScheme = "dark"; window.GBOX_LOCAL = ${JSON.stringify({ worker: S.workerName, incidentCapture: true })}; await window.gboxViewReady; await new Promise(resolve => requestAnimationFrame(resolve)); })()`);
+        await wv.executeJavaScript(`(async () => { document.documentElement.dataset.embedded = "true"; document.documentElement.style.colorScheme = "dark"; window.GBOX_LOCAL = ${JSON.stringify({ worker: S.workerName, incidentCapture: true, offline: S.connectionMode === "local" })}; await window.gboxViewReady; await new Promise(resolve => requestAnimationFrame(resolve)); })()`);
         if (!wv.isConnected || revision !== generation) return;
         clearTimeout(timeout); wv.dataset.ready = "true"; panel.hidden = true;
       } catch {
@@ -2385,7 +2386,7 @@ const FIELDS = [["apiUrl", "Control plane URL (the DGX Spark)"], ["token", "API 
   ["workerName", "This PC's worker name (unique per PC)"]];
 async function loadSettings() {
   S = await gbox.settings();
-  $("#sform").innerHTML = FIELDS.map(([k, l, t]) => `<label>${l}<input type="${t || "text"}" name="${k}" value="${esc(S[k])}"></label>`).join("") +
+  $("#sform").innerHTML = FIELDS.map(([k, l, t]) => `<label>${l}<input type="${t || "text"}" name="${k}" value="${esc(k === "apiUrl" ? S.configuredApiUrl || S.apiUrl : k === "token" && S.connectionMode === "local" ? "" : S[k])}"></label>`).join("") +
     `<label><span><input type="checkbox" name="autoStartWorker" ${S.autoStartWorker ? "checked" : ""}> Start the Windows worker with the app</span></label>` +
     `<label><span><input type="checkbox" name="voiceOverlay" ${vovEnabledPref() ? "checked" : ""}> Voice overlay on the game: the randomized transition visual over the game while you talk with gBox or it talks back</span></label>` +
     `<p class="mut" id="hotkey-scope-note"><b>Hotkeys only when gBox is in front.</b> F2 save · F3 autoplay · F4 load · F5 reset · Shift/Ctrl+F2 save slot · Ctrl+I eyedropper · F11 / Alt+Enter full screen · hold ~ to talk · right-click / Ctrl+click / Alt+drag on the game: these work only while gBox (or the game playing in it) is the window in front. Blender and every other application keep all their keys and clicks.</p>`;
@@ -6433,7 +6434,17 @@ async function ringAttach() {
 }
 // ---------------- end replay ring pop-up ----------------
 
-loadSettings().then(() => { refresh(); refreshInbox(); });
+function initializeConnection() {
+  $("#playmessage").textContent = "Connecting to gBox; preparing local play if Spark is unavailable...";
+  $("#playretry").hidden = true;
+  loadSettings().then(() => { refresh(); refreshInbox(); }).catch(error => {
+    $("#playhost").hidden = false;
+    $("#playmessage").textContent = "Could not start gBox: " + error.message;
+    $("#playretry").hidden = false;
+    $("#playretry").onclick = initializeConnection;
+  });
+}
+initializeConnection();
 // Spark status runs ssh + 3 requests: every 15 s while Control is open or the play view still has to connect, else every minute
 let refreshAt = Date.now();
 setInterval(() => {
@@ -6513,8 +6524,8 @@ const pollStatusRight = singleFlightPoll(async () => {
   const [ws, ss] = await pollTogether([WORKERS.get(), liveSessions()]);
   const svc = ["ok", "warn", "bad"].find(k => $("#d-svc").classList.contains(k)) || "bad";   // refreshed by refresh() (SSH), not here
   const c = (key, cls, ic, label, tip) => `<span class="c ${cls}" data-k="${esc(key)}" title="${esc(tip)} · click for details"><i></i>${ic} ${esc(label)}</span>`;
-  let h = c("api", ws.ok ? "ok" : "bad", "🌐", "Spark API", ws.ok ? "control plane reachable" : "control plane unreachable");
-  h += c("service", svc, "🛠️", "service", `Spark gbox.service: ${svc === "ok" ? "active" : svc === "warn" ? "SSH ok, service down" : "unreachable"}`);
+  let h = c("api", ws.ok ? "ok" : "bad", "🌐", S.connectionMode === "local" ? "This PC - local play" : "Spark API", ws.ok ? "control plane reachable" : "control plane unreachable");
+  if (S.connectionMode !== "local") h += c("service", svc, "🛠️", "service", `Spark gbox.service: ${svc === "ok" ? "active" : svc === "warn" ? "SSH ok, service down" : "unreachable"}`);
   for (const w of ws.ok ? ws.data : []) h += c("worker:" + w.id, w.online ? "ok" : "bad", w.os === "windows" ? "🪟" : "🐧", w.name, `${w.name} · ${w.os} · ${w.online ? "online" : "offline"}`);
   const mine = ss.ok && ss.data.filter(x => x.state === "running").sort((a, b) => (b.started || 0) - (a.started || 0))[0];
   h += mine ? `<span class="emu" data-k="emu:${esc(mine.session_id)}" title="${esc(mine.title)} · click for details">${EMU_ICON[mine.adapter] || "🎮 " + esc(mine.adapter)}</span>`
