@@ -440,6 +440,8 @@ class SessionRewind:
         self.pad = pad                                  # a local pad reader (XInputPad) or None
         self.fed = [False, False, False]                # select / l2 / r2 from streamed pad events
         self.ff_on, self.steps, self.ff_holds, self.last_step = False, 0, 0, None
+        self.ff_manual = False
+        self.ff_blocked = False
         self._lock = threading.Lock()
         self.threads: list[threading.Thread] = []
 
@@ -460,6 +462,8 @@ class SessionRewind:
         now = self.clock() if now is None else now
         with self._lock:
             s = self.sample() if sample is None else sample
+            if self.ff_blocked and not (s[0] and s[2]):
+                self.ff_blocked = False
             acts = self.chord.update(*s, now)
             for a in acts:
                 if a == "rewind_step" and self.ring is not None:
@@ -477,7 +481,7 @@ class SessionRewind:
                 elif a == "ff_start":
                     self.ff_holds += 1
             if self.use_ramp:
-                self._set_ff(self.ramp.tick(self.chord.ff_held, now))
+                self._set_ff(self.ff_manual or self.ramp.tick(self.chord.ff_held and not self.ff_blocked, now))
             return acts
 
     def _set_ff(self, want: bool) -> None:
@@ -648,6 +652,41 @@ def mode(sid: str) -> str | None:
 def status(sid: str) -> dict | None:
     sr = ACTIVE.get(sid)
     return sr.status() if sr is not None else None
+
+
+def fast_forward_status(sid: str, adapter) -> dict:
+    if "fast_forward" not in getattr(adapter, "supported", ()):
+        return {"supported": False, "on": None}
+    read = getattr(type(adapter), "fast_forward_status", None)
+    try:
+        state = read(adapter) if read else {"supported": True, "on": bool(getattr(adapter, "ff_on", False)), "source": "tracked"}
+    except Exception as exc:  # speed telemetry must not break pause or the rest of session info
+        state = {"supported": True, "on": None, "source": "unknown", "error": str(exc)}
+    sr = ACTIVE.get(sid)
+    if sr and (sr.ff_manual or (sr.chord.ff_held and not sr.ff_blocked)):
+        state = {**state, "on": True, "held": not sr.ff_manual}
+    return state
+
+
+def set_fast_forward(sid: str, adapter, on: bool | None = None, recover: bool = False) -> dict:
+    """One owner for UI/agent toggles and the pad ramp. Off suppresses the chord until released."""
+    if "fast_forward" not in getattr(adapter, "supported", ()):
+        raise Unsupported(f"{getattr(adapter, 'name', 'this emulator')} cannot control fast-forward from gBox")
+    sr = ACTIVE.get(sid)
+    with sr._lock if sr else contextlib.nullcontext():
+        want = False if recover else (not fast_forward_status(sid, adapter)["on"] if on is None else bool(on))
+        if sr:
+            sr.ff_manual = False
+            if not want:
+                sr.ff_blocked = True
+                sr.fed = [False, False, False]
+                sr.ramp.tick(False, sr.clock())
+        clear = getattr(type(adapter), "normal_speed", None)
+        result = clear(adapter) if recover and clear else adapter.fast_forward(on=want)
+        if sr:
+            sr.ff_on = want
+            sr.ff_manual = want
+        return {"supported": True, "on": want, **(result or {})}
 
 
 def capabilities(sid: str, caps: dict | None) -> dict:

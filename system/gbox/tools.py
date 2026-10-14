@@ -1066,7 +1066,10 @@ def session_rpc(sid: str, op: str, args: dict):
     if op == "info":
         return {"platform": g.get("platform"), "core": g.get("core"), "title": g.get("title"), "emulator": ad.name, "game_id": g.get("game_id"),
                 "rom": Path(g["_rom_path"]).name if g.get("_rom_path") else None,
-                "capabilities": rewind.capabilities(sid, ad.get_capabilities()), "runtime": ad.query_runtime()}
+                "capabilities": rewind.capabilities(sid, ad.get_capabilities()), "runtime": ad.query_runtime(),
+                "fast_forward": rewind.fast_forward_status(sid, ad)}
+    if op == "normal_speed":
+        return rewind.set_fast_forward(sid, ad, on=False, recover=True)
     if op.startswith("debug_"):
         return _debug_rpc(ad, g, op[6:], args)
     if op == "state":
@@ -1219,6 +1222,10 @@ def session_op(inp: SessionIn, ctx: Ctx):
         from . import padstate
         padstate.report(ctx, inp.session_id, inp.args.get("events"), "agent")
     ad, _ = SESSIONS[inp.session_id]
+    if inp.op == "fast_forward":
+        return {"result": rewind.set_fast_forward(inp.session_id, ad, inp.args.get("on"),
+                                                recover=inp.args.get("on") is False),
+                "session_id": inp.session_id, "ended": False}
     if inp.op == "rewind" and rewind.mode(inp.session_id) == "checkpoint":   # gBox's checkpoint ring, not the emulator's buffer
         res = rewind.step(inp.session_id, float(inp.args.get("seconds", 5.0)))
     else:

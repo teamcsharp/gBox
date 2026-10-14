@@ -1517,6 +1517,50 @@ class RetroArchAdapter(CommandAdapter):
         self.ff_on = (not self.ff_on) if on is None else bool(on)
         return {"fast_forward": "toggled", "on": self.ff_on}
 
+    def fast_forward_status(self) -> dict:
+        # New RetroArch versions expose the actual toggle, including native hotkeys.
+        # Older versions have no such query: retain a clearly labelled tracked state.
+        if self.__dict__.get('_ff_option') is not False:
+            try:
+                reply = self.cmd('GET_OPTION fast_forward', reply=True, timeout=0.25)
+                words = (reply or '').split()
+                if words == ['fast_forward', 'on'] or words == ['fast_forward', 'off']:
+                    self._ff_option = True
+                    return {"supported": True, "on": words[-1] == 'on', "source": "emulator"}
+            except RuntimeError:
+                if self.__dict__.get('_ff_option') is True:
+                    raise
+            self._ff_option = False
+        return {"supported": True, "on": self.ff_on, "source": "tracked"}
+
+    def normal_speed(self) -> dict:
+        state = self.fast_forward_status()
+        if state['source'] == 'emulator':
+            self.cmd('SET_OPTION fast_forward off', reply=True)
+            after = self.fast_forward_status()
+            if after['on']:
+                raise RuntimeError('RetroArch did not clear fast-forward; release the fast-forward hotkey and retry')
+        else:
+            # Legacy runloop.c clears fastmotion on a fast-forward input edge WHILE
+            # PAUSED. A hold pulse while playing just toggles twice and cannot repair
+            # a stale toggle. Preserve pause state and never restart the content.
+            before = self.query_runtime()
+            if before.get('state') not in ('PLAYING', 'PAUSED'):
+                raise RuntimeError('RetroArch is not ready to restore normal speed')
+            was_paused = before['state'] == 'PAUSED'
+            try:
+                if not was_paused:
+                    self.pause()
+                self.cmd('FAST_FORWARD_HOLD\nGET_STATUS', reply=True)
+                time.sleep(0.05)
+                self.query_runtime()  # a subsequent poll: the hold pulse has been released
+            finally:
+                if not was_paused:
+                    self.resume()
+            after = {"supported": True, "on": False, "source": "tracked"}
+        self.ff_on = False
+        return after
+
     def state_dir(self) -> Path:
         return getattr(self, "states_override", None) or self.config.runtime / "states"
 
@@ -2340,6 +2384,14 @@ D-Pad/Right = `Pad E`
         return {"slot": 8}
 
     ff_on = False
+
+    def normal_speed(self) -> dict:
+        # Release even if our cached toggle says off: a missed release is recoverable.
+        result = win_send_keys(self.proc.pid, [{"key": self.lane, "down": False}], hidden_ok=True)
+        if result.get('sent') != 1 or result.get('stopped'):
+            raise RuntimeError('Dolphin did not receive the speed-limit key release')
+        self.ff_on = False
+        return {"supported": True, "on": False, "source": "tracked"}
 
     def fast_forward(self, on: bool | None = None) -> dict:
         """Hold Dolphin's "Disable Emulation Speed Limit" hotkey (this Dolphin's lane key alone) while gBox fast-forwards."""
