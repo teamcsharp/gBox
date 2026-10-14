@@ -902,7 +902,8 @@ def swap_index(slot: str | None, data=None, active_id: int | None = None) -> int
     return int(digits)
 
 
-CACHE_VERSION = 6  # 3: multi-root writer. 4 was taken by #1151's branch builds (mod ..._a80947d49d022a3a), which
+CACHE_VERSION = 7  # 7: each object owns its model record (native loader relocates pointers in place).
+# 3: multi-root writer. 4 was taken by #1151's branch builds (mod ..._a80947d49d022a3a), which
                    # put new vertices past the native cache span and drew no body in gameplay (#1153 live).
                    # 5: new vertices stay inside every group's native span (#1156).
                    # 6: the atlas is the body group's largest texlist texture and every group draws it under its
@@ -1187,7 +1188,7 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
     def _copy_id(g, j):
         d, t = xforms[g].get(j), tex_ids[g]
         return None if d is None and t == prim_tex else (j, d or (1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0), t)
-    copies = {}                                    # (node, transform, texture id) -> blob key >= 20; equal twins share it
+    copies = {}                                    # equal twins may share list bytes, never mutable model records
     for g in twins:
         for j in range(len(nodes)):
             if _copy_id(g, j) is not None:
@@ -1196,6 +1197,11 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
     def copy_key(g, j):
         c = _copy_id(g, j)
         return None if c is None else copies[c]
+    groups = {root: nodes, **twins}
+
+    def geometry_key(g, j):
+        key = copy_key(g, j) if g != root else None
+        return j if key is None else key
     spans = {}
     for group_root in [root, *twins]:
         cache = nj.vbuf if group_root == root else play_model(buf, group_root).vbuf
@@ -1277,13 +1283,17 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
     for j, nd in enumerate(nodes):
         if nd["model"]:
             vl, pl_ = struct.unpack_from("<II", buf, nd["model"])
-            homes.update({("v", j): vl or nd["model"], ("p", j): pl_ or nd["model"], ("m", j): nd["model"]})
+            homes.update({("v", j): vl or nd["model"], ("p", j): pl_ or nd["model"]})
     for g, group in twins.items():                         # a re-expressed copy goes back where its twin's lists sat
         for j, nd in enumerate(group):
             key = copy_key(g, j)
-            if key is not None and nd["model"] and ("m", key) not in homes:
+            if key is not None and nd["model"] and ("v", key) not in homes:
                 vl, pl_ = struct.unpack_from("<II", buf, nd["model"])
-                homes.update({("v", key): vl or nd["model"], ("p", key): pl_ or nd["model"], ("m", key): nd["model"]})
+                homes.update({("v", key): vl or nd["model"], ("p", key): pl_ or nd["model"]})
+    for g, group in groups.items():
+        for j, nd in enumerate(group):
+            if nd["model"]:
+                homes[("m", (g, j))] = nd["model"]
 
     def encode(geo):
         # every blob (new-only vertex lists, poly lists, model structs) is sized
@@ -1299,8 +1309,6 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
                                                  base=min(orig_base(nd), vlimit - len(P)))
                 blobs[("v", j)] = built[j][0]
                 blobs[("p", j)] = built[j][1]
-            if nd["model"] or j in built:                 # a node with no native model may still get geometry
-                blobs[("m", j)] = bytes(24)
         for (j, d, t), key in copies.items():              # the same strips in a twin's own node frame / texlist
             if j in geo:
                 P, N, T = geo[j]
@@ -1312,9 +1320,16 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
                                                    base=min(orig_base(nodes[j]), vlimit - len(P)))
                 blobs[("v", key)] = built[key][0]
                 blobs[("p", key)] = built[key][1]
-                blobs[("m", key)] = bytes(24)
-        if any(nd["model"] and j not in built for j, nd in enumerate(nodes)):
-            blobs[("e", 0)] = struct.pack("<HH", 0xFF, 0)
+        # US FUN_8c0c7278 adds the PLAY base into vlist/plist on every object visit.
+        # Even identical geometry must have a separate 24-byte model per object;
+        # sharing these records adds the base twice and corrupts the pointers.
+        for g, group in groups.items():
+            for j, nd in enumerate(group):
+                key = geometry_key(g, j)
+                if nd["model"] or key in built:
+                    blobs[("m", (g, j))] = bytes(24)
+                    if key not in built:
+                        blobs[("e", 0)] = struct.pack("<HH", 0xFF, 0)
         sizes = {k: len(v) for k, v in blobs.items()}
         at, err = None, None
         for hs in ([tuple(h) for h in holes], [tuple(h) for h in holes] + spare):   # inside the old entry first
@@ -1330,27 +1345,21 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
             raise ValueError(f"PLAY {index:02d}: {err}")
         out = bytearray(body)
         out += bytes(max(0, max(at[k] + len(v) for k, v in blobs.items()) - len(out)))
-        for j, nd in enumerate(nodes):
-            if j in built:
-                _vl, _pl, c, r = built[j]
-                blobs[("m", j)] = struct.pack("<II4f", at[("v", j)], at[("p", j)], *c, r)
-            elif nd["model"]:
-                c_r = struct.unpack_from("<4f", buf, nd["model"] + 8)
-                blobs[("m", j)] = struct.pack("<II4f", at.get(("v", j), 0), at[("e", 0)], *c_r)
-        for key in sorted(k for k in built if k >= len(nodes)):
-            _vl, _pl, c, r = built[key]
-            blobs[("m", key)] = struct.pack("<II4f", at[("v", key)], at[("p", key)], *c, r)
+        for g, group in groups.items():
+            for j, nd in enumerate(group):
+                key, record = geometry_key(g, j), ("m", (g, j))
+                if key in built:
+                    _vl, _pl, c, r = built[key]
+                    blobs[record] = struct.pack("<II4f", at[("v", key)], at[("p", key)], *c, r)
+                elif nd["model"]:
+                    c_r = struct.unpack_from("<4f", buf, nd["model"] + 8)
+                    blobs[record] = struct.pack("<II4f", 0, at[("e", 0)], *c_r)
         for k, v in blobs.items():
             out[at[k]:at[k] + len(v)] = v
-        for j, nd in enumerate(nodes):
-            flags = nd["flags"] & ~0x8 if j in geo else nd["flags"]
-            struct.pack_into("<II", out, nd["off"], flags, at.get(("m", j), 0))
-        for g, group in twins.items():
+        for g, group in groups.items():
             for j, nd in enumerate(group):
                 flags = nd["flags"] & ~0x8 if j in geo else nd["flags"]
-                key = copy_key(g, j)
-                key = key if key is not None and key in built else j
-                struct.pack_into("<II", out, nd["off"], flags, at.get(("m", key), 0))
+                struct.pack_into("<II", out, nd["off"], flags, at.get(("m", (g, j)), 0))
         if len(out) > room:
             raise ValueError(f"PLAY {index:02d}: {len(out)} bytes > {room} bytes of AFS room")
         return bytes(out)

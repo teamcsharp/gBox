@@ -193,14 +193,17 @@ def test_writer_changes_all_equivalent_groups_and_preserves_shared_storage(monke
     points = [_world_points(jgr.play_model(rewritten, root)) for root in roots[:-1]]
     assert points[1] == points[0] == points[2]      # every group draws the donor in the same bind pose
     models = [[n["model"] for n in ninja.tree_nodes(rewritten, root)] for root in roots[:-1]]
+    assert len({m for group in models for m in group}) == 60
+    assert _native_relocation_errors(rewritten, roots) == []
+    lists = [[struct.unpack_from('<II', rewritten, m) for m in group] for group in models]
     if variant == "translated":
-        assert models[1][15] != models[0][15] and models[1][:15] == models[0][:15]
+        assert lists[1][15] != lists[0][15] and lists[1][:15] == lists[0][:15]
         assert result["report"]["bind_offsets"] == {hex(roots[1]): {"15": [-0.5, 0.0, 0.0]}}
     elif variant == "turned":
-        assert all(a != b for a, b in zip(models[0][1:], models[1][1:])) and models[2] == models[0]
+        assert all(a != b for a, b in zip(lists[0][1:], lists[1][1:])) and lists[2] == lists[0]
         assert set(result["report"]["bind_transforms"][hex(roots[1])]) == {str(j) for j in range(20)}
     else:
-        assert models[1] == models[0] and result["report"]["bind_offsets"] == {}
+        assert lists[1] == lists[0] and result["report"]["bind_offsets"] == {}
 
 
 def _patched_writer(monkeypatch, original, roots, geo):
@@ -239,6 +242,47 @@ def _vertex_lists(buf, root):
     return out
 
 
+def _native_relocation_errors(data, roots):
+    """Transcribe US FUN_8c0c7278: pointers are changed in place on EVERY visit.
+
+    Unlike our offline Ninja reader, the game does not deduplicate model records.
+    List contents are not changed by this loader. Use an illustrative RAM base.
+    """
+    buf, base, errors = bytearray(data), 0x8C200000, []
+    def read(off):
+        return struct.unpack_from('<I', buf, off)[0]
+    def relocate(off):
+        value = (read(off) + base) & 0xFFFFFFFF
+        struct.pack_into('<I', buf, off, value)
+        return value - base
+    def walk(node):
+        while node:
+            if read(node + 4):
+                model = relocate(node + 4)
+                for field in (model, model + 4):
+                    if read(field):
+                        target = relocate(field)
+                        if not 0 <= target < len(buf):
+                            errors.append((node, model, target))
+            if read(node + 44):
+                walk(relocate(node + 44))
+            node = relocate(node + 48) if read(node + 48) else 0
+    for root in roots:
+        walk(root)
+    return errors
+
+
+def test_written_models_survive_native_in_place_relocation(monkeypatch, tmp_path):
+    original, roots = _binary_groups()
+    triangle = [((0, 1, 2), ((0, 0), (1, 0), (0, 1)))]
+    geo = {i: ([[0, 0, 0], [0.25, 0, 0], [0, 0.25, 0]], [[0, 0, 1]] * 3, triangle)
+           for i in range(1, 20)}
+    _patched_writer(monkeypatch, original, roots, geo)
+    result = jgr.build_swap('fixture.gdi', tmp_path / 'fixture.glb', {'hip': 'x'}, tmp_path, 'Donor', 4)
+    rewritten = result['files'][jgr.PLAYER_AFS][0]
+    assert _native_relocation_errors(rewritten, roots) == []
+
+
 def test_new_vertices_stay_inside_every_groups_native_cache_span(monkeypatch, tmp_path):
     """#1156: on Beat, new slots 368-529 (stock body 0-354, low LOD 0-178) drew NO body in gameplay
     (#1153 live) although the cutscene renderer drew the same models. Every rewritten group must find
@@ -273,4 +317,4 @@ def test_node_larger_than_the_native_span_is_refused_for_a_smaller_budget(monkey
 
 def test_span_clamped_writer_never_reuses_a_pre_1156_cached_build():
     # v3 builds (slots past the native span) drew no body in gameplay; `use` must not serve them again.
-    assert jgr.CACHE_VERSION >= 5
+    assert jgr.CACHE_VERSION >= 7  # earlier versions share model records and corrupt pointers during native loading

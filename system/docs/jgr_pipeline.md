@@ -52,7 +52,7 @@ Slots:
 
 `cast_slots()` feeds the cast menu that `characters op=collect` returns: `player` plus the 16 `character:` slots.
 
-Build (`jgr.build_swap`, `jgr.build_mod`, `jgr.use`; cache schema 6):
+Build (`jgr.build_swap`, `jgr.build_mod`, `jgr.use`; cache schema 7):
 
 1. **Fit.** `ninja_swap.fit` retargets the donor onto the shared 20-node body with `jgr.BODY_ROLES` (15 roles) and
    decimates it through `BUDGETS` until it fits the PLAY entry's own AFS room.
@@ -63,6 +63,13 @@ Build (`jgr.build_swap`, `jgr.build_mod`, `jgr.use`; cache schema 6):
      leader, and Gum's rescaled low-detail limbs.
    - A group whose texlist id for the atlas differs gets its own copy too (`group_texture_ids`): Yo-Yo's, Code's
      and Reco's spray-can bodies, and Gum's low-detail body.
+   - Each object has its own 24-byte model record, even when it shares immutable vertex/polygon lists with
+     another group. Ghidra analysis of the owned US executable identifies `FUN_8c0c75f0` as the PLAY loader
+     and `FUN_8c0c7278` as the recursive in-place relocation routine: it adds the PLAY base into model list
+     pointers on every object visit, without a visited-model guard. Sharing records adds that base repeatedly.
+     An offline transcription applied to the reported #1853 archive produced 100 invalid list pointers;
+     the stock archive produced none. This is an offline loader simulation, not a live RAM capture.
+     Schema 7 prevents reuse of builds produced by the earlier shared-record writer.
 3. **Atlas.** The atlas is the largest texture in group 0's texlist (`atlas_texture`). It is re-encoded in place in
    the same PVR format and size.
 4. **Disc.** PLAYER.AFS keeps its length and every other entry. `gdrom.patch_gdi` writes a new GD-ROM image into a
@@ -80,9 +87,13 @@ Not done / unverified:
 
 - The motion data (PLAY kinds 4-7) is untouched, so the donor plays JGR's own animations through the 20 nodes.
 - Alternate colour slots 1-3 of the rival leaders still point at their original atlases.
-- **No build has been seen in gameplay yet.** The #1156 build (cache v5, Beat) was never launched. The v6 build
-  differs from it only in the texlist bookkeeping. On Beat the atlas id is 0 in every group, and the twin
-  transforms reduce to v5's hand offsets.
+- The reported v5 Beat build reached the tutorial in #1853 investigation captures, followed by a black frame.
+  A matched stock comparison and a sustained failure in that build were not verified. Schema 7 fixes the
+  offline relocation defect. The separate Amy build reached player control on idle i9-NUC, moved with the
+  analog stick, jumped, and remained visible from timer 91.50 through 36.70. See [capture evidence](evidence/jgr-model-relocation/README.md).
+  Front-view facial geometry/detail still needs review; this is not a claim that all visual defects are fixed.
+  TIME OVER renders but displays the preserved native head with the replacement atlas, so it is incorrect.
+  Spray-can groups and the other 15 replacement targets still lack live verification.
 
 ## Live check (do this before closing #1151/#1153/#1156)
 
