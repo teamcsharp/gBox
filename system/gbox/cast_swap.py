@@ -811,8 +811,13 @@ def plan(game: dict, chars: list[dict], source: str, mapping: str = "auto", seed
         out = apply_edits(out, texture_assignment_aliases([e for e in assignments if e.get("character") not in why],chars,rows), rows,
                           [s for s in chosen if not s.get("skip")])
     strat, how = strategy(w["writer"])
+    scope = {}
+    if w['writer'] == 'gbox.jgr_swap':
+        from .jgr_swap import replacement_scope
+        scope['replacement_scope'] = replacement_scope()
     return {"status": "planned" if out else "empty", "game_id": game["game_id"], "title": game.get("title"),
             "writer": w["writer"], "strategy": strat, "how": how, "source": src["label"], "mapping": mapping,
+            **scope,
             "seed": seed, "slots_filter": slots, **({"prefer": prefer} if pref else {}),
             "slot_sets": slot_sets(all_slots),
             "slots": [{k: s.get(k) for k in ("slot", "name", "kind", "status", "skip", "size", "context", "groups")

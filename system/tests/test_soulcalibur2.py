@@ -358,6 +358,20 @@ def test_decimation_preview_uses_the_surviving_faces_and_moved_positions(monkeyp
     np.testing.assert_array_equal(shown["tris"], after[0]["tris"])
 
 
+def test_manual_mesh_is_never_decimated_even_above_the_configured_cap(monkeypatch, donor, stock):
+    from gbox import auf_swap
+    donor.scale={'profile':{'preserve_geometry':True}}
+    original=W.corners
+    def corners(*args):
+        mesh=original(*args);mesh['F']=np.resize(mesh['F'],(9001,3));return mesh
+    monkeypatch.setattr(W,'corners',corners)
+    monkeypatch.setattr(auf_swap,'decimate',lambda *a:pytest.fail('No reduction was authorized'))
+    monkeypatch.setattr(V,'encode',lambda *a:bytes(200000))
+    assert W.fit_costume(donor,V.parse(stock),'mitsurugi',0,300000).report['triangles']==9001
+    with pytest.raises(ValueError,match='Automatic geometry reduction disabled'):
+        W.fit_costume(donor,V.parse(stock),'mitsurugi',0,100000)
+
+
 def test_ground_feet_lifts_tall_shoes_out_of_the_floor():
     tgt = {"T": np.array([[0, 0.13, 0.0], [0, 1, 0]]), "jmap": {"l_foot": 0}, "ground": 0.0}
     prims = [{"pos": np.array([[0, 0.13, 0], [0, -0.3, 0.1]]), "J": np.array([[0, 0, 0, 0], [0, 0, 0, 0]])}]

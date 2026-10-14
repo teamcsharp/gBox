@@ -265,10 +265,11 @@ def fit_costume(donor: Donor, v: V.Vmg, key: str, costume: int, budget: int, pro
     atlas = pages[0]
     mesh = corners(prims, layout)
     F0 = mesh["F"]
-    target = min(len(F0), MAX_TRIS)
+    preserve = bool(((donor.scale or {}).get('profile') or {}).get('preserve_geometry'))
+    target = len(F0) if preserve else min(len(F0), MAX_TRIS)
     last = None
-    limits = {"vmg_budget_bytes": budget, "vertex_limit": 0xFFFF, "configured_triangle_limit": MAX_TRIS}
-    for attempt in range(12):
+    limits = {"vmg_budget_bytes": budget, "vertex_limit": 0xFFFF, "configured_triangle_limit": None if preserve else MAX_TRIS}
+    for attempt in range(1 if preserve else 12):
         Pd, F = decimate(mesh["P"], F0, target) if target < len(F0) else (mesh["P"], F0)
         used = np.unique(F.reshape(-1))
         if attempt == 0:
@@ -277,6 +278,7 @@ def fit_costume(donor: Donor, v: V.Vmg, key: str, costume: int, budget: int, pro
         remap = np.full(len(Pd), -1)
         remap[used] = np.arange(len(used))
         if len(used) > 0xFFFF:
+            if preserve: raise ValueError(f'Automatic geometry reduction disabled: {len(used)} vertices exceed VMG index capacity 65535')
             target = int(target * SHRINK)
             continue
         data = V.encode(v, Pd[used], mesh["N"][used], mesh["UV"][used], mesh["B"][used], remap[F], atlas,
@@ -287,6 +289,10 @@ def fit_costume(donor: Donor, v: V.Vmg, key: str, costume: int, budget: int, pro
                        "attempts": attempt + 1, "from_triangles": int(len(F0))})
         if len(data) <= budget:
             break
+        if preserve:
+            FE.comparison([{'pos':mesh['P'],'tris':F0}],[{'pos':Pd,'tris':F}],
+                          reason='Edited mesh retained; native VMG allocation rejected it; automatic reduction disabled',limits=limits)
+            raise ValueError(f'Automatic geometry reduction disabled: VMG needs {len(data)} bytes; costume allocation is {budget}')
         target = max(64, int(target * min(SHRINK, budget / len(data))))
         if progress:
             progress(None, f"{len(data)} bytes over the {budget}-byte budget: {target} triangles")

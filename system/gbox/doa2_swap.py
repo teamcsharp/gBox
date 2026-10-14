@@ -195,7 +195,7 @@ def encode_parts(chr_data: bytes, bin_data: bytes, prims: list[dict], profile: d
 
 def encode_budgeted(chr_data, bin_data, prims, profile, target, size_budget, *,
                     coefficients=None, sup_budget=None, allow_downscale=False,
-                    progress=lambda p,m:None):
+                    progress=lambda p,m:None, preserve_geometry=False):
     """Keep full geometry when it fits; use audited Blender LOD attempts otherwise."""
     import tempfile
     from . import sm64_swap as S
@@ -253,6 +253,10 @@ def encode_budgeted(chr_data, bin_data, prims, profile, target, size_budget, *,
     except ValueError as error:
         if not str(error).startswith('CHR budget exceeded:'): raise
         attempts.append({'triangles':source_triangles,'result':str(error)})
+    if preserve_geometry:
+        FE.comparison(original_prims, prims, reason='Edited mesh retained; native CHR allocation rejected it; automatic reduction disabled',
+                      limits={'chr_budget_bytes':size_budget,'allocation_failure':attempts[-1]['result'],'automatic_reduction':False})
+        raise ValueError('Automatic geometry reduction disabled: '+attempts[-1]['result'])
     with tempfile.TemporaryDirectory(prefix='gbox-doa2-lod-') as temporary:
         work=Path(temporary)
         rigged=S.write_rigged(prims,target,work/'retargeted.gltf','native-donor')
@@ -415,7 +419,8 @@ def prepare(gdi: str | Path, character_dir: str | Path, out_dir: str | Path,
     try:
         result = encode_budgeted(chr_data, bin_data, prims, profile, target, (next_lba-lba)*2048,
                                  coefficients=native_coefficients(executable),
-                                 allow_downscale=allow_downscale, progress=progress)
+                                 allow_downscale=allow_downscale, progress=progress,
+                                 preserve_geometry=bool((RP.resolve(meta,GAME_IDS,f'fighter:{family}') or {}).get('preserve_geometry')))
     except Exception as e:
         FE.stage("encode", "failed", {"error": str(e)[:150]})
         raise
