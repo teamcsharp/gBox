@@ -5014,17 +5014,21 @@ def create_app(config: Config) -> FastAPI:
                                  headers={"content-disposition": 'attachment; filename="gbox-request-history.md"'})
 
     @app.get("/api/requests")
-    def req_list(request: Request, status: str = "", source: str = "", actor=Depends(auth)):
+    def req_list(request: Request, status: str = "", source: str = "", group: int = 0, actor=Depends(auth)):
         # The desktop inbox polls this every few seconds and it is the whole history (~8 MB, ~1 s to build). An unchanged
         # inbox answers 304 from a hash of the stored rows, without decoding, organizing or sending them (#712).
+        # group=1 (#1788): each kind of automated ticket (launch failures, readiness, observer/gap, agent messages,
+        # reviews, other automation) becomes one summary entry with its count, pending count, newest time and ids;
+        # operator requests and build reports are returned unchanged. Without it the answer is the plain list.
         import hashlib
         from fastapi.responses import JSONResponse
-        tag = f'"{store.digest("request")}:{hashlib.sha1(f"{status}|{source}".encode()).hexdigest()[:8]}"'
+        tag = f'"{store.digest("request")}:{hashlib.sha1((f"{status}|{source}" + (f"|group" if group else "")).encode()).hexdigest()[:8]}"'
         if request.headers.get("if-none-match") == tag:
             return Response(status_code=304, headers={"etag": tag})
         from . import inbox
         rs = [r for r in inbox.organize(store.all("request")) if (not status or r["status"] in status.split(",")) and (not source or r["source"] == source)]
-        return JSONResponse(_clean(sorted(rs, key=lambda r: r["created"], reverse=True)), headers={"etag": tag})
+        rs = sorted(rs, key=lambda r: r["created"], reverse=True)
+        return JSONResponse(_clean(inbox.grouped(rs) if group else rs), headers={"etag": tag})
 
     def _clean(o):
         """Lone surrogates (bad clipboard/dictation text) can't be sent as UTF-8 JSON: replace them, don't fail the list."""
