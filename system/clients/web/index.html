@@ -1519,9 +1519,20 @@ async function play(id, node, debug, boot) {
       if (boot.slot !== "" && boot.slot != null)                // start from the chosen save state once the emulator is up
         setTimeout(() => runJob({ tool: "session_op", input: { session_id: nsid, op: "load_state", args: { slot: +boot.slot } }, require_worker: nsid.split("-")[0] }).catch(() => {}), 12000);
       return show("Sessions", nsid); }
-    if (!["queued", "running"].includes(j.state)) { launch.error = `Launch ${j.state}: ${j.error || "unknown error"}`;
-      loader.fail(launch.error);
-      return launchReportFollow(j, r => { if (LAST_LAUNCH === launch && !LOADING) loader.report(r); }); }
+    if (!["queued", "running"].includes(j.state)) {
+      launch.error = `Launch ${j.state}: ${j.error || "unknown error"}`;
+      LOADING = null;
+      loader.hide();
+      // The previous game can still be running after a refused switch. Return
+      // to it; the persistent launch bar keeps the failure and report visible.
+      const sessions = await api("/api/sessions").catch(() => []);
+      if (LAST_LAUNCH !== launch || LOADING) return;
+      const previous = sessions.filter(s => s.state === "running" &&
+        (s.detail?.worker_name === node || s.session_id?.split("-")[0] === job.require_worker))
+        .sort((a, b) => (b.started || 0) - (a.started || 0))[0];
+      show(previous ? "Sessions" : "Library", previous?.session_id);
+      return;
+    }
     await new Promise(r => setTimeout(r, 400));
   }
   launch.error = waitNote ? `Launch job ${job.id} is still queued after five minutes. ${waitNote}`
