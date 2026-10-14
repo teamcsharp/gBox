@@ -724,7 +724,7 @@ async function show(t, ...args) {
 
 // The game's extracted models live here, separate from the boot/mod selector.
 // Added after the header tabs are rendered because this view is opened from a game card.
-const gameModelTile = m => `<button class="game-model-card" data-model="${esc(m.slug)}"><img loading="lazy" alt="" src="${m.preview_url}?${tq()}"><span><b>${esc(m.name)}</b><br><small class="mut">${esc(m.kind || "character")} · ${esc(m.model || "model")}</small></span></button>`;
+const gameModelTile = m => `<button class="game-model-card" data-model="${esc(m.slug)}" data-asset-url="/api/characters/${encodeURIComponent(m.slug)}/model" data-asset-name="${esc(m.name)}" data-asset-format="${/\.(glb|gltf)$/i.test(m.model || "") ? "GLB" : "image"}" data-asset-character="${/\.(glb|gltf)$/i.test(m.model || "") ? esc(m.slug) : ""}"><img loading="lazy" alt="" src="${m.preview_url}?${tq()}"><span><b>${esc(m.name)}</b><br><small class="mut">${esc(m.kind || "character")} · ${esc(m.model || "model")}</small></span></button>`;
 tabs.GameModels = async (gid, title) => {
   const all = await api(`/api/characters?game_id=${encodeURIComponent(gid)}`);
   const models = all.filter(m => m.source?.game_id === gid);
@@ -2526,7 +2526,7 @@ async function charsInit() {
     cs = Object.keys(byGroup).sort((a, b) => { const x = keyOf(a), y = keyOf(b); return x < y ? -1 : x > y ? 1 : head(a).name.localeCompare(head(b).name); })
       .flatMap(g => byGroup[g]); }
   const stale = c => (c.targets?.[gid] || []).some(t => t.needs_rebuild);
-  const card = (c, i) => `<div class="chc" data-i="${i}" data-slug="${esc(c.slug)}" data-name="${esc(c.name)}" style="border:1px solid var(--line,#333);${c.variant_of ? "border-left:3px solid var(--acc,#6cf);" : ""}border-radius:6px;padding:4px;display:flex;flex-direction:column;gap:2px;font-size:12px">
+  const card = (c, i) => `<div class="chc" data-i="${i}" data-asset-url="/api/characters/${encodeURIComponent(c.slug)}/model" data-asset-format="${c.kind === "sprites" ? "image" : "GLB"}" data-asset-name="${esc(c.name)}" data-asset-character="${c.kind === "sprites" ? "" : esc(c.slug)}" data-slug="${esc(c.slug)}" data-name="${esc(c.name)}" style="border:1px solid var(--line,#333);${c.variant_of ? "border-left:3px solid var(--acc,#6cf);" : ""}border-radius:6px;padding:4px;display:flex;flex-direction:column;gap:2px;font-size:12px">
       <img loading="lazy" alt="" draggable="true" title="Drag onto a character in the game to replace it" style="width:100%;aspect-ratio:1;object-fit:contain;background:#26282f;border-radius:4px;cursor:grab" src="${c.preview_url}?${tq()}"
         ondragstart='event.dataTransfer.setData("text/plain", ${JSON.stringify(c.slug)}); event.dataTransfer.effectAllowed = "copy"; console.log("GBOX:" + JSON.stringify({ ev: "carddrag", slug: ${JSON.stringify(c.slug)}, name: ${JSON.stringify(c.name)} }))'
         ondragend='console.log("GBOX:" + JSON.stringify({ ev: "carddragend" }))'>
@@ -2752,7 +2752,8 @@ const blenderCopyNote = r => `on Blender's clipboard${r.host ? " on " + r.host :
   ` · hover a 3D viewport there and press Ctrl+V (${blenderCopyFiles(r).length} file${blenderCopyFiles(r).length === 1 ? "" : "s"} written)`;
 function blenderCopied(r, input, me) {
   if (!window.GBOX_LOCAL?.worker) return;                    // only the desktop shell listens
-  console.log("GBOX:" + JSON.stringify({ ev: "blendercopied", result: r, input, worker: me.name }));
+  const { image_b64, ...descriptor } = input;               // the shell popup needs the source, not another image payload
+  console.log("GBOX:" + JSON.stringify({ ev: "blendercopied", result: r, input: descriptor, worker: me.name }));
 }
 async function modShot(m, sid, card, force) {                // the mod card's picture = this game's screen now
   const st = card.querySelector(".row i");
