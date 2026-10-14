@@ -633,16 +633,45 @@ def build_cast(cfg, game: dict, pairs, name: str, progress=None) -> dict:
 
 # ------------------------------------------------------------------------------------------------ CLI
 
-def pool_slugs(root: Path, pool: str) -> list[str]:
+LEG_ROLES = ("l_thigh", "l_shin", "r_thigh", "r_shin")
+
+
+def leg_vertex_count(rig: dict) -> int:
+    """Vertices a donor rig binds to its thigh / shin joints (or their unmapped children). 0 = no legs: the feet hang
+    straight off the body (Toad), so a fighter's long legs would leave a gap between the body and the feet."""
+    from .re4gc_enemies import _role_of_joint
+    jr = np.array(_role_of_joint({"roles": rig["roles"], "parent": rig["parent"]}))
+    own = np.concatenate([np.asarray(p["owner"], int) for p in rig["prims"]]) if rig["prims"] else np.zeros(0, int)
+    return int(np.isin(jr[own], LEG_ROLES).sum()) if len(own) else 0
+
+
+def has_legs(root: Path, slug: str) -> bool | None:
+    """Does the library donor have leg geometry? None when its model cannot be read (left to the fit to decide)."""
+    try:
+        return leg_vertex_count(donor_from_library(Path(root), slug).rig) > 0
+    except Exception:                                     # noqa: BLE001 - unreadable here is not a verdict
+        return None
+
+
+def pool_slugs(root: Path, pool: str, excluded: dict | None = None) -> list[str]:
     """Humanoid donors of a pool in a library folder: sa2 = the Sonic Adventure 2 entries, sm64ds = the Super Mario
     64 DS ones, mario = gbox.cast_swap's 'mario' group (the best model per character: HD > SM64 > SM64 DS), all only
-    when replacement readiness (or the roles) allow a full-body fit."""
+    when replacement readiness (or the roles) allow a full-body fit. A donor without leg geometry (has_legs False:
+    Toad, whose feet sit right under his body) is left out, since an SC2 fighter's legs would leave its feet floating
+    below the body; `excluded` collects {slug: reason}."""
+    excluded = {} if excluded is None else excluded
+
+    def legs_ok(slug: str) -> bool:
+        if has_legs(root, slug) is False:
+            excluded[slug] = "no leg geometry (thigh / shin own no vertices): the feet would float below the body"
+            return False
+        return True
     if pool == "mario":
         from . import cast_swap
         metas = {m["slug"]: m for m in cast_swap.library_metas(Path(root)) if m.get("slug")}
         need = {"hip", "head", "l_hand", "r_hand", "l_foot", "r_foot"}
         return sorted(s for s in cast_swap.group_best(list(metas.values()), "mario").values()
-                      if need <= ((metas[s].get("rig") or {}).get("roles") or {}).keys())
+                      if need <= ((metas[s].get("rig") or {}).get("roles") or {}).keys() and legs_ok(s))
     title = POOLS.get(pool, pool)
     out = []
     for m in sorted(Path(root).glob("*/meta.json")):
@@ -657,7 +686,8 @@ def pool_slugs(root: Path, pool: str) -> list[str]:
         rd = (meta.get("readiness") or {}).get("status")
         if rd in ("blocked", "limited") or not {"hip", "head", "l_hand", "r_hand", "l_foot", "r_foot"} <= roles.keys():
             continue
-        out.append(meta["slug"])
+        if legs_ok(meta["slug"]):
+            out.append(meta["slug"])
     return out
 
 
@@ -692,7 +722,10 @@ def main(argv=None) -> int:
             print(json.dumps({"random_select": random_patched(d)}))
         return 0
     if a.cmd == "random":
-        pools = {p: pool_slugs(Path(a.library), p) for p in a.pool}
+        left_out: dict[str, str] = {}
+        pools = {p: pool_slugs(Path(a.library), p, left_out) for p in a.pool}
+        for slug, why in sorted(left_out.items()):
+            print(f"[ --] {slug} left out of the pool: {why}", flush=True)
         plan = plan_random(list(pools.values()), seed=a.seed)
         rs = True
         name = a.name

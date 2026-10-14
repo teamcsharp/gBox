@@ -142,3 +142,26 @@ def test_hd_builds_name_the_mario_group_in_their_markers():
     assert "Super Mario HD" in SC2.random_desc({("mitsurugi", 0): "sonic", ("mitsurugi", 1): "peach_hd"})
     assert SC2.random_desc({("mitsurugi", 0): "sa2_rouge", ("mitsurugi", 1): "sm64ds_peach"}) == \
         "Soul Calibur II: Sonic Adventure 2 vs Super Mario 64 DS, a random costume per selection"
+
+
+def _rig(owners_by_role):
+    """A synthetic donor rig: one joint per role (hip root), one prim whose vertices are owned per the counts."""
+    roles = ["hip", "chest", "head", "l_thigh", "l_shin", "l_foot", "r_thigh", "r_shin", "r_foot", "l_hand", "r_hand"]
+    parent = [-1, 0, 1, 0, 3, 4, 0, 6, 7, 1, 1]
+    owner = [roles.index(r) for r, n in owners_by_role.items() for _ in range(n)]
+    import numpy as np
+    return {"roles": {r: i for i, r in enumerate(roles)}, "parent": parent,
+            "prims": [{"owner": np.array(owner, int)}]}
+
+
+def test_sc2_pool_leaves_out_a_donor_without_legs(tmp_path, monkeypatch):
+    """#1748: Toad HD's feet hang straight off his body (no thigh / shin vertices); on an SC2 fighter the retarget
+    puts them at the fighter's ankles, a body's height below. The pool leaves such a donor out and says why."""
+    assert SC2.leg_vertex_count(_rig({"hip": 10, "head": 50, "l_foot": 5, "r_foot": 5})) == 0
+    assert SC2.leg_vertex_count(_rig({"hip": 10, "l_thigh": 4, "r_shin": 3, "l_foot": 5})) == 7
+    lib = _library(tmp_path / "lib")
+    assert SC2.has_legs(lib, "mario_hd") is None              # no model file here: no verdict, kept
+    monkeypatch.setattr(SC2, "has_legs", lambda root, slug: slug != "luigi_hd")
+    out = {}
+    assert SC2.pool_slugs(lib, "mario", out) == ["mario_hd", "sm64_yoshi", "sm64ds_koopa_troopa"]
+    assert list(out) == ["luigi_hd"] and "leg" in out["luigi_hd"]
