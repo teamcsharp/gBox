@@ -48,7 +48,8 @@ async function tick() {
   if(!stopped)timer=setTimeout(tick,4000);
 }
 $('#pause').onclick=async()=>{try{await api('/api/testing/workers/'+encodeURIComponent(worker),{available:false});parent.postMessage({gboxBackgroundClosed:true},'*');}catch(e){$('#notice').textContent=e.message;}};
-for(const name of ['pointerdown','keydown','wheel'])addEventListener(name,event=>{
+addEventListener('wheel',()=>parent.postMessage({gboxBackgroundScroll:true},'*'),{capture:true,passive:true});
+for(const name of ['pointerdown','keydown'])addEventListener(name,event=>{
   if(!event.target.closest?.('button,a,input,details'))parent.postMessage({gboxBackgroundInput:true},'*');
 },{capture:true,passive:true});
 document.addEventListener('visibilitychange',()=>{if(document.hidden)visual?.stop();else visual?.start();});

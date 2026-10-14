@@ -30,7 +30,7 @@ test('operations UI renders real components, progress, deferral, offline and pau
   await new Promise(r=>server.listen(0,'127.0.0.1',r));
   try{
     await withPage(async(evaluate,send)=>{
-      await send('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
+      await send('Emulation.setDeviceMetricsOverride',{width:1440,height:600,deviceScaleFactor:1,mobile:false});
       await send('Page.navigate',{url:`http://127.0.0.1:${server.address().port}/viz/background-operations.html#worker=fixture&token=fixture`});
       for(let n=0;n<100;n++){if(await evaluate(`document.querySelector('#active')?.textContent.includes('Packing the fitted')`))break;await new Promise(r=>setTimeout(r,50));}
       const text=await evaluate('document.body.textContent');
@@ -39,6 +39,20 @@ test('operations UI renders real components, progress, deferral, offline and pau
       assert.match(text,/Writing game image/);assert.match(text,/Waiting for the build output/);
       assert.match(text,/Goal verification/);assert.match(text,/not hard-throttle/);assert.match(text,/Blender is not installed/);
       assert.equal(await evaluate(`document.querySelectorAll('.flow .now').length`),3);
+      await evaluate(`window.inputReports=[];addEventListener('message',event=>{if(event.source===window)inputReports.push(event.data);});`);
+      await send('Input.dispatchMouseEvent',{type:'mouseWheel',x:700,y:400,deltaX:0,deltaY:480});
+      for(let n=0;n<50;n++){if(await evaluate(`scrollY>0&&inputReports.some(m=>m.gboxBackgroundScroll)`))break;await new Promise(r=>setTimeout(r,20));}
+      assert.equal(await evaluate(`scrollY>0&&inputReports.some(m=>m.gboxBackgroundScroll)`),true,'real wheel input scrolls the operations page');
+      assert.equal(await evaluate(`inputReports.some(m=>m.gboxBackgroundInput)`),false,'scrolling never asks the desktop to dismiss it');
+      await send('Input.dispatchMouseEvent',{type:'mousePressed',x:700,y:400,button:'left',clickCount:1});
+      await send('Input.dispatchMouseEvent',{type:'mouseReleased',x:700,y:400,button:'left',clickCount:1});
+      for(let n=0;n<30;n++){if(await evaluate(`inputReports.some(m=>m.gboxBackgroundInput)`))break;await new Promise(r=>setTimeout(r,20));}
+      assert.equal(await evaluate(`inputReports.some(m=>m.gboxBackgroundInput)`),true,'clicks still request dismissal');
+      await evaluate(`document.body.tabIndex=-1;document.body.focus();inputReports=[];`);
+      await send('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+      await send('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+      for(let n=0;n<30;n++){if(await evaluate(`inputReports.some(m=>m.gboxBackgroundInput)`))break;await new Promise(r=>setTimeout(r,20));}
+      assert.equal(await evaluate(`inputReports.some(m=>m.gboxBackgroundInput)`),true,'keys still request dismissal');
       if(process.env.GBOX_BACKGROUND_EVIDENCE){
         const output=path.resolve(process.env.GBOX_BACKGROUND_EVIDENCE);fs.mkdirSync(output,{recursive:true});
         await evaluate(`let label=document.createElement('div');label.textContent='UI screenshot / synthetic worker status / no gameplay evidence';label.style='background:#244974;color:white;padding:8px;font:13px system-ui';document.body.append(label);`);

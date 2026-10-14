@@ -49,3 +49,23 @@ test('a transient status failure keeps the existing diagnostic surface visible',
  await a.poll();assert.equal(a.frames.length,1);assert.equal(a.removed,0);
  a.events.pointerdown({});assert.equal(a.removed,1,'human input still dismisses it');
 });
+
+test('scrolling keeps the inspected panel through Windows idle resets and native test selection',async()=>{
+ const a=app();a.advance();await a.poll();
+ a.events.message({source:{},data:{gboxBackgroundScroll:true}});
+ a.state.worker.idle_seconds=1;await a.poll();assert.equal(a.removed,1,'untrusted messages cannot pin the panel');
+ a.state.worker.idle_seconds=600;await a.poll();
+ a.events.message({source:a.frames[1].contentWindow,data:{gboxBackgroundScroll:true}});
+ a.state.worker.idle_seconds=1;await a.poll();assert.equal(a.removed,1);
+ a.context.GBoxBackgroundGameplay=()=>{throw Error('Reading was interrupted by native focus');};
+ a.state.sessions=[{agent_owned:true,local_window:true}];await a.poll();assert.equal(a.removed,1);
+ a.events.keydown({});assert.equal(a.removed,2,'keys still return to the app');
+});
+
+test('inspection still yields to operator games, opt-out and local clicks',async()=>{
+ const a=app();a.advance();await a.poll();a.events.wheel({});
+ a.state.worker.idle_seconds=1;a.state.sessions=[{agent_owned:false}];await a.poll();assert.equal(a.removed,1);
+ a.state.sessions=[];a.state.worker.idle_seconds=600;await a.poll();a.events.wheel({});
+ a.state.background_testing=false;await a.poll();assert.equal(a.removed,2);
+ a.state.background_testing=true;await a.poll();a.events.wheel({});a.events.pointerdown({});assert.equal(a.removed,3);
+});
