@@ -279,6 +279,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/session-build.js"></script>
 <script src="/viz/cast-swap.js"></script>
 <script src="/viz/pso-controls.js"></script>
+<script src="/viz/live-controls.js"></script>
 <script src="/viz/build-actions.js"></script>
 <script src="/viz/build-report-image.js"></script>
 <script src="/viz/decimation-review.js"></script>
@@ -2385,7 +2386,7 @@ async function wbInit() {
         <div>${esc((tdesc[c.tool] || "").split("\n")[0].slice(0, 220))}</div><pre>${esc(JSON.stringify(c.input))}</pre></div>`).join("")}</details></div>`;
   el.innerHTML = `<details open data-dock="observers" class="sect"><summary draggable="true">Session agents <span class="mut">models and gameplay</span></summary><div id="session-observers"><p>Connecting observers...</p></div></details>
     <details open data-dock="mods" class="sect"><summary draggable="true">Mods <span class="mut">${mods.length} switch${mods.length === 1 ? "" : "es"} for this game: every change that worked</span></summary>
-      <div class="wbms">${mods.map(mod).join("") || '<p class="mut">Ask gBox to change the game ("infinite red shells", "skip the Deku Tree"); when it works it lands here as a switch.</p>'}</div></details>
+      <div id="game-live-controls"></div><div class="wbms">${mods.map(mod).join("") || '<p class="mut">Ask gBox to change the game ("infinite red shells", "skip the Deku Tree"); when it works it lands here as a switch.</p>'}</div></details>
     <details open data-dock="controls" class="sect"><summary draggable="true">🎚 Controls <span class="mut">${d.controls.length} from your conversations</span></summary>
       <div class="wbcs">${d.controls.map(ctl).join("") || '<p class="mut">Ask gBox for a slider ("give me a slider for car speed") and it lands here.</p>'}</div></details>
     <details open data-dock="bookmarks" class="sect"><summary draggable="true">🔖 Bookmarks <span class="mut">${d.bookmarks.length} changes, with save states before and after</span></summary>
@@ -2398,6 +2399,8 @@ async function wbInit() {
   charsInit();
   modWatch(gid, sid, mods);
   const curSession = (await api("/api/sessions").catch(() => [])).find(x => x.session_id === sid);
+  const liveHost = host.querySelector('#game-live-controls');
+  if (liveHost) GBoxLiveControls.mount(liveHost, {api, pso:GBoxPSO}, {game:gid, sid});
   mods.forEach((m, i) => { const c = el.closest(".play")?.querySelector(`.wbm[data-m="${i}"]`) || el.querySelector(`.wbm[data-m="${i}"]`);
     const on = modDisc(m) ? !!GBoxBuildActions.sessionBuild(m, gid, curSession)?.session_id : modKeepGet(gid).includes(m.id);
     if (on && c) { c.classList.add("on"); const b = c.querySelector("button[data-apply]"); if (b && modOffable(m)) b.textContent = "Turn off";
