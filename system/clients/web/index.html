@@ -272,6 +272,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/session-build.js"></script>
 <script src="/viz/cast-swap.js"></script>
 <script src="/viz/build-actions.js"></script>
+<script src="/viz/build-report-image.js"></script>
 <script src="/viz/game-menu.js"></script>
 <script src="/viz/build-shot.js"></script>
 <script src="/viz/build-local.js"></script>
@@ -2335,7 +2336,7 @@ async function wbInit() {
   const tdesc = Object.fromEntries((reg.tools || []).map(t => [t.name, t.description || ""]));
   const mod = (m, i) => `<div class="wbm" data-m="${i}">${m.thumb ? `<img loading="lazy" data-moment="${m.state_slot ?? ""}" title="Click to view (zoom / pan)" style="cursor:zoom-in" src="/api/artifacts/${m.thumb}?${tq()}">` : '<div class="nf">no picture yet</div>'}
       <b>${esc(m.title)}</b><span class="${m.verified ? "ok" : "unv"}">${m.verified ? "verified" : "not verified yet"} · ${m.calls.length} step${m.calls.length === 1 ? "" : "s"}</span>
-      <div class="row"><button data-apply title="${modOffable(m) ? "Click to switch this mod on or off in the running game (same PC, same moment)" : "One-shot: applies once"}">${modOffable(m) ? "Turn on" : "Activate"}</button><button data-shot title="Use what the game shows right now as this mod's picture">📷</button>${
+      <div class="row"><button data-apply title="${modOffable(m) ? "Click to switch this mod on or off in the running game (same PC, same moment)" : "One-shot: applies once"}">${modOffable(m) ? "Turn on" : "Activate"}</button><button data-shot aria-label="Capture mod picture; Ctrl-click to annotate a problem report" title="Click: save mod picture. Ctrl-click: draw boxes/arrows and attach reference images to a build report">📷</button>${
         m.calls.some(c => c.tool === "@launch") ? `<button data-blmod title="Copy this mod's model to Blender's clipboard (Ctrl+V in a Blender 3D viewport)">⧉</button><button data-export title="Save the modded game file (bootable, with this mod built in)">💾</button>` : ""}${
         m.calls.some(c => ["@launch", "cheats", "re_mods", "characters"].includes(c.tool)) ? `<button data-romx title="Export ROM hack: a bootable copy of YOUR game file with this mod baked in (flash cart / modded console / emulator) + a shareable patch (BPS/IPS, no game data) + cheat files. Stays on your gBox.">Export ROM hack</button>` : ""}${m.state_slot != null ? `<button data-moment="${m.state_slot}">Load moment</button>` : ""}
         ${modDisc(m) ? '<button type="button" data-report-mod title="Write a note and create a ticket about this ROM build">Report problem</button>' : ""}
@@ -2431,7 +2432,17 @@ async function wbInit() {
             st.textContent = `saving ${img.path.split("/").pop()} (${(img.size / 2 ** 20).toFixed(0)} MB): boots in any emulator, or burn it`; }
       catch (err) { st.textContent = "✗ " + err.message.slice(0, 120); }
     } else if (e.target.closest("button[data-shot]")) {
-      st.textContent = "taking picture…"; await modShot(m, sid, card, true);
+      if (e.ctrlKey) {
+        const btn = e.target.closest("button[data-shot]"); btn.disabled = true;
+        try {
+          const session = (await api("/api/sessions")).find(s => s.session_id === sid);
+          const build = GBoxBuildActions.sessionBuild(m, gid, session);
+          if (!build?.session_id) throw new Error("This mod is not the build playing in this session");
+          const result = await GBoxBuildReportImage.open(build, { api });
+          if (result) { st.textContent = `Ticket #${result.number} submitted`; toast(`Ticket #${result.number} submitted with marked frame and references`); }
+        } catch (err) { st.textContent = "Report failed: " + err.message; }
+        finally { btn.disabled = false; }
+      } else { st.textContent = "taking picture."; await modShot(m, sid, card, true); }
     } else if (mom && mom.dataset.moment !== "") {
       st.textContent = "loading…";
       const j = await runJob({ tool: "session_op", input: { session_id: sid, op: "load_state", args: { slot: +mom.dataset.moment } }, require_worker: sid.split("-")[0] });
