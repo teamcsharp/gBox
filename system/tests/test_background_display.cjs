@@ -43,3 +43,9 @@ test('an owned native test selects gameplay while persistent black evidence sele
   a.state.sessions[0].presentation={persistent:true};await a.poll();
   assert.deepEqual(selected,['w-test']);assert.equal(a.frames.length,1);
 });
+
+test('a transient status failure keeps the existing diagnostic surface visible',async()=>{
+ const a=app();a.advance();await a.poll();a.context.gbox.api=async()=>{throw Error('temporary disconnect');};
+ await a.poll();assert.equal(a.frames.length,1);assert.equal(a.removed,0);
+ a.events.pointerdown({});assert.equal(a.removed,1,'human input still dismisses it');
+});

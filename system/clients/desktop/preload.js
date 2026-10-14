@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("gbox", {
   settings: () => ipcRenderer.invoke("settings:get"),
+  backgroundPowerStatus: () => ipcRenderer.invoke('background:power'),
   saveSettings: s => ipcRenderer.invoke("settings:save", s),
   token: () => ipcRenderer.invoke("token"),
   api: (path, body, method) => ipcRenderer.invoke("api", path, body, method),
