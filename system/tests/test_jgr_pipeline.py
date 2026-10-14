@@ -294,7 +294,11 @@ def test_writer_gives_a_twin_with_another_atlas_id_its_own_strips(monkeypatch, t
     assert set(jgr.play_model(rewritten, roots[1]).tris) == {1}      # its texlist's id for the atlas
     assert set(jgr.play_model(rewritten, roots[2]).tris) == {0}
     models = [[n["model"] for n in ninja.tree_nodes(rewritten, r)] for r in roots[:3]]
-    assert models[0] == models[2] and all(a != b for a, b in zip(models[0][1:], models[1][1:]))
+    assert len({m for group in models for m in group}) == 60
+    lists = [[struct.unpack_from('<II', rewritten, m) for m in group] for group in models]
+    assert lists[0] == lists[2] and all(a != b for a, b in zip(lists[0][1:], lists[1][1:]))
+    from test_jgr_twins import _native_relocation_errors
+    assert _native_relocation_errors(rewritten, roots) == []
     assert result["report"]["texture_ids"] == {hex(roots[0]): 0, hex(roots[1]): 1, hex(roots[2]): 0}
     assert result["report"]["atlas_texture"] == 0
 
