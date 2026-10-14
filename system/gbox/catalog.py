@@ -807,7 +807,7 @@ def stage(src: Path, game_id: str, config: Config, progress=None) -> dict:
 
 # never evicted: built mods and their base copies (mods hard-link onto modbase; not a cache of anything), the character
 # and environment libraries, and the two-tier cache's own state (gbox/cache_tiers.py)
-EVICT_KEEP = ("mods", "modbase", "characters", "environments", "characters_mirror", ".gbox-tiers")
+EVICT_KEEP = ("mods", "modbase", "characters", "environments", "characters_mirror", ".gbox-tiers", ".broken-builds")
 
 
 def _evictable(cache: Path):

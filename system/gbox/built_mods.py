@@ -973,6 +973,7 @@ def gallery(store, config, records: list[dict] | None = None, *, register: bool 
     launches = launch_index(sessions, _failed_launches(store))
     names = display_names(store)
     favs, reported = favorites(store), build_reports(store)
+    broken = {r['key']: r for r in _fields(store, 'build_broken', ('key', 'state', 'number', 'request_id', 'built', 'error'))}
     try:
         frames = session_frames(store, sessions)
     except Exception:                                            # noqa: BLE001 - frames are a convenience
@@ -995,6 +996,10 @@ def gallery(store, config, records: list[dict] | None = None, *, register: bool 
                            frames=frames.get((gid, rec["name"])), display_name=names.get(f"{gid}/{rec['name']}", ""),
                            launch_report=reports.get((gid, rec["name"])),
                            favorite=f"{gid}/{rec['name']}" in favs, reported=reported.get(f"{gid}/{rec['name']}")))
+    for item in items:
+        flag = broken.get(item['key'])
+        if flag and flag.get('state') != 'deleted' and (not flag.get('built') or item.get('built') == flag['built']):
+            item['broken'] = flag
     items.sort(key=lambda m: -(m["built"] or 0))
     return {"items": items, "registered": made, "cache_dir": str(root)}
 

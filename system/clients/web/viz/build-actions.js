@@ -71,6 +71,13 @@
       <div class="ba-btns"><button class="act pri" type="button" data-ba="go">Submit ticket</button><button class="act" type="button" data-ba="cancel">Cancel</button><span class="ba-status" data-ba-status></span></div></div>`;
   }
   const deleteCall = (b, scope, here) => ({ path: path(b) + "/delete", body: { scope, node: scope === "node" ? here : "" } });
+  function brokenDialogHTML(b, env = {}) {
+    return `<div class="ba-box" role="dialog" aria-modal="true" aria-label="Mark build broken"><h3>Mark ${ESC(nameOf(b))} broken</h3>
+      <p>Queue this build for investigation and remove its copy from ${ESC(env.here || "this PC")} after a verified copy is preserved on Spark.</p>
+      <p>After the findings and resolution are recorded and the ticket is completed, the broken files are deleted from Spark too. The ticket and repair history remain.</p>
+      <label for="ba-broken-note">What is broken?</label><textarea id="ba-broken-note" class="ba-text" data-ba-note rows="4" maxlength="4000" placeholder="For example: The character is completely distorted, although the game no longer crashes." data-nomic></textarea>
+      <div class="ba-btns"><button class="act ba-danger" type="button" data-ba="go">Mark broken &amp; remove local copy</button><button class="act" type="button" data-ba="cancel">Cancel</button><span class="ba-status" data-ba-status></span></div></div>`;
+  }
   const reportCall = (b, reason, note) => ({ path: path(b) + "/report", body: { reason, note: String(note || "").trim(),
     ...(b.session_id ? { session_id: b.session_id } : {}) } });
   function deleteResultText(b, r) {
@@ -98,9 +105,9 @@
     const doc = env.document || root.document;
     const wrap = doc.createElement("div");
     wrap.className = "ba-modal";
-    wrap.innerHTML = `<style>${CSS}${WHAT_CSS}</style>` + (kind === "delete" ? deleteDialogHTML(b, env) : reportDialogHTML(b));
+    wrap.innerHTML = `<style>${CSS}${WHAT_CSS}</style>` + (kind === "broken" ? brokenDialogHTML(b, env) : kind === "delete" ? deleteDialogHTML(b, env) : reportDialogHTML(b));
     doc.body.appendChild(wrap);
-    if (kind === "report") wrap.querySelector("[data-ba-note]")?.focus?.();
+    if (kind !== "delete") wrap.querySelector("[data-ba-note]")?.focus?.();
     const status = text => { const s = wrap.querySelector("[data-ba-status]"); if (s) s.textContent = text; };
     return new Promise(resolve => {
       let busy = false;
@@ -114,7 +121,11 @@
         busy = true; if (btn) btn.disabled = true;
         try {
           let r;
-          if (kind === "delete") {
+          if (kind === "broken") {
+            if (!env.here) throw new Error("Choose this PC before marking a build broken");
+            status("Preserving evidence and queuing investigation...");
+            r = await env.api(path(b) + "/broken", { node: env.here, note: String(wrap.querySelector("[data-ba-note]")?.value || "").trim() }, "POST");
+          } else if (kind === "delete") {
             const scope = env.onlyHere ? "node" : wrap.querySelector('input[name="ba-scope"]:checked')?.value || "all";
             status("Deleting…");
             const c = deleteCall(b, scope, env.here || "");
@@ -135,7 +146,7 @@
   }
 
   const api = { whatHTML, reportedHTML, deleteDialogHTML, reportDialogHTML, deleteCall, reportCall, deleteResultText, open, fmtSize,
-                sessionBuild, REASONS, CSS, WHAT_CSS };
+                sessionBuild, brokenDialogHTML, REASONS, CSS, WHAT_CSS };
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.GBoxBuildActions = api;
 })(typeof window !== "undefined" ? window : globalThis);

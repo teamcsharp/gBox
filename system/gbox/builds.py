@@ -198,7 +198,7 @@ def build_row(item: dict, meta: dict, card: dict | None, pcs: list[dict], here: 
             "card_id": item.get("card_id") or "", "state_slot": item.get("state_slot"),
             "launch_options": SB.launch_options(item, pcs), "has_recipe": bool(recipe), "recipe_recorded": recorded,
             "job_id": meta.get("job_id") or "", "favorite": bool(item.get("favorite")),
-            "what": item.get("what") or BM.what_of(item | {"meta": meta}), "reported": item.get("reported")}
+            "what": item.get("what") or BM.what_of(item | {"meta": meta}), "reported": item.get("reported"), "broken": item.get('broken')}
 
 
 def local_only_row(key: str, here: list[dict], names: dict, titles: dict, favs: set | frozenset = frozenset()) -> dict:
@@ -956,6 +956,74 @@ def routes(app, store, config, auth, *, submit, workers, file_report=None):
         if inv:
             inv()
 
+    from . import build_quarantine as BQ
+    quarantine_tick = BQ.routes(app, store, config, auth, submit, workers, changed)
+
+    @app.post('/api/builds/{game_id}/{name}/broken')
+    @BQ.serialized(quarantine_tick.guard)
+    def mark_broken(game_id: str, name: str, body: dict = Body(default={}), actor=Depends(auth)):
+        key, item = known(game_id, name)
+        node = str(body.get('node') or '')
+        worker = next((w for w in workers() if w.get('name') == node and w.get('os') == 'windows'), None)
+        if not worker: raise HTTPException(422, 'Choose the PC whose broken copy should be removed')
+        if file_report is None: raise HTTPException(503, 'Reports are unavailable')
+        old = store.get(BQ.KIND, key)
+        if old and old.get('state') != 'deleted' and old.get('request_id'):
+            if old.get('state') == 'blocked':
+                old.pop('cleanup_job', None)
+                old.pop('error', None)
+                old['state'] = 'queued'
+                store.put(BQ.KIND, key, old)
+                quarantine_tick()
+                changed()
+                return store.get(BQ.KIND, key)
+            return old
+        # Retention must not race preservation. A running deletion cannot be recalled safely.
+        note = str(body.get('note') or '')[:4000]
+        record = {'key': key, 'game_id': game_id, 'name': name, 'node': node, 'by': actor,
+                  'ts': time.time(), 'built': (item or {}).get('built'), 'state': 'queued', 'note': note, 'archives': []}
+        with store.lock:
+            cleanup = [j for j in store.all('job') if j.get('tool') == 'file_mod'
+                       and j.get('input', {}).get('op') == 'delete_build'
+                       and j.get('input', {}).get('game_id') == game_id and j.get('input', {}).get('name') == name
+                       and j.get('state') in ('queued', 'claimed', 'running')]
+            if any(j['state'] != 'queued' for j in cleanup):
+                raise HTTPException(409, 'A cleanup is already running; retry after it finishes')
+            store.put(BQ.KIND, key, record)
+            for j in cleanup:
+                store.put('job', j['id'], j | {'state': 'cancelled', 'error': 'Broken build needs verified preservation first'})
+        changed()
+        try:
+            for copy in BQ.filemods.copies_of(config, game_id, name):
+                evidence = BQ.preserve(store, config, game_id, name, copy)
+                record['archives'].append(evidence['id'])
+            meta = next((r.get('meta') or {} for r in gallery()[1] if f"{r['game_id']}/{r['name']}" == key), {})
+            issue, details = report_of(item or {'key': key, 'name': name, 'game_id': game_id}, meta, 'broken', note,
+                                      store.read_artifact, lambda pic: BM.image_path(config, game_id, name, pic).read_bytes())
+            instructions = (f'\nCOMPLETELY BROKEN BUILD: {key}. Remove copies from {node} only after verified preservation. '
+                f'Temporary evidence is indexed as build_evidence in the store under {Path(config.cache) / BQ.ROOT}. '
+                f'Archive IDs: {record["archives"]}. Investigate this exact build, document the cause, use the findings '
+                'to repair the writer/build, and verify the correction. Do not test on the operator PC while they play. '
+                f'When resolved, POST /api/builds/{game_id}/{name}/broken/analysis with JSON findings and resolution '
+                '(include repair and validation evidence), then complete this ticket. This automatically deletes the '
+                'broken ROM payloads and temporary archives while retaining findings and ticket history. '
+                'Do not complete without analysis or delete evidence prematurely.')
+            issue['detail'] += instructions
+            existing = store.get(REPORT_KIND, key) or {}
+            if existing.get('id'): issue['existing_report_id'] = existing['id']
+            report = file_report(issue, details + instructions, actor)
+            record.update(request_id=report['id'], number=report.get('number'))
+            store.put(REPORT_KIND, key, {'key': key, 'id': report['id'], 'number': report.get('number'), 'reason': 'broken'})
+            store.put(BQ.KIND, key, record)
+            store.audit(actor, 'build.broken', key, {'request': report['id'], 'node': node})
+            quarantine_tick()
+            changed()
+            return store.get(BQ.KIND, key)
+        except Exception as exc:
+            record.update(state='blocked', error=str(exc))
+            store.put(BQ.KIND, key, record)
+            raise HTTPException(409, f'Broken build kept for safety; preservation/report incomplete: {exc}') from exc
+
     # POST too: the desktop app's IPC api() sends a body as POST (same handler, same path)
     @app.api_route("/api/builds/{game_id}/{name}", methods=["PATCH", "POST"])
     def builds_rename(game_id: str, name: str, body: dict = Body(default={}), actor=Depends(auth)):
@@ -1052,6 +1120,9 @@ def routes(app, store, config, auth, *, submit, workers, file_report=None):
 
     # ---------------------------------------------------------------------------------------------- delete (#1656)
     def delete_build(game_id: str, name: str, scope: str, node: str, actor: str) -> dict:
+        broken = store.get(BQ.KIND, f'{game_id}/{name}')
+        if broken and broken.get('state') != 'deleted':
+            raise HTTPException(409, 'Broken build cleanup is managed by its investigation; evidence is deleted after findings and resolution are recorded')
         if scope not in SCOPES:
             raise HTTPException(422, "scope: all (the Spark collection and every PC's copy) or node (one PC's copy)")
         key, item = known(game_id, name)
@@ -1183,6 +1254,8 @@ def routes(app, store, config, auth, *, submit, workers, file_report=None):
             raise HTTPException(422, "op: download, locate or export")
         key, item = known(game_id, name)
         w = pc_of(str(body.get("node") or ""), workers())
+        if op != 'locate' and (item or {}).get('broken'):
+            raise HTTPException(409, 'This build is marked broken and retained only for investigation')
         inp = {"op": op, "game_id": game_id, "name": name}
         if op == "export":
             dest, fmt = str(body.get("dest") or "").strip(), str(body.get("format") or "same")

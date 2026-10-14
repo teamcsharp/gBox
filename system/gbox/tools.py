@@ -2997,7 +2997,7 @@ def file_mod(inp: FileModIn, ctx: Ctx):
     delete_build (Builds ▸ Delete): this PC's copies of a build, its staged copies included; refused while a running
     game on this PC uses one."""
     from . import filemods
-    if inp.op == "delete_build":                       # no catalog / rom needed: the game may not be on this PC at all
+    if inp.op in ("delete_build", "quarantine_build"):  # no catalog / base ROM required
         if not inp.name:
             raise ValueError("delete_build needs the build's name")
         r = httpx.get(f"{ctx.server}/api/sessions?include_ended=false", headers=ctx.headers, timeout=30)
@@ -3005,7 +3005,11 @@ def file_mod(inp: FileModIn, ctx: Ctx):
         # (any running session of the build blocks it, wherever it runs: over-cautious beats a half-deleted copy)
         in_use = [str(s.get(k) or "") for s in r.json() if s.get("state") == "running" and s.get("game_id") == inp.game_id
                   for k in ("mod", "collection_mod")]
-        res = filemods.delete_build(ctx.config, inp.game_id, inp.name, [m for m in in_use if m])
+        if inp.op == 'quarantine_build':
+            from . import build_quarantine
+            res = build_quarantine.worker(ctx, inp.game_id, inp.name, [m for m in in_use if m])
+        else:
+            res = filemods.delete_build(ctx.config, inp.game_id, inp.name, [m for m in in_use if m])
         if res["errors"]:
             raise RuntimeError("some copies could not be deleted (open in another program?): " + "; ".join(res["errors"]))
         return {"result": res}
