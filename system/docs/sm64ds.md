@@ -110,6 +110,28 @@ Slugs are `sm64ds_<key>` because the N64 reader already owns the plain `mario` s
 `native_player`, so the cast planner treats him as the game's lead. Not extracted: the other 400-odd `.bmd` files
 (courses, items and props), Big Mario `b_mario_*` (a one-bone model) and the animations (`.bca`, `.btp`).
 
+### Open: Koopa Troopa's stray leg vertices (#1748)
+
+`sm64ds_koopa_troopa` is rated `ready`, but its GLB has a few vertices far from the rest of the body. The legs reach
+y = -15 and +22 while the head is at about 15 and the feet at about 3, so the library model shows long spikes. Every
+writer carries them over: SoulCalibur VOL1 / CER1 get black spikes past the head, the Soul Calibur II Koopa costumes
+are a thin, spiky figure, and DOA2's Koopa costumes are likely affected too. Ten vertices of display list 1 cause
+this. In bone space they sit 12 to 20 units from their own joint, and a shin is 2.2 long:
+
+| vertex | bone (slot) | VTX_16 words | local position |
+|---|---|---|---|
+| 142 / 177 | leg_r2 / leg_l2 (0 / 8) | `0x050d5271, 0xfffa` | (20.6, 1.26, 0) |
+| 147 / 182 | leg_r1 / leg_l1 (1 / 9) | `0x1b92c7c1, 0xf84d` | (-14.1, 6.9, -1.9) |
+| 194, 258, 292, 294, 303, 310 | ankle_r1 / ankle_l1 | | (1.75, 12.3, 0) |
+
+The packed command stream decodes cleanly around them (`gx_commands`), every bone scale is 1 (BMD and
+`nokonoko_wait1.bca` frame 0), and no other bone or model space puts them near their strip neighbours. So the
+coordinates are what the BMD stores. How the game draws Koopa's legs without the spikes is not known yet: some matrix
+the game sets up for those slots and this reader does not model. Until that is found, treat this donor as broken.
+On the same test (a vertex's distance from its own joint over the skeleton's joint span), only Koopa Troopa fails:
+24 vertices are over 1.0, up to 1.72. The other eight humanoids stay at or below 0.92. Peach's long edges, noted in
+soulcalibur_dc.md, are a different defect that this test does not catch.
+
 ## Using it
 
 ```
