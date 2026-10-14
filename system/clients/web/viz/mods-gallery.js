@@ -30,13 +30,23 @@
 
   // kind: "" every build | "showcase" the Sonic showcase test builds (gbox/sonic_showcase.py) | "other" everything else;
   // favorites (★) first, then newest; fav: only the favorites
-  function filterMods(items, { game = "", writer = "", q = "", kind = "", fav = false } = {}) {
+  function filterMods(items, { game = "", writer = "", q = "", kind = "", fav = false, sort = "newest", played = "" } = {}) {
     const words = String(q || "").toLowerCase().split(/\s+/).filter(Boolean);
     const hay = m => [m.name, m.game_id, m.title, m.mod_title, m.original_title, m.writer, ...(m.changes || []).map(r => `${r.donor} ${r.slot}`),
       ...(m.tickets || []).map(t => `#${t.number} ${t.title || ""}`)].join(" ").toLowerCase();
     return (items || []).filter(m => (!game || m.game_id === game) && (!writer || m.writer === writer) && (!fav || m.favorite)
-        && (!kind || (kind === "showcase") === !!m.showcase) && words.every(w => hay(m).includes(w)))
-      .sort((a, b) => (+!!b.favorite - +!!a.favorite) || (b.built || 0) - (a.built || 0));
+        && (!kind || (kind === "showcase") === !!m.showcase) && words.every(w => hay(m).includes(w))
+        && (!played || (played === "unplayed" ? m.play_count === 0 : m.play_count > 0)))
+      .sort((a, b) => {
+        const newest = (b.built || 0) - (a.built || 0) || String(a.key).localeCompare(String(b.key));
+        if (sort === "favorites") return (+!!b.favorite - +!!a.favorite) || newest;
+        if (sort === "oldest") return (a.built || 0) - (b.built || 0) || newest;
+        if (sort === "unplayed") return (+!!a.play_count - +!!b.play_count) || newest;
+        if (sort === "plays") return (b.play_count || 0) - (a.play_count || 0) || newest;
+        if (sort === "recent") return (b.last_played || 0) - (a.last_played || 0) || newest;
+        if (sort === "name") return String(a.mod_title || a.name).localeCompare(String(b.mod_title || b.name)) || newest;
+        return newest;
+      });
   }
 
   function facets(items) {
@@ -90,7 +100,7 @@
   function changesHTML(m) {
     const rows = m.changes || [];
     if (!rows.length) return '<div class="mg-ch mut">No donor / slot record in this build\'s marker.</div>';
-    return `<ul class="mg-ch">${rows.map(r => `<li${r.reason ? ` title="${ESC(r.reason)}"` : ""}><b>${ESC(r.donor || "?")}</b> → ${ESC(r.slot || "?")}`
+    return `<ul class="mg-ch">${rows.map(r => `<li${r.reason ? ` title="${ESC(r.reason)}"` : ""}><b>${String(r.donor || "").split(",").map(s => s.trim()).filter(Boolean).map(slug => `<button type="button" class="mg-character" data-mg="character" data-slug="${ESC(slug)}" data-slot="${ESC(r.slot || "player")}" title="View ${ESC(slug)} in 3D, export to Blender, examine or retarget">${ESC(slug)}</button>`).join(", ") || "?"}</b> → ${ESC(r.slot || "?")}`
       + (r.status ? ` <span class="mg-st mg-${ESC(r.status)}">${ESC(r.status)}</span>` : "")
       + (r.reason ? ` <span class="mut">${ESC(r.reason)}</span>` : "") + "</li>").join("")}</ul>`;
   }
@@ -103,7 +113,7 @@
     return `<b class="mg-title" data-mg="rename" role="button" tabindex="0" title="Click to rename · folder ${ESC(m.name)}${m.display_name && m.original_title ? ` · was “${ESC(m.original_title)}”` : ""}">${ESC(m.mod_title || m.name)}</b>`
       + `<button class="mg-ico" type="button" data-mg="rename" title="Rename this build (the folder keeps its name)" aria-label="Rename">✎</button>`;
   }
-  const starHTML = m => `<button class="mg-ico mg-star${m.favorite ? " on" : ""}" type="button" data-mg="fav" aria-pressed="${!!m.favorite}" title="${m.favorite ? "Remove from favorites" : "Add to favorites: listed first, at the top of the game's Special builds, never evicted"}" aria-label="Favorite">${m.favorite ? "★" : "☆"}</button>`;
+  const starHTML = m => `<button class="mg-ico mg-star${m.favorite ? " on" : ""}" type="button" data-mg="fav" aria-pressed="${!!m.favorite}" title="${m.favorite ? "Remove from favorites" : "Add to favorites: filter with ★ Favorites, at the top of the game's Special builds, never evicted"}" aria-label="Favorite">${m.favorite ? "★" : "☆"}</button>`;
   // the card's options (⋯ or right-click): Rename…, favorite, Play, restore the original name
   function menuHTML(m) {
     const item = (act, text, title = "") => `<button class="act" type="button" role="menuitem" data-mg="${act}"${title ? ` title="${ESC(title)}"` : ""}>${text}</button>`;
@@ -161,6 +171,7 @@
           <span class="mg-chip" data-mg-writer="${ESC(m.writer)}">${ESC(m.writer)}</span>${m.cast ? '<span class="mg-chip">cast swap</span>' : ""}${m.showcase ? '<span class="mg-chip mg-sonic" data-mg-kind="showcase" title="A Sonic showcase test build (Settings &gt; Sonic showcase)">Sonic showcase</span>' : ""}</div>
         ${BA()?.whatHTML(m.what) || ""}
         ${m.unlocks ? `<div class="mg-unlock-status"><span class="mg-chip">${ESC(m.unlocks.label)}</span>${m.unlocks.number ? `<button class="act" type="button" data-mg="unlock-ticket">#${ESC(m.unlocks.number)}</button>` : ""}</div>` : ""}
+        <div class="mg-plays" title="Recorded player launches; failed starts and automated tests are excluded"><span>${m.play_count == null ? "Play count unavailable" : `${m.play_count} ${m.play_count === 1 ? "play" : "plays"}`}</span>${m.play_count === 0 ? ' <span class="mg-chip mg-unplayed">unplayed</span>' : ""}</div>
         ${changesHTML(m)}
         <div class="mg-meta mut">${ESC(m.name)} · built ${ESC(fmtAge(m.built, now))} · ${sizeHTML(m)}
           · <span class="mg-launch${m.last_launch && /failed|cancelled/.test(m.last_launch.state) ? " mg-bad" : ""}">${ESC(launchText(m.last_launch, now))}</span></div>
@@ -184,6 +195,9 @@
   function toolbarHTML(st, f, nodes = []) {
     const opt = (v, l, sel) => `<option value="${ESC(v)}"${v === sel ? " selected" : ""}>${ESC(l)}</option>`;
     return `<div class="mg-bar"><h2 style="margin:0">Mods</h2>
+      <details class="mg-sort"><summary title="Filter and sort mods" aria-label="Filter and sort mods"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 4h18l-7 8v7l-4 2V12z"/></svg></summary><div class="mg-sort-menu">
+        <label>Sort by <select data-mg-f="sort">${[["newest","Newest builds first"],["oldest","Oldest builds first"],["favorites","Favorites first"],["unplayed","Unplayed first"],["plays","Most played"],["recent","Recently played"],["name","Name A–Z"]].map(([k,l])=>opt(k,l,st.sort || "newest")).join("")}</select></label>
+        <label>Show <select data-mg-f="played">${opt("","All play counts",st.played || "")}${opt("unplayed","Unplayed only",st.played || "")}${opt("played","Played only",st.played || "")}</select></label></div></details>
       <input type="search" data-mg-f="q" placeholder="Search mod, game, donor, slot, #request" value="${ESC(st.q)}">
       <select data-mg-f="game">${opt("", "All games", st.game)}${f.games.map(g => opt(g.game_id, `${g.title} (${g.count})`, st.game)).join("")}</select>
       <select data-mg-f="writer">${opt("", "All writers", st.writer)}${f.writers.map(w => opt(w.writer, `${w.writer} (${w.count})`, st.writer)).join("")}</select>
@@ -194,7 +208,10 @@
       <div class="mg-grid" data-mg-grid></div><div data-mg-more></div>`;
   }
 
-  const CSS = `.mg-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 10px}.mg-bar input[type=search]{flex:1;min-width:180px}
+  const CSS = `.mg-sort{position:relative}.mg-sort summary{list-style:none;cursor:pointer;padding:6px;border:1px solid var(--line,#444);border-radius:5px;display:flex}.mg-sort summary::-webkit-details-marker{display:none}
+    .mg-sort-menu{position:absolute;left:0;top:34px;z-index:8;min-width:225px;padding:12px;background:var(--bg,#16161a);border:1px solid var(--line,#444);border-radius:8px;box-shadow:0 8px 24px #000a}.mg-sort-menu label{display:flex;flex-direction:column;gap:5px;margin-bottom:8px}
+    .mg-character{font:inherit;font-weight:600;color:var(--acc,#a2b5ff);background:none;border:0;border-bottom:1px dotted currentColor;padding:0;cursor:pointer}.mg-character:hover{color:#fff}.mg-plays{font-size:12px;color:#bfc7db}.mg-unplayed{color:#d4c9ff;border-color:#8472b8}
+    .mg-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 10px}.mg-bar input[type=search]{flex:1;min-width:180px}
     .mg-broken-toggle{position:absolute;top:6px;left:6px;z-index:3;border:1px solid #cf796c;border-radius:6px;background:#241a1a;color:#ffbdab;font-size:18px;cursor:pointer;padding:3px 7px}
     .mg-broken{border-color:#b85d50!important}.mg-broken-status{background:#612c27;color:#fff1e9;padding:6px 8px;border-radius:4px;font-weight:600}
     .mg-broken button:disabled{opacity:.45;cursor:not-allowed}
@@ -234,7 +251,7 @@
   //   openImages(list, i, [x, y]), poll (GBoxLivePoll), here (this PC's worker name), visible() -> bool,
   //   play?(mod, {node, moment}), openRequest?(ticket), toast?(text), wait?(ms) }
   function mount(host, env) {
-    const st = { q: env.q || "", game: env.game || "", writer: "", kind: env.kind || "", node: "", fav: !!env.fav, page: 1, idx: new Map(), data: null,
+    const st = { q: env.q || "", game: env.game || "", writer: "", kind: env.kind || "", node: "", fav: !!env.fav, sort: "newest", played: "", page: 1, idx: new Map(), data: null,
                  nodes: [], sig: "", renaming: null, menu: null, notes: new Map(),
                  choice: new Map() };                        // card key -> the screenshot choice it offers (another build runs)
     const poll = env.poll || root.GBoxLivePoll;
@@ -430,6 +447,10 @@
       if (chipK) { st.kind = chipK.dataset.mgKind; st.page = 1; built = false; draw(); return; }
       if (chipG || chipW) { if (chipG) st.game = chipG.dataset.mgGame; else st.writer = chipW.dataset.mgWriter; st.page = 1; built = false; draw(); return; }
       if (!m) return;
+      if (act === "character") {
+        const b = t.closest("[data-slug]");
+        return env.openCharacter?.({slug:b.dataset.slug, name:b.dataset.slug, gid:m.game_id, slot:b.dataset.slot});
+      }
       if (act === "unlock-ticket") return openRequest(m.unlocks.number, {...m,tickets:[...(m.tickets || []),{number:m.unlocks.number,id:m.unlocks.request_id}]}, card);
       if (act === "broken") return markBroken(m, card);
       if (m.broken && ["play", "moment", "shot"].includes(act)) { toast("This build is broken and queued for investigation"); return; }

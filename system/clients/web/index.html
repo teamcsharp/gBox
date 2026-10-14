@@ -278,6 +278,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/build-local.js"></script>
 <script src="/viz/last-played.js"></script>
 <script src="/live-poll.js"></script>
+<script src="/viz/character-popup.js"></script>
 <script src="/viz/mods-gallery.js"></script>
 <script src="/viz/builds.js"></script>
 <script src="/viz/toast-stack.js"></script>
@@ -1111,7 +1112,7 @@ modsView.after = () => {
   const focus = MODSG.focus || {}; MODSG.focus = null;      // "Open in Mods page" / "Open request #n" from the game menu
   MODSG.ctl = GBoxModsGallery.mount($("#modsgallery"), { api, poll: window.GBoxLivePoll, here: window.GBOX_LOCAL?.worker || "auto", q: focus.q, game: focus.game,
     url: u => /^(https?|data|blob):/.test(u) ? u : `${u}${u.includes("?") ? "&" : "?"}${tq()}`,
-    visible: () => cur === "Mods" && !!$("#modsgallery"), openImages: (list, i) => lbOpen(null, list, i), toast: blToast, ...deskFolders() });
+    openCharacter: characterPopup, visible: () => cur === "Mods" && !!$("#modsgallery"), openImages: (list, i) => lbOpen(null, list, i), toast: blToast, ...deskFolders() });
 };
 // ---- Builds: every custom build + the scheduled / running build jobs (viz/builds.js over /api/builds; the desktop app shows this shell) ----
 // launches go through the game menu's Special builds path (this PC's worker, the loader); details load 360° viewers lazily
@@ -2476,6 +2477,10 @@ function romxShow(card, r) {
     + `<span class="mut">${esc(r.note || "")}</span>`;
 }
 // ---- character library (gbox/characters.py): every extracted model, "use in this game" = launch / build / what's missing ----
+function characterPopup(o) {
+  return GBoxCharacterPopup.open(o, {api, url:u=>`${u}${u.includes("?") ? "&" : "?"}${tq()}`,
+    loadViewer:()=>import("/viz/character-model.js"), blender:slug=>blenderCopy({character:slug}), retarget:retargetOpen});
+}
 async function charsInit() {
   const el = $("#chars"); if (!el) return;
   const gid = el.dataset.gid, sid = el.dataset.sid;
@@ -2499,7 +2504,7 @@ async function charsInit() {
       <img loading="lazy" alt="" draggable="true" title="Drag onto a character in the game to replace it" style="width:100%;aspect-ratio:1;object-fit:contain;background:#26282f;border-radius:4px;cursor:grab" src="${c.preview_url}?${tq()}"
         ondragstart='event.dataTransfer.setData("text/plain", ${JSON.stringify(c.slug)}); event.dataTransfer.effectAllowed = "copy"; console.log("GBOX:" + JSON.stringify({ ev: "carddrag", slug: ${JSON.stringify(c.slug)}, name: ${JSON.stringify(c.name)} }))'
         ondragend='console.log("GBOX:" + JSON.stringify({ ev: "carddragend" }))'>
-      <b>${esc(c.name)}${c.ready?.length ? ' <span class="ok" title="' + esc(c.ready.map(r => r.slot + ": " + r.mod).join(", ")) + '">ready</span>' : ""}</b>
+      <b><button class="act" data-character-preview title="View in 3D, examine, export to Blender or retarget">${esc(c.name)}</button>${c.ready?.length ? ' <span class="ok" title="' + esc(c.ready.map(r => r.slot + ": " + r.mod).join(", ")) + '">ready</span>' : ""}</b>
       <span class="mut">${esc(c.source?.game_title || "")}</span>
       ${c.variant_of ? `<span class="mut" style="font-size:11px" title="${esc((c.props || []).map(p => p.node + " on " + p.bone).join(", "))}">↳ variant of ${esc(c.variant?.base_name || c.variant_of)}${c.props?.length ? ` · ${c.props.length} prop${c.props.length > 1 ? "s" : ""}` : ""}${stale(c) ? ' · <b class="warn">needs rebuild</b>' : ""}</span>` : ""}
       <button class="act" data-use>Use in this game</button>
@@ -2521,6 +2526,8 @@ async function charsInit() {
     r.nextElementSibling.textContent = v + "×"; g.hidden = v === "1.0"; g.textContent = "Build head ×" + v;
   };
   el.onclick = async e => {
+    const preview = e.target.closest("[data-character-preview]");
+    if (preview) { const c = cs[+preview.closest(".chc").dataset.i]; return characterPopup({slug:c.slug,name:c.name,gid,slot:"player"}); }
     const hg = e.target.closest("button[data-headgo]");
     if (hg) { const box = hg.closest(".chc"), c = cs[+box.dataset.i], st = box.querySelector("i"), k = +box.querySelector("input[data-head]").value;
       hg.disabled = true; st.textContent = `building ${c.name} with a ×${k} head…`;
