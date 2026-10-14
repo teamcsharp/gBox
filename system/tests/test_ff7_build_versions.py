@@ -39,8 +39,18 @@ def test_rebuild_preserves_old_builds_and_their_previews(tmp_path, monkeypatch):
     assert {p.name: p.read_bytes() for p in first_dir.iterdir()} == before
     assert (old/'original.bin').read_bytes() == b'legacy game'
     assert preview.read_bytes() == b'legacy preview'
-    assert (root/'mario/targets'/first['mod']/'ff7_cloud_field.gltf').is_file()
-    assert (root/'mario/targets'/second['mod']/'ff7_cloud_field.gltf').is_file()
+    assert (root/'mario/targets'/game['game_id']/first['mod']/'ff7_cloud_field.gltf').is_file()
+    assert (root/'mario/targets'/game['game_id']/second['mod']/'ff7_cloud_field.gltf').is_file()
+    # Disc 2 uses the same donor/version name but must not collide with Disc 1's
+    # preview or an in-progress work directory.
+    pending = cfg.cache/'characters_build'/game['game_id']/first['mod']
+    pending.mkdir(parents=True)
+    (pending/'keep.txt').write_text('other disc build')
+    game2 = {'game_id': '52d73a58e6b29209'}
+    other_disc = S.build_mod(cfg, meta, game2, root=root)
+    assert other_disc['mod'] == first['mod']
+    assert (root/'mario/targets'/game2['game_id']/other_disc['mod']/'ff7_cloud_field.gltf').is_file()
+    assert (pending/'keep.txt').read_text() == 'other disc build'
 
 
 def test_use_records_and_returns_the_new_rebuild_name(tmp_path, monkeypatch):
