@@ -348,7 +348,7 @@ Installed at `D:\gBox\cache\mods\c747331797369f74\sc_sonic_vs_mario_hd_random\`,
 `verified_in_game` false. Its title and `cast_source` name the `mario` group (`cast_swap.mario_side`).
 
 Offline renders of every rebuilt costume (`scripts/sc_engine_render.py BUILT.gdi OUT "" --built-only`), front and
-back: `D:\gBoxesearch\mario_donors\hd_builds\sc\` with `evidence.json`. Peach HD's head is closed from behind
+back: `D:\gBox\research\mario_donors\hd_builds\sc\` with `evidence.json`. Peach HD's head is closed from behind
 (her hair is a closed mesh, so the SM64DS Peach's open back of the head does not apply and no double-sided hair is
 needed). 41 of 45 look right. The two Metal Wario costumes (SIE1, INF1) are an untextured navy body, as in v5. The two
 Koopa Troopa costumes (VOL1, CER1) have long black spikes from the hands past the head, as in v5: the SM64 DS donor
