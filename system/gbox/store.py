@@ -39,6 +39,7 @@ class Store:
             CREATE TABLE IF NOT EXISTS docs(kind TEXT, id TEXT, body TEXT, PRIMARY KEY(kind, id));
             CREATE INDEX IF NOT EXISTS docs_kind ON docs(kind);
             CREATE INDEX IF NOT EXISTS docs_queued_jobs ON docs(json_extract(body,'$.state')) WHERE kind='job';
+            CREATE INDEX IF NOT EXISTS docs_session_state ON docs(json_extract(body,'$.state')) WHERE kind='session';
             CREATE INDEX IF NOT EXISTS docs_resolution_requests_created
                 ON docs(COALESCE(json_extract(body,'$.created'),0) DESC)
                 WHERE kind='request' AND {_RESOLUTION_ID_TRUTHY};
@@ -318,6 +319,13 @@ class Store:
         with self.lock:
             rows = self.db.execute("SELECT body FROM docs WHERE kind=? ORDER BY rowid "
                                    + ("DESC" if reverse else "ASC"), (kind,)).fetchall()
+        return [json.loads(r[0]) for r in rows]
+
+    def running_sessions(self) -> list[dict]:
+        """Live sessions only; admission polls must not decode the session archive."""
+        with self.lock:
+            rows = self.db.execute("SELECT body FROM docs INDEXED BY docs_session_state "
+                                   "WHERE kind='session' AND json_extract(body,'$.state')='running'").fetchall()
         return [json.loads(r[0]) for r in rows]
 
     def jobs(self, *, states: tuple[str, ...] | None = None, exclude_states: tuple[str, ...] = (),

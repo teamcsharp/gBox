@@ -50,7 +50,7 @@ def describe(config: Config, name: str, wid: str | None = None) -> WorkerInfo:
             reason = f'availability check failed: {type(exc).__name__}: {exc}'
         (bad.__setitem__(t.name, reason) if reason else ok.append(t.name))
     bad.update({f"module {n}": why for n, why in _builtin.LOAD_ERRORS.items()})
-    features = ['independent_heartbeat', 'durable_result_delivery'] + (["idle_telemetry", "desktop_stream", "two_percent_audio"] if HOST_OS == "windows" else [])
+    features = ['independent_heartbeat', 'durable_result_delivery', 'resource_telemetry'] + (["idle_telemetry", "desktop_stream", "two_percent_audio"] if HOST_OS == "windows" else [])
     info = WorkerInfo(name=name, os=HOST_OS, tools=ok, unavailable=bad, idle_seconds=user_idle_seconds(), features=features)
     if wid:
         info.id = wid
@@ -271,13 +271,18 @@ def run(server: str, token: str, config: Config, name: str | None = None,
     active: set[str] = set()
     active_agent: set[str] = set()
     quiet_sessions: set[str] = set()
+    from . import worker_resources
+    resource_sampler = worker_resources.Sampler()
+    threading.Thread(target=worker_resources.run, args=(stop, resource_sampler),
+                     name='worker-resources', daemon=True).start()
     def current_info():
         try:                                        # this PC's own builds for the Builds view (cached, stat-only)
             from . import filemods
             local = filemods.local_builds(config)
         except Exception:                           # noqa: BLE001 - liveness never depends on the cache disk
             local = []
-        return info.model_copy(update={'pending_results': outbox.pending_count(), 'local_builds': local})
+        return info.model_copy(update={'pending_results': outbox.pending_count(), 'local_builds': local,
+                                       'resources': resource_sampler.snapshot()})
     threading.Thread(target=_quiet_volume_loop, args=(stop, active_agent, quiet_sessions), daemon=True).start()
     with httpx.Client(base_url=server, headers=h | {"x-gbox-actor": f"worker:{name}"}, timeout=30) as c:
         while not stop.is_set():                    # the control plane may be restarting: keep trying

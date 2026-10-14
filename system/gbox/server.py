@@ -1953,7 +1953,8 @@ def create_app(config: Config) -> FastAPI:
         now = time.time()
         from . import background_testing
         ex = background_testing.excluded(store)
-        return [w | {"online": now - w["last_seen"] < WORKER_TTL, "background_testing": background_testing.allowed(w, ex)}
+        return [w | {"online": now - w["last_seen"] < WORKER_TTL, "background_testing": background_testing.allowed(w, ex),
+                     "admission": {'allowed': (reason := background_testing.guarded_reason(store, w)) is None, 'reason': reason}}
                 for w in store.all("worker")]
 
     @app.get("/api/tools")
@@ -2057,21 +2058,62 @@ def create_app(config: Config) -> FastAPI:
 
     # --- which PCs background testing may use (#1383): ticked in the Tasks icon menu, keyed by worker name ---
     class TestingIn(BaseModel):
-        available: bool
+        available: bool | None = None
+        budget_percent: int | None = Field(default=None, ge=10, le=90)
 
     @app.get("/api/testing/workers")
     def testing_workers(actor=Depends(auth)):
         from . import background_testing
-        return {"excluded": sorted(background_testing.excluded(store)),
-                "workers": [{k: w.get(k) for k in ("id", "name", "os", "online", "background_testing")} for w in workers()]}
+        ex = background_testing.excluded(store)
+        rows = []
+        for w in workers():
+            policy = background_testing.policy(store, w['name'])
+            reason = background_testing.guarded_reason(store, w)
+            if not w.get('online'):
+                reason = 'Worker is offline; queued work is preserved.'
+            rows.append({k: w.get(k) for k in ('id','name','os','online','background_testing','resources',
+                                               'idle_seconds','active_jobs')} | policy |
+                        {'admission': {'allowed': reason is None, 'reason': reason},
+                         'budget_kind': 'admission', 'hard_throttle': False})
+        return {'excluded': sorted(ex), 'workers': rows}
 
     @app.post("/api/testing/workers/{wid}")
     def testing_worker_set(wid: str, body: TestingIn, actor=Depends(auth)):
         from . import background_testing
         w = store.get("worker", _wid(wid)) or next((x for x in workers() if x.get("name") == wid), None) or _404()
-        background_testing.set_available(store, w["name"], body.available)
-        store.audit(actor, "worker.background_testing", w["id"], {"name": w["name"], "available": body.available})
+        if body.available is None and body.budget_percent is None:
+            raise HTTPException(422, 'Choose availability or a resource budget.')
+        with store.lock:
+            if body.available is not None:
+                background_testing.set_available(store, w["name"], body.available)
+            if body.budget_percent is not None:
+                setting = store.get('setting', background_testing.SETTING) or {}
+                policies = dict(setting.get('policies') or {})
+                policies[w['name']] = {'budget_percent': body.budget_percent}
+                store.put('setting', background_testing.SETTING, setting | {'policies': policies})
+        store.audit(actor, "worker.background_testing", w["id"], body.model_dump(exclude_none=True) | {'name': w['name']})
         return testing_workers(actor)
+
+    background_coordinator_cache = {'at': 0, 'runs': []}
+    background_coordinator_lock = threading.Lock()
+
+    @app.get('/api/background/workers/{wid}/status')
+    def background_worker_status(wid: str, actor=Depends(auth)):
+        from .background_status import snapshot
+        w = store.get('worker', _wid(wid)) or next((x for x in workers() if x.get('name') == wid), None) or _404()
+        now = time.time()
+        # Reading the coordinator must not enqueue inventory or create work.
+        # Cache across workstation displays; do not scan transcripts every poll.
+        with background_coordinator_lock:
+            if now - background_coordinator_cache['at'] >= 10:
+                from .hermes_tasks import list_runs
+                runs = list_runs(limit=3)
+                background_coordinator_cache.update(at=now, runs=[
+                    {k: run.get(k) for k in ('id','name','state','progress','started','finished','request_id')}
+                    for run in runs])
+            coordinator = {'host': 'control plane', 'runs': background_coordinator_cache['runs'],
+                           'sampled_at': background_coordinator_cache['at']}
+        return snapshot(store, w, online=now-w.get('last_seen',0) < WORKER_TTL) | {'coordinator': coordinator}
 
     class WorkerActivity(BaseModel):
         idle_seconds: float | None = None
@@ -2194,6 +2236,15 @@ def create_app(config: Config) -> FastAPI:
             for j in sorted(store.queued_jobs(), key=lambda j: (not _is_stop_job(j), bool(j.get("low_priority")))):
                 if (j["state"] == JobState.QUEUED and j["tool"] in w["tools"]
                         and j["require_os"] in (None, w["os"]) and j["require_worker"] in (None, wid, w["name"])):   # by name: launched while that worker was restarting
+                    from . import background_testing
+                    if background_testing.requires_admission(j):
+                        reason = background_testing.guarded_reason(store, w)
+                        if reason:
+                            waiting = {'worker': w['name'], 'reason': reason}
+                            if j.get('admission_wait') != waiting:
+                                store.put('job', j['id'], j | {'admission_wait': waiting})
+                            continue
+                    j.pop('admission_wait', None)
                     j.update(state=JobState.RUNNING, worker_id=wid, started=time.time())
                     store.put("job", j["id"], j)
                     store.audit(actor, "job.claim", j["id"], {"worker": wid})
@@ -3357,7 +3408,13 @@ def create_app(config: Config) -> FastAPI:
         from .live_stream import health
         s = store.get("session", sid)
         lv = live.get(sid) or {}
-        return health(lv, s.get("state") if s else None) | {"session_id": sid}
+        w = store.get('worker', _wid(sid.split('-')[0])) or {}
+        observer = store.get('session_observer', sid) or {}
+        return health(lv, s.get("state") if s else None) | {'session_id': sid,
+            'worker_online': bool(w and time.time()-w.get('last_seen',0) < WORKER_TTL),
+            'local_window': bool((s or {}).get('detail',{}).get('local_window')),
+            'gameplay_state': observer.get('gameplay_state'), 'presentation': observer.get('presentation'),
+            'exit': (s or {}).get('exit')}
 
     @app.get("/api/sessions/{sid}/frame.jpg")
     def get_frame(sid: str, actor=Depends(auth)):

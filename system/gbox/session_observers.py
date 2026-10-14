@@ -437,6 +437,11 @@ def _gameplay_agent(view, title, wants_characters):
     elif gs == 'unchanged':
         agent.update(doing='The screen has not changed since its last look, so it skipped the frame.',
                      you_can_help='Move or turn the camera, or set up the scene you want it to see and ' + LOOK_NOW + '.')
+    elif gs == 'black_screen':
+        persistent = (view.get('presentation') or {}).get('persistent')
+        agent.update(doing='Repeated near-black frames observed.' if persistent else 'A near-black frame was captured.',
+                     blocked_by='visible gameplay is unverified; a dark frame may also be a normal transition',
+                     you_can_help='Report what the native emulator window shows if it differs.', needs_you=False)
     elif gs == 'no_window':
         agent.update(doing='Waiting for the game window.', blocked_by='the game window is closed or minimised',
                      you_can_help='Reopen or restore the game window.', needs_you=True)
@@ -648,7 +653,8 @@ class SessionObservers:
         body = (f'Automatic observation of {session.get("title") or gid}, game_id={gid}, '
                 f'session_id={sid}. {reason}\n'
                 'Read get_session_observers for this session and its timestamped gameplay evidence. '
-                'The operator is playing. Work on owned game files and saved observation artifacts. '
+                + ('The operator is playing. ' if self._user_session(session) else 'This is an agent-owned test. ')
+                + 'Work on owned game files and saved observation artifacts. '
                 'Do not send controls, pause, reset, stop, move, relaunch, or run scene_capture on this session. '
                 'For missing native models (or sprites in a 2D title), identify the exact build and model/texture/skeleton/animation '
                 'loaders with REA/Ghidra; implement and test a reusable reader and collect validated assets. '
@@ -744,8 +750,30 @@ class SessionObservers:
             with Image.open(io.BytesIO(raw)) as image:
                 image = image.convert('RGB')
                 image.thumbnail((960, 720))
+                from .frame_presentation import measure, update
+                presentation = update(measure(image), record.get('presentation') or {}, captured)
                 digest = hashlib.sha256(image.tobytes()).hexdigest()
                 stream = io.BytesIO(); image.save(stream, 'PNG'); frame = stream.getvalue()
+            if presentation['near_black']:
+                current = self.store.get('session', sid) or {}
+                setting = self.store.get('session_observer', sid) or {}
+                if current.get('state') != 'running' or not setting.get('enabled', True):
+                    return
+                ref = self.store.put_artifact(frame, f'presentation-{sid}.png', 'image/png',
+                                              {'session_id': sid, 'game_id': session['game_id'], 'captured': captured})
+                presentation['frame'] = ref.sha256
+                self._put(sid, presentation=presentation, gameplay_state='black_screen',
+                          frame_digest=digest, next_sample=captured + 30, last_checked=captured,
+                          window_failures=0, window_missing_since=None, **look)
+                if presentation['persistent'] and not self._user_session(session):
+                    self._gap(session, 'presentation',
+                              f'Agent test repeatedly captured near-black frames for at least 90 seconds. '
+                              f'Session {sid}; evidence artifact {ref.sha256}; '
+                              f'mean luminance {presentation["mean_luma"]}. '
+                              'This does not establish whether the emulator, game or capture path failed. '
+                              'Inspect logs and window evidence before recovering only this agent-owned test.', frame=frame)
+                return
+            self._put(sid, presentation=presentation)
             if digest == record.get('frame_digest'):
                 self._put(sid, gameplay_state='unchanged', next_sample=captured + 30, last_checked=captured,
                           window_failures=0, window_missing_since=None, **look)

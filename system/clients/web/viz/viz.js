@@ -45,7 +45,7 @@ function loadPresets() {
 export async function createViz(canvas, opts = {}) {
   const o = { mode: "random", palette: "PlayStation Blue", quality: "auto", provider: "demo", wsUrl: null, hud: false, keys: false, cycleSecs: 0, ...opts };
   const presets = await loadPresets();
-  const mgr = new VisualizerManager(canvas, { presets, quality: o.quality, palette: o.palette });
+  const mgr = new VisualizerManager(canvas, { presets, quality: o.quality, palette: o.palette, maxFps: o.maxFps });
   let hud = null, requested = o.mode, cycleT = performance.now(), disposed = false, keyHandler = null;
 
   const ctl = {

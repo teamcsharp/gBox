@@ -6,6 +6,7 @@ from gbox.server import create_app
 
 
 def test_worker_recovers_after_periodic_registration_timeout(monkeypatch, cfg):
+    monkeypatch.setattr('gbox.worker_resources.run', lambda *_: None)
     calls = []
     class Reply:
         status_code = 204

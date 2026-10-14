@@ -1198,6 +1198,7 @@ window.taskVizCreate = canvas => {
 <script src="../web/viz/report-story.js"></script>
 <script src="request-solvers.js"></script>
 <script src="task-activity.js"></script>
+<script src="background-display.js"></script>
 <script src="hermes-providers.js"></script>
 <script src="../web/viz/toast-stack.js"></script>
 <script src="../web/viz/process-popup.js"></script>
@@ -2232,15 +2233,31 @@ async function testPcMenu(x, y) {                             // which PCs backg
   const e = { clientX: x, clientY: y };
   let m = $("#testpcmenu"); if (!m) { m = document.createElement("div"); m.id = "testpcmenu"; document.body.append(m); dragAnywhere(m); }
   m.style.cssText = "position:fixed;z-index:95;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;box-shadow:0 10px 30px #000a;min-width:290px;font-size:13px;display:block";
-  m.innerHTML = `<b>Background testing may use</b><div class="mut" style="margin:2px 0 6px">Unticked PCs are never used for automated tests, so you can play on them.</div><div data-list>loading…</div>`;
+  m.innerHTML = `<b>Background testing may use</b><div class="mut" style="margin:2px 0 6px">Untick for gaming. New background work waits until the PC is idle and below its budget. Running jobs may peak above this admission limit.</div><div data-list>loading…</div>`;
   fitMenu(m, e.clientX, e.clientY, 8, 40);
-  const render = r => { m.querySelector("[data-list]").innerHTML = (r.workers || []).filter(w => w.os === "windows").map(w =>
-      `<label style="display:flex;gap:8px;align-items:center;padding:3px 0;cursor:pointer"><input type="checkbox" data-w="${esc(w.name)}" ${w.background_testing ? "checked" : ""}> ${esc(w.name)} <span class="mut">${w.online ? "online" : "offline"}</span></label>`).join("")
-      || `<div class="mut">no Windows PCs are registered</div>`; fitMenu(m, e.clientX, e.clientY, 8, 40); };
-  const r = await gbox.api("/api/testing/workers"); if (r.ok) render(r.data); else m.querySelector("[data-list]").textContent = "✗ " + r.error;
-  m.onchange = async ev => { const cb = ev.target.closest("input[data-w]"); if (!cb) return; cb.disabled = true;
-    const x = await gbox.api(`/api/testing/workers/${encodeURIComponent(cb.dataset.w)}`, { available: cb.checked });
-    if (x.ok) render(x.data); else { cb.checked = !cb.checked; cb.disabled = false; toast("Could not change it: " + x.error); } };
+  const pct = value => value == null ? 'unknown' : `${Math.round(value)}%`;
+  const render = r => { m.querySelector('[data-list]').innerHTML = (r.workers || []).map(w => {
+      const resources = w.resources || {}, admission = w.admission || {};
+      const gpu = (resources.gpus || []).map(g => `${esc(g.name || 'GPU')} ${pct(g.utilization_percent)}`).join(' / ') || 'GPU unreported';
+      return `<div style="border-top:1px solid var(--line);padding:8px 0;max-width:430px">
+        <label style="display:flex;gap:8px;align-items:center;cursor:pointer"><input type="checkbox" data-w="${esc(w.name)}" ${w.background_testing ? 'checked' : ''}>
+          <b>${esc(w.name)}</b><span class="mut">${w.online ? 'online' : 'offline'} / ${w.background_testing ? 'Background' : 'Gaming'}</span></label>
+        <div class="mut" style="font-size:11px;margin:4px 0">CPU ${pct(resources.cpu_percent)} / ${gpu} / RAM ${pct(resources.memory_percent)}</div>
+        <label style="display:flex;gap:8px;align-items:center">Admit work below <input type="range" data-budget="${esc(w.name)}" min="10" max="90" step="5" value="${Number(w.budget_percent || 70)}"><span>${Number(w.budget_percent || 70)}%</span></label>
+        <div role="status" style="font-size:11px;margin-top:4px">${esc(admission.reason || 'Ready for queued background work.')}</div>
+      </div>`;
+    }).join('') || '<div class="mut">No workers are registered.</div>';
+    fitMenu(m, e.clientX, e.clientY, 8, 40); };
+  const r = await gbox.api('/api/testing/workers'); if (r.ok) render(r.data); else m.querySelector('[data-list]').textContent = r.error;
+  m.oninput = ev => { const range = ev.target.closest('input[data-budget]'); if (range) range.nextElementSibling.textContent = range.value + '%'; };
+  m.onchange = async ev => {
+    const control = ev.target.closest('input[data-w], input[data-budget]'); if (!control) return;
+    control.disabled = true;
+    const name = control.dataset.w || control.dataset.budget;
+    const body = control.dataset.w ? { available: control.checked } : { budget_percent: Number(control.value) };
+    const result = await gbox.api(`/api/testing/workers/${encodeURIComponent(name)}`, body);
+    if (result.ok) render(result.data); else { control.disabled = false; toast('Could not change background policy: ' + result.error); }
+  };
   const close = ev => { if (!m.contains(ev.target)) { m.style.display = "none"; document.removeEventListener("mousedown", close); } };
   setTimeout(() => document.addEventListener("mousedown", close), 0);
 };
@@ -4895,6 +4912,16 @@ function tbFrame() {
   TB.r.render(TB.scene, TB.cam); TB.raf = requestAnimationFrame(tbFrame);
 }
 const viewRemember = m => { if (EMB.game) try { localStorage.setItem("gbox_view_" + EMB.game, m); } catch {} };
+// Idle background display may select an owned test without changing view preferences
+// or activating/focusing an OS window. Any real input wins before the async selection.
+window.GBoxBackgroundGameplay = async (session, current) => {
+  const wv = document.querySelector('#wv');
+  if (!current() || !wv || wv.dataset.ready !== 'true') return false;
+  await wv.executeJavaScript(`(typeof playing !== "undefined" && playing === ${JSON.stringify(session.session_id)}) || (typeof LOADING !== "undefined" && LOADING) || show("Sessions", ${JSON.stringify(session.session_id)})`).catch(() => {});
+  if (!current()) return false;
+  document.querySelector('aside button[data-s="play"]')?.click();
+  return true;
+};
 function viewAction(a, auto = false) {                       // auto = applied by gBox on launch (don't re-save)
   const wv = document.querySelector("#wv");
   if (["main", "pip", "full", "library"].includes(a) && !auto) viewRemember(a === "full" ? "full" : "windowed");

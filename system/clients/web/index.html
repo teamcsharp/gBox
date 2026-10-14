@@ -267,6 +267,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 </style>
 <script src="/padglyph.js"></script>
 <script src="/viz/session-pause.js"></script>
+<script src="/viz/session-presentation.js"></script>
 <script src="/viz/session-speed.js"></script>
 <script src="/viz/session-move.js"></script>
 <script src="/viz/session-build.js"></script>
@@ -2006,6 +2007,21 @@ sessionsView.after = (sid, mode) => {
   sessionBuildMount(head);
   if (!head || head.dataset.state !== "running") { playing = null; if (active?.sid === sid) { active = null; pip(); } return; }
   sid = head.dataset.sid; playing = sid;
+  window.sessionPresentation?.stop();
+  const status = document.createElement('p'); status.className = 'mut'; status.setAttribute('role', 'status');
+  status.style.cssText = 'padding:8px 12px;border:1px solid var(--line);border-radius:8px';
+  status.hidden = true; head.insertAdjacentElement('afterend', status);
+  window.sessionPresentation = GBoxSessionPresentation.create({
+    current: () => head.isConnected && head.dataset.sid === sid,
+    read: () => api(`/api/sessions/${encodeURIComponent(sid)}/stream/health`),
+    render: ({ text }) => { status.textContent = text; status.hidden = !text; },
+    ended: () => {
+      playing = null;
+      if (active?.sid === sid) { active = null; pip(); }
+      show('Sessions', sid, mode);
+    }
+  });
+  window.sessionPresentation.poll();
   watchSessionPause(sid);
   if ($("#ss")) smartSearchInit(sid).catch(() => {});
   if (mode !== "inspect") {                                   // mods/controls first; a failing graphics panel must not take them down

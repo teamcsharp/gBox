@@ -669,3 +669,39 @@ def test_1602_main_reports_running_code_and_exits_nonzero_for_restart(tmp_path, 
     assert exit_info.value.code == _so.RESTART_EXIT_CODE and len(ticks) == 2
     runtime = store.get('setting', 'session_observers_runtime')
     assert runtime['active'] == 0 and runtime['code_stale'] is True and 'restarting' in runtime
+
+
+def test_persistent_black_test_keeps_evidence_and_files_one_gap_without_input(observer):
+    o = observer
+    o._frame = lambda *_: png('black')
+    o.observe = lambda *_: pytest.fail('black frames must not waste repeated inference')
+    o.store.put('slabel', 'worker-launch', {'owner': 'agent'})
+    o.sample(o.session)
+    row = o.store.get('session_observer', 'worker-launch')
+    assert row['gameplay_state'] == 'black_screen' and not row['presentation']['persistent']
+    assert not o.store.all('request')
+    o.clock = lambda: 1090
+    o.sample(o.session)
+    o.clock = lambda: 1120
+    o.sample(o.session)
+    row = o.store.get('session_observer', 'worker-launch')
+    assert row['presentation']['persistent']
+    assert o.store.read_artifact(row['presentation']['frame'])
+    assert len(o.store.all('request')) == 1
+    assert o.store.all('request')[0]['context']['role'] == 'presentation'
+    assert o.store.all('request')[0]['image_b64']
+    assert not o.store.all('job')
+    o._frame = lambda *_: png('red')
+    o.observe = lambda *_: {'summary': 'Gameplay resumed'}
+    o.sample(o.session)
+    assert not o.store.get('session_observer', 'worker-launch')['presentation']['near_black']
+
+
+def test_single_dark_operator_transition_never_creates_a_repair_or_sends_controls(observer):
+    o = observer
+    o._frame = lambda *_: png('black')
+    o.sample(o.session)
+    o.clock = lambda: 1300
+    o.sample(o.session)
+    assert o.store.get('session_observer', 'worker-launch')['presentation']['persistent']
+    assert not o.store.all('request') and not o.store.all('job')
