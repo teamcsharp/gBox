@@ -337,6 +337,24 @@ Known limits:
 - VS BATTLE and TEAM BATTLE wait for "PRESS 2P START". `evidence_capture` only drives the player-1 pad, so the
   in-game frames are Arcade fights, player 1 against the CPU. Both fighters still load through the patched loader.
 
+### The HD build: `sc_sonic_vs_mario_hd_random` (#1748)
+
+`python -m gbox.soulcalibur_swap build disc.gdi D:\gBox\cache\characters_mirror <out> sc_sonic_vs_mario_hd_random
+--mario-group` on this branch's writer (TA UV order, winding normals, double-sided materials, the LOD ladder aimed
+at the measured room). The Mario side is the `mario` group: Mario, Luigi, Wario, Peach, Yoshi and Bowser are the
+Render96 HD models (8k to 42k triangles, reduced to 1.7k to 2.9k by the LOD ladder in two or three attempts); Koopa
+Troopa, Metal Wario and Ukiki stay SM64 DS. 45 / 45 costumes built and verified, random costume hook installed.
+Installed at `D:\gBox\cache\mods\c747331797369f74\sc_sonic_vs_mario_hd_random\`, marker written last,
+`verified_in_game` false. Its title and `cast_source` name the `mario` group (`cast_swap.mario_side`).
+
+Offline renders of every rebuilt costume (`scripts/sc_engine_render.py BUILT.gdi OUT "" --built-only`), front and
+back: `D:\gBox
+esearch\mario_donors\hd_builds\sc\` with `evidence.json`. Peach HD's head is closed from behind
+(her hair is a closed mesh, so the SM64DS Peach's open back of the head does not apply and no double-sided hair is
+needed). 41 of 45 look right. The two Metal Wario costumes (SIE1, INF1) are an untextured navy body, as in v5. The two
+Koopa Troopa costumes (VOL1, CER1) have long black spikes from the hands past the head, as in v5: the SM64 DS donor
+itself is wrong (sm64ds.md, Koopa Troopa).
+
 Still unchecked:
 
 - the hook's randomness on Flycast's TMU emulation, beyond the costumes seen

@@ -209,6 +209,34 @@ Per costume:
 * Evidence: `D:\gBox\research\soulcalibur2\evidence\sc2_<fighter>_before_after.png` (stock costumes over the built
   ones, every costume, weapon on the hands).
 
+### The HD build: `sc2_sonic_vs_mario_hd_random` (#1748)
+
+* Same plan and random select, with the Mario side from `--pool mario` (gbox.cast_swap's `mario` group: the best
+  model per character, HD > SM64 > SM64 DS): Mario, Luigi, Wario, Peach, Yoshi and Bowser are the Render96 HD
+  models; Koopa Troopa and Metal Wario have no HD model and stay SM64 DS.
+* **Donors without legs are left out** (`pool_slugs` -> `has_legs` / `leg_vertex_count`). Toad HD binds no vertex to a
+  thigh or shin: his feet hang straight off his body. The retarget puts a donor's feet at the fighter's ankles, so on
+  an SC2 body Toad's feet floated about a metre below him (the first build's renders are kept in
+  `D:\gBox
+esearch\mario_donors\hd_builds\sc2irst_build_with_toad\`). The CLI prints every donor it leaves
+  out and why. Every other mario / sa2 donor has leg geometry.
+* Built 2026-10-13 on the Windows PC from the local ISO (`D:\gBox
+esearch\soulcalibur2\sc2.iso`, GRSEAF) and the
+  collection mirror: 73 / 73 slots built, read back OK, random select present.
+  `python -m gbox.soulcalibur2_swap random sc2.iso D:\gBox\cache\characters_mirror <out> --pool sa2 --pool mario
+  --name sc2_sonic_vs_mario_hd_random --seed sc2 --image-name "Soul Calibur II (USA).iso"`.
+* Installed at `D:\gBox\cache\mods\201629ad498aba7b\sc2_sonic_vs_mario_hd_random\` (built in
+  `.tmp_sc2_sonic_vs_mario_hd_random` and renamed; `.gbox-mod.json` written last, `verified_in_game` false).
+* Offline renders: `scripts/sc2_cast_evidence.py BUILT.iso STOCK.iso OUT` reads every rebuilt costume back from the
+  built image and renders it front and back, one sheet per fighter, in
+  `D:\gBox
+esearch\mario_donors\hd_builds\sc2\` (`evidence.json` holds a verdict per costume). The GX lists wind
+  front faces **clockwise** in model space (stock and rebuilt alike: toes and chin at +Z, negative signed volume), so
+  the culled views use `render_preview(cull="cw")`. A counter-clockwise cull shows every costume inside out.
+* Verdict: 63 costumes look right; Inferno's Shadow is coarse (332 triangles in Inferno's small package); the 5 Metal
+  Wario costumes are an untextured navy body (the DS model is environment-mapped chrome); the 4 SM64 DS Koopa Troopa
+  costumes are a thin, spiky figure (see sm64ds.md, Koopa Troopa). Not verified in Dolphin.
+
 ## 5. Live check (operator)
 
 1. Launch `sc2_sonic_vs_mario_random` for Soul Calibur II (USA) in gBox (Dolphin).
