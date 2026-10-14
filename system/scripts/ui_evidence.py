@@ -505,83 +505,94 @@ def _init_script(fx_data: dict, desktop: bool) -> str:
 
 def run_shots(base_url: str, fx_data: dict, shots: list[dict], out: Path, offline: bool = False, log=print) -> list[Path]:
     from playwright.sync_api import sync_playwright
+    try:
+        from browser_lifecycle import BrowserLease
+    except ModuleNotFoundError:
+        from scripts.browser_lifecycle import BrowserLease
 
     out.mkdir(parents=True, exist_ok=True)
     made, local = [], urlsplit(base_url).netloc
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True, args=["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"])
-        for shot in shots:
-            vw, vh = shot.get("viewport", [1280, 800])
-            ctx = browser.new_context(viewport={"width": vw, "height": vh}, device_scale_factor=shot.get("scale", 1),
-                                      color_scheme=shot.get("color_scheme", "dark"),
-                                      reduced_motion=shot.get("reduced_motion", "no-preference"))
-            def route(r):                                  # (one parameter: playwright passes the request to a second)
-                host = urlsplit(r.request.url).netloc
-                if host == local or (not offline and host in CDN_HOSTS):
-                    return r.continue_()
-                return r.abort()                       # nothing else: no control plane, no LAN, no telemetry
-            ctx.route("**/*", route)
-            ctx.add_init_script(_init_script(fx_data, shot["url"].lstrip("/").startswith("clients/desktop/")))
-            if shot.get("init_js"):
-                ctx.add_init_script(shot["init_js"])
-            page = ctx.new_page()
-            errors = []
-            page.on("pageerror", lambda e, errors=errors: errors.append(str(e)))
-            page.on("console", lambda m, errors=errors: errors.append(m.text) if m.type == "error" else None)
-            page.on("dialog", lambda d: d.accept())
-            page.goto(base_url.rstrip("/") + "/" + shot["url"].lstrip("/"), wait_until="load")
-            page.wait_for_timeout(shot.get("settle", 600))
-            for a in shot.get("actions", []):
-                (k, v), = a.items()
-                if isinstance(v, str) and v.startswith("$") and v[1:] in fx_data:   # "$setup_js": a shared snippet
-                    v = fx_data[v[1:]]
-                if k == "wait":
-                    page.wait_for_timeout(v)
-                elif k == "wait_for":
-                    page.wait_for_selector(v, timeout=15000)
-                elif k == "click":
-                    page.click(v)
-                elif k == "dblclick":
-                    page.dblclick(v)
-                elif k == "right_click":
-                    page.click(v, button="right")
-                elif k == "hover":
-                    page.hover(v)
-                elif k == "eval":
-                    page.evaluate(v)
-                elif k == "mouse":
-                    page.mouse.move(v[0], v[1], steps=4)
-                elif k == "click_at":                  # [x, y] or [x, y, "right"]
-                    page.mouse.click(v[0], v[1], button=v[2] if len(v) > 2 else "left")
-                elif k == "press":
-                    page.keyboard.press(v)
-                elif k == "select":
-                    page.select_option(v[0], v[1])
-                elif k == "fill":
-                    page.fill(v[0], v[1])
-                elif k == "viewport":                  # resize the window: pages lay their pop-ups out again
-                    vw, vh = v
-                    page.set_viewport_size({"width": vw, "height": vh})
-                else:
-                    raise ValueError(f"unknown action {k!r}")
-            dest = out / f"{shot['name']}.png"
-            if shot.get("clip"):
-                box = page.locator(shot["clip"]).first.bounding_box()
-                if not box:
-                    raise RuntimeError(f"{shot['name']}: {shot['clip']} is not on screen")
-                pad = shot.get("pad", 8)
-                x, y = max(0, box["x"] - pad), max(0, box["y"] - pad)
-                clip = {"x": x, "y": y, "width": min(vw - x, box["width"] + 2 * pad), "height": min(vh - y, box["height"] + 2 * pad)}
-                page.screenshot(path=str(dest), clip=clip)
-            else:
-                page.screenshot(path=str(dest))
-            size = dest.stat().st_size
-            log(f"{dest} ({size // 1024} KB){'  WARNING: over 1 MB' if size > 1_000_000 else ''}")
-            for e in errors[:8]:
-                log(f"  page error: {e[:300]}")
-            made.append(dest)
-            ctx.close()
-        browser.close()
+        # Reuse one managed browser for the batch; each shot gets an isolated context.
+        import os
+        with BrowserLease(os.environ.get("GBOX_CHROME") or pw.chromium.executable_path, software_gl=True) as lease:
+            browser = pw.chromium.connect_over_cdp(f"http://127.0.0.1:{lease['port']}")
+            try:
+                for shot in shots:
+                    vw, vh = shot.get("viewport", [1280, 800])
+                    ctx = browser.new_context(viewport={"width": vw, "height": vh}, device_scale_factor=shot.get("scale", 1),
+                                              color_scheme=shot.get("color_scheme", "dark"),
+                                              reduced_motion=shot.get("reduced_motion", "no-preference"))
+                    try:
+                        def route(r):                                  # (one parameter: playwright passes the request to a second)
+                            host = urlsplit(r.request.url).netloc
+                            if host == local or (not offline and host in CDN_HOSTS):
+                                return r.continue_()
+                            return r.abort()                       # nothing else: no control plane, no LAN, no telemetry
+                        ctx.route("**/*", route)
+                        ctx.add_init_script(_init_script(fx_data, shot["url"].lstrip("/").startswith("clients/desktop/")))
+                        if shot.get("init_js"):
+                            ctx.add_init_script(shot["init_js"])
+                        page = ctx.new_page()
+                        errors = []
+                        page.on("pageerror", lambda e, errors=errors: errors.append(str(e)))
+                        page.on("console", lambda m, errors=errors: errors.append(m.text) if m.type == "error" else None)
+                        page.on("dialog", lambda d: d.accept())
+                        page.goto(base_url.rstrip("/") + "/" + shot["url"].lstrip("/"), wait_until="load")
+                        page.wait_for_timeout(shot.get("settle", 600))
+                        for a in shot.get("actions", []):
+                            (k, v), = a.items()
+                            if isinstance(v, str) and v.startswith("$") and v[1:] in fx_data:   # "$setup_js": a shared snippet
+                                v = fx_data[v[1:]]
+                            if k == "wait":
+                                page.wait_for_timeout(v)
+                            elif k == "wait_for":
+                                page.wait_for_selector(v, timeout=15000)
+                            elif k == "click":
+                                page.click(v)
+                            elif k == "dblclick":
+                                page.dblclick(v)
+                            elif k == "right_click":
+                                page.click(v, button="right")
+                            elif k == "hover":
+                                page.hover(v)
+                            elif k == "eval":
+                                page.evaluate(v)
+                            elif k == "mouse":
+                                page.mouse.move(v[0], v[1], steps=4)
+                            elif k == "click_at":                  # [x, y] or [x, y, "right"]
+                                page.mouse.click(v[0], v[1], button=v[2] if len(v) > 2 else "left")
+                            elif k == "press":
+                                page.keyboard.press(v)
+                            elif k == "select":
+                                page.select_option(v[0], v[1])
+                            elif k == "fill":
+                                page.fill(v[0], v[1])
+                            elif k == "viewport":                  # resize the window: pages lay their pop-ups out again
+                                vw, vh = v
+                                page.set_viewport_size({"width": vw, "height": vh})
+                            else:
+                                raise ValueError(f"unknown action {k!r}")
+                        dest = out / f"{shot['name']}.png"
+                        if shot.get("clip"):
+                            box = page.locator(shot["clip"]).first.bounding_box()
+                            if not box:
+                                raise RuntimeError(f"{shot['name']}: {shot['clip']} is not on screen")
+                            pad = shot.get("pad", 8)
+                            x, y = max(0, box["x"] - pad), max(0, box["y"] - pad)
+                            clip = {"x": x, "y": y, "width": min(vw - x, box["width"] + 2 * pad), "height": min(vh - y, box["height"] + 2 * pad)}
+                            page.screenshot(path=str(dest), clip=clip)
+                        else:
+                            page.screenshot(path=str(dest))
+                        size = dest.stat().st_size
+                        log(f"{dest} ({size // 1024} KB){'  WARNING: over 1 MB' if size > 1_000_000 else ''}")
+                        for e in errors[:8]:
+                            log(f"  page error: {e[:300]}")
+                        made.append(dest)
+                    finally:
+                        ctx.close()
+            finally:
+                browser.close()
     return made
 
 
