@@ -5,6 +5,14 @@ pinned to that session's worker. The catalog can be browsed for Dreamcast Ver. 2
 live native mutations currently require the US Dreamcast Ver. 2 executable fingerprint. GameCube never receives
 Dreamcast addresses. Episode III is a different game and does not show this panel.
 
+Item browsing, native actions and the shared equipment default load independently.
+A missing preferences endpoint during a backend update does not disable search,
+filters, selection or supported live actions. An unknown preference is shown as
+indeterminate, with an explanation and Retry loading. GameCube can browse/select
+items and save the shared default, but live drops and stat/equipment writes stay
+disabled with a visible revision-specific explanation. Saving that default never
+applies Dreamcast memory patches to the current GameCube game.
+
 ## Available implementation
 
 - Search/filter the disc's item database, select up to twenty items and drop those exact items beside the player.
