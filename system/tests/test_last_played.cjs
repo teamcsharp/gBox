@@ -121,3 +121,32 @@ test('nothing to offer (a game runs): no pop-up; the web shell mounts it and loa
   assert.match(main, /\/api\/sessions\/\$\{encodeURIComponent\(x\.session_id\)\}\/moment\?wait=5/, 'the app keeps the moment before it quits');
   assert.ok(main.indexOf('await keepMoments();') < main.indexOf('taskkill", ["/T", "/F", "/PID", String(worker.pid)]); worker = null;'));
 });
+
+
+test('manual close is neutral even with a related pre-existing build report', () => {
+  const html = LPop.html({...ENTRY, reason:{kind:'ended',crash:false,text:'The emulator closed.'},
+    report:{id:'r-existing',number:1864,status:'open'}});
+  assert.match(html,/The emulator closed\./);
+  assert.match(html,/Related report #1864/);
+  assert.doesNotMatch(html,/class="lp-box lp-bad"|quit unexpectedly/);
+});
+
+test('late stop confirmation and moment update refresh an already visible session', async () => {
+  const initial={...ENTRY,moment:null,reason:{kind:'ended',crash:false,text:'The emulator closed.'}};
+  const e=env(initial),ctl=LPop.mount(e);await ctl.ready;
+  assert.match(e.host.html,/The emulator closed/);
+  e.setEntry(ENTRY);await ctl.check();
+  assert.match(e.host.html,/You stopped it/);
+  assert.match(e.host.html,/Reload with your last moment/);
+  ctl.stop();
+});
+
+
+test('rolling deployment normalizes only the legacy generic-code-1 crash claim', () => {
+  const legacy={...ENTRY,reason:{kind:'crash',crash:true,text:'The emulator quit unexpectedly (exit code 1).'}};
+  const closed=LPop.html(legacy);
+  assert.match(closed,/The emulator closed\./);
+  assert.doesNotMatch(closed,/class="lp-box lp-bad"|quit unexpectedly/);
+  const crash=LPop.html({...ENTRY,reason:{kind:'crash',crash:true,text:'The emulator quit unexpectedly (exit code 3221225477).'}});
+  assert.match(crash,/class="lp-box lp-bad"/);
+});

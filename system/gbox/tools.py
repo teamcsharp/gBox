@@ -440,6 +440,7 @@ def _stop_session(sid: str, args: dict, ctx) -> dict:
     timings['teardown_s'] = round(time.monotonic() - t, 3)
     timings['total_s'] = round(time.monotonic() - t0, 3)
     out = dict(res) if isinstance(res, dict) else {'value': str(res)[:200]}
+    out['via'] = 'stop'
     out['timings'] = timings
     if saved is not None:
         out['save'] = saved
@@ -1182,11 +1183,17 @@ class SessionOut(BaseModel):
     ended: bool = False
 
 def _session_accept(store, out: SessionOut, actor: str):
-    if out.ended and (s := store.get("session", out.session_id)) and s.get("state") != "ended":
+    if out.ended and (s := store.get("session", out.session_id)):
+        from .session_exit import intentional
         m = out.result.get("moment") if isinstance(out.result.get("moment"), dict) else {}
-        kept = {"checkpoint": m["artifact"], "moment_ts": time.time(), **({"moment_frame": m["frame"]} if m.get("frame") else {})} \
+        if s.get('state') == 'ended' and not (intentional(out.result) or m.get('artifact')):
+            return  # No new close intent or checkpoint: preserve the verified terminal record.
+        moment_ts = s.get('moment_ts') if s.get('checkpoint') == m.get('artifact') else None
+        kept = {"checkpoint": m["artifact"], "moment_ts": moment_ts or time.time(), **({"moment_frame": m["frame"]} if m.get("frame") else {})} \
             if m.get("artifact") else {}                     # last played: the moment saved as the game stopped
-        store.put("session", out.session_id, s | {"state": "ended", "ended": time.time(), "exit": out.result, **kept})
+        from .session_exit import merge
+        store.put("session", out.session_id, s | {"state": "ended", "ended": s.get("ended") or time.time(),
+                                                  "exit": merge(s.get("exit"), out.result), **kept})
 
 @tool("session_op", "1.0", SessionIn, SessionOut, capabilities=["runtime"], permissions=[P.EXECUTE],
       on_accept=_session_accept)

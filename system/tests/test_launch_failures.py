@@ -256,6 +256,8 @@ def test_a_crash_right_after_start_is_a_failure_but_stops_are_not(plane):
             "state": "ended", "started": p.t - 12, "ended": p.t}
     assert ledger.observe_session_end(sess, {"returncode": 3221225477}, stop_requested=True) is None
     assert ledger.observe_session_end(sess, {"returncode": 0}) is None
+    assert ledger.observe_session_end(sess, {"returncode": 1}) is None
+    assert ledger.observe_session_end(sess, {"returncode": 1, "timings": {"kill_s": .1}}) is None
     assert ledger.observe_session_end(sess, {"returncode": 1, "via": "single_game"}) is None
     assert ledger.observe_session_end(sess | {"started": p.t - 600}, {"returncode": 1}) is None
     assert ledger.observe_session_end(sess, {"returncode": 1}, label={"owner": "agent"}) is None

@@ -4265,15 +4265,22 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/api/sessions/{sid}/ended")
     def ended(sid: str, info: dict, actor=Depends(auth)):
-        s_ = store.get("session", sid)
-        log_tail = info.pop("log_tail", None) if isinstance(info, dict) else None   # kept for a crash report only
+        from .session_exit import merge, crash_code, intentional
+        log_tail = info.pop("log_tail", None) if isinstance(info, dict) else None
+        with store.lock:
+            s_ = store.get("session", sid)
+            stop = _stop_requested(sid)
+            if s_:
+                was_running = s_.get("state") != "ended"
+                info = merge(s_.get("exit"), info)
+                if stop and not info.get('via'):
+                    info['via'] = 'stop'
+                s_ = s_ | {"state": "ended", "ended": s_.get("ended") or time.time(), "exit": info}
+                store.put("session", sid, s_)
         if s_:
-            was_running = s_.get("state") != "ended"
-            s_ = s_ | {"state": "ended", "ended": time.time(), "exit": info}
-            store.put("session", sid, s_)
-            if was_running and isinstance(info, dict) and info.get("returncode") not in (None, 0):
-                # a game that crashed right after it started failed to load: launch failure report
-                ended_session, stop = dict(s_), sid in stopping or _stop_requested(sid)
+            if was_running and crash_code(info) and not intentional(info):
+                # Only recognizable crash evidence can file a crash report.
+                ended_session = dict(s_)
                 def _crash():
                     try:
                         launch_ledger.observe_session_end(ended_session, info | {"log_tail": log_tail or ""},
@@ -4285,11 +4292,12 @@ def create_app(config: Config) -> FastAPI:
         return {"ok": True}
 
     def _stop_requested(sid: str) -> bool:
-        """Any stop_game job for this session (an intentional stop, not a crash)."""
+        """An accepted stop intent, excluding failed/rejected/cancelled stop attempts."""
         with store.lock:
             return bool(store.db.execute(
                 "SELECT 1 FROM docs WHERE kind='job' AND json_extract(body,'$.tool')='session_op' "
-                "AND json_extract(body,'$.input.op')='stop_game' AND json_extract(body,'$.input.session_id')=? LIMIT 1",
+                "AND json_extract(body,'$.input.op')='stop_game' AND json_extract(body,'$.input.session_id')=? "
+                "AND json_extract(body,'$.state') IN ('queued','running','succeeded') LIMIT 1",
                 (sid,)).fetchone())
 
     # --- requests inbox: operator reports (screenshot / eyedropper / chat) <-> agent, with per-request metrics ---

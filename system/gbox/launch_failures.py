@@ -458,7 +458,8 @@ class Ledger:
         if not isinstance(info, dict) or info.get("via") or stop_requested or session.get("replaced_by"):
             return None
         code = info.get("returncode")
-        if code in (None, 0) or isinstance(code, bool):
+        from .session_exit import crash_code, intentional
+        if intentional(info) or not crash_code(info):
             return None
         started = session.get("started") or 0
         ended = session.get("ended") or self.h.now()
