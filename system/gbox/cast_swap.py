@@ -33,6 +33,7 @@ import re
 import statistics
 import struct
 import time
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -40,6 +41,8 @@ from types import SimpleNamespace
 
 # Named groups of source games, by the DEDICATED extractor that made the entries (characters.DEDICATED names).
 GROUPS = {
+    "doa": {"label":"Dead or Alive universe (DOA2 + DOA++)","extractors":["doa2","doapp"],
+            "aliases":["doa","dead or alive","dead or alive universe","doa universe","dead or alive characters"]},
     "wrestlers": {"label": "Wrestlers (No Mercy, WCW, SmackDown! 2, Def Jam)",
                   "extractors": ["nomercy", "worldtour", "revenge", "smackdown2", "defjam_vendetta_ps2", "defjam_vendetta"],
                   "aliases": ["wrestlers", "wrestler", "wrestling", "wrestling games", "the wrestlers"]},
@@ -189,7 +192,7 @@ def extractor_of(meta: dict) -> str | None:
 
 def base_name(meta: dict) -> str:
     """The name without its costume tag: costumes of one character dedupe to one donor."""
-    n = str(meta.get("name") or meta.get("slug") or "").lower()
+    n = str(meta.get("texture_base_name") or meta.get("name") or meta.get("slug") or "").lower()
     n = re.sub(r"\s*\((?:costume|outfit|variant|alt)\.?\s*(?:\d+|[a-z])\)", "", n)
     n = re.sub(r"\s+(?:costume|outfit|alt)\s*(?:\d+|[a-z])\b", "", n)          # "fighter 000 costume a" (Def Jam GC)
     return re.sub(r"\s+", " ", n).strip()
@@ -225,8 +228,16 @@ def source_groups(chars: list[dict]) -> list[dict]:
 
 def _candidates(chars: list[dict], kind: str = "character") -> list[dict]:
     """Collection entries that can be donors at all: the right kind, not a head-size variant, with a source game."""
-    return [m for m in chars if (m.get("kind") or "character") == kind and not m.get("variant_of")
-            and (m.get("source") or {}).get("game_title")]
+    base=[m for m in chars if (m.get("kind") or "character")==kind and (m.get("source") or {}).get("game_title")]
+    by_slug={m['slug']:m for m in base};approved={}
+    for m in base:
+        a=m.get('texture_approval') or {};digest=a.get('candidate','')
+        if not m.get('variant_of') or not digest or not m['slug'].endswith('_tex_'+digest[:12]):continue
+        parent=m['variant_of'];seen=set()
+        while parent in by_slug and by_slug[parent].get('variant_of') and parent not in seen:
+            seen.add(parent);parent=by_slug[parent]['variant_of']
+        if parent not in approved or a.get('at',0)>(approved[parent].get('texture_approval') or {}).get('at',0):approved[parent]=m
+    return [approved.get(m['slug'],m) for m in base if not m.get('variant_of')]
 
 
 def resolve_source(spec: str, chars: list[dict], kind: str = "character") -> dict:
@@ -579,9 +590,22 @@ def apply_edits(plan: list[dict], edits: list[dict], donors: list[dict], slots: 
     return sorted(rows.values(), key=lambda r: pos.get(r["slot"], 1 << 30))
 
 
+def texture_assignment_aliases(edits, chars, donors):
+    """An old recipe may name the original superseded by an explicitly approved texture donor."""
+    metas={m['slug']:m for m in chars};aliases={};eligible={m['slug'] for m in donors}
+    for donor in donors:
+        item=metas.get(donor['slug'],{});seen=set()
+        while item.get('texture_approval') and item.get('variant_of') and item['slug'] not in seen:
+            seen.add(item['slug']);parent=item['variant_of']
+            if parent not in eligible:aliases[parent]=donor['slug']
+            item=metas.get(parent,{})
+    return [{**e,'character':aliases.get(e.get('character'),e.get('character'))} for e in (edits or [])]
+
+
 # ---------------------------------------------------------------- how each writer builds many slots at once
 
 STRATEGIES = {
+    "gbox.gta_stories_models": ("pairs", "LCS PS2: streamed pedestrians in one disc; special story/cutscene models remain separate"),
     "gbox.pso_player": ("pairs", "PSO Ver.2: every enemy pack rebuilt with its donors in one GD-ROM (gbox.pso_enemy.build_cast)"),
     "gbox.doa2_swap": ("pairs", "DOA2: the roster build (doa2_swap.use_roster: every selectable fighter in one disc)"),
     "gbox.soulcalibur_swap": ("pairs", "SoulCalibur DC: every fighter's costumes rebuilt in one HUMAN.DAT, one GD-ROM "
@@ -784,7 +808,7 @@ def plan(game: dict, chars: list[dict], source: str, mapping: str = "auto", seed
                     s["skip"] = f"donor {e['character']} refused: {why[e['character']]}"
     out = assign(chosen, rows, mapping, seed)
     if assignments:
-        out = apply_edits(out, [e for e in assignments if e.get("character") not in why], rows,
+        out = apply_edits(out, texture_assignment_aliases([e for e in assignments if e.get("character") not in why],chars,rows), rows,
                           [s for s in chosen if not s.get("skip")])
     strat, how = strategy(w["writer"])
     return {"status": "planned" if out else "empty", "game_id": game["game_id"], "title": game.get("title"),
@@ -923,6 +947,12 @@ def build(ctx, game: dict, p: dict, chars: list[dict], root: Path, inp, launch: 
     profiles = ",".join(sorted({f"{s}={m.get('retarget_profile_digest')}" for s, m in pairs
                                 if m.get("retarget_profile_digest")}))
     digest = plan_digest(p["assignments"])
+    if p.get('writer') == 'gbox.gta_stories_models':
+        # A changed plan/profile, or an explicit rebuild, must preserve the last disc.
+        suffix='_plan'+digest[:8]+('_fit'+hashlib.sha256(profiles.encode()).hexdigest()[:8] if profiles else '')
+        if not name.endswith(suffix):name=name[:max(1,95-len(suffix))]+suffix
+        if inp.rebuild:name=name[:82]+'_r'+uuid.uuid4().hex[:10]
+        p['mod']=name
     showcase = bool(getattr(inp, "showcase", False))
     have = filemods.mod_dir(ctx.config, gid, name) / ".gbox-mod.json"
     if have.is_file() and not inp.rebuild:
@@ -1114,6 +1144,11 @@ def _pso(ctx, game, pairs, name, inp):
     return pso_enemy.build_cast(ctx.config, game, C._dc_gdi(ctx, game), pairs, name, ctx.progress)
 
 
+def _gta_lcs(ctx, game, pairs, name, inp):
+    from . import characters as C, gta_lcs_cast
+    return gta_lcs_cast.build_cast(ctx.config, game, C._rom(ctx, game), pairs, name, ctx.progress)
+
+
 def _gta_vc(ctx, game, pairs, name, inp):
     from . import characters as C, gta_vc_swap
     return gta_vc_swap.build_cast(ctx.config, game, C._rom(ctx, game), pairs, name, ctx.progress)
@@ -1243,6 +1278,7 @@ BUILDERS = {
     "gbox.yukes_sd": _match_builder("yukes_sd"),
     "gbox.aki_wrestling": _match_builder("aki_wrestling"),
     "gbox.gta_vc_swap": _gta_vc,
+    "gbox.gta_stories_models": _gta_lcs,
     "gbox.etm_swap": _etm,
     "gbox.mgs2_swap": _mgs2,
     "gbox.oot_swap": _oot,

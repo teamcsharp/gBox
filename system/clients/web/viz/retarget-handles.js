@@ -56,11 +56,26 @@
       const v = vec(d, [0, 0, 0], -JOINT_RANGE, JOINT_RANGE).map(x => Math.round(x * 1e6) / 1e6);
       if (v.some(x => Math.abs(x) > 1e-6)) out.joints[r] = v;
     }
+    const cage = {};
+    for (const [key,v] of Object.entries(p.lattice?.offsets || {})) if (/^(?:[0-9]|1[0-9]|2[0-6])$/.test(key)) {
+      const d=vec(v,[0,0,0],-.25,.25).map(x=>Math.round(x*1e6)/1e6);if(d.some(x=>x))cage[key]=d;
+    }
+    if(Object.keys(cage).length)out.lattice={offsets:cage};
+    if(p.plant_feet === true)out.plant_feet=true;
     return out;
+  }
+  function latticePoint(i,b) { return [0,1,2].map(a=>b.min[a]+(b.max[a]-b.min[a])*([i%3,Math.floor(i/3)%3,Math.floor(i/9)][a]/2)); }
+  function deformCage(flat,profile,b,height) {
+    const out=new Float32Array(flat), offsets=normalize(profile).lattice?.offsets||{};
+    for(let v=0;v<flat.length;v+=3){
+      const t=[0,1,2].map(a=>Math.max(0,Math.min(1,(flat[v+a]-b.min[a])/Math.max(b.max[a]-b.min[a],height*.001))));
+      const w=t.map(x=>[(1-x)**2,2*x*(1-x),x*x]);
+      for(const [key,d] of Object.entries(offsets)){const i=+key,k=w[0][i%3]*w[1][Math.floor(i/3)%3]*w[2][Math.floor(i/9)];for(let a=0;a<3;a++)out[v+a]+=k*d[a]*height;}
+    }return out;
   }
   function isIdentity(p) {
     const n = normalize(p);
-    return !Object.keys(n.adjust).length && !Object.keys(n.joints).length
+    return !n.lattice && !n.plant_feet && !Object.keys(n.adjust).length && !Object.keys(n.joints).length
       && ["height", "ground", "head", "torso_width", "arm_length", "leg_length"].every(k => n[k] === DEFAULT[k]);
   }
   // ---- joint moves: where a role's pivot sits on the donor (fractions of the donor height, editor frame) ----------------
@@ -462,7 +477,7 @@
     applyVertex, applyPositions, guessRoles, assign, issues, roleOverrides, applyOverrides, boneRoles, handles, drag, hit,
     view, frame, baseFit, standardSkeleton, euler, facing, rotate, JOINT_RANGE, LIMB_CHAINS, GOALS, JOINT_LABELS, jointOf,
     setJoint, moveJoint, resetJoint, movedPositions, rotBetween, boundaryNormal, resegment, tPose, posedJoint, goalCircles,
-    dragJoint, limbFit, compose };
+    dragJoint, limbFit, compose, latticePoint, deformCage };
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.GBoxRetargetHandles = api;
 })(typeof window !== "undefined" ? window : globalThis);

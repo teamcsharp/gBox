@@ -194,6 +194,7 @@ class Config(BaseModel):
     smb_credentials: str | None = None   # linux credentials file for SMB mounts (never stored in the TOML)
     steam_root: Path | None = None
     cache_dir: Path | None = None     # default: data_dir/cache
+    texture_comfy_url: str = "http://127.0.0.1:8188" # local experimental texture upscaler; no external image API
     cache_dirs: dict[str, str] = {}   # os -> fast local disk for staged titles (overrides cache_dir per node)
     cache_limit_gb: float = 20.0
     cache_limits_gb: dict[str, float] = {}   # os -> size cap for that node's cache
