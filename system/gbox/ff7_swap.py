@@ -642,14 +642,14 @@ def build_mod(cfg, meta: dict, game: dict, progress=lambda p, m: None, root: Pat
         name += '_' + uuid.uuid4().hex[:12]
         d = filemods.mod_dir(cfg, gid, name)
     d.mkdir(parents=True, exist_ok=False)
-    work = Path(cfg.cache) / "characters_build" / name
+    work = Path(cfg.cache) / "characters_build" / gid / name
     work.mkdir(parents=True, exist_ok=False)
     img = image_name(meta, gid)
     b = build(base, root / meta["slug"] / meta["model"], roles, work, meta["name"], d / img, base, battle=True,
               blender=Cm._blender(cfg), progress=progress, scale=(meta.get("rig") or {}).get("scale"),
               props=[p["node"] for p in meta.get("props") or []])
     progress(88, "Rendering a preview of the model on Cloud's skeleton")
-    tdir = root / meta["slug"] / "targets" / name
+    tdir = root / meta["slug"] / "targets" / gid / name
     tdir.mkdir(parents=True, exist_ok=False)
     shutil.copy2(b["rigged_field"], tdir / "ff7_cloud_field.gltf")
     prev = Cm.render_preview(tdir / "ff7_cloud_field.gltf", tdir / "ff7_preview.png")
@@ -682,7 +682,7 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
                     json={"game_id": gid, "slot": "player", "mod": name, "nodes": [Cm.HOST_OS],
                           "notes": f"replaces Cloud: field model {built['report']['field']['triangles']} triangles, battle "
                                    f"model {(built['report']['battle'] or {}).get('triangles')} triangles (his animations); "
-                                   f"preview targets/{name}/ff7_preview.png"})
+                                   f"preview targets/{gid}/{name}/ff7_preview.png"})
         else:
             cp = next((w["id"] for w in Cm._api(ctx, "GET", "/api/workers") if w.get("os") == "linux"), None)
             ctx.progress(10, "Building the FF7 mod on the control-plane node (the collection lives there)")
