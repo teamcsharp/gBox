@@ -15,7 +15,7 @@ def policy(store, name):
     return {'budget_percent': row.get('budget_percent', DEFAULT_BUDGET)}
 
 
-def admission_reason(worker, excluded_names, budget_percent=DEFAULT_BUDGET, *, now=None):
+def admission_reason(worker, excluded_names, budget_percent=DEFAULT_BUDGET, *, now=None, allow_active=False, require_gpu=True):
     """Admission for new background compute, including competing non-gBox load.
 
     This is a measured admission budget, not an OS/GPU hard throttle. Running
@@ -25,7 +25,7 @@ def admission_reason(worker, excluded_names, budget_percent=DEFAULT_BUDGET, *, n
     from .worker_resources import percent
     if not allowed(worker, excluded_names):
         return 'Gaming mode: background work is disabled on this PC.'
-    if worker.get('os') == 'windows':
+    if worker.get('os') == 'windows' and not allow_active:
         idle = worker.get('idle_seconds')
         if idle is None or idle < IDLE_MIN_S:
             return 'Waiting for five minutes without operator input.'
@@ -39,7 +39,7 @@ def admission_reason(worker, excluded_names, budget_percent=DEFAULT_BUDGET, *, n
         return 'Waiting for a measured CPU interval.'
     if cpu >= budget_percent:
         return f'CPU is at {cpu:g}%; background admission budget is {budget_percent:g}%.'
-    for gpu in resources.get('gpus') or []:
+    for gpu in (resources.get('gpus') or []) if require_gpu else []:
         load = percent(gpu.get('utilization_percent'))
         if load is None:
             return 'Waiting for measured utilization of an installed GPU.'
@@ -61,14 +61,15 @@ def requires_admission(job):
     return bool(job.get('agent_use') or job.get('low_priority')) and job.get('tool') not in controls
 
 
-def guarded_reason(store, worker, *, now=None):
+def guarded_reason(store, worker, *, now=None, allow_active=False, require_gpu=True):
     """Controller play may not update input-idle time. Ownership is authoritative."""
     from .operator_guard import operator_sessions
     owned = operator_sessions(store.running_sessions(), lambda sid: store.get('slabel', sid),
                               lambda jid: store.get('job', jid), [worker['id']])
     if owned:
         return 'Human gameplay is active on this PC; background compute is waiting.'
-    return admission_reason(worker, excluded(store), policy(store, worker['name'])['budget_percent'], now=now)
+    return admission_reason(worker, excluded(store), policy(store, worker['name'])['budget_percent'], now=now,
+                            allow_active=allow_active, require_gpu=require_gpu)
 
 
 def excluded(store) -> set[str]:

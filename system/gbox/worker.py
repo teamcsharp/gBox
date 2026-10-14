@@ -272,7 +272,9 @@ def run(server: str, token: str, config: Config, name: str | None = None,
     active_agent: set[str] = set()
     quiet_sessions: set[str] = set()
     from . import worker_resources
-    resource_sampler = worker_resources.Sampler()
+    resource_sampler = worker_resources.Sampler(config.cache)
+    from .inspection_builds import source_inventory
+    build_sources = source_inventory()  # Never recompute while old modules remain loaded in this process.
     threading.Thread(target=worker_resources.run, args=(stop, resource_sampler),
                      name='worker-resources', daemon=True).start()
     def current_info():
@@ -282,7 +284,7 @@ def run(server: str, token: str, config: Config, name: str | None = None,
         except Exception:                           # noqa: BLE001 - liveness never depends on the cache disk
             local = []
         return info.model_copy(update={'pending_results': outbox.pending_count(), 'local_builds': local,
-                                       'resources': resource_sampler.snapshot()})
+                                       'resources': resource_sampler.snapshot(), 'build_sources': build_sources})
     threading.Thread(target=_quiet_volume_loop, args=(stop, active_agent, quiet_sessions), daemon=True).start()
     with httpx.Client(base_url=server, headers=h | {"x-gbox-actor": f"worker:{name}"}, timeout=30) as c:
         while not stop.is_set():                    # the control plane may be restarting: keep trying
