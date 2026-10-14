@@ -8,12 +8,16 @@ Only Amy replacing Beat was built and tested. No operator session was used.
 - New Game was selected from the observed menu. The game was paused between inspection steps.
 - Analog-stick movement changed the player's position; Dreamcast A produced the captured jump.
 - Player rendering continued from timer 91.50 to 36.70 (over 54 seconds of game time).
+- After another 40 seconds the TIME OVER menu rendered. Its separate head model is incorrectly textured;
+  that original head tree is currently preserved by the writer and needs its own replacement path.
 
 ![Player handoff, timer 91.50](handoff.png)
 
 ![Amy mid-jump, timer 65.80](jump.png)
 
 ![Front view after sustained play, timer 36.70](sustained.png)
+
+![TIME OVER renders, but the separate head remains wrong](time-over.png)
 
 The front view has coarse facial detail/geometry that still needs investigation. These frames prove the
 pointer fix reaches and sustains player rendering; they do not prove every visual issue is resolved or
@@ -32,3 +36,4 @@ Original frame artifacts (handoff, jump, sustained):
 - `d9d3ac25287b3754fe6a20416084115c682f3a84a84dc98b616c52cc722a045a`
 - `435da8f0474208b7a81253e7da6bdc71c85421940ce34ddcc70a6674654a1c5a`
 - `5ddf7a355a9cd5e78cb685155a1eec1f4319858da32ff4e5a1f8b56148a0f5c0`
+- TIME OVER: `f03273703be5f8a54f04e8cc0fa6b12e76bd09143aa23c0ab2e5d0fd6d2e0190`

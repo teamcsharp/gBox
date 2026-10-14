@@ -92,6 +92,7 @@ Not done / unverified:
   offline relocation defect. The separate Amy build reached player control on idle i9-NUC, moved with the
   analog stick, jumped, and remained visible from timer 91.50 through 36.70. See [capture evidence](evidence/jgr-model-relocation/README.md).
   Front-view facial geometry/detail still needs review; this is not a claim that all visual defects are fixed.
+  TIME OVER renders but displays the preserved native head with the replacement atlas, so it is incorrect.
   Spray-can groups and the other 15 replacement targets still lack live verification.
 
 ## Live check (do this before closing #1151/#1153/#1156)
