@@ -68,8 +68,8 @@ test('card: carousel, escaped title, badges, donor -> slot rows with the per-slo
   assert.match(html, /<img class="mg-img" loading="lazy"[^>]*data-i="0" src="\/api\/artifacts\/a{64}\?token=t"/);
   assert.match(html, /data-mg="prev"[\s\S]*data-mg="next"/);
   assert.match(html, /in-game · 1 \/ 3/);
-  assert.match(html, /<b><button[^>]*data-slug="ramar"[^>]*>ramar<\/button><\/b> → enemy:gobooma <span class="mg-st mg-failed">failed<\/span> <span class="mut">too many triangles/);
-  assert.match(html, /<b><button[^>]*data-slug="hucast"[^>]*>hucast<\/button><\/b> → enemy:booma <span class="mg-st mg-built">built/);
+  assert.match(html, /<b><button[^>]*data-slug="ramar"[^>]*>ramar<\/button><\/b> <button[^>]*data-mg="mapping"[^>]*>→ enemy:gobooma<\/button> <span class="mg-st mg-failed">failed<\/span> <span class="mut">too many triangles/);
+  assert.match(html, /<b><button[^>]*data-slug="hucast"[^>]*>hucast<\/button><\/b> <button[^>]*data-mg="mapping"[^>]*>→ enemy:booma<\/button> <span class="mg-st mg-built">built/);
   assert.match(html, /1\.0 MB \(3\.00 GB with shared files\)/);
   assert.match(html, /built just now/); assert.match(html, /never launched/);
   assert.match(html, /data-mg="play">Play</);

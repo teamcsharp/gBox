@@ -124,6 +124,7 @@
           <div class="rt-sec"><b>Geometry approval</b><label><input type="checkbox" data-rt-preserve> No automatic geometry reduction</label><p class="mut">JGR/shared Ninja, SC2, DOA2 and FF7 try the edited mesh intact and stop with the allocation error if it cannot fit. Other writers may still reduce geometry.</p><button class="act" data-rt-go="workspace">Editable Blender workspace</button><p data-rt-workspace-status></p></div>
           <div class="rt-sec"><b>Proportions</b><div data-rt-part-slot="globals"></div></div>
           <div class="rt-sec" data-rt-part-slot="part"></div>
+          <div class="rt-sec" data-rt-fit-history hidden></div>
           <div class="rt-sec" data-rt-textures></div>
           <div class="rt-sec"><b>What is what</b> <button type="button" class="act" data-rt-go="guess" title="Fill empty roles from bone names">Guess from names</button><div data-rt-part-slot="roles"></div></div>
         </div>
@@ -755,6 +756,12 @@
       if (e.target.matches('[data-rt="slot"]')) c.setSlot(e.target.value).then(() => { refit(); schedule(); }).catch(err => ui.status("✗ " + err.message));
     });
     el.addEventListener("click", async e => {
+      const history=e.target.closest('[data-rt-fit-job]');
+      if(history){try{
+        if(!window.GBoxDecimationReview)throw Error('Reload gBox to open saved mesh comparisons.');
+        await window.GBoxDecimationReview.open(history.dataset.rtFitJob,history.dataset.rtFitModel,
+          {document:doc,api:io.api,assetUrl:io.url,loadViewer:()=>import(io.url('/viz/character-model.js'))});
+      }catch(err){ui.status(err.message);}return;}
       const mode = e.target.closest("[data-rt-mode]"); if (mode) { c.setMode(mode.dataset.rtMode); return; }
       const pick = e.target.closest("[data-rt-joint-pick]"); if (pick) { c.selectJoint(pick.dataset.rtJointPick); return; }
       const arm = e.target.closest("[data-rt-arm]"); if (arm) { c.arm(arm.dataset.rtArm); schedule(); return; }
@@ -858,6 +865,17 @@
       }
       schedule();
     })().catch(err => ui.status("✗ " + String(err.message || err).slice(0, 300)));
+    if(opts.build_name){
+      const history=q('[data-rt-fit-history]');history.hidden=false;history.textContent='Loading this build\'s recorded fitting...';
+      io.api(`/api/builds/${encodeURIComponent(opts.gid)}/${encodeURIComponent(opts.build_name)}/fitting?donor=${encodeURIComponent(opts.slug)}`).then(result=>{
+        if(dead)return;
+        const rows=(result.jobs||[]).flatMap(job=>job.models.map(model=>({job,model})));
+        history.innerHTML='<b>Recorded mesh reduction</b>'+ (rows.length?rows.map(({job,model})=>{
+          const counts=model.triangles||{};
+          return `<p><button class="act" data-rt-fit-job="${ESC(job.job_id)}" data-rt-fit-model="${ESC(model.key)}">${ESC(model.label)}</button> <span class="mut">${counts.source_triangles??'?'} → ${counts.result_triangles??'?'} triangles${model.comparison_available?'':' (exact pair unavailable)'}</span></p>`;
+        }).join(''):'<p class="mut">This build has no matching saved fitting job for this donor. The live retarget preview is an adjustment preview; it does not reconstruct the build\'s historical decimation.</p>');
+      }).catch(err=>{if(!dead)history.textContent='Saved fitting history unavailable: '+err.message;});
+    }
     return { el, controller: c, dispose, views, previewTexture:showTextureCandidate }; // diagnostics and tests
   }
 

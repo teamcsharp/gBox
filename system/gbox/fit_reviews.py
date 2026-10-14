@@ -51,6 +51,24 @@ def routes(app, store, config, auth, *, file_report):
              "stages": {name: stage.get("data") for name, stage in model.get("stages", {}).items()}}
             for key in fitting.get("order", []) if (model := models.get(key))]}
 
+    @app.get('/api/builds/{gid}/{name}/fitting')
+    def build_fitting(gid:str,name:str,donor:str='',actor=Depends(auth)):
+        if not re.fullmatch(r'[0-9a-f]{16}',gid) or not re.fullmatch(r'[A-Za-z0-9_.()-]{1,160}',name):
+            raise HTTPException(422,'Invalid build identity')
+        matches=[]
+        for row in store.all('job'):
+            inp=row.get('input') or {};output=row.get('output') or {};result=output.get('result') or output
+            if not isinstance(result,dict) or result.get('mod')!=name:continue
+            if gid not in (inp.get('game_id'),inp.get('target_game'),result.get('game_id')):continue
+            models=(row.get('fitting') or {}).get('models') or {}
+            selected=[{'key':key,'label':m.get('label') or key,'donor':m.get('donor'),'slot':m.get('slot'),
+                       'comparison_available':bool(pair_of(row['id'],m)),
+                       'triangles':(m.get('comparison') or {}).get('data') or {}}
+                      for key,m in models.items() if not donor or donor==m.get('donor')]
+            if selected:matches.append({'job_id':row['id'],'state':row.get('state'),'created':row.get('created',0),'models':selected})
+        return {'game_id':gid,'name':name,'jobs':sorted(matches,key=lambda row:row['created'] or 0,reverse=True)[:20],
+                'notice':'Exact saved job history only. Missing or expired before/after geometry cannot be reconstructed.'}
+
     @app.post("/api/jobs/{jid}/fitting/review")
     def submit_review(jid: str, body: ReviewIn, actor=Depends(auth)):
         row = job(jid)

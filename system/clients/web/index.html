@@ -1128,7 +1128,7 @@ modsView.after = () => {
   const focus = MODSG.focus || {}; MODSG.focus = null;      // "Open in Mods page" / "Open request #n" from the game menu
   MODSG.ctl = GBoxModsGallery.mount($("#modsgallery"), { api, poll: window.GBoxLivePoll, here: window.GBOX_LOCAL?.worker || "auto", q: focus.q, game: focus.game,
     url: u => /^(https?|data|blob):/.test(u) ? u : `${u}${u.includes("?") ? "&" : "?"}${tq()}`,
-    openCharacter: characterPopup, visible: () => cur === "Mods" && !!$("#modsgallery"), openImages: (list, i) => lbOpen(null, list, i), toast: blToast, ...deskFolders() });
+    openCharacter: characterPopup, openMapping: retargetOpen, visible: () => cur === "Mods" && !!$("#modsgallery"), openImages: (list, i) => lbOpen(null, list, i), toast: blToast, ...deskFolders() });
 };
 // ---- Builds: every custom build + the scheduled / running build jobs (viz/builds.js over /api/builds; the desktop app shows this shell) ----
 // launches go through the game menu's Special builds path (this PC's worker, the loader); details load 360° viewers lazily
