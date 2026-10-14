@@ -1,7 +1,23 @@
 # Application and gameplay recordings
 
-Click the title-bar recording icon to record the application. Click it again to stop.
-Open the adjacent arrow (▾) and choose **Record gameplay only + audio** to record the visible game picture without the surrounding application or emulator window. Start a game first and keep its picture visible. The arrow also holds the existing size/compression options.
+Click the title-bar recording icon to record **gameplay only** with playback audio. Click it again to stop.
+Start a game first and keep its picture visible; missing gameplay never falls back to capturing the app.
+Open the adjacent arrow (▾) to change **Record icon captures** to **Whole application**, or use either one-time recording button.
+
+The menu also stores size, speed, capture mode, original retention and export folder in this desktop instance's
+`settings.json` (`recording`), independent of other PCs or standalone installations. Choose or paste a folder;
+the managed LAN desktops initially export to `\\10.89.1.246\spark_ext\samples_grabbed\user\gBox`.
+Standalone installations initially use their local recordings folder. Each instance can change its own destination.
+An empty export setting keeps processed videos locally. Existing size/speed choices migrate from the old browser
+preference; the new defaults capture gameplay and keep originals.
+
+Full-size originals remain in `%LOCALAPPDATA%/gbox/recordings`. **Keep full-size original locally** defaults on.
+Turning it off permits deletion only after processing/export succeeds and the original is unchanged. Network/export
+failure retains the original and the local compressed file, with their paths in the error. Output is staged, flushed,
+and checked with SHA-256. Same-name files from other instances are preserved with a unique export filename.
+Compressed local staging copies are removed after verified external export. Clips already below the limit are also
+exported without another encode; with no size limit, the original recording is exported as-is. Existing recordings
+are not retroactively moved or deleted. **Open export folder** and **Open originals folder** are separate menu actions.
 
 Right-click the icon for **Replay**: export the last 30 s to 2 min of play after the fact, from the background gameplay ring that records while the controller is in use ([ring_recording.md](ring_recording.md)).
 

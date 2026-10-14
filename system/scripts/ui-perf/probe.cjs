@@ -82,6 +82,8 @@ const SETTINGS = { apiUrl: API.origin, workerName: WORKER, sshHost: "", repoLoca
   repoRemote: "", token: "", autoStartWorker: false, volume: 0 };
 const IPC = {
   "settings:get": () => SETTINGS, "settings:save": () => SETTINGS, token: () => TOKEN,
+  'rec:preferences': () => ({targetMB:20,speed:'balanced',keep:true,capture:'gameplay',exportDir:''}),
+  'rec:preferences-save': (_e,p) => p,
   api: async (_e, p, body) => {
     try {
       const r = await apiFetch("shell-ipc", body ? "POST" : "GET", API.origin + p, { headers: { authorization: `Bearer ${TOKEN}` } });
