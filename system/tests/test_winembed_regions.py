@@ -62,7 +62,7 @@ def test_replacement_window_scan_runs_at_most_once_a_second_so_popups_are_cut_at
     class Clock:
         def monotonic(self):return now[0]
     namespace={'state':{'hwnd':7,'mode':'native','pid':42,'parent':9},'u32':User(),'g32':Graphics(),'time':Clock(),
-               'find_window':lambda pid:scans.append(pid) or 7}
+               'find_window':lambda pid, **kw:scans.append(pid) or 7}
     exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),namespace)
     move=namespace['move']
     for i in range(10):

@@ -397,32 +397,45 @@ _SCAN.update({"F13": (0x64, 0), "F14": (0x65, 0), "F15": (0x66, 0),
 
 
 def _pid_window(pid: int):
-    """The visible window of a process, top-level or docked inside gBox as a child window."""
+    """The game's visible render window, including one docked inside gBox.
+
+    Enumeration order is not a render-window identity: an owned Warning dialog
+    can come first, even minimized, and would receive input and black captures.
+    """
     import ctypes
     from ctypes import wintypes
     u = ctypes.windll.user32
     found = []
     PROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
-    def mine(h):
+    def consider(h):
         p = wintypes.DWORD()
         u.GetWindowThreadProcessId(h, ctypes.byref(p))
-        return p.value == pid and u.IsWindowVisible(h)
+        if p.value != pid or not u.IsWindowVisible(h) or u.IsIconic(h):
+            return
+        title = ctypes.create_unicode_buffer(512)
+        u.GetWindowTextW(h, title, len(title))
+        if title.value.startswith(('DIEmWin', '__wgl', 'NVOGL', 'Default IME', 'MSCTFIME')):
+            return
+        rect = wintypes.RECT()
+        u.GetWindowRect(h, ctypes.byref(rect))
+        area = max(0, rect.right - rect.left) * max(0, rect.bottom - rect.top)
+        if area:
+            render = title.value.startswith('Dolphin ') and ' | ' in title.value
+            found.append((render, area, h))
 
     @PROC
     def child(h, _):
-        if mine(h):
-            found.append(h)
+        consider(h)
         return True
 
     @PROC
     def top(h, _):
-        if mine(h):
-            found.append(h)
+        consider(h)
         u.EnumChildWindows(h, child, 0)
         return True
     u.EnumWindows(top, 0)
-    return found[0] if found else None
+    return max(found)[2] if found else None
 
 
 def _win_input_in_front(user32, root, hidden_ok: bool) -> bool:

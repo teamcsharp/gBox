@@ -240,7 +240,9 @@ def move(x, y, w, h, holes=()):
     # opening over the game must be cut out now, not after it.
     if state.get("pid") and state.get("parent") and time.monotonic() >= state.get("fresh_check", 0):
         state["fresh_check"] = time.monotonic() + 1.0
-        fresh = find_window(state["pid"])
+        # Include the working dock in the ranking. A top-level Warning dialog is
+        # not a replacement rendering window and must not take over the dock.
+        fresh = find_window(state["pid"], parent=state["parent"])
         if fresh and fresh != state["hwnd"]:
             pid, parent = state["pid"], state["parent"]
             state["hwnd"] = None
