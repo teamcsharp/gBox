@@ -19,6 +19,7 @@ import shutil
 import struct
 import subprocess
 import time
+import uuid
 from pathlib import Path
 
 import numpy as np
@@ -97,12 +98,12 @@ class Rig:
         return {i: (R.GTA_TO_GLTF @ f["world"])[:3, 3] * 1000.0 for i, f in enumerate(self.frames)}
 
 
-def retarget(rig: Rig, src_model: Path, src_roles: dict) -> list[dict]:
+def retarget(rig: Rig, src_model: Path, src_roles: dict, scale: dict | None = None) -> list[dict]:
     """Library glTF -> prims in GTA model space (metres, Z up), J[:,0] = Claude frame index."""
     from .characters import rig_from_gltf
     from .re4gc_enemies import retarget as fit
     src = rig_from_gltf(Path(src_model), src_roles)
-    prims = fit(src, rig, roles=rig.roles, height_range=(1500.0, 1900.0))
+    prims = fit(src, rig, roles=rig.roles, height_range=(1500.0, 1900.0), scale=scale)
     inv = np.linalg.inv(R.GTA_TO_GLTF)[:3, :3]
     for p in prims:
         p["pos"] = (np.asarray(p["pos"], float) / 1000.0) @ inv.T
@@ -225,7 +226,7 @@ def build_txd(txd: bytes, atlases: list[np.ndarray]) -> bytes:
 
 # ------------------------------------------------------------------------------------------------------ build
 def swap_files(disc: R.GtaDisc, src_model: Path, src_roles: dict, work: Path, blender: str | None = None,
-               progress=None, skin: str = "player") -> dict:
+               progress=None, skin: str = "player", scale: dict | None = None) -> dict:
     """New <skin>.dff + <skin>.txd bytes that fit their IMG slots (skin = one of SKINS)."""
     dname, tname = f"{skin}.dff", f"{skin}.txd"
     from .gta_stories_models import pack_atlases
@@ -239,7 +240,7 @@ def swap_files(disc: R.GtaDisc, src_model: Path, src_roles: dict, work: Path, bl
     src, tried = Path(src_model), []
     for attempt in range(5):
         progress(20 + 12 * attempt, f"Fitting onto Claude's {len(rig.frames)} frames")
-        prims = retarget(rig, src, src_roles)
+        prims = retarget(rig, src, src_roles, **({"scale": scale} if scale else {}))
         atlases, maps = pack_atlases(prims, [(r.width, r.height) for r in rasters])
         if len(rasters) > 1:          # one texture per material in Claude's parts: keep every triangle on atlas 0
             maps = [(0, uv) for a, uv in maps]
@@ -270,7 +271,7 @@ def _sha(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
 
-def build_mod(cfg, game: dict, rom: Path, src_model: Path, roles: dict, name: str, progress=None) -> dict:
+def build_mod(cfg, game: dict, rom: Path, src_model: Path, roles: dict, name: str, progress=None, scale: dict | None = None) -> dict:
     """The disc-image mod gta3_<slug>: a copy of the vanilla image with player.dff/.txd replaced in every IMG copy."""
     from . import filemods
     progress = progress or (lambda p, m: None)
@@ -290,7 +291,7 @@ def build_mod(cfg, game: dict, rom: Path, src_model: Path, roles: dict, name: st
             if f"{skin}.dff" not in disc.index or f"{skin}.txd" not in disc.index:
                 continue
             try:
-                fits.append(swap_files(disc, Path(src_model), roles, work, bl, progress, skin=skin))
+                fits.append(swap_files(disc, Path(src_model), roles, work, bl, progress, skin=skin, **({"scale": scale} if scale else {})))
             except ValueError as e:
                 if skin == "player":
                     raise
@@ -345,6 +346,9 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
     gid, name = game["game_id"], f"gta3_{meta['slug']}"
     sess = C._session(ctx, inp.session_id) if inp.session_id else None
     node = sess["session_id"].split("-")[0] if sess else C.HOST_OS
+    if meta.get("retarget_profile_digest"):
+        name += "_fit" + meta["retarget_profile_digest"]
+    if inp.rebuild:name += '_r'+uuid.uuid4().hex[:10]
     have = name in {m["name"] for m in filemods.list_mods(ctx.config, gid)}
     built = None
     if inp.rebuild or not have:
@@ -352,7 +356,7 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
         if not roles:
             raise ValueError(f"{meta['name']} has no body roles (rig.roles): can't fit it to Claude's frames")
         built = build_mod(ctx.config, game, C._rom(ctx, game), C._local_or_fetch(ctx, meta, meta["model"]), roles, name,
-                          progress=ctx.progress)
+                          progress=ctx.progress, scale=(meta.get("rig") or {}).get("scale"))
         C._api(ctx, "POST", f"/api/characters/{meta['slug']}/targets",
                json={"game_id": gid, "slot": "player", "mod": name, "nodes": [C.HOST_OS],
                      "notes": "replaces Claude (player + prison playerp skins, .dff/.txd in every GTA3.IMG copy; his 17 frames and animations stay)"})

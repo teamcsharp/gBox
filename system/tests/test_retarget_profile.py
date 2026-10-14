@@ -42,6 +42,14 @@ def test_roles_match_the_retarget_role_order():
     assert RP.ROLES == S.ORDER
 
 
+def test_mesh_foot_placement_uses_weighted_foot_vertices_and_keeps_ground_offset():
+    points=[[.1,-.15,0],[-.1,-.1,0],[0,1.6,0]]
+    out,report=fit(points,['l_foot','r_foot','head'],{'plant_feet':True,'ground':.02})
+    expected=.02*RP.frame(POS,0)['H']
+    assert out['pos'][:2,1].min()==pytest.approx(expected)
+    assert report['feet']['applied'] and np.allclose(np.diff(out['pos'],axis=0),np.diff(points,axis=0))
+
+
 def test_normalize_clamps_numbers_and_drops_default_adjustments():
     p = RP.normalize({"height": 99, "ground": -3, "head": "1.5", "torso_width": float("nan"),
                       "adjust": {"l_fore": {"length": 0.01, "offset": [5, 0, 0]}, "r_fore": {}},

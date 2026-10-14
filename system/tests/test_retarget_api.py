@@ -80,6 +80,18 @@ def test_reference_finds_the_slots_stock_character(client):
     assert none["reference"] is None
 
 
+def test_native_pedestrian_reference_route_is_exact_and_authenticated(client,monkeypatch,tmp_path):
+    from gbox import gta_lcs_cast
+    file=tmp_path/'native.glb';file.write_bytes(b'glTF')
+    monkeypatch.setattr(gta_lcs_cast,'cached_reference',lambda cfg,g,s:file if s=='ped:1' else None)
+    row=client.get(f'/api/retarget/reference?game_id={GID}&slot=ped:1').json()
+    assert row['exact'] and row['reference']['model_url']==f'/api/retarget/native-reference/{GID}/1'
+    url=row['reference']['model_url']
+    assert client.get(url).content==b'glTF'
+    assert client.get(url,headers={'Authorization':'Bearer invalid'}).status_code==401
+    assert client.get(f'/api/retarget/native-reference/{GID}/2').status_code==404
+
+
 def test_fitting_events_fold_into_the_job_and_snapshots_upload(client, tmp_path):
     client.store.put("job", "j1", {"id": "j1", "tool": "characters", "state": "running", "input": {"op": "cast_swap"}})
     plan = "Fitting 1 models" + FE.encode({"plan": [{"model": "fighter:KAS", "label": "Amy → Kasumi"}]})

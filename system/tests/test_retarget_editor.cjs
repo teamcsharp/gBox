@@ -41,6 +41,14 @@ test('load: the collection roles plus the saved overrides, the slot list, the st
   assert.equal(x.calls[0][0], '/api/characters/amy/retarget_profile?game_id=0123456789abcdef&slot=fighter%3AKAS');
 });
 
+test('texture review blocks rebuilding until decided and carries draft proportions into an approved donor',async()=>{
+  const x=fakeIo(),c=E.controller(x.io,{slug:'amy',gid:'g',title:'T',slot:'player',draftProfile:{head:.75,plant_feet:true}});
+  await c.load();assert.equal(c.state.profile.head,.75);assert.equal(c.state.profile.plant_feet,true);
+  c.state.texturePending=true;
+  await assert.rejects(c.saveAndRebuild(),/Accept or reject/);
+  assert.ok(!x.calls.some(([p])=>p.includes('special_builds/rebuild')));
+});
+
 test('what is what: arm a role, click its bone in the donor view; a bone keeps one role', async () => {
   const x = fakeIo();
   const c = E.controller(x.io, { slug: 'amy', gid: 'g', title: 'T', slot: 'player' });

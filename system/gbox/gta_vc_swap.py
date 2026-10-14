@@ -28,6 +28,7 @@ import re
 import shutil
 import struct
 import time
+import uuid
 from pathlib import Path
 
 import numpy as np
@@ -107,12 +108,12 @@ def slot_targets(img: ImgArchive, inst: dict, slot: str) -> list[tuple[str, str]
 
 
 # ---------------------------------------------------------------------------------------------------- retarget
-def retarget(clump: Clump, src_model: Path, src_roles: dict) -> list[dict]:
+def retarget(clump: Clump, src_model: Path, src_roles: dict, scale: dict | None = None) -> list[dict]:
     """Library glTF -> prims in GTA model space (metres, Z up), J[:,0] = frame index of the owning bone."""
     from .characters import rig_from_gltf
     from .re4gc_enemies import retarget as fit
     src = rig_from_gltf(Path(src_model), src_roles)
-    prims = fit(src, clump, roles=clump.roles, height_range=HEIGHT_MM)
+    prims = fit(src, clump, roles=clump.roles, height_range=HEIGHT_MM, scale=scale)
     inv = np.linalg.inv(R.GTA_TO_GLTF)[:3, :3]
     for p in prims:
         p["pos"] = (np.asarray(p["pos"], float) / 1000.0) @ inv.T
@@ -221,7 +222,7 @@ def _sha(b: bytes) -> str:
 
 # -------------------------------------------------------------------------------------------------------- build
 def swap_files(img: ImgArchive, src_model: Path, src_roles: dict, work: Path, blender: str | None = None,
-               progress=None, model: str = "player", txd_name: str | None = None) -> dict:
+               progress=None, model: str = "player", txd_name: str | None = None, scale: dict | None = None) -> dict:
     """New <model>.dff + <txd>.txd bytes for one ped."""
     from .gta_stories_models import pack_atlases
     progress = progress or (lambda p, m: None)
@@ -240,7 +241,7 @@ def swap_files(img: ImgArchive, src_model: Path, src_roles: dict, work: Path, bl
     src = Path(src_model)
     from . import fit_events as FE
     progress(20, f"Fitting onto {model}'s {len(clump.hanim['nodes'])} bones")
-    prims = retarget(clump, src, src_roles)
+    prims = retarget(clump, src, src_roles, **({"scale": scale} if scale else {}))
     names = {i: f"{fr['name']} (frame {i})" for i, fr in enumerate(clump.frames)}
     FE.weights(prims, names=names, skeleton=len(clump.hanim["nodes"]),
                mode="one bone per vertex (skinned to the ped's HAnim bones)")
@@ -250,7 +251,7 @@ def swap_files(img: ImgArchive, src_model: Path, src_roles: dict, work: Path, bl
         from .re4gc_enemies import decimate
         progress(30, f"{tris} triangles: decimating to ~{int(MAX_TRIS * 0.9)} (Blender)")
         src = decimate(src, Path(work) / f"_gtavc_{model}_dec.glb", int(MAX_TRIS * 0.9), blender)
-        prims = retarget(clump, src, src_roles)
+        prims = retarget(clump, src, src_roles, **({"scale": scale} if scale else {}))
         FE.stage("decimate", data={"from": tris, "to": int(MAX_TRIS * 0.9), "max_tris": MAX_TRIS,
                                    "triangles": FE.triangles(prims)}, prims=prims)
     elif tris > MAX_TRIS:
@@ -276,7 +277,7 @@ def swap_files(img: ImgArchive, src_model: Path, src_roles: dict, work: Path, bl
 
 
 def build_mod(cfg, game: dict, rom: Path, src_model: Path, roles: dict, name: str, slot: str = "player",
-              progress=None) -> dict:
+              progress=None, scale: dict | None = None) -> dict:
     """The mod gtavc_<slug>[_<slot>]: a filemods copy of the classic install with models/gta3.img + gta3.dir rebuilt."""
     from . import filemods
     progress = progress or (lambda p, m: None)
@@ -300,7 +301,7 @@ def build_mod(cfg, game: dict, rom: Path, src_model: Path, roles: dict, name: st
     for k, (model, txd) in enumerate(targets):
         progress(10 + 55 * k / len(targets), f"{model}.dff ({k + 1}/{len(targets)})")
         try:
-            f = swap_files(img, Path(src_model), roles, work, bl, None, model, txd)
+            f = swap_files(img, Path(src_model), roles, work, bl, None, model, txd, **({"scale": scale} if scale else {}))
         except ValueError as e:
             if len(targets) == 1:
                 raise
@@ -390,7 +391,7 @@ def build_cast(cfg, game: dict, rom: Path, pairs: list[tuple[str, dict]], name: 
             if not roles:
                 raise ValueError(f"{meta.get('name')} has no body roles (rig.roles)")
             f = swap_files(img, root / meta["slug"] / meta["model"], roles, work, bl, None, model,
-                           txds.get(model.lower(), model))
+                           txds.get(model.lower(), model), **({"scale": meta["rig"]["scale"]} if (meta.get("rig") or {}).get("scale") else {}))
         except Exception as e:                             # noqa: BLE001 - one ped never stops the cast
             slots[slot] = {"status": "failed", "reason": str(e)[:400]}
             FE.stage("write", "failed", {"reason": slots[slot]["reason"][:150]})
@@ -450,6 +451,9 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
                         f"this install ({inst['kind']}: {inst.get('engine') or inst['root']})", "install": inst}
         return char_coverage.no_writer(ctx, C._api, meta, game, need, inp) | {"install": inst, "writer": "gbox.gta_vc_swap"}
     name = f"gtavc_{meta['slug']}" + {"player": "", "ped": f"_{target}", "peds": "_peds", "all": "_all"}[kind]
+    if meta.get("retarget_profile_digest"):
+        name += "_fit" + meta["retarget_profile_digest"]
+    if inp.rebuild:name += '_r'+uuid.uuid4().hex[:10]
     have = name in {m["name"] for m in filemods.list_mods(ctx.config, gid)}
     built = None
     if inp.rebuild or not have:
@@ -457,7 +461,7 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
         if not roles:
             raise ValueError(f"{meta['name']} has no body roles (rig.roles): can't fit it to Tommy's bones")
         built = build_mod(ctx.config, game, rom, C._local_or_fetch(ctx, meta, meta["model"]), roles, name, inp.slot,
-                          progress=ctx.progress)
+                          progress=ctx.progress, scale=(meta.get("rig") or {}).get("scale"))
         C._api(ctx, "POST", f"/api/characters/{meta['slug']}/targets",
                json={"game_id": gid, "slot": inp.slot, "mod": name, "nodes": [C.HOST_OS],
                      "notes": f"replaces {', '.join(built['models'])} (.dff/.txd in a rebuilt models/gta3.img; bones and animations stay)"})

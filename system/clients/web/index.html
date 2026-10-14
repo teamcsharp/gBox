@@ -292,6 +292,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/build-notes.js"></script>
 <script src="/viz/launch-mods.js"></script>
 <script src="/viz/retarget-handles.js"></script>
+<script src="/viz/texture-review.js"></script>
 <script src="/viz/retarget-editor.js"></script>
 <script src="/viz/pick-whip.js"></script>
 <script src="/viz/gpu-game-surface.js"></script>
@@ -785,6 +786,7 @@ tabs.GameModels.after = (gid, title) => {
     detail.innerHTML = `<h3>${esc(model.name)}</h3><p class="mut">${esc(model.source?.game_title || title || "")}</p>
       <div class="bar"><a class="act" href="${modelUrl}" download="${esc(model.model || model.slug + '.glb')}">Export model</a>
       <label>Assign to <select id="model-slot"><option value="player">Player</option><option value="enemies">Enemies</option></select></label>
+      <button class="act" id="model-fit">Fit &amp; textures…</button>
       <button class="act pri" id="model-assign">Build replacement for this game</button></div><p id="model-result" class="mut"></p>`;
     if (canView) {
       try {
@@ -795,6 +797,8 @@ tabs.GameModels.after = (gid, title) => {
         if (revision !== viewRevision || selection !== GAME_MODELS.selection) viewer.dispose(); else { GAME_MODELS.viewer = viewer; modelClips(model, viewer, fileUrl); }
       } catch (err) { if (revision === viewRevision && selection === GAME_MODELS.selection) preview.innerHTML = `<p class="bad" style="padding:15px">3D preview unavailable: ${esc(err.message)}</p><img style="height:70%;max-width:100%;object-fit:contain" src="${model.preview_url}?${tq()}" alt="${esc(model.name)}">`; }
     } else { preview.innerHTML = `<img style="width:100%;height:100%;object-fit:contain" src="${model.preview_url}?${tq()}" alt="${esc(model.name)}">`; modelClips(model, null, fileUrl, preview); }
+    $("#model-fit").hidden = !canView;
+    $("#model-fit").onclick = () => retargetOpen({slug:model.slug,gid,title,slot:$("#model-slot").value});
     $("#model-assign").onclick = async e => {
       const status = $("#model-result"); e.currentTarget.disabled = true; status.textContent = "Building replacement…";
       try {

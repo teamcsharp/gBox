@@ -70,6 +70,7 @@
   function tabsHTML(state) {
     return `<button type="button" class="act${state.mode === "goals" ? " pri" : ""}" data-rt-mode="goals" title="Both figures in a T-pose, a circle on every joint">Goals</button>
       <button type="button" class="act${state.mode === "fit" ? " pri" : ""}" data-rt-mode="fit" title="Bones, proportions and the fit over the stock model">Fit &amp; proportions</button>
+      <button type="button" class="act${state.mode === "shape" ? " pri" : ""}" data-rt-mode="shape">Shape cage</button>
       <label class="rt-tp"><input type="checkbox" data-rt-tpose${state.tpose ? " checked" : ""}> T-pose</label>`;
   }
   // the selected circle: which donor bone it is (a list of every bone) and where its pivot moved
@@ -111,8 +112,13 @@
         <div class="rt-side scroll">
           <div class="rt-sec rt-goals-only" data-rt-part-slot="joint"></div>
           <div class="rt-sec rt-goals-only"><b>Goals</b> <span class="mut">donor bone → target joint</span><div data-rt-part-slot="legend"></div></div>
+          <div class="rt-sec"><b>Shape before fitting</b><p class="mut">In Shape cage, drag circles over the source. The adjusted fit stays visible on the right.</p>
+            <label>Cage depth <select data-rt-cage-slice><option value="0">Back</option><option value="1" selected>Middle</option><option value="2">Front</option></select></label>
+            <button class="act" data-rt-go="shape-reset">Reset cage</button><label><input type="checkbox" data-rt-plant> Plant mesh feet at reference ground</label>
+            <div class="mut" data-rt-fit-measures></div></div>
           <div class="rt-sec"><b>Proportions</b><div data-rt-part-slot="globals"></div></div>
           <div class="rt-sec" data-rt-part-slot="part"></div>
+          <div class="rt-sec" data-rt-textures></div>
           <div class="rt-sec"><b>What is what</b> <button type="button" class="act" data-rt-go="guess" title="Fill empty roles from bone names">Guess from names</button><div data-rt-part-slot="roles"></div></div>
         </div>
       </div>
@@ -126,6 +132,7 @@
   const CAPTIONS = {
     goals: { donor: ["Source · donor", "(drag a circle to move that joint; click it to pick its bone)"],
       target: ["Target · goals", "(the fitted donor, live)"] },
+    shape: {donor:["Reference · original donor", "(drag cage circles; Alt-drag changes depth)"],target:["Adjusted · over stock reference", "(cage deformation before retargeting)"]},
     fit: { donor: ["Donor · bones", "(arm a role, click its bone)"], target: ["In the game", "(drag the circles; Shift-drag moves a part)"] } };
 
   // ---- the controller (no DOM) ------------------------------------------------------------
@@ -158,8 +165,8 @@
         if (!st.slots.some(s => s.slot === st.slot)) st.slots.unshift({ slot: st.slot, name: st.slot });
       }
       st.baseRoles = Object.assign({}, v.rig_roles || {});
-      const p = H.normalize(v.resolved || {});
-      st.roles = H.applyOverrides(st.baseRoles, p.roles); st.profile = p; st.dirty = false;
+      const p = H.normalize(opts.draftProfile || v.resolved || {});
+      st.roles = H.applyOverrides(st.baseRoles, p.roles); st.profile = p; st.dirty = !!opts.draftProfile;
       st.savedNote = v.profile ? "saved for this slot" : v.game_wide ? "using the game-wide profile" : "automatic fit (nothing saved)";
       renderAll();
       io.status(!H.issues(st.roles).ok ? `Assign ${H.issues(st.roles).missing.join(" and ")} first: the fit needs them.`
@@ -168,7 +175,7 @@
       changed();
       return st;
     }
-    function setMode(mode) { st.mode = mode === "fit" ? "fit" : "goals"; io.render("tabs", tabsHTML(st)); changed(); }
+    function setMode(mode) { st.mode = ["fit","shape"].includes(mode) ? mode : "goals"; io.render("tabs", tabsHTML(st)); changed(); }
     function setTpose(on) { st.tpose = !!on; io.render("tabs", tabsHTML(st)); changed(); }
     function selectJoint(role) {                              // a circle clicked: its bone list and its move
       st.joint = H.GOALS.includes(role) ? role : null;
@@ -274,6 +281,7 @@
         base && base.strict_cutscenes ? { strict_cutscenes: true } : {}) };
     }
     async function saveAndRebuild() {
+      if(st.texturePending)throw Error("Accept or reject the texture candidate before rebuilding.");
       const v = await save("slot");
       if (!v) return null;
       const recipe = await rebuildRecipe();
@@ -311,7 +319,7 @@
     #rtedit .rt-part b{display:block;margin:2px 0}#rtedit .rt-hint{font-size:11px}
     #rtedit .rt-views{flex-wrap:wrap}#rtedit .rt-modes{flex:1 0 100%;display:flex;gap:6px;align-items:center;font-size:11px}
     #rtedit .rt-modes .rt-tp{margin-left:auto;display:flex;gap:4px;align-items:center}#rtedit .rt-view{min-height:0;height:calc(100% - 30px)}
-    #rtedit[data-mode=fit] .rt-goals-only{display:none}
+    #rtedit[data-mode=fit] .rt-goals-only,#rtedit[data-mode=shape] .rt-goals-only{display:none}
     #rtedit .rt-joint b{display:flex;gap:6px;align-items:center;margin:2px 0}#rtedit .rt-joint b i,#rtedit .rt-goal i{width:16px;height:16px;border-radius:50%;
       display:inline-block;font:700 9px/16px ui-monospace,monospace;text-align:center;color:#101318;font-style:normal;flex:none}
     #rtedit .rt-jb{display:grid;grid-template-columns:92px 1fr;gap:4px;align-items:center;font-size:11px;margin-bottom:3px}#rtedit .rt-jb select{min-width:0;font-size:11px}
@@ -343,6 +351,7 @@
       const skinBones = o.isSkinnedMesh && o.skeleton ? o.skeleton.bones.map(b => byObj.has(b) ? byObj.get(b) : -1) : null;
       meshes.push({ pos, index: g.index ? g.index.array : null, skinBones, owner: owner ? byObj.get(owner) : -1,
         skinIdx: skinBones && g.attributes.skinIndex ? g.attributes.skinIndex.array : null,
+        prop:!!(o.userData?.gbox_prop), material:o.material, uv:g.attributes.uv?.array,
         skinW: skinBones && g.attributes.skinWeight ? g.attributes.skinWeight.array : null });
     });
     let ground = Infinity; for (const m of meshes) for (let i = 1; i < m.pos.length; i += 3) ground = Math.min(ground, m.pos[i]);
@@ -365,6 +374,8 @@
       onChange: () => schedule(),
     });
     const c = controller(ui, opts);
+    const textures=root.GBoxTextureReview?.mount(q('[data-rt-textures]'),{api:io.api,url:u=>io.url?io.url(u):u},{slug:opts.slug,
+      onPending:on=>{c.state.texturePending=on;},onAccepted:result=>{const draft=H.normalize(c.state.profile),slot=c.state.slot;dispose();open(doc,io,{...opts,slug:result.variant,name:result.name,slot,draftProfile:draft});}});
     el.dataset.mode = c.state.mode;
     let raf = 0;
     function schedule() { if (!raf && !dead) raf = requestAnimationFrame(() => { raf = 0; redraw(); }); }
@@ -372,7 +383,7 @@
     // ---- scene data (filled once the models load) ----
     const I = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
     let THREE = null, Loader = null, donor = null, target = null, R = null, donorRest = {}, donorPos = {}, fit = null, lfit = null,
-      pivots = {}, tPos = {}, tGround = 0, dGround = 0, Hd = 1, jointsKey = null, donorScene = null, refHolder = null;
+      cageBounds = null, shapeKey = null, cageSlice=1, pivots = {}, tPos = {}, tGround = 0, dGround = 0, Hd = 1, jointsKey = null, donorScene = null, refHolder = null;
     let previewMeshes = [], posedMeshes = [], drag = null;
     function rolePositions(model, roles, rot) {
       const out = {};
@@ -403,12 +414,17 @@
           } else { pm.roles0[i] = m.owner >= 0 ? br[m.owner] : "hip"; pm.w[i] = 1; }
         }
       }
+      const body=previewMeshes.filter(pm=>!pm.src.prop).flatMap(pm=>Array.from(pm.rest));
+      const mn=[Infinity,Infinity,Infinity],mx=[-Infinity,-Infinity,-Infinity];for(let i=0;i<body.length;i+=3)for(let a=0;a<3;a++){mn[a]=Math.min(mn[a],body[i+a]);mx[a]=Math.max(mx[a],body[i+a]);}
+      cageBounds={min:mn,max:mx};shapeKey=null;
       jointsKey = null;
       rejoint();
     }
     // joint moves changed: the moved pivots, the limb segments they re-derive (retarget_profile.move_joints), the fits
     function rejoint() {
       jointsKey = JSON.stringify(H.normalize(c.state.profile).joints);
+      shapeKey = JSON.stringify(c.state.profile.lattice||{});
+      for(const pm of previewMeshes)pm.shaped=pm.src.prop?pm.rest:H.deformCage(pm.rest,c.state.profile,cageBounds,Hd);
       if (!donor || !donorRest.hip || !donorRest.head) { fit = lfit = null; return; }
       donorPos = H.movedPositions(donorRest, c.state.profile, Hd);
       fit = H.baseFit(donorPos, dGround, tPos, tGround);
@@ -419,7 +435,7 @@
         for (let i = 0; i < n; i++) {                         // the strongest influence's role decides the segment
           let best = 0; for (let j = 1; j < k; j++) if (pm.w[i * k + j] > pm.w[i * k + best]) best = j;
           own[i] = pm.roles0[i * k + best];
-          const p = fit.apply([pm.rest[3 * i], pm.rest[3 * i + 1], pm.rest[3 * i + 2]]);
+          const p = fit.apply([pm.shaped[3 * i], pm.shaped[3 * i + 1], pm.shaped[3 * i + 2]]);
           pm.base[3 * i] = p[0]; pm.base[3 * i + 1] = p[1]; pm.base[3 * i + 2] = p[2];
         }
         const now = H.resegment(pm.rest, own, donorRest, donorPos);
@@ -498,7 +514,8 @@
       if (dead) return;
       const st = c.state, goals = st.mode === "goals";
       captions();
-      if (donor && JSON.stringify(H.normalize(st.profile).joints) !== jointsKey) rejoint();
+      const plant=q("[data-rt-plant]");if(plant)plant.checked=!!st.profile.plant_feet;
+      if (donor && (JSON.stringify(H.normalize(st.profile).joints) !== jointsKey || JSON.stringify(st.profile.lattice||{}) !== shapeKey)) rejoint();
       if (donorScene) donorScene.visible = !goals;
       if (refHolder) refHolder.visible = !goals;
       for (const pm of posedMeshes) pm.mesh.visible = goals;
@@ -532,6 +549,10 @@
           else { const [x, y] = dv.map.toScreen(p); ctx.fillStyle = st.armed ? "#ffb46b" : "#8b93a3"; ctx.fillRect(x - 2, y - 2, 4, 4); }
         });
         dv.points = pts; dv.circles = null;
+        if(st.mode === "shape" && cageBounds){
+          const cs=[];for(let y=0;y<3;y++)for(let x=0;x<3;x++){const i=x+3*y+9*cageSlice,base=H.latticePoint(i,cageBounds),d=st.profile.lattice?.offsets?.[i]||[0,0,0];cs.push({id:i,at:base.map((v,a)=>v+d[a]*Hd),r:Hd*.025});}
+          for(const g of cs)circle(ctx,dv.map,g.at,g.r,"#ffce66","#ffce6644",String(g.id));dv.cage=cs;
+        }
       }
       const tv = views.target;
       if (tv && goals) {
@@ -539,7 +560,9 @@
         const tp = H.tPose(tPos, st.tpose), pts = [];
         if (lfit) {
           const tr = H.compose(tp, H.compose(H.roleTransforms(lfit.pivots, st.profile, tGround), lfit));
-          for (const pm of previewMeshes) { updateMesh(pm, pm.rest, tr); pts.push(...samples(pm.attr.array, 300)); }
+          for (const pm of previewMeshes) updateMesh(pm, pm.shaped||pm.rest, tr);
+          plantFeet();
+          for (const pm of previewMeshes) pts.push(...samples(pm.attr.array, 300));
         }
         const cs = H.goalCircles(tPos, { tpose: st.tpose, ground: tGround });
         frameView(tv, bounds(pts.concat(cs.map(g => g.at))));
@@ -553,12 +576,14 @@
         // target view: stock model / skeleton + the fitted donor, live, with the circles
         const tr = H.roleTransforms(pivots, st.profile, tGround);
         for (const pm of previewMeshes) updateMesh(pm, pm.base, tr);
+        plantFeet();
         const hs = H.handles(pivots, st.profile, tGround);
         const pts = Object.values(tPos).concat(hs.map(h => h.at));
         frameView(tv, bounds(pts.concat([[0, tGround - 0.05 * H.frame(tPos, tGround).H, 0]])));
         if (tv.renderer) tv.renderer.render(tv.scene, tv.camera);
         const ctx = tv.ctx; ctx.clearRect(0, 0, tv.w, tv.h);
         bonesLines(ctx, tv.map, tPos, "#ffffff40");
+        const measure=q('[data-rt-fit-measures]');if(measure){let low=Infinity;for(const pm of previewMeshes)for(let i=1;i<pm.attr.array.length;i+=3)low=Math.min(low,pm.attr.array[i]);measure.textContent=Number.isFinite(low)?`Lowest mesh point: ${((low-tGround)/Math.max(H.frame(tPos,tGround).H,1e-9)*100).toFixed(1)}% of reference height above ground. Check animated poses before approving.`:'No mesh measurement.';}
         const g = tv.map.toScreen([0, tGround + st.profile.ground * H.frame(tPos, tGround).H, 0]);
         ctx.strokeStyle = "#ffffff30"; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(0, g[1]); ctx.lineTo(tv.w, g[1]); ctx.stroke(); ctx.setLineDash([]);
         for (const h of hs) {
@@ -577,6 +602,18 @@
         tv.handles = tv.circles = null;
       }
     }
+    function plantFeet() {
+      if(!c.state.profile.plant_feet)return;
+      let floor=Infinity;
+      for(const pm of previewMeshes)if(!pm.src.prop)for(let i=0;i<pm.roleIdx.length/pm.k;i++){
+        let best=0;for(let k=1;k<pm.k;k++)if(pm.w[i*pm.k+k]>pm.w[i*pm.k+best])best=k;
+        if(["l_foot","r_foot"].includes(H.ROLES[pm.roleIdx[i*pm.k+best]]))floor=Math.min(floor,pm.attr.array[i*3+1]);
+      }
+      if(Number.isFinite(floor)){
+        const lift=tGround+c.state.profile.ground*H.frame(tPos,tGround).H-floor;
+        for(const pm of previewMeshes){for(let i=1;i<pm.attr.array.length;i+=3)pm.attr.array[i]+=lift;pm.attr.needsUpdate=true;pm.geo.computeBoundingSphere();}
+      }
+    }
     function nearest(list, p, tol) {                          // the goal circle under the pointer
       let best = null, bd = Infinity;
       for (const g of list || []) { const d = Math.hypot(g.at[0] - p[0], g.at[1] - p[1]); if (d <= g.r + tol && d < bd) { best = g; bd = d; } }
@@ -587,6 +624,9 @@
       v.ov.addEventListener("pointerdown", e => {
         if (!v.map) return;
         const p = at(e), tol = 6 / v.map.s;
+        if(c.state.mode === "shape" && kind === "donor"){
+          const g=nearest(v.cage,p,tol);if(!g)return;drag={kind:"cage",g,from:p,start:(c.state.profile.lattice?.offsets?.[g.id]||[0,0,0]).slice(),map:v.map};try{v.ov.setPointerCapture(e.pointerId);}catch(err){/* optional */}e.preventDefault();e.stopPropagation();return;
+        }
         if (c.state.mode === "goals") {                      // Goals: drag a donor circle; click either side's to pick it
           const g = nearest(v.circles, p, tol);
           if (!g) return;
@@ -615,6 +655,11 @@
       });
       v.ov.addEventListener("pointermove", e => {
         if (!drag) return;
+        if(drag.kind === "cage"){
+          if(kind!=="donor")return;const rect=v.ov.getBoundingClientRect(),to=drag.map.toModel([e.clientX-rect.left,e.clientY-rect.top]);
+          const offsets={...(c.state.profile.lattice?.offsets||{})};offsets[drag.g.id]=drag.start.map((d,a)=>Math.max(-.25,Math.min(.25,d+(e.altKey?(a===2?(to[0]-drag.from[0])/Hd:0):(a<2?(to[a]-drag.from[a])/Hd:0)))));
+          c.state.profile=H.normalize({...c.state.profile,lattice:{offsets}});c.state.dirty=true;schedule();return;
+        }
         if (drag.kind === "joint") {
           if (drag.side !== "donor" || kind !== "donor") return;
           if (!drag.moved && Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) < 3) return;
@@ -648,6 +693,8 @@
     el.addEventListener("change", e => {
       const b = e.target.closest("[data-rt-bone]");
       if (b) { c.setRoleBone(b.dataset.rtBone, b.value); refit(); schedule(); return; }
+      if(e.target.matches('[data-rt-cage-slice]')){cageSlice=+e.target.value;schedule();return;}
+      if(e.target.matches('[data-rt-plant]')){c.state.profile=H.normalize({...c.state.profile,plant_feet:e.target.checked});c.state.dirty=true;schedule();return;}
       if (e.target.matches("[data-rt-tpose]")) { c.setTpose(e.target.checked); return; }
       if (e.target.matches('[data-rt="slot"]')) c.setSlot(e.target.value).then(() => { refit(); schedule(); }).catch(err => ui.status("✗ " + err.message));
     });
@@ -660,6 +707,7 @@
       const what = go.dataset.rtGo;
       try {
         if (what === "close") { if (c.state.dirty && io.confirm && !io.confirm("Close without saving the retarget changes?")) return; dispose(); return; }
+        if(what === "shape-reset"){const profile={...c.state.profile};delete profile.lattice;c.state.profile=H.normalize(profile);c.state.dirty=true;schedule();return;}
         if (what === "guess") { c.guess(); refit(); schedule(); return; }
         if (what === "part-reset") { c.resetPart(go.dataset.role); schedule(); return; }
         if (what === "joint-reset") { c.resetJoint(go.dataset.role); schedule(); return; }
@@ -672,7 +720,7 @@
     });
     const ro = typeof ResizeObserver === "function" ? new ResizeObserver(() => schedule()) : null;
     function dispose() {
-      dead = true; if (ro) ro.disconnect();
+      dead = true; textures?.dispose(); if (ro) ro.disconnect();
       for (const v of Object.values(views)) if (v && v.renderer) {
         v.scene.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material) [].concat(o.material).forEach(m => m.dispose()); });
         v.renderer.dispose();
@@ -732,7 +780,9 @@
           for (const m of donor.meshes) {
             const geo = new THREE.BufferGeometry(), attr = new THREE.BufferAttribute(new Float32Array(m.pos.length), 3);
             geo.setAttribute("position", attr); if (m.index) geo.setIndex(Array.from(m.index));
-            const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0x8fe6a8, transparent: true, opacity: 0.8, side: THREE.DoubleSide }));
+            if(m.uv)geo.setAttribute("uv",new THREE.BufferAttribute(new Float32Array(m.uv),2));
+            const material=m.material?([].concat(m.material)[0]).clone():new THREE.MeshStandardMaterial({color:0x8fe6a8,side:THREE.DoubleSide});
+            const mesh = new THREE.Mesh(geo, material);
             views.target.group.add(mesh);
             const pm = { src: m, geo, attr, mesh }; previewMeshes.push(pm);
             const pgeo = new THREE.BufferGeometry(), pattr = new THREE.BufferAttribute(new Float32Array(m.pos.length), 3);

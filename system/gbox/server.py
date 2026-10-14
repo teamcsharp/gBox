@@ -575,6 +575,14 @@ def create_app(config: Config) -> FastAPI:
         K, root = _chars()
         if not re.fullmatch(r"[0-9a-f]{16}", game_id or ""):
             raise HTTPException(422, "game_id is a catalog game id")
+        if re.fullmatch(r'ped:\d+',slot):
+            from . import gta_lcs_cast, gta_stories_models
+            game=store.catalog_get(game_id)
+            exact=gta_lcs_cast.cached_reference(config,game,slot) if game else None
+            if exact:
+                return {'game_id':game_id,'slot':slot,'slot_name':slot,'exact':True,
+                        'reference':{'name':f'Native {slot}','roles':gta_stories_models.LCS_ROLES,
+                                     'model_url':f'/api/retarget/native-reference/{game_id}/{slot.split(":")[1]}'}}
         own = [m for m in K.list_all(root) if (m.get("source") or {}).get("game_id") == game_id
                and (m.get("kind") or "character") == "character" and not m.get("variant_of") and m.get("model")]
         words = set(re.findall(r"[a-z0-9]+", str(slot).lower())) - {"fighter", "wrestler", "player", "enemy", "driver",
@@ -601,6 +609,16 @@ def create_app(config: Config) -> FastAPI:
                 "reference": {"slug": best["slug"], "name": best["name"],
                               "model_url": f"/api/characters/{best['slug']}/file/{best['model']}",
                               "roles": (best.get("rig") or {}).get("roles") or {}}}
+
+    @app.get('/api/retarget/native-reference/{game_id}/{index}')
+    def native_ped_reference(game_id:str,index:int,actor=Depends(auth)):
+        from . import gta_lcs_cast
+        if not re.fullmatch(r'[0-9a-f]{16}',game_id):raise HTTPException(422,'Invalid game id')
+        game=store.catalog_get(game_id)
+        try:path=gta_lcs_cast.cached_reference(config,game,f'ped:{index}') if game else None
+        except (KeyError,ValueError):raise HTTPException(404,'Native pedestrian reference unavailable')
+        if not path:raise HTTPException(404,'Native pedestrian reference unavailable; stage the base disc first')
+        return FileResponse(path,media_type='model/gltf-binary')
 
     @app.get("/api/retarget/goals")
     def retarget_goals(game_id: str, slot: str = "", actor=Depends(auth)):
@@ -631,6 +649,8 @@ def create_app(config: Config) -> FastAPI:
     # copy to the clipboard (the picker's right-click), import back as a variant / new donor (a characters job)
     from . import blender_roundtrip
     blender_roundtrip.register(app, auth, store, _chars, lambda req, actor: submit(req, actor), JobRequest)
+    from . import texture_review
+    texture_review.register(app, auth, store, _chars, lambda req, actor: submit(req, actor), JobRequest)
 
     # environments: whole captured scenes (characters op=extract kind=environment), next to the characters
     def _env_file(slug: str, rel: str) -> Path:

@@ -30,8 +30,8 @@ Writers apply a profile in three places:
      elbow / wrist / knee / ankle swept across, so the fit's pivots, limb rotations, stretch, segmentation and weights
      all use the moved joint: every writer that hands rig.scale to sm64_swap.retarget (SM64, OoT, PE1/2, FF7,
      SA2/JGR/PSO, SmackDown! 2, No Mercy/WCW, Def Jam, DOA++, Enter the Matrix), doa2_weighted_retarget (DOA2) or
-     re4gc_enemies.retarget (RE4, Metal Arms). Writers that call those retargets without the profile (GTA III /
-     Vice City / Stories, RE6, 007 AUF, MGS VR) or fit without them (Crazy Taxi's principal-axis parts, the sprite
+     re4gc_enemies.retarget (RE4, Metal Arms, GTA III / Vice City / Stories). Writers that call those retargets
+     without the profile (RE6, 007 AUF, MGS VR) or fit without them (Crazy Taxi's principal-axis parts, the sprite
      writers) do not honour joint moves (nor the rest of the profile, except Crazy Taxi's part_transform below).
   3. after the automatic fit, in target space: the shared retargets (sm64_swap.retarget - used by SM64, OoT, PE1/2,
      FF7, SA2/JGR/PSO through ninja_swap, SmackDown! 2, No Mercy/WCW, Def Jam - doa2_weighted_retarget.retarget and
@@ -137,6 +137,13 @@ def normalize(profile: dict | None) -> dict:
     for k in ("notes", "updated", "by"):
         if isinstance(profile.get(k), (str, int, float)):
             out[k] = profile[k] if not isinstance(profile[k], str) else profile[k][:500]
+    if "lattice" in profile:
+        from .shape_lattice import normalize as clean_lattice
+        cage = clean_lattice(profile["lattice"])
+        if cage["offsets"]:
+            out["lattice"] = cage
+    if profile.get("plant_feet") is True:
+        out["plant_feet"] = True
     return out
 
 
@@ -145,7 +152,7 @@ def is_identity(profile: dict | None) -> bool:
     if not profile:
         return True
     p = normalize(profile)
-    return (not p["adjust"] and not p["joints"] and all(p[k] == DEFAULT[k] for k in ("height", "ground", "head",
+    return (not p["adjust"] and not p["joints"] and not p.get("lattice") and not p.get("plant_feet") and all(p[k] == DEFAULT[k] for k in ("height", "ground", "head",
                                                                                      "torso_width", "arm_length",
                                                                                      "leg_length")))
 
@@ -335,10 +342,29 @@ def apply_roles(prims: list[dict], role_pos: dict, joint_role: dict, profile: di
             shift = max(shift, float(np.abs(newP - P).max()))
         out.append({**p, "pos": newP, "nrm": newN})
     f = frame(role_pos, ground)
+    planted = {"applied": False}
+    if prof.get("plant_feet"):
+        feet = {int(j) for j, role in joint_role.items() if role in ("l_foot", "r_foot")}
+        floors = []
+        for p in out:
+            if p.get("prop"):
+                continue
+            j = np.asarray(p["J"], int)
+            if j.ndim == 1:
+                j = j[:, None]
+            w = np.asarray(p.get("W", np.ones(j.shape)), float)
+            owner = j[np.arange(len(j)), w.argmax(1)]
+            selected = np.isin(owner, list(feet))
+            if selected.any():
+                floors.append(float(np.asarray(p["pos"])[selected, 1].min()))
+        if floors:
+            lift = f["ground"] + prof["ground"] * f["H"] - min(floors)
+            out = [{**p, "pos": np.asarray(p["pos"]) + [0, lift, 0]} for p in out]
+            planted = {"applied": True, "lift": float(lift), "measured_floor": min(floors)}
     return out, {"applied": True, "height": prof["height"], "ground": prof["ground"], "head": prof["head"],
                  "torso_width": prof["torso_width"], "arm_length": prof["arm_length"],
                  "leg_length": prof["leg_length"], "roles_adjusted": sorted(prof["adjust"]),
-                 "max_shift": round(shift / f["H"], 4)}
+                 "max_shift": round(shift / f["H"], 4), "feet": planted}
 
 
 def apply_jmap(prims: list[dict], T, jmap: dict, profile: dict | None, ground: float | None = None):
@@ -408,6 +434,9 @@ def move_joints(rig: dict, profile: dict | None) -> tuple[dict, dict]:
     their new segment (owner, and J where a prim carries weights: influences of the chain's two segments go to the
     new one). Returns (rig, report); the rig itself when nothing moves, so builds without joint moves are unchanged."""
     prof = profile_of({"profile": profile}) if profile else None
+    if prof and prof.get("lattice"):
+        from .shape_lattice import apply as shape_donor
+        rig = shape_donor(rig, prof["lattice"])
     ri = rig.get("roles") or {}
     moves = {r: np.asarray(d, float) for r, d in (prof or {}).get("joints", {}).items() if r in ri}
     if not moves:
