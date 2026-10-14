@@ -146,7 +146,8 @@
     }
     function remote(list) {
       const ids = new Set();
-      for (const j of list || []) if (isLaunch(j) && LIVE.has(j.state) && !finished.has(j.id)) { ids.add(j.id); track(j); }
+      // Background agent tests belong in Tasks, not the operator's game-loading bar.
+      for (const j of list || []) if (isLaunch(j) && !j.agent_use && LIVE.has(j.state) && !finished.has(j.id)) { ids.add(j.id); track(j); }
       for (const id of [...live.keys()]) {
         if (ids.has(id) || settling.has(id)) continue;
         if (observedAt.has(id) && now() - observedAt.get(id) < OBSERVED_GRACE_MS) continue;   // jobWait follows it and brings the end
