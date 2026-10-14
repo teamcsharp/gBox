@@ -6,7 +6,8 @@ requires-python = ">=3.11"
 dependencies = ["fastapi>=0.110", "uvicorn>=0.29", "pydantic>=2.6", "httpx>=0.27", "capstone>=5.0", "yt-dlp>=2026.1", "numpy>=1.26", "pillow>=10", "jsonschema>=4.23", "PyYAML>=6.0", "tzdata>=2024.1; sys_platform == 'win32'", "zstandard>=0.25; python_version < '3.14'"]
 
 [project.optional-dependencies]
-test = ["pytest>=8"]
+test = ["pytest>=8", "psutil>=5.9"]
+browser = ["psutil>=5.9", "playwright>=1.40"] # isolated UI evidence / browser diagnostics
 mcp = ["mcp>=2.3"]                # gbox mcp: Claude Desktop / Claude Code / other agents
 overlay = ["opencv-contrib-python-headless>=4.8"]   # PC venv: overlay swap tracker (clients/desktop/overlay_track.py, CSRT)
 
