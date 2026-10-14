@@ -315,6 +315,21 @@ carry this branch's double-sided and LOD changes. The offline renders are in
 `D:\gBox\research\soulcalibur\evidence\v4_offline\` (`evidence.json`). They include the stock costumes and v3,
 both rendered the way the game reads them.
 
+**v4 Peach had no face.** The SM64DS library GLBs carry no normals. The retarget loader (`load_rig`) filled
+them with a constant +Y, and `sm64_swap._orient` flips a material whose normals point toward its joint's centroid.
+Peach's single-sided face (DS POLYGON_ATTR `0x81`) sits below her head joint's centroid, because the hair and crown
+lift it, so the check turned the face inside out and the game culled it. The same check also flipped her neck and
+both ponytails, and one Koopa Troopa part. Every one of those triangles agrees with its own DS normal, so the source
+winding is right. A donor without normals now gets its winding's normals, flagged `normals_from_winding`, and
+`_orient` leaves those parts alone. No other donor in the pool changes.
+
+**v5 (`sc_sonic_vs_mario_random_v5`)** has 45 of 45 costumes built and verified. Compared with v4, the Peach (Seung
+Mina, Sophitia, Ivy) and Koopa Troopa costumes change geometry. The other SM64DS costumes change only their normal
+rows (lighting), because their donor normals are now geometric instead of +Y. Renders: `D:\gBox\research\soulcalibur\evidence\v5_offline\`.
+The library Peach is the ending-cutscene model and is built to be seen from the front: with the DS's own culling,
+the back of her head is open apart from the back-hair strip, so it is open in game too. Drawing her single-sided hair
+from both sides would close it, at the cost of budget.
+
 Known limits:
 
 - The SM64DS Peach library entry (`sm64ds_peach`) is stretched before any fitting: one primitive spans 17 units
