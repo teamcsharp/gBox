@@ -36,7 +36,7 @@
     .bri-refs{display:flex;gap:10px;flex-wrap:wrap}.bri-refs figure{margin:5px 0;max-width:160px}.bri-refs img{max-width:150px;max-height:100px}.bri-refs figcaption{font-size:12px;overflow-wrap:anywhere}
     .bri-status{color:#c8cde0}.bri-buttons{position:sticky;bottom:-18px;background:#17181f;padding:10px 0;margin-bottom:0}.bri-box label{display:block;margin-top:12px}.bri-file{max-width:100%}`;
   function open(build, env = {}) {
-    if (!build.session_id) return Promise.reject(new Error('This build is not the active game. Select its running session to capture a report.'));
+    if (!build.session_id && typeof env.capture!=='function') return Promise.reject(new Error('This build is not the active game. Select its running session to capture a report.'));
     const doc = env.document || root.document, previous = doc.activeElement;
     const existing = doc.querySelector('.bri-modal');
     if (existing?._reportResult) return existing._reportResult; // also covers a pending, hidden capture
@@ -44,7 +44,7 @@
     wrap.innerHTML = `<style>${css}</style><section class="bri-box" role="dialog" aria-modal="true" aria-label="Annotate build report" tabindex="-1">
       <h2>Show what is wrong with this build</h2><p class="bri-sub">${esc(build.game_title)} · ${esc(build.runtime_mod || build.name)}</p>
       <div class="bri-tools"><button type="button" data-tool="box" aria-pressed="true">Box</button><button type="button" data-tool="arrow" aria-pressed="false">Arrow</button><button type="button" data-undo>Undo</button><button type="button" data-clear>Clear marks</button><button type="button" data-retry hidden>Retry capture</button></div>
-      <p class="bri-sub">Drag to mark a problem. Numbers match your note below. This is a still image; the game keeps running.</p>
+      <p class="bri-sub" data-instructions>Drag to mark a problem. Numbers match your note below. This is a still image; the game keeps running.</p>
       <div class="bri-frame"><canvas aria-label="Game screenshot: drag to draw boxes or arrows" hidden></canvas></div>
       <label>What still needs fixing?<textarea data-note maxlength="4000" data-nomic placeholder="For example: 1. Unnatural black spots on Mario's hat. 2. Missing shirt detail. The reference shows how he should look."></textarea></label>
       <label>Reference images (optional, up to 3)<input class="bri-file" data-files type="file" accept="image/png,image/jpeg,image/webp" multiple></label>
@@ -55,6 +55,9 @@
     wrap.style.setProperty('visibility','hidden','important');
     doc.body.appendChild(wrap);
     const q = s => wrap.querySelector(s), canvas = q('canvas'), ctx = canvas.getContext('2d');
+    if(env.heading)q('h2').textContent=env.heading;
+    if(env.instructions)q('[data-instructions]').textContent=env.instructions;
+    if(env.initialNote)q('[data-note]').value=env.initialNote;
     let original = '', frame = null, shapes = [], draft = null, tool = 'box', refs = [], busy = false, reading = false, closed = false, capturing = false;
     let resolve; const result = new Promise(r => { resolve = r; });
     wrap._reportResult = result;
@@ -86,7 +89,7 @@
         const raf = root.requestAnimationFrame?.bind(root) || (fn => setTimeout(fn,16));
         await new Promise(yes => raf(() => raf(yes)));
         if (closed) return;
-        const captured = await env.api(`/api/sessions/${encodeURIComponent(build.session_id)}/report-frame`, {}, 'POST');
+        const captured = await (env.capture ? env.capture() : env.api(`/api/sessions/${encodeURIComponent(build.session_id)}/report-frame`, {}, 'POST'));
         const image = new root.Image();
         await new Promise((yes,no) => { image.onload = yes; image.onerror = () => no(new Error('The game frame could not be displayed.')); image.src = 'data:image/png;base64,'+captured.image_b64; });
         if (closed) return;
@@ -149,9 +152,13 @@
       if (!btn.hasAttribute('data-send') || !frame || reading) return;
       busy=true; draft=null; redraw(); available(); status('Sending marked frame and references…');
       try {
-        const c = root.GBoxBuildActions.reportCall(build,'broken',q('[data-note]').value);
-        c.body.evidence={image_b64:canvas.toDataURL('image/png').split(',')[1],original_image_b64:original,reference_images:refs.map(r=>({...r}))};
-        close(await env.api(c.path,c.body,'POST'));
+        const note=q('[data-note]').value;
+        const evidence={image_b64:canvas.toDataURL('image/png').split(',')[1],original_image_b64:original,reference_images:refs.map(r=>({...r}))};
+        if(env.submit)close(await env.submit({note,evidence}));
+        else{
+          const c = root.GBoxBuildActions.reportCall(build,'broken',note);c.body.evidence=evidence;
+          close(await env.api(c.path,c.body,'POST'));
+        }
       } catch (err) { busy=false; available(); status('Report failed: '+err.message+'. Your note and images are kept here; retry when ready.'); }
     });
     capture(); return result;

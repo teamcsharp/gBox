@@ -75,6 +75,7 @@
       const m = f.models[k], st = m.stages || {};
       const names = STAGES.filter(s => st[s]).concat(Object.keys(st).filter(s => !STAGES.includes(s)));
       return { key: k, label: m.label || k, state: m.state || "pending", current: m.current || null, snapshot: m.snapshot || null,
+        comparison: m.comparison || null,
         snapshotStage: m.snapshot_stage || null, updated: m.updated || 0, preview: m.preview || null,
         previewStage: m.preview_stage || null, previewTs: m.preview_ts || 0, snapshotTs: m.snapshot_ts || 0,
         stages: names.map(s => ({ name: s, state: st[s].state || "running", text: stageNumbers(s, st[s].data) })) };
@@ -198,7 +199,7 @@
       <span class="pp-fl">${ESC(r.label)}</span><span class="pp-fs">${chips.map(name => {
         const st = r.stages.find(x => x.name === name);
         return `<i class="${st ? ESC(st.state) : "todo"}" title="${ESC(STAGE_NAMES[name] || name)}${st && st.text ? ": " + ESC(st.text) : ""}">${ESC(name[0].toUpperCase())}</i>`;
-      }).join("")}${withR && retargetOf(job, r.key) ? `<button type="button" class="pp-rr" data-pp-r="${ESC(r.key)}" title="Retarget goals: ${ESC(r.label)} - fix how its joints match the target">R</button>` : ""}</span><span class="pp-fn">${ESC((() => { const st = r.stages.find(x => x.name === r.current); return st ? `${st.name}${st.text ? " · " + st.text : ""}` : r.state; })())}</span></div>`).join("");
+      }).join("")}${withR && retargetOf(job, r.key) ? `<button type="button" class="pp-rr" data-pp-r="${ESC(r.key)}" title="Retarget goals: ${ESC(r.label)} - fix how its joints match the target">R</button>` : ""}</span><span class="pp-fn">${ESC((() => { const st = r.stages.find(x => x.name === r.current); return st ? `${st.name}${st.text ? " · " + st.text : ""}` : r.state; })())}</span>${opts?.review && (r.comparison || r.stages.some(s=>s.name==='decimate')) ? `<button type="button" class="pp-review" data-pp-review="${ESC(r.key)}">Compare / report mesh</button>` : ''}</div>`).join("");
   }
 
   // ---- what the current stage is doing to the mesh (drives the live mesh-change view) -----
@@ -324,6 +325,7 @@
       "background:#0b0d12cc;padding:1px 6px;border-radius:4px;pointer-events:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.gbox-pp .pp-cal:empty{display:none}",
       ".gbox-pp .pp-fh{color:#9fc2ff;margin:2px 0}.gbox-pp .pp-fh .bad{color:#ff8b8b}",
       ".gbox-pp .pp-fr{display:grid;grid-template-columns:1fr auto;gap:0 6px;padding:2px 4px;border-radius:4px}",
+      ".gbox-pp .pp-review{grid-column:1/3;justify-self:start;margin:3px 0;background:#27354c;color:#c6dcff;border:1px solid #526680;border-radius:4px;font:11px system-ui;cursor:pointer}",
       ".gbox-pp .pp-fr.cur{background:#ffffff0d}.gbox-pp .pp-fr.failed .pp-fl{color:#ff8b8b}.gbox-pp .pp-fr.done .pp-fl{color:#8fe6a8}",
       ".gbox-pp .pp-fl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.gbox-pp .pp-fs{display:flex;gap:2px}",
       ".gbox-pp .pp-fs i{font:700 9px/14px ui-monospace,monospace;width:14px;text-align:center;border-radius:3px;font-style:normal;",
@@ -370,6 +372,8 @@
       logEl = doc.createElement("div"); logEl.className = "pp-log";
       fitEl = doc.createElement("div"); fitEl.className = "pp-fit";                // per-model fitting stages
       fitEl.onclick = e => {                                                        // a row's own R
+        const review = e?.target?.closest?.('[data-pp-review]');
+        if(review && typeof opts.review==='function'){opts.review(current,review.dataset.ppReview);return;}
         const b = e && e.target && e.target.closest && e.target.closest("[data-pp-r]");
         if (b) openRetarget(b.dataset ? b.dataset.ppR : b.getAttribute("data-pp-r"));
       };
@@ -449,7 +453,7 @@
         logEl.textContent = lastMsgs.join("\n");
       }
       const fitting = fittingSummary(job);
-      if (fitEl) { const html = fittingHTML(job, { retarget: typeof opts.retarget === "function" }); if (html !== fitEl.innerHTML) fitEl.innerHTML = html; }
+      if (fitEl) { const html = fittingHTML(job, { retarget: typeof opts.retarget === "function", review: typeof opts.review === "function" }); if (html !== fitEl.innerHTML) fitEl.innerHTML = html; }
       if (rBtn) {
         const o = typeof opts.retarget === "function" ? retargetOf(job, shownKey(job)) : null, show = o ? "" : "none";
         if (rBtn.style.display !== show) rBtn.style.display = show;

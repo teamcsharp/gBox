@@ -338,6 +338,26 @@ def test_fit_costume_retargets_within_the_budget(donor, stock):
         W.fit_costume(donor, v, "mitsurugi", 0, 1000)        # cannot fit 1000 bytes
 
 
+def test_decimation_preview_uses_the_surviving_faces_and_moved_positions(monkeypatch, donor, stock):
+    from gbox import auf_swap, fit_events as FE
+    stages = []; pairs = []
+    monkeypatch.setattr(auf_swap, "decimate", lambda P, F, target: (P + 2, F[:max(1, min(target, len(F) - 1))]))
+    calls = []
+    def encode(*args):
+        calls.append(1)
+        return bytes(100000 if len(calls) == 1 else 20000)
+    monkeypatch.setattr(V, "encode", encode)
+    monkeypatch.setattr(FE, "stage", lambda name, *args, **kw: stages.append((name, kw)))
+    monkeypatch.setattr(FE, "comparison", lambda before, after, **kw: pairs.append((before, after, kw)))
+    result = W.fit_costume(donor, V.parse(stock), "mitsurugi", 0, 60000)
+    before, after, info = pairs[0]
+    assert len(after[0]["tris"]) == result.report["triangles"] < len(before[0]["tris"])
+    assert info["limits"]["first_attempt_bytes"] == 100000
+    shown = next(kw["prims"][0] for name, kw in stages if name == "decimate")
+    np.testing.assert_array_equal(shown["pos"], after[0]["pos"])
+    np.testing.assert_array_equal(shown["tris"], after[0]["tris"])
+
+
 def test_ground_feet_lifts_tall_shoes_out_of_the_floor():
     tgt = {"T": np.array([[0, 0.13, 0.0], [0, 1, 0]]), "jmap": {"l_foot": 0}, "ground": 0.0}
     prims = [{"pos": np.array([[0, 0.13, 0], [0, -0.3, 0.1]]), "J": np.array([[0, 0, 0, 0], [0, 0, 0, 0]])}]

@@ -202,6 +202,7 @@ def encode_budgeted(chr_data, bin_data, prims, profile, target, size_budget, *,
     from . import doa2_atlas as A, doa2_materials as M
     from .re4gc_enemies import decimate
     source_triangles=sum(len(p['tris']) for p in prims)
+    original_prims=prims
     attempts=[]
     atlas_report=None
     def encode(geometry):
@@ -217,11 +218,15 @@ def encode_budgeted(chr_data, bin_data, prims, profile, target, size_budget, *,
                             synthesize_headers=bool(profile.get('synthesize_material_headers')),
                             retype_argb4444=bool(profile.get('retype_argb4444')))
     from . import fit_events as FE
-    def finish(result, reduced):
+    def finish(result, reduced, geometry=None):
         result['report'].update(source_triangles=source_triangles, lod_attempts=attempts,
                                 geometry_reduced=reduced, atlas=atlas_report)
         FE.stage('decimate', 'done' if reduced else 'skipped',
                  {'from': source_triangles, 'triangles': result['report'].get('triangles'), 'attempts': len(attempts)})
+        FE.comparison(original_prims, geometry if geometry is not None else prims,
+                      reason='Original mesh exceeds native CHR allocation' if reduced else 'Original geometry fits unchanged',
+                      limits={'chr_budget_bytes':size_budget,'sup_budget_bytes':sup_budget,
+                              'original_failure':attempts[0]['result'] if attempts else None})
         return result
     try:
         result=encode(prims)
@@ -253,6 +258,7 @@ def encode_budgeted(chr_data, bin_data, prims, profile, target, size_budget, *,
         rigged=S.write_rigged(prims,target,work/'retargeted.gltf','native-donor')
         failed_budget=source_triangles
         best=None
+        best_geometry=None
         best_budget=None
         def reduced_geometry(budget):
             model=decimate(rigged,work/f'lod{budget}.glb',float(budget))
@@ -277,6 +283,7 @@ def encode_budgeted(chr_data, bin_data, prims, profile, target, size_budget, *,
                 continue
             attempts.append({'budget':budget,'triangles':count,'result':'allocation_verified'})
             best,best_budget=result,budget
+            best_geometry=geometry
             break
         if best is not None:
             # Measure intermediate allocations; keep the most detailed actual fit.
@@ -295,10 +302,12 @@ def encode_budgeted(chr_data, bin_data, prims, profile, target, size_budget, *,
                     continue
                 attempts.append({'budget':budget,'triangles':count,'result':'allocation_verified'})
                 low=budget
-                if result['report']['triangles'] > best['report']['triangles']: best=result
+                if result['report']['triangles'] > best['report']['triangles']:
+                    best=result
+                    best_geometry=geometry
             best['report']['lod_skin_policy']=('Blender retains mapped skin weights; native SUP quantization is reported'
                 if coefficients is not None else 'legacy rigid-part conversion; explicit native SUP coefficients were not supplied')
-            return finish(best, True)
+            return finish(best, True, best_geometry)
     raise ValueError('Native allocation cannot fit donor geometry after bounded LOD attempts: '+str(attempts))
 
 

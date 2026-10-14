@@ -99,11 +99,14 @@ class Ctx:
         text, ev = fit_events.split(msg)
         if ev is None:
             return msg
-        for key in ("snapshot", "preview"):
-            p = ev.get(key)
+        fields = [(ev, key) for key in ("snapshot", "preview")]
+        if isinstance(ev.get("comparison"), dict):
+            fields += [(ev["comparison"], key) for key in ("before", "after")]
+        for owner, key in fields:
+            p = owner.get(key)
             if not p or str(p).startswith("/api/"):
                 continue
-            ev.pop(key)
+            owner.pop(key)
             f = Path(p)
             try:
                 if f.is_file() and f.stat().st_size <= 8 << 20:
@@ -111,7 +114,7 @@ class Ctx:
                     r = httpx.post(f"{self.server}/api/jobs/{self.job_id}/fitting/files/{f.name}", content=f.read_bytes(),
                                    headers=self.headers, timeout=10)
                     if r.status_code == 200:
-                        ev[key] = r.json()["url"]
+                        owner[key] = r.json()["url"]
             except Exception:                                # noqa: BLE001 - best effort, like progress itself
                 pass
         return text + fit_events.encode(ev)

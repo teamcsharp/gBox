@@ -280,6 +280,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/cast-swap.js"></script>
 <script src="/viz/build-actions.js"></script>
 <script src="/viz/build-report-image.js"></script>
+<script src="/viz/decimation-review.js"></script>
 <script src="/viz/game-menu.js"></script>
 <script src="/viz/build-shot.js"></script>
 <script src="/viz/build-local.js"></script>
@@ -3731,9 +3732,12 @@ async function jobs() {
   const js = await api("/api/jobs");
   timer = setInterval(() => cur === "Jobs" && show("Jobs"), 4000);
   return table(["Job", "Tool", "State", "Worker", "Error / output", "Receipt"], js.map(j => `<tr>
-    <td><code>${j.id}</code><br><span class="mut">${new Date(j.created * 1000).toLocaleTimeString()}</span></td><td>${esc(j.tool)}</td><td>${state(j.state)}</td>
+    <td><code>${j.id}</code><br><span class="mut">${new Date(j.created * 1000).toLocaleTimeString()}</span>${j.fitting?.order?.length ? `<br><button class="act" onclick='meshReductionReview(${JSON.stringify(j.id)})'>Review mesh</button>` : ''}</td><td>${esc(j.tool)}</td><td>${state(j.state)}</td>
     <td><code>${esc(j.worker_id)}</code></td><td><code>${esc(j.error || JSON.stringify(j.output || "").slice(0, 200))}</code></td>
     <td>${j.receipt_id ? `<a href="#" onclick='receipt(${JSON.stringify(j.receipt_id)});return false'>${j.receipt_id}</a>` : ""}</td></tr>`));
+}
+function meshReductionReview(jobId,key) {
+  return GBoxDecimationReview.open(jobId,key,{api,assetUrl:p=>p+(p.includes('?')?'&':'?')+tq(),loadViewer:()=>import('/viz/character-model.js')});
 }
 async function receipt(id) {
   clearInterval(timer);
@@ -4013,6 +4017,7 @@ if (!new URLSearchParams(location.search).has('embedded')) {
     fetchJobs: () => api('/api/jobs?state=queued,running&limit=100'),
     assetUrl: p => p + (p.includes('?') ? '&' : '?') + tq(),
     retarget: o => retargetOpen(o),                         // the R buttons: the Retarget editor on that model
+    review: (job,key) => meshReductionReview(job.id,key),
     fit: el => GBoxToastStack.fit(el, { header: 'header' }),  // inside the window, below the header; scrolls when taller
   });
   window.addEventListener('pagehide', () => window.GBOX_PROCESS_POPUP.dispose(), { once: true });

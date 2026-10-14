@@ -23,9 +23,9 @@ export async function createCharacterViewer(container, url, options = {}) {
   const size = Math.max(bounds.getSize(new THREE.Vector3()).length(), 0.1);
   gltf.scene.position.sub(center);
   const camera = new THREE.PerspectiveCamera(40, 1, Math.max(0.001, size / 1000), size * 50);
-  camera.position.set(size * 0.55, size * 0.35, size * 3);
+  camera.position.set(size * 0.55, size * 0.35, size * (options.distance ?? 3));
   const controls = new OrbitControls(camera, renderer.domElement);
-  controls.enableDamping = true; controls.autoRotate = true; controls.autoRotateSpeed = 1;
+  controls.enableDamping = true; controls.autoRotate = options.autoRotate ?? true; controls.autoRotateSpeed = 1;
   let dead = false, frameId = 0, player = null;
   const clock = new THREE.Clock(), files = new Map();
   const resize = () => {
@@ -33,6 +33,8 @@ export async function createCharacterViewer(container, url, options = {}) {
     renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
   };
   const observer = new ResizeObserver(resize); observer.observe(container); resize();
+  const getView=()=>({position:camera.position.toArray().map(x=>x/size),target:controls.target.toArray().map(x=>x/size)});
+  controls.addEventListener('change',()=>options.onViewChange?.(getView()));
   function frame() { if (dead) return; frameId = requestAnimationFrame(frame); const dt = clock.getDelta(); player?.update(dt); controls.update(); renderer.render(scene, camera); }
   frame();
   // the clips of one GLB of this entry: the model's own, or a sibling clip file loaded once and kept under holder
@@ -51,6 +53,12 @@ export async function createCharacterViewer(container, url, options = {}) {
   }
   return {
     THREE, holder, gltf,
+    getView,
+    setView(pose) {
+      if(!pose||![pose.position,pose.target].every(a=>Array.isArray(a)&&a.length===3&&a.every(Number.isFinite)))return;
+      camera.position.fromArray(pose.position.map(x=>x*size));controls.target.fromArray(pose.target.map(x=>x*size));controls.update();
+    },
+    snapshot() { renderer.render(scene,camera); return renderer.domElement.toDataURL('image/png'); },
     embedded: gltf.animations.map(a => ({ name: a.name, duration: a.duration })),
     async clip(row) {
       const found = (await clipsOf(row.file)).find(a => a.name === row.name);

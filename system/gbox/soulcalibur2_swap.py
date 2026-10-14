@@ -267,9 +267,13 @@ def fit_costume(donor: Donor, v: V.Vmg, key: str, costume: int, budget: int, pro
     F0 = mesh["F"]
     target = min(len(F0), MAX_TRIS)
     last = None
+    limits = {"vmg_budget_bytes": budget, "vertex_limit": 0xFFFF, "configured_triangle_limit": MAX_TRIS}
     for attempt in range(12):
         Pd, F = decimate(mesh["P"], F0, target) if target < len(F0) else (mesh["P"], F0)
         used = np.unique(F.reshape(-1))
+        if attempt == 0:
+            limits["first_attempt_vertices"] = int(len(used))
+            limits["first_attempt_triangles"] = int(len(F))
         remap = np.full(len(Pd), -1)
         remap[used] = np.arange(len(used))
         if len(used) > 0xFFFF:
@@ -277,6 +281,8 @@ def fit_costume(donor: Donor, v: V.Vmg, key: str, costume: int, budget: int, pro
             continue
         data = V.encode(v, Pd[used], mesh["N"][used], mesh["UV"][used], mesh["B"][used], remap[F], atlas,
                         second_colour(atlas), tgt["root"])
+        if attempt == 0:
+            limits["first_attempt_bytes"] = len(data)
         last = (data, {"triangles": int(len(F)), "vertices": int(len(used)), "bytes": len(data), "budget": budget,
                        "attempts": attempt + 1, "from_triangles": int(len(F0))})
         if len(data) <= budget:
@@ -289,7 +295,9 @@ def fit_costume(donor: Donor, v: V.Vmg, key: str, costume: int, budget: int, pro
     data, r = last
     FE.stage("decimate", data={"from": r["from_triangles"], "to": r["triangles"], "budget": f"{budget} bytes "
                                "(the costume's VMG)", "attempts": r["attempts"]},
-             prims=[{"pos": mesh["P"], "tris": F0}])
+             prims=[{"pos": Pd, "tris": F}])
+    FE.comparison([{"pos": mesh["P"], "tris": F0}], [{"pos": Pd, "tris": F}], limits=limits,
+                  reason="Original mesh fits unchanged" if len(F) == len(F0) else "Native VMG allocation, vertex-index capacity or configured triangle limit")
     FE.stage("encode", data={"bytes": r["bytes"], "budget": budget, "vertices": r["vertices"], "bones": len(v.bones),
                              "atlas": f"{side}x{side} CMPR (1P + 2P)", "where": "package child 0"})
     rep = {k: v_ for k, v_ in rep.items() if k in ("scale", "torso_up", "torso_down", "shoulder_widen", "head_scale",

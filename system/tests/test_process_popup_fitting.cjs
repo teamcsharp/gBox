@@ -247,3 +247,12 @@ test('follow(jobId): the rebuild the editor queued takes the window once it is l
   assert.equal(x.win.openRetarget('fighter:KAS'), null);                            // the rebuild has no rows yet
   x.win.dispose();
 });
+
+test('the mesh review button opens the selected model and its exact source job',()=>{
+ const opened=[],x=mountWith({review:(job,key)=>opened.push([job.id,key])});
+ x.win.sync([castJob()]);
+ const fit=x.elements.find(e=>e.className==='pp-fit');
+ assert.match(fit.innerHTML,/data-pp-review="fighter:KAS"/);
+ fit.onclick({target:{closest:selector=>selector==='[data-pp-review]'?{dataset:{ppReview:'fighter:KAS'}}:null}});
+ assert.deepEqual(opened,[['j1','fighter:KAS']]);x.win.dispose();
+});

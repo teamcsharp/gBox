@@ -2688,6 +2688,9 @@ def create_app(config: Config) -> FastAPI:
     # ⚑ build reports go through the issue flow and then the investigation queue (both defined further down)
     builds.routes(app, store, config, auth, workers=workers, submit=lambda req, actor: submit(JobRequest(**req), actor),
                   file_report=lambda issue, details, actor: _build_report(issue, details, actor))
+    from . import fit_reviews
+    fit_reviews.routes(app, store, config, auth,
+                       file_report=lambda issue, details, actor: _build_report(issue, details, actor))
 
     class Progress(BaseModel):
         pct: float

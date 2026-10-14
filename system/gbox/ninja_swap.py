@@ -100,6 +100,9 @@ def fit(model: Path, src_roles: dict, tgt: dict, work: Path, name: str, budgets,
         tris = sum(len(g[2]) for g in geo.values())
         FE.stage("encode", data={"budget": budget, "triangles": tris, "nodes": len(geo),
                                  "bytes": len(data) if isinstance(data, (bytes, bytearray)) else None})
+        FE.comparison(prims, rp, reason="Original triangle count kept" if tris == src_tris else "Writer allocation / configured triangle budget",
+                      limits={"configured_triangle_budget": budget, "previous_allocation_failure": str(last) if last else None,
+                              "encoded_bytes": len(data) if isinstance(data, (bytes, bytearray)) else None})
         return {"data": data, "atlas": img, "rigged": rigged, "geometry": geo,
                 "report": rep | {"triangles": tris, "budget": budget, "nodes": sorted(int(k) for k in geo)}}
     raise last or ValueError("no triangle budget fits")
