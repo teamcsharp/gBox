@@ -45,15 +45,20 @@
   const reportedHTML = (r, cls = "ba-rep") => r && r.number ? `<span class="${cls}" title="A report was filed on this build: request #${ESC(r.number)}">Reported #${ESC(r.number)}</span>` : "";
 
   // ---------------------------------------------------------------- the dialogs
+  function attachedCopies(b) {
+    return [...new Map((b.where || []).filter(w => w.where === "pc" && w.node).map(w => [w.node, w])).values()];
+  }
   function whereList(b) { return (b.where || []).map(w => w.label).filter(Boolean); }
   function deleteDialogHTML(b, { here = "", onlyHere = false } = {}) {
-    const where = whereList(b), onHere = here && (b.where || []).some(w => w.node === here);
+    const where = whereList(b), onHere = here && (b.where || []).some(w => w.node === here), pcs = attachedCopies(b);
     return `<div class="ba-box" role="dialog" aria-modal="true" aria-label="Delete build"><h3>🗑 Delete “${ESC(nameOf(b))}”${onlyHere ? " from this PC" : ""}?</h3>
       <table class="ba-facts"><tr><th>Name</th><td>${ESC(nameOf(b))}</td></tr><tr><th>Folder</th><td><code>${ESC(b.name)}</code></td></tr>
         <tr><th>Game</th><td>${ESC(b.game_title || b.title || b.game_id)}</td></tr><tr><th>Size</th><td>${ESC(fmtSize(b.own_size || b.size))}${b.own_size && b.size > b.own_size ? ` (${ESC(fmtSize(b.size))} with files shared with the base game)` : ""}</td></tr>
         <tr><th>Lives on</th><td>${where.length ? where.map(ESC).join("<br>") : "the Spark collection"}</td></tr></table>
       ${onlyHere ? "" : `<label class="ba-opt"><input type="radio" name="ba-scope" value="all" checked> Delete everywhere (Spark collection + every PC's copy)</label>`}
       <label class="ba-opt${onHere ? "" : " ba-dis"}"><input type="radio" name="ba-scope" value="node"${onHere ? (onlyHere ? " checked" : "") : " disabled"}> Only this PC${here ? ` (${ESC(here)})` : ""}${onHere ? "" : " (no copy here)"}</label>
+      ${onlyHere ? "" : `<label class="ba-opt${pcs.length ? "" : " ba-dis"}"><input type="radio" name="ba-scope" value="pcs"${pcs.length ? "" : " disabled"}> Attached computers (keep Spark collection)</label>
+      <fieldset class="ba-pcs" data-ba-pcs disabled><legend>Choose copies to delete</legend>${pcs.length ? pcs.map(w => `<label class="ba-opt"><input type="checkbox" data-ba-pc value="${ESC(w.node)}"> ${ESC(w.node)}${w.online === false ? " (offline; cannot delete now)" : ""}</label>`).join("") : '<span class="ba-note">No attached computer reports a copy.</span>'}</fieldset>`}
       ${onlyHere ? `<p class="ba-note">Only this PC's copy is removed: the Spark collection and other PCs keep theirs, and ⬇ downloads it again.</p>` : ""}
       <p class="ba-note">The base game and other builds are never touched. A build a running game uses can't be deleted: stop the game first. Deleting can't be undone (the marker is kept in the recently deleted list).</p>
       <div class="ba-btns"><button class="act ba-danger" type="button" data-ba="go">🗑 Delete</button><button class="act" type="button" data-ba="cancel">Cancel</button><span class="ba-status" data-ba-status></span></div></div>`;
@@ -70,7 +75,8 @@
       <p class="ba-note">Sent with the build's game, writer, slots and donors, what it changes, its recipe, its last launch, its newest in-game frame and its fit previews. It goes to the investigation queue.</p>
       <div class="ba-btns"><button class="act pri" type="button" data-ba="go">Submit ticket</button><button class="act" type="button" data-ba="cancel">Cancel</button><span class="ba-status" data-ba-status></span></div></div>`;
   }
-  const deleteCall = (b, scope, here) => ({ path: path(b) + "/delete", body: { scope, node: scope === "node" ? here : "" } });
+  const deleteCall = (b, scope, here, nodes = []) => ({ path: path(b) + "/delete",
+    body: scope === "pcs" ? { scope, nodes: [...new Set(nodes)] } : { scope, node: scope === "node" ? here : "" } });
   function brokenDialogHTML(b, env = {}) {
     return `<div class="ba-box" role="dialog" aria-modal="true" aria-label="Mark build broken"><h3>Mark ${ESC(nameOf(b))} broken</h3>
       <p>Queue this build for investigation and remove its copy from ${ESC(env.here || "this PC")} after a verified copy is preserved on Spark.</p>
@@ -82,7 +88,7 @@
     ...(b.session_id ? { session_id: b.session_id } : {}) } });
   function deleteResultText(b, r) {
     const n = nameOf(b), jobs = (r.jobs || []).map(j => j.node), skipped = (r.skipped || []).map(s => `${s.node}: ${s.reason}`);
-    return `Deleted ${n}${r.scope === "node" ? ` from ${r.node}` : ""}` + ((r.spark?.removed || []).length ? " (Spark collection removed)" : "")
+    return `${r.scope === "pcs" ? `Requested deletion of ${n} from ${(r.nodes || []).join(", ")} (Spark collection kept)` : `Deleted ${n}${r.scope === "node" ? ` from ${r.node}` : ""}`}` + ((r.spark?.removed || []).length ? " (Spark collection removed)" : "")
       + (jobs.length ? `; deleting the copy on ${jobs.join(", ")}` : "") + (skipped.length ? `; not deleted: ${skipped.join("; ")}` : "");
   }
 
@@ -90,6 +96,7 @@
     .ba-box{background:var(--bg,#16161a);color:var(--fg,#e8e8ee);border:1px solid var(--line,#444);border-radius:10px;box-shadow:0 16px 48px #000c;padding:16px 18px;width:min(520px,calc(100vw - 32px));max-height:calc(100vh - 32px);overflow:auto;font-size:13px}
     .ba-box h3{margin:0 0 10px;font-size:15px;overflow-wrap:anywhere}.ba-facts{border-collapse:collapse;margin:0 0 10px;width:100%}.ba-facts th{text-align:left;color:#9aa;font-weight:500;padding:2px 10px 2px 0;vertical-align:top;white-space:nowrap}.ba-facts td{padding:2px 0;overflow-wrap:anywhere}
     .ba-opt{display:flex;gap:6px;align-items:center;margin:4px 0}.ba-dis{opacity:.55}.ba-note{color:#9aa;font-size:12px;margin:8px 0}.ba-text{width:100%;box-sizing:border-box;font:inherit;margin-top:6px}
+    .ba-pcs{margin:6px 0 8px 20px;border:1px solid #444;border-radius:6px;padding:6px 10px}.ba-pcs:disabled{opacity:.5}.ba-pcs legend{font-size:12px;color:#9aa}
     .ba-btns{display:flex;gap:8px;align-items:center;margin-top:10px}.ba-danger{background:#7a2b2b;color:#fff;border-color:#7a2b2b}.ba-status{font-size:12px;color:#9aa}`;
   const WHAT_CSS = `.ba-what{border-left:3px solid var(--acc,#7c96ff);background:#ffffff08;padding:4px 8px;border-radius:0 6px 6px 0;font-size:12.5px}
     .ba-what .ba-h{font-weight:600;font-size:12px;margin-bottom:2px}.ba-lines{margin:2px 0;padding-left:16px}.ba-where{font-size:12px;margin-top:2px}
@@ -107,6 +114,10 @@
     wrap.className = "ba-modal";
     wrap.innerHTML = `<style>${CSS}${WHAT_CSS}</style>` + (kind === "broken" ? brokenDialogHTML(b, env) : kind === "delete" ? deleteDialogHTML(b, env) : reportDialogHTML(b));
     doc.body.appendChild(wrap);
+    if (kind === "delete" && !env.onlyHere) wrap.addEventListener("change", () => {
+      const pcs = wrap.querySelector('[data-ba-pcs]');
+      if (pcs) pcs.disabled = wrap.querySelector('input[name="ba-scope"]:checked')?.value !== "pcs";
+    });
     if (kind !== "delete") wrap.querySelector("[data-ba-note]")?.focus?.();
     const status = text => { const s = wrap.querySelector("[data-ba-status]"); if (s) s.textContent = text; };
     return new Promise(resolve => {
@@ -128,7 +139,9 @@
           } else if (kind === "delete") {
             const scope = env.onlyHere ? "node" : wrap.querySelector('input[name="ba-scope"]:checked')?.value || "all";
             status("Deleting…");
-            const c = deleteCall(b, scope, env.here || "");
+            const nodes = scope === "pcs" ? [...wrap.querySelectorAll('[data-ba-pc]:checked')].map(el => el.value) : [];
+            if (scope === "pcs" && !nodes.length) throw new Error("Choose at least one attached computer.");
+            const c = deleteCall(b, scope, env.here || "", nodes);
             r = { ...(await env.api(c.path, c.body, "POST")), scope };
           } else {
             const reason = wrap.querySelector('input[name="ba-reason"]:checked')?.value || "other";
