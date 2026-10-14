@@ -105,31 +105,35 @@ def routes(app, store, auth, submit, workers):
     def queue(node, actor):
         w = target(node)
         if not w.get('online'): return {'queued': False, 'reason': 'PC offline; cleanup resumes when it reconnects'}
-        settings = policy(store.get(KIND, node))
         rows = w.get('local_builds', [])
         # Collection creation dates win over when a PC downloaded a copy.
         current = getattr(app.state, 'built_mods_current', None)
         built = {(r['game_id'], r['name']): r.get('built') for r in (current() if current else {}).get('items', [])}
-        rows = [r | {'built': built.get((r['game_id'], r.get('staged_of') or r['name'].split('~')[0])) or r['built']} for r in rows]
-        busy = {(s.get('game_id'), str(s.get(k) or '')) for s in store.all('session') if s.get('state') == 'running'
-                for k in ('mod', 'collection_mod', 'launch_mod')}
-        candidates = plan(rows, settings, busy)
-        jobs = store.all('job')
-        pending = {(j.get('input', {}).get('game_id'), j.get('input', {}).get('name')) for j in jobs
-                   if j.get('tool') == 'file_mod' and j.get('input', {}).get('op') == 'delete_build'
-                   and j.get('require_worker') in (w['id'], node) and j.get('state') in ('queued', 'running')}
-        queued = []
-        for r in candidates['remove']:
-            name = r.get('staged_of') or r['name'].split('~')[0]
-            key = (r['game_id'], name)
-            broken = store.get('build_broken', f'{r["game_id"]}/{name}')
-            if broken and broken.get('state') != 'deleted': continue
-            if key in pending: continue
-            j = submit({'tool': 'file_mod', 'input': {'game_id': r['game_id'], 'op': 'delete_build', 'name': name,
-                       'retention_node': node}, 'require_worker': w['id'], 'low_priority': True}, actor)
-            queued.append(j.id if hasattr(j, 'id') else j['id'])
-            pending.add(key)
-        return {'queued': True, 'jobs': queued, 'protected': len(candidates['protected'])}
+        # Gallery joins take their cache lock before the Store lock. Never call
+        # current() while holding Store: retention and a gallery refresh would deadlock.
+        # Re-read policy under Store after the slow snapshot so changed limits win.
+        with store.lock:
+            settings = policy(store.get(KIND, node))
+            rows = [r | {'built': built.get((r['game_id'], r.get('staged_of') or r['name'].split('~')[0])) or r['built']} for r in rows]
+            busy = {(s.get('game_id'), str(s.get(k) or '')) for s in store.all('session') if s.get('state') == 'running'
+                    for k in ('mod', 'collection_mod', 'launch_mod')}
+            candidates = plan(rows, settings, busy)
+            jobs = store.all('job')
+            pending = {(j.get('input', {}).get('game_id'), j.get('input', {}).get('name')) for j in jobs
+                       if j.get('tool') == 'file_mod' and j.get('input', {}).get('op') == 'delete_build'
+                       and j.get('require_worker') in (w['id'], node) and j.get('state') in ('queued', 'running')}
+            queued = []
+            for r in candidates['remove']:
+                name = r.get('staged_of') or r['name'].split('~')[0]
+                key = (r['game_id'], name)
+                broken = store.get('build_broken', f'{r["game_id"]}/{name}')
+                if broken and broken.get('state') != 'deleted': continue
+                if key in pending: continue
+                j = submit({'tool': 'file_mod', 'input': {'game_id': r['game_id'], 'op': 'delete_build', 'name': name,
+                           'retention_node': node}, 'require_worker': w['id'], 'low_priority': True}, actor)
+                queued.append(j.id if hasattr(j, 'id') else j['id'])
+                pending.add(key)
+            return {'queued': True, 'jobs': queued, 'protected': len(candidates['protected'])}
 
     @app.get('/api/build-retention')
     def get(node: str, actor=Depends(auth)):
@@ -155,7 +159,7 @@ def routes(app, store, auth, submit, workers):
                 if j.get('state') == 'queued' and j.get('input', {}).get('retention_node') == node:
                     store.put('job', j['id'], j | {'state': 'failed', 'error': 'Build limit changed before cleanup'})
             store.audit(actor, 'build_retention.set', node, p)
-            return p | queue(node, actor)
+        return p | queue(node, actor)
 
     stop = threading.Event()
     def loop():
@@ -165,7 +169,7 @@ def routes(app, store, auth, submit, workers):
                     try:
                         w = target(p['node'])
                         if w.get('online') and not w.get('active_jobs') and plan(w.get('local_builds', []), p)['remove']:
-                            with store.lock: queue(p['node'], 'operator')
+                            queue(p['node'], 'operator')
                     except Exception: pass  # unavailable worker cannot affect the control plane
     app.on_event('startup')(lambda: threading.Thread(target=loop, daemon=True, name='build-retention').start())
     app.on_event('shutdown')(stop.set)

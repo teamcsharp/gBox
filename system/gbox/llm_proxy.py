@@ -487,7 +487,7 @@ class LocalLLM:
         return s, payload, meta
 
     async def acquire(self, s, gone=None):
-        reason = self.gate_reason()
+        reason = await asyncio.to_thread(self.gate_reason)
         if reason:
             await self._maybe_unload(s)
             raise Busy(503, f'Local model paused: {reason}', s.retry_after_s)
@@ -502,7 +502,12 @@ class LocalLLM:
             raise Busy(503, f'Local model busy for {int(s.queue_wait_s)} s', 60) from None
         finally:
             self.waiting -= 1
-        reason = self.gate_reason()                # the operator may have started a game while this call waited
+        try:
+            # Worker/session snapshots may wait on SQLite. Keep the serving loop responsive.
+            reason = await asyncio.to_thread(self.gate_reason)
+        except BaseException:
+            lock.release()
+            raise
         if reason:
             lock.release()
             raise Busy(503, f'Local model paused: {reason}', s.retry_after_s)

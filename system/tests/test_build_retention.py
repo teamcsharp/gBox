@@ -95,3 +95,32 @@ def test_policy_defaults_are_per_pc_and_invalid_limits_never_queue():
 @pytest.mark.parametrize('n', [0, 11, True, '3'])
 def test_policy_rejects_invalid_limits(n):
     with pytest.raises(ValueError): R.policy({'games': {'a': n}})
+
+
+def test_gallery_wait_during_retention_does_not_block_unrelated_store_requests(tmp_path):
+    from gbox.store import Store
+    store, app = Store(tmp_path), FastAPI()
+    entered, release, observed = threading.Event(), threading.Event(), threading.Event()
+    def gallery():
+        entered.set()
+        assert release.wait(5)
+        return {'items': []}
+    app.state.built_mods_current = gallery
+    R.routes(app, store, lambda: 'operator', lambda *a: {'id': 'j'},
+             lambda: [{'id': 'w', 'name': 'PC', 'os': 'windows', 'online': True}])
+    responses = []
+    with TestClient(app) as client:
+        saving = threading.Thread(target=lambda: responses.append(client.post('/api/build-retention', json={'node': 'PC', 'limit': 4})))
+        saving.start()
+        try:
+            assert entered.wait(2)
+            def other_request():
+                store.put('probe', 'health', {'ok': True})
+                observed.set()
+            reading = threading.Thread(target=other_request, daemon=True)
+            reading.start()
+            assert observed.wait(1), 'A slow Mods gallery must not hold the global database lock'
+        finally:
+            release.set()
+            saving.join(5)
+        assert not saving.is_alive() and responses[0].status_code == 200

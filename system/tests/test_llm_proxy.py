@@ -192,6 +192,49 @@ def test_operator_playing_on_the_spark_gates_calls_and_frees_the_gpu(tmp_path):
     assert [r['status'] for r in records] == ['ok', 'gated', 'gated']
 
 
+def test_slow_operator_gate_does_not_freeze_the_event_loop():
+    import threading
+    entered, release = threading.Event(), threading.Event()
+    def gate():
+        entered.set()
+        assert release.wait(3)
+    proxy = P.LocalLLM(lambda: S, gate=gate, transport=ollama([]))
+    async def main():
+        call = asyncio.create_task(proxy.acquire(S))
+        try:
+            # The release is scheduled on the same loop: a synchronous gate would stall it.
+            asyncio.get_running_loop().call_later(.05, release.set)
+            lock, _ = await asyncio.wait_for(call, 1)
+            assert entered.is_set()
+            proxy.release(lock)
+        finally:
+            release.set()
+    asyncio.run(main())
+
+
+def test_cancelling_second_operator_gate_releases_model_slot():
+    import threading
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+    def gate():
+        calls.append(1)
+        if len(calls) == 2:
+            entered.set()
+            assert release.wait(3)
+    proxy = P.LocalLLM(lambda: S, gate=gate, transport=ollama([]))
+    async def main():
+        call = asyncio.create_task(proxy.acquire(S))
+        try:
+            while not entered.is_set():
+                await asyncio.sleep(.005)
+            call.cancel()
+            with pytest.raises(asyncio.CancelledError): await call
+            assert not proxy._lock().locked()
+            assert proxy.active == 0
+        finally: release.set()
+    asyncio.run(main())
+
+
 def test_endpoint_fixes_messages_streams_and_gates(cfg, monkeypatch, tmp_path):
     from gbox.server import create_app
     monkeypatch.setenv('GBOX_HERMES_DISPATCH_STATE', str(tmp_path / 'state'))
