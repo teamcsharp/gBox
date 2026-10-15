@@ -14,6 +14,8 @@ In the 3D / UV pane:
 
 Brush strokes update the GBox model preview immediately. **Send current texture to PhotoCraft** opens the current flattened texture in the 2D editor for its image editing tools.
 
+Mesh painting follows the material's UV0 or UV1 channel, including its texture transform. A missing or unsupported UV channel does not receive mesh strokes; use the 2D texture canvas for those maps.
+
 PhotoCraft does not expose its document pixels continuously to GBox. After editing there, choose **File → Export → Quick Export as PNG**. GBox captures that export and updates the selected image / 3D texture preview. If the exported filename no longer identifies the selected texture, review the selection and click **Use exported PNG on this texture** to assign it explicitly. The PNG must retain the original texture's dimensions.
 
 This is GBox painting a model beside PhotoCraft; it does not add a native 3D editor inside the upstream PhotoCraft application.
