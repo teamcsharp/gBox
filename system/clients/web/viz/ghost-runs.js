@@ -259,16 +259,32 @@
     if (S.raf) env.cancelAnimationFrame(S.raf); S.raf = 0;
     if (S.poll) env.clearInterval(S.poll); S.poll = null;
     if (S.autoTimer) env.clearInterval(S.autoTimer); S.autoTimer = null;
+    if (S.tasTimer) env.clearInterval(S.tasTimer); S.tasTimer = null;
     S.canvas?.remove(); S.canvas = null;
   }
 
   async function load() {
     if (!S.gid) return;
     S.data = await S.api(`/api/ghosts/game/${encodeURIComponent(S.gid)}`);
+    try { S.tas = await S.api(`/api/tas/runs?game_id=${encodeURIComponent(S.gid)}&session_id=${encodeURIComponent(S.sid)}`); }
+    catch (error) { S.tas = { runs: [], error: String(error) }; }
     for (const rid of S.data.showing || []) if (!S.tracks.has(rid)) {
       try { S.tracks.set(rid, await S.api(`/api/ghosts/runs/${encodeURIComponent(rid)}`)); } catch { /* deleted meanwhile */ }
     }
     render();
+  }
+  async function refreshNative() {
+    const sid = S.sid, gid = S.gid;
+    if (!doc().getElementById('ghost-runs')) return;
+    try {
+      const data = await S.api(`/api/tas/runs?game_id=${encodeURIComponent(gid)}&session_id=${encodeURIComponent(sid)}`);
+      if (sid !== S.sid || gid !== S.gid) return;
+      const changed = (data.runs || []).map(r => r.id).join() !== (S.tas?.runs || []).map(r => r.id).join();
+      S.tas = data;
+      if (changed) return render();
+      const status = doc().getElementById('tas-capture-status');
+      if (status && data.capture) status.textContent = `Capture: ${data.capture.state}${data.capture.frame != null ? ' · '+Number(data.capture.frame).toLocaleString()+' frames' : ''}${data.capture.reason ? ' · '+data.capture.reason : ''}`;
+    } catch { /* refresh button and the next heartbeat retry */ }
   }
   async function setPrefs(p) {
     S.data.prefs = await S.api(`/api/ghosts/game/${encodeURIComponent(S.gid)}/prefs`, p);
@@ -304,7 +320,7 @@
           <span class="gr-acts"><button class="act gr-ren" title="Rename">✎</button><button class="act gr-del${del ? " bad" : ""}" title="Delete this run">${del ? "Delete?" : "🗑"}</button></span></div>
         ${sp ? `<details class="gr-splits" ${S.open[r.run_id] ? "open" : ""}><summary class="mut">${r.splits.length} split${r.splits.length > 1 ? "s" : ""}</summary><table>${sp}</table></details>` : ""}</div>`;
     }).join("");
-    host.innerHTML = `<p id="gr-status" class="gr-status"></p>
+    host.innerHTML = `${tasHtml(S.tas)}<p id="gr-status" class="gr-status"></p>
       ${docked ? `<p class="bad" style="font-size:11.5px">This game is docked as a native window, which nothing can draw over. Turn on the GPU compositor (top bar) to see the ghosts; runs are still recorded.</p>` : ""}
       <div class="gr-bar"><span class="mut">Ghosts</span>${pick("best", "Best", "Your best run (fastest complete, else furthest)")}${pick("last", "Last " + (p.last_n || 3), "Your last runs, stacked")}${pick("pb_segments", "Best levels", "For each level, the run with its fastest segment")}${pick("custom", "Picked", "The runs ticked below")}${pick("none", "Off", "No ghosts")}</div>
       <div class="gr-bar"><span class="mut">Sync</span><button class="act${p.mode !== "run" ? " pri" : ""}" data-mode="level" title="Race each level from its start (you vs the ghost on the same level)">Level</button><button class="act${p.mode === "run" ? " pri" : ""}" data-mode="run" title="Race the whole run from the first frame">Run</button>
@@ -314,8 +330,46 @@
       <div class="gr-list">${rows || `<p class="mut">No runs yet. Play: every run is recorded, from Start to game over or the end.</p>`}</div>`;
     statusLine();
   }
+  function tasHtml(data) {
+    const rows = (data?.runs || []).map(r => `<article class="gr-run tas-run" data-tas="${esc(r.id)}">
+      <b>${esc(r.title || 'Mario run')}</b> <span class="mut">${Number(r.frames).toLocaleString()} frames · ${Number(r.state_restores)} state restores</span>
+      <p class="mut">${r.full_verified_sprites?.length ? 'Full replay verified: '+r.full_verified_sprites.map(x => esc(x || 'Original Mario')).join(', ') : 'Recorded; full playback verification pending'}</p>
+      <div class="gr-bar"><select class="tas-segment" aria-label="Replay segment"><option value="">Entire run</option>${(r.segments || []).map((s, i) => `<option value="${esc(s.id)}">${esc(s.label)} · attempt ${i+1}</option>`).join('')}</select>
+      <label><input class="tas-loop" type="checkbox"> Loop</label><button class="act pri tas-play">▶ Play</button></div>
+      <label>Player sprite <select class="tas-sprite" aria-label="Replay sprite">${[['', 'Original Mario'], ['sonic', 'Sonic'], ['mario2', 'Mario 2'], ['mario3', 'Mario 3'], ['smw', 'Super Mario World Mario']].map(([id, label]) => `<option value="${id}" ${r.idle?.sprite === id ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+      <p><label><input class="tas-idle" type="checkbox" ${r.idle?.enabled ? 'checked' : ''}> Use as idle screensaver on available PCs</label></p>
+      <p class="mut tas-result" role="status">${r.idle?.enabled ? 'Armed; waits for a verified full run and an idle PC.' : 'Playback uses a separate test session and yields when you return.'}</p>
+      </article>`).join('');
+    return `<section class="tas-runs"><b>Native TAS playback</b><button class="act tas-refresh" style="float:right">Refresh runs</button>
+      <p id="tas-capture-status" class="${data?.capture?.state === 'recording' ? 'ok' : 'mut'}">${data?.capture ? `Capture: ${esc(data.capture.state)}${data.capture.frame != null ? ' · '+Number(data.capture.frame).toLocaleString()+' frames' : ''}${data.capture.reason ? ' · '+esc(data.capture.reason) : ''}` : ''}</p>
+      ${data?.error ? `<p class="bad">Native archive unavailable: ${esc(data.error)}</p>` : ''}
+      ${rows || '<p class="mut">New SMB1 sessions capture native inputs, checkpoints and rewind branches. The tape becomes available here after the emulator closes.</p>'}
+      <p class="mut">${esc(data?.legacy_reason || 'Earlier ghost tracks do not contain the native input tape required for exact replay.')}</p></section>`;
+  }
+  async function playTas(button) {
+    const row = button.closest('.tas-run'), message = row.querySelector('.tas-result');
+    button.disabled = true; message.textContent = 'Finding an available idle PC…';
+    try {
+      let job = await S.api(`/api/tas/runs/${encodeURIComponent(row.dataset.tas)}/play`, {
+        segment: row.querySelector('.tas-segment').value, loop: row.querySelector('.tas-loop').checked,
+        sprite: row.querySelector('.tas-sprite').value.trim()
+      });
+      if (['failed', 'rejected'].includes(job.state)) throw Error(job.error || 'Replay could not start');
+      message.textContent = `Replay queued (${job.id || job.job_id}); it will not close your current game.`;
+      for (let i = 0; i < 900 && row.isConnected && ['queued', 'running'].includes(job.state); i++) {
+        await new Promise(resolve => env.setTimeout(resolve, 1000));
+        job = await S.api('/api/jobs/' + encodeURIComponent(job.id));
+        message.textContent = job.progress?.msg || `Replay ${job.state}`;
+      }
+      if (['failed', 'rejected'].includes(job.state)) throw Error(job.error || 'Replay failed');
+      if (job.output?.session_id) message.textContent = `Playing in test session ${job.output.session_id}. Use Sessions to watch it.`;
+    } catch (error) { message.textContent = String(error); }
+    finally { button.disabled = false; }
+  }
   function onClick(e) {
     const t = e.target, host = doc().getElementById("ghost-runs"); if (!host?.contains(t)) return;
+    if (t.classList.contains('tas-play')) return playTas(t);
+    if (t.classList.contains('tas-refresh')) return load();
     const rid = t.closest(".gr-run")?.dataset.rid;
     if (t.dataset.pick) return setPrefs({ pick: t.dataset.pick, ...(t.dataset.pick === "last" && S.data.prefs.pick === "last" ? { last_n: (S.data.prefs.last_n % 5) + 1 } : {}) });
     if (t.dataset.mode) return setPrefs({ mode: t.dataset.mode });
@@ -343,6 +397,13 @@
   }
   function onChange(e) {
     const t = e.target, host = doc().getElementById("ghost-runs"); if (!host?.contains(t)) return;
+    if (t.classList.contains('tas-idle') || t.classList.contains('tas-sprite') && t.closest('.tas-run').querySelector('.tas-idle').checked) {
+      const row = t.closest('.tas-run'), message = row.querySelector('.tas-result');
+      const toggle = row.querySelector('.tas-idle');
+      return S.api(`/api/tas/runs/${encodeURIComponent(row.dataset.tas)}/idle`, {
+        enabled: toggle.checked, sprite: row.querySelector('.tas-sprite').value.trim()
+      }).then(r => { message.textContent = r.reason; }).catch(error => { toggle.checked = false; message.textContent = String(error); });
+    }
     if (t.classList.contains("gr-color")) return setPrefs({ colors: { [t.closest(".gr-run").dataset.rid]: t.value } });
     if (t.id === "gr-hud") return setPrefs({ hud: t.checked });
     if (t.id === "gr-me") return setPrefs({ me: t.checked });
@@ -369,7 +430,7 @@
     let host = doc().getElementById("ghost-runs");
     if (!host) {
       const target = into || doc().getElementById("dock-top") || doc().getElementById("dock-side"); if (!target) return false;
-      target.insertAdjacentHTML("beforeend", `<details open data-dock="runs" class="sect"><summary draggable="true">Runs <span class="mut">ghosts of your earlier runs</span></summary><div id="ghost-runs"><p class="mut">loading…</p></div></details>`);
+      target.insertAdjacentHTML("beforeend", `<details open data-dock="runs" class="sect"><summary draggable="true">Runs <span class="mut">TAS playback and ghosts</span></summary><div id="ghost-runs"><p class="mut">loading…</p></div></details>`);
       host = doc().getElementById("ghost-runs");
       host.addEventListener("click", onClick); host.addEventListener("change", onChange);
       host.addEventListener("toggle", e => { const rid = e.target.closest?.(".gr-run")?.dataset.rid; if (rid && e.target.matches("details")) S.open[rid] = e.target.open; }, true);
@@ -377,8 +438,9 @@
     await load();
     if (!S.data?.profile) { host.closest("details")?.remove(); return false; }
     mountOverlay(); fetchLive();
+    if (!S.tasTimer) S.tasTimer = env.setInterval(refreshNative, 10000);
     return true;
   }
   return { mount, unmount: unmountOverlay, ghostFrame, attemptOf, sampleAt, ghostScreen, pictureRect, fmtTime, fmtDelta, raceRows,
-    aspectScore, levelName, ASPECTS, _state: S };
+    aspectScore, levelName, ASPECTS, tasHtml, _state: S };
 });
