@@ -62,8 +62,9 @@ async function fixture(fn) {
           api:async(p,b)=>{const r=await fetch(p,{method:b===undefined?'GET':'POST',headers:{'content-type':'application/json'},...(b===undefined?{}:{body:JSON.stringify(b)})});if(!r.ok)throw Error('HTTP '+r.status);return r.json()},
           onDonor:value=>donors.push(value),mapDonor:value=>mapping.push(value),
           loadViewer:async()=>({createCharacterViewer:async()=>{const face={uuid:'face',name:'face',map:{image:makeImage('#2040e0'),flipY:false}},body={uuid:'body',name:'body',map:{image:makeImage('#20c040'),flipY:false}};
+            const dependencies=window.cloneMaterialDependencies?[{...face,uuid:'face-base'},{...body,uuid:'body-base'}]:[face,body],associations=new Map([[face,{materials:0}],[body,{materials:1}]]);
             const vector=()=>({copy(){return this}});const value={face,body,paintMaterialIds:true,disposed:false,THREE:{CanvasTexture:class{constructor(image){this.image=image;this.repeat=vector();this.offset=vector();this.center=vector()}dispose(){}updateMatrix(){}}},
-              gltf:{parser:{getDependency:async(type,index)=>[face,body][index]},scene:{traverse:fn=>fn({isMesh:true,material:[face,body]})}},paint:handler=>value.paintHandler=handler,uvLines:()=>[],dispose(){this.disposed=true}};viewers.push(value);return value}})};
+              gltf:{parser:{getDependency:async(type,index)=>dependencies[index],associations},scene:{traverse:fn=>fn({isMesh:true,material:[face,body]})}},paint:handler=>value.paintHandler=handler,uvLines:()=>[],dispose(){this.disposed=true}};viewers.push(value);return value}})};
         window.q=name=>document.querySelector('[data-pc-'+name+']');window.pixel=(which='face')=>[...viewers.at(-1)[which].map.image.getContext('2d').getImageData(32,32,1,1).data];
         window.frame=()=>q('editor')?.querySelector('iframe');window.activeName=()=>frame()?.contentWindow.received?.at(-1)?.name;
         window.exportImage=async(name,color,mime='image/png',nonce)=>{const bytes=mime==='image/png'?await(await fetch(makeImage(color).toDataURL())).arrayBuffer():new TextEncoder().encode(color).buffer;frame().contentWindow.postMessage({type:'fixture-export',name,mime,nonce,bytes},location.origin,[bytes]);};
@@ -252,5 +253,23 @@ test('popup opens over a LAN HTTP capability set without crypto.randomUUID', asy
     assert.equal(await evaluate('panel.close()'), true);
     assert.equal(await evaluate(`document.querySelector('#photocraft-popup')===null`), true);
     assert.equal(await evaluate('viewers.every(value=>value.disposed)'), true);
+  });
+});
+
+test('glTF loader material clones bind through parser associations to the actual rendered image surfaces', async () => {
+  await fixture(async ({evaluate, calls, second}) => {
+    await evaluate(`window.cloneMaterialDependencies=true;openPopup()`);
+    assert.equal(await evaluate(`document.querySelector('[data-mtp-canvas]').width`), 64);
+    assert.match(await evaluate(`q('surface').textContent`), /Actual collection model/);
+    assert.equal(await evaluate(`viewers.at(-1).gltf.parser.getDependency('material',0).then(value=>value===viewers.at(-1).face)`), false, 'loader base dependencies are different objects from rendered clones');
+    await evaluate('openMap(1)');
+    await evaluate(`document.querySelector('[data-mtp-paint]').checked=true;document.querySelector('[data-mtp-paint]').dispatchEvent(new Event('change'));document.querySelector('[data-mtp-color]').value='#ff0000';document.querySelector('[data-mtp-radius]').value=3;
+      viewers.at(-1).paintHandler({material:'body',materialId:'body',u:.5,v:.5,event:{type:'pointerdown'}});document.dispatchEvent(new PointerEvent('pointerup'));`);
+    assert.deepEqual(await evaluate(`pixel('body')`), [255, 0, 0, 255]);
+    assert.deepEqual(await evaluate('pixel()'), [32, 64, 224, 255], 'the other base-color image remains unchanged');
+    await evaluate('panel.save()');
+    const revisions = calls.filter(call => call.path.endsWith('/revisions'));
+    assert.equal(revisions.length, 1); assert.equal(revisions[0].path, '/api/photocraft/sessions/' + second + '/revisions');
+    assert.equal(revisions[0].body.expected_revision, 0);
   });
 });
