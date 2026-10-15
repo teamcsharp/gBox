@@ -20,6 +20,9 @@ exported without another encode; with no size limit, the original recording is e
 are not retroactively moved or deleted. **Open export folder** and **Open originals folder** are separate menu actions.
 
 Right-click the icon for **Replay**: export the last 30 s to 2 min of play after the fact, from the background gameplay ring that records while the controller is in use ([ring_recording.md](ring_recording.md)).
+Replay's **Export clip** uses this same per-instance export folder, including from
+the embedded Sessions panel, and confirms the saved path. A failed share copy offers
+**Retry saving clip** and preserves the clip for recovery and attachments.
 
 Both choices capture PC playback audio, including audible gameplay, through Electron's system loopback. They do not capture the microphone. Other audio playing on the PC is included. Compression retains an AAC audio track and reserves 128 kbps for it within the file-size budget.
 

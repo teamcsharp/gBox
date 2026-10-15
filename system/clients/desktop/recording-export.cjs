@@ -79,4 +79,39 @@ async function finish({ original, candidate, exportDir, keep, originalStamp }) {
   }
   return { file, exported, originalFile: original, originalDeleted, warning };
 }
-module.exports = { DEFAULTS, preferences, fingerprint, ownedOriginal, publish, finish };
+
+// Replay artifacts already fit their requested size. Download once, verify the
+// content-addressed bytes, and publish through the same per-instance export policy.
+async function saveReplay({ clip, directory, exportDir, fetchArtifact }) {
+  if (!/^[a-f0-9]{64}$/.test(clip?.sha256 || '') || !Number.isSafeInteger(clip.bytes) || clip.bytes <= 0 || clip.bytes > 256 * 1048576)
+    throw Error('Invalid or oversized replay clip');
+  const folder = preferences({ exportDir }).exportDir || directory;
+  const name = String(clip.name || `replay-${clip.sha256.slice(0, 12)}.mp4`);
+  if (name.length > 180 || !/\.mp4$/i.test(name) || /[<>:"/\\|?*\x00-\x1f]/.test(name) || name.startsWith('.'))
+    throw Error('Invalid replay filename');
+  await fsp.mkdir(directory, { recursive: true });
+  const local = path.join(directory, `.gbox-replay-${crypto.randomUUID()}.mp4`);
+  let verified = false;
+  try {
+    const response = await fetchArtifact(clip.sha256);
+    if (!response.ok || !response.body) throw Error(`Replay download failed (${response.status})`);
+    const hash = crypto.createHash('sha256'); let bytes = 0;
+    await require('node:stream/promises').pipeline(require('node:stream').Readable.from(response.body), async function* (chunks) {
+      for await (const chunk of chunks) {
+        bytes += chunk.length;
+        if (bytes > clip.bytes) throw Error('Replay download exceeded its expected size');
+        hash.update(chunk); yield chunk;
+      }
+    }, fs.createWriteStream(local, { flags: 'wx' }));
+    if (bytes !== clip.bytes || hash.digest('hex') !== clip.sha256) throw Error('Replay download did not verify');
+    verified = true;
+    let file;
+    try { file = await publish(local, folder, name); }
+    catch (e) { throw Error(`Export failed: ${e.message}. Clip retained locally at ${local}; the Spark artifact is also retained`); }
+    verified = false;
+    return { file, bytes, sha256: clip.sha256, exported: !!exportDir };
+  } finally {
+    if (!verified) await fsp.unlink(local).catch(() => {});
+  }
+}
+module.exports = { DEFAULTS, preferences, fingerprint, ownedOriginal, publish, finish, saveReplay };

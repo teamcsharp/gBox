@@ -27,7 +27,7 @@ const flush = () => new Promise(r => setImmediate(r));
 const plain = x => JSON.parse(JSON.stringify(x));
 
 function fixture(src, extra = {}) {
-  const jobs = [], fits = [], drags = [], toasts = [], posts = [], opened = [], recmenu = node('div');
+  const jobs = [], fits = [], drags = [], toasts = [], posts = [], opened = [], saved = [], recmenu = node('div');
   const status = { state: 'recording', span_s: 95.5, segments: [[5, 0], [10, 5], [95.5, 10]], encoder_note: 'h264_nvenc (NVIDIA GPU)',
     bitrate_kbps: 8000, stops_in_s: 14.2, game_id: 'g1', title: 'Crazy Taxi' };
   const ctx = {
@@ -35,7 +35,8 @@ function fixture(src, extra = {}) {
       querySelector: sel => (sel === '#sopres' ? { set textContent(t) { toasts.push(t); } } : null) }, $: sel => (sel === '#recmenu' ? recmenu : null), esc: String,
     fitMenu: (el, x, y, pad, top) => fits.push([x, y, pad, top]), dragAnywhere: el => { drags.push(el); return el; },
     toast: t => toasts.push(t), S: { apiUrl: 'http://spark:8765' }, window: { open: u => opened.push(u) },
-    openRecMenu: () => { ctx.recOpened = true; }, setImmediate, tq: () => 'token=t0k',
+    openRecMenu: () => { ctx.recOpened = true; }, setImmediate, setTimeout, clearTimeout, tq: () => 'token=t0k', bnEmbedded: () => false,
+    recordingPrefsReady: Promise.resolve(), recordingPrefsSave: Promise.resolve(),
     runJob: async body => {                                    // web: the job queue answers with the job
       try { return { state: 'succeeded', output: await ctx.gameJob(body.tool, Object.fromEntries(Object.entries(body.input).filter(([k]) => k !== 'session_id'))) }; }
       catch (e) { return { state: 'failed', error: e.message }; }
@@ -47,7 +48,8 @@ function fixture(src, extra = {}) {
         bytes: 9.5 * 1048576, seconds: input.in_s - input.out_s, height: 720, encoder: 'h264_nvenc', fits: true } };
       return { session_id: 'w-1', op: 'status', status };
     },
-    gbox: { token: async () => 't0k', api: async (url, body) => {
+    gbox: { token: async () => 't0k', recSaveClip: async clip => { saved.push(plain(clip));return {file:'configured-folder/replay-g1.mp4'}; },
+      recOpen: async file => opened.push(file), api: async (url, body) => {
       posts.push([url, body && plain(body)]);
       if (url.startsWith('/api/requests?')) return { ok: true, data: [{ id: 'r9', number: 1084, title: 'auto capture' }] };
       if (url === '/api/mods' && !body) return { ok: true, data: [{ id: 'm1', title: 'Fast taxi', game_id: 'g1', calls: [{ tool: 'poke', input: {} }] },
@@ -60,7 +62,7 @@ function fixture(src, extra = {}) {
   vm.runInContext(src.slice(src.indexOf(START), src.indexOf(END)), ctx);
   Object.assign(ctx, vm.runInContext('({ RING, ringClamp, ringKbps, ringFmt, ringTimelineHTML, ringPopOpen, ringRender, ringStateText })', ctx));
   ctx.open = (e, sid) => ctx.ringPopOpen(e, sid);
-  return { ctx, jobs, fits, drags, toasts, posts, opened, recmenu, status };
+  return { ctx, jobs, fits, drags, toasts, posts, opened, saved, recmenu, status };
 }
 
 for (const [name, src] of [['desktop', desktop], ['web', web]]) {
@@ -127,7 +129,8 @@ for (const [name, src] of [['desktop', desktop], ['web', web]]) {
     assert.match(m.sub['#rg-clip'].innerHTML, /Request #1084 · auto capture/);
     assert.match(m.sub['#rg-clip'].innerHTML, /Mod card · Fast taxi/);
     assert.doesNotMatch(m.sub['#rg-clip'].innerHTML, /Other game/, 'only this game\'s mod cards');
-    assert.ok(f.toasts.some(t => /Clip ready: 9\.5 MB/.test(t)));
+    assert.ok(f.toasts.some(t => (name === 'desktop' ? /Clip saved to configured-folder/ : /Clip ready: 9\.5 MB/).test(t)));
+    if (name === 'desktop') { assert.equal(f.saved.length,1);assert.match(m.sub['#rg-clip'].innerHTML,/Saved to configured-folder/); }
   });
 
   test(`${name}: the clip opens, attaches to a request and becomes a mod card's video`, async () => {
@@ -138,7 +141,7 @@ for (const [name, src] of [['desktop', desktop], ['web', web]]) {
     await flush(); await flush(); await flush();
     m.fire('click', { target: button({ rg: 'open' }) });
     await flush();
-    assert.ok(f.opened.at(-1).endsWith(`/api/artifacts/${'ab'.repeat(32)}?token=t0k`), f.opened.at(-1));
+    assert.ok(name === 'desktop' ? f.opened.at(-1)==='configured-folder/replay-g1.mp4' : f.opened.at(-1).endsWith(`/api/artifacts/${'ab'.repeat(32)}?token=t0k`), f.opened.at(-1));
     m.querySelector('#rg-target').value = 'req:r9';
     m.fire('click', { target: button({ rg: 'attach' }) });
     await flush(); await flush();
@@ -163,11 +166,35 @@ for (const [name, src] of [['desktop', desktop], ['web', web]]) {
   });
 }
 
+test('desktop: failed folder export keeps the clip attachable and retries saving without encoding again',async()=>{
+  const f=fixture(desktop),{ctx}=f;let attempts=0;
+  ctx.gbox.recSaveClip=async()=>{if(++attempts===1)throw Error('Network share unavailable');return {file:'new-preference/clip.mp4'};};
+  await ctx.ringPopOpen({clientX:1,clientY:1});const m=ctx.RING.el;
+  m.fire('click',{target:button({rg:'export'})});await flush();await flush();await flush();
+  assert.equal(ctx.RING.clip.sha256,'ab'.repeat(32));assert.match(m.sub['#rg-clip'].innerHTML,/Network share unavailable.*Retry saving/s);
+  assert.ok(!f.toasts.some(t=>/Clip saved/.test(t)));assert.equal(f.opened.length,0);
+  m.fire('click',{target:button({rg:'save'})});await flush();await flush();await flush();
+  assert.equal(attempts,2);assert.equal(f.jobs.filter(j=>j[1].op==='export').length,1);
+  assert.equal(ctx.RING.clip.localFile,'new-preference/clip.mp4');assert.equal(ctx.RING.clip.exportError,undefined);
+});
+
+test('embedded web: clip saving crosses the desktop bridge and waits for confirmed destination',async()=>{
+  const f=fixture(web,{bnEmbedded:()=>true}),{ctx}=f;const calls=[];
+  ctx.console={log:message=>{const m=JSON.parse(message.slice(5));calls.push(m);
+    setImmediate(()=>ctx.window.gboxReplaySaved(m.id,{file:'desktop-profile/clip.mp4'},''));}};
+  ctx.deskFolders=()=>({showInFolder:file=>f.opened.push(file)});
+  await ctx.ringPopOpen({clientX:1,clientY:1},'w-1');const m=ctx.RING.el;
+  m.fire('click',{target:button({rg:'export'})});await flush();await flush();await flush();await flush();
+  assert.equal(calls[0].ev,'savereplay');assert.equal(calls[0].clip.sha256,'ab'.repeat(32));
+  assert.equal(ctx.RING.clip.localFile,'desktop-profile/clip.mp4');assert.match(m.sub['#rg-clip'].innerHTML,/Show in folder/);
+  m.fire('click',{target:button({rg:'open'})});await flush();assert.deepEqual(f.opened,['desktop-profile/clip.mp4']);
+});
+
 test('desktop: right-click on the record icon opens the replay pop-up; clicking elsewhere closes it', () => {
   assert.match(desktop, /\$\("#tb-rec"\)\.oncontextmenu = e => \{ e\.preventDefault\(\); e\.stopPropagation\(\); ringPopOpen\(e\); \}/);
   assert.match(desktop, /\["#ringpop", "#tb-rec, #recmenu"\]\]/, 'closePops knows #ringpop and its opener');
   assert.match(desktop, /\$\("#tb-recopt"\)\.onclick = openRecMenu;/, 'the ▾ button keeps the app recording options');
-  assert.match(desktop, /<button id="tb-rec" title="[^"]*Right-click: replay the last minutes of gameplay/);
+  assert.match(desktop, /<button id="tb-rec" title="[^"]*Right-click: replay/);
 });
 
 test('web: the session panel offers the replay pop-up', () => {
