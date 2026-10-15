@@ -280,6 +280,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/cast-swap.js"></script>
 <script src="/viz/pso-controls.js"></script>
 <script src="/viz/pso-face-editor.js"></script>
+<script src="/viz/native-inventory.js"></script>
 <script src="/viz/memory-cards.js"></script>
 <script src="/viz/operation-console.js"></script>
 <script src="/viz/live-controls.js"></script>
@@ -453,6 +454,7 @@ if (!tok) $("#tok").style.display = "";                    // only a plain brows
 // ---- header tray: every running session as a clickable icon (yours bright, agents' dimmed) + a bell for notifications ----
 const TRAY = { open: false, notes: [], bn: {}, seen: null };
 const SESSIONBUILD = { ctl: null, session: null };            // the Sessions header's build name (viz/session-build.js)
+let nativeInventory = null;
 // build notifications (viz/build-notes.js over gbox/build_notify.py): thumbnail, summary, Play (this PC, the game menu's
 // launch path: the mod is staged / fetched there), ▾ other launch options, Open in Mods; errors: Open request / Retry build
 document.head.insertAdjacentHTML("beforeend", `<style>${GBoxBuildNotes.CSS}</style>`);
@@ -1739,6 +1741,7 @@ async function openMemoryCards(sid) {
 async function smartSearchInit(sid) {
   SS.sid = sid;
   const faceSession=SESSIONBUILD.session;
+  nativeInventory?.dispose();nativeInventory=GBoxNativeInventory.mount($('#dock-top'),{...faceSession,session_id:sid},{api});
   if(faceSession?.state==='running'&&faceSession.platform==='gamecube'&&/phantasy\s*star\s*online/i.test(faceSession.title||'')&&!$('#pso-face-open')){
     const b=document.createElement('button');b.className='act';b.id='pso-face-open';b.textContent='Face paint';b.title='Map a saved face photo onto your current PSO character texture';
     b.onclick=()=>GBoxPSOFaceEditor.open({...faceSession,session_id:sid},{api,url:u=>`${u}${u.includes('?')?'&':'?'}${tq()}`});
@@ -4166,6 +4169,15 @@ window.PWW = GBoxPickWhip.mountOverlay(document, {
   blenderCopy: input => blenderCopy(input),
   retarget: o => /^[0-9a-f]{16}$/.test(o.gid || "") ? retargetOpen({ ...o, title: active?.title || "" }) : null,
   assets: q => window.assetSidebar?.reveal?.(q),
+  canFace: () => SESSIONBUILD.session?.platform==='gamecube' && /phantasy\s*star\s*online/i.test(active?.title||""),
+  faceEdit: async o => {
+    const session=(await api('/api/sessions?include_ended=false')).find(s=>s.session_id===o.sid);
+    if(!session)throw Error('This game has ended.');
+    const hold=GBoxPickWhip.createHold({api,holder:'face-'+Date.now().toString(36),enabled:()=>true});
+    const held=await hold.acquire(o.sid);if(held.error){hold.releaseAll();throw Error(held.error);}
+    try{return GBoxPSOFaceEditor.open(session,{api,url:u=>`${u}${u.includes('?')?'&':'?'}${tq()}`,point:o.point,onInspected:()=>hold.releaseAll(),onClose:()=>hold.releaseAll()});}
+    catch(error){hold.releaseAll();throw error;}
+  },
   chatModel: () => ({ name: "" }),                         // the Spark's local default (the desktop passes its header model)
   session: sid => ({ game: active?.title || "", game_id: document.querySelector("#wb[data-gid]")?.dataset.gid || "", worker: String(sid || "").split("-")[0] }),
   view: () => typeof cur === "string" ? (cur === "Sessions" ? `web Sessions · ${sessionMode || "play"}` : "web " + cur) : "web",

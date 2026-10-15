@@ -1226,6 +1226,7 @@ window.taskVizCreate = canvas => {
 <script src="../web/viz/photo-skin.js"></script>
 <script src="../web/viz/retarget-editor.js"></script>
 <script src="../web/viz/pick-whip.js"></script>
+<script src="../web/viz/pso-face-editor.js"></script>
 <script src="../web/viz/operation-console.js"></script>
 <script src="../web/viz/gpu-game-surface.js"></script>
 <script src="embed-geometry.js"></script>
@@ -3999,6 +4000,15 @@ async function pwIO() {
     img: c => `${S.apiUrl}${c.preview_url || `/api/characters/${encodeURIComponent(c.slug)}/preview`}?token=${tok}`,
     clipboard: t => navigator.clipboard.writeText(t), assets: pwAssets, chatModel: pwModel, crop: pwCrop, blenderCopy: pwBlenderCopy,
     session: pwSession, frame: pwFrame, onReported: () => { try { refreshInbox(); } catch {} },
+    canFace: () => /phantasy\s*star\s*online.*episode/i.test(EMB.title||""),
+    faceEdit: async o => {
+      const session=(await pwApi('/api/sessions?include_ended=false')).find(s=>s.session_id===o.sid);
+      if(!session)throw Error('This game has ended.');
+      const hold=PW.createHold({api:pwApi,holder:'face-'+Date.now().toString(36),enabled:()=>true});
+      const held=await hold.acquire(o.sid);if(held.error){hold.releaseAll();throw Error(held.error);}
+      try{return GBoxPSOFaceEditor.open(session,{api:pwApi,url:u=>`${S.apiUrl}${u}${u.includes('?')?'&':'?'}token=${tok}`,loadViewer:()=>import(new URL('/viz/character-model.js',S.apiUrl).href),point:o.point,onInspected:()=>hold.releaseAll(),onClose:()=>hold.releaseAll()});}
+      catch(error){hold.releaseAll();throw error;}
+    },
     retarget: o => /^[0-9a-f]{16}$/.test(o.gid || "") ? retargetOpen({ ...o, title: EMB.title || "" }) : toast("Open the game first: the Retarget editor needs its game id."),
     fallbackLive: o => gameJob("characters", { op: "live_use", character: o.character, session_id: sid, x: o.x, y: o.y,
       window_aspect: +(o.aspect || (EMB.rect ? EMB.rect.w / EMB.rect.h : 4 / 3)).toFixed(4),

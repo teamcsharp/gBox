@@ -402,7 +402,7 @@
   }
 
   // ---- the menu ------------------------------------------------------------------------------------------------------
-  function menuItems({ label, asset, canBlender = true, extra = [] } = {}) {
+  function menuItems({ label, asset, canBlender = true, canFace = false, extra = [] } = {}) {
     const who = label && label.known ? label.name : "this character";
     return [
       { id: "report", icon: "⚑", text: "Report…", hint: "a problem at this spot: the moment, a frame and what was picked go to the inbox" },
@@ -413,7 +413,7 @@
       { id: "identify", icon: "⌕", text: "Identify", hint: "model, RAM, Ghidra/REA evidence, slot" },
       { id: "export", icon: "⇪", text: "Export to Blender (round trip)", hint: "gBox add-on: Ctrl+Shift+V, edit, Send to gBox" },
       { id: "assets", icon: "▤", text: "Show in Assets", hint: "" },
-    ].concat(extra);
+    ].concat(canFace ? [{ id: "face", icon: "\u263a", text: "Inspect / paint face...", hint: "captured 3D draw, native face texture, UV placement and mask" }] : [], extra);
   }
 
   // ---- console lines from a job: progress log, fit events, the end --------------------------------------------------
@@ -878,7 +878,7 @@
     const lbl = () => labelOf(st.preview, st.ident, st.named);
     const head = () => { const l = lbl(); return `${labelHTML(l)}<div class="mut">${l.via ? "via " + ESC(l.via) : "looking…"}${l.ram ? " · RAM " + ESC(l.ram) : ""}${l.id ? " · id " + ESC(l.id) : ""}</div>`; };
     const s = settings();
-    const items = () => menuItems({ label: lbl(), asset: st.asset, canBlender: !!io.blenderCopy, extra: ["-",
+    const items = () => menuItems({ label: lbl(), asset: st.asset, canBlender: !!io.blenderCopy, canFace: !!io.faceEdit && (!io.canFace || io.canFace(o.sid)), extra: ["-",
       { id: "pause", icon: "⏸", text: `Pause while picking: ${settings().pause ? "on" : "off"}` },
       { id: "cloud", icon: "☁", text: `Cloud naming: ${settings().cloud ? "allowed" : "off (local only)"}` }].concat(o.extra || []) });
     const con = o.con || createConsole(doc, { drag: io.drag, fit: io.fit });
@@ -940,6 +940,11 @@
       }
       if (id === "pause") { saveSettings({ pause: !settings().pause }); return render(); }
       if (id === "cloud") { saveSettings({ cloud: !settings().cloud }); return render(); }
+      if (id === "face") {
+        try { await io.faceEdit({sid:o.sid,game_id:o.gid,point:{x:o.at[0],y:o.at[1],window_aspect:o.aspect},pick:st.ident||st.preview});dismiss("face"); }
+        catch(e){io.toast?.("Face editor: "+e.message);}
+        return;
+      }
       if (o.extra && o.extra.some(x => x.id === id)) { dismiss(id); return o.onExtra && o.onExtra(id); }
       if (id === "replace" || id === "retarget") {
         const m = doc.getElementById("pwmenu");

@@ -32,7 +32,7 @@ export async function createCharacterViewer(container, url, options = {}) {
     if(!paintHandler||event.button>0||event.type==='pointermove'&&!(event.buttons&1))return;
     const rect=renderer.domElement.getBoundingClientRect();raycaster.setFromCamera(new THREE.Vector2((event.clientX-rect.left)/rect.width*2-1,1-(event.clientY-rect.top)/rect.height*2),camera);
     const hit=raycaster.intersectObject(gltf.scene,true).find(h=>h.uv);
-    if(hit){const material=Array.isArray(hit.object.material)?hit.object.material[hit.face.materialIndex]:hit.object.material;paintHandler({u:hit.uv.x,v:hit.uv.y,material:material?.name,event});}
+    if(hit){const material=Array.isArray(hit.object.material)?hit.object.material[hit.face.materialIndex]:hit.object.material,uv=hit.uv.clone();material?.map?.transformUv(uv);paintHandler({u:uv.x,v:uv.y,material:material?.name,event});}
     event.preventDefault();event.stopImmediatePropagation();
   }
   renderer.domElement.addEventListener('pointerdown',paintEvent,true);renderer.domElement.addEventListener('pointermove',paintEvent,true);
@@ -63,11 +63,20 @@ export async function createCharacterViewer(container, url, options = {}) {
   return {
     THREE, holder, gltf,
     materials(){const names=new Set();gltf.scene.traverse(o=>{if(o.isMesh)for(const m of [].concat(o.material||[]))if(m.map)names.add(m.name);});return [...names];},
+    uvLines(materialName,limit=12000){
+      const lines=[];gltf.scene.traverse(o=>{if(!o.isMesh||lines.length>=limit)return;const g=o.geometry,uv=g?.attributes?.uv;if(!uv)return;
+        const mats=[].concat(o.material||[]),groups=g.groups?.length?g.groups:[{start:0,count:g.index?.count||uv.count,materialIndex:0}];
+        for(const group of groups){if(mats[group.materialIndex||0]?.name!==materialName)continue;const end=Math.min(group.start+group.count,g.index?.count||uv.count);
+          for(let i=group.start;i+2<end&&lines.length<limit;i+=3){const ids=[0,1,2].map(n=>g.index?g.index.getX(i+n):i+n);lines.push(ids.map(j=>[uv.getX(j),uv.getY(j)]));}}});return lines;
+    },
     paint(handler){paintHandler=handler;controls.enabled=!handler;controls.autoRotate=handler?false:(options.autoRotate??true);},
     texture(image,materialName){
       let texture=generatedTextures.get(materialName);
       if(texture){texture.image=image;texture.needsUpdate=true;return;}
-      texture=new THREE.CanvasTexture(image);texture.flipY=false;texture.colorSpace=THREE.SRGBColorSpace;paintTextures.add(texture);generatedTextures.set(materialName,texture);
+      texture=new THREE.CanvasTexture(image);texture.flipY=false;texture.colorSpace=THREE.SRGBColorSpace;
+      let original;gltf.scene.traverse(o=>{if(o.isMesh&&!original)original=[].concat(o.material||[]).find(m=>m.name===materialName)?.map;});
+      if(original){texture.wrapS=original.wrapS;texture.wrapT=original.wrapT;texture.repeat.copy(original.repeat);texture.offset.copy(original.offset);texture.center.copy(original.center);texture.rotation=original.rotation;texture.updateMatrix();}
+      paintTextures.add(texture);generatedTextures.set(materialName,texture);
       gltf.scene.traverse(o=>{if(o.isMesh)for(const m of [].concat(o.material||[]))if(m.name===materialName){if(m.map)paintTextures.add(m.map);m.map=texture;m.needsUpdate=true;}});
     },
     getView,

@@ -18,6 +18,19 @@ from gbox.server import create_app
 GID, OTHER = "g1", "g2"
 
 
+def test_native_face_loading_images_are_real_bounded_files_inside_the_build(tmp_path):
+    folder=tmp_path/'build';folder.mkdir()
+    for name in ('before.png','after.png'):(folder/name).write_bytes(b'PNG fixture')
+    meta={'name':'Bla','selfie_photo':'a'*64,'photo_faces':{'previews':[{'before':'../foreign.png','after':'after.png'},
+          {'before':'before.png','after':'after.png','label':'Native actor'}]}}
+    result=B.native_face_preview(meta,folder,'game','build name')
+    assert len(result['maps'])==1 and result['geometry']=='unchanged'
+    assert result['maps'][0]['before']=='/api/modfiles/game/build%20name/file/before.png'
+    assert all(r['kind']=='texture_projection' for r in result['frames'])
+    (folder/'before.png').unlink()
+    assert B.native_face_preview(meta,folder,'game','name') is None
+
+
 def mk(cache, gid, name, meta, files=None):
     d = cache / "mods" / gid / name
     d.mkdir(parents=True)

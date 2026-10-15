@@ -4,7 +4,7 @@ No guessed pointers, model replacement, disk modification, or identity inference
 The operator selects a resident texture and one exact address; shared textures
 can affect every mesh using that texture. GPU refresh is separate from RAM proof.
 """
-import base64,hashlib,io,json,math,struct,time,uuid
+import base64,hashlib,io,json,math,re,struct,time,uuid
 from pathlib import Path
 from typing import Literal
 import httpx
@@ -25,6 +25,11 @@ class FaceIn(BaseModel):
     character_class:str='HUnewearl'
     head:int=Field(default=0,ge=0,le=4)
     hair:int=Field(default=0,ge=0,le=9)
+    target_kind:Literal['player','npc','all']='player'
+    surface_id:str=Field(default='',pattern='^(?:[a-f0-9]{24})?$')
+    x:float|None=Field(default=None,ge=0,le=1)
+    y:float|None=Field(default=None,ge=0,le=1)
+    window_aspect:float=Field(default=4/3,ge=.25,le=8)
     key:str=Field(default='',max_length=64)
     address:int=Field(default=0,ge=0,le=0x817fffff)
     candidate:str=Field(default='',pattern='^(?:[a-f0-9]{64})?$')
@@ -48,46 +53,98 @@ def matches(ram,raw):
     return found if len(found)<=8 else []
 
 
+def baseline_chunk(source,row,current):
+    """A face build carries native originals so editing never compounds baked photos."""
+    from . import pso_gc as G
+    folder=Path(source).parent
+    marker=folder/'.gbox-mod.json'
+    if not marker.is_file():return current
+    metadata=json.loads(marker.read_text()).get('photo_faces') or {}
+    if metadata.get('original_face_archive'):
+        import zipfile
+        if metadata['original_face_archive']!='face-originals.zip':raise ValueError('Unsupported native original archive')
+        path=(folder/'face-originals.zip').resolve()
+        if not path.is_relative_to(folder.resolve()) or not path.is_file() or path.stat().st_size>128*2**20:raise ValueError('This face build is missing its bounded native originals archive')
+        with zipfile.ZipFile(path) as archive:
+            if len(archive.infolist())>2048:raise ValueError('Native original archive has too many entries')
+            try:entry=archive.getinfo(row['id']+'.gvr')
+            except KeyError as error:raise ValueError('The native face original is missing; re-download the complete build') from error
+            if not 16<=entry.file_size<=256*2**10:raise ValueError('Native face original exceeds its size limit')
+            original=archive.read(entry)
+    elif metadata.get('original_face_dir')=='face-originals':
+        path=(folder/'face-originals'/(row['id']+'.gvr')).resolve()
+        if not path.is_relative_to(folder.resolve()) or not path.is_file():raise ValueError('This face build is missing its native original; re-download the complete build')
+        original=path.read_bytes()
+    else:return current
+    before,after=G.gvr_header(original),G.gvr_header(current)
+    if len(original)!=len(current) or before!=after or original[:before['data']]!=current[:after['data']]:raise ValueError('The saved native face original does not match this build format')
+    return original
+
+
 def inspect(sid,ad,game,inp,ctx):
-    from . import pso_gc as G,pso_gc_swap as W
+    from . import pso_gc as G,pso_face_build as B,pso_face_target as Target
     from .pso_gc_live import GC
     from .melee_models import tex_size
     m=GC(ad);m.check()
     source=game.get('_rom_path')
     if not source:raise Unsupported('The running owned PSO image path is unavailable')
-    disc=G.open_disc(source);L=G.letter(inp.character_class)
+    marker=Path(source).parent/'.gbox-mod.json'
+    metadata=json.loads(marker.read_text()).get('photo_faces') if marker.is_file() else None
+    metadata=metadata if isinstance(metadata,dict) else {}
+    source_photo=metadata.get('source_photo','')
+    if not isinstance(source_photo,str) or not re.fullmatch('[a-f0-9]{64}',source_photo):source_photo=''
+    pinned=metadata.get('profiles') if source_photo else {}
+    pinned=pinned if isinstance(pinned,dict) else {}
+    if (inp.x is None)!=(inp.y is None):raise ValueError('A game point needs both x and y')
+    captured=Target.capture(ad,sid,{'x':inp.x,'y':inp.y,'window_aspect':inp.window_aspect},ctx) if inp.x is not None else None
+    disc=G.open_disc(source)
     try:
-        tables=G.tables(disc)[L];entries=G.afs(disc.read(tables['afs_file']))
+        surfaces=B.surface_catalog(disc)
+        if inp.surface_id:surfaces=[r for r in surfaces if r['id']==inp.surface_id]
+        elif not captured:
+            surfaces=[r for r in surfaces if r['kind']==inp.target_kind] if inp.target_kind!='all' else surfaces
+            if inp.target_kind=='player':surfaces=[r for r in surfaces if r['class_letter']==G.letter(inp.character_class) and r['head']==inp.head]
+        if not surfaces:raise Unsupported('No named native face surface matches that selection')
         # The bytes actually resident in this game's MEM1 determine availability.
         ram=b''.join(ad.read_memory(0x80000000+offset,min(1024*1024,0x1800000-offset)) for offset in range(0,0x1800000,1024*1024))
         if len(ram)!=0x1800000:raise Unsupported('Incomplete PSO RAM snapshot')
         records={};rows=[]
-        for index,chunk in enumerate(entries):
+        for surface in surfaces:
             try:
+                if not surface['supported']:continue
+                chunk=B.read_surface(disc,surface)
                 hd=G.gvr_header(chunk)
                 if hd['flags']&1 or hd['fmt'] not in (1,4,5,14):continue
                 n=tex_size(hd['fmt'],hd['w'],hd['h']);raw=chunk[hd['data']:hd['data']+n]
                 if not 128<=n<=131072 or len(raw)!=n:continue
                 addresses=matches(ram,raw)
                 if not addresses:continue
-                name=tables['afs'][index];key=uuid.uuid4().hex
-                provenance={'pso_face_session':sid,'pso_face_key':key,'texture_name':name,'character_class':inp.character_class}
-                chunk_sha=upload(ctx,name+'.gvr',chunk,'application/octet-stream',provenance)
-                registered=httpx.post(ctx.server+'/api/pso/faces/inspections',json={'session_id':sid,'key':key,'chunk':chunk_sha},headers=ctx.headers,timeout=5)
+                bindings=Target.texture_binding(chunk,captured['textures']) if captured else []
+                if captured and not bindings:continue
+                name=surface['name'];key=uuid.uuid4().hex;original=baseline_chunk(source,surface,chunk)
+                provenance={'pso_face_session':sid,'pso_face_key':key,'texture_name':name,'surface_id':surface['id']}
+                chunk_sha=upload(ctx,name+'.gvr',original,'application/octet-stream',provenance)
+                registered=httpx.post(ctx.server+'/api/pso/faces/inspections',json={'session_id':sid,'key':key,'chunk':chunk_sha,'surface_id':surface['id']},headers=ctx.headers,timeout=5)
                 registered.raise_for_status()
-                image=upload(ctx,name+'.png',G.png_bytes(G.gvr_decode(chunk)),'image/png',provenance)
-                records[key]={'chunk':chunk,'original':raw,'current':raw,'addresses':addresses,'offset':hd['data'],'name':name,'chunk_sha':chunk_sha}
-                rows.append({'key':key,'name':name,'chunk':chunk_sha,'image':image,'addresses':addresses,'size':[hd['w'],hd['h']],'format':hd['fmt']})
+                image=upload(ctx,name+'.png',G.png_bytes(G.gvr_decode(original)),'image/png',provenance)
+                records[key]={'chunk':original,'original':raw,'current':raw,'addresses':addresses,'offset':hd['data'],'name':name,'chunk_sha':chunk_sha,'surface_id':surface['id']}
+                profile=pinned.get(surface['id'])
+                rows.append({'key':key,'name':name,'surface_id':surface['id'],'kind':surface['kind'],'class_name':surface.get('class_name'),'chunk':chunk_sha,'image':image,'addresses':addresses,'size':[hd['w'],hd['h']],'format':hd['fmt'],'bindings':bindings,'profile':profile if isinstance(profile,dict) else surface.get('profile'),'profile_source':'build' if isinstance(profile,dict) else 'default'})
                 if len(rows)>=48:break
             except (ValueError,IndexError):continue
         m.check()
-        if not rows:raise Unsupported('No writable native textures from this class are resident. Select your current class and enter offline gameplay first. Palette/mipmapped maps are not yet editable.')
-        work=ctx.config.data_dir/'pso-faces'/sid/L;work.mkdir(parents=True,exist_ok=True)
-        model,info=G.export_player(disc,L,work,inp.head,inp.hair)
-        model_sha=upload(ctx,'pso-face-reference.glb',model.read_bytes(),'model/gltf-binary',{'pso_face_session':sid,'character_class':inp.character_class})
+        if not rows:raise Unsupported('No writable native face texture from this selection is resident'+(' and verified against the clicked draw' if captured else '')+'. Enter offline gameplay or choose the correct class/NPC. No texture write was attempted.')
+        work=ctx.config.data_dir/'pso-faces'/sid;work.mkdir(parents=True,exist_ok=True)
+        model=info=None
+        if captured:model=captured['model_path'];info=captured['evidence']
+        elif inp.target_kind=='player' or inp.surface_id:
+            surface=next(r for r in surfaces if r['id']==rows[0]['surface_id']);model,info=B.export_surface_reference(disc,surface,work,hair=inp.hair)
+        if info and info.get('reference_face_materials'):
+            for row in rows:row['reference_materials']=info['reference_face_materials']
+        model_sha=upload(ctx,'pso-face-reference.glb',model.read_bytes(),'model/gltf-binary',{'pso_face_session':sid}) if model else None
         ad._pso_face_maps=records
-        return {'session_id':sid,'maps':rows,'model':model_sha,'class':inp.character_class,'head':inp.head,'hair':inp.hair,
-            'notice':'Choose the face map and one resident address. The 3D model is the selected class/head/hair reference, not a captured animated frame. Shared textures can also change other meshes. Originals and the ROM stay intact.'}
+        return {'session_id':sid,'maps':rows,'model':model_sha,'photo':source_photo,'class':inp.character_class,'head':inp.head,'hair':inp.hair,'target':info,'captured':bool(captured),
+            'notice':('Captured geometry under your click, with matching native face texels. This is a static draw, not a verified actor identity. ' if captured else 'The model is an owned class/NPC reference, not the current animation. ')+('No verified 3D reference is available for this NPC; 2D native texture editing remains available. ' if not model else '')+'Choose one exact resident address. Shared textures can change other meshes. Apply is temporary; Save mapping retains edits for future face builds.'}
     finally:disc.f.close()
 
 
@@ -152,7 +209,7 @@ def authorize(store,config,sid,body):
     session=store.get('session',sid) or {}
     if session.get('state')!='running':raise ValueError('Choose a running PSO session')
     worker=store.get('worker',session.get('worker_id') or sid.split('-')[0]) or {}
-    for name in ('pso_faces.py','pso_gc.py','pso_gc_swap.py','tools.py','adapters.py'):
+    for name in ('pso_faces.py','pso_face_build.py','pso_face_target.py','pso_gc.py','pso_gc_swap.py','tools.py','adapters.py'):
         if worker.get('build_sources',{}).get('gbox/'+name)!=digest(Path(__file__).with_name(name).read_bytes().replace(b'\r\n',b'\n')):raise ValueError('This worker needs an idle update for live face painting')
     return inp
 
@@ -178,8 +235,13 @@ class Stroke(BaseModel):
     erase:bool=True
 
 
-def preview_image(chunk,photo,placement,strokes):
+def preview_image(chunk,photo,placement,strokes,mask=None,additional_patches=None):
     from . import pso_gc as G,pso_gc_swap as W,photo_skin
+    if additional_patches and mask is None:raise ValueError('Face islands require an explicit photo mask')
+    if mask is not None:
+        from . import pso_face_build as B
+        raw=B.paint(chunk,photo,placement.model_dump()|{'mask':mask.model_dump(),'strokes':[s.model_dump() for s in strokes],'additional_patches':additional_patches or []})
+        return raw,G.png_bytes(G.gvr_decode(raw))
     hd=G.gvr_header(chunk)
     if not 0<hd['w']<=1024 or not 0<hd['h']<=1024 or hd['fmt'] not in (1,4,5,14) or hd['flags']&1:raise ValueError('Unsupported or oversized native face texture')
     original=Image.fromarray(G.gvr_decode(chunk));painted=photo_skin.project(original,photo,placement)
@@ -204,15 +266,23 @@ def preview_image(chunk,photo,placement,strokes):
     return candidate,G.png_bytes(G.gvr_decode(candidate))
 
 
-def routes(app,store,auth):
+def routes(app,store,auth,config=None):
     from fastapi import Depends,HTTPException
     from .photo_skin import Placement
+    class FaceMask(BaseModel):
+        shape:Literal['ellipse','rectangle']='ellipse'
+        inset:float=Field(default=0,ge=0,le=.45)
     class Preview(BaseModel):
         session_id:str;key:str;chunk:str=Field(pattern='^[a-f0-9]{64}$')
         settings:Placement
         strokes:list[Stroke]=Field(default_factory=list,max_length=4096)
+        mask:FaceMask|None=None
+        additional_patches:list[dict]=Field(default_factory=list,max_length=7)
     class Inspection(BaseModel):
         session_id:str;key:str=Field(pattern='^[a-f0-9]{32}$');chunk:str=Field(pattern='^[a-f0-9]{64}$')
+        surface_id:str=Field(default='',pattern='^(?:[a-f0-9]{24})?$')
+    class SaveRecipe(BaseModel):
+        session_id:str;key:str;candidate:str=Field(pattern='^[a-f0-9]{64}$')
     @app.post('/api/pso/faces/inspections')
     def inspection(body:Inspection,actor=Depends(auth)):
         if not store.get('artifact',body.chunk):raise HTTPException(404,'Texture artifact missing')
@@ -227,6 +297,34 @@ def routes(app,store,auth):
     @app.get('/api/pso/faces/photos')
     def photos(actor=Depends(auth)):
         return [{'photo':r['photo'],'label':r.get('label') or r['photo'][:8],'url':'/api/artifacts/'+r['photo']} for r in store.all('photo_source') if (store.get('artifact',r['photo']) or {}).get('provenance',{}).get('photo_skin_source')]
+    @app.get('/api/pso/faces/surfaces')
+    def surfaces(actor=Depends(auth)):
+        if config is None:raise HTTPException(503,'Native surface catalogue is unavailable')
+        from . import pso_face_build as B,pso_gc as G
+        path=next((p for p in (config.cache/'gc/436e0bb84d5337d1/disc.iso',config.cache/'gc/psogc.iso') if p.is_file()),None)
+        if path is None:raise HTTPException(404,'Prepare the owned GameCube PSO disc first')
+        disc=G.open_disc(path)
+        try:return B.surface_catalog(disc)
+        finally:disc.f.close()
+    @app.get('/api/pso/faces/recipes')
+    def recipes(photo:str,actor=Depends(auth)):
+        if not re.fullmatch('[a-f0-9]{64}',photo):raise HTTPException(422,'Choose a saved source photo')
+        rows=[r for r in store.all('pso_face_recipe') if r.get('photo')==photo]
+        return {'photo':photo,'profiles':{r['surface_id']:r['profile'] for r in rows},'mappings':rows}
+    @app.post('/api/pso/faces/recipes')
+    def save_recipe(body:SaveRecipe,actor=Depends(auth)):
+        inspection=store.get('pso_face_inspection',body.key) or {}
+        candidate=store.get('pso_face_candidate',body.session_id+':'+body.key+':'+body.candidate) or {}
+        if inspection.get('session_id')!=body.session_id or not inspection.get('surface_id') or not candidate:
+            raise HTTPException(422,'Preview a named native face surface in this session first')
+        settings=candidate['settings'];surface=inspection['surface_id']
+        if not (store.get('artifact',settings['photo']) or {}).get('provenance',{}).get('photo_skin_source'):
+            raise HTTPException(422,'The source photo is unavailable')
+        profile={**settings,'strokes':candidate.get('strokes',[]),'mask':candidate.get('mask') or {'shape':'rectangle','inset':0},'additional_patches':candidate.get('additional_patches',[])}
+        row={'photo':settings['photo'],'surface_id':surface,'profile':profile,'native_original':inspection['chunk'],
+             'candidate':body.candidate,'updated':time.time(),'source_session':body.session_id,'by':str(actor)}
+        store.put('pso_face_recipe',settings['photo']+':'+surface,row)
+        return {'saved':True,'surface_id':surface,'photo':settings['photo'],'notice':'Mapping and mask saved for future face builds. The running ROM was not rewritten.'}
     @app.post('/api/pso/faces/preview')
     def preview(body:Preview,actor=Depends(auth)):
         inspection=store.get('pso_face_inspection',body.key) or {}
@@ -235,11 +333,11 @@ def routes(app,store,auth):
         source=store.get('artifact',body.settings.photo) or {}
         if not source.get('provenance',{}).get('photo_skin_source'):raise HTTPException(422,'Choose a photo from Faces or upload a source photo')
         try:
-            raw,image=preview_image(store.read_artifact(body.chunk),Image.open(io.BytesIO(store.read_artifact(body.settings.photo))),body.settings,body.strokes)
+            raw,image=preview_image(store.read_artifact(body.chunk),Image.open(io.BytesIO(store.read_artifact(body.settings.photo))),body.settings,body.strokes,body.mask,body.additional_patches)
         except (ValueError,OSError,np.linalg.LinAlgError) as error:raise HTTPException(422,str(error)) from error
         candidate=digest(raw)
         if not store.get('artifact',candidate):store.put_artifact(raw,'pso-face-candidate.gvr','application/octet-stream',p|{'original_gvr':body.chunk,'settings':body.settings.model_dump(),'strokes':[s.model_dump() for s in body.strokes]})
-        store.put('pso_face_candidate',body.session_id+':'+body.key+':'+candidate,{'session_id':body.session_id,'key':body.key,'original_gvr':body.chunk,'candidate':candidate,'settings':body.settings.model_dump(),'strokes':[s.model_dump() for s in body.strokes]})
+        store.put('pso_face_candidate',body.session_id+':'+body.key+':'+candidate,{'session_id':body.session_id,'key':body.key,'original_gvr':body.chunk,'candidate':candidate,'settings':body.settings.model_dump(),'strokes':[s.model_dump() for s in body.strokes],'mask':body.mask.model_dump() if body.mask else None,'additional_patches':body.additional_patches})
         view=digest(image)
         if not store.get('artifact',view):store.put_artifact(image,'pso-face-preview.png','image/png',{'pso_face_candidate':candidate})
         return {'candidate':candidate,'image':view,'native_quantized':True,'notice':'Preview decoded from the exact native encoded texture. Apply to update the selected resident game texture.'}

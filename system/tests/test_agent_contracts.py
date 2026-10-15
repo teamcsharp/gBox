@@ -11,6 +11,17 @@ from gbox.characters import CharIn
 from gbox.tools import CheatIn
 
 
+@pytest.mark.parametrize('name', ['pso_face', 'gta3_items'])
+def test_native_face_and_inventory_jobs_stay_on_the_session_worker(name):
+    agent = object.__new__(Agent)
+    agent._live_session = lambda _: None
+    sent = []
+    agent.api = SimpleNamespace(post=lambda path, json: (
+        sent.append((path, json)) or SimpleNamespace(json=lambda: {'state': 'succeeded'})))
+    agent._job(name, {'session_id': 'worker-session', 'op': 'list'})
+    assert sent == [('/api/jobs', {'tool': name, 'input': {'session_id': 'worker-session', 'op': 'list'}, 'require_worker': 'worker'})]
+
+
 def test_missing_character_is_rejected_before_any_job_or_session_lookup():
     agent = object.__new__(Agent)
     agent._job = agent._live_session = lambda *_a, **_k: pytest.fail('no dispatch expected')

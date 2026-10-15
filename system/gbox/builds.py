@@ -452,6 +452,38 @@ def launches(store, gid: str, name: str, limit: int = 10) -> list[dict]:
     return out
 
 
+def native_face_preview(meta, folder, gid, name):
+    """Expose saved native texture comparisons, never invented deformation frames."""
+    from urllib.parse import quote
+    from . import filemods
+    photo=meta.get('selfie_photo')
+    if not isinstance(photo,str) or not re.fullmatch('[a-f0-9]{64}',photo):return None
+    faces=meta.get('photo_faces');report=meta.get('report')
+    rows=(faces.get('previews') if isinstance(faces,dict) else None) or (report.get('faces') if isinstance(report,dict) else None) or []
+    if not isinstance(rows,list):return None
+    maps=[];frames=[]
+    for row in rows[:256]:
+        if not isinstance(row,dict):continue
+        paths=[row.get('before') or row.get('preview_before'),row.get('after') or row.get('preview_after')]
+        urls=[]
+        for path in paths:
+            try:
+                file=filemods._file_path(folder,path)
+                if file.suffix.lower() not in ('.png','.jpg','.jpeg','.webp') or not file.is_file() or file.stat().st_size>8*2**20:break
+                urls.append(f'/api/modfiles/{quote(gid,safe="")}/{quote(name,safe="")}/file/'+quote(path,safe='/'))
+            except (TypeError,ValueError,OSError):break
+        if len(urls)!=2:continue
+        label=str(row.get('label') or row.get('native_actor') or row.get('face_label') or row.get('model') or 'Native face')[:160]
+        maps.append({'before':urls[0],'after':urls[1],'label':label})
+        frames.extend([{'img':urls[0],'label':label+' · original texture','kind':'texture_projection','map_index':len(maps)-1},
+                       {'img':urls[1],'label':label+' · native photo texture candidate','kind':'texture_projection','map_index':len(maps)-1}])
+        if len(maps)>=4:break
+    if not maps:return None
+    return {'name':str(meta.get('title') or meta.get('name') or 'Photo faces')[:160],
+            'source':'/api/artifacts/'+photo,'maps':maps,'frames':frames,'geometry':'unchanged',
+            'notice':'Recorded native texture comparisons · original body and mesh shape unchanged · likeness review required'}
+
+
 def details(store, config, item: dict, meta: dict, card: dict | None, lib: dict, workers: list[dict]) -> dict:
     from . import special_builds as SB
     from .sprite_faces import loading_preview
@@ -489,6 +521,7 @@ def details(store, config, item: dict, meta: dict, card: dict | None, lib: dict,
         "modifications": modifications(meta, folder),
         "characters": characters(meta, item, gid, lib, lib.get("root"), (job or {}).get("fitting"), job_id, fit_exists),
         "sprite_preview":loading_preview(gid,name,meta),
+        "native_face_preview":native_face_preview(meta,folder,gid,name),
         "cast": {"source": meta.get("cast_source") or "", "mapping": meta.get("cast_mapping") or "",
                  "seed": meta.get("cast_seed") or ""} if isinstance(meta.get("cast"), list) else None,
         "codes": codes,
