@@ -619,6 +619,11 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
             src = rom_archives.prepare(src, ctx.config, g.launch["archive_member"], ctx.progress)
             staged_on = __import__("platform").node()
             lap("unpack_s")
+        if g.game_id in ('b7aecee966090bfa','66062703301f4969') and not getattr(ad,'tas_playback',None):
+            from . import sm64_startup
+            src,startup=sm64_startup.prepare_launch(src,ctx.config)
+            diag['native_startup']=startup
+            if startup.get('applied'):ctx.progress(71,'Mario 64: native title startup; automatic empty-save Options disabled')
         diag["stage"] = "close the previous game"
         checkpoints = _close_previous_games(ctx, keep=inp.keep_session)
         lap("close_previous_s")
@@ -3999,7 +4004,7 @@ AGENTS = [
 # pso_mods_tool: PSO Ver.2 DC mods | re_mods_tool: RE4 GC items/ammo/Mercenaries | zelda_tool: every Zelda
 # ac_mods_tool: Armored Core | characters: character library (list / get / use / extract)
 # scene_capture: Examine 3D (pause + RenderDoc frame -> glTF scene)
-def _load_tool_modules(names=("photo_skin", "gameplay_memory", "tas_tool", "ollama_assist", "inspection_builds", "live_controls", "pso_mods_tool", "re_mods_tool", "zelda_tool", "ac_mods_tool", "characters", "scene_capture", "tasks_tool", "blender_copy", "texture_review", "mesh_workspace", "hops_workspace",
+def _load_tool_modules(names=("sprite_faces", "smb1_sprite_build", "photo_skin", "gameplay_memory", "tas_tool", "ollama_assist", "inspection_builds", "live_controls", "pso_mods_tool", "re_mods_tool", "zelda_tool", "ac_mods_tool", "characters", "scene_capture", "tasks_tool", "blender_copy", "texture_review", "mesh_workspace", "hops_workspace",
                               "live_link",   # live_link: Blender Live Link push -> build, validate, hot-swap into the running game
                               "re4r",   # re4r: Resident Evil 4 (2023, Steam) via REFramework + gBox's Lua bridge
                               "ue_steam",   # ue_steam: generic Unreal Engine Steam game static analysis (locomotion/animation)

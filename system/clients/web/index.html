@@ -290,6 +290,8 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/last-played.js"></script>
 <script src="/live-poll.js"></script>
 <script src="/viz/character-popup.js"></script>
+<script src="/viz/game-build-request.js"></script>
+<script src="/viz/sprite-face-editor.js"></script>
 <script src="/viz/mods-gallery.js"></script>
 <script src="/viz/builds.js"></script>
 <script src="/viz/toast-stack.js"></script>
@@ -1709,7 +1711,7 @@ function smartSearchHTML() {
     #ssres .tx { min-width:0 } #ssres .tx b { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:12px }
     #ssres .tx span { font-size:11px; color:var(--mut,#999) } #ssres .hd { font-size:11px; color:var(--mut,#999); padding:4px 6px 2px }
     .ssflash { outline:2px solid var(--acc,#6cf) !important; outline-offset:2px; transition:outline-color .6s }</style>`);
-  return `<div id="ss"><div class="row1"><input id="ssq" type="search" autocomplete="off" placeholder="Search characters, mods, controls, tools, games…" aria-label="Smart search">
+  return `<div id="ss"><div class="row1"><button class="act" id="game-build-request-open" type="button" title="Request a custom build or modification for this game" aria-label="Request a custom build">👩</button><input id="ssq" type="search" autocomplete="off" placeholder="Search characters, mods, controls, tools, games…" aria-label="Smart search">
     <button class="act" id="sshist" title="Search history" aria-label="Search history" style="padding:4px 8px">▾</button></div><div id="ssres" hidden></div></div>`;
 }
 const ssIcon = { character: "🧍", mod: "🧩", control: "🎚", section: "▤", tool: "🛠", game: "🎮", search: "🔍" };
@@ -1721,6 +1723,17 @@ function ssReveal(sel, dock) {                               // open the section
 }
 async function smartSearchInit(sid) {
   SS.sid = sid;
+  const requestButton = $('#game-build-request-open');
+  requestButton.onclick = async () => {
+    try {
+      const session = (await api('/api/sessions')).find(s=>s.session_id===sid);
+      if(!session)throw Error('This session is no longer available. Open the game session again.');
+      GBoxGameBuildRequest.open({...session, session_id:sid}, {api,url:bnUrl,
+        request:id=>buildNoteIO().openRequest({id}), builds:()=>show('Builds'),
+        play:(gid,name)=>gameMenuIO().launch(gid,{mod:name,node:window.GBOX_LOCAL?.worker||'auto'}),
+        download:(gid,name)=>api(`/api/builds/${encodeURIComponent(gid)}/${encodeURIComponent(name)}/local`,{op:'download',node:window.GBOX_LOCAL?.worker||'auto'})});
+    } catch(error) {requestButton.title=error.message;requestButton.textContent='👩 !';}
+  };
   const gid = $("#wb")?.dataset.gid || "", q = $("#ssq"), res = $("#ssres"); let sel = -1, shown = [];
   const tq_ = tq();
   const [chars, wb, reg] = await Promise.all([gid ? api(`/api/characters?game_id=${encodeURIComponent(gid)}`).catch(() => []) : [],

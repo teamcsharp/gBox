@@ -4991,6 +4991,12 @@ def create_app(config: Config) -> FastAPI:
         return item.get("job_id") if item.get("dispatch_state") in ("queued", "finished") else None
 
     from . import live_controls_api
+    from . import game_build_requests
+    from . import sprite_faces
+    sprite_faces.routes(app, store, config, auth)
+    game_build_requests.routes(app, store, config, auth,
+        create_request=lambda body: req_create(RequestIn(**body), 'operator'),
+        investigate=_lf_investigate, submit=lambda body, actor: submit(JobRequest(**body), actor))
     live_controls_api.routes(app, store, auth, submit, JobRequest,
         create_request=lambda body: req_create(RequestIn(**body), 'operator'), investigate=_lf_investigate)
 
