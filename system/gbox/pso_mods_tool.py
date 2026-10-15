@@ -756,7 +756,7 @@ def _flush_jit(ad) -> bool:
 # --- the gBox tool ---------------------------------------------------------------------------------------------------
 class ModsIn(BaseModel):
     session_id: str
-    op: str = "status"          # status | list | item_set | multi_equip | dupe | attack_speed | move_speed | meseta_max | meseta | crit_always | equip_any | key_bypass | give | stat | floor_spawn | floor_rares | floor_clear | floor_list | rare_drops | unhook
+    op: str = "status"          # Platform-specific operations; pso_controls.capabilities gates native support.
     on: bool = True             # crit_always / equip_any / key_bypass / move_speed / rare_drops: on/off
     value: int = 999999         # meseta: amount
     factor: int = 3             # move_speed: the player moves N times faster (1 = off)
@@ -831,7 +831,13 @@ RARES = ["000105", "000106", "000107", "000205", "000206", "000207", "000305", "
 @tool("pso_mods", "1.1", ModsIn, ModsOut, capabilities=["runtime", "memory"], permissions=[P.MEMORY_WRITE], timeout_s=120)
 @serialized
 def pso_mods(inp: ModsIn, ctx):
-    """Phantasy Star Online Ver. 2 (Dreamcast US) live mods: op=meseta_max (999999 meseta) | meseta value=N |
+    """Offline PSO native controls; check capabilities for revision/platform support.
+
+    GameCube Plus 3OE2 adds enemy_drops on=true/false codes=[catalog codes] max_grind=true;
+    walk_through on=true/false; bosses; boss_warp target=<boss id>; adventure_status.
+    See pso_live.gamecube for the GameCube inventory/equipment/stat/survival/MAG operations.
+
+    Dreamcast US Ver.2 operations: op=meseta_max (999999 meseta) | meseta value=N |
     crit_always on=true/false (every player hit is a critical, x1.5) | equip_any on=true/false (no class/level/stat
     equip restrictions) | give code=000105 count=15 equip=true (real inventory items via the game's own create-item
     routine; equip = also equip the first) | stat name=atp value=900 (status-screen value; moves the saved base stat) |
