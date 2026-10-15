@@ -49,6 +49,30 @@
   }
   const plural = (n, [one, many]) => `${n} ${n === 1 ? one : many}`;
   const imgOf = u => typeof u === "string" && u && IMG_RX.test(u) ? u : "";
+  const artifact = sha => typeof sha==='string'&&/^[a-f0-9]{64}$/.test(sha)?'/api/artifacts/'+sha:'';
+  function selfieFrom(meta) {
+    const a=meta?.photo_skin_approval,source=artifact(a?.source_photo||meta?.selfie_photo);
+    if(!a||!source)return null;
+    const maps=(a.images||[]).filter(r=>artifact(r.before)&&artifact(r.after)).slice(0,4);
+    const story=a.story,frames=(story?.frames||[]).filter(f=>artifact(f.sha256)&&['texture_projection','geometry_snapshot'].includes(f.kind)).slice(0,16)
+      .map(f=>({img:artifact(f.sha256),label:String(f.label||'Recorded face snapshot'),kind:f.kind}));
+    if(!frames.length&&maps.length)frames.push({img:artifact(maps[0].before),label:'Original face texture map',kind:'texture_map'},
+      {img:artifact(maps[0].after),label:'Photo projected onto the texture map',kind:'texture_map'});
+    if(!frames.length)return null;
+    const deformed=story?.geometry==='deformed'&&frames.some(f=>f.kind==='geometry_snapshot');
+    return {name:String(meta.name||meta.slug||'Photo character'),source,frames,
+      maps:maps.map(r=>({before:artifact(r.before),after:artifact(r.after)})),
+      geometry:deformed?'deformed':'unchanged',
+      notice:deformed?'Recorded face-shape snapshots':'Photo texture projection · mesh shape unchanged'};
+  }
+  function selfieHTML(story, index, {mapUrl=u=>u,reduced=false}={}) {
+    const frames=story.frames,frame=frames[reduced?frames.length-1:index%frames.length],previous=frames[Math.max(0,(index%frames.length)-1)],map=story.maps[0];
+    const img=(url,alt,cls='')=>`<img class="${cls}" src="${ESC(mapUrl(url))}" alt="${ESC(alt)}" decoding="async" onerror="this.style.visibility='hidden'">`;
+    return `<div class="lm-selfie-card${reduced?' lm-selfie-still':''}"><b>${ESC(story.name)}</b><div class="lm-face-row"><figure>${img(story.source,'Source selfie')}<figcaption>Source photo</figcaption></figure>
+      <figure class="lm-face-result"><div class="lm-face-wipe">${img(previous.img,'Previous recorded face snapshot')}${img(frame.img,frame.label,'lm-face-next')}</div><figcaption>${ESC(frame.label)}</figcaption></figure></div>
+      ${map?`<div class="lm-uv-row"><span>Original texture → photo texture</span><div class="lm-uv-wipe">${img(map.before,'Original UV texture')}${img(map.after,'Photo UV texture','lm-uv-next')}</div></div>`:''}
+      <small>${ESC(story.notice)}</small></div>`;
+  }
 
   // ---------------------------------------------------------------- which launch carries a mod
   // launch_game / session_swap jobs carry the build name in input.mod; "" (back to the original) is no mod.
@@ -94,7 +118,7 @@
     const verification = d && d.verification;
     const call = d && d.build_call && typeof d.build_call === "object" ? d.build_call : null;
     const model = {
-      gameId, mod,
+      gameId, mod, selfies:[],
       label: (d && d.display_name) || (b && b.display_name) || (b && b.mod_title) || (d && d.label) || mod,
       originalTitle: (d && d.original_title) || (b && b.original_title) || "",
       writer: (d && d.writer) || (b && b.writer) || "",
@@ -122,7 +146,8 @@
     });
   }
   const hasContent = m => !!m && (!!m.mod || m.session.length > 0);
-  const thumbsOf = m => [...new Set(m.pairs.flatMap(p => [p.original && p.original.img, p.donor.img]).filter(Boolean))];
+  const thumbsOf = m => [...new Set([...m.pairs.flatMap(p => [p.original && p.original.img, p.donor.img]),
+    ...(m.selfies||[]).flatMap(s=>[s.source,...s.frames.map(f=>f.img),...s.maps.flatMap(m=>[m.before,m.after])])].filter(Boolean))];
 
   // ---------------------------------------------------------------- markup
   const thumb = (url, label, cls, mapUrl) => `<span class="lm-th ${cls}"><i>${ESC(label)}</i>${url
@@ -139,7 +164,8 @@
   // place, so the loop has no seam (every tile carries its own right margin: both halves are exactly the same width).
   // A short list repeats inside one copy so the band is full on a wide screen.
   function marqueeHTML(m, { mapUrl = u => u, reduced = false } = {}) {
-    const items = [...m.pairs.map(p => pairHTML(p, mapUrl)), ...m.files.map(fileHTML)];
+    const photos=(m.selfies||[]).flatMap(s=>s.frames.map((f,i)=>`<span class="lm-pair">${thumb(i?s.frames[i-1].img:s.source,i?'Previous face snapshot':'Source photo','lm-orig',mapUrl)}<b class="lm-arrow">→</b>${thumb(f.img,f.label,'lm-new',mapUrl)}<span class="lm-cap">${ESC(f.label)}</span></span>`));
+    const items = [...photos,...m.pairs.map(p => pairHTML(p, mapUrl)), ...m.files.map(fileHTML)];
     if (!items.length) return "";
     const reps = reduced ? 1 : Math.max(1, Math.ceil(MIN_ITEMS / items.length));
     const once = items.join("").repeat(reps);
@@ -220,6 +246,19 @@
 @media (max-width:820px), (max-height:560px) { .lm-stage { display:none; } }
 @media (max-width:1000px), (max-height:640px) { .lm-info { max-width:calc(100% - 28px); } .lm-info .lm-call, .lm-info .lm-state { display:none; } }
 @media (prefers-reduced-motion: reduce) { .lm-track.lm-ltr, .lm-card.lm-fly { animation:none; } .lm-card.lm-fly { opacity:1; } }
+.lm-selfie-stage {position:absolute;left:18px;top:125px;width:min(420px,38vw);max-height:calc(100% - 260px);overflow:hidden;color:#f4eeee;font:12px/1.35 system-ui,sans-serif}
+.lm-selfie-card {padding:12px;border:1px solid #9ecbff66;border-radius:12px;background:#111626dc;box-shadow:0 8px 30px #0007}
+.lm-selfie-card>b {display:block;margin-bottom:8px}.lm-face-row {display:flex;gap:12px;align-items:center}.lm-face-row figure{margin:0;min-width:0;flex:1}
+.lm-face-row figure:first-child{flex:.65}.lm-face-row img{width:100%;height:160px;object-fit:contain}.lm-face-row figcaption{color:#bec9e1;text-align:center;font-size:11px;margin-top:4px}
+.lm-face-result{flex:1.4!important}.lm-face-wipe,.lm-uv-wipe{position:relative;overflow:hidden}.lm-face-next,.lm-uv-next{position:absolute;inset:0;animation:lm-face-reveal 1.5s ease-in-out both}
+.lm-uv-row{display:flex;align-items:center;gap:10px;margin-top:8px;color:#bec9e1;font-size:11px}.lm-uv-wipe{width:100px;height:60px;flex:none}.lm-uv-wipe img{width:100%;height:100%;object-fit:contain}
+.lm-uv-wipe img:first-child{animation:lm-texture-out 1.5s ease-in-out both}.lm-uv-next{animation:lm-texture-in 1.5s ease-in-out both}
+.lm-selfie-card small{display:block;margin-top:8px;color:#b1c3db;font-size:11px}.lm-selfie-still .lm-face-next,.lm-selfie-still .lm-uv-next,.lm-selfie-still .lm-uv-wipe img:first-child{animation:none}
+@keyframes lm-face-reveal {from{clip-path:inset(0 100% 0 0);transform:translateX(12px)}to{clip-path:inset(0);transform:translateX(0)}}
+@keyframes lm-texture-out{to{transform:translateX(-100%);opacity:0}}@keyframes lm-texture-in{from{transform:translateX(100%)}to{transform:translateX(0)}}
+@media(max-height:650px){.lm-face-row img{height:110px}.lm-uv-row{display:none}.lm-selfie-stage{top:115px}}
+@media(max-width:820px){.lm-selfie-stage{width:calc(100% - 36px);top:116px;max-height:calc(100% - 260px)}.lm-face-row img{height:110px}}
+@media(prefers-reduced-motion:reduce){.lm-face-next,.lm-uv-next,.lm-uv-wipe img:first-child{animation:none}}
 `;
 
   // ---------------------------------------------------------------- loading inside the budget
@@ -233,14 +272,24 @@
     let timer = null;
     const deadline = new Promise(resolve => { timer = st(() => { resolve(null); try { ctl && ctl.abort(); } catch (e) { /* ignore */ } }, budgetMs); });
     const within = p => Promise.race([Promise.resolve().then(p).catch(() => null), deadline]);
-    const [details, built, session] = await Promise.all([
-      mod ? within(() => fetchJson(`/api/builds/${enc(gameId)}/${enc(mod)}/details`, signal)) : null,
+    const detailsPromise=mod ? within(() => fetchJson(`/api/builds/${enc(gameId)}/${enc(mod)}/details`, signal)) : Promise.resolve(null);
+    const photoPromise=detailsPromise.then(d=>{
+      const donors=[...new Set((d?.characters||[]).flatMap(r=>r.donors||[r.donor?.slug]).filter(Boolean))];
+      return Promise.all(donors.filter(s=>/_photo_|selfie/i.test(s)).slice(0,2).map(slug=>within(()=>fetchJson('/api/characters/'+enc(slug),signal))));
+    });
+    const [details, built, session, photoRows] = await Promise.all([
+      detailsPromise,
       mod ? within(() => fetchJson(`/api/mods/built?game_id=${enc(gameId)}&q=${enc(mod)}&limit=20`, signal)) : null,
       sessionMods ? within(() => sessionMods(signal)) : null,
+      photoPromise,
     ]);
-    ct(timer);
     const item = built && Array.isArray(built.items) ? built.items.find(x => x && x.name === mod) || null : null;
-    return modelFrom({ gameId, mod, details, built: item, session: Array.isArray(session) ? session : [], now: now() / 1000 });
+    const model=modelFrom({ gameId, mod, details, built: item, session: Array.isArray(session) ? session : [], now: now() / 1000 });
+    const donors=[...new Set([...(details?.characters||[]).flatMap(r=>r.donors||[r.donor?.slug]).filter(Boolean),
+      ...(item?.changes||[]).map(c=>String(c.donor||'').split(',')[0]).filter(Boolean)])];
+    const candidates=photoRows.length?[]:donors.filter(s=>/_photo_|selfie/i.test(s)).slice(0,2);
+    const photos=photoRows.length?photoRows:await Promise.all(candidates.map(slug=>within(()=>fetchJson('/api/characters/'+enc(slug),signal))));
+    model.selfies=photos.map(selfieFrom).filter(Boolean);ct(timer);return model;
   }
 
   // ---------------------------------------------------------------- the controller on the loading screen
@@ -267,10 +316,14 @@
       held = Img ? urls.map(u => { const im = new Img(); im.decoding = "async"; im.src = mapUrl(u); return im; }) : [];
     }
     function slide() {
-      const m = model; if (!m || !m.pairs.length) return;
+      const m = model; if (!m || (!m.pairs.length&&!m.selfies?.length)) return;
       const still = reduced();
+      if(m.selfies?.length){const slot=layer.querySelector('.lm-selfie-stage');
+        if(slot)slot.innerHTML=selfieHTML(m.selfies[Math.floor(slideN/8)%m.selfies.length],slideN,{mapUrl,reduced:still});
+      } else {
       const slot = layer.querySelector ? layer.querySelector(still || slideN % 2 === 0 ? ".lm-l" : ".lm-r") : null;
       if (slot) slot.innerHTML = slideHTML(m.pairs[slideN % m.pairs.length], { mapUrl, reduced: still });
+      }
       slideN++;
       const t = token;
       timer = st(() => { if (t === token) slide(); }, still ? STILL_MS : SLIDE_MS);
@@ -281,11 +334,11 @@
       const still = reduced();
       preload(thumbsOf(m));
       layer.innerHTML = marqueeHTML(m, { mapUrl, reduced: still })
-        + (m.pairs.length ? `<div class="lm-stage" aria-hidden="true"><div class="lm-slot lm-l"></div><div class="lm-slot lm-r"></div></div>` : "")
+        + (m.selfies?.length?'<div class="lm-selfie-stage" aria-label="Photo character construction snapshots"></div>':m.pairs.length ? `<div class="lm-stage" aria-hidden="true"><div class="lm-slot lm-l"></div><div class="lm-slot lm-r"></div></div>` : "")
         + infoHTML(m);
       layer.hidden = false;
       layer.dataset && (layer.dataset.motion = still ? "reduced" : "full");
-      if (m.pairs.length) slide();
+      if (m.pairs.length||m.selfies?.length) slide();
     }
     // start({gameId, mod, sessionMods}): a stock launch (no mod, no session mods) clears and fetches nothing.
     async function start({ gameId, mod = "", sessionMods = null, fetchJson = opts.fetchJson } = {}) {
@@ -304,5 +357,5 @@
   }
 
   return { BUDGET_MS, SLIDE_MS, KINDS, CSS, modOfJob, modelFrom, load, mount, marqueeHTML, slideHTML, infoHTML, infoLines,
-           pairsFrom, slotLabel, thumbsOf, hasContent, sessionModsFrom };
+           pairsFrom, slotLabel, thumbsOf, hasContent, sessionModsFrom, selfieFrom, selfieHTML };
 });

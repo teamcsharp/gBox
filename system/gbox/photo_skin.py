@@ -152,11 +152,12 @@ def prepare(model,photo,settings,emit):
             texture=gl['textures'][tex['index']]
             if 'source' in texture:refs.append((tex,tex['index'],texture['source']))
     if set(settings.maps)-{r[2] for r in refs}:raise ValueError('Select existing base-color maps; normal/data/emissive maps are not edited')
-    out=bytearray(blob);images=[]
+    out=bytearray(blob);images=[];story_maps=[]
     for index in settings.maps:
         im=gl['images'][index];view=gl['bufferViews'][im['bufferView']]
         raw=blob[view.get('byteOffset',0):view.get('byteOffset',0)+view['byteLength']]
         before=Image.open(io.BytesIO(raw));before.load();after=project(before,photo,settings)
+        if len(settings.maps)<=4:story_maps.append((before,after))
         data=png(after)
         if len(out)+len(data)>64*1024**2:raise ValueError('Photo candidate exceeds 64 MiB')
         out.extend(bytes(-len(out)%4));offset=len(out);out.extend(data)
@@ -170,7 +171,12 @@ def prepare(model,photo,settings,emit):
             ref['index']=remap[texture]
         images.append({'index':index,'before':emit('photo-before-'+str(index)+'.png',png(before),'image/png'),
                        'after':emit('photo-after-'+str(index)+'.png',data,'image/png'),'size':list(after.size)})
-    return {'source_sha256':source,'candidate':emit('photo-candidate.glb',A.glb_bytes(gl,bytes(out)),'model/gltf-binary'),
+    story=None
+    try:
+        from .photo_story import record
+        story=record(model,settings,story_maps,emit)
+    except (ValueError,OSError,KeyError,IndexError):pass # Texture comparison still works when a mesh preview is unavailable.
+    return {'source_sha256':source,'candidate':emit('photo-candidate.glb',A.glb_bytes(gl,bytes(out)),'model/gltf-binary'), 'story':story,
             'images':images,'settings':settings.model_dump(),'status':'pending',
             'notice':'Photo projected onto existing UV maps. Geometry, rig, weights and original alpha unchanged; not a reconstructed 3D head or a verified game build.'}
 
@@ -360,7 +366,7 @@ def register(app,auth,store,chars):
                 new.update(slug=variant,name=row['settings']['name']+' on '+meta['name'],model='model.glb',variant_of=meta['slug'],
                     selfie_photo=row['settings']['photo'],tags=list(dict.fromkeys([*(meta.get('tags') or []),'selfie:'+row['settings']['photo']])),
                     photo_skin_approval={'review':rid,'source_photo':row['settings']['photo'],'source_sha256':row['source_sha256'],
-                        'candidate':row['candidate'],'images':row['images'],'settings':row['settings'],'at':time.time(),'by':str(actor)},
+                        'candidate':row['candidate'],'images':row['images'],'settings':row['settings'],'story':row.get('story'),'at':time.time(),'by':str(actor)},
                     verification={'status':'unverified','reason':'Photo skin approved; requires native build and gameplay verification'},files=['model.glb'])
                 try:
                     if (new.get('stats') or {}).get('triangles',0)>50000:raise ValueError('Use the interactive 3D preview for this high-poly donor')
