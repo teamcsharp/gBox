@@ -10,6 +10,16 @@
   if(!w||!h||w>4096||h>4096||w*h>16777216)throw Error('Use an image up to 4096 × 4096 pixels.');
   const c=document.createElement('canvas');c.width=w;c.height=h;c.getContext('2d').drawImage(image,0,0);return {data:c.toDataURL('image/png'),width:w,height:h};
  }
+ async function imageMaterials(viewer,indices){
+  const selected=new Set(indices||[]),base=await Promise.all([...selected].map(index=>viewer.gltf.parser.getDependency('material',index))),bound=new Set();
+  // GLTFLoader can clone a material for skinning or vertex colors. Its source
+  // association survives on that final material; editing a parser dependency
+  // alone would never update the mesh using the clone.
+  viewer.gltf.scene.traverse(object=>{if(!object.isMesh)return;for(const material of [].concat(object.material||[])){
+   const index=viewer.gltf.parser.associations?.get(material)?.materials;
+   if(selected.has(index)||base.includes(material))bound.add(material);
+  }});return [...bound];
+ }
  function recent(){try{const rows=JSON.parse(localStorage.getItem(RECENT)||'[]');return Array.isArray(rows)?rows.filter(r=>/^[a-f0-9]{32}$/.test(r.id)).slice(0,20):[];}catch{return [];}}
  function remember(session){try{localStorage.setItem(RECENT,JSON.stringify([{id:session.id,label:session.label||'Texture project'},...recent().filter(r=>r.id!==session.id)].slice(0,20)));}catch{}}
  function open(options={},io={}){
@@ -45,7 +55,7 @@
    if(session.character)sessions.set(session.image,session);q('saved').textContent=session.revision?'Saved revision '+session.revision:'Original image';showImage(draft().png);controls();
    if(session.model_url){
     try{q('model').textContent='Loading actual collection model…';const mod=await(io.loadViewer?io.loadViewer():import('/viz/character-model.js'));if(dead||my!==turn)return;q('model').replaceChildren();const v=await mod.createCharacterViewer(q('model'),url(session.model_url),{autoRotate:false,distance:1.2});if(dead||my!==turn){v.dispose();return;}viewer=v;
-     const bound=await Promise.all((session.material_indices||[]).map(i=>v.gltf.parser.getDependency('material',i)));if(dead||my!==turn)return;
+     const bound=await imageMaterials(v,session.material_indices);if(dead||my!==turn)return;if(!bound.length)throw Error('This color map is not bound to a renderable mesh in the collection model');
      painter=root.GBoxModelTexturePaint.mount(q('paint'),{viewer:v,materials:[{id:String(session.image),image:session.image,name:session.label,materials:bound}],onChange:result=>{if(!dead&&my===turn)changed(result);},onEditImage:()=>sendCurrent().catch(errors),onCommit:()=>save()});await painter.ready;if(dead||my!==turn)return;
      await setPainterImage(draft().png);if(dead||my!==turn)return;q('image').hidden=true;q('surface').textContent='Actual collection model · selected base-color map · edits affect all model surfaces sharing this image. Exported assets still require in-game validation.';
     }catch(e){if(dead||my!==turn)return;painter?.dispose();painter=null;viewer?.dispose();viewer=null;q('model').replaceChildren();q('paint').replaceChildren();showImage(draft().png);q('surface').textContent='3D preview unavailable: '+e.message+'. The original texture can still be edited in PhotoCraft.';}
