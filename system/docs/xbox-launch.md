@@ -25,6 +25,14 @@ an XInput controller profile. Existing local emulator settings and saves are
 preserved. Shared emulator data and the old collection settings are not
 imported into a fresh profile.
 
+Automation prefers the release's standalone `cxbxr-ldr.exe /load <XBE>` entry,
+with explicit kernel log arguments. This initializes the emulator directly
+without opening the configuration GUI. The GUI's positional XBE launch remains
+a fallback for manually installed runtimes that lack the standalone loader.
+Startup dialogs include their actual message and button text in the failure
+report; a dialog caption alone is insufficient for diagnosis. No warning is
+clicked automatically and the emulator's warning settings remain unchanged.
+
 A successful startup requires an owned, responsive `CxbxRender` game window
 that stays open for three seconds. The configuration GUI alone is insufficient.
 Startup errors and timeouts retain emulator logs and clean up only the new

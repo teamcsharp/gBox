@@ -22,7 +22,9 @@ from .config import HOST_OS, Config
 from .registry import ToolUnavailable, Unsupported
 
 _INSTALL_LOCK = threading.Lock()
-EXES = ("cxbx.exe", "cxbxr-ldr.exe")
+# Upstream's standalone automation entry initializes Settings/EmuShared itself.
+# The GUI additionally asks about retail signatures, including legitimate mods.
+EXES = ("cxbxr-ldr.exe", "cxbx.exe")
 CXBX_TAG = "CI-585c49a"
 CXBX_URL = f"https://github.com/Cxbx-Reloaded/Cxbx-Reloaded/releases/download/{CXBX_TAG}/CxbxReloaded-Release.zip"
 CXBX_SHA256 = "010d1e85bee9f82f05ae57ca483e7ae61fecba06c1637bf6b5a74ca09b03bf43"
@@ -237,6 +239,45 @@ def prepare_xbe(source: str | Path, config: Config, progress=lambda *_: None) ->
     return source
 
 
+def dialog_controls(hwnd: int) -> list[dict]:
+    """Read the body of this owned dialog, including cross-process Edit controls.
+
+    GetWindowText alone returns only a remote dialog's caption. WM_GETTEXT with
+    a short timeout obtains its actual explanation without hanging on a broken
+    emulator. Do not click buttons or dismiss warnings on the operator's behalf.
+    """
+    import ctypes
+    from ctypes import wintypes as w
+    user = ctypes.windll.user32
+    user.GetClassNameW.argtypes = [w.HWND, w.LPWSTR, ctypes.c_int]
+    user.GetWindowTextW.argtypes = [w.HWND, w.LPWSTR, ctypes.c_int]
+    user.SendMessageTimeoutW.argtypes = [w.HWND, w.UINT, w.WPARAM, w.LPARAM,
+                                         w.UINT, w.UINT, ctypes.POINTER(ctypes.c_size_t)]
+    user.SendMessageTimeoutW.restype = ctypes.c_ssize_t
+    controls = []
+
+    @ctypes.WINFUNCTYPE(w.BOOL, w.HWND, w.LPARAM)
+    def each(control, _):
+        if len(controls) >= 32:
+            return False
+        name = ctypes.create_unicode_buffer(256)
+        user.GetClassNameW(control, name, len(name))
+        if name.value.lower() not in ("static", "edit", "button") and not name.value.lower().startswith("richedit"):
+            return True
+        text, result = ctypes.create_unicode_buffer(4096), ctypes.c_size_t()
+        # SMTO_BLOCK | SMTO_ABORTIFHUNG, WM_GETTEXT. The destination is our buffer.
+        ok = user.SendMessageTimeoutW(control, 0x000D, len(text), ctypes.addressof(text),
+                                      0x3, 150, ctypes.byref(result))
+        if not ok:
+            user.GetWindowTextW(control, text, len(text))
+        value = text.value.strip()
+        if value:
+            controls.append({"class": name.value, "text": value})
+        return True
+    user.EnumChildWindows(hwnd, each, 0)
+    return controls
+
+
 def owned_windows(pids: set[int], known_hwnd: int | None = None) -> list[dict]:
     """CxbxRender is the emulator's game window, distinct from its library GUI."""
     import ctypes
@@ -262,9 +303,13 @@ def owned_windows(pids: set[int], known_hwnd: int | None = None) -> list[dict]:
         user.GetClassNameW(hwnd, name, len(name))
         user.GetWindowTextW(hwnd, title, len(title))
         user.GetClientRect(hwnd, ctypes.byref(rect))
-        rows.append({"pid": pid.value, "hwnd": int(hwnd), "class": name.value, "title": title.value,
-                     "width": rect.right - rect.left, "height": rect.bottom - rect.top,
-                     "hung": bool(user.IsHungAppWindow(hwnd))})
+        row = {"pid": pid.value, "hwnd": int(hwnd), "class": name.value, "title": title.value,
+               "width": rect.right - rect.left, "height": rect.bottom - rect.top,
+               "hung": bool(user.IsHungAppWindow(hwnd))}
+        if name.value == "#32770":
+            row["controls"] = dialog_controls(int(hwnd))
+            row["text"] = "\n".join(dict.fromkeys(control["text"] for control in row["controls"]))[:8000]
+        rows.append(row)
         return True
     user.EnumWindows(each, 0)
     # SetParent docks this renderer into Electron: it is no longer a top-level
@@ -363,7 +408,12 @@ class XboxAdapter:
         })
         self.output_path = exe.parent / "gbox-launch.log"
         self._output = self.output_path.open("wb")
-        args = [str(exe), "/load", str(xbe.resolve())] if exe.name.lower() == "cxbxr-ldr.exe" else [str(exe), str(xbe.resolve())]
+        if exe.name.lower() == "cxbxr-ldr.exe":
+            # cxbxr-emu.cpp requires /load. CxbxKrnlSetupVerboseLog reads /dm
+            # and /df from CLI (not Settings), so retain the real kernel log.
+            args = [str(exe), "/load", str(xbe.resolve()), "/dm", "2", "/df", str(self.log_path.resolve())]
+        else:
+            args = [str(exe), str(xbe.resolve())]
         try:
             self.launcher = subprocess.Popen(args, cwd=exe.parent, stdout=self._output, stderr=subprocess.STDOUT,
                                              startupinfo=hidden_start())
@@ -382,7 +432,9 @@ class XboxAdapter:
                 windows = owned_windows(live)
                 dialog = next((row for row in windows if row["class"] == "#32770"), None)
                 if dialog:
-                    raise RuntimeError(f"Cxbx displayed a startup error: {dialog['title']}. {self.log_tail(3000)}")
+                    explanation = dialog.get("text") or "\n".join(control.get("text", "") for control in dialog.get("controls", []))
+                    raise RuntimeError(f"Cxbx displayed a startup dialog: {dialog['title']}. "
+                                       f"{explanation}\n{self.log_tail(3000)}")
                 render = next((row for row in windows if row["class"] == "CxbxRender" and not row["hung"]
                                and row["width"] >= 160 and row["height"] >= 120), None)
                 if render:
