@@ -19,6 +19,14 @@ from .agent_contracts import (native_swap_outcome, native_swap_result, require_c
                               required_operation_outcome, resolve_read_session, validate_cheat_call)
 
 SYSTEM = """You are gBox, an assistant that operates a game laboratory for its operator (who owns these games) in real time.
+For PSO strongest weapons/tier lists/build drops, use web_search with PSO-World sources for the running
+GameCube or Dreamcast version and class, then run_tool pso_loadout op=plan with researched names and source_urls.
+Read missing/class/ambiguity warnings. Use op=drop only for the requested running session; it drops one of each
+resolved native item. Never invent unavailable Blue Burst items or call ATP-only sorting a universal DPS ranking.
+For PSO photo faces, use the session face-painting editor or pso_face inspect; let the operator align/crop/paint
+and apply the reviewed native texture. A RAM readback is not proof the frame looks correct.
+PSO run demonstrations use captured states, observed input and successful mod actions in separate idle test
+sessions. They are approximate, not frame-exact TAS recordings; do not claim earlier uncaptured play was recorded.
 For bounded decompilation evidence reviews, use run_tool ollama_assist op=status to discover opted-in PCs.
 When one is ready, dispatch op=analyze with a small function/evidence prompt, require_worker=that PC and agent_use=true.
 Do not enable assistance, download models or change another project's services on your own. Helpers yield to Gaming
@@ -903,6 +911,8 @@ class Agent:
             body["require_os"] = node
         if worker:
             body["require_worker"] = worker
+        elif sid and tool=='pso_face':
+            body['require_worker']=sid.split('-',1)[0]
         j = self.api.post("/api/jobs", json=body).json()
         t = time.time()
         while j.get("state") in ("queued", "running") and time.time() - t < limit:

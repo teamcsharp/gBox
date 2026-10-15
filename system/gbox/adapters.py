@@ -1010,7 +1010,7 @@ class RetroArchAdapter(CommandAdapter):
         self.rewind_on = (platform or "") not in NO_REWIND
         self.checkpoint_min_interval_s = FLYCAST_CHECKPOINT_MIN_S if (platform or "") in FLYCAST_PLATFORMS else 0.0
         self.granularity = 15 if (platform or "") in COARSE_REWIND else 4
-        self.trigger_hotkeys = self.rewind_on and (platform or "") not in TRIGGERS_USED   # L2 = rewind, R2 = fast-forward
+        self.trigger_hotkeys = False                  # the worker owns Select+trigger and D-pad time controls
         # sound (gbox/game_audio.py): the driver of the current attempt and the device it opens ("" = Windows' default)
         self.audio_driver, self.audio_device = ("null" if HOST_OS == "linux" else "xaudio"), ""
         if HOST_OS == "windows":
@@ -1061,14 +1061,14 @@ class RetroArchAdapter(CommandAdapter):
         if self.rewind_on:
             opts.update({"rewind_enable": "true", "rewind_granularity": str(self.granularity),
                          "rewind_buffer_size": "1024" if self.granularity > 4 else "512", "rewind_buffer_size_step": "64"})
+        # One worker handles both D-pad aliases and triggers on every emulator. Disable inherited RetroArch time
+        # bindings so a native pad never rewinds twice, and L2/R2 without Select remain ordinary game controls.
+        opts.update({"input_rewind": "nul", "input_rewind_btn": "nul", "input_rewind_axis": "nul",
+                     "input_hold_fast_forward": "nul", "input_hold_fast_forward_btn": "nul",
+                     "input_hold_fast_forward_axis": "nul", "input_toggle_fast_forward": "nul",
+                     "input_toggle_fast_forward_btn": "nul", "input_toggle_fast_forward_axis": "nul"})
         if HOST_OS == "windows":
-            # every game: hold Select + L2 = rewind (RetroArch's own hotkey). Select is the hotkey enabler, so L2/R2 keep
-            # working in games that use them. SDL gamepad button 4 = View/Back (Select).
-            # Select + R2 = fast-forward ramping 2x -> 4x -> 16x: driven by the worker (tools._ff_ramp), since RetroArch
-            # has one fixed fast-forward ratio per run.
-            opts.update({"input_enable_hotkey_btn": "4", "input_rewind_axis": "+4", "input_hold_fast_forward_axis": "nul"})
-        elif self.trigger_hotkeys:         # streamed: the pad's L2/R2 keys, sent together with the hotkey-enable key
-            opts.update({"input_rewind": "e", "input_hold_fast_forward": "r"})
+            opts["input_enable_hotkey_btn"] = "4"       # Select still gates the emulator's other hotkeys
         opts["fastforward_ratio"] = "16.0"                 # the ramp's top speed; lower speeds = fast-forward part of the time
         # cheats: the game's .cht is placed under <runtime>/cheats/<core library name>/ before launch (see install_cheats)
         opts.update({"cheat_database_path": rt / "cheats", "apply_cheats_after_load": "true", "apply_cheats_after_toggle": "true"})
@@ -1986,7 +1986,7 @@ class StandaloneAdapter(Adapter):
         return self.debugger().remove_breakpoint(address, kind, length)
 
     def _xdo(self, *args):
-        subprocess.run(["xdotool", *args], env={**os.environ, "DISPLAY": self.display.name}, timeout=5)
+        subprocess.run(["xdotool", *args], env={**os.environ, "DISPLAY": self.display.name}, timeout=5, check=True)
 
     def save_state(self) -> dict:
         self._xdo("key", self.hotkeys["save_state"])
@@ -2023,6 +2023,7 @@ class StandaloneAdapter(Adapter):
 class DolphinAdapter(StandaloneAdapter):
     """GameCube / Wii on standalone Dolphin (flatpak), Vulkan on the GPU, GDB stub for CPU debugging."""
     name = "dolphin"
+    supported = StandaloneAdapter.supported | {'fast_forward'}
     flatpak = "org.DolphinEmu.dolphin-emu"
     screen = (640, 480)                          # GameCube output size; Dolphin's window opens at exactly this
     checkpoint_state, state_glob = "dir", "*.s08"   # gBox's checkpoint ring lives in Dolphin's slot 8 (Shift+F8 / F8)
@@ -2113,17 +2114,26 @@ D-Pad/Right = `H`
                 "note": "Dolphin runs this Gecko code from the next game start (load state / restart the game)"}
 
     def _argv(self, rom: str) -> list[str]:
-        user = self.config.runtime / "dolphin-user"            # shared: memory cards, shader cache, settings
+        user = Path(getattr(self, 'gameplay_demo_user', self.config.runtime / "dolphin-user"))
         (user / "Config").mkdir(parents=True, exist_ok=True)
         (user / "Config" / "GCPadNew.ini").write_text(self.PAD_INI)
+        (user / "Config" / "Hotkeys.ini").write_text('[Hotkeys]\nDevice = XInput2/0/Virtual core pointer\n'
+            'Emulation Speed/Disable Emulation Speed Limit = `Tab`\n'
+            'Save State/Save State Slot 8 = `Shift_L` & `F8`\n'
+            'Load State/Load State Slot 8 = !`Shift_L` & `F8`\n'
+            'Save State/Save State Slot 1 = `Shift_L` & `F1`\n'
+            'Load State/Load State Slot 1 = !`Shift_L` & `F1`\n')
         self._gecko_setup(user, rom)
         opts = {"Dolphin.General.GDBPort": self.port, "Dolphin.Core.GFXBackend": "Vulkan", "Dolphin.Core.EnableCheats": "True",
+                "Dolphin.General.HotkeysRequireFocus": "False",  # private Xvfb has no window manager to give Qt focus
                 "Dolphin.Display.Fullscreen": "True", "Dolphin.Interface.ConfirmStop": "False",
                 "Dolphin.Analytics.PermissionAsked": "True", "Dolphin.Analytics.Enabled": "False",
                 "Dolphin.Input.BackgroundInput": "True", "Dolphin.Core.SIDevice0": "6",   # 6 = standard controller
                 # JIT emits breakpoint/watchpoint checks only in debug mode (verified: breakpoints fire, steps work;
                 # ponytail: JIT steps can cover a few instructions; Core.CPUCore=0 (interpreter) steps exactly but is slow)
                 "Dolphin.Interface.DebugModeEnabled": "True"}
+        if str(getattr(self, 'gecko_id', '') or '').startswith('GPO'):
+            opts['GFX.Settings.SafeTextureCacheColorSamples'] = '0'  # hash every byte for small live PSO face edits
         from . import memory_card_emulators
         opts.update(memory_card_emulators.dolphin_options(self,rom))
         if getattr(self,'memory_card_context',None):
@@ -2139,14 +2149,28 @@ D-Pad/Right = `H`
 
     # gBox's checkpoint ring (Select+L2 on the streamed pad, gbox/rewind.py): Dolphin's slot 8, the operator keeps slot 1
     def state_dir(self) -> Path:
-        return Path.home() / ".var" / "app" / self.flatpak / "data" / "dolphin-emu" / "StateSaves"
+        return Path(getattr(self, 'gameplay_demo_user', self.config.runtime / 'dolphin-user')) / 'StateSaves'
+
+    ff_on = False
+
+    def normal_speed(self) -> dict:
+        self._xdo('keyup', 'Tab')
+        self.ff_on = False
+        return {'supported': True, 'on': False, 'source': 'tracked'}
+
+    def fast_forward(self, on: bool | None = None) -> dict:
+        want = not self.ff_on if on is None else bool(on)
+        if want != self.ff_on:
+            self._xdo('keydown' if want else 'keyup', 'Tab')
+            self.ff_on = want
+        return {'fast_forward': 'on' if self.ff_on else 'off'}
 
     def checkpoint_save(self) -> dict:
-        self._xdo("key", "shift+F8")
+        self._xdo('keydown', 'Shift_L', 'keydown', 'F8', 'sleep', '0.1', 'keyup', 'F8', 'keyup', 'Shift_L')
         return {"slot": 8}
 
     def checkpoint_load(self) -> dict:
-        self._xdo("key", "F8")
+        self._xdo('keydown', 'F8', 'sleep', '0.1', 'keyup', 'F8')
         return {"slot": 8}
 
 
@@ -2270,8 +2294,9 @@ D-Pad/Right = `Pad E`
 
     def _argv(self, rom: str) -> list[str]:
         exe = self._exe()
-        user = exe.parent / "User"                                  # portable mode (portable.txt next to the exe)
-        (exe.parent / "portable.txt").touch()
+        user = Path(getattr(self, 'gameplay_demo_user', exe.parent / 'User'))
+        if not getattr(self, 'gameplay_demo_user', None):
+            (exe.parent / "portable.txt").touch()
         (user / "Config").mkdir(parents=True, exist_ok=True)
         (user / "Config" / "GCPadNew.ini").write_text(self.PAD_INI_WIN)
         self.lane = self._claim_lane()
@@ -2306,6 +2331,8 @@ D-Pad/Right = `Pad E`
             opts["Dolphin.Core.GFXBackend"] = "Vulkan"              # Dolphin's command-line layer is never saved
             opts["Dolphin.DSP.Backend"] = "No Audio Output"
         self.audio_backend = opts["Dolphin.DSP.Backend"]
+        if str(getattr(self, 'gecko_id', '') or '').startswith('GPO'):
+            opts['GFX.Settings.SafeTextureCacheColorSamples'] = '0'
         from . import memory_card_emulators
         opts.update(memory_card_emulators.dolphin_options(self,rom))
         if getattr(self,'memory_card_context',None):
@@ -2340,7 +2367,7 @@ D-Pad/Right = `Pad E`
         self.log_path = logs / f"dolphin-win-{self.port}.log"
         si = subprocess.STARTUPINFO()                                # minimized, no focus: no boot window on screen;
         si.dwFlags |= subprocess.STARTF_USESHOWWINDOW                # the app docks (and restores) the game window
-        si.wShowWindow = 7                                           # SW_SHOWMINNOACTIVE
+        si.wShowWindow = 4 if getattr(self, 'gameplay_demo_user', None) else 7  # idle demo visible without activation
         if getattr(self, "capture_backend", None):
             si = capture_start()                                     # a minimized window presents no frames to capture
         self.proc = _popen(self, argv, stdout=open(self.log_path, "wb"), stderr=subprocess.STDOUT, cwd=str(Path(argv[0]).parent),
@@ -2446,7 +2473,8 @@ D-Pad/Right = `Pad E`
     checkpoint_min_interval_s = FLYCAST_CHECKPOINT_MIN_S
 
     def state_dir(self) -> Path:
-        return self._exe().parent / "User" / "StateSaves"
+        user = getattr(self, 'gameplay_demo_user', None)
+        return (Path(user) if user else self._exe().parent / 'User') / 'StateSaves'
 
     def checkpoint_save(self) -> dict:
         self._hotkey("Save State/Save State Slot 8")
@@ -2470,7 +2498,9 @@ D-Pad/Right = `Pad E`
         """Hold Dolphin's "Disable Emulation Speed Limit" hotkey (this Dolphin's lane key alone) while gBox fast-forwards."""
         want = (not self.ff_on) if on is None else bool(on)
         if want != self.ff_on:
-            win_send_keys(self.proc.pid, [{"key": self.lane, "down": want}])
+            result = win_send_keys(self.proc.pid, [{"key": self.lane, "down": want}], hidden_ok=True)
+            if result.get('sent') != 1 or result.get('stopped'):
+                raise RuntimeError('Dolphin did not receive the speed-limit hotkey')
             self.ff_on = want
         return {"fast_forward": "on" if self.ff_on else "off"}
 

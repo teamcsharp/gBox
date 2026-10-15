@@ -316,7 +316,7 @@ def test_native_rewind_the_pad_cannot_reach_is_driven_by_the_worker(tmp_path, mo
     assert calls == [0.6] and sr.steps == 1
     free = SimpleNamespace(name="retroarch", rewind_on=True, trigger_hotkeys=True, supported={"rewind", "fast_forward"})
     st = rewind.start("s-psp", free, Config(data_dir=tmp_path), threads=False)
-    assert st["rewind"] == "native" and "native_steps" not in st and not st["fast_forward_ramp"]   # RetroArch's own hotkeys
+    assert st["rewind"] == "native" and st['native_steps'] and st["fast_forward_ramp"]  # one worker owns all aliases
 
 
 def test_toggle_only_fast_forward_still_ramps(tmp_path):
@@ -422,7 +422,7 @@ def test_xinput_reader_is_quiet_without_a_pad():
     pad = rewind.XInputPad()
     assert pad.ok == (HOST_OS == "windows")
     sample = pad.read()
-    assert sample is None or (len(sample) == 3 and all(isinstance(v, bool) for v in sample))
+    assert sample is None or (len(sample) == 5 and all(isinstance(v, bool) for v in sample))
 
 
 # --- the worker: session_op and the session's end --------------------------------------------------------------

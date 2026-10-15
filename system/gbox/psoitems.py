@@ -10,7 +10,7 @@ from .ninja import prs_decompress
 
 SLOT, SLOTS = 28, 30
 CAT_NAMES = {0: "Weapons", 1: "Armor", 2: "Mags", 3: "Tools"}
-CATALOG_SCHEMA = 2
+CATALOG_SCHEMA = 3
 CLASSES = {"HUmar": 0x49, "HUnewearl": 0xA1, "HUcast": 0x51, "RAmar": 0x4A,
            "RAcast": 0x52, "RAcaseal": 0x92, "FOmarl": 0x8C, "FOnewm": 0x64,
            "FOnewearl": 0xA4, "HUcaseal": 0x91, "RAmarl": 0x8A, "FOmar": 0x4C}
@@ -89,7 +89,9 @@ def catalog(pmt: bytes, text: bytes, endian: str = "<", root_skip: int = 1) -> l
                 row |= {"usability_flags": u16(at + base_size), "atp_min": u16(at + base_size + 2),
                         "atp_max": u16(at + base_size + 4), "atp_required": u16(at + base_size + 6),
                         "mst_required": u16(at + base_size + 8), "ata_required": u16(at + base_size + 10),
-                        "max_grind": p[at + (0x10 if dc else 0x16)]}
+                        "max_grind": p[at + (0x10 if dc else 0x16)],
+                        "ata": p[at + (0x13 if dc else 0x19)],
+                        "special_id": p[at + (0x12 if dc else 0x18)]}
             elif kind in ("Frame", "Barrier"):
                 row |= {"usability_flags": u16(at + base_size + 6), "level_required": p[at + base_size + 8] + 1}
             elif kind == "Mag":
@@ -116,7 +118,8 @@ def catalog(pmt: bytes, text: bytes, endian: str = "<", root_skip: int = 1) -> l
         if c == 2:                                                  # technique disks: 03 02 level tech
             continue
         add(lambda k, c=c: (3, c, k), "Tools", f"class {c:02X}", n, o, 0x10 if dc else 0x14)
-    return [i for i in out if i["name"] not in ("", "?", "????")]
+    from .pso_loadouts import enrich
+    return [enrich(i, 'dcv2' if dc else 'gc') for i in out if i["name"] not in ("", "?", "????")]
 
 
 def catalog_dc_v2(read) -> list[dict]:

@@ -27,3 +27,19 @@ test('browser: search, timeline and notes use evidence APIs and never launch a g
   await evaluate('ctl.stop()');
  });
 });
+test('browser: observed demo play/loop and idle preference use isolated replay routes',async()=>{
+ await withPage(async evaluate=>{
+  await evaluate(fs.readFileSync(path.join(__dirname,'../clients/desktop/gameplay-memory.js'),'utf8'));
+  await evaluate(`document.body.innerHTML='<div id="memory"></div>';var calls=[];var fixture=${JSON.stringify(fixture)};fixture.runs[0].observed_demo={ready:true};
+   var ctl=GBoxGameplayMemory.mount(document.querySelector('#memory'),{api:async(p,b)=>{calls.push({p,b});return b?{id:'demo-job'}:fixture;}});ctl.load();`);
+  await evaluate(`document.querySelector('[data-demo]').click();new Promise(r=>setTimeout(r,20));`);
+  assert.equal(await evaluate(`calls.find(c=>c.p.endsWith('/demo/play')).b.loop`),false);
+  await evaluate(`document.querySelector('[data-demo-loop]').click();new Promise(r=>setTimeout(r,20));`);
+  assert.equal(await evaluate(`calls.filter(c=>c.p.endsWith('/demo/play'))[1].b.loop`),true);
+  await evaluate(`document.querySelector('[data-demo-idle]').click();new Promise(r=>setTimeout(r,20));`);
+  assert.equal(await evaluate(`calls.find(c=>c.p.endsWith('/demo/idle')).b.enabled`),true);
+  assert.match(await evaluate(`document.querySelector('[data-demo-status]').textContent`),/separate available PCs/);
+  assert.equal(await evaluate(`calls.some(c=>c.p==='/api/jobs'||c.p.includes('session_op'))`),false);
+  await evaluate('ctl.stop()');
+ });
+});

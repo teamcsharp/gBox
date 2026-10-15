@@ -40,6 +40,7 @@ class Archive:
               CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, meta TEXT NOT NULL, started REAL, updated REAL);
               CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, run TEXT, kind TEXT, at REAL, payload BLOB, token TEXT UNIQUE);
               CREATE INDEX IF NOT EXISTS run_events ON events(run,id);
+              CREATE INDEX IF NOT EXISTS run_timeline ON events(run,at,id);
               CREATE TABLE IF NOT EXISTS segments(run TEXT, bucket INTEGER, summary TEXT, embedding BLOB, events INTEGER,
                 PRIMARY KEY(run,bucket));
             ''')
@@ -64,7 +65,7 @@ class Archive:
             if db.execute('PRAGMA page_count').fetchone()[0] * db.execute('PRAGMA page_size').fetchone()[0] > self.max_bytes:
                 self.error = 'Gameplay memory budget reached; old runs retained, new observations paused'
                 raise ValueError(self.error)
-            db.execute('INSERT INTO runs VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET updated=excluded.updated',
+            db.execute('INSERT INTO runs VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET updated=max(runs.updated,excluded.updated)',
                        (sid, json.dumps(meta), session.get('started') or at, at))
             cur = db.execute('INSERT OR IGNORE INTO events(run,kind,at,payload,token) VALUES(?,?,?,?,?)',
                              (sid, kind, at, gzip.compress(raw.encode(), mtime=0), token))
@@ -94,9 +95,36 @@ class Archive:
                 m=json.loads(meta)
                 if game_id and m.get('game_id') != game_id: continue
                 counts=dict(db.execute('SELECT kind,count(*) FROM events WHERE run=? GROUP BY kind',(sid,)))
-                result.append(m | {'id':sid,'updated':updated,'events':counts,
-                    'replay_status':'native file recorded; validation required' if counts.get('native_replay') else 'observations only; not a TAS'})
+                demo=self.demo(sid)
+                result.append(m | {'id':sid,'updated':updated,'events':counts,'observed_demo':demo,
+                    'replay_status':'observed-input demo available; not frame-exact TAS' if demo.get('ready') else
+                    'native file recorded; validation required' if counts.get('native_replay') else 'observations only; not a TAS'})
             return result
+
+    def demo(self,sid):
+        """Small readiness query; observations alone never qualify as a replay."""
+        with self.connect() as db:
+            meta=db.execute('SELECT meta FROM runs WHERE id=?',(sid,)).fetchone()
+            meta=json.loads(meta[0]) if meta else {}
+            rows=db.execute("SELECT id,at,payload FROM events WHERE run=? AND kind='checkpoint' ORDER BY id LIMIT 500",(sid,)).fetchall()
+            end=db.execute('SELECT max(at),count(*),max(id) FROM events WHERE run=?',(sid,)).fetchone()
+        for event_id,at,raw in rows:
+            p=json.loads(gzip.decompress(raw))
+            identity=p.get('identity') or {}
+            if p.get('schema')!=1 or not p.get('cards') or not identity.get('rom_sha256') or not identity.get('emulator_sha256'):
+                continue
+            return {'ready':True,'start_id':event_id,'start':at,'end':end[0], 'end_id':end[2], 'events':end[1],
+                    'game_id':meta.get('game_id'),'title':meta.get('title'),'mod':meta.get('mod') or '',
+                    'checkpoint':p,'mode':'approximate observed input + native checkpoint/action replay',
+                    'reason':'Separate idle test session; not frame-exact and no level-completion guarantee'}
+        return {'ready':False,'reason':'Waiting for a native checkpoint, isolated card copy and verified runtime/content identity'}
+
+    def timeline(self,sid,after_at=0,after_id=0,end_id=0):
+        with self.connect() as db:
+            return [{'id':i,'kind':k,'at':at,'payload':json.loads(gzip.decompress(raw))} for i,k,at,raw in
+                db.execute('SELECT id,kind,at,payload FROM events WHERE run=? AND (at>? OR (at=? AND id>?)) '
+                           'AND id<=? ORDER BY at,id LIMIT 100',
+                           (sid,after_at,after_at,after_id,end_id))]
 
     def events(self, sid, after=0, limit=100):
         with self.connect() as db:
@@ -124,26 +152,64 @@ def install(app, store, config, auth):
     from pydantic import BaseModel, Field
     archive=Archive(config.data_dir/'gameplay-memory')
     app.state.gameplay_memory=archive
-    def capture(sid,kind,payload,token=None):
+    def capture(sid,kind,payload,token=None,at=None):
         if not getattr(config,'gameplay_memory_enabled',True):return False
         session=store.get('session',sid)
         if not session:return False
         from .background_testing import agent_owned
         if agent_owned(store.get('slabel',sid),store.get('job',sid.split('-',1)[-1])):return False
         try:
-            archive.record(session,kind,payload,token=token)
+            archive.record(session,kind,payload,token=token,at=at)
             return True  # Includes a previously accepted idempotency token.
         except (ValueError,OSError,sqlite3.Error) as e:archive.error=str(e)[:200]
         return False
     app.state.capture_gameplay=capture
 
+    def blobs():
+        folder=archive.root/'snapshots';folder.mkdir(exist_ok=True)
+        return folder
+
+    @app.post('/api/gameplay-memory/blobs/{digest}')
+    async def snapshot_blob(digest:str,request:Request,actor=Depends(auth)):
+        """Immutable states/card copies used only by isolated observed demos."""
+        if not re.fullmatch('[a-f0-9]{64}',digest):raise HTTPException(422,'Invalid gameplay snapshot identity')
+        folder=blobs();dest=folder/(digest+'.blob')
+        if dest.is_file():return {'sha256':digest,'bytes':dest.stat().st_size}
+        if shutil.disk_usage(folder).free<4*2**30 or sum(p.stat().st_size for p in folder.glob('*.blob'))>=64*2**30:
+            raise HTTPException(507,'Gameplay snapshot archive budget reached; worker retains the original')
+        fd,tmp=tempfile.mkstemp(dir=folder,prefix='upload-');size=0;h=hashlib.sha256()
+        try:
+            from starlette.concurrency import run_in_threadpool
+            with os.fdopen(fd,'wb') as stream:
+                async for block in request.stream():
+                    size+=len(block)
+                    if size>128*2**20:raise HTTPException(413,'Gameplay snapshot exceeds 128 MiB')
+                    h.update(block);await run_in_threadpool(stream.write,block)
+            if not size or h.hexdigest()!=digest:raise HTTPException(422,'Gameplay snapshot digest differs')
+            os.replace(tmp,dest)
+            return {'sha256':digest,'bytes':size}
+        finally:Path(tmp).unlink(missing_ok=True)
+
+    @app.get('/api/gameplay-memory/blobs/{digest}')
+    def snapshot_file(digest:str,actor=Depends(auth)):
+        from fastapi.responses import FileResponse
+        if not re.fullmatch('[a-f0-9]{64}',digest):raise HTTPException(404,'Gameplay snapshot not found')
+        path=blobs()/(digest+'.blob')
+        if not path.is_file():raise HTTPException(404,'Gameplay snapshot not found')
+        return FileResponse(path,media_type='application/octet-stream')
+
     @app.get('/api/gameplay-memory')
     def status(game_id:str='',q:str='',actor=Depends(auth)):
+        runs=archive.runs(game_id)
+        for row in runs:
+            row['observed_demo']['idle_enabled']=bool((store.get('gameplay_demo_idle',row['id']) or {}).get('enabled'))
+        ready=any(row['observed_demo'].get('ready') for row in runs)
         return archive.status() | {'enabled':getattr(config,'gameplay_memory_enabled',True),
-            'runs':archive.runs(game_id),'matches':archive.search(q[:2000],game_id=game_id) if q else [],
+            'runs':runs,'matches':archive.search(q[:2000],game_id=game_id) if q else [],
             'demonstrations':{'scope':'separate test sessions on available idle PCs',
-                'state':'waiting_for_validated_native_run',
-                'reason':'Observations cannot recreate unrecorded input. Native files require core/content/checkpoint and replay validation before unattended use; PSO replay is not yet verified.'}}
+                'state':'observed_demo_available' if ready else 'waiting_for_validated_native_run',
+                'reason':'Observed PSO demos use sampled controller input, recorded mods and native checkpoints. They are approximate, and idle loops require a completed test replay first.' if ready else
+                         'Waiting for an archived native checkpoint and isolated memory card. Observations cannot recreate unrecorded input; an exact PSO TAS is not yet verified.'}}
 
     @app.post('/api/gameplay-memory/runs/{sid}/native')
     async def native(sid:str,request:Request,actor=Depends(auth)):
@@ -184,6 +250,16 @@ def install(app, store, config, auth):
     def events(sid:str,after:int=0,actor=Depends(auth)):
         return {'session_id':sid,'events':archive.events(sid,after)}
 
+    @app.get('/api/gameplay-memory/runs/{sid}/demo')
+    def demo(sid:str,actor=Depends(auth)):
+        return archive.demo(sid)
+
+    @app.get('/api/gameplay-memory/runs/{sid}/demo/events')
+    def demo_events(sid:str,after_at:float=0,after_id:int=0,end_id:int=0,actor=Depends(auth)):
+        if not math.isfinite(after_at) or after_at<0 or after_id<0 or end_id<0:
+            raise HTTPException(422,'Invalid observed-demo cursor')
+        return {'events':archive.timeline(sid,after_at,after_id,end_id)}
+
     class Note(BaseModel):
         text:str=Field(min_length=1,max_length=2000)
     @app.post('/api/gameplay-memory/runs/{sid}/note')
@@ -197,10 +273,21 @@ def install(app, store, config, auth):
         kind:str
         payload:dict
         token:str=Field(min_length=1,max_length=200)
+        at:float|None=None
     @app.post('/api/gameplay-memory/runs/{sid}/observe')
     def observe(sid:str,body:Observation,actor=Depends(auth)):
         if body.kind not in EVENTS:raise HTTPException(422,'Unsupported event kind')
-        try:saved=capture(sid,body.kind,body.payload,body.token)
+        if body.at is not None and (not math.isfinite(body.at) or not 0<=body.at<=time.time()+30):
+            raise HTTPException(422,'Invalid gameplay capture time')
+        if body.kind=='checkpoint' and body.payload.get('schema')==1:
+            digest=body.payload.get('sha256','')
+            if not re.fullmatch('[a-f0-9]{64}',digest) or not (blobs()/(digest+'.blob')).is_file():
+                raise HTTPException(422,'Upload the immutable gameplay checkpoint first')
+            for card in body.payload.get('cards',[]):
+                digest=card.get('sha256','') if isinstance(card,dict) else ''
+                if not re.fullmatch('[a-f0-9]{64}',digest) or not (blobs()/(digest+'.blob')).is_file():
+                    raise HTTPException(422,'Upload the isolated memory-card snapshot first')
+        try:saved=capture(sid,body.kind,body.payload,body.token,body.at)
         except ValueError as e:raise HTTPException(422,str(e)) from e
         return {'saved':saved,'error':archive.error if not saved else None}
 

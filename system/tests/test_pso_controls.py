@@ -182,7 +182,7 @@ def test_owned_disc_catalogs_when_provided():
         assert saber["name"] == "Saber" and not saber["rare"] and saber["atp_required"] == 30
         assert any(i["code"].startswith("0088") for i in rows)
         assert next(i for i in rows if i["code"] == "001000")["name"] == "OROTIAGITO"
-        assert all(i["schema"] == 2 and 0 <= i["stars"] <= 12 for i in rows)
+        assert all(i["schema"] == psoitems.CATALOG_SCHEMA and 0 <= i["stars"] <= 12 for i in rows)
         for c in list(psoitems.CLASSES)[:9 if version == "dcv2" else 12]:
             pool = psoitems.rare_pool(rows, c)
             assert pool and all(c in i["classes"] for i in pool)

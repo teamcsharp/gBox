@@ -14,7 +14,16 @@
   function mount(el,{api}){
     let sid='',after=0,stopped=false;
     async function load(q=''){
-      try{const d=await api('/api/gameplay-memory?q='+encodeURIComponent(q));if(!stopped)el.innerHTML=html(d);}
+      try{
+        const d=await api('/api/gameplay-memory?q='+encodeURIComponent(q));if(stopped)return;
+        el.innerHTML=html(d);
+        for(const r of d.runs||[]){
+          if(!r.observed_demo?.ready)continue;
+          const button=[...el.querySelectorAll('[data-run]')].find(b=>b.dataset.run===r.id);
+          if(button)button.insertAdjacentHTML('afterend',`<div><button data-demo="${esc(r.id)}">Play observed demo</button> <button data-demo-loop="${esc(r.id)}">Loop</button> <button data-demo-idle="${esc(r.id)}" data-enabled="${!!r.observed_demo.idle_enabled}">${r.observed_demo.idle_enabled?'Disable idle screensaver':'Use as idle screensaver'}</button><small style="display:block">Separate idle PC; approximate inputs, recorded mods and state restores.</small></div>`);
+        }
+        el.insertAdjacentHTML('beforeend','<p data-demo-status role="status"></p>');
+      }
       catch(e){el.textContent='Gameplay memory unavailable: '+e.message;}
     }
     async function page(id,more=false){
@@ -27,7 +36,19 @@
         el.querySelector('[data-more]').disabled=(d.events||[]).length<100;
       }catch(e){const box=el.querySelector('[data-memory-run]');if(box)box.textContent=e.message;}
     }
-    function click(e){const run=e.target.closest('[data-run]');if(run)page(run.dataset.run);if(e.target.closest('[data-more]'))page(sid,true);}
+    async function click(e){
+      const run=e.target.closest('[data-run]');if(run)page(run.dataset.run);if(e.target.closest('[data-more]'))page(sid,true);
+      const demo=e.target.closest('[data-demo],[data-demo-loop],[data-demo-idle]');if(!demo)return;
+      const id=demo.dataset.demo||demo.dataset.demoLoop||demo.dataset.demoIdle;
+      const status=el.querySelector('[data-demo-status]');demo.disabled=true;
+      try{
+        const idle=demo.hasAttribute('data-demo-idle');
+        const enable=demo.dataset.enabled!=='true';
+        const result=await api('/api/gameplay-memory/runs/'+encodeURIComponent(id)+'/demo/'+(idle?'idle':'play'),idle?{enabled:enable}:{loop:demo.hasAttribute('data-demo-loop')});
+        if(idle){demo.dataset.enabled=String(enable);demo.textContent=enable?'Disable idle screensaver':'Use as idle screensaver';}
+        status.textContent=idle?(enable?'Idle demonstrations enabled for this run on separate available PCs after a completed test replay.':'Idle demonstrations disabled for this run.'):'Observed demo queued: '+(result.id||result.job_id||'waiting for an idle PC');
+      }catch(err){status.textContent=err.message;}finally{demo.disabled=false;}
+    }
     async function submit(e){
       if(e.target.matches('[data-memory-search]')){e.preventDefault();load(new FormData(e.target).get('q'));}
       if(e.target.matches('[data-note]')){
