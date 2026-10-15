@@ -177,9 +177,9 @@ test('web viewer: shared module, ⌖ in the session bar, right-click on the pict
   assert.match(web, /<script src="\/viz\/pick-whip\.js"><\/script>/);
   assert.match(web, /id="pwbtn"[\s\S]{0,400}PWW\.toggle\(\)/);
   assert.match(web, /window\.PWW = GBoxPickWhip\.mountOverlay\(document, \{/);
-  assert.match(web, /closest\("\.tchip, \.card\[data-gid\], input, textarea, select, #scr, img\.screen, img\[src\*='\/mjpeg'\], #pwcanvas, #pwmenu, #pwreport"\)/);   // the issue menu stays off the picture
-  assert.match(web, /const PW_GAME_VIEW = "#scr, img\.screen, img\[src\*='\/mjpeg'\]";/);
-  assert.match(web, /closest\?\.\(PW_GAME_VIEW\)[\s\S]{0,120}PWW\.menuAt\(e\.clientX, e\.clientY, v\)/);
+  assert.match(web, /closest\("\.tchip, \.card\[data-gid\], input, textarea, select, #scr, #nativeslot, \.gbox-gpu-video, img\.screen, img\[src\*='\/mjpeg'\], #pwcanvas, #pwmenu, #pwreport"\)/);   // the issue menu stays off every game surface
+  assert.match(web, /const PW_GAME_VIEW = "#scr, #nativeslot, \.gbox-gpu-video, img\.screen, img\[src\*='\/mjpeg'\]";/);
+  assert.match(web, /closest\?\.\(PW_GAME_VIEW\)[\s\S]{0,500}PWW\.menuAt\(e\.clientX, e\.clientY, v\)/);
 });
 
 // ---- Report… ---------------------------------------------------------------------------------------------------------------
