@@ -88,7 +88,7 @@ function setup() {
   const env = { document: { createElement: element, head: element('head'), body: element('body') },
     setTimeout: () => 1, clearTimeout: () => {}, setInterval: () => 1, clearInterval: () => {},
     requestAnimationFrame: () => 1, cancelAnimationFrame: () => {}, Math };
-  const win = createPopup(env).mount({ now: () => 0 });
+  const win = createPopup(env).mount({ now: () => 0, loadModules:()=>new Promise(()=>{}) });
   return { env, win, elements };
 }
 
@@ -99,16 +99,14 @@ test('the window shows the fitting list and labels the current stage over the 3D
   assert.match(fit.innerHTML, /Sonic → Ryu/);
   assert.equal(op.textContent, 'proportion · 2/3');
   const cal = x.elements.find(e => e.className === 'pp-cal');           // #1385 calibration play-by-play caption
-  assert.equal(cal.textContent, 'Calibrating Sonic → Ryu: size ×0.9');
+  assert.equal(cal.textContent, '', 'no simulated calibration is displayed');
   const later = JSON.parse(JSON.stringify(FITTING));
   later.models['fighter:RYU'].state = 'done'; later.models['fighter:RYU'].current = 'write';
   later.models['fighter:RYU'].stages.write = { state: 'done', data: { mod: 'm' } };
   later.current = 'fighter:TIN'; later.models['fighter:TIN'].current = 'scale'; later.models['fighter:TIN'].state = 'running';
   later.models['fighter:TIN'].stages.scale = { state: 'running' };
   x.win.sync([job({ fitting: later })]);
-  assert.match(fit.innerHTML, /<b>Fitting<\/b> 2\/3 models/);
-  assert.equal(op.textContent, 'scale · 3/3');
-  assert.equal(cal.textContent, '');                                     // Tina's scale has no numbers yet
+  assert.equal(x.elements.find(e=>e.className==='gbox-pp').removed,true,'no visual for the new current model: hide the previous model');
   x.win.dispose();
 });
 
@@ -206,7 +204,7 @@ function mountWith(opts) {
   const env = { document: { createElement: element, head: element('head'), body: element('body') },
     setTimeout: () => 1, clearTimeout: () => {}, setInterval: () => 1, clearInterval: () => {},
     requestAnimationFrame: () => 1, cancelAnimationFrame: () => {}, Math };
-  return { win: createPopup(env).mount(Object.assign({ now: () => 0 }, opts)), elements };
+  return { win: createPopup(env).mount(Object.assign({ now: () => 0, loadModules:()=>new Promise(()=>{}) }, opts)), elements };
 }
 
 test('the R in the 3D view\'s corner opens the editor on the model shown; a row\'s R on that row\'s model', () => {
@@ -234,18 +232,11 @@ test('the R in the 3D view\'s corner opens the editor on the model shown; a row\
   plain.win.dispose();
 });
 
-test('follow(jobId): the rebuild the editor queued takes the window once it is live', () => {
-  const x = mountWith({ retarget: () => {} });
-  const older = castJob({ id: 'j1', progress: { pct: 10, msg: 'x', ts: 50 } });
-  const rebuild = { id: 'j2', tool: 'characters', state: 'queued', created: 10, input: { op: 'cast_swap', slots: 'fighter:KAS' } };
-  x.win.sync([older, rebuild]);
-  const chip = x.elements.find(e => e.className === 'pp-chip');                    // the state chip
-  assert.equal(chip.textContent, 'processing');                                     // running beats queued...
-  x.win.follow('j2'); x.win.sync([older, rebuild]);
-  assert.equal(chip.textContent, 'queued');                                         // ...unless the editor queued it
-  assert.ok(x.elements.some(e => e.className === 'pp-chip' && e.textContent === '+1 more'));
-  assert.equal(x.win.openRetarget('fighter:KAS'), null);                            // the rebuild has no rows yet
-  x.win.dispose();
+test('following a queued rebuild never opens a visual until it has started and reported an asset',()=>{
+ const x=mountWith({retarget:()=>{}}),older=castJob({id:'j1'}),rebuild={id:'j2',tool:'characters',state:'queued',input:{op:'cast_swap'}};
+ x.win.sync([older,rebuild]);x.win.follow('j2');x.win.sync([older,rebuild]);
+ assert.equal(x.elements.find(e=>e.className==='pp-chip').textContent,'processing');
+ x.win.sync([rebuild]);assert.ok(x.elements.find(e=>e.className==='gbox-pp').removed);x.win.dispose();
 });
 
 test('the mesh review button opens the selected model and its exact source job',()=>{

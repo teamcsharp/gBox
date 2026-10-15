@@ -1,6 +1,5 @@
-/* Background 3D task popup (#1175): while a Blender / GLB / model-prep job runs on a worker,
-   a small always-on-top window opens with an orbiting (360°) view of the model being processed,
-   a live stage ticker, and a VCR static-and-signal-loss exit when the task ends.
+/* Background task visual: a running job opens this only after its actual model/image loads.
+   Queued/nonvisual tasks and unavailable assets never substitute decorative geometry.
    Shared verbatim by the web shell (/viz/process-popup.js) and the desktop app (../web/viz/…).
    "R" (bottom-right of the 3D view, and on each fitting row): the Retarget editor's Goals view on that model's donor,
    target game and slot (mount({retarget(o)}): the shell's opener); follow(jobId) shows a rebuild the editor queued. */
@@ -86,6 +85,10 @@
     const f = job.fitting || {}, m = (f.models || {})[f.current];
     if (!m) return modelPath(job);
     return m.snapshot || (m.donor ? `/api/characters/${encodeURIComponent(m.donor)}/model` : null);
+  }
+  function visualOf(job) {
+    const image=previewOf(job),model=activityModelPath(job);
+    return image ? {kind:'image',path:image} : model ? {kind:'model',path:model} : null;
   }
 
   // ---- the Fitting view: every model a writer fits, stage by stage (gbox/fit_events.py -> job.fitting) ----------
@@ -313,7 +316,15 @@
     opts = opts || {};
     const fetchJobs = opts.fetchJobs || null, pollMs = opts.pollMs || 4000;
     const assetUrl = opts.assetUrl || (p => p);
-    const pathFor = opts.activity ? activityModelPath : modelPath;
+    const pathFor = activityModelPath;
+    const failedVisuals=new Set();
+    const visualKey=job=>{
+      const visual=visualOf(job),rows=fittingRows(job),row=rows.find(r=>r.key===job.fitting?.current);
+      return JSON.stringify([job.id,visual,visual?.kind==='image'?row?.previewTs:row?.snapshotTs]);
+    };
+    let pendingVisual=null;
+    function visualReady(key) { if(root && current?.state==='running' && key===pendingVisual) {root.hidden=false;fitIn();} }
+    function visualFailed(key) { if(key!==pendingVisual)return;failedVisuals.add(key);while(failedVisuals.size>128)failedVisuals.delete(failedVisuals.values().next().value);remove(); }
     // opts.fit(el): the shell keeps the window inside its viewport and below its header bar (toast-stack.js fit): after
     // each update (the fitting rows grow it upward from its bottom anchor), after a drag and on window resize
     const fitIn = () => { if (root && typeof opts.fit === "function") { try { opts.fit(root); } catch (e) { /* layout only */ } } };
@@ -380,6 +391,7 @@
 
     function build() {
       root = doc.createElement("div");
+      root.hidden = true; // Nothing is shown until a relevant asset has actually loaded.
       root.className = "gbox-pp";
       if (opts.activity) root.classList.add('pp-activity');
       root.setAttribute("role", "dialog");
@@ -419,7 +431,7 @@
       calEl = doc.createElement("div"); calEl.className = "pp-cal";                // the calibration play-by-play caption
       stage.append(calEl);
       footEl = doc.createElement("div"); footEl.className = "pp-f";
-      footEl.textContent = "Progress illustration · following the worker's reported stage";
+      footEl.textContent = "Loading the task's reported visual";
       root.append(head, stage, meta, fitEl, logEl, footEl);
       if (opts.activity) {
         const controls = doc.createElement('div'); controls.className = 'pp-controls';
@@ -473,7 +485,7 @@
     }
 
     function remove() {
-      closing = false; current = null;
+      closing = false; current = null; pendingVisual=null;picSrc=null;
       if (timer) { (env.clearTimeout || clearTimeout)(timer); timer = null; }
       if (three) { try { three.dispose(); } catch (e) {} three = null; }
       if (root) { root.remove(); root = null; }
@@ -483,17 +495,18 @@
       if (!root) build();
       if (current?.id !== job.id) { lastMsgs = []; logEl.textContent = ''; msgEl.textContent = ''; barEl.firstChild.style.width = '0%'; consolePaused=false;if(logButton)logButton.textContent='Pause output'; }
       current = job;
+      const key=visualKey(job);
+      if(key!==pendingVisual){if(three){three.dispose();three=null;}pendingVisual=key;root.hidden=true;picSrc=null;picEl.style.display='none';}
       titleEl.textContent = title(job);
       stateEl.textContent = job.state === "running" ? "processing" : "queued";
       const run = job.state === "running";
       if (stateEl.classList) stateEl.classList[run ? "add" : "remove"]("run");
       moreEl.textContent = `+${others} more`;
       moreEl.style.display = others ? "" : "none";
-      const visible = !opts.activity || !!(pathFor(job) || previewOf(job));
+      const visible = !!visualOf(job);
       stage.style.display = visible ? '' : 'none';
       if (!visible && three) { three.dispose(); three=null; }
-      if (visible && !three) startViewer(job);
-      if (opts.activity && !visible) footEl.textContent = classify(job) ? 'No model snapshot reported yet. Live worker output is shown below.' : 'Live worker output · no 3D artifact reported for this operation';
+      if (visible && !previewOf(job) && !three) startViewer(job);
     }
 
     function update(job) {
@@ -526,8 +539,14 @@
       const pic = previewOf(job);
       if (picEl && pic !== picSrc) {
         picSrc = pic;
-        if (pic) picEl.src = assetUrl(pic);
-        picEl.style.display = pic ? "" : "none";
+        picEl.style.display = 'none';
+        if (pic) {
+          const image=picEl,key=pendingVisual;
+          image.onload=()=>{if(image!==picEl||key!==pendingVisual)return;if(!image.naturalWidth)return visualFailed(key);
+            image.style.display='';footEl.textContent='Task sprite / image preview';visualReady(key);};
+          image.onerror=()=>{if(image===picEl)visualFailed(key);};
+          image.src = assetUrl(pic);
+        }
       }
       if (opEl && fitting.current && fitting.current.current) {             // the model being fitted and its stage
         const lbl = opts.activity ? `${fitting.current.current} · ${fitting.current.label}` : `${fitting.current.current} · ${fitting.done + (fitting.current.state === "done" ? 0 : 1)}/${fitting.total}`;
@@ -536,17 +555,18 @@
         const fx = stageEffect(p.msg), lbl = fx ? fx.label : "";
         if (lbl !== opEl.textContent) opEl.textContent = lbl;
       }
-      if (calEl) { const cal = opts.activity ? null : calibration(job), txt = cal ? cal.text : ""; if (txt !== calEl.textContent) calEl.textContent = txt; }
+      if (calEl) calEl.textContent = ''; // Show actual snapshots, not a simulated deformation.
       const t = title(job);
       if (titleEl && t !== titleEl.textContent) titleEl.textContent = t;   // the job may name its model mid-run
       if (three && three.setJob) three.setJob(job);
     }
 
-    // ---- viewer: three.js when it can load (web shell), 2D wireframe orbit otherwise -------
+    // ---- viewer: only the job's actual asset; no generic shape or renderer fallback -------
     async function startViewer(job) {
       if (!stage || three) return;
       const holder = { canvas: null, dispose() {} };
-      three = holder;                                                       // placeholder until the real viewer is ready
+      const key=pendingVisual;
+      three = holder;                                                       // loading token, never displayed
       let made = null;
       try {
         if (opts.loadModules || opts.now === undefined) {                   // injectable modules also exercise the real viewer offline
@@ -554,210 +574,62 @@
             THREE: await import("https://cdn.jsdelivr.net/npm/three@0.160.0/+esm"),
             GLTFLoader: (await import("https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js/+esm")).GLTFLoader,
           };
-          if (!root || three !== holder) return;                            // closed while loading
-          let S = modules.SimplifyModifier || null;
-          try { if (!opts.loadModules) S = (await import("https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/modifiers/SimplifyModifier.js/+esm")).SimplifyModifier; }
-          catch (e) { /* no simplifier: decimation is shown with a thinned wireframe instead */ }
           if (!root || three !== holder || !current) return;
-          made = makeThree(modules.THREE, modules.GLTFLoader, current, S);
+          made = makeThree(modules.THREE, modules.GLTFLoader, current);
         }
       } catch (e) { if (made) { try { made.dispose(); } catch (e2) {} made = null; } }
       if (!root || three !== holder) { if (made) made.dispose(); return; }
-      three = made || make2D(current || job);
+      if(!made){visualFailed(key);return;}
+      three = made;
       if (current && three.setJob) three.setJob(current);
       if (root && stage.firstChild !== overlay) stage.insertBefore(overlay, stage.firstChild);
     }
 
-    function makeThree(THREE, GLTFLoader, job, Simplify) {
-      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-      renderer.setPixelRatio(Math.min(env.devicePixelRatio || 1, 2));
-      renderer.setSize(390, 250, false);
-      const canvas = renderer.domElement;
-      canvas.style.cssText = "position:absolute;inset:0;width:100%;height:100%";
-      stage.insertBefore(canvas, overlay);
-      const scene = new THREE.Scene();
-      scene.add(new THREE.HemisphereLight(0xffffff, 0x30364a, 2.1));
-      const sun = new THREE.DirectionalLight(0xffffff, 1.8); sun.position.set(3, 5, 4); scene.add(sun);
-      const camera = new THREE.PerspectiveCamera(40, 390 / 250, 0.01, 100);
-      let group = new THREE.Group(); scene.add(group);
-      const placeholder = new THREE.IcosahedronGeometry(1, 1);
-      const wire = new THREE.LineSegments(new THREE.EdgesGeometry(placeholder),
-        new THREE.LineBasicMaterial({ color: 0x4f8cff }));
-      placeholder.dispose();
-      group.add(wire);
-      let path = pathFor(job), loader = null, fx = null, fxKey = "", fxObjs = [], pulse = 0,
-        loadGeneration = 0, raf = 0, stop = false, calib = opts.activity ? null : calibration(job), calT0 = nowS();
-      const previewMaterials = new Map();                                  // one original baseline for each shared material
-      const swapIn = gltf => {
-        // frame from the bind-pose geometry: skinned meshes report a collapsed box before their first render
-        gltf.scene.updateMatrixWorld(true);
-        const b = new THREE.Box3(), mb = new THREE.Box3();
-        gltf.scene.traverse(o => { if (o.isMesh && o.geometry) {
-          if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
-          b.union(mb.copy(o.geometry.boundingBox).applyMatrix4(o.matrixWorld)); } });
-        if (b.isEmpty()) b.setFromObject(gltf.scene);
-        const c = b.getCenter(new THREE.Vector3()), s = Math.max(b.getSize(new THREE.Vector3()).length(), 0.1);
-        const k = 1.6 / s;                                                  // centre in scaled units so the whole model is in frame
-        gltf.scene.scale.setScalar(k); gltf.scene.position.copy(c).multiplyScalar(-k);
-        const old = group.userData.model;
-        clearFx();
-        if (old) { group.remove(old); disposeObject(old); }
-        group.remove(wire); group.add(gltf.scene); group.userData.model = gltf.scene;
-        if (isSnapshot(path)) {                                             // the writer's own fitted mesh, this stage
-          const s = fittingSummary(current || job), r = s.current || fittingRows(current || job).find(x => x.snapshot === path);
-          footEl.textContent = `${isCollect(current || job) ? "Extracted model" : opts.activity ? 'Fitted preview' : "Fitted mesh"} · ${r ? `${r.snapshotStage || r.current || ""} · ${r.label}` : "writer snapshot"}${opts.activity ? ' · preview geometry may be reduced' : ''}`;
-        } else footEl.textContent = opts.activity ? 'Source donor model · awaiting fitted stage snapshots' : "Donor model preview · stage effects illustrate reported progress";
-        fxKey = ""; applyFx();                                              // re-apply the live stage to the new mesh
+    function makeThree(THREE, GLTFLoader, job) {
+      const renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
+      renderer.setPixelRatio(Math.min(env.devicePixelRatio||1,2));renderer.setSize(390,250,false);
+      const canvas=renderer.domElement;canvas.style.cssText="position:absolute;inset:0;width:100%;height:100%";
+      stage.insertBefore(canvas,overlay);
+      const scene=new THREE.Scene(),group=new THREE.Group();scene.add(group);
+      scene.add(new THREE.HemisphereLight(0xffffff,0x30364a,2.1));
+      const sun=new THREE.DirectionalLight(0xffffff,1.8);sun.position.set(3,5,4);scene.add(sun);
+      const camera=new THREE.PerspectiveCamera(40,390/250,.01,100);camera.position.set(0,.7,3.1);camera.lookAt(0,0,0);
+      let path=pathFor(job),model=null,generation=0,raf=0,stop=false,lastFrame=-Infinity;
+      const tick=()=>{
+        if(stop)return;
+        raf=(env.requestAnimationFrame||(f=>env.setTimeout(f,33)))(tick);
+        if(doc.hidden||nowS()-lastFrame<.05)return;
+        lastFrame=nowS();group.rotation.y+=.012;
+        renderer.render(scene,camera);
       };
-      const safeLoad = p => {
-        const generation = ++loadGeneration;
-        if (!loader) loader = new GLTFLoader();
-        try { loader.load(assetUrl(p), gltf => {
-          if (stop || generation !== loadGeneration || path !== p) { disposeObject(gltf.scene); return; }
-          swapIn(gltf);
-        }, undefined, () => {
-          if (!stop && generation === loadGeneration) footEl.textContent = "Progress illustration · donor model preview unavailable";
-        }); } catch (e) { footEl.textContent = "Progress illustration · donor model preview unavailable"; }
-      };
-      const clearFx = () => {
-        for (const o of fxObjs) { if (o.parent) o.parent.remove(o); disposeObject(o); }
-        fxObjs = [];
-        for (const [mt, m0] of previewMaterials) {
-          mt.transparent = m0.t; mt.opacity = m0.o; mt.depthWrite = m0.d; mt.needsUpdate = true;
-        }
-        previewMaterials.clear();
-      };
-      const applyFx = () => {                                               // show what this stage does to the actual mesh
-        const model = group.userData.model;
-        const key = model ? JSON.stringify(fx) : "";
-        if (key === fxKey) return;
-        fxKey = key; clearFx(); pulse = 0;
-        if (!model || !fx) return;
-        if (fx.kind === "rescale") { pulse = 1; return; }
-        if (fx.kind === "retarget") {
-          let bones = 0; model.traverse(o => { if (o.isBone) bones++; });
-          if (bones) { const h = new THREE.SkeletonHelper(model); h.material.color.set(0x8fe6a8);
-            h.material.depthTest = false; scene.add(h); fxObjs.push(h); }
-          return;
-        }
-        const meshes = []; let tris = 0;
-        model.traverse(o => { if (o.isMesh && o.geometry && o.geometry.attributes.position) {
-          meshes.push(o); const g = o.geometry; tris += (g.index ? g.index.count : g.attributes.position.count) / 3; } });
-        const keep = decimateRatio(fx, tris);
-        for (const o of meshes) {
-          const ms = Array.isArray(o.material) ? o.material : [o.material];
-          ms.forEach(mt => {
-            if (!previewMaterials.has(mt)) previewMaterials.set(mt, { t: mt.transparent, o: mt.opacity, d: mt.depthWrite });
-          });
-          ms.forEach(mt => { mt.transparent = true; mt.opacity = 0.22; mt.depthWrite = false; mt.needsUpdate = true; });  // original fades back…
-          let g = null;
-          const verts = o.geometry.attributes.position.count;
-          if (Simplify && verts <= 20000) {                                 // …the decimated mesh draws over it
-            let src = null, simplified = null;
-            try {
-              src = new THREE.BufferGeometry();
-              src.setAttribute("position", o.geometry.attributes.position.clone());
-              if (o.geometry.index) src.setIndex(o.geometry.index.clone());
-              const pa = src.attributes.position.array, seen = new Set();   // the modifier welds seams first:
-              for (let v = 0; v < pa.length; v += 3) seen.add(`${pa[v].toFixed(5)},${pa[v + 1].toFixed(5)},${pa[v + 2].toFixed(5)}`);
-              simplified = new Simplify().modify(src, Math.floor(seen.size * (1 - keep)));
-              g = new THREE.WireframeGeometry(simplified);                  // remove a share of welded verts
-              if (g.attributes.position.count < 2) { g.dispose(); g = null; }
-            } catch (e) { g = null; }
-            finally { if (simplified && simplified !== src) simplified.dispose(); if (src) src.dispose(); }
-          }
-          if (!g) {                                                         // big mesh: thin the wireframe to the kept share
-            g = new THREE.WireframeGeometry(o.geometry);
-            g.setDrawRange(0, Math.max(2, Math.floor(g.attributes.position.count * keep / 2) * 2));
-          }
-          const lines = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: 0xffb46b, transparent: true, opacity: 0.9, depthTest: false }));
-          lines.renderOrder = 2;
-          o.add(lines); fxObjs.push(lines);
-        }
-      };
-      camera.position.set(0, 0.7, 3.1); camera.lookAt(0, 0, 0);
-      let lastFrame = -Infinity;
-      const tick = () => {
-        if (stop) return;
-        raf = (env.requestAnimationFrame || (f => env.setTimeout(f, 33)))(tick);
-        if (opts.activity && (doc.hidden || nowS() - lastFrame < .05)) return;
-        lastFrame = nowS();
-        group.rotation.y += 0.012;                                          // the 360° orbit around the model
-        group.rotation.x = 0.25 + Math.sin(group.rotation.y * 0.5) * 0.1;
-        if (pulse > 0) { pulse = (pulse + 0.012) % 1; group.scale.setScalar(1 - 0.18 * Math.sin(pulse * Math.PI)); }
-        else if (calib && group.userData.model) {                           // donor proportions -> fitted, on a loop
-          const k = calibrationPhase(nowS() - calT0), f = calib.from;
-          group.scale.set(f.x + (1 - f.x) * k, f.y + (1 - f.y) * k, f.z + (1 - f.z) * k);
-        } else if (group.scale.x !== 1 || group.scale.y !== 1 || group.scale.z !== 1) group.scale.setScalar(1);
-        for (const o of fxObjs) if (o.isSkeletonHelper) o.updateMatrixWorld(true);
-        renderer.render(scene, camera);
-        drawOverlay();
-      };
-      if (path) safeLoad(path);
-      tick();
-      return {
-        canvas,
-        setJob(j) {
-          const p = pathFor(j);
-          if (p !== path) {
-            const keep = isSnapshot(p) && isSnapshot(path) && group.userData.model;   // snapshot -> snapshot: no flicker
-            path = p; ++loadGeneration; clearFx();
-            const old = group.userData.model;
-            if (old && !keep) { group.remove(old); disposeObject(old); delete group.userData.model; }
-            if (!keep) { group.add(wire); footEl.textContent = "Progress illustration · following the worker's reported stage"; }
-            fxKey = "";
-            if (path) safeLoad(path);
-          }
-          const nc = opts.activity ? null : calibration(j);
-          if (!nc || !calib || nc.key !== calib.key) calT0 = nowS();        // a new model restarts its play-by-play
-          calib = nc;
-          const next = opts.activity || isSnapshot(path) ? null : stageEffect((j.progress || {}).msg);   // a snapshot shows the real result
-          if (next || (j.progress || {}).msg) { fx = next; if (!fx) pulse = 0; applyFx(); }
-        },
-        get state() { return { path, fx, fxObjs: fxObjs.length, pulse, calib: calib ? calib.key : null,
-          lineVerts: fxObjs.reduce((n, o) => n + (o.isLineSegments && !o.isSkeletonHelper ? o.geometry.attributes.position.count : 0), 0) }; },
-        dispose() { stop = true; ++loadGeneration; clearFx(); (env.cancelAnimationFrame || (t => env.clearTimeout(t)))(raf);
-          if (group.userData.model) disposeObject(group.userData.model);
-          disposeObject(wire); renderer.dispose(); canvas.remove(); },
-      };
-    }
-
-    function make2D(job) {
-      const canvas = doc.createElement("canvas"); canvas.width = 390; canvas.height = 250;
-      canvas.style.cssText = "position:absolute;inset:0;width:100%;height:100%";
-      stage.insertBefore(canvas, overlay);
-      const c = canvas.getContext && canvas.getContext("2d");
-      if (opts.activity) {
-        if(c){c.fillStyle='#9fb6d8';c.font='14px system-ui';c.fillText('3D renderer unavailable',90,125);}
-        footEl.textContent='3D renderer unavailable · worker measurements and console remain live';
-        return {canvas,setJob(){},dispose(){canvas.remove();}};
+      function load(p){
+        const attempt=++generation,key=pendingVisual;
+        const fail=()=>{if(!stop&&attempt===generation)visualFailed(key);};
+        try{new GLTFLoader().load(assetUrl(p),gltf=>{
+          if(stop||attempt!==generation||key!==pendingVisual){disposeObject(gltf.scene);return;}
+          gltf.scene.updateMatrixWorld(true);
+          const box=new THREE.Box3(),part=new THREE.Box3();let meshes=0;
+          gltf.scene.traverse(o=>{if(o.isMesh&&o.geometry?.attributes?.position?.count>0){meshes++;
+            if(!o.geometry.boundingBox)o.geometry.computeBoundingBox();
+            box.union(part.copy(o.geometry.boundingBox).applyMatrix4(o.matrixWorld));}});
+          if(!meshes){disposeObject(gltf.scene);fail();return;}
+          if(box.isEmpty())box.setFromObject(gltf.scene);
+          const center=box.getCenter(new THREE.Vector3()),size=Math.max(box.getSize(new THREE.Vector3()).length(),.1),scale=1.6/size;
+          gltf.scene.scale.setScalar(scale);gltf.scene.position.copy(center).multiplyScalar(-scale);
+          if(model){group.remove(model);disposeObject(model);}model=gltf.scene;group.add(model);group.userData.model=model;
+          const row=fittingRows(current).find(r=>r.snapshot===p);
+          footEl.textContent=isSnapshot(p)?`Task model snapshot${row?' · '+(row.snapshotStage||row.current||'')+' · '+row.label:''}`:'Source donor model · awaiting fitted stage snapshots';
+          visualReady(key);if(!raf)tick();
+        },undefined,fail);}catch(error){fail();}
       }
-      let t = 0, timer2 = null, stop = false;
-      const pts = [];
-      for (let i = 0; i < 90; i++) {                                        // a point-cloud "mesh" to orbit around
-        const y = 1 - 2 * (i % 10) / 9, a = i * 2.399963, r = Math.sqrt(Math.max(0, 1 - y * y));
-        pts.push([Math.cos(a) * r, y, Math.sin(a) * r]);
-      }
-      const draw = () => {
-        if (stop || !c) return;
-        timer2 = env.setTimeout(draw, 33);
-        t += 0.02;
-        c.clearRect(0, 0, 390, 250);
-        c.strokeStyle = "#2b3242"; c.lineWidth = 1;
-        for (let y = 0; y < 250; y += 4) { c.beginPath(); c.moveTo(0, y + .5); c.lineTo(390, y + .5); c.stroke(); }
-        const spin = t * 1.1, cs = Math.cos(spin), sn = Math.sin(spin);
-        c.fillStyle = "#6ea8ff";
-        for (const [x, y, z] of pts) {
-          const rx = x * cs - z * sn, rz = x * sn + z * cs;                  // camera orbiting 360° around the model
-          const sx = 195 + rx * 95 * (1 + rz * .25), sy = 128 - y * 85 + rz * 18;
-          c.globalAlpha = 0.35 + 0.5 * (rz + 1) / 2;
-          c.fillRect(sx, sy, 2, 2);
-        }
-        c.globalAlpha = 1;
-        drawOverlay();
+      if(path)load(path);
+      return {canvas,
+        setJob(j){const next=pathFor(j);if(next!==path){path=next;++generation;if(model){group.remove(model);disposeObject(model);model=null;}
+          if(root)root.hidden=true;if(path)load(path);}},
+        get state(){return {path,ready:!!model,fx:null,fxObjs:0,pulse:0,calib:null,lineVerts:0};},
+        dispose(){stop=true;++generation;if(raf)(env.cancelAnimationFrame||(t=>env.clearTimeout(t)))(raf);
+          if(model){disposeObject(model);model=null;}renderer.dispose();canvas.remove();}
       };
-      draw();
-      return { canvas, setJob() {}, dispose() { stop = true; if (timer2) env.clearTimeout(timer2); canvas.remove(); } };
     }
 
     function drawOverlay() {                                                // VCR static + tracking band while closing
@@ -799,9 +671,9 @@
     function sync(jobs) {
       if (dead || !Array.isArray(jobs)) return;
       const worker = typeof opts.worker === 'function' ? opts.worker() : opts.worker;
-      const live = jobs.filter(j => (opts.activity ? activityJob(j) : classify(j)) && (!opts.worker || onWorker(j, worker)) && !suppressed.has(j.id));
+      const live = jobs.filter(j => j.state==='running' && visualOf(j) && (!opts.worker || onWorker(j, worker)) && !suppressed.has(j.id) && !failedVisuals.has(visualKey(j)));
       lastJobs = live;
-      if (!live.length) { if (root && !closing) teardown(false); return; }
+      if (!live.length) { remove(); return; }
       let { job, others } = opts.activity ? {job:[...live].sort((a,b)=>(b.state==='running')-(a.state==='running') || ((b.progress||{}).ts||b.started||b.created||0)-((a.progress||{}).ts||a.started||a.created||0))[0],others:live.length-1} : pick(live);
       const wanted = preferred && live.find(j => j.id === preferred);         // a rebuild the editor queued: follow it
       if (wanted) job = wanted;
@@ -832,7 +704,7 @@
       pollTimer = env.setInterval(poll, pollMs);
     }
 
-    function markStale() { if(root){stateEl.textContent='stale';msgEl.textContent='Control plane unavailable. Last reported operation retained; current activity is unconfirmed.';} }
+    function markStale() { remove(); } // Processing is unconfirmed; don't keep a visual running as evidence.
     return {
       sync,
       stale: markStale,
@@ -850,5 +722,5 @@
   }
 
   return { mount, classify, activityJob, onWorker, detailHTML, pick, createVcr, title, modelPath, activityModelPath, stageEffect, decimateRatio, MODEL_TOOLS,
-    fittingRows, fittingSummary, fittingHTML, snapshotOf, previewOf, stageNumbers, calibration, calibrationPhase, STAGES, retargetOf, shownKey };
+    fittingRows, fittingSummary, fittingHTML, snapshotOf, previewOf, visualOf, stageNumbers, calibration, calibrationPhase, STAGES, retargetOf, shownKey };
 });
