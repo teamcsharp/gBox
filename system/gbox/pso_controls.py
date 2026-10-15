@@ -3,7 +3,8 @@ import threading
 
 from .psoitems import CLASSES
 
-DEFAULTS = {"equip_any": True, "permanent_scape": False, "legendary": False}
+DEFAULTS = {"equip_any": True, "permanent_scape": False, "legendary": False,
+            "enemy_drops": False, "enemy_codes": [], "enemy_max_grind": True, "walk_through": False}
 _locks = {}
 _locks_guard = threading.Lock()
 
@@ -38,9 +39,17 @@ def capabilities(game, read):
                 supported, reason = True, ''
             except Exception as error:
                 reason = str(error)
+        adventure=False
+        if supported:
+            try:
+                from .pso_gc_adventure import Adventure
+                Adventure(SimpleNamespace(read_memory=read,write_memory=None)).check()
+                adventure=True
+            except Exception: pass
         return {'version': 'gc', 'label': 'GameCube Plus US revision 2', 'supported': supported, 'reason': reason,
                 'character_class': None, 'classes': list(CLASSES),
-                'features': {k: supported for k in ('floor_spawn','floor_rares','floor_clear','give','equip_any','multi_equip','stat','survival','revive','mag','randomized')},
+                'features': {k: supported for k in ('floor_spawn','floor_rares','floor_clear','give','equip_any','multi_equip','stat','survival','revive','mag','randomized')} |
+                            {k:adventure for k in ('enemy_drops','walk_through','boss_warp')},
                 'pending': {'areas': 'Teleporter progression needs a verified GameCube patch.',
                             'skins': 'Imported wardrobe cycling needs a native GameCube skin loader.',
                             'npcs': 'NPC model replacement and movement need verified GameCube bindings.'},
@@ -128,6 +137,8 @@ def on_launch(sid, ad, game, ctx):
                             from .pso_gc_live import SURVIVAL
                             survive=bool(prefs.get('permanent_scape',False))
                             if bool(gc.u32(SURVIVAL))!=survive:gc.survival(survive)
+                            from .pso_gc_adventure import apply_preferences
+                            apply_preferences(ad,prefs,ctx)
                             state.update(state='applied', equip_any=want, reason='')
                         else:
                             before = m.patch_state("equip_any")

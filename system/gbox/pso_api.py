@@ -4,7 +4,7 @@ import threading
 from typing import Literal
 
 from fastapi import Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import psoitems
 from .pso_controls import DEFAULTS
@@ -14,6 +14,10 @@ class PreferencesIn(BaseModel):
     equip_any: bool | None = None
     permanent_scape: bool | None = None
     legendary: bool | None = None
+    enemy_drops: bool | None = None
+    enemy_codes: list[str] | None = Field(default=None,max_length=20)
+    enemy_max_grind: bool | None = None
+    walk_through: bool | None = None
 
 
 def routes(app, config, auth):
@@ -37,6 +41,11 @@ def routes(app, config, auth):
             f = folder / "preferences.json"
             temp = f.with_suffix(".json.tmp")
             saved=DEFAULTS | (json.loads(f.read_text()) if f.exists() else {}) | value.model_dump(exclude_none=True)
+            codes=saved['enemy_codes']
+            if len(set(codes))!=len(codes) or any(len(c)!=6 or any(ch not in '0123456789abcdef' for ch in c) for c in codes):
+                raise HTTPException(422,'Choose unique six-digit lowercase catalog item codes')
+            if saved['enemy_drops'] and not codes:
+                raise HTTPException(422,'Select items before enabling enemy drops')
             temp.write_text(json.dumps(saved))
             temp.replace(f)
             return saved

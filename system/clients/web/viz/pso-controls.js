@@ -28,6 +28,7 @@
     host.dataset.psoSid = sid;
     let cap, items = [], busy = false, ready = false, prefsReady = false, loading = false, checking = false, loadId = 0, selected = new Set();
     let magId = null, magTimer = null, modeTimer = null, magPatch = {};
+    let lootTimer = null, lootDirty = false, selectionTouched = false, bossesReady = false, lastTravel = '';
     const q = sel => host.querySelector(sel);
     host.innerHTML = `<style>
       .pso-controls {font-size:12px;min-width:0}.pso-controls fieldset{border:1px solid var(--line,#35353f);border-radius:6px;margin:8px 0;padding:8px;min-width:0}
@@ -56,6 +57,19 @@
         <div class="pso-row"><button class="act" data-drop disabled>Drop selected</button><button class="act pri" data-random disabled>Scatter class rares</button>
           <button class="act" data-clear>Clear gBox drops</button><button class="act" data-give>Add selected to inventory</button></div>
         <small>Selected items drop beside you now. Class rares use the disc's class flags and star ratings. Stat requirements are separate from class eligibility.</small>
+      </fieldset>
+      <fieldset data-enemy disabled><legend>Enemy drops</legend>
+        <label><input type="checkbox" data-enemy-on> Enemies drop selected items</label>
+        <small data-enemy-pool>Choose up to 20 items in the database above.</small>
+        <small>Changes to your selection and Maximum weapon grind apply while enabled. One item per enemy drop event, cycling through your pool. Boxes stay unchanged. Count and Spread above are for manual scattering.</small>
+        <small>Saved for supported current and future custom builds.</small>
+      </fieldset>
+      <fieldset data-travel disabled><legend>Doors and boss travel</legend>
+        <label><input type="checkbox" data-walk> Walk through doors, obstacles and laser barriers</label>
+        <small>Collision bypass, saved for supported custom builds. Turn off to restore normal collision. Stay on the map; this does not grant invulnerability.</small>
+        <label>Boss <select data-boss aria-label="Boss destination"><option value="">Loading current episode…</option></select></label>
+        <button class="act" data-boss-warp disabled>Teleport straight to boss</button>
+        <small>Uses the game's area-loading path in your current episode. Changes the area immediately; difficulty and inventory are retained.</small>
       </fieldset>
       <fieldset data-defaults disabled><legend>Equipment default</legend>
         <label><input type="checkbox" data-equip> Default: equip any weapon</label>
@@ -106,7 +120,7 @@
       q("[data-retry]").disabled = busy || loading;
       q("[data-drop]").disabled = busy || checking || !ready || !cap?.supported || !selected.size;
       q("[data-random]").disabled = busy || checking || !ready || !cap?.supported || !q("[data-class]").value;
-      // Catalog browsing also works on GC; mutation buttons do not.
+      // Browsing is independent of revision support for native actions.
       q("[data-clear]").disabled = busy || checking || !ready || !cap?.supported;
       q("[data-give]").disabled = busy || checking || !ready || !cap?.supported || selected.size !== 1;
       for (const [name,feature] of [['survival','survival'],['randomized','randomized'],['mag','mag']])
@@ -114,6 +128,10 @@
       q('[data-scape]').disabled=!prefsReady;
       q('[data-legendary]').disabled=!prefsReady;
       q('[data-mag-values]').disabled=magId===null;
+      q('[data-enemy]').disabled=busy || checking || !ready || !prefsReady || !cap?.features?.enemy_drops;
+      q('[data-travel]').disabled=busy || checking || !cap?.supported;
+      q('[data-walk]').disabled=!prefsReady || !cap?.features?.walk_through;
+      q('[data-boss-warp]').disabled=busy || checking || !bossesReady || !cap?.features?.boss_warp;
     }
     async function run(op, args = {}) {
       if (!current() || busy || checking) return;
@@ -121,9 +139,9 @@
       busy = true; enabled(); say("Applying " + op.replace(/_/g, " ") + "…");
       try {
         const r = await command(op, args);
-        if (r.verified === false) throw new Error(r.spawned != null
+        if (r.verified === false) throw new Error(r.message || (r.spawned != null
           ? `Only ${r.spawned} / ${r.codes.length} floor items were verified. Check the ground before retrying.`
-          : "The game did not verify this change.");
+          : "The game did not verify this change."));
         if (current()) {
           say(r.spawned != null ? `${r.spawned} / ${r.codes.length} items created on the ground.`
             : r.removed != null ? `Removed ${r.removed} gBox floor items.`
@@ -144,6 +162,7 @@
       q("[data-items]").innerHTML = rows.slice(0, 160).map(i => `<label class="pso-item"><input type="checkbox" data-code="${esc(i.code)}" ${selected.has(i.code) ? "checked" : ""}>
         <span>${esc(i.name)}<small>${i.stars} stars · ${esc(i.code)}${i.max_grind != null ? ` · grind +${i.max_grind}` : ""}
         ${i.atp_required != null ? ` · ATP ${i.atp_required} / MST ${i.mst_required} / ATA ${i.ata_required}` : ""}</small></span></label>`).join("") || "No matching items.";
+      q('[data-enemy-pool]').textContent=selected.size ? `Enemy pool: ${[...selected].map(c=>items.find(i=>i.code===c)?.name||c).join(', ')}` : 'Choose up to 20 items in the database above.';
       enabled();
     }
     for (const attr of ["search", "category", "rare", "class"]) q(`[data-${attr}]`).addEventListener(attr === "search" ? "input" : "change", render);
@@ -151,8 +170,36 @@
     q("[data-items]").onchange = e => {
       const code = e.target.dataset.code; if (!code) return;
       if (e.target.checked && selected.size >= 20) { e.target.checked = false; say("Select up to 20 items per drop."); return; }
+      selectionTouched = true;
       e.target.checked ? selected.add(code) : selected.delete(code); render();
+      if(q('[data-enemy-on]').checked) scheduleLoot();
     };
+    function scheduleLoot() {
+      lootDirty=true;clearTimeout(lootTimer);lootTimer=setTimeout(applyLoot,350);
+    }
+    async function applyLoot() {
+      if(!current() || !lootDirty || !prefsReady || !cap?.features?.enemy_drops)return;
+      if(busy || checking){lootTimer=setTimeout(applyLoot,150);return;}
+      lootDirty=false;
+      const on=q('[data-enemy-on]').checked;
+      if(on && !selected.size){q('[data-enemy-on]').checked=false;say('Select items before enabling enemy drops.');}
+      const want=on && !!selected.size,codes=[...selected],max_grind=q('[data-grind]').checked;
+      busy=true;enabled();
+      try {await io.api('/api/pso/preferences',{enemy_drops:want,enemy_codes:codes,enemy_max_grind:max_grind});}
+      catch(error){say('Enemy drop settings were not saved: '+error.message);busy=false;enabled();return;}
+      busy=false;
+      if(current())await run('enemy_drops',{on:want,codes,max_grind});
+    }
+    q('[data-enemy-on]').onchange=scheduleLoot;
+    q('[data-grind]').onchange=()=>{if(q('[data-enemy-on]').checked)scheduleLoot();};
+    q('[data-walk]').onchange=async e=>{
+      if(busy || checking || !prefsReady)return;
+      const on=e.target.checked;busy=true;enabled();
+      try {await io.api('/api/pso/preferences',{walk_through:on});}
+      catch(error){e.target.checked=!on;say(error.message);busy=false;enabled();return;}
+      busy=false;if(current())await run('walk_through',{on});
+    };
+    q('[data-boss-warp]').onclick=()=>run('boss_warp',{target:q('[data-boss]').value});
     const spawnArgs = () => ({ count: +q("[data-count]").value, radius: +q("[data-radius]").value, max_grind: q("[data-grind]").checked });
     q("[data-drop]").onclick = () => run("floor_spawn", { ...spawnArgs(), codes: [...selected] });
     q("[data-random]").onclick = () => run("floor_rares", { ...spawnArgs(), character_class: q("[data-class]").value, highest: q("[data-highest]").checked });
@@ -225,7 +272,7 @@
     q('[data-interval]').onchange=()=>{if(q('[data-randomized-on]').checked)q('[data-apply-randomized]').click();};
     modeTimer=setInterval(async()=>{
       if(!current()||busy||checking||!cap?.features?.randomized)return;
-      try {const r=await command('modes');if(current())showModes(r.randomized);}catch(error){say(error.message);}
+      try {const r=await command('modes');if(current()){showModes(r.randomized);if(r.travel && r.travel.message!==lastTravel){lastTravel=r.travel.message;say(lastTravel);}}}catch(error){say(error.message);}
     },5000);
     async function load() {
       if (!current() || busy || loading) return;
@@ -246,6 +293,13 @@
         q("[data-pending]").innerHTML = Object.values(cap.pending).map(x => `<p>${esc(x)}</p>`).join("");
         const messages = [];
         await Promise.all([
+          Promise.resolve().then(async()=>{
+            if(!cap.features?.boss_warp)return;
+            const r=await command('bosses');if(!fresh())return;
+            q('[data-boss]').innerHTML=r.bosses.map(b=>`<option value="${esc(b.id)}">${esc(b.name)}</option>`).join('');
+            if(r.default)q('[data-boss]').value=r.default;
+            bossesReady=!!r.bosses.length;enabled();
+          }).catch(error=>{if(fresh())q('[data-boss]').innerHTML='<option value="">Boss destinations unavailable</option>';}),
           Promise.resolve().then(() => io.api("/api/pso/items?version=" + cap.version)).then(catalog => {
             if (!fresh()) return;
             if (!Array.isArray(catalog)) throw new Error("Invalid item database");
@@ -256,6 +310,10 @@
             if (typeof prefs?.equip_any !== 'boolean') throw new Error("Invalid equipment default");
             prefsReady = true; q("[data-equip]").indeterminate = false; q("[data-equip]").checked = prefs.equip_any;
             q('[data-scape]').checked=!!prefs.permanent_scape;q('[data-legendary]').checked=!!prefs.legendary;
+            q('[data-enemy-on]').checked=!!prefs.enemy_drops;q('[data-walk]').checked=!!prefs.walk_through;
+            if(!selectionTouched && Array.isArray(prefs.enemy_codes))selected=new Set(prefs.enemy_codes.slice(0,20));
+            if(typeof prefs.enemy_max_grind==='boolean')q('[data-grind]').checked=prefs.enemy_max_grind;
+            render();
             q("[data-preferences]").textContent = "Shared default for supported current and future builds. Unsupported revisions still need their own verified patch.";
             enabled();
           }).catch(() => { if (fresh()) {
@@ -271,7 +329,7 @@
     }
     q("[data-retry]").onclick = load;
     load();
-    return { dispose() { clearTimeout(magTimer);clearInterval(modeTimer);if (host._psoMount === token) { host._psoMount = null; host.dataset.psoSid = ""; } } };
+    return { dispose() { clearTimeout(lootTimer);clearTimeout(magTimer);clearInterval(modeTimer);if (host._psoMount === token) { host._psoMount = null; host.dataset.psoSid = ""; } } };
   }
   return { mount, isPSO, filterItems };
 });

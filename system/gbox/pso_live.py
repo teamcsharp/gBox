@@ -10,8 +10,9 @@ from .registry import Unsupported
 
 OPS = frozenset(('capabilities', 'status', 'list', 'floor_spawn', 'floor_rares', 'floor_clear',
                  'floor_list', 'give', 'equip_any', 'multi_equip', 'stat',
-                 'survival','revive','mag','mag_set','mag_feed','randomized','modes','legendary'))
-READS = frozenset(('capabilities', 'status', 'list', 'floor_list','mag','modes'))
+                 'survival','revive','mag','mag_set','mag_feed','randomized','modes','legendary',
+                 'enemy_drops','walk_through','bosses','boss_warp','adventure_status'))
+READS = frozenset(('capabilities', 'status', 'list', 'floor_list','mag','modes','bosses','adventure_status'))
 _receipts = {}
 _guard = threading.Lock()
 
@@ -30,7 +31,7 @@ def authorize(store, config, sid, body):
     if time.time() - worker.get('last_seen', 0) > 60:
         raise ValueError('The emulator worker is offline')
     root = Path(__file__).parent
-    for name in ('pso_live.py', 'pso_gc_live.py', 'pso_gc_extras.py','pso_modes.py', 'tools.py', 'pso_mods_tool.py', 'pso_controls.py'):
+    for name in ('pso_live.py', 'pso_gc_live.py', 'pso_gc_extras.py','pso_gc_adventure.py','pso_modes.py', 'tools.py', 'pso_mods_tool.py', 'pso_controls.py'):
         expected = hashlib.sha256((root/name).read_bytes().replace(b'\r\n',b'\n')).hexdigest()
         if worker.get('build_sources', {}).get('gbox/'+name) != expected:
             raise ValueError('This worker needs a safe refresh to load the verified PSO live controls')
@@ -145,6 +146,20 @@ def gamecube(inp, ctx, ad):
     from .psoitems import CLASSES, rare_pool
     m = GC(ad)
     m.check()
+    if inp.op in ('enemy_drops','walk_through','bosses','boss_warp','adventure_status'):
+        from .pso_gc_adventure import Adventure,validate_pool
+        m=Adventure(ad);m.check()
+        if inp.op=='bosses': return m.destinations()
+        if inp.op=='adventure_status': return {'enemy_drops':m.loot_status(),'walk_through':m.walk_state(),'travel':m.travel_status(),'verified':True}
+        if inp.op=='enemy_drops':
+            rows=catalog(ctx,'gc') if inp.on else []
+            codes,grinds=validate_pool(rows,inp.codes,inp.max_grind) if inp.on else ([],{})
+            deadline(ctx);result=m.enemy_drops(inp.on,codes,grinds)
+        else:
+            deadline(ctx)
+            result=m.walk_through(inp.on) if inp.op=='walk_through' else m.teleport_boss(inp.target)
+        if inp.op!='boss_warp': ad._pso_preferences_dirty=True
+        return result
     if inp.op in ('survival','revive','mag','mag_set','mag_feed','randomized','modes','legendary'):
         from .pso_gc_extras import Extras,legendary
         from . import pso_modes
@@ -159,7 +174,10 @@ def gamecube(inp, ctx, ad):
         if inp.op in ('mag_set','mag_feed'):
             if inp.item_id is None:raise ValueError('Refresh your equipped MAG first')
             return m.mag_set(inp.item_id,inp.properties) if inp.op=='mag_set' else m.mag_feed(inp.item_id,inp.code)
-        if inp.op=='modes':return {'permanent_scape':m.u32(VT_UPDATE)==CAVE and m.u32(SURVIVAL)==1,'randomized':pso_modes.status(inp.session_id)}
+        if inp.op=='modes':
+            from .pso_gc_adventure import Adventure
+            return {'permanent_scape':m.u32(VT_UPDATE)==CAVE and m.u32(SURVIVAL)==1,'randomized':pso_modes.status(inp.session_id),
+                    'travel':Adventure(ad).travel_status()}
         rows=catalog(ctx,'gc') if inp.on else []
         deadline(ctx)
         return pso_modes.configure(inp.session_id,ad,ctx,inp.on,inp.interval,inp.categories,inp.character_class,rows)

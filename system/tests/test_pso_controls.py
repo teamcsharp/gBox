@@ -29,6 +29,17 @@ def test_class_rares_use_attributes_and_star_values_not_names():
         psoitems.rare_pool(rows, "FOnewearl")
 
 
+def test_enemy_defaults_validate_pool_and_preserve_other_preferences(tmp_path):
+    app=FastAPI();pso_api.routes(app,Config(data_dir=tmp_path),lambda:'operator');c=TestClient(app)
+    assert c.post('/api/pso/preferences',json={'enemy_drops':True}).status_code==422
+    assert c.post('/api/pso/preferences',json={'enemy_codes':['invalid']}).status_code==422
+    assert c.post('/api/pso/preferences',json={'enemy_codes':['000100']*2}).status_code==422
+    good=c.post('/api/pso/preferences',json={'enemy_drops':True,'enemy_codes':['010122','000100'],'walk_through':True}).json()
+    assert good['enemy_codes']==['010122','000100'] and good['equip_any'] is True
+    assert c.post('/api/pso/preferences',json={'equip_any':False}).json()['walk_through'] is True
+    assert c.get('/api/pso/preferences').json()['enemy_drops'] is True
+
+
 def test_gc_capability_never_reads_dreamcast_addresses():
     def forbidden(*args):
         raise AssertionError("DC address read on GameCube")
@@ -113,9 +124,9 @@ def test_persistent_defaults_and_catalog_version_validation(tmp_path):
     cfg = Config(data_dir=tmp_path)
     pso_api.routes(app, cfg, lambda: "fixture")
     client = TestClient(app)
-    assert client.get("/api/pso/preferences").json() == {"equip_any": True,"permanent_scape":False,"legendary":False}
+    assert client.get("/api/pso/preferences").json() == pso_controls.DEFAULTS
     assert client.post("/api/pso/preferences", json={"equip_any": False}).json()['equip_any'] is False
-    assert client.post('/api/pso/preferences',json={'permanent_scape':True,'legendary':True}).json()=={'equip_any':False,'permanent_scape':True,'legendary':True}
+    assert client.post('/api/pso/preferences',json={'permanent_scape':True,'legendary':True}).json()==pso_controls.DEFAULTS|{'equip_any':False,'permanent_scape':True,'legendary':True}
     assert client.post('/api/pso/preferences',json={'equip_any':True}).json()['permanent_scape'] is True
     client.post('/api/pso/preferences',json={'equip_any':False})
     assert client.get("/api/pso/preferences").json()["equip_any"] is False

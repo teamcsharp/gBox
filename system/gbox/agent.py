@@ -113,9 +113,11 @@ How to work:
   verify the display changed, freeze_memory if the game reverts it; (5) remember the verified address for next time.
   For items/equipment, find the inventory slot the same way (search for the item's ID from the game's item list), then write the
   wanted item's ID. Do it; don't explain how.
-- Phantasy Star Online "every enemy drops the rarest items" / "only rares, the best ones": pso_mods op=rare_drops on=true
-  (every monster and box slot drops a rare from the rarest-items list; codes=[..] to choose the list), op=rare_drops on=false
-  to restore. For a tuned rate (double/triple) use pso_drops op=scale factor instead; op=all_rare maxes the existing rares.
+- Phantasy Star Online loot: check pso_mods op=capabilities first. On supported GameCube Plus 3OE2, use op=enemy_drops
+  on=true codes=[..] max_grind=true with 1-20 owned-disc catalog codes: native enemy drop events cycle through that pool;
+  boxes stay stock. On Dreamcast Ver.2, op=rare_drops changes monster AND box tables. on=false restores either policy.
+  GameCube walk_through on=true bypasses collision; on=false restores. op=bosses lists the current episode's destinations;
+  op=boss_warp target=<returned id> explicitly loads that boss area. Never warp or retry a timed-out mutation automatically.
 - Phantasy Star Online "run/move three times faster", "let me run faster": pso_mods op=move_speed factor=3 on=true (the
   player's per-frame move step runs N x; on=false to stop). It is separate from attack_speed (which speeds attacks). "faster
   attacks / rapid fire" is still pso_mods op=attack_speed.
@@ -434,7 +436,12 @@ def tool_specs() -> list[dict]:
            "pso_item_search: every enemy and box drops THAT item - the reliable way to 'give me / equip X'), restore, status. Finds the game's rare tables "
            "in RAM and rewrites them; works on PSO versions with a drop_tables profile (others: tell the operator it's not mapped yet).",
            {"session_id": s, "op": s, "factor": {"type": "number"}, "code": s, "boxes": b}, ["session_id", "op"]),
-        fn("pso_mods", "Phantasy Star Online Ver.2 (Dreamcast) live mods, all verified in game. op=give (code = item code hex from "
+        fn("pso_mods", "Offline PSO US Dreamcast Ver.2 / GameCube Plus US 3OE2 native mods. Check op=capabilities first; "
+           "ops vary by platform. GameCube enemy_drops on=true codes=[1-20 catalog codes] max_grind=true cycles selected "
+           "items through native enemy loot; boxes unchanged; on=false restores. GameCube walk_through on=true|false "
+           "bypasses/restores collision. GameCube bosses lists current-episode IDs; boss_warp target=<id> explicitly "
+           "starts native boss-area loading; adventure_status confirms arrival. Never automatically retry a warp. "
+           "The following rare_drops, speed, crit, key_bypass, dupe and item_set ops are Dreamcast-only. op=give (code = item code hex from "
            "pso_item_search, count: real inventory items, 30-slot limit - 'give me 15 DB sabers'), equip_any on=true|false (any class/level "
            "can equip anything - 'let me equip any weapon'), floor_spawn (code, count: real items on the ground next to the player - "
            "'drop a DB saber on the ground'), floor_rares (count: rares scattered around the player), floor_clear (on=false: remove "
@@ -456,7 +463,7 @@ def tool_specs() -> list[dict]:
            "status, unhook. give with equip=true also equips the first item ('equip me with a DB saber' = give code count=1 "
            "equip=true; add equip_any first if the class can't normally use it).",
            {"session_id": s, "op": s, "on": b, "value": i, "factor": i, "code": s, "count": i, "equip": b, "name": s,
-            "target": s, "rare": b, "codes": {"type": "array", "items": s}},
+            "target": s, "rare": b, "codes": {"type": "array", "items": s}, "max_grind": b},
            ["session_id", "op"]),
         fn("re_mods", "Resident Evil 4 live mods (GameCube; Wii Edition = unlock_all, merc_time, merc_time_bonus, merc_timer_freeze, "
            "unlimited_health, weapon_mod), verified by read-back. MERCENARIES (same op names in every RE with a Mercenaries "
@@ -1257,10 +1264,10 @@ class Agent:
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
     def pso_mods(self, session_id, op="status", on=True, value=999999, factor=3, code="", count=1, equip=False, name="",
-                 target="", rare=False, codes=None):
+                 target="", rare=False, codes=None, max_grind=False):
         j = self._job("pso_mods", {"session_id": session_id, "op": op, "on": on, "value": value, "factor": factor,
                                    "code": code, "count": count, "equip": equip, "name": name, "target": target,
-                                   "rare": rare, "codes": codes or []},
+                                   "rare": rare, "codes": codes or [], "max_grind": max_grind},
                       worker=session_id.rsplit("-", 1)[0])
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 

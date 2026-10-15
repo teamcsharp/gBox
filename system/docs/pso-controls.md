@@ -44,6 +44,9 @@ GameCube survival, Legendary/Ultimate defaults, timed rare equipment and live MA
 editing/feeding are described in [PSO survival and MAG controls](pso-survival-mag.md).
 These additions retain the same exact-revision and offline guards.
 
+Selected enemy loot, reversible collision bypass and explicit boss-area travel are described in
+[PSO enemy drops and traversal](pso-enemy-drops-traversal.md). These also apply saved policies to supported custom builds.
+
 Both clients send `pso_controls` through `/api/sessions/{sid}/rpc`, rather than submitting a worker job.
 Builds do not sit ahead of a button click. Each request carries a unique command ID and an eight-second admission
 deadline. Worker execution is serialized per session; a busy session refuses another mutation instead of queuing it.
@@ -61,7 +64,7 @@ message rather than a command it cannot execute. The panel reports measured work
 The owned `PsoV3.dol` SHA-256 is
 `1f80fb82b41c05b26b6d0545b1ba9c0aa60b52e6589cf32fbb2ffe644692a61a`.
 Native entry points and structures were independently checked against that executable and an isolated copy of a
-Forest 1 save state in Dolphin 2609a. The test used its own display, user directory and memory-card paths.
+Episode II VR Temple Alpha save state in Dolphin 2609a. The test used its own display, user directory and memory-card paths.
 No operator session or original save was modified. No game binary, save or personal asset is included in source.
 
 Observed native checks: real floor objects and their IDs/codes in the floor table; gBox-only clear; inventory insertion;
