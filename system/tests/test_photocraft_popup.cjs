@@ -239,3 +239,18 @@ test('collection-model and image-lightbox entrypoints preserve the selected asse
     assert.equal(await evaluate(`document.querySelector('#lbox').style.display`), 'none', 'the lightbox yields to the editor');
   });
 });
+
+test('popup opens over a LAN HTTP capability set without crypto.randomUUID', async () => {
+  await fixture(async ({evaluate}) => {
+    await evaluate(`Object.defineProperty(crypto,'randomUUID',{value:undefined,configurable:true});`);
+    assert.equal(await evaluate('typeof crypto.getRandomValues'), 'function');
+    assert.equal(await evaluate('typeof crypto.randomUUID'), 'undefined');
+    await evaluate('openPopup()');
+    assert.equal(await evaluate('panel.ready.then(value=>value.ready)'), true);
+    assert.match(await evaluate(`new URLSearchParams(frame().contentWindow.location.hash.slice(1)).get('bridge')`), /^[a-f0-9]{64}$/);
+    assert.deepEqual(await evaluate('pixel()'), [32, 64, 224, 255]);
+    assert.equal(await evaluate('panel.close()'), true);
+    assert.equal(await evaluate(`document.querySelector('#photocraft-popup')===null`), true);
+    assert.equal(await evaluate('viewers.every(value=>value.disposed)'), true);
+  });
+});
