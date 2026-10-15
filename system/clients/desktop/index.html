@@ -1014,7 +1014,7 @@ window.taskVizCreate = canvas => {
     <button id="tb-rec" title="Record gameplay with playback audio (click to stop). Recording preferences: adjacent arrow. Right-click: replay">
       <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><circle id="tb-rec-dot" cx="12" cy="12" r="4.5" fill="#ff3b3b"/></svg><span id="tb-rec-t"></span></button>
     <button id="tb-recopt" title="Recording size limit and compression" style="min-width:0;padding:0 4px">▾</button>
-    <button id="tb-mini" hidden title="Mini mode: shrink gBox to a resizable game window (keeps the game's aspect ratio)">
+    <button id="tb-mini" hidden title="Picture-in-picture: resizable game-only window. Double-click the game to restore GBox.">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="14" rx="2"/><rect x="12" y="11" width="7" height="5" rx="1" fill="currentColor"/></svg>Mini</button>
     <button id="tb-pad" hidden title="Controller settings of the running emulator, over the game (RetroArch: Quick Menu → Controls → Port 1 Controls: binds, deadzone, turbo; click again to close). Emulators without that menu open gBox's controller mapping instead">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 11h4M8 9v4M15 12h.01M18 10h.01"/><path d="M17.3 5H6.7a4 4 0 0 0-3.9 3.1l-1.2 6.5A2.8 2.8 0 0 0 6.4 17l2.1-2h7l2.1 2a2.8 2.8 0 0 0 4.8-2.4l-1.2-6.5A4 4 0 0 0 17.3 5z"/></svg>Controller</button>
@@ -1233,6 +1233,22 @@ window.taskVizCreate = canvas => {
 <script src="../web/viz/gpu-game-surface.js"></script>
 <script src="embed-geometry.js"></script>
 <script src="game-surface.js"></script>
+<script src="compact-game.js"></script>
+<script>window.GBOX_STREAM_HEALTH = false;</script>
+<script src="../web/viz/stream-watchdog.js"></script>
+<style id="compact-game-style">
+  body.gbox-compact { background:#000; }
+  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(#compact-stream):not(#compact-controls):not(script):not(style) { display:none !important; }
+  #compact-stream { display:none; position:fixed; inset:0; width:100%; height:100%; object-fit:contain; background:#000; }
+  body.gbox-compact #compact-stream.on { display:block; }
+  #compact-controls { display:none; position:fixed; inset:0 0 auto; height:28px; z-index:100;
+    align-items:center; gap:8px; padding:2px 8px; background:#101014dc; color:#ddd; font:11px system-ui;
+    -webkit-app-region:drag; opacity:0; pointer-events:none; }
+  body.gbox-compact #compact-controls { display:flex; }
+  body.gbox-compact #compact-controls.shown { opacity:1; pointer-events:auto; }
+  #compact-controls span { flex:1; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+  #compact-controls button { -webkit-app-region:no-drag; border:1px solid #666; border-radius:3px; background:#18181d; color:#fff; cursor:pointer; }
+</style>
 <script>
 const $ = s => document.querySelector(s), esc = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
 
@@ -3398,8 +3414,15 @@ async function embedTick() {
     const r = LIVE_SESSIONS.peek() || await liveSessions();
     if (r.ok) $("#tb-mini").hidden = $("#tb-pad").hidden = !r.data.some(s => s.state === "running");
     const mine = r.ok && r.data.filter(s => s.state === "running" && s.detail && s.detail.local_window && s.detail.worker_name === S.workerName
-                                          && !EMB.closed.has(s.session_id)).sort((a, b) => (b.started || 0) - (a.started || 0))[0];
+                                          && !EMB.closed.has(s.session_id) && (!COMPACT.on || s.session_id === COMPACT.sid)).sort((a, b) => (b.started || 0) - (a.started || 0))[0];
     if (!r.ok) return;                                       // API blip (Spark restarting): leave the game exactly as it is
+    if (COMPACT.on && !r.data.some(s => s.session_id === COMPACT.sid && s.state === "running")) await compactRestore();
+    if (COMPACT.on && !COMPACT.local) {
+      if (GPU_GAME.pid) await gpuGameDispose();
+      pipHandle(null); EMB.rect = null; EMB.vis = false;
+      if (EMB.pid) { EMB.pid = null; EMB.last = ""; await gbox.embedSync(null); }
+      return;
+    }
     if (!mine) { if (GPU_GAME.pid) await gpuGameDispose(); pipHandle(null); EMB.sid = null; EMB.rect = null; if (EMB.pid) { EMB.pid = null; EMB.last = ""; await gbox.embedSync(null); } return; }
     if (mine.session_id !== EMB.sid) {
       const wv0 = document.querySelector("#wv");
@@ -3416,7 +3439,9 @@ async function embedTick() {
     const onPlay = document.querySelector("section.on")?.id === "play";
     let rect = null, pipNow = false;
     const wv = document.querySelector("#wv");
-    if (onPlay && VIEW.mode === "full") {
+    if (COMPACT.on) {
+      rect = GBoxCompactGame.fit(innerWidth, innerHeight, COMPACT.aspect);
+    } else if (onPlay && VIEW.mode === "full") {
       rect = { x: 0, y: 36, w: innerWidth, h: innerHeight - 36 };
     } else if (onPlay && wv) {
       const slot = VIEW.mode === "pip" ? null : await wv.executeJavaScript(`(() => { const e = document.getElementById("nativeslot"); if (!e) return null;
@@ -3429,22 +3454,22 @@ async function embedTick() {
       }
     }
     if (rect) rect = GBoxEmbedGeometry.intersect(rect, { x: 0, y: 0, w: innerWidth, h: innerHeight });
-    if (rect && !pipNow && $("#live").classList.contains("on") && !$("#live").closest("#dock"))        // docked in the sidebar (#262) it is already out of the way
+    if (rect && !COMPACT.on && !pipNow && $("#live").classList.contains("on") && !$("#live").closest("#dock"))        // docked in the sidebar (#262) it is already out of the way
       rect = GBoxEmbedGeometry.intersect(rect, { x:0, y:0, w:Math.max(0, $("#live").getBoundingClientRect().left - 4), h:innerHeight });
     EMB.rect = rect;
-    const hidden = overlay || EYE.on;
+    const hidden = !COMPACT.on && (overlay || EYE.on);
     EMB.title = mine.title;
     pipHandle(pipNow && !hidden ? rect : null, mine.title);
     if (await gpuGamePresent(mine, rect, pipNow, hidden, wv, onPlay)) return;
     if (GPU_GAME.pid) await gpuGameDispose(wv);
     // panels over the game (chat, menus, inspector...) are cut out of the native game window, so the game keeps playing around them
-    const webMenus = rect && wv && onPlay ? await wv.executeJavaScript(`(() => { ${EMB_GUEST_WATCH} return [...document.querySelectorAll(${JSON.stringify(EMB_GUEST_MENUS)})]
+    const webMenus = rect && wv && onPlay && !COMPACT.on ? await wv.executeJavaScript(`(() => { ${EMB_GUEST_WATCH} return [...document.querySelectorAll(${JSON.stringify(EMB_GUEST_MENUS)})]
       .filter(el => { const s = getComputedStyle(el); return s.display !== "none" && s.visibility !== "hidden" &&
         +s.opacity !== 0 && s.pointerEvents !== "none"; })
       .map(el => { const r = el.getBoundingClientRect(); return { x:r.left, y:r.top, w:r.width, h:r.height, viewport: { w:innerWidth, h:innerHeight } }; })
       .filter(r => r.w > 0 && r.h > 0); })()`).catch(() => []) : [];
     const webOrigin = wv?.getBoundingClientRect();
-    const holes = rect ? [...document.querySelectorAll(EMB_HOLES), ...popups()]                                             // + any other floating menu / popover / toast (recording menu...)
+    const holes = rect ? [...document.querySelectorAll(COMPACT.on ? "#compact-controls.shown" : EMB_HOLES), ...(COMPACT.on ? [] : popups())]                                             // + any other floating menu / popover / toast (recording menu...)
       .filter(el => el.offsetParent !== null || getComputedStyle(el).position === "fixed" && getComputedStyle(el).display !== "none")
       .map(el => el.getBoundingClientRect()).concat(webMenus.map(b => GBoxEmbedGeometry.guestRect(b, webOrigin, b.viewport)).filter(Boolean)
         .map(b => ({ left:b.x, top:b.y, right:b.x+b.w, bottom:b.y+b.h, width:b.w, height:b.h })))
@@ -3511,6 +3536,71 @@ addEventListener("resize", () => { EMB.last = ""; });
 // ---------------- picture-in-picture for the native game window: drag bar + menu (main view / PiP / full screen / talk / ask) ----------------
 // the game window is a native child window (it swallows its own clicks), so the handle is a gBox bar along its top edge
 const VIEW = { mode: "auto", pip: null };                    // mode: auto (game in its slot) | pip (forced) | full
+// Compact PiP uses this same window, game and input path. It never launches another emulator.
+let compactStreamUrl = '', compactTitle = '', compactHoverTimer = null;
+const compactController = GBoxCompactGame.create({
+  mode: () => VIEW.mode,
+  resolve: async () => {
+    const st = await gboxState();
+    const sid = st.playing || st.session || EMB.sid;
+    let session = sid ? await sessionById(sid) : null;
+    if (!session || session.state !== 'running') {
+      const r = await liveSessions(0);
+      session = r.ok && r.data.filter(s => s.state === 'running').sort((a,b) => (b.started || 0) - (a.started || 0))[0];
+    }
+    if (!session) return null;
+    const local = !!session.detail?.local_window && session.detail.worker_name === S.workerName;
+    compactTitle = sessionTitle(session);
+    compactStreamUrl = local ? '' : `${S.apiUrl}/api/sessions/${encodeURIComponent(session.session_id)}/mjpeg?token=${encodeURIComponent(await gbox.token())}`;
+    if (document.fullscreenElement) await document.exitFullscreen();
+    closePops(null); if (EYE.on) eyeStop();
+    document.querySelector('aside button[data-s="play"]')?.click();
+    const wv = document.querySelector('#wv');
+    if (wv) await wv.executeJavaScript(`show("Sessions", ${JSON.stringify(session.session_id)})`).catch(() => {});
+    const frame = local && EMB.sid === session.session_id ? window.GBoxGPUVideo?.stats() : null;
+    return { sid: session.session_id, local, ...(frame?.ready ? { aspect: frame.width / frame.height } : {}) };
+  },
+  windowMode: value => gbox.compactView(value),
+  render: state => {
+    VIEW.mode = state.on ? 'compact' : state.returnMode === 'full' ? 'full' : 'auto';
+    document.body.classList.toggle('gbox-compact', state.on);
+    let stream = $('#compact-stream'), controls = $('#compact-controls');
+    if (state.on && !controls) {
+      controls = document.createElement('div'); controls.id = 'compact-controls';
+      controls.innerHTML = '<span></span><button type="button" title="Restore GBox (or double-click the game)">Full app</button>';
+      controls.querySelector('button').onclick = () => compactRestore().catch(error => toast(error.message)); document.body.append(controls);
+      controls.addEventListener('pointerenter', () => compactHover(true));
+      controls.addEventListener('pointerleave', () => compactHover(false));
+    }
+    if (controls) controls.querySelector('span').textContent = compactTitle;
+    if (state.on && !state.local) {
+      if (!stream) { stream = document.createElement('img'); stream.id = 'compact-stream'; stream.alt = 'Live emulation session'; document.body.append(stream); }
+      stream.classList.add('on');
+      if (stream.getAttribute('src') !== compactStreamUrl) stream.src = compactStreamUrl;
+    } else if (stream) { stream.classList.remove('on'); stream.removeAttribute('src'); stream.style.backgroundImage = ''; }
+    if (!state.on) compactHover(false);
+  },
+  pad: sid => miniPadTarget(sid),
+  present: () => { EMB.last = ''; embedTick(); }
+});
+const COMPACT = compactController.state;
+const compactEnter = () => compactController.enter();
+const compactRestore = () => compactController.restore();
+function compactHover(show) {
+  clearTimeout(compactHoverTimer);
+  const apply = () => { $('#compact-controls')?.classList.toggle('shown', COMPACT.on && show); EMB.last = ''; embedTick(); };
+  if (show || !COMPACT.on) apply(); else compactHoverTimer = setTimeout(apply, 450);
+}
+gbox.onCompactView?.(value => compactController.changed(value));
+addEventListener('dblclick', event => { if (COMPACT.on) { event.preventDefault(); event.stopPropagation(); compactRestore().catch(error => toast(error.message)); } }, true);
+addEventListener('pointermove', event => { if (COMPACT.on) compactHover(event.clientY < 32); }, { passive:true });
+addEventListener('resize', () => { if (COMPACT.on) requestAnimationFrame(() => embedTick()); });
+addEventListener('keydown', event => { if (COMPACT.on && event.key === 'Escape') { event.preventDefault(); compactRestore().catch(error => toast(error.message)); } });
+setInterval(() => {
+  if (!COMPACT.on || COMPACT.local) return;
+  const image = $('#compact-stream');
+  if (image?.naturalWidth) compactController.picture(image.naturalWidth, image.naturalHeight)?.catch(() => {});
+}, 500);
 try { VIEW.pip = JSON.parse(localStorage.getItem("gbox_pip")); } catch {}
 const PIP_SIZES = { S: [320, 240], M: [480, 360], L: [720, 540] };
 function pipRect() {
@@ -3922,6 +4012,7 @@ setInterval(() => { const wv = document.querySelector("#wv"); if (wv && !wv._gbo
     else cardDragMsg(m);
   } catch {} }); } }, 1000);
 gbox.onEmbedEvent?.(async ev => {
+  if (ev.event === 'compact-hover') { compactHover(ev.show); return; }
   if (ev.event === "gpu-whip") return gpuGameWhip(ev);
   if (ev.event === "overlayframe") return gpuGameOverlayEvent(ev.message);
   if (ev.event === "gameup" && CARDDRAG.c && Date.now() - CARDDRAG.t < 60000 && (!CARDDRAG.end || Date.now() - CARDDRAG.end < 1500)) {
@@ -4995,7 +5086,8 @@ window.GBoxBackgroundGameplay = async (session, current) => {
 function viewAction(a, auto = false) {                       // auto = applied by gBox on launch (don't re-save)
   const wv = document.querySelector("#wv");
   if (["main", "pip", "full", "library", "home"].includes(a) && !auto) viewRemember(a === "full" ? "full" : "windowed");
-  if (a !== "full" && ["main", "pip", "library", "home"].includes(a)) gbox.setFullScreen?.(false);
+  if (a !== "full" && ["main", "library", "home"].includes(a)) gbox.setFullScreen?.(false);
+  if (COMPACT.on && ["main", "library", "home", "full"].includes(a)) { compactRestore().then(() => viewAction(a, auto)); return; }
   if (a === "main" || a === "library" || a === "home") {
     VIEW.mode = "auto";
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
@@ -5003,12 +5095,12 @@ function viewAction(a, auto = false) {                       // auto = applied b
     if (wv && a === "home") wv.executeJavaScript('show("Home")').catch(() => {});
     else if (wv && a === "library") wv.executeJavaScript('show("Library")').catch(() => {});
     else if (wv && EMB.sid) wv.executeJavaScript(`show("Sessions", ${JSON.stringify(EMB.sid)})`).catch(() => {});
-  } else if (a === "pip") { VIEW.mode = "pip"; if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); }
+  } else if (a === "pip") { compactEnter().catch(error => toast(error.message)); return; }
   else if (a === "full") { VIEW.mode = "full"; document.querySelector('aside button[data-s="play"]')?.click();
     (gbox.setFullScreen ? gbox.setFullScreen(true) : document.documentElement.requestFullscreen()).catch?.(() => {}); }
   else if (a === "talk") { TALK.on ? talkStop() : talkStart(); }
   else if (a === "ask") { const i = $("#chatin"); i.value = ""; i.placeholder = "Ask about the game you're playing…"; i.focus(); }
-  else if (PIP_SIZES[a]) { const r = pipRect(); VIEW.pip = { ...r, w: PIP_SIZES[a][0], h: PIP_SIZES[a][1] }; pipSave(); }
+  else if (PIP_SIZES[a]) { if (COMPACT.on) { gbox.compactView({ on: true, width: PIP_SIZES[a][0] }).catch(error => toast(error.message)); return; } const r = pipRect(); VIEW.pip = { ...r, w: PIP_SIZES[a][0], h: PIP_SIZES[a][1] }; pipSave(); }
   EMB.last = ""; embedTick();
 }
 gbox.onFullscreen?.(on => { if (!on && VIEW.mode === "full") { VIEW.mode = "auto"; viewRemember("windowed"); EMB.last = ""; } });
@@ -6129,22 +6221,7 @@ document.addEventListener("drop", async e => {
 });
 
 // ---------------- mini mode ----------------
-$("#tb-mini").onclick = async () => {
-  const st = await gboxState();
-  let sid = st.session, title = "";
-  if (!sid) {                                                     // no game open: use the most recent running streamed session
-    const r = await liveSessions(0);
-    const s = r.ok && r.data.find(x => x.state === "running" && !(x.detail && x.detail.local_window));
-    if (!s) return alert("Mini mode shows a streamed game. Start one (or use the Spark button), then click Mini.");
-    sid = s.session_id; title = sessionTitle(s);
-  } else {
-    const s = await sessionById(sid);
-    if (s && s.detail && s.detail.local_window) return alert("This game runs natively in its own RetroArch window — resize that window directly.");
-    title = s ? sessionTitle(s) : "";
-  }
-  miniPadTarget(sid);
-  gbox.miniOpen(sid, title);
-};
+$("#tb-mini").onclick = () => compactEnter().catch(error => toast(error.message));
 // ---------------- Tools: everything dispatchable by an LLM (typed tools, agent roles, Ghidra scripts) ----------------
 const TL = { data: null, open: new Set(), q: "", kind: "" };
 async function loadTools() {

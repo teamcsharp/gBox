@@ -601,7 +601,8 @@ app.on("web-contents-created", (_e, wc) => wc.on("before-input-event", (ev, inpu
   }
   if (input.type !== "keyDown") return;
   const toggle = input.key === "F11" || (input.alt && input.key === "Enter");
-  if (input.key === "Escape" && win.isFullScreen()) { win.setFullScreen(false); win.webContents.send("fullscreen", false); ev.preventDefault(); }
+  if (input.key === "Escape" && compactWindow.state().on) { compactWindow.restore().catch(error => logPush('compact', error.message)); ev.preventDefault(); }
+  else if (input.key === "Escape" && win.isFullScreen()) { win.setFullScreen(false); win.webContents.send("fullscreen", false); ev.preventDefault(); }
   else if (toggle) { win.webContents.send("hotkey", "fullscreen"); ev.preventDefault(); }   // the page's view mode follows
   else if (input.key === "F2" && (input.shift || input.control) && !input.alt) { win.webContents.send("hotkey", input.shift ? "slot+" : "slot-"); ev.preventDefault(); }
   else if (GAME_KEYS[input.key] && !input.control && !input.alt && !input.shift) { win.webContents.send("hotkey", GAME_KEYS[input.key]); ev.preventDefault(); }
@@ -623,12 +624,36 @@ function embedCmd(cmd) {
     embedder.stdout.on("data", d => { embedBuf += d; let i; while ((i = embedBuf.indexOf("\n")) >= 0) { const l = embedBuf.slice(0, i); embedBuf = embedBuf.slice(i + 1); const m = JSON.parse(l);
       if (m.event === "whip") { pickWhip(m); continue; }
       if (m.event === "foreground") { hotkeys.setFront(!!m.front); continue; }   // gBox gained / lost the foreground
+      if (m.event === 'piprestore') { compactWindow.restore().catch(error => logPush('compact', error.message)); continue; }
       if (m.event) { if (win) { const k = screen.getDisplayMatching(win.getBounds()).scaleFactor; win.webContents.send("embed:event", { ...m, x: m.x / k, y: m.y / k }); } continue; }
       const r = embedQ.shift(); r && r(m); } });
-    embedder.on("close", () => { embedder = null; embedded = null; fgWatched = 0; hotkeys.setFront(false); embedQ.splice(0).forEach(r => r({ ok: false })); });
+    embedder.on("close", () => { embedder = null; embedded = null; fgWatched = 0; hotkeys.setFront(false); embedQ.splice(0).forEach(r => r({ ok: false }));
+      if (!quitting && compactWindow.state().on && !compactRecoveryPending) {
+        compactRecoveryPending = true;
+        compactWindow.restore().catch(error => logPush('compact', error.message));
+      } });
   }
   return new Promise(res => { embedQ.push(res); embedder.stdin.write(JSON.stringify(cmd) + "\n"); });
 }
+let compactChromeBits = null, compactRecoveryPending = false;
+const compactWindow = require('./compact-window.cjs').create({ getWin: () => win, screen,
+  nativeChrome: async on => {
+    if (!win || win.isDestroyed()) return { ok: false, error: 'The gBox window is unavailable.' };
+    if (process.platform !== 'win32') { win.setWindowButtonVisibility?.(!on); return { ok: true }; }
+    const appWindow = Number(win.getNativeWindowHandle().readBigUInt64LE(0));
+    const watched = await embedCmd({ op: 'watch', app: appWindow });
+    if (!watched.ok) return watched;
+    const result = await embedCmd({ op: 'appchrome', app: appWindow, pid: process.pid, on,
+      ...(!on && compactChromeBits !== null ? { bits: compactChromeBits } : {}) });
+    if (result.ok) { compactChromeBits = on ? result.bits : null; compactRecoveryPending = false; }
+    return result;
+  },
+  emit: state => { if (win && !win.isDestroyed()) win.webContents.send('compact:view', state); }
+});
+ipcMain.handle('compact:view', (event, state) => {
+  if (!win || event.sender !== win.webContents || (event.senderFrame && event.senderFrame !== win.webContents.mainFrame)) throw Error('Only the gBox app can change picture-in-picture mode.');
+  return compactWindow.update(state);
+});
 let embedded = null, gpuSurface = false;                          // active presentation uses Chromium's compositor
 // Pick whip: Alt + drag over the game draws a line from one thing to another; on release the frame (with the line) goes
 // to the chat as "swap this with that". The line lives on a transparent click-through window above the docked game.
@@ -969,7 +994,10 @@ app.whenReady().then(() => {
   backgroundPower = require('./background-power').create({powerSaveBlocker,
     status:()=>api('/api/background/workers/'+encodeURIComponent(settings().workerName)+'/status')});
   backgroundPower.start();
-  win.webContents.on("did-start-navigation", (_e, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) pickHoldReleaseAll("window reloaded"); });
+  win.webContents.on("did-start-navigation", (_e, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) {
+    pickHoldReleaseAll("window reloaded");
+    if (compactWindow.state().on) compactWindow.restore().catch(error => logPush('compact', error.message));
+  } });
   win.on("closed", () => pickHoldReleaseAll("window closed"));
   startPadWatcher();
   win.on("focus", () => { win.webContents.send("app-focus"); if (hotkeys.docked) checkFront(); });   // coming back to gBox: the renderer decides whether the game gets focus
