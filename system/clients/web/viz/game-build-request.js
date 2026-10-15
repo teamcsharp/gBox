@@ -28,7 +28,7 @@
     async function refresh(){
       try{const r=await io.api(`/api/games/${encodeURIComponent(game.game_id)}/build-requests`);if(dead)return;
         q('[data-list]').innerHTML=r.items.map(x=>{
-          const job=[...(x.jobs||[])].reverse().find(j=>['running','queued','failed','invalid','rejected'].includes(j.state));
+          const job=[...(x.jobs||[])].reverse().find(j=>['running','queued','succeeded','failed','invalid','rejected'].includes(j.state));
           const state=x.build?'Build available'+(x.build.verified?' · verified in game':' · gameplay verification pending'):job?job.state:x.status==='done'?'Build has not been published':x.status;
           return `<article style="border-top:1px solid var(--line,#555);padding:10px 0"><button type="button" data-request="${esc(x.id)}">#${esc(x.number)}</button> <b>${esc(state)}</b><p style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(x.description)}</p>
             ${job?.progress?`<progress max="100" value="${Number(job.progress.pct)||0}"></progress> ${esc(job.progress.msg)}`:''}
