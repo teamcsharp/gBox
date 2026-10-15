@@ -48,6 +48,10 @@ capture; the same server setting disables observation journaling.
 
 ## Replay limits and next acceptance gate
 
+Native SMB1 replay is now implemented separately: see [Native Mario replay](native-mario-tas.md).
+Its Runs play/segment/loop controls and verified idle dispatch apply only to new supported
+Mesen tapes. The limitations below still apply to sampled observations, BSV and PSO.
+
 The UI deliberately reports `waiting_for_validated_native_run`. **Unattended native
 demonstration dispatch is not implemented by this change. PSO TAS recording/playback
 has not been verified.** Pad receipt times can miss physical taps and cannot be

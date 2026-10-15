@@ -1105,6 +1105,22 @@ class RetroArchAdapter(CommandAdapter):
             opts = capture_backend.retroarch_cfg(opts, cap, work)
             self.states_override = work / "states"
             cfg = work / "retroarch.cfg"
+        playback = getattr(self, 'tas_playback', None)
+        if playback:
+            work = Path(playback['folder'])
+            for sub in ('saves', 'states', 'screenshots', 'system'):
+                (work/sub).mkdir(parents=True, exist_ok=True)
+            co = work/'core-options.cfg'
+            co.write_text(playback.get('core_options', ''))
+            opts.update(system_directory=work/'system', savefile_directory=work/'saves',
+                        savestate_directory=work/'states', screenshot_directory=work/'screenshots',
+                        core_options_path=co, rewind_enable='false', run_ahead_enabled='false',
+                        preemptive_frames_enable='false', savestate_auto_load='false',
+                        savestate_auto_save='false', apply_cheats_after_load='false',
+                        input_autodetect_enable='false', input_joypad_driver='null',
+                        audio_volume='-34', pause_nonactive='false')
+            cfg = work/'retroarch.cfg'
+            self.states_override = work/'states'
         cfg.write_text("".join(f'{k} = "{v}"\n' for k, v in opts.items()))
         return cfg
 
@@ -1119,6 +1135,29 @@ class RetroArchAdapter(CommandAdapter):
         elif not core:
             raise ToolUnavailable("retroarch adapter needs 'core' configured")
         cfg = self._write_cfg() if self.config is not None else None
+        playback = getattr(self, 'tas_playback', None)
+        if playback:
+            from . import tas
+            if tas.fingerprint(core) != playback['core_sha256']:
+                raise Unsupported('This replay requires the exact recorded Mesen core binary')
+            self.tas_real_core = core
+            self.tas_environment = {'GBOX_TAS_CORE': core, 'GBOX_TAS_PLAY': playback['tape'],
+                                    'GBOX_TAS_STATUS': playback['status'],
+                                    'GBOX_TAS_FROM': str(playback['start_frame']),
+                                    'GBOX_TAS_TO': str(playback['end_frame']),
+                                    'GBOX_TAS_LOOP': '1' if playback['loop'] else '0'}
+            return [exe, '--config', str(cfg), '-L', str(tas.compile_proxy(self.config.runtime,
+                    getattr(self, 'tas_server', ''), getattr(self, 'tas_headers', {}))), '--verbose', rom]
+        # SMB1 capture wraps native callbacks and state restores, preserving rewind branches.
+        # A capture failure is reported without preventing the operator's game from loading.
+        if self.config is not None:
+            try:
+                from . import tas
+                proxy = tas.prepare(self, core, rom)
+                if proxy is not None:
+                    return [exe, *(["--config", str(cfg)] if cfg else []), "-L", str(proxy), "--verbose", *self.cfg.args, rom]
+            except Exception as exc:
+                self.tas_capture = {'state': 'unavailable', 'reason': str(exc)[:240]}
         from .gameplay_replay import prepare
         try:
             movie = prepare(self,exe,core,rom) if self.config is not None else []
@@ -1311,17 +1350,19 @@ class RetroArchAdapter(CommandAdapter):
         from .scene_support import video_driver
         self.video_driver = video_driver(argv)             # Examine 3D capability matrix (gbox/scene_support.py)
         self.core_path = argv[argv.index("-L") + 1] if "-L" in argv else None
+        self.core_path = getattr(self, 'tas_real_core', self.core_path)
         # an OpenGL session can't hold RenderDoc; the capability matrix (scene_support) names the capture session that
         # captures its moment instead (#971), so there is no blanket "unavailable" reason here any more
         self.examine_unavailable_reason = None
-        if "-L" in argv:
+        if "-L" in argv and not getattr(self, 'tas_playback', None):
             try:
-                n = len(self.install_cheats(argv[argv.index("-L") + 1], rom))
+                n = len(self.install_cheats(self.core_path, rom))
                 if n:
                     self._p(76, f"{n} cheat codes available ({self.cheat_source})")
             except Exception:
                 pass                                       # cheats are optional; never block a launch
         env = dict(os.environ)
+        env.update(getattr(self, 'tas_environment', {}))
         if HOST_OS == "windows":
             from .gamepads import emulator_environment
             env = emulator_environment(env)
@@ -1451,6 +1492,9 @@ class RetroArchAdapter(CommandAdapter):
         # Killed at once (#1504). The old QUIT + wait(5) never ended a Windows session by itself (exit code 1 = the kill
         # that followed, median stop 5.5 s) and left the checkpoint ring time to start a save into a quitting RetroArch.
         # In-game saves are not lost: the session cfg flushes SRAM every few seconds (autosave_interval).
+        if getattr(self, 'tas_capture', None):
+            from . import tas
+            tas.finalize(self)
         if self.stream:
             self.stream.close()
         _kill_tree(self.proc)

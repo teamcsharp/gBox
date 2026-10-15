@@ -22,7 +22,7 @@ build-backend = "setuptools.build_meta"
 packages = ["gbox", "gbox.doa2_native_export", "gbox.vendor", "gbox.vendor.universal_modder"]
 
 [tool.setuptools.package-data]
-gbox = ["rea_catalog.json.gz", "REA-LICENSE"]
+gbox = ["rea_catalog.json.gz", "REA-LICENSE", "native/*.c"]
 "gbox.doa2_native_export" = ["tools/*.java", "REPRODUCE.md"]
 "gbox.vendor.universal_modder" = ["LICENSE", "knowledge_index.json", "blender/*.py", "playbooks/*.md", "playbooks/engines/*.md"]
 

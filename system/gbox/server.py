@@ -3900,6 +3900,8 @@ def create_app(config: Config) -> FastAPI:
     ollama_assist.install(app, store, auth)
     from . import gameplay_memory
     gameplay_memory.install(app, store, config, auth)
+    from . import tas_api
+    tas_api.install(app, store, config, auth, submit, workers)
 
     @app.get("/api/hermes/local")
     def hermes_local_state(actor=Depends(auth)):
