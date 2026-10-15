@@ -29,6 +29,9 @@
     let menu = null;
     const close = () => { menu?.remove(); menu = null; };
     const handler = e => {
+      // Game entries own their menus, including clicks on their cover images.
+      // This capture listener must leave their mods/launch handlers reachable.
+      if (e.target.closest?.('.card[data-gid], .mg-card, [data-bv-key], .tchip')) { close(); return; }
       if (e.defaultPrevented || e.target.closest?.('input,textarea,select,#scr,#nativeslot,.gbox-gpu-video,img.screen,img[src*="/mjpeg"],#pwcanvas')) return;
       const asset = find(e.target); if (!asset) return;
       e.preventDefault(); e.stopImmediatePropagation(); close();
