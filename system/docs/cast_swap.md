@@ -29,6 +29,13 @@ crew, each donor looking like its own game's character (no outline shell, correc
   the Spark and shows the per-slot report. The dialog is `clients/web/viz/cast-swap.js`; the API behind the plan is
   `GET /api/cast_swap/sources?game_id=` and `POST /api/cast_swap/plan`; the build is a `characters op=cast_swap` job.
 
+When a title has zero registered native character slots, the dialog offers **Request this build**. This saves the
+selected donor source, mapping, scope and seed through `/api/games/{id}/build-requests` for reader/writer work.
+An equivalent pending whole-cast request is reused; retries retain the same client request ID. Request details and
+linked worker progress are available in the popup. Closing it leaves the saved request intact. A queued engineering
+request or completed analysis task is not a playable mod; a real published build must exist before the dialog calls it
+available. The engineering dispatcher follows the existing task-mode setting, including its paused state.
+
 ## How it works
 
 1. **Slots** come from the target's writer (`char_coverage.cast_slots` -> the writer module's `cast_slots()`, or
