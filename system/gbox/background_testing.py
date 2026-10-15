@@ -63,6 +63,12 @@ def requires_admission(job):
     return bool(job.get('agent_use') or job.get('low_priority')) and job.get('tool') not in controls
 
 
+def requires_gpu(job):
+    # These bounded native recipes decode/quantize with NumPy/Pillow and use
+    # software previews. A busy image-generation GPU cannot block CPU work.
+    return job.get('tool') not in {'smb1_sprite_build','photo_sprite_build'}
+
+
 def guarded_reason(store, worker, *, now=None, allow_active=False, require_gpu=True):
     """Controller play may not update input-idle time. Ownership is authoritative."""
     from .operator_guard import operator_sessions

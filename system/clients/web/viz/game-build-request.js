@@ -32,6 +32,7 @@
           const state=x.build?'Build available'+(x.build.verified?' · verified in game':' · gameplay verification pending'):job?job.state:x.status==='done'?'Build has not been published':x.status;
           return `<article style="border-top:1px solid var(--line,#555);padding:10px 0"><button type="button" data-request="${esc(x.id)}">#${esc(x.number)}</button> <b>${esc(state)}</b><p style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(x.description)}</p>
             ${job?.progress?`<progress max="100" value="${Number(job.progress.pct)||0}"></progress> ${esc(job.progress.msg)}`:''}
+            ${job?.admission_wait?.reason?`<p>${esc(job.admission_wait.reason)}</p>`:''}
             ${job?.error?`<p>${esc(job.error)}</p>`:''}${x.dispatch_error?'<p>Saved; dispatch needs attention. The system can pick up this request from the inbox.</p>':''}
             ${x.build?`<div><button type="button" data-play="${esc(x.build.name)}">Play build</button> <button type="button" data-download="${esc(x.build.name)}">Download to this PC</button> <button type="button" data-builds>Open Builds</button></div>`:''}</article>`;
         }).join('')||'No build requests for this game yet.';

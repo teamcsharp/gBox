@@ -2270,7 +2270,7 @@ def create_app(config: Config) -> FastAPI:
                             from .inspection_builds import claim_reason
                             reason = claim_reason(store, w, j)
                         else:
-                            reason = background_testing.guarded_reason(store, w)
+                            reason = background_testing.guarded_reason(store, w,require_gpu=background_testing.requires_gpu(j))
                         if not reason and j.get('tool')=='characters' and (j.get('input') or {}).get('showcase'):
                             resources=w.get('resources') or {}
                             if (resources.get('memory_available_bytes') or 0)<12*1024**3 or resources.get('memory_percent',100)>=80:
