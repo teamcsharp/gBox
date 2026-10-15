@@ -723,6 +723,8 @@ class CharIn(BaseModel):
     seed: str = ""                         # cast_swap: the same seed builds the same plan
     slots: str = "all"                     # cast_swap: all | main | enemies | bosses | npcs | bots | campaign | multiplayer | ... | a comma list of groups / slot names (slots=campaign,bots)
     assignments: list[dict] = []           # cast_swap: the operator's edits [{slot, character}] ('' drops the slot)
+    lead_character: str = Field(default='',description='Exact donor slug locked onto the main character, including an approved photo donor. Excluded from supporting-cast roulette; never silently moved to an enemy.')
+    lead_slot: str = Field(default='player',description='Native player/lead slot for lead_character; player aliases resolve to the actual slot.')
     plan_only: bool = False                # cast_swap: return the plan without building
     mod_name: str = ""                     # cast_swap: a fixed mod folder name (the Sonic showcase's showcase_sonic_<title>); the plan hash in its marker decides a rebuild
     showcase: bool = False                 # cast_swap: a Sonic showcase test build (gbox.sonic_showcase): marked in its record, no Play-as targets
@@ -886,6 +888,14 @@ def build_re4(ctx, meta: dict, game: dict, progress) -> dict:
         else:
             shutil.copy2(rom, base.with_suffix(".part"))
         base.with_suffix(".part").replace(base)
+    if meta.get('photo_skin_approval') and meta.get('variant_of')=='leon' and not wii:
+        from . import retarget_profile as RP
+        requested=(meta.get('rig') or {}).get('scale') or {}
+        profile=dict(requested.get('profile') or {});profile.pop('preserve_geometry',None)
+        if not RP.is_identity(profile) or any(isinstance(v,(int,float)) and v!=1 for k,v in requested.items() if k!='profile'):
+            raise ValueError('The RE4 texture-only photo path preserves native Leon geometry. Reset shape adjustments before this build; they are not silently ignored.')
+        from . import re4_photo_skin
+        return re4_photo_skin.build(ctx,meta,game,base,progress)
     scale = (meta.get("rig") or {}).get("scale") or {}
     rig = meta.get("rigs", {}).get("re4gc_leon") if not scale else None    # a head-size change needs the numpy retarget
     if rig:
