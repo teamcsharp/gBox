@@ -1,5 +1,6 @@
 """Native PSO GameCube 3OE2 controls. Exact revision guards, game-thread calls, no DC addresses."""
 import math
+import hashlib
 import struct
 import time
 from .registry import Unsupported
@@ -9,7 +10,12 @@ PLAYER=0x8050EA10
 PHASE=0x804FE120
 VT_UPDATE=0x804C3BC8
 ORIGINAL_UPDATE=0x801BB330
-CAVE,QUEUE,BUF,END=0x80004000,0x80004400,0x80004900,0x80005000
+CAVE,QUEUE,BUF,END=0x80004C00,0x80004400,0x80004800,0x80005000
+OLD_CAVE,OLD_HEADER,OLD_NEXT,OLD_SURVIVAL=0x80004000,0x800043F0,0x800043E0,0x80004340
+LEGACY_DISPATCHERS={
+ b'GBPSOGC1':(260,'811a9e78e8cc6e1b7c2357d1574b1c3b02bf37d8e483cfea34b1c4e85bc87790'),
+ b'GBPSOGC2':(344,'7d7b14b17636f1a1bdfc2a802a956e098afae8c56ed043a3893c2e6c9def081e'),
+}
 HEADER=CAVE+0x3F0
 NEXT_ID=CAVE+0x3E0
 FLUSH=CAVE+0x300
@@ -43,7 +49,7 @@ GUARDS.update({
 def d(op,rt,ra,imm):return op<<26|rt<<21|ra<<16|(imm&0xffff)
 
 
-def dispatcher():
+def dispatcher(survival=True,header=None,survival_address=None):
     """PPC EABI wrapper: preserve update args/CR/FPRs, run bounded calls, tail-chain stock update."""
     code=[];labels={};fix=[]
     def emit(*words):code.extend(words)
@@ -51,12 +57,15 @@ def dispatcher():
     emit(d(37,1,1,-0x100),0x7c0802a6,d(36,0,1,0x104),d(47,3,1,8),0x7c000026,d(36,0,1,0x80))
     for r in range(1,14):emit(d(54,r,1,0x88+(r-1)*8))
     # Virtual Scape Doll: only this local offline player, on the guest game thread.
-    emit(d(15,12,0,SURVIVAL>>16),d(32,0,12,SURVIVAL&0xffff),d(11,0,0,1));branch(0x40820000,'commands')
-    emit(d(15,12,0,(PHASE+0x8000)>>16),d(32,0,12,PHASE&0xffff),d(11,0,0,14));branch(0x40820000,'commands')
-    emit(d(15,12,0,(PLAYER+0x8000)>>16),d(32,0,12,PLAYER&0xffff),0x7c001840);branch(0x40820000,'commands')
-    emit(d(40,0,3,0x32c),d(11,0,0,0));branch(0x40820000,'commands')
-    emit(d(14,0,0,3),d(44,0,3,0x324))  # native Scape Doll revival kind
-    emit(d(15,12,0,0x801b),d(24,12,12,0x4340),0x7d8903a6,0x4e800421)
+    survival_address=SURVIVAL if survival_address is None else survival_address
+    header=HEADER if header is None else header
+    if survival:
+        emit(d(15,12,0,survival_address>>16),d(32,0,12,survival_address&0xffff),d(11,0,0,1));branch(0x40820000,'commands')
+        emit(d(15,12,0,(PHASE+0x8000)>>16),d(32,0,12,PHASE&0xffff),d(11,0,0,14));branch(0x40820000,'commands')
+        emit(d(15,12,0,(PLAYER+0x8000)>>16),d(32,0,12,PLAYER&0xffff),0x7c001840);branch(0x40820000,'commands')
+        emit(d(40,0,3,0x32c),d(11,0,0,0));branch(0x40820000,'commands')
+        emit(d(14,0,0,3),d(44,0,3,0x324))  # native Scape Doll revival kind
+        emit(d(15,12,0,0x801b),d(24,12,12,0x4340),0x7d8903a6,0x4e800421)
     labels['commands']=len(code)
     emit(d(15,30,0,QUEUE>>16),d(24,30,30,QUEUE&0xffff),d(14,31,0,QMAX))
     labels['loop']=len(code)
@@ -67,7 +76,7 @@ def dispatcher():
     emit(d(14,30,30,QSZ),d(14,31,31,-1),d(11,0,31,0));branch(0x40820000,'loop')
     for r in range(1,14):emit(d(50,r,1,0x88+(r-1)*8))
     emit(d(32,0,1,0x80),0x7c0ff120,d(46,3,1,8),d(32,0,1,0x104),0x7c0803a6,d(14,1,1,0x100),
-         d(15,12,0,(HEADER+8+0x8000)>>16),d(32,12,12,(HEADER+8)&0xffff),0x7d8903a6,0x4e800420)
+         d(15,12,0,(header+8+0x8000)>>16),d(32,12,12,(header+8)&0xffff),0x7d8903a6,0x4e800420)
     for index,label in fix:code[index]|=((labels[label]-index)*4)&0xfffc
     out=struct.pack('>'+str(len(code))+'I',*code)
     assert len(out)<0x300
@@ -106,17 +115,33 @@ class GC:
     def hook(self):
         self.check()
         head=self.read(HEADER,16)
+        metadata=b'GBPSOGC3'+struct.pack('>II',ORIGINAL_UPDATE,VT_UPDATE)
+        owned=head==metadata and self.read(CAVE,len(CODE))==CODE
         if self.u32(VT_UPDATE)==CAVE:
-            if head!=b'GBPSOGC2'+struct.pack('>II',ORIGINAL_UPDATE,VT_UPDATE) or self.read(CAVE,len(CODE))!=CODE:
+            if not owned:
                 raise Unsupported('The PSO native dispatcher does not match this build')
             return
-        if self.u32(VT_UPDATE)!=ORIGINAL_UPDATE:raise Unsupported('PSO update slot is already modified')
-        old=self.read(CAVE,END-CAVE)
-        if any(old) and not (head==b'GBPSOGC2'+struct.pack('>II',ORIGINAL_UPDATE,VT_UPDATE) and old[:len(CODE)]==CODE):
+        legacy=False;next_id=self.u32(NEXT_ID) if owned else 0;survive=0
+        if self.u32(VT_UPDATE) not in (ORIGINAL_UPDATE,OLD_CAVE):raise Unsupported('PSO update slot is already modified')
+        previous=self.read(OLD_HEADER,16);version=previous[:8];spec=LEGACY_DISPATCHERS.get(version)
+        if self.u32(VT_UPDATE)==OLD_CAVE or spec and not owned:
+            if not spec or previous[8:]!=metadata[8:] or hashlib.sha256(self.read(OLD_CAVE,spec[0])).hexdigest()!=spec[1]:
+                raise Unsupported('Unknown older PSO dispatcher; leave it intact')
+            if any(self.u32(QUEUE+i*QSZ) for i in range(QMAX)):
+                raise RuntimeError('An older PSO command is pending; resume the game before migration')
+            next_id=self.u32(OLD_NEXT);survive=self.u32(OLD_SURVIVAL) if version==b'GBPSOGC2' else 0
+            if (next_id and not ID_BASE<=next_id<=ID_BASE+0x100000) or survive not in (0,1):
+                raise Unsupported('Older PSO dispatcher metadata is invalid')
+            legacy=True
+        old=self.read(QUEUE,END-QUEUE)
+        if any(old) and not (owned or legacy):
             raise Unsupported('PSO scratch region is occupied; leave it intact')
+        # New code uses a different address: never replace an old warm-JIT entry in place.
+        # BUF fits 30 inventory entries below CAVE. A verified legacy hook owns this entire scratch region.
         self.write(CAVE,CODE);self.write(FLUSH,FLUSH_CODE)
-        self.write(HEADER,b'GBPSOGC2'+struct.pack('>II',ORIGINAL_UPDATE,VT_UPDATE))
-        self.write(SURVIVAL,bytes(4))
+        self.write(HEADER,metadata)
+        self.write(NEXT_ID,struct.pack('>I',next_id))
+        self.write(SURVIVAL,struct.pack('>I',survive))
         self.write(QUEUE,bytes(QMAX*QSZ))
         self.write(VT_UPDATE,struct.pack('>I',CAVE))  # data pointer: works on an already-running JIT session
 

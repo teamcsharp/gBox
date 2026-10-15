@@ -71,7 +71,8 @@ def test_dispatcher_hook_is_idempotent_and_restores_only_its_own_slot():
     m.hook();count=len(ram.writes);m.hook()
     assert len(ram.writes)==count
     assert m.u32(G.VT_UPDATE)==G.CAVE
-    assert G.CAVE+len(G.CODE)<=G.FLUSH<G.HEADER<G.QUEUE
+    assert G.CAVE+len(G.CODE)<=G.FLUSH<G.HEADER<G.END
+    assert G.BUF+30*28<=G.CAVE
     assert G.QUEUE+G.QMAX*G.QSZ<=G.BUF
     m.unhook()
     assert m.u32(G.VT_UPDATE)==G.ORIGINAL_UPDATE

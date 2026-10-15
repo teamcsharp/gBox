@@ -34,7 +34,10 @@ item/stat controls remain available.
 Scape Doll and Legendary preferences persist on Spark alongside equip-any. Partial
 preference updates preserve the other defaults. The boot watcher applies them to new
 supported sessions and rechecks after state loads. Loading new worker code requires a
-safe worker refresh and a new game launch; an older dispatcher is never overwritten.
+safe worker refresh and a new game launch. Known version-1/version-2 dispatchers in
+older save states migrate to a separate code address, preserving the item-ID counter
+and leaving the old compiled code intact. A pending command, unknown hook, modified
+vtable or occupied unowned scratch buffer is refused before writing.
 
 Randomized runs on the selected emulator worker even when the panel closes. It needs
 one free inventory slot and retains at most one generated item per selected category
@@ -65,6 +68,8 @@ without modifying the shared menu getter. The timer is exercised at five seconds
 the UI checks live interval changes from 15 to 20 seconds and coalesced MAG edits.
 This does not establish compatibility with other discs, online play, every rare item,
 every MAG cell/Photon Blast combination, or a complete new Ultimate playthrough.
+An additional real save/load check restored a version-1 dispatcher, migrated it while
+retaining the old code and item counter, and verified native full HP/TP revival.
 
 The owned executable digest and earlier native controls are documented in
 [PSO controls](pso-controls.md). MAG item encoding facts were cross-checked against

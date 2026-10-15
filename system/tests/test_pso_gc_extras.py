@@ -5,6 +5,7 @@ import pytest
 from gbox import pso_gc_extras as E,pso_modes as M
 from gbox.registry import Unsupported
 from test_pso_gc_live import RAM
+from gbox import pso_gc_live as G
 
 
 def memory():
@@ -76,6 +77,43 @@ def test_rewind_does_not_delete_generated_ids_from_a_different_state_branch():
  with pytest.raises(ValueError,match='state load/reset'):M.tick(m,state,1)
  with pytest.raises(ValueError,match='state load/reset'):M.cleanup(m,state)
  assert not ram.writes
+
+
+@pytest.mark.parametrize('survival',[False,True])
+@pytest.mark.parametrize('unhooked',[False,True])
+def test_known_legacy_state_moves_code_without_overwriting_warm_entry(survival,unhooked):
+ ram=memory();m=E.Extras(ram)
+ version=b'GBPSOGC2' if survival else b'GBPSOGC1'
+ old=G.dispatcher(survival,G.OLD_HEADER,G.OLD_SURVIVAL)
+ ram.put(G.OLD_CAVE,old);ram.put(G.OLD_HEADER,version+struct.pack('>II',G.ORIGINAL_UPDATE,G.VT_UPDATE))
+ ram.word(G.VT_UPDATE,G.ORIGINAL_UPDATE if unhooked else G.OLD_CAVE);ram.word(G.OLD_NEXT,G.ID_BASE+42)
+ ram.word(G.OLD_SURVIVAL,int(survival))
+ ram.put(G.CAVE,b'previous inventory export')
+ m.hook()
+ assert m.u32(G.VT_UPDATE)==G.CAVE and m.u32(G.NEXT_ID)==G.ID_BASE+42
+ assert m.u32(G.SURVIVAL)==int(survival)
+ assert ram.read_memory(G.OLD_CAVE,len(old))==old
+ assert G.BUF+30*28<=G.CAVE
+
+
+@pytest.mark.parametrize('damage',['code','header','pending','vtable'])
+def test_legacy_migration_refuses_unknown_or_pending_hooks_without_writes(damage):
+ ram=memory();m=E.Extras(ram)
+ ram.put(G.OLD_CAVE,G.dispatcher(False,G.OLD_HEADER,G.OLD_SURVIVAL))
+ ram.put(G.OLD_HEADER,b'GBPSOGC1'+struct.pack('>II',G.ORIGINAL_UPDATE,G.VT_UPDATE));ram.word(G.VT_UPDATE,G.OLD_CAVE)
+ if damage=='code':ram.put(G.OLD_CAVE,b'xxxx')
+ if damage=='header':ram.put(G.OLD_HEADER,b'unknown!')
+ if damage=='pending':ram.word(G.QUEUE,G.F_CREATE)
+ if damage=='vtable':ram.word(G.VT_UPDATE,0x80002000)
+ with pytest.raises((Unsupported,RuntimeError)):m.hook()
+ assert not ram.writes
+
+
+def test_fresh_hook_refuses_an_occupied_command_or_inventory_buffer():
+ for address in (G.QUEUE,G.BUF):
+  ram=memory();ram.put(address,b'occupied')
+  with pytest.raises(Unsupported,match='scratch'):E.Extras(ram).hook()
+  assert not ram.writes
 
 
 def test_legendary_changes_only_offline_menu_code_and_flushes_reversibly(monkeypatch):

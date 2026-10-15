@@ -4,10 +4,11 @@ import random
 import threading
 import time
 import uuid
+from .pso_gc_live import SURVIVAL
 
 _states={}
 PREFIXES={'weapon':'00','armor':'0101','shield':'0102','mag':'02'}
-MARKER=0x80004350
+MARKER=SURVIVAL+16
 
 
 def category(row):
