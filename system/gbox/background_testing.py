@@ -58,6 +58,8 @@ def requires_admission(job):
     # Live controls and diagnostics must remain available even after a PC is
     # unticked or loaded: they are how an owned test saves and yields its place.
     controls = {'session_op', 'get_frame', 'state_transfer', 'read_memory', 'tasks'}
+    if job.get('tool') == 'ollama_assist' and (job.get('input') or {}).get('op') == 'status':
+        return False  # Read-only discovery must work while the main PC is busy.
     return bool(job.get('agent_use') or job.get('low_priority')) and job.get('tool') not in controls
 
 
