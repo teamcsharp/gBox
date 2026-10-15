@@ -280,6 +280,8 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/cast-swap.js"></script>
 <script src="/viz/pso-controls.js"></script>
 <script src="/viz/pso-face-editor.js"></script>
+<script src="/viz/face-warp-editor.js"></script>
+<script src="/viz/native-face-editor.js"></script>
 <script src="/viz/native-inventory.js"></script>
 <script src="/viz/memory-cards.js"></script>
 <script src="/viz/operation-console.js"></script>
@@ -752,7 +754,9 @@ async function selfieModelsView() {
 }
 selfieModelsView.after=()=>{
   $('#selfie-library').onclick=()=>show('Library');
-  SELFIE_MODELS.ctl=GBoxSelfieModels.mount($('#selfie-models'),{api,url:bnUrl,openModel:characterPopup,blender:input=>blenderCopy(input)},SELFIE_MODELS.state);
+  const face=document.createElement('button');face.className='act';face.id='native-face-editor-open';face.textContent='Liquify / lattice face editor';
+  face.onclick=()=>GBoxNativeFaceEditor.open({}, {api,url:bnUrl});$('#selfie-library').after(face);
+  SELFIE_MODELS.ctl=GBoxSelfieModels.mount($('#selfie-models'),{api,url:bnUrl,openModel:characterPopup,blender:input=>blenderCopy(input),editFace:photo=>GBoxNativeFaceEditor.open({photo},{api,url:bnUrl})},SELFIE_MODELS.state);
 };
 // Added after the header tabs are rendered because this view is opened from a game card.
 const gameModelTile = m => `<button class="game-model-card" data-model="${esc(m.slug)}" data-asset-url="/api/characters/${encodeURIComponent(m.slug)}/model" data-asset-name="${esc(m.name)}" data-asset-format="${/\.(glb|gltf)$/i.test(m.model || "") ? "GLB" : "image"}" data-asset-character="${/\.(glb|gltf)$/i.test(m.model || "") ? esc(m.slug) : ""}"><img loading="lazy" alt="" src="${m.preview_url}?${tq()}"><span><b>${esc(m.name)}</b><br><small class="mut">${esc(m.kind || "character")} · ${esc(m.model || "model")}</small></span></button>`;
@@ -1741,6 +1745,11 @@ async function openMemoryCards(sid) {
 async function smartSearchInit(sid) {
   SS.sid = sid;
   const faceSession=SESSIONBUILD.session;
+  if(faceSession?.game_id==='1de2e7634f3161ff'&&!$('#native-face-session-open')){
+    const b=document.createElement('button');b.className='act';b.id='native-face-session-open';b.textContent='Face texture editor';
+    b.onclick=()=>GBoxNativeFaceEditor.open({game_id:faceSession.game_id},{api,url:bnUrl});
+    $('#session-head')?.insertBefore(b,$('#session-fav'));
+  }
   nativeInventory?.dispose();nativeInventory=GBoxNativeInventory.mount($('#dock-top'),{...faceSession,session_id:sid},{api});
   if(faceSession?.state==='running'&&faceSession.platform==='gamecube'&&/phantasy\s*star\s*online/i.test(faceSession.title||'')&&!$('#pso-face-open')){
     const b=document.createElement('button');b.className='act';b.id='pso-face-open';b.textContent='Face paint';b.title='Map a saved face photo onto your current PSO character texture';

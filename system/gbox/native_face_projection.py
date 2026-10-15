@@ -11,12 +11,18 @@ import hashlib
 import numpy as np
 from PIL import Image
 
+from .face_warp import apply_layer, is_identity, normalize_deformation, recipe_report
+
 
 @dataclass
 class Projection:
     image: Image.Image
     mask: np.ndarray
     report: dict
+    # Undeformed projected photo, before native-alpha protection. Editors can
+    # manipulate this layer without reconstructing it from a baked composite.
+    layer: Image.Image | None = None
+    coverage: np.ndarray | None = None
 
 
 def compact_previews(folder,faces,keep=4):
@@ -52,7 +58,8 @@ def compact_previews(folder,faces,keep=4):
 
 
 def project(original, photo, primitives, *, crop=(0., 0., 1., 1.), bounds=None,
-            opacity=1., feather=.12, normal_min=.15, flip_x=True, wrap=True,respect_alpha=True,mirror_x=False):
+            opacity=1., feather=.12, normal_min=.15, flip_x=True, wrap=True,respect_alpha=True,mirror_x=False,
+            deformation=None):
     """Project photo XY onto reviewed +Z-facing native triangles in their UVs.
 
     ``primitives`` contain finite ``pos``, ``nrm``, ``uv``, ``tris`` arrays. Only
@@ -60,10 +67,12 @@ def project(original, photo, primitives, *, crop=(0., 0., 1., 1.), bounds=None,
     coordinates, with repeat allowed for native tiled coordinates. ``bounds``
     is [left,bottom,right,top] in native head space; auto bounds are a preview
     candidate derived from the supplied geometry, never an approval assertion.
-    Native alpha and pixels outside the face mask are preserved exactly.
+    Native alpha and pixels outside reviewed face triangles are preserved
+    exactly. Optional UV deformation edits only the projected photo layer.
     """
     base=np.asarray(original.convert('RGBA') if isinstance(original,Image.Image) else Image.fromarray(np.asarray(original,dtype=np.uint8)).convert('RGBA'))
     source=np.asarray(photo.convert('RGBA') if isinstance(photo,Image.Image) else Image.open(photo).convert('RGBA'))
+    deformation=normalize_deformation(deformation)
     crop=np.asarray(crop,dtype=float)
     if crop.shape!=(4,) or not np.isfinite(crop).all() or not (0<=crop[0]<crop[2]<=1 and 0<=crop[1]<crop[3]<=1):
         raise ValueError('Photo crop must be normalized left/top/right/bottom')
@@ -86,6 +95,7 @@ def project(original, photo, primitives, *, crop=(0., 0., 1., 1.), bounds=None,
     if bounds.shape!=(4,) or not np.isfinite(bounds).all() or not (bounds[0]<bounds[2] and bounds[1]<bounds[3]):
         raise ValueError('Invalid native projection bounds')
     h,w=base.shape[:2];mask=np.zeros((h,w),float);sample=np.zeros((h,w,3),float);depth=np.full((h,w),-np.inf)
+    coverage=np.zeros((h,w),bool)
     accepted=0
     for pos,nrm,uv,tris in pp:
         for ids in tris:
@@ -109,6 +119,7 @@ def project(original, photo, primitives, *, crop=(0., 0., 1., 1.), bounds=None,
                     wa=((b[1]-c[1])*(xx-c[0])+(c[0]-b[0])*(yy-c[1]))/den
                     wb=((c[1]-a[1])*(xx-c[0])+(a[0]-c[0])*(yy-c[1]))/den;wc=1-wa-wb
                     inside=(wa>=-1e-7)&(wb>=-1e-7)&(wc>=-1e-7)
+                    coverage[y0:y1+1,x0:x1+1]|=inside
                     point=wa[...,None]*p[0]+wb[...,None]*p[1]+wc[...,None]*p[2]
                     sample_x=point[...,0]
                     if mirror_x:
@@ -138,6 +149,13 @@ def project(original, photo, primitives, *, crop=(0., 0., 1., 1.), bounds=None,
                     region=sample[y0:y1+1,x0:x1+1];region[valid]=col[valid,:3]
                     mask[y0:y1+1,x0:x1+1][valid]=alpha[valid]
                     depth[y0:y1+1,x0:x1+1][valid]=point[...,2][valid]
+    layer=np.concatenate((sample,mask[...,None]*255),axis=2)
+    # Preserve an exact undeformed layer for editing. The float layer remains
+    # authoritative for baking; preview PNG alpha is necessarily 8-bit.
+    original_layer=Image.fromarray(np.rint(np.clip(layer,0,255)).astype(np.uint8))
+    if not is_identity(deformation):
+        layer=apply_layer(layer,deformation,coverage)
+        sample=layer[...,:3];mask=layer[...,3]/255
     if respect_alpha:mask*=base[...,3]/255
     result=base.copy();active=mask>0
     result[active,:3]=np.rint(base[active,:3]*(1-mask[active,None])+sample[active]*mask[active,None]).astype(np.uint8)
@@ -145,6 +163,8 @@ def project(original, photo, primitives, *, crop=(0., 0., 1., 1.), bounds=None,
         'opacity':opacity,'feather':feather,'normal_min':normal_min,'flip_x':flip_x,'wrap':wrap,'respect_alpha':respect_alpha,'mirror_x':mirror_x,
         'triangles':sum(len(p[3]) for p in pp),'front_triangles':accepted,'masked_pixels':int(active.sum()),
         'outside_mask_unchanged':bool(np.array_equal(base[~active],result[~active])),
+        'outside_reviewed_triangles_unchanged':bool(np.array_equal(base[~coverage],result[~coverage])),
         'alpha_unchanged':bool(np.array_equal(base[...,3],result[...,3])),
         'source_photo_pixels_sha256':hashlib.sha256(source.tobytes()).hexdigest(),
-        'geometry_modified':False,'review_status':'projection candidate; native likeness review required'})
+        'deformation':recipe_report(deformation),
+        'geometry_modified':False,'review_status':'projection candidate; native likeness review required'},original_layer,coverage)

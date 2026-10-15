@@ -21,7 +21,12 @@
     host.innerHTML=`<style>${CSS}</style><div class="bar"><input type="search" data-sm-search placeholder="Search selfie, model or game" aria-label="Search selfie models"><select data-sm-select aria-label="Source selfie"><option value="">All selfies</option></select><button class="act" data-sm-refresh>Refresh</button><span class="mut" data-sm-count></span></div><p data-sm-status role="status" aria-live="polite"></p><div data-sm-groups></div>`;
     const q=s=>host.querySelector(s),note=t=>{if(!dead)q('[data-sm-status]').textContent=t;};
     q('[data-sm-search]').value=state.q||'';
-    function paint(){if(dead)return;const rows=filter(groups,state);q('[data-sm-groups]').innerHTML=cards(rows,io.url);q('[data-sm-count]').textContent=rows.reduce((n,g)=>n+g.models.length,0)+' models';}
+    function paint(){if(dead)return;const rows=filter(groups,state);q('[data-sm-groups]').innerHTML=cards(rows,io.url);q('[data-sm-count]').textContent=rows.reduce((n,g)=>n+g.models.length,0)+' models';
+      if(io.editFace)for(const section of host.querySelectorAll('[data-sm-group]')){
+        const button=document.createElement('button');button.className='act';button.dataset.smAct='face';button.dataset.smPhoto=section.dataset.smGroup;
+        button.textContent='Liquify / lattice face editor';section.querySelector('.sm-heading>div').append(button);
+      }
+    }
     async function refresh(){if(loading||dead)return;loading=true;try{groups=await io.api('/api/photo-skins/collections');if(dead)return;
       q('[data-sm-select]').innerHTML='<option value="">All selfies</option>'+groups.map(g=>`<option value="${esc(g.photo)}">${esc(g.label)}</option>`).join('');
       if(!groups.some(g=>g.photo===state.photo))state.photo='';q('[data-sm-select]').value=state.photo||'';paint();note('');
@@ -29,7 +34,8 @@
     q('[data-sm-search]').oninput=e=>{state.q=e.target.value;paint();};q('[data-sm-select]').onchange=e=>{state.photo=e.target.value;paint();};q('[data-sm-refresh]').onclick=refresh;
     host.onclick=async e=>{const b=e.target.closest('[data-sm-act]');if(!b)return;const g=groups.find(g=>g.photo===b.dataset.smPhoto);if(!g)return;
       const m=g.models.find(m=>m.slug===b.dataset.smModel),file=b.dataset.smFile||'';b.disabled=true;
-      try{if(b.dataset.smAct==='rename'){const label=q(`[data-sm-label="${g.photo}"]`).value.trim();if(!label)throw Error('Enter an image tag name');await io.api('/api/photo-skins/photos/'+g.photo+'/label',{label});await refresh();}
+      try{if(b.dataset.smAct==='face'){await io.editFace?.(g.photo);}
+        else if(b.dataset.smAct==='rename'){const label=q(`[data-sm-label="${g.photo}"]`).value.trim();if(!label)throw Error('Enter an image tag name');await io.api('/api/photo-skins/photos/'+g.photo+'/label',{label});await refresh();}
         else if(m&&b.dataset.smAct==='inspect'){await io.openModel({slug:m.slug,name:file?m.name+' · '+file:m.name,photo:g.photo,modelFile:file||m.model,modelUrl:filePath(g,m,file),examine:true});}
         else if(m&&b.dataset.smAct==='blender'){note('Preparing textured model for Blender…');const result=await io.api(path(g)+encodeURIComponent(m.slug)+'/export'+(file?'?file='+encodeURIComponent(file):''),{});if(!dead){await io.blender({artifact:result.sha256});note('Copied to Blender. Press Ctrl+V in its 3D viewport.');}}
       }catch(err){note(err.message);}finally{b.disabled=false;}};

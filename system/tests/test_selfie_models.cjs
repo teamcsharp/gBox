@@ -52,5 +52,20 @@ test('Models tab and game Models link use the same collection controller in the 
  assert.ok(html.includes('Models: selfieModelsView'));assert.ok(html.includes('/viz/selfie-models.js'));
  assert.ok(html.includes('$("#models-selfies").onclick = () => show("Models")'));
  assert.ok(html.includes('SELFIE_MODELS.ctl?.dispose()'));
+ assert.ok(html.includes('GBoxNativeFaceEditor.open({photo}'));
+ assert.ok(html.includes('/viz/face-warp-editor.js'));
+ assert.ok(html.includes('/viz/native-face-editor.js'));
  for(const m of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g))if(!m[1].includes('src=')&&!m[1].includes('importmap'))new (require('node:vm').Script)(m[2]);
+});
+
+test('browser: deforming a selfie opens the exact source photo without queuing a build',async()=>{
+ await withPage(async evaluate=>{
+  await evaluate(fs.readFileSync(path.join(__dirname,'../clients/web/viz/selfie-models.js'),'utf8'));
+  await evaluate(`document.body.innerHTML='<div id="faces"></div>';var edits=[],calls=[];var ctl=GBoxSelfieModels.mount(document.querySelector('#faces'),{
+    api:async p=>{calls.push(p);return ${JSON.stringify(groups)};},editFace:photo=>edits.push(photo)});ctl.ready;`);
+  await evaluate(`document.querySelector('[data-sm-act=face]').click();new Promise(r=>setTimeout(r,0));`);
+  assert.deepEqual(await evaluate('edits'),['a'.repeat(64)]);
+  assert.deepEqual(await evaluate('calls'),['/api/photo-skins/collections']);
+  await evaluate('ctl.dispose()');
+ });
 });
