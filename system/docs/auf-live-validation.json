@@ -1,0 +1,339 @@
+{
+  "schema_version": 1,
+  "title": "007: Agent Under Fire native live controls validation",
+  "date": "2026-10-15",
+  "scope": {
+    "platform": "Nintendo GameCube",
+    "disc_id": "GW7E69",
+    "disc_number": 0,
+    "revision": 1,
+    "catalog_ids": [
+      "65b7187589166b26",
+      "a8a1484cf7ac7ce1"
+    ],
+    "native_module": "Bond.elf",
+    "native_module_sha256": "1a9c0d19fb7bab09c2fd6ef56bd8158e88e507f72ba982d0ca292bc8145e716f",
+    "runtime": "Dolphin 2609a, Linux ARM64 JIT, Vulkan, HLE",
+    "tested_play": "Offline single-player on-foot campaign, first mission exterior and its next interior section",
+    "excluded": [
+      "Other 007 games",
+      "Xbox",
+      "PlayStation 2",
+      "Multiplayer",
+      "Driving modules",
+      "Unverified executable revisions"
+    ]
+  },
+  "provenance": {
+    "guest_dispatcher_sha256": "70f8e3b61773cd127a64b90eba49387f84ce699888768083b697e5eccc12ccd2",
+    "final_source_sha256": "36abae9b299a430baeb81546373a23ffa97fb59bfb7234b800faa5218e1c0185",
+    "runtime_sources": {
+      "give_item_noclip_rocket_pistol": "5440445f46fed978fc277296476e0194859c3908e63f419c9409c9978b9fb027",
+      "infinite_ammo": "2dfa518c11a429beceed59253a46a0629f02f9d390c5505d52456f9b6e2b2c9c",
+      "pause_menu_refusal": "09a119db073e07d53851576dac1dd8ce22da47207ca5394855c741e9b761d563",
+      "corrected_full_finish": "8effb705174875a7b4e0ea660ff6db9076e10df34a0d90429af0c65ffb038a6b"
+    },
+    "final_source_delta": "The final source adds host prequeue callback validation and scopes the one-shot finish-attempt marker to a verified mission identity and epoch. The guest dispatcher and corrected pair of native exit calls are unchanged. The final marker's cross-section runtime readiness has not yet been demonstrated; the first corrected transition was demonstrated with the runtime source identified above.",
+    "bootstrap": "Native Dolphin controller movie for menu bootstrap, followed by actual keyboard/XInput2 input for movement, firing, pause and normal mission restart. No host movie input buffer writes were used.",
+    "evidence_artifacts": [
+      {
+        "kind": "native_runtime_trace",
+        "sha256": "2a06a6fc10e56c4c03b605a1ffa9a797740940fe0cc71e8e9b8db1a63f3013f7",
+        "name": "auf-native-trace-published.json",
+        "media_type": "application/json",
+        "size": 23166
+      },
+      {
+        "kind": "owned_native_analysis",
+        "sha256": "b2a6c2114483fabd170566e764d90779bb1bed58a8f010e199b78ab717aecfea",
+        "name": "auf-owned-native-analysis.json",
+        "media_type": "application/json",
+        "size": 10267
+      },
+      {
+        "kind": "native_gameplay_frame",
+        "sha256": "22149eb21698bb87b88205d7685ecb335a0d05097d6b3029330ebf788bcaddcf",
+        "name": "auf-native-p2k-equipped.png",
+        "media_type": "image/png",
+        "size": 472942
+      },
+      {
+        "kind": "native_gameplay_frame",
+        "sha256": "1cc58c65926f5f1062103db9ca98b2e06e264ed4fb08e5072df4ea535ff1c9d2",
+        "name": "auf-wall-blocked-normal.png",
+        "media_type": "image/png",
+        "size": 492597
+      },
+      {
+        "kind": "native_gameplay_frame",
+        "sha256": "86b53393d5b42d6e58cfa964ed49ee86d500b889fba0131d8a18759c3c675120",
+        "name": "auf-wall-through-noclip.png",
+        "media_type": "image/png",
+        "size": 275789
+      },
+      {
+        "kind": "native_gameplay_frame",
+        "sha256": "53739180ecc1caba20a138b296d9b3000f02b7fed1087a0f2476a7f5a502a009",
+        "name": "auf-rocket-pistol-flight-0.png",
+        "media_type": "image/png",
+        "size": 266829
+      },
+      {
+        "kind": "native_gameplay_frame",
+        "sha256": "8acc8e2b709eba149393add8e673240893b52006a47a52f2672185768da54687",
+        "name": "auf-rocket-pistol-restored-normal-shot.png",
+        "media_type": "image/png",
+        "size": 188437
+      },
+      {
+        "kind": "native_gameplay_frame",
+        "sha256": "4b3608025895094a772334dcc261869d1b882b211b468abcfab4d8a151c9e640",
+        "name": "auf-ammo-off-shot.png",
+        "media_type": "image/png",
+        "size": 186522
+      },
+      {
+        "kind": "native_gameplay_frame",
+        "sha256": "fa14cc79fff35f044646f2d11583694a0fde6ba2f15e2919c43f5836e8c33134",
+        "name": "auf-ammo-on-shot.png",
+        "media_type": "image/png",
+        "size": 188862
+      },
+      {
+        "kind": "native_gameplay_frame",
+        "sha256": "f79d18307a15e0e60e26d55fdd3926ef946abffb24e0a268da8e550b28517182",
+        "name": "auf-ammo-restored-shot.png",
+        "media_type": "image/png",
+        "size": 199477
+      },
+      {
+        "kind": "native_gameplay_frame",
+        "sha256": "4be64e975c209ac73d4255d5032429895131e7523d2c3bdf009337afa1f63720",
+        "name": "auf-native-menu-actions-disabled.png",
+        "media_type": "image/png",
+        "size": 267584
+      },
+      {
+        "kind": "native_gameplay_frame",
+        "sha256": "2ed98ad2804415b6f3fa5c3d50b7780ed9b956016a406b4bcbbdbd60e39cde09",
+        "name": "auf-native-corrected-finish-before.png",
+        "media_type": "image/png",
+        "size": 476421
+      },
+      {
+        "kind": "native_gameplay_frame",
+        "sha256": "ccda8e24a148ea162b362040be02574b6560e48a10f5b18e3b139078b2c86e86",
+        "name": "auf-native-corrected-finish-3.png",
+        "media_type": "image/png",
+        "size": 324470
+      }
+    ]
+  },
+  "verified_ops": [
+    "noclip",
+    "give_item",
+    "finish_level",
+    "infinite_ammo",
+    "rocket_pistol"
+  ],
+  "operations": {
+    "noclip": {
+      "effect_verified": true,
+      "native_field": "Player + 0xA4",
+      "normal_value": 5,
+      "enabled_value": 1,
+      "blocked_normal_movement_world_units": 0.010498,
+      "enabled_movement_world_units": 1289.94647,
+      "effect": "Normal forward movement stopped against the compound wall. With noclip enabled, the same input traversed the wall and building into the area behind it. Reverse movement returned to the original side.",
+      "restored": true,
+      "restored_value": 5,
+      "frames": [
+        "wall-blocked-normal.png",
+        "wall-through-noclip.png",
+        "native-noclip-restored.png"
+      ]
+    },
+    "give_item": {
+      "effect_verified": true,
+      "native_function": "0x8011B39C",
+      "item": "p2k",
+      "model": "models/p2k_view.men",
+      "returned_object": "0x815F1400",
+      "owner_player": "0x815CDEE0",
+      "vtable": "0x8025F630",
+      "effect": "A native P2K item object was returned, its owner read back as the active player, and the weapon was visibly equipped.",
+      "test_setup": "Native item grant does not automatically equip the item. The private harness selected it through the exact-fingerprinted Player::useGadget at 0x800DCEF8. This additional private setup call is not exposed as a production action.",
+      "setup_function_sha256": "91bc67a36a1c31fe59ab3d1713b13461269a6716a16b37856995d33259240311",
+      "frames": [
+        "native-give-p2k.png",
+        "native-p2k-equipped.png"
+      ]
+    },
+    "rocket_pistol": {
+      "effect_verified": true,
+      "primary_fire_type": {
+        "before": 1,
+        "enabled": 2,
+        "restored": 1
+      },
+      "projectile_string_pointer": {
+        "before": "0x804F6DD4",
+        "enabled": "0x800045E0",
+        "restored": "0x804F6DD4"
+      },
+      "spawned_projectile": {
+        "entity": 295,
+        "object": "0x815E64A0",
+        "model": "models/mrl22_projectile.men"
+      },
+      "projectile_z_samples": [
+        650.55,
+        1065.74,
+        1500.53,
+        1915.54,
+        2350.4,
+        2765.49,
+        3200.07,
+        3575.67
+      ],
+      "effect": "An actual P2K trigger press produced the native MRL-22 rocket object, whose position advanced across eight samples. Captured frames show the firing effect. After disabling the switch and allowing the old rocket to leave, a normal P2K shot spawned no rocket object.",
+      "restored": true,
+      "frames": [
+        "rocket-pistol-flight-0.png",
+        "rocket-pistol-restored-normal-shot.png",
+        "native-rocket-restored.png"
+      ]
+    },
+    "infinite_ammo": {
+      "effect_verified": true,
+      "native_cvar_pointer": "0x804E390C",
+      "native_cvar_integer_offset": "0x20",
+      "cvar_values": [
+        0,
+        1,
+        0
+      ],
+      "ammo_type": "ammo_9mm",
+      "reserve_object": "0x815E2A20",
+      "reserve_amount_address": "0x815E2CBC",
+      "shots": [
+        {
+          "switch": "off",
+          "reserve_before": 21,
+          "reserve_after": 20,
+          "clip_before": 3,
+          "clip_after": 2
+        },
+        {
+          "switch": "on",
+          "reserve_before": 20,
+          "reserve_after": 20,
+          "clip_before": 2,
+          "clip_after": 1
+        },
+        {
+          "switch": "restored_off",
+          "reserve_before": 20,
+          "reserve_after": 19,
+          "clip_before": 1,
+          "clip_after": 0
+        }
+      ],
+      "effect": "The native unlimited-ammo option prevents reserve depletion. Magazine ammunition still decreases and normal reload behavior remains necessary.",
+      "restored": true,
+      "frames": [
+        "ammo-off-shot.png",
+        "ammo-on-shot.png",
+        "ammo-restored-shot.png"
+      ]
+    },
+    "finish_level": {
+      "effect_verified": true,
+      "native_functions": [
+        "0x800E6400",
+        "0x8001A314"
+      ],
+      "native_exit_callback_pointer": "0x803F0154",
+      "end_level_sha256": "0132033afd23f4f93f175a3a1a188472387ce52c94919f2c61d30a4c1060e90e",
+      "complete_submap_sha256": "89a761867c4228609f2beba5abcd08ce6215bd47c4f975cc50af93231f7b6011",
+      "clean_baseline": {
+        "end_statistics_flag": 0,
+        "ui_pending": 0,
+        "ui_mode": 0,
+        "completed_submaps": 0
+      },
+      "native_ack": {
+        "end_statistics_flag": 1,
+        "ui_pending": 1,
+        "ui_mode": 2,
+        "completed_submaps": 1
+      },
+      "next_section": {
+        "entity_base": "0x809F2B00",
+        "entity_count": 229,
+        "player": "0x81386320",
+        "origin": [
+          256,
+          11908,
+          138.125
+        ]
+      },
+      "effect": "One corrected native exit sequence advanced the exterior mission section into its next interior section, with a new entity table, player object, position and rendered room.",
+      "baseline_setup": "The private harness used the game's ordinary Restart Mission menu to obtain a clean baseline. It did not force the statistics or UI flags.",
+      "corrected_defect": "Player::EndLevel alone finalized statistics without leaving the current section. That incomplete behavior was detected and is not counted as a passing exit. The verified sequence also invokes the game's exact deferred UI_CompleteSubmap callback.",
+      "final_cross_section_readiness_verified": false,
+      "frames": [
+        "native-corrected-finish-before.png",
+        "native-corrected-finish-3.png",
+        "native-corrected-finish-final.png"
+      ]
+    }
+  },
+  "pause_menu_guard": {
+    "effect_verified": true,
+    "input": "Actual Start button press",
+    "native_pause_flag": "0x804E34DC",
+    "give_item_available_in_menu": false,
+    "finish_level_available_in_menu": false,
+    "direct_calls_refused": [
+      "give_item",
+      "finish_level"
+    ],
+    "writes_during_refused_calls": [],
+    "available_after_normal_unpause": true,
+    "all_switches_restored_before_exit": true,
+    "frame": "native-menu-actions-disabled.png"
+  },
+  "unavailable_ops": {
+    "next_checkpoint": "The owned map/script census does not establish an ordered campaign checkpoint route. Native timed checkpoint triggers represent a different gameplay feature, so no speculative warp is offered."
+  },
+  "final_transition_probe": {
+    "source_sha256": "36abae9b299a430baeb81546373a23ffa97fb59bfb7234b800faa5218e1c0185",
+    "private_lifetime_limit_seconds": 240,
+    "result": "The shorter controller movie bootstrap did not reach the fully fingerprinted on-foot Bond module within its private lifetime. The helper refused mismatched routines at 0x800DC450 and later 0x8014B524, submitted no native feature commands, and stopped its process.",
+    "native_feature_calls_submitted": 0,
+    "private_process_stopped": true
+  },
+  "isolation": {
+    "host": "Spark",
+    "operator_sessions_touched": false,
+    "operator_card_data_written": false,
+    "operator_card_selections_changed": false,
+    "private_user_and_copied_cards": true,
+    "original_private_process_stopped": true,
+    "final_probe_private_process_stopped": true,
+    "auf_cloud_selection_before": {},
+    "auf_cloud_selection_after": {},
+    "cloud_card_revision_and_sha256_unchanged": true,
+    "notes": "No managed worker or Spark backend restart was performed by the validation harness. A rejected optional i9 process scenario never executed and no permissions were broadened.",
+    "cloud_card_count": 3
+  },
+  "automated_checks": {
+    "python": 211,
+    "browser": 12,
+    "native_module_tests_included_in_python": 65,
+    "git_diff_check": "clean",
+    "reported_by": "integration owner",
+    "independent_of_native_effect_proof": true
+  }
+}

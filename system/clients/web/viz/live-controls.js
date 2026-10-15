@@ -5,12 +5,20 @@
 })(typeof window === 'undefined' ? globalThis : window, function() {
   'use strict';
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const commandId = () => {
+    const bytes = crypto.getRandomValues(new Uint8Array(16)); bytes[6]=(bytes[6]&15)|64; bytes[8]=(bytes[8]&63)|128;
+    return Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('').replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/,'$1-$2-$3-$4-$5');
+  };
+  const toggle = a => a.control === 'toggle' && a.parameters.some(p=>p.id === a.toggle_parameter && p.kind === 'boolean');
   function actionHTML(a, available) {
+    const isToggle = toggle(a);
     return `<fieldset data-lc-action="${esc(a.id)}"${available ? '' : ' disabled'}><legend>${esc(a.label)}</legend>
-      <small>${esc(a.scope)}</small><p>${esc(a.notes)}</p>${a.parameters.map(p => `<label>${esc(p.label)} ${p.kind === 'choice'
+      <small>${esc(a.scope)}</small><p>${esc(a.notes)}</p>${a.parameters.filter(p=>!isToggle || p.id !== a.toggle_parameter).map(p => `<label>${esc(p.label)} ${p.kind === 'choice'
         ? `<select data-lc-param="${esc(p.id)}">${p.options.map(o => `<option value="${esc(o.value)}"${o.value === p.default ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select>`
+        : p.kind === 'boolean' ? `<input type="checkbox" data-lc-param="${esc(p.id)}"${p.default ? ' checked' : ''}>`
         : `<input type="number" data-lc-param="${esc(p.id)}" min="${p.min}" max="${p.max}" value="${p.default}" step="1">`}</label>`).join('')}
-      <button type="button" data-lc-apply="${esc(a.id)}">${esc(a.label)}</button><small data-lc-availability>${available ? 'Available in this session.' : 'Check the running revision and mode to enable.'}</small></fieldset>`;
+      ${isToggle ? `<label><input type="checkbox" role="switch" data-lc-toggle="${esc(a.id)}" aria-label="${esc(a.label)}"> Enabled</label>`
+      : `<button type="button" data-lc-apply="${esc(a.id)}">${esc(a.label)}</button>`}<small data-lc-availability>${available ? 'Available in this session.' : 'Check the running revision and mode to enable.'}</small></fieldset>`;
   }
   function mount(host, io, initial = {}) {
     const token = {}; host._liveControls = token;
@@ -34,7 +42,9 @@
     }
     async function job(path, body) {
       let j = await io.api(path, body);
+      const until = Date.now() + (io.jobTimeoutMs || 90000);
       while(current() && ['queued','running'].includes(j.state)) {
+        if(Date.now() >= until) throw Error('Completion was not confirmed. No action was retried. Refresh / check mode before another action.');
         await (io.wait || (ms => new Promise(r => setTimeout(r, ms))))(500);
         j = await io.api('/api/jobs/' + encodeURIComponent(j.id));
       }
@@ -42,16 +52,49 @@
       if(j.state !== 'succeeded') throw new Error(j.error || j.state);
       return j.output?.result || {};
     }
-    function body(op, action, values) { return {session_id: sid, revision: data.profile.revision, op, action, values}; }
+    function body(op, action, values) { return {session_id: sid, revision: data.profile.revision, op, action, values,
+      ...(op === 'apply' ? {command_id:commandId(), expires:Date.now()/1000+15} : {})}; }
     async function probe(n) {
       if(!data?.profile || !sid) return;
+      for(const f of host.querySelectorAll('[data-lc-action]')) { f.disabled=true; f.dataset.available='false'; }
       const r = await job(`/api/games/${encodeURIComponent(game)}/live-controls/run`, body('inspect'));
       if(!current() || n !== serial) return;
       for(const a of r.actions || []) {
         const f = Array.from(host.querySelectorAll('[data-lc-action]')).find(x => x.dataset.lcAction === a.id);
-        if(f) { f.disabled = !a.available; f.dataset.available = String(a.available); f.querySelector('[data-lc-availability]').textContent=a.available ? 'Available in this session.' : 'Unavailable in the current mode or scene.'; }
+        if(f) {
+          const sw = f.querySelector('[data-lc-toggle]');
+          let ready = a.available === true && (!sw || typeof a.value === 'boolean');
+          if(a.item_choices) {
+            const select=Array.from(f.querySelectorAll('select[data-lc-param]')).find(el=>el.dataset.lcParam===a.item_choices.parameter);
+            if(select) {
+              const allowed=new Set(Array.isArray(a.item_choices.values) ? a.item_choices.values : []);
+              for(const option of select.options) option.disabled=!allowed.has(option.value);
+              if(!Array.from(select.options).some(o=>o.value===select.value&&!o.disabled)) select.value=Array.from(select.options).find(o=>!o.disabled)?.value || '';
+              if(!select.value) ready=false;
+            } else ready=false;
+          }
+          f.disabled = !ready; f.dataset.available = String(ready);
+          if(sw && typeof a.value === 'boolean') { sw.checked = a.value; sw.dataset.confirmed = String(a.value); }
+          f.querySelector('[data-lc-availability]').textContent=ready ? (sw ? (a.value ? 'On' : 'Off') + ' in this session.' : 'Available in this session.') : a.reason || 'Unavailable in the current mode or scene.';
+        }
       }
       say('Revision checked. Available controls apply to this session only; mode is checked again on every click.');
+    }
+    function enableChecked(n) {
+      if(!current() || n !== serial) return;
+      busy = false;
+      for(const b of host.querySelectorAll('button,select,input')) if(!b.closest('[data-lc-pso]')) b.disabled = false;
+      for(const f of host.querySelectorAll('[data-lc-action]')) f.disabled = f.dataset.available !== 'true';
+    }
+    function valuesFor(a, field, desired) {
+      const values = {};
+      for(const p of a.parameters) {
+        if(toggle(a) && p.id === a.toggle_parameter) { values[p.id]=desired; continue; }
+        const el = Array.from(field.querySelectorAll('[data-lc-param]')).find(el=>el.dataset.lcParam===p.id);
+        if(!el || !el.reportValidity()) return null;
+        values[p.id] = p.kind==='integer' ? Number(el.value) : p.kind==='boolean' ? el.checked : el.value;
+      }
+      return values;
     }
     async function refresh() {
       if(!current() || busy) return;
@@ -73,7 +116,10 @@
         q('[data-lc-policy]').textContent = 'Shared default for all custom builds. Pending unlock research stays pending until each exact build is verified; base games and personal saves are preserved.';
         q('[data-lc-actions]').innerHTML = (d.profile?.actions || []).map(a=>actionHTML(a, false)).join('');
         const covered = new Set((d.profile?.actions || []).map(a=>a.category));
-        q('[data-lc-missing]').innerHTML = Object.entries(d.categories).filter(([k])=>!covered.has(k)).map(([,label])=>`<p><small>${esc(label)} — needs game-specific discovery / verification, or an applicability assessment.</small></p>`).join('');
+        q('[data-lc-missing]').innerHTML = Object.entries(d.categories).filter(([k])=>!covered.has(k)).map(([key,label])=>{
+          const assessment=d.profile?.assessments?.[key];
+          return `<p><small>${esc(label)} — ${assessment ? esc(assessment.reason)+' ('+esc(assessment.scope)+')' : 'needs game-specific discovery / verification, or an applicability assessment.'}</small></p>`;
+        }).join('');
         say(d.task ? `Research request #${d.task.number}${d.task.error ? ': '+d.task.error : ' is tracked.'}` : sid ? 'Check the running mode to use published controls.' : 'Launch this game to apply live controls. Research is available without launching.');
       } catch(e) { say('Live controls unavailable: ' + e.message); }
       finally { if(current() && n === serial) disable(false); }
@@ -90,11 +136,7 @@
         if(data.profile) await probe(n);
       } catch(e) { say(e.message); }
       finally {
-        if(current() && n === serial) {
-          busy = false;
-          for(const b of host.querySelectorAll('button,select,input')) if(!b.closest('[data-lc-pso]')) b.disabled = false;
-          for(const f of host.querySelectorAll('[data-lc-action]')) f.disabled = f.dataset.available !== 'true';
-        }
+        enableChecked(n);
       }
     }
     async function click(e) {
@@ -108,12 +150,7 @@
       }
       if(b.dataset.lcApply) {
         const a = data?.profile?.actions.find(a=>a.id===b.dataset.lcApply); if(!a || !sid) return;
-        const values = {};
-        for(const p of a.parameters) {
-          const el = Array.from(b.closest('fieldset').querySelectorAll('[data-lc-param]')).find(el=>el.dataset.lcParam===p.id);
-          if(!el.reportValidity()) return;
-          values[p.id] = p.kind==='integer' ? Number(el.value) : el.value;
-        }
+        const values = valuesFor(a, b.closest('fieldset')); if(!values) return;
         const n=serial; disable(true); say('Applying to the selected session…');
         try { const result = await job(`/api/games/${encodeURIComponent(game)}/live-controls/run`, body('apply', a.id, values));
           if(n===serial) say(result.result?.result?.error || `${a.label}: completed. Refresh / check mode before another action.`); }
@@ -123,7 +160,29 @@
     }
     host.addEventListener('click', click);
     const change = async e => {
-      if(e.target.hasAttribute('data-lc-session')) { sid=e.target.value; pso?.dispose(); q('[data-lc-pso]').innerHTML=''; for(const f of host.querySelectorAll('[data-lc-action]')) f.disabled=true; say('Refresh / check mode to enable this session.'); }
+      if(e.target.hasAttribute('data-lc-toggle')) {
+        const sw=e.target, f=sw.closest('[data-lc-action]'), a=data?.profile?.actions.find(a=>a.id===sw.dataset.lcToggle);
+        if(busy || !game || !sid || !a || !toggle(a) || f.dataset.available !== 'true') { sw.checked=sw.dataset.confirmed==='true'; return; }
+        const desired=sw.checked, values=valuesFor(a,f,desired), n=serial; if(!values) { sw.checked=sw.dataset.confirmed==='true'; return; }
+        disable(true); say(`${a.label}: ${desired ? 'enabling' : 'disabling'}...`);
+        try {
+          await job(`/api/games/${encodeURIComponent(game)}/live-controls/run`,body('apply',a.id,values));
+          if(!current() || n!==serial) return;
+          await probe(n);
+          if(!current() || n!==serial) return;
+          if(f.dataset.available!=='true' || sw.checked!==desired) throw Error('The requested switch state was not confirmed. Refresh / check mode before another action.');
+          say(`${a.label}: ${desired ? 'on' : 'off'}. Native state checked.`);
+          enableChecked(n);
+        } catch(error) {
+          if(current() && n===serial) { sw.checked=sw.dataset.confirmed==='true'; say(error.message); disable(false); }
+        }
+        return;
+      }
+      if(e.target.hasAttribute('data-lc-session')) {
+        ++serial; sid=e.target.value; pso?.dispose(); q('[data-lc-pso]').innerHTML='';
+        for(const f of host.querySelectorAll('[data-lc-action]')) { f.disabled=true; f.dataset.available='false'; }
+        enableChecked(serial); say('Refresh / check mode to enable this session.');
+      }
       if(e.target.hasAttribute('data-lc-unlocks')) {
         const desired=e.target.checked, n=serial; e.target.disabled=true;
         try { await io.api('/api/custom-build-unlocks/policy', {enabled:desired}); if(n===serial) say(desired ? 'Unlock-all required for every custom build; each build needs its own verification.' : 'Shared unlock-all requirement disabled.'); }
@@ -133,7 +192,7 @@
     host.addEventListener('change', change);
     return {refresh, checkMode, setGame(gid) { if(game === gid) return; ++serial; game=gid || ''; pinned=''; busy=false; data=null; refresh(); },
       dispose() { stopped=true; ++serial; pso?.dispose(); host.removeEventListener('click',click); host.removeEventListener('change',change); if(host._liveControls===token) host._liveControls=null; },
-      ready: refresh()};
+      ready: refresh().then(()=>initial.autoCheck ? checkMode() : undefined)};
   }
   return {mount, actionHTML};
 });

@@ -45,6 +45,10 @@ for the game's current request revisions/feedback; read reports/images, implemen
 cast_swap recipe with launch:false, change_id, relevant gbox/*.py dependencies, requests_ack and feedback_ack.
 The enabled local queue debounces changes, reserves RAM/disk headroom and serializes builds. Never acknowledge
 unread feedback, rebuild an unchanged failure repeatedly, auto-launch a game, or claim a compiled build is verified.
+Whenever a game is decomposed or its gameplay is reverse-engineered, assess walk-through-walls, give-item catalogs,
+finish-level, next-checkpoint, unlimited-ammunition and projectile overrides (such as a rocket-firing pistol).
+Find each native implementation and publish tested switches/actions; record genuinely inapplicable operations and
+unverified gaps instead of presenting installed tools or guessed cheat codes as working game controls.
 When Ghidra/reverse-engineering establishes tested item, inventory, upgrade, level-completion, boss-health, NPC-spawn
 or hidden-content operations, publish reusable exact-revision/mode controls with run_tool game_controls_research op=publish
 (docs/live-controls.md); use game_live_controls to inspect/apply them. Keep unverified actions pending. Unlock everything
@@ -912,6 +916,11 @@ class Agent:
         sid = inp.get("session_id") if isinstance(inp, dict) else None
         if sid and tool != "session_op" and (bad := self._live_session(sid)):   # a mistyped id would queue the job forever
             return {"state": "failed", "error": bad["error"], "output": None}
+        if sid and ((tool == 'auf_live' and inp.get('op', 'inspect') != 'inspect')
+                    or (tool == 'game_live_controls' and inp.get('op') == 'apply')):
+            inp = dict(inp)
+            inp.setdefault('command_id', new_id())
+            inp.setdefault('expires', time.time() + 15)
         body = {"tool": tool, "input": inp}
         if getattr(self, "parent_request_id", None):
             body["parent_request_id"] = self.parent_request_id
@@ -919,7 +928,7 @@ class Agent:
             body["require_os"] = node
         if worker:
             body["require_worker"] = worker
-        elif sid and tool in ('pso_face','gta3_items'):
+        elif sid and tool in ('pso_face','gta3_items','auf_live','game_live_controls'):
             body['require_worker']=sid.split('-',1)[0]
         j = self.api.post("/api/jobs", json=body).json()
         t = time.time()

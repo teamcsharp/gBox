@@ -11,6 +11,17 @@ has an inventory writer or a verified unlock patch. Missing categories remain
 explicitly pending. **Research missing controls with Ghidra** creates one durable
 request per game, retrying failed dispatch without duplicating the ticket.
 Agents should record which operations are irrelevant and why in that request.
+Published profiles can also include `assessments` keyed by category, with a
+bounded `scope`, `reason` and `status` (`unsupported`, `not_relevant` or
+`research_pending`). These explain verified gaps in the panel without creating
+an executable control. An unsupported category cannot also publish an action.
+The standing discovery targets include walk-through-walls/obstacles, named item
+insertion, finish level, next checkpoint, unlimited ammunition and pistol-fired
+rockets through the game's native projectile routine. Each assimilation
+fingerprint and custom-build investigation carries this objective. Fingerprinting
+does not enable an unverified action or launch background analysis automatically.
+Existing discovery tickets are upgraded once when these requirements change;
+their earlier findings and request IDs are preserved.
 
 The shared **Require unlock-all in every custom build** preference uses the
 existing custom_build_unlocks policy. It is the operator's standing requirement:
@@ -27,6 +38,8 @@ profile, research ticket, categories and unlock policy. Publish a complete
 snapshot with `POST /api/games/{game_id}/live-controls/profile`:
 Agents can use the audited `game_controls_research` tool with `op:get`,
 `op:discover`, or `op:publish` and the `profile` object instead of making HTTP calls.
+This fixed-endpoint metadata client uses `read` and `stage`; applying a control
+still requires `memory_write`, and no general file-mutation permission is granted.
 
 ```json
 {
@@ -53,9 +66,19 @@ fingerprints that distinguish all incompatible builds. Every action also needs
 scene/mode guards that exclude loading, invalid objects, and unsupported modes.
 Static addresses only: dynamic objects require a tested native tool adapter.
 
+A profile may also include bounded category `assessments`, for example
+`{"checkpoints":{"status":"unsupported","scope":"Reviewed on-foot mission sections",
+"reason":"No authored ordered checkpoint route was established"}}`. Allowed
+statuses are `unsupported`, `not_relevant`, and `research_pending`, with explicit
+scope and reason. An assessment is displayed as a limitation; it never creates
+an executable action or a verified unlock claim. A category containing published
+actions may only retain a `research_pending` assessment for remaining gaps.
+
 Categories: `items`, `inventory`, `upgrades`, `levels`, `bosses`, `pedestrians`,
-`unlocks`. Parameters have a unique `id`, `label`, and `kind`: `integer` with
-`min/max/default` or `choice` with `options:[{value,label}]` and `default`.
+`movement`, `checkpoints`, `ammunition`, `projectiles`, `unlocks`. Parameters have
+a unique `id`, `label`, and `kind`: `integer` with `min/max/default`, `choice` with
+`options:[{value,label}]` and `default`, or `boolean` with an explicit true/false
+`default`. Booleans do not accept 0/1 or string coercions.
 Memory bindings can reference an integer `parameter` instead of a fixed `value`.
 Only unsigned 1/2/4-byte fields are supported, with explicit endian order and
 readback; writes cannot overlap guards. This is a field setter, **not** a generic
@@ -71,9 +94,45 @@ integer count and tested GTA revision/mode guards. Expanding to another native
 routine requires implementing/testing its worker adapter and allowlist entry.
 Never publish an untested adapter merely because the tool is installed.
 
+Persistent switches use `control:"toggle"`, `toggle_parameter:"on"` and a boolean
+parameter named `on`. They require a tested native binding with
+`input:{op:"noclip",on:"$on"}` and `state_key:"noclip"`, for example, rather than
+a memory field setter. The separate read-only inspector allowlist supplies the
+actual current state; an unchecked default is never treated as a measured state.
+Agent Under Fire's `auf_live` inspector provides exact booleans in `switches` and
+authoritative per-operation booleans in `available`. A missing state, unknown
+availability or failed revision probe keeps the switch unavailable. Inspection
+calls `op:"inspect"` once per native tool; it cannot select a profile-supplied
+arbitrary inspector operation. Enable/disable and restoration must be tested on
+the exact owned revision before publication.
+For `auf_live` item dropdowns, inspection also returns
+`item_choices:{parameter:"item",values:[...]}` on the action. These are the
+intersection of the published reviewed options and item IDs actually loaded in
+the current mission; native inspection cannot add new labels or catalog entries.
+Missing/empty catalogs keep insertion unavailable. Native per-operation
+`unavailable_reasons` are surfaced with the action so an unsupported checkpoint
+or missing projectile resource has a concrete explanation.
+
 `POST /api/games/{gid}/live-controls/run` accepts `session_id`, `revision`,
 `op:"inspect"|"apply"`, and for apply `action`, `values`. Jobs are pinned to that
 session's worker. The worker fetches the authoritative profile, rejects stale
 revisions or mismatched games, and rechecks every guard immediately before
 execution. Missing research stays unavailable, including modes not yet tested.
 Profile publication and jobs retain their normal audit and receipt records.
+
+Apply requests carry a unique `command_id` (16–64 letters, digits, `_` or `-`) and
+an `expires` Unix timestamp. The route supplies omitted IDs/deadlines for older
+clients and limits commands to 15 seconds from submission, preserving any earlier
+client deadline. The worker checks expiry again immediately before the memory
+write/native call; adapters that support these fields receive both and repeat
+the check after their own transaction locks. Direct `game_live_controls` apply
+calls must supply both fields and a deadline no more than 30 seconds ahead.
+Inspection needs neither field. The server reserves command IDs before submitting
+jobs, returns the original receipt on an identical replay, rejects a reused ID
+with different parameters, and never retries an uncertain submission. Late queue
+delivery reports expiry rather than changing a later gameplay moment.
+
+Profiles using `auf_live` additionally require the selected session's worker to
+advertise both tools and current process-start hashes of `live_controls.py` and
+`auf_live.py`. An old worker is asked to refresh safely when idle; it cannot probe
+or execute a new profile with outdated toggle/expiry behavior.
