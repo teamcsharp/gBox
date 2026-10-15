@@ -80,14 +80,31 @@ def png(im):
     b=io.BytesIO();im.save(b,format='PNG');return b.getvalue()
 
 
-def decoded(rom,gid):
+def loading_preview(gid,name,meta):
+    """Declare real, lazily decoded image URLs without slowing launch metadata."""
+    from urllib.parse import quote
+    if gid not in SUPPORTED or meta.get('writer') not in ('gbox.smb1_sprite_build','gbox.sprite_faces'):return None
+    base=f'/api/builds/{quote(gid,safe="")}/{quote(name,safe="")}/native-sprite-preview/'
+    character='Mario' if gid==SMB or gid in N64 else 'Sonic'
+    result='Sonic adapted to NES' if meta['writer']=='gbox.smb1_sprite_build' else character+' with photo face'
+    source={'name':'Sonic 2 source sprite','preview_url':base+'source.png'} if meta['writer']=='gbox.smb1_sprite_build' else (
+        {'name':'Source selfie','preview_url':'/api/artifacts/'+meta['selfie_photo']} if meta.get('selfie_photo') else None)
+    return {'original':{'name':character+(' original face texture' if gid in N64 else ' original sprite'),'preview_url':base+'before.png'},
+            'source':source,'result':{'name':result+(' — gameplay face texture' if gid in N64 else ''),'preview_url':base+'after.png'}}
+
+
+def decoded(rom,gid,*,reference=None):
     """RGBA, physical pixel references and palette for every native player frame."""
     if gid in N64:
         from .sm64_photo_projection import atlas
         rgba=atlas(rom);return [(rgba,np.full(rgba.shape[:2],-1),None,np.zeros(rgba.shape[:2],np.uint8))]
     if gid==SMB:
         from . import tas,smb1_inventory as S
-        tas.smb_identity(rom);p=rom[16:32784]
+        if reference is None or rom[16:32784]==reference[16:32784]:tas.smb_identity(rom)
+        else:
+            from .smb1_sprite_build import validate_output
+            validate_output(reference,rom)
+        p=rom[16:32784]
         palette=np.array([[(c>>16)&255,(c>>8)&255,c&255,255] for c in S.NES_PALETTE],dtype=np.uint8)
         colors=palette[S._area_palettes(p)['GroundPaletteData']['palettes'][4]].copy();colors[0,3]=0
         result=[]
@@ -246,6 +263,37 @@ def routes(app,store,config,auth):
             'rect':default_rect(rgba,ids,gid),'rom_sha256':hashlib.sha256(rom).hexdigest(),
             'projection_target':'gameplay' if gid in N64 else 'sprites',
             'boot_screen_supported':False if gid in N64 else None}
+
+    @app.get('/api/builds/{gid}/{name}/native-sprite-preview/{filename}')
+    def native_loading_image(gid:str,name:str,filename:str,actor=Depends(auth)):
+        from .filemods import mod_dir
+        from fastapi import Response
+        if filename not in ('before.png','after.png','source.png'):raise HTTPException(404,'Native sprite preview not found')
+        folder=mod_dir(config,gid,name)
+        try:
+            meta=json.loads((folder/'.gbox-mod.json').read_text())
+            if meta.get('game_id')!=gid or not loading_preview(gid,name,meta):raise ValueError('Not a native sprite build')
+            path=(folder/meta['image']).resolve()
+            if not path.is_relative_to(folder.resolve()) or not path.is_file():raise ValueError('Build image is missing')
+            if path.stat().st_size>32*1024**2:raise ValueError('Native preview exceeds the supported ROM size')
+            out=path.read_bytes();rom,frames=original(gid)
+            key=hashlib.sha256((gid+name).encode()+hashlib.sha256(out).digest()+hashlib.sha256(rom).digest()).hexdigest()
+            with lock:
+                row=store.get('sprite_loading_preview',key) or {}
+                if filename not in row:
+                    frame=0 if gid==SMB or gid in N64 else 1
+                    rgba=frames[frame][0] if filename=='before.png' else decoded(out,gid,reference=rom)[frame][0]
+                    if filename=='source.png':
+                        if meta['writer']!='gbox.smb1_sprite_build':raise ValueError('No sprite donor for this photo build')
+                        rgba=original(SONIC[0])[1][1][0]
+                    im=Image.fromarray(rgba);scale=max(1,min(256//im.width,256//im.height))
+                    im=im.resize((im.width*scale,im.height*scale),Image.Resampling.NEAREST)
+                    artifact=store.put_artifact(png(im),filename,'image/png',{'native_sprite_preview':True,'game_id':gid,'mod':name,
+                        'output_sha256':hashlib.sha256(out).hexdigest(),'stage':filename})
+                    row[filename]=artifact.sha256;store.put('sprite_loading_preview',key,row)
+                data=store.read_artifact(row[filename])
+            return Response(content=data,media_type='image/png',headers={'Cache-Control':'private, max-age=300'})
+        except (KeyError,ValueError,OSError) as e:raise HTTPException(404,str(e)) from e
     class PreviewIn(BaseModel):
         photo:str=Field(pattern='^[a-f0-9]{64}$')
         mapping:Mapping=Field(default_factory=Mapping)
@@ -302,7 +350,7 @@ def prune_candidates(root,store,keep):
         candidate=(row.get('mapping') or {}).get('candidate')
         if candidate:pinned.add(candidate)
     for job in store.all('job'):
-        if job.get('tool')=='photo_sprite_build':pinned.add((job.get('input') or {}).get('candidate'))
+        if job.get('tool') in ('photo_sprite_build','smb1_sprite_build'):pinned.add((job.get('input') or {}).get('candidate'))
     disposable=[]
     for p in root.glob('*/candidate.json'):
         if p.parent.name in pinned:continue

@@ -60,6 +60,17 @@ const answers = (over = {}) => async p => {
 };
 const sessionMods = async () => LM.sessionModsFrom(CARDS, ['m_unlock', 'm_link']);
 
+test('native sprite builds show original, source and decoded result instead of missing library labels',()=>{
+ const image=(name,file)=>({name,preview_url:'/api/builds/gid/native/native-sprite-preview/'+file+'.png'});
+ const model=LM.modelFrom({gameId:'gid',mod:'native',details:{sprite_preview:{original:image('Mario','before'),
+   source:image('Sonic 2 source','source'),result:image('Sonic adapted to NES','after')}}});
+ assert.equal(model.pairs.length,2);
+ assert.equal(model.pairs[0].original.name,'Mario');assert.equal(model.pairs[1].original.name,'Sonic 2 source');
+ assert.equal(model.pairs[0].donor.img,'/api/builds/gid/native/native-sprite-preview/after.png');
+ const html=LM.marqueeHTML(model);
+ assert.match(html,/before\.png/);assert.match(html,/source\.png/);assert.match(html,/after\.png/);
+});
+
 // ---------------------------------------------------------------- the model
 test('the model: display name, slot <- donor pairs with the game\'s own character and the fit preview, counts', () => {
   const m = LM.modelFrom({ gameId: 'doa2', mod: 'doa2_sonic_cast', details: DETAILS, built: BUILT.items[0], now: NOW,
