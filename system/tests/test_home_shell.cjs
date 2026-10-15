@@ -6,6 +6,8 @@ const {withPage} = require('../scripts/browser_lifecycle.cjs');
 test('application starts at Home, the logo returns there, and header search stays in Home', async () => {
   const web = path.resolve(__dirname, '../clients/web'), requests = [];
   const game = {game_id:'testgame', title:'Sonic the Hedgehog 2', platform:'genesis', system:'Genesis', plays:2, last_played:1792091000, media:[], models_count:0, mods_count:0};
+  const modRows = [{...game,key:'testgame/bla_sonic',mod_name:'bla_sonic',title:'Bla as Sonic',game_title:game.title,built:1792091200,is_mod:true,available:true,launch_node:'Test-PC'},
+    {...game,key:'testgame/sonic_blue',mod_name:'sonic_blue',title:'Blue Sonic',game_title:game.title,built:1792091100,is_mod:true,available:true,launch_node:'auto'}];
   const detail = {game, models:[], builds:[], reports:[], activity:[], timeline:[], media:[], progress:{status:'idle',active_jobs:[]}};
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
@@ -13,6 +15,7 @@ test('application starts at Home, the logo returns there, and header search stay
       requests.push({path:url.pathname, query:url.search, method:req.method});
       let data = [];
       if (url.pathname === '/api/home/games') data = {items:[game],total:1,offset:0,limit:48,platforms:[{platform:'genesis',count:1}],indexing:false};
+      else if (url.pathname === '/api/home/mods') data = {items:modRows,total:modRows.length,offset:0,limit:48,platforms:[{platform:'genesis',count:1}],indexing:false};
       else if (url.pathname === '/api/home/games/testgame') data = detail;
       else if (url.pathname === '/api/catalog/facets') data = {platforms:{genesis:1}, systems:{Genesis:1}, libraries:{}};
       else if (url.pathname === '/api/catalog/platforms') data = [];
@@ -38,6 +41,11 @@ test('application starts at Home, the logo returns there, and header search stay
       await evaluate(`document.getElementById('gsearch').value='sonic';document.getElementById('gsearch').dispatchEvent(new Event('input',{bubbles:true}));new Promise(r=>setTimeout(r,500));`);
       assert.deepEqual(await evaluate(`({view:cur,search:document.querySelector('[data-lh-search]').value})`),{view:'Home',search:'sonic'});
       assert.ok(requests.some(r=>r.path==='/api/home/games' && new URLSearchParams(r.query).get('q')==='sonic' && r.method==='GET'));
+      await evaluate(`window._homeLaunches=[];play=async(...args)=>_homeLaunches.push(args);const feed=document.querySelector('[data-lh-shelf-title] [data-lh-feed]');feed.value='mods';feed.dispatchEvent(new Event('change',{bubbles:true}));(async()=>{for(let i=0;i<150&&document.querySelectorAll('.lh-card').length!==2;i++)await new Promise(r=>setTimeout(r,20));})()`);
+      assert.equal(await evaluate(`document.querySelector('[data-lh-title]').textContent`),'Bla as Sonic');
+      assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('.lh-card'),b=>b.dataset.lhGame)`),['testgame/bla_sonic','testgame/sonic_blue']);
+      await evaluate(`document.querySelector('[data-lh-play]').click();new Promise(r=>setTimeout(r,50));`);
+      assert.deepEqual(await evaluate(`_homeLaunches.map(args=>({game:args[0],node:args[1],mod:args[3]?.disc}))`),[{game:'testgame',node:'Test-PC',mod:'bla_sonic'}]);
       await evaluate(`show('Jobs')`);
       assert.equal(await evaluate('HOME.ctl'),null,'leaving Home disposes its media and controllers');
     });

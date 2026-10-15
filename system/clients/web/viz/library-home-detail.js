@@ -20,6 +20,13 @@
     return safe ? safeURL((io.url || (u => u))(safe)) : '';
   };
   const label = value => String(value || '').replace(/_/g, ' ');
+  function selectedBuild(data) {
+    const raw = data.selected_build, row = typeof raw === 'string' ? { name: raw } : raw;
+    const name = row?.mod_name || row?.name;
+    if (!name || row.game_id && row.game_id !== data.game?.game_id) return null;
+    const recorded = list(data.builds).find(build => build.name === name);
+    return { ...row, ...recorded, name, title: recorded?.title || row.title || name };
+  }
   function modelOptions(data) {
     return list(data.models).filter(m => m && safeURL(m.model_url) && /^(glb|gltf)$/i.test(String(m.format || '').replace(/^\./, '')));
   }
@@ -43,9 +50,11 @@
     const game = data.game || {}, models = list(data.models), builds = list(data.builds), reports = list(data.reports), activity = list(data.activity), media = list(data.media), timeline = events(data);
     const models3D = modelOptions(data), jobs = list(data.progress?.active_jobs), devices = list(game.devices);
     const modelTotal = game.models_count ?? models.length, buildTotal = game.mods_count ?? builds.length, reportTotal = game.reports_count ?? reports.length;
+    const selected = selectedBuild(data), buildRows = builds.map((build, index) => ({ build, index }));
+    if (selected) buildRows.sort((a, b) => Number(b.build.name === selected.name) - Number(a.build.name === selected.name));
     return `<div class="ghd-root">
-      <header class="ghd-heading"><div><span class="ghd-eyebrow">GAME WORKSPACE</span><h2>${esc(game.title || 'Game details')}</h2><p>${[game.system || game.platform, game.year, game.manufacturer].filter(Boolean).map(esc).join(' · ')}</p></div>
-        <div class="ghd-actions"><button type="button" class="ghd-primary" data-ghd-action="play">▶ Play</button><button type="button" data-ghd-action="builds">Mod builds (${count(buildTotal)})</button><button type="button" data-ghd-action="models">Models (${count(modelTotal)})</button></div></header>
+      <header class="ghd-heading"><div><span class="ghd-eyebrow">${selected ? 'MOD BUILD WORKSPACE' : 'GAME WORKSPACE'}</span><h2>${esc(selected?.title || game.title || 'Game details')}</h2><p>${[selected ? game.title : '', game.system || game.platform, game.year, game.manufacturer].filter(Boolean).map(esc).join(' · ')}</p>${selected ? `<p class="ghd-selected-meta">${esc(date(selected.built))} · ${selected.verified ? 'Verified' : 'Unverified'}${selected.writer ? ` · ${esc(selected.writer)}` : ''}<br><code>${esc(selected.name)}</code></p>` : ''}</div>
+        <div class="ghd-actions">${selected ? '<button type="button" class="ghd-primary" data-ghd-action="play-selected">▶ Play selected build</button>' : ''}<button type="button" class="${selected ? '' : 'ghd-primary'}" data-ghd-action="play">▶ ${selected ? 'Play original game' : 'Play'}</button><button type="button" data-ghd-action="builds">Mod builds (${count(buildTotal)})</button><button type="button" data-ghd-action="models">Models (${count(modelTotal)})</button></div></header>
       <div class="ghd-metrics"><div><b>${count(game.plays)}</b><span>times played</span></div><div><b>${esc(game.last_played ? date(game.last_played) : 'Not played yet')}</b><span>last played</span></div><div><b>${esc(game.last_device || 'No device recorded')}</b><span>last device</span></div><div><b>${count(modelTotal)} / ${count(buildTotal)}</b><span>models / mod builds</span></div><div><b>${count(reportTotal)}</b><span>reports</span></div></div>
       <div class="ghd-columns"><section class="ghd-panel ghd-model-panel"><div class="ghd-section-heading"><h3>Models &amp; modding progress</h3><span class="ghd-tag">3D inspection</span></div>
         ${models3D.length ? `<label class="ghd-model-select">Inspect a model<select data-ghd-model>${models3D.map((m, i) => `<option value="${i}">${esc(m.name || m.slug)}${m.source_game_id && m.source_game_id !== game.game_id ? ' · imported' : ' · extracted'}</option>`).join('')}</select></label>` : ''}
@@ -53,7 +62,7 @@
         <div class="ghd-work-state"><b>${esc(label(data.progress?.status) || (jobs.length ? 'Work in progress' : 'No active work reported'))}</b>${jobs.length ? `<ul>${jobs.map(j => `<li><span>${esc(j.tool || 'Task')} · ${esc(label(j.state))}</span>${j.stage ? `<small>${esc(j.stage)}</small>` : ''}${Number.isFinite(j.progress) && j.progress >= 0 && j.progress <= 100 ? `<progress value="${j.progress}" max="100" aria-label="${esc(j.tool || 'Task')} progress: ${j.progress}%"></progress>` : ''}</li>`).join('')}</ul>` : '<p>No background operation is currently reporting progress for this game.</p>'}</div>
         <div class="ghd-progress-evidence">${timeline.length ? `<div class="ghd-chart">${timelineSVG(data)}<small>Recorded sessions, extractions, builds and reports. These counts describe activity, not completion percentage.</small></div>` : '<p class="ghd-empty">No dated modding activity has been recorded yet.</p>'}</div>
       </section><section class="ghd-panel"><div class="ghd-section-heading"><h3>Mod builds</h3><button type="button" data-ghd-action="builds">View all</button></div>
-        <div class="ghd-builds">${builds.length ? builds.slice(0, 12).map((b, i) => `<article class="ghd-build">${image(b.images?.[0]?.url || b.shots?.[0]?.url, b.title || b.name, io, 'ghd-build-image')}<div><h4>${esc(b.title || b.name)}</h4><p>${esc(date(b.built))} · <span class="ghd-tag">${b.verified ? 'Verified' : 'Unverified'}</span></p>${b.writer ? `<small>${esc(b.writer)}</small>` : ''}${list(b.changes).length ? `<ul class="ghd-changes">${list(b.changes).slice(0, 4).map(c => `<li>${esc(c.donor_name || c.donor || c.character || c.description || 'Modification')}${c.slot ? ` → ${esc(c.slot)}` : ''}</li>`).join('')}</ul>` : ''}<div class="ghd-actions"><button type="button" data-ghd-build="${i}">▶ Play build</button><button type="button" data-ghd-action="builds">Details &amp; downloads</button></div></div></article>`).join('') : '<p class="ghd-empty">No mod builds have been published for this title yet.</p>'}</div>
+        <div class="ghd-builds">${builds.length ? buildRows.slice(0, 12).map(({ build: b, index: i }) => `<article class="ghd-build${selected?.name === b.name ? ' ghd-build-selected' : ''}"${selected?.name === b.name ? ' aria-current="true"' : ''}>${image(b.images?.[0]?.url || b.shots?.[0]?.url, b.title || b.name, io, 'ghd-build-image')}<div><h4>${esc(b.title || b.name)}</h4><p>${esc(date(b.built))} · <span class="ghd-tag">${b.verified ? 'Verified' : 'Unverified'}</span>${selected?.name === b.name ? ' <span class="ghd-tag">Selected build</span>' : ''}</p>${b.writer ? `<small>${esc(b.writer)}</small>` : ''}${list(b.changes).length ? `<ul class="ghd-changes">${list(b.changes).slice(0, 4).map(c => `<li>${esc(c.donor_name || c.donor || c.character || c.description || 'Modification')}${c.slot ? ` → ${esc(c.slot)}` : ''}</li>`).join('')}</ul>` : ''}<div class="ghd-actions"><button type="button" data-ghd-build="${i}">▶ Play build</button><button type="button" data-ghd-action="builds">Details &amp; downloads</button></div></div></article>`).join('') : '<p class="ghd-empty">No mod builds have been published for this title yet.</p>'}</div>
       </section></div>
       <section class="ghd-panel"><div class="ghd-section-heading"><h3>Images, screenshots &amp; models</h3><span>${count(media.length)} captured or catalogued assets</span></div><div class="ghd-gallery">${media.slice(0, 30).map((m, i) => {
         const src = urlFor(m.url, io); if (!src) return '';
@@ -77,10 +86,10 @@
   function mount(host, data, io = {}) {
     const doc = host.ownerDocument || root.document;
     if (!doc.getElementById('gbox-home-detail-style')) {
-      const style = doc.createElement('style'); style.id = 'gbox-home-detail-style'; style.textContent = '.ghd-root [hidden]{display:none!important}.ghd-root header.ghd-heading{position:static;inset:auto;z-index:auto;background:transparent;padding:0;border:0}' + CSS; doc.head.appendChild(style);
+      const style = doc.createElement('style'); style.id = 'gbox-home-detail-style'; style.textContent = '.ghd-root [hidden]{display:none!important}.ghd-root header.ghd-heading{position:static;inset:auto;z-index:auto;background:transparent;padding:0;border:0}.ghd-root .ghd-build-selected{background:#243451;border-left:3px solid #92b4ff;padding:12px;border-radius:7px}.ghd-root .ghd-selected-meta{font-size:12px;line-height:1.7}.ghd-root h2,.ghd-root .ghd-selected-meta{overflow-wrap:anywhere}' + CSS; doc.head.appendChild(style);
     }
     host.innerHTML = render(data, io);
-    const game = data.game || {}, gid = game.game_id, eligible = modelOptions(data), q = s => host.querySelector(s);
+    const game = data.game || {}, gid = game.game_id, pinnedSelection = selectedBuild(data), eligible = modelOptions(data), q = s => host.querySelector(s);
     let disposed = false, generation = 0, viewer = null, pendingStage = null, lightbox = null, pollTimer = null, refreshing = false, latest = data;
     const assetsKey = value => JSON.stringify([list(value.models).map(m => [m.slug, m.model_url, m.preview_url]), list(value.media).map(m => [m.kind, m.url])]);
     const initialAssets = assetsKey(data);
@@ -131,18 +140,20 @@
     async function action(event) {
       const button = event.target.closest('button'); if (!button || !host.contains(button) || disposed) return;
       const status = q('[data-ghd-action-status]'); status.textContent = '';
-      const launches = button.dataset.ghdAction === 'play' || button.dataset.ghdBuild !== undefined;
+      const launches = button.dataset.ghdAction === 'play' || button.dataset.ghdAction === 'play-selected' || button.dataset.ghdBuild !== undefined;
       if (launches) { if (button.disabled) return; button.disabled = true; }
       const invoke = (name, ...args) => {
         if (typeof io[name] !== 'function') throw new Error(`${name === 'report' ? 'Report details' : name === 'session' ? 'Session details' : 'This action'} are unavailable in this client.`);
         return io[name](...args);
       };
+      const buildOptions = build => ({ mod: build.name, ...(build.launch_node ? { node: build.launch_node } : {}) });
       try {
-        if (button.dataset.ghdAction === 'play') await invoke('launch', gid);
+        if (button.dataset.ghdAction === 'play') await invoke('launch', gid, ...(pinnedSelection ? [{ mod: '', slot: '' }] : []));
+        else if (button.dataset.ghdAction === 'play-selected' && pinnedSelection) await invoke('launch', gid, buildOptions(selectedBuild(data) || pinnedSelection));
         else if (button.dataset.ghdAction === 'refresh-assets') await invoke('refreshDetail', latest);
         else if (button.dataset.ghdAction === 'models') await invoke('models', gid, game.title);
         else if (button.dataset.ghdAction === 'builds') await invoke('builds', gid);
-        else if (button.dataset.ghdBuild !== undefined) await invoke('launch', gid, { mod: list(data.builds)[+button.dataset.ghdBuild]?.name });
+        else if (button.dataset.ghdBuild !== undefined) await invoke('launch', gid, buildOptions(list(data.builds)[+button.dataset.ghdBuild]));
         else if (button.dataset.ghdReport !== undefined) await invoke('report', list(data.reports)[+button.dataset.ghdReport]?.id);
         else if (button.dataset.ghdSession !== undefined) await invoke('session', list(data.activity)[+button.dataset.ghdSession]?.session_id);
         else if (button.dataset.ghdMedia !== undefined) openImage(list(data.media)[+button.dataset.ghdMedia]);
@@ -175,10 +186,10 @@
         const fresh = await io.api('/api/home/games/' + encodeURIComponent(gid));
         if (disposed) return;
         if (fresh?.game?.game_id !== gid) throw new Error('Received details for a different game');
-        latest = fresh;
+        latest = { ...fresh, selected_build: pinnedSelection };
         // Keep the selected model and playing media intact. New catalogue assets are
         // offered explicitly; the dynamic sections and their indexed actions move together.
-        const next = { ...fresh, models: data.models, media: data.media }, fragment = doc.createElement('div');
+        const next = { ...fresh, selected_build: pinnedSelection, models: data.models, media: data.media }, fragment = doc.createElement('div');
         fragment.innerHTML = render(next, io);
         const selectors = ['.ghd-heading', '.ghd-metrics', '.ghd-work-state', '.ghd-progress-evidence', '.ghd-builds', '.ghd-timeline', '.ghd-reports', '[data-ghd-live=activity]'];
         for (const selector of selectors) {
@@ -199,8 +210,11 @@
     };
     host.addEventListener('click', action); host.addEventListener('change', change); host.addEventListener('contextmenu', context); host.addEventListener('error', mediaError, true);
     schedule();
+    const donors = new Set(list(pinnedSelection?.changes).map(change => change.donor || change.character).filter(value => typeof value === 'string'));
+    const matchingModel = eligible.findIndex(model => donors.has(model.slug)), initialModel = Math.max(0, matchingModel);
+    if (eligible.length) q('[data-ghd-model]').value = String(initialModel);
     return {
-      ready: eligible.length ? showModel(0) : Promise.resolve(),
+      ready: eligible.length ? showModel(initialModel) : Promise.resolve(),
       refresh,
       dispose() {
         if (disposed) return;
@@ -211,6 +225,6 @@
       }
     };
   }
-  const api = { mount, render, modelOptions, events, timelineSVG, geometryStats, safeURL };
+  const api = { mount, render, modelOptions, events, timelineSVG, geometryStats, safeURL, selectedBuild };
   if (typeof module === 'object' && module.exports) module.exports = api; else root.GBoxHomeDetail = api;
 })(typeof window !== 'undefined' ? window : globalThis);
