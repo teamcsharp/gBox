@@ -218,6 +218,8 @@ def create_app(config: Config) -> FastAPI:
     # --- Phantasy Star Online item catalog (from the disc) + item thumbnails (PSO wiki) for the item sidebar ---
     from . import pso_api
     pso_api.routes(app, config, auth)
+    from . import memory_cards
+    memory_cards.routes(app,store,config,auth)
 
     @app.get("/api/pso/item_thumb")
     def pso_item_thumb(name: str, actor=Depends(auth)):
@@ -4272,7 +4274,7 @@ def create_app(config: Config) -> FastAPI:
     def session_rpc(sid: str, req: Rpc, actor=Depends(auth)):
         """Inspector peeks (read_memory / read_rom / info) and CPU debugger ops (debug_*), answered by the worker over the
         session channel. Debugger control (halt/step/breakpoints) changes execution, not memory, and is audited."""
-        if req.op not in ("read_memory", "read_rom", "info", "state", "reset", "menu", "pause", "resume", "normal_speed", "pso_controls") \
+        if req.op not in ("read_memory", "read_rom", "info", "state", "reset", "menu", "pause", "resume", "normal_speed", "pso_controls", "memory_cards") \
                 and not req.op.startswith("debug_"):
             raise HTTPException(422, "read-only, reset, pause/resume and debug_* ops only; edits go through the write_memory job")
         if req.op in ("reset", "pause", "resume", "normal_speed", "debug_halt", "debug_resume", "debug_step", "debug_break", "debug_unbreak"):
@@ -4286,15 +4288,23 @@ def create_app(config: Config) -> FastAPI:
             except (ValueError, TypeError) as error:
                 raise HTTPException(422, str(error))
             store.audit(actor, 'session.pso_controls', sid, {'command_id': req.args['command_id'], 'input': inp.model_dump()})
+        if req.op=='memory_cards':
+            from .memory_card_sessions import validate
+            try:
+                validate(store,sid,req.args)
+                if 'stage' not in config.granted_permissions:raise PermissionError('stage permission is required for memory-card sync')
+            except PermissionError as error:raise HTTPException(403,str(error))
+            except (ValueError,TypeError) as error:raise HTTPException(422,str(error))
+            store.audit(actor,'session.memory_cards',sid,req.args['input'])
         rid, lv = new_id(), _live(sid)
         item = {"rpc": rid, "op": req.op, "args": req.args}
         with lv["cond"]:
-            if req.op == 'pso_controls':
+            if req.op in ('pso_controls','memory_cards'):
                 pso_rpc_pending[rid] = sid
             lv["input"].append(item)
             lv["cond"].notify_all()
             if not lv["cond"].wait_for(lambda: rid in rpc_results, 10):
-                if req.op == 'pso_controls':
+                if req.op in ('pso_controls','memory_cards'):
                     pso_rpc_pending.pop(rid, None)
                     try: lv['input'].remove(item)
                     except ValueError: pass

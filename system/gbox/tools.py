@@ -308,6 +308,8 @@ def _close_previous_games(ctx, keep: str = ""):
     for sid, ad, game in previous:
         proc = getattr(ad, 'proc', None)
         if proc and proc.poll() is not None:
+            from . import memory_card_sessions
+            memory_card_sessions.finish(sid,ad,ctx)
             if getattr(ctx, 'server', None):
                 httpx.post(f'{ctx.server}/api/sessions/{sid}/ended', headers=ctx.headers,
                            json={'returncode': proc.poll(), 'via': 'single_game'}, timeout=10).raise_for_status()
@@ -338,6 +340,8 @@ def _close_previous_games(ctx, keep: str = ""):
         if proc and proc.poll() is None:
             rewind.reattach(sid, sr, lambda sid=sid: sid in SESSIONS)
             raise RuntimeError('The previous emulator is still running; another game was not started')
+        from . import memory_card_sessions
+        memory_card_sessions.finish(sid,ad,ctx)
         snapshot = next(s for s in checkpoints if s['session_id'] == sid)
         if getattr(ctx, 'server', None) and not snapshot.get('orphan'):
             httpx.post(f'{ctx.server}/api/sessions/{sid}/ended', headers=ctx.headers,
@@ -433,6 +437,8 @@ def _stop_session(sid: str, args: dict, ctx) -> dict:
     if proc is not None and proc.poll() is None:
         rewind.reattach(sid, sr, lambda: sid in SESSIONS)
         raise RuntimeError('Emulator process is still running; stop was not confirmed')
+    from . import memory_card_sessions
+    memory_card_sessions.finish(sid,ad,ctx)
     SESSIONS.pop(sid, None)
     track_emulator(ctx.config, sid, None, add=False)
     t = time.monotonic()
@@ -460,6 +466,12 @@ def launch_game(inp: LaunchIn, ctx: Ctx):
         try:
             return _launch_game(inp, ctx)
         except Exception as exc:
+            try:
+                from . import memory_card_sessions
+                ad=diag.get('_adapter')
+                if ad is not None and getattr(ad,'memory_card_context',None):
+                    memory_card_sessions.abandon(ad,ctx)
+            except Exception:pass
             _launch_failure_evidence(inp, ctx, diag, exc)
             raise
         finally:
@@ -627,6 +639,10 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         diag["stage"] = "close the previous game"
         checkpoints = _close_previous_games(ctx, keep=inp.keep_session)
         lap("close_previous_s")
+        from . import memory_card_sessions
+        memory_card_sessions.recover_pending(ctx)
+        ad.memory_card_rom=str(src)
+        memory_card_sessions.checkout(f'{ctx.worker}-{ctx.job_id}',ad,g.model_dump(),ctx)
         ctx.progress(72, f"Starting {ad.name} with {src.name}")
         diag["stage"] = "start the emulator"
         detail = ad.launch_game(str(src))
@@ -642,6 +658,13 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     if g.launch.get("kind") != "steam" and not isinstance(ad, adapters.RocketLauncherAdapter):
         gd["_rom_path"] = str(src)                     # for the inspector's ROM viewer
     SESSIONS[sid] = (ad, gd)
+    if getattr(ad,'memory_card_context',None):
+        from . import memory_card_sessions
+        try:detail['memory_cards']=memory_card_sessions.watch(sid,ad,gd,ctx)
+        except Exception as error:
+            # A card-monitor failure must not turn an already running game into
+            # a failed launch. The staged card and recovery journal stay intact.
+            detail['memory_cards']={'supported':False,'reason':str(error)[:500]}
     if not inp.capture_backend:
         try:
             from . import gameplay_replay
@@ -893,7 +916,7 @@ def _rpc_answerer(sid: str, client, ctx=None):
             result = {"ok": True, "data": session_rpc(sid, ev["op"], ev.get("args") or {}, ctx=ctx)}
         except Exception as e:
             result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
-        if ev.get('op') == 'pso_controls':
+        if ev.get('op') in ('pso_controls','memory_cards'):
             result['pso_command'] = True
         try:
             client.post(f"/api/sessions/{sid}/rpc/{ev['rpc']}", json=result)
@@ -1021,6 +1044,8 @@ def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
                     scene_watch = _refresh_scene_row(c, sid, ad)
                 running = ad.proc.poll() is None if getattr(ad, "proc", None) else ad.query_runtime().get("running", True)
                 if not running:
+                    from . import memory_card_sessions
+                    memory_card_sessions.finish(sid,ad,ctx)
                     rc = getattr(getattr(ad, "proc", None), "returncode", None)
                     end = {"returncode": rc}
                     if rc not in (None, 0) and callable(getattr(type(ad), "log_tail", None)):
@@ -1084,6 +1109,9 @@ def _rom_bytes(path: str) -> bytes:
 
 def session_rpc(sid: str, op: str, args: dict, ctx=None):
     ad, g = SESSIONS[sid]
+    if op=='memory_cards':
+        from .memory_card_sessions import execute
+        return execute(sid,args,ctx)
     if op == 'pso_controls':
         from .pso_live import execute
         return execute(sid, args, ctx)
