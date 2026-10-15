@@ -113,7 +113,7 @@ def test_pinned_install_checksum_and_preserve_settings(tmp_path, monkeypatch):
     save.parent.mkdir(parents=True)
     save.write_bytes(b"do not overwrite")
     exe = xbox.ensure_cxbx(cfg)
-    assert exe.name == "cxbx.exe" and (home / "cxbxr-emu.dll").is_file()
+    assert exe.name == "cxbxr-ldr.exe" and (home / "cxbxr-emu.dll").is_file()
     assert settings.read_text() == "operator settings"
     assert save.read_bytes() == b"do not overwrite"
     assert (home / ".gbox-installed.json").is_file()
@@ -173,6 +173,25 @@ def test_launch_requires_renderer_and_reports_owned_child_pid(tmp_path, monkeypa
     ad._output.close()
 
 
+def test_standalone_loader_has_required_load_and_explicit_kernel_logging(tmp_path, monkeypatch):
+    renderer = {"pid": 101, "hwnd": 77, "class": "CxbxRender", "title": "Cxbx-Reloaded",
+                "width": 640, "height": 480, "hung": False}
+    ad, xbe = setup_launch(tmp_path, monkeypatch, lambda: [renderer])
+    loader = tmp_path / "cxbxr-ldr.exe"
+    loader.write_bytes(b"MZ" + b"\0" * 2048)
+    assert xbox._executable(tmp_path) == loader
+    monkeypatch.setattr(xbox, "ensure_cxbx", lambda *args: loader)
+    calls = []
+    monkeypatch.setattr(xbox.subprocess, "Popen", lambda argv, **kwargs: calls.append(argv) or FakeProcess())
+    out = ad.launch_game(str(xbe))
+    assert calls == [[str(loader), "/load", str(xbe.resolve()), "/dm", "2", "/df", str(ad.log_path.resolve())]]
+    assert out["pid"] == 101 and "stable" in out["boot_validation"]
+    settings = (tmp_path / "settings.ini").read_text()
+    assert "IgnoreInvalidXbeSig" not in settings and "IgnoreInvalidXbeSec" not in settings
+    assert "AllowAdminPrivilege = true" not in settings
+    ad._output.close()
+
+
 def test_gui_alone_times_out_instead_of_reporting_a_playable_game(tmp_path, monkeypatch):
     gui = {"pid": 101, "hwnd": 1, "class": "Cxbx", "title": "Dead or Alive 3",
            "width": 640, "height": 480, "hung": False}
@@ -193,6 +212,45 @@ def test_owned_startup_error_is_a_failed_launch(tmp_path, monkeypatch):
         ad.launch_game(str(xbe))
     assert not ad.ready
     ad._output.close()
+
+
+def test_startup_dialog_reports_explanation_and_buttons_without_accepting(tmp_path, monkeypatch):
+    dialog = {"class": "#32770", "title": "Cxbx-Reloaded", "controls": [
+        {"class": "Static", "text": "The emulator was launched with Administrator rights. Continue?"},
+        {"class": "Button", "text": "&Yes"}, {"class": "Button", "text": "&No"}]}
+    ad, xbe = setup_launch(tmp_path, monkeypatch, lambda: [dialog])
+    monkeypatch.setattr(ad, "stop_game", lambda: None)
+    with pytest.raises(RuntimeError, match="Administrator rights") as error:
+        ad.launch_game(str(xbe))
+    assert "&Yes" in str(error.value) and "&No" in str(error.value)
+    assert not ad.ready
+    assert "AllowAdminPrivilege = true" not in (tmp_path / "settings.ini").read_text()
+    ad._output.close()
+
+
+@pytest.mark.skipif(__import__("sys").platform != "win32", reason="Windows dialog API")
+def test_native_dialog_static_edit_and_button_text_is_collected():
+    import ctypes
+    from ctypes import wintypes as w
+    user = ctypes.windll.user32
+    user.CreateWindowExW.argtypes = [w.DWORD, w.LPCWSTR, w.LPCWSTR, w.DWORD,
+                                     ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                     w.HWND, w.HMENU, w.HINSTANCE, w.LPVOID]
+    user.CreateWindowExW.restype = w.HWND
+    user.DestroyWindow.argtypes = [w.HWND]
+    # Hidden owned fixture windows cannot interrupt the operator's desktop.
+    dialog = user.CreateWindowExW(0, "#32770", "Cxbx diagnostic fixture", 0, 0, 0, 400, 300, None, None, None, None)
+    assert dialog
+    try:
+        for klass, text in (("Static", "The required emulation DLL could not be loaded."),
+                            ("Edit", "C:\\runtime\\cxbxr-emu.dll"), ("Button", "OK")):
+            assert user.CreateWindowExW(0, klass, text, 0x40000000, 0, 0, 200, 40, dialog, None, None, None)
+        controls = xbox.dialog_controls(dialog)
+        assert {row["class"] for row in controls} == {"Static", "Edit", "Button"}
+        assert any("emulation DLL" in row["text"] for row in controls)
+        assert any(row["text"] == "C:\\runtime\\cxbxr-emu.dll" for row in controls)
+    finally:
+        user.DestroyWindow(dialog)
 
 
 def test_docked_renderer_keeps_its_verified_handle(tmp_path, monkeypatch):
