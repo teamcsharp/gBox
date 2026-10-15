@@ -33,6 +33,16 @@ Startup dialogs include their actual message and button text in the failure
 report; a dialog caption alone is insufficient for diagnosis. No warning is
 clicked automatically and the emulator's warning settings remain unchanged.
 
+Verified staging hashes keep an extracted archive reusable when the staging
+cache updates its LRU timestamp. Changed content or stale staging records still
+invalidate extraction. Older extraction markers require one initial extraction
+under this identity; later cache touches do not unpack the game again.
+
+The emulator starts without activation and is parked off-screen for docking.
+It must not start minimized: Cxbx honors that flag and can leave its game client
+at zero size. Renderer discovery includes owned child windows as well as
+top-level windows.
+
 A successful startup requires an owned, responsive `CxbxRender` game window
 that stays open for three seconds. The configuration GUI alone is insufficient.
 Startup errors and timeouts retain emulator logs and clean up only the new

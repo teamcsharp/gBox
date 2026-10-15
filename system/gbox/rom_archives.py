@@ -102,12 +102,28 @@ def repair_cue(path):
     path.write_text(text.replace('"' + missing[0] + '"', '"' + candidates[0].name + '"'), encoding="utf8")
 
 
+def _source_identity(src, config, member):
+    from . import catalog
+    stat = src.stat()
+    identity = {"source": str(src.resolve()), "size": stat.st_size, "member": member}
+    # Staging touches mtime on every use for LRU. Its recorded content hash is
+    # reusable only while the record still describes this exact file version.
+    db = catalog._db_load(config.cache)
+    record = db.get(str(src)) if isinstance(db, dict) else None
+    digest = record.get("sha1") if isinstance(record, dict) else None
+    if isinstance(digest, str) and re.fullmatch(r"[0-9a-fA-F]{40}", digest) \
+            and record.get("ident") == catalog._ident(stat):
+        identity["sha1"] = digest.lower()
+    else:
+        identity["mtime_ns"] = stat.st_mtime_ns
+    return identity
+
+
 def prepare(src, config, member, progress=lambda *_: None):
     """Extract once, retain relative track paths, and publish a cache only after extraction succeeds."""
     src = Path(src)
     member = safe_name(member)
-    stat = src.stat()
-    identity = {"source": str(src.resolve()), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns, "member": member}
+    identity = _source_identity(src, config, member)
     key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:24]
     root = config.runtime / "extract"
     out = root / ("rom-" + key)

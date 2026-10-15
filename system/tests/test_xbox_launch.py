@@ -148,7 +148,7 @@ def setup_launch(tmp_path, monkeypatch, windows):
     monkeypatch.setattr(xbox, "ensure_cxbx", lambda *args: exe)
     monkeypatch.setattr(xbox.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
     monkeypatch.setattr(psutil, "Process", lambda pid: type("Process", (), {"create_time": lambda _: 10.0})())
-    monkeypatch.setattr(adapters, "hidden_start", lambda: None)
+    monkeypatch.setattr(adapters, "capture_start", lambda: None)
     monkeypatch.setattr(adapters, "keep_offscreen", lambda pid: None)
     monkeypatch.setattr(xbox.XboxAdapter, "_live", lambda self: {101, 202})
     monkeypatch.setattr(xbox, "owned_windows", lambda pids, known_hwnd=None: windows())
@@ -182,10 +182,19 @@ def test_standalone_loader_has_required_load_and_explicit_kernel_logging(tmp_pat
     assert xbox._executable(tmp_path) == loader
     monkeypatch.setattr(xbox, "ensure_cxbx", lambda *args: loader)
     calls = []
-    monkeypatch.setattr(xbox.subprocess, "Popen", lambda argv, **kwargs: calls.append(argv) or FakeProcess())
+    startup = object()
+    monkeypatch.setattr(adapters, "capture_start", lambda: startup)
+    park = []
+    monkeypatch.setattr(adapters, "keep_offscreen", lambda pid: park.append(pid))
+    def popen(argv, **kwargs):
+        assert kwargs["startupinfo"] is startup
+        calls.append(argv)
+        return FakeProcess()
+    monkeypatch.setattr(xbox.subprocess, "Popen", popen)
     out = ad.launch_game(str(xbe))
     assert calls == [[str(loader), "/load", str(xbe.resolve()), "/dm", "2", "/df", str(ad.log_path.resolve())]]
     assert out["pid"] == 101 and "stable" in out["boot_validation"]
+    assert park[0] == 101
     settings = (tmp_path / "settings.ini").read_text()
     assert "IgnoreInvalidXbeSig" not in settings and "IgnoreInvalidXbeSec" not in settings
     assert "AllowAdminPrivilege = true" not in settings
