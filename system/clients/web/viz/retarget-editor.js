@@ -386,6 +386,7 @@
     const c = controller(ui, opts);
     const pending=new Set(),pendingReview=(kind,on)=>{on?pending.add(kind):pending.delete(kind);c.state.texturePending=!!pending.size;};
     const accepted=result=>{const draft=H.normalize(c.state.profile),slot=c.state.slot;dispose();open(doc,io,{...opts,slug:result.variant,name:result.name,slot,draftProfile:draft});};
+    if(io.editTextures){const paint=doc.createElement('button');paint.type='button';paint.className='act';paint.textContent='Paint donor textures in PhotoCraft';paint.onclick=()=>{const draft=H.normalize(c.state.profile),slot=c.state.slot;dispose();io.editTextures({...opts,character:opts.slug,slot,draftProfile:draft});};q('[data-rt-textures]').before(paint);}
     const textures=root.GBoxTextureReview?.mount(q('[data-rt-textures]'),{api:io.api,url:u=>io.url?io.url(u):u},{slug:opts.slug,onPreview:showTextureCandidate,
       onPending:on=>pendingReview('texture',on),onAccepted:accepted});
     const photos=root.GBoxPhotoSkin?.mount(q('[data-rt-photos]'),{api:io.api,url:u=>io.url?io.url(u):u},{slug:opts.slug,onPreview:showTextureCandidate,

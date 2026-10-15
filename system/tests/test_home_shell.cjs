@@ -34,9 +34,9 @@ test('real application Home has compact controls, viewport media, dictation, and
     await withPage(async (evaluate, send) => {
       const screenshot=async name=>{if(!process.env.GBOX_HOME_EVIDENCE)return;const shot=await send('Page.captureScreenshot',{format:'png'});fs.mkdirSync(process.env.GBOX_HOME_EVIDENCE,{recursive:true});fs.writeFileSync(path.join(process.env.GBOX_HOME_EVIDENCE,name+'.png'),Buffer.from(shot.result.data,'base64'));};
       await send('Emulation.setDeviceMetricsOverride',{width:1500,height:1000,deviceScaleFactor:1,mobile:false});
-      await send('Page.addScriptToEvaluateOnNewDocument',{source:`try{localStorage.setItem('gbox_asset_sidebar',JSON.stringify({closed:true}));}catch{}`});
+      await send('Page.addScriptToEvaluateOnNewDocument',{source:`window.__homeShellErrors=[];addEventListener('error',event=>{if(event.error&&__homeShellErrors.length<8)__homeShellErrors.push(event.message+' (line '+event.lineno+')');});try{localStorage.setItem('gbox_asset_sidebar',JSON.stringify({closed:true}));}catch{}`});
       await send('Page.navigate',{url:`http://127.0.0.1:${server.address().port}/#token=fixture`});
-      await evaluate(`(async()=>{for(let i=0;i<150&&!window.gboxViewReady;i++)await new Promise(r=>setTimeout(r,20));await window.gboxViewReady;await HOME.ctl?.ready;})()`);
+      await evaluate(`(async()=>{const deadline=Date.now()+30000;while(!window.gboxViewReady){if(Date.now()>deadline)throw Error('gBox did not initialize within 30 s; document='+document.readyState+'; runtime errors='+JSON.stringify(window.__homeShellErrors||[]));await new Promise(r=>setTimeout(r,25));}await window.gboxViewReady;await HOME.ctl?.ready;})()`);
       assert.deepEqual(await evaluate(`({view:cur,title:document.querySelector('[data-lh-title]')?.textContent,full:document.querySelector('#view').classList.contains('home-view')})`), {view:'Home',title:game.title,full:true});
       await evaluate(`(async()=>{for(let i=0;i<150&&(!document.querySelector('.lh-search .micbtn')||!document.querySelector('[data-lh-backdrop]')?.naturalWidth);i++)await new Promise(r=>setTimeout(r,20));await new Promise(requestAnimationFrame);})()`);
       const layout = await evaluate(`(()=>{const rect=s=>{const r=document.querySelector(s).getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height}};return {search:rect('.lh-search'),mic:rect('.lh-search .micbtn'),toolbar:rect('.lh-toolbar'),filters:rect('.lh-filters'),views:rect('.lh-views'),background:rect('.lh-backdrop'),main:rect('#view'),cards:rect('[data-lh-cards]'),backgroundPosition:getComputedStyle(document.querySelector('.lh-backdrop')).position,backgroundParent:document.querySelector('.lh-backdrop').parentElement.className,heroBackground:getComputedStyle(document.querySelector('.lh-hero')).backgroundColor,screen:document.querySelector('.lh-home').dataset.lhScreen,details:document.querySelectorAll('.ghd-root').length,micDecorated:document.querySelector('[data-lh-search]').parentElement.classList.contains('micwrap'),assetsClosed:document.querySelector('#asset-sidebar').classList.contains('closed')}})()`);
@@ -89,6 +89,6 @@ test('real application Home has compact controls, viewport media, dictation, and
       await screenshot('home-back-real-shell');
       await evaluate(`show('Jobs')`);
       assert.equal(await evaluate('HOME.ctl'),null,'leaving Home disposes its media and controllers');
-    });
+    },{requestTimeoutMs:45000});
   } finally {await new Promise(resolve=>server.close(resolve));}
 });
