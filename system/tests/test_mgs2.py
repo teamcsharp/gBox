@@ -396,7 +396,7 @@ def test_registrations_and_platform():
     # HyperSpin's "Microsoft XBOX" emulator lists the PS2 rom folder: those discs are PS2 games
     assert systems.classify("Microsoft XBOX", "Microsoft XBOX", "collections/Sony Playstation 2/roms/USA")[:2] == \
         ("ps2", "pcsx2")
-    assert systems.classify("Microsoft XBOX", "Microsoft XBOX", "collections/Microsoft XBOX/roms")[0] == "windows_native"
+    assert systems.classify("Microsoft XBOX", "Microsoft XBOX", "collections/Microsoft XBOX/roms")[0] == "xbox"
     assert systems.classify("PC Games", "PC Games", "collections/PC Games/roms")[0] == "windows_native"
 
 

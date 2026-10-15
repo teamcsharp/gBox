@@ -46,10 +46,10 @@ MAX_OCCURRENCES = 60
 DEFAULTS = {"auto_remedy": True, "investigate": True, "verify": True}
 
 ADAPTERS = ("retroarch", "dolphin", "flycast", "pcsx2", "duckstation", "rpcs3", "ppsspp", "xenia", "cemu", "mame",
-            "redream", "xemu", "melonds", "citra", "ryujinx", "yuzu", "mupen64plus", "mgba", "steam", "rocketlauncher")
+            "redream", "xemu", "cxbx", "melonds", "citra", "ryujinx", "yuzu", "mupen64plus", "mgba", "steam", "rocketlauncher")
 ADAPTER_RX = re.compile(r"\b(" + "|".join(ADAPTERS) + r")\b", re.I)
 PLATFORM_ADAPTER = {"gamecube": "dolphin", "wii": "dolphin", "ps3": "rpcs3", "xbox360": "xenia", "switch": "yuzu",
-                    "pc_steam": "steam"}
+                    "xbox": "cxbx", "pc_steam": "steam"}
 
 CANCELLED_RX = re.compile(r"cancelled by the operator|cancelled with its parent|^cancelled\b|stopped by the operator", re.I)
 TRANSIENT_VERIFY_RX = re.compile(r"No idle node|Can't capture on|yielded|already running|server restarted|Interrupted|"

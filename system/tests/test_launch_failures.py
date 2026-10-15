@@ -165,6 +165,8 @@ def test_signature_is_game_mod_adapter_and_class():
     assert len({s, LF.signature(DOA2, "", "retroarch", "content_timeout"), LF.signature(DOA2, MOD, "flycast", "content_timeout"),
                 LF.signature(DOA2, MOD, "retroarch", "emulator_crash"), LF.signature(MGS, MOD, "retroarch", "content_timeout")}) == 5
     assert LF.adapter_for({"platform": "gamecube"}, "") == "dolphin"
+    assert LF.adapter_for({"platform": "xbox"}, "") == "cxbx"
+    assert LF.adapter_for({}, "cxbx exited 1 during boot") == "cxbx"
     assert LF.adapter_for({"platform": "dreamcast", "core": "flycast"}, BLOCK_ERR) == "retroarch"
     assert LF.adapter_for({"platform": "dreamcast"}, "redream exited 1") == "redream"
     assert LF.adapter_for({}, "", "Dolphin") == "dolphin"

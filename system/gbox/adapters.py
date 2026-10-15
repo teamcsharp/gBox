@@ -3109,6 +3109,16 @@ def for_game(game: dict, config: Config, debug: bool = False) -> Adapter:
         return DEBUG_ADAPTERS[plat](config, plat)
     if plat == "pc_steam":
         return SteamAdapter()
+    # Older catalog rows called original Xbox games windows_native. Match their
+    # physical collection too, before the broken RocketLauncher wrapper path.
+    from .xbox import XboxAdapter, is_xbox_game
+    if is_xbox_game(game):
+        xbox_override = config.emulators.get("xbox") or config.emulators.get(plat)
+        if xbox_override and xbox_override.adapter == "command":
+            return CommandAdapter(xbox_override)
+        if HOST_OS != "windows":
+            raise ToolUnavailable("Original Xbox games run in Cxbx-Reloaded on a Windows worker")
+        return XboxAdapter(config)
     from . import systems
     if game.get("core") and plat != "arcade" and systems.core_for(plat)[0] is None:
         game = game | {"core": None}                       # catalog still has a core the platform rule has since dropped

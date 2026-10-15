@@ -22,7 +22,7 @@ EXT_PLATFORM = {
     ".n64": "n64", ".z64": "n64", ".v64": "n64", ".md": "genesis", ".gen": "genesis", ".smd": "genesis", ".sms": "sms",
     ".gg": "gamegear", ".pce": "pce", ".gdi": "dreamcast", ".cdi": "dreamcast", ".gcm": "gamecube", ".gcz": "gamecube",
     ".rvz": "gamecube_wii", ".wbfs": "wii", ".wua": "wiiu", ".pbp": "psp", ".cso": "psp", ".nds": "nds",
-    ".3ds": "3ds", ".xci": "switch", ".nsp": "switch", ".lst": "naomi",
+    ".3ds": "3ds", ".xci": "switch", ".nsp": "switch", ".lst": "naomi", ".xbe": "xbox",
 }
 SNIFF_EXT = {".iso", ".bin", ".img", ".cue", ".chd"}   # container formats: platform needs header sniffing
 REGION_TAGS = {"USA": "US", "Europe": "EU", "Japan": "JP", "World": "World", "Korea": "KR", "Australia": "AU"}
