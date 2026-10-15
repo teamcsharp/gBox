@@ -48,10 +48,10 @@ mouth and eye animation images (241 unique images), not the 3D head UV layout.
 helmeted materials are also unchanged. Stage-native scene resources that reuse
 the edited heads receive their face textures; this does not establish complete
 cinematic coverage. `nja_def` and `nja_dmo` still exceed their compressed slots
-by 2,048 bytes on both discs, after bounded standard zlib strategies; those
-stages are preserved unchanged and listed in the reports. DOA2 leaves unbound
-story archive `YTI00`, roster portraits and prerecorded videos unchanged. No
-complete-cast or all-cutscene claim is made.
+by 8,192 and 6,144 bytes respectively on both discs, after bounded standard zlib
+strategies; those stages are preserved unchanged and listed in the reports.
+DOA2 leaves unbound story archive `YTI00`, roster portraits and prerecorded
+videos unchanged. No complete-cast or all-cutscene claim is made.
 
 The final DOA2 copy cold-booted in a private Spark Flycast session, reached a
 native fight and responded to controls. Twin Snakes disc 1 cold-booted in private
