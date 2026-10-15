@@ -129,6 +129,23 @@ def test_export_packs_a_gltf_with_external_files(lib, tmp_path):
 
 # ---------------------------------------------------------------- in: variant / derived / new
 
+def test_photo_model_edit_and_derived_rig_keep_the_image_tag(lib,tmp_path):
+    from gbox.photo_skin import photo_of
+    root,ctx=lib
+    original=library_char(root,tmp_path,slug='photo_donor')
+    original.update(variant_of='original_unmodified',photo_skin_approval={'source_photo':'a'*64})
+    C.put_meta(root,original)
+    out=tmp_path/'photo_export.glb';out.write_bytes(RT.export_glb(root,'photo_donor'))
+    assert RT.read_info(attachments.read_gltf(out)[0])['base']=='photo_donor'
+    edited=blender_edit(out,tmp_path/'photo_edit.glb')
+    result=add(ctx,edited,'Photo with hat');meta=C.get(root,result['entry']['slug'])
+    assert meta['variant_of']=='photo_donor' and meta['selfie_photo']=='a'*64
+    assert 'selfie:'+'a'*64 in meta['tags']
+    assert photo_of(meta,{})=='a'*64  # survives deletion of the parent library model
+    derived=blender_edit(out,tmp_path/'photo_new_rig.glb',extra_bone='antenna')
+    result=add(ctx,derived,'Photo new rig',derived_ok=True)
+    assert result['mode']=='derived' and result['entry']['selfie_photo']=='a'*64
+
 def blender_edit(src: Path, dst: Path, hat_on="head", armature_extras=None, extra_bone=None):
     """What the add-on sends after an edit: the exported character + a hat parented to a bone (unskinned child node,
     own texture, marked by the add-on's custom properties)."""

@@ -29,7 +29,7 @@
     host.querySelector('details').addEventListener('toggle',()=>{if(!maps.length&&host.querySelector('details').open)loadMaps();});
     q('file').onchange=async()=>{try{const f=q('file').files[0];if(!f)return;if(f.size>8*1024**2)throw Error('Photo must be at most 8 MiB');
       const data_url=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=reject;r.readAsDataURL(f);});
-      const d=await io.api('/api/photo-skins/photos',{data_url,source_kind:q('source').value});if(dead)return;photo=d.photo;images.photo=await image(d.url);crop=[0,0,1,1];draw('photo');note('Photo loaded. Select the face crop and matching UV region.');
+      const label=q('name').value.trim(),d=await io.api('/api/photo-skins/photos',{data_url,source_kind:q('source').value,label:label&&label!=='Photo character'?label:f.name.replace(/\.[^.]+$/,'').slice(0,80)});if(dead)return;photo=d.photo;images.photo=await image(d.url);crop=[0,0,1,1];draw('photo');note('Photo loaded. Select the face crop and matching UV region.');
     }catch(e){note(e.message);}};
     host.addEventListener('click',async e=>{const b=e.target.closest('[data-ps-show]');if(!b)return;try{images.uv=await image(maps.find(m=>m.index===+b.dataset.psShow).url);draw('uv');}catch(err){note(err.message);}});
     q('rotate').onclick=()=>{if(review)return;turn=(turn+1)%4;note('Patch rotation: '+turn*90+'°');};

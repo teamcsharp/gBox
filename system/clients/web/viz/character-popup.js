@@ -37,25 +37,26 @@
       if(act==='retarget') {close();return env.retarget?.({...o,slug:model.slug||o.slug,name:model.name||o.name});}
       if(act==='blender'){
         b.disabled=true;status('Copying the textured model to Blender…');
-        try{if(!env.blender)throw new Error('Blender export is unavailable in this client');await env.blender(model.slug||o.slug);if(!closed)status('Copied to Blender. Press Ctrl+V in a Blender 3D viewport.');}
+        try{if(!env.blender)throw new Error('Blender export is unavailable in this client');await env.blender(model.slug||o.slug,o);if(!closed)status('Copied to Blender. Press Ctrl+V in a Blender 3D viewport.');}
         catch(err){if(!closed)status('Blender export failed: '+err.message);}finally{b.disabled=false;}
       }
     });
     try{
       model=await env.api('/api/characters/'+encodeURIComponent(o.slug));if(closed)return;
+      if(o.modelFile)model={...model,model:o.modelFile,name:o.name||model.name};
       q('h2').textContent=model.name||o.name||o.slug;
       q('.cp-source').textContent=`Collection model · ${model.source?.game_title||o.slug} · target slot: ${o.slot||'player'}`;
       const base='/api/characters/'+encodeURIComponent(model.slug||o.slug),url=env.url||(u=>u);
-      const download=q('[data-download]');download.href=url(base+'/model');download.download=String(model.model||o.slug+'.glb').split('/').pop();download.hidden=!model.model;
+      const download=q('[data-download]');download.href=url(o.modelUrl||base+'/model');download.download=String(model.model||o.slug+'.glb').split('/').pop();download.hidden=!model.model;
       q('[data-cp=blender]').disabled=!model.model||!env.blender;
       q('[data-cp=retarget]').disabled=!o.gid||!env.retarget;
       q('[data-cp=examine]').disabled=false;
       if(!/\.(gltf|glb)$/i.test(model.model||''))throw new Error('This collection file has no glTF/GLB model to rotate.');
       const mod=await env.loadViewer();if(closed)return;
       stage.textContent='';
-      const loaded=await mod.createCharacterViewer(stage,url(base+'/model'),{model:model.model,
+      const loaded=await mod.createCharacterViewer(stage,url(o.modelUrl||base+'/model'),{model:model.model,
         fileUrl:rel=>url(base+'/file/'+String(rel).split('/').map(encodeURIComponent).join('/'))});
-      if(closed)loaded.dispose();else{viewer=loaded;status('Model ready. Export to Blender, examine its geometry, or retarget it for this game.');}
+      if(closed)loaded.dispose();else{viewer=loaded;status('Model ready. Export to Blender, examine its geometry, or retarget it for this game.');if(o.examine)q('[data-cp=examine]').click();}
     }catch(err){if(!closed){status('3D preview unavailable: '+err.message);stage.textContent='';
       if(model?.model){const im=doc.createElement('img');im.alt=model.name||o.slug;im.src=(env.url||(u=>u))('/api/characters/'+encodeURIComponent(o.slug)+'/preview');stage.appendChild(im);}
     }}

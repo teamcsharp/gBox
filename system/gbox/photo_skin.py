@@ -6,6 +6,8 @@ import io
 from pathlib import Path
 import time
 import uuid
+import re
+from urllib.parse import quote
 
 import numpy as np
 from pydantic import BaseModel, Field, model_validator
@@ -27,6 +29,51 @@ def claim_reason(worker,job):
 class PhotoUpload(BaseModel):
     data_url: str = Field(max_length=MAX_PHOTO*4//3+200)
     source_kind: str = Field(default='photo',pattern='^(photo|selfie|generated|internet)$')
+    label: str = Field(default='',max_length=80)
+
+
+class PhotoLabel(BaseModel):
+    label: str = Field(min_length=1,max_length=80)
+
+
+def photo_of(meta, entries):
+    """Follow explicit asset lineage, never a person's name or a visual similarity."""
+    seen=set()
+    while meta and meta.get('slug') not in seen:
+        seen.add(meta.get('slug'))
+        photo=(meta.get('photo_skin_approval') or {}).get('source_photo') or meta.get('selfie_photo')
+        if isinstance(photo,str) and re.fullmatch('[a-f0-9]{64}',photo):return photo
+        parent=meta.get('variant_of') or meta.get('derived_from') or (meta.get('source') or {}).get('derived_from')
+        meta=entries.get(parent)
+    return None
+
+
+def collections(store,K,root):
+    entries={m['slug']:m for m in K.list_all(root)};groups={}
+    for meta in entries.values():
+        photo=photo_of(meta,entries)
+        if not photo:continue
+        artifact=store.get('artifact',photo) or {}
+        if not (artifact.get('provenance') or {}).get('photo_skin_source'):continue
+        label=store.get('photo_source',photo) or {}
+        group=groups.setdefault(photo,{'photo':photo,'tag':'selfie:'+photo,
+            'label':label.get('label') or 'Selfie '+photo[:8], 'url':'/api/artifacts/'+photo,
+            'source_kind':artifact['provenance'].get('source_kind','photo'),'models':[]})
+        if not label.get('label') and (meta.get('photo_skin_approval') or {}).get('settings',{}).get('name'):
+            group['label']=meta['photo_skin_approval']['settings']['name']
+        directory=(Path(root)/meta['slug']).resolve()
+        if directory.parent!=Path(root).resolve():continue
+        files=[]
+        for path in sorted((directory/'targets').glob('*')):
+            if path.suffix.lower() not in ('.glb','.gltf') or not path.is_file() or not path.resolve().is_relative_to(directory):continue
+            files.append({'file':path.relative_to(directory).as_posix(),'name':path.stem,'bytes':path.stat().st_size})
+        group['models'].append({'slug':meta['slug'],'name':meta['name'],'model':meta.get('model'),
+            'preview_url':f"/api/characters/{quote(meta['slug'],safe='')}/preview",'source':meta.get('source') or {},
+            'variant_of':meta.get('variant_of'),'stats':meta.get('stats') or {},'verification':meta.get('verification'),
+            'tags':list(dict.fromkeys([*(meta.get('tags') or []),'selfie:'+photo])),
+            'targets':meta.get('targets') or {},'fitted_models':files})
+    for group in groups.values():group['models'].sort(key=lambda m:m['name'].casefold())
+    return sorted(groups.values(),key=lambda g:(g['label'].casefold(),g['photo']))
 
 
 class Placement(BaseModel):
@@ -165,6 +212,68 @@ def demo_plan(game,chars,lead,source,seed,root=None):
 
 def register(app,auth,store,chars):
     from fastapi import Depends,HTTPException
+    from fastapi.responses import Response
+
+    def source(photo):
+        if not re.fullmatch('[a-f0-9]{64}',photo):raise HTTPException(404,'Source photo missing')
+        artifact=store.get('artifact',photo) or {}
+        if not (artifact.get('provenance') or {}).get('photo_skin_source'):raise HTTPException(404,'Source photo missing')
+        return artifact
+
+    @app.get('/api/photo-skins/collections')
+    def library(actor=Depends(auth)):
+        K,root=chars()
+        return collections(store,K,root)
+
+    @app.post('/api/photo-skins/photos/{photo}/label')
+    def rename(photo:str,body:PhotoLabel,actor=Depends(auth)):
+        source(photo);label=body.label.strip()
+        if not label:raise HTTPException(422,'Enter a name for this image')
+        with store.lock:
+            row=(store.get('photo_source',photo) or {})|{'photo':photo,'label':label,'updated':time.time()}
+            store.put('photo_source',photo,row)
+        return row
+
+    def export_model(photo,slug,file):
+        from . import attachments as A
+        source(photo);K,root=chars();entries={m['slug']:m for m in K.list_all(root)};meta=entries.get(slug)
+        if not meta or photo_of(meta,entries)!=photo:raise HTTPException(404,'Model does not belong to this source image')
+        directory=(Path(root)/slug).resolve();relative=file or meta.get('model','');path=(directory/relative).resolve()
+        if directory.parent!=Path(root).resolve() or not path.is_relative_to(directory) or not path.is_file():raise HTTPException(404,'Model missing')
+        if relative!=meta.get('model') and (not relative.startswith('targets/') or len(Path(relative).parts)!=2):raise HTTPException(422,'Select the donor or a fitted target model')
+        if path.suffix.lower() not in ('.gltf','.glb'):raise HTTPException(422,'Select a GLB or glTF model')
+        if path.stat().st_size>64*1024**2:raise HTTPException(422,'Model exceeds the 64 MiB export budget')
+        # Validate companion paths before packing a glTF; no escaping the private model directory.
+        try:
+            gl,_=A.read_gltf(path);budget=path.stat().st_size
+            for item in [*gl.get('buffers',[]),*gl.get('images',[])]:
+                uri=item.get('uri','')
+                if not uri or uri.startswith('data:'):continue
+                from urllib.parse import unquote,urlsplit
+                parsed=urlsplit(uri);external=(path.parent/unquote(parsed.path)).resolve()
+                raw_external=(path.parent/uri).resolve()
+                if parsed.scheme or parsed.netloc or not external.is_relative_to(directory) or not raw_external.is_relative_to(directory):raise ValueError('Model companion leaves its collection folder')
+                budget+=external.stat().st_size
+                if budget>64*1024**2:raise ValueError('Packed model exceeds the 64 MiB export budget')
+            gl,blob=A.pack(path)
+            from . import blender_roundtrip
+            blender_roundtrip.tag(gl,meta)
+            data=A.glb_bytes(gl,blob)
+            if len(data)>64*1024**2:raise ValueError('Packed model exceeds the 64 MiB export budget')
+        except (ValueError,OSError,KeyError) as e:raise HTTPException(422,str(e)) from e
+        return data,path.stem+'.glb'
+
+    @app.get('/api/photo-skins/collections/{photo}/models/{slug}/download')
+    def download(photo:str,slug:str,file:str='',actor=Depends(auth)):
+        data,name=export_model(photo,slug,file)
+        return Response(data,media_type='model/gltf-binary',headers={'Content-Disposition':"attachment; filename*=UTF-8''"+quote(name,safe='')})
+
+    @app.post('/api/photo-skins/collections/{photo}/models/{slug}/export')
+    def export(photo:str,slug:str,file:str='',actor=Depends(auth)):
+        data,name=export_model(photo,slug,file)
+        ref=store.put_artifact(data,name,'model/gltf-binary',{'selfie_photo':photo,'character':slug,'file':file})
+        return {'sha256':ref.sha256,'name':name,'url':'/api/artifacts/'+ref.sha256}
+
     @app.post('/api/photo-skins/photos')
     def upload(body:PhotoUpload,actor=Depends(auth)):
         try:
@@ -173,6 +282,9 @@ def register(app,auth,store,chars):
             data=normalize_photo(base64.b64decode(encoded,validate=True))
         except (ValueError,OSError) as e:raise HTTPException(422,str(e)) from e
         ref=store.put_artifact(data,'photo-source.png','image/png',{'photo_skin_source':True,'source_kind':body.source_kind,'uploaded_by':str(actor)})
+        with store.lock:
+            if not store.get('photo_source',ref.sha256):
+                store.put('photo_source',ref.sha256,{'photo':ref.sha256,'label':body.label.strip(),'created':time.time()})
         return {'photo':ref.sha256,'url':'/api/artifacts/'+ref.sha256}
 
     @app.post('/api/characters/{slug}/photo-skins')
@@ -246,6 +358,7 @@ def register(app,auth,store,chars):
                 for key in ('targets','target_files','rigs','retarget_profiles','readiness','native_player','files','preview','preview_url','verification','verified','aliases','texture_approval','anims_file','animations'):
                     new.pop(key,None)
                 new.update(slug=variant,name=row['settings']['name']+' on '+meta['name'],model='model.glb',variant_of=meta['slug'],
+                    selfie_photo=row['settings']['photo'],tags=list(dict.fromkeys([*(meta.get('tags') or []),'selfie:'+row['settings']['photo']])),
                     photo_skin_approval={'review':rid,'source_photo':row['settings']['photo'],'source_sha256':row['source_sha256'],
                         'candidate':row['candidate'],'images':row['images'],'settings':row['settings'],'at':time.time(),'by':str(actor)},
                     verification={'status':'unverified','reason':'Photo skin approved; requires native build and gameplay verification'},files=['model.glb'])
