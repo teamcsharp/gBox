@@ -14,19 +14,26 @@
   }
   function mount(host, io, session) {
     const sid = session.sid, token = {};
+    const timeouts = new Set();
+    function bounded(promise, message, ms = 12000) {
+      let timer;
+      return Promise.race([promise, new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error(message)),ms);timeouts.add(timer);})])
+        .finally(()=>{clearTimeout(timer);timeouts.delete(timer);});
+    }
     const command = (op, args = {}) => {
       const bytes = new Uint8Array(16); globalThis.crypto.getRandomValues(bytes);
       bytes[6] = (bytes[6] & 15) | 64; bytes[8] = (bytes[8] & 63) | 128;
       const h = [...bytes].map(v => v.toString(16).padStart(2, '0')).join('');
       const command_id = `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
       // A timeout is never retried: the game may already have applied this exact command.
-      return io.api(`/api/sessions/${encodeURIComponent(sid)}/rpc`, {op: 'pso_controls',
-        args: {command_id, expires: Date.now()/1000 + 8, input: {session_id: sid, op, ...args}}});
+      return bounded(io.api(`/api/sessions/${encodeURIComponent(sid)}/rpc`, {op: 'pso_controls',
+        args: {command_id, expires: Date.now()/1000 + 8, input: {session_id: sid, op, ...args}}}),
+        'PSO did not answer in time. The outcome may be unknown; no action was retried. Use Reconnect PSO controls to diagnose the connection.');
     };
     host._psoMount = token;
     const current = () => host.isConnected && host._psoMount === token;
     host.dataset.psoSid = sid;
-    let cap, items = [], busy = false, ready = false, prefsReady = false, loading = false, checking = false, loadId = 0, selected = new Set();
+    let cap, items = [], busy = false, ready = false, prefsReady = false, loading = false, checking = false, recovering = false, loadId = 0, selected = new Set();
     let magId = null, magTimer = null, modeTimer = null, magPatch = {};
     let lootTimer = null, lootDirty = false, selectionTouched = false, bossesReady = false, lastTravel = '';
     const q = sel => host.querySelector(sel);
@@ -40,7 +47,9 @@
       .pso-controls .pso-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}.pso-controls .pso-stat input{width:64px}
       .pso-controls [role=status]{white-space:pre-wrap;overflow-wrap:anywhere;margin:6px 0}.pso-controls button{cursor:pointer}
     </style><div class="pso-controls">
-      <p class="mut" data-profile>Checking the running game's version…</p>
+      <div class="pso-row" style="justify-content:space-between;flex-wrap:nowrap;align-items:flex-start"><p class="mut" data-profile style="flex:1;min-width:0;margin:6px 0">Checking the running game's version…</p>
+        <button type="button" class="act" data-rehook title="Troubleshoot and reconnect PSO controls without restarting the game" aria-label="Reconnect PSO controls" style="flex:none">&#8635;</button></div>
+      <div data-rehook-report role="status" aria-live="polite"></div>
       <fieldset data-controls disabled><legend>Item database</legend>
         <input type="search" data-search placeholder="Search the disc's item database" aria-label="Search PSO items">
         <div class="pso-row"><select data-category aria-label="Item category">${["Weapons", "Armor", "Mags", "Tools"].map(x => `<option>${x}</option>`).join("")}</select>
@@ -73,6 +82,8 @@
       </fieldset>
       <fieldset data-defaults disabled><legend>Equipment default</legend>
         <label><input type="checkbox" data-equip> Default: equip any weapon</label>
+        <label><input type="checkbox" data-always-hit> Default: attacks never miss</label>
+        <small data-accuracy-note>Bypasses the accuracy miss roll for your attacks on supported revisions. Range, target contact and invulnerability still apply.</small>
         <small data-preferences>Shared default for supported current and future builds on your PCs. This does not enable patches on an unsupported revision.</small>
       </fieldset>
       <fieldset data-live disabled><legend>Live equipment and stats</legend>
@@ -117,7 +128,11 @@
       q("[data-spawn]").disabled = busy || checking || !ready || !cap?.supported;
       q("[data-live]").disabled = busy || checking || !cap?.supported;
       q("[data-defaults]").disabled = busy || checking || !prefsReady;
-      q("[data-retry]").disabled = busy || loading;
+      q("[data-retry]").disabled = busy || loading || recovering;
+      q('[data-rehook]').disabled = busy || recovering;
+      q('[data-rehook]').textContent = recovering ? '…' : '↻';
+      q('[data-rehook]').setAttribute('aria-busy',String(recovering));
+      q('[data-always-hit]').disabled = busy || checking || !prefsReady || !cap?.features?.always_hit;
       q("[data-drop]").disabled = busy || checking || !ready || !cap?.supported || !selected.size;
       q("[data-random]").disabled = busy || checking || !ready || !cap?.supported || !q("[data-class]").value;
       // Browsing is independent of revision support for native actions.
@@ -274,14 +289,14 @@
       if(!current()||busy||checking||!cap?.features?.randomized)return;
       try {const r=await command('modes');if(current()){showModes(r.randomized);if(r.travel && r.travel.message!==lastTravel){lastTravel=r.travel.message;say(lastTravel);}}}catch(error){say(error.message);}
     },5000);
-    async function load() {
-      if (!current() || busy || loading) return;
+    async function load(knownCap = null, notice = '') {
+      if (!current() || busy || loading || recovering) return;
       const attempt = ++loadId;
       loading = true; checking = true; cap = null; prefsReady = false; enabled();
       q("[data-equip]").indeterminate = true;
       const fresh = () => current() && attempt === loadId;
       try {
-        const result = await command("capabilities");
+        const result = knownCap || await command("capabilities");
         if (!fresh()) return;
         cap = result;
         checking = false; enabled();
@@ -300,15 +315,17 @@
             if(r.default)q('[data-boss]').value=r.default;
             bossesReady=!!r.bosses.length;enabled();
           }).catch(error=>{if(fresh())q('[data-boss]').innerHTML='<option value="">Boss destinations unavailable</option>';}),
-          Promise.resolve().then(() => io.api("/api/pso/items?version=" + cap.version)).then(catalog => {
+          Promise.resolve().then(() => bounded(io.api("/api/pso/items?version=" + cap.version),'Item database timed out. Use Retry loading.')).then(catalog => {
             if (!fresh()) return;
             if (!Array.isArray(catalog)) throw new Error("Invalid item database");
             items = catalog; ready = true; render();
           }).catch(() => { if (fresh()) messages.push("Item database unavailable. Prepare the owned disc or retry loading."); }),
-          Promise.resolve().then(() => io.api("/api/pso/preferences")).then(prefs => {
+          Promise.resolve().then(() => bounded(io.api("/api/pso/preferences"),'PSO preferences timed out. Use Retry loading.')).then(prefs => {
             if (!fresh()) return;
             if (typeof prefs?.equip_any !== 'boolean') throw new Error("Invalid equipment default");
             prefsReady = true; q("[data-equip]").indeterminate = false; q("[data-equip]").checked = prefs.equip_any;
+            q('[data-always-hit]').checked=prefs.always_hit!==false;
+            q('[data-accuracy-note]').textContent=cap.features?.always_hit ? 'Bypasses your attack accuracy miss roll. Range, target contact and invulnerability still apply.' : 'The always-hit patch needs verification for this game revision.';
             q('[data-scape]').checked=!!prefs.permanent_scape;q('[data-legendary]').checked=!!prefs.legendary;
             q('[data-enemy-on]').checked=!!prefs.enemy_drops;q('[data-walk]').checked=!!prefs.walk_through;
             if(!selectionTouched && Array.isArray(prefs.enemy_codes))selected=new Set(prefs.enemy_codes.slice(0,20));
@@ -322,14 +339,36 @@
           } })
         ]);
         if (!fresh()) return;
-        say([ready ? cap.supported ? "Choose items to drop, or choose your class and scatter rares."
+        say([notice,ready ? cap.supported ? "Choose items to drop, or choose your class and scatter rares."
           : `Item database available. ${cap.reason}` : "", ...messages].filter(Boolean).join(" "));
-      } catch (e) { if (fresh()) say(e.message || "Could not check this game's live controls. Retry loading when the worker is available."); }
+      } catch (e) { if (fresh()) {q('[data-profile]').textContent='PSO controls not connected';say(e.message || "Could not check this game's live controls. Use Reconnect PSO controls.");} }
       finally { if (fresh()) { loading = false; checking = false; enabled(); } }
     }
-    q("[data-retry]").onclick = load;
+    q('[data-rehook]').onclick = async()=>{
+      if(!current() || busy || recovering)return;
+      ++loadId;loading=false;checking=true;recovering=true;cap=null;bossesReady=false;enabled();
+      const report=q('[data-rehook-report]');report.textContent='Reconnecting to this emulator and checking the native mod hook…';
+      try{
+        const result=await command('rehook');if(!current())return;
+        report.textContent=[...(result.steps||[]).map(s=>s.message),result.message].filter(Boolean).join('\n');
+        checking=false;recovering=false;
+        if(result.capabilities){
+          const next=result.ready ? result.capabilities : {...result.capabilities,supported:false,features:{},reason:result.message};
+          await load(next,result.message);
+        }else{cap=null;q('[data-profile]').textContent='PSO controls not connected';say(result.message);}
+      }catch(error){if(current()){q('[data-profile]').textContent='PSO reconnect did not finish';report.textContent=error.message;say(error.message);}}
+      finally{if(current()){checking=false;recovering=false;enabled();}}
+    };
+    q('[data-always-hit]').onchange=async e=>{
+      if(!current()||busy||checking||!prefsReady||!cap?.features?.always_hit)return;
+      const on=e.target.checked;busy=true;enabled();
+      try{await bounded(io.api('/api/pso/preferences',{always_hit:on}),'Could not confirm the always-hit preference. Retry loading to check it.');}
+      catch(error){if(current()){e.target.checked=!on;say(error.message);}busy=false;enabled();return;}
+      busy=false;if(current())await run('always_hit',{on});enabled();
+    };
+    q("[data-retry]").onclick = ()=>load();
     load();
-    return { dispose() { clearTimeout(lootTimer);clearTimeout(magTimer);clearInterval(modeTimer);if (host._psoMount === token) { host._psoMount = null; host.dataset.psoSid = ""; } } };
+    return { dispose() { for(const t of timeouts)clearTimeout(t);timeouts.clear();clearTimeout(lootTimer);clearTimeout(magTimer);clearInterval(modeTimer);if (host._psoMount === token) { host._psoMount = null; host.dataset.psoSid = ""; } } };
   }
   return { mount, isPSO, filterItems };
 });

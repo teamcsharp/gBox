@@ -850,6 +850,16 @@ def pso_mods(inp: ModsIn, ctx):
     on=true/false codes=[..] (every enemy and box drops a rare from the list; defaults to the rarest 2OEF items) | status."""
     from .tools import SESSIONS
     ad, g = SESSIONS[inp.session_id]
+    if inp.op == 'rehook':
+        from .pso_rehook import recover
+        return {'result':recover(inp.session_id,ad,g,ctx)}
+    if inp.op == 'always_hit':
+        from . import pso_accuracy
+        from .pso_live import deadline
+        deadline(ctx)
+        result=pso_accuracy.set_enabled(ad,g.get('platform'),inp.on)
+        ad._pso_preferences_dirty=True
+        return {'result':result}
     if inp.op == "capabilities":
         from .pso_controls import capabilities
         return {"result": capabilities(g, ad.read_memory)}

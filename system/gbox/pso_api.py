@@ -12,6 +12,7 @@ from .pso_controls import DEFAULTS
 
 class PreferencesIn(BaseModel):
     equip_any: bool | None = None
+    always_hit: bool | None = None
     permanent_scape: bool | None = None
     legendary: bool | None = None
     enemy_drops: bool | None = None

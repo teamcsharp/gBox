@@ -61,8 +61,11 @@ def test_guard_refuses_without_any_writes(damage):
 def test_exact_gc_revision_enables_panel_without_dc_reads():
     ram=RAM()
     from gbox import pso_gc_adventure as A
+    from gbox import pso_accuracy as H
     for a,b in A.GUARDS.items():ram.put(a,b)
     ram.put(A.DROP_ENTRY,A.DROP_ORIGINAL)
+    for a,b in H.GUARDS.items():ram.put(a,b)
+    for a,_,_,b in H.SITES:ram.put(a,b)
     cap=pso_controls.capabilities({'title':'Phantasy Star Online Episode I & II Plus','platform':'gamecube'},ram.read_memory)
     assert cap['supported'] and all(cap['features'].values())
     assert 'GameCube' in cap['label']
