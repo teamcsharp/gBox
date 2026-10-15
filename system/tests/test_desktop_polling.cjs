@@ -27,7 +27,7 @@ function deferred() {
 }
 function setup(visible = false) {
   const nodes = new Map(), calls = [], active = new Map(), maximum = new Map();
-  let renders = 0, tokens = 0, auditRenders = 0;
+  let renders = 0, tokens = 0, auditRenders = 0; const operationJobs=[];
   function node(id) {
     if (!nodes.has(id)) nodes.set(id, { id, innerHTML: '', textContent: '', style: {}, dataset: {},
       classes: new Set(), attrs: {}, setAttribute(k, v) { this.attrs[k] = v; },
@@ -54,6 +54,7 @@ function setup(visible = false) {
     GBoxRequestSolvers: { badge: () => '' }, GBoxReportStory: { disclosureHtml: () => '', reattach() {} }, fmtDur: String, fmtTok: String,
     updateInboxView(host, key, render) { renders++; host.innerHTML = render(); host.key = key; },
     AUD: { rows: [], after: 0 }, activity: { remote() {} }, processPopupSync() {},
+    GAME_OUTPUT: { observe: job=>operationJobs.push(job), audit() {} },
     AU_ACTION: [], AU_ACTOR: [], auIcon: () => '*', auBadge: () => '',
     auGroup: rows => rows.map(row => [row]), auditRender: () => { auditRenders++; }, EMU_ICON: {}
   });
@@ -62,7 +63,7 @@ function setup(visible = false) {
     run: code => vm.runInContext(code, context),
     count: url => calls.filter(call => call.url === url).length,
     request: (url, n = 0) => calls.filter(call => call.url === url)[n],
-    renders: () => renders, tokens: () => tokens, auditRenders: () => auditRenders };
+    renders: () => renders, tokens: () => tokens, auditRenders: () => auditRenders, operationJobs };
 }
 function request(status = 'open') {
   return { id: 'request-1', number: 1, title: 'Actual request', status, source: 'app', kind: 'text',
@@ -205,12 +206,14 @@ test('desktop popup receives the shared jobs result without introducing a second
   x.request('/api/jobs?state=queued,running&limit=100').resolve({ ok: true, data: jobs });
   x.request('/api/audit?tail=500').resolve({ ok: true, data: [] }); await p;
   assert.deepEqual(received, [jobs]);
+  assert.deepEqual(x.operationJobs,jobs,'the text overlay reuses the same shared job snapshot');
   assert.equal(x.count('/api/jobs?state=queued,running&limit=100'), 1);
 });
 
 test('desktop waits for its API credentials before creating the donor preview URL', async () => {
   const ready = deferred(), received = []; let options, mounts = 0;
   const context = vm.createContext({ SBX_READY: ready.promise, SBX: { api: '', tok: '' }, encodeURIComponent,
+    document:{querySelector:()=>null},WORKERS:{get:async()=>({ok:true,data:[]})},S:{workerName:'fixture'},
     window: { GBoxProcessPopup: { mount(opts) { mounts++; options = opts; return { sync: jobs => received.push(jobs) }; } } } });
   vm.runInContext(between('let PROCESS_POPUP = null;', 'function auditPoll(explicit'), context);
   const pending = vm.runInContext('processPopupSync([{id:"model"}])', context); await tick();

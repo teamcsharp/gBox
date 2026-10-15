@@ -56,6 +56,8 @@ contextBridge.exposeInMainWorld("gbox", {
   embedKill: () => ipcRenderer.invoke("embed:kill"),
   appFocus: () => ipcRenderer.invoke("app:focus"),
   vizOverlay: st => ipcRenderer.invoke("viz:overlay", st),
+  operationConsoleFrame: st => ipcRenderer.invoke('operation-console:frame',st),
+  onOperationConsole: fn => ipcRenderer.on('operation-console',(_e,event)=>fn(event)),
   overlay: (op, arg) => ipcRenderer.invoke("overlay", op, arg),
   onOverlay: fn => ipcRenderer.on("overlay:status", (_e, s) => fn(s)),
   onAppFocus: fn => ipcRenderer.on("app-focus", () => fn()),
