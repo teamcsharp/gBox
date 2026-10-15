@@ -25,6 +25,44 @@ async function parseModel(bytes, options, model) {
   return new GLTFLoader(manager).parseAsync(bytes, '');
 }
 
+function paintUvAttribute(material) {
+  // Three r160 Mesh.raycast exposes uv/uv1. Its deprecated uv2 is an alias for uv1, not UV set 2.
+  const channel = material?.map?.channel ?? 0;
+  return material?.map && (channel === 0 || channel === 1) ? (channel === 0 ? 'uv' : 'uv1') : null;
+}
+
+export function characterPaintHit(hit) {
+  if (!hit) return null;
+  const material = Array.isArray(hit.object?.material) ? hit.object.material[hit.face?.materialIndex ?? 0] : hit.object?.material;
+  const attribute = paintUvAttribute(material), point = attribute && hit[attribute];
+  if (!attribute || !hit.object?.geometry?.attributes?.[attribute] || !point || typeof point.clone !== 'function' || typeof material.map.transformUv !== 'function' || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return null;
+  const uv = point.clone(); material.map.transformUv(uv);
+  return Number.isFinite(uv.x) && Number.isFinite(uv.y) ? {u:uv.x,v:uv.y,material:material.name,materialId:material.uuid} : null;
+}
+
+export function characterUvLines(model, materialName, limit = 12000) {
+  const lines = [];
+  model.traverse(object => {
+    if (!object.isMesh || lines.length >= limit) return;
+    const geometry = object.geometry, materials = [].concat(object.material || []);
+    const groups = geometry?.groups?.length ? geometry.groups : [{start:0,count:geometry?.index?.count || geometry?.attributes?.position?.count || 0,materialIndex:0}];
+    for (const group of groups) {
+      const material = materials[group.materialIndex || 0];
+      if (material?.name !== materialName) continue;
+      const attribute = paintUvAttribute(material), uv = attribute && geometry.attributes?.[attribute];
+      if (!uv) continue;
+      const end = Math.min(group.start + group.count, geometry.index?.count || uv.count);
+      for (let i = group.start; i + 2 < end && lines.length < limit; i += 3) {
+        const ids = [0,1,2].map(n => geometry.index ? geometry.index.getX(i+n) : i+n);
+        if (ids.some(id => !Number.isInteger(id) || id < 0 || id >= uv.count)) continue;
+        const line = ids.map(id => [uv.getX(id),uv.getY(id)]);
+        if (line.every(point => point.every(Number.isFinite))) lines.push(line);
+      }
+    }
+  });
+  return lines;
+}
+
 // options.fileUrl(rel): URL of another file of this collection entry, including glTF sidecars and clip GLBs.
 export async function createCharacterViewer(container, url, options = {}) {
   const response = await fetch(url);
@@ -54,8 +92,9 @@ export async function createCharacterViewer(container, url, options = {}) {
   function paintEvent(event){
     if(!paintHandler||event.button>0||event.type==='pointermove'&&!(event.buttons&1))return;
     const rect=renderer.domElement.getBoundingClientRect();raycaster.setFromCamera(new THREE.Vector2((event.clientX-rect.left)/rect.width*2-1,1-(event.clientY-rect.top)/rect.height*2),camera);
-    const hit=raycaster.intersectObject(gltf.scene,true).find(h=>h.uv);
-    if(hit){const material=Array.isArray(hit.object.material)?hit.object.material[hit.face.materialIndex]:hit.object.material,uv=hit.uv.clone();material?.map?.transformUv(uv);paintHandler({u:uv.x,v:uv.y,material:material?.name,materialId:material?.uuid,event});}
+    // Do not paint through an unsupported front surface into another mesh behind it.
+    const hit=characterPaintHit(raycaster.intersectObject(gltf.scene,true)[0]);
+    if(hit)paintHandler({...hit,event});
     event.preventDefault();event.stopImmediatePropagation();
   }
   renderer.domElement.addEventListener('pointerdown',paintEvent,true);renderer.domElement.addEventListener('pointermove',paintEvent,true);
@@ -86,19 +125,14 @@ export async function createCharacterViewer(container, url, options = {}) {
   return {
     THREE, holder, gltf, paintMaterialIds:true,
     materials(){const names=new Set();gltf.scene.traverse(o=>{if(o.isMesh)for(const m of [].concat(o.material||[]))if(m.map)names.add(m.name);});return [...names];},
-    uvLines(materialName,limit=12000){
-      const lines=[];gltf.scene.traverse(o=>{if(!o.isMesh||lines.length>=limit)return;const g=o.geometry,uv=g?.attributes?.uv;if(!uv)return;
-        const mats=[].concat(o.material||[]),groups=g.groups?.length?g.groups:[{start:0,count:g.index?.count||uv.count,materialIndex:0}];
-        for(const group of groups){if(mats[group.materialIndex||0]?.name!==materialName)continue;const end=Math.min(group.start+group.count,g.index?.count||uv.count);
-          for(let i=group.start;i+2<end&&lines.length<limit;i+=3){const ids=[0,1,2].map(n=>g.index?g.index.getX(i+n):i+n);lines.push(ids.map(j=>[uv.getX(j),uv.getY(j)]));}}});return lines;
-    },
+    uvLines(materialName,limit=12000){return characterUvLines(gltf.scene,materialName,limit);},
     paint(handler){paintHandler=handler;controls.enabled=!handler;controls.autoRotate=handler?false:(options.autoRotate??true);},
     texture(image,materialName){
       let texture=generatedTextures.get(materialName);
       if(texture){texture.image=image;texture.needsUpdate=true;return;}
       texture=new THREE.CanvasTexture(image);texture.flipY=false;texture.colorSpace=THREE.SRGBColorSpace;
       let original;gltf.scene.traverse(o=>{if(o.isMesh&&!original)original=[].concat(o.material||[]).find(m=>m.name===materialName)?.map;});
-      if(original){texture.wrapS=original.wrapS;texture.wrapT=original.wrapT;texture.repeat.copy(original.repeat);texture.offset.copy(original.offset);texture.center.copy(original.center);texture.rotation=original.rotation;texture.updateMatrix();}
+      if(original){texture.channel=original.channel??0;texture.wrapS=original.wrapS;texture.wrapT=original.wrapT;texture.repeat.copy(original.repeat);texture.offset.copy(original.offset);texture.center.copy(original.center);texture.rotation=original.rotation;texture.updateMatrix();}
       paintTextures.add(texture);generatedTextures.set(materialName,texture);
       gltf.scene.traverse(o=>{if(o.isMesh)for(const m of [].concat(o.material||[]))if(m.name===materialName){if(m.map)paintTextures.add(m.map);m.map=texture;m.needsUpdate=true;}});
     },
