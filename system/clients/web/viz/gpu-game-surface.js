@@ -227,7 +227,7 @@
     return c.toDataURL("image/png");
   }
   function layer(url) {
-    const frame = doc.createElement("iframe"); frame.src = url; frame.tabIndex = -1;
+    const frame = doc.createElement("iframe"); frame.src = url; frame.tabIndex = -1; frame.className = "gbox-game-overlay";
     frame.setAttribute("aria-hidden", "true");
     Object.assign(frame.style, { border: "0", background: "transparent", colorScheme: "dark", pointerEvents: "none" });
     return frame;

@@ -51,6 +51,8 @@ contextBridge.exposeInMainWorld("gbox", {
   clipImage: dataUrl => ipcRenderer.invoke("clip:image", dataUrl),
   setFullScreen: on => ipcRenderer.invoke("win:fullscreen", on),
   onFullscreen: fn => ipcRenderer.on("fullscreen", (_e, on) => fn(on)),
+  compactView: state => ipcRenderer.invoke('compact:view', state),
+  onCompactView: fn => ipcRenderer.on('compact:view', (_e, state) => fn(state)),
   updatePending: () => ipcRenderer.invoke("update:pending"),
   browser: (op, url) => ipcRenderer.invoke("browser:send", op, url),
   embedFocus: () => ipcRenderer.invoke("embed:focus"),

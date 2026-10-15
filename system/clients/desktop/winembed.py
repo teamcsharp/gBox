@@ -5,6 +5,7 @@ Long-running helper driven by the Electron main process over stdin/stdout (one J
   {"op": "move", "x":.., "y":.., "w":.., "h":..}     physical pixels, relative to the parent's client area
   {"op": "hide"} / {"op": "detach"}
   {"op": "watch", "app": <HWND>}                    the gBox window: reply {"ok": true, "front": bool}, then report changes
+  {"op": "appchrome", "app": <HWND>, "pid": <gBox PID>, "on": true|false}   temporarily hide only gBox's caption controls
 Replies: {"ok": true, ...} or {"ok": false, "error": "..."}.
 Events: {"event": "foreground", "front": bool} whenever gBox (or the game docked in it) gains or loses the foreground.
 
@@ -57,7 +58,7 @@ def emit(obj):
 
 
 state = {"hwnd": None, "style": None, "exstyle": None, "pid": None, "parent": None, "rect": None, "shown": True, "mode": "native",
-         "app": None, "front": None}
+         "app": None, "front": None, "compact": False, "app_chrome": None, "source_aspect": None}
 lock = __import__("threading").Lock()
 
 
@@ -135,6 +136,10 @@ def attach(pid: int, parent: int):
     if u32.IsIconic(h):
         u32.ShowWindow(h, 4)                                 # SW_SHOWNOACTIVATE: un-minimize before docking
     u32.RemovePropW(h, "GBoxCompositedSurface")
+    source_rect = wintypes.RECT()
+    u32.GetClientRect(h, ctypes.byref(source_rect))
+    source_width, source_height = source_rect.right-source_rect.left, source_rect.bottom-source_rect.top
+    state['source_aspect'] = source_width/source_height if source_width > 0 and source_height > 0 else None
     # the emulator starts fully transparent (gBox launches it that way so it never flashes on the desktop): opaque from here
     state.update(hwnd=h, pid=pid, parent=parent, holes=None, mode="native", style=u32.GetWindowLongPtrW(h, GWL_STYLE),
                  exstyle=u32.GetWindowLongPtrW(h, GWL_EXSTYLE) & ~0x00080000)   # WS_EX_LAYERED
@@ -394,6 +399,57 @@ def watch(app: int):
     return {"ok": bool(state["app"]), "front": bool(report_front(force=True))}
 
 
+def appchrome(app: int, pid: int, on: bool, restore_bits=None):
+    """Change caption bits on the already registered gBox HWND only; never the game.
+
+    Keep WS_THICKFRAME so normal edge resizing works. Restore just the saved
+    chrome bits rather than overwriting visibility/maximize changes made later.
+    """
+    known = state.get('app') or state.get('parent')
+    if not app or app != known or not u32.IsWindow(app):
+        return {'ok': False, 'error': 'The registered gBox window is unavailable'}
+    actual_pid = wintypes.DWORD()
+    u32.GetWindowThreadProcessId(app, ctypes.byref(actual_pid))
+    if not pid or actual_pid.value != pid:
+        return {'ok': False, 'error': 'The gBox window process does not match'}
+    bits = WS_CAPTION | WS_SYSMENU | WS_MINMAX
+    current = u32.GetWindowLongPtrW(app, GWL_STYLE)
+    saved = state.get('app_chrome')
+    if saved and saved['hwnd'] != app:
+        return {'ok': False, 'error': 'The compact gBox window has changed'}
+    if on:
+        if saved is None:
+            saved = {'hwnd': app, 'pid': pid, 'bits': current & bits}
+        desired = current & ~bits
+    else:
+        # The trusted main process retains the snapshot too, allowing recovery
+        # if this helper restarted while the live app stayed compact.
+        original = saved['bits'] if saved else int(restore_bits) & bits if restore_bits is not None else current & bits
+        desired = (current & ~bits) | original
+    u32.SetWindowLongPtrW(app, GWL_STYLE, desired)
+    u32.SetWindowPos(app, 0, 0, 0, 0, 0, SWP_NOZORDER | SWP_FRAMECHANGED | 0x0001 | 0x0002 | 0x0010)
+    if u32.GetWindowLongPtrW(app, GWL_STYLE) & bits != desired & bits:
+        u32.SetWindowLongPtrW(app, GWL_STYLE, current)
+        u32.SetWindowPos(app, 0, 0, 0, 0, 0, SWP_NOZORDER | SWP_FRAMECHANGED | 0x0001 | 0x0002 | 0x0010)
+        return {'ok': False, 'error': 'Windows did not apply the gBox caption change'}
+    state['app_chrome'] = saved if on else None
+    state['compact'] = bool(on)
+    return {'ok': True, 'on': bool(on), 'aspect': state.get('source_aspect'), 'bits': saved['bits'] if saved else desired & bits}
+
+
+def compact_click(previous, point, when, window, enabled, limit, extent):
+    """Pure native double-click detection, scoped before calling this helper."""
+    if not enabled or not window:
+        return None, False
+    x, y = point
+    current = (x, y, when, window)
+    if previous:
+        px, py, pt, pw = previous
+        if pw == window and 0 <= when-pt <= limit and abs(x-px) <= extent[0]/2 and abs(y-py) <= extent[1]/2:
+            return None, True
+    return current, False
+
+
 def foreground_watch():
     """EVENT_SYSTEM_FOREGROUND (out of context, every process) + a 100 ms recheck: report gBox gaining/losing the front."""
     WINEVENT = ctypes.WINFUNCTYPE(None, wintypes.HANDLE, wintypes.DWORD, wintypes.HWND, ctypes.c_long, ctypes.c_long,
@@ -446,6 +502,7 @@ def rclick_hook():
         return r.left <= pt.x < r.right and r.top <= pt.y < r.bottom
 
     whip = {"on": False, "t": 0.0}
+    compact = {'click': None, 'release': False, 'hover': False}
 
     def target(pt, needs_front=False):
         """"game" / "app" (the gBox window, only while a game is docked in it) / None = not gBox's input."""
@@ -467,6 +524,34 @@ def rclick_hook():
 
     @PROC
     def proc(code, wp, lp):
+        if code == 0 and wp == WM_LBUTTONUP and compact['release']:
+            compact['release'] = False
+            return 1                                      # second half of a compact-mode double click
+        if code == 0 and wp in (0x200, WM_LBUTTONDOWN):
+            cm = ctypes.cast(lp, ctypes.POINTER(MS)).contents
+            enabled = bool(state.get('compact'))
+            hit = target(cm.pt) if enabled else None
+            if wp == 0x200:
+                show = False
+                if hit:
+                    cx, cy = rel(cm.pt)
+                    try:
+                        threshold = 32 * u32.GetDpiForWindow(state.get('app') or state['parent']) / 96
+                    except AttributeError:
+                        threshold = 48
+                    show = 0 <= cy < threshold
+                if show != compact['hover']:
+                    compact['hover'] = show
+                    emit({'event': 'compact-hover', 'show': show})
+            elif not whip['on']:
+                plain = not any(u32.GetAsyncKeyState(key) & 0x8000 for key in (0x10, 0x11, 0x12))
+                compact['click'], double = compact_click(compact['click'], (cm.pt.x, cm.pt.y), cm.time,
+                    state.get('hwnd'), enabled and hit == 'game' and plain, u32.GetDoubleClickTime(),
+                    (u32.GetSystemMetrics(36), u32.GetSystemMetrics(37)))
+                if double:
+                    compact['release'] = True
+                    emit({'event': 'piprestore'})
+                    return 1
         if code == 0 and (whip["on"] or wp == WM_LBUTTONDOWN):   # Alt + drag = pick whip: "swap this with that"
             m = ctypes.cast(lp, ctypes.POINTER(MS)).contents
             if whip["on"]:
@@ -563,7 +648,15 @@ for line in sys.stdin:
                  else captured(int(m["pid"])) if op == "captured"
                  else attach(int(m["pid"]), int(m["parent"])) if op == "attach" else move(m["x"], m["y"], m["w"], m["h"], m.get("holes")) if op == "move"
                  else watch(int(m.get("app") or 0)) if op == "watch"
+                 else appchrome(int(m.get('app') or 0), int(m.get('pid') or 0), bool(m.get('on')), m.get('bits')) if op == 'appchrome'
                  else hide() if op == "hide" else focus() if op == "focus" else kill() if op == "kill" else unfocus() if op == "unfocus" else detach() if op == "detach" else {"ok": False, "error": f"unknown op {op}"})
     except Exception as e:
         r = {"ok": False, "error": f"{type(e).__name__}: {e}"}
     emit(r)
+
+# Restore the caption if stdin closes while the app itself is still alive.
+if state.get('app_chrome'):
+    try:
+        appchrome(state['app_chrome']['hwnd'], state['app_chrome']['pid'], False)
+    except Exception:
+        pass
