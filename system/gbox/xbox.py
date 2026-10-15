@@ -290,11 +290,15 @@ def owned_windows(pids: set[int], known_hwnd: int | None = None) -> list[dict]:
     user.IsHungAppWindow.argtypes = [w.HWND]
     user.IsWindow.argtypes = [w.HWND]
     rows = []
+    seen = set()
 
     @ctypes.WINFUNCTYPE(w.BOOL, w.HWND, w.LPARAM)
     def each(hwnd, _):
         if not user.IsWindow(hwnd):
             return True
+        if int(hwnd) in seen:
+            return True
+        seen.add(int(hwnd))
         pid, rect = w.DWORD(), w.RECT()
         user.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
         if pid.value not in pids:
@@ -311,7 +315,15 @@ def owned_windows(pids: set[int], known_hwnd: int | None = None) -> list[dict]:
             row["text"] = "\n".join(dict.fromkeys(control["text"] for control in row["controls"]))[:8000]
         rows.append(row)
         return True
-    user.EnumWindows(each, 0)
+
+    @ctypes.WINFUNCTYPE(w.BOOL, w.HWND, w.LPARAM)
+    def top(hwnd, _):
+        each(hwnd, 0)
+        # The GUI fallback or a native host can parent the renderer before gBox
+        # first sees it. Search child windows too, still filtering by owned PID.
+        user.EnumChildWindows(hwnd, each, 0)
+        return True
+    user.EnumWindows(top, 0)
     # SetParent docks this renderer into Electron: it is no longer a top-level
     # window, but its previously verified HWND and process identity remain valid.
     if known_hwnd and not any(row["hwnd"] == known_hwnd for row in rows):
@@ -396,7 +408,7 @@ class XboxAdapter:
 
     def launch_game(self, rom: str) -> dict:
         import psutil
-        from .adapters import hidden_start, keep_offscreen
+        from .adapters import capture_start, keep_offscreen
         progress = getattr(self, "progress", lambda *_: None)
         exe = ensure_cxbx(self.config, progress)
         xbe = prepare_xbe(rom, self.config, progress)
@@ -416,12 +428,16 @@ class XboxAdapter:
             args = [str(exe), str(xbe.resolve())]
         try:
             self.launcher = subprocess.Popen(args, cwd=exe.parent, stdout=self._output, stderr=subprocess.STDOUT,
-                                             startupinfo=hidden_start())
+                                             startupinfo=capture_start())
             try:
                 self._owned = {self.launcher.pid: psutil.Process(self.launcher.pid).create_time()}
             except psutil.NoSuchProcess:
                 raise RuntimeError(f"Cxbx exited immediately (exit {self.launcher.poll()}). {self.log_tail(3000)}") from None
             self.proc = _OwnedProcess(self)
+            # Cxbx honors SW_SHOWDEFAULT for its render window. A minimized
+            # startup yields a 0x0 client and can prevent the GPU from starting;
+            # show without focus, parking it until the desktop docks it.
+            keep_offscreen(self.launcher.pid)
             progress(76, "Waiting for the Xbox game's Cxbx render window")
             stable_since, stable_hwnd = None, None
             deadline = time.monotonic() + float(getattr(self, "boot_timeout_s", 90))
