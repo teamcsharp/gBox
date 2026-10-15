@@ -19,6 +19,7 @@ class PlayIn(BaseModel):
     game: CatalogEntry
     segment: str = ''
     loop: bool = False
+    idle_demo: bool = False
     sprite: str = ''  # built-in native HD sprite, sprite:gallery_slug, or chr:build_name
 
 
@@ -179,7 +180,9 @@ def play(inp, ctx):
         tools.track_emulator(ctx.config, sid, detail.get('pid'))
         threading.Thread(target=tools._pump, args=(sid, ad, ctx.server, ctx.headers, ctx), daemon=True).start()
         def watch():
-            deadline = time.monotonic()+3600
+            duration = 3600 if inp.loop else max(3600, min(86400, (end-start)/40+600))
+            deadline = time.monotonic()+duration
+            preference_checked = 0
             reported_loops = -1
             status = {'state': 'starting', 'mismatches': 0}
             try:
@@ -201,6 +204,12 @@ def play(inp, ctx):
                     from .padstate import player_active
                     if player_active(sid, within=4):
                         break
+                    if inp.idle_demo and time.monotonic()-preference_checked > 10:
+                        preference_checked = time.monotonic()
+                        response = httpx.get(ctx.server+'/api/tas/runs/'+inp.run_id, headers=ctx.headers, timeout=10)
+                        response.raise_for_status(); pref = response.json().get('idle') or {}
+                        if not pref.get('enabled') or pref.get('sprite', '') != inp.sprite:
+                            break
                     admission(ctx)  # missing control plane, operator return or pressure yields this test
                     if time.monotonic() >= deadline:
                         break
@@ -214,9 +223,9 @@ def play(inp, ctx):
                     finally:
                         # _pump records the normal process exit and releases its own session.
                         tools.track_emulator(ctx.config, sid, detail.get('pid'), add=False)
-                        if ad.proc.poll() is not None:
-                            # Private playback copies are disposable; the archive/original recording is not.
-                            for name in ('source.gbt', 'segment.gbt', 'sprite.gbt', 'replay.nes'):
-                                (folder/name).unlink(missing_ok=True)
+                if ad.proc.poll() is not None:
+                    # Private playback copies are disposable; the archive/original recording is not.
+                    for name in ('source.gbt', 'segment.gbt', 'sprite.gbt', 'replay.nes'):
+                        (folder/name).unlink(missing_ok=True)
         threading.Thread(target=watch, daemon=True, name='tas-play-'+sid).start()
         return {'session_id': sid, 'adapter': ad.name, 'capabilities': ad.get_capabilities(), 'detail': detail}

@@ -18,7 +18,8 @@ segment does not qualify the entire run. Dispatch checks five minutes of inactiv
 background-testing opt-in, current resource telemetry, the configured admission budget
 (70% by default), memory headroom, running sessions and active jobs. It never switches
 or stops another game. Playback yields on operator input/controller activity, opt-out,
-resource pressure, control-plane loss or its one-hour limit. The next idle period can
+resource pressure, control-plane loss or its one-hour loop limit. Full single-pass
+playback allows the recorded duration plus slack (up to 24 hours). The next idle period can
 start a new loop. The operating system must still allow the monitor to remain awake.
 
 ## Sprite choices

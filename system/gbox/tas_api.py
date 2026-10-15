@@ -136,7 +136,7 @@ def install(app, store, config, auth, submit, workers):
             raise HTTPException(404, 'Native run not found')
         return row
 
-    def launch(row, body, actor):
+    def launch(row, body, actor, idle_demo=False):
         candidates = [w for w in workers() if w.get('online') and w.get('os') == 'windows' and 'tas_play' in (w.get('tools') or [])
                       and not w.get('active_jobs') and (not body.worker or body.worker in (w['id'], w['name']))]
         candidates = [w for w in candidates if not any(s['session_id'].split('-')[0] == w['id']
@@ -152,7 +152,7 @@ def install(app, store, config, auth, submit, workers):
         if not game:
             raise HTTPException(404, 'The owned game is no longer in the library')
         return submit(JobRequest(tool='tas_play', input={'run_id': row['id'], 'game': game,
-                      'segment': body.segment, 'loop': body.loop, 'sprite': body.sprite},
+                      'segment': body.segment, 'loop': body.loop, 'sprite': body.sprite, 'idle_demo': idle_demo},
                       agent_use=True, low_priority=True, require_worker=chosen['id']), actor=actor,
                       origin={'via': 'native TAS playback', 'run_id': row['id']})
 
@@ -300,7 +300,7 @@ def install(app, store, config, auth, submit, workers):
             if any(j.get('tool') == 'tas_play' and j.get('state') in ('queued', 'running') for j in store.all('job')):
                 continue
             try:
-                launch(row, Play(loop=True, sprite=pref.get('sprite', '')), 'tas-screensaver')
+                launch(row, Play(loop=True, sprite=pref.get('sprite', '')), 'tas-screensaver', idle_demo=True)
                 with store.lock:
                     store.put('tas_run', row['id'], get(row['id']) | {'idle_last': time.time()})
                 break

@@ -200,6 +200,7 @@ def test_idle_dispatch_uses_only_verified_full_run_and_respects_resources_and_ex
     app.state.tas_idle_tick()
     assert len(submitted)==1 and submitted[0]['agent_use'] and submitted[0]['low_priority']
     assert submitted[0]['require_worker']=='idlepc' and submitted[0]['input']['loop'] is True
+    assert submitted[0]['input']['idle_demo'] is True
 
 
 def test_current_capture_status_is_explicit_and_does_not_expose_worker_paths(tmp_path):
