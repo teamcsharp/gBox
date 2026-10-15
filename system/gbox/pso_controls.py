@@ -28,6 +28,23 @@ def is_pso(game):
 
 
 def capabilities(game, read):
+    if game.get('platform') == 'gamecube':
+        from types import SimpleNamespace
+        from .pso_gc_live import GC
+        supported, reason = False, 'This is not a PSO game'
+        if is_pso(game):
+            try:
+                GC(SimpleNamespace(read_memory=read, write_memory=None)).check()
+                supported, reason = True, ''
+            except Exception as error:
+                reason = str(error)
+        return {'version': 'gc', 'label': 'GameCube Plus US revision 2', 'supported': supported, 'reason': reason,
+                'character_class': None, 'classes': list(CLASSES),
+                'features': {k: supported for k in ('floor_spawn','floor_rares','floor_clear','give','equip_any','multi_equip','stat')},
+                'pending': {'areas': 'Teleporter progression needs a verified GameCube patch.',
+                            'skins': 'Imported wardrobe cycling needs a native GameCube skin loader.',
+                            'npcs': 'NPC model replacement and movement need verified GameCube bindings.'},
+                'multi_equip_note': 'Stacks weapon effects; one active weapon is drawn. This does not add dual-wield animations.'}
     from .pso_mods_tool import SIGNATURE, PATCHES, CHAR_PTR
     dc = game.get("platform") == "dreamcast"
     supported = dc and is_pso(game) and read(SIGNATURE[0], len(SIGNATURE[1])) == SIGNATURE[1]
@@ -90,13 +107,20 @@ def on_launch(sid, ad, game, ctx):
                     with session_lock(sid):
                         m = PSO(ad.read_memory, ad.write_memory)
                         want = bool(prefs["equip_any"])
-                        before = m.patch_state("equip_any")
-                        if before in ("on", "off"):
-                            if (before == "on") != want:
-                                m.patch("equip_any", want)
-                            state.update(state="applied", equip_any=want, reason="")
+                        if game.get('platform') == 'gamecube':
+                            from .pso_gc_live import GC, EQUIP_PATCH
+                            gc = GC(ad)
+                            if (gc.read(EQUIP_PATCH,4).hex() == '38000005') != want:
+                                gc.equip_any(want)
+                            state.update(state='applied', equip_any=want, reason='')
                         else:
-                            state.update(state="unsupported", reason="Equip code bytes do not match this revision.")
+                            before = m.patch_state("equip_any")
+                            if before in ("on", "off"):
+                                if (before == "on") != want:
+                                    m.patch("equip_any", want)
+                                state.update(state="applied", equip_any=want, reason="")
+                            else:
+                                state.update(state="unsupported", reason="Equip code bytes do not match this revision.")
             except Exception as e:
                 state.update(state="waiting", reason=str(e)[:180])
             time.sleep(2)

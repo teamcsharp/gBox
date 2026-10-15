@@ -787,12 +787,9 @@ def _catalog(ctx) -> dict:
 
 
 def _catalog_rows(ctx) -> list[dict]:
-    import httpx
-    r = httpx.get(f"{ctx.server}/api/pso/items", params={"version": "dcv2"}, headers=ctx.headers, timeout=60)
-    r.raise_for_status()
-    rows = r.json()
-    if not isinstance(rows, list) or not rows or any(i.get("schema") != 2 for i in rows):
-        raise Unsupported("the PSO item database needs the updated disc metadata before spawning class-compatible rares")
+    from .pso_live import catalog, deadline
+    rows = catalog(ctx, 'dcv2')
+    deadline(ctx)
     return rows
 
 
@@ -846,6 +843,9 @@ def pso_mods(inp: ModsIn, ctx):
     if inp.op == "capabilities":
         from .pso_controls import capabilities
         return {"result": capabilities(g, ad.read_memory)}
+    if g.get("platform") == "gamecube":
+        from .pso_live import gamecube
+        return {"result": gamecube(inp, ctx, ad)}
     if g.get("platform") != "dreamcast":
         raise Unsupported("pso_mods supports Phantasy Star Online Ver. 2 on Dreamcast (US)")
     m = PSO(ad.read_memory, ad.write_memory)

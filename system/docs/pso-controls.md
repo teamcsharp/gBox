@@ -2,36 +2,70 @@
 
 The PSO panel appears in the running game's session sidebar, and in the desktop game's Items menu. Commands are
 pinned to that session's worker. The catalog can be browsed for Dreamcast Ver. 2 and GameCube Episode I & II;
-live native mutations currently require the US Dreamcast Ver. 2 executable fingerprint. GameCube never receives
-Dreamcast addresses. Episode III is a different game and does not show this panel.
+live native mutations support US Dreamcast Ver. 2 and **GameCube Plus US, GPOE8P disc 0 revision 2 (3OE2)**.
+GameCube uses its own PowerPC routines and revision guards. Other revisions are refused. Episode III is a different
+game and does not show this panel.
 
 Item browsing, native actions and the shared equipment default load independently.
 A missing preferences endpoint during a backend update does not disable search,
 filters, selection or supported live actions. An unknown preference is shown as
-indeterminate, with an explanation and Retry loading. GameCube can browse/select
-items and save the shared default, but live drops and stat/equipment writes stay
-disabled with a visible revision-specific explanation. Saving that default never
-applies Dreamcast memory patches to the current GameCube game.
+indeterminate, with an explanation and Retry loading. Unsupported revisions can browse/select
+items and save the shared default, but native actions stay disabled with a visible revision-specific explanation.
 
 ## Available implementation
 
 - Search/filter the disc's item database, select up to twenty items and drop those exact items beside the player.
   The count slider controls a random scatter; an explicit selection drops one of each selected item. Spread controls
   the radius in game world units. Clear removes only gBox-created floor items.
+- Select one catalog item and use **Add selected to inventory**; Count controls the number of new entries.
+  GameCube uses its native item creation/insertion routines and refuses a full inventory before creating objects.
 - Scatter random rare weapons compatible with the selected class, optionally limited to the highest base-star tier.
   Each weapon can be spawned at its own maximum grind. Class eligibility does not imply the player meets its ATP,
   MST or ATA requirements. PSO weapons do not have an arbitrary item-level field.
 - Equip-any is a shared default across PSO builds and PCs (`GET/POST /api/pso/preferences`, default true). A worker
   boot watcher applies the guarded equip patch and rechecks after reset/state loads. A manual panel change also
-  flushes Flycast's JIT through the existing PSO tool. The boot watcher never loads or saves a state, sends pad
+  flushes Flycast's JIT through the existing PSO tool. GameCube executes guest `dcbst/sync/icbi/isync` to invalidate
+  the already-compiled equip-check block, without a save-state round trip. The boot watcher never loads or saves a state, sends pad
   input, or blocks a launch. If the preference endpoint cannot be read, it does not guess and apply a default.
 - Inventory weapon rows offer Stack equip and Unstack using the game's own equip/unequip callbacks. Equipment
   effects stack; the engine continues to draw one weapon, so this does not implement dual-wield animations.
+  Native equipment callbacks can enforce the engine's class stat caps when changing equipment.
 - ATP/MST/EVP/HP/DFP/ATA/LCK numeric editors use the existing native recompute/read-back path, bounded 0–9999.
   Right-clicking a stat focuses its editor. This is not automatic identification of arbitrary screen text or RAM.
 
-The native dispatcher reuses an online network handler and is for **offline sessions**, as documented by
-`pso_mods_tool`. Online play has not been verified. Never apply this dispatcher to an active online session.
+The Dreamcast dispatcher reuses an online network handler and is for **offline sessions**, as documented by
+`pso_mods_tool`. The GameCube dispatcher requires offline free-play phase `0x0E`, a matching player vtable,
+all native entry fingerprints and an unused scratch region. It preserves the original player update and executes
+native actions on the emulated game thread. Online sessions are refused.
+
+## Immediate session commands
+
+Both clients send `pso_controls` through `/api/sessions/{sid}/rpc`, rather than submitting a worker job.
+Builds do not sit ahead of a button click. Each request carries a unique command ID and an eight-second admission
+deadline. Worker execution is serialized per session; a busy session refuses another mutation instead of queuing it.
+Successful and failed receipts are retained in a bounded session cache. Reusing an ID with different input is refused.
+Neither the UI nor the worker automatically retries a timed-out native action: its outcome may be unknown.
+Expired requests are withdrawn and late receipts discarded. Catalog lookups are cached for five minutes and bounded
+to three seconds on a miss. The worker checks the admission deadline after catalog access and before mutation.
+
+The server audits commands and requires `memory_write` for mutations; the worker checks the same permission.
+The server also checks the worker's immutable loaded-source hashes. An old worker receives a clear safe-refresh
+message rather than a command it cannot execute. The panel reports measured worker milliseconds after acknowledgment.
+
+## GameCube verification
+
+The owned `PsoV3.dol` SHA-256 is
+`1f80fb82b41c05b26b6d0545b1ba9c0aa60b52e6589cf32fbb2ffe644692a61a`.
+Native entry points and structures were independently checked against that executable and an isolated copy of a
+Forest 1 save state in Dolphin 2609a. The test used its own display, user directory and memory-card paths.
+No operator session or original save was modified. No game binary, save or personal asset is included in source.
+
+Observed native checks: real floor objects and their IDs/codes in the floor table; gBox-only clear; inventory insertion;
+equip eligibility denied → allowed → denied with a warm JIT; all seven displayed stats set/read back at 900;
+weapon effect stack/unstack with the visible weapon slot unchanged. The first inventory-read plus two-item spawn
+sequence measured 48 ms in that isolated session. This is a measured example, not a latency guarantee for every PC.
+The HP screenshot shows the game's own `27/900` HUD. Actual item pickups, all floor transitions, every catalog item,
+other disc revisions and online play are not exhaustively verified.
 
 ## Disc metadata and safety
 
@@ -59,8 +93,8 @@ The Python parser is an independent implementation of those format facts; no ups
 
 ## Remaining requested native work — not implemented by this panel
 
-1. GameCube revision-specific live ground creation, unrestricted/multiple equip, progression and stat patches.
-   The owned Plus disc is GPOE8P revision 2; the executable to analyze is `PsoV3.dol`, not the AppSwitcher main DOL.
+1. Additional GameCube revisions and progression patches. The native controls above are verified only for 3OE2;
+   they do not imply compatibility with every Episode I & II disc.
 2. Start + L / R imported wardrobe. This needs native multi-donor resource banks and a verified reload path, not
    changing a stock costume number or drawing an overlay. Sources requested: Sonic, Mario, DOA2, SC2 and Twin Snakes.
 3. Teleporter access to every area, with per-difficulty/episode progression flags and a reversible original snapshot.
@@ -72,5 +106,5 @@ The Python parser is an independent implementation of those format facts; no ups
 6. Arbitrary screen-parameter identification via Ghidra plus a guarded live RAM editor (type, address provenance,
    before/after values, rollback). Ghidra is a static analysis tool; clicking pixels alone cannot establish a RAM address.
 
-No new imported-character ROM has been built or gameplay-verified by these UI/catalog changes. The requested
-PSO feature suite remains in progress until those native parts have been implemented and tested in game.
+No new imported-character ROM is delivered by these live-control changes. The broader PSO feature suite remains
+in progress until the wardrobe, teleporter and NPC parts have been implemented and tested in game.

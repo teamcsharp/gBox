@@ -653,7 +653,7 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     if HOST_OS == "windows" and isinstance(ad, adapters.RPCS3Adapter):
         _ensure_ps3_load_hotkey()
     if ctx.server and (not isinstance(ad, adapters.SteamAdapter) or ad.install_dir):     # live channel (input, inspector RPCs, exit) even without video
-        threading.Thread(target=_pump, args=(sid, ad, ctx.server, ctx.headers), daemon=True).start()
+        threading.Thread(target=_pump, args=(sid, ad, ctx.server, ctx.headers, ctx), daemon=True).start()
     detail["_game"] = {"game_id": g.game_id, "title": g.title}
     detail["mod"] = launch_mod or ""                           # the actual prepared folder used by this process
     if launch_mod != inp.mod:
@@ -874,14 +874,16 @@ def _stageable(src: Path) -> bool:
     return src.suffix.lower() not in (".cue", ".gdi", ".m3u")
 
 
-def _rpc_answerer(sid: str, client):
+def _rpc_answerer(sid: str, client, ctx=None):
     """Answer live-channel requests (pause/resume, reset, inspector reads) through one keep-alive client. A new httpx
     client per reply builds an SSL context and opens a TCP connection every time, on the path of every click (#1123)."""
     def answer(ev):
         try:
-            result = {"ok": True, "data": session_rpc(sid, ev["op"], ev.get("args") or {})}
+            result = {"ok": True, "data": session_rpc(sid, ev["op"], ev.get("args") or {}, ctx=ctx)}
         except Exception as e:
             result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        if ev.get('op') == 'pso_controls':
+            result['pso_command'] = True
         try:
             client.post(f"/api/sessions/{sid}/rpc/{ev['rpc']}", json=result)
         except httpx.HTTPError:
@@ -935,7 +937,7 @@ def _stream_event_reporter(sid: str, server: str, headers: dict):
     return report
 
 
-def _pump(sid: str, ad, server: str, headers: dict):
+def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
     """Live session plumbing, three independent loops so nothing slow can stall the video:
     frames  - pushed the moment the encoder produces one (up to the stream fps, 60),
     input   - long-polled from the control plane and applied immediately,
@@ -969,7 +971,7 @@ def _pump(sid: str, ad, server: str, headers: dict):
                           f"({type(e).__name__}); reconnecting", flush=True)
                 time.sleep(1)
 
-    answer = _rpc_answerer(sid, httpx.Client(base_url=server, headers=headers, timeout=10))
+    answer = _rpc_answerer(sid, httpx.Client(base_url=server, headers=headers, timeout=10), ctx)
 
     def inputs():
         # one channel carries pad/keyboard events and read-only inspector requests ({"rpc": id, "op", "args"})
@@ -1069,8 +1071,11 @@ def _rom_bytes(path: str) -> bytes:
     return _ROM_CACHE[path]
 
 
-def session_rpc(sid: str, op: str, args: dict):
+def session_rpc(sid: str, op: str, args: dict, ctx=None):
     ad, g = SESSIONS[sid]
+    if op == 'pso_controls':
+        from .pso_live import execute
+        return execute(sid, args, ctx)
     if op == "read_memory":
         n = max(1, min(int(args.get("length", 256)), 1 << 20))       # up to 1 MiB per call (one CPU halt on debug stubs)
         return ad.read_memory(int(args["address"]), n).hex()
