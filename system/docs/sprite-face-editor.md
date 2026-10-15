@@ -6,6 +6,14 @@ The face editor accepts original photo pixels, crops, mirroring, elliptical/rect
 
 ## Supported native layouts
 
+### One-to-one animation alignment
+
+For Super Mario Bros., open the lady button, then **Sprite-to-sprite animation editor**. The window loops native run/jump/swim/climb groups alongside decoded Sonic 2 animations. Choose a source clip/frame, draw its crop, drag its overlay in native pixel coordinates, and adjust scale, rotation, mirroring and the target mask. Apply transforms to one row or the entire selected animation. Independently toggle Mario's reference, Sonic's overlay and the compiled ROM result, or switch directly between reference and result. Profiles persist locally per game.
+
+Debounced compilation uses the complete 26-frame player tile allocation, refuses overflow without lossy merging, and decodes the patched ROM for the authoritative result layer. **Build edited ROM** submits that exact immutable snapshot. Source hashes and loaded writer fingerprints prevent an older worker from silently building the default mapping. The native decoder validates changed tables/palettes against the owned original; it does not relax the exact-program check used by TAS replay. This writer currently covers Sonic 2 into SMB1, not arbitrary title pairs or live hot injection into an active emulator.
+
+An edited native run (90% scale, one-pixel translation) used 71/91 tiles and booted for 1,600 frames in isolated Mesen with gameplay rendering. Managed browser checks cover grouped edits, layer switching and exact candidate submission.
+
 * Super Mario Bros., catalog `49b6a2f65aca26a2`: all 26 native player animation rows; NES three-opaque-color quantization. Shared pattern pixels used outside a face mask are preserved. Sonic replacement uses 67 of 91 player-exclusive tiles and patches the native player palette reload table, including fire colors.
 * Sonic the Hedgehog 2, catalogs `938e4ca5b120e344` and `764582c25053f662`: real mappings/DPLC and 4bpp art nibbles, original player palette, shared-pixel voting/protection and recalculated Genesis checksum. Only visible face regions are edited; rolling/blank frames can remain unchanged.
 * Super Mario 64, catalogs `b7aecee966090bfa` and `66062703301f4969`: the owned PAL layout, original gameplay head geometry, 32×64 RGBA16 projection. Yaw, pitch, projection width/height and center are adjustable alongside the image layers. Before/after orbit viewers load glTFs decoded from the original and patched ROMs. The output retains 752 triangles and 20 joints, without decimation. Resulting models appear in Models under their source selfie tag and can use the existing download/Blender workflow.

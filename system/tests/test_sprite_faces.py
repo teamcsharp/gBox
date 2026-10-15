@@ -102,7 +102,8 @@ def test_loading_images_decode_real_roms_and_keep_the_immutable_build_untouched(
     monkeypatch.setattr(tas,'rom_bytes',lambda p:b'original')
     monkeypatch.setattr(D,'read_rom',lambda p:(b'donor',{}))
     calls=[]
-    def frames(rom,gid):
+    def frames(rom,gid,**kw):
+        if rom==b'patched':assert kw['reference']==b'original'
         calls.append((rom,gid));color={'original':(255,0,0,255),'patched':(0,0,255,255),'donor':(0,255,0,255)}[rom.decode()]
         return [(np.tile(np.array(color,np.uint8),(4,4,1)),None,None,None)]*2
     monkeypatch.setattr(F,'decoded',frames)

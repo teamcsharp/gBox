@@ -103,6 +103,13 @@ def routes(app, store, config, auth, create_request, investigate, submit):
         if body.session_id and (not session or session.get('game_id')!=gid):
             raise HTTPException(409,'The session does not belong to this game')
         if body.recipe=='sonic2_player' and gid!='49b6a2f65aca26a2':raise HTTPException(422,'Sonic 2 player recipe requires Super Mario Bros.')
+        if body.recipe=='sonic2_player' and body.mapping.get('candidate'):
+            import re
+            candidate=body.mapping['candidate']
+            if not isinstance(candidate,str) or not re.fullmatch('[a-f0-9]{32}',candidate):raise HTTPException(422,'Invalid sprite-pair preview')
+            try:preview=json.loads((config.data_dir/'sprite-pair-candidates'/candidate/'candidate.json').read_text())
+            except (OSError,ValueError):raise HTTPException(422,'Sprite-pair preview is missing')
+            if preview['game_id']!=gid:raise HTTPException(409,'Sprite-pair preview belongs to a different game')
         if body.photo:
             artifact=store.get('artifact',body.photo) or {}
             if not (artifact.get('provenance') or {}).get('photo_skin_source'):raise HTTPException(422,'Upload the original photo first')
@@ -137,7 +144,7 @@ def routes(app, store, config, auth, create_request, investigate, submit):
                 # One verified local recipe; every other game/type goes through the existing engineering queue.
                 if body.recipe=='sonic2_player':
                     job=submit({'tool':'smb1_sprite_build','input':{'game_id':gid,'request_id':row['id'],
-                                'request_number':row['number']},'require_os':'linux','parent_request_id':row['id'],'agent_use':True},actor)
+                                'request_number':row['number'],'candidate':body.mapping.get('candidate','')},'require_os':'linux','parent_request_id':row['id'],'agent_use':True},actor)
                     row['dispatch']={'mode':'native_recipe','job_id':getattr(job,'id',None) or job.get('id')}
                 elif body.recipe=='photo_face':
                     job=submit({'tool':'photo_sprite_build','input':{'game_id':gid,'candidate':body.mapping['candidate'],

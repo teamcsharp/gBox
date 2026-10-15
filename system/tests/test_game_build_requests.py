@@ -109,3 +109,13 @@ def test_native_sprite_builds_keep_cpu_and_memory_admission_without_requiring_gp
         job={'tool':tool,'agent_use':True}
         assert B.requires_admission(job) and not B.requires_gpu(job)
     assert B.requires_gpu({'tool':'characters'})
+
+
+def test_sonic_pair_request_passes_the_exact_accepted_snapshot(tmp_path):
+    client,store,cfg,calls=setup(tmp_path);cid='c'*32
+    body=payload(recipe='sonic2_player',mapping={'candidate':cid});url='/api/games/49b6a2f65aca26a2/build-requests'
+    assert client.post(url,json=body).status_code==422
+    folder=cfg.data_dir/'sprite-pair-candidates'/cid;folder.mkdir(parents=True)
+    (folder/'candidate.json').write_text(json.dumps({'game_id':'49b6a2f65aca26a2'}))
+    result=client.post(url,json=body);assert result.status_code==200,result.text
+    assert calls[-1][1]['input']['candidate']==cid

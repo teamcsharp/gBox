@@ -12,18 +12,24 @@
       <p><label>Build recipe <select name="recipe"><option value="agent">Let the system research this request</option>${game.game_id==='49b6a2f65aca26a2'?'<option value="sonic2_player">Sonic 2 sprites replace Mario</option>':''}<option value="photo_face">Photo face from preview</option></select></label></p>
       ${['b7aecee966090bfa','66062703301f4969'].includes(game.game_id)?'<p><label>Mario 64 projection target <select name="projection_scope"><option value="gameplay">Gameplay Mario</option><option value="boot">Boot-screen head (engineering request)</option><option value="both">Both targets (engineering request)</option></select></label></p><p>The boot-screen head has a separate format. The native preview below edits gameplay Mario only.</p>':''}
       <label style="display:block;margin-top:12px">What would you like changed?<textarea name="description" required minlength="3" maxlength="12000" rows="5" style="display:block;width:100%;box-sizing:border-box;margin:6px 0" placeholder="Replace Mario with Sonic using the sprites from Sonic the Hedgehog 2."></textarea></label><div data-face-editor></div>
+      ${game.game_id==='49b6a2f65aca26a2'?'<p><button type="button" data-pair-open>Sprite-to-sprite animation editor</button> <small data-pair-status></small></p>':''}
       <small>Requests stay tied to this game and build. The system researches, builds and tests the change. Your running game is kept as it is.</small>
       <p><button type="submit" data-submit>Request build</button></p></form><p role="status" aria-live="polite" data-status></p>
       <h4>Requests for this game</h4><div data-list>Loading…</div>`;
     const q=s=>d.querySelector(s),key='gbox_build_request_'+game.game_id;
     q('[data-game]').textContent=game.title+(game.mod?' · based on '+game.mod:'');
-    let clientId=null,signature='',busy=false,dead=false,timer=null;
+    let clientId=null,signature='',busy=false,dead=false,timer=null,pairMapping={},pairWindow=null;
     try{const draft=JSON.parse(sessionStorage.getItem(key)||'null');if(draft){q('textarea').value=draft.description||'';q('select').value=draft.kind||'build';clientId=draft.clientId;signature=draft.signature||'';}}catch{}
     function draft(){try{sessionStorage.setItem(key,JSON.stringify({description:q('textarea').value,kind:q('select').value,clientId,signature}));}catch{}}
     q('form').oninput=draft;
     const face=globalThis.GBoxSpriteFaceEditor?.mount(q('[data-face-editor]'),game,{api:io.api,url:io.url,changed:()=>{draft();}});
     q('[data-face-editor] details')?.addEventListener('toggle',e=>{d.style.width=e.target.open?'min(1000px,92vw)':'min(560px,90vw)';});
     q('[name=recipe]').onchange=()=>{if(q('[name=recipe]').value==='sonic2_player'&&!q('textarea').value)q('textarea').value='Replace Mario with Sonic using the sprites from Sonic the Hedgehog 2.';draft();};
+    if(q('[data-pair-open]'))q('[data-pair-open]').onclick=()=>{pairWindow=globalThis.GBoxSpritePairEditor?.open(game,{api:io.api,onCandidate:(mapping,build)=>{
+      pairMapping=mapping;q('[name=recipe]').value='sonic2_player';q('[data-pair-status]').textContent='Edited ROM snapshot selected.';
+      if(!q('textarea').value.trim())q('textarea').value='Build Sonic 2 in Mario Bros. using my edited animation crop, scale and frame mappings.';
+      if(build)setTimeout(()=>{if(!dead)q('form').requestSubmit();},0);
+    }});};
     const say=t=>{if(!dead)q('[data-status]').textContent=t;};
     async function refresh(){
       try{const r=await io.api(`/api/games/${encodeURIComponent(game.game_id)}/build-requests`);if(dead)return;
@@ -43,6 +49,7 @@
       const description=q('textarea').value.trim(),kind=q('select').value;
       if(description.length<3)return say('Describe the build you want.');
       const recipe=q('[name=recipe]').value,photo=face?.selection()||{photo:'',mapping:{}};
+      if(recipe==='sonic2_player'){photo.photo='';photo.mapping=pairMapping;}
       const projection_scope=q('[name=projection_scope]')?.value||'gameplay';
       if(recipe==='photo_face'&&projection_scope!=='gameplay')return say('Choose the research recipe for a boot-screen or both-target request. The current native writer edits gameplay Mario only.');
       if(recipe==='photo_face'&&!photo.ready)return say('Upload the image, adjust the mapping, and preview the native ROM result first.');
@@ -65,7 +72,7 @@
       catch(error){say(error.message);}finally{busy=false;b.disabled=false;}
     };
     q('[data-close]').onclick=()=>d.close();
-    d.onclose=()=>{dead=true;clearInterval(timer);face?.dispose();draft();d.remove();io.closed?.();};
+    d.onclose=()=>{dead=true;clearInterval(timer);face?.dispose();pairWindow?.close();draft();d.remove();io.closed?.();};
     document.body.append(d);d.showModal();q('textarea').focus();refresh();timer=setInterval(refresh,5000);
     return {element:d,close:()=>d.close()};
   }

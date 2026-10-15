@@ -93,14 +93,18 @@ def loading_preview(gid,name,meta):
             'source':source,'result':{'name':result+(' — gameplay face texture' if gid in N64 else ''),'preview_url':base+'after.png'}}
 
 
-def decoded(rom,gid):
+def decoded(rom,gid,*,reference=None):
     """RGBA, physical pixel references and palette for every native player frame."""
     if gid in N64:
         from .sm64_photo_projection import atlas
         rgba=atlas(rom);return [(rgba,np.full(rgba.shape[:2],-1),None,np.zeros(rgba.shape[:2],np.uint8))]
     if gid==SMB:
         from . import tas,smb1_inventory as S
-        tas.smb_identity(rom);p=rom[16:32784]
+        if reference is None or rom[16:32784]==reference[16:32784]:tas.smb_identity(rom)
+        else:
+            from .smb1_sprite_build import validate_output
+            validate_output(reference,rom)
+        p=rom[16:32784]
         palette=np.array([[(c>>16)&255,(c>>8)&255,c&255,255] for c in S.NES_PALETTE],dtype=np.uint8)
         colors=palette[S._area_palettes(p)['GroundPaletteData']['palettes'][4]].copy();colors[0,3]=0
         result=[]
@@ -278,7 +282,7 @@ def routes(app,store,config,auth):
                 row=store.get('sprite_loading_preview',key) or {}
                 if filename not in row:
                     frame=0 if gid==SMB or gid in N64 else 1
-                    rgba=frames[frame][0] if filename=='before.png' else decoded(out,gid)[frame][0]
+                    rgba=frames[frame][0] if filename=='before.png' else decoded(out,gid,reference=rom)[frame][0]
                     if filename=='source.png':
                         if meta['writer']!='gbox.smb1_sprite_build':raise ValueError('No sprite donor for this photo build')
                         rgba=original(SONIC[0])[1][1][0]
@@ -346,7 +350,7 @@ def prune_candidates(root,store,keep):
         candidate=(row.get('mapping') or {}).get('candidate')
         if candidate:pinned.add(candidate)
     for job in store.all('job'):
-        if job.get('tool')=='photo_sprite_build':pinned.add((job.get('input') or {}).get('candidate'))
+        if job.get('tool') in ('photo_sprite_build','smb1_sprite_build'):pinned.add((job.get('input') or {}).get('candidate'))
     disposable=[]
     for p in root.glob('*/candidate.json'):
         if p.parent.name in pinned:continue

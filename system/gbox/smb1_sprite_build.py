@@ -53,16 +53,42 @@ def quantize_sonic(image):
     return out
 
 
-def adapt(rom,frames):
+def validate_output(original,output):
+    """Allow only the native writer's graphics/table/palette changes against an owned source."""
+    tas.smb_identity(original)
+    prg=original[16:32784];old=S._player_rows(prg)
+    enemy={t for row in S._enemy_rows(prg) for t in row}
+    pool={t for row in old for t in row}-enemy-{0xFC}
+    start=16+S.OFFSETS['PlayerGraphicsTable']
+    allowed=set(range(start,start+208))|{a for t in pool for a in range(32784+t*16,32784+(t+1)*16)}
+    for name in ('GroundPaletteData','WaterPaletteData','UndergroundPaletteData','CastlePaletteData'):
+        allowed.update(range(16+S.OFFSETS[name]+19,16+S.OFFSETS[name]+23))
+    allowed.update(range(16+S.OFFSETS['Palette3Data'],16+S.OFFSETS['Palette3Data']+16))
+    player_colors=bytes.fromhex('221627182230271922372716')
+    if original.count(player_colors)!=1:raise ValueError('The native player color table differs')
+    color_at=original.index(player_colors)
+    allowed.update(range(color_at,color_at+4));allowed.update(range(color_at+8,color_at+12))
+    if len(output)!=len(original) or any(a not in allowed for a,(x,y) in enumerate(zip(original,output)) if x!=y):
+        raise ValueError('The writer changed data outside player graphics and palettes')
+    rows=S._player_rows(output[16:32784])
+    if any(t not in pool|{0xFC} for row in rows for t in row):raise ValueError('Player graphics reference a tile outside the native allocation')
+
+
+def adapt(rom,frames,profile=None,selected=None):
     from .tas_sprites import fit
     tas.smb_identity(rom)
     if len(frames)!=26:raise ValueError('All 26 native Mario player rows are required')
     prg=rom[16:32784];old=S._player_rows(prg);enemy={t for row in S._enemy_rows(prg) for t in row}
     pool=sorted({t for row in old for t in row}-enemy-{0xFC})
     output=bytearray(rom);tiles={};newrows=[];pictures=[]
-    for original,image in zip(old,frames):
+    for index,(original,image) in enumerate(zip(old,frames)):
         top=next(i//2*8 for i,t in enumerate(original) if t!=0xFC)
-        canvas=Image.new('RGBA',(16,32));canvas.alpha_composite(fit(image,16,32-top),(0,top))
+        settings=profile.frames.get(str(index)) if profile is not None else None
+        if settings:
+            from .sprite_pair_editor import transform
+            canvas=transform((selected or {}).get(index,image),top,settings)
+        else:
+            canvas=Image.new('RGBA',(16,32));canvas.alpha_composite(fit(image,16,32-top),(0,top))
         indices=quantize_sonic(canvas);pictures.append(indices)
         row=[]
         for i,t in enumerate(original):
@@ -85,13 +111,7 @@ def adapt(rom,frames):
     if rom.count(player_colors)!=1:raise ValueError('The native player color table differs')
     color_at=rom.index(player_colors)
     output[color_at:color_at+4]=bytes(PALETTE);output[color_at+8:color_at+12]=bytes(PALETTE)
-    allowed=set(range(start,start+208))|{a for t in pool for a in range(32784+t*16,32784+(t+1)*16)}
-    for name in ('GroundPaletteData','WaterPaletteData','UndergroundPaletteData','CastlePaletteData'):
-        allowed.update(range(16+S.OFFSETS[name]+19,16+S.OFFSETS[name]+23))
-    allowed.update(range(off,off+16))
-    allowed.update(range(color_at,color_at+4));allowed.update(range(color_at+8,color_at+12))
-    if len(output)!=len(rom) or any(a not in allowed for a,(x,y) in enumerate(zip(rom,output)) if x!=y):
-        raise ValueError('The writer changed data outside player graphics and palettes')
+    validate_output(rom,output)
     return bytes(output),{'tiles_used':len(tiles),'tile_budget':len(pool),'palette':list(PALETTE),'rows':26,'allowed_ranges_verified':True},pictures
 
 
@@ -107,6 +127,7 @@ class SpriteBuildIn(BaseModel):
     game_id: str=Field(default=GAME_ID,pattern='^49b6a2f65aca26a2$')
     request_id: str=Field(default='',pattern='^[a-f0-9]{0,32}$')
     request_number: int=Field(default=0,ge=0)
+    candidate:str=Field(default='',pattern='^(?:[a-f0-9]{32})?$')
 
 
 class SpriteBuildOut(BaseModel):
@@ -126,7 +147,18 @@ def run(inp,ctx):
     original=tas.rom_bytes(rom_path(CatalogEntry.model_validate(game),ctx.config))
     frames,source=sonic_frames(rom_path(CatalogEntry.model_validate(donor),ctx.config))
     ctx.progress(45,'Fitting Sonic 2 poses into native NES player tiles')
-    rom,report,pictures=adapt(original,frames);sha=hashlib.sha256(rom).hexdigest()
+    pair=None
+    if inp.candidate:
+        folder=ctx.config.data_dir/'sprite-pair-candidates'/inp.candidate
+        pair=json.loads((folder/'candidate.json').read_text());rom=(folder/'rom.bin').read_bytes()
+        if pair['game_id']!=GAME_ID or pair['target_sha256']!=hashlib.sha256(original).hexdigest() or pair['source']!=source or hashlib.sha256(rom).hexdigest()!=pair['rom_sha256']:
+            raise ValueError('This sprite-pair snapshot differs from its owned source or output; preview again')
+        from .sprite_faces import decoded
+        from .sprite_pair_editor import WRITER_SOURCES
+        if pair.get('writer_sources')!=WRITER_SOURCES:raise ValueError('Sprite writer changed after this preview; prepare it again')
+        pictures=[f[3] for f in decoded(rom,GAME_ID,reference=original)];report=pair['report']
+    else:rom,report,pictures=adapt(original,frames)
+    sha=hashlib.sha256(rom).hexdigest()
     name='smb1_sonic2_'+sha[:10];folder=mod_dir(ctx.config,GAME_ID,name)
     if not (folder/'.gbox-mod.json').exists():
         folder.mkdir(parents=True,exist_ok=True)
@@ -134,6 +166,7 @@ def run(inp,ctx):
         (folder/'preview.png').write_bytes(preview(pictures))
         meta=build_record.stamp({'name':name,'game_id':GAME_ID,'image':'Sonic in Super Mario Bros.nes','title':'Super Mario Bros. — Sonic 2 player sprites',
             'writer':'gbox.smb1_sprite_build','character':'sonic2_sonic','built':time.time(),'source':source,'sprite_report':report,
+            'sprite_pair_edit':pair,
             'requests':[inp.request_number] if inp.request_number else [],'request_id':inp.request_id,'rom_sha256':sha,'verified_in_game':False,
             'changes':[{'donor':'sonic2_sonic','slot':'player'}],'notes':'Native NES three-color adaptation. Original Mario physics, levels and enemies retained.'},
             kind='character',job_id=ctx.job_id,build_call={'tool':'smb1_sprite_build','input':inp.model_dump()})

@@ -73,3 +73,28 @@ test('live edits coalesce, reject stale previews, retain layers, and distinguish
   await evaluate('panel.close()');
  });
 });
+
+test('one-to-one animation editor keeps source crop, group transforms, layer toggles and exact build snapshot',async()=>{
+ await withPage(async(evaluate,send)=>{
+  await send('Emulation.setDeviceMetricsOverride',{width:1200,height:1100,deviceScaleFactor:1,mobile:false});
+  for(const file of ['sprite-pair-editor.js','game-build-request.js'])await evaluate(fs.readFileSync(path.join(__dirname,'../clients/web/viz',file),'utf8'));
+  await evaluate(`const saved=new Map();Object.defineProperty(window,'localStorage',{value:{getItem:k=>saved.get(k)||null,setItem:(k,v)=>saved.set(k,v)}});
+   window.calls=[];window.waitFor=async f=>{for(let n=0;n<500;n++){if(f())return;await new Promise(r=>setTimeout(r,10));}throw Error('sprite pair timeout')};
+   const c=document.createElement('canvas');c.width=16;c.height=32;const ctx=c.getContext('2d');ctx.fillStyle='blue';ctx.fillRect(4,8,8,24);window.picture=c.toDataURL();
+   const template={game_id:'49b6a2f65aca26a2',target_top:Array(26).fill(0),groups:[{name:'Big Mario run',rows:[0,1,2]}],target_frames:Array(26).fill(picture),default_sources:Array(26).fill(picture),
+    donor:{animation:'walk',clips:['walk','run'],frames:Array(4).fill(picture),timing:[100,100,100,100]}};
+   window.io={api:async(p,b)=>{calls.push({p,b});if(p.includes('sprite-pairs')&&!p.endsWith('/preview'))return template;
+    if(p.endsWith('/preview'))return {id:'c'.repeat(32),frames:Array(26).fill(picture),report:{tiles_used:70,tile_budget:91}};
+    if(b)return {id:'r',number:10};return {items:[]};}};
+   window.panel=GBoxGameBuildRequest.open({game_id:'49b6a2f65aca26a2',title:'Mario',session_id:'native-session'},io);
+   document.querySelector('[data-pair-open]').click();waitFor(()=>document.querySelector('#sprite-pair-editor [data-use]')?.disabled===false);`);
+  await evaluate(`const editor=document.querySelector('#sprite-pair-editor');editor.querySelector('[data-animate]').checked=false;const scale=editor.querySelector('[data-transform=scale]');scale.value=1.25;scale.dispatchEvent(new Event('input',{bubbles:true}));waitFor(()=>calls.filter(c=>c.p.endsWith('/preview')).at(-1)?.b.profile.frames['0']?.scale===1.25);`);
+  const changed=await evaluate(`calls.filter(c=>c.p.endsWith('/preview')).at(-1).b.profile.frames`);
+  assert.deepEqual(Object.keys(changed),['0','1','2']);assert.equal(changed['2'].scale,1.25);
+  await evaluate(`document.querySelector('#sprite-pair-editor [data-toggle]').click();`);
+  assert.equal(await evaluate(`document.querySelector('#sprite-pair-editor [data-layer=result]').checked`),true);
+  await evaluate(`document.querySelector('#sprite-pair-editor [data-build]').click();waitFor(()=>calls.some(c=>c.b?.recipe==='sonic2_player'));`);
+  const request=await evaluate(`calls.find(c=>c.b?.recipe==='sonic2_player').b`);assert.equal(request.mapping.candidate,'c'.repeat(32));assert.equal(request.session_id,'native-session');
+  await evaluate(`panel.close();`);
+ });
+});

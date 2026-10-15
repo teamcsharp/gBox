@@ -2265,6 +2265,11 @@ def create_app(config: Config) -> FastAPI:
                     if photo_wait:
                         store.put('job',j['id'],j | {'admission_wait':{'worker':w['name'],'reason':photo_wait}})
                         continue
+                    from .sprite_pair_editor import claim_reason as sprite_claim_reason
+                    sprite_wait=sprite_claim_reason(w,j,config)
+                    if sprite_wait:
+                        store.put('job',j['id'],j | {'admission_wait':{'worker':w['name'],'reason':sprite_wait}})
+                        continue
                     if background_testing.requires_admission(j):
                         if (j.get('origin') or {}).get('inspection_run'):
                             from .inspection_builds import claim_reason
@@ -4994,6 +4999,8 @@ def create_app(config: Config) -> FastAPI:
     from . import game_build_requests
     from . import sprite_faces
     sprite_faces.routes(app, store, config, auth)
+    from . import sprite_pair_editor
+    sprite_pair_editor.routes(app,store,config,auth)
     game_build_requests.routes(app, store, config, auth,
         create_request=lambda body: req_create(RequestIn(**body), 'operator'),
         investigate=_lf_investigate, submit=lambda body, actor: submit(JobRequest(**body), actor))
