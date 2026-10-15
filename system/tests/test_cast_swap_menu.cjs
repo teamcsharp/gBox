@@ -60,11 +60,12 @@ test('only the rows the operator changed are sent as edits', () => {
 });
 
 function fakeIo(answers) {
-  const calls = [], parts = {}, statuses = [], enabled = {};
-  return { calls, parts, statuses, enabled,
+  const calls = [], parts = {}, statuses = [], enabled = {}, requestable = [];
+  return { calls, parts, statuses, enabled, requestable,
     io: { api: async (p, body) => { calls.push([p, body]); const a = answers(p, body, calls.length); if (a instanceof Error) throw a; return a; },
           render: (part, html) => { parts[part] = html; }, status: t => statuses.push(t), enable: (n, on) => { enabled[n] = on; },
-          img: u => u, delay: async () => {} } };
+          img: u => u, delay: async () => {}, requestable: on => requestable.push(on),
+          uuid: () => 'd80b9b59-7e64-4bf4-a35c-1b2ea3c5dc21' } };
 }
 
 test('controller: sources -> plan -> build one mod -> per-slot report', async () => {
@@ -191,4 +192,182 @@ test('controller: build sends unticked rows as left alone, refuses a build with 
   await c.build({}, { 'enemy:booma': false, 'enemy:gigobooma': true });
   const job = calls.find(([p]) => p === '/api/jobs')[1];
   assert.deepEqual(job.input.assignments, [{ slot: 'enemy:booma', character: '' }, { slot: 'enemy:gigobooma', character: 'sd2_kane' }]);
+});
+
+const SONIC_SOURCE = [{key: 'sonic', label: 'Sonic characters (Sonic Adventure 1 + 2)', kind: 'group', count: 20}];
+const BLACK = {gid: '858ac1ab12044c9c', title: 'Black (USA)'};
+const CAST_FORM = {source: 'sonic', mapping: 'auto', slots: 'all', seed: ''};
+const REQUEST_PATH = `/api/games/${BLACK.gid}/build-requests`;
+const PENDING_CAST = {id: '23273c9c660d43c5', number: 1965, kind: 'build', status: 'in_progress', photo: '',
+  description: 'Replace the entire cast of Black (USA) with Sonic characters.',
+  mapping: {source: 'sonic', mapping: 'auto', slots: 'all'}, jobs: []};
+
+test('zero slots offers a durable research request immediately and retains the exact donor and scope', async () => {
+  const x = fakeIo((p, body) => {
+    if (p.startsWith('/api/cast_swap/sources')) return {sources: SONIC_SOURCE, slots: [], slot_sets: [['all', 'Everyone (0)']]};
+    if (p === REQUEST_PATH && !body) return {items: []};
+    if (p === REQUEST_PATH) return {...PENDING_CAST, description: body.description, mapping: body.mapping, status: 'open'};
+    throw new Error('Unexpected ' + p);
+  });
+  const c = CS.controller(x.io, BLACK);
+  await c.sources();
+  assert.equal(c.state.requestAllowed, true); assert.equal(x.enabled.request, true);
+  assert.match(x.statuses.at(-1), /No native character slots.*Request this build/);
+  assert.match(x.parts.form, /data-cs-go="request" type="button" hidden>Request this build/);
+  await c.request({...CAST_FORM, mapping: 'random', seed: 'review-17'});
+  const body = x.calls.find(([p, b]) => p === REQUEST_PATH && b)[1];
+  assert.equal(body.recipe, 'agent'); assert.equal(body.kind, 'build'); assert.equal(body.session_id, '');
+  assert.equal(body.client_id, 'd80b9b59-7e64-4bf4-a35c-1b2ea3c5dc21');
+  assert.match(body.description, /entire cast of Black.*Sonic Adventure 1 \+ 2/);
+  assert.match(body.description, /missing native reader and combined character writer/);
+  assert.deepEqual(body.mapping, {source: 'sonic', source_label: SONIC_SOURCE[0].label, mapping: 'random', slots: 'all', seed: 'review-17'});
+  assert.ok(!x.calls.some(([p]) => p === '/api/jobs'), 'unsupported target must not submit a doomed cast job');
+  assert.match(x.parts.request, /Request #1965.*View details/); assert.match(x.parts.request, /No playable build has been published/);
+  assert.match(x.statuses.at(-1), /Request #1965 saved/);
+});
+
+test('an existing equivalent pending whole-cast request is reused without posting another request', async () => {
+  const x = fakeIo((p, body) => {
+    if (p.startsWith('/api/cast_swap/sources')) return {sources: SONIC_SOURCE, slots: []};
+    if (p === REQUEST_PATH && !body) return {items: [PENDING_CAST]};
+    throw new Error('A second build request must not be submitted');
+  });
+  const c = CS.controller(x.io, BLACK); await c.sources();
+  const result = await c.request(CAST_FORM);
+  assert.equal(result.id, PENDING_CAST.id); assert.match(x.statuses.at(-1), /#1965 already saved/);
+  assert.ok(!x.calls.some(([, body]) => body));
+  assert.equal(CS.samePendingCast({...PENDING_CAST, mapping: {...PENDING_CAST.mapping, seed: ''}}, CAST_FORM), true);
+  for (const different of [
+    {...PENDING_CAST, status: 'done'}, {...PENDING_CAST, kind: 'modification'}, {...PENDING_CAST, photo: 'photo-sha'},
+    {...PENDING_CAST, base_mod: 'another_mod'}, {...PENDING_CAST, projection_scope: 'boot'},
+    {...PENDING_CAST, description: 'Replace a face in Black'},
+    {...PENDING_CAST, description: 'Replace the entire cast faces with Sonic faces'},
+    {...PENDING_CAST, mapping: {...PENDING_CAST.mapping, source: 'mario'}},
+    {...PENDING_CAST, mapping: {...PENDING_CAST.mapping, mapping: 'random'}},
+    {...PENDING_CAST, mapping: {...PENDING_CAST.mapping, slots: 'player'}},
+    {...PENDING_CAST, mapping: {...PENDING_CAST.mapping, seed: 'another'}},
+    {...PENDING_CAST, mapping: {...PENDING_CAST.mapping, candidate: 'photo-map'}},
+    {...PENDING_CAST, mapping: {...PENDING_CAST.mapping, assignments: [{slot: 'player', character: 'sa2_sonic'}]}},
+  ]) assert.equal(CS.samePendingCast(different, CAST_FORM), false, JSON.stringify(different));
+});
+
+test('an unconfirmed submit retains its client UUID across retries and reopening; different intent gets a new UUID', async () => {
+  const cache = new Map(), storage = {getItem: k => cache.get(k), setItem: (k, v) => cache.set(k, v)};
+  const posted = []; let serial = 0;
+  const make = () => {
+    const x = fakeIo((p, body) => {
+      if (p.startsWith('/api/cast_swap/sources')) return {sources: SONIC_SOURCE, slots: []};
+      if (p === REQUEST_PATH && !body) return {items: []};
+      if (p === REQUEST_PATH) {posted.push(body); return new Error('connection lost after submit');}
+      throw new Error('Unexpected ' + p);
+    });
+    Object.assign(x.io, {storage, uuid: () => `00000000-0000-4000-8000-${String(++serial).padStart(12, '0')}`});
+    return {x, c: CS.controller(x.io, BLACK)};
+  };
+  let {x, c} = make(); await c.sources();
+  await assert.rejects(c.request(CAST_FORM), /connection lost/);
+  assert.match(x.statuses.at(-1), /could not be confirmed.*Retry uses the same request ID/);
+  await assert.rejects(c.request(CAST_FORM), /connection lost/);
+  ({x, c} = make()); await c.sources();
+  await assert.rejects(c.request(CAST_FORM), /connection lost/);
+  await assert.rejects(c.request({...CAST_FORM, seed: 'new-seed'}), /connection lost/);
+  assert.equal(posted[0].client_id, posted[1].client_id); assert.equal(posted[0].client_id, posted[2].client_id);
+  assert.notEqual(posted[0].client_id, posted[3].client_id); assert.equal(serial, 2);
+});
+
+test('unsupported combined writers can be requested without changing the reviewed plan or source', async () => {
+  const unsupported = {status: 'unsupported_cast', message: 'Only individual replacements supported.', assignments: []};
+  const x = fakeIo((p, body) => p === '/api/cast_swap/plan' ? unsupported : p === REQUEST_PATH ?
+    body ? PENDING_CAST : {items: []} : {sources: SONIC_SOURCE, slots: [{slot: 'player'}]});
+  const c = CS.controller(x.io, BLACK); await c.sources();
+  assert.equal(c.state.requestAllowed, false);
+  await assert.rejects(c.request(CAST_FORM), /review its assignments/);
+  await c.plan(CAST_FORM); const originalForm = c.state.form;
+  assert.equal(x.enabled.build, false); assert.equal(c.state.requestAllowed, true);
+  await c.request(CAST_FORM);
+  assert.equal(c.state.plan, unsupported); assert.equal(c.state.form, originalForm);
+  assert.ok(!x.calls.some(([p]) => p === '/api/jobs'));
+});
+
+test('request progress and details report actual jobs, escape data, and never treat succeeded analysis as a playable build', async () => {
+  let stage = 0;
+  const x = fakeIo((p, body) => {
+    if (p.startsWith('/api/cast_swap/sources')) return {sources: SONIC_SOURCE, slots: []};
+    if (p === '/api/requests/' + PENDING_CAST.id) return {...PENDING_CAST, body: '<script>request</script>', messages: [{author: 'agent', text: '<img> mapped evidence'}]};
+    if (p === REQUEST_PATH && !body) return {items: [{...PENDING_CAST, jobs: [{id: 'extract', tool: 're_executable', state: stage++ ? 'succeeded' : 'running', progress: {pct: 37, msg: '<ELF> unpacking'}}]}]};
+    throw new Error('Unexpected ' + p);
+  });
+  const c = CS.controller(x.io, BLACK); await c.sources(); await c.request(CAST_FORM);
+  assert.match(x.parts.request, /re_executable: running/); assert.match(x.parts.request, /value="37"/);
+  assert.match(x.parts.request, /&#60;ELF&#62; unpacking/); assert.ok(!x.parts.request.includes('<ELF>'));
+  await c.refreshRequest(); assert.match(x.parts.request, /re_executable: succeeded/);
+  assert.match(x.parts.request, /No playable build has been published/); assert.ok(!x.parts.request.includes('Build available'));
+  await c.refreshRequest(true); assert.match(x.parts['request-detail'], /&#60;script&#62;request/);
+  assert.ok(!x.parts['request-detail'].includes('<script>'));
+});
+
+test('a supported cast still requires the native reviewed plan and never offers a research bypass', async () => {
+  const x = fakeIo(p => p === '/api/cast_swap/plan' ? PLAN : {sources: SOURCES, slots: [{slot: 'enemy:booma'}]});
+  const c = CS.controller(x.io, {gid: 'pso', title: 'PSO'}); await c.sources(); await c.plan({source: 'wrestlers', mapping: 'auto'});
+  assert.equal(c.state.requestAllowed, false); assert.equal(x.enabled.build, true);
+  await assert.rejects(c.request({source: 'wrestlers', slots: 'all'}), /review its assignments/);
+  assert.ok(!x.calls.some(([p]) => p.includes('/build-requests')));
+});
+
+test('a paused engineering dispatcher is shown as queued, never as an actively running build', () => {
+  const html = CS.requestHTML({...PENDING_CAST, dispatch: {mode: 'queue', priority: 0}});
+  assert.match(html, /Engineering queued/);
+  assert.match(html, /not been confirmed as actively running/);
+  assert.match(html, /No playable build has been published/);
+  assert.ok(!html.includes('<b>running</b>'));
+});
+test('an earlier running local task stays visible when a newer prerequisite has completed', () => {
+  const html = CS.requestHTML({...PENDING_CAST, jobs:[
+    {id:'ghidra',tool:'analyze_binary',state:'running',progress:{pct:25,msg:'Inspecting native character loaders'}},
+    {id:'fingerprint',tool:'assimilate',state:'succeeded'}
+  ]});
+  assert.match(html,/analyze_binary: running/);
+  assert.match(html,/Inspecting native character loaders/);
+  assert.match(html,/No playable build has been published/);
+});
+
+test('rapid repeat requests share one pending submission', async () => {
+  let resolveList;
+  const x = fakeIo((p, body) => p.startsWith('/api/cast_swap/sources') ? {sources: SONIC_SOURCE, slots: []}
+    : body ? PENDING_CAST : new Promise(resolve => { resolveList = resolve; }));
+  const c = CS.controller(x.io, BLACK); await c.sources();
+  const first = c.request(CAST_FORM), second = c.request(CAST_FORM);
+  assert.equal(first, second); resolveList({items: []}); await first;
+  assert.equal(x.calls.filter(([p, body]) => p === REQUEST_PATH && body).length, 1);
+});
+
+test('the popup exposes the zero-slot request action, opens its progress and details, and closes without cancelling it', async () => {
+  const nodes = new Map();
+  for (const name of ['form', 'source', 'mapping', 'slots', 'seed', 'status', 'plan', 'request', 'request-detail'])
+    nodes.set(name === 'form' ? '[data-cs-part="form"]' : `[data-cs="${name}"]`, {value: CAST_FORM[name] || '', innerHTML: '', textContent: ''});
+  for (const name of ['build', 'request']) nodes.set(`[data-cs-go="${name}"]`, {hidden: name === 'request', disabled: true});
+  const calls = [], el = {style: {}, isConnected: true, setAttribute() {},
+    querySelector: s => nodes.get(s) || null, querySelectorAll: () => [], remove() {this.isConnected = false;}};
+  const doc = {getElementById: () => null, createElement: () => el, body: {append() {}}};
+  const view = CS.open(doc, {uuid: () => 'd80b9b59-7e64-4bf4-a35c-1b2ea3c5dc21', api: async (p, body) => {
+    calls.push([p, body]);
+    if (p.startsWith('/api/cast_swap/sources')) return {sources: SONIC_SOURCE, slots: []};
+    if (p === REQUEST_PATH) return {items: [PENDING_CAST]};
+    if (p === '/api/requests/' + PENDING_CAST.id) return {...PENDING_CAST, body: 'Every character uses the Sonic cast.', messages: []};
+    throw new Error('Unexpected ' + p);
+  }}, BLACK);
+  const click = action => el.onclick({target: {closest: selector => selector === '[data-cs-go]' ? {dataset: {csGo: action}} : null}});
+  try {
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(nodes.get('[data-cs-go="request"]').hidden, false);
+    assert.equal(nodes.get('[data-cs-go="request"]').disabled, false);
+    assert.equal(nodes.get('[data-cs-go="build"]').disabled, true);
+    await click('request');
+    assert.match(nodes.get('[data-cs="request"]').innerHTML, /Request #1965/);
+    await click('request-details');
+    assert.match(nodes.get('[data-cs="request-detail"]').innerHTML, /Every character uses the Sonic cast/);
+    await click('close'); assert.equal(el.isConnected, false);
+    assert.equal(view.controller.state.request.id, PENDING_CAST.id);
+    assert.ok(!calls.some(([p]) => p === '/api/jobs' || p.includes('cancel')));
+  } finally {view.close();}
 });

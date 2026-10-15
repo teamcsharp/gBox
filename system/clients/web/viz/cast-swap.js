@@ -32,8 +32,10 @@
         Seed <input data-cs="seed" size="6" placeholder="any"></label>
       <div style="display:flex;gap:6px;margin:6px 0"><button class="act" data-cs-go="plan" type="button">Plan the cast</button>
         <button class="act pri" data-cs-go="build" type="button" disabled>Build one mod</button>
+        <button class="act pri" data-cs-go="request" type="button" hidden>Request this build</button>
         <button class="act" data-cs-go="close" type="button" style="margin-left:auto">Close</button></div>
-      <div data-cs="status" class="mut" style="font-size:12px;white-space:pre-wrap"></div><div data-cs="plan"></div>`;
+      <div data-cs="status" class="mut" style="font-size:12px;white-space:pre-wrap"></div><div data-cs="plan"></div>
+      <div data-cs="request"></div><div data-cs="request-detail"></div>`;
   }
 
   // the plan as rows: target slot -> donor thumbnail + a picker of every eligible donor ("(leave as it is)" drops it)
@@ -112,16 +114,69 @@
       <table style="width:100%;font-size:12px;border-collapse:collapse"><tbody>${rows}</tbody></table>`;
   }
 
+  function requestHTML(row) {
+    const jobs = [...(row.jobs || [])].reverse();
+    const job = jobs.find(j => j.state === "running") || jobs.find(j => j.state === "queued") ||
+      jobs.find(j => /^(failed|invalid|rejected|succeeded)$/.test(j.state));
+    const state = row.build ? "Build available" : job ? job.state : row.status === "done" ? "Build not published"
+      : row.dispatch?.mode === "queue" ? "Engineering queued" : row.status || "open";
+    const pct = Math.max(0, Math.min(100, Number(job?.progress?.pct) || 0));
+    return `<section style="border-top:1px solid var(--line);margin-top:8px;padding-top:8px;font-size:12px">
+      <button class="act" type="button" data-cs-go="request-details">Request #${ESC(row.number)} · View details</button>
+      <b>${ESC(state)}</b> <button class="act" type="button" data-cs-go="request-refresh">Refresh</button>
+      <p>${row.build ? ESC(row.build.title || row.build.name) : "No playable build has been published yet. You can close this window; the request stays saved."}</p>
+      ${job ? `<div>${ESC(job.tool || "Task")}: ${ESC(job.state)}</div>` : ""}
+      ${job?.progress ? `<progress max="100" value="${pct}"></progress> ${ESC(job.progress.msg)}` : ""}
+      ${job?.admission_wait?.reason ? `<p>${ESC(job.admission_wait.reason)}</p>` : ""}
+      ${job?.error ? `<p>${ESC(job.error)}</p>` : ""}
+      ${row.dispatch?.mode === "queue" ? "<p>Engineering request queued; it has not been confirmed as actively running.</p>" : ""}
+      ${row.dispatch_error ? `<p>Saved; dispatch needs attention: ${ESC(row.dispatch_error)}</p>` : ""}
+    </section>`;
+  }
+
+  function requestDetailsHTML(row) {
+    return `<details open style="font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere"><summary>Request #${ESC(row.number)}</summary>
+      <p>${ESC(row.body || row.description)}</p>${(row.messages || []).slice(-6).map(m => `<p><b>${ESC(m.author)}</b>: ${ESC(m.text)}</p>`).join("")}</details>`;
+  }
+
+  function uuid() {
+    const b = new Uint8Array(16); root.crypto.getRandomValues(b); b[6] = (b[6] & 15) | 64; b[8] = (b[8] & 63) | 128;
+    const h = [...b].map(v => v.toString(16).padStart(2, "0")).join("");
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+  }
+
+  // Only an equivalent pending whole-cast request can be reused. Photo mappings, other donor pools and reviewed
+  // per-slot assignments are different requests even when their titles mention the same game.
+  function samePendingCast(row, form) {
+    const m = row.mapping || {};
+    return /^(open|in_progress|blocked)$/.test(row.status || "") && row.kind === "build" && !row.photo && !row.base_mod &&
+      (!row.projection_scope || row.projection_scope === "gameplay") &&
+      (form.slots || "all") === "all" && /\b(?:entire cast|whole cast|every character)\b/i.test(row.description || "") &&
+      !/\b(?:faces?|selfies?|photos?|photographs?)\b/i.test(row.description || "") &&
+      Object.keys(m).every(k => ["source", "source_label", "mapping", "slots", "seed", "assignments"].includes(k)) &&
+      m.source === form.source && (m.mapping || "auto") === (form.mapping || "auto") &&
+      (m.slots || "all") === "all" && (m.seed || "") === (form.seed || "") && !(m.assignments || []).length;
+  }
+
   // io: api(path, body?) -> data (throws on error), render(part, html), status(text), enable(name, on), img(url),
   //     delay(ms), onBuilt(result)
   function controller(io, game) {
     const wait = io.delay || (ms => new Promise(r => setTimeout(r, ms)));
-    const st = { plan: null, form: null };
+    const st = { plan: null, form: null, sources: [], requestAllowed: false, request: null, pendingRequest: null };
+    let intents = [];
+    const storageKey = `gbox_cast_build_requests_${game.gid}`;
+    const storage = () => io.storage || root.sessionStorage;
+    try { const saved = JSON.parse(storage()?.getItem(storageKey) || "[]"); if (Array.isArray(saved)) intents = saved; } catch {}
+    const allowRequest = on => { st.requestAllowed = on; io.requestable?.(on); io.enable("request", on); };
     async function sources() {
       io.status("Loading the collection…");
       const r = await io.api(`/api/cast_swap/sources?game_id=${encodeURIComponent(game.gid)}`);
+      st.sources = r.sources || [];
       io.render("form", formHTML(game.title, r.sources || [], r.slot_sets));
-      io.status(r.sources?.length ? `${(r.slots || []).length || "The"} replaceable slots; pick who replaces them.`
+      const unsupported = Array.isArray(r.slots) && !r.slots.length;
+      allowRequest(unsupported && !!r.sources?.length);
+      io.status(unsupported && r.sources?.length ? "No native character slots are available yet. Choose the donors, then Request this build to research and implement the replacement."
+        : r.sources?.length ? `${(r.slots || []).length || "The"} replaceable slots; pick who replaces them.`
         : "Nothing in the collection to cast yet: extract a game's characters first.");
       return r;
     }
@@ -130,10 +185,53 @@
       const p = await io.api("/api/cast_swap/plan", { game_id: game.gid, source: form.source, mapping: form.mapping,
                                                       seed: form.seed || "", slots: form.slots || "all", assignments });
       st.plan = p;
+      allowRequest(["unsupported", "unsupported_cast"].includes(p.status));
       io.render("plan", p.assignments?.length ? planHTML(p, io.img || (u => u)) : "");
       io.status(p.assignments?.length ? `${p.assignments.length} slots planned. Change any donor, then build.` : (p.message || p.status));
       io.enable("build", !!p.assignments?.length);
       return p;
+    }
+    function request(form) {
+      if (st.pendingRequest) return st.pendingRequest;
+      if (!st.requestAllowed) return Promise.reject(new Error("Plan the supported cast and review its assignments before building."));
+      if (!form.source) return Promise.reject(new Error("Choose the source characters first."));
+      const source = st.sources.find(s => s.key === form.source), label = source?.label || form.source;
+      const scope = form.slots || "all", mapping = form.mapping || "auto", seed = form.seed || "";
+      const body = { kind: "build", recipe: "agent", session_id: game.session_id || "",
+        description: `${scope === "all" ? "Replace the entire cast" : `Replace the ${scope} characters`} of ${game.title} with ${label}. ` +
+          `Use the extracted donor source ${form.source}, mapping ${mapping}${seed ? `, seed ${seed}` : ""}. ` +
+          "Implement and test any missing native reader and combined character writer; do not substitute an overlay or a single-player replacement. Publish one playable mod build after separate gameplay verification.",
+        mapping: { source: form.source, source_label: label, mapping, slots: scope, seed } };
+      const signature = JSON.stringify(body);
+      let intent = intents.find(i => i.signature === signature);
+      if (!intent) {
+        intent = { signature, clientId: (io.uuid || uuid)() }; intents = [...intents.slice(-19), intent];
+        try { storage()?.setItem(storageKey, JSON.stringify(intents)); } catch {}
+      }
+      io.enable("request", false); io.status("Checking and saving the build request…");
+      const path = `/api/games/${encodeURIComponent(game.gid)}/build-requests`;
+      st.pendingRequest = (async () => {
+        const existing = await io.api(path);
+        const previous = (existing.items || []).find(r => samePendingCast(r, form));
+        const row = previous || await io.api(path, { ...body, client_id: intent.clientId });
+        st.request = row; io.render("request", requestHTML(row)); io.render("request-detail", "");
+        io.status(`Request #${row.number} ${previous ? "already saved" : "saved"}. ${row.dispatch_error ? "Dispatch needs attention; your request is retained." : "Follow its progress below. No playable build is being claimed yet."}`);
+        return row;
+      })().catch(error => { io.status(`Request could not be confirmed: ${error.message}. Retry uses the same request ID.`); throw error; })
+        .finally(() => { st.pendingRequest = null; io.enable("request", st.requestAllowed); });
+      return st.pendingRequest;
+    }
+    async function refreshRequest(details = false) {
+      if (!st.request) return null;
+      const id = st.request.id;
+      if (details) {
+        const row = await io.api(`/api/requests/${encodeURIComponent(id)}`);
+        if (st.request?.id === id) io.render("request-detail", requestDetailsHTML(row)); return row;
+      }
+      const res = await io.api(`/api/games/${encodeURIComponent(game.gid)}/build-requests`);
+      const row = (res.items || []).find(r => r.id === id);
+      if (row && st.request?.id === id) { st.request = row; io.render("request", requestHTML(row)); }
+      return row || null;
     }
     async function build(picks, marks) {
       if (!st.plan) throw new Error("plan first");
@@ -156,7 +254,7 @@
       if (res.mod && io.onBuilt) io.onBuilt(res);
       return res;
     }
-    return { sources, plan, build, state: st };
+    return { sources, plan, build, request, refreshRequest, state: st };
   }
 
   // the browser binding: a dialog under <body> wired to the controller
@@ -170,10 +268,13 @@
     el.innerHTML = '<div data-cs-part="form"></div>';
     doc.body.append(el);
     const q = s => el.querySelector(s);
+    let closed = false, requestTimer = null;
+    const close = () => { closed = true; clearInterval(requestTimer); el.remove(); };
     const ui = Object.assign({}, io, {
-      render: (part, html) => { if (part === "form") { q('[data-cs-part="form"]').innerHTML = html; } else { const p = q('[data-cs="plan"]'); if (p) p.innerHTML = html; } },
+      render: (part, html) => { if (closed) return; if (part === "form") { q('[data-cs-part="form"]').innerHTML = html; } else { const p = q(`[data-cs="${part}"]`); if (p) p.innerHTML = html; } },
       status: t => { const s = q('[data-cs="status"]'); if (s) s.textContent = t; },
       enable: (name, on) => { const b = q(`[data-cs-go="${name}"]`); if (b) b.disabled = !on; },
+      requestable: on => { const b = q('[data-cs-go="request"]'); if (b) b.hidden = !on; },
     });
     const c = controller(ui, game);
     const form = () => ({ source: q('[data-cs="source"]').value, mapping: q('[data-cs="mapping"]').value,
@@ -194,7 +295,7 @@
         return;
       }
       const b = e.target.closest("[data-cs-go]"); if (!b) return;
-      if (b.dataset.csGo === "close") { el.remove(); return; }
+      if (b.dataset.csGo === "close") { close(); return; }
       if (b.dataset.csGo === "markall" || b.dataset.csGo === "marknone") {
         el.querySelectorAll("[data-cs-mark]").forEach(m => { m.checked = b.dataset.csGo === "markall"; }); counted(); return;
       }
@@ -206,7 +307,18 @@
         el.querySelectorAll("[data-cs-slot]").forEach(s => { if (dealt[s.dataset.csSlot]) { s.value = dealt[s.dataset.csSlot]; thumb(s); } });
         ui.status(`Dealt ${ds.length} donors over ${on.length} marked characters. Change any row, then build.`); return;
       }
-      try { if (b.dataset.csGo === "plan") await c.plan(form()); else await c.build(picks(), marks()); }
+      try {
+        if (b.dataset.csGo === "plan") await c.plan(form());
+        else if (b.dataset.csGo === "request") {
+          await c.request(form());
+          if (!closed && !requestTimer) requestTimer = setInterval(() => {
+            if (el.isConnected === false) { clearInterval(requestTimer); return; }
+            c.refreshRequest().catch(() => {});
+          }, 5000);
+        } else if (b.dataset.csGo === "request-refresh") await c.refreshRequest();
+        else if (b.dataset.csGo === "request-details") await c.refreshRequest(true);
+        else await c.build(picks(), marks());
+      }
       catch (err) { ui.status("✗ " + String(err.message || err).slice(0, 300)); }
     };
     el.onchange = e => {                                     // a changed donor: its thumbnail follows; a tick: the count
@@ -214,10 +326,10 @@
       const s = e.target.closest("[data-cs-slot]"); if (s) thumb(s);
     };
     c.sources().catch(err => ui.status("✗ " + String(err.message || err).slice(0, 300)));
-    return { el, controller: c };
+    return { el, controller: c, close };
   }
 
-  const api = { sourceOptions, formHTML, planHTML, edits, reviewed, deal, reportHTML, controller, open, MAPPINGS, SLOT_SETS };
+  const api = { sourceOptions, formHTML, planHTML, edits, reviewed, deal, reportHTML, requestHTML, samePendingCast, controller, open, MAPPINGS, SLOT_SETS };
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.GBoxCastSwap = api;
 })(typeof window !== "undefined" ? window : globalThis);
