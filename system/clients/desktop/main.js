@@ -4,6 +4,9 @@
 const { app, BrowserWindow, ipcMain, shell, desktopCapturer, session, screen, dialog, clipboard, nativeImage, globalShortcut, Menu, nativeTheme, Notification, powerSaveBlocker } = require("electron");
 const { spawn, execFile, execFileSync } = require("child_process");
 const embedGeometry = require("./embed-geometry");
+const operationConsole = require('../web/viz/operation-console.js');
+const operationOutput = require('./operation-output-window.cjs')({BrowserWindow,getWin:()=>win});
+ipcMain.handle('operation-console:frame',(_e,state)=>{operationOutput.update(state);});
 // The shell and its guest are one dark app, including native controls and first paint.
 nativeTheme.themeSource = "dark";
 
@@ -154,7 +157,14 @@ async function token() {
 
 // GET answers the control plane tags (ETag): re-asking costs a 304, not a download and a parse (#712: /api/requests ~8 MB)
 const ETAGS = new Map();                              // path -> { etag, data }
-async function api(p, body, method) {               // method: PATCH / PUT / DELETE when asked, else POST with a body
+async function api(p, body, method) {
+  return operationConsole.trace(event=>send('operation-console',event),p,body,async()=>{
+    const data=await apiRaw(p,body,method);
+    if(p.startsWith('/api/jobs/')&&data?.id&&data?.state)send('operation-console',{job:data});
+    return data;
+  });
+}
+async function apiRaw(p, body, method) {               // method: PATCH / PUT / DELETE when asked, else POST with a body
   const t = await token();
   method = /^(GET|POST|PUT|PATCH|DELETE)$/.test(String(method || "").toUpperCase()) ? String(method).toUpperCase() : (body ? "POST" : "GET");
   const known = method === "GET" && !body && ETAGS.get(p);

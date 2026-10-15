@@ -279,6 +279,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/session-build.js"></script>
 <script src="/viz/cast-swap.js"></script>
 <script src="/viz/pso-controls.js"></script>
+<script src="/viz/operation-console.js"></script>
 <script src="/viz/live-controls.js"></script>
 <script src="/viz/build-actions.js"></script>
 <script src="/viz/build-report-image.js"></script>
@@ -679,6 +680,14 @@ const LASTPLAYED = GBoxLastPlayed.mount({ api, host: document.body, top: () => G
   onReloaded: nsid => { if (nsid) show("Sessions", nsid); }, openReport: id => window.open(`/api/requests/${encodeURIComponent(id)}?${tq()}`, "_blank") });
 $("#tok").onchange = e => { tok = e.target.value; try { localStorage.setItem("gbox_tok", tok); } catch {} show(cur); };
 async function api(path, body, method, timeoutMs = 0) {
+  const run=async()=>{
+    const data=await apiRaw(path,body,method,timeoutMs);
+    if(path.startsWith('/api/jobs/')&&data?.id&&data?.state)window.GBOX_OPERATION_CONSOLE?.observe?.(data);
+    return data;
+  };
+  return window.GBOX_OPERATION_CONSOLE?.request(path,body,run) || run();
+}
+async function apiRaw(path, body, method, timeoutMs = 0) {
   const m = method || (body ? "POST" : "GET");
   let r;
   for (let i = 0; ; i++) {                                 // reads ride out a Spark restart / Wi-Fi blip (~30 s) instead of failing a job
@@ -4038,6 +4047,29 @@ if (!new URLSearchParams(location.search).has('embedded')) {
 </script>
 <script src="/viz/process-popup.js"></script>
 <script>
+// Native/GPU pictures use the desktop's transparent window; remote streams also work inside the desktop viewer.
+{
+  const embedded=new URLSearchParams(location.search).has('embedded');
+  const visible=el=>{const r=el.getBoundingClientRect();return r.width>20&&r.height>20;};
+  const native=()=>embedded&&[...document.querySelectorAll('#nativeslot, .gbox-gpu-video')].some(visible);
+  const host=document.createElement('div');host.style.cssText='position:fixed;pointer-events:none;z-index:110;overflow:hidden';document.body.append(host);
+  const output=GBoxOperationConsole.view(document,host);
+  const controller=window.GBOX_OPERATION_CONSOLE=GBoxOperationConsole.create({session:()=>active?.sid||'',
+    fetchJob:id=>native()?null:api('/api/jobs/'+encodeURIComponent(id)),render:frame=>{
+      const surface=[...document.querySelectorAll('#scr, #nativeslot, .gbox-gpu-video, #pipimg')]
+        .find(visible);
+      host.hidden=native()||!surface||!frame.rows.length;
+      if(surface){const r=surface.getBoundingClientRect();Object.assign(host.style,{left:r.left+'px',top:r.top+'px',width:r.width+'px',height:r.height+'px'});}
+      output.draw(frame);
+    }});
+  if(embedded) controller.request=(path,body,run)=>GBoxOperationConsole.trace(event=>{
+    controller.ingest(event);console.log('GBOX:'+JSON.stringify({ev:'operationconsole',event}));},path,body,run);
+  let cursor=0,busy=false;
+  const audit=setInterval(async()=>{if(busy||!active?.sid||native())return;busy=true;
+    try{const rows=await api(cursor?'/api/audit?after='+cursor+'&limit=100':'/api/audit?tail=100');controller.audit(rows);if(rows.length)cursor=rows.at(-1).seq;}
+    catch{}finally{busy=false;}},1000);
+  addEventListener('pagehide',()=>{clearInterval(audit);controller.dispose();output.dispose();host.remove();},{once:true});
+}
 if (!new URLSearchParams(location.search).has('embedded')) {
   window.GBOX_PROCESS_POPUP = GBoxProcessPopup.mount({
     fetchJobs: () => api('/api/jobs?state=queued,running&limit=100'),
