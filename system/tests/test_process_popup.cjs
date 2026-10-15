@@ -205,89 +205,36 @@ function setup(options = {}) {
   return { env, body, elements, timers, intervals, win, element, advance: ms => { t += ms; }, runTimers };
 }
 
-test('popup opens for a 3D job, follows its progress and closes via the VCR effect', async () => {
-  const x = setup();
-  const j = job('characters', { op: 'use', character: 'amy' }, {
-    id: 'a1', state: 'running', progress: { pct: 12, msg: 'decimating…' }, progress_log: ['import glb', 'decimating…'],
-  });
-  x.win.sync([j]);
-  const root = x.body.children.find(c => c.className === 'gbox-pp');
-  assert.ok(root, 'window mounted in the page');
-  assert.equal(root.attributes.role, 'dialog', 'native surface cutouts can discover the popup');
-  const deep = (el) => [el, ...el.children.flatMap(deep)];               // all descendants
-  const title = deep(root).find(c => c.tagName === 'B');
-  assert.equal(title.textContent, 'characters · use · amy');
-  assert.ok(deep(root).some(c => c.className === 'pp-stage'), '3D stage present');
-
-  // progress updates flow into the bar and the ticker without remounting
-  const before = root;
-  x.win.sync([job('characters', { op: 'use', character: 'amy' }, {
-    id: 'a1', state: 'running', progress: { pct: 80, msg: 'retargeting…' }, progress_log: ['import glb', 'decimating…', 'retargeting…'],
-  })]);
-  assert.equal(x.body.children.find(c => c.className === 'gbox-pp'), before, 'same window instance');
-  const msg = deep(root).find(c => c.className === 'pp-msg');
-  assert.equal(msg.textContent, 'retargeting…');
-
-  // job ends: the window plays the VCR close (animated by timers) and removes itself
-  x.win.sync([]);
-  assert.equal(root.className, 'gbox-pp pp-closing', 'VCR close started');
-  x.runTimers(40);                                                                 // run the animation loop to completion
-  assert.equal(root.removed, true, 'window removed after the effect');
-
-  // a later 3D job reopens the window
-  x.win.sync([job('asset_convert', {}, { id: 'b2', state: 'running', progress: { pct: 5, msg: 'converting' } })]);
-  assert.ok(x.body.children.some(c => c.className === 'gbox-pp' && !c.removed), 'window reopened');
-  x.win.dispose();
-  assert.equal(x.body.children.filter(c => c.className === 'gbox-pp' && !c.removed).length, 0, 'dispose removes the window');
+test('popup waits for a loaded sprite, follows progress and disappears when processing ends', () => {
+ const x=setup();const j={id:'sprite',state:'running',tool:'file_mod',input:{op:'build'},fitting:{order:['a'],current:'a',models:{a:{preview:'/fitted.png',stages:{}}}}};
+ x.win.sync([j]);const root=x.elements.find(e=>e.className==='gbox-pp'),pic=x.elements.find(e=>e.className==='pp-pic');
+ assert.ok(root.hidden);pic.naturalWidth=32;pic.onload();assert.equal(root.hidden,false);
+ x.win.sync([{...j,progress:{pct:80,msg:'Writing fitted sprite'}}]);
+ assert.equal(x.elements.find(e=>e.className==='pp-msg').textContent,'Writing fitted sprite');
+ x.win.sync([]);assert.equal(root.removed,true);assert.equal(x.win.viewer(),null);x.win.dispose();
 });
 
-test('the ✕ button hides this task instantly and it stays hidden while it runs', async () => {
-  const x = setup();
-  const j = job('characters', { op: 'use', character: 'amy' }, { id: 'a1', state: 'running', progress: { pct: 10, msg: 'rigging' } });
-  x.win.sync([j]);
-  const root = x.body.children.find(c => c.className === 'gbox-pp');
-  const deep = (el) => [el, ...el.children.flatMap(deep)];
-  const close = deep(root).find(c => c.tagName === 'BUTTON');
-  close.onclick();
-  assert.equal(root.removed, true, 'closed without the VCR animation');
-  x.win.sync([job('characters', { op: 'use', character: 'amy' }, { id: 'a1', state: 'running', progress: { pct: 20, msg: 'still rigging' } })]);
-  assert.ok(!x.body.children.some(c => c.className === 'gbox-pp' && !c.removed), 'suppressed task does not reopen');
-  x.win.sync([job('asset_convert', {}, { id: 'c3', state: 'queued' })]);
-  assert.ok(x.body.children.some(c => c.className === 'gbox-pp' && !c.removed), 'a different task still opens');
-  x.win.dispose();
+
+test('close hides a real visual and keeps that task dismissed',()=>{
+ const x=setup();const j={id:'sprite',state:'running',tool:'file_mod',fitting:{order:['a'],current:'a',models:{a:{preview:'/fitted.png',stages:{}}}}};
+ x.win.sync([j]);const root=x.elements.find(e=>e.className==='gbox-pp');
+ const pic=x.elements.find(e=>e.className==='pp-pic');pic.naturalWidth=32;pic.onload();
+ x.elements.find(e=>e.className==='pp-x').onclick();assert.ok(root.removed);
+ x.win.sync([j]);assert.equal(x.body.children.length,0);x.win.dispose();
 });
 
-test('the popup labels the mesh operation running now and clears it on other stages', () => {
-  const x = setup();
-  const deep = (el) => [el, ...el.children.flatMap(deep)];
-  const j = (msg) => job('characters', { op: 'use', character: 'amy' }, { id: 'op1', progress: { pct: 30, msg } });
-  x.win.sync([j('Amy: decimating 12000 -> 8000 triangles')]);
-  const root = x.body.children.find(c => c.className === 'gbox-pp');
-  const op = deep(root).find(c => c.className === 'pp-op');
-  assert.ok(op, 'stage label element exists');
-  assert.equal(op.textContent, 'decimate 12,000 → 8,000 tris');
-  x.win.sync([j("Retargeting Amy onto Leon's skeleton")]);
-  assert.equal(op.textContent, "retarget → Leon's skeleton");
-  x.win.sync([j('Building the disc image x.iso')]);
-  assert.equal(op.textContent, '');
+test('queued cleanup, unknown models and word-only mesh progress never mount a popup',()=>{
+ const x=setup();
+ for(const j of [job('file_mod',{op:'quarantine_build'},{state:'queued'}),job('asset_convert'),job('future_tool',{}, {progress:{msg:'Retargeting a mesh'}}),job('characters',{character:'sonic'},{state:'queued'})])x.win.sync([j]);
+ assert.equal(x.body.children.length,0);x.win.dispose();
 });
 
-test('the same job updates its queued/running chip and changing companion count', () => {
-  const x = setup();
-  const queued = job('characters', { character: 'A' }, { id: 'same', state: 'queued' });
-  x.win.sync([queued]);
-  const root = x.body.children.find(c => c.className === 'gbox-pp');
-  const deep = el => [el, ...el.children.flatMap(deep)];
-  const [state, more] = deep(root).filter(c => c.className === 'pp-chip');
-  assert.equal(state.textContent, 'queued'); assert.equal(more.style.display, 'none');
-  x.win.sync([{ ...queued, state: 'running' }, job('asset_convert', {}, { id: 'other', state: 'queued' })]);
-  assert.equal(x.body.children.find(c => c.className === 'gbox-pp'), root, 'no remount on state transition');
-  assert.equal(state.textContent, 'processing'); assert.ok(state.classList.contains('run'));
-  assert.equal(more.textContent, '+1 more'); assert.equal(more.style.display, '');
-  x.win.sync([queued]);
-  assert.equal(state.textContent, 'queued'); assert.ok(!state.classList.contains('run'));
-  assert.equal(more.textContent, '+0 more'); assert.equal(more.style.display, 'none');
-  x.win.dispose();
+test('a real asset is still hidden until its queued job actually starts',()=>{
+ const x=setup(),j={id:'sprite',state:'queued',tool:'file_mod',fitting:{order:['a'],current:'a',models:{a:{preview:'/fitted.png',stages:{}}}}};
+ x.win.follow(j.id);x.win.sync([j]);assert.equal(x.body.children.length,0);
+ x.win.sync([{...j,state:'running'}]);const root=x.elements.find(e=>e.className==='gbox-pp');assert.ok(root.hidden);
+ const pic=x.elements.find(e=>e.className==='pp-pic');pic.naturalWidth=32;pic.onload();assert.equal(root.hidden,false);
+ x.win.sync([j]);assert.ok(root.removed);x.win.dispose();
 });
 
 test('non-3D jobs never mount anything', () => {
@@ -371,7 +318,7 @@ function viewerFixture() {
       render(scene) { rendered.push(scene); }
     },
   };
-  class GLTFLoader { load(path, callback) { loads.push({ path, callback }); } }
+  class GLTFLoader { load(path, callback, progress, error) { loads.push({ path, callback, error }); } }
   function model(name) {
     const scene = new Object3D(), mesh = new Object3D();
     const geometry = new Geometry(), material = new Material();
@@ -392,7 +339,7 @@ test('module imports use the latest same-job model and stage; closed imports nev
   x.win.sync([job('characters', { character: 'new' }, { id: 'same', progress: { msg: 'Rescaling the model' } })]);
   modules.resolve(v.modules); await tick();
   assert.deepEqual(v.loads.map(l => l.path), ['/api/characters/new/model']);
-  assert.equal(x.win.viewer().fx.kind, 'rescale');
+  assert.equal(x.win.viewer().fx, null, 'a progress message does not simulate mesh deformation');
   x.win.dispose();
 
   const late = deferred(), y = setup({ loadModules: () => late.promise });
@@ -401,19 +348,31 @@ test('module imports use the latest same-job model and stage; closed imports nev
   assert.equal(v.loads.length, 1, 'closed import never constructs another viewer');
 });
 
+test('a model remains hidden until real geometry loads; failed or empty assets never display a replacement',async()=>{
+  const v=viewerFixture(),x=setup({loadModules:async()=>v.modules});
+  const j=character=>job('characters',{character});
+  x.win.sync([j('valid')]);await tick();
+  const root=x.elements.find(e=>e.className==='gbox-pp');assert.equal(root.hidden,true);
+  v.loads[0].callback(v.model('valid'));assert.equal(root.hidden,false);
+  x.win.sync([j('broken')]);await tick();assert.equal(root.hidden,true);v.loads[1].error();
+  assert.ok(root.removed);x.win.sync([j('broken')]);await tick();assert.equal(v.loads.length,2,'broken assets are not polled repeatedly');
+  x.win.sync([j('empty')]);await tick();const empty=v.model('empty');empty.geometry.attributes.position.count=0;
+  v.loads[2].callback(empty);assert.equal(x.body.children.length,0);assert.equal(empty.geometry.disposals,1);x.win.dispose();
+});
+
 test('out-of-order models, replacements and close dispose real resources without stale presentation', async () => {
   const v = viewerFixture(), x = setup({ loadModules: async () => v.modules });
   const j = (name, msg = '') => job('characters', { character: name }, { progress: { msg } });
   x.win.sync([j('A')]); await tick();
-  x.win.sync([j('B', 'Decimating 12 -> 6 triangles')]);
+  x.win.sync([j('B', 'Decimating 12 -> 6 triangles')]); await tick();
   const A = v.model('A'), B = v.model('B');
   v.loads[1].callback(B); v.loads[0].callback(A);
   assert.equal(v.current(), B.scene, 'latest B remains displayed after A finishes');
   assert.equal(A.geometry.disposals, 1); assert.equal(A.material.disposals, 1); assert.equal(A.texture.disposals, 1);
-  assert.equal(B.material.opacity, 0.22, 'live decimation preview applied');
+  assert.equal(B.material.opacity, 1, 'the actual loaded mesh is not altered');
   const footer = x.elements.find(e => e.className === 'pp-f');
-  assert.equal(footer.textContent, 'Donor model preview · stage effects illustrate reported progress');
-  x.win.sync([j('C')]);
+  assert.equal(footer.textContent, 'Source donor model · awaiting fitted stage snapshots');
+  x.win.sync([j('C')]); await tick();
   assert.equal(B.material.opacity, 1, 'preview material restored before disposal');
   assert.equal(B.geometry.disposals, 1); assert.equal(B.material.disposals, 1); assert.equal(B.texture.disposals, 1);
   const C = v.model('C'); x.win.dispose(); v.loads[2].callback(C);
@@ -426,38 +385,25 @@ test('a job with no model clears its predecessor instead of mislabelling the old
   x.win.sync([job('characters', { character: 'A' })]); await tick();
   const A = v.model('A'); v.loads[0].callback(A);
   x.win.sync([job('asset_convert', {}, { id: 'unknown-model' })]);
-  assert.equal(x.win.viewer().path, null); assert.equal(v.current(), null);
-  assert.match(x.elements.find(e => e.className === 'pp-f').textContent, /^Progress illustration/);
+  assert.equal(x.win.viewer(), null); assert.equal(x.body.children.length, 0);
   assert.equal(A.geometry.disposals, 1);
   x.win.dispose();
 });
 
-test('decimation restores a shared material once across meshes and repeated preview/replacement', async () => {
-  const v = viewerFixture(), x = setup({ loadModules: async () => v.modules });
-  const j = (character, msg) => job('characters', { character }, { progress: { msg } });
-  const decimating = j('A', 'Decimating 12 -> 6 triangles');
-  x.win.sync([decimating]); await tick();
-  const A = v.model('A'), shared = v.model('another');
-  shared.mesh.material = A.mesh.material; A.scene.add(shared.mesh);
-  A.material.opacity = 0.65;
-  const original = () => {
-    assert.equal(A.material.opacity, 0.65);
-    assert.equal(A.material.transparent, false);
-    assert.equal(A.material.depthWrite, true);
-  };
-  v.loads[0].callback(A); assert.equal(A.material.opacity, 0.22);
-  x.win.sync([j('A', 'Building the disc image')]); original();
-  x.win.sync([decimating]); assert.equal(A.material.opacity, 0.22);
-  x.win.sync([j('B', 'Loading the donor')]); original();
-  assert.equal(A.material.disposals, 1, 'shared material disposed once on replacement');
-  assert.equal(A.texture.disposals, 1);
-  x.win.dispose();
+test('reported decimation does not alter source geometry or material; replacement disposes resources once',async()=>{
+ const v=viewerFixture(),x=setup({loadModules:async()=>v.modules});
+ const j=(character,msg)=>job('characters',{character},{progress:{msg}});
+ x.win.sync([j('A','Decimating 12 -> 6 triangles')]);await tick();
+ const A=v.model('A'),shared=v.model('another');shared.mesh.material=A.mesh.material;A.scene.add(shared.mesh);A.material.opacity=.65;
+ v.loads[0].callback(A);assert.equal(A.material.opacity,.65);assert.equal(x.win.viewer().fx,null);
+ x.win.sync([j('A','Retargeting A onto a new skeleton')]);assert.equal(A.material.opacity,.65);
+ x.win.sync([j('B','Loading donor')]);await tick();assert.equal(A.material.disposals,1);assert.equal(A.texture.disposals,1);x.win.dispose();
 });
 
 test('web owns one authenticated popup poller and embedded pages leave ownership to desktop', () => {
   const vm = require('node:vm');
   const web = fs.readFileSync(require.resolve('../clients/web/index.html'), 'utf8');
-  const start = web.indexOf('<script>', web.indexOf('<script src="/viz/process-popup.js"></script>')) + '<script>'.length;
+  const start = web.indexOf("if (!new URLSearchParams(location.search).has('embedded'))", web.indexOf('<script src="/viz/process-popup.js"></script>'));
   const script = web.slice(start, web.indexOf('</script>', start));
   for (const embedded of [false, true]) {
     let mounts = 0, disposed = 0, options, pagehide;

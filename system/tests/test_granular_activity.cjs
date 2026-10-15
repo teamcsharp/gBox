@@ -20,31 +20,38 @@ test('current donor never displays a different character snapshot; details escap
  const html=P.detailHTML({...re,admission_wait:{reason:'<script>bad</script>'}});
  assert.doesNotMatch(html,/<script>/);assert.match(html,/Verification pending/);
 });
-test('browser: local job selection, scrollable console, pause/resume, actual fit detail, and no fake model for RE',async()=>{
+test('browser: show only a loaded task sprite; hide queued, nonvisual, failed and unconfirmed work',async()=>{
  await withPage(async(evaluate,send)=>{
   await send('Emulation.setDeviceMetricsOverride',{width:1350,height:1000,deviceScaleFactor:1,mobile:false});
   await evaluate(fs.readFileSync(path.join(__dirname,'../clients/web/viz/process-popup.js'),'utf8'));
-  await evaluate(`document.body.style='background:#080e1a;color:white;font:16px system-ui';document.body.innerHTML='<h2>i9-NUC · Background automation</h2><p>Synthetic UI fixture using worker progress and fitting records.</p>';var worker=${JSON.stringify(worker)},re=${JSON.stringify(re)},fit=${JSON.stringify(fit)};var now=Date.now();re.progress.ts=now/1000;fit.progress.ts=now/1000;
-   var ctl=GBoxProcessPopup.mount({activity:true,worker:()=>worker,now:()=>now});ctl.sync([re,{...re,id:'other',worker_id:'remote'}]);`);
+  await evaluate(`document.body.style='background:#080e1a;color:white;font:16px system-ui';
+   document.body.innerHTML='<h2>Background task visual fixture</h2>';
+   window.waitFor=async(fn)=>{for(let n=0;n<200;n++){if(fn())return;await new Promise(r=>setTimeout(r,10));}throw Error('Visual timeout');};
+   window.worker=${JSON.stringify(worker)};window.re=${JSON.stringify(re)};window.fit=${JSON.stringify(fit)};
+   const canvas=document.createElement('canvas');canvas.width=32;canvas.height=32;
+   const c=canvas.getContext('2d');c.fillStyle='#28bf85';c.fillRect(12,2,8,8);c.fillRect(8,10,16,16);window.sprite=canvas.toDataURL();
+   delete fit.fitting.models.sonic.snapshot;fit.fitting.models.sonic.preview=sprite;
+   fit.progress_log=Array.from({length:45},(_,n)=>'Fitting vertex '+n);
+   window.ctl=GBoxProcessPopup.mount({activity:true,worker:()=>worker,now:()=>Date.now(),loadModules:async()=>{throw Error('Renderer unavailable');}});
+   ctl.sync([re,{...re,id:'cleanup',state:'queued',tool:'file_mod',input:{op:'quarantine_build'}}]);`);
+  assert.equal(await evaluate(`document.querySelector('.gbox-pp')===null`),true);
+  await evaluate(`ctl.sync([fit,re,{...fit,id:'remote',worker_id:'remote'}]);waitFor(()=>document.querySelector('.gbox-pp')?.hidden===false);`);
   assert.equal(await evaluate(`document.querySelectorAll('[aria-label="Operation to inspect"] option').length`),1);
-  assert.equal(await evaluate(`document.querySelector('.pp-stage').style.display`),'none');
-  assert.match(await evaluate(`document.querySelector('.pp-log').textContent`),/function 0/);
-  assert.equal(await evaluate(`document.querySelector('.pp-log').scrollHeight>document.querySelector('.pp-log').clientHeight`),true);
-  await evaluate(`document.querySelector('.pp-controls button:last-child').click();re.progress_log.push('PAUSED NEW LINE');ctl.sync([re]);`);
+  assert.equal(await evaluate(`document.querySelector('.pp-pic').naturalWidth`),32);
+  assert.equal(await evaluate(`document.querySelector('.pp-stage').querySelectorAll('canvas').length`),1,'no decorative renderer, only existing close-effect canvas');
+  await evaluate(`document.querySelector('.pp-controls button:last-child').click();fit.progress_log.push('PAUSED NEW LINE');ctl.sync([fit]);`);
   assert.doesNotMatch(await evaluate(`document.querySelector('.pp-log').textContent`),/PAUSED NEW LINE/);
-  await evaluate(`document.querySelector('.pp-controls button:last-child').click()`);
+  await evaluate(`document.querySelector('.pp-controls button:last-child').click();`);
   assert.match(await evaluate(`document.querySelector('.pp-log').textContent`),/PAUSED NEW LINE/);
-  await evaluate(`ctl.sync([re,fit]);var select=document.querySelector('.pp-controls select');select.value='mesh';select.dispatchEvent(new Event('change'));document.querySelector('.pp-controls button').click();`);
   assert.match(await evaluate(`document.querySelector('.pp-detail').textContent`),/1800/);
-  assert.equal(await evaluate(`document.querySelector('.gbox-pp').classList.contains('pp-expanded')`),true);
-  assert.equal(await evaluate(`document.querySelector('.pp-cal').textContent`),'');
-  // Offline renderer fallback is explicit instead of pretending the generic globe is the fitted mesh.
-  await new Promise(r=>setTimeout(r,50));
-  assert.match(await evaluate(`document.querySelector('.pp-f').textContent`),/renderer unavailable/);
-  if(process.env.GBOX_ACTIVITY_EVIDENCE){const shot=await send('Page.captureScreenshot',{format:'png'});fs.mkdirSync(process.env.GBOX_ACTIVITY_EVIDENCE,{recursive:true});fs.writeFileSync(path.join(process.env.GBOX_ACTIVITY_EVIDENCE,'granular-activity.png'),Buffer.from(shot.result.data,'base64'));}
-  await evaluate(`ctl.stale()`);assert.match(await evaluate(`document.querySelector('.pp-msg').textContent`),/unconfirmed/);
-  await evaluate(`ctl.sync([fit])`);assert.equal(await evaluate(`document.querySelector('.pp-chip').textContent`),'processing');
-  await evaluate(`ctl.suspend()`);assert.equal(await evaluate(`document.querySelector('.gbox-pp')===null`),true);
-  await evaluate(`ctl.sync([re]);ctl.dispose()`);
+  await evaluate(`ctl.stale();`);assert.equal(await evaluate(`document.querySelector('.gbox-pp')===null`),true);
+  await evaluate(`ctl.sync([fit]);waitFor(()=>document.querySelector('.gbox-pp')?.hidden===false);`);
+  await evaluate(`ctl.sync([{...fit,state:'queued'}]);`);assert.equal(await evaluate(`document.querySelector('.gbox-pp')===null`),true);
+  await evaluate(`fit.fitting.models.sonic.preview='data:image/png;base64,invalid';ctl.sync([fit]);waitFor(()=>!document.querySelector('.gbox-pp'));ctl.sync([fit]);`);
+  assert.equal(await evaluate(`document.querySelector('.gbox-pp')===null`),true);
+  await evaluate(`fit.fitting.models.sonic.preview=sprite+'#updated';ctl.sync([fit]);waitFor(()=>document.querySelector('.gbox-pp')?.hidden===false);`);
+  await evaluate(`delete fit.fitting.models.sonic.preview;fit.fitting.models.sonic.snapshot='/current-task.glb';ctl.sync([fit]);waitFor(()=>!document.querySelector('.gbox-pp'));`);
+  assert.equal(await evaluate(`document.querySelector('.gbox-pp')===null`),true,'renderer failure cannot fall back to a generic globe');
+  await evaluate(`ctl.dispose()`);
  });
 });
