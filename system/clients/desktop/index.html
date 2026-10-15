@@ -1030,7 +1030,7 @@ window.taskVizCreate = canvas => {
   </div>
 </div>
 <div id="chatbar">
-  <button id="chat-home" type="button" title="Play &amp; Library" aria-label="Play &amp; Library"><img src="../../assets/brand/gbox-logo.svg" alt=""></button>
+  <button id="chat-home" type="button" title="Home" aria-label="Open gBox Home"><img src="../../assets/brand/gbox-logo.svg" alt=""></button>
   <span id="chatinput">
   <button id="chatnew" type="button" aria-label="New conversation" title="New conversation"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button>
   <input id="chatin" aria-label="Ask gBox" placeholder="Ask gBox… e.g. “give me infinite lives”, “extract Mario's sprites to Blender”, “what does this function do?”" autocomplete="off">
@@ -1326,7 +1326,7 @@ document.querySelectorAll("aside button[data-s]").forEach(b => b.onclick = () =>
   if (b.dataset.s === "mods") modsGalleryOpen();
   if (b.dataset.s === "settings") loadCacheTiers();
 });
-$("#chat-home").onclick = () => viewAction("library");
+$("#chat-home").onclick = () => viewAction("home");
 // Keep the input's size independent of the microphone wrapper added after the Spark connects.
 (() => {
   const bar = $("#chatbar"), box = $("#chatinput"), grip = $("#chatresize"), min = 180, key = "gbox_speech_width";
@@ -4985,13 +4985,14 @@ window.GBoxBackgroundGameplay = async (session, current) => {
 };
 function viewAction(a, auto = false) {                       // auto = applied by gBox on launch (don't re-save)
   const wv = document.querySelector("#wv");
-  if (["main", "pip", "full", "library"].includes(a) && !auto) viewRemember(a === "full" ? "full" : "windowed");
-  if (a !== "full" && ["main", "pip", "library"].includes(a)) gbox.setFullScreen?.(false);
-  if (a === "main" || a === "library") {
+  if (["main", "pip", "full", "library", "home"].includes(a) && !auto) viewRemember(a === "full" ? "full" : "windowed");
+  if (a !== "full" && ["main", "pip", "library", "home"].includes(a)) gbox.setFullScreen?.(false);
+  if (a === "main" || a === "library" || a === "home") {
     VIEW.mode = "auto";
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     document.querySelector('aside button[data-s="play"]')?.click();
-    if (wv && a === "library") wv.executeJavaScript('show("Library")').catch(() => {});
+    if (wv && a === "home") wv.executeJavaScript('show("Home")').catch(() => {});
+    else if (wv && a === "library") wv.executeJavaScript('show("Library")').catch(() => {});
     else if (wv && EMB.sid) wv.executeJavaScript(`show("Sessions", ${JSON.stringify(EMB.sid)})`).catch(() => {});
   } else if (a === "pip") { VIEW.mode = "pip"; if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); }
   else if (a === "full") { VIEW.mode = "full"; document.querySelector('aside button[data-s="play"]')?.click();

@@ -2,11 +2,34 @@ import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/+esm";
 import { GLTFLoader } from "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js/+esm";
 import { OrbitControls } from "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js/+esm";
 
-// options.fileUrl(rel): URL of another file of the same collection entry (a sibling <slug>.anims.glb holding clips)
+// Resolve sidecars through the same authenticated collection-file route as the model.
+// GLTFLoader.parseAsync has no source URL, so a raw glTF otherwise requests /mesh.bin.
+export function resolveCharacterResource(uri, options = {}, model = options.model || '') {
+  if (!options.fileUrl || /^(?:[a-z][a-z\d+.-]*:|\/|\\)/i.test(uri)) return uri;
+  const match = String(uri).match(/^([^?#]*)(\?[^#]*)?(#.*)?$/);
+  if (!match || !match[1]) return uri;
+  const base = String(model).replace(/\\/g, '/').split('/').slice(0, -1), parts = base.filter(Boolean);
+  for (const encoded of match[1].split('/')) {
+    const part = decodeURIComponent(encoded);
+    if (!part || part === '.') continue;
+    if (part === '..') { if (!parts.length) throw new Error('Model sidecar escapes its collection'); parts.pop(); }
+    else { if (/[\\/\u0000]/.test(part)) throw new Error('Invalid model sidecar path'); parts.push(part); }
+  }
+  const mapped = options.fileUrl(parts.join('/'));
+  return mapped + (match[2] ? (mapped.includes('?') ? '&' : '?') + match[2].slice(1) : '') + (match[3] || '');
+}
+
+async function parseModel(bytes, options, model) {
+  const manager = new THREE.LoadingManager();
+  if (options.fileUrl) manager.setURLModifier(uri => resolveCharacterResource(uri, options, model));
+  return new GLTFLoader(manager).parseAsync(bytes, '');
+}
+
+// options.fileUrl(rel): URL of another file of this collection entry, including glTF sidecars and clip GLBs.
 export async function createCharacterViewer(container, url, options = {}) {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`model download returned ${response.status}`);
-  const gltf = await new GLTFLoader().parseAsync(await response.arrayBuffer(), "");
+  const gltf = await parseModel(await response.arrayBuffer(), options, options.model || '');
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
@@ -53,7 +76,7 @@ export async function createCharacterViewer(container, url, options = {}) {
       if (!options.fileUrl) throw new Error("no clip file URL");
       const r = await fetch(options.fileUrl(file));
       if (!r.ok) throw new Error(`clip file download returned ${r.status}`);
-      const g = await new GLTFLoader().parseAsync(await r.arrayBuffer(), "");
+      const g = await parseModel(await r.arrayBuffer(), options, file);
       if (dead) return [];
       g.scene.visible = false; holder.add(g.scene);
       return g.animations;

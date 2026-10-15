@@ -22,13 +22,15 @@ test('game cover, title and blank art retain mods and launch choices while asset
    document.querySelectorAll('img').forEach(im=>im.src=fixtureImage);
    Promise.all([...document.images].map(im=>im.decode()));`);
   await evaluate(fs.readFileSync(path.join(__dirname,'../clients/web/viz/game-menu.js'),'utf8'));
+  await evaluate(`document.querySelector('main').insertAdjacentHTML('beforeend','<button data-lh-game="game-one" title="Game one"><img alt="Home cover"><span>Game one</span></button>');document.querySelector('[data-lh-game] img').src=fixtureImage;
+   document.querySelector('[data-lh-game]').addEventListener('contextmenu',e=>{e.preventDefault();e.stopPropagation();GBoxGameMenu.open(gameMenuIO(),{gid:'game-one',title:'Game one',card:e.currentTarget,x:e.clientX,y:e.clientY});});`);
   // Match production registration order: existing bubble handlers first, then
   // the generic asset listener, which runs earlier in capture phase.
   await evaluate(reportHandler+'\n'+cardHandler);
   await evaluate(`for(const selector of ['#mod-card','#build-row','#session-chip'])document.querySelector(selector).addEventListener('contextmenu',e=>{e.preventDefault();e.stopPropagation();owned.push(selector);});`);
   await evaluate(fs.readFileSync(path.join(__dirname,'../clients/web/viz/asset-context.js'),'utf8'));
   await evaluate(`GBoxAssetContext.mount(document,{image:async png=>copies.push(png),blender:async()=>({}),sourceBase:'http://fixture.test/'});`);
-  for(const selector of ['.card[data-gid="game-one"] img','.card[data-gid="game-one"] .art','.card[data-gid="game-one"] b','.card[data-gid="game-one"] button','.card[data-gid="game-two"] .art']){
+  for(const selector of ['.card[data-gid="game-one"] img','.card[data-gid="game-one"] .art','.card[data-gid="game-one"] b','.card[data-gid="game-one"] button','.card[data-gid="game-two"] .art','[data-lh-game] img','[data-lh-game] span']){
    await evaluate(`contextAt(${JSON.stringify(selector)});new Promise(r=>setTimeout(r,0));`);
    const state=await evaluate(`({game:$('#gmenu h4').textContent,open:$('#gmenu').classList.contains('on'),assets:document.querySelectorAll('.gbox-asset-menu').length,report:!!$('#issuemenu'),mods:!!$('#gmenu input[value="sonic_disc"]'),original:!!$('#gmenu [data-go="plain"]'),spark:!!$('#gmenu [data-go="linux"]')})`);
    assert.deepEqual(state,{game:selector.includes('game-two')?'Game two':'Game one',open:true,assets:0,report:false,mods:true,original:true,spark:true},selector);
