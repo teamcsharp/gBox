@@ -17,9 +17,20 @@ def snapshot(store, worker, *, online, now=None):
                 and job.get('require_worker') in (None, worker['id'], worker['name']))
     active, queue = [], []
     keys = ('id','tool','state','created','started','finished','progress','error','receipt_id',
-            'parent_request_id','admission_wait','worker_id')
+            'parent_request_id','admission_wait','worker_id','require_worker','agent_use','low_priority','origin')
     def small(job):
-        return {k:job.get(k) for k in keys} | {'stage_log': (job.get('progress_log') or [])[-6:]}
+        # Only presentation metadata; never send arbitrary tool inputs, prompts,
+        # outputs or credentials to the unattended display.
+        inp = {k:str(v)[:200] for k,v in (job.get('input') or {}).items()
+               if k in ('op','character','mod','model','target_game','game_id','slot') and isinstance(v,str)}
+        f = job.get('fitting') or {}; models = f.get('models') or {}
+        order = [k for k in f.get('order',[]) if k in models]
+        chosen = list(dict.fromkeys(([f['current']] if f.get('current') in models else []) + order[-11:]))
+        fitting = {k:f.get(k) for k in ('kind','current','updated')}
+        fitting.update(order=chosen, models={k:models[k] for k in chosen}, reported_total=len(order))
+        logs = [str(line)[:2000] for line in (job.get('progress_log') or [])[-50:]]
+        return {k:job.get(k) for k in keys} | {'input':inp, 'fitting':fitting, 'stage_log':logs,
+                                               'worker_name':worker['name']}
     for job in store.jobs(states=('running','queued'), limit=200, reverse=True):
         if job.get('worker_id') == worker['id'] and job.get('state') == 'running':
             active.append(small(job))

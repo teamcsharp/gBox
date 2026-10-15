@@ -32,6 +32,30 @@
     return msgs.some(m => STAGE_WORDS.test(String(m)));
   }
 
+  // Activity mode also follows RE, compilation, testing and service jobs. Cheap
+  // polling/control calls are not useful work to display as automation.
+  function activityJob(job) {
+    if (!job || !['queued', 'running'].includes(job.state)) return false;
+    if (classify(job)) return true;
+    if (CHEAP_OPS.has((job.input || {}).op)) return false;
+    return !!(job.agent_use || job.low_priority || (job.origin || {}).inspection_run);
+  }
+  function onWorker(job, worker) {
+    if (!worker) return false; // Unknown machine must never show another PC's work.
+    const names = [worker.id, worker.name].filter(Boolean);
+    return job.state === 'running' ? names.includes(job.worker_id) : names.includes(job.require_worker);
+  }
+  function detailHTML(job, now = Date.now() / 1000) {
+    const p = job.progress || {}, stamp = p.ts || job.started || job.created;
+    const age = typeof stamp === 'number' ? Math.max(0, Math.floor(now - stamp)) : null;
+    const rows = fittingRows(job), cur = rows.find(r => r.key === job.fitting?.current);
+    const data = cur ? job.fitting.models[cur.key].stages || {} : {};
+    return `<div class="pp-origin">${ESC(job.worker_name || job.worker_id || job.require_worker || 'Worker not assigned')} · Job ${ESC(job.id)}${job.parent_request_id ? ' · Request ' + ESC(job.parent_request_id) : ''}</div>
+      <div class="pp-flow"><span class="${job.state==='queued'?'now':''}">Queued</span> → <span class="${job.state==='running'?'now':''}">Executing</span> → <span>Result</span> → <span>Verification pending</span></div>
+      <div>${ESC(job.admission_wait?.reason || (job.state==='queued' ? 'Waiting for worker admission; execution has not started.' : age==null ? 'No timestamped progress reported yet.' : `Last worker update ${age}s ago${age>=30 ? '; waiting for the next reported step' : ''}.`))}</div>
+      ${cur ? `<details open><summary>${ESC(cur.label)} · reported measurements</summary>${Object.entries(data).map(([k,v])=>`<div><b>${ESC(k)}</b> ${ESC(v.state)}<pre>${ESC(JSON.stringify(v.data || {}, null, 2))}</pre></div>`).join('')}</details>` : ''}`;
+  }
+
   // ---- which of several live 3D jobs the window follows ----------------------------------
   function pick(jobs) {
     const live = jobs.filter(classify);
@@ -57,6 +81,11 @@
     const i = job.input || {};
     if (i.character && MODEL_TOOLS.has(job.tool)) return `/api/characters/${encodeURIComponent(i.character)}/model`;
     return null;
+  }
+  function activityModelPath(job) {
+    const f = job.fitting || {}, m = (f.models || {})[f.current];
+    if (!m) return modelPath(job);
+    return m.snapshot || (m.donor ? `/api/characters/${encodeURIComponent(m.donor)}/model` : null);
   }
 
   // ---- the Fitting view: every model a writer fits, stage by stage (gbox/fit_events.py -> job.fitting) ----------
@@ -194,7 +223,8 @@
     if (!rows.length) return "";
     const s = fittingSummary(job), collect = isCollect(job), chips = collect ? COLLECT_STAGES : STAGES;
     const withR = !opts || opts.retarget !== false;
-    const head = `<div class="pp-fh"><b>${collect ? "Collecting" : "Fitting"}</b> ${s.done}/${s.total} ${collect ? "characters" : "models"}${s.failed ? ` · <span class="bad">${s.failed} failed</span>` : ""}</div>`;
+    const count = (job.fitting?.reported_total || 0) > rows.length ? `${rows.length} shown of ${job.fitting.reported_total}` : `${s.done}/${s.total}`;
+    const head = `<div class="pp-fh"><b>${collect ? "Collecting" : "Fitting"}</b> ${count} ${collect ? "characters" : "models"}${s.failed ? ` · <span class="bad">${s.failed} failed</span>` : ""}</div>`;
     return head + rows.map(r => `<div class="pp-fr ${ESC(r.state)}${s.current && s.current.key === r.key ? " cur" : ""}" title="${ESC(r.key)}">
       <span class="pp-fl">${ESC(r.label)}</span><span class="pp-fs">${chips.map(name => {
         const st = r.stages.find(x => x.name === name);
@@ -283,6 +313,7 @@
     opts = opts || {};
     const fetchJobs = opts.fetchJobs || null, pollMs = opts.pollMs || 4000;
     const assetUrl = opts.assetUrl || (p => p);
+    const pathFor = opts.activity ? activityModelPath : modelPath;
     // opts.fit(el): the shell keeps the window inside its viewport and below its header bar (toast-stack.js fit): after
     // each update (the fitting rows grow it upward from its bottom anchor), after a drag and on window resize
     const fitIn = () => { if (root && typeof opts.fit === "function") { try { opts.fit(root); } catch (e) { /* layout only */ } } };
@@ -290,7 +321,8 @@
     if (view && typeof view.addEventListener === "function" && typeof opts.fit === "function") view.addEventListener("resize", fitIn);
     const suppressed = new Set();
     let root = null, stage = null, overlay = null, ctx2d = null, titleEl = null, stateEl = null, moreEl = null,
-      barEl = null, msgEl = null, logEl = null, opEl = null, footEl = null, fitEl = null, calEl = null, picEl = null, picSrc = null, rBtn = null;
+      barEl = null, msgEl = null, logEl = null, opEl = null, footEl = null, fitEl = null, calEl = null, picEl = null, picSrc = null, rBtn = null,
+      detailEl = null, jobsEl = null, consolePaused = false, logButton = null;
     let current = null, closing = false, vcr = createVcr(opts.now), three = null, timer = null, pollTimer = null,
       lastMsgs = [], dead = false, polling = null, preferred = null;
     // "R": the Retarget editor (opts.retarget(o), the shell's opener) on a row's donor / game / slot
@@ -337,14 +369,21 @@
       "border-radius:3px;background:#16233a;color:#9fc2ff;cursor:pointer}.gbox-pp .pp-rr:hover,.gbox-pp .pp-rbtn:hover{background:#4f8cff;color:#fff}",
       ".gbox-pp .pp-rbtn{position:absolute;right:8px;bottom:8px;z-index:3;width:26px;height:26px;border-radius:50%;border:1px solid #4f8cff;",
       "background:#101318e6;color:#9fc2ff;font:700 13px/24px ui-monospace,monospace;text-align:center;padding:0;cursor:pointer}",
+      ".gbox-pp.pp-activity{width:520px;max-height:calc(100vh - 160px);overflow:auto}.gbox-pp.pp-expanded{width:800px}",
+      ".gbox-pp.pp-activity .pp-log{max-height:155px;overflow:auto;white-space:pre-wrap;color:#bdcee8;font:11px/1.5 ui-monospace,monospace;overflow-wrap:anywhere}",
+      ".gbox-pp.pp-expanded .pp-log{max-height:300px}.gbox-pp .pp-detail{padding:6px 10px;color:#aebbd0;font-size:11px}",
+      ".gbox-pp .pp-detail pre{white-space:pre-wrap;max-height:150px;overflow:auto;font:11px ui-monospace,monospace}",
+      ".gbox-pp .pp-flow{display:flex;gap:5px;flex-wrap:wrap;margin:7px 0}.gbox-pp .pp-flow span{border:1px solid #34465d;padding:2px 4px;border-radius:4px}.gbox-pp .pp-flow .now{background:#2e5596}",
+      ".gbox-pp .pp-controls{display:flex;gap:6px;padding:6px 10px}.gbox-pp .pp-controls select{min-width:0;flex:1}.gbox-pp .pp-controls button,.gbox-pp .pp-controls select{font:11px system-ui;background:#182437;color:#dfe4ec;border:1px solid #415673;border-radius:4px;padding:4px}",
     ].join("");
     doc.head.append(style);
 
     function build() {
       root = doc.createElement("div");
       root.className = "gbox-pp";
+      if (opts.activity) root.classList.add('pp-activity');
       root.setAttribute("role", "dialog");
-      root.setAttribute("aria-label", "Background 3D task");               // native emulator cutouts recognize non-modal dialogs
+      root.setAttribute("aria-label", opts.activity ? 'This PC background operation' : "Background 3D task");
       const head = doc.createElement("div"); head.className = "pp-h";
       titleEl = doc.createElement("b");
       stateEl = doc.createElement("span"); stateEl.className = "pp-chip";
@@ -382,6 +421,19 @@
       footEl = doc.createElement("div"); footEl.className = "pp-f";
       footEl.textContent = "Progress illustration · following the worker's reported stage";
       root.append(head, stage, meta, fitEl, logEl, footEl);
+      if (opts.activity) {
+        const controls = doc.createElement('div'); controls.className = 'pp-controls';
+        jobsEl = doc.createElement('select'); jobsEl.setAttribute('aria-label', 'Operation to inspect');
+        jobsEl.onchange = () => { preferred = jobsEl.value; const j = lastJobs.find(j=>j.id===preferred); if(j){setContent(j,lastJobs.length-1);update(j);} };
+        const expand = doc.createElement('button'); expand.textContent = 'Expand';
+        expand.onclick = () => { const on = !root.classList.contains('pp-expanded');root.classList[on?'add':'remove']('pp-expanded');expand.textContent=on?'Compact':'Expand';fitIn(); };
+        logButton = doc.createElement('button'); logButton.textContent = 'Pause output';
+        logButton.title = 'Freeze console and measurement text for inspection; the worker keeps running';
+        logButton.onclick = () => { consolePaused=!consolePaused;logButton.textContent=consolePaused?'Resume output':'Pause output';if(!consolePaused&&current)update(current); };
+        controls.append(jobsEl, expand, logButton);
+        detailEl = doc.createElement('div'); detailEl.className='pp-detail';
+        root.append(controls, detailEl);
+      }
       doc.body.append(root);
       draggable(root);
     }
@@ -391,7 +443,7 @@
     function draggable(el) {
       if (typeof el.addEventListener !== "function") return;              // headless test documents
       el.addEventListener("pointerdown", e => {
-        if (e.button !== 0 || e.target.closest("button, a, canvas, .pp-log, .pp-stage, .pp-fit")) return;
+        if (e.button !== 0 || e.target.closest("button, a, select, input, details, canvas, .pp-log, .pp-stage, .pp-fit, .pp-detail")) return;
         const r = el.getBoundingClientRect(), x0 = e.clientX, y0 = e.clientY, id = e.pointerId;
         let moving = false;
         const move = ev => {
@@ -429,6 +481,7 @@
 
     function setContent(job, others) {
       if (!root) build();
+      if (current?.id !== job.id) { lastMsgs = []; logEl.textContent = ''; msgEl.textContent = ''; barEl.firstChild.style.width = '0%'; consolePaused=false;if(logButton)logButton.textContent='Pause output'; }
       current = job;
       titleEl.textContent = title(job);
       stateEl.textContent = job.state === "running" ? "processing" : "queued";
@@ -436,7 +489,11 @@
       if (stateEl.classList) stateEl.classList[run ? "add" : "remove"]("run");
       moreEl.textContent = `+${others} more`;
       moreEl.style.display = others ? "" : "none";
-      if (!three) startViewer(job);
+      const visible = !opts.activity || !!(pathFor(job) || previewOf(job));
+      stage.style.display = visible ? '' : 'none';
+      if (!visible && three) { three.dispose(); three=null; }
+      if (visible && !three) startViewer(job);
+      if (opts.activity && !visible) footEl.textContent = classify(job) ? 'No model snapshot reported yet. Live worker output is shown below.' : 'Live worker output · no 3D artifact reported for this operation';
     }
 
     function update(job) {
@@ -444,14 +501,21 @@
       const p = job.progress || {};
       if (typeof p.pct === "number") barEl.firstChild.style.width = Math.max(0, Math.min(100, p.pct)) + "%";
       if (p.msg && p.msg !== msgEl.textContent) msgEl.textContent = p.msg;
-      const logs = (job.progress_log || []).filter(Boolean).slice(-3);
-      if (logs.length) {
+      const logs = (job.progress_log || job.stage_log || []).filter(Boolean).slice(opts.activity ? -50 : -3);
+      const atTail = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 24;
+      if (!consolePaused && logs.length) {
         const joined = logs.join("\n");
         if (joined !== logEl.textContent) logEl.textContent = joined;
-      } else if (p.msg && lastMsgs[lastMsgs.length - 1] !== p.msg) {
-        lastMsgs = (lastMsgs.concat([p.msg])).slice(-3);
+      } else if (!consolePaused && p.msg && lastMsgs[lastMsgs.length - 1] !== p.msg) {
+        lastMsgs = (lastMsgs.concat([p.msg])).slice(opts.activity ? -50 : -3);
         logEl.textContent = lastMsgs.join("\n");
       }
+      if (atTail && !consolePaused) logEl.scrollTop = logEl.scrollHeight;
+      if (detailEl && !consolePaused) {
+        const html = detailHTML(job);
+        if(detailEl.innerHTML !== html) detailEl.innerHTML=html;
+      }
+      if (jobsEl) jobsEl.value = job.id;
       const fitting = fittingSummary(job);
       if (fitEl) { const html = fittingHTML(job, { retarget: typeof opts.retarget === "function", review: typeof opts.review === "function" }); if (html !== fitEl.innerHTML) fitEl.innerHTML = html; }
       if (rBtn) {
@@ -466,13 +530,13 @@
         picEl.style.display = pic ? "" : "none";
       }
       if (opEl && fitting.current && fitting.current.current) {             // the model being fitted and its stage
-        const lbl = `${fitting.current.current} · ${fitting.done + (fitting.current.state === "done" ? 0 : 1)}/${fitting.total}`;
+        const lbl = opts.activity ? `${fitting.current.current} · ${fitting.current.label}` : `${fitting.current.current} · ${fitting.done + (fitting.current.state === "done" ? 0 : 1)}/${fitting.total}`;
         if (lbl !== opEl.textContent) opEl.textContent = lbl;
       } else if (opEl && p.msg) {                                           // which mesh operation is running now
         const fx = stageEffect(p.msg), lbl = fx ? fx.label : "";
         if (lbl !== opEl.textContent) opEl.textContent = lbl;
       }
-      if (calEl) { const cal = calibration(job), txt = cal ? cal.text : ""; if (txt !== calEl.textContent) calEl.textContent = txt; }
+      if (calEl) { const cal = opts.activity ? null : calibration(job), txt = cal ? cal.text : ""; if (txt !== calEl.textContent) calEl.textContent = txt; }
       const t = title(job);
       if (titleEl && t !== titleEl.textContent) titleEl.textContent = t;   // the job may name its model mid-run
       if (three && three.setJob) three.setJob(job);
@@ -521,8 +585,8 @@
         new THREE.LineBasicMaterial({ color: 0x4f8cff }));
       placeholder.dispose();
       group.add(wire);
-      let path = modelPath(job), loader = null, fx = null, fxKey = "", fxObjs = [], pulse = 0,
-        loadGeneration = 0, raf = 0, stop = false, calib = calibration(job), calT0 = nowS();
+      let path = pathFor(job), loader = null, fx = null, fxKey = "", fxObjs = [], pulse = 0,
+        loadGeneration = 0, raf = 0, stop = false, calib = opts.activity ? null : calibration(job), calT0 = nowS();
       const previewMaterials = new Map();                                  // one original baseline for each shared material
       const swapIn = gltf => {
         // frame from the bind-pose geometry: skinned meshes report a collapsed box before their first render
@@ -541,8 +605,8 @@
         group.remove(wire); group.add(gltf.scene); group.userData.model = gltf.scene;
         if (isSnapshot(path)) {                                             // the writer's own fitted mesh, this stage
           const s = fittingSummary(current || job), r = s.current || fittingRows(current || job).find(x => x.snapshot === path);
-          footEl.textContent = `${isCollect(current || job) ? "Extracted model" : "Fitted mesh"} · ${r ? `${r.snapshotStage || r.current || ""} · ${r.label}` : "writer snapshot"}`;
-        } else footEl.textContent = "Donor model preview · stage effects illustrate reported progress";
+          footEl.textContent = `${isCollect(current || job) ? "Extracted model" : opts.activity ? 'Fitted preview' : "Fitted mesh"} · ${r ? `${r.snapshotStage || r.current || ""} · ${r.label}` : "writer snapshot"}${opts.activity ? ' · preview geometry may be reduced' : ''}`;
+        } else footEl.textContent = opts.activity ? 'Source donor model · awaiting fitted stage snapshots' : "Donor model preview · stage effects illustrate reported progress";
         fxKey = ""; applyFx();                                              // re-apply the live stage to the new mesh
       };
       const safeLoad = p => {
@@ -612,9 +676,12 @@
         }
       };
       camera.position.set(0, 0.7, 3.1); camera.lookAt(0, 0, 0);
+      let lastFrame = -Infinity;
       const tick = () => {
         if (stop) return;
         raf = (env.requestAnimationFrame || (f => env.setTimeout(f, 33)))(tick);
+        if (opts.activity && (doc.hidden || nowS() - lastFrame < .05)) return;
+        lastFrame = nowS();
         group.rotation.y += 0.012;                                          // the 360° orbit around the model
         group.rotation.x = 0.25 + Math.sin(group.rotation.y * 0.5) * 0.1;
         if (pulse > 0) { pulse = (pulse + 0.012) % 1; group.scale.setScalar(1 - 0.18 * Math.sin(pulse * Math.PI)); }
@@ -631,7 +698,7 @@
       return {
         canvas,
         setJob(j) {
-          const p = modelPath(j);
+          const p = pathFor(j);
           if (p !== path) {
             const keep = isSnapshot(p) && isSnapshot(path) && group.userData.model;   // snapshot -> snapshot: no flicker
             path = p; ++loadGeneration; clearFx();
@@ -641,10 +708,10 @@
             fxKey = "";
             if (path) safeLoad(path);
           }
-          const nc = calibration(j);
+          const nc = opts.activity ? null : calibration(j);
           if (!nc || !calib || nc.key !== calib.key) calT0 = nowS();        // a new model restarts its play-by-play
           calib = nc;
-          const next = isSnapshot(path) ? null : stageEffect((j.progress || {}).msg);   // a snapshot shows the real result
+          const next = opts.activity || isSnapshot(path) ? null : stageEffect((j.progress || {}).msg);   // a snapshot shows the real result
           if (next || (j.progress || {}).msg) { fx = next; if (!fx) pulse = 0; applyFx(); }
         },
         get state() { return { path, fx, fxObjs: fxObjs.length, pulse, calib: calib ? calib.key : null,
@@ -660,6 +727,11 @@
       canvas.style.cssText = "position:absolute;inset:0;width:100%;height:100%";
       stage.insertBefore(canvas, overlay);
       const c = canvas.getContext && canvas.getContext("2d");
+      if (opts.activity) {
+        if(c){c.fillStyle='#9fb6d8';c.font='14px system-ui';c.fillText('3D renderer unavailable',90,125);}
+        footEl.textContent='3D renderer unavailable · worker measurements and console remain live';
+        return {canvas,setJob(){},dispose(){canvas.remove();}};
+      }
       let t = 0, timer2 = null, stop = false;
       const pts = [];
       for (let i = 0; i < 90; i++) {                                        // a point-cloud "mesh" to orbit around
@@ -723,11 +795,14 @@
       if (closing && root) timer = env.setTimeout(loop, 33);
     }
 
+    let lastJobs = [];
     function sync(jobs) {
       if (dead || !Array.isArray(jobs)) return;
-      const live = jobs.filter(j => classify(j) && !suppressed.has(j.id));
+      const worker = typeof opts.worker === 'function' ? opts.worker() : opts.worker;
+      const live = jobs.filter(j => (opts.activity ? activityJob(j) : classify(j)) && (!opts.worker || onWorker(j, worker)) && !suppressed.has(j.id));
+      lastJobs = live;
       if (!live.length) { if (root && !closing) teardown(false); return; }
-      let { job, others } = pick(live);
+      let { job, others } = opts.activity ? {job:[...live].sort((a,b)=>(b.state==='running')-(a.state==='running') || ((b.progress||{}).ts||b.started||b.created||0)-((a.progress||{}).ts||a.started||a.created||0))[0],others:live.length-1} : pick(live);
       const wanted = preferred && live.find(j => j.id === preferred);         // a rebuild the editor queued: follow it
       if (wanted) job = wanted;
       if (closing && root) {
@@ -735,6 +810,10 @@
         closing = false; root.classList.remove("pp-closing");
       }
       setContent(job, others);                                              // state and companion counts can change without a new job id
+      if (jobsEl) {
+        const html = live.map(j=>`<option value="${ESC(j.id)}">${ESC(title(j))} · ${ESC(j.state)}</option>`).join('');
+        if(jobsEl.innerHTML !== html)jobsEl.innerHTML=html;
+      }
       update(job);
       fitIn();
     }
@@ -744,7 +823,7 @@
         if (dead || polling) return polling;
         polling = Promise.resolve().then(async () => {
           try { const jobs = await fetchJobs(); if (!dead) sync(jobs); }
-          catch (e) { /* server blip: keep the current window as-is */ }
+          catch (e) { markStale(); }
           finally { polling = null; }
         });
         return polling;
@@ -753,8 +832,11 @@
       pollTimer = env.setInterval(poll, pollMs);
     }
 
+    function markStale() { if(root){stateEl.textContent='stale';msgEl.textContent='Control plane unavailable. Last reported operation retained; current activity is unconfirmed.';} }
     return {
       sync,
+      stale: markStale,
+      suspend() { remove(); }, // Idle operations iframe owns the single visible task window.
       follow(id) { preferred = id || null; if (id) suppressed.delete(id); },  // show this job once it is live
       openRetarget,
       viewer() { return three && three.state ? three.state : null; },      // live mesh-view state (diagnostics/tests)
@@ -767,6 +849,6 @@
     };
   }
 
-  return { mount, classify, pick, createVcr, title, modelPath, stageEffect, decimateRatio, MODEL_TOOLS,
+  return { mount, classify, activityJob, onWorker, detailHTML, pick, createVcr, title, modelPath, activityModelPath, stageEffect, decimateRatio, MODEL_TOOLS,
     fittingRows, fittingSummary, fittingHTML, snapshotOf, previewOf, stageNumbers, calibration, calibrationPhase, STAGES, retargetOf, shownKey };
 });

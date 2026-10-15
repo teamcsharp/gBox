@@ -194,17 +194,25 @@ class Budget(Exception):
 
 
 def run_loop(target: str, query, llm, checker_llm=None, max_rounds: int = 4, max_investigations: int = 8,
-             max_llm_calls: int = 40, label: str = "") -> dict:
+             max_llm_calls: int = 40, label: str = "", progress=None) -> dict:
     """target: 0x address or name. query(op, **args) -> ghidra_bridge result. llm(messages) -> text."""
     if max_rounds < 1:
         raise ValueError("max_rounds must be positive")
     checker_llm = checker_llm or llm
     calls = {"n": 0}
+    latest_excerpt = ''
+    def report(message, code=None):
+        nonlocal latest_excerpt
+        if progress:
+            if code:
+                latest_excerpt = '\nLatest inspected code excerpt:\n' + '\n'.join(str(code).splitlines()[:24])[:2400]
+            progress((message + latest_excerpt).replace(' #fit{', ' # fit{'))
 
     def ask(model, messages):
         if calls["n"] >= max_llm_calls:
             raise Budget(f"LLM call budget of {max_llm_calls} spent")
         calls["n"] += 1
+        report(f'Analyzing {target}: model call {calls["n"]}/{max_llm_calls}')
         return model(messages)
 
     d = query("decompile", target=target)
@@ -212,6 +220,7 @@ def run_loop(target: str, query, llm, checker_llm=None, max_rounds: int = 4, max
         raise RuntimeError(f"Ghidra could not decompile {target}: {d.get('error')}")
     name = label or d.get("name") or target
     addr = d.get("address") or target
+    report(f'Ghidra decompiled {name} ({addr}); inspecting source evidence', d['decompiled'])
     evidence, investigations = [], 0
     transcript, rounds = [], []
     verdict = obj = None
@@ -223,6 +232,7 @@ def run_loop(target: str, query, llm, checker_llm=None, max_rounds: int = 4, max
     stop = None
     try:
         for rnd in range(1, max_rounds + 1):
+            report(f'Reconstruction round {rnd}/{max_rounds}: {name}')
             # reverse / fix, answering evidence requests first (bounded)
             while True:
                 reply = ask(llm, list(history))
@@ -233,6 +243,7 @@ def run_loop(target: str, query, llm, checker_llm=None, max_rounds: int = 4, max
                 answers = []
                 for a in acts[:max(0, max_investigations - investigations)]:
                     investigations += 1
+                    report(f'Inspecting {a["tool"]}: {a.get("target", "")} ({investigations}/{max_investigations})')
                     args = {"pattern": a.get("target", "")} if a["tool"] == "strings" else \
                         {"address": a.get("target", "")} if a["tool"] == "containing" else {"target": a.get("target", "")}
                     try:
@@ -245,6 +256,7 @@ def run_loop(target: str, query, llm, checker_llm=None, max_rounds: int = 4, max
                             {"role": "user", "content": "Evidence:\n" + json.dumps(answers, default=str)[:24000] +
                              "\nNow give the function in one ```cpp block."}]
             code = extract_code(reply) or code
+            report(f'Candidate reconstruction for {name}; checking against Ghidra (hypothesis)', code)
             history.append({"role": "assistant", "content": reply})
             # independent check + structural verifier
             check_reply = ask(checker_llm, [{"role": "system", "content": CHECKER_SYSTEM},
@@ -253,6 +265,7 @@ def run_loop(target: str, query, llm, checker_llm=None, max_rounds: int = 4, max
             transcript.append({"round": rnd, "role": "checker", "text": check_reply})
             verdict = parse_verdict(check_reply)
             obj = objective(code, d["decompiled"], len(d.get("callees") or []) if d.get("callees") is not None else None)
+            report(f'Round {rnd}: checker {verdict["verdict"]}, structural checks {obj["verdict"]}; gameplay verification pending')
             rounds.append({"round": rnd, "checker": verdict, "objective": obj, "code_sha256": hashlib.sha256(code.encode()).hexdigest()})
             if verdict["verdict"] == "PASS" and obj["verdict"] != "FAIL":
                 break
@@ -326,7 +339,7 @@ class ReAgentOut(BaseModel):
     result: dict
 
 
-def run(inp: ReAgentIn, config, worker="local", query=None, llm=None, checker_llm=None) -> dict:
+def run(inp: ReAgentIn, config, worker="local", query=None, llm=None, checker_llm=None, progress=None) -> dict:
     q = query or bridge_query(inp, config, worker)
     if inp.op == "strategies":
         return {"strategies": STRATEGIES, "loop": ["reverse (evidence requests served by ghidra_bridge)", "independent check",
@@ -360,7 +373,7 @@ def run(inp: ReAgentIn, config, worker="local", query=None, llm=None, checker_ll
     if inp.op == "reverse":
         rev = llm or llm_for(config, inp.endpoint, inp.model)
         chk = checker_llm or (llm_for(config, inp.checker_endpoint, inp.model) if inp.checker_endpoint else None)
-        return run_loop(inp.target, q, rev, chk, inp.max_rounds, inp.max_investigations, inp.max_llm_calls)
+        return run_loop(inp.target, q, rev, chk, inp.max_rounds, inp.max_investigations, inp.max_llm_calls, progress=progress)
     raise ValueError(f"unknown op {inp.op!r}: strategies | pick | reverse | check | verify")
 
 
@@ -373,7 +386,8 @@ def re_agent(inp: ReAgentIn, ctx):
     and bounded fix rounds; or check/verify a candidate you wrote. Runs on the worker whose ghidra_bridge has the program
     open (or over export_dir)."""
     ctx.progress(1, f"re_agent {inp.op} {inp.target or inp.query}")
-    res = run(inp, ctx.config, ctx.worker)
+    ctx.nowait = True  # Display output must not add synchronous network waits to every inspected function.
+    res = run(inp, ctx.config, ctx.worker, progress=lambda text:ctx.progress(1, text))
     ctx.artifact("re_agent.json", json.dumps(res, default=str).encode(), "application/json", op=inp.op,
                  upstream="https://github.com/Dryxio/reagent")
     if "transcript" in res:
