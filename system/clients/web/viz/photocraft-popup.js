@@ -26,7 +26,7 @@
   const q=s=>d.querySelector('[data-pc-'+s+']'),url=p=>io.url?io.url(p):p;
   let dead=false,frame=null,frameReady=false,initialized=false,frameOrigin='',queue=null,viewer=null,painter=null,current=null,turn=0,busy=false,editSerial=0,exportSerial=0,donor=null,pendingExport=null,project=null,readyResolve,receivingImage=false;
   const ready=new Promise(resolve=>readyResolve=resolve),sessions=new Map(),drafts=new Map(),projects=new Map();
-  const nonce=crypto.randomUUID().replace(/-/g,'')+crypto.randomUUID().replace(/-/g,'');
+  const nonce=Array.from(crypto.getRandomValues(new Uint8Array(32)),value=>value.toString(16).padStart(2,'0')).join('');
   const note=t=>{if(!dead)q('status').textContent=t;};
   const errors=e=>{note(e.message||String(e));};
   function refreshRecent(){q('recent').innerHTML='<option value="">Choose a saved project</option>'+recent().map(r=>`<option value="${esc(r.id)}">${esc(r.label)}</option>`).join('');}
