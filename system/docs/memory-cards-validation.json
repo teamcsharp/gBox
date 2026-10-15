@@ -1,0 +1,66 @@
+{
+  "validated_on": "2026-10-15",
+  "scope": "Dreamcast VMU and GameCube raw-card formats, isolated emulator launch paths and safe file copying",
+  "isolation": {
+    "native_tests_host": "Spark",
+    "private_runtime": "/tmp/gbox-memory-card-lab",
+    "operator_emulator_processes_changed": false,
+    "operator_save_files_changed": false,
+    "private_native_processes_stopped": true
+  },
+  "automated_tests": {
+    "command": "python -m pytest tests/test_memory_card_emulators.py -q",
+    "working_directory": "system",
+    "checks": [
+      "New VMU: native 128 KiB image and 200 free save blocks",
+      "New GameCube card: native 16 Mbit image and 251 free save blocks",
+      "Native filesystem directories, checksums, redundant metadata and bounded allocation chains",
+      "Selected VMU files retain original payloads; missing files, duplicate names and insufficient space are rejected",
+      "Session-private firmware, VMUs and core options leave global files unchanged",
+      "Disabled VMU expansion slots do not become attached because an old file exists",
+      "Dolphin native region filenames are the exact paths tracked by cloud sync",
+      "Unknown compressed GameCube regions require an unmanaged launch fallback"
+    ]
+  },
+  "native_results": {
+    "dreamcast": {
+      "original_primary_vmu": {"formatted": true, "total_blocks": 200, "free_blocks": 0},
+      "selected_copy": {
+        "filename": "PSO______SYS",
+        "blocks": 15,
+        "free_blocks": 185,
+        "sha256": "869705850bdcb7ad8a8e8a459a911bd7cc4684a3c3871f8a1c39deeab3d8b8f0"
+      },
+      "verified_by": "Native Dreamcast BIOS File manager running inside Flycast on a private Xvfb display",
+      "observed": "A-1 shows 185 Free and PSOV2/MAIN_DATA using 15 blocks",
+      "original_card_unchanged": true,
+      "test_card_unchanged": true,
+      "private_screenshot": "system/gbox-data/memory-card-validation/dc-final.png"
+    },
+    "gamecube": {
+      "new_card": {"formatted": true, "total_blocks": 251, "free_blocks": 251},
+      "sha256": "2720dec79d52d029d500c5dc4c40a6433ec59b03aa22737d67b20c4448c1c11b",
+      "verified_by": "Dolphin GameCube Memory Card Manager calls its native GCMemcard::Open filesystem validator",
+      "observed": "Slot A opens without error and displays Free Blocks: 251, Free Files: 127",
+      "test_card_unchanged": true,
+      "private_screenshot": "system/gbox-data/memory-card-validation/native-manager.png",
+      "existing_operator_card_read_only_check": {"formatted": true, "total_blocks": 2043, "free_blocks": 2010},
+      "full_gameplay_save_write_verified": false
+    }
+  },
+  "limitations": [
+    "Changing raw files under a running Flycast or Dolphin process is not a verified card swap; selections apply at next launch.",
+    "The native GameCube format was verified by Dolphin's own card manager; the separate PSO cold boot did not reach a reliable save-write check.",
+    "GameCube saves that bind to a card serial must retain that raw image identity; selective GameCube save transfer is not implemented here.",
+    "Live Flycast option reconnect is present in upstream core source, but the installed Spark RetroArch lacks the required network command; no operator runtime was used to test it."
+  ],
+  "primary_sources": [
+    "https://github.com/KallistiOS/KallistiOS/blob/master/kernel/arch/dreamcast/include/dc/vmufs.h",
+    "https://github.com/flyinghead/flycast/blob/master/core/hw/maple/maple_devs.cpp",
+    "https://github.com/flyinghead/flycast/blob/master/shell/libretro/libretro.cpp",
+    "https://github.com/flyinghead/flycast/blob/master/shell/libretro/libretro_core_options.h",
+    "https://github.com/dolphin-emu/dolphin/blob/master/Source/Core/Core/HW/GCMemcard/GCMemcard.cpp",
+    "https://github.com/dolphin-emu/dolphin/blob/master/Source/Core/Core/Config/MainSettings.cpp",
+    "https://github.com/dolphin-emu/dolphin/blob/master/Source/Core/DolphinQt/GCMemcardManager.cpp"
+  ]
+}

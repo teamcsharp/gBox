@@ -1121,6 +1121,11 @@ class RetroArchAdapter(CommandAdapter):
                         audio_volume='-34', pause_nonactive='false')
             cfg = work/'retroarch.cfg'
             self.states_override = work/'states'
+        from . import memory_card_emulators
+        opts=memory_card_emulators.retroarch_options(self,opts,co)
+        if getattr(self,'memory_card_context',None):
+            from . import memory_card_sessions
+            memory_card_sessions.journal(self.memory_card_context)
         cfg.write_text("".join(f'{k} = "{v}"\n' for k, v in opts.items()))
         return cfg
 
@@ -1390,6 +1395,8 @@ class RetroArchAdapter(CommandAdapter):
                 self.audio_driver = driver
                 self._write_cfg()
             self.proc = _popen(self, argv, env=env, stdout=open(self.log_path, "wb"), stderr=subprocess.STDOUT, cwd=work)
+            from . import memory_card_sessions
+            memory_card_sessions.launched(self)
             if n == 0:
                 self._p(78, "Emulator process started" + (" on the GPU (VirtualGL)" if argv[0] == VGLRUN else "")
                         + (" · Examine 3D ready" if _examine_ok(self.proc) else ""))
@@ -1913,6 +1920,8 @@ class StandaloneAdapter(Adapter):
         self.log_path = logs / f"{self.name}-{self.port}.log"
         env = {**os.environ, "DISPLAY": self.display.name, "QT_QPA_PLATFORM": "xcb", **self.env}
         self.proc = subprocess.Popen(argv, env=env, stdout=open(self.log_path, "wb"), stderr=subprocess.STDOUT)
+        from . import memory_card_sessions
+        memory_card_sessions.launched(self)
         self._p(80, f"{self.name} started; attaching the debugger")
         try:
             self.dbg = self._debugger()
@@ -2115,7 +2124,13 @@ D-Pad/Right = `H`
                 # JIT emits breakpoint/watchpoint checks only in debug mode (verified: breakpoints fire, steps work;
                 # ponytail: JIT steps can cover a few instructions; Core.CPUCore=0 (interpreter) steps exactly but is slow)
                 "Dolphin.Interface.DebugModeEnabled": "True"}
-        return ["flatpak", "run", "--die-with-parent", f"--filesystem={user}", self.flatpak, "-b", "-u", str(user),
+        from . import memory_card_emulators
+        opts.update(memory_card_emulators.dolphin_options(self,rom))
+        if getattr(self,'memory_card_context',None):
+            from . import memory_card_sessions
+            memory_card_sessions.journal(self.memory_card_context)
+        extra=[f'--filesystem={getattr(self,"memory_card_context",{}).get("work_dir")}'] if getattr(self,'memory_card_context',None) else []
+        return ["flatpak", "run", "--die-with-parent", f"--filesystem={user}", *extra, self.flatpak, "-b", "-u", str(user),
                 *[a for k, v in opts.items() for a in ("-C", f"{k}={v}")], "-e", rom]
 
     def _debugger(self):
@@ -2291,6 +2306,11 @@ D-Pad/Right = `Pad E`
             opts["Dolphin.Core.GFXBackend"] = "Vulkan"              # Dolphin's command-line layer is never saved
             opts["Dolphin.DSP.Backend"] = "No Audio Output"
         self.audio_backend = opts["Dolphin.DSP.Backend"]
+        from . import memory_card_emulators
+        opts.update(memory_card_emulators.dolphin_options(self,rom))
+        if getattr(self,'memory_card_context',None):
+            from . import memory_card_sessions
+            memory_card_sessions.journal(self.memory_card_context)
         return [str(exe), "-b", "-u", str(user), *[a for k, v in opts.items() for a in ("-C", f"{k}={v}")], "-e", rom]
 
     def cheat_set(self, index: int, on: bool) -> dict:
@@ -2325,6 +2345,8 @@ D-Pad/Right = `Pad E`
             si = capture_start()                                     # a minimized window presents no frames to capture
         self.proc = _popen(self, argv, stdout=open(self.log_path, "wb"), stderr=subprocess.STDOUT, cwd=str(Path(argv[0]).parent),
                            startupinfo=si)
+        from . import memory_card_sessions
+        memory_card_sessions.launched(self)
         self._p(70, "Dolphin started; releasing the boot hold")
         spawned = time.monotonic()
         try:

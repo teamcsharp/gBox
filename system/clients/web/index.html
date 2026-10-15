@@ -279,6 +279,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/session-build.js"></script>
 <script src="/viz/cast-swap.js"></script>
 <script src="/viz/pso-controls.js"></script>
+<script src="/viz/memory-cards.js"></script>
 <script src="/viz/operation-console.js"></script>
 <script src="/viz/live-controls.js"></script>
 <script src="/viz/build-actions.js"></script>
@@ -1640,12 +1641,15 @@ async function sessionsView(sid, mode) {
   sid = s.session_id || sid;
   const local = !!(s.detail && s.detail.local_window);
   const btn = k => `<button class="act" data-k="${k}">${k}</button>`;
+  const cardGame=s.game_id ? await api('/api/catalog/'+encodeURIComponent(s.game_id)).catch(()=>null) : null;
+  const cardPlatform=s.platform||cardGame?.platform;
   SESSIONBUILD.session = s;                                   // sessionsView.after mounts the header's build rename on it
   const head = `<div class="bar" id="session-head" data-sid="${esc(sid)}" data-state="${esc(s.state || 'missing')}"><button class="act" onclick="show('Sessions')">All sessions</button><button class="act" id="emulation-issue" aria-label="Report emulation issue and recover game" title="Game frozen or black? Capture diagnostics and save state, file an inbox report, and recover gameplay" style="padding:5px 7px;line-height:0;color:var(--bad)" onclick='reportEmulationIssue(${JSON.stringify(sid)})'><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 17h.01"/></svg></button><button class="act" id="emulation-troubleshooting" aria-label="Emulation troubleshooting options" aria-expanded="false" aria-controls="emulation-troubleshooting-menu" title="Troubleshooting options" style="padding:5px 4px;line-height:0;margin-left:-6px" onclick='toggleEmulationTroubleshooting(${JSON.stringify(sid)})'><svg viewBox="0 0 16 16" width="13" height="17" fill="currentColor"><path d="M4 5l4 6 4-6z"/></svg></button>${window.GBoxSessionBuild ? GBoxSessionBuild.titleHTML(s) : `<b>${esc(s.title || 'Game session')}</b>`}
     <span class="tabs2"><button class="act ${!mode ? "pri" : ""}" onclick='show("Sessions",${JSON.stringify(sid)})'>Play</button><button class="act ${mode === "inspect" ? "pri" : ""}" onclick='show("Sessions",${JSON.stringify(sid)},"inspect")'>Inspect</button><button class="act ${mode === "examine" ? "pri" : ""}" title="Pause and explore this frame as a real 3D scene (the game waits in picture-in-picture)" onclick='show("Sessions",${JSON.stringify(sid)},"examine")'>Examine 3D</button></span>
     <span class="mut">${esc(s.adapter)} · <code>${esc(sid)}</code></span>
     ${s.game_id === RE6_GAME && s.state === "running" ? `<button class="act" title="Pick weapons and items (every item, with pictures) for Mercenaries" onclick='re6Loadout(${JSON.stringify(sid)})'>Loadout</button>` : ""}
     ${s.state === "running" ? `<button class="act" id="speedbtn" aria-label="Turn off fast-forward" aria-pressed="false" title="Clear stuck fast-forward" onclick='normalSessionSpeed(${JSON.stringify(sid)})'><span aria-hidden="true">⏩</span></button>` : ""}
+    ${s.state==='running' && ['dreamcast','gamecube'].includes(cardPlatform)?`<button class="act" id="memory-card-open" aria-label="Manage memory cards" title="Memory cards · select, make a PSO card, and sync saves with Spark" onclick='openMemoryCards(${JSON.stringify(sid)})' style="padding:5px 7px;line-height:0"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 3h10l3 3v15H5V3z"/><path d="M8 3v6h8V3M8 14h8v7M10 5v2M13 5v2"/></svg></button>`:''}
     ${s.game_id ? `<button class="act" id="session-fav" data-gid="${esc(s.game_id)}" style="margin-left:auto;padding:4px 8px;font-size:16px;line-height:1;color:var(--warn,#f5c542)" title="Checking favorites" aria-label="Favorite this game" aria-pressed="false" disabled onclick='toggleSessionFav(this)'>☆</button>` : ""}
     ${s.state === "running" ? `<button class="act" id="pausebtn" data-sid="${esc(sid)}" style="${s.game_id ? "" : "margin-left:auto;"}padding:5px 7px;line-height:0" title="Checking emulator pause state" aria-label="Pause or resume emulation" disabled onclick='toggleSessionPause(${JSON.stringify(sid)})'><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg></button>
     <button class="act" id="padbtn" style="padding:5px 7px;line-height:0" title="Controller settings of this emulator, over the game (RetroArch: Quick Menu → Controls → Port 1 Controls; click again to close). Emulators without that menu open gBox's controller mapping" aria-label="Controller settings" aria-pressed="false" onclick='padSettings(${JSON.stringify(sid)}, this)'><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 11h4M8 9v4M15 12h.01M18 10h.01"/><path d="M17.3 5H6.7a4 4 0 0 0-3.9 3.1l-1.2 6.5A2.8 2.8 0 0 0 6.4 17l2.1-2h7l2.1 2a2.8 2.8 0 0 0 4.8-2.4l-1.2-6.5A4 4 0 0 0 17.3 5z"/></svg></button>
@@ -1721,6 +1725,14 @@ function ssReveal(sel, dock) {                               // open the section
   const el = typeof sel === "string" ? document.querySelector(sel) : sel; if (!el) return false;
   el.scrollIntoView({ behavior: "smooth", block: "center" }); el.classList.add("ssflash"); setTimeout(() => el.classList.remove("ssflash"), 1800);
   return true;
+}
+async function openMemoryCards(sid) {
+  try {
+    const session=(await api('/api/sessions')).find(s=>s.session_id===sid);
+    if(!session)throw Error('Open a running game session to manage its memory cards.');
+    const game=await api('/api/catalog/'+encodeURIComponent(session.game_id));
+    GBoxMemoryCards.open({...session,sid,platform:game.platform},{api});
+  } catch(error){const b=$('#memory-card-open');if(b)b.title=error.message;}
 }
 async function smartSearchInit(sid) {
   SS.sid = sid;
