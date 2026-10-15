@@ -479,7 +479,7 @@
   #pwcon .pwc { background:#0d0f14ee; color:#d8deea; border:1px solid #2c3242; border-radius:7px; box-shadow:0 6px 18px #0009; overflow:hidden }
   #pwcon .pwc-h { display:flex; gap:6px; align-items:center; padding:4px 6px; background:#161a24; cursor:move; font:12px system-ui,sans-serif }
   #pwcon .pwc-h b { flex:1; overflow:hidden; white-space:nowrap; text-overflow:ellipsis }
-  #pwcon .pwc-h button { background:none; border:0; color:#aab3cc; cursor:pointer; padding:0 3px; font:inherit }
+  #pwcon .pwc-h button { background:none; border:0; color:#aab3cc; cursor:pointer; min-width:24px; min-height:24px; padding:2px 5px; flex:none; font:inherit }
   #pwcon .pwc-s { font-size:10px; padding:1px 5px; border-radius:8px; background:#2c3242 }
   #pwcon .pwc[data-state=succeeded] .pwc-s { background:#1f5130 } #pwcon .pwc[data-state=failed] .pwc-s { background:#6b1f24 }
   #pwcon .pwc-bar { height:2px; background:#7c96ff; transition:width .3s }
@@ -590,9 +590,15 @@
       let p = panels.get(id);
       if (!p) {
         const el = doc.createElement("div"); el.className = "pwc"; el.dataset.id = id; el.dataset.state = "queued";
-        el.innerHTML = `<div class="pwc-h"><b></b><span class="pwc-s">queued</span><button data-c="min" title="Collapse">▾</button><button data-c="x" title="Close">✕</button></div><div class="pwc-bar" style="width:0"></div><pre></pre>`;
+        el.innerHTML = `<div class="pwc-h"><b></b><span class="pwc-s">queued</span><button type="button" data-c="min" title="Collapse" aria-label="Collapse task panel">▾</button><button type="button" data-c="x" title="Close task panel" aria-label="Close task panel">✕</button></div><div class="pwc-bar" style="width:0"></div><pre></pre>`;
         el.querySelector("b").textContent = title;
-        el.onclick = e => { const c = e.target.dataset && e.target.dataset.c; if (c === "min") { el.classList.toggle("min"); clamp(); } if (c === "x") close(id); };
+        el.onclick = e => {
+          const c = e.target.closest?.("button[data-c]")?.dataset.c;
+          if (!c) return;
+          e.preventDefault(); e.stopPropagation();
+          if (c === "min") { el.classList.toggle("min"); clamp(); }
+          if (c === "x") close(id);
+        };
         box.append(el);
         p = { el, lines: [], job: null, extra: [] };
         panels.set(id, p);

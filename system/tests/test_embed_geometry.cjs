@@ -76,6 +76,20 @@ function fakeDom() {
 }
 const attr = target => ({ type: 'attributes', target });
 const list = (target, added = [], removed = []) => ({ type: 'childList', target, addedNodes: added, removedNodes: removed });
+
+test('embedded task panels cut native input out as they open, resize and close', () => {
+  const source = fs.readFileSync(require.resolve('../clients/desktop/index.html'), 'utf8');
+  const holes = source.match(/const EMB_GUEST_MENUS = "([^"]+)";/)[1];
+  const { make, body } = fakeDom();
+  const opts = { body, holes, bodyChildren: false };
+  for (const id of ['pwcon', 'pwmenu', 'pwreport']) {
+    const panel = make(id, ['#' + id], body);
+    assert.equal(panel.matches(holes), true, id + ' must receive clicks above the native emulator');
+    assert.equal(G.popupMutation([list(body, [panel])], opts), true);
+    assert.equal(G.popupMutation([attr(make('button', [], panel))], opts), true);
+    assert.equal(G.popupMutation([list(body, [], [panel])], opts), true);
+  }
+});
 test('pop-up mutations: body pop-ups, cut-out panels opening and closing, never the sync\'s own game bar', () => {
   const { make, body } = fakeDom();
   const opts = { body, holes: '#chatpanel.on, #pipmenu, #chatbar .sugg', ignore: '#piph, .piprz' };
