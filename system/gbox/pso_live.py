@@ -8,8 +8,8 @@ from collections import OrderedDict
 
 from .registry import Unsupported
 
-OPS = frozenset(('capabilities', 'status', 'list', 'floor_spawn', 'floor_rares', 'floor_clear',
-                 'floor_list', 'give', 'equip_any', 'multi_equip', 'stat',
+OPS = frozenset(('capabilities', 'rehook', 'status', 'list', 'floor_spawn', 'floor_rares', 'floor_clear',
+                 'floor_list', 'give', 'equip_any', 'always_hit', 'multi_equip', 'stat',
                  'survival','revive','mag','mag_set','mag_feed','randomized','modes','legendary',
                  'enemy_drops','walk_through','bosses','boss_warp','adventure_status'))
 READS = frozenset(('capabilities', 'status', 'list', 'floor_list','mag','modes','bosses','adventure_status'))
@@ -31,7 +31,7 @@ def authorize(store, config, sid, body):
     if time.time() - worker.get('last_seen', 0) > 60:
         raise ValueError('The emulator worker is offline')
     root = Path(__file__).parent
-    for name in ('pso_live.py', 'pso_gc_live.py', 'pso_gc_extras.py','pso_gc_adventure.py','pso_modes.py', 'tools.py', 'pso_mods_tool.py', 'pso_controls.py'):
+    for name in ('pso_live.py', 'pso_rehook.py', 'pso_accuracy.py', 'pso_gc_live.py', 'pso_gc_extras.py','pso_gc_adventure.py','pso_modes.py', 'tools.py', 'pso_mods_tool.py', 'pso_controls.py'):
         expected = hashlib.sha256((root/name).read_bytes().replace(b'\r\n',b'\n')).hexdigest()
         if worker.get('build_sources', {}).get('gbox/'+name) != expected:
             raise ValueError('This worker needs a safe refresh to load the verified PSO live controls')

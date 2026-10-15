@@ -162,7 +162,7 @@ def test_boot_defaults_only_write_after_preference_and_revision_checks(monkeypat
         if not fetch_ok: raise ConnectionError("unreachable")
         return {"equip_any": True}
     monkeypatch.setattr(pso_controls, "preferences", prefs)
-    r = pso_controls.on_launch("boot-fixture", ad, game, SimpleNamespace())
+    r = pso_controls.on_launch("boot-fixture", ad, game, SimpleNamespace(config=Config(granted_permissions=['memory_write'])))
     assert T.PSO(ad.read_memory, ad.write_memory).patch_state("equip_any") == ("on" if fetch_ok else "off")
     assert r["state"] == ("applied" if fetch_ok else "waiting")
 

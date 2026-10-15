@@ -98,6 +98,18 @@ the [REL footer layout](https://github.com/fuzziqersoftware/newserv/blob/9b075e4
 and [saved character layout](https://github.com/fuzziqersoftware/newserv/blob/9b075e4d125edac2a8740dc90b013e6e41322e1f/src/SaveFileFormats.hh).
 The Python parser is an independent implementation of those format facts; no upstream source or game data is bundled.
 
+## Reconnect an uninitialized mod panel
+
+The reload icon beside the PSO connection status sends a session-pinned **Reconnect PSO controls** command over the live channel. It remains reachable while the initial version check is stalled. Client reads have a timeout; newer recovery results replace stale initial responses. Recovery diagnostics identify the memory connection, executable/player check, native dispatcher and saved defaults.
+
+On Windows Dolphin, recovery opens a fresh memory handle to the same live process, verifies the PSO header before swapping handles and discards stale RAM mapping caches. It does not reconnect the detached Windows GDB stub. Healthy RetroArch memory connections are reused; Linux Dolphin can reconnect its configured localhost debugger. The complete revision/offline/player guards still apply before native writes.
+
+Recovery checks pending commands before installing an idempotent hook and refreshing saved defaults. It preserves pending commands, never replays an item/stat operation, and refuses unknown hooks. A paused game stays paused, with a request to resume it before reconnecting. Recovery does not close, reset, restart, save or load the game. Unsupported revisions, disconnected workers and workers needing a code update produce explicit diagnostics; re-hooking cannot turn an unverified ROM into a supported revision.
+
+## Default attack accuracy
+
+On the verified GameCube Plus US revision 2, **Default: attacks never miss** starts enabled and is shared across supported PSO builds. It bypasses the local player's native random accuracy miss checks rather than changing ATA or enemy accuracy. Normal range, contact/hitbox checks and invulnerability still apply. The toggle persists the preference and applies it through the acknowledged live channel. Executable fingerprints and instruction-cache publication guard enabling/disabling it. Dreamcast accuracy remains unavailable until its separate native routines are verified.
+
 ## Remaining requested native work — not implemented by this panel
 
 1. Additional GameCube revisions and progression patches. The native controls above are verified only for 3OE2;

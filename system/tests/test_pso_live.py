@@ -69,7 +69,7 @@ def test_server_authorization_requires_live_pso_current_worker_and_permission(tm
     from pathlib import Path
     import hashlib
     sources={}
-    for name in ('pso_live.py','pso_gc_live.py','pso_gc_extras.py','pso_gc_adventure.py','pso_modes.py','tools.py','pso_mods_tool.py','pso_controls.py'):
+    for name in ('pso_live.py','pso_rehook.py','pso_accuracy.py','pso_gc_live.py','pso_gc_extras.py','pso_gc_adventure.py','pso_modes.py','tools.py','pso_mods_tool.py','pso_controls.py'):
         sources['gbox/'+name]=hashlib.sha256((Path(L.__file__).parent/name).read_bytes().replace(b'\r\n',b'\n')).hexdigest()
     rows={('session','w-s'):{'state':'running','game_id':'gc'},('worker','w'):{'last_seen':time.time(),'build_sources':sources}}
     store=SimpleNamespace(get=lambda kind,key:rows.get((kind,key)),catalog_get=lambda key:{'title':'Phantasy Star Online','platform':'gamecube'})
