@@ -38,17 +38,17 @@ test('Home shelf selects a game, retains the normal game menu, and changes to a 
   await setup(evaluate,send);
   assert.equal(await evaluate(`document.querySelector('[data-lh-title]').textContent`),games[0].title);
   assert.equal(await evaluate(`document.querySelectorAll('.lh-card').length`),3);
-  assert.equal(await evaluate(`document.querySelector('[data-lh-sort]').value`),'recent');
+  assert.equal(await evaluate(`document.querySelector('[data-lh-sort]').value`),'recent');assert.deepEqual(await evaluate('details'),[]);
   assert.deepEqual(await evaluate('scrolled'),[]);
   await evaluate(`document.querySelector('[data-lh-game="b"]').click();new Promise(r=>setTimeout(r,0));`);
   assert.equal(await evaluate(`document.querySelector('[data-lh-details]').textContent`),'Details for Super Mario Bros.');
-  assert.deepEqual(await evaluate('scrolled'),['lh-details']);
-  await evaluate(`document.querySelector('[data-lh-play]').click();var e=new MouseEvent('contextmenu',{bubbles:true,cancelable:true});document.querySelector('[data-lh-game="b"] img').dispatchEvent(e);document.querySelector('[data-lh-view-button="list"]').click();`);
+  assert.deepEqual(await evaluate('scrolled'),[]);
+  await evaluate(`document.querySelector('[data-lh-back]').click();document.querySelector('[data-lh-play]').click();var e=new MouseEvent('contextmenu',{bubbles:true,cancelable:true});document.querySelector('[data-lh-game="b"] img').dispatchEvent(e);document.querySelector('[data-lh-view-button="list"]').click();`);
   assert.deepEqual(await evaluate('launches'),['b']);assert.deepEqual(await evaluate('contexts'),[{id:'b',prevented:true}]);
   assert.equal(await evaluate(`document.querySelector('.lh-list').hidden`),false);assert.equal(await evaluate(`document.querySelector('.lh-shelf').hidden`),true);
   assert.equal(await evaluate(`document.querySelector('[data-lh-view-button="list"]').getAttribute('aria-pressed')`),'true');
   await evaluate(`document.querySelector('.lh-list-game[data-lh-game="c"]').click();new Promise(r=>setTimeout(r,0));`);
-  assert.deepEqual(await evaluate('scrolled'),['lh-details']);
+  assert.deepEqual(await evaluate('scrolled'),[]);
   await evaluate(`ctl.dispose();ctl=GBoxHome.mount(document.querySelector('#home'),io);ctl.ready;`);
   assert.equal(await evaluate(`document.querySelector('.lh-home').dataset.lhView`),'list');
   await evaluate('ctl.dispose()');
@@ -104,15 +104,17 @@ test('Home hover plays only the actual captured video, pauses on leave, and resp
  });
 });
 
-test('Home detail loading survives hovering another title; disposal cannot resurrect a late response',async()=>{
+test('Home explicit Info can return before a late detail resolves without resurrecting its viewer',async()=>{
  await withPage(async(evaluate,send)=>{
   await setup(evaluate,send);
-  await evaluate(`var base=io.api,bResolve,cResolve;io.api=p=>p==='/api/home/games/b'?new Promise(r=>bResolve=r):p==='/api/home/games/c'?new Promise(r=>cResolve=r):base(p);document.querySelector('.lh-card[data-lh-game="b"]').click();document.querySelector('.lh-card[data-lh-game="c"]').dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));new Promise(r=>setTimeout(r,270));`);
-  await evaluate(`bResolve({game:fixtures[1],media:[]});new Promise(r=>setTimeout(r,0));`);
-  assert.equal(await evaluate(`document.querySelector('[data-lh-details]').textContent`),'Details for Super Mario Bros.');
-  assert.equal(await evaluate(`document.querySelector('[data-lh-title]').textContent`),'Phantasy Star Online');
-  await evaluate(`ctl.dispose();document.querySelector('#home').innerHTML='New page';cResolve({game:fixtures[2],media:[]});new Promise(r=>setTimeout(r,0));`);
-  assert.equal(await evaluate(`document.querySelector('#home').textContent`),'New page');
+  await evaluate(`var base=io.api,bResolve;io.api=p=>p==='/api/home/games/b'?new Promise(r=>bResolve=r):base(p);document.querySelector('.lh-card[data-lh-game="b"]').click();new Promise(r=>setTimeout(r,0));`);
+  assert.equal(await evaluate(`document.querySelector('.lh-home').dataset.lhScreen`),'info');
+  assert.equal(await evaluate(`document.querySelector('.lh-layout').hidden`),true);
+  await evaluate(`document.querySelector('[data-lh-back]').click();bResolve({game:fixtures[1],media:[]});new Promise(r=>setTimeout(r,0));`);
+  assert.equal(await evaluate(`document.querySelector('.lh-home').dataset.lhScreen`),'browse');
+  assert.deepEqual(await evaluate('details'),[]);
+  assert.equal(await evaluate(`document.querySelector('[data-lh-info]').hidden`),true);
+  await evaluate('ctl.dispose()');
  });
 });
 
@@ -154,8 +156,8 @@ test('Home immediately skips missing hero art, keeps a usable slide, and bounds 
   assert.equal(await evaluate(`document.querySelector('[data-lh-backdrop]').getAttribute('src')`),games[0].poster_url);
   await evaluate(`fixtures[1].poster_url='data:image/png;base64,AQ==';fixtures[1].media=[];ctl.select('b');new Promise(r=>setTimeout(r,100));`);
   assert.equal(await evaluate(`document.querySelector('[data-lh-backdrop]').hasAttribute('src')`),false);
-  await evaluate(`ctl.dispose();preloads=0;fixtures[0].poster_url='data:image/png;base64,AQ==';fixtures[0].media=[{kind:'image',url:'data:image/png;base64,Ag=='},{kind:'image',url:'data:image/png;base64,Aw=='}];ctl=GBoxHome.mount(document.querySelector('#home'),io);ctl.ready;`);
-  await evaluate(`new Promise(r=>setTimeout(r,600));var allFailedCount=preloads;new Promise(r=>setTimeout(r,200));`);
+  await evaluate(`ctl.dispose();preloads=0;window.Image=function(){preloads++;return {set src(value){queueMicrotask(()=>this.onerror?.());}};};fixtures[0].poster_url='data:image/png;base64,AQ==';fixtures[0].media=[{kind:'image',url:'data:image/png;base64,Ag=='},{kind:'image',url:'data:image/png;base64,Aw=='}];ctl=GBoxHome.mount(document.querySelector('#home'),io);ctl.ready;`);
+  await evaluate(`new Promise(r=>setTimeout(r,20));var allFailedCount=preloads;new Promise(r=>setTimeout(r,30));`);
   assert.ok(await evaluate(`preloads<=6`));assert.equal(await evaluate('preloads'),await evaluate('allFailedCount'));
   assert.equal(await evaluate(`document.querySelector('[data-lh-backdrop]').hasAttribute('src')`),false);
   await evaluate('ctl.dispose()');
@@ -180,7 +182,7 @@ test('Home View game waits for the expanded detail and ignores a superseded sele
   await evaluate(`var base=io.api,bResolve;io.api=p=>p==='/api/home/games/b'?new Promise(r=>bResolve=r):base(p);ctl.select('b');document.querySelector('[data-lh-open]').click();new Promise(r=>setTimeout(r,0));`);
   assert.deepEqual(await evaluate('scrolled'),[]);
   await evaluate(`bResolve({game:fixtures[1],media:[]});new Promise(r=>setTimeout(r,0));`);
-  assert.deepEqual(await evaluate('scrolled'),['lh-details']);
+  assert.deepEqual(await evaluate('scrolled'),[]);
   assert.equal(await evaluate(`document.querySelector('[data-lh-details]').textContent`),'Details for Super Mario Bros.');
   assert.ok(css.includes('scroll-margin-top:calc(var(--hdr,56px) + 12px)'));
   await evaluate('ctl.dispose()');
@@ -205,7 +207,7 @@ test('Home heading switches to individual newest mod builds and keeps same-game 
   assert.equal(await evaluate('selectedBuilds.at(-1)'),'older');
   assert.equal(await evaluate(`document.querySelectorAll('.lh-card[aria-current=true]').length`),1);
   assert.equal(await evaluate(`document.querySelector('.lh-card[aria-current=true]').dataset.lhGame`),'a/older');
-  await evaluate(`document.querySelector('[data-lh-view-button=list]').click();`);
+  await evaluate(`ctl.back();document.querySelector('[data-lh-view-button=list]').click();`);
   assert.equal(await evaluate(`document.querySelector('[data-lh-list-feed]').hidden`),false);
   assert.equal(await evaluate(`document.querySelector('[data-lh-list-feed] select').value`),'mods');
   assert.equal(await evaluate(`document.querySelectorAll('.lh-list-game').length`),2);
