@@ -143,6 +143,17 @@ def test_metadata_fingerprint_and_ticket_fingerprint_never_raise():
     assert c["nearest_titles"][0]["id"].startswith("doa2") and c["summary"].startswith("[metadata]")
 
 
+def test_each_fingerprint_carries_the_standing_gameplay_control_discovery_objective():
+    from gbox.live_controls import REQUESTED_CONTROLS
+    fp=A.metadata_fingerprint('A newly decomposed game','gamecube')
+    objective=fp['proposal']['gameplay_controls']
+    assert objective['requested']==list(REQUESTED_CONTROLS)
+    assert objective['status']=='discovery_required' and objective['executed'] is False
+    assert objective['publish_route']=='/api/games/{game_id}/live-controls/profile'
+    assert 'runtime evidence' in objective['acceptance'] and 'enable/disable' in objective['acceptance']
+    assert A.compact(fp)['gameplay_controls']==objective,'readiness ticket fingerprints must retain the objective'
+
+
 def test_ticket_fingerprint_reads_the_owned_files_when_this_host_can(tmp_path):
     from tests.test_formats import build_gc_disc
     from gbox.config import Config

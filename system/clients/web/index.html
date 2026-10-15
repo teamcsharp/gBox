@@ -2458,7 +2458,8 @@ async function wbInit() {
   modWatch(gid, sid, mods);
   const curSession = (await api("/api/sessions").catch(() => [])).find(x => x.session_id === sid);
   const liveHost = host.querySelector('#game-live-controls');
-  if (liveHost) GBoxLiveControls.mount(liveHost, {api, pso:GBoxPSO}, {game:gid, sid});
+  if (liveHost) GBoxLiveControls.mount(liveHost, {api, pso:GBoxPSO}, {game:gid, sid,
+    ...(['65b7187589166b26','a8a1484cf7ac7ce1'].includes(gid) ? {open:true,autoCheck:true} : {})});
   mods.forEach((m, i) => { const c = el.closest(".play")?.querySelector(`.wbm[data-m="${i}"]`) || el.querySelector(`.wbm[data-m="${i}"]`);
     const on = modDisc(m) ? !!GBoxBuildActions.sessionBuild(m, gid, curSession)?.session_id : modKeepGet(gid).includes(m.id);
     if (on && c) { c.classList.add("on"); const b = c.querySelector("button[data-apply]"); if (b && modOffable(m)) b.textContent = "Turn off";

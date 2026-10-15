@@ -478,9 +478,20 @@ def propose(fp: dict) -> dict:
         steps.insert(1, "no model magic seen: models are headerless or packed; search the executable for the loader "
                         "(playbook string-xref-loader) or capture RAM/frames (playbooks ram-capture, frame-capture)")
     eng = top["engine"] if top and top["confidence"] >= 0.5 else None
+    from .live_controls import REQUESTED_CONTROLS
+    gameplay_controls = {
+        'status': 'discovery_required', 'requested': list(REQUESTED_CONTROLS),
+        'publish_route': '/api/games/{game_id}/live-controls/profile',
+        'research_tool': 'game_controls_research',
+        'acceptance': 'Exact executable identity and immutable loaded fingerprints, scene/mode guards, '
+                      'stored Ghidra artifacts and isolated native runtime evidence. Named item choices; '
+                      'switches need inspected boolean state and tested enable/disable restoration. '
+                      'Keep unknown or inapplicable actions explicit; fingerprinting does not verify a control.',
+        'executed': False,
+    }
     return {"engine": eng, "start_from": (near["reader"] if near and near["similarity"] >= 0.2 else None),
             "engine_reader": ENGINE_READERS.get(eng) if eng else None, "shared": shared, "next_steps": steps,
-            "skeleton": skeleton(fp, eng, near)}
+            "skeleton": skeleton(fp, eng, near), 'gameplay_controls': gameplay_controls}
 
 
 def skeleton(fp: dict, eng: str | None, near: dict | None) -> str:
@@ -626,6 +637,7 @@ def compact(fp: dict) -> dict:
             "textures": [r["format"] for r in fp.get("textures", [])[:3]],
             "nearest_titles": [{k: n[k] for k in ("id", "title", "similarity", "reader")} for n in fp.get("nearest_titles", [])[:3]],
             "start_from": pr.get("start_from"), "engine_reader": pr.get("engine_reader"),
+            'gameplay_controls': pr.get('gameplay_controls'),
             "next_steps": pr.get("next_steps", [])[:4], "notes": fp.get("notes", [])[:4]}
 
 
