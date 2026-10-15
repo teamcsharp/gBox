@@ -37,7 +37,9 @@ from . import attachments
 
 def gbox_info(meta: dict) -> dict:
     roles = (meta.get("rig") or {}).get("roles") or {}
-    return {"slug": meta["slug"], "name": meta.get("name"), "base": meta.get("variant_of") or meta["slug"],
+    # A photo donor is a new visual source; don't flatten a Blender edit back to unmodified Leon.
+    base = meta['slug'] if meta.get('photo_skin_approval') else meta.get('variant_of') or meta['slug']
+    return {"slug": meta["slug"], "name": meta.get("name"), "base": base,
             "variant_of": meta.get("variant_of") or "", "roles": roles,
             "props": [{"node": p.get("node"), "bone": p.get("bone"), "role": p.get("role")} for p in meta.get("props") or []],
             "source_game": (meta.get("source") or {}).get("game_title") or "", "kind": meta.get("kind") or "character",
@@ -233,6 +235,10 @@ def store_new(ctx, root: Path, f: Path, name: str, inp, game: dict | None, cls: 
                                          "detected_roles": len(roles)}}
     if base_meta:
         extra["derived_from"] = base_meta["slug"]
+        photo=(base_meta.get('photo_skin_approval') or {}).get('source_photo') or base_meta.get('selfie_photo')
+        if photo:
+            extra['selfie_photo']=photo
+            extra['tags']=list(dict.fromkeys([*(base_meta.get('tags') or []),'selfie:'+photo]))
     if gs:
         extra.update({k: gs[k] for k in SOURCE_META if gs.get(k)})
         notes.append(f"source: {gs.get('pack') or gs.get('game_title')}" + (f" ({gs['url']})" if gs.get("url") else ""))

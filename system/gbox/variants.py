@@ -157,6 +157,10 @@ def store(ctx, root: Path, base_slug: str, name: str, model: Path, scale: dict |
                  extra={"variant_of": base_slug, "variant": var, "props": props,
                         **({"rigs": base["rigs"]} if keep_rigs and base.get("rigs") else {})})
     meta["targets"] = _inherit_targets(base, prev)
+    photo=(base.get('photo_skin_approval') or {}).get('source_photo') or base.get('selfie_photo')
+    if photo:
+        meta['selfie_photo']=photo
+        meta['tags']=list(dict.fromkeys([*(base.get('tags') or []),'selfie:'+photo]))
     return C.put_meta(root, meta)
 
 

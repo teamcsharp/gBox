@@ -297,6 +297,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/retarget-handles.js"></script>
 <script src="/viz/texture-review.js"></script>
 <script src="/viz/photo-skin.js"></script>
+<script src="/viz/selfie-models.js"></script>
 <script src="/viz/retarget-editor.js"></script>
 <script src="/viz/pick-whip.js"></script>
 <script src="/viz/gpu-game-surface.js"></script>
@@ -374,7 +375,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
   <div class="grip" id="pipgrip" title="Drag to resize"></div>
 </div>
 <script>
-const tabs = { Library: library, Mods: modsView, Builds: buildsView, Sessions: sessionsView, Controllers: controllersView, Jobs: jobs, Tools: toolsView, Workers: workersView, Audit: audit, Metrics: metrics };
+const tabs = { Library: library, Mods: modsView, Builds: buildsView, Models: selfieModelsView, Sessions: sessionsView, Controllers: controllersView, Jobs: jobs, Tools: toolsView, Workers: workersView, Audit: audit, Metrics: metrics };
 const $ = s => document.querySelector(s), esc = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
 
 // Keep a fixed-position menu inside the window (#1052, #1397): measure it once its content is in, flip it above the pointer
@@ -698,6 +699,7 @@ async function api(path, body, method, timeoutMs = 0) {
 let cur = "Library", timer = null, viewRevision = 0, sessionMode = null;
 const EXAM = { sid: null, cache: {}, viewer: null, mod: null, busy: new Map() };   // Examine 3D state (see examineView)
 const GAME_MODELS = { viewer: null, module: null, models: [], selection: 0 };
+const SELFIE_MODELS = { ctl:null, state:{} };
 $("#tabs").innerHTML = Object.keys(tabs).map(t => `<button data-t="${t}">${t}</button>`).join("");
 $("#tabs").onclick = e => e.target.dataset.t && show(e.target.dataset.t);
 function fitSessionLayout() {
@@ -714,6 +716,7 @@ function watchSessionLayout() {
 addEventListener("resize", fitSessionLayout);
 async function show(t, ...args) {
   const revision = ++viewRevision;
+  SELFIE_MODELS.ctl?.dispose(); SELFIE_MODELS.ctl=null;
   if (cur === "Builds") BUILDSV.ctl?.stop(); // save its position before replacing the page
   if (EXAM.sid && !(t === "Sessions" && args[0] === EXAM.sid && args[1] === "examine")) examineLeave();
   GAME_MODELS.selection++;
@@ -728,13 +731,20 @@ async function show(t, ...args) {
 }
 
 // The game's extracted models live here, separate from the boot/mod selector.
+async function selfieModelsView() {
+  return '<div class="bar"><h2 style="margin:0">Models · Selfies</h2><button class="act" id="selfie-library">Game library</button></div><p class="mut">Each source image collects its custom donors, Blender edits and fitted models. Analyze the rotating model, export to Blender, or download a self-contained GLB.</p><div id="selfie-models"></div>';
+}
+selfieModelsView.after=()=>{
+  $('#selfie-library').onclick=()=>show('Library');
+  SELFIE_MODELS.ctl=GBoxSelfieModels.mount($('#selfie-models'),{api,url:bnUrl,openModel:characterPopup,blender:input=>blenderCopy(input)},SELFIE_MODELS.state);
+};
 // Added after the header tabs are rendered because this view is opened from a game card.
 const gameModelTile = m => `<button class="game-model-card" data-model="${esc(m.slug)}" data-asset-url="/api/characters/${encodeURIComponent(m.slug)}/model" data-asset-name="${esc(m.name)}" data-asset-format="${/\.(glb|gltf)$/i.test(m.model || "") ? "GLB" : "image"}" data-asset-character="${/\.(glb|gltf)$/i.test(m.model || "") ? esc(m.slug) : ""}"><img loading="lazy" alt="" src="${m.preview_url}?${tq()}"><span><b>${esc(m.name)}</b><br><small class="mut">${esc(m.kind || "character")} · ${esc(m.model || "model")}</small></span></button>`;
 tabs.GameModels = async (gid, title) => {
   const all = await api(`/api/characters?game_id=${encodeURIComponent(gid)}`);
   const models = all.filter(m => m.source?.game_id === gid);
   GAME_MODELS.models = models;
-  return `<div class="bar"><button class="act" id="models-back">← Library</button><h2 style="margin:0">${esc(title || "Game")} · Models</h2><span class="mut">${models.length} extracted</span></div>
+  return `<div class="bar"><button class="act" id="models-back">← Library</button><h2 style="margin:0">${esc(title || "Game")} · Models</h2><span class="mut">${models.length} extracted</span><button class="act" id="models-selfies">Selfie models</button></div>
     <div class="game-models"><div class="game-model-list" id="game-model-list">${models.length ? models.map(gameModelTile).join("") : '<p class="mut">No extracted models for this game yet.</p>'}
       <button class="act" id="models-collect">Extract this game's models</button><div id="models-collect-status" class="mut"></div></div>
       <section style="min-width:0"><div class="game-model-stage"><div id="game-model-preview" class="game-model-preview"><p class="mut" style="padding:15px">Select a model to inspect it.</p></div><aside id="model-clips" aria-label="Animation clips" hidden></aside></div>
@@ -745,6 +755,7 @@ tabs.GameModels.after = (gid, title) => {
   const revision = viewRevision;
   const models = GAME_MODELS.models;
   $("#models-back").onclick = () => show("Library");
+  $("#models-selfies").onclick = () => show("Models");
   $("#models-collect").onclick = async e => {
     const button = e.currentTarget;
     button.disabled = true;
@@ -2522,7 +2533,10 @@ function romxShow(card, r) {
 // ---- character library (gbox/characters.py): every extracted model, "use in this game" = launch / build / what's missing ----
 function characterPopup(o) {
   return GBoxCharacterPopup.open(o, {api, url:u=>`${u}${u.includes("?") ? "&" : "?"}${tq()}`,
-    loadViewer:()=>import("/viz/character-model.js"), blender:slug=>blenderCopy({character:slug}), retarget:retargetOpen});
+    loadViewer:()=>import("/viz/character-model.js"), blender:async(slug,options)=>{
+      if(options?.photo){const p='/api/photo-skins/collections/'+encodeURIComponent(options.photo)+'/models/'+encodeURIComponent(slug)+'/export';
+        const result=await api(p+(options.modelFile?'?file='+encodeURIComponent(options.modelFile):''),{});return blenderCopy({artifact:result.sha256});}
+      return blenderCopy({character:slug});}, retarget:retargetOpen});
 }
 async function charsInit() {
   const el = $("#chars"); if (!el) return;

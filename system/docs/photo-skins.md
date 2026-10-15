@@ -8,6 +8,33 @@ same layout. Prepare, inspect the candidate on the 3D model, and accept or rejec
 Acceptance creates a separate donor; the original remains unchanged. The existing
 Blender export/round-trip handles the accepted model as a self-contained GLB.
 
+## Selfie model collections
+
+The **Models** tab groups custom models under their exact source image, showing
+the image, an editable tag name and a stable `selfie:<image hash>` tag. The
+**Selfie models** button in a game's Models screen opens the same collection.
+Search and image selection update immediately. Existing approved photo donors
+are included without recreating them. Accepted donors, their Blender/derived
+edits and saved `targets/*.glb` / `targets/*.gltf` fitted models stay together.
+Two different images of the same person remain separate; names are not identity
+matching. Pending/rejected previews are not library models.
+
+Each asset offers **Analyze / 3D**, **Export to Blender** and **Download GLB**.
+Analysis opens the rotating model with mesh, vertex, triangle, bone and texture
+counts. This is model inspection, not a claim of game compatibility. Downloads
+and Blender exports bundle companion buffers/textures into one GLB. The existing
+local worker writes Blender's clipboard; Ctrl+V pastes it in a Blender viewport.
+Model exports retain gBox round-trip metadata, with photo donors as the edit's
+parent so edits do not return to the unmodified source character.
+
+`GET /api/photo-skins/collections` lists groups. `POST
+/api/photo-skins/photos/{photo}/label` saves a tag name. `GET
+/api/photo-skins/collections/{photo}/models/{slug}/download` downloads a packed
+GLB; `POST .../export` stores that packed GLB as an authenticated artifact for
+Blender. Both accept optional `file=targets/name.gltf` and validate photo lineage,
+file confinement and a 64 MiB packing budget. Collection names and images stay
+in private gBox data; they are not published to GitHub.
+
 Selfies, generated pictures and saved internet images use the same file workflow.
 There is no face recognition, biometric embedding, automatic landmark detection,
 background removal, or reconstruction of a new 3D head. This projects source photo
