@@ -27,6 +27,7 @@
     const current = () => host.isConnected && host._psoMount === token;
     host.dataset.psoSid = sid;
     let cap, items = [], busy = false, ready = false, prefsReady = false, loading = false, checking = false, loadId = 0, selected = new Set();
+    let magId = null, magTimer = null, modeTimer = null, magPatch = {};
     const q = sel => host.querySelector(sel);
     host.innerHTML = `<style>
       .pso-controls {font-size:12px;min-width:0}.pso-controls fieldset{border:1px solid var(--line,#35353f);border-radius:6px;margin:8px 0;padding:8px;min-width:0}
@@ -66,6 +67,30 @@
           `<label class="pso-stat" data-stat="${x}" title="Right-click to edit ${x.toUpperCase()}">${x.toUpperCase()} <input type="number" min="0" max="9999" value="900" aria-label="${x.toUpperCase()}"><button class="act" data-set="${x}">Set</button></label>`).join("")}</div>
         <small>Right-click a stat to focus its live editor. Values are bounded by the game's native stat format (0–9999).</small>
       </fieldset>
+      <fieldset data-survival disabled><legend>Survival and difficulty</legend>
+        <label><input type="checkbox" data-scape> Permanent Scape Doll</label>
+        <button class="act" data-revive>Revive now</button>
+        <small>Offline native auto-revival without consuming a Doll or using an inventory slot. Saved as a default for supported GameCube builds.</small>
+        <label><input type="checkbox" data-legendary> Legendary: start in Ultimate</label>
+        <small>Uses the next offline game's Ultimate difficulty. Return to the game's difficulty selection or relaunch; a loaded area's enemies are unchanged.</small>
+      </fieldset>
+      <fieldset data-randomized disabled><legend>Randomized</legend>
+        <label><input type="checkbox" data-randomized-on> Cycle equipped rares</label>
+        <label>Every <input type="range" data-interval min="5" max="300" step="5" value="15"><output data-interval-value>15 s</output></label>
+        <div class="pso-row">${['weapon','armor','shield','mag'].map(k=>`<label><input type="checkbox" data-random-kind="${k}" ${k==='weapon'?'checked':''}> ${k}</label>`).join('')}</div>
+        <button class="act" data-apply-randomized>Apply Randomized settings</button>
+        <small data-mode-state>Stopped. Choose your class above. Needs one free inventory slot; retains your original equipment and removes only its own previous generated gear.</small>
+      </fieldset>
+      <fieldset data-mag disabled><legend>Equipped MAG</legend>
+        <button class="act" data-read-mag>Read equipped MAG</button><small data-mag-summary>Equip a MAG, then read its current properties.</small>
+        <fieldset data-mag-values disabled><legend>Live properties</legend>
+          ${['def','pow','dex','mind','iq','synchro','color'].map(k=>`<label>${k.toUpperCase()} <input type="number" data-mag-property="${k}" min="0" max="${k==='synchro'?120:k==='color'?18:200}" step="${['def','pow','dex','mind'].includes(k)?'.01':'1'}" value="0"></label>`).join('')}
+          <label>Evolution form <select data-mag-property="form" aria-label="MAG evolution form"></select></label>
+          <small>Changes apply after you finish adjusting. Total stat level is limited to 200. Native evolution/food rules still apply; Photon Blasts are retained.</small>
+          <label>Food <select data-mag-food>${[['030000','Monomate'],['030001','Dimate'],['030002','Trimate'],['030100','Monofluid'],['030101','Difluid'],['030102','Trifluid'],['030300','Antidote'],['030400','Antiparalysis'],['030500','Sol Atomizer'],['030600','Moon Atomizer'],['030700','Star Atomizer']].map(([v,n])=>`<option value="${v}">${n}</option>`).join('')}</select></label>
+          <button class="act" data-feed-mag>Feed MAG</button><small>Panel feeding applies native food effects and evolution without consuming inventory food.</small>
+        </fieldset>
+      </fieldset>
       <p role="status" aria-live="polite" data-status>Loading PSO controls…</p>
       <button type="button" class="act" data-retry>Retry loading</button>
       <details><summary>Character, NPC and area support</summary><div data-pending></div>
@@ -84,6 +109,11 @@
       // Catalog browsing also works on GC; mutation buttons do not.
       q("[data-clear]").disabled = busy || checking || !ready || !cap?.supported;
       q("[data-give]").disabled = busy || checking || !ready || !cap?.supported || selected.size !== 1;
+      for (const [name,feature] of [['survival','survival'],['randomized','randomized'],['mag','mag']])
+        q(`[data-${name}]`).disabled=busy || checking || !cap?.supported || !cap?.features?.[feature];
+      q('[data-scape]').disabled=!prefsReady;
+      q('[data-legendary]').disabled=!prefsReady;
+      q('[data-mag-values]').disabled=magId===null;
     }
     async function run(op, args = {}) {
       if (!current() || busy || checking) return;
@@ -153,6 +183,50 @@
     });
     q("[data-live]").oncontextmenu = e => { const row = e.target.closest("[data-stat]"); if (!row) return;
       e.preventDefault(); const input = row.querySelector("input"); input.focus(); input.select(); };
+    function showMag(result) {
+      if (!result?.mag || !current()) return;
+      const m=result.mag;magId=m.id;
+      q('[data-mag-summary]').textContent=`Level ${m.level} · evolution stage ${m.stage} · item ${m.id}`;
+      q('[data-mag-property="form"]').innerHTML=items.filter(i=>i.cat==='Mags'&&parseInt(i.code.slice(2,4),16)<=66)
+        .map(i=>`<option value="${parseInt(i.code.slice(2,4),16)}">${esc(i.name)}</option>`).join('');
+      host.querySelectorAll('[data-mag-property]').forEach(el=>{el.value=m[el.dataset.magProperty];});enabled();
+    }
+    async function flushMag() {
+      clearTimeout(magTimer);
+      if (!current() || magId===null || !Object.keys(magPatch).length) return;
+      if (busy) {magTimer=setTimeout(flushMag,150);return;}
+      const properties=magPatch;magPatch={};
+      showMag(await run('mag_set',{item_id:magId,properties}));
+    }
+    q('[data-mag-values]').addEventListener('input',e=>{
+      const name=e.target.dataset.magProperty;if(!name)return;
+      if (!e.target.checkValidity()) return;
+      magPatch[name]=+e.target.value;clearTimeout(magTimer);magTimer=setTimeout(flushMag,350);
+    });
+    q('[data-read-mag]').onclick=async()=>{magPatch={};clearTimeout(magTimer);showMag(await run('mag'));};
+    q('[data-feed-mag]').onclick=async()=>{await flushMag();if(Object.keys(magPatch).length)return;showMag(await run('mag_feed',{item_id:magId,code:q('[data-mag-food]').value}));};
+    q('[data-revive]').onclick=()=>run('revive');
+    for (const [attr,name] of [['scape','permanent_scape'],['legendary','legendary']]) q(`[data-${attr}]`).onchange=async e=>{
+      const on=e.target.checked;
+      try {await io.api('/api/pso/preferences',{[name]:on});}
+      catch(error){e.target.checked=!on;say(error.message);return;}
+      const result=await run(name==='permanent_scape'?'survival':'legendary',{on});
+      if(name==='legendary'&&result)say(on?'Legendary default saved. Return to difficulty selection or relaunch to start Ultimate; the loaded area is unchanged.':'Normal difficulty selection restored.');
+    };
+    const randomizedArgs=()=>({on:q('[data-randomized-on]').checked,interval:+q('[data-interval]').value,
+      categories:[...host.querySelectorAll('[data-random-kind]:checked')].map(el=>el.dataset.randomKind),character_class:q('[data-class]').value});
+    const showModes=r=>{if(r&&current()){
+      q('[data-mode-state]').textContent=`${r.on?'Running':'Stopped'} · ${r.cycles||0} cycles · ${r.message||''}`;
+      q('[data-randomized-on]').checked=!!r.on;
+    }};
+    q('[data-apply-randomized]').onclick=async()=>showModes(await run('randomized',randomizedArgs()));
+    q('[data-randomized-on]').onchange=()=>q('[data-apply-randomized]').click();
+    q('[data-interval]').oninput=()=>q('[data-interval-value]').value=q('[data-interval]').value+' s';
+    q('[data-interval]').onchange=()=>{if(q('[data-randomized-on]').checked)q('[data-apply-randomized]').click();};
+    modeTimer=setInterval(async()=>{
+      if(!current()||busy||checking||!cap?.features?.randomized)return;
+      try {const r=await command('modes');if(current())showModes(r.randomized);}catch(error){say(error.message);}
+    },5000);
     async function load() {
       if (!current() || busy || loading) return;
       const attempt = ++loadId;
@@ -181,6 +255,7 @@
             if (!fresh()) return;
             if (typeof prefs?.equip_any !== 'boolean') throw new Error("Invalid equipment default");
             prefsReady = true; q("[data-equip]").indeterminate = false; q("[data-equip]").checked = prefs.equip_any;
+            q('[data-scape]').checked=!!prefs.permanent_scape;q('[data-legendary]').checked=!!prefs.legendary;
             q("[data-preferences]").textContent = "Shared default for supported current and future builds. Unsupported revisions still need their own verified patch.";
             enabled();
           }).catch(() => { if (fresh()) {
@@ -196,7 +271,7 @@
     }
     q("[data-retry]").onclick = load;
     load();
-    return { dispose() { if (host._psoMount === token) { host._psoMount = null; host.dataset.psoSid = ""; } } };
+    return { dispose() { clearTimeout(magTimer);clearInterval(modeTimer);if (host._psoMount === token) { host._psoMount = null; host.dataset.psoSid = ""; } } };
   }
   return { mount, isPSO, filterItems };
 });

@@ -40,6 +40,10 @@ native actions on the emulated game thread. Online sessions are refused.
 
 ## Immediate session commands
 
+GameCube survival, Legendary/Ultimate defaults, timed rare equipment and live MAG
+editing/feeding are described in [PSO survival and MAG controls](pso-survival-mag.md).
+These additions retain the same exact-revision and offline guards.
+
 Both clients send `pso_controls` through `/api/sessions/{sid}/rpc`, rather than submitting a worker job.
 Builds do not sit ahead of a button click. Each request carries a unique command ID and an eight-second admission
 deadline. Worker execution is serialized per session; a busy session refuses another mutation instead of queuing it.

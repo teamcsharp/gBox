@@ -3,7 +3,7 @@ import threading
 
 from .psoitems import CLASSES
 
-DEFAULTS = {"equip_any": True}
+DEFAULTS = {"equip_any": True, "permanent_scape": False, "legendary": False}
 _locks = {}
 _locks_guard = threading.Lock()
 
@@ -40,7 +40,7 @@ def capabilities(game, read):
                 reason = str(error)
         return {'version': 'gc', 'label': 'GameCube Plus US revision 2', 'supported': supported, 'reason': reason,
                 'character_class': None, 'classes': list(CLASSES),
-                'features': {k: supported for k in ('floor_spawn','floor_rares','floor_clear','give','equip_any','multi_equip','stat')},
+                'features': {k: supported for k in ('floor_spawn','floor_rares','floor_clear','give','equip_any','multi_equip','stat','survival','revive','mag','randomized')},
                 'pending': {'areas': 'Teleporter progression needs a verified GameCube patch.',
                             'skins': 'Imported wardrobe cycling needs a native GameCube skin loader.',
                             'npcs': 'NPC model replacement and movement need verified GameCube bindings.'},
@@ -97,21 +97,37 @@ def on_launch(sid, ad, game, ctx):
         last_fetch, prefs = 0, None
         while sid in SESSIONS:
             try:
-                if time.monotonic() - last_fetch >= 15:
+                if time.monotonic() - last_fetch >= 15 or getattr(ad,'_pso_preferences_dirty',False):
+                    ad._pso_preferences_dirty=False
+                    last_fetch,prefs=0,None
                     prefs = preferences(ctx)
                     last_fetch = time.monotonic()
+                if prefs is not None and game.get('platform')=='gamecube':
+                    from .models import Permission
+                    if Permission.MEMORY_WRITE not in ctx.config.granted_permissions:
+                        raise PermissionError('memory_write permission is required for PSO defaults')
+                    from .pso_gc_extras import legendary
+                    with session_lock(sid):
+                        if getattr(ad,'_pso_preferences_dirty',False):raise RuntimeError('PSO defaults changed; refreshing preferences')
+                        legendary(ad,bool(prefs.get('legendary',False)))
                 cap = capabilities(game, ad.read_memory)
                 if not cap["supported"]:
                     state.update(state="unsupported", reason=cap["reason"])
                 elif prefs is not None:
                     with session_lock(sid):
+                        if getattr(ad,'_pso_preferences_dirty',False):raise RuntimeError('PSO defaults changed; refreshing preferences')
                         m = PSO(ad.read_memory, ad.write_memory)
                         want = bool(prefs["equip_any"])
                         if game.get('platform') == 'gamecube':
                             from .pso_gc_live import GC, EQUIP_PATCH
-                            gc = GC(ad)
+                            from .pso_gc_extras import Extras
+                            gc = Extras(ad)
                             if (gc.read(EQUIP_PATCH,4).hex() == '38000005') != want:
                                 gc.equip_any(want)
+                            gc.hook()
+                            from .pso_gc_live import SURVIVAL
+                            survive=bool(prefs.get('permanent_scape',False))
+                            if bool(gc.u32(SURVIVAL))!=survive:gc.survival(survive)
                             state.update(state='applied', equip_any=want, reason='')
                         else:
                             before = m.patch_state("equip_any")

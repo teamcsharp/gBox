@@ -13,6 +13,7 @@ CAVE,QUEUE,BUF,END=0x80004000,0x80004400,0x80004900,0x80005000
 HEADER=CAVE+0x3F0
 NEXT_ID=CAVE+0x3E0
 FLUSH=CAVE+0x300
+SURVIVAL=CAVE+0x340
 QMAX,QSZ=20,40
 ID_BASE=0x00F00000
 FLOOR=0x805D5FC0
@@ -49,6 +50,14 @@ def dispatcher():
     def branch(word,label):fix.append((len(code),label));emit(word)
     emit(d(37,1,1,-0x100),0x7c0802a6,d(36,0,1,0x104),d(47,3,1,8),0x7c000026,d(36,0,1,0x80))
     for r in range(1,14):emit(d(54,r,1,0x88+(r-1)*8))
+    # Virtual Scape Doll: only this local offline player, on the guest game thread.
+    emit(d(15,12,0,SURVIVAL>>16),d(32,0,12,SURVIVAL&0xffff),d(11,0,0,1));branch(0x40820000,'commands')
+    emit(d(15,12,0,(PHASE+0x8000)>>16),d(32,0,12,PHASE&0xffff),d(11,0,0,14));branch(0x40820000,'commands')
+    emit(d(15,12,0,(PLAYER+0x8000)>>16),d(32,0,12,PLAYER&0xffff),0x7c001840);branch(0x40820000,'commands')
+    emit(d(40,0,3,0x32c),d(11,0,0,0));branch(0x40820000,'commands')
+    emit(d(14,0,0,3),d(44,0,3,0x324))  # native Scape Doll revival kind
+    emit(d(15,12,0,0x801b),d(24,12,12,0x4340),0x7d8903a6,0x4e800421)
+    labels['commands']=len(code)
     emit(d(15,30,0,QUEUE>>16),d(24,30,30,QUEUE&0xffff),d(14,31,0,QMAX))
     labels['loop']=len(code)
     emit(d(32,12,30,0),d(11,0,12,0));branch(0x41820000,'next')
@@ -98,15 +107,16 @@ class GC:
         self.check()
         head=self.read(HEADER,16)
         if self.u32(VT_UPDATE)==CAVE:
-            if head!=b'GBPSOGC1'+struct.pack('>II',ORIGINAL_UPDATE,VT_UPDATE) or self.read(CAVE,len(CODE))!=CODE:
+            if head!=b'GBPSOGC2'+struct.pack('>II',ORIGINAL_UPDATE,VT_UPDATE) or self.read(CAVE,len(CODE))!=CODE:
                 raise Unsupported('The PSO native dispatcher does not match this build')
             return
         if self.u32(VT_UPDATE)!=ORIGINAL_UPDATE:raise Unsupported('PSO update slot is already modified')
         old=self.read(CAVE,END-CAVE)
-        if any(old) and not (head==b'GBPSOGC1'+struct.pack('>II',ORIGINAL_UPDATE,VT_UPDATE) and old[:len(CODE)]==CODE):
+        if any(old) and not (head==b'GBPSOGC2'+struct.pack('>II',ORIGINAL_UPDATE,VT_UPDATE) and old[:len(CODE)]==CODE):
             raise Unsupported('PSO scratch region is occupied; leave it intact')
         self.write(CAVE,CODE);self.write(FLUSH,FLUSH_CODE)
-        self.write(HEADER,b'GBPSOGC1'+struct.pack('>II',ORIGINAL_UPDATE,VT_UPDATE))
+        self.write(HEADER,b'GBPSOGC2'+struct.pack('>II',ORIGINAL_UPDATE,VT_UPDATE))
+        self.write(SURVIVAL,bytes(4))
         self.write(QUEUE,bytes(QMAX*QSZ))
         self.write(VT_UPDATE,struct.pack('>I',CAVE))  # data pointer: works on an already-running JIT session
 
@@ -236,6 +246,8 @@ class GC:
         for index in range(count):
             item=bytearray(20);item[:3]=bytes.fromhex(code);struct.pack_into('>I',item,12,next_id+index)
             if code.startswith('03'):item[5]=1
+            if code.startswith('02'):
+                item[2]=5;struct.pack_into('<H',item,4,500);item[16]=40;item[19]=14
             self.write(NEXT_ID,struct.pack('>I',next_id+index+1));self.write(BUF,item)
             self.call([(0x8010C740,BUF,0),(0x8010CCB0,BUF)])
             obj=self.call([(0x80102AC0,BUF)])[0]
@@ -243,7 +255,8 @@ class GC:
             self.call([(0x801B8E68,p,self.ptr(obj,0x200))]);created.append(next_id+index)
         after=self.inventory()
         def quantity(rows):
-            return sum(max(1,bytes.fromhex(r['data'])[5]) if code.startswith('03') else 1 for r in rows if r['code']==code)
+            return sum(max(1,bytes.fromhex(r['data'])[5]) if code.startswith('03') else 1 for r in rows
+                       if (r['code'][:4]==code[:4] if code.startswith('02') else r['code']==code))
         added=quantity(after)-quantity(before)
         return {'created':added,'ids':[r['id'] for r in after if r['id'] in created],
                 'verified':added==count,'note':'Consumables may merge into an existing stack.'}

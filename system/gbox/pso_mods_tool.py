@@ -771,6 +771,10 @@ class ModsIn(BaseModel):
     highest: bool = True        # floor_rares: highest base-star rarity tier in that class
     max_grind: bool = False     # ground weapons: their own PMT maximum, never an invented item level
     radius: float = Field(default=18.0, ge=5, le=100, allow_inf_nan=False)
+    item_id: int | None = Field(default=None,ge=0,le=0xffffffff)
+    properties: dict[str,float] = {}
+    interval: int = Field(default=15,ge=5,le=300)
+    categories: list[str] = ['weapon']
 
 class ModsOut(BaseModel):
     result: dict
