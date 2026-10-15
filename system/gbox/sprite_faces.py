@@ -333,7 +333,7 @@ from .registry import tool
 from .models import Permission as P
 
 
-@tool('photo_sprite_build','1.0',FaceBuildIn,FaceBuildOut,permissions=[P.STAGE,P.BINARY_PATCH],timeout_s=180)
+@tool('photo_sprite_build','1.0',FaceBuildIn,FaceBuildOut,permissions=[P.EXECUTE,P.STAGE],timeout_s=180)
 def build_candidate(inp,ctx):
     """Publish an explicitly selected photo/sprite preview as a portable native ROM; never launches a game."""
     from .filemods import mod_dir
