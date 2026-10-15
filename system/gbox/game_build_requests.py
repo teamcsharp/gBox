@@ -75,7 +75,7 @@ def routes(app, store, config, auth, create_request, investigate, submit):
         report = store.get('request', row['request_id']) or {}
         result = dict(row, status=report.get('status','open'))
         result['jobs'] = [{'id':j['id'],'state':j['state'],'tool':j.get('tool'),'progress':j.get('progress'),
-                           'error':j.get('error')} for j in store.all('job') if j.get('parent_request_id')==row['request_id']][-12:]
+                           'error':j.get('error'),'admission_wait':j.get('admission_wait')} for j in store.all('job') if j.get('parent_request_id')==row['request_id']][-12:]
         # A completed recipe job can publish its exact output without an agent claiming success.
         for j in store.all('job'):
             if j.get('parent_request_id') != row['request_id'] or j.get('state') != 'succeeded': continue

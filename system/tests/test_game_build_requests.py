@@ -101,3 +101,11 @@ def test_real_server_registers_dialog_routes_and_native_build_job(cfg):
     assert not result.json().get('dispatch_error'),result.text
     assert result.json()['jobs'][0]['tool']=='smb1_sprite_build'
     assert result.json()['jobs'][0]['state']=='queued',result.text
+
+
+def test_native_sprite_builds_keep_cpu_and_memory_admission_without_requiring_gpu():
+    from gbox import background_testing as B
+    for tool in ('smb1_sprite_build','photo_sprite_build'):
+        job={'tool':tool,'agent_use':True}
+        assert B.requires_admission(job) and not B.requires_gpu(job)
+    assert B.requires_gpu({'tool':'characters'})
