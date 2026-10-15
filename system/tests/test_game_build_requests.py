@@ -100,3 +100,4 @@ def test_real_server_registers_dialog_routes_and_native_build_job(cfg):
     assert result.status_code==200,result.text
     assert not result.json().get('dispatch_error'),result.text
     assert result.json()['jobs'][0]['tool']=='smb1_sprite_build'
+    assert result.json()['jobs'][0]['state']=='queued',result.text

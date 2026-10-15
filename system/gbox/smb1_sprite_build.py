@@ -113,7 +113,7 @@ class SpriteBuildOut(BaseModel):
     result: dict
 
 
-@tool('smb1_sprite_build','1.0',SpriteBuildIn,SpriteBuildOut,permissions=[P.STAGE,P.BINARY_PATCH],timeout_s=180)
+@tool('smb1_sprite_build','1.0',SpriteBuildIn,SpriteBuildOut,permissions=[P.EXECUTE,P.STAGE],timeout_s=180)
 def run(inp,ctx):
     """Build a native portable Super Mario Bros. ROM with Sonic 2's player sprites. Never launches a game."""
     from .characters import _api
