@@ -274,6 +274,19 @@ def inspect_actions(ad, profile, inp, ctx):
                     loaded = {r.get('id') for r in catalog[:2000] if isinstance(r, dict) and isinstance(r.get('id'), str)}
                     row['item_choices'] = {'parameter': parameter['id'],
                                            'values': [o['value'] for o in parameter['options'] if o['value'] in loaded]}
+                    # Only carry typed native state for reviewed, loaded choices.
+                    # Runtime strings never replace the approved item labels.
+                    states = {}
+                    for entry in catalog[:2000]:
+                        if not isinstance(entry, dict) or entry.get('id') not in row['item_choices']['values']:
+                            continue
+                        if type(entry.get('owned')) is bool:
+                            state = {'owned': entry['owned']}
+                            if type(entry.get('equipped')) is bool and (entry['owned'] or not entry['equipped']):
+                                state['equipped'] = entry['equipped']
+                            states[entry['id']] = state
+                    if states:
+                        row['item_choices']['states'] = states
                     if not row['item_choices']['values']:
                         row['available'] = False
                         row['reason'] = row.get('reason') or 'No reviewed item choices are loaded in this mission'

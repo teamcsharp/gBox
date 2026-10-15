@@ -31,18 +31,20 @@ class Adapter:
                     (A.RESOURCE_TABLE,0x80D00000)):
             self.word(a,v)
         self.put(self.player+0x180,struct.pack('>f',100))
-        names=('models/p2k_pickup.men','models/mrl22_pickup.men','models/mrl22_projectile.men')
-        self.word(0x80D00000,len(names));at=0x80D01001
-        for index,name in enumerate(names):
-            self.put(at,name.encode()+b'\0')
-            self.put(0x80D00010+16*index,struct.pack('>4I',at,0x80D02000+index*16,4,index))
-            at+=len(name)+1
+        self.load_resources(('models/p2k_pickup.men','models/mrl22_pickup.men','models/mrl22_projectile.men'))
         self.weapon=0x80E00000;self.word(self.player+0x29C,self.weapon)
         self.word(self.weapon+0x278,self.player)
         self.word(self.weapon+0x28,0x80E01000);self.word(0x80E01000,0x80E01101)
         self.put(0x80E01101,b'models/p2k_pickup.men\0')
         self.word(self.weapon+0x394,1);self.word(self.weapon+0x3F0,0x80E01200)
         self.put(0x80E01200,struct.pack('>4I',0x80E01301,1,16,0));self.put(0x80E01301,b'\0')
+
+    def load_resources(self,names):
+        self.word(0x80D00000,len(names));at=0x80D01001
+        for index,name in enumerate(names):
+            self.put(at,name.encode()+b'\0')
+            self.put(0x80D00010+16*index,struct.pack('>4I',at,0x80D02000+index*16,4,index))
+            at+=len(name)+1
 
     def put(self,address,data):
         off=address-0x80000000
@@ -55,6 +57,17 @@ class Adapter:
         assert 0<=off<=len(self.data)-size
         return bytes(self.data[off:off+size])
     def write_memory(self,address,data):self.writes.append((address,bytes(data)));self.put(address,data)
+    def add_item(self,name,address=None):
+        count=struct.unpack('>I',self.read_memory(self.player+0x2C0,4))[0]
+        entity_id=count+1;item=address or 0x80E10000+count*0x1000
+        entity=self.table+entity_id*0x2B0;sd=0x80E40000+count*0x100
+        self.word(entity+0x24C,item);self.word(entity+0x1E4,1)
+        for offset,value in ((0x10,entity_id),(0x14,entity),(0x278,self.player),(0x2D8,sd)):
+            self.word(item+offset,value)
+        self.word(sd,sd+16);self.put(sd+16,name.encode()+b'\0')
+        self.word(self.player+0x2BC,0x80E30000)
+        self.word(0x80E30000+count*4,entity_id);self.word(self.player+0x2C0,count+1)
+        return item
     def query_runtime(self):return {'state':self.state}
     def pause(self):self.pauses+=1;self.state='PAUSED'
     def resume(self):
@@ -66,8 +79,10 @@ class Adapter:
             packet=self.read_memory(A.QUEUE,64);self.native_calls.append(packet)
             self.word(A.QUEUE,0);self.word(A.QUEUE+40,1)
             result=0
-            if fn==A.F_GIVE:
-                result=0x80E10000;self.word(result+0x278,self.player)
+            if fn in (A.F_GIVE,A.F_GIVE_GADGET):
+                model=self.read_memory(A.BUFFER,80).split(b'\0',1)[0].decode()
+                native_name={'gadget_pcodegen.men':'pcodegen','fist_pickup.men':'fist'}.get(model,model[:-4])
+                result=self.add_item(native_name)
             elif fn==A.F_END:self.word(A.IS_END_OF_MISSION,1)
             elif fn==A.F_COMPLETE_SUBMAP:
                 self.word(A.UI_COMPLETED_SUBMAPS,struct.unpack('>I',self.read_memory(A.UI_COMPLETED_SUBMAPS,4))[0]+1)
@@ -158,6 +173,109 @@ def test_unloaded_or_unknown_item_is_rejected_without_install(ad):
     m=A.Native(ad)
     with pytest.raises(Unsupported,match='not packaged'):m.give('ssr4000',time.time()+15)
     with pytest.raises(ValueError,match='dropdown'):m.give('arbitrary/path.men',time.time()+15)
+    assert not ad.writes and not ad.native_calls
+
+
+@pytest.mark.parametrize('item,model,function',(
+    ('qclaw','qclaw_pickup.men',A.F_GIVE),
+    ('qlaser','gadget_qlaser.men',A.F_GIVE_GADGET),
+    ('qdecryptor','gadget_qdecryptor.men',A.F_GIVE_GADGET),
+    ('qremote','gadget_qremote.men',A.F_GIVE_GADGET),
+    ('qcamera','gadget_qcamera.men',A.F_GIVE_GADGET),
+    ('qjet','gadget_qjet.men',A.F_GIVE_GADGET),
+    ('qspecs','xrayglasses_large.men',A.F_GIVE_GADGET),
+    ('keycard','gadget_keycard.men',A.F_GIVE_GADGET),
+    ('keycard2','gadget_keycard2.men',A.F_GIVE_GADGET),
+    ('pcodegen','gadget_pcodegen.men',A.F_GIVE_GADGET),
+    ('dartgun','dartgun_pickup.men',A.F_GIVE),
+    ('fist','fist_pickup.men',A.F_GIVE),
+))
+def test_native_gadget_grant_uses_its_reviewed_model_and_correct_native_path(ad,item,model,function):
+    ad.load_resources(('models/'+model,))
+    m=A.Native(ad);result=m.give(item,time.time()+15)
+    assert result['verified'] and not result['already_owned'] and not result['equipped']
+    assert 'does not auto-equip' in result['message']
+    assert len(ad.native_calls)==1
+    packet=struct.unpack('>16I',ad.native_calls[0])
+    assert packet[:5]==(function,ad.player,A.BUFFER,0,0)
+    assert packet[5:9]==((0,0,0,0) if function==A.F_GIVE_GADGET else (0xFFFFFFFF,0xFFFFFFFF,0,0))
+    assert m.text(A.BUFFER)==model
+    native_name={'pcodegen':'pcodegen','fist':'fist'}.get(item,model[:-4])
+    assert m.inventory()[native_name]==[int(result['native_item'],16)]
+    assert m.u32(ad.player+0x29C)==ad.weapon
+
+
+@pytest.mark.parametrize('item',tuple(A.GADGET_MODELS)+('qclaw','dartgun'))
+def test_gadgets_never_grant_assets_absent_from_the_loaded_mission(ad,item):
+    with pytest.raises(Unsupported,match='not packaged'):A.Native(ad).give(item,time.time()+15)
+    assert not ad.writes and not ad.native_calls
+
+
+def test_profile_exposes_reviewed_gadget_catalog_and_explains_selection():
+    profile=A.reviewed_profile(['b'*64],['c'*64],{'give_item'})
+    action=profile['actions'][0];options=action['parameters'][0]['options']
+    assert set(A.GADGET_MODELS)|{'qclaw','dartgun'} <= {row['value'] for row in options}
+    assert 'weapon or gadget' in action['label'] and 'does not auto-equip' in action['notes']
+
+
+def test_owned_gadgets_are_reported_and_not_regranted_or_selected(ad):
+    ad.load_resources(('models/qclaw_pickup.men','models/gadget_qlaser.men'))
+    claw=ad.add_item('qclaw_pickup');laser=ad.add_item('gadget_qlaser')
+    ad.word(ad.player+0x29C,claw)
+    m=A.Native(ad);m.check();rows={row['id']:row for row in m.items()}
+    assert rows['qclaw']['owned'] is True and rows['qclaw']['equipped'] is True
+    assert rows['qlaser']['owned'] is True and rows['qlaser']['equipped'] is False
+    result=m.give('qlaser',time.time()+15)
+    assert result['already_owned'] is True and result['equipped'] is False
+    assert 'already in your inventory' in result['message']
+    assert not ad.writes and not ad.native_calls
+    assert m.u32(ad.player+0x29C)==claw and laser!=claw
+
+
+def test_simultaneous_extra_gadget_is_reported_equipped(ad):
+    ad.load_resources(('models/gadget_qlaser.men',))
+    laser=ad.add_item('gadget_qlaser');ad.word(ad.player+0x7A4,laser)
+    m=A.Native(ad);m.check()
+    assert m.items()[0]['equipped'] is True
+    assert m.give('qlaser',time.time()+15)['equipped'] is True
+    assert not ad.writes
+
+
+@pytest.mark.parametrize('damage',('count','entity','owner','name'))
+def test_unknown_inventory_omits_booleans_and_refuses_grants_without_writing(ad,damage):
+    ad.load_resources(('models/gadget_qlaser.men',))
+    laser=ad.add_item('gadget_qlaser')
+    if damage=='count':ad.word(ad.player+0x2C0,257)
+    if damage=='entity':ad.word(0x80E30000,4096)
+    if damage=='owner':ad.word(laser+0x278,ad.player+4)
+    if damage=='name':ad.word(laser+0x2D8,0)
+    m=A.Native(ad);m.check();row=m.items()[0]
+    assert 'owned' not in row and 'equipped' not in row
+    inspected=m.inspect()
+    assert inspected['items'][0]['id']=='qlaser'
+    assert inspected['available']['give_item'] is False
+    assert 'Inventory could not be verified' in inspected['unavailable_reasons']['give_item']
+    assert inspected['available']['noclip'] is True and inspected['available']['infinite_ammo'] is True
+    with pytest.raises(Unsupported):m.give('qlaser',time.time()+15)
+    assert not ad.writes and not ad.native_calls
+
+
+def test_native_grant_requires_matching_inventory_name_not_only_owner(ad):
+    ad.load_resources(('models/gadget_qlaser.men',))
+    def corrupt_name(ram):ram.put(0x80E40010,b'wrong_item\0')
+    ad.ack_mutator=corrupt_name
+    with pytest.raises(RuntimeError,match='inventory/name'):A.Native(ad).give('qlaser',time.time()+15)
+    assert len(ad.native_calls)==1
+
+
+def test_already_owned_result_still_requires_a_fresh_deadline(ad,monkeypatch):
+    ad.load_resources(('models/gadget_qlaser.men',));ad.add_item('gadget_qlaser')
+    clock=[100.];monkeypatch.setattr(A.time,'time',lambda:clock[0])
+    m=A.Native(ad);original=m.resources
+    def slow_resources():
+        rows=original();clock[0]=116.;return rows
+    m.resources=slow_resources
+    with pytest.raises(TimeoutError):m.give('qlaser',115.)
     assert not ad.writes and not ad.native_calls
 
 

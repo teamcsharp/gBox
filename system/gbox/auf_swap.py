@@ -1061,6 +1061,7 @@ def swap_level(data: bytes, assign: dict[str, Donor], level: str = "", progress=
     out = NW.write_package(pkg, {"restable": NW.build_restable(entries), "restxtrs": new_tx})
     chk = NW.check_package(out, {n: hashlib.sha256(b).hexdigest() for n, b in repl.items()})
     q = ngc.NgcPackage(out)
+    chk["problems"] += NW.check_preserved(pkg, q, repl, ("restable", "restxtrs"))
     tq, t0 = ngc.textures(q), tex
     if len(q.payload("restxtrs")) != len(pkg.payload("restxtrs")):
         chk["problems"].append("texture chunk changed size")

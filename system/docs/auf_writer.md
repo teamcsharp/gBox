@@ -299,8 +299,9 @@ Keep audio at 2%.
      tux) for a bot. Capture a frame with the wrestler running and animating. Pass if the level loads with no
      crash or hang, the model is drawn textured, the animations play (no T-pose), Bond's head is not drawn over
      the wrestler's, and shots register on the body (hit boxes are the slot's own).
-   * **First mission**: m6_1 is the first mission's level by its cast (Bond in the grey suit, R, the shower girl,
-     vest henchmen). Capture a cut-scene frame with Bond. In first-person play Bond's body is not on screen.
+   * **First mission (Trouble in Paradise)**: use `orc_1`, then `orc_2` for its interior section. `m6_1` is a later
+     mission, not the campaign's first level. Capture a cut-scene frame with Bond. In first-person play Bond's body
+     is not on screen.
 3. **Enemies**: `slot=enemies` with a wrestler, for example `sd2_the_rock` or `djv_s1xxa`. Load m6_1, then capture a
    frame of a henchman walking and dying (the death animations bind by bone hash). Repeat in one Alpine level for
    the `_h/_m/_l` LOD switch.
@@ -316,3 +317,24 @@ Possible failures and where to look:
   --export`.
 * Exploding vertices suggest a palette or matrix-slot issue. Compare against `auf_gcm.decode_check`, which mirrors
   `R_DrawGeomSection`.
+
+## 8. First-mission gadget preservation (2026-10-15)
+
+The five existing custom images were compared directly with the owned source. The first mission's `orc_1`
+package has 773 resources and its `orc_2` interior has 757. The four whole-cast builds change ten exterior actor
+models and nine interior actor models plus their texture chunks; every noncharacter resource, mission script,
+gadget definition, gadget model/animation and other chunk is unchanged. The multiplayer-only swap leaves both
+entire packages unchanged. All five retain the five original ELF executables and `main.dol`. Hashes and build
+names are in [the audit receipt](auf-gadget-build-audit.json).
+
+The original `maps/orc_1.scr` grants the Q-Claw as a weapon and the Q-Laser and Q-Decryptor as gadgets during
+`init_player`. After the intro it selects the Q-Decryptor. These grants and selection are identical in the custom
+images. The interior's `init_player` is empty, so it does not re-grant this initial equipment. This static check
+does not establish what a particular running session owns or currently has selected; inspect the live inventory
+before diagnosing a missing-item report as a disc writer error. The [gadget model census](auf-gadget-model-census.json)
+records exact native item names and authored grant routes across the owned packages, including Q-Specs and the
+tranquilizer dart gun.
+
+The character writer now rejects a rebuilt package if any unrequested resource or chunk changes, including
+missing gadget resources, changed loadout scripts, changed script dictionaries or collision data. The existing
+model and texture validation still applies.

@@ -127,6 +127,32 @@ test('browser: item dropdown and boolean option dispatch the selected catalog va
  });
 });
 
+test('browser: item ownership distinguishes missing from unselected and native grant feedback is text',async()=>{
+ await withPage(async(evaluate,send)=>{
+  await setupToggle(evaluate,send);
+  await evaluate(`ctl.dispose();var previousApi=toggleApi;var stateApi=async(path,body)=>{
+    if(path.endsWith('/run') && body.op==='inspect')return {state:'succeeded',output:{result:{actions:[
+      {id:'noclip',available:true,value:false},
+      {id:'give_item',available:true,item_choices:{parameter:'item',values:['pistol','launcher'],states:{pistol:{owned:true,equipped:false},launcher:{owned:false,equipped:false}}}}
+    ]}}};
+    if(path.endsWith('/run') && body.op==='apply')return {state:'succeeded',output:{result:{action:'give_item',result:{result:{message:'Restored <gadget>; select it with the D-pad.'}}}}};
+    return previousApi(path,body);
+  };ctl=GBoxLiveControls.mount(host,{api:stateApi},{game:'g',sid:'w-one',open:true,autoCheck:true});ctl.ready;`);
+  assert.match(await evaluate(`host.querySelector('[data-lc-item-status]').textContent`),/^$/,'switch has no inventory status');
+  assert.match(await evaluate(`host.querySelector('[data-lc-action=give_item] [data-lc-item-status]').textContent`),/In inventory; not selected/);
+  assert.match(await evaluate(`host.querySelector('[data-lc-param=item] option').textContent`),/Pistol — in inventory/);
+  await evaluate(`var sel=host.querySelector('[data-lc-param=item]');sel.value='launcher';sel.dispatchEvent(new Event('change',{bubbles:true}));`);
+  assert.match(await evaluate(`host.querySelector('[data-lc-action=give_item] [data-lc-item-status]').textContent`),/Not in inventory/);
+  await evaluate(`host.querySelector('[data-lc-apply=give_item]').click();new Promise(r=>setTimeout(r,20));`);
+  assert.match(await evaluate(`host.querySelector('[role=status]').textContent`),/Restored <gadget>; select it with the D-pad/);
+  assert.equal(await evaluate(`host.querySelectorAll('gadget').length`),0);
+  await evaluate(`var session=host.querySelector('[data-lc-session]');session.value='';session.dispatchEvent(new Event('change',{bubbles:true}));`);
+  assert.equal(await evaluate(`host.querySelector('[data-lc-action=give_item] [data-lc-item-status]').hidden`),true);
+  assert.equal(await evaluate(`host.querySelector('[data-lc-param=item] option').textContent`),'Pistol');
+  await evaluate('ctl.dispose()');
+ });
+});
+
 test('browser: unknown native state and uncertain mutations stay disabled until explicitly checked',async()=>{
  await withPage(async(evaluate,send)=>{
   await setupToggle(evaluate,send);

@@ -29,6 +29,7 @@ RESOURCE_TABLE = 0x804E3CE0
 NATIVE_PAUSED = 0x804E34DC
 NATIVE_MENU_OFFSET = 0x40A
 F_GIVE, F_END = 0x8011B39C, 0x800E6400
+F_GIVE_GADGET = 0x8011B1F4
 F_COMPLETE_SUBMAP, GI_COMPLETE_SUBMAP = 0x8001A314, 0x803F0154
 UI_FLOW_PENDING, UI_COMPLETED_SUBMAPS, IS_END_OF_MISSION = 0x804E35A0, 0x804E35B0, 0x804E3244
 FINGERPRINTS = (
@@ -36,6 +37,12 @@ FINGERPRINTS = (
     (0x8014B524,108,'f0e2bfe9f79e6007c314a53c0d3384e59f13658574ba81613ec93929379c04a8'),
     (ORIGINAL,172,'73d0e8a16ea7fb585586127d6637a71958db5bf2c2bbfe38be2c0108706e9e7a'),
     (F_GIVE,1120,'fdb5d0270dd8908b9659655eef1c2939c410c850e11e0c453bcb13961c2f6cb9'),
+    (F_GIVE_GADGET,424,'9a28e6217812f8c8edcb1f96970db8eab1f873d102ea8fec5f12befbc61627df'),
+    (0x80118610,196,'10425afbe73554d1247d4ede22c670d258147ae2cf7549496342817210331836'),
+    (0x80099F10,8,'5ee15fb44bf4254a4071428049f6816299cb2e8b6bb620a5ed6fda1a82ae3c4d'),
+    (0x800B1B48,936,'aa5d82508db1ec2af069c216309c34d8a927d42215c6c3c498d4e453a25d9a45'),
+    (0x800DD950,96,'70120cf88f15c91536d368bada54a4954c9d88f03962372afce54d5193ae961f'),
+    (0x800DD9B0,76,'706a0860be406e67d38db05191e9a501cd3d9b88e4d6852db2ca05485db4daa4'),
     (F_END,484,'0132033afd23f4f93f175a3a1a188472387ce52c94919f2c61d30a4c1060e90e'),
     (0x801AEE38,148,'403e3fb7e0cea70d4a3d3fb600ec8389ce3e8cdb60720dd107b3e91a40b915c5'),
     (0x801AEF64,248,'65e5dd6fb679061df856b7e1a9ea412d68b8afc42cc685ac237a80bbacb9db42'),
@@ -56,7 +63,19 @@ ITEMS = {
     'calypso':'Calypso','frinesi':'Frinesi shotgun','ssr4000':'SSR 4000 sniper rifle',
     'mrl22':'MRL-22 rocket launcher','rpg':'Rocket launcher','grenadelauncher':'Grenade launcher',
     'fraggrenade':'Frag grenade','goldengrenade':'Golden grenade','fist':'Fists',
+    'qclaw':'Q-Claw grappling hook','qlaser':'Q-Laser','qdecryptor':'Q-Decryptor',
+    'qremote':'Q-Remote','qcamera':'Q-Camera','qjet':'Q-Jet',
+    'qspecs':'Q-Specs (X-ray glasses)','keycard':'Keycard','keycard2':'Keycard 2',
+    'pcodegen':'Access code generator','dartgun':'Dart gun',
 }
+GADGET_MODELS = {
+    'qlaser':'gadget_qlaser.men','qdecryptor':'gadget_qdecryptor.men',
+    'qremote':'gadget_qremote.men','qcamera':'gadget_qcamera.men','qjet':'gadget_qjet.men',
+    'qspecs':'xrayglasses_large.men','keycard':'gadget_keycard.men','keycard2':'gadget_keycard2.men',
+    'pcodegen':'gadget_pcodegen.men',
+}
+ITEM_MODELS = {key:GADGET_MODELS.get(key,key+'_pickup.men') for key in ITEMS}
+ITEM_NAMES = {key:{'pcodegen':'pcodegen','fist':'fist'}.get(key,model[:-4]) for key,model in ITEM_MODELS.items()}
 OPS = frozenset(('inspect','noclip','give_item','finish_level','next_checkpoint','infinite_ammo','rocket_pistol'))
 _locks, _receipts, _guard = {}, {}, threading.Lock()
 
@@ -220,10 +239,40 @@ class Native:
             out[name]=row
         return out
 
+    def inventory(self):
+        """Read native Item names from the checked Sentient entity-ID container."""
+        count=self.u32(self.player+0x2C0)
+        if count>256:raise Unsupported('The native inventory exceeds the reviewed bounded layout')
+        if not count:return {}
+        raw=self.read(self.ptr(self.u32(self.player+0x2BC),count*4),count*4)
+        result={}
+        for entity_id in struct.unpack('>'+str(count)+'I',raw):
+            if not 1<=entity_id<4096:raise Unsupported('The native inventory entity number is invalid')
+            entity=self.ptr(self.table+entity_id*0x2B0,0x2B0)
+            item=self.ptr(self.u32(entity+0x24C),0x2E0)
+            if (self.u32(entity+0x1E4)!=1 or self.u32(item+0x10)!=entity_id
+                    or self.u32(item+0x14)!=entity or self.u32(item+0x278)!=self.player):
+                raise Unsupported('The native inventory ownership changed; refresh before applying an item')
+            name_data=self.ptr(self.u32(item+0x2D8),16)
+            name=self.text(self.u32(name_data)).lower()
+            result.setdefault(name,[]).append(item)
+        return result
+
     def items(self,resources=None):
         resources=self.resources() if resources is None else resources
-        return [{'id':key,'name':name,'model':key+'_pickup.men'} for key,name in ITEMS.items()
-                if 'models/'+key+'_pickup.men' in resources]
+        rows=[{'id':key,'name':name,'model':ITEM_MODELS[key]} for key,name in ITEMS.items()
+              if 'models/'+ITEM_MODELS[key] in resources]
+        try:inventory=self.inventory()
+        except (Unsupported,UnicodeError,ValueError,struct.error):return rows
+        equipped=self.equipped_items()
+        for row in rows:
+            owned=inventory.get(ITEM_NAMES[row['id']],[])
+            row.update(owned=bool(owned),equipped=bool(equipped.intersection(owned)))
+        return rows
+
+    def equipped_items(self):
+        # StartExtraGadget/StopExtraGadget use a separate simultaneous gadget slot.
+        return {self.u32(self.player+0x29C),self.u32(self.player+0x7A4)}-{0}
 
     def weapon(self):
         w=self.u32(self.player+0x29C)
@@ -246,11 +295,16 @@ class Native:
         if mode not in (1,5) or ammo_value not in (0,1):raise Unsupported('Native movement/ammo state is not supported')
         call_reason=self.native_call_reason()
         finish_reason=call_reason or self.finish_start_reason()
+        item_rows=self.items(resources)
+        give_reason=call_reason
+        if not give_reason and any(type(row.get('owned')) is not bool for row in item_rows):
+            give_reason='Inventory could not be verified; wait for playable gameplay and reload the controls'
         return {'verified':True,'switches':{'noclip':mode==1,'infinite_ammo':bool(ammo_value),'rocket_pistol':active},
-                'items':self.items(resources),'available':{'noclip':True,'infinite_ammo':True,'give_item':call_reason is None,
+                'items':item_rows,'available':{'noclip':True,'infinite_ammo':True,'give_item':give_reason is None,
                 'finish_level':finish_reason is None,'next_checkpoint':False,'rocket_pistol':bool(weapon and 'models/mrl22_projectile.men' in resources)},
                 'unavailable_reasons':{'next_checkpoint':'The native timed checkpoint triggers are not an ordered mission/save checkpoint route; no safe next checkpoint has been verified.',
                     **({op:call_reason for op in ('give_item','finish_level')} if call_reason else {}),
+                    **({'give_item':give_reason} if give_reason else {}),
                     **({'finish_level':finish_reason} if finish_reason else {}),
                     **({} if weapon else {'rocket_pistol':'Equip the P2K pistol in a level containing the native MRL-22 projectile first.'})},
                 'player':hex(p),'revision':'GW7E69 disc 0 revision 1','scope':'Offline on-foot campaign only; driving and multiplayer use different native systems.'}
@@ -291,7 +345,7 @@ class Native:
             raise Unsupported('Resume the emulator before submitting a native item or level command')
         with self.paused():
             p=self.check();self.require_native_call();deadline(expires)
-            if fn not in (F_GIVE,F_END,F_COMPLETE_SUBMAP) or not args or args[0]!=p:
+            if fn not in (F_GIVE,F_GIVE_GADGET,F_END,F_COMPLETE_SUBMAP) or not args or args[0]!=p:
                 raise Unsupported('The prepared player changed before submission; no command was published')
             if fn==F_END:
                 reason=self.finish_start_reason()
@@ -334,22 +388,37 @@ class Native:
     def give(self,item,expires):
         self.expires=expires
         if item not in ITEMS:raise ValueError('Choose an item from this game\'s dropdown')
+        instructions=('Use D-pad left/right to select gadgets, then B to use them.' if item in GADGET_MODELS or item=='qclaw'
+                      else 'Use D-pad up/down to select weapons, then R to fire.')
         if (self.ad.query_runtime() or {}).get('state')!='PLAYING':
             raise Unsupported('Resume the emulator before submitting a native item command')
         with self.paused():
             self.check();self.require_native_call();rows={x['id']:x for x in self.items()}
             if item not in rows:raise Unsupported('This item is not packaged in the loaded mission; no missing assets were synthesized')
+            inventory=self.inventory();existing=inventory.get(ITEM_NAMES[item],[])
+            if existing:
+                deadline(expires);equipped=bool(self.equipped_items().intersection(existing))
+                return {'verified':True,'item':item,'name':ITEMS[item],'already_owned':True,'equipped':equipped,
+                        'message':ITEMS[item]+(' is already equipped.' if equipped else ' is already in your inventory.')+
+                        ' '+instructions+' Giving an item does not auto-equip it.'}
             deadline(expires);self.idle_queue()
             name=rows[item]['model'].encode('ascii')+b'\0';self.write(BUFFER,name)
             prepared=(self.owned['identity'],self.owned['epoch'],name)
-        result=self.call(F_GIVE,[self.player,BUFFER,0,0,0xFFFFFFFF,0xFFFFFFFF,0],expires,prepared)
+        fn=F_GIVE_GADGET if item in GADGET_MODELS else F_GIVE
+        args=[self.player,BUFFER,0,0] if fn==F_GIVE_GADGET else [self.player,BUFFER,0,0,0xFFFFFFFF,0xFFFFFFFF,0]
+        result=self.call(fn,args,expires,prepared)
         if not 0x80000000<=result<=0x817FFB00:raise RuntimeError('The native item grant returned no item; no retry was attempted')
         with self.paused():
             self.check()
             if self.owned['identity']!=prepared[0] or self.owned['epoch']!=prepared[1]:
                 raise RuntimeError('The mission changed after the native grant; outcome unknown and no retry was attempted')
             if self.u32(result+0x278)!=self.player:raise RuntimeError('The native item owner read-back did not match; no retry was attempted')
-        return {'verified':True,'item':item,'name':ITEMS[item],'native_item':hex(result),'native_function':hex(F_GIVE)}
+            if result not in self.inventory().get(ITEM_NAMES[item],[]):
+                raise RuntimeError('The native item inventory/name read-back did not match; no retry was attempted')
+            equipped=result in self.equipped_items()
+        return {'verified':True,'item':item,'name':ITEMS[item],'native_item':hex(result),'native_function':hex(fn),
+                'already_owned':False,'equipped':equipped,
+                'message':ITEMS[item]+' was restored to your inventory. '+instructions+' Giving an item does not auto-equip it.'}
 
     def finish(self,expires):
         self.expires=expires
@@ -429,7 +498,7 @@ def reviewed_profile(analysis_artifacts,runtime_artifacts,verified_ops):
             {'address':0x804E34CC,'hex':'00000000'}, {'address':0x804E34C8,'hex':'00000000'}]
     definitions=(
         ('noclip','movement','Walk through walls','Pass through walls. Turn this off in open space; the previous movement setting is restored.'),
-        ('give_item','inventory','Give selected item','Adds a weapon available in the current mission. Mission documents and driving weapons use separate systems.'),
+        ('give_item','inventory','Give weapon or gadget','Restores a weapon or gadget available in the current mission and reports items already owned. Use D-pad left/right to select gadgets, then B to use them. Giving an item does not auto-equip it. Mission documents and driving items use separate systems.'),
         ('finish_level','levels','Go to end of level','Starts the game\'s normal results and progression flow. Close the pause/options menu first. This does not complete unfinished objectives.'),
         ('infinite_ammo','ammunition','Unlimited ammo','Enables the game\'s own unlimited ammunition setting. Magazines still reload. Turning it off restores the previous setting.'),
         ('rocket_pistol','projectiles','Rocket launcher pistol','Equip the P2K in a mission containing MRL-22 rockets. Primary fire launches those rockets; turning this off restores the previous projectile. The pistol, secondary fire and ammunition keep their existing behavior.'),
@@ -473,7 +542,7 @@ class LiveOut(BaseModel):
 @tool('auf_live','1.0',LiveIn,LiveOut,capabilities=['runtime','memory'],permissions=[Permission.READ],timeout_s=30,retries=0)
 def auf_live(inp,ctx):
     """Agent Under Fire GameCube GW7E69 rev1 offline campaign native controls.
-    inspect lists native switches and only weapons packaged in the loaded level.
+    inspect lists native switches and reviewed weapons/gadgets in the loaded level.
     noclip/infinite_ammo/rocket_pistol accept on. give_item accepts listed item id.
     finish_level invokes native EndLevel. next_checkpoint is unavailable until an
     ordered native route is verified. Mutations require memory_write and never retry.

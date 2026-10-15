@@ -203,6 +203,24 @@ def test_native_loaded_item_choices_cannot_add_unreviewed_items_and_missing_reas
     assert r[0]['available'] is False and r[0]['item_choices']['values']==[]
 
 
+def test_native_inventory_status_is_typed_and_limited_to_reviewed_loaded_choices(monkeypatch):
+    result={'available':{'give_item':True}, 'items':[
+        {'id':'claw','owned':True,'equipped':False,'name':'Untrusted runtime label'},
+        {'id':'laser','owned':False,'equipped':True},
+        {'id':'unknown','owned':True,'equipped':True},
+        {'id':'pistol','owned':1,'equipped':False},
+    ]}
+    ad,p,g,i,calls=native_probe(monkeypatch,result)
+    p['actions']=[p['actions'][0]|{'id':'give','control':'button',
+        'parameters':[{'id':'item','kind':'choice','label':'Item','default':'claw',
+                       'options':[{'value':v,'label':v} for v in ('claw','laser','pistol')]}],
+        'binding':{'kind':'native','tool':'auf_live','input':{'op':'give_item','item':'$item'}}}]
+    row=L.operate(ad,p,g,i.model_copy(update={'op':'inspect'}),SimpleNamespace(config=None))['actions'][0]
+    assert row['item_choices']=={'parameter':'item','values':['claw','laser','pistol'],
+        'states':{'claw':{'owned':True,'equipped':False},'laser':{'owned':False}}}
+    assert not ad.writes and len(calls)==1
+
+
 @pytest.mark.parametrize('result',[
     {'switches':{'noclip':True}},
     {'switches':{'noclip':1},'available':{'noclip':True}},
