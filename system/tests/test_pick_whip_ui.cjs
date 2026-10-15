@@ -453,3 +453,12 @@ test('menu: Identify streams into the console; settings toggle; outside click cl
   fx2.doc.listeners.mousedown[0]({ target: {} }); fx2.doc.listeners.mousedown[0]?.({ target: {} });
   assert.deepEqual(fx2.seen.closed, ['dismiss']);
 });
+
+test('menu: face editor acquires its own hold before the picker is dismissed', async () => {
+  const fx=menuFixture({pick_preview:{picked:{class:'npc'}}});let resolve;
+  fx.io.faceEdit=async o=>{fx.seen.face=o;await new Promise(r=>resolve=r);};
+  const pending=fx.menu.onPick('face');await tick();
+  assert.deepEqual(fx.seen.closed,[]);
+  assert.equal(fx.seen.face.sid,'w1-s1');assert.deepEqual(fx.seen.face.point,{x:.5,y:.5,window_aspect:4/3});
+  resolve();await pending;assert.deepEqual(fx.seen.closed,['face']);
+});

@@ -1,0 +1,296 @@
+{
+  "format": "twin-snakes-reviewed-native-face-materials-v1",
+  "review": "Owned GGSEA4 source atlas contact sheets, facial regions only; original masks/helmets retained. Projection remains editable and likeness unverified.",
+  "profiles": [
+    {
+      "model": "f7a622",
+      "texture": "92b726",
+      "sha256": "0154a882c77fd5dbfe3615813a855059a7fe1ed32bd10d166e4a4d0f01522e2e"
+    },
+    {
+      "model": "55ab65",
+      "texture": "3074a2",
+      "sha256": "952873cd305207d6a45f29d8a35804a20062c636ec7f0d8ef003e1713860180c"
+    },
+    {
+      "model": "f7a622",
+      "texture": "9b005b",
+      "sha256": "e8d9c05028b30dd7ed0e1c56eddd352e4fa869e667c1047bce43da84643029fd"
+    },
+    {
+      "model": "69b995",
+      "texture": "eda75d",
+      "sha256": "853960a072bd361954285fb53ec63ef99be67e2db248aab459752a223f7f8cbf"
+    },
+    {
+      "model": "69b995",
+      "texture": "9b005b",
+      "sha256": "e8d9c05028b30dd7ed0e1c56eddd352e4fa869e667c1047bce43da84643029fd"
+    },
+    {
+      "model": "f13930",
+      "texture": "86b350",
+      "sha256": "cb34b95ba889286eb859c5bcd762055d2a365e3d7ba2fc9ff732429e0959d52c"
+    },
+    {
+      "model": "e08364",
+      "texture": "6f0ca0",
+      "sha256": "1fc4738aab7a023e41292ac2e15a8de00e246459717e3f8e0186fe761a822d2a"
+    },
+    {
+      "model": "e08364",
+      "texture": "611bd8",
+      "sha256": "45fcccfa6aac3bc3dfb7b467adb830d3862b65d766f2b2e1127d1cf252711aaa"
+    },
+    {
+      "model": "1030a2",
+      "texture": "5e6c79",
+      "sha256": "04ae9986a9da97245dd437f0e2791b804d6ba1a286d327b3826b10872a12bec8"
+    },
+    {
+      "model": "664c91",
+      "texture": "3dcbb7",
+      "sha256": "cb34b95ba889286eb859c5bcd762055d2a365e3d7ba2fc9ff732429e0959d52c"
+    },
+    {
+      "model": "f13930",
+      "texture": "a12c81",
+      "sha256": "cb34b95ba889286eb859c5bcd762055d2a365e3d7ba2fc9ff732429e0959d52c"
+    },
+    {
+      "model": "9a0364",
+      "texture": "0ea593",
+      "sha256": "f748f2640f1ea23caa5c53a235f76f57acb623da04eefc01e842778d7218c865"
+    },
+    {
+      "model": "9a0364",
+      "texture": "51eda5",
+      "sha256": "efee2d48737e183ad0e76961faaa31c6e649cc7f4ef7822f2251d4f92486c796"
+    },
+    {
+      "model": "4a3dee",
+      "texture": "83d6ec",
+      "sha256": "f748f2640f1ea23caa5c53a235f76f57acb623da04eefc01e842778d7218c865"
+    },
+    {
+      "model": "65729f",
+      "texture": "f683b9",
+      "sha256": "61e0edaa6325a3c4ed6de1016c8401950a90ae9637ab3a7ef00ccafd48cc0e9f"
+    },
+    {
+      "model": "65729f",
+      "texture": "1b6953",
+      "sha256": "2103a7418787a17be456993a7ede1c8da298f7fe1518003e6d6cf71a6a656038"
+    },
+    {
+      "model": "f3a0e7",
+      "texture": "8672c6",
+      "sha256": "a4eaf86ddd54bce359d823177ccf18c2f3e3b4422bc644186cbb68182dd91ef4"
+    },
+    {
+      "model": "65729f",
+      "texture": "8cd1ab",
+      "sha256": "106f8c74580d471ae95e0c1352e73271cf61806b4fdd877b1175dbfb23ff23de"
+    },
+    {
+      "model": "f3a0e7",
+      "texture": "4ccbfe",
+      "sha256": "8f0a563ae597c54942d41cd1f2789179c779df8fc00476d1ad394b51d2f20abd"
+    },
+    {
+      "model": "93a813",
+      "texture": "8672c6",
+      "sha256": "a4eaf86ddd54bce359d823177ccf18c2f3e3b4422bc644186cbb68182dd91ef4"
+    },
+    {
+      "model": "413a69",
+      "texture": "8672c6",
+      "sha256": "a4eaf86ddd54bce359d823177ccf18c2f3e3b4422bc644186cbb68182dd91ef4"
+    },
+    {
+      "model": "93a813",
+      "texture": "4ccbfe",
+      "sha256": "8f0a563ae597c54942d41cd1f2789179c779df8fc00476d1ad394b51d2f20abd"
+    },
+    {
+      "model": "413a69",
+      "texture": "4ccbfe",
+      "sha256": "8f0a563ae597c54942d41cd1f2789179c779df8fc00476d1ad394b51d2f20abd"
+    },
+    {
+      "model": "36e364",
+      "texture": "e18dd0",
+      "sha256": "8afd547008330647fc4fc89d7da6aa9bdc2ac1881f334590e0a829ba96d5089b"
+    },
+    {
+      "model": "b1386a",
+      "texture": "b5bdef",
+      "sha256": "313f211fcd87dc6b96e3db57082846a57bbbe4c91b08c9515267e360828b264f"
+    },
+    {
+      "model": "a5346d",
+      "texture": "b5766e",
+      "sha256": "f3757699513eacfcf86226cd8a7a8f5b5472b67e2fe20ff38c9ad17eba04d8a5"
+    },
+    {
+      "model": "0a9e38",
+      "texture": "d350f8",
+      "sha256": "c8bed4a8959b2b5d312cc652980cd04ffcd82b5e4a163d1af015c055dec718ab"
+    },
+    {
+      "model": "938c32",
+      "texture": "095119",
+      "sha256": "68337c69e20406367324dc5458c5e6bb1d6f22f22036cd1746bee10bfa053728"
+    },
+    {
+      "model": "313635",
+      "texture": "8aab3d",
+      "sha256": "6a8263beb7343d447989324fbb43b8a646b3b63f7ca9d4f08b553d5950de5c04"
+    },
+    {
+      "model": "dc0276",
+      "texture": "7ae0cc",
+      "sha256": "f9e36dce300708fb460ed34823260f7c09dd362931cd2219a27f53923bfde2b9"
+    },
+    {
+      "model": "c139f3",
+      "texture": "0c95e0",
+      "sha256": "c2e5909edcc30ec1e0ae472be89a16129389b15d15a606b6cf91dd008cd8fbe7"
+    },
+    {
+      "model": "313aa9",
+      "texture": "01b436",
+      "sha256": "28583012dda5d1ecc5024b773845f208f9aa5f65a8db4fb8e23fbbd489d366cb"
+    },
+    {
+      "model": "f4985c",
+      "texture": "86b350",
+      "sha256": "cb34b95ba889286eb859c5bcd762055d2a365e3d7ba2fc9ff732429e0959d52c"
+    },
+    {
+      "model": "d38cea",
+      "texture": "57e471",
+      "sha256": "3b9c52f487a5741807e1d9a8a86d77fb85a5de718c33ab18f241003657bca297"
+    },
+    {
+      "model": "5292df",
+      "texture": "57e471",
+      "sha256": "3b9c52f487a5741807e1d9a8a86d77fb85a5de718c33ab18f241003657bca297"
+    },
+    {
+      "model": "7b4fac",
+      "texture": "aa2cb3",
+      "sha256": "9cca62402773fa03e255541c3a004ca66f8eae97273b20a8b0cae930fda53dc6"
+    },
+    {
+      "model": "1b5b80",
+      "texture": "987a53",
+      "sha256": "12aa907d7faa5ac54c2fda7e5809bbcecb602334586e7a616991c895706d5640"
+    },
+    {
+      "model": "f39fe5",
+      "texture": "ea3d94",
+      "sha256": "7e65f28d99325dc832ffb856bcc788709cabe247f09c97be714865eb2abcd434"
+    },
+    {
+      "model": "bb9cba",
+      "texture": "115fce",
+      "sha256": "306a5e0162f3cd7646409fe107c4be777620a36a847ad56977393a0215072baf"
+    },
+    {
+      "model": "23e574",
+      "texture": "77de9b",
+      "sha256": "96878ac4fbccbbd70bdf987738b0cd9c01c61fae0e3d6452f87a0d4a661e3c40"
+    },
+    {
+      "model": "bc536a",
+      "texture": "630e17",
+      "sha256": "531135fba6023fd5b900aa35b8340cc116a51e85f082a00c7bb59d867beacee4"
+    },
+    {
+      "model": "914575",
+      "texture": "6b94d1",
+      "sha256": "ce9fd9cbed5d108b7fbf37d08b5c997d4b9bd0f0519aa81fb1e1bdd5ba39f77c"
+    },
+    {
+      "model": "4136ec",
+      "texture": "278383",
+      "sha256": "293bc4d1d860e03d93dfc05cb41c96c95de7086b9f2e9b3d3fe2f8bf4b0359a4"
+    },
+    {
+      "model": "bb9cba",
+      "texture": "115fce",
+      "sha256": "f9592c655aa78c30b73a4cb7659328fca63cb4cdc2125d31d105539555787fdb"
+    },
+    {
+      "model": "23e574",
+      "texture": "77de9b",
+      "sha256": "0d51d9aac7fc77a7a80c552a438e99a98b226fbfcf64a8932eea419e3bbd767d"
+    },
+    {
+      "model": "6139b4",
+      "texture": "2b58b1",
+      "sha256": "41ac7f9a747dc3974fd59f5b7a12947729e98a474cee2d6a08fef3fd14469e93"
+    },
+    {
+      "model": "d53074",
+      "texture": "7dfc4e",
+      "sha256": "277a0aaa2fc4d44f7f8a354673b53b2b90b69aebc5d3a78ce42d4cba1d677403"
+    },
+    {
+      "model": "a136b1",
+      "texture": "eefd39",
+      "sha256": "46de05ad04fcf6dd442b12621b2a4bf826115777944bb98bec17d4b2b0e8af85"
+    },
+    {
+      "model": "31368f",
+      "texture": "ba33c8",
+      "sha256": "f59dabb6a0d039d1c8ead24f9524abc3328a910ca731b9ccea9ce56e692ea738"
+    },
+    {
+      "model": "735dc6",
+      "texture": "77de9b",
+      "sha256": "96878ac4fbccbbd70bdf987738b0cd9c01c61fae0e3d6452f87a0d4a661e3c40"
+    },
+    {
+      "model": "730bad",
+      "texture": "2b58b1",
+      "sha256": "d3e964c6c41ea61296f83e5de5c7d017b16d0de30b21ddbfc3a9eb342c34b932"
+    },
+    {
+      "model": "fb6b64",
+      "texture": "601050",
+      "sha256": "eb972ff27385476a2366dca2bb4904f83641035071a9cf9b20b24b170f697faa"
+    },
+    {
+      "model": "bd86ac",
+      "texture": "1e34de",
+      "sha256": "6b8aad6231b57d4a6b2fa79f7f6f72fd917fa8a0891f4477933003a3f1695598"
+    },
+    {
+      "model": "aa06fb",
+      "texture": "be3858",
+      "sha256": "2741ff8195478a8ecdd9c9639e7b6a8ec46ea799df4726ff53afd9d3ab6ee77c"
+    },
+    {
+      "model": "730bad",
+      "texture": "2b58b1",
+      "sha256": "41ac7f9a747dc3974fd59f5b7a12947729e98a474cee2d6a08fef3fd14469e93"
+    },
+    {
+      "model": "40a37b",
+      "texture": "091119",
+      "sha256": "3d39ad993994ba76e7c5ca421b9209252c185d35baee7b6e38f1bcde5dc57899"
+    },
+    {
+      "model": "f38941",
+      "texture": "ac6348",
+      "sha256": "7531851d3934fe982554fb2a508590e32ec937347c566dbd1b5d94c4a0c0c4c9"
+    },
+    {
+      "model": "4138df",
+      "texture": "5a645b",
+      "sha256": "43204c79ba9d92fd412f86ecb54e436f3da7ab0612d8200cdb88f31430cc6a2b"
+    }
+  ]
+}

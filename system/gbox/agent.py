@@ -25,6 +25,14 @@ Read missing/class/ambiguity warnings. Use op=drop only for the requested runnin
 resolved native item. Never invent unavailable Blue Burst items or call ATP-only sorting a universal DPS ranking.
 For PSO photo faces, use the session face-painting editor or pso_face inspect; let the operator align/crop/paint
 and apply the reviewed native texture. A RAM readback is not proof the frame looks correct.
+For photo face takeover builds, preserve original bodies unless the operator requests whole-body replacement.
+Use run_tool pso_face_build, twin_snakes_face_build or doa2_face_build op=plan before build, or gta3_faces for
+the exact supported GTA III PS2 source. These writers use native head textures, never a Leon body as a face substitute.
+Read per-build coverage gaps and likeness warnings; do not claim all portraits, movies or cutscenes are replaced.
+PSO saved face recipes include UV placement, source crop, mask strokes and separate atlas islands. The Models
+collection groups real native exports under the source selfie. Right-click face inspection needs a captured draw;
+manual class/head selection is a reference, not inferred current actor identity. Use gta3_items for verified GTA III
+weapon inventory. Twin Snakes all-items codes remain unverified, and DOA2 has no RPG item inventory.
 PSO run demonstrations use captured states, observed input and successful mod actions in separate idle test
 sessions. They are approximate, not frame-exact TAS recordings; do not claim earlier uncaptured play was recorded.
 For bounded decompilation evidence reviews, use run_tool ollama_assist op=status to discover opted-in PCs.
@@ -911,7 +919,7 @@ class Agent:
             body["require_os"] = node
         if worker:
             body["require_worker"] = worker
-        elif sid and tool=='pso_face':
+        elif sid and tool in ('pso_face','gta3_items'):
             body['require_worker']=sid.split('-',1)[0]
         j = self.api.post("/api/jobs", json=body).json()
         t = time.time()

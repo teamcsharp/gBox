@@ -188,7 +188,7 @@ def test_identical_texture_and_candidate_bytes_stay_pinned_independently_for_two
 def test_authorization_rejects_stale_source_worker_missing_permission_and_expired_input(tmp_path):
     store = Store(tmp_path)
     sources = {f'gbox/{name}': F.digest(Path(F.__file__).with_name(name).read_bytes().replace(b'\r\n', b'\n'))
-               for name in ('pso_faces.py', 'pso_gc.py', 'pso_gc_swap.py', 'tools.py', 'adapters.py')}
+               for name in ('pso_faces.py', 'pso_face_build.py', 'pso_face_target.py', 'pso_gc.py', 'pso_gc_swap.py', 'tools.py', 'adapters.py')}
     store.put('session', 'w-s', {'state': 'running', 'worker_id': 'w'})
     store.put('worker', 'w', {'build_sources': sources})
     cfg = SimpleNamespace(granted_permissions=['read', 'memory_write'])
@@ -200,3 +200,91 @@ def test_authorization_rejects_stale_source_worker_missing_permission_and_expire
     cfg.granted_permissions = ['memory_write']
     store.put('worker', 'w', {'build_sources': sources | {'gbox/pso_faces.py': 'old'}})
     with pytest.raises(ValueError, match='idle update'): F.authorize(store, cfg, 'w-s', body)
+
+
+def test_saved_mapping_requires_named_session_review_and_reuses_the_exact_mask(api):
+    client, store, photo, source = api
+    inspection = {'session_id': 's', 'key': 'a' * 32, 'chunk': source, 'surface_id': 'b' * 24}
+    assert client.post('/api/pso/faces/inspections', json=inspection).status_code == 200
+    mask = {'shape': 'ellipse', 'inset': .1}
+    strokes = [{'x': .5, 'y': .5, 'radius': .04, 'erase': True}]
+    preview = client.post('/api/pso/faces/preview', json=inspection | {
+        'settings': placement(photo).model_dump(), 'mask': mask, 'strokes': strokes})
+    assert preview.status_code == 200, preview.text
+    body = {'session_id': 's', 'key': inspection['key'], 'candidate': preview.json()['candidate']}
+    assert client.post('/api/pso/faces/recipes', json=body | {'session_id': 'other'}).status_code == 422
+    result = client.post('/api/pso/faces/recipes', json=body)
+    assert result.status_code == 200 and result.json()['saved']
+    recipe = client.get('/api/pso/faces/recipes', params={'photo': photo}).json()['profiles']['b' * 24]
+    assert recipe['crop'] == placement(photo).crop and recipe['mask'] == mask and recipe['strokes'] == strokes
+    assert client.get('/api/pso/faces/recipes', params={'photo': 'not-a-photo'}).status_code == 422
+
+
+def test_baked_face_build_uses_native_original_for_preview_and_rejects_bad_baseline(tmp_path):
+    import json
+    source = tmp_path / 'disc.iso';source.write_bytes(b'owned image')
+    folder = tmp_path / 'face-originals';folder.mkdir()
+    (tmp_path / '.gbox-mod.json').write_text(json.dumps({'photo_faces': {'original_face_dir': 'face-originals'}}))
+    original = chunk();modified = W.gvr_like(original, Image.new('RGBA', (32, 32), 'red'))
+    path = folder / ('a' * 24 + '.gvr');path.write_bytes(original)
+    assert F.baseline_chunk(source, {'id': 'a' * 24}, modified) == original
+    path.write_bytes(chunk(14))
+    with pytest.raises(ValueError, match='format'): F.baseline_chunk(source, {'id': 'a' * 24}, modified)
+
+
+def test_secondary_face_island_is_previewed_and_saved_without_hidden_build_changes(api):
+    client, store, photo, source = api
+    inspection={'session_id':'s','key':'c'*32,'chunk':source,'surface_id':'d'*24}
+    assert client.post('/api/pso/faces/inspections',json=inspection).status_code==200
+    patch={'crop':[.1,.1,.9,.9],'quad':[[.6,.1],[.9,.1],[.9,.4],[.6,.4]],'mask':{'shape':'ellipse','inset':.1},'opacity':.8}
+    body=inspection|{'settings':placement(photo).model_dump(),'mask':{'shape':'ellipse','inset':0},'additional_patches':[patch]}
+    preview=client.post('/api/pso/faces/preview',json=body)
+    assert preview.status_code==200,preview.text
+    accepted=preview.json()['candidate']
+    assert client.post('/api/pso/faces/recipes',json={'session_id':'s','key':'c'*32,'candidate':accepted}).status_code==200
+    saved=client.get('/api/pso/faces/recipes',params={'photo':photo}).json()['profiles']['d'*24]
+    assert saved['additional_patches']==[patch]
+    assert client.post('/api/pso/faces/preview',json=body|{'additional_patches':[{}]}).status_code==422
+
+
+def test_compact_original_archive_is_read_without_extraction_or_unbounded_members(tmp_path):
+    import json,zipfile
+    image=tmp_path/'disc.iso';image.write_bytes(b'owned disc')
+    (tmp_path/'.gbox-mod.json').write_text(json.dumps({'photo_faces':{'original_face_archive':'face-originals.zip'}}))
+    original=chunk();modified=W.gvr_like(original,Image.new('RGBA',(32,32),'blue'))
+    with zipfile.ZipFile(tmp_path/'face-originals.zip','w') as archive:archive.writestr('a'*24+'.gvr',original)
+    assert F.baseline_chunk(image,{'id':'a'*24},modified)==original
+    with pytest.raises(ValueError,match='missing'):F.baseline_chunk(image,{'id':'b'*24},modified)
+    with zipfile.ZipFile(tmp_path/'face-originals.zip','w') as archive:archive.writestr('a'*24+'.gvr',bytes(256*2**10+1))
+    with pytest.raises(ValueError,match='size limit'):F.baseline_chunk(image,{'id':'a'*24},modified)
+    assert not (tmp_path/'face-originals').exists()
+
+
+def test_manual_inspection_uses_selected_native_head_skin_and_explicit_material(tmp_path,monkeypatch):
+    from gbox import pso_face_build as B,pso_gc_live as GC
+    monkeypatch.setattr(GC.GC,'check',lambda self:None)
+    disc=SimpleNamespace(f=SimpleNamespace(close=lambda:None))
+    monkeypatch.setattr(G,'open_disc',lambda _:disc)
+    native=chunk()
+    rows=[{'id':str(i)*24,'name':'face'+str(i),'class_letter':'C','class_name':'HUcast','head':i,
+           'kind':'player','supported':True,'profile':{}} for i in (0,1)]
+    monkeypatch.setattr(B,'surface_catalog',lambda _:rows)
+    monkeypatch.setattr(B,'read_surface',lambda _disc,row:native)
+    monkeypatch.setattr(F,'matches',lambda ram,raw:[0x80020000])
+    monkeypatch.setattr(F,'upload',lambda ctx,name,data,typ,meta:F.digest(data))
+    monkeypatch.setattr(F.httpx,'post',lambda *a,**kw:SimpleNamespace(raise_for_status=lambda:None))
+    model=tmp_path/'reference.glb';model.write_bytes(b'GLB fixture')
+    selected=[]
+    def export(_disc,row,out,*,hair=0):
+        selected.append((row['id'],hair));return model,{'reference_face_materials':['tex100']}
+    monkeypatch.setattr(B,'export_surface_reference',export)
+    import json
+    profile={'crop':[.1,.2,.8,.9],'quad':[[.2,.2],[.7,.2],[.7,.8],[.2,.8]],'mask':{'shape':'ellipse','inset':.1}}
+    (tmp_path/'.gbox-mod.json').write_text(json.dumps({'photo_faces':{'source_photo':'a'*64,'profiles':{'1'*24:profile}}}))
+    ad=SimpleNamespace(read_memory=lambda addr,n:bytes(n),write_memory=lambda *_:pytest.fail('Inspection must not write game memory'))
+    ctx=SimpleNamespace(config=SimpleNamespace(data_dir=tmp_path),server='http://fixture',headers={})
+    result=F.inspect('session',ad,{'_rom_path':str(tmp_path/'disc.iso')},F.FaceIn(session_id='session',character_class='HUcast',head=1,hair=3),ctx)
+    assert selected==[('1'*24,3)]
+    assert len(result['maps'])==1 and result['maps'][0]['reference_materials']==['tex100']
+    assert result['photo']=='a'*64 and result['maps'][0]['profile']==profile
+    assert result['maps'][0]['profile_source']=='build'

@@ -1,0 +1,2613 @@
+{
+  "format": "doa2-le-reviewed-native-face-materials-v1",
+  "review": "Owned LE JP native head-material contact sheets; 41 distinct face/mask maps. Original geometry and headwear retained; projection remains editable and likeness unverified.",
+  "profiles": {
+    "DOA2/AYA00.CHR": {
+      "texture": 9,
+      "head_model": 1,
+      "sha256": "2e29836cb5f25ed5f5da7bd1f02053d95a560914a2528f648c788c617c1242f7",
+      "bounds": [
+        -0.06859999962828375,
+        0.06472742557525635,
+        0.0643999996510419,
+        0.1927592823695805
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 13,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.030799999833106995,
+            0.14790000021457672,
+            0.07190000265836716
+          ],
+          [
+            -0.030799999833106995,
+            0.14790000021457672,
+            0.07190000265836716
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/AYA01.CHR": {
+      "texture": 9,
+      "head_model": 1,
+      "sha256": "2e29836cb5f25ed5f5da7bd1f02053d95a560914a2528f648c788c617c1242f7",
+      "bounds": [
+        -0.06859999962828375,
+        0.06472742557525635,
+        0.0643999996510419,
+        0.1927592823695805
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 13,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.030799999833106995,
+            0.14790000021457672,
+            0.07190000265836716
+          ],
+          [
+            -0.030799999833106995,
+            0.14790000021457672,
+            0.07190000265836716
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/AYA02.CHR": {
+      "texture": 16,
+      "head_model": 1,
+      "sha256": "2e29836cb5f25ed5f5da7bd1f02053d95a560914a2528f648c788c617c1242f7",
+      "bounds": [
+        -0.06859999962828375,
+        0.06472742557525635,
+        0.0643999996510419,
+        0.1927592823695805
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 13,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.030799999833106995,
+            0.14790000021457672,
+            0.07190000265836716
+          ],
+          [
+            -0.030799999833106995,
+            0.14790000021457672,
+            0.07190000265836716
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/AYA03.CHR": {
+      "texture": 12,
+      "head_model": 1,
+      "sha256": "2e29836cb5f25ed5f5da7bd1f02053d95a560914a2528f648c788c617c1242f7",
+      "bounds": [
+        -0.06859999962828375,
+        0.06472742557525635,
+        0.0643999996510419,
+        0.1927592823695805
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 13,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.030799999833106995,
+            0.14790000021457672,
+            0.07190000265836716
+          ],
+          [
+            -0.030799999833106995,
+            0.14790000021457672,
+            0.07190000265836716
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/AYA04.CHR": {
+      "texture": 17,
+      "head_model": 1,
+      "sha256": "2e29836cb5f25ed5f5da7bd1f02053d95a560914a2528f648c788c617c1242f7",
+      "bounds": [
+        -0.06859999962828375,
+        0.06472742557525635,
+        0.0643999996510419,
+        0.1927592823695805
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 13,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.030799999833106995,
+            0.14790000021457672,
+            0.07190000265836716
+          ],
+          [
+            -0.030799999833106995,
+            0.14790000021457672,
+            0.07190000265836716
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/AYA05.CHR": {
+      "texture": 6,
+      "head_model": 1,
+      "sha256": "2e29836cb5f25ed5f5da7bd1f02053d95a560914a2528f648c788c617c1242f7",
+      "bounds": [
+        -0.06859999962828375,
+        0.06472742557525635,
+        0.0643999996510419,
+        0.1927592823695805
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 13,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.030799999833106995,
+            0.14790000021457672,
+            0.07190000265836716
+          ],
+          [
+            -0.030799999833106995,
+            0.14790000021457672,
+            0.07190000265836716
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/AYA06.CHR": {
+      "texture": 8,
+      "head_model": 1,
+      "sha256": "2e29836cb5f25ed5f5da7bd1f02053d95a560914a2528f648c788c617c1242f7",
+      "bounds": [
+        -0.06859999962828375,
+        0.06472742557525635,
+        0.0643999996510419,
+        0.1927592823695805
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 13,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.030799999833106995,
+            0.14790000021457672,
+            0.07190000265836716
+          ],
+          [
+            -0.030799999833106995,
+            0.14790000021457672,
+            0.07190000265836716
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/BAS00.CHR": {
+      "texture": 11,
+      "head_model": 3,
+      "sha256": "7a1ac74d15dd21ab6a4a9f004529b627d5268846c7064488997bb2b692352a75",
+      "bounds": [
+        -0.07127273065800015,
+        0.0631830096244812,
+        0.0669090940871022,
+        0.2710216673504975
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 9,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.03200000151991844,
+            0.19820000231266022,
+            0.10999999940395355
+          ],
+          [
+            -0.03200000151991844,
+            0.19820000231266022,
+            0.10999999940395355
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/BAS01.CHR": {
+      "texture": 14,
+      "head_model": 2,
+      "sha256": "7a1ac74d15dd21ab6a4a9f004529b627d5268846c7064488997bb2b692352a75",
+      "bounds": [
+        -0.07127273065800015,
+        0.0631830096244812,
+        0.0669090940871022,
+        0.2710216673504975
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 9,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.03200000151991844,
+            0.19820000231266022,
+            0.10999999940395355
+          ],
+          [
+            -0.03200000151991844,
+            0.19820000231266022,
+            0.10999999940395355
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/BAS02.CHR": {
+      "texture": 4,
+      "head_model": 1,
+      "sha256": "504b074f75a9cb75935307f68671ff9cb86938ef2852a3d7131bb3cc228d8df0",
+      "bounds": [
+        -0.07127273065800015,
+        0.0631830096244812,
+        0.0669090940871022,
+        0.2710216673504975
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 9,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.03200000151991844,
+            0.19820000231266022,
+            0.10999999940395355
+          ],
+          [
+            -0.03200000151991844,
+            0.19820000231266022,
+            0.10999999940395355
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/BAS03.CHR": {
+      "texture": 9,
+      "head_model": 1,
+      "sha256": "8c68b73d877b272858a655f9479dc91c64e6585db98c271d70f9e1fb82c0c0b8",
+      "bounds": [
+        -0.07127273065800015,
+        0.06318304687738419,
+        0.0669090940871022,
+        0.27102164725807526
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 9,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.03200000151991844,
+            0.19820000231266022,
+            0.10999999940395355
+          ],
+          [
+            -0.03200000151991844,
+            0.19820000231266022,
+            0.10999999940395355
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/BAY00.CHR": {
+      "texture": 6,
+      "head_model": 1,
+      "sha256": "6c2777aabb52616ec7ad7006c0dfd6ef20c18c90e56dc089faf2950900eda73b",
+      "bounds": [
+        -0.07060454582626167,
+        0.0626055896282196,
+        0.06628181853077629,
+        0.2331571700051427
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 8,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.031700000166893005,
+            0.17339999973773956,
+            0.09260000288486481
+          ],
+          [
+            -0.031700000166893005,
+            0.17339999973773956,
+            0.09260000288486481
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/BAY01.CHR": {
+      "texture": 5,
+      "head_model": 1,
+      "sha256": "6c2777aabb52616ec7ad7006c0dfd6ef20c18c90e56dc089faf2950900eda73b",
+      "bounds": [
+        -0.07060454582626167,
+        0.0626055896282196,
+        0.06628181853077629,
+        0.2331571700051427
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 8,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.031700000166893005,
+            0.17339999973773956,
+            0.09260000288486481
+          ],
+          [
+            -0.031700000166893005,
+            0.17339999973773956,
+            0.09260000288486481
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/BAY03.CHR": {
+      "texture": 14,
+      "head_model": 1,
+      "sha256": "b53761c9904524d1c38f719c599d95538b57baadf9d7119d787adafc792c408f",
+      "bounds": [
+        -0.07060454582626167,
+        0.0626055896282196,
+        0.06628181853077629,
+        0.2331571700051427
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 8,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.031700000166893005,
+            0.17339999973773956,
+            0.09260000288486481
+          ],
+          [
+            -0.031700000166893005,
+            0.17339999973773956,
+            0.09260000288486481
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/BAY04.CHR": {
+      "texture": 5,
+      "head_model": 1,
+      "sha256": "b53761c9904524d1c38f719c599d95538b57baadf9d7119d787adafc792c408f",
+      "bounds": [
+        -0.07060454582626167,
+        0.0626055896282196,
+        0.06628181853077629,
+        0.2331571700051427
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 8,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.031700000166893005,
+            0.17339999973773956,
+            0.09260000288486481
+          ],
+          [
+            -0.031700000166893005,
+            0.17339999973773956,
+            0.09260000288486481
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/GEN00.CHR": {
+      "texture": 12,
+      "head_model": 2,
+      "sha256": "da041bb5493dcb9a0a78050d62f7328d15f4088fb9d749c5456c536071cfbdd6",
+      "bounds": [
+        -0.07149545340375466,
+        0.03207552433013916,
+        0.06711818074638193,
+        0.19312941138115194
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 6,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.032099999487400055,
+            0.13670000433921814,
+            0.08879999816417694
+          ],
+          [
+            -0.032099999487400055,
+            0.13670000433921814,
+            0.08879999816417694
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/GEN01.CHR": {
+      "texture": 7,
+      "head_model": 1,
+      "sha256": "2a70e787b9a07f6f30f0e6508663e0831e93b7ab4d8fd121b0ed37176c513fe3",
+      "bounds": [
+        -0.07149545340375466,
+        0.03207552433013916,
+        0.06711818074638193,
+        0.19312941138115194
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 6,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.032099999487400055,
+            0.13670000433921814,
+            0.08879999816417694
+          ],
+          [
+            -0.032099999487400055,
+            0.13670000433921814,
+            0.08879999816417694
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/GEN02.CHR": {
+      "texture": 6,
+      "head_model": 2,
+      "sha256": "6160572c02817ac4664228e20c4c2fbc7975300b0d0267810b28754768d9d76e",
+      "bounds": [
+        -0.07149545340375466,
+        0.03207552433013916,
+        0.06711818074638193,
+        0.19312941138115194
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 6,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.032099999487400055,
+            0.13670000433921814,
+            0.08879999816417694
+          ],
+          [
+            -0.032099999487400055,
+            0.13670000433921814,
+            0.08879999816417694
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/GEN03.CHR": {
+      "texture": 7,
+      "head_model": 1,
+      "sha256": "c1b798f01a0e7453ee877c992c6f8b30fa0e20e5f05a71b28fc438090fc73925",
+      "bounds": [
+        -0.07149545340375466,
+        0.03207552433013916,
+        0.06711818074638193,
+        0.19312941138115194
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 6,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.032099999487400055,
+            0.13670000433921814,
+            0.08879999816417694
+          ],
+          [
+            -0.032099999487400055,
+            0.13670000433921814,
+            0.08879999816417694
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/GEN04.CHR": {
+      "texture": 6,
+      "head_model": 1,
+      "sha256": "6160572c02817ac4664228e20c4c2fbc7975300b0d0267810b28754768d9d76e",
+      "bounds": [
+        -0.07149545340375466,
+        0.03207552433013916,
+        0.06711818074638193,
+        0.19312941138115194
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 6,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.032099999487400055,
+            0.13670000433921814,
+            0.08879999816417694
+          ],
+          [
+            -0.032099999487400055,
+            0.13670000433921814,
+            0.08879999816417694
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/GEN05.CHR": {
+      "texture": 6,
+      "head_model": 1,
+      "sha256": "6160572c02817ac4664228e20c4c2fbc7975300b0d0267810b28754768d9d76e",
+      "bounds": [
+        -0.07149545340375466,
+        0.03207552433013916,
+        0.06711818074638193,
+        0.19312941138115194
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 6,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.032099999487400055,
+            0.13670000433921814,
+            0.08879999816417694
+          ],
+          [
+            -0.032099999487400055,
+            0.13670000433921814,
+            0.08879999816417694
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/HIK00.CHR": {
+      "texture": 19,
+      "head_model": 3,
+      "sha256": "93bbe2d54104584de6758cbc5e25522e65992488d89f8a09dddb5e7e060558a3",
+      "bounds": [
+        -0.06459090723232788,
+        0.029028594493865967,
+        0.06063636189157313,
+        0.1573665262268925
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 7,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.028999999165534973,
+            0.11240000277757645,
+            0.06840000301599503
+          ],
+          [
+            -0.028999999165534973,
+            0.11240000277757645,
+            0.06840000301599503
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/HIK01.CHR": {
+      "texture": 19,
+      "head_model": 3,
+      "sha256": "93bbe2d54104584de6758cbc5e25522e65992488d89f8a09dddb5e7e060558a3",
+      "bounds": [
+        -0.06459090723232788,
+        0.029028594493865967,
+        0.06063636189157313,
+        0.1573665262268925
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 7,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.028999999165534973,
+            0.11240000277757645,
+            0.06840000301599503
+          ],
+          [
+            -0.028999999165534973,
+            0.11240000277757645,
+            0.06840000301599503
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/HIK02.CHR": {
+      "texture": 13,
+      "head_model": 4,
+      "sha256": "fc8d82217c983f89572672bbcb3ac20fec0331db2ff85ce25d7d58250f501a63",
+      "bounds": [
+        -0.06459090723232788,
+        0.029028594493865967,
+        0.06063636189157313,
+        0.1573665262268925
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 7,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.028999999165534973,
+            0.11240000277757645,
+            0.06840000301599503
+          ],
+          [
+            -0.028999999165534973,
+            0.11240000277757645,
+            0.06840000301599503
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/HIK03.CHR": {
+      "texture": 21,
+      "head_model": 3,
+      "sha256": "93bbe2d54104584de6758cbc5e25522e65992488d89f8a09dddb5e7e060558a3",
+      "bounds": [
+        -0.06459090723232788,
+        0.029028594493865967,
+        0.06063636189157313,
+        0.1573665262268925
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 7,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.028999999165534973,
+            0.11240000277757645,
+            0.06840000301599503
+          ],
+          [
+            -0.028999999165534973,
+            0.11240000277757645,
+            0.06840000301599503
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/HIK04.CHR": {
+      "texture": 14,
+      "head_model": 3,
+      "sha256": "93bbe2d54104584de6758cbc5e25522e65992488d89f8a09dddb5e7e060558a3",
+      "bounds": [
+        -0.06459090723232788,
+        0.029028594493865967,
+        0.06063636189157313,
+        0.1573665262268925
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 7,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.028999999165534973,
+            0.11240000277757645,
+            0.06840000301599503
+          ],
+          [
+            -0.028999999165534973,
+            0.11240000277757645,
+            0.06840000301599503
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/HIK05.CHR": {
+      "texture": 9,
+      "head_model": 3,
+      "sha256": "93bbe2d54104584de6758cbc5e25522e65992488d89f8a09dddb5e7e060558a3",
+      "bounds": [
+        -0.06459090723232788,
+        0.029028594493865967,
+        0.06063636189157313,
+        0.1573665262268925
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 7,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.028999999165534973,
+            0.11240000277757645,
+            0.06840000301599503
+          ],
+          [
+            -0.028999999165534973,
+            0.11240000277757645,
+            0.06840000301599503
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/HIK06.CHR": {
+      "texture": 19,
+      "head_model": 3,
+      "sha256": "93bbe2d54104584de6758cbc5e25522e65992488d89f8a09dddb5e7e060558a3",
+      "bounds": [
+        -0.06459090723232788,
+        0.029028594493865967,
+        0.06063636189157313,
+        0.1573665262268925
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 7,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.028999999165534973,
+            0.11240000277757645,
+            0.06840000301599503
+          ],
+          [
+            -0.028999999165534973,
+            0.11240000277757645,
+            0.06840000301599503
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/JAN00.CHR": {
+      "texture": 11,
+      "head_model": 1,
+      "sha256": "c54be9628375d5d7c0119be78a213ede18bf3c35bd44729465c67c51fc0a8a9c",
+      "bounds": [
+        -0.06904545341703024,
+        0.019171765074133873,
+        0.06481818075884473,
+        0.1693020357483032
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 2,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.03099999949336052,
+            0.11670000106096268,
+            0.0689999982714653
+          ],
+          [
+            -0.03099999949336052,
+            0.11670000106096268,
+            0.0689999982714653
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/JAN01.CHR": {
+      "texture": 9,
+      "head_model": 1,
+      "sha256": "f25612f8fd95b9a2c7215010ae459bd6ab269096d18be70bd0df7069b74c0a87",
+      "bounds": [
+        -0.06904545341703024,
+        0.019171765074133873,
+        0.06481818075884473,
+        0.1693020357483032
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 2,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.03099999949336052,
+            0.11670000106096268,
+            0.0689999982714653
+          ],
+          [
+            -0.03099999949336052,
+            0.11670000106096268,
+            0.0689999982714653
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/JAN02.CHR": {
+      "texture": 10,
+      "head_model": 1,
+      "sha256": "f25612f8fd95b9a2c7215010ae459bd6ab269096d18be70bd0df7069b74c0a87",
+      "bounds": [
+        -0.06904545341703024,
+        0.019171765074133873,
+        0.06481818075884473,
+        0.1693020357483032
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 2,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.03099999949336052,
+            0.11670000106096268,
+            0.0689999982714653
+          ],
+          [
+            -0.03099999949336052,
+            0.11670000106096268,
+            0.0689999982714653
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/JAN03.CHR": {
+      "texture": 5,
+      "head_model": 1,
+      "sha256": "18ba2a84a84d1b23b899e3136db3229318d7aadeaa313e3068fc92c5f19a2fc1",
+      "bounds": [
+        -0.06904545341703024,
+        0.019171765074133873,
+        0.06481818075884473,
+        0.1693020357483032
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 2,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.03099999949336052,
+            0.11670000106096268,
+            0.0689999982714653
+          ],
+          [
+            -0.03099999949336052,
+            0.11670000106096268,
+            0.0689999982714653
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/JAN04.CHR": {
+      "texture": 8,
+      "head_model": 1,
+      "sha256": "15b60766f7e1e1bea2614c2315620634f39ef13fb61299abab34361b9416ff15",
+      "bounds": [
+        -0.06904545341703024,
+        0.019171765074133873,
+        0.06481818075884473,
+        0.1693020357483032
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 2,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.03099999949336052,
+            0.11670000106096268,
+            0.0689999982714653
+          ],
+          [
+            -0.03099999949336052,
+            0.11670000106096268,
+            0.0689999982714653
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/KAS00.CHR": {
+      "texture": 26,
+      "head_model": 4,
+      "sha256": "0d2aa5318d68e2f1b39d694ba56809406bfc1d5d3bb744e87670dd2d315365aa",
+      "bounds": [
+        -0.06681818032467905,
+        0.0641329288482666,
+        0.06272727132520893,
+        0.19477321804259662
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 5,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.029999999329447746,
+            0.14900000393390656,
+            0.06830000132322311
+          ],
+          [
+            -0.029999999329447746,
+            0.14900000393390656,
+            0.06830000132322311
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/KAS01.CHR": {
+      "texture": 20,
+      "head_model": 4,
+      "sha256": "0d2aa5318d68e2f1b39d694ba56809406bfc1d5d3bb744e87670dd2d315365aa",
+      "bounds": [
+        -0.06681818032467905,
+        0.0641329288482666,
+        0.06272727132520893,
+        0.19477321804259662
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 5,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.029999999329447746,
+            0.14900000393390656,
+            0.06830000132322311
+          ],
+          [
+            -0.029999999329447746,
+            0.14900000393390656,
+            0.06830000132322311
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/KAS02.CHR": {
+      "texture": 25,
+      "head_model": 4,
+      "sha256": "0d2aa5318d68e2f1b39d694ba56809406bfc1d5d3bb744e87670dd2d315365aa",
+      "bounds": [
+        -0.06681818032467905,
+        0.0641329288482666,
+        0.06272727132520893,
+        0.19477321804259662
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 5,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.029999999329447746,
+            0.14900000393390656,
+            0.06830000132322311
+          ],
+          [
+            -0.029999999329447746,
+            0.14900000393390656,
+            0.06830000132322311
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/KAS03.CHR": {
+      "texture": 17,
+      "head_model": 4,
+      "sha256": "0d2aa5318d68e2f1b39d694ba56809406bfc1d5d3bb744e87670dd2d315365aa",
+      "bounds": [
+        -0.06681818032467905,
+        0.0641329288482666,
+        0.06272727132520893,
+        0.19477321804259662
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 5,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.029999999329447746,
+            0.14900000393390656,
+            0.06830000132322311
+          ],
+          [
+            -0.029999999329447746,
+            0.14900000393390656,
+            0.06830000132322311
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/KAS04.CHR": {
+      "texture": 15,
+      "head_model": 1,
+      "sha256": "0d2aa5318d68e2f1b39d694ba56809406bfc1d5d3bb744e87670dd2d315365aa",
+      "bounds": [
+        -0.06681818032467905,
+        0.0641329288482666,
+        0.06272727132520893,
+        0.19477321804259662
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 5,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.029999999329447746,
+            0.14900000393390656,
+            0.06830000132322311
+          ],
+          [
+            -0.029999999329447746,
+            0.14900000393390656,
+            0.06830000132322311
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/KAS05.CHR": {
+      "texture": 24,
+      "head_model": 4,
+      "sha256": "b5a33f388f3c9ba2e4486e62223856c1751daec1973a2a277701d4df27d6f4b5",
+      "bounds": [
+        -0.06681818032467905,
+        0.0641329288482666,
+        0.06272727132520893,
+        0.19477321804259662
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 5,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.029999999329447746,
+            0.14900000393390656,
+            0.06830000132322311
+          ],
+          [
+            -0.029999999329447746,
+            0.14900000393390656,
+            0.06830000132322311
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/KAS06.CHR": {
+      "texture": 12,
+      "head_model": 4,
+      "sha256": "0d2aa5318d68e2f1b39d694ba56809406bfc1d5d3bb744e87670dd2d315365aa",
+      "bounds": [
+        -0.06681818032467905,
+        0.0641329288482666,
+        0.06272727132520893,
+        0.19477321804259662
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 5,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.029999999329447746,
+            0.14900000393390656,
+            0.06830000132322311
+          ],
+          [
+            -0.029999999329447746,
+            0.14900000393390656,
+            0.06830000132322311
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/KAS07.CHR": {
+      "texture": 26,
+      "head_model": 5,
+      "sha256": "0d2aa5318d68e2f1b39d694ba56809406bfc1d5d3bb744e87670dd2d315365aa",
+      "bounds": [
+        -0.06681818032467905,
+        0.0641329288482666,
+        0.06272727132520893,
+        0.19477321804259662
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 5,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.029999999329447746,
+            0.14900000393390656,
+            0.06830000132322311
+          ],
+          [
+            -0.029999999329447746,
+            0.14900000393390656,
+            0.06830000132322311
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/KAS09.CHR": {
+      "texture": 18,
+      "head_model": 4,
+      "sha256": "64989fb8afd239e947268abaf265f046ce42f79cc26a89b9a1183c4b9053d937",
+      "bounds": [
+        -0.06681818032467905,
+        0.0641329288482666,
+        0.06272727132520893,
+        0.19477321804259662
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 5,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.029999999329447746,
+            0.14900000393390656,
+            0.06830000132322311
+          ],
+          [
+            -0.029999999329447746,
+            0.14900000393390656,
+            0.06830000132322311
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/KTE00.CHR": {
+      "texture": 15,
+      "head_model": 1,
+      "sha256": "6433dc3740824d3e367bb1a47905e5931bbb496a9774806c3d51d2f356c219db",
+      "bounds": [
+        -0.07327727685597808,
+        0.037814319133758545,
+        0.06879091296683658,
+        0.1949600993345181
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 3,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.03290000185370445,
+            0.13989999890327454,
+            0.07729999721050262
+          ],
+          [
+            -0.03290000185370445,
+            0.13989999890327454,
+            0.07729999721050262
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/KTE01.CHR": {
+      "texture": 18,
+      "head_model": 1,
+      "sha256": "6433dc3740824d3e367bb1a47905e5931bbb496a9774806c3d51d2f356c219db",
+      "bounds": [
+        -0.07327727685597808,
+        0.037814319133758545,
+        0.06879091296683658,
+        0.1949600993345181
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 3,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.03290000185370445,
+            0.13989999890327454,
+            0.07729999721050262
+          ],
+          [
+            -0.03290000185370445,
+            0.13989999890327454,
+            0.07729999721050262
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/KTE02.CHR": {
+      "texture": 13,
+      "head_model": 1,
+      "sha256": "e480d1761192fa8d5321f2fb3bfe7840552a1b129f0cbabdb9a8849d6dc393bb",
+      "bounds": [
+        -0.07327727685597808,
+        0.037814319133758545,
+        0.06879091296683658,
+        0.1949600993345181
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 3,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.03290000185370445,
+            0.13989999890327454,
+            0.07729999721050262
+          ],
+          [
+            -0.03290000185370445,
+            0.13989999890327454,
+            0.07729999721050262
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/KTE03.CHR": {
+      "texture": 17,
+      "head_model": 1,
+      "sha256": "e480d1761192fa8d5321f2fb3bfe7840552a1b129f0cbabdb9a8849d6dc393bb",
+      "bounds": [
+        -0.07327727685597808,
+        0.037814319133758545,
+        0.06879091296683658,
+        0.1949600993345181
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 3,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.03290000185370445,
+            0.13989999890327454,
+            0.07729999721050262
+          ],
+          [
+            -0.03290000185370445,
+            0.13989999890327454,
+            0.07729999721050262
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/KTE04.CHR": {
+      "texture": 16,
+      "head_model": 1,
+      "sha256": "e480d1761192fa8d5321f2fb3bfe7840552a1b129f0cbabdb9a8849d6dc393bb",
+      "bounds": [
+        -0.07327727685597808,
+        0.037814319133758545,
+        0.06879091296683658,
+        0.1949600993345181
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 3,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.03290000185370445,
+            0.13989999890327454,
+            0.07729999721050262
+          ],
+          [
+            -0.03290000185370445,
+            0.13989999890327454,
+            0.07729999721050262
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/LEI00.CHR": {
+      "texture": 15,
+      "head_model": 1,
+      "sha256": "02bf05ff281d6d9743d0acc25e0bc7e9aeefbbf605d7a0f9346aba4f2c4db475",
+      "bounds": [
+        -0.07461363822221753,
+        0.027509987354278564,
+        0.07004545629024506,
+        0.17234762571752069
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 12,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.03350000083446503,
+            0.12160000205039978,
+            0.0551999993622303
+          ],
+          [
+            -0.03350000083446503,
+            0.12160000205039978,
+            0.0551999993622303
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/LEI01.CHR": {
+      "texture": 10,
+      "head_model": 1,
+      "sha256": "02bf05ff281d6d9743d0acc25e0bc7e9aeefbbf605d7a0f9346aba4f2c4db475",
+      "bounds": [
+        -0.07461363822221753,
+        0.027509987354278564,
+        0.07004545629024506,
+        0.17234762571752069
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 12,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.03350000083446503,
+            0.12160000205039978,
+            0.0551999993622303
+          ],
+          [
+            -0.03350000083446503,
+            0.12160000205039978,
+            0.0551999993622303
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/LEI02.CHR": {
+      "texture": 18,
+      "head_model": 1,
+      "sha256": "02bf05ff281d6d9743d0acc25e0bc7e9aeefbbf605d7a0f9346aba4f2c4db475",
+      "bounds": [
+        -0.07461363822221753,
+        0.027509987354278564,
+        0.07004545629024506,
+        0.17234762571752069
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 12,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.03350000083446503,
+            0.12160000205039978,
+            0.0551999993622303
+          ],
+          [
+            -0.03350000083446503,
+            0.12160000205039978,
+            0.0551999993622303
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/LEI03.CHR": {
+      "texture": 6,
+      "head_model": 1,
+      "sha256": "02bf05ff281d6d9743d0acc25e0bc7e9aeefbbf605d7a0f9346aba4f2c4db475",
+      "bounds": [
+        -0.07461363822221753,
+        0.027509987354278564,
+        0.07004545629024506,
+        0.17234762571752069
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 12,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.03350000083446503,
+            0.12160000205039978,
+            0.0551999993622303
+          ],
+          [
+            -0.03350000083446503,
+            0.12160000205039978,
+            0.0551999993622303
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/LEI04.CHR": {
+      "texture": 13,
+      "head_model": 1,
+      "sha256": "02bf05ff281d6d9743d0acc25e0bc7e9aeefbbf605d7a0f9346aba4f2c4db475",
+      "bounds": [
+        -0.07461363822221753,
+        0.027509987354278564,
+        0.07004545629024506,
+        0.17234762571752069
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 12,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.03350000083446503,
+            0.12160000205039978,
+            0.0551999993622303
+          ],
+          [
+            -0.03350000083446503,
+            0.12160000205039978,
+            0.0551999993622303
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/LEI05.CHR": {
+      "texture": 13,
+      "head_model": 1,
+      "sha256": "02bf05ff281d6d9743d0acc25e0bc7e9aeefbbf605d7a0f9346aba4f2c4db475",
+      "bounds": [
+        -0.07461363822221753,
+        0.027509987354278564,
+        0.07004545629024506,
+        0.17234762571752069
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 12,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.03350000083446503,
+            0.12160000205039978,
+            0.0551999993622303
+          ],
+          [
+            -0.03350000083446503,
+            0.12160000205039978,
+            0.0551999993622303
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/LOR00.CHR": {
+      "texture": 12,
+      "head_model": 1,
+      "sha256": "0f4218254e4674562fe7e3d6e139a8376ad814a3c32b7b5b6ef6267a745592fa",
+      "bounds": [
+        -0.06459090723232788,
+        0.029383204877376556,
+        0.06063636189157313,
+        0.15717526645986016
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 16,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.028999999165534973,
+            0.11240000277757645,
+            0.06840000301599503
+          ],
+          [
+            -0.028999999165534973,
+            0.11240000277757645,
+            0.06840000301599503
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/MAM00.CHR": {
+      "texture": 19,
+      "head_model": 1,
+      "sha256": "3791601a267167f0122debaf04f3c03b45c94aded10196d3362e4830a3c35717",
+      "bounds": [
+        -0.06459090723232788,
+        0.027532994747161865,
+        0.06063636189157313,
+        0.15817318071990652
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 10,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.028999999165534973,
+            0.11240000277757645,
+            0.06840000301599503
+          ],
+          [
+            -0.028999999165534973,
+            0.11240000277757645,
+            0.06840000301599503
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/RYU00.CHR": {
+      "texture": 8,
+      "head_model": 1,
+      "sha256": "b573860863d46a2259688bd015488c15a7ad6554a7433dd2bed181aaef73f801",
+      "bounds": [
+        -0.06681818032467905,
+        0.05459444224834442,
+        0.06272727132520893,
+        0.19791665010982087
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 4,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.029999999329447746,
+            0.1476999968290329,
+            0.07999999821186066
+          ],
+          [
+            -0.029999999329447746,
+            0.1476999968290329,
+            0.07999999821186066
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/RYU01.CHR": {
+      "texture": 7,
+      "head_model": 1,
+      "sha256": "6d719503fd10f2cc76a4272dca3a4d38553e35db1c66a942c8b5cec7de63da14",
+      "bounds": [
+        -0.06681818032467905,
+        0.05459444224834442,
+        0.06272727132520893,
+        0.19791665010982087
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 4,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.029999999329447746,
+            0.1476999968290329,
+            0.07999999821186066
+          ],
+          [
+            -0.029999999329447746,
+            0.1476999968290329,
+            0.07999999821186066
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/RYU02.CHR": {
+      "texture": 21,
+      "head_model": 1,
+      "sha256": "4109242d6db97f3adb1cfc6ace2800d57f30a54ef05fed98c5f2e68a719fa6a8",
+      "bounds": [
+        -0.06681818032467905,
+        0.05390586704015732,
+        0.06272727132520893,
+        0.19828803442349585
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 4,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.029999999329447746,
+            0.1476999968290329,
+            0.07999999821186066
+          ],
+          [
+            -0.029999999329447746,
+            0.1476999968290329,
+            0.07999999821186066
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/RYU03.CHR": {
+      "texture": 23,
+      "head_model": 1,
+      "sha256": "a76bdc3a29f9a88beeb6770e32db9e959fb27b80e62dff9020d967761f24f89d",
+      "bounds": [
+        -0.06681818032467905,
+        0.05390586704015732,
+        0.06272727132520893,
+        0.19828803442349585
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 4,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.029999999329447746,
+            0.1476999968290329,
+            0.07999999821186066
+          ],
+          [
+            -0.029999999329447746,
+            0.1476999968290329,
+            0.07999999821186066
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/RYU04.CHR": {
+      "texture": 9,
+      "head_model": 1,
+      "sha256": "f1c6dec408410d13ff4aba3316107123eb3a670be28f0b5e7d918a084390e7f9",
+      "bounds": [
+        -0.06681818032467905,
+        0.05459444224834442,
+        0.06272727132520893,
+        0.19791665010982087
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 4,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.029999999329447746,
+            0.1476999968290329,
+            0.07999999821186066
+          ],
+          [
+            -0.029999999329447746,
+            0.1476999968290329,
+            0.07999999821186066
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/SAM00.CHR": {
+      "texture": 13,
+      "head_model": 1,
+      "sha256": "280b88c3095484e7b393a464cd65792db1174e139ba933f5053ab42765955a0d",
+      "bounds": [
+        -0.0699363609945232,
+        0.07022634148597717,
+        0.06565454297445038,
+        0.23751334425199913
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 24,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.03139999881386757,
+            0.17890000343322754,
+            0.09880000352859497
+          ],
+          [
+            -0.03139999881386757,
+            0.17890000343322754,
+            0.09880000352859497
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/SAM01.CHR": {
+      "texture": 9,
+      "head_model": 1,
+      "sha256": "280b88c3095484e7b393a464cd65792db1174e139ba933f5053ab42765955a0d",
+      "bounds": [
+        -0.0699363609945232,
+        0.07022634148597717,
+        0.06565454297445038,
+        0.23751334425199913
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 24,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.03139999881386757,
+            0.17890000343322754,
+            0.09880000352859497
+          ],
+          [
+            -0.03139999881386757,
+            0.17890000343322754,
+            0.09880000352859497
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/SAM02.CHR": {
+      "texture": 13,
+      "head_model": 1,
+      "sha256": "280b88c3095484e7b393a464cd65792db1174e139ba933f5053ab42765955a0d",
+      "bounds": [
+        -0.0699363609945232,
+        0.07022634148597717,
+        0.06565454297445038,
+        0.23751334425199913
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 24,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.03139999881386757,
+            0.17890000343322754,
+            0.09880000352859497
+          ],
+          [
+            -0.03139999881386757,
+            0.17890000343322754,
+            0.09880000352859497
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/TIN00.CHR": {
+      "texture": 25,
+      "head_model": 1,
+      "sha256": "e7daaf27057443eaaed76a60c6a10d059c5079f76f2a7fb1450d91752cca8a86",
+      "bounds": [
+        -0.06614999964155932,
+        0.027519971132278442,
+        0.062099999663504685,
+        0.1597195485330842
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 1,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.02969999983906746,
+            0.11339999735355377,
+            0.06830000132322311
+          ],
+          [
+            -0.02969999983906746,
+            0.11339999735355377,
+            0.06830000132322311
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/TIN01.CHR": {
+      "texture": 24,
+      "head_model": 1,
+      "sha256": "e7daaf27057443eaaed76a60c6a10d059c5079f76f2a7fb1450d91752cca8a86",
+      "bounds": [
+        -0.06614999964155932,
+        0.027519971132278442,
+        0.062099999663504685,
+        0.1597195485330842
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 1,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.02969999983906746,
+            0.11339999735355377,
+            0.06830000132322311
+          ],
+          [
+            -0.02969999983906746,
+            0.11339999735355377,
+            0.06830000132322311
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/TIN02.CHR": {
+      "texture": 18,
+      "head_model": 1,
+      "sha256": "484a04f101e98898e0871289d2432d3f872a4b8808d9297f092632956d838869",
+      "bounds": [
+        -0.06614999964155932,
+        0.02752000093460083,
+        0.062099999663504685,
+        0.15971953245914644
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 1,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.02969999983906746,
+            0.11339999735355377,
+            0.06830000132322311
+          ],
+          [
+            -0.02969999983906746,
+            0.11339999735355377,
+            0.06830000132322311
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/TIN03.CHR": {
+      "texture": 17,
+      "head_model": 1,
+      "sha256": "e7daaf27057443eaaed76a60c6a10d059c5079f76f2a7fb1450d91752cca8a86",
+      "bounds": [
+        -0.06614999964155932,
+        0.027519971132278442,
+        0.062099999663504685,
+        0.1597195485330842
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 1,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.02969999983906746,
+            0.11339999735355377,
+            0.06830000132322311
+          ],
+          [
+            -0.02969999983906746,
+            0.11339999735355377,
+            0.06830000132322311
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/TIN04.CHR": {
+      "texture": 16,
+      "head_model": 1,
+      "sha256": "e7daaf27057443eaaed76a60c6a10d059c5079f76f2a7fb1450d91752cca8a86",
+      "bounds": [
+        -0.06614999964155932,
+        0.027519971132278442,
+        0.062099999663504685,
+        0.1597195485330842
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 1,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.02969999983906746,
+            0.11339999735355377,
+            0.06830000132322311
+          ],
+          [
+            -0.02969999983906746,
+            0.11339999735355377,
+            0.06830000132322311
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/TIN05.CHR": {
+      "texture": 27,
+      "head_model": 1,
+      "sha256": "e7daaf27057443eaaed76a60c6a10d059c5079f76f2a7fb1450d91752cca8a86",
+      "bounds": [
+        -0.06614999964155932,
+        0.027519971132278442,
+        0.062099999663504685,
+        0.1597195485330842
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 1,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.02969999983906746,
+            0.11339999735355377,
+            0.06830000132322311
+          ],
+          [
+            -0.02969999983906746,
+            0.11339999735355377,
+            0.06830000132322311
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/TIN06.CHR": {
+      "texture": 18,
+      "head_model": 1,
+      "sha256": "e7daaf27057443eaaed76a60c6a10d059c5079f76f2a7fb1450d91752cca8a86",
+      "bounds": [
+        -0.06614999964155932,
+        0.027519971132278442,
+        0.062099999663504685,
+        0.1597195485330842
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 1,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.02969999983906746,
+            0.11339999735355377,
+            0.06830000132322311
+          ],
+          [
+            -0.02969999983906746,
+            0.11339999735355377,
+            0.06830000132322311
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/TNG00.CHR": {
+      "texture": 5,
+      "head_model": 1,
+      "sha256": "07cf9fe090f02b7e4a3dea5a6a15670a6525c877f63e47f922a1d0727bc43b76",
+      "bounds": [
+        -0.08018181473016736,
+        0.05075370520353317,
+        0.07527272403240204,
+        0.26279372230379117
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 17,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.035999998450279236,
+            0.18850000202655792,
+            0.09920000284910202
+          ],
+          [
+            -0.035999998450279236,
+            0.18850000202655792,
+            0.09920000284910202
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/TNG01.CHR": {
+      "texture": 8,
+      "head_model": 1,
+      "sha256": "e823897cd484770f200ee269a51202ce05c7ceac4b7b9dc396067558ce963041",
+      "bounds": [
+        -0.08018181473016736,
+        0.05075368657708168,
+        0.07527272403240204,
+        0.26279373235000225
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 17,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.035999998450279236,
+            0.18850000202655792,
+            0.09920000284910202
+          ],
+          [
+            -0.035999998450279236,
+            0.18850000202655792,
+            0.09920000284910202
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/WBA00.CHR": {
+      "texture": 10,
+      "head_model": 1,
+      "sha256": "a48f056a97c927d56d7c2ee966339a21df9d2d517069421b1f793bb6f8590529",
+      "bounds": [
+        -0.07127273065800015,
+        0.06989011913537979,
+        0.0669090940871022,
+        0.26740417541522116
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 14,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.03200000151991844,
+            0.19820000231266022,
+            0.10999999940395355
+          ],
+          [
+            -0.03200000151991844,
+            0.19820000231266022,
+            0.10999999940395355
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/ZAC00.CHR": {
+      "texture": 8,
+      "head_model": 16,
+      "sha256": "3d1747004471b91a8b981a99392de9c987b812de5118a0bd39d2c719be639f4e",
+      "bounds": [
+        -0.0636999996548349,
+        0.04887735843658447,
+        0.059799999675967476,
+        0.23224901383811675
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 0,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.028599999845027924,
+            0.1679999977350235,
+            0.10029999911785126
+          ],
+          [
+            -0.028599999845027924,
+            0.1679999977350235,
+            0.10029999911785126
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/ZAC01.CHR": {
+      "texture": 9,
+      "head_model": 1,
+      "sha256": "c3ca08cdc8f4358325ccee4e9cc75af8a04a3fe6b856b54e9aa0a1f8850f0fe0",
+      "bounds": [
+        -0.0636999996548349,
+        0.04875016212463379,
+        0.059799999675967476,
+        0.2323176174045161
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 0,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.028599999845027924,
+            0.1679999977350235,
+            0.10029999911785126
+          ],
+          [
+            -0.028599999845027924,
+            0.1679999977350235,
+            0.10029999911785126
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/ZAC02.CHR": {
+      "texture": 9,
+      "head_model": 4,
+      "sha256": "841478056fd327e840deb6c7708de3011a5f477c727ae042f5e8a420ae6c551f",
+      "bounds": [
+        -0.0636999996548349,
+        0.06973810493946075,
+        0.059799999675967476,
+        0.22099773158077837
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 0,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.028599999845027924,
+            0.1679999977350235,
+            0.10029999911785126
+          ],
+          [
+            -0.028599999845027924,
+            0.1679999977350235,
+            0.10029999911785126
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/ZAC03.CHR": {
+      "texture": 29,
+      "head_model": 25,
+      "sha256": "318d26d0f155ed558ac2d19aee990a4b16e12b2c6d637d06d2887d9429147e2f",
+      "bounds": [
+        -0.0636999996548349,
+        0.048868536949157715,
+        0.059799999675967476,
+        0.23225377172369646
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 0,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.028599999845027924,
+            0.1679999977350235,
+            0.10029999911785126
+          ],
+          [
+            -0.028599999845027924,
+            0.1679999977350235,
+            0.10029999911785126
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/ZAC04.CHR": {
+      "texture": 7,
+      "head_model": 1,
+      "sha256": "2c308827b7ec9233c5d548eae4ec474c84343031d398bb92760b6312f68e36a1",
+      "bounds": [
+        -0.0636999996548349,
+        0.04875016212463379,
+        0.059799999675967476,
+        0.2323176174045161
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 0,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.028599999845027924,
+            0.1679999977350235,
+            0.10029999911785126
+          ],
+          [
+            -0.028599999845027924,
+            0.1679999977350235,
+            0.10029999911785126
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    },
+    "DOA2/PDG01.CHR": {
+      "texture": 0,
+      "head_model": 1,
+      "sha256": "7ff491a374d89b0cfd5f162572cec4bfa8fc0e001b2dcfc1b94750e9c54c01b7",
+      "bounds": [
+        -0.05590454590591516,
+        -0.019633086398243904,
+        0.052481818605553024,
+        0.1829965542355138
+      ],
+      "landmark_evidence": {
+        "native_eye_rest_table": "0x8c1949a0",
+        "native_render_slot": 23,
+        "photo_eye_y": 0.268,
+        "photo_eye_x": [
+          0.364,
+          0.628
+        ],
+        "native_eyes": [
+          [
+            0.025100000202655792,
+            0.1120000034570694,
+            0.047600001096725464
+          ],
+          [
+            -0.025100000202655792,
+            0.1120000034570694,
+            0.047600001096725464
+          ]
+        ],
+        "status": "measured source landmarks on approved 635x821 photo; native likeness review pending"
+      }
+    }
+  }
+}

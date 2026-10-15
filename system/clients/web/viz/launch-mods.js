@@ -66,7 +66,7 @@
       notice:deformed?'Recorded face-shape snapshots':'Photo texture projection · mesh shape unchanged'};
   }
   function selfieHTML(story, index, {mapUrl=u=>u,reduced=false}={}) {
-    const frames=story.frames,frame=frames[reduced?frames.length-1:index%frames.length],previous=frames[Math.max(0,(index%frames.length)-1)],map=story.maps[0];
+    const frames=story.frames,frame=frames[reduced?frames.length-1:index%frames.length],previous=frames[Math.max(0,(index%frames.length)-1)],map=story.maps[Number.isInteger(frame.map_index)?frame.map_index:0];
     const img=(url,alt,cls='')=>`<img class="${cls}" src="${ESC(mapUrl(url))}" alt="${ESC(alt)}" decoding="async" onerror="this.style.visibility='hidden'">`;
     return `<div class="lm-selfie-card${reduced?' lm-selfie-still':''}"><b>${ESC(story.name)}</b><div class="lm-face-row"><figure>${img(story.source,'Source selfie')}<figcaption>Source photo</figcaption></figure>
       <figure class="lm-face-result"><div class="lm-face-wipe">${img(previous.img,'Previous recorded face snapshot')}${img(frame.img,frame.label,'lm-face-next')}</div><figcaption>${ESC(frame.label)}</figcaption></figure></div>
@@ -85,6 +85,7 @@
 
   // ---------------------------------------------------------------- the model: details + index entry -> what to show
   function pairsFrom(details, built) {
+    if(details?.native_face_preview?.maps?.length)return details.native_face_preview.maps.slice(0,MAX_PAIRS).map((m,i)=>({slot:'face:'+i,slotName:m.label||'Native face',original:{name:'Original face texture',img:imgOf(m.before)},donor:{name:'Photo face texture candidate',img:imgOf(m.after)},status:'original body retained'}));
     const native=details?.sprite_preview;
     if(native?.original&&native?.result){
       const pair=(o,slot)=>({slot,slotName:slot==='source'?'Source → native result':'Player',
@@ -296,7 +297,7 @@
       ...(item?.changes||[]).map(c=>String(c.donor||'').split(',')[0]).filter(Boolean)])];
     const candidates=photoRows.length?[]:donors.filter(s=>/_photo_|selfie/i.test(s)).slice(0,2);
     const photos=photoRows.length?photoRows:await Promise.all(candidates.map(slug=>within(()=>fetchJson('/api/characters/'+enc(slug),signal))));
-    model.selfies=photos.map(selfieFrom).filter(Boolean);ct(timer);return model;
+    model.selfies=[...(details?.native_face_preview?[details.native_face_preview]:[]),...photos.map(selfieFrom).filter(Boolean)];ct(timer);return model;
   }
 
   // ---------------------------------------------------------------- the controller on the loading screen

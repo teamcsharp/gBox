@@ -57,6 +57,14 @@ test('real saved geometry renders on both sides and can be captured without the 
     loadViewer:async()=>{const m=await import('/character-model.js');return {createCharacterViewer:async(...args)=>{const v=await m.createCharacterViewer(...args);views.push(v);return v;}};}});until(()=>!document.querySelector('[data-mark]').disabled);`);
   const counts=await evaluate(`views.map(v=>{let n=0;v.gltf.scene.traverse(o=>{if(o.isMesh)n+=o.geometry.index.count/3;});return n;})`);
   assert.deepEqual(counts.sort((a,b)=>b-a),[meta.before_triangles,meta.after_triangles].sort((a,b)=>b-a));
+  // A temporary sampler fixture exercises real Three.js UVs even when the
+  // saved native comparison uses vertex colours. Remove it before any capture.
+  const textureChecks=await evaluate(`(()=>{const v=views[0],T=v.THREE,original=new T.DataTexture(new Uint8Array([255,0,0,255]),1,1);original.wrapS=T.RepeatWrapping;original.repeat.set(2,3);
+    const material=new T.MeshBasicMaterial({map:original});material.name='sampler-fixture';const mesh=new T.Mesh(new T.PlaneGeometry(),material);v.gltf.scene.add(mesh);
+    const image=document.createElement('canvas');image.width=image.height=8;v.texture(image,material.name);const first=material.map;v.texture(image,material.name);
+    const result={wire:v.uvLines(material.name).length,reused:first===material.map,wrap:first.wrapS===T.RepeatWrapping,repeat:first.repeat.toArray()};
+    v.gltf.scene.remove(mesh);mesh.geometry.dispose();material.dispose();return result;})()`);
+  assert.equal(textureChecks.wire,2);assert.equal(textureChecks.reused,true);assert.equal(textureChecks.wrap,true);assert.deepEqual(textureChecks.repeat,[2,3]);
   await evaluate(`views[0].setView({position:[.55,.3,1.55],target:[0,0,0]});`);
   const poses=await evaluate(`views.map(v=>v.getView())`);
   for(let i=0;i<3;i++)assert.ok(Math.abs(poses[0].position[i]-poses[1].position[i])<1e-5,'both views orbit and zoom together');

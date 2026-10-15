@@ -16,6 +16,20 @@ const BUILT = FX['/api/mods/built'];
 const CARDS = FX['/api/mods'];
 const LM = factory({});
 
+test('native face builds load recorded texture comparisons without borrowing a body donor',async()=>{
+ const story={name:'Bla face',source:'/api/artifacts/'+ 'a'.repeat(64),geometry:'unchanged',maps:[{label:'Native actor',before:'/api/modfiles/g/m/file/before.png',after:'/api/modfiles/g/m/file/after.png'}],frames:[{img:'/api/modfiles/g/m/file/after.png',kind:'texture_projection',label:'Native encoded face'}]};
+ const model=await LM.load({gameId:'g',mod:'m',fetchJson:async p=>p.endsWith('/details')?{native_face_preview:story}:{items:[]}});
+ assert.deepEqual(model.selfies,[story]);assert.equal(model.pairs[0].original.img,story.maps[0].before);
+ assert.equal(model.pairs[0].donor.img,story.maps[0].after);assert.equal(model.pairs[0].status,'original body retained');
+ assert.match(LM.selfieHTML(story,0),/mesh shape unchanged|native|Native/);
+});
+
+test('native multi-actor slides retain the matching original and result comparison strip',()=>{
+ const frames=[0,0,1,1].map((map_index,i)=>({map_index,img:'/actor'+map_index+'-'+i+'.png',label:'actor'+map_index}));
+ const html=LM.selfieHTML({name:'Bla',source:'/selfie.png',frames,maps:[{before:'/claude-before.png',after:'/claude-after.png'},{before:'/cop-before.png',after:'/cop-after.png'}]},3);
+ assert.match(html,/cop-before\.png/);assert.doesNotMatch(html,/claude-before\.png/);
+});
+
 // ---------- a small DOM: the loader host, the layer and its two slide slots ----------
 function fakeDom() {
   const made = [];
