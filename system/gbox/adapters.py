@@ -1119,7 +1119,14 @@ class RetroArchAdapter(CommandAdapter):
         elif not core:
             raise ToolUnavailable("retroarch adapter needs 'core' configured")
         cfg = self._write_cfg() if self.config is not None else None
-        return [exe, *(["--config", str(cfg)] if cfg else []), "-L", core, "--verbose", *self.cfg.args, rom]
+        from .gameplay_replay import prepare
+        try:
+            movie = prepare(self,exe,core,rom) if self.config is not None else []
+        except Exception as exc:
+            # A full recording disk must never prevent the operator's game from loading.
+            self.gameplay_replay = {'state':'failed','reason':type(exc).__name__}
+            movie = []
+        return [exe, *(["--config", str(cfg)] if cfg else []), "-L", core, "--verbose", *self.cfg.args, *movie, rom]
 
     def install_cheats(self, core: str, rom: str) -> list[dict]:
         """Copy the libretro-database code list for this game where RetroArch auto-loads it (all codes off)."""

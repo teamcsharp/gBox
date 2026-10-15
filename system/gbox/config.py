@@ -96,6 +96,8 @@ class ShowcaseConfig(BaseModel):
     """[showcase] the Sonic showcase (gbox/sonic_showcase.py, docs/sonic_showcase.md): a background service on the
     control plane that builds `showcase_sonic_<title>` cast swaps (SA1 + SA2 cast) of the favorites and recently
     played titles, and queues readiness work for titles without a writer. The gBox Settings toggle overrides these."""
+    roulette: bool = False  # hourly deterministic target/donor selection, recorded in the showcase receipt
+    source_pool: list[str] = ['sonic','mario','sonic,mario']
     enabled: bool = False             # off until the operator turns it on (Settings card or PUT /api/showcase)
     paused: bool = False              # the pause switch: nothing new is planned, built or queued
     favorites: int = 25               # favorites considered per pass (starred titles first)
@@ -105,7 +107,7 @@ class ShowcaseConfig(BaseModel):
     whole_cast_max_slots: int = 16    # whole cast when it has at most this many slots, else player + main cast
     interval_s: float = 300.0         # seconds between passes (a settings change or POST /api/showcase/run wakes it)
     recheck_hours: float = 6.0        # an up-to-date title is planned again after this long (new donors, writer fixes)
-    retry_failed_hours: float = 24.0  # a failed plan is not built again before this, unless the plan changes
+    retry_failed_hours: float = 24.0  # a fresh random seed alone never bypasses failed-writer cooldown
     hdd_root: dict[str, str] = {"linux": "/home/ehm_eckx/samples"}   # os -> the external HDD mount; builds only there
     require_hdd: bool = True          # refuse to build when the mod cache is not on that mount (never fill the NVMe)
     min_free_gb: float = 50.0         # and when the HDD has less than this free
@@ -189,6 +191,8 @@ class HermesConfig(BaseModel):
 
 
 class Config(BaseModel):
+    gameplay_memory_enabled: bool = True  # operator gameplay journal and native capture on supported new launches
+    gameplay_native_replay_enabled: bool = False  # experimental: BSV can change native load-state behavior
     data_dir: Path = Path("gbox-data")
     libraries: list[Library] = []
     smb_credentials: str | None = None   # linux credentials file for SMB mounts (never stored in the TOML)

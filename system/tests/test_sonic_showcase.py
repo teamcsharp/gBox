@@ -540,3 +540,44 @@ def test_gallery_marks_showcase_builds_and_filters_them():
     assert [m["name"] for m in B.select([e, plain], kind="showcase")] == ["showcase_sonic_jgr"]
     assert [m["name"] for m in B.select([e, plain], kind="other")] == ["cast_x"]
     assert B.facets([e, plain])["showcase"] == 1
+
+
+def test_hourly_roulette_is_reproducible_and_failed_writer_cannot_loop(env):
+    game=entry(1,'Jet Grind Radio')
+    env.svc.update({'roulette':True,'source_pool':['sonic','mario','sonic,mario']},'operator')
+    first=env.svc.draw(game)
+    assert first==env.svc.draw(game)
+    env.clock.t+=3600
+    assert first['seed']!=env.svc.draw(game)['seed']
+    assert env.svc.draw(game)['source'] in ['sonic','mario','sonic,mario']
+    assert not env.svc._due({'stage':'failed','failed_at':env.clock(),'checked':0},env.svc.settings())
+
+
+def test_roulette_target_order_uses_clock_seam(env):
+    env.store.upsert_catalog([entry(n,'Game '+str(n)) for n in range(1,8)])
+    for n in range(1,8):env.store.set_favorite(gid(n),True)
+    settings=env.svc.settings()|{'roulette':True,'favorites':20,'recent':0}
+    a=SS.select_titles(env.store,settings,env.clock())
+    assert a==SS.select_titles(env.store,settings,env.clock())
+    assert {x['game_id'] for x in a}=={gid(n) for n in range(1,8)}
+    assert a!=SS.select_titles(env.store,settings,env.clock()+3600)
+
+
+def test_operator_reports_block_roulette_before_eviction_or_submission(env):
+    g=entry(1,'Jet Grind Radio')
+    env.store.put('build_feedback','report',{'id':'report','game_id':g['game_id'],'revision':2})
+    row,started=env.svc._plan_and_build(g,{'writer':'jgr'},{},env.svc.settings(),{})
+    assert not started and row['stage']=='needs_review'
+    assert not env.submitted
+    assert row['feedback']==[{'id':'report','revision':2}]
+
+
+def test_same_assignment_after_roulette_draw_is_not_rebuilt(env):
+    g=entry(1,'Jet Grind Radio');env.store.upsert_catalog([g]);env.store.set_favorite(gid(1),True)
+    env.writers[gid(1)]={'writer':'gbox.jgr_swap','routed':True}
+    env.svc.update({'roulette':True,'source_pool':['sonic']},'operator')
+    env.svc.tick();job=env.submitted[0];mod=job['input']['mod_name']
+    finish_job(env,job,gid(1),mod);env.svc.tick()
+    env.clock.t+=3600;env.svc.tick()
+    assert len(env.submitted)==1
+    rec=env.svc.record(gid(1));assert rec['stage']=='unchanged' and rec['mod']==mod

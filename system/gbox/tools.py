@@ -527,6 +527,7 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     ctx.progress(2, f"Loading {g.title} · {g.system or g.platform}")
     diag["stage"] = "pick emulator"
     ad = adapters.for_game(g.model_dump(), ctx.config, debug=inp.debug)
+    ad.capture_gameplay = not getattr(ctx,'agent_use',False) and not inp.capture_backend
     ad.progress = ctx.progress
     diag.update(_adapter=ad, adapter=ad.name, core=getattr(getattr(ad, "cfg", None), "core", None) or g.core,
                 stage="prepare")
@@ -631,9 +632,16 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     ctx.progress(100, "Running natively in its own window" if detail.get("local_window") else "Running — connecting the stream")
     sid = f"{ctx.worker}-{ctx.job_id}"
     gd = g.model_dump()
+    gd['mod'] = launch_mod or ''
     if g.launch.get("kind") != "steam" and not isinstance(ad, adapters.RocketLauncherAdapter):
         gd["_rom_path"] = str(src)                     # for the inspector's ROM viewer
     SESSIONS[sid] = (ad, gd)
+    if not inp.capture_backend:
+        try:
+            from . import gameplay_replay
+            detail['gameplay_memory'] = gameplay_replay.start(sid,ad,gd,ctx.server,ctx.headers,lambda:sid in SESSIONS)
+        except Exception as e:
+            detail['gameplay_memory'] = {'state':'unsupported','reason':type(e).__name__}
     if gd.get("game_id") == "0871eee3b68cdea3":                # Resident Evil 6 (X360): Auto QTE + saved switches at boot
         try:
             from . import re6_tool
@@ -3980,7 +3988,7 @@ AGENTS = [
 # pso_mods_tool: PSO Ver.2 DC mods | re_mods_tool: RE4 GC items/ammo/Mercenaries | zelda_tool: every Zelda
 # ac_mods_tool: Armored Core | characters: character library (list / get / use / extract)
 # scene_capture: Examine 3D (pause + RenderDoc frame -> glTF scene)
-def _load_tool_modules(names=("ollama_assist", "inspection_builds", "live_controls", "pso_mods_tool", "re_mods_tool", "zelda_tool", "ac_mods_tool", "characters", "scene_capture", "tasks_tool", "blender_copy", "texture_review", "mesh_workspace", "hops_workspace",
+def _load_tool_modules(names=("gameplay_memory", "ollama_assist", "inspection_builds", "live_controls", "pso_mods_tool", "re_mods_tool", "zelda_tool", "ac_mods_tool", "characters", "scene_capture", "tasks_tool", "blender_copy", "texture_review", "mesh_workspace", "hops_workspace",
                               "live_link",   # live_link: Blender Live Link push -> build, validate, hot-swap into the running game
                               "re4r",   # re4r: Resident Evil 4 (2023, Steam) via REFramework + gBox's Lua bridge
                               "ue_steam",   # ue_steam: generic Unreal Engine Steam game static analysis (locomotion/animation)
