@@ -646,6 +646,8 @@ def create_app(config: Config) -> FastAPI:
     native_face_editor.routes(app,store,auth,config)
     from . import library_home
     library_home.routes(app, store, config, auth)
+    from . import photocraft
+    photocraft.routes(app, store, auth, config)
 
     # environments: whole captured scenes (characters op=extract kind=environment), next to the characters
     def _env_file(slug: str, rel: str) -> Path:

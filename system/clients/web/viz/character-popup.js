@@ -18,7 +18,7 @@
       <h2>${esc(o.name||o.slug)}</h2><div class="cp-source cp-status">Collection model · target slot: ${esc(o.slot||'player')}</div>
       <div class="cp-stage" aria-label="Rotating 3D character model">Loading model…</div>
       <p class="cp-status">Drag to orbit · scroll to zoom · rotates automatically</p>
-      <div class="cp-actions"><button type="button" data-cp="blender" disabled>Export to Blender</button><button type="button" data-cp="examine" disabled>Examine</button><button type="button" data-cp="retarget" disabled>Retarget…</button><a data-download hidden>Download model</a><button type="button" data-cp="close">Close</button></div>
+      <div class="cp-actions"><button type="button" data-cp="blender" disabled>Export to Blender</button><button type="button" data-cp="examine" disabled>Examine</button><button type="button" data-cp="retarget" disabled>Retarget…</button><button type="button" data-cp="paint" disabled>Paint textures · PhotoCraft</button><a data-download hidden>Download model</a><button type="button" data-cp="close">Close</button></div>
       <pre class="cp-info" hidden></pre><p class="cp-status" data-status role="status" aria-live="polite">Loading character…</p>`;
     doc.body.appendChild(dialog);dialog.showModal();
     const q=s=>dialog.querySelector(s),stage=q('.cp-stage'),status=t=>{q('[data-status]').textContent=t;};
@@ -35,6 +35,7 @@
         return;
       }
       if(act==='retarget') {close();return env.retarget?.({...o,slug:model.slug||o.slug,name:model.name||o.name});}
+      if(act==='paint') {close();return env.editTextures?.({...o,slug:model.slug||o.slug,name:model.name||o.name});}
       if(act==='blender'){
         b.disabled=true;status('Copying the textured model to Blender…');
         try{if(!env.blender)throw new Error('Blender export is unavailable in this client');await env.blender(model.slug||o.slug,o);if(!closed)status('Copied to Blender. Press Ctrl+V in a Blender 3D viewport.');}
@@ -51,6 +52,7 @@
       q('[data-cp=blender]').disabled=!model.model||!env.blender;
       q('[data-cp=retarget]').disabled=!o.gid||!env.retarget;
       q('[data-cp=examine]').disabled=false;
+      q('[data-cp=paint]').disabled=!env.editTextures||!!o.modelFile||!/\.(gltf|glb)$/i.test(model.model||'');
       if(!/\.(gltf|glb)$/i.test(model.model||''))throw new Error('This collection file has no glTF/GLB model to rotate.');
       const mod=await env.loadViewer();if(closed)return;
       stage.textContent='';

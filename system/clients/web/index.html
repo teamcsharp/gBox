@@ -297,6 +297,8 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/last-played.js"></script>
 <script src="/live-poll.js"></script>
 <script src="/viz/character-popup.js"></script>
+<script src="/viz/model-texture-paint.js"></script>
+<script src="/viz/photocraft-popup.js"></script>
 <script src="/viz/game-build-request.js"></script>
 <script src="/viz/sprite-face-editor.js"></script>
 <script src="/viz/sprite-pair-editor.js"></script>
@@ -563,7 +565,7 @@ document.body.insertAdjacentHTML("beforeend", `<div id="lbox" style="display:non
   <button class="act" data-z="fit" title="Fit (0)">Fit</button><button class="act" data-z="1:1" title="Actual pixels">1:1</button><button class="act" data-z="checker" title="Alpha checkerboard">▦</button>
   <label class="mut" style="font-size:11px" title="Brightness">☀ <input data-adj="bright" type="range" min="0" max="300" value="100" style="width:64px"></label>
   <label class="mut" style="font-size:11px" title="Contrast">◐ <input data-adj="contrast" type="range" min="0" max="300" value="100" style="width:64px"></label>
-  <button class="act" data-z="save" title="Download this picture">⬇ Save</button><button class="act" data-z="x" title="Close (Esc)">✕</button></div></div>`);
+  <button class="act" data-z="edit" title="Edit this image in the local PhotoCraft popup">PhotoCraft</button><button class="act" data-z="save" title="Download this picture">⬇ Save</button><button class="act" data-z="x" title="Close (Esc)">✕</button></div></div>`);
 const LB = { el: $("#lbox"), k: 1, x: 0, y: 0, list: [], i: 0, bright: 100, contrast: 100, checker: false };
 LB.img = LB.el.querySelector("img");
 const lbApply = () => { LB.img.style.transform = `translate(${LB.x}px,${LB.y}px) scale(${LB.k})`;
@@ -604,7 +606,7 @@ LB.el.addEventListener("input", e => { const a = e.target.dataset?.adj; if (a) {
 LB.el.addEventListener("click", e => { const z = e.target.closest("button[data-z]")?.dataset.z; if (!z) return;
   if (z === "x") lbClose(); else if (z === "fit") lbFit(); else if (z === "1:1") lbZoom(1 / LB.k);
   else if (z === "prev" || z === "next") lbShow((LB.i + (z === "next" ? 1 : -1) + LB.list.length) % LB.list.length);
-  else if (z === "checker") { LB.checker = !LB.checker; lbApply(); } else if (z === "save") lbSave(); else lbZoom(+z); });
+  else if (z === "checker") { LB.checker = !LB.checker; lbApply(); } else if (z === "save") lbSave(); else if (z === "edit") { const item=LB.list[LB.i];if(item){lbClose();photocraftOpen({src:item.src,name:item.name||'Image'});} } else lbZoom(+z); });
 addEventListener("keydown", e => { if (LB.el.style.display === "none" || e.target.closest?.("input, textarea, select")) return;
   if (e.key === "Escape") lbClose(); else if (e.key === "+" || e.key === "=") lbZoom(1.25); else if (e.key === "-") lbZoom(0.8); else if (e.key === "0") lbFit();
   else if (e.key === "ArrowLeft" || e.key === "ArrowRight") lbShow((LB.i + (e.key === "ArrowRight" ? 1 : -1) + LB.list.length) % LB.list.length); });
@@ -617,7 +619,7 @@ document.addEventListener("click", e => { const im = e.target.closest(LB_SOURCES
 // card showed, the session's recent jobs and a frame go into the inbox for a fix); otherwise file a request about that
 // element (#1386): what it is, where it is and what the operator wants done with it
 document.addEventListener("contextmenu", e => {
-  if (e.defaultPrevented || e.target.closest(".tchip, .card[data-gid], [data-lh-game], input, textarea, select, #scr, #nativeslot, .gbox-gpu-video, img.screen, img[src*='/mjpeg'], #pwcanvas, #pwmenu, #pwreport")) return;   // game surfaces keep their own menu, including an empty native slot
+  if (e.defaultPrevented || e.target.closest(".tchip, .card[data-gid], [data-lh-game], #photocraft-popup, input, textarea, select, #scr, #nativeslot, .gbox-gpu-video, img.screen, img[src*='/mjpeg'], #pwcanvas, #pwmenu, #pwreport")) return;   // game and editor surfaces keep their own menu
   const scr = document.querySelector(".screen[data-sid]"),
         opt = e.target.closest("button, .chc, .modcard, .card, [data-use], a, label, li, h2, h3, h4, section") || e.target;
   if (!opt) return; e.preventDefault();
@@ -794,6 +796,7 @@ selfieModelsView.after=()=>{
   $('#selfie-library').onclick=()=>show('Library');
   const face=document.createElement('button');face.className='act';face.id='native-face-editor-open';face.textContent='Liquify / lattice face editor';
   face.onclick=()=>GBoxNativeFaceEditor.open({}, {api,url:bnUrl});$('#selfie-library').after(face);
+  const paint=document.createElement('button');paint.className='act';paint.id='photocraft-open';paint.textContent='PhotoCraft image / texture editor';paint.onclick=()=>photocraftOpen();face.after(paint);
   SELFIE_MODELS.ctl=GBoxSelfieModels.mount($('#selfie-models'),{api,url:bnUrl,openModel:characterPopup,blender:input=>blenderCopy(input),editFace:photo=>GBoxNativeFaceEditor.open({photo},{api,url:bnUrl})},SELFIE_MODELS.state);
 };
 // Added after the header tabs are rendered because this view is opened from a game card.
@@ -860,6 +863,7 @@ tabs.GameModels.after = (gid, title) => {
       <div class="bar"><a class="act" href="${modelUrl}" download="${esc(model.model || model.slug + '.glb')}">Export model</a>
       <label>Assign to <select id="model-slot"><option value="player">Player</option><option value="enemies">Enemies</option></select></label>
       <button class="act" id="model-fit">Fit &amp; textures…</button>
+      <button class="act" id="model-paint">Paint textures · PhotoCraft</button>
       <button class="act pri" id="model-assign">Build replacement for this game</button></div><p id="model-result" class="mut"></p>`;
     if (canView) {
       try {
@@ -871,6 +875,8 @@ tabs.GameModels.after = (gid, title) => {
       } catch (err) { if (revision === viewRevision && selection === GAME_MODELS.selection) preview.innerHTML = `<p class="bad" style="padding:15px">3D preview unavailable: ${esc(err.message)}</p><img style="height:70%;max-width:100%;object-fit:contain" src="${model.preview_url}?${tq()}" alt="${esc(model.name)}">`; }
     } else { preview.innerHTML = `<img style="width:100%;height:100%;object-fit:contain" src="${model.preview_url}?${tq()}" alt="${esc(model.name)}">`; modelClips(model, null, fileUrl, preview); }
     $("#model-fit").hidden = !canView;
+    $("#model-paint").hidden = !canView;
+    $("#model-paint").onclick = () => photocraftOpen({character:model.slug,name:model.name,gid,title,slot:$("#model-slot").value});
     $("#model-fit").onclick = () => retargetOpen({slug:model.slug,gid,title,slot:$("#model-slot").value});
     $("#model-assign").onclick = async e => {
       const status = $("#model-result"); e.currentTarget.disabled = true; status.textContent = "Building replacement…";
@@ -2629,6 +2635,7 @@ function romxShow(card, r) {
 // ---- character library (gbox/characters.py): every extracted model, "use in this game" = launch / build / what's missing ----
 function characterPopup(o) {
   return GBoxCharacterPopup.open(o, {api, url:u=>`${u}${u.includes("?") ? "&" : "?"}${tq()}`,
+    editTextures:opts=>photocraftOpen({...opts,character:opts.slug}),
     loadViewer:()=>import("/viz/character-model.js"), blender:async(slug,options)=>{
       if(options?.photo){const p='/api/photo-skins/collections/'+encodeURIComponent(options.photo)+'/models/'+encodeURIComponent(slug)+'/export';
         const result=await api(p+(options.modelFile?'?file='+encodeURIComponent(options.modelFile):''),{});return blenderCopy({artifact:result.sha256});}
@@ -2930,12 +2937,16 @@ document.addEventListener("mousedown", e => { if (!e.target.closest("#gmenu")) $
 function castSwapOpen(gid, title) {
   return GBoxCastSwap.open(document, { api, img: u => `${u}${u.includes("?") ? "&" : "?"}${tq()}`, retarget: retargetOpen }, { gid, title });
 }
+function photocraftOpen(options={}) {
+  return GBoxPhotoCraft.open(options,{api,url:bnUrl,loadViewer:()=>import('/viz/character-model.js'),
+    mapDonor:opts=>retargetOpen(opts),confirm:message=>confirm(message)});
+}
 // Retarget editor (gbox/retarget_profile.py via clients/web/viz/retarget-editor.js): how a collection character is
 // scaled and proportioned into one game's slot; opened from the cast plan rows (✎), the character cards (✎ Retarget…)
 // and the Fitting pop-up's R buttons (the Goals view); "Save and rebuild this slot" hands its job to the pop-up
 function retargetOpen(o) {
   return GBoxRetargetEditor.open(document, { api, url: u => `${u}${u.includes("?") ? "&" : "?"}${tq()}`, drag: dragAnywhere,
-    confirm: s => confirm(s), onRebuild: r => window.GBOX_PROCESS_POPUP && window.GBOX_PROCESS_POPUP.follow((r.job_ids || [])[0]) }, o);
+    editTextures:opts=>photocraftOpen(opts),confirm: s => confirm(s), onRebuild: r => window.GBOX_PROCESS_POPUP && window.GBOX_PROCESS_POPUP.follow((r.job_ids || [])[0]) }, o);
 }
 async function attachCover(gid, card, btn, url = "") {        // #1067: fetch box art online (or a chosen picture) and keep it for this game
   btn.disabled = true; btn.textContent = url ? "Fetching that picture…" : "Looking for the cover online…";

@@ -4466,14 +4466,14 @@ function texPopEl() {
   TP.name = h("b"); TP.info = h("span", { className: "mut" }); TP.img = h("img", { alt: "", draggable: false }); TP.stage = stage;
   TP.btn = { prev: btn("‹", "prev", "Previous texture (←)"), next: btn("›", "next", "Next texture (→)"), minus: btn("−", "minus", "Zoom out (−)"), plus: btn("+", "plus", "Zoom in (+)"),
              fit: btn("Fit", "fit", "Fit the window (0)"), one: btn("1:1", "one", "Actual pixels (1)"), checker: btn("▦", "checker", "Alpha checkerboard (C)"),
-             smooth: btn("◌", "smooth", "Smooth / pixelated sampling (S)"), save: btn("⬇ Save", "save", "Download this texture"), close: btn("✕", "close", "Close (Esc)") };
+             smooth: btn("◌", "smooth", "Smooth / pixelated sampling (S)"), edit: btn("PhotoCraft", "edit", "Edit image in PhotoCraft"), save: btn("⬇ Save", "save", "Download this texture"), close: btn("✕", "close", "Close (Esc)") };
   TP.inB = h("input", { type: "range", min: 0, max: 300, value: 100, title: "Brightness" }); TP.inC = h("input", { type: "range", min: 0, max: 300, value: 100, title: "Contrast" });
   TP.inB.oninput = () => { TP.bright = +TP.inB.value; texPopApply(); }; TP.inC.oninput = () => { TP.contrast = +TP.inC.value; texPopApply(); };
   const lab = (t, input) => { const l = h("label", { title: input.title }, t); l.append(input); return l; };
   TP.chans = h("span", { className: "tpch" }); TP.chBtns = ["RGB", "R", "G", "B", "A"].map(c => btn(c, "ch:" + c, c === "RGB" ? "All channels" : c + " channel only"));
   TP.chans.append(...TP.chBtns);
   head.append(TP.btn.prev, TP.btn.next, TP.name, TP.info, TP.btn.minus, TP.btn.plus, TP.btn.fit, TP.btn.one, TP.chans, TP.btn.checker, TP.btn.smooth,
-              lab("☀", TP.inB), lab("◐", TP.inC), TP.btn.save, TP.btn.close);
+              lab("☀", TP.inB), lab("◐", TP.inC), TP.btn.edit, TP.btn.save, TP.btn.close);
   stage.append(TP.img);
   TP.hist = h("canvas", { className: "tphist", width: 512, height: 44 }); TP.foot = h("div", { className: "tpfoot" });
   el.append(head, stage, TP.hist, TP.foot);
@@ -4517,8 +4517,17 @@ function texPopAction(a) {
   else if (a === "checker") { TP.checker = !TP.checker; texPopApply(); }
   else if (a === "smooth") { TP.smooth = !TP.smooth; texPopApply(); }
   else if (a === "save") texPopSave();
+  else if (a === "edit") texPopPhotoCraft();
   else if (a === "close") texPopClose();
   else if (a.startsWith("ch:")) { TP.ch = a.slice(3); texPopChannel(); }
+}
+async function texPopPhotoCraft() {
+  const item=TP.list[TP.i];if(!item)return;TP.btn.edit.disabled=true;
+  try{const response=await fetch(item.src);if(!response.ok)throw Error('Image download returned '+response.status);const blob=await response.blob();if(blob.size>32*1024*1024)throw Error('Use an image under 32 MiB.');
+    const src=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=reject;reader.readAsDataURL(blob);});
+    const guest=document.querySelector('#wv');if(!guest)throw Error('Open the Play & Library window first.');texPopClose();viewAction('main');
+    await guest.executeJavaScript(`void photocraftOpen(${JSON.stringify({src,name:item.name||'Image'})})`);
+  }catch(error){toast('PhotoCraft: '+error.message);}finally{TP.btn.edit.disabled=false;}
 }
 function texPopShow(i) {
   const it = TP.list[i]; if (!it) return;

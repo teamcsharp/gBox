@@ -55,7 +55,7 @@ export async function createCharacterViewer(container, url, options = {}) {
     if(!paintHandler||event.button>0||event.type==='pointermove'&&!(event.buttons&1))return;
     const rect=renderer.domElement.getBoundingClientRect();raycaster.setFromCamera(new THREE.Vector2((event.clientX-rect.left)/rect.width*2-1,1-(event.clientY-rect.top)/rect.height*2),camera);
     const hit=raycaster.intersectObject(gltf.scene,true).find(h=>h.uv);
-    if(hit){const material=Array.isArray(hit.object.material)?hit.object.material[hit.face.materialIndex]:hit.object.material,uv=hit.uv.clone();material?.map?.transformUv(uv);paintHandler({u:uv.x,v:uv.y,material:material?.name,event});}
+    if(hit){const material=Array.isArray(hit.object.material)?hit.object.material[hit.face.materialIndex]:hit.object.material,uv=hit.uv.clone();material?.map?.transformUv(uv);paintHandler({u:uv.x,v:uv.y,material:material?.name,materialId:material?.uuid,event});}
     event.preventDefault();event.stopImmediatePropagation();
   }
   renderer.domElement.addEventListener('pointerdown',paintEvent,true);renderer.domElement.addEventListener('pointermove',paintEvent,true);
@@ -84,7 +84,7 @@ export async function createCharacterViewer(container, url, options = {}) {
     return files.get(file);
   }
   return {
-    THREE, holder, gltf,
+    THREE, holder, gltf, paintMaterialIds:true,
     materials(){const names=new Set();gltf.scene.traverse(o=>{if(o.isMesh)for(const m of [].concat(o.material||[]))if(m.map)names.add(m.name);});return [...names];},
     uvLines(materialName,limit=12000){
       const lines=[];gltf.scene.traverse(o=>{if(!o.isMesh||lines.length>=limit)return;const g=o.geometry,uv=g?.attributes?.uv;if(!uv)return;
