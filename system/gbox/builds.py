@@ -454,6 +454,7 @@ def launches(store, gid: str, name: str, limit: int = 10) -> list[dict]:
 
 def details(store, config, item: dict, meta: dict, card: dict | None, lib: dict, workers: list[dict]) -> dict:
     from . import special_builds as SB
+    from .sprite_faces import loading_preview
     gid, name = item["game_id"], item["name"]
     folder = BM.mods_root(config) / gid / name
     recipe, recorded = SB.recipe_for(meta, gid)
@@ -487,6 +488,7 @@ def details(store, config, item: dict, meta: dict, card: dict | None, lib: dict,
         "size": item.get("size"), "own_size": item.get("own_size"), "files_count": item.get("files"),
         "modifications": modifications(meta, folder),
         "characters": characters(meta, item, gid, lib, lib.get("root"), (job or {}).get("fitting"), job_id, fit_exists),
+        "sprite_preview":loading_preview(gid,name,meta),
         "cast": {"source": meta.get("cast_source") or "", "mapping": meta.get("cast_mapping") or "",
                  "seed": meta.get("cast_seed") or ""} if isinstance(meta.get("cast"), list) else None,
         "codes": codes,

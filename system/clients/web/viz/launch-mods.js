@@ -85,6 +85,12 @@
 
   // ---------------------------------------------------------------- the model: details + index entry -> what to show
   function pairsFrom(details, built) {
+    const native=details?.sprite_preview;
+    if(native?.original&&native?.result){
+      const pair=(o,slot)=>({slot,slotName:slot==='source'?'Source → native result':'Player',
+        original:{name:o.name,img:imgOf(o.preview_url)},donor:{name:native.result.name,img:imgOf(native.result.preview_url)},status:'native ROM preview'});
+      return [pair(native.original,'player'),...(native.source?[pair(native.source,'source')]:[])];
+    }
     const previews = new Map(((built && built.donor_previews) || []).map(p => [p.slug, p.url]));
     const rows = details && Array.isArray(details.characters) && details.characters.length ? details.characters : null;
     if (rows) return rows.slice(0, MAX_PAIRS).map(r => {
@@ -219,6 +225,7 @@
   background:linear-gradient(160deg,#ffffff1a,#ffffff08); box-shadow:0 0 0 1px #ffffff22 inset; }
 .lm-th i { font:600 10px/1.15 system-ui,sans-serif; font-style:normal; color:#e9d3c9; text-align:center; padding:3px; word-break:break-word; max-height:100%; overflow:hidden; }
 .lm-th img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; background:#1a0e0f; }
+.lm-th img[src*="native-sprite-preview"] {object-fit:contain;image-rendering:pixelated;background:#181b24;}
 .lm-th.lm-new { box-shadow:0 0 0 1px #7ee0ff66 inset, 0 0 14px #7ee0ff2e; }
 .lm-th.lm-txt { width:auto; min-width:58px; max-width:150px; padding:0 4px; }
 .lm-arrow { color:#ffd2b0; font:700 16px system-ui,sans-serif; text-shadow:0 0 10px #ffb38a99; }
