@@ -14,6 +14,15 @@
   }
   function mount(host, io, session) {
     const sid = session.sid, token = {};
+    const command = (op, args = {}) => {
+      const bytes = new Uint8Array(16); globalThis.crypto.getRandomValues(bytes);
+      bytes[6] = (bytes[6] & 15) | 64; bytes[8] = (bytes[8] & 63) | 128;
+      const h = [...bytes].map(v => v.toString(16).padStart(2, '0')).join('');
+      const command_id = `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
+      // A timeout is never retried: the game may already have applied this exact command.
+      return io.api(`/api/sessions/${encodeURIComponent(sid)}/rpc`, {op: 'pso_controls',
+        args: {command_id, expires: Date.now()/1000 + 8, input: {session_id: sid, op, ...args}}});
+    };
     host._psoMount = token;
     const current = () => host.isConnected && host._psoMount === token;
     host.dataset.psoSid = sid;
@@ -44,7 +53,7 @@
         <label><input type="checkbox" data-grind checked> Maximum weapon grind</label>
         <label><input type="checkbox" data-highest checked> Highest rarity tier for my class</label>
         <div class="pso-row"><button class="act" data-drop disabled>Drop selected</button><button class="act pri" data-random disabled>Scatter class rares</button>
-          <button class="act" data-clear>Clear gBox drops</button></div>
+          <button class="act" data-clear>Clear gBox drops</button><button class="act" data-give>Add selected to inventory</button></div>
         <small>Selected items drop beside you now. Class rares use the disc's class flags and star ratings. Stat requirements are separate from class eligibility.</small>
       </fieldset>
       <fieldset data-defaults disabled><legend>Equipment default</legend>
@@ -74,13 +83,14 @@
       q("[data-random]").disabled = busy || checking || !ready || !cap?.supported || !q("[data-class]").value;
       // Catalog browsing also works on GC; mutation buttons do not.
       q("[data-clear]").disabled = busy || checking || !ready || !cap?.supported;
+      q("[data-give]").disabled = busy || checking || !ready || !cap?.supported || selected.size !== 1;
     }
     async function run(op, args = {}) {
       if (!current() || busy || checking) return;
       if (!cap?.supported) { say(cap?.reason || "Live actions are not available for this game revision."); return; }
       busy = true; enabled(); say("Applying " + op.replace(/_/g, " ") + "…");
       try {
-        const r = await io.job("pso_mods", { session_id: sid, op, ...args });
+        const r = await command(op, args);
         if (r.verified === false) throw new Error(r.spawned != null
           ? `Only ${r.spawned} / ${r.codes.length} floor items were verified. Check the ground before retrying.`
           : "The game did not verify this change.");
@@ -88,7 +98,9 @@
           say(r.spawned != null ? `${r.spawned} / ${r.codes.length} items created on the ground.`
             : r.removed != null ? `Removed ${r.removed} gBox floor items.`
             : r.shown_now != null ? `${r.stat.toUpperCase()}: ${r.shown_now}`
+            : r.created != null ? `${r.created} items added to inventory.`
             : r.message || `${op.replace(/_/g, " ")} applied.`);
+          if (r.elapsed_ms != null) q('[data-status]').textContent += ` (${Math.round(r.elapsed_ms)} ms on worker)`;
         }
         return r;
       } catch (e) { say(e.message); return null; }
@@ -115,6 +127,7 @@
     q("[data-drop]").onclick = () => run("floor_spawn", { ...spawnArgs(), codes: [...selected] });
     q("[data-random]").onclick = () => run("floor_rares", { ...spawnArgs(), character_class: q("[data-class]").value, highest: q("[data-highest]").checked });
     q("[data-clear]").onclick = () => run("floor_clear", { on: false });
+    q("[data-give]").onclick = () => run("give", {code: [...selected][0], count: +q('[data-count]').value});
     q("[data-equip]").onchange = async e => {
       if (!current() || busy || checking || !prefsReady) return;
       const on = e.target.checked; busy = true; enabled();
@@ -147,11 +160,11 @@
       q("[data-equip]").indeterminate = true;
       const fresh = () => current() && attempt === loadId;
       try {
-        const result = await io.job("pso_mods", { session_id: sid, op: "capabilities" });
+        const result = await command("capabilities");
         if (!fresh()) return;
         cap = result;
         checking = false; enabled();
-        q("[data-profile]").textContent = cap.supported ? "Dreamcast US Ver. 2 · offline live controls" : cap.reason;
+        q("[data-profile]").textContent = cap.supported ? `${cap.label || 'Dreamcast US Ver. 2'} · offline live controls` : cap.reason;
         q("[data-live-reason]").textContent = cap.supported ? "" : "You can browse and select items below. Dropping items, editing stats and changing equipment in this running game require a verified patch: " + cap.reason;
         q("[data-class]").innerHTML = '<option value="">Choose your class</option>' + cap.classes.map(c => `<option>${esc(c)}</option>`).join("");
         if (cap.character_class) q("[data-class]").value = cap.character_class;
@@ -177,8 +190,8 @@
         ]);
         if (!fresh()) return;
         say([ready ? cap.supported ? "Choose items to drop, or choose your class and scatter rares."
-          : "Item database available. GameCube live actions are not implemented and verified yet." : "", ...messages].filter(Boolean).join(" "));
-      } catch (e) { if (fresh()) say("Could not check this game's live controls. Retry loading when the worker is available."); }
+          : `Item database available. ${cap.reason}` : "", ...messages].filter(Boolean).join(" "));
+      } catch (e) { if (fresh()) say(e.message || "Could not check this game's live controls. Retry loading when the worker is available."); }
       finally { if (fresh()) { loading = false; checking = false; enabled(); } }
     }
     q("[data-retry]").onclick = load;

@@ -4255,6 +4255,7 @@ def create_app(config: Config) -> FastAPI:
         return {"ok": True}
 
     rpc_results: dict[str, dict] = {}
+    pso_rpc_pending: dict[str, str] = {}
 
     class Rpc(BaseModel):
         op: str
@@ -4264,17 +4265,34 @@ def create_app(config: Config) -> FastAPI:
     def session_rpc(sid: str, req: Rpc, actor=Depends(auth)):
         """Inspector peeks (read_memory / read_rom / info) and CPU debugger ops (debug_*), answered by the worker over the
         session channel. Debugger control (halt/step/breakpoints) changes execution, not memory, and is audited."""
-        if req.op not in ("read_memory", "read_rom", "info", "state", "reset", "menu", "pause", "resume", "normal_speed") \
+        if req.op not in ("read_memory", "read_rom", "info", "state", "reset", "menu", "pause", "resume", "normal_speed", "pso_controls") \
                 and not req.op.startswith("debug_"):
             raise HTTPException(422, "read-only, reset, pause/resume and debug_* ops only; edits go through the write_memory job")
         if req.op in ("reset", "pause", "resume", "normal_speed", "debug_halt", "debug_resume", "debug_step", "debug_break", "debug_unbreak"):
             store.audit(actor, f"session.{req.op}", sid, req.args)
+        if req.op == 'pso_controls':
+            from .pso_live import authorize
+            try:
+                inp = authorize(store, config, sid, req.args)
+            except PermissionError as error:
+                raise HTTPException(403, str(error))
+            except (ValueError, TypeError) as error:
+                raise HTTPException(422, str(error))
+            store.audit(actor, 'session.pso_controls', sid, {'command_id': req.args['command_id'], 'input': inp.model_dump()})
         rid, lv = new_id(), _live(sid)
+        item = {"rpc": rid, "op": req.op, "args": req.args}
         with lv["cond"]:
-            lv["input"].append({"rpc": rid, "op": req.op, "args": req.args})
+            if req.op == 'pso_controls':
+                pso_rpc_pending[rid] = sid
+            lv["input"].append(item)
             lv["cond"].notify_all()
             if not lv["cond"].wait_for(lambda: rid in rpc_results, 10):
-                raise HTTPException(504, "session did not answer (ended, or not a live gBox session)")
+                if req.op == 'pso_controls':
+                    pso_rpc_pending.pop(rid, None)
+                    try: lv['input'].remove(item)
+                    except ValueError: pass
+                raise HTTPException(504, "Session did not acknowledge the action. Its outcome may be unknown; check the game before issuing another action.")
+            pso_rpc_pending.pop(rid, None)
         res = rpc_results.pop(rid)
         if not res.get("ok"):
             raise HTTPException(422, res.get("error"))
@@ -4284,6 +4302,8 @@ def create_app(config: Config) -> FastAPI:
     def session_rpc_result(sid: str, rid: str, res: dict, actor=Depends(auth)):
         lv = _live(sid)
         with lv["cond"]:
+            if res.get('pso_command') and pso_rpc_pending.get(rid) != sid:
+                return {'ok': True, 'expired': True}
             rpc_results[rid] = res
             lv["cond"].notify_all()
         return {"ok": True}

@@ -1,6 +1,57 @@
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
 const {withPage}=require('../scripts/browser_lifecycle.cjs');
 const PSO=require('../clients/web/viz/pso-controls.js');
+test('verified GameCube actions use live RPC, suppress double clicks and never retry unknown outcomes',async()=>{
+ await withPage(async(evaluate,send)=>{
+  await send('Emulation.setDeviceMetricsOverride',{width:1000,height:1300,deviceScaleFactor:1,mobile:false});
+  await evaluate(fs.readFileSync(path.join(__dirname,'../clients/web/viz/pso-controls.js'),'utf8'));
+  await evaluate(`document.body.innerHTML='<div id="host" style="width:440px"></div>';window.calls=[];window.failDrop=false;
+   window.waitFor=async fn=>{for(let n=0;n<300;n++){if(fn())return;await new Promise(r=>setTimeout(r,10));}throw Error('Live PSO timeout')};
+   window.io={job:()=>{throw Error('Build queue must never be used')},api:async(p,b)=>{
+    calls.push({p,b});if(p.endsWith('/rpc')){
+     const i=b.args.input;if(i.op==='capabilities')return {version:'gc',label:'GameCube Plus US revision 2',supported:true,classes:['HUnewearl'],pending:{},multi_equip_note:'One active weapon; native equipment effects stack.'};
+     await new Promise(r=>setTimeout(r,40));
+     if(i.op==='floor_spawn'){if(failDrop)throw Error('Outcome unknown; check the game before retrying');return {spawned:1,codes:i.codes,verified:true,elapsed_ms:48};}
+     if(i.op==='floor_rares')return {spawned:i.count,codes:Array(i.count).fill('001000'),verified:true};
+     if(i.op==='give')return {created:i.count,verified:true};
+     if(i.op==='floor_clear')return {removed:3,verified:true};
+     if(i.op==='list')return {inventory:[{slot:5,code:'001000',name:'OROTIAGITO',equipped:false}]};
+     if(i.op==='stat')return {stat:i.name,shown_now:i.value,verified:true};return {verified:true};
+    }if(p.includes('/items'))return [{code:'001000',name:'OROTIAGITO',cat:'Weapons',stars:12,rare:true,classes:['HUnewearl'],max_grind:9}];return {equip_any:true};}};
+   GBoxPSO.mount(document.querySelector('#host'),io,{sid:'gc-worker'});waitFor(()=>document.querySelector('[data-code]'));`);
+  await evaluate(`document.querySelector('[data-code]').click();document.querySelector('[data-drop]').click();document.querySelector('[data-drop]').click();waitFor(()=>document.querySelector('[data-status]').textContent.includes('48 ms'));`);
+  assert.equal(await evaluate(`calls.filter(c=>c.b?.args?.input.op==='floor_spawn').length`),1);
+  await evaluate(`document.querySelector('[data-class]').value='HUnewearl';document.querySelector('[data-class]').dispatchEvent(new Event('change'));document.querySelector('[data-random]').click();waitFor(()=>document.querySelector('[data-status]').textContent.includes('10 / 10'));`);
+  await evaluate(`document.querySelector('[data-give]').click();waitFor(()=>document.querySelector('[data-status]').textContent.includes('added to inventory'));`);
+  await evaluate(`document.querySelector('[data-clear]').click();waitFor(()=>document.querySelector('[data-status]').textContent.includes('Removed 3'));`);
+  await evaluate(`document.querySelector('[data-inventory]').click();waitFor(()=>document.querySelector('[data-multi]'));`);
+  await evaluate(`document.querySelector('[data-multi]').click();waitFor(()=>document.querySelector('[data-status]').textContent.includes('applied'));`);
+  await evaluate(`document.querySelector('[data-set="hp"]').click();waitFor(()=>document.querySelector('[data-status]').textContent==='HP: 900');`);
+  await evaluate(`failDrop=true;document.querySelector('[data-drop]').click();waitFor(()=>document.querySelector('[data-status]').textContent.includes('Outcome unknown'));new Promise(r=>setTimeout(r,100));`);
+  assert.equal(await evaluate(`calls.filter(c=>c.b?.args?.input.op==='floor_spawn').length`),2);
+  const commands=await evaluate(`calls.filter(c=>c.p.endsWith('/rpc')).map(c=>c.b.args)`);
+  assert.equal(new Set(commands.map(c=>c.command_id)).size,commands.length);
+  assert(commands.every(c=>c.input.session_id==='gc-worker'));
+  assert.match(await evaluate(`document.querySelector('[data-profile]').textContent`),/GameCube Plus/);
+  if(process.env.GBOX_PSO_LIVE_EVIDENCE){
+   await evaluate(`document.body.style='background:#16171c;color:#eee;font:14px system-ui;padding:25px';document.head.insertAdjacentHTML('beforeend','<style>:root{--line:#444;--mut:#aab}input,select,button{background:#242735;color:#eee;border:1px solid #667;border-radius:4px;padding:5px}button{margin:3px}</style>');document.querySelector('[data-status]').textContent='UI test fixture. Real-game evidence is supplied separately.';`);
+   const shot=await send('Page.captureScreenshot',{format:'png'});fs.mkdirSync(process.env.GBOX_PSO_LIVE_EVIDENCE,{recursive:true});fs.writeFileSync(path.join(process.env.GBOX_PSO_LIVE_EVIDENCE,'gamecube-panel.png'),Buffer.from(shot.result.data,'base64'));
+  }
+ });
+});
+async function loadPanel(evaluate){
+ await evaluate(fs.readFileSync(path.join(__dirname,'../clients/web/viz/pso-controls.js'),'utf8'));
+ // Reuse existing response fixtures, now served through the real session-RPC contract.
+ await evaluate(`window.mountLive=(host,io,session)=>{
+  const api=io.api;const wrapped={api:async(p,b)=>{
+   if(p.endsWith('/rpc')){
+    if(b.op!=='pso_controls'||!b.args.command_id||b.args.expires<=Date.now()/1000)throw Error('Invalid live command');
+    return io.job('pso_mods',b.args.input);
+   }return api(p,b);
+  }};return GBoxPSO.mount(host,wrapped,session);
+ };`);
+}
+
 test('item filters update immediately and match actual class metadata',()=>{
  const rows=[{code:'a',name:'Hunter',stars:12,rare:true,cat:'Weapons',classes:['HUmar']},{code:'b',name:'Ranger',stars:12,rare:true,cat:'Weapons',classes:['RAmar']},{code:'c',name:'COMMON',stars:1,rare:false,cat:'Weapons',classes:['HUmar']}];
  assert.deepEqual(PSO.filterItems(rows,{rare:true,characterClass:'HUmar'}).map(i=>i.code),['a']);
@@ -9,11 +60,11 @@ test('item filters update immediately and match actual class metadata',()=>{
 for(const platform of ['dcv2','gc'])test(`${platform} panel pins commands and disables unsupported writes`,async()=>{
  await withPage(async(evaluate,send)=>{
   await send('Emulation.setDeviceMetricsOverride',{width:1000,height:1050,deviceScaleFactor:1,mobile:false});
-  await evaluate(fs.readFileSync(path.join(__dirname,'../clients/web/viz/pso-controls.js'),'utf8'));
+  await loadPanel(evaluate);
   await evaluate(`document.body.innerHTML='<div id="host" style="width:430px"></div>';window.calls=[];
    window.waitFor=async fn=>{for(let n=0;n<300;n++){if(fn())return;await new Promise(r=>setTimeout(r,10));}throw Error('PSO panel timeout')};
    window.io={api:async(p,b)=>{calls.push({p,b});return p.includes('/items')?[{code:'001000',name:'Rare hunter blade',cat:'Weapons',stars:12,rare:true,classes:['HUmar'],max_grind:9,atp_required:800,mst_required:0,ata_required:0}]:{equip_any:true};},job:async(t,i)=>{calls.push({t,i});if(i.op==='capabilities')return {version:'${platform}',supported:${platform==='dcv2'},reason:'GC revision needs verification',classes:['HUmar','RAmar'],pending:{skins:'Native skin banks pending'},multi_equip_note:'One weapon model, stacked equipment effects'};if(i.op==='floor_spawn'||i.op==='floor_rares')return {spawned:i.codes?.length||i.count,codes:i.codes||Array(i.count).fill('001000')};if(i.op==='list')return {inventory:[{slot:0,code:'001000',name:'Rare hunter blade',equipped:'weapon'}]};return {verified:true};}};
-   GBoxPSO.mount(document.querySelector('#host'),io,{sid:'worker-session'});waitFor(()=>document.querySelector('[data-total]').textContent.includes('1 matches'));`);
+   mountLive(document.querySelector('#host'),io,{sid:'worker-session'});waitFor(()=>document.querySelector('[data-total]').textContent.includes('1 matches'));`);
   await evaluate(`document.querySelector('[data-class]').value='HUmar';document.querySelector('[data-class]').dispatchEvent(new Event('change'));`);
   assert.equal(await evaluate(`document.querySelector('[data-random]').disabled`),platform!=='dcv2');
   if(platform==='dcv2'){
@@ -40,7 +91,7 @@ for(const platform of ['dcv2','gc'])test(`${platform} panel pins commands and di
 for(const version of ['dcv2','gc'])test(`${version}: preferences 404 does not disable item browsing or supported actions`,async()=>{
  await withPage(async(evaluate,send)=>{
   await send('Emulation.setDeviceMetricsOverride',{width:900,height:1200,deviceScaleFactor:1,mobile:false});
-  await evaluate(fs.readFileSync(path.join(__dirname,'../clients/web/viz/pso-controls.js'),'utf8'));
+  await loadPanel(evaluate);
   await evaluate(`document.body.innerHTML='<div id="host" style="width:400px"></div>';var calls=[],failPrefs=true;
     var waitFor=async fn=>{for(let n=0;n<300;n++){if(fn())return;await new Promise(r=>setTimeout(r,10));}throw Error('PSO fallback timeout')};
     var io={api:async(p,b)=>{calls.push({p,b});if(p.includes('/items'))return [
@@ -48,7 +99,7 @@ for(const version of ['dcv2','gc'])test(`${version}: preferences 404 does not di
       {code:'010100',name:'Frame',cat:'Armor',stars:1,rare:false,classes:['HUmar']}];
       if(failPrefs)throw Error('404 {"detail":"Not Found"}');return {equip_any:true};},
     job:async(t,i)=>{calls.push({t,i});return i.op==='capabilities'?{version:'${version}',supported:${version==='dcv2'},reason:'GC revision needs verification',classes:['HUmar','RAmar'],pending:{},multi_equip_note:''}:{spawned:1,codes:['001000'],verified:true}}};
-    GBoxPSO.mount(document.querySelector('#host'),io,{sid:'worker-session'});waitFor(()=>document.querySelector('[data-status]').textContent.includes('Equipment default unavailable'));`);
+    mountLive(document.querySelector('#host'),io,{sid:'worker-session'});waitFor(()=>document.querySelector('[data-status]').textContent.includes('Equipment default unavailable'));`);
   assert.equal(await evaluate(`document.querySelector('[data-search]').matches(':disabled')`),false);
   assert.equal(await evaluate(`document.querySelector('[data-class]').matches(':disabled')`),false);
   assert.equal(await evaluate(`document.querySelector('[data-equip]').matches(':disabled')`),true);
@@ -77,12 +128,12 @@ for(const version of ['dcv2','gc'])test(`${version}: preferences 404 does not di
 
 test('catalog failure preserves equipment preferences and retry recovers the database',async()=>{
  await withPage(async evaluate=>{
-  await evaluate(fs.readFileSync(path.join(__dirname,'../clients/web/viz/pso-controls.js'),'utf8'));
+  await loadPanel(evaluate);
   await evaluate(`document.body.innerHTML='<div id="host"></div>';var failCatalog=true;
     var waitFor=async fn=>{for(let n=0;n<300;n++){if(fn())return;await new Promise(r=>setTimeout(r,10));}throw Error('PSO catalog retry timeout')};
     var io={job:async()=>({version:'dcv2',supported:true,classes:['HUmar'],pending:{},multi_equip_note:''}),
       api:async p=>{if(p.includes('/items')){if(failCatalog)throw Error('Disc unavailable');return [];}return {equip_any:true};}};
-    GBoxPSO.mount(document.querySelector('#host'),io,{sid:'worker-session'});waitFor(()=>document.querySelector('[data-status]').textContent.includes('Item database unavailable'));`);
+    mountLive(document.querySelector('#host'),io,{sid:'worker-session'});waitFor(()=>document.querySelector('[data-status]').textContent.includes('Item database unavailable'));`);
   assert.equal(await evaluate(`document.querySelector('[data-controls]').disabled`),true);
   assert.equal(await evaluate(`document.querySelector('[data-equip]').matches(':disabled')`),false);
   await evaluate(`failCatalog=false;document.querySelector('[data-retry]').click();waitFor(()=>!document.querySelector('[data-controls]').disabled);`);
@@ -92,12 +143,12 @@ test('catalog failure preserves equipment preferences and retry recovers the dat
 
 test('a stalled preference read does not block a loaded catalog or supported drops',async()=>{
  await withPage(async evaluate=>{
-  await evaluate(fs.readFileSync(path.join(__dirname,'../clients/web/viz/pso-controls.js'),'utf8'));
+  await loadPanel(evaluate);
   await evaluate(`document.body.innerHTML='<div id="host"></div>';var calls=[],prefsReply;
     var waitFor=async fn=>{for(let n=0;n<300;n++){if(fn())return;await new Promise(r=>setTimeout(r,10));}throw Error('PSO independent load timeout')};
     var io={job:async(t,i)=>{calls.push(i);return i.op==='capabilities'?{version:'dcv2',supported:true,classes:['HUmar'],pending:{},multi_equip_note:''}:{spawned:1,codes:['001000'],verified:true}},
       api:async p=>p.includes('/items')?[{code:'001000',name:'Sword',cat:'Weapons',stars:1,classes:['HUmar']}]:new Promise(r=>prefsReply=r)};
-    GBoxPSO.mount(document.querySelector('#host'),io,{sid:'worker-session'});waitFor(()=>document.querySelector('[data-code]'));`);
+    mountLive(document.querySelector('#host'),io,{sid:'worker-session'});waitFor(()=>document.querySelector('[data-code]'));`);
   await evaluate(`document.querySelector('[data-code]').click();document.querySelector('[data-drop]').click();waitFor(()=>calls.some(i=>i.op==='floor_spawn'));`);
   assert.equal(await evaluate(`document.querySelector('[data-equip]').matches(':disabled')`),true);
   await evaluate(`prefsReply({equip_any:true});waitFor(()=>!document.querySelector('[data-equip]').matches(':disabled'));`);
@@ -105,12 +156,12 @@ test('a stalled preference read does not block a loaded catalog or supported dro
 });
 test('reopening the same session discards an older capability reply',async()=>{
  await withPage(async evaluate=>{
-  await evaluate(fs.readFileSync(path.join(__dirname,'../clients/web/viz/pso-controls.js'),'utf8'));
+  await loadPanel(evaluate);
   await evaluate(`document.body.innerHTML='<div id="host"></div>';window.n=0;
    window.waitFor=async fn=>{for(let n=0;n<300;n++){if(fn())return;await new Promise(r=>setTimeout(r,10));}throw Error('PSO remount timeout')};
    window.cap={version:'dcv2',supported:true,classes:['HUmar'],pending:{},multi_equip_note:''};
    window.io={job:()=>++n===1?new Promise(r=>window.oldReply=r):Promise.resolve(cap),api:async p=>p.includes('/items')?[]:{equip_any:true}};
-   const h=document.querySelector('#host');GBoxPSO.mount(h,io,{sid:'same-session'});GBoxPSO.mount(h,io,{sid:'same-session'});
+   const h=document.querySelector('#host');mountLive(h,io,{sid:'same-session'});mountLive(h,io,{sid:'same-session'});
    waitFor(()=>h.querySelector('[data-status]').textContent.startsWith('Choose items'));`);
   await evaluate(`oldReply({...cap,supported:false,reason:'STALE REPLY'});new Promise(r=>setTimeout(r,20));`);
   assert.doesNotMatch(await evaluate(`document.querySelector('[data-profile]').textContent`),/STALE/);
