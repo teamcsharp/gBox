@@ -256,6 +256,34 @@ def check_package(data: bytes, expect: dict | None = None) -> dict:
             "resources": len(res), "problems": probs}
 
 
+def check_preserved(source: "ngc.NgcPackage", rebuilt: "ngc.NgcPackage", changed_resources,
+                    changed_chunks=("restable",)) -> list[str]:
+    """Reject incidental gameplay edits during a model/texture-only rebuild.
+
+    Character replacement must keep the resource census, mission loadout scripts,
+    gadget definitions and every other unrequested resource byte-for-byte. Chunk
+    offsets/compression may change, so compare their decoded payloads.
+    """
+    problems = []
+    before = {r.name.lower(): r for r in source.resources()}
+    after = {r.name.lower(): r for r in rebuilt.resources()}
+    if before.keys() != after.keys():
+        problems.append("resource names changed during a visual-only rebuild")
+    allowed = {n.lower() for n in changed_resources}
+    for key in sorted((before.keys() & after.keys()) - allowed):
+        old, new = before[key], after[key]
+        if source.table[old.offset:old.offset + old.size] != rebuilt.table[new.offset:new.offset + new.size]:
+            problems.append("unrequested resource changed: %s" % old.name)
+    before_chunks = {c.id for c in source.chunks}
+    after_chunks = {c.id for c in rebuilt.chunks}
+    if before_chunks != after_chunks:
+        problems.append("chunk names changed during a visual-only rebuild")
+    for name in sorted((before_chunks & after_chunks) - set(changed_chunks)):
+        if source.payload(name) != rebuilt.payload(name):
+            problems.append("unrequested chunk changed: %s" % name)
+    return problems
+
+
 def swap_models(pkg: "ngc.NgcPackage", pairs) -> tuple[bytes, list]:
     """Put each donor .gcm (same level, so its shader ids resolve) in a target's file.
 

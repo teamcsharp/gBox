@@ -15,7 +15,7 @@ Their five executable payloads match, despite different FST directory layouts.
 Both aliases use the same exact live guards; a matching game title alone never
 authorizes an unreviewed catalog entry.
 
-The adapter implements walk-through-walls, named loaded-weapon insertion, native
+The adapter implements walk-through-walls, named loaded-item insertion, native
 level-section completion, unlimited reserve ammunition and P2K primary-fire projectile
 replacement. A registered adapter or passing unit test does not publish these as
 runtime-verified controls. `reviewed_profile` creates a publication candidate only
@@ -23,8 +23,34 @@ for operations backed by separately registered analysis and native runtime
 artifacts. The shared [live-controls contract](live-controls.md) supplies Mods
 switches, bounded item dropdowns and scene/revision checks after publication.
 
-Item choices are restricted to reviewed weapons packaged in the currently loaded
-mission. An unavailable MRL-22 projectile or unequipped P2K keeps rocket-pistol
+Item choices are restricted to reviewed weapons and gadgets packaged in the currently
+loaded mission. Q-Claw uses the native weapon inventory; Q-Laser and Q-Decryptor
+use the separate native gadget inventory. The dropdown reports checked ownership
+and selection rather than treating an unselected gadget as missing. Giving an item
+does not automatically select it. With the default GameCube controls, D-pad
+left/right cycles gadgets and B uses the selected gadget; weapon cycling uses
+D-pad up/down. The [original manual](https://manuals.plus/m/af0183b39cc51595c9315940760f91328869e2732f6e98c86020cc0a6ccae69d)
+describes these separate controls.
+
+The owned first-mission script grants Q-Claw, Q-Laser and Q-Decryptor, then
+selects Q-Decryptor after the introductory cinematic. An initial Q-Decryptor icon
+therefore does not establish that the other devices are absent. The
+[build audit](auf-gadget-build-audit.json) records original-versus-custom resource
+comparisons. Native inventory/use evidence is recorded separately; no
+missing-loadout repair is claimed solely from the icon or from a successful unit
+test.
+
+The [gadget validation receipt](auf-gadget-validation.json) records removal of an
+inactive Q-Laser through the game's native routine in an isolated test, restoration
+through native `giveGadget`, owner/name/inventory readback, visible laser/grapple
+firing, and zero-write responses for items already owned. It distinguishes the
+runtime-tested source from subsequent catalog/readiness fixes. The
+[model census](auf-gadget-model-census.json) covers exact authored gadget names and
+grant routes; it does not claim every item has been exercised individually in every
+mission. Keycards and other grants do not automatically complete mission script
+flags or objectives.
+
+An unavailable MRL-22 projectile or unequipped P2K keeps rocket-pistol
 unavailable. The secondary firing mode and permanent emulator settings are not
 changed. Switches read back native state; disabling restores the checked original
 mapping/value. Leave noclip in open space before disabling it.

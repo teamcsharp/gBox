@@ -82,6 +82,29 @@ def test_write_package_noop_and_resource_replace():
         W.replace_resources(pkg, {"models/nope.gcm": b""})
 
 
+def test_visual_rebuild_rejects_missing_or_changed_gadgets_and_mission_scripts():
+    entries = [("models/actors/bond.gcm", b"body"),
+               ("models/qclaw_pickup.men", b"qclaw definition"),
+               ("models/gadget_qlaser.men", b"qlaser definition"),
+               ("maps/orc_1.scr", b"grant the mission gadgets"),
+               ("script_dictionary", b"unchanged dictionary")]
+    def package(files, bsp=b"unchanged bsp"):
+        return auf_ngc.NgcPackage(W.encode_chunk("bspfile", bsp)
+                                 + W.encode_chunk("restable", W.build_restable(files)))
+    before = package(entries)
+    visual = [(n, b"replacement body" if n.endswith(".gcm") else b) for n, b in entries]
+    assert W.check_preserved(before, package(visual), ["models/actors/bond.gcm"]) == []
+    for resource in ("models/qclaw_pickup.men", "models/gadget_qlaser.men", "maps/orc_1.scr", "script_dictionary"):
+        broken = [(n, b"changed" if n == resource else b) for n, b in visual]
+        assert W.check_preserved(before, package(broken), ["models/actors/bond.gcm"]) == [
+            "unrequested resource changed: " + resource]
+    missing = [(n, b) for n, b in visual if n != "models/qclaw_pickup.men"]
+    assert "resource names changed during a visual-only rebuild" in W.check_preserved(
+        before, package(missing), ["models/actors/bond.gcm"])
+    assert W.check_preserved(before, package(visual, b"changed collision"), ["models/actors/bond.gcm"]) == [
+        "unrequested chunk changed: bspfile"]
+
+
 def _dm1(tmp_path):
     from gbox import au_inventory
     au_inventory.extract(GCZ, ["dm1.ngc"], str(tmp_path))

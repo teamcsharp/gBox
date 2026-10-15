@@ -17,6 +17,7 @@
         ? `<select data-lc-param="${esc(p.id)}">${p.options.map(o => `<option value="${esc(o.value)}"${o.value === p.default ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select>`
         : p.kind === 'boolean' ? `<input type="checkbox" data-lc-param="${esc(p.id)}"${p.default ? ' checked' : ''}>`
         : `<input type="number" data-lc-param="${esc(p.id)}" min="${p.min}" max="${p.max}" value="${p.default}" step="1">`}</label>`).join('')}
+      <small data-lc-item-status aria-live="polite" hidden></small>
       ${isToggle ? `<label><input type="checkbox" role="switch" data-lc-toggle="${esc(a.id)}" aria-label="${esc(a.label)}"> Enabled</label>`
       : `<button type="button" data-lc-apply="${esc(a.id)}">${esc(a.label)}</button>`}<small data-lc-availability>${available ? 'Available in this session.' : 'Check the running revision and mode to enable.'}</small></fieldset>`;
   }
@@ -26,6 +27,7 @@
     const current = () => !stopped && host._liveControls === token && host.isConnected !== false;
     const q = s => host.querySelector(s);
     host.innerHTML = `<style>.lc-panel{border:1px solid var(--line,#41414a);border-radius:8px;padding:12px;margin:10px 0;font-size:13px}.lc-panel summary{cursor:pointer;font-weight:600}.lc-panel .lc-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0}.lc-panel fieldset{border:1px solid var(--line,#41414a);border-radius:5px;margin:8px 0}.lc-panel fieldset:disabled{opacity:.6}.lc-panel label{display:flex;gap:6px;align-items:center;margin:6px 0}.lc-panel input{max-width:100px}.lc-panel select{max-width:100%}.lc-panel small{display:block;color:var(--mut,#aaa)}.lc-panel p{margin:6px 0}.lc-panel [role=status]{white-space:pre-wrap}</style>
+      <style>.lc-panel [hidden]{display:none}</style>
       <details class="lc-panel"${initial.open ? ' open' : ''}><summary>Inventory, world controls &amp; hidden content</summary>
       <p data-lc-game>Choose a game above to see its discovered controls.</p>
       <div class="lc-row"><select data-lc-session aria-label="Running session for live controls"></select>
@@ -35,6 +37,13 @@
       <div data-lc-missing></div><button type="button" data-lc-discover>Research missing controls with Ghidra</button>
       <p role="status" aria-live="polite" data-lc-status></p></details>`;
     const say = s => { if(current()) q('[data-lc-status]').textContent = s; };
+    function itemStatus(field) {
+      const info=field.querySelector('[data-lc-item-status]'), items=field._lcItems;
+      const select=items && Array.from(field.querySelectorAll('select[data-lc-param]')).find(el=>el.dataset.lcParam===items.parameter);
+      const state=select && items.states?.[select.value];
+      info.hidden=typeof state?.owned!=='boolean';
+      info.textContent=info.hidden ? '' : `${state.equipped===true ? 'Equipped' : state.owned ? (state.equipped===false ? 'In inventory; not selected' : 'In inventory') : 'Not in inventory'} at the last check.`;
+    }
     function disable(on) {
       busy = on;
       for(const b of host.querySelectorAll('button,select,input')) b.disabled = on;
@@ -68,9 +77,17 @@
             const select=Array.from(f.querySelectorAll('select[data-lc-param]')).find(el=>el.dataset.lcParam===a.item_choices.parameter);
             if(select) {
               const allowed=new Set(Array.isArray(a.item_choices.values) ? a.item_choices.values : []);
-              for(const option of select.options) option.disabled=!allowed.has(option.value);
+              const states=a.item_choices.states || {};
+              f._lcItems={parameter:a.item_choices.parameter,states};
+              for(const option of select.options) {
+                option.disabled=!allowed.has(option.value);
+                option.dataset.lcLabel ||= option.textContent;
+                const state=allowed.has(option.value) && states[option.value];
+                option.textContent=option.dataset.lcLabel + (typeof state?.owned==='boolean' ? (state.equipped===true ? ' — equipped' : state.owned ? ' — in inventory' : ' — not in inventory') : '');
+              }
               if(!Array.from(select.options).some(o=>o.value===select.value&&!o.disabled)) select.value=Array.from(select.options).find(o=>!o.disabled)?.value || '';
               if(!select.value) ready=false;
+              itemStatus(f);
             } else ready=false;
           }
           f.disabled = !ready; f.dataset.available = String(ready);
@@ -153,13 +170,18 @@
         const values = valuesFor(a, b.closest('fieldset')); if(!values) return;
         const n=serial; disable(true); say('Applying to the selected session…');
         try { const result = await job(`/api/games/${encodeURIComponent(game)}/live-controls/run`, body('apply', a.id, values));
-          if(n===serial) say(result.result?.result?.error || `${a.label}: completed. Refresh / check mode before another action.`); }
+          if(n===serial) {
+            const detail=result.result?.result;
+            const message=typeof detail?.message==='string' ? detail.message.slice(0,1000) : '';
+            say(detail?.error || `${a.label}: ${message || 'completed.'} Refresh / check mode before another action.`);
+          } }
         catch(e) { if(n===serial) say(e.message); }
         finally { if(current() && n===serial) disable(false); }
       }
     }
     host.addEventListener('click', click);
     const change = async e => {
+      if(e.target.matches('select[data-lc-param]')) itemStatus(e.target.closest('fieldset'));
       if(e.target.hasAttribute('data-lc-toggle')) {
         const sw=e.target, f=sw.closest('[data-lc-action]'), a=data?.profile?.actions.find(a=>a.id===sw.dataset.lcToggle);
         if(busy || !game || !sid || !a || !toggle(a) || f.dataset.available !== 'true') { sw.checked=sw.dataset.confirmed==='true'; return; }
@@ -180,7 +202,10 @@
       }
       if(e.target.hasAttribute('data-lc-session')) {
         ++serial; sid=e.target.value; pso?.dispose(); q('[data-lc-pso]').innerHTML='';
-        for(const f of host.querySelectorAll('[data-lc-action]')) { f.disabled=true; f.dataset.available='false'; }
+        for(const f of host.querySelectorAll('[data-lc-action]')) {
+          f.disabled=true; f.dataset.available='false'; delete f._lcItems; itemStatus(f);
+          for(const option of f.querySelectorAll('option')) if(option.dataset.lcLabel) option.textContent=option.dataset.lcLabel;
+        }
         enableChecked(serial); say('Refresh / check mode to enable this session.');
       }
       if(e.target.hasAttribute('data-lc-unlocks')) {

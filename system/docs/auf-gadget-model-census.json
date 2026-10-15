@@ -1,0 +1,363 @@
+{
+  "schema": 1,
+  "checked_at": "2026-10-15",
+  "game_id": "65b7187589166b26",
+  "scope": "All 38 owned NGC packages; exact native item names and authored mission grant sites, not runtime verification.",
+  "models": [
+    {
+      "path": "models/dartgun_pickup.men",
+      "native_fields": {
+        "classname": "dartgun_pickup",
+        "itemname": "dartgun_pickup",
+        "uiNameTag": "dartgun",
+        "rank": "300"
+      },
+      "sample_map": "maps/emstel_1.ngc",
+      "sample_definition_sha256": "472eaad80ae2ee32990b7224098b3e6cbb1e31c360cd0851b3005ecc277203af",
+      "available_maps": [
+        "maps/emstel_1.ngc"
+      ]
+    },
+    {
+      "path": "models/gadget_keycard.men",
+      "native_fields": {
+        "classname": "keycard",
+        "itemname": "gadget_keycard",
+        "uiNameTag": "keycard",
+        "rank": "701"
+      },
+      "sample_map": "maps/carrier2.ngc",
+      "sample_definition_sha256": "6c1e3cb28431c902f992124406f2566f66271c6ed43be10af1f333993414c958",
+      "available_maps": [
+        "maps/carrier2.ngc",
+        "maps/m6_1.ngc",
+        "maps/m6_2.ngc",
+        "maps/m6_3.ngc",
+        "maps/uwb_2aa.ngc",
+        "maps/uwb_2b.ngc"
+      ]
+    },
+    {
+      "path": "models/gadget_keycard2.men",
+      "native_fields": {
+        "classname": "keycard",
+        "itemname": "gadget_keycard2",
+        "uiNameTag": "keycard2",
+        "rank": "701"
+      },
+      "sample_map": "maps/alp1_1.ngc",
+      "sample_definition_sha256": "8b87f3513339b4c338f4ee283294190f436048d53120dae76f34cf8dce4ed019",
+      "available_maps": [
+        "maps/alp1_1.ngc",
+        "maps/alp1_2.ngc",
+        "maps/emstel_1.ngc",
+        "maps/orc_1.ngc",
+        "maps/orc_2.ngc",
+        "maps/orc_3.ngc",
+        "maps/orc_4.ngc",
+        "maps/rig_1.ngc"
+      ]
+    },
+    {
+      "path": "models/gadget_pcodegen.men",
+      "native_fields": {
+        "classname": "pcodegen",
+        "itemname": "pcodegen",
+        "uiNameTag": "pcodegen",
+        "rank": "1401"
+      },
+      "sample_map": "maps/emstel_1.ngc",
+      "sample_definition_sha256": "4a3bcd1d5e34fdc0963df03eea62668742571bed26ce29515809f5c9e57da242",
+      "available_maps": [
+        "maps/emstel_1.ngc"
+      ]
+    },
+    {
+      "path": "models/gadget_qcamera.men",
+      "native_fields": {
+        "classname": "QCamera",
+        "itemname": "gadget_qcamera",
+        "uiNameTag": "QCamera",
+        "rank": "1001"
+      },
+      "sample_map": "maps/alp1_1.ngc",
+      "sample_definition_sha256": "40fcc59d74f34f6f7b0595e3ee0890619c05f1f2f48b3e5c53f9b5d1929d82aa",
+      "available_maps": [
+        "maps/alp1_1.ngc",
+        "maps/alp1_2.ngc"
+      ]
+    },
+    {
+      "path": "models/gadget_qdecryptor.men",
+      "native_fields": {
+        "classname": "QDecryptor",
+        "itemname": "gadget_qdecryptor",
+        "uiNameTag": "Q-Decryptor",
+        "rank": "1102"
+      },
+      "sample_map": "maps/alp1_1.ngc",
+      "sample_definition_sha256": "5ee79dabcfe64fb96a3531fbdeca02a6fc3a61decfd0dcd4001ffd0a26b73a67",
+      "available_maps": [
+        "maps/alp1_1.ngc",
+        "maps/alp1_2.ngc",
+        "maps/orc_1.ngc",
+        "maps/orc_2.ngc",
+        "maps/orc_3.ngc",
+        "maps/orc_4.ngc",
+        "maps/uwb_2a.ngc",
+        "maps/uwb_2aa.ngc",
+        "maps/uwb_2b.ngc"
+      ]
+    },
+    {
+      "path": "models/gadget_qjet.men",
+      "native_fields": {
+        "classname": "QJet",
+        "itemname": "gadget_qjet",
+        "uiNameTag": "QJet",
+        "rank": "901"
+      },
+      "sample_map": "maps/alp2_1.ngc",
+      "sample_definition_sha256": "bae3f1289ca00d0580455062a246147719fbf286f6f536f8914b74ad971e50a2",
+      "available_maps": [
+        "maps/alp2_1.ngc",
+        "maps/alp2_2.ngc",
+        "maps/alp2_3.ngc",
+        "maps/rig_1.ngc",
+        "maps/rig_2.ngc"
+      ]
+    },
+    {
+      "path": "models/gadget_qlaser.men",
+      "native_fields": {
+        "classname": "item_qlaser",
+        "itemname": "gadget_qlaser",
+        "uiNameTag": "QLaser",
+        "rank": "1201"
+      },
+      "sample_map": "maps/alp1_1.ngc",
+      "sample_definition_sha256": "ced7e9da15af5f9a103fe02bd17eda9e7fed1f6f324c8a84aecf7e7219f6dbb3",
+      "available_maps": [
+        "maps/alp1_1.ngc",
+        "maps/alp1_2.ngc",
+        "maps/alp2_1.ngc",
+        "maps/alp2_2.ngc",
+        "maps/alp2_3.ngc",
+        "maps/carrier1.ngc",
+        "maps/carrier2.ngc",
+        "maps/emstel_1.ngc",
+        "maps/m6_1.ngc",
+        "maps/m6_2.ngc",
+        "maps/m6_3.ngc",
+        "maps/orc_1.ngc",
+        "maps/orc_2.ngc",
+        "maps/orc_3.ngc",
+        "maps/orc_4.ngc",
+        "maps/rig_1.ngc",
+        "maps/rig_2.ngc",
+        "maps/uwb_2a.ngc",
+        "maps/uwb_2aa.ngc",
+        "maps/uwb_2b.ngc"
+      ]
+    },
+    {
+      "path": "models/gadget_qremote.men",
+      "native_fields": {
+        "classname": "QRemote",
+        "itemname": "gadget_qremote",
+        "uiNameTag": "QRemote",
+        "rank": "1101"
+      },
+      "sample_map": "maps/alp1_1.ngc",
+      "sample_definition_sha256": "52505add9bcb157ee2dd2b7ae1bec66a3dcf52e7a6e54e7f7f6fc1afc5eeab33",
+      "available_maps": [
+        "maps/alp1_1.ngc",
+        "maps/alp1_2.ngc",
+        "maps/alp2_1.ngc",
+        "maps/alp2_2.ngc",
+        "maps/alp2_3.ngc",
+        "maps/carrier1.ngc",
+        "maps/carrier2.ngc",
+        "maps/rig_1.ngc",
+        "maps/rig_2.ngc",
+        "maps/uwb_2a.ngc",
+        "maps/uwb_2aa.ngc",
+        "maps/uwb_2b.ngc"
+      ]
+    },
+    {
+      "path": "models/qclaw_pickup.men",
+      "native_fields": {
+        "classname": "qclaw_pickup",
+        "itemname": "qclaw_pickup",
+        "uiNameTag": "qclaw",
+        "rank": "601"
+      },
+      "sample_map": "maps/alp1_1.ngc",
+      "sample_definition_sha256": "52e4ad5b2ef33dfa9f47e97b6bcbe943fb7136e34e89f4ec9991f82b5dee7658",
+      "available_maps": [
+        "maps/alp1_1.ngc",
+        "maps/alp1_2.ngc",
+        "maps/alp2_1.ngc",
+        "maps/alp2_2.ngc",
+        "maps/alp2_3.ngc",
+        "maps/carrier1.ngc",
+        "maps/carrier2.ngc",
+        "maps/emstel_1.ngc",
+        "maps/m6_1.ngc",
+        "maps/m6_2.ngc",
+        "maps/m6_3.ngc",
+        "maps/orc_1.ngc",
+        "maps/orc_2.ngc",
+        "maps/orc_3.ngc",
+        "maps/orc_4.ngc",
+        "maps/rig_1.ngc",
+        "maps/rig_2.ngc",
+        "maps/uwb_2a.ngc",
+        "maps/uwb_2aa.ngc",
+        "maps/uwb_2b.ngc"
+      ]
+    },
+    {
+      "path": "models/xrayglasses_large.men",
+      "native_fields": {
+        "classname": "MFGlasses",
+        "itemname": "xrayglasses_large",
+        "uiNameTag": "xrayGlasses",
+        "rank": "801"
+      },
+      "sample_map": "maps/alp2_2.ngc",
+      "sample_definition_sha256": "3441febafd5f1ce253170a0b6270d5743666ed75d733d6d0123258c697f04436",
+      "available_maps": [
+        "maps/alp2_2.ngc",
+        "maps/alp2_3.ngc",
+        "maps/emstel_1.ngc",
+        "maps/m6_1.ngc",
+        "maps/m6_2.ngc",
+        "maps/m6_3.ngc"
+      ]
+    }
+  ],
+  "authored_grants": [
+    {
+      "kind": "gadget",
+      "model": "gadget_keycard.men",
+      "sites": [
+        "maps/m6_1.ngc:maps/m6_1.scr",
+        "maps/uwb_2aa.ngc:maps/uwb_2aa.scr"
+      ]
+    },
+    {
+      "kind": "gadget",
+      "model": "gadget_keycard2.men",
+      "sites": [
+        "maps/alp1_1.ngc:maps/alp1_1.scr",
+        "maps/emstel_1.ngc:maps/emstel_1.scr",
+        "maps/orc_1.ngc:maps/orc_1.scr"
+      ]
+    },
+    {
+      "kind": "gadget",
+      "model": "gadget_pcodegen.men",
+      "sites": [
+        "maps/emstel_1.ngc:maps/emstel_1.scr"
+      ]
+    },
+    {
+      "kind": "gadget",
+      "model": "gadget_qcamera.men",
+      "sites": [
+        "maps/alp1_1.ngc:maps/alp1_1.scr"
+      ]
+    },
+    {
+      "kind": "gadget",
+      "model": "gadget_qdecryptor.men",
+      "sites": [
+        "maps/alp1_1.ngc:maps/alp1_1.scr",
+        "maps/orc_1.ngc:maps/orc_1.scr",
+        "maps/uwb_2a.ngc:maps/uwb_2a.scr",
+        "maps/uwb_2aa.ngc:maps/uwb_2aa.scr"
+      ]
+    },
+    {
+      "kind": "gadget",
+      "model": "gadget_qjet.men",
+      "sites": [
+        "maps/alp2_1.ngc:maps/alp2_1.scr",
+        "maps/alp2_2.ngc:maps/alp2_2.scr",
+        "maps/rig_1.ngc:maps/rig_1.scr",
+        "maps/rig_2.ngc:maps/rig_2.scr"
+      ]
+    },
+    {
+      "kind": "gadget",
+      "model": "gadget_qlaser.men",
+      "sites": [
+        "maps/alp1_1.ngc:maps/alp1_1.scr",
+        "maps/alp2_1.ngc:maps/alp2_1.scr",
+        "maps/alp2_2.ngc:maps/alp2_2.scr",
+        "maps/carrier1.ngc:maps/carrier1.scr",
+        "maps/carrier2.ngc:maps/carrier2.scr",
+        "maps/emstel_1.ngc:maps/emstel_1.scr",
+        "maps/m6_1.ngc:maps/m6_1.scr",
+        "maps/orc_1.ngc:maps/orc_1.scr",
+        "maps/rig_1.ngc:maps/rig_1.scr",
+        "maps/rig_2.ngc:maps/rig_2.scr",
+        "maps/uwb_2a.ngc:maps/uwb_2a.scr"
+      ]
+    },
+    {
+      "kind": "gadget",
+      "model": "gadget_qremote.men",
+      "sites": [
+        "maps/alp1_1.ngc:maps/alp1_1.scr",
+        "maps/alp2_1.ngc:maps/alp2_1.scr",
+        "maps/alp2_2.ngc:maps/alp2_2.scr",
+        "maps/carrier1.ngc:maps/carrier1.scr",
+        "maps/carrier2.ngc:maps/carrier2.scr",
+        "maps/rig_1.ngc:maps/rig_1.scr",
+        "maps/rig_2.ngc:maps/rig_2.scr",
+        "maps/uwb_2a.ngc:maps/uwb_2a.scr",
+        "maps/uwb_2aa.ngc:maps/uwb_2aa.scr"
+      ]
+    },
+    {
+      "kind": "gadget",
+      "model": "xrayglasses_large.men",
+      "sites": [
+        "maps/alp2_2.ngc:maps/alp2_2.scr",
+        "maps/emstel_1.ngc:maps/emstel_1.scr",
+        "maps/m6_1.ngc:maps/m6_1.scr"
+      ]
+    },
+    {
+      "kind": "weapon",
+      "model": "dartgun_pickup.men",
+      "sites": [
+        "maps/emstel_1.ngc:maps/emstel_1.scr"
+      ]
+    },
+    {
+      "kind": "weapon",
+      "model": "qclaw_pickup.men",
+      "sites": [
+        "maps/alp1_1.ngc:maps/alp1_1.scr",
+        "maps/alp2_1.ngc:maps/alp2_1.scr",
+        "maps/alp2_2.ngc:maps/alp2_2.scr",
+        "maps/carrier1.ngc:maps/carrier1.scr",
+        "maps/carrier2.ngc:maps/carrier2.scr",
+        "maps/emstel_1.ngc:maps/emstel_1.scr",
+        "maps/m6_1.ngc:maps/m6_1.scr",
+        "maps/orc_1.ngc:maps/orc_1.scr",
+        "maps/rig_1.ngc:maps/rig_1.scr",
+        "maps/rig_2.ngc:maps/rig_2.scr",
+        "maps/uwb_2a.ngc:maps/uwb_2a.scr"
+      ]
+    }
+  ],
+  "limitations": [
+    "A native grant does not automatically satisfy mission script flags, keys or objectives.",
+    "Definition hashes cover their sample map; dictionary token numbers can differ across packages."
+  ]
+}
