@@ -11,7 +11,9 @@ from .pso_controls import DEFAULTS
 
 
 class PreferencesIn(BaseModel):
-    equip_any: bool
+    equip_any: bool | None = None
+    permanent_scape: bool | None = None
+    legendary: bool | None = None
 
 
 def routes(app, config, auth):
@@ -34,9 +36,10 @@ def routes(app, config, auth):
             folder.mkdir(parents=True, exist_ok=True)
             f = folder / "preferences.json"
             temp = f.with_suffix(".json.tmp")
-            temp.write_text(json.dumps(value.model_dump()))
+            saved=DEFAULTS | (json.loads(f.read_text()) if f.exists() else {}) | value.model_dump(exclude_none=True)
+            temp.write_text(json.dumps(saved))
             temp.replace(f)
-            return value.model_dump()
+            return saved
 
     @app.get("/api/pso/items")
     def items(version: Literal["dcv2", "gc"] = "dcv2", actor=Depends(auth)):

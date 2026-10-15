@@ -9,8 +9,9 @@ from collections import OrderedDict
 from .registry import Unsupported
 
 OPS = frozenset(('capabilities', 'status', 'list', 'floor_spawn', 'floor_rares', 'floor_clear',
-                 'floor_list', 'give', 'equip_any', 'multi_equip', 'stat'))
-READS = frozenset(('capabilities', 'status', 'list', 'floor_list'))
+                 'floor_list', 'give', 'equip_any', 'multi_equip', 'stat',
+                 'survival','revive','mag','mag_set','mag_feed','randomized','modes','legendary'))
+READS = frozenset(('capabilities', 'status', 'list', 'floor_list','mag','modes'))
 _receipts = {}
 _guard = threading.Lock()
 
@@ -29,7 +30,7 @@ def authorize(store, config, sid, body):
     if time.time() - worker.get('last_seen', 0) > 60:
         raise ValueError('The emulator worker is offline')
     root = Path(__file__).parent
-    for name in ('pso_live.py', 'pso_gc_live.py', 'tools.py', 'pso_mods_tool.py', 'pso_controls.py'):
+    for name in ('pso_live.py', 'pso_gc_live.py', 'pso_gc_extras.py','pso_modes.py', 'tools.py', 'pso_mods_tool.py', 'pso_controls.py'):
         expected = hashlib.sha256((root/name).read_bytes().replace(b'\r\n',b'\n')).hexdigest()
         if worker.get('build_sources', {}).get('gbox/'+name) != expected:
             raise ValueError('This worker needs a safe refresh to load the verified PSO live controls')
@@ -144,6 +145,24 @@ def gamecube(inp, ctx, ad):
     from .psoitems import CLASSES, rare_pool
     m = GC(ad)
     m.check()
+    if inp.op in ('survival','revive','mag','mag_set','mag_feed','randomized','modes','legendary'):
+        from .pso_gc_extras import Extras,legendary
+        from . import pso_modes
+        from .pso_gc_live import SURVIVAL,CAVE,VT_UPDATE
+        m=Extras(ad);m.check();deadline(ctx)
+        if inp.op in ('survival','legendary'):
+            result=m.survival(inp.on) if inp.op=='survival' else legendary(ad,inp.on)
+            ad._pso_preferences_dirty=True
+            return result
+        if inp.op=='revive':return m.revive()
+        if inp.op=='mag':return m.mag()
+        if inp.op in ('mag_set','mag_feed'):
+            if inp.item_id is None:raise ValueError('Refresh your equipped MAG first')
+            return m.mag_set(inp.item_id,inp.properties) if inp.op=='mag_set' else m.mag_feed(inp.item_id,inp.code)
+        if inp.op=='modes':return {'permanent_scape':m.u32(VT_UPDATE)==CAVE and m.u32(SURVIVAL)==1,'randomized':pso_modes.status(inp.session_id)}
+        rows=catalog(ctx,'gc') if inp.on else []
+        deadline(ctx)
+        return pso_modes.configure(inp.session_id,ad,ctx,inp.on,inp.interval,inp.categories,inp.character_class,rows)
     if inp.op in ('floor_spawn', 'floor_rares', 'give', 'list'):
         rows = catalog(ctx, 'gc')
         by_code = {i['code']: i for i in rows}
@@ -151,9 +170,10 @@ def gamecube(inp, ctx, ad):
     if inp.op == 'status':
         return {'stats': m.shown_stats(), 'equip_any': m.read(EQUIP_PATCH, 4).hex() == '38000005'}
     if inp.op == 'list':
-        return {'inventory': [r | {'name': by_code.get(r['code'], {}).get('name', r['code'])} for r in m.inventory()]}
+        return {'inventory': [r | {'name': by_code.get(r['code'][:4]+'00' if r['code'].startswith('02') else r['code'], {}).get('name', r['code'])} for r in m.inventory()]}
     if inp.op == 'equip_any':
-        return m.equip_any(inp.on)
+        result=m.equip_any(inp.on);ad._pso_preferences_dirty=True
+        return result
     if inp.op == 'multi_equip':
         return m.multi_equip(inp.target, inp.on)
     if inp.op == 'stat':

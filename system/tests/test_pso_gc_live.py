@@ -136,3 +136,12 @@ def test_inventory_give_verifies_a_consumable_merged_into_an_existing_stack():
     m.call=lambda calls:[0x80DB0000]*len(calls)
     result=m.give('030000')
     assert result['created']==1 and result['verified'] and result['ids']==[]
+
+
+def test_mag_give_uses_form_identity_not_the_level_byte():
+    ram=RAM();m=G.GC(ram)
+    data=bytes.fromhex('02010500f40100000000000000f000002800000e')
+    results=iter([[],[{'code':'020105','id':G.ID_BASE,'data':data.hex()}]])
+    m.inventory=lambda:next(results);m.call=lambda calls:[0x80DB0000]*len(calls)
+    result=m.give('020100')
+    assert result['created']==1 and result['verified'] and result['ids']==[G.ID_BASE]

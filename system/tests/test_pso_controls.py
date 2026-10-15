@@ -113,8 +113,11 @@ def test_persistent_defaults_and_catalog_version_validation(tmp_path):
     cfg = Config(data_dir=tmp_path)
     pso_api.routes(app, cfg, lambda: "fixture")
     client = TestClient(app)
-    assert client.get("/api/pso/preferences").json() == {"equip_any": True}
-    assert client.post("/api/pso/preferences", json={"equip_any": False}).json() == {"equip_any": False}
+    assert client.get("/api/pso/preferences").json() == {"equip_any": True,"permanent_scape":False,"legendary":False}
+    assert client.post("/api/pso/preferences", json={"equip_any": False}).json()['equip_any'] is False
+    assert client.post('/api/pso/preferences',json={'permanent_scape':True,'legendary':True}).json()=={'equip_any':False,'permanent_scape':True,'legendary':True}
+    assert client.post('/api/pso/preferences',json={'equip_any':True}).json()['permanent_scape'] is True
+    client.post('/api/pso/preferences',json={'equip_any':False})
     assert client.get("/api/pso/preferences").json()["equip_any"] is False
     assert client.get("/api/pso/items?version=../../api_token").status_code == 422
     assert client.get("/api/pso/items?version=gc").status_code == 404
