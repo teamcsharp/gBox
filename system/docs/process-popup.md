@@ -6,6 +6,20 @@ Changing jobs or models invalidates older downloads. Late results cannot replace
 
 The popup closes with tracking static and a picture-collapse transition when model work ends. Hiding it keeps that task hidden while it runs; it does not cancel the worker.
 
+## This PC's automation activity
+
+The desktop and idle operations screen use activity mode. It includes actual automated RE, compilation, build, service and test jobs in addition to model jobs. Running jobs must belong to this worker; queued jobs must explicitly target it. Unassigned compatible queue entries remain in the dashboard's eligible-work list and are not portrayed as work already happening on the PC. Lightweight status/list polling does not open the popup. The desktop resolves its worker from the shared cached worker inventory. The idle iframe owns its own scoped popup; the parent suspends its duplicate without creating another polling loop.
+
+The operation selector switches between concurrent local jobs. Expand gives a larger inspection window. The scrollable console shows up to the latest 50 reported progress lines and follows the tail only while already at the bottom. **Pause output** freezes console and measurement text for reading without pausing execution. Controls inside the idle popup remain usable; Escape or clicking the idle-page background still returns to gBox.
+
+The window shows the worker/job/request IDs, queue or admission reason, current step, last worker-update age, measured fitting data (scale, heights, role/vertex/triangle counts, encoding sizes), and a stage flow that leaves goal verification pending. Backend snapshots contain only whitelisted presentation inputs, up to 50 bounded log lines and 12 model rows including the current model; larger rosters explicitly show how many rows are displayed. Arbitrary tool inputs, prompts and outputs are omitted.
+
+Activity mode displays the current model's actual writer snapshot, or its source donor while waiting for a fitted snapshot. It never substitutes a preceding character's snapshot. It does not synthesize deformation or run illustrative decimation on the donor. Each newly reported stage snapshot replaces the model; writers without snapshots expose only their reported measurements and logs. Non-model tasks use the console and stage flow rather than an unrelated globe. Offline 3D rendering is explicitly marked unavailable. Model rendering is limited to 20 frames per second and skips hidden documents. Control-plane failures mark retained activity stale, rather than implying work is still confirmed.
+
+Writer snapshots are preview artifacts and may use the existing reduced geometry budget; the viewer labels them as fitted previews. Reported native triangle/vertex measurements and the full build artifacts remain distinct from the preview's display geometry.
+
+The ReAgent reverse loop now reports bounded excerpts of actual Ghidra source and reconstructed candidate code, evidence requests, model-call/round counts and checker/structural verdicts. Progress publication is asynchronous and retains the latest code excerpt across coalesced updates. It does not stream model reasoning or claim a checker PASS is verified native gameplay. Other tools continue to show the progress they actually publish; this is not a capture of every subprocess console or a frame-by-frame mesh edit recorder.
+
 ## Fixing a bad deformation: the R buttons
 
 While a writer fits models (a cast build, `characters op=cast_swap`, or a single `op=use`), each fitting row names its donor (collection slug), the target game id and the slot (`gbox/fit_events.py`: `plan` rows and `model` events carry `donor`, `game`, `slot`). Two "R" buttons open the Retarget editor (`clients/web/viz/retarget-editor.js`) on that model, in the web shell and in the desktop app:

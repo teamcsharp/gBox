@@ -3,6 +3,9 @@ const params = new URLSearchParams(location.hash.slice(1)), token = params.get('
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const pct = n => typeof n === 'number' && Number.isFinite(n) ? Math.round(n)+'%' : 'Unknown';
 let visual = null, stopped = false, timer;
+let activityWorker = null;
+const taskPopup = globalThis.GBoxProcessPopup?.mount({activity:true, worker:()=>activityWorker,
+  assetUrl:p=>p+(p.includes('?')?'&':'?')+'token='+encodeURIComponent(token)});
 async function api(path, body) {
   const response = await fetch(path, {method:body?'POST':'GET',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined,cache:'no-store',signal:AbortSignal.timeout(8000)});
   if (!response.ok) throw Error('HTTP '+response.status);
@@ -21,6 +24,8 @@ async function tick() {
   try {
     const data=await api('/api/background/workers/'+encodeURIComponent(worker)+'/status');
     if(stopped)return;
+    activityWorker=data.worker;
+    taskPopup?.sync(data.online ? [...data.active,...data.eligible_queue] : []);
     const r=data.worker.resources||{}, gpus=r.gpus||[];
     $('#title').textContent=data.worker.name;
     $('#mode').textContent=data.mode+' / '+(data.online?'online':'offline');
@@ -44,16 +49,18 @@ async function tick() {
 
     }else{$('#game-frame').removeAttribute('src');}
     visual?.push({stationActivity:(r.cpu_percent||0)/100,bass:Math.max(0,...gpus.map(g=>g.utilization_percent||0))/100});
-  }catch(error){if(!stopped){visual?.push({stationActivity:0,bass:0});$('#metrics').style.opacity='.5';$('#notice').textContent='Control plane unavailable: '+error.message+'. Displayed measurements are stale. Retrying.';}}
+  }catch(error){if(!stopped){taskPopup?.stale();visual?.push({stationActivity:0,bass:0});$('#metrics').style.opacity='.5';$('#notice').textContent='Control plane unavailable: '+error.message+'. Displayed measurements are stale. Retrying.';}}
   if(!stopped)timer=setTimeout(tick,4000);
 }
 $('#pause').onclick=async()=>{try{await api('/api/testing/workers/'+encodeURIComponent(worker),{available:false});parent.postMessage({gboxBackgroundClosed:true},'*');}catch(e){$('#notice').textContent=e.message;}};
 addEventListener('wheel',()=>parent.postMessage({gboxBackgroundScroll:true},'*'),{capture:true,passive:true});
 for(const name of ['pointerdown','keydown'])addEventListener(name,event=>{
+  if(event.key==='Escape'){parent.postMessage({gboxBackgroundInput:true},'*');return;}
+  if(event.target.closest?.('.gbox-pp'))return; // Inspection controls and console selection keep the display open.
   if(!event.target.closest?.('button,a,input,details'))parent.postMessage({gboxBackgroundInput:true},'*');
 },{capture:true,passive:true});
 document.addEventListener('visibilitychange',()=>{if(document.hidden)visual?.stop();else visual?.start();});
-addEventListener('pagehide',()=>{stopped=true;clearTimeout(timer);visual?.dispose();});
+addEventListener('pagehide',()=>{stopped=true;clearTimeout(timer);taskPopup?.dispose();visual?.dispose();});
 // Existing Three.js wave renderer, driven by measured load rather than demo activity.
 import('./viz.js').then(async({createViz})=>{visual=await createViz($('#wave'),{mode:'smooth-wave',palette:'PlayStation Blue',quality:'low',provider:'external',maxFps:20});if(stopped)visual.dispose();else if(document.hidden)visual.stop();}).catch(()=>{ $('#wave').hidden=true;$('#visual-status').textContent='3D display unavailable. Live operation data remains visible.'; });
 tick();

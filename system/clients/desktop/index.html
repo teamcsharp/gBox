@@ -6580,10 +6580,15 @@ const AU_ACTION = [[/^job/, "⚙️"], [/^session/, "🎮"], [/^chat/, "💬"], 
                    [/memory|cheat|patch/, "🧬"], [/^worker/, "🖥️"], [/launch/, "🚀"], [/.*/, "•"]];
 const auIcon = (tbl, v) => tbl.find(([rx]) => rx.test(v || ""))[1];
 let PROCESS_POPUP = null;
+let PROCESS_POPUP_WORKER = null;
 async function processPopupSync(jobs) {
   if (!window.GBoxProcessPopup) return;
+  if(document.querySelector('iframe[title="Live background operations"]')){PROCESS_POPUP?.suspend();return;}
   await SBX_READY;                                                          // first job must not cache a failed file:// / unauthenticated model load
+  const workers = await WORKERS.get();
+  PROCESS_POPUP_WORKER = workers.ok ? workers.data.find(w=>w.name===S.workerName) || null : null;
   if (!PROCESS_POPUP) PROCESS_POPUP = window.GBoxProcessPopup.mount({
+    activity:true, worker:()=>PROCESS_POPUP_WORKER,
     assetUrl: p => `${SBX.api}${p}?token=${encodeURIComponent(SBX.tok)}`,
     fit: el => GBoxToastStack.fit(el, toastBounds()),       // inside the window, below the bars, above the status strip
     retarget: o => retargetOpen(o),                         // the R buttons: the Retarget editor on that model
@@ -6600,7 +6605,7 @@ async function meshReductionReview(jobId,key) {
 function auditPoll(explicit = true) { return pollAudit(explicit); }
 const pollAudit = singleFlightPoll(async () => {
   const [r, jobs] = await pollTogether([gbox.api(AUD.after ? `/api/audit?after=${AUD.after}&limit=500` : "/api/audit?tail=500"), gbox.api("/api/jobs?state=queued,running&limit=100")]);
-  if (jobs.ok) { activity?.remote(jobs.data); globalThis.GBOX_LAUNCH_BAR?.remote(jobs.data); await processPopupSync(jobs.data); } if (r.ok && r.data.length) { AUD.rows.push(...r.data); AUD.after = r.data.at(-1).seq; AUD.rows = AUD.rows.slice(-3000); }
+  if (jobs.ok) { activity?.remote(jobs.data); globalThis.GBOX_LAUNCH_BAR?.remote(jobs.data); await processPopupSync(jobs.data); } else PROCESS_POPUP?.stale(); if (r.ok && r.data.length) { AUD.rows.push(...r.data); AUD.after = r.data.at(-1).seq; AUD.rows = AUD.rows.slice(-3000); }
   if (!AUD.rows.length) return;                                // re-render anyway so the spinner stops when a series ends
   const grp = auGroup(AUD.rows.slice(-200)).at(-1), x = grp.at(-1);
   $("#sb-audit").innerHTML = `<span>${auIcon(AU_ACTION, x.action)}</span><span class="t"><b>${esc(x.action)}</b>${auBadge(grp)} ${esc(x.subject)} · ${auIcon(AU_ACTOR, x.actor)} ${esc(x.actor)} · ${new Date(x.ts * 1000).toLocaleTimeString()}</span>`;
