@@ -126,6 +126,7 @@
           <div class="rt-sec" data-rt-part-slot="part"></div>
           <div class="rt-sec" data-rt-fit-history hidden></div>
           <div class="rt-sec" data-rt-textures></div>
+          <div class="rt-sec" data-rt-photos></div>
           <div class="rt-sec"><b>What is what</b> <button type="button" class="act" data-rt-go="guess" title="Fill empty roles from bone names">Guess from names</button><div data-rt-part-slot="roles"></div></div>
         </div>
       </div>
@@ -285,6 +286,7 @@
       const source = (base && base.source) || ((st.view || {}).source || {}).game_id || st.slug;
       return { tool: "characters", input: Object.assign({ op: "cast_swap", target_game: st.gid, source, mapping: (base && base.mapping) || "auto",
         seed: (base && base.seed) || "", slots: st.slot, assignments: who, launch: false, rebuild: true },
+        base && base.lead_character && (!base.lead_slot || base.lead_slot===st.slot) ? {lead_character:st.slug,lead_slot:st.slot} : {},
         base && base.strict_cutscenes ? { strict_cutscenes: true } : {}) };
     }
     async function saveAndRebuild() {
@@ -382,8 +384,12 @@
       onChange: () => schedule(),
     });
     const c = controller(ui, opts);
+    const pending=new Set(),pendingReview=(kind,on)=>{on?pending.add(kind):pending.delete(kind);c.state.texturePending=!!pending.size;};
+    const accepted=result=>{const draft=H.normalize(c.state.profile),slot=c.state.slot;dispose();open(doc,io,{...opts,slug:result.variant,name:result.name,slot,draftProfile:draft});};
     const textures=root.GBoxTextureReview?.mount(q('[data-rt-textures]'),{api:io.api,url:u=>io.url?io.url(u):u},{slug:opts.slug,onPreview:showTextureCandidate,
-      onPending:on=>{c.state.texturePending=on;},onAccepted:result=>{const draft=H.normalize(c.state.profile),slot=c.state.slot;dispose();open(doc,io,{...opts,slug:result.variant,name:result.name,slot,draftProfile:draft});}});
+      onPending:on=>pendingReview('texture',on),onAccepted:accepted});
+    const photos=root.GBoxPhotoSkin?.mount(q('[data-rt-photos]'),{api:io.api,url:u=>io.url?io.url(u):u},{slug:opts.slug,onPreview:showTextureCandidate,
+      onPending:on=>pendingReview('photo',on),onAccepted:accepted});
     el.dataset.mode = c.state.mode;
     let raf = 0;
     function schedule() { if (!raf && !dead) raf = requestAnimationFrame(() => { raf = 0; redraw(); }); }
@@ -788,7 +794,7 @@
     });
     const ro = typeof ResizeObserver === "function" ? new ResizeObserver(() => schedule()) : null;
     function dispose() {
-      dead = true;textureRequest++;textures?.dispose(); if (ro) ro.disconnect();
+      dead = true;textureRequest++;textures?.dispose();photos?.dispose(); if (ro) ro.disconnect();
       for (const v of Object.values(views)) if (v && v.renderer) {
         v.scene.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material) [].concat(o.material).forEach(m => m.dispose()); });
         v.renderer.dispose();

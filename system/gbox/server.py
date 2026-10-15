@@ -636,6 +636,8 @@ def create_app(config: Config) -> FastAPI:
     blender_roundtrip.register(app, auth, store, _chars, lambda req, actor: submit(req, actor), JobRequest)
     from . import texture_review
     texture_review.register(app, auth, store, _chars, lambda req, actor: submit(req, actor), JobRequest)
+    from . import photo_skin
+    photo_skin.register(app, auth, store, _chars)
 
     # environments: whole captured scenes (characters op=extract kind=environment), next to the characters
     def _env_file(slug: str, rel: str) -> Path:
@@ -2258,6 +2260,11 @@ def create_app(config: Config) -> FastAPI:
                         if reason:
                             store.put('job', j['id'], j | {'admission_wait': {'worker': w['name'], 'reason': reason}})
                             continue
+                    from .photo_skin import claim_reason as photo_claim_reason
+                    photo_wait=photo_claim_reason(w,j)
+                    if photo_wait:
+                        store.put('job',j['id'],j | {'admission_wait':{'worker':w['name'],'reason':photo_wait}})
+                        continue
                     if background_testing.requires_admission(j):
                         if (j.get('origin') or {}).get('inspection_run'):
                             from .inspection_builds import claim_reason

@@ -742,7 +742,7 @@ def _named(inp) -> str:
 
 def plan(game: dict, chars: list[dict], source: str, mapping: str = "auto", seed: str = "", slots: str = "all",
          assignments: list[dict] | None = None, root: Path | None = None, slot_list: list[dict] | None = None,
-         refresh=None, prefer: str = "") -> dict:
+         refresh=None, prefer: str = "", lead_character: str = '', lead_slot: str = 'player') -> dict:
     """The whole plan, without building: target slots, eligible / refused / deduplicated donors, assignments.
     prefer: a source spec (same forms as source) whose donors are dealt first by the random mapping (assign=random)
     and by by_role among equals ("wrestlers, preferring the WWF games": prefer=smackdown2,nomercy)."""
@@ -791,7 +791,7 @@ def plan(game: dict, chars: list[dict], source: str, mapping: str = "auto", seed
         kept = {m["slug"] for m in keep}
         donors = [m for m in donors if not member(m) or m["slug"] in kept]
     pos = {m["slug"]: i for i, m in enumerate(entries)}    # the source's own order, re-extracted or not: same plan
-    rows = donor_rows(sorted(donors, key=lambda m: pos.get(m["slug"], 1 << 30)), root)
+    rows = donor_rows(sorted((m for m in donors if m['slug']!=lead_character), key=lambda m: pos.get(m["slug"], 1 << 30)), root)
     pref = {m["slug"] for m in resolve_source(prefer, chars, kind)["entries"]} if (prefer or "").strip() else set()
     for r in rows:
         if r["slug"] in stale:
@@ -806,10 +806,24 @@ def plan(game: dict, chars: list[dict], source: str, mapping: str = "auto", seed
             for s in chosen:
                 if s["slot"] == e.get("slot") and not s.get("skip"):
                     s["skip"] = f"donor {e['character']} refused: {why[e['character']]}"
-    out = assign(chosen, rows, mapping, seed)
+    dealt=[s for s in chosen if not (lead_character and (s['slot']==lead_slot or (lead_slot=='player' and s.get('lead_slot'))))]
+    out = assign(dealt, rows, mapping, seed)
     if assignments:
-        out = apply_edits(out, texture_assignment_aliases([e for e in assignments if e.get("character") not in why],chars,rows), rows,
+        out = apply_edits(out, texture_assignment_aliases([e for e in assignments if e.get("character") not in why and not (lead_character and e.get('slot')==lead_slot)],chars,rows), rows,
                           [s for s in chosen if not s.get("skip")])
+    locked=None
+    if lead_character:
+        lead=next((m for m in chars if m.get('slug')==lead_character),None)
+        if not lead:raise ValueError('Lead character must name an exact collection slug')
+        problem=retarget_check(lead,root,kind)
+        if problem:raise ValueError('Lead character cannot be built: '+problem)
+        target=next((s for s in chosen if s['slot']==lead_slot or (lead_slot=='player' and s.get('lead_slot'))),None)
+        if not target or target.get('skip'):
+            raise ValueError('The requested lead slot is not buildable; refusing to put the lead on a supporting character')
+        # A seed or supporting-cast edit can never replace the explicitly locked lead.
+        lead_slot=target['slot'];locked=_row(target,donor_rows([lead],root)[0],'locked lead')
+        out=[r for r in out if r['slot']!=lead_slot]+[locked]
+        order={s['slot']:i for i,s in enumerate(chosen)};out.sort(key=lambda r:order[r['slot']])
     strat, how = strategy(w["writer"])
     scope = {}
     if w['writer'] == 'gbox.jgr_swap':
@@ -825,6 +839,7 @@ def plan(game: dict, chars: list[dict], source: str, mapping: str = "auto", seed
             "donors": rows, "refused": refused, "costumes_merged": costumes, "refreshed": refreshed,
             **({"superseded": superseded} if superseded else {}),
             "assignments": out, "skipped": [{"slot": s["slot"], "reason": s["skip"]} for s in chosen if s.get("skip")],
+            **({'locked_lead':{'slot':lead_slot,'character':lead_character}} if locked else {}),
             "mod": mod_name(game, src["label"], out) if out else None,
             "message": (f"{len(out)} slots of {game.get('title')} get {src['label']} donors ({len(rows)} usable, "
                         f"{len(refused)} refused, {len(costumes)} costumes merged)") if out else
@@ -879,14 +894,14 @@ def run(ctx, inp) -> dict:
     mapping, prefer = mapping_of(inp), str(getattr(inp, "prefer", "") or "")
     if inp.plan_only or not local:
         p = plan(game, chars, inp.source, mapping, inp.seed, inp.slots, inp.assignments, root if local else None,
-                 live, prefer=prefer)
+                 live, prefer=prefer,lead_character=getattr(inp,'lead_character',''),lead_slot=getattr(inp,'lead_slot','player'))
         if p["status"] == "planned" and _named(inp):
             p["mod"] = _named(inp)
         if inp.plan_only or p["status"] != "planned":
             return p
         return _on_control_plane(ctx, game, inp)
     p = plan(game, chars, inp.source, mapping, inp.seed, inp.slots, inp.assignments, root, live,
-             refresh=_refresher(ctx, root), prefer=prefer)
+             refresh=_refresher(ctx, root), prefer=prefer,lead_character=getattr(inp,'lead_character',''),lead_slot=getattr(inp,'lead_slot','player'))
     if p["status"] != "planned":
         return p
     if _named(inp):                                        # a fixed name: the plan hash decides a rebuild instead
