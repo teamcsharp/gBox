@@ -10,7 +10,7 @@ from . import doa2_bindings as B, doa2_geometry as G, doa2_textures as T
 from .native_face_projection import project,compact_previews
 
 
-def prepare(disc, photo, profiles, *, crop=(.22,.035,.79,.7), preview_dir=None,label='Bla',progress=lambda p,m:None):
+def prepare(disc, photo, profiles, *, crop=(.22,.035,.79,.7), preview_dir=None,label='Bla',progress=lambda p,m:None,expected_payloads=None):
     """Return same-size BIN edits for explicitly reviewed native face profiles.
 
     A profile binds an archive/head material to the source texture payload SHA.
@@ -33,9 +33,12 @@ def prepare(disc, photo, profiles, *, crop=(.22,.035,.79,.7), preview_dir=None,l
             primitives.append({'pos':a[:,:3],'nrm':a[:,3:6],'uv':a[:,6:8],'tris':mesh['triangles']})
         base=T.decode(tex,bank)
         candidate=project(base,photo,primitives,crop=profile.get('crop',crop),bounds=profile.get('bounds'),
-                          opacity=profile.get('opacity',1.),feather=profile.get('feather',.12))
+                          opacity=profile.get('opacity',1.),feather=profile.get('feather',.12),
+                          deformation=profile.get('deformation'))
         if candidate.report['masked_pixels']<4:raise ValueError(f'{name}: empty native face mask')
         payload=T.encode(tex,candidate.image)
+        if expected_payloads is not None and hashlib.sha256(payload).hexdigest()!=expected_payloads.get(name):
+            raise ValueError(f'{name}: native face differs from the exact accepted editor preview')
         if len(payload)>tex.capacity:raise ValueError(f'{name}: face payload exceeds native allocation')
         edited=bytearray(bank);edited[tex.offset:tex.offset+len(payload)]=payload
         if len(edited)!=len(bank):raise AssertionError('Native BIN resized')
@@ -62,13 +65,13 @@ def prepare(disc, photo, profiles, *, crop=(.22,.035,.79,.7), preview_dir=None,l
     return changes,reports
 
 
-def build(gdi,out_dir,name,photo,profiles,*,game_id='1de2e7634f3161ff',photo_sha256='',label='Bla',progress=lambda p,m:None):
+def build(gdi,out_dir,name,photo,profiles,*,game_id='1de2e7634f3161ff',photo_sha256='',label='Bla',progress=lambda p,m:None,expected_payloads=None):
     from .gdrom import GDRom,patch_gdi
     out=Path(out_dir)
     if out.exists():raise FileExistsError('Face build destination must be new; originals and previous builds are preserved')
     disc=GDRom(gdi)
     # Previews are produced only after all source lineage is validated.
-    changes,reports=prepare(disc,photo,profiles,preview_dir=out/'face-previews',label=label,progress=progress)
+    changes,reports=prepare(disc,photo,profiles,preview_dir=out/'face-previews',label=label,progress=progress,expected_payloads=expected_payloads)
     if not changes:raise ValueError('No reviewed native faces selected')
     image=patch_gdi(gdi,out,name,changes,progress)
     rebuilt=GDRom(image)
@@ -127,7 +130,7 @@ def run(inp,ctx):
     unknown=set(inp.profiles)-set(profiles)
     if unknown:raise ValueError('Face profile does not belong to this owned native head catalog')
     for key,settings in inp.profiles.items():
-        if set(settings)-{'crop','bounds','opacity','feather'}:raise ValueError('Only native face crop, head-space bounds and blend settings are editable')
+        if set(settings)-{'crop','bounds','opacity','feather','deformation'}:raise ValueError('Only native face crop, head-space bounds, blend and deformation settings are editable')
         profiles[key]=profiles[key]|settings
     if inp.op=='plan':return {'result':{'game_id':inp.game_id,'profiles':profiles,'geometry_unchanged':True,
         'coverage_gaps':['unbound story YTI00','roster portraits','prerendered videos'],'inventory':'No RPG inventory; no unverified unlock patch'}}

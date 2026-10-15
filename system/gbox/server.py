@@ -642,6 +642,8 @@ def create_app(config: Config) -> FastAPI:
     photo_skin.register(app, auth, store, _chars)
     from . import pso_faces
     pso_faces.routes(app,store,auth,config)
+    from . import native_face_editor
+    native_face_editor.routes(app,store,auth,config)
 
     # environments: whole captured scenes (characters op=extract kind=environment), next to the characters
     def _env_file(slug: str, rel: str) -> Path:

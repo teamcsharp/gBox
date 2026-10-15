@@ -89,7 +89,8 @@ def prepare_container(raw,photo,profiles,*,crop=(.22,.035,.79,.7),preview_dir=No
                 if min_lod or max_lod:
                     skipped.append({'stage':st.name,'model':key[0],'texture':key[1],'reason':'Native mipmapped face needs an explicit full-chain writer','min_lod':min_lod,'max_lod':max_lod});continue
                 candidate=project(Image.fromarray(base),photo,primitives,crop=profile.get('crop',crop),bounds=profile.get('bounds'),
-                                  opacity=profile.get('opacity',1.),feather=profile.get('feather',.12),respect_alpha=False,mirror_x=True)
+                                  opacity=profile.get('opacity',1.),feather=profile.get('feather',.12),respect_alpha=False,mirror_x=True,
+                                  deformation=profile.get('deformation'))
                 if candidate.report['masked_pixels']<4:
                     skipped.append({'stage':st.name,'model':key[0],'texture':key[1],'reason':'empty face mask'});continue
                 try:baked=replace_masked(ts,img,candidate.image,candidate.mask>0)
@@ -220,7 +221,7 @@ def run(inp,ctx):
     keyed={p['model']+':'+p['texture']+':'+p['sha256']:p for p in profiles}
     if set(inp.profiles)-set(keyed):raise ValueError('Face profile does not belong to this native model/material catalog')
     for key,settings in inp.profiles.items():
-        if set(settings)-{'crop','bounds','opacity','feather'}:raise ValueError('Only native face crop, head-space bounds and blend settings are editable')
+        if set(settings)-{'crop','bounds','opacity','feather','deformation'}:raise ValueError('Only native face crop, head-space bounds, blend and deformation settings are editable')
         keyed[key]=keyed[key]|settings
     if inp.op=='plan':return {'result':{'game_id':inp.game_id,'profiles':keyed,'geometry_unchanged':True,
         'coverage_gaps':['codec portrait/eye/mouth sprites','demo.dat streamed resources','unreviewed/helmeted faces','compressed stages exceeding their native slot'],

@@ -61,6 +61,36 @@ def test_transparent_source_rgb_is_not_painted_into_a_native_face():
     assert np.array_equal(original,out.image) and out.report['masked_pixels']==0
 
 
+def test_liquify_edits_only_photo_layer_inside_reviewed_native_face():
+    original=np.full((64,64,4),[40,50,60,127],np.uint8)
+    photo=np.zeros((32,32,4),np.uint8);photo[:]=[255,0,0,255];photo[:,16:]=[0,0,255,255]
+    deformation={'version':1,'strokes':[{'x':.5,'y':.5,'dx':.06,'dy':0,'radius':.3}]}
+    plain=project(Image.fromarray(original),Image.fromarray(photo),[quad()])
+    warped=project(Image.fromarray(original),Image.fromarray(photo),[quad()],deformation=deformation)
+    result=np.asarray(warped.image)
+    assert np.array_equal(result[~warped.coverage],original[~warped.coverage])
+    assert np.array_equal(result[...,3],original[...,3])
+    assert not np.array_equal(plain.image,warped.image)
+    assert np.array_equal(plain.layer,warped.layer)
+    assert warped.report['outside_reviewed_triangles_unchanged'] and not warped.report['deformation']['identity']
+
+
+def test_explicit_identity_deformation_keeps_existing_projection_exact():
+    base=Image.new('RGBA',(32,32),(40,50,60,127));photo=Image.new('RGBA',(16,16),(200,20,10,210))
+    a=project(base,photo,[quad()]);b=project(base,photo,[quad()],deformation={'version':1,'strokes':[]})
+    assert np.array_equal(a.image,b.image) and np.array_equal(a.mask,b.mask)
+
+
+def test_projection_rejects_invalid_deformation_and_clips_shifted_lattice():
+    from gbox.face_warp import normalize_deformation
+    g={'columns':2,'rows':2,'points':[{'x':.2,'y':0},{'x':1.2,'y':0},{'x':.2,'y':1},{'x':1.2,'y':1}]}
+    deformation=normalize_deformation({'version':1,'lattice':g})
+    base=np.full((32,32,4),[20,30,40,255],np.uint8)
+    result=project(Image.fromarray(base),Image.new('RGB',(8,8),'red'),[quad()],deformation=deformation)
+    assert np.array_equal(np.asarray(result.image)[~result.coverage],base[~result.coverage])
+    with pytest.raises(ValueError):project(Image.fromarray(base),Image.new('RGB',(8,8),'red'),[quad()],deformation={'version':100})
+
+
 @pytest.mark.parametrize('crop',[(1,0,0,1),(-.1,0,1,1),(0,0,2,1),(0,0,float('nan'),1)])
 def test_invalid_crop_rejected(crop):
     with pytest.raises(ValueError):project(Image.new('RGBA',(8,8)),Image.new('RGB',(8,8)),[quad()],crop=crop)
