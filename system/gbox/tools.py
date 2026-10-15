@@ -310,6 +310,8 @@ def _close_previous_games(ctx, keep: str = ""):
         if proc and proc.poll() is not None:
             from . import memory_card_sessions
             memory_card_sessions.finish(sid,ad,ctx)
+            from . import gameplay_actions
+            gameplay_actions.stop(sid)
             if getattr(ctx, 'server', None):
                 httpx.post(f'{ctx.server}/api/sessions/{sid}/ended', headers=ctx.headers,
                            json={'returncode': proc.poll(), 'via': 'single_game'}, timeout=10).raise_for_status()
@@ -342,6 +344,8 @@ def _close_previous_games(ctx, keep: str = ""):
             raise RuntimeError('The previous emulator is still running; another game was not started')
         from . import memory_card_sessions
         memory_card_sessions.finish(sid,ad,ctx)
+        from . import gameplay_actions
+        gameplay_actions.stop(sid)
         snapshot = next(s for s in checkpoints if s['session_id'] == sid)
         if getattr(ctx, 'server', None) and not snapshot.get('orphan'):
             httpx.post(f'{ctx.server}/api/sessions/{sid}/ended', headers=ctx.headers,
@@ -440,6 +444,8 @@ def _stop_session(sid: str, args: dict, ctx) -> dict:
     from . import memory_card_sessions
     memory_card_sessions.finish(sid,ad,ctx)
     SESSIONS.pop(sid, None)
+    from . import gameplay_actions
+    gameplay_actions.stop(sid)
     track_emulator(ctx.config, sid, None, add=False)
     t = time.monotonic()
     timings['teardown_done'] = _teardown(sid, sr)
@@ -658,6 +664,11 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     if g.launch.get("kind") != "steam" and not isinstance(ad, adapters.RocketLauncherAdapter):
         gd["_rom_path"] = str(src)                     # for the inspector's ROM viewer
     SESSIONS[sid] = (ad, gd)
+    if not inp.capture_backend:
+        try:
+            from . import gameplay_actions
+            detail['action_capture']=gameplay_actions.start(sid,ad,gd,ctx)
+        except Exception as error:detail['action_capture']={'state':'unavailable','reason':str(error)[:240]}
     if getattr(ad,'memory_card_context',None):
         from . import memory_card_sessions
         try:detail['memory_cards']=memory_card_sessions.watch(sid,ad,gd,ctx)
@@ -916,7 +927,7 @@ def _rpc_answerer(sid: str, client, ctx=None):
             result = {"ok": True, "data": session_rpc(sid, ev["op"], ev.get("args") or {}, ctx=ctx)}
         except Exception as e:
             result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
-        if ev.get('op') in ('pso_controls','memory_cards'):
+        if ev.get('op') in ('pso_controls','memory_cards','pso_face'):
             result['pso_command'] = True
         try:
             client.post(f"/api/sessions/{sid}/rpc/{ev['rpc']}", json=result)
@@ -1018,10 +1029,10 @@ def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
                         if "rpc" in e:
                             threading.Thread(target=answer, args=(e,), daemon=True).start()
                     if pad:
-                        rewind.feed(sid, pad)                 # Select+L2 / Select+R2 on a streamed session's pad
+                        game_pad = rewind.feed(sid, pad)      # Consume time chords before injecting game input.
                         ring_record.touch(sid, pad)           # the operator's pad in use: the gameplay ring records
                     if pad and "send_input" in ad.supported:
-                        ad.send_input(pad)
+                        ad.send_input(game_pad)
                 except Exception:
                     time.sleep(0.5)
 
@@ -1044,6 +1055,8 @@ def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
                     scene_watch = _refresh_scene_row(c, sid, ad)
                 running = ad.proc.poll() is None if getattr(ad, "proc", None) else ad.query_runtime().get("running", True)
                 if not running:
+                    from . import gameplay_actions
+                    gameplay_actions.stop(sid)
                     from . import memory_card_sessions
                     memory_card_sessions.finish(sid,ad,ctx)
                     rc = getattr(getattr(ad, "proc", None), "returncode", None)
@@ -1112,6 +1125,9 @@ def session_rpc(sid: str, op: str, args: dict, ctx=None):
     if op=='memory_cards':
         from .memory_card_sessions import execute
         return execute(sid,args,ctx)
+    if op=='pso_face':
+        from .pso_faces import live
+        return live(sid,args,ctx)
     if op == 'pso_controls':
         from .pso_live import execute
         return execute(sid, args, ctx)
@@ -1126,7 +1142,7 @@ def session_rpc(sid: str, op: str, args: dict, ctx=None):
         return {"platform": g.get("platform"), "core": g.get("core"), "title": g.get("title"), "emulator": ad.name, "game_id": g.get("game_id"),
                 "rom": Path(g["_rom_path"]).name if g.get("_rom_path") else None,
                 "capabilities": rewind.capabilities(sid, ad.get_capabilities()), "runtime": ad.query_runtime(),
-                "fast_forward": rewind.fast_forward_status(sid, ad)}
+                "fast_forward": rewind.fast_forward_status(sid, ad), "time_controls": rewind.status(sid)}
     if op == "normal_speed":
         return rewind.set_fast_forward(sid, ad, on=False, recover=True)
     if op.startswith("debug_"):
@@ -1301,6 +1317,14 @@ def session_op(inp: SessionIn, ctx: Ctx):
                 if "slot" not in inp.args:
                     raise
                 res = getattr(ad, inp.op)(**{k: v for k, v in inp.args.items() if k != "slot"})   # emulator with one slot
+    if inp.op in ('save_state','load_state') and isinstance(res,dict):
+        try:
+            path=res.get('path')
+            if not path and getattr(ad,'name','')=='retroarch':path=ad.checkpoint_target()
+            if not path and getattr(ad,'name','')=='dolphin':path=Path(ad.state_dir())/(ad.serial+'.s01')
+            callback=getattr(ad,'gameplay_checkpoint',None)
+            if path and Path(path).is_file() and callback:callback(Path(path),'checkpoint' if inp.op=='save_state' else 'restore')
+        except Exception:pass  # Capture must not alter the result of a completed state operation.
     if inp.op == "save_state" and isinstance(res, dict):            # thumbnail for the save-state film strip
         if getattr(ad, 'name', '') == 'retroarch' and res.get('path'):
             _validate_state_container(Path(res['path']).read_bytes(), 'retroarch')
@@ -4032,7 +4056,7 @@ AGENTS = [
 # pso_mods_tool: PSO Ver.2 DC mods | re_mods_tool: RE4 GC items/ammo/Mercenaries | zelda_tool: every Zelda
 # ac_mods_tool: Armored Core | characters: character library (list / get / use / extract)
 # scene_capture: Examine 3D (pause + RenderDoc frame -> glTF scene)
-def _load_tool_modules(names=("sprite_faces", "smb1_sprite_build", "photo_skin", "gameplay_memory", "tas_tool", "ollama_assist", "inspection_builds", "live_controls", "pso_mods_tool", "re_mods_tool", "zelda_tool", "ac_mods_tool", "characters", "scene_capture", "tasks_tool", "blender_copy", "texture_review", "mesh_workspace", "hops_workspace",
+def _load_tool_modules(names=("pso_faces", "pso_loadouts", "gameplay_demo", "sprite_faces", "smb1_sprite_build", "photo_skin", "gameplay_memory", "tas_tool", "ollama_assist", "inspection_builds", "live_controls", "pso_mods_tool", "re_mods_tool", "zelda_tool", "ac_mods_tool", "characters", "scene_capture", "tasks_tool", "blender_copy", "texture_review", "mesh_workspace", "hops_workspace",
                               "live_link",   # live_link: Blender Live Link push -> build, validate, hot-swap into the running game
                               "re4r",   # re4r: Resident Evil 4 (2023, Steam) via REFramework + gBox's Lua bridge
                               "ue_steam",   # ue_steam: generic Unreal Engine Steam game static analysis (locomotion/animation)

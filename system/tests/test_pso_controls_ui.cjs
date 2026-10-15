@@ -21,8 +21,9 @@ test('verified GameCube actions use live RPC, suppress double clicks and never r
    GBoxPSO.mount(document.querySelector('#host'),io,{sid:'gc-worker'});waitFor(()=>document.querySelector('[data-code]'));`);
   await evaluate(`document.querySelector('[data-code]').click();document.querySelector('[data-drop]').click();document.querySelector('[data-drop]').click();waitFor(()=>document.querySelector('[data-status]').textContent.includes('48 ms'));`);
   assert.equal(await evaluate(`calls.filter(c=>c.b?.args?.input.op==='floor_spawn').length`),1);
+  assert.equal(await evaluate(`document.querySelector('[data-code]').checked`),false,'a verified manual drop clears the checkmark');
   await evaluate(`document.querySelector('[data-class]').value='HUnewearl';document.querySelector('[data-class]').dispatchEvent(new Event('change'));document.querySelector('[data-random]').click();waitFor(()=>document.querySelector('[data-status]').textContent.includes('10 / 10'));`);
-  await evaluate(`document.querySelector('[data-give]').click();waitFor(()=>document.querySelector('[data-status]').textContent.includes('added to inventory'));`);
+  await evaluate(`document.querySelector('[data-code]').click();document.querySelector('[data-give]').click();waitFor(()=>document.querySelector('[data-status]').textContent.includes('added to inventory'));`);
   await evaluate(`document.querySelector('[data-clear]').click();waitFor(()=>document.querySelector('[data-status]').textContent.includes('Removed 3'));`);
   await evaluate(`document.querySelector('[data-inventory]').click();waitFor(()=>document.querySelector('[data-multi]'));`);
   await evaluate(`document.querySelector('[data-multi]').click();waitFor(()=>document.querySelector('[data-status]').textContent.includes('applied'));`);

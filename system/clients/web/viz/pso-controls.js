@@ -8,9 +8,18 @@
   const isPSO = title => /phantasy\s*star\s*online/i.test(title || "") && !/episode\s*(iii|3)/i.test(title || "");
   function filterItems(items, { query = "", category = "Weapons", rare = false, characterClass = "" } = {}) {
     const q = query.trim().toLowerCase();
-    return items.filter(i => (!category || i.cat === category) && (!q || `${i.name} ${i.code}`.toLowerCase().includes(q))
+    return items.filter(i => (!category || i.cat === category) && (!q || `${i.name} ${i.display_name || ''} ${i.family_name || ''} ${i.variant_name || ''} ${i.code}`.toLowerCase().includes(q))
       && (!rare || i.rare) && (!characterClass || !i.classes || i.classes.includes(characterClass)))
-      .sort((a, b) => (b.stars || 0) - (a.stars || 0) || a.name.localeCompare(b.name));
+      .sort((a, b) => (b.stars || 0) - (a.stars || 0) || (a.family_name || a.name).localeCompare(b.family_name || b.name) || a.code.localeCompare(b.code));
+  }
+  function groupItems(items) {
+    const groups = new Map();
+    for (const item of items) {
+      const key = item.family_key || `${item.cat}:${item.name.toLowerCase()}`;
+      if (!groups.has(key)) groups.set(key, {key, name:item.family_name || item.name, items:[]});
+      groups.get(key).items.push(item);
+    }
+    return [...groups.values()];
   }
   function mount(host, io, session) {
     const sid = session.sid, token = {};
@@ -35,7 +44,9 @@
     host.dataset.psoSid = sid;
     let cap, items = [], busy = false, ready = false, prefsReady = false, loading = false, checking = false, recovering = false, loadId = 0, selected = new Set();
     let magId = null, magTimer = null, modeTimer = null, magPatch = {};
-    let lootTimer = null, lootDirty = false, selectionTouched = false, bossesReady = false, lastTravel = '';
+    let lootTimer = null, lootDirty = false, lootDraft = null, selectionTouched = false, bossesReady = false, lastTravel = '';
+    let groupLimit = 80, loadout = null, planning = false, planId = 0, enemyPoolCodes = [];
+    const expanded = new Set();
     const q = sel => host.querySelector(sel);
     host.innerHTML = `<style>
       .pso-controls {font-size:12px;min-width:0}.pso-controls fieldset{border:1px solid var(--line,#35353f);border-radius:6px;margin:8px 0;padding:8px;min-width:0}
@@ -44,6 +55,11 @@
       .pso-controls .pso-items{max-height:240px;overflow:auto;border-top:1px solid var(--line,#35353f);margin:6px 0}
       .pso-controls .pso-item{display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid var(--line,#35353f)}
       .pso-controls .pso-item span{flex:1;overflow-wrap:anywhere}.pso-controls small{color:var(--mut,#aaa);display:block;font-size:11px}
+      .pso-controls .pso-thumb{width:48px;height:48px;object-fit:contain;flex:none;background:#11151d;border-radius:4px}
+      .pso-controls .pso-family{border-bottom:1px solid var(--line,#35353f)}.pso-controls .pso-family summary{cursor:pointer;padding:6px 0;list-style-position:inside}
+      .pso-controls .pso-family summary img{vertical-align:middle;margin-right:5px}.pso-controls .pso-variants{padding-left:10px;border-left:2px solid var(--line,#35353f)}
+      .pso-controls .pso-reference{font-size:10px}.pso-controls textarea{width:100%;box-sizing:border-box;resize:vertical;min-height:68px}
+      .pso-controls .pso-plan{max-height:220px;overflow:auto}.pso-controls .pso-plan ol{padding-left:22px}
       .pso-controls .pso-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}.pso-controls .pso-stat input{width:64px}
       .pso-controls [role=status]{white-space:pre-wrap;overflow-wrap:anywhere;margin:6px 0}.pso-controls button{cursor:pointer}
     </style><div class="pso-controls">
@@ -56,6 +72,20 @@
         <label><input type="checkbox" data-rare> Rares only</label></div>
         <label>Class <select data-class aria-label="Character class"><option value="">Choose your class</option></select></label>
         <div class="pso-items" data-items></div><small data-total></small>
+        <button class="act" data-more hidden>Show more weapon groups</button>
+        <small>Expand a weapon to choose its individual specials or variants. Wiki pictures are references; names, codes and stats are read from your disc.</small>
+      </fieldset>
+      <fieldset data-loadouts disabled><legend>Researched weapon lists and builds</legend>
+        <label>List <select data-loadout-preset aria-label="Researched weapon list">
+          <option value="community">Community powerful weapons</option><option value="hunter">Hunter damage and utility</option>
+          <option value="ranger">Ranger damage and utility</option><option value="force">Force technique and support</option>
+          <option value="atp">Highest maximum-grind ATP</option><option value="import">Import a researched list</option>
+        </select></label>
+        <div data-loadout-import hidden><label>One exact item name or code per line<textarea data-loadout-names aria-label="Imported weapon names"></textarea></label>
+          <label>Source article <input type="url" data-loadout-source placeholder="https://…" aria-label="Research source URL"></label></div>
+        <div class="pso-row"><button class="act" data-loadout-preview>Preview list</button><button class="act pri" data-loadout-drop disabled>Drop list</button></div>
+        <small>Uses Count and Class below/above, drops one of each resolved item, and excludes unavailable or class-incompatible items. No universal strongest-weapon order is assumed.</small>
+        <div class="pso-plan" data-loadout-result aria-live="polite"></div>
       </fieldset>
       <p data-live-reason></p>
       <fieldset data-spawn disabled><legend>Items on the ground</legend>
@@ -125,6 +155,8 @@
     function enabled() {
       if (!current()) return;
       q("[data-controls]").disabled = !ready;
+      q('[data-loadouts]').disabled = !ready || planning || busy || checking;
+      q('[data-loadout-drop]').disabled = !loadout?.codes?.length || planning || busy || checking || !cap?.supported;
       q("[data-spawn]").disabled = busy || checking || !ready || !cap?.supported;
       q("[data-live]").disabled = busy || checking || !cap?.supported;
       q("[data-defaults]").disabled = busy || checking || !prefsReady;
@@ -171,17 +203,36 @@
     }
     function render() {
       if (!current()) return;
+      const scroller=q('[data-items]'),scrollTop=scroller.scrollTop;
+      scroller.querySelectorAll('[data-family]').forEach(el=>{el.open?expanded.add(el.dataset.family):expanded.delete(el.dataset.family);});
       const rows = filterItems(items, { query: q("[data-search]").value, category: q("[data-category]").value,
         rare: q("[data-rare]").checked, characterClass: q("[data-class]").value });
-      q("[data-total]").textContent = `${rows.length} matches · ${selected.size} selected (up to 20)`;
-      q("[data-items]").innerHTML = rows.slice(0, 160).map(i => `<label class="pso-item"><input type="checkbox" data-code="${esc(i.code)}" ${selected.has(i.code) ? "checked" : ""}>
-        <span>${esc(i.name)}<small>${i.stars} stars · ${esc(i.code)}${i.max_grind != null ? ` · grind +${i.max_grind}` : ""}
-        ${i.atp_required != null ? ` · ATP ${i.atp_required} / MST ${i.mst_required} / ATA ${i.ata_required}` : ""}</small></span></label>`).join("") || "No matching items.";
-      q('[data-enemy-pool]').textContent=selected.size ? `Enemy pool: ${[...selected].map(c=>items.find(i=>i.code===c)?.name||c).join(', ')}` : 'Choose up to 20 items in the database above.';
+      const groups = groupItems(rows);
+      q("[data-total]").textContent = `${rows.length} matches · ${groups.length} weapon/item groups · ${selected.size} selected (up to 20)`;
+      const picture = i => i.thumbnail_url && /^https:\/\/wiki\.pioneer2\.net\/images\//.test(i.thumbnail_url)
+        ? `<img class="pso-thumb" loading="lazy" referrerpolicy="no-referrer" alt="${esc(i.family_name || i.name)} reference" src="${esc(i.thumbnail_url)}">` : '';
+      const reference = i => i.reference_url && /^https:\/\/wiki\.pioneer2\.net\/w\//.test(i.reference_url)
+        ? `<a class="pso-reference" href="${esc(i.reference_url)}" target="_blank" rel="noopener noreferrer" title="${esc(i.reference_note || '')}">Wiki reference ↗</a>` : '';
+      const row = (i, variant=false) => `<label class="pso-item"><input type="checkbox" data-code="${esc(i.code)}" ${selected.has(i.code) ? 'checked' : ''}>
+        ${variant ? '' : picture(i)}<span>${esc(variant ? i.variant_name || i.code : i.display_name || i.name)}
+        <small>${i.stars} stars · ${esc(i.code)}${i.max_grind != null ? ` · grind +${i.max_grind}` : ''}
+        ${i.atp_required != null ? ` · ATP ${i.atp_required} / MST ${i.mst_required} / ATA ${i.ata_required}` : ''}</small>${variant ? '' : reference(i)}</span></label>`;
+      q('[data-items]').innerHTML = groups.slice(0,groupLimit).map(g => g.items.length===1 ? row(g.items[0]) :
+        `<details class="pso-family" data-family="${esc(g.key)}" ${expanded.has(g.key) ? 'open' : ''}>
+          <summary>${picture(g.items[0])}<strong>${esc(g.name)}</strong><small>${g.items.length} variants · ${g.items.filter(i=>selected.has(i.code)).length} selected</small></summary>
+          ${reference(g.items[0])}<div class="pso-variants">${g.items.map(i=>row(i,true)).join('')}</div></details>`).join('') || 'No matching items.';
+      q('[data-items]').querySelectorAll('img').forEach(img=>{img.onerror=()=>{img.hidden=true;};});
+      scroller.scrollTop=scrollTop;
+      q('[data-more]').hidden=groups.length<=groupLimit;
+      const pool=q('[data-enemy-on]').checked ? enemyPoolCodes : [...selected];
+      q('[data-enemy-pool]').textContent=pool.length ? `Enemy pool: ${pool.map(c=>items.find(i=>i.code===c)?.display_name||items.find(i=>i.code===c)?.name||c).join(', ')}` : 'Choose up to 20 items in the database above.';
       enabled();
     }
-    for (const attr of ["search", "category", "rare", "class"]) q(`[data-${attr}]`).addEventListener(attr === "search" ? "input" : "change", render);
-    for (const attr of ["count", "radius"]) q(`[data-${attr}]`).oninput = () => q(`[data-${attr}-value]`).value = q(`[data-${attr}]`).value;
+    function invalidatePlan(){++planId;loadout=null;q('[data-loadout-result]').textContent='';enabled();}
+    for (const attr of ["search", "category", "rare", "class"]) q(`[data-${attr}]`).addEventListener(attr === "search" ? "input" : "change", ()=>{groupLimit=80;if(attr==='class')invalidatePlan();render();});
+    q('[data-items]').addEventListener('toggle',e=>{const key=e.target.dataset.family;if(key)e.target.open?expanded.add(key):expanded.delete(key);},true);
+    q('[data-more]').onclick=()=>{groupLimit+=80;render();};
+    for (const attr of ["count", "radius"]) q(`[data-${attr}]`).oninput = () => {q(`[data-${attr}-value]`).value = q(`[data-${attr}]`).value;if(attr==='count')invalidatePlan();};
     q("[data-items]").onchange = e => {
       const code = e.target.dataset.code; if (!code) return;
       if (e.target.checked && selected.size >= 20) { e.target.checked = false; say("Select up to 20 items per drop."); return; }
@@ -189,24 +240,27 @@
       e.target.checked ? selected.add(code) : selected.delete(code); render();
       if(q('[data-enemy-on]').checked) scheduleLoot();
     };
-    function scheduleLoot() {
+    function scheduleLoot(useSelection=true) {
+      // Keep the intended enemy policy independent of manual drop checkmarks.
+      // A successful drop may clear them while this debounced request is waiting.
+      lootDraft={on:q('[data-enemy-on]').checked,codes:selected.size || useSelection ? [...selected] : [...enemyPoolCodes],max_grind:q('[data-grind]').checked};
       lootDirty=true;clearTimeout(lootTimer);lootTimer=setTimeout(applyLoot,350);
     }
     async function applyLoot() {
       if(!current() || !lootDirty || !prefsReady || !cap?.features?.enemy_drops)return;
       if(busy || checking){lootTimer=setTimeout(applyLoot,150);return;}
       lootDirty=false;
-      const on=q('[data-enemy-on]').checked;
-      if(on && !selected.size){q('[data-enemy-on]').checked=false;say('Select items before enabling enemy drops.');}
-      const want=on && !!selected.size,codes=[...selected],max_grind=q('[data-grind]').checked;
+      const {on,codes,max_grind}=lootDraft;
+      if(on && !codes.length){q('[data-enemy-on]').checked=false;say('Select items before enabling enemy drops.');}
+      const want=on && !!codes.length;
       busy=true;enabled();
       try {await io.api('/api/pso/preferences',{enemy_drops:want,enemy_codes:codes,enemy_max_grind:max_grind});}
       catch(error){say('Enemy drop settings were not saved: '+error.message);busy=false;enabled();return;}
-      busy=false;
+      enemyPoolCodes=want ? codes : [];busy=false;render();
       if(current())await run('enemy_drops',{on:want,codes,max_grind});
     }
-    q('[data-enemy-on]').onchange=scheduleLoot;
-    q('[data-grind]').onchange=()=>{if(q('[data-enemy-on]').checked)scheduleLoot();};
+    q('[data-enemy-on]').onchange=()=>scheduleLoot(false);
+    q('[data-grind]').onchange=()=>{if(q('[data-enemy-on]').checked)scheduleLoot(false);};
     q('[data-walk]').onchange=async e=>{
       if(busy || checking || !prefsReady)return;
       const on=e.target.checked;busy=true;enabled();
@@ -216,7 +270,38 @@
     };
     q('[data-boss-warp]').onclick=()=>run('boss_warp',{target:q('[data-boss]').value});
     const spawnArgs = () => ({ count: +q("[data-count]").value, radius: +q("[data-radius]").value, max_grind: q("[data-grind]").checked });
-    q("[data-drop]").onclick = () => run("floor_spawn", { ...spawnArgs(), codes: [...selected] });
+    q("[data-drop]").onclick = async() => {
+      const dropped=[...selected],r=await run('floor_spawn',{...spawnArgs(),codes:dropped});
+      if(r?.verified===true && current()){dropped.forEach(c=>selected.delete(c));selectionTouched=true;render();}
+    };
+    q('[data-loadout-preset]').onchange=()=>{q('[data-loadout-import]').hidden=q('[data-loadout-preset]').value!=='import';invalidatePlan();};
+    for(const attr of ['names','source'])q(`[data-loadout-${attr}]`).oninput=invalidatePlan;
+    q('[data-loadout-preview]').onclick=async()=>{
+      if(planning || busy || checking || !ready)return;
+      const attempt=++planId;
+      planning=true;loadout=null;enabled();q('[data-loadout-result]').textContent='Resolving against this disc and character class…';
+      const preset=q('[data-loadout-preset]').value;
+      const input={version:cap.version,preset:preset==='import'?'community':preset,character_class:q('[data-class]').value,count:+q('[data-count]').value};
+      if(preset==='import'){
+        input.names=q('[data-loadout-names]').value.split(/\n/).map(s=>s.replace(/^\s*\d+[.)]\s*/, '').trim()).filter(Boolean);
+        input.source_urls=q('[data-loadout-source]').value.trim() ? [q('[data-loadout-source]').value.trim()] : [];
+        if(!input.names.length){planning=false;enabled();q('[data-loadout-result]').textContent='Enter at least one researched item name.';return;}
+      }
+      try{
+        const result=await bounded(io.api('/api/pso/loadouts/plan',input),'List preview timed out. No items were dropped.');
+        if(!current() || attempt!==planId)return;
+        if(!Array.isArray(result.items)||!Array.isArray(result.codes)||result.codes.length>20)throw Error('Invalid researched list response');
+        loadout=result;
+        q('[data-loadout-result]').innerHTML=`<strong>${esc(result.label)}</strong><ol>${result.items.map(i=>`<li>${esc(i.display_name||i.name)}<small>${esc(i.code)}${i.max_grind_atp!=null?' · max-grind ATP '+i.max_grind_atp:''}</small></li>`).join('')}</ol><small>${esc(result.note)}</small>
+          ${(result.warnings||[]).map(w=>`<p>${esc(w)}</p>`).join('')}<small>${(result.sources||[]).filter(u=>/^https:\/\//.test(u)).map((u,n)=>`<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">Source ${n+1} ↗</a>`).join(' · ')}</small>`;
+      }catch(error){if(current() && attempt===planId)q('[data-loadout-result]').textContent=error.message;}
+      finally{planning=false;enabled();}
+    };
+    q('[data-loadout-drop]').onclick=async()=>{
+      if(!loadout?.codes?.length)return;
+      const codes=[...loadout.codes],r=await run('floor_spawn',{...spawnArgs(),count:codes.length,codes});
+      if(r?.verified===true && current()){codes.forEach(c=>selected.delete(c));selectionTouched=true;render();}
+    };
     q("[data-random]").onclick = () => run("floor_rares", { ...spawnArgs(), character_class: q("[data-class]").value, highest: q("[data-highest]").checked });
     q("[data-clear]").onclick = () => run("floor_clear", { on: false });
     q("[data-give]").onclick = () => run("give", {code: [...selected][0], count: +q('[data-count]').value});
@@ -292,6 +377,7 @@
     async function load(knownCap = null, notice = '') {
       if (!current() || busy || loading || recovering) return;
       const attempt = ++loadId;
+      invalidatePlan();
       loading = true; checking = true; cap = null; prefsReady = false; enabled();
       q("[data-equip]").indeterminate = true;
       const fresh = () => current() && attempt === loadId;
@@ -328,6 +414,7 @@
             q('[data-accuracy-note]').textContent=cap.features?.always_hit ? 'Bypasses your attack accuracy miss roll. Range, target contact and invulnerability still apply.' : 'The always-hit patch needs verification for this game revision.';
             q('[data-scape]').checked=!!prefs.permanent_scape;q('[data-legendary]').checked=!!prefs.legendary;
             q('[data-enemy-on]').checked=!!prefs.enemy_drops;q('[data-walk]').checked=!!prefs.walk_through;
+            enemyPoolCodes=Array.isArray(prefs.enemy_codes)?prefs.enemy_codes.slice(0,20):[];
             if(!selectionTouched && Array.isArray(prefs.enemy_codes))selected=new Set(prefs.enemy_codes.slice(0,20));
             if(typeof prefs.enemy_max_grind==='boolean')q('[data-grind]').checked=prefs.enemy_max_grind;
             render();
@@ -370,5 +457,5 @@
     load();
     return { dispose() { for(const t of timeouts)clearTimeout(t);timeouts.clear();clearTimeout(lootTimer);clearTimeout(magTimer);clearInterval(modeTimer);if (host._psoMount === token) { host._psoMount = null; host.dataset.psoSid = ""; } } };
   }
-  return { mount, isPSO, filterItems };
+  return { mount, isPSO, filterItems, groupItems };
 });

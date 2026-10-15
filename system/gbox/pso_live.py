@@ -31,7 +31,7 @@ def authorize(store, config, sid, body):
     if time.time() - worker.get('last_seen', 0) > 60:
         raise ValueError('The emulator worker is offline')
     root = Path(__file__).parent
-    for name in ('pso_live.py', 'pso_rehook.py', 'pso_accuracy.py', 'pso_gc_live.py', 'pso_gc_extras.py','pso_gc_adventure.py','pso_modes.py', 'tools.py', 'pso_mods_tool.py', 'pso_controls.py'):
+    for name in ('pso_live.py', 'pso_rehook.py', 'pso_accuracy.py', 'pso_gc_live.py', 'pso_gc_extras.py','pso_gc_adventure.py','pso_modes.py', 'psoitems.py','pso_loadouts.py','tools.py', 'pso_mods_tool.py', 'pso_controls.py'):
         expected = hashlib.sha256((root/name).read_bytes().replace(b'\r\n',b'\n')).hexdigest()
         if worker.get('build_sources', {}).get('gbox/'+name) != expected:
             raise ValueError('This worker needs a safe refresh to load the verified PSO live controls')
@@ -103,6 +103,10 @@ def execute(sid, body, ctx):
             result['elapsed_ms'] = round((time.monotonic() - started) * 1000, 1)
             result['command_id'] = body['command_id']
             receipt['result'] = result
+            try:
+                from . import gameplay_actions
+                gameplay_actions.record(sid,body['input'],result,ctx,body['command_id'])
+            except Exception:pass  # Applied mutations must never become retries because recording failed.
             return result
         except Exception as error:
             receipt['error'] = str(error)
@@ -131,7 +135,8 @@ def catalog(ctx, version):
     response = httpx.get(f'{ctx.server}/api/pso/items', params={'version': version}, headers=ctx.headers, timeout=3)
     response.raise_for_status()
     rows = response.json()
-    if not isinstance(rows, list) or not rows or any(i.get('schema') != 2 for i in rows):
+    from .psoitems import CATALOG_SCHEMA
+    if not isinstance(rows, list) or not rows or any(i.get('schema') != CATALOG_SCHEMA for i in rows):
         raise Unsupported('Prepare the updated owned-disc item database first')
     with _catalog_lock:
         if len(_catalogs) >= 8:

@@ -640,6 +640,8 @@ def create_app(config: Config) -> FastAPI:
     texture_review.register(app, auth, store, _chars, lambda req, actor: submit(req, actor), JobRequest)
     from . import photo_skin
     photo_skin.register(app, auth, store, _chars)
+    from . import pso_faces
+    pso_faces.routes(app,store,auth)
 
     # environments: whole captured scenes (characters op=extract kind=environment), next to the characters
     def _env_file(slug: str, rel: str) -> Path:
@@ -2490,6 +2492,12 @@ def create_app(config: Config) -> FastAPI:
         # arbitrary RAM buffers, credentials, or interpreting success as gameplay proof.
         capture = getattr(app.state, 'capture_gameplay', None)
         attempt = j.get('input') or {}
+        if capture and attempt.get('session_id') and t.name=='pso_mods':
+            from .gameplay_actions import action
+            native=(r.output or {}).get('result') or {}
+            if state!=JobState.SUCCEEDED:native={'verified':False}
+            payload=action(attempt,native)
+            if payload:capture(attempt['session_id'],'mod_action',payload,token='pso-job:'+j['id'])
         if capture and attempt.get('session_id') and t.name in (
                 'session_op', 'pso_inventory', 'pso_drops', 'characters', 'mod', 'cheats', 'graphics'):
             fields = ('op','action','slot','character','name','item','item_id','count','stat','value','enabled','index','weapon')
@@ -3907,6 +3915,8 @@ def create_app(config: Config) -> FastAPI:
     ollama_assist.install(app, store, auth)
     from . import gameplay_memory
     gameplay_memory.install(app, store, config, auth)
+    from . import gameplay_demo
+    gameplay_demo.install(app,store,config,auth,submit,workers,app.state.gameplay_memory)
     from . import tas_api
     tas_api.install(app, store, config, auth, submit, workers)
 
@@ -4274,7 +4284,7 @@ def create_app(config: Config) -> FastAPI:
     def session_rpc(sid: str, req: Rpc, actor=Depends(auth)):
         """Inspector peeks (read_memory / read_rom / info) and CPU debugger ops (debug_*), answered by the worker over the
         session channel. Debugger control (halt/step/breakpoints) changes execution, not memory, and is audited."""
-        if req.op not in ("read_memory", "read_rom", "info", "state", "reset", "menu", "pause", "resume", "normal_speed", "pso_controls", "memory_cards") \
+        if req.op not in ("read_memory", "read_rom", "info", "state", "reset", "menu", "pause", "resume", "normal_speed", "pso_controls", "memory_cards", "pso_face") \
                 and not req.op.startswith("debug_"):
             raise HTTPException(422, "read-only, reset, pause/resume and debug_* ops only; edits go through the write_memory job")
         if req.op in ("reset", "pause", "resume", "normal_speed", "debug_halt", "debug_resume", "debug_step", "debug_break", "debug_unbreak"):
@@ -4296,15 +4306,21 @@ def create_app(config: Config) -> FastAPI:
             except PermissionError as error:raise HTTPException(403,str(error))
             except (ValueError,TypeError) as error:raise HTTPException(422,str(error))
             store.audit(actor,'session.memory_cards',sid,req.args['input'])
+        if req.op=='pso_face':
+            from .pso_faces import authorize
+            try:authorize(store,config,sid,req.args)
+            except PermissionError as error:raise HTTPException(403,str(error))
+            except (ValueError,TypeError) as error:raise HTTPException(422,str(error))
+            store.audit(actor,'session.pso_face',sid,req.args['input'])
         rid, lv = new_id(), _live(sid)
         item = {"rpc": rid, "op": req.op, "args": req.args}
         with lv["cond"]:
-            if req.op in ('pso_controls','memory_cards'):
+            if req.op in ('pso_controls','memory_cards','pso_face'):
                 pso_rpc_pending[rid] = sid
             lv["input"].append(item)
             lv["cond"].notify_all()
             if not lv["cond"].wait_for(lambda: rid in rpc_results, 10):
-                if req.op in ('pso_controls','memory_cards'):
+                if req.op in ('pso_controls','memory_cards','pso_face'):
                     pso_rpc_pending.pop(rid, None)
                     try: lv['input'].remove(item)
                     except ValueError: pass

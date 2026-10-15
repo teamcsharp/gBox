@@ -66,7 +66,7 @@ def test_every_poller_reads_through_the_shared_binding(monkeypatch):
     snap = gamepads.xinput_snapshot()
     assert [(s["slot"], s["buttons"], s["lt"]) for s in snap] == [(0, rewind.BACK | 0x1000, 200)]
     pad = rewind.XInputPad()
-    assert pad.ok and pad.read() == (True, 200 > rewind.TRIGGER, False)
+    assert pad.ok and pad.read() == (True, 200 > rewind.TRIGGER, False, False, False)
 
 
 def test_off_windows_no_poller_touches_xinput(monkeypatch):

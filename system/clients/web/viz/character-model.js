@@ -27,6 +27,15 @@ export async function createCharacterViewer(container, url, options = {}) {
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true; controls.autoRotate = options.autoRotate ?? true; controls.autoRotateSpeed = 1;
   let dead = false, frameId = 0, player = null;
+  let paintHandler=null;const paintTextures=new Set(),generatedTextures=new Map(),raycaster=new THREE.Raycaster();
+  function paintEvent(event){
+    if(!paintHandler||event.button>0||event.type==='pointermove'&&!(event.buttons&1))return;
+    const rect=renderer.domElement.getBoundingClientRect();raycaster.setFromCamera(new THREE.Vector2((event.clientX-rect.left)/rect.width*2-1,1-(event.clientY-rect.top)/rect.height*2),camera);
+    const hit=raycaster.intersectObject(gltf.scene,true).find(h=>h.uv);
+    if(hit){const material=Array.isArray(hit.object.material)?hit.object.material[hit.face.materialIndex]:hit.object.material;paintHandler({u:hit.uv.x,v:hit.uv.y,material:material?.name,event});}
+    event.preventDefault();event.stopImmediatePropagation();
+  }
+  renderer.domElement.addEventListener('pointerdown',paintEvent,true);renderer.domElement.addEventListener('pointermove',paintEvent,true);
   const clock = new THREE.Clock(), files = new Map();
   const resize = () => {
     const w = Math.max(1, container.clientWidth), h = Math.max(1, container.clientHeight);
@@ -53,6 +62,14 @@ export async function createCharacterViewer(container, url, options = {}) {
   }
   return {
     THREE, holder, gltf,
+    materials(){const names=new Set();gltf.scene.traverse(o=>{if(o.isMesh)for(const m of [].concat(o.material||[]))if(m.map)names.add(m.name);});return [...names];},
+    paint(handler){paintHandler=handler;controls.enabled=!handler;controls.autoRotate=handler?false:(options.autoRotate??true);},
+    texture(image,materialName){
+      let texture=generatedTextures.get(materialName);
+      if(texture){texture.image=image;texture.needsUpdate=true;return;}
+      texture=new THREE.CanvasTexture(image);texture.flipY=false;texture.colorSpace=THREE.SRGBColorSpace;paintTextures.add(texture);generatedTextures.set(materialName,texture);
+      gltf.scene.traverse(o=>{if(o.isMesh)for(const m of [].concat(o.material||[]))if(m.name===materialName){if(m.map)paintTextures.add(m.map);m.map=texture;m.needsUpdate=true;}});
+    },
     getView,
     setView(pose) {
       if(!pose||![pose.position,pose.target].every(a=>Array.isArray(a)&&a.length===3&&a.every(Number.isFinite)))return;
@@ -69,6 +86,7 @@ export async function createCharacterViewer(container, url, options = {}) {
     dispose() {
       if (dead) return;
       dead = true; cancelAnimationFrame(frameId); observer.disconnect(); controls.dispose(); player?.dispose?.(); player = null;
+      paintHandler=null;for(const texture of paintTextures)texture.dispose();paintTextures.clear();generatedTextures.clear();
       gltf.scene.traverse(o => { if (!o.isMesh) return; o.geometry?.dispose();
         for (const material of [].concat(o.material || [])) { for (const value of Object.values(material)) if (value?.isTexture) value.dispose(); material.dispose(); }
       });

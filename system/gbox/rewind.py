@@ -1,17 +1,16 @@
-"""Universal Select+L2 rewind and Select+R2 fast-forward (#454, #1382), for every emulator gBox runs.
+"""Shared Select+direction/trigger time controls, with truthful per-emulator capabilities.
 
 Every session reports `rewind` in its capabilities:
 
-  native       RetroArch cores with rewind_enable: RetroArch's own rewind buffer answers Select+L2 (Select is the hotkey
-               enabler in the session cfg). The worker only drives the Select+R2 ramp.
+  native       RetroArch cores with rewind_enable: the worker sends REWIND through its command channel.
   checkpoint   everything else that saves and loads a state in place (RetroArch heavy cores where rewind_enable would
                stutter: Flycast, PCSX2, Citra, the Dolphin core; standalone Dolphin): the worker keeps a bounded ring
                of periodic save states and each Select+L2 press or hold-repeat loads the next older one. Select+R2
                ramps the adapter's fast_forward when it has one.
-  unsupported  no in-place save state (Xenia, Yuzu) or one that reboots the emulator (RPCS3).
+  unsupported  no verified in-place state interface (Xenia, Yuzu, Steam) or one that reboots the emulator (RPCS3).
   off          checkpoints switched off (gbox.toml [rewind] checkpoints = false, or launch_game rewind=false).
 
-The chord comes from the operator's own pad, which gBox only watches: on Windows the worker polls XInput slot 0 (the
+The chord comes from the operator's own pad, which gBox only watches: on Windows the worker polls a connected XInput pad (the
 pad itself goes straight to the emulator); for streamed sessions the pad events the browser sends through
 /api/sessions/{sid}/input pass through the worker and are watched there (feed). A pad plugged into the Linux node
 itself is not read (no evdev dependency; see docs/rewind.md).
@@ -30,7 +29,31 @@ from .registry import Unsupported
 MODES = ("native", "checkpoint", "unsupported", "off")
 TRIGGER = 60            # an XInput trigger (0-255) counts as pressed above this, like the RetroArch ramp before it
 BACK = 0x0020           # XINPUT_GAMEPAD_BACK = Select / View
+DPAD_BACK = 0x0004 | 0x0002       # Left / Down
+DPAD_FORWARD = 0x0008 | 0x0001    # Right / Up
+TIME_KEYS = frozenset(('select', 'l2', 'r2', 'left', 'right', 'up', 'down'))
 STATE_SUFFIX = re.compile(r"\.state(-?\d+)?$")
+
+
+def _time_key(ev):
+    """Only Player 1 controls time. Keyboard events use the same names as the GPU surface."""
+    if not isinstance(ev, dict) or 'rpc' in ev:
+        return None
+    try:
+        if int(ev.get('player') or 1) != 1:
+            return None
+    except (TypeError, ValueError):
+        return None
+    key = str(ev.get('key') or '')
+    aliases = {'Shift_R': 'select', 'BackSpace': 'select', 'Up': 'up', 'Down': 'down',
+               'Left': 'left', 'Right': 'right'}
+    key = aliases.get(key, key.lower())
+    return key if key in TIME_KEYS else None
+
+
+def _time_sample(keys):
+    return ('select' in keys, 'l2' in keys, 'r2' in keys,
+            bool({'left', 'down'} & keys), bool({'right', 'up'} & keys))
 
 
 class FastForwardRamp:
@@ -67,29 +90,32 @@ class FastForwardRamp:
 
 
 class ChordDetector:
-    """Select+L2 / Select+R2 from pad samples (select, l2, r2 held). update() returns the sample's actions:
+    """Select+L2/Left/Down or Select+R2/Right/Up from pad samples. update() returns the sample's actions:
     rewind_step (on the press, then every repeat_s while held), rewind_end, ff_start, ff_end.
     Select+L2 wins while both triggers are held. Pressing order does not matter."""
 
     def __init__(self, repeat_s: float = 0.6):
         self.repeat_s = float(repeat_s)
-        self.select = self.l2 = self.r2 = False
+        self.select = self.l2 = self.r2 = self.backward = self.forward = False
+        self.keys = set()
         self.rewind_held = self.ff_held = False
         self._next = 0.0
 
     def feed(self, events, now: float) -> list[str]:
         """Pad events as the session input channel carries them ({key, down}); other keys are ignored."""
         for ev in events or []:
-            key = str(ev.get("key") or "").lower() if isinstance(ev, dict) else ""
-            if key in ("select", "l2", "r2"):
-                setattr(self, key, bool(ev.get("down", True)))
-        return self.update(self.select, self.l2, self.r2, now)
+            key = _time_key(ev)
+            if key:
+                self.keys.add(key) if ev.get('down', True) else self.keys.discard(key)
+        select, l2, r2, backward, forward = _time_sample(self.keys)
+        return self.update(select, l2, r2, now, backward, forward)
 
-    def update(self, select: bool, l2: bool, r2: bool, now: float) -> list[str]:
+    def update(self, select: bool, l2: bool, r2: bool, now: float, backward=False, forward=False) -> list[str]:
         self.select, self.l2, self.r2 = bool(select), bool(l2), bool(r2)
+        self.backward, self.forward = bool(backward), bool(forward)
         out = []
-        rewind = self.select and self.l2
-        ff = self.select and self.r2 and not rewind
+        rewind = self.select and (self.l2 or self.backward)
+        ff = self.select and (self.r2 or self.forward) and not rewind
         if rewind and not self.rewind_held:
             self.rewind_held, self._next = True, now + self.repeat_s
             out.append("rewind_step")
@@ -233,7 +259,17 @@ class CheckpointRing:
         self.entries.append(entry)
         self.taken += 1
         self._trim()
+        self._notify_gameplay(dst, 'checkpoint')
         return entry
+
+    def _notify_gameplay(self, path, kind):
+        callback = getattr(self.adapter, 'gameplay_checkpoint', None)
+        if callable(callback):
+            try:
+                callback(path, kind)
+            except Exception:
+                # Archiving is optional and must never prevent an operator rewind or damage its private ring.
+                pass
 
     def _state_folder(self) -> Path | None:
         fn = getattr(self.adapter, "state_dir", None)
@@ -368,6 +404,7 @@ class CheckpointRing:
                     self.sleep(self.load_settle_s)   # the emulator reads the file on its next frame; then it is the operator's again
                     self._restore_manual()
             self.cursor = nxt
+            self._notify_gameplay(entry['file'], 'restore')
             return entry
 
     def release(self) -> int:
@@ -408,24 +445,32 @@ class CheckpointRing:
 
 
 class XInputPad:
-    """The operator's Xbox-layout pad on Windows (XInput slot 0): Select = Back / View, L2 / R2 = the triggers."""
+    """The operator's connected Xbox-layout pad; a disconnected slot is rediscovered after unplug/replug."""
 
-    def __init__(self, slot: int = 0):
+    def __init__(self, slot: int | None = None):
         from . import xinput
-        self.slot, self.state = slot, xinput.XInputState()
+        self.slot, self.automatic, self.state = 0 if slot is None else slot, slot is None, xinput.XInputState()
         self.dll = xinput.load()            # shared XInputGetState (#1638); None off Windows or without XInput
 
     @property
     def ok(self) -> bool:
         return self.dll is not None
 
-    def read(self) -> tuple[bool, bool, bool] | None:
-        """(select, l2, r2) held, or None without a pad in the slot."""
+    def read(self) -> tuple[bool, bool, bool, bool, bool] | None:
+        """(select, l2, r2, backward, forward), or None without a pad in the slot."""
         from . import xinput
-        if self.dll is None or xinput.read(self.dll, self.slot, self.state) is None:
+        if self.dll is None:
+            return None
+        order = [self.slot, *[n for n in range(4) if n != self.slot]] if self.automatic else [self.slot]
+        for slot in order:
+            if xinput.read(self.dll, slot, self.state) is not None:
+                self.slot = slot
+                break
+        else:
             return None
         g = self.state.gamepad
-        return (bool(g.buttons & BACK), g.lt > TRIGGER, g.rt > TRIGGER)
+        return (bool(g.buttons & BACK), g.lt > TRIGGER, g.rt > TRIGGER,
+                bool(g.buttons & DPAD_BACK), bool(g.buttons & DPAD_FORWARD))
 
 
 class SessionRewind:
@@ -438,50 +483,92 @@ class SessionRewind:
         self.use_ramp = bool(ramp) and "fast_forward" in (getattr(adapter, "supported", None) or ())
         self.native_steps = bool(native_steps)          # native rewind the pad cannot reach itself: the worker sends the steps
         self.pad = pad                                  # a local pad reader (XInputPad) or None
-        self.fed = [False, False, False]                # select / l2 / r2 from streamed pad events
+        self.fed = [False] * 5                         # select / l2 / r2 / backward / forward
+        self._fed_keys = set()
+        self._delivered = {}                          # time-control buttons actually sent to the emulator
+        self._swallowed = set()                       # a chord key stays swallowed until its physical release
         self.ff_on, self.steps, self.ff_holds, self.last_step = False, 0, 0, None
         self.ff_manual = False
         self.ff_blocked = False
+        self.control_error = None
         self._lock = threading.Lock()
         self.threads: list[threading.Thread] = []
 
     # --- pad sources ---
-    def feed(self, events) -> None:
-        """Pad events passing through the worker (streamed sessions): remembered, applied on the next poll."""
-        for ev in events or []:
-            key = str(ev.get("key") or "").lower() if isinstance(ev, dict) else ""
-            if key in ("select", "l2", "r2"):
-                self.fed[("select", "l2", "r2").index(key)] = bool(ev.get("down", True))
+    def feed(self, events) -> list[dict]:
+        """Remember streamed chords and remove their buttons from game input.
+
+        A trigger or direction delivered before Select joined receives a key-up on chord entry. Keys remain
+        swallowed until released, so releasing Select cannot turn a held time-control key into a game action.
+        Player 2 and ordinary buttons pass through unchanged. Native pads are observed, never intercepted.
+        """
+        out = []
+        with self._lock:
+            planned = set(self._fed_keys)
+            for ev in events or []:
+                key = _time_key(ev)
+                if key:
+                    planned.add(key) if ev.get('down', True) else planned.discard(key)
+            joining = 'select' in planned and bool((TIME_KEYS - {'select'}) & planned)
+            for ev in events or []:
+                key = _time_key(ev)
+                if key is None:
+                    out.append(ev)
+                    continue
+                if ev.get('down', True):
+                    self._fed_keys.add(key)
+                else:
+                    self._fed_keys.discard(key)
+                    self._swallowed.discard(key)
+                active = 'select' in self._fed_keys and bool((TIME_KEYS - {'select'}) & self._fed_keys)
+                if active or joining:
+                    self._swallowed.update(self._fed_keys & TIME_KEYS)
+                for held, delivered in list(self._delivered.items()):
+                    if held not in self._fed_keys or held in self._swallowed:
+                        out.append({**delivered, 'down': False})
+                        self._delivered.pop(held, None)
+                if ev.get('down', True) and key not in self._swallowed and key not in self._delivered:
+                    out.append(ev)
+                    self._delivered[key] = ev
+            self.fed = list(_time_sample(self._fed_keys))
+        return out
 
     def sample(self) -> tuple[bool, bool, bool]:
         local = self.pad.read() if self.pad is not None else None
-        return tuple(bool(a or b) for a, b in zip(local or (False, False, False), self.fed))
+        return tuple(bool(a or b) for a, b in zip(local or (False,) * 5, self.fed))
 
     def poll(self, now: float | None = None, sample=None) -> list[str]:
         """One 60 Hz tick: the chord's actions go to the ring, the held fast-forward to the ramp."""
         now = self.clock() if now is None else now
         with self._lock:
             s = self.sample() if sample is None else sample
-            if self.ff_blocked and not (s[0] and s[2]):
+            # Three-element samples remain accepted by API clients and older test harnesses.
+            select, l2, r2, backward, forward = (*s, False, False)[:5]
+            if self.ff_blocked and not (select and (r2 or forward)):
                 self.ff_blocked = False
-            acts = self.chord.update(*s, now)
+            acts = self.chord.update(select, l2, r2, now, backward, forward)
             for a in acts:
                 if a == "rewind_step" and self.ring is not None:
                     entry = self.ring.step_back()
                     if entry is not None:
                         self.steps, self.last_step = self.steps + 1, entry
+                        self.control_error = None
+                    else:
+                        self.control_error = 'No older checkpoint yet; keep playing to fill the rewind buffer'
                 elif a == "rewind_step" and self.native_steps:
                     try:
                         self.adapter.rewind(self.chord.repeat_s)   # one repeat's worth through the emulator's own buffer
                         self.steps += 1
-                    except Exception:                   # noqa: BLE001 - rewind off or the emulator between frames
-                        pass
+                        self.control_error = None
+                    except Exception as exc:            # noqa: BLE001 - the game keeps running
+                        self.control_error = f'Rewind: {exc}'
                 elif a == "rewind_end" and self.ring is not None:
                     self.ring.release()
                 elif a == "ff_start":
                     self.ff_holds += 1
             if self.use_ramp:
-                self._set_ff(self.ff_manual or self.ramp.tick(self.chord.ff_held and not self.ff_blocked, now))
+                ramp = self.ramp.tick(self.chord.ff_held and not self.ff_blocked, now)
+                self._set_ff((self.ff_manual or ramp) and not self.chord.rewind_held)
             return acts
 
     def _set_ff(self, want: bool) -> None:
@@ -493,8 +580,8 @@ class SessionRewind:
             except TypeError:                       # an adapter whose fast_forward is a plain toggle
                 self.adapter.fast_forward()
             self.ff_on = want
-        except Exception:                           # noqa: BLE001 - the emulator may be between frames or gone
-            pass
+        except Exception as exc:                    # noqa: BLE001 - the emulator may be between frames or gone
+            self.control_error = f'Fast-forward: {exc}'
 
     # --- threads (the real worker) ---
     def run(self, alive) -> None:
@@ -532,11 +619,17 @@ class SessionRewind:
                 self.ring.close()
 
     def status(self) -> dict:
-        d = {"rewind": self.mode, "fast_forward_ramp": self.use_ramp}
+        d = {"rewind": self.mode, "fast_forward_ramp": self.use_ramp,
+             "controls": {"rewind": "Select + Left/Down or L2", "fast_forward": "Select + Right/Up or R2"},
+             "fast_forward_supported": "fast_forward" in (getattr(self.adapter, 'supported', None) or ())}
+        if not d['fast_forward_supported']:
+            d['fast_forward_reason'] = f"{getattr(self.adapter, 'name', 'This emulator')} has no verified speed-control interface"
         if self.native_steps:
             d["native_steps"] = True
         if self.reason:
             d["reason"] = self.reason
+        if self.control_error:
+            d['control_error'] = self.control_error
         if self.ring is not None:
             d.update(self.ring.status())
         if self.last_step is not None:
@@ -597,9 +690,10 @@ def start(sid: str, adapter, config, game: dict | None = None, enabled: bool | N
                                   content=(game or {}).get("_rom_path"), max_duty=max_duty)
     # The pad reaches RetroArch's own hotkeys on Windows (XInput binds in the session cfg) and, streamed, where the
     # game leaves the triggers free (trigger_hotkeys); elsewhere the worker drives the native rewind and the ramp itself.
-    hotkeys = HOST_OS == "windows" or bool(getattr(adapter, "trigger_hotkeys", False))
-    native_steps = mode == "native" and not hotkeys
-    ramp = mode != "native" or HOST_OS == "windows" or native_steps
+    # One owner for every chord, including the D-pad aliases. RetroArch's own trigger hotkeys are disabled in the
+    # session config; otherwise one physical press both rewinds natively and tells the worker to rewind again.
+    native_steps = mode == "native"
+    ramp = True
     pad = XInputPad() if HOST_OS == "windows" and threads else None
     sr = SessionRewind(sid, adapter, mode, ring, reason, ramp=ramp, repeat_s=repeat, pad=pad if pad and pad.ok else None,
                        native_steps=native_steps)
@@ -638,10 +732,11 @@ def reattach(sid: str, sr: SessionRewind | None, alive=None) -> None:
         sr.run(alive or (lambda: sid in ACTIVE))
 
 
-def feed(sid: str, events) -> None:
+def feed(sid: str, events) -> list[dict]:
     sr = ACTIVE.get(sid)
     if sr is not None:
-        sr.feed(events)
+        return sr.feed(events)
+    return list(events or [])
 
 
 def mode(sid: str) -> str | None:
@@ -679,7 +774,8 @@ def set_fast_forward(sid: str, adapter, on: bool | None = None, recover: bool = 
             sr.ff_manual = False
             if not want:
                 sr.ff_blocked = True
-                sr.fed = [False, False, False]
+                sr.fed = [False] * 5
+                sr._fed_keys.clear()
                 sr.ramp.tick(False, sr.clock())
         clear = getattr(type(adapter), "normal_speed", None)
         result = clear(adapter) if recover and clear else adapter.fast_forward(on=want)

@@ -6,7 +6,7 @@ from typing import Literal
 from fastapi import Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from . import psoitems
+from . import psoitems, pso_loadouts
 from .pso_controls import DEFAULTS
 
 
@@ -51,8 +51,7 @@ def routes(app, config, auth):
             temp.replace(f)
             return saved
 
-    @app.get("/api/pso/items")
-    def items(version: Literal["dcv2", "gc"] = "dcv2", actor=Depends(auth)):
+    def read_items(version):
         with guard:
             f = folder / f"items-{version}-v{psoitems.CATALOG_SCHEMA}.json"
             if f.exists():
@@ -75,3 +74,21 @@ def routes(app, config, auth):
             temp.write_text(json.dumps(catalog))
             temp.replace(f)
             return catalog
+
+    @app.get("/api/pso/items")
+    def items(version: Literal["dcv2", "gc"] = "dcv2", actor=Depends(auth)):
+        return read_items(version)
+
+    @app.get('/api/pso/loadouts')
+    def loadouts(actor=Depends(auth)):
+        return {'presets': pso_loadouts.presets(), 'researched_on': '2026-10-15'}
+
+    @app.post('/api/pso/loadouts/plan')
+    def loadout_plan(value: pso_loadouts.LoadoutIn, actor=Depends(auth)):
+        if value.op != 'plan':
+            raise HTTPException(422, 'Preview this list, then use the session-pinned drop button')
+        try:
+            return pso_loadouts.plan(read_items(value.version), value.version, value.preset,
+                value.character_class, value.count, value.names, value.source_urls)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error

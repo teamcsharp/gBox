@@ -1,5 +1,10 @@
 # Gameplay memory and hourly cast mashups
 
+PSO now also has [recorded actions and observed demonstrations](pso-observed-demos.md).
+These replay sampled inputs, resolved mod actions and native checkpoint branches in
+separate idle test sessions. They are approximate demonstrations; the native/exact
+replay limitations below still apply.
+
 Operator intent: preserve every human run for test reuse. Demonstrations belong in
 **separate test sessions on available idle PCs**, never the human's live character,
 save slots, inventory, or controller session.
@@ -34,8 +39,8 @@ Each uses a unique worker-local file and manifest; no
 personal replay slot or save-state slot is selected/overwritten. Core and emulator
 hashes are computed off the launch path. Content has a stat fingerprint, not a
 full content hash, so exact ROM identity is not claimed. Existing games are not
-restarted or switched into recording. Dolphin/other standalone adapters currently
-have observations only.
+restarted or switched into recording. Dolphin's native DTM capture remains
+unimplemented; PSO can instead use the checkpoint/action demonstration path above.
 
 Native recording requires 8 GiB free to begin, stops its managed recording at
 256 MiB or below 4 GiB free, and caps retained worker recordings at 20 GiB. It does
@@ -52,9 +57,10 @@ Native SMB1 replay is now implemented separately: see [Native Mario replay](nati
 Its Runs play/segment/loop controls and verified idle dispatch apply only to new supported
 Mesen tapes. The limitations below still apply to sampled observations, BSV and PSO.
 
-The UI deliberately reports `waiting_for_validated_native_run`. **Unattended native
-demonstration dispatch is not implemented by this change. PSO TAS recording/playback
-has not been verified.** Pad receipt times can miss physical taps and cannot be
+When no checkpoint-backed demonstration is ready, the UI reports
+`waiting_for_validated_native_run`. **Exact PSO TAS recording/playback has not been
+verified.** Approximate PSO observed demos can dispatch idle loops after a completed
+test receipt, as described above. Pad receipt times can miss physical taps and cannot be
 converted honestly into frame-accurate TAS data. Nothing can recover inputs already
 discarded before capture was enabled.
 

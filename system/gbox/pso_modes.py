@@ -17,7 +17,7 @@ def category(row):
 
 def status(sid):
  state=_states.get(sid,{})
- return {k:copy.deepcopy(v) for k,v in state.items() if k not in ('original','generated','owned','catalog','epoch')}
+ return {k:copy.deepcopy(v) for k,v in state.items() if k not in ('original','generated','owned','catalog','epoch') and not k.startswith('_')}
 
 
 def epoch_valid(m,state):
@@ -48,6 +48,7 @@ def tick(m,state,now):
  if not m.u16(m.check()+0x32c):return # no changing gear while dead
  if 'epoch' in state:new_epoch(m,state)
  rows=m.inventory()
+ resolved=[]
  # Never build an unbounded pile. Remove only this mode's tracked generated IDs.
  for kind in state['categories']:
   pool=[r for r in state['catalog'] if category(r)==kind and r.get('rare') and
@@ -64,8 +65,16 @@ def tick(m,state,now):
   state['generated'][kind]=item_id
   if not m.equip_id(item_id):raise RuntimeError('The game refused to equip the generated rare; Randomized stopped')
   if old is not None:m.remove_generated(old);state['owned'].pop(old,None)
+  gear={'kind':kind,'code':row['code']}
+  if kind=='mag':
+   try:gear['properties']={k:v for k,v in m.mag()['mag'].items() if k in ('def','pow','dex','mind','iq','synchro','color','form')}
+   except Exception:pass
+  resolved.append(gear)
  state['cycles']+=1;state['due']=now+state['interval'];state['message']='Equipment randomized'
  if 'epoch' in state:new_epoch(m,state)
+ if callable(state.get('_record')):
+  try:state['_record'](resolved,state['cycles'])
+  except Exception:pass # successful equipment changes must never be retried for a recording failure
 
 
 def configure(sid,ad,ctx,on,interval,categories,character_class,catalog):
@@ -104,6 +113,8 @@ def configure(sid,ad,ctx,on,interval,categories,character_class,catalog):
  state={'on':True,'interval':interval,'categories':list(categories),'character_class':character_class,
         'original':{category(r):r['id'] for r in m.inventory() if r['equipped'] and category(r)},
         'generated':{},'owned':{},'catalog':catalog,'due':time.monotonic(),'cycles':0,'message':'Starting Randomized'}
+ from . import gameplay_actions
+ state['_record']=lambda gear,cycle:gameplay_actions.randomized(sid,gear,ctx,cycle)
  m.hook();new_epoch(m,state)
  _states[sid]=state
  def watch():
