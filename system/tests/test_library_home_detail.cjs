@@ -32,6 +32,14 @@ test('timeline orders real timestamps and visualisation makes no invented comple
  assert.equal(Detail.modelOptions({models:[...data.models,{format:'png',model_url:'/sprite.png'}]}).length,2);
 });
 
+test('selected build details are scoped to their parent game and remain distinct for repeated titles',()=>{
+ const input=structuredClone(pictured);input.builds.push({...input.builds[0],name:'second_swap',title:'Second replacement'});input.selected_build={game_id:input.game.game_id,mod_name:'second_swap',title:'Second replacement'};
+ const html=Detail.render(input);assert.ok(html.includes('<h2>Second replacement</h2>'));assert.ok(html.includes('Play selected build'));assert.ok(html.includes('Play original game'));assert.ok(html.includes('aria-current="true"'));
+ assert.equal(Detail.selectedBuild(input).name,'second_swap');
+ assert.equal(Detail.selectedBuild({...input,selected_build:{game_id:'wrong',mod_name:'second_swap'}}),null);
+ assert.equal(Detail.selectedBuild({...input,selected_build:'sonic_swap'}).name,'sonic_swap');
+});
+
 test('browser: real viewer selection, build and report navigation, gallery close, media cleanup',async()=>{
  await withPage(async(evaluate,send)=>{
   await send('Emulation.setDeviceMetricsOverride',{width:1280,height:1100,deviceScaleFactor:1,mobile:false});
@@ -107,5 +115,24 @@ test('browser: live activity refresh preserves the viewer and playing media whil
   await evaluate(`document.querySelector('[data-ghd-build]').click();document.querySelector('[data-ghd-report]').click();document.querySelector('[data-ghd-action=refresh-assets]').click();new Promise(r=>setTimeout(r,10));`);
   assert.deepEqual(await evaluate('opened'),[[data.game.game_id,{mod:'new_swap'}],'new-report']);assert.equal(await evaluate('refreshed'),1);
   await evaluate('ctl.dispose();ctl.refresh()');assert.equal(await evaluate('calls.length'),1);assert.equal(await evaluate('disposed'),1);
+ });
+});
+
+test('browser: selected mod launches exactly that build and stays selected across activity refresh',async()=>{
+ await withPage(async evaluate=>{
+  await evaluate(source);
+  const selected=structuredClone(pictured);selected.builds.push({...selected.builds[0],name:'second_swap',title:'Second replacement',launch_node:'i9-NUC',changes:[{slot:'player',donor:'edited'}]});selected.selected_build={game_id:selected.game.game_id,mod_name:'second_swap',title:'Second replacement',launch_node:'stale-device'};
+  const fresh=structuredClone(selected);delete fresh.selected_build;fresh.builds.unshift({...fresh.builds[0],name:'newest_swap',title:'Newest replacement'});
+  await evaluate(`document.body.innerHTML='<div id="detail"></div>';var opened=[],modelURLs=[],disposed=0;var ctl=GBoxHomeDetail.mount(document.querySelector('#detail'),${JSON.stringify(selected)},{api:async()=>(${JSON.stringify(fresh)}),launch:(...x)=>opened.push(x),loadViewer:async()=>({createCharacterViewer:async(stage,url)=>{modelURLs.push(url);return {dispose:()=>disposed++}}})});ctl.ready;`);
+  assert.equal(await evaluate(`document.querySelector('.ghd-heading h2').textContent`),'Second replacement');
+  assert.ok(await evaluate(`document.querySelector('.ghd-heading p').textContent.includes('Super Example')`));
+  assert.equal(await evaluate(`document.querySelector('.ghd-build-selected h4').textContent`),'Second replacement');
+  assert.deepEqual(await evaluate('modelURLs'),['/api/characters/edited/file/model.gltf']);
+  await evaluate(`document.querySelector('[data-ghd-action=play-selected]').click();new Promise(r=>setTimeout(r,0));`);
+  await evaluate('ctl.refresh()');
+  assert.equal(await evaluate(`document.querySelector('.ghd-heading h2').textContent`),'Second replacement');assert.equal(await evaluate('modelURLs.length'),1);
+  await evaluate(`document.querySelector('[data-ghd-action=play-selected]').click();document.querySelector('.ghd-build-selected [data-ghd-build]').click();document.querySelector('[data-ghd-action=play]').click();new Promise(r=>setTimeout(r,10));`);
+  assert.deepEqual(await evaluate('opened'),[...Array.from({length:3},()=>[data.game.game_id,{mod:'second_swap',node:'i9-NUC'}]),[data.game.game_id,{mod:'',slot:''}]]);
+  await evaluate('ctl.dispose()');assert.equal(await evaluate('disposed'),1);
  });
 });

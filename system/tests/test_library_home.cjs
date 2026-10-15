@@ -22,9 +22,11 @@ async function setup(evaluate,send,extra=''){
 }
 
 test('Home settings and bounded query encode user filters',()=>{
- assert.deepEqual(H.settings(),{view:'shelf',sort:'recent',favorites:false,has_mods:false,platform:''});
+ assert.deepEqual(H.settings(),{mode:'games',view:'shelf',sort:'recent',favorites:false,has_mods:false,platform:''});
  assert.deepEqual(H.settings(null),H.settings());
  assert.equal(H.settings({view:'evil',sort:'unknown'}).sort,'recent');
+ assert.equal(H.settings({mode:'mods'}).mode,'mods');assert.equal(H.identity({game_id:'a',key:'a/build'}),'a/build');
+ assert.ok(H.query({mode:'mods',sort:'recent',has_mods:true}).startsWith('/api/home/mods?'));assert.ok(!H.query({mode:'mods',sort:'recent',has_mods:true}).includes('has_mods'));
  const url=new URL('https://local'+H.query({sort:'title',q:'Mario & Sonic',favorites:true,has_mods:true,platform:'Nintendo / 64'},96));
  assert.equal(url.searchParams.get('q'),'Mario & Sonic');assert.equal(url.searchParams.get('limit'),'48');assert.equal(url.searchParams.get('offset'),'96');assert.equal(url.searchParams.get('platform'),'Nintendo / 64');
  assert.deepEqual(H.mediaOf({media:[{kind:'image',url:'/a'},{kind:'image',url:'/a'},{kind:'html',url:'/x'}],game:{media:[{kind:'video',url:'/v'}]}}).map(m=>m.url),['/a','/v']);
@@ -137,6 +139,83 @@ test('Home escapes titles and displays a usable empty/error state without invent
   await evaluate(`io.api=async()=>{throw Error('Network unavailable');};ctl.refresh();`);
   assert.ok(await evaluate(`document.querySelector('[data-lh-status]').textContent.includes('Network unavailable')`));
   if(process.env.GBOX_HOME_EVIDENCE){await evaluate(`io.api=async p=>p.includes('?')?{items:${JSON.stringify(games)},total:3,platforms:[]}:({game:${JSON.stringify(games[0])},media:[]});ctl.refresh();`);const shot=await send('Page.captureScreenshot',{format:'png'});fs.mkdirSync(process.env.GBOX_HOME_EVIDENCE,{recursive:true});fs.writeFileSync(path.join(process.env.GBOX_HOME_EVIDENCE,'library-home.png'),Buffer.from(shot.result.data,'base64'));}
+  await evaluate('ctl.dispose()');
+ });
+});
+
+test('Home immediately skips missing hero art, keeps a usable slide, and bounds all-failed fallbacks',async()=>{
+ await withPage(async(evaluate,send)=>{
+  await setup(evaluate,send,`var preloads=0,NativeImage=Image;window.Image=function(){preloads++;return new NativeImage();};fixtures[0].media=[{kind:'image',url:'data:image/png;base64,AA==',label:'Missing snap'},{kind:'image',url:fixtures[0].poster_url,label:'Valid box art'}];`);
+  await evaluate(`new Promise(r=>setTimeout(r,180));`);
+  assert.equal(await evaluate(`document.querySelector('[data-lh-backdrop]').getAttribute('src')`),games[0].poster_url);
+  assert.ok(await evaluate(`document.querySelector('[data-lh-backdrop]').naturalWidth>0`));
+  // A failed next slide must not remove the already-decoded current image.
+  await evaluate(`document.querySelector('.lh-hero').dispatchEvent(new MouseEvent('mouseleave'));new Promise(r=>setTimeout(r,50));`);
+  assert.equal(await evaluate(`document.querySelector('[data-lh-backdrop]').getAttribute('src')`),games[0].poster_url);
+  await evaluate(`fixtures[1].poster_url='data:image/png;base64,AQ==';fixtures[1].media=[];ctl.select('b');new Promise(r=>setTimeout(r,100));`);
+  assert.equal(await evaluate(`document.querySelector('[data-lh-backdrop]').hasAttribute('src')`),false);
+  await evaluate(`ctl.dispose();preloads=0;fixtures[0].poster_url='data:image/png;base64,AQ==';fixtures[0].media=[{kind:'image',url:'data:image/png;base64,Ag=='},{kind:'image',url:'data:image/png;base64,Aw=='}];ctl=GBoxHome.mount(document.querySelector('#home'),io);ctl.ready;`);
+  await evaluate(`new Promise(r=>setTimeout(r,600));var allFailedCount=preloads;new Promise(r=>setTimeout(r,200));`);
+  assert.ok(await evaluate(`preloads<=6`));assert.equal(await evaluate('preloads'),await evaluate('allFailedCount'));
+  assert.equal(await evaluate(`document.querySelector('[data-lh-backdrop]').hasAttribute('src')`),false);
+  await evaluate('ctl.dispose()');
+ });
+});
+
+test('Home cannot replace the selected title artwork with a late image load from another title',async()=>{
+ await withPage(async(evaluate,send)=>{
+  await setup(evaluate,send,`var artLoads=[];window.Image=function(){return {set src(url){artLoads.push({url,load:this.onload,error:this.onerror});}};};`);
+  await evaluate(`var stale=artLoads[0].load;ctl.select('b');new Promise(r=>setTimeout(r,0));`);
+  await evaluate(`artLoads.at(-1).load();new Promise(r=>setTimeout(r,30));`);
+  assert.equal(await evaluate(`document.querySelector('[data-lh-backdrop]').getAttribute('src')`),games[1].poster_url);
+  await evaluate(`stale();new Promise(r=>setTimeout(r,0));`);
+  assert.equal(await evaluate(`document.querySelector('[data-lh-backdrop]').getAttribute('src')`),games[1].poster_url);
+  await evaluate('ctl.dispose()');
+ });
+});
+
+test('Home View game waits for the expanded detail and ignores a superseded selection before scrolling',async()=>{
+ await withPage(async(evaluate,send)=>{
+  await setup(evaluate,send);
+  await evaluate(`var base=io.api,bResolve;io.api=p=>p==='/api/home/games/b'?new Promise(r=>bResolve=r):base(p);ctl.select('b');document.querySelector('[data-lh-open]').click();new Promise(r=>setTimeout(r,0));`);
+  assert.deepEqual(await evaluate('scrolled'),[]);
+  await evaluate(`bResolve({game:fixtures[1],media:[]});new Promise(r=>setTimeout(r,0));`);
+  assert.deepEqual(await evaluate('scrolled'),['lh-details']);
+  assert.equal(await evaluate(`document.querySelector('[data-lh-details]').textContent`),'Details for Super Mario Bros.');
+  assert.ok(css.includes('scroll-margin-top:calc(var(--hdr,56px) + 12px)'));
+  await evaluate('ctl.dispose()');
+ });
+});
+
+test('Home heading switches to individual newest mod builds and keeps same-game builds distinct',async()=>{
+ await withPage(async(evaluate,send)=>{
+  await setup(evaluate,send,`var modLaunches=[],selectedBuilds=[],modFixtures=[{...fixtures[0],key:'a/new',mod_name:'new',game_title:fixtures[0].title,title:'Newest Sonic face and sprite replacement build with a complete descriptive name',built:1792090300,mods_count:0,is_mod:true,launch_node:'i9-NUC',poster_url:fixtures[1].poster_url,media:[{kind:'image',url:fixtures[1].poster_url,label:'New build screenshot'}]},{...fixtures[0],key:'a/older',mod_name:'older',game_title:fixtures[0].title,title:'Earlier character swap build',built:1792090000,mods_count:0,is_mod:true,launch_node:'auto',poster_url:fixtures[2].poster_url,media:[]}],baseApi=io.api;io.api=p=>{if(!p.startsWith('/api/home/mods?'))return baseApi(p);calls.push(p);var params=new URLSearchParams(p.split('?')[1]),items=modFixtures.filter(g=>!params.get('q')||g.title.toLowerCase().includes(params.get('q').toLowerCase()));return Promise.resolve({items,total:items.length,platforms:[],indexing:false});};io.launch=(...args)=>modLaunches.push(args);GBoxHomeDetail.mount=(host,data)=>{selectedBuilds.push(data.selected_build?.mod_name||'');host.textContent=data.selected_build?.title||data.game.title;return {dispose:()=>disposed++};};`);
+  assert.equal(await evaluate(`document.querySelector('[data-lh-shelf-title] select').value`),'games');
+  await evaluate(`document.querySelector('[data-lh-sort]').value='plays';document.querySelector('[data-lh-sort]').dispatchEvent(new Event('change'));new Promise(r=>setTimeout(r,0));`);
+  await evaluate(`var feed=document.querySelector('[data-lh-shelf-title] select');feed.value='mods';feed.dispatchEvent(new Event('change'));new Promise(r=>setTimeout(r,30));`);
+  assert.equal(await evaluate(`document.querySelectorAll('.lh-card').length`),2);
+  assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('.lh-card')).map(b=>b.dataset.lhGame)`),['a/new','a/older']);
+  assert.equal(await evaluate(`document.querySelector('[data-lh-sort]').value`),'recent');
+  assert.equal(await evaluate(`document.querySelector('[data-lh-sort] option[value=recent]').textContent`),'Newest builds');
+  assert.equal(await evaluate(`document.querySelector('[data-lh-title]').textContent`),'Newest Sonic face and sprite replacement build with a complete descriptive name');
+  assert.equal(await evaluate(`document.querySelector('.lh-card small').textContent`),games[0].title);
+  assert.ok(await evaluate(`document.querySelector('[data-lh-mods]').closest('label').hidden`));
+  await evaluate(`document.querySelector('[data-lh-play]').click();document.querySelector('.lh-card[data-lh-game="a/older"]').click();new Promise(r=>setTimeout(r,30));document.querySelector('[data-lh-play]').click();`);
+  assert.deepEqual(await evaluate('modLaunches'),[['a',{mod:'new',node:'i9-NUC'}],['a',{mod:'older',node:'auto'}]]);
+  assert.equal(await evaluate('selectedBuilds.at(-1)'),'older');
+  assert.equal(await evaluate(`document.querySelectorAll('.lh-card[aria-current=true]').length`),1);
+  assert.equal(await evaluate(`document.querySelector('.lh-card[aria-current=true]').dataset.lhGame`),'a/older');
+  await evaluate(`document.querySelector('[data-lh-view-button=list]').click();`);
+  assert.equal(await evaluate(`document.querySelector('[data-lh-list-feed]').hidden`),false);
+  assert.equal(await evaluate(`document.querySelector('[data-lh-list-feed] select').value`),'mods');
+  assert.equal(await evaluate(`document.querySelectorAll('.lh-list-game').length`),2);
+  await evaluate(`ctl.dispose();ctl=GBoxHome.mount(document.querySelector('#home'),io);ctl.ready;`);
+  assert.equal(await evaluate(`document.querySelector('.lh-home').dataset.lhMode`),'mods');
+  assert.equal(await evaluate(`document.querySelector('.lh-home').dataset.lhView`),'list');
+  await evaluate(`ctl.setSearch('Earlier');new Promise(r=>setTimeout(r,230));`);
+  assert.equal(await evaluate(`document.querySelectorAll('.lh-list-game').length`),1);
+  await evaluate(`document.querySelector('[data-lh-list-feed] select').value='games';document.querySelector('[data-lh-list-feed] select').dispatchEvent(new Event('change'));new Promise(r=>setTimeout(r,0));`);
+  assert.equal(await evaluate(`document.querySelector('.lh-home').dataset.lhMode`),'games');
   await evaluate('ctl.dispose()');
  });
 });

@@ -255,3 +255,117 @@ def test_large_library_decodes_only_the_requested_page(home, monkeypatch):
     assert response.status_code == 200, response.text
     assert response.json()['total'] == 64003 and len(calls) == 24
     assert elapsed < 5, f'Bounded 64k library page took {elapsed:.2f}s'
+
+
+def test_mod_feed_lists_individual_builds_newest_first_and_scopes_play_history(home):
+    build(home, name='old_mod', title='Older Bla faces', built=100)
+    build(home, name='new_mod', title='Newest Bla faces', built=800)
+    build(home, gid='mario', name='sonic_mario', title='Sonic replaces Mario', built=500)
+    build(home, name='undated', title='Undated build', built=None)
+    session(home, 'old-original', started=5000)
+    session(home, 'old-oldmod', started=4500, mod='old_mod')
+    session(home, 'old-newmod', started=900, mod='new_mod')
+    session(home, 'retired-staged', started=1000, collection_mod='new_mod~staging', mod='other_value')
+    session(home, 'old-agentmod', started=1100, mod='new_mod', agent_use=True)
+    data = home.client.get('/api/home/mods').json()
+    assert data['feed'] == 'mods' and data['total'] == 4
+    assert [row['mod_name'] for row in data['items']] == ['new_mod', 'sonic_mario', 'old_mod', 'undated']
+    row = data['items'][0]
+    assert (row['key'], row['game_id'], row['title'], row['game_title']) == (
+        'pso/new_mod', 'pso', 'Newest Bla faces', 'Phantasy Star Online')
+    assert row['plays'] == 2 and row['last_played'] == 1000 and row['last_device'] == 'i9-NUC'
+    assert row['mods_count'] == 0 and row['is_mod'] is True and row['launch_node'] == 'auto'
+    assert row['available_on'] == ['Spark collection']
+    assert [d['name'] for d in row['devices']] == ['i9-NUC', 'JAY']
+    assert home.client.get('/api/home/mods?sort=plays').json()['items'][0]['mod_name'] == 'new_mod'
+    assert [r['mod_name'] for r in home.client.get('/api/home/mods?sort=updated').json()['items']] == [
+        'new_mod', 'sonic_mario', 'old_mod', 'undated']
+
+
+def test_mod_feed_searches_build_and_parent_titles_with_filters_and_paging(home):
+    build(home, name='pso_bla', title='Bla faces', built=800)
+    build(home, gid='mario', name='sonic_mario', title='Sonic replaces Mario', built=500)
+    build(home, gid='mario', name='bla_mario', title='Bla replaces Mario', built=300)
+    assert home.client.get('/api/home/mods?q=phantasy+bla').json()['total'] == 1
+    assert home.client.get('/api/home/mods?q=SONIC').json()['items'][0]['key'] == 'mario/sonic_mario'
+    assert home.client.get('/api/home/mods?favorites=true').json()['total'] == 2
+    assert home.client.get('/api/home/mods?platform=gamecube').json()['total'] == 1
+    assert home.client.get('/api/home/mods?q=absent').json()['total'] == 0
+    page = home.client.get('/api/home/mods?limit=1&offset=1').json()
+    assert page['total'] == 3 and page['has_more'] is True and page['items'][0]['mod_name'] == 'sonic_mario'
+    assert home.client.get('/api/home/mods?sort=title').json()['items'][0]['title'] == 'Bla faces'
+
+
+def test_mod_feed_excludes_missing_historical_cards_and_routes_local_builds_to_actual_worker(home):
+    home.store.put('mod', 'missing', {'game_id': 'pso', 'title': 'Gone build', 'ts': 999,
+        'calls': [{'tool': '@launch', 'input': {'mod': 'gone'}}]})
+    home.store.put('worker', 'old', {'name': 'JAY', 'last_seen': 100,
+        'local_builds': [{'game_id': 'pso', 'name': 'local~copy', 'staged_of': 'local', 'built': 500}]})
+    home.store.put('worker', 'new', {'name': 'i9-NUC', 'last_seen': 200,
+        'local_builds': [{'game_id': 'pso', 'name': 'local', 'built': 500}]})
+    data = home.client.get('/api/home/mods').json()
+    assert data['total'] == 1
+    row = data['items'][0]
+    assert row['key'] == 'pso/local' and row['launch_node'] == 'i9-NUC'
+    assert row['available_on'] == ['JAY', 'i9-NUC']
+    assert len(home.client.get('/api/home/games/pso').json()['builds']) == 2
+
+
+def test_mod_feed_play_history_uses_the_current_live_build(home):
+    build(home, name='boot_build')
+    build(home, name='live_build')
+    session(home, 'old-live', mod='boot_build~staged', collection_mod='boot_build', live_mod='live_build~preview')
+    rows = {row['mod_name']: row for row in home.client.get('/api/home/mods').json()['items']}
+    assert rows['live_build']['plays'] == 1 and rows['boot_build']['plays'] == 0
+    assert home.client.get('/api/home/games/pso').json()['activity'][0]['mod'] == 'live_build'
+
+
+def test_mod_feed_uses_build_art_capture_and_donor_preview_without_unrelated_gameplay(home):
+    model(home, slug='bla', gid='pso')
+    build(home, gid='mario', name='bla', title='Bla Mario', character='bla')
+    clip = home.store.put_artifact(b'build clip', 'build.mp4', 'video/mp4', {'game_id': 'mario'})
+    shot = home.store.put_artifact(b'build shot', 'shot.png', 'image/png', {'game_id': 'mario'})
+    unrelated = home.store.put_artifact(b'other gameplay', 'other.png', 'image/png', {'game_id': 'mario'})
+    home.store.put('mod', 'm', {'game_id': 'mario', 'title': 'Bla Mario', 'video': clip.sha256, 'thumb': shot.sha256,
+        'calls': [{'tool': '@launch', 'input': {'mod': 'bla'}}]})
+    response = home.client.get('/api/home/mods')
+    row = response.json()['items'][0]
+    assert row['poster_url'] == '/api/mods/built/mario/bla/image/before.png'
+    urls = {item['url'] for item in row['media']}
+    assert '/api/characters/bla/preview' in urls
+    assert f'/api/artifacts/{clip.sha256}' in urls and f'/api/artifacts/{shot.sha256}' in urls
+    assert f'/api/artifacts/{unrelated.sha256}' not in urls
+    assert '/api/media/mario/boxart' in urls and 'C:/private' not in response.text
+    assert [item['kind'] for item in row['media']].count('video') == 1
+
+
+def test_mod_feed_donor_and_parent_art_fallbacks_and_missing_catalog_title(home):
+    model(home, slug='bla')
+    home.app.state.built_mods.rows.extend([
+        {'game_id': 'pso', 'name': 'bla', 'meta': {'built': 500, 'character': 'bla'}},
+        {'game_id': 'mario', 'name': 'plain', 'meta': {'built': 400}},
+        {'game_id': 'unknown_alias', 'name': 'local_mod', 'meta': {'built': 300, 'title': 'Alias build', 'game_title': 'Original game title'}},
+    ])
+    rows = home.client.get('/api/home/mods').json()['items']
+    assert rows[0]['poster_url'] == '/api/characters/bla/preview'
+    assert rows[1]['poster_url'].startswith('/api/media/mario/')
+    assert rows[2]['game_title'] == 'Original game title' and rows[2]['title'] == 'Alias build'
+
+
+def test_mod_feed_auth_validation_and_decodes_only_paged_titles(home, monkeypatch):
+    for index in range(200):
+        build(home, name=f'variant_{index}', title=f'Variant {index}', built=index + 1)
+    build(home, gid='mario', name='mario', built=300)
+    calls = []
+    original = home.store.catalog_get
+
+    def get(gid):
+        calls.append(gid)
+        return original(gid)
+
+    monkeypatch.setattr(home.store, 'catalog_get', get)
+    data = home.client.get('/api/home/mods?limit=10&offset=5').json()
+    assert data['total'] == 201 and len(data['items']) == 10 and calls == ['pso']
+    assert home.client.get('/api/home/mods', headers={'Authorization': ''}).status_code == 401
+    for query in ('limit=0', 'limit=121', 'offset=-1', 'sort=unknown'):
+        assert home.client.get('/api/home/mods?' + query).status_code == 422

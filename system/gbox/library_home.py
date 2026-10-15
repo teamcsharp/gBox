@@ -150,9 +150,10 @@ class HomeData:
                 self.characters_at, self.characters_busy = time.monotonic(), False
 
     def _sessions(self):
+        from .built_mods import session_build
         workers = {w['id']: w.get('name') for w in _rows(self.store, 'worker', ('name',))}
         aliases = {w['id']: w.get('name') for w in _rows(self.store, 'worker_alias', ('name',))}
-        columns = ('session_id', 'game_id', 'started', 'ended', 'state', 'mod', 'collection_mod',
+        columns = ('session_id', 'game_id', 'started', 'ended', 'state', 'mod', 'collection_mod', 'live_mod',
                    'detail.worker_name', 'detail.capture_session', 'agent_use')
         labels = {w['id']: w.get('owner') for w in _rows(self.store, 'slabel', ('owner',))}
         # A native session ID is "worker-launchjob" (tools._launch_game).
@@ -174,7 +175,7 @@ class HomeData:
             value = {'session_id': sid, 'started': _number(row.get('started')) or None,
                 'ended': _number(row.get('ended')) or None, 'state': row.get('state') or 'unknown',
                 'device': row.get('detail.worker_name') or workers.get(worker_id) or aliases.get(worker_id) or worker_id,
-                'mod': str(row.get('collection_mod') or row.get('mod') or '').split('~', 1)[0], 'agent_use': agent}
+                'mod': session_build(row), 'agent_use': agent}
             grouped[gid].append(value)
             sessions[sid] = gid
         for rows in grouped.values():
@@ -186,14 +187,16 @@ class HomeData:
         index = getattr(self.app.state, 'built_mods', None)
         records = index.records() if index else []  # memory only: never B.scan()
         cards = {}
-        fields = ('game_id', 'title', 'ts', 'verified', 'thumb', 'shots', 'video', 'calls')
+        fields = ('game_id', 'game_title', 'title', 'ts', 'verified', 'thumb', 'shots', 'video', 'calls')
         for card in _rows(self.store, 'mod', fields):
             card['calls'] = _json(card.get('calls'), [])
             name = B.card_mod(card)
             if _component(card.get('game_id')) and _component(name):
                 cards[(card['game_id'], name)] = card
-        entries, devices = {}, defaultdict(set)
-        for worker in _rows(self.store, 'worker', ('name', 'local_builds')):
+        entries, devices, device_seen = {}, defaultdict(set), {}
+        for worker in _rows(self.store, 'worker', ('name', 'local_builds', 'last_seen')):
+            device_name = worker.get('name') or worker['id']
+            device_seen[device_name] = max(device_seen.get(device_name, 0), _number(worker.get('last_seen')))
             for build in _json(worker.get('local_builds'), []) or []:
                 if not isinstance(build, dict):
                     continue
@@ -201,7 +204,7 @@ class HomeData:
                 gid = build.get('game_id')
                 name = staged if isinstance(staged, str) else str(build.get('name') or '').split('~', 1)[0]
                 if _component(gid) and _component(name):
-                    devices[(gid, name)].add(worker.get('name') or worker['id'])
+                    devices[(gid, name)].add(device_name)
                     entries.setdefault((gid, name), {'game_id': gid, 'name': name, 'meta': {'built': build.get('built')}})
         for record in records:
             if _component(record.get('game_id')) and _component(record.get('name')):
@@ -221,11 +224,22 @@ class HomeData:
             shots = [{'url': url, 'sha256': s} for s in [card.get('thumb'), *(_json(card.get('shots'), []) or [])] if (url := _artifact(s))]
             changes = [{key: str(change[key])[:400] for key in ('slot', 'donor', 'status') if change.get(key) is not None}
                        for change in B.changes_of(meta)[:200] if isinstance(change, dict)]
+            donor_previews = []
+            for preview in record.get('donor_previews') or []:
+                if isinstance(preview, dict) and _component(preview.get('slug')):
+                    url = f'/api/characters/{quote(preview["slug"], safe="")}/preview'
+                    if preview.get('url') == url:
+                        donor_previews.append({'slug': preview['slug'], 'url': url})
+            available_on = sorted(devices[(gid, name)])
+            launch_node = 'auto' if 'Spark collection' in available_on else next(iter(sorted(
+                available_on, key=lambda node: (-device_seen.get(node, 0), node))), None)
             out[gid].append({'name': name, 'title': names.get(f'{gid}/{name}') or card.get('title') or meta.get('title') or name,
+                'game_title': card.get('game_title') or meta.get('game_title') or '',
                 'built': _number(meta.get('built')) or _number(record.get('marker_mtime')) or _number(card.get('ts')) or None,
                 'verified': B.verified_of(meta, card), 'writer': B.writer_of(meta, name), 'changes': changes,
                 'images': images[:24], 'shots': shots[:24], 'video': _artifact(card.get('video')),
-                'size': record.get('size'), 'available_on': sorted(devices[(gid, name)]),
+                'size': record.get('size'), 'available_on': available_on, 'launch_node': launch_node,
+                'donor_previews': donor_previews[:24],
                 'available': bool(devices[(gid, name)]), 'card_id': card.get('id') or '',
                 'tickets': B.tickets_of(meta, card)})
         for rows in out.values():
@@ -368,6 +382,90 @@ class HomeData:
             'items': [self.game(json.loads(row[0]), snapshot, art) for row in rows],
             'platforms': snapshot['platforms'], 'indexing': snapshot['indexing']}
 
+    def mods(self, q='', sort='recent', favorites=False, platform='', limit=60, offset=0):
+        """Individual playable build cards, newest build first, across every node.
+
+        Historical cards whose files are no longer indexed stay in title history.
+        Only small catalog headers are read to filter/sort; full catalog rows are
+        decoded after paging, once per selected title rather than per build.
+        """
+        snapshot, art = self.snapshot(), self._local_art()
+        available = [(gid, build) for gid, builds in snapshot['builds'].items()
+                     for build in builds if build['available']]
+        gids = sorted({gid for gid, _ in available})
+        with self.store.lock:
+            headers = self.store.db.execute("SELECT game_id,title,platform,system,json_extract(body,'$.favorite') "
+                "FROM catalog WHERE game_id IN (SELECT value FROM json_each(?))", (json.dumps(gids),)).fetchall()
+        catalog = {gid: {'game_id': gid, 'title': title, 'platform': plat, 'system': system, 'favorite': bool(favorite)}
+                   for gid, title, plat, system, favorite in headers}
+        sessions = defaultdict(list)
+        for gid in gids:
+            for session in snapshot['sessions'].get(gid, []):
+                if not session['agent_use'] and session['started'] and session['state'] in ('running', 'paused', 'ended', 'stopped', 'completed'):
+                    sessions[(gid, session['mod'])].append(session)
+        words = q.casefold().split()
+        platforms, selected = defaultdict(int), []
+        for gid, build in available:
+            header = catalog.get(gid, {'game_id': gid, 'title': build.get('game_title') or gid, 'platform': '', 'favorite': False})
+            platforms[header.get('platform') or ''] += 1
+            haystack = ' '.join(str(value or '') for value in (build['title'], build['name'], header['title'])).casefold()
+            if (favorites and not header['favorite']) or (platform and header.get('platform') != platform) or not all(word in haystack for word in words):
+                continue
+            played = sessions[(gid, build['name'])]
+            selected.append((gid, build, header, played))
+        if sort == 'title':
+            selected.sort(key=lambda row: (row[1]['title'].casefold(), row[2]['title'].casefold(), row[0], row[1]['name']))
+        elif sort == 'plays':
+            selected.sort(key=lambda row: (-len(row[3]), -_number(row[1]['built']), row[0], row[1]['name']))
+        else:  # Both recent and updated refer to build creation, not base-title recency.
+            selected.sort(key=lambda row: (-_number(row[1]['built']), row[0], row[1]['name']))
+        total, page, rows, decoded = len(selected), selected[offset:offset + limit], [], {}
+        known_models = {model['slug']: model for models in snapshot['models'].values() for model in models}
+        for gid, build, header, played in page:
+            if gid not in decoded:
+                decoded[gid] = self.store.catalog_get(gid) or header
+            base = self.game(decoded[gid], snapshot, art)
+            media, seen = [], set()
+
+            def add(kind, url, label, source):
+                if url and url not in seen:
+                    seen.add(url)
+                    media.append({'kind': kind, 'url': url, 'label': label, 'source': source, 'ts': build['built']})
+
+            for image in build['images'] + build['shots']:
+                add('image', image['url'], build['title'], 'build')
+            add('video', build['video'], build['title'], 'capture')
+            for preview in build['donor_previews']:
+                add('image', preview['url'], preview['slug'], 'model')
+            for change in build['changes']:
+                for slug in str(change.get('donor') or '').split(','):
+                    model = known_models.get(slug.strip())
+                    if model:
+                        add('image', model['preview_url'], model['name'], 'model')
+            # Parent artwork is relevant; captures of another build are not.
+            for image in base['media']:
+                if image['source'] == 'art':
+                    add('image', image['url'], image['label'], 'art')
+            devices = {}
+            for session in played:
+                device = devices.setdefault(session['device'], {'name': session['device'], 'plays': 0, 'last_played': 0})
+                device['plays'] += 1
+                device['last_played'] = max(device['last_played'], session['started'])
+            last = max(played, key=lambda session: session['started'], default=None)
+            rows.append(base | {'key': gid + '/' + build['name'], 'is_mod': True, 'mod_name': build['name'],
+                'game_title': base['title'], 'title': build['title'], 'built': build['built'], 'updated': build['built'],
+                'plays': len(played), 'last_played': last['started'] if last else None,
+                'last_device': last['device'] if last else None,
+                'devices': sorted(devices.values(), key=lambda device: -device['last_played']),
+                'poster_url': next((item['url'] for item in media if item['kind'] == 'image'), base['poster_url']),
+                'media': media[:100], 'mods_count': 0, 'available': True, 'available_on': build['available_on'],
+                'launch_node': build['launch_node'] or 'auto', 'verified': build['verified'], 'writer': build['writer'],
+                'size': build['size'], 'changes': build['changes'], 'images': build['images'], 'shots': build['shots'],
+                'card_id': build['card_id']})
+        return {'total': total, 'offset': offset, 'limit': limit, 'has_more': offset + len(page) < total,
+                'items': rows, 'platforms': [{'platform': key, 'count': count} for key, count in sorted(platforms.items())],
+                'indexing': snapshot['indexing'], 'feed': 'mods'}
+
     def detail(self, gid):
         row = self.store.catalog_get(gid)
         if row is None:
@@ -428,6 +526,12 @@ def routes(app, store, config, auth):
                    favorites: bool = False, has_mods: bool = False, platform: str = Query('', max_length=120),
                    limit: int = Query(60, ge=1, le=120), offset: int = Query(0, ge=0), actor=Depends(auth)):
         return data.games(q, sort, favorites, has_mods, platform, limit, offset)
+
+    @app.get('/api/home/mods')
+    def home_mods(q: str = Query('', max_length=300), sort: str = Query('recent', pattern='^(recent|title|plays|updated)$'),
+                  favorites: bool = False, platform: str = Query('', max_length=120),
+                  limit: int = Query(60, ge=1, le=120), offset: int = Query(0, ge=0), actor=Depends(auth)):
+        return data.mods(q, sort, favorites, platform, limit, offset)
 
     @app.get('/api/home/games/{gid}')
     def home_detail(gid: str, actor=Depends(auth)):
