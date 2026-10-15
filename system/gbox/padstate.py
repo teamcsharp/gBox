@@ -211,6 +211,9 @@ def register(app, auth_dependency) -> None:
         record(sid, p.events, p.source if p.source in SOURCES else actor)
         if p.stick is not None or p.rstick is not None:
             record_stick(sid, p.stick, p.rstick)
+        if p.source in ('player','ui') and hasattr(app.state,'capture_gameplay'):
+            app.state.capture_gameplay(sid,'pad',{'events':p.events[:100],'stick':p.stick,'rstick':p.rstick,
+                                               'timing':'server receipt time; not core-frame TAS input'})
         return {"ok": True}
 
     @app.get("/padglyph.js")

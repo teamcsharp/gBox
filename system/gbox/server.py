@@ -2264,6 +2264,10 @@ def create_app(config: Config) -> FastAPI:
                             reason = claim_reason(store, w, j)
                         else:
                             reason = background_testing.guarded_reason(store, w)
+                        if not reason and j.get('tool')=='characters' and (j.get('input') or {}).get('showcase'):
+                            resources=w.get('resources') or {}
+                            if (resources.get('memory_available_bytes') or 0)<12*1024**3 or resources.get('memory_percent',100)>=80:
+                                reason='Showcase assembly reserves 8 GiB and leaves 4 GiB free, below 80% RAM usage.'
                         if reason:
                             waiting = {'worker': w['name'], 'reason': reason}
                             if j.get('admission_wait') != waiting:
@@ -2468,6 +2472,17 @@ def create_app(config: Config) -> FastAPI:
         return receipt, out, state, refs, problems
 
     def _result_followups(j, r, t, state, actor):
+        # Journal operator manipulations beside the input run, without copying
+        # arbitrary RAM buffers, credentials, or interpreting success as gameplay proof.
+        capture = getattr(app.state, 'capture_gameplay', None)
+        attempt = j.get('input') or {}
+        if capture and attempt.get('session_id') and t.name in (
+                'session_op', 'pso_inventory', 'pso_drops', 'characters', 'mod', 'cheats', 'graphics'):
+            fields = ('op','action','slot','character','name','item','item_id','count','stat','value','enabled','index','weapon')
+            safe = {k:v for k,v in attempt.items() if k in fields and isinstance(v,(str,int,float,bool,type(None)))}
+            capture(attempt['session_id'], 'mod_action', {'tool':t.name,'input':safe,
+                'job_id':j['id'],'state':str(state),'evidence':'tool receipt; in-game effect not independently verified'},
+                token='action:'+j['id'])
         build_notes.job_ended(j)                      # a finished build / collect / failed build -> the bell tray
         attempt = j.get("input") or {}
         op = attempt.get("op") or ""
@@ -3478,6 +3493,8 @@ def create_app(config: Config) -> FastAPI:
             lv["input"].extend(ev.events)
             padstate.record(sid, ev.events, actor)                 # controller glyph: who pressed what
             lv["cond"].notify_all()
+        if actor not in ('agent','mcp','hermes','gbox-agent') and hasattr(app.state,'capture_gameplay'):
+            app.state.capture_gameplay(sid,'pad',{'events':ev.events[:100],'timing':'received input events; not a core-frame TAS'})
         return {"queued": len(ev.events)}
 
     @app.get("/api/sessions/{sid}/input")
@@ -3874,6 +3891,8 @@ def create_app(config: Config) -> FastAPI:
 
     from . import ollama_assist
     ollama_assist.install(app, store, auth)
+    from . import gameplay_memory
+    gameplay_memory.install(app, store, config, auth)
 
     @app.get("/api/hermes/local")
     def hermes_local_state(actor=Depends(auth)):

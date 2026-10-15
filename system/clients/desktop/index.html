@@ -1188,12 +1188,14 @@ window.taskVizCreate = canvas => {
       <form id="sform"></form>
       <button class="act pri" id="ssave">Save</button> <span class="mut" id="ssaved"></span>
       <div id="ollama-assist" class="card" style="margin-top:20px"></div>
+      <div id="gameplay-memory" class="card" style="margin-top:20px"></div>
       <div id="showcase" style="margin-top:22px;border:1px solid var(--line,#333);border-radius:8px;padding:10px 12px"></div>
       <div class="card" id="tiers"><h2>Game cache drives</h2><span class="mut">Loading...</span></div>
     </div></section>
   </main>
 </div>
 <script src="floating.js"></script>
+<script src="gameplay-memory.js"></script>
 <script src="inbox-view.js"></script>
 <script src="request-tokens.js"></script>
 <script src="inbox-groups.js"></script>
@@ -2459,6 +2461,10 @@ $('#ollama-assist').addEventListener('submit',async e=>{
   catch(err){msg.textContent=' '+err.message;}
 });
 document.querySelector('aside button[data-s="settings"]').addEventListener('click',oaLoad);
+const gameplayMemoryView=GBoxGameplayMemory.mount($('#gameplay-memory'),{api:async(path,body)=>{
+  const r=await gbox.api(path,body);if(!r.ok)throw new Error(r.error||'Backend update pending');return r.data;
+}});
+document.querySelector('aside button[data-s="settings"]').addEventListener('click',()=>gameplayMemoryView.load());
 
 // ---------------- Settings > Sonic showcase (gbox/sonic_showcase.py: GET /api/showcase, POST = PUT /api/showcase) ----------------
 // The Spark builds showcase_sonic_<title> test versions of the favorites / recently played titles with the Sonic Adventure
@@ -2476,13 +2482,16 @@ function scRender() {
   if (!d) { el.innerHTML = `<b>Sonic showcase</b><p class="mut">${SC.err ? "⚠ " + esc(SC.err) : "Loading…"}</p>`; return; }
   const disk = d.disk || {}, pct = disk.budget ? Math.min(100, Math.round(100 * (disk.used || 0) / disk.budget)) : 0;
   const cur = d.current, stage = s => esc(String(s || "pending").replace(/_/g, " "));
-  el.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b>Sonic showcase</b>
+  el.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b>Favorite cast mashups</b>
       <span class="mut" style="font-size:12px">${esc(d.phase || "")}${d.last_tick ? " · checked " + esc(scWhen(d.last_tick)) : ""}</span></div>
     <p class="mut" style="font-size:12px;margin:4px 0 8px">Builds a test version of your favorites, then recently played titles, with their key people replaced by the
       Sonic Adventure 1 + 2 cast (showcase_sonic_&lt;title&gt;, on the Spark's HDD, never while you play on the Spark). Titles without a writer go to Hermes's
       readiness queue (Ghidra / REA). Results show in Mods (filter "Sonic showcase") and the game's right-click menu (Special builds).</p>
     <label><span><input type="checkbox" data-sc="enabled" ${d.enabled ? "checked" : ""}> Build Sonic showcase versions in the background</span></label>
     <label><span><input type="checkbox" data-sc="paused" ${d.paused ? "checked" : ""}> Paused</span></label>
+    <label><span><input type="checkbox" data-sc="roulette" ${d.settings?.roulette ? "checked" : ""}> Hourly roulette: rotate target and donor cast</span></label>
+    <label>Donor choices (separate choices with ;)<input data-sc-pool value="${esc((d.settings?.source_pool||['sonic']).join('; '))}"></label>
+    <p class="mut">One draw per title per hour; actual builds wait for resources, changed plans, and operator report review. A failed writer is not repaired by another random seed.</p>
     <div style="display:grid;grid-template-columns:1fr 90px;gap:4px 8px;align-items:center;margin:6px 0">
       ${SC_NUMS.map(([k, l]) => `<span style="font-size:12px">${l}</span><input type="number" min="0" data-scn="${k}" value="${esc(d.settings?.[k])}">`).join("")}</div>
     <button class="act" type="button" data-sc-act="apply">Apply</button> <button class="act" type="button" data-sc-act="run" title="Run a pass now">Run a pass now</button>
@@ -2510,6 +2519,7 @@ $("#showcase").addEventListener("click", async e => {
   const act = e.target?.closest?.("[data-sc-act]")?.dataset.scAct; if (!act) return;
   if (act === "apply") {
     const body = {}; for (const i of document.querySelectorAll("#showcase [data-scn]")) if (i.value !== "") body[i.dataset.scn] = Number(i.value);
+    body.source_pool=$('#showcase [data-sc-pool]').value.split(';').map(s=>s.trim()).filter(Boolean);
     return scSet(body);
   }
   if (act === "run") { try { await scApi("/api/showcase/run", {}); const m = $("#scmsg"); if (m) m.textContent = "pass started"; setTimeout(scLoad, 1500); } catch (err) { const m = $("#scmsg"); if (m) m.textContent = "⚠ " + err.message; } }

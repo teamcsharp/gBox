@@ -49,7 +49,7 @@ DEFAULT_ESTIMATE = 2 << 30                 # a first build's size guess for the 
 LAST_RESULTS = 20
 EDITABLE = {"enabled": bool, "paused": bool, "favorites": int, "recent": int, "budget_gb": float,
             "builds_per_hour": int, "whole_cast_max_slots": int, "interval_s": float, "dedupe": bool,
-            "pause_while_playing_anywhere": bool}
+            "pause_while_playing_anywhere": bool, "roulette": bool, "source_pool": list}
 LIMITS = {"favorites": (0, 200), "recent": (0, 100), "budget_gb": (1, 4000), "builds_per_hour": (0, 60),
           "whole_cast_max_slots": (1, 400), "interval_s": (30, 86400)}
 # stages a record can be in; "due" ones are looked at again on the next pass
@@ -86,6 +86,10 @@ def validate(body: dict) -> dict:
         if k not in EDITABLE:
             raise ValueError(f"{k} is not a showcase setting (editable: {', '.join(EDITABLE)})")
         kind = EDITABLE[k]
+        if k == 'source_pool':
+            if not isinstance(v,list) or not 1<=len(v)<=20 or any(not isinstance(x,str) or not x.strip() or len(x)>120 for x in v):
+                raise ValueError('source_pool must contain 1–20 owned donor groups/titles')
+            out[k]=v;continue
         if kind is bool and not isinstance(v, bool):
             raise ValueError(f"{k} must be true or false")
         try:
@@ -103,12 +107,12 @@ def mod_name_for(game: dict) -> str:
     return PREFIX + (words or str(game.get("game_id") or "game"))
 
 
-def donor_reader(game: dict) -> str | None:
+def donor_reader(game: dict, readers=DONOR_READERS) -> str | None:
     """'sa1' / 'sa2' when this catalog title is one of the donor games, else None."""
     from . import characters as C
     t, plat = (game.get("title") or "").lower(), game.get("platform") or ""
     for name, test, _roster, _run in C.DEDICATED:
-        if name in DONOR_READERS:
+        if name in readers:
             try:
                 if test(t, plat):
                     return name
@@ -117,7 +121,7 @@ def donor_reader(game: dict) -> str | None:
     return None
 
 
-def select_titles(store, s: dict) -> list[dict]:
+def select_titles(store, s: dict, now=None) -> list[dict]:
     """Favorites first (most recently played first, then most recently starred), then recently played titles that are
     not favorites; each list capped (s.favorites, s.recent). Rows are catalog entries + origin."""
     favs = []
@@ -135,7 +139,11 @@ def select_titles(store, s: dict) -> list[dict]:
     if n:
         _total, rows = store.search(recent=True, sort="recent", limit=n + len(seen))
         recent = [g | {"origin": "recent"} for g in rows if g["game_id"] not in seen][:n]
-    return favs + recent
+    result = favs + recent
+    if s.get('roulette'):
+        epoch=int((time.time() if now is None else now)//3600)
+        result.sort(key=lambda g:hashlib.sha256(f'{epoch}:{g["game_id"]}'.encode()).hexdigest())
+    return result
 
 
 # ------------------------------------------------------------------------------------------------- idle gating
@@ -364,7 +372,16 @@ class Showcase:
     def _plan(self, game, slots_spec):
         from . import cast_swap as CS, characters as C
         root = C.library_root(self.config)
-        return CS.plan(game, self.chars(), SOURCE, "auto", "showcase", slots_spec, None, root if root.is_dir() else None)
+        draw=game.get('_showcase_draw') or self.draw(game)
+        return CS.plan(game, self.chars(), draw['source'], "random" if self.settings().get('roulette') else "auto", draw['seed'], slots_spec, None, root if root.is_dir() else None)
+
+    def draw(self,game):
+        s=self.settings();epoch=int(self.clock()//3600)
+        if not s.get('roulette'):return {'source':SOURCE,'seed':'showcase','hour':None}
+        pool=s.get('source_pool') or [SOURCE]
+        seed=f'showcase:{epoch}:{game["game_id"]}'
+        index=int(hashlib.sha256(seed.encode()).hexdigest()[:8],16)%len(pool)
+        return {'source':pool[index],'seed':seed,'hour':epoch}
 
     def _fingerprint(self, game):
         from .assimilate import ticket_fingerprint
@@ -521,7 +538,7 @@ class Showcase:
                 return st
             st["builds"] = [t for t in st.get("builds") or [] if now - t < 3600]
             storage = self.storage_problem(s)
-            titles = select_titles(self.store, s)
+            titles = select_titles(self.store, s, now)
             st["queue"] = []
             readiness_left = READINESS_PER_PASS
             started = False
@@ -579,6 +596,9 @@ class Showcase:
                 "stage": rec.get("stage") or "pending", "mod": rec.get("mod")}
 
     def _due(self, rec: dict, s: dict) -> bool:
+        if rec.get('stage')=='failed' and self.clock()-float(rec.get('failed_at') or 0)<float(s['retry_failed_hours'])*3600:
+            return False  # A new roulette seed is not evidence a failed writer was repaired.
+        if s.get('roulette') and int(float(rec.get('checked') or 0)//3600)<int(self.clock()//3600):return True
         if not rec or rec.get("stage") in WAITING or rec.get("stage") is None:
             return True
         return self.clock() - float(rec.get("checked") or 0) >= float(s["recheck_hours"]) * 3600
@@ -625,17 +645,20 @@ class Showcase:
         (one at a time); proceeds with the donors there are once no collection is pending."""
         from . import cast_swap as CS
         chars = self.chars()
+        readers = tuple(dict.fromkeys((*DONOR_READERS, *(
+            ('sm64','sm64ds') if self.settings().get('roulette') and any('mario' in x.lower() for x in self.settings().get('source_pool',[])) else ()))))
         have: dict[str, int] = {}
         for m in CS._candidates(chars):
             ex = CS.extractor_of(m)
-            if ex in DONOR_READERS:
+            if ex in readers:
                 have[ex] = have.get(ex, 0) + 1
-        missing = [r for r in DONOR_READERS if not have.get(r)]
+        missing = [r for r in readers if not have.get(r)]
         notes = []
         for reader in missing:
-            games = [g for g in self.store.search(q="sonic adventure", limit=50)[1] if donor_reader(g) == reader]
+            query='super mario' if reader.startswith('sm64') else 'sonic adventure'
+            games = [g for g in self.store.search(q=query, limit=50)[1] if donor_reader(g,readers) == reader]
             if not games:
-                notes.append(f"{reader}: no Sonic Adventure {reader[-1]} disc in the catalog")
+                notes.append(f"{reader}: no matching owned donor title in the catalog")
                 continue
             g = games[0]
             col = self.store.get("character_collection", g["game_id"]) or {}
@@ -678,10 +701,18 @@ class Showcase:
     def _plan_and_build(self, g: dict, w: dict, rec: dict, s: dict, st: dict) -> tuple[dict, bool]:
         from . import cast_swap as CS
         now = self.clock()
+        from .build_feedback import rows
+        pending = rows(self.store,g['game_id'])
+        if pending:
+            return self._put(g,rec,stage='needs_review',checked=now,
+                message='Operator reports must be addressed by a reviewed inspection recipe before generating more builds.',
+                feedback=[{'id':r['id'],'revision':r.get('revision',1)} for r in pending]),False
+        draw=self.draw(g)
         gid, name = g["game_id"], mod_name_for(g)
+        if s.get('roulette'):name += '_' + hashlib.sha256(draw['seed'].encode()).hexdigest()[:8]
         try:
             spec, why = self.slots_for(g, s)
-            p = self.planner(g, spec)
+            p = self.planner(g | {'_showcase_draw':draw}, spec)
         except (ValueError, KeyError, OSError) as e:
             return self._put(g, rec, stage="no_plan", writer=w["writer"], checked=now, message=str(e)[:300]), False
         if p.get("status") != "planned":
@@ -690,10 +721,15 @@ class Showcase:
         h = CS.plan_digest(p["assignments"])
         planned = [{"slot": r["slot"], "slot_name": r.get("slot_name"), "character": r["character"],
                     "donor": r.get("donor"), "preview_url": r.get("preview_url")} for r in p["assignments"]]
-        base = dict(writer=w["writer"], checked=now, plan_hash=h, mod=name, slots_spec=spec, slots_why=why,
+        base = dict(writer=w["writer"], checked=now, plan_hash=h, mod=name, slots_spec=spec, slots_why=why, roulette=draw,
                     strategy=p.get("strategy"), planned=planned, refused=len(p.get("refused") or []))
         folder = self.mods_root / gid / name
         meta = _is_showcase(folder)
+        previous_name=rec.get('mod') or ''
+        previous=_is_showcase(self.mods_root/gid/previous_name) if previous_name else None
+        if s.get('roulette') and previous and previous.get('cast_plan')==h:
+            return self._put(g,rec,**(base | {'mod':previous_name}),stage='unchanged',
+                message=f'plan {h} unchanged since its build: not rebuilt'),False
         if meta is not None and meta.get("cast_plan") == h:
             stage = "built" if rec.get("plan_hash") == h and rec.get("stage") == "built" else "unchanged"
             return self._put(g, rec, **base, stage=stage,
@@ -717,8 +753,8 @@ class Showcase:
         if meta is not None:                               # our old build of another plan: replaced, never patched
             self._remove({"game_id": gid, "name": name, "path": folder})
         job = self.submit({"tool": "characters", "require_os": "linux", "agent_use": True, "low_priority": True,
-                           "input": {"op": "cast_swap", "target_game": gid, "source": SOURCE, "mapping": "auto",
-                                     "seed": "showcase", "slots": spec, "launch": False, "showcase": True,
+                           "input": {"op": "cast_swap", "target_game": gid, "source": draw['source'], "mapping": "random" if s.get('roulette') else "auto",
+                                     "seed": draw['seed'], "slots": spec, "launch": False, "showcase": True,
                                      "mod_name": name,
                                      "assignments": [{"slot": r["slot"], "character": r["character"]} for r in planned]}})
         if job.get("state") not in ("queued", "running"):
@@ -803,7 +839,7 @@ class Showcase:
             rec = self._put(game, rec, stage="built", mod=mod, job_id=j.get("id"), built_at=j.get("finished") or self.clock(),
                             build_time=round(took, 1), slots_replaced=slots, previews=previews, dedupe=dd,
                             status=res.get("status"), failed_at=None,
-                            message=f"{n}/{len(slots) or n} slots replaced with Sonic characters in {mod}"
+                            message=f"{n}/{len(slots) or n} slots replaced from {(rec.get('roulette') or {}).get('source') or SOURCE} in {mod}"
                                     + ("" if res.get("status") != "ready" else " (already built)"))
             self._usage["at"] = 0.0
             size = self.disk(fresh=True).get("per", {}).get(f"{gid}/{mod}")
@@ -933,6 +969,8 @@ def fit_previews(fitting, planned: list[dict]) -> list[dict]:
 class ShowcaseIn(BaseModel):
     """PUT /api/showcase: the editable settings (the safety limits - hdd_root, require_hdd, min_free_gb - are
     gbox.toml only)."""
+    roulette: bool | None = None
+    source_pool: list[str] | None = None
     enabled: bool | None = None
     paused: bool | None = None
     favorites: int | None = None
