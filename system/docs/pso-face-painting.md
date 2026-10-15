@@ -47,5 +47,12 @@ Validation: `tests/test_pso_faces.py` checks native formats, untouched blocks,
 independent session lineage, address/header guards, pause/resume and restoration.
 `tests/test_pso_face_editor_ui.cjs` checks review/application, stale replies,
 closing and UV/mesh strokes. The UI screenshot is explicitly labeled a fixture
-with a stubbed renderer. A native gameplay face-change screenshot has not yet
-been verified.
+with a stubbed renderer. A separate native Linux Dolphin check identified the
+loaded FOnewearl face map by exact comparison with the owned class bank, applied
+synthetic magenta test pixels through the guarded worker path, verified the RAM
+readback, observed the changed face in gameplay, and restored both the original
+bytes and appearance. The class was selected explicitly; automatic detection of
+the current class/head/hair was not established. See
+[`pso-face-native-validation.json`](pso-face-native-validation.json) for the
+sanitized result. This verifies native texture rendering and restoration, not
+selfie likeness, a complete production browser workflow, or Windows rendering.

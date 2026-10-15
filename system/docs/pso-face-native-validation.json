@@ -1,0 +1,64 @@
+{
+  "schema": 1,
+  "verified_on": "2026-10-15",
+  "scope": "Isolated native PSO GameCube resident-face texture inspection, synthetic test-color application, rendering and restoration",
+  "environment": {
+    "worker_os": "Linux aarch64",
+    "emulator": "Standalone Dolphin Flatpak",
+    "disc_id": "GPOE8P",
+    "disc_revision": 2,
+    "mode": "Offline free-play",
+    "private_user_directory": true,
+    "private_display": true,
+    "copied_start_state": true,
+    "memory_card_slots_disabled": true,
+    "local_test_artifact_service": true,
+    "operator_sessions_touched": false,
+    "production_memory_cards_touched": false,
+    "private_process_stopped": true
+  },
+  "selection": {
+    "class": "FOnewearl",
+    "class_selection": "Selected explicitly after read-only comparison of all twelve owned class face banks; not inferred from the character's appearance",
+    "head_hair_reference": "The editor reference remained the explicitly selected default head/hair; automatic matching of the player's current head/hair was not verified",
+    "texture": "pxtIf_03a_t_kao",
+    "address": "0x80c1ed20",
+    "width": 64,
+    "height": 64,
+    "native_format": "GX CMPR (14)",
+    "resident_source_match": "Exact full native texture bytes"
+  },
+  "checks": {
+    "native_executable_guard_passed": true,
+    "resident_texture_inspection_passed": true,
+    "candidate_native_preview_decoded": true,
+    "pause_state_confirmed_before_write": true,
+    "patched_ram_readback_verified": true,
+    "original_bytes_restored_and_verified": true,
+    "native_rendered_test_color_observed": true,
+    "native_rendered_original_observed_after_restore": true
+  },
+  "rendered_evidence": {
+    "comparison": "Human inspection of native before/after/restored screenshots, supported by a head-region color count; whole-screen differences were not used as face proof",
+    "head_region_xyxy_exclusive": [300, 281, 325, 305],
+    "test_color": "Synthetic magenta patch, darkened by native game lighting",
+    "dark_purple_pixel_rule": "R > 1.4*G and B > 1.4*G and R > 35 and B > 30",
+    "head_region_dark_purple_pixels": {
+      "before": 0,
+      "after": 97,
+      "restored": 0
+    },
+    "private_screenshot_sha256": {
+      "before": "79383e2af13b4c1bfb43cc9c7349a9a2420ba7603019ad0ca4d093afa8a813c4",
+      "after": "7be249189dcf4df4469d977ae32e8c04a60cfecebae4d55dbad6a83b3bad24a0",
+      "restored": "d9ff586664282220be135e099cee459504f45f6b131cb90a9192d877b7eeda2c"
+    }
+  },
+  "limits": [
+    "This proves a native face texture can be changed and restored visibly with test pixels; it does not verify a person's likeness or the quality of a selfie projection.",
+    "Windows Dolphin face rendering was not exercised by this native proof.",
+    "Other player classes, head/hair combinations and game revisions need their own resident-map selection and validation.",
+    "The local test artifact service exercised the worker inspect/apply protocol; this was not an end-to-end production browser session.",
+    "This is a temporary RAM texture edit, not a persistent rebuilt-ROM proof."
+  ]
+}
