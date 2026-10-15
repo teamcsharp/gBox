@@ -572,6 +572,14 @@ ipcMain.handle("rec:fit", async (_e, file, options) => {
     recFitBusy = false;
   }
 });
+// Replay export uses this desktop profile's current folder, never a browser download directory.
+ipcMain.handle('rec:save-clip', async (_e, clip) => {
+  const o = recordingExport.preferences({ ...RECORDING_DEFAULTS, ...settings().recording });
+  return recordingExport.saveReplay({ clip, directory: REC_DIR, exportDir: o.exportDir,
+    fetchArtifact: async sha => fetch(settings().apiUrl + '/api/artifacts/' + sha, {
+      headers: { authorization: `Bearer ${await token()}` }, redirect: 'error', signal: AbortSignal.timeout(120000),
+    }) });
+});
 // chat export: printable HTML -> PDF (Save dialog); a PNG data URL -> the system clipboard as an image
 ipcMain.handle("export:pdf", async (_e, html, name) => {
   const w = new BrowserWindow({ show: false, webPreferences: { offscreen: true } });

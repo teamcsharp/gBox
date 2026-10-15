@@ -3067,7 +3067,23 @@ const RING_IO = {
   },
   api: async (url, body) => { try { return { ok: true, data: await api(url, body) }; } catch (e) { return { ok: false, error: e.message }; } },
   url: async sha => `/api/artifacts/${sha}?${tq()}`, opts: null,
+  save: clip => bnEmbedded() ? ringDesktopSave(clip) : Promise.resolve(null),
+  open: file => deskFolders().showInFolder?.(file),
   toast: t => { const el = document.querySelector("#sopres"); if (el) el.textContent = t; } };
+const REPLAY_SAVES = { n: 0, wait: new Map() };
+window.gboxReplaySaved = (id, result, error) => {
+  const pending = REPLAY_SAVES.wait.get(id); if (!pending) return;
+  REPLAY_SAVES.wait.delete(id); clearTimeout(pending.timer);
+  error ? pending.reject(Error(error)) : pending.resolve(result);
+};
+function ringDesktopSave(clip) {
+  return new Promise((resolve, reject) => {
+    const id = 'replay-' + (++REPLAY_SAVES.n);
+    const timer = setTimeout(() => { REPLAY_SAVES.wait.delete(id); reject(Error('Desktop clip export did not answer. Reopen gBox and retry saving the clip.')); }, 180000);
+    REPLAY_SAVES.wait.set(id, { resolve, reject, timer });
+    console.log('GBOX:' + JSON.stringify({ ev: 'savereplay', id, clip }));
+  });
+}
 const RING = { el: null, st: null, at: 0, inS: 30, outS: 0, mb: 20, clip: null, busy: false, sid: "", touched: false, targets: [] };
 function ringClamp(inS, outS, span) {                      // seconds back from the newest moment; in is the older edge
   span = Math.max(0, +span || 0);
@@ -3118,6 +3134,7 @@ function ringPopEl() {
     if (a === "close") m.classList.remove("on");
     else if (a === "refresh") ringRefresh();
     else if (a === "export") ringExport();
+    else if (a === "save") ringRetrySave();
     else if (a === "opts" && RING_IO.opts) { m.classList.remove("on"); RING_IO.opts(e); }
     else if (a === "open") ringOpenClip();
     else if (a === "attach") ringAttach();
@@ -3152,7 +3169,8 @@ function ringRender() {
   if (!RING.clip) { cl.innerHTML = ""; return; }
   const k = RING.clip;
   cl.innerHTML = `<div class="rg-done">✓ ${esc(k.name)} · ${(k.bytes / 1048576).toFixed(1)} MB · ${ringFmt(k.seconds)} · ${k.height}p ${esc(k.encoder)}${k.fits ? "" : " (over the goal)"}</div>
-    <div class="rg-row"><button class="act" data-rg="open">Open / save</button>
+    ${k.localFile ? `<div class="mut" style="overflow-wrap:anywhere">Saved to ${esc(k.localFile)}</div>` : k.exportError ? `<div class="mut" style="overflow-wrap:anywhere">${esc(k.exportError)}</div><button class="act" data-rg="save" ${RING.busy ? 'disabled' : ''}>Retry saving clip</button>` : ''}
+    <div class="rg-row"><button class="act" data-rg="open">${k.localFile ? 'Show in folder' : 'Open / save'}</button>
     <select id="rg-target" aria-label="Attach the clip to"><option value="">Attach to…</option>${(RING.targets || []).map(t =>
       `<option value="${esc(t.v)}">${esc(t.label)}</option>`).join("")}</select><button class="act" data-rg="attach">Attach</button></div>`;
 }
@@ -3191,13 +3209,28 @@ async function ringExport() {
   RING_IO.toast(`🎬 Exporting ${ringFmt(c.seconds)} of gameplay (≤ ${RING.mb} MB)…`, 60000);
   try {
     const r = await RING_IO.job({ op: "export", in_s: c.inS, out_s: c.outS, target_mb: RING.mb });
-    RING.clip = r.clip; RING.st = r.status || RING.st; RING.targets = await ringTargets();
-    RING_IO.toast(`🎬 Clip ready: ${(r.clip.bytes / 1048576).toFixed(1)} MB`, 6000);
-  } catch (e) { RING_IO.toast("Export failed: " + e.message, 9000); }
+    const clip = RING.clip = r.clip; RING.st = r.status || RING.st;
+    RING.targets = await ringTargets(); await ringSaveClip(clip);
+    RING_IO.toast(clip.localFile ? `Clip saved to ${clip.localFile}` : `🎬 Clip ready: ${(clip.bytes / 1048576).toFixed(1)} MB`, 9000);
+  } catch (e) { if (RING.clip) RING.clip.exportError = e.message; RING_IO.toast("Export failed: " + e.message, 9000); }
+  finally { RING.busy = false; ringRender(); }
+}
+async function ringSaveClip(clip) {
+  const result = await RING_IO.save?.(clip);
+  if (result?.file) { clip.localFile = result.file; delete clip.exportError; }
+}
+async function ringRetrySave() {
+  const clip = RING.clip; if (!clip || RING.busy) return;
+  RING.busy = true; ringRender();
+  try { await ringSaveClip(clip); RING.targets = await ringTargets(); RING_IO.toast(`Clip saved to ${clip.localFile}`, 9000); }
+  catch (e) { clip.exportError = e.message; RING_IO.toast('Export failed: ' + e.message, 9000); }
   finally { RING.busy = false; ringRender(); }
 }
 async function ringOpenClip() {
-  if (RING.clip) window.open(await RING_IO.url(RING.clip.sha256));
+  try {
+    if (RING.clip?.localFile) await RING_IO.open(RING.clip.localFile);
+    else if (RING.clip) window.open(await RING_IO.url(RING.clip.sha256));
+  } catch (e) { RING_IO.toast('Open failed: ' + e.message, 9000); }
 }
 async function ringAttach() {
   const k = RING.clip, v = RING.el?.querySelector("#rg-target")?.value || "";
