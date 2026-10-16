@@ -13,6 +13,7 @@ from gbox import black_models as bm
 from gbox.black_models import (
     DISC, ELF, CAST_WEAPONS, LOADER_SITES, FormatError, elf_loader_sites,
     BONE_HEADER_FIXED, BONE_HEADER_PER, db_bone_records,
+    WDD_STREAMS, WDD_ATTRS, wdd_type, wdd_type_census,
 )
 
 WDO_FIXTURE = bytes.fromhex(
@@ -221,3 +222,41 @@ def test_db_bone_records_absolute_and_contiguous():
         tbl = bm.db_bone_offset_table(db)
         for off, r in zip(tbl["offsets"], rec["records"]):
             assert db[off:off + 24] == r, f"{slot} record mismatch at {off:#x}"
+
+
+def test_wdd_type_decodes_nibbles():
+    """type = (stream<<4)|attr; bit 7 / stream >= 5 / attr >= 13 are all invalid."""
+    assert wdd_type(0x00) == (0, 0)
+    assert wdd_type(0x36) == (3, 6)
+    assert wdd_type(0x4C) == (4, 12)
+    for bad in (0x80, 0x5F, 0x0D, 0xFF):
+        with pytest.raises(FormatError):
+            wdd_type(bad)
+
+
+@pytest.mark.skipif(not DISC.exists(), reason="owned Black disc not unpacked on this node")
+def test_wdd_type_census_matches_records():
+    """Every record type decomposes as stream 0..4 / attr 0..12, and the census
+    tallies the same (stream, attr) kinds as a direct walk of wdd_records()."""
+    cast = bm.list_cast()
+    for slot in sorted(k for k in cast if k.startswith("BG1_")):
+        data = _wdd_bytes(slot)
+        c = bm.wdd_type_census(data)
+        kinds: dict = {}
+        n_data = 0
+        n_pointer = 0
+        for t, sub, _p in bm.wdd_records(data):
+            s, a = wdd_type(t)                    # raises if the codec is violated
+            assert 0 <= s < WDD_STREAMS and 0 <= a < WDD_ATTRS, f"{slot} type {t:#x}"
+            if sub == 2:
+                n_data += 1
+                kinds[(s, a)] = kinds.get((s, a), 0) + 1
+            elif sub == 3:
+                n_pointer += 1
+        assert c["records"] == 4096, slot
+        assert c["data_records"] == n_data, slot
+        assert c["kinds"] == kinds, slot
+        assert set(c["streams"]) <= set(range(WDD_STREAMS)), slot
+        assert set(c["attrs"]) <= set(range(WDD_ATTRS)), slot
+        assert n_pointer == sum(sum(m.values()) for m in c["pointer"].values()), slot
+        assert n_pointer > 0, slot                  # every variant carries pointer records

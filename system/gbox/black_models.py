@@ -182,6 +182,15 @@ def wdd_census(data: bytes) -> dict:
 
 WDD_SIZE = 65536
 WDD_RECORD = 16
+# The WDD record type byte is (stream_id << 4) | attr_id: the high nibble selects
+# one of 5 sub-streams (0..4), the low nibble one of 13 attribute/record kinds
+# (0..12). Verified on every data and pointer record of all 31 BG1_*.WDD
+# (2026-10-16, 81,539 sub-2 records, 65 distinct types): bit 7 is always clear,
+# high nibble <= 4, low nibble <= 12. The 14-byte payload is 14 independent
+# quantized signed-byte channels (no index/short field), so a record is a
+# per-(stream, attr) operand block, not a packed vertex with an inline bone index.
+WDD_STREAMS = 5
+WDD_ATTRS = 13
 
 
 def wdd_records(data: bytes) -> list[tuple[int, int, bytes]]:
@@ -215,6 +224,59 @@ def wdd_summary(data: bytes) -> dict:
         if sub == 0:
             zero_pad += 1
     return {"records": len(recs), "subs": subs, "zero_pad_records": zero_pad}
+
+
+def wdd_type(t: int) -> tuple[int, int]:
+    """Decode a WDD record type byte into ``(stream_id, attr_id)``.
+
+    The type byte is ``(stream_id << 4) | attr_id``: high nibble = one of
+    ``WDD_STREAMS`` sub-streams (0..4), low nibble = one of ``WDD_ATTRS``
+    attribute/record kinds (0..12). Verified across all 31 BG1_*.WDD (2026-10-16):
+    bit 7 is always clear, the high nibble never exceeds 4, and the low nibble
+    never exceeds 12. This supersedes the earlier "type < 0x80" observation and
+    gives the reader its stream/attribute axes.
+    """
+    if t < 0 or t > 0x7F:
+        raise FormatError(f"WDD type 0x{t:02x} has bit 7 set")
+    stream, attr = t >> 4, t & 0x0F
+    if stream >= WDD_STREAMS:
+        raise FormatError(f"WDD type 0x{t:02x} stream {stream} >= {WDD_STREAMS}")
+    if attr >= WDD_ATTRS:
+        raise FormatError(f"WDD type 0x{t:02x} attr {attr} >= {WDD_ATTRS}")
+    return stream, attr
+
+
+def wdd_type_census(data: bytes) -> dict:
+    """(stream, attr) record-kind census of a WDD, validating every type byte.
+
+    Every record's type (including the zero-padding tail, which is type 0) must
+    decode via wdd_type(); data (sub 2) records are tallied into ``streams`` /
+    ``attrs`` / ``kinds``, and pointer (sub 3) records into ``pointer``.
+    """
+    recs = wdd_records(data)
+    streams: dict[int, int] = {}
+    attrs: dict[int, int] = {}
+    kinds: dict[tuple[int, int], int] = {}
+    pointer: dict[int, dict[int, int]] = {}
+    data_records = 0
+    for t, sub, _p in recs:
+        stream, attr = wdd_type(t)
+        if sub == 2:
+            data_records += 1
+            streams[stream] = streams.get(stream, 0) + 1
+            attrs[attr] = attrs.get(attr, 0) + 1
+            kinds[(stream, attr)] = kinds.get((stream, attr), 0) + 1
+        elif sub == 3:
+            m = pointer.setdefault(stream, {})
+            m[attr] = m.get(attr, 0) + 1
+    return {
+        "records": len(recs),
+        "data_records": data_records,
+        "streams": streams,
+        "attrs": attrs,
+        "kinds": kinds,
+        "pointer": pointer,
+    }
 
 
 # .DB skeleton name table: a run of 24-byte records (null-terminated ASCII name, zero
