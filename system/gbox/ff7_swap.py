@@ -78,34 +78,53 @@ BATTLE_ROLES = {"hip": 1, "chest": 2, "head": 3, "armA": (6, 7, 8), "armB": (11,
 
 # ---------------------------------------------------------------- LZS (FF7) encoder
 
-def lzs_encode(data: bytes) -> bytes:
+def lzs_encode(data: bytes, thorough: bool = False) -> bytes:
     """Greedy LZSS in FF7's LZS format (u32 compressed size, flag bytes LSB first, 1 = literal, references into a
-    4 KiB ring that starts at 0xFEE, 3..18 bytes). ff7_models.lzs() decodes it."""
+    4 KiB ring that starts at 0xFEE, 3..18 bytes). ff7_models.lzs() decodes it. thorough: scan every candidate and
+    use lazy matching (better ratio, slower) - the default path keeps the historical output byte-identical."""
     n = len(data)
     out = bytearray()
     heads: dict[bytes, list[int]] = {}
     i = 0
+
+    def best(k: int) -> tuple[int, int]:
+        key = data[k:k + 3]
+        if len(key) < 3:
+            return 0, 0
+        cands = heads.get(key, [])
+        best_len, best_pos = 0, 0
+        for j in reversed(cands if thorough else cands[-64:]):
+            if k - j > 4078:
+                break
+            ln = 3
+            while ln < 18 and k + ln < n and data[j + ln] == data[k + ln]:
+                ln += 1
+            if ln > best_len:
+                best_len, best_pos = ln, j
+                if ln == 18:
+                    break
+        return best_len, best_pos
+
     while i < n:
         flag_pos = len(out)
         out.append(0)
         flags = 0
-        for bit in range(8):
-            if i >= n:
-                break
-            best_len, best_pos = 0, 0
-            key = data[i:i + 3]
-            if len(key) == 3:
-                cands = heads.get(key, [])
-                for j in reversed(cands[-64:]):
-                    if i - j > 4078:
+        bit = 0
+        while bit < 8 and i < n:
+            best_len, best_pos = best(i)
+            if thorough and best_len >= 3 and i + 1 < n:
+                nxt_len, nxt_pos = best(i + 1)
+                if nxt_len > best_len:
+                    # lazy matching: a literal here and the longer match at i+1 wins
+                    flags |= 1 << bit
+                    out.append(data[i])
+                    if i + 3 <= n:
+                        heads.setdefault(data[i:i + 3], []).append(i)
+                    i += 1
+                    bit += 1
+                    if bit >= 8:
                         break
-                    ln = 3
-                    while ln < 18 and i + ln < n and data[j + ln] == data[i + ln]:
-                        ln += 1
-                    if ln > best_len:
-                        best_len, best_pos = ln, j
-                        if ln == 18:
-                            break
+                    best_len, best_pos = nxt_len, nxt_pos
             if best_len >= 3:
                 o = (best_pos + 0xFEE) & 0xFFF
                 out += bytes([o & 0xFF, ((o >> 4) & 0xF0) | (best_len - 3)])
@@ -118,6 +137,7 @@ def lzs_encode(data: bytes) -> bytes:
                 if k + 3 <= n:
                     heads.setdefault(data[k:k + 3], []).append(k)
             i += step
+            bit += 1
         out[flag_pos] = flags
     return struct.pack("<I", len(out)) + bytes(out)
 
@@ -783,6 +803,33 @@ def build_cast(ctx, game: dict, pairs: list, name: str, inp) -> dict:
             for path, data in w:
                 writes[path] = data
             per[slot] = {"status": "built", **{k: rep.get(k) for k in ("field", "battle") if k in rep}}
+        # In-engine cutscenes: the special-scene BSX files carry their own copy of Cloud's mesh (22 bones, the body
+        # parts plus his sword). Replace those body parts with the player's fitted field geometry so the whole-party
+        # cast also covers the cutscene models.
+        if "FIELD/CLOUD.BCX" in writes:
+            bsx = {}
+            orig_fm = F.read_field_model(src.read("FIELD/CLOUD.BCX"))
+            donor_fm = F.read_field_model(writes["FIELD/CLOUD.BCX"])
+            for name, (_lba, size) in sorted(src.files.items()):
+                if not name.upper().endswith(".BSX"):
+                    continue
+                u = F.lzs(src.read(name))
+                if not any(m["id"] == 0 and m["nb"] == 22 for m in bsx_models(u)):
+                    continue
+                try:
+                    new_u, rep = patch_bsx_cloud(u, orig_fm, donor_fm)
+                except ValueError as e:
+                    bsx[name] = {"status": "skipped", "reason": str(e)[:200]}
+                    continue
+                comp = lzs_encode(new_u, thorough=True)
+                if len(comp) > size:
+                    bsx[name] = {"status": "skipped", "reason": f"compressed {len(comp)}B > file budget {size}B"}
+                    continue
+                writes[name] = comp
+                bsx[name] = {"status": "patched", **rep}
+            per.setdefault("player", {}).setdefault("cutscenes", {}).update(
+                {"bsx_files": len([v for v in bsx.values() if v["status"] == "patched"]),
+                 "bsx_skipped": {k: v for k, v in bsx.items() if v["status"] != "patched"}})
     finally:
         src.close()
     if not writes:
@@ -804,6 +851,206 @@ def build_cast(ctx, game: dict, pairs: list, name: str, inp) -> dict:
                                                   "files": sorted(writes), "writer": "gbox.ff7_swap (cast)"}))
     shutil.rmtree(work_root, ignore_errors=True)
     return {"mod": name, "slots": per, "detail": {"files": sorted(writes), "sectors_written": sectors}}
+
+
+# ---------------------------------------------------------------- BSX (special-scene cutscene models)
+
+BSX_POLYS = (("qct", 24, 4, True), ("tct", 20, 3, True), ("qmt", 12, 4, True), ("tmt", 12, 3, True),
+             ("tm", 8, 3, False), ("qm", 8, 4, False), ("tc", 16, 3, False), ("qc", 20, 4, False))
+
+
+def bsx_models(u: bytes) -> list[dict]:
+    """Decompressed BSX -> model records. [] when the file has no models section (placeholder BSX files)."""
+    if len(u) < 12:
+        return []
+    _size, off_models = struct.unpack_from("<II", u, 0)
+    if off_models <= 8 or off_models + 16 > len(u):
+        return []
+    psx_mem, num_models, _tex_ptr, _buf_size = struct.unpack_from("<IIII", u, off_models)
+    if psx_mem & 0x7FFFFFFF != off_models or not 0 < num_models <= 64:
+        return []
+    out = []
+    for i in range(num_models):
+        q = off_models + 16 + 48 * i
+        if q + 48 > len(u):
+            return []
+        mid, scale = struct.unpack_from("<HH", u, q)
+        off_skel = struct.unpack_from("<I", u, q + 4)[0]
+        nb, np_, na = u[q + 23], u[q + 35], u[q + 47]
+        out.append({"id": mid, "scale": scale, "record": q, "skel": q + off_skel, "nb": nb, "np": np_, "na": na})
+    return out
+
+
+def _bsx_poly_bytes(part: dict) -> int:
+    n = 0
+    for key, size, _verts, _tex in BSX_POLYS:
+        n += part["counts"].get(key, 0) * size
+    return n
+
+
+def _bsx_block_len(part: dict) -> int:
+    """Byte length of one part's self-contained block (4-byte blank + vertices + polygons + flags + texcoords +
+    control), the same layout in BCX and BSX part data."""
+    n = 4 + 8 * part["nv"] + _bsx_poly_bytes(part)
+    n = max(n, part["opoly"] + _bsx_poly_bytes(part))
+    n = max(n, part["otc"] + 2 * part["ntc"], part["ofl"] + 4 * part["flags"], part["octl"] + part["controls"])
+    return (n + 3) // 4 * 4
+
+
+def patch_bsx_cloud(u: bytes, orig_fm: dict, donor_fm: dict) -> tuple[bytes, dict]:
+    """Replace Cloud's body mesh inside one decompressed BSX with the donor-encoded field model (fitted onto the same
+    22-bone skeleton, e.g. the player slot's new FIELD/CLOUD.BCX).
+
+    Body parts are matched to the original BCX by (bone, vertex count); BSX parts without a BCX counterpart (Cloud's
+    sword) and every other model's data are byte-preserved. All part blocks and animation data keep their original
+    order; every absolute pointer (part vertex offsets, animation data offsets, the models-section offset) is
+    recomputed. -> (new decompressed BSX bytes, report). Raises ValueError with a reason when the file can't be
+    patched safely.
+    """
+    models = bsx_models(u)
+    if not models:
+        raise ValueError("no models section")
+    off_models = struct.unpack_from("<I", u, 4)[0]
+    body_sig = {(p["bone"], p["nv"]) for p in orig_fm["parts"]}
+    donor_by_bone = {p["bone"]: p for p in donor_fm["parts"]}
+
+    # Every part of every model: table position, block start and payload (the block bytes, self-contained).
+    part_items = []
+    for mi, m in enumerate(models):
+        if m["nb"] or m["np"] or m["na"]:
+            if m["skel"] < off_models:
+                raise ValueError(f"model {m['id']} tables sit below the models section")
+        for pi in range(m["np"]):
+            q = m["skel"] + 4 * m["nb"] + 32 * pi
+            if q + 32 > len(u):
+                raise ValueError(f"model {mi} part {pi} table runs past the file")
+            f = struct.unpack_from("<12B2B5H2I", u, q)
+            ovx = f[19] & 0x7FFFFFFF
+            if not 8 <= ovx < off_models:
+                raise ValueError(f"model {mi} part {pi} vertex offset 0x{ovx:x} outside the data region")
+            part = {"raw": bytes(f[0:12]), "bone": f[1], "nv": f[2], "ntc": f[3],
+                    "counts": dict(zip([k for k, *_ in BSX_POLYS], f[4:12])), "flags": f[12], "controls": f[13],
+                    "opoly": f[14], "otc": f[15], "ofl": f[16], "octl": f[17], "buffer": f[18], "ovx": ovx,
+                    "prec": f[20], "q": q, "mi": mi}
+            n = _bsx_block_len(part)
+            if ovx + n > len(u):
+                raise ValueError(f"model {mi} part {pi} block runs past the file")
+            part["len"], part["payload"] = n, u[ovx:ovx + n]
+            part_items.append(part)
+
+    # Animation data blobs (absolute pointers from every model's animation table).
+    anim_items = {}
+    for m in models:
+        for k in range(m["na"]):
+            aq = m["skel"] + 4 * m["nb"] + 32 * m["np"] + 16 * k
+            if aq + 16 > len(u):
+                raise ValueError(f"model {m['id']} animation {k} table runs past the file")
+            off = struct.unpack_from("<I", u, aq + 12)[0] & 0x7FFFFFFF
+            if not 8 <= off < off_models:
+                raise ValueError(f"model {m['id']} animation {k} data offset 0x{off:x} outside the data region")
+            anim_items.setdefault(off, aq)
+
+    # Identify Cloud models (id 0 with the party skeleton) and the parts to replace. A part is replaced only when
+    # its block is owned exclusively by Cloud models (shared scene actors render from the same data region) and the
+    # model carries the complete body (all 15 body parts of the original BCX): partial variants (disguise scenes)
+    # are left as they are.
+    cloud = [m for m in models if m["id"] == 0 and m["nb"] == 22]
+    if not cloud:
+        raise ValueError("no Cloud (id 0) model with the 22-bone skeleton")
+    cloud_idx = {models.index(m) for m in cloud}
+    owners = {}
+    for p in part_items:
+        owners.setdefault(p["ovx"], set()).add(p["mi"])
+    by_model = {mi: [p for p in part_items if p["mi"] == mi] for mi in cloud_idx}
+    replaced = {}
+    for mi, plist in by_model.items():
+        matches = [p for p in plist if (p["bone"], p["nv"]) in body_sig]
+        if len(matches) != 15:
+            continue                                    # disguise / partial variant: leave the whole model alone
+        for p in matches:
+            if owners[p["ovx"]] - cloud_idx:
+                continue                                # the block is shared with a non-Cloud actor
+            if p["bone"] in donor_by_bone:
+                replaced[id(p)] = donor_by_bone[p["bone"]]
+    if not replaced:
+        raise ValueError("no Cloud model carries the complete body mesh")
+
+    # Rebuild: keep every item's original order; replaced parts carry the donor block. Items must not overlap.
+    items = [(p["ovx"], p) for p in part_items] + [(off, None) for off in anim_items]
+    items.sort(key=lambda t: t[0])
+    starts = [s for s, _ in items]
+    sized = []
+    seen = set()
+    for start, it in items:
+        if it is None:
+            end = next((s for s in starts if s > start), off_models)
+            sized.append((start, u[start:end]))
+        elif start in seen:
+            continue                          # shared part block (two models, one data region)
+        elif id(it) in replaced:
+            dp = replaced[id(it)]
+            payload = donor_fm["raw"][dp["ovx"]:dp["ovx"] + _bsx_block_len(dp)]
+            if len(payload) != _bsx_block_len(dp):
+                raise ValueError("donor part block is truncated")
+            sized.append((start, payload))
+            seen.add(start)
+        else:
+            sized.append((start, it["payload"]))
+            seen.add(start)
+    for (a, it), (nxt, _) in zip(items, items[1:]):
+        if a < nxt and it is not None and a + it["len"] > nxt:
+            raise ValueError(f"original part block at 0x{a:x} overlaps the next item at 0x{nxt:x}")
+    body = bytearray(u[0:8])
+    if sized[0][0] > 8:
+        body += u[8:sized[0][0]]
+    cur = len(body)
+    new_ovx = {}
+    for start, payload in sized:
+        new_ovx[start] = cur
+        body += payload
+        cur += len(payload)
+    new_off_models = cur
+    body += u[off_models:]
+    delta = len(body) - len(u)
+
+    # Patch the models section in place: part tables (counts / offsets / buffer / vertex offset) and the header.
+    for p in part_items:
+        q, ovx_new = p["q"] + delta, new_ovx[p["ovx"]]
+        if id(p) in replaced:
+            dp = replaced[id(p)]
+            counts = tuple(dp["counts"].get(k, 0) for k, *_ in F.FIELD_POLYS)
+            struct.pack_into("<12B2B5H2I", body, q, p["raw"][0], p["bone"], dp["nv"], dp["ntc"], *counts, dp["flags"],
+                             dp["controls"], dp["opoly"], dp["otc"], dp["ofl"], dp["octl"], dp["buffer"],
+                             ovx_new | 0x80000000, p["prec"])
+        else:
+            struct.pack_into("<I", body, q + 24, ovx_new | 0x80000000)
+    for start, aq in anim_items.items():
+        struct.pack_into("<I", body, aq + delta + 12, new_ovx[start] | 0x80000000)
+    struct.pack_into("<II", body, 0, len(body), new_off_models)
+    struct.pack_into("<I", body, new_off_models, new_off_models | 0x80000000)
+
+    # Validate the result: re-parse and verify the byte-preservation promises.
+    check = bsx_models(bytes(body))
+    if len(check) != len(models):
+        raise ValueError("rebuilt BSX lost models")
+    for p in part_items:
+        q = p["q"] + delta
+        f = struct.unpack_from("<12B2B5H2I", body, q)
+        ovx = f[19] & 0x7FFFFFFF
+        part = {"raw": bytes(f[0:12]), "bone": f[1], "nv": f[2], "ntc": f[3],
+                "counts": dict(zip([k for k, *_ in F.FIELD_POLYS], f[4:12])), "flags": f[12], "controls": f[13],
+                "opoly": f[14], "otc": f[15], "ofl": f[16], "octl": f[17], "buffer": f[18], "ovx": ovx}
+        n = _bsx_block_len(part)
+        if id(p) in replaced:
+            dp = replaced[id(p)]
+            assert part["nv"] == dp["nv"] and part["buffer"] == dp["buffer"], "donor part table not written"
+            assert body[ovx:ovx + n] == donor_fm["raw"][dp["ovx"]:dp["ovx"] + n], "donor part block not written"
+        else:
+            assert body[ovx:ovx + n] == p["payload"], f"untouched part {p['q']:#x} changed"
+    n_replaced = len(replaced)
+    return bytes(body), {"cloud_models": len(cloud), "body_parts_replaced": n_replaced,
+                         "parts_kept": len(part_items) - n_replaced, "bytes": len(body),
+                         "budget_bytes": len(u)}
 
 
 # ---------------------------------------------------------------- characters op=use
