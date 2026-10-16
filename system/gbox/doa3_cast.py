@@ -72,8 +72,13 @@ header 0x1E000):
   (9 on 65/68, 12 on the three Hikaru costumes) + C0 body-relative
   offsets/-1 sentinels, then per-group blocks ``{N, header_size = 4*(N+3),
   N+1 cumulative data lengths}`` (``cat_lnk_groups``; 431 blocks validated,
-  N in [1, 22]). The per-sub-section record semantics (joint links / skin
-  weights) and the trailing near-EOF record table are still left for RE.
+  N in [1, 22]). Each block's data region partitions into a leading *link
+  table* (a count-prefixed u16 polygon list ``{n, n indices}``, n in [1, 13],
+  zero-terminated, plus an unresolved residual) and N equal-length *link
+  sections* that are flat u16 triangle lists (3 u16 per triangle,
+  ``cat_lnk_sections``; stride multiple of 6 on 3971/3971 sections). The
+  per-section triangle/joint semantics and the trailing near-EOF record table
+  are still left for RE.
 * AFS entries must be rewritten inside their room (size rounded up to the
   archive alignment, bounded by the next entry's offset / name directory),
   which ``doa3_inventory.entry_rooms`` computes.
@@ -101,6 +106,7 @@ LNK_HEADER_WORDS = 6             # the LNK header is {2, 16, 32, size, 0, 0}
 LNK_MAX_LINK_GROUPS = 255        # measured C0 in {9, 12} across all 68 LNK costumes
 LNK_MAX_SUB_BLOCKS = 1024        # sane upper bound for the C1 sub-block count
 LNK_GROUP_MAX = 256              # per-group link count N measured in [1, 22] across 431 blocks
+LNK_POLY_MAX_VERTICES = 255      # polygon vertex count n measured in [1, 13] across 431 blocks
 CAT_FIXED_OFFSET = 0x14          # the stable fixed block sits at 0x14
 CAT_SIGNATURE = (0x100, 1)       # (word@0x14, word@0x18) across all 69 costumes
 MAX_HEADER_WORDS = 4096
@@ -797,6 +803,93 @@ def cat_lnk_groups(blob: bytes) -> dict | None:
             "body_offset": bo, "size": size}
 
 
+def _parse_polygon_list(u16: list[int]) -> tuple[list[list[int]], int]:
+    """A count-prefixed u16 polygon list ``{n, then n u16 indices}``.
+
+    Each polygon starts with its vertex count ``n`` (measured in [1, 13] across
+    all 431 blocks) followed by ``n`` u16 indices. The list is terminated by a
+    zero count. Returns ``(polygons, terminator_index)`` where
+    ``terminator_index`` is the u16 index of the terminating 0 (the residual
+    bytes after it are not part of the list). Raises on an out-of-range or
+    unterminated list.
+    """
+    polys = []
+    p = 0
+    while p < len(u16):
+        n = u16[p]
+        if n == 0:
+            return polys, p
+        if n > LNK_POLY_MAX_VERTICES:
+            raise ValueError(f"polygon at u16[{p}] has {n} vertices, beyond "
+                             f"the measured range (1..{LNK_POLY_MAX_VERTICES})")
+        if p + 1 + n > len(u16):
+            raise ValueError(f"polygon at u16[{p}] with {n} vertices overruns "
+                             f"the link table")
+        polys.append(u16[p + 1:p + 1 + n])
+        p += 1 + n
+    raise ValueError("link-table polygon list is not terminated by a zero count")
+
+
+def cat_lnk_sections(blob: bytes) -> dict | None:
+    """Decode every link-group block's data-region partition.
+
+    Measured across all 68 LNK-bearing costumes (431 blocks, 0 deviations):
+    each block's data region (``data_offsets[-1]`` bytes) splits into a leading
+    *link table* ``[0, data_offsets[0])`` and ``N`` *link sections*
+    ``[data_offsets[k-1], data_offsets[k])`` for ``k`` in ``1..N``:
+
+    * The link table is u16-aligned and holds a count-prefixed polygon list
+      ``{n, then n u16 indices}`` (``n`` in [1, 13]) terminated by a zero
+      count; any residual bytes after the terminator are returned unparsed
+      (their record semantics remain unresolved).
+    * The ``N`` link sections are all the SAME byte length (the *stride*) and
+      that stride is a multiple of 6 - i.e. each section is a flat u16 triangle
+      list (3 u16 indices per triangle, no count prefix), verified 3971/3971
+      sections across all 431 blocks. The per-section index semantics (which
+      joint/vertex the triangles bind) remain unresolved.
+
+    Returns ``None`` when the companion has no LNK section (kor00); raises
+    ``ValueError`` on any structural deviation from the pinned shape.
+    """
+    groups = cat_lnk_groups(blob)
+    if groups is None:
+        return None
+    sections = []
+    for g in groups["groups"]:
+        if not g.get("present"):
+            sections.append({"index": g["index"], "present": False})
+            continue
+        n = g["count"]
+        lens = g["data_offsets"]
+        data_start = g["offset"] + g["header_size"]
+        data = blob[data_start:data_start + lens[-1]]
+        link_table = data[0:lens[0]]
+        if len(link_table) % 2:
+            raise ValueError(f"link-group {g['index']} link table is not "
+                             f"u16-aligned ({len(link_table)} bytes)")
+        u16 = list(struct.unpack(f"<{len(link_table) // 2}H", link_table))
+        polys, term = _parse_polygon_list(u16)
+        residual = len(link_table) - 2 * (term + 1)
+        strides = [lens[k] - lens[k - 1] for k in range(1, n + 1)]
+        if len(set(strides)) != 1:
+            raise ValueError(f"link-group {g['index']} link sections are not "
+                             f"equal length: {[hex(s) for s in strides]}")
+        stride = strides[0]
+        if stride % 6:
+            raise ValueError(f"link-group {g['index']} link-section stride "
+                             f"{stride:#x} is not a whole number of triangles")
+        sections.append({
+            "index": g["index"], "present": True, "offset": g["offset"],
+            "link_table_bytes": len(link_table),
+            "polygon_count": len(polys), "polygons": polys,
+            "link_table_residual_bytes": residual,
+            "link_sections": n, "link_section_stride": stride,
+            "triangles_per_section": stride // 6,
+        })
+    return {"link_group_count": groups["link_group_count"],
+            "body_offset": groups["body_offset"], "groups": sections}
+
+
 # ----------------------------------------------------------------- slots
 
 def slot_inventory(manifest: dict) -> dict:
@@ -926,6 +1019,12 @@ def cast_writer_status() -> dict:
                                "{N, header_size=4*(N+3), N+1 cumulative data lengths}, "
                                "validated on all 431 blocks (N in [1,22], 0 deviations); "
                                "the sub-section record semantics remain",
+        "cat_lnk_sections": True,
+        "cat_lnk_sections_note": "each block's data region = a leading link table "
+                                 "(count-prefixed u16 polygon list, n in [1,13], "
+                                 "zero-terminated, plus an unresolved residual) + N "
+                                 "equal-length flat u16 triangle sections (stride % 6 == 0, "
+                                 "3971/3971); the per-section triangle/joint semantics remain",
         "donor_retarget": False,
         "playable": False,
         "message": "measured MDL geometry decode (vertices/normals/UVs/u16 strips/material "
