@@ -343,7 +343,7 @@ api_port = 8765
 cache_limit_gb = 50
 stage_min_mb = 32
 granted_permissions = ["read", "execute", "stage", "network", "install", "memory_write"]
-examine_ready = true
+examine_ready = false
 
 [agent]
 llm_url = "http://127.0.0.1:11434/v1"
