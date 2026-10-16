@@ -167,3 +167,56 @@ def test_dedicated_registration():
 def test_rejects_foreign_rom():
     with pytest.raises(GoldenEyeFormatError):
         GoldenEyeROM.from_bytes(b"\x80\x37\x12\x40" + b"\0" * 1024)
+
+
+def test_header_num_matrices_and_records(ge):
+    # ModelFileHeader: numMatrices=21 (was mislabelled "num_records"), numRecords=0
+    doc = gr.read_character(ge, "CsuitbondZ")
+    assert doc["num_matrices"] == 21
+    assert doc["num_records"] == 0
+
+
+def test_point_usage_decodes(ge):
+    doc = gr.read_character(ge, "CsuitbondZ")
+    vnodes = [n for n in doc["nodes"] if int(n["opcode"], 16) & 0xFF == 0x18]
+    assert len(vnodes) == 25
+    for n in vnodes:
+        # one s16 point index per render vertex, in vertex order
+        assert "point_usage" in n
+        assert len(n["point_usage"]) == n["record"]["num_vertices"]
+    torso = max(vnodes, key=lambda n: n["record"]["num_vertices"])
+    assert torso["record"]["num_vertices"] == 97
+    assert max(torso["point_usage"]) == 96          # point pool is 0..96 (97 points)
+    assert torso["point_usage"].count(-1) == 44     # -1 = unskinned/static vertex
+    # fully static meshes (e.g. the first-person hand/suit shells) are all -1
+    assert any(all(p == -1 for p in n["point_usage"]) for n in vnodes)
+
+
+def test_group_matrix_map(ge):
+    doc = gr.read_character(ge, "CsuitbondZ")
+    nodes = gr.parse_nodes(ge.read_file("CsuitbondZ"), doc["root_offset"])
+    owner = gr.group_matrix_map(nodes)
+    assert set(owner) <= set(range(doc["num_matrices"]))
+    assert len(owner) >= 19   # 15 groups own ~20 of 21 matrix slots
+    assert all(0 <= j <= 15 for j in owner.values())
+
+
+def test_image_entries_accumulate():
+    # initimages.c image_entries_load: sizes -> cumulative offsets + total
+    assert gr.image_entries_accumulate([0x754, 0x16A, 0x974]) == [0, 0x754, 0x8BE, 0x1232]
+    assert gr.image_entries_accumulate([]) == [0]
+
+
+def test_decode_image_rgba16():
+    # 1x1 RGBA16 opaque red (R=31,G=0,B=0,A=1 -> 0xF801)
+    assert gr.decode_image(b"\xF8\x01", 1, 1, gr.FMT_RGBA, gr.SIZ_16B) == \
+        bytes([0xFF, 0x00, 0x00, 0xFF])
+    # 1x1 RGBA16 transparent green (0x07C0)
+    assert gr.decode_image(b"\x07\xC0", 1, 1, gr.FMT_RGBA, gr.SIZ_16B) == \
+        bytes([0x00, 0xFF, 0x00, 0x00])
+    # I8: value 0x40 -> 0x40 in all channels, opaque
+    assert gr.decode_image(b"\x40", 1, 1, gr.FMT_I, gr.SIZ_8B) == bytes([0x40, 0x40, 0x40, 0xFF])
+    # unsupported combo -> None
+    assert gr.decode_image(b"\x00", 1, 1, gr.FMT_YUV, gr.SIZ_8B) is None
+    # short input -> None (never a partial decode)
+    assert gr.decode_image(b"\x00", 2, 2, gr.FMT_RGBA, gr.SIZ_16B) is None

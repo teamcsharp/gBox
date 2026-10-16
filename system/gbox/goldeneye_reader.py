@@ -57,10 +57,27 @@ The skeleton is exported as a proper glTF ``skins`` array: the 15 op-0x02
 GroupRecords (JointID 1..15) hang off the implicit root joint 0, each
 render mesh (op-0x18 node) is rigidly bound to the nearest ancestor group's
 JointID, and the inverse bind matrices are the negation of the accumulated
-group origins.  Texture pixels are not decoded yet: the model's 12-byte
-sImageTableEntry records name the global ``g_Textures`` index + format, and
-the per-node G_SETTEX ids are recorded in mesh extras; the global texture
-table location and the ROM image-bank codec are the next reader step.
+group origins.
+
+Two ModelFileHeader fields were previously swapped: the s16 after numSwitches
+is ``numMatrices`` (21 for CsuitbondZ) and the one after radius is
+``numRecords`` (0) -- now named to match bondtypes.h.  The op-0x18
+``PointUsage`` s16[] (one point index per render vertex, -1 = unskinned,
+0..96 = the model's transform-point pool consumed by the gspFast3D RSP
+microcode) is decoded per node, and ``group_matrix_map`` pins each matrix
+slot (GroupRecord MatrixID0/1/2) to its owning joint.
+
+Texture pixels are the remaining reader item.  The model's 12-byte
+sImageTableEntry records name the global ``g_Textures`` index + width/height
++ Type (G_IM_FMT) + RenderDepth (G_IM_SIZ); the global table is the
+"Globalimagetable" segment (ge007.ld) -- NOT the rarezip data segment, so the
+US D:80049300 does not apply -- whose 6-byte ``image_entry`` stores the
+per-image byte SIZE in ``dataoffset`` and is converted to cumulative offsets
+by ``image_entries_load`` (0xffff terminator); the pixel bank is the ROM
+"images" segment at ``_imagesSegmentRomStart``.  ``decode_image`` implements
+the RGBA16/RGBA32/I4/I8/IA/CI codec; locating the PAL table/bank offsets
+remains (pin ``image_entries_load`` / ``_imagesSegmentRomStart`` via a Ghidra
+xref before dumping pixels).
 
 Usage: python -m gbox.goldeneye_reader ROM [--body CsuitbondZ] [--gltf out.gltf]
 """
@@ -154,6 +171,7 @@ class NodeRec:
     collision_vertices: list[VertexRec] = field(default_factory=list)
     triangles: list[tuple[int, int, int]] = field(default_factory=list)
     triangle_hint: str = ""
+    point_usage: list[int] = field(default_factory=list)  # s16 per render vertex
 
     @property
     def op(self) -> int:
@@ -272,6 +290,9 @@ def decode_record(model: bytes, rec: NodeRec) -> None:
                     rec.collision_vertices.append(VertexRec.parse(model, c_off + VERTEX_SIZE * i))
                 except struct.error:
                     break
+        pu_off = rec.record["point_usage"]
+        if pu_off is not None and 0 <= pu_off < len(model) and nv > 0:
+            rec.point_usage = list(struct.unpack_from(f">{nv}h", model, pu_off))
         decode_primary_dl(model, rec)
 
 
@@ -381,6 +402,8 @@ def read_character(ge: GoldenEyeROM, filename: str) -> dict:
                                   "mtx_b": j.mtx_b} for j in skeleton.joints]}
                      if skeleton else None),
         "num_switches": hdr.num_switches,
+        "num_matrices": hdr.num_matrices,
+        "num_records": hdr.num_records,
         "switches": [hex(s) for s in switches],
         "textures": textures,
         "root_offset": root_off,
@@ -394,12 +417,175 @@ def read_character(ge: GoldenEyeROM, filename: str) -> dict:
                 if r.vertices else {}),
              **({"triangles": r.triangles, "triangle_hint": r.triangle_hint}
                 if r.op == 0x18 else {}),
+             **({"point_usage": r.point_usage} if r.point_usage else {}),
              } for r in nodes],
         "opcode_nodes": {f"0x{k:02X}": len(v) for k, v in sorted(ops.items())},
     }
 
 
-# ---------------------------------------------------------------- roster / rig
+# ---------------------------------------------------------------- textures / points
+
+# The global image table ``g_Textures`` (image.h ``image_entry``) packs each
+# entry into 6 bytes: hitSound:4 | hitTexture:4 | dataoffset:24 | flag3..6:4
+# (one nibble each).  In ROM the 24-bit ``dataoffset`` field stores the
+# PER-IMAGE byte SIZE; ``image_entries_load`` (initimages.c) rewrites it in
+# place to cumulative offsets at startup, stopping at a 0xffff terminator.
+# The pixel bytes live in the ROM ``images`` segment at ``_imagesSegmentRomStart``
+# (the final ROM segment per ge007.ld), i.e. image i is at
+# [_imagesSegmentRomStart + offset[i], ... + offset[i+1]).
+G_TEXTURES_ENTRY_SIZE = 6
+G_TEXTURES_TERMINATOR = 0xFFFF
+G_TEXTURES_COUNT = 0xBB9  # PAL build image count (NTSC decomp: 2698 in images.def)
+
+# G_IM_FMT / G_IM_SIZ for the model's 12-byte sImageTableEntry (bondtypes.h
+# ModelFileTextures: Type = format, RenderDepth = size).
+FMT_RGBA, FMT_YUV, FMT_CI, FMT_IA, FMT_I = 0, 1, 2, 3, 4
+SIZ_4B, SIZ_8B, SIZ_16B, SIZ_32B = 0, 1, 2, 3
+
+
+def image_entries_accumulate(sizes: list[int]) -> list[int]:
+    """Replicate ``image_entries_load`` (initimages.c): per-image sizes -> cumulative
+    offsets, appending the total as the trailing terminator entry."""
+    offsets, total = [], 0
+    for s in sizes:
+        offsets.append(total)
+        total += s
+    offsets.append(total)
+    return offsets
+
+
+def group_matrix_map(nodes: list[NodeRec]) -> dict[int, int]:
+    """Map model matrix slot -> owning joint id.
+
+    Each op-0x02 GroupRecord carries MatrixID0/1/2 (the reader's
+    ``matrix_ids``); ``process_02_position`` (model.c) builds render_pos[slot]
+    from the group's origin/rotation, so slot ``m`` is the transform matrix
+    owned by the group with MatrixID0/1/2 == m.  Returns {matrix_slot:
+    joint_id}; slots are 0..num_matrices-1.
+    """
+    owner: dict[int, int] = {}
+    for r in nodes:
+        if r.op != 0x02:
+            continue
+        jid = r.record.get("joint_id")
+        if jid is None:
+            continue
+        for m in r.record.get("matrix_ids", []):
+            if isinstance(m, int) and m >= 0:
+                owner.setdefault(m, jid)
+    return owner
+
+
+def _c16(v: int) -> int:
+    """5-bit channel -> 8-bit."""
+    return (v << 3) | (v >> 2)
+
+
+def decode_image(pixels: bytes, width: int, height: int, fmt: int,
+                 siz: int, palette: bytes | None = None) -> bytes | None:
+    """Decode an N64 texture to RGBA8888 (row-major width*height*4 bytes).
+
+    ``fmt``/``siz`` are the model texture record's Type/RenderDepth fields
+    (G_IM_FMT / G_IM_SIZ).  CI textures require a 16-bit RGBA ``palette``.
+    Returns None for unsupported combinations.
+    """
+    n = width * height
+    out = bytearray(n * 4)
+    if fmt == FMT_RGBA and siz == SIZ_16B:
+        if len(pixels) < n * 2:
+            return None
+        for i in range(n):
+            w = (pixels[i * 2] << 8) | pixels[i * 2 + 1]
+            out[i * 4] = _c16((w >> 11) & 0x1F)
+            out[i * 4 + 1] = _c16((w >> 6) & 0x1F)
+            out[i * 4 + 2] = _c16((w >> 1) & 0x1F)
+            out[i * 4 + 3] = 255 if (w & 1) else 0
+        return bytes(out)
+    if fmt == FMT_RGBA and siz == SIZ_32B:
+        if len(pixels) < n * 4:
+            return None
+        for i in range(n):
+            out[i * 4:i * 4 + 4] = pixels[i * 4:i * 4 + 4]
+        return bytes(out)
+    if fmt == FMT_I and siz == SIZ_8B:
+        if len(pixels) < n:
+            return None
+        for i in range(n):
+            v = pixels[i]
+            out[i * 4:i * 4 + 4] = (v, v, v, 255)
+        return bytes(out)
+    if fmt == FMT_I and siz == SIZ_4B:
+        if len(pixels) < (n + 1) // 2:
+            return None
+        for i in range(n):
+            v = (pixels[i // 2] >> (4 if i % 2 == 0 else 0)) & 0xF
+            v = (v << 4) | v
+            out[i * 4:i * 4 + 4] = (v, v, v, 255)
+        return bytes(out)
+    if fmt == FMT_IA and siz == SIZ_16B:
+        if len(pixels) < n * 2:
+            return None
+        for i in range(n):
+            ia = (pixels[i * 2] << 8) | pixels[i * 2 + 1]
+            v = ia >> 8
+            out[i * 4:i * 4 + 4] = (v, v, v, ia & 0xFF)
+        return bytes(out)
+    if fmt == FMT_IA and siz == SIZ_8B:
+        if len(pixels) < n:
+            return None
+        for i in range(n):
+            b = pixels[i]
+            i4 = (b >> 4) & 0xF
+            v = (i4 << 4) | i4
+            a = ((b & 0xF) << 4) | (b & 0xF)
+            out[i * 4:i * 4 + 4] = (v, v, v, a)
+        return bytes(out)
+    if fmt == FMT_CI and palette:
+        step = 1 if siz == SIZ_8B else 2  # CI8 / CI4
+        shift = 4 if siz == SIZ_4B else 0
+        for i in range(n):
+            if siz == SIZ_8B:
+                c = pixels[i]
+            else:
+                c = (pixels[i // 2] >> (shift if i % 2 == 0 else 0)) & 0xF
+            if c * 2 + 2 <= len(palette):
+                w = (palette[c * 2] << 8) | palette[c * 2 + 1]
+                out[i * 4] = _c16((w >> 11) & 0x1F)
+                out[i * 4 + 1] = _c16((w >> 6) & 0x1F)
+                out[i * 4 + 2] = _c16((w >> 1) & 0x1F)
+                out[i * 4 + 3] = 255 if (w & 1) else 0
+        return bytes(out)
+    return None
+
+
+def find_global_texture_table(rom: bytes, count: int = G_TEXTURES_COUNT) -> int | None:
+    """Locate the uncompressed g_Textures size table in ROM, or None.
+
+    The table is ``count`` x 6-byte entries whose 24-bit dataoffset is the
+    per-image size (1..0xffff) with a 0xffff terminator.  It lives in the
+    "Globalimagetable" segment (ge007.ld), NOT the rarezip data segment, so
+    the PAL offset is not the US 0x80049300.  If this scan returns None the
+    table is at an offset that must first be pinned from a code xref to
+    ``image_entries_load`` / ``_imagesSegmentRomStart`` (Ghidra); do not guess.
+    """
+    def _d(o: int) -> int:
+        return (rom[o + 1] << 16) | (rom[o + 2] << 8) | rom[o + 3]
+
+    s = 0
+    while s <= len(rom) - G_TEXTURES_ENTRY_SIZE * count:
+        if 1 <= _d(s) < 0xFFFF:
+            ok = True
+            for i in range(1, count):
+                if not 1 <= _d(s + G_TEXTURES_ENTRY_SIZE * i) < 0xFFFF:
+                    ok = False
+                    break
+            if ok and _d(s + G_TEXTURES_ENTRY_SIZE * count) == G_TEXTURES_TERMINATOR:
+                return s
+        s += 1
+    return None
+
+
+
 
 
 def _slug(s: str) -> str:
