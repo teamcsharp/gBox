@@ -13,8 +13,8 @@ Here:
   default one when it is active, else the first active one, so an emulator never opens a stale or unplugged default.
 - warm: a silent shared-mode stream on that device while the launch prepares, so a sleeping device is awake by the
   time the emulator opens it.
-- BootWatch: reads the RetroArch log while gBox waits. Content loaded + audio still opening extends the wait instead of
-  failing; audio init past init_grace_s (or opened late with the loop still silent past stall_s) asks for the next
+- BootWatch: reads the RetroArch log while gBox waits. Content loaded (the game still booting) extends the wait instead
+  of failing; audio init past init_grace_s (or opened late with the loop still silent past stall_s) asks for the next
   driver in [game_audio] retroarch_drivers (xaudio -> wasapi -> null). Never a failure because audio is slow.
 - remember / first_driver: a driver that took over from a stalled one starts first on that device for a while, so the
   next launch does not pay for the stall again. null is never remembered (sound comes back on the next launch).
@@ -37,7 +37,8 @@ STATE_FILE = "game-audio.json"                     # <runtime>/: device id -> dr
 
 # --- RetroArch boot log ---------------------------------------------------------------------------------------------
 
-CONTENT = re.compile(r"\[BOOT\] Game ID|\[Core\] Geometry:|\[Core\] Version of libretro API|\[Content\] Loaded content")
+CONTENT = re.compile(r"\[BOOT\] Game ID|\[Core\] Geometry:|\[Core\] Version of libretro API|\[Content\] Loaded content|"
+                     r"\[Environ\] SET_(?:GEOMETRY|PIXEL_FORMAT|SYSTEM_AV_INFO|VIDEO_MODE)")
 AUDIO_START = re.compile(r"\[Audio\] (?:Starting threaded audio driver|Set audio input rate)")
 AUDIO_SLOW = re.compile(r'\[Audio\] Driver "([^"]+)" has not returned from init')
 # anything RetroArch logs once the audio driver's init has returned (the driver's own report, or the next subsystems)
@@ -60,8 +61,8 @@ def boot_phase(log: str) -> dict:
 
 class BootWatch:
     """The launch's patience while a RetroArch session boots. observe() each poll with the log so far; decide() says
-    'ready' | 'wait' | 'fallback' (relaunch with the next audio driver) | 'fail' (gave up: not an audio problem, or
-    audio still not open after extended_wait_s)."""
+    'ready' | 'wait' | 'fallback' (relaunch with the next audio driver) | 'fail' (gave up: content never loaded, or a
+    content-loaded game still not running after extended_wait_s)."""
 
     def __init__(self, t0: float, boot_wait_s: float = 30.0, extended_wait_s: float = 120.0, init_grace_s: float = 3.0,
                  stall_s: float = 6.0, can_fallback: bool = True):
@@ -89,10 +90,9 @@ class BootWatch:
         return round(self.seen.get("audio_done", now) - self.seen["audio_started"], 2)
 
     def deadline(self) -> float:
-        """Content loaded and audio the thing still in progress: the long wait. Otherwise the normal one."""
-        p = self.phase
-        audio_busy = p["audio_started"] and not p["audio_done"] or p["audio_slow"]
-        return self.t0 + (self.extended_wait_s if p["content"] and audio_busy else self.boot_wait_s)
+        """Content loaded means the game is still booting: a disc that has set its video geometry (or otherwise
+        loaded its content) but has not reached the PLAYING state yet gets the long wait. Otherwise the normal one."""
+        return self.t0 + (self.extended_wait_s if self.phase["content"] else self.boot_wait_s)
 
     def decide(self, now: float, running: bool) -> str:
         p, seen = self.phase, self.seen
@@ -109,9 +109,13 @@ class BootWatch:
             return "fallback"
         if now >= self.deadline():
             # "content not running after Ns" is what launch_failures classifies as content_timeout (#318)
-            self.reason = (f"content not running after {now - self.t0:.0f}s (content loaded, audio still opening)"
-                           if self.warning
-                           else f"content not running after {self.boot_wait_s:.0f}s")
+            elapsed = f"content not running after {now - self.t0:.0f}s"
+            if self.warning:
+                self.reason = elapsed + " (content loaded, audio still opening)"
+            elif self.phase["content"]:
+                self.reason = elapsed + " (content loaded, still booting)"
+            else:
+                self.reason = elapsed
             return "fail"
         return "wait"
 
