@@ -231,3 +231,48 @@ def test_xbe_motion_banks_real_disc_order():
                      "leifan", "ninja", "bass", "bayman", "hika", "genfu", "kasumi", "ryu",
                      "karate", "janlee", "tina", "zack"]
     assert "chin" not in banks
+
+
+def test_sonic_donors_distinct_and_pinned():
+    # 14 distinct Sonic Adventure 1/2 characters; SA1+SA2 overlap (Sonic/Tails/Knuckles/
+    # Amy/Tikal/Super Sonic) is one canonical entry each with both slugs. The collection is
+    # verified: SA1 -> 8, SA2 -> 10 characters (vehicles cyclone/egg_walker excluded).
+    names = [d["character"] for d in d3.SONIC_DONORS]
+    assert len(names) == len(set(names)) == 14
+    assert d3.SONIC_DONOR_GAMES == {"1a3f4cd416db9ffd": "sa1", "d95ed7ed1e40552a": "sa2"}
+    by_name = {d["character"]: d for d in d3.SONIC_DONORS}
+    assert by_name["Sonic"]["slugs"] == ["sa1_sonic", "sonic"]
+    assert by_name["Shadow"]["slugs"] == ["sa2_shadow"]          # SA2 only
+    assert by_name["Big the Cat"]["slugs"] == ["sa1_big"]        # SA1 only
+    assert by_name["Amy Rose"]["slugs"] == ["sa1_amy", "sa2_amy_rose"]
+
+
+def test_sonic_cast_assignment_exhausts_distinct_before_repeat():
+    plan = d3.sonic_cast_assignment()
+    rows = plan["assignment"]
+    assert plan["donors_distinct"] == 14 and plan["slots"] == 20
+    assert [r["slot_character"] for r in rows] == d3.ROSTER
+    # first 14 slots use every distinct donor exactly once (no repeat before exhaustion)
+    first14 = [r["donor"] for r in rows[:14]]
+    assert len(set(first14)) == 14
+    # counts stay within one: 6 donors twice, 8 once (14 donors over 20 slots)
+    counts = list(plan["usage"].values())
+    assert max(counts) - min(counts) <= 1 and set(counts) <= {1, 2}
+    assert sum(counts) == 20 and len(plan["usage"]) == 14
+    # boss/cameo slots carry their kind and a donor, never a blank
+    kinds = {r["slot_character"]: r["kind"] for r in rows}
+    assert kinds["Genra"] == "boss" and kinds["Tengu"] == "boss" and kinds["Chen"] == "cameo"
+    assert all(r["donor"] and r["donor_slug"] for r in rows)
+
+
+def test_sonic_cast_assignment_deterministic_and_custom():
+    a = d3.sonic_cast_assignment()
+    b = d3.sonic_cast_assignment()
+    assert a == b
+    small = d3.sonic_cast_assignment(roster={"kasumi": "Kasumi", "ayane": "Ayane", "ryu": "Ryu Hayabusa"},
+                                     donors=[{"character": "Sonic", "slugs": ["sa1_sonic"]},
+                                             {"character": "Shadow", "slugs": ["sa2_shadow"]}])
+    assert [r["donor"] for r in small["assignment"]] == ["Sonic", "Shadow", "Sonic"]
+    assert small["usage"] == {"Sonic": 2, "Shadow": 1}
+    with pytest.raises(ValueError):
+        d3.sonic_cast_assignment(roster={"kasumi": "Kasumi"}, donors=[])

@@ -393,6 +393,62 @@ def xbe_voice_codes(data: bytes) -> list[str]:
     return out
 
 
+# --------------------------------------------------------------------- Sonic cast
+
+# The "Sonic cast" request (#1976) replaces DOA3's cast with distinct Sonic Adventure 1/2
+# characters. Both readers' collections are complete and verified (characters op=collect):
+#   SA1 (game 1a3f4cd416db9ffd) -> 8 characters, extracted + verified + retargetable
+#   SA2 (game d95ed7ed1e40552a) -> 10 characters, in_collection + verified + retargetable
+# SA2's two vehicle entries (cyclone, egg_walker) are out of scope for a fighter cast.
+# The first slug is the canonical donor; the rest are the same character in the other game.
+SONIC_DONORS = [
+    {"character": "Sonic", "slugs": ["sa1_sonic", "sonic"]},
+    {"character": "Tails", "slugs": ["sa1_tails", "sa2_tails"]},
+    {"character": "Knuckles", "slugs": ["sa1_knuckles", "sa2_knuckles"]},
+    {"character": "Amy Rose", "slugs": ["sa1_amy", "sa2_amy_rose"]},
+    {"character": "Big the Cat", "slugs": ["sa1_big"]},
+    {"character": "E-102 Gamma", "slugs": ["sa1_e102"]},
+    {"character": "Super Sonic", "slugs": ["sa1_super_sonic", "sa2_super_sonic"]},
+    {"character": "Tikal", "slugs": ["sa1_tikal", "sa2_tikal"]},
+    {"character": "Shadow", "slugs": ["sa2_shadow"]},
+    {"character": "Rouge", "slugs": ["sa2_rouge"]},
+    {"character": "Dr. Eggman", "slugs": ["sa2_dr_eggman"]},
+    {"character": "Metal Sonic", "slugs": ["sa2_metal_sonic"]},
+    {"character": "Chaos 0", "slugs": ["sa2_chaos_0"]},
+    {"character": "Super Shadow", "slugs": ["sa2_super_shadow"]},
+]
+SONIC_DONOR_GAMES = {"1a3f4cd416db9ffd": "sa1", "d95ed7ed1e40552a": "sa2"}
+
+
+def sonic_cast_assignment(roster: dict[str, str] | None = None,
+                          donors: list[dict] | None = None) -> dict:
+    """Deterministic Sonic->DOA3 whole-cast assignment plan.
+
+    Deals the distinct donor list over the DOA3 person slots round-robin in roster order
+    (the order ``NICKNAME_TO_CHARACTER`` pins), so every distinct donor is used before any
+    donor repeats and no donor's count exceeds another's by more than one -- the request's
+    "exhaust usable distinct characters before repeating" with counts within one. 20 slots
+    over 14 distinct donors = 6 donors twice + 8 once. This is a plan: it reads nothing from
+    the disc and only becomes a build once the native DOA3 writer can reimport a donor;
+    role-based refinement (boss/cameo slots -> antagonist donors) is the writer's body-size
+    retarget pass, layered on top of this exhaust-distinct baseline.
+    """
+    nickmap: dict[str, str] = roster if roster is not None else NICKNAME_TO_CHARACTER
+    slots = list(nickmap.items())
+    pool = donors if donors is not None else SONIC_DONORS
+    if not pool:
+        raise ValueError("a cast assignment needs at least one donor")
+    n = len(pool)
+    rows = []
+    for i, (nick, character) in enumerate(slots):
+        donor = pool[i % n]
+        rows.append({"slot_nick": nick, "slot_character": character,
+                     "kind": CHARACTER_KIND.get(character, "playable"),
+                     "donor": donor["character"], "donor_slug": donor["slugs"][0]})
+    usage = dict(Counter(r["donor"] for r in rows))
+    return {"donors_distinct": n, "slots": len(slots), "usage": usage, "assignment": rows}
+
+
 # ----------------------------------------------------------------------------- build
 
 def build(game_dir: str | Path, *, source_7z: str | Path | None = None,
