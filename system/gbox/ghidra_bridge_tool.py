@@ -16,7 +16,7 @@ Every result is JSON; the full result is also kept as the ghidra_bridge.json art
 import json
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from . import ghidra_bridge as gb
 from .models import Permission as P
@@ -44,6 +44,14 @@ class GhidraBridgeIn(BaseModel):
     args: list[str] = []
     export_dir: str | None = None
     export_limit: int = Field(0, ge=0)   # export: first N functions only (0 = all)
+    expected_binary_path: str | None = Field(None, min_length=1, max_length=4096)
+    expected_sha256: str | None = Field(None, pattern=r"^[0-9a-fA-F]{64}$")
+
+    @model_validator(mode="after")
+    def paired_target_guard(self):
+        if (self.expected_binary_path is None) != (self.expected_sha256 is None):
+            raise ValueError("expected_binary_path and expected_sha256 must be supplied together")
+        return self
 
 
 class GhidraBridgeOut(BaseModel):
@@ -77,6 +85,22 @@ def run(inp: GhidraBridgeIn, config, worker="local", progress=None, sess=None) -
     op = {"start": "open", "close": "close"}.get(inp.op, inp.op)
     if inp.op not in OPS:
         raise ValueError(f"unknown op {inp.op!r}; ops: {sorted(OPS)}")
+    guard = {}
+    if inp.expected_binary_path is not None:
+        from .ghidra_bridge_server import canonical_binary_path
+        canonical_binary_path(inp.expected_binary_path)
+        if op not in QUERY_OPS | {"run_script", "export"}:
+            raise ValueError("target guards apply only to queries, scripts and exports")
+        guard = {"expected_binary_path": inp.expected_binary_path, "expected_sha256": inp.expected_sha256}
+        if not s.opened or not s.running():
+            raise ToolUnavailable("The pinned Ghidra program is no longer open on this worker; the target was not switched")
+
+    def request(operation, args, **kwargs):
+        # The new protocol verb fails closed on an older, still-running bridge
+        # whose operation methods would ignore expected_* keyword arguments.
+        if guard:
+            return s.request("guarded", {"operation": operation, **args, **guard}, **kwargs)
+        return s.request(operation, args, **kwargs)
     if inp.op == "status":
         return {"op": "status", "source": "live" if s.opened else "none", "worker_id": worker,
                 "result": {"running": s.running(), "open": s.opened, "unavailable": gb.unavailable(config) if sess is None else None,
@@ -102,13 +126,13 @@ def run(inp: GhidraBridgeIn, config, worker="local", progress=None, sess=None) -
     if op == "run_script":
         if not inp.script:
             raise ValueError("run_script needs script")
-        res = s.request("run_script", {"script": inp.script, "args": inp.args, "script_dirs": gb.SCRIPT_DIRS},
+        res = request("run_script", {"script": inp.script, "args": inp.args, "script_dirs": gb.SCRIPT_DIRS},
                         timeout=3500, progress=progress)
         return {"op": op, "source": "live", "worker_id": worker, "result": res}
     if op == "export":
         if not inp.export_dir:
             raise ValueError("export needs export_dir")
-        res = s.request("export", {"export_dir": inp.export_dir, "limit": inp.export_limit},
+        res = request("export", {"export_dir": inp.export_dir, "limit": inp.export_limit},
                         timeout=3500, progress=progress)
         return {"op": op, "source": "live", "worker_id": worker, "result": res}
     # queries
@@ -121,7 +145,9 @@ def run(inp: GhidraBridgeIn, config, worker="local", progress=None, sess=None) -
     if op == "containing" and not args["address"]:
         raise ValueError("containing needs address")
     if s.opened and s.running():
-        return {"op": op, "source": "live", "worker_id": worker, "result": s.request(op, args, timeout=900, progress=progress)}
+        return {"op": op, "source": "live", "worker_id": worker, "result": request(op, args, timeout=900, progress=progress)}
+    if guard:
+        raise ToolUnavailable("The pinned Ghidra program is no longer open; an export was not substituted")
     if inp.export_dir:
         return {"op": op, "source": "export", "worker_id": worker,
                 "result": getattr(gb.ExportBackend(inp.export_dir), op)(**args)}
@@ -129,7 +155,7 @@ def run(inp: GhidraBridgeIn, config, worker="local", progress=None, sess=None) -
                           "run ghidra_bridge op=open (binary_path or an existing project) first, on the same worker.")
 
 
-@tool("ghidra_bridge", "1.0", GhidraBridgeIn, GhidraBridgeOut, capabilities=["analysis", "ghidra", "reverse-engineering"],
+@tool("ghidra_bridge", "1.1", GhidraBridgeIn, GhidraBridgeOut, capabilities=["analysis", "ghidra", "reverse-engineering"],
       platforms=["windows", "linux", "darwin"], permissions=[P.READ, P.EXECUTE], timeout_s=3600,
       side_effects=["keeps a Ghidra process with the open program on this worker until op=stop",
                     "op=open/run_script save analysis into the Ghidra project; game files are only read"],

@@ -79,6 +79,38 @@ methods preserve the original MCP error rather than pretending they exist.
 
 ## Stateful analysis and evidence
 
+### Requests against a running game
+
+The desktop request bar captures one session, catalog title, mod and worker
+snapshot for both conversation selection and submission. Requests to change a
+game are attached to that exact session through its runtime RPC. Ended sessions
+are reported instead of silently redirecting a request to another game on the PC.
+
+The agent checks published controls first. If its proposed answer has no verified
+live result, `live_research` captures the actual running guest image through
+`re_executable source=ram`, retaining session/build/worker provenance. Related
+REA and Ghidra jobs use the capture's analysis worker and guest image. SH-4,
+MIPS and PowerPC use Ghidra's explicit guest processor; a REA capability check is
+not reported as attachment to those unsupported native-provider architectures.
+The host emulator executable is never substituted for the guest game.
+Subsequent Ghidra queries pin the captured path and loaded-file SHA-256 in one
+serialized server operation. Changed targets and old bridges that lack the
+guarded protocol fail before scripts or queries execute. The older `re_agent`
+path is not used for live requests until it forwards those target guards.
+
+RAM captures are non-atomic observations, not immutable executable revision
+fingerprints. Their content-addressed images and findings remain separate from
+the base title's executable metadata. The session is checked before and after
+capture and again before later live operations. Existing job permissions apply.
+
+Progress reports attachment, research, application and verification from actual
+operations. Analysis alone, assistant prose, a raw write or a screenshot cannot
+complete a live-change request. Broad unlock goals additionally require runtime
+coverage of every requested content category. Missing implementations remain
+in progress with a durable research handoff; provider or permission failures
+retain their diagnostics. This workflow does not guarantee an instant patch
+for every game or unsupported revision.
+
 Each worker owns a long-lived, serialized REA MCP process. Keep related calls
 on the `worker_id` returned by the first job: open a target, inspect functions,
 trace relationships, compare captures, and verify reconstruction there.

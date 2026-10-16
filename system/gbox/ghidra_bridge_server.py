@@ -17,6 +17,7 @@ import json
 import os
 import re
 import sys
+import threading
 import traceback
 import warnings
 
@@ -27,6 +28,43 @@ class Bridge:
     def __init__(self):
         self.flat = self.program = self.project = self._ctx = None
         self._decomp = None
+        self._request_lock = threading.RLock()
+
+    def dispatch(self, op, args=None):
+        """Check a pinned target and execute its operation in one serialized request."""
+        if op not in OPS:
+            raise ValueError(f"unknown op {op!r}; ops: {sorted(OPS)}")
+        if args is not None and not isinstance(args, dict):
+            raise ValueError("operation args must be an object")
+        params = dict(args or {})
+        # An older running bridge accepts arbitrary **kwargs on queries. A new
+        # protocol op makes that server reject a guarded script before running
+        # it, instead of silently ignoring the expected target parameters.
+        wrapped = op == "guarded"
+        if wrapped:
+            op = params.pop("operation", None)
+            if op not in GUARDED_OPS:
+                raise ValueError("guarded requests require a query, script or export operation")
+        guarded = "expected_binary_path" in params or "expected_sha256" in params
+        with self._request_lock:
+            if guarded or wrapped:
+                if op not in GUARDED_OPS:
+                    raise ValueError("target guards apply to queries, scripts and exports, not lifecycle operations")
+                self._check_target(params.pop("expected_binary_path", None), params.pop("expected_sha256", None))
+            return getattr(self, op)(**params)
+
+    def _check_target(self, expected_binary_path, expected_sha256):
+        expected_path = canonical_binary_path(expected_binary_path)
+        if not isinstance(expected_sha256, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", expected_sha256):
+            raise ValueError("expected_sha256 must be a complete SHA-256 digest")
+        program = self._need()
+        actual_path = program.getExecutablePath()
+        if actual_path is None or canonical_binary_path(str(actual_path)) != expected_path:
+            raise RuntimeError("Ghidra target changed: the open executable path differs from the pinned analysis input")
+        getter = getattr(program, "getExecutableSHA256", None)
+        actual_sha = getter() if callable(getter) else None
+        if actual_sha is None or str(actual_sha).lower() != expected_sha256.lower():
+            raise RuntimeError("Ghidra target changed: the loaded executable SHA-256 differs or is unavailable")
 
     # --- lifecycle ---------------------------------------------------------------------------------------------------
     def open(self, binary_path=None, project_dir=None, project_name=None, program_name=None, processor=None,
@@ -124,9 +162,11 @@ class Bridge:
     # --- ops ---------------------------------------------------------------------------------------------------------
     def info(self, **_):
         p = self._need()
+        getter = getattr(p, "getExecutableSHA256", None)
         return {"name": p.getName(), "language": str(p.getLanguageID()), "compiler": str(p.getCompilerSpec().getCompilerSpecID()),
                 "image_base": "0x" + str(p.getImageBase()), "functions": p.getFunctionManager().getFunctionCount(),
-                "executable_path": p.getExecutablePath(), "executable_md5": p.getExecutableMD5()}
+                "executable_path": p.getExecutablePath(), "executable_md5": p.getExecutableMD5(),
+                "executable_sha256": getter() if callable(getter) else None}
 
     def functions(self, query="", limit=100, offset=0, **_):
         fm, q, rows = self._need().getFunctionManager(), (query or "").lower(), []
@@ -257,7 +297,21 @@ class Bridge:
 
 
 OPS = {"open", "close", "info", "functions", "decompile", "xrefs_to", "xrefs_from", "containing", "strings", "run_script",
-       "export"}
+       "export", "guarded"}
+GUARDED_OPS = OPS - {"open", "close", "guarded"}
+
+
+def canonical_binary_path(value):
+    """Bounded lexical identity only: never probe an arbitrary path or follow links."""
+    if not isinstance(value, str) or not value or len(value) > 4096 or re.search(r"[\x00-\x1f\x7f]", value):
+        raise ValueError("expected_binary_path must be a bounded absolute file path without control characters")
+    # Ghidra's executable-path metadata has no guaranteed naming convention;
+    # Java sometimes stores a Windows drive path with a leading slash.
+    if os.name == "nt" and re.match(r"^/[A-Za-z]:[/\\]", value):
+        value = value[1:]
+    if not os.path.isabs(value) or (os.name == "nt" and not os.path.splitdrive(value)[0]):
+        raise ValueError("expected_binary_path must be an absolute file path on this worker")
+    return os.path.normcase(os.path.normpath(value))
 
 
 def serve(bridge, stdin, stdout):
@@ -269,9 +323,7 @@ def serve(bridge, stdin, stdout):
         try:
             req = json.loads(line)
             rid, op = req.get("id"), req.get("op")
-            if op not in OPS:
-                raise ValueError(f"unknown op {op!r}; ops: {sorted(OPS)}")
-            reply = {"id": rid, "result": getattr(bridge, op)(**(req.get("args") or {}))}
+            reply = {"id": rid, "result": bridge.dispatch(op, req.get("args"))}
         except Exception as exc:  # noqa: BLE001 - every failure is reported to the caller, the server keeps running
             traceback.print_exc(file=sys.stderr)
             reply = {"id": rid, "error": f"{type(exc).__name__}: {exc}"}

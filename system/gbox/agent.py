@@ -17,6 +17,7 @@ import httpx
 from .models import new_id
 from .agent_contracts import (native_swap_outcome, native_swap_result, require_character,
                               required_operation_outcome, resolve_read_session, validate_cheat_call)
+from .live_request import bind_target, is_live_change_request, request_outcome, phase_for_tool, is_mutation
 
 SYSTEM = """You are gBox, an assistant that operates a game laboratory for its operator (who owns these games) in real time.
 For PSO strongest weapons/tier lists/build drops, use web_search with PSO-World sources for the running
@@ -59,6 +60,12 @@ and run Ghidra analyses. Use tools; don't guess facts you can look up or measure
 REA provides deconstruction, application/binary/runtime analysis and reconstruction verification: use rea_tools query
 to find an operation, then rea_tools name to load its native function and schema. Run it directly or through run_tool.
 Keep related calls on the same worker. Preserve evidence/unknowns; check actual provider support before claiming success.
+Live change requests bind the exact session, game, mod and worker. Never substitute another game when that session ends.
+Use existing tested native controls first. If the requested operation is missing, live_research captures the actual
+running guest image and opens REA/Ghidra on the analysis worker. Query its functions/strings/decompilation there,
+correlate with live memory, then apply only confirmed changes through audited game tools. Never inspect the emulator
+executable as if it were the guest. Provider attachment and static analysis do not accomplish the requested game change.
+Keep unverified goals pending, and publish reusable controls only with the exact revision and runtime evidence.
 
 How to work:
 - Custom builds: read GET /api/custom-build-unlocks. When its standing policy is enabled, unlock-all is required for
@@ -891,6 +898,10 @@ def tool_specs() -> list[dict]:
            "One sheet per animation as an artifact; mod + game_id stages them.",
            {"character": s, "artifact": s, "path": s, "preset": s, "canvas": s, "length": {"type": "number"}, "anims": s,
             "shadows": b, "engine": s, "headings": i, "name": s, "mod": s, "game_id": s, "dest": s, "worker": s}, []),
+        fn("live_research", "Investigate the exact running game attached to this request. Captures its guest RAM/executable "
+           "with session/build provenance, then opens REA/Ghidra on one analysis worker using the guest processor. "
+           "Use the returned worker_id for ghidra_bridge queries. This does not change or unlock the game.",
+           {"session_id": s, "goal": s}, []),
         fn("rea_tools", "Discover REA tools for deconstruction, analysis and reconstruction. Search query first, then exact name "
            "to obtain its input schema and examples. Call run_tool with the rea_ name; keep analysis on its returned worker_id.",
            {"query": s, "name": s}, []),
@@ -912,8 +923,41 @@ class Agent:
         self.analysis_share = "//10.89.1.246/ehm_eckx/gBox/system/gbox-data/analysis"   # where Windows Ghidra reads ELFs
 
     # --- tool implementations (all through the public API) ---
+    def _live_phase(self, phase, label, status='running', **extra):
+        emit = getattr(self, '_live_emit', None)
+        if emit and getattr(self, 'live_target', None):
+            emit({'type': 'live_request', **self.live_target, 'phase': phase, 'label': label, 'status': status, **extra})
+
+    def live_research(self, session_id='', goal=''):
+        from .live_research import investigate
+        self.live_researched = True
+        return investigate(self, session_id, goal or getattr(self, 'live_goal_text', ''))
+
+    def _guard_live_call(self, name, args):
+        target = getattr(self, 'live_target', None)
+        if not target:
+            return
+        action, values = (args.get('name'), args.get('input') or {}) if name == 'run_tool' else (name, args)
+        sid = values.get('session_id')
+        if sid and sid != target['session_id']:
+            raise ValueError('This live request cannot operate on another session')
+        if is_mutation(name, args):
+            if sid != target['session_id']:
+                raise ValueError('Live changes require the exact attached session_id')
+            bind_target(target, self.api.get('/api/sessions').json())
+        if action == 'launch_game' or action == 'session_op' and values.get('op') in {'stop_game', 'reset', 'relaunch'}:
+            raise ValueError('This live change request cannot restart or replace the selected game')
+        if action == 're_agent':
+            raise ValueError('Live research requires pinned ghidra_bridge queries; re_agent does not forward the target guards yet')
+
     def _job(self, tool, inp, node=None, limit=900, worker=None):
+        self._guard_live_call(tool, inp)
         sid = inp.get("session_id") if isinstance(inp, dict) else None
+        target = getattr(self, 'live_target', None)
+        if target and sid:
+            if sid != target['session_id']:
+                raise ValueError('This request is bound to a different live game session')
+            bind_target(target, self.api.get('/api/sessions').json())
         if sid and tool != "session_op" and (bad := self._live_session(sid)):   # a mistyped id would queue the job forever
             return {"state": "failed", "error": bad["error"], "output": None}
         if sid and ((tool == 'auf_live' and inp.get('op', 'inspect') != 'inspect')
@@ -928,16 +972,28 @@ class Agent:
             body["require_os"] = node
         if worker:
             body["require_worker"] = worker
-        elif sid and tool in ('pso_face','gta3_items','auf_live','game_live_controls'):
+        elif sid and not node:
             body['require_worker']=sid.split('-',1)[0]
         j = self.api.post("/api/jobs", json=body).json()
         t = time.time()
+        last_progress = None
         while j.get("state") in ("queued", "running") and time.time() - t < limit:
+            progress = j.get('progress') or {}
+            marker = (j.get('state'), progress.get('pct'), progress.get('msg'))
+            if target and marker != last_progress and (phase := phase_for_tool(tool, inp)):
+                self._live_phase(phase, progress.get('msg') or f'{tool}: {j.get("state")}',
+                                 job_id=j.get('id'), pct=progress.get('pct'))
+                last_progress = marker
             time.sleep(0.7)
             j = self.api.get(f"/api/jobs/{j['id']}").json()
         return j
 
     def _rpc(self, sid, op, args=None):
+        target = getattr(self, 'live_target', None)
+        if target:
+            if sid != target['session_id']:
+                raise ValueError('This request is bound to a different live game session')
+            bind_target(target, self.api.get('/api/sessions').json())
         r = self.api.post(f"/api/sessions/{sid}/rpc", json={"op": op, "args": args or {}}, timeout=60)
         if r.status_code != 200:
             raise RuntimeError(r.text[:300])
@@ -1042,10 +1098,20 @@ class Agent:
         out = []
         for st in r["steps"]:
             a = fill(st.get("args", {}))
+            self._guard_live_call(st['tool'], a)
+            emit = getattr(self, '_live_emit', None) if getattr(self, 'live_target', None) else None
+            if emit:
+                emit({'type': 'tool_call', 'name': st['tool'], 'args': a})
+                if phase := phase_for_tool(st['tool'], a):
+                    self._live_phase(phase, f"Running learned step: {st['tool']}")
             res = getattr(self, st["tool"])(**a) if hasattr(self, st["tool"]) and not st["tool"].startswith("_") else \
                 (lambda j: (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")})(
                     self._job(st["tool"], a, worker=(a.get("session_id") or "").rsplit("-", 1)[0] or None))
             out.append({"tool": st["tool"], "result": res})
+            if emit:
+                emit({'type': 'tool_result', 'name': st['tool'], 'text': json.dumps(res, default=str)[:4000]})
+            if isinstance(res, dict) and (res.get('error') or res.get('state') in {'failed', 'blocked', 'queued', 'running'}):
+                return {'recipe': r['name'], 'steps': out, 'error': 'A learned step did not finish successfully; later steps were not run'}
         return {"recipe": r["name"], "steps": out}
 
     def recall(self, query):
@@ -1129,7 +1195,8 @@ class Agent:
                 return {"error": f"re_executable {j.get('state')}: {j.get('error')}",
                         "next": "if the disc route fails, get the game to gameplay and use source=ram with its session_id"}
             ex = j["output"]
-            self.api.post(f"/api/re/dossier/{gid}/study", json={"executable": ex})
+            if ex.get('source') != 'ram' and source != 'ram':
+                self.api.post(f"/api/re/dossier/{gid}/study", json={"executable": ex})
         an = d.get("analysis")
         if analyze and (not an or an.get("elf_sha256") != ex.get("sha256")):
             j = self._job("analyze_binary", {"binary_path": ex["elf_path"], "processor": ex.get("processor")}, node="linux", limit=3600)
@@ -1141,9 +1208,12 @@ class Agent:
             a = self.api.get(f"/api/artifacts/{sha}", timeout=300).json() if sha else {}
             an = re_lab.summarize_analysis(a, sha) | {"elf_sha256": ex.get("sha256")} if a else \
                 {"functions": j["output"].get("functions"), "strings": j["output"].get("strings"), "elf_sha256": ex.get("sha256")}
-            self.api.post(f"/api/re/dossier/{gid}/study", json={"analysis": an})
+            if ex.get('source') != 'ram' and source != 'ram':
+                self.api.post(f"/api/re/dossier/{gid}/study", json={"analysis": an})
         text = self.api.get(f"/api/re/dossier/{gid}").json().get("text")
         return {"game_id": gid, "elf_path": ex.get("elf_path"), "processor": ex.get("processor"), "dossier": text,
+                "executable": ex, "analysis": an,
+                "scope": 'live_snapshot' if source == 'ram' or ex.get('source') == 'ram' else 'base_executable',
                 "next": "re_playbook op=list query=<your task>; record findings with re_dossier op=record"}
 
     def remember(self, text, title=""):
@@ -1206,6 +1276,7 @@ class Agent:
         return {"best_first": True, "games": [{k: g.get(k) for k in ("game_id", "title", "system", "platform", "core", "year")} for g in items[:10]]}
 
     def launch_game(self, game_id, where="local", debug=False, mod=""):
+        self._guard_live_call('launch_game', {'game_id': game_id})
         node = {"spark": "linux", "local": self.local_worker or "auto"}.get(where, where)
         r = self.api.post(f"/api/games/{game_id}/launch", params={"node": node, "debug": bool(debug), **({"mod": mod} if mod else {})}).json()
         t = time.time()
@@ -1233,6 +1304,7 @@ class Agent:
         return r
 
     def find_code_that_writes(self, session_id, address, label, length=2, trigger_key=""):
+        self._guard_live_call('find_code_that_writes', {'session_id': session_id})
         from pathlib import Path
         from .bridge import Bridge
         br = Bridge(str(self.api.base_url).rstrip("/"), self.api.headers["authorization"].split()[-1], session_id, log=lambda *a: None)
@@ -1254,6 +1326,7 @@ class Agent:
 
     def cheats(self, session_id, op="list", index=None, codes=None, desc="", query=""):
         validate_cheat_call(op, index, codes)
+        self._guard_live_call('cheats', {'session_id': session_id, 'op': op})
         j = self.api.post("/api/jobs", json={"tool": "cheats", "require_worker": session_id.split("-")[0],   # the session's worker
                                              "input": {"session_id": session_id, "op": op, "index": index, "codes": codes or [],
                                                        "desc": desc, "query": query}}).json()
@@ -1737,7 +1810,16 @@ class Agent:
         return job.get("output") or {"state": job.get("state"), "error": job.get("error")}
 
     def run_tool(self, name, input, worker_id=None, node=None):
-        worker = worker_id or (getattr(self, "rea_worker", None) if name.startswith("rea_") and not node else None)
+        self._guard_live_call(name, input)
+        if getattr(self, 'live_analysis_executable', None) and (name == 'rea_open_binary' or name == 'ghidra_bridge' and input.get('op') in {'open', 'start'}):
+            key = 'path' if name == 'rea_open_binary' else 'binary_path'
+            if input.get(key) != self.live_analysis_executable['elf_path']:
+                raise ValueError('This live request must analyze its captured guest image, not another executable')
+        if name == 'ghidra_bridge' and getattr(self, 'live_analysis_executable', None) and input.get('op', 'status') not in {'status', 'open', 'start', 'close', 'stop'}:
+            ex = self.live_analysis_executable
+            input = dict(input, expected_binary_path=ex['elf_path'], expected_sha256=ex['sha256'])
+        worker = worker_id or (getattr(self, "live_analysis_worker", None) if name == 'ghidra_bridge' and not node else None) \
+            or (getattr(self, "rea_worker", None) if name.startswith("rea_") and not node else None)
         j = self._job(name, input, worker=worker, node=node, limit=1140 if name.startswith("rea_") else 900)
         if name.startswith("rea_") and j.get("worker_id"):
             self.rea_worker = j["worker_id"]
@@ -1760,6 +1842,15 @@ class Agent:
         self.context_game = context.get("game_id") or context.get("game_title") or ""
         latest = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
         plain = latest.split("\n[context:", 1)[0].strip() if isinstance(latest, str) else ""
+        self.live_target, self.live_researched = None, False
+        self.live_goal_text = plain
+        self._live_emit = emit
+        live_events, outer_emit = [], emit
+        def emit(event):
+            live_events.append(event)
+            outer_emit(event)
+        self._live_emit = emit
+        live_goal = is_live_change_request(plain, context)
         if re.fullmatch(r"(?:hi|hello|hey|hey there|good morning|good afternoon|good evening)[!?.\s]*", plain, re.I):
             game = context.get("game_title")
             answer = f"Hi! What would you like to do with {game}?" if game else "Hi! What would you like to do in gBox?"
@@ -1785,21 +1876,11 @@ class Agent:
             tail = " Go ahead with this." if answer.endswith((".", "!", "?")) else ". Go ahead with this."
             messages[-1]["content"] = f"My answer{(' to the question \"' + q + '\"') if q else ''}: {answer}{tail}"
             continued = True
-        sid = context.get("session_id")
-        if sid:                                                # the app can hand over a stale id (game relaunched): use the live one
-            try:
-                live = [x for x in self.api.get("/api/sessions").json() if x.get("state") == "running"]
-                if sid not in {x["session_id"] for x in live}:
-                    same = [x for x in live if x["session_id"].split("-")[0] == sid.split("-")[0]] or \
-                           [x for x in live if context.get("game_title") and x.get("title") == context.get("game_title")]
-                    if same:
-                        context["session_id"] = same[0]["session_id"]
-                        for m in reversed(messages):           # the request's context line carries the id the LLM will copy
-                            if m.get("role") == "user" and isinstance(m.get("content"), str) and sid in m["content"]:
-                                m["content"] = m["content"].replace(sid, context["session_id"])
-                                break
-            except Exception:
-                pass
+        if live_goal:
+            self.live_target = bind_target(context, self.api.get('/api/sessions').json())
+            context.update(self.live_target)
+            context['live_target'] = dict(self.live_target)
+            self._live_phase('attach', 'Connecting to the selected game')
         self.context_session_id = context.get("session_id") or ""
         tools, usage, used = tool_specs(), {"in": 0, "out": 0}, {}
         if continued:                                           # this turn answers a questionnaire: no re-asking mid-flow
@@ -1848,6 +1929,24 @@ class Agent:
                 info = self.session_info(sid)
             except Exception as e:
                 info = {"title": context.get("game_title"), "error": str(e)}
+            if live_goal:
+                if info.get('error') or info.get('game_id') != self.live_target['game_id'] or not (info.get('runtime') or {}).get('running'):
+                    raise ValueError('The selected game could not be attached; it will not be replaced with another session')
+                self.live_target.update(platform=info.get('platform') or '', core=info.get('core') or '')
+                context['live_target'] = dict(self.live_target)
+                context.update(self.live_target)
+                self._live_phase('attach', f"Attached to {self.live_target['game_title']}", 'completed')
+                self._live_phase('research', 'Checking tested controls for this game and build')
+                try:
+                    controls_response = self.api.get(f"/api/games/{self.live_target['game_id']}/live-controls")
+                    controls_response.raise_for_status()
+                    controls = controls_response.json()
+                except Exception as error:
+                    controls = {'error': str(error)}
+                messages.append({'role': 'system', 'content': 'LIVE CHANGE TARGET (immutable): ' + json.dumps(self.live_target) +
+                    '\nPublished controls (availability is not proof they match the running revision): ' + json.dumps(controls, default=str)[:10000] +
+                    '\nApply a matching tested action, then verify the requested result. If no tested route works, use live_research. '
+                    'Do not restart or replace this game to investigate it; do not guess pointers or claim that static analysis is a live change.'})
             self.game = re.sub(r"\s*[\(\[].*?[\)\]]", "", info.get("title") or context.get("game_title") or "").strip() or None
             messages.append({"role": "system", "content": f"LIVE GAME (session_id={sid}) - the operator means this game unless they name "
                              f"another: {json.dumps(info, default=str)[:2500]}. Every web_search must name '{self.game}' and its platform. "
@@ -1895,6 +1994,25 @@ class Agent:
             messages.append({"role": "assistant", "content": m.get("content") or "", **({"tool_calls": calls} if calls else {})})
             if not calls:
                 answer = re.sub(r"(?s)<think>.*?</think>", "", m.get("content") or "").strip()
+                outcome = request_outcome(plain, context, live_events) if live_goal else {'required': False}
+                if outcome.get('required') and not outcome.get('verified') and not self.live_researched:
+                    messages[-1]['content'] = 'The live change is not verified. Continuing with reverse engineering.'
+                    args = {'session_id': context['session_id'], 'goal': plain}
+                    emit({'type': 'tool_call', 'name': 'live_research', 'args': args})
+                    try:
+                        research = self.live_research(**args)
+                    except Exception as error:
+                        research = {'error': f'{type(error).__name__}: {error}', 'session_id': context['session_id']}
+                    used['live_research'] = used.get('live_research', 0) + 1
+                    payload = json.dumps(research, default=str)
+                    emit({'type': 'tool_result', 'name': 'live_research', 'text': payload[:4000]})
+                    messages.append({'role': 'system', 'content': 'The requested live change is still unverified. '
+                        'Actual reverse-engineering results follow; use them to continue with tools. If a provider is blocked, '
+                        'state the exact limitation and retain the task for further implementation.\n' + payload[:16000]})
+                    continue
+                if outcome.get('required') and not outcome.get('verified'):
+                    answer = 'This live change is still in progress. ' + outcome['reason']
+                messages[-1]['content'] = answer
                 emit({"type": "assistant", "text": answer})
                 if bm["tools"]:                                     # major change: before/after save states + bookmark
                     q0 = next((x["content"] for x in reversed(messages) if x.get("role") == "user" and isinstance(x.get("content"), str)), "")
@@ -1942,6 +2060,9 @@ class Agent:
                 except ValueError:
                     args = {}
                 emit({"type": "tool_call", "name": name, "args": args})
+                if phase := phase_for_tool(name, args):
+                    self._live_phase(phase, {'attach': 'Checking the selected game', 'research': 'Investigating the requested change',
+                        'apply': 'Applying the live change', 'verify': 'Checking the result in game'}[phase])
                 used[name] = used.get(name, 0) + 1
                 changes_game = _modifies_game(name, args)
                 if changes_game and bm["sid"]:
@@ -1957,6 +2078,7 @@ class Agent:
                     try:
                         if name not in {t["function"]["name"] for t in tools}:
                             raise ValueError(f"unknown tool {name}")
+                        self._guard_live_call(name, args)
                         if name.startswith("rea_") and name != "rea_tools":
                             result = self.run_tool(name, args)
                         else:
@@ -1979,7 +2101,8 @@ class Agent:
                 text = json.dumps(result, default=str)
                 emit({"type": "tool_result", "name": name, "text": text[:4000]})
                 if changes_game and bm["sid"] and isinstance(result, dict) and not result.get("error") and result.get("state") != "failed":
-                    bm["calls"].append({"tool": name, "input": args})        # replayable as a mod switch
+                    replay_tool, replay_args = (args.get('name'), args.get('input') or {}) if name == 'run_tool' else (name, args)
+                    bm["calls"].append({"tool": replay_tool, "input": replay_args})
                     bm["verified"] |= '"verified": true' in text or '"landed": true' in text
                 if isinstance(result, dict):                        # images for the live sidebar
                     for key, cap in (("frame", "screen capture"), ("artifact", "extracted")):
@@ -2017,6 +2140,8 @@ MODIFIES = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_m
 
 def _modifies_game(name: str, args: dict) -> bool:
     """Only actual game changes earn a before/after state and a replayable mod card."""
+    if is_mutation(name, args):
+        return True
     if name not in MODIFIES:
         return False
     op = str(args.get("op") or "").lower()
@@ -2086,12 +2211,15 @@ class ChatHub:
     GAP_GAVE_UP = re.compile(r"\b(can't|cannot|couldn't|could not|unable to|not able to|no way to|isn't supported|not supported|"
                              r"no (tool|way|pipeline|writer|reader)|missing|blocked|don't have)\b", re.I)
 
-    def _gap_report(self, cid, text, context, api_requests, status, note):
+    def _gap_report(self, cid, text, context, api_requests, status, note, events=None):
         """The local LLM failed this request: file an inbox report (source "gap") with what was asked, what it tried and
         what failed, so Claude builds the missing tool and the next attempt succeeds."""
-        evs = self.get(cid).get("events", [])
-        i = max((k for k, e in enumerate(evs) if e.get("type") == "user"), default=-1)
-        turn = evs[i + 1:]
+        if events is None:
+            evs = self.get(cid).get("events", [])
+            i = max((k for k, e in enumerate(evs) if e.get("type") == "user"), default=-1)
+            turn = evs[i + 1:]
+        else:
+            turn = list(events)
         calls = [e for e in turn if e.get("type") == "tool_call"]
         def failed(e):                                # a real error result, not the word "unsupported" in a capability list
             if e.get("type") == "error":
@@ -2104,7 +2232,7 @@ class ChatHub:
             return isinstance(d, dict) and bool(d.get("error") or d.get("state") == "failed" or d.get("status") in ("missing", "blocked"))
         errs = [e for e in turn if e.get("type") in ("tool_result", "error") and failed(e)]
         final = next((e.get("text") or "" for e in reversed(turn) if e.get("type") == "assistant"), "")
-        if status != "blocked":
+        if status != "blocked" and not context.get('live_request_pending'):
             if final and not self.GAP_GAVE_UP.search(re.sub(r"```.*?(```|$)", " ", final, flags=re.S)):   # returned data isn't a give-up
                 return                                # it recovered and delivered: errors on the way aren't a gap
             if not final and not errs:
@@ -2164,6 +2292,18 @@ class ChatHub:
         except Exception as e:
             emit({"type": "error", "text": f"{type(e).__name__}: {e}"})
             res, status, note = {"usage": {"in": 0, "out": 0}, "tools": {}}, "blocked", str(e)
+        live = request_outcome(text, context, turn_events)
+        if live['required']:
+            if not live['verified']:
+                status, note = 'in_progress', note or live['reason']
+                context['live_request_pending'] = not any(e.get('type') == 'choices' for e in turn_events)
+            target = context.get('live_target') or {k: context.get(k) for k in
+                ('session_id', 'game_id', 'game_title', 'mod', 'worker_id')}
+            verified = live['verified'] and status == 'done'
+            emit({'type': 'live_request', **target, 'phase': 'completed' if verified else 'pending',
+                  'status': 'verified' if verified else 'pending',
+                  'label': 'Live change verified' if verified else 'Live request remains in progress',
+                  'reason': '' if verified else note})
         with self.lock:
             cur = self.get(cid)
             cur["messages"], cur["busy"], cur["updated"] = c["messages"], False, time.time()
@@ -2175,14 +2315,14 @@ class ChatHub:
             threading.Thread(target=self.post, args=(cid, nxt["text"], nxt.get("context") or {}, api_requests, nxt.get("model"),
                                                      nxt.get("images")), daemon=True).start()
         try:
-            self._gap_report(cid, text, context, api_requests, status, note)
+            self._gap_report(cid, text, context, api_requests, status, note, turn_events)
         except Exception:
             pass
         if req:
             api_requests("metrics", {"id": req, "tokens_in": res["usage"]["in"], "tokens_out": res["usage"]["out"],
                                      "tools": res["tools"], "duration_s": round(time.time() - t0, 1)})
             if reuse:
-                final = next((e.get("text") or "" for e in reversed(self.get(cid).get("events") or [])
+                final = next((e.get("text") or "" for e in reversed(turn_events)
                               if e.get("type") == "assistant"), "")
                 api_requests("reply", {"id": req, "text": final or note or "Resolution attempt ended without a result.",
                     "task_step": {"action": "automatic resolution attempt", "attempt": "1",

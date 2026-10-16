@@ -488,6 +488,8 @@
   .cm.error { align-self:flex-start; color:var(--bad); border:1px solid var(--bad); }
   .cm.tool { align-self:flex-start; font:12px ui-monospace,Consolas,monospace; color:var(--mut); background:none; padding:2px 12px; border-left:2px solid var(--line); border-radius:0; }
   .cm.tool details summary { cursor:pointer; color:var(--fg); }
+  .cm.live-request { align-self:flex-start; border:1px solid var(--line); background:var(--card); }
+  .cm.live-request .mut { display:block; font-size:11px; margin-top:4px; }
   #ctlpop { position:fixed; z-index:60; width:340px; display:none; flex-direction:column; gap:8px; padding:0 0 10px; background:var(--bg);
     border:1px solid var(--line); border-radius:12px; box-shadow:0 12px 40px #000a; overflow:hidden; } #ctlpop.on { display:flex; }
   #ctlpop .ah { display:flex; align-items:center; gap:6px; padding:8px 10px; border-bottom:1px solid var(--line); } #ctlpop .ah b { flex:none; } #ctlpop .ah .mut { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; }
@@ -2633,7 +2635,12 @@ const PICKER_SRC = `(() => new Promise(resolve => {
 async function gboxState() {                             // what the embedded gBox UI is showing
   const wv = document.querySelector("#wv");
   if (!wv) return {};
-  try { return await wv.executeJavaScript(`({ tab: typeof cur !== "undefined" ? cur : null, session: typeof active !== "undefined" && active ? active.sid : null, playing: typeof playing !== "undefined" ? playing : null, hash: location.hash })`); }
+  try { return await wv.executeJavaScript(`(() => {
+    const tab = typeof cur !== "undefined" ? cur : null;
+    const selected = tab === "Sessions" ? document.getElementById("session-head")?.dataset.sid : null;
+    return { tab, session: selected || (typeof active !== "undefined" && active ? active.sid : null),
+      playing: typeof playing !== "undefined" ? playing : null, hash: location.hash };
+  })()`); }
   catch { return {}; }
 }
 function appContext(extra = {}) {
@@ -5468,11 +5475,12 @@ function chatSave() {
   try { localStorage.setItem("gbox_chat", CH.cid); const m = JSON.parse(localStorage.getItem("gbox_chats") || "{}");
         m[CH.game || ""] = CH.cid; localStorage.setItem("gbox_chats", JSON.stringify(m)); } catch {}
 }
-async function chatForGame() {             // switch to the active game's own conversation (new game -> new conversation)
-  const ctx = await chatContext().catch(() => ({})), g = ctx.game_id || "";
+async function chatForGame(ctx = null) {    // keep the conversation and submitted request on the same context snapshot
+  ctx = ctx || await chatContext().catch(() => ({})); const g = ctx.game_id || "";
   if (CH.game === g && CH.cid) return;
   let m = {}; try { m = JSON.parse(localStorage.getItem("gbox_chats") || "{}"); } catch {}
   CH.game = g; CH.n = 0; CH.seen = false;
+  BUSY.steps = []; BUSY.live = null;
   CH.cid = m[g] || (g ? null : CH.cid);
   $("#chatlog").innerHTML = CH.cid ? "" : `<div class="mut">New conversation${ctx.game_title ? " for " + esc(ctx.game_title) : ""}. Ask anything about the game you're playing.</div>`;
   if (CH.cid) chatLoad(CH.cid);
@@ -5539,23 +5547,48 @@ document.addEventListener("mousedown", e => { if (!e.target.closest("#modelmenu,
 $("#chatmodel").onchange = e => { try { localStorage.setItem("gbox_model", e.target.value); } catch {} modelCaps(); };
 async function chatContext() {
   const st = await gboxState(), ctx = { local_worker: S.workerName, tab: st.tab };
+  let session = null;
   if (!st.session) {                       // native-window games (RPCS3, RetroArch): newest running session on this PC
     const [ss, ws] = await Promise.all([liveSessions(), WORKERS.get()]);
     const me = ws.ok && ws.data.find(w => w.name === S.workerName);
-    const mine = me && ss.ok && ss.data.filter(x => x.state === "running" && x.session_id.startsWith(me.id + "-"))
+    const mine = me && ss.ok && ss.data.filter(x => x.state === "running" && !x.ended && x.session_id.startsWith(me.id + "-"))
       .sort((a, b) => (b.started || 0) - (a.started || 0))[0];
-    if (mine) st.session = mine.session_id;
+    if (mine) { st.session = mine.session_id; session = mine; }
   }
   if (st.session) {
-    const s = await sessionById(st.session);
-    Object.assign(ctx, { session_id: st.session, game_id: s?.game_id, game_title: s?.title, native_window: !!s?.detail?.local_window });
+    // Preserve an ended or unknown selected session; never substitute another running game.
+    const s = session || await sessionById(st.session);
+    Object.assign(ctx, { session_id: st.session, session_state: "unknown", live_edit: false });
+    if (s?.session_id === st.session) Object.assign(ctx, {
+      game_id: s.game_id, game_title: s.title, worker_id: s.worker_id || st.session.split("-", 1)[0],
+      mod: s.mod || "", collection_mod: s.collection_mod || "", platform: s.platform || s.detail?.platform || "",
+      core: s.core || s.detail?.core || "", native_window: !!s.detail?.local_window,
+      session_state: s.state || "unknown", live_edit: s.state === "running" && !s.ended
+    });
   }
   return ctx;
+}
+const LIVE_REQUEST_PHASES = { attach: "Attaching to the game", research: "Researching the game", apply: "Applying the change",
+  verify: "Verifying the result", pending: "Request pending", completed: "Request completed" };
+function liveRequestState(e) {
+  if (e?.type !== "live_request" || !Object.hasOwn(LIVE_REQUEST_PHASES, e.phase)) return null;
+  const status = String(e.status || "pending");
+  const state = ["completed", "succeeded", "verified"].includes(status) ? "ok" :
+    ["failed", "blocked"].includes(status) ? "err" : ["running", "in_progress"].includes(status) ? "run" : "pending";
+  return { ...e, status, state, label: String(e.label || LIVE_REQUEST_PHASES[e.phase]) };
+}
+function liveRequestTarget(e) {
+  return [e.game_id && `Game ${e.game_id}`, `Build ${e.mod || "original"}`, e.worker_id && `Worker ${e.worker_id}`,
+    e.session_id && `Session ${e.session_id}`].filter(Boolean).join(" · ");
 }
 function choicesHtml(q, opts) {
   return `<div class="cm choices">${esc(q)}<div class="opts">${opts.map(o => `<button data-pick="${esc(o)}">${esc(o)}</button>`).join("")}</div></div>`;
 }
 function renderEvent(e) {
+  if (e.type === "live_request") {
+    const live = liveRequestState(e); if (!live) return "";
+    return `<div class="cm live-request" data-phase="${esc(live.phase)}" data-status="${esc(live.status)}"><b>${esc(live.label)}</b> · ${esc(live.status)}<span class="mut">${esc(liveRequestTarget(live))}</span>${live.reason ? `<div>${esc(live.reason)}</div>` : ""}</div>`;
+  }
   if (e.type === "user") return `<div class="cm user">${esc(e.text)}${(e.images || []).map(s =>
     `<img class="uimg" alt="" src="${SBX.api}/api/artifacts/${s}?token=${encodeURIComponent(SBX.tok)}">`).join("")}</div>`;
   if (e.type === "choices") return choicesHtml(e.question, e.options);
@@ -5603,7 +5636,7 @@ async function chatLoad(cid, full = true) {
   if (full) { $("#chatlog").innerHTML = ""; CH.n = 0; }
   $("#chatlog").insertAdjacentHTML("beforeend", c.events.map(renderEvent).join(""));
   if (full && !c.events.length) $("#chatlog").innerHTML = `<div class="mut">No messages in this conversation yet.</div>`;
-  if (full) BUSY.steps = [];
+  if (full) { BUSY.steps = []; BUSY.live = null; }
   for (const e of c.events) busyStep(e);
   if (!full && c.events.length && !$("#chatpanel").classList.contains("on") && !c.busy) {   // window closed: the reply shows next to the bar
     const e = [...c.events].reverse().find(x => ["assistant", "choices", "tool_call", "error"].includes(x.type));
@@ -5614,7 +5647,7 @@ async function chatLoad(cid, full = true) {
   const cs = [...$("#chatlog").querySelectorAll(".cm")]; cs.forEach((el, i) => { if (el.classList.contains("choices") && cs.slice(i + 1).some(x => x.classList.contains("user"))) el.classList.add("done"); });
   if (c.events.length) $("#chatlog").scrollTop = $("#chatlog").scrollHeight;
   $("#sb-chat")?.classList.toggle("busy", !!c.busy);
-  CH.busy = c.busy; if (c.busy) busyRender(); else if ($("#chatpanel").classList.contains("on")) $("#chatbusy").textContent = "";   // closed: keeps the reply line
+  CH.busy = c.busy; if (c.busy || BUSY.live) busyRender(); else if ($("#chatpanel").classList.contains("on")) $("#chatbusy").textContent = "";   // live goals retain their reported final/pending phase
   if (c.model && full) { const o = [...$("#chatmodel").options].find(o => o.value === c.model); if (o) { $("#chatmodel").value = c.model; modelCaps(); } }
   clearInterval(CH.poll);
   if (c.busy) CH.poll = setInterval(async () => { await chatLoad(cid, false); if (CH.cid === cid && !CH.busy) { clearInterval(CH.poll); chatHistory(); } }, 900);
@@ -5636,6 +5669,7 @@ $("#chathist").onclick = async e => {
   if (!ci) return;
   clearInterval(CH.poll); CH.poll = null;
   CH.cid = ci.dataset.c; CH.n = 0; CH.seen = false; chatSave();
+  BUSY.steps = []; BUSY.live = null;
   $("#chatpanel").classList.add("on");
   $("#chatlog").innerHTML = `<div class="mut">Loading conversation…</div>`;
   await Promise.all([chatHistory(), chatLoad(CH.cid)]);
@@ -5722,9 +5756,9 @@ const SESSION_CMDS = [
   [/^(please )?pause( the game)?\.?$/i, "pause", "Paused."],
   [/^(please )?(resume|unpause|continue)( the game)?\.?$/i, "resume", "Resumed."],
 ];
-async function sessionCommand(text) {
+async function sessionCommand(text, context = null) {
   const hit = SESSION_CMDS.find(([rx]) => rx.test(text.trim())); if (!hit) return null;
-  const ctx = await chatContext();
+  const ctx = context || await chatContext();
   if (!ctx.session_id) return { say: "No game is running right now." };
   let j = (await gbox.api("/api/jobs", { tool: "session_op", input: { session_id: ctx.session_id, op: hit[1], args: {} },
                                            require_worker: ctx.session_id.split("-")[0] })).data;
@@ -5733,8 +5767,8 @@ async function sessionCommand(text) {
   }
   return { say: j?.state === "succeeded" ? hit[2] : `That didn't work: ${(j?.error || j?.state || "no answer").slice(0, 160)}` };
 }
-async function instantCommand(text) {
-  const sc = await sessionCommand(text).catch(() => null); if (sc) return sc;
+async function instantCommand(text, context = null) {
+  const sc = await sessionCommand(text, context).catch(() => null); if (sc) return sc;
   const r = await gbox.api("/api/intent?text=" + encodeURIComponent(text)); if (!r.ok) return null;
   const it = r.data, wv = document.querySelector("#wv");
   if (it.action === "load") {
@@ -6045,13 +6079,14 @@ async function whipSendOld(ev) {
 async function chatSend(given) {
   const imgs = CH.imgs || [];
   const text = (given ?? $("#chatin").value).trim() || (imgs.length ? "What can you tell me from this image?" : ""); if (!text) return;
-  const quick = imgs.length ? null : await instantCommand(text).catch(() => null);
+  const context = await chatContext();
+  const quick = imgs.length ? null : await instantCommand(text, context).catch(() => null);
   if (quick) { $("#chatin").value = ""; $("#chatbusy").textContent = "✓ " + quick.say; setTimeout(() => $("#chatbusy").textContent = CH.busy ? "● working…" : "", 4000); return; }
   // busy: the server queues it and runs it right after the current request
-  await chatForGame();
+  await chatForGame(context);
   if (!CH.cid) { const r = await gbox.api("/api/chat", {}); CH.cid = r.data.id; chatSave(); }
   $("#chatin").value = ""; $("#chatbusy").textContent = "● gBox is on it…"; $("#sb-chat")?.classList.add("busy");
-  const r = await gbox.api(`/api/chat/${CH.cid}/messages`, { text, model: $("#chatmodel").value, context: await chatContext(),
+  const r = await gbox.api(`/api/chat/${CH.cid}/messages`, { text, model: $("#chatmodel").value, context,
                                                               images: imgs.map(i => i.b64) });
   CH.imgs = []; chatImgs();
   if (!r.ok) { $("#chatlog").insertAdjacentHTML("beforeend", `<div class="cm error">${esc(r.error)}</div>`); return; }
@@ -6097,7 +6132,7 @@ $("#chatin").onkeydown = e => {
   $("#chatsug").querySelectorAll("div").forEach((d, i) => d.classList.toggle("on", i === SUG.i));
 };
 // ---- live activity: a plain-language line per tool/step while gBox works; click = every step with its result ----
-const BUSY = { steps: [] };
+const BUSY = { steps: [], live: null };
 const TOOL_SAY = {
   recall: "Remembering what worked before", remember: "Saving this for next time", web_search: "Searching the web", wiki: "Reading the game's wiki",
   image_search: "Looking up pictures", look_at_screen: "Looking at the game screen", vision: "Reading the attached image", get_frame: "Grabbing a frame",
@@ -6117,23 +6152,34 @@ const busyDet = a => { a = a || {}; const v = a.op || a.query || a.character || 
   const x = Object.entries(a).filter(([k]) => !["session_id"].includes(k)).slice(0, 3).map(([k, w]) => `${k}=${typeof w === "object" ? JSON.stringify(w) : w}`).join(" ");
   return String(v || x).slice(0, 90); };
 function busyStep(e) {
-  if (e.type === "user") { BUSY.steps = []; return; }
-  if (e.type === "tool_call") BUSY.steps.push({ name: e.name, args: e.args, st: "run", t: e.ts });
+  if (e.type === "user") { BUSY.steps = []; BUSY.live = null; return; }
+  if (e.type === "live_request") {
+    const live = liveRequestState(e); if (!live) return;
+    BUSY.live = live;
+    BUSY.steps.push({ name: "live_request", live, st: live.state, t: e.ts, res: live.reason || "" });
+  }
+  else if (e.type === "tool_call") BUSY.steps.push({ name: e.name, args: e.args, st: "run", t: e.ts });
   else if (e.type === "tool_result") { const s = [...BUSY.steps].reverse().find(x => x.name === e.name && x.st === "run");
     if (s) { s.st = /^\s*\{?"?(error|state"?:\s*"failed)/i.test(e.text || "") || /"error"/.test((e.text || "").slice(0, 40)) ? "err" : "ok"; s.res = (e.text || "").slice(0, 400); } }
-  else if (e.type === "assistant") BUSY.steps.forEach(x => { if (x.st === "run") x.st = "ok"; });
+  else if (e.type === "assistant") BUSY.steps.forEach(x => { if (!x.live && x.st === "run") x.st = "ok"; });
   if ($("#busysteps")?.classList.contains("on")) busyList();
 }
 function busyRender() {
   const b = $("#chatbusy"), cur = [...BUSY.steps].reverse().find(x => x.st === "run");
+  if (BUSY.live) {
+    const live = BUSY.live;
+    b.title = `${live.label} · ${live.status}\n${liveRequestTarget(live)}${live.reason ? "\n" + live.reason : ""}\nClick to see every step`;
+    b.innerHTML = `${live.state === "run" ? '<span class="spin"></span>' : `<span>${live.state === "ok" ? "✓" : live.state === "err" ? "!" : "○"}</span>`}<span${live.state === "run" ? ' class="shim"' : ""}>${esc(live.label)}</span><span class="det">${esc(live.reason || live.status)}</span>`;
+    return;
+  }
   b.title = "Click to see every step";
   b.innerHTML = `<span class="spin"></span><span class="shim">${esc(cur ? busySay(cur.name) : "Thinking")}…</span>` +
     `<span class="det">${esc(cur ? busyDet(cur.args) : BUSY.steps.length ? `${BUSY.steps.length} step${BUSY.steps.length > 1 ? "s" : ""} so far` : "")}</span>`;
 }
 function busyList() {
   const el = $("#busysteps");
-  el.innerHTML = (BUSY.steps.length ? BUSY.steps.map(x => `<div class="st"><span class="ic">${x.st === "run" ? '<span class="spin"></span>' : x.st === "err" ? "⚠" : "✓"}</span>
-      <div><b>${esc(busySay(x.name))}</b><span class="mut">${esc(x.name)} · ${esc(busyDet(x.args))}</span>${x.res ? `<div class="r">${esc(x.res)}</div>` : ""}</div></div>`).join("")
+  el.innerHTML = (BUSY.steps.length ? BUSY.steps.map(x => `<div class="st"><span class="ic">${x.st === "run" ? '<span class="spin"></span>' : x.st === "err" ? "⚠" : x.st === "pending" ? "○" : "✓"}</span>
+      <div><b>${esc(x.live ? x.live.label : busySay(x.name))}</b><span class="mut">${esc(x.live ? `${x.live.phase} · ${x.live.status} · ${liveRequestTarget(x.live)}` : `${x.name} · ${busyDet(x.args)}`)}</span>${x.res ? `<div class="r">${esc(x.res)}</div>` : ""}</div></div>`).join("")
     : '<p class="mut">No tool steps yet.</p>') + `<div style="text-align:right;padding-top:6px"><button class="act" id="bs-open">Open the conversation</button></div>`;
   $("#bs-open").onclick = () => { el.classList.remove("on"); if (!$("#chatpanel").classList.contains("on")) $("#sb-chat").click(); };
 }
