@@ -92,6 +92,11 @@ FIGHTER_DISPLAY = {
 # and chin is a story-only person absent from the select table.
 DISPLAY_MAPPING_PENDING = frozenset({"hika", "koryu", "gokei", "chin"})
 
+# Slots that are not on the base select screen: tengu (hidden boss, owns no costume) and
+# bosnin (Genra, the boss family). chin is a story-only person absent from the select table.
+HIDDEN_SLOTS = frozenset({"tengu", "bosnin"})
+STORY_ONLY = frozenset({"chin"})
+
 
 def fighter_display_name(nick: str) -> str | None:
     """Display name for a fighter-family nickname, or None when still pending."""
@@ -407,6 +412,66 @@ def xbe_select_name_table(data: bytes) -> list[str]:
     if names != [n.upper().replace(" ", "-") for n in XBE_SELECT_NAMES]:
         raise ValueError(f"DOA3 XBE select name table mismatch: {names!r}")
     return names
+
+
+# ----------------------------------------------------------------------------- cast slots
+
+def slot_inventory(manifest: dict) -> dict:
+    """Cast slot rows and exact coverage gaps from a ``doa3_inventory`` manifest.
+
+    One row per fighter family with its resolved display name (``fighter_display_name``),
+    hidden/boss/story classification, motion banks and costume coverage. The display name is
+    always recomputed from the pinned ``FIGHTER_DISPLAY``/``DISPLAY_MAPPING_PENDING``, so the
+    report is correct even for a manifest written before those fields were added. Coverage
+    gaps are listed explicitly: families whose display name is still pending, families with
+    no complete ``xpr``+``cat`` costume pair, and roster names no family covers yet.
+    """
+    fams = manifest.get("fighter_families", []) or []
+    slots = []
+    covered: set[str] = set()
+    for f in fams:
+        nick = f.get("nick")
+        if not nick:
+            continue
+        display = fighter_display_name(nick)
+        if display:
+            covered.add(display)
+        slots.append({
+            "nick": nick,
+            "code": f.get("code"),
+            "display_name": display,
+            "display_pending": nick in DISPLAY_MAPPING_PENDING,
+            "hidden": nick in HIDDEN_SLOTS,
+            "story_only": nick in STORY_ONLY,
+            "motion_banks": f.get("mot") or [],
+            "complete_costumes": f.get("complete_costumes") or [],
+            "costume_count": len(f.get("complete_costumes") or []),
+        })
+    gaps: list[dict] = []
+    for s in slots:
+        if s["display_pending"]:
+            gaps.append({"kind": "display_name_pending", "slot": s["nick"],
+                         "detail": "code->name link needs the XBE character-table RE stage"})
+        if s["costume_count"] == 0:
+            gaps.append({"kind": "no_complete_costumes", "slot": s["nick"],
+                         "detail": "family has no complete xpr+cat costume pair"})
+    roster = manifest.get("roster_expected") or ROSTER
+    for name in roster:
+        if name not in covered:
+            gaps.append({"kind": "roster_not_covered", "slot": name,
+                         "detail": "roster name not matched to any fighter family"})
+    slots.sort(key=lambda s: (s["display_pending"], s["nick"]))
+    return {
+        "game_id": manifest.get("game_id", GAME_ID),
+        "title": manifest.get("title"),
+        "slot_count": len(slots),
+        "slots": slots,
+        "costume_total": sum(s["costume_count"] for s in slots),
+        "roster_expected": roster,
+        "resolved_display": sorted(covered),
+        "display_pending": sorted(s["nick"] for s in slots if s["display_pending"]),
+        "coverage_gaps": gaps,
+    }
 
 
 # ----------------------------------------------------------------------------- build
