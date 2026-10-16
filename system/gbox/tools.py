@@ -21,7 +21,7 @@ from .agent_contracts import validate_cheat_call
 
 from . import adapters, catalog, ghost_runs, provision, rewind, ring_record, uap
 from .models import CatalogEntry, Permission as P
-from .registry import HOST_OS, Ctx, ToolUnavailable, Unsupported, tool
+from .registry import HOST_OS, Cancelled, Ctx, ToolUnavailable, Unsupported, tool
 from .store import sha256
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -170,6 +170,102 @@ class HashOut(BaseModel):
     game_id: str
     hashes: dict[str, str]
     size: int
+
+
+class SaveMGOAssetsIn(BaseModel):
+    game: CatalogEntry
+    op: str = 'inventory'
+    paths: list[str] = Field(default_factory=list, max_length=6000)
+    members: list[dict] = Field(default_factory=list, max_length=10000)
+    archive_path: str = ''
+
+
+class SaveMGOAssetsOut(BaseModel):
+    result: dict
+    report_sha256: str
+
+
+def _savemgo_assets_validate(out: SaveMGOAssetsOut, arts):
+    report = arts.get('savemgo-assets.json')
+    return [] if report is not None and sha256(report) == out.report_sha256 else ['SaveMGO extraction report missing or differs']
+
+
+@tool('savemgo_assets', '1.0', SaveMGOAssetsIn, SaveMGOAssetsOut,
+      capabilities=['asset-extract'], platforms=['windows'], permissions=[P.EXECUTE, P.FILE_MUTATION], timeout_s=3600,
+      artifacts=['savemgo-assets.json'], validate=_savemgo_assets_validate,
+      validation='verified source identity and hashed extraction report',
+      side_effects=['stages the complete owned package locally', 'writes selected native assets to a separate export folder'])
+def savemgo_assets(inp: SaveMGOAssetsIn, ctx: Ctx):
+    """Inspect or export owned MGO native assets without touching its installed game or personal profile."""
+    from . import savemgo, savemgo_assets as reader
+    if inp.game.launch.get('kind') != 'savemgo_bundle' or inp.game.platform != 'ps3':
+        raise Unsupported('This reader supports only the verified SaveMGO bundle')
+    if HOST_OS != 'windows':
+        raise ToolUnavailable('Select a Windows PC to inspect its locally staged SaveMGO package')
+    if inp.op not in {'inventory', 'index', 'export'}:
+        raise ValueError('Choose inventory, index or export')
+    if inp.op == 'export' and not (inp.paths or inp.members):
+        raise ValueError('Select files or archive members to export')
+    ctx.nowait = True
+    ctx.progress(1, 'Preparing verified Metal Gear Online asset source on this PC')
+    bundle = savemgo.prepare(rom_path(inp.game, ctx.config), ctx.config, ctx.progress,
+        expected_fingerprint=inp.game.launch.get('source_fingerprint'))
+    root = bundle['data_root']
+    identity = bundle['source_fingerprint']
+    def cancellation():
+        if getattr(ctx, '_cancel', False):
+            raise Cancelled('SaveMGO asset export cancelled by the operator')
+        return False
+    if inp.op == 'inventory':
+        result = reader.inventory(root, source_fingerprint=identity,
+            progress=lambda p: ctx.progress(96, f"Inspecting {p['files']} native game assets"))
+    elif inp.op == 'index':
+        result = reader.archive_index(root, inp.archive_path)
+    else:
+        paths = inp.paths
+        if '*' in paths:
+            if paths != ['*']:
+                raise ValueError('All-files selection cannot be combined with individual paths')
+        output = ctx.config.data_dir / 'asset-exports' / sha256(inp.game.game_id.encode())[:16] / 'savemgo'
+        result = reader.export(root, output, paths=paths, members=inp.members,
+                               source_fingerprint=identity,
+                               progress=lambda p: ctx.progress(96, f"{p.get('phase', 'export').title()} native game assets: {p.get('files', 0)} files"),
+                               cancel=cancellation)
+        # Large exports remain on the selected PC; never upload gigabytes of
+        # native data just because the operator opened an inventory window.
+        if result['bytes'] <= 128 * 2**20:
+            import io
+            import zipfile
+            folder = Path(result['directory']).resolve()
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, 'w', compression=zipfile.ZIP_STORED) as archive:
+                for row in result['files']:
+                    path = folder / row['output']
+                    if not path.resolve().is_relative_to(folder):
+                        raise ValueError('Export package path escapes its bundle')
+                    for part in (path, *path.parents):
+                        if part == folder.parent:
+                            break
+                        if part.is_symlink() or getattr(part.stat(), 'st_file_attributes', 0) & 0x400:
+                            raise ValueError('Export package contains a linked path')
+                    if path.stat().st_size != row['size'] or row['size'] > 128 * 2**20:
+                        raise ValueError('Export package size differs from its manifest')
+                    data = path.read_bytes()
+                    if sha256(data) != row['sha256']:
+                        raise ValueError('Export package changed after verification')
+                    archive.writestr(row['output'], data)
+                archive.writestr('manifest.json', json.dumps({
+                    'source_fingerprint': identity, 'native_only': True, 'files': result['files']}).encode())
+            if buf.tell() <= 129 * 2**20:
+                ctx.artifact('savemgo-native-assets.zip', buf.getvalue(), 'application/zip',
+                             game_id=inp.game.game_id, source_fingerprint=identity, native_only=True)
+                result['download'] = 'savemgo-native-assets.zip'
+    result = dict(result, worker=ctx.worker, game_id=inp.game.game_id,
+                  source_fingerprint=identity, source_verified=True)
+    report = json.dumps(result, default=str, ensure_ascii=True).encode()
+    ctx.artifact('savemgo-assets.json', report, 'application/json', game_id=inp.game.game_id)
+    ctx.progress(100, 'Native assets inspected' if inp.op != 'export' else 'Selected native assets exported; format conversion is separate')
+    return {'result': result, 'report_sha256': sha256(report)}
 
 def _hash_accept(store, out: HashOut, actor: str):
     store.catalog_update(out.game_id, hashes=out.hashes, size=out.size)
@@ -475,7 +571,7 @@ def launch_game(inp: LaunchIn, ctx: Ctx):
             ad = diag.get('_adapter')
             # A cancellation after native boot proof but before session
             # registration must not strand a game outside the session ledger.
-            if getattr(ad, 'name', None) == 'doa3_native' and not any(sr[0] is ad for sr in tuple(SESSIONS.values())):
+            if getattr(ad, 'name', None) in {'doa3_native', 'savemgo'} and not any(sr[0] is ad for sr in tuple(SESSIONS.values())):
                 try:
                     diag['native_cleanup'] = ad.stop_game()
                 except Exception as cleanup_error:
@@ -645,6 +741,11 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
             src = rom_archives.prepare(src, ctx.config, g.launch["archive_member"], ctx.progress)
             staged_on = __import__("platform").node()
             lap("unpack_s")
+        if isinstance(ad, adapters.SaveMGOAdapter):
+            diag['stage'] = 'prepare bundled SaveMGO runtime'
+            src = ad.prepare_bundle(src)
+            staged_on = __import__('platform').node()
+            lap('bundle_s')
         if g.game_id in ('b7aecee966090bfa','66062703301f4969') and not getattr(ad,'tas_playback',None):
             from . import sm64_startup
             src,startup=sm64_startup.prepare_launch(src,ctx.config)

@@ -244,6 +244,26 @@ def scan(roots: list[Path], runtimes: dict[str, str], hash_cache: dict | None = 
         archive_meta = {}
         zplat = None
         if ext in (".zip", ".7z"):
+            if ext == '.zip':
+                from . import savemgo
+                try:
+                    bundle = savemgo.identify(f)
+                except (OSError, ValueError) as exc:
+                    problems.append(f"{f}: {exc}")
+                    continue
+                if bundle:
+                    root = next(Path(r) for r in roots if f.is_relative_to(r))
+                    rel = f.relative_to(root).as_posix()
+                    gid = hashlib.sha1(f"{lib_id}:{rel}".encode()).hexdigest()[:16]
+                    by_hash[gid] = CatalogEntry(
+                        game_id=gid, title='Metal Gear Online', alt_title='MGO (Metal Gear Online 2)',
+                        platform='ps3', platform_confidence='bundled emulator and PARAM.SFO',
+                        serial=bundle['serial'], source_paths=[str(f)], library=lib_id, rel_path=rel,
+                        system='ps3', collections=[lib_id] if lib_id else [], core=None, hashes={},
+                        size=bundle['archive_size'], format='savemgo_bundle',
+                        runtimes={'ps3': 'savemgo'},
+                        launch=bundle['launch'] | {'platform': 'ps3', 'path': str(f)}, profile_id=gid)
+                    continue
             from . import rom_archives
             try:
                 contents = rom_archives.members(f)
