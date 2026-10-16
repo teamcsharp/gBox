@@ -184,3 +184,48 @@ def test_owned_disc_mesh_probe():
         # quad records (kinds 3/4) always carry the (1, 0x10) flags on the owned disc
         for p in probe["quad_flagged"]:
             assert p["kind"] in (3, 4) and (p["flags"], p["z2"]) == (1, 0x10)
+
+
+# --- compressed entry probe ------------------------------------------------------------------
+
+
+def _x_data_entry(iso, entry):
+    """Raw bytes of one X_DATA.BIN AFS entry from the owned disc image."""
+    X_LBA = 1264649
+    with iso.open("rb") as f:
+        f.seek(X_LBA * 2048)
+        n = struct.unpack_from("<I", f.read(8)[4:])[0]
+        f.seek(X_LBA * 2048)
+        tab = dmc2.afs_table(f.read(8 + 8 * n), 1065326592)
+        o, z = tab["offsets"][entry], tab["sizes"][entry]
+        f.seek(X_LBA * 2048 + o)
+        return f.read(z)
+
+
+def _momo_entry(children):
+    """Synthetic compressed MOMO entry: 2-byte flag 0x0000 + literal MOMO package."""
+    return b"\x00\x00" + _momo(children)
+
+
+def test_compressed_entry_probe_synthetic():
+    p = dmc2.compressed_entry_probe(_momo_entry([b"TIM2" + b"\0" * 28]))
+    assert p["flag"] == 0 and p["flag_hi"] == 0 and p["flag_lo"] == 0
+    assert p["type"] == "momo" and p["magic"] == "MOMO"
+    assert p["literal_prefix"] == 16  # MOMO + count + one table entry
+    with pytest.raises(ValueError):
+        dmc2.compressed_entry_probe(b"MOMO" + b"\0" * 8)  # uncompressed: magic at 0, not +2
+
+
+@ pytest.mark.skipif(not ISO.exists(), reason="owned DMC2 Disc 1 image not extracted on this host")
+def test_owned_disc_compressed_probe():
+    # X:105/106 are compressed MOMO (flag 0x0000); X:2631 is a compressed TIM2 (flag 0x0440).
+    p105 = dmc2.compressed_entry_probe(_x_data_entry(ISO, 105))
+    assert p105["type"] == "momo" and p105["flag"] == 0x0000
+    assert p105["literal_prefix"] == 32  # MOMO + count + 3 leading table entries on this entry
+    p106 = dmc2.compressed_entry_probe(_x_data_entry(ISO, 106))
+    assert p106["type"] == "momo" and p106["flag"] == 0x0000
+    assert p106["literal_prefix"] == 32  # MOMO + count + full 3-entry table, all literal
+    p2631 = dmc2.compressed_entry_probe(_x_data_entry(ISO, 2631))
+    assert p2631["type"] == "tim2" and p2631["flag_hi"] == 0x04
+    assert p2631["flag_lo"] in dmc2.TIM2_FLAGS
+    assert p2631["literal_prefix"] >= 8
