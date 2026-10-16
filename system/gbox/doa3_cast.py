@@ -1,27 +1,57 @@
 """DOA3 (USA, Xbox) native cast layer: XPR0 container walker, CAT companions,
-slot inventory and the AFS patch path for the combined cast writer.
+slot inventory, the AFS patch path and the measured MDL geometry decoder.
 
 Everything here is validated against the owned USA build (game b8edf7040116f3aa;
 XBE sha256 e523dd15d0765899a43a1824c023e0219d129e9a8b41e8213e4e645755d2bfa3,
-loadfile.afs 365690880 bytes). The MDL geometry decoder/encoder is NOT
-implemented yet: this module stops at container level and says so. It is not a
+loadfile.afs 365690880 bytes). The decoder pins real byte layout; it is not a
 playable build and must never be reported as one.
 
-Layout facts pinned from kas00.xpr / kas00.cat (Kasumi costume 00, live bytes):
+Layout facts pinned from kas00.xpr (entry 296 of loadfile.afs, 1943552 bytes,
+sha256 2d048d4c0343c6a50ccd2a362a00980c88b09ee229dc5e6adce24cfc17ecf18d,
+header 0x1E000):
 
 * XPR0: magic, u32 total, u32 header_size, then the user-data pair
-  {u32 0x80000000, u32 size, 4cc tag ``MDL``} at 0x0C..0x18. The MDL payload
-  starts at header_size (kas00: 119868 bytes of dense float data, no texture
-  magic). The header continues with a second pair {u32 0x48, u32 87} at 0x18
-  and a u32 18 at 0x20. From 0x24 the header holds a run of increasing u32
-  offsets into the header (kas00: 0x48 .. 0x1D240, all below header_size, i.e.
-  texture surface data positions), terminated by 0x00000000 immediately before
-  an ``OBJ\0`` section marker at 0x14C (the material/object table). The MDL
-  payload is headerless: it begins directly with dense f32 data (kas00 shows a
-  ~32-byte periodic structure, no count word and no texture magic). No ``DDS
-  `` magic exists anywhere in the resource: textures are raw D3D surfaces, so
-  the per-texture descriptor stride has to be pinned against the XBE loader
-  (RE stage).
+  {u32 0x80000000, u32 size, 4cc tag ``MDL``} at 0x0C..0x18. The MDL chunk
+  header follows at 0x18: obj_count u32 (72), tex_count u32 (87), unknown u32
+  (18), duplicated obj_count u32 (72). The ABSOLUTE object pointer table runs
+  at 0x28 (obj_count u32), ends with a zero word and the first object record
+  sits immediately after it ('OBJ\\0' at 0x14C for kas00). All OBJ records and
+  their 16-bit index buffers live inside the header (below header_size); the
+  32-byte vertex buffers start at header_size and form one contiguous chain,
+  which extends PAST the declared MDL user-resource end - bounds are validated
+  against ``total``, never against the resource size.
+* OBJ record (0x4A424F = ``OBJ\\0``): +0x04 vertex type (0 = no weights,
+  32-byte stride), +0x08 unknown, +0x0C unknown count, then the pinned geometry
+  fields 16 bytes EARLIER than the DOA2U importer expects: +0x10 vertex_count,
+  +0x14 absolute vertex buffer offset, +0x18 index_count (u16 strip indices),
+  +0x1C absolute index buffer offset. The DOA2U importer reads position floats
+  at +0x10..+0x1F and counts at +0x20..+0x2C - on DOA3 those reads produce
+  denormals (measured), i.e. the DOA2U layout does NOT apply to DOA3.
+* Materials begin at OBJ+0x60. Each record: a 33-word fixed header from M
+  (word0 = flags, word1 = length in WORDS, words 2..32 unparsed), then 16-byte
+  packets. The LAST packet is the face range descriptor (matching the DOA2U
+  importer's tail read) {word0 u32 (unresolved type/effect; kas00 values
+  0x60/0x80/0xA0/0x540), face_off u32, face_count u32, tail u32}: face_off is
+  a u16 INDEX offset into the OBJ's own index buffer and face_count counts
+  TRIANGLES, so the strip spans [face_off, face_off + face_count + 2) indices
+  (the DOA2U buildmsh reads exactly face_count shorts after the first two;
+  OBJ2/OBJ4 fc=2 descriptors tile their whole 12/4-index buffers exactly).
+  face_count 0 carries no geometry. The other packets are kept raw (their
+  semantics are unresolved; some contain float data, measured on kas00 OBJ1).
+  Next record = M + 4*length_words. The record chain ends with a zero dword
+  then 0x12345678 exactly 8 bytes before the OBJ index buffer (72/72 objects
+  measured). On kas00 the first material header word is 0x80000000 (the 0x80
+  presence bit) and per-record length is 33 + 4*packets.
+* Indices: u16 triangle strips per material descriptor; triangles are rebuilt
+  with the DOA2U parity flip rule (winding alternates per index; degenerate
+  triples are skipped). Every descriptor face range decodes with all indices
+  below vertex_count, and every whole buffer passes the same bound check.
+* Vertices: 32 bytes = position f32x3, normal f32x3, UV f32x2 (the DOA2U
+  buildmsh order). Measured on kas00 OBJ0: |normal| = 1.0000 +/- 0.0000 for
+  all 1204 vertices; u in [0.003, 1.000], v in [-0.995, 0.993]; position bounds
+  x +/-0.094, y -0.320..0.234, z -0.093..0.152 (a costume part in model space).
+* Textures: no DDS magic anywhere; raw D3D surfaces. The 87 texture
+  descriptors and the draw-packet semantics are still unresolved.
 * CAT: u32 version (1) then size/count words (kas00: 0x14, 1472, 0x9A40,
   0x4F5C0, 0x100, 1, 0x18) and ASCII section markers (``LNK\\0`` plus digits,
   e.g. at 0x9A40). The trailing 12-byte table near EOF looks like
@@ -46,6 +76,7 @@ XBE_SHA256 = "e523dd15d0765899a43a1824c023e0219d129e9a8b41e8213e4e645755d2bfa3"
 XPR_MAGIC = b"XPR0"
 USER_TYPE = 0x80000000
 MDL_TAG = b"MDL\x00"
+OBJ_TAG = b"OBJ\x00"
 LNK_MARKER = b"LNK\x00"
 MAX_HEADER_WORDS = 4096
 
@@ -123,6 +154,326 @@ def xpr_roundtrip(blob: bytes) -> bytes:
     out[res["mdl"]["offset"]:res["mdl"]["end"]] = blob[res["mdl"]["offset"]:res["mdl"]["end"]]
     out[res["mdl"]["end"]:] = blob[res["mdl"]["end"]:]
     return bytes(out)
+
+
+# ----------------------------------------------------------------- MDL geometry
+
+MDL_CHUNK = 0x14            # 'MDL' tag inside the XPR0 header
+VERTEX_STRIDE = 32          # position f32x3, normal f32x3, uv f32x2
+INDEX_STRIDE = 2            # u16 strip indices
+OBJ_GEOM_FIELDS = 0x10      # vcount/vptr/icount/iptr sit at OBJ+0x10 on DOA3
+MAT_HEADER_BASE = 0x60      # material records start at OBJ+0x60
+MAT_HEADER_WORDS = 33
+PACKET_BYTES = 16
+MAT_FLAG_PRESENT = 0x80
+MAT_TERMINATOR = 0x12345678
+
+
+def mdl_chunk(blob: bytes) -> dict:
+    """The MDL chunk header and the absolute object pointer table (validated).
+
+    The chunk tag sits at 0x14 in the XPR0 header; counts follow at 0x18 and
+    the object table at 0x28. The table must be terminated by a zero word and
+    the first object record must start right after that terminator."""
+    xpr_resources(blob)
+    total = struct.unpack_from("<I", blob, 4)[0]
+    if blob[MDL_CHUNK:MDL_CHUNK + 4] != MDL_TAG:
+        raise ValueError(f"MDL chunk tag missing at {MDL_CHUNK:#x}")
+    obj_count, tex_count, unk, dup = struct.unpack_from("<4I", blob, MDL_CHUNK + 4)
+    if obj_count == 0 or obj_count > MAX_HEADER_WORDS:
+        raise ValueError(f"MDL object count invalid ({obj_count})")
+    if dup != obj_count:
+        raise ValueError(f"MDL duplicated object count {dup} != object count {obj_count}")
+    table_off = MDL_CHUNK + 0x14        # tag (4) + four count words (16)
+    table_end = table_off + 4 * obj_count
+    if table_end + 8 > total:
+        raise ValueError("MDL object table extends outside the resource")
+    objects = list(struct.unpack_from(f"<{obj_count}I", blob, table_off))
+    if any(o >= total or o % 4 for o in objects):
+        raise ValueError("MDL object pointer outside the resource or misaligned")
+    if any(b <= a for a, b in zip(objects, objects[1:])):
+        raise ValueError("MDL object pointers are not strictly increasing")
+    if struct.unpack_from("<I", blob, table_end)[0] != 0:
+        raise ValueError("MDL object table is not zero-terminated")
+    if blob[objects[0]:objects[0] + 4] != OBJ_TAG:
+        raise ValueError(f"first object record at {objects[0]:#x} is not {OBJ_TAG!r}")
+    return {"obj_count": obj_count, "tex_count": tex_count, "unknown": unk,
+            "dup_count": dup, "table_offset": table_off,
+            "objects": objects, "table_end": table_end}
+
+
+def _obj_header(blob: bytes, obj: int) -> tuple[int, int, int, int, list[int]]:
+    """Pinned OBJ geometry fields: (vcount, vptr, icount, iptr, 8 header words)."""
+    total = struct.unpack_from("<I", blob, 4)[0]
+    if obj + 0x20 > total or blob[obj:obj + 4] != OBJ_TAG:
+        raise ValueError(f"OBJ record at {obj:#x} is truncated or missing its tag")
+    words = list(struct.unpack_from("<8I", blob, obj))
+    vcount, vptr, icount, iptr = words[4:8]
+    if vcount < 3 or icount < 3:
+        raise ValueError(f"OBJ {obj:#x} has implausible counts (vertices {vcount}, indices {icount})")
+    if vptr + VERTEX_STRIDE * vcount > total:
+        raise ValueError(f"OBJ {obj:#x} vertex buffer extends outside the resource")
+    if iptr + INDEX_STRIDE * icount > total:
+        raise ValueError(f"OBJ {obj:#x} index buffer extends outside the resource")
+    return vcount, vptr, icount, iptr, words
+
+
+def _obj_materials(blob: bytes, obj: int, icount: int, iptr: int) -> list[dict]:
+    """The validated material record chain of one OBJ.
+
+    Records start at OBJ+0x60 and run until a zero dword followed by
+    0x12345678 exactly 8 bytes before the index buffer (measured on all 72
+    kas00 objects). Each record: a 33-word header from M (word0 flags, word1
+    length in words), then 16-byte packets whose LAST packet carries the face
+    range {face_off, face_count, tail, pad}; face_off/face_count address u16
+    strip indices inside the OBJ's own index buffer."""
+    materials = []
+    m = obj + MAT_HEADER_BASE
+    while True:
+        if blob[m:m + 4] == b"\x00\x00\x00\x00":
+            terminator = struct.unpack_from("<I", blob, m + 4)[0]
+            if terminator != MAT_TERMINATOR:
+                raise ValueError(f"material chain at {m:#x} is not terminated by {MAT_TERMINATOR:#x}")
+            if m + 8 != iptr:
+                raise ValueError(f"material chain at {m:#x} must end exactly 8 bytes before the index buffer {iptr:#x}")
+            return materials
+        if m + 8 > iptr or iptr - 8 < obj + MAT_HEADER_BASE:
+            raise ValueError(f"material chain at {m:#x} runs into the OBJ index buffer {iptr:#x}")
+        flags = blob[m:m + 4]
+        if not flags[3] & MAT_FLAG_PRESENT:
+            raise ValueError(f"material at {m:#x} lacks the {MAT_FLAG_PRESENT:#x} presence bit (flags {flags.hex()})")
+        length_words = struct.unpack_from("<I", blob, m + 4)[0]
+        if length_words < MAT_HEADER_WORDS:
+            raise ValueError(f"material at {m:#x} length {length_words} words is below the fixed header")
+        if (length_words - MAT_HEADER_WORDS) % 4:
+            raise ValueError(f"material at {m:#x} length {length_words} words is not 33 + 4*packets")
+        record_end = m + 4 * length_words
+        if record_end > iptr - 8:
+            raise ValueError(f"material at {m:#x} extends past the chain terminator")
+        header = list(struct.unpack_from(f"<{MAT_HEADER_WORDS}I", blob, m))
+        packet_count = (length_words - MAT_HEADER_WORDS) // 4
+        word0, face_off, face_count, tail = struct.unpack_from("<4I", blob, record_end - PACKET_BYTES)
+        if face_count and face_off + face_count + 2 > icount:
+            raise ValueError(f"material {m:#x} face range "
+                             f"[{face_off}, {face_off + face_count + 2}) "
+                             f"exceeds the OBJ index count {icount}")
+        materials.append({
+            "offset": m, "flags": flags.hex(), "length_words": length_words,
+            "header": header, "packet_count": packet_count,
+            "packet_bytes": blob[m + 4 * MAT_HEADER_WORDS:record_end],
+            "ref": word0, "face_off": face_off, "face_count": face_count, "tail": tail,
+        })
+        m = record_end
+
+
+def _strip_triangles(indices: list[int]) -> list[tuple[int, int, int]]:
+    """u16 strip -> triangles with the DOA2U parity flip rule.
+
+    The winding alternates per index; degenerate triples (any repeated index)
+    are skipped. The winding handedness itself is not verified against the
+    runtime - only the parity rule and the index bounds are measured facts."""
+    triangles = []
+    f1, f2 = indices[0], indices[1]
+    flip = True
+    for f3 in indices[2:]:
+        if f1 != f2 and f2 != f3 and f3 != f1:
+            triangles.append((f1, f3, f2) if flip else (f1, f2, f3))
+        flip = not flip
+        f1, f2 = f2, f3
+    return triangles
+
+
+def _decode_strip_range(blob: bytes, iptr: int, face_off: int, face_count: int,
+                        vcount: int) -> tuple[list[int], list[tuple[int, int, int]]]:
+    """One packet's strip: face_count counts TRIANGLES and the strip spans
+    [face_off, face_off + face_count + 2) u16 indices (measured: OBJ2/OBJ4
+    fc=2 packets tile their whole 12/4-index buffer exactly)."""
+    count = face_count + 2
+    if count < 3:
+        raise ValueError(f"strip range {face_off}+{face_count} is too short for a triangle")
+    raw = list(struct.unpack_from(f"<{count}H", blob, iptr + INDEX_STRIDE * face_off))
+    if max(raw) >= vcount:
+        raise ValueError(f"strip index {max(raw)} outside the OBJ vertex range {vcount}")
+    return raw, _strip_triangles(raw)
+
+
+def obj_geometry(blob: bytes, obj: int) -> dict:
+    """One OBJ record: pinned header fields, material chain, strips and vertices.
+
+    All buffer/count/range relationships are validated against the native
+    record bounds before any data is returned."""
+    vcount, vptr, icount, iptr, words = _obj_header(blob, obj)
+    materials = _obj_materials(blob, obj, icount, iptr)
+    strips, triangles, tris = [], [], 0
+    for mat in materials:
+        if mat["face_count"] == 0:
+            continue
+        raw, m_tris = _decode_strip_range(blob, iptr, mat["face_off"], mat["face_count"], vcount)
+        strips.append({"material": mat["offset"], "face_off": mat["face_off"],
+                       "face_count": mat["face_count"], "indices": raw, "triangles": m_tris})
+        triangles.extend(m_tris)
+        tris += len(m_tris)
+    all_indices = struct.unpack_from(f"<{icount}H", blob, iptr)
+    if max(all_indices) >= vcount:
+        raise ValueError(f"OBJ {obj:#x} index buffer contains {max(all_indices)} outside {vcount} vertices")
+    vertex_bytes = blob[vptr:vptr + VERTEX_STRIDE * vcount]
+    floats = struct.unpack(f"<{8 * vcount}f", vertex_bytes)
+    vertices = [tuple(floats[8 * i:8 * i + 8]) for i in range(vcount)]
+    return {"offset": obj, "header": words, "vertex_count": vcount,
+            "vertex_offset": vptr, "index_count": icount, "index_offset": iptr,
+            "materials": materials, "strips": strips,
+            "triangle_count": tris, "triangles": triangles,
+            "vertices": vertices, "vertex_bytes": vertex_bytes,
+            "index_bytes": blob[iptr:iptr + INDEX_STRIDE * icount],
+            "record_span": (obj, iptr + INDEX_STRIDE * icount)}
+
+
+def costume_geometry(blob: bytes) -> dict:
+    """Decode an entire costume XPR0: chunk, every OBJ, its materials and mesh.
+
+    This is a decoder for the owned format; it validates every buffer, count
+    and range against the native record bounds and the resource size before
+    returning measured geometry."""
+    chunk = mdl_chunk(blob)
+    total = struct.unpack_from("<I", blob, 4)[0]
+    objects, spans, tris_total, verts_total = [], [], 0, 0
+    for obj in chunk["objects"]:
+        geo = obj_geometry(blob, obj)
+        if spans and geo["record_span"][0] < spans[-1][1]:
+            raise ValueError(f"OBJ {obj:#x} record span overlaps the previous object")
+        spans.append(geo["record_span"])
+        objects.append(geo)
+        tris_total += geo["triangle_count"]
+        verts_total += geo["vertex_count"]
+    last_end = max(geo["vertex_offset"] + VERTEX_STRIDE * geo["vertex_count"] for geo in objects)
+    if last_end > total:
+        raise ValueError("vertex region extends outside the resource")
+    vertex_starts = [g["vertex_offset"] for g in objects]
+    vertex_chain = all(
+        a + VERTEX_STRIDE * ga["vertex_count"] == b
+        for (a, ga), b in zip(zip(vertex_starts, objects), vertex_starts[1:])
+    ) if len(objects) > 1 else True
+    return {"chunk": chunk, "objects": objects, "object_count": len(objects),
+            "triangle_total": tris_total, "vertex_total": verts_total,
+            "vertex_region": (min(vertex_starts), last_end),
+            "vertex_chain_contiguous": vertex_chain}
+
+
+def vertex_sanity(geometry: dict) -> dict:
+    """Measured invariants of the decoded vertices (evidence, not validation).
+
+    On kas00 these are: |normal| = 1.0000 +/- 0.0000, u in [0.003, 1.000],
+    v in [-0.995, 0.993]. Used to confirm the f32x8 layout on a new resource;
+    a mismatch means the layout hypothesis does not hold for that resource."""
+    verts = [v for g in geometry["objects"] for v in g["vertices"]]
+    if not verts:
+        return {}
+    nlens = [(v[3] ** 2 + v[4] ** 2 + v[5] ** 2) ** 0.5 for v in verts]
+    mean = sum(nlens) / len(nlens)
+    std = (sum((x - mean) ** 2 for x in nlens) / len(nlens)) ** 0.5
+    us = [v[6] for v in verts]
+    vs = [v[7] for v in verts]
+    xs = [v[0] for v in verts]
+    ys = [v[1] for v in verts]
+    zs = [v[2] for v in verts]
+    return {"normal_length_mean": mean, "normal_length_std": std,
+            "u_range": [min(us), max(us)], "v_range": [min(vs), max(vs)],
+            "pos_bounds": {"x": [min(xs), max(xs)], "y": [min(ys), max(ys)],
+                           "z": [min(zs), max(zs)]}}
+
+
+def xpr_geometry_roundtrip(blob: bytes) -> bytes:
+    """Byte-preserving geometry encode: rebuild the parsed MDL region.
+
+    Every structurally parsed field is re-serialized from its parsed value
+    (chunk header, object table, OBJ header words, material records, index
+    buffers, vertex buffers); the unparsed interleavings and the trailing
+    texture region pass through raw. The result must equal ``blob`` exactly -
+    the no-op encode gate the writer path must keep holding before donor
+    geometry replaces native bytes."""
+    total, hsize = struct.unpack_from("<II", blob, 4)
+    geometry = costume_geometry(blob)
+    chunk = geometry["chunk"]
+    out = bytearray(total)
+    out[0:MDL_CHUNK] = blob[0:MDL_CHUNK]                      # magic, sizes, first pair
+    out[MDL_CHUNK:MDL_CHUNK + 4] = MDL_TAG
+    struct.pack_into("<4I", out, MDL_CHUNK + 4, chunk["obj_count"], chunk["tex_count"],
+                     chunk["unknown"], chunk["dup_count"])
+    struct.pack_into(f"<{chunk['obj_count']}I", out, chunk["table_offset"], *chunk["objects"])
+    struct.pack_into("<I", out, chunk["table_end"], 0)
+    prev_end = 0
+    for geo in geometry["objects"]:
+        obj, span_end = geo["record_span"]
+        if prev_end and obj > prev_end:
+            out[prev_end:obj] = blob[prev_end:obj]            # unparsed interleaving
+        struct.pack_into("<8I", out, obj, *geo["header"])
+        # OBJ record tail between the pinned fields and the material chain:
+        # semantics unresolved, passed through raw (byte-preserving by design).
+        out[obj + 0x20:obj + MAT_HEADER_BASE] = blob[obj + 0x20:obj + MAT_HEADER_BASE]
+        for mat in geo["materials"]:
+            m = mat["offset"]
+            struct.pack_into(f"<{MAT_HEADER_WORDS}I", out, m, *mat["header"])
+            p = m + 4 * MAT_HEADER_WORDS
+            out[p:p + len(mat["packet_bytes"])] = mat["packet_bytes"]
+        mend = geo["index_offset"] - 8
+        out[mend:mend + 4] = b"\x00\x00\x00\x00"
+        struct.pack_into("<I", out, mend + 4, MAT_TERMINATOR)
+        out[geo["index_offset"]:geo["index_offset"] + len(geo["index_bytes"])] = geo["index_bytes"]
+        packed = struct.pack(f"<{8 * geo['vertex_count']}f",
+                             *[f for v in geo["vertices"] for f in v])
+        out[geo["vertex_offset"]:geo["vertex_offset"] + len(packed)] = packed
+        prev_end = span_end
+    last_geo_end = max(geo["vertex_offset"] + VERTEX_STRIDE * geo["vertex_count"]
+                       for geo in geometry["objects"])
+    if prev_end < hsize:
+        out[prev_end:hsize] = blob[prev_end:hsize]
+    out[hsize:last_geo_end] = _gaps_filled(blob, geometry, hsize, last_geo_end)
+    out[last_geo_end:] = blob[last_geo_end:]                  # trailing (textures)
+    if bytes(out) != blob:
+        first = next(i for i, (a, b) in enumerate(zip(out, blob)) if a != b)
+        raise ValueError(f"geometry re-encode is not byte-identical (first difference at {first:#x})")
+    return bytes(out)
+
+
+def _gaps_filled(blob: bytes, geometry: dict, start: int, end: int) -> bytes:
+    """Vertex region with each OBJ's buffer re-packed and raw gap passthrough."""
+    out = bytearray(blob[start:end])
+    for geo in geometry["objects"]:
+        v0 = geo["vertex_offset"]
+        packed = struct.pack(f"<{8 * geo['vertex_count']}f",
+                             *[f for v in geo["vertices"] for f in v])
+        out[v0 - start:v0 - start + len(packed)] = packed
+    return bytes(out)
+
+
+def export_obj(geometry: dict, path: str | Path) -> int:
+    """Write decoded geometry to a Wavefront OBJ (private readable evidence).
+
+    One group per material strip; vertices carry position/normal/uv. Returns
+    the number of faces written. The DOA3 runtime uses v as stored (no flip);
+    the winding parity rule is applied exactly as decoded."""
+    p = Path(path)
+    faces = 0
+    with open(p, "w") as out:
+        out.write("# DOA3 decoded geometry (gbox.doa3_cast)\n")
+        for gi, geo in enumerate(geometry["objects"]):
+            base = sum(g["vertex_count"] for g in geometry["objects"][:gi])
+            out.write(f"o OBJ_{gi}\n")
+            for v in geo["vertices"]:
+                out.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
+            for v in geo["vertices"]:
+                out.write(f"vn {v[3]:.6f} {v[4]:.6f} {v[5]:.6f}\n")
+            for v in geo["vertices"]:
+                out.write(f"vt {v[6]:.6f} {v[7]:.6f}\n")
+            for si, strip in enumerate(geo["strips"]):
+                mat = strip["material"]
+                out.write(f"g OBJ_{gi}_mat_{mat:#x}\n")
+                for a, b, c in strip["triangles"]:
+                    out.write(f"f {a + base + 1}/{a + base + 1}/{a + base + 1} "
+                              f"{b + base + 1}/{b + base + 1}/{b + base + 1} "
+                              f"{c + base + 1}/{c + base + 1}/{c + base + 1}\n")
+                    faces += 1
+    return faces
 
 
 # --------------------------------------------------------------------- CAT
@@ -259,12 +610,16 @@ def cast_writer_status() -> dict:
         "afs_patch_path": True,
         "xpr0_parser": True,
         "cat_parser": True,
-        "mdl_geometry_decode": False,
-        "mdl_geometry_encode": False,
+        "mdl_geometry_decode": True,
+        "mdl_geometry_encode": True,
+        "mdl_geometry_encode_note": "byte-preserving no-op roundtrip on parsed records; "
+                                    "donor replacement is not implemented",
         "donor_retarget": False,
         "playable": False,
-        "message": "container parsing and the AFS patch path are in place; MDL geometry "
-                   "decode/encode, donor retarget and the routed cast build are the next stages",
+        "message": "measured MDL geometry decode (vertices/normals/UVs/u16 strips/material "
+                   "face ranges) and the no-op encode gate hold on the owned kas00; "
+                   "texture descriptors, CAT body, donor retarget and the routed cast "
+                   "build are the next stages",
     }
 
 

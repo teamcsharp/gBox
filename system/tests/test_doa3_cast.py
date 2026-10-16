@@ -1,6 +1,7 @@
-"""Focused tests for gbox.doa3_cast: XPR0 walk, CAT sections, slot inventory
-and the AFS patch path. Fixtures mirror the byte layout observed in the owned
-USA build (kas00.xpr / kas00.cat, loadfile.afs)."""
+"""Focused tests for gbox.doa3_cast: XPR0 walk, CAT sections, slot inventory,
+the AFS patch path and the measured MDL geometry decoder. Fixtures mirror the
+byte layout observed in the owned USA build (kas00.xpr / kas00.cat,
+loadfile.afs)."""
 import struct
 
 import pytest
@@ -74,6 +75,48 @@ def make_manifest() -> dict:
                 {"nick": "tengu", "code": None, "mot": [], "costumes": {},
                  "complete_costumes": []},
             ]}
+
+
+def make_geo_xpr(vcount: int = 4, icount: int = 6, mat_face_off: int = 0,
+                 mat_face_count: int | None = None, flags: int = 0x80000000,
+                 ref: int = 0x25, tail: int = 0, packets_extra: int = 1) -> bytes:
+    """An XPR0 with one OBJ shaped like the measured kas00 record: pinned
+    fields at OBJ+0x10..+0x1F, a material chain from OBJ+0x60 ending in
+    [0x00000000, 0x12345678] exactly 8 bytes before the u16 strip buffer, and
+    a 32-byte f32x8 vertex buffer starting at header_size."""
+    mat_face_count = icount - 2 if mat_face_count is None else mat_face_count
+    length_words = doa3_cast.MAT_HEADER_WORDS + 4 * (packets_extra + 1)
+    obj = 0x30                                            # table_end (0x2C) + 4
+    mat_off = obj + doa3_cast.MAT_HEADER_BASE
+    iptr = mat_off + 4 * length_words + 8
+    hsize = iptr + 2 * icount
+    total = hsize + 32 * vcount + 8
+    out = bytearray(total)
+    struct.pack_into("<4sII", out, 0, b"XPR0", total, hsize)
+    struct.pack_into("<II", out, 12, 0x80000000, 32 * vcount)
+    out[0x14:0x18] = b"MDL\x00"
+    struct.pack_into("<4I", out, 0x18, 1, 0, 1, 1)   # obj, tex, unk, dup
+    struct.pack_into("<I", out, 0x28, obj)           # object pointer table
+    struct.pack_into("<I", out, 0x2C, 0)             # zero table terminator
+    out[obj:obj + 4] = b"OBJ\x00"
+    struct.pack_into("<4I", out, obj + 0x10, vcount, hsize, icount, iptr)
+    m = mat_off
+    header_words = [flags, length_words] + [0x3F800000 + i for i in range(31)]
+    struct.pack_into(f"<{doa3_cast.MAT_HEADER_WORDS}I", out, m, *header_words)
+    pkt = m + 4 * doa3_cast.MAT_HEADER_WORDS
+    for i in range(packets_extra):
+        struct.pack_into("<4I", out, pkt + 16 * i, 0x80, 0, 0, 0)  # zero-face packets
+    struct.pack_into("<4I", out, pkt + 16 * packets_extra, ref, mat_face_off,
+                     mat_face_count, tail)
+    mend = m + 4 * length_words
+    out[mend:mend + 4] = b"\x00\x00\x00\x00"
+    struct.pack_into("<I", out, mend + 4, doa3_cast.MAT_TERMINATOR)
+    struct.pack_into(f"<{icount}H", out, iptr, *[i % vcount for i in range(icount)])
+    verts = []
+    for i in range(vcount):
+        verts += [float(i), float(i), 0.0, 0.0, 0.0, 1.0, 0.0, float(i) / vcount]
+    struct.pack_into(f"<{8 * vcount}f", out, hsize, *verts)
+    return bytes(out)
 
 
 # ----------------------------------------------------------------- XPR0
@@ -160,7 +203,9 @@ def test_slot_inventory_counts_and_gaps():
 def test_cast_writer_status_is_honest():
     st = doa3_cast.cast_writer_status()
     assert st["xpr0_parser"] and st["cat_parser"] and st["afs_patch_path"]
-    assert not st["mdl_geometry_decode"] and not st["playable"]
+    assert st["mdl_geometry_decode"] and st["mdl_geometry_encode"]
+    assert "no-op" in st["mdl_geometry_encode_note"]
+    assert not st["donor_retarget"] and not st["playable"]
 
 
 # ----------------------------------------------------------------- AFS patch
@@ -280,3 +325,101 @@ def test_afs_patch_entry_rejects_name_directory_out_of_bounds(tmp_path):
     afs.write_bytes(bytes(out))
     with pytest.raises(ValueError, match="name directory"):
         doa3_cast.afs_patch_entry(afs, 0, b"X")
+
+
+# ----------------------------------------------------------------- MDL geometry
+
+def test_mdl_geometry_decodes_measured_obj_layout():
+    blob = make_geo_xpr()
+    geo = doa3_cast.costume_geometry(blob)
+    assert geo["object_count"] == 1
+    assert geo["vertex_total"] == 4
+    assert geo["triangle_total"] == 4                     # 6 strip indices -> 4 tris
+    obj = geo["objects"][0]
+    assert obj["header"][4:8] == [4, obj["vertex_offset"], 6, obj["index_offset"]]
+    assert obj["vertex_offset"] == 0x30 + 0x60 + 4 * 41 + 8 + 12
+    assert obj["index_offset"] == 0x30 + 0x60 + 4 * 41 + 8
+    assert obj["vertex_count"] == 4 and obj["index_count"] == 6
+    mat = obj["materials"][0]
+    assert mat["length_words"] == 41 and mat["packet_count"] == 2
+    assert mat["header"][0] == 0x80000000 and mat["header"][1] == 41
+    assert mat["ref"] == 0x25 and mat["face_off"] == 0 and mat["face_count"] == 4 and mat["tail"] == 0
+    assert obj["vertices"][1][:3] == (1.0, 1.0, 0.0)
+    assert obj["vertices"][1][3:6] == (0.0, 0.0, 1.0)    # unit normal
+    sanity = doa3_cast.vertex_sanity(geo)
+    assert sanity["normal_length_mean"] == pytest.approx(1.0)
+    assert sanity["normal_length_std"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_xpr_geometry_roundtrip_is_byte_preserving():
+    blob = make_geo_xpr()
+    assert doa3_cast.xpr_geometry_roundtrip(blob) == blob
+
+
+def test_geometry_roundtrip_holds_with_multi_packet_material():
+    blob = make_geo_xpr(packets_extra=7, tail=1)
+    assert doa3_cast.xpr_geometry_roundtrip(blob) == blob
+
+
+def test_geometry_rejects_index_out_of_vertex_range():
+    blob = bytearray(make_geo_xpr())
+    iptr = doa3_cast.costume_geometry(bytes(blob))["objects"][0]["index_offset"]
+    struct.pack_into("<H", blob, iptr + 4, 0xFFFF)       # index beyond vcount
+    with pytest.raises(ValueError, match="outside the OBJ vertex range"):
+        doa3_cast.costume_geometry(bytes(blob))
+
+
+def test_geometry_rejects_face_range_overflow():
+    blob = make_geo_xpr(mat_face_off=4, mat_face_count=6)  # 4+6 > icount 6
+    with pytest.raises(ValueError, match="exceeds the OBJ index count"):
+        doa3_cast.costume_geometry(blob)
+
+
+def test_geometry_rejects_bad_terminator():
+    blob = bytearray(make_geo_xpr())
+    geo = doa3_cast.costume_geometry(bytes(blob))["objects"][0]
+    mend = geo["index_offset"] - 4
+    struct.pack_into("<I", blob, mend, 0xDEADBEEF)
+    with pytest.raises(ValueError, match="terminated"):
+        doa3_cast.costume_geometry(bytes(blob))
+
+
+def test_geometry_rejects_material_length_not_33_plus_4_packets():
+    blob = bytearray(make_geo_xpr())
+    m = doa3_cast.costume_geometry(bytes(blob))["objects"][0]["materials"][0]["offset"]
+    struct.pack_into("<I", blob, m + 4, 34)              # 34-33 = 1 not divisible by 4
+    with pytest.raises(ValueError, match="33 \\+ 4\\*packets"):
+        doa3_cast.costume_geometry(bytes(blob))
+
+
+def test_geometry_rejects_missing_presence_bit():
+    blob = make_geo_xpr(flags=0x01)  # nonzero flags, 0x80 presence bit cleared
+    with pytest.raises(ValueError, match="presence bit"):
+        doa3_cast.costume_geometry(blob)
+
+
+def test_geometry_rejects_truncated_vertex_buffer():
+    blob = bytearray(make_geo_xpr())
+    struct.pack_into("<I", blob, 0x30 + 0x10, 10_000)  # vcount grows past the file
+    with pytest.raises(ValueError, match="vertex buffer extends outside"):
+        doa3_cast.costume_geometry(bytes(blob))
+
+
+def test_export_obj_writes_measured_groups(tmp_path):
+    geo = doa3_cast.costume_geometry(make_geo_xpr())
+    out = tmp_path / "geo.obj"
+    faces = doa3_cast.export_obj(geo, out)
+    text = out.read_text()
+    assert faces == 4
+    assert "o OBJ_0" in text and "g OBJ_0_mat_" in text
+    assert text.count("\nv ") == 4 and text.count("\nvn ") == 4
+    assert text.count("\nf ") == 4
+
+
+def test_mdl_chunk_rejects_non_increasing_object_table():
+    blob = bytearray(make_geo_xpr())
+    struct.pack_into("<I", blob, 0x18, 2)              # obj_count 2
+    struct.pack_into("<I", blob, 0x24, 2)              # dup 2
+    struct.pack_into("<2I", blob, 0x28, 0x2C, 0x2C)    # non-increasing table
+    with pytest.raises(ValueError, match="strictly increasing"):
+        doa3_cast.mdl_chunk(bytes(blob))
