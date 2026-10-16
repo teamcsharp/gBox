@@ -103,6 +103,10 @@ WRITERS = [
      "Dead Or Alive ++ (arcade, MAME doapp): any of the 11 fighters' costume models (player = all 44) rebuilt on the "
      "fighter's own 15 bones (motions, moves and accessory chains stay) in a new doapp set folder; read back through "
      "the game's fight init + skeleton build; unverified in MAME"),
+    ("doa3_cast", ["fighter:<nick>[:<costume>]"],
+     "Dead or Alive 3 (Xbox): XPR0/CAT/MDL and AFS decode + byte-preserving no-op roundtrip pinned on the owned "
+     "costumes; full donor body reimport/retarget and the routed cast build are not implemented yet (decode-only, "
+     "cast_writer_status() reports the remaining gap)"),
 ]
 SPECIAL = [                                               # writers routed by code in characters.py, not a module's use()
     ("re4gc", "build_re4(", ["player"], "Leon (story + Mercenaries, every costume pack)"),

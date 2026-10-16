@@ -40,10 +40,25 @@ XBE_KEYS = {"retail": (0xA8FC57AB, 0x5B6D40B6), "debug": (0x94859D4B, 0xEFB1F152
             "chihiro": (0x40B5C16E, 0x2290059D)}
 REGIONS = {0x1: "NA", 0x2: "JP", 0x4: "ROW", 0x80000000: "MFG"}
 
-# DOA3 roster (15 selectable fighters plus the boss Omega, Genra's transformed form); codes are
-# filled from the archive names by ``fighter_groups`` and never assumed.
-ROSTER = ["Kasumi", "Ayane", "Hitomi", "Leifang", "Tina", "Helena", "Christie", "Ryu Hayabusa",
-          "Jann Lee", "Zack", "Bass", "Gen Fu", "Brad Wong", "Bayman", "Ein", "Omega"]
+# DOA3 person slots. The nickname -> character mapping is the DOA3 modding community's BIN-file
+# documentation (Free Step Dodge "DOA3 - Modding: Understanding the BIN Files", corroborated by
+# TCRF's DOA3 codename table), cross-checked against the authoritative roster (Wikipedia: 17
+# playable + the boss Omega) and the loadfile.afs costume counts (e.g. ``karate`` = 3 costumes,
+# and Ein is the 3-costume karateka; Hitomi's codename is ``koryu`` at 8 costumes). The
+# executable's select table is the final authority and is still to be pinned by RE, so this table
+# is the reviewed working hypothesis until then -- it is NOT read from the XBE.
+NICKNAME_TO_CHARACTER = {
+    "kasumi": "Kasumi", "ayane": "Ayane", "karate": "Ein", "koryu": "Hitomi",
+    "leifang": "Leifang", "tina": "Tina", "hika": "Helena", "gokei": "Christie",
+    "ryu": "Ryu Hayabusa", "janlee": "Jann Lee", "zack": "Zack", "bass": "Bass",
+    "genfu": "Gen Fu", "suiken": "Brad Wong", "bayman": "Bayman", "sambo": "Leon",
+    "ninja": "Hayate", "bosnin": "Genra", "tengu": "Tengu", "chin": "Chen",
+}
+# Genra transforms into the boss Omega; Tengu is a DOA2 remnant kept in DOA3 with no costume XPRs
+# (boss/cameo); Chen is Brad Wong's master (story cameo, reuses suiken.mot).
+CHARACTER_KIND = {"Genra": "boss", "Tengu": "boss", "Chen": "cameo"}
+PLAYABLE_ROSTER = [n for n in NICKNAME_TO_CHARACTER.values() if n not in CHARACTER_KIND]
+ROSTER = list(NICKNAME_TO_CHARACTER.values())
 
 
 def sha256_file(path: str | Path, chunk: int = 1 << 22) -> str:
@@ -236,6 +251,7 @@ def read_afs(path: str | Path, sniff_bytes: int = 16) -> dict:
 
 
 _CODE = re.compile(r"^([A-Za-z]{2,4})[_\-]?(?:\d|[A-Za-z_]|$)")
+_MOT = re.compile(rb"c_([a-z]+)\.mot")
 
 
 def fighter_groups(entries: list[dict], codes: list[str] | None = None) -> dict[str, list[str]]:
@@ -315,6 +331,124 @@ def fighter_families(entries: list[dict]) -> list[dict]:
     return fams
 
 
+def xbe_motion_banks(data: bytes) -> list[str]:
+    """The ordered ``c_<nickname>.mot`` motion-bank names embedded in the XBE.
+
+    DOA3's ``default.xbe`` embeds one contiguous ASCII resource-path block that lists every
+    character motion bank as ``D:\\bin\\c_<nickname>.mot`` in the game's internal order. The
+    select table (a separate structure elsewhere in the XBE) indexes into this ordering, so the
+    order here is the canonical bank/fighter order that maps the martial-art nicknames
+    (sambo, gokei, suiken, bosnin, koryu, hika, karate, ninja, ...) to fighters. ``chin`` has no
+    bank of its own (its family reuses ``suiken.mot``), so it is absent here by design.
+
+    This is a byte-scan of the executable: the returned names are facts about the XBE, not a
+    fighter-mapping assertion.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for m in _MOT.finditer(data):
+        name = m.group(1).decode("latin-1")
+        if name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out
+
+
+def fighter_roster(families: list[dict]) -> list[dict]:
+    """Join each fighter family to its documented character name and coverage.
+
+    One row per family: ``nick`` (the loadfile.afs ``<nick>.bin`` name), ``character`` (the
+    documented display name, or ``None`` when no nickname is known yet), ``kind``
+    (playable | boss | cameo | unknown), the costume code, the count of complete costume pairs and
+    the motion files. A ``kind`` of ``unknown`` marks a family whose nickname has no documented
+    character -- the executable's select table must pin it before a whole-cast build can trust it.
+    """
+    rows = []
+    for f in families:
+        nick = f["nick"]
+        char = NICKNAME_TO_CHARACTER.get(nick)
+        rows.append({
+            "nick": nick,
+            "character": char,
+            "kind": CHARACTER_KIND.get(char, "playable") if char else "unknown",
+            "code": f.get("code"),
+            "costumes": len(f.get("complete_costumes") or []),
+            "mot": list(f.get("mot") or []),
+        })
+    return rows
+
+
+def xbe_voice_codes(data: bytes) -> list[str]:
+    """The ordered 2-letter voice codes embedded in the XBE (``voice\\\\<code>\\\\v_<code>_en_*.adx``).
+
+    The XBE lists every voiced line's ADX path grouped by character code; the first occurrence of
+    each code is the game's internal voice-slot order. This is a byte-scan fact (the codes), not a
+    code -> character assertion (that needs the select table).
+    """
+    out: list[str] = []
+    for m in re.finditer(rb"voice\\([a-z]{2})\\v_", data):
+        c = m.group(1).decode("latin-1")
+        if c not in out:
+            out.append(c)
+    return out
+
+
+# --------------------------------------------------------------------- Sonic cast
+
+# The "Sonic cast" request (#1976) replaces DOA3's cast with distinct Sonic Adventure 1/2
+# characters. Both readers' collections are complete and verified (characters op=collect):
+#   SA1 (game 1a3f4cd416db9ffd) -> 8 characters, extracted + verified + retargetable
+#   SA2 (game d95ed7ed1e40552a) -> 10 characters, in_collection + verified + retargetable
+# SA2's two vehicle entries (cyclone, egg_walker) are out of scope for a fighter cast.
+# The first slug is the canonical donor; the rest are the same character in the other game.
+SONIC_DONORS = [
+    {"character": "Sonic", "slugs": ["sa1_sonic", "sonic"]},
+    {"character": "Tails", "slugs": ["sa1_tails", "sa2_tails"]},
+    {"character": "Knuckles", "slugs": ["sa1_knuckles", "sa2_knuckles"]},
+    {"character": "Amy Rose", "slugs": ["sa1_amy", "sa2_amy_rose"]},
+    {"character": "Big the Cat", "slugs": ["sa1_big"]},
+    {"character": "E-102 Gamma", "slugs": ["sa1_e102"]},
+    {"character": "Super Sonic", "slugs": ["sa1_super_sonic", "sa2_super_sonic"]},
+    {"character": "Tikal", "slugs": ["sa1_tikal", "sa2_tikal"]},
+    {"character": "Shadow", "slugs": ["sa2_shadow"]},
+    {"character": "Rouge", "slugs": ["sa2_rouge"]},
+    {"character": "Dr. Eggman", "slugs": ["sa2_dr_eggman"]},
+    {"character": "Metal Sonic", "slugs": ["sa2_metal_sonic"]},
+    {"character": "Chaos 0", "slugs": ["sa2_chaos_0"]},
+    {"character": "Super Shadow", "slugs": ["sa2_super_shadow"]},
+]
+SONIC_DONOR_GAMES = {"1a3f4cd416db9ffd": "sa1", "d95ed7ed1e40552a": "sa2"}
+
+
+def sonic_cast_assignment(roster: dict[str, str] | None = None,
+                          donors: list[dict] | None = None) -> dict:
+    """Deterministic Sonic->DOA3 whole-cast assignment plan.
+
+    Deals the distinct donor list over the DOA3 person slots round-robin in roster order
+    (the order ``NICKNAME_TO_CHARACTER`` pins), so every distinct donor is used before any
+    donor repeats and no donor's count exceeds another's by more than one -- the request's
+    "exhaust usable distinct characters before repeating" with counts within one. 20 slots
+    over 14 distinct donors = 6 donors twice + 8 once. This is a plan: it reads nothing from
+    the disc and only becomes a build once the native DOA3 writer can reimport a donor;
+    role-based refinement (boss/cameo slots -> antagonist donors) is the writer's body-size
+    retarget pass, layered on top of this exhaust-distinct baseline.
+    """
+    nickmap: dict[str, str] = roster if roster is not None else NICKNAME_TO_CHARACTER
+    slots = list(nickmap.items())
+    pool = donors if donors is not None else SONIC_DONORS
+    if not pool:
+        raise ValueError("a cast assignment needs at least one donor")
+    n = len(pool)
+    rows = []
+    for i, (nick, character) in enumerate(slots):
+        donor = pool[i % n]
+        rows.append({"slot_nick": nick, "slot_character": character,
+                     "kind": CHARACTER_KIND.get(character, "playable"),
+                     "donor": donor["character"], "donor_slug": donor["slugs"][0]})
+    usage = dict(Counter(r["donor"] for r in rows))
+    return {"donors_distinct": n, "slots": len(slots), "usage": usage, "assignment": rows}
+
+
 # ----------------------------------------------------------------------------- build
 
 def build(game_dir: str | Path, *, source_7z: str | Path | None = None,
@@ -369,7 +503,17 @@ def build(game_dir: str | Path, *, source_7z: str | Path | None = None,
                    "xpr_with_mdl": sum(1 for f in fams for c in f["costumes"].values()
                                        if c.get("xpr_header", {}).get("first_tag") == "MDL")},
         "movies": sorted(f["name"] for f in files if f["name"].endswith(".sfd")),
-        "roster_expected": ROSTER,
+        "roster": fighter_roster(fams),
+        "roster_playable": PLAYABLE_ROSTER,
+        "roster_bosses": sorted(k for k, v in CHARACTER_KIND.items() if v == "boss"),
+        "roster_cameos": sorted(k for k, v in CHARACTER_KIND.items() if v == "cameo"),
+        "xbe_voice_codes": xbe_voice_codes(xbe_path.read_bytes()),
+        "counts_person_slots": {
+            "families": len(fams),
+            "playable": len(PLAYABLE_ROSTER),
+            "bosses": sum(1 for v in CHARACTER_KIND.values() if v == "boss"),
+            "cameos": sum(1 for v in CHARACTER_KIND.values() if v == "cameo"),
+        },
     }
 
 

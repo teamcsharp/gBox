@@ -1,5 +1,6 @@
 import json
 import struct
+from pathlib import Path
 
 import pytest
 
@@ -163,5 +164,115 @@ def test_fighter_families_from_layout(tmp_path):
 
 
 def test_roster_has_no_duplicate_fighters():
-    assert len(d3.ROSTER) == len(set(d3.ROSTER)) == 16
-    assert "Ein" in d3.ROSTER and "Lei Fang" not in d3.ROSTER
+    # 20 person slots: 17 playable + 2 bosses (Genra/Omega, Tengu) + 1 cameo (Chen).
+    assert len(d3.NICKNAME_TO_CHARACTER) == 20
+    assert len(d3.ROSTER) == len(set(d3.ROSTER)) == 20
+    assert len(d3.PLAYABLE_ROSTER) == 17
+    assert d3.CHARACTER_KIND == {"Genra": "boss", "Tengu": "boss", "Chen": "cameo"}
+    assert "Ein" in d3.PLAYABLE_ROSTER and "Leon" in d3.PLAYABLE_ROSTER
+    assert "Hayate" in d3.PLAYABLE_ROSTER and "Lei Fang" not in d3.ROSTER
+
+
+def test_nickname_mapping_style_codenames():
+    # DOA3 modding community BIN-file documentation (Free Step Dodge / TCRF): the style-codenamed
+    # families map to specific fighters, NOT their obvious names.
+    assert d3.NICKNAME_TO_CHARACTER["karate"] == "Ein"      # Ein is the 3-costume karateka
+    assert d3.NICKNAME_TO_CHARACTER["koryu"] == "Hitomi"    # Hitomi's codename
+    assert d3.NICKNAME_TO_CHARACTER["sambo"] == "Leon"      # Leon's codename; Bayman is "bayman"
+    assert d3.NICKNAME_TO_CHARACTER["bayman"] == "Bayman"
+    assert d3.NICKNAME_TO_CHARACTER["gokei"] == "Christie"
+    assert d3.NICKNAME_TO_CHARACTER["hika"] == "Helena"
+    assert d3.NICKNAME_TO_CHARACTER["ninja"] == "Hayate"
+    assert d3.NICKNAME_TO_CHARACTER["suiken"] == "Brad Wong"
+    assert d3.NICKNAME_TO_CHARACTER["bosnin"] == "Genra"
+    assert d3.NICKNAME_TO_CHARACTER["tengu"] == "Tengu"
+    assert d3.NICKNAME_TO_CHARACTER["chin"] == "Chen"
+    # the direct-name families stay direct
+    assert d3.NICKNAME_TO_CHARACTER["kasumi"] == "Kasumi"
+    assert d3.NICKNAME_TO_CHARACTER["ryu"] == "Ryu Hayabusa"
+    assert d3.NICKNAME_TO_CHARACTER["janlee"] == "Jann Lee"
+
+
+def test_fighter_roster_joins_name_kind_and_costumes():
+    fams = [
+        {"nick": "kasumi", "code": "kas", "complete_costumes": ["kas00", "kas01"], "mot": ["kasumi.mot"]},
+        {"nick": "tengu", "code": None, "complete_costumes": [], "mot": ["tengu.mot"]},
+        {"nick": "chin", "code": "chi", "complete_costumes": ["chi00"], "mot": ["suiken.mot"]},
+        {"nick": "mystery", "code": None, "complete_costumes": [], "mot": []},
+    ]
+    r = d3.fighter_roster(fams)
+    assert [x["character"] for x in r] == ["Kasumi", "Tengu", "Chen", None]
+    assert [x["kind"] for x in r] == ["playable", "boss", "cameo", "unknown"]
+    assert [x["costumes"] for x in r] == [2, 0, 1, 0]
+
+
+def test_xbe_voice_codes_ordered_and_deduped():
+    blob = b"voice\\bn\\v_bn_en_ad24.adx\x00voice\\ni\\v_ni_en_ad69.adx\x00voice\\bn\\v_bn_en_ad23.adx\x00"
+    assert d3.xbe_voice_codes(blob) == ["bn", "ni"]
+    assert d3.xbe_voice_codes(b"none") == []
+
+
+def test_xbe_motion_banks_ordered_and_deduped():
+    blob = (b"PAD" + b"D:\\bin\\c_sambo.mot" + b"\x00" + b"D:\\bin\\c_gokei.mot" + b"\x00"
+            + b"junk c_sambo.mot again" + b"\x00" + b"D:\\bin\\c_kasumi.mot" + b"\x00")
+    assert d3.xbe_motion_banks(blob) == ["sambo", "gokei", "kasumi"]
+    assert d3.xbe_motion_banks(b"no banks here") == []
+
+
+def test_xbe_motion_banks_real_disc_order():
+    # The owned DOA3 default.xbe lists every character motion bank in the game's internal
+    # order; the martial-art nicknames (karate/ninja/koryu/suiken/gokei/sambo/bosnin/hika)
+    # are how the select table names those fighters, and 'chin' reuses suiken.mot (absent).
+    xbe = Path.home() / "gbox-cache/b8edf7040116f3aa/extract/Dead or Alive 3/default.xbe"
+    if not xbe.is_file():
+        pytest.skip("owned DOA3 default.xbe not present")
+    banks = d3.xbe_motion_banks(xbe.read_bytes())
+    assert banks == ["sambo", "gokei", "suiken", "bosnin", "tengu", "koryu", "ayane",
+                     "leifan", "ninja", "bass", "bayman", "hika", "genfu", "kasumi", "ryu",
+                     "karate", "janlee", "tina", "zack"]
+    assert "chin" not in banks
+
+
+def test_sonic_donors_distinct_and_pinned():
+    # 14 distinct Sonic Adventure 1/2 characters; SA1+SA2 overlap (Sonic/Tails/Knuckles/
+    # Amy/Tikal/Super Sonic) is one canonical entry each with both slugs. The collection is
+    # verified: SA1 -> 8, SA2 -> 10 characters (vehicles cyclone/egg_walker excluded).
+    names = [d["character"] for d in d3.SONIC_DONORS]
+    assert len(names) == len(set(names)) == 14
+    assert d3.SONIC_DONOR_GAMES == {"1a3f4cd416db9ffd": "sa1", "d95ed7ed1e40552a": "sa2"}
+    by_name = {d["character"]: d for d in d3.SONIC_DONORS}
+    assert by_name["Sonic"]["slugs"] == ["sa1_sonic", "sonic"]
+    assert by_name["Shadow"]["slugs"] == ["sa2_shadow"]          # SA2 only
+    assert by_name["Big the Cat"]["slugs"] == ["sa1_big"]        # SA1 only
+    assert by_name["Amy Rose"]["slugs"] == ["sa1_amy", "sa2_amy_rose"]
+
+
+def test_sonic_cast_assignment_exhausts_distinct_before_repeat():
+    plan = d3.sonic_cast_assignment()
+    rows = plan["assignment"]
+    assert plan["donors_distinct"] == 14 and plan["slots"] == 20
+    assert [r["slot_character"] for r in rows] == d3.ROSTER
+    # first 14 slots use every distinct donor exactly once (no repeat before exhaustion)
+    first14 = [r["donor"] for r in rows[:14]]
+    assert len(set(first14)) == 14
+    # counts stay within one: 6 donors twice, 8 once (14 donors over 20 slots)
+    counts = list(plan["usage"].values())
+    assert max(counts) - min(counts) <= 1 and set(counts) <= {1, 2}
+    assert sum(counts) == 20 and len(plan["usage"]) == 14
+    # boss/cameo slots carry their kind and a donor, never a blank
+    kinds = {r["slot_character"]: r["kind"] for r in rows}
+    assert kinds["Genra"] == "boss" and kinds["Tengu"] == "boss" and kinds["Chen"] == "cameo"
+    assert all(r["donor"] and r["donor_slug"] for r in rows)
+
+
+def test_sonic_cast_assignment_deterministic_and_custom():
+    a = d3.sonic_cast_assignment()
+    b = d3.sonic_cast_assignment()
+    assert a == b
+    small = d3.sonic_cast_assignment(roster={"kasumi": "Kasumi", "ayane": "Ayane", "ryu": "Ryu Hayabusa"},
+                                     donors=[{"character": "Sonic", "slugs": ["sa1_sonic"]},
+                                             {"character": "Shadow", "slugs": ["sa2_shadow"]}])
+    assert [r["donor"] for r in small["assignment"]] == ["Sonic", "Shadow", "Sonic"]
+    assert small["usage"] == {"Sonic": 2, "Shadow": 1}
+    with pytest.raises(ValueError):
+        d3.sonic_cast_assignment(roster={"kasumi": "Kasumi"}, donors=[])

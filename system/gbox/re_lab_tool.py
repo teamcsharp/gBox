@@ -10,6 +10,7 @@ The typed Ghidra tools (analyze_binary, ghidra_script) import a file with Ghidra
   n64        ROM (.z64/.v64/.n64, in a .zip)                                boot code ROM 0x1000 (1 MiB) at the header entry
   gba        ROM                                                            the ROM at 0x08000000 (ARM LE)
   xbox360    disc (.iso, XDVD)                                              default.xex -> PE image (gbox.re6.xex_image)
+  xbox       DVD folder / .7z / .zip / .iso (original Xbox)                default.xbe -> ELF32 x86 (xbe_to_elf)
   any        source=ram + session_id: the session's main RAM read through the control plane -> ELF at the RAM base
 
 Output goes to <data_dir>/analysis/re/<game_id>/ on this node (the Spark: the same folder Windows sees as
@@ -42,6 +43,7 @@ PLATFORM_CPU = {
     "n64": ("mips_be", "MIPS:BE:32:default", 8, True),
     "gba": ("arm", "ARM:LE:32:v4t", 40, False),
     "xbox360": ("ppc64", None, 20, True),      # Xenon: ELF loader's PowerPC:BE:32 default; VMX128 opcodes won't decode
+    "xbox": ("x86", "x86:LE:32:default", 3, False),   # original Xbox: Pentium-III-class x86 (EM_386), little-endian
 }
 DC_BASE = 0x8C010000
 GBA_BASE = 0x08000000
@@ -128,6 +130,60 @@ def ram_to_image(platform: str, ram: bytes, base: int) -> tuple[bytes, dict]:
     entry = base + (0x400 if platform == "n64" else 0)
     return ram_to_elf(ram, base, entry, machine, be), {"base": base, "entry": entry, "size": len(ram),
                                                        "format": f"{platform} RAM image", "notes": notes}
+
+
+# Original-Xbox XBE entry-point/thunk keys (retail, debug, Chihiro), the same trio
+# doa3_inventory uses to decode the header.
+XBOX_XBE_KEYS = {"retail": (0xA8FC57AB, 0x5B6D40B6), "debug": (0x94859D4B, 0xEFB1F152),
+                 "chihiro": (0x40B5C16E, 0x2290059D)}
+
+
+def xbe_to_elf(xbe: bytes) -> tuple[bytes, dict]:
+    """Original-Xbox XBE -> ELF32 little-endian x86 (one PT_LOAD per section).
+
+    Sections load at their absolute virtual addresses (base 0x10000); the decrypted
+    entry point becomes ``e_entry``. Ghidra then imports the game's real x86 code at the
+    addresses its relocations assume, unlike a raw BinaryLoader import.
+    """
+    if len(xbe) < 0x178 or xbe[:4] != b"XBEH":
+        raise ValueError(f"not an Xbox XBE (magic {xbe[:4]!r})")
+    u = lambda o: struct.unpack_from("<I", xbe, o)[0]  # noqa: E731
+    base = u(0x104)
+    if base != 0x10000:
+        raise ValueError(f"unexpected XBE base address {base:#x}")
+    hdr_size = u(0x108)
+    image_size = u(0x10C)
+    entry = None
+    for _kind, (k_ep, k_th) in XBOX_XBE_KEYS.items():
+        e, t = u(0x128) ^ k_ep, u(0x158) ^ k_th
+        if base <= e < base + image_size and base <= t < base + image_size:
+            entry = e
+            break
+    if entry is None:
+        raise ValueError("XBE entry point/thunk do not decode with a known key")
+    nsec, sec_va = u(0x11C), u(0x120) - base
+    segs: list[tuple[int, int, int, int, int]] = []
+    for i in range(nsec):
+        o = sec_va + 0x38 * i
+        if o + 0x38 > hdr_size:
+            raise ValueError("XBE section table outside the header")
+        flags, va, vsz, raw, rsz, _name_va = struct.unpack_from("<6I", xbe, o)
+        if raw + rsz > len(xbe):
+            raise ValueError(f"XBE section {i} raw data outside the file")
+        if rsz:
+            segs.append((flags, va, vsz, raw, rsz))
+    phnum = len(segs)
+    data_off = 52 + 32 * phnum
+    body, ph = bytearray(), bytearray()
+    for flags, va, vsz, raw, rsz in segs:
+        # XBE section flags: 1 writable, 4 executable; ELF p_flags: R=4, W=2, X=1.
+        p_flags = 4 | (2 if flags & 1 else 0) | (1 if flags & 4 else 0)
+        ph += struct.pack("<8I", 1, data_off + len(body), va, va, rsz, max(vsz, rsz), p_flags, 0x1000)
+        body += xbe[raw:raw + rsz] + (b"\x00" * (vsz - rsz) if vsz > rsz else b"")
+    ehdr = b"\x7fELF" + bytes([1, 1, 1, 0]) + bytes(8) + struct.pack(
+        "<HHIIIIIHHHHHH", 2, 3, 1, entry, 52, 0, 0, 52, 32, phnum, 40, 0, 0)
+    return ehdr + bytes(ph) + bytes(body), {"base": base, "entry": entry,
+                                            "format": "Xbox XBE -> ELF32 x86"}
 
 
 # --- disc readers (read-only; unpacked images are cached where gBox's mod builders keep them) ---
@@ -250,6 +306,12 @@ def extract_from_disc(cfg, game: dict, rom: Path, progress=lambda p, m: None) ->
             "source_file": "default.xex", "format": "XEX2 -> PE image", "base": im["base"], "entry": im["entry"],
             "notes": ["Xenon VMX128 opcodes don't decode in Ghidra's PowerPC; function starts come from auto-analysis "
                       "only (Xbox360Pdata.java needs a raw import, not available through ghidra_script)"]}
+    if plat in ("xbox", "windows_native"):
+        from .xbox import is_xbox_game, prepare_xbe
+        if is_xbox_game(game):
+            xbe = prepare_xbe(rom, cfg, progress).read_bytes()
+            elf, info = xbe_to_elf(xbe)
+            return elf, xbe, info | {"source_file": "default.xbe"}
     raise ValueError(f"no executable reader for platform {plat!r}: use source=ram with a running session "
                      "(or path=<an extracted executable the worker can read>)")
 

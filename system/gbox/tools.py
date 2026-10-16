@@ -2544,7 +2544,8 @@ MSEARCH: dict[str, dict] = {}
 # main RAM per platform as the emulators' debuggers address it (cheat searches default to it)
 MAIN_RAM = {"gamecube": [[0x80000000, 0x1800000]], "wii": [[0x80000000, 0x1800000], [0x90000000, 0x4000000]],
             "dreamcast": [[0x8C000000, 0x1000000]], "n64": [[0x80000000, 0x800000]], "psx": [[0x80000000, 0x200000]],
-            "gba": [[0x02000000, 0x40000], [0x03000000, 0x8000]], "nds": [[0x02000000, 0x400000]], "ps2": [[0x00000000, 0x2000000]]}
+            "gba": [[0x02000000, 0x40000], [0x03000000, 0x8000]], "nds": [[0x02000000, 0x400000]], "ps2": [[0x00000000, 0x2000000]],
+            "xbox": [[0x00000000, 0x04000000]]}
 BIG_ENDIAN = {"ps3", "gamecube", "wii", "n64", "n64dd", "genesis", "segacd", "sega32x", "saturn", "x68000", "xbox360"}
 
 
