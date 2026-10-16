@@ -95,11 +95,29 @@ def test_all_body_files_parse(ge):
     assert ok == 80
 
 
+def test_triangle_index_space(ge):
+    """The F3D_OLD GBI index space is pinned: every decoded triangle's
+    node-local vertex indices fall inside the node's own vertex array."""
+    doc = gr.read_character(ge, "CsuitbondZ")
+    nodes = gr.parse_nodes(ge.read_file("CsuitbondZ"), doc["root_offset"])
+    vnodes = [n for n in nodes if n.op == 0x18]
+    total = 0
+    for n in vnodes:
+        nv = n.record["num_vertices"]
+        assert all(0 <= i < nv for t in n.triangles for i in t), \
+            f"triangle index out of range at node 0x{n.offset:04X}"
+        total += len(n.triangles)
+    assert total == 619  # pinned for CsuitbondZ: 619 render triangles
+    # the two 64-vertex nodes use G_TRI1 (0xBF) 8-bit x10 indices too
+    assert any(n.record["num_vertices"] == 64 and n.triangles for n in vnodes)
+
+
 def test_gltf_export(ge, tmp_path):
     out = tmp_path / "CsuitbondZ.gltf"
     stats = gr.to_gltf(ge, "CsuitbondZ", out)
     assert stats["joints"] == 15  # 15 position (joint) nodes
     assert stats["meshes"] == 25
+    assert stats["triangles"] == 619  # real triangles, not a point cloud
     gltf = json.loads(out.read_text())
     assert gltf["asset"]["version"] == "2.0"
     assert (tmp_path / "CsuitbondZ.bin").stat().st_size == gltf["buffers"][0]["byteLength"]
@@ -108,6 +126,9 @@ def test_gltf_export(ge, tmp_path):
         prim = m["primitives"][0]
         for attr in ("POSITION", "COLOR_0", "TEXCOORD_0"):
             assert attr in prim["attributes"]
+    # meshes carry real indexed geometry (triangles, mode 4)
+    assert any(m["primitives"][0]["mode"] == 4 for m in gltf["meshes"])
+    assert any("indices" in m["primitives"][0] for m in gltf["meshes"])
     # joints carry translations
     assert all("translation" in n for n in gltf["nodes"][:stats["joints"]])
 

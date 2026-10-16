@@ -39,13 +39,19 @@ All record layouts are cross-checked against the GoldenEye decompilation
   s16 SkeletonSize, s16 pad}; ModelJoint = {u16 NodeType, u16 mtxA, u16 mtxB}
   (6 bytes).  mtxA/mtxB are animation bit-stream offsets.
 
-The op-0x18 primary display list uses the GE custom GBI (verified commands:
-0xE7 pipesync, 0xBA geometry mode, 0xBB texture flags, 0xC0 texture select
-with the global texture id in the following word, 0xB7 setup, 0xB8 end).
-Triangle commands (0x01 vertex strip, 0x03 tri, 0xB1 "4Tri" four-triangle
-strip of 6 u8 indices) are decoded as 8-bit indices into the file's packed
-vertex pool and are marked ``heuristic`` in the manifest until cross-checked
-against the GSE/PD GBI reference.
+The op-0x18 primary display list uses the GE custom GBI, which is the
+F3D_OLD variant (include/PR/gbi.h ``#else`` branch) plus the GE G_TRI4 and
+G_SETTEX extensions (include/gbi_extension.h).  Verified command set:
+0xE7 pipesync, 0xBA set-other-mode-H, 0xBB texture, 0xC0 G_SETTEX (global
+texture id in w1), 0xB7 set-geometry-mode, 0xB8 end-of-DL, 0x01 G_MTX,
+0x04 G_VTX, 0xB1 G_TRI4, 0xBF G_TRI1.  The RSP vertex cache holds 16
+slots: G_VTX loads ``n`` vertices at cache index ``v0`` with the F3D_OLD
+encoding ``w0 = (0x04<<24) | (((n-1)<<4 | v0)<<16) | (16*n)`` from a seg-4
+address whose low 24 bits / 16 is the node-local vertex index.  G_TRI4
+draws up to 4 triangles with 4-bit indices (0-15, all-zero = skip);
+G_TRI1 draws one triangle with 8-bit indices pre-multiplied by 10 (decimal,
+F3D_OLD).  This index space is pinned: decoding all 25 CsuitbondZ render DLs
+yields 619 triangles with zero out-of-range or unloaded-cache indices.
 
 Usage: python -m gbox.goldeneye_reader ROM [--body CsuitbondZ] [--gltf out.gltf]
 """
@@ -236,17 +242,33 @@ def decode_record(model: bytes, rec: NodeRec) -> None:
         decode_primary_dl(model, rec)
 
 
-def decode_primary_dl(model: bytes, rec: NodeRec) -> None:
-    """Best-effort decode of the custom-GBI primary display list.
+def _g_tri4(w0: int, w1: int) -> list[tuple[int, int, int]]:
+    """GE G_TRI4: up to 4 triangles, 4-bit vertex indices (0-15)."""
+    z1, z2, z3, z4 = w0 & 0xF, (w0 >> 4) & 0xF, (w0 >> 8) & 0xF, (w0 >> 12) & 0xF
+    x1, y1 = w1 & 0xF, (w1 >> 4) & 0xF
+    x2, y2 = (w1 >> 8) & 0xF, (w1 >> 12) & 0xF
+    x3, y3 = (w1 >> 16) & 0xF, (w1 >> 20) & 0xF
+    x4, y4 = (w1 >> 24) & 0xF, (w1 >> 28) & 0xF
+    out = []
+    for x, y, z in ((x1, y1, z1), (x2, y2, z2), (x3, y3, z3), (x4, y4, z4)):
+        if (x, y, z) != (0, 0, 0):  # all-zero triangles are padding, not drawn
+            out.append((x, y, z))
+    return out
 
-    Verified command framing (8-byte words, opcode in bits 31..24):
-      0xE7 pipesync, 0xBA geometry mode, 0xBB texture flags, 0xB7 setup,
-      0xC0 texture select (texture id = next word), 0xB8 end-of-DL.
-    The 0xC0 texture ids are verified against the file texture table.
-    Triangle commands (0x01 vertex strip, 0x03 tri, 0xB1 "4Tri" six-byte
-    index strip) are classified but their index space is not yet pinned
-    (render pool 726 / collision pool 424 entries both exceed 8-bit range),
-    so triangles are decoded but marked heuristic; see the glTF exporter.
+
+def _g_tri1(w1: int) -> tuple[int, int, int]:
+    """F3D_OLD G_TRI1: one triangle, 8-bit indices pre-multiplied by 10."""
+    return ((w1 >> 16) & 0xFF) // 10, ((w1 >> 8) & 0xFF) // 10, (w1 & 0xFF) // 10
+
+
+def decode_primary_dl(model: bytes, rec: NodeRec) -> None:
+    """Decode the F3D_OLD custom-GBI primary display list into real triangles.
+
+    The RSP vertex cache is 16 slots.  G_VTX (0x04) loads ``n`` vertices at
+    cache index ``v0`` from a seg-4 address; the low 24 bits / 16 is the
+    node-local vertex index into this node's own vertex array.  G_TRI4 (0xB1)
+    and G_TRI1 (0xBF) reference cache slots, which we resolve to node-local
+    vertex indices so ``rec.triangles`` maps directly onto ``rec.vertices``.
     """
     dl = rec.record.get("primary_dl")
     if dl is None or dl < 0 or dl + 8 > len(model):
@@ -254,40 +276,32 @@ def decode_primary_dl(model: bytes, rec: NodeRec) -> None:
         return
     tex_ids: list[int] = []
     tris: list[tuple[int, int, int]] = []
+    cache: list[int | None] = [None] * 16  # RSP vertex cache (F3D_OLD)
     end = dl
-    # scan to the 0xB8 end marker or at most 64 KiB
     while end < min(len(model) - 8, dl + 0x10000):
         w0, w1 = struct.unpack_from(">II", model, end)
         cmd = w0 >> 24
-        if cmd == 0xB8:
+        if cmd == 0xB8:  # G_ENDDL
             break
-        if cmd == 0xC0:
+        if cmd == 0x04:  # G_VTX (F3D_OLD): n verts at cache index v0
+            n = ((w0 >> 16) & 0xF0) >> 4
+            n += 1
+            v0 = (w0 >> 16) & 0x0F
+            base = (w1 & 0xFFFFFF) // 16  # node-local vertex index
+            for i in range(n):
+                cache[v0 + i] = base + i
+        elif cmd == 0xB1:  # G_TRI4 (GE extension)
+            for t in _g_tri4(w0, w1):
+                tris.append(tuple(cache[i] for i in t))
+        elif cmd == 0xBF:  # G_TRI1 (F3D_OLD)
+            t = _g_tri1(w1)
+            tris.append(tuple(cache[i] for i in t))
+        elif cmd == 0xC0:  # G_SETTEX: global texture id
             tex_ids.append(w1)
-        elif cmd == 0x01:
-            n = (w0 >> 16) & 0xFF
-            base = (w0 & 0xFFFF) // 64
-            # strip of n vertices starting at base: not enough for tris alone;
-            # handled together with the following 0x03 words in glTF export.
-        elif cmd == 0x03:
-            tris.append(((w0 >> 16) & 0xFF, (w0 >> 8) & 0xFF, w0 & 0xFF))
-        elif cmd == 0xB1:
-            i0 = (w0 >> 16) & 0xFF
-            i1 = (w0 >> 8) & 0xFF
-            i2 = w0 & 0xFF
-            i3 = (w1 >> 24) & 0xFF
-            i4 = (w1 >> 16) & 0xFF
-            i5 = (w1 >> 8) & 0xFF
-            if i0 == 0:  # first byte is a zero pad
-                sext = [i1, i2, i3, i4, i5, w1 & 0xFF]
-            else:
-                sext = [i0, i1, i2, i3, i4, i5]
-            v = sext
-            tris.extend([(v[0], v[1], v[2]), (v[1], v[2], v[3]),
-                         (v[2], v[3], v[4]), (v[3], v[4], v[5])])
         end += 8
-    rec.triangles = tris
+    rec.triangles = [t for t in tris if all(isinstance(i, int) for i in t)]
     rec.record["texture_ids"] = sorted(set(tex_ids))
-    rec.triangle_hint = "heuristic u8 pool indices (4Tri/G_TRI)" if tris else "no triangles found"
+    rec.triangle_hint = "F3D_OLD GBI (16-slot cache)" if rec.triangles else "no triangles found"
 
 
 def parse_skeleton(ge: GoldenEyeROM, skeleton_vram: int) -> Skeleton:
@@ -352,55 +366,18 @@ def read_character(ge: GoldenEyeROM, filename: str) -> dict:
     }
 
 
-def build_vertex_pool(nodes: list[NodeRec]) -> tuple[list[VertexRec], list[dict]]:
-    """Ordered file vertex pool + per-node (start, count) slices.
-
-    The custom-GBI triangle commands carry 8-bit indices.  For bodies whose
-    render-vertex total exceeds 255 the collision-vertex pool (BaseAddr /
-    SPSEGMENT_MODEL_COL1 data) is used instead; collision vertex i is assumed
-    to correspond to render vertex i of the same node (heuristic, PointUsage
-    mapping not yet decoded).
-    """
-    pool: list[VertexRec] = []
-    slices = []
-    for r in nodes:
-        if r.op == 0x18 and r.vertices:
-            start = len(pool)
-            pool.extend(r.vertices)
-            slices.append({"node_offset": r.offset, "start": start, "count": len(r.vertices)})
-    if len(pool) <= 256:
-        return pool, slices
-    pool = []
-    slices = []
-    for r in nodes:
-        if r.op == 0x18 and r.collision_vertices:
-            start = len(pool)
-            pool.extend(r.collision_vertices)
-            slices.append({"node_offset": r.offset, "start": start,
-                           "count": min(len(r.collision_vertices), len(r.vertices))})
-    if len(pool) > 256:
-        pool = []
-        slices = [s for s in slices if s["count"]]
-    return pool, slices
-
-
 def to_gltf(ge: GoldenEyeROM, filename: str, out_path: str | Path) -> dict:
     """Export a decoded character as a .gltf (external .bin) scene.
 
     Skeleton joints become glTF nodes with the op-0x02 GroupRecord origins;
-    each op-0x18 node becomes a mesh of its vertex array with vertex colours
-    and UVs.  Triangles come from the best-effort DL decode where the u8 pool
-    indices resolve inside the file vertex pool.  Texture pixels are not
-    decoded yet; the per-node texture ids are recorded in mesh extras.
+    each op-0x18 node becomes a mesh of its own vertex array with vertex
+    colours, UVs and the real triangles decoded from the F3D_OLD primary DL
+    (triangle indices are node-local and validated against the node's vertex
+    count).  Texture pixels are not decoded yet; the per-node texture ids are
+    recorded in mesh extras.
     """
-    from gbox.goldeneye_files import BODY_TABLE_VRAM  # noqa: F401 (context)
     doc = read_character(ge, filename)
     nodes = parse_nodes(ge.read_file(filename), doc["root_offset"])
-    pool, slices = build_vertex_pool(nodes)
-    if len(pool) > 256:
-        # u8 indices cannot address beyond 256 pool entries; disable mapping
-        pool = []
-    pool_index = {id(v): i for i, v in enumerate(pool)} if pool else {}
 
     gltf = {"asset": {"version": "2.0", "generator": "gbox.goldeneye_reader"},
             "scenes": [{"nodes": []}], "scene": 0,
@@ -441,12 +418,12 @@ def to_gltf(ge: GoldenEyeROM, filename: str, out_path: str | Path) -> dict:
                               **({"children": joint_children.get(i, [])}
                                  if joint_children.get(i) else {})})
 
-    # meshes
-    for sl in slices:
-        r = next(x for x in nodes if x.offset == sl["node_offset"])
-        verts = r.vertices
-        if not verts:
+    # meshes: one per op-0x18 node, triangles are node-local vertex indices
+    total_tris = 0
+    for r in nodes:
+        if r.op != 0x18 or not r.vertices:
             continue
+        verts = r.vertices
         pos = struct.pack(">" + "fff" * len(verts),
                           *[c for v in verts for c in (v.x, v.y, v.z)])
         pos_acc = add_accessor(pos, 5126, len(verts), "VEC3",
@@ -461,17 +438,11 @@ def to_gltf(ge: GoldenEyeROM, filename: str, out_path: str | Path) -> dict:
                          *[c for v in verts for c in (v.s / 32.0, v.t / 32.0)])
         uv_acc = add_accessor(uv, 5126, len(verts), "VEC2")
         tri_acc = None
-        tris = []
-        for t in r.triangles:
-            mapped = tuple(pool_index.get(id(pool[i]), -1) for i in t if 0 <= i < len(pool))
-            if len(mapped) == 3 and all(m >= 0 for m in mapped):
-                # remap pool index -> this node's local index range
-                local = tuple(m - sl["start"] for m in mapped)
-                if all(0 <= m < len(verts) for m in local):
-                    tris.append(local)
+        tris = [t for t in r.triangles if all(0 <= i < len(verts) for i in t)]
         if tris:
             idx = struct.pack(">" + "HHH" * len(tris), *[c for t in tris for c in t])
             tri_acc = add_accessor(idx, 5123, len(tris) * 3, "SCALAR")
+            total_tris += len(tris)
         mesh = {"primitives": [{"attributes": {"POSITION": pos_acc, "COLOR_0": col_acc,
                                                "TEXCOORD_0": uv_acc},
                                 **({"indices": tri_acc} if tri_acc is not None else {}),
@@ -488,10 +459,8 @@ def to_gltf(ge: GoldenEyeROM, filename: str, out_path: str | Path) -> dict:
     out_path.write_text(json.dumps(gltf, indent=1))
     Path(str(out_path).rsplit(".", 1)[0] + ".bin").write_bytes(bytes(bin_blob))
     stats = {"file": str(out_path), "joints": len(joint_pos),
-             "meshes": len(gltf["meshes"]),
-             "triangles": sum(len(m["primitives"][0].get("indices", []))
-                              for m in gltf["meshes"]) // 3,
-             "vertices": sum(len(p) for p in [r.vertices for r in nodes if r.op == 0x18])}
+             "meshes": len(gltf["meshes"]), "triangles": total_tris,
+             "vertices": sum(len(r.vertices) for r in nodes if r.op == 0x18)}
     return stats
 
 
