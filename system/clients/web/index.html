@@ -293,6 +293,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/build-report-image.js"></script>
 <script src="/viz/decimation-review.js"></script>
 <script src="/viz/game-menu.js"></script>
+<script src="/viz/game-assets.js"></script>
 <script src="/viz/cover-picker.js"></script>
 <script src="/viz/build-shot.js"></script>
 <script src="/viz/build-local.js"></script>
@@ -2921,6 +2922,8 @@ dragAnywhere($("#gmenu"));
 // #1562: the menu opens in the frame of the right-click from what the page already has (clients/web/viz/game-menu.js:
 // cached character library + this game's cached mods; sections waiting on the server say "loading…" and fill in)
 const gameMenuIO = () => ({ el: $("#gmenu"), api, img: u => `${u}${u.includes("?") ? "&" : "?"}${tq()}`, worker: window.GBOX_LOCAL?.worker || "",
+  assets: (gid,title) => GBoxGameAssets.open({gid,title,api,worker:window.GBOX_LOCAL?.worker||"",media:u=>`${u}${u.includes("?")?"&":"?"}${tq()}`,
+    models:(id,name)=>show("GameModels",id,name),onJob:job=>window.GBOX_PROCESS_POPUP?.sync([job])}),
   boot: { get: bootGet, set: bootSet }, keep: { get: modKeepGet, set: modKeep }, badge: bootBadge,
   place: (el, x, y) => fitMenu(el, x, y), refit: el => { if (el._fitXY) refitMenu(el); },
   models: (gid, title) => show("GameModels", gid, title), cover: (gid, card, btn) => attachCover(gid, document.querySelector(`.card[data-gid="${CSS.escape(gid)}"]`) || card, btn),   // the card on screen now

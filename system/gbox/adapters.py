@@ -2768,6 +2768,75 @@ RPCS3_XINPUT = """Player 1 Input:
 """
 
 
+class SaveMGOAdapter(Adapter):
+    """The owned MGO2PC portable runner; never provision or configure generic RPCS3."""
+    name = 'savemgo'
+    supported = {'launch_game', 'stop_game', 'query_runtime'}
+    checkpoint_state = False
+    checkpoint_reason = 'SaveMGO has no verified in-place checkpoint interface'
+
+    def __init__(self, config: Config, game: dict):
+        self.config, self.game, self.proc, self._lease = config, game, None, None
+
+    def prepare_bundle(self, archive: Path) -> Path:
+        from . import savemgo
+        self.bundle = savemgo.prepare(archive, self.config, getattr(self, 'progress', None),
+            expected_fingerprint=self.game['launch'].get('source_fingerprint'))
+        return self.bundle['eboot']
+
+    def _release_lease(self):
+        if self._lease is not None:
+            lease, self._lease = self._lease, None
+            lease.__exit__(None, None, None)
+
+    def launch_game(self, rom: str) -> dict:
+        from . import savemgo
+        if not getattr(self, 'bundle', None) or Path(rom) != self.bundle['eboot']:
+            raise ValueError('SaveMGO must be prepared from its complete verified package')
+        if getattr(self, 'capture_backend', None):
+            raise Unsupported('The bundled SaveMGO emulator has no verified RenderDoc capture path')
+        self.home = self.bundle['home']
+        lease = savemgo.runtime_lease(self.home)
+        lease.__enter__()
+        self._lease = lease
+        try:
+            # Keep the vendor command, CWD and configuration. In particular, do
+            # not call ensure_rpcs3, write YAML, change pads or inject a layer.
+            self.proc = subprocess.Popen([str(self.bundle['executable']), '--no-gui', rom],
+                                         cwd=self.home, startupinfo=hidden_start())
+            keep_offscreen(self.proc.pid)
+            self.proc.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            pass  # Alive; window creation and shader compilation may continue.
+        except BaseException:
+            _kill_tree(self.proc)
+            self._release_lease()
+            raise
+        else:
+            self._release_lease()
+            raise RuntimeError(f'SaveMGO bundled emulator exited during startup (code {self.proc.returncode})')
+        return {'pid': self.proc.pid, 'eboot': rom, 'local_window': True,
+                'worker_name': __import__('platform').node(), 'examine': False,
+                'bundled_runtime': {'kind': 'savemgo_bundle', 'verified': True,
+                    'source_fingerprint': self.bundle['source_fingerprint'],
+                    'archive_sha256': self.bundle['archive_sha256'],
+                    'reused': self.bundle['reused'], 'settings': 'bundled, per-PC'},
+                'startup': 'process running; awaiting game window'}
+
+    def stop_game(self) -> dict:
+        _kill_tree(self.proc)
+        running = bool(self.proc and self.proc.poll() is None)
+        if not running:
+            self._release_lease()
+        return {'returncode': self.proc.poll() if self.proc else None, 'ended': not running}
+
+    def query_runtime(self) -> dict:
+        running = bool(self.proc and self.proc.poll() is None)
+        if not running:
+            self._release_lease()
+        return {'running': running, 'paused': False}
+
+
 class RPCS3Adapter(Adapter):
     """Windows node: PS3 games (extracted disc folders) in RPCS3. Guest memory is read/written straight from the
     emulator process (PS3 addresses map 1:1 onto a 4 GiB-aligned host reservation); pause/resume freeze the whole
@@ -3109,6 +3178,14 @@ def for_game(game: dict, config: Config, debug: bool = False, *, mod: str | None
         return DEBUG_ADAPTERS[plat](config, plat)
     if plat == "pc_steam":
         return SteamAdapter()
+    if (game.get('launch') or {}).get('kind') == 'savemgo_bundle':
+        if plat != 'ps3':
+            raise ToolUnavailable('The SaveMGO bundle must be catalogued as PS3')
+        if HOST_OS != 'windows':
+            raise ToolUnavailable('The bundled SaveMGO emulator runs on a Windows PC')
+        if mod or game.get('mod'):
+            raise Unsupported('SaveMGO file-mod builds need a verified package writer')
+        return SaveMGOAdapter(config, game)
     # Older catalog rows called original Xbox games windows_native. Match their
     # physical collection too, before the broken RocketLauncher wrapper path.
     from .xbox import XboxAdapter, is_xbox_game
