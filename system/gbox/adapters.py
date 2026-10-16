@@ -446,14 +446,13 @@ def _win_input_in_front(user32, root, hidden_ok: bool) -> bool:
         return True
     if not hidden_ok:
         return False
-    # GPU capture leaves Dolphin's HWND off-screen instead of parenting it into
-    # Electron. Its global emulator hotkeys still belong to the foreground gBox.
-    import ctypes
-    from ctypes import wintypes
-    from .tools import _exe_name
-    pid = wintypes.DWORD()
-    user32.GetWindowThreadProcessId(wintypes.HWND(foreground), ctypes.byref(pid))
-    return _exe_name(pid.value) == 'gbox.exe'
+    # hidden_ok: Dolphin's global focus-free hotkeys (F13-F15 chords). Dolphin reads
+    # them without focus (HotkeysRequireFocus=False, BackgroundInput=True) and nothing
+    # else binds F13-F15, so they are safe to send while another app is in front.
+    # Requiring gBox.exe to be the foreground window here blocked every
+    # save-before-switch when the operator was in another app ("could not be saved:
+    # gBox or the emulator must be active to send emulator input safely", 2026-10-13).
+    return True
 
 
 def win_send_keys(pid: int, events: list[dict], hidden_ok: bool = False) -> dict:
