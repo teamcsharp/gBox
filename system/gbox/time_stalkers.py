@@ -40,6 +40,69 @@ MAN_RE = re.compile(r"^LANDERS/MANDATA/MAN(\d{3})(\d{2})\.BIN$")
 OBJ_RE = re.compile(r"^LANDERS/MANDATA/OBJ(\d{3})\.(BIN|PVM|TEX)$")
 LOADER_RE = re.compile(rb"%s\\[A-Za-z]+%0\dd(?:%0\dd)?\.[A-Za-z]{3}")
 
+MAIN_BIN_SHA256 = "62d4c0fd6ba77427317d372e72caf5aeeb47e7aac6b89b34b16c117709af7c20"
+LINK_BASE = 0x8C010000  # MAIN.BIN runtime base: 1ST_READ.BIN loads it here, then jumps to it
+
+
+def main_bin_strings(data: bytes) -> dict[str, int]:
+    """Exact file offsets of MAIN.BIN's asset-loader format strings.
+
+    The game formats these with sprintf before a file load: ``%s\\man%03d%02d.BIN`` names one MAN
+    skeleton+motion bank, ``%s\\obj%03d.BIN``/``%s\\obj%03d.pvm`` name an OBJ mesh and its textures, and
+    ``\\landers\\ManData`` is the MAN/OBJ root directory. The offsets are build-stable (MAIN.BIN sha256
+    62d4c0fd...7c20) and feed the Ghidra xref pass that recovers the part->node and character-id->OBJ
+    tables.
+    """
+    patterns = {
+        "man_bin": b"%s\\man%03d%02d.BIN",
+        "obj_bin": b"%s\\obj%03d.BIN",
+        "obj_pvm": b"%s\\obj%03d.pvm",
+        "obj_tex": b"obj%03d.tex",
+        "man_root": b"\\landers\\ManData",
+    }
+    out = {}
+    for name, pat in patterns.items():
+        off = data.find(pat)
+        if off >= 0:
+            out[name] = off
+    return out
+
+
+def sh4_movl_xrefs(data: bytes, file_off: int) -> list[int]:
+    """File offsets of every SH-4 ``mov.l @(disp,pc),Rn`` whose literal-pool word points at ``file_off``.
+
+    SH-4 encodes the instruction as ``0xDn <disp8>`` with effective literal address
+    ``((pc + 4) & ~3) + disp * 4`` (all in file offsets; add ``LINK_BASE`` for runtime addresses). These are
+    the call sites that load a string/table address - the loader functions. Returns [] when the address is
+    reached through a pointer table or a base register instead of an absolute literal.
+    """
+    refs = []
+    for i in range(0, len(data) - 1, 2):
+        op = struct.unpack_from("<H", data, i)[0]
+        if (op >> 12) == 0xD:
+            disp = op & 0xFF
+            if disp >= 0x80:
+                disp -= 0x100
+            if ((i + 4) & ~3) + disp * 4 == file_off:
+                refs.append(i)
+    return refs
+
+
+def sh4_absolute_refs(data: bytes, base: int = LINK_BASE) -> dict[str, int]:
+    """Count 32-bit absolute references into the executable's own image, bucketed by 64 KB.
+
+    A Katana executable addresses its own entry region by absolute address, so the most-referenced 64 KB
+    bucket is the link base. For MAIN.BIN the modal bucket is ``8c010000`` = LINK_BASE; a bucket above the
+    file end is BSS/heap, not code.
+    """
+    refs = Counter()
+    n = len(data)
+    for i in range(0, n - 3, 2):
+        v = struct.unpack_from("<I", data, i)[0]
+        if base <= v < base + 0x400000:
+            refs[v & 0xFFFF0000] += 1
+    return {f"{k:08x}": c for k, c in sorted(refs.items())}
+
 
 def ip_meta(ip: bytes) -> dict:
     """The Dreamcast IP.BIN header fields that name the exact build."""

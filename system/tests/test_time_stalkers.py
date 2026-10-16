@@ -187,6 +187,45 @@ def test_owned_disc_obj000_geometry_decode():
     assert "vn " in out and "vt " in out                                     # normals and UV strips decoded
 
 
+def test_main_bin_strings_finds_loader_formats():
+    blob = (b"pad\x00" + b"%s\\man%03d%02d.BIN" + b"\x00tail"
+            b"%s\\obj%03d.BIN" + b"\x00\x00" + b"obj%03d.tex" + b"\x00\x00\x00"
+            b"%s\\obj%03d.pvm" + b"\x00\x00" + b"\\landers\\ManData" + b"\x00")
+    got = ts.main_bin_strings(blob)
+    assert got["man_bin"] == blob.index(b"%s\\man%03d%02d.BIN")
+    assert got["obj_bin"] == blob.index(b"%s\\obj%03d.BIN")
+    assert got["obj_pvm"] == blob.index(b"%s\\obj%03d.pvm")
+    assert got["obj_tex"] == blob.index(b"obj%03d.tex")
+    assert got["man_root"] == blob.index(b"\\landers\\ManData")
+
+
+def test_sh4_movl_xrefs_resolves_literal_pool():
+    # mov.l @(0,pc),r1 (0xD1 0x00) at file offset 0 reads the literal at ((0+4)&~3) = 4
+    data = struct.pack("<H", 0xD100) + b"\x00\x00" + struct.pack("<I", 0x8C011000) + b"\x00" * 8
+    assert ts.sh4_movl_xrefs(data, 4) == [0]
+    assert ts.sh4_movl_xrefs(data, 8) == []  # nothing targets offset 8
+
+
+def test_sh4_absolute_refs_modal_bucket_is_link_base():
+    data = struct.pack("<4I", 0x8C010200, 0x8C01FF00, 0x8C020000, 0x8C010000)
+    refs = ts.sh4_absolute_refs(data)
+    assert refs["8c010000"] == 3 and refs["8c020000"] == 1
+
+
+@pytest.mark.skipif(not GDI.exists(), reason="owned Time Stalkers GD-ROM not unpacked on this node")
+def test_owned_disc_main_bin_loaders():
+    d = Path.home() / "gbox-cache" / "time_stalkers" / "MAIN.BIN"
+    if not d.exists():
+        pytest.skip("MAIN.BIN not copied locally")
+    data = d.read_bytes()
+    s = ts.main_bin_strings(data)
+    assert s["man_bin"] == 0x17CED0 and s["obj_bin"] == 0x17CEA4
+    assert s["obj_pvm"] == 0x17CEC0 and s["obj_tex"] == 0x17CEB4
+    assert s["man_root"] in (0x17CDB9, 0x17CDCA)
+    refs = ts.sh4_absolute_refs(data)
+    assert max(refs, key=refs.get) == "8c010000" and refs["8c010000"] > 1000
+
+
 @pytest.mark.skipif(not GDI.exists(), reason="owned Time Stalkers GD-ROM not unpacked on this node")
 def test_owned_disc_man00000_link_chains():
     from gbox.gdrom import GDRom
