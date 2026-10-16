@@ -223,7 +223,8 @@ def _accept(store, out, actor):
 @tool('title_assets', '1.0', TitleAssetsIn, TitleAssetsOut, capabilities=['asset', 'extract'],
       permissions=[P.READ, P.STAGE, P.EXECUTE], timeout_s=1800,
       artifacts=[ARTIFACT, BUNDLE], validate=_validate, on_accept=_accept,
-      side_effects=['Writes only bounded content-addressed raw exports below data_dir/title-assets'])
+      side_effects=['Writes bounded content-addressed raw exports below data_dir/title-assets',
+                    'Explicit allow_unpack=true may extract the complete owned archive below runtime/extract'])
 def title_assets(inp, ctx):
     """Inventory or export selected native members from the exact owned title; never builds or launches a game."""
     from .characters import _api
@@ -279,6 +280,18 @@ class TitleAssets:
             raise KeyError('Unknown exact catalog game_id')
         return game
 
+    def _canonical_worker(self, selected):
+        seen = set()
+        for _ in range(20):
+            alias = self.store.get('worker_alias', selected)
+            if not alias:
+                return selected
+            if selected in seen or not isinstance(alias.get('to'), str):
+                raise ValueError('The source worker alias chain is invalid')
+            seen.add(selected)
+            selected = alias['to']
+        raise ValueError('The source worker alias chain is too long')
+
     def status(self, gid):
         from . import char_coverage as coverage
         game = self._game(gid)
@@ -294,7 +307,13 @@ class TitleAssets:
                                  'result': (job.get('output') or {}).get('result') if job.get('state') == 'succeeded' else None})
         extractor, roster = coverage.extractor_for(game)
         writer = coverage.writer_for(game)
-        valid_native = lambda t: (t['result'] or {}).get('game_id') == gid and (t['result'] or {}).get('catalog_key') == key and (t['result'] or {}).get('worker_id') == t['worker_id']
+        def valid_native(task):
+            result = task['result'] or {}
+            try:
+                same_worker = self._canonical_worker(result.get('worker_id')) == self._canonical_worker(task['worker_id'])
+            except ValueError:
+                return False
+            return result.get('game_id') == gid and result.get('catalog_key') == key and same_worker
         inventory = next((t['result'] for t in reversed(tasks) if t['kind'] == 'inventory' and t['state'] == 'succeeded' and valid_native(t)), None)
         exports = [t['result'] for t in tasks if t['kind'] == 'export' and t['state'] == 'succeeded' and
                    valid_native(t) and inventory and (t['result'] or {}).get('source') == inventory.get('source')]
@@ -324,17 +343,7 @@ class TitleAssets:
         candidates = [w for w in self.workers() if w.get('online') and tool_name in (w.get('tools') or []) and
                       (not os_required or w.get('os') == os_required)]
         if selected:
-            seen = set()
-            for _ in range(20):
-                alias = self.store.get('worker_alias', selected)
-                if not alias:
-                    break
-                if selected in seen or not isinstance(alias.get('to'), str):
-                    raise ValueError('The source worker alias chain is invalid')
-                seen.add(selected)
-                selected = alias['to']
-            else:
-                raise ValueError('The source worker alias chain is too long')
+            selected = self._canonical_worker(selected)
             candidates = [w for w in candidates if selected in (w.get('id'), w.get('name'))]
         library = next((lib for lib in self.config.libraries if lib.id == game.get('library')), None)
         if library:

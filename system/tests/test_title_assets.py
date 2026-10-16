@@ -201,6 +201,29 @@ def test_export_follows_only_explicit_worker_restart_aliases(manager):
     assert manager.sent[-1]['input']['expected_source'] == SOURCE
 
 
+def test_queued_inventory_and_export_results_follow_restart_aliases_without_rewriting_attribution(manager):
+    manager.collect(GID, T.CollectIn(), 'operator')
+    manager.worker_rows[0]['id'] = 'office-new'
+    manager.store.put('worker_alias', 'office', {'to': 'office-new', 'name': 'Office'})
+    job = manager.store.get('job', 'job-0')
+    manager.store.put('job', job['id'], job | {'require_worker': 'office-new', 'worker_id': 'office-new'})
+    finish(manager, 0, {'source': SOURCE, 'members': [{'index': 1, 'size': 100}]})
+    ready = manager.status(GID)
+    assert ready['inventory']['worker_id'] == 'office-new'
+    assert ready['tasks'][0]['worker_id'] == 'office'  # request provenance retained
+    manager.collect(GID, T.CollectIn(), 'operator')
+    assert manager.sent[-1]['input']['op'] == 'export'
+    manager.worker_rows[0]['id'] = 'office-newer'
+    manager.store.put('worker_alias', 'office-new', {'to': 'office-newer', 'name': 'Office'})
+    job = manager.store.get('job', 'job-1')
+    manager.store.put('job', job['id'], job | {'require_worker': 'office-newer', 'worker_id': 'office-newer'})
+    finish(manager, 1, {'source': SOURCE, 'members': [{'index': 1, 'size': 100}], 'bundle_sha256': 'f' * 64})
+    done = manager.status(GID)
+    assert done['raw_coverage']['complete'] and len(done['exports']) == 1
+    assert done['exports'][0]['worker_id'] == 'office-newer'
+    assert done['tasks'][1]['worker_id'] == 'office-new'
+
+
 def test_invalid_worker_alias_does_not_pick_another_source(manager):
     manager.store.put('worker_alias', 'office', {'to': 'office'})
     with pytest.raises(ValueError, match='alias chain'):
