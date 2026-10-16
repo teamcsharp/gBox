@@ -1,5 +1,6 @@
 import json
 import struct
+from pathlib import Path
 
 import pytest
 
@@ -165,3 +166,24 @@ def test_fighter_families_from_layout(tmp_path):
 def test_roster_has_no_duplicate_fighters():
     assert len(d3.ROSTER) == len(set(d3.ROSTER)) == 16
     assert "Ein" in d3.ROSTER and "Lei Fang" not in d3.ROSTER
+
+
+def test_xbe_motion_banks_ordered_and_deduped():
+    blob = (b"PAD" + b"D:\\bin\\c_sambo.mot" + b"\x00" + b"D:\\bin\\c_gokei.mot" + b"\x00"
+            + b"junk c_sambo.mot again" + b"\x00" + b"D:\\bin\\c_kasumi.mot" + b"\x00")
+    assert d3.xbe_motion_banks(blob) == ["sambo", "gokei", "kasumi"]
+    assert d3.xbe_motion_banks(b"no banks here") == []
+
+
+def test_xbe_motion_banks_real_disc_order():
+    # The owned DOA3 default.xbe lists every character motion bank in the game's internal
+    # order; the martial-art nicknames (karate/ninja/koryu/suiken/gokei/sambo/bosnin/hika)
+    # are how the select table names those fighters, and 'chin' reuses suiken.mot (absent).
+    xbe = Path.home() / "gbox-cache/b8edf7040116f3aa/extract/Dead or Alive 3/default.xbe"
+    if not xbe.is_file():
+        pytest.skip("owned DOA3 default.xbe not present")
+    banks = d3.xbe_motion_banks(xbe.read_bytes())
+    assert banks == ["sambo", "gokei", "suiken", "bosnin", "tengu", "koryu", "ayane",
+                     "leifan", "ninja", "bass", "bayman", "hika", "genfu", "kasumi", "ryu",
+                     "karate", "janlee", "tina", "zack"]
+    assert "chin" not in banks

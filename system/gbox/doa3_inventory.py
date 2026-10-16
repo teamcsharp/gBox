@@ -236,6 +236,7 @@ def read_afs(path: str | Path, sniff_bytes: int = 16) -> dict:
 
 
 _CODE = re.compile(r"^([A-Za-z]{2,4})[_\-]?(?:\d|[A-Za-z_]|$)")
+_MOT = re.compile(rb"c_([a-z]+)\.mot")
 
 
 def fighter_groups(entries: list[dict], codes: list[str] | None = None) -> dict[str, list[str]]:
@@ -313,6 +314,29 @@ def fighter_families(entries: list[dict]) -> list[dict]:
         f["code"] = codes[0] if len(codes) == 1 else (codes or None)
         f["complete_costumes"] = sorted(c for c, v in f["costumes"].items() if {"xpr", "cat"} <= set(v))
     return fams
+
+
+def xbe_motion_banks(data: bytes) -> list[str]:
+    """The ordered ``c_<nickname>.mot`` motion-bank names embedded in the XBE.
+
+    DOA3's ``default.xbe`` embeds one contiguous ASCII resource-path block that lists every
+    character motion bank as ``D:\\bin\\c_<nickname>.mot`` in the game's internal order. The
+    select table (a separate structure elsewhere in the XBE) indexes into this ordering, so the
+    order here is the canonical bank/fighter order that maps the martial-art nicknames
+    (sambo, gokei, suiken, bosnin, koryu, hika, karate, ninja, ...) to fighters. ``chin`` has no
+    bank of its own (its family reuses ``suiken.mot``), so it is absent here by design.
+
+    This is a byte-scan of the executable: the returned names are facts about the XBE, not a
+    fighter-mapping assertion.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for m in _MOT.finditer(data):
+        name = m.group(1).decode("latin-1")
+        if name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out
 
 
 # ----------------------------------------------------------------------------- build

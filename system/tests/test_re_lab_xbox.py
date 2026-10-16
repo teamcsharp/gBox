@@ -102,3 +102,31 @@ def test_live_ram_range_accepts_and_rejects_xbox_ranges():
         assert "outside the verified live platform layout" in str(exc)
     else:
         raise AssertionError("expected ValueError for a 64 MiB + 1 range")
+
+
+def test_xbe_to_elf_decodes_the_owned_doa3_default_xbe():
+    # The owned DOA3 (USA) default.xbe is a retail XBE whose entry point decodes to 0x1651a5
+    # and kernel thunk to 0x1ed0e0 (doa3_inventory.pinned). xbe_to_elf must turn it into a valid
+    # ELF32 little-endian x86 image with one PT_LOAD per non-empty section.
+    from pathlib import Path
+    xbe_path = Path.home() / "gbox-cache/b8edf7040116f3aa/extract/Dead or Alive 3/default.xbe"
+    if not xbe_path.is_file():
+        import pytest
+        pytest.skip("owned DOA3 default.xbe not present")
+    xbe = xbe_path.read_bytes()
+    elf, info = re_lab_tool.xbe_to_elf(xbe)
+
+    assert elf[:4] == b"\x7fELF"
+    assert elf[4] == 1 and elf[5] == 1                      # ELFCLASS32, little-endian
+    assert struct.unpack_from("<H", elf, 0x12)[0] == 3      # e_machine = EM_386
+    assert info["entry"] == 0x1651A5                        # retail entry point (decrypted)
+    assert info["base"] == 0x10000
+    phnum = struct.unpack_from("<H", elf, 0x2C)[0]
+    assert phnum == 14
+    # every PT_LOAD is a valid, in-file load segment with its real virtual address
+    for i in range(phnum):
+        p_type, p_offset, p_vaddr, _p_paddr, p_filesz, _p_memsz, _p_flags, _p_align = \
+            struct.unpack_from("<8I", elf, 52 + 32 * i)
+        assert p_type == 1
+        assert p_offset + p_filesz <= len(elf)
+        assert 0x10000 <= p_vaddr
