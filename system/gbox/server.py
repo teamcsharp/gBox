@@ -2250,11 +2250,22 @@ def create_app(config: Config) -> FastAPI:
                 w["idle_seconds"] = activity.idle_seconds
                 w["active_jobs"] = activity.active_jobs
             store.put("worker", wid, w)
+        # The unlock reconciler takes its own guard and then the Store lock.
+        # Sample admission outside the Store lock to preserve that lock order.
+        from .unlock_job_policy import admit
+        unlock_wait = {j['id']: admit(store, app, j.get('parent_request_id'), j['tool'], j.get('input') or {})
+                       for j in store.queued_jobs() if j['tool'] in w['tools']
+                       and j['require_os'] in (None, w['os'])
+                       and j['require_worker'] in (None, wid, w['name'])}
+        with store.lock:
             # Stop goes first (#1504): a stop never waits behind queued polls or captures of the game it ends.
             # Low-priority background work (the Sonic showcase) goes last.
             for j in sorted(store.queued_jobs(), key=lambda j: (not _is_stop_job(j), bool(j.get("low_priority")))):
                 if (j["state"] == JobState.QUEUED and j["tool"] in w["tools"]
                         and j["require_os"] in (None, w["os"]) and j["require_worker"] in (None, wid, w["name"])):   # by name: launched while that worker was restarting
+                    if why := unlock_wait.get(j['id'], 'Waiting for fresh job admission'):
+                        store.put('job', j['id'], j | {'admission_wait': {'worker': w['name'], 'reason': why}})
+                        continue
                     try:
                         build_feedback.check(store, j)
                     except HTTPException as exc:
@@ -2584,6 +2595,9 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/api/jobs")
     def submit(req: JobRequest, actor=Depends(auth), origin=Depends(request_origin)):
+        from .unlock_job_policy import admit
+        if why := admit(store, app, req.parent_request_id, req.tool, req.input):
+            raise HTTPException(409, why)
         build_feedback.check(store, req)
         origin = origin if isinstance(origin, dict) else {"via": "internal"}   # in-server callers pass no request
         if req.tool in ('@launch', 'launch_game'):
