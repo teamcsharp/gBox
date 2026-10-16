@@ -3102,7 +3102,7 @@ class SteamAdapter(Adapter):
         return grab_png(None, [max(0, x), max(0, y), ww - ww % 2, hh - hh % 2])
 
 
-def for_game(game: dict, config: Config, debug: bool = False) -> Adapter:
+def for_game(game: dict, config: Config, debug: bool = False, *, mod: str | None = None) -> Adapter:
     """Pick the adapter for a catalog entry on THIS node. debug=True prefers an emulator with a full CPU debugger."""
     plat = game["platform"]
     if debug and HOST_OS == "linux" and plat in DEBUG_ADAPTERS:
@@ -3118,6 +3118,9 @@ def for_game(game: dict, config: Config, debug: bool = False) -> Adapter:
             return CommandAdapter(xbox_override)
         if HOST_OS != "windows":
             raise ToolUnavailable("Original Xbox games run in Cxbx-Reloaded on a Windows worker")
+        from .doa3_native import Doa3NativeAdapter, supports_game
+        if not mod and not game.get("mod") and supports_game(game):
+            return Doa3NativeAdapter(config, game)
         return XboxAdapter(config)
     from . import systems
     if game.get("core") and plat != "arcade" and systems.core_for(plat)[0] is None:

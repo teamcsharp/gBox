@@ -472,9 +472,16 @@ def launch_game(inp: LaunchIn, ctx: Ctx):
         try:
             return _launch_game(inp, ctx)
         except Exception as exc:
+            ad = diag.get('_adapter')
+            # A cancellation after native boot proof but before session
+            # registration must not strand a game outside the session ledger.
+            if getattr(ad, 'name', None) == 'doa3_native' and not any(sr[0] is ad for sr in tuple(SESSIONS.values())):
+                try:
+                    diag['native_cleanup'] = ad.stop_game()
+                except Exception as cleanup_error:
+                    diag['native_cleanup_error'] = str(cleanup_error)[:500]
             try:
                 from . import memory_card_sessions
-                ad=diag.get('_adapter')
                 if ad is not None and getattr(ad,'memory_card_context',None):
                     memory_card_sessions.abandon(ad,ctx)
             except Exception:pass
@@ -544,8 +551,9 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     ctx.nowait = True                                     # progress lines never wait on the control plane (registry.Ctx)
     ctx.progress(2, f"Loading {g.title} · {g.system or g.platform}")
     diag["stage"] = "pick emulator"
-    ad = adapters.for_game(g.model_dump(), ctx.config, debug=inp.debug)
+    ad = adapters.for_game(g.model_dump(), ctx.config, debug=inp.debug, mod=inp.mod)
     ad.capture_gameplay = not getattr(ctx,'agent_use',False) and not inp.capture_backend
+    ad.api_server, ad.api_headers = ctx.server or '', ctx.headers
     ad.tas_server, ad.tas_headers = ctx.server or '', ctx.headers
     ad.progress = ctx.progress
     diag.update(_adapter=ad, adapter=ad.name, core=getattr(getattr(ad, "cfg", None), "core", None) or g.core,
@@ -652,6 +660,12 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         ctx.progress(72, f"Starting {ad.name} with {src.name}")
         diag["stage"] = "start the emulator"
         detail = ad.launch_game(str(src))
+        if callable(getattr(type(ad), '_boot_frame', None)):
+            frame = ad._boot_frame()
+            if frame:
+                ctx.artifact('native-boot.png', frame[1], 'image/png', game=g.game_id,
+                             capture_source='native-back-buffer')
+                detail['boot_frame_sha256'] = sha256(frame[1])
     lap("emulator_start_s")                                   # the adapter returns once the content runs (first frames)
     timings["total_s"] = round(time.monotonic() - t_start, 3)
     detail["timings"] = timings                               # #1506: where a launch's time went, per stage
