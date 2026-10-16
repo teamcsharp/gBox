@@ -265,6 +265,7 @@ class CollectIn(BaseModel):
     request_ids: list[str] = Field(default_factory=list, max_length=8)
     retry_failed: bool = False
     allow_unpack: bool = False
+    refresh_inventory: bool = False
 
 
 class TitleAssets:
@@ -283,9 +284,10 @@ class TitleAssets:
         game = self._game(gid)
         record = self.store.get('title_asset_pipeline', gid) or {}
         key = catalog_key(game)
+        epoch = record.get('inventory_epoch', 0)
         tasks = []
         for task in (record.get('tasks') or {}).values():
-            if task.get('catalog_key') != key:
+            if task.get('catalog_key') != key or task.get('inventory_epoch', 0) != epoch:
                 continue
             job = self.store.get('job', task['job_id']) or {}
             tasks.append(task | {'state': job.get('state', 'missing'), 'error': job.get('error'),
@@ -311,6 +313,7 @@ class TitleAssets:
                 'categories': categories, 'tasks': tasks, 'inventory': inventory, 'exports': exports,
                 'request_ids': record.get('request_ids', []), 'writer': writer,
                 'requested_categories': record.get('categories', []), 'blocked_reason': record.get('blocked_reason'),
+                'inventory_epoch': epoch, 'historical_tasks_count': len(record.get('tasks') or {}) - len(tasks),
                 'raw_coverage': {'scope': 'non-placeholder loadfile.afs members', 'expected': len(expected) if inventory else None,
                                  'exported': len(expected & exported), 'complete': bool(inventory and expected and expected <= exported),
                                  'oversized_members': [row['index'] for row in (inventory or {}).get('members', []) if row['index'] in expected and row['size'] > CHUNK_BYTES]},
@@ -354,13 +357,20 @@ class TitleAssets:
             for rid in ids:
                 if not re.fullmatch(r'[0-9a-f]{16}', rid) or not self.store.get('request', rid):
                     raise ValueError('Every dependency must reference an existing request_id')
-            current = self.status(gid)
             record = self.store.get('title_asset_pipeline', gid) or {'tasks': {}, 'request_ids': []}
+            if inp.refresh_inventory:
+                if not native_reader(game):
+                    raise ValueError('This title has no registered native inventory to refresh')
+                if any((self.store.get('job', task['job_id']) or {}).get('state') in ACTIVE
+                       for task in (record.get('tasks') or {}).values()):
+                    raise ValueError('Wait for this title’s queued or running extraction jobs before refreshing inventory')
+                record['inventory_epoch'] = record.get('inventory_epoch', 0) + 1
             record['request_ids'] = list(dict.fromkeys(record.get('request_ids', []) + ids))
             record['categories'] = sorted(set(record.get('categories', []) + inp.categories))
             record['game_id'], record['updated'] = gid, time.time()
             record.pop('blocked_reason', None)
             self.store.put('title_asset_pipeline', gid, record)
+            current = self.status(gid)
             kind, tool_name, data, required_os = None, None, None, None
             if native_reader(game):
                 if not current['inventory']:
@@ -376,7 +386,7 @@ class TitleAssets:
             if data:
                 if tool_name == 'title_assets':
                     data['expected_catalog_key'] = current['catalog_key']
-                task_key = digest({'catalog_key': current['catalog_key'], 'tool': tool_name, 'input': data})
+                task_key = digest({'catalog_key': current['catalog_key'], 'inventory_epoch': current['inventory_epoch'], 'tool': tool_name, 'input': data})
                 previous = (record.get('tasks') or {}).get(task_key)
                 previous_job = self.store.get('job', previous['job_id']) if previous else None
                 if not previous_job or (inp.retry_failed and previous_job.get('state') not in ACTIVE | {'succeeded'}):
@@ -391,9 +401,11 @@ class TitleAssets:
                         'require_os': required_os or worker['os'], 'parent_request_id': inp.parent_request_id or (ids[0] if ids else None),
                         'agent_use': True, 'low_priority': True}, actor)
                     record.setdefault('tasks', {})[task_key] = {'kind': kind, 'job_id': job['id'],
-                        'worker_id': worker['id'], 'catalog_key': current['catalog_key'], 'categories': inp.categories}
+                        'worker_id': worker['id'], 'catalog_key': current['catalog_key'], 'categories': inp.categories,
+                        'inventory_epoch': current['inventory_epoch']}
             self.store.put('title_asset_pipeline', gid, record)
-            self.store.audit(actor, 'title_assets.collect', gid, {'request_ids': ids, 'categories': inp.categories})
+            self.store.audit(actor, 'title_assets.collect', gid, {'request_ids': ids, 'categories': inp.categories,
+                'refresh_inventory': inp.refresh_inventory, 'inventory_epoch': current['inventory_epoch']})
             return self.status(gid)
 
 

@@ -132,6 +132,41 @@ def test_failed_work_requires_explicit_retry(manager):
     assert len(manager.sent) == 2
 
 
+def test_refresh_inventory_recovers_source_mutation_without_borrowing_old_coverage(manager):
+    manager.collect(GID, T.CollectIn(), 'operator')
+    old_members = [{'index': 1, 'size': 100}, {'index': 2, 'size': 100}]
+    finish(manager, 0, {'source': SOURCE, 'members': old_members})
+    manager.collect(GID, T.CollectIn(), 'operator')
+    finish(manager, 1, {'source': SOURCE, 'members': old_members[:1], 'bundle_sha256': 'f' * 64})
+    manager.collect(GID, T.CollectIn(), 'operator')
+    failed = manager.store.get('job', 'job-2')
+    manager.store.put('job', failed['id'], failed | {'state': 'failed', 'error': 'Native source changed since inventory'})
+    manager.collect(GID, T.CollectIn(retry_failed=True), 'operator')
+    assert manager.sent[-1]['input']['expected_source'] == SOURCE
+    retry = manager.store.get('job', manager.sent[-1]['id'])
+    manager.store.put('job', retry['id'], retry | {'state': 'failed', 'error': 'Native source changed since inventory'})
+    refreshed = manager.collect(GID, T.CollectIn(refresh_inventory=True), 'operator')
+    assert refreshed['inventory_epoch'] == 1 and refreshed['inventory'] is None
+    assert refreshed['exports'] == [] and refreshed['raw_coverage']['exported'] == 0
+    assert refreshed['historical_tasks_count'] >= 3
+    assert manager.sent[-1]['input']['op'] == 'inventory'
+    new_source = SOURCE | {'archive_sha256': 'd' * 64}
+    finish(manager, len(manager.sent) - 1, {'source': new_source, 'members': [{'index': 5, 'size': 123}]})
+    updated = manager.collect(GID, T.CollectIn(), 'operator')
+    assert manager.sent[-1]['input']['expected_source'] == new_source
+    assert manager.sent[-1]['input']['entry_ids'] == [5]
+    assert updated['exports'] == [] and updated['raw_coverage']['exported'] == 0
+    assert len(manager.store.get('title_asset_pipeline', GID)['tasks']) >= 5
+
+
+def test_refresh_inventory_refuses_active_title_jobs_even_across_catalog_revisions(manager):
+    manager.collect(GID, T.CollectIn(), 'operator')
+    manager.store.upsert_catalog([game(hashes={'sha1': 'c' * 40})])
+    with pytest.raises(ValueError, match='queued or running'):
+        manager.collect(GID, T.CollectIn(refresh_inventory=True), 'operator')
+    assert len(manager.sent) == 1 and manager.store.get('title_asset_pipeline', GID).get('inventory_epoch', 0) == 0
+
+
 def test_small_native_metadata_is_not_assumed_placeholder():
     inventory = {'members': [{'index': 0, 'size': 4, 'kind': 'unknown'},
                              {'index': 1, 'size': 4, 'kind': 'placeholder'},
