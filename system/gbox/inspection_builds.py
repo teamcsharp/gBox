@@ -299,7 +299,7 @@ class WatchOut(BaseModel):
     result:dict
 
 
-@tool('inspection_builds','1.0',WatchIn,WatchOut,permissions=[P.FILE_MUTATION],timeout_s=30)
+@tool('inspection_builds','1.0',WatchIn,WatchOut,permissions=[P.EXECUTE],timeout_s=30)
 def watch(inp,ctx):
     """Continuous local builds: status, plan (game_id), configure (value policy), publish (game_id,value reviewed
     cast_swap recipe/change_id/dependencies/requests_ack/feedback_ack). Publish after implementing operator feedback;
