@@ -7,6 +7,7 @@ Requires the normalised PAL z64 (sha256 40ff3643...) at
 artifacts/source/007_GoldenEye_Europe_norm.z64 (created by the inventory
 stage; see gbox/goldeneye_inventory.py).
 """
+import base64
 import hashlib
 import json
 import struct
@@ -144,6 +145,39 @@ def test_gltf_export(ge, tmp_path):
     assert all(n.get("skin") == 0 for n in gltf["nodes"][16:] if "mesh" in n)
 
 
+def test_gltf_export_embeds_textures(ge, tmp_path):
+    """The exported .gltf embeds the decoded textures as PNG images, glTF
+    textures/samplers and materials referenced by the mesh primitives."""
+    out = tmp_path / "CsuitbondZ.gltf"
+    gr.to_gltf(ge, "CsuitbondZ", out)
+    gltf = json.loads(out.read_text())
+    # all 14 textures decode, so 14 images + 14 glTF textures + 1 sampler
+    assert len(gltf["images"]) == 14
+    assert len(gltf["textures"]) == 14
+    assert len(gltf["samplers"]) == 1
+    # every image is an embedded base64 PNG data URI
+    assert all(img["uri"].startswith("data:image/png;base64,") for img in gltf["images"])
+    # the PNG payloads are real PNGs (8-byte signature)
+    for img in gltf["images"]:
+        png = base64.b64decode(img["uri"].split(",", 1)[1])
+        assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    # materials exist and reference valid texture indices
+    assert len(gltf["materials"]) >= 1
+    for m in gltf["materials"]:
+        ti = m["pbrMetallicRoughness"]["baseColorTexture"]["index"]
+        assert 0 <= ti < len(gltf["textures"])
+    # at least one mesh primitive carries a material with a baseColorTexture
+    textured = [p for m in gltf["meshes"] for p in m["primitives"] if "material" in p]
+    assert textured
+
+
+def test_rgba_to_png_roundtrip():
+    """_rgba_to_png emits a valid PNG with the right IHDR dimensions."""
+    png = gr._rgba_to_png(bytes([255, 0, 0, 255]), 1, 1)
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    assert struct.unpack(">II", png[16:24]) == (1, 1)  # IHDR width, height
+
+
 def test_roster():
     ros = gr.roster()
     assert len(ros) == 80
@@ -242,12 +276,13 @@ def test_g_textures_table(ge):
 
 
 def test_images_segment_pinned(ge):
-    """_imagesSegmentRomStart = 0x8F7848; image data ends exactly at the 0xFF tail."""
+    """_imagesSegmentRomStart = 0x8F7840; image data ends at 0xBE6758, 8 bytes
+    before the 0xFF tail (the 8 trailing bytes are the dropped US image2698)."""
     sizes = gr.g_textures(ge)
     off, size = gr.image_rom_span(sizes, 0)
-    assert off == gr.IMAGES_ROM_START == 0x8F7848
+    assert off == gr.IMAGES_ROM_START == 0x8F7840
     assert size == 0x754
-    assert gr.IMAGES_ROM_START + sum(sizes) == 0xBE6760
+    assert gr.IMAGES_ROM_START + sum(sizes) == 0xBE6758
     # the byte at images start is a valid 1-byte image header (bit7/6/0-5)
     hdr = ge.rom[off]
     assert hdr & 0x3F == 0  # COPYICON has no LOD / zlib / explicit-LOD flags
@@ -272,13 +307,11 @@ def test_tex_read_uncompressed_rgba16():
 
 
 def test_csuitbondz_texture_headers(ge):
-    """The 14 CsuitbondZ texture records resolve to real global image headers.
+    """All 14 CsuitbondZ texture records decode to their model-record dimensions.
 
-    The pixel bank stores them as a bitstream (format/width/height/compmethod)
-    with Huffman/RLE/LOOKUP/zlib compression.  ``decode_model_texture`` now runs
-    the full texInflate codec pipeline; a texture whose header overruns its
-    recorded byte size (the pre-existing KNOWN ISSUE) reports ``pixels`` None
-    with a note rather than a silent partial decode.
+    They are zlib-paletted (RGBA16_CI8/CI4, IA16_CI8); ``decode_model_texture``
+    runs the full texInflate codec pipeline and returns width*height*4 RGBA
+    bytes whose width/height match the model's sImageTableEntry records exactly.
     """
     doc = gr.read_character(ge, "CsuitbondZ")
     seen = {}
@@ -290,15 +323,22 @@ def test_csuitbondz_texture_headers(ge):
         seen[t["index"]] = d
     # every texture id is a 12-bit global id (G_SETTEX texture_id field)
     assert all(0 <= i < 0xFFF for i in seen)
-    # at least one zlib and one non-zlib codec are represented
-    assert any(d.get("is_zlib") for d in seen.values())
-    assert any(not d.get("is_zlib") for d in seen.values())
-    # a decode either yields width*height*4 RGBA bytes or a note (no partials)
-    for d in seen.values():
-        if d.get("pixels") is not None:
-            assert d["pixel_bytes"] == d["width"] * d["height"] * 4
-        else:
-            assert "note" in d
+    # every one of the 14 decodes (no silent partials), and its dimensions
+    # match the model record byte-for-byte
+    assert len(seen) == 14
+    for t in doc["textures"]:
+        d = seen[t["index"]]
+        assert d.get("pixels") is not None, f"texture {t['index']} failed to decode"
+        assert d["width"] == t["w"] and d["height"] == t["h"], \
+            f"texture {t['index']}: decoded {d['width']}x{d['height']} != model {t['w']}x{t['h']}"
+        assert d["pixel_bytes"] == t["w"] * t["h"] * 4
+    # every CsuitbondZ texture is zlib-paletted (RGBA16_CI8/CI4 or IA16_CI8)
+    assert all(d["is_zlib"] for d in seen.values())
+    assert all(9 <= d["format"] <= 11 for d in seen.values())
+    # at least one opaque-ish pixel in the suit textures (not all black/alpha)
+    for tid in (1631, 1642, 1609):
+        px = seen[tid]["pixels"]
+        assert any(px[i:i + 3] != b"\x00\x00\x00" for i in range(0, len(px), 4))
 
 
 def test_g_settex_12bit_mask(ge):

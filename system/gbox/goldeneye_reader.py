@@ -445,8 +445,15 @@ G_TEXTURES_DATA_OFF = 0x22C30   # PAL data-segment offset of g_Textures (VRAM 0x
 G_TEXTURES_VRAM = 0x80040E80
 G_TEXTURES_ENTRY_SIZE = 8       # image_entry is 8 bytes, not 6
 G_TEXTURES_TERMINATOR = 0xFFFF
-G_TEXTURES_COUNT = 2698         # pinned: 2698 images, total 3075864 bytes
-IMAGES_ROM_START = 0x8F7848     # PAL _imagesSegmentRomStart (images segment, ROM end)
+G_TEXTURES_COUNT = 2698         # PAL g_Textures entries before the 0xffff terminator
+# PAL _imagesSegmentRomStart.  reader(4)/(5) had 0x8F7848 (off by 8): that value
+# was derived from "0xFF tail (0xBE6760) - sum(sizes)", but the PAL table stops
+# at 2698 entries (the 8-byte image2698 that the US imagelist.u.csv carries is
+# the 0xffff terminator here), so the true start is 8 bytes earlier.  Verified
+# by decoding all 14 CsuitbondZ textures: at 0x8F7840 they decode to EXACTLY
+# the model-record dimensions (32x48/48x32/32x32/1x1) as zlib-paletted
+# RGBA16_CI8/CI4/IA16_CI8; at 0x8F7848 every header overran its payload.
+IMAGES_ROM_START = 0x8F7840
 
 # G_IM_FMT / G_IM_SIZ for the model's 12-byte sImageTableEntry (bondtypes.h
 # ModelFileTextures: Type = format, RenderDepth = size).
@@ -744,16 +751,15 @@ def decode_model_texture(ge: GoldenEyeROM, texture_id: int) -> dict:
 # mirrors the C bit-for-bit, including the u32 accumulator wrap of texReadBits
 # and C-style truncating integer division in texBlur.
 #
-# KNOWN ISSUE (pre-existing from reader(4)/(5)): applying the decomp's image
-# header (1 byte {explicit,zlib,lod} + 4/8/8/4-bit format/width/height/comp)
-# to the byte-exact g_Textures offsets yields dimensions that overrun the
-# per-image byte size for many images (e.g. image 0 COPYICON reads 80x80 LOOKUP
-# = ~4956 bytes of indices from a 1876-byte payload; the character textures
-# read 132x49 "uncompressed" RGBA32 from 724 bytes).  The offsets and sizes are
-# verified 0-mismatch against imagelist.u.csv, and the header layout is
-# confirmed by BOTH the game image.c and mktex reader.c, so this is a real
-# format question, not an off-by-one in this module.  The codecs below are
-# correct; the remaining work is to re-derive the true per-image header.
+# RESOLVED (reader(6)): the "KNOWN ISSUE" from reader(4)/(5) -- bitstream
+# dimensions overrunning the per-image byte size -- was NOT a header-layout
+# question.  The images-segment base was 8 bytes too high (0x8F7848 instead of
+# 0x8F7840).  At the corrected base every header decodes cleanly: COPYICON is
+# 32x28 RGBA32 RLELOOKUP, DELICON 32x28 HUFFMANBLUR, and the 14 CsuitbondZ
+# textures are all zlib-paletted (RGBA16_CI8/CI4, IA16_CI8) matching their
+# model-record widths/heights exactly.  Confirmed byte-for-byte against the
+# reference C decoder (mktex reader.c), which produced the same overruns at the
+# old base -- i.e. the codecs below were always correct.
 
 TEXFORMAT_NUM_CHANNELS = [4, 3, 3, 3, 2, 2, 1, 1, 1, 1, 1, 1, 1]
 TEXFORMAT_HAS_1BIT_ALPHA = [0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]
@@ -1240,6 +1246,17 @@ def _inverse_bind_matrices(world: list[list[float]]) -> bytes:
     return struct.pack(">" + "f" * len(mats), *mats)
 
 
+def _rgba_to_png(rgba: bytes, width: int, height: int) -> bytes:
+    """Encode row-major RGBA8888 to a minimal 8-bit RGBA PNG (no external deps)."""
+    def _chunk(typ: bytes, data: bytes) -> bytes:
+        c = typ + data
+        return struct.pack(">I", len(data)) + c + struct.pack(">I", zlib.crc32(c) & 0xFFFFFFFF)
+    raw = b"".join(b"\x00" + rgba[y * width * 4:(y + 1) * width * 4] for y in range(height))
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", ihdr)
+            + _chunk(b"IDAT", zlib.compress(raw, 9)) + _chunk(b"IEND", b""))
+
+
 def to_gltf(ge: GoldenEyeROM, filename: str, out_path: str | Path) -> dict:
     """Export a decoded character as a self-contained, rigged .gltf scene.
 
@@ -1261,6 +1278,7 @@ def to_gltf(ge: GoldenEyeROM, filename: str, out_path: str | Path) -> dict:
             "scenes": [{"nodes": []}], "scene": 0,
             "nodes": [], "meshes": [], "skins": [], "accessors": [], "bufferViews": [],
             "buffers": [{"byteLength": 0}],
+            "images": [], "textures": [], "samplers": [], "materials": [],
             "extras": {"textures": doc["textures"]}}
     bin_blob = bytearray()
 
@@ -1288,6 +1306,32 @@ def to_gltf(ge: GoldenEyeROM, filename: str, out_path: str | Path) -> dict:
     gltf["skins"].append({"joints": list(range(len(joints))),
                           "inverseBindMatrices": add_accessor(
                               _inverse_bind_matrices(world), 5126, len(joints), "MAT4")})
+
+    # Decode the model's textures and embed them as PNG images + glTF
+    # textures/samplers.  Each render mesh is bound to its first texture id
+    # through a material (baseColorTexture) so TEXCOORD_0 resolves in viewers.
+    gltf["samplers"].append({"magFilter": 9729, "minFilter": 9987,
+                             "wrapS": 33071, "wrapT": 33071})
+    tex_by_index: dict[int, int] = {}
+    for t in doc["textures"]:
+        dec = decode_model_texture(ge, t["index"])
+        png = dec.get("pixels")
+        if not png:
+            continue
+        gltf["images"].append({"uri": "data:image/png;base64," +
+                               base64.b64encode(_rgba_to_png(png, dec["width"], dec["height"])).decode("ascii")})
+        gltf["textures"].append({"sampler": 0, "source": len(gltf["images"]) - 1})
+        tex_by_index[t["index"]] = len(gltf["textures"]) - 1
+
+    def material_for(rec: dict) -> int | None:
+        for tid in rec.get("texture_ids", []):
+            if tid in tex_by_index:
+                gltf["materials"].append({"name": f"tex{tid}",
+                                          "pbrMetallicRoughness": {
+                                              "baseColorTexture": {"index": tex_by_index[tid]},
+                                              "metallicFactor": 0.0, "roughnessFactor": 1.0}})
+                return len(gltf["materials"]) - 1
+        return None
 
     total_tris = 0
     total_verts = 0
@@ -1319,11 +1363,13 @@ def to_gltf(ge: GoldenEyeROM, filename: str, out_path: str | Path) -> dict:
             idx = struct.pack(">" + "HHH" * len(tris), *[c for t in tris for c in t])
             tri_acc = add_accessor(idx, 5123, len(tris) * 3, "SCALAR")
             total_tris += len(tris)
+        mat = material_for(r.record)
         mesh = {"primitives": [{"attributes": {"POSITION": pos_acc, "COLOR_0": col_acc,
                                                "TEXCOORD_0": uv_acc,
                                                "JOINTS_0": joint_acc, "WEIGHTS_0": weight_acc},
                                 **({"indices": tri_acc} if tri_acc is not None else {}),
                                 "mode": 4 if tri_acc is not None else 0,
+                                **({"material": mat} if mat is not None else {}),
                                 "extras": {"texture_ids": r.record.get("texture_ids", []),
                                            "node_offset": r.offset,
                                            "triangle_hint": r.triangle_hint}}]}
