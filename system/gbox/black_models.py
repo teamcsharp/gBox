@@ -46,6 +46,12 @@ Verified evidence (request #1965 checkpoints):
   after the name table is float32 animation data (rotation tracks plus "FireSelect"
   event markers at 0x84975 / 0xa01ec in BG1_AK1); the per-bone records and the WDD
   vertex streams are the remaining decode stages before read_model()/to_glb().
+* .DB fixed header (0x70 bytes) is a section directory (db_header/db_sections): three
+  lead-record pairs (second word carries a 0x5446-prefixed revision), a section count
+  (always 9), a 0x80 stride word, then 9 absolute section offsets. In order: 4 data
+  blocks, one animation block (magic 0x8161d7c0), a data block, 2 RIFF/WAVE audio
+  chunks (48 kHz 16-bit mono PCM weapon samples), and a trailing .WDO object (magic
+  0x0809) whose size field equals the remaining file length.
 """
 from __future__ import annotations
 
@@ -294,6 +300,19 @@ BONE_RECORD = 24
 BONE_HEADER_FIXED = 0x70
 BONE_HEADER_PER = 72
 
+# The .DB fixed header (0x70 bytes) is a section directory: three u32 lead-record
+# pairs (the second word of each has a constant DB_REV_PREFIX high half and a
+# per-asset revision low half), a section count, a 0x80 stride/flags word, then that
+# many ABSOLUTE file offsets of the file's sections. Verified on every owned
+# BG1_*.DB (2026-10-16): the count is always 9 and the 9 sections follow a fixed
+# order (see db_sections).
+DB_REV_PREFIX = 0x5446          # constant high half of the three lead-record revision words
+DB_HEADER_U32 = 17              # u32 words parsed from the 0x70-byte fixed header
+DB_SECTION_COUNT = 9            # section count on every owned BG1_*.DB
+WAV_MAGIC = b"RIFF"
+WDO_MAGIC = b"\x09\x08\x00\x00"  # same magic as the .WDO object container
+ANIM_MAGIC = 0x8161D7C0          # little-endian bytes c0 d7 61 81, DB section 4
+
 # Bones that are the always-present FPS arms chain (not the weapon), in file order.
 # Pinned from the owned disc; the weapon-specific bones sit between Wrist_rt and the
 # right-hand finger chain (or, in a few variants, replace part of the finger chain).
@@ -407,6 +426,117 @@ def db_bone_records(db: bytes) -> dict:
         "block_end": offs[-1] + BONE_RECORD,
         "records": records,
     }
+
+
+def db_header(db: bytes) -> dict:
+    """The fixed 0x70-byte header of a BG1_*.DB container.
+
+    Layout (little-endian u32): three lead-record word-pairs, then a section count,
+    a 0x80 stride/flags word, then that many ABSOLUTE file offsets of the file's
+    sections. Verified on all 31 owned BG1_*.DB (2026-10-16): the count is always
+    ``DB_SECTION_COUNT`` (9); each lead record's second word keeps the constant
+    ``DB_REV_PREFIX`` high half with a monotonically increasing per-asset low half
+    (a revision stamp, not a fixed sentinel).
+    """
+    if len(db) < 0x70:
+        raise FormatError(f"DB shorter than its 0x70-byte header ({len(db)} bytes)")
+    vals = struct.unpack_from(f"<{DB_HEADER_U32}I", db, 0)
+    count = vals[6]
+    if count < 1 or count > DB_SECTION_COUNT:
+        raise FormatError(f"DB section count {count} outside 1..{DB_SECTION_COUNT}")
+    return {
+        "lead": [(vals[0], vals[1]), (vals[2], vals[3]), (vals[4], vals[5])],
+        "count": count,
+        "flags": vals[7],
+        "offsets": list(vals[8:8 + count]),
+    }
+
+
+def db_section_kind(db: bytes, off: int) -> str:
+    """Classify the DB section at absolute file offset ``off``.
+
+    Returns one of ``"wav"`` (RIFF/WAVE audio), ``"wdo"`` (0x0809 object container),
+    ``"anim"`` (the 0x8161d7c0 animation block), ``"data"`` (a data block carrying a
+    0x80 stride word at offset +0xc), or ``"unknown"`` (and ``"oob"`` past the file).
+    """
+    if off < 0 or off + 4 > len(db):
+        return "oob"
+    magic = db[off:off + 4]
+    if magic == WAV_MAGIC:
+        return "wav"
+    if magic == WDO_MAGIC:
+        return "wdo"
+    if struct.unpack_from("<I", db, off)[0] == ANIM_MAGIC:
+        return "anim"
+    if off + 16 <= len(db) and struct.unpack_from("<I", db, off + 12)[0] == 0x80:
+        return "data"
+    return "unknown"
+
+
+def db_sections(db: bytes) -> dict:
+    """The parsed fixed header plus every section classified in directory order.
+
+    On every owned BG1_*.DB the 9 sections are, in order: 4 data blocks, the anim
+    block (magic 0x8161d7c0), 1 data block, 2 RIFF/WAVE audio chunks, and a trailing
+    .WDO object (magic 0x0809). See db_section_kind for the kind vocabulary.
+    """
+    hdr = db_header(db)
+    return {
+        "header": hdr,
+        "sections": [{"offset": o, "kind": db_section_kind(db, o)}
+                     for o in hdr["offsets"]],
+    }
+
+
+def db_wave(db: bytes, off: int) -> dict:
+    """Parse an embedded RIFF/WAVE chunk at absolute file offset ``off``.
+
+    The owned disc stores two PCM samples per DB (weapon fire/reload audio):
+    48 kHz, 16-bit, mono, little-endian. Returns the RIFF size, the fmt
+    sub-chunk fields and the PCM stream parameters.
+    """
+    if off + 28 > len(db):
+        raise FormatError(f"WAV at {off:#x} runs past end of DB")
+    if db[off:off + 4] != WAV_MAGIC or db[off + 8:off + 12] != b"WAVE":
+        raise FormatError(f"no RIFF/WAVE chunk at {off:#x}")
+    size = struct.unpack_from("<I", db, off + 4)[0]
+    if off + 8 + size > len(db):
+        raise FormatError(f"WAV at {off:#x} size {size} runs past end of DB")
+    sc_id = db[off + 12:off + 16]
+    sc_size = struct.unpack_from("<I", db, off + 16)[0]
+    tag, channels, rate, byte_rate, align, bits = struct.unpack_from(
+        "<HHIIHH", db, off + 20)
+    return {
+        "offset": off, "riff_size": size, "subchunk": sc_id.decode("latin-1"),
+        "subchunk_size": sc_size, "format_tag": tag, "channels": channels,
+        "sample_rate": rate, "byte_rate": byte_rate, "block_align": align,
+        "bits_per_sample": bits,
+    }
+
+
+def db_wave_sections(db: bytes) -> list[dict]:
+    """Parse every embedded RIFF/WAVE section (two per DB on the owned disc)."""
+    return [db_wave(db, s["offset"])
+            for s in db_sections(db)["sections"] if s["kind"] == "wav"]
+
+
+def db_tail_wdo(db: bytes) -> dict:
+    """The trailing .WDO object is the DB's last section.
+
+    Its size field (u32 at +8) must equal the remaining file length, i.e. the object
+    runs from its offset to EOF. Verified on all 31 owned BG1_*.DB.
+    """
+    wdo = [s for s in db_sections(db)["sections"] if s["kind"] == "wdo"]
+    if len(wdo) != 1:
+        raise FormatError(f"expected exactly one trailing WDO section, found {len(wdo)}")
+    off = wdo[0]["offset"]
+    magic, _zero, size = struct.unpack_from("<3I", db, off)
+    tail = len(db) - off
+    if magic != 0x0809:
+        raise FormatError(f"WDO section at {off:#x} magic 0x{magic:04x}, expected 0x0809")
+    if size != tail:
+        raise FormatError(f"WDO size field {size} != remaining file length {tail}")
+    return {"offset": off, "magic": magic, "size": size, "tail": tail}
 
 
 def elf_loader_sites(elf: Path | str | None = None) -> dict:

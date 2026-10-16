@@ -5,6 +5,7 @@ without them. GRDLNCHR.WDO is embedded (211 bytes) so the WDO parser is always t
 """
 import hashlib
 import struct
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,8 @@ from gbox.black_models import (
     DISC, ELF, CAST_WEAPONS, LOADER_SITES, FormatError, elf_loader_sites,
     BONE_HEADER_FIXED, BONE_HEADER_PER, db_bone_records,
     WDD_STREAMS, WDD_ATTRS, wdd_type, wdd_type_census,
+    DB_REV_PREFIX, DB_SECTION_COUNT, ANIM_MAGIC,
+    db_header, db_sections, db_section_kind, db_wave, db_wave_sections, db_tail_wdo,
 )
 
 WDO_FIXTURE = bytes.fromhex(
@@ -81,6 +84,7 @@ def test_elf_loader_sites():
     assert {a for lst in hits.values() for a in lst} == {s for lst in LOADER_SITES.values() for s in lst[1]}
 
 
+@lru_cache(maxsize=None)
 def _db_bytes(slot: str) -> bytes:
     cast = bm.list_cast()
     f = open(DISC, "rb")
@@ -140,6 +144,7 @@ def test_db_weapon_bones_match_slot_family():
     assert "GrenadeShell" in wb and "BottomLead" in wb and "AssualtRifle_Root" in wb
 
 
+@lru_cache(maxsize=None)
 def _wdd_bytes(slot: str) -> bytes:
     cast = bm.list_cast()
     f = open(DISC, "rb")
@@ -260,3 +265,110 @@ def test_wdd_type_census_matches_records():
         assert set(c["attrs"]) <= set(range(WDD_ATTRS)), slot
         assert n_pointer == sum(sum(m.values()) for m in c["pointer"].values()), slot
         assert n_pointer > 0, slot                  # every variant carries pointer records
+
+
+# --- .DB section directory (fixed 0x70-byte header -> 9 classified sections) ---
+
+def _synth_header(count=DB_SECTION_COUNT, flags=0x80, offsets=()):
+    hdr = bytearray(0x70)
+    rev = (DB_REV_PREFIX << 16) | 0x1272
+    # three lead-record word-pairs (value, revision)
+    struct.pack_into("<I", hdr, 0, 0x9B811400)
+    struct.pack_into("<I", hdr, 4, rev)
+    struct.pack_into("<I", hdr, 8, 0x9C98D080)
+    struct.pack_into("<I", hdr, 12, rev)
+    struct.pack_into("<I", hdr, 16, 0x97C60000)
+    struct.pack_into("<I", hdr, 20, rev)
+    struct.pack_into("<I", hdr, 24, count)
+    struct.pack_into("<I", hdr, 28, flags)
+    for i, off in enumerate(offsets):
+        struct.pack_into("<I", hdr, 32 + 4 * i, off)
+    return bytes(hdr)
+
+
+def test_db_header_parses_fixed_layout():
+    offs = list(range(0x100, 0x100 + 9 * 0x100, 0x100))
+    h = bm.db_header(_synth_header(count=9, offsets=offs))
+    assert h["count"] == 9
+    assert h["flags"] == 0x80
+    assert h["offsets"] == offs
+    assert all(pair[1] >> 16 == DB_REV_PREFIX for pair in h["lead"])
+    assert h["lead"][0][0] == 0x9B811400
+
+
+def test_db_header_rejects_bad_count_and_short_file():
+    with pytest.raises(FormatError):
+        bm.db_header(_synth_header(count=10))          # count above the 9-slot budget
+    with pytest.raises(FormatError):
+        bm.db_header(_synth_header(count=0))           # count must be >= 1
+    with pytest.raises(FormatError):
+        bm.db_header(b"\x00" * 0x40)                   # shorter than 0x70
+
+
+def test_db_section_kind_classifies_magic():
+    assert bm.db_section_kind(b"RIFF" + b"\x00" * 32, 0) == "wav"
+    assert bm.db_section_kind(b"\x09\x08\x00\x00" + b"\x00" * 32, 0) == "wdo"
+    assert bm.db_section_kind(struct.pack("<I", ANIM_MAGIC) + b"\x00" * 32, 0) == "anim"
+    data = bytearray(16)
+    struct.pack_into("<I", data, 12, 0x80)            # 0x80 stride word at +0xc
+    assert bm.db_section_kind(bytes(data), 0) == "data"
+    assert bm.db_section_kind(b"ZZZZ", 0) == "unknown"
+    assert bm.db_section_kind(b"", 4) == "oob"
+
+
+@pytest.mark.skipif(not DISC.exists(), reason="owned Black disc not unpacked on this node")
+def test_db_header_section_directory_every_variant():
+    """Every BG1_*.DB fixed header is a 9-section directory with in-file offsets."""
+    cast = bm.list_cast()
+    for slot in sorted(k for k in cast if k.startswith("BG1_")):
+        h = db_header(_db_bytes(slot))
+        assert h["count"] == DB_SECTION_COUNT, slot
+        assert h["flags"] == 0x80, slot
+        assert all(0 <= o < len(_db_bytes(slot)) for o in h["offsets"]), slot
+        assert all(pair[1] >> 16 == DB_REV_PREFIX for pair in h["lead"]), slot
+
+
+@pytest.mark.skipif(not DISC.exists(), reason="owned Black disc not unpacked on this node")
+def test_db_sections_fixed_order_every_variant():
+    """The 9 sections follow a fixed order: 4 data, 1 anim, 1 data, 2 WAV, 1 WDO."""
+    cast = bm.list_cast()
+    for slot in sorted(k for k in cast if k.startswith("BG1_")):
+        kinds = [s["kind"] for s in db_sections(_db_bytes(slot))["sections"]]
+        assert kinds == ["data", "data", "data", "data", "anim", "data", "wav", "wav", "wdo"], (slot, kinds)
+
+
+@pytest.mark.skipif(not DISC.exists(), reason="owned Black disc not unpacked on this node")
+def test_db_embedded_waves_are_pcm16_mono_48k():
+    """Both embedded WAV chunks are 48 kHz 16-bit mono PCM on every variant."""
+    cast = bm.list_cast()
+    for slot in sorted(k for k in cast if k.startswith("BG1_")):
+        waves = db_wave_sections(_db_bytes(slot))
+        assert len(waves) == 2, slot
+        for w in waves:
+            assert w["subchunk"] == "fmt " and w["format_tag"] == 1, (slot, w)
+            assert w["channels"] == 1 and w["bits_per_sample"] == 16, (slot, w)
+            assert w["sample_rate"] == 48000, (slot, w)
+
+
+@pytest.mark.skipif(not DISC.exists(), reason="owned Black disc not unpacked on this node")
+def test_db_tail_wdo_fits_file_every_variant():
+    """The trailing WDO object's size field equals the remaining file length."""
+    cast = bm.list_cast()
+    for slot in sorted(k for k in cast if k.startswith("BG1_")):
+        db = _db_bytes(slot)
+        w = db_tail_wdo(db)
+        assert w["magic"] == 0x0809, slot
+        assert w["size"] == w["tail"], slot
+        assert w["offset"] + w["size"] == len(db), slot
+
+
+@pytest.mark.skipif(not DISC.exists(), reason="owned Black disc not unpacked on this node")
+def test_db_ak1_sections_pinned():
+    """BG1_AK1's directory is pinned: 9 offsets, trailing WDO at the file tail."""
+    db = _db_bytes("BG1_AK1")
+    h = db_header(db)
+    secs = db_sections(db)["sections"]
+    assert h["offsets"] == [s["offset"] for s in secs]
+    assert db_tail_wdo(db)["offset"] == h["offsets"][8]
+    assert db_wave(db, h["offsets"][6])["riff_size"] == 69138
+    assert db_wave(db, h["offsets"][7])["riff_size"] == 20162
