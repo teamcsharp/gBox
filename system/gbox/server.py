@@ -2241,6 +2241,11 @@ def create_app(config: Config) -> FastAPI:
                 store.put("job", j["id"], j)
                 build_notes.job_ended(j)
                 store.audit(actor, "job.failed", j["id"], {"reason": "worker restarted"})
+                if j["tool"] in ("launch_game", "session_swap"):
+                    # an abandoned launch / swap still owes the operator a game: file it with the launch-failure
+                    # ledger (gbox/launch_failures.py) so its automatic remedy can relaunch on the re-registered
+                    # worker instead of waiting for the per-minute scan, which only files the ticket.
+                    _lf_observe_later(j["id"])
         for s_ in store.all("session"):             # ...and its emulator sessions died with it
             if s_.get("state") == "running" and s_["session_id"].split("-")[0] in old_ids:
                 store.put("session", s_["session_id"], s_ | {"state": "ended", "ended": time.time(), "exit": "worker restarted"})
