@@ -1055,7 +1055,10 @@ def swap_files(disc: LcsDisc, src_model: Path, src_roles: dict, entry: str = "pl
         previous_target = target
         progress(25 + attempt * 12, f"Too big ({len(mdl)} > {budget} bytes): decimating to ~{target} triangles")
         from .re4gc_enemies import decimate
-        src = decimate(Path(src_model), work / f"_lcs_dec_{entry.replace(':', '_')}_{attempt}.glb", target, blender)
+        # Spare the head/face from the collapse: the pedestrian slots force a ~90%+ triangle cut on
+        # high-poly donors, which otherwise erases the face. The body absorbs the reduction instead.
+        src = decimate(Path(src_model), work / f"_lcs_dec_{entry.replace(':', '_')}_{attempt}.glb", target,
+                       blender, protect=("head", "eye"))
     else:
         raise ValueError(f"doesn't fit {entry}.mdl's {e['sectors']} sectors: {tried}")
     new_chk = replace_chk(chk, {s["texture"]: a for s, a in zip(slots, atlases)})

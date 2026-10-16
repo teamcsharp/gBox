@@ -258,13 +258,17 @@ def blender_exe() -> str | None:
     return cands[-1] if cands else None
 
 
-def decimate(src: Path, dst: Path, amount: float, blender: str | None = None) -> Path:
+def decimate(src: Path, dst: Path, amount: float, blender: str | None = None,
+             protect: tuple[str, ...] | list[str] | None = None) -> Path:
     script = Path(__file__).resolve().parent / "decimate_gltf.py"
     if not script.exists():        # pre-PR #r1292 layout
         script = Path(__file__).resolve().parents[1] / "scripts" / "decimate_gltf.py"
     exe = blender or blender_exe()
-    r = subprocess.run([exe, "--background", "--factory-startup", "--python", str(script), "--", str(src), str(dst),
-                        str(amount)], capture_output=True, text=True, timeout=600)
+    cmd = [exe, "--background", "--factory-startup", "--python", str(script), "--", str(src), str(dst),
+           str(amount)]
+    if protect:                    # vertex-group name substrings to spare from the collapse (head/face)
+        cmd.append(",".join(protect))
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if not Path(dst).exists():
         raise RuntimeError("decimate failed: " + (r.stdout + r.stderr)[-2000:])
     return Path(dst)
