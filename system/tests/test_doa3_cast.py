@@ -53,6 +53,30 @@ def make_cat_lnk(size: int = 0x100, at: int = 0x9A40) -> bytes:
     return bytes(body)
 
 
+def make_cat_lnk_body(c0: int = 9, entries: list[int] | None = None,
+                      c1: int = 3, sub_offsets: list[int] | None = None,
+                      size: int = 0x40000) -> bytes:
+    """A CAT with a LNK section whose body holds the C0/C1 table structure."""
+    at = 0x9A40
+    if entries is None:
+        entries = [0x28, 0xFFFFFFFF, 0x183A, 0x6242, 0xFFFFFFFF,
+                   0x9AE0, 0x11A7A, 0x1A274, 0x2F1E0][:c0]
+    if sub_offsets is None:
+        sub_offsets = [0x522, 0x9DE, 0xE9A, 0x1356][:c1 + 1]
+    bo = at + 8 + 4 * doa3_cast.LNK_HEADER_WORDS
+    body = bytearray(bo + size)
+    struct.pack_into("<8I", body, 0, 1, 0x14, 0x5C0, at, bo + size, 0x100, 1, 0x18)
+    body[at:at + 4] = b"LNK\x00"
+    body[at + 4:at + 8] = b"0100"
+    struct.pack_into("<6I", body, at + 8, *doa3_cast.LNK_HEADER, size, 0, 0)
+    struct.pack_into("<I", body, bo, c0)
+    struct.pack_into(f"<{c0}I", body, bo + 4, *entries)
+    sub = bo + 4 + 4 * c0
+    struct.pack_into("<I", body, sub, c1)
+    struct.pack_into(f"<{c1 + 1}I", body, sub + 4, *sub_offsets)
+    return bytes(body)
+
+
 def make_afs(entries: list[bytes]) -> bytes:
     """Minimal AFS without a CRI name directory: header, offset/size table, data."""
     n = len(entries)
@@ -262,6 +286,50 @@ def test_cat_lnk_rejects_unaligned_size():
     struct.pack_into("<I", body, 0x9A40 + 8 + 12, 0x101)
     with pytest.raises(ValueError, match="4-aligned"):
         doa3_cast.cat_lnk(bytes(body))
+
+
+def test_cat_lnk_body_decodes_structure():
+    res = doa3_cast.cat_lnk_body(make_cat_lnk_body())
+    assert res is not None
+    assert res["link_group_count"] == 9
+    assert res["link_group_entries"][0] == 0x28
+    assert res["link_group_entries"][1] == 0xFFFFFFFF
+    assert res["sub_table_offset"] == 4 + 4 * 9
+    assert res["sub_table_count"] == 3
+    assert res["sub_table_offsets"] == [0x522, 0x9DE, 0xE9A, 0x1356]
+
+
+def test_cat_lnk_body_absent_returns_none():
+    body = bytearray(0x30)
+    struct.pack_into("<8I", body, 0, 1, 0x14, 1, 0x20, 1, 0x100, 1, 0x18)
+    assert doa3_cast.cat_lnk_body(bytes(body)) is None
+
+
+def test_cat_lnk_body_rejects_zero_group_count():
+    body = bytearray(make_cat_lnk_body())
+    bo = 0x9A40 + 8 + 4 * doa3_cast.LNK_HEADER_WORDS
+    struct.pack_into("<I", body, bo, 0)
+    with pytest.raises(ValueError, match="link-group count"):
+        doa3_cast.cat_lnk_body(bytes(body))
+
+
+def test_cat_lnk_body_rejects_out_of_body_offset():
+    body = make_cat_lnk_body(entries=[0x28, 0xFFFFFFFF, 0x183A, 0x6242, 0xFFFFFFFF,
+                                      0x9AE0, 0x11A7A, 0x1A274, 0x500000])
+    with pytest.raises(ValueError, match="exceeds"):
+        doa3_cast.cat_lnk_body(body)
+
+
+def test_cat_lnk_body_rejects_non_increasing_sub_offsets():
+    body = make_cat_lnk_body(sub_offsets=[0x522, 0x522, 0xE9A, 0x1356])
+    with pytest.raises(ValueError, match="strictly increasing"):
+        doa3_cast.cat_lnk_body(body)
+
+
+def test_cat_lnk_body_rejects_sub_offsets_exceeding_size():
+    body = make_cat_lnk_body(sub_offsets=[0x522, 0x9DE, 0xE9A, 0x500000])
+    with pytest.raises(ValueError, match="exceeds"):
+        doa3_cast.cat_lnk_body(body)
 
 
 def test_cat_sections_rejects_non_increasing_offsets():

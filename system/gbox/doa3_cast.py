@@ -94,6 +94,8 @@ LNK_MARKER = b"LNK\x00"
 LNK_NAME = b"0100"               # the 4-byte name after every LNK marker (68/69 costumes)
 LNK_HEADER = (2, 16, 32)         # fixed leading words of the LNK section header
 LNK_HEADER_WORDS = 6             # the LNK header is {2, 16, 32, size, 0, 0}
+LNK_MAX_LINK_GROUPS = 255        # measured C0 in {9, 12} across all 68 LNK costumes
+LNK_MAX_SUB_BLOCKS = 1024        # sane upper bound for the C1 sub-block count
 CAT_FIXED_OFFSET = 0x14          # the stable fixed block sits at 0x14
 CAT_SIGNATURE = (0x100, 1)       # (word@0x14, word@0x18) across all 69 costumes
 MAX_HEADER_WORDS = 4096
@@ -673,6 +675,60 @@ def cat_lnk(blob: bytes) -> dict | None:
             "body_offset": at + 8 + 4 * LNK_HEADER_WORDS}
 
 
+def cat_lnk_body(blob: bytes) -> dict | None:
+    """Decode the CAT ``LNK`` link-data body structure.
+
+    Measured across all 68 LNK-bearing costumes (69 complete costumes; kor00 has
+    none): the body spans ``size`` bytes from ``cat_lnk``'s ``body_offset`` and
+    is 16-byte aligned. Its first u32 is a link-group count C0 (9 on 65/68
+    costumes, 12 on the three Hikaru costumes hik00/hik01/hik02), followed by C0
+    u32 entries that are each either a body-relative offset or the -1 sentinel.
+    Immediately after that C0-entry table sits a second count C1 and C1+1
+    strictly-increasing cumulative u32 offsets (the sub-block boundaries); the
+    last offset never exceeds ``size``. The per-joint / skin-weight semantics
+    past these tables are still left for the RE stage.
+
+    Returns ``None`` when the companion has no LNK section (kor00); raises
+    ``ValueError`` on any structural deviation from the pinned shape.
+    """
+    lnk = cat_lnk(blob)
+    if lnk is None:
+        return None
+    size = lnk["size"]
+    body = lnk["body_offset"]
+    if body + size > len(blob):
+        raise ValueError(f"LNK body at {body:#x} ({size:#x} bytes) exceeds "
+                         f"the {len(blob)}-byte companion")
+    c0 = struct.unpack_from("<I", blob, body)[0]
+    if not 0 < c0 <= LNK_MAX_LINK_GROUPS:
+        raise ValueError(f"LNK link-group count {c0} is outside the measured "
+                         f"range (1..{LNK_MAX_LINK_GROUPS})")
+    entries = list(struct.unpack_from(f"<{c0}I", blob, body + 4))
+    for e in entries:
+        if e == 0xFFFFFFFF:
+            continue
+        if e > size:
+            raise ValueError(f"LNK link-group offset {e:#x} exceeds the "
+                             f"{size:#x}-byte body")
+    sub = body + 4 + 4 * c0
+    if sub + 8 > body + size:
+        raise ValueError("LNK body is too small to hold the sub-block table")
+    c1 = struct.unpack_from("<I", blob, sub)[0]
+    if not 0 < c1 < LNK_MAX_SUB_BLOCKS:
+        raise ValueError(f"LNK sub-block count {c1} is outside the sane range "
+                         f"(1..{LNK_MAX_SUB_BLOCKS - 1})")
+    offs = list(struct.unpack_from(f"<{c1 + 1}I", blob, sub + 4))
+    if any(b <= a for a, b in zip(offs, offs[1:])):
+        raise ValueError("LNK sub-block offsets are not strictly increasing")
+    if offs[-1] > size:
+        raise ValueError(f"LNK sub-block offset {offs[-1]:#x} exceeds the "
+                         f"{size:#x}-byte body")
+    return {"offset": lnk["offset"], "body_offset": body, "size": size,
+            "link_group_count": c0, "link_group_entries": entries,
+            "sub_table_offset": sub - body, "sub_table_count": c1,
+            "sub_table_offsets": offs}
+
+
 # ----------------------------------------------------------------- slots
 
 def slot_inventory(manifest: dict) -> dict:
@@ -792,6 +848,11 @@ def cast_writer_status() -> dict:
         "cat_lnk_header": True,
         "cat_lnk_note": "LNK section = 'LNK\\0' + '0100' + {2,16,32,size,0,0} pinned on "
                         "68/69 costumes (kor00 has none); the joint-link body remains",
+        "cat_lnk_body": True,
+        "cat_lnk_body_note": "LNK body = C0 link-group count (9 on 65/68, 12 on the three "
+                             "Hikaru costumes) + C0 offset/sentinel entries + C1 sub-block "
+                             "count + C1+1 cumulative offsets, validated on all 68 costumes; "
+                             "the per-joint / skin-weight semantics remain",
         "donor_retarget": False,
         "playable": False,
         "message": "measured MDL geometry decode (vertices/normals/UVs/u16 strips/material "
@@ -800,9 +861,10 @@ def cast_writer_status() -> dict:
                    "0x100/1 signature across all 69 costumes); the header-tail data "
                    "descriptor table (vertex + texture records) is located and pinned; "
                    "the LNK section envelope ('LNK\\0' + '0100' + {2,16,32,size,0,0}) "
-                   "is pinned on 68/69 costumes; the LNK joint-link body, texture "
-                   "pixel format, donor retarget and the routed cast build are the "
-                   "next stages",
+                   "is pinned on 68/69 costumes and its body structure (link-group count "
+                   "C0 + offset/sentinel table + sub-block boundary table) is decoded on "
+                   "all 68; the per-joint link semantics, texture pixel format, donor "
+                   "retarget and the routed cast build are the next stages",
     }
 
 
