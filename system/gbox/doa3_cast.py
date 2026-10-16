@@ -116,6 +116,13 @@ CAT_FIXED_OFFSET = 0x14          # the stable fixed block sits at 0x14
 CAT_SIGNATURE = (0x100, 1)       # (word@0x14, word@0x18) across all 69 costumes
 MAX_HEADER_WORDS = 4096
 
+# The <nick>.bin body files begin with a self-describing header: word 0 is the
+# header byte size, which is 0x88 (34 words) on 18/20 bodies and 0x84 (33 words)
+# on suiken/gokei (Brad Wong / Christie). The header is a section-offset table;
+# every remaining word is either 0 or an in-file pointer, and the body data
+# (bone/joint table, mesh) begins immediately after it.
+BIN_HEADER_SIZES = (0x84, 0x88)
+
 # Header-tail data descriptor table (pinned across kas00/kas01/kas02):
 # after the last OBJ record and before header_size, obj_count 12-byte vertex
 # descriptors ({VERTEX_DESC_FLAG, cumulative_offset, 0}) are followed by
@@ -995,6 +1002,44 @@ def afs_patch_entry(path: str | Path, entry_index: int, new_bytes: bytes, *,
     return room
 
 
+# ----------------------------------------------------------------- BIN body
+
+def bin_header(blob: bytes) -> dict:
+    """The self-describing header of a ``<nick>.bin`` body file.
+
+    Word 0 is the header byte size, measured as ``0x88`` (34 words) on 18/20
+    bodies and ``0x84`` (33 words) on ``suiken``/``gokei`` (Brad Wong /
+    Christie). The header is a section-offset table: every remaining word is
+    either 0 or an in-file pointer, and the body data (the bone/joint table
+    then the mesh) begins immediately after it. This pins the envelope the
+    donor-retarget stage must decode; the per-section semantics (joint records,
+    skinned vertices) are still left for the XBE-loader RE stage.
+
+    Validates the size is one of the two observed values, is 4-byte aligned,
+    fits inside ``blob``, and that every header word is 0 or an in-file
+    pointer. Returns the header words and the body-data offset.
+    """
+    if len(blob) < 4:
+        raise ValueError("BIN body is too short for its header word")
+    header_size = struct.unpack_from("<I", blob, 0)[0]
+    if header_size not in BIN_HEADER_SIZES:
+        raise ValueError(f"BIN header size {header_size:#x} is not one of the "
+                         f"measured values {tuple(hex(s) for s in BIN_HEADER_SIZES)}")
+    if header_size % 4:
+        raise ValueError(f"BIN header size {header_size:#x} is not 4-byte aligned")
+    if header_size > len(blob):
+        raise ValueError(f"BIN header size {header_size:#x} exceeds the "
+                         f"{len(blob)}-byte body")
+    word_count = header_size // 4
+    words = list(struct.unpack_from(f"<{word_count}I", blob, 0))
+    for k, w in enumerate(words[1:], start=1):
+        if w != 0 and w >= len(blob):
+            raise ValueError(f"BIN header word {k} ({w:#x}) is not an in-file pointer")
+    return {"header_size": header_size, "word_count": word_count,
+            "version": f"{header_size:#x}", "words": words,
+            "data_offset": header_size}
+
+
 def cast_writer_status() -> dict:
     """The honest current state of the combined DOA3 cast writer."""
     return {
@@ -1030,6 +1075,13 @@ def cast_writer_status() -> dict:
                                  "zero-terminated, plus an unresolved residual) + N "
                                  "equal-length flat u16 triangle sections (stride % 6 == 0, "
                                  "3971/3971); the per-section triangle/joint semantics remain",
+        "bin_body_header": True,
+        "bin_body_header_note": "<nick>.bin body begins with a self-describing header: "
+                                "word 0 is the header byte size (0x88 on 18/20 bodies, "
+                                "0x84 on suiken/gokei), a section-offset table whose every "
+                                "remaining word is 0 or an in-file pointer; the bone/joint "
+                                "table and skinned mesh follow it and remain to be decoded "
+                                "(XBE-loader RE stage)",
         "donor_retarget": False,
         "playable": False,
         "message": "measured MDL geometry decode (vertices/normals/UVs/u16 strips/material "

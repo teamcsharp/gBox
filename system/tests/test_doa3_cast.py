@@ -3,6 +3,7 @@ the AFS patch path and the measured MDL geometry decoder. Fixtures mirror the
 byte layout observed in the owned USA build (kas00.xpr / kas00.cat,
 loadfile.afs)."""
 import struct
+from pathlib import Path
 
 import pytest
 
@@ -560,6 +561,7 @@ def test_cast_writer_status_is_honest():
     assert st["mdl_descriptor_table"]
     assert st["cat_lnk_groups"]
     assert st["cat_lnk_sections"]
+    assert st["bin_body_header"]
     assert "no-op" in st["mdl_geometry_encode_note"]
     assert not st["donor_retarget"] and not st["playable"]
 
@@ -896,3 +898,83 @@ def test_mdl_descriptor_table_rejects_non_increasing_offsets():
     struct.pack_into("<I", blob, p, first)
     with pytest.raises(ValueError, match="strictly increasing"):
         doa3_cast.mdl_descriptor_table(bytes(blob))
+
+
+# ----------------------------------------------------------------- BIN body
+
+def make_bin_body(header_size: int = 0x88, pointers: list[int] | None = None,
+                  total: int | None = None) -> bytes:
+    """A ``<nick>.bin`` body shaped like the measured files: word 0 is the header
+    byte size, the remaining words are in-file section pointers (0 allowed), and
+    the body data follows immediately after the header."""
+    n = header_size // 4
+    pointers = list(pointers) if pointers is not None else [0] * (n - 1)
+    total = total if total is not None else header_size + 0x100
+    out = bytearray(total)
+    struct.pack_into("<I", out, 0, header_size)
+    for k, w in enumerate(pointers, start=1):
+        struct.pack_into("<I", out, 4 * k, w)
+    return bytes(out)
+
+
+def test_bin_header_parses_0x88_body():
+    res = doa3_cast.bin_header(make_bin_body(0x88))
+    assert res["header_size"] == 0x88
+    assert res["word_count"] == 34
+    assert res["version"] == "0x88"
+    assert res["data_offset"] == 0x88
+    assert res["words"][0] == 0x88
+
+
+def test_bin_header_parses_0x84_body():
+    res = doa3_cast.bin_header(make_bin_body(0x84))
+    assert res["header_size"] == 0x84
+    assert res["word_count"] == 33
+
+
+def test_bin_header_accepts_in_file_pointers():
+    pointers = [0x90, 0, 0x100, 0] + [0] * 29
+    res = doa3_cast.bin_header(make_bin_body(0x88, pointers=pointers))
+    assert res["words"][1] == 0x90 and res["words"][3] == 0x100
+
+
+def test_bin_header_rejects_unknown_size():
+    with pytest.raises(ValueError, match="not one of"):
+        doa3_cast.bin_header(make_bin_body(0x80))
+
+
+def test_bin_header_rejects_out_of_file_pointer():
+    with pytest.raises(ValueError, match="not an in-file pointer"):
+        doa3_cast.bin_header(make_bin_body(0x88, pointers=[0xFFFF0000] + [0] * 32))
+
+
+def test_bin_header_rejects_too_short():
+    with pytest.raises(ValueError, match="too short"):
+        doa3_cast.bin_header(b"\x00")
+
+
+def test_bin_header_rejects_header_exceeding_file():
+    with pytest.raises(ValueError, match="exceeds"):
+        doa3_cast.bin_header(struct.pack("<I", 0x88))
+
+
+def test_bin_header_holds_on_all_owned_bodies():
+    # The owned loadfile.afs carries 20 fighter bodies: 18 with a 0x88 header and
+    # 2 (suiken/gokei = Brad Wong / Christie) with a 0x84 header. Every header word
+    # is an in-file pointer or 0. Pinned against the owned build; skipped when the
+    # cache is absent.
+    afs_path = Path.home() / "gbox-cache/b8edf7040116f3aa/extract/Dead or Alive 3/loadfile.afs"
+    if not afs_path.is_file():
+        pytest.skip("owned DOA3 loadfile.afs not present")
+    from gbox import doa3_inventory
+    af = doa3_inventory.read_afs(afs_path)
+    fams = doa3_inventory.fighter_families(af["entries"])
+    assert fams, "owned loadfile.afs should yield fighter families"
+    sizes: dict[int, int] = {}
+    with open(afs_path, "rb") as f:
+        for fam in fams:
+            e = next(x for x in af["entries"] if x["index"] == fam["bin"])
+            f.seek(e["offset"])
+            res = doa3_cast.bin_header(f.read(e["size"]))
+            sizes[res["header_size"]] = sizes.get(res["header_size"], 0) + 1
+    assert sizes == {0x88: 18, 0x84: 2}
