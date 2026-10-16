@@ -220,3 +220,83 @@ def test_decode_image_rgba16():
     assert gr.decode_image(b"\x00", 1, 1, gr.FMT_YUV, gr.SIZ_8B) is None
     # short input -> None (never a partial decode)
     assert gr.decode_image(b"\x00", 2, 2, gr.FMT_RGBA, gr.SIZ_16B) is None
+
+
+def test_g_textures_table(ge):
+    """g_Textures is pinned: 2698 x 8-byte image_entry in the data segment, each
+    dataoffset (word0 low 24 bits) a per-image byte size, 0xffff terminator."""
+    sizes = gr.g_textures(ge)
+    assert len(sizes) == gr.G_TEXTURES_COUNT == 2698
+    assert sum(sizes) == 0x2EEF18 == 3075864
+    # first three sizes match the n64decomp imagelist.u.csv (COPYICON/X/DELICON)
+    assert sizes[:3] == [0x754, 0x16A, 0x974]
+    # image_entry is 8 bytes: word0 = {hitSound:4|hitTexture:4, u24 dataoffset}
+    p = gr.G_TEXTURES_DATA_OFF
+    w0 = (ge.data[p] << 24) | (ge.data[p + 1] << 16) | (ge.data[p + 2] << 8) | ge.data[p + 3]
+    assert w0 & 0xFFFFFF == 0x754
+    # terminator sits right after the 2698th entry
+    t = gr.G_TEXTURES_DATA_OFF + 8 * 2698
+    w0t = (ge.data[t] << 24) | (ge.data[t + 1] << 16) | (ge.data[t + 2] << 8) | ge.data[t + 3]
+    assert w0t & 0xFFFFFF == gr.G_TEXTURES_TERMINATOR
+
+
+def test_images_segment_pinned(ge):
+    """_imagesSegmentRomStart = 0x8F7848; image data ends exactly at the 0xFF tail."""
+    sizes = gr.g_textures(ge)
+    off, size = gr.image_rom_span(sizes, 0)
+    assert off == gr.IMAGES_ROM_START == 0x8F7848
+    assert size == 0x754
+    assert gr.IMAGES_ROM_START + sum(sizes) == 0xBE6760
+    # the byte at images start is a valid 1-byte image header (bit7/6/0-5)
+    hdr = ge.rom[off]
+    assert hdr & 0x3F == 0  # COPYICON has no LOD / zlib / explicit-LOD flags
+
+
+def test_tex_bit_reader():
+    """texReadBits is MSB-first; the first byte read is the most significant."""
+    br = gr.TexBitReader(bytes([0x12, 0x34]))
+    assert [br.read(4) for _ in range(4)] == [0x1, 0x2, 0x3, 0x4]
+    br = gr.TexBitReader(bytes([0x80, 0x00]))
+    assert br.read(1) == 1 and br.read(15) == 0
+
+
+def test_tex_read_uncompressed_rgba16():
+    """texReadUncompressed RGBA16: bit-packed 5/5/5/1 -> RGBA8888."""
+    # format(4)=1, w(8)=1, h(8)=1, comp(4)=0, then 0xF801 (opaque red)
+    bits = 0b0001_00000001_00000001_0000_1111100000000001
+    br = gr.TexBitReader(bits.to_bytes(5, "big"))
+    fmt, w, h, comp = br.read(4), br.read(8), br.read(8), br.read(4)
+    assert (fmt, w, h, comp) == (1, 1, 1, 0)
+    assert gr.tex_read_uncompressed(br, w, h, fmt) == bytes([0xFF, 0x00, 0x00, 0xFF])
+
+
+def test_csuitbondz_texture_headers(ge):
+    """The 14 CsuitbondZ texture records resolve to real global image headers.
+
+    The pixel bank stores them as a bitstream (format/width/height/compmethod)
+    with Huffman/RLE/LOOKUP/zlib compression -- not the raw RGBA16 that the
+    reader(4) note assumed -- so decode_model_texture reports the codec and
+    leaves pixels None where the codec is not yet implemented.
+    """
+    doc = gr.read_character(ge, "CsuitbondZ")
+    seen = {}
+    for t in doc["textures"]:
+        d = gr.decode_model_texture(ge, t["index"])
+        assert d["texture_id"] == t["index"]
+        assert d["rom_offset"] == gr.IMAGES_ROM_START + gr.image_offsets(gr.g_textures(ge))[t["index"]]
+        seen[t["index"]] = d
+    # every texture id is a 12-bit global id (G_SETTEX texture_id field)
+    assert all(0 <= i < 0xFFF for i in seen)
+    # all 14 are compressed/undecoded in this milestone (no silent garbage)
+    assert all(d.get("pixels") is None for d in seen.values())
+    # at least one zlib and one Huffman-family codec are represented
+    assert any(d.get("is_zlib") for d in seen.values())
+    assert any(d.get("compmethod", 0) >= 2 for d in seen.values())
+
+
+def test_g_settex_12bit_mask(ge):
+    """G_SETTEX (0xC0) texture ids are the 12-bit texture_id field (w1 & 0xFFF)."""
+    doc = gr.read_character(ge, "CsuitbondZ")
+    vnodes = [n for n in doc["nodes"] if int(n["opcode"], 16) & 0xFF == 0x18]
+    for n in vnodes:
+        assert all(0 <= t < 0xFFF for t in n["record"]["texture_ids"])

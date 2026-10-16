@@ -350,8 +350,8 @@ def decode_primary_dl(model: bytes, rec: NodeRec) -> None:
         elif cmd == 0xBF:  # G_TRI1 (F3D_OLD)
             t = _g_tri1(w1)
             tris.append(tuple(cache[i] for i in t))
-        elif cmd == 0xC0:  # G_SETTEX: global texture id
-            tex_ids.append(w1)
+        elif cmd == 0xC0:  # G_SETTEX: global texture id (12-bit, gbi_extension.h)
+            tex_ids.append(w1 & 0xFFF)
         end += 8
     rec.triangles = [t for t in tris if all(isinstance(i, int) for i in t)]
     rec.record["texture_ids"] = sorted(set(tex_ids))
@@ -425,17 +425,27 @@ def read_character(ge: GoldenEyeROM, filename: str) -> dict:
 
 # ---------------------------------------------------------------- textures / points
 
-# The global image table ``g_Textures`` (image.h ``image_entry``) packs each
-# entry into 6 bytes: hitSound:4 | hitTexture:4 | dataoffset:24 | flag3..6:4
-# (one nibble each).  In ROM the 24-bit ``dataoffset`` field stores the
-# PER-IMAGE byte SIZE; ``image_entries_load`` (initimages.c) rewrites it in
-# place to cumulative offsets at startup, stopping at a 0xffff terminator.
-# The pixel bytes live in the ROM ``images`` segment at ``_imagesSegmentRomStart``
-# (the final ROM segment per ge007.ld), i.e. image i is at
-# [_imagesSegmentRomStart + offset[i], ... + offset[i+1]).
-G_TEXTURES_ENTRY_SIZE = 6
+# The global image table ``g_Textures`` (image.h ``image_entry``) lives in the
+# rarezip DATA segment (image.c: ``struct image_entry g_Textures[]`` at US
+# D:80049300).  It is NOT the "Globalimagetable" linker segment (that segment is
+# the odd-texture image bank: ammo/crosshair/HUD sImageTableEntry tables + DLs).
+#
+# Each entry is 8 bytes.  ``*((s32*)&g_Textures[i]) & 0xFFFFFF`` is the 24-bit
+# ``dataoffset``: in ROM it holds the PER-IMAGE byte SIZE (image i occupies
+# [_imagesSegmentRomStart + offset[i], + offset[i] + size[i]) with offset[i] the
+# cumulative sum of sizes[0..i-1]); ``image_entries_load`` (initimages.c)
+# rewrites it in place to the cumulative offset at startup, stopping at a
+# 0xffff terminator.  word0 = {u8 hitSound:4 | u8 hitTexture:4, u24 dataoffset},
+# word1 = {u8 flag3:4, flag4:4, flag5:4, flag6:4, pad}.  Verified against the
+# n64decomp/007 imagelist.u.csv: the 2698 sizes and cumulative offsets match the
+# US ROM's absolute image offsets byte-for-byte (PAL images segment is the same
+# bytes shifted by -0x5A8).
+G_TEXTURES_DATA_OFF = 0x22C30   # PAL data-segment offset of g_Textures (VRAM 0x80040E80)
+G_TEXTURES_VRAM = 0x80040E80
+G_TEXTURES_ENTRY_SIZE = 8       # image_entry is 8 bytes, not 6
 G_TEXTURES_TERMINATOR = 0xFFFF
-G_TEXTURES_COUNT = 0xBB9  # PAL build image count (NTSC decomp: 2698 in images.def)
+G_TEXTURES_COUNT = 2698         # pinned: 2698 images, total 3075864 bytes
+IMAGES_ROM_START = 0x8F7848     # PAL _imagesSegmentRomStart (images segment, ROM end)
 
 # G_IM_FMT / G_IM_SIZ for the model's 12-byte sImageTableEntry (bondtypes.h
 # ModelFileTextures: Type = format, RenderDepth = size).
@@ -558,31 +568,186 @@ def decode_image(pixels: bytes, width: int, height: int, fmt: int,
     return None
 
 
-def find_global_texture_table(rom: bytes, count: int = G_TEXTURES_COUNT) -> int | None:
-    """Locate the uncompressed g_Textures size table in ROM, or None.
+def g_textures(ge: GoldenEyeROM) -> list[int]:
+    """Read the pinned g_Textures size table from the data segment.
 
-    The table is ``count`` x 6-byte entries whose 24-bit dataoffset is the
-    per-image size (1..0xffff) with a 0xffff terminator.  It lives in the
-    "Globalimagetable" segment (ge007.ld), NOT the rarezip data segment, so
-    the PAL offset is not the US 0x80049300.  If this scan returns None the
-    table is at an offset that must first be pinned from a code xref to
-    ``image_entries_load`` / ``_imagesSegmentRomStart`` (Ghidra); do not guess.
+    Returns the per-image byte sizes (2698 entries); the table ends at a
+    0xffff dataoffset terminator (not included).
     """
-    def _d(o: int) -> int:
-        return (rom[o + 1] << 16) | (rom[o + 2] << 8) | rom[o + 3]
+    sizes: list[int] = []
+    p = G_TEXTURES_DATA_OFF
+    while True:
+        w0 = (ge.data[p] << 24) | (ge.data[p + 1] << 16) | (ge.data[p + 2] << 8) | ge.data[p + 3]
+        d = w0 & 0xFFFFFF
+        if d == G_TEXTURES_TERMINATOR:
+            break
+        if not 1 <= d < G_TEXTURES_TERMINATOR:
+            raise GoldenEyeFormatError(f"implausible image size 0x{d:X} at data offset 0x{p:X}")
+        sizes.append(d)
+        p += G_TEXTURES_ENTRY_SIZE
+    return sizes
 
-    s = 0
-    while s <= len(rom) - G_TEXTURES_ENTRY_SIZE * count:
-        if 1 <= _d(s) < 0xFFFF:
-            ok = True
-            for i in range(1, count):
-                if not 1 <= _d(s + G_TEXTURES_ENTRY_SIZE * i) < 0xFFFF:
-                    ok = False
-                    break
-            if ok and _d(s + G_TEXTURES_ENTRY_SIZE * count) == G_TEXTURES_TERMINATOR:
-                return s
-        s += 1
-    return None
+
+def image_offsets(sizes: list[int]) -> list[int]:
+    """Cumulative image offsets (the runtime dataoffset) plus the trailing total."""
+    return image_entries_accumulate(sizes)
+
+
+def image_rom_span(sizes: list[int], index: int) -> tuple[int, int]:
+    """(rom_offset, size) of image ``index`` in the images segment."""
+    off = image_offsets(sizes)
+    return IMAGES_ROM_START + off[index], sizes[index]
+
+
+# G_IM_FMT_* style TEXFORMAT (image.h) -> decode metadata, cross-checked against
+# g_TexFormat* in image.c.
+TEXFORMAT_NAMES = ["RGBA32", "RGBA16", "RGB24", "RGB15", "IA16", "IA8", "IA4",
+                   "I8", "I4", "RGBA16_CI8", "RGBA16_CI4", "IA16_CI8", "IA16_CI4"]
+# bits per pixel (image.c g_TexFormatBitsPerPixel)
+TEXFORMAT_BPP = [32, 16, 24, 15, 16, 8, 4, 8, 4, 16, 16, 16, 16]
+# N64 G_IM_FMT (image.c g_TexFormatGbiMappings)
+TEXFORMAT_GBI = [0, 0, 0, 0, 3, 3, 3, 4, 4, 2, 2, 2, 2]
+# N64 G_IM_SIZ (image.c g_TexFormatDepths)
+TEXFORMAT_DEPTH = [3, 2, 3, 2, 2, 1, 0, 1, 0, 1, 0, 1, 0]
+# compression methods (image.h TEXCOMPMETHOD_*)
+COMPMETHOD_NAMES = ["UNCOMPRESSED0", "UNCOMPRESSED1", "HUFFMAN", "HUFFMANPERHCHANNEL",
+                    "RLE", "LOOKUP", "HUFFMANLOOKUP", "RLELOOKUP", "HUFFMANBLUR", "RLEBLUR"]
+
+
+class TexBitReader:
+    """Replicates ``texReadBits`` (image_bank.c): MSB-first bit stream.
+
+    The first byte read is the most significant; ``read(k)`` returns the next
+    ``k`` bits as an unsigned int.
+    """
+
+    def __init__(self, buf: bytes):
+        self.buf = buf
+        self.pos = 0
+        self.acc = 0
+        self.nbits = 0
+
+    def read(self, k: int) -> int:
+        while self.nbits < k:
+            self.acc = (self.buf[self.pos] | (self.acc << 8)) & 0xFFFFFFFF
+            self.pos += 1
+            self.nbits += 8
+        self.nbits -= k
+        return (self.acc >> self.nbits) & ((1 << k) - 1)
+
+
+def image_payload_header(rom: bytes, off: int) -> tuple[bool, bool, int]:
+    """Parse the 1-byte image header (texLoad): (has_explicit_lods, is_zlib, lod)."""
+    hdr = rom[off]
+    return (bool(hdr & 0x80), bool(hdr & 0x40), hdr & 0x3F)
+
+
+def tex_read_uncompressed(br: TexBitReader, width: int, height: int,
+                          fmt: int) -> bytes:
+    """Replicate ``texReadUncompressed`` (image.c) -> RGBA8888, tight rows."""
+    n = width * height
+    out = bytearray(n * 4)
+    if fmt == 0:  # RGBA32
+        for i in range(n):
+            w = (br.read(16) << 16) | br.read(16)
+            out[i * 4:i * 4 + 4] = (w >> 24) & 0xFF, (w >> 16) & 0xFF, (w >> 8) & 0xFF, w & 0xFF
+    elif fmt == 1:  # RGBA16 (5/5/5/1)
+        for i in range(n):
+            w = br.read(16)
+            out[i * 4] = _c16((w >> 11) & 0x1F)
+            out[i * 4 + 1] = _c16((w >> 6) & 0x1F)
+            out[i * 4 + 2] = _c16((w >> 1) & 0x1F)
+            out[i * 4 + 3] = 255 if (w & 1) else 0
+    elif fmt == 2:  # RGB24
+        for i in range(n):
+            w = br.read(24)
+            out[i * 4:i * 4 + 4] = (w >> 16) & 0xFF, (w >> 8) & 0xFF, w & 0xFF, 0xFF
+    elif fmt == 3:  # RGB15 (5/5/5)
+        for i in range(n):
+            w = br.read(15)
+            out[i * 4] = _c16((w >> 10) & 0x1F)
+            out[i * 4 + 1] = _c16((w >> 5) & 0x1F)
+            out[i * 4 + 2] = _c16(w & 0x1F)
+            out[i * 4 + 3] = 0xFF
+    elif fmt == 4:  # IA16 (8-bit intensity + 8-bit alpha)
+        for i in range(n):
+            ia = br.read(16)
+            v = ia >> 8
+            out[i * 4:i * 4 + 4] = v, v, v, ia & 0xFF
+    elif fmt in (5, 7):  # IA8 / I8
+        for i in range(n):
+            v = br.read(8)
+            out[i * 4:i * 4 + 4] = v, v, v, (v if fmt == 7 else 0xFF)
+    elif fmt in (6, 8):  # IA4 / I4 (nibble per pixel, high nibble first)
+        for i in range(n):
+            v = br.read(4)
+            v = (v << 4) | v
+            out[i * 4:i * 4 + 4] = v, v, v, (v if fmt == 8 else 0xFF)
+    else:
+        return b""  # paletted (CI) needs a palette -- handled elsewhere
+    return bytes(out)
+
+
+def texture_bitstream_header(rom: bytes, off: int, size: int) -> dict:
+    """Decode the texInflateNonZlib header of image at ``off`` (header byte + bitstream).
+
+    Returns format/width/height/compmethod and the per-image decode path.  Only
+    the first (top) mip level is read when has_explicit_lods is unset.
+    """
+    explicit, is_zlib, lod = image_payload_header(rom, off)
+    payload = rom[off + 1:off + size]
+    br = TexBitReader(payload)
+    try:
+        fmt = br.read(4)
+        width = br.read(8)
+        height = br.read(8)
+        comp = br.read(4)
+    except IndexError:
+        return {"error": "payload too short for bitstream header"}
+    return {"has_explicit_lods": explicit, "is_zlib": is_zlib, "lod": lod,
+            "format": fmt, "format_name": TEXFORMAT_NAMES[fmt] if fmt < len(TEXFORMAT_NAMES) else fmt,
+            "width": width, "height": height, "compmethod": comp,
+            "compmethod_name": COMPMETHOD_NAMES[comp] if comp < len(COMPMETHOD_NAMES) else comp}
+
+
+def decode_model_texture(ge: GoldenEyeROM, texture_id: int) -> dict:
+    """Decode one global texture (g_Textures index) to its header + pixels.
+
+    Pixels are decoded only for uncompressed (comp 0/1) raw formats.  Zlib and
+    Huffman/RLE/LOOKUP codecs are reported with their method and left undecoded
+    (the zlib payload is compressed, so its bitstream header is meaningless).
+    """
+    sizes = g_textures(ge)
+    if not 0 <= texture_id < len(sizes):
+        raise KeyError(texture_id)
+    off, size = image_rom_span(sizes, texture_id)
+    explicit, is_zlib, lod = image_payload_header(ge.rom, off)
+    if is_zlib:
+        return {"texture_id": texture_id, "rom_offset": off, "size": size,
+                "has_explicit_lods": explicit, "is_zlib": True, "lod": lod,
+                "pixels": None, "note": "zlib-compressed paletted texture"}
+    hdr = texture_bitstream_header(ge.rom, off, size)
+    if "error" in hdr or hdr["compmethod"] >= 2:
+        # Huffman / RLE / LOOKUP codecs not decoded yet
+        return {"texture_id": texture_id, "rom_offset": off, "size": size,
+                "has_explicit_lods": explicit, "is_zlib": False, "lod": lod,
+                **hdr, "pixels": None}
+    # Guard the raw path: the header's width*height*bpp must fit the payload,
+    # otherwise the bitstream header itself is suspect (observed on character
+    # textures where the stored width disagrees with the model record).
+    bpp = TEXFORMAT_BPP[hdr["format"]] if hdr["format"] < len(TEXFORMAT_BPP) else 0
+    need_bits = 24 + hdr["width"] * hdr["height"] * bpp
+    if bpp == 0 or hdr["width"] == 0 or hdr["height"] == 0 or need_bits > (size - 1) * 8:
+        return {"texture_id": texture_id, "rom_offset": off, "size": size,
+                "has_explicit_lods": explicit, "is_zlib": False, "lod": lod,
+                **hdr, "pixels": None,
+                "note": f"header {hdr['width']}x{hdr['height']} @{bpp}bpp overruns "
+                        f"{size - 1}-byte payload"}
+    rgba = tex_read_uncompressed(TexBitReader(ge.rom[off + 1:off + size]), hdr["width"],
+                                 hdr["height"], hdr["format"])
+    return {"texture_id": texture_id, "rom_offset": off, "size": size,
+            "has_explicit_lods": explicit, "is_zlib": False, "lod": lod,
+            **hdr, "pixels": rgba, "pixel_bytes": len(rgba)}
 
 
 
