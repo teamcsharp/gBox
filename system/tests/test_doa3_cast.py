@@ -206,3 +206,77 @@ def test_read_afs_roundtrip_sees_patched_entry(tmp_path):
     assert parsed["count"] == 2
     assert parsed["entries"][1]["size"] == 24
     assert parsed["entries"][1]["magic"].startswith("Y")
+
+
+# ----------------------------------------------------------------- review-gap fixes
+
+def test_xpr_resources_rejects_short_fixed_header():
+    blob = make_xpr()
+    with pytest.raises(ValueError, match="too short"):
+        doa3_cast.xpr_resources(blob[:0x20])
+
+
+def test_xpr_roundtrip_is_byte_preserving():
+    blob = make_xpr(mdl_size=256, words=[0x48, 0x14C, 0x16BC, 0x3F54, 0x4190, 0x97DC])
+    assert doa3_cast.xpr_roundtrip(blob) == blob
+
+
+def test_xpr_resources_rejects_misaligned_header():
+    blob = bytearray(make_xpr())
+    struct.pack_into("<I", blob, 8, 0x39)  # header_size not 4-byte aligned
+    with pytest.raises(ValueError, match="aligned"):
+        doa3_cast.xpr_resources(bytes(blob))
+
+
+def test_afs_patch_entry_stages_output_and_keeps_original(tmp_path):
+    afs = tmp_path / "loadfile.afs"
+    afs.write_bytes(make_afs([b"A" * 16, b"B" * 32]))
+    before = afs.read_bytes()
+    out = tmp_path / "loadfile.patched.afs"
+    room = doa3_cast.afs_patch_entry(afs, 0, b"Z" * 8, out=out)
+    assert room == 16
+    assert afs.read_bytes() == before                  # source untouched
+    patched = afs_table(out.read_bytes(), len(before))
+    assert patched["sizes"][0] == 8
+    assert out.read_bytes()[patched["offsets"][0]:patched["offsets"][0] + 8] == b"Z" * 8
+
+
+def test_afs_patch_entry_refuses_source_digest_mismatch(tmp_path):
+    afs = tmp_path / "loadfile.afs"
+    afs.write_bytes(make_afs([b"A" * 16]))
+    before = afs.read_bytes()
+    with pytest.raises(ValueError, match="digest mismatch"):
+        doa3_cast.afs_patch_entry(afs, 0, b"Z" * 8, expected_sha256="0" * 64)
+    assert afs.read_bytes() == before
+
+
+def test_afs_patch_entry_refuses_no_source_change(tmp_path):
+    afs = tmp_path / "loadfile.afs"
+    afs.write_bytes(make_afs([b"A" * 16, b"B" * 32]))
+    before = afs.read_bytes()
+    with pytest.raises(ValueError, match="no source change"):
+        doa3_cast.afs_patch_entry(afs, 1, b"B" * 32)
+    assert afs.read_bytes() == before
+
+
+def test_afs_patch_entry_rejects_malformed_and_truncated(tmp_path):
+    afs = tmp_path / "loadfile.afs"
+    afs.write_bytes(b"NOTAFS" + bytes(64))
+    with pytest.raises(ValueError, match="not an AFS"):
+        doa3_cast.afs_patch_entry(afs, 0, b"X")
+    afs.write_bytes(b"AFS\x00" + struct.pack("<I", 4) + struct.pack("<8I", *[0] * 8))
+    with pytest.raises(ValueError, match="truncated"):
+        doa3_cast.afs_patch_entry(afs, 0, b"X")
+
+
+def test_afs_patch_entry_rejects_name_directory_out_of_bounds(tmp_path):
+    n = 1
+    head_len = 16 + 8 * n
+    out = bytearray(head_len + 0x800)
+    struct.pack_into("<4sI", out, 0, b"AFS\x00", n)
+    struct.pack_into("<II", out, 8, head_len, 0x100)          # entry 0 inside the archive
+    struct.pack_into("<II", out, 8 + 8 * n, head_len + 0x800, 48 * n)  # name dir past EOF
+    afs = tmp_path / "loadfile.afs"
+    afs.write_bytes(bytes(out))
+    with pytest.raises(ValueError, match="name directory"):
+        doa3_cast.afs_patch_entry(afs, 0, b"X")

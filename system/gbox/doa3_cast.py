@@ -3,7 +3,7 @@ slot inventory and the AFS patch path for the combined cast writer.
 
 Everything here is validated against the owned USA build (game b8edf7040116f3aa;
 XBE sha256 e523dd15d0765899a43a1824c023e0219d129e9a8b41e8213e4e645755d2bfa3,
-loadfile.afs 365689880 bytes). The MDL geometry decoder/encoder is NOT
+loadfile.afs 365690880 bytes). The MDL geometry decoder/encoder is NOT
 implemented yet: this module stops at container level and says so. It is not a
 playable build and must never be reported as one.
 
@@ -13,11 +13,15 @@ Layout facts pinned from kas00.xpr / kas00.cat (Kasumi costume 00, live bytes):
   {u32 0x80000000, u32 size, 4cc tag ``MDL``} at 0x0C..0x18. The MDL payload
   starts at header_size (kas00: 119868 bytes of dense float data, no texture
   magic). The header continues with a second pair {u32 0x48, u32 87} at 0x18
-  and a u32 18 at 0x20; the words after that are NOT resolved to a record
-  stride yet (12- and 20-byte interpretations both fail internal consistency
-  on live bytes) and are exposed raw. No ``DDS `` magic exists anywhere in the
-  resource: textures are raw D3D surfaces without an external marker, so the
-  D3D resource table has to be pinned against the XBE loader (RE stage).
+  and a u32 18 at 0x20. From 0x24 the header holds a run of increasing u32
+  offsets into the header (kas00: 0x48 .. 0x1D240, all below header_size, i.e.
+  texture surface data positions), terminated by 0x00000000 immediately before
+  an ``OBJ\0`` section marker at 0x14C (the material/object table). The MDL
+  payload is headerless: it begins directly with dense f32 data (kas00 shows a
+  ~32-byte periodic structure, no count word and no texture magic). No ``DDS
+  `` magic exists anywhere in the resource: textures are raw D3D surfaces, so
+  the per-texture descriptor stride has to be pinned against the XBE loader
+  (RE stage).
 * CAT: u32 version (1) then size/count words (kas00: 0x14, 1472, 0x9A40,
   0x4F5C0, 0x100, 1, 0x18) and ASCII section markers (``LNK\\0`` plus digits,
   e.g. at 0x9A40). The trailing 12-byte table near EOF looks like
@@ -29,8 +33,11 @@ Layout facts pinned from kas00.xpr / kas00.cat (Kasumi costume 00, live bytes):
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import struct
+import tempfile
 from pathlib import Path
 
 from .doa3_inventory import GAME_ID, ROSTER, afs_table, entry_rooms
@@ -57,10 +64,16 @@ def xpr_resources(blob: bytes) -> dict:
 
     The descriptor words are intentionally not interpreted as records: their
     stride is still unresolved (see the module docstring)."""
-    if len(blob) < 0x20 or blob[:4] != XPR_MAGIC:
+    if len(blob) < 0x24:
+        raise ValueError(f"XPR0 resource is too short for its fixed header ({len(blob)} < 0x24 bytes)")
+    if blob[:4] != XPR_MAGIC:
         raise ValueError(f"not an XPR0 resource (magic {blob[:4]!r})")
     total, hsize = struct.unpack_from("<II", blob, 4)
-    if not 12 <= hsize <= total <= len(blob):
+    if hsize < 0x24:
+        raise ValueError(f"XPR0 header is too small for the fixed MDL/descriptor fields ({hsize:#x} < 0x24)")
+    if hsize % 4 or total % 4:
+        raise ValueError(f"XPR0 sizes are not 4-byte aligned (header {hsize:#x}, total {total:#x})")
+    if not hsize <= total <= len(blob):
         raise ValueError(f"XPR0 sizes invalid: header {hsize}, total {total}, file {len(blob)}")
     rtype, rsize = struct.unpack_from("<II", blob, 12)
     if rtype != USER_TYPE:
@@ -91,6 +104,25 @@ def xpr_mdl(blob: bytes) -> bytes:
     """The raw MDL payload of an XPR0 costume resource (undecoded)."""
     res = xpr_resources(blob)
     return blob[res["mdl"]["offset"]:res["mdl"]["end"]]
+
+
+def xpr_roundtrip(blob: bytes) -> bytes:
+    """Re-serialize a parsed XPR0 resource byte-for-byte (the no-op encode gate).
+
+    The output must equal ``blob`` exactly. It reconstructs the container from
+    the fields ``xpr_resources`` returns, so a byte-identical result proves the
+    parser's boundaries (header_size, MDL offset/end, trailing region) account
+    for every byte. This gate must hold before any donor geometry is written
+    into the MDL payload."""
+    res = xpr_resources(blob)
+    out = bytearray(res["total"])
+    out[0:4] = XPR_MAGIC
+    struct.pack_into("<I", out, 4, res["total"])
+    struct.pack_into("<I", out, 8, res["header_size"])
+    out[0x0C:res["mdl"]["offset"]] = blob[0x0C:res["mdl"]["offset"]]
+    out[res["mdl"]["offset"]:res["mdl"]["end"]] = blob[res["mdl"]["offset"]:res["mdl"]["end"]]
+    out[res["mdl"]["end"]:] = blob[res["mdl"]["end"]:]
+    return bytes(out)
 
 
 # --------------------------------------------------------------------- CAT
@@ -159,30 +191,63 @@ def slot_inventory(manifest: dict) -> dict:
 
 # ----------------------------------------------------------------- AFS writer path
 
-def afs_patch_entry(path: str | Path, entry_index: int, new_bytes: bytes) -> int:
-    """Rewrite one AFS entry in place inside its room (content at the same
-    offset, zero-padded to the room; the entry table size word is updated).
+def afs_patch_entry(path: str | Path, entry_index: int, new_bytes: bytes, *,
+                    out: str | Path | None = None, expected_sha256: str | None = None) -> int:
+    """Rewrite one AFS entry into a separately staged image and publish it atomically.
 
-    Returns the room the entry occupied. Refuses anything larger than the
-    room; the archive is left untouched on failure."""
+    The source archive is read once and never modified in place: the patched
+    image is written to a fresh sibling staging file, fsync'd, then atomically
+    moved over ``out`` (or the source when ``out`` is None) with os.replace, so
+    an existing archive is never left partially written. The full layout is
+    validated first (magic/header bounds, entry table, no overlap, name
+    directory bounds, optional source digest) and a byte-identical replacement
+    is refused as a no-op. Returns the room the entry occupied."""
     p = Path(path)
-    data = bytearray(p.read_bytes())
-    table = afs_table(bytes(data), len(data))
+    original = p.read_bytes()
+    source_digest = hashlib.sha256(original).hexdigest()
+    if expected_sha256 is not None and source_digest != expected_sha256:
+        raise ValueError(f"AFS source digest mismatch (expected {expected_sha256}, got {source_digest})")
+    data = bytearray(original)
+    archive_size = len(data)
+    table = afs_table(bytes(data), archive_size)
     count = table["count"]
     if not 0 <= entry_index < count:
         raise ValueError(f"AFS entry {entry_index} outside {count} entries")
+    nd = table["name_dir"]
+    if nd:
+        nd_off, nd_size = nd
+        if nd_off + nd_size > archive_size:
+            raise ValueError("AFS name directory extends outside the archive")
+        for i, (o, z) in enumerate(zip(table["offsets"], table["sizes"])):
+            if z and o < nd_off + nd_size and nd_off < o + z:
+                raise ValueError(f"AFS name directory overlaps entry {i}")
     off, size = table["offsets"][entry_index], table["sizes"][entry_index]
     if not size:
         raise ValueError(f"AFS entry {entry_index} is empty; a cast writer must replace a live slot")
-    rooms = entry_rooms(table["offsets"], table["sizes"], len(data), table["name_dir"] or ())
+    rooms = entry_rooms(table["offsets"], table["sizes"], archive_size, (nd[0],) if nd else ())
     room = rooms[entry_index]
     if len(new_bytes) > room:
         raise ValueError(f"new payload {len(new_bytes)} bytes exceeds the entry room {room}")
+    if new_bytes == bytes(data[off:off + size]):
+        raise ValueError("no source change: the entry already holds these bytes")
     data[off:off + len(new_bytes)] = new_bytes
     if len(new_bytes) < room:
         data[off + len(new_bytes):off + room] = b"\x00" * (room - len(new_bytes))
     struct.pack_into("<I", data, 8 + 8 * entry_index + 4, len(new_bytes))
-    p.write_bytes(bytes(data))
+    target = Path(out) if out is not None else p
+    fd, staging = tempfile.mkstemp(prefix=target.name + ".", suffix=".staging", dir=str(target.parent))
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(bytes(data))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(staging, target)
+    except BaseException:
+        try:
+            os.unlink(staging)
+        except OSError:
+            pass
+        raise
     return room
 
 
