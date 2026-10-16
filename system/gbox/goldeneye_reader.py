@@ -26,8 +26,13 @@ All record layouts are cross-checked against the GoldenEye decompilation
     0x0A BoundingBoxRecord 0x1CB {u32 ModelNumber, bbox {coord3d min, max}}
     0x0D ShadowRecord     0x20B {coord2d pos, coord2d size, u32 image,
                                  u32 HeaderNode, f32 Scale, u32 BaseAddr}
-    0x17 Op17Record       0x20B {s32 hitpart, f32 radiusSq, coord3d pos,
+    0x11 Op17Record       0x20B {s32 hitpart, f32 radiusSq, coord3d pos,
                                  u32 othernode, f32 scale1, f32 scale2}
+    0x12 SwitchRecord      0x08B {u32 Controls, u16 RwDataIndex, u16 pad}
+    0x15 GroupSimpleRecord 0x14B {coord3d Origin, s16 Group1, u16 Group2,
+                                 f32 BoundingVolumeRadius}
+    0x17 HeadPlaceholderRecord 0x02B {u16 RwDataIndex}  (not Op17Record,
+                                 which is 0x11 -- corrected from the decomp)
     0x18 DisplayListCollisionRecord 0x20B {Gfx* Primary, Gfx* Secondary,
                                  Vertex* Vertices, s16 numVertices,
                                  s16 numCollisionVertices, Vertex*
@@ -99,9 +104,13 @@ PAL_Z64_SHA256 = "40ff3643d3ed0be1b0b88266d298f455c15bd5a6f1a520c9aa2650b5f4b349
 VERTEX_SIZE = 0x10
 JOINT_SIZE = 6
 
-# Opcode -> record byte size (0 = skip payload decode).
-RECORD_SIZES = {0x01: 0x10, 0x02: 0x1C, 0x08: 0x10, 0x09: 0x24, 0x0A: 0x1C,
-                0x0D: 0x20, 0x17: 0x20, 0x18: 0x20}
+# Opcode -> record byte size (0 = skip payload decode).  Corrected against the
+# decomp bondtypes.h ModelRoData_*: opcode 0x11 is the 32-byte Op17Record, and
+# opcode 0x17 is the 2-byte HeadPlaceholderRecord (u16 RwDataIndex) -- the
+# reader previously mis-labelled 0x17 as Op17Record and over-read 32 bytes.
+RECORD_SIZES = {0x01: 0x10, 0x02: 0x1C, 0x04: 0x14, 0x08: 0x10, 0x09: 0x24,
+                0x0A: 0x1C, 0x0D: 0x20, 0x11: 0x20, 0x12: 0x08, 0x15: 0x14,
+                0x17: 0x02, 0x18: 0x20}
 
 # The 80 character body/head files of the PAL body table (deterministic for
 # the owned build; order == body-table index).  Used by the characters
@@ -243,6 +252,11 @@ def decode_record(model: bytes, rec: NodeRec) -> None:
                       "matrix_ids": [m0, m1, m2],
                       "child_group_node": _seg5(model, child_group),
                       "bounding_volume_radius": round(radius, 3)}
+    elif rec.op == 0x04:
+        primary, secondary, base, verts, nv, mtype = struct.unpack_from(">IIIIHB", b, p)
+        rec.record = {"primary_dl": _seg5(model, primary), "secondary_dl": _seg5(model, secondary),
+                      "vertices": _seg5(model, verts), "num_vertices": nv,
+                      "model_type": mtype, "base_addr": _seg5(model, base)}
     elif rec.op == 0x08:
         mn, mx, affects, rwidx, _ = struct.unpack_from(">ffIHH", b, p)
         rec.record = {"min_distance": round(mn, 3), "max_distance": round(mx, 3),
@@ -263,12 +277,22 @@ def decode_record(model: bytes, rec: NodeRec) -> None:
         rec.record = {"pos": [round(px, 3), round(py, 3)], "size": [round(sx, 3), round(sy, 3)],
                       "image": _seg5(model, image), "header_node": _seg5(model, header),
                       "scale": round(scale, 3), "base_addr": _seg5(model, base)}
-    elif rec.op == 0x17:
+    elif rec.op == 0x11:  # Op17Record
         hitpart, radius_sq, px, py, pz, other, s1, s2 = struct.unpack_from(">iffffIff", b, p)
         rec.record = {"hitpart": hitpart, "radius_sq": round(radius_sq, 3),
                       "pos": [round(px, 3), round(py, 3), round(pz, 3)],
                       "other_node": _seg5(model, other),
                       "scale1": round(s1, 3), "scale2": round(s2, 3)}
+    elif rec.op == 0x12:  # SwitchRecord
+        controls, rwidx, _ = struct.unpack_from(">IHH", b, p)
+        rec.record = {"controls_node": _seg5(model, controls), "rw_data_index": rwidx}
+    elif rec.op == 0x15:  # GroupSimpleRecord
+        ox, oy, oz, g1, g2, radius = struct.unpack_from(">fffhHf", b, p)
+        rec.record = {"origin": [round(ox, 3), round(oy, 3), round(oz, 3)],
+                      "group1": g1, "group2": g2, "bounding_volume_radius": round(radius, 3)}
+    elif rec.op == 0x17:  # HeadPlaceholderRecord
+        rwidx = struct.unpack_from(">H", b, p)[0]
+        rec.record = {"rw_data_index": rwidx}
     elif rec.op == 0x18:
         primary, secondary, verts, nv, ncv, cv, point_usage, mtype, rwidx, base = \
             struct.unpack_from(">IIIhhIIhHI", b, p)

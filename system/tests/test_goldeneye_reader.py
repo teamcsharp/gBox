@@ -171,6 +171,35 @@ def test_gltf_export_embeds_textures(ge, tmp_path):
     assert textured
 
 
+def test_opcode_0x17_is_head_placeholder(ge):
+    """0x17 is HeadPlaceholderRecord (u16 RwDataIndex), not the 32-byte Op17Record
+    (which is 0x11).  Regression guard for the record-size correction."""
+    doc = gr.read_character(ge, "CsuitbondZ")
+    node = next(n for n in doc["nodes"] if int(n["opcode"], 16) & 0xFF == 0x17)
+    assert node["record"] == {"rw_data_index": 0}
+    # Op17Record (0x11) does not occur in any PAL body/head file
+    bodies = ge.body_table()
+    for b in bodies:
+        d = gr.read_character(ge, b.filename)
+        assert not any(int(n["opcode"], 16) & 0xFF == 0x11 for n in d["nodes"]), b.filename
+
+
+def test_head_switch_and_groupsimple_decode(ge):
+    """Random heads use 0x12 SwitchRecord; the left-hand model uses 0x04
+    (collisionless DL) and 0x15 GroupSimpleRecord.  All decode correctly."""
+    doc = gr.read_character(ge, "CheadkarlZ")
+    switches = [n for n in doc["nodes"] if int(n["opcode"], 16) & 0xFF == 0x12]
+    assert switches
+    for n in switches:
+        assert "controls_node" in n["record"]
+        assert isinstance(n["record"]["rw_data_index"], int)
+    hand = gr.read_character(ge, "Csuit_lf_handZ")
+    dl04 = [n for n in hand["nodes"] if int(n["opcode"], 16) & 0xFF == 0x04]
+    assert dl04 and all("num_vertices" in n["record"] for n in dl04)
+    g15 = [n for n in hand["nodes"] if int(n["opcode"], 16) & 0xFF == 0x15]
+    assert g15 and all("origin" in n["record"] for n in g15)
+
+
 def test_rgba_to_png_roundtrip():
     """_rgba_to_png emits a valid PNG with the right IHDR dimensions."""
     png = gr._rgba_to_png(bytes([255, 0, 0, 255]), 1, 1)
