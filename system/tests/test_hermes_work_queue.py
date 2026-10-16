@@ -18,6 +18,36 @@ def request(rid=R, **kw):
     return {'id': rid, 'number': 5, 'title': 'Fix it', 'status': 'in_progress', **kw}
 
 
+def test_custom_unlock_work_requires_current_idle_admission_and_has_its_own_actual_dispatch_budget():
+    data = {'version': 1, 'items': {}}
+    reqs = [request(str(i) * 16, automated=True, context={'custom_build_unlocks': str(i) * 16,
+                    'game_id': str(i) * 16}) for i in range(1, 4)]
+    q.sync(data, {'count': 0, 'items': []}, reqs, now=1000)
+    assert len(data['items']) == 3, 'Durable custom unlock tickets belong to the existing queue'
+    assert q.candidates(data, reqs, [], set(), set(), now=1000) == []
+    data['unlock_admission'] = {'allowed': True, 'request_ids': [r['id'] for r in reqs], 'dispatch_per_hour': 2}
+    options = q.candidates(data, reqs, [], set(), set(), now=1000)
+    assert len(options) == 1, 'Spare queue capacity must not start several unlock investigations at once'
+    first = options[0][1]
+    first.update(last_dispatched=900, unlock_dispatch_times=[800, 900])
+    assert q.candidates(data, reqs, [], set(), set(), now=1000) == [], 'Retries count as actual starts too'
+    first.update(last_dispatched=0, unlock_dispatch_times=[])
+    data['unlock_admission']['request_ids'] = [reqs[1]['id']]
+    assert q.candidates(data, reqs, [], set(), set(), now=1000)[0][1]['request_id'] == reqs[1]['id']
+    data['unlock_admission']['allowed'] = False
+    assert q.candidates(data, reqs, [], set(), set(), now=1000) == []
+
+
+def test_unlock_prompt_has_complete_boot_scope_without_replacement_replay(monkeypatch):
+    monkeypatch.setattr(q.mode, '_handoff', lambda: '')
+    text = q._prompt({'request_id': R, 'number': 5, 'lane': 'inbox', 'unlock_work': True, 'favorite_unlock_work': True, 'repair': True})
+    assert 'hidden_characters' in text and 'boot_apply' in text and 'exact-build receipts' in text
+    assert 'Never launch an emulator automatically' in text and 'copy/rebuild a ROM for discovery' in text
+    assert 'cast_swap' not in text and 'donor/target' not in text and 'unfinished native character work' not in text
+    legacy = q._prompt({'request_id': R, 'number': 5, 'lane': 'inbox', 'unlock_work': True, 'repair': True})
+    assert 'existing custom-build writer' in legacy and 'original favorite' not in legacy
+
+
 @pytest.fixture
 def env(monkeypatch, tmp_path):
     monkeypatch.setenv('GBOX_HERMES_DISPATCH_STATE', str(tmp_path))

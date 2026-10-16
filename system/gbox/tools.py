@@ -679,6 +679,9 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         gd["_rom_path"] = str(src)                     # for the inspector's ROM viewer
     SESSIONS[sid] = (ad, gd)
     if not inp.capture_backend:
+        from . import custom_build_unlocks
+        detail['unlocks'] = custom_build_unlocks.on_launch(sid, ctx, requested_mod=inp.mod)
+    if not inp.capture_backend:
         try:
             from . import gameplay_actions
             detail['action_capture']=gameplay_actions.start(sid,ad,gd,ctx)
