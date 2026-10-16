@@ -40,10 +40,25 @@ XBE_KEYS = {"retail": (0xA8FC57AB, 0x5B6D40B6), "debug": (0x94859D4B, 0xEFB1F152
             "chihiro": (0x40B5C16E, 0x2290059D)}
 REGIONS = {0x1: "NA", 0x2: "JP", 0x4: "ROW", 0x80000000: "MFG"}
 
-# DOA3 roster (15 selectable fighters plus the boss Omega, Genra's transformed form); codes are
-# filled from the archive names by ``fighter_groups`` and never assumed.
-ROSTER = ["Kasumi", "Ayane", "Hitomi", "Leifang", "Tina", "Helena", "Christie", "Ryu Hayabusa",
-          "Jann Lee", "Zack", "Bass", "Gen Fu", "Brad Wong", "Bayman", "Ein", "Omega"]
+# DOA3 person slots. The nickname -> character mapping is the DOA3 modding community's BIN-file
+# documentation (Free Step Dodge "DOA3 - Modding: Understanding the BIN Files", corroborated by
+# TCRF's DOA3 codename table), cross-checked against the authoritative roster (Wikipedia: 17
+# playable + the boss Omega) and the loadfile.afs costume counts (e.g. ``karate`` = 3 costumes,
+# and Ein is the 3-costume karateka; Hitomi's codename is ``koryu`` at 8 costumes). The
+# executable's select table is the final authority and is still to be pinned by RE, so this table
+# is the reviewed working hypothesis until then -- it is NOT read from the XBE.
+NICKNAME_TO_CHARACTER = {
+    "kasumi": "Kasumi", "ayane": "Ayane", "karate": "Ein", "koryu": "Hitomi",
+    "leifang": "Leifang", "tina": "Tina", "hika": "Helena", "gokei": "Christie",
+    "ryu": "Ryu Hayabusa", "janlee": "Jann Lee", "zack": "Zack", "bass": "Bass",
+    "genfu": "Gen Fu", "suiken": "Brad Wong", "bayman": "Bayman", "sambo": "Leon",
+    "ninja": "Hayate", "bosnin": "Genra", "tengu": "Tengu", "chin": "Chen",
+}
+# Genra transforms into the boss Omega; Tengu is a DOA2 remnant kept in DOA3 with no costume XPRs
+# (boss/cameo); Chen is Brad Wong's master (story cameo, reuses suiken.mot).
+CHARACTER_KIND = {"Genra": "boss", "Tengu": "boss", "Chen": "cameo"}
+PLAYABLE_ROSTER = [n for n in NICKNAME_TO_CHARACTER.values() if n not in CHARACTER_KIND]
+ROSTER = list(NICKNAME_TO_CHARACTER.values())
 
 
 def sha256_file(path: str | Path, chunk: int = 1 << 22) -> str:
@@ -339,6 +354,45 @@ def xbe_motion_banks(data: bytes) -> list[str]:
     return out
 
 
+def fighter_roster(families: list[dict]) -> list[dict]:
+    """Join each fighter family to its documented character name and coverage.
+
+    One row per family: ``nick`` (the loadfile.afs ``<nick>.bin`` name), ``character`` (the
+    documented display name, or ``None`` when no nickname is known yet), ``kind``
+    (playable | boss | cameo | unknown), the costume code, the count of complete costume pairs and
+    the motion files. A ``kind`` of ``unknown`` marks a family whose nickname has no documented
+    character -- the executable's select table must pin it before a whole-cast build can trust it.
+    """
+    rows = []
+    for f in families:
+        nick = f["nick"]
+        char = NICKNAME_TO_CHARACTER.get(nick)
+        rows.append({
+            "nick": nick,
+            "character": char,
+            "kind": CHARACTER_KIND.get(char, "playable") if char else "unknown",
+            "code": f.get("code"),
+            "costumes": len(f.get("complete_costumes") or []),
+            "mot": list(f.get("mot") or []),
+        })
+    return rows
+
+
+def xbe_voice_codes(data: bytes) -> list[str]:
+    """The ordered 2-letter voice codes embedded in the XBE (``voice\\\\<code>\\\\v_<code>_en_*.adx``).
+
+    The XBE lists every voiced line's ADX path grouped by character code; the first occurrence of
+    each code is the game's internal voice-slot order. This is a byte-scan fact (the codes), not a
+    code -> character assertion (that needs the select table).
+    """
+    out: list[str] = []
+    for m in re.finditer(rb"voice\\([a-z]{2})\\v_", data):
+        c = m.group(1).decode("latin-1")
+        if c not in out:
+            out.append(c)
+    return out
+
+
 # ----------------------------------------------------------------------------- build
 
 def build(game_dir: str | Path, *, source_7z: str | Path | None = None,
@@ -393,7 +447,17 @@ def build(game_dir: str | Path, *, source_7z: str | Path | None = None,
                    "xpr_with_mdl": sum(1 for f in fams for c in f["costumes"].values()
                                        if c.get("xpr_header", {}).get("first_tag") == "MDL")},
         "movies": sorted(f["name"] for f in files if f["name"].endswith(".sfd")),
-        "roster_expected": ROSTER,
+        "roster": fighter_roster(fams),
+        "roster_playable": PLAYABLE_ROSTER,
+        "roster_bosses": sorted(k for k, v in CHARACTER_KIND.items() if v == "boss"),
+        "roster_cameos": sorted(k for k, v in CHARACTER_KIND.items() if v == "cameo"),
+        "xbe_voice_codes": xbe_voice_codes(xbe_path.read_bytes()),
+        "counts_person_slots": {
+            "families": len(fams),
+            "playable": len(PLAYABLE_ROSTER),
+            "bosses": sum(1 for v in CHARACTER_KIND.values() if v == "boss"),
+            "cameos": sum(1 for v in CHARACTER_KIND.values() if v == "cameo"),
+        },
     }
 
 

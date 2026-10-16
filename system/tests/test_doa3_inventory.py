@@ -164,8 +164,52 @@ def test_fighter_families_from_layout(tmp_path):
 
 
 def test_roster_has_no_duplicate_fighters():
-    assert len(d3.ROSTER) == len(set(d3.ROSTER)) == 16
-    assert "Ein" in d3.ROSTER and "Lei Fang" not in d3.ROSTER
+    # 20 person slots: 17 playable + 2 bosses (Genra/Omega, Tengu) + 1 cameo (Chen).
+    assert len(d3.NICKNAME_TO_CHARACTER) == 20
+    assert len(d3.ROSTER) == len(set(d3.ROSTER)) == 20
+    assert len(d3.PLAYABLE_ROSTER) == 17
+    assert d3.CHARACTER_KIND == {"Genra": "boss", "Tengu": "boss", "Chen": "cameo"}
+    assert "Ein" in d3.PLAYABLE_ROSTER and "Leon" in d3.PLAYABLE_ROSTER
+    assert "Hayate" in d3.PLAYABLE_ROSTER and "Lei Fang" not in d3.ROSTER
+
+
+def test_nickname_mapping_style_codenames():
+    # DOA3 modding community BIN-file documentation (Free Step Dodge / TCRF): the style-codenamed
+    # families map to specific fighters, NOT their obvious names.
+    assert d3.NICKNAME_TO_CHARACTER["karate"] == "Ein"      # Ein is the 3-costume karateka
+    assert d3.NICKNAME_TO_CHARACTER["koryu"] == "Hitomi"    # Hitomi's codename
+    assert d3.NICKNAME_TO_CHARACTER["sambo"] == "Leon"      # Leon's codename; Bayman is "bayman"
+    assert d3.NICKNAME_TO_CHARACTER["bayman"] == "Bayman"
+    assert d3.NICKNAME_TO_CHARACTER["gokei"] == "Christie"
+    assert d3.NICKNAME_TO_CHARACTER["hika"] == "Helena"
+    assert d3.NICKNAME_TO_CHARACTER["ninja"] == "Hayate"
+    assert d3.NICKNAME_TO_CHARACTER["suiken"] == "Brad Wong"
+    assert d3.NICKNAME_TO_CHARACTER["bosnin"] == "Genra"
+    assert d3.NICKNAME_TO_CHARACTER["tengu"] == "Tengu"
+    assert d3.NICKNAME_TO_CHARACTER["chin"] == "Chen"
+    # the direct-name families stay direct
+    assert d3.NICKNAME_TO_CHARACTER["kasumi"] == "Kasumi"
+    assert d3.NICKNAME_TO_CHARACTER["ryu"] == "Ryu Hayabusa"
+    assert d3.NICKNAME_TO_CHARACTER["janlee"] == "Jann Lee"
+
+
+def test_fighter_roster_joins_name_kind_and_costumes():
+    fams = [
+        {"nick": "kasumi", "code": "kas", "complete_costumes": ["kas00", "kas01"], "mot": ["kasumi.mot"]},
+        {"nick": "tengu", "code": None, "complete_costumes": [], "mot": ["tengu.mot"]},
+        {"nick": "chin", "code": "chi", "complete_costumes": ["chi00"], "mot": ["suiken.mot"]},
+        {"nick": "mystery", "code": None, "complete_costumes": [], "mot": []},
+    ]
+    r = d3.fighter_roster(fams)
+    assert [x["character"] for x in r] == ["Kasumi", "Tengu", "Chen", None]
+    assert [x["kind"] for x in r] == ["playable", "boss", "cameo", "unknown"]
+    assert [x["costumes"] for x in r] == [2, 0, 1, 0]
+
+
+def test_xbe_voice_codes_ordered_and_deduped():
+    blob = b"voice\\bn\\v_bn_en_ad24.adx\x00voice\\ni\\v_ni_en_ad69.adx\x00voice\\bn\\v_bn_en_ad23.adx\x00"
+    assert d3.xbe_voice_codes(blob) == ["bn", "ni"]
+    assert d3.xbe_voice_codes(b"none") == []
 
 
 def test_xbe_motion_banks_ordered_and_deduped():
