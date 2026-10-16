@@ -129,7 +129,7 @@ test('catalog search selects an unextracted title without inventing a model or l
 
 test('rapid source changes discard stale roster responses and close/reopen restores reviewed draft connections', { skip }, async () => {
   await page(async evaluate => {
-    await evaluate.run(`openCast();await ready();connect('original-a','donor-a_1');pendingRoster['donor-b']=[];pendingRoster['donor-c']=[];chooseSource('donor-b');chooseSource('donor-c');await waitFor(()=>pendingRoster['donor-b'].length&&pendingRoster['donor-c'].length);`);
+    await evaluate.run(`openCast();await ready();connect('original-a','donor-a_1');document.querySelector('[data-seed]').value='reopen-seed';document.querySelector('[data-seed]').dispatchEvent(new Event('change',{bubbles:true}));card('donor','donor-a_2').querySelector('[data-action=pool]').click();pendingRoster['donor-b']=[];pendingRoster['donor-c']=[];chooseSource('donor-b');chooseSource('donor-c');await waitFor(()=>pendingRoster['donor-b'].length&&pendingRoster['donor-c'].length);`);
     await evaluate(`pendingRoster['donor-c'][0](rosterFor('donor-c'));waitFor(()=>document.querySelector('[data-key=donor-c_0]'))`);
     await evaluate(`pendingRoster['donor-b'][0](rosterFor('donor-b'));Promise.resolve()`);
     assert.equal(await evaluate(`document.querySelectorAll('[data-key=donor-b_0]').length`), 0);
@@ -137,6 +137,9 @@ test('rapid source changes discard stale roster responses and close/reopen resto
     await evaluate(`panel.close();openCast();ready()`);
     assert.equal(await evaluate(`panel.controller.state.chartRows.find(r=>r.target_id==='original-a').character`), 'donor-a_1');
     assert.match(await evaluate(`card('target','original-a').querySelector('.cm-assignment').textContent`), /Replacement A 1/);
+    assert.equal(await evaluate(`card('target','original-a').querySelector('[data-action=lock]').checked`), true);
+    assert.equal(await evaluate(`document.querySelector('[data-seed]').value`), 'reopen-seed');
+    assert.equal(await evaluate(`card('donor','donor-a_2').querySelector('[data-action=pool]').checked`), false);
     await evaluate.run(`pendingRoster['donor-b']=[];chooseSource('donor-b');await waitFor(()=>pendingRoster['donor-b'].length===1);panel.close();pendingRoster['donor-b'][0](rosterFor('donor-b'));await Promise.resolve();`);
     assert.equal(await evaluate(`document.querySelectorAll('#castdlg').length`), 0);
   });
@@ -222,6 +225,20 @@ test('one visible chart seed is saved exactly, and explicit Clear in random mode
     assert.equal(await evaluate(`panel.controller.state.chartRows.every(row=>row.character==='')`), true);
     assert.equal(await evaluate(`calls.filter(c=>c.p==='/api/cast_swap/plan').at(-1).b.assignments.every(row=>row.character==='')`), true);
     assert.equal(await evaluate(`calls.filter(c=>c.p==='/api/cast_swap/plan').at(-1).b.seed`), seed);
+    await evaluate(`panel.close()`);
+  });
+});
+
+test('a planner that changes the reviewed native connections cannot submit a native build', { skip }, async () => {
+  await page(async evaluate => {
+    await evaluate.run(`native=true;const originalApi=api;api=async(p,b)=>{const result=await originalApi(p,b);return p==='/api/cast_swap/plan'?{...result,assignments:[{slot:'fighter:a',character:'donor-a_0'},{slot:'fighter:b',character:''}]}:result;};openCast();await ready();connect('original-a','donor-a_2');connect('original-c','donor-a_0');go('plan');await waitFor(()=>panel.controller.state.plan!==null);`);
+    assert.equal(await evaluate(`document.querySelector('[data-cs-go=build]').disabled`), true);
+    assert.equal(await evaluate(`document.querySelector('[data-cs-go=request]').hidden`), false);
+    assert.equal(await evaluate(`panel.controller.state.chartRows.find(r=>r.target_id==='original-a').character`), 'donor-a_2');
+    assert.equal(await evaluate(`panel.controller.state.chartRows.find(r=>r.target_id==='original-c').character`), 'donor-a_0');
+    await evaluate(`go('request');waitFor(()=>saved.length===1)`);
+    assert.deepEqual(await evaluate(`saved[0].mapping.assignments`), [{ slot: 'fighter:a', character: 'donor-a_2' }, { slot: 'fighter:b', character: '' }, { slot: 'fighter:c', character: 'donor-a_0' }]);
+    assert.equal(await evaluate(`calls.some(c=>c.p==='/api/jobs')`), false);
     await evaluate(`panel.close()`);
   });
 });
