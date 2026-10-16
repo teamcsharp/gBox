@@ -71,6 +71,12 @@ Cxbx routing, including manually configured command overrides. Custom DOA3
 builds retain Cxbx routing: the native program is verified only for the
 unmodified USA disc, and mod playability is not established by this exception.
 
+GBox enables the native runtime's supported `--vsync` option. This synchronizes
+presentation to the display and avoids its default `DXGI_PRESENT_DO_NOT_WAIT`
+path, which treats a temporarily busy presentation queue (`0x887A000A`,
+`DXGI_ERROR_WAS_STILL_DRAWING`) as a fatal error. This changes presentation
+settings without replacing the runtime binary or modifying the disc.
+
 The native runtime is built privately from the user's existing USA disc. Its
 generated program must match upstream's manifest. Only the exact supported
 original XBE or the independently verified media/region-patched copy is accepted;

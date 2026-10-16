@@ -250,7 +250,7 @@ def test_unpublished_build_and_other_platform_never_execute(tmp_path, monkeypatc
         native.ensure_runtime(config(tmp_path), "", {})
 
 
-def test_normal_launch_has_only_fixed_arguments_and_removes_diagnostic_environment(disc, tmp_path, monkeypatch):
+def test_normal_launch_has_fixed_vsync_arguments_and_removes_diagnostic_environment(disc, tmp_path, monkeypatch):
     from gbox import adapters
     import psutil
     xbe, _, _ = disc
@@ -284,7 +284,7 @@ def test_normal_launch_has_only_fixed_arguments_and_removes_diagnostic_environme
     monkeypatch.setattr(adapter, "_live", lambda: {56789})
     result = adapter.launch_game(str(xbe))
     args, kwargs = calls[0]
-    assert args == [str(exe), "--xbe", str(Path(result["rom"]).resolve())]
+    assert args == [str(exe), "--xbe", str(Path(result["rom"]).resolve()), "--vsync"]
     assert {key for key in kwargs["env"] if key.upper().startswith("RECOMP_")} == {
         "RECOMP_D3D_SCALE", "RECOMP_D3D_WIDESCREEN", "RECOMP_AUDIO_GAIN", "RECOMP_D3D_FRAME_DUMP",
         "RECOMP_D3D_FRAME_DUMP_COUNT", "RECOMP_D3D_FRAME_DUMP_AT", "RECOMP_D3D_FRAME_DUMP_INTERVAL_MS"}

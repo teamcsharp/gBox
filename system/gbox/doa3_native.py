@@ -323,7 +323,7 @@ class Doa3NativeAdapter(XboxAdapter):
         env.update(RECOMP_D3D_FRAME_DUMP=str(frame_prefix), RECOMP_D3D_FRAME_DUMP_COUNT="12",
                    RECOMP_D3D_FRAME_DUMP_AT="1", RECOMP_D3D_FRAME_DUMP_INTERVAL_MS="2000")
         try:
-            self.launcher = subprocess.Popen([str(exe), "--xbe", str(xbe.resolve())], cwd=exe.parent,
+            self.launcher = subprocess.Popen([str(exe), "--xbe", str(xbe.resolve()), "--vsync"], cwd=exe.parent,
                 env=env, stdout=self._output, stderr=subprocess.STDOUT, startupinfo=capture_start())
             try:
                 self._owned = {self.launcher.pid: psutil.Process(self.launcher.pid).create_time()}
