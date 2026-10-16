@@ -14,7 +14,9 @@ import pytest
 
 from gbox.goldeneye_files import GoldenEyeROM, GoldenEyeFormatError
 from gbox.goldeneye_writer import (ZFile, parse, serialize, verify_coverage,
-                                   edit_geometry, RECORD_SIZES)
+                                   edit_geometry, RECORD_SIZES,
+                                   relayout, rarezip_compress, splice_file,
+                                   cast_swap)
 from gbox import goldeneye_reader as gr
 
 ROM = Path(__file__).resolve().parent.parent / "artifacts" / "source" / "007_GoldenEye_Europe_norm.z64"
@@ -129,3 +131,103 @@ def test_parse_is_reentrant(ge):
     a = serialize(parse(ge, "CnatalyaZ"))
     b = serialize(parse(ge, "CnatalyaZ"))
     assert a == b
+
+
+# -- writer(2): blob re-layout, rarezip recompression, ROM splice, cast swap --
+
+def _torso(nodes):
+    return max((n for n in nodes if n.op == 0x18),
+               key=lambda n: n.record.get("num_vertices", 0))
+
+
+def _geom_blobs(zf, node_offset):
+    return {b.kind: b.data for b in zf.blobs
+            if b.node_offset == node_offset
+            and b.kind in ("verts", "collision", "point_usage",
+                           "primary_dl", "secondary_dl")}
+
+
+def test_relayout_noop_byte_identical(ge):
+    """relayout with no replacements reproduces every body/head file exactly."""
+    for b in ge.body_table():
+        zf = parse(ge, b.filename)
+        assert relayout(zf) == zf.original, b.filename
+
+
+def test_relayout_larger_donor_fits(ge):
+    """A donor torso larger than the target slot re-packs with correct pointers.
+
+    CnatalyaZ's 423-vertex torso (199 tris) replaces CsuitbondZ's 97-vertex
+    torso (67 tris): the file grows, every seg-5 pointer is recomputed, and the
+    result re-parses with the donor geometry and the rest of the model intact.
+    """
+    zf_t = parse(ge, "CsuitbondZ")
+    zf_d = parse(ge, "CnatalyaZ")
+    torso_t = _torso(gr.parse_nodes(zf_t.original, zf_t.root_offset))
+    torso_d = _torso(gr.parse_nodes(zf_d.original, zf_d.root_offset))
+    assert torso_d.record["num_vertices"] > torso_t.record["num_vertices"]
+
+    new_file = relayout(zf_t, {torso_t.offset: _geom_blobs(zf_d, torso_d.offset)})
+    assert len(new_file) > len(zf_t.original)
+
+    nodes = gr.parse_nodes(new_file, zf_t.root_offset)
+    assert len(nodes) == 79
+    t = next(n for n in nodes if n.offset == torso_t.offset)
+    assert len(t.vertices) == 423
+    assert len(t.collision_vertices) == 103
+    assert len(t.triangles) == 199
+    # 619 original render triangles - 67 target torso + 199 donor torso
+    assert sum(len(n.triangles) for n in nodes if n.op == 0x18) == 751
+
+
+def test_rarezip_roundtrip(ge):
+    """rarezip_compress is the exact inverse of rarezip_inflate."""
+    from gbox.goldeneye_files import rarezip_inflate
+    data = ge.read_file("CsuitbondZ")
+    c = rarezip_compress(data)
+    assert c[:2] == b"\x11\x72"
+    rt, used = rarezip_inflate(c, 0)
+    assert used == len(c)
+    assert rt == data
+
+
+def test_splice_noop_roundtrip_and_budget(ge):
+    """A no-op splice re-reads identically; an oversize block is refused."""
+    data = ge.read_file("CsuitbondZ")
+    rom = splice_file(ge, "CsuitbondZ", data)
+    assert GoldenEyeROM.from_bytes(rom).read_file("CsuitbondZ") == data
+    # incompressible padding guarantees the recompressed block exceeds the slot
+    big = data + bytes((i * 37 + 11) & 0xFF for i in range(16384))
+    with pytest.raises(GoldenEyeFormatError):
+        splice_file(ge, "CsuitbondZ", big)
+
+
+def test_cast_swap_changed_donor(ge):
+    """A real changed-donor swap: CsuitbondZ's torso becomes CgreyguardZ's.
+
+    The spliced ROM re-reads CsuitbondZ with the donor's 60-vertex/43-triangle
+    torso in place of the native 97-vertex torso, the other 24 meshes and 79
+    nodes are intact, and the donor file is untouched.
+    """
+    new_rom, meta = cast_swap(ge, "CsuitbondZ", "CgreyguardZ")
+    assert meta["donor_vertices"] == 60 and meta["target_vertices"] == 97
+    assert meta["compressed_after"] <= meta["file_slot"]
+    assert meta["inflated_after"] < meta["inflated_before"]  # smaller donor
+
+    ge2 = GoldenEyeROM.from_bytes(new_rom)
+    zf = parse(ge2, "CsuitbondZ")
+    nodes = gr.parse_nodes(zf.original, zf.root_offset)
+    assert len(nodes) == 79
+    torso = next(n for n in nodes if n.offset == int(meta["target_torso_node"], 16))
+    assert len(torso.vertices) == 60
+    assert len(torso.triangles) == 43
+    # 619 - 67 (native torso) + 43 (donor torso)
+    assert sum(len(n.triangles) for n in nodes if n.op == 0x18) == 595
+    # the donor body file is unchanged in the spliced ROM
+    assert ge2.read_file("CgreyguardZ") == ge.read_file("CgreyguardZ")
+
+
+def test_cast_swap_rejects_too_large_donor(ge):
+    """CnatalyaZ's 423-vertex torso exceeds CsuitbondZ's file-table slot."""
+    with pytest.raises(GoldenEyeFormatError):
+        cast_swap(ge, "CsuitbondZ", "CnatalyaZ")
