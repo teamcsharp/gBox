@@ -50,8 +50,12 @@ header 0x1E000):
   buildmsh order). Measured on kas00 OBJ0: |normal| = 1.0000 +/- 0.0000 for
   all 1204 vertices; u in [0.003, 1.000], v in [-0.995, 0.993]; position bounds
   x +/-0.094, y -0.320..0.234, z -0.093..0.152 (a costume part in model space).
-* Textures: no DDS magic anywhere; raw D3D surfaces. The 87 texture
-  descriptors and the draw-packet semantics are still unresolved.
+* Textures: no DDS magic anywhere; raw D3D surfaces. The header tail after the
+  last OBJ record holds the data descriptor table ``mdl_descriptor_table``:
+  obj_count 12-byte vertex descriptors (cumulative vertex byte offsets) and
+  tex_count 20-byte texture descriptors (cumulative data-region offsets plus a
+  raw format word), terminated by 0xFFFFFFFF and 0xAD debug fill. The texture
+  pixel format / draw-packet semantics are still unresolved (XBE loader RE).
 * CAT (kas00.cat, entry 297, 338448 bytes, sha256
   17525ce658173efbc0b0e7a695e4cdae1842f2594866a1b1dcb6830e630aa4fc): the
   reliable signature is the FIXED pair at 0x14/0x18 = 0x100, 1, verified on
@@ -87,6 +91,18 @@ LNK_MARKER = b"LNK\x00"
 CAT_FIXED_OFFSET = 0x14          # the stable fixed block sits at 0x14
 CAT_SIGNATURE = (0x100, 1)       # (word@0x14, word@0x18) across all 69 costumes
 MAX_HEADER_WORDS = 4096
+
+# Header-tail data descriptor table (pinned across kas00/kas01/kas02):
+# after the last OBJ record and before header_size, obj_count 12-byte vertex
+# descriptors ({VERTEX_DESC_FLAG, cumulative_offset, 0}) are followed by
+# tex_count 20-byte texture descriptors ({TEXTURE_DESC_FLAG, offset, 0, format,
+# 0}), a 0xFFFFFFFF terminator and 0xAD debug fill to header_size.
+VERTEX_DESC_FLAG = 0x00800001
+TEXTURE_DESC_FLAG = 0x00040001
+VERTEX_DESC_BYTES = 12
+TEXTURE_DESC_BYTES = 20
+DESC_TERMINATOR = 0xFFFFFFFF
+DESC_PAD_BYTE = 0xAD
 
 # Display-name mapping for the nickname families that carry a fighter code is
 # NOT derivable from the archive: karate, ninja, koryu, suiken, gokei, chin,
@@ -454,6 +470,87 @@ def _gaps_filled(blob: bytes, geometry: dict, start: int, end: int) -> bytes:
     return bytes(out)
 
 
+# ----------------------------------------------------------------- MDL data descriptors
+
+def mdl_descriptor_table(blob: bytes) -> dict:
+    """The header-tail data descriptor table (obj_count vertex + tex_count texture
+    records), located between the last OBJ record and ``header_size``.
+
+    Pinned across kas00 (obj 72/tex 87), kas01 (72/86) and kas02 (74/95):
+
+    * ``obj_count`` vertex descriptors, 12 bytes each, flag ``0x00800001``:
+      ``{flag, cumulative_offset, 0}``. The offset is the cumulative vertex byte
+      count (sum of the preceding OBJs' ``vertex_count * 32``), first = 0, so the
+      k-th OBJ's vertex buffer sits at ``header_size + offset[k]``. Every offset
+      is checked against the decoded ``vertex_count`` chain.
+    * ``tex_count`` texture descriptors, 20 bytes each, flag ``0x00040001``:
+      ``{flag, offset, 0, format, 0}``. The offset is the cumulative data-region
+      byte offset from ``header_size`` (texture data follows the vertex buffers
+      with a small alignment gap, and the whole data region tiles exactly up to
+      ``total``). Strictly increasing; the last texture's extent is implied by
+      ``total - header_size``. The ``format`` word is returned raw: byte 0 is
+      always ``0x2A`` on the measured costumes, byte 2 in {0x41,0x51,0x61,0x71,
+      0x81}, byte 3 in {0x04..0x08}; its D3D surface semantics (width/height/
+      pixel format) are still unresolved and must come from the XBE loader.
+    * a ``0xFFFFFFFF`` terminator word, then ``0xAD`` debug fill to header_size.
+    """
+    total, hsize = struct.unpack_from("<II", blob, 4)
+    geometry = costume_geometry(blob)
+    chunk = geometry["chunk"]
+    vcounts = [g["vertex_count"] for g in geometry["objects"]]
+    last_end = max(g["record_span"][1] for g in geometry["objects"])
+
+    vertex, p = [], last_end
+    while p + VERTEX_DESC_BYTES <= hsize and struct.unpack_from("<I", blob, p)[0] == VERTEX_DESC_FLAG:
+        offset, zero = struct.unpack_from("<II", blob, p + 4)
+        if zero != 0:
+            raise ValueError(f"vertex descriptor at {p:#x} has a nonzero tail word {zero:#x}")
+        vertex.append(offset)
+        p += VERTEX_DESC_BYTES
+    if len(vertex) != chunk["obj_count"]:
+        raise ValueError(f"vertex descriptor count {len(vertex)} != object count {chunk['obj_count']}")
+    cumulative = 0
+    for k, offset in enumerate(vertex):
+        if offset != cumulative:
+            raise ValueError(f"vertex descriptor {k} offset {offset:#x} != cumulative {cumulative:#x}")
+        cumulative += vcounts[k] * VERTEX_STRIDE
+
+    textures = []
+    while p + TEXTURE_DESC_BYTES <= hsize and struct.unpack_from("<I", blob, p)[0] == TEXTURE_DESC_FLAG:
+        offset, zero_a, fmt, zero_b = struct.unpack_from("<4I", blob, p + 4)
+        if zero_a != 0 or zero_b != 0:
+            raise ValueError(f"texture descriptor at {p:#x} has nonzero pad words "
+                             f"({zero_a:#x}, {zero_b:#x})")
+        textures.append({"offset": offset, "format": fmt})
+        p += TEXTURE_DESC_BYTES
+    if len(textures) != chunk["tex_count"]:
+        raise ValueError(f"texture descriptor count {len(textures)} != texture count {chunk['tex_count']}")
+    offsets = [t["offset"] for t in textures]
+    if any(b <= a for a, b in zip(offsets, offsets[1:])):
+        raise ValueError("texture descriptor offsets are not strictly increasing")
+    data_region = total - hsize
+    if offsets and offsets[0] < cumulative:
+        raise ValueError(f"first texture offset {offsets[0]:#x} precedes the "
+                         f"{cumulative:#x} vertex bytes")
+    if offsets and offsets[-1] >= data_region:
+        raise ValueError(f"last texture offset {offsets[-1]:#x} leaves no room in "
+                         f"the {data_region:#x}-byte data region")
+
+    if p + 4 > hsize or struct.unpack_from("<I", blob, p)[0] != DESC_TERMINATOR:
+        raise ValueError(f"descriptor table at {p:#x} is not terminated by {DESC_TERMINATOR:#x}")
+    p += 4
+    pad = blob[p:hsize]
+    last_size = data_region - offsets[-1] if offsets else 0
+    return {
+        "vertex_descriptors": vertex, "vertex_byte_total": cumulative,
+        "texture_descriptors": textures, "texture_count": len(textures),
+        "first_texture_gap": offsets[0] - cumulative if offsets else 0,
+        "last_texture_size": last_size,
+        "data_region": (hsize, total),
+        "terminator_offset": p - 4, "pad_bytes": len(pad), "pad_is_ad_fill": all(b == DESC_PAD_BYTE for b in pad),
+    }
+
+
 def export_obj(geometry: dict, path: str | Path) -> int:
     """Write decoded geometry to a Wavefront OBJ (private readable evidence).
 
@@ -636,14 +733,19 @@ def cast_writer_status() -> dict:
         "mdl_geometry_encode": True,
         "mdl_geometry_encode_note": "byte-preserving no-op roundtrip on parsed records; "
                                     "donor replacement is not implemented",
+        "mdl_descriptor_table": True,
+        "mdl_descriptor_note": "header-tail vertex (obj_count) + texture (tex_count) "
+                               "descriptors pinned across kas00/kas01/kas02; texture "
+                               "pixel format / draw-packet semantics unresolved",
         "donor_retarget": False,
         "playable": False,
         "message": "measured MDL geometry decode (vertices/normals/UVs/u16 strips/material "
                    "face ranges) and the no-op encode gate hold on the owned kas00; "
                    "the CAT header is classified (offsets vs id_block layout, fixed "
-                   "0x100/1 signature across all 69 costumes); texture descriptors, "
-                   "the CAT body (LNK skeleton/joints), donor retarget and the "
-                   "routed cast build are the next stages",
+                   "0x100/1 signature across all 69 costumes); the header-tail data "
+                   "descriptor table (vertex + texture records) is located and pinned; "
+                   "texture pixel format, the CAT body (LNK skeleton/joints), donor "
+                   "retarget and the routed cast build are the next stages",
     }
 
 

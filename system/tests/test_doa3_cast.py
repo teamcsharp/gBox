@@ -229,6 +229,7 @@ def test_cast_writer_status_is_honest():
     st = doa3_cast.cast_writer_status()
     assert st["xpr0_parser"] and st["cat_parser"] and st["afs_patch_path"]
     assert st["mdl_geometry_decode"] and st["mdl_geometry_encode"]
+    assert st["mdl_descriptor_table"]
     assert "no-op" in st["mdl_geometry_encode_note"]
     assert not st["donor_retarget"] and not st["playable"]
 
@@ -448,3 +449,120 @@ def test_mdl_chunk_rejects_non_increasing_object_table():
     struct.pack_into("<2I", blob, 0x28, 0x2C, 0x2C)    # non-increasing table
     with pytest.raises(ValueError, match="strictly increasing"):
         doa3_cast.mdl_chunk(bytes(blob))
+
+
+# ----------------------------------------------------------------- MDL data descriptors
+
+def make_descriptor_xpr(vcount: int = 4, icount: int = 6,
+                        tex_sizes: tuple[int, ...] = (0x40, 0x20)) -> bytes:
+    """An XPR0 with one OBJ and a valid header-tail descriptor table: one
+    vertex descriptor {0x00800001, 0, 0}, len(tex_sizes) texture descriptors
+    {0x00040001, cumulative_offset, 0, format, 0}, a 0xFFFFFFFF terminator and
+    0xAD fill, then a vertex buffer and the texture data region."""
+    ntex = len(tex_sizes)
+    mat_face_count = icount - 2
+    length_words = doa3_cast.MAT_HEADER_WORDS + 4 * 2   # extra packet + face packet
+    obj = 0x30
+    mat_off = obj + doa3_cast.MAT_HEADER_BASE
+    iptr = mat_off + 4 * length_words + 8
+    tail = doa3_cast.VERTEX_DESC_BYTES + doa3_cast.TEXTURE_DESC_BYTES * ntex + 4
+    hsize = iptr + 2 * icount + tail
+    vertex_bytes = 32 * vcount
+    gap = 0x20
+    total = hsize + vertex_bytes + gap + sum(tex_sizes)
+    out = bytearray(total)
+    struct.pack_into("<4sII", out, 0, b"XPR0", total, hsize)
+    struct.pack_into("<II", out, 12, 0x80000000, vertex_bytes)
+    out[0x14:0x18] = b"MDL\x00"
+    struct.pack_into("<4I", out, 0x18, 1, ntex, 1, 1)  # obj=1, tex=ntex, unk=1, dup=1
+    struct.pack_into("<I", out, 0x28, obj)
+    struct.pack_into("<I", out, 0x2C, 0)
+    out[obj:obj + 4] = b"OBJ\x00"
+    struct.pack_into("<4I", out, obj + 0x10, vcount, hsize, icount, iptr)
+    m = mat_off
+    header_words = [0x80000000, length_words] + [0x3F800000 + i for i in range(31)]
+    struct.pack_into(f"<{doa3_cast.MAT_HEADER_WORDS}I", out, m, *header_words)
+    pkt = m + 4 * doa3_cast.MAT_HEADER_WORDS
+    struct.pack_into("<4I", out, pkt, 0x80, 0, 0, 0)              # zero-face packet
+    struct.pack_into("<4I", out, pkt + 16, 0x25, 0, mat_face_count, 0)  # face packet
+    mend = m + 4 * length_words
+    out[mend:mend + 4] = b"\x00\x00\x00\x00"
+    struct.pack_into("<I", out, mend + 4, doa3_cast.MAT_TERMINATOR)
+    struct.pack_into(f"<{icount}H", out, iptr, *[i % vcount for i in range(icount)])
+    p = iptr + 2 * icount                                  # header tail begins at last_end
+    struct.pack_into("<3I", out, p, doa3_cast.VERTEX_DESC_FLAG, 0, 0)
+    p += doa3_cast.VERTEX_DESC_BYTES
+    cum = vertex_bytes + gap
+    for sz in tex_sizes:
+        struct.pack_into("<5I", out, p, doa3_cast.TEXTURE_DESC_FLAG, cum, 0, 0x06710F2A, 0)
+        cum += sz
+        p += doa3_cast.TEXTURE_DESC_BYTES
+    struct.pack_into("<I", out, p, doa3_cast.DESC_TERMINATOR)
+    p += 4
+    out[p:hsize] = bytes([doa3_cast.DESC_PAD_BYTE]) * (hsize - p)
+    verts = []
+    for i in range(vcount):
+        verts += [float(i), float(i), 0.0, 0.0, 0.0, 1.0, 0.0, float(i) / vcount]
+    struct.pack_into(f"<{8 * vcount}f", out, hsize, *verts)
+    return bytes(out)
+
+
+def test_mdl_descriptor_table_parses_vertex_and_texture():
+    blob = make_descriptor_xpr(tex_sizes=(0x40, 0x20))
+    table = doa3_cast.mdl_descriptor_table(blob)
+    assert table["vertex_descriptors"] == [0]
+    assert table["vertex_byte_total"] == 4 * 32
+    assert table["texture_count"] == 2
+    assert table["first_texture_gap"] == 0x20
+    assert table["last_texture_size"] == 0x20
+    assert table["texture_descriptors"][0]["offset"] == 4 * 32 + 0x20
+    assert table["texture_descriptors"][1]["offset"] == 4 * 32 + 0x20 + 0x40
+    assert table["texture_descriptors"][0]["format"] == 0x06710F2A
+    assert table["pad_is_ad_fill"] and table["pad_bytes"] >= 0
+
+
+def test_mdl_descriptor_table_offsets_match_vertex_chain():
+    # three OBJs worth of vertices is exercised through cumulative checks; use a
+    # single-OBJ fixture and confirm the vertex offset equals the running total.
+    blob = make_descriptor_xpr(vcount=8, icount=6, tex_sizes=(0x80,))
+    table = doa3_cast.mdl_descriptor_table(blob)
+    assert table["vertex_descriptors"] == [0]
+    assert table["vertex_byte_total"] == 8 * 32
+    assert table["last_texture_size"] == 0x80
+
+
+def test_mdl_descriptor_table_rejects_missing_terminator():
+    blob = bytearray(make_descriptor_xpr(tex_sizes=(0x40,)))
+    table = doa3_cast.mdl_descriptor_table(bytes(blob))
+    term = table["terminator_offset"]
+    struct.pack_into("<I", blob, term, 0xDEADBEEF)
+    with pytest.raises(ValueError, match="terminated"):
+        doa3_cast.mdl_descriptor_table(bytes(blob))
+
+
+def test_mdl_descriptor_table_rejects_tex_count_mismatch():
+    blob = bytearray(make_descriptor_xpr(tex_sizes=(0x40,)))
+    struct.pack_into("<I", blob, 0x1C, 3)              # tex_count 3 vs 1 descriptor
+    with pytest.raises(ValueError, match="texture descriptor count"):
+        doa3_cast.mdl_descriptor_table(bytes(blob))
+
+
+def test_mdl_descriptor_table_rejects_nonzero_pad_words():
+    blob = bytearray(make_descriptor_xpr(tex_sizes=(0x40,)))
+    table = doa3_cast.mdl_descriptor_table(bytes(blob))
+    # last descriptor is 20 bytes before the terminator; zero_b is its 5th word.
+    p = table["terminator_offset"] - doa3_cast.TEXTURE_DESC_BYTES + 16
+    struct.pack_into("<I", blob, p, 1)
+    with pytest.raises(ValueError, match="pad words"):
+        doa3_cast.mdl_descriptor_table(bytes(blob))
+
+
+def test_mdl_descriptor_table_rejects_non_increasing_offsets():
+    blob = bytearray(make_descriptor_xpr(tex_sizes=(0x40, 0x40)))
+    table = doa3_cast.mdl_descriptor_table(bytes(blob))
+    # force the second texture offset equal to the first
+    p = table["terminator_offset"] - doa3_cast.TEXTURE_DESC_BYTES + 4
+    first = table["texture_descriptors"][0]["offset"]
+    struct.pack_into("<I", blob, p, first)
+    with pytest.raises(ValueError, match="strictly increasing"):
+        doa3_cast.mdl_descriptor_table(bytes(blob))
