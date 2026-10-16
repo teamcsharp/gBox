@@ -168,18 +168,43 @@ def test_cat_sections_mirrors_observed_header_and_marker():
     assert res["header"][0] == 0x14
     assert res["header"][1] == 0x5C0
     assert res["lnk_markers"] == [0x9A40]
+    assert res["layout"] == "offsets"
+    assert res["lnk_offset_hint"] == 0x9A40
+    assert res["fixed"] == [0x100, 1, 0x18]
 
 
-def test_cat_sections_rejects_wrong_version():
-    with pytest.raises(ValueError, match="version"):
+def test_cat_sections_rejects_missing_fixed_signature():
+    # word@0x14 must be 0x100 and word@0x18 must be 1 on every measured costume;
+    # a first word of 2 alone is not a valid rejection reason anymore.
+    with pytest.raises(ValueError, match="signature"):
         doa3_cast.cat_sections(make_cat(header=(2, 0x14, 1, 1, 1, 1, 1, 1)))
+
+
+def test_cat_sections_accepts_id_block_layout():
+    # Type-B costumes (zack, tina, ayane, ...) store an unresolved 20-byte ID
+    # block in the first five words; they must not be rejected as "wrong version".
+    body = make_cat(header=(0xB041D1, 0x5821A, 0x3EAEE, 0x2539A, 0x6F9AE,
+                            0x100, 1, 0x18))
+    res = doa3_cast.cat_sections(body)
+    assert res["layout"] == "id_block"
+    assert res["id_block"] == [0xB041D1, 0x5821A, 0x3EAEE, 0x2539A, 0x6F9AE]
+    assert "lnk_offset_hint" not in res
+    assert res["lnk_markers"] == [0x9A40]
+
+
+def test_cat_sections_rejects_mismatched_lnk_hint():
+    body = make_cat(header=(1, 0x14, 0x5C0, 0x9A40 + 4, 0x4F5C0, 0x100, 1, 0x18))
+    with pytest.raises(ValueError, match="does not match"):
+        doa3_cast.cat_sections(body)
 
 
 def test_cat_sections_without_markers():
     body = bytearray(0x30)
-    struct.pack_into("<8I", body, 0, 1, 0x14, 1, 0x20, 1, 1, 1, 1)
+    struct.pack_into("<8I", body, 0, 1, 0x14, 1, 0x20, 1, 0x100, 1, 0x18)
     res = doa3_cast.cat_sections(bytes(body))
     assert res["lnk_markers"] == []
+    assert res["layout"] == "offsets"
+    assert res["lnk_offset_hint"] == 0x20
 
 
 # ----------------------------------------------------------------- slots

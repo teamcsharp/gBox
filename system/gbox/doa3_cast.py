@@ -52,11 +52,17 @@ header 0x1E000):
   x +/-0.094, y -0.320..0.234, z -0.093..0.152 (a costume part in model space).
 * Textures: no DDS magic anywhere; raw D3D surfaces. The 87 texture
   descriptors and the draw-packet semantics are still unresolved.
-* CAT: u32 version (1) then size/count words (kas00: 0x14, 1472, 0x9A40,
-  0x4F5C0, 0x100, 1, 0x18) and ASCII section markers (``LNK\\0`` plus digits,
-  e.g. at 0x9A40). The trailing 12-byte table near EOF looks like
-  {id, size, next_id} records but its alignment/chain rules differ between
-  costumes (kas00 vs kas01 scans disagree), so it is left for the RE stage.
+* CAT (kas00.cat, entry 297, 338448 bytes, sha256
+  17525ce658173efbc0b0e7a695e4cdae1842f2594866a1b1dcb6830e630aa4fc): the
+  reliable signature is the FIXED pair at 0x14/0x18 = 0x100, 1, verified on
+  all 69 complete costumes across 20 fighter families. The first five words
+  (0x00..0x13) are NOT a stable header: 24 costumes store version=1, a 0x14
+  word, then section offsets whose word[3] is the ``LNK`` section offset (the
+  "offsets" layout); the other 45 store an unresolved 20-byte ID block (the
+  "id_block" layout). Each ``LNK\0`` section is followed by a 4-byte name; it
+  holds the skeleton/joint links. The body past the header and the trailing
+  near-EOF record table are still left for the RE stage (their stride differs
+  between costumes).
 * AFS entries must be rewritten inside their room (size rounded up to the
   archive alignment, bounded by the next entry's offset / name directory),
   which ``doa3_inventory.entry_rooms`` computes.
@@ -78,6 +84,8 @@ USER_TYPE = 0x80000000
 MDL_TAG = b"MDL\x00"
 OBJ_TAG = b"OBJ\x00"
 LNK_MARKER = b"LNK\x00"
+CAT_FIXED_OFFSET = 0x14          # the stable fixed block sits at 0x14
+CAT_SIGNATURE = (0x100, 1)       # (word@0x14, word@0x18) across all 69 costumes
 MAX_HEADER_WORDS = 4096
 
 # Display-name mapping for the nickname families that carry a fighter code is
@@ -479,17 +487,22 @@ def export_obj(geometry: dict, path: str | Path) -> int:
 # --------------------------------------------------------------------- CAT
 
 def cat_sections(blob: bytes) -> dict:
-    """CAT companion header and section markers.
+    """CAT companion header, layout class and ``LNK`` section markers.
 
-    The body format past the header is not decoded yet; this returns the
-    verified header words and every ``LNK`` section marker offset so later
-    stages have named anchors. The trailing near-EOF table is deliberately
-    not parsed: its record alignment is inconsistent across costumes."""
+    Measured across all 69 complete costumes (20 fighter families): the word
+    at 0x14 is always 0x100 and the word at 0x18 is always 1, so that fixed
+    pair - not the first word - is the CAT signature. The first five words are
+    costume-dependent: when word0==1 and word1==0x14 they hold version plus
+    section offsets and word3 is the ``LNK`` section offset (the "offsets"
+    layout); otherwise they are an unresolved 20-byte ID block ("id_block").
+    The body past the header and the trailing near-EOF table are deliberately
+    not decoded: their record stride differs between costumes."""
     if len(blob) < 0x20:
         raise ValueError("CAT companion is too small")
-    head = struct.unpack_from("<8I", blob, 0)
-    if head[0] != 1:
-        raise ValueError(f"CAT version is {head[0]}, not 1")
+    head = list(struct.unpack_from("<8I", blob, 0))
+    if (head[5], head[6]) != CAT_SIGNATURE:
+        raise ValueError(f"CAT companion lacks the fixed signature {CAT_SIGNATURE} "
+                         f"at {CAT_FIXED_OFFSET:#x} (words {head[5]:#x}, {head[6]:#x})")
     markers = []
     start = 0
     while True:
@@ -498,8 +511,17 @@ def cat_sections(blob: bytes) -> dict:
             break
         markers.append(at)
         start = at + len(LNK_MARKER)
-    return {"version": head[0], "header": list(head[1:]), "size": len(blob),
-            "lnk_markers": markers}
+    layout = "offsets" if head[0] == 1 and head[1] == CAT_FIXED_OFFSET else "id_block"
+    result = {"version": head[0], "header": list(head[1:]), "size": len(blob),
+              "id_block": list(head[:5]), "fixed": list(head[5:]),
+              "layout": layout, "lnk_markers": markers}
+    if layout == "offsets":
+        hint = head[3]
+        result["lnk_offset_hint"] = hint
+        if markers and hint != markers[0]:
+            raise ValueError(f"CAT LNK offset hint {hint:#x} does not match "
+                             f"the first LNK marker {markers[0]:#x}")
+    return result
 
 
 # ----------------------------------------------------------------- slots
@@ -618,8 +640,10 @@ def cast_writer_status() -> dict:
         "playable": False,
         "message": "measured MDL geometry decode (vertices/normals/UVs/u16 strips/material "
                    "face ranges) and the no-op encode gate hold on the owned kas00; "
-                   "texture descriptors, CAT body, donor retarget and the routed cast "
-                   "build are the next stages",
+                   "the CAT header is classified (offsets vs id_block layout, fixed "
+                   "0x100/1 signature across all 69 costumes); texture descriptors, "
+                   "the CAT body (LNK skeleton/joints), donor retarget and the "
+                   "routed cast build are the next stages",
     }
 
 
