@@ -31,6 +31,16 @@ Verified evidence (request #1965 checkpoints):
 * .WDO object container (GRDLNCHR.WDO, 211 bytes): u32 magic 0x0809, u32 file size,
   resource records with absolute EE-RAM pointers (0x0043cd60, 0x0043e008, 0x01120104,
   0x0148d00), trailing ASCII name "GrdLnchr" + "LF" extension.
+* .DB skeleton table (BG1_*.DB, all 31 variants): the FPS arms rig is stored as 24-byte
+  records of null-terminated ASCII bone names, anchored at the literal "World" bone and
+  terminated by the first non-printable record. Every variant carries the same shared
+  upper-body chain (World, Extra, Root, Shoulder/Elbow/Joint_wrist_twist/Wrist _lft/_rt,
+  four fingers + thumb _lft/_rt) and then a WEAPON-SPECIFIC tail (AssualtRifle_* for the
+  AK/AS families, Pistol_* for GK, Shotgun_* for GRL, grenade bones for BNS, ...). The
+  skeleton is an FPS arms rig: there are no leg, spine, neck or head bones, and the cast
+  "body" is the weapon-holding arms seen in first person. This is the skeleton the
+  Sonic retarget must bind onto. An offset table of u32 (stride 0x18) sits immediately
+  before the name table and points at each bone record relative to a base.
 """
 from __future__ import annotations
 
@@ -163,6 +173,67 @@ def wdd_census(data: bytes) -> dict:
         raise FormatError(f"implausible WDD first word 0x{head:08x}")
     tail = data.rstrip(b"\x00")
     return {"size": len(data), "head": head, "zero_pad": len(data) - len(tail)}
+
+
+# .DB skeleton name table: a run of 24-byte records (null-terminated ASCII name, zero
+# padded) anchored at the literal "World" bone. The FPS arms rig has no leg/spine/neck/
+# head bones: it is the weapon-holding arms the player sees. The weapon-specific tail
+# (AssualtRifle_*, Pistol_*, Shotgun_*, grenade bones, ...) varies per BG1_<weapon> slot.
+SKEL_ANCHOR = b"World\x00"
+BONE_RECORD = 24
+
+# Bones that are the always-present FPS arms chain (not the weapon), in file order.
+# Pinned from the owned disc; the weapon-specific bones sit between Wrist_rt and the
+# right-hand finger chain (or, in a few variants, replace part of the finger chain).
+SHARED_FPS_BONES = frozenset({
+    "World", "Extra", "Root",
+    "Shoulder_lft", "Elbow_lft", "Joint_wrist_twist", "Wrist_lft",
+    "Finger1_Top_lft", "Finger1_Mid_lft", "Finger1_Tip_lft",
+    "Finger2_Top_lft", "Finger2_Mid_lft", "Finger2_Tip_lft",
+    "Finger3_Top_lft", "Finger3_Mid_lft", "Finger3_Tip_lft",
+    "Finger4_Top_lft", "Finger4_Mid_lft", "Finger4_Tip_lft",
+    "Thumb_Top_lft", "Thumb_Mid_lft", "Thumb_Tip_lft",
+    "Shoulder_rt", "Elbow_rt", "Wrist_rt",
+    "Finger1_Top_rt", "Finger1_Mid_rt", "Finger1_Tip_rt",
+    "Finger2_Top_rt", "Finger2_Mid_rt", "Finger2_Tip_rt",
+    "Finger3_Top_rt", "Finger3_Mid_rt", "Finger3_Tip_rt",
+    "Finger4_Top_rt", "Finger4_Mid_rt", "Finger4_Tip_rt",
+    "Thumb_Top_rt", "Thumb_Mid_rt", "Thumb_Tip_rt",
+})
+
+
+def db_skeleton(db: bytes) -> list[str]:
+    """Ordered bone names of the FPS arms rig stored in a BG1_*.DB file.
+
+    Walks 24-byte records from the "World" anchor, decoding each null-terminated ASCII
+    name, and stops at the first record that is empty or non-printable (the table's
+    trailing edge). Weapon-specific bones are included, in their file position.
+    """
+    anchor = db.find(SKEL_ANCHOR)
+    if anchor < 0:
+        raise FormatError("DB has no skeleton anchor 'World'")
+    bones: list[str] = []
+    off = anchor
+    while off + BONE_RECORD <= len(db):
+        rec = db[off:off + BONE_RECORD]
+        end = rec.find(b"\x00")
+        if end <= 0:
+            break
+        name = rec[:end]
+        if not name or any(b < 0x20 or b > 0x7E for b in name):
+            break  # first non-printable record terminates the table
+        bones.append(name.decode("ascii"))
+        off += BONE_RECORD
+    return bones
+
+
+def db_weapon_bones(db: bytes) -> list[str]:
+    """The weapon-specific bones of a BG1_*.DB skeleton (bones outside SHARED_FPS_BONES).
+
+    These vary per weapon family and are the slots a native cast writer must rebuild
+    alongside the shared arms. Empty only if the file carries no weapon-specific bones.
+    """
+    return [b for b in db_skeleton(db) if b not in SHARED_FPS_BONES]
 
 
 def elf_loader_sites(elf: Path | str | None = None) -> dict:

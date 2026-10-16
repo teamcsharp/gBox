@@ -75,3 +75,62 @@ def test_elf_loader_sites():
             assert site in hits[saddr], f"expected site {site:#x} for {frag!r}"
     # no other code site may reference these strings (pins the table exactly)
     assert {a for lst in hits.values() for a in lst} == {s for lst in LOADER_SITES.values() for s in lst[1]}
+
+
+def _db_bytes(slot: str) -> bytes:
+    cast = bm.list_cast()
+    f = open(DISC, "rb")
+    lba = cast[slot][".DB"]["lba"]
+    f.seek(lba * 2048)
+    return f.read(cast[slot][".DB"]["size"])
+
+
+@pytest.mark.skipif(not DISC.exists(), reason="owned Black disc not unpacked on this node")
+def test_db_skeleton_ak1_pinned():
+    """The BG1_AK1 DB skeleton is an FPS arms rig, pinned bone-for-bone."""
+    bones = bm.db_skeleton(_db_bytes("BG1_AK1"))
+    assert bones == [
+        "World", "Extra", "Root",
+        "Shoulder_lft", "Elbow_lft", "Joint_wrist_twist", "Wrist_lft",
+        "Finger1_Top_lft", "Finger1_Mid_lft", "Finger1_Tip_lft",
+        "Finger2_Top_lft", "Finger2_Mid_lft", "Finger2_Tip_lft",
+        "Finger3_Top_lft", "Finger3_Mid_lft", "Finger3_Tip_lft",
+        "Finger4_Top_lft", "Finger4_Mid_lft", "Finger4_Tip_lft",
+        "Thumb_Top_lft", "Thumb_Mid_lft", "Thumb_Tip_lft",
+        "Shoulder_rt", "Elbow_rt", "Wrist_rt",
+        "AssualtRifle_Root", "AssualtRifle_Clip", "AssualtRifle_Magazine",
+        "AssualtRifle_Slide", "Bullets",
+        "Finger1_Top_rt", "Finger1_Mid_rt", "Finger1_Tip_rt",
+        "Finger2_Top_rt", "Finger2_Mid_rt", "Finger2_Tip_rt",
+        "Finger3_Top_rt", "Finger3_Mid_rt", "Finger3_Tip_rt",
+        "Finger4_Top_rt", "Finger4_Mid_rt",
+        "Thumb_Top_rt", "Thumb_Mid_rt", "Thumb_Tip_rt",
+    ]
+
+
+@pytest.mark.skipif(not DISC.exists(), reason="owned Black disc not unpacked on this node")
+def test_db_skeleton_every_variant_anchors_and_bounds():
+    """Every BG1_*.DB yields a bounded skeleton anchored at 'World'."""
+    cast = bm.list_cast()
+    for slot in sorted(k for k in cast if k.startswith("BG1_")):
+        bones = bm.db_skeleton(_db_bytes(slot))
+        assert bones[0] == "World", f"{slot} not anchored at World"
+        assert 42 <= len(bones) <= 46, f"{slot} has {len(bones)} bones"
+        # no leg/spine/neck/head bones anywhere: it is an FPS arms rig
+        assert not any(b.startswith(("Leg", "Spine", "Neck", "Head", "Hip", "Thigh", "Knee", "Ankle")) for b in bones)
+
+
+@pytest.mark.skipif(not DISC.exists(), reason="owned Black disc not unpacked on this node")
+def test_db_weapon_bones_match_slot_family():
+    """Weapon-specific bones track the weapon family of the slot (pistol/shotgun/heavy)."""
+    fam = {
+        "BG1_GK1": "Pistol", "BG1_GK5": "Pistol",
+        "BG1_GRL": "Shotgun",
+        "BG1_HV5": "Heavy", "BG1_HVY": "Heavy",
+    }
+    for slot, prefix in fam.items():
+        wb = bm.db_weapon_bones(_db_bytes(slot))
+        assert wb and all(b.startswith(prefix) or b == "Site" or b == "Small_Site" for b in wb), (slot, wb)
+    # the grenade launcher variant carries grenade-specific bones alongside the rifle
+    wb = bm.db_weapon_bones(_db_bytes("BG1_BNS"))
+    assert "GrenadeShell" in wb and "BottomLead" in wb and "AssualtRifle_Root" in wb
