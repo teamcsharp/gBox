@@ -76,7 +76,7 @@ header 0x1E000):
   table* (a count-prefixed u16 polygon list ``{n, n indices}``, n in [1, 13],
   zero-terminated, plus an unresolved residual) and N equal-length *link
   sections* that are flat u16 triangle lists (3 u16 per triangle,
-  ``cat_lnk_sections``; stride multiple of 6 on 3971/3971 sections). The
+  ``cat_lnk_sections``; stride multiple of 6 on 4402/4402 sections). The
   per-section triangle/joint semantics and the trailing near-EOF record table
   are still left for RE.
 * AFS entries must be rewritten inside their room (size rounded up to the
@@ -844,7 +844,7 @@ def cat_lnk_sections(blob: bytes) -> dict | None:
       (their record semantics remain unresolved).
     * The ``N`` link sections are all the SAME byte length (the *stride*) and
       that stride is a multiple of 6 - i.e. each section is a flat u16 triangle
-      list (3 u16 indices per triangle, no count prefix), verified 3971/3971
+      list (3 u16 indices per triangle, no count prefix), verified 4402/4402
       sections across all 431 blocks. The per-section index semantics (which
       joint/vertex the triangles bind) remain unresolved.
 
@@ -1024,7 +1024,7 @@ def cast_writer_status() -> dict:
                                  "(count-prefixed u16 polygon list, n in [1,13], "
                                  "zero-terminated, plus an unresolved residual) + N "
                                  "equal-length flat u16 triangle sections (stride % 6 == 0, "
-                                 "3971/3971); the per-section triangle/joint semantics remain",
+                                 "4402/4402); the per-section triangle/joint semantics remain",
         "donor_retarget": False,
         "playable": False,
         "message": "measured MDL geometry decode (vertices/normals/UVs/u16 strips/material "
