@@ -554,6 +554,9 @@ def tick(*, now=None):
             item.update(job_name=name, dispatch_state='uncertain', last_dispatched=now,
                         attempts=item.get('attempts', 0) + 1, local=local, route=dict(primary))
             if item.get('unlock_work'):
+                from .hermes_unlock_guard import dispatch_scope
+                request = next(r for r in requests if r['id'] == item['request_id'])
+                item['unlock_scope'] = dispatch_scope(request, now)
                 item['unlock_dispatch_times'] = [stamp for stamp in item.get('unlock_dispatch_times', [])
                                                  if now - 3600 < stamp <= now] + [now]
             _save(data)

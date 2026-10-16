@@ -213,6 +213,8 @@ def test_queue_poll_observation_restarts_quiet_interval_and_rejects_stale_releas
 
 def test_ongoing_research_ignores_only_its_own_canonical_claim_and_worker_jobs(tmp_path, monkeypatch):
     from gbox import hermes_activation, hermes_work_queue
+    from gbox import hermes_unlock_guard
+    monkeypatch.setattr(hermes_unlock_guard, 'readiness_reason', lambda: '')
     clock = [1000.0]
     monkeypatch.setattr(U.time, 'time', lambda: clock[0])
     cron = [{'id': 'execution-own', 'job_id': 'hermes-own', 'state': 'running'}]

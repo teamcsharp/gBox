@@ -52,13 +52,17 @@ def required(store, rec):
     return bool(favorite or policy['enabled'] and not rec.get('base'))
 
 
-def idle_reason(store, workers, policy, *, now=None, parent_request_id='', owned_hermes_ids=()):
+def idle_reason(store, workers, policy, *, now=None, parent_request_id='', owned_hermes_ids=(), require_guard=False):
     """Fresh measured admission before dispatching one bounded research request."""
     from . import background_testing as B
     from .hermes_activation import read_cron_snapshot
     now = time.time() if now is None else now
     if not policy['idle_resolution']:
         return 'Idle unlock research is paused'
+    if require_guard:
+        from .hermes_unlock_guard import readiness_reason
+        if reason := readiness_reason():
+            return reason
     sessions = store.running_sessions()
     if sessions:
         return 'Waiting for games to stop; unlock research never interrupts gameplay'
@@ -237,6 +241,8 @@ def favorite_instructions(game, builds, profile=None):
         're_executable/re_study with source auto/disc, launch an emulator, edit personal saves, or alter any current '
         'game. Analysis does not belong on Play. If needed evidence is unavailable, retain the precise pending '
         'gap; never guess addresses or use another revision.\n\n'
+        f'Use the favorite_unlocks MCP convenience with this assigned request_id and game_id {gid} for '
+        'status, native_profile, unlock_profile, manifest and verify metadata; no shell is needed to publish evidence. '
         'Trace native lock predicates/progress flags and inventory every unlockable entry. Publish a reusable '
         'exact-executable native unlock_all control with revision/mode guards through '
         f'POST /api/games/{gid}/live-controls/profile. Partial native actions are insufficient. The boot recipe '
@@ -376,7 +382,8 @@ def routes(app, store, cfg, auth, create_request, investigate, workers=lambda: [
             runtime = store.get(POLICY, 'idle-state') or {'last_busy': now}
             try:
                 reason = ('Idle unlock research is paused' if not policy['idle_resolution'] else
-                          admission() if admission else idle_reason(store, workers(), policy, now=now))
+                          admission() if admission else idle_reason(store, workers(), policy, now=now,
+                              require_guard=any(r.get('base') for r in target_rows)))
             except Exception as exc:
                 reason = 'Idle admission unavailable: ' + type(exc).__name__
             if reason:
@@ -477,7 +484,8 @@ def routes(app, store, cfg, auth, create_request, investigate, workers=lambda: [
         policy = policy_value(store)
         try:
             reason = ('Idle unlock research is paused' if not policy['idle_resolution'] else
-                      admission() if admission else idle_reason(store, workers(), policy))
+                      admission() if admission else idle_reason(store, workers(), policy,
+                          require_guard=any(r.get('base') for r in targets())))
         except Exception as exc:
             reason = 'Idle admission unavailable: ' + type(exc).__name__
         runtime = store.get(POLICY, 'idle-state') or {}
@@ -535,7 +543,9 @@ def routes(app, store, cfg, auth, create_request, investigate, workers=lambda: [
             policy, now = policy_value(store), time.time()
             try:
                 reason = idle_reason(store, workers(), policy, now=now,
-                                     parent_request_id=parent_request_id, owned_hermes_ids=own_hermes)
+                                     parent_request_id=parent_request_id, owned_hermes_ids=own_hermes,
+                                     require_guard=bool((request.get('context') or {}).get('no_rom_copy')
+                                         or (request.get('context') or {}).get('no_automatic_launch')))
             except Exception as exc:
                 reason = 'Fresh unlock-job admission unavailable: ' + type(exc).__name__
             if reason:

@@ -19,6 +19,27 @@ investigation starts per managed tick, with a default limit of two per hour.
 Dispatch history survives restarts. Every request forbids automatic game launches
 and ROM copying; unsupported titles stay pending. Existing analysis is reused.
 
+Favorite idle admission also requires the repository's Hermes attribution plugin
+to be installed and loaded by the current gateway. It binds the core-provided
+`cron:JOB:EXECUTION` identity to that exact active canonical claim, queue item and
+request. The plugin supplies the request parent for allowed analysis jobs and
+blocks shell/code/delegation and launch conveniences for these favorite runs.
+Ordinary operator and unrelated cron work keep their existing tool profile.
+Missing or stale loaded-hook evidence leaves favorite research pending.
+The managed favorite scope is analysis plus the exact-request `favorite_unlocks`
+metadata convenience (status, evidence, native profiles and unlock receipts).
+Arbitrary new code implementations, workspace publication and terminal execution
+require a separately reviewed workflow; this scope does not claim to create them
+autonomously. Missing runtime proof or implementation remains pending.
+
+Review installation with `python -m gbox.hermes_unlock_guard --install`; adding
+`--apply` creates only the fixed `~/.hermes/plugins/gbox-unlock-guard` symlink to
+the deployed repository. Existing plugin data is never replaced. It edits no
+schedules, permissions or upstream Hermes files, and performs no restart. Use
+the normal guarded gateway refresh to load it; readiness additionally checks the
+current gateway PID/creation time and registered source hashes. `python -m
+gbox.hermes_unlock_guard` reports readiness without changing anything.
+
 `POST /api/custom-build-unlocks/policy` accepts partial updates for
 `favorites_enabled`, `default_boot`, `idle_resolution`, `excluded_games`,
 `quiet_seconds` (30–3600), and `dispatch_per_hour` (1–4), independently of the older

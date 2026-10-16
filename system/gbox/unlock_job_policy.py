@@ -5,9 +5,12 @@ ordinary offline build requests keep their existing permission checks.
 """
 from functools import lru_cache
 from copy import deepcopy
+import hashlib
 import gzip
 import json
 from pathlib import Path, PurePosixPath
+
+LOADED_SOURCE_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
 
 FLAGS = ('idle_only', 'no_rom_copy', 'no_automatic_launch')
