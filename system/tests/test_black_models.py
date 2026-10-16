@@ -14,9 +14,10 @@ from gbox import black_models as bm
 from gbox.black_models import (
     DISC, ELF, CAST_WEAPONS, LOADER_SITES, FormatError, elf_loader_sites,
     BONE_HEADER_FIXED, BONE_HEADER_PER, db_bone_records,
-    WDD_STREAMS, WDD_ATTRS, wdd_type, wdd_type_census,
+    WDD_STREAMS, WDD_ATTRS, wdd_type, wdd_type_census, wdd_runs,
     DB_REV_PREFIX, DB_SECTION_COUNT, ANIM_MAGIC,
-    db_header, db_sections, db_section_kind, db_wave, db_wave_sections, db_tail_wdo,
+    db_header, db_sections, db_section_kind, db_chunk_header,
+    db_wave, db_wave_sections, db_tail_wdo,
 )
 
 WDO_FIXTURE = bytes.fromhex(
@@ -372,3 +373,88 @@ def test_db_ak1_sections_pinned():
     assert db_tail_wdo(db)["offset"] == h["offsets"][8]
     assert db_wave(db, h["offsets"][6])["riff_size"] == 69138
     assert db_wave(db, h["offsets"][7])["riff_size"] == 20162
+
+
+# --- WDD primitive runs (pointer-delimited mesh list) ---
+
+@lru_cache(maxsize=None)
+def _ak1_wdd() -> bytes:
+    return _wdd_bytes("BG1_AK1")
+
+
+@pytest.mark.skipif(not DISC.exists(), reason="owned Black disc not unpacked on this node")
+def test_wdd_runs_ak1_pinned():
+    """BG1_AK1 is 10 pointer-delimited primitives with pinned data-run lengths."""
+    r = wdd_runs(_ak1_wdd())
+    assert [c for _s, c in r["runs"]] == [893, 132, 221, 269, 181, 267, 215, 219, 130, 144]
+    assert len(r["pointers"]) == 10
+    assert len(r["runs"]) == len(r["pointers"])
+    # pointer records carry (stream, attr) types in file order
+    assert [(s, a) for _i, s, a in r["pointers"]] == \
+        [(0, 12), (3, 6), (1, 9), (0, 12), (0, 12), (0, 8), (0, 8), (1, 10), (3, 9), (0, 10)]
+    # last padding span is the zero tail to the end of the file
+    assert r["padding"][-1] == (2713, 4096 - 2713)
+
+
+@pytest.mark.skipif(not DISC.exists(), reason="owned Black disc not unpacked on this node")
+def test_wdd_runs_partition_every_variant():
+    """Every WDD partitions exactly into pointer -> padding -> data-run spans."""
+    cast = bm.list_cast()
+    for slot in sorted(k for k in cast if k.startswith("BG1_")):
+        data = _wdd_bytes(slot)
+        recs = bm.wdd_records(data)
+        r = wdd_runs(data)
+        assert len(r["runs"]) == len(r["pointers"]) > 0, slot
+        # every run is a contiguous stretch of sub-2 records
+        for start, count in r["runs"]:
+            assert all(recs[i][1] == 2 for i in range(start, start + count)), slot
+        # every pointer is a single sub-3 record
+        for idx, _s, _a in r["pointers"]:
+            assert recs[idx][1] == 3, slot
+        # padding spans are sub-0 records, and runs+padding+pointers cover the file
+        covered = [False] * len(recs)
+        for start, count in r["runs"]:
+            for i in range(start, start + count):
+                covered[i] = True
+        for idx, _s, _a in r["pointers"]:
+            covered[idx] = True
+        for start, count in r["padding"]:
+            for i in range(start, start + count):
+                assert recs[i][1] == 0, slot
+                covered[i] = True
+        assert all(covered), f"{slot} run partition leaves gaps"
+
+
+# --- .DB 16-byte chunk headers on data/anim sections ---
+
+@pytest.mark.skipif(not DISC.exists(), reason="owned Black disc not unpacked on this node")
+def test_db_chunk_headers_stride_0x80_every_variant():
+    """Data and anim sections open with [id][id2][count][0x80]; wav/wdo do not."""
+    cast = bm.list_cast()
+    for slot in sorted(k for k in cast if k.startswith("BG1_")):
+        db = _db_bytes(slot)
+        for s in db_sections(db)["sections"]:
+            if s["kind"] in ("data", "anim"):
+                ch = db_chunk_header(db, s["offset"])
+                assert ch["stride"] == 0x80, (slot, s)
+            else:
+                assert s["kind"] in ("wav", "wdo"), (slot, s["kind"])
+
+
+@pytest.mark.skipif(not DISC.exists(), reason="owned Black disc not unpacked on this node")
+def test_db_chunk_header_anim_is_count_zero():
+    """The anim chunk (magic 0x8161d7c0) is the one data/anim header with count 0."""
+    cast = bm.list_cast()
+    for slot in sorted(k for k in cast if k.startswith("BG1_")):
+        db = _db_bytes(slot)
+        for s in db_sections(db)["sections"]:
+            ch = db_chunk_header(db, s["offset"])
+            if ch["id"] == ANIM_MAGIC:
+                assert s["kind"] == "anim" and ch["count"] == 0, slot
+
+
+def test_db_chunk_header_rejects_out_of_range():
+    with pytest.raises(FormatError):
+        bm.db_chunk_header(b"", 0)
+    with pytest.raises(FormatError):
+        bm.db_chunk_header(b"\\x00" * 16, -1)

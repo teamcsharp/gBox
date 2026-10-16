@@ -285,6 +285,53 @@ def wdd_type_census(data: bytes) -> dict:
     }
 
 
+def wdd_runs(data: bytes) -> dict:
+    """Split a WDD into its primitive runs, delimited by pointer (sub 3) records.
+
+    A WDD is not a flat vertex array: it is a list of mesh primitives. Each
+    primitive is a run of sub-2 data records terminated by a single sub-3 pointer
+    record, followed by 2..8 sub-0 padding records that align the next run; the
+    last run is followed by the zero-padding tail. Verified on all 31 owned
+    BG1_*.WDD (2026-10-16): every variant has the same pointer -> padding -> data
+    structure, with 10 primitives in BG1_AK1 (data-run lengths 893, 132, 221, 269,
+    181, 267, 215, 219, 130, 144). The pointer record's (stream, attr) type marks
+    the primitive that just ended.
+
+    Returns ``runs`` as ``(start, count)`` data-record spans, ``pointers`` as
+    ``(index, stream, attr)`` in file order, and ``padding`` as ``(start, count)``
+    spans (the final span is the tail).
+    """
+    recs = wdd_records(data)
+    runs: list[tuple[int, int]] = []
+    pointers: list[tuple[int, int, int]] = []
+    padding: list[tuple[int, int]] = []
+    run_start = 0
+    i = 0
+    n = len(recs)
+    while i < n:
+        _t, sub, _p = recs[i]
+        if sub == 2:
+            i += 1
+            continue
+        if sub == 3:
+            if i > run_start:
+                runs.append((run_start, i - run_start))
+            stream, attr = wdd_type(_t)
+            pointers.append((i, stream, attr))
+            j = i + 1
+            while j < n and recs[j][1] == 0:      # alignment padding records
+                j += 1
+            if j > i + 1:
+                padding.append((i + 1, j - i - 1))
+            run_start = j
+            i = j
+            continue
+        break                                    # sub 0 tail without a pointer
+    if run_start < n:
+        padding.append((run_start, n - run_start))
+    return {"runs": runs, "pointers": pointers, "padding": padding}
+
+
 # .DB skeleton name table: a run of 24-byte records (null-terminated ASCII name, zero
 # padded) anchored at the literal "World" bone. The FPS arms rig has no leg/spine/neck/
 # head bones: it is the weapon-holding arms the player sees. The weapon-specific tail
@@ -486,6 +533,23 @@ def db_sections(db: bytes) -> dict:
         "sections": [{"offset": o, "kind": db_section_kind(db, o)}
                      for o in hdr["offsets"]],
     }
+
+
+def db_chunk_header(db: bytes, off: int) -> dict:
+    """The 16-byte chunk header that opens a data or anim section.
+
+    Every one of the 5 data sections and the anim section begins with the same
+    16-byte header ``[u32 id][u32 id2][u32 count][u32 stride]``, where the stride
+    word is always 0x80 (the fixed header's ``flags`` word). The anim chunk
+    (id 0x8161d7c0) is distinguished by ``count == 0``. The WAV and WDO sections
+    carry their own magics (``RIFF`` / 0x0809) and are not chunk headers. The
+    ``id`` / ``id2`` words are per-chunk content hashes, not file offsets.
+    """
+    if off < 0 or off + 16 > len(db):
+        raise FormatError(f"chunk header at {off:#x} runs past end of DB")
+    ident, ident2, count, stride = struct.unpack_from("<4I", db, off)
+    return {"offset": off, "id": ident, "id2": ident2,
+            "count": count, "stride": stride}
 
 
 def db_wave(db: bytes, off: int) -> dict:
