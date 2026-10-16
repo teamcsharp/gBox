@@ -5593,6 +5593,10 @@ def create_app(config: Config) -> FastAPI:
                 "jobs_by_state": {s: sum(1 for j in jobs if j["state"] == s) for s in JobState},
                 "artifact_bytes": sum(a["size"] for a in arts), "artifacts": len(arts)}
 
+    from . import title_assets
+    title_assets.routes(app, store, config, auth, workers,
+        lambda body, actor: submit(JobRequest(**body), actor).model_dump(mode='json'))
+
     return app
 
 

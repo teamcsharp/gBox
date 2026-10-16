@@ -4087,6 +4087,7 @@ def _load_tool_modules(names=("native_face_editor", "auf_live", "twin_snakes_fac
                               "doa2_lab",      # verified native fighter archive decomposition/reintegration
                               "mashup",        # mashup: natural-language cross-title planner and dispatcher
                               "favorite_capabilities",  # exact-build coverage and verified unlock launch plans
+                              "title_assets",  # bounded exact-title native exports and durable extraction plans
                               "pickwhip",      # pickwhip: pick_name (local-LLM naming of a pick whip target)
                               "rea_tool",      # complete pinned REA CLI/MCP capability catalog
                               "decomp_tools",  # decomp_tools: decomp_me (opt-in REST), ida (headless export), n64recomp
