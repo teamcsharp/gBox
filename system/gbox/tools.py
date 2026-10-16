@@ -1702,7 +1702,8 @@ def cheats_tool(inp: CheatIn, ctx: Ctx):
         rows += [{"index": len(ra) + i, "desc": c["desc"], "enabled": c["on"].is_set(), "engine": "gbox",
                   "code": " / ".join(c["lines"])} for i, c in enumerate(mine)]
         if q:
-            rows = [r for r in rows if q in r["desc"].lower() or q in r["code"].lower()]
+            rows = [r for r, s in sorted(((r, C.match_query(q, r["desc"], r["code"])) for r in rows),
+                                         key=lambda x: -x[1]) if s > 0]
         return {"result": {"source": getattr(ad, "cheat_source", None), "count": len(rows), "cheats": rows[:400]},
                 "session_id": inp.session_id}
     if inp.op == "add":
@@ -1724,7 +1725,9 @@ def cheats_tool(inp: CheatIn, ctx: Ctx):
             raise ValueError("index required")
         if inp.index < len(ra):
             e = ra[inp.index]
-            ops, bad = C.decode(g.get("platform", ""), e.get("code", "")) if e.get("code") else ([], ["no code"])
+            ops, bad = C.decode(g.get("platform", ""), e.get("code", "") or "")
+            if not ops and str(e.get("address", "")).strip():
+                ops, bad = C.decode_native(g.get("platform", ""), e)
             if ops and not bad:                          # gBox can apply this code itself: verified writes on any core
                 import threading as _t
                 key = f"db{inp.index}"

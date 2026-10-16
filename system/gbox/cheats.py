@@ -215,6 +215,51 @@ def decode(platform: str, code: str) -> tuple[list[tuple], list[str]]:
     return ops, bad
 
 
+def match_query(query: str, desc: str, code: str) -> int:
+    """Token-overlap score for a cheat-search query against one row, or 0 for no match.
+
+    The query is split on non-alphanumerics; a row scores one point per query token present in
+    the lowercased desc+code. 'unlock all characters' therefore surfaces every 'Unlock <name>'
+    code (token 'unlock') ahead of rows that only share 'all'; zero-scoring rows are filtered.
+    """
+    toks = [t for t in re.split(r"[^a-z0-9]+", (query or "").lower()) if t]
+    if not toks:
+        return 1
+    hay = f"{desc} {code}".lower()
+    return sum(1 for t in toks if t in hay)
+
+
+def decode_native(platform: str, entry: dict) -> tuple[list[tuple], list[str]]:
+    """A RetroArch-native memory-cheat entry -> gBox write ops.
+
+    libretro-database .cht files for memory-addressing cores (Flycast/Dreamcast) carry no `code`
+    field; they state `address`/`value`/`memory_search_size`/`big_endian` directly (e.g. Soul
+    Calibur 'Unlock Hwang' address=3370494 value=1). gBox applies the plain constant write
+    itself, exactly like a decoded CodeBreaker code, so no emulator cheat engine is required.
+    Returns (ops, unsupported); conditional cheat types stay unsupported and fall back to the
+    emulator's own engine.
+    """
+    ctype = str(entry.get("cheat_type", "1")).strip()
+    if ctype not in ("", "1"):
+        return [], [f"cheat_type {ctype or '?'} is conditional, not a plain write"]
+    try:
+        addr = int(str(entry.get("address", "")).strip())
+        val = int(str(entry.get("value", "")).strip())
+    except (TypeError, ValueError):
+        return [], ["address/value not parseable"]
+    try:
+        size = int(entry.get("memory_search_size") or 4)
+    except (TypeError, ValueError):
+        size = 4
+    if size not in (1, 2, 4):
+        return [], [f"memory_search_size {size} unsupported (want 1/2/4)"]
+    big_endian = str(entry.get("big_endian", "false")).strip().lower() == "true"
+    if platform in ("dreamcast", "naomi"):                 # .cht stores a raw RAM offset
+        addr = 0x8C000000 | (addr & 0x00FFFFFF)
+    order = "big" if big_endian else "little"
+    return [("w", addr, (val & ((1 << (8 * size)) - 1)).to_bytes(size, order))], []
+
+
 def _selftest():
     txt = 'cheats = 2\n\ncheat0_desc = "Inf HP"\ncheat0_code = "80309457 0001"\ncheat0_enable = false\n\ncheat1_desc = "B"\ncheat1_code = "1+2"\ncheat1_enable = true\n'
     e = parse_cht(txt)
