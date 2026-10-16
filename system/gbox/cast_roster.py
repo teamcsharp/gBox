@@ -104,6 +104,31 @@ def _roster_scope(rows, scope):
         or token in (row['id'].lower(), str(row.get('slug') or '').lower()) for token in tokens)]
 
 
+def _native_entry(slot, entries, writer):
+    """Join only declared reader/writer identities, never a display-name guess."""
+    explicit = slot.get('slug') or slot.get('collection_slug')
+    matches = []
+    for entry, meta in entries:
+        bound = bool(explicit and explicit == (meta or entry).get('slug'))
+        if not explicit:
+            bound = bool(entry.get('slot') and entry['slot'] == slot['slot'])
+            native_id = slot.get('native_id')
+            if type(native_id) is int and type(entry.get('native_id')) is int:
+                bound |= native_id == entry['native_id']
+            if writer == 'gbox.twin_snakes_swap' and entry.get('key'):
+                from .twin_snakes import slot_for_key
+                bound |= slot_for_key(entry['key']) == slot['slot']
+            elif writer == 'gbox.auf_swap' and slot.get('body'):
+                bound |= slot['body'] == entry.get('key')
+            elif writer == 'gbox.sa2_chars':
+                # sa2_chars.build_swap/use targets SONICMDL.PRS explicitly.
+                # The other thirteen reader entries do not share this slot.
+                bound |= slot['slot'] == 'player' and entry.get('key') == 'SONIC'
+        if bound:
+            matches.append((entry, meta))
+    return matches[0] if len(matches) == 1 else (None, None)
+
+
 def roster(game, chars, root, config, source='', source_game=None, slots='all'):
     """Union native slots and exact-title roster; never call plan/build/refresh."""
     root = Path(root)
@@ -118,17 +143,17 @@ def roster(game, chars, root, config, source='', source_game=None, slots='all'):
     except ValueError:
         native = []
     entries, issues = _roster_entries(config, game, chars)
-    exact = {meta['slug']: meta for _entry, meta in entries if meta}
     targets, consumed = [], set()
     for slot in native:
-        # Only a declared collection identity can enrich a native slot. A
-        # generic player slot does not stand for the title's entire cast.
-        slug = slot.get('slug') or slot.get('collection_slug')
-        meta = exact.get(slug)
-        if meta:
+        entry, meta = _native_entry(slot, entries, writer_name)
+        slug = (meta or entry or {}).get('slug')
+        if slug:
             consumed.add(slug)
-        targets.append({'id': slot['slot'], 'slot': slot['slot'], 'name': slot.get('name') or slot['slot'],
-            'slug': meta.get('slug') if meta else None, 'kind': slot.get('kind') or 'slot', 'source_game_id': gid,
+        name = slot.get('name')
+        if entry and name in (None, '', slot['slot']):
+            name = entry.get('name')
+        targets.append({'id': slot['slot'], 'slot': slot['slot'], 'name': name or slot['slot'],
+            'slug': slug, 'kind': slot.get('kind') or 'slot', 'source_game_id': gid,
             **(_assets(meta, root) if meta else {'preview_url': None, 'model_url': None, 'model': None, 'format': None}),
             'buildable': routed and slot.get('status') != 'not_working',
             **({'reason': slot['reason']} if slot.get('reason') else {})})

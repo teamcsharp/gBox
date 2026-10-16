@@ -43,12 +43,11 @@ def test_sa2_exposes_real_player_and_full_registered_roster_without_whole_cast_c
     native = [row for row in out['targets'] if row['slot'] is not None]
     registered = [row for row in out['targets'] if row['slot'] is None]
     assert len(native) == 1 and native[0]['slot'] == 'player' and native[0]['buildable']
-    assert native[0]['model_url'] is None and native[0]['preview_url'] is None
-    assert len(registered) == len(C.SA2_CHARS) == 14
-    assert {'Sonic', 'Shadow', 'Tails', 'Cyclone', 'Egg Walker'} <= {row['name'] for row in registered}
+    assert native[0]['model_url'] == '/api/characters/sonic/file/model.glb' and native[0]['name'] == 'Sonic'
+    assert len(native) + len(registered) == len(C.SA2_CHARS) == 14
+    assert {'Shadow', 'Tails', 'Cyclone', 'Egg Walker'} <= {row['name'] for row in registered}
     assert all(row['id'].startswith('roster:') and not row['buildable'] for row in registered)
-    sonic_row = next(row for row in registered if row['slug'] == 'sonic')
-    assert sonic_row['model_url'] == '/api/characters/sonic/file/model.glb'
+    assert not any(row['slug'] == 'sonic' for row in registered)
     assert out['capability']['status'] == 'partial' and not out['capability']['combined_writer']
     assert out['capability']['native_slots_count'] == 1
     assert any('individual replacements' in reason for reason in out['capability']['blocking_reasons'])
@@ -74,7 +73,8 @@ def test_equal_display_names_and_legacy_preview_urls_never_cross_title_provenanc
     foreign = write(library, meta('sonic', other, preview_url='/unverified.png', model_url='/unverified.glb'))
     own = write(library, meta('sonic_alt', SA2, name='Sonic'))
     out = R.roster(SA2, [foreign, own], library, Config(), other['game_id'], other)
-    target = next(row for row in out['targets'] if row['id'] == 'roster:sonic_' + SA2['game_id'])
+    target = next(row for row in out['targets'] if row['slot'] == 'player')
+    assert target['slug'] == 'sonic_' + SA2['game_id']
     assert target['preview_url'] is None and target['model_url'] is None
     assert all(row['source_game_id'] == SA2['game_id'] for row in out['targets'])
     assert all(row['source_game_id'] == other['game_id'] for row in out['donors'])
@@ -142,6 +142,45 @@ def test_explicit_native_collection_identity_only_enriches_its_matching_row(libr
     rows = R.roster(OTHER, [value], library, Config())['targets']
     assert len(rows) == 2 and rows[0]['model_url'] == '/api/characters/native_npc/file/model.glb'
     assert rows[1]['model_url'] is None
+
+
+def test_declared_reader_slot_enriches_pso_native_card_without_duplicate_roster(library, monkeypatch):
+    game = OTHER | {'title': 'Fixture PSO', 'platform': 'gamecube'}
+    value = write(library, meta('native_humar', game, name='HUmar'))
+    monkeypatch.setattr(C, 'DEDICATED', [('fixture', lambda t, p: True,
+        lambda: [{'slug': 'native_humar', 'name': 'HUmar', 'slot': 'class:humar', 'kind': 'character'}], None)])
+    monkeypatch.setattr(CC, 'writer_for', lambda game: {'writer': 'gbox.pso_gc_swap', 'routed': True})
+    monkeypatch.setattr(CS, 'slot_rows', lambda game: [{'slot': 'class:humar', 'name': 'HUmar', 'kind': 'player'}])
+    rows = R.roster(game, [value], library, Config())['targets']
+    assert len(rows) == 1 and rows[0]['preview_url'] == '/api/characters/native_humar/preview'
+
+
+@pytest.mark.parametrize('writer,native,registered', [
+    ('gbox.jgr_swap', {'slot': 'character:beat', 'native_id': 7}, {'native_id': 7}),
+    ('gbox.twin_snakes_swap', {'slot': 'model:liquid'}, {'key': 'liquid'}),
+    ('gbox.auf_swap', {'slot': 'campaign:bond', 'body': 'bond'}, {'key': 'bond'}),
+])
+def test_proven_writer_keys_enrich_only_the_exact_registered_original(library, monkeypatch, writer, native, registered):
+    value = write(library, meta('exact_original', OTHER))
+    entry = {'slug': value['slug'], 'name': 'Original', 'kind': 'character', **registered}
+    monkeypatch.setattr(C, 'DEDICATED', [('fixture', lambda t, p: True, lambda: [entry], None)])
+    monkeypatch.setattr(CC, 'writer_for', lambda game: {'writer': writer, 'routed': True})
+    monkeypatch.setattr(CS, 'slot_rows', lambda game: [native | {'name': 'Native original', 'kind': 'character'}])
+    row, = R.roster(OTHER, [value], library, Config())['targets']
+    assert row['slot'] == native['slot'] and row['slug'] == value['slug']
+    assert row['model_url'] == '/api/characters/exact_original/file/model.glb'
+
+
+def test_ambiguous_native_identity_never_picks_one_roster_or_a_matching_name(library, monkeypatch):
+    first = write(library, meta('first', OTHER, name='Same character'))
+    second = write(library, meta('second', OTHER, name='Same character'))
+    entries = [{'slug': m['slug'], 'name': m['name'], 'kind': 'character', 'slot': 'player'} for m in (first, second)]
+    monkeypatch.setattr(C, 'DEDICATED', [('fixture', lambda t, p: True, lambda: entries, None)])
+    monkeypatch.setattr(CC, 'writer_for', lambda game: {'writer': 'gbox.auf_swap', 'routed': True})
+    monkeypatch.setattr(CS, 'slot_rows', lambda game: [{'slot': 'player', 'name': 'Same character', 'kind': 'player'}])
+    rows = R.roster(OTHER, [first, second], library, Config())['targets']
+    assert len(rows) == 3 and rows[0]['slug'] is None and rows[0]['model_url'] is None
+    assert {row['id'] for row in rows[1:]} == {'roster:first', 'roster:second'}
 
 
 def test_authenticated_roster_get_is_read_only_and_missing_source_is_pending(library, tmp_path, monkeypatch):
