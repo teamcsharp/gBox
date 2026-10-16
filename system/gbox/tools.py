@@ -709,9 +709,13 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
                 print(f"gBox: re6 pre-launch failed: {e}", flush=True)
         if inp.mod:
             from . import filemods
-            if not (filemods.mod_dir(ctx.config, g.game_id, inp.mod) / ".gbox-mod.json").exists() and ctx.server:
+            marker = filemods.mod_dir(ctx.config, g.game_id, inp.mod) / ".gbox-mod.json"
+            if not marker.is_file() and ctx.server:
                 ctx.progress(20, f"Fetching mod {inp.mod} from the central collection (Spark)")
                 launch_mod = filemods.stage(ctx.config, ctx.server, ctx.headers, g.game_id, inp.mod, ctx.progress)
+                if launch_mod == inp.mod and not (filemods.mod_dir(ctx.config, g.game_id, launch_mod) / ".gbox-mod.json").is_file():
+                    raise ValueError(f"mod {inp.mod!r} has not been built for this game yet (build it first, or launch "
+                                     "without a mod)")
             src = local_mod or filemods.launch_path(ctx.config, g.game_id, src, launch_mod)
             ctx.progress(28, f"Using local build: {launch_mod}")
             diag["staged_mod"] = launch_mod

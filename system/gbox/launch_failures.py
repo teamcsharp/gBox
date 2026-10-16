@@ -90,6 +90,12 @@ CLASSES = (
                "The mod's files could not be fetched from the collection or staged on this PC (a timeout, an "
                "incomplete copy or a stale staged folder).",
                "restage_mod"),
+    ErrorClass("mod_not_built",
+               re.compile(r"no built mod|has not been built for this game", re.I),
+               "The requested mod has never been built for this game: it is neither in this PC's cache nor in the "
+               "central collection. Build it first (for a character swap, run the game's build/use action), then "
+               "launch it; re-staging will not help because there is nothing to fetch.",
+               "none"),
     ErrorClass("emulator_crash",
                re.compile(r"\b(?P<emu>[a-z0-9_]+) exited (?:with code )?(?P<code>-?\d+)|crashed|access violation|"
                           r"segmentation fault|0xc0000005", re.I),
@@ -157,6 +163,8 @@ def classify(error: str, *, adapter: str = "", session_exit: dict | None = None)
             g["file"] = name[0] if name else ""
         elif c.cls == "mod_fetch":
             label = "the mod could not be fetched or staged"
+        elif c.cls == "mod_not_built":
+            label = "the requested mod has not been built for this game"
         elif c.cls == "emulator_crash":
             label = (f"{g.get('emu') or adapter or 'emulator'} exited with code {_code(g.get('code'))} during boot"
                      if g.get("code") else f"{adapter or 'emulator'} crashed during boot")
