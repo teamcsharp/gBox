@@ -74,7 +74,7 @@ The following files are attached:
 | `mod_fetch` | mod fetch / staging / hash / marker errors | re-stage the mod (`prepare_mod`, does not touch a running game), then relaunch once |
 | `emulator_crash` | "X exited N", access violation, a crash within 60 s of starting | relaunch once |
 | `missing_file` | ROM not reachable / FileNotFoundError | none |
-| `worker_restarted` | worker or server restarted mid-launch | relaunch once |
+| `worker_restarted` | worker or server restarted mid-launch | none (a relaunch cannot fix a worker crash; check the worker's own log first) |
 | `worker_unavailable` | rejected: worker can't run it, outdated or offline | none |
 | `state_restore` | a swap could not restore the saved moment | none |
 | `timeout` | timed out | relaunch once |

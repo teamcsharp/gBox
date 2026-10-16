@@ -102,8 +102,10 @@ CLASSES = (
                "none"),
     ErrorClass("worker_restarted",
                re.compile(r"worker .{0,60}restarted|server restarted|Interrupted: the gBox server", re.I),
-               "The gBox worker (or the control plane) restarted while the launch was running, so it was abandoned.",
-               "relaunch"),
+               "The gBox worker (or the control plane) restarted while the launch was running, so it was abandoned. "
+               "A blind relaunch cannot fix a worker crash and often crashes it again: investigate the worker's own "
+               "crash (its supervisor, event log or the last lines of its own log) before retrying the game.",
+               "none"),
     ErrorClass("worker_unavailable",
                re.compile(r"can't run launch_game|must update its worker|permission not granted|no worker|is offline", re.I),
                "No PC could take the launch: the chosen worker is offline, outdated or lacks the launch tool.",
