@@ -1,6 +1,7 @@
 # Original Xbox launch support
 
-Original Xbox titles launch directly in Cxbx-Reloaded on Windows. They no longer
+Original Xbox titles launch directly in Cxbx-Reloaded on Windows, with the
+DOA3 USA exception below. They no longer
 go through the collection's RocketLauncher wrapper. The old Microsoft XBOX
 launcher selected PCSX2 and failed with `RLDLL.Start - Exception thrown: -2` on
 the operator's PCs before an Xbox game was running.
@@ -58,6 +59,37 @@ support. Normal in-game saves remain in the local portable console profile.
 The collection's xemu installation is not used as a fallback: its configuration
 referenced missing MCPX, BIOS and HDD files. GBox does not substitute unrelated
 firmware or silently launch a different console emulator.
+
+## Dead or Alive 3 (USA)
+
+The specific owned catalog entry `b8edf7040116f3aa` uses the
+[DOA3 native Windows runtime v0.2](https://github.com/NoRain211/doa3-re/releases/tag/v0.2).
+The collection's TC-001 executable uses SDK 3925; its Cxbx session remained
+black while reporting `Unknown blend source factor: 0x40348`. Creating a stable
+window did not establish a working game. Other Xbox titles keep their existing
+Cxbx routing, including manually configured command overrides. Custom DOA3
+builds retain Cxbx routing: the native program is verified only for the
+unmodified USA disc, and mod playability is not established by this exception.
+
+The native runtime is built privately from the user's existing USA disc. Its
+generated program must match upstream's manifest. Only the exact supported
+original XBE or the independently verified media/region-patched copy is accepted;
+restoring those two certificate fields in a separate copy must produce the
+exact upstream full-file checksum. The source ROM and its extraction remain
+unchanged. No game code or assets are included in the gBox source repository.
+
+The fixed runtime bundle is fetched from the authenticated Spark artifact store.
+Its archive, executable, DLLs, release receipt and generated-program checksums
+must match the reviewed build. Installation is local under the worker's runtime
+directory. A separate persistent play-disc holds native `.recomp-storage` saves;
+replacing runtime binaries does not delete saves. Mismatched files or unsafe
+linked paths fail with an explanation and leave existing saves intact.
+
+A successful native launch requires both its owned window and a nonuniform,
+nonblack image read directly from its GPU back buffer. Startup captures a bounded
+set of twelve back buffers, and the launch receipt retains a PNG of the proven
+output. A blank window alone cannot satisfy this check. This establishes rendered
+output; title screens, controls and gameplay still require actual session evidence.
 
 Sources: [official Cxbx release](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded/releases/tag/CI-585c49a),
 [official Cxbx source](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded),

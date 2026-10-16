@@ -31,6 +31,17 @@ def test_original_xbox_routes_directly_without_catalog_rescan(tmp_path, monkeypa
         adapters.for_game(legacy_entry(), cfg)
 
 
+def test_verified_doa3_catalog_title_uses_its_native_runtime_without_rerouting_other_xbox_games(tmp_path, monkeypatch):
+    from gbox.doa3_native import Doa3NativeAdapter, GAME_ID
+    monkeypatch.setattr(adapters, "HOST_OS", "windows")
+    cfg = config(tmp_path)
+    game = legacy_entry() | {"game_id": GAME_ID}
+    assert isinstance(adapters.for_game(game, cfg), Doa3NativeAdapter)
+    assert adapters.for_game(game | {"game_id": "another-xbox-game"}, cfg).name == "cxbx"
+    assert adapters.for_game(game, cfg, mod="texture-build").name == "cxbx"
+    assert adapters.for_game(game | {"mod": "texture-build"}, cfg).name == "cxbx"
+
+
 def test_console_identity_uses_actual_disc_collection():
     assert systems.classify("Microsoft XBOX")[:2] == ("xbox", None)
     assert systems.classify("Microsoft XBOX 360")[:2] == ("xbox360", None)

@@ -350,6 +350,7 @@ class _OwnedProcess:
 
 class XboxAdapter:
     name = "cxbx"
+    render_class = "CxbxRender"
     supported = {"launch_game", "stop_game", "query_runtime", "get_frame"}
     checkpoint_state = False
     checkpoint_reason = "Cxbx-Reloaded has no verified in-place save-state interface"
@@ -395,7 +396,7 @@ class XboxAdapter:
         if not self.ready:
             return bool(live)
         windows = owned_windows(live, self.render_window["hwnd"] if self.render_window else None)
-        render = next((row for row in windows if row["class"] == "CxbxRender"), None)
+        render = next((row for row in windows if row["class"] == self.render_class), None)
         if render:
             self.render_pid, self.render_window = render["pid"], render
             self._render_missing_since = None
