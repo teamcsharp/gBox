@@ -634,6 +634,9 @@ STRATEGIES = {
     "gbox.auf_swap": ("pairs", "007 Agent Under Fire GC: every body in the missions (campaign:<body>) and in the "
                                "multiplayer maps (mp:<body>, the bots) gets its donor; every level rebuilt once, one disc "
                                "image (auf_swap.build_cast)"),
+    "gbox.ff7_swap": ("pairs", "Final Fantasy VII: every party member's field (FIELD/<X>.BCX) and battle "
+                                "(ENEMY6/<X>.LZS) models rebuilt in one disc image (ff7_swap.build_cast); members "
+                                "without the humanoid party skeleton (Red XIII, Cait Sith) are skipped"),
 }
 
 
@@ -1287,6 +1290,14 @@ def _auf(ctx, game, pairs, name, inp):
     return auf_swap.build_cast(ctx, game, pairs, name, ctx.progress)
 
 
+def _ff7(ctx, game, pairs, name, inp):
+    from . import ff7_swap
+    try:
+        return ff7_swap.build_cast(ctx, game, pairs, name, inp)
+    except Exception as e:                                # noqa: BLE001 - the disc build failed as a whole
+        return {"mod": None, "slots": {s: {"status": "failed", "reason": str(e)[:500]} for s, _m in pairs}}
+
+
 BUILDERS = {
     "gbox.twin_snakes_swap": _twin_snakes,
     "gbox.stranglehold_swap": _stranglehold,
@@ -1306,4 +1317,5 @@ BUILDERS = {
     "gbox.crazy_taxi_swap": _crazy_taxi,
     "gbox.mgs_vr_swap": _mgs_vr,
     "gbox.auf_swap": _auf,
+    "gbox.ff7_swap": _ff7,
 }
