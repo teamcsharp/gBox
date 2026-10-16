@@ -91,12 +91,21 @@ test('native review and build preserve every real slot and unchanged rows; later
     await evaluate(`connect('original-a','donor-a_2');connect('original-c','donor-a_0');go('plan');waitFor(()=>!document.querySelector('[data-cs-go=build]').disabled)`);
     const expected = [{ slot: 'fighter:a', character: 'donor-a_2' }, { slot: 'fighter:b', character: '' }, { slot: 'fighter:c', character: 'donor-a_0' }];
     assert.deepEqual(await evaluate(`calls.find(c=>c.p==='/api/cast_swap/plan').b.assignments`), expected);
+    assert.equal(await evaluate(`[...document.querySelectorAll('[data-cs=plan] select, [data-cs=plan] input, [data-cs=plan] button')].every(control=>control.matches(':disabled'))`), true);
+    assert.equal(await evaluate(`card('target','original-a').querySelector('[data-action=lock]').checked`), true);
+    // Reviewing an unchanged diagram must not reset the manually locked choices.
+    await evaluate(`document.querySelector('[data-action=pool-none]').click();card('donor','donor-a_1').querySelector('[data-action=pool]').click();document.querySelector('[data-action=shuffle]').click()`);
+    assert.equal(await evaluate(`panel.controller.state.chartRows.find(r=>r.target_id==='original-a').character`), 'donor-a_2');
+    assert.equal(await evaluate(`panel.controller.state.chartRows.find(r=>r.target_id==='original-c').character`), 'donor-a_0');
+    await evaluate(`card('target','original-b').querySelector('[data-action=remove]').click()`);
     await evaluate(`connect('original-a','donor-a_1')`);
     assert.equal(await evaluate(`document.querySelector('[data-cs-go=build]').disabled`), true);
     assert.equal(await evaluate(`panel.controller.state.reviewedChart`), null);
     await evaluate.run(`connect('original-a','donor-a_2');go('plan');await waitFor(()=>!document.querySelector('[data-cs-go=build]').disabled);go('build');await waitFor(()=>lastJob!==null);`);
     assert.deepEqual(await evaluate(`lastJob.input.assignments`), expected);
     assert.equal(await evaluate(`lastJob.input.launch`), false);
+    assert.equal(await evaluate(`lastJob.input.seed===document.querySelector('[data-seed]').value`), true);
+    assert.equal(await evaluate(`document.querySelector('[data-cs=seed]').offsetParent===null`), true);
     assert.equal(await evaluate(`built[0].mod`), 'cast_fixture');
     await evaluate(`panel.close()`);
   });
@@ -151,7 +160,7 @@ test('actual 3D popup receives authenticated model/file URLs and a late viewer c
 });
 
 test('closing clears title-search and request-poll timers while an in-flight request stays saved', { skip }, async () => {
-  await page(async evaluate => {
+  await page(async (evaluate, send) => {
     await evaluate.run(`window.intervals=new Map();window.searches=new Map();window.timerSequence=50000;
       window.realClearTimeout=window.clearTimeout.bind(window);window.realClearInterval=window.clearInterval.bind(window);
       window.setInterval=(fn,ms)=>{const id=++timerSequence;intervals.set(id,{fn,ms});return id;};window.clearInterval=id=>{intervals.delete(id);realClearInterval(id);};
@@ -164,7 +173,14 @@ test('closing clears title-search and request-poll timers while an in-flight req
     assert.equal(await evaluate(`searches.size`), 0);
     assert.equal(await evaluate(`calls.some(c=>c.p.startsWith('/api/home/games?'))`), false);
     // A saved request is separate from its UI. Closing during POST cannot cancel or duplicate it.
-    await evaluate.run(`memory.clear();openCast();await ready();connect('original-b','donor-a_2');pendingSave=[];go('request');await waitFor(()=>pendingSave.length===1);panel.close();pendingSave[0]();await waitFor(()=>saved.length===2);`);
+    await evaluate.run(`memory.clear();openCast();await ready();connect('original-b','donor-a_2');pendingSave=[];go('request');await waitFor(()=>pendingSave.length===1);`);
+    assert.equal(await evaluate(`document.querySelector('[data-cs=chart]').inert`), true);
+    assert.equal(await evaluate(`[...document.querySelectorAll('[data-cs=source],[data-cs=mapping],[data-cs=slots],[data-cs=title-search]')].every(control=>control.disabled)`), true);
+    const point = await evaluate(`(()=>{const r=card('donor','donor-a_0').querySelector('.cm-main').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`);
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 });
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 });
+    assert.equal(await evaluate(`panel.controller.state.chartRows.find(r=>r.target_id==='original-b').character`), 'donor-a_2');
+    await evaluate.run(`panel.close();pendingSave[0]();await waitFor(()=>saved.length===2);`);
     assert.equal(await evaluate(`document.querySelectorAll('#castdlg').length`), 0);
     assert.equal(await evaluate(`intervals.size`), 0);
     assert.equal(await evaluate(`saved[1].mapping.cast_chart.connections.find(r=>r.target_id==='original-b').character`), 'donor-a_2');
@@ -190,5 +206,22 @@ test('closing a native queued build stops UI polling while retaining the submitt
     assert.equal(await evaluate(`calls.some(c=>c.p.includes('queued-native-job'))`), false);
     assert.equal(await evaluate(`calls.some(c=>/cancel|abort|stop/.test(c.p))`), false);
     assert.equal(await evaluate(`document.querySelectorAll('#castdlg').length`), 0);
+  });
+});
+
+test('one visible chart seed is saved exactly, and explicit Clear in random mode stays unchanged on Review', { skip }, async () => {
+  await page(async evaluate => {
+    await evaluate(`openCast();ready()`);
+    await evaluate(`document.querySelector('[data-action=shuffle]').click()`);
+    const seed = await evaluate(`document.querySelector('[data-seed]').value`);
+    assert.ok(seed.length > 0);
+    assert.equal(await evaluate(`document.querySelector('[data-cs=seed]').offsetParent===null`), true);
+    await evaluate(`go('request');waitFor(()=>saved.length===1)`);
+    assert.equal(await evaluate(`saved[0].mapping.seed`), seed);
+    await evaluate(`document.querySelector('[data-cs=mapping]').value='random';document.querySelector('[data-cs=mapping]').dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('[data-action=clear]').click();go('plan');waitFor(()=>calls.some(c=>c.p==='/api/cast_swap/plan'))`);
+    assert.equal(await evaluate(`panel.controller.state.chartRows.every(row=>row.character==='')`), true);
+    assert.equal(await evaluate(`calls.filter(c=>c.p==='/api/cast_swap/plan').at(-1).b.assignments.every(row=>row.character==='')`), true);
+    assert.equal(await evaluate(`calls.filter(c=>c.p==='/api/cast_swap/plan').at(-1).b.seed`), seed);
+    await evaluate(`panel.close()`);
   });
 });
