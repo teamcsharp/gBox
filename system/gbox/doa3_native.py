@@ -21,6 +21,11 @@ from .registry import ToolUnavailable
 from .xbox import XboxAdapter, _OwnedProcess, is_xbox_game, owned_windows, prepare_xbe
 
 GAME_ID = "b8edf7040116f3aa"
+# Read-only catalog.scan(lib_id="quickswap-xbox", do_hash=False) identity.
+# Its extracted XBE was independently checked against XBE_SHA256 before adding it.
+QUICKSWAP_GAME_ID = "f03a801797a90506"
+QUICKSWAP_LIBRARY = "quickswap-xbox"
+QUICKSWAP_ROM = "Dead or Alive 3 (USA) (En,Ja).7z"
 XBE_SHA256 = "e523dd15d0765899a43a1824c023e0219d129e9a8b41e8213e4e645755d2bfa3"
 PATCHED_XBE_SHA256 = "80bc5611b8c288fc3e7b26cec2d4275c25d5b12a182d680e0dbe45a75326ad41"
 PROGRAM_SHA256 = "73f9be4f86bc8a7ce024c38b6d907f6b129237d10aa049b246527e005ab7febc"
@@ -40,7 +45,9 @@ _MAX_BUNDLE = 64 * 1024 * 1024
 
 
 def supports_game(game: dict) -> bool:
-    return game.get("game_id") == GAME_ID and is_xbox_game(game)
+    return is_xbox_game(game) and (game.get("game_id") == GAME_ID or (
+        game.get("game_id") == QUICKSWAP_GAME_ID and game.get("library") == QUICKSWAP_LIBRARY
+        and game.get("rel_path") == QUICKSWAP_ROM))
 
 
 def install_dir(config) -> Path:
@@ -203,7 +210,8 @@ def prepare_play_disc(source: Path, config, game: dict, progress=lambda *_: None
         raise ToolUnavailable("This native adapter is restricted to the owned DOA3 USA catalog title")
     source = source.absolute()
     original = _original_xbe(source)
-    parent = (config.runtime / "xbox" / "doa3-native-play" / GAME_ID).absolute()
+    game_id = game["game_id"]  # supports_game restricts this to reviewed catalog identities.
+    parent = (config.runtime / "xbox" / "doa3-native-play" / game_id).absolute()
     disc, marker = parent / "disc", parent / "disc-receipt.json"
     _plain_path(parent)
     progress(35, "Checking the DOA3 disc and its persistent save folder")
@@ -223,7 +231,7 @@ def prepare_play_disc(source: Path, config, game: dict, progress=lambda *_: None
                 receipt = json.loads(marker.read_text(encoding="utf8"))
             except (OSError, ValueError) as error:
                 raise ToolUnavailable("Existing DOA3 play disc has no valid receipt; it was left intact") from error
-            if not isinstance(receipt, dict) or receipt.get("format") != 1 or receipt.get("game_id") != GAME_ID or receipt.get("fingerprint") != fingerprint:
+            if not isinstance(receipt, dict) or receipt.get("format") != 1 or receipt.get("game_id") != game_id or receipt.get("fingerprint") != fingerprint:
                 raise ToolUnavailable("Existing DOA3 play disc differs from this source; its saves were left intact")
             actual = {name: path for name, path in _disc_files(disc)}
             if set(actual) != {item["name"] for item in inventory}:
@@ -251,7 +259,7 @@ def prepare_play_disc(source: Path, config, game: dict, progress=lambda *_: None
                     shutil.copy2(src, target)
                 if _sha(target) != item["sha256"]:
                     raise ToolUnavailable("DOA3 disc changed while its private copy was being prepared")
-            receipt = {"format": 1, "game_id": GAME_ID, "fingerprint": fingerprint, "files": inventory}
+            receipt = {"format": 1, "game_id": game_id, "fingerprint": fingerprint, "files": inventory}
             receipt_path = Path(temporary) / "receipt.json"
             receipt_path.write_text(json.dumps(receipt), encoding="utf8")
             os.replace(stage, disc)

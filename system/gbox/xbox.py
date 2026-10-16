@@ -1,7 +1,7 @@
 """Original Xbox launches without RocketLauncher.
 
-The collection's Xbox archives contain complete DVD folders, not Windows programs.
-Cxbx-Reloaded boots their default.xbe directly. Its portable installation and saves
+Xbox archives contain complete DVD folders or disc images, not Windows programs.
+Cxbx-Reloaded boots their prepared default.xbe directly. Its portable installation and saves
 are kept on this worker; the library's emulator, settings and game files are read-only.
 """
 from __future__ import annotations
@@ -227,12 +227,21 @@ def prepare_xbe(source: str | Path, config: Config, progress=lambda *_: None) ->
     elif source.suffix.lower() in (".7z", ".zip"):
         entries = rom_archives.members(source)
         choices = [e["name"] for e in entries if PurePosixPath(e["name"].replace("\\", "/")).name.lower() == "default.xbe"]
-        if len(choices) != 1:
-            raise ValueError(f"Xbox archive must contain exactly one default.xbe (found {len(choices)}): {source.name}")
-        source = rom_archives.prepare(source, config, choices[0], progress)
+        images = [e["name"] for e in entries if PurePosixPath(e["name"].replace("\\", "/")).suffix.lower() in (".iso", ".xiso")]
+        if len(choices) == 1:
+            source = rom_archives.prepare(source, config, choices[0], progress)
+        elif not choices and len(images) == 1:
+            from .xbox_disc import validate_archive
+            validate_archive(entries)
+            source = rom_archives.prepare(source, config, images[0], progress)
+        else:
+            raise ValueError(f"Xbox archive must contain exactly one default.xbe or one DVD image: {source.name}")
+    if source.suffix.lower() in (".iso", ".xiso"):
+        from .xbox_disc import prepare
+        source = prepare(source, config, progress)
     if source.suffix.lower() != ".xbe":
-        raise Unsupported("This Xbox runtime needs an extracted DVD folder/default.xbe or its complete .7z/.zip archive. "
-                          "Xbox ISO/XISO/CHD images need conversion to a DVD folder before Cxbx can boot them.")
+        raise Unsupported("This Xbox runtime needs a DVD folder/default.xbe, a recognized Xbox ISO/XISO, or its .7z/.zip archive. "
+                          "Other image formats, including CHD, need conversion first.")
     with source.open("rb") as reader:
         if reader.read(4) != b"XBEH":
             raise ValueError(f"Not an Xbox XBE executable: {source}")

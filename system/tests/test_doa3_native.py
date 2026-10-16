@@ -49,6 +49,41 @@ def test_title_recognition_is_id_and_console_not_display_name():
     assert not native.supports_game({"platform": "xbox", "title": "Dead or Alive 3 (USA)"})
 
 
+def quickswap_game():
+    return {**game(), "game_id": native.QUICKSWAP_GAME_ID, "library": native.QUICKSWAP_LIBRARY,
+            "rel_path": native.QUICKSWAP_ROM}
+
+
+def test_quickswap_alias_matches_real_scan_identity_and_exact_library_path():
+    from gbox import catalog
+    assert catalog._gid(native.QUICKSWAP_LIBRARY, native.QUICKSWAP_ROM) == native.QUICKSWAP_GAME_ID
+    assert native.supports_game(quickswap_game())
+    assert not native.supports_game({**quickswap_game(), "library": "different-library"})
+    assert not native.supports_game({**quickswap_game(), "rel_path": "Dead or Alive 3 (USA) (En Ja).7z"})
+    assert not native.supports_game({**quickswap_game(), "game_id": "c77a5418f4328722"})
+
+
+def test_verified_catalog_copies_keep_distinct_persistent_discs_and_hash_gate(disc, tmp_path):
+    xbe, original, patched = disc
+    cfg = config(tmp_path)
+    old = native.prepare_play_disc(xbe, cfg, game())
+    saved = old.parent / ".recomp-storage" / "saved-profile"
+    saved.parent.mkdir()
+    saved.write_bytes(b"keep old save")
+    new = native.prepare_play_disc(xbe, cfg, quickswap_game())
+    assert old.parent.parent.name == native.GAME_ID
+    assert new.parent.parent.name == native.QUICKSWAP_GAME_ID
+    assert old != new and old.read_bytes() == new.read_bytes() == original
+    assert saved.read_bytes() == b"keep old save"
+    assert native.prepare_play_disc(xbe, cfg, quickswap_game()) == new
+    receipt = json.loads((new.parent.parent / "disc-receipt.json").read_text())
+    assert receipt["game_id"] == native.QUICKSWAP_GAME_ID
+    xbe.write_bytes(b"XBEHunreviewed revision")
+    with pytest.raises(ToolUnavailable, match="verified USA executable"):
+        native.prepare_play_disc(xbe, cfg, quickswap_game())
+    assert new.read_bytes() == original and saved.read_bytes() == b"keep old save"
+
+
 @pytest.mark.parametrize('registered', [False, True])
 def test_cancelled_launch_cleans_only_an_unregistered_native_game(tmp_path, monkeypatch, registered):
     from gbox import tools
