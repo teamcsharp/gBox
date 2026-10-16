@@ -717,8 +717,8 @@ class CharIn(BaseModel):
     # cast_swap (gbox.cast_swap): the entire cast of target_game replaced by the cast of source, one mod
     target_game: str = ""                  # cast_swap: the game whose cast is replaced (catalog id or title; default game/game_id)
     source: str = ""                       # cast_swap: the donor cast: a game id / title / abbreviation (JGR, SA2) or a group (wrestlers, fighters), comma-joined
-    mapping: str = "auto"                  # cast_swap: auto | random | by_role (lead on the player, body size on the rest)
-    assign: str = ""                       # cast_swap: random | by_role | auto, wins over mapping: assign=random deals the source's donors at random (seeded, no repeats before the pool is used, each name once first)
+    mapping: str = "auto"                  # cast_swap: auto | random | by_role | alternate (alternate round-robins the donors across comma-joined source pools, keeping their counts within one)
+    assign: str = ""                       # cast_swap: random | by_role | auto | alternate, wins over mapping: assign=random deals the source's donors at random (seeded, no repeats before the pool is used, each name once first)
     prefer: str = ""                       # cast_swap: a source spec whose donors are dealt first (source=wrestlers prefer=smackdown2,nomercy)
     seed: str = ""                         # cast_swap: the same seed builds the same plan
     slots: str = "all"                     # cast_swap: all | main | enemies | bosses | npcs | bots | campaign | multiplayer | ... | a comma list of groups / slot names (slots=campaign,bots)
@@ -2547,7 +2547,7 @@ def characters_tool(inp: CharIn, ctx):
     variant of the collection character it came from (base=, or the GLB's gBox extras; skeleton unchanged), else a new
     character (derived_ok=true when bones changed) with its rig recognised (Mixamo, Rigify, VRM, UE, biped) or
     auto-rigged (auto_rig); objects parented to bones become attachments every writer carries. |
-    cast_swap target_game=<id|title> source=<game|group, e.g. wrestlers> [mapping=auto|random|by_role | assign=random]
+    cast_swap target_game=<id|title> source=<game|group, e.g. wrestlers> [mapping=auto|random|by_role|alternate | assign=random]
     [seed] [prefer] [slots=all|main|enemies|bots|campaign|<comma list>] [assignments] [plan_only] [launch]: the entire cast of one game replaced by the cast of
     another in ONE mod (gbox.cast_swap: donor quality gate, stale entries re-extracted, per-slot built/failed report)."""
     if inp.op == "mgs_vr_decode":                    # internal Windows handoff for the native reader
