@@ -1336,6 +1336,13 @@ class RetroArchAdapter(CommandAdapter):
         self.audio_driver = chain[0]
         return {"ga": ga, "chain": chain, "sel": sel, "remembered": first}
 
+    def _rebind_port(self) -> None:
+        """Pick a fresh command-interface port. RetroArch's NetCMD could not bind the old one (a leftover or racing
+        socket took it), so gBox would never hear GET_STATUS; a new ephemeral port is almost certainly free."""
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.bind((self.addr[0], 0))
+            self.addr = (self.addr[0], s.getsockname()[1])
+
     def launch_game(self, rom: str) -> dict:
         try:
             return self._launch_game(rom)
@@ -1388,7 +1395,11 @@ class RetroArchAdapter(CommandAdapter):
         # [game_audio] boot_wait_s; content loaded with audio still opening extends past it (extended_wait_s)
         boot_s = float(getattr(self, "boot_timeout_s", None) or ga.boot_wait_s)
         boot_started = time.monotonic()
-        for n, driver in enumerate(chain):
+        n = 0
+        netcmd_retries = 0
+        verdict = None
+        while n < len(chain):
+            driver = chain[n]
             if n:                                              # the previous driver stalled: same session, next driver
                 self.audio_driver = driver
                 self._write_cfg()
@@ -1408,13 +1419,31 @@ class RetroArchAdapter(CommandAdapter):
                              "audio_init_s": watch.audio_init_s(time.monotonic()), "reason": watch.reason})
             if verdict == "ready":
                 break
+            if verdict == "netcmd" and netcmd_retries < 2 and "--config" in argv:
+                # NetCMD failed to bind its port (a leftover / racing socket took it): gBox would never hear
+                # GET_STATUS and would false-fail "content not running". Restart the same launch on a fresh port.
+                _kill_tree(self.proc)
+                netcmd_retries += 1
+                self._rebind_port()
+                cfg = self._write_cfg()
+                argv[argv.index("--config") + 1] = str(cfg)
+                self.log_path = logs / f"retroarch-{self.addr[1]}.log"
+                self._p(80, f"Network command interface could not bind; restarting on a fresh port "
+                            f"(attempt {netcmd_retries})")
+                n = 0                                          # run the audio chain again on the fresh port
+                continue
             _kill_tree(self.proc)                              # stuck in its audio init: nothing to save yet
             try:                                               # keep the stalled attempt's log as evidence
                 shutil.copyfile(self.log_path, self.log_path.with_name(f"{self.log_path.stem}-{driver}.log"))
             except OSError:
                 pass
+            n += 1
+        if verdict != "ready":                          # every attempt ended "netcmd": the command interface never
+            tail = self.log_tail()                      # bound, so the session is unusable — not "content not running"
+            self.stop_game()
+            raise RuntimeError(f"retroarch started but {getattr(watch, 'reason', None) or 'the network command interface never came up'}: {tail}")
         boot_finished = time.monotonic()
-        if len(attempts) > 1 and self.config is not None:
+        if any(a["outcome"] == "fallback" for a in attempts) and self.config is not None:
             game_audio.remember(self.config.runtime, ((plan["sel"] or {}).get("chosen") or {}).get("id"),
                                 self.audio_driver, attempts[0]["driver"])
         warning = next((a["reason"] for a in attempts if a["outcome"] == "fallback"), None) or \
@@ -1464,7 +1493,7 @@ class RetroArchAdapter(CommandAdapter):
             except RuntimeError:
                 pass
             verdict = watch.decide(time.monotonic(), running)
-            if verdict in ("ready", "fallback"):
+            if verdict in ("ready", "fallback", "netcmd"):
                 return verdict, st
             if verdict == "fail":
                 tail = self.log_tail()
