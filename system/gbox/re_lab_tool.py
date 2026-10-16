@@ -25,6 +25,7 @@ import subprocess
 import time
 import zipfile
 from pathlib import Path
+from urllib.parse import quote
 
 from pydantic import BaseModel
 
@@ -283,6 +284,12 @@ class ExeOut(BaseModel):
     disc_id: str = ""
     registers: dict = {}
     notes: list[str] = []
+    session_id: str = ""
+    mod: str = ""
+    worker_id: str = ""                    # owner of the live game, not the analysis worker
+    snapshot_started_at: float | None = None
+    snapshot_finished_at: float | None = None
+    revision: dict = {}                     # RAM snapshot fingerprint, never a catalog/disc executable hash
 
 
 def _api(ctx, method, path, **kw):
@@ -299,11 +306,69 @@ def _ram_snapshot(ctx, sid: str, base: int, size: int) -> bytes:
     step = 0x100000
     for o in range(0, size, step):
         n = min(step, size - o)
-        h = _api(ctx, "POST", f"/api/sessions/{sid}/rpc", json={"op": "read_memory", "args": {"address": base + o,
+        h = _api(ctx, "POST", f"/api/sessions/{quote(sid, safe='')}/rpc", json={"op": "read_memory", "args": {"address": base + o,
                                                                                                 "length": n}}, timeout=60)
-        out += bytes.fromhex(h if isinstance(h, str) else h.get("hex", ""))
+        text = h if isinstance(h, str) else h.get("hex") if isinstance(h, dict) else None
+        if not isinstance(text, str):
+            raise ValueError("The selected session did not return a RAM byte payload")
+        chunk = bytes.fromhex(text)
+        if len(chunk) != n:
+            raise ValueError(f"Incomplete RAM snapshot: requested {n} bytes at {base + o:#x}, received {len(chunk)}")
+        out += chunk
         ctx.progress(10 + 70 * (o + n) / size, f"read {(o + n) >> 20} of {size >> 20} MiB of RAM")
     return bytes(out)
+
+
+def _live_ram_target(ctx, game: dict, sid: str) -> dict:
+    """Authenticate the exact ledger row and the worker's current session info."""
+    from .live_request import bind_target
+    sessions = _api(ctx, "GET", "/api/sessions")
+    if not isinstance(sessions, list):
+        raise ValueError("The control plane did not return a session inventory")
+    target = bind_target({"session_id": sid, "game_id": game["game_id"]}, sessions)
+    row = next(item for item in sessions if isinstance(item, dict) and item.get("session_id") == sid)
+    if row.get("stopping"):
+        raise ValueError("The selected session is stopping; no RAM was read")
+    info = _api(ctx, "POST", f"/api/sessions/{quote(sid, safe='')}/rpc", json={"op": "info"})
+    if not isinstance(info, dict) or info.get("game_id") != game["game_id"]:
+        raise ValueError("The live worker's session belongs to a different game; no RAM was accepted")
+    platform = info.get("platform")
+    if platform != game.get("platform") or (row.get("platform") and row["platform"] != platform):
+        raise ValueError("The live session platform does not match the requested game's RAM layout")
+    if platform not in PLATFORM_CPU:
+        raise ValueError(f"No verified CPU mapping for live platform {platform!r}")
+    runtime = info.get("runtime")
+    if not isinstance(runtime, dict) or runtime.get("running") is not True:
+        raise ValueError("The selected session's emulator is no longer running")
+    capabilities = info.get("capabilities")
+    if not isinstance(capabilities, dict) or capabilities.get("read_memory") != "supported":
+        raise ValueError("The selected live session does not support RAM reads")
+    if row.get("adapter") and info.get("emulator") != row["adapter"]:
+        raise ValueError("The live session emulator changed; no RAM was accepted")
+    detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+    collection_mod = row.get("collection_mod") or target["mod"]
+    actual_mod = row.get("launch_mod") or row.get("staged_mod") or detail.get("mod") or target["mod"]
+    if not isinstance(collection_mod, str) or not isinstance(actual_mod, str):
+        raise ValueError("The selected session has an invalid build identity")
+    if "mod" in info and info["mod"] != actual_mod:
+        raise ValueError("The live session build changed; no RAM was accepted")
+    return target | {"platform": platform, "core": info.get("core"), "emulator": info.get("emulator"),
+                     "rom": info.get("rom"), "actual_mod": actual_mod, "collection_mod": collection_mod,
+                     "started": row.get("started"), "pid": runtime.get("pid") or detail.get("pid"),
+                     "runtime_content": runtime.get("content")}
+
+
+def _live_ram_range(inp: ExeIn, platform: str) -> tuple[int, int]:
+    from .tools import MAIN_RAM
+    ranges = MAIN_RAM.get(platform)
+    if not ranges:
+        raise ValueError(f"No verified main-RAM layout for live platform {platform!r}")
+    if (inp.ram_base is None) != (inp.ram_size is None):
+        raise ValueError("ram_base and ram_size must be supplied together")
+    base, size = (inp.ram_base, inp.ram_size) if inp.ram_base is not None else ranges[0]
+    if size <= 0 or not any(lo <= base and base + size <= lo + length for lo, length in ranges):
+        raise ValueError("Requested RAM range is outside the verified live platform layout")
+    return base, size
 
 
 def analysis_root(cfg) -> Path:
@@ -315,21 +380,29 @@ def _validate(out: ExeOut, arts) -> list[str]:
     if not d:
         return ["exe_info.json missing"]
     info = json.loads(d)
-    return [] if info.get("sha256") == out.sha256 and info.get("rel") == out.rel else ["exe_info.json does not match the output"]
+    fields = ("game_id", "source", "sha256", "rel")
+    if out.source == "ram":
+        fields += ("source_sha256", "session_id", "mod", "worker_id", "platform", "revision",
+                   "snapshot_started_at", "snapshot_finished_at")
+    return [] if all(info.get(key) == getattr(out, key) for key in fields) else ["exe_info.json does not match the output"]
 
 
-@tool("re_executable", "1.0", ExeIn, ExeOut, capabilities=["analysis"], timeout_s=3600, artifacts=["exe_info.json"],
+@tool("re_executable", "1.1", ExeIn, ExeOut, capabilities=["analysis"], timeout_s=3600, artifacts=["exe_info.json"],
       side_effects=["writes <data_dir>/analysis/re/<game_id>/*.elf", "may unpack a disc image once into the cache"],
-      validate=_validate, validation="exe_info.json matches the output (ELF sha256 + path)")
+      validate=_validate, validation="exe_info.json matches the ELF hash, path and live-session provenance")
 def re_executable(inp: ExeIn, ctx):
     """Extract a title's main executable (or a live RAM image) as an ELF that Ghidra imports at the right address."""
     from .models import CatalogEntry
     from .tools import rom_path
     game = _api(ctx, "GET", f"/api/catalog/{inp.game_id}")
+    if game.get("game_id") != inp.game_id:
+        raise ValueError("The catalog response does not match the requested game")
     plat = game.get("platform") or ""
     cpu, proc, _m, _be = PLATFORM_CPU.get(plat, (None, None, None, None))
     src = inp.source if inp.source in ("disc", "ram", "path") else ("path" if inp.path else "disc")
     notes: list[str] = []
+    live, revision = {}, {}
+    snapshot_started_at = snapshot_finished_at = None
     ctx.progress(2, f"{game['title']}: reading the executable ({src})")
     if src == "disc":
         try:
@@ -358,16 +431,27 @@ def re_executable(inp: ExeIn, ctx):
     elif src == "ram":
         if not inp.session_id:
             raise ValueError("source=ram needs session_id (a running session of this game)")
-        base, size = (inp.ram_base, inp.ram_size) if inp.ram_base is not None and inp.ram_size else ram_layout(plat)
+        live = _live_ram_target(ctx, game, inp.session_id)
+        plat = live["platform"]
+        cpu, proc, _m, _be = PLATFORM_CPU[plat]
+        base, size = _live_ram_range(inp, plat)
+        snapshot_started_at = time.time()
         raw = _ram_snapshot(ctx, inp.session_id, base, size)
+        snapshot_finished_at = time.time()
+        if _live_ram_target(ctx, game, inp.session_id) != live:
+            raise ValueError("The selected session/build changed while reading RAM; the snapshot was discarded")
         elf, info = ram_to_image(plat, raw, base)
         info["source_file"] = f"RAM {base:#x}+{size:#x} of session {inp.session_id}"
         notes += info.pop("notes", [])
-        notes.append("RAM image: heap and stack are included; code is what was loaded at the moment of the snapshot")
+        notes.append("RAM image includes heap and stack. Reads are non-atomic: in-game state can change between chunks. "
+                     "The RAM hash identifies this snapshot, not an immutable executable or the catalog's base disc.")
+        revision = live | {"kind": "ram_snapshot", "sha256": sha(raw), "base": base, "size": size,
+                           "atomic": False, "snapshot_started_at": snapshot_started_at,
+                           "snapshot_finished_at": snapshot_finished_at}
     d = analysis_root(ctx.config) / "re" / inp.game_id
     d.mkdir(parents=True, exist_ok=True)
     stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(info.get("source_file") or "exe").name)[:40] if src != "ram" else \
-        f"ram_{time.strftime('%Y%m%d_%H%M%S')}"
+        f"ram_{sha(elf)}"
     out = d / f"{stem}.elf"
     out.write_bytes(elf)
     regs = dict(info.get("registers") or {})
@@ -377,7 +461,12 @@ def re_executable(inp: ExeIn, ctx):
            "base": f"0x{info['base']:08X}" if info.get("base") is not None else None,
            "entry": f"0x{info['entry']:08X}" if info.get("entry") is not None else None,
            "size": int(info.get("size") or len(raw)), "sha256": sha(elf), "source_sha256": sha(raw),
-           "disc_id": info.get("disc_id", ""), "registers": regs, "notes": notes}
-    ctx.artifact("exe_info.json", json.dumps(res, indent=1).encode(), "application/json", game_id=inp.game_id)
+           "disc_id": info.get("disc_id", ""), "registers": regs, "notes": notes,
+           "session_id": live.get("session_id", ""), "mod": live.get("mod", ""),
+           "worker_id": live.get("worker_id", ""), "revision": revision,
+           "snapshot_started_at": snapshot_started_at, "snapshot_finished_at": snapshot_finished_at}
+    ctx.artifact("exe_info.json", json.dumps(res, indent=1).encode(), "application/json", game_id=inp.game_id,
+                 session_id=res["session_id"], mod=res["mod"], worker_id=res["worker_id"],
+                 source_sha256=res["source_sha256"], revision=revision)
     ctx.progress(100, f"{res['source_file']} -> {res['rel']}")
     return res
