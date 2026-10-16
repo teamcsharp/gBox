@@ -436,6 +436,156 @@ def splice_file(ge: GoldenEyeROM, filename: str, new_data: bytes,
     return bytes(rom)
 
 
+def _sevenzip_deflate(data: bytes) -> bytes | None:
+    """Raw DEFLATE via 7z (much tighter than zlib for the data segment).
+
+    Returns None when 7z is unavailable or fails.  7z's Deflate beats zlib
+    level 9 by enough to re-fit the data segment (zlib recompresses the
+    PAL data segment to 68658 bytes, +981 over its 67677-byte slot; 7z
+    compresses it to 61872, so a re-laid-out ROM still fits the fixed slot).
+    """
+    import os
+    import subprocess
+    import tempfile
+    import zipfile
+
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, "in.bin")
+            zp = os.path.join(td, "out.zip")
+            with open(src, "wb") as fh:
+                fh.write(data)
+            subprocess.run(["7z", "a", "-tzip", "-mx=9", "-mm=Deflate",
+                            "-bd", "-y", zp, src], check=True,
+                           capture_output=True)
+            with zipfile.ZipFile(zp) as zf_:
+                comp_size = zf_.infolist()[0].compress_size
+            with open(zp, "rb") as fh:
+                raw = fh.read()
+            namelen = struct.unpack_from("<H", raw, 26)[0]
+            extralen = struct.unpack_from("<H", raw, 28)[0]
+            start = 30 + namelen + extralen
+            return raw[start:start + comp_size]
+    except (FileNotFoundError, subprocess.CalledProcessError, OSError,
+            zipfile.BadZipFile, IndexError):
+        return None
+
+
+def best_deflate(data: bytes, level: int = 9) -> bytes:
+    """Raw DEFLATE stream, tightest compressor available (7z, else zlib)."""
+    via_7z = _sevenzip_deflate(data)
+    if via_7z is not None:
+        return via_7z
+    c = zlib.compressobj(level, zlib.DEFLATED, -15)
+    return c.compress(data) + c.flush()
+
+
+def rarezip_compress_best(data: bytes, level: int = 9) -> bytes:
+    """rarezip block (0x11 0x72 + raw DEFLATE) using the tightest compressor."""
+    return RAREZIP_MAGIC + best_deflate(data, level)
+
+
+def _patch_rom_constant(rom: bytearray, old: int, new: int,
+                        start: int = 0x1000, end: int = 0x42EAA0) -> int:
+    """Rewrite every ``lui/addiu`` pair forming the 32-bit immediate ``old``
+    (a hard-coded ROM address in the uncompressed code) to form ``new``, in
+    place.  Returns the number of sites patched."""
+    hi_old = ((old + 0x8000) >> 16) & 0xFFFF
+    lo_old = old & 0xFFFF
+    hi_new = ((new + 0x8000) >> 16) & 0xFFFF
+    lo_new = new & 0xFFFF
+    count = 0
+    o = start
+    while o < end - 4:
+        w = struct.unpack_from(">I", rom, o)[0]
+        if w >> 26 != 0x0F or (w & 0xFFFF) != hi_old:
+            o += 4
+            continue
+        rt = (w >> 16) & 31
+        for k in range(1, 17):
+            q = o + 4 * k
+            if q + 4 > end:
+                break
+            x = struct.unpack_from(">I", rom, q)[0]
+            op = x >> 26
+            if ((x >> 21) & 31) == rt and (x & 0xFFFF) == lo_old and \
+                    op in (0x09, 0x23, 0x2B, 0x21, 0x25, 0x20, 0x24, 0x31, 0x39):
+                rom[o + 2:o + 4] = struct.pack(">H", hi_new)
+                rom[q + 2:q + 4] = struct.pack(">H", lo_new)
+                count += 1
+                break
+        o += 4
+    return count
+
+
+def rom_relayout(ge: GoldenEyeROM, filename: str, new_inflated: bytes,
+                 level: int = 9) -> bytes:
+    """Splice ``new_inflated`` into ``filename``'s ROM slot, growing it if needed.
+
+    When the recompressed block exceeds the file's table slot (next entry's
+    ROM offset minus its own), the files that follow it and the images segment
+    are shifted down (higher ROM), their file-table ``rom_offset`` entries are
+    rewritten, the ``_imagesSegmentRomStart`` code immediate is patched, and
+    the data segment is recompressed (tightest available) into its fixed-size
+    slot.  Returns the new ROM bytes.  Raises :class:`GoldenEyeFormatError` if
+    the data segment recompresses larger than its fixed slot (no better
+    compressor available) or the images constant cannot be located.
+
+    The header CIC boot checksum (0x0C/0x10, over ROM 0x1000..0x101000) is NOT
+    recomputed: emulators (parallel_n64/RetroArch) do not enforce it, but a
+    re-laid-out ROM would fail CIC lockout on real hardware.
+    """
+    from gbox.goldeneye_files import (DATA_SEG_ROM, FILE_TABLE_STRIDE,
+                                      FILE_TABLE_VRAM, rarezip_inflate)
+    from gbox.goldeneye_reader import IMAGES_ROM_START
+
+    e = ge.file_by_name(filename)
+    comp = rarezip_compress_best(new_inflated, level)
+    delta = len(comp) - e.rom_size
+    if delta <= 0:
+        # Fits the existing slot: zero-pad in place (the loader stops at the
+        # DEFLATE end-of-stream, so the pad is ignored).
+        rom = bytearray(ge.rom)
+        rom[e.rom_offset:e.rom_offset + e.rom_size] = \
+            comp + b"\x00" * (e.rom_size - len(comp))
+        return bytes(rom)
+
+    rom = bytearray(ge.rom)
+
+    # Rewrite every file-table rom_offset after the target (they shift +delta).
+    data = bytearray(ge.data)
+    fbase = ge.d_off(FILE_TABLE_VRAM)
+    ft = ge.file_table()
+    for idx in range(e.index + 1, len(ft)):
+        off = fbase + idx * FILE_TABLE_STRIDE
+        _entry_idx, _name_ptr, rom_off = struct.unpack_from(">III", data, off)
+        struct.pack_into(">I", data, off + 8, rom_off + delta)
+
+    # Patch _imagesSegmentRomStart (the images segment shifts by the same delta).
+    if _patch_rom_constant(rom, IMAGES_ROM_START, IMAGES_ROM_START + delta) == 0:
+        raise GoldenEyeFormatError("images-segment ROM start constant not found")
+
+    # Recompress the data segment into its fixed-size slot (zero-padded).
+    data_comp = rarezip_compress_best(bytes(data), level)
+    data_slot = rarezip_inflate(ge.rom, DATA_SEG_ROM)[1]
+    if len(data_comp) > data_slot:
+        raise GoldenEyeFormatError(
+            f"recompressed data segment {len(data_comp)} bytes exceeds its "
+            f"fixed {data_slot}-byte slot (no tight-enough deflate available)")
+    padded = data_comp + b"\x00" * (data_slot - len(data_comp))
+
+    # Assemble: [0,DATA_SEG_ROM) | data segment | code/raw/files<target |
+    #            new file | files>target + images | tail (all shifted +delta).
+    out = bytearray()
+    out += rom[:DATA_SEG_ROM]
+    out += padded
+    out += rom[DATA_SEG_ROM + data_slot:e.rom_offset]
+    out += comp
+    out += rom[e.rom_offset + e.rom_size:IMAGES_ROM_START]
+    out += rom[IMAGES_ROM_START:]
+    return bytes(out)
+
+
 def _torso(nodes: list):
     """The op-0x18 node with the most render vertices (the body's torso mesh)."""
     return max((n for n in nodes if n.op == 0x18),
@@ -448,9 +598,10 @@ def cast_swap(ge: GoldenEyeROM, target: str, donor: str, *, level: int = 9) -> t
     The donor's torso geometry blobs (verts, collision, point usage, primary and
     secondary display lists) replace the target's in place; ``relayout`` then
     re-packs the file and recomputes every seg-5 pointer, so a donor larger than
-    the target slot fits in the inflated file.  Returns ``(new_rom, meta)``.
-    Raises :class:`GoldenEyeFormatError` if the recompressed target exceeds its
-    file-table slot.
+    the target slot fits in the inflated file.  ``rom_relayout`` splices the
+    recompressed file back, shifting subsequent files and the images segment and
+    recompressing the data segment when the donor no longer fits its slot.
+    Returns ``(new_rom, meta)``.
     """
     zf_t = parse(ge, target)
     zf_d = parse(ge, donor)
@@ -462,7 +613,9 @@ def cast_swap(ge: GoldenEyeROM, target: str, donor: str, *, level: int = 9) -> t
     donor_blobs = {b.kind: b.data for b in zf_d.blobs
                    if b.node_offset == torso_d.offset and b.kind in GEOM_KINDS}
     new_file = relayout(zf_t, {torso_t.offset: donor_blobs})
-    new_rom = splice_file(ge, target, new_file, level)
+    new_rom = rom_relayout(ge, target, new_file, level)
+    comp = rarezip_compress_best(new_file, level)
+    slot = ge.file_by_name(target).rom_size
     meta = {
         "target": target, "donor": donor,
         "target_torso_node": hex(torso_t.offset), "donor_torso_node": hex(torso_d.offset),
@@ -471,8 +624,11 @@ def cast_swap(ge: GoldenEyeROM, target: str, donor: str, *, level: int = 9) -> t
         "target_triangles": len(torso_t.triangles),
         "donor_triangles": len(torso_d.triangles),
         "inflated_before": len(zf_t.original), "inflated_after": len(new_file),
-        "compressed_after": len(rarezip_compress(new_file, level)),
-        "file_slot": ge.file_by_name(target).rom_size,
+        "compressed_after": len(comp),
+        "file_slot": slot,
+        "relayout": len(comp) > slot,
+        "rom_delta": max(0, len(comp) - slot),
+        "rom_size": len(new_rom),
         "new_file_sha256": hashlib.sha256(new_file).hexdigest(),
     }
     return new_rom, meta
