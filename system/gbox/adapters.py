@@ -3119,8 +3119,10 @@ def for_game(game: dict, config: Config, debug: bool = False, *, mod: str | None
         if HOST_OS != "windows":
             raise ToolUnavailable("Original Xbox games run in Cxbx-Reloaded on a Windows worker")
         from .doa3_native import Doa3NativeAdapter, supports_game
-        if not mod and not game.get("mod") and supports_game(game):
-            return Doa3NativeAdapter(config, game)
+        if supports_game(game):
+            # Asset-only variants keep the exact pinned guest executable. The
+            # native adapter verifies that hash before it creates a play disc.
+            return Doa3NativeAdapter(config, game | {"mod": mod or game.get("mod") or ""})
         return XboxAdapter(config)
     from . import systems
     if game.get("core") and plat != "arcade" and systems.core_for(plat)[0] is None:
