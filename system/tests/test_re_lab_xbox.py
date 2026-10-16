@@ -80,3 +80,25 @@ def test_ram_to_image_accepts_xbox_platform():
     assert elf[:4] == b"\x7fELF"
     assert struct.unpack_from("<H", elf, 0x12)[0] == 3   # EM_386
     assert info["base"] == 0x10000
+
+
+def test_xbox_main_ram_layout_is_64_mib_at_zero():
+    # Original Xbox: 64 MiB of unified DDR SDRAM mapped at physical 0x0.
+    assert re_lab_tool.ram_layout("xbox") == (0x00000000, 0x04000000)
+
+
+def test_live_ram_range_accepts_and_rejects_xbox_ranges():
+    default = re_lab_tool._live_ram_range(re_lab_tool.ExeIn(game_id="g", source="ram"), "xbox")
+    assert default == (0x00000000, 0x04000000)
+
+    in_range = re_lab_tool._live_ram_range(
+        re_lab_tool.ExeIn(game_id="g", source="ram", ram_base=0x10000, ram_size=0x03FF0000), "xbox")
+    assert in_range == (0x10000, 0x03FF0000)
+
+    try:
+        re_lab_tool._live_ram_range(
+            re_lab_tool.ExeIn(game_id="g", source="ram", ram_base=0x0, ram_size=0x04000001), "xbox")
+    except ValueError as exc:
+        assert "outside the verified live platform layout" in str(exc)
+    else:
+        raise AssertionError("expected ValueError for a 64 MiB + 1 range")
