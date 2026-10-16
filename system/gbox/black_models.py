@@ -161,8 +161,8 @@ def wdd_census(data: bytes) -> dict:
     """Structural census of a 65536-byte BG1_*.WDD geometry stream.
 
     The streams are small-byte quantized payloads with zero padding at the end; the
-    record framing is not yet cracked (a u16 length-prefix walk does not cover the
-    file). Census = verified invariants only: fixed size, padded tail, first-word
+    record framing (16-byte [type][sub][payload] records) is parsed by wdd_records().
+    Census = verified invariants only: fixed size, padded tail, first-word
     plausibility.
     """
     if len(data) != 65536:
@@ -173,6 +173,43 @@ def wdd_census(data: bytes) -> dict:
         raise FormatError(f"implausible WDD first word 0x{head:08x}")
     tail = data.rstrip(b"\x00")
     return {"size": len(data), "head": head, "zero_pad": len(data) - len(tail)}
+
+
+WDD_SIZE = 65536
+WDD_RECORD = 16
+
+
+def wdd_records(data: bytes) -> list[tuple[int, int, bytes]]:
+    """The 16-byte record stream of a BG1_*.WDD geometry blob.
+
+    Verified on the owned disc (all 31 BG1_<weapon>.WDD, 2026-10-16): a WDD is a run
+    of 4096 16-byte records, each ``[u8 type][u8 sub][14-byte payload]``.
+
+    * ``sub`` is 0x02 (data record), 0x03 (a handful of table/pointer records — 10 in
+      BG1_AK1, with non-zero types) or 0x00 (zero padding: type 0, payload all zero;
+      these form the file tail).
+    * The type byte stays below 0x80 on data records (0x00..0x4f on the owned disc).
+    * The 14-byte payload is quantized attribute data as *signed bytes*, not 7 x i16:
+      byte values cluster at 0, ±1, ±16 (0x10/0xf0), ±31 (0x1f/0xe1), ±32 (0x20/0xe0).
+      Reading two adjacent small bytes as one little-endian i16 fabricates large values
+      (0x7778 / 0x8888 = ±30584) that are an artifact, not a stored 16-bit quantity.
+    """
+    if len(data) != WDD_SIZE:
+        raise FormatError(f"WDD size {len(data)}, every BG1 WDD is exactly {WDD_SIZE} bytes")
+    return [(data[o], data[o + 1], data[o + 2:o + WDD_RECORD])
+            for o in range(0, WDD_SIZE, WDD_RECORD)]
+
+
+def wdd_summary(data: bytes) -> dict:
+    """Framing census of a BG1_*.WDD: per-sub record counts and zero-padding split."""
+    recs = wdd_records(data)
+    subs: dict[int, int] = {}
+    zero_pad = 0
+    for _t, sub, payload in recs:
+        subs[sub] = subs.get(sub, 0) + 1
+        if sub == 0:
+            zero_pad += 1
+    return {"records": len(recs), "subs": subs, "zero_pad_records": zero_pad}
 
 
 # .DB skeleton name table: a run of 24-byte records (null-terminated ASCII name, zero
@@ -234,6 +271,31 @@ def db_weapon_bones(db: bytes) -> list[str]:
     alongside the shared arms. Empty only if the file carries no weapon-specific bones.
     """
     return [b for b in db_skeleton(db) if b not in SHARED_FPS_BONES]
+
+
+def db_bone_offset_table(db: bytes) -> dict:
+    """The u32 offset table that immediately precedes the skeleton name table.
+
+    A dense little-endian u32 array sits right before the "World" anchor; its values
+    step by BONE_RECORD (24) and are relative offsets to per-bone data records. On
+    the owned disc the table has one entry per skeleton bone (BG1_AK1: 44 entries,
+    0x0cd0..0x10d8, matching its 44 bone names). Returns the anchor, the ascending
+    offset list, and the table's file position.
+    """
+    anchor = db.find(SKEL_ANCHOR)
+    if anchor < 0:
+        raise FormatError("DB has no skeleton anchor 'World'")
+    offsets: list[int] = []
+    o = anchor - 4
+    while o >= 0:
+        v = struct.unpack_from("<I", db, o)[0]
+        if offsets and offsets[0] - v != BONE_RECORD:
+            break
+        offsets.insert(0, v)
+        o -= 4
+    if not offsets:
+        raise FormatError("no bone offset table before the skeleton anchor")
+    return {"anchor": anchor, "table_offset": o + 4, "offsets": offsets}
 
 
 def elf_loader_sites(elf: Path | str | None = None) -> dict:

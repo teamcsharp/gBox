@@ -134,3 +134,64 @@ def test_db_weapon_bones_match_slot_family():
     # the grenade launcher variant carries grenade-specific bones alongside the rifle
     wb = bm.db_weapon_bones(_db_bytes("BG1_BNS"))
     assert "GrenadeShell" in wb and "BottomLead" in wb and "AssualtRifle_Root" in wb
+
+
+def _wdd_bytes(slot: str) -> bytes:
+    cast = bm.list_cast()
+    f = open(DISC, "rb")
+    lba = cast[slot][".WDD"]["lba"]
+    f.seek(lba * 2048)
+    return f.read(65536)
+
+
+@pytest.mark.skipif(not DISC.exists(), reason="owned Black disc not unpacked on this node")
+def test_wdd_records_framing():
+    """Every BG1_*.WDD is 4096 16-byte [type][sub][payload] records."""
+    cast = bm.list_cast()
+    for slot in sorted(k for k in cast if k.startswith("BG1_")):
+        recs = bm.wdd_records(_wdd_bytes(slot))
+        assert len(recs) == 4096, f"{slot} has {len(recs)} records"
+        for t, sub, payload in recs:
+            assert len(payload) == 14
+            assert sub in (0, 2, 3), f"{slot} record sub {sub:#x}"
+            if sub == 0:                     # zero padding: type 0, all-zero payload
+                assert t == 0 and payload == b"\x00" * 14, f"{slot} non-padding sub-0 record"
+            else:
+                assert t < 0x80, f"{slot} data record type {t:#x}"
+
+
+@pytest.mark.skipif(not DISC.exists(), reason="owned Black disc not unpacked on this node")
+def test_wdd_summary_padding_and_pointer_records():
+    """The tail is zero padding (sub 0); a few sub 3 pointer records sit inside."""
+    cast = bm.list_cast()
+    for slot in sorted(k for k in cast if k.startswith("BG1_")):
+        s = bm.wdd_summary(_wdd_bytes(slot))
+        assert s["records"] == 4096
+        assert s["zero_pad_records"] > 0, f"{slot} has no trailing padding"
+        assert 0 < s["subs"].get(3, 0) <= 20, f"{slot} sub-3 count {s['subs'].get(3, 0)}"
+
+
+@pytest.mark.skipif(not DISC.exists(), reason="owned Black disc not unpacked on this node")
+def test_db_bone_offset_table_ak1_pinned():
+    """BG1_AK1's offset table is one u32 per bone (44), stepping by 24, before 'World'."""
+    tbl = bm.db_bone_offset_table(_db_bytes("BG1_AK1"))
+    assert tbl["offsets"] == [0x0CD0 + i * 24 for i in range(44)]
+    assert len(tbl["offsets"]) == len(bm.db_skeleton(_db_bytes("BG1_AK1"))) == 44
+    assert tbl["anchor"] == tbl["table_offset"] + 4 * 44
+
+
+@pytest.mark.skipif(not DISC.exists(), reason="owned Black disc not unpacked on this node")
+def test_db_bone_offset_table_every_variant():
+    """Every BG1_*.DB carries one offset per bone, ascending by 24, before its anchor."""
+    cast = bm.list_cast()
+    for slot in sorted(k for k in cast if k.startswith("BG1_")):
+        db = _db_bytes(slot)
+        tbl = bm.db_bone_offset_table(db)
+        offs = tbl["offsets"]
+        assert offs, f"{slot} has no offset table"
+        assert offs == sorted(offs), f"{slot} offsets not ascending"
+        for a, b in zip(offs, offs[1:]):
+            assert b - a == 24, f"{slot} offset stride {b - a:#x}"
+        assert tbl["anchor"] == tbl["table_offset"] + 4 * len(offs)
+        assert len(offs) == len(bm.db_skeleton(db)), \
+            f"{slot}: {len(offs)} offsets vs {len(bm.db_skeleton(db))} bones"
