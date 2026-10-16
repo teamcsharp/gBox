@@ -7,6 +7,7 @@ Requires the normalised PAL z64 (sha256 40ff3643...) at
 artifacts/source/007_GoldenEye_Europe_norm.z64 (see gbox/goldeneye_inventory.py).
 """
 import hashlib
+import shutil
 import struct
 from pathlib import Path
 
@@ -16,12 +17,16 @@ from gbox.goldeneye_files import GoldenEyeROM, GoldenEyeFormatError
 from gbox.goldeneye_writer import (ZFile, parse, serialize, verify_coverage,
                                    edit_geometry, RECORD_SIZES,
                                    relayout, rarezip_compress, splice_file,
+                                   rom_relayout, rarezip_compress_best,
                                    cast_swap)
 from gbox import goldeneye_reader as gr
 
 ROM = Path(__file__).resolve().parent.parent / "artifacts" / "source" / "007_GoldenEye_Europe_norm.z64"
 
 pytestmark = pytest.mark.skipif(not ROM.exists(), reason="normalised PAL z64 not present")
+
+_HAVE_7Z = shutil.which("7z") is not None
+_needs_7z = pytest.mark.skipif(not _HAVE_7Z, reason="7z (best deflate) not available")
 
 
 @pytest.fixture(scope="module")
@@ -227,7 +232,67 @@ def test_cast_swap_changed_donor(ge):
     assert ge2.read_file("CgreyguardZ") == ge.read_file("CgreyguardZ")
 
 
-def test_cast_swap_rejects_too_large_donor(ge):
-    """CnatalyaZ's 423-vertex torso exceeds CsuitbondZ's file-table slot."""
-    with pytest.raises(GoldenEyeFormatError):
-        cast_swap(ge, "CsuitbondZ", "CnatalyaZ")
+def test_cast_swap_rejects_too_large_donor_without_relayout(ge):
+    """Without a tight-enough deflate, a too-large donor is refused, not corrupted."""
+    # force zlib-only best deflate (no 7z) to exercise the size check
+    import gbox.goldeneye_writer as w
+    orig = w._sevenzip_deflate
+    w._sevenzip_deflate = lambda data: None
+    try:
+        with pytest.raises(GoldenEyeFormatError):
+            cast_swap(ge, "CsuitbondZ", "CnatalyaZ")
+    finally:
+        w._sevenzip_deflate = orig
+
+
+@_needs_7z
+def test_cast_swap_larger_donor_relayout(ge):
+    """CnatalyaZ's 423-vertex torso now fits via ROM file-table re-layout.
+
+    The donor exceeds CsuitbondZ's file-table slot, so rom_relayout shifts the
+    subsequent files and the images segment down, rewrites their file-table
+    rom_offsets, patches _imagesSegmentRomStart in the code, and recompresses
+    the data segment into its fixed slot.  The result re-reads with the donor
+    geometry, every other body file is intact, and the shifted images segment
+    still decodes the model's textures byte-identically.
+    """
+    new_rom, meta = cast_swap(ge, "CsuitbondZ", "CnatalyaZ")
+    assert meta["relayout"] is True
+    assert meta["rom_delta"] > 0
+    assert meta["rom_size"] == 0xC00000 + meta["rom_delta"]
+    assert meta["donor_vertices"] == 423 and meta["target_vertices"] == 97
+
+    ge2 = GoldenEyeROM.from_bytes(new_rom)
+
+    # the target re-reads with the donor torso; the other 24 meshes / 79 nodes intact
+    zf = parse(ge2, "CsuitbondZ")
+    nodes = gr.parse_nodes(zf.original, zf.root_offset)
+    assert len(nodes) == 79
+    torso = next(n for n in nodes if n.offset == int(meta["target_torso_node"], 16))
+    assert len(torso.vertices) == 423
+    assert len(torso.triangles) == 199
+    assert sum(len(n.triangles) for n in nodes if n.op == 0x18) == 751
+
+    # every other body/head file is byte-identical (shifted, not modified)
+    for b in ge.body_table():
+        if b.filename == "CsuitbondZ":
+            continue
+        assert ge2.read_file(b.filename) == ge.read_file(b.filename), b.filename
+
+    # the file table is still contiguous and the images segment shifted
+    roms = [e.rom_offset for e in ge2.file_table() if e.index != 0]
+    assert roms == sorted(roms)
+    assert ge2.file_by_name("ob/ob_end.seg").rom_offset == \
+        ge.file_by_name("ob/ob_end.seg").rom_offset + meta["rom_delta"]
+
+    # the shifted images segment is byte-identical (moved, not modified) --
+    # exactly what the patched _imagesSegmentRomStart now points at
+    delta = meta["rom_delta"]
+    img_start = gr.IMAGES_ROM_START
+    img_end = img_start + sum(gr.g_textures(ge))   # g_Textures table unchanged
+    assert ge2.rom[img_start + delta:img_end + delta] == ge.rom[img_start:img_end]
+
+    # the code immediate was patched 0x8F7840 -> 0x8F7840+delta (one site, no stale ref)
+    from gbox.goldeneye_files import find_code_xrefs
+    assert find_code_xrefs(new_rom, img_start) == []
+    assert len(find_code_xrefs(new_rom, img_start + delta)) == 1
