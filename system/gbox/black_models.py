@@ -40,7 +40,12 @@ Verified evidence (request #1965 checkpoints):
   skeleton is an FPS arms rig: there are no leg, spine, neck or head bones, and the cast
   "body" is the weapon-holding arms seen in first person. This is the skeleton the
   Sonic retarget must bind onto. An offset table of u32 (stride 0x18) sits immediately
-  before the name table and points at each bone record relative to a base.
+  before the name table and holds ABSOLUTE file offsets into a contiguous
+  ``nBones x 24``-byte bone-record block that begins right after the DB header; the
+  header is ``0x70 + 72*nBones`` bytes (3 x 24-byte records per bone). The region
+  after the name table is float32 animation data (rotation tracks plus "FireSelect"
+  event markers at 0x84975 / 0xa01ec in BG1_AK1); the per-bone records and the WDD
+  vertex streams are the remaining decode stages before read_model()/to_glb().
 """
 from __future__ import annotations
 
@@ -218,6 +223,14 @@ def wdd_summary(data: bytes) -> dict:
 # (AssualtRifle_*, Pistol_*, Shotgun_*, grenade bones, ...) varies per BG1_<weapon> slot.
 SKEL_ANCHOR = b"World\x00"
 BONE_RECORD = 24
+# The DB header (bytes 0..bone_records start) is BONE_HEADER_FIXED bytes of fixed
+# data plus BONE_HEADER_PER bytes per skeleton bone (3 x 24-byte records). Verified
+# on every BG1_*.DB: a 42-bone variant header is 0xC40, 43-bone is 0xC88, 44-bone is
+# 0xCD0 — each = 0x70 + 72*nBones. The offset table (see db_bone_offset_table) holds
+# ABSOLUTE file offsets into the contiguous nBones x 24-byte bone-record block that
+# begins immediately after this header.
+BONE_HEADER_FIXED = 0x70
+BONE_HEADER_PER = 72
 
 # Bones that are the always-present FPS arms chain (not the weapon), in file order.
 # Pinned from the owned disc; the weapon-specific bones sit between Wrist_rt and the
@@ -277,10 +290,11 @@ def db_bone_offset_table(db: bytes) -> dict:
     """The u32 offset table that immediately precedes the skeleton name table.
 
     A dense little-endian u32 array sits right before the "World" anchor; its values
-    step by BONE_RECORD (24) and are relative offsets to per-bone data records. On
-    the owned disc the table has one entry per skeleton bone (BG1_AK1: 44 entries,
+    step by BONE_RECORD (24) and are ABSOLUTE file offsets into the contiguous
+    per-bone record block that begins just after the DB header (see db_bone_records).
+    On the owned disc the table has one entry per skeleton bone (BG1_AK1: 44 entries,
     0x0cd0..0x10d8, matching its 44 bone names). Returns the anchor, the ascending
-    offset list, and the table's file position.
+    offset list, the table's file position, and the bone-record block bounds.
     """
     anchor = db.find(SKEL_ANCHOR)
     if anchor < 0:
@@ -295,7 +309,42 @@ def db_bone_offset_table(db: bytes) -> dict:
         o -= 4
     if not offsets:
         raise FormatError("no bone offset table before the skeleton anchor")
-    return {"anchor": anchor, "table_offset": o + 4, "offsets": offsets}
+    return {
+        "anchor": anchor,
+        "table_offset": o + 4,
+        "offsets": offsets,
+        "block_start": offsets[0],
+        "block_end": offsets[-1] + BONE_RECORD,
+    }
+
+
+def db_bone_records(db: bytes) -> dict:
+    """The contiguous per-bone record block the offset table points at.
+
+    Each u32 in the offset table is an absolute file offset; the nBones records it
+    addresses form one contiguous ``nBones x 24``-byte block that starts immediately
+    after the DB header. Verified on every BG1_*.DB: the block start satisfies
+    ``block_start == BONE_HEADER_FIXED + BONE_HEADER_PER * nBones`` (0xC40 / 0xC88 /
+    0xCD0 for 42 / 43 / 44 bones), so the header holds 3 x 24-byte records per bone.
+    The records' payload is heterogeneous (quantized key data plus small index/flag
+    words) and remains the open decode stage.
+    """
+    tbl = db_bone_offset_table(db)
+    offs = tbl["offsets"]
+    n = len(offs)
+    if offs[0] != BONE_HEADER_FIXED + BONE_HEADER_PER * n:
+        raise FormatError(
+            f"bone-record block start {offs[0]:#x} != 0x{BONE_HEADER_FIXED + BONE_HEADER_PER * n:x}"
+        )
+    if offs[-1] + BONE_RECORD > len(db):
+        raise FormatError("bone-record block runs past end of DB")
+    records = [db[o:o + BONE_RECORD] for o in offs]
+    return {
+        "count": n,
+        "block_start": offs[0],
+        "block_end": offs[-1] + BONE_RECORD,
+        "records": records,
+    }
 
 
 def elf_loader_sites(elf: Path | str | None = None) -> dict:

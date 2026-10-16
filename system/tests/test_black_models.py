@@ -10,7 +10,10 @@ from pathlib import Path
 import pytest
 
 from gbox import black_models as bm
-from gbox.black_models import DISC, ELF, CAST_WEAPONS, LOADER_SITES, FormatError, elf_loader_sites
+from gbox.black_models import (
+    DISC, ELF, CAST_WEAPONS, LOADER_SITES, FormatError, elf_loader_sites,
+    BONE_HEADER_FIXED, BONE_HEADER_PER, db_bone_records,
+)
 
 WDO_FIXTURE = bytes.fromhex(
     "0908000000000000d30000002c0000000000000000400000acc9eaaa38fc1749ae8164eadbc79353"
@@ -195,3 +198,26 @@ def test_db_bone_offset_table_every_variant():
         assert tbl["anchor"] == tbl["table_offset"] + 4 * len(offs)
         assert len(offs) == len(bm.db_skeleton(db)), \
             f"{slot}: {len(offs)} offsets vs {len(bm.db_skeleton(db))} bones"
+
+
+@pytest.mark.skipif(not DISC.exists(), reason="owned Black disc not unpacked on this node")
+def test_db_bone_records_absolute_and_contiguous():
+    """The offset table holds ABSOLUTE file offsets; the block sits right after the
+    header whose size is 0x70 + 72*nBones (3 x 24-byte records per bone)."""
+    cast = bm.list_cast()
+    for slot in sorted(k for k in cast if k.startswith("BG1_")):
+        db = _db_bytes(slot)
+        bones = bm.db_skeleton(db)
+        rec = db_bone_records(db)
+        n = len(bones)
+        assert rec["count"] == n, f"{slot} block count {rec['count']} vs {n} bones"
+        # header = fixed + per-bone bytes; the block starts immediately after it
+        assert rec["block_start"] == BONE_HEADER_FIXED + BONE_HEADER_PER * n, \
+            f"{slot} block start {rec['block_start']:#x} != 0x{BONE_HEADER_FIXED + BONE_HEADER_PER * n:x}"
+        assert rec["block_end"] == rec["block_start"] + 24 * n
+        assert rec["block_end"] <= len(db), f"{slot} block runs past end of DB"
+        assert all(len(r) == 24 for r in rec["records"]), f"{slot} record not 24 bytes"
+        # the records are byte-for-byte the offsets' targets
+        tbl = bm.db_bone_offset_table(db)
+        for off, r in zip(tbl["offsets"], rec["records"]):
+            assert db[off:off + 24] == r, f"{slot} record mismatch at {off:#x}"
