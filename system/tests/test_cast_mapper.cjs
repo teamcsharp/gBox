@@ -69,6 +69,11 @@ test('click connections, inspection, locks, pool selection and seeded review sna
     await evaluate(`panel.clear();`);
     assert.equal(await evaluate(`panel.getAssignments().every(r=>r.character==='')`), true);
     assert.deepEqual(await evaluate(`changes.at(-1)`), await evaluate(`panel.getAssignments()`));
+    // Keeping the original is also a deliberate choice that can stay locked across reopening.
+    await evaluate(`card('target','t0').querySelector('[data-action=lock]').click();window.draft=panel.getDraft();panel.dispose();panel=GBoxCastMapper.mount(document.querySelector('#host'),data);panel.restoreDraft(draft);panel.shuffle('reopened');`);
+    assert.equal(await evaluate(`card('target','t0').querySelector('[data-action=lock]').checked`), true);
+    assert.equal(await evaluate(`panel.getAssignments()[0].character`), '');
+    assert.equal(await evaluate(`panel.getAssignments().slice(1).every(r=>r.character)`), true);
   });
 });
 

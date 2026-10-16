@@ -90,7 +90,8 @@
       return `<span class="cm-thumb"><span class="cm-fallback"><span class="cm-initial">${esc(initial)}</span><small>No preview</small></span>${url ? `<img alt="${esc(card.name)} preview" loading="lazy" src="${esc(url)}">` : ''}</span>`;
     };
     const cardHTML = (card, side, index) => {
-      const model = !!(card.model_url && card.slug && typeof io.inspect === 'function'), target = side === 'target';
+      const format = String(card.format || String(card.model || '').split('.').slice(1).pop() || '').toLowerCase();
+      const model = !!(card.model_url && card.slug && (!format || ['glb', 'gltf'].includes(format)) && typeof io.inspect === 'function'), target = side === 'target';
       const availability = target ? (card.slot ? 'Native slot available' : 'Planning only · native slot needed') :
         (card.ready === false ? `Needs extraction/support${card.reason ? ` · ${card.reason}` : ''}` : 'Replacement character');
       return `<article class="cm-card" data-cm-card="${side}" data-key="${esc(target ? card.id : card.slug)}" data-index="${index}">
@@ -186,7 +187,7 @@
       if (disposed) return getAssignments();
       const enteredSeed = seed === undefined ? q('[data-seed]').value : String(seed);
       const effectiveSeed = enteredSeed || (win.crypto?.randomUUID ? win.crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
-      if (seed !== undefined) q('[data-seed]').value = String(seed);
+      q('[data-seed]').value = effectiveSeed;
       const eligible = targets.filter(t => !locks.has(t.id)).map(t => t.id), chosen = deal(eligible, [...pool], effectiveSeed);
       for (const [id, character] of Object.entries(chosen)) picks.set(id, character);
       render(); notify(); status(pool.size ? `Shuffled ${eligible.length} originals; ${locks.size} locked choices kept.` : 'Select replacements for the shuffle pool.');
@@ -276,6 +277,17 @@
     status(targets.length && donors.length ? `Select an original, then choose its replacement. Inspect 3D opens either model.` :
       !targets.length ? 'No original character roster is available yet. Extract or register the title’s cast first.' : 'No replacement characters are available yet. Choose another source or extract its cast.');
     const api = { getAssignments, setAssignments, shuffle, clear,
+      getDraft() { return {version: 1, rows: getAssignments(), locks: [...locks], pool: [...pool],
+        seed: q('[data-seed]').value, autoLock: q('[data-auto-lock]').checked}; },
+      restoreDraft(draft) {
+        if (disposed || draft?.version !== 1 || !Array.isArray(draft.rows)) return;
+        setAssignments(draft.rows);
+        for (const id of Array.isArray(draft.locks) ? draft.locks : []) if (targetMap.has(id)) locks.add(id);
+        if (Array.isArray(draft.pool)) { pool.clear(); for (const slug of draft.pool) if (donorMap.has(slug)) pool.add(slug); }
+        q('[data-seed]').value = String(draft.seed || '').slice(0, 100);
+        q('[data-auto-lock]').checked = draft.autoLock !== false;
+        render(); notify();
+      },
       dispose() { if (disposed) return; disposed = true; inspectSequence++; endDrag(); if (frame !== null) win.cancelAnimationFrame(frame); frame = null; observer?.disconnect(); listeners.splice(0).forEach(remove => remove()); node.remove(); } };
     api.ready = Promise.resolve(api);
     return api;

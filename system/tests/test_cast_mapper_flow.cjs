@@ -152,6 +152,8 @@ test('actual 3D popup receives authenticated model/file URLs and a late viewer c
       openCast();await ready();card('donor','donor-a_0').querySelector('[data-action=inspect]').click();await waitFor(()=>viewerCalls.length===1);`);
     assert.deepEqual(await evaluate(`viewerCalls[0]`), { url: 'https://gbox.invalid/api/characters/donor-a_0/model?token=fixture-token', file: 'https://gbox.invalid/api/characters/donor-a_0/file/body%20texture.png?token=fixture-token' });
     assert.equal(await evaluate(`inspected[0].modelUrl`), '/api/characters/donor-a_0/model');
+    assert.equal(await evaluate(`inspected[0].gid`), '');
+    assert.equal(await evaluate(`inspected[0].slot`), 'unassigned');
     await evaluate(`waitFor(()=>document.querySelector('[data-status]').textContent.includes('Model ready'))`);
     await evaluate(`panel.close();waitFor(()=>!document.querySelector('.cp-modal'))`);
     assert.equal(await evaluate(`viewerDisposals`), 1);

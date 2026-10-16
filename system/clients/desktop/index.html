@@ -1214,6 +1214,7 @@ window.taskVizCreate = canvas => {
 <script src="../web/viz/build-report-image.js"></script>
 <script src="../web/viz/decimation-review.js"></script>
 <script src="../web/viz/launch-bar.js"></script>
+<script src="../web/viz/cast-mapper.js"></script>
 <script src="../web/viz/cast-swap.js"></script>
 <script src="../web/viz/pso-controls.js"></script>
 <script src="../web/viz/live-controls.js"></script>
@@ -5722,7 +5723,9 @@ async function castSwapOpen(gid, title) {
   const tok = encodeURIComponent(await gbox.token());
   const api = async (path, body) => { const r = await gbox.api(path, body); if (!r.ok) throw new Error(r.error || "request failed"); return r.data; };
   return GBoxCastSwap.open(document, { api, img: u => `${S.apiUrl}${u}${u.includes("?") ? "&" : "?"}token=${tok}`,
-    onBuilt: res => toast(`Cast mod ${res.mod} built: boot it from the game's menu`, 8000), retarget: retargetOpen }, { gid, title });
+    onBuilt: res => toast(`Cast mod ${res.mod} built: boot it from the game's menu`, 8000), retarget: retargetOpen,
+    inspect: o => GBoxCharacterPopup.open(o, {document, api, url:u=>`${S.apiUrl}${u}${u.includes("?") ? "&" : "?"}token=${tok}`,
+      loadViewer:()=>import(new URL('/viz/character-model.js',S.apiUrl).href), retarget:retargetOpen}) }, { gid, title });
 }
 // Retarget editor (../web/viz/retarget-editor.js; gbox/retarget_profile.py): how a collection character is scaled and
 // proportioned into one game's slot. Opened from the cast plan rows (✎), the pick-whip card menu and the Fitting

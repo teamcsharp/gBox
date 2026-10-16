@@ -279,6 +279,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/session-speed.js"></script>
 <script src="/viz/session-move.js"></script>
 <script src="/viz/session-build.js"></script>
+<script src="/viz/cast-mapper.js"></script>
 <script src="/viz/cast-swap.js"></script>
 <script src="/viz/pso-controls.js"></script>
 <script src="/viz/pso-face-editor.js"></script>
@@ -2940,7 +2941,7 @@ document.addEventListener("mousedown", e => { if (!e.target.closest("#gmenu")) $
 // "Replace entire cast with…" (gbox/cast_swap.py via clients/web/viz/cast-swap.js): source + mapping -> the planned
 // slot -> donor rows (editable) -> one mod built on the Spark; the built mod then shows under "Boot with a mod"
 function castSwapOpen(gid, title) {
-  return GBoxCastSwap.open(document, { api, img: u => `${u}${u.includes("?") ? "&" : "?"}${tq()}`, retarget: retargetOpen }, { gid, title });
+  return GBoxCastSwap.open(document, { api, img: u => `${u}${u.includes("?") ? "&" : "?"}${tq()}`, inspect: characterPopup, retarget: retargetOpen }, { gid, title });
 }
 function photocraftOpen(options={}) {
   return GBoxPhotoCraft.open(options,{api,url:bnUrl,loadViewer:()=>import('/viz/character-model.js'),
