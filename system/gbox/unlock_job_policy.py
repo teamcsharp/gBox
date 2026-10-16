@@ -4,6 +4,7 @@ These limits apply only to the persisted request context. Operator actions and
 ordinary offline build requests keep their existing permission checks.
 """
 from functools import lru_cache
+from copy import deepcopy
 import gzip
 import json
 from pathlib import Path, PurePosixPath
@@ -62,10 +63,18 @@ def reason(context, name, args, *, agent=False):
     return 'Favorite unlock research cannot launch a game, copy a ROM, or run build/mutation tools; this work remains pending'
 
 
-def admit(store, app, parent_request_id, name, args):
+def snapshot(context):
+    if not any((context or {}).get(k) for k in FLAGS):
+        return None
+    return deepcopy({k: context.get(k) for k in (*FLAGS, 'custom_build_unlocks', 'unlock_dispatch')})
+
+
+def admit(store, app, parent_request_id, name, args, *, expected=None):
     """Authenticate limits from the stored parent, then sample idle state afresh."""
     request = store.get('request', parent_request_id) if parent_request_id else None
     context = (request or {}).get('context') or {}
+    if expected is not None and snapshot(context) != expected:
+        return 'Unlock research scope changed or disappeared; a new admitted job is required'
     if why := reason(context, name, args):
         return why
     if context.get('idle_only'):

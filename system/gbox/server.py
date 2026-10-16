@@ -2253,7 +2253,8 @@ def create_app(config: Config) -> FastAPI:
         # The unlock reconciler takes its own guard and then the Store lock.
         # Sample admission outside the Store lock to preserve that lock order.
         from .unlock_job_policy import admit
-        unlock_wait = {j['id']: admit(store, app, j.get('parent_request_id'), j['tool'], j.get('input') or {})
+        unlock_wait = {j['id']: admit(store, app, j.get('parent_request_id'), j['tool'], j.get('input') or {},
+                                    expected=j.get('unlock_context'))
                        for j in store.queued_jobs() if j['tool'] in w['tools']
                        and j['require_os'] in (None, w['os'])
                        and j['require_worker'] in (None, wid, w['name'])}
@@ -2595,8 +2596,10 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/api/jobs")
     def submit(req: JobRequest, actor=Depends(auth), origin=Depends(request_origin)):
-        from .unlock_job_policy import admit
-        if why := admit(store, app, req.parent_request_id, req.tool, req.input):
+        from .unlock_job_policy import admit, snapshot
+        parent = store.get('request', req.parent_request_id) if req.parent_request_id else None
+        unlock_context = snapshot((parent or {}).get('context') or {})
+        if why := admit(store, app, req.parent_request_id, req.tool, req.input, expected=unlock_context):
             raise HTTPException(409, why)
         build_feedback.check(store, req)
         origin = origin if isinstance(origin, dict) else {"via": "internal"}   # in-server callers pass no request
@@ -2702,7 +2705,7 @@ def create_app(config: Config) -> FastAPI:
             job.state, job.error = JobState.REJECTED, f"{w.get('name')} can't run {t.name}: {why}"
         if missing:
             job.state, job.error = JobState.REJECTED, f"permission not granted: {missing}"
-        store.put("job", job.id, job.model_dump())
+        store.put("job", job.id, job.model_dump() | ({'unlock_context': unlock_context} if unlock_context else {}))
         if job.state == JobState.REJECTED:
             build_notes.job_ended(job.model_dump(mode="json"))
         if t.name == "session_op" and inp.get("op") == "stop_game" and job.state == JobState.QUEUED:

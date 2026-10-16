@@ -97,6 +97,10 @@ def test_queued_job_rechecks_idle_before_claim_and_resumes_later(tmp_path):
     assert store.get('job', jid)['state'] == 'queued'
     assert store.get('job', jid)['admission_wait']['reason'] == reason[0]
     reason[0] = ''
+    store.put('request', 'r', {'context': {}})
+    assert client.post('/api/workers/w/claim', json={'idle_seconds': 1000}).status_code == 204
+    assert 'scope changed' in store.get('job', jid)['admission_wait']['reason']
+    store.put('request', 'r', {'context': LIMITS})
     claim = client.post('/api/workers/w/claim', json={'idle_seconds': 1000})
     assert claim.status_code == 200, claim.text
     assert claim.json()['id'] == jid and claim.json()['state'] == 'running'
