@@ -27,14 +27,16 @@
     const slotSets = sets && sets.length ? sets : SLOT_SETS;
     return `<h4 style="margin:0 0 6px">Replace the entire cast of ${ESC(title)}</h4>
       <label style="display:flex;gap:6px;align-items:center;margin:4px 0">With <select data-cs="source" style="flex:1;min-width:0">${sourceOptions(sources)}</select></label>
+      <label style="display:flex;gap:6px;align-items:center;margin:6px 0">Find a donor title <input data-cs="title-search" type="search" placeholder="Search all your games" style="flex:1;min-width:0" autocomplete="off"></label>
+      <div data-cs="title-results" aria-live="polite"></div>
       <label style="display:flex;gap:6px;align-items:center;margin:4px 0">Mapping <select data-cs="mapping" style="flex:1;min-width:0">${MAPPINGS.map(([v, l]) => `<option value="${v}">${ESC(l)}</option>`).join("")}</select></label>
       <label style="display:flex;gap:6px;align-items:center;margin:4px 0">Slots <select data-cs="slots" style="flex:1;min-width:0">${slotSets.map(([v, l]) => `<option value="${v}">${ESC(l)}</option>`).join("")}</select>
-        Seed <input data-cs="seed" size="6" placeholder="any"></label>
+        <span data-cs-seed-control>Seed <input data-cs="seed" size="6" placeholder="any"></span></label>
       <div style="display:flex;gap:6px;margin:6px 0"><button class="act" data-cs-go="plan" type="button">Plan the cast</button>
         <button class="act pri" data-cs-go="build" type="button" disabled>Build one mod</button>
         <button class="act pri" data-cs-go="request" type="button" hidden>Request this build</button>
         <button class="act" data-cs-go="close" type="button" style="margin-left:auto">Close</button></div>
-      <div data-cs="status" class="mut" style="font-size:12px;white-space:pre-wrap"></div><div data-cs="plan"></div>
+      <div data-cs="status" class="mut" style="font-size:12px;white-space:pre-wrap" role="status" aria-live="polite"></div><div data-cs="chart"></div><div data-cs="plan"></div>
       <div data-cs="request"></div><div data-cs="request-detail"></div>`;
   }
 
@@ -66,6 +68,43 @@
   }
 
   const has = (o, k) => !!o && Object.prototype.hasOwnProperty.call(o, k);
+  const stable = value => JSON.stringify(canonical(value));
+  function canonical(value) {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map(k => [k, canonical(value[k])]));
+    return value;
+  }
+  function chartRows(roster, rows = []) {
+    const targets = roster?.targets || [], donors = new Set((roster?.donors || []).map(d => d.slug));
+    const byId = new Map();
+    for (const row of rows) {
+      if (!row || byId.has(row.target_id)) throw new Error('Each original character needs one mapping row.');
+      if (row.character && !donors.has(row.character)) throw new Error('A replacement is outside the selected donor roster.');
+      byId.set(row.target_id, row.character || '');
+    }
+    if ([...byId.keys()].some(id => !targets.some(t => t.id === id))) throw new Error('A mapping belongs to a different target roster.');
+    return targets.map(t => ({target_id: t.id, slot: t.slot || null, character: byId.get(t.id) || ''}));
+  }
+  const nativeRows = rows => rows.filter(row => row.slot).map(({slot, character}) => ({slot, character}))
+    .sort((a,b) => a.slot.localeCompare(b.slot));
+  function chartSnapshot(roster, rows) {
+    const reference = card => Object.fromEntries(['id', 'slot', 'slug', 'name', 'source_game_id', 'kind'].filter(k => card[k] != null).map(k => [k, card[k]]));
+    const selected = new Set(rows.map(row => row.character).filter(Boolean));
+    return {version: 1, target_game_id: roster.game.game_id, source: roster.source.key,
+      targets: roster.targets.map(reference).sort((a,b) => a.id.localeCompare(b.id)),
+      donors: roster.donors.filter(card => selected.has(card.slug)).map(reference).sort((a,b) => a.id.localeCompare(b.id)),
+      connections: chartRows(roster, rows).sort((a,b) => a.target_id.localeCompare(b.target_id))};
+  }
+  function nativeChartReady(roster, rows) {
+    const donors = new Map((roster?.donors || []).map(d => [d.slug, d]));
+    return roster?.capability?.combined_writer === true && rows.some(r => r.character) &&
+      rows.every(r => !r.character || (r.slot && roster.targets.find(t => t.id === r.target_id)?.buildable === true && donors.get(r.character)?.ready === true));
+  }
+  function nativePlanMatches(rows, plan) {
+    const pairs = values => values.filter(row => row.character).map(({slot, character}) => ({slot, character}))
+      .sort((a,b) => a.slot.localeCompare(b.slot));
+    return plan.status === 'planned' && stable(pairs(nativeRows(rows))) === stable(pairs(plan.assignments || []));
+  }
   // a row's donor as reviewed: an unticked row ("leave as it is") is '', otherwise the picker overrides the plan
   const chosen = (r, picks, marks) => (has(marks, r.slot) && !marks[r.slot]) ? "" : has(picks, r.slot) ? picks[r.slot] : r.character;
 
@@ -162,12 +201,14 @@
   //     delay(ms), onBuilt(result)
   function controller(io, game) {
     const wait = io.delay || (ms => new Promise(r => setTimeout(r, ms)));
-    const st = { plan: null, form: null, sources: [], requestAllowed: false, request: null, pendingRequest: null };
+    const st = { plan: null, form: null, sources: [], requestAllowed: false, request: null, pendingRequest: null,
+      roster: null, chartRows: null, reviewedChart: null, chartTouched: false };
+    let rosterVersion = 0, planVersion = 0, disposed = false;
     let intents = [];
     const storageKey = `gbox_cast_build_requests_${game.gid}`;
     const storage = () => io.storage || root.sessionStorage;
     try { const saved = JSON.parse(storage()?.getItem(storageKey) || "[]"); if (Array.isArray(saved)) intents = saved; } catch {}
-    const allowRequest = on => { st.requestAllowed = on; io.requestable?.(on); io.enable("request", on); };
+    const allowRequest = on => { st.requestAllowed = on; io.requestable?.(on); io.enable("request", on && !st.pendingRequest); };
     async function sources() {
       io.status("Loading the collection…");
       const r = await io.api(`/api/cast_swap/sources?game_id=${encodeURIComponent(game.gid)}`);
@@ -181,18 +222,51 @@
       return r;
     }
     async function plan(form, assignments = []) {
+      const version = ++planVersion;
+      if (st.roster && (st.roster.source.key !== form.source || (st.roster.requested_scope || 'all') !== (form.slots || 'all')))
+        throw new Error('Load the selected donor roster and scope before reviewing.');
+      if (st.roster && st.chartTouched) assignments = nativeRows(chartRows(st.roster, st.chartRows || []));
       st.form = form; io.enable("build", false); io.status("Planning…");
       const p = await io.api("/api/cast_swap/plan", { game_id: game.gid, source: form.source, mapping: form.mapping,
                                                       seed: form.seed || "", slots: form.slots || "all", assignments });
+      if (disposed || version !== planVersion) return null;
+      if (st.roster && !st.chartTouched && p.assignments?.length) {
+        const bySlot = new Map(p.assignments.map(row => [row.slot, row.character]));
+        st.chartRows = chartRows(st.roster, st.roster.targets.map(target => ({target_id: target.id, character: bySlot.get(target.slot) || ''})));
+      }
       st.plan = p;
-      allowRequest(["unsupported", "unsupported_cast"].includes(p.status));
+      const ready = !st.roster || (nativeChartReady(st.roster, st.chartRows || []) && nativePlanMatches(st.chartRows || [], p));
+      st.reviewedChart = st.roster && ready ? stable(st.chartRows) : null;
+      allowRequest(["unsupported", "unsupported_cast"].includes(p.status) || !ready);
       io.render("plan", p.assignments?.length ? planHTML(p, io.img || (u => u)) : "");
-      io.status(p.assignments?.length ? `${p.assignments.length} slots planned. Change any donor, then build.` : (p.message || p.status));
-      io.enable("build", !!p.assignments?.length);
+      io.status(st.roster ? !st.chartRows.some(row => row.character) ? 'Connect original characters to replacements, or shuffle the cast, then review.' :
+        ready ? `${st.chartRows.filter(row => row.character).length} connections reviewed. Build the mapped cast when ready.` :
+        'Your connections are preserved. This mapping needs extraction or native cast support; submit the mapped build request to continue.' :
+        p.assignments?.length ? `${p.assignments.length} slots planned. Change any donor, then build.` : (p.message || p.status));
+      io.enable("build", ready && p.status === 'planned' && !!p.assignments?.length);
       return p;
     }
+    async function roster(form) {
+      const version = ++rosterVersion; planVersion++;
+      st.plan = null; st.roster = null; st.chartRows = null; st.reviewedChart = null; st.chartTouched = false; st.form = form;
+      io.enable('build', false); allowRequest(false);
+      const r = await io.api(`/api/cast_swap/roster?game_id=${encodeURIComponent(game.gid)}&source=${encodeURIComponent(form.source || '')}&slots=${encodeURIComponent(form.slots || 'all')}`);
+      if (disposed || version !== rosterVersion) return null;
+      if (r?.game?.game_id !== game.gid || r?.source?.key !== (form.source || '') ||
+          (r?.requested_scope || 'all') !== (form.slots || 'all') || !Array.isArray(r.targets) || !Array.isArray(r.donors))
+        throw new Error('Received a roster for a different game or donor source.');
+      st.roster = r; st.chartRows = chartRows(r, []);
+      allowRequest(r.capability?.status !== 'ready');
+      return r;
+    }
+    function updateChart(rows, initial = false) {
+      if (!st.roster) throw new Error('Load the cast rosters first.');
+      st.chartRows = chartRows(st.roster, rows); st.plan = null; st.reviewedChart = null; planVersion++;
+      if (!initial) st.chartTouched = true;
+      io.enable('build', false); allowRequest(!nativeChartReady(st.roster, st.chartRows));
+      return st.chartRows;
+    }
     function request(form) {
-      if (st.pendingRequest) return st.pendingRequest;
       if (!st.requestAllowed) return Promise.reject(new Error("Plan the supported cast and review its assignments before building."));
       if (!form.source) return Promise.reject(new Error("Choose the source characters first."));
       const source = st.sources.find(s => s.key === form.source), label = source?.label || form.source;
@@ -202,23 +276,42 @@
           `Use the extracted donor source ${form.source}, mapping ${mapping}${seed ? `, seed ${seed}` : ""}. ` +
           "Implement and test any missing native reader and combined character writer; do not substitute an overlay or a single-player replacement. Publish one playable mod build after separate gameplay verification.",
         mapping: { source: form.source, source_label: label, mapping, slots: scope, seed } };
-      const signature = JSON.stringify(body);
+      if (st.roster) {
+        if (st.roster.source.key !== form.source || (st.roster.requested_scope || 'all') !== (form.slots || 'all'))
+          return Promise.reject(new Error('Load the selected donor roster and scope first.'));
+        const rows = chartRows(st.roster, st.chartRows || []);
+        if (rows.length && st.roster.donors.length && !rows.some(r => r.character))
+          return Promise.reject(new Error('Connect at least one replacement before requesting this build.'));
+        body.mapping.assignments = nativeRows(rows);
+        body.mapping.cast_chart = chartSnapshot(st.roster, rows);
+        body.description = body.description.replace('Use the extracted donor source', 'Use the selected donor source');
+        body.description += ' Preserve every reviewed cast_chart connection exactly. Its empty characters stay unchanged. ' +
+          'A null slot is a named roster reference requiring native slot discovery, never an instruction to reuse the player slot. ' +
+          'Do not randomize reviewed choices. If no roster is available, extract the exact titles and complete the requested mapping first.';
+      }
+      if (JSON.stringify(body.mapping).length > 96000) return Promise.reject(new Error('This mapping exceeds the saved profile limit. Choose a smaller cast scope.'));
+      const signature = stable(body);
+      if (st.pendingRequest) return st.pendingSignature === signature ? st.pendingRequest :
+        Promise.reject(new Error('A different mapping is still being saved. Wait for its request number, then submit this mapping.'));
       let intent = intents.find(i => i.signature === signature);
       if (!intent) {
         intent = { signature, clientId: (io.uuid || uuid)() }; intents = [...intents.slice(-19), intent];
         try { storage()?.setItem(storageKey, JSON.stringify(intents)); } catch {}
       }
       io.enable("request", false); io.status("Checking and saving the build request…");
+      io.saving?.(true); st.pendingSignature = signature;
       const path = `/api/games/${encodeURIComponent(game.gid)}/build-requests`;
       st.pendingRequest = (async () => {
         const existing = await io.api(path);
-        const previous = (existing.items || []).find(r => samePendingCast(r, form));
+        const previous = (existing.items || []).find(r => body.mapping.cast_chart ?
+          /^(open|in_progress|blocked)$/.test(r.status || '') && r.kind === 'build' && !r.photo && !r.base_mod &&
+            (!r.projection_scope || r.projection_scope === 'gameplay') && stable(r.mapping) === stable(body.mapping) : samePendingCast(r, form));
         const row = previous || await io.api(path, { ...body, client_id: intent.clientId });
         st.request = row; io.render("request", requestHTML(row)); io.render("request-detail", "");
         io.status(`Request #${row.number} ${previous ? "already saved" : "saved"}. ${row.dispatch_error ? "Dispatch needs attention; your request is retained." : "Follow its progress below. No playable build is being claimed yet."}`);
         return row;
       })().catch(error => { io.status(`Request could not be confirmed: ${error.message}. Retry uses the same request ID.`); throw error; })
-        .finally(() => { st.pendingRequest = null; io.enable("request", st.requestAllowed); });
+        .finally(() => { st.pendingRequest = null; st.pendingSignature = null; io.saving?.(false); io.enable("request", st.requestAllowed); });
       return st.pendingRequest;
     }
     async function refreshRequest(details = false) {
@@ -235,17 +328,23 @@
     }
     async function build(picks, marks) {
       if (!st.plan) throw new Error("plan first");
-      const f = st.form, changed = edits(st.plan, picks, marks).length, rows = reviewed(st.plan, picks, marks);
+      if (st.roster && (!nativeChartReady(st.roster, st.chartRows || []) || st.reviewedChart !== stable(st.chartRows) || st.plan.status !== 'planned'))
+        throw new Error('Review the current native mapping before building. Missing cast support needs an engineering request.');
+      const f = st.form, changed = edits(st.plan, picks, marks).length,
+        rows = st.roster ? nativeRows(st.chartRows) : reviewed(st.plan, picks, marks);
       if (!rows.some(r => r.character)) { io.status("Tick at least one character to replace."); return null; }
       io.enable("build", false); io.status(`Queued on the Spark${changed ? ` (${changed} rows changed by you)` : ""}…`);
       let j = await io.api("/api/jobs", { tool: "characters", require_os: "linux", input: { op: "cast_swap",
         target_game: game.gid, source: f.source, mapping: f.mapping, seed: f.seed || "", slots: f.slots || "all",
         assignments: rows, launch: false } });
       while (/queued|running/.test(j.state)) {
+        if (disposed) return j;
         await wait(1500);
+        if (disposed) return j;
         j = await io.api("/api/jobs/" + j.id);
         if (j.progress?.msg) io.status(j.progress.msg);
       }
+      if (disposed) return j;
       if (j.state !== "succeeded") { io.status("✗ " + (j.error || j.state)); io.enable("build", true); return j; }
       const res = j.output?.result || {};
       io.render("plan", reportHTML(res));
@@ -254,31 +353,95 @@
       if (res.mod && io.onBuilt) io.onBuilt(res);
       return res;
     }
-    return { sources, plan, build, request, refreshRequest, state: st };
+    return { sources, plan, roster, updateChart, build, request, refreshRequest, state: st,
+      dispose() { disposed = true; rosterVersion++; planVersion++; } };
   }
 
   // the browser binding: a dialog under <body> wired to the controller
   function open(doc, io, game) {
-    doc.getElementById("castdlg")?.remove();
+    const previous = doc.getElementById('castdlg');
+    if (typeof previous?.gboxCastClose === 'function') previous.gboxCastClose(); else previous?.remove();
     const el = doc.createElement("div");
     el.id = "castdlg"; el.setAttribute("role", "dialog");
-    el.style.cssText = "position:fixed;left:50%;top:8vh;transform:translateX(-50%);z-index:97;width:min(560px,calc(100vw - 24px));" +
-      "max-height:84vh;overflow:auto;box-sizing:border-box;background:var(--bg);color:var(--fg,inherit);border:1px solid var(--line);" +
+    el.setAttribute('aria-modal', 'true'); el.setAttribute('aria-label', 'Map replacement cast');
+    el.style.cssText = "position:fixed;left:50%;top:3vh;transform:translateX(-50%);z-index:97;width:min(1180px,calc(100vw - 24px));" +
+      "max-height:94vh;overflow:auto;box-sizing:border-box;background:var(--bg,#17191f);color:var(--fg,#eee);border:1px solid var(--line,#444);" +
       "border-radius:10px;padding:10px 12px;box-shadow:0 10px 30px #000a;font-size:13px";
     el.innerHTML = '<div data-cs-part="form"></div>';
     doc.body.append(el);
     const q = s => el.querySelector(s);
-    let closed = false, requestTimer = null;
-    const close = () => { closed = true; clearInterval(requestTimer); el.remove(); };
+    let closed = false, requestTimer = null, mapper = null, chartVersion = 0, titleVersion = 0, searchTimer = null,
+      mapperForm = null, titleHits = [], applyingPlan = false, savingForm = null;
+    const inspectors = new Set();
+    const frozen = new Map();
+    const close = () => { if (closed) return; if (mapper) saveDraft(mapper.getAssignments()); closed = true; chartVersion++; titleVersion++; clearInterval(requestTimer); clearTimeout(searchTimer);
+      mapper?.dispose(); c.dispose(); for (const inspector of inspectors) inspector.close?.(); el.remove(); };
     const ui = Object.assign({}, io, {
-      render: (part, html) => { if (closed) return; if (part === "form") { q('[data-cs-part="form"]').innerHTML = html; } else { const p = q(`[data-cs="${part}"]`); if (p) p.innerHTML = html; } },
-      status: t => { const s = q('[data-cs="status"]'); if (s) s.textContent = t; },
-      enable: (name, on) => { const b = q(`[data-cs-go="${name}"]`); if (b) b.disabled = !on; },
-      requestable: on => { const b = q('[data-cs-go="request"]'); if (b) b.hidden = !on; },
+      render: (part, html) => { if (closed) return; if (part === "form") { q('[data-cs-part="form"]').innerHTML = html; } else { const p = q(`[data-cs="${part}"]`); if (p) p.innerHTML = part === 'plan' && mapper && html ? `<details><summary>Mapping details</summary><fieldset disabled style="border:0;padding:0;margin:0">${html}</fieldset></details>` : html; } },
+      status: t => { if (closed) return; const s = q('[data-cs="status"]'); if (s) s.textContent = t; },
+      enable: (name, on) => { if (closed) return; const b = q(`[data-cs-go="${name}"]`); if (b) b.disabled = !on; },
+      requestable: on => { if (closed) return; const b = q('[data-cs-go="request"]'); if (b) b.hidden = !on; },
+      saving: on => {
+        if (closed) return;
+        savingForm = on ? form() : null;
+        const chart = q('[data-cs="chart"]'); if (chart) chart.inert = on;
+        if (on) {
+          for (const control of el.querySelectorAll('[data-cs="source"], [data-cs="mapping"], [data-cs="slots"], [data-cs="seed"], [data-cs="title-search"], [data-cs-title]')) {
+            frozen.set(control, control.disabled); control.disabled = true;
+          }
+        } else { for (const [control, disabled] of frozen) control.disabled = disabled; frozen.clear(); }
+      },
     });
     const c = controller(ui, game);
+    el.gboxCastClose = close;
     const form = () => ({ source: q('[data-cs="source"]').value, mapping: q('[data-cs="mapping"]').value,
-                          slots: q('[data-cs="slots"]').value, seed: q('[data-cs="seed"]').value.trim() });
+                          slots: q('[data-cs="slots"]').value, seed: (q('[data-cs="chart"] [data-seed]') || q('[data-cs="seed"]')).value.trim() });
+    const storage = () => io.storage || root.sessionStorage;
+    const draftKey = f => `gbox_cast_chart_v1:${game.gid}:${f.source}:${f.slots}`;
+    function saveDraft(rows, f = mapperForm) { if (!f) return; try { storage()?.setItem(draftKey(f), JSON.stringify(mapper?.getDraft?.() || {version: 1, rows, seed: f.seed})); } catch {} }
+    async function inspectCard(card) {
+      if (!card.slug || !card.model_url || !io.inspect) { ui.status('This character needs an extracted 3D model before inspection.'); return; }
+      const popup = await io.inspect({slug: card.slug, name: card.name, gid: card.slot ? game.gid : '', title: game.title,
+        slot: card.slot || 'unassigned', modelUrl: card.model_url});
+      if (closed) popup?.close?.(); else if (popup) inspectors.add(popup);
+    }
+    async function loadChart() {
+      if (closed || !root.GBoxCastMapper) return null;
+      if (c.state.pendingRequest) { ui.status('Wait for the current request to finish saving.'); return null; }
+      if (mapper) saveDraft(mapper.getAssignments());
+      const version = ++chartVersion, f = form(), host = q('[data-cs="chart"]');
+      q('[data-cs="seed"]').value = f.seed;
+      mapper?.dispose(); mapper = null; mapperForm = null;
+      host.textContent = 'Loading both character rosters…'; ui.render('plan', '');
+      const roster = await c.roster(f);
+      if (closed || version !== chartVersion || !roster) return null;
+      mapperForm = f; let initializing = true, saved;
+      try { const raw = storage()?.getItem(draftKey(f)); if (raw) saved = JSON.parse(raw); } catch {}
+      host.replaceChildren();
+      mapper = root.GBoxCastMapper.mount(host, roster, {img: io.img, inspect: io.inspect ? inspectCard : undefined,
+        onChange: rows => {
+          if (closed || version !== chartVersion) return;
+          saveDraft(rows, f);
+          if (applyingPlan) return;
+          c.updateChart(rows, initializing); ui.render('plan', '');
+          if (!initializing) ui.status(`${rows.filter(r => r.character).length} connections. Review the mapping, then build or request its missing support.`);
+        }});
+      const seedInput = host.querySelector('[data-seed]'); if (seedInput) seedInput.value = f.seed;
+      const outerSeed = q('[data-cs-seed-control]'); if (outerSeed) outerSeed.hidden = true;
+      const hasDraft = Array.isArray(saved) || (saved?.version === 1 && Array.isArray(saved.rows));
+      if (Array.isArray(saved)) mapper.setAssignments(saved);
+      else if (hasDraft) mapper.restoreDraft(saved);
+      c.updateChart(mapper.getAssignments(), !hasDraft);
+      await mapper.ready; initializing = false;
+      if (closed || version !== chartVersion) return null;
+      const review = q('[data-cs-go="plan"]'); if (review) review.textContent = 'Review mapping';
+      const build = q('[data-cs-go="build"]'); if (build) build.textContent = 'Build mapped cast';
+      const request = q('[data-cs-go="request"]'); if (request) request.textContent = 'Request mapped build';
+      ui.status(`${roster.targets.length} original characters · ${roster.donors.length} replacements. ` +
+        (roster.capability?.blocking_reasons || []).join('. '));
+      return roster;
+    }
+    function refreshChart() { return loadChart().catch(error => { if (!closed) ui.status('Roster unavailable: ' + String(error.message || error)); }); }
     const picks = () => Object.fromEntries([...el.querySelectorAll("[data-cs-slot]")].map(s => [s.dataset.csSlot, s.value]));
     const marks = () => Object.fromEntries([...el.querySelectorAll("[data-cs-mark]")].map(m => [m.dataset.csMark, m.checked]));
     const counted = () => { const m = Object.values(marks()), n = q('[data-cs="marked"]');
@@ -286,6 +449,20 @@
     const thumb = s => { const d = (c.state.plan?.donors || []).find(x => x.slug === s.value), im = s.closest("tr")?.querySelector("img");
                          if (im && d) im.src = (io.img || (u => u))(d.preview_url); };
     el.onclick = async e => {
+      const title = e.target.closest('[data-cs-title]');
+      if (title && title.dataset.csTitle !== undefined) {
+        if (c.state.pendingRequest) { ui.status('Wait for the current request to finish saving.'); return; }
+        const hit = titleHits[Number(title.dataset.csTitle)]; if (!hit) return;
+        const select = q('[data-cs="source"]');
+        if (![...select.options].some(option => option.value === hit.game_id)) {
+          const option = doc.createElement('option'); option.value = hit.game_id; option.textContent = hit.title;
+          select.appendChild(option);
+        }
+        if (!c.state.sources.some(source => source.key === hit.game_id)) c.state.sources.push({key: hit.game_id, label: hit.title, kind: 'game', count: 0});
+        select.value = hit.game_id; q('[data-cs="title-search"]').value = hit.title;
+        titleVersion++; q('[data-cs="title-results"]').replaceChildren();
+        await refreshChart(); return;
+      }
       const rt = e.target.closest("[data-cs-rt]");
       if (rt && rt.dataset.csRt !== undefined) {             // ✎ on a plan row: the Retarget editor for that donor + slot
         const slot = rt.dataset.csRt, slug = picks()[slot], d = (c.state.plan?.donors || []).find(x => x.slug === slug);
@@ -308,7 +485,14 @@
         ui.status(`Dealt ${ds.length} donors over ${on.length} marked characters. Change any row, then build.`); return;
       }
       try {
-        if (b.dataset.csGo === "plan") await c.plan(form());
+        if (b.dataset.csGo === "plan") {
+          if (root.GBoxCastMapper && !mapper) { await refreshChart(); if (!mapper) return; }
+          if (mapper && !c.state.chartTouched && form().mapping === 'random' && !mapper.getAssignments().some(row => row.character)) mapper.shuffle(form().seed);
+          const p = await c.plan(form());
+          if (p && mapper && c.state.chartRows && stable(mapper.getAssignments()) !== stable(c.state.chartRows)) {
+            applyingPlan = true; try { mapper.setAssignments(c.state.chartRows); } finally { applyingPlan = false; }
+          }
+        }
         else if (b.dataset.csGo === "request") {
           await c.request(form());
           if (!closed && !requestTimer) requestTimer = setInterval(() => {
@@ -321,15 +505,38 @@
       }
       catch (err) { ui.status("✗ " + String(err.message || err).slice(0, 300)); }
     };
+    el.oninput = event => {
+      const input = event.target.closest('[data-cs="title-search"]'); if (!input) return;
+      clearTimeout(searchTimer); const version = ++titleVersion, query = input.value.trim(), result = q('[data-cs="title-results"]');
+      if (query.length < 2) { result.textContent = ''; return; }
+      result.textContent = 'Searching your titles…';
+      searchTimer = setTimeout(async () => {
+        try {
+          const response = await io.api('/api/home/games?q=' + encodeURIComponent(query) + '&limit=12');
+          if (closed || version !== titleVersion) return;
+          titleHits = (response.items || []).filter(game => game.game_id && game.title);
+          result.innerHTML = titleHits.length ? titleHits.map((game, index) => `<button class="act" type="button" data-cs-title="${index}" style="margin:3px;text-align:left">${ESC(game.title)} <small>${ESC(game.system || game.platform || '')}</small></button>`).join('') : 'No matching titles in your catalog.';
+        } catch (error) { if (!closed && version === titleVersion) result.textContent = 'Title search failed: ' + String(error.message || error); }
+      }, 250);
+    };
+    el.onkeydown = event => { if (event.key === 'Escape') { event.preventDefault?.(); close(); } };
     el.onchange = e => {                                     // a changed donor: its thumbnail follows; a tick: the count
+      if (c.state.pendingRequest && savingForm) {
+        const field = e.target.closest('[data-cs="source"], [data-cs="slots"], [data-cs="mapping"], [data-cs="seed"]');
+        if (field) field.value = savingForm[field.dataset.cs] || '';
+        const seed = e.target.closest('[data-cs="chart"] [data-seed]'); if (seed) seed.value = savingForm.seed;
+        if (field || seed) { ui.status('The current mapping is still being saved.'); return; }
+      }
+      if (root.GBoxCastMapper && e.target.closest('[data-cs="source"], [data-cs="slots"]')) { refreshChart(); return; }
+      if (mapper && e.target.closest('[data-cs="mapping"], [data-cs="seed"], [data-cs="chart"] [data-seed]')) { c.updateChart(mapper.getAssignments()); saveDraft(mapper.getAssignments()); return; }
       if (e.target.closest("[data-cs-mark]")) { counted(); return; }
       const s = e.target.closest("[data-cs-slot]"); if (s) thumb(s);
     };
-    c.sources().catch(err => ui.status("✗ " + String(err.message || err).slice(0, 300)));
+    c.sources().then(() => { if (!closed) return refreshChart(); }).catch(err => ui.status("✗ " + String(err.message || err).slice(0, 300)));
     return { el, controller: c, close };
   }
 
-  const api = { sourceOptions, formHTML, planHTML, edits, reviewed, deal, reportHTML, requestHTML, samePendingCast, controller, open, MAPPINGS, SLOT_SETS };
+  const api = { sourceOptions, formHTML, planHTML, edits, reviewed, deal, chartRows, chartSnapshot, nativeChartReady, nativePlanMatches, reportHTML, requestHTML, samePendingCast, controller, open, MAPPINGS, SLOT_SETS };
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.GBoxCastSwap = api;
 })(typeof window !== "undefined" ? window : globalThis);

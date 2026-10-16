@@ -1643,6 +1643,21 @@ def create_app(config: Config) -> FastAPI:
             out["slot_sets"] = cast_swap.slot_sets(out["slots"])
         return out
 
+    @app.get('/api/cast_swap/roster')
+    def cast_swap_roster(game_id: str, source: str = '', slots: str = 'all', actor=Depends(auth)):
+        """Read-only visual roster, including characters with no writable native slot."""
+        from . import cast_roster
+        game = store.catalog_get(game_id) or _404()
+        if len(source) > 300 or len(slots) > 300:
+            raise HTTPException(422, 'Source or scope selection is too long')
+        source = source.strip()
+        source_game = store.catalog_get(source) if source and source not in cast_roster.CS.GROUPS else None
+        chars, root = _cast_chars()
+        try:
+            return cast_roster.roster(game, chars, root, config, source, source_game, slots)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+
     class CastPlanIn(BaseModel):
         game_id: str
         source: str = ""
