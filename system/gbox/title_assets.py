@@ -324,6 +324,17 @@ class TitleAssets:
         candidates = [w for w in self.workers() if w.get('online') and tool_name in (w.get('tools') or []) and
                       (not os_required or w.get('os') == os_required)]
         if selected:
+            seen = set()
+            for _ in range(20):
+                alias = self.store.get('worker_alias', selected)
+                if not alias:
+                    break
+                if selected in seen or not isinstance(alias.get('to'), str):
+                    raise ValueError('The source worker alias chain is invalid')
+                seen.add(selected)
+                selected = alias['to']
+            else:
+                raise ValueError('The source worker alias chain is too long')
             candidates = [w for w in candidates if selected in (w.get('id'), w.get('name'))]
         library = next((lib for lib in self.config.libraries if lib.id == game.get('library')), None)
         if library:

@@ -190,6 +190,24 @@ def test_export_stays_on_inventory_worker_and_unavailable_does_not_substitute(ma
     assert manager.status(GID)['blocked_reason']
 
 
+def test_export_follows_only_explicit_worker_restart_aliases(manager):
+    manager.collect(GID, T.CollectIn(), 'operator')
+    finish(manager, 0, {'source': SOURCE, 'members': [{'index': 1, 'size': 100}], 'worker_id': 'office'})
+    manager.worker_rows[0]['id'] = 'office-new'
+    manager.store.put('worker_alias', 'office', {'to': 'office-middle', 'name': 'Office'})
+    manager.store.put('worker_alias', 'office-middle', {'to': 'office-new', 'name': 'Office'})
+    manager.collect(GID, T.CollectIn(), 'operator')
+    assert manager.sent[-1]['require_worker'] == 'office-new'
+    assert manager.sent[-1]['input']['expected_source'] == SOURCE
+
+
+def test_invalid_worker_alias_does_not_pick_another_source(manager):
+    manager.store.put('worker_alias', 'office', {'to': 'office'})
+    with pytest.raises(ValueError, match='alias chain'):
+        manager.collect(GID, T.CollectIn(worker_id='office'), 'operator')
+    assert not manager.sent
+
+
 def test_known_readers_preserve_central_linux_collection(manager, monkeypatch):
     from gbox import char_coverage as C
     monkeypatch.setattr(C, 'extractor_for', lambda g: ('sm64', [{'slug': 'mario'}]))
@@ -326,3 +344,27 @@ def test_routes_auth_and_exact_status(manager):
     queued = client.post(f'/api/title-assets/{GID}/collect', json={'parent_request_id': RID})
     assert queued.status_code == 200 and queued.json()['tasks'][0]['state'] == 'queued'
     assert not manager.store.all('session')
+
+
+def test_real_server_preserves_only_trusted_title_collection_source_pin(tmp_path, monkeypatch):
+    from gbox import char_coverage as C
+    from gbox.server import create_app
+    monkeypatch.setattr(C, 'extractor_for', lambda g: ('sm64', [{'slug': 'mario'}]))
+    monkeypatch.setattr(C, 'writer_for', lambda g: None)
+    cfg = Config(data_dir=tmp_path / 'data', libraries=[Library(id='owned', paths={'linux': str(tmp_path)})])
+    app = create_app(cfg)
+    app.state.store.upsert_catalog([game(OTHER, title='Super Mario 64', platform='n64')])
+    client = TestClient(app)
+    client.headers['Authorization'] = 'Bearer ' + cfg.token()
+    registered = client.post('/api/workers/register', json={'id': 'source-linux', 'name': 'SourceLinux', 'os': 'linux', 'tools': ['characters']})
+    assert registered.status_code == 200
+    response = client.post(f'/api/title-assets/{OTHER}/collect', json={'categories': ['characters'], 'worker_id': 'source-linux'})
+    assert response.status_code == 200, response.text
+    job = app.state.store.get('job', response.json()['tasks'][0]['job_id'])
+    assert job['require_worker'] == 'source-linux' and job['require_os'] == 'linux'
+    assert job['origin'] == {'via': 'title_assets', 'game_id': OTHER, 'source_worker': 'source-linux'}
+    assert job['agent_use'] and job['low_priority'] and job['state'] == 'queued'
+    ordinary = client.post('/api/jobs', json={'tool': 'characters', 'input': {'op': 'collect', 'game_id': OTHER},
+                          'require_worker': 'source-linux'}, headers={'x-gbox-client': 'title_assets'})
+    assert ordinary.status_code == 200
+    assert ordinary.json()['require_worker'] is None and ordinary.json()['require_os'] == 'linux'

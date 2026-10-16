@@ -2646,7 +2646,15 @@ def create_app(config: Config) -> FastAPI:
         if t.name == 'characters' and inp.get('op') == 'collect' and not job.parent_request_id:
             job.parent_request_id = auto_collection.policy().get('parent_request_id')
         if t.name == "characters" and inp.get("op") in ("extract", "collect", "add", "blender"):
-            job.require_worker, job.require_os = None, "linux"   # they write the collection (Spark); captures go to the session's PC
+            # Collection normally chooses any Linux collection worker. The
+            # exact-title route already selected a source-capable Linux worker;
+            # preserve only that trusted in-server pin, never a client header.
+            scoped = (inp.get('op') == 'collect' and origin.get('via') == 'title_assets'
+                      and origin.get('game_id') == inp.get('game_id')
+                      and origin.get('source_worker') == job.require_worker and bool(job.require_worker))
+            if not scoped:
+                job.require_worker = None
+            job.require_os = "linux"
         elif t.name in ("re_executable", "assimilate"):
             # Analysis output belongs on Spark; RAM is read remotely through the
             # session RPC. Pinning this to a Windows session makes Linux work unrunnable.
@@ -5595,7 +5603,8 @@ def create_app(config: Config) -> FastAPI:
 
     from . import title_assets
     title_assets.routes(app, store, config, auth, workers,
-        lambda body, actor: submit(JobRequest(**body), actor).model_dump(mode='json'))
+        lambda body, actor: submit(JobRequest(**body), actor, origin={'via': 'title_assets',
+            'game_id': body['input']['game_id'], 'source_worker': body.get('require_worker')}).model_dump(mode='json'))
 
     return app
 
