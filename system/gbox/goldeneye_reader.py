@@ -8,7 +8,7 @@ All record layouts are cross-checked against the GoldenEye decompilation
 
 * ModelFileHeader (data segment, per body table): {RootNode*, Skeleton*,
   Switches**, s16 numSwitches, s16 numMatrices, f32 radius, s16 numRecords,
-  s16 numTextures, Textures*}.
+  s16 numTextures, ModelFileTextures*}.
 * Z file layout: [numSwitches x u32 switch-node ptrs][numTextures x 12-byte
   sImageTableEntry records {u32 index, u8 w, u8 h, u8 fmt, u8 depth, u8
   flagsS, u8 flagsT, u8 pad}][node tree].
@@ -28,11 +28,11 @@ All record layouts are cross-checked against the GoldenEye decompilation
                                  u32 HeaderNode, f32 Scale, u32 BaseAddr}
     0x17 Op17Record       0x20B {s32 hitpart, f32 radiusSq, coord3d pos,
                                  u32 othernode, f32 scale1, f32 scale2}
-    0x18 DisplayListCollisionRecord 0x20B {u32 Primary, u32 Secondary,
-                                 u32 Vertices, s16 numVertices,
-                                 s16 numCollisionVertices, u32
-                                 CollisionVertices, u32 PointUsage,
-                                 s16 ModelType, u16 RwDataIndex, u32 BaseAddr}
+    0x18 DisplayListCollisionRecord 0x20B {Gfx* Primary, Gfx* Secondary,
+                                 Vertex* Vertices, s16 numVertices,
+                                 s16 numCollisionVertices, Vertex*
+                                 CollisionVertices, s16* PointUsage,
+                                 s16 ModelType, u16 RwDataIndex, void* BaseAddr}
 * Vertex = {s16 x, s16 y, s16 z, s16 index, s16 s, s16 t, u8 r, g, b, a}
   (0x10 bytes).
 * ModelSkeleton (data segment) = {s16 numjoints, s16 pad, ModelJoint *Joints,
@@ -53,10 +53,20 @@ G_TRI1 draws one triangle with 8-bit indices pre-multiplied by 10 (decimal,
 F3D_OLD).  This index space is pinned: decoding all 25 CsuitbondZ render DLs
 yields 619 triangles with zero out-of-range or unloaded-cache indices.
 
+The skeleton is exported as a proper glTF ``skins`` array: the 15 op-0x02
+GroupRecords (JointID 1..15) hang off the implicit root joint 0, each
+render mesh (op-0x18 node) is rigidly bound to the nearest ancestor group's
+JointID, and the inverse bind matrices are the negation of the accumulated
+group origins.  Texture pixels are not decoded yet: the model's 12-byte
+sImageTableEntry records name the global ``g_Textures`` index + format, and
+the per-node G_SETTEX ids are recorded in mesh extras; the global texture
+table location and the ROM image-bank codec are the next reader step.
+
 Usage: python -m gbox.goldeneye_reader ROM [--body CsuitbondZ] [--gltf out.gltf]
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import struct
@@ -74,6 +84,29 @@ JOINT_SIZE = 6
 # Opcode -> record byte size (0 = skip payload decode).
 RECORD_SIZES = {0x01: 0x10, 0x02: 0x1C, 0x08: 0x10, 0x09: 0x24, 0x0A: 0x1C,
                 0x0D: 0x20, 0x17: 0x20, 0x18: 0x20}
+
+# The 80 character body/head files of the PAL body table (deterministic for
+# the owned build; order == body-table index).  Used by the characters
+# DEDICATED roster so game_roster can enumerate the cast without a ROM.
+ROSTER_NAMES = [
+    "CcamguardZ", "CgreyguardZ", "ColiveguardZ", "CrusguardZ", "CtrevguardZ",
+    "CdjbondZ", "CborisZ", "CorumovZ", "CtrevelyanZ", "CboilertrevZ",
+    "CvalentinZ", "CxeniaZ", "CbaronsamediZ", "CjawsZ", "CmaydayZ",
+    "CoddjobZ", "CnatalyaZ", "CarmourguardZ", "CcommguardZ", "CgreatguardZ",
+    "CnavyguardZ", "CsnowguardZ", "CboilerbondZ", "CsuitbondZ", "CtimberbondZ",
+    "CsnowbondZ", "CbluewomanZ", "CfattechwomanZ", "CtechwomanZ", "CjeanwomanZ",
+    "CgreymanZ", "CbluemanZ", "CredmanZ", "CcardimanZ", "CcheckmanZ",
+    "CtechmanZ", "CpilotZ", "Cgreatguard2Z", "CbluecamguardZ", "CmoonguardZ",
+    "CmoonfemaleZ", "Csuit_lf_handZ", "CheadkarlZ", "CheadalanZ", "CheadpeteZ",
+    "CheadmartinZ", "CheadmarkZ", "CheadduncanZ", "CheadshaunZ", "CheaddwayneZ",
+    "CheadbZ", "CheaddaveZ", "CheadgrantZ", "CheaddesZ", "CheadchrisZ",
+    "CheadleeZ", "CheadneilZ", "CheadjimZ", "CheadrobinZ", "CheadstevehZ",
+    "CheadbalaclavaZ", "CheadbikeZ", "CheadgrahamZ", "CheadsteveeZ",
+    "CheadjoelZ", "CheadscottZ", "CheadjoeZ", "CheadkenZ", "Cheadjoe2Z",
+    "CheadmishkinZ", "CheadsallyZ", "CheadmarionZ", "CheadmandyZ", "CheadvivienZ",
+    "CheadbrosnanboilerZ", "CheadbrosnansuitZ", "CheadbrosnantimberZ",
+    "CheadbrosnansnowZ", "CheadbrosnanZ", "CspicebondZ",
+]
 
 
 @dataclass
@@ -366,23 +399,150 @@ def read_character(ge: GoldenEyeROM, filename: str) -> dict:
     }
 
 
-def to_gltf(ge: GoldenEyeROM, filename: str, out_path: str | Path) -> dict:
-    """Export a decoded character as a .gltf (external .bin) scene.
+# ---------------------------------------------------------------- roster / rig
 
-    Skeleton joints become glTF nodes with the op-0x02 GroupRecord origins;
-    each op-0x18 node becomes a mesh of its own vertex array with vertex
-    colours, UVs and the real triangles decoded from the F3D_OLD primary DL
-    (triangle indices are node-local and validated against the node's vertex
-    count).  Texture pixels are not decoded yet; the per-node texture ids are
-    recorded in mesh extras.
+
+def _slug(s: str) -> str:
+    out = []
+    for ch in s:
+        out.append(ch if ch.isalnum() else "_")
+    return "".join(out).strip("_").lower()
+
+
+def _pretty(name: str) -> str:
+    """'CheadbrosnansuitZ' -> 'Head Brosnan Suit'."""
+    stem = name
+    if stem.startswith("C"):
+        stem = stem[1:]
+    if stem.endswith("Z"):
+        stem = stem[:-1]
+    stem = stem.replace("_", " ")
+    words, cur = [], ""
+    for ch in stem:
+        if ch.isupper() and cur and not cur[-1].isupper():
+            words.append(cur)
+            cur = ch
+        else:
+            cur += ch
+    if cur:
+        words.append(cur)
+    return " ".join(w[:1].upper() + w[1:] for w in words if w).strip() or name
+
+
+def roster() -> list[dict]:
+    """The 80 PAL body/head files as characters.DEDICATED roster rows."""
+    return [{"key": n, "slug": f"ge_{_slug(n)}", "name": _pretty(n),
+             "aliases": [f"GoldenEye {_pretty(n)}", n], "kind": "character"}
+            for n in ROSTER_NAMES]
+
+
+def build_skeleton(nodes: list[NodeRec]) -> tuple[list[dict], dict[int, int]]:
+    """Joint list {joint_id, origin, parent} (0..N-1) and {node_offset -> joint_id}.
+
+    Joint 0 is the implicit root (no GroupRecord); the op-0x02 GroupRecords
+    carry JointID 1..numjoints-1.  A group's skeleton parent is the nearest
+    group ancestor in the node tree (or 0 for the root group)."""
+    by_offset = {r.offset: r for r in nodes}
+    pos_nodes = [r for r in nodes if r.op == 0x02]
+
+    def parent_group(r: NodeRec) -> NodeRec | None:
+        seen = set()
+        p = r.parent
+        while p and p not in seen:
+            seen.add(p)
+            pr = by_offset.get(p)
+            if pr is None:
+                break
+            if pr.op == 0x02:
+                return pr
+            p = pr.parent
+        return None
+
+    joints: list[dict] = [{"joint_id": 0, "origin": [0.0, 0.0, 0.0], "parent": -1}]
+    for r in pos_nodes:
+        par = parent_group(r)
+        joints.append({"joint_id": r.record["joint_id"], "origin": r.record["origin"],
+                       "parent": par.record["joint_id"] if par else 0})
+    joints.sort(key=lambda j: j["joint_id"])
+    # parent must index an existing joint id (0..len-1)
+    ids = {j["joint_id"] for j in joints}
+    for j in joints:
+        if j["parent"] < 0:            # the implicit root has no parent
+            continue
+        if j["parent"] not in ids:
+            j["parent"] = 0
+    node_joint = {}
+    for r in nodes:
+        jid = 0
+        p = r
+        seen = set()
+        while p.offset not in seen:
+            seen.add(p.offset)
+            if p.op == 0x02:
+                jid = p.record["joint_id"]
+                break
+            if not p.parent or p.parent not in by_offset:
+                break
+            p = by_offset[p.parent]
+        node_joint[r.offset] = jid
+    return joints, node_joint
+
+
+def joint_world_positions(joints: list[dict]) -> list[list[float]]:
+    """Accumulated world-space position of each joint (translation-only bind)."""
+    world: list[list[float] | None] = [None] * len(joints)
+    idx = {j["joint_id"]: i for i, j in enumerate(joints)}
+
+    def acc(i: int) -> list[float]:
+        if world[i] is not None:
+            return world[i]
+        j = joints[i]
+        if j["parent"] < 0:
+            world[i] = list(j["origin"])
+        else:
+            o = j["origin"]
+            w = acc(idx[j["parent"]])
+            world[i] = [w[0] + o[0], w[1] + o[1], w[2] + o[2]]
+        return world[i]
+
+    for i in range(len(joints)):
+        acc(i)
+    return world  # type: ignore[return-value]
+
+
+def _inverse_bind_matrices(world: list[list[float]]) -> bytes:
+    """glTF column-major MAT4 inverse bind matrices (translation-only rig)."""
+    mats = []
+    for x, y, z in world:
+        mats += [1.0, 0.0, 0.0, 0.0,
+                 0.0, 1.0, 0.0, 0.0,
+                 0.0, 0.0, 1.0, 0.0,
+                 -x, -y, -z, 1.0]
+    return struct.pack(">" + "f" * len(mats), *mats)
+
+
+def to_gltf(ge: GoldenEyeROM, filename: str, out_path: str | Path) -> dict:
+    """Export a decoded character as a self-contained, rigged .gltf scene.
+
+    The 16-joint skeleton (implicit root 0 + the 15 op-0x02 GroupRecords)
+    becomes a glTF ``skins`` array with translation-only inverse bind
+    matrices; every op-0x18 render mesh is rigidly bound to its nearest
+    ancestor group's joint with unit weights.  Vertices keep their native
+    model-space coordinates, vertex colours and UVs, and the real triangles
+    decoded from the F3D_OLD primary DL.  Texture pixels are not decoded yet;
+    per-node texture ids are recorded in mesh extras and the model's texture
+    records in the scene extras.
     """
     doc = read_character(ge, filename)
     nodes = parse_nodes(ge.read_file(filename), doc["root_offset"])
+    joints, node_joint = build_skeleton(nodes)
+    world = joint_world_positions(joints)
 
     gltf = {"asset": {"version": "2.0", "generator": "gbox.goldeneye_reader"},
             "scenes": [{"nodes": []}], "scene": 0,
-            "nodes": [], "meshes": [], "accessors": [], "bufferViews": [],
-            "buffers": [{"uri": Path(out_path).stem + ".bin", "byteLength": 0}]}
+            "nodes": [], "meshes": [], "skins": [], "accessors": [], "bufferViews": [],
+            "buffers": [{"byteLength": 0}],
+            "extras": {"textures": doc["textures"]}}
     bin_blob = bytearray()
 
     def add_accessor(data: bytes, component_type: int, count: int, type_: str,
@@ -399,27 +559,19 @@ def to_gltf(ge: GoldenEyeROM, filename: str, out_path: str | Path) -> dict:
         bin_blob.extend(data)
         return idx
 
-    # skeleton joints as glTF nodes (matrix index from the op-0x02 records)
-    joint_pos = []
-    joint_children: dict[int, list[int]] = {}
-    pos_nodes = [r for r in nodes if r.op == 0x02]
-    for i, r in enumerate(pos_nodes):
-        joint_pos.append(r.record.get("origin", [0.0, 0.0, 0.0]))
-    # hierarchy from the file parent/child links: map node offset -> glTF index
-    off_to_joint = {r.offset: i for i, r in enumerate(pos_nodes)}
-    for i, r in enumerate(pos_nodes):
-        par = off_to_joint.get(r.parent)
-        if par is not None:
-            joint_children.setdefault(par, []).append(i)
-    for i in range(len(pos_nodes)):
-        t = joint_pos[i]
-        gltf["nodes"].append({"name": f"joint{i}",
-                              "translation": t,
-                              **({"children": joint_children.get(i, [])}
-                                 if joint_children.get(i) else {})})
+    # skeleton joints (sorted by joint_id 0..N-1) as glTF nodes
+    gltf["nodes"] = [{"name": f"joint{j['joint_id']}", "translation": j["origin"]}
+                     for j in joints]
+    for i, j in enumerate(joints):
+        kids = [k for k, o in enumerate(joints) if o["parent"] == j["joint_id"]]
+        if kids:
+            gltf["nodes"][i]["children"] = kids
+    gltf["skins"].append({"joints": list(range(len(joints))),
+                          "inverseBindMatrices": add_accessor(
+                              _inverse_bind_matrices(world), 5126, len(joints), "MAT4")})
 
-    # meshes: one per op-0x18 node, triangles are node-local vertex indices
     total_tris = 0
+    total_verts = 0
     for r in nodes:
         if r.op != 0x18 or not r.vertices:
             continue
@@ -437,6 +589,11 @@ def to_gltf(ge: GoldenEyeROM, filename: str, out_path: str | Path) -> dict:
         uv = struct.pack(">" + "ff" * len(verts),
                          *[c for v in verts for c in (v.s / 32.0, v.t / 32.0)])
         uv_acc = add_accessor(uv, 5126, len(verts), "VEC2")
+        jid = node_joint.get(r.offset, 0)
+        joint_attr = struct.pack(">" + "H" * len(verts), *([jid] * len(verts)))
+        joint_acc = add_accessor(joint_attr, 5123, len(verts), "VEC4")
+        weight = struct.pack(">" + "f" * len(verts), *([1.0] * len(verts)))
+        weight_acc = add_accessor(weight, 5126, len(verts), "VEC4")
         tri_acc = None
         tris = [t for t in r.triangles if all(0 <= i < len(verts) for i in t)]
         if tris:
@@ -444,7 +601,8 @@ def to_gltf(ge: GoldenEyeROM, filename: str, out_path: str | Path) -> dict:
             tri_acc = add_accessor(idx, 5123, len(tris) * 3, "SCALAR")
             total_tris += len(tris)
         mesh = {"primitives": [{"attributes": {"POSITION": pos_acc, "COLOR_0": col_acc,
-                                               "TEXCOORD_0": uv_acc},
+                                               "TEXCOORD_0": uv_acc,
+                                               "JOINTS_0": joint_acc, "WEIGHTS_0": weight_acc},
                                 **({"indices": tri_acc} if tri_acc is not None else {}),
                                 "mode": 4 if tri_acc is not None else 0,
                                 "extras": {"texture_ids": r.record.get("texture_ids", []),
@@ -452,16 +610,35 @@ def to_gltf(ge: GoldenEyeROM, filename: str, out_path: str | Path) -> dict:
                                            "triangle_hint": r.triangle_hint}}]}
         gltf["meshes"].append(mesh)
         gltf["nodes"].append({"name": f"mesh_{r.offset:04X}",
-                              "mesh": len(gltf["meshes"]) - 1})
+                              "mesh": len(gltf["meshes"]) - 1,
+                              "skin": 0})
         gltf["scenes"][0]["nodes"].append(len(gltf["nodes"]) - 1)
+        total_verts += len(verts)
+
+    # self-contained .gltf: embed the buffer as a data URI (no external .bin)
     gltf["buffers"][0]["byteLength"] = len(bin_blob)
+    gltf["buffers"][0]["uri"] = "data:application/octet-stream;base64," + \
+        base64.b64encode(bytes(bin_blob)).decode("ascii")
     out_path = Path(out_path)
     out_path.write_text(json.dumps(gltf, indent=1))
-    Path(str(out_path).rsplit(".", 1)[0] + ".bin").write_bytes(bytes(bin_blob))
-    stats = {"file": str(out_path), "joints": len(joint_pos),
-             "meshes": len(gltf["meshes"]), "triangles": total_tris,
-             "vertices": sum(len(r.vertices) for r in nodes if r.op == 0x18)}
-    return stats
+    return {"file": str(out_path), "joints": len(joints),
+            "meshes": len(gltf["meshes"]), "triangles": total_tris,
+            "vertices": total_verts}
+
+
+def extract_run(ctx, game: dict, entry: dict, work) -> dict:
+    """characters.DEDICATED run(): decode one body to a rigged .gltf."""
+    from .models import CatalogEntry
+    from .tools import rom_path
+    p = rom_path(CatalogEntry.model_validate(game), ctx.config)
+    ge = GoldenEyeROM.load(p)
+    out = Path(work) / (entry["slug"] + ".gltf")
+    stats = to_gltf(ge, entry["key"], out)
+    return {"files": [out], "tool": "gbox.goldeneye_reader",
+            "source_files": [entry["key"]],
+            "notes": f"Native GoldenEye Z-file body: {stats['joints']}-joint skeleton, "
+                     f"{stats['meshes']} meshes, {stats['triangles']} triangles, vertex colours. "
+                     "Texture pixels are the next reader step (global g_Textures table)."}
 
 
 def main(argv: list[str] | None = None) -> int:

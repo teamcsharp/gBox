@@ -115,22 +115,53 @@ def test_triangle_index_space(ge):
 def test_gltf_export(ge, tmp_path):
     out = tmp_path / "CsuitbondZ.gltf"
     stats = gr.to_gltf(ge, "CsuitbondZ", out)
-    assert stats["joints"] == 15  # 15 position (joint) nodes
+    assert stats["joints"] == 16  # implicit root + 15 position (joint) nodes
     assert stats["meshes"] == 25
     assert stats["triangles"] == 619  # real triangles, not a point cloud
+    assert stats["vertices"] == 726
     gltf = json.loads(out.read_text())
     assert gltf["asset"]["version"] == "2.0"
-    assert (tmp_path / "CsuitbondZ.bin").stat().st_size == gltf["buffers"][0]["byteLength"]
-    # every mesh primitive is at least a valid point cloud with colours
+    # self-contained: buffer is embedded, no external .bin
+    assert gltf["buffers"][0]["uri"].startswith("data:")
+    assert gltf["buffers"][0]["byteLength"] > 0
+    # rigged: one skin over all 16 joints with inverse bind matrices
+    assert len(gltf["skins"]) == 1
+    skin = gltf["skins"][0]
+    assert skin["joints"] == list(range(16))
+    ibm = gltf["accessors"][skin["inverseBindMatrices"]]
+    assert ibm["type"] == "MAT4" and ibm["count"] == 16
+    # every mesh primitive is an indexed triangle list with per-vertex skinning
     for m in gltf["meshes"]:
         prim = m["primitives"][0]
-        for attr in ("POSITION", "COLOR_0", "TEXCOORD_0"):
+        for attr in ("POSITION", "COLOR_0", "TEXCOORD_0", "JOINTS_0", "WEIGHTS_0"):
             assert attr in prim["attributes"]
-    # meshes carry real indexed geometry (triangles, mode 4)
-    assert any(m["primitives"][0]["mode"] == 4 for m in gltf["meshes"])
-    assert any("indices" in m["primitives"][0] for m in gltf["meshes"])
-    # joints carry translations
-    assert all("translation" in n for n in gltf["nodes"][:stats["joints"]])
+        assert prim["mode"] == 4 and "indices" in prim
+    # mesh nodes reference the skin; joint nodes carry translations
+    joint_names = {n["name"] for n in gltf["nodes"][:16]}
+    assert joint_names == {f"joint{i}" for i in range(16)}
+    assert all("translation" in n for n in gltf["nodes"][:16])
+    assert all(n.get("skin") == 0 for n in gltf["nodes"][16:] if "mesh" in n)
+
+
+def test_roster():
+    ros = gr.roster()
+    assert len(ros) == 80
+    by_key = {r["key"]: r for r in ros}
+    assert "CsuitbondZ" in by_key and "CheadbrosnanZ" in by_key
+    for r in ros:
+        assert r["slug"].startswith("ge_") and r["kind"] == "character"
+        assert r["name"] and r["aliases"]
+    # the player's tuxedo body and Bond's head are in the cast
+    assert by_key["CsuitbondZ"]["slug"] == "ge_csuitbondz"
+
+
+def test_dedicated_registration():
+    from gbox import characters as C
+    name = next((n for n, test, _r, _run in C.DEDICATED
+                 if test("007 - goldeneye (europe)", "n64")), None)
+    assert name == "goldeneye"
+    ros = next(r for n, _t, r, _run in C.DEDICATED if n == "goldeneye")()
+    assert len(ros) == 80
 
 
 def test_rejects_foreign_rom():
