@@ -123,6 +123,23 @@ set of twelve back buffers, and the launch receipt retains a PNG of the proven
 output. A blank window alone cannot satisfy this check. This establishes rendered
 output; title screens, controls and gameplay still require actual session evidence.
 
+The native adapter can inspect guest RAM through a read-only bridge. It opens
+only its already owned renderer PID with query/read rights, checks its creation
+time and exact executable/source checksums, and requires one unique 64 MiB RAM
+allocation matching the reviewed XBE's mapped header and all immutable executable
+sections. The only normalized header fields are the documented section reference
+counts changed by upstream's load/unload-section routines; their exact addresses
+are included in the verification metadata. Other changed header or code bytes,
+ambiguous allocations and changed process identities fail closed.
+
+`query_memory_map` reports the verified x86 little-endian guest address space,
+the source-derived image analysis range and retail entry point. Reads support
+RAM at zero and its native cached/physical aliases. Every read rechecks the
+process, source and immutable RAM anchors before returning data. The image span
+includes the game's persistent profile data without initially capturing the
+entire heap. This interface does not expose writes, unlock switches or synthetic
+input; locating and validating game-specific flags remains separate research.
+
 Sources: [official Cxbx release](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded/releases/tag/CI-585c49a),
 [official Cxbx source](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded),
 [official XboxDev extractor release](https://github.com/XboxDev/extract-xiso/releases/tag/build-202609111233),
