@@ -68,6 +68,22 @@ def _windows_pid_reused(kernel, handle, recorded_at):
     return born > recorded_at + 1  # tolerate timestamp rounding
 
 
+def _windows_pid_reused_fallback(pid, recorded_at):
+    """System process information can prove reuse when a query handle is denied."""
+    import math
+    if type(recorded_at) not in (int, float) or not math.isfinite(recorded_at) or recorded_at <= 0:
+        return False
+    try:
+        # A fresh psutil Process can obtain creation time through Windows system
+        # process information even when OpenProcess is denied. No extra rights.
+        import psutil
+        born = psutil.Process(pid).create_time()
+    except Exception:
+        return False  # independent query uncertainty must keep the game protected
+    return (type(born) in (int, float) and math.isfinite(born) and born > 0
+            and born > recorded_at + 1)
+
+
 def _pid_alive(pid, *, recorded_at=None):
     if type(pid) is not int or pid <= 0:
         raise RuntimeError('Invalid owned emulator PID; activation was stopped')
@@ -80,7 +96,12 @@ def _pid_alive(pid, *, recorded_at=None):
         kernel.OpenProcess.restype = wintypes.HANDLE
         handle = kernel.OpenProcess(0x1000, False, pid)
         if not handle:
-            return ctypes.get_last_error() != 87  # unknown/access denied also blocks activation
+            error = ctypes.get_last_error()
+            if error == 87:
+                return False
+            if error == 5:  # ERROR_ACCESS_DENIED: try read-only process information.
+                return not _windows_pid_reused_fallback(pid, recorded_at)
+            return True  # unknown failures still block activation
         try:
             code = wintypes.DWORD()
             kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
