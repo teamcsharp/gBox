@@ -22,6 +22,13 @@ several minutes. Later launches reuse the local home, rehash the runner and DLLs
 check critical game/firmware identity and validate cached bulk-file metadata.
 Changed bulk files are rehashed. Changes to the source archive require a rescan.
 
+Emulators legitimately rewrite some of their own files on first boot. A file
+whose content drifted from the verified package is restored from the archive
+before the launch (the archive is re-identified on every launch) and the
+restored paths are reported in the launch result as `healed_files`. A file that
+is actively changing while it is read is reported, never overwritten; tampered
+content never runs.
+
 Each PC retains its own mutable configuration, shader cache and user data. A
 process-lifetime lease prevents two games sharing the same writable home on one
 PC. Runtime homes on UNC shares or mapped network drives are rejected. No account
