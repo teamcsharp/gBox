@@ -292,6 +292,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/build-report-image.js"></script>
 <script src="/viz/decimation-review.js"></script>
 <script src="/viz/game-menu.js"></script>
+<script src="/viz/cover-picker.js"></script>
 <script src="/viz/build-shot.js"></script>
 <script src="/viz/build-local.js"></script>
 <script src="/viz/last-played.js"></script>
@@ -577,6 +578,10 @@ const lbFit = () => { const w = LB.img.naturalWidth || 1, h = LB.img.naturalHeig
   LB.k = Math.min((innerWidth - 40) / w, (innerHeight - 70) / h); LB.x = (innerWidth - w * LB.k) / 2; LB.y = (innerHeight - h * LB.k) / 2 + 15; lbApply(); };
 function lbShow(i) {
   const it = LB.list[i]; if (!it) return;
+  if (it.game_id) LB.img.dataset.assetGame = it.game_id;
+  else delete LB.img.dataset.assetGame;
+  LB.img.dataset.assetOriginalUrl = it.original_url || it.src;
+  LB.img.dataset.assetFormat = 'image'; LB.img.dataset.assetName = it.name || 'Image';
   LB.i = i; LB.img.onload = lbFit; LB.img.src = it.src; if (LB.img.complete) lbFit();
   $("#lbox-name").textContent = (it.name || "") + (LB.list.length > 1 ? `${it.name ? " · " : ""}${i + 1} / ${LB.list.length}` : "");
   LB.el.querySelectorAll("[data-z=prev], [data-z=next]").forEach(b => b.disabled = LB.list.length < 2);
@@ -586,7 +591,7 @@ function lbOpen(src, list = null, i = 0) {                   // one picture, or 
   LB.bright = LB.contrast = 100; LB.el.querySelectorAll("[data-adj]").forEach(r => r.value = 100);
   LB.el.style.display = "block"; lbShow(list && list.length ? Math.max(0, i) : 0);
 }
-const lbClose = () => { LB.el.style.display = "none"; LB.img.removeAttribute("src"); LB.list = []; };
+const lbClose = () => { LB.el.style.display = "none"; LB.img.removeAttribute("src"); delete LB.img.dataset.assetGame; LB.list = []; };
 async function lbSave() {
   const it = LB.list[LB.i]; if (!it) return;
   const ext = (it.src.match(/\.(png|jpe?g|webp|gif|bmp)(?:\?|$)/i) || [])[1] || (it.src.startsWith("data:image/") ? it.src.slice(11, it.src.indexOf(";")) : "png");
@@ -614,7 +619,7 @@ const LB_SOURCES = [".wbm > img, .wbm img[data-moment]", "img.tpable"];
 document.addEventListener("click", e => { const im = e.target.closest(LB_SOURCES.join(", ")); if (!im || e.target.closest("button")) return;
   const all = [...document.querySelectorAll(LB_SOURCES.find(s => im.matches(s)))];   // its siblings: every picture of the same kind on the page
   e.preventDefault(); e.stopPropagation();
-  lbOpen(null, all.map(x => ({ src: (x.tpSrc || x.dataset.full || x.src).replace(/([?&])w=\d+/, "$1"), name: x.dataset.name || x.alt || x.title || "" })), all.indexOf(im)); }, true);   // capture: before the card's own click (Load moment stays a button)
+  lbOpen(null, all.map(x => { const asset = window.GBoxAssetContext?.find(x) || {}; return { src: (x.tpSrc || x.dataset.full || x.src).replace(/([?&])w=\d+/, "$1"), name: x.dataset.name || x.alt || x.title || "", game_id: asset.game_id, original_url: asset.original_url || asset.url }; }), all.indexOf(im)); }, true);   // capture: before the card's own click (Load moment stays a button)
 // right-click any option: with a game open, report that it doesn't work with this title (game, what was tried, what the
 // card showed, the session's recent jobs and a frame go into the inbox for a fix); otherwise file a request about that
 // element (#1386): what it is, where it is and what the operator wants done with it
@@ -2948,18 +2953,31 @@ function retargetOpen(o) {
   return GBoxRetargetEditor.open(document, { api, url: u => `${u}${u.includes("?") ? "&" : "?"}${tq()}`, drag: dragAnywhere,
     editTextures:opts=>photocraftOpen(opts),confirm: s => confirm(s), onRebuild: r => window.GBOX_PROCESS_POPUP && window.GBOX_PROCESS_POPUP.follow((r.job_ids || [])[0]) }, o);
 }
-async function attachCover(gid, card, btn, url = "") {        // #1067: fetch box art online (or a chosen picture) and keep it for this game
-  btn.disabled = true; btn.textContent = url ? "Fetching that picture…" : "Looking for the cover online…";
-  try {
-    const r = await api(`/api/catalog/${encodeURIComponent(gid)}/cover`, { url, kind: "boxart" });
-    btn.textContent = `✓ Cover attached (${Math.round(r.bytes / 1024)} KB)`;
-    card.querySelectorAll("img").forEach(im => { const u = im.src.replace(/([?&])v=\d+/, ""); im.src = u + (u.includes("?") ? "&" : "?") + "v=" + Date.now(); });
-  } catch (err) {
-    btn.disabled = false;
-    const u = prompt("No cover was found online for this title. Paste a picture URL to use instead:", "");
-    if (u && u.trim()) return attachCover(gid, card, btn, u.trim());
-    btn.textContent = "Attach game cover (online)";
+async function coverArtworkChanged(gid) {
+  const stamp = String(Date.now());
+  for (const image of document.querySelectorAll('img')) {
+    try {
+      const url = new URL(image.currentSrc || image.src, location.href);
+      if (url.origin === location.origin && url.pathname.startsWith('/api/media/' + encodeURIComponent(gid) + '/')) {
+        url.searchParams.set('v', stamp); image.src = url.href;
+      }
+    } catch {}
   }
+  await HOME.ctl?.refreshArtwork?.(gid);
+}
+async function attachCover(gid, card, btn) {
+  $('#gmenu')?.classList.remove('on');
+  const entry = await api('/api/catalog/' + encodeURIComponent(gid)).catch(() => null);
+  const title = entry?.title || card?.dataset?.title || card?.querySelector('strong')?.textContent || gid;
+  return GBoxCoverPicker.open({gid, title, api, media: bnUrl,
+    onSaved: async () => { await coverArtworkChanged(gid); blToast('Game cover updated.'); }});
+}
+async function setImageAsCover(asset) {
+  if (!asset.game_id) throw Error('Choose an image belonging to a game.');
+  const url = new URL(asset.original_url || asset.url, location.href);
+  const source = url.origin === location.origin ? url.pathname : url.href;
+  await api('/api/catalog/' + encodeURIComponent(asset.game_id) + '/cover', {url: source, kind: 'boxart'});
+  await coverArtworkChanged(asset.game_id);
 }
 // move a running game to another computer behind its loading screen (#1501): the last frame, each step, the progress
 async function moveSession(sid, to, label) {
@@ -4153,7 +4171,7 @@ window.gboxViewReady = HASH.get("session") ? show("Sessions", HASH.get("session"
 <script src="/viz/asset-context.js"></script>
 <script>
 window.GBOX_ASSET_MENU = GBoxAssetContext.mount(document, {
-  place: (el,x,y) => fitMenu(el,x,y), blender: input => blenderCopy(input),
+  place: (el,x,y) => fitMenu(el,x,y), blender: input => blenderCopy(input), cover: setImageAsCover,
   image: async data => {
     if (window.GBOX_LOCAL?.worker) {
       const id = 'clip-' + Date.now() + '-' + Math.random().toString(36).slice(2);
