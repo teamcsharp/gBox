@@ -3,6 +3,8 @@ const H=require('../clients/web/viz/library-home.js');
 const {withPage}=require('../scripts/browser_lifecycle.cjs');
 const script=fs.readFileSync(path.join(__dirname,'../clients/web/viz/library-home.js'),'utf8');
 const css=fs.readFileSync(path.join(__dirname,'../clients/web/viz/library-home.css'),'utf8');
+const detailScript=fs.readFileSync(path.join(__dirname,'../clients/web/viz/library-home-detail.js'),'utf8');
+const indexHTML=fs.readFileSync(path.join(__dirname,'../clients/web/index.html'),'utf8');
 const art=(color,title)=>'data:image/svg+xml;base64,'+Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="700" height="900"><rect width="700" height="900" fill="${color}"/><circle cx="350" cy="300" r="200" fill="#ffffff22"/><path d="M0 900L350 200 700 900Z" fill="#ffffff15"/><text x="350" y="760" fill="white" font-family="sans-serif" text-anchor="middle" font-size="48">${title}</text></svg>`).toString('base64');
 const games=[{game_id:'a',title:'Sonic the Hedgehog 2',system:'Sega Genesis',platform:'genesis',plays:24,last_played:1792090000,last_device:'JAY',mods_count:3,models_count:2,favorite:true,playable:true,poster_url:art('#29456e','SONIC 2'),media:[{kind:'image',url:art('#1e395d','SONIC 2'),label:'Box art'},{kind:'image',url:art('#345c75','SONIC 2'),label:'Gameplay capture'},{kind:'video',url:'/captured/sonic.mp4',label:'Your latest run'}]},{game_id:'b',title:'Super Mario Bros.',system:'NES',platform:'nes',plays:11,last_played:1792080000,last_device:'i9-NUC',mods_count:2,models_count:0,favorite:true,poster_url:art('#70422d','MARIO'),media:[]},{game_id:'c',title:'Phantasy Star Online',system:'Nintendo GameCube',platform:'gamecube',plays:7,last_played:1792000000,mods_count:4,models_count:12,poster_url:art('#275951','PSO'),media:[]}];
 
@@ -219,5 +221,48 @@ test('Home heading switches to individual newest mod builds and keeps same-game 
   await evaluate(`document.querySelector('[data-lh-list-feed] select').value='games';document.querySelector('[data-lh-list-feed] select').dispatchEvent(new Event('change'));new Promise(r=>setTimeout(r,0));`);
   assert.equal(await evaluate(`document.querySelector('.lh-home').dataset.lhMode`),'games');
   await evaluate('ctl.dispose()');
+ });
+});
+
+test('changing cover art preserves the open Info selection and refreshes thumbnail, backdrop, and detail image URLs',async()=>{
+ await withPage(async(evaluate,send)=>{
+  await setup(evaluate,send,`fixtures[0].poster_url='/api/media/a/boxart?w=300';fixtures[0].media=[{kind:'image',url:'/api/media/a/boxart?w=1024',label:'Box art'}];
+    var artRequests=[];io.url=u=>{artRequests.push(u);return u.startsWith('/api/media/')?fixtures[1].poster_url+'#'+encodeURIComponent(u):u;};`);
+  await evaluate(detailScript);
+  await evaluate(`ctl.select('a');`);
+  await evaluate(`new Promise(r=>setTimeout(r,80));`);
+  assert.equal(await evaluate(`document.querySelector('.lh-home').dataset.lhScreen`),'info');
+  assert.equal(await evaluate(`document.querySelector('.ghd-heading h2').textContent`),games[0].title);
+  await evaluate(`var beforeArtwork={thumb:document.querySelector('.lh-card[data-lh-game=a] img').getAttribute('src'),backdrop:document.querySelector('[data-lh-backdrop]').getAttribute('src'),detail:document.querySelector('.ghd-gallery img').getAttribute('src')};var beforeDetailFetches=calls.filter(p=>p==='/api/home/games/a').length;ctl.refreshArtwork('a');`);
+  await evaluate(`new Promise(r=>setTimeout(r,80));`);
+  assert.equal(await evaluate(`document.querySelector('.lh-home').dataset.lhScreen`),'info');
+  assert.equal(await evaluate(`document.querySelector('.lh-layout').hidden`),true);
+  assert.equal(await evaluate(`document.querySelector('.lh-card[aria-current=true]').dataset.lhGame`),'a');
+  assert.equal(await evaluate(`document.querySelector('.ghd-heading h2').textContent`),games[0].title);
+  const updated=await evaluate(`Object.fromEntries([['thumb',document.querySelector('.lh-card[data-lh-game=a] img')],['backdrop',document.querySelector('[data-lh-backdrop]')],['detail',document.querySelector('.ghd-gallery img')]].map(([name,img])=>[name,decodeURIComponent(img.getAttribute('src').split('#')[1])]))`);
+  const versions=Object.values(updated).map(value=>new URL(value,'https://gbox.example').searchParams.get('v'));
+  assert.ok(versions.every(Boolean),'all three actual media paths receive cache versions');
+  assert.equal(new Set(versions).size,1,'one cover revision is shared by cards, background and the real Info renderer');
+  assert.equal(await evaluate(`document.querySelector('[data-lh-backdrop]').getAttribute('src')!==beforeArtwork.backdrop`),true,'an already decoded backdrop must reload after cover changes');
+  assert.equal(await evaluate(`calls.filter(p=>p==='/api/home/games/a').length>beforeDetailFetches`),true,'Info refreshes its detail response instead of keeping the cached view');
+  await evaluate(`ctl.back();`);
+  assert.equal(await evaluate(`document.querySelector('.lh-home').dataset.lhScreen`),'browse');
+  assert.equal(await evaluate(`document.activeElement.dataset.lhGame`),'a');
+  await evaluate('ctl.dispose()');
+ });
+});
+
+test('Library and Home build cover actions search for the catalog game title',async()=>{
+ const attach=indexHTML.match(/async function attachCover\([\s\S]*?\n}\n/)?.[0];
+ assert.ok(attach,'shared application cover action exists');
+ await withPage(async evaluate=>{
+  await evaluate(`document.body.innerHTML='<div id="gmenu" class="on"></div><article id="library" data-title="Sonic 2"><strong>Library display title</strong></article><button id="home-build"><strong>My newest Sonic face swap build</strong></button>';window.coverCalls=[];window.api=async()=>({title:'Sonic the Hedgehog 2 (World)'});window.$=s=>document.querySelector(s);window.bnUrl=u=>u;window.blToast=()=>{};window.coverArtworkChanged=async()=>{};window.GBoxCoverPicker={open:o=>coverCalls.push({gid:o.gid,title:o.title})};`);
+  await evaluate(attach);
+  await evaluate(`attachCover('game',document.querySelector('#library'));`);
+  await evaluate(`attachCover('game',document.querySelector('#home-build'));`);
+  assert.deepEqual(await evaluate('coverCalls'),[
+   {gid:'game',title:'Sonic the Hedgehog 2 (World)'},
+   {gid:'game',title:'Sonic the Hedgehog 2 (World)'}
+  ]);
  });
 });

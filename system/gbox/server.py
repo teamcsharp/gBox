@@ -3044,6 +3044,7 @@ def create_app(config: Config) -> FastAPI:
     BEST = ("boxart", "snap", "wheel", "cartart")
     art_dirs: dict[str, tuple[float, dict[str, str]]] = {}     # dir -> (listed at, {lower name: real name})
     art_hits: dict[tuple[str, str], Path | None] = {}
+    art_versions: dict[str, int] = {}
 
     def _art_dir(d: Path) -> dict[str, str]:
         # one listing per art folder (SMB stat-per-candidate is too slow for a 60-card grid); refreshed every 10 min
@@ -3092,6 +3093,7 @@ def create_app(config: Config) -> FastAPI:
     MISS_TTL = 86400                                 # re-check art that was missing once a day
 
     def _thumb(gid: str, kind: str, w: int) -> Path | None:
+        version = art_versions.get(gid, 0)
         out = thumbs / gid[:2] / f"{gid}-{kind}-{w}.jpg"
         miss = out.with_suffix(".none")
         if out.exists():
@@ -3102,7 +3104,9 @@ def create_app(config: Config) -> FastAPI:
         src = _resolve_art(e, BEST if kind == "best" else (kind,)) if e else None
         out.parent.mkdir(exist_ok=True)
         if not src:
-            miss.touch()
+            with thumb_publish_lock:
+                if version == art_versions.get(gid, 0):
+                    miss.touch()
             return None
         tmp = out.with_name(out.stem + f"-{threading.get_ident()}-{time.time_ns()}.tmp.jpg")
         r = subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(src), "-frames:v", "1",
@@ -3112,6 +3116,9 @@ def create_app(config: Config) -> FastAPI:
             miss.touch()
             return None
         with thumb_publish_lock:
+            if version != art_versions.get(gid, 0):
+                tmp.unlink(missing_ok=True)
+                return None
             if not out.exists():
                 tmp.replace(out)
             else:
@@ -3144,8 +3151,39 @@ def create_app(config: Config) -> FastAPI:
         return FileResponse(f, headers={"cache-control": "max-age=86400"}) if f else _404()
 
     class CoverIn(BaseModel):
-        url: str = ""              # a picture the operator chose; empty = look it up online by platform + title
+        url: str = Field(default="", max_length=8192)  # online picture or a path-checked gBox image
         kind: str = "boxart"       # boxart | snap | wheel
+
+    @app.get("/api/catalog/{gid}/cover/search")
+    def catalog_cover_search(gid: str, q: str = "", source: Literal['web', 'vimm'] = 'web',
+                             page: int = 1, page_size: int = 9, actor=Depends(auth)):
+        from . import cover_art
+        e = store.catalog_get(gid) or _404()
+        query = q.strip() or re.sub(r'\s*\([^)]*\)', '', e.get('title') or '').strip() + ' cover'
+        if not 1 <= page <= 100 or page_size != 9 or len(query) > 300:
+            raise HTTPException(422, 'use a search up to 300 characters and pages of nine images (1–100)')
+        try:
+            return cover_art.search(query, source=source, page=page, searx_url=config.agent.get('searx_url', ''))
+        except cover_art.CoverSearchError as exc:
+            raise HTTPException(502, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(502, 'Online cover search is unavailable. Please try again or paste an image URL.') from exc
+
+    @app.get("/api/catalog/{gid}/cover/preview")
+    def catalog_cover_preview(gid: str, url: str, actor=Depends(auth)):
+        from . import cover_art
+        store.catalog_get(gid) or _404()
+        if len(url) > 8192:
+            raise HTTPException(422, 'image URL is too long')
+        try:
+            data = cover_art.fetch(url, timeout=12)
+        except Exception as exc:
+            raise HTTPException(400, 'This image preview could not be loaded.') from exc
+        kind = cover_art.image_type(data)
+        return Response(data, media_type='image/' + ('jpeg' if kind == 'jpg' else kind),
+                        headers={'cache-control': 'private, max-age=300', 'x-content-type-options': 'nosniff'})
 
     @app.post("/api/catalog/{gid}/cover")
     def catalog_cover(gid: str, body: CoverIn, actor=Depends(auth)):
@@ -3155,7 +3193,16 @@ def create_app(config: Config) -> FastAPI:
         kind = body.kind if body.kind in cover_art.KINDS else "boxart"
         if body.url:
             try:
-                data, src, tried = cover_art.fetch(body.url), body.url, []
+                if body.url.startswith('/'):
+                    from .cover_source import local_image
+                    def original_media(source_gid, source_kind):
+                        entry = store.catalog_get(source_gid) or _404()
+                        return _resolve_art(entry, BEST if source_kind == 'best' else (source_kind,)) or _404()
+                    src, data = local_image(body.url, store=store, config=config,
+                                            media_file=original_media, character_file=_char_file)
+                else:
+                    data, src = cover_art.fetch(body.url), body.url
+                tried = []
             except Exception as exc:                  # noqa: BLE001
                 raise HTTPException(400, f"could not fetch that picture: {exc}") from exc
         else:
@@ -3165,14 +3212,25 @@ def create_app(config: Config) -> FastAPI:
                                           "platform": e.get("platform"), "tried": tried})
         d = art_dir / gid
         d.mkdir(parents=True, exist_ok=True)
-        for old in d.glob(f"{kind}.*"):
-            old.unlink()
         f = d / f"{kind}.{cover_art.image_type(data)}"
-        f.write_bytes(data)
-        for key in [k for k in art_hits if k[0] == gid]:
-            art_hits.pop(key, None)
-        for t in (thumbs / gid[:2]).glob(f"{gid}-*"):
-            t.unlink(missing_ok=True)
+        temporary = d / f'.{kind}-{time.time_ns()}-{threading.get_ident()}.tmp'
+        try:
+            temporary.write_bytes(data)
+            with thumb_publish_lock:
+                temporary.replace(f)
+                art_versions[gid] = art_versions.get(gid, 0) + 1
+                for old in d.glob(f"{kind}.*"):
+                    if old != f:
+                        old.unlink(missing_ok=True)
+                for key in [k for k in art_hits if k[0] == gid]:
+                    art_hits.pop(key, None)
+                for t in (thumbs / gid[:2]).glob(f"{gid}-*"):
+                    t.unlink(missing_ok=True)
+        finally:
+            temporary.unlink(missing_ok=True)
+        home = getattr(app.state, 'library_home', None)
+        if home:
+            home.cover_changed(gid, kind)
         store.audit(actor, "catalog.cover", gid, {"kind": kind, "source": src, "bytes": len(data)})
         return {"ok": True, "kind": kind, "source": src, "bytes": len(data), "file": str(f)}
 

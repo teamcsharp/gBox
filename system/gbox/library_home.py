@@ -73,6 +73,7 @@ class HomeData:
         self.cached_at = 0.0
         self.cached_generation = None
         self.art = {}
+        self.attached_art = {}
         self.art_at = 0.0
         self.art_busy = False
         self.characters_at = 0.0
@@ -85,6 +86,13 @@ class HomeData:
                 self.art_busy = True
                 threading.Thread(target=self._scan_art, name='home-attached-art', daemon=True).start()
             return self.art
+
+    def cover_changed(self, gid, kind):
+        """Publish a just-saved cover immediately, including during a directory scan."""
+        with self.lock:
+            kinds = self.attached_art.setdefault(gid, set())
+            kinds.add(kind)
+            self.art = self.art | {gid: self.art.get(gid, set()) | kinds}
 
     def _scan_art(self):
         out = {}
@@ -108,6 +116,8 @@ class HomeData:
             pass
         finally:
             with self.lock:
+                for gid, kinds in self.attached_art.items():
+                    out[gid] = out.get(gid, set()) | kinds
                 self.art, self.art_at, self.art_busy = out, time.monotonic(), False
 
     def _characters(self):

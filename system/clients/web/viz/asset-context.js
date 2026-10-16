@@ -10,14 +10,19 @@
   }
   function bind(el, asset) { if (el) bound.set(el, asset); }
   function find(target) {
+    const context = target.closest?.('[data-asset-game]');
+    const game = context?.dataset.assetGame;
+    const original = context?.dataset.assetOriginalUrl;
     for (let el = target; el; el = el.parentElement) {
-      if (bound.has(el)) return { ...bound.get(el), image: target.closest?.('img') };
+      if (bound.has(el)) return { ...(game ? {game_id:game} : {}), ...(original ? {original_url:original} : {}), ...bound.get(el), image: target.closest?.('img') };
       if (el.dataset?.assetUrl) return { url: el.dataset.assetUrl, name: el.dataset.assetName,
-        format: el.dataset.assetFormat, image: target.closest?.('img'),
+        format: el.dataset.assetFormat, image: target.closest?.('img'), game_id: game,
+        ...(original ? {original_url:original} : {}),
         ...(el.dataset.assetCharacter ? {input:{character:el.dataset.assetCharacter}} : {}) };
     }
     const image = target.closest?.('img');
-    return image ? { image, url: image.currentSrc || image.src, name: image.alt || 'Image', format: 'image' } : null;
+    return image ? { image, url: image.currentSrc || image.src, name: image.alt || 'Image', format: 'image',
+      ...(game ? {game_id:game} : {}), ...(original ? {original_url:original} : {}) } : null;
   }
   async function png(image) {
     if (!image?.complete || !image.naturalWidth) throw Error('The image has not loaded yet.');
@@ -37,11 +42,14 @@
       e.preventDefault(); e.stopImmediatePropagation(); close();
       const isModel = !!asset.input?.character || /^(glb|gltf|uap)$/i.test(asset.format || '') || /\.(glb|gltf)(?:\?|$)/i.test(asset.url || '');
       const isImage = !isModel && (asset.image || /^(image|png|jpe?g|webp|apng|gif|bmp)$/i.test(asset.format || ''));
+      const coverURL = asset.original_url || asset.source_url || asset.url;
+      const canCover = isImage && asset.game_id && coverURL && typeof io.cover === 'function';
       menu = doc.createElement('div'); const panel = menu;
-      panel.className = 'gbox-asset-menu'; panel.setAttribute('role', 'menu'); panel.setAttribute('aria-label', 'Copy asset');
+      panel.className = 'gbox-asset-menu'; panel.setAttribute('role', 'menu'); panel.setAttribute('aria-label', 'Asset actions');
       panel.style.cssText = 'position:fixed;z-index:2147483000;min-width:240px;max-width:340px;padding:8px;border:1px solid #555;border-radius:8px;background:#1c1e26;color:#fff;font:13px system-ui;box-shadow:0 8px 32px #0009';
       panel.innerHTML = `<b style="display:block;margin:2px 4px 8px;overflow-wrap:anywhere">${esc(asset.name || 'Asset')}</b>`
         + (asset.image ? '<button data-copy="image">Copy image to clipboard</button>' : '')
+        + (canCover ? '<button data-copy="cover">Set as game cover</button>' : '')
         + (isModel ? '<button data-copy="model">Copy model to Blender</button>' : '')
         + (isImage ? '<button data-copy="image_plane">Copy to Blender · Image plane</button><button data-copy="image_empty">Copy to Blender · Image empty</button>' : '')
         + (asset.mp4 || /^(mp4)$/i.test(asset.format || '') ? '<button data-copy="movie_plane">Copy to Blender · MP4 image plane</button>' : '')
@@ -53,9 +61,12 @@
       panel.onclick = async ev => {
         const button = ev.target.closest('[data-copy]'); if (!button || button.disabled) return;
         const mode = button.dataset.copy, status = panel.querySelector('[role=status]');
-        panel.querySelectorAll('button').forEach(b => b.disabled = true); status.textContent = 'Copying…';
+        panel.querySelectorAll('button').forEach(b => b.disabled = true); status.textContent = mode === 'cover' ? 'Saving game cover…' : 'Copying…';
         try {
-          if (mode === 'image') { await io.image(await png(asset.image)); status.textContent = 'Image copied to clipboard.'; }
+          // Covers retain the source file's original bytes. Never rasterize the
+          // displayed thumbnail through the clipboard canvas for this action.
+          if (mode === 'cover') { await io.cover({...asset, url:coverURL}); status.textContent = 'Game cover updated.'; }
+          else if (mode === 'image') { await io.image(await png(asset.image)); status.textContent = 'Image copied to clipboard.'; }
           else if (mode === 'asset') { await io.asset(asset); status.textContent = 'Copied to the gBox asset clipboard.'; }
           else {
             let input;
@@ -67,7 +78,7 @@
             status.textContent = `Copied ${mode.replaceAll('_', ' ')}${result.host ? ' on ' + result.host : ''}. In Blender, hover a 3D viewport and press Ctrl+V.`
               + (mode === 'movie_plane' ? ' Play the timeline to animate. MP4 has an opaque background; its file stays on this PC.' : '');
           }
-        } catch (err) { status.textContent = 'Copy failed: ' + err.message; }
+        } catch (err) { status.textContent = (mode === 'cover' ? 'Could not set game cover: ' : 'Copy failed: ') + err.message; }
         finally { panel.querySelectorAll('button').forEach(b => b.disabled = false); }
       };
     };
