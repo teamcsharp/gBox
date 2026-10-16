@@ -128,19 +128,82 @@ def test_prepare_atomic_receipt_and_warm_reuse_preserve_profiles(bundle, monkeyp
     assert receipt['archive_sha256'] == hashlib.sha256(before).hexdigest()
 
 
-def test_stat_changed_immutable_corruption_refused_without_profile_overwrite(bundle):
+def test_drifted_immutable_file_restored_without_profile_overwrite(bundle):
     first = M.prepare(bundle.archive, bundle.cfg)
     private = first['home'] / 'config/rpcn.yml'; private.write_bytes(b'personal')
-    (first['home'] / 'known.dll').write_bytes(b'bad--runtime!')
-    with pytest.raises(ValueError, match='integrity'):M.prepare(bundle.archive, bundle.cfg)
+    (first['home'] / 'known.dll').write_bytes(b'bad--runtime!!')
+    again = M.prepare(bundle.archive, bundle.cfg)
+    assert again['reused'] and again['healed_files'] == ['known.dll']
+    assert (first['home'] / 'known.dll').read_bytes() == b'known-runtime'
     assert private.read_bytes() == b'personal'
+    receipt = json.loads((first['home'] / M.RECEIPT).read_text())
+    assert receipt['immutable_files']['known.dll']['sha256'] == hashlib.sha256(b'known-runtime').hexdigest()
 
 
-def test_runtime_dll_tamper_with_restored_size_mtime_is_still_refused(bundle):
+def test_runtime_dll_tamper_with_restored_size_mtime_is_still_detected(bundle):
     first = M.prepare(bundle.archive, bundle.cfg)
     path = first['home'] / 'known.dll'; before = path.stat()
     path.write_bytes(b'bad--runtime!'); os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
-    with pytest.raises(ValueError, match='integrity'):M.prepare(bundle.archive, bundle.cfg)
+    with pytest.raises(ValueError, match=r'known\.dll'):
+        M.verify_install(first['home'], M.identify(bundle.archive))
+    again = M.prepare(bundle.archive, bundle.cfg)
+    assert again['healed_files'] == ['known.dll'] and path.read_bytes() == b'known-runtime'
+
+
+def test_verifier_names_the_divergent_file_without_an_archive(bundle):
+    first = M.prepare(bundle.archive, bundle.cfg)
+    (first['home'] / 'known.dll').write_bytes(b'bad--runtime!')
+    with pytest.raises(ValueError, match=r'SaveMGO immutable content integrity differs: known\.dll \(CRC differs'):
+        M.verify_install(first['home'], M.identify(bundle.archive))
+
+
+def test_drifted_critical_file_is_restored_from_the_verified_archive(bundle):
+    first = M.prepare(bundle.archive, bundle.cfg)
+    profile = M.identify(bundle.archive)
+    (first['home'] / M.SFO).write_bytes(b'x' * 100)
+    again = M.prepare(bundle.archive, bundle.cfg)
+    assert again['healed_files'] == [M.SFO]
+    assert (first['home'] / M.SFO).read_bytes() == bundle.files[M.SFO]
+    receipt = json.loads((first['home'] / M.RECEIPT).read_text())
+    assert receipt['immutable_files'][M.SFO]['sha256'] == profile['critical_sha256'][M.SFO]
+
+
+def test_missing_immutable_file_is_restored_from_the_verified_archive(bundle):
+    first = M.prepare(bundle.archive, bundle.cfg)
+    (first['home'] / 'known.dll').unlink()
+    again = M.prepare(bundle.archive, bundle.cfg)
+    assert again['healed_files'] == ['known.dll']
+    assert (first['home'] / 'known.dll').read_bytes() == b'known-runtime'
+
+
+def test_file_being_written_is_never_restored_or_accepted(bundle):
+    first = M.prepare(bundle.archive, bundle.cfg)
+    original = M._hash_file
+    def hash_and_write(path, *args, **kwargs):
+        result = original(path, *args, **kwargs)
+        if Path(path).name == 'known.dll':
+            with open(path, 'ab') as stream:
+                stream.write(b'concurrent')
+        return result
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(M, '_hash_file', hash_and_write)
+    try:
+        with pytest.raises(ValueError, match=r'changed during verification: known\.dll'):
+            M.prepare(bundle.archive, bundle.cfg)
+    finally:
+        monkeypatch.undo()
+    assert (first['home'] / 'known.dll').read_bytes() != b'known-runtime'
+
+
+def test_prepare_reports_restored_files_and_updates_the_receipt(bundle):
+    first = M.prepare(bundle.archive, bundle.cfg)
+    (first['home'] / 'known.dll').write_bytes(b'bad--runtime!!')
+    notices = []
+    again = M.prepare(bundle.archive, bundle.cfg, progress=lambda p, text: notices.append(text))
+    assert any('Restored drifted SaveMGO file(s): known.dll' in text for text in notices)
+    receipt = json.loads((first['home'] / M.RECEIPT).read_text())
+    assert receipt['immutable_files']['known.dll']['sha256'] == hashlib.sha256(b'known-runtime').hexdigest()
+    assert (first['home'] / 'known.dll').read_bytes() == b'known-runtime'
 
 
 def test_expected_catalog_fingerprint_rejects_changed_archive_before_writes(bundle):
