@@ -68,8 +68,12 @@ header 0x1E000):
   ``{2, 16, 32, size, 0, 0}``: the words 2/16/32 and the two trailing zeros
   are constant on every costume (68/69 have a LNK section; kor00 has none),
   while ``size`` is a 4-aligned byte count (the link-data size) that varies
-  with the costume's accessory bones. The LNK body (joint links) and the
-  trailing near-EOF record table are still left for the RE stage.
+  with the costume's accessory bones. The LNK body is: a C0 link-group count
+  (9 on 65/68, 12 on the three Hikaru costumes) + C0 body-relative
+  offsets/-1 sentinels, then per-group blocks ``{N, header_size = 4*(N+3),
+  N+1 cumulative data lengths}`` (``cat_lnk_groups``; 431 blocks validated,
+  N in [1, 22]). The per-sub-section record semantics (joint links / skin
+  weights) and the trailing near-EOF record table are still left for RE.
 * AFS entries must be rewritten inside their room (size rounded up to the
   archive alignment, bounded by the next entry's offset / name directory),
   which ``doa3_inventory.entry_rooms`` computes.
@@ -96,6 +100,7 @@ LNK_HEADER = (2, 16, 32)         # fixed leading words of the LNK section header
 LNK_HEADER_WORDS = 6             # the LNK header is {2, 16, 32, size, 0, 0}
 LNK_MAX_LINK_GROUPS = 255        # measured C0 in {9, 12} across all 68 LNK costumes
 LNK_MAX_SUB_BLOCKS = 1024        # sane upper bound for the C1 sub-block count
+LNK_GROUP_MAX = 256              # per-group link count N measured in [1, 22] across 431 blocks
 CAT_FIXED_OFFSET = 0x14          # the stable fixed block sits at 0x14
 CAT_SIGNATURE = (0x100, 1)       # (word@0x14, word@0x18) across all 69 costumes
 MAX_HEADER_WORDS = 4096
@@ -729,6 +734,69 @@ def cat_lnk_body(blob: bytes) -> dict | None:
             "sub_table_offsets": offs}
 
 
+def cat_lnk_groups(blob: bytes) -> dict | None:
+    """Decode every link-group block a CAT ``LNK`` C0 entry points at.
+
+    Measured across all 68 LNK-bearing costumes (431 blocks, 0 deviations): each
+    non-sentinel C0 entry is a body-relative offset to a link-group block whose
+    header is exactly three words plus the per-group link count:
+
+    * ``N`` (u32) - the group's link/sub-block count, measured in [1, 22].
+    * ``header_size`` (u32) - always ``4 * (N + 3)`` bytes, i.e. the byte
+      offset from the block start to its data region (this exact relation holds
+      on all 431 blocks).
+    * ``N + 1`` u32 cumulative data lengths - strictly increasing, the last one
+      is the data region's byte length. The data region is
+      ``[block + header_size, block + header_size + last_length)`` and is
+      partitioned into ``N`` sub-sections by the ``N + 1`` cumulative lengths
+      (the first sub-section starts implicitly at 0).
+
+    This generalises and corrects ``cat_lnk_body``'s C1 read: the C1 "sub-table"
+    is itself one of these blocks (the one at ``body + 4 + 4 * C0``), so the old
+    code read ``header_size`` as the first sub-block boundary and dropped the
+    final boundary. The sub-section record semantics and whether the cumulative
+    lengths index joint-link/skin-weight records remain unresolved.
+
+    Returns ``None`` when the companion has no LNK section (kor00); raises
+    ``ValueError`` on any structural deviation from the pinned shape.
+    """
+    body = cat_lnk_body(blob)
+    if body is None:
+        return None
+    bo = body["body_offset"]
+    size = body["size"]
+    groups = []
+    for k, e in enumerate(body["link_group_entries"]):
+        if e == 0xFFFFFFFF:
+            groups.append({"index": k, "present": False})
+            continue
+        off = bo + e
+        if off + 12 > len(blob):
+            raise ValueError(f"link-group {k} at {off:#x} is truncated")
+        n = struct.unpack_from("<I", blob, off)[0]
+        if not 0 < n <= LNK_GROUP_MAX:
+            raise ValueError(f"link-group {k} count {n} is outside the measured "
+                             f"range (1..{LNK_GROUP_MAX})")
+        hdr = struct.unpack_from("<I", blob, off + 4)[0]
+        if hdr != 4 * (n + 3):
+            raise ValueError(f"link-group {k} header size {hdr:#x} != "
+                             f"4 * (N + 3) = {4 * (n + 3):#x}")
+        lengths = list(struct.unpack_from(f"<{n + 1}I", blob, off + 8))
+        if any(b <= a for a, b in zip(lengths, lengths[1:])):
+            raise ValueError(f"link-group {k} cumulative lengths are not "
+                             f"strictly increasing: {[hex(x) for x in lengths[:6]]}")
+        if lengths[-1] > size:
+            raise ValueError(f"link-group {k} last length {lengths[-1]:#x} exceeds "
+                             f"the {size:#x}-byte LNK body")
+        if off + hdr + lengths[-1] > len(blob):
+            raise ValueError(f"link-group {k} data region extends outside the file")
+        groups.append({"index": k, "present": True, "offset": off,
+                       "count": n, "header_size": hdr,
+                       "data_offsets": lengths, "data_bytes": lengths[-1]})
+    return {"link_group_count": body["link_group_count"], "groups": groups,
+            "body_offset": bo, "size": size}
+
+
 # ----------------------------------------------------------------- slots
 
 def slot_inventory(manifest: dict) -> dict:
@@ -853,6 +921,11 @@ def cast_writer_status() -> dict:
                              "Hikaru costumes) + C0 offset/sentinel entries + C1 sub-block "
                              "count + C1+1 cumulative offsets, validated on all 68 costumes; "
                              "the per-joint / skin-weight semantics remain",
+        "cat_lnk_groups": True,
+        "cat_lnk_groups_note": "each non-sentinel C0 entry points to a link-group block "
+                               "{N, header_size=4*(N+3), N+1 cumulative data lengths}, "
+                               "validated on all 431 blocks (N in [1,22], 0 deviations); "
+                               "the sub-section record semantics remain",
         "donor_retarget": False,
         "playable": False,
         "message": "measured MDL geometry decode (vertices/normals/UVs/u16 strips/material "

@@ -77,6 +77,34 @@ def make_cat_lnk_body(c0: int = 9, entries: list[int] | None = None,
     return bytes(body)
 
 
+def make_cat_lnk_groups(at: int = 0x9A40, size: int = 0x4000) -> bytes:
+    """A CAT whose LNK body has C0 entries pointing at real link-group blocks
+    ``{N, header_size=4*(N+3), N+1 cumulative lengths}``.
+
+    Block 0 is the C1 sub-table (C0 entry 0 -> body+0x10 = 4+4*3): N=2, header
+    0x14, lengths [0x40, 0x80, 0xC0]. Block 2 (C0 entry 2 -> body+0x200): N=1,
+    header 0x10, lengths [0x30, 0x60]. C0 entry 1 is the -1 sentinel."""
+    c0 = 3
+    entries = [0x10, 0xFFFFFFFF, 0x200]
+    bo = at + 8 + 4 * doa3_cast.LNK_HEADER_WORDS
+    body = bytearray(bo + size)
+    struct.pack_into("<8I", body, 0, 1, 0x14, 0x5C0, at, bo + size, 0x100, 1, 0x18)
+    body[at:at + 4] = b"LNK\x00"
+    body[at + 4:at + 8] = b"0100"
+    struct.pack_into("<6I", body, at + 8, *doa3_cast.LNK_HEADER, size, 0, 0)
+    struct.pack_into("<I", body, bo, c0)
+    struct.pack_into(f"<{c0}I", body, bo + 4, *entries)
+    # block 0 (the sub-table) at bo + 0x10
+    struct.pack_into("<I", body, bo + 0x10, 2)                 # N = 2
+    struct.pack_into("<I", body, bo + 0x14, 4 * (2 + 3))       # header_size = 0x14
+    struct.pack_into("<3I", body, bo + 0x18, 0x40, 0x80, 0xC0)  # N+1 = 3 lengths
+    # block 2 at bo + 0x200
+    struct.pack_into("<I", body, bo + 0x200, 1)                # N = 1
+    struct.pack_into("<I", body, bo + 0x204, 4 * (1 + 3))      # header_size = 0x10
+    struct.pack_into("<2I", body, bo + 0x208, 0x30, 0x60)      # N+1 = 2 lengths
+    return bytes(body)
+
+
 def make_afs(entries: list[bytes]) -> bytes:
     """Minimal AFS without a CRI name directory: header, offset/size table, data."""
     n = len(entries)
@@ -332,6 +360,65 @@ def test_cat_lnk_body_rejects_sub_offsets_exceeding_size():
         doa3_cast.cat_lnk_body(body)
 
 
+# ----------------------------------------------------------------- LNK groups
+
+def test_cat_lnk_groups_decodes_blocks():
+    res = doa3_cast.cat_lnk_groups(make_cat_lnk_groups())
+    assert res is not None
+    assert res["link_group_count"] == 3
+    by_index = {g["index"]: g for g in res["groups"]}
+    assert by_index[1] == {"index": 1, "present": False}
+    g0 = by_index[0]
+    assert g0["present"] and g0["count"] == 2
+    assert g0["header_size"] == 4 * (2 + 3)
+    assert g0["data_offsets"] == [0x40, 0x80, 0xC0]
+    assert g0["data_bytes"] == 0xC0
+    g2 = by_index[2]
+    assert g2["present"] and g2["count"] == 1
+    assert g2["header_size"] == 4 * (1 + 3)
+    assert g2["data_offsets"] == [0x30, 0x60]
+
+
+def test_cat_lnk_groups_absent_returns_none():
+    body = bytearray(0x30)
+    struct.pack_into("<8I", body, 0, 1, 0x14, 1, 0x20, 1, 0x100, 1, 0x18)
+    assert doa3_cast.cat_lnk_groups(bytes(body)) is None
+
+
+def test_cat_lnk_groups_rejects_bad_header_size():
+    body = bytearray(make_cat_lnk_groups())
+    bo = 0x9A40 + 8 + 4 * doa3_cast.LNK_HEADER_WORDS
+    struct.pack_into("<I", body, bo + 0x14, 0x18)   # block 0 header_size 0x18 != 0x14
+    with pytest.raises(ValueError, match="header size"):
+        doa3_cast.cat_lnk_groups(bytes(body))
+
+
+def test_cat_lnk_groups_rejects_non_increasing_lengths():
+    body = bytearray(make_cat_lnk_groups())
+    bo = 0x9A40 + 8 + 4 * doa3_cast.LNK_HEADER_WORDS
+    struct.pack_into("<3I", body, bo + 0x18, 0x40, 0x40, 0xC0)
+    with pytest.raises(ValueError, match="strictly increasing"):
+        doa3_cast.cat_lnk_groups(bytes(body))
+
+
+def test_cat_lnk_groups_rejects_lengths_exceeding_body():
+    body = bytearray(make_cat_lnk_groups())
+    bo = 0x9A40 + 8 + 4 * doa3_cast.LNK_HEADER_WORDS
+    struct.pack_into("<3I", body, bo + 0x18, 0x40, 0x80, 0x500000)
+    with pytest.raises(ValueError, match="exceeds"):
+        doa3_cast.cat_lnk_groups(bytes(body))
+
+
+def test_cat_lnk_groups_rejects_truncated_block():
+    body = bytearray(make_cat_lnk_groups())
+    bo = 0x9A40 + 8 + 4 * doa3_cast.LNK_HEADER_WORDS
+    # point C0 entry 2 at the last 4 bytes of the body, so the block header
+    # (12 bytes) runs past the end of the file
+    struct.pack_into("<I", body, bo + 4 + 4 * 2, 0x4000 - 4)
+    with pytest.raises(ValueError, match="truncated"):
+        doa3_cast.cat_lnk_groups(bytes(body))
+
+
 def test_cat_sections_rejects_non_increasing_offsets():
     body = make_cat(header=(1, 0x14, 0x9A40, 0x9A40, 0x4F5C0, 0x100, 1, 0x18))
     with pytest.raises(ValueError, match="increasing"):
@@ -361,6 +448,7 @@ def test_cast_writer_status_is_honest():
     assert st["xpr0_parser"] and st["cat_parser"] and st["afs_patch_path"]
     assert st["mdl_geometry_decode"] and st["mdl_geometry_encode"]
     assert st["mdl_descriptor_table"]
+    assert st["cat_lnk_groups"]
     assert "no-op" in st["mdl_geometry_encode_note"]
     assert not st["donor_retarget"] and not st["playable"]
 
