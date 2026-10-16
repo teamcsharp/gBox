@@ -2668,6 +2668,11 @@ def characters_tool(inp: CharIn, ctx):
     from . import doa2_swap
     if gid in doa2_swap.GAME_IDS:
         return {"result": out | doa2_swap.use(ctx, meta, game, inp)}
+    from . import doa3_cast
+    if gid in doa3_cast.GAME_IDS and doa3_cast.is_slot(inp.slot):
+        # DOA3 (Xbox): the native cast writer is in progress — use() answers writer_in_progress (never a build) until
+        # donor retarget and texture write land
+        return {"result": out | doa3_cast.use(ctx, meta, game, inp)}
     from . import soulcalibur_swap
     if gid in soulcalibur_swap.GAME_IDS:
         return {"result": out | soulcalibur_swap.use(ctx, meta, game, inp)}

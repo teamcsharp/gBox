@@ -124,6 +124,16 @@ DESC_PAD_BYTE = 0xAD
 # still-unresolved families (hika/koryu/gokei/chin). This module imports both so
 # its slot inventory stays consistent with the inventory layer.
 
+# The writer routes to this catalog game (``char_coverage.writer_for``): a routed
+# writer must be importable with GAME_IDS and a use() the characters tool calls.
+GAME_IDS = {GAME_ID}
+WRITER_GAME_IDS = GAME_IDS
+
+
+def is_slot(slot: str | None) -> bool:
+    """The DOA3 cast writer's slots: fighter:<nick>[:<costume>] or the whole cast."""
+    return bool(slot) and (slot == "cast" or slot.startswith("fighter:"))
+
 
 # --------------------------------------------------------------------- XPR0
 
@@ -947,6 +957,24 @@ def cast_writer_status() -> dict:
                    "all 68; the per-joint link semantics, texture pixel format, donor "
                    "retarget and the routed cast build are the next stages",
     }
+
+
+def use(ctx, meta, game, inp) -> dict:
+    """The honest ``characters op=use`` answer while the native writer is unfinished.
+
+    XPR0/CAT/MDL/LNK decode and the AFS patch path are implemented, but donor
+    retarget and texture write are not, so no native build can be produced yet.
+    Returning a truthful ``writer_in_progress`` result (never a fabricated mod)
+    keeps the writer discoverable through writer_for/coverage without claiming
+    playability.
+    """
+    status = cast_writer_status()
+    return {"status": "writer_in_progress", "writer": "gbox.doa3_cast",
+            "slot": getattr(inp, "slot", ""), "playable": status["playable"],
+            "donor_retarget": status["donor_retarget"],
+            "message": ("DOA3 native cast writer is not playable yet: donor retarget and texture write are "
+                        "unimplemented (XPR0/CAT/MDL/LNK decode and the AFS patch path are in place). "
+                        "No build was produced.")}
 
 
 def _cli_slot_report(manifest_path: str | Path) -> str:
