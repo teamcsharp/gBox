@@ -634,6 +634,9 @@ STRATEGIES = {
     "gbox.auf_swap": ("pairs", "007 Agent Under Fire GC: every body in the missions (campaign:<body>) and in the "
                                "multiplayer maps (mp:<body>, the bots) gets its donor; every level rebuilt once, one disc "
                                "image (auf_swap.build_cast)"),
+    "gbox.ff7_swap": ("pairs", "FF7: every party member's field + battle model rebuilt on that member's own skeletons "
+                               "in one disc image (ff7_swap.build_cast; Yuffie's and Cait Sith's field skeletons are "
+                               "not_working)"),
 }
 
 
@@ -1180,6 +1183,9 @@ def _etm(ctx, game, pairs, name, inp):
 def _mgs2(ctx, game, pairs, name, inp):
     from . import mgs2_swap
     return mgs2_swap.build_cast(ctx.config, game, pairs, name, ctx.progress)
+def _ff7(ctx, game, pairs, name, inp):
+    from . import ff7_swap
+    return ff7_swap.build_cast(ctx.config, game, pairs, name, ctx.progress)
 
 
 def _oot(ctx, game, pairs, name, inp):
@@ -1306,4 +1312,5 @@ BUILDERS = {
     "gbox.crazy_taxi_swap": _crazy_taxi,
     "gbox.mgs_vr_swap": _mgs_vr,
     "gbox.auf_swap": _auf,
+    "gbox.ff7_swap": _ff7,
 }

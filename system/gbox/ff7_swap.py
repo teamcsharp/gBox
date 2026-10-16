@@ -39,13 +39,44 @@ GAME_IDS = {"6703ee6f461a2ea5": "Final Fantasy VII (USA) (Disc 1)", "52d73a58e6b
 C = np.diag([1.0, -1.0, -1.0])                     # PSX (y down) <-> y up
 FIELD_NORMALS_AT = 0x3F520                         # FIELD.BIN (gunzipped): 240 x (s16 x, y, z, 0), 4096 = 1
 NORMALS = 240
-CACHE_VERSION = 4  # Native field textures and battle brightness; preserve earlier builds.
+CACHE_VERSION = 5  # Whole-cast slots (field + battle per party member) and generalized battle skeleton roles.
 FIELD_FIT_HEIGHT = 1.0                             # x Cloud's height (whole figure), then at most HEIGHT_MAX
 HEIGHT_MAX = 1.12
 FIELD_ROLES = {"hip": 1, "chest": 2, "head": 3, "armA": (6, 7, 8), "armB": (11, 12, 13), "legA": (15, 16, 17),
                "legB": (19, 20, 21)}
 BATTLE_ROLES = {"hip": 1, "chest": 2, "head": 3, "armA": (6, 7, 8), "armB": (11, 12, 13), "legA": (15, 16, 17),
                 "legB": (20, 21, 22)}
+
+
+# ---------------------------------------------------------------- whole cast (characters op=cast_swap)
+
+# slot -> (field model FIELD/<field>.BCX, battle model ENEMY6/<battle>.LZS, display name)
+CAST = [("player", "CLOUD", "CLOUD", "Cloud Strife"), ("tifa", "TIFA", "TIFA", "Tifa Lockhart"),
+        ("aerith", "EARITH", "EARITH", "Aerith Gainsborough"), ("barret", "BALLET", "BARRETT", "Barret Wallace"),
+        ("red13", "RED", "RED13", "Red XIII"), ("cid", "CID", "CID", "Cid Highwind"),
+        ("yuffie", "YUFI", "YUFI", "Yuffie Kisaragi"), ("caitsith", "KETCY", "KETCY", "Cait Sith"),
+        ("vincent", "VINCENT", "VINSENT", "Vincent Valentine")]
+CAST_BY_SLOT = {s: (f, b, n) for s, f, b, n in CAST}
+
+
+def is_slot(slot: str) -> bool:
+    return str(slot or "") in CAST_BY_SLOT
+
+
+def cast_slots(game=None):
+    """FF7's replaceable cast: each party member's field model (FIELD/<name>.BCX) and battle model
+    (ENEMY6/<key>.LZS) replaced together on that member's own skeletons. Yuffie's and Cait Sith's field
+    skeletons don't follow the party layout (field_spec returns None), so those slots are not_working."""
+    reasons = {"yuffie": "its field skeleton doesn't follow the FF7 party layout (no pelvis/chest/head chain)",
+               "caitsith": "its field skeleton doesn't follow the FF7 party layout (no pelvis/chest/head chain)",
+               "red13": "its quadruped battle skeleton has no party layout for donor limbs (a dedicated role map is needed)",
+               "vincent": "its battle skeleton's extra chains (cloak/gun) fail the party-layout sanity check",
+               "aerith": "its battle skeleton's bind pose hides one arm chain; a dedicated role map is needed",
+               "barret": "its battle skeleton's gun arm defeats the topology heuristic; a dedicated role map is needed"}
+    return [{"slot": s, "name": f"{n} (field + battle)", "kind": "player" if s == "player" else "character",
+             "field": f, "battle": b,
+             **({"status": "not_working", "reason": reasons[s]} if s in reasons else {})}
+            for s, f, b, n in CAST]
 
 
 # ---------------------------------------------------------------- LZS (FF7) encoder
@@ -343,14 +374,12 @@ def field_normals(disc) -> np.ndarray:
     return np.frombuffer(fb[FIELD_NORMALS_AT:FIELD_NORMALS_AT + 8 * NORMALS], "<i2").reshape(-1, 4)[:, :3] / 4096.0
 
 
-def field_spec(fm: dict) -> dict | None:
-    """Body roles of a field skeleton from its topology (FF7 party layout: root -> pelvis 1 -> chest 2 -> head; each arm
-    hangs off the pelvis through mesh-less joints, then upper / fore / hand; each leg off the root through a mesh-less
-    joint, then thigh / shin / foot). None when the skeleton doesn't follow it (Cait Sith)."""
-    bones = fm["bones"]
-    kids = {i: [k for k, b in enumerate(bones) if b["parent"] == i] for i in range(len(bones))}
-    W = F.field_pose(bones, fm["anims"][0][0] if fm["anims"] else None)
-    y = {i: -W[i][1, 3] for i in range(len(bones))}       # height (PSX y is down)
+def _party_spec(mesh: list[bool], kids: dict, W: list[np.ndarray]) -> dict | None:
+    """Body roles from skeleton topology (FF7 party layout: root -> pelvis -> chest -> head; each arm hangs off
+    the pelvis through mesh-less joints, then upper / fore / hand; each leg off the root through a mesh-less
+    joint, then thigh / shin / foot). None when the skeleton doesn't follow it."""
+    n = len(mesh)
+    y = {i: -W[i][1, 3] for i in range(n)}                # height (PSX y is down)
 
     def depth(i):
         return 1 + max((depth(k) for k in kids[i]), default=0)
@@ -358,21 +387,102 @@ def field_spec(fm: dict) -> dict | None:
     def chain(start):                                     # the first three mesh bones down the deepest branch
         out, cur = [], start
         while cur is not None and len(out) < 3:
-            if bones[cur]["has_mesh"]:
+            if mesh[cur]:
                 out.append(cur)
             cur = max(kids[cur], key=depth) if kids[cur] else None
         return tuple(out) if len(out) == 3 else None
-    if len(bones) < 4 or not bones[1]["has_mesh"] or not kids.get(1):
+    if n < 4 or not mesh[1] or not kids.get(1):
         return None
-    chest = next((k for k in kids[1] if bones[k]["has_mesh"]), None)
-    head = next((k for k in kids.get(chest, []) if bones[k]["has_mesh"]), None) if chest is not None else None
-    arms = [c for c in (chain(k) for k in kids[1] if k != chest and not bones[k]["has_mesh"]) if c]
+    chest = next((k for k in kids[1] if mesh[k]), None)
+    head = next((k for k in kids.get(chest, []) if mesh[k]), None) if chest is not None else None
+    arms = [c for c in (chain(k) for k in kids[1] if k != chest and not mesh[k]) if c]
     legs = sorted((c for c in (chain(k) for k in kids[0] if k != 1) if c), key=lambda c: y[c[2]])[:2]   # lowest ends
     if len(arms) > 2:                                     # e.g. a tail: keep the two chains reaching furthest sideways
         arms = sorted(arms, key=lambda c: -abs(W[c[2]][0, 3] - W[1][0, 3]))[:2]
     if head is None or len(arms) != 2 or len(legs) != 2:
         return None
     return {"hip": 1, "chest": chest, "head": head, "armA": arms[0], "armB": arms[1], "legA": legs[0], "legB": legs[1]}
+
+
+def field_spec(fm: dict) -> dict | None:
+    """Body roles of a field skeleton from its topology (FF7 party layout: root -> pelvis 1 -> chest 2 -> head; each arm
+    hangs off the pelvis through mesh-less joints, then upper / fore / hand; each leg off the root through a mesh-less
+    joint, then thigh / shin / foot). None when the skeleton doesn't follow it (Cait Sith, Yuffie)."""
+    bones = fm["bones"]
+    kids = {i: [k for k, b in enumerate(bones) if b["parent"] == i] for i in range(len(bones))}
+    W = F.field_pose(bones, fm["anims"][0][0] if fm["anims"] else None)
+    return _party_spec([b["has_mesh"] for b in bones], kids, W)
+
+
+def battle_spec(bm: dict) -> dict | None:
+    """Body roles of a battle skeleton from its topology. The FF7 party layout varies per member (arms off the
+    pelvis or the root, legs off the root or a meshed root child, the head at the end of the spine branch), so
+    detect it: pelvis = the meshed root child with the deepest branch; chest = the pelvis's deepest meshed child;
+    head = the last meshed bone of the chest's branch; every chain of >= 2 mesh bones reached through mesh-less
+    joints is a limb -- the two deepest are the legs (first three mesh bones), the two widest of the rest are the
+    arms (short chains pad their last bone). None when the skeleton doesn't follow it (Red XIII's quadruped,
+    Cait Sith's cat-on-moogle, Vincent's cloak)."""
+    bones = bm["bones"]
+    n = len(bones)
+    kids = {i: [k for k, b in enumerate(bones) if b["parent"] == i] for i in range(n)}
+    nb = n - 1
+    frames = F.read_animation(bm["raw"], bm["anims"][0], nb) if bm["anims"] else []
+    W = F.pose(bones, frames[0] if frames else None)
+    mesh = {i for i in range(n) if bones[i]["mesh"] is not None}
+
+    def depth(i):
+        return 1 + max((depth(k) for k in kids[i]), default=0)
+    pelvises = [k for k in kids.get(0, []) if k in mesh]
+    if not pelvises:
+        return None
+    pelvis = max(pelvises, key=depth)
+    meshed_children = [k for k in kids.get(pelvis, []) if k in mesh]
+    if not meshed_children:
+        return None
+    chest = max(meshed_children, key=depth)
+    cur, head = chest, None
+    while cur is not None:
+        if cur in mesh and cur != chest:
+            head = cur
+        cur = max(kids[cur], key=depth) if kids[cur] else None
+    if head is None:
+        return None
+    chains, seen = [], set()
+    for i in range(n):
+        if i == 0 or i in mesh or not kids.get(i):
+            continue
+        chain, cur, mark = [], i, set()
+        while cur is not None and len(chain) < 5 and cur not in mark:
+            mark.add(cur)
+            if cur in mesh:
+                chain.append(cur)
+            cur = max(kids[cur], key=depth) if kids[cur] else None
+        key = tuple(chain)
+        if len(chain) >= 2 and chain[0] != pelvis and key not in seen:
+            seen.add(key)
+            chains.append(chain)
+    # a chain that is a suffix of a longer one is a fragment of that limb (extra foot/toe joints): drop it
+    chains = [c for c in chains if not any(tuple(c) != tuple(d) and tuple(c) == tuple(d[-len(c):]) for d in chains)]
+    if len(chains) < 4:
+        return None
+    y = {i: W[i][1, 3] for i in range(n)}                 # PSX y is down: larger = lower
+    # the two deepest chains; on an equal end height the longer chain is the real limb (its fragment is dropped)
+    legs = sorted(chains, key=lambda c: (y[c[-1]], len(c)))[-2:]
+    if any(len(c) < 3 for c in legs):
+        return None
+    leg_keys = {tuple(c) for c in legs}
+    arms = sorted((c for c in chains if tuple(c) not in leg_keys),
+                  key=lambda c: -abs(W[c[-1]][0, 3] - W[pelvis][0, 3]))[:2]
+    if len(arms) < 2 or len(arms[0]) < 2 or len(arms[1]) < 2:
+        return None
+    arms = [tuple(c[:3]) if len(c) >= 3 else tuple(c[:2]) + (c[-1],) for c in arms]
+    legs = [tuple(c[:3]) for c in legs]
+    if len({arms[0], arms[1]}) < 2 or len({legs[0], legs[1]}) < 2:
+        return None
+    # the bind pose may crouch or bow, so heights are not checked; the roles are structural (deepest = legs,
+    # widest = arms, the spine branch's last meshed bone = head)
+    return {"hip": pelvis, "chest": chest, "head": head, "armA": arms[0], "armB": arms[1],
+            "legA": legs[0], "legB": legs[1]}
 
 
 def field_target(fm: dict) -> dict:
@@ -462,13 +572,18 @@ def write_field(fm: dict, geo: dict[int, dict], normals: np.ndarray, nsign: floa
 
 # ---------------------------------------------------------------- battle (ENEMY6/CLOUD.LZS)
 
-def battle_target(bm: dict, anim: int = 0) -> dict:
+def battle_target(bm: dict, anim: int = 0, legacy_roles: dict | None = None) -> dict:
+    """The target skeleton of a battle model: its own party-layout roles detected from topology (battle_spec),
+    or Cloud's fixed layout (legacy_roles) when detection fails and the caller knows the model is Cloud's."""
     nb = len(bm["bones"]) - 1
-    frames = F.read_animation(bm["raw"], bm["anims"][anim], nb)
+    frames = F.read_animation(bm["raw"], bm["anims"][anim], nb) if bm["anims"] else []
     W = F.pose(bm["bones"], frames[0] if frames else None)
     verts = {i: (np.c_[b["mesh"]["verts"], np.ones(len(b["mesh"]["verts"]))] @ W[i].T)[:, :3]
              for i, b in enumerate(bm["bones"]) if b["mesh"]}
-    return make_target(W, verts, BATTLE_ROLES, FIELD_FIT_HEIGHT)
+    spec = legacy_roles or battle_spec(bm)
+    if spec is None:
+        raise ValueError("this battle skeleton doesn't follow the FF7 party layout (no pelvis/chest/head chain)")
+    return make_target(W, verts, spec, FIELD_FIT_HEIGHT)
 
 
 def write_battle(bm: dict, geo: dict[int, dict], tim: bytes | None = None) -> tuple[bytes, dict]:
@@ -577,7 +692,8 @@ def _fit_loop(name: str, tgt: dict, model: Path, roles: dict, work: Path, blende
 
 
 def build(disc: Path, model_path: Path, roles: dict, work: Path, name: str, out_bin: Path, base_bin: Path | None = None,
-          battle: bool = True, blender: str | None = None, progress=lambda p, m: None, scale=None, props=()) -> dict:
+          battle: bool = True, blender: str | None = None, progress=lambda p, m: None, scale=None, props=(),
+          field_file: str = "CLOUD", battle_file: str = "CLOUD", use_field_textures: bool = True) -> dict:
     from . import psxdisc
     work = Path(work)
     work.mkdir(parents=True, exist_ok=True)
@@ -587,8 +703,8 @@ def build(disc: Path, model_path: Path, roles: dict, work: Path, name: str, out_
             progress(3, "Unpacking the disc to a raw image")
             psxdisc.chd_to_bin(disc, base_bin)
     src = psxdisc.RawBin(base_bin, writable=False)
-    bcx_lba, bcx_size = src.files["FIELD/CLOUD.BCX"]
-    fm = F.read_field_model(src.read("FIELD/CLOUD.BCX"))
+    bcx_lba, bcx_size = src.files[f"FIELD/{field_file}.BCX"]
+    fm = F.read_field_model(src.read(f"FIELD/{field_file}.BCX"))
     normals = field_normals(src)
     # lighting normals point outward; check the sign on Cloud's own vertices
     dots = []
@@ -607,7 +723,7 @@ def build(disc: Path, model_path: Path, roles: dict, work: Path, name: str, out_
 
     def make_field(rp):
         nonlocal field_atlas
-        if field_atlas is None and any(p['tex'] is not None for p in rp):
+        if use_field_textures and field_atlas is None and any(p['tex'] is not None for p in rp):
             from .ff7_field_textures import FieldAtlas
             field_atlas=FieldAtlas(src.read('FIELD/FIELD.TDB'),src.read('FIELD/FIELD.BIN'),rp)
         geo = bone_geometry(ftgt, rp, mesh_bones,field_atlas)
@@ -632,15 +748,15 @@ def build(disc: Path, model_path: Path, roles: dict, work: Path, name: str, out_
     F.field_to_gltf(encoded_field,native_preview)
     res["field"] = frep
     res["rigged_field"] = str(native_preview)
-    writes = [("FIELD/CLOUD.BCX", bcx)]
+    writes = [(f"FIELD/{field_file}.BCX", bcx)]
     if field_atlas:
         frep['textures']=field_atlas.report
         writes.extend([('FIELD/FIELD.TDB',field_atlas.tdb),('FIELD/FIELD.BIN',field_atlas.field)])
     if battle:
-        progress(45, f"Fitting {name} onto Cloud's battle skeleton")
-        blba, bsize = src.files["ENEMY6/CLOUD.LZS"]
-        bm = F.read_battle_model(src.read("ENEMY6/CLOUD.LZS"))
-        btgt = battle_target(bm)
+        progress(45, f"Fitting {name} onto the battle skeleton")
+        blba, bsize = src.files[f"ENEMY6/{battle_file}.LZS"]
+        bm = F.read_battle_model(src.read(f"ENEMY6/{battle_file}.LZS"))
+        btgt = battle_target(bm, legacy_roles=BATTLE_ROLES if battle_file == "CLOUD" else None)
         bbones = {i for i, b in enumerate(bm["bones"]) if b["mesh"]}
 
         def make_battle(rp):
@@ -658,12 +774,13 @@ def build(disc: Path, model_path: Path, roles: dict, work: Path, name: str, out_
         F.read_battle_model(blz)
         res["battle"] = brep
         res["rigged_battle"] = str(brig)
-        writes.append(("ENEMY6/CLOUD.LZS", blz))
+        writes.append((f"ENEMY6/{battle_file}.LZS", blz))
     src.close()
     progress(75, "Copying the disc image")
     out_bin = Path(out_bin)
     out_bin.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(base_bin, out_bin)
+    if Path(base_bin).resolve() != out_bin.resolve():
+        shutil.copyfile(base_bin, out_bin)
     rb = psxdisc.RawBin(out_bin)
     res["sectors_written"] = sum(rb.write_file(k, 0, data) for k, data in writes)
     rb.close()
@@ -679,16 +796,20 @@ def image_name(meta: dict, gid: str) -> str:
     return "Final Fantasy VII - " + re.sub(r"[^\w .()'-]+", "", meta["name"]).strip() + f" (USA) (Disc {disc}).bin"
 
 
-def mod_name(meta: dict) -> str:
-    return f"ff7_{meta['slug']}_v{CACHE_VERSION}"
+def mod_name(meta: dict, slot: str = "player") -> str:
+    return f"ff7_{meta['slug']}_v{CACHE_VERSION}" if slot == "player" else f"ff7_{meta['slug']}_{slot}_v{CACHE_VERSION}"
 
 
-def build_mod(cfg, meta: dict, game: dict, progress=lambda p, m: None, root: Path | None = None) -> dict:
+def build_mod(cfg, meta: dict, game: dict, progress=lambda p, m: None, root: Path | None = None,
+              slot: str = "player") -> dict:
     from . import characters as Cm
     from . import filemods
     from .pe_swap import base_bin
     root = root or Cm.library_root(cfg)
-    gid, name = game["game_id"], mod_name(meta)
+    if not is_slot(slot):
+        raise ValueError(f"unknown FF7 cast slot {slot!r}")
+    field_file, battle_file, display = CAST_BY_SLOT[slot]
+    gid, name = game["game_id"], mod_name(meta, slot)
     roles = (meta.get("rig") or {}).get("roles") or {}
     if "hip" not in roles:
         raise ValueError(f"{meta['name']} has no body roles (rig.roles in meta.json): can't map it onto Cloud's bones")
@@ -703,7 +824,8 @@ def build_mod(cfg, meta: dict, game: dict, progress=lambda p, m: None, root: Pat
     img = image_name(meta, gid)
     b = build(base, root / meta["slug"] / meta["model"], roles, work, meta["name"], d / img, base, battle=True,
               blender=Cm._blender(cfg), progress=progress, scale=(meta.get("rig") or {}).get("scale"),
-              props=[p["node"] for p in meta.get("props") or []])
+              props=[p["node"] for p in meta.get("props") or []], field_file=field_file, battle_file=battle_file,
+              use_field_textures=slot == "player")
     progress(88, "Rendering a preview of the model on Cloud's skeleton")
     tdir = root / meta["slug"] / "targets" / gid / name
     tdir.mkdir(parents=True, exist_ok=False)
@@ -712,8 +834,9 @@ def build_mod(cfg, meta: dict, game: dict, progress=lambda p, m: None, root: Pat
     cue = Path(b["cue"]).name
     mj = {"name": name, "game_id": gid, "image": cue, "built": time.time(), "character": meta["slug"],
           "writer_version": CACHE_VERSION,
-          "files": ["FIELD/CLOUD.BCX (field model)", "ENEMY6/CLOUD.LZS (battle model)"]+
+          "files": [f"FIELD/{field_file}.BCX (field model)", f"ENEMY6/{battle_file}.LZS (battle model)"]+
                    (["FIELD/FIELD.TDB (Cloud face banks)","FIELD/FIELD.BIN (Cloud expression mapping)"] if b['field'].get('textures') else []), "source": meta["model"],
+          "replaces": f"{display} (field + battle models; their skeletons and animations stay)",
           "field": b["field"], "battle": b.get("battle")}
     (d / ".gbox-mod.json").write_text(json.dumps(mj, default=str))
     shutil.rmtree(work, ignore_errors=True)
@@ -728,17 +851,21 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
     if meta.get("source", {}).get("game_id") in GAME_IDS and meta["slug"] in ("cloud", "ff7_cloud") \
             and not meta.get("variant_of"):
         return {"status": "native", "message": f"{meta['name']} is FF7's own player: launch the game without a mod."}
+    slot = str(getattr(inp, "slot", "player") or "player")
+    if not is_slot(slot):
+        raise ValueError(f"unknown FF7 cast slot {slot!r} (player, tifa, aerith, barret, red13, cid, yuffie, caitsith, vincent)")
+    _f, _b, display = CAST_BY_SLOT[slot]
     sess = Cm._session(ctx, inp.session_id) if inp.session_id else None
     node = sess["session_id"].split("-")[0] if sess else Cm.HOST_OS
     built = None
     if inp.rebuild or not _have_mod(ctx, gid, name):
         if Cm.library_root(ctx.config).is_dir():
-            built = build_mod(ctx.config, meta, game, ctx.progress)
+            built = build_mod(ctx.config, meta, game, ctx.progress, slot=slot)
             name = built['mod']
             Cm._api(ctx, "POST", f"/api/characters/{meta['slug']}/targets",
-                    json={"game_id": gid, "slot": "player", "mod": name, "nodes": [Cm.HOST_OS],
-                          "notes": f"replaces Cloud: field model {built['report']['field']['triangles']} triangles, battle "
-                                   f"model {(built['report']['battle'] or {}).get('triangles')} triangles (his animations); "
+                    json={"game_id": gid, "slot": slot, "mod": name, "nodes": [Cm.HOST_OS],
+                          "notes": f"replaces {display}: field model {built['report']['field']['triangles']} triangles, battle "
+                                   f"model {(built['report']['battle'] or {}).get('triangles')} triangles (their animations); "
                                    f"preview targets/{gid}/{name}/ff7_preview.png"})
         else:
             cp = next((w["id"] for w in Cm._api(ctx, "GET", "/api/workers") if w.get("os") == "linux"), None)
@@ -750,7 +877,7 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
                 return {"status": "failed", "mod": name, "error": r.get("error") or j.get("error") or r}
             built = r.get("build")
             name = r['mod']
-    res = {"mod": name, "build": built, "replaces": "Cloud Strife (field + battle models; his skeletons and animations stay)"}
+    res = {"mod": name, "build": built, "replaces": f"{display} (field + battle models; their skeletons and animations stay)"}
     if not inp.launch:
         return res | {"status": "built" if built else "ready"}
     ctx.progress(90, f"Launching Final Fantasy VII with {meta['name']} (mod {name})")
@@ -759,11 +886,65 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
     ok = lj.get("state") == "succeeded"
     launch = {"job": lj.get("id"), "state": lj.get("state"), "node": node,
               "session_id": (lj.get("output") or {}).get("session_id"), "error": lj.get("error")}
-    msg = (f"Final Fantasy VII is running with {meta['name']} in Cloud's place (mod {name}, session {launch['session_id']}). "
-           "Field and battle models are replaced; FMVs and the menu portrait stay Cloud."
+    msg = (f"Final Fantasy VII is running with {meta['name']} in {display}'s place (mod {name}, session {launch['session_id']}). "
+           "Field and battle models are replaced; FMVs and the menu portrait stay the original cast."
            if ok else f"Mod {name} is {'built' if built else 'ready'} but the launch {lj.get('state')}: {lj.get('error')}")
     return res | {"status": ("built+launched" if built else "launched") if ok else f"launch {lj.get('state')}",
                   "launch": launch, "message": msg}
+
+
+def build_cast(cfg, game: dict, pairs, name: str, progress=lambda p, m: None, root: Path | None = None) -> dict:
+    """characters op=cast_swap: every assigned cast member's field + battle models rebuilt on that member's own
+    skeletons, all written into ONE disc image (one mod folder). The field texture banks (FIELD.TDB/BIN) are
+    Cloud-specific, so only the player slot keeps them; other members get Gouraud field polygons."""
+    from . import characters as Cm
+    from . import filemods
+    from .pe_swap import base_bin
+    root = root or Cm.library_root(cfg)
+    gid = game["game_id"]
+    disc = {"52d73a58e6b29209": "2", "18581bf582f81eb2": "3"}.get(gid, "1")
+    base = base_bin(cfg, game, progress)
+    d = filemods.mod_dir(cfg, gid, name)
+    d.mkdir(parents=True, exist_ok=True)
+    work = Path(cfg.cache) / "characters_build" / gid / name
+    work.mkdir(parents=True, exist_ok=True)
+    img = f"Final Fantasy VII - {name} (USA) (Disc {disc}).bin"
+    out_bin = d / img
+    if Path(base).resolve() != out_bin.resolve():
+        shutil.copyfile(base, out_bin)
+    out_bin.with_suffix(".cue").write_text(f'FILE "{out_bin.name}" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
+    slots: dict[str, dict] = {}
+    files: list[str] = []
+    n = max(1, len(pairs))
+    for i, (slot, meta) in enumerate(pairs):
+        progress(5 + 80 * i // n, f"{slot} <- {meta['slug']}")
+        try:
+            row = CAST_BY_SLOT.get(slot)
+            if not row:
+                raise ValueError(f"unknown FF7 cast slot {slot!r}")
+            field_file, battle_file, _display = row
+            roles = (meta.get("rig") or {}).get("roles") or {}
+            if "hip" not in roles:
+                raise ValueError(f"{meta['name']} has no body roles (rig.roles in meta.json): can't map it onto the native bones")
+            rep = build(Path(out_bin), root / meta["slug"] / meta["model"], roles, work / slot, meta["name"], out_bin, base,
+                        battle=True, blender=Cm._blender(cfg), progress=lambda p, m: None,
+                        scale=(meta.get("rig") or {}).get("scale"),
+                        props=[p["node"] for p in meta.get("props") or []],
+                        field_file=field_file, battle_file=battle_file, use_field_textures=slot == "player")
+            files += [f"FIELD/{field_file}.BCX (field model)", f"ENEMY6/{battle_file}.LZS (battle model)"]
+            if slot == "player" and rep["field"].get("textures"):
+                files += ["FIELD/FIELD.TDB (Cloud face banks)", "FIELD/FIELD.BIN (Cloud expression mapping)"]
+            slots[slot] = {"status": "built", "field": rep["field"], "battle": rep.get("battle")}
+        except Exception as e:  # noqa: BLE001 - one cast member never stops the rest
+            slots[slot] = {"status": "failed", "reason": str(e)[:500]}
+    mj = {"name": name, "game_id": gid, "image": img, "built": time.time(), "writer_version": CACHE_VERSION,
+          "files": sorted(set(files)), "cast": [{"slot": s, **r} for s, r in slots.items()]}
+    (d / ".gbox-mod.json").write_text(json.dumps(mj, default=str))
+    shutil.rmtree(work, ignore_errors=True)
+    return {"mod": name, "slots": slots, "summary": {
+        "what": f"every FF7 party member's field and battle models rebuilt from the cast donors in one disc "
+                f"({len(slots)} slots, one mod)",
+        "where_to_look": "field gameplay (each party member) and battles"}}
 
 
 if __name__ == "__main__":

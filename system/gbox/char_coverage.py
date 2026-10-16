@@ -38,7 +38,9 @@ WRITERS = [
      "BODY/BODY2 + texture page rebuilt, read back by the reader; not yet verified in an emulator"),
     ("pe_swap", ["player"], "Aya, all 5 outfits (field + battle share the model)"),
     ("pe2_swap", ["player"], "PE2 Aya, every outfit file (STAGE0.CDF 10200..10600: model + page + CLUT); unverified in game"),
-    ("ff7_swap", ["player"], "Cloud: field model (FIELD/CLOUD.BCX) + battle model (ENEMY6/CLOUD.LZS)"),
+    ("ff7_swap", ["player", "tifa", "aerith", "barret", "red13", "cid", "yuffie", "caitsith", "vincent"],
+     "the FF7 party cast: each member's field model (FIELD/<name>.BCX) and battle model (ENEMY6/<key>.LZS) "
+     "rebuilt on that member's own skeletons"),
     ("sa2_chars", ["player"], "Sonic (SA2 player model)"),
     ("pso_player", ["player", "enemy:<name>", "enemies"],
      "a PSO class (Ninja node tree, not drawn by the game yet); enemy:booma / gobooma / gigobooma / boomas or any BM_ENE "
