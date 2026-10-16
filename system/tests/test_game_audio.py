@@ -154,7 +154,39 @@ def test_a_boot_that_is_not_about_audio_still_fails_at_30s():
     assert w.decide(30.1, running=False) == "fail" and w.reason == "content not running after 30s"
     clean = watch()
     clean.observe(log("no_audio_warning.log"), 1.0)
-    assert clean.decide(30.1, running=False) == "fail" and clean.warning is None
+    assert clean.warning is None
+    # no_audio_warning.log is a real N64 boot: content loaded, core executing, audio clean. Its deadline extends too
+    # (the core's first frame lags behind "Init new dynarec"), so a slow boot is not a 30 s failure.
+    assert clean.decide(30.1, running=False) == "wait"
+
+
+N64_LOG = (
+    "[INFO] [Content] Loaded content file: WCW vs. nWo World Tour - Sonic (USA).z64\n"
+    "[INFO] [Environ] SET_INPUT_DESCRIPTORS.\n"
+    "[libretro INFO] EmuThread: M64CMD_EXECUTE.\n"
+    "[libretro INFO] mupen64plus: Using CIC type X102\n"
+    "[INFO] [Environ] SET_MEMORY_MAPS.\n"
+    "[libretro INFO] mupen64plus: Initializing 4 RDRAM modules for a total of 8 MB\n"
+    "[libretro INFO] mupen64plus: Starting R4300 emulator: Dynamic Recompiler (Ari64)\n"
+    "[libretro INFO] mupen64plus: Init new dynarec\n")
+
+
+def test_parallel_n64_core_executing_extends_the_boot_wait():
+    # #1707: the core loads the ROM and starts the R4300 emulator, but the first frame (and so GET_STATUS "PLAYING")
+    # lags behind it; a slow N64 boot must not fail at the plain 30 s window.
+    w = watch()
+    w.observe(N64_LOG, 5.0)
+    assert w.phase["content"] and w.phase["core_exec"] and not w.phase["audio_started"]
+    assert w.deadline() == 120.0                          # content loaded + core executing: the long wait
+    assert w.decide(31.0, running=False) == "wait"        # no audio trouble, yet not a 30 s failure
+    assert w.decide(119.0, running=False) == "wait"
+    assert w.decide(120.5, running=False) == "fail" and "core executing" in w.reason
+
+
+def test_parallel_n64_core_executing_then_running_is_ready():
+    w = watch()
+    w.observe(N64_LOG, 5.0)
+    assert w.decide(7.0, running=True) == "ready"
 
 
 # ------------------------------------------------------------------------------------------------ RetroArch launch
