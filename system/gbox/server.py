@@ -2270,6 +2270,14 @@ def create_app(config: Config) -> FastAPI:
             for j in sorted(store.queued_jobs(), key=lambda j: (not _is_stop_job(j), bool(j.get("low_priority")))):
                 if (j["state"] == JobState.QUEUED and j["tool"] in w["tools"]
                         and j["require_os"] in (None, w["os"]) and j["require_worker"] in (None, wid, w["name"])):   # by name: launched while that worker was restarting
+                    from .savemgo import claim_reason as savemgo_claim_reason
+                    savemgo_wait = savemgo_claim_reason(w, j)
+                    if savemgo_wait:
+                        waiting = {'worker': w['name'], 'reason': savemgo_wait,
+                                   'code': 'savemgo_worker_refresh_required'}
+                        if j.get('admission_wait') != waiting:
+                            store.put('job', j['id'], j | {'admission_wait': waiting})
+                        continue
                     try:
                         build_feedback.check(store, j)
                     except HTTPException as exc:

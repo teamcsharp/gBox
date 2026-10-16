@@ -32,6 +32,23 @@ class BundleError(ValueError):
     """Invalid or busy owned package; user cancellation exceptions stay separate."""
 
 
+def claim_reason(worker, job):
+    """Old workers ignore the bundle launch kind and would select generic RPCS3.
+
+    The builtin asset tool is advertised only by a process that loaded this bundle
+    integration. A source update on disk alone does not refresh an older worker.
+    """
+    game = (job.get('input') or {}).get('game') or {}
+    if job.get('tool') != 'launch_game' or (game.get('launch') or {}).get('kind') != 'savemgo_bundle':
+        return None
+    if worker.get('os') != 'windows':
+        return 'SaveMGO needs a Windows PC with bundled-emulator support; queued launch retained.'
+    if 'savemgo_assets' not in (worker.get('tools') or []):
+        return ('Restart the idle gBox app on this PC to load SaveMGO bundled-emulator support; '
+                'the queued launch is retained until its worker has refreshed.')
+    return None
+
+
 MAX_ENTRIES, MAX_EXPANDED, MAX_ARCHIVE, MAX_MEMBER = 6000, 12 * 2**30, 10 * 2**30, 2 * 2**30
 BLOCK = 1024 * 1024
 MUTABLE_DIRS = {'cache', 'captures', 'config', 'guiconfigs', 'glcache', 'log',
