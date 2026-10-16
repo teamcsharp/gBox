@@ -257,6 +257,10 @@ def _files(d: Path, hashes: bool = False) -> list[dict]:
 
 STAGED_SEP = "~"                     # <mod>~<build>: a rebuilt mod staged beside a copy the running game holds open
 STAGED_MARK = ".gbox-staged-of"     # inside such a folder: the collection name it mirrors (never pushed back or listed)
+# A built mod is a full disc image (1+ GB), served from the Spark's cold HDD tier when it isn't promoted yet.
+# Its manifest and its file transfer share the launch's own 900 s budget; a 60 s per-read limit (httpcore.ReadTimeout)
+# fires when a cold-HDD read stalls, which fails the launch after only a minute of a potentially 15-minute fetch (#1730).
+MOD_FETCH_TIMEOUT_S = 900
 
 
 class ModInUse(PermissionError):
@@ -346,7 +350,7 @@ def stage(cfg, server: str, headers: dict, game_id: str, name: str, progress=Non
         if progress:
             progress(20, f"Checking build {name} against the central collection (Spark)")
         # the Spark hashes a new or just-restarted build's disc image (1+ GB on its HDD) before answering
-        r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=900)
+        r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=MOD_FETCH_TIMEOUT_S)
         if r.status_code == 404:
             return name  # Local-only mods still have a local completed marker.
         r.raise_for_status()
@@ -404,7 +408,7 @@ def _fetch(cfg, server: str, headers: dict, game_id: str, name: str, progress=No
     import httpx
     out = dest or mod_dir(cfg, game_id, name)
     if files is None:
-        r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=900)
+        r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=MOD_FETCH_TIMEOUT_S)
         if r.status_code == 404:
             return False
         r.raise_for_status()
@@ -434,7 +438,7 @@ def _fetch(cfg, server: str, headers: dict, game_id: str, name: str, progress=No
         request_headers = dict(headers)
         if offset: request_headers['Range'] = f'bytes={offset}-'
         with httpx.stream("GET", f"{server}/api/modfiles/{game_id}/{name}/file/{f['path']}", headers=request_headers,
-                          timeout=httpx.Timeout(60, connect=30)) as s:
+                          timeout=httpx.Timeout(MOD_FETCH_TIMEOUT_S, connect=30)) as s:
             s.raise_for_status()
             if offset and s.status_code == 206:
                 if not s.headers.get('Content-Range', '').startswith(f'bytes {offset}-'):
@@ -470,7 +474,7 @@ def push_missing(cfg, server: str, headers: dict) -> list[str]:
         d, game_id, name = meta.parent, meta.parent.parent.name, meta.parent.name
         if (d / STAGED_MARK).exists():
             continue                                       # a local staging copy of a collection mod, not a new build
-        r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=900)
+        r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=MOD_FETCH_TIMEOUT_S)
         have = {f["path"]: f["size"] for f in r.json().get("files", [])} if r.status_code == 200 else {}
         todo = [f for f in _files(d) if have.get(f["path"]) != f["size"] and not f["path"].endswith(".part")]
         for f in sorted(todo, key=lambda f: f["path"] == ".gbox-mod.json"):
