@@ -33,6 +33,8 @@
       <div class="lc-row"><select data-lc-session aria-label="Running session for live controls"></select>
         <button type="button" data-lc-check>Refresh / check mode</button></div>
       <div class="lc-row"><label><input type="checkbox" data-lc-unlocks> Require unlock-all in every custom build</label></div>
+      <div class="lc-row"><label><input type="checkbox" data-lc-favorite-unlocks> Unlock favorites by default at boot</label>
+        <label><input type="checkbox" data-lc-unlock-research> Research missing unlocks while idle</label></div>
       <small data-lc-policy></small><div data-lc-actions></div><div data-lc-pso></div>
       <div data-lc-missing></div><button type="button" data-lc-discover>Research missing controls with Ghidra</button>
       <p role="status" aria-live="polite" data-lc-status></p></details>`;
@@ -130,7 +132,10 @@
         q('[data-lc-session]').value = sid;
         q('[data-lc-game]').textContent = `${d.title}${d.profile ? ' · ' + d.profile.revision_label : ' · live research pending'}`;
         q('[data-lc-unlocks]').checked = !!d.unlock_policy.enabled;
-        q('[data-lc-policy]').textContent = 'Shared default for all custom builds. Pending unlock research stays pending until each exact build is verified; base games and personal saves are preserved.';
+        q('[data-lc-favorite-unlocks]').checked = !!d.unlock_policy.favorites_enabled && !!d.unlock_policy.default_boot;
+        q('[data-lc-unlock-research]').checked = !!d.unlock_policy.idle_resolution;
+        q('[data-lc-policy]').textContent = (d.favorite_unlocks ? `${d.favorite_unlocks.label}${d.favorite_unlocks.number ? ' #'+d.favorite_unlocks.number : ''}. ` : '') +
+          'Original favorites and exact custom builds need complete verified coverage. Research yields to games and activity; unsupported titles remain pending.';
         q('[data-lc-actions]').innerHTML = (d.profile?.actions || []).map(a=>actionHTML(a, false)).join('');
         const covered = new Set((d.profile?.actions || []).map(a=>a.category));
         q('[data-lc-missing]').innerHTML = Object.entries(d.categories).filter(([k])=>!covered.has(k)).map(([key,label])=>{
@@ -212,6 +217,14 @@
         const desired=e.target.checked, n=serial; e.target.disabled=true;
         try { await io.api('/api/custom-build-unlocks/policy', {enabled:desired}); if(n===serial) say(desired ? 'Unlock-all required for every custom build; each build needs its own verification.' : 'Shared unlock-all requirement disabled.'); }
         catch(err) { if(n===serial) { e.target.checked=!desired; say(err.message); } } finally { if(current() && n===serial) e.target.disabled=false; }
+      }
+      if(e.target.hasAttribute('data-lc-favorite-unlocks') || e.target.hasAttribute('data-lc-unlock-research')) {
+        const desired=e.target.checked, n=serial, favorites=e.target.hasAttribute('data-lc-favorite-unlocks'); e.target.disabled=true;
+        try {
+          await io.api('/api/custom-build-unlocks/policy', favorites ? {favorites_enabled:desired,default_boot:desired} : {idle_resolution:desired});
+          if(n===serial) say(favorites ? (desired ? 'Favorite boot defaults enabled; missing complete coverage stays pending.' : 'Favorite boot defaults disabled.') : (desired ? 'Idle unlock research enabled with quiet time and dispatch budgets.' : 'Idle unlock research paused.'));
+        } catch(err) { if(n===serial) { e.target.checked=!desired; say(err.message); } }
+        finally { if(current() && n===serial) e.target.disabled=false; }
       }
     };
     host.addEventListener('change', change);

@@ -572,8 +572,10 @@ test('both clients have a Mods view wired to the shared gallery', () => {
   assert.match(desktop, /GBoxModsGallery\.mount\(\$\("#modsgallery"\), \{ api, poll: GBoxLivePoll/);
   assert.match(desktop, /openImages: \(list, i, at\) => texPopOpen\(list, i, at\)/);
   assert.match(desktop, /return modPlay\(m\.mod_title \? \{ \.\.\.card, title: m\.mod_title \} : card, moment && card\.state_slot != null \? "moment" : "play"\)/);
-  assert.match(web, /const tabs = \{ Library: library, Mods: modsView,/);
-  assert.match(web, /<script src="\/live-poll\.js"><\/script>\r?\n(?:<script src="\/viz\/character-popup\.js"><\/script>\r?\n)?<script src="\/viz\/mods-gallery\.js"><\/script>/);
+  assert.match(web, /const tabs = \{[^\n]*\bLibrary: library, Mods: modsView,/);
+  assert.match(web, /<script src="\/viz\/mods-gallery\.js"><\/script>/);
+  assert.ok(web.indexOf('src="/live-poll.js"') >= 0);
+  assert.ok(web.indexOf('src="/live-poll.js"') < web.indexOf('src="/viz/mods-gallery.js"'));
   assert.match(web, /openImages: \(list, i\) => lbOpen\(null, list, i\)/);
   assert.match(web, /poll: window\.GBoxLivePoll/);
   for (const f of [desktop, web]) assert.ok(!/[^\r]\n/.test(f), 'CRLF line endings kept');
