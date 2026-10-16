@@ -144,6 +144,7 @@ def test_classifies_the_operator_examples_and_the_known_errors():
         "JAYBUILTFINALE can't run launch_game: not installed there": "worker_unavailable",
         "Replacement state restore failed (load timed out). The original checkpoint is retained": "state_restore",
         "launch_game: timed out after 900 s": "timeout",
+        "ValueError: no built mod 'mgs_vr_bighead_test' for this game": "mod_not_built",
     }
     for err, cls in cases.items():
         assert LF.classify(err, adapter="retroarch")["cls"] == cls, err

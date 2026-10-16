@@ -55,6 +55,12 @@ def running_old_build(tmp_path, monkeypatch):
     return cfg, old
 
 
+def test_launch_path_missing_mod_raises_a_clear_error(tmp_path):
+    cfg = SimpleNamespace(cache=tmp_path)
+    with pytest.raises(ValueError, match="no built mod 'nope' for this game.*Build the mod first"):
+        filemods.launch_path(cfg, 'g', tmp_path / 'game.bin', 'nope')
+
+
 def test_locked_running_copy_stages_new_build_beside_it(tmp_path, monkeypatch):
     cfg, old = running_old_build(tmp_path, monkeypatch)
     before = {p.name: p.read_bytes() for p in old.iterdir()}

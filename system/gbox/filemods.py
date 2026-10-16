@@ -208,7 +208,8 @@ def launch_path(cfg, game_id: str, rom: Path, name: str) -> Path:
     out = mod_dir(cfg, game_id, name)
     marker = _file_path(out, ".gbox-mod.json")
     if not marker.exists():
-        raise ValueError(f"no built mod {name!r} for this game")
+        raise ValueError(f"no built mod {name!r} for this game: it is neither on this PC nor in the central "
+                         f"collection. Build the mod first, or launch the stock game without a mod")
     meta = json.loads(marker.read_text())
     if meta.get("launchable") is False:                # universal-modder staged files (um_mod): an overlay, not a game copy
         raise ValueError(f"mod {name!r} is a staged file set ({meta.get('kind', 'files')}), not a launchable copy of the "
