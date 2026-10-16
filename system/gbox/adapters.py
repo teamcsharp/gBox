@@ -681,7 +681,7 @@ def _examine_driver_ok(argv, also: tuple = ()) -> bool:
     drivers a capture session may inject into (core-profile "glcore", #971)."""
     import re
     if "--config" not in argv:
-        return True                                   # standalone emulators here (Dolphin D3D12) are Direct3D
+        return True                                   # standalone emulators here (Dolphin on Vulkan) are RenderDoc-capturable
     try:
         cfg = Path(argv[argv.index("--config") + 1]).read_text(errors="replace")
     except (OSError, IndexError):
@@ -2262,7 +2262,11 @@ D-Pad/Right = `Pad E`
         self.lane = self._claim_lane()
         (user / "Config" / "Hotkeys.ini").write_text(self.hotkeys_ini(self.lane))   # read once, when this Dolphin starts
         self._gecko_setup(user, rom)
-        opts = {"Dolphin.General.GDBPort": self.port, "Dolphin.Core.GFXBackend": "D3D12", "Dolphin.Core.EnableCheats": "True",
+        # Vulkan, not D3D12: Dolphin's D3D12 renderer can hang and stop presenting frames while the CPU core keeps
+        # "playing" (gpu_pct 0.0, black frame - Soul Calibur II #1806/#1933). Vulkan matches the Linux adapter and the
+        # capture-session backend; RenderDoc still enters through popen_hooked (which covers Vulkan) or the capture
+        # session's Vulkan layer, so Examine 3D keeps working.
+        opts = {"Dolphin.General.GDBPort": self.port, "Dolphin.Core.GFXBackend": "Vulkan", "Dolphin.Core.EnableCheats": "True",
                 # Docked in gBox, Dolphin's render window is a child window: on Windows Dolphin counts it focused only
                 # when it is the foreground window, which a child never is, so every hotkey (save / load state, speed
                 # limit) was dropped and StateSaves stayed empty. Hotkeys.ini binds only F13-F15 chords, so no key a
