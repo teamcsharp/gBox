@@ -239,7 +239,7 @@ class Config(BaseModel):
                    "vision_model": "qwen2.5vl:7b", "voice_director": "http://127.0.0.1:8090", "tts_engine": "xtts",
                    "voice_library": "/home/ehm_eckx/pinevoice-stack/spark-agent/data/voices"}   # in-app chat agent (Spark-local Ollama + SearXNG)
     emulators: dict[str, EmulatorConfig] = {}   # platform -> backend override (defaults come from systems.py)
-    examine_ready: bool = True        # Windows: local-window emulators start with RenderDoc inside (Examine 3D, gbox.scene_capture)
+    examine_ready: bool = False       # Windows: opt-in RenderDoc injection for Examine 3D. Off by default — injecting renderdoc.dll into every launch hung Dolphin's D3D12 renderer (Soul Calibur II froze ~70 s into attract mode with 0% GPU, #1973). Captures relaunch a dedicated Vulkan-layer session instead (gbox.scene_support.relay).
     examine_capture_worker: str = "JAYBUILTFINALE"   # Examine 3D capture sessions run here first (gbox/scene_relay.py)
     rewind: RewindConfig = RewindConfig()   # [rewind] checkpoint rewind for emulators without a native one
     audio_cpp: AudioCppConfig = AudioCppConfig()   # [audio_cpp] local audio.cpp speech service (docs/audio_cpp.md)
