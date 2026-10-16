@@ -88,6 +88,7 @@ import hashlib
 import json
 import struct
 import sys
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -711,43 +712,410 @@ def texture_bitstream_header(rom: bytes, off: int, size: int) -> dict:
 
 
 def decode_model_texture(ge: GoldenEyeROM, texture_id: int) -> dict:
-    """Decode one global texture (g_Textures index) to its header + pixels.
+    """Decode one global texture (g_Textures index) to its header + RGBA8888 pixels.
 
-    Pixels are decoded only for uncompressed (comp 0/1) raw formats.  Zlib and
-    Huffman/RLE/LOOKUP codecs are reported with their method and left undecoded
-    (the zlib payload is compressed, so its bitstream header is meaningless).
+    All texInflate codecs (Huffman/RLE/LOOKUP/Blur and the zlib paletted path)
+    are implemented via :func:`inflate_image_pixels`.  ``pixels`` is None when the
+    payload is too short for the bitstream header's dimensions (see the KNOWN
+    ISSUE note above) or the codec is unknown -- never a silent partial decode.
     """
     sizes = g_textures(ge)
     if not 0 <= texture_id < len(sizes):
         raise KeyError(texture_id)
     off, size = image_rom_span(sizes, texture_id)
     explicit, is_zlib, lod = image_payload_header(ge.rom, off)
+    result = inflate_image_pixels(ge.rom, off, size, is_zlib)
+    base = {"texture_id": texture_id, "rom_offset": off, "size": size,
+            "has_explicit_lods": explicit, "is_zlib": is_zlib, "lod": lod}
+    if result is None:
+        base["pixels"] = None
+        base["note"] = ("bitstream header overruns the recorded payload, or the "
+                        "codec is unknown (KNOWN ISSUE: image header vs byte size)")
+        return base
+    rgba, width, height, fmt = result
+    base.update({"pixels": rgba, "pixel_bytes": len(rgba),
+                 "width": width, "height": height, "format": fmt})
+    return base
+
+
+# ------------------------------------------------------------ texInflate codecs
+# Faithful ports of n64decomp/007 src/game/image.c (texInflate{NonZlib,Zlib})
+# and tools/mktex/src/libpdtex/reader.c (the reference decoder).  Each function
+# mirrors the C bit-for-bit, including the u32 accumulator wrap of texReadBits
+# and C-style truncating integer division in texBlur.
+#
+# KNOWN ISSUE (pre-existing from reader(4)/(5)): applying the decomp's image
+# header (1 byte {explicit,zlib,lod} + 4/8/8/4-bit format/width/height/comp)
+# to the byte-exact g_Textures offsets yields dimensions that overrun the
+# per-image byte size for many images (e.g. image 0 COPYICON reads 80x80 LOOKUP
+# = ~4956 bytes of indices from a 1876-byte payload; the character textures
+# read 132x49 "uncompressed" RGBA32 from 724 bytes).  The offsets and sizes are
+# verified 0-mismatch against imagelist.u.csv, and the header layout is
+# confirmed by BOTH the game image.c and mktex reader.c, so this is a real
+# format question, not an off-by-one in this module.  The codecs below are
+# correct; the remaining work is to re-derive the true per-image header.
+
+TEXFORMAT_NUM_CHANNELS = [4, 3, 3, 3, 2, 2, 1, 1, 1, 1, 1, 1, 1]
+TEXFORMAT_HAS_1BIT_ALPHA = [0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]
+TEXFORMAT_CHANNEL_SIZES = [0x100, 0x20, 0x100, 0x20, 0x100, 0x10, 8,
+                           0x100, 0x10, 0x100, 0x10, 0x100, 0x10]
+# 0=RGBA16 palette, 1=IA16 palette (g_TexFormatLutModes >> G_MDSFT_TEXTLUT)
+TEXFORMAT_LUT = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]
+
+
+def _cdiv(a: int, b: int) -> int:
+    """C-style integer division (truncation toward zero, unlike Python //)."""
+    q = abs(a) // abs(b)
+    return q if (a >= 0) == (b >= 0) else -q
+
+
+def tex_get_bit_size(decimal: int) -> int:
+    """Number of bits needed to index ``decimal`` distinct values (texGetBitSize)."""
+    count = 0
+    decimal -= 1
+    while decimal > 0:
+        decimal >>= 1
+        count += 1
+    return count
+
+
+def tex_inflate_huffman(br: TexBitReader, numiterations: int, chansize: int) -> list[int]:
+    """Replicate texInflateHuffman: decode ``numiterations`` channel samples."""
+    frequencies = [br.read(8) for _ in range(chansize)]
+    nodes = [[-1, -1] for _ in range(2048)]
+    minfreq1 = minfreq2 = 9999
+    minindex1 = minindex2 = 0
+    for i in range(chansize):
+        if frequencies[i] < minfreq1:
+            if minfreq2 < minfreq1:
+                minfreq1, minindex1 = frequencies[i], i
+            else:
+                minfreq2, minindex2 = frequencies[i], i
+        elif frequencies[i] < minfreq2:
+            minfreq2, minindex2 = frequencies[i], i
+    done = False
+    rootindex = 0
+    while not done:
+        s = frequencies[minindex1] + frequencies[minindex2]
+        if s == 0:
+            s = 1
+        frequencies[minindex1] = 9999
+        frequencies[minindex2] = 9999
+        if nodes[minindex1][0] < 0 and nodes[minindex1][1] < 0:
+            nodes[minindex1][0] = minindex1 + 10000
+            rootindex = minindex1
+            frequencies[minindex1] = s
+            if nodes[minindex2][0] < 0 and nodes[minindex2][1] < 0:
+                nodes[minindex1][1] = minindex2 + 10000
+            else:
+                nodes[minindex1][1] = minindex2
+        elif nodes[minindex2][0] < 0 and nodes[minindex2][1] < 0:
+            nodes[minindex2][0] = minindex2 + 10000
+            rootindex = minindex2
+            frequencies[minindex2] = s
+            if nodes[minindex1][0] < 0 and nodes[minindex1][1] < 0:
+                nodes[minindex2][1] = minindex1 + 10000
+            else:
+                nodes[minindex2][1] = minindex1
+        else:
+            rootindex = 0
+            while nodes[rootindex][0] >= 0 or nodes[rootindex][1] >= 0 or frequencies[rootindex] < 9999:
+                rootindex += 1
+            frequencies[rootindex] = s
+            nodes[rootindex][0] = minindex1
+            nodes[rootindex][1] = minindex2
+        minfreq1 = minfreq2 = 9999
+        for i in range(chansize):
+            if frequencies[i] < minfreq1:
+                if minfreq1 > minfreq2:
+                    minfreq1, minindex1 = frequencies[i], i
+                else:
+                    minfreq2, minindex2 = frequencies[i], i
+            elif frequencies[i] < minfreq2:
+                minfreq2, minindex2 = frequencies[i], i
+        if minfreq1 == 9999 or minfreq2 == 9999:
+            done = True
+    out = []
+    for _ in range(numiterations):
+        iv = rootindex
+        while iv < 10000:
+            iv = nodes[iv][br.read(1)]
+        out.append(iv - 10000)
+    return out
+
+
+def tex_inflate_rle(br: TexBitReader, blockstotal: int) -> list[int]:
+    """Replicate texInflateRle: decode ``blockstotal`` channel samples."""
+    btfieldsize = br.read(3)
+    rlfieldsize = br.read(3)
+    blocksize = br.read(4)
+    cost = btfieldsize + rlfieldsize + blocksize + 1
+    fudge = 0
+    while cost > 0:
+        cost -= blocksize + 1
+        fudge += 1
+    blocks: list[int] = []
+    blocksdone = 0
+    while blocksdone < blockstotal:
+        if br.read(1) == 0:
+            blocks.append(br.read(blocksize))
+            blocksdone += 1
+        else:
+            start = blocksdone - br.read(btfieldsize) - 1
+            run = br.read(rlfieldsize) + fudge
+            for i in range(start, start + run):
+                blocks.append(blocks[i])
+                blocksdone += 1
+            blocks.append(br.read(blocksize))
+            blocksdone += 1
+    return blocks
+
+
+def tex_build_lookup(br: TexBitReader, bitsperpixel: int) -> tuple[int, list[int]]:
+    """Replicate texBuildLookup: read an 11-bit count then that many colours."""
+    numcolors = br.read(11)
+    lookup: list[int] = []
+    if bitsperpixel <= 16:
+        for _ in range(numcolors):
+            lookup.append(br.read(bitsperpixel))
+    elif bitsperpixel <= 24:
+        for _ in range(numcolors):
+            lookup.append(br.read(bitsperpixel))
+    else:
+        for _ in range(numcolors):
+            lookup.append((br.read(24) << 8) | br.read(bitsperpixel - 24))
+    return numcolors, lookup
+
+
+def tex_blur(pixels: list[int], width: int, height: int, method: int, chansize: int) -> None:
+    """Replicate texBlur in place over a flat channel array (width x height)."""
+    for y in range(height):
+        for x in range(width):
+            cur = pixels[y * width + x] + chansize * 2
+            left = pixels[y * width + x - 1] if x > 0 else 0
+            above = pixels[(y - 1) * width + x] if y > 0 else 0
+            aboveleft = pixels[(y - 1) * width + x - 1] if x > 0 and y > 0 else 0
+            if method == 0:
+                pixels[y * width + x] = (cur + left) % chansize
+            elif method == 1:
+                pixels[y * width + x] = (cur + above) % chansize
+            elif method == 2:
+                pixels[y * width + x] = (cur + aboveleft) % chansize
+            elif method == 3:
+                pixels[y * width + x] = (cur + (left + above - aboveleft)) % chansize
+            elif method == 4:
+                pixels[y * width + x] = (cur + (_cdiv(above - aboveleft, 2) + left)) % chansize
+            elif method == 5:
+                pixels[y * width + x] = (cur + (_cdiv(left - aboveleft, 2) + above)) % chansize
+            elif method == 6:
+                pixels[y * width + x] = (cur + ((left + above) // 2)) % chansize
+
+
+def _packed_pixel_rgba8888(format: int, value: int) -> tuple[int, int, int, int]:
+    """Decode one packed TEXFORMAT pixel value to 8-bit RGBA."""
+    if format == 0:  # RGBA32
+        return ((value >> 24) & 0xFF, (value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF)
+    if format == 2:  # RGB24 (alpha forced 0xff)
+        return ((value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF, 0xFF)
+    if format == 1:  # RGBA16 5551
+        return (_c16((value >> 11) & 0x1F), _c16((value >> 6) & 0x1F), _c16((value >> 1) & 0x1F), 255 if value & 1 else 0)
+    if format == 3:  # RGB15 555
+        return (_c16((value >> 10) & 0x1F), _c16((value >> 5) & 0x1F), _c16(value & 0x1F), 0xFF)
+    if format == 4:  # IA16
+        v = (value >> 8) & 0xFF
+        return (v, v, v, value & 0xFF)
+    if format == 5:  # IA8 (4/4)
+        i = (value >> 4) & 0xF
+        a = value & 0xF
+        return ((i << 4) | i, (i << 4) | i, (i << 4) | i, (a << 4) | a)
+    if format == 7:  # I8
+        v = value & 0xFF
+        return (v, v, v, 0xFF)
+    if format == 8:  # I4
+        v = value & 0xF
+        v8 = (v << 4) | v
+        return (v8, v8, v8, 0xFF)
+    if format == 6:  # IA4 (3/1)
+        i = (value >> 1) & 0x7
+        a = value & 1
+        i8 = (i << 5) | (i << 2) | (i >> 1)
+        return (i8, i8, i8, 255 if a else 0)
+    return (0, 0, 0, 0)
+
+
+def tex_channels_to_pixels(scratch: list[int], width: int, height: int, format: int) -> bytes:
+    """Replicate texChannelsToPixels, emitting RGBA8888 (row-major, no pad)."""
+    mult = width * height
+    out = bytearray(mult * 4)
+    pos = 0
+    for y in range(height):
+        for x in range(width):
+            i = y * width + x
+            if format == 0:  # RGBA32
+                rgba = (scratch[i], scratch[i + mult], scratch[i + 2 * mult], scratch[i + 3 * mult])
+            elif format == 2:  # RGB24
+                rgba = (scratch[i], scratch[i + mult], scratch[i + 2 * mult], 0xFF)
+            elif format == 1:  # RGBA16
+                rgba = (_c16(scratch[i]), _c16(scratch[i + mult]), _c16(scratch[i + 2 * mult]), 255 if scratch[i + 3 * mult] else 0)
+            elif format == 3:  # RGB15
+                rgba = (_c16(scratch[i]), _c16(scratch[i + mult]), _c16(scratch[i + 2 * mult]), 0xFF)
+            elif format == 4:  # IA16
+                v = scratch[i]
+                rgba = (v, v, v, scratch[i + mult])
+            elif format == 5:  # IA8
+                i4 = scratch[i]
+                a4 = scratch[i + mult]
+                rgba = ((i4 << 4) | i4, (i4 << 4) | i4, (i4 << 4) | i4, (a4 << 4) | a4)
+            elif format == 7:  # I8
+                v = scratch[i]
+                rgba = (v, v, v, 0xFF)
+            elif format == 6:  # IA4 (intensity ch0, 1-bit alpha ch3)
+                i3 = scratch[i]
+                a1 = scratch[i + 3 * mult]
+                i8 = (i3 << 5) | (i3 << 2) | (i3 >> 1)
+                rgba = (i8, i8, i8, 255 if a1 else 0)
+            elif format == 8:  # I4
+                v = scratch[i]
+                v8 = (v << 4) | v
+                rgba = (v8, v8, v8, 0xFF)
+            else:
+                rgba = (0, 0, 0, 0)
+            out[pos:pos + 4] = bytes(rgba)
+            pos += 4
+    return bytes(out)
+
+
+def tex_inflate_lookup(br: TexBitReader, lookup: list[int], numcolours: int,
+                       width: int, height: int, format: int) -> bytes:
+    """Replicate texInflateLookup: index the lookup table per pixel -> RGBA8888."""
+    bitspercolour = tex_get_bit_size(numcolours)
+    out = bytearray(width * height * 4)
+    pos = 0
+    for _ in range(height):
+        for _ in range(width):
+            idx = br.read(bitspercolour)
+            out[pos:pos + 4] = bytes(_packed_pixel_rgba8888(format, lookup[idx]))
+            pos += 4
+    return bytes(out)
+
+
+def tex_inflate_lookup_from_buffer(src: list[int], lookup: list[int], numcolours: int,
+                                   width: int, height: int, format: int) -> bytes:
+    """Replicate texInflateLookupFromBuffer: indices come from ``src``, not the bitstream."""
+    out = bytearray(width * height * 4)
+    pos = 0
+    for y in range(height):
+        for x in range(width):
+            idx = src[y * width + x]
+            out[pos:pos + 4] = bytes(_packed_pixel_rgba8888(format, lookup[idx]))
+            pos += 4
+    return bytes(out)
+
+
+def inflate_image_pixels(rom: bytes, off: int, size: int, is_zlib: bool) -> tuple[bytes, int, int, int] | None:
+    """Decode one global image (at ``off``, ``size`` bytes) to (rgba8888, w, h, fmt).
+
+    Returns None when the payload is too short for the header's dimensions or the
+    compression method is unknown (see the KNOWN ISSUE note above: many images'
+    bitstream headers overrun their recorded byte size, which this returns None
+    for rather than silently emitting a partial decode).
+    """
+    payload = rom[off + 1:off + size]
+    br = TexBitReader(payload)
     if is_zlib:
-        return {"texture_id": texture_id, "rom_offset": off, "size": size,
-                "has_explicit_lods": explicit, "is_zlib": True, "lod": lod,
-                "pixels": None, "note": "zlib-compressed paletted texture"}
-    hdr = texture_bitstream_header(ge.rom, off, size)
-    if "error" in hdr or hdr["compmethod"] >= 2:
-        # Huffman / RLE / LOOKUP codecs not decoded yet
-        return {"texture_id": texture_id, "rom_offset": off, "size": size,
-                "has_explicit_lods": explicit, "is_zlib": False, "lod": lod,
-                **hdr, "pixels": None}
-    # Guard the raw path: the header's width*height*bpp must fit the payload,
-    # otherwise the bitstream header itself is suspect (observed on character
-    # textures where the stored width disagrees with the model record).
-    bpp = TEXFORMAT_BPP[hdr["format"]] if hdr["format"] < len(TEXFORMAT_BPP) else 0
-    need_bits = 24 + hdr["width"] * hdr["height"] * bpp
-    if bpp == 0 or hdr["width"] == 0 or hdr["height"] == 0 or need_bits > (size - 1) * 8:
-        return {"texture_id": texture_id, "rom_offset": off, "size": size,
-                "has_explicit_lods": explicit, "is_zlib": False, "lod": lod,
-                **hdr, "pixels": None,
-                "note": f"header {hdr['width']}x{hdr['height']} @{bpp}bpp overruns "
-                        f"{size - 1}-byte payload"}
-    rgba = tex_read_uncompressed(TexBitReader(ge.rom[off + 1:off + size]), hdr["width"],
-                                 hdr["height"], hdr["format"])
-    return {"texture_id": texture_id, "rom_offset": off, "size": size,
-            "has_explicit_lods": explicit, "is_zlib": False, "lod": lod,
-            **hdr, "pixels": rgba, "pixel_bytes": len(rgba)}
+        fmt = br.read(8)
+        numcolours = br.read(8) + 1
+        palette = [br.read(16) for _ in range(numcolours)]
+        width = br.read(8)
+        height = br.read(8)
+        if width * height >= 4097 or not (9 <= fmt <= 12):
+            return None
+        data = payload[br.pos:]
+        if data[:2] == b"\x11\x72":
+            data = data[2:]
+        try:
+            indices = zlib.decompress(data, -15)
+        except zlib.error:
+            return None
+        mult = width * height
+        out = bytearray(mult * 4)
+        ci8 = fmt in (9, 11)
+        for i in range(mult):
+            c = indices[i] if ci8 else (indices[i // 2] >> (4 if i % 2 == 0 else 0)) & 0xF
+            if c < numcolours:
+                pv = palette[c]
+                if fmt in (9, 10):  # RGBA16 palette (5551)
+                    rgba = (_c16((pv >> 11) & 0x1F), _c16((pv >> 6) & 0x1F), _c16((pv >> 1) & 0x1F), 255 if pv & 1 else 0)
+                else:  # IA16 palette
+                    v = (pv >> 8) & 0xFF
+                    rgba = (v, v, v, pv & 0xFF)
+                out[i * 4:i * 4 + 4] = bytes(rgba)
+        return bytes(out), width, height, fmt
+
+    fmt = br.read(4)
+    width = br.read(8)
+    height = br.read(8)
+    comp = br.read(4)
+    if width * height > 0x2000 or comp > 9:
+        return None
+    mult = width * height
+    scratch = [0] * (4 * mult)
+    try:
+        if comp in (0, 1):  # UNCOMPRESSED0/1
+            bpp = TEXFORMAT_BPP[fmt] if fmt < len(TEXFORMAT_BPP) else 0
+            if bpp == 0 or (24 + mult * bpp) > (size - 1) * 8:
+                return None
+            rgba = tex_read_uncompressed(br, width, height, fmt)
+            return rgba, width, height, fmt
+        if comp == 2:  # HUFFMAN
+            samples = tex_inflate_huffman(br, TEXFORMAT_NUM_CHANNELS[fmt] * mult, TEXFORMAT_CHANNEL_SIZES[fmt])
+            scratch[:len(samples)] = samples
+            if TEXFORMAT_HAS_1BIT_ALPHA[fmt]:
+                for i in range(mult):
+                    scratch[3 * mult + i] = br.read(1)
+        elif comp == 3:  # HUFFMANPERHCHANNEL
+            for j in range(TEXFORMAT_NUM_CHANNELS[fmt]):
+                scratch[j * mult:(j + 1) * mult] = tex_inflate_huffman(br, mult, TEXFORMAT_CHANNEL_SIZES[fmt])
+            if TEXFORMAT_HAS_1BIT_ALPHA[fmt]:
+                for i in range(mult):
+                    scratch[3 * mult + i] = br.read(1)
+        elif comp == 4:  # RLE
+            samples = tex_inflate_rle(br, TEXFORMAT_NUM_CHANNELS[fmt] * mult)
+            scratch[:len(samples)] = samples
+            if TEXFORMAT_HAS_1BIT_ALPHA[fmt]:
+                for i in range(mult):
+                    scratch[3 * mult + i] = br.read(1)
+        elif comp == 5:  # LOOKUP
+            ncolours, lookup = tex_build_lookup(br, TEXFORMAT_BPP[fmt])
+            return tex_inflate_lookup(br, lookup, ncolours, width, height, fmt), width, height, fmt
+        elif comp == 6:  # HUFFMANLOOKUP
+            ncolours, lookup = tex_build_lookup(br, TEXFORMAT_BPP[fmt])
+            samples = tex_inflate_huffman(br, mult, ncolours)
+            return tex_inflate_lookup_from_buffer(samples, lookup, ncolours, width, height, fmt), width, height, fmt
+        elif comp == 7:  # RLELOOKUP
+            ncolours, lookup = tex_build_lookup(br, TEXFORMAT_BPP[fmt])
+            samples = tex_inflate_rle(br, mult)
+            return tex_inflate_lookup_from_buffer(samples, lookup, ncolours, width, height, fmt), width, height, fmt
+        elif comp == 8:  # HUFFMANBLUR
+            stack = br.read(3)
+            samples = tex_inflate_huffman(br, TEXFORMAT_NUM_CHANNELS[fmt] * mult, TEXFORMAT_CHANNEL_SIZES[fmt])
+            scratch[:len(samples)] = samples
+            tex_blur(scratch, width, TEXFORMAT_NUM_CHANNELS[fmt] * height, stack, TEXFORMAT_CHANNEL_SIZES[fmt])
+            if TEXFORMAT_HAS_1BIT_ALPHA[fmt]:
+                for i in range(mult):
+                    scratch[3 * mult + i] = br.read(1)
+        elif comp == 9:  # RLEBLUR
+            stack = br.read(3)
+            samples = tex_inflate_rle(br, TEXFORMAT_NUM_CHANNELS[fmt] * mult)
+            scratch[:len(samples)] = samples
+            tex_blur(scratch, width, TEXFORMAT_NUM_CHANNELS[fmt] * height, stack, TEXFORMAT_CHANNEL_SIZES[fmt])
+            if TEXFORMAT_HAS_1BIT_ALPHA[fmt]:
+                for i in range(mult):
+                    scratch[3 * mult + i] = br.read(1)
+    except IndexError:
+        # bitstream ran out mid-decode (see KNOWN ISSUE: header vs byte size)
+        return None
+    return tex_channels_to_pixels(scratch, width, height, fmt), width, height, fmt
 
 
 

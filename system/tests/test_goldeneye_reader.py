@@ -10,6 +10,7 @@ stage; see gbox/goldeneye_inventory.py).
 import hashlib
 import json
 import struct
+import zlib
 from pathlib import Path
 
 import pytest
@@ -274,9 +275,10 @@ def test_csuitbondz_texture_headers(ge):
     """The 14 CsuitbondZ texture records resolve to real global image headers.
 
     The pixel bank stores them as a bitstream (format/width/height/compmethod)
-    with Huffman/RLE/LOOKUP/zlib compression -- not the raw RGBA16 that the
-    reader(4) note assumed -- so decode_model_texture reports the codec and
-    leaves pixels None where the codec is not yet implemented.
+    with Huffman/RLE/LOOKUP/zlib compression.  ``decode_model_texture`` now runs
+    the full texInflate codec pipeline; a texture whose header overruns its
+    recorded byte size (the pre-existing KNOWN ISSUE) reports ``pixels`` None
+    with a note rather than a silent partial decode.
     """
     doc = gr.read_character(ge, "CsuitbondZ")
     seen = {}
@@ -284,14 +286,19 @@ def test_csuitbondz_texture_headers(ge):
         d = gr.decode_model_texture(ge, t["index"])
         assert d["texture_id"] == t["index"]
         assert d["rom_offset"] == gr.IMAGES_ROM_START + gr.image_offsets(gr.g_textures(ge))[t["index"]]
+        assert d["size"] == gr.g_textures(ge)[t["index"]]
         seen[t["index"]] = d
     # every texture id is a 12-bit global id (G_SETTEX texture_id field)
     assert all(0 <= i < 0xFFF for i in seen)
-    # all 14 are compressed/undecoded in this milestone (no silent garbage)
-    assert all(d.get("pixels") is None for d in seen.values())
-    # at least one zlib and one Huffman-family codec are represented
+    # at least one zlib and one non-zlib codec are represented
     assert any(d.get("is_zlib") for d in seen.values())
-    assert any(d.get("compmethod", 0) >= 2 for d in seen.values())
+    assert any(not d.get("is_zlib") for d in seen.values())
+    # a decode either yields width*height*4 RGBA bytes or a note (no partials)
+    for d in seen.values():
+        if d.get("pixels") is not None:
+            assert d["pixel_bytes"] == d["width"] * d["height"] * 4
+        else:
+            assert "note" in d
 
 
 def test_g_settex_12bit_mask(ge):
@@ -300,3 +307,92 @@ def test_g_settex_12bit_mask(ge):
     vnodes = [n for n in doc["nodes"] if int(n["opcode"], 16) & 0xFF == 0x18]
     for n in vnodes:
         assert all(0 <= t < 0xFFF for t in n["record"]["texture_ids"])
+
+
+# ---------------------------------------------------------------- texInflate codecs
+
+def _bits(s: str) -> bytes:
+    """Pack a string of '0'/'1' (MSB-first) into bytes, zero-padded to a byte."""
+    s += "0" * ((-len(s)) % 8)
+    return int(s, 2).to_bytes(len(s) // 8, "big")
+
+
+def test_tex_get_bit_size():
+    # texGetBitSize(decimal) = ceil(log2(decimal))
+    assert gr.tex_get_bit_size(1) == 0
+    assert gr.tex_get_bit_size(2) == 1
+    assert gr.tex_get_bit_size(3) == 2
+    assert gr.tex_get_bit_size(4) == 2
+    assert gr.tex_get_bit_size(5) == 3
+    assert gr.tex_get_bit_size(8) == 3
+    assert gr.tex_get_bit_size(9) == 4
+    assert gr.tex_get_bit_size(256) == 8
+
+
+def test_cdiv_truncates_toward_zero():
+    assert gr._cdiv(7, 2) == 3
+    assert gr._cdiv(-7, 2) == -3   # C truncation, not Python floor
+    assert gr._cdiv(-1, 2) == 0
+
+
+def test_tex_inflate_rle_literals():
+    """Literal-only RLE stream: bt=1 rl=1 blocksize=8 then two literals."""
+    # btfieldsize=001, rlfieldsize=001, blocksize=1000, then 0 00000101, 0 00001010
+    stream = _bits("001" + "001" + "1000" + "0" + "00000101" + "0" + "00001010")
+    br = gr.TexBitReader(stream)
+    assert gr.tex_inflate_rle(br, 2) == [5, 10]
+
+
+def test_tex_build_lookup_16bpp():
+    """11-bit count then two 16-bit RGBA16 colours."""
+    stream = _bits("00000000010" + "1111100000000001" + "0000011111000000")
+    br = gr.TexBitReader(stream)
+    n, lookup = gr.tex_build_lookup(br, 16)
+    assert n == 2 and lookup == [0xF801, 0x07C0]
+
+
+def test_tex_channels_to_pixels_rgba16():
+    """1x1 RGBA16: channels R=31,G=0,B=0,A=1 -> opaque red."""
+    rgba = gr.tex_channels_to_pixels([31, 0, 0, 1], 1, 1, 1)
+    assert rgba == bytes([0xFF, 0x00, 0x00, 0xFF])
+
+
+def test_tex_channels_to_pixels_i8():
+    """1x1 I8: intensity 0x40 -> 0x40 in all channels, opaque."""
+    rgba = gr.tex_channels_to_pixels([0x40], 1, 1, 7)
+    assert rgba == bytes([0x40, 0x40, 0x40, 0xFF])
+
+
+def test_tex_blur_method0_left():
+    """texBlur method 0: pixels = (cur + left) % chansize, chansize 256."""
+    px = [10, 20]
+    gr.tex_blur(px, 2, 1, 0, 256)
+    assert px == [10, (20 + 256 * 2 + 10) % 256]
+
+
+def test_tex_inflate_lookup():
+    """1x2 LOOKUP: two indices into a 2-colour RGBA16 lookup -> two pixels."""
+    lookup = [0xF801, 0x07C0]
+    # bitspercolour = texGetBitSize(2) = 1; indices 0 then 1
+    stream = _bits("0" + "1")
+    br = gr.TexBitReader(stream)
+    rgba = gr.tex_inflate_lookup(br, lookup, 2, 1, 2, 1)
+    assert rgba == bytes([0xFF, 0x00, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0x00])
+
+
+def test_inflate_image_pixels_zlib_ci8():
+    """A 1x1 zlib paletted (RGBA16_CI8) image round-trips to opaque red."""
+    co = zlib.compressobj(level=9, wbits=-15)
+    raw = co.compress(bytes([0])) + co.flush()
+    payload = bytes([0x40])  # header byte: bit6 = zlib
+    payload += bytes([0x09, 0x00])              # format=9 (RGBA16_CI8), numcolours-1=0
+    payload += (0xF801).to_bytes(2, "big")      # palette[0] = opaque red 5551
+    payload += bytes([0x01, 0x01])              # width=1, height=1
+    payload += b"\x11\x72" + raw                # rarezip magic + raw DEFLATE
+    buf = payload + b"\x00" * 4
+    result = gr.inflate_image_pixels(buf, 0, len(payload), True)
+    assert result is not None
+    rgba, w, h, fmt = result
+    assert (w, h, fmt) == (1, 1, 9)
+    assert rgba == bytes([0xFF, 0x00, 0x00, 0xFF])
+
