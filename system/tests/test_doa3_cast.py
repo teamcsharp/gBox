@@ -37,9 +37,19 @@ def make_xpr(mdl_size: int = 64, words: list[int] | None = None,
 def make_cat(header: tuple[int, ...] | None = None) -> bytes:
     """A CAT companion shaped like kas00: 8 header words and a LNK marker."""
     header = header or (1, 0x14, 0x5C0, 0x9A40, 0x4F5C0, 0x100, 1, 0x18)
-    body = bytearray(0x9A40 + 4)
+    body = bytearray(max(0x9A40 + 4, header[4] + 4))
     struct.pack_into("<8I", body, 0, *header)
     body[0x9A40:0x9A44] = b"LNK\x00"
+    return bytes(body)
+
+
+def make_cat_lnk(size: int = 0x100, at: int = 0x9A40) -> bytes:
+    """A CAT companion with a fully-formed LNK section (name + 6-word header)."""
+    body = bytearray(at + 8 + 4 * doa3_cast.LNK_HEADER_WORDS + 4)
+    struct.pack_into("<8I", body, 0, 1, 0x14, 0x5C0, 0x9A40, 0x4F5C0, 0x100, 1, 0x18)
+    body[at:at + 4] = b"LNK\x00"
+    body[at + 4:at + 8] = b"0100"
+    struct.pack_into("<6I", body, at + 8, *doa3_cast.LNK_HEADER, size, 0, 0)
     return bytes(body)
 
 
@@ -171,6 +181,7 @@ def test_cat_sections_mirrors_observed_header_and_marker():
     assert res["layout"] == "offsets"
     assert res["lnk_offset_hint"] == 0x9A40
     assert res["fixed"] == [0x100, 1, 0x18]
+    assert res["section_offsets"] == [0x14, 0x5C0, 0x9A40, 0x4F5C0]
 
 
 def test_cat_sections_rejects_missing_fixed_signature():
@@ -200,11 +211,63 @@ def test_cat_sections_rejects_mismatched_lnk_hint():
 
 def test_cat_sections_without_markers():
     body = bytearray(0x30)
-    struct.pack_into("<8I", body, 0, 1, 0x14, 1, 0x20, 1, 0x100, 1, 0x18)
+    struct.pack_into("<8I", body, 0, 1, 0x14, 0x18, 0x20, 0x24, 0x100, 1, 0x18)
     res = doa3_cast.cat_sections(bytes(body))
     assert res["lnk_markers"] == []
     assert res["layout"] == "offsets"
     assert res["lnk_offset_hint"] == 0x20
+
+
+def test_cat_lnk_decodes_pinned_header():
+    res = doa3_cast.cat_lnk(make_cat_lnk(size=0x100))
+    assert res is not None
+    assert res["offset"] == 0x9A40
+    assert res["name"] == "0100"
+    assert res["header"] == [2, 16, 32, 0x100, 0, 0]
+    assert res["size"] == 0x100
+    assert res["body_offset"] == 0x9A40 + 8 + 4 * doa3_cast.LNK_HEADER_WORDS
+
+
+def test_cat_lnk_absent_returns_none():
+    body = bytearray(0x30)
+    struct.pack_into("<8I", body, 0, 1, 0x14, 1, 0x20, 1, 0x100, 1, 0x18)
+    assert doa3_cast.cat_lnk(bytes(body)) is None
+
+
+def test_cat_lnk_rejects_truncated_section():
+    # LNK marker at the very end with no room for the name/header after it.
+    body = bytearray(0x9A40 + 4)
+    struct.pack_into("<8I", body, 0, 1, 0x14, 0x5C0, 0x9A40, 0x9A44, 0x100, 1, 0x18)
+    body[0x9A40:0x9A44] = b"LNK\x00"
+    with pytest.raises(ValueError, match="truncated"):
+        doa3_cast.cat_lnk(bytes(body))
+
+
+def test_cat_lnk_rejects_bad_name():
+    body = bytearray(make_cat_lnk())
+    body[0x9A40 + 4:0x9A40 + 8] = b"0200"
+    with pytest.raises(ValueError, match="name"):
+        doa3_cast.cat_lnk(bytes(body))
+
+
+def test_cat_lnk_rejects_bad_header():
+    body = bytearray(make_cat_lnk())
+    struct.pack_into("<I", body, 0x9A40 + 8, 3)   # first header word must be 2
+    with pytest.raises(ValueError, match="header"):
+        doa3_cast.cat_lnk(bytes(body))
+
+
+def test_cat_lnk_rejects_unaligned_size():
+    body = bytearray(make_cat_lnk())
+    struct.pack_into("<I", body, 0x9A40 + 8 + 12, 0x101)
+    with pytest.raises(ValueError, match="4-aligned"):
+        doa3_cast.cat_lnk(bytes(body))
+
+
+def test_cat_sections_rejects_non_increasing_offsets():
+    body = make_cat(header=(1, 0x14, 0x9A40, 0x9A40, 0x4F5C0, 0x100, 1, 0x18))
+    with pytest.raises(ValueError, match="increasing"):
+        doa3_cast.cat_sections(body)
 
 
 # ----------------------------------------------------------------- slots

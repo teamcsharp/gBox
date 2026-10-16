@@ -61,12 +61,15 @@ header 0x1E000):
   reliable signature is the FIXED pair at 0x14/0x18 = 0x100, 1, verified on
   all 69 complete costumes across 20 fighter families. The first five words
   (0x00..0x13) are NOT a stable header: 24 costumes store version=1, a 0x14
-  word, then section offsets whose word[3] is the ``LNK`` section offset (the
-  "offsets" layout); the other 45 store an unresolved 20-byte ID block (the
-  "id_block" layout). Each ``LNK\0`` section is followed by a 4-byte name; it
-  holds the skeleton/joint links. The body past the header and the trailing
-  near-EOF record table are still left for the RE stage (their stride differs
-  between costumes).
+  word, then section offsets (word[1..4] = {0x14, s2, s3, s4}) whose word[3]
+  is the ``LNK`` section offset (the "offsets" layout); the other 45 store an
+  unresolved 20-byte ID block (the "id_block" layout). The ``LNK\\0`` section
+  itself is ``LNK\\0`` + the 4-byte name ``0100`` + a 6-word header
+  ``{2, 16, 32, size, 0, 0}``: the words 2/16/32 and the two trailing zeros
+  are constant on every costume (68/69 have a LNK section; kor00 has none),
+  while ``size`` is a 4-aligned byte count (the link-data size) that varies
+  with the costume's accessory bones. The LNK body (joint links) and the
+  trailing near-EOF record table are still left for the RE stage.
 * AFS entries must be rewritten inside their room (size rounded up to the
   archive alignment, bounded by the next entry's offset / name directory),
   which ``doa3_inventory.entry_rooms`` computes.
@@ -88,6 +91,9 @@ USER_TYPE = 0x80000000
 MDL_TAG = b"MDL\x00"
 OBJ_TAG = b"OBJ\x00"
 LNK_MARKER = b"LNK\x00"
+LNK_NAME = b"0100"               # the 4-byte name after every LNK marker (68/69 costumes)
+LNK_HEADER = (2, 16, 32)         # fixed leading words of the LNK section header
+LNK_HEADER_WORDS = 6             # the LNK header is {2, 16, 32, size, 0, 0}
 CAT_FIXED_OFFSET = 0x14          # the stable fixed block sits at 0x14
 CAT_SIGNATURE = (0x100, 1)       # (word@0x14, word@0x18) across all 69 costumes
 MAX_HEADER_WORDS = 4096
@@ -618,7 +624,53 @@ def cat_sections(blob: bytes) -> dict:
         if markers and hint != markers[0]:
             raise ValueError(f"CAT LNK offset hint {hint:#x} does not match "
                              f"the first LNK marker {markers[0]:#x}")
+        sections = list(head[1:5])            # {0x14, s2, s3(LNK), s4}
+        if any(b <= a for a, b in zip(sections, sections[1:])):
+            raise ValueError(f"CAT section offsets are not strictly increasing: "
+                             f"{[hex(s) for s in sections]}")
+        if sections[-1] > len(blob):
+            raise ValueError(f"CAT section offset {sections[-1]:#x} exceeds the "
+                             f"{len(blob)}-byte companion")
+        result["section_offsets"] = sections
     return result
+
+
+def cat_lnk(blob: bytes) -> dict | None:
+    """Decode the CAT ``LNK`` skeleton-link section header.
+
+    Measured across all 68 LNK-bearing costumes (69 complete costumes; kor00
+    has no LNK section): the section is ``LNK\\0`` + the 4-byte name ``0100``
+    + a 6-word header ``{2, 16, 32, size, 0, 0}``. The words 2, 16 and 32 and
+    the two trailing zeros are constant on every costume; ``size`` is a
+    4-aligned byte count (the link-data size) that varies with the costume's
+    accessory bones. The body past the header (the actual joint links) is
+    still left for the RE stage; this pins the section envelope it must decode.
+
+    Returns ``None`` when the companion has no LNK section (kor00), and raises
+    ``ValueError`` when a present LNK section deviates from the pinned shape.
+    """
+    at = blob.find(LNK_MARKER)
+    if at < 0:
+        return None
+    if len(blob) < at + 8 + 4 * LNK_HEADER_WORDS:
+        raise ValueError(f"LNK section at {at:#x} is truncated")
+    name = blob[at + 4:at + 8]
+    if name != LNK_NAME:
+        raise ValueError(f"LNK section at {at:#x} has unexpected name {name!r}")
+    a, b, c, size, z4, z5 = struct.unpack_from("<6I", blob, at + 8)
+    if (a, b, c) != LNK_HEADER:
+        raise ValueError(f"LNK section at {at:#x} has unexpected header words "
+                         f"{(a, b, c)!r}, expected {LNK_HEADER!r}")
+    if (z4, z5) != (0, 0):
+        raise ValueError(f"LNK section at {at:#x} has nonzero trailing words "
+                         f"({z4:#x}, {z5:#x})")
+    if size % 4:
+        raise ValueError(f"LNK size {size:#x} is not 4-aligned")
+    if size >= len(blob):
+        raise ValueError(f"LNK size {size:#x} exceeds the {len(blob)}-byte companion")
+    return {"offset": at, "name": name.decode("latin-1"),
+            "header": [a, b, c, size, z4, z5], "size": size,
+            "body_offset": at + 8 + 4 * LNK_HEADER_WORDS}
 
 
 # ----------------------------------------------------------------- slots
@@ -737,6 +789,9 @@ def cast_writer_status() -> dict:
         "mdl_descriptor_note": "header-tail vertex (obj_count) + texture (tex_count) "
                                "descriptors pinned across kas00/kas01/kas02; texture "
                                "pixel format / draw-packet semantics unresolved",
+        "cat_lnk_header": True,
+        "cat_lnk_note": "LNK section = 'LNK\\0' + '0100' + {2,16,32,size,0,0} pinned on "
+                        "68/69 costumes (kor00 has none); the joint-link body remains",
         "donor_retarget": False,
         "playable": False,
         "message": "measured MDL geometry decode (vertices/normals/UVs/u16 strips/material "
@@ -744,8 +799,10 @@ def cast_writer_status() -> dict:
                    "the CAT header is classified (offsets vs id_block layout, fixed "
                    "0x100/1 signature across all 69 costumes); the header-tail data "
                    "descriptor table (vertex + texture records) is located and pinned; "
-                   "texture pixel format, the CAT body (LNK skeleton/joints), donor "
-                   "retarget and the routed cast build are the next stages",
+                   "the LNK section envelope ('LNK\\0' + '0100' + {2,16,32,size,0,0}) "
+                   "is pinned on 68/69 costumes; the LNK joint-link body, texture "
+                   "pixel format, donor retarget and the routed cast build are the "
+                   "next stages",
     }
 
 
