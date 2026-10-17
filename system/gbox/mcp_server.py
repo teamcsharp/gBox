@@ -72,7 +72,7 @@ CONVENIENCE = {
                              obj({'request_id': S, 'title': S, 'files': {'type': 'array', 'items': S},
                                   'tests': {'type': 'array', 'items': S}}, ['request_id', 'title', 'files'])),
     "get_dispatch_feedback": ("Read durable failure lessons and model cooldowns from actual Hermes executions. Use these to change the next attempt, not repeat a failed step.", obj({})),
-    "get_game_work_queue": ("Read the persistent all-favorites character-replacement queue. Supply game_id for detailed exact-build checkpoints and evidence. A completed agent run is not game readiness.", obj({"game_id": S})),
+    "get_game_work_queue": ("Read the persistent favorite and requested-game character-replacement queue. Supply any game_id for an engineering plan with stage-specific reader/writer checks and reusable playbooks, plus existing exact-build checkpoints. Reading an unqueued game does not enqueue it or imply support. A completed agent run is not game readiness.", obj({"game_id": S})),
     "record_game_work": ("Checkpoint the assigned favorite game's inventory, analysis, reader, writer or native gameplay verification. Verified stages require stored artifact hashes and the same owned-source hash; runtime also requires an actual gameplay image. Partial/blocked checkpoints preserve the next step.",
                          obj({"game_id": S, "request_id": S, "stage": {"type": "string", "enum": ["inventory", "analysis", "reader", "writer", "runtime"]},
                               "status": {"type": "string", "enum": ["partial", "verified", "blocked"]}, "note": S,
