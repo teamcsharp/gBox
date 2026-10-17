@@ -292,6 +292,19 @@ def test_checkout_releases_acquired_lease_when_download_fails(tmp_path, monkeypa
     assert '/api/memory-cards/' + cid + '/release' in calls
 
 
+def test_checkout_falls_back_to_local_cards_when_control_plane_times_out(tmp_path, monkeypatch):
+    from gbox import memory_card_sessions as S
+    import httpx
+    def down(*args, **kwargs):
+        raise httpx.ReadTimeout('timed out')
+    monkeypatch.setattr(S, 'api', down)
+    ad = SimpleNamespace(name='retroarch')
+    ctx = SimpleNamespace(server='http://spark', worker='w1', config=SimpleNamespace(data_dir=tmp_path))
+    assert S.checkout('w1-job', ad, {'platform': 'dreamcast', 'game_id': 'pso-dc'}, ctx) is None
+    assert 'ReadTimeout' in (ad.memory_card_unavailable or '')
+    assert not getattr(ad, 'memory_card_context', None)
+
+
 def test_finish_never_releases_card_before_emulator_process_has_exited(tmp_path, monkeypatch):
     from gbox import memory_card_sessions as S
     context, row, path, raw = local_context(tmp_path); sid = context['session_id']; calls = []
