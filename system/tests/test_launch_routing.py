@@ -46,3 +46,29 @@ def test_mod_launch_ignores_unrelated_job_with_null_session_id(tmp_path):
         response = client.post("/api/games/test-game/launch?node=windows&mod=sonic")
     assert response.status_code == 200, response.text
     assert response.json()["input"]["mod"] == "sonic"
+
+
+@pytest.mark.parametrize("online", [True, False])
+@pytest.mark.parametrize("platform", ["xbox", "xbox360", "windows_native"])
+def test_named_pc_stays_pinned_for_coreless_games(tmp_path, online, platform):
+    from gbox.models import WorkerInfo
+    cfg = Config(data_dir=tmp_path)
+    app = create_app(cfg)
+    store = app.state.store
+    for name, wid, last_seen in [("i9-NUC", "nuc-worker", None if online else 1),
+                                  ("JAYBUILTFINALE", "jay-worker", None)]:
+        worker = WorkerInfo(id=wid, name=name, os="windows", tools=["launch_game"],
+                            **({"last_seen": last_seen} if last_seen is not None else {}))
+        store.put("worker", wid, worker.model_dump())
+    store.upsert_catalog([{
+        "game_id": "coreless", "title": "Standalone game", "platform": platform,
+        "source_paths": ["test.iso"], "format": "iso", "profile_id": "coreless",
+        "core": None, "launch": {"kind": "attract", "path": "test.iso"},
+    }])
+    with TestClient(app) as client:
+        r = client.post("/api/games/coreless/launch?node=i9-NUC",
+                        headers={"Authorization": f"Bearer {cfg.token()}"}, json={})
+    assert r.status_code == 200, r.text
+    job = r.json()
+    assert job["require_worker"] == "nuc-worker"
+    assert job["require_os"] is None

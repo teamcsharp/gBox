@@ -72,7 +72,7 @@ CONVENIENCE = {
                              obj({'request_id': S, 'title': S, 'files': {'type': 'array', 'items': S},
                                   'tests': {'type': 'array', 'items': S}}, ['request_id', 'title', 'files'])),
     "get_dispatch_feedback": ("Read durable failure lessons and model cooldowns from actual Hermes executions. Use these to change the next attempt, not repeat a failed step.", obj({})),
-    "get_game_work_queue": ("Read the persistent all-favorites character-replacement queue. Supply game_id for detailed exact-build checkpoints and evidence. A completed agent run is not game readiness.", obj({"game_id": S})),
+    "get_game_work_queue": ("Read the persistent favorite and requested-game character-replacement queue. Supply any game_id for an engineering plan with stage-specific reader/writer checks and reusable playbooks, plus existing exact-build checkpoints. Reading an unqueued game does not enqueue it or imply support. A completed agent run is not game readiness.", obj({"game_id": S})),
     "record_game_work": ("Checkpoint the assigned favorite game's inventory, analysis, reader, writer or native gameplay verification. Verified stages require stored artifact hashes and the same owned-source hash; runtime also requires an actual gameplay image. Partial/blocked checkpoints preserve the next step.",
                          obj({"game_id": S, "request_id": S, "stage": {"type": "string", "enum": ["inventory", "analysis", "reader", "writer", "runtime"]},
                               "status": {"type": "string", "enum": ["partial", "verified", "blocked"]}, "note": S,
@@ -211,17 +211,23 @@ def build(base_url: str, token: str) -> Server:
     async def start_background(body):
         if body.get('require_worker') in ('idle', 'other'):
             body = body | {'require_worker': (await select_background_worker(body['tool']))['id']}
+        target = body.get('require_worker')
+        worker = None
+        if target and target not in ('idle', 'other'):
+            workers = await get('/api/workers')
+            worker = next((w for w in workers if target in (w.get('id'), w.get('name'))), None)
+            from .job_routing import conflict
+            if why := conflict(body.get('require_os'), worker):
+                raise ValueError(why)
         # Retrying an MCP call must not multiply model swaps on the same session.
         active = await get('/api/jobs', state='queued,running', limit=100)
         for job in active:
             if (job.get('tool') == body['tool'] and job.get('input') == body.get('input', {})
                     and job.get('require_worker') == body.get('require_worker')
+                    and job.get('require_os') == body.get('require_os')
                     and job.get('parent_request_id') == body.get('parent_request_id')):
                 return job | {'deduplicated': True}
-        target = body.get('require_worker')
         if target and target not in ('idle', 'other'):
-            workers = await get('/api/workers')
-            worker = next((w for w in workers if target in (w.get('id'), w.get('name'))), None)
             if not worker or not worker.get('online'):
                 raise RuntimeError('Target worker is unavailable. Do not enqueue more requests for it; use an idle worker or continue source work.')
             if worker.get('active_jobs', 0) >= 4:

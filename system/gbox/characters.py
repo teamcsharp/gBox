@@ -1581,6 +1581,12 @@ def _sonic2d(key):
 
 # (name, does this extractor read the game? (title lower, platform), roster(), run)
 DEDICATED = [
+    ("re5ps3", lambda t, p: t.startswith("resident evil 5") and p == "ps3",
+     lambda: __import__("gbox.re5ps3_collection", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.re5ps3_collection", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    ("re2gc", lambda t, p: t == "resident evil 2 (usa)" and p == "gamecube",
+     lambda: __import__("gbox.re2gc_models", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.re2gc_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("mvc2", lambda t, p: "marvel vs. capcom 2" in t and p == "dreamcast",
      lambda: __import__("gbox.mvc2_chars", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.mvc2_chars", fromlist=["x"]).extract_run(ctx, game, e, work)),
@@ -1734,7 +1740,35 @@ DEDICATED = [
     # mappings + Ani scripts + palette) as 2D sprites entries with clips (spin dash, jump, level complete, every named
     # animation); gbox.sonic2d_sprites, docs/sonic2d_sprites.md
     *[_sonic2d(k) for k in ("sonic1", "sonic2", "sonic3", "s3k", "sk")],
+    # Super Mario Bros. 3 (NES): the player (Mario; Luigi = palette swap) as editable indexed 4-colour sprite sheets,
+    # CHR page atlases and a slot->page/tile frame map (gbox.smb3_sprites)
+    ("smb3", lambda t, p: __import__("gbox.smb3_sprites", fromlist=["x"]).title_test(t, p),
+     lambda: __import__("gbox.smb3_sprites", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.smb3_sprites", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # Shadow In Sonic 1 (Mega Drive): the Sonic 1 REV00 disassembly-rebuild hack whose player is Shadow in the Sonic
+    # slot (object 01). gbox.sonic1_reader exports every mapping frame as an indexed PNG + an import-ready
+    # pieces/DPLC/origin manifest, the walk/run animation map and the Nemesis title/continue/signpost/lives/ending art.
+    ("sonic1_shadow", lambda t, p: __import__("gbox.sonic1_reader", fromlist=["x"]).title_test(t, p),
+     lambda: __import__("gbox.sonic1_reader", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.sonic1_reader", fromlist=["x"]).extract_run(ctx, game, e, work)),
 ]
+
+
+def reader_matches(name, test, game):
+    """Exact-build readers cannot be advertised for a sibling catalog entry."""
+    return (name != 're5ps3' or game.get('game_id') == 'e7ca89bbeb67360d') and \
+        test((game.get('title') or '').lower(), game.get('platform') or '')
+
+
+READER_SCOPES = {"re5ps3": "gbox.re5ps3_collection"}
+
+
+def reader_scope(extractor):
+    """Optional bounded coverage, separate from completing a registered roster."""
+    import importlib
+    module = READER_SCOPES.get(extractor or '')
+    fn = getattr(importlib.import_module(module), 'collection_scope', None) if module else None
+    return fn() if callable(fn) else {}
 
 
 def dedicated_entries(config, game, name, roster):
@@ -1754,6 +1788,10 @@ def dedicated_entries(config, game, name, roster):
     if name == "twin_snakes":                             # each disc carries part of the cast (Liquid: disc 2)
         from . import twin_snakes
         roster = functools.partial(twin_snakes.roster, twin_snakes.disc_of(game))
+    if name == 're5ps3' and game.get('game_id') != 'e7ca89bbeb67360d':
+        return []
+    if name == 're2gc' and game.get('game_id') != 'c6adbfa00c20aaf9':
+        return []
     root = library_root(config)
     entries = []
     for entry in roster():
@@ -1769,7 +1807,7 @@ def dedicated_entries(config, game, name, roster):
 # the cast swap's donor gate): JGR v2 draws the body without the cel-shading outline shell, with per-group textures.
 # AUF v2 extracts every body (v1 listed the writer's slots only); collect() records the version it ran with, so a
 # stored collection made by an older reader is collected again at the next launch (character_collection).
-READER_VERSIONS = {"jgr": ("gbox.jgr", "jgr_reader"), "auf": ("gbox.auf_chars", "auf_reader"),
+READER_VERSIONS = {"re5ps3": ("gbox.re5ps3_collection", "re5ps3_reader"), "re2gc": ("gbox.re2gc_models", "re2gc_reader"), "sonic1_shadow": ("gbox.sonic1_reader", "sonic1_shadow_reader"), "smb3": ("gbox.smb3_sprites", "smb3_reader"), "jgr": ("gbox.jgr", "jgr_reader"), "auf": ("gbox.auf_chars", "auf_reader"),
                    "twin_snakes": ("gbox.twin_snakes", "tts_reader"), "sm64ds": ("gbox.sm64ds_chars", "sm64ds_reader"),
                    "soulcalibur": ("gbox.soulcalibur_dc", "sc_reader"),
                    "soulcalibur2": ("gbox.soulcalibur2", "sc2_reader"),
@@ -1793,7 +1831,8 @@ def reader_status(meta: dict, extractor: str | None = None) -> dict | None:
     if extractor is None:
         s = meta.get("source") or {}
         t, plat = (s.get("game_title") or "").lower(), s.get("platform") or ""
-        extractor = next((n for n, test, _r, _run in DEDICATED if test(t, plat)), None)
+        extractor = next((n for n, test, _r, _run in DEDICATED
+                          if reader_matches(n, test, {'title': t, 'platform': plat, 'game_id': s.get('game_id')})), None)
     spec = READER_VERSIONS.get(extractor or "")
     if not spec:
         return None
@@ -1828,8 +1867,7 @@ def backfill_roles(root: Path, extractor: str, meta: dict) -> dict:
 def collect(ctx, inp):
     """Collect a supported disc roster without vision/LLM calls or gameplay interruption."""
     game, root = _game(ctx, inp), library_root(ctx.config)
-    title, platform = game['title'].lower(), game['platform']
-    reader = next((r for r in DEDICATED if r[1](title, platform)), None)
+    reader = next((r for r in DEDICATED if reader_matches(r[0], r[1], game)), None)
     if reader is None:
         return {"status": "unsupported", "game_id": game['game_id'],
                 "message": "No native model reader for this game; no unrigged capture was substituted."}
@@ -1883,6 +1921,7 @@ def collect(ctx, inp):
     from . import char_coverage
     return collection_status(results) | {
         'game_id': game['game_id'], 'extractor': name, 'reader_version': reader_version(name),
+        'scope': reader_scope(name),
         # the slots this game's writer can put a collection character into (the cast menu: player, enemy:<name>...)
         'slots': char_coverage.cast_slots(game)}
 
@@ -1966,9 +2005,9 @@ def _preview_stage(d: Path, meta: dict):
 
 def extract_dedicated(ctx, game: dict, what: str, root: Path, prepared=None) -> dict | None:
     """The game's own extractor, when it has one: None = no extractor for this game."""
-    t, plat = (game.get("title") or "").lower(), game.get("platform") or ""
+    plat = game.get("platform") or ""
     for name, test, roster, run in DEDICATED:
-        if not test(t, plat):
+        if not reader_matches(name, test, game):
             continue
         ros = prepared[1] if prepared and prepared[0] == name else dedicated_entries(ctx.config, game, name, roster)
         e = best_match(ros, what)
@@ -2769,7 +2808,8 @@ def characters_tool(inp: CharIn, ctx):
     if gid in pe2_swap.GAME_IDS and inp.slot == "player":        # Parasite Eve II (PS1): Aya, every outfit -> pe2_<slug>
         return {"result": out | pe2_swap.use(ctx, meta, game, inp)}
     from . import ff7_swap
-    if gid in ff7_swap.GAME_IDS and inp.slot == "player":        # Final Fantasy VII (PS1): Cloud, field + battle -> ff7_<slug>
+    if gid in ff7_swap.GAME_IDS and ff7_swap.is_slot(inp.slot):
+        # Final Fantasy VII (PS1): a party member (player = Cloud), field + battle -> ff7_<slug>[_<slot>]
         return {"result": out | ff7_swap.use(ctx, meta, game, inp)}
     from . import mgs_vr_swap
     if gid in mgs_vr_swap.GAME_IDS and (mgs_vr_swap.is_slot(inp.slot) or inp.slot == "cast"):

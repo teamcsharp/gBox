@@ -21,7 +21,7 @@ implementation: OpenBiohazard2 fileio/pld.go):
   compressed on the PSX build.
 * MD1: u32 section_len, u32 unknown, u32 num_obj; ``num_obj // 2`` object
   headers of 56 bytes (triangle header of 7 u32, then quad header of 7 u32);
-  every data offset inside is relative to the start of the MD1 section.
+  every data offset inside is relative to the end of the 12-byte MD1 header.
   num_obj is twice the number of objects because each object contributes a
   triangle list and a quad list.
 * EMR: u16 off_armatures, u16 off_frames, u16 count (bone count),

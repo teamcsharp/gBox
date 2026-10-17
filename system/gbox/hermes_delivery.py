@@ -159,6 +159,28 @@ def publish(request_id: str, title: str, files: list[str], tests: list[str]) -> 
                     or not path.resolve().is_relative_to(root) or not path.is_file()
                     or any(part.startswith('.') for part in Path(name).parts)):
                 raise ValueError('Only explicit source, test and documentation files can be published')
+        # The executed regression files are part of the handoff, even when the
+        # caller supplied them only in tests rather than repeating them in files.
+        files = list(dict.fromkeys(files))
+        if any(name.endswith('.py') for name in files):
+            if not tests or len(tests) > 10:
+                raise ValueError('Python changes require 1 to 10 focused test files')
+            for name in tests:
+                path = root / 'system' / name
+                if (not re.fullmatch(r'tests/test_[\w]+\.py', name) or path.is_symlink()
+                        or not path.resolve().is_relative_to(root / 'system') or not path.is_file()):
+                    raise ValueError('Tests must be named files inside system/tests')
+                if 'system/' + name not in files:
+                    files.append('system/' + name)
+            if len(files) > 40:
+                raise ValueError('Source and focused test files together must fit the 40-file handoff')
+            dirty = set(_run(['git', 'diff', 'HEAD', '--name-only', '--',
+                              'system/gbox/', 'system/tests/'], root).splitlines())
+            dirty.update(_run(['git', 'ls-files', '--others', '--exclude-standard', '--',
+                               'system/gbox/', 'system/tests/'], root).splitlines())
+            omitted = sorted(dirty - set(files))
+            if omitted:
+                raise ValueError('Include changed source/test helpers in files before validation: ' + ', '.join(omitted))
         _run(['git', 'diff', '--check'], root)
         # Workspaces survive their first PR merge. Refresh the comparison base
         # without changing the agent's branch, index or uncommitted source.
@@ -193,14 +215,13 @@ def publish(request_id: str, title: str, files: list[str], tests: list[str]) -> 
             raise RuntimeError('No task commit exists; no GitHub progress was claimed')
         _run(['git', 'push', '-u', 'origin', workspace['branch']], root, timeout=90)
         commit = _run(['git', 'rev-parse', 'HEAD'], root)
-        local = _local_run(request_id)
-        note = ''
-        if local:
-            from . import hermes_local
-            head, summary = hermes_local.pr_note(checks)
-            note = f"> **Local model.** {head}\n> {summary}\n\n"
+        from . import hermes_device_work
+        provenance = hermes_device_work.publication_provenance(request_id)
+        local = any(r['device_id'] not in ('unknown', 'mixed') and not r['device_id'].startswith('provider:')
+                    for run in provenance.get('runs', []) for r in run.get('routes', []))
+        note = hermes_device_work.pr_note(provenance)
         body = (note + f"gBox request #{workspace['number']} ({request_id}).\n\n"
-                f"{title}\n\nValidation:\n```text\n" + '\n'.join(checks) +
+                f"{title}\n\nValidation files: {', '.join(tests)}\n\nValidation:\n```text\n" + '\n'.join(checks) +
                 "\n```\n\nPublished for review. This PR does not by itself verify live emulation or close the inbox ticket.\n")
         body_path = state_dir() / (request_id + '-pr.md')
         body_path.write_text(body)
@@ -225,6 +246,12 @@ def publish(request_id: str, title: str, files: list[str], tests: list[str]) -> 
             workspace['local_model'] = _mark_local(root, number, existing is not None)
         workspace.update(commit=commit, url=confirmed['url'], pr_number=number, pr_state=confirmed['state'],
                          base_head=_run(['git', 'rev-parse', 'origin/main'], root),
-                         checks=checks, files=files, published_at=time.time())
+                         checks=checks, files=files, published_at=time.time(), provenance=provenance)
         record.write_text(json.dumps(workspace, indent=2))
+        receipts = state_dir() / 'publications'
+        receipts.mkdir(parents=True, exist_ok=True)
+        receipt = receipts / f'{number}-{commit}.json'
+        if not receipt.exists():
+            with receipt.open('x', encoding='utf-8') as stream:
+                json.dump(workspace, stream, indent=2)
         return workspace

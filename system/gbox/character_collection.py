@@ -9,8 +9,7 @@ RECOLLECT_PARTIAL_S = 24 * 3600     # a partial roster is re-collected at most o
 
 def registered(game):
     """True when a dedicated native reader in characters.DEDICATED matches this catalog game."""
-    title = (game.get('title') or '').lower()
-    return any(test(title, game.get('platform')) for _, test, _, _ in C.DEDICATED)
+    return any(C.reader_matches(name, test, game) for name, test, _, _ in C.DEDICATED)
 
 
 class AutoCollection:

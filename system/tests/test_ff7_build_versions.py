@@ -37,7 +37,7 @@ def test_rebuild_preserves_old_builds_and_their_previews(tmp_path, monkeypatch):
     first_dir = cfg.cache/'mods'/game['game_id']/first['mod']
     before = {p.name: p.read_bytes() for p in first_dir.iterdir()}
     second = S.build_mod(cfg, meta, game, root=root)
-    assert first['mod'] == 'ff7_mario_v4'
+    assert first['mod'] == f'ff7_mario_v{S.CACHE_VERSION}'
     assert second['mod'].startswith(first['mod']+'_')
     assert second['mod'] != first['mod']
     assert {p.name: p.read_bytes() for p in first_dir.iterdir()} == before
@@ -69,7 +69,7 @@ def test_use_records_and_returns_the_new_rebuild_name(tmp_path, monkeypatch):
     monkeypatch.setattr(characters, 'library_root', lambda cfg: tmp_path)
     monkeypatch.setattr(sm64_swap, '_have_mod', lambda *args: True)
     monkeypatch.setattr(characters, '_api', lambda *args, **kwargs: recorded.append(kwargs.get('json')))
-    monkeypatch.setattr(S, 'build_mod', lambda *args: {'mod': 'ff7_mario_v2_new',
+    monkeypatch.setattr(S, 'build_mod', lambda *args, **kwargs: {'mod': 'ff7_mario_v2_new',
                         'report': {'field': {'triangles': 359}, 'battle': {'triangles': 752}}})
     result = S.use(ctx, meta, game, inp)
     assert result['mod'] == recorded[0]['mod'] == 'ff7_mario_v2_new'

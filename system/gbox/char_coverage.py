@@ -38,7 +38,9 @@ WRITERS = [
      "BODY/BODY2 + texture page rebuilt, read back by the reader; not yet verified in an emulator"),
     ("pe_swap", ["player"], "Aya, all 5 outfits (field + battle share the model)"),
     ("pe2_swap", ["player"], "PE2 Aya, every outfit file (STAGE0.CDF 10200..10600: model + page + CLUT); unverified in game"),
-    ("ff7_swap", ["player"], "Cloud: field model (FIELD/CLOUD.BCX) + battle model (ENEMY6/CLOUD.LZS)"),
+    ("ff7_swap", ["player", "tifa", "aerith", "barret", "red13", "cid", "yuffie", "caitsith", "vincent"],
+     "the FF7 party cast: each member's field model (FIELD/<name>.BCX) and battle model (ENEMY6/<key>.LZS) "
+     "rebuilt on that member's own skeletons"),
     ("sa2_chars", ["player"], "Sonic (SA2 player model)"),
     ("pso_player", ["player", "enemy:<name>", "enemies"],
      "a PSO class (Ninja node tree, not drawn by the game yet); enemy:booma / gobooma / gigobooma / boomas or any BM_ENE "
@@ -204,9 +206,10 @@ def cast_slots(game: dict) -> list[dict]:
 
 def extractor_for(game: dict) -> tuple[str | None, list[dict]]:
     from . import characters as C
-    t, plat = (game.get("title") or "").lower(), game.get("platform") or ""
     for name, test, roster, _run in C.DEDICATED:
-        if test(t, plat):
+        if name == 're2gc' and game.get('game_id') != 'c6adbfa00c20aaf9':
+            continue
+        if C.reader_matches(name, test, game):
             try:
                 return name, [r for r in roster() if r.get("kind", "character") == "character"]
             except Exception:                              # noqa: BLE001
@@ -265,6 +268,7 @@ def coverage(ctx, api) -> dict:
                      "favorite": bool(g.get('favorite')), "library": g.get('library'),
                      "capabilities": capabilities, "backlog": GC.backlog(capabilities),
                      "rip": {"extractor": ex or (tools[0] if tools else None), "roster": len(roster),
+                             "scope": C.reader_scope(ex),
                              "in_collection": sorted(slugs), "usable": sorted(m["slug"] for m in have
                                                                              if (m.get("rig") or {}).get("roles")),
                              "not_ripped": missing},

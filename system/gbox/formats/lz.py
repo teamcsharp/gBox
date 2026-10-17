@@ -487,38 +487,40 @@ def prs_compress(data: bytes, depth: int = 256) -> bytes:
     return bytes(out)
 
 
-def yaz0_decompress(src: bytes) -> bytes:
-    assert src[:4] == b"Yaz0", "not Yaz0"
+def yaz0_decompress(src: bytes, *, max_output: int | None = None) -> bytes:
+    """Decode Yaz0, rejecting truncated streams and invalid back-references."""
+    if len(src) < 16 or src[:4] != b"Yaz0":
+        raise ValueError("Invalid or truncated Yaz0 header")
     size = struct.unpack_from(">I", src, 4)[0]
-    dst = bytearray(size)
-    s, d = 16, 0
-    while d < size:
-        code = src[s]
+    if max_output is not None and (max_output < 0 or size > max_output):
+        raise ValueError("Yaz0 output exceeds configured limit")
+    # Every token uses at least one byte and can produce at most 273 bytes.
+    if size > (len(src) - 16) * 273:
+        raise ValueError("Yaz0 output size cannot fit the encoded stream")
+    dst = bytearray()
+    s = 16
+    def byte():
+        nonlocal s
+        if s >= len(src):
+            raise ValueError("Truncated Yaz0 stream")
+        value = src[s]
         s += 1
+        return value
+    while len(dst) < size:
+        code = byte()
         for bit in range(8):
-            if d >= size:
+            if len(dst) == size:
                 break
             if code & (0x80 >> bit):
-                dst[d] = src[s]
-                d += 1
-                s += 1
+                dst.append(byte())
             else:
-                b1, b2 = src[s], src[s + 1]
-                s += 2
+                b1, b2 = byte(), byte()
                 dist = ((b1 & 0x0F) << 8 | b2) + 1
-                n = b1 >> 4
-                if n == 0:
-                    n = src[s] + 0x12
-                    s += 1
-                else:
-                    n += 2
-                c = d - dist
-                if dist >= n:
-                    dst[d:d + n] = dst[c:c + n]
-                else:
-                    for i in range(n):
-                        dst[d + i] = dst[c + i]
-                d += n
+                n = (b1 >> 4) + 2 if b1 >> 4 else byte() + 0x12
+                if dist > len(dst) or n > size - len(dst):
+                    raise ValueError("Invalid Yaz0 back-reference")
+                for _ in range(n):
+                    dst.append(dst[-dist])
     return bytes(dst)
 
 

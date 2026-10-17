@@ -112,6 +112,10 @@ How to work:
   weather value=<sunny|cloudy|rainy|foggy|release> | time hours minutes | wanted level=0-6 | teleport x y z | spawn model.
   Its result lists each address's source and live_checked; a field that is not mapped says how to map it. Vice City
   windows_native 1fd42f50b10252e6 is the Definitive Edition (Unreal Engine 4) and has no table: say so.
+  For Dreamcast function work use decomp_pipeline status -> init -> setup -> prepare -> task -> check; task packets
+  go to the local model, and only the official checker verdict counts. For Xbox 360 use xenonrecomp init/analyze/codegen
+  or rexglue init/codegen. Pin subsequent calls to the worker that owns work_id; discover dependencies with status.
+  Use start_job for long operations and preserve job IDs; generated C++ is not a verified native port or asset writer.
   ida (IDA Pro headless, same analysis.json as analyze_binary) where a node has IDA; n64recomp op=run (rom_path + the
   analysis_sha256 of re_study's N64 ELF) recompiles an N64 game's boot code to C in a work folder (the ROM is only read);
   decomp_me to match a function on decomp.me: dry_run first, real calls are opt-in and submit makes a PUBLIC scratch.
@@ -775,10 +779,10 @@ def tool_specs() -> list[dict]:
            "flash cart / modded console / emulator (N64 .z64 with fixed CRC, GameCube .iso, Wii .iso/.rvz, PS2 .iso, PS3/360 "
            "extracted folder) + a shareable BPS/IPS patch with no game data + cheat files for codes. mod_id = a saved mod "
            "(its file mod, re_mods code patches and cheat codes are baked; live memory mods are reported as not bakeable); "
-           "mods = more file-mod names / saved mod ids to stack; op=plan shows what can be baked without building; "
+           "mods = more file-mod names / saved mod ids to stack; op=plan checks selection, lists available mods, tools and concrete repair steps without building. Never retry an empty selection or unsupported live patch unchanged. "
            "op=list shows finished exports. Output stays on this gBox (exports/); tell the operator to download it from the "
            "mod card's 'Export ROM hack' button.",
-           {"op": s, "mod_id": s, "game_id": s, "mods": {"type": "array", "items": s}, "name": s}, []),
+           {"op": s, "mod_id": s, "game_id": s, "mods": {"type": "array", "items": s}, "name": s, "changes": {"type": "object"}, "formats": {"type": "array", "items": s}, "wii_format": s, "original": {"type": "boolean"}}, []),
         fn("script_patch", "Live UnrealScript patches from the game's profile on a running session (PS3 UE3 games). op: status, "
            "locate (find the profile's script functions in RAM), preset (preset=name, e.g. Stranglehold 'god' = infinite life, "
            "'hit' = precision-aim shots always lethal, 'miss' = always miss, 'god_hit'/'god_miss' = both, 'off' = original "
@@ -799,6 +803,15 @@ def tool_specs() -> list[dict]:
            "analyze_binary) on a node with IDA installed; processor = IDA's -p name (mipsb N64, mipsl PS1, r5900l PS2, ppc "
            "GameCube). op=status shows the IDA used. If no node has IDA the error says how to install it; use analyze_binary.",
            {"op": s, "binary_path": s, "processor": s}, []),
+        fn("decomp_pipeline", 'Dreamcast SH-4 DecompPipeline: status, init(binary_path/work_id/game_end), setup, prepare(address), task(address), check(address/candidate_source), audit. Local models use task/check; Windows MSVC is needed for the upstream checker. No paid agents.',
+            {"op": s, "work_id": s, "binary_path": s, "expected_sha256": s, "game_id": s, "game_end": s, "address": s,
+             "candidate_source": s, "xenon_options": {"type": "object"}, "timeout_s": i, "worker": s}, []),
+        fn("xenonrecomp", 'Xbox 360 XenonRecomp: status, init(binary_path/work_id/expected_sha256/xenon_options), analyze, codegen. Generated C++ still needs a runtime and gameplay validation.',
+            {"op": s, "work_id": s, "binary_path": s, "expected_sha256": s, "game_id": s, "game_end": s, "address": s,
+             "candidate_source": s, "xenon_options": {"type": "object"}, "timeout_s": i, "worker": s}, []),
+        fn("rexglue", 'RexGlue Xbox 360 SDK: status, init(binary_path/work_id/expected_sha256), codegen. Returns isolated project, logs and source hashes. Generated code is not verified gameplay.',
+            {"op": s, "work_id": s, "binary_path": s, "expected_sha256": s, "game_id": s, "game_end": s, "address": s,
+             "candidate_source": s, "xenon_options": {"type": "object"}, "timeout_s": i, "worker": s}, []),
         fn("n64recomp", "N64Recomp on an owned N64 ROM: op=run rom_path=<ROM the worker can read> analysis_sha256=<analysis.json "
            "of re_study's N64 ELF> name=<work folder>: generates symbols from gBox's analysis and recompiles the boot code "
            "to C (RecompiledFuncs) in a work folder; the ROM is only read. dry_run=true prepares without running. op=status "
@@ -1596,6 +1609,33 @@ class Agent:
         j = self._job("ida", {"op": op, "binary_path": binary_path, "processor": processor or ""}, limit=3600)
         return {"state": j.get("state"), "error": j.get("error"), "output": j.get("output"), "receipt": j.get("receipt_id")}
 
+    def decomp_pipeline(self, op="status", work_id="", binary_path="", expected_sha256="", game_id="", game_end="",
+                     address="", candidate_source="", xenon_options=None, timeout_s=900, worker=""):
+        j = self._job("decomp_pipeline", {"op": op, "work_id": work_id, "binary_path": binary_path,
+            "expected_sha256": expected_sha256, "game_id": game_id, "game_end": game_end, "address": address,
+            "candidate_source": candidate_source, "xenon_options": xenon_options or {}, "timeout_s": timeout_s},
+            limit=3700, worker=worker or None)
+        return {"state": j.get("state"), "worker": j.get("worker_id"), "output": j.get("output"),
+                "error": j.get("error"), "receipt": j.get("receipt_id"), "job_id": j.get("id")}
+
+    def xenonrecomp(self, op="status", work_id="", binary_path="", expected_sha256="", game_id="", game_end="",
+                     address="", candidate_source="", xenon_options=None, timeout_s=900, worker=""):
+        j = self._job("xenonrecomp", {"op": op, "work_id": work_id, "binary_path": binary_path,
+            "expected_sha256": expected_sha256, "game_id": game_id, "game_end": game_end, "address": address,
+            "candidate_source": candidate_source, "xenon_options": xenon_options or {}, "timeout_s": timeout_s},
+            limit=3700, worker=worker or None)
+        return {"state": j.get("state"), "worker": j.get("worker_id"), "output": j.get("output"),
+                "error": j.get("error"), "receipt": j.get("receipt_id"), "job_id": j.get("id")}
+
+    def rexglue(self, op="status", work_id="", binary_path="", expected_sha256="", game_id="", game_end="",
+                     address="", candidate_source="", xenon_options=None, timeout_s=900, worker=""):
+        j = self._job("rexglue", {"op": op, "work_id": work_id, "binary_path": binary_path,
+            "expected_sha256": expected_sha256, "game_id": game_id, "game_end": game_end, "address": address,
+            "candidate_source": candidate_source, "xenon_options": xenon_options or {}, "timeout_s": timeout_s},
+            limit=3700, worker=worker or None)
+        return {"state": j.get("state"), "worker": j.get("worker_id"), "output": j.get("output"),
+                "error": j.get("error"), "receipt": j.get("receipt_id"), "job_id": j.get("id")}
+
     def n64recomp(self, op="status", rom_path="", analysis_sha256="", analysis_path="", name="", entrypoint="", dry_run=False):
         j = self._job("n64recomp", {"op": op, "rom_path": rom_path, "analysis_sha256": analysis_sha256,
                                     "analysis_path": analysis_path, "name": name, "entrypoint": entrypoint,
@@ -1644,9 +1684,17 @@ class Agent:
         j = self._job("file_mod", {"game_id": game_id, "op": op, "name": name, "changes": changes or {}}, "windows", 7200)
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
-    def rom_export(self, op="export", mod_id="", game_id="", mods=None, name=""):
-        j = self._job("rom_export", {"op": op, "mod_id": mod_id, "game_id": game_id, "mods": mods or [], "name": name},
-                      "linux", 7200)
+    def rom_export(self, op="export", mod_id="", game_id="", mods=None, name="", changes=None,
+                   formats=None, wii_format="iso", original=False):
+        inp = {"op": op, "mod_id": mod_id, "game_id": game_id, "mods": mods or [], "name": name,
+               "changes": changes or {}, "formats": formats if formats is not None else ["bps", "ips", "xdelta"],
+               "wii_format": wii_format, "original": original}
+        if op == "export":
+            checked = self._job("rom_export", inp | {"op": "plan"}, "linux", 600)
+            plan = (checked.get("output") or {}).get("result") or {}
+            if not plan.get("ready"):
+                return plan or {"state": checked["state"], "error": checked.get("error")}
+        j = self._job("rom_export", inp, "linux", 7200)
         res = (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
         if op == "export" and res.get("files"):          # keep the chat reply short: what's there and where
             res = {k: res.get(k) for k in ("title", "game", "platform", "image", "rel_dir", "patches", "cheat_files",
