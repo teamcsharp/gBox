@@ -226,3 +226,38 @@ def test_publication_requires_open_exact_head_readback(tracked_repo, monkeypatch
     with pytest.raises(RuntimeError, match='exact pushed commit'):
         delivery.publish(task['request_id'], 'Readback guard', ['system/gbox/value.py'], ['tests/test_value.py'])
     assert 'published_at' not in json.loads(delivery._record_path(task['request_id']).read_text())
+
+
+@pytest.mark.parametrize('new_test',[False,True])
+def test_named_changed_tests_are_in_the_pushed_commit(tracked_repo,monkeypatch,new_test):
+    from pathlib import Path
+    _,origin,git=tracked_repo
+    task=delivery.prepare('abcdef0123456789',12)
+    system=Path(task['workdir'])
+    (system/'gbox/value.py').write_text('VALUE = 7\n')
+    name='tests/test_new_value.py' if new_test else 'tests/test_value.py'
+    text='import runpy\ndef test_value():\n    assert runpy.run_path("gbox/value.py")["VALUE"] == 7\n'
+    (system/name).write_text(text)
+    real_run=subprocess.run
+    def fake_gh(args,**kw):
+        if args[0]!='gh':return real_run(args,**kw)
+        if args[1:3]==['pr','list']:return SimpleNamespace(returncode=0,stdout='[]',stderr='')
+        if args[1:3]==['pr','view']:return SimpleNamespace(returncode=0,stdout=json.dumps(_pull(task,git)),stderr='')
+        assert args[1:3]==['pr','create']
+        assert name in Path(args[args.index('--body-file')+1]).read_text()
+        return SimpleNamespace(returncode=0,stdout='https://github.com/teamcsharp/gBox/pull/123\n',stderr='')
+    monkeypatch.setattr(delivery.subprocess,'run',fake_gh)
+    result=delivery.publish(task['request_id'],'Preserve regression',['system/gbox/value.py'],[name])
+    assert git('show',result['commit']+':system/'+name,cwd=origin)==text.strip()
+    assert '1 passed' in result['checks'][0]
+
+
+def test_omitted_test_helper_blocks_before_commit_and_keeps_work(tracked_repo):
+    from pathlib import Path
+    _,_,git=tracked_repo;task=delivery.prepare('abcdef0123456789',12);system=Path(task['workdir'])
+    (system/'gbox/value.py').write_text('VALUE = 2\n')
+    helper=system/'tests/owned_fixture.py';helper.write_text('SOURCE = "owned"\n')
+    with pytest.raises(ValueError,match='owned_fixture.py'):
+        delivery.publish(task['request_id'],'Incomplete handoff',['system/gbox/value.py'],['tests/test_value.py'])
+    assert git('rev-parse','HEAD',cwd=task['path'])==task['baseline']
+    assert helper.read_text()=='SOURCE = "owned"\n'
