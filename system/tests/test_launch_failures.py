@@ -316,6 +316,17 @@ def test_no_relaunch_over_a_running_game_or_for_old_failures(plane):
     assert not p.submitted
 
 
+def test_worker_restart_does_not_auto_relaunch(plane):
+    p, ledger = plane
+    c = LF.classify("launch_game failed: worker JAYBUILTFINALE restarted while running", adapter="retroarch")
+    assert c["cls"] == "worker_restarted" and c["remedy"] == "none"
+    rec = ledger.observe_job(failed_launch(p, err="launch_game failed: worker JAYBUILTFINALE restarted while running"))
+    assert rec["error_class"] == "worker_restarted"
+    assert not p.submitted                       # a worker crash is not fixed by relaunching the same launch
+    req = p.store.get("request", rec["request_id"])
+    assert "None automatic for this kind of failure" in req["body"]
+
+
 def test_mod_fetch_restages_the_mod_then_relaunches(plane):
     p, ledger = plane
     rec = ledger.observe_job(failed_launch(p, err="RuntimeError: Fetching mod doa2_roster_59d8ed0e from the collection "
