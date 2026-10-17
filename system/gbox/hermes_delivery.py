@@ -125,7 +125,7 @@ def prepare(request_id: str, number: int) -> dict:
         if record.exists():
             workspace = json.loads(record.read_text())
             if (Path(workspace['path']) / '.git').exists():
-                return workspace | {'reused': True}
+                return workspace | {'reused': True, 'shared_sources': _shared_sources(workspace)}
             raise RuntimeError('The recorded task workspace is missing; preserve its history before retrying')
         _run(['git', 'fetch', 'origin', 'main'], repo)
         branch = f'hermes/request-{int(number)}-{time.time_ns()}'
@@ -138,7 +138,12 @@ def prepare(request_id: str, number: int) -> dict:
                      'workdir': str(path / 'system'), 'branch': branch,
                      'baseline': _run(['git', 'rev-parse', 'HEAD'], path)}
         record.write_text(json.dumps(workspace, indent=2))
-        return workspace
+        return workspace | {'shared_sources': _shared_sources(workspace)}
+
+
+def _shared_sources(workspace):
+    from .shared_sources import references
+    return references(workspace['path'], state_dir() / 'source-references' / workspace['request_id'])
 
 
 def publish(request_id: str, title: str, files: list[str], tests: list[str]) -> dict:
@@ -154,6 +159,28 @@ def publish(request_id: str, title: str, files: list[str], tests: list[str]) -> 
                     or not path.resolve().is_relative_to(root) or not path.is_file()
                     or any(part.startswith('.') for part in Path(name).parts)):
                 raise ValueError('Only explicit source, test and documentation files can be published')
+        # The executed regression files are part of the handoff, even when the
+        # caller supplied them only in tests rather than repeating them in files.
+        files = list(dict.fromkeys(files))
+        if any(name.endswith('.py') for name in files):
+            if not tests or len(tests) > 10:
+                raise ValueError('Python changes require 1 to 10 focused test files')
+            for name in tests:
+                path = root / 'system' / name
+                if (not re.fullmatch(r'tests/test_[\w]+\.py', name) or path.is_symlink()
+                        or not path.resolve().is_relative_to(root / 'system') or not path.is_file()):
+                    raise ValueError('Tests must be named files inside system/tests')
+                if 'system/' + name not in files:
+                    files.append('system/' + name)
+            if len(files) > 40:
+                raise ValueError('Source and focused test files together must fit the 40-file handoff')
+            dirty = set(_run(['git', 'diff', 'HEAD', '--name-only', '--',
+                              'system/gbox/', 'system/tests/'], root).splitlines())
+            dirty.update(_run(['git', 'ls-files', '--others', '--exclude-standard', '--',
+                               'system/gbox/', 'system/tests/'], root).splitlines())
+            omitted = sorted(dirty - set(files))
+            if omitted:
+                raise ValueError('Include changed source/test helpers in files before validation: ' + ', '.join(omitted))
         _run(['git', 'diff', '--check'], root)
         # Workspaces survive their first PR merge. Refresh the comparison base
         # without changing the agent's branch, index or uncommitted source.
@@ -195,7 +222,7 @@ def publish(request_id: str, title: str, files: list[str], tests: list[str]) -> 
             head, summary = hermes_local.pr_note(checks)
             note = f"> **Local model.** {head}\n> {summary}\n\n"
         body = (note + f"gBox request #{workspace['number']} ({request_id}).\n\n"
-                f"{title}\n\nValidation:\n```text\n" + '\n'.join(checks) +
+                f"{title}\n\nValidation files: {', '.join(tests)}\n\nValidation:\n```text\n" + '\n'.join(checks) +
                 "\n```\n\nPublished for review. This PR does not by itself verify live emulation or close the inbox ticket.\n")
         body_path = state_dir() / (request_id + '-pr.md')
         body_path.write_text(body)

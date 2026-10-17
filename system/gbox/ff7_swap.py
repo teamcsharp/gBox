@@ -693,7 +693,8 @@ def _fit_loop(name: str, tgt: dict, model: Path, roles: dict, work: Path, blende
 
 def build(disc: Path, model_path: Path, roles: dict, work: Path, name: str, out_bin: Path, base_bin: Path | None = None,
           battle: bool = True, blender: str | None = None, progress=lambda p, m: None, scale=None, props=(),
-          field_file: str = "CLOUD", battle_file: str = "CLOUD", use_field_textures: bool = True) -> dict:
+          field_file: str = "CLOUD", battle_file: str = "CLOUD", use_field_textures: bool = True,
+          prepare_only: bool = False) -> dict:
     from . import psxdisc
     work = Path(work)
     work.mkdir(parents=True, exist_ok=True)
@@ -703,90 +704,128 @@ def build(disc: Path, model_path: Path, roles: dict, work: Path, name: str, out_
             progress(3, "Unpacking the disc to a raw image")
             psxdisc.chd_to_bin(disc, base_bin)
     src = psxdisc.RawBin(base_bin, writable=False)
-    bcx_lba, bcx_size = src.files[f"FIELD/{field_file}.BCX"]
-    fm = F.read_field_model(src.read(f"FIELD/{field_file}.BCX"))
-    normals = field_normals(src)
-    # lighting normals point outward; check the sign on Cloud's own vertices
-    dots = []
-    for p in fm["parts"]:
-        cen = p["verts"].mean(0)
-        for pl in p["polys"]:
-            for vi, ni in zip(pl["idx"], pl["nrm"]):
-                if ni < NORMALS:
-                    dots.append(float((p["verts"][vi] - cen) @ normals[ni]))
-    nsign = 1.0 if np.mean(np.sign(dots)) >= 0 else -1.0
-    res = {"normal_sign": nsign}
-    progress(10, f"Fitting {name} onto Cloud's field skeleton")
-    ftgt = field_target(fm)
-    mesh_bones = {p["bone"] for p in fm["parts"]}
-    field_atlas=None
+    try:
+        bcx_lba, bcx_size = src.files[f"FIELD/{field_file}.BCX"]
+        fm = F.read_field_model(src.read(f"FIELD/{field_file}.BCX"))
+        normals = field_normals(src)
+        # lighting normals point outward; check the sign on Cloud's own vertices
+        dots = []
+        for p in fm["parts"]:
+            cen = p["verts"].mean(0)
+            for pl in p["polys"]:
+                for vi, ni in zip(pl["idx"], pl["nrm"]):
+                    if ni < NORMALS:
+                        dots.append(float((p["verts"][vi] - cen) @ normals[ni]))
+        nsign = 1.0 if np.mean(np.sign(dots)) >= 0 else -1.0
+        res = {"normal_sign": nsign}
+        progress(10, f"Fitting {name} onto Cloud's field skeleton")
+        ftgt = field_target(fm)
+        mesh_bones = {p["bone"] for p in fm["parts"]}
+        field_atlas=None
 
-    def make_field(rp):
-        nonlocal field_atlas
-        if use_field_textures and field_atlas is None and any(p['tex'] is not None for p in rp):
-            from .ff7_field_textures import FieldAtlas
-            field_atlas=FieldAtlas(src.read('FIELD/FIELD.TDB'),src.read('FIELD/FIELD.BIN'),rp)
-        geo = bone_geometry(ftgt, rp, mesh_bones,field_atlas)
-        try:
-            raw, r = write_field(fm, geo, normals, nsign)
-        except ValueError as e:
-            per = max(max(len(g["verts"]), len(g["tris"])) for g in geo.values())
-            return None, {"error": str(e), "triangles": sum(len(g["tris"]) for g in geo.values())}, False, 250 / per
-        comp = lzs_encode(raw)
-        assert F.lzs(comp) == raw
-        r["compressed"] = len(comp)
-        r["budget_compressed"] = bcx_size
-        ok = len(comp) <= bcx_size and r["bytes"] <= r["budget_bytes"] and r["gpu_buffer"] <= r["budget_gpu_buffer"]
-        k = min(bcx_size / len(comp), r["budget_bytes"] / r["bytes"], r["budget_gpu_buffer"] / max(r["gpu_buffer"], 1))
-        return comp, r, ok, k
-    bcx, frep, frig = _fit_loop("ff7_field", ftgt, model_path, roles, work, blender, make_field, 640, progress, scale, props,protect_textures=True)
-    encoded_field=F.read_field_model(bcx)
-    if field_atlas:
-        from .ff7_field_textures import face_tim
-        encoded_field['tim']=face_tim(field_atlas.tdb,field_atlas.field)
-    native_preview=work/'ff7_field_native.gltf'
-    F.field_to_gltf(encoded_field,native_preview)
-    res["field"] = frep
-    res["rigged_field"] = str(native_preview)
-    writes = [(f"FIELD/{field_file}.BCX", bcx)]
-    if field_atlas:
-        frep['textures']=field_atlas.report
-        writes.extend([('FIELD/FIELD.TDB',field_atlas.tdb),('FIELD/FIELD.BIN',field_atlas.field)])
-    if battle:
-        progress(45, f"Fitting {name} onto the battle skeleton")
-        blba, bsize = src.files[f"ENEMY6/{battle_file}.LZS"]
-        bm = F.read_battle_model(src.read(f"ENEMY6/{battle_file}.LZS"))
-        btgt = battle_target(bm, legacy_roles=BATTLE_ROLES if battle_file == "CLOUD" else None)
-        bbones = {i for i, b in enumerate(bm["bones"]) if b["mesh"]}
-
-        def make_battle(rp):
-            atlas = BattleAtlas(bm, rp) if any(p['tex'] is not None for p in rp) else None
-            geo = bone_geometry(btgt, rp, bbones, atlas)
-            raw, r = write_battle(bm, geo, atlas.tim if atlas else None)
+        def make_field(rp):
+            nonlocal field_atlas
+            if use_field_textures and field_atlas is None and any(p['tex'] is not None for p in rp):
+                from .ff7_field_textures import FieldAtlas
+                field_atlas=FieldAtlas(src.read('FIELD/FIELD.TDB'),src.read('FIELD/FIELD.BIN'),rp)
+            geo = bone_geometry(ftgt, rp, mesh_bones,field_atlas)
+            try:
+                raw, r = write_field(fm, geo, normals, nsign)
+            except ValueError as e:
+                per = max(max(len(g["verts"]), len(g["tris"])) for g in geo.values())
+                return None, {"error": str(e), "triangles": sum(len(g["tris"]) for g in geo.values())}, False, 250 / per
             comp = lzs_encode(raw)
+            assert F.lzs(comp) == raw
             r["compressed"] = len(comp)
-            r["budget_compressed"] = bsize
-            ok = len(comp) <= bsize and r["bytes"] <= r["budget_bytes"] and r['gpu_buffer'] <= r['budget_gpu_buffer']
-            return comp, r, ok, min(bsize / len(comp), r["budget_bytes"] / r["bytes"],
-                                   r['budget_gpu_buffer'] / max(r['gpu_buffer'], 1))
-        blz, brep, brig = _fit_loop("ff7_battle", btgt, model_path, roles, work, blender, make_battle, 2000, progress,
-                                    scale, props)
-        F.read_battle_model(blz)
-        res["battle"] = brep
-        res["rigged_battle"] = str(brig)
-        writes.append((f"ENEMY6/{battle_file}.LZS", blz))
-    src.close()
-    progress(75, "Copying the disc image")
-    out_bin = Path(out_bin)
-    out_bin.parent.mkdir(parents=True, exist_ok=True)
-    if Path(base_bin).resolve() != out_bin.resolve():
-        shutil.copyfile(base_bin, out_bin)
-    rb = psxdisc.RawBin(out_bin)
-    res["sectors_written"] = sum(rb.write_file(k, 0, data) for k, data in writes)
-    rb.close()
-    out_bin.with_suffix(".cue").write_text(f'FILE "{out_bin.name}" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
-    res |= {"bin": str(out_bin), "cue": str(out_bin.with_suffix(".cue"))}
-    return res
+            r["budget_compressed"] = bcx_size
+            ok = len(comp) <= bcx_size and r["bytes"] <= r["budget_bytes"] and r["gpu_buffer"] <= r["budget_gpu_buffer"]
+            k = min(bcx_size / len(comp), r["budget_bytes"] / r["bytes"], r["budget_gpu_buffer"] / max(r["gpu_buffer"], 1))
+            return comp, r, ok, k
+        bcx, frep, frig = _fit_loop("ff7_field", ftgt, model_path, roles, work, blender, make_field, 640, progress, scale, props,protect_textures=True)
+        encoded_field=F.read_field_model(bcx)
+        if field_atlas:
+            from .ff7_field_textures import face_tim
+            encoded_field['tim']=face_tim(field_atlas.tdb,field_atlas.field)
+        native_preview=work/'ff7_field_native.gltf'
+        F.field_to_gltf(encoded_field,native_preview)
+        res["field"] = frep
+        res["rigged_field"] = str(native_preview)
+        writes = [(f"FIELD/{field_file}.BCX", bcx)]
+        if field_atlas:
+            frep['textures']=field_atlas.report
+            writes.extend([('FIELD/FIELD.TDB',field_atlas.tdb),('FIELD/FIELD.BIN',field_atlas.field)])
+        if battle:
+            progress(45, f"Fitting {name} onto the battle skeleton")
+            blba, bsize = src.files[f"ENEMY6/{battle_file}.LZS"]
+            bm = F.read_battle_model(src.read(f"ENEMY6/{battle_file}.LZS"))
+            btgt = battle_target(bm, legacy_roles=BATTLE_ROLES if battle_file == "CLOUD" else None)
+            bbones = {i for i, b in enumerate(bm["bones"]) if b["mesh"]}
+
+            def make_battle(rp):
+                atlas = BattleAtlas(bm, rp) if any(p['tex'] is not None for p in rp) else None
+                geo = bone_geometry(btgt, rp, bbones, atlas)
+                raw, r = write_battle(bm, geo, atlas.tim if atlas else None)
+                comp = lzs_encode(raw)
+                r["compressed"] = len(comp)
+                r["budget_compressed"] = bsize
+                ok = len(comp) <= bsize and r["bytes"] <= r["budget_bytes"] and r['gpu_buffer'] <= r['budget_gpu_buffer']
+                return comp, r, ok, min(bsize / len(comp), r["budget_bytes"] / r["bytes"],
+                                       r['budget_gpu_buffer'] / max(r['gpu_buffer'], 1))
+            blz, brep, brig = _fit_loop("ff7_battle", btgt, model_path, roles, work, blender, make_battle, 2000, progress,
+                                        scale, props)
+            F.read_battle_model(blz)
+            res["battle"] = brep
+            res["rigged_battle"] = str(brig)
+            writes.append((f"ENEMY6/{battle_file}.LZS", blz))
+    finally:
+        src.close()
+    if prepare_only:
+        return res | {'writes':writes}
+    progress(75, "Writing the prepared models into a new disc image")
+    return res | _write_prepared(base_bin,out_bin,dict(writes))
+
+
+def _write_prepared(base_bin, out_bin, writes):
+    """Publish one new raw image only after every prepared file reads back exactly."""
+    from . import psxdisc
+    base_bin,out_bin=Path(base_bin),Path(out_bin)
+    if base_bin.resolve()==out_bin.resolve() or out_bin.exists() or out_bin.with_suffix('.cue').exists():
+        raise ValueError('FF7 output must be new and distinct from the source')
+    if not writes:
+        raise ValueError('No FF7 replacements were prepared')
+    src=psxdisc.RawBin(base_bin,writable=False)
+    try:
+        spans=[]
+        for key,data in writes.items():
+            if key not in src.files or not data or len(data)>src.files[key][1]:
+                raise ValueError(f'{key}: replacement exceeds the original file or is empty')
+            lba,size=src.files[key]
+            spans.append((lba,lba+(size+2047)//2048,key))
+        spans.sort()
+        if any(a[1]>b[0] for a,b in zip(spans,spans[1:])):
+            raise ValueError('FF7 replacement files share sectors')
+    finally:
+        src.close()
+    out_bin.parent.mkdir(parents=True,exist_ok=True)
+    temporary=out_bin.with_name(out_bin.name+'.'+uuid.uuid4().hex+'.partial')
+    try:
+        shutil.copyfile(base_bin,temporary)
+        rb=psxdisc.RawBin(temporary)
+        try:
+            sectors=sum(rb.write_file(key,0,data) for key,data in writes.items())
+            for key,data in writes.items():
+                if rb.read(key)[:len(data)]!=data:
+                    raise ValueError(f'{key}: FF7 replacement readback mismatch')
+        finally:
+            rb.close()
+        # The caller reserves an immutable mod directory. Recheck direct CLI targets too.
+        if out_bin.exists():raise ValueError('FF7 output appeared during build')
+        temporary.replace(out_bin)
+        cue=out_bin.with_suffix('.cue')
+        cue.write_text(f'FILE "{out_bin.name}" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
+        return {'bin':str(out_bin),'cue':str(cue),'sectors_written':sectors,'readback_verified':True}
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------- characters op=use
@@ -847,13 +886,12 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
     """Build/reuse the current writer version; an explicit rebuild creates a new immutable output."""
     from . import characters as Cm
     from .sm64_swap import _have_mod, _wait
-    gid, name = game["game_id"], mod_name(meta)
-    if meta.get("source", {}).get("game_id") in GAME_IDS and meta["slug"] in ("cloud", "ff7_cloud") \
-            and not meta.get("variant_of"):
-        return {"status": "native", "message": f"{meta['name']} is FF7's own player: launch the game without a mod."}
     slot = str(getattr(inp, "slot", "player") or "player")
     if not is_slot(slot):
-        raise ValueError(f"unknown FF7 cast slot {slot!r} (player, tifa, aerith, barret, red13, cid, yuffie, caitsith, vincent)")
+        raise ValueError(f"unknown FF7 cast slot {slot!r}")
+    gid, name = game["game_id"], mod_name(meta,slot)
+    if slot=="player" and meta.get("source", {}).get("game_id") in GAME_IDS and meta["slug"] in ("cloud", "ff7_cloud") and not meta.get("variant_of"):
+        return {"status":"native","message":f"{meta['name']} is FF7's own player: launch the game without a mod."}
     _f, _b, display = CAST_BY_SLOT[slot]
     sess = Cm._session(ctx, inp.session_id) if inp.session_id else None
     node = sess["session_id"].split("-")[0] if sess else Cm.HOST_OS
@@ -871,7 +909,7 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
             cp = next((w["id"] for w in Cm._api(ctx, "GET", "/api/workers") if w.get("os") == "linux"), None)
             ctx.progress(10, "Building the FF7 mod on the control-plane node (the collection lives there)")
             j = Cm._job(ctx, "characters", {"op": "use", "character": meta["slug"], "game_id": gid, "rebuild": inp.rebuild,
-                                            "launch": False}, cp, 3600)
+                                            "launch": False, "slot":slot}, cp, 3600)
             r = (j.get("output") or {}).get("result") or {}
             if j.get("state") != "succeeded" or r.get("status") not in ("built", "ready"):
                 return {"status": "failed", "mod": name, "error": r.get("error") or j.get("error") or r}
@@ -894,57 +932,56 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
 
 
 def build_cast(cfg, game: dict, pairs, name: str, progress=lambda p, m: None, root: Path | None = None) -> dict:
-    """characters op=cast_swap: every assigned cast member's field + battle models rebuilt on that member's own
-    skeletons, all written into ONE disc image (one mod folder). The field texture banks (FIELD.TDB/BIN) are
-    Cloud-specific, so only the player slot keeps them; other members get Gouraud field polygons."""
-    from . import characters as Cm
-    from . import filemods
+    """Prepare every successful member against vanilla data, then publish one verified image."""
+    from . import characters as Cm, filemods
     from .pe_swap import base_bin
-    root = root or Cm.library_root(cfg)
-    gid = game["game_id"]
-    disc = {"52d73a58e6b29209": "2", "18581bf582f81eb2": "3"}.get(gid, "1")
-    base = base_bin(cfg, game, progress)
-    d = filemods.mod_dir(cfg, gid, name)
-    d.mkdir(parents=True, exist_ok=True)
-    work = Path(cfg.cache) / "characters_build" / gid / name
-    work.mkdir(parents=True, exist_ok=True)
-    img = f"Final Fantasy VII - {name} (USA) (Disc {disc}).bin"
-    out_bin = d / img
-    if Path(base).resolve() != out_bin.resolve():
-        shutil.copyfile(base, out_bin)
-    out_bin.with_suffix(".cue").write_text(f'FILE "{out_bin.name}" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
-    slots: dict[str, dict] = {}
-    files: list[str] = []
-    n = max(1, len(pairs))
-    for i, (slot, meta) in enumerate(pairs):
-        progress(5 + 80 * i // n, f"{slot} <- {meta['slug']}")
+    root=root or Cm.library_root(cfg)
+    pairs=list(pairs)
+    if len({slot for slot,_ in pairs})!=len(pairs):
+        raise ValueError('Duplicate FF7 cast slot')
+    gid=game['game_id'];base=base_bin(cfg,game,progress)
+    d=filemods.mod_dir(cfg,gid,name)
+    if d.exists():
+        name+='_'+uuid.uuid4().hex[:12]
+        d=filemods.mod_dir(cfg,gid,name)
+    work=Path(cfg.cache)/'characters_build'/gid/(name+'_'+uuid.uuid4().hex[:12])
+    work.mkdir(parents=True,exist_ok=False)
+    disc_no={'52d73a58e6b29209':'2','18581bf582f81eb2':'3'}.get(gid,'1')
+    img=f'Final Fantasy VII - {name} (USA) (Disc {disc_no}).bin'
+    out_bin=d/img;slots={};writes={}
+    for i,(slot,meta) in enumerate(pairs):
+        progress(5+70*i//max(1,len(pairs)),f"{slot} <- {meta['slug']}")
         try:
-            row = CAST_BY_SLOT.get(slot)
-            if not row:
-                raise ValueError(f"unknown FF7 cast slot {slot!r}")
-            field_file, battle_file, _display = row
-            roles = (meta.get("rig") or {}).get("roles") or {}
-            if "hip" not in roles:
-                raise ValueError(f"{meta['name']} has no body roles (rig.roles in meta.json): can't map it onto the native bones")
-            rep = build(Path(out_bin), root / meta["slug"] / meta["model"], roles, work / slot, meta["name"], out_bin, base,
-                        battle=True, blender=Cm._blender(cfg), progress=lambda p, m: None,
-                        scale=(meta.get("rig") or {}).get("scale"),
-                        props=[p["node"] for p in meta.get("props") or []],
-                        field_file=field_file, battle_file=battle_file, use_field_textures=slot == "player")
-            files += [f"FIELD/{field_file}.BCX (field model)", f"ENEMY6/{battle_file}.LZS (battle model)"]
-            if slot == "player" and rep["field"].get("textures"):
-                files += ["FIELD/FIELD.TDB (Cloud face banks)", "FIELD/FIELD.BIN (Cloud expression mapping)"]
-            slots[slot] = {"status": "built", "field": rep["field"], "battle": rep.get("battle")}
-        except Exception as e:  # noqa: BLE001 - one cast member never stops the rest
-            slots[slot] = {"status": "failed", "reason": str(e)[:500]}
-    mj = {"name": name, "game_id": gid, "image": img, "built": time.time(), "writer_version": CACHE_VERSION,
-          "files": sorted(set(files)), "cast": [{"slot": s, **r} for s, r in slots.items()]}
-    (d / ".gbox-mod.json").write_text(json.dumps(mj, default=str))
-    shutil.rmtree(work, ignore_errors=True)
-    return {"mod": name, "slots": slots, "summary": {
-        "what": f"every FF7 party member's field and battle models rebuilt from the cast donors in one disc "
-                f"({len(slots)} slots, one mod)",
-        "where_to_look": "field gameplay (each party member) and battles"}}
+            if slot not in CAST_BY_SLOT:raise ValueError(f'Unknown FF7 cast slot {slot!r}')
+            field,battle,_=CAST_BY_SLOT[slot]
+            roles=(meta.get('rig') or {}).get('roles') or {}
+            if 'hip' not in roles:raise ValueError('Donor has no hip body role')
+            rep=build(base,root/meta['slug']/meta['model'],roles,work/slot,meta['name'],out_bin,base,
+                      battle=True,blender=Cm._blender(cfg),progress=lambda p,m:None,
+                      scale=(meta.get('rig') or {}).get('scale'),props=[p['node'] for p in meta.get('props') or []],
+                      field_file=field,battle_file=battle,use_field_textures=slot=='player',prepare_only=True)
+            pending=dict(rep['writes'])
+            if len(pending)!=len(rep['writes']) or any(key in writes for key in pending):
+                raise ValueError('Conflicting FF7 replacement file ownership')
+            if not pending:raise ValueError('No replacement data prepared')
+            writes.update(pending)
+            slots[slot]={'status':'prepared','field':rep['field'],'battle':rep.get('battle')}
+        except Exception as exc:
+            slots[slot]={'status':'failed','reason':str(exc)[:500]}
+    if not writes:return {'mod':None,'slots':slots}
+    d.mkdir(parents=True,exist_ok=False)
+    output=_write_prepared(base,out_bin,writes)
+    for status in slots.values():
+        if status['status']=='prepared':status['status']='built'
+    manifest={'name':name,'game_id':gid,'image':Path(output['cue']).name,'built':time.time(),
+              'writer_version':CACHE_VERSION,'files':sorted(writes),'readback_verified':True,
+              'cast':[{'slot':slot,**status} for slot,status in slots.items()]}
+    (d/'.gbox-mod.json').write_text(json.dumps(manifest,default=str))
+    # Keep the per-member native previews and preparation evidence for review.
+    count=sum(r['status']=='built' for r in slots.values())
+    return {'mod':name,'slots':slots,'detail':output,'work':str(work),'summary':{
+        'what':f'{count} of {len(slots)} FF7 party slots prepared and read back in one disc image',
+        'where_to_look':'Field gameplay and battles; cutscenes and runtime acceptance remain separate'}}
 
 
 if __name__ == "__main__":
