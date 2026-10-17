@@ -1581,6 +1581,9 @@ def _sonic2d(key):
 
 # (name, does this extractor read the game? (title lower, platform), roster(), run)
 DEDICATED = [
+    ("re2gc", lambda t, p: t == "resident evil 2 (usa)" and p == "gamecube",
+     lambda: __import__("gbox.re2gc_models", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.re2gc_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("mvc2", lambda t, p: "marvel vs. capcom 2" in t and p == "dreamcast",
      lambda: __import__("gbox.mvc2_chars", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.mvc2_chars", fromlist=["x"]).extract_run(ctx, game, e, work)),
@@ -1765,6 +1768,8 @@ def dedicated_entries(config, game, name, roster):
     if name == "twin_snakes":                             # each disc carries part of the cast (Liquid: disc 2)
         from . import twin_snakes
         roster = functools.partial(twin_snakes.roster, twin_snakes.disc_of(game))
+    if name == 're2gc' and game.get('game_id') != 'c6adbfa00c20aaf9':
+        return []
     root = library_root(config)
     entries = []
     for entry in roster():
@@ -1780,7 +1785,7 @@ def dedicated_entries(config, game, name, roster):
 # the cast swap's donor gate): JGR v2 draws the body without the cel-shading outline shell, with per-group textures.
 # AUF v2 extracts every body (v1 listed the writer's slots only); collect() records the version it ran with, so a
 # stored collection made by an older reader is collected again at the next launch (character_collection).
-READER_VERSIONS = {"sonic1_shadow": ("gbox.sonic1_reader", "sonic1_shadow_reader"), "smb3": ("gbox.smb3_sprites", "smb3_reader"), "jgr": ("gbox.jgr", "jgr_reader"), "auf": ("gbox.auf_chars", "auf_reader"),
+READER_VERSIONS = {"re2gc": ("gbox.re2gc_models", "re2gc_reader"), "sonic1_shadow": ("gbox.sonic1_reader", "sonic1_shadow_reader"), "smb3": ("gbox.smb3_sprites", "smb3_reader"), "jgr": ("gbox.jgr", "jgr_reader"), "auf": ("gbox.auf_chars", "auf_reader"),
                    "twin_snakes": ("gbox.twin_snakes", "tts_reader"), "sm64ds": ("gbox.sm64ds_chars", "sm64ds_reader"),
                    "soulcalibur": ("gbox.soulcalibur_dc", "sc_reader"),
                    "soulcalibur2": ("gbox.soulcalibur2", "sc2_reader"),
