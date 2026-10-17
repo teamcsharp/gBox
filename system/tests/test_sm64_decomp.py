@@ -149,10 +149,31 @@ def test_finish_maps_all_18_roles_without_moving_a_vertex(test_actor):
     J = model["joints"]
     w = {r: J[j]["world"][3, :3] for r, j in roles.items()}
     assert w["l_upper"][0] > 0 > w["r_upper"][0]              # left on +X
-    assert w["head"][1] > w["neck"][1] > w["chest"][1] > w["hip"][1] > w["l_foot"][1]
+    assert w["head"][1] == w["neck"][1] > w["chest"][1] > w["hip"][1] > w["l_foot"][1]   # head at the neck (head base)
     assert abs(w["l_clav"][0]) < abs(w["l_upper"][0])         # the clavicle has length: pulled toward the chest
     assert J[roles["head"]]["parent"] == roles["neck"]
     assert after[:, 1].min() == pytest.approx(0, abs=1e-6)   # stands on y = 0
+
+
+def test_split_head_anchors_the_head_joint_at_the_neck_not_the_head_centre():
+    """#1816: a centre-anchored synthetic head joint shifts the retarget's head-height reference (head joint Y) up to
+    the head centre, so the DOA2/SM64 fit maps the head centre onto the target's neck and sinks the head into the
+    shoulders. The head joint must sit at the neck (the head's base) like native donors."""
+    W = np.eye(4)
+    W[3, :3] = (0.0, 1.4, 0.0)                          # the neck pivot (SM64 head part), 1.4 m up
+    # a tall head: geometry from y=1.4 (base) to y=2.0 (top), centred ~1.7
+    P = np.array([[0, 1.4, 0], [0, 2.0, 0], [0.2, 1.7, 0]], np.float32)
+    model = {"joints": [{"parent": None, "world": np.eye(4), "part": 0},
+                        {"parent": 0, "world": W, "part": 3, "name": "head"}],
+             "prims": [{"P": P, "N": np.zeros((3, 3)), "UV": np.zeros((3, 2)), "J": np.array([1, 1, 1], np.int64),
+                        "T": np.array([[0, 1, 2]], np.int64), "mat": 0}],
+             "materials": [{"colour": [1, 1, 1, 1], "image": None, "texgen": False, "mode": "shade", "name": "m0"}]}
+    head = D.split_head(model, 1)
+    neck_pos = model["joints"][1]["world"][3, :3]
+    head_pos = model["joints"][head]["world"][3, :3]
+    assert head_pos[1] == neck_pos[1]                    # head anchored at the neck, not the head centre (~1.7)
+    assert model["joints"][head]["parent"] == 1
+    assert (model["prims"][0]["J"] == head).all()        # the head geometry rides the head joint
 
 
 def test_mirrored_skeleton_gets_its_sides_swapped():
