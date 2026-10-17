@@ -124,11 +124,8 @@ class Session:
             home = ghidra_home(self.config)
             if home:
                 env["GHIDRA_INSTALL_DIR"] = str(home.resolve())
-        if "JAVA_HOME" not in env:
-            from .provision import jdk21
-            java = jdk21(self.config)
-            if java:
-                env["JAVA_HOME"] = str(java.resolve())
+        from .analysis_runtime import apply_java_home
+        apply_java_home(self.config, env)
         self.responses = queue.Queue()
         responses = self.responses
         self.stderr.clear()
