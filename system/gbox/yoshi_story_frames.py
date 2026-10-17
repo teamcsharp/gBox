@@ -29,8 +29,8 @@ e8a63388c38f8f0bea37e9b13a97f0898ac5496e08ca2028afb8db9a866e0ce9):
 
 The CI8 tile/TLUT atlas for the frame bank is not yet resolved to a ROM
 offset, so ``render_frame_png`` rasterises the decoded quads flat-shaded: it
-proves the geometry (silhouette, vertex and UV decode) but not the texture
-colours.  The tile seg3 offsets + texel counts needed to finish the decode are
+shows decoded quad positions and UVs, not the sprite silhouette (which
+requires texture alpha) or texture colours.  The tile seg3 offsets + texel counts needed to finish the decode are
 returned by ``parse_frame``.
 """
 from __future__ import annotations
