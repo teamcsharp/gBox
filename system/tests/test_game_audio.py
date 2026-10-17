@@ -148,13 +148,45 @@ def test_slow_audio_then_running_is_ready_with_a_warning():
 
 
 def test_a_boot_that_is_not_about_audio_still_fails_at_30s():
+    # no content ever loaded: the plain 30 s deadline still applies
     w = watch()
     w.observe("[INFO] RetroArch 1.22.2\n[INFO] [Core] Loading dynamic libretro core\n", 0.5)
     assert w.decide(29.0, running=False) == "wait"
     assert w.decide(30.1, running=False) == "fail" and w.reason == "content not running after 30s"
-    clean = watch()
-    clean.observe(log("no_audio_warning.log"), 1.0)
-    assert clean.decide(30.1, running=False) == "fail" and clean.warning is None
+
+
+def test_content_loaded_without_an_audio_problem_gets_the_long_wait():
+    # content loaded but not yet PLAYING with audio fine (a large modded disc's first boot): the extended wait, never
+    # an audio warning, and never the 30 s default.
+    w = watch()
+    w.observe(log("no_audio_warning.log"), 1.0)
+    assert w.phase["content"] and w.warning is None
+    assert w.deadline() == 120.0
+    assert w.decide(30.1, running=False) == "wait"
+    assert w.decide(120.5, running=False) == "fail" and "content not running after 120s" in w.reason
+
+
+def test_set_geometry_is_recognized_as_content_loaded():
+    # pcsx_rearmed reports the loaded disc through the libretro SET_GEOMETRY env call, not [Core] Geometry:. This is
+    # the tail of the failed MGS VR Missions "bighead" launch (job 15cd0ca906094274): audio fine, then SET_GEOMETRY,
+    # then silence -- content is loaded and still booting, so it gets the long wait, not the 30 s default.
+    tail = (
+        "[INFO] [Audio] Starting threaded audio driver.\n"
+        "[INFO] [Audio] Driver \"xaudio\" reports a 24576-byte buffer.\n"
+        "[INFO] [Microphone] Initialized microphone driver.\n"
+        "[INFO] [Display] Found display driver: \"gl\".\n"
+        "[INFO] [NetCMD] bringing_up_command_interface_at_port 64351 (all interfaces).\n"
+        "[INFO] [Rewind] Initializing rewind buffer with size: 1073 MB\n"
+        "[INFO] [Environ] SET_MINIMUM_AUDIO_LATENCY.\n"
+        "[INFO] [Environ] SET_GEOMETRY: 640x480, Aspect: 1.333.\n"
+    )
+    p = ga.boot_phase(tail)
+    assert p["content"] is True and p["audio_done"] is True and not p["audio_slow"]
+    w = watch(can_fallback=False)
+    w.observe(tail, 2.0)
+    assert w.deadline() == 120.0
+    assert w.decide(31.0, running=False) == "wait"
+    assert w.decide(121.0, running=False) == "fail" and "still booting" in w.reason
 
 
 # ------------------------------------------------------------------------------------------------ RetroArch launch
