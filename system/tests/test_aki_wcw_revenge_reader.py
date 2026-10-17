@@ -117,3 +117,41 @@ def test_static_revenge_roster_matches_owned_rom():
 def _slug(name: str) -> str:
     import re
     return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+
+
+@pytest.mark.skipif(not EU_ZIP.exists(), reason="owned EU Revenge ROM not mounted")
+def test_collection_path_exports_editable_sting(tmp_path, monkeypatch):
+    """The characters collect path (dedicated_entries -> extract_dedicated -> add -> verify_entry)
+    exports rv_0_1_sting as a verified, rigged, editable glTF from the owned ROM, not just aki_wcw.extract."""
+    from gbox import characters as C
+    from gbox import tools
+
+    # The collect job resolves the ROM through rom_path; point it at the owned EU zip on this node.
+    monkeypatch.setattr(tools, "rom_path", lambda g, cfg: EU_ZIP)
+
+    class Ctx:
+        class config:
+            cache = str(tmp_path / "cache")
+
+        def progress(self, pct, msg):
+            pass
+
+    game = {"game_id": "061264c636cc284d", "title": "WCW-nWo Revenge (Europe)", "platform": "n64",
+            "source_paths": [str(EU_ZIP)], "format": "n64", "profile_id": "061264c636cc284d"}
+    root = tmp_path / "lib"
+    root.mkdir()
+    ros = C.dedicated_entries(Ctx().config, game, "revenge", W.revenge_roster)
+    assert len(ros) == 92 and all(e["kind"] == "character" for e in ros)
+    res = C.extract_dedicated(Ctx(), game, "rv_0_1_sting", root, ("revenge", ros))
+    assert res["status"] == "extracted", res
+    meta = C.get(root, "rv_0_1_sting")
+    check = C.verify_entry(root, meta)
+    assert check["ok"], check
+    roles = meta["rig"]["roles"]
+    assert len(roles) == 15 and set(roles) >= {"hip", "chest", "head", "l_foot", "r_foot"}
+    model = root / "rv_0_1_sting" / meta["model"]
+    assert model.is_file() and model.stat().st_size > 10_000
+    rig = C.rig_from_gltf(model, roles)
+    assert len(rig["joints"]) == 18 and len(rig["roles"]) == 15
+    y = {r: rig["joints"][i][1] for r, i in rig["roles"].items()}
+    assert y["l_foot"] < y["hip"] < y["head"] and y["r_foot"] < y["hip"]
