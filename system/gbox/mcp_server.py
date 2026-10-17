@@ -211,17 +211,23 @@ def build(base_url: str, token: str) -> Server:
     async def start_background(body):
         if body.get('require_worker') in ('idle', 'other'):
             body = body | {'require_worker': (await select_background_worker(body['tool']))['id']}
+        target = body.get('require_worker')
+        worker = None
+        if target and target not in ('idle', 'other'):
+            workers = await get('/api/workers')
+            worker = next((w for w in workers if target in (w.get('id'), w.get('name'))), None)
+            from .job_routing import conflict
+            if why := conflict(body.get('require_os'), worker):
+                raise ValueError(why)
         # Retrying an MCP call must not multiply model swaps on the same session.
         active = await get('/api/jobs', state='queued,running', limit=100)
         for job in active:
             if (job.get('tool') == body['tool'] and job.get('input') == body.get('input', {})
                     and job.get('require_worker') == body.get('require_worker')
+                    and job.get('require_os') == body.get('require_os')
                     and job.get('parent_request_id') == body.get('parent_request_id')):
                 return job | {'deduplicated': True}
-        target = body.get('require_worker')
         if target and target not in ('idle', 'other'):
-            workers = await get('/api/workers')
-            worker = next((w for w in workers if target in (w.get('id'), w.get('name'))), None)
             if not worker or not worker.get('online'):
                 raise RuntimeError('Target worker is unavailable. Do not enqueue more requests for it; use an idle worker or continue source work.')
             if worker.get('active_jobs', 0) >= 4:
