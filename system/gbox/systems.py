@@ -96,7 +96,8 @@ RULES: list[tuple[str, str, str | None, list[str]]] = [
      r"exidy sorcerer|super acan|game pocket|adventure vision|touhou|namco system es3", "computer_misc", None, []),
     # --- Windows-only (PC launchers, modern consoles, special hardware) ---
     (r"xbox 360|xbox360", "xbox360", None, []),          # Xenia on Windows nodes (gbox/xenia.py)
-    (r"xbox|teknoparrot|taito type x|nesicaxlive|examu|pc games|arcadepc|future pinball|pinball|flash games|"
+    (r"\bxbox\b", "xbox", None, []),                 # Cxbx-Reloaded on Windows nodes (gbox/xbox.py)
+    (r"teknoparrot|taito type x|nesicaxlive|examu|pc games|arcadepc|future pinball|pinball|flash games|"
      r"java games|mugen|openbor|ouya|popcap|laserdisc|daphne|american laser|mfme|locomalito|angry birds|darksiders|"
      r"settings|magazines|wow action|jukebox|ledblinky", "windows_native", None, []),
     # --- Arcade (MAME / FBNeo sets, and every virtual MAME collection) ---
@@ -122,10 +123,25 @@ def classify(system: str, emulator: str = "", rompath: str = "") -> tuple[str, s
     for text in order:
         for rx, plat, core, bios in _compiled:
             if text and rx.search(text):
+                if plat in ("windows_native", "xbox") and folder:
+                    # a launcher system that also scans a console's rom folder (HyperSpin's "Microsoft XBOX" lists
+                    # collections\Sony Playstation 2\roms\USA): those files are that console's discs (Metal Gear
+                    # Solid 2 Substance, Enter the Matrix, Path of Neo, GTA Vice City are PS2 CHDs), so the folder
+                    # decides when it names a platform gBox has an emulator core for
+                    fp = _first(folder.group(1))
+                    if fp and fp[0] not in ("windows_native", "unknown") and fp[1]:
+                        return fp
                 return plat, core, bios
     if re.search(r"\bmame\b", f"{system} {emulator}", re.I):
         return ARCADE
     return "unknown", None, []
+
+
+def _first(text: str):
+    for rx, plat, core, bios in _compiled:
+        if text and rx.search(text):
+            return plat, core, bios
+    return None
 
 
 def core_for(platform: str) -> tuple[str | None, list[str]]:

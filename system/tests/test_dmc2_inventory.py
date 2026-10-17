@@ -229,3 +229,16 @@ def test_owned_disc_compressed_probe():
     assert p2631["type"] == "tim2" and p2631["flag_hi"] == 0x04
     assert p2631["flag_lo"] in dmc2.TIM2_FLAGS
     assert p2631["literal_prefix"] >= 8
+
+
+@pytest.mark.parametrize("magic", [b"MOMO", b"TIM2"])
+@pytest.mark.parametrize("length", [8, 9])
+def test_compressed_probe_rejects_truncated_headers(magic, length):
+    blob = (b"\x00\x00" + magic + b"\x01\x00\x00\x00")[:length]
+    with pytest.raises(ValueError):
+        dmc2.compressed_entry_probe(blob)
+
+
+def test_compressed_probe_stops_before_a_truncated_momo_record():
+    blob = b"\x00\x00MOMO" + struct.pack("<I", 1) + b"\x01" * 7
+    assert dmc2.compressed_entry_probe(blob)["literal_prefix"] == 8

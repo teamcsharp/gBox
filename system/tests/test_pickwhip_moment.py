@@ -87,7 +87,7 @@ def test_running_session_preserves_moment(monkeypatch):
     monkeypatch.setattr(os_, "start", lambda ctx, a, m, sid, x=None, y=None: {"status": "overlay"})
 
     res = cc.no_writer(CTX, api, META, GAME, NEED, inp())
-    assert res["status"] == "overlay"
+    assert res["status"] == "missing" and "overlay" not in res
     p = res["preserved"]
     assert p["saved"] and p["slot"] == 71 and p["captured"] is True and p["artifact"] == "abc"
     (t1, save, r1), (t2, export, r2) = dispatched
@@ -101,7 +101,7 @@ def test_running_session_preserves_moment(monkeypatch):
     assert any(m.get("attachments") for m in msgs), "the captured frame must be attached to the request"
 
 
-def test_dead_session_skips_preservation_but_still_overlays(monkeypatch):
+def test_dead_session_skips_preservation_but_keeps_repair(monkeypatch):
     api = API(requests={}, sessions=[{"session_id": SID, "state": "ended"}])
     existing_gap(api)
     import gbox.overlay_swap as os_
@@ -112,11 +112,11 @@ def test_dead_session_skips_preservation_but_still_overlays(monkeypatch):
 
     monkeypatch.setattr(cc, "preserve_moment", fail)
     res = cc.no_writer(CTX, api, META, GAME, NEED, inp())
-    assert res["status"] == "overlay"
+    assert res["status"] == "missing"
     assert "preserved" not in res
 
 
-def test_failed_save_posts_note_and_still_overlays(monkeypatch):
+def test_failed_save_posts_note_and_keeps_repair(monkeypatch):
     api = API(requests={})
     existing_gap(api)
     monkeypatch.setattr(cc, "_run_job", lambda *a, **k: {"state": "failed", "error": "no reply from emulator"})
@@ -124,7 +124,7 @@ def test_failed_save_posts_note_and_still_overlays(monkeypatch):
     monkeypatch.setattr(os_, "start", lambda ctx, a, m, sid, x=None, y=None: {"status": "overlay"})
 
     res = cc.no_writer(CTX, api, META, GAME, NEED, inp())
-    assert res["status"] == "overlay"
+    assert res["status"] == "missing"
     p = res["preserved"]
     assert p["saved"] is False and "no reply" in p["error"]
     assert any("Save state unavailable" in m["text"] for m in api.requests["r1"]["messages"])
@@ -141,7 +141,7 @@ def test_capture_failure_degrades_to_partial_note(monkeypatch):
     monkeypatch.setattr(os_, "start", lambda ctx, a, m, sid, x=None, y=None: {"status": "overlay"})
 
     res = cc.no_writer(CTX, api, META, GAME, NEED, inp())
-    assert res["status"] == "overlay"
+    assert res["status"] == "missing"
     p = res["preserved"]
     assert p["saved"] is True and p["captured"] is False and p["artifact"] == "abc"
     partial = [m for m in api.requests["r1"]["messages"]
@@ -155,6 +155,19 @@ def test_no_session_unchanged_gap_only():
     assert res["status"] == "missing"
     assert "preserved" not in res
     assert res["request"]["number"] == 1
+
+
+def test_missing_writer_does_not_start_overlay(monkeypatch):
+    import gbox.overlay_swap as overlay
+    calls = []
+    monkeypatch.setattr(overlay, 'start', lambda *args: calls.append(args))
+    monkeypatch.setattr(cc, 'preserve_moment', lambda *args: {'saved': True})
+    api = API()
+    res = cc.no_writer(CTX, api, META, GAME, NEED, inp())
+    assert res['status'] == 'missing' and calls == []
+    created = next(body for method, path, body in api.calls if method == 'POST' and path == '/api/requests')
+    assert created['context']['native_replacement'] and created['context']['needs_rebuild']
+    assert 'x=0.47' in created['body'] and SID in created['body']
 
 
 def test_moment_slot_increments_per_preserved_message():

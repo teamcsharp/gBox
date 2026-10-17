@@ -15,30 +15,47 @@ How it works
     floor item:   0x8C1631C8(FloorItem*, 0)    (what the 6x5F "drop item" handler calls)
     give item:    6x2B "create inventory item" sequence: 0x8C1CA46C(item,0), 0x8C1C9C98(item), obj=0x8C0735D8(item),
                   player->vtable[0x130](player, obj)
+- move_speed: the CAVE2 TObjPlayer::update wrapper (same cave as attack_speed) runs the player's own update an extra
+  N-1 times per frame, so the per-frame move routine (the step it adds to the player's position at TObjPlayer +0x3C/+0x44
+  = analog magnitude x a speed constant, applied through 0x8C02AE70) advances N x per frame: the player moves N x faster.
+  SPEED_VARS+0x10 = move extra updates (0 = off).
+- key_bypass: the Hunter's License serial/access-key check. Two near-identical validators (0x8C1E73E4 and 0x8C26705C)
+  count the 8 serial characters and then call the key verifier at a jsr (0x8C1E743E and 0x8C2670B6, both 400B jsr @r0).
+  Patching that jsr -> mov #1,r0 (E001) forces the verifier result to 1 (valid) and the title accepts any key. No live
+  player object is needed, so it applies on the key-entry screen itself; original bytes are restored on off.
+- rare_drops: the loaded ItemRT rare-drop table in RAM (found by its ItemRT.afs content signature) is rewritten so every
+  monster and box slot drops an item from a configurable list of the rarest items at the format's maximum chance. Offline
+  enemy kills then roll from this copy and the game's own offline drop path (which ends in the floor-item create at
+  0x8C1631C8) drops a rare. The original 640-byte table is kept and restored on off.
 """
 import struct
 import time
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .models import Permission as P
 from .registry import Unsupported, tool
+from .pso_controls import serialized
 
 PLAYER_TBL = 0x8C42D92C
 CHAR_PTR = 0x8C4EC4E0
 MESETA_OFF, CHAR_MESETA_OFF = 0xC20, 0x36C
 FLOOR_NOW = 0x8C45C904
-PATCHES = {   # name: (address, original, patched)
+PATCHES = {   # name: (address or (addresses,), original, patched); every listed site is checked and written together
     "crit_always": (0x8C047BC0, bytes.fromhex("1a89"), bytes.fromhex("0900")),
     "equip_any": (0x8C1638CC, bytes.fromhex("c060"), bytes.fromhex("05e0")),
+    "key_bypass": ((0x8C1E743E, 0x8C2670B6), bytes.fromhex("0b40"), bytes.fromhex("01e0")),
 }
+NO_PLAYER_OPS = {"key_bypass"}                   # applied at the title/key screen, before a TObjPlayer exists
 SIGNATURE = (0x8C2F3014, b"TObjPlayer")          # same check as the pso-v2-dc-us profile
 VT_UPDATE, ORIG_UPDATE = 0x8C26C848, 0x8C0216F4
 CAVE, QUEUE, BUF = 0x8C02DD30, 0x8C02DE00, 0x8C02DED0
 CAVE_ORIG_HEAD = bytes.fromhex("e62f224f")
 CAVE2, CAVE2_END = 0x8C02DF90, 0x8C02E098            # second online-only handler: speed / rapid-fire wrapper + vars
 CAVE2_ORIG_HEAD = bytes.fromhex("e62fd62f")
-SPEED_VARS = 0x8C02E080                              # u32 rapid-fire mask, period (frames), counter, extra updates
+SPEED_VARS = 0x8C02E080                              # u32 rapid-fire mask, period (frames), counter, attack extra, move extra
+MOVE_EXTRA_OFF = 0x10                                # SPEED_VARS + 0x10: u32 extra player updates per frame (move_speed)
+SPEED_VARS_LEN = 0x14                                # 5 u32 in the 0x8C02E080..0x8C02E098 var block
 PAD_HELD = 0x8C42D6C0                                # port A: +0 buttons held, +8 pressed this frame (0x400 = attack 'y')
 ACTION_STATE = 0x30E                                 # TObjPlayer u16: 1 while an attack is running (5 standing)       # first bytes of the online handler we overwrite (sanity check)
 QMAX, BUF_END = 8, 0x8C02DF90
@@ -50,6 +67,7 @@ F_EQUIP = 0x8C022428                              # (player, TItem*, slot): what
 EQUIPPED = {"mag": 0xBD0, "armor": 0xBD4, "weapon": 0xBE4}   # TObjPlayer -> equipped TItem*
 EQUIP_SLOTS = 0xBCC                               # 7 equip slot pointers (index = item vtable+0x80()); 6 = weapon
 ITEM_FLAGS = 0xE4                                 # TItem u32: 1 = in inventory, |2 = equipped (E marker)
+ITEM_RECORD = 0x134                               # TItem: the 20-byte item data record, data bytes spaced 2 apart
 BASE_STATS = 0xC00                                # TObjPlayer: character base stats u16 atp mst evp hp dfp ata lck
 STATS = ["atp", "mst", "evp", "hp", "dfp", "ata", "lck"]
 LIVE = {"atp": (0x1A2, 0x1AA), "evp": (0x1A6, 0x1AE), "dfp": (0x1A8, 0x1B0), "ata": (0x1B2,), "lck": (0x1B4,),
@@ -60,6 +78,18 @@ F_DELETE_INV = 0x8C023484                         # (player, item_id, amount): w
 PLY_ITEM = 0xBC8                                  # TObjPlayer -> TPlyItem; its child TItemList's children = inventory nodes
 F_RECALC = 0x8C025570                             # (player): recompute live stats from base stats + equipment, clamp HP/TP
 ATP_SPREAD = 0x1A4                                # shown ATP = live atp + this (weapon part)
+# ItemRT rare-drop table (PSO V2 DC): the game copies the on-disc ItemRT.afs table for the current difficulty+section
+# into RAM. Each 640-byte table = 101 monster slots then a 30-byte box-area map then 30 box rare slots; a slot is a
+# packed probability byte + a 3-byte item code. rare_drops rewrites every slot to a rare from a list at the max chance.
+RT_ENTRY, RT_MON_SLOTS = 640, 101
+RT_BOX_AREAS_AT, RT_BOX_SLOTS, RT_BOX_RARES_AT = 404, 30, 434
+RT_MAX_PROB = 0xFF                                 # the format's maximum packed probability
+ITEMRT_AFS_SHA = "57591915246c6b60fd5cb2348091ce57b7bbeee4aaf05b2529fc24e4b60132da"   # pso-v2-dc-us profile drop_tables
+# Defaults: the rarest weapons, frames, barriers and units for 2OEF (real PSO item codes).
+RARE_DROPS = ["000107", "000207", "001000", "001100", "001200", "001d00", "001e00", "001f00", "003200",   # weapons
+              "010133", "010128", "010131",                                                               # frames
+              "010227", "010226", "01022c", "010229",                                                     # barriers
+              "010320", "010335", "010341", "01033b"]                                                     # units
 
 
 # --- minimal SH-4 assembler (only what the stubs need) ---------------------------------------------------------------
@@ -176,8 +206,10 @@ def stub_code(want_labels: bool = False):
 
 def speed_code() -> bytes:
     """TObjPlayer::update wrapper (second cave): rapid fire (while the attack button is held, re-press it every PERIOD
-    frames in the pad's pressed-this-frame mask) and attack speed (while the player is in the attack state, run the
-    original update EXTRA more times per frame), then the original update."""
+    frames in the pad's pressed-this-frame mask); attack speed (while the player is in the attack state, run the original
+    update ATTACK-EXTRA more times per frame); move speed (run the original update MOVE-EXTRA more times per frame every
+    frame, so the per-frame move step advances that many extra times - the player moves N x faster); then the original
+    update once more. The two extra-update counts (attack, move) are independent so each op toggles on its own."""
     return _asm([
         ("push", "r14"), ("push", "r13"), ("pushpr",), ("mov", "r4", "r14"),
         ("ldl", "VARS", "r2"), ("ldd", 0, "r2", "r1"),              # r1 = rapid-fire button mask (0 = off)
@@ -189,11 +221,15 @@ def speed_code() -> bytes:
         ("ldd", 8, "r5", "r3"), ("or", "r1", "r3"), ("std", "r3", 8, "r5"),      # pressed |= mask
         ("bra", "spd"), ("nop",),
         "rfreset:", ("movi", 0, "r3"), ("std", "r3", 8, "r2"),
-        "spd:", ("ldd", 12, "r2", "r13"),                                         # r13 = extra updates
-        "sploop:", ("tst", "r13", "r13"), ("bt", "splast"),
-        ("ldl", "OST", "r0"), ("ldwr0", "r14", "r0"), ("cmpeq0", 1), ("bf", "splast"),   # attacking?
+        "spd:", ("ldd", 12, "r2", "r13"),                                         # r13 = attack extra updates
+        "sploop:", ("tst", "r13", "r13"), ("bt", "amove"),
+        ("ldl", "OST", "r0"), ("ldwr0", "r14", "r0"), ("cmpeq0", 1), ("bf", "amove"),   # attacking?
         ("ldl", "ORIG2", "r0"), ("jsr", "r0"), ("mov", "r14", "r4"),
         ("addi", -1, "r13"), ("bra", "sploop"), ("nop",),
+        "amove:", ("ldl", "VARS", "r2"), ("ldd", 16, "r2", "r13"),                # r2 clobbered by the jsr above; reload
+        "mvloop:", ("tst", "r13", "r13"), ("bt", "splast"),                       # r13 = move extra updates (every frame)
+        ("ldl", "ORIG2", "r0"), ("jsr", "r0"), ("mov", "r14", "r4"),
+        ("addi", -1, "r13"), ("bra", "mvloop"), ("nop",),
         "splast:", ("mov", "r14", "r4"), ("poppr",), ("pop", "r13"), ("pop", "r14"),
         ("ldl", "ORIG2", "r0"), ("jmp", "r0"), ("nop",),
         (".align",),
@@ -217,16 +253,17 @@ class PSO:
 
     def __init__(self, read, write):
         self.read, self.write = read, write
+        self._rare_orig = {}                       # ItemRT table addr -> original 640 bytes (for rare_drops off)
 
     def u32(self, a):
         return struct.unpack("<I", self.read(a, 4))[0]
 
-    def check(self):
+    def check(self, require_player=True):
         a, s = SIGNATURE
         if self.read(a, len(s)) != s:
             raise Unsupported("not Phantasy Star Online Ver. 2 (Dreamcast, US) - signature TObjPlayer missing")
         p = self.u32(PLAYER_TBL)
-        if not 0x8C000000 <= p < 0x8D000000:
+        if require_player and not 0x8C000000 <= p < 0x8D000000:
             raise RuntimeError("no player object yet: start a game first")
         return p
 
@@ -242,18 +279,27 @@ class PSO:
         return self.u32(p + MESETA_OFF)
 
     # --- code patches ---
+    @staticmethod
+    def _patch_addrs(name):
+        a = PATCHES[name][0]
+        return a if isinstance(a, tuple) else (a,)
+
     def patch(self, name, on: bool):
-        a, orig, new = PATCHES[name]
-        cur = self.read(a, len(orig))
-        if cur not in (orig, new):
-            raise Unsupported(f"{name}: unexpected code at {a:#x} ({cur.hex()}) - different game version?")
-        self.write(a, new if on else orig)
-        return self.read(a, len(orig)) == (new if on else orig)
+        addrs, orig, new = self._patch_addrs(name), PATCHES[name][1], PATCHES[name][2]
+        for a in addrs:                                # verify every site before touching any
+            cur = self.read(a, len(orig))
+            if cur not in (orig, new):
+                raise Unsupported(f"{name}: unexpected code at {a:#x} ({cur.hex()}) - different game version?")
+        want = new if on else orig
+        for a in addrs:
+            self.write(a, want)
+        return all(self.read(a, len(orig)) == want for a in addrs)
 
     def patch_state(self, name):
-        a, orig, new = PATCHES[name]
-        cur = self.read(a, len(orig))
-        return "on" if cur == new else "off" if cur == orig else f"unknown ({cur.hex()})"
+        addrs, orig, new = self._patch_addrs(name), PATCHES[name][1], PATCHES[name][2]
+        states = {"on" if self.read(a, len(orig)) == new else "off" if self.read(a, len(orig)) == orig else "unknown"
+                  for a in addrs}
+        return states.pop() if len(states) == 1 else "partial"
 
     # --- game-function calls ---
     def hook(self):
@@ -265,7 +311,7 @@ class PSO:
             head = self.read(CAVE2, 4)
             if head != CAVE2_ORIG_HEAD and head != sc[:4]:
                 raise Unsupported(f"code cave {CAVE2:#x} holds unexpected bytes {head.hex()}")
-            self.write(SPEED_VARS, b"\0" * 16)
+            self.write(SPEED_VARS, b"\0" * SPEED_VARS_LEN)
             self.write(CAVE2, sc)
         code = stub_code()
         if self.read(CAVE, len(code)) != code:
@@ -327,21 +373,60 @@ class PSO:
 
     def give(self, code: str, count: int = 1, item_id0: int | None = None) -> list:
         """Create `count` real inventory items for player 0 through the game's own 6x2B path. Returns TItem pointers."""
+        item_id0 = self.next_ids(count) if item_id0 is None else item_id0
+        return self.give_records([self.item_data(code, item_id0 + i) for i in range(count)])
+
+    def give_records(self, records: list[bytes]) -> list:
+        """Create one real inventory item per 20-byte item record through the game's own 6x2B path."""
         g = give_addr()
         self.hook()
-        item_id0 = self.next_ids(count) if item_id0 is None else item_id0
-        made = []
-        n = 0
-        while n < count:
-            k = min(QMAX, count - n, (BUF_END - BUF) // 24)
+        made, n = [], 0
+        while n < len(records):
+            k = min(QMAX, len(records) - n, (BUF_END - BUF) // 24)
             calls = []
             for i in range(k):
                 a = BUF + 24 * i
-                self.write(a, self.item_data(code, item_id0 + n + i))
+                self.write(a, records[n + i])
                 calls.append((g, a))
             made += self.call(calls)
             n += k
         return made
+
+    def item_record(self, obj: int) -> bytes:
+        """The 20-byte item data record stored in a TItem (data bytes spaced 2 apart from ITEM_RECORD)."""
+        if not 0x8C000000 <= obj < 0x8D000000:
+            raise ValueError(f"not an item object: {obj:#x}")
+        return bytes(self.read(obj + ITEM_RECORD + 2 * i, 1)[0] for i in range(20))
+
+    def dupe(self, target, count: int = 1, equip: bool = False) -> dict:
+        """Clone an inventory item exactly: read its live 20-byte record (stats, percentages, grind and stack count
+        all come along) and create `count` copies through the game's own 6x2B create-item path - the classic dupe
+        glitch, without the disconnect trick. equip: also equip the first copy (the 6x25 path)."""
+        p = self.check()
+        x = self._find(target)
+        if x is None:
+            raise ValueError(f"no inventory item matches {target!r}")
+        rec = self.item_record(x["obj"])
+        if struct.unpack("<I", rec[12:16])[0] != x["id"]:
+            raise RuntimeError(f"item {x['code']} record id mismatch ({rec[12:16].hex()} vs {x['id']:#x}) - "
+                               f"different game version or wrong record offset?")
+        ids = self.next_ids(count)
+        records = []
+        for i in range(count):
+            r = bytearray(rec)
+            struct.pack_into("<I", r, 12, ids + i)          # every copy needs its own unique id
+            records.append(bytes(r))
+        made = self.give_records(records)
+        equipped = False
+        if equip:
+            first = next((o for o in made if o), None)
+            equipped = bool(first) and self.equip(first)
+        inv2 = self.inventory()
+        return {"source": {"slot": x["slot"], "code": x["code"], "equipped": x["equipped"], "id": hex(x["id"])},
+                "created": sum(1 for o in made if o), "requested": count, "objects": [hex(o) for o in made if o],
+                "record": rec.hex(), "equipped_first": equipped,
+                "slots_with_code_now": [y["slot"] for y in inv2 if y["code"] == x["code"]],
+                "verified": sum(1 for o in made if o) == count}
 
     def equip(self, obj: int, slot: int = 0) -> bool:
         """Equip an inventory TItem the way the 6x25 handler does (the old item in that slot comes off)."""
@@ -521,6 +606,15 @@ class PSO:
         v = struct.unpack("<4I", self.read(SPEED_VARS, 16))
         return {"factor": v[3] + 1, "rapid_fire": bool(v[0]), "rapid_period_frames": v[1]}
 
+    def move_speed(self, factor: int, on: bool = True) -> dict:
+        """factor 1 = off; N = the player's update (and so its per-frame move step) runs N times per frame, moving the
+        player N x faster. Independent of attack_speed: writing only the move-extra var leaves the attack vars alone."""
+        self.hook()
+        f = max(1, min(20, int(factor)))
+        self.write(SPEED_VARS + MOVE_EXTRA_OFF, struct.pack("<I", (f - 1) if on else 0))
+        extra = struct.unpack("<I", self.read(SPEED_VARS + MOVE_EXTRA_OFF, 4))[0]
+        return {"factor": extra + 1, "on": extra > 0}
+
     def floor_items(self) -> list:
         """[(item_id, code_hex)] on the player's current floor (the game's floor-item table)."""
         self.check()
@@ -548,7 +642,7 @@ class PSO:
             self.call(calls)
         return ids
 
-    def floor_spawn(self, codes: list, radius: float = 18.0, item_id0: int | None = None) -> list:
+    def floor_spawn(self, codes: list, radius: float = 18.0, item_id0: int | None = None, grinds: dict | None = None) -> list:
         """Drop real floor items in a ring around player 0 via 0x8C1631C8 (the 6x5F drop path)."""
         import math
         p = self.check()
@@ -564,14 +658,83 @@ class PSO:
             for i, code in enumerate(chunk):
                 j = b + i
                 ang = 2 * math.pi * j / max(1, len(codes))
-                r = radius if len(codes) > 1 else 10.0
+                r = radius
+                data = bytearray(self.item_data(code, item_id0 + j))
+                if code.startswith("00") and grinds:
+                    data[3] = max(0, min(255, int(grinds.get(code, 0))))
                 rec = struct.pack("<BBHffHH", floor, 1, 0, x + r * math.sin(ang), z + r * math.cos(ang), room, j) + \
-                    self.item_data(code, item_id0 + j)
+                    bytes(data)
                 a = BUF + 36 * i
                 self.write(a, rec)
                 calls.append((F_FLOOR_CREATE, a, 0))
             made += self.call(calls)
         return made
+
+    # --- rare drops: rewrite the loaded ItemRT rare table so every enemy/box drops a rare -------------------------------
+    def rare_find(self, sigs: list) -> dict:
+        """Scan main RAM for the loaded ItemRT table(s) by their on-disc content signatures. sigs: [(index, bytes)].
+        Returns {address: table_index}. Only the current difficulty+section table is in RAM at a time."""
+        found = {}
+        for base, size in ((0x8C000000, 0x01000000),):
+            for o in range(base, base + size, 1 << 20):
+                try:
+                    blk = self.read(o, min((1 << 20) + RT_ENTRY, base + size - o))
+                except Exception:
+                    continue
+                for idx, sig in sigs:
+                    k = blk.find(sig)
+                    while 0 <= k < (1 << 20):
+                        found[o + k] = idx
+                        k = blk.find(sig, k + 4)
+        return found
+
+    def rare_slots(self, boxes: bool = True) -> list:
+        """Byte offsets of the drop slots in a 640-byte ItemRT table: every monster slot (and every box rare slot)."""
+        s = [4 * i for i in range(RT_MON_SLOTS)]
+        if boxes:
+            s += [RT_BOX_RARES_AT + 4 * i for i in range(RT_BOX_SLOTS)]
+        return s
+
+    def rare_drops(self, on: bool, codes: list, found: dict, boxes: bool = True) -> dict:
+        """Rewrite each located ItemRT table so every monster/box slot drops a code from `codes` (round-robin) at the
+        format's maximum chance; on=False restores the saved original bytes. Returns a per-table verify summary."""
+        codes = [c.strip().lower() for c in (codes or RARE_DROPS)]
+        if any(len(bytes.fromhex(c)) != 3 for c in codes):
+            raise ValueError("every rare code must be 3 bytes of hex (e.g. 000107 = DURANDAL)")
+        for a in found:
+            orig = self._rare_orig.get(a)
+            if orig is None:
+                orig = self.read(a, RT_ENTRY)
+                self._rare_orig[a] = orig
+            if on:
+                tbl = bytearray(orig)
+                slots = self.rare_slots(boxes)
+                for n, s_ in enumerate(slots):
+                    tbl[s_] = RT_MAX_PROB
+                    tbl[s_ + 1:s_ + 4] = bytes.fromhex(codes[n % len(codes)])
+                if boxes:                                   # box rares only roll in their slot's area: cover every area
+                    for k in range(RT_BOX_SLOTS):
+                        tbl[RT_BOX_AREAS_AT + k] = 1 + k % 15
+                self.write(a, bytes(tbl))
+            else:
+                self.write(a, orig)
+        want = set(codes)
+        bad = []
+        for a in found:
+            cur = self.read(a, RT_ENTRY)
+            if on and any(cur[s_ + 1:s_ + 4].hex() not in want for s_ in self.rare_slots(boxes)):
+                bad.append(hex(a))
+            if not on and cur != self._rare_orig.get(a, cur):
+                bad.append(hex(a))
+        return {"tables": {hex(a): f"difficulty {i // 10}, section id {i % 10}" for a, i in found.items()},
+                "codes": codes, "verified": not bad, "mismatched": bad}
+
+
+def rare_signatures(afs: bytes) -> list:
+    """[(table_index, 32-byte signature)] from ItemRT.afs: the first 32 bytes of each table's monster-slot block."""
+    n = int.from_bytes(afs[4:8], "little")
+    ents = [afs[o:o + s] for o, s in (struct.unpack_from("<II", afs, 8 + 8 * i) for i in range(n))]
+    return [(i, e[:32]) for i, e in enumerate(ents) if len(e) >= RT_ENTRY]
 
 
 def _flush_jit(ad) -> bool:
@@ -593,9 +756,10 @@ def _flush_jit(ad) -> bool:
 # --- the gBox tool ---------------------------------------------------------------------------------------------------
 class ModsIn(BaseModel):
     session_id: str
-    op: str = "status"          # status | list | item_set | multi_equip | attack_speed | meseta_max | meseta | crit_always | equip_any | give | stat | floor_spawn | floor_rares | floor_clear | floor_list | unhook
-    on: bool = True             # crit_always / equip_any: on/off
+    op: str = "status"          # Platform-specific operations; pso_controls.capabilities gates native support.
+    on: bool = True             # crit_always / equip_any / key_bypass / move_speed / rare_drops: on/off
     value: int = 999999         # meseta: amount
+    factor: int = 3             # move_speed: the player moves N times faster (1 = off)
     code: str = ""              # give / floor_spawn: item code hex (e.g. 000105 = DB's Saber) or name
     equip: bool = False         # give: also equip the first created item
     name: str = ""              # stat: atp | mst | evp | hp | dfp | ata | lck
@@ -603,6 +767,14 @@ class ModsIn(BaseModel):
     rare: bool = False          # item_set: replace with a random rare of the same kind instead of `code`
     count: int = 1              # give / floor_spawn / floor_rares: how many
     codes: list[str] = []       # floor_rares: explicit codes (default: a rare set)
+    character_class: str = ""   # floor_rares: required for class-compatible random rares
+    highest: bool = True        # floor_rares: highest base-star rarity tier in that class
+    max_grind: bool = False     # ground weapons: their own PMT maximum, never an invented item level
+    radius: float = Field(default=18.0, ge=5, le=100, allow_inf_nan=False)
+    item_id: int | None = Field(default=None,ge=0,le=0xffffffff)
+    properties: dict[str,float] = {}
+    interval: int = Field(default=15,ge=5,le=300)
+    categories: list[str] = ['weapon']
 
 class ModsOut(BaseModel):
     result: dict
@@ -616,6 +788,24 @@ def _catalog(ctx) -> dict:
                                                         headers=ctx.headers, timeout=60).json()}
     except Exception:
         return {}
+
+
+def _catalog_rows(ctx) -> list[dict]:
+    from .pso_live import catalog, deadline
+    rows = catalog(ctx, 'dcv2')
+    deadline(ctx)
+    return rows
+
+
+def _itemrt_sigs(ctx) -> list:
+    """ItemRT.afs signatures (read-only artifact GET) to locate the loaded rare table in RAM; [] if unavailable."""
+    try:
+        import httpx
+        r = httpx.get(f"{ctx.server}/api/artifacts/{ITEMRT_AFS_SHA}", headers=ctx.headers, timeout=120)
+        r.raise_for_status()
+        return rare_signatures(r.content)
+    except Exception:
+        return []
 
 
 def _is_rare(name: str) -> bool:
@@ -638,21 +828,48 @@ RARES = ["000105", "000106", "000107", "000205", "000206", "000207", "000305", "
          "000605", "000705", "000805", "000905", "001000", "001100", "000d00"]
 
 
-@tool("pso_mods", "1.0", ModsIn, ModsOut, capabilities=["runtime", "memory"], permissions=[P.MEMORY_WRITE], timeout_s=120)
+@tool("pso_mods", "1.1", ModsIn, ModsOut, capabilities=["runtime", "memory"], permissions=[P.MEMORY_WRITE], timeout_s=120)
+@serialized
 def pso_mods(inp: ModsIn, ctx):
-    """Phantasy Star Online Ver. 2 (Dreamcast US) live mods: op=meseta_max (999999 meseta) | meseta value=N |
+    """Offline PSO native controls; check capabilities for revision/platform support.
+
+    GameCube Plus 3OE2 adds enemy_drops on=true/false codes=[catalog codes] max_grind=true;
+    walk_through on=true/false; bosses; boss_warp target=<boss id>; adventure_status.
+    See pso_live.gamecube for the GameCube inventory/equipment/stat/survival/MAG operations.
+
+    Dreamcast US Ver.2 operations: op=meseta_max (999999 meseta) | meseta value=N |
     crit_always on=true/false (every player hit is a critical, x1.5) | equip_any on=true/false (no class/level/stat
     equip restrictions) | give code=000105 count=15 equip=true (real inventory items via the game's own create-item
     routine; equip = also equip the first) | stat name=atp value=900 (status-screen value; moves the saved base stat) |
     list (live inventory in menu order) | item_set target=<slot|weapon|armor|mag|code> code=<code|name> or rare=true (replace
-    that item in place; re-equipped if it was equipped) | floor_spawn code=.. count=N (real floor items around the player) | floor_rares count=N | floor_clear on=true (all floor
-    items on this floor; on=false: only gBox-spawned ones) | floor_list | status."""
+    that item in place; re-equipped if it was equipped) | dupe target=<slot|weapon|armor|mag|code> count=N equip=true
+    (exact clones - stats, percentages, grind and stack count all copied; equip = also equip the first copy) |
+    floor_spawn code=.. count=N (real floor items around the player) | floor_rares count=N | floor_clear on=true (all floor
+    items on this floor; on=false: only gBox-spawned ones) | floor_list | move_speed factor=3 on=true/false (the player
+    runs N times faster) | key_bypass on=true/false (skip the serial/access-key entry check at the title) | rare_drops
+    on=true/false codes=[..] (every enemy and box drops a rare from the list; defaults to the rarest 2OEF items) | status."""
     from .tools import SESSIONS
     ad, g = SESSIONS[inp.session_id]
+    if inp.op == 'rehook':
+        from .pso_rehook import recover
+        return {'result':recover(inp.session_id,ad,g,ctx)}
+    if inp.op == 'always_hit':
+        from . import pso_accuracy
+        from .pso_live import deadline
+        deadline(ctx)
+        result=pso_accuracy.set_enabled(ad,g.get('platform'),inp.on)
+        ad._pso_preferences_dirty=True
+        return {'result':result}
+    if inp.op == "capabilities":
+        from .pso_controls import capabilities
+        return {"result": capabilities(g, ad.read_memory)}
+    if g.get("platform") == "gamecube":
+        from .pso_live import gamecube
+        return {"result": gamecube(inp, ctx, ad)}
     if g.get("platform") != "dreamcast":
         raise Unsupported("pso_mods supports Phantasy Star Online Ver. 2 on Dreamcast (US)")
     m = PSO(ad.read_memory, ad.write_memory)
-    m.check()
+    m.check(require_player=inp.op not in NO_PLAYER_OPS | {"status"})
     code = (inp.code or "").strip().lower().replace("0x", "")
     if code and any(ch not in "0123456789abcdef" for ch in code) and inp.op != "item_set":
         hit = [c for c, n in _catalog(ctx).items() if n.lower() == code]
@@ -676,9 +893,26 @@ def pso_mods(inp: ModsIn, ctx):
             res["equipped"] = m.equip(next(o for o in objs if o))
     elif inp.op == "multi_equip":
         res = m.multi_equip(inp.target, inp.on)
+    elif inp.op == "dupe":
+        res = m.dupe(inp.target, max(1, min(30, inp.count)), inp.equip)
     elif inp.op == "attack_speed":
         res = m.attack_speed(inp.value if inp.on and inp.value != 999999 else (10 if inp.on else 1), rapid=inp.on)
         res["code_cache_flushed"] = _flush_jit(ad)
+    elif inp.op == "move_speed":
+        res = m.move_speed(inp.factor if inp.on and inp.factor > 1 else (3 if inp.on else 1), on=inp.on)
+        res["code_cache_flushed"] = _flush_jit(ad)
+        res["note"] = "the player's run/walk step advances this many times per frame"
+    elif inp.op == "rare_drops":
+        sigs = _itemrt_sigs(ctx)
+        if not sigs:
+            raise Unsupported("could not read the ItemRT drop table (ItemRT.afs) to locate it in RAM")
+        found = m.rare_find(sigs)
+        if not found:
+            raise RuntimeError("the ItemRT rare table is not in RAM now (it loads with a field/quest); enter a field and retry")
+        codes = [c.strip().lower().replace("0x", "") for c in inp.codes] or ([code] if code else RARE_DROPS)
+        res = m.rare_drops(inp.on, codes, found)
+        res["mode"] = "every enemy and box drops a rare" if inp.on else "original drop tables"
+        res["note"] = "rares drop on offline kills once the game rolls this copy; a drop still needs the enemy's drop roll"
     elif inp.op == "list":
         names = _catalog(ctx)
         res = {"inventory": [{"slot": x["slot"], "code": x["code"], "name": names.get(x["code"], x["cls"]),
@@ -712,10 +946,33 @@ def pso_mods(inp: ModsIn, ctx):
     elif inp.op == "stat":
         res = m.set_stat(inp.name, inp.value)
     elif inp.op in ("floor_spawn", "floor_rares"):
-        codes = [code] * max(1, min(20, inp.count)) if inp.op == "floor_spawn" else \
-            (inp.codes or RARES)[:max(1, min(20, inp.count if inp.count > 1 else 10))]
-        objs = m.floor_spawn(codes)
-        res = {"spawned": sum(1 for o in objs if o), "codes": codes, "objects": [hex(o) for o in objs]}
+        import random
+        from .psoitems import rare_pool
+        rows = _catalog_rows(ctx)
+        by_code = {i["code"]: i for i in rows}
+        count = max(1, min(20, inp.count))
+        if inp.op == "floor_rares" and inp.character_class:
+            from .psoitems import CLASSES
+            if inp.character_class not in list(CLASSES)[:9]:
+                raise ValueError("choose a class that exists in Dreamcast Ver. 2")
+            pool = rare_pool(rows, inp.character_class, inp.highest)
+            codes = [i["code"] for i in random.choices(pool, k=count)]
+        elif inp.op == "floor_rares":
+            pool = inp.codes or RARES
+            codes = random.choices(pool, k=count)
+        else:
+            codes = (inp.codes[:20] if inp.codes else [code] * count)
+        if not codes or any(c not in by_code for c in codes):
+            raise ValueError("choose item codes from this Dreamcast disc's item database")
+        grinds = {c: by_code[c].get("max_grind", 0) for c in codes} if inp.max_grind else {}
+        item_id0 = m.next_ids(len(codes))
+        objs = m.floor_spawn(codes, radius=inp.radius, grinds=grinds, item_id0=item_id0)
+        actual = dict(m.floor_items())
+        confirmed = sum(actual.get(item_id0 + i) == c for i, c in enumerate(codes))
+        res = {"spawned": confirmed, "verified": confirmed == len(codes), "codes": codes, "objects": [hex(o) for o in objs],
+               "radius": inp.radius, "max_grinds": grinds, "class": inp.character_class or None,
+               "floor_codes_after": list(actual.values()),
+               "note": "Class-compatible does not bypass ATP/MST/ATA requirements; Equip any handles those separately."}
     elif inp.op == "floor_clear":
         gone = m.floor_clear(only_gbox=not inp.on)
         res = {"removed": len(gone), "ids": [hex(i) for i in gone], "left_on_floor": len(m.floor_items()),
@@ -727,8 +984,12 @@ def pso_mods(inp: ModsIn, ctx):
         res["hooked"] = False
     elif inp.op != "status":
         raise ValueError(f"unknown op {inp.op}")
-    p = m.check()
-    sv = struct.unpack("<4I", m.read(SPEED_VARS, 16)) if m.read(CAVE2, 4) == speed_code()[:4] else (0, 0, 0, 0)
-    res["status"] = {"meseta": m.u32(p + MESETA_OFF), **{k: m.patch_state(k) for k in PATCHES},
-                     "hooked": m.u32(VT_UPDATE) == CAVE, "attack_speed": sv[3] + 1, "rapid_fire": bool(sv[0])}
+    try:                                              # key_bypass runs at the title, before a player object exists
+        meseta = m.u32(m.check() + MESETA_OFF)
+    except RuntimeError:
+        meseta = None
+    sv = struct.unpack("<5I", m.read(SPEED_VARS, SPEED_VARS_LEN)) if m.read(CAVE2, 4) == speed_code()[:4] else (0,) * 5
+    res["status"] = {"meseta": meseta, **{k: m.patch_state(k) for k in PATCHES},
+                     "hooked": m.u32(VT_UPDATE) == CAVE, "attack_speed": sv[3] + 1, "rapid_fire": bool(sv[0]),
+                     "move_speed": sv[4] + 1}
     return {"result": res}

@@ -12,6 +12,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .formats.texture import morton as _twiddle       # shared PowerVR twiddle
+
 
 @dataclass(frozen=True)
 class Texture:
@@ -105,32 +107,109 @@ def decode(tex: Texture, bin_data: bytes):
     return Image.frombytes("RGBA", (w, h), rgba)
 
 
-def _twiddle(x: int, y: int) -> int:
-    r = 0
-    for i in range(12):
-        r |= ((y >> i) & 1) << (2 * i) | ((x >> i) & 1) << (2 * i + 1)
-    return r
+# bits per channel (A, R, G, B) of the 16-bit pixel formats: 0 ARGB1555, 1 RGB565, 2 ARGB4444
+_BITS = {0: (1, 5, 5, 5), 1: (0, 5, 6, 5), 2: (4, 4, 4, 4)}
+
+
+def _quantise(v: np.ndarray, bits: int) -> np.ndarray:
+    """8-bit channel -> the nearest `bits`-bit level (rounded, not truncated: truncation darkens by up to one
+    level and never dithers either way). A 5-bit source widened by bit copy (a DS / N64 colour) comes back exact."""
+    top = (1 << bits) - 1
+    return (np.asarray(v, np.uint32) * top + 127) // 255
 
 
 def _pixels16(img: np.ndarray, pix: int) -> np.ndarray:
-    a = np.asarray(img, np.uint16)
-    if pix == 0:
-        return ((a[..., 3] >= 128).astype(np.uint16) << 15) | ((a[..., 0] >> 3) << 10) | ((a[..., 1] >> 3) << 5) | (a[..., 2] >> 3)
-    if pix == 1:
-        return ((a[..., 0] >> 3) << 11) | ((a[..., 1] >> 2) << 5) | (a[..., 2] >> 3)
-    if pix == 2:
-        return ((a[..., 3] >> 4) << 12) | ((a[..., 0] >> 4) << 8) | ((a[..., 1] >> 4) << 4) | (a[..., 2] >> 4)
-    raise ValueError(f"Unsupported pixel format {pix}")
+    a = np.asarray(img)
+    if pix not in _BITS:
+        raise ValueError(f"Unsupported pixel format {pix}")
+    ab, rb, gb, bb = _BITS[pix]
+    r, g, b = _quantise(a[..., 0], rb), _quantise(a[..., 1], gb), _quantise(a[..., 2], bb)
+    out = (r << (gb + bb)) | (g << bb) | b
+    if ab == 1:
+        out |= (a[..., 3] >= 128).astype(np.uint32) << 15
+    elif ab:
+        out |= _quantise(a[..., 3], ab) << 12
+    return out.astype(np.uint16)
+
+
+def _expand16(words: np.ndarray, pix: int) -> np.ndarray:
+    """16-bit pixels -> (..., 4) RGBA floats as the PowerVR samples them (gbox.ninja._px)."""
+    w = np.asarray(words, np.int64)
+    ab, rb, gb, bb = _BITS[pix]
+    out = np.empty(w.shape + (4,), np.float32)
+    out[..., 0] = ((w >> (gb + bb)) & ((1 << rb) - 1)) * 255 // ((1 << rb) - 1)
+    out[..., 1] = ((w >> bb) & ((1 << gb) - 1)) * 255 // ((1 << gb) - 1)
+    out[..., 2] = (w & ((1 << bb) - 1)) * 255 // ((1 << bb) - 1)
+    out[..., 3] = 255 if ab == 0 else np.where(w & 0x8000, 255, 0) if ab == 1 else ((w >> 12) & 15) * 17
+    return out
+
+
+def fit_image(image, width: int, height: int):
+    """The donor image at the slot's size. Area averaging when an axis shrinks, texel replication when it grows: no
+    resampling ringing (Lanczos haloes every edge) and no invented in-between colours, so a flat region stays flat
+    and a VQ codebook only has to learn the donor's own 2x2 blocks."""
+    from PIL import Image
+    image = image.convert("RGBA")
+    if image.size == (width, height):
+        return image
+    return image.resize((width, height), Image.Resampling.BOX)
+
+
+def _nearest(blocks: np.ndarray, book: np.ndarray, step: int = 2048) -> tuple[np.ndarray, np.ndarray]:
+    labels, dist = [], []
+    bb = (book ** 2).sum(1)
+    for s in range(0, len(blocks), step):
+        x = blocks[s:s + step]
+        d = (x ** 2).sum(1)[:, None] - 2 * x @ book.T + bb[None, :]
+        k = d.argmin(1)
+        labels.append(k)
+        dist.append(np.maximum(d[np.arange(len(x)), k], 0))
+    return np.concatenate(labels), np.concatenate(dist)
+
+
+def vq_codebook(blocks: np.ndarray, size: int = 256, iterations: int = 12, seed: int = 0) -> np.ndarray:
+    """Weighted k-means over the distinct 2x2 blocks: k-means++ seeding (spread over every colour the image uses, so
+    a small detail such as a button keeps an entry), Lloyd steps until the labels settle (at least `iterations`, at
+    most 64), empty entries re-seeded on the worst-served block."""
+    unique, counts = np.unique(blocks, axis=0, return_counts=True)
+    unique = unique.astype(np.float64)
+    if len(unique) <= size:
+        return unique
+    w = counts.astype(np.float64)
+    rng = np.random.default_rng(seed)
+    book = np.empty((size, unique.shape[1]))
+    book[0] = unique[w.argmax()]
+    d = ((unique - book[0]) ** 2).sum(1)
+    for k in range(1, size):
+        p = w * d
+        book[k] = unique[rng.choice(len(unique), p=p / p.sum())] if p.sum() > 0 else unique[rng.integers(len(unique))]
+        d = np.minimum(d, ((unique - book[k]) ** 2).sum(1))
+    labels = None
+    for step in range(max(64, iterations)):
+        new, dist = _nearest(unique, book)
+        if labels is not None and step >= iterations and (new == labels).all():
+            break
+        labels = new
+        sums = np.zeros_like(book)
+        np.add.at(sums, labels, unique * w[:, None])
+        tot = np.bincount(labels, weights=w, minlength=size)
+        filled = tot > 0
+        book[filled] = sums[filled] / tot[filled, None]
+        worst = np.argsort(-(dist * w))
+        for k, j in zip(np.flatnonzero(~filled), worst):
+            book[k] = unique[j]
+    return book
 
 
 def encode(tex: Texture, image, iterations: int = 12) -> bytes:
     """Encode native payload at the existing size, including VQ alpha.
 
-    VQ colors include alpha for ARGB formats; gbox.ninja.pvr_vq currently fits
-    RGB only. This encoder intentionally retains alpha in its codebook.
+    The image is fitted with fit_image (no resampling ringing), every channel is rounded to the nearest level of
+    the 16-bit format and nothing is dithered. VQ colours include alpha for ARGB formats; the codebook is fitted
+    with vq_codebook, quantised to the pixel format and every 2x2 block then takes the entry nearest to it as the
+    hardware will show it. A donor whose alpha is binary keeps a binary alpha in the codebook.
     """
-    from PIL import Image
-    img = np.asarray(image.convert("RGBA").resize((tex.width, tex.height), Image.Resampling.LANCZOS))
+    img = np.asarray(fit_image(image, tex.width, tex.height))
     w, h, fmt, pix = tex.width, tex.height, tex.format, tex.pixel
     if fmt in (1, 0x0D):
         packed = _pixels16(img, pix)
@@ -146,26 +225,17 @@ def encode(tex: Texture, image, iterations: int = 12) -> bytes:
         raise ValueError("Only square native VQ textures can be encoded")
     # Hardware codebook stores (top-left, bottom-left, top-right, bottom-right).
     channels = 3 if pix == 1 else 4
-    work = img[..., :channels].astype(np.float32)
+    work = img[..., :channels].astype(np.float64)
     blocks = np.stack([work[0::2, 0::2], work[1::2, 0::2], work[0::2, 1::2], work[1::2, 1::2]], axis=2).reshape(-1, 4 * channels)
-    unique, inverse = np.unique(blocks, axis=0, return_inverse=True)
-    rng = np.random.default_rng(0)
-    if len(unique) <= 256:
-        book = unique
-        label = inverse
-    else:
-        book = unique[rng.choice(len(unique), 256, replace=False)].copy()
-        def labels():
-            return np.concatenate([((blocks[s:s + 512, None, :] - book[None, ...]) ** 2).sum(2).argmin(1) for s in range(0, len(blocks), 512)])
-        for _ in range(max(1, iterations)):
-            label = labels()
-            for k in range(256):
-                mask = label == k
-                book[k] = blocks[mask].mean(0) if mask.any() else blocks[rng.integers(len(blocks))]
-        label = labels()
-    rgba = np.full((256, 4, 4), 255, np.uint8)
-    rgba[:len(book), :, :channels] = np.rint(book).clip(0, 255).reshape(-1, 4, channels).astype(np.uint8)
-    packed = _pixels16(rgba, pix).astype("<u2").tobytes()
+    book = vq_codebook(blocks, 256, iterations)
+    rgba = np.full((256, 4, 4), 255.0)
+    rgba[:len(book), :, :channels] = book.reshape(-1, 4, channels)
+    if channels == 4 and np.isin(img[..., 3], (0, 255)).all():
+        rgba[..., 3] = np.where(rgba[..., 3] >= 128, 255, 0)
+    words = _pixels16(np.rint(rgba).clip(0, 255).astype(np.uint8), pix)
+    shown = _expand16(words, pix)[:len(book), :, :channels].reshape(len(book), -1).astype(np.float64)
+    label, _ = _nearest(blocks, shown)
+    packed = words.astype("<u2").tobytes()
     bw, bh = w // 2, h // 2
     indices = bytearray(bw * bh)
     label = label.reshape(bh, bw)

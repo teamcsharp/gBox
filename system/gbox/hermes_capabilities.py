@@ -18,7 +18,8 @@ INSTRUCTIONS = (
     'and correct that cause; do not treat historical approval denials as current policy. '
     'Keep changes in the isolated task workspace and install necessary project '
     'dependencies there or in its venv. Preserve the operator PC, existing games, '
-    'owned ROMs and saves; agent Windows tests use JAYBUILTFINALE at 2% audio. '
+    'owned ROMs and saves; agent test sessions run only on i9-NUC or the Spark, while idle, at 2% audio, '
+    'never on JAYBUILTFINALE (the operator\'s play PC). '
     'Only send external messages when the operator explicitly requested them.'
 )
 

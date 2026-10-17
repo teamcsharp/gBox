@@ -105,7 +105,9 @@ def recover(feedback, *, now=None):
     now = time.time() if now is None else now
     jobs = {j['id']: j for j in hermes_task_mode._jobs() if j.get('id')}
     config = hermes_task_mode._config()
-    routes = hermes_quota.routes(config, feedback.get('routes') or [])
+    from . import hermes_local
+    # A failed paid run is resumed on a paid route only: its transcript and scope are too big for the local model.
+    routes = [r for r in hermes_quota.routes(config, feedback.get('routes') or []) if not hermes_local.is_local(r)]
     eligible = [r for r in routes if feedback.get('cooldowns', {}).get(r['provider'] + '/' + r['model'], 0) <= now]
     if not _path().exists():
         return {'status': 'no_pending_recovery'}

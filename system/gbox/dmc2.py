@@ -266,7 +266,7 @@ def compressed_entry_probe(b: bytes) -> dict:
     Pins the 2-byte flag, its type/mode bytes and the length of the literal header run so a
     candidate back-ref decoder can be validated against X:105/106 (MOMO) and X:2631 (TIM2).
     """
-    if len(b) < 8 or b[2:6] not in COMPRESSED_TYPE:
+    if len(b) < 10 or b[2:6] not in COMPRESSED_TYPE:
         raise ValueError(f"not a compressed DMC2 entry (magic at +2 = {b[2:6]!r})")
     flag = struct.unpack_from("<H", b, 0)[0]
     typ = COMPRESSED_TYPE[b[2:6]]
@@ -292,7 +292,7 @@ def _momo_literal_prefix(b: bytes, off: int) -> int:
         return 0
     run, prev_end, bound = 8, 0, len(b) * 64
     for j in range(n):
-        if run + 8 > len(b):
+        if off + run + 8 > len(b):
             break
         o, s = struct.unpack_from("<II", b, off + run)
         if o <= 0 or s <= 0 or o > bound or (j and o < prev_end):

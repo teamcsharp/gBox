@@ -14,36 +14,108 @@ import re
 import time
 
 # Writers `characters op=use` routes to: (module, slots, what gets replaced). Games: the module's GAME_IDS; "routed" is
-# read from characters_tool's own source, so a writer counts only once op=use actually reaches it.
+# read from characters_tool's loaded code. WRITER_GAME_IDS narrows modules whose
+# GAME_IDS also includes games that only support extraction.
 WRITERS = [
     ("doa2_swap", ["fighter:<name>:<costume>"], "DOA2 LE Japan: native body replacement; fighter motions preserved, per-donor gameplay verification"),
+    ("soulcalibur_swap", ["fighter:<name>[:<costume>]", "roster"],
+     "SoulCalibur DC (USA): any of the 19 fighters, every costume rebuilt natively on the fighter's own skeleton "
+     "(motions, weapons, cloth and face bones kept; donor textures in the YUV422 pages); slot=roster builds the Sonic "
+     "vs Mario cast with the random costume hook; unverified in game"),
     ("sm64_swap", ["player"], "Mario (20 joints, all his animations)"),
-    ("gta_stories_models", ["player"], "Toni, every outfit"),
+    ("gta_stories_models", ["player", "ped:<index>"], "Toni outfits or streamed pedestrian cast; special cutscene/story models separate"),
+    ("gta3_swap", ["player"], "Claude, the GTA III player (player.dff/.txd in every GTA3.IMG copy on the disc)"),
+    ("gta_vc_swap", ["player", "ped:<dff name>", "peds:all", "all"],
+     "Tommy (player.dff/.txd), one ped or every ped on his skeleton in a rebuilt models/gta3.img (classic RenderWare PC "
+     "port only; the owned install is the UE4 Definitive Edition, which use() detects and reports as a gap)"),
     ("re6_tool", ["player", "enemies", "enemy:<family>"], "Leon in every costume; zombies / J'avo"),
     ("metal_arms", ["player", "npc", "enemy"], "Glitch; any bot (picked on screen)"),
-    ("aki_wrestling", ["<wrestler>", "player"], "any wrestler (several per ROM: op=match); No Mercy + World Tour "
-                                                "(gbox.aki_wcw); Revenge has no writer yet"),
+    ("aki_wrestling", ["<wrestler>", "player"], "any wrestler (several per ROM: op=match); No Mercy USA, "
+                                                "World Tour USA and Revenge USA (gbox.aki_wcw)"),
     ("yukes_sd", ["<wrestler>"], "any wrestler, every costume (several per disc: op=match); SmackDown! 2 (PS1)"),
+    ("defjam_writer", ["<wrestler>", "player"],
+     "Def Jam Vendetta PS2: any of the 58 wrestler containers (player = the four story heroes, every costume); "
+     "BODY/BODY2 + texture page rebuilt, read back by the reader; not yet verified in an emulator"),
     ("pe_swap", ["player"], "Aya, all 5 outfits (field + battle share the model)"),
+    ("pe2_swap", ["player"], "PE2 Aya, every outfit file (STAGE0.CDF 10200..10600: model + page + CLUT); unverified in game"),
     ("ff7_swap", ["player"], "Cloud: field model (FIELD/CLOUD.BCX) + battle model (ENEMY6/CLOUD.LZS)"),
     ("sa2_chars", ["player"], "Sonic (SA2 player model)"),
-    ("pso_player", ["player"], "a PSO class (Ninja node tree)"),
-    ("jgr", ["id:N", "<00-15>", "player (requires known active_id)"],
-     "JGR USA: one selected PLAYER.AFS body tree and PTEX texture 0; draw-group selection and native replacement remain unverified"),
-    ("mgs_vr_swap", ["player"], "VR Missions Snake: currently only the HUcast donor KMD is routed; arbitrary donor replacement is unsupported"),
+    ("pso_player", ["player", "enemy:<name>", "enemies"],
+     "a PSO class (Ninja node tree, not drawn by the game yet); enemy:booma / gobooma / gigobooma / boomas or any BM_ENE "
+     "pack on the enemy's own motions (gbox.pso_enemy, unverified in game)"),
+    ("jgr_swap", ["player", "character:<name>", "id:<N>", "<00-15>"],
+     "JGR USA: any of the 16 PLAYER.AFS cast (player = Beat unless active_id): every textured body group and its "
+     "texlist's body atlas rebuilt in a new GD-ROM mod; gameplay replacement unverified until launched"),
+    ("mgs_vr_swap", ["player", "enemy:soldier", "enemy:ninja", "model:<hash>", "enemies", "all", "cast"],
+     "Metal Gear Solid VR Missions: any collection character as Snake, every Genome soldier (38582 + 55267 in all 88 "
+     "mission stages), the ninja or the other 16-object figures, one native disc (fitted KMDs with their own textures; "
+     "cast_swap pairs); pick whip / live_use swaps a running session in place (session_swap); unverified in game"),
     ("mgs1_swap", ["player"], "MGS disc Snake: HUcast donor KMD only; visible replacement remains experimental/unverified"),
+    ("clayfighter_swap", ["fighter:<name>", "player"],
+     "Clay Fighter: Sculptor's Cut (N64): every sprite frame of one fighter re-drawn from a collection sprites entry "
+     "(frame sizes, hotspots, moves, hit boxes and sounds kept; patched ROM with the header CRC fixed)"),
+    ("auf_swap", ["player", "model:<body>", "enemies", "bosses", "npcs", "bots", "all", "cast"],
+     "007 Agent Under Fire GC: Bond (every outfit), any of the 45 body models in every level, the mission enemies, "
+     "bosses, other people, the multiplayer bots, or a cast plan (pairs [{target, donor}], the rest dealt at random): "
+     "re-encoded .gcm on the slot's skeleton (native animations), donor atlas in the level's texture chunk, rebuilt "
+     "maps/*.ngc in a disc-image copy; unverified in game"),
+    ("pso_gc_swap", ["class:<humar..fomar>", "player", "enemy:<key>"],
+     "PSO Episode I & II (GC): any of the 12 player classes (pl<X>bdy00.nj loose + in pl<X>nj.bml, head / hair hidden, "
+     "the atlas in every pl<X>tex.afs texture) or any of 50 enemy bodies on their own trees (the BML pack rebuilt in "
+     "every GSL area archive that carries it); read back by gbox.pso_gc; unverified in Dolphin"),
+    ("crazy_taxi_swap", ["player", "driver:<axel|bd_joe|gena|gus>", "drivers", "pedestrian:<group>", "pedestrians",
+                         "passenger:<group>", "passengers"],
+     "Crazy Taxi GC: any driver (every .shp part, hand pose and sl_ LOD in ct/polDC0.all; accessory sub-parts "
+     "hidden; skeleton and animations stay), or the pedestrians / fares; unverified in game"),
+    ("stranglehold_swap", ["player", "tequila", "tequila:<default|suit|jacket|sweater|jack_swtr>", "enemy:<class>",
+                           "enemies", "model:<package>"],
+     "Stranglehold PS3: Tequila (every outfit, story + multiplayer packages) or a gang enemy / named character's "
+     "multiplayer skin: the donor on the package's own skeleton (native animations), every LOD re-encoded into SPU "
+     "segments as an appended SkeletalMesh export, donor atlas over the body diffuse (DXT), PS3TOC.txt sizes "
+     "updated, in a folder mod; campaign enemies (level packages) not written; unverified in RPCS3"),
+    ("crazy_taxi2_swap", ["player", "driver:<axel|bd_joe|gena|gus|slash|iceman|cinnamon|hot_d>", "drivers"],
+     "Crazy Taxi 2 DC: any of the eight drivers, both detail levels (polPP??/H + texPP??/H rebuilt: one atlas mesh per "
+     "part in the driver's largest texture slot, gesture hands carry the donor hand, accessories hidden; slot tables "
+     "in 1ST_READ.BIN; IK rig and motions stay) in a copied GD-ROM; PowerVR safety-checked; unverified in game"),
+    ("twin_snakes_swap", ["player", "model:<key>", "enemies", "soldiers", "bosses", "npcs", "all", "cast"],
+     "Metal Gear Solid: The Twin Snakes GC (both discs): Snake (snake_def + his low-detail twin), every Genome soldier "
+     "model (out_cold / out_cold2 / in_door / in_gus / hev_grd + their _sh twins), the bosses and Meryl / Otacon / "
+     "Johnny: re-encoded .kms on the MGS2 21-bone skeleton (native animations), donor atlas over the model's colour "
+     "texture, gameplay and in-engine cutscene stages of stage.dat rebuilt in place (prerecorded movies unchanged) in a disc-image copy; pick whip / live_use writes "
+     "the body into the running game after the session swap; unverified in Dolphin"),
+    ("soulcalibur2_swap", ["fighter:<key>[:<costume>]", "player", "all", "cast", "random"],
+     "Soul Calibur II GC: any of the 24 fighters (Link included), every costume or one (Extra-mode copies too): a new "
+     "VMG on the fighter's own skeleton (motions, moves and weapon kept), donor atlas, human.olk packages rewritten in "
+     "place in a disc-image copy; random = two donor pools alternating over the costume slots + main.dol's body load "
+     "drawing a costume at random each time a fighter is loaded; unverified in Dolphin"),
+    ("etm_swap", ["player", "<cast slot>"],
+     "Enter the Matrix (the catalog's windows_native entry is the PS2 disc SLUS-20454): any cast member (Niobe, Ghost, "
+     "the Agents, Trinity, Morpheus, Neo, Seraph, SWAT, police, vampires ... every costume / variant file of the slot) "
+     "rebuilt as plain triangles on the shared 89-joint skeleton in WAD1.DFU, in place; read back from the image; "
+     "unverified in PCSX2"),
+    ("mgs2_swap", ["player", "snake", "raiden", "soldiers", "<cast slot>"],
+     "Metal Gear Solid 2 Substance (the catalog's windows_native entry is the PS2 DVD SLUS-20554): Snake (tanker + "
+     "Big Shell models), Raiden (every outfit), the soldier variants (Tanker / Big Shell Gurlukovich, heavy, high-tech, "
+     "SEAL, Tengu), Marines, Olga, the Ninja, Ocelot, Solidus, Otacon: stage kms rebuilt on each model's own skeleton "
+     "with the donor atlas in its texture pack, STAGE.DAT / STAGE2.DAT pages re-deflated + re-encrypted in place; "
+     "pick whip live_use swaps the running session; unverified in PCSX2"),
+    ("doapp_swap", ["<fighter>[:<costume>]", "player"],
+     "Dead Or Alive ++ (arcade, MAME doapp): any of the 11 fighters' costume models (player = all 44) rebuilt on the "
+     "fighter's own 15 bones (motions, moves and accessory chains stay) in a new doapp set folder; read back through "
+     "the game's fight init + skeleton build; unverified in MAME"),
 ]
 SPECIAL = [                                               # writers routed by code in characters.py, not a module's use()
     ("re4gc", "build_re4(", ["player"], "Leon (story + Mercenaries, every costume pack)"),
-    ("oot", "oot_swap.tool(", ["player (Link, both ages)", "npc:<name> / x,y", "swap a<->b", "place (statue)"],
-     "Link or any NPC"),
+    ("oot", "oot_swap.tool(", ["player", "<cast slot: saria, mido, goron, stalfos... (gbox.oot_cast)>",
+                               "npc:<name> / x,y", "swap a<->b", "place <statue>"],
+     "Link (both ages) or any NPC / enemy; the whole cast in one ROM (characters op=cast_swap)"),
 ]
 # games docs/model_swaps.md discusses that have no writer yet (catalog search terms -> platform)
 DISCUSSED = [("Resident Evil 3 Nemesis", "psx"), ("Resident Evil 2", "psx"), ("Resident Evil Director's Cut", "psx"),
              ("Mario Kart 64", "n64"), ("Resident Evil The Mercenaries 3D", "3ds"), ("Super Smash Bros. Melee", "gamecube"),
-             ("Phantasy Star Online Ver. 2", "dreamcast"), ("Grand Theft Auto III", "ps2"), ("Grand Theft Auto Vice City", "ps2"),
+             ("Phantasy Star Online Ver. 2", "dreamcast"), ("Grand Theft Auto Vice City", "ps2"),
              ("Grand Theft Auto Vice City Stories", "ps2"), ("Resident Evil 4", "ps2"), ("Shenmue", "dreamcast"),
-             ("Parasite Eve II", "psx"), ("Final Fantasy VIII", "psx"), ("Sonic Adventure 2", "dreamcast"),
+             ("Final Fantasy VIII", "psx"), ("Sonic Adventure 2", "dreamcast"),
              ("WWF SmackDown!", "psx"), ("WWE SmackDown! vs. RAW 2006", "psp"), ("Resident Evil 5", "xbox360")]
 
 
@@ -55,24 +127,79 @@ def _mod(name):
         return None
 
 
+def code_routes(fn) -> dict:
+    """What a function (and its nested code) routes to, read from its loaded bytecode: {"imports": {alias: module} for
+    `from . import module [as alias]`, "calls": {(alias, attr)} for `alias.attr(...)` loads, "globals": names}.
+
+    The bytecode is the code that actually runs. inspect.getsource re-reads the file through the function's stale line
+    numbers, so in a long-running worker whose characters.py was updated on disk after import (lines shifted) it sliced
+    the wrong text, and cast_swap answered "Crazy Taxi (USA) has no routed character writer" (#1554) although
+    characters_tool routes crazy_taxi_swap.use."""
+    import dis
+    imports, calls, names = {}, set(), set()
+    todo = [getattr(fn, "__code__", fn)]
+    while todo:
+        co = todo.pop()
+        names.update(co.co_names)
+        todo += [c for c in co.co_consts if hasattr(c, "co_code")]
+        ins = list(dis.get_instructions(co))
+        for i, a in enumerate(ins):
+            nxt = ins[i + 1] if i + 1 < len(ins) else None
+            if nxt is None:
+                continue
+            if a.opname == "IMPORT_FROM" and nxt.opname.startswith("STORE_"):
+                imports[str(nxt.argval)] = str(a.argval)
+            elif a.opname.startswith(("LOAD_FAST", "LOAD_DEREF", "LOAD_GLOBAL", "LOAD_NAME")) and \
+                    nxt.opname in ("LOAD_ATTR", "LOAD_METHOD"):
+                vals = a.argval if isinstance(a.argval, tuple) else (a.argval,)
+                calls.add((str(vals[-1]).removeprefix("NULL + ").removesuffix(" + NULL"), str(nxt.argval)))
+    return {"imports": imports, "calls": calls, "globals": names}
+
+
+def routes_to(r: dict, module: str, attr: str = "use") -> bool:
+    """Does the code_routes result call <module>.<attr>(...) through any alias it imported the module under?"""
+    return any(mod == module and (alias, attr) in r["calls"] for alias, mod in r["imports"].items())
+
+
 def writer_for(game: dict) -> dict | None:
     """The swap writer op=use reaches for this catalog game, or None."""
     from . import characters as C
-    src = inspect.getsource(C.characters_tool)
+    r = code_routes(C.characters_tool)
     gid, t, plat = game.get("game_id", ""), (game.get("title") or "").lower(), game.get("platform") or ""
     for name, slots, what in WRITERS:
         m = _mod(name)
-        if m is not None and gid in (getattr(m, "GAME_IDS", None) or {}):
-            alias = re.search(rf"from \. import {name}(?: as (\w+))?", src)
-            routed = bool(alias) and f"{alias.group(1) or name}.use(" in src
-            return {"writer": f"gbox.{name}", "routed": routed, "slots": slots, "replaces": what}
+        if m is not None and gid in (getattr(m, "WRITER_GAME_IDS", getattr(m, "GAME_IDS", None)) or {}):
+            return {"writer": f"gbox.{name}", "routed": routes_to(r, name), "slots": slots, "replaces": what}
     if gid in C.RE4GC or gid in C.RE4WII:
-        return {"writer": "gbox.characters.build_re4 (+ re4wii)", "routed": "build_re4(" in src, "slots": SPECIAL[0][2],
-                "replaces": SPECIAL[0][3]}
+        return {"writer": "gbox.characters.build_re4 (+ re4wii)", "routed": "build_re4" in r["globals"],
+                "slots": SPECIAL[0][2], "replaces": SPECIAL[0][3]}
     o = _mod("oot_swap")
     if o is not None and getattr(o, "is_oot", None) and o.is_oot(game):
-        return {"writer": "gbox.oot_swap", "routed": "oot_swap.tool(" in src, "slots": SPECIAL[1][2], "replaces": SPECIAL[1][3]}
+        return {"writer": "gbox.oot_swap", "routed": routes_to(r, "oot_swap", "tool"), "slots": SPECIAL[1][2],
+                "replaces": SPECIAL[1][3]}
     return None
+
+
+def cast_slots(game: dict) -> list[dict]:
+    """The slots a game's writer can put a collection character into, for the cast menu (characters op=collect
+    "slots"): the writer module's own list (cast_slots(): PSO's enemies, gbox.pso_enemy.slots) plus the fixed slot
+    names from WRITERS (placeholders like enemy:<family> are left to the module)."""
+    w = writer_for(game)
+    if not w or not w["routed"]:
+        return []
+    out: list[dict] = []
+    m = _mod(w["writer"].split(".")[-1])
+    if m is not None and callable(getattr(m, "cast_slots", None)):
+        try:
+            fn = m.cast_slots
+            rows = fn(game=game) if "game" in inspect.signature(fn).parameters else fn()   # per-title rosters (WCW)
+            out += [dict(s, writer=s.get("writer", w["writer"])) for s in rows]
+        except Exception:                                  # noqa: BLE001 - a writer that can't list keeps its fixed slots
+            pass
+    for s in w["slots"]:
+        if "<" not in s and not any(o.get("slot") == s for o in out):
+            out.append({"slot": s, "name": s, "kind": "player" if s == "player" else "slot", "writer": w["writer"]})
+    return out
 
 
 def extractor_for(game: dict) -> tuple[str | None, list[dict]]:
@@ -187,6 +314,12 @@ def markdown(cov: dict) -> str:
 def gap(ctx, api, meta: dict, game: dict, need: dict, asked: str) -> dict:
     """File (once) an inbox gap report: no swap writer for this game (agent._gap_report's layout, source "gap")."""
     title = f"GAP: character writer for {game['title']}"
+    parent = getattr(ctx, "parent_request_id", None)
+    if parent:
+        request = api(ctx, "GET", f"/api/requests/{parent}")
+        if (request.get("context") or {}).get("native_replacement"):
+            _post_message(ctx, api, parent, f"Native writer missing: {json.dumps(need)}. Attempt: {asked}")
+            return {"number": request.get("number"), "id": parent, "existing": True}
     for r in api(ctx, "GET", "/api/requests", params={"status": "open,in_progress"}):
         if r.get("title") == title:
             return {"number": r.get("number"), "id": r["id"], "existing": True}
@@ -200,10 +333,12 @@ def gap(ctx, api, meta: dict, game: dict, need: dict, asked: str) -> dict:
         "Build the writer for this game like gbox/pe_swap.py / ff7_swap.py / sm64_swap.py (read the player model, rigid "
         "retarget with sm64_swap.retarget + a role map onto the game's skeleton, fit the game's budgets, rebuild the "
         "file/disc as a file mod), route it in characters_tool, add it to char_coverage.WRITERS, verify in an emulator "
-        "on the Spark and reply here. Meanwhile the operator has the overlay (characters op=overlay)."])
+        "on a test worker and reply here. A donor preview or overlay does not satisfy this native replacement request."])
     r = api(ctx, "POST", "/api/requests", json={"title": title, "body": body, "source": "gap", "kind": "text",
                                                  "parent_request_id": getattr(ctx, "parent_request_id", None),
-                                                 "context": {"character": meta["slug"], "game_id": game["game_id"], "job_id": ctx.job_id}})
+                                                 "context": {"character": meta["slug"], "game_id": game["game_id"],
+                                                             "native_replacement": True, "needs_rebuild": True,
+                                                             "job_id": ctx.job_id}})
     return {"number": r.get("number"), "id": r["id"], "existing": False}
 
 
@@ -288,11 +423,13 @@ def preserve_moment(ctx, api, rid: str, sid: str, game: dict, meta: dict, inp) -
 
 
 def no_writer(ctx, api, meta: dict, game: dict, need: dict, inp) -> dict:
-    """characters op=use on a game without a writer: the overlay now (when a session runs it), plus a gap report.
+    """characters op=use without a native writer leaves a durable repair request.
     A running session also gets its moment preserved on the gap report (#1146): checkpoint, portable export, frame."""
-    asked = f"characters op=use character={meta['slug']} game={game['title']} slot={inp.slot}"
+    asked = (f"characters op=use character={meta['slug']} game={game['title']} slot={inp.slot} "
+             f"session_id={inp.session_id} x={inp.x} y={inp.y}")
     req = gap(ctx, api, meta, game, need, asked)
-    res = {"status": "missing", "missing": need, "request": req, "fallback": "overlay"}
+    _post_message(ctx, api, req['id'], f"Replacement still required: {asked}")
+    res = {"status": "missing", "missing": need, "request": req, "native_replacement": False}
     sid = inp.session_id
     if sid:
         running = False
@@ -308,15 +445,6 @@ def no_writer(ctx, api, meta: dict, game: dict, need: dict, inp) -> dict:
                 _post_message(ctx, api, req["id"], f"Moment preservation failed: {e}.",
                               {"action": "preserve pickwhip moment", "attempt": "1", "result": str(e)[:400],
                                "status": "failed"})
-        try:
-            from . import overlay_swap
-            ov = overlay_swap.start(ctx, api, meta, sid, inp.x, inp.y)
-            return res | {"status": "overlay", "overlay": ov,
-                          "message": f"{game['title']} has no in-engine swap writer yet, so {meta['name']} is drawn over the "
-                                     f"player as an overlay in the desktop app now (the game itself is unchanged). Gap report "
-                                     f"#{req.get('number')} asks for the writer."}
-        except Exception as e:                             # noqa: BLE001 - session not running / not on screen
-            res["overlay_error"] = str(e)
-    return res | {"message": f"{game['title']} has no in-engine swap writer yet (gap report #{req.get('number')} filed so it "
-                             f"gets built). Right now: characters op=overlay character={meta['slug']} session_id=<the "
-                             "running game> draws it over the player in the desktop app (an overlay, not in-engine)."}
+    return res | {"message": f"{meta['name']} has not replaced the character in {game['title']}. "
+                             f"Native writer work is tracked in request #{req.get('number')}; "
+                             "the saved target must be rebuilt and verified in gameplay."}

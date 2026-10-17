@@ -1,4 +1,13 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(git push *)",
+      "Bash(ssh *)",
+      "Bash(scp *)",
+      "Bash(tar *)",
+      "Bash(python scripts/agent_ledger.py *)"
+    ]
+  },
   "hooks": {
     "UserPromptSubmit": [
       { "hooks": [ { "type": "command", "command": "python \"$CLAUDE_PROJECT_DIR/system/scripts/agent_ledger.py\" prompt || true", "timeout": 15 } ] }
