@@ -2780,7 +2780,8 @@ def characters_tool(inp: CharIn, ctx):
     if gid in pe2_swap.GAME_IDS and inp.slot == "player":        # Parasite Eve II (PS1): Aya, every outfit -> pe2_<slug>
         return {"result": out | pe2_swap.use(ctx, meta, game, inp)}
     from . import ff7_swap
-    if gid in ff7_swap.GAME_IDS and inp.slot == "player":        # Final Fantasy VII (PS1): Cloud, field + battle -> ff7_<slug>
+    if gid in ff7_swap.GAME_IDS and ff7_swap.is_slot(inp.slot):
+        # Final Fantasy VII (PS1): a party member (player = Cloud), field + battle -> ff7_<slug>[_<slot>]
         return {"result": out | ff7_swap.use(ctx, meta, game, inp)}
     from . import mgs_vr_swap
     if gid in mgs_vr_swap.GAME_IDS and (mgs_vr_swap.is_slot(inp.slot) or inp.slot == "cast"):
