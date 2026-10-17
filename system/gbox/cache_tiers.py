@@ -1440,6 +1440,10 @@ class Tiers:
     # -- job hook
     def promote_for(self, tool: str, raw_input, progress=None) -> list[dict]:
         """Units a job names come up before it runs; a launch waits only for a quick one (the rest: when idle)."""
+        if tool == 'title_assets':
+            # This reader resolves an already available source and streams only
+            # selected members. Do not move the entire ROM/mod unit first.
+            return []
         out, keys = [], sorted(self.keys_in(raw_input))
         for key in keys:
             self.touch(key)

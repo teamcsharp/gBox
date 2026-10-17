@@ -335,9 +335,21 @@ def ensure_virtualgl() -> dict:
 
 def _seven_zip() -> str:
     """7-Zip CLI (libretro's Windows archives use BCJ2, which pure-Python extractors can't decode)."""
-    for c in (shutil.which("7z"), "C:/Program Files/7-Zip/7z.exe", "C:/Program Files (x86)/7-Zip/7z.exe"):
+    for c in (shutil.which("7zz"), shutil.which("7z"), "C:/Program Files/7-Zip/7z.exe", "C:/Program Files (x86)/7-Zip/7z.exe"):
         if c and Path(c).exists():
             return c
+    if HOST_OS == 'linux':
+        try:
+            apt_packages(['7zip'])
+        except ProvisionError:
+            apt_packages(['p7zip-full'])
+        found = shutil.which('7zz') or shutil.which('7z')
+        if not found:
+            apt_packages(['p7zip-full'])
+            found = shutil.which('7z')
+        if not found:
+            raise ProvisionError('7-Zip install failed')
+        return found
     _run(["winget", "install", "-e", "--id", "7zip.7zip", "--silent", "--accept-source-agreements", "--accept-package-agreements"], 900)
     c = "C:/Program Files/7-Zip/7z.exe"
     if not Path(c).exists():
@@ -669,6 +681,7 @@ def ensure_ffmpeg() -> dict:
 
 def setup(cfg: Config, with_ghidra: bool = True, log=print) -> list[dict]:
     steps = []
+    steps.append(('archives', lambda: _receipt('archives', 'ok', _seven_zip())))
     from .rea import install as install_rea
     steps.append(("rea", lambda: install_rea(cfg)))
     if HOST_OS == "linux":
