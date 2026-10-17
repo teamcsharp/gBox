@@ -88,3 +88,23 @@ def test_full_inventory_integration():
     # fingerprint claims: RenderWare streams + GameCube TPL textures
     assert m["fst"]["extensions"][".rws"] >= 150
     assert m["fst"]["extensions"][".tpl"] == 2
+
+
+def test_wrong_game_and_reversed_dol_extent_fail_before_reads(tmp_path):
+    p=tmp_path/'source.iso'
+    p.write_bytes(make_head(game_id=b'OTHER1'))
+    with pytest.raises(ValueError,match='Expected'):inventory(p)
+    p.write_bytes(make_head(dol=0x1000,fst=0x800,fst_size=12))
+    with pytest.raises(ValueError,match='DOL span'):inventory(p)
+
+def test_fst_extent_is_bounded(tmp_path):
+    p=tmp_path/'source.iso';p.write_bytes(make_head(dol=0x440,fst=0x540,fst_size=0xffffffff))
+    with pytest.raises(ValueError,match='FST outside'):inventory(p)
+
+def test_top_level_chunks_include_header_in_advance():
+    first=struct.pack('<III',1,3,0x1003ffff)+b'abc'
+    second=struct.pack('<III',3,0,0x1003ffff)
+    result=rw_chunks(first+second)
+    assert [(r['offset'],r['size']) for r in result]==[(0,3),(15,0)]
+    with pytest.raises(ValueError):rw_chunks(first[:-1])
+    with pytest.raises(ValueError):rw_chunks(first+b'x')

@@ -97,12 +97,16 @@ def dol_header(dol: bytes) -> dict:
     bss_addr = struct.unpack_from(">I", dol, 0xD8)[0]
     bss_size = struct.unpack_from(">I", dol, 0xDC)[0]
     entry = struct.unpack_from(">I", dol, 0xE0)[0]
-    size = 0
+    size = 0x100
     for off, sz in zip(text_off, text_size):
         if sz:
+            if off<0x100:
+                raise ValueError("DOL section overlaps header")
             size = max(size, off + sz)
     for off, sz in zip(data_off, data_size):
         if sz:
+            if off<0x100:
+                raise ValueError("DOL section overlaps header")
             size = max(size, off + sz)
     return {"entry": entry, "bss_addr": bss_addr, "bss_size": bss_size, "size": size,
             "text_sections": [(a, s) for a, s in zip(text_addr, text_size) if s],
@@ -110,24 +114,24 @@ def dol_header(dol: bytes) -> dict:
 
 
 def rw_chunks(b: bytes, maxdepth: int = 4) -> list[dict]:
-    """Walk the leading RenderWare chunk tree of a .rws stream.
+    """Read up to maxdepth top-level RenderWare chunk headers; do not infer nesting.
 
     Hypothesis (to confirm in the analysis stage): the GC RenderWare stream records are little-endian
     {u32 type, u32 size, u32 version}, where size is the payload size (excluding the 12-byte header) and
     version 0x1003ffff marks RenderWare 3.x.  This is a *reader probe*, not a verified decoder: the chunk
     type ids (e.g. 0x0809) still need to be mapped to RenderWare's type table.
     """
-    out, i, depth = [], 0, 0
-    while depth < maxdepth and i + 12 <= len(b):
-        t, sz, ver = struct.unpack_from("<III", b, i)
-        if not (0 < sz <= len(b) - i - 12) or ver >> 16 not in (0x1003, 0x0000):
-            break
-        out.append({"type": t, "size": sz, "version": ver, "offset": i})
-        if t & 0xFF in (0x01, 0x08, 0x09, 0x0A, 0x0E, 0x10, 0x1A):  # container-ish types
-            depth += 1
-            i += 12
-            continue
-        break
+    if maxdepth<0:
+        raise ValueError("Chunk count must be nonnegative")
+    out=[];i=0
+    while i<len(b) and len(out)<maxdepth:
+        if i+12>len(b):
+            raise ValueError("Truncated RenderWare chunk header")
+        typ,size,version=struct.unpack_from("<III",b,i)
+        if size>len(b)-i-12:
+            raise ValueError("RenderWare chunk outside buffer")
+        out.append({'type':typ,'size':size,'version':version,'offset':i})
+        i+=12+size
     return out
 
 
@@ -139,6 +143,14 @@ def inventory(iso_path: str) -> dict:
     with iso.open("rb") as f:
         head = f.read(0x440)
         hdr = disc_header(head)
+        image_size=iso.stat().st_size
+        if hdr["game_id"]!=DISC_ID:
+            raise ValueError(f"Expected {DISC_ID}, got {hdr['game_id']}")
+        span=hdr["fst_offset"]-hdr["dol_offset"]
+        if not (0x440<=hdr["dol_offset"] and 0x100<=span<=64*1024*1024):
+            raise ValueError("Invalid bounded DOL span")
+        if not (12<=hdr["fst_size"]<=16*1024*1024) or hdr["fst_offset"]+hdr["fst_size"]>image_size:
+            raise ValueError("FST outside source image")
         f.seek(hdr["dol_offset"])
         dol = f.read(hdr["fst_offset"] - hdr["dol_offset"])
         f.seek(hdr["fst_offset"])
@@ -147,7 +159,17 @@ def inventory(iso_path: str) -> dict:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     dh = dol_header(dol)
-    files = gcfst.parse_fst(fst, hdr["fst_offset"])
+    if len(dol)!=span or len(fst)!=hdr["fst_size"] or dh["size"]>len(dol):
+        raise ValueError("Truncated DOL or FST")
+    count=struct.unpack_from(">I",fst,8)[0]
+    if not count or count>len(fst)//12 or fst[0]!=1:
+        raise ValueError("Invalid FST entry count or root")
+    try:
+        files = gcfst.parse_fst(fst, hdr["fst_offset"])
+    except (struct.error,IndexError,ValueError) as exc:
+        raise ValueError("Malformed FST") from exc
+    if any(off>image_size or size>image_size-off for _,off,size,_ in files):
+        raise ValueError("FST member outside source image")
 
     by_ext = Counter()
     cars = defaultdict(dict)
