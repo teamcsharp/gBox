@@ -1,0 +1,15 @@
+[Unit]
+Description=gBox passive session model and gameplay observers
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/gBox/system
+ExecStart=%h/gBox/system/.venv-linux-aarch64/bin/python -m gbox.session_observers --config %h/gBox/system/gbox.toml
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=90
+Nice=10
+
+[Install]
+WantedBy=default.target

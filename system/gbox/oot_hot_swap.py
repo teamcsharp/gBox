@@ -112,8 +112,8 @@ def replace_object(ad, item, previous=None):
     if len(slots) != 1:
         raise ValueError("the target object is not uniquely loaded")
     base = slots[0]["segment"]
-    start = L.u32(ad, oot.PLAY + L.OBJECT_CTX)
-    end = L.u32(ad, oot.PLAY + L.OBJECT_CTX + 4)
+    start = L.u32(ad, oot.play(ad) + L.OBJECT_CTX)
+    end = L.u32(ad, oot.play(ad) + L.OBJECT_CTX + 4)
     later = [s["segment"] for s in L.object_slots(ad) if s["segment"] > base]
     bound = min([end, *later])
     if not 0x80000000 <= start <= base < base + len(data) <= bound <= 0x80400000:

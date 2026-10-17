@@ -1,0 +1,148 @@
+{
+  "schema": 1,
+  "revision": "GameCube Plus US GPOE8P disc 0 revision 2 (3OE2)",
+  "emulator": "Dolphin 2609a (aarch64 Flatpak)",
+  "owned_executable_sha256": "1f80fb82b41c05b26b6d0545b1ba9c0aa60b52e6589cf32fbb2ffe644692a61a",
+  "isolation": {
+    "copied_state": true,
+    "separate_display_and_memory_cards": true,
+    "operator_session_or_save_changed": false
+  },
+  "checks": {
+    "python_unique_passed": 156,
+    "asset_dependent_skipped": 9,
+    "browser_passed": 10
+  },
+  "native": {
+    "manual_revive": {
+      "verified": true,
+      "hp": 27,
+      "tp": 87,
+      "message": "Native revival applied."
+    },
+    "automatic_revives_hp_tp": [
+      [
+        27,
+        87
+      ],
+      [
+        27,
+        87
+      ],
+      [
+        27,
+        87
+      ]
+    ],
+    "mag_before": {
+      "id": 65538,
+      "form": 0,
+      "stage": 0,
+      "level": 5,
+      "def": 5.0,
+      "pow": 0.0,
+      "dex": 0.0,
+      "mind": 0.0,
+      "iq": 0,
+      "synchro": 35,
+      "color": 11
+    },
+    "mag_edit": {
+      "id": 65538,
+      "form": 0,
+      "stage": 0,
+      "level": 9,
+      "def": 5.0,
+      "pow": 4.9,
+      "dex": 0.0,
+      "mind": 0.0,
+      "iq": 170,
+      "synchro": 110,
+      "color": 3
+    },
+    "mag_after_food": {
+      "id": 65538,
+      "form": 25,
+      "stage": 1,
+      "level": 10,
+      "def": 5.05,
+      "pow": 5.3,
+      "dex": 0.05,
+      "mind": 0.0,
+      "iq": 173,
+      "synchro": 113,
+      "color": 3
+    },
+    "offline_eligibility_before_enabled_restored": [
+      0,
+      3,
+      0
+    ],
+    "scoped_offline_selection_calls": {
+      "0x80133084": "38600003",
+      "0x80133098": "38600003",
+      "0x801330c0": "38600003"
+    },
+    "shared_menu_getter_unchanged": true,
+    "randomized_interval_seconds": 5,
+    "timed_equipment_cycles": 3,
+    "categories": [
+      "weapon",
+      "armor",
+      "shield",
+      "mag"
+    ],
+    "inventory_counts": [
+      5,
+      9,
+      5
+    ],
+    "original_equipment_restored": true,
+    "game_still_playing": true
+  },
+  "native_live_rpc": {
+    "acknowledged": 11,
+    "operations": [
+      "capabilities",
+      "mag",
+      "mag_set",
+      "mag_feed",
+      "survival",
+      "survival",
+      "legendary",
+      "legendary",
+      "randomized",
+      "modes",
+      "randomized"
+    ]
+  },
+  "legacy_migration": {
+    "legacy_version": "GBPSOGC1",
+    "first_generated_id": 15728640,
+    "old_code_preserved": true,
+    "state_load_exercised": true,
+    "id_counter_preserved": true,
+    "new_dispatcher": "0x80004c00",
+    "old_dispatcher": "0x80004000",
+    "revival_after_migration": [
+      27,
+      87
+    ],
+    "game_alive": true,
+    "passed": true
+  },
+  "limits": [
+    "Native checks are bounded, not an exhaustive test of every item, MAG cell or Photon Blast combination.",
+    "Ultimate eligibility/selector execution is verified; a complete new Ultimate playthrough was not run.",
+    "New native features are not enabled for other disc revisions, Dreamcast or online sessions."
+  ],
+  "source_sha256": {
+    "pso_gc_live.py": "9b0752dc831e60f6d5d590072974c3b84a4bf7d039907d13d88d3c9f3d11da2f",
+    "pso_gc_extras.py": "1f1b49c6dbb5ab540e7f19d40262cd72a52c86a63afb97bec8f65ba5ffbb0f9a",
+    "pso_modes.py": "02283b6512add7890fd9e5de2f2bc5cc19a385f75d08644e28ec521ad158f728",
+    "pso_controls.py": "caf3183c649ba867ff4bd7c7c2bf18f74d68bf360cfa107e698f1277dcec3960",
+    "pso_live.py": "7a6fc2a6a6d4e0640eadc3caddd7dd5f2e6d7f9f3c881ab93f2defdfaca5e68e",
+    "pso_mods_tool.py": "5c577402287a7ca2cbd2cfceb8b33dd541adc3f9c67b0f8ebf468da5d244fae0",
+    "pso_api.py": "3ba74c4f30657eed5c6c5c479554d811d61df5e425de5a22c555e3cea431b00e"
+  }
+}

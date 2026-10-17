@@ -89,20 +89,54 @@ def render_playbook(pb: dict) -> str:
 # ---------------------------------------------------------------- dossiers
 
 def _seed_facts(game: dict) -> dict | None:
+    """Every TITLE_FACTS entry that matches the title, merged: label/executable from the first (hand-written entries
+    come first), facts from all of them (gbox.assimilate_kb adds formats/reader/techniques per assimilated title)."""
     t, plat = (game.get("title") or "").lower(), game.get("platform") or ""
-    for tf in re_seeds.TITLE_FACTS:
-        if tf.get("platform") in (plat, "any") and all(w in t for w in tf.get("title_has", [])):
-            return tf
-    return None
+    hits = [tf for tf in re_seeds.TITLE_FACTS
+            if tf.get("platform") in (plat, "any") and tf.get("title_has") and all(w in t for w in tf["title_has"])]
+    if not hits:
+        return None
+    # hand-written entries first; among the assimilation entries the most specific title match first
+    # ("turok 2" before "turok", "parasite eve ii" before "parasite eve")
+    hits.sort(key=lambda h: (bool(h.get("kb")), -len(" ".join(h["title_has"])) if h.get("kb") else 0))
+    out = dict(hits[0])
+    out["executable"] = next((h["executable"] for h in hits if h.get("executable")), None)
+    seen, facts = set(), []
+    for h in hits:
+        for f in h.get("facts", []):
+            key = (f.get("kind"), f.get("address") or f.get("name"))
+            if key not in seen:
+                seen.add(key)
+                facts.append(f)
+    out["facts"] = facts
+    return out
+
+
+def _merge_seed(d: dict, tf: dict) -> None:
+    """Add documented facts a newer seed knows and the dossier lacks (never touches agent findings)."""
+    have = {(f.get("kind"), f.get("address") or f.get("name")) for f in d["findings"]}
+    for f in tf.get("facts", []):
+        if (f.get("kind"), f.get("address") or f.get("name")) not in have:
+            d["findings"].append(f | {"status": "documented", "by": "seed", "ts": time.time()})
+    d.setdefault("label", tf.get("label"))
+    if not d.get("executable_hint") and tf.get("executable"):
+        d["executable_hint"] = tf.get("executable")
 
 
 def dossier(store, game: dict) -> dict:
     gid = game["game_id"]
     d = store.get("dossier", gid)
     if d:
+        if d.get("seed_version", 1) < re_seeds.FACTS_VERSION:     # seeds learned more since this dossier was made
+            tf = _seed_facts(game)
+            if tf:
+                _merge_seed(d, tf)
+            d["seed_version"] = re_seeds.FACTS_VERSION
+            store.put("dossier", gid, d)
         return d
     d = {"game_id": gid, "title": game.get("title"), "platform": game.get("platform"), "created": time.time(),
-         "executable": None, "analysis": None, "findings": [], "questions": [], "log": []}
+         "executable": None, "analysis": None, "findings": [], "questions": [], "log": [],
+         "seed_version": re_seeds.FACTS_VERSION}
     tf = _seed_facts(game)
     if tf:
         d["label"] = tf.get("label")
@@ -203,7 +237,7 @@ def summarize_analysis(a: dict, artifact: str, keywords=("player", "item", "hp",
     """analysis.json (functions + strings from Ghidra) -> what fits in a dossier."""
     fns = a.get("functions") or []
     names = [f.get("name") if isinstance(f, dict) else str(f) for f in fns]
-    named = [n for n in names if n and not re.match(r"^(FUN|LAB|thunk_FUN|SUB|switchD)_", n)]
+    named = [n for n in names if n and not re.match(r"^(FUN|LAB|thunk_FUN|SUB|switchD|sub|nullsub|j_sub|loc)_", n)]   # Ghidra + IDA defaults
     strs = [s.get("value") if isinstance(s, dict) else str(s) for s in (a.get("strings") or [])]
     hits = [s for s in strs if s and any(k in s.lower() for k in keywords) and len(s) < 120]
     return {"functions": len(fns), "strings": len(strs), "artifact": artifact, "named": named[:200], "strings_sample": hits[:80],

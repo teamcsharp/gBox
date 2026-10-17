@@ -1,0 +1,194 @@
+{
+ "about": "Per-game recipes for gbox.evidence_capture (docs/pr-evidence.md): how a test session reaches a frame that shows the replaced characters. moment = a saved state (kind artifact: a state_transfer export digest, portable between nodes of the same emulator core; kind slot: a save slot on the node that saved it; kind mod_card: the saved moment a mod card links). A state holds the models that were in RAM when it was saved, so after_moment are the inputs that make the game load them again from the modded disc (a restart, a Continue, a scene change). steps = the boot path when there is no moment. Pad names: a b x y start select up down left right l r z (gBox pad; RetroArch maps them to the system's pad). status: ready (seen working) | unverified (written from the game's menus and the saved frames, not yet replayed) | needs_state (the operator must record a moment: todo says how) | todo. A moment recorded with POST /api/evidence/moments replaces the seed moment.",
+ "games": {
+  "1de2e7634f3161ff": {
+   "title": "Dead or Alive 2 - Limited Edition (Japan)",
+   "platform": "dreamcast",
+   "adapter": "retroarch (flycast)",
+   "status": "unverified",
+   "prefer_os": ["windows", "linux"],
+   "boot_s": 8,
+   "shows": "The character select, the versus screen (both fighters full size) and round 1 of the fight show the replaced fighters; DOA2 loads the two fighters' models when the match starts, so any moment before the versus screen works with a rebuilt roster.",
+   "moment": {"kind": "artifact", "artifact": "b1fb364673bcf890aaac473093cbcea6fab013924cfbdb17f593e4dcf72d9c92",
+              "label": "title screen (DEAD OR ALIVE 2 logo), saved 2026-10-12 23:33 on lilspark (flycast aarch64) from a doa2_gen_sa2_amy_rose session; holds no fighter models"},
+   "after_moment": [
+    {"press": ["start"], "wait_s": 3.0, "label": "title"},
+    {"press": ["a"], "wait_s": 3.0, "label": "mode"},
+    {"press": ["a"], "wait_s": 4.0, "label": "select", "shot": "character select"},
+    {"press": ["a"], "wait_s": 2.0, "label": "pick"},
+    {"press": ["a"], "wait_s": 9.0, "label": "costume", "shot": "versus screen"}
+   ],
+   "shots": [{"label": "fight", "at_s": 12}],
+   "todo": "Replay once with compare_stock=false and check the 'character select' frame. If the mode menu differs, record a moment on the character select screen instead: start any DOA2 session, go to Story or Time Attack, stay on the character select with the cursor on a replaced fighter, then POST /api/evidence/moments {game_id: 1de2e7634f3161ff, session_id: <it>, label: 'character select', after_moment: [{press:[a], wait_s:2}, {press:[a], wait_s:9, shot:'versus screen'}]}. The seed state comes from the Spark's aarch64 flycast core; if a Windows flycast refuses it, record the moment on a Windows PC.",
+   "variants": {}
+  },
+  "bc02bb68790ce2e7": {
+   "title": "Crazy Taxi (USA) (GameCube)",
+   "platform": "gamecube",
+   "adapter": "dolphin",
+   "status": "unverified",
+   "prefer_os": ["windows"],
+   "boot_s": 25,
+   "shows": "The driver select shows all four drivers (Axel, B.D. Joe, Gena, Gus) at once; the driver you pick then drives in the city.",
+   "steps": [
+    {"press": ["start"], "wait_s": 4.0, "label": "title"},
+    {"press": ["a"], "wait_s": 3.0, "label": "mode (Arcade)"},
+    {"press": ["a"], "wait_s": 3.0, "label": "rules"},
+    {"press": ["a"], "wait_s": 5.0, "label": "time", "shot": "driver select"},
+    {"press": ["right"], "wait_s": 1.5, "label": "next driver", "shot": "driver select (2)"},
+    {"press": ["a"], "wait_s": 12.0, "label": "drive", "shot": "in the city"}
+   ],
+   "shots": [],
+   "todo": "No saved Crazy Taxi moment exists yet (one local save, slot 1, no export). Replay the boot path once and check the frames. For a stable recipe record a moment on the driver select: in a Crazy Taxi session reach the driver select, then POST /api/evidence/moments {game_id: bc02bb68790ce2e7, session_id: <it>, label: 'driver select', after_moment: [{wait_s: 2, shot: 'driver select'}, {press:[a], wait_s:12, shot:'in the city'}]}. Dolphin's state slot is shared with the operator's slot 1: record only from an agent test session or when the operator agrees."
+  },
+  "afd2fc507bb69843": {
+   "title": "Metal Gear Solid - VR Missions (USA)",
+   "platform": "psx",
+   "adapter": "retroarch (pcsx_rearmed)",
+   "status": "unverified",
+   "prefer_os": ["windows", "linux"],
+   "boot_s": 6,
+   "shows": "Sneaking Mode stages: the top-down camera shows Snake and the patrolling Genome soldiers together. The stage's KMDs are in RAM, so the stage must be (re)started from the disc after the state loads (pause > Restart, or TRY AGAIN after MISSION FAILED). Ninja: stages vcd_n01-03 only.",
+   "moment": {"kind": "artifact", "artifact": "bfe300e27e2fa6a0c45adea589958e9e04877815a43b3e2d88dbeb51942c0010",
+              "label": "Sneaking Mode stage, top-down camera, stock session on i9-NUC (pcsx_rearmed), 2026-10-10 15:00"},
+   "after_moment": [
+    {"press": ["start"], "wait_s": 1.5, "label": "pause", "shot": "pause menu"},
+    {"press": ["down"], "wait_s": 0.6, "label": "to restart"},
+    {"press": ["a"], "wait_s": 8.0, "label": "restart", "shot": "stage restarted"}
+   ],
+   "shots": [{"label": "gameplay", "at_s": 4}],
+   "todo": "Check the 'pause menu' frame: the Restart entry's position and the confirm button (a = circle on RetroArch's PSX pad) are not verified. Most reliable: record a moment on the MISSION FAILED screen (TRY AGAIN highlighted) of a Sneaking stage with soldiers, e.g. vr_sud03: POST /api/evidence/moments {game_id: afd2fc507bb69843, session_id: <it>, label: 'mission failed, TRY AGAIN', after_moment: [{press:[a], wait_s:8, shot:'stage restarted'}]}.",
+   "variants": {
+    "mission_failed": {
+     "status": "unverified",
+     "moment": {"kind": "mod_card", "mod_card": "f72f4f155abd",
+                "label": "mod card 'Resolve gBox auto report #993': MISSION FAILED screen (TRY AGAIN / EXIT), slot 21 on JAYBUILTFINALE"},
+     "after_moment": [{"press": ["a"], "wait_s": 8.0, "label": "try again", "shot": "stage restarted"}],
+     "shots": [{"label": "gameplay", "at_s": 4}]
+    },
+    "ninja": {
+     "status": "needs_state",
+     "moment": null,
+     "after_moment": [],
+     "shots": [],
+     "todo": "No saved moment in a Ninja stage exists. In a VR Missions session open Special > Ninja (stages vcd_n01, vcd_n02, vcd_n03), let the mission fail or pause, and record the moment with TRY AGAIN / Restart highlighted: POST /api/evidence/moments {game_id: afd2fc507bb69843, variant: 'ninja', session_id: <it>, label: 'ninja stage', after_moment: [{press:[a], wait_s:8, shot:'ninja stage'}]}."
+    }
+   }
+  },
+  "ba32927ecc104b9a": {
+   "title": "Metal Gear Solid - The Twin Snakes (GameCube)",
+   "platform": "gamecube",
+   "adapter": "dolphin",
+   "status": "needs_state",
+   "prefer_os": ["windows"],
+   "boot_s": 30,
+   "shows": "The dock (area01a): Snake and the patrolling Genome soldiers. The stage's models are in RAM (docs/twin_snakes.md): a body change shows from the next area load or a Continue.",
+   "moment": null,
+   "after_moment": [],
+   "steps": [],
+   "shots": [],
+   "todo": "Record a dock moment that reloads the area with one input: play to the dock (after the opening cutscenes), let Snake be spotted and killed (or press Start > Quit is not needed: any Game Over), and on the GAME OVER screen with CONTINUE highlighted record it: POST /api/evidence/moments {game_id: ba32927ecc104b9a, session_id: <the Twin Snakes session>, label: 'dock, GAME OVER > CONTINUE', after_moment: [{press:[a], wait_s:15, shot:'dock (continue)'}, {wait_s:4, shot:'dock gameplay'}]}. Recording exports a state from that session (Dolphin slot 1 on that PC); it does not stop or pause the game."
+  },
+  "446e8e442d726e31": {
+   "title": "Legend of Zelda, The: Ocarina of Time (USA)",
+   "platform": "n64",
+   "adapter": "retroarch (parallel_n64)",
+   "status": "unverified",
+   "prefer_os": ["windows", "linux"],
+   "boot_s": 8,
+   "shows": "Link in third person; a scene change (zelda_oot goto) loads Link's object again from the modded ROM. Kakariko's daylight shows the body clearly.",
+   "moment": {"kind": "artifact", "artifact": "ecfea6b836896768ed0cc0f254a16178123960207edf3aee111085d64a1f2a48",
+              "label": "adult Link in a torch-lit temple room, oot_sa2shadow session on JAYBUILTFINALE, 2026-10-10 15:11"},
+   "after_moment": [
+    {"tool": "zelda_oot", "input": {"op": "goto", "place": "kakariko"}, "wait_s": 10.0, "label": "goto kakariko",
+     "shot": "Kakariko (scene reloaded)"}
+   ],
+   "shots": [{"label": "gameplay", "at_s": 3}],
+   "todo": "Replay once; if goto lands in a cutscene, use place 'hyrule field'. The seed state was saved in a modded session, so without the scene change it still shows that mod's Link."
+  },
+  "1aa2e4bb5797493f": {
+   "title": "Legend of Zelda, The: Ocarina of Time (USA) (second dump)",
+   "platform": "n64",
+   "adapter": "retroarch (parallel_n64)",
+   "status": "needs_state",
+   "prefer_os": ["windows", "linux"],
+   "boot_s": 8,
+   "shows": "As 446e8e442d726e31 (a different ROM file; states are not shared between the two entries).",
+   "moment": null,
+   "after_moment": [{"tool": "zelda_oot", "input": {"op": "goto", "place": "kakariko"}, "wait_s": 10.0,
+                     "shot": "Kakariko (scene reloaded)"}],
+   "steps": [],
+   "shots": [],
+   "todo": "Only slot-0 saves exist (no export). Start this OoT entry, load any save file into gameplay, then POST /api/evidence/moments {game_id: 1aa2e4bb5797493f, session_id: <it>, label: 'gameplay'} (the after_moment goto above stays)."
+  },
+  "b7aecee966090bfa": {
+   "title": "Super Mario 64 (USA)",
+   "platform": "n64",
+   "adapter": "retroarch (parallel_n64)",
+   "status": "unverified",
+   "prefer_os": ["windows", "linux"],
+   "boot_s": 8,
+   "shows": "Castle grounds after the intro: Mario (the replaced player) in third person. Mario's model (actor group 0) is loaded once at boot, so a saved state keeps the model that was in RAM: this recipe boots instead.",
+   "moment": null,
+   "steps": [
+    {"press": ["start"], "wait_s": 3.0, "label": "title"},
+    {"press": ["start"], "wait_s": 3.0, "label": "file select", "shot": "file select"},
+    {"press": ["a"], "wait_s": 2.0, "label": "file A"},
+    {"press": ["a"], "wait_s": 4.0, "label": "start file"},
+    {"press": ["a"], "wait_s": 1.0, "repeat": 6, "label": "letter"},
+    {"wait_s": 30.0, "label": "intro flyover"}
+   ],
+   "shots": [{"label": "castle grounds", "at_s": 3}, {"label": "castle grounds (2)", "at_s": 8}],
+   "todo": "Replay once; if file A holds a save, the castle grounds come sooner (no letter). Exports exist (0bafe1dd... sm64_melee_mario session) but carry the previous model.",
+   "variants": {
+    "moment": {
+     "status": "unverified",
+     "moment": {"kind": "artifact", "artifact": "0bafe1dd5fd711d9abde204634821b59731d0e0333d2961b872c6b93daa5f6c3",
+                "label": "sm64_melee_mario session, 2026-10-08 08:11 (Whomp's Fortress tower): shows the model in RAM at save time"},
+     "after_moment": [],
+     "shots": [{"label": "gameplay (state model)", "at_s": 2}]
+    }
+   }
+  },
+  "66062703301f4969": {
+   "title": "Super Mario 64 (Europe) (En,Fr,De)",
+   "platform": "n64",
+   "adapter": "retroarch (parallel_n64)",
+   "status": "unverified",
+   "prefer_os": ["windows", "linux"],
+   "boot_s": 8,
+   "shows": "As the USA entry: boot path to the castle grounds (the model loads once at boot).",
+   "moment": null,
+   "steps": [
+    {"press": ["start"], "wait_s": 3.0, "label": "title"},
+    {"press": ["start"], "wait_s": 3.0, "label": "file select", "shot": "file select"},
+    {"press": ["a"], "wait_s": 2.0, "label": "file A"},
+    {"press": ["a"], "wait_s": 4.0, "label": "start file"},
+    {"press": ["a"], "wait_s": 1.0, "repeat": 6, "label": "letter"},
+    {"wait_s": 30.0, "label": "intro flyover"}
+   ],
+   "shots": [{"label": "castle grounds", "at_s": 3}],
+   "todo": "Replay once (language select may appear first on the EU file select; add a press if so)."
+  },
+  "c747331797369f74": {
+   "title": "SoulCalibur (USA) (Dreamcast)",
+   "platform": "dreamcast",
+   "adapter": "retroarch (flycast)",
+   "status": "ready",
+   "prefer_os": ["windows", "linux"],
+   "boot_s": 10,
+   "shows": "Arcade mode, player 1 (Kilik, where the cursor starts) against the CPU: the versus screen shows the stock 2D portraits, the fight from about 9 s shows both replaced fighters. VS BATTLE needs a 2P start, which the player-1 network pad cannot give. Menu presses through the network pad register twice (the main menu drum moves two items per press), so the recipe only uses Start and A.",
+   "steps": [
+    {"wait_s": 12.0, "label": "boot"},
+    {"press": ["start"], "wait_s": 4.0, "label": "title -> main menu (ARCADE)"},
+    {"press": ["start"], "wait_s": 5.0, "label": "arcade", "shot": "character select"},
+    {"press": ["a"], "wait_s": 3.0, "label": "pick"},
+    {"press": ["a"], "wait_s": 3.0, "label": "weapon"},
+    {"press": ["a"], "wait_s": 6.0, "label": "costume"},
+    {"wait_s": 5.0, "label": "versus"}
+   ],
+   "shots": [{"label": "fight", "at_s": 4}, {"label": "fight +7", "at_s": 7}, {"label": "fight +15", "at_s": 15}],
+   "todo": "Verified 2026-10-13 on i9-NUC (jobs d49302d4b6f74f09, c17cc69454534f1a). VS BATTLE would need a step that sends player-2 Start."
+  }
+ }
+}

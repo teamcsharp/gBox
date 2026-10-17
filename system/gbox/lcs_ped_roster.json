@@ -1,0 +1,467 @@
+[
+ {
+  "slot": "ped:1",
+  "name": "cop",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:2",
+  "name": "swat",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:3",
+  "name": "fbi",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:4",
+  "name": "army",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:5",
+  "name": "medic",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:6",
+  "name": "fireman",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:7",
+  "name": "male01",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:9",
+  "name": "taxi_d",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:10",
+  "name": "pimp",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:11",
+  "name": "criminal01",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:12",
+  "name": "criminal02",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:13",
+  "name": "male02",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:14",
+  "name": "male03",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:15",
+  "name": "fatmale01",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:16",
+  "name": "fatmale02",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:17",
+  "name": "female01",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:18",
+  "name": "female02",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:19",
+  "name": "female03",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:20",
+  "name": "fatfemale01",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:21",
+  "name": "fatfemale02",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:22",
+  "name": "prostitute",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:23",
+  "name": "prostitute2",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:24",
+  "name": "p_man1",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:25",
+  "name": "p_man2",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:26",
+  "name": "p_wom1",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:27",
+  "name": "p_wom2",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:28",
+  "name": "ct_man1",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:29",
+  "name": "ct_man2",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:30",
+  "name": "ct_wom1",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:31",
+  "name": "ct_wom2",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:32",
+  "name": "li_man1",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:33",
+  "name": "li_man2",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:34",
+  "name": "li_wom1",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:35",
+  "name": "li_wom2",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:36",
+  "name": "docker1",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:37",
+  "name": "docker2",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:38",
+  "name": "scum_man",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:39",
+  "name": "scum_wom",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:40",
+  "name": "worker1",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:41",
+  "name": "worker2",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:42",
+  "name": "b_man1",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:43",
+  "name": "b_man2",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:44",
+  "name": "b_man3",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:45",
+  "name": "b_wom1",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:46",
+  "name": "b_wom2",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:47",
+  "name": "b_wom3",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:48",
+  "name": "mod_man",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:49",
+  "name": "mod_wom",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:50",
+  "name": "st_man",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:51",
+  "name": "st_wom",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:52",
+  "name": "fan_man1",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:53",
+  "name": "fan_man2",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:54",
+  "name": "fan_wom",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:55",
+  "name": "hos_man",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:56",
+  "name": "hos_wom",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:57",
+  "name": "const1",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:58",
+  "name": "const2",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:59",
+  "name": "shopper1",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:60",
+  "name": "shopper2",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:61",
+  "name": "shopper3",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:62",
+  "name": "stud_man",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:63",
+  "name": "stud_wom",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:64",
+  "name": "cas_man",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:65",
+  "name": "cas_wom",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:66",
+  "name": "camp_man",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:67",
+  "name": "camp_wom",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:68",
+  "name": "HITMAN",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:79",
+  "name": "gang01",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:80",
+  "name": "gang02",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:81",
+  "name": "gang03",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:82",
+  "name": "gang04",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:83",
+  "name": "gang05",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:84",
+  "name": "gang06",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:85",
+  "name": "gang07",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:86",
+  "name": "gang08",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:87",
+  "name": "gang09",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:88",
+  "name": "gang10",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:89",
+  "name": "gang11",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:90",
+  "name": "gang12",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:91",
+  "name": "gang13",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:92",
+  "name": "gang14",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:93",
+  "name": "gang15",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:94",
+  "name": "gang16",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:95",
+  "name": "gang17",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:96",
+  "name": "gang18",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:97",
+  "name": "vice1",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:98",
+  "name": "vice2",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:99",
+  "name": "vice3",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:100",
+  "name": "vice4",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:101",
+  "name": "vice5",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:102",
+  "name": "vice6",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:103",
+  "name": "vice7",
+  "kind": "pedestrian"
+ },
+ {
+  "slot": "ped:104",
+  "name": "vice8",
+  "kind": "pedestrian"
+ }
+]

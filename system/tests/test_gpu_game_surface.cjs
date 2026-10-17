@@ -31,6 +31,17 @@ function setup(open) {
 }
 const st = { pid: 123, sid: 's1', sourceId: 'window:456:0', visible: true };
 
+test('GPU context menu owns the event so generic report menus cannot replace it', async () => {
+  const x = setup(), menus = [];
+  x.env.pipMenu = (x, y) => menus.push([x, y]);
+  await x.api.sync(st);
+  let prevented = false, stopped = false;
+  x.videos[0].events.contextmenu({ clientX: 90, clientY: 120,
+    preventDefault() { prevented = true; }, stopPropagation() { stopped = true; } });
+  assert.deepEqual(menus, [[90, 120]]);
+  assert.ok(prevented && stopped);
+});
+
 test('re-rendering and resizing keep one live capture and mount in the latest slot', async () => {
   const x = setup(); await x.api.sync(st); await x.api.sync(st);
   assert.equal(x.calls(), 1); assert.equal(x.streams[0].getTracks()[0].readyState, 'live');

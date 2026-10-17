@@ -57,6 +57,8 @@ USA_VARIANTS = ("LOR", "MAM", "WBA", "YTI")
 
 
 def _name_at(data: bytes, offset: int, maxlen: int = 96) -> bytes | None:
+    if offset < 0 or offset >= len(data) or maxlen <= 0:
+        return None
     end = data.find(b"\0", offset, offset + maxlen)
     return data[offset:end] if end >= 0 else None
 
@@ -93,6 +95,8 @@ def locate_file_names(executable: bytes) -> int:
             run_start, run_len = None, 0
     if run_len > best_len and run_start is not None:
         best_start, best_len = run_start, run_len
+    if best_len <= 0:
+        raise ValueError("No resource-name pointer table found")
     return best_start
 
 
@@ -100,12 +104,14 @@ def read_names(executable: bytes, table_offset: int) -> list[bytes]:
     """Walk the name pointer table at ``table_offset`` until an invalid pointer."""
     n = len(executable)
     names: list[bytes] = []
-    while True:
+    if table_offset < 0 or table_offset % 4 or table_offset + 4 > n:
+        raise ValueError("Invalid resource-name table offset")
+    while table_offset + (len(names) + 1) * 4 <= n:
         p = struct.unpack_from("<I", executable, table_offset + len(names) * 4)[0]
         if not (BASE <= p < BASE + n):
             break
         name = _name_at(executable, p - BASE)
-        if name is None:
+        if name is None or not is_resource_name(executable, p - BASE):
             break
         names.append(name)
     return names

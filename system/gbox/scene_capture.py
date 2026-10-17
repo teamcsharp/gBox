@@ -5,6 +5,9 @@ How it works (Windows node, portable RenderDoc in <runtime>/tools/RenderDoc_*):
                already inside: the process is created suspended, renderdoc.dll is loaded through a remote LoadLibraryW,
                a few in-app API calls switch RenderDoc's on-screen overlay and capture hotkeys off, then the process runs.
                (`popen_hooked`, used by the RetroArch / Dolphin adapters when examine is enabled.)
+               Vulkan backends need no injection: `popen_layer` sets RenderDoc's Vulkan layer for that process only
+               (gbox/capture_backend.py), used by Yuzu / RPCS3 and by agent-owned capture sessions (#971: a GL
+               RetroArch session is captured at the same moment in a Vulkan capture session, gbox/scene_relay.py).
   2. capture   pause the session, ask RenderDoc (target control, from qrenderdoc --python) for the next frame, step the
                emulator one frame (RetroArch FRAMEADVANCE) or let one frame through and suspend (Dolphin), so the game
                stays paused on exactly the captured frame.
@@ -28,6 +31,7 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -37,15 +41,23 @@ import time
 from ctypes import wintypes
 from pathlib import Path
 
+from .scene_support import session_support, support  # noqa: F401  (capability matrix, #971)
+
 
 def _cfg():
     from . import config
     return config.load(os.environ.get("GBOX_CONFIG") or Path(__file__).resolve().parents[1] / "gbox.toml")
 
 
-def renderdoc_dir() -> Path:
+RENDERDOC_VERSION = "1.46"                                             # portable build fetched when a PC has none
+RENDERDOC_SHA256 = "9ca4d09ecaba2cc791168660d6fc2a7e3d70fe67146e87ec05c5f8dea70772f7"
+
+
+def renderdoc_dir(provision: bool = False) -> Path:
     """The portable RenderDoc under <runtime>/tools (newest RenderDoc_* folder). (frame_rip has the same lookup but
-    imports numpy, which the worker venv doesn't have: everything here is stdlib + qrenderdoc's own Python.)"""
+    imports numpy, which the worker venv doesn't have: everything here is stdlib + qrenderdoc's own Python.)
+    provision=True downloads the pinned portable build into <runtime>/tools when the PC has none (capture sessions on
+    the test PC)."""
     roots = []
     try:
         roots.append(_cfg().runtime)
@@ -56,7 +68,47 @@ def renderdoc_dir() -> Path:
         found = sorted((r / "tools").glob("RenderDoc_*/qrenderdoc.exe"))
         if found:
             return found[-1].parent
+    if provision and roots:
+        return ensure_renderdoc(roots[0])
     raise FileNotFoundError("RenderDoc not found under <runtime>/tools/RenderDoc_*")
+
+
+def ensure_renderdoc(runtime: Path, version: str = RENDERDOC_VERSION, sha256_hex: str = RENDERDOC_SHA256,
+                     fetch=None) -> Path:
+    """Install the official portable RenderDoc (renderdoc.org zip, sha256-pinned) into <runtime>/tools/RenderDoc_<v>_64.
+    `fetch(url) -> bytes` is injectable for tests."""
+    import hashlib
+    import io
+    import zipfile
+    dst = Path(runtime) / "tools" / f"RenderDoc_{version}_64"
+    if (dst / "qrenderdoc.exe").is_file() and (dst / "renderdoc.json").is_file():
+        return dst
+    url = f"https://renderdoc.org/stable/{version}/RenderDoc_{version}_64.zip"
+    if fetch is None:
+        import urllib.request
+
+        def fetch(u):
+            with urllib.request.urlopen(u, timeout=1800) as r:
+                return r.read()
+    data = fetch(url)
+    if hashlib.sha256(data).hexdigest() != sha256_hex:
+        raise RuntimeError(f"RenderDoc {version} download failed its sha256 check")
+    tmp = dst.with_name(dst.name + ".partial")
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        for m in z.infolist():
+            name = m.filename.split("/", 1)[1] if "/" in m.filename else ""
+            if not name or m.is_dir():
+                continue
+            out = (tmp / name).resolve()
+            if not out.is_relative_to(tmp.resolve()):
+                raise RuntimeError(f"unsafe path in the RenderDoc zip: {m.filename}")
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(z.read(m))
+    shutil.rmtree(dst, ignore_errors=True)
+    tmp.rename(dst)
+    return dst
 
 
 def _qrd(script: str, env: dict, timeout: float = 600) -> None:
@@ -304,17 +356,61 @@ def popen_hooked(argv, cap_dir: Path | None = None, **kw) -> subprocess.Popen:
     return p
 
 
+def popen_layer(argv, cap_dir: Path | None = None, **kw) -> subprocess.Popen:
+    """subprocess.Popen with RenderDoc's Vulkan layer enabled for this process only (gbox/capture_backend.layer_env):
+    the Vulkan loader loads renderdoc.dll when the program creates its Vulkan instance. No injection, nothing
+    registered system-wide. p.renderdoc["attach"] = "layer"; whether it loaded is checked later (renderdoc_loaded)."""
+    from .capture_backend import layer_env
+    try:
+        rd = renderdoc_dir()
+        kw["env"] = layer_env(rd, Path(cap_dir) / "frame" if cap_dir else None, base=kw.get("env"))
+        info = {"attach": "layer", "renderdoc": str(rd / "renderdoc.dll"), "manifest": str(rd / "renderdoc.json"),
+                "capfile": kw["env"].get("RENDERDOC_CAPFILE"), "started": time.time()}
+    except Exception as e:                                              # never block a game launch on the examine hook
+        info = {"attach": "layer", "error": f"{type(e).__name__}: {e}"}
+    p = subprocess.Popen(argv, **kw)
+    p.renderdoc = info
+    return p
+
+
+def renderdoc_loaded(pid: int) -> bool:
+    """renderdoc.dll is mapped into the process (injected, or loaded by the Vulkan loader as a layer)."""
+    try:
+        return "renderdoc.dll" in _modules(pid)
+    except Exception:
+        return False
+
+
+def layer_check(proc, wait_s: float = 0.0) -> bool | None:
+    """For a layer-attached process: record whether the Vulkan loader loaded RenderDoc (p.renderdoc["loaded"]).
+    Returns None for processes that weren't started with the layer."""
+    info = getattr(proc, "renderdoc", None)
+    if not isinstance(info, dict) or info.get("attach") != "layer" or "error" in info:
+        return None
+    t0 = time.time()
+    while True:
+        ok = proc.poll() is None and renderdoc_loaded(proc.pid)
+        if ok or time.time() - t0 >= wait_s:
+            info["loaded"] = ok
+            if ok:
+                try:
+                    info["crash_handlers_closed"] = _kill_children(proc.pid)
+                except Exception:
+                    pass
+            return ok
+        time.sleep(0.25)
+
+
 def hooked(proc) -> bool:
-    """Whether a running emulator process has RenderDoc inside (launched by popen_hooked)."""
+    """Whether a running emulator process has RenderDoc inside (popen_hooked, or popen_layer once Vulkan is up)."""
     if proc is None or proc.poll() is not None:
         return False
     info = getattr(proc, "renderdoc", None)
+    if isinstance(info, dict) and info.get("attach") == "layer" and "error" not in info:
+        return bool(layer_check(proc))
     if info and "error" not in info:
         return True
-    try:
-        return "renderdoc.dll" in _modules(proc.pid)
-    except Exception:
-        return False
+    return renderdoc_loaded(proc.pid)
 
 
 # ------------------------------------------------------------------------------------------------ 2. capture
@@ -584,6 +680,9 @@ try:
         elif draws and all(el(d, "TEXCOORD", 0, 4) and el(d, "TEXCOORD", 2, 4) and el(d, "COLOR", 0, 4) for d in draws[:50]):
             ws = [w for d in draws[:200] for w in array.array("f", d["vb"])[3::d["s"]]]
             mode = "pcsx2" if ws and max(abs(x - 1.0) for x in ws) < 1e-4 else "generic"
+        elif draws and all(el(d, "VTX_UV", 0, 3) and el(d, "VTX_BASE", 0, 4) for d in draws[:50]):
+            ws = [w for d in draws[:200] for w in array.array("f", d["vb"])[3::d["s"]]]
+            mode = "flycast" if ws and max(abs(x - 1.0) for x in ws) < 1e-4 else "generic"
         else:
             mode = "generic"
     flip = api == "Vulkan"
@@ -646,6 +745,22 @@ try:
             cs = 1.0 / (128.0 if tex is not None else 255.0)
             C = [(min(2.0, r * cs), min(2.0, g * cs), min(2.0, b * cs), min(1.0, a_ / 128.0))
                  for r, g, b, a_ in zip(f[c0::s], f[c0 + 1::s], f[c0 + 2::s], f[c0 + 3::s])]
+            XY_CLIP = False
+        elif mode == "flycast":
+            # Flycast (Vulkan / GL4) draws the PVR's screen-space vertices: gl_Position = (x_ndc, y_ndc, 0, 1) and the
+            # interpolants are pre-multiplied by q = 1/w for its own perspective correction: vtx_uv = (u*q, v*q, q),
+            # vtx_base = colour*q. View depth w = 1/q; a draw with one q for every vertex is flat 2D (HUD, sprites).
+            tu, cb_ = el(d, "VTX_UV", 0, 3)[0], el(d, "VTX_BASE", 0, 4)[0]
+            Q = f[tu + 2::s]
+            okq = [q for q in Q if q > 1e-9 and math.isfinite(q)]
+            flat = not okq or len(okq) < len(Q) or max(okq) - min(okq) <= 1e-6 * max(okq)
+            W = [None] * nv if flat else [1.0 / q for q in Q]
+            iq = [(1.0 / q) if q > 1e-9 and math.isfinite(q) else 0.0 for q in Q]
+            if tex is not None:
+                UV = [((u * k, v * k) if math.isfinite(u) and math.isfinite(v) else (0.0, 0.0))
+                      for u, v, k in zip(f[tu::s], f[tu + 1::s], iq)]
+            C = [tuple(max(0.0, min(1.0, x * k)) if math.isfinite(x) else 1.0 for x in (r, g, b, a_))
+                 for r, g, b, a_, k in zip(f[cb_::s], f[cb_ + 1::s], f[cb_ + 2::s], f[cb_ + 3::s], iq)]
             XY_CLIP = False
         else:
             W = [w if abs(w - 1.0) > 1e-5 else None for w in Wc]
@@ -877,15 +992,211 @@ def extract(rdc, out_dir: Path, fovy: float = 0, aspect: float = 0, mode: str = 
         f.unlink()
     (out_dir / "extract.log").unlink(missing_ok=True)
     rdcs = [str(r) for r in rdc] if isinstance(rdc, (list, tuple)) else [str(rdc)]
-    _qrd(EXTRACT_PY, {"RD_CAP": "|".join(rdcs), "RD_OUT": str(out_dir), "RD_FOVY": str(fovy or ""), "RD_ASPECT": str(aspect or ""),
-                      "RD_MODE": mode}, timeout)
+    try:
+        _qrd(EXTRACT_PY, {"RD_CAP": "|".join(rdcs), "RD_OUT": str(out_dir), "RD_FOVY": str(fovy or ""), "RD_ASPECT": str(aspect or ""),
+                          "RD_MODE": mode}, timeout)
+    except Exception as e:                                   # qrenderdoc died: still say when it was GPU memory
+        log = (out_dir / "extract.log").read_text(errors="replace") if (out_dir / "extract.log").exists() else ""
+        if GPU_OOM.search(f"{e}\n{log}"):
+            raise ReplayOutOfMemory(f"scene extract failed: the GPU ran out of memory replaying the capture: {e} "
+                                    f"{log[-1200:]}") from e
+        raise
     log = (out_dir / "extract.log").read_text(errors="replace") if (out_dir / "extract.log").exists() else "no log"
     if not log.startswith("OK"):
+        if GPU_OOM.search(log):
+            raise ReplayOutOfMemory("scene extract failed: the GPU ran out of memory replaying the capture: " + log[-1500:])
         raise RuntimeError("scene extract failed: " + log[-3000:])
     return json.loads((out_dir / "scene.json").read_text())
 
 
 # ------------------------------------------------------------------------------------------------ session flow
+
+# A rebuilt frame with no 3D draw and only a handful of draw calls is the emulator's own present, not the game: the
+# cached frame a paused RetroArch re-presents without running the core, a 30 fps game's duplicate, Dolphin's XFB-only
+# frames (movies, logos, attract), or a renderer that draws outside the device RenderDoc captures (LRPS2 on D3D11 so
+# far). Such a capture is retried once over more frames with the game running; a frame that still has no 3D draw is
+# returned labelled 2D-only (fallback frame_2d) with the reason, instead of as an empty 3D scene (#971).
+EMPTY_SCENE_MAX_DRAWS = 6
+RETRY_FRAMES = 4
+RETRY_SETTLE_S = 1.0
+_PS2_HINT = ("PS2 (LRPS2) on Direct3D 11 has so far left its GS draws out of RetroArch's captured frame on the test PC "
+             "(open item in docs/examine_emulators.md).")
+EMPTY_HINTS = {
+    "pcsx2": _PS2_HINT, "lrps2": _PS2_HINT,
+    "dolphin": "Dolphin shows movies, logos and attract screens as a bare XFB with no 3D draws: capture again during "
+               "3D gameplay.",
+}
+
+
+def scene_empty(summary: dict | None) -> bool:
+    """True when a rebuilt frame holds no 3D draw and at most EMPTY_SCENE_MAX_DRAWS draw calls (present blits only).
+    A 2D screen with many HUD draws is not empty: it is a real 2D moment."""
+    s = summary or {}
+    return not int(s.get("scene_draws") or 0) and int(s.get("draws_total") or 0) <= EMPTY_SCENE_MAX_DRAWS
+
+
+def _attempt(s: dict, frames: int, how: str) -> dict:
+    return {"frames": frames, "how": how, "draws_total": int(s.get("draws_total") or 0),
+            "scene_draws": int(s.get("scene_draws") or 0), "hud_draws": int(s.get("hud_draws") or 0)}
+
+
+def _busier(a: dict, b: dict) -> bool:
+    def key(s):
+        return int(s.get("scene_draws") or 0), int(s.get("draws_total") or 0)
+    return key(a) > key(b)
+
+
+def _adopt(src: Path, dst: Path) -> None:
+    """Replace dst's rebuilt scene (scene.glb, scene.json, extract.log, tex_*.png) with the one in src."""
+    for f in dst.glob("tex_*.png"):
+        f.unlink(missing_ok=True)
+    for f in list(src.iterdir()):
+        target = dst / f.name
+        if target.exists():
+            target.unlink()
+        shutil.move(str(f), str(target))
+    shutil.rmtree(src, ignore_errors=True)
+
+
+def _retry_empty(ad, proc, out_dir: Path, fovy: float, aspect: float, say, first: dict, attempts: list):
+    """The first capture held only present blits: capture RETRY_FRAMES more frames with the game running, then pause
+    it again, and keep the busier rebuild. -> (summary, rdc paths of the retry, adopted). A failed retry keeps the
+    first capture (the error is recorded in attempts)."""
+    out_dir = Path(out_dir)
+    say(38, f"The captured frame held {int(first.get('draws_total') or 0)} draw call(s) and no 3D scene; capturing "
+            f"{RETRY_FRAMES} more frames with the game running")
+    rdcs, retry_dir = [], out_dir / "retry"
+    try:
+        ad.resume()
+        try:
+            time.sleep(RETRY_SETTLE_S)
+            rdcs = capture_rdc(proc.pid, RETRY_FRAMES)
+        finally:
+            ad.pause()
+        shutil.rmtree(retry_dir, ignore_errors=True)
+        second = extract(rdcs, retry_dir, fovy, aspect)
+    except Exception as e:                                               # noqa: BLE001
+        attempts.append({"frames": RETRY_FRAMES, "how": "game running", "error": str(e)[-300:]})
+        shutil.rmtree(retry_dir, ignore_errors=True)
+        return first, rdcs, False
+    attempts.append(_attempt(second, len(rdcs), "game running"))
+    if _busier(second, first):
+        _adopt(retry_dir, out_dir)
+        return second, rdcs, True
+    shutil.rmtree(retry_dir, ignore_errors=True)
+    return first, rdcs, False
+
+
+def _no_scene_note(ad, s: dict, attempts: list) -> str:
+    """Why this result is 2D-only (shown in the Examine panel)."""
+    hud = int(s.get("hud_draws") or 0)
+    if not scene_empty(s):
+        return (f"No 3D draws at this moment ({hud} 2D/HUD draw calls): the game is showing a 2D screen. Labelled "
+                "2D-only; capture again during 3D gameplay for a 3D scene.")
+    keys = []
+    try:
+        from . import scene_support as _ss
+        row = _ss.session_support(ad, "windows") or {}
+        keys = [str(row.get("core") or ""), str(row.get("adapter") or "")]
+    except Exception:                                                    # noqa: BLE001
+        pass
+    keys.append(str(getattr(ad, "name", "") or ""))
+    hint = next((EMPTY_HINTS[k] for k in keys if k in EMPTY_HINTS), "")
+    frames = sum(int(a.get("frames") or 0) for a in attempts if not a.get("error"))
+    return (f"No 3D scene in {frames} captured frame(s) over {len(attempts)} attempt(s): the kept frame held only "
+            f"{int(s.get('draws_total') or 0)} draw call(s), the emulator's own present, and no game geometry. The "
+            "game was showing a 2D or movie frame, or this renderer draws outside the frame RenderDoc captures."
+            + (f" {hint}" if hint else "") + " Labelled 2D-only; the 2D frame is kept.")
+
+
+# The Vulkan layer (#971): a layer-started emulator may not have made its Vulkan device yet (Yuzu boots the game first);
+# Examine 3D waits this long for the layer before it explains. A replay that runs out of GPU memory (the paused
+# standalone emulator still holds it: VK_ERROR_OUT_OF_DEVICE_MEMORY on the test PC's RTX 3070) keeps the capture for
+# a rebuild once the game has closed (scene_capture rebuild=true).
+LAYER_WAIT_S = 20
+GPU_OOM = re.compile(r"(?i)out[ _]?of[ _]?(?:device[ _]?|host[ _]?|video[ _]?)?memory|E_OUTOFMEMORY")
+
+
+class ReplayOutOfMemory(RuntimeError):
+    """qrenderdoc could not replay a capture: the GPU ran out of memory."""
+
+
+def _keep_for_rebuild(ad, rdcs, out_dir: Path, fovy: float, aspect: float, err) -> str:
+    """Keep a capture whose replay ran out of GPU memory (out_dir/rebuild/*.rdc + rebuild.json); returns the reason."""
+    out_dir = Path(out_dir)
+    keep = out_dir / "rebuild"
+    keep.mkdir(parents=True, exist_ok=True)
+    for f in keep.glob("*.rdc"):                                          # one kept capture per session
+        f.unlink()
+    kept = []
+    for r in rdcs:
+        dst = keep / Path(r).name
+        try:
+            shutil.move(str(r), str(dst))
+            kept.append(str(dst))
+        except OSError:
+            if Path(r).exists():
+                kept.append(str(r))
+    from .scene_support import _NAMES
+    name = _NAMES.get(getattr(ad, "name", "") or "", getattr(ad, "name", "") or "the emulator")
+    (out_dir / "rebuild.json").write_text(json.dumps({"rdcs": kept, "fovy": fovy, "aspect": aspect,
+                                                      "emulator": getattr(ad, "name", None), "error": str(err)[-800:],
+                                                      "at": time.time()}))
+    return (f"The frame was captured, but rebuilding it as a 3D scene needs the video memory {name} holds while it "
+            "runs: the GPU ran out of memory replaying the capture (VK_ERROR_OUT_OF_DEVICE_MEMORY). The capture is kept "
+            f"({len(kept)} frame(s) in {keep}). Close the game, then rebuild the kept capture (scene_capture with "
+            "rebuild: true for this session).")
+
+
+def _kept_meta(out_dir: Path, meta: dict) -> None:
+    f = Path(out_dir) / "rebuild.json"
+    try:
+        info = json.loads(f.read_text())
+    except (OSError, ValueError):
+        return
+    info["meta"] = meta
+    f.write_text(json.dumps(info))
+
+
+def rebuild_kept(out_dir: Path, progress=None, ad=None) -> dict:
+    """Replay the capture _keep_for_rebuild kept (once the emulator has freed the GPU memory) into out_dir/scene.glb."""
+    from .registry import Unsupported
+    say = progress or (lambda p, m: None)
+    out_dir = Path(out_dir)
+    try:
+        info = json.loads((out_dir / "rebuild.json").read_text())
+    except (OSError, ValueError):
+        raise Unsupported("No kept capture to rebuild for this session: Examine 3D keeps one only when replaying a "
+                          "capture ran out of GPU memory.") from None
+    rdcs = [r for r in info.get("rdcs") or [] if Path(r).is_file()]
+    if not rdcs:
+        raise Unsupported("The kept capture for this session is gone: capture the game again.")
+    say(20, f"Rebuilding the 3D scene from the kept capture ({len(rdcs)} frame(s))")
+    t0 = time.time()
+    try:
+        summary = extract(rdcs, out_dir, info.get("fovy") or 0, info.get("aspect") or 0)
+    except ReplayOutOfMemory as e:
+        raise Unsupported("Rebuilding the kept capture ran out of GPU memory again: close the game (stop the session) "
+                          "so its emulator frees the video memory, then rebuild.") from e
+    attempts = [_attempt(summary, len(rdcs), "kept capture, rebuilt once GPU memory was free")]
+    if not int(summary.get("scene_draws") or 0):
+        summary.update(fallback="frame_2d", scene_empty=scene_empty(summary),
+                       note="The kept frame has no 3D draw call: only the 2D frame is available.")
+    summary["capture_attempts"] = attempts
+    dst = out_dir / "frame.rdc"
+    try:
+        keep = Path(summary.get("capture") or rdcs[0])
+        dst.unlink(missing_ok=True)
+        shutil.move(str(keep), str(dst))
+        summary["capture"] = str(dst)
+    except OSError:
+        pass
+    shutil.rmtree(out_dir / "rebuild", ignore_errors=True)
+    (out_dir / "rebuild.json").unlink(missing_ok=True)
+    summary.update(rebuilt_from_kept=True, kept_meta=info.get("meta") or {},
+                   timings={"extract_s": round(time.time() - t0, 2)}, frame_png=(out_dir / "frame.png").exists())
+    return summary | {"resume_on_leave": False}
+
 
 def capture_session(ad, out_dir: Path, frames: int = 2, fovy: float = 0, aspect: float = 0, progress=None) -> dict:
     """Keep a successful scene paused; restore the original pause state if capture fails."""
@@ -916,8 +1227,16 @@ def _capture_session(ad, out_dir: Path, frames: int = 2, fovy: float = 0, aspect
     if not hooked(proc):
         if reason := getattr(ad, "examine_unavailable_reason", None):
             raise Unsupported(reason)
-        raise Unsupported("this session was started without Examine 3D (RenderDoc isn't inside the emulator): "
-                          "relaunch the game with Examine 3D on (save state first)")
+        row = session_support(ad, "windows") if getattr(ad, "name", None) else None    # the matrix says why/what works
+        if row and row.get("layer") == "pending":           # started with the Vulkan layer; no Vulkan device yet (#971)
+            say(5, "Waiting for RenderDoc's Vulkan layer (it loads once the game has booted)")
+            if getattr(ad, "paused_tids", None) or not layer_check(proc, LAYER_WAIT_S):
+                raise Unsupported(row["reason"] + " It has not loaded yet: capture again once the game is running.")
+        elif row and (row["status"] == "unsupported" or row["driver"]):
+            raise Unsupported(row["reason"])
+        else:
+            raise Unsupported("this session was started without Examine 3D (RenderDoc isn't inside the emulator): "
+                              "relaunch the game with Examine 3D on (save state first)")
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
@@ -936,17 +1255,40 @@ def _capture_session(ad, out_dir: Path, frames: int = 2, fovy: float = 0, aspect
         finally:
             ad.pause()
     times["capture_s"] = round(time.time() - t0, 2)
-    try:
-        frame = ad.get_frame()
-        (out_dir / "frame.png").write_bytes(frame)
-    except Exception:
-        frame = None
+
+    def grab():
+        try:
+            if getattr(ad, "capture_backend", None) and not hasattr(ad, "_screenshot"):
+                raise RuntimeError("a capture session's window is parked off-screen: a desktop grab would be black")
+            data = ad.get_frame()
+            (out_dir / "frame.png").write_bytes(data)
+            return data
+        except Exception:
+            return None
+    frame = grab()
     say(35, f"Rebuilding the 3D scene from {len(rdcs)} captured frame(s)")
     t1 = time.time()
-    summary = extract(rdcs, out_dir, fovy, aspect)
+    try:
+        summary = extract(rdcs, out_dir, fovy, aspect)
+    except ReplayOutOfMemory as e:                  # the paused emulator holds the video memory the replay needs
+        raise Unsupported(_keep_for_rebuild(ad, rdcs, out_dir, fovy, aspect, e)) from e
     times["extract_s"] = round(time.time() - t1, 2)
+    ra = hasattr(ad, "cmd") and hasattr(ad, "addr")
+    attempts = [_attempt(summary, len(rdcs), "paused, frame step" if ra else "next frames")]
+    used = list(rdcs)
+    if scene_empty(summary):                    # only the emulator's present blit(s): more frames, game running
+        t2 = time.time()
+        summary, more, adopted = _retry_empty(ad, proc, out_dir, fovy, aspect, say, summary, attempts)
+        used += more
+        times["retry_s"] = round(time.time() - t2, 2)
+        if adopted:                             # the kept frame is the retry's: grab the frame the game is paused on
+            (out_dir / "frame.png").unlink(missing_ok=True)
+            frame = grab()
+    if not int(summary.get("scene_draws") or 0):    # no 3D draw: labelled 2D-only with the reason, never a blank scene
+        summary.update(fallback="frame_2d", scene_empty=scene_empty(summary), note=_no_scene_note(ad, summary, attempts))
+    summary["capture_attempts"] = attempts
     keep = Path(summary["capture"])
-    for r in rdcs:                                                       # keep only the frame used (open it in RenderDoc)
+    for r in used:                                                       # keep only the frame used (open it in RenderDoc)
         try:
             if Path(r) != keep:
                 Path(r).unlink()
@@ -1003,6 +1345,8 @@ class SceneIn(BaseModel):
     frames: int = 2                        # consecutive frames captured; the busiest is used (30 fps games)
     fovy: float = 0                        # vertical FOV (deg) when the emulator has no projection constants (PS2: 55)
     aspect: float = 0                      # display aspect override (0 = PS2 4:3 / viewport)
+    relay: bool = False                    # server: capture this moment in a separate capture session (scene_relay)
+    rebuild: bool = False                  # replay the capture kept when the GPU ran out of memory (#971)
 
 
 class SceneOut(BaseModel):
@@ -1027,27 +1371,31 @@ def _scene_validate(out: SceneOut, arts):
       check=lambda c: None if sys.platform == "win32" else "RenderDoc capture runs on the Windows node")
 def scene_capture(inp: SceneIn, ctx: Ctx):
     """Examine in 3D: pause a live session and rebuild the frame on screen as a 3D scene (glTF + textures, one node
-    per draw call, HUD as its own layer). The game stays paused; resume with session_op resume."""
+    per draw call, HUD as its own layer). The game stays paused; resume with session_op resume. rebuild=True replays
+    the capture kept when the GPU ran out of memory (the game may have ended since: that frees the memory)."""
     from .tools import SESSIONS
     from .registry import Unsupported
     session = SESSIONS.get(inp.session_id)
+    if inp.rebuild:
+        out = ctx.config.runtime / "scene_capture" / inp.session_id
+        ad, g = session if session is not None else (None, {})
+        s = rebuild_kept(out, ctx.progress, ad)
+        kept = s.pop("kept_meta", None) or {}
+        meta = {"session": inp.session_id, "game": g.get("game_id") or kept.get("game"),
+                "title": g.get("title") or kept.get("title")}
+        return _upload_scene(inp, ctx, out, s, meta, paused=False)
     if session is None:
         raise Unsupported("This game session is no longer available on its worker. Open the running game in Sessions.")
     ad, g = session
     out = ctx.config.runtime / "scene_capture" / inp.session_id
-    s = capture_session(ad, out, max(1, min(inp.frames, 4)), inp.fovy, inp.aspect, ctx.progress)
+    meta = {"session": inp.session_id, "game": g.get("game_id"), "title": g.get("title")}
     try:
-        ctx.progress(92, f"Uploading the scene ({s['draws_exported']} draws, {s['textures']} textures)")
-        glb = (out / "scene.glb").read_bytes()
-        meta = {"session": inp.session_id, "game": g.get("game_id"), "title": g.get("title")}
-        ctx.artifact("scene.glb", glb, "model/gltf-binary", **meta)
-        ctx.artifact("scene.json", json.dumps(s).encode(), "application/json", **meta)
-        if (out / "frame.png").exists():
-            ctx.artifact("frame.png", (out / "frame.png").read_bytes(), "image/png", **meta)
-        small = {k: v for k, v in s.items() if k not in ("draw_list", "projection")}
-        small["glb_bytes"] = len(glb)
-        return {"session_id": inp.session_id, "glb": sha256(glb), "summary": small, "paused": True,
-                "resume_on_leave": s["resume_on_leave"]}
+        s = capture_session(ad, out, max(1, min(inp.frames, 4)), inp.fovy, inp.aspect, ctx.progress)
+    except Unsupported:
+        _kept_meta(out, meta)                          # a capture kept for a later rebuild names its game
+        raise
+    try:
+        return _upload_scene(inp, ctx, out, s, meta, paused=True)
     except Exception:
         if s["resume_on_leave"]:
             try:
@@ -1057,5 +1405,14 @@ def scene_capture(inp: SceneIn, ctx: Ctx):
         raise
 
 
-if __name__ == "__main__":
-    main()
+def _upload_scene(inp, ctx, out: Path, s: dict, meta: dict, paused: bool = True) -> dict:
+    ctx.progress(92, f"Uploading the scene ({s['draws_exported']} draws, {s['textures']} textures)")
+    glb = (out / "scene.glb").read_bytes()
+    ctx.artifact("scene.glb", glb, "model/gltf-binary", **meta)
+    ctx.artifact("scene.json", json.dumps(s).encode(), "application/json", **meta)
+    if (out / "frame.png").exists():
+        ctx.artifact("frame.png", (out / "frame.png").read_bytes(), "image/png", **meta)
+    small = {k: v for k, v in s.items() if k not in ("draw_list", "projection")}
+    small["glb_bytes"] = len(glb)
+    return {"session_id": inp.session_id, "glb": sha256(glb), "summary": small, "paused": paused,
+            "resume_on_leave": s["resume_on_leave"]}

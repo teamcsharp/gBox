@@ -120,7 +120,9 @@ saturated targets fail before another job is queued. Agents continue independent
 source work rather than repeatedly consuming five-minute calls.
 
 Hermes's gBox MCP environment protects the operator's selected PC using
-`GBOX_OPERATOR_WORKER` (currently i9-NUC; JAYBUILTFINALE is the test PC).
+`GBOX_OPERATOR_WORKER`. Since 2026-10-13 the operator plays on JAYBUILTFINALE and agent test sessions run
+only on i9-NUC or the Spark: `GBOX_OPERATOR_WORKER=JAYBUILTFINALE`, `GBOX_TEST_WORKER=i9-NUC` in Hermes's
+`mcp_servers.gbox.env` (`~/.hermes/config.yaml`; the repo sets neither).
 Idle selection excludes that PC even when it owns no
 live game or has been idle while the operator reads. A test launch also preserves
 an existing game on the other PC. Windows agent jobs retain 2% audio enforcement.
@@ -133,7 +135,7 @@ live acceptance therefore remains visible rather than being claimed complete.
 Spark continues source analysis, focused tests and Git publication while that
 client is unavailable. It subsequently reconnected and a real desktop capture
 passed and was attached to the report. The operator then selected i9-NUC as the
-protected PC. JAY's idle worker was refreshed without a local emulator running.
+protected PC (superseded on 2026-10-13, above). JAY's idle worker was refreshed without a local emulator running.
 The operator's explicit test-PC assignment is stored in GBOX_TEST_WORKER.
 It takes precedence over recent-input telemetry, while offline/saturated checks
 and preservation of an existing game remain enforced. Unassigned selection
@@ -228,3 +230,57 @@ before recording successful publication. A failed lookup defers publication
 instead of assuming no PR exists and creating a duplicate. An uncertain create
 or readback is reconciled through open-PR discovery on the next attempt; the
 workspace and pushed commit remain intact.
+
+## Continuous favorite-game engineering queue
+
+Task mode can now run a no-agent admission pump every minute instead of waiting
+30 minutes after each model run. `hermes_work_queue` inventories the durable
+`/api/favorites` list, including missing catalog entries, and retains one work
+record per game. Selected games receive one recoverable child request under the
+operator's configured parent request. No catalog page limit truncates the queue.
+
+The pump reserves capacity before creating or resuming genuine one-shots. It
+uses the existing configured cloud route, excludes known provider cooldowns,
+and counts both queued and running agent jobs. At most four agents run, balanced
+between inbox work and favorite-game analysis when both have eligible work.
+Each lane alternates first attempts with follow-ups: acceptance and later game stages
+do not wait until every untouched request or title has been visited. Explicit pick-whips,
+native repairs and published work awaiting acceptance receive priority within each group.
+Automatic replacement failures, extraction requests, tool gaps and operator child requests
+remain actionable; recurring review reminders and agent notifications are excluded.
+Two pending heavyweight native analysis jobs defer new inventory
+and analysis admissions while allowing independent writer or acceptance work.
+This is admission backpressure, not a new worker execution limit.
+
+Per-game milestones are exact-build inventory, actionable executable/format
+analysis, native reader, native writer, and runtime replacement verification.
+`get_game_work_queue(game_id=...)` returns the saved next step;
+`record_game_work` records partial, blocked or evidence-backed verified stages.
+Verified stages require consistent source identity and existing artifacts
+attached to that game's request. Runtime additionally requires an image, with
+agent instructions requiring real donor/slot gameplay evidence. These checks
+validate evidence references, not the truth of an image's contents. Readiness
+is limited to the demonstrated build and donor/slot; it is never universal
+character compatibility.
+
+Pending native job IDs and active ownership suppress duplicate work. Lost
+request-creation responses reconcile by a stable context marker. Uncertain
+cron writes remain held instead of being blindly repeated. Ended runs without
+new checkpoints back off from five minutes to six hours. Games rotate by last
+dispatch, so one difficult title cannot monopolize the queue. Unfavoriting
+stops new admissions while preserving existing work and evidence. Disabling
+task mode pauses pending queue jobs and allows already active work to finish.
+
+Pick-whip replacement/rebuild requests preserve the donor slug, selected actor name,
+normalized game point, session, screenshot and saved moment. Managed Hermes queues
+own these requests without also launching a local chat. An existing local resolution
+still reserves its request. Same-game repair and favorite work cannot be admitted
+together. Missing writers return an incomplete native result and a durable repair
+request; an overlay is available only as an explicit operator action. The desktop
+offers target identification/correction and marking the selected actor for rebuild.
+
+The Z.AI quota monitor continues cheap account checks. Under queue control it
+only restores an eligible route after quota recovery; it does not launch its
+old competing favorites job. The one-minute pump and new MCP processes load
+fresh source; an already running backend needs ordinary safe activation for
+its updated toggle and task-view code.

@@ -8,7 +8,8 @@ window.updateInboxView = function (host, key, render, replyAttachments = {}) {
     const reply = card.querySelector(":scope > .thread .reply");
     if (reply) drafts.set(card.dataset.id, reply.value);
   }
-  const detailKey = detail => (detail.closest(".req[data-id]")?.dataset.id || "root") + ":" + detail.querySelector(":scope > summary")?.textContent;
+  // A group's summary text changes with its count and newest ticket, so a group is remembered by its kind (#1788).
+  const detailKey = detail => (detail.closest(".req[data-id]")?.dataset.id || "root") + ":" + (detail.dataset.groupKey ? "group:" + detail.dataset.groupKey : detail.querySelector(":scope > summary")?.textContent);
   const expanded = host._gboxExpanded ||= new Map();
   for (const detail of host.querySelectorAll("details")) expanded.set(detailKey(detail), detail.open);
   const scroll = host.scrollTop;

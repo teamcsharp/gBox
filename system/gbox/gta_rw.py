@@ -90,6 +90,14 @@ def string_chunk(s: str, version: int = 0x310) -> Chunk:
     return Chunk(STRING, version, b + b"\0" * (-len(b) % 4))
 
 
+def rw_version(raw: int) -> int:
+    """A chunk header's version field -> RW version number (0x34003 = 3.4.0.3). GTA III PS2 stamps the bare 0x310;
+    RW 3.1+ library ids pack it (0x1003FFFF = 3.4.0.3, 0x1803FFFF = 3.6.0.3): the unpacking RW itself does."""
+    if raw & 0xFFFF0000:
+        return (((raw >> 14) & 0x3FF00) + 0x30000) | ((raw >> 16) & 0x3F)
+    return raw << 8
+
+
 # ------------------------------------------------------------------------------------------------------- disc + IMG
 def iso_files(f) -> dict[str, tuple[int, int]]:
     """ISO9660 path (upper case, '/') -> (lba, size) of every file on a 2048-byte-sector image."""
@@ -240,7 +248,7 @@ class Geom:
 def geometry_read(g: Chunk) -> Geom:
     st = g.first(STRUCT).data
     fmt, nt, nv, nm = struct.unpack_from("<IIII", st)
-    o = 16 + (12 if g.version < 0x34000 else 0)
+    o = 16 + (12 if rw_version(g.version) < 0x34000 else 0)
     prelit = uv = nrm = None
     if fmt & 8:
         prelit = np.frombuffer(st, np.uint8, nv * 4, o).reshape(nv, 4)
@@ -281,7 +289,7 @@ def geometry_build(g: Geom, template: Chunk) -> Chunk:
     nv, nt = len(g.pos), len(g.tris)
     fmt = 0x2 | 0x4 | 0x20 | (0x10 if g.nrm is not None else 0) | (0x8 if g.prelit is not None else 0)
     st = struct.pack("<IIII", fmt, nt, nv, 1)
-    if v < 0x34000:
+    if rw_version(v) < 0x34000:
         st += struct.pack("<3f", 1.0, 1.0, 1.0)
     if g.prelit is not None:
         st += np.asarray(g.prelit, np.uint8).tobytes()
@@ -453,11 +461,18 @@ def clump_to_gltf(dff: bytes, out: Path, rgba: np.ndarray | None = None, name: s
                              np.concatenate(T), [f["name"] for f in frames], [f["parent"] for f in frames], world, rgba, name)
 
 
-def write_skinned_glb(out: Path, pos, nrm, uv, joint, tris, names, parents, world, rgba=None, name="model") -> Path:
-    """Minimal skinned glTF binary (1 primitive, 1 joint per vertex); joints placed at world matrices (translation +
-    rotation kept, so the node hierarchy is the source skeleton)."""
+def write_skinned_glb(out: Path, pos, nrm, uv, joint, tris, names, parents, world, rgba=None, name="model",
+                      weights=None) -> Path:
+    """Minimal skinned glTF binary (1 primitive); joints placed at world matrices (translation + rotation kept, so the
+    node hierarchy is the source skeleton). `joint` is (n,) for one joint per vertex (weight 1) or (n, 4) with
+    `weights` (n, 4) for smooth-skinned sources (GTA Vice City peds)."""
     import io
     blob = bytearray()
+    joint = np.asarray(joint)
+    if joint.ndim == 1:
+        joint = np.c_[joint, np.zeros((len(joint), 3))]
+        weights = np.c_[np.ones(len(joint)), np.zeros((len(joint), 3))]
+    weights = np.asarray(weights, np.float32)
 
     def view(arr, target=None):
         b = np.ascontiguousarray(arr).tobytes()
@@ -493,8 +508,8 @@ def write_skinned_glb(out: Path, pos, nrm, uv, joint, tris, names, parents, worl
     attrs = {"POSITION": acc(pos.astype(np.float32), 5126, "VEC3", 34962, True),
              "NORMAL": acc(nrm.astype(np.float32), 5126, "VEC3", 34962),
              "TEXCOORD_0": acc(uv.astype(np.float32), 5126, "VEC2", 34962),
-             "JOINTS_0": acc(np.c_[joint, np.zeros((len(joint), 3))].astype(np.uint16), 5123, "VEC4", 34962),
-             "WEIGHTS_0": acc(np.c_[np.ones(len(joint)), np.zeros((len(joint), 3))].astype(np.float32), 5126, "VEC4", 34962)}
+             "JOINTS_0": acc(joint.astype(np.uint16), 5123, "VEC4", 34962),
+             "WEIGHTS_0": acc(weights.astype(np.float32), 5126, "VEC4", 34962)}
     ind = acc(tris.reshape(-1).astype(np.uint32), 5125, "SCALAR", 34963)
     gl = {"asset": {"version": "2.0", "generator": "gbox.gta_rw"}, "scene": 0,
           "nodes": nodes + [{"name": name, "mesh": 0, "skin": 0}],

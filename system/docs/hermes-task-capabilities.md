@@ -21,7 +21,8 @@ settings. Hermes's atomic configuration writer applies it without copying keys.
   enabling local gBox/worker URLs in the tools that read those separate settings.
 - Remove gBox MCP `tools.include` and `tools.exclude`. An empty `include` list
   would disable every tool; absence exposes the current and future registry.
-- Preserve protected `i9-NUC` and assigned `JAYBUILTFINALE`; agent Windows testing
+- Agent test sessions run only on `i9-NUC` or the Spark, while idle, never on
+  `JAYBUILTFINALE` (the operator's play PC, decision of 2026-10-13). Testing
   remains at 2% audio and preserves existing games, owned ROMs and saved moments.
 
 The operator-approved unattended profile runs task commands without waiting for

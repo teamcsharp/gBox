@@ -28,29 +28,9 @@ ANIM_TABLE = 0x4CE710
 
 
 def mio0(d: bytes, o: int = 0) -> bytes:
+    from .formats.lz import mio0_decompress          # shared MIO0 codec (also sf64_inventory)
     assert d[o:o + 4] == b"MIO0"
-    size, comp, raw = struct.unpack_from(">III", d, o + 4)
-    out = bytearray()
-    bits_p, comp_p, raw_p = o + 16, o + comp, o + raw
-    word, nbits = 0, 0
-    while len(out) < size:
-        if nbits == 0:
-            word = struct.unpack_from(">I", d, bits_p)[0]
-            bits_p += 4
-            nbits = 32
-        bit = word & 0x80000000
-        word = (word << 1) & 0xFFFFFFFF
-        nbits -= 1
-        if bit:
-            out.append(d[raw_p])
-            raw_p += 1
-        else:
-            v = struct.unpack_from(">H", d, comp_p)[0]
-            comp_p += 2
-            ln, back = (v >> 12) + 3, (v & 0xFFF) + 1
-            for _ in range(ln):
-                out.append(out[-back])
-    return bytes(out)
+    return mio0_decompress(d, o, strict=False)
 
 
 LOAD_SEG04 = 0x28CEE0                                       # main level script: LOAD_MIO0(0x04, group0) (12 bytes)
@@ -62,9 +42,17 @@ class Mem:
         cmd, _ln, seg, start, end = struct.unpack_from(">BBHII", rom, LOAD_SEG04)
         if (cmd, seg) == (0x17, 0x04):                      # rewritten by gbox.sm64_writer: LOAD_RAW of an extended copy
             seg04 = rom[start:end]
-        else:
+            seg17 = rom[SEG17[0]:SEG17[1]]
+        elif rom[SEG04[0]:SEG04[0] + 4] == b"MIO0":
             seg04 = mio0(rom, SEG04[0])
-        self.seg = {0x04: seg04, 0x17: rom[SEG17[0]:SEG17[1]]}
+            seg17 = rom[SEG17[0]:SEG17[1]]
+        else:                                               # another build (the US ROM): its loads, found by scanning
+            from .sm64_decomp import _layout
+            lay = _layout(rom)
+            if not lay["seg04"] or not lay["seg17"]:
+                raise ValueError("this SM64 ROM's group0 (Mario) segment loads were not found")
+            seg04, seg17 = mio0(rom, lay["seg04"][0]), rom[lay["seg17"][0]:lay["seg17"][1]]
+        self.seg = {0x04: seg04, 0x17: seg17}
 
     def at(self, addr: int, n: int) -> bytes:
         s, o = addr >> 24, addr & 0xFFFFFF
@@ -247,9 +235,13 @@ def _rot_xyz(rx, ry, rz):
 
 def anim_frame(rom: bytes, index: int, frame: int = 0):
     """-> (root translation (3,), [ (rx, ry, rz) per joint ]) for Mario animation `index`."""
-    n = struct.unpack_from(">I", rom, ANIM_TABLE)[0]
-    off, _size = struct.unpack_from(">II", rom, ANIM_TABLE + 8 + 8 * index)
-    a = ANIM_TABLE + off
+    table = ANIM_TABLE
+    if struct.unpack_from(">I", rom, table)[0] != 0xD1:     # another build (the US ROM keeps it at 0x4EC000)
+        from .sm64_decomp import _layout
+        table = _layout(rom)["mario_anims"] or table
+    n = struct.unpack_from(">I", rom, table)[0]
+    off, _size = struct.unpack_from(">II", rom, table + 8 + 8 * index)
+    a = table + off
     flags, ydiv, start, loop_s, loop_e, nbones = struct.unpack_from(">6h", rom, a)
     vals_o, idx_o, _ln = struct.unpack_from(">III", rom, a + 12)
     vals, idxs = a + vals_o, a + idx_o

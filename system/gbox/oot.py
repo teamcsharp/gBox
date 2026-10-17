@@ -1,13 +1,21 @@
-"""Zelda: Ocarina of Time (N64 NTSC v1.2) live edits: story skips, items, equipment, warps.
+"""Zelda: Ocarina of Time (N64 NTSC 1.0 / 1.1 / 1.2) live edits: story skips, items, equipment, warps.
 
 Offsets and constants are from the zeldaret/oot decompilation (include/save.h, item.h, tables/entrance_table.h);
 the v1.2 SaveContext / Play-state addresses were verified live (the save's "ZELDAZ" marker, play->nextEntranceIndex ==
-save.entranceIndex). ParaLLEl N64 exposes RDRAM as little-endian 32-bit words, so every access swaps per word.
+save.entranceIndex). The 1.0 and 1.1 bases come from the decomp's per-version symbol maps and are confirmed at run
+time by the same two checks (layout()). The SaveContext / PlayState layouts are shared by the three N64 NTSC revisions,
+so every offset below is relative to the running ROM's bases: functions take them from bases(ad), and tables written
+against the v1.2 constants (gbox/zelda_n64.py) go through remap(ad). ParaLLEl N64 exposes RDRAM as little-endian
+32-bit words, so every access swaps per word.
 """
 import struct
 
-SAVE = 0x8011AC80                      # gSaveContext (v1.2)
+SAVE = 0x8011AC80                      # gSaveContext (v1.2): the canonical base the offset tables are written against
 PLAY = 0x801C8D60                      # gPlayState (v1.2)
+LAYOUTS = {"ntsc-1.0": (0x8011A5D0, 0x801C84A0),         # (gSaveContext, gPlayState) per N64 NTSC revision
+           "ntsc-1.1": (0x8011A790, 0x801C8660),
+           "ntsc-1.2": (SAVE, PLAY)}
+SAVE_SIZE = 0x1450                     # sizeof(SaveContext): the window remap() moves
 P_NEXT_ENTRANCE, P_TRANSITION, P_AGE_ON_LOAD = 0x11E1A, 0x11E15, 0x11DE8   # play->linkAgeOnLoad wins over save.linkAge
 S_ENTRANCE, S_BUTTONS, S_CSLOTS, S_EQUIPS = 0x00, 0x68, 0x6C, 0x70
 S_ITEMS, S_AMMO, S_INV_EQUIP, S_UPGRADES, S_QUEST = 0x74, 0x8C, 0x9C, 0xA0, 0xA4
@@ -62,12 +70,60 @@ def _wr(ad, a, data: bytes):
     ad.write_memory(a0, b"".join(bytes(be[i:i + 4][::-1]) for i in range(0, n0, 4)))
 
 
-def check(ad):
-    if _rd(ad, SAVE + 0x1C, 6) != b"ZELDAZ":
-        raise RuntimeError("no OoT v1.2 save loaded (title screen? other ROM revision?) - load a file first")
+def layout(ad) -> dict:
+    """{"version", "save", "play", "play_checked"} for the ROM this session runs. The save's "ZELDAZ" marker at the
+    revision's gSaveContext picks the revision; play->nextEntranceIndex == save.entranceIndex confirms gPlayState (it can
+    legitimately differ for a frame during a scene change, so a marker match alone is still accepted). Cached on the
+    adapter and re-validated with one read, so a different ROM in the same session is picked up."""
+    hit = getattr(ad, "_oot_layout", None)
+    if hit and _rd(ad, hit["save"] + 0x1C, 6) == b"ZELDAZ":
+        return hit
+    found = []
+    for ver, (save, play) in LAYOUTS.items():
+        if _rd(ad, save + 0x1C, 6) != b"ZELDAZ":
+            continue
+        ent = struct.unpack(">I", _rd(ad, save + S_ENTRANCE, 4))[0] & 0xFFFF
+        nxt = struct.unpack(">H", _rd(ad, play + P_NEXT_ENTRANCE, 2))[0]
+        found.append({"version": ver, "save": save, "play": play, "play_checked": ent == nxt})
+    if not found:
+        raise RuntimeError("no OoT save loaded (title screen? other ROM revision?) - load a file first; known N64 "
+                           "revisions: " + ", ".join(LAYOUTS))
+    hit = next((f for f in found if f["play_checked"]), found[0])
+    try:
+        ad._oot_layout = hit
+    except Exception:
+        pass
+    return hit
+
+
+def bases(ad) -> tuple[int, int]:
+    """(gSaveContext, gPlayState) of the running ROM."""
+    l = layout(ad)
+    return l["save"], l["play"]
+
+
+def save(ad) -> int:
+    return layout(ad)["save"]
+
+
+def play(ad) -> int:
+    return layout(ad)["play"]
+
+
+def remap(ad):
+    """Address translator for tables written against the v1.2 SaveContext (gbox/zelda_n64.py): addresses inside that
+    window move to this ROM's gSaveContext; code addresses and pointers read from memory are left alone."""
+    delta = save(ad) - SAVE
+    return lambda a: a + delta if SAVE <= a < SAVE + SAVE_SIZE else a
+
+
+def check(ad) -> dict:
+    """Raise unless an OoT save is loaded; returns the detected layout."""
+    return layout(ad)
 
 
 def state(ad) -> dict:
+    SAVE, PLAY = bases(ad)
     s = _rd(ad, SAVE, 0xF00)
     u16 = lambda o: struct.unpack_from(">H", s, o)[0]
     u32 = lambda o: struct.unpack_from(">I", s, o)[0]
@@ -79,6 +135,7 @@ def state(ad) -> dict:
 
 def give(ad, name: str, c_button: int | None = None) -> dict:
     """Put an item in its inventory slot (with ammo) and optionally on C-left/down/right (1-3)."""
+    SAVE, PLAY = bases(ad)
     key = name.lower().replace("'", "").strip()
     if key not in ITEMS:
         raise ValueError(f"unknown item {name!r}; known: {sorted(ITEMS)}")
@@ -94,6 +151,7 @@ def give(ad, name: str, c_button: int | None = None) -> dict:
 
 
 def warp(ad, entrance: int, cutscene: int | None = None) -> dict:
+    SAVE, PLAY = bases(ad)
     if cutscene is not None:
         _wr(ad, SAVE + S_NEXT_CUTSCENE, struct.pack(">H", cutscene))
     _wr(ad, PLAY + P_NEXT_ENTRANCE, struct.pack(">H", entrance))
@@ -103,6 +161,7 @@ def warp(ad, entrance: int, cutscene: int | None = None) -> dict:
 
 def in_gameplay(ad) -> bool:
     """Link exists and isn't in a cutscene / talking (player->stateFlags1 IN_CUTSCENE 0x20000000, TALKING 0x40)."""
+    SAVE, PLAY = bases(ad)
     pl = struct.unpack(">I", _rd(ad, PLAY + 0x1C44, 4))[0]
     return bool(pl) and not struct.unpack(">I", _rd(ad, pl + 0x66C, 4))[0] & 0x20000040
 
@@ -120,6 +179,7 @@ def wait_gameplay(ad, timeout: float = 60.0) -> bool:
 def alive(ad, wait: float = 8.0) -> bool:
     """Did the warp land? play->gameplayFrames keeps ticking unless the game hung."""
     import time
+    SAVE, PLAY = bases(ad)
     time.sleep(wait)
     a = _rd(ad, PLAY + 0x11DE4, 4)
     time.sleep(1)
@@ -128,6 +188,7 @@ def alive(ad, wait: float = 8.0) -> bool:
 
 def kit(ad, which: str) -> dict:
     """Make Link able to survive where he's going: child basics, adult gear, or the full endgame loadout."""
+    SAVE, PLAY = bases(ad)
     u16 = lambda o: struct.unpack(">H", _rd(ad, SAVE + o, 2))[0]
     hearts = {"child": 6, "adult": 12, "endgame": 20}[which]
     if u16(0x2E) < hearts * 16:
@@ -159,6 +220,7 @@ def kit(ad, which: str) -> dict:
 def full_inventory(ad) -> dict:
     """Every item (max ammo + bag/quiver upgrades), every sword/shield/tunic/boots, 4 bottles, 20 hearts, 500 rupees.
     Link keeps his age; what's equipped is left alone."""
+    SAVE, PLAY = bases(ad)
     for name in ITEMS:
         if name not in ("fairy ocarina", "hookshot"):                                # upgraded versions share the slot
             give(ad, name)
@@ -197,6 +259,7 @@ def goto(ad, place: str) -> dict:
 def skip_deku_tree(ad, cutscene: bool = False) -> dict:
     """What beating Gohma does (z_door_warp1.c): EVENTCHKINF 07 + 09, Kokiri Emerald, warp to Kokiri Forest with the
     farewell cutscene. Also: Mido / Deku Tree access flags (02, 03, 04), Kokiri Sword + Deku Shield owned and equipped."""
+    SAVE, PLAY = bases(ad)
     ev = struct.unpack(">H", _rd(ad, SAVE + S_EVENTCHKINF, 2))[0]
     ev |= (1 << 2) | (1 << 3) | (1 << 4) | (1 << 7) | (1 << 9)
     _wr(ad, SAVE + S_EVENTCHKINF, struct.pack(">H", ev))

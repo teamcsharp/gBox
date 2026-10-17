@@ -1,0 +1,1600 @@
+{
+  "id": "auf-gcn-us",
+  "title": "007 - Agent Under Fire (USA) - GameCube (GW7E69)",
+  "game_id": "65b7187589166b26",
+  "status": "static analysis of Bond.elf (symbols kept); nothing verified against a running game yet",
+  "match": {
+    "platform": "gamecube",
+    "title_contains": "Agent Under Fire",
+    "memory": {
+      "address": "0x80000000",
+      "equals": "GW7E69"
+    }
+  },
+  "endian": "big",
+  "entities": {
+    "layout": "struct_array",
+    "base_pointer": "0x804E38B0",
+    "base_pointer_alt": "0x804E3520",
+    "count": "0x803F0210",
+    "count_alt": "0x804E3528",
+    "count_max": 1024,
+    "stride": "0x2B0",
+    "pointer_range": [
+      "0x80000000",
+      "0x81800000"
+    ],
+    "inuse": [
+      "u32",
+      "0x1E4",
+      "record"
+    ],
+    "object": [
+      "ptr",
+      "0x24C",
+      "record"
+    ],
+    "position": "position",
+    "fields": {
+      "number": [
+        "i32",
+        "0x0",
+        "record"
+      ],
+      "modelindex": [
+        "i32",
+        "0x5C",
+        "record"
+      ],
+      "parent": [
+        "i32",
+        "0x54",
+        "record"
+      ],
+      "svflags": [
+        "u32",
+        "0x124",
+        "record"
+      ],
+      "record_origin": [
+        "f32x3",
+        "0x22C",
+        "record"
+      ],
+      "record_absmin": [
+        "f32x3",
+        "0x214",
+        "record"
+      ],
+      "record_absmax": [
+        "f32x3",
+        "0x220",
+        "record"
+      ],
+      "class": [
+        "vptr",
+        "0x4"
+      ],
+      "entnum": [
+        "i32",
+        "0x10"
+      ],
+      "client": [
+        "ptr",
+        "0x18"
+      ],
+      "classname": [
+        "ptrstr",
+        "0x1C"
+      ],
+      "spawnflags": [
+        "u32",
+        "0x20"
+      ],
+      "model": [
+        "strobj",
+        "0x28"
+      ],
+      "mins": [
+        "f32x3",
+        "0x2C"
+      ],
+      "maxs": [
+        "f32x3",
+        "0x38"
+      ],
+      "absmin": [
+        "f32x3",
+        "0x44"
+      ],
+      "absmax": [
+        "f32x3",
+        "0x50"
+      ],
+      "position": [
+        "f32x3",
+        "0x8C"
+      ],
+      "angles": [
+        "f32x3",
+        "0x98"
+      ],
+      "model_handle": [
+        "u32",
+        "0x144"
+      ],
+      "bindmaster": [
+        "ptr",
+        "0x158"
+      ]
+    },
+    "flags": [
+      {
+        "name": "hidden",
+        "field": "svflags",
+        "mask": "0x80"
+      },
+      {
+        "name": "rendered",
+        "field": "svflags",
+        "mask": "0x40000000"
+      }
+    ],
+    "box": {
+      "min": "record_absmin",
+      "max": "record_absmax",
+      "world": true
+    },
+    "viewer": {
+      "field": "client",
+      "equals": "camera_client"
+    },
+    "kind_roots": [
+      [
+        "Bot",
+        "bot"
+      ],
+      [
+        "Player",
+        "player"
+      ],
+      [
+        "ClonePlayer",
+        "player"
+      ],
+      [
+        "Actor",
+        "npc"
+      ],
+      [
+        "Deadbody",
+        "corpse"
+      ],
+      [
+        "Sentient",
+        "npc"
+      ],
+      [
+        "Vehicle",
+        "vehicle"
+      ],
+      [
+        "VehicleBase",
+        "vehicle"
+      ],
+      [
+        "Weapon",
+        "weapon"
+      ],
+      [
+        "Gadget",
+        "item"
+      ],
+      [
+        "Item",
+        "item"
+      ],
+      [
+        "Projectile",
+        "projectile"
+      ],
+      [
+        "Camera",
+        "camera"
+      ],
+      [
+        "Trigger",
+        "trigger"
+      ],
+      [
+        "Door",
+        "door"
+      ],
+      [
+        "World",
+        "world"
+      ]
+    ],
+    "classes": {
+      "0x80246E5C": {
+        "name": "Ammo",
+        "super": "Item",
+        "size": 752
+      },
+      "0x80246FF4": {
+        "name": "Animate",
+        "super": "Entity",
+        "size": 624,
+        "id": "animate"
+      },
+      "0x80247888": {
+        "name": "Camera",
+        "super": "Entity",
+        "size": 960,
+        "id": "func_camera"
+      },
+      "0x80247938": {
+        "name": "Class",
+        "super": "NULL",
+        "size": 16
+      },
+      "0x80247958": {
+        "name": "ClonePlayer",
+        "super": "Sentient",
+        "size": 1168,
+        "id": "cloneplayer"
+      },
+      "0x80247BA0": {
+        "name": "ClusterGrenadeLauncher",
+        "super": "GrenadeLauncher",
+        "size": 1296,
+        "id": "clustergrenade_pickup"
+      },
+      "0x80247E2C": {
+        "name": "ClusterGrenade",
+        "super": "Grenade",
+        "size": 768,
+        "id": "clustergrenade"
+      },
+      "0x80247EFC": {
+        "name": "Deadbody",
+        "super": "Sentient",
+        "size": 944,
+        "id": "deadbody"
+      },
+      "0x802482C0": {
+        "name": "DeathmatchPlayer",
+        "super": "Player",
+        "size": 2352,
+        "id": "deathmatchplayer"
+      },
+      "0x80248BAC": {
+        "name": "ScriptDoor",
+        "super": "Door",
+        "size": 1296,
+        "id": "script_door"
+      },
+      "0x80248C54": {
+        "name": "SlidingDoor",
+        "super": "Door",
+        "size": 1264,
+        "id": "func_door"
+      },
+      "0x80248CCC": {
+        "name": "SafeDoor",
+        "super": "RotatingDoor",
+        "size": 1312,
+        "id": "func_safedoor"
+      },
+      "0x80248D44": {
+        "name": "RotatingDoor",
+        "super": "Door",
+        "size": 1296,
+        "id": "func_rotatingdoor"
+      },
+      "0x80248DBC": {
+        "name": "Door",
+        "super": "ScriptSlave",
+        "size": 1216,
+        "id": "NormalDoor"
+      },
+      "0x80248EC8": {
+        "name": "Earthquake",
+        "super": "Trigger",
+        "size": 528,
+        "id": "func_earthquake"
+      },
+      "0x8024908C": {
+        "name": "Elevator",
+        "super": "ScriptSlave",
+        "size": 1136,
+        "id": "func_elevator"
+      },
+      "0x80249100": {
+        "name": "ElevatorFloor",
+        "super": "Trigger",
+        "size": 528,
+        "id": "func_elevatorfloor"
+      },
+      "0x80249C70": {
+        "name": "Entity",
+        "super": "Listener",
+        "size": 448
+      },
+      "0x8024A104": {
+        "name": "BreakPlane",
+        "super": "Animate",
+        "size": 480,
+        "id": "func_breakplane"
+      },
+      "0x8024A188": {
+        "name": "ExplodeObject",
+        "super": "Animate",
+        "size": 704,
+        "id": "func_explodeobject"
+      },
+      "0x8024A218": {
+        "name": "Fist",
+        "super": "Weapon",
+        "size": 1248,
+        "id": "fist"
+      },
+      "0x8024A9A4": {
+        "name": "FixedGunModel",
+        "super": "Animate",
+        "size": 640,
+        "id": "fixedgun_model"
+      },
+      "0x8024AA38": {
+        "name": "FixedGun",
+        "super": "Animate",
+        "size": 912,
+        "id": "weap_fixedgun"
+      },
+      "0x8024ACE0": {
+        "name": "Func_Button",
+        "super": "ScriptSlave",
+        "size": 1184,
+        "id": "func_button"
+      },
+      "0x8024B114": {
+        "name": "TriggerGadget",
+        "super": "Gadget",
+        "size": 880,
+        "id": "triggergadget"
+      },
+      "0x8024B27C": {
+        "name": "Gadget",
+        "super": "Item",
+        "size": 864
+      },
+      "0x8024B5C4": {
+        "name": "Gib",
+        "super": "Mover",
+        "size": 800,
+        "id": "gib"
+      },
+      "0x8024B78C": {
+        "name": "GravPathNode",
+        "super": "Entity",
+        "size": 464,
+        "id": "info_grav_pathnode"
+      },
+      "0x8024B8F0": {
+        "name": "GoldenGrenadeLauncher",
+        "super": "GrenadeLauncher",
+        "size": 1296,
+        "id": "goldengrenade_pickup"
+      },
+      "0x8024BB7C": {
+        "name": "FragGrenadeLauncher",
+        "super": "GrenadeLauncher",
+        "size": 1296,
+        "id": "fraggrenade_pickup"
+      },
+      "0x8024BE08": {
+        "name": "GrenadeLauncher",
+        "super": "Weapon",
+        "size": 1296,
+        "id": "grenade_pickup"
+      },
+      "0x8024C094": {
+        "name": "Grenade",
+        "super": "Projectile",
+        "size": 736,
+        "id": "grenade"
+      },
+      "0x8024C764": {
+        "name": "HelicopterCin",
+        "super": "Helicopter",
+        "size": 2144,
+        "id": "helicopter_cin"
+      },
+      "0x8024C8C8": {
+        "name": "Helicopter",
+        "super": "Vehicle",
+        "size": 2144,
+        "id": "helicopter"
+      },
+      "0x8024CDE0": {
+        "name": "BonusItem",
+        "super": "ModifierItem",
+        "size": 736,
+        "id": "BonusItem"
+      },
+      "0x8024CF00": {
+        "name": "Money",
+        "super": "Item",
+        "size": 736,
+        "id": "item_money"
+      },
+      "0x8024CFF8": {
+        "name": "InfoItem",
+        "super": "Item",
+        "size": 752,
+        "id": "item_pdainfo"
+      },
+      "0x8024D0FC": {
+        "name": "Item",
+        "super": "Animate",
+        "size": 736
+      },
+      "0x8024D218": {
+        "name": "Light",
+        "super": "Entity",
+        "size": 448,
+        "id": "light"
+      },
+      "0x8024D2D0": {
+        "name": "Listener",
+        "super": "Class",
+        "size": 16
+      },
+      "0x8024D494": {
+        "name": "UGW",
+        "super": "ScopedMachineGun",
+        "size": 1264,
+        "id": "ugw_pickup"
+      },
+      "0x8024D714": {
+        "name": "D17",
+        "super": "ScopedMachineGun",
+        "size": 1264,
+        "id": "d17_pickup"
+      },
+      "0x8024D994": {
+        "name": "ScopedMachineGun",
+        "super": "MachineGun",
+        "size": 1264
+      },
+      "0x8024DC14": {
+        "name": "FSU4",
+        "super": "MachineGun",
+        "size": 1248,
+        "id": "fsu4_pickup"
+      },
+      "0x8024DE94": {
+        "name": "KS7",
+        "super": "MachineGun",
+        "size": 1248,
+        "id": "ks7_pickup"
+      },
+      "0x8024E114": {
+        "name": "CALYPSO",
+        "super": "MachineGun",
+        "size": 1248,
+        "id": "calypso_pickup"
+      },
+      "0x8024E394": {
+        "name": "PS100",
+        "super": "MachineGun",
+        "size": 1248,
+        "id": "ps100_pickup"
+      },
+      "0x8024E614": {
+        "name": "INGALLS",
+        "super": "MachineGun",
+        "size": 1248,
+        "id": "ingalls_pickup"
+      },
+      "0x8024E894": {
+        "name": "KA57",
+        "super": "MachineGun",
+        "size": 1248,
+        "id": "ka57_pickup"
+      },
+      "0x8024EB14": {
+        "name": "MachineGun",
+        "super": "Weapon",
+        "size": 1248
+      },
+      "0x8024EDE0": {
+        "name": "MFGlasses",
+        "super": "Gadget",
+        "size": 896,
+        "id": "item_mfglasses"
+      },
+      "0x8024F014": {
+        "name": "Mine",
+        "super": "Weapon",
+        "size": 1248,
+        "id": "mp_mine_pickup"
+      },
+      "0x8024F2C0": {
+        "name": "MineDevice",
+        "super": "ExplodeObject",
+        "size": 720,
+        "id": "minedevice"
+      },
+      "0x8024F39C": {
+        "name": "Minigame",
+        "super": "Entity",
+        "size": 480
+      },
+      "0x8024FA58": {
+        "name": "TimerEntity",
+        "super": "Entity",
+        "size": 496,
+        "id": "func_timer"
+      },
+      "0x8024FAC4": {
+        "name": "FuncWater",
+        "super": "Mover",
+        "size": 816,
+        "id": "func_water"
+      },
+      "0x8024FB34": {
+        "name": "Lock",
+        "super": "Entity",
+        "size": 464,
+        "id": "func_lock"
+      },
+      "0x8024FBA0": {
+        "name": "VolumetricBeam",
+        "super": "Entity",
+        "size": 496,
+        "id": "func_volumetricbeam"
+      },
+      "0x8024FC0C": {
+        "name": "Corona",
+        "super": "Entity",
+        "size": 512,
+        "id": "func_corona"
+      },
+      "0x8024FC78": {
+        "name": "LensFlare",
+        "super": "Entity",
+        "size": 464,
+        "id": "func_lensflare"
+      },
+      "0x8024FCE4": {
+        "name": "ClipBox",
+        "super": "Entity",
+        "size": 464,
+        "id": "func_clipbox"
+      },
+      "0x8024FD50": {
+        "name": "BloodSplat",
+        "super": "Animate",
+        "size": 624
+      },
+      "0x8024FDC0": {
+        "name": "Waypoint",
+        "super": "Mover",
+        "size": 784,
+        "id": "info_waypoint"
+      },
+      "0x8024FE30": {
+        "name": "TeleporterDestination",
+        "super": "Entity",
+        "size": 464,
+        "id": "func_teleportdest"
+      },
+      "0x8024FE9C": {
+        "name": "Teleporter",
+        "super": "Trigger",
+        "size": 512,
+        "id": "trigger_teleport"
+      },
+      "0x8024FF10": {
+        "name": "SpawnChain",
+        "super": "Spawn",
+        "size": 480,
+        "id": "func_spawnchain"
+      },
+      "0x8024FF80": {
+        "name": "SpawnOutOfSight",
+        "super": "Spawn",
+        "size": 480,
+        "id": "func_spawnoutofsight"
+      },
+      "0x8024FFF0": {
+        "name": "ReSpawn",
+        "super": "Spawn",
+        "size": 480,
+        "id": "func_respawn"
+      },
+      "0x80250060": {
+        "name": "Spawn",
+        "super": "Entity",
+        "size": 480,
+        "id": "func_spawn"
+      },
+      "0x802500D0": {
+        "name": "Electrocute",
+        "super": "Trigger",
+        "size": 528,
+        "id": "func_electrocute"
+      },
+      "0x80250144": {
+        "name": "InfoNotNull",
+        "super": "Entity",
+        "size": 448,
+        "id": "info_notnull"
+      },
+      "0x802501B0": {
+        "name": "InfoNull",
+        "super": "Entity",
+        "size": 448,
+        "id": "info_null"
+      },
+      "0x8025021C": {
+        "name": "MiscModel",
+        "super": "Entity",
+        "size": 448,
+        "id": "misc_model"
+      },
+      "0x80250288": {
+        "name": "FuncRemove",
+        "super": "Entity",
+        "size": 448,
+        "id": "func_remove"
+      },
+      "0x80250404": {
+        "name": "ModifierItem",
+        "super": "Item",
+        "size": 784,
+        "id": "ModifierItem"
+      },
+      "0x802505F0": {
+        "name": "Mover",
+        "super": "Animate",
+        "size": 784,
+        "id": "mover"
+      },
+      "0x80250984": {
+        "name": "CannonBall",
+        "super": "Projectile",
+        "size": 768,
+        "id": "cannonball"
+      },
+      "0x80250A10": {
+        "name": "MP_PhotonCannon",
+        "super": "Weapon",
+        "size": 1280,
+        "id": "mp_photoncannon_pickup"
+      },
+      "0x80250C90": {
+        "name": "MP_BRIEFCASE",
+        "super": "Weapon",
+        "size": 1232,
+        "id": "mp_actor_vip_briefcase"
+      },
+      "0x80250F10": {
+        "name": "MP_GrenadeLauncher",
+        "super": "Weapon",
+        "size": 1232,
+        "id": "mp_grenadelauncher_pickup"
+      },
+      "0x80251190": {
+        "name": "MP_VIPER",
+        "super": "VIPER",
+        "size": 1232,
+        "id": "mp_viper_pickup"
+      },
+      "0x80251410": {
+        "name": "MP_KS7",
+        "super": "KS7",
+        "size": 1248,
+        "id": "mp_ks7_pickup"
+      },
+      "0x80251690": {
+        "name": "MP_D17",
+        "super": "D17",
+        "size": 1264,
+        "id": "mp_d17_pickup"
+      },
+      "0x80251910": {
+        "name": "MP_CALYPSO",
+        "super": "CALYPSO",
+        "size": 1248,
+        "id": "mp_calypso_pickup"
+      },
+      "0x80251B90": {
+        "name": "MP_UGW",
+        "super": "UGW",
+        "size": 1264,
+        "id": "mp_ugw_pickup"
+      },
+      "0x80251E10": {
+        "name": "MP_PS100",
+        "super": "PS100",
+        "size": 1248,
+        "id": "mp_ps100_pickup"
+      },
+      "0x80252090": {
+        "name": "MP_INGALLS",
+        "super": "INGALLS",
+        "size": 1248,
+        "id": "mp_ingalls_pickup"
+      },
+      "0x80252310": {
+        "name": "MP_KA57",
+        "super": "KA57",
+        "size": 1248,
+        "id": "mp_ka57_pickup"
+      },
+      "0x80252590": {
+        "name": "MP_RocketLauncher",
+        "super": "RocketLauncher",
+        "size": 1232,
+        "id": "mp_mrl22_pickup"
+      },
+      "0x80252810": {
+        "name": "MP_Frinesi",
+        "super": "Frinesi",
+        "size": 1232,
+        "id": "mp_frinesi_pickup"
+      },
+      "0x80252A90": {
+        "name": "MP_INSTAGIBGOLDENGUN",
+        "super": "Weapon",
+        "size": 1232,
+        "id": "mp_instagibgoldengun_pickup"
+      },
+      "0x80252D10": {
+        "name": "MP_GOLDENGUN",
+        "super": "Weapon",
+        "size": 1232,
+        "id": "mp_goldengun_pickup"
+      },
+      "0x80252F90": {
+        "name": "MP_FSU4",
+        "super": "FSU4",
+        "size": 1248,
+        "id": "mp_fsu4_pickup"
+      },
+      "0x80253210": {
+        "name": "MP_SSR4000",
+        "super": "SSR4000",
+        "size": 1344,
+        "id": "mp_ssr4000_pickup"
+      },
+      "0x80253490": {
+        "name": "MP_DEFENDER",
+        "super": "DEFENDER",
+        "size": 1232,
+        "id": "mp_defender_pickup"
+      },
+      "0x80253710": {
+        "name": "MP_P2K",
+        "super": "P2K",
+        "size": 1232,
+        "id": "mp_p2k_pickup"
+      },
+      "0x80253A80": {
+        "name": "PlayerPowerup",
+        "super": "Item",
+        "size": 768,
+        "id": "PlayerPowerup"
+      },
+      "0x80253C44": {
+        "name": "Leaf",
+        "super": "Rain",
+        "size": 448,
+        "id": "func_leaf"
+      },
+      "0x80253CB0": {
+        "name": "Rain",
+        "super": "Entity",
+        "size": 448,
+        "id": "func_rain"
+      },
+      "0x80253E20": {
+        "name": "ThrowObject",
+        "super": "Object",
+        "size": 656,
+        "id": "func_throwobject"
+      },
+      "0x80253E90": {
+        "name": "Object",
+        "super": "Animate",
+        "size": 624,
+        "id": "object"
+      },
+      "0x80254070": {
+        "name": "PCodeGen",
+        "super": "TriggerGadget",
+        "size": 880,
+        "id": "gadgetpcodegen_pickup"
+      },
+      "0x802541C0": {
+        "name": "KeyCard",
+        "super": "TriggerGadget",
+        "size": 880,
+        "id": "gadgetkeycard_pickup"
+      },
+      "0x80254310": {
+        "name": "PhoneTap",
+        "super": "TriggerGadget",
+        "size": 880,
+        "id": "phonetap_pickup"
+      },
+      "0x80254E70": {
+        "name": "Player",
+        "super": "Sentient",
+        "size": 2112,
+        "id": "player"
+      },
+      "0x80255170": {
+        "name": "PlayerIntermission",
+        "super": "Camera",
+        "size": 960,
+        "id": "info_player_intermission"
+      },
+      "0x80255200": {
+        "name": "PlayerCoopStart",
+        "super": "PlayerStart",
+        "size": 448,
+        "id": "info_player_coop"
+      },
+      "0x8025526C": {
+        "name": "PlayerDeathmatchStart",
+        "super": "PlayerStart",
+        "size": 464,
+        "id": "info_player_deathmatch"
+      },
+      "0x802552D8": {
+        "name": "TestPlayerStart",
+        "super": "PlayerStart",
+        "size": 448,
+        "id": "testplayerstart"
+      },
+      "0x80255344": {
+        "name": "ProgressiveStart",
+        "super": "PlayerStart",
+        "size": 448,
+        "id": "info_player_progressivestart"
+      },
+      "0x802553B0": {
+        "name": "PlayerStart",
+        "super": "Entity",
+        "size": 448,
+        "id": "info_player_start"
+      },
+      "0x80255478": {
+        "name": "PortalCamera",
+        "super": "Entity",
+        "size": 448,
+        "id": "portal_camera"
+      },
+      "0x802554E4": {
+        "name": "PortalSurface",
+        "super": "Entity",
+        "size": 448,
+        "id": "portal_surface"
+      },
+      "0x802555C8": {
+        "name": "PushableObject",
+        "super": "Entity",
+        "size": 496,
+        "id": "func_pushable"
+      },
+      "0x80255780": {
+        "name": "QCamera",
+        "super": "TriggerGadget",
+        "size": 896,
+        "id": "item_qcamera"
+      },
+      "0x802559FC": {
+        "name": "BotGrappleTarget",
+        "super": "Entity",
+        "size": 464,
+        "id": "info_bot_grapple_target"
+      },
+      "0x80255A80": {
+        "name": "BotGrappleStart",
+        "super": "Entity",
+        "size": 448,
+        "id": "info_bot_grapple_start"
+      },
+      "0x80255AEC": {
+        "name": "QClaw",
+        "super": "Weapon",
+        "size": 1488,
+        "id": "qclaw_pickup"
+      },
+      "0x80255F88": {
+        "name": "MPQJet",
+        "super": "QJet",
+        "size": 944,
+        "id": "mp_qjet_pickup"
+      },
+      "0x802560F0": {
+        "name": "QJet",
+        "super": "Gadget",
+        "size": 912,
+        "id": "item_qjet"
+      },
+      "0x802562DC": {
+        "name": "QLaser",
+        "super": "Gadget",
+        "size": 1040,
+        "id": "item_qlaser"
+      },
+      "0x80256478": {
+        "name": "QLung",
+        "super": "Item",
+        "size": 752,
+        "id": "qlung"
+      },
+      "0x802565C0": {
+        "name": "QRemote",
+        "super": "TriggerGadget",
+        "size": 880,
+        "id": "item_qremote"
+      },
+      "0x8025674C": {
+        "name": "RandomWeaponLocation",
+        "super": "Item",
+        "size": 736,
+        "id": "RandomWeaponLocation"
+      },
+      "0x802569B8": {
+        "name": "Flare",
+        "super": "Projectile",
+        "size": 736,
+        "id": "flare"
+      },
+      "0x80256A50": {
+        "name": "FlareGun",
+        "super": "Weapon",
+        "size": 1232,
+        "id": "flaregun_pickup"
+      },
+      "0x80256CD0": {
+        "name": "Rocket",
+        "super": "Projectile",
+        "size": 784,
+        "id": "rocket"
+      },
+      "0x80256D44": {
+        "name": "RocketLauncher",
+        "super": "Weapon",
+        "size": 1232,
+        "id": "mrl22_pickup"
+      },
+      "0x80257048": {
+        "name": "SafeDecryptor",
+        "super": "Gadget",
+        "size": 912,
+        "id": "safedecryptor_pickup"
+      },
+      "0x802590EC": {
+        "name": "ScriptWeaponModel",
+        "super": "ScriptModel",
+        "size": 1200,
+        "id": "script_weapon_model"
+      },
+      "0x80259178": {
+        "name": "ScriptFloatingModel",
+        "super": "ScriptFloating",
+        "size": 1136,
+        "id": "script_floating_model"
+      },
+      "0x802591EC": {
+        "name": "ScriptFloating",
+        "super": "ScriptModel",
+        "size": 1136,
+        "id": "script_floating"
+      },
+      "0x80259260": {
+        "name": "ScriptToggleModel",
+        "super": "ScriptModel",
+        "size": 1136,
+        "id": "func_toggleModel"
+      },
+      "0x802592D4": {
+        "name": "ScriptVolumetric",
+        "super": "ScriptSlave",
+        "size": 1104,
+        "id": "func_volumetric"
+      },
+      "0x80259348": {
+        "name": "ScriptOrigin",
+        "super": "ScriptSlave",
+        "size": 1104,
+        "id": "script_origin"
+      },
+      "0x802593BC": {
+        "name": "ScriptModel",
+        "super": "ScriptSlave",
+        "size": 1120,
+        "id": "script_model"
+      },
+      "0x80259430": {
+        "name": "ScriptCollidingSlave",
+        "super": "ScriptSlave",
+        "size": 1120,
+        "id": "script_colliding_object"
+      },
+      "0x802594A4": {
+        "name": "ScriptSlave",
+        "super": "Mover",
+        "size": 1104,
+        "id": "script_object"
+      },
+      "0x80259E4C": {
+        "name": "Sentient",
+        "super": "Animate",
+        "size": 944
+      },
+      "0x8025A220": {
+        "name": "Sprite",
+        "super": "Animate",
+        "size": 624,
+        "id": "fx_sprite"
+      },
+      "0x8025A290": {
+        "name": "FuncBeam",
+        "super": "ScriptSlave",
+        "size": 1120,
+        "id": "func_beam"
+      },
+      "0x8025A3F8": {
+        "name": "SplinePath",
+        "super": "Entity",
+        "size": 496,
+        "id": "info_splinepath"
+      },
+      "0x8025AD48": {
+        "name": "CellPhoneStunner",
+        "super": "Weapon",
+        "size": 1280,
+        "id": "stunner_pickup"
+      },
+      "0x8025BD04": {
+        "name": "TriggerLevelExit",
+        "super": "Trigger",
+        "size": 528,
+        "id": "trigger_levelexit"
+      },
+      "0x8025BD8C": {
+        "name": "TriggerPlayerLocation",
+        "super": "Trigger",
+        "size": 528,
+        "id": "trigger_playerlocation"
+      },
+      "0x8025BDFC": {
+        "name": "TriggerObjectiveFailed",
+        "super": "Trigger",
+        "size": 528,
+        "id": "trigger_objective_failed"
+      },
+      "0x8025BE6C": {
+        "name": "TriggerObjectiveCompleted",
+        "super": "Trigger",
+        "size": 528,
+        "id": "trigger_objective_completed"
+      },
+      "0x8025BEDC": {
+        "name": "TriggerCheckpoint",
+        "super": "Trigger",
+        "size": 528,
+        "id": "trigger_checkpoint"
+      },
+      "0x8025BF4C": {
+        "name": "TriggerBySound",
+        "super": "Trigger",
+        "size": 528,
+        "id": "trigger_by_sound"
+      },
+      "0x8025BFBC": {
+        "name": "TriggerByGadget",
+        "super": "Trigger",
+        "size": 544,
+        "id": "trigger_by_gadget"
+      },
+      "0x8025C048": {
+        "name": "TriggerRepeat",
+        "super": "Trigger",
+        "size": 528,
+        "id": "trigger_repeat"
+      },
+      "0x8025C0B8": {
+        "name": "TriggerMusic",
+        "super": "Trigger",
+        "size": 528,
+        "id": "trigger_music"
+      },
+      "0x8025C128": {
+        "name": "TriggerBox",
+        "super": "Trigger",
+        "size": 512,
+        "id": "trigger_box"
+      },
+      "0x8025C198": {
+        "name": "TriggerExit",
+        "super": "Trigger",
+        "size": 512,
+        "id": "trigger_exit"
+      },
+      "0x8025C208": {
+        "name": "TriggerCameraUse",
+        "super": "TriggerUse",
+        "size": 624,
+        "id": "trigger_camerause"
+      },
+      "0x8025C278": {
+        "name": "TriggerDamageTargets",
+        "super": "Trigger",
+        "size": 528,
+        "id": "trigger_damagetargets"
+      },
+      "0x8025C2E8": {
+        "name": "TriggerDamageableBy",
+        "super": "Trigger",
+        "size": 640,
+        "id": "trigger_damageable_by"
+      },
+      "0x8025C358": {
+        "name": "TriggerHurt",
+        "super": "Trigger",
+        "size": 528,
+        "id": "trigger_hurt"
+      },
+      "0x8025C3C8": {
+        "name": "TriggerUseOnce",
+        "super": "TriggerUse",
+        "size": 624,
+        "id": "trigger_useonce"
+      },
+      "0x8025C438": {
+        "name": "TriggerUse",
+        "super": "Trigger",
+        "size": 624,
+        "id": "trigger_use"
+      },
+      "0x8025C4A8": {
+        "name": "RandomSpeaker",
+        "super": "TriggerSpeaker",
+        "size": 560,
+        "id": "sound_randomspeaker"
+      },
+      "0x8025C518": {
+        "name": "TriggerSpeaker",
+        "super": "TriggerPlaySound",
+        "size": 544,
+        "id": "sound_speaker"
+      },
+      "0x8025C588": {
+        "name": "TriggerPlaySound",
+        "super": "Trigger",
+        "size": 544,
+        "id": "play_sound_triggered"
+      },
+      "0x8025C5F8": {
+        "name": "TriggerSlide",
+        "super": "Trigger",
+        "size": 544,
+        "id": "trigger_slide"
+      },
+      "0x8025C668": {
+        "name": "TriggerPushAny",
+        "super": "Trigger",
+        "size": 528,
+        "id": "trigger_pushany"
+      },
+      "0x8025C6D8": {
+        "name": "TriggerPush",
+        "super": "Trigger",
+        "size": 528,
+        "id": "trigger_push"
+      },
+      "0x8025C748": {
+        "name": "TriggerSetVariable",
+        "super": "Trigger",
+        "size": 528,
+        "id": "trigger_setvariable"
+      },
+      "0x8025C7B8": {
+        "name": "TriggerSecret",
+        "super": "TriggerOnce",
+        "size": 512,
+        "id": "trigger_secret"
+      },
+      "0x8025C828": {
+        "name": "TriggerRelay",
+        "super": "Trigger",
+        "size": 512,
+        "id": "trigger_relay"
+      },
+      "0x8025C898": {
+        "name": "TriggerOnce",
+        "super": "Trigger",
+        "size": 512,
+        "id": "trigger_once"
+      },
+      "0x8025C908": {
+        "name": "TouchField",
+        "super": "Trigger",
+        "size": 576
+      },
+      "0x8025C97C": {
+        "name": "Trigger",
+        "super": "Entity",
+        "size": 512,
+        "id": "trigger_multiple"
+      },
+      "0x8025CEAC": {
+        "name": "DrivableVehicle",
+        "super": "Vehicle",
+        "size": 1584,
+        "id": "script_drivablevehicle"
+      },
+      "0x8025CFF8": {
+        "name": "Vehicle",
+        "super": "VehicleBase",
+        "size": 1584,
+        "id": "script_vehicle"
+      },
+      "0x8025D128": {
+        "name": "FrontWheels",
+        "super": "VehicleBase",
+        "size": 1136,
+        "id": "script_wheelsfront"
+      },
+      "0x8025D19C": {
+        "name": "BackWheels",
+        "super": "VehicleBase",
+        "size": 1136,
+        "id": "script_wheelsback"
+      },
+      "0x8025D210": {
+        "name": "VehicleBase",
+        "super": "ScriptModel",
+        "size": 1136
+      },
+      "0x8025DD20": {
+        "name": "VehicleTwinWeapon",
+        "super": "VehicleWeapon",
+        "size": 1248,
+        "id": "VehicleTwinWeapon"
+      },
+      "0x8025DFAC": {
+        "name": "VehicleWeapon",
+        "super": "Weapon",
+        "size": 1232,
+        "id": "VehicleWeapon"
+      },
+      "0x8025E230": {
+        "name": "RPG",
+        "super": "Weapon",
+        "size": 1232,
+        "id": "rpg_pickup"
+      },
+      "0x8025E4B0": {
+        "name": "Frinesi",
+        "super": "Weapon",
+        "size": 1232,
+        "id": "frinesi_pickup"
+      },
+      "0x8025E730": {
+        "name": "SSR4000",
+        "super": "Weapon",
+        "size": 1344,
+        "id": "ssr4000_pickup"
+      },
+      "0x8025E9B0": {
+        "name": "DARTGUN",
+        "super": "Weapon",
+        "size": 1232,
+        "id": "dartgun_pickup"
+      },
+      "0x8025EC30": {
+        "name": "DEFENDER",
+        "super": "Weapon",
+        "size": 1232,
+        "id": "defender_pickup"
+      },
+      "0x8025EEB0": {
+        "name": "VIPER",
+        "super": "Weapon",
+        "size": 1232,
+        "id": "viper_pickup"
+      },
+      "0x8025F130": {
+        "name": "SPGoldenGun",
+        "super": "Weapon",
+        "size": 1232,
+        "id": "goldengun_pickup"
+      },
+      "0x8025F3B0": {
+        "name": "P2KNS",
+        "super": "Weapon",
+        "size": 1232,
+        "id": "p2kns_pickup"
+      },
+      "0x8025F630": {
+        "name": "P2K",
+        "super": "Weapon",
+        "size": 1232,
+        "id": "p2k_pickup"
+      },
+      "0x8025F8B0": {
+        "name": "Weapon",
+        "super": "Gadget",
+        "size": 1232
+      },
+      "0x8025FED4": {
+        "name": "Explosion",
+        "super": "Projectile",
+        "size": 736
+      },
+      "0x8025FF48": {
+        "name": "Projectile",
+        "super": "Animate",
+        "size": 736
+      },
+      "0x80260354": {
+        "name": "World",
+        "super": "Entity",
+        "size": 496,
+        "id": "worldspawn"
+      },
+      "0x802612C0": {
+        "name": "Actor",
+        "super": "Sentient",
+        "size": 2592,
+        "id": "monster_generic"
+      },
+      "0x802629B0": {
+        "name": "TripMine",
+        "super": "Mine",
+        "size": 1248,
+        "id": "mp_tripmine_pickup"
+      },
+      "0x80262C74": {
+        "name": "TripMineDevice",
+        "super": "MineDevice",
+        "size": 816,
+        "id": "tripminedevice"
+      },
+      "0x80262EA4": {
+        "name": "FlagSpawnLocation",
+        "super": "Entity",
+        "size": 448,
+        "id": "info_multiplayer_flaglocation"
+      },
+      "0x80262F10": {
+        "name": "BombSpawnLocation",
+        "super": "Entity",
+        "size": 448,
+        "id": "info_multiplayer_bomblocation"
+      },
+      "0x80262F7C": {
+        "name": "PowerupSetLocation",
+        "super": "Entity",
+        "size": 464,
+        "id": "info_multiplayer_poweruplocation"
+      },
+      "0x80262FF8": {
+        "name": "AmmoLocation",
+        "super": "Entity",
+        "size": 464,
+        "id": "info_multiplayer_ammolocation"
+      },
+      "0x80263064": {
+        "name": "WeaponSetLocation",
+        "super": "Entity",
+        "size": 464,
+        "id": "info_multiplayer_weaponlocation"
+      },
+      "0x80265124": {
+        "name": "QDetonator",
+        "super": "Gadget",
+        "size": 896,
+        "id": "mp_qdetonator"
+      },
+      "0x80265280": {
+        "name": "DetonatorMine",
+        "super": "Mine",
+        "size": 1264,
+        "id": "mp_detonatormine_pickup"
+      },
+      "0x80265518": {
+        "name": "DetonatorMineDevice",
+        "super": "MineDevice",
+        "size": 720,
+        "id": "detonatorminedevice"
+      },
+      "0x80265604": {
+        "name": "ProximityMine",
+        "super": "Mine",
+        "size": 1248,
+        "id": "mp_proximitymine_pickup"
+      },
+      "0x802658BC": {
+        "name": "ProximityMineDevice",
+        "super": "MineDevice",
+        "size": 752,
+        "id": "proximityminedevice"
+      },
+      "0x80265DE8": {
+        "name": "QDecryptor",
+        "super": "TriggerGadget",
+        "size": 896,
+        "id": "item_qdecryptor"
+      },
+      "0x80287BB4": {
+        "name": "Bot",
+        "super": "DeathmatchPlayer",
+        "size": 3216,
+        "id": "bot"
+      }
+    }
+  },
+  "globals": {
+    "num_entities": [
+      "u32",
+      "0x803F0210"
+    ],
+    "num_game_entities": [
+      "u32",
+      "0x804E3528"
+    ],
+    "num_clients": [
+      "u32",
+      "0x804E3068"
+    ],
+    "current_player": [
+      "u32",
+      "0x804E34CC"
+    ],
+    "num_bots": [
+      "u32",
+      "0x804E3538"
+    ]
+  },
+  "camera": {
+    "layout": "pos_angles_fov",
+    "clients_pointer": "0x804E3530",
+    "client_stride": "0x804E3534",
+    "client_stride_expected": "0x860",
+    "client_index": "0x804E34CC",
+    "client_count": "0x804E3068",
+    "eye": [
+      "f32x3",
+      "0x74"
+    ],
+    "angles": [
+      "f32x3",
+      "0x68"
+    ],
+    "fov": [
+      "f32",
+      "0x2D0"
+    ],
+    "magnification": [
+      "f32",
+      "0x2D4"
+    ],
+    "override": {
+      "flags": [
+        "u32",
+        "0xC"
+      ],
+      "mask": "0x100",
+      "eye": [
+        "f32x3",
+        "0x2DC"
+      ],
+      "angles": [
+        "f32x3",
+        "0x2E8"
+      ],
+      "fov": [
+        "f32",
+        "0x2F4"
+      ],
+      "active": [
+        "u32",
+        "0x2D8"
+      ],
+      "duration": [
+        "f32",
+        "0x2F8"
+      ],
+      "remaining": [
+        "f32",
+        "0x2FC"
+      ]
+    },
+    "angles_convention": "quake",
+    "fov_axis": "vertical",
+    "aspect": "4:3",
+    "near": 1.0,
+    "render_state": {
+      "re": "0x803CA2C0",
+      "fov_radians": "+0x2BC",
+      "far": "+0x2B8",
+      "near": "+0xB58",
+      "viewport_xywh": "+0xB6C",
+      "player": "+0x2B6 (u16)"
+    },
+    "why": "R_BuildCameraMatrix (0x800138A0) reads gclient_t[player] (gClientArr + player * gClientSize): +0x74 position and +0x68 angles for the player view, or +0x2DC/+0x2E8/+0x2F4 while pm_flags (+0xC) has 0x100 (scripted camera); fov = +0x2D0 degrees (R_fGetFovFromPlayerNumber multiplies by pi/180); veMatPerspective builds m00 = cot(fov/2)/aspect, m11 = cot(fov/2), so fov spans the vertical axis (static reading; the axis and the pitch sign are the first things the live check confirms)"
+  },
+  "evidence": {
+    "entities.base_pointer": "g_entities (0x804E38B0, .sbss, r13-0x7790): G_NextEntity (0x800990D0) walks g_entities[0 .. globals.num_entities) in 0x2B0 steps; gGameEntities (0x804E3520) is the renderer's copy of the same pointer (SIM_SetGameData)",
+    "entities.count": "globals+0x80 = 0x803F0210: G_Spawn (0x80092CD0) increments it and passes it to gi.LocateGameData(g_entities, num_entities, 0x2B0, game.clients, 0x860)",
+    "entities.stride": "0x2B0 = sizeof(gentity_t): the mulli in G_NextEntity/Entity::Entity and the LocateGameData call; active_edicts/free_edicts list heads are 688 bytes",
+    "entities.inuse": "G_InitEdict (0x80098D10) stores 1 at edict+0x1E4; G_NextEntity and R_MarkVisibleEntities skip slots where it is 0",
+    "entities.object": "Entity::Entity (0x80076D88) stores `this` at edict+0x24C; G_NextEntity returns it",
+    "fields.number": "G_InitEdict computes (edict - g_entities) / 0x2B0 and stores it at edict+0; Entity::Entity copies it to Entity+0x10 (entnum)",
+    "fields.class": "Entity::Entity stores __vt__6Entity at this+4 (Class puts the vtable pointer at +4, +0 is Class's own first word); every virtual call is lwz r12,4(r3); lwz r12,slot(r12)",
+    "fields.classname": "Entity::Entity: vtable slot +8 (classinfo()) -> ClassDef, whose first word is the classname C string; stored at Entity+0x1C",
+    "fields.client": "Entity::Entity copies edict+0x1E0 (gclient_t*) to Entity+0x18",
+    "fields.model": "Entity::setModel (0x80075D00) stores the str at Entity+0x28; str = {strdata*}, strdata = {char *data, int refcount, int alloced, int len} (str::EnsureAlloced 0x8012B8F0)",
+    "fields.position": "Entity::setOrigin (0x80074C64) writes Entity+0x8C..0x94 and copies it to edict+0x10, edict+0x1C and edict+0x22C (currentOrigin)",
+    "fields.angles": "Entity::setAngles (0x800743F8) writes Entity+0x98..0xA0, then edict+0x34/+0x40/+0x238",
+    "fields.mins/maxs/absmin/absmax": "setModel writes mins +0x2C / maxs +0x38 from the model bounds; Entity::link (0x80074FB8) copies edict+0x214/+0x220 (absmin/absmax after gi.linkentity) to Entity+0x44/+0x50 and the centroid to +0x68/edict+0x268",
+    "fields.modelindex": "setModel: gi.setmodel(edict, name) then lwz r29,0x5C(edict); R_MarkVisibleEntities skips edicts with s.modelindex < 0",
+    "fields.svflags": "R_MarkVisibleEntities (0x80015EBC): edict+0x124 & 0x80 -> not drawn; it ORs 0x40000000 into entities it marks visible this frame; G_InitEdict sets 0x20",
+    "fields.parent": "edict+0x54 = s.parent, ENTITYNUM_NONE (0x804E38D0) when unbound (setOrigin)",
+    "fields.model_handle": "setModel: result of gi+0xF0(edict) stored at Entity+0x144 (model/tiki handle)",
+    "classes": "246 ClassDef registrations recovered from the __sinit_* static initialisers (ClassDef::ClassDef(this, classname, classID, superclass, responses, newInstance, size)); vtable addresses from the __vt__ symbols; 205 are Entity-derived",
+    "camera": "see camera.why; gClientArr 0x804E3530, gClientSize 0x804E3534, gNumClients 0x804E3068, currentPlayer 0x804E34CC (all .sbss, reached through r13 = _SDA_BASE_ 0x804EB040)",
+    "camera.eye": "PLAYER_ClientAdjustView (0x8000D7E4) adds PLAYER_GetViewposAdjustment to +0x74..0x7C and shake/roll to +0x68..0x70 before the renderer reads them: +0x74 is the final eye position",
+    "camera.fov": "Player::SetFov (0x800DB038) keeps Player+0x424 between 90 and 160 (constants at 0x804E57B4/0x804E57B8); the renderer reads the client copy at gclient+0x2D0",
+    "match.memory": "GameCube disc header is mirrored at 0x80000000; disc ID GW7E69 (header read from the GCZ)"
+  },
+  "provenance": {
+    "method": "pyelftools + capstone over Bond.elf (ET_EXEC with .symtab 17636 symbols and .rela.* kept); no Ghidra run was needed; scripts in the scratchpad (xref.py, classtree.py)",
+    "executable": {
+      "path": "/base.elf/Bond.elf",
+      "sha256": "1a9c0d19fb7bab09c2fd6ef56bd8158e88e507f72ba982d0ca292bc8145e716f",
+      "size": 4729888,
+      "entry": "0x80007140",
+      "text": "0x800094A0..0x80228CF0",
+      "sda_base_r13": "0x804EB040",
+      "sda2_base_r2": "0x804EC2A0"
+    },
+    "boot_elf": {
+      "path": "/base.elf/boot.elf",
+      "sha256": "29b2a3b48badbfef7b62542d14a0ca41f4bfc72a728bb4644c012bc69061446d",
+      "size": 252080
+    },
+    "disc": {
+      "path": "collections/Nintendo GameCube/roms/007 - Agent Under Fire (USA).gcz",
+      "sha256": "00a0ebbd99cf3934b626dbc0d5bfa0de53e91a1f717fbb1814cb6c93d393faac",
+      "game_code": "GW7E69"
+    },
+    "engine": "Quake III Arena / Ritual UberTools lineage (Entity > Listener > Class, gentity_t, gclient_t, str, tiki): FAKK2's public source names most structures; offsets here are from this executable",
+    "confidence": {
+      "entities.base_pointer/count/stride/inuse/object": "high (three independent functions agree)",
+      "fields.class/classname/position/angles/model": "high (constructor and setters)",
+      "fields.mins/maxs/absmin/absmax/box": "medium (link() copies; absmin/absmax are only valid after linking)",
+      "fields.svflags flags": "medium (bit meaning read from R_MarkVisibleEntities only)",
+      "camera.eye/angles/fov/override": "high for the offsets, medium for the angle convention",
+      "camera.fov_axis": "medium (veMatPerspective reading; confirm live)",
+      "kind_roots": "medium (class names; Actor is the single-player NPC class, Bot the multiplayer AI)"
+    },
+    "unverified": [
+      "every address against a running Dolphin session (nothing has been read live yet)",
+      "fov axis (vertical assumed) and the pitch sign / yaw origin of the Quake angle convention",
+      "whether absmin/absmax (edict+0x214/+0x220) are kept for bots and NPCs at all times",
+      "the 0x80 'hidden' and 0x40000000 'rendered' svflags bits in play",
+      "split-screen: currentPlayer as the viewed client index"
+    ]
+  }
+}

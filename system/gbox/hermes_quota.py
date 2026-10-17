@@ -28,14 +28,29 @@ def route(item):
     return dict(zip(('provider', 'model'), (v.strip() for v in values)))
 
 
+# Providers Hermes must never run cron work on. The CPU-only llama.cpp model pins the Spark (load ~40) and slows every
+# build; EhmBird answered every call with HTTP 500. Routes are a union of the Hermes config and the saved list, so
+# removing one from the config alone never sticks: it has to be filtered here. GBOX_HERMES_EXCLUDED_PROVIDERS
+# (comma list, "" for none) overrides the default.
+EXCLUDED_PROVIDERS = ('llamacpp', 'EhmBird')
+
+
+def excluded_providers():
+    import os
+    raw = os.environ.get('GBOX_HERMES_EXCLUDED_PROVIDERS')
+    names = EXCLUDED_PROVIDERS if raw is None else [x for x in raw.split(',')]
+    return {n.strip().casefold() for n in names if n.strip()}
+
+
 def routes(config, saved=()):
     cron = config.get('cron') or {}
     candidates = [{'provider': cron.get('model_provider'), 'model': cron.get('model')},
                   *(config.get('fallback_providers') or []), *saved]
+    skip = excluded_providers()
     result = []
     for item in candidates:
         clean = route(item)
-        if clean and clean not in result:
+        if clean and clean not in result and clean['provider'].casefold() not in skip:
             result.append(clean)
     return result
 
@@ -105,9 +120,37 @@ def provider_failure(error):
     text = str(error or '').lower()
     if any(word in text for word in ('insufficient_quota', 'usage limit', 'usage_limit',
                                     'quota exceeded', 'quota exhausted', 'quota limit',
-                                    'insufficient credits', 'credit balance')) or re.search(
+                                    'insufficient credits', 'insufficient available credits', 'credit balance',
+                                    'add credits', 'limit_remaining', 'payment required',
+                                    # Nous answers an empty account with HTTP 404, not 402.
+                                    'requires available credits', 'balance is too low', 'insufficient balance',
+                                    'exceeds your available credits')) or re.search(
+            '(^|[^0-9a-z])402([^0-9]|$)', text) or re.search(
             r'["\'](?:error_code|code)["\']\s*:\s*["\']?(?:1113|1308|1310|131[6-9]|132[01])\b', text):
         return 'quota'
     if re.search(r'\b429\b', text) or any(word in text for word in ('rate limit', 'rate_limit', 'too many requests')):
         return 'rate_limit'
     return None
+
+
+# An exhausted account (no credit, or a plan's usage cap) does not come back in minutes the way a throttle does, so a
+# route seen exhausted waits hours, doubling while it stays exhausted. The first call after the wait is the probe: if
+# it fails the same way the wait doubles, if it works the route is back. OpenRouter's balance endpoint ends an
+# out-of-credit wait early (hermes_local.credit_recovered).
+EXHAUSTED_KINDS = ('out_of_credit', 'usage_limit')
+EXHAUSTED_SOURCE = 'provider_exhausted_backoff'
+
+
+def exhaustion_wait(kind, text, error_at, *, failures=1):
+    """{'until', 'source', 'quota_balance_known'} for a route whose latest call failed out of credit or at its usage
+    limit. Out of credit: 3 h, then 6 h, then every 12 h. A monthly or weekly usage limit: 6 h, 12 h, then every 24 h.
+    Another usage limit (hourly or daily windows): 1 h doubling to 6 h."""
+    t = str(text or '').lower()
+    if kind == 'out_of_credit':
+        base, cap = 3 * 3600, 12 * 3600
+    elif 'month' in t or 'week' in t:
+        base, cap = 6 * 3600, 24 * 3600
+    else:
+        base, cap = 3600, 6 * 3600
+    delay = min(base * 2 ** min(max(int(failures) - 1, 0), 6), cap)
+    return {'until': error_at + delay, 'source': EXHAUSTED_SOURCE, 'quota_balance_known': False}

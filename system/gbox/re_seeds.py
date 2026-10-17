@@ -12,13 +12,16 @@ merged into a title's dossier the first time it is studied. They are not LLM cla
 
 PLAYBOOKS = [
     {
-        "id": "study-title", "seed_version": 1, "title": "Start reverse-engineering a title (dossier + Ghidra study)",
+        "id": "study-title", "seed_version": 3, "title": "Start reverse-engineering a title (dossier + Ghidra study)",
         "goal": "Have the title's executable in Ghidra with the right processor and registers, and know what gBox "
                 "already found, before working on any task in that game.",
         "when": ["ghidra", "reverse engineer", "analyze the executable", "decompile", "disassemble", "study this game",
                  "find the code", "how does the game"],
         "platforms": ["any"], "tags": ["setup", "ghidra", "executable", "dossier"],
         "steps": [
+            {"do": "Step one: fingerprint the title (formats, engine/middleware, nearest assimilated titles, the reader to "
+                   "start from). It lands in the dossier as a hypothesis.", "tool": "assimilate",
+             "args": {"op": "fingerprint"}, "expect": "engines, containers/codecs/models, nearest_titles, proposal"},
             {"do": "Read what gBox already knows about the title: executable, key addresses with evidence, formats, "
                    "mods, open questions.", "tool": "re_dossier", "args": {"op": "read"},
              "expect": "the dossier text; 'no executable yet' means continue with re_study"},
@@ -30,11 +33,19 @@ PLAYBOOKS = [
                    "time), snapshot the live game's RAM instead: get the game to gameplay first.", "tool": "re_study",
              "args": {"source": "ram", "session_id": "<session_id>", "analyze": True},
              "expect": "a RAM-image ELF at the platform's RAM base"},
+            {"do": "Name what other titles already named: functions whose masked bodies (call targets and relocated "
+                   "addresses ignored, everything else identical) match the cross-title library land in the dossier "
+                   "as hypotheses citing their source title. SDK/middleware code (Katana, Dolphin SDK, PsyQ, libultra) "
+                   "is named in seconds this way.", "tool": "re_dossier", "args": {"op": "transfer"},
+             "expect": "named / recorded counts and a sample; 0 on the first title of a new SDK is normal"},
             {"do": "Pick the playbook for the actual task and follow it.", "tool": "re_playbook",
              "args": {"op": "list", "query": "<task words>"}},
             {"do": "Record each address you confirm (with how), each dead end and each open question.",
              "tool": "re_dossier", "args": {"op": "record", "kind": "function", "address": "0x...", "name": "...",
                                             "role": "...", "status": "hypothesis"}},
+            {"do": "When the title is done (or its executable has debug symbols), teach the library its named "
+                   "functions so the next title on the same SDK/engine starts with them.", "tool": "re_dossier",
+             "args": {"op": "teach"}, "expect": "added / ambiguous counts and the library size"},
         ],
         "pitfalls": [
             "GameCube/Wii: processor PowerPC:BE:32:default. 'PowerPC:BE:32:Gekko_Broadway' does NOT exist in gBox's "
@@ -170,7 +181,7 @@ PLAYBOOKS = [
         ],
     },
     {
-        "id": "asset-loader-format", "seed_version": 1,
+        "id": "asset-loader-format", "seed_version": 2,
         "title": "Find the model/asset loader and reverse the file format",
         "goal": "Know where the game loads a model/texture/archive and the exact layout, so gBox can read (and later "
                 "write) the files.",
@@ -178,6 +189,10 @@ PLAYBOOKS = [
                  "extract the model", "no reader", "unknown format", "loader"],
         "platforms": ["any"], "tags": ["format", "loader", "models", "textures", "strings"],
         "steps": [
+            {"do": "Fingerprint first: magic bytes inside the archives, extensions, executable strings and symbols name "
+                   "the likely container/codec/model formats and the closest assimilated title; its reader and "
+                   "gbox.formats (codecs, ISO9660/FST, TIM/PVR/TPL, Ninja chunks) are where the new reader starts.",
+             "tool": "assimilate", "args": {"op": "fingerprint"}},
             {"do": "Make sure the executable is analysed (strings + functions).", "tool": "re_study",
              "args": {"analyze": True}},
             {"do": "Find the file extensions / resource type tags the loader uses.", "tool": "ghidra_run",
@@ -366,7 +381,324 @@ PLAYBOOKS = [
                       "ResolvePrecisionAim + StrangleholdPawn.ServerResolveDamage (@01e1 branch, @02a6 DamageScale=1000)",
                       "ref": "profiles/stranglehold-ps3-us.json"}],
     },
+    {
+        # ReAgent (Dryxio/reagent, MIT) ported onto gBox's Ghidra Bridge: docs/re_tool_integrations.md
+        "id": "reconstruct-function", "seed_version": 1,
+        "title": "Reconstruct a game function as C/C++ (ReAgent loop on the Ghidra Bridge)",
+        "goal": "Turn one decompiled function into reviewed C/C++ that matches the binary, as a hypothesis with evidence: "
+                "to understand a mechanic, document a struct or prepare a patch.",
+        "when": ["reconstruct", "rewrite in c", "c++", "source code", "what does this function do", "decompile",
+                 "reverse this function", "reagent", "clean up the decompilation", "port the function"],
+        "platforms": ["any"], "tags": ["ghidra", "decompile", "reconstruction", "llm", "reagent"],
+        "steps": [
+            {"do": "Know the title first (executable, processor, known addresses).", "tool": "re_dossier", "args": {"op": "read"}},
+            {"do": "Open the executable in the operator's Ghidra once; later calls stay on the same worker.",
+             "tool": "ghidra_bridge", "args": {"op": "open", "binary_path": "<ELF from re_study>", "processor": "<if needed>"},
+             "expect": "program info (language, image base, function count) and a worker_id"},
+            {"do": "Choose what to reconstruct. high-impact = most callers first (shared helpers), easiest-first = "
+                   "fewest callers (leaf functions, quick wins), dependency-order = callees before callers (each "
+                   "function's helpers are done before it).", "tool": "re_agent",
+             "args": {"op": "pick", "query": "<class or name filter>", "strategy": "dependency-order"}},
+            {"do": "Gather evidence the decompilation alone lacks: callers, callees, referenced strings.",
+             "tool": "ghidra_bridge", "args": {"op": "xrefs_to", "target": "<0x address>"}},
+            {"do": "Run the loop: reverser (may request decompile/xrefs/strings itself) -> independent checker -> "
+                   "structural verifier -> fix rounds, stopping on PASS, the call budget or a repeated failure.",
+             "tool": "re_agent", "args": {"op": "reverse", "target": "<0x address>", "max_rounds": 4},
+             "expect": "code + checker verdict + objective verdict per round"},
+            {"do": "Or write the candidate yourself from ghidra_bridge op=decompile and have it judged.",
+             "tool": "re_agent", "args": {"op": "check", "target": "<0x address>", "code": "<your C/C++>"}},
+            {"do": "Record the function (name, role) as a hypothesis; promote it only with runtime evidence "
+                   "(debugger breakpoint hit, value change).", "tool": "re_dossier",
+             "args": {"op": "record", "kind": "function", "address": "<0x address>", "name": "<Class::Name>",
+                      "role": "<what it does>", "status": "hypothesis"}},
+        ],
+        "pitfalls": [
+            "A PASS means the checker and the structural verifier found no mismatch, not that the code is equivalent.",
+            "Use an independent checker model when you can (checker_endpoint): one model grading itself is weak.",
+            "The structural verifier only fails on strong mismatches (missing calls/branches, wrong constant return).",
+            "Ghidra Bridge keeps the program open on ONE worker: pass the returned worker_id to later calls.",
+            "Floating-point expression order and integer widths matter; keep Ghidra's order unless evidence says otherwise.",
+        ],
+        "verify": ["re_agent result success=true with checker PASS and objective not FAIL",
+                   "for gameplay code: a debugger exec breakpoint at the address fires on the in-game event"],
+        "record": ["re_dossier op=record kind=function status=hypothesis", "re_playbook op=learn with what helped"],
+        "examples": [],
+    },
+    {
+        "id": "hashed-archive-names", "seed_version": 1,
+        "title": "Open a hashed archive (no file names stored): recover the name hash and the data base",
+        "goal": "Read and patch files of a big game archive whose table holds only name hashes, by recovering the "
+                "game's own hash function and offset rules from the lookup code.",
+        "when": ["archive", "hash", "no file names", "wad", "dfu", "pak", "packfile", "big file", "lookup table",
+                 "file table"],
+        "platforms": ["any"], "tags": ["archive", "hash", "format", "loader"],
+        "steps": [
+            {"do": "Dump the archive header and the first table rows; look for a count, a sorted u32 column (the hash) "
+                   "and offset / size columns (packed vs unpacked size = compressed entries).", "tool": "read_file",
+             "args": {"path": "<archive>", "length": 512}},
+            {"do": "Find the lookup: the code that binary-searches the sorted column (slt/sltu on [table + 16*i], a "
+                   "halving loop). The few instructions before it are the name hash; note every header field it reads "
+                   "(seeds) and every prefix it prepends to the name.", "tool": "ghidra_run",
+             "args": {"op": "refs", "addresses": ["<archive name string>", "<header global>"]}},
+            {"do": "Re-implement the hash and test it on names the executable spells out (debug lists, headers, "
+                   "sprintf formats with their real arguments): one hit proves it.", "tool": "re_dossier",
+             "args": {"op": "record", "kind": "function", "name": "<archive> name hash", "role": "<formula>",
+                      "status": "hypothesis"}},
+            {"do": "Find where the data starts: the read path adds an aligned table size (or a base field) to each "
+                   "offset; check it by reading a known text file (a list file) and inflating packed entries with the "
+                   "decompressor the loader calls (search its version string: 'inflate 1.1.4').", "tool": "ghidra_run",
+             "args": {"op": "explain", "addresses": ["<read / inflate path>"]}},
+            {"do": "Name what you can (every model / level / list file the loaded tables name), record the format.",
+             "tool": "re_dossier", "args": {"op": "record", "kind": "format", "name": "<archive>",
+                                            "role": "<header, row, hash, base, compression>", "status": "documented"}},
+        ],
+        "pitfalls": [
+            "PS2 R5900 code: capstone (and Ghidra's stock MIPS) mis-decode lq/sq (opcodes 0x1e/0x1f), MMI (0x1c: madd, "
+            "3-operand mult) as MSA or junk. Decode those opcodes yourself, use MIPS64 mode for the rest; the 3-operand "
+            "mult (rd = rs * rt) is what hash loops use.",
+            "Sequels change the hash: Path of Neo added a per-position term (c << 8 * (i & 3)) and a 'ps2\\' prefix for "
+            "every name without 'common', and versioned names (levels\\%s.3d2_63, hdr_5): read the sprintf arguments.",
+            "An archive split over several files (WAD1.DFU + WAD1_B.DFU) is usually one address space: the max "
+            "offset + size equals the sum of the parts.",
+            "Offsets often count from the end of the table rounded to the sector size, not from 0.",
+        ],
+        "verify": ["the hash finds names the executable lists", "every packed entry inflates to its table size",
+                   "a parsed list file (AnimList.txt, LevelList.txt) reads as text"],
+        "record": ["re_dossier op=record kind=format", "re_playbook op=lesson"],
+        "examples": [
+            {"game": "Enter the Matrix (PS2 SLUS-20454)", "note": "WAD1.DFU lookup 0x1d8390, inflate 0x241be0 (zlib "
+             "1.1.4); h += a*c; a += b + ((c & 0x30) >> 4); b += 674 + (c & 15); a, b = 22313, 2067 (header fields)",
+             "ref": "gbox/shiny_dfu.py, docs/matrix_pipeline.md"},
+            {"game": "The Matrix: Path of Neo (PS2 SLUS-21273)", "note": "lookup 0x1f5860: same seeds plus c << 8*(i&3) "
+             "and the 'ps2\\' prefix", "ref": "gbox/shiny_dfu.py"},
+        ],
+    },
+    {
+        "id": "bezier-patch-models", "seed_version": 1,
+        "title": "Decode a patch (Bezier surface) character model and write it back as triangles",
+        "goal": "Turn a model made of curved patches (16 / 10 control points per packet) into a rigged triangle mesh, "
+                "and write a donor into the same file format.",
+        "when": ["patch model", "bezier", "control points", "tessellation", "curved surfaces", "dcn", "subdivision"],
+        "platforms": ["ps2", "any"], "tags": ["models", "format", "tessellation"],
+        "steps": [
+            {"do": "Walk the mesh blocks: a packet header that carries 4 (or 3) UV pairs and a size, then 16 (or 10) "
+                   "vertices, is a quad (or triangle) patch; plain triangles carry a UV per vertex.", "tool": "re_dossier",
+             "args": {"op": "record", "kind": "format", "name": "<model ext>", "role": "<packet layout>",
+                      "status": "hypothesis"}},
+            {"do": "Find the control point order by counting, per index, how often its position is shared with other "
+                   "packets: boundary points are shared, interior ones are not (4 x 4 row-major: 5, 6, 9, 10 inner; "
+                   "cubic triangle: centre only). Corner UVs: the assignment with the fewest conflicts at shared corners."},
+            {"do": "Tessellate with the Bernstein basis (UVs bilinear / barycentric from the corners, weights = the "
+                   "basis applied to the control points' weights), render a preview and compare with the game."},
+            {"do": "Write donors as the format's plain-triangle packets (no tessellation needed), keep the skeleton "
+                   "block and checksums, and read the file back with the reader before patching the disc."},
+        ],
+        "pitfalls": [
+            "Plain triangles may be stored with the opposite winding to the patches (ETM: ~99% of its tri3 packets "
+            "face the other way once mirrored): orient by the stored normals, and write new triangles the same way.",
+            "Left-handed model space (facing -Z): mirror one axis for glTF and reverse the winding.",
+            "Keep the written file no larger than the original and the packed size within the slot when patching "
+            "in place.",
+        ],
+        "verify": ["every model file parses to its last byte", "the preview looks like the character",
+                   "a written donor reads back with the same triangle count"],
+        "record": ["re_dossier op=record kind=format", "re_playbook op=lesson"],
+        "examples": [
+            {"game": "Enter the Matrix (PS2)", "note": "actors\\*.dcn: loader 0x167da0 (DCPatchModel); blocks A quad "
+             "patches, B triangle patches, C triangles; 275 files parse", "ref": "gbox/etm_models.py"},
+        ],
+    },
+    {
+        "id": "gta-live-state", "seed_version": 1,
+        "title": "GTA live state: player, pools, vehicles, weather, time, wanted level, teleport, spawn",
+        "goal": "Read or change a running PS2 GTA's world state (the in-game controls of the Ariane map editor).",
+        "when": ["gta", "grand theft auto", "weather", "time of day", "wanted level", "stars", "teleport", "spawn a car",
+                 "vehicle pool", "ped pool", "liberty city", "vice city"],
+        "platforms": ["ps2"], "tags": ["gta", "memory", "ariane"],
+        "steps": [
+            {"do": "See what is mapped for this game and where each address comes from.", "tool": "gta_live",
+             "args": {"session_id": "<session_id>", "op": "games"}},
+            {"do": "If clock/weather/wanted are not mapped, resolve them from the game's own ELF symbol table.",
+             "tool": "gta_live", "args": {"session_id": "<session_id>", "op": "resolve", "elf_path": "<ELF from re_study>"}},
+            {"do": "Read the state first.", "tool": "gta_live", "args": {"session_id": "<session_id>", "op": "player"}},
+            {"do": "Change it (each write is read back; the previous bytes are returned for undo).", "tool": "gta_live",
+             "args": {"session_id": "<session_id>", "op": "weather", "value": "rainy"}},
+            {"do": "Verify on screen once.", "tool": "look_at_screen", "args": {"session_id": "<session_id>"}},
+        ],
+        "pitfalls": [
+            "Every gta_live address is live_checked=false until someone confirms it; say 'written, read back' not 'verified'.",
+            "Vice City windows_native 1fd42f50b10252e6 is the Definitive Edition (UE4): no RenderWare addresses apply.",
+            "Liberty City Stories and Vice City Stories have no symbol table: unmapped fields need memory_search.",
+            "Wanted level follows the chaos value every frame: freeze_memory the chaos word to hold it.",
+        ],
+        "verify": ["the op's read-back value equals the request", "look_at_screen shows the weather/time/stars"],
+        "record": ["re_dossier op=record kind=global with the address once confirmed live"],
+        "examples": [],
+    },
 ]
+
+
+# ------------------------------------------------------------------ assimilation techniques (docs/assimilation.md)
+# One playbook per technique that cracked a title. Examples come from gbox.assimilate_kb, so every title added there
+# shows up as a worked example of the techniques that cracked it.
+
+def _kb_examples(tech: str, limit: int = 6) -> list[dict]:
+    from .assimilate_kb import KNOWN_TITLES
+    return [{"game": t["title"], "note": f"reader {t['reader']}; " + "; ".join(
+        f"{k} {v}" for k, v in (t.get("formats") or {}).items() if k in ("container", "model", "codec"))[:260],
+        "ref": f"docs/assimilation.md ({t['effort']})"} for t in KNOWN_TITLES if tech in t.get("techniques", [])][:limit]
+
+
+_TECHNIQUES = [
+    {"id": "assimilate-title", "title": "Assimilate a new title: fingerprint -> nearest reader -> inventory -> round trip",
+     "goal": "Go from an unknown game to a tested native reader by reusing what gBox already learned from other titles.",
+     "when": ["assimilate", "new game", "fingerprint", "what engine", "which format", "readiness", "start a reader",
+              "no reader yet"],
+     "tags": ["assimilate", "fingerprint", "reader", "inventory"],
+     "steps": [
+         {"do": "Fingerprint the owned files and executable.", "tool": "assimilate", "args": {"op": "fingerprint"},
+          "expect": "engines, containers/codecs/models/textures/animations, nearest_titles, proposal.skeleton"},
+         {"do": "Read the nearest assimilated title's reader and its docs/assimilation.md section: which technique "
+                "cracked it, what was reusable.", "tool": "re_playbook", "args": {"op": "list", "query": "<technique>"}},
+         {"do": "Inventory with the shared pieces (gbox.formats.disc listing, iso9660/gcfst, lz codecs) and prove the "
+                "container: every file parses, offsets tile the archive."},
+         {"do": "Pick the technique that fits the evidence: symbols-first if the ELF keeps .symtab, string-xref-loader "
+                "for named files, instruction-pattern for per-build code, routine-oracle when the game's own "
+                "decompressor/expander can run, community-spec when a modding community documented the format."},
+         {"do": "Record the formats and the reader in the dossier, then add the title to gbox/assimilate_kb.py "
+                "(files, magics, strings, engines, reader, techniques) so the next fingerprint learns from it.",
+          "tool": "re_dossier", "args": {"op": "record", "kind": "format", "status": "hypothesis"}},
+     ],
+     "pitfalls": ["A fingerprint is a ranking of evidence, not a reader: verify every claim against the files.",
+                  "Generic extensions (.bin/.dat/.img/.pac) say little; magics inside archives say much more.",
+                  "Same engine family is not the same format version: check the version fields before reusing a parser."],
+     "verify": ["the reader parses every file of the exact build", "re-writing an unmodified file is byte-identical"],
+     "record": ["re_dossier op=record kind=format", "gbox/assimilate_kb.py entry", "docs/assimilation.md section"],
+     "tech": None},
+    {"id": "symbols-first", "title": "Use the executable's own symbol table before anything else",
+     "goal": "Name every loader/struct from shipped symbols (ELF .symtab, debug strings, RTTI) instead of guessing.",
+     "when": ["symbols", "symtab", "debug build", "elf symbols", "mangled names", "rtti", "vtable names"],
+     "tags": ["symbols", "elf", "ghidra"],
+     "steps": [{"do": "Fingerprint reports ELF symbol counts; list them.", "tool": "assimilate", "args": {"op": "fingerprint"}},
+               {"do": "Search the symbols for the loader/resource names (RSRC_Load, ReadChunkData, FindItem...).",
+                "tool": "ghidra_run", "args": {"op": "strings", "query": "Load|Read|Chunk|Model|Skin"}},
+               {"do": "Decompile the named loader; record each struct offset with the symbol that proves it.",
+                "tool": "ghidra_run", "args": {"op": "explain", "addresses": ["<symbol address>"]}}],
+     "pitfalls": ["CodeWarrior/GCC mangled names need demangling (Ghidra does it) to read class layouts.",
+                  "A debug ELF on the disc (base.elf/Bond.elf) may differ from main.dol: confirm addresses live."],
+     "verify": ["a symbol-named function's decompilation matches the file layout on real files"],
+     "record": ["re_dossier op=record kind=function with the symbol as name"], "tech": "symbols-first"},
+    {"id": "string-xref-loader", "title": "Find the loader from the file names / format strings it uses",
+     "goal": "From a file name or printf format in the executable to the loader and the file layout.",
+     "when": ["file name string", "format string", "%s", "xref", "who opens", "loader for"],
+     "tags": ["strings", "xrefs", "loader"],
+     "steps": [{"do": "Strings with the extensions / names the fingerprint listed.", "tool": "ghidra_run",
+                "args": {"op": "strings", "query": "<name or %s pattern>"}},
+               {"do": "References to the string (PowerPC lis/addi, MIPS lui/addiu pairs; gbox.formats.insn_pattern "
+                      "ppc_lis_addi finds them without Ghidra).", "tool": "ghidra_run", "args": {"op": "refs", "addresses": ["<string>"]}},
+               {"do": "Decompile the caller: open, read, decompress, parse."}],
+     "pitfalls": ["Hashed file names (Nightfire %s%8.8x.bin) need the hash routine first."],
+     "verify": ["the loader's header reads match real files"], "record": ["re_dossier op=record kind=function"],
+     "tech": "string-xref-loader"},
+    {"id": "instruction-pattern", "title": "Find code by instruction shape (per-stage overlays, other builds/regions)",
+     "goal": "Locate a known routine in every overlay or build where its address moves.",
+     "when": ["instruction pattern", "signature scan", "overlay", "other region", "pal version", "per stage"],
+     "tags": ["pattern", "overlay", "capstone"],
+     "steps": [{"do": "Write the routine's instructions as gbox.formats.insn_pattern Insn entries (fixed bits + "
+                      "register/immediate captures that must agree)."},
+               {"do": "search() every overlay/build; one hit each is the proof; the captures give the per-build "
+                      "addresses (hi_lo for lui/addiu pairs)."}],
+     "pitfalls": ["Too loose a mask matches compiler idioms; too tight misses register allocation changes.",
+                  "Delay slots: the routine may start one instruction earlier."],
+     "verify": ["exactly one match per overlay/build", "a breakpoint at the match fires on the event"],
+     "record": ["re_dossier op=record kind=function with the pattern in role"], "tech": "instruction-pattern"},
+    {"id": "routine-oracle", "title": "Run the game's own routine as the oracle (decoder, expander, skeleton build)",
+     "goal": "Prove a Python reader/writer against what the game itself computes, byte for byte.",
+     "when": ["oracle", "interpreter", "emulate the routine", "exact inverse", "packer", "decompressor matches"],
+     "tags": ["oracle", "interpreter", "round trip"],
+     "steps": [{"do": "Get the program image (decoded executable / RAM snapshot) and the routine address (Ghidra)."},
+               {"do": "MIPS: gbox.formats.oracle.RoutineOracle('mips_le', ram) .run(fn, inputs, args, read). SH-4/PPC: "
+                      "oracle_route() -> Ghidra EmulatorHelper via ghidra_bridge op=run_script."},
+               {"do": "check_reader(python_reader, oracle, files) on every file; check_inverse(encoder, oracle, "
+                      "samples) for a writer."}],
+     "pitfalls": ["The routine may touch hardware (GTE, DMA): attach the GTE model or stub the I/O it reads.",
+                  "Run limits: a wrong entry runs forever; keep limit= small and read the stop pc."],
+     "verify": ["0 mismatches on every file of the build (DOA++: 327/327 sections, 3045 motions)"],
+     "record": ["re_dossier op=record kind=function (routine) with the check counts"], "tech": "routine-oracle"},
+    {"id": "community-spec", "title": "Start from a community format spec, then prove it on the owned build",
+     "goal": "Reuse published layouts (decomps, modding wikis, tools) without trusting them blindly.",
+     "when": ["community", "wiki", "spec", "documented format", "modding tools", "reference implementation"],
+     "tags": ["docs", "spec"],
+     "steps": [{"do": "Find the spec (decomp project, modding wiki, open tool) and note its version/build."},
+               {"do": "Write the reader from the spec; run it on every file of the owned build; diff with the "
+                      "reference tool's output where one exists."}],
+     "pitfalls": ["Specs often describe another region/version; check header versions first.",
+                  "Read references as documentation only; never copy incompatible-licence code."],
+     "verify": ["the reader parses every owned file and matches the reference output"],
+     "record": ["cite the spec in the module docstring and the dossier"], "tech": "community-spec"},
+    {"id": "magic-census", "title": "Magic census: classify every file and archive member by its first bytes",
+     "goal": "Know the container/codec/model/texture mix of a build before reading any code.",
+     "when": ["census", "magic", "classify files", "what is in the archive", "inventory"],
+     "tags": ["magic", "inventory"],
+     "steps": [{"do": "assimilate op=fingerprint (heads + inner magics of the largest archives).", "tool": "assimilate",
+                "args": {"op": "fingerprint"}},
+               {"do": "Walk the top container exactly (entries tile the file, terminators counted) and repeat the census "
+                      "per member."}],
+     "pitfalls": ["Weak magics (one byte, zlib header) need a successful decode to count."],
+     "verify": ["the container walk consumes the archive exactly"], "record": ["re_dossier op=record kind=format"],
+     "tech": "magic-census"},
+    {"id": "ram-capture", "title": "Read the loaded object from RAM (entity probe, pick whip, save states)",
+     "goal": "When files are packed or built at run time, read the live structures instead.",
+     "when": ["ram capture", "entity probe", "live object", "pick whip", "save state", "loaded model in ram"],
+     "tags": ["ram", "entity", "live"],
+     "steps": [{"do": "Profile the entity table (playbook entity-table) and capture RAM + frame together."},
+               {"do": "Match the RAM object to the file it came from (sizes, pointers) to learn the file layout."}],
+     "pitfalls": ["Heap addresses move between rooms; capture frames byte-identical before and after the dump."],
+     "verify": ["the RAM-derived layout reads the files on disc"], "record": ["re_dossier op=record kind=struct"],
+     "tech": "ram-capture"},
+    {"id": "frame-capture", "title": "Use rendered frames as ground truth (identity, texture layout, outline hulls)",
+     "goal": "Confirm what a decoded model/texture is by comparing against what the game draws.",
+     "when": ["frame capture", "screenshot compare", "which character is this", "texture layout"],
+     "tags": ["frames", "visual"], "steps": [{"do": "Capture the moment (look_at_screen / scene_capture) and compare "
+                                                     "with the decoded asset rendered the same way."}],
+     "pitfalls": ["Lighting and PS1 half-intensity textures change colours (gbox.ps1_texture)."],
+     "verify": ["the decoded asset matches the frame"], "record": ["attach the frames as evidence"],
+     "tech": "frame-capture"},
+    {"id": "round-trip-proof", "title": "Prove the reader with a byte-identical round trip before writing",
+     "goal": "A writer starts only after reading + re-writing every unmodified file gives identical bytes.",
+     "when": ["round trip", "byte identical", "re-encode", "writer", "rebuild the file"],
+     "tags": ["round trip", "writer"],
+     "steps": [{"do": "Parse -> serialize every file of the build; compare bytes (gbox.formats encoders for codecs)."},
+               {"do": "Only then change one thing (a donor) and check sizes, pointers, alignment, budgets."}],
+     "pitfalls": ["Compression ratio matters when files are rewritten in place (AKI lzss_store packs tighter)."],
+     "verify": ["N/N files byte-identical"], "record": ["the counts in the module docstring and the dossier"],
+     "tech": "round-trip-proof"},
+    {"id": "welded-fit", "title": "Fit a donor into a fixed native mesh budget (welded chunks, per-vertex bones)",
+     "goal": "Make a donor fit the native slot's vertex/triangle/chunk budgets without open seams.",
+     "when": ["budget", "chunk limit", "seams", "welded", "fit the donor", "too many triangles"],
+     "tags": ["writer", "fit"],
+     "steps": [{"do": "Measure the slot budgets from the native file (exact room per chunk)."},
+               {"do": "One welded mesh per chunk with per-vertex bones (not per-bone shells); decimate until it fits; "
+                      "repeat the fit when the budget check fails."}],
+     "pitfalls": ["Per-bone shells leave open boundary edges (SD2: 270)."], "verify": ["no open edges; budgets met"],
+     "record": ["FIT_VERSION bump when the fit changes"], "tech": "welded-fit"},
+    {"id": "decomp-reference", "title": "Use a matching decompilation project as the map",
+     "goal": "For titles with public decomps (N64 especially), read layouts and addresses from the decomp.",
+     "when": ["decomp", "decompilation project", "n64decomp", "zeldaret", "baserom"],
+     "tags": ["decomp", "n64"],
+     "steps": [{"do": "Match the ROM hash to the decomp's baserom; use its symbol/segment tables as documentation."},
+               {"do": "Check every table against the owned ROM (DMA tables, CRCs)."}],
+     "pitfalls": ["Region/version differences (the 'USA' zip that is really PAL)."],
+     "verify": ["tables rebuilt from the decomp match the ROM"], "record": ["cite the decomp + commit"],
+     "tech": "decomp-reference"},
+]
+
+for _t in _TECHNIQUES:
+    PLAYBOOKS.append({"id": _t["id"], "seed_version": 1, "title": _t["title"], "goal": _t["goal"], "when": _t["when"],
+                      "platforms": ["any"], "tags": _t["tags"], "steps": _t["steps"], "pitfalls": _t["pitfalls"],
+                      "verify": _t["verify"], "record": _t["record"],
+                      "examples": _kb_examples(_t["tech"]) if _t["tech"] else _kb_examples("routine-oracle", 2)
+                      + _kb_examples("welded-fit", 1)})
 
 
 def _f(kind, address, name, role, ref):
@@ -432,6 +764,32 @@ TITLE_FACTS = [
          _f("patch", "0x8C1E743E", "serial check bypass 1", "01 E0 (mov #1,r0)", "docs/what_this_is.md"),
          _f("patch", "0x8C2670B6", "serial check bypass 2", "01 E0 (mov #1,r0)", "docs/what_this_is.md"),
      ]},
+    {"platform": "gamecube", "title_has": ["agent under fire"], "label": "007 Agent Under Fire GameCube USA (GW7E69)",
+     "executable": {"processor": "PowerPC:BE:32:default", "registers": {"r13": "0x804EB040", "r2": "0x804EC2A0"},
+                    "note": "Bond.elf (/base.elf/Bond.elf, sha256 1a9c0d19...) keeps .symtab and .rela.*: 17636 "
+                            "CodeWarrior-mangled symbols; Quake III / Ritual UberTools lineage (FAKK2 names)"},
+     "facts": [
+         _f("global", "0x804E38B0", "g_entities", "gentity_t* table, 0x2B0 bytes each; count at globals+0x80 "
+            "(0x803F0210); +0x1E4 inuse, +0x24C Entity*, +0x5C s.modelindex, +0x124 svflags (0x80 hidden), "
+            "+0x214/+0x220 absmin/absmax, +0x22C currentOrigin", "profiles/auf-gcn-us.json"),
+         _f("global", "0x804E3530", "gClientArr", "gclient_t* array (stride at gClientSize 0x804E3534 = 0x860, count "
+            "gNumClients 0x804E3068, viewed index currentPlayer 0x804E34CC): +0x74 eye, +0x68 angles (pitch,yaw,roll "
+            "deg), +0x2D0 fov deg; scripted camera +0x2DC/+0x2E8/+0x2F4 while pm_flags(+0xC) & 0x100",
+            "profiles/auf-gcn-us.json"),
+         _f("field", "+0x4", "Entity.vtable", "vtable pointer (Class keeps it at +4); +0x1C classname, +0x28 model "
+            "(str -> strdata.data), +0x8C origin, +0x98 angles, +0x2C/+0x38 mins/maxs, +0x14 edict, +0x18 client",
+            "profiles/auf-gcn-us.json"),
+         _f("table", "0x802612C0", "__vt__5Actor", "NPC class vtable; Player 0x80254E70, DeathmatchPlayer 0x802482C0, "
+            "Bot 0x80287BB4, Sentient 0x80259E4C (246 ClassDefs from the __sinit_* initialisers)",
+            "profiles/auf-gcn-us.json"),
+         _f("function", "0x800990D0", "G_NextEntity(Entity*)", "walks g_entities[0..num_entities) skipping !inuse",
+            "docs/auf-entity-analysis.md"),
+         _f("function", "0x800138A0", "R_BuildCameraMatrix(player, mtx, fov*, angles*)", "camera from gclient_t; "
+            "R_RenderPlayerView_Sub 0x800149F8 -> R_Draw 0x800142B0 -> R_SetupProjection 0x80014270 -> "
+            "veMatPerspective 0x8019B4D0 (m00 = cot/aspect, m11 = cot: vertical fov)", "docs/auf-entity-analysis.md"),
+         _f("function", "0x80075D00", "Entity::setModel(const char*)", "gi.setmodel -> edict s.modelindex; model str "
+            "at Entity+0x28, handle at +0x144", "docs/auf-entity-analysis.md"),
+     ]},
     {"platform": "gamecube", "title_has": ["metal arms"], "label": "Metal Arms GameCube USA (GM5E7D)",
      "executable": {"processor": "PowerPC:BE:32:default", "registers": {"r13": "0x804BABE0", "r2": "0x804C2420"}},
      "facts": [
@@ -494,6 +852,24 @@ TITLE_FACTS = [
          _f("patch", "0x8003B230", "back-face cull (renderer 1)", "nclip; blez -> 00000000 draws back faces "
             "(also 0x8003B380, 0x8003B4D0, 0x8003B620)", "knowledge base"),
      ]},
+    {"platform": "psx", "title_has": ["metal gear", "vr missions"], "label": "Metal Gear Solid: VR Missions USA (SLUS-00957)",
+     "executable": {"processor": "MIPS:LE:32:default", "base": "0x80010000", "note": "stage overlays (entry 0 of each "
+                    "STAGE.DIR .stg) load unrelocated at 0x800C4350"},
+     "facts": [
+         _f("global", "0x800B5B98", "current stage name", "8 chars, e.g. vr_sud03", "docs/mgs_vr_decomp.md"),
+         _f("global", "0x800AC1E4", "GM_GameStatus", "bit 0x10000000 = mission ended", "docs/mgs_vr_decomp.md"),
+         _f("global", "0x800AC820", "GM_PlayerPosition", "SVECTOR; the goal test reads it", "docs/mgs_vr_decomp.md"),
+         _f("table", "0x800ADA28", "GV actor levels", "9 x 0x44; actor +4 next, +8 act, +0xC die, +0x14 source name",
+            "docs/mgs_vr_decomp.md"),
+         _f("function", "0x800D87A8", "vr.c clear routine (vr_sud03)", "state=2, status|=0x10000000, step+0x10B=1; "
+            "per-stage address: gbox.mgs_vr_tool.find_clear_handler", "docs/mgs_vr_decomp.md"),
+         _f("global", "0x800E2BB0", "mission state (vr_sud03)", "1 running, 2 cleared, 4 result, 5 over",
+            "docs/mgs_vr_decomp.md"),
+         _f("format", "VRAM 160,224 12x16", "clearflags grid", "16 rows x 6 words; selectvr mirror 0x800E543C",
+            "gbox/mgs_vr_unlock.py"),
+         _f("table", "0x800B5398", "GCL variables / records", "0x800 bytes (copy 0x800B4AD8); save loader 0x800240A0",
+            "docs/mgs_vr_decomp.md"),
+     ]},
     {"platform": "n64", "title_has": ["ocarina of time"], "label": "Zelda: Ocarina of Time N64 (v1.2)",
      "executable": {"processor": "MIPS:BE:32:default"},
      "facts": [
@@ -507,6 +883,38 @@ TITLE_FACTS = [
          _f("format", "0x108590", "segment 0x17 (geo layouts)", "ROM 0x108590-0x10B3C0; Mario geo 0x17002DD4", "gbox/sm64_mario.py"),
          _f("format", "0x4CE710", "Mario animation DMA table", "u32 count 0xD1, then (offset, size)", "gbox/sm64_mario.py"),
      ]},
+    # Enter the Matrix: the catalog's windows_native entry 3f43b79a68a60b41 is the PS2 disc (HyperSpin CHD)
+    {"platform": "windows_native", "title_has": ["enter the matrix"], "label": "Enter the Matrix USA PS2 (SLUS-20454)",
+     "executable": {"processor": "MIPS:LE:64:64-32addr", "base": "0x00100000",
+                    "note": "R5900 ELF SLUS_204.54 (sha256 3b076e25...); capstone/Ghidra miss lq/sq/MMI: decode those "
+                            "opcodes by hand. Not a PC install: HyperSpin files the PS2 CHD under Microsoft XBOX"},
+     "facts": [
+         _f("function", "0x1d8390", "WAD1.DFU lookup", "name hash + binary search over the 16-byte rows",
+            "gbox/shiny_dfu.py"),
+         _f("function", "0x241be0", "WadFile inflate", "zlib 1.1.4 inflateInit/inflate of packed entries",
+            "gbox/shiny_dfu.py"),
+         _f("function", "0x167da0", "DCPatchModel loader", ".dcn: header, joints, meshes, textures, materials, configs",
+            "gbox/etm_models.py"),
+         _f("function", "0x14e850", "actor model bind", "model[0] must equal the animation set's skeleton checksum "
+            "(error 'DC2 Model checksum error')", "docs/matrix_pipeline.md"),
+         _f("format", "WAD1.DFU", "hashed archive", "9690 rows {hash, packed, offset, size}; data base 0x26000; split "
+            "over WAD1.DFU + WAD1_B.DFU", "gbox/shiny_dfu.py"),
+         _f("format", "actors\\*.dcn", "DC patch model", "Bezier quad / triangle patches + triangles on the shared "
+            "89-joint skeleton 0x002e5ea3", "gbox/etm_models.py"),
+     ]},
+    {"platform": "windows_native", "title_has": ["path of neo"], "label": "The Matrix: Path of Neo USA PS2 (SLUS-21273)",
+     "executable": {"processor": "MIPS:LE:64:64-32addr", "base": "0x00100000",
+                    "note": "R5900 ELF SLUS_212.73 (sha256 e7d56d8d...); the windows_native entry is the PS2 CHD"},
+     "facts": [
+         _f("function", "0x1f5860", "WAD1.DFU lookup", "ETM's hash + c << 8*(i&3); names without 'common' get 'ps2\\'",
+            "gbox/shiny_dfu.py"),
+         _f("function", "0x1f51b0", "CRC32 (table 0x3f8088)", "ids of chunks inside level packages (not the archive "
+            "hash)", "docs/matrix_pipeline.md"),
+         _f("format", "common\\misc\\ActorHeadersV11.Bin", "actor table", "444 x 0x140: 3 model paths (LODs) + name",
+            "gbox/pon_inventory.py"),
+         _f("format", "level package", "per-level chunk container", "header + {u32 id, u32 offset, u32 size, u32 type} "
+            "rows; characters live inside the level packages", "docs/matrix_pipeline.md"),
+     ]},
     {"platform": "ps3", "title_has": ["stranglehold"], "label": "Stranglehold PS3 (BLUS30081, UE3)",
      "executable": {"note": "Unreal Engine 3: gameplay is UnrealScript in CookedPS3 packages (playbook unreal-script)"},
      "facts": [
@@ -516,3 +924,26 @@ TITLE_FACTS = [
             "profiles/stranglehold-ps3-us.json"),
      ]},
 ]
+
+# Bump when TITLE_FACTS gain facts: dossiers seeded by an older version merge the new documented facts (re_lab.dossier).
+FACTS_VERSION = 4                  # 3: Super Mario 64 DS (assimilate_kb sm64ds_nds); 4: SoulCalibur DC
+
+
+def _kb_title_facts() -> list[dict]:
+    """Per assimilated title (gbox.assimilate_kb): its formats, the reader to start from and the techniques that
+    cracked it, as documented facts. Merged with the hand-written entries above for the same title."""
+    from .assimilate_kb import KNOWN_TITLES
+    out = []
+    for t in KNOWN_TITLES:
+        if not t.get("title_has"):
+            continue
+        facts = [_f("format", "", f"{k} format", str(v), "docs/assimilation.md") for k, v in (t.get("formats") or {}).items()]
+        facts.append(_f("note", "", "gBox reader", f"start from {t['reader']}; engine family {', '.join(t['engines'])}; "
+                        f"cracked by {', '.join(t.get('techniques', []))} (playbooks of the same ids)",
+                        "docs/assimilation.md"))
+        out.append({"platform": t["platform"], "title_has": t["title_has"], "label": t["title"], "facts": facts,
+                    "kb": t["id"]})
+    return out
+
+
+TITLE_FACTS += _kb_title_facts()
