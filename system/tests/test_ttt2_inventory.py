@@ -53,3 +53,24 @@ def test_xdvdfs_walk_finds_default_xex():
     boot = next(p for p in files if p.lower() == "default.xex")
     s, n = files[boot]
     assert dvd.read(s, 4) == b"XEX2"
+
+
+def test_xdvdfs_rejects_directory_cycles_and_out_of_range_reads(tmp_path):
+    image = bytearray(35 * 2048)
+    image[32*2048:32*2048+20] = XDVDFS_MAGIC
+    image[33*2048-20:33*2048] = XDVDFS_MAGIC
+    struct.pack_into("<II", image, 32*2048+20, 33, 32)
+    struct.pack_into("<HHIIBB", image, 33*2048, 0, 0, 33, 32, 0x10, 4)
+    image[33*2048+14:33*2048+18] = b"loop"
+    path = tmp_path / "cycle.iso"
+    path.write_bytes(image)
+    dvd = Xdvdfs(path)
+    try:
+        with pytest.raises(ValueError, match="cyclic"):
+            dvd.files()
+        with pytest.raises(ValueError, match="outside"):
+            dvd.read(35, 1)
+        with pytest.raises(ValueError, match="outside"):
+            dvd.read(0, -1)
+    finally:
+        dvd.close()

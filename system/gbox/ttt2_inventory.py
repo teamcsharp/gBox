@@ -62,7 +62,11 @@ class Xdvdfs:
         self.path = str(path)
         self.size = Path(path).stat().st_size
         self.f = open(path, "rb")
-        self.base, self.root_sector, self.root_size = self._locate()
+        try:
+            self.base, self.root_sector, self.root_size = self._locate()
+        except Exception:
+            self.f.close()
+            raise
 
     def _locate(self):
         found = []
@@ -86,14 +90,27 @@ class Xdvdfs:
         return found[0]
 
     def read(self, sector: int, size: int) -> bytes:
-        self.f.seek(self.base + sector * SECTOR)
-        return self.f.read(size)
+        offset = self.base + sector * SECTOR
+        if sector < 0 or size < 0 or offset + size > self.size:
+            raise ValueError("XDVDFS read outside image")
+        self.f.seek(offset)
+        data = self.f.read(size)
+        if len(data) != size:
+            raise ValueError("truncated XDVDFS read")
+        return data
+
+    def close(self):
+        self.f.close()
 
     def files(self) -> dict[str, tuple[int, int]]:
         """Return ``{path: (sector, size)}`` for every file (directories dropped)."""
         files: dict[str, tuple[int, int]] = {}
 
+        visited = set()
         def walk(sec: int, size: int, path: str):
+            if (sec, size) in visited:
+                raise ValueError("cyclic XDVDFS directory")
+            visited.add((sec, size))
             data = self.read(sec, size)
             stack, seen = [0], set()
             while stack:
@@ -105,6 +122,8 @@ class Xdvdfs:
                 if off + 14 > len(data):
                     continue
                 left, right, s, n, attr, nl = struct.unpack("<HHIIBB", data[off:off + 14])
+                if off + 14 + nl > len(data):
+                    raise ValueError("truncated XDVDFS filename")
                 name = data[off + 14:off + 14 + nl].decode("latin-1")
                 if left not in (0, 0xFFFF):
                     stack.append(left)
@@ -158,69 +177,72 @@ def main(argv: list[str]) -> int:
         return 2
 
     dvd = Xdvdfs(image)
-    files = dvd.files()
-    print(f"XDVDFS base=0x{dvd.base:x} root_sector={dvd.root_sector} "
-          f"root_size={dvd.root_size} files={len(files)}")
+    try:
+        files = dvd.files()
+        print(f"XDVDFS base=0x{dvd.base:x} root_sector={dvd.root_sector} "
+              f"root_size={dvd.root_size} files={len(files)}")
 
-    if BOOT not in files and BOOT.lower() not in {p.lower() for p in files}:
-        raise ValueError("no Default.xex boot executable on disc")
+        if BOOT not in files and BOOT.lower() not in {p.lower() for p in files}:
+            raise ValueError("no Default.xex boot executable on disc")
 
-    boot_path = BOOT if BOOT in files else next(p for p in files if p.lower() == BOOT.lower())
-    s, n = files[boot_path]
-    xex = dvd.read(s, n)
-    if xex[:4] != b"XEX2":
-        raise ValueError(f"boot file is not XEX2: {xex[:4]!r}")
-    boot_sha = hashlib.sha256(xex).hexdigest()
-    print(f"{boot_path}: {n} bytes, XEX2, sha256={boot_sha}")
+        boot_path = BOOT if BOOT in files else next(p for p in files if p.lower() == BOOT.lower())
+        s, n = files[boot_path]
+        xex = dvd.read(s, n)
+        if xex[:4] != b"XEX2":
+            raise ValueError(f"boot file is not XEX2: {xex[:4]!r}")
+        boot_sha = hashlib.sha256(xex).hexdigest()
+        print(f"{boot_path}: {n} bytes, XEX2, sha256={boot_sha}")
 
-    # Container first pass: classify every root file, parse pack headers in place.
-    containers = []
-    for path, (sec, size) in sorted(files.items()):
-        head = dvd.read(sec, min(size, 16))
-        kind = "other"
-        info = {}
-        if head[:4] == b"XEX2":
-            kind = "xex"
-        elif len(head) >= 4 and struct.unpack(">I", head[:4])[0] == PACK_MAGIC:
-            kind = "pack"
-            blob = dvd.read(sec, min(size, 65536))
-            info = pack_header(blob, size)
-            info["table_truncated"] = (size > 65536 and 65536 - len(info["records"]) * 8 <= 32)
-            info["record_count"] = len(info["records"])
-            info["records"] = info["records"][:8]  # sample only; re-run for full table
-        elif head[:4] == b"PIRS":
-            kind = "pirs"
-        elif head[4:8] == b"ftyp":
-            kind = "isobmff"
-        elif path == "nrfo.bin":
-            kind = "table"
-        entry = {"path": path, "sector": sec, "size": size, "kind": kind}
-        if kind == "pack":
-            entry.update(info)
-        containers.append(entry)
+        # Container first pass: classify every root file, parse pack headers in place.
+        containers = []
+        for path, (sec, size) in sorted(files.items()):
+            head = dvd.read(sec, min(size, 16))
+            kind = "other"
+            info = {}
+            if head[:4] == b"XEX2":
+                kind = "xex"
+            elif len(head) >= 4 and struct.unpack(">I", head[:4])[0] == PACK_MAGIC:
+                kind = "pack"
+                blob = dvd.read(sec, min(size, 65536))
+                info = pack_header(blob, size)
+                info["table_truncated"] = (size > 65536 and 65536 - len(info["records"]) * 8 <= 32)
+                info["record_count"] = len(info["records"])
+                info["records"] = info["records"][:8]  # sample only; re-run for full table
+            elif head[:4] == b"PIRS":
+                kind = "pirs"
+            elif head[4:8] == b"ftyp":
+                kind = "isobmff"
+            elif path == "nrfo.bin":
+                kind = "table"
+            entry = {"path": path, "sector": sec, "size": size, "kind": kind}
+            if kind == "pack":
+                entry.update(info)
+            containers.append(entry)
 
-    manifest = {
-        "game": "Tekken Tag Tournament 2",
-        "platform": "xbox360",
-        "source_sha256": source_sha256,
-        "source_size": dvd.size,
-        "xdvdfs": {"base": dvd.base, "root_sector": dvd.root_sector,
-                   "root_size": dvd.root_size},
-        "boot": {"path": boot_path, "sha256": boot_sha, "size": n, "format": "xex2"},
-        "files": containers,
-        "engine": "Namco (Tekken 6 / TTT2 family)",
-        "pack_magic": "0x0FF512ED",
-        "known_sub_formats": ["NDXR geometry", "NTXR texture", "NSXR shader", "BONE skeleton"],
-        "next_stage": "analysis: decode 0x0FF512ED table terminator + XMemCompress entries",
-    }
-    with open(out, "w") as fh:
-        json.dump(manifest, fh, indent=1)
-    packs = [c for c in containers if c["kind"] == "pack"]
-    print(f"manifest -> {out}  ({len(packs)} packs, {len(files)} files total)")
-    for c in packs:
-        print(f"  {c['path']:18s} records={c.get('record_count', 0)}"
-              f"{' (truncated)' if c.get('table_truncated') else ''}")
-    return 0
+        manifest = {
+            "game": "Tekken Tag Tournament 2",
+            "platform": "xbox360",
+            "source_sha256": source_sha256,
+            "source_size": dvd.size,
+            "xdvdfs": {"base": dvd.base, "root_sector": dvd.root_sector,
+                       "root_size": dvd.root_size},
+            "boot": {"path": boot_path, "sha256": boot_sha, "size": n, "format": "xex2"},
+            "files": containers,
+            "engine": "Namco (Tekken 6 / TTT2 family)",
+            "pack_magic": "0x0FF512ED",
+            "known_sub_formats": ["NDXR geometry", "NTXR texture", "NSXR shader", "BONE skeleton"],
+            "next_stage": "analysis: decode 0x0FF512ED table terminator + XMemCompress entries",
+        }
+        with open(out, "w") as fh:
+            json.dump(manifest, fh, indent=1)
+        packs = [c for c in containers if c["kind"] == "pack"]
+        print(f"manifest -> {out}  ({len(packs)} packs, {len(files)} files total)")
+        for c in packs:
+            print(f"  {c['path']:18s} records={c.get('record_count', 0)}"
+                  f"{' (truncated)' if c.get('table_truncated') else ''}")
+        return 0
+    finally:
+        dvd.close()
 
 
 if __name__ == "__main__":

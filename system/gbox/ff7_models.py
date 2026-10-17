@@ -128,8 +128,12 @@ def read_battle_model(lzs_bytes: bytes) -> dict:
     weapons = []
     for i in range(tim_i + 1, ns):
         o = offs[i]
+        if o + 12 > len(u):                               # not even a weapon header fits: not a weapon
+            continue
         _z, _p, wl, wo = struct.unpack_from("<IHhI", u, o)
-        weapons.append({"length": wl, "mesh": read_mesh(u, o + wo)})
+        if _z != 0 or o + wo >= len(u):                   # weapon sections start with a u32 0 marker and a mesh
+            continue                                      # inside the buffer; monster models (e.g. Vincent's
+        weapons.append({"length": wl, "mesh": read_mesh(u, o + wo)})  # limit-break forms) have a TIM-fill tail instead
     return {"raw": u, "sections": offs, "bones": bones, "anims": anims, "tim": read_tim(u, offs[tim_i]),
             "weapons": weapons}
 
