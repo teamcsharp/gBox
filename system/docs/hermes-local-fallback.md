@@ -303,6 +303,10 @@ next call to another enabled, healthy local host. A partial tool-call stream is
 never replayed by the proxy. Tasks, workspaces and evidence remain on lilspark.
 Each new queue run pins its host's provider and model and reads previous request
 checkpoints. Larger implementation tasks go to the dedicated host.
+The proxy counts tool calls in the supplied queue transcript before trimming its
+context. With six calls left it requests a saved checkpoint; at the configured
+budget it disables further tool choice and asks for a factual final report.
+Incomplete acceptance criteria stay pending. Interactive conversations are exempt.
 
 The operator's local-only setting prevents newly replenished cloud credit from
 changing this policy. An unavailable pool leaves work queued. Per-host health,

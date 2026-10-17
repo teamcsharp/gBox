@@ -98,3 +98,26 @@ def test_second_spark_metrics_do_not_inherit_lilspark_calls(monkeypatch):
     result = H.local_summary(S, {}, [], 0)
     assert result['calls_ok'] == 1 and result['tokens'] == 30 and result['host_name'] == 'sparkDeux'
     assert 'at most one source file' not in hermes_local.local_prompt('Assigned task', S)
+
+
+@pytest.mark.parametrize('api_format', ['openai', 'ollama'])
+def test_queue_budget_warns_then_forces_final_checkpoint(api_format):
+    s = S.model_copy(update={'api_format': api_format, 'tool_budget': 8})
+    proxy = P.LocalLLM(lambda: s)
+    messages = [{'role': 'user', 'content': 'Assigned queue task: request #7. Read the inventory.'}]
+    for n in range(8):
+        call = dict(CALL, id='call-'+str(n))
+        messages += [{'role': 'assistant', 'content': None, 'tool_calls': [call]},
+                     {'role': 'tool', 'tool_call_id': call['id'], 'content': 'bounded result'}]
+    _, warning, meta = asyncio.run(proxy.prepare(dict(BODY, messages=messages[:-2])))
+    assert 'save a checkpoint' in str(warning['messages']) and not meta['budget_final']
+    _, final, meta = asyncio.run(proxy.prepare(dict(BODY, messages=messages)))
+    assert meta['budget_final'] and meta['queue_tool_calls'] == 8
+    assert 'factual final checkpoint' in str(final['messages'])
+    if api_format == 'openai':
+        assert final['tool_choice'] == 'none'
+    else:
+        assert 'tools' not in final
+    messages[0]['content'] = 'Unrelated interactive conversation'
+    _, payload, meta = asyncio.run(proxy.prepare(dict(BODY, messages=messages)))
+    assert not meta['budget_final'] and payload.get('tools')

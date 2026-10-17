@@ -485,6 +485,19 @@ class LocalLLM:
         asked = body.get('max_completion_tokens') or body.get('max_tokens')
         max_out = min(int(asked), s.max_output_tokens) if isinstance(asked, int) and asked > 0 else s.max_output_tokens
         fixed, fixes = fix_messages(messages)
+        # Queue runs must yield a result instead of consuming a slot indefinitely.
+        # Count before context trimming so the proxy cannot erase its own budget.
+        queued = any('Assigned queue task: request #' in str(m.get('content', '')) for m in messages if isinstance(m, dict))
+        used = sum(len(m.get('tool_calls') or []) for m in messages if isinstance(m, dict) and m.get('role') == 'assistant')
+        budget = max(6, int(s.tool_budget))
+        final = queued and used >= budget
+        if queued and used >= budget - 6:
+            instruction = ('This run has reached its tool budget. Return a factual final checkpoint now: verified '
+                           'results, artifact/job IDs, tests, blockers and the exact next step. Do not claim incomplete '
+                           'acceptance criteria are resolved. The scheduler retains this report for the next run.'
+                           if final else f'Only {budget-used} tool calls remain. Stop exploration and use them to save '
+                           'a checkpoint on the assigned request, record tests and blockers, then return your result.')
+            fixed.append({'role': 'user', 'content': instruction})
         capped, info = cap_context(fixed, body.get('tools'), ctx - max_out - MARGIN_TOKENS, s.chars_per_token)
         if s.api_format == 'openai':
             payload = {k: body[k] for k in ('tools', 'tool_choice', 'parallel_tool_calls', 'temperature',
@@ -492,13 +505,18 @@ class LocalLLM:
             payload.update(model=model, messages=capped, max_tokens=max_out)
             if s.enable_thinking is not None:
                 payload['chat_template_kwargs'] = {'enable_thinking': s.enable_thinking}
+            if final:
+                payload['tool_choice'] = 'none'
         else:
             payload = to_ollama(body, capped, s, model=model, max_out=max_out, ctx=ctx)
+            if final:
+                payload.pop('tools', None)
         meta = {'model': model, 'provider': s.provider, 'host_name': s.host_name,
                 'upstream': s.upstream, 'api_format': s.api_format,
                 'fixes': sorted(set(fixes)), 'dropped': info['dropped'], 'cut': info['cut'],
                 'est_prompt_tokens': info['tokens'], 'stream': bool(body.get('stream')),
-                'tools': len(body.get('tools') or [])}
+                'tools': len(body.get('tools') or []), 'queue_tool_calls': used if queued else None,
+                'budget_final': final}
         return s, payload, meta
 
     async def acquire(self, s, gone=None):
