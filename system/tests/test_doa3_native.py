@@ -132,6 +132,81 @@ def test_existing_save_and_cache_survive_relaunch(disc, tmp_path):
     assert not (private.parent / ".recomp-storage" / "not-our-save").exists()
 
 
+def test_cast_variants_and_revisions_keep_separate_storage_and_source(disc, tmp_path):
+    xbe, original, patched = disc
+    cfg = config(tmp_path)
+    base = native.prepare_play_disc(xbe, cfg, game())
+    base_save = base.parent / ".recomp-storage" / "profile"
+    base_save.parent.mkdir()
+    base_save.write_bytes(b"personal progress")
+    variants = {}
+    for name in ("doa3_cast_sonic", "doa3_cast_sonic_vs_mario", "doa3_cast_twin_snakes"):
+        build = {**game(), "mod": name}
+        private = native.prepare_play_disc(xbe, cfg, build)
+        variants[name] = private
+        assert private.read_bytes() == original
+        assert not (private.parent / ".recomp-storage").exists()
+        save = private.parent / ".recomp-storage" / "profile"
+        save.parent.mkdir()
+        save.write_bytes(name.encode())
+        assert native.prepare_play_disc(xbe, cfg, build) == private
+        assert save.read_bytes() == name.encode()
+    assert len({base, *variants.values()}) == 4
+    asset = xbe.parent / "data" / "game.afs"
+    asset.write_bytes(b"cast revision")
+    revised = native.prepare_play_disc(xbe, cfg, {**game(), "mod": "doa3_cast_sonic"})
+    assert revised != variants["doa3_cast_sonic"]
+    assert (revised.parent / "data" / "game.afs").read_bytes() == b"cast revision"
+    assert not (revised.parent / ".recomp-storage").exists()
+    assert base_save.read_bytes() == b"personal progress"
+    for name, private in variants.items():
+        assert (private.parent / ".recomp-storage" / "profile").read_bytes() == name.encode()
+        assert (private.parent / "data" / "game.afs").read_bytes() == b"game assets"
+    assert xbe.read_bytes() == patched
+    # The play copy must not be a hard link back into a staged build.
+    (revised.parent / "data" / "game.afs").write_bytes(b"local corruption")
+    assert asset.read_bytes() == b"cast revision"
+    with pytest.raises(ToolUnavailable, match="content differs"):
+        native.prepare_play_disc(xbe, cfg, {**game(), "mod": "doa3_cast_sonic"})
+
+
+def test_build_receipt_identity_and_executable_gate_preserve_existing_storage(disc, tmp_path):
+    xbe, original, _ = disc
+    cfg = config(tmp_path)
+    build = {**game(), "mod": "doa3_cast_sonic"}
+    private = native.prepare_play_disc(xbe, cfg, build)
+    receipt_path = private.parent.parent / "disc-receipt.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt["mod"] = "another build"
+    receipt_path.write_text(json.dumps(receipt))
+    with pytest.raises(ToolUnavailable, match="differs"):
+        native.prepare_play_disc(xbe, cfg, build)
+    xbe.write_bytes(original + b"unknown guest code")
+    with pytest.raises(ToolUnavailable, match="verified USA executable"):
+        native.prepare_play_disc(xbe, cfg, build)
+    assert private.read_bytes() == original
+
+
+def test_original_receipt_without_build_field_still_reuses_personal_saves(disc, tmp_path):
+    xbe, _, _ = disc
+    cfg = config(tmp_path)
+    private = native.prepare_play_disc(xbe, cfg, game())
+    receipt_path = private.parent.parent / "disc-receipt.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt.pop("mod")
+    receipt_path.write_text(json.dumps(receipt))
+    assert native.prepare_play_disc(xbe, cfg, game()) == private
+
+
+@pytest.mark.parametrize("mod", [42, "a" * 161, "bad\x00name", "bad\nname"])
+def test_invalid_build_identity_cannot_create_a_play_directory(disc, tmp_path, mod):
+    xbe, _, _ = disc
+    cfg = config(tmp_path)
+    with pytest.raises(ToolUnavailable, match="bounded build identity"):
+        native.prepare_play_disc(xbe, cfg, {**game(), "mod": mod})
+    assert not (cfg.runtime / "xbox" / "doa3-native-play").exists()
+
+
 def test_changed_source_asset_and_damaged_private_copy_fail_without_overwriting_saves(disc, tmp_path):
     xbe, _, _ = disc
     cfg = config(tmp_path)
