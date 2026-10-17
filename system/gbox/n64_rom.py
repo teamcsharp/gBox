@@ -2,13 +2,69 @@
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
+import os
 import shutil
 import subprocess
+import tempfile
 import zipfile
 
 
 ROM_EXTENSIONS = (".z64", ".v64", ".n64")
 MAX_ROM_BYTES = 128 * 1024 * 1024
+# 7-Zip reads the archive from the library share (SMB). A fixed 120 s limit failed a whole swap when the share
+# stalled (#1053: OoT, 24 MB .7z). Allow at least MIN_7Z_SECONDS, more for big archives, and retry once.
+MIN_7Z_SECONDS = 300
+MIN_7Z_BYTES_PER_SECOND = 64 * 1024
+CACHE_ENV = "GBOX_N64_ROM_CACHE"
+
+
+def cache_dir() -> Path | None:
+    """Where unpacked archive ROMs are kept (normalized .z64), so later reads skip the share and 7-Zip.
+    GBOX_N64_ROM_CACHE overrides it; an empty value disables the cache."""
+    v = os.environ.get(CACHE_ENV)
+    if v is not None:
+        return Path(v) if v.strip() else None
+    return Path.home() / "gbox-cache" / "n64-rom"
+
+
+def _cache_file(path: Path) -> Path | None:
+    root = cache_dir()
+    if root is None:
+        return None
+    st = path.stat()
+    key = hashlib.sha256(f"{path.resolve()}\0{st.st_size}\0{st.st_mtime_ns}".encode()).hexdigest()[:24]
+    return root / f"{key}.z64"
+
+
+def _cached(path: Path) -> bytes | None:
+    try:
+        f = _cache_file(path)
+        if f is None or not f.is_file():
+            return None
+        data = f.read_bytes()
+    except OSError:
+        return None
+    return data if data[:4] == b"\x80\x37\x12\x40" and len(data) % 4 == 0 else None
+
+
+def _store(path: Path, data: bytes) -> None:
+    """Best effort: a cache that can't be written never fails the read."""
+    try:
+        f = _cache_file(path)
+        if f is None:
+            return
+        f.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=f.parent, suffix=".part")
+        with os.fdopen(fd, "wb") as out:
+            out.write(data)
+        os.replace(tmp, f)
+    except OSError:
+        pass
+
+
+def _7z_timeout(path: Path) -> float:
+    return max(MIN_7Z_SECONDS, path.stat().st_size / MIN_7Z_BYTES_PER_SECOND)
 
 
 def _check_size(size: int) -> None:
@@ -34,7 +90,15 @@ def _from_7z(path: Path) -> bytes:
         raise ValueError(f"no .z64, .v64, or .n64 ROM in {path.name}")
     name, size = members[0]
     _check_size(size)
-    extracted = subprocess.run([exe, "x", "-so", str(path), name], capture_output=True, timeout=120, check=True)
+    timeout = _7z_timeout(path)
+    for attempt in (1, 2):
+        try:
+            extracted = subprocess.run([exe, "x", "-so", str(path), name], capture_output=True, timeout=timeout,
+                                       check=True)
+            break
+        except subprocess.TimeoutExpired:
+            if attempt == 2:
+                raise
     if len(extracted.stdout) != size:
         raise ValueError(f"7-Zip returned an incomplete N64 ROM from {path.name}")
     return extracted.stdout
@@ -59,6 +123,9 @@ def normalize(data: bytes) -> bytes:
 def read(path: str | Path) -> bytes:
     """Return big-endian ROM bytes without changing the operator's original file."""
     path = Path(path)
+    archived = path.suffix.lower() in (".7z", ".zip")
+    if archived and (hit := _cached(path)) is not None:
+        return hit
     if path.suffix.lower() == ".7z":
         data = _from_7z(path)
     elif path.suffix.lower() == ".zip":
@@ -71,4 +138,7 @@ def read(path: str | Path) -> bytes:
     else:
         _check_size(path.stat().st_size)
         data = path.read_bytes()
-    return normalize(data)
+    data = normalize(data)
+    if archived:
+        _store(path, data)
+    return data

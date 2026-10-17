@@ -78,7 +78,7 @@ function postMat(fs, uniforms) {
 }
 
 export class VisualizerManager {
-  constructor(canvas, { presets = {}, quality = "auto", palette } = {}) {
+  constructor(canvas, { presets = {}, quality = "auto", palette, maxFps = 0 } = {}) {
     this.canvas = canvas;
     const r = this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false, stencil: false, powerPreference: "high-performance" });
     r.outputColorSpace = THREE.LinearSRGBColorSpace; // palette colors are display values; no conversions
@@ -116,7 +116,12 @@ export class VisualizerManager {
     this.resize();
     if (typeof ResizeObserver !== "undefined") { this.ro = new ResizeObserver(() => this.resize()); this.ro.observe(canvas); }
     this.onWinResize = () => this.resize(); window.addEventListener("resize", this.onWinResize);
-    this.loop = (now) => { if (!this.running) return; this.raf = requestAnimationFrame(this.loop); this.frame(now); };
+    this.frameInterval = Number.isFinite(maxFps) && maxFps > 0 ? 1000 / maxFps : 0;
+    this.loop = (now) => {
+      if (!this.running) return;
+      this.raf = requestAnimationFrame(this.loop);
+      if (now - this.last >= this.frameInterval) this.frame(now);
+    };
   }
 
   makeTargets() {

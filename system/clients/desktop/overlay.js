@@ -8,6 +8,7 @@
 // gbox.overlay(op, arg). A plain Alt+click on the game while it waits for a target marks the character (pick()).
 const path = require("path");
 const { spawn } = require("child_process");
+const { shapeMinusHoles } = require("./embed-geometry");
 
 module.exports = function overlaySwap({ app, ipcMain, BrowserWindow, getWin, venvPython, settings, token, send }) {
   let trk = null, buf = "", ov = null, ready = false, queue = [], st = null, hooked = null;
@@ -77,21 +78,8 @@ module.exports = function overlaySwap({ app, ipcMain, BrowserWindow, getWin, ven
     const b = win.getContentBounds(), z = win.webContents.getZoomFactor() || 1, r = st.rect;
     const w = Math.max(1, Math.round(r.w * z)), h = Math.max(1, Math.round(r.h * z));
     ov.setBounds({ x: Math.round(b.x + r.x * z), y: Math.round(b.y + r.y * z), width: w, height: h });
-    let shape = [{ x: 0, y: 0, width: w, height: h }];
-    for (const o of st.holes || []) {                      // the model never draws over the chat / menus open on the game
-      const hx = o.x * z, hy = o.y * z, hx2 = hx + o.w * z, hy2 = hy + o.h * z, next = [];
-      for (const s of shape) {
-        const sx2 = s.x + s.width, sy2 = s.y + s.height;
-        if (hx >= sx2 || hx2 <= s.x || hy >= sy2 || hy2 <= s.y) { next.push(s); continue; }
-        if (hy > s.y) next.push({ x: s.x, y: s.y, width: s.width, height: hy - s.y });
-        if (hy2 < sy2) next.push({ x: s.x, y: hy2, width: s.width, height: sy2 - hy2 });
-        const my = Math.max(s.y, hy), my2 = Math.min(sy2, hy2);
-        if (hx > s.x) next.push({ x: s.x, y: my, width: hx - s.x, height: my2 - my });
-        if (hx2 < sx2) next.push({ x: hx2, y: my, width: sx2 - hx2, height: my2 - my });
-      }
-      shape = next;
-    }
-    try { ov.setShape(shape.map(s => ({ x: Math.round(s.x), y: Math.round(s.y), width: Math.max(1, Math.round(s.width)), height: Math.max(1, Math.round(s.height)) }))); } catch {}
+    // the model never draws over the chat / menus open on the game
+    try { ov.setShape(shapeMinusHoles(w, h, st.holes, z)); } catch {}
     if (!ov.isVisible()) ov.showInactive();
   }
 

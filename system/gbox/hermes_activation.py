@@ -150,6 +150,16 @@ def activation_snapshot(root: Path, api, *, home: Path | None = None, now: float
         return {'reason': 'Waiting for a complete canonical activation safety snapshot.', 'sessions': sessions}
 
 
+def check_idle(root: Path) -> int:
+    """Bootstrap preflight: a busy or unknown runtime must not be restarted."""
+    from .hermes_work_queue import _api
+    reason = activation_snapshot(root, _api)['reason']
+    if reason:
+        print('gBox update deferred: ' + reason + ' Running work is preserved.', flush=True)
+        return 75
+    return 0
+
+
 def verify_activation(policy: dict, before: list[dict], after: list[dict], expected_fields=None) -> None:
     required = expected_fields or {'fallback_enabled', 'max_parallel_jobs', 'image_input_mode'}
     if not isinstance(policy, dict) or not set(required) <= policy.keys():
@@ -245,3 +255,10 @@ def activate(root: Path, request_id: str, verification_run: str, timeout: int = 
     except Exception as exc:
         step('Backend refresh remains pending: ' + type(exc).__name__ + '. No ticket completion was recorded.', 'failed')
         raise
+
+
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description='Check whether a gBox backend refresh would interrupt work.')
+    parser.add_argument('--check-idle', required=True, type=Path)
+    raise SystemExit(check_idle(parser.parse_args().check_idle))

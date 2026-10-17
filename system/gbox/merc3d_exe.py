@@ -2,17 +2,16 @@
 
 Analysis-stage tools for the owned EUR build's decompressed .code (ARM11, base 0x100000,
 sha256 85a34c86...821be). Pure python (stdlib only) so the scan is reproducible anywhere;
-the instruction encodings and every real-file assertion below were cross-validated against
-capstone 5.0.7 on the actual binary.
+Scanned words are candidate references, not proof of instruction boundaries or
+ARM/Thumb execution mode. Follow candidates in a mode-aware disassembler before
+using them as loader evidence.
 
 Pinned findings this module reproduces (pl0000 analysis, ticket #1320 / PR #46):
 
-  * The uPl roster table at 0x76AC10 sits inside an ARM-mode class-registration blob
-    (0x76A000-0x76C000) that registers every class by name through one routine at
-    0x478E44: unrolled ARM code does ``add r1, pc, #imm`` (name pointer) + ``bl #0x478e44``.
-    The table holds the 16-costume roster: uPl< Chris > ... uPl< Wesker > and
-    uPl< ChrisCos2 > ... uPl< WeskerCos2 >, each name followed by one or two 16-byte
-    descriptor quads (model id column 0x80010000 + 0x10*i, vtable/ro pointers).
+  * A bounded scan beginning at 0x76AC10 finds 18 aligned uPl name strings,
+    representing 16 unique names; Chris and Jill occur again in another registration
+    cluster. Intervening bytes include executable code. They must not be treated as
+    uniform 16-byte model descriptors or a complete roster binding table.
   * 'archive\\%s' at 0x4D6CE4 is referenced by ARM-mode code at 0x4D6C68
     (``add r2, pc, #0x74``) inside the archive-path cluster 0x4D6A40-0x4D6D90, which
     calls the formatter at 0x100E7C and the global-object accessor at 0x804818.
@@ -120,7 +119,7 @@ def arm_ldr_literal_refs(data: bytes, ranges, base: int = BASE) -> list[dict]:
     out = []
     for off in range(0, len(data) - 3, 4):
         w = _u32(data, off)
-        if (w & 0x0F7F0000) == 0x051F0000:
+        if w >> 28 != 15 and (w & 0x0F7F0000) == 0x051F0000:
             imm = w & 0xFFF
             t = ((base + off + 8) & ~3) + (imm if (w >> 23) & 1 else -imm)
             if match_range(ranges, t):
@@ -129,12 +128,15 @@ def arm_ldr_literal_refs(data: bytes, ranges, base: int = BASE) -> list[dict]:
 
 
 def arm_adr_refs(data: bytes, ranges, base: int = BASE) -> list[dict]:
-    """ARM ADD/SUB Rd, pc, #imm12 (ADR/ADRl): (w & 0x0FFF0000) == 0x028F0000."""
+    """A32 ADD/SUB Rd, pc, immediate: imm8 rotated right by twice rotate_imm."""
     out = []
     for off in range(0, len(data) - 3, 4):
         w = _u32(data, off)
-        if (w & 0x0FFF0000) == 0x028F0000:
-            t = (base + off + 8) + (w & 0xFFF)
+        op = w & 0x0FFF0000
+        if w >> 28 != 15 and op in (0x028F0000, 0x024F0000):
+            value, rotate = w & 0xFF, ((w >> 8) & 15) * 2
+            immediate = ((value >> rotate) | (value << (32 - rotate))) & 0xFFFFFFFF
+            t = (base + off + 8 + (immediate if op == 0x028F0000 else -immediate)) & 0xFFFFFFFF
             if match_range(ranges, t):
                 out.append({"site": base + off, "target": t, "kind": "arm_adr"})
     return out
@@ -145,7 +147,7 @@ def arm_b_bl(data: bytes, base: int = BASE) -> list[tuple[int, int]]:
     out = []
     for off in range(0, len(data) - 3, 4):
         w = _u32(data, off)
-        if (w & 0x0F000000) in (0x0A000000, 0x0B000000):
+        if w >> 28 != 15 and (w & 0x0F000000) in (0x0A000000, 0x0B000000):
             imm = (w & 0xFFFFFF) << 2
             if imm & (1 << 25):
                 imm -= 1 << 26
@@ -154,18 +156,16 @@ def arm_b_bl(data: bytes, base: int = BASE) -> list[tuple[int, int]]:
 
 
 def thumb_bl(data: bytes, base: int = BASE) -> list[tuple[int, int]]:
-    """Thumb BL immediate targets: (site, target)."""
+    """ARM11/ARMv6 Thumb BL immediate targets; not Thumb-2 encodings."""
     out = []
     for off in range(0, len(data) - 3, 2):
         hw1, hw2 = _u16(data, off), _u16(data, off + 2)
-        if (hw1 & 0xF800) == 0xF000 and (hw2 & 0xD000) == 0xD000:
-            s = (hw1 >> 10) & 1
-            j1, j2 = (hw2 >> 13) & 1, (hw2 >> 11) & 1
-            i1, i2 = (~(j1 ^ s)) & 1, (~(j2 ^ s)) & 1
-            imm = (s << 24) | (i1 << 23) | (i2 << 22) | ((hw1 & 0x3FF) << 12) | ((hw2 & 0x7FF) << 1)
-            if imm & (1 << 24):
-                imm -= 1 << 25
-            out.append((base + off, base + off + 4 + imm))
+        if (hw1 & 0xF800) == 0xF000 and (hw2 & 0xF800) == 0xF800:
+            high = hw1 & 0x7FF
+            if high & 0x400:
+                high -= 0x800
+            imm = (high << 12) + ((hw2 & 0x7FF) << 1)
+            out.append((base + off, (base + off + 4 + imm) & 0xFFFFFFFF))
     return out
 
 
@@ -174,7 +174,7 @@ def callers_of(data: bytes, ranges, base: int = BASE) -> list[dict]:
     out = [{"site": s, "target": t, "kind": "thumb_bl"} for s, t in thumb_bl(data, base)
            if match_range(ranges, t)]
     out += [{"site": s, "target": t, "kind": "arm_bl"} for s, t in arm_b_bl(data, base)
-            if match_range(ranges, t)]
+            if (_u32(data, s - base) & 0x01000000) and match_range(ranges, t)]
     return out
 
 
@@ -201,42 +201,29 @@ def strings_in(data: bytes, lo: int, hi: int, base: int = BASE, min_len: int = 3
 
 def upl_table(data: bytes, addr: int = 0x76AC10, base: int = BASE,
               max_names: int = 64) -> list[dict]:
-    """Parse the uPl< Name > roster table embedded in the class-registration blob.
+    """Bounded candidate name scan; descriptor layout and loader bindings are unproven.
 
-    Layout (pinned on the owned EUR build): for each entry, the name "uPl< X >" is
-    NUL-terminated and padded to 4 bytes; one or more 16-byte descriptor quads follow
-    until the next "uPl<" marker. The first entry (Chris) carries two descriptors, the
-    second of which is only 12 bytes (3 u32s) before Jill's name.
+    Preserve repeated names rather than interpreting them as extra costumes. The
+    following words are raw evidence only and may include code or unrelated data.
     """
-    if not (0 <= addr - base < len(data)):
-        raise ExeError(f"table addr {addr:#x} outside image")
-    out = []
+    import re
+    if type(max_names) is not int or not 0 <= max_names <= 64:
+        raise ExeError("max_names must be between zero and 64")
     pos = addr - base
+    if not 0 <= pos < len(data):
+        raise ExeError(f"table addr {addr:#x} outside image")
     limit = min(len(data), pos + 0x2000)
-    while len(out) < max_names and pos + 4 <= limit:
-        if data[pos:pos + 4] != b"uPl<":
+    out = []
+    for off in range(pos, limit - 3, 4):
+        if len(out) >= max_names:
             break
-        name_start = pos
-        end = data.find(b"\0", pos, pos + 64)
-        if end < 0:
-            break
-        name = data[pos:end].decode("latin-1")
-        pos = (end + 1 + 3) & ~3  # NUL-terminated, pad to 4
-        descs = []
-        tail = []
-        while pos + 4 <= limit and data[pos:pos + 4] != b"uPl<":
-            # a full quad is taken only when no name marker starts inside the next 12 bytes
-            nxt = data.find(b"uPl<", pos + 4, pos + 16)
-            if nxt < 0 and pos + 16 <= limit:
-                descs.append([_u32(data, pos + k) for k in (0, 4, 8, 12)])
-                pos += 16
-            else:
-                while pos + 4 <= nxt:
-                    tail.append(_u32(data, pos))
-                    pos += 4
-                break
-        out.append({"name": name, "va": base + name_start,
-                    "descs": descs, "tail": tail})
+        end = data.find(b"\0", off, min(limit, off + 64))
+        if end < 0 or not re.fullmatch(rb"uPl< [A-Za-z0-9]+ >", data[off:end]):
+            continue
+        after = (end + 4) & ~3
+        out.append({"name":data[off:end].decode('ascii'), "va":base+off,
+                    "following_words":[_u32(data, p) for p in range(after,min(after+16,limit-3),4)],
+                    "layout_verified":False})
     return out
 
 
@@ -252,7 +239,7 @@ class CodeImage:
         return cls(Path(path).read_bytes())
 
     def refs_to(self, ranges: list[tuple[int, int]]) -> list[dict]:
-        fns = (find_u32_refs, thumb_ldr_literal_refs, thumb_adr_refs, thumb_add_pc_refs,
+        fns = (find_u32_refs, thumb_ldr_literal_refs, thumb_adr_refs,
                arm_ldr_literal_refs, arm_adr_refs)
         out = []
         for fn in fns:

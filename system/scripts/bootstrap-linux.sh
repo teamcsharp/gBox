@@ -6,6 +6,19 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 VENV="$REPO/.venv-linux-$(uname -m)"
 CONFIG="$REPO/gbox.toml"
 
+# Updating dependencies or restarting this combined API/worker can terminate
+# active Ghidra, extraction and gameplay work. Defer the entire live update.
+if systemctl is-active --quiet gbox.service; then
+  [ -x "$VENV/bin/python" ] || { echo "!! active gBox has no usable preflight interpreter; update deferred"; exit 1; }
+  if "$VENV/bin/python" -m gbox.hermes_activation --check-idle "$REPO"; then
+    :
+  else
+    status=$?
+    [ "$status" -eq 75 ] && exit 0
+    exit "$status"
+  fi
+fi
+
 echo "== python venv: $VENV"
 [ -x "$VENV/bin/python" ] || python3 -m venv "$VENV"
 "$VENV/bin/pip" install -q --upgrade pip
@@ -35,6 +48,16 @@ WantedBy=multi-user.target
 UNIT
 sudo -n systemctl daemon-reload
 sudo -n systemctl enable gbox.service >/dev/null
+# Setup can take minutes; check again because work may have arrived meanwhile.
+if systemctl is-active --quiet gbox.service; then
+  if "$VENV/bin/python" -m gbox.hermes_activation --check-idle "$REPO"; then
+    :
+  else
+    status=$?
+    [ "$status" -eq 75 ] && exit 0
+    exit "$status"
+  fi
+fi
 sudo -n systemctl restart gbox.service
 sleep 3
 systemctl is-active gbox.service && curl -sf "http://127.0.0.1:8765/api/health" && echo && echo "== gBox running on http://$(hostname -I | awk '{print $1}'):8765"

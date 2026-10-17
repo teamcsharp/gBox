@@ -150,3 +150,16 @@ def test_default_zero_actual_cost_is_not_a_provider_billing_observation(tmp_path
     total = hermes_feedback._recorded_usage(1100)['provider/model']
     assert total['actual_cost_usd'] is None and total['actual_cost_sessions'] == 0
     assert total['estimated_cost_usd'] == 0.1 and total['estimated_cost_sessions'] == 1
+
+def test_openrouter_402_insufficient_credits_is_a_quota_failure():
+    """OpenRouter answers HTTP 402 once a key's limit is spent; Hermes raised it as a non-retryable client error and
+    the route supervisor never cooled the route down, so every queued run failed at its first call (2026-10-12)."""
+    from gbox import hermes_quota as Q
+    msg = ("RuntimeError: HTTP 402: Insufficient available credits for this inference request. "
+           "Add credits or lower the requested maximum output tokens.")
+    assert Q.provider_failure(msg) == 'quota'
+    assert Q.provider_failure("Error code: 402 - {'status': 402, 'message': 'Payment Required'}") == 'quota'
+    assert Q.provider_failure('"limit_remaining": 0') == 'quota'
+    assert Q.provider_failure("HTTP 500 upstream error") is None
+    assert Q.provider_failure("job 14020 finished") is None
+

@@ -1,0 +1,26 @@
+{
+  "version": "0.9.0",
+  "tag": "v0.9.0",
+  "commit": "c699e3cda69f4852b43c0b191ab0091aaeff9d6a",
+  "repository": "https://github.com/storytold/photocraft",
+  "license": "MIT OR Apache-2.0",
+  "runtime_dir": "photocraft/runtime/v0.9.0",
+  "archive": {
+    "name": "photocraft-web-0.9.0.zip",
+    "url": "https://github.com/storytold/photocraft/releases/download/v0.9.0/photocraft-web-0.9.0.zip",
+    "sha256": "b3fa5ab6a9d32bc5ff7dfdde31939a2337471a196a2e70f1ff961a61b1bb02e6",
+    "size": 11467035,
+    "prefix": "photocraft-web-0.9.0/"
+  },
+  "files": {
+    "index.html": {"sha256": "fa06712b037be9140457248a205b2c5c74a15a0f79a1a0b9abf036ac3fe8e0d7", "size": 2320, "mime": "text/html"},
+    "photocraft-web-4cc0a6fe355463b6.js": {"sha256": "83135ae3724d9a8d9dfdaa37f45058a67bffb4c5a333d4a581191a312f326b1a", "size": 171798, "mime": "text/javascript"},
+    "photocraft-web-4cc0a6fe355463b6_bg.wasm": {"sha256": "5d2e3b7254f478e8b5f09ef23e96f08651da2a9ee59c9f904a08515f4b77fa0b", "size": 25033027, "mime": "application/wasm"},
+    "LICENSE-MIT": {"sha256": "1a8f66d8a86b146f5336fa0d4b1186576c8aa98e60823080c85c7811cfd810af", "size": 1102, "mime": "text/plain"},
+    "LICENSE-APACHE": {"sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594", "size": 10174, "mime": "text/plain"},
+    "HOSTING.md": {"sha256": "5433116e4bb1624a6ff0dd50630ea5bd16af9d63ddcb9e239ef6c421f786517c", "size": 11032, "mime": "text/plain"},
+    "README.md": {"sha256": "f9208a0aefc6fb97bc849597ad146cc701312f04b6f6c9eaecd5ff797a501e76", "size": 31704, "mime": "text/plain"},
+    "_headers": {"sha256": "e3e253de74fb99a761fc91d4dec4b81ad6a1022b29c98761b5ac1e8ba5aff05a", "size": 326, "mime": "text/plain"},
+    ".htaccess": {"sha256": "c92d61b428bff284fce08dc57f0255261476397f2cba5836c833974eded5c725", "size": 495, "mime": "text/plain"}
+  }
+}

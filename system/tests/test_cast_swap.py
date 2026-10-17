@@ -1,0 +1,656 @@
+"""Whole-cast swap (gbox.cast_swap): slot enumeration per writer, donor selection (groups, titles, costume dedupe,
+the retarget check, stale readers re-extracted), deterministic mappings, the chained multi-slot path with fake
+writers, one-mod builds with per-slot reports, the PSO pairs build on synthetic enemy packs (no disc, Blender or
+emulator), and the agent / mashup routing of "replace everyone in PSO with wrestlers"."""
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from gbox import cast_swap as CS, characters as C, mashup, pso_enemy as PE
+
+PSO = {"game_id": "daba7a3b195dcf6b", "title": "Phantasy Star Online Ver. 2 (USA)", "platform": "dreamcast"}
+JGR = {"game_id": "4187aeab4d67638c", "title": "Jet Grind Radio (USA)", "platform": "dreamcast"}
+CT = {"game_id": next(iter(__import__("gbox.crazy_taxi_swap", fromlist=["x"]).GAME_IDS)), "title": "Crazy Taxi (USA)",
+      "platform": "gamecube"}
+DJV = {"game_id": "deabd11481aa5a0c", "title": "Def Jam - Vendetta (USA)", "platform": "ps2"}
+DOA2 = {"game_id": next(iter(__import__("gbox.doa2_swap", fromlist=["x"]).GAME_IDS)), "title": "Dead or Alive 2",
+        "platform": "dreamcast"}
+ROLES = {"hip": "j0", "chest": "j1", "head": "j2"}
+
+
+def entry(slug, name, title, platform, roles=ROLES, **kw):
+    return {"slug": slug, "name": name, "kind": "character", "model": f"{slug}.glb", "aliases": kw.pop("aliases", []),
+            "rig": {"roles": roles} if roles is not None else {}, "stats": {"triangles": 100, "textures": 1},
+            "source": {"game_title": title, "game_id": kw.pop("gid", slug[:3] + "0" * 13), "platform": platform}, **kw}
+
+
+DJ = ("Def Jam - Vendetta (USA)", "ps2")
+SD2 = ("WWF SmackDown! 2 - Know Your Role (USA)", "psx")
+JG = ("Jet Grind Radio (USA)", "dreamcast")
+CHARS = [
+    entry("djv_ps2_briggs_1", "Briggs (costume 1) (Def Jam Vendetta PS2)", *DJ, gid="deabd11481aa5a0c"),
+    entry("djv_ps2_briggs_2", "Briggs (costume 2) (Def Jam Vendetta PS2)", *DJ, gid="deabd11481aa5a0c"),
+    entry("djv_ps2_dmx", "DMX (Def Jam Vendetta PS2)", *DJ, gid="deabd11481aa5a0c"),
+    entry("djv_ps2_moses", "Moses (Def Jam Vendetta PS2)", *DJ, gid="deabd11481aa5a0c"),
+    entry("djv_ps2_unmapped", "Deebo (Def Jam Vendetta PS2)", *DJ, gid="deabd11481aa5a0c", roles=None),
+    entry("sd2_the_rock", "The Rock", *SD2, gid="276334ad218ffb46"),
+    entry("sd2_kane", "Kane", *SD2, gid="276334ad218ffb46"),
+    entry("jgr_char04", "Beat (JGR ereki, ID 0)", *JG, gid="4187aeab4d67638c", extraction_tool="gbox.jgr + gbox.ninja",
+          jgr_reader=2),
+    entry("jgr_char06", "Gum (JGR gum, ID 1)", *JG, gid="4187aeab4d67638c", extraction_tool="gbox.jgr + gbox.ninja"),
+    entry("sonic", "Sonic", "Sonic Adventure 2 (USA)", "dreamcast", gid="5a20000000000000"),
+    entry("sonic_bighead", "Sonic - big head", "Sonic Adventure 2 (USA)", "dreamcast", variant_of="sonic"),
+]
+
+
+# ---------------------------------------------------------------- slots
+
+def test_pso_slots_drop_aggregates_and_keep_the_player_with_its_status():
+    rows = CS.slot_rows(PSO)
+    slots = [r["slot"] for r in rows]
+    assert slots[0] == "player" and rows[0]["status"] == "not_working"
+    assert {"enemy:booma", "enemy:gobooma", "enemy:gigobooma", "enemy:bm2_moja", "enemy:df2_bringer"} <= set(slots)
+    assert "enemy:boomas" not in slots and "enemies" not in slots
+    assert len(slots) == len(set(slots))
+    big = {r["slot"]: r["size"] for r in rows if r.get("size")}
+    assert big["enemy:gigobooma"] > big["enemy:booma"] > big["enemy:lappy"]
+    assert [r["slot"] for r in CS.filter_slots(rows, "enemies")] == slots[1:]
+    assert [r["slot"] for r in CS.filter_slots(rows, "main")] == ["player"]
+    assert [r["slot"] for r in CS.filter_slots(rows, "enemy:booma, enemy:lappy")] == ["enemy:booma", "enemy:lappy"]
+    with pytest.raises(ValueError, match="matches none"):
+        CS.filter_slots(rows, "enemy:nope")
+
+
+def test_jgr_crazy_taxi_defjam_doa2_slots_list_every_model_once():
+    jgr = [r["slot"] for r in CS.slot_rows(JGR)]
+    assert len(jgr) == 16 and "player" not in jgr and "character:beat" in jgr       # player is Beat's alias
+    ct = CS.slot_rows(CT)
+    assert {r["slot"] for r in ct} >= {"driver:axel", "driver:bd_joe", "driver:gena", "driver:gus"}
+    assert not {"player", "drivers", "pedestrians", "passengers"} & {r["slot"] for r in ct}
+    assert {r["kind"] for r in ct} == {"driver", "pedestrian", "passenger"}
+    dj = CS.slot_rows(DJV)
+    names = [r["slot"] for r in dj]
+    assert "player" not in names and len(names) == len(set(names)) and {"Briggs", "DMX", "Method Man"} <= set(names)
+    assert next(r for r in dj if r["slot"] == "Briggs")["costumes"] == 3
+    doa = CS.slot_rows(DOA2)
+    assert len(doa) == 14 and all(r["slot"].startswith("fighter:") and r["kind"] == "fighter" for r in doa)
+
+
+# ---------------------------------------------------------------- donors
+
+def test_source_groups_titles_ids_and_extractors():
+    w = CS.resolve_source("wrestlers", CHARS)
+    assert {m["slug"] for m in w["entries"]} == {"djv_ps2_briggs_1", "djv_ps2_briggs_2", "djv_ps2_dmx", "djv_ps2_moses",
+                                                  "djv_ps2_unmapped", "sd2_the_rock", "sd2_kane"}
+    assert "Wrestlers" in w["label"]
+    assert {m["slug"] for m in CS.resolve_source("JGR", CHARS)["entries"]} == {"jgr_char04", "jgr_char06"}
+    assert {m["slug"] for m in CS.resolve_source("Jet Grind Radio", CHARS)["entries"]} == {"jgr_char04", "jgr_char06"}
+    assert {m["slug"] for m in CS.resolve_source("276334ad218ffb46", CHARS)["entries"]} == {"sd2_the_rock", "sd2_kane"}
+    assert {m["slug"] for m in CS.resolve_source("smackdown2", CHARS)["entries"]} == {"sd2_the_rock", "sd2_kane"}
+    both = CS.resolve_source("SA2, JGR", CHARS)["entries"]
+    assert {m["slug"] for m in both} == {"sonic", "jgr_char04", "jgr_char06"}               # the big-head variant is out
+    with pytest.raises(ValueError, match="sources: Wrestlers"):
+        CS.resolve_source("Final Fantasy XII", CHARS)
+    menu = CS.source_groups(CHARS)
+    assert menu[0]["key"] == "wrestlers" and menu[0]["count"] == 6                         # Briggs' costumes count once
+    assert any(g["label"] == "Jet Grind Radio (USA)" and g["count"] == 2 for g in menu)
+
+
+def test_costumes_dedupe_onto_one_donor():
+    keep, dropped = CS.dedupe(CS.resolve_source("wrestlers", CHARS)["entries"])
+    assert "djv_ps2_briggs_1" in {m["slug"] for m in keep} and "djv_ps2_briggs_2" not in {m["slug"] for m in keep}
+    assert dropped == [{"slug": "djv_ps2_briggs_2", "name": "Briggs (costume 2) (Def Jam Vendetta PS2)",
+                        "costume_of": "djv_ps2_briggs_1"}]
+    gc = [entry(f"djv_s000{c}", f"Def Jam Vendetta fighter 000 costume {c}", "Def Jam - Vendetta (USA)", "gamecube")
+          for c in "abc"] + [entry("djv_s001a", "Def Jam Vendetta fighter 001 costume a", "Def Jam - Vendetta (USA)", "gamecube")]
+    assert [m["slug"] for m in CS.dedupe(gc)[0]] == ["djv_s000a", "djv_s001a"]                # live GC naming
+
+
+def test_gate_refuses_unmapped_donors_with_the_reason():
+    donors, refused, refreshed = CS.gate([m for m in CHARS if m["slug"].startswith("djv")])
+    assert "djv_ps2_unmapped" not in {d["slug"] for d in donors}
+    why = next(r for r in refused if r["slug"] == "djv_ps2_unmapped")["reason"]
+    assert "no body roles" in why and refreshed == []
+
+
+def test_gate_runs_the_collection_check_when_the_library_is_here(tmp_path):
+    m = entry("broken", "Broken", *SD2)
+    (tmp_path / "broken").mkdir()
+    (tmp_path / "broken" / "meta.json").write_text(json.dumps(m))
+    assert "no model file" in CS.retarget_check(m, tmp_path)
+
+
+def test_stale_jgr_donor_is_re_extracted_before_building():
+    v1, v2 = CHARS[8], CHARS[7]
+    assert C.reader_status(v1) == {"extractor": "jgr", "entry": 1, "current": 2, "stale": True}
+    assert C.reader_status(v2)["stale"] is False and C.reader_status(CHARS[0]) is None
+    calls = []
+
+    def refresh(meta):
+        calls.append(meta["slug"])
+        return meta | {"jgr_reader": 2}
+    donors, refused, refreshed = CS.gate([v1, v2], refresh=refresh)
+    assert calls == ["jgr_char06"] and [d["slug"] for d in donors] == ["jgr_char06", "jgr_char04"]
+    assert refreshed[0]["slug"] == "jgr_char06" and "v2" in refreshed[0]["status"] and not refused
+    donors, refused, _ = CS.gate([v1], refresh=lambda m: (_ for _ in ()).throw(RuntimeError("disc unreadable")))
+    assert not donors and "re-extraction (reader v1 -> v2) failed: disc unreadable" in refused[0]["reason"]
+    donors, refused, _ = CS.gate([v1])                                # planning: no refresh -> flagged as stale
+    assert not donors and refused[0]["stale"] and "re-extract" in refused[0]["reason"]
+
+
+def test_refresher_reruns_the_source_games_dedicated_reader(monkeypatch, tmp_path):
+    seen = {}
+    monkeypatch.setattr(C, "_api", lambda ctx, m, p, **kw: seen.setdefault("api", p) and JGR)
+    monkeypatch.setattr(C, "extract_dedicated", lambda ctx, g, what, root: seen.update(game=g, what=what) or
+                        {"status": "extracted", "entry": {"slug": what}})
+    monkeypatch.setattr(C, "get", lambda root, slug: CHARS[8] | {"jgr_reader": 2})
+    new = CS._refresher(SimpleNamespace(), tmp_path)(CHARS[8])
+    assert seen == {"api": "/api/catalog/4187aeab4d67638c", "game": JGR, "what": "jgr_char06"}
+    assert new["jgr_reader"] == 2 and new["preview_url"] == "/api/characters/jgr_char06/preview"
+
+
+def test_extract_dedicated_flags_a_v1_jgr_entry_for_refresh():
+    assert C.reader_status(CHARS[8], "jgr")["stale"] and not C.reader_status(CHARS[7], "jgr")["stale"]
+    not_jgr = CHARS[8] | {"extraction_tool": "scene_capture"}                       # a frame cut is never re-read
+    assert C.reader_status(not_jgr, "jgr")["stale"] is False
+
+
+# ---------------------------------------------------------------- mapping
+
+def donors(n, sizes=None, lead=()):
+    return [{"slug": f"d{i}", "name": f"D{i}", "size": (sizes or {}).get(i), "lead": i in lead} for i in range(n)]
+
+
+def slots(n, sizes=None, player=False):
+    out = [{"slot": "player", "name": "player", "kind": "player"}] if player else []
+    return out + [{"slot": f"s{i}", "name": f"S{i}", "kind": "enemy", "size": (sizes or {}).get(i)} for i in range(n)]
+
+
+def test_mapping_is_deterministic_per_seed_and_uses_every_donor_before_repeating():
+    a = CS.assign(slots(10), donors(4), "random", "x")
+    assert a == CS.assign(slots(10), donors(4), "random", "x")
+    assert [r["character"] for r in a] != [r["character"] for r in CS.assign(slots(10), donors(4), "random", "y")]
+    first = [r["character"] for r in a[:4]]
+    assert sorted(first) == ["d0", "d1", "d2", "d3"]                     # one full round before any repeat
+    assert sorted(r["character"] for r in a[4:8]) == ["d0", "d1", "d2", "d3"]
+    b = CS.assign(slots(3), donors(8), "by_role", "x")
+    assert len({r["character"] for r in b}) == 3 and b == CS.assign(slots(3), donors(8), "by_role", "x")
+    with pytest.raises(ValueError, match="mapping"):
+        CS.assign(slots(1), donors(1), "alphabetical")
+
+
+def test_by_role_puts_the_lead_on_the_player_and_big_donors_on_big_slots():
+    s = slots(3, {0: 0.6, 1: 1.7, 2: 1.0}, player=True)
+    d = donors(4, {0: 0.8, 1: 1.3, 2: 1.0, 3: 1.1}, lead=(2,))
+    got = {r["slot"]: r["character"] for r in CS.assign(s, d, "auto", "")}
+    assert got == {"player": "d2", "s1": "d1", "s2": "d3", "s0": "d0"}
+    rows = CS.assign(s, d, "by_role", "")
+    assert [r["slot"] for r in rows] == ["player", "s0", "s1", "s2"]                 # the target's own slot order
+    assert rows[0]["why"] == "lead character on the player slot" and "body size" in rows[2]["why"]
+
+
+def test_skipped_slots_get_no_donor_and_edits_override_the_plan():
+    s = slots(2, player=True)
+    s[0]["skip"] = "not drawn"
+    plan = CS.assign(s, donors(3), "random", "1")
+    assert [r["slot"] for r in plan] == ["s0", "s1"]
+    d = donors(3)
+    edited = CS.apply_edits(plan, [{"slot": "s0", "character": "d2"}, {"slot": "s1", "character": ""}], d, s[1:])
+    assert [(r["slot"], r["character"], r["why"]) for r in edited] == [("s0", "d2", "edited")]
+    with pytest.raises(ValueError, match="not an eligible donor"):
+        CS.apply_edits(plan, [{"slot": "s0", "character": "zz"}], d, s[1:])
+
+
+def test_plan_pso_cast_as_wrestlers_without_the_library():
+    p = CS.plan(PSO, CHARS, "wrestlers", "by_role", "7")
+    assert p["status"] == "planned" and p["writer"] == "gbox.pso_player" and p["strategy"] == "pairs"
+    assert p["skipped"][0]["slot"] == "player" and "not_working" in p["skipped"][0]["reason"]
+    assert {r["slot"] for r in p["assignments"]} == {s["slot"] for s in p["slots"] if not s.get("skip")}
+    used = {r["character"] for r in p["assignments"]}
+    assert used == {"djv_ps2_briggs_1", "djv_ps2_dmx", "djv_ps2_moses", "sd2_the_rock", "sd2_kane"}
+    assert [r["slug"] for r in p["refused"]] == ["djv_ps2_unmapped"] and p["costumes_merged"][0]["slug"] == "djv_ps2_briggs_2"
+    assert p["mod"].startswith("cast_phantasy_star_onli_wrestlers_no_mercy_")
+    assert p == CS.plan(PSO, CHARS, "wrestlers", "by_role", "7")
+    enemies = CS.plan(PSO, CHARS, "JGR", slots="enemy:booma,enemy:gigobooma")
+    assert [r["slot"] for r in enemies["assignments"]] == ["enemy:booma", "enemy:gigobooma"]
+    stale = next(d for d in enemies["donors"] if d["slug"] == "jgr_char06")         # planned, re-extracted at build
+    assert stale["stale"] and "will be re-extracted" in enemies["refreshed"][0]["status"]
+
+
+def test_the_reviewed_plan_is_what_builds_even_after_re_extraction():
+    shown = CS.plan(JGR, CHARS, "JGR", "random", "s")                       # plan_only: Gum flagged as stale
+    built = CS.plan(JGR, CHARS, "JGR", "random", "s", refresh=lambda m: m | {"jgr_reader": 2})
+    assert [r["slug"] for r in shown["donors"]] == [r["slug"] for r in built["donors"]]
+    assert shown["assignments"] == built["assignments"]
+    rows = [{"slot": r["slot"], "character": r["character"]} for r in shown["assignments"]]
+    pinned = CS.plan(JGR, CHARS, "JGR", "random", "other seed", assignments=rows,
+                     refresh=lambda m: m | {"jgr_reader": 2})
+    assert [(r["slot"], r["character"]) for r in pinned["assignments"]] == [(r["slot"], r["character"]) for r in rows]
+    gum = next(r for r in rows if r["character"] == "jgr_char06")
+    failed = CS.plan(JGR, CHARS, "JGR", "random", "s", assignments=rows,
+                     refresh=lambda m: (_ for _ in ()).throw(RuntimeError("disc unreadable")))
+    assert gum["slot"] not in {r["slot"] for r in failed["assignments"]}
+    assert any(s["slot"] == gum["slot"] and "disc unreadable" in s["reason"] for s in failed["skipped"])
+
+
+def test_plan_for_a_game_without_a_writer_is_unsupported():
+    p = CS.plan({"game_id": "f" * 16, "title": "Shenmue", "platform": "dreamcast"}, CHARS, "wrestlers")
+    assert p["status"] == "unsupported" and "no routed character writer" in p["message"]
+
+
+# ---------------------------------------------------------------- the chained path and one-mod builds
+
+def test_chain_feeds_each_step_the_previous_output_and_isolates_failures():
+    original = {"AFS": b"0000"}
+    seen = []
+
+    def writer(i, fail=False):
+        def step(files):
+            seen.append(files["AFS"])
+            if fail:
+                raise ValueError("does not fit its AFS room")
+            b = bytearray(files["AFS"])
+            b[i] = ord("x")
+            return {"AFS": bytes(b)}
+        return step
+    files, rep = CS.chain(original, [("a", writer(0)), ("b", writer(1, fail=True)), ("c", writer(2))])
+    assert files == {"AFS": b"x0x0"} and original == {"AFS": b"0000"}
+    assert seen == [b"0000", b"x000", b"x000"]                     # c builds on a's output, b left no trace
+    assert rep["a"] == {"status": "built", "files": ["AFS"]} and rep["c"]["status"] == "built"
+    assert rep["b"] == {"status": "failed", "reason": "does not fit its AFS room"}
+    _f, rep = CS.chain({"AFS": b"0"}, [("d", lambda f: {"OTHER": b"1"})])
+    assert rep["d"]["status"] == "failed" and "outside the staged copy" in rep["d"]["reason"]
+
+
+def test_staged_disc_answers_the_previous_steps_bytes():
+    disc = SimpleNamespace(files={"A": (10, 4), "B": (20, 4)}, read=lambda p: b"orig")
+    st = CS.StagedDisc(disc, {"A": b"newer!"})
+    assert st.read("A") == b"newer!" and st.read("B") == b"orig" and st.files["A"] == (10, 6)
+
+
+def _ctx(tmp_path):
+    return SimpleNamespace(config=SimpleNamespace(cache=tmp_path / "cache"), progress=lambda *a: None, job_id="j")
+
+
+def test_build_runs_one_multi_slot_builder_and_reports_every_slot(tmp_path, monkeypatch):
+    from gbox import filemods
+    posted, calls = [], []
+    monkeypatch.setattr(C, "_api", lambda ctx, m, p, **kw: posted.append((m, p, kw.get("json"))))
+    monkeypatch.setattr(C, "get", lambda root, slug: next(m for m in CHARS if m["slug"] == slug))
+
+    def fake(ctx, game, pairs, name, inp):
+        calls.append([(s, m["slug"]) for s, m in pairs])
+        d = filemods.mod_dir(ctx.config, game["game_id"], name)
+        d.mkdir(parents=True)
+        (d / ".gbox-mod.json").write_text(json.dumps({"name": name, "game_id": game["game_id"]}))
+        return {"mod": name, "slots": {s: ({"status": "failed", "reason": "pack full"} if i == 1 else {"status": "built"})
+                                       for i, (s, _m) in enumerate(pairs)}}
+    monkeypatch.setitem(CS.BUILDERS, "gbox.pso_player", fake)
+    p = CS.plan(PSO, CHARS, "wrestlers", "random", "3", "enemy:booma,enemy:gobooma,enemy:gigobooma")
+    inp = SimpleNamespace(rebuild=False, seed="3")
+    r = CS.build(_ctx(tmp_path), PSO, p, CHARS, tmp_path, inp)
+    assert len(calls) == 1 and [s for s, _ in calls[0]] == ["enemy:booma", "enemy:gobooma", "enemy:gigobooma"]
+    assert r["status"] == "partial" and r["mod"] == p["mod"]
+    assert [(x["slot"], x["status"]) for x in r["report"]][:3] == [("enemy:booma", "built"), ("enemy:gobooma", "failed"),
+                                                                   ("enemy:gigobooma", "built")]
+    assert r["report"][1]["reason"] == "pack full" and r["report"][1]["donor"]
+    rec = json.loads((filemods.mod_dir(_ctx(tmp_path).config, PSO["game_id"], p["mod"]) / ".gbox-mod.json").read_text())
+    assert [c["slot"] for c in rec["cast"]] == ["enemy:booma", "enemy:gobooma", "enemy:gigobooma"]
+    assert rec["cast_source"] == p["source"] and rec["verified_in_game"] is False
+    assert [x[1] for x in posted] == [f"/api/characters/{r['report'][0]['character']}/targets",
+                                      f"/api/characters/{r['report'][2]['character']}/targets"]
+    again = CS.build(_ctx(tmp_path), PSO, p, CHARS, tmp_path, inp)                 # the same plan reuses the mod
+    assert again["status"] == "ready" and len(calls) == 1 and again["report"][1]["status"] == "failed"
+
+
+def test_build_without_a_multi_slot_path_reports_why(tmp_path, monkeypatch):
+    monkeypatch.setattr(C, "get", lambda root, slug: next(m for m in CHARS if m["slug"] == slug))
+    p = {"mod": "cast_x", "strategy": "single", "writer": "gbox.re6_tool", "source": "x", "mapping": "auto", "seed": "",
+         "assignments": [{"slot": "player", "slot_name": "Leon", "character": "sonic", "donor": "Sonic"},
+                         {"slot": "enemies", "slot_name": "enemies", "character": "sd2_kane", "donor": "Kane"}]}
+    r = CS.build(_ctx(tmp_path), PSO, p, CHARS, tmp_path, SimpleNamespace(rebuild=False))
+    assert r["status"] == "failed" and r["mod"] is None and "no multi-slot path" in r["report"][0]["reason"]
+
+
+def test_jgr_chain_builder_stages_player_afs_and_writes_one_image(tmp_path, monkeypatch):
+    from gbox import gdrom, jgr
+    afs = b"AFS-ORIGINAL"
+    steps = []
+    monkeypatch.setattr(C, "_dc_gdi", lambda ctx, g: tmp_path / "disc.gdi")
+    monkeypatch.setattr(C, "_blender", lambda cfg: None)
+    monkeypatch.setattr(C, "library_root", lambda cfg: tmp_path / "lib")
+    monkeypatch.setattr(gdrom, "GDRom", lambda p: SimpleNamespace(read=lambda path: afs))
+    monkeypatch.setattr(__import__("gbox.jgr_swap", fromlist=["x"]), "resolve_slot",
+                        lambda slot, data: {"archive": {"character:beat": 4, "character:gum": 6}[slot]})
+
+    def build_swap(gdi, model, roles, work, name, index, *a, data=None):
+        steps.append((index, data))
+        if index == 6 and b"#4" not in data:
+            raise AssertionError("Gum's step must see Beat's output")
+        return {"files": {jgr.PLAYER_AFS: data + f"#{index}".encode()}}
+    monkeypatch.setattr(jgr, "build_swap", build_swap)
+    written = {}
+    monkeypatch.setattr(gdrom, "patch_gdi", lambda gdi, d, name, files, progress=None:
+                        written.update(files) or (d.mkdir(parents=True) or d / f"{name}.gdi"))
+    pairs = [("character:beat", CHARS[5]), ("character:gum", CHARS[6])]
+    r = CS._jgr(_ctx(tmp_path), JGR, pairs, "cast_jgr_x", SimpleNamespace())
+    assert r["mod"] == "cast_jgr_x" and {s: x["status"] for s, x in r["slots"].items()} == \
+        {"character:beat": "built", "character:gum": "built"}
+    assert steps == [(4, b"AFS-ORIGINAL"), (6, b"AFS-ORIGINAL#4")]
+    assert written == {jgr.PLAYER_AFS: b"AFS-ORIGINAL#4#6"} and afs == b"AFS-ORIGINAL"
+
+
+# ---------------------------------------------------------------- PSO pairs build on synthetic data
+
+def _pso_fixtures():
+    import importlib
+    return importlib.import_module("test_pso_enemy")
+
+
+def test_pso_build_swap_pairs_give_every_enemy_its_own_donor(tmp_path):
+    T = _pso_fixtures()
+    bml = T.enemy_pack()
+    disc = T.fake_disc(bml, spare_sectors=8)
+    tall = T.DONOR_POS * [1, 1.3, 1]
+    a, b = T.donor_gltf(tmp_path / "a.gltf"), T.donor_gltf(tmp_path / "b.gltf", pos=tall)
+    roles = {n: n for n in T.DONOR_NAMES}
+    ens = [T.enemy(bml) | {"donor": {"model": a, "roles": roles, "name": "Briggs"}},
+           T.enemy(bml, "lappy_two", "lappy_two.nj", roles=None) | {"donor": {"model": b, "roles": roles, "name": "Kane"}}]
+    r = PE.build_swap(disc, None, None, tmp_path / "work", "cast", ens)
+    assert list(r["files"]) == [T.PACK] and len(r["files"][T.PACK]) <= PE.room_bytes(disc, T.PACK)
+    assert r["report"]["lappy_base"]["donor"] == "Briggs" and r["report"]["lappy_two"]["donor"] == "Kane"
+    errors = {}
+    ens[1]["donor"] = {"model": b, "roles": {}, "name": "Nobody"}
+    r = PE.build_swap(disc, None, None, tmp_path / "work2", "cast", ens, on_error=lambda k, e: errors.update({k: str(e)}))
+    assert set(r["report"]) == {"lappy_base"} and "no donor model / body roles" in errors["lappy_two"]
+
+
+def test_pso_build_cast_writes_one_gdi_with_every_assignment(tmp_path, monkeypatch):
+    from gbox.gdrom import GDRom
+    T = _pso_fixtures()
+    bml = T.enemy_pack()
+    gdi = T.make_gdi(tmp_path / "src", {"BM_ENE_LAPPY_AP.BML": bml, "BM_ENE_OTHER_A.BML": b"other" * 500})
+    lib = tmp_path / "library"
+    metas = {}
+    for slug, pos in (("briggs", T.DONOR_POS), ("kane", T.DONOR_POS * [1, 1.3, 1])):
+        (lib / slug).mkdir(parents=True)
+        T.donor_gltf(lib / slug / "model.gltf", pos=pos)
+        metas[slug] = {"slug": slug, "name": slug.title(), "model": "model.gltf",
+                       "rig": {"roles": {n: n for n in T.DONOR_NAMES}}}
+    monkeypatch.setattr(C, "_blender", lambda cfg: None)
+    cfg = SimpleNamespace(cache=tmp_path / "cache")
+    pairs = [("player", metas["briggs"]), ("enemy:lappy_base", metas["briggs"]), ("enemy:lappy_two", metas["kane"]),
+             ("enemy:nosuch", metas["kane"])]
+    before = (tmp_path / "src" / "disc03.bin").read_bytes()
+    r = PE.build_cast(cfg, PSO, gdi, pairs, "cast_pso_test", root=lib)
+    assert r["mod"] == "cast_pso_test"
+    st = {s: x["status"] for s, x in r["slots"].items()}
+    assert st == {"player": "failed", "enemy:lappy_base": "built", "enemy:lappy_two": "built", "enemy:nosuch": "failed"}
+    assert "not_working" in r["slots"]["player"]["reason"] and "nosuch" in r["slots"]["enemy:nosuch"]["reason"]
+    d = tmp_path / "cache" / "mods" / PSO["game_id"] / "cast_pso_test"
+    man = json.loads((d / ".gbox-mod.json").read_text())
+    assert man["files"] == [T.PACK] and man["enemies"] == {"lappy_base": "enemy:lappy_base", "lappy_two": "enemy:lappy_two"}
+    mod = GDRom(d / man["image"])
+    assert mod.read(T.PACK) != bml and mod.read("PSO/BM_ENE_OTHER_A.BML") == b"other" * 500
+    assert (tmp_path / "src" / "disc03.bin").read_bytes() == before                         # never the original
+    assert r["detail"]["lappy_base"]["donor"] == "Briggs" and r["detail"]["lappy_two"]["donor"] == "Kane"
+    assert (lib / "kane" / "targets" / "pso_lappy_two.gltf").is_file()
+
+
+# ---------------------------------------------------------------- the menu's API
+
+def test_cast_swap_api_lists_sources_and_plans(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from gbox.config import Config
+    from gbox.server import create_app
+    import numpy as np
+    from PIL import Image
+    lib = tmp_path / "characters"
+    rng = np.random.default_rng(0)
+    for m in CHARS:
+        (lib / m["slug"]).mkdir(parents=True)
+        (lib / m["slug"] / "meta.json").write_text(json.dumps(m))
+        if m["slug"] in ("djv_ps2_dmx", "sd2_kane"):                    # two donors pass the collection check
+            (lib / m["slug"] / m["model"]).write_bytes(b"glTF" + bytes(64))
+            Image.fromarray(rng.integers(0, 255, (64, 64, 3), np.uint8)).save(lib / m["slug"] / "preview.png")
+    monkeypatch.setenv("GBOX_CHARACTERS", str(lib))
+    cfg = Config(data_dir=tmp_path / "data")
+    app = create_app(cfg)
+    app.state.store.upsert_catalog([PSO | {"source_paths": ["pso.gdi"], "format": "gdi", "profile_id": "dc"}])
+    with TestClient(app) as client:
+        client.headers["Authorization"] = f"Bearer {cfg.token()}"
+        r = client.get(f"/api/cast_swap/sources?game_id={PSO['game_id']}").json()
+        assert r["sources"][0]["key"] == "wrestlers" and "enemy:booma" in [s["slot"] for s in r["slots"]]
+        p = client.post("/api/cast_swap/plan", json={"game_id": PSO["game_id"], "source": "wrestlers", "seed": "1"}).json()
+        assert p["status"] == "planned" and p["assignments"][0]["preview_url"].startswith("/api/characters/")
+        assert {r["character"] for r in p["assignments"]} == {"djv_ps2_dmx", "sd2_kane"}
+        assert any("no model file" in x["reason"] for x in p["refused"])          # the library check runs server-side
+        bad = client.post("/api/cast_swap/plan", json={"game_id": PSO["game_id"], "source": "nothing like it"})
+        assert bad.status_code == 422 and "sources:" in bad.json()["detail"]
+        assert client.post("/api/cast_swap/plan", json={"game_id": "0" * 16, "source": "x"}).status_code == 404
+
+
+# ---------------------------------------------------------------- the tool, the agent, the mashup planner
+
+def test_characters_tool_routes_cast_swap_without_a_character(monkeypatch):
+    got = {}
+    monkeypatch.setattr(CS, "run", lambda ctx, inp: got.setdefault("inp", inp) and {"status": "planned"})
+    inp = C.CharIn(op="cast_swap", target_game="PSO", source="wrestlers", plan_only=True)
+    assert C.characters_tool(inp, SimpleNamespace()) == {"result": {"status": "planned"}}
+    assert got["inp"].source == "wrestlers" and "launch" not in inp.model_fields_set
+
+
+def test_run_plans_through_the_api_and_names_sources_when_none_given(tmp_path, monkeypatch):
+    monkeypatch.setattr(C, "library_root", lambda cfg: tmp_path / "absent")
+    monkeypatch.setattr(C, "_game", lambda ctx, q: PSO if "phantasy" in (q.game or "") else pytest.fail(q))
+    monkeypatch.setattr(C, "_api", lambda ctx, m, p, **kw: CHARS if p.split("?")[0] == "/api/characters" else pytest.fail(p))
+    ctx = _ctx(tmp_path)
+    r = CS.run(ctx, C.CharIn(op="cast_swap", target_game="PSO"))
+    assert r["status"] == "needs_source" and r["sources"][0]["key"] == "wrestlers"
+    p = CS.run(ctx, C.CharIn(op="cast_swap", target_game="PSO", source="wrestlers", plan_only=True, seed="1"))
+    assert p["status"] == "planned" and p["assignments"] and all(d["height"] is None for d in p["donors"])
+
+
+@pytest.mark.parametrize("text,want", [
+    ("replace everyone in PSO with wrestlers", ("pso", "wrestlers")),
+    ("Replace the entire cast of Phantasy Star Online with the entire cast of Jet Grind Radio",
+     ("phantasy star online", "jet grind radio")),
+    ("replace all the characters in Crazy Taxi with Def Jam wrestlers", ("crazy taxi", "def jam wrestlers")),
+    ("everyone in DOA2 as Sonic Adventure 2 characters", ("doa2", "sonic adventure 2")),
+    ("make PSO's cast the wrestlers", None),
+])
+def test_mashup_recognises_whole_cast_requests(text, want):
+    assert mashup.parse_cast_request(text) == want
+    assert mashup.parse_cast_request("put Mario in Ocarina of Time") is None
+
+
+def test_mashup_routes_a_whole_cast_request_to_cast_swap(monkeypatch):
+    posted = []
+    monkeypatch.setattr(mashup, "_resolve_game", lambda name, ctx: PSO if "phantasy" in name else None)
+    monkeypatch.setattr(mashup, "_dispatch_job", lambda ctx, tool, inp, limit=0: posted.append((tool, inp)) or
+                        {"id": "j1", "state": "succeeded"})
+    ctx = SimpleNamespace(artifact=lambda *a, **k: None)
+    r = mashup.mashup(mashup.MashupIn(request="replace everyone in PSO with wrestlers"), ctx)["result"]
+    assert r["kind"] == "cast_swap" and r["status"] == "ready_to_dispatch" and not posted
+    assert r["call"]["input"] == {"op": "cast_swap", "target_game": PSO["game_id"], "source": "wrestlers",
+                                  "mapping": "auto", "launch": False}
+    r = mashup.mashup(mashup.MashupIn(request="replace everyone in PSO with wrestlers", auto_dispatch=True), ctx)["result"]
+    assert r["status"] == "dispatched_succeeded" and posted[0][0] == "characters" and posted[0][1]["op"] == "cast_swap"
+
+
+def test_agent_prompt_and_schema_route_whole_cast_requests_to_cast_swap():
+    src = Path(__file__).resolve().parents[1].joinpath("gbox", "agent.py").read_text("utf-8")
+    assert "everyone in PSO with wrestlers" in src
+    assert "characters op=cast_swap target_game=<game>" in src
+    assert '"target_game": s, "source": s, "mapping": s' in src
+
+
+# ---------------------------------------------------------------- Sonic Adventure (DC) donors -> Crazy Taxi drivers
+
+SA1 = ("Sonic Adventure (USA)", "dreamcast")
+SA1_ROLES = {r: r for r in ("hip", "chest", "head", "l_upper", "l_fore", "l_hand", "r_upper", "r_fore", "r_hand",
+                            "l_thigh", "l_shin", "l_foot", "r_thigh", "r_shin", "r_foot")}
+SA1_CAST = [("sa1_sonic", "Sonic (Sonic Adventure)", 10.1), ("sa1_tails", "Tails", 8.7),
+            ("sa1_knuckles", "Knuckles", 11.0), ("sa1_amy", "Amy Rose", 9.2), ("sa1_big", "Big the Cat", 21.0),
+            ("sa1_e102", "E-102 Gamma", 21.3), ("sa1_super_sonic", "Super Sonic", 10.9), ("sa1_tikal", "Tikal", 9.3)]
+
+
+def sa1_donors(root=None):
+    """The eight sa1_chars entries (heights as the reader exports them), each with a tiny glTF whose POSITION bounds
+    give model_height its standing height when a root is given."""
+    out = []
+    for slug, name, h in SA1_CAST:
+        if root is not None:
+            (root / slug).mkdir(exist_ok=True)
+            (root / slug / f"{slug}.gltf").write_text(json.dumps({
+                "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+                "accessors": [{"min": [-1, -h / 2, -1], "max": [1, h / 2, 1]}]}))
+        out.append(entry(slug, name, *SA1, roles=SA1_ROLES, gid="1a3f4cd416db9ffd", model=f"{slug}.gltf",
+                         extraction_tool="gbox.sa1_chars + gbox.ninja",
+                         **({"native_player": True} if slug == "sa1_sonic" else {})))
+    return out
+
+
+def test_sonic_adventure_sources_titles_alias_and_the_sonic_group():
+    chars = CHARS + sa1_donors()
+    sa1 = {s for s, _n, _h in SA1_CAST}
+    assert all(CS.extractor_of(m) == "sa1" for m in sa1_donors())
+    for spec in ("Sonic Adventure", "sa1", "SA1", "Sonic Adventure 1", "1a3f4cd416db9ffd"):
+        assert {m["slug"] for m in CS.resolve_source(spec, chars)["entries"]} == sa1, spec   # SA2's Sonic stays out
+    assert {m["slug"] for m in CS.resolve_source("SA2", chars)["entries"]} == {"sonic"}
+    assert {m["slug"] for m in CS.resolve_source("Sonic Adventure 2", chars)["entries"]} == {"sonic"}
+    both = CS.resolve_source("sonic", chars)
+    assert {m["slug"] for m in both["entries"]} == sa1 | {"sonic"} and "Sonic Adventure 1 + 2" in both["label"]
+    menu = {g["key"]: g for g in CS.source_groups(chars)}
+    assert menu["sonic"]["count"] == 9 and menu["sega"]["count"] == 9 + 2                    # + the two JGR skaters
+
+
+def test_sa1_donors_pass_the_gate_and_one_without_a_hip_is_refused():
+    bad = entry("sa1_broken", "Broken", *SA1, roles={"head": "node011"}, gid="1a3f4cd416db9ffd")
+    donors, refused, _ = CS.gate(sa1_donors() + [bad])
+    assert len(donors) == 8 and [r["slug"] for r in refused] == ["sa1_broken"]
+    assert "lack the hip" in refused[0]["reason"]
+
+
+def test_crazy_taxi_driver_slots_carry_sizes_and_axel_is_the_lead_slot():
+    rows = {r["slot"]: r for r in CS.filter_slots(CS.slot_rows(CT), "drivers")}
+    assert list(rows) == ["driver:axel", "driver:bd_joe", "driver:gena", "driver:gus"]
+    assert rows["driver:axel"].get("lead_slot") and not any(rows[s].get("lead_slot") for s in list(rows)[1:])
+    assert rows["driver:gus"]["size"] > rows["driver:axel"]["size"] >= rows["driver:gena"]["size"] > rows["driver:bd_joe"]["size"]
+
+
+def test_crazy_taxi_drivers_get_four_sonic_adventure_characters_by_height(tmp_path):
+    chars = CHARS + sa1_donors(tmp_path)
+    p = CS.plan(CT, chars, "Sonic Adventure", "by_role", "", slots="drivers", root=tmp_path)
+    assert p["status"] == "planned" and p["writer"] == "gbox.crazy_taxi_swap" and p["strategy"] == "chain"
+    got = {r["slot"]: r["character"] for r in p["assignments"]}
+    assert list(got) == ["driver:axel", "driver:bd_joe", "driver:gena", "driver:gus"]
+    assert set(got.values()) <= {s for s, _n, _h in SA1_CAST} and len(set(got.values())) == 4
+    assert got["driver:axel"] == "sa1_sonic"                     # SA1's lead on Crazy Taxi's own player
+    assert got["driver:gus"] == "sa1_e102" and got["driver:gena"] == "sa1_big"   # tallest donors, biggest drivers
+    assert got["driver:bd_joe"] in ("sa1_knuckles", "sa1_super_sonic")
+    why = {r["slot"]: r["why"] for r in p["assignments"]}
+    assert "lead character" in why["driver:axel"] and "body size" in why["driver:gus"]
+    assert not p["refused"] and len(p["donors"]) == 8 and p["mod"].startswith("cast_crazy_taxi_")
+    assert p == CS.plan(CT, chars, "Sonic Adventure", "by_role", "", slots="drivers", root=tmp_path)   # deterministic
+    again = CS.plan(CT, chars, "sa1", "auto", "", slots="drivers", root=tmp_path)
+    assert {r["slot"]: r["character"] for r in again["assignments"]} == got
+
+
+# ---------------------------------------------------------------- 007 Agent Under Fire: every slot, assign=random
+
+AUF = {"game_id": "65b7187589166b26", "title": "007 - Agent Under Fire (USA)", "platform": "gamecube"}
+NM = ("WWF No Mercy (USA)", "n64")
+RV = ("WCW-nWo Revenge (USA)", "n64")
+SA2 = ("Sonic Adventure 2 (USA)", "dreamcast")
+
+
+def wrestler_chars():
+    """SmackDown! 2 + No Mercy (WWF), Revenge (WCW) and Def Jam entries; The Rock and Kane are in two games."""
+    out = [entry(f"sd2_{n}", n.replace("_", " ").title(), *SD2, gid="276334ad218ffb46")
+           for n in ("the_rock", "kane", "x_pac", "rikishi", "edge")]
+    out += [entry(f"nm_{n}", n.replace("_", " ").title(), *NM, gid="9b4aa1ef62e4ff07")
+            for n in ("the_rock", "kane", "triple_h", "mankind", "chyna")]
+    out += [entry(f"rv_{n}", n.replace("_", " ").title(), *RV, gid="1fa1a05a7ca43ca2") for n in ("sting", "goldberg")]
+    return out + [m for m in CHARS if m["slug"].startswith("djv_")]
+
+
+def sa2_chars():
+    names = ("Sonic", "Shadow", "Knuckles", "Rouge", "Tails", "Dr. Eggman", "Amy Rose", "Metal Sonic", "Tikal",
+             "Chaos 0", "Super Sonic", "Super Shadow")
+    return [entry("sa2_" + "".join(c for c in n.lower() if c.isalnum()), n, *SA2, gid="5a20000000000000") for n in names]
+
+
+def test_auf_cast_slots_cover_every_level_body_once_with_groups():
+    from gbox import auf_swap as A
+    rows = CS.slot_rows(AUF)
+    assert len(rows) == 57 and len({r["slot"] for r in rows}) == 57          # 40 campaign + 16 bots + the escort VIP
+    pairs = [A.select(r["slot"]) for r in rows]
+    assert sum(len(p) for p in pairs) == len(set().union(*pairs)) == len(A.select("all")) == 372
+    by = {g: [r["slot"] for r in CS.filter_slots(rows, g)] for g in ("campaign", "bots", "multiplayer", "bosses",
+                                                                    "npcs", "enemies", "player", "model:zoe_body")}
+    assert len(by["campaign"]) == 40 and len(by["bots"]) == 16 and len(by["multiplayer"]) == 17
+    assert all(s.startswith("campaign:") for s in by["campaign"]) and all(s.startswith("mp:") for s in by["bots"])
+    assert "mp:vip_body" in by["npcs"] and "mp:vip_body" not in by["bots"] and len(by["bosses"]) == 7
+    assert set(by["player"]) == {"campaign:bond_tux", "campaign:bond_combat", "campaign:bond_graysuit",
+                                 "campaign:bond_jetpack", "mp:bond_tux", "mp:bond_combat"}
+    assert by["model:zoe_body"] == ["campaign:zoe_body", "mp:zoe_body"]
+    # the lead's call that used to plan only 'player'
+    mixed = CS.filter_slots(rows, "player,bosses,npcs,bots")
+    assert len(mixed) == 48 and [r["slot"] for r in mixed] == [r["slot"] for r in rows if r in mixed]
+    assert len(CS.filter_slots(rows, "campaign,bots")) == 56
+    with pytest.raises(ValueError, match="nobody"):
+        CS.filter_slots(rows, "campaign,nobody")
+    sets = dict(CS.slot_sets(rows))
+    assert {"campaign", "bots", "bosses", "npcs", "campaign,bots"} <= set(sets) and sets["campaign"].endswith("(40)")
+    assert CS.strategy("gbox.auf_swap")[0] == "pairs" and "gbox.auf_swap" in CS.BUILDERS
+
+
+def test_auf_wrestlers_plan_every_slot_distinct_and_preferring_wwf():
+    p = CS.plan(AUF, wrestler_chars(), "wrestlers", "random", "w", "all", prefer="smackdown2,nomercy")
+    assert p["status"] == "planned" and p["strategy"] == "pairs" and not p["skipped"] and len(p["assignments"]) == 57
+    first = p["assignments"][:8]                         # 8 distinct WWF names (The Rock and Kane once each) first
+    names = [next(d["name_key"] for d in p["donors"] if d["slug"] == r["character"]) for r in first]
+    assert len(set(names)) == 8 and all(r["character"][:3] in ("sd2", "nm_") for r in first)
+    assert all("preferred source" in r["why"] for r in first)
+    assert p == CS.plan(AUF, wrestler_chars(), "wrestlers", "random", "w", "all", prefer="smackdown2,nomercy")
+    with pytest.raises(ValueError):
+        CS.plan(AUF, sa2_chars() + wrestler_chars(), "SA2", "random", "w", prefer="nomercy")   # prefer outside source
+
+
+def test_assign_random_is_a_general_option_and_deals_the_whole_source_before_repeating():
+    inp = SimpleNamespace(assign="random", mapping="by_role")
+    assert CS.mapping_of(inp) == "random" and CS.mapping_of(SimpleNamespace(mapping="by_role")) == "by_role"
+    p = CS.plan(AUF, sa2_chars(), "SA2", CS.mapping_of(inp), "sonic", "campaign,bots")
+    rows = p["assignments"]
+    assert len(rows) == 56 and {r["slot"].split(":")[0] for r in rows} == {"campaign", "mp"}
+    for i in range(0, 48, 12):                            # every SA2 character once per round of 12
+        assert len({r["character"] for r in rows[i:i + 12]}) == 12
+    assert rows == CS.plan(AUF, sa2_chars(), "SA2", "random", "sonic", "campaign,bots")["assignments"]
+    assert rows != CS.plan(AUF, sa2_chars(), "SA2", "random", "other", "campaign,bots")["assignments"]
+    # the same option on another writer (PSO): random over its enemy slots
+    pso = CS.plan(PSO, sa2_chars(), "SA2", CS.mapping_of(inp), "sonic")
+    assert pso["status"] == "planned" and all(r["why"].startswith("random") for r in pso["assignments"])
+
+
+def test_spread_puts_each_name_once_and_preferred_first_and_keeps_plain_decks():
+    deck = [{"slug": "a", "name_key": "rock"}, {"slug": "b", "name_key": "kane", "preferred": True},
+            {"slug": "c", "name_key": "rock", "preferred": True}, {"slug": "d", "name_key": "sting"}]
+    assert [d["slug"] for d in CS.spread(deck)] == ["b", "c", "d", "a"]
+    plain = [{"slug": s, "name_key": s} for s in "xyzw"]
+    assert CS.spread(plain) == plain
+    assert CS.name_key({"name": "Briggs (costume 2) (Def Jam Vendetta PS2)"}) == "briggs"
+    assert CS.name_key({"name": "The Rock"}) == CS.name_key({"name": "THE ROCK (No Mercy)"}) == "therock"
+
+
+def test_mashup_marks_a_random_cast_request_as_assign_random(monkeypatch):
+    monkeypatch.setattr(mashup, "_resolve_game", lambda name, ctx: AUF)
+    inp = mashup.MashupIn(request="replace all the characters in the campaign of 007 Agent Under Fire with randomly "
+                                  "selected characters from Sonic Adventure 2", dry_run=True)
+    out = mashup._cast_plan(("007 Agent Under Fire", "Sonic Adventure 2"), inp, SimpleNamespace())
+    assert out["call"]["input"]["assign"] == "random"
+    plain = mashup._cast_plan(("PSO", "wrestlers"), mashup.MashupIn(request="everyone in PSO as wrestlers"),
+                              SimpleNamespace())
+    assert "assign" not in plain["call"]["input"]

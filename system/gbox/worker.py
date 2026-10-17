@@ -40,13 +40,20 @@ def user_idle_seconds() -> float | None:
 
 
 def describe(config: Config, name: str, wid: str | None = None) -> WorkerInfo:
+    if _builtin.LOAD_ERRORS:
+        _builtin._load_tool_modules(tuple(_builtin.LOAD_ERRORS))
     ok, bad = [], {}
-    for t in REGISTRY.values():
-        reason = t.unavailable_reason(config)
+    for t in tuple(REGISTRY.values()):
+        try:
+            reason = t.unavailable_reason(config)
+        except Exception as exc:
+            reason = f'availability check failed: {type(exc).__name__}: {exc}'
         (bad.__setitem__(t.name, reason) if reason else ok.append(t.name))
     bad.update({f"module {n}": why for n, why in _builtin.LOAD_ERRORS.items()})
-    features = ['independent_heartbeat', 'durable_result_delivery'] + (["idle_telemetry", "desktop_stream", "two_percent_audio"] if HOST_OS == "windows" else [])
+    features = ['independent_heartbeat', 'durable_result_delivery', 'resource_telemetry'] + (["idle_telemetry", "desktop_stream", "two_percent_audio"] if HOST_OS == "windows" else [])
     info = WorkerInfo(name=name, os=HOST_OS, tools=ok, unavailable=bad, idle_seconds=user_idle_seconds(), features=features)
+    from .ollama_assist import inventory
+    info.ollama = inventory()
     if wid:
         info.id = wid
     return info
@@ -57,7 +64,9 @@ def _run_job(job: dict, config: Config, wid: str, server: str, h: dict, client: 
     ctx = Ctx(config, job_id=job["id"], worker=wid)
     ctx.parent_request_id = job.get("parent_request_id")
     ctx.agent_use = bool(job.get("agent_use"))
-    ctx.server, ctx.headers = server, h
+    # x-gbox-parent-job: a tool calling the control plane back (e.g. characters op=use -> @launch) is traced to this
+    # job, and an agent job's callbacks count as automation (never swapping the operator's game; stream-stability.md)
+    ctx.server, ctx.headers = server, h | {"x-gbox-parent-job": job["id"]}
     res = {"job_id": job["id"], "ok": True}
     if job.get("agent_use") and HOST_OS == "windows":
         from .audio_volume import keep_pc_at_two_percent
@@ -198,7 +207,7 @@ def _desktop_stream(stop: threading.Event, wid: str, server: str, h: dict, confi
                     stream.close()
                     stream = None
                 if stream is not None:
-                    if stream.proc.poll() is not None:
+                    if stream.proc is not None and stream.proc.poll() is not None:   # None: its supervisor is restarting it
                         stream.close()
                         stream = None
                     elif stream.wait(seen, 1) and stream.latest:
@@ -246,6 +255,8 @@ def run(server: str, token: str, config: Config, name: str | None = None,
     if outbox.protected_sessions(_builtin._running_file(config)):
         raise RuntimeError('Worker activation held: a delivered native launch still has an owned PID record; no emulator was stopped')
     info = describe(config, name)
+    from . import cache_tiers                       # two-tier cache where configured (no-op when `serve` did it)
+    cache_tiers.install(config)
     def _push():                                    # mods built on this machine join the central collection on the Spark
         try:
             from . import filemods
@@ -255,13 +266,27 @@ def run(server: str, token: str, config: Config, name: str | None = None,
         except Exception as e:
             print(f"mod upload skipped: {e}", flush=True)
     threading.Thread(target=_push, daemon=True).start()
+    from . import audio_cpp                         # local speech service when audiocpp_server is on this machine (#816)
+    threading.Thread(target=audio_cpp.autostart, args=(config,), name="audio_cpp-autostart", daemon=True).start()
     # Live owned PIDs were checked above. Startup never kills a surviving game,
     # including a launch whose completion delivery was lost by an older worker.
     active: set[str] = set()
     active_agent: set[str] = set()
     quiet_sessions: set[str] = set()
+    from . import worker_resources
+    resource_sampler = worker_resources.Sampler(config.cache)
+    from .inspection_builds import source_inventory
+    build_sources = source_inventory()  # Never recompute while old modules remain loaded in this process.
+    threading.Thread(target=worker_resources.run, args=(stop, resource_sampler),
+                     name='worker-resources', daemon=True).start()
     def current_info():
-        return info.model_copy(update={'pending_results': outbox.pending_count()})
+        try:                                        # this PC's own builds for the Builds view (cached, stat-only)
+            from . import filemods
+            local = filemods.local_builds(config)
+        except Exception:                           # noqa: BLE001 - liveness never depends on the cache disk
+            local = []
+        return info.model_copy(update={'pending_results': outbox.pending_count(), 'local_builds': local,
+                                       'resources': resource_sampler.snapshot(), 'build_sources': build_sources})
     threading.Thread(target=_quiet_volume_loop, args=(stop, active_agent, quiet_sessions), daemon=True).start()
     with httpx.Client(base_url=server, headers=h | {"x-gbox-actor": f"worker:{name}"}, timeout=30) as c:
         while not stop.is_set():                    # the control plane may be restarting: keep trying
@@ -274,6 +299,7 @@ def run(server: str, token: str, config: Config, name: str | None = None,
         threading.Thread(target=_heartbeat_loop, args=(stop, current_info, active, server, h), daemon=True).start()
         threading.Thread(target=_result_delivery_loop, args=(stop, outbox, active, active_agent, server, h), daemon=True).start()
         described = time.time()
+        cleanup_job = None
         while not stop.is_set():
             if time.time() - described > REDESCRIBE_S:
                 try:
@@ -284,7 +310,7 @@ def run(server: str, token: str, config: Config, name: str | None = None,
                     print(f"worker registration retry: {exc}", flush=True)
                     stop.wait(poll_s * 5)
                     continue
-            if len(active) >= MAX_PARALLEL:
+            if len(active) >= MAX_PARALLEL or cleanup_job in active:
                 stop.wait(poll_s)
                 continue
             try:
@@ -308,6 +334,12 @@ def run(server: str, token: str, config: Config, name: str | None = None,
                 stop.wait(poll_s * 5)
                 continue
             job = r.json()
+            if job.get('tool') == 'file_mod' and job.get('input', {}).get('op') in ('delete_build', 'quarantine_build'):
+                # Cleanup runs between jobs, never during a build/download/launch.
+                while active and not stop.is_set():
+                    stop.wait(0.1)
+                if stop.is_set(): break
+                cleanup_job = job['id']
             active.add(job["id"])
             if job.get("agent_use"):
                 active_agent.add(job["id"])
