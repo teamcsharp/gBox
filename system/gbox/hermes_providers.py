@@ -304,11 +304,11 @@ class Scanner:
             if session:
                 for call in reversed(session['calls'][-12:]):
                     if call['state'] == 'open' and call['provider'] == provider:
-                        call.update(state='ok', tokens=tokens, model=model)
+                        call.update(state='ok', tokens=tokens, model=model, completed_at=ts)
                         break
                 else:
                     session['calls'].append({'provider': provider, 'model': model, 'ts': ts, 'state': 'ok',
-                                             'tokens': tokens})
+                                             'tokens': tokens, 'completed_at': ts, 'base_url': observed_url})
             return
         cleanup = _CLEANUP.search(message)
         attempt = _ATTEMPT.search(message)
