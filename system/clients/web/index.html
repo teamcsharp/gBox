@@ -309,6 +309,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/builds.js"></script>
 <script src="/viz/toast-stack.js"></script>
 <script src="/viz/build-notes.js"></script>
+<script src="/viz/rom-export-repair.js"></script>
 <script src="/viz/launch-mods.js"></script>
 <script src="/viz/retarget-handles.js"></script>
 <script src="/viz/texture-review.js"></script>
@@ -486,6 +487,7 @@ function bnAnnounce(n) {                                       // a new build en
 }
 window.gboxBuildNoteOpen = () => { TRAY.open = true; trayPop(); };   // the desktop shell: its OS notification was clicked
 const buildNoteIO = () => ({ api, notes: () => TRAY.notes, state: TRAY.bn, here: window.GBOX_LOCAL?.worker || "",
+  repairExport: item => GBoxRomExportRepair.open(item,{api}),
   launch: (gid, x) => gameMenuIO().launch(gid, x),
   openMods: (gid, mod) => { MODSG.focus = { q: mod || "", game: gid || "" }; show("Mods"); },
   openRequest: async r => {
