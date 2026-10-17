@@ -35,6 +35,20 @@ BRAND = Path(__file__).resolve().parent.parent / "assets" / "brand"
 # the running copy first there (launch_game saves it before closing, and refuses if it can't)
 RELAUNCH_BESIDE_UNSAFE = {"mgba"}
 
+# The replacement launch child runs up to its registered tool timeout once claimed (launch_game:
+# 900 s) and may spend up to SWAP_LAUNCH_QUEUE_S queued first. Waiting exactly that long races the
+# child's own timeout: the parent can read the job as still "running" a beat before its terminal
+# "failed/TimeoutError" lands, and then misreport the swap as "launch_game failed: running" instead
+# of the real cause (#1731). Wait past the queue window + child timeout so the parent always
+# observes the terminal state.
+SWAP_LAUNCH_QUEUE_S = 180.0      # the target worker must start the replacement launch within this (or nothing changes)
+SWAP_LAUNCH_MARGIN_S = 120.0     # extra time for the child's terminal transition to land and be polled
+
+
+def swap_launch_wait_s(queue_wait_s: float = 0.0) -> float:
+    """How long session_swap waits for its replacement launch_game child (see SWAP_LAUNCH_MARGIN_S)."""
+    return float(queue_wait_s) + float(REGISTRY["launch_game"].timeout_s) + SWAP_LAUNCH_MARGIN_S
+
 
 class ArtifactUpload(BaseModel):
     name: str
@@ -853,8 +867,6 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(409, f"no online gBox worker '{to}'")
         return hit
 
-    SWAP_LAUNCH_QUEUE_S = 180.0      # the target worker must start the replacement launch within this (or nothing changes)
-
     def session_swap(sid: str, mod: str, to: str, actor: str, keep_state: bool = True, progress=None,
                      should_stop=None, keep_old: bool = False, parent_job: str = "") -> dict:
         """keep_old: on the same worker, the replacement starts beside the running copy (launch_game keep_session), which
@@ -915,7 +927,8 @@ def create_app(config: Config) -> FastAPI:
         beside = keep_old and running and tw["id"] == _wid(old_w) and sess.get("adapter") not in RELAUNCH_BESIDE_UNSAFE
         try:
             new = _run_job("launch_game", {"game": game, "mod": launch_mod, **({"keep_session": sid} if beside else {})},
-                           actor, worker=tw["id"], wait=900, should_stop=stop, on_cancel_deferred=defer_cancel,
+                           actor, worker=tw["id"], wait=swap_launch_wait_s(SWAP_LAUNCH_QUEUE_S),
+                           should_stop=stop, on_cancel_deferred=defer_cancel,
                            queue_wait=SWAP_LAUNCH_QUEUE_S, origin=origin)
         except HTTPException as e:
             if str(e.detail).startswith('cancelled by the operator before the replacement started'):
@@ -935,7 +948,7 @@ def create_app(config: Config) -> FastAPI:
                 say(60, "That didn't start: putting your game back")
                 try:
                     back = _run_job("launch_game", {"game": game,
-                        "mod": sess.get("launch_mod") or sess.get("staged_mod") or sess.get("mod") or ""}, actor, worker=old_w, wait=900)
+                        "mod": sess.get("launch_mod") or sess.get("staged_mod") or sess.get("mod") or ""}, actor, worker=old_w, wait=swap_launch_wait_s())
                     if art:
                         time.sleep(6)
                         _run_job("state_transfer", {"session_id": back["session_id"], "op": "import", "artifact": art}, actor,
@@ -976,7 +989,7 @@ def create_app(config: Config) -> FastAPI:
                     say(75, 'State restore failed; recovering the original game and checkpoint')
                     try:
                         back = _run_job('launch_game', {'game': game,
-                            'mod': sess.get('launch_mod') or sess.get('staged_mod') or sess.get('mod') or ''}, actor, worker=old_w, wait=900)
+                            'mod': sess.get('launch_mod') or sess.get('staged_mod') or sess.get('mod') or ''}, actor, worker=old_w, wait=swap_launch_wait_s())
                         time.sleep(6)
                         _run_job('state_transfer', {'session_id': back['session_id'], 'op': 'import', 'artifact': art}, actor, worker=old_w, wait=90)
                         store.put('session', sid, (store.get('session', sid) or {}) | {'state': 'ended', 'replaced_by': back['session_id']})
