@@ -353,3 +353,31 @@ def test_removed_asset_selects_a_new_stage_without_altering_the_previous_copy(tm
     assert new != previous and not (new / 'obsolete.bin').exists()
     assert before == {p.name: p.read_bytes() for p in previous.iterdir()}
     assert {p.name for p in new.iterdir()} == set(NEW) | {filemods.STAGED_MARK}
+
+
+def test_large_mod_download_uses_launch_length_read_timeout(tmp_path, monkeypatch):
+    """#1730: a cast-swap mod is a single 1.4 GB disc image. The file transfer used a 60 s read timeout
+    (httpcore.ReadTimeout), which killed a launch after a minute while the manifest request already allowed 900 s.
+    The download must share the manifest's budget so a cold-HDD read stall cannot abort a big fetch."""
+    files = [{'path': p, 'size': len(b), 'sha256': hashlib.sha256(b).hexdigest()} for p, b in NEW.items()]
+    monkeypatch.setattr(httpx, 'get', lambda *a, **k: httpx.Response(
+        200, json={'files': files}, request=httpx.Request('GET', 'http://t')))
+    seen = {}
+
+    class Stream:
+        def __init__(self, path, timeout):
+            seen['timeout'] = timeout
+            self.status_code, self.headers, self.content = 200, {}, NEW[path]
+
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def raise_for_status(self): pass
+        def iter_bytes(self, n): yield self.content
+
+    def stream(method, url, headers, **kw):
+        return Stream(url.rsplit('/', 1)[-1], kw.get('timeout'))
+    monkeypatch.setattr(httpx, 'stream', stream)
+
+    filemods.stage(SimpleNamespace(cache=tmp_path), 'http://t', {}, 'g', 'amy')
+    assert seen['timeout'].read == filemods.MOD_FETCH_TIMEOUT_S
+    assert seen['timeout'].connect == 30
