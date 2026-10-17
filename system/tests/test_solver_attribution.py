@@ -34,6 +34,16 @@ def test_verified_credit_survives_a_reopen_without_awarding_another_completion(c
     assert completed_again['solved_by'] is None  # do not reuse old implementation credit
 
 
+def test_prompt_export_contains_original_and_followup_across_statuses(client):
+    rid = client.post('/api/requests', json={'title': 'Export original', 'body': 'First full prompt', 'source': 'api'}).json()['id']
+    client.post(f'/api/requests/{rid}/status', json={'status': 'done'})
+    client.post(f'/api/requests/{rid}/messages', json={'author': 'operator', 'text': 'Later follow-up 日本語'})
+    response = client.get('/api/requests/export?prompts_only=true&status=done')
+    assert response.status_code == 200
+    assert 'gbox-prompt-history.md' in response.headers['content-disposition']
+    assert response.text.index('First full prompt') < response.text.index('Later follow-up 日本語')
+
+
 def test_credit_requires_verification_and_usage_is_separated_by_provider(client):
     rid = client.post('/api/requests', json={'title': 'Model swap', 'source': 'api'}).json()['id']
     response = client.post(f'/api/requests/{rid}/status', json={'status': 'done', 'solved_by': {'service': 'nous'}})

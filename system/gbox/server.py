@@ -2669,7 +2669,15 @@ def create_app(config: Config) -> FastAPI:
         if t.name == 'characters' and inp.get('op') == 'collect' and not job.parent_request_id:
             job.parent_request_id = auto_collection.policy().get('parent_request_id')
         if t.name == "characters" and inp.get("op") in ("extract", "collect", "add", "blender"):
-            job.require_worker, job.require_os = None, "linux"   # they write the collection (Spark); captures go to the session's PC
+            # Collection normally chooses any Linux collection worker. The
+            # exact-title route already selected a source-capable Linux worker;
+            # preserve only that trusted in-server pin, never a client header.
+            scoped = (inp.get('op') == 'collect' and origin.get('via') == 'title_assets'
+                      and origin.get('game_id') == inp.get('game_id')
+                      and origin.get('source_worker') == job.require_worker and bool(job.require_worker))
+            if not scoped:
+                job.require_worker = None
+            job.require_os = "linux"
         elif t.name in ("re_executable", "assimilate"):
             # Analysis output belongs on Spark; RAM is read remotely through the
             # session RPC. Pinning this to a Windows session makes Linux work unrunnable.
@@ -5318,9 +5326,30 @@ def create_app(config: Config) -> FastAPI:
         store.audit(actor, "request.import", "requests", {"added": added})
         return {"added": added, "total": len(store.all("request"))}
 
+    @app.get('/api/analysis/sources')
+    def analysis_sources(actor=Depends(auth)):
+        from .shared_sources import inventory
+        return inventory()
+
+    @app.get('/api/analysis/sources/file')
+    def analysis_source_file(path: str, actor=Depends(auth)):
+        from .shared_sources import read
+        import hashlib
+        try:
+            data = read(path)
+        except (ValueError, OSError) as e:
+            raise HTTPException(404, str(e)) from e
+        return Response(data, media_type='text/plain', headers={'x-content-sha256': hashlib.sha256(data).hexdigest()})
+
     @app.get("/api/requests/export")
-    def req_export(actor=Depends(auth)):
+    def req_export(prompts_only: bool = False, actor=Depends(auth)):
         """The whole request history, oldest first, as one Markdown transcript."""
+        if prompts_only:
+            from .prompt_history import markdown
+            with store.lock:
+                transcript = markdown(store.all('request'), store.all('chat'), redact=_redact)
+            return PlainTextResponse(transcript, media_type='text/markdown',
+                                     headers={'content-disposition': 'attachment; filename="gbox-prompt-history.md"'})
         import datetime as _dt
         from zoneinfo import ZoneInfo
         ct = ZoneInfo("America/Chicago")                   # the operator's time, whatever the Spark's clock says
@@ -5615,6 +5644,11 @@ def create_app(config: Config) -> FastAPI:
                 "hypotheses": sum(1 for e in edges if e["status"] == "hypothesis"),
                 "jobs_by_state": {s: sum(1 for j in jobs if j["state"] == s) for s in JobState},
                 "artifact_bytes": sum(a["size"] for a in arts), "artifacts": len(arts)}
+
+    from . import title_assets
+    title_assets.routes(app, store, config, auth, workers,
+        lambda body, actor: submit(JobRequest(**body), actor, origin={'via': 'title_assets',
+            'game_id': body['input']['game_id'], 'source_worker': body.get('require_worker')}).model_dump(mode='json'))
 
     return app
 

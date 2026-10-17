@@ -19,7 +19,7 @@ from pathlib import Path
 
 from . import gcfst, iso9660
 
-EXECUTABLE_NAMES = ("main.dol", "1st_read.bin", "default.xex", "eboot.bin", "boot.bin", "start.dol")
+EXECUTABLE_NAMES = ("main.dol", "1st_read.bin", "default.xbe", "default.xex", "eboot.bin", "boot.bin", "start.dol")
 
 
 @dataclass
@@ -75,6 +75,7 @@ def listing(path: str | Path, *, head: int = 64, max_files: int = 4000, exe_limi
     AFS, DATA.BIN or .IMG show their inner formats only there)."""
     p = Path(path)
     suf = p.suffix.lower()
+    from .. import rom_archives
     if p.is_dir():
         files = [{"path": q.relative_to(p).as_posix(), "size": q.stat().st_size} for q in sorted(p.rglob("*")) if q.is_file()]
 
@@ -82,14 +83,12 @@ def listing(path: str | Path, *, head: int = 64, max_files: int = 4000, exe_limi
             with open(p / name, "rb") as fh:
                 return fh.read(exe_limit if n is None else n)
         L = Listing(str(p), "folder", files)
-    elif suf == ".zip":
-        z = zipfile.ZipFile(p)
-        files = [{"path": i.filename, "size": i.file_size} for i in z.infolist() if not i.is_dir()]
+    elif rom_archives.is_archive(p):
+        files = [{'path': e['name'], 'size': e['size']} for e in rom_archives.members(p)]
 
         def read(name, n):
-            with z.open(name) as fh:
-                return fh.read(exe_limit if n is None else n)
-        L = Listing(str(p), "zip", files)
+            return rom_archives.prefix(p, name, exe_limit if n is None else n)
+        L = Listing(str(p), "zip" if suf == '.zip' else "archive", files)
         roms = [f for f in files if f["path"].lower().endswith((".z64", ".v64", ".n64"))]
         if roms:
             L.kind = "n64_rom"
