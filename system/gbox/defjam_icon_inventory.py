@@ -73,7 +73,11 @@ class GDFX:
         self.game_offset = 0
         self.root_sector = 0
         self.root_size = 0
-        self._find_descriptor()
+        try:
+            self._find_descriptor()
+        except Exception:
+            self._fh.close()
+            raise
 
     def _find_descriptor(self) -> None:
         for game_offset in GAME_OFFSETS:
@@ -99,7 +103,7 @@ class GDFX:
 
     def _read(self, sector: int, length: int) -> bytes:
         at = self.game_offset + sector * SECTOR
-        if at < 0 or at + length > self.size:
+        if length < 0 or at < 0 or at + length > self.size:
             raise GDFXError(f"read {at:#x}+{length} exceeds image size {self.size:#x}")
         self._fh.seek(at)
         return self._fh.read(length)
@@ -114,10 +118,14 @@ class GDFX:
         (sector, length) pair so a self-referential or damaged image cannot recurse
         forever.
         """
-        visited: set[tuple[int, int]] = set()
+        visited: set[tuple[int, int]] = {(self.root_sector, self.root_size)}
         root = self._read(self.root_sector, self.root_size)
 
-        def emit(buf: bytes, ordinal: int, prefix: str):
+        def emit(buf: bytes, ordinal: int, prefix: str, seen=None):
+            seen = set() if seen is None else seen
+            if ordinal in seen:
+                raise GDFXError("cyclic GDFX directory entry")
+            seen.add(ordinal)
             p = ordinal * 4
             if p + 14 > len(buf):
                 return
@@ -130,7 +138,7 @@ class GDFX:
             name = buf[p + 14 : p + 14 + name_len].decode("latin1")
             path = f"{prefix}/{name}" if prefix else name
             if left:
-                yield from emit(buf, left, prefix)
+                yield from emit(buf, left, prefix, seen)
             if attr & ATTR_DIRECTORY:
                 yield path, True, sector, length
                 key = (sector, length)
@@ -143,7 +151,7 @@ class GDFX:
             else:
                 yield path, False, sector, length
             if right:
-                yield from emit(buf, right, prefix)
+                yield from emit(buf, right, prefix, seen)
 
         yield from emit(root, 0, "")
 

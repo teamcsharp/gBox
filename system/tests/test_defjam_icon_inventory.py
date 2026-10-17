@@ -119,3 +119,20 @@ def test_real_disc_smoke():
     assert tree["common/char.viv"][1] == 1281259996
     assert tree["common/char.viv.bh"][1] == 9628
     assert tree["common/char/hdr_char.viv"][1] == 107292
+
+
+def test_cyclic_directory_ordinals_are_rejected(tmp_path):
+    data = bytearray(_build_image())
+    child_offset = _pad4(14 + len("default.xex"))
+    struct.pack_into("<H", data, 0x108 * SECTOR + child_offset, child_offset // 4)
+    path = tmp_path / "cycle.iso"
+    path.write_bytes(data)
+    with GDFX(path) as disc, pytest.raises(GDFXError, match="cyclic"):
+        list(disc.walk())
+
+
+def test_negative_read_length_is_rejected(tmp_path):
+    path = tmp_path / "valid.iso"
+    path.write_bytes(_build_image())
+    with GDFX(path) as disc, pytest.raises(GDFXError):
+        disc.read_file(0, -1)
