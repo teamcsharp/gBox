@@ -1,0 +1,50 @@
+{
+  "title": "Sessions header: click the build name to rename the ROM mod the session runs; ★ Favorite this build; the stock game renames nothing",
+  "branch": "session-header-build-rename",
+  "include": ["_web_shell.json"],
+  "snippets_note": "w1-s7 runs the build auf_dm1_bondcombat_uwbthug (no display name yet: the folder name shows); w1-s8 runs the stock game. Headless Chromium paints no native tooltips: $tooltip draws the element's title attribute where the browser would.",
+  "tooltip_build": "(() => { const t = document.querySelector('#session-build .sb-name'); const r = t.getBoundingClientRect(); const d = document.createElement('div'); d.textContent = t.title; d.style.cssText = `position:fixed;left:${r.left + 10}px;top:${r.bottom + 6}px;z-index:2147483647;background:#2b2b30;color:#eee;border:1px solid #555;font:12px system-ui;padding:3px 7px;border-radius:3px;box-shadow:0 2px 6px #0008;white-space:nowrap`; document.body.append(d); })()",
+  "tooltip_title": "(() => { const t = document.querySelector('#session-title'); const r = t.getBoundingClientRect(); const d = document.createElement('div'); d.textContent = t.title; d.style.cssText = `position:fixed;left:${r.left + 10}px;top:${r.bottom + 6}px;z-index:2147483647;background:#2b2b30;color:#eee;border:1px solid #555;font:12px system-ui;padding:3px 7px;border-radius:3px;box-shadow:0 2px 6px #0008;white-space:nowrap`; document.body.append(d); })()",
+  "routes": {
+    "/api/sessions": [
+      {"session_id": "w1-s7", "game_id": "65b7187589166b26", "title": "007 - Agent Under Fire (USA)", "state": "running", "adapter": "dolphin",
+       "mod": "auf_dm1_bondcombat_uwbthug", "collection_mod": "auf_dm1_bondcombat_uwbthug", "mod_build": "auf_dm1_bondcombat_uwbthug",
+       "started": "$now-900", "last_frame_age": 0.1, "detail": {"worker_name": "spark"}},
+      {"session_id": "w1-s8", "game_id": "65b7187589166b26", "title": "007 - Agent Under Fire (USA)", "state": "running", "adapter": "dolphin",
+       "started": "$now-300", "last_frame_age": 0.1, "detail": {"worker_name": "spark"}}
+    ],
+    "/api/sessions/w1-s7/mjpeg": {"$placeholder": "synthetic frame · 007 Agent Under Fire · build auf_dm1_bondcombat_uwbthug", "hue": 28, "style": "scene"},
+    "/api/sessions/w1-s8/mjpeg": {"$placeholder": "synthetic frame · 007 Agent Under Fire · stock game", "hue": 210, "style": "scene"},
+    "/api/catalog/65b7187589166b26": {"game_id": "65b7187589166b26", "title": "007 - Agent Under Fire (USA)", "favorite": false},
+    "/api/games/*/workbench": {"mods": [], "controls": [], "bookmarks": []},
+    "PATCH /api/builds/65b7187589166b26/auf_dm1_bondcombat_uwbthug": {"key": "65b7187589166b26/auf_dm1_bondcombat_uwbthug",
+      "display_name": "Bond (combat) vs UWB thug - works", "label": "Bond (combat) vs UWB thug - works"},
+    "PUT /api/builds/65b7187589166b26/auf_dm1_bondcombat_uwbthug/favorite": {"key": "65b7187589166b26/auf_dm1_bondcombat_uwbthug", "favorite": true}
+  },
+  "shots": [
+    {"name": "session-header-build-name", "url": "/#token=fixture&session=w1-s7", "viewport": [1280, 800],
+     "actions": [{"wait_for": "#session-build .sb-name"}, {"wait": 1200}]},
+    {"name": "session-header-build-name-tooltip", "url": "/#token=fixture&session=w1-s7", "viewport": [1280, 800],
+     "actions": [{"wait_for": "#session-build .sb-name"}, {"wait": 900}, {"hover": "#session-build .sb-name"}, {"eval": "$tooltip_build"}, {"wait": 200}],
+     "clip": "#session-head", "pad": 34},
+    {"name": "session-header-rename-field", "url": "/#token=fixture&session=w1-s7", "viewport": [1280, 800],
+     "actions": [{"wait_for": "#session-build .sb-name"}, {"wait": 900}, {"click": "#session-build .sb-name"}, {"wait_for": "#session-build .sb-input"},
+                 {"fill": ["#session-build .sb-input", "Bond (combat) vs UWB thug - works"]}, {"wait": 400}],
+     "clip": "#session-head", "pad": 12},
+    {"name": "session-header-renamed-favorite-offer", "url": "/#token=fixture&session=w1-s7", "viewport": [1280, 800],
+     "actions": [{"wait_for": "#session-build .sb-name"}, {"wait": 900}, {"click": "#session-build .sb-name"}, {"wait_for": "#session-build .sb-input"},
+                 {"fill": ["#session-build .sb-input", "Bond (combat) vs UWB thug - works"]}, {"press": "Enter"}, {"wait_for": "#session-build .sb-fav"}, {"wait": 400}],
+     "clip": "#session-head", "pad": 12},
+    {"name": "session-header-favorited", "url": "/#token=fixture&session=w1-s7", "viewport": [1280, 800],
+     "actions": [{"wait_for": "#session-build .sb-name"}, {"wait": 900}, {"click": "#session-build .sb-name"}, {"wait_for": "#session-build .sb-input"},
+                 {"fill": ["#session-build .sb-input", "Bond (combat) vs UWB thug - works"]}, {"press": "Enter"}, {"wait_for": "#session-build .sb-fav"},
+                 {"click": "#session-build .sb-fav"}, {"wait_for": "#session-build .sb-star"}, {"wait": 400}],
+     "clip": "#session-head", "pad": 12},
+    {"name": "session-header-renamed-full", "url": "/#token=fixture&session=w1-s7", "viewport": [1280, 800],
+     "actions": [{"wait_for": "#session-build .sb-name"}, {"wait": 900}, {"click": "#session-build .sb-name"}, {"wait_for": "#session-build .sb-input"},
+                 {"fill": ["#session-build .sb-input", "Bond (combat) vs UWB thug - works"]}, {"press": "Enter"}, {"wait_for": "#session-build .sb-fav"}, {"wait": 600}]},
+    {"name": "session-header-stock-game", "url": "/#token=fixture&session=w1-s8", "viewport": [1280, 800],
+     "actions": [{"wait_for": "#session-title[data-stock]"}, {"wait": 900}, {"click": "#session-title"}, {"hover": "#session-title"}, {"eval": "$tooltip_title"}, {"wait": 200}],
+     "clip": "#session-head", "pad": 34}
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "about": "Shared synthetic answers for the web shell's own polls (header tray, Library, Assets sidebar, process pop-up); included by the PR fixtures.",
+  "lists": ["/api/catalog/platforms", "/api/notify", "/api/workers"],
+  "local_storage": {"gbox_asset_sidebar": {"closed": true}},
+  "routes": {
+    "/api/health": {"ok": true, "time": "$now"},
+    "/api/catalog/facets": {"platform": {}, "system": {}},
+    "/api/catalog": {"total": 0, "items": []},
+    "/api/session_labels": {},
+    "/api/asset-groups": {"total": 0, "nested": false, "hidden_assets": 0, "hidden_textures": 0, "groups": [], "items": []},
+    "/api/assets": {"total": 0, "items": []},
+    "/api/jobs?state=queued,running&limit=100": []
+  }
+}

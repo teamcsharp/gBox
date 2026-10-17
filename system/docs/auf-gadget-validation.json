@@ -1,0 +1,282 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-15",
+  "title": "Agent Under Fire Q-Claw and Q-Laser native validation",
+  "scope": {
+    "platform": "Nintendo GameCube",
+    "disc_id": "GW7E69",
+    "disc_number": 0,
+    "revision": 1,
+    "catalog_ids": [
+      "65b7187589166b26",
+      "a8a1484cf7ac7ce1"
+    ],
+    "native_module": "Bond.elf",
+    "native_module_sha256": "1a9c0d19fb7bab09c2fd6ef56bd8158e88e507f72ba982d0ca292bc8145e716f",
+    "runtime": "Dolphin 2609a, Linux ARM64 JIT, Vulkan, HLE",
+    "tested_play": "Original owned ROM, first offline on-foot campaign section",
+    "custom_build_validation": "Static byte comparison of all five existing builds, not separate gameplay launches",
+    "build_audit_receipt": "auf-gadget-build-audit.json",
+    "model_census_receipt": "auf-gadget-model-census.json"
+  },
+  "provenance": {
+    "production_source_sha256": "66479db9e87022c35381240058e014c0550f4893be1493da7a87a6c84fad161c",
+    "missing_item_restore_runtime_source_sha256": "4469391ed9cb844095734a70d073af292992fc5c7bc54bdaa6706e5664893973",
+    "ownership_and_use_runtime_source_sha256": "d360302a09bf1ae7b2f2b44b671c4a7ab44db69d27a0a01211fe71053a592132",
+    "guest_dispatcher_sha256": "70f8e3b61773cd127a64b90eba49387f84ce699888768083b697e5eccc12ccd2",
+    "source_delta": "After the missing Q-Laser restore proof, the candidate added exact-reviewed extra gadget/Dart catalog entries, a native-name override for the packaged pcodegen item and class-specific instructions. That source was exercised for real owned/equipped readback, zero-write idempotence and visible Q-Laser use. The production source then corrected fist_pickup's native name to fist and made Give unavailable if inventory cannot be verified. These final catalog/availability changes were unit tested, not claimed as native runtime exercised. Q-Laser grant/inventory logic and guest dispatcher remain unchanged.",
+    "evidence_artifacts": [
+      {
+        "kind": "native_runtime_trace",
+        "sha256": "67eb04a1e1228fb61beb818314bf506a28093af2f42fb996c9a90a6dd58a90c8",
+        "name": "auf-gadget-runtime.json",
+        "media_type": "application/json",
+        "size": 47092
+      },
+      {
+        "kind": "owned_native_analysis",
+        "sha256": "b3e0cd6ba34b842c82addb3a46b0c43feea1af49f7a7da4c7e84b6adba5c082a",
+        "name": "auf-gadget-owned-analysis.json",
+        "media_type": "application/json",
+        "size": 7313
+      },
+      {
+        "kind": "custom_build_static_audit",
+        "sha256": "6421acd0a86021599d1e2f5f8020e7cf0ac476b6d30aa39553b85030563fe07b",
+        "name": "auf-gadget-build-audit.json",
+        "media_type": "application/json",
+        "size": 14564
+      },
+      {
+        "kind": "owned_gadget_model_census",
+        "sha256": "896c9c0d4df71899b06945702de250b465ecdbf00ce25f416e73d050b74dd809",
+        "name": "auf-gadget-model-census.json",
+        "media_type": "application/json",
+        "size": 10789
+      },
+      {
+        "kind": "owned_native_itemname_census",
+        "sha256": "1ced5423314dd5ec0855f286f222412e889105c66c9b0950f5d9433be63807ac",
+        "name": "auf-native-itemname-census.json",
+        "media_type": "application/json",
+        "size": 38255
+      },
+      {
+        "kind": "native_gameplay_frame",
+        "sha256": "73cb952071ea8de6ed534405aeb06b0ac3f4354002494ba790d374f8c5341b76",
+        "name": "auf-gadget-original-campaign-baseline.png",
+        "media_type": "image/png",
+        "size": 477468
+      },
+      {
+        "kind": "native_gameplay_frame",
+        "sha256": "eaebf88fc86a5c33be13b488bcb1a0800da168a12288ef990380bf64a5e54399",
+        "name": "auf-gadget-stock-dpad-0-dleft.png",
+        "media_type": "image/png",
+        "size": 471934
+      },
+      {
+        "kind": "native_gameplay_frame",
+        "sha256": "0966e26ec9b3f8856d5191fccfc0659f2751eb5f666552bf57cff8a232489d55",
+        "name": "auf-gadget-gadget_qlaser-native-selected.png",
+        "media_type": "image/png",
+        "size": 293495
+      },
+      {
+        "kind": "native_gameplay_frame",
+        "sha256": "17030396bf37654a3f9eac474e244508eeed937082a920d38d0714ba3f7fe1c4",
+        "name": "auf-gadget-gadget_qlaser-b-use-3.png",
+        "media_type": "image/png",
+        "size": 294350
+      },
+      {
+        "kind": "native_gameplay_frame",
+        "sha256": "262df462a41023abe84ea7fe4f99bb395d895e3b8032ebe7f40e4a69519b1072",
+        "name": "auf-gadget-qclaw_pickup-native-selected.png",
+        "media_type": "image/png",
+        "size": 288906
+      },
+      {
+        "kind": "native_gameplay_frame",
+        "sha256": "4164eeb778bb2673fbe2d692fa951feb0e934380da57760c758f52c82be6f6b7",
+        "name": "auf-gadget-qclaw_pickup-b-use-3.png",
+        "media_type": "image/png",
+        "size": 290328
+      },
+      {
+        "kind": "native_gameplay_frame",
+        "sha256": "86afa6c536ccf4d17d39a0cbf1627facff3409dc7923961ff7f8331537e377f4",
+        "name": "auf-gadget-final-source-qlaser-selected.png",
+        "media_type": "image/png",
+        "size": 293462
+      },
+      {
+        "kind": "native_gameplay_frame",
+        "sha256": "c3868b1a3efd6a272b77b94567dcc13e47718ebbd65587c7e08e4ab29712ac5b",
+        "name": "auf-gadget-final-source-qlaser-beam.png",
+        "media_type": "image/png",
+        "size": 293935
+      }
+    ]
+  },
+  "original_game_baseline": {
+    "verified": true,
+    "mission_script": "maps/orc_1.scr",
+    "mission_script_sha256": "e9c72283af524c0bfe608ee28a230acd822ae9731a5a365da350e4c4177ce17f",
+    "authored_loadout": [
+      {
+        "native_path": "giveWeapon",
+        "model": "p2kns_pickup.men"
+      },
+      {
+        "native_path": "giveWeapon",
+        "model": "qclaw_pickup.men"
+      },
+      {
+        "native_path": "giveGadget",
+        "model": "gadget_qlaser.men"
+      },
+      {
+        "native_path": "giveGadget",
+        "model": "gadget_qdecryptor.men"
+      }
+    ],
+    "authored_selection_after_intro": "gadget_qdecryptor",
+    "actual_inventory_count": 7,
+    "actual_owned_gadgets": [
+      {
+        "native_name": "qclaw_pickup",
+        "model": "models/qclaw_view.men",
+        "object": "0x815E2D20"
+      },
+      {
+        "native_name": "gadget_qlaser",
+        "model": "models/qlaser_view.men",
+        "object": "0x815E35A0"
+      },
+      {
+        "native_name": "gadget_qdecryptor",
+        "model": "models/qdecryptor_view.men",
+        "object": "0x815E4820"
+      }
+    ],
+    "actual_selected_gadget": "gadget_qdecryptor",
+    "player": "0x815CDEE0",
+    "input_hook_was_original": true,
+    "all_mod_switches_off": true,
+    "clean_private_checkpoint_saved": true,
+    "clean_private_checkpoint_bytes": 15589303,
+    "clean_private_checkpoint_sha256": "817dfa5b7cb7567472f56ef55c2c88f8e0faff3e6ed87c3b3254b85db5a176ab",
+    "conclusion": "Both requested gadgets were present in the original inventory. The intro deliberately selected Q-Decryptor; a single visible device was not evidence that Q-Claw or Q-Laser had been removed.",
+    "frame": "original-campaign-baseline.png"
+  },
+  "custom_build_comparison": {
+    "build_count": 5,
+    "first_exterior_loadout_script_unchanged": true,
+    "exterior_gadget_resources_compared": 18,
+    "interior_gadget_resources_compared": 22,
+    "gadget_resources_unchanged": true,
+    "native_executables_and_main_dol_unchanged": true,
+    "runtime_launches_of_custom_builds_claimed": false
+  },
+  "already_owned_requests": {
+    "verified": true,
+    "items": [
+      "qclaw",
+      "qlaser",
+      "qdecryptor"
+    ],
+    "initial_runtime_source": "4469391ed9cb844095734a70d073af292992fc5c7bc54bdaa6706e5664893973",
+    "rechecked_runtime_source": "d360302a09bf1ae7b2f2b44b671c4a7ab44db69d27a0a01211fe71053a592132",
+    "each_returned_already_owned": true,
+    "writes": [],
+    "qlaser_returned_equipped_after_native_selection": true,
+    "grant_does_not_auto_equip": true
+  },
+  "missing_qlaser_restore": {
+    "verified": true,
+    "private_test_setup": {
+      "method": "Exact-fingerprinted native removal of inactive Q-Laser from this private inventory",
+      "function": "Sentient::RemoveItem",
+      "address": "0x8011D438",
+      "bytes": 228,
+      "sha256": "25e7b020a6cf879cffcf52d50d2de76840df7b487c94475f0bfbc83255cfc593",
+      "raw_inventory_or_active_pointer_edits": false,
+      "removal_endpoint_exposed_in_product": false
+    },
+    "inventory_count_before": 7,
+    "inventory_count_missing": 6,
+    "missing_owned_flag": false,
+    "native_restore_function": "Sentient::giveGadget",
+    "native_restore_address": "0x8011B1F4",
+    "native_restore_bytes": 424,
+    "native_restore_sha256": "9a28e6217812f8c8edcb1f96970db8eab1f873d102ea8fec5f12befbc61627df",
+    "restored_object": "0x815F17C0",
+    "restored_owner": "0x815CDEE0",
+    "restored_native_name": "gadget_qlaser",
+    "restored_model": "models/qlaser_view.men",
+    "inventory_count_restored": 7,
+    "restored_owned_flag": true,
+    "primary_and_extra_selection_slots_unchanged": true
+  },
+  "selection_and_use": {
+    "native_selection_verified": true,
+    "private_native_selection_function": "Player::useGadget",
+    "private_native_selection_address": "0x800DCEF8",
+    "private_native_selection_bytes": 396,
+    "private_native_selection_sha256": "91bc67a36a1c31fe59ab3d1713b13461269a6716a16b37856995d33259240311",
+    "private_selection_alias_exposed_in_product": false,
+    "selection_pointer_edits": false,
+    "primary_equipped_slot": "Player + 0x29C",
+    "simultaneous_extra_gadget_slot": "Player + 0x7A4",
+    "stock_dpad_qclaw_selection_observed": true,
+    "actual_use_input": "GameCube B, native PADStatus button mask 0x0200",
+    "qlaser": {
+      "selected_model": "models/qlaser_view.men",
+      "owned_and_equipped_flags_verified": true,
+      "visible_red_beam_with_b_input": true,
+      "rechecked_with_ownership_runtime_source": true,
+      "frames": [
+        "gadget_qlaser-native-selected.png",
+        "gadget_qlaser-b-use-3.png",
+        "final-source-qlaser-selected.png",
+        "final-source-qlaser-beam.png"
+      ]
+    },
+    "qclaw": {
+      "selected_model": "models/qclaw_view.men",
+      "owned_and_equipped_flags_verified": true,
+      "visible_grappling_mechanism_firing_with_b_input": true,
+      "successful_attached_grapple_or_pull_verified": false,
+      "frames": [
+        "stock-dpad-0-dleft.png",
+        "qclaw_pickup-native-selected.png",
+        "qclaw_pickup-b-use-3.png"
+      ]
+    },
+    "limits": "The use test aimed at rooftop scenery. It proves rendered gadget selection, Q-Laser firing and Q-Claw firing, but does not certify cutting a mission lock, attaching to a valid grapple surface or completing a grapple pull. A missing Q-Claw restoration was not separately exercised."
+  },
+  "isolation": {
+    "host": "Spark",
+    "operator_sessions_touched": false,
+    "operator_card_data_written": false,
+    "operator_card_selections_changed": false,
+    "private_user_and_copied_cards": true,
+    "private_process_stopped": true,
+    "independent_process_inventory_found_no_dolphin": true,
+    "cloud_card_count": 3,
+    "cloud_card_revision_and_sha256_unchanged": true,
+    "auf_cloud_selection_before": {},
+    "auf_cloud_selection_after": {},
+    "managed_launch_or_worker_identity_workaround_used": false,
+    "prior_native_evidence_overwritten": false
+  },
+  "automated_checks": {
+    "python_passed": 276,
+    "python_skipped": 4,
+    "browser_passed": 13,
+    "native_module_tests_included": 97,
+    "reported_by": "integration and implementation owners",
+    "automated_checks_do_not_replace_native_effect_evidence": true
+  }
+}

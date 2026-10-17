@@ -1,15 +1,23 @@
 // gBox headless post-script: exports functions and defined strings to JSON.
 // Usage: analyzeHeadless <proj> gbox -import <bin> -postScript ExportAnalysis.java <out.json>
-// Status: written against the Ghidra 11.x API; not yet run (Ghidra not installed on the build host).
 // @category gBox
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.listing.*;
 import ghidra.program.model.data.StringDataInstance;
-import java.io.FileWriter;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 public class ExportAnalysis extends GhidraScript {
     private static String q(String s) {
-        return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r") + "\"";
+        StringBuilder out = new StringBuilder("\"");
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '"' || c == '\\') out.append('\\').append(c);
+            else if (c < 0x20) out.append(String.format("\\u%04x", (int)c));
+            else out.append(c);
+        }
+        return out.append('"').toString();
     }
 
     @Override
@@ -39,6 +47,8 @@ public class ExportAnalysis extends GhidraScript {
               .append(",\"value\":").append(q(StringDataInstance.getStringDataInstance(d).getStringValue() + "")).append("}");
         }
         sb.append("]}");
-        try (FileWriter w = new FileWriter(getScriptArgs()[0])) { w.write(sb.toString()); }
+        try (java.io.Writer w = Files.newBufferedWriter(Path.of(getScriptArgs()[0]), StandardCharsets.UTF_8)) {
+            w.write(sb.toString());
+        }
     }
 }

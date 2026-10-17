@@ -3,7 +3,7 @@ under a screen point), the object and skeleton an actor draws with, its current 
 that is loaded. Struct offsets from the zeldaret/oot decompilation (include/play_state.h, actor.h, object.h, room.h,
 animation.h); RDRAM access through gbox.oot (_rd / _wr: word-swapped ParaLLEl RDRAM).
 
-PlayState (oot.PLAY: the live tools know NTSC 1.2's address only, like gbox.oot):
+PlayState (oot.play(ad): resolved per ROM revision by gbox.oot.layout):
   +0x00A4 sceneId (s16) | +0x1C24 actorCtx: +0x0C actorLists[12] {s32 length, Actor* head}
   +0x117A4 objectCtx: +0x0C slots[19] {s16 id, void* segment, ...} 0x44 each | +0x11CBC roomCtx: curRoom {s8 num, ...,
   RoomShape* +0x08, void* segment +0x0C} | +0x11D60 viewProjectionMtxF (float[4][4], column-major)
@@ -44,11 +44,11 @@ def f3(ad, a):
 
 
 def scene(ad) -> int:
-    return s16(ad, oot.PLAY + 0xA4)
+    return s16(ad, oot.play(ad) + 0xA4)
 
 
 def object_slots(ad) -> list[dict]:
-    base = oot.PLAY + OBJECT_CTX
+    base = oot.play(ad) + OBJECT_CTX
     n = oot._rd(ad, base + 8, 1)[0]
     raw = oot._rd(ad, base + 0x0C, 0x44 * 19)
     out = []
@@ -61,7 +61,7 @@ def object_slots(ad) -> list[dict]:
 def actors(ad) -> list[dict]:
     """Every live actor: id, name, category, world / focus position, object slot -> object id / name, instance address."""
     slots = {s["slot"]: s for s in object_slots(ad)}
-    lists = oot._rd(ad, oot.PLAY + ACTOR_CTX + 0x0C, 8 * 12)
+    lists = oot._rd(ad, oot.play(ad) + ACTOR_CTX + 0x0C, 8 * 12)
     out = []
     for cat in range(12):
         n, a = struct.unpack_from(">iI", lists, 8 * cat)
@@ -85,7 +85,7 @@ def actors(ad) -> list[dict]:
 
 def view_proj(ad) -> np.ndarray:
     """play->viewProjectionMtxF as a row-major 4x4 for column vectors (clip = M @ [x, y, z, 1])."""
-    v = struct.unpack(">16f", oot._rd(ad, oot.PLAY + VP_MTX, 64))
+    v = struct.unpack(">16f", oot._rd(ad, oot.play(ad) + VP_MTX, 64))
     return np.array(v).reshape(4, 4).T
 
 
@@ -134,7 +134,7 @@ def pick(ad, x: float, y: float, want=("player", "npc", "enemy", "boss", "prop",
 
 
 def player(ad) -> dict:
-    a = u32(ad, oot.PLAY + 0x1C44)
+    a = u32(ad, oot.play(ad) + 0x1C44)
     raw = oot._rd(ad, a, 0x140)
     return {"addr": a, "pos": np.array(struct.unpack_from(">3f", raw, 0x24)), "rot": struct.unpack_from(">3h", raw, 0x30),
             "floor": struct.unpack_from(">f", raw, 0x80)[0]}
@@ -186,7 +186,7 @@ def write_block(ad, a: int, data: bytes) -> None:
 def rooms_loaded(ad) -> list[dict]:
     out = []
     for k in range(2):                                  # curRoom, prevRoom (both drawn during a room transition)
-        raw = oot._rd(ad, oot.PLAY + ROOM_CTX + 0x14 * k, 0x14)
+        raw = oot._rd(ad, oot.play(ad) + ROOM_CTX + 0x14 * k, 0x14)
         num = struct.unpack_from(">b", raw, 0)[0]
         shape, seg = struct.unpack_from(">II", raw, 8)
         if num >= 0 and 0x80000000 <= shape < 0x80800000 and 0x80000000 <= seg < 0x80800000:
@@ -215,7 +215,7 @@ def _entries(ad, room: dict) -> list[dict]:
 
 def objects_end(ad, obj_table: int) -> tuple[int, int]:
     """-> (end of the last loaded object, objectCtx.spaceEnd). Object sizes from gObjectTable (vromEnd - vromStart)."""
-    base = oot.PLAY + OBJECT_CTX
+    base = oot.play(ad) + OBJECT_CTX
     end = u32(ad, base + 4)
     last = u32(ad, base)
     for s in object_slots(ad):
@@ -316,7 +316,7 @@ def watch(sid: str, items: list[dict]) -> dict:
 
 def where(ad) -> dict:
     p = player(ad)
-    age_child = struct.unpack(">I", oot._rd(ad, oot.SAVE + 4, 4))[0] == 1
+    age_child = struct.unpack(">I", oot._rd(ad, oot.save(ad) + 4, 4))[0] == 1
     return {"scene": scene(ad), "rooms": [r["num"] for r in rooms_loaded(ad)], "player": [round(float(v), 1) for v in p["pos"]],
             "yaw": p["rot"][1] * 360.0 / 65536, "floor": p["floor"], "age": "child" if age_child else "adult"}
 

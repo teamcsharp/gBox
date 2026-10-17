@@ -1,0 +1,6471 @@
+{
+ "rom": {
+  "version": "ntsc-1.0",
+  "md5": "5bd1fe107bf8106b2ab6650abecd54d6"
+ },
+ "slots": {
+  "player": {
+   "object": "object_link_boy",
+   "skeleton": "gLinkAdultSkel",
+   "object_id": 20,
+   "mapping": {
+    "mode": "retarget",
+    "roles": "LINK_ROLES"
+   }
+  },
+  "kokiri_boy": {
+   "object": "object_km1",
+   "skeleton": "gKm1Skel",
+   "object_id": 252,
+   "dma_index": 729,
+   "object_bytes": 22976,
+   "skeleton_facts": {
+    "offset": 240,
+    "limbs": 15,
+    "lod": false,
+    "limbs_with_dl": 15,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Ko": {
+     "id": 355,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 14192,
+    "textures": 944
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Know-It-All Brothers' House",
+    "Twins' House",
+    "Mido's House",
+    "Saria's House",
+    "Kokiri Shop",
+    "Kokiri Forest",
+    "Lost Woods",
+    "Lon Lon Ranch"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 14,
+     "l_upper": 8,
+     "l_fore": 9,
+     "l_hand": 10,
+     "r_upper": 11,
+     "r_fore": 12,
+     "r_hand": 13,
+     "chest": 7,
+     "r_thigh": 4,
+     "r_shin": 5,
+     "r_foot": 6,
+     "l_thigh": 1,
+     "l_shin": 2,
+     "l_foot": 3
+    },
+    "pose": "animation",
+    "height": 5270.8
+   }
+  },
+  "kokiri_girl": {
+   "object": "object_kw1",
+   "skeleton": "gKw1Skel",
+   "object_id": 253,
+   "dma_index": 730,
+   "object_bytes": 26848,
+   "skeleton_facts": {
+    "offset": 240,
+    "limbs": 15,
+    "lod": false,
+    "limbs_with_dl": 15,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Ko": {
+     "id": 355,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 7824,
+    "textures": 0
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Know-It-All Brothers' House",
+    "Twins' House",
+    "Mido's House",
+    "Saria's House",
+    "Kokiri Shop",
+    "Kokiri Forest",
+    "Lost Woods",
+    "Lon Lon Ranch"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 14,
+     "l_upper": 8,
+     "l_fore": 9,
+     "l_hand": 10,
+     "r_upper": 11,
+     "r_fore": 12,
+     "r_hand": 13,
+     "chest": 7,
+     "r_thigh": 4,
+     "r_shin": 5,
+     "r_foot": 6,
+     "l_thigh": 1,
+     "l_shin": 2,
+     "l_foot": 3
+    },
+    "pose": "animation",
+    "height": 4443.0
+   }
+  },
+  "saria": {
+   "object": "object_sa",
+   "skeleton": "gSariaSkel",
+   "object_id": 188,
+   "dma_index": 668,
+   "object_bytes": 86576,
+   "skeleton_facts": {
+    "offset": 45472,
+    "limbs": 16,
+    "lod": false,
+    "limbs_with_dl": 15,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Sa": {
+     "id": 326,
+     "names_skeleton": true
+    },
+    "Demo_Sa": {
+     "id": 201,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 22864,
+    "textures": 2384
+   },
+   "branch_dls": 1,
+   "scenes": [
+    "Inside Ganon's Castle",
+    "Saria's House",
+    "Chamber of the Sages",
+    "Kokiri Forest",
+    "Sacred Forest Meadow",
+    "Lost Woods",
+    "Death Mountain Trail"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 15,
+     "l_upper": 9,
+     "l_fore": 10,
+     "l_hand": 11,
+     "r_upper": 12,
+     "r_fore": 13,
+     "r_hand": 14,
+     "chest": 8,
+     "l_thigh": 2,
+     "l_shin": 3,
+     "l_foot": 4,
+     "r_thigh": 5,
+     "r_shin": 6,
+     "r_foot": 7
+    },
+    "pose": "animation",
+    "height": 4440.6
+   }
+  },
+  "mido": {
+   "object": "object_md",
+   "skeleton": "gMidoSkel",
+   "object_id": 251,
+   "dma_index": 728,
+   "object_bytes": 41296,
+   "skeleton_facts": {
+    "offset": 32696,
+    "limbs": 16,
+    "lod": false,
+    "limbs_with_dl": 15,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Md": {
+     "id": 365,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 20448,
+    "textures": 1472
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Mido's House",
+    "Kokiri Forest",
+    "Lost Woods",
+    "Lon Lon Ranch"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 15,
+     "l_upper": 9,
+     "l_fore": 10,
+     "l_hand": 11,
+     "r_upper": 12,
+     "r_fore": 13,
+     "r_hand": 14,
+     "chest": 8,
+     "l_thigh": 2,
+     "l_shin": 3,
+     "l_foot": 4,
+     "r_thigh": 5,
+     "r_shin": 6,
+     "r_foot": 7
+    },
+    "pose": "animation",
+    "height": 4605.5
+   }
+  },
+  "zelda_child": {
+   "object": "object_zl4",
+   "skeleton": "gChildZeldaSkel",
+   "object_id": 401,
+   "dma_index": 879,
+   "object_bytes": 118304,
+   "skeleton_facts": {
+    "offset": 57400,
+    "limbs": 17,
+    "lod": false,
+    "limbs_with_dl": 16,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Zl4": {
+     "id": 467,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 26176,
+    "textures": 12608
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Temple of Time",
+    "Castle courtyard (Zelda)",
+    "Hyrule Field"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 16,
+     "l_upper": 10,
+     "l_fore": 11,
+     "l_hand": 12,
+     "r_upper": 13,
+     "r_fore": 14,
+     "r_hand": 15,
+     "chest": 9,
+     "r_thigh": 4,
+     "r_shin": 5,
+     "l_thigh": 2,
+     "l_shin": 3
+    },
+    "pose": "animation",
+    "height": 4624.6
+   }
+  },
+  "zelda_child_escape": {
+   "object": "object_zl1",
+   "skeleton": "gChildZelda1Skel",
+   "object_id": 29,
+   "dma_index": 521,
+   "object_bytes": 82880,
+   "skeleton_facts": {
+    "offset": 62936,
+    "limbs": 17,
+    "lod": false,
+    "limbs_with_dl": 16,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Zl1": {
+     "id": 41,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 30256,
+    "textures": 11360
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Castle courtyard (Zelda)"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 16,
+     "l_upper": 10,
+     "l_fore": 11,
+     "l_hand": 12,
+     "r_upper": 13,
+     "r_fore": 14,
+     "r_hand": 15,
+     "chest": 9,
+     "r_thigh": 4,
+     "r_shin": 5,
+     "l_thigh": 2,
+     "l_shin": 3
+    },
+    "pose": "animation",
+    "height": 4595.6
+   }
+  },
+  "zelda_adult": {
+   "object": "object_zl2",
+   "skeleton": "gZelda2Skel",
+   "object_id": 96,
+   "dma_index": 588,
+   "object_bytes": 68992,
+   "skeleton_facts": {
+    "offset": 68976,
+    "limbs": 14,
+    "lod": false,
+    "limbs_with_dl": 13,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Zl2": {
+     "id": 77,
+     "names_skeleton": true
+    },
+    "En_Zl3": {
+     "id": 377,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 34096,
+    "textures": 1312
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Ganon's Tower (collapse, inside)",
+    "Ganon's Castle (collapse)",
+    "Ganondorf's lair",
+    "Ganon's Tower (collapse, outside)",
+    "Temple of Time",
+    "Ganon's arena",
+    "Hyrule Field",
+    "Outside Ganon's Castle"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "chest": 6,
+     "head": 13,
+     "l_upper": 7,
+     "l_fore": 8,
+     "l_hand": 9,
+     "r_upper": 10,
+     "r_fore": 11,
+     "r_hand": 12,
+     "hip": 0
+    },
+    "pose": "animation",
+    "height": 5976.4
+   }
+  },
+  "sheik": {
+   "object": "object_xc",
+   "skeleton": "gSheikSkel",
+   "object_id": 138,
+   "dma_index": 618,
+   "object_bytes": 117536,
+   "skeleton_facts": {
+    "offset": 79120,
+    "limbs": 16,
+    "lod": false,
+    "limbs_with_dl": 15,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Xc": {
+     "id": 72,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 26144,
+    "textures": 12992
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Ice Cavern",
+    "Temple of Time",
+    "Kakariko Village",
+    "Sacred Forest Meadow",
+    "Lake Hylia",
+    "Desert Colossus",
+    "Death Mountain Crater"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 15,
+     "l_upper": 9,
+     "l_fore": 10,
+     "l_hand": 11,
+     "r_upper": 12,
+     "r_fore": 13,
+     "r_hand": 14,
+     "chest": 8,
+     "r_thigh": 5,
+     "r_shin": 6,
+     "r_foot": 7,
+     "l_thigh": 2,
+     "l_shin": 3,
+     "l_foot": 4
+    },
+    "pose": "animation",
+    "height": 5968.2
+   }
+  },
+  "impa": {
+   "object": "object_im",
+   "skeleton": "gImpaSkel",
+   "object_id": 135,
+   "dma_index": 615,
+   "object_bytes": 74288,
+   "skeleton_facts": {
+    "offset": 63368,
+    "limbs": 16,
+    "lod": false,
+    "limbs_with_dl": 15,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "Demo_Im": {
+     "id": 169,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 33968,
+    "textures": 1280
+   },
+   "branch_dls": 1,
+   "scenes": [
+    "Inside Ganon's Castle",
+    "Chamber of the Sages",
+    "Castle courtyard (Zelda)",
+    "Hyrule Field",
+    "Death Mountain Trail"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 15,
+     "l_upper": 9,
+     "l_fore": 10,
+     "l_hand": 11,
+     "r_upper": 12,
+     "r_fore": 13,
+     "r_hand": 14,
+     "chest": 8,
+     "r_thigh": 5,
+     "r_shin": 6,
+     "r_foot": 7,
+     "l_thigh": 2,
+     "l_shin": 3,
+     "l_foot": 4
+    },
+    "pose": "animation",
+    "height": 6703.0
+   }
+  },
+  "hyrule_soldier": {
+   "object": "object_sd",
+   "skeleton": "gEnHeishiSkel",
+   "object_id": 151,
+   "dma_index": 632,
+   "object_bytes": 50912,
+   "skeleton_facts": {
+    "offset": 47816,
+    "limbs": 16,
+    "lod": false,
+    "limbs_with_dl": 15,
+    "type": "normal"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Heishi1": {
+     "id": 143,
+     "names_skeleton": true
+    },
+    "En_Heishi2": {
+     "id": 179,
+     "names_skeleton": true
+    },
+    "En_Heishi3": {
+     "id": 322,
+     "names_skeleton": true
+    },
+    "En_Heishi4": {
+     "id": 376,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 19712,
+    "textures": 4224
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Market Entrance (day)",
+    "Market Entrance (night)",
+    "Back Alley (day)",
+    "Back Alley (night)",
+    "Market (night)",
+    "Temple of Time exterior (day)",
+    "Temple of Time exterior (night)",
+    "Temple of Time exterior (ruins)",
+    "Castle courtyard guards (day)",
+    "Castle courtyard guards (night)",
+    "Castle courtyard (Zelda)",
+    "Market guard house",
+    "Kakariko Village",
+    "Hyrule Castle"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 15,
+     "l_upper": 9,
+     "l_fore": 10,
+     "l_hand": 11,
+     "r_upper": 12,
+     "r_fore": 13,
+     "r_hand": 14,
+     "chest": 8,
+     "r_thigh": 5,
+     "r_shin": 6,
+     "r_foot": 7,
+     "l_thigh": 2,
+     "l_shin": 3,
+     "l_foot": 4
+    },
+    "pose": "animation",
+    "height": 8025.5
+   }
+  },
+  "dampe": {
+   "object": "object_tk",
+   "skeleton": "gDampeSkel",
+   "object_id": 137,
+   "dma_index": 617,
+   "object_bytes": 48720,
+   "skeleton_facts": {
+    "offset": 48704,
+    "limbs": 17,
+    "lod": false,
+    "limbs_with_dl": 17,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Tk": {
+     "id": 133,
+     "names_skeleton": true
+    },
+    "En_Po_Relay": {
+     "id": 290,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 19232,
+    "textures": 2192
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Redead grave",
+    "Windmill and Dampe's grave",
+    "Graveyard"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 15,
+     "l_upper": 8,
+     "l_fore": 9,
+     "l_hand": 10,
+     "r_upper": 11,
+     "r_fore": 12,
+     "r_hand": 13,
+     "chest": 7,
+     "l_thigh": 1,
+     "l_shin": 2,
+     "l_foot": 3,
+     "r_thigh": 4,
+     "r_shin": 5,
+     "r_foot": 6
+    },
+    "pose": "animation",
+    "height": 5469.0
+   }
+  },
+  "happy_mask_salesman": {
+   "object": "object_os",
+   "skeleton": "gHappyMaskSalesmanSkel",
+   "object_id": 318,
+   "dma_index": 793,
+   "object_bytes": 18032,
+   "skeleton_facts": {
+    "offset": 18008,
+    "limbs": 8,
+    "lod": false,
+    "limbs_with_dl": 8,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Ossan": {
+     "id": 61,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 3424,
+    "textures": 0
+   },
+   "branch_dls": 1,
+   "scenes": [
+    "Happy Mask Shop",
+    "Lon Lon Ranch"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "head": 7,
+     "l_upper": 1,
+     "l_fore": 2,
+     "l_hand": 3,
+     "r_upper": 4,
+     "r_fore": 5,
+     "r_hand": 6,
+     "hip": 0
+    },
+    "pose": "animation",
+    "height": 4087.0
+   }
+  },
+  "running_man": {
+   "object": "object_mm",
+   "skeleton": "gRunningManSkel",
+   "object_id": 316,
+   "dma_index": 791,
+   "object_bytes": 32880,
+   "skeleton_facts": {
+    "offset": 24088,
+    "limbs": 15,
+    "lod": false,
+    "limbs_with_dl": 15,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Mm": {
+     "id": 354,
+     "names_skeleton": true
+    },
+    "En_Mm2": {
+     "id": 468,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 6608,
+    "textures": 1408
+   },
+   "branch_dls": 2,
+   "scenes": [
+    "Carpenters' Tent",
+    "Hyrule Field",
+    "Lost Woods",
+    "Lon Lon Ranch"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 14,
+     "l_upper": 8,
+     "l_fore": 9,
+     "l_hand": 10,
+     "r_upper": 11,
+     "r_fore": 12,
+     "r_hand": 13,
+     "chest": 7,
+     "r_thigh": 4,
+     "r_shin": 5,
+     "r_foot": 6,
+     "l_thigh": 1,
+     "l_shin": 2,
+     "l_foot": 3
+    },
+    "pose": "animation",
+    "height": 6623.9
+   }
+  },
+  "cucco_lady": {
+   "object": "object_ane",
+   "skeleton": "gCuccoLadySkel",
+   "object_id": 272,
+   "dma_index": 749,
+   "object_bytes": 28592,
+   "skeleton_facts": {
+    "offset": 240,
+    "limbs": 15,
+    "lod": false,
+    "limbs_with_dl": 15,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Niw_Lady": {
+     "id": 316,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 18448,
+    "textures": 1712
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Impa's House",
+    "Kakariko Village",
+    "Lon Lon Ranch"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 14,
+     "l_upper": 8,
+     "l_fore": 9,
+     "l_hand": 10,
+     "r_upper": 11,
+     "r_fore": 12,
+     "r_hand": 13,
+     "chest": 7,
+     "r_thigh": 4,
+     "r_shin": 5,
+     "r_foot": 6,
+     "l_thigh": 1,
+     "l_shin": 2,
+     "l_foot": 3
+    },
+    "pose": "animation",
+    "height": 6513.1
+   }
+  },
+  "cucco_girl": {
+   "object": "object_gr",
+   "skeleton": "gNiwGirlSkel",
+   "object_id": 362,
+   "dma_index": 837,
+   "object_bytes": 40080,
+   "skeleton_facts": {
+    "offset": 39240,
+    "limbs": 16,
+    "lod": false,
+    "limbs_with_dl": 15,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Niw_Girl": {
+     "id": 410,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 15328,
+    "textures": 16560
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Market (day)"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 4,
+     "l_upper": 6,
+     "l_fore": 7,
+     "r_upper": 8,
+     "r_fore": 9,
+     "chest": 2,
+     "l_thigh": 10,
+     "l_shin": 11,
+     "l_foot": 12,
+     "r_thigh": 13,
+     "r_shin": 14,
+     "r_foot": 15
+    },
+    "pose": "animation",
+    "height": 3193.6
+   }
+  },
+  "windmill_man": {
+   "object": "object_fu",
+   "skeleton": "gWindmillManSkel",
+   "object_id": 307,
+   "dma_index": 782,
+   "object_bytes": 27808,
+   "skeleton_facts": {
+    "offset": 27792,
+    "limbs": 15,
+    "lod": false,
+    "limbs_with_dl": 15,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Fu": {
+     "id": 339,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 15808,
+    "textures": 4800
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Windmill and Dampe's grave",
+    "Lon Lon Ranch"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "chest": 7,
+     "head": 14,
+     "l_upper": 8,
+     "l_fore": 9,
+     "r_upper": 10,
+     "r_fore": 11,
+     "r_hand": 12,
+     "l_thigh": 1,
+     "l_shin": 2,
+     "l_foot": 3,
+     "r_thigh": 4,
+     "r_shin": 5,
+     "r_foot": 6,
+     "hip": 0
+    },
+    "pose": "animation",
+    "height": 7389.9
+   }
+  },
+  "roof_man": {
+   "object": "object_ani",
+   "skeleton": "gRoofManSkel",
+   "object_id": 236,
+   "dma_index": 714,
+   "object_bytes": 30464,
+   "skeleton_facts": {
+    "offset": 240,
+    "limbs": 15,
+    "lod": false,
+    "limbs_with_dl": 15,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Ani": {
+     "id": 359,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 15744,
+    "textures": 2304
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Kakariko Village"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 14,
+     "l_upper": 8,
+     "l_fore": 9,
+     "l_hand": 10,
+     "r_upper": 11,
+     "r_fore": 12,
+     "r_hand": 13,
+     "chest": 7,
+     "r_thigh": 4,
+     "r_shin": 5,
+     "r_foot": 6,
+     "l_thigh": 1,
+     "l_shin": 2,
+     "l_foot": 3
+    },
+    "pose": "animation",
+    "height": 6607.6
+   }
+  },
+  "graveyard_kid": {
+   "object": "object_cs",
+   "skeleton": "gGraveyardKidSkel",
+   "object_id": 325,
+   "dma_index": 800,
+   "object_bytes": 34128,
+   "skeleton_facts": {
+    "offset": 34112,
+    "limbs": 15,
+    "lod": false,
+    "limbs_with_dl": 15,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Cs": {
+     "id": 364,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 18144,
+    "textures": 3072
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Graveyard"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 14,
+     "l_upper": 8,
+     "l_fore": 9,
+     "l_hand": 10,
+     "r_upper": 11,
+     "r_fore": 12,
+     "r_hand": 13,
+     "chest": 7,
+     "l_thigh": 1,
+     "l_shin": 2,
+     "l_foot": 3,
+     "r_thigh": 4,
+     "r_shin": 5,
+     "r_foot": 6
+    },
+    "pose": "animation",
+    "height": 3252.2
+   }
+  },
+  "carpenter_boss": {
+   "object": "object_toryo",
+   "skeleton": "object_toryo_Skel_007150",
+   "object_id": 289,
+   "dma_index": 765,
+   "object_bytes": 29024,
+   "skeleton_facts": {
+    "offset": 29008,
+    "limbs": 16,
+    "lod": false,
+    "limbs_with_dl": 16,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Toryo": {
+     "id": 306,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 21456,
+    "textures": 3616
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Kakariko guest house",
+    "Kakariko Village",
+    "Gerudo Valley",
+    "Lon Lon Ranch"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 15,
+     "l_upper": 8,
+     "l_fore": 9,
+     "l_hand": 10,
+     "r_upper": 11,
+     "r_fore": 12,
+     "r_hand": 13,
+     "chest": 7,
+     "l_thigh": 1,
+     "l_shin": 2,
+     "l_foot": 3,
+     "r_thigh": 4,
+     "r_shin": 5,
+     "r_foot": 6
+    },
+    "pose": "animation",
+    "height": 6675.3
+   }
+  },
+  "carpenters": {
+   "object": "object_daiku",
+   "skeleton": "object_daiku_Skel_007958",
+   "object_id": 290,
+   "dma_index": 766,
+   "object_bytes": 34928,
+   "skeleton_facts": {
+    "offset": 31064,
+    "limbs": 16,
+    "lod": false,
+    "limbs_with_dl": 16,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Daiku": {
+     "id": 307,
+     "names_skeleton": true
+    },
+    "En_Daiku_Kakariko": {
+     "id": 444,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 17744,
+    "textures": 3232
+   },
+   "branch_dls": 4,
+   "scenes": [
+    "Thieves' Hideout",
+    "Kakariko guest house",
+    "Kakariko Potion Shop",
+    "Carpenters' Tent",
+    "Kakariko Village",
+    "Lon Lon Ranch"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 15,
+     "l_upper": 8,
+     "l_fore": 9,
+     "l_hand": 10,
+     "r_upper": 11,
+     "r_fore": 12,
+     "r_hand": 13,
+     "chest": 7,
+     "l_thigh": 1,
+     "l_shin": 2,
+     "l_foot": 3,
+     "r_thigh": 4,
+     "r_shin": 5,
+     "r_foot": 6
+    },
+    "pose": "animation",
+    "height": 6612.1
+   }
+  },
+  "carpenter_son": {
+   "object": "object_hs",
+   "skeleton": "gCarpenterSonSkel",
+   "object_id": 296,
+   "dma_index": 771,
+   "object_bytes": 25200,
+   "skeleton_facts": {
+    "offset": 25184,
+    "limbs": 15,
+    "lod": false,
+    "limbs_with_dl": 13,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Hs": {
+     "id": 319,
+     "names_skeleton": true
+    },
+    "En_Hs2": {
+     "id": 422,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 18560,
+    "textures": 4896
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Kakariko Village",
+    "Lost Woods"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "head": 4,
+     "l_upper": 1,
+     "l_fore": 2,
+     "l_hand": 3,
+     "r_upper": 7,
+     "r_fore": 8,
+     "hip": 0
+    },
+    "pose": "animation",
+    "height": 5585.8
+   }
+  },
+  "shooting_gallery_man": {
+   "object": "object_ossan",
+   "skeleton": "gObjectOssanSkel",
+   "object_id": 91,
+   "dma_index": 583,
+   "object_bytes": 39760,
+   "skeleton_facts": {
+    "offset": 39736,
+    "limbs": 8,
+    "lod": false,
+    "limbs_with_dl": 8,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Syateki_Man": {
+     "id": 193,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 20544,
+    "textures": 4208
+   },
+   "branch_dls": 1,
+   "scenes": [
+    "Bazaar",
+    "Zora Shop",
+    "Shooting Gallery"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "head": 7,
+     "l_upper": 1,
+     "l_fore": 2,
+     "l_hand": 3,
+     "r_upper": 4,
+     "r_fore": 5,
+     "r_hand": 6,
+     "hip": 0
+    },
+    "pose": "animation",
+    "height": 6639.8
+   }
+  },
+  "bombchu_bowling_girl": {
+   "object": "object_bg",
+   "skeleton": "gBowlingGirlSkel",
+   "object_id": 352,
+   "dma_index": 827,
+   "object_bytes": 29376,
+   "skeleton_facts": {
+    "offset": 28336,
+    "limbs": 10,
+    "lod": false,
+    "limbs_with_dl": 10,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Bom_Bowl_Man": {
+     "id": 331,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 14832,
+    "textures": 5376
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Bombchu Bowling Alley",
+    "Lon Lon Ranch"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "chest": 1,
+     "head": 2,
+     "l_upper": 4,
+     "l_fore": 5,
+     "l_hand": 6,
+     "r_upper": 7,
+     "r_fore": 8,
+     "r_hand": 9,
+     "hip": 0
+    },
+    "pose": "animation",
+    "height": 3257.4
+   }
+  },
+  "poe_collector": {
+   "object": "object_ps",
+   "skeleton": "gPoeSellerSkel",
+   "object_id": 393,
+   "dma_index": 870,
+   "object_bytes": 51456,
+   "skeleton_facts": {
+    "offset": 49696,
+    "limbs": 11,
+    "lod": false,
+    "limbs_with_dl": 10,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Gb": {
+     "id": 440,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 22064,
+    "textures": 13952
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Market guard house"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "chest": 1,
+     "head": 10,
+     "l_upper": 2,
+     "l_fore": 3,
+     "r_upper": 6,
+     "r_fore": 7,
+     "r_hand": 8,
+     "hip": 0
+    },
+    "pose": "animation",
+    "height": 13989.0
+   }
+  },
+  "scientist": {
+   "object": "object_mk",
+   "skeleton": "object_mk_Skel_005DF0",
+   "object_id": 306,
+   "dma_index": 781,
+   "object_bytes": 24064,
+   "skeleton_facts": {
+    "offset": 24048,
+    "limbs": 12,
+    "lod": false,
+    "limbs_with_dl": 12,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Mk": {
+     "id": 330,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 16784,
+    "textures": 3584
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Lakeside Laboratory",
+    "Lon Lon Ranch"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "chest": 1,
+     "head": 5,
+     "l_upper": 2,
+     "l_fore": 3,
+     "l_hand": 4,
+     "r_upper": 8,
+     "r_fore": 9,
+     "r_hand": 10,
+     "hip": 0
+    },
+    "pose": "animation",
+    "height": 5110.7
+   }
+  },
+  "carpet_merchant": {
+   "object": "object_js",
+   "skeleton": "gCarpetMerchantSkel",
+   "object_id": 324,
+   "dma_index": 799,
+   "object_bytes": 24368,
+   "skeleton_facts": {
+    "offset": 24224,
+    "limbs": 12,
+    "lod": false,
+    "limbs_with_dl": 11,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Js": {
+     "id": 362,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 18352,
+    "textures": 4544
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Haunted Wasteland",
+    "Lon Lon Ranch"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "chest": 4,
+     "head": 11,
+     "l_upper": 5,
+     "l_fore": 6,
+     "l_hand": 7,
+     "r_upper": 8,
+     "r_fore": 9,
+     "r_hand": 10,
+     "hip": 0
+    },
+    "pose": "animation",
+    "height": 4950.0
+   }
+  },
+  "bean_salesman": {
+   "object": "object_ms",
+   "skeleton": "gBeanSalesmanSkel",
+   "object_id": 295,
+   "dma_index": 770,
+   "object_bytes": 15824,
+   "skeleton_facts": {
+    "offset": 15808,
+    "limbs": 8,
+    "lod": false,
+    "limbs_with_dl": 7,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Ms": {
+     "id": 318,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 11312,
+    "textures": 2832
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Zora's River",
+    "Lon Lon Ranch"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "head": 6,
+     "l_upper": 1,
+     "l_fore": 2,
+     "l_hand": 3,
+     "r_upper": 4,
+     "r_fore": 5,
+     "hip": 0
+    },
+    "pose": "animation",
+    "height": 2878.0
+   }
+  },
+  "fishing_pond_owner": {
+   "object": "object_fish",
+   "skeleton": "gFishingOwnerSkel",
+   "object_id": 347,
+   "dma_index": 822,
+   "object_bytes": 87536,
+   "skeleton_facts": {
+    "offset": 34296,
+    "limbs": 8,
+    "lod": false,
+    "limbs_with_dl": 8,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "Fishing": {
+     "id": 254,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 13184,
+    "textures": 2048
+   },
+   "branch_dls": 1,
+   "scenes": [
+    "Fishing Pond",
+    "Lon Lon Ranch"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "head": 7,
+     "l_upper": 4,
+     "l_fore": 5,
+     "l_hand": 6,
+     "r_upper": 1,
+     "r_fore": 2,
+     "r_hand": 3,
+     "hip": 0
+    },
+    "pose": "animation",
+    "height": 2183.5
+   }
+  },
+  "great_fairy": {
+   "object": "object_dy_obj",
+   "skeleton": "gGreatFairySkel",
+   "object_id": 10,
+   "dma_index": 509,
+   "object_bytes": 120112,
+   "skeleton_facts": {
+    "offset": 115792,
+    "limbs": 27,
+    "lod": false,
+    "limbs_with_dl": 27,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "Bg_Dy_Yoseizo": {
+     "id": 11,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 33456,
+    "textures": 4800
+   },
+   "branch_dls": 1,
+   "scenes": [
+    "Great Fairy (magic)",
+    "Great Fairy (spells)",
+    "Fairy Fountain grave",
+    "Bombchu Bowling Alley"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 14,
+     "l_upper": 8,
+     "l_fore": 9,
+     "l_hand": 10,
+     "r_upper": 11,
+     "r_fore": 12,
+     "r_hand": 13,
+     "chest": 7,
+     "l_thigh": 1,
+     "l_shin": 2,
+     "l_foot": 3,
+     "r_thigh": 4,
+     "r_shin": 5,
+     "r_foot": 6
+    },
+    "pose": "animation",
+    "height": 5932.4
+   }
+  },
+  "malon_child": {
+   "object": "object_ma1",
+   "skeleton": "gMalonChildSkel",
+   "object_id": 224,
+   "dma_index": 704,
+   "object_bytes": 36224,
+   "skeleton_facts": {
+    "offset": 33888,
+    "limbs": 18,
+    "lod": false,
+    "limbs_with_dl": 17,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Ma1": {
+     "id": 231,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 20512,
+    "textures": 4832
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Market (day)",
+    "Market (night)",
+    "Hyrule Castle",
+    "Lon Lon Ranch"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 14,
+     "l_upper": 8,
+     "l_fore": 9,
+     "l_hand": 10,
+     "r_upper": 11,
+     "r_fore": 12,
+     "r_hand": 13,
+     "chest": 7,
+     "l_thigh": 1,
+     "l_shin": 2,
+     "l_foot": 3,
+     "r_thigh": 4,
+     "r_shin": 5,
+     "r_foot": 6
+    },
+    "pose": "animation",
+    "height": 4531.4
+   }
+  },
+  "malon_adult": {
+   "object": "object_ma2",
+   "skeleton": "gMalonAdultSkel",
+   "object_id": 208,
+   "dma_index": 688,
+   "object_bytes": 40688,
+   "skeleton_facts": {
+    "offset": 36240,
+    "limbs": 18,
+    "lod": false,
+    "limbs_with_dl": 16,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Ma2": {
+     "id": 217,
+     "names_skeleton": true
+    },
+    "En_Ma3": {
+     "id": 453,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 19792,
+    "textures": 7552
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Stable",
+    "Lon Lon Ranch"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 17,
+     "l_upper": 11,
+     "l_fore": 12,
+     "l_hand": 13,
+     "r_upper": 14,
+     "r_fore": 15,
+     "r_hand": 16,
+     "chest": 10,
+     "l_thigh": 2,
+     "l_shin": 3,
+     "l_foot": 4,
+     "r_thigh": 5,
+     "r_shin": 6,
+     "r_foot": 7
+    },
+    "pose": "animation",
+    "height": 5974.7
+   }
+  },
+  "talon": {
+   "object": "object_ta",
+   "skeleton": "gTalonSkel",
+   "object_id": 136,
+   "dma_index": 616,
+   "object_bytes": 58352,
+   "skeleton_facts": {
+    "offset": 47032,
+    "limbs": 16,
+    "lod": false,
+    "limbs_with_dl": 15,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Ta": {
+     "id": 132,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 28864,
+    "textures": 4704
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Kakariko guest house",
+    "Stable",
+    "Lon Lon Ranch buildings",
+    "Hyrule Castle",
+    "Lon Lon Ranch"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 14,
+     "l_upper": 8,
+     "l_fore": 9,
+     "l_hand": 10,
+     "r_upper": 11,
+     "r_fore": 12,
+     "r_hand": 13,
+     "chest": 7,
+     "l_thigh": 1,
+     "l_shin": 2,
+     "l_foot": 3,
+     "r_thigh": 4,
+     "r_shin": 5,
+     "r_foot": 6
+    },
+    "pose": "animation",
+    "height": 6193.1
+   }
+  },
+  "ingo": {
+   "object": "object_in",
+   "skeleton": "gIngoSkel",
+   "object_id": 192,
+   "dma_index": 672,
+   "object_bytes": 101456,
+   "skeleton_facts": {
+    "offset": 80776,
+    "limbs": 19,
+    "lod": false,
+    "limbs_with_dl": 18,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_In": {
+     "id": 203,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 26144,
+    "textures": 4992
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Stable",
+    "Lon Lon Ranch buildings",
+    "Lon Lon Ranch"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 16,
+     "l_upper": 9,
+     "l_fore": 10,
+     "l_hand": 11,
+     "r_upper": 12,
+     "r_fore": 13,
+     "r_hand": 14,
+     "chest": 8,
+     "r_thigh": 4,
+     "r_shin": 5,
+     "r_foot": 6,
+     "l_thigh": 1,
+     "l_shin": 2,
+     "l_foot": 3
+    },
+    "pose": "animation",
+    "height": 6869.5
+   }
+  },
+  "darunia": {
+   "object": "object_du",
+   "skeleton": "gDaruniaSkel",
+   "object_id": 157,
+   "dma_index": 638,
+   "object_bytes": 75312,
+   "skeleton_facts": {
+    "offset": 74408,
+    "limbs": 17,
+    "lod": false,
+    "limbs_with_dl": 16,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Du": {
+     "id": 152,
+     "names_skeleton": true
+    },
+    "Demo_Du": {
+     "id": 168,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 25104,
+    "textures": 6592
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Fire Temple",
+    "Inside Ganon's Castle",
+    "Chamber of the Sages",
+    "Death Mountain Trail",
+    "Goron City"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 16,
+     "l_upper": 9,
+     "l_fore": 10,
+     "l_hand": 11,
+     "r_upper": 12,
+     "r_fore": 13,
+     "r_hand": 14,
+     "chest": 8,
+     "l_thigh": 2,
+     "l_shin": 3,
+     "l_foot": 4,
+     "r_thigh": 5,
+     "r_shin": 6,
+     "r_foot": 7
+    },
+    "pose": "animation",
+    "height": 7794.5
+   }
+  },
+  "goron": {
+   "object": "object_oF1d_map",
+   "skeleton": "gGoronSkel",
+   "object_id": 201,
+   "dma_index": 681,
+   "object_bytes": 66976,
+   "skeleton_facts": {
+    "offset": 65264,
+    "limbs": 17,
+    "lod": false,
+    "limbs_with_dl": 15,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Go": {
+     "id": 338,
+     "names_skeleton": true
+    },
+    "En_Go2": {
+     "id": 430,
+     "names_skeleton": true
+    },
+    "Demo_Go": {
+     "id": 202,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 18416,
+    "textures": 6400
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Fire Temple",
+    "Bazaar",
+    "Goron Shop",
+    "Death Mountain Trail",
+    "Goron City",
+    "Lon Lon Ranch"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 16,
+     "l_upper": 10,
+     "l_fore": 11,
+     "l_hand": 12,
+     "r_upper": 13,
+     "r_fore": 14,
+     "r_hand": 15,
+     "chest": 9,
+     "l_thigh": 3,
+     "l_shin": 4,
+     "l_foot": 5,
+     "r_thigh": 6,
+     "r_shin": 7,
+     "r_foot": 8
+    },
+    "pose": "animation",
+    "height": 6989.2
+   }
+  },
+  "zora": {
+   "object": "object_zo",
+   "skeleton": "gZoraSkel",
+   "object_id": 254,
+   "dma_index": 731,
+   "object_bytes": 49216,
+   "skeleton_facts": {
+    "offset": 49064,
+    "limbs": 19,
+    "lod": false,
+    "limbs_with_dl": 19,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Zo": {
+     "id": 462,
+     "names_skeleton": true
+    },
+    "En_Diving_Game": {
+     "id": 292,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 24304,
+    "textures": 6016
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Zora Shop",
+    "Lake Hylia",
+    "Zora's Domain",
+    "Lon Lon Ranch"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 15,
+     "l_upper": 8,
+     "l_fore": 9,
+     "l_hand": 10,
+     "r_upper": 11,
+     "r_fore": 12,
+     "r_hand": 13,
+     "chest": 7,
+     "r_thigh": 4,
+     "r_shin": 5,
+     "r_foot": 6,
+     "l_thigh": 1,
+     "l_shin": 2,
+     "l_foot": 3
+    },
+    "pose": "animation",
+    "height": 6606.3
+   }
+  },
+  "king_zora": {
+   "object": "object_kz",
+   "skeleton": "gKzSkel",
+   "object_id": 255,
+   "dma_index": 732,
+   "object_bytes": 34528,
+   "skeleton_facts": {
+    "offset": 34512,
+    "limbs": 11,
+    "lod": false,
+    "limbs_with_dl": 11,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Kz": {
+     "id": 356,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 8704,
+    "textures": 1792
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Zora's Domain",
+    "Lon Lon Ranch"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "head": 4,
+     "l_upper": 1,
+     "l_fore": 2,
+     "l_hand": 3,
+     "r_upper": 7,
+     "r_fore": 8,
+     "hip": 0
+    },
+    "pose": "animation",
+    "height": 21112.1
+   }
+  },
+  "ruto_child": {
+   "object": "object_ru1",
+   "skeleton": "gRutoChildSkel",
+   "object_id": 163,
+   "dma_index": 643,
+   "object_bytes": 80512,
+   "skeleton_facts": {
+    "offset": 75520,
+    "limbs": 16,
+    "lod": false,
+    "limbs_with_dl": 15,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Ru1": {
+     "id": 161,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 23584,
+    "textures": 2544
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Jabu-Jabu's Belly",
+    "Barinade's lair",
+    "Zora's Domain",
+    "Zora's Fountain"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 14,
+     "l_upper": 8,
+     "l_fore": 9,
+     "l_hand": 10,
+     "r_upper": 11,
+     "r_fore": 12,
+     "r_hand": 13,
+     "chest": 7,
+     "l_thigh": 1,
+     "l_shin": 2,
+     "l_foot": 3,
+     "r_thigh": 4,
+     "r_shin": 5,
+     "r_foot": 6
+    },
+    "pose": "animation",
+    "height": 4515.1
+   }
+  },
+  "ruto_adult": {
+   "object": "object_ru2",
+   "skeleton": "gAdultRutoSkel",
+   "object_id": 202,
+   "dma_index": 682,
+   "object_bytes": 63696,
+   "skeleton_facts": {
+    "offset": 50944,
+    "limbs": 22,
+    "lod": false,
+    "limbs_with_dl": 21,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Ru2": {
+     "id": 210,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 30400,
+    "textures": 7168
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Water Temple",
+    "Inside Ganon's Castle",
+    "Chamber of the Sages",
+    "Death Mountain Trail"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 20,
+     "l_upper": 10,
+     "l_fore": 13,
+     "l_hand": 14,
+     "r_upper": 15,
+     "r_fore": 18,
+     "r_hand": 19,
+     "chest": 9,
+     "r_thigh": 5,
+     "r_shin": 6,
+     "r_foot": 7,
+     "l_thigh": 1,
+     "l_shin": 2,
+     "l_foot": 3
+    },
+    "pose": "animation",
+    "height": 6247.1
+   }
+  },
+  "nabooru": {
+   "object": "object_nb",
+   "skeleton": "gNabooruSkel",
+   "object_id": 179,
+   "dma_index": 659,
+   "object_bytes": 98784,
+   "skeleton_facts": {
+    "offset": 98760,
+    "limbs": 18,
+    "lod": false,
+    "limbs_with_dl": 17,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Nb": {
+     "id": 195,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 31696,
+    "textures": 8592
+   },
+   "branch_dls": 1,
+   "scenes": [
+    "Spirit Temple",
+    "Inside Ganon's Castle",
+    "Twinrova's lair",
+    "Chamber of the Sages",
+    "Desert Colossus",
+    "Death Mountain Trail"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 16,
+     "l_upper": 8,
+     "l_fore": 9,
+     "l_hand": 10,
+     "r_upper": 11,
+     "r_fore": 12,
+     "r_hand": 13,
+     "chest": 7,
+     "l_thigh": 1,
+     "l_shin": 2,
+     "l_foot": 3,
+     "r_thigh": 4,
+     "r_shin": 5,
+     "r_foot": 6
+    },
+    "pose": "animation",
+    "height": 6478.0
+   }
+  },
+  "rauru": {
+   "object": "object_rl",
+   "skeleton": "object_rl_Skel_007B38",
+   "object_id": 167,
+   "dma_index": 647,
+   "object_bytes": 31568,
+   "skeleton_facts": {
+    "offset": 31544,
+    "limbs": 10,
+    "lod": false,
+    "limbs_with_dl": 9,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Rl": {
+     "id": 166,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 19648,
+    "textures": 6240
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Inside Ganon's Castle",
+    "Chamber of the Sages"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "chest": 1,
+     "head": 8,
+     "l_upper": 2,
+     "l_fore": 3,
+     "l_hand": 4,
+     "r_upper": 5,
+     "r_fore": 6,
+     "r_hand": 7,
+     "hip": 0
+    },
+    "pose": "animation",
+    "height": 7365.4
+   }
+  },
+  "gerudo_guard": {
+   "object": "object_gla",
+   "skeleton": "gGerudoPurpleSkel",
+   "object_id": 359,
+   "dma_index": 834,
+   "object_bytes": 40688,
+   "skeleton_facts": {
+    "offset": 35176,
+    "limbs": 21,
+    "lod": false,
+    "limbs_with_dl": 18,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Ge2": {
+     "id": 390,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 21568,
+    "textures": 3136
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Thieves' Hideout",
+    "Gerudo Valley",
+    "Gerudo's Fortress"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 3,
+     "l_upper": 11,
+     "l_fore": 12,
+     "l_hand": 13,
+     "r_upper": 6,
+     "r_fore": 7,
+     "r_hand": 8,
+     "chest": 1,
+     "r_thigh": 17,
+     "r_shin": 18,
+     "r_foot": 19,
+     "l_thigh": 14,
+     "l_shin": 15,
+     "l_foot": 16
+    },
+    "pose": "animation",
+    "height": 9762.8
+   }
+  },
+  "gerudo_white": {
+   "object": "object_ge1",
+   "skeleton": "gGerudoWhiteSkel",
+   "object_id": 278,
+   "dma_index": 755,
+   "object_bytes": 42160,
+   "skeleton_facts": {
+    "offset": 816,
+    "limbs": 15,
+    "lod": false,
+    "limbs_with_dl": 15,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Ge1": {
+     "id": 312,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 19056,
+    "textures": 3232
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Thieves' Hideout",
+    "Gerudo Valley",
+    "Gerudo's Fortress",
+    "Lon Lon Ranch"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 14,
+     "l_upper": 8,
+     "l_fore": 9,
+     "l_hand": 10,
+     "r_upper": 11,
+     "r_fore": 12,
+     "r_hand": 13,
+     "chest": 7,
+     "l_thigh": 1,
+     "l_shin": 2,
+     "l_foot": 3,
+     "r_thigh": 4,
+     "r_shin": 5,
+     "r_foot": 6
+    },
+    "pose": "animation",
+    "height": 5980.2
+   }
+  },
+  "koume": {
+   "object": "object_tr",
+   "skeleton": "gKoumeSkel",
+   "object_id": 193,
+   "dma_index": 673,
+   "object_bytes": 77360,
+   "skeleton_facts": {
+    "offset": 71304,
+    "limbs": 26,
+    "lod": false,
+    "limbs_with_dl": 26,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Tr": {
+     "id": 204,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 17312,
+    "textures": 2688
+   },
+   "branch_dls": 3,
+   "scenes": [
+    "Twinrova's lair",
+    "Desert Colossus"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 24,
+     "l_upper": 8,
+     "l_fore": 11,
+     "l_hand": 12,
+     "r_upper": 14,
+     "r_fore": 15,
+     "r_hand": 16,
+     "chest": 7,
+     "r_thigh": 4,
+     "r_shin": 5,
+     "r_foot": 6,
+     "l_thigh": 1,
+     "l_shin": 2,
+     "l_foot": 3
+    },
+    "pose": "animation",
+    "height": 7771.0
+   }
+  },
+  "kotake": {
+   "object": "object_tr",
+   "skeleton": "gKotakeSkel",
+   "object_id": 193,
+   "dma_index": 673,
+   "object_bytes": 77360,
+   "skeleton_facts": {
+    "offset": 50480,
+    "limbs": 26,
+    "lod": false,
+    "limbs_with_dl": 26,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Tr": {
+     "id": 204,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 11024,
+    "textures": 496
+   },
+   "branch_dls": 3,
+   "scenes": [
+    "Twinrova's lair",
+    "Desert Colossus"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 24,
+     "l_upper": 8,
+     "l_fore": 11,
+     "l_hand": 12,
+     "r_upper": 14,
+     "r_fore": 15,
+     "r_hand": 16,
+     "chest": 7,
+     "r_thigh": 4,
+     "r_shin": 5,
+     "r_foot": 6,
+     "l_thigh": 1,
+     "l_shin": 2,
+     "l_foot": 3
+    },
+    "pose": "animation",
+    "height": 7771.0
+   }
+  },
+  "skull_kid": {
+   "object": "object_skj",
+   "skeleton": "gSkullKidSkel",
+   "object_id": 266,
+   "dma_index": 743,
+   "object_bytes": 36400,
+   "skeleton_facts": {
+    "offset": 24384,
+    "limbs": 18,
+    "lod": false,
+    "limbs_with_dl": 17,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Skj": {
+     "id": 277,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 15264,
+    "textures": 2848
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Lost Woods"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 11,
+     "l_upper": 12,
+     "l_fore": 13,
+     "l_hand": 14,
+     "r_upper": 15,
+     "r_fore": 16,
+     "r_hand": 17,
+     "chest": 8,
+     "r_thigh": 5,
+     "r_shin": 6,
+     "r_foot": 7,
+     "l_thigh": 2,
+     "l_shin": 3,
+     "l_foot": 4
+    },
+    "pose": "animation",
+    "height": 5099.9
+   }
+  },
+  "kaepora_gaebora": {
+   "object": "object_owl",
+   "skeleton": "gOwlPerchingSkel",
+   "object_id": 305,
+   "dma_index": 780,
+   "object_bytes": 65728,
+   "skeleton_facts": {
+    "offset": 65712,
+    "limbs": 15,
+    "lod": false,
+    "limbs_with_dl": 14,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Owl": {
+     "id": 333,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 14096,
+    "textures": 496
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Hyrule Field",
+    "Zora's River",
+    "Lake Hylia",
+    "Gerudo Valley",
+    "Lost Woods",
+    "Desert Colossus",
+    "Hyrule Castle",
+    "Death Mountain Trail",
+    "Lon Lon Ranch"
+   ],
+   "mapping": {
+    "mode": "rigid",
+    "roles": {
+     "hip": 2
+    },
+    "pose": "animation",
+    "height": 4858.3
+   }
+  },
+  "stalfos": {
+   "object": "object_sk2",
+   "skeleton": "gStalfosSkel",
+   "object_id": 50,
+   "dma_index": 543,
+   "object_bytes": 59392,
+   "skeleton_facts": {
+    "offset": 31784,
+    "limbs": 60,
+    "lod": false,
+    "limbs_with_dl": 24,
+    "type": "normal"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Test": {
+     "id": 2,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 14880,
+    "textures": 3248
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Forest Temple",
+    "Spirit Temple",
+    "Shadow Temple",
+    "Ganon's Tower",
+    "Gerudo Training Ground",
+    "Ganon's Tower (collapse, inside)"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 6,
+     "l_upper": 21,
+     "l_fore": 22,
+     "l_hand": 23,
+     "r_upper": 29,
+     "r_fore": 30,
+     "r_hand": 31,
+     "chest": 3,
+     "r_thigh": 51,
+     "r_shin": 52,
+     "r_foot": 53,
+     "l_thigh": 42,
+     "l_shin": 43,
+     "l_foot": 44
+    },
+    "pose": "animation",
+    "height": 7121.0
+   }
+  },
+  "stalchild": {
+   "object": "object_skb",
+   "skeleton": "gStalchildSkel",
+   "object_id": 388,
+   "dma_index": 865,
+   "object_bytes": 18448,
+   "skeleton_facts": {
+    "offset": 16888,
+    "limbs": 19,
+    "lod": false,
+    "limbs_with_dl": 17,
+    "type": "normal"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Skb": {
+     "id": 432,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 7968,
+    "textures": 2304
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Hyrule Field"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 11,
+     "l_upper": 15,
+     "l_fore": 16,
+     "l_hand": 17,
+     "r_upper": 12,
+     "r_fore": 13,
+     "r_hand": 14,
+     "chest": 9,
+     "r_thigh": 3,
+     "r_shin": 4,
+     "r_foot": 5,
+     "l_thigh": 6,
+     "l_shin": 7,
+     "l_foot": 8
+    },
+    "pose": "animation",
+    "height": 5065.5
+   }
+  },
+  "moblin_spear": {
+   "object": "object_mb",
+   "skeleton": "gEnMbSpearSkel",
+   "object_id": 48,
+   "dma_index": 541,
+   "object_bytes": 82336,
+   "skeleton_facts": {
+    "offset": 36664,
+    "limbs": 27,
+    "lod": false,
+    "limbs_with_dl": 15,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Mb": {
+     "id": 75,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 16224,
+    "textures": 864
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Sacred Forest Meadow"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "chest": 4,
+     "head": 6,
+     "l_upper": 7,
+     "l_fore": 8,
+     "l_hand": 9,
+     "r_upper": 12,
+     "r_fore": 13,
+     "r_hand": 14,
+     "l_thigh": 17,
+     "l_shin": 18,
+     "l_foot": 20,
+     "r_thigh": 22,
+     "r_shin": 23,
+     "r_foot": 25,
+     "hip": 2
+    },
+    "pose": "animation",
+    "height": 7884.0
+   }
+  },
+  "moblin_club": {
+   "object": "object_mb",
+   "skeleton": "gEnMbClubSkel",
+   "object_id": 48,
+   "dma_index": 541,
+   "object_bytes": 82336,
+   "skeleton_facts": {
+    "offset": 82320,
+    "limbs": 27,
+    "lod": false,
+    "limbs_with_dl": 15,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Mb": {
+     "id": 75,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 10576,
+    "textures": 1664
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Sacred Forest Meadow"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "chest": 5,
+     "head": 6,
+     "l_upper": 7,
+     "l_fore": 8,
+     "l_hand": 9,
+     "r_upper": 12,
+     "r_fore": 13,
+     "r_hand": 14,
+     "l_thigh": 17,
+     "l_shin": 18,
+     "l_foot": 20,
+     "r_thigh": 22,
+     "r_shin": 23,
+     "r_foot": 25,
+     "hip": 2
+    },
+    "pose": "animation",
+    "height": 12785.8
+   }
+  },
+  "iron_knuckle": {
+   "object": "object_ik",
+   "skeleton": "gIronKnuckleSkel",
+   "object_id": 262,
+   "dma_index": 739,
+   "object_bytes": 132560,
+   "skeleton_facts": {
+    "offset": 123256,
+    "limbs": 29,
+    "lod": false,
+    "limbs_with_dl": 24,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Ik": {
+     "id": 275,
+     "names_skeleton": true
+    },
+    "Demo_Ik": {
+     "id": 276,
+     "names_skeleton": false
+    }
+   },
+   "reclaim": {
+    "lists": 0,
+    "textures": 0
+   },
+   "branch_dls": 2,
+   "scenes": [
+    "Spirit Temple",
+    "Ganon's Tower",
+    "Twinrova's lair"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 10,
+     "l_upper": 18,
+     "l_fore": 19,
+     "l_hand": 20,
+     "r_upper": 13,
+     "r_fore": 14,
+     "r_hand": 15,
+     "chest": 9,
+     "r_thigh": 2,
+     "r_shin": 3,
+     "r_foot": 4,
+     "l_thigh": 5,
+     "l_shin": 6,
+     "l_foot": 7
+    },
+    "pose": "animation",
+    "height": 7561.1
+   }
+  },
+  "lizalfos": {
+   "object": "object_zf",
+   "skeleton": "gLizalfosSkel",
+   "object_id": 27,
+   "dma_index": 519,
+   "object_bytes": 91040,
+   "skeleton_facts": {
+    "offset": 66744,
+    "limbs": 48,
+    "lod": false,
+    "limbs_with_dl": 20,
+    "type": "normal"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Zf": {
+     "id": 37,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 14240,
+    "textures": 2048
+   },
+   "branch_dls": 2,
+   "scenes": [
+    "Dodongo's Cavern",
+    "Spirit Temple",
+    "Ganon's Tower",
+    "Gerudo Training Ground"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "chest": 2,
+     "head": 17,
+     "l_upper": 3,
+     "l_fore": 4,
+     "l_hand": 5,
+     "r_upper": 10,
+     "r_fore": 11,
+     "r_hand": 12,
+     "l_thigh": 40,
+     "l_shin": 41,
+     "l_foot": 42,
+     "r_thigh": 33,
+     "r_shin": 34,
+     "r_foot": 35,
+     "hip": 1
+    },
+    "pose": "animation",
+    "height": 4299.4
+   }
+  },
+  "dinolfos": {
+   "object": "object_zf",
+   "skeleton": "gDinolfosSkel",
+   "object_id": 27,
+   "dma_index": 519,
+   "object_bytes": 91040,
+   "skeleton_facts": {
+    "offset": 26256,
+    "limbs": 48,
+    "lod": false,
+    "limbs_with_dl": 20,
+    "type": "normal"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Zf": {
+     "id": 37,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 23184,
+    "textures": 2304
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Dodongo's Cavern",
+    "Spirit Temple",
+    "Ganon's Tower",
+    "Gerudo Training Ground"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "chest": 2,
+     "head": 17,
+     "l_upper": 3,
+     "l_fore": 4,
+     "l_hand": 5,
+     "r_upper": 10,
+     "r_fore": 11,
+     "r_hand": 12,
+     "l_thigh": 40,
+     "l_shin": 41,
+     "l_foot": 42,
+     "r_thigh": 33,
+     "r_shin": 34,
+     "r_foot": 35,
+     "hip": 1
+    },
+    "pose": "animation",
+    "height": 5206.7
+   }
+  },
+  "wolfos": {
+   "object": "object_wf",
+   "skeleton": "gWolfosGraySkel",
+   "object_id": 387,
+   "dma_index": 864,
+   "object_bytes": 42240,
+   "skeleton_facts": {
+    "offset": 38544,
+    "limbs": 21,
+    "lod": false,
+    "limbs_with_dl": 19,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Wf": {
+     "id": 431,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 12640,
+    "textures": 1520
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Forest Temple",
+    "Spirit Temple",
+    "Ice Cavern",
+    "Gerudo Training Ground",
+    "Inside Ganon's Castle",
+    "Grottos",
+    "Sacred Forest Meadow"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 15,
+     "l_upper": 18,
+     "l_fore": 19,
+     "l_hand": 20,
+     "r_upper": 12,
+     "r_fore": 13,
+     "r_hand": 14,
+     "chest": 11,
+     "l_thigh": 1,
+     "l_shin": 2,
+     "l_foot": 3,
+     "r_thigh": 7,
+     "r_shin": 8,
+     "r_foot": 9
+    },
+    "pose": "animation",
+    "height": 10909.8
+   }
+  },
+  "white_wolfos": {
+   "object": "object_wf",
+   "skeleton": "gWolfosWhiteSkel",
+   "object_id": 387,
+   "dma_index": 864,
+   "object_bytes": 42240,
+   "skeleton_facts": {
+    "offset": 15296,
+    "limbs": 21,
+    "lod": false,
+    "limbs_with_dl": 19,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Wf": {
+     "id": 431,
+     "names_skeleton": false
+    }
+   },
+   "reclaim": {
+    "lists": 12640,
+    "textures": 0
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Forest Temple",
+    "Spirit Temple",
+    "Ice Cavern",
+    "Gerudo Training Ground",
+    "Inside Ganon's Castle",
+    "Grottos",
+    "Sacred Forest Meadow"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 15,
+     "l_upper": 18,
+     "l_fore": 19,
+     "l_hand": 20,
+     "r_upper": 12,
+     "r_fore": 13,
+     "r_hand": 14,
+     "chest": 11,
+     "l_thigh": 1,
+     "l_shin": 2,
+     "l_foot": 3,
+     "r_thigh": 7,
+     "r_shin": 8,
+     "r_foot": 9
+    },
+    "pose": "animation",
+    "height": 10909.8
+   }
+  },
+  "redead": {
+   "object": "object_rd",
+   "skeleton": "gRedeadSkel",
+   "object_id": 152,
+   "dma_index": 633,
+   "object_bytes": 61424,
+   "skeleton_facts": {
+    "offset": 59256,
+    "limbs": 25,
+    "lod": false,
+    "limbs_with_dl": 15,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Rd": {
+     "id": 144,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 7680,
+    "textures": 16384
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Shadow Temple",
+    "Bottom of the Well",
+    "Ganon's Castle (collapse)",
+    "Market (ruins)",
+    "Gravekeeper's Hut",
+    "Grottos",
+    "Redead grave",
+    "Royal Family's Tomb",
+    "Windmill and Dampe's grave"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 22,
+     "l_upper": 14,
+     "l_fore": 15,
+     "l_hand": 16,
+     "r_upper": 18,
+     "r_fore": 19,
+     "r_hand": 20,
+     "chest": 13,
+     "l_thigh": 2,
+     "l_shin": 3,
+     "l_foot": 4,
+     "r_thigh": 7,
+     "r_shin": 8,
+     "r_foot": 9
+    },
+    "pose": "animation",
+    "height": 6832.9
+   }
+  },
+  "gibdo": {
+   "object": "object_rd",
+   "skeleton": "gGibdoSkel",
+   "object_id": 152,
+   "dma_index": 633,
+   "object_bytes": 61424,
+   "skeleton_facts": {
+    "offset": 15832,
+    "limbs": 25,
+    "lod": false,
+    "limbs_with_dl": 15,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Rd": {
+     "id": 144,
+     "names_skeleton": false
+    }
+   },
+   "reclaim": {
+    "lists": 10304,
+    "textures": 0
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Shadow Temple",
+    "Bottom of the Well",
+    "Ganon's Castle (collapse)",
+    "Market (ruins)",
+    "Gravekeeper's Hut",
+    "Grottos",
+    "Redead grave",
+    "Royal Family's Tomb",
+    "Windmill and Dampe's grave"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 22,
+     "l_upper": 14,
+     "l_fore": 15,
+     "l_hand": 16,
+     "r_upper": 18,
+     "r_fore": 19,
+     "r_hand": 20,
+     "chest": 13,
+     "l_thigh": 2,
+     "l_shin": 3,
+     "l_foot": 4,
+     "r_thigh": 7,
+     "r_shin": 8,
+     "r_foot": 9
+    },
+    "pose": "animation",
+    "height": 7015.0
+   }
+  },
+  "gerudo_fighter": {
+   "object": "object_geldb",
+   "skeleton": "gGerudoRedSkel",
+   "object_id": 361,
+   "dma_index": 836,
+   "object_bytes": 46832,
+   "skeleton_facts": {
+    "offset": 42072,
+    "limbs": 23,
+    "lod": false,
+    "limbs_with_dl": 19,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_GeldB": {
+     "id": 407,
+     "names_skeleton": true
+    },
+    "En_Ge3": {
+     "id": 464,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 25312,
+    "textures": 3792
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Thieves' Hideout"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 3,
+     "l_upper": 11,
+     "l_fore": 12,
+     "l_hand": 13,
+     "r_upper": 7,
+     "r_fore": 8,
+     "r_hand": 9,
+     "r_clav": 6,
+     "chest": 1,
+     "r_thigh": 19,
+     "r_shin": 20,
+     "r_foot": 21,
+     "l_thigh": 16,
+     "l_shin": 17,
+     "l_foot": 18
+    },
+    "pose": "animation",
+    "height": 7167.3
+   }
+  },
+  "dark_link": {
+   "object": "object_torch2",
+   "skeleton": "gDarkLinkSkel",
+   "object_id": 32,
+   "dma_index": 525,
+   "object_bytes": 18288,
+   "skeleton_facts": {
+    "offset": 18276,
+    "limbs": 21,
+    "lod": true,
+    "limbs_with_dl": 17,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Torch2": {
+     "id": 51,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 16160,
+    "textures": 1024
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Water Temple"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 1,
+     "chest": 20,
+     "head": 10,
+     "l_upper": 13,
+     "l_fore": 14,
+     "l_hand": 15,
+     "r_upper": 16,
+     "r_fore": 17,
+     "r_hand": 18,
+     "l_thigh": 6,
+     "l_shin": 7,
+     "l_foot": 8,
+     "r_thigh": 3,
+     "r_shin": 4,
+     "r_foot": 5
+    },
+    "pose": "Link idle",
+    "height": 6153.1
+   }
+  },
+  "flare_dancer": {
+   "object": "object_fw",
+   "skeleton": "gFlareDancerSkel",
+   "object_id": 158,
+   "dma_index": 639,
+   "object_bytes": 32224,
+   "skeleton_facts": {
+    "offset": 22544,
+    "limbs": 26,
+    "lod": false,
+    "limbs_with_dl": 21,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Fd": {
+     "id": 153,
+     "names_skeleton": true
+    },
+    "En_Fw": {
+     "id": 171,
+     "names_skeleton": false
+    }
+   },
+   "reclaim": {
+    "lists": 11136,
+    "textures": 4640
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Fire Temple"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 23,
+     "l_upper": 16,
+     "l_fore": 17,
+     "l_hand": 18,
+     "r_upper": 13,
+     "r_fore": 14,
+     "r_hand": 15,
+     "chest": 10,
+     "l_thigh": 6,
+     "l_shin": 7,
+     "l_foot": 8,
+     "r_thigh": 2,
+     "r_shin": 3,
+     "r_foot": 4
+    },
+    "pose": "animation",
+    "height": 12734.6
+   }
+  },
+  "deku_scrub": {
+   "object": "object_dekunuts",
+   "skeleton": "gDekuNutsSkel",
+   "object_id": 74,
+   "dma_index": 566,
+   "object_bytes": 13920,
+   "skeleton_facts": {
+    "offset": 12904,
+    "limbs": 24,
+    "lod": false,
+    "limbs_with_dl": 9,
+    "type": "normal"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Dekunuts": {
+     "id": 96,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 1520,
+    "textures": 0
+   },
+   "branch_dls": 1,
+   "scenes": [
+    "Deku Tree",
+    "Inside Ganon's Castle",
+    "Kokiri Forest",
+    "Sacred Forest Meadow"
+   ],
+   "mapping": {
+    "mode": "rigid",
+    "roles": {
+     "hip": 9
+    },
+    "pose": "animation",
+    "height": 6369.0
+   }
+  },
+  "business_scrub": {
+   "object": "object_shopnuts",
+   "skeleton": "gBusinessScrubSkel",
+   "object_id": 360,
+   "dma_index": 835,
+   "object_bytes": 17808,
+   "skeleton_facts": {
+    "offset": 16808,
+    "limbs": 17,
+    "lod": false,
+    "limbs_with_dl": 17,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Dns": {
+     "id": 282,
+     "names_skeleton": true
+    },
+    "En_Shopnuts": {
+     "id": 405,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 4928,
+    "textures": 3072
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Dodongo's Cavern",
+    "Jabu-Jabu's Belly",
+    "Inside Ganon's Castle",
+    "Grottos",
+    "Lost Woods",
+    "Death Mountain Crater"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 7,
+     "l_upper": 9,
+     "l_fore": 10,
+     "l_hand": 11,
+     "r_upper": 12,
+     "r_fore": 13,
+     "r_hand": 14,
+     "r_thigh": 4,
+     "r_shin": 5,
+     "r_foot": 6,
+     "l_thigh": 1,
+     "l_shin": 2,
+     "l_foot": 3
+    },
+    "pose": "animation",
+    "height": 9150.1
+   }
+  },
+  "skulltula": {
+   "object": "object_st",
+   "skeleton": "object_st_Skel_005298",
+   "object_id": 36,
+   "dma_index": 529,
+   "object_bytes": 23472,
+   "skeleton_facts": {
+    "offset": 21144,
+    "limbs": 29,
+    "lod": false,
+    "limbs_with_dl": 10,
+    "type": "normal"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_St": {
+     "id": 55,
+     "names_skeleton": true
+    },
+    "En_Sw": {
+     "id": 149,
+     "names_skeleton": false
+    }
+   },
+   "reclaim": {
+    "lists": 7216,
+    "textures": 1344
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Deku Tree",
+    "Dodongo's Cavern",
+    "Jabu-Jabu's Belly",
+    "Forest Temple",
+    "Fire Temple",
+    "Water Temple",
+    "Spirit Temple",
+    "Shadow Temple",
+    "Bottom of the Well",
+    "Ice Cavern",
+    "Gerudo Training Ground",
+    "Thieves' Hideout",
+    "Inside Ganon's Castle",
+    "Lakeside Laboratory",
+    "Grottos",
+    "Market guard house",
+    "House of Skulltula",
+    "Kakariko Village",
+    "Graveyard",
+    "Zora's River",
+    "Kokiri Forest",
+    "Sacred Forest Meadow",
+    "Lake Hylia",
+    "Zora's Domain",
+    "Zora's Fountain",
+    "Gerudo Valley",
+    "Lost Woods",
+    "Desert Colossus",
+    "Gerudo's Fortress",
+    "Haunted Wasteland",
+    "Hyrule Castle",
+    "Death Mountain Trail",
+    "Death Mountain Crater",
+    "Goron City",
+    "Lon Lon Ranch",
+    "Outside Ganon's Castle"
+   ],
+   "mapping": {
+    "mode": "rigid",
+    "roles": {
+     "hip": 4
+    },
+    "pose": "animation",
+    "height": 2764.3
+   }
+  },
+  "poe": {
+   "object": "object_poh",
+   "skeleton": "gPoeSkel",
+   "object_id": 9,
+   "dma_index": 507,
+   "object_bytes": 20704,
+   "skeleton_facts": {
+    "offset": 20688,
+    "limbs": 20,
+    "lod": false,
+    "limbs_with_dl": 9,
+    "type": "normal"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Poh": {
+     "id": 13,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 2736,
+    "textures": 0
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Shadow Temple",
+    "Windmill and Dampe's grave",
+    "Graveyard"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "chest": 1,
+     "head": 4,
+     "l_upper": 5,
+     "l_fore": 6,
+     "l_hand": 7,
+     "r_upper": 11,
+     "r_fore": 12,
+     "r_hand": 13,
+     "hip": 0
+    },
+    "pose": "animation",
+    "height": 7615.9
+   }
+  },
+  "poe_sisters": {
+   "object": "object_po_sisters",
+   "skeleton": "gPoeSistersSkel",
+   "object_id": 153,
+   "dma_index": 634,
+   "object_bytes": 58304,
+   "skeleton_facts": {
+    "offset": 26056,
+    "limbs": 11,
+    "lod": false,
+    "limbs_with_dl": 9,
+    "type": "normal"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Po_Sisters": {
+     "id": 145,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 0,
+    "textures": 2512
+   },
+   "branch_dls": 3,
+   "scenes": [
+    "Forest Temple"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "head": 8,
+     "l_upper": 1,
+     "l_fore": 2,
+     "r_upper": 3,
+     "r_fore": 4,
+     "r_hand": 5,
+     "hip": 0
+    },
+    "pose": "animation",
+    "height": 10484.0
+   }
+  },
+  "big_poe": {
+   "object": "object_po_field",
+   "skeleton": "gPoeFieldSkel",
+   "object_id": 109,
+   "dma_index": 852,
+   "object_bytes": 27200,
+   "skeleton_facts": {
+    "offset": 27184,
+    "limbs": 9,
+    "lod": false,
+    "limbs_with_dl": 9,
+    "type": "normal"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Po_Field": {
+     "id": 373,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 4928,
+    "textures": 1536
+   },
+   "branch_dls": 2,
+   "scenes": [
+    "Hyrule Field",
+    "Haunted Wasteland"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "head": 7,
+     "l_upper": 1,
+     "l_fore": 2,
+     "r_upper": 3,
+     "r_fore": 4,
+     "r_hand": 5,
+     "hip": 0
+    },
+    "pose": "animation",
+    "height": 9913.6
+   }
+  },
+  "armos": {
+   "object": "object_am",
+   "skeleton": "gArmosSkel",
+   "object_id": 56,
+   "dma_index": 549,
+   "object_bytes": 23376,
+   "skeleton_facts": {
+    "offset": 22856,
+    "limbs": 13,
+    "lod": false,
+    "limbs_with_dl": 4,
+    "type": "normal"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Am": {
+     "id": 84,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 8576,
+    "textures": 12848
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Dodongo's Cavern",
+    "Fire Temple",
+    "Spirit Temple",
+    "Inside Ganon's Castle"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "chest": 2,
+     "head": 3,
+     "l_upper": 4,
+     "l_fore": 5,
+     "l_hand": 6,
+     "r_upper": 7,
+     "r_fore": 8,
+     "r_hand": 9,
+     "hip": 1
+    },
+    "pose": "animation",
+    "height": 7470.0
+   }
+  },
+  "octorok": {
+   "object": "object_okuta",
+   "skeleton": "gOctorokSkel",
+   "object_id": 7,
+   "dma_index": 506,
+   "object_bytes": 15488,
+   "skeleton_facts": {
+    "offset": 13920,
+    "limbs": 37,
+    "lod": false,
+    "limbs_with_dl": 15,
+    "type": "normal"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Okuta": {
+     "id": 14,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 5216,
+    "textures": 3840
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Jabu-Jabu's Belly",
+    "Forest Temple",
+    "Grottos",
+    "Zora's River",
+    "Kokiri Forest",
+    "Lake Hylia",
+    "Zora's Fountain",
+    "Gerudo Valley"
+   ],
+   "mapping": {
+    "mode": "rigid",
+    "roles": {
+     "hip": 4
+    },
+    "pose": "animation",
+    "height": 8726.8
+   }
+  },
+  "keese": {
+   "object": "object_firefly",
+   "skeleton": "gKeeseSkel",
+   "object_id": 13,
+   "dma_index": 510,
+   "object_bytes": 6336,
+   "skeleton_facts": {
+    "offset": 6328,
+    "limbs": 27,
+    "lod": false,
+    "limbs_with_dl": 10,
+    "type": "normal"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Firefly": {
+     "id": 19,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 3456,
+    "textures": 1664
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Dodongo's Cavern",
+    "Forest Temple",
+    "Fire Temple",
+    "Water Temple",
+    "Spirit Temple",
+    "Shadow Temple",
+    "Bottom of the Well",
+    "Ice Cavern",
+    "Ganon's Tower",
+    "Gerudo Training Ground",
+    "Inside Ganon's Castle",
+    "Royal Family's Tomb"
+   ],
+   "mapping": {
+    "mode": "rigid",
+    "roles": {
+     "hip": 9
+    },
+    "pose": "animation",
+    "height": 3175.3
+   }
+  },
+  "tektite": {
+   "object": "object_tite",
+   "skeleton": "object_tite_Skel_003A20",
+   "object_id": 22,
+   "dma_index": 514,
+   "object_bytes": 14896,
+   "skeleton_facts": {
+    "offset": 14880,
+    "limbs": 24,
+    "lod": false,
+    "limbs_with_dl": 9,
+    "type": "normal"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Tite": {
+     "id": 27,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 5792,
+    "textures": 256
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Water Temple",
+    "Grottos",
+    "Zora's River",
+    "Lake Hylia",
+    "Zora's Fountain",
+    "Death Mountain Trail"
+   ],
+   "mapping": {
+    "mode": "rigid",
+    "roles": {
+     "hip": 3
+    },
+    "pose": "animation",
+    "height": 3042.1
+   }
+  },
+  "peahat": {
+   "object": "object_peehat",
+   "skeleton": "gPeehatSkel",
+   "object_id": 24,
+   "dma_index": 516,
+   "object_bytes": 7312,
+   "skeleton_facts": {
+    "offset": 7296,
+    "limbs": 23,
+    "lod": false,
+    "limbs_with_dl": 8,
+    "type": "normal"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Peehat": {
+     "id": 29,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 2608,
+    "textures": 1792
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Hyrule Field",
+    "Sacred Forest Meadow"
+   ],
+   "mapping": {
+    "mode": "rigid",
+    "roles": {
+     "hip": 2
+    },
+    "pose": "animation",
+    "height": 4486.0
+   }
+  },
+  "dodongo": {
+   "object": "object_dodongo",
+   "skeleton": "gDodongoSkel",
+   "object_id": 12,
+   "dma_index": 511,
+   "object_bytes": 39232,
+   "skeleton_facts": {
+    "offset": 33560,
+    "limbs": 30,
+    "lod": false,
+    "limbs_with_dl": 12,
+    "type": "normal"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Dodongo": {
+     "id": 18,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 10368,
+    "textures": 3184
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Dodongo's Cavern"
+   ],
+   "mapping": {
+    "mode": "rigid",
+    "roles": {
+     "hip": 6
+    },
+    "pose": "animation",
+    "height": 2285.4
+   }
+  },
+  "wallmaster": {
+   "object": "object_wallmaster",
+   "skeleton": "gWallmasterSkel",
+   "object_id": 11,
+   "dma_index": 508,
+   "object_bytes": 41072,
+   "skeleton_facts": {
+    "offset": 36784,
+    "limbs": 24,
+    "lod": false,
+    "limbs_with_dl": 14,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Wallmas": {
+     "id": 17,
+     "names_skeleton": true
+    },
+    "En_Floormas": {
+     "id": 142,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 16592,
+    "textures": 640
+   },
+   "branch_dls": 1,
+   "scenes": [
+    "Forest Temple",
+    "Spirit Temple",
+    "Shadow Temple",
+    "Bottom of the Well",
+    "Gerudo Training Ground",
+    "Inside Ganon's Castle",
+    "Ganon's Tower (collapse, inside)"
+   ],
+   "mapping": {
+    "mode": "rigid",
+    "roles": {
+     "hip": 1
+    },
+    "pose": "animation",
+    "height": 6223.2
+   }
+  },
+  "dead_hand": {
+   "object": "object_dh",
+   "skeleton": "object_dh_Skel_007E88",
+   "object_id": 166,
+   "dma_index": 646,
+   "object_bytes": 37056,
+   "skeleton_facts": {
+    "offset": 32392,
+    "limbs": 15,
+    "lod": false,
+    "limbs_with_dl": 14,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Dh": {
+     "id": 164,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 9472,
+    "textures": 3072
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Shadow Temple",
+    "Bottom of the Well"
+   ],
+   "mapping": {
+    "mode": "rigid",
+    "roles": {
+     "hip": 12
+    },
+    "pose": "animation",
+    "height": 7404.2
+   }
+  },
+  "anubis": {
+   "object": "object_anubice",
+   "skeleton": "gAnubiceSkel",
+   "object_id": 214,
+   "dma_index": 694,
+   "object_bytes": 14752,
+   "skeleton_facts": {
+    "offset": 14736,
+    "limbs": 15,
+    "lod": false,
+    "limbs_with_dl": 8,
+    "type": "normal"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Anubice": {
+     "id": 224,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 6320,
+    "textures": 1792
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Spirit Temple"
+   ],
+   "mapping": {
+    "mode": "rigid",
+    "roles": {
+     "hip": 12
+    },
+    "pose": "animation",
+    "height": 6183.0
+   }
+  },
+  "guay": {
+   "object": "object_crow",
+   "skeleton": "gGuaySkel",
+   "object_id": 8,
+   "dma_index": 872,
+   "object_bytes": 4304,
+   "skeleton_facts": {
+    "offset": 4288,
+    "limbs": 8,
+    "lod": false,
+    "limbs_with_dl": 7,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Crow": {
+     "id": 448,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 2368,
+    "textures": 1536
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Lake Hylia",
+    "Desert Colossus",
+    "Lon Lon Ranch"
+   ],
+   "mapping": {
+    "mode": "rigid",
+    "roles": {
+     "hip": 1
+    },
+    "pose": "animation",
+    "height": 2608.8
+   }
+  },
+  "deku_baba": {
+   "object": "object_dekubaba",
+   "skeleton": "gDekubabaHeadSkel",
+   "object_id": 57,
+   "dma_index": 550,
+   "object_bytes": 14784,
+   "skeleton_facts": {
+    "offset": 10816,
+    "limbs": 7,
+    "lod": false,
+    "limbs_with_dl": 2,
+    "type": "normal"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "En_Dekubaba": {
+     "id": 85,
+     "names_skeleton": true
+    },
+    "En_Karebaba": {
+     "id": 199,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 2608,
+    "textures": 3072
+   },
+   "branch_dls": 1,
+   "scenes": [
+    "Deku Tree",
+    "Forest Temple",
+    "Bottom of the Well",
+    "Kokiri Forest",
+    "Sacred Forest Meadow"
+   ],
+   "mapping": {
+    "mode": "rigid",
+    "roles": {
+     "hip": 3
+    },
+    "pose": "animation",
+    "height": 2572.3
+   }
+  },
+  "ganondorf": {
+   "object": "object_ganon",
+   "skeleton": "gGanondorfSkel",
+   "object_id": 225,
+   "dma_index": 705,
+   "object_bytes": 65792,
+   "skeleton_facts": {
+    "offset": 65768,
+    "limbs": 25,
+    "lod": false,
+    "limbs_with_dl": 24,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "Boss_Ganon": {
+     "id": 232,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 14608,
+    "textures": 0
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Ganondorf's lair",
+    "Ganon's Tower (collapse, outside)",
+    "Cutscene map",
+    "Ganon's arena"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 11,
+     "l_upper": 3,
+     "l_fore": 4,
+     "l_hand": 5,
+     "l_clav": 2,
+     "r_upper": 7,
+     "r_fore": 8,
+     "r_hand": 9,
+     "r_clav": 6,
+     "chest": 1,
+     "r_thigh": 22,
+     "r_shin": 23,
+     "r_foot": 24,
+     "l_thigh": 19,
+     "l_shin": 20,
+     "l_foot": 21
+    },
+    "pose": "animation",
+    "height": 11211.7
+   }
+  },
+  "ganon": {
+   "object": "object_ganon2",
+   "skeleton": "gGanonSkel",
+   "object_id": 339,
+   "dma_index": 814,
+   "object_bytes": 215024,
+   "skeleton_facts": {
+    "offset": 148848,
+    "limbs": 46,
+    "lod": false,
+    "limbs_with_dl": 45,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "Boss_Ganon2": {
+     "id": 378,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 31056,
+    "textures": 12512
+   },
+   "branch_dls": 2,
+   "scenes": [
+    "Ganon's arena"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 25,
+     "l_upper": 2,
+     "l_fore": 3,
+     "l_hand": 4,
+     "r_upper": 8,
+     "r_fore": 9,
+     "r_hand": 10,
+     "chest": 1,
+     "r_thigh": 38,
+     "r_shin": 39,
+     "r_foot": 40,
+     "l_thigh": 35,
+     "l_shin": 36,
+     "l_foot": 37
+    },
+    "pose": "animation",
+    "height": 18934.0
+   }
+  },
+  "phantom_ganon": {
+   "object": "object_gnd",
+   "skeleton": "gPhantomGanonSkel",
+   "object_id": 55,
+   "dma_index": 548,
+   "object_bytes": 77824,
+   "skeleton_facts": {
+    "offset": 50960,
+    "limbs": 25,
+    "lod": false,
+    "limbs_with_dl": 16,
+    "type": "normal"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "Boss_Ganondrof": {
+     "id": 82,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 19120,
+    "textures": 0
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Phantom Ganon's lair"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 14,
+     "l_upper": 3,
+     "l_fore": 4,
+     "l_hand": 5,
+     "r_upper": 7,
+     "r_fore": 8,
+     "r_hand": 9,
+     "chest": 2,
+     "l_thigh": 18,
+     "l_shin": 19,
+     "l_foot": 20,
+     "r_thigh": 22,
+     "r_shin": 23,
+     "r_foot": 24
+    },
+    "pose": "animation",
+    "height": 11688.6
+   }
+  },
+  "twinrova": {
+   "object": "object_tw",
+   "skeleton": "gTwinrovaSkel",
+   "object_id": 211,
+   "dma_index": 691,
+   "object_bytes": 236464,
+   "skeleton_facts": {
+    "offset": 199712,
+    "limbs": 43,
+    "lod": false,
+    "limbs_with_dl": 43,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "Boss_Tw": {
+     "id": 220,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 32896,
+    "textures": 2944
+   },
+   "branch_dls": 15,
+   "scenes": [
+    "Twinrova's lair"
+   ],
+   "mapping": {
+    "mode": "retarget",
+    "roles": {
+     "hip": 0,
+     "head": 21,
+     "l_upper": 26,
+     "l_fore": 27,
+     "l_hand": 28,
+     "l_clav": 25,
+     "r_upper": 35,
+     "r_fore": 36,
+     "r_hand": 37,
+     "r_clav": 34,
+     "chest": 11,
+     "l_thigh": 5,
+     "l_shin": 6,
+     "l_foot": 7,
+     "r_thigh": 8,
+     "r_shin": 9,
+     "r_foot": 10
+    },
+    "pose": "animation",
+    "height": 40574.0
+   }
+  },
+  "king_dodongo": {
+   "object": "object_kingdodongo",
+   "skeleton": "object_kingdodongo_Skel_01B310",
+   "object_id": 25,
+   "dma_index": 517,
+   "object_bytes": 194784,
+   "skeleton_facts": {
+    "offset": 106256,
+    "limbs": 48,
+    "lod": false,
+    "limbs_with_dl": 20,
+    "type": "normal"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "Boss_Dodongo": {
+     "id": 39,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 26528,
+    "textures": 0
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "King Dodongo's lair"
+   ],
+   "mapping": {
+    "mode": "rigid",
+    "roles": {
+     "hip": 5
+    },
+    "pose": "animation",
+    "height": 33918.9
+   }
+  },
+  "bongo_bongo_head": {
+   "object": "object_sst",
+   "skeleton": "gBongoHeadSkel",
+   "object_id": 226,
+   "dma_index": 706,
+   "object_bytes": 104368,
+   "skeleton_facts": {
+    "offset": 92224,
+    "limbs": 44,
+    "lod": false,
+    "limbs_with_dl": 30,
+    "type": "flex"
+   },
+   "type_matches_decomp": true,
+   "actors": {
+    "Boss_Sst": {
+     "id": 233,
+     "names_skeleton": true
+    }
+   },
+   "reclaim": {
+    "lists": 21936,
+    "textures": 1920
+   },
+   "branch_dls": 0,
+   "scenes": [
+    "Bongo Bongo's lair"
+   ],
+   "mapping": {
+    "mode": "rigid",
+    "roles": {
+     "hip": 6
+    },
+    "pose": "animation",
+    "height": 38891.3
+   }
+  },
+  "epona": {
+   "object": "object_horse",
+   "skeleton": "gEponaSkel",
+   "mapping": {
+    "mode": null,
+    "reason": "Epona is a skinned skeleton (SkinLimbs: vertices blended between limbs every frame by Skin_Draw); gBox's OoT writer only rebuilds Standard / LOD limb display lists"
+   }
+  },
+  "navi": {
+   "object": "gameplay_keep",
+   "skeleton": "gFairySkel",
+   "mapping": {
+    "mode": null,
+    "reason": "Navi (En_Elf) is drawn from gameplay_keep, the object every actor and Link share: rebuilding it is not a per-character change; the overlay (characters op=overlay) can still draw over her"
+   }
+  },
+  "like_like": {
+   "object": "object_rr",
+   "skeleton": null,
+   "mapping": {
+    "mode": null,
+    "reason": "Like Like has no skeleton (En_Rr builds its body from display lists and matrices in code)"
+   }
+  },
+  "hylian_townsfolk": {
+   "object": "object_aob",
+   "skeleton": "gHylianWoman1Skel",
+   "mapping": {
+    "mode": null,
+    "reason": "En_Hy draws a head from one object on a body from another, per townsperson type (object_aob, ahg, boj, bba, bji, cne, cob + object_os_anime): the per-type head / body table isn't catalogued yet"
+   }
+  }
+ },
+ "scan": {
+  "object_okuta": {
+   "id": 7,
+   "actors": [
+    "En_Okuta"
+   ],
+   "bytes": 15488,
+   "skeletons": [
+    {
+     "offset": 13920,
+     "limbs": 37,
+     "lod": false,
+     "limbs_with_dl": 15,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_crow": {
+   "id": 8,
+   "actors": [
+    "En_Crow"
+   ],
+   "bytes": 4304,
+   "skeletons": [
+    {
+     "offset": 4288,
+     "limbs": 8,
+     "lod": false,
+     "limbs_with_dl": 7,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_dy_obj": {
+   "id": 10,
+   "actors": [
+    "Bg_Dy_Yoseizo",
+    "En_Dy_Extra"
+   ],
+   "bytes": 120112,
+   "skeletons": [
+    {
+     "offset": 115792,
+     "limbs": 27,
+     "lod": false,
+     "limbs_with_dl": 27,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_wallmaster": {
+   "id": 11,
+   "actors": [
+    "En_Wallmas",
+    "En_Floormas"
+   ],
+   "bytes": 41072,
+   "skeletons": [
+    {
+     "offset": 36784,
+     "limbs": 24,
+     "lod": false,
+     "limbs_with_dl": 14,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_dodongo": {
+   "id": 12,
+   "actors": [
+    "En_Dodongo"
+   ],
+   "bytes": 39232,
+   "skeletons": [
+    {
+     "offset": 33560,
+     "limbs": 30,
+     "lod": false,
+     "limbs_with_dl": 12,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_firefly": {
+   "id": 13,
+   "actors": [
+    "En_Firefly"
+   ],
+   "bytes": 6336,
+   "skeletons": [
+    {
+     "offset": 6328,
+     "limbs": 27,
+     "lod": false,
+     "limbs_with_dl": 10,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_box": {
+   "id": 14,
+   "actors": [
+    "En_Box",
+    "Demo_Tre_Lgt"
+   ],
+   "bytes": 24576,
+   "skeletons": [
+    {
+     "offset": 18392,
+     "limbs": 4,
+     "lod": false,
+     "limbs_with_dl": 0,
+     "type": "normal"
+    },
+    {
+     "offset": 24248,
+     "limbs": 14,
+     "lod": false,
+     "limbs_with_dl": 5,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_niw": {
+   "id": 19,
+   "actors": [
+    "En_Niw",
+    "En_Syateki_Niw",
+    "En_Attack_Niw"
+   ],
+   "bytes": 9536,
+   "skeletons": [
+    {
+     "offset": 9520,
+     "limbs": 15,
+     "lod": false,
+     "limbs_with_dl": 7,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_link_boy": {
+   "id": 20,
+   "actors": [
+    "Arms_Hook"
+   ],
+   "bytes": 227328,
+   "skeletons": [
+    {
+     "offset": 227316,
+     "limbs": 21,
+     "lod": true,
+     "limbs_with_dl": 18,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_link_child": {
+   "id": 21,
+   "actors": [
+    "Item_Shield"
+   ],
+   "bytes": 184192,
+   "skeletons": [
+    {
+     "offset": 184172,
+     "limbs": 21,
+     "lod": true,
+     "limbs_with_dl": 18,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_tite": {
+   "id": 22,
+   "actors": [
+    "En_Tite"
+   ],
+   "bytes": 14896,
+   "skeletons": [
+    {
+     "offset": 14880,
+     "limbs": 24,
+     "lod": false,
+     "limbs_with_dl": 9,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_reeba": {
+   "id": 23,
+   "actors": [
+    "En_Reeba"
+   ],
+   "bytes": 7920,
+   "skeletons": [
+    {
+     "offset": 7912,
+     "limbs": 17,
+     "lod": false,
+     "limbs_with_dl": 6,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_peehat": {
+   "id": 24,
+   "actors": [
+    "En_Peehat"
+   ],
+   "bytes": 7312,
+   "skeletons": [
+    {
+     "offset": 7296,
+     "limbs": 23,
+     "lod": false,
+     "limbs_with_dl": 8,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_kingdodongo": {
+   "id": 25,
+   "actors": [
+    "Boss_Dodongo",
+    "En_Bdfire"
+   ],
+   "bytes": 194784,
+   "skeletons": [
+    {
+     "offset": 106256,
+     "limbs": 48,
+     "lod": false,
+     "limbs_with_dl": 20,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_horse": {
+   "id": 26,
+   "actors": [
+    "En_Horse"
+   ],
+   "bytes": 57104,
+   "skeletons": [
+    {
+     "offset": 2152,
+     "limbs": 14,
+     "lod": false,
+     "limbs_with_dl": 14,
+     "type": "normal"
+    },
+    {
+     "offset": 40308,
+     "limbs": 47,
+     "lod": true,
+     "limbs_with_dl": 34,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_zf": {
+   "id": 27,
+   "actors": [
+    "En_Zf"
+   ],
+   "bytes": 91040,
+   "skeletons": [
+    {
+     "offset": 26256,
+     "limbs": 48,
+     "lod": false,
+     "limbs_with_dl": 20,
+     "type": "normal"
+    },
+    {
+     "offset": 66744,
+     "limbs": 48,
+     "lod": false,
+     "limbs_with_dl": 20,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_zl1": {
+   "id": 29,
+   "actors": [
+    "En_Zl1"
+   ],
+   "bytes": 82880,
+   "skeletons": [
+    {
+     "offset": 62936,
+     "limbs": 17,
+     "lod": false,
+     "limbs_with_dl": 16,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_gol": {
+   "id": 30,
+   "actors": [
+    "En_Goma"
+   ],
+   "bytes": 16928,
+   "skeletons": [
+    {
+     "offset": 15168,
+     "limbs": 23,
+     "lod": false,
+     "limbs_with_dl": 9,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_dodojr": {
+   "id": 31,
+   "actors": [
+    "En_Dodojr"
+   ],
+   "bytes": 8432,
+   "skeletons": [
+    {
+     "offset": 8416,
+     "limbs": 14,
+     "lod": false,
+     "limbs_with_dl": 5,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_torch2": {
+   "id": 32,
+   "actors": [
+    "En_Torch2"
+   ],
+   "bytes": 18288,
+   "skeletons": [
+    {
+     "offset": 18276,
+     "limbs": 21,
+     "lod": true,
+     "limbs_with_dl": 17,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_bl": {
+   "id": 33,
+   "actors": [
+    "En_Bili"
+   ],
+   "bytes": 22608,
+   "skeletons": [
+    {
+     "offset": 22600,
+     "limbs": 4,
+     "lod": false,
+     "limbs_with_dl": 3,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_st": {
+   "id": 36,
+   "actors": [
+    "En_St",
+    "En_Sw",
+    "En_Si"
+   ],
+   "bytes": 23472,
+   "skeletons": [
+    {
+     "offset": 21144,
+     "limbs": 29,
+     "lod": false,
+     "limbs_with_dl": 10,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_bw": {
+   "id": 37,
+   "actors": [
+    "En_Bw"
+   ],
+   "bytes": 8800,
+   "skeletons": [
+    {
+     "offset": 8432,
+     "limbs": 11,
+     "lod": false,
+     "limbs_with_dl": 5,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_ei": {
+   "id": 38,
+   "actors": [
+    "En_Eiyer",
+    "En_Weiyer"
+   ],
+   "bytes": 13344,
+   "skeletons": [
+    {
+     "offset": 13328,
+     "limbs": 18,
+     "lod": false,
+     "limbs_with_dl": 11,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_horse_normal": {
+   "id": 39,
+   "actors": [
+    "En_Horse_Normal"
+   ],
+   "bytes": 40896,
+   "skeletons": [
+    {
+     "offset": 40876,
+     "limbs": 46,
+     "lod": true,
+     "limbs_with_dl": 33,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_horse_ganon": {
+   "id": 45,
+   "actors": [
+    "En_Horse_Ganon"
+   ],
+   "bytes": 49296,
+   "skeletons": [
+    {
+     "offset": 34408,
+     "limbs": 53,
+     "lod": true,
+     "limbs_with_dl": 40,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_mb": {
+   "id": 48,
+   "actors": [
+    "En_Mb"
+   ],
+   "bytes": 82336,
+   "skeletons": [
+    {
+     "offset": 36664,
+     "limbs": 27,
+     "lod": false,
+     "limbs_with_dl": 15,
+     "type": "flex"
+    },
+    {
+     "offset": 82320,
+     "limbs": 27,
+     "lod": false,
+     "limbs_with_dl": 15,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_sk2": {
+   "id": 50,
+   "actors": [
+    "En_Test"
+   ],
+   "bytes": 59392,
+   "skeletons": [
+    {
+     "offset": 31784,
+     "limbs": 60,
+     "lod": false,
+     "limbs_with_dl": 24,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_oE2": {
+   "id": 53,
+   "actors": [
+    "En_OE2"
+   ],
+   "bytes": 23152,
+   "skeletons": [
+    {
+     "offset": 608,
+     "limbs": 38,
+     "lod": false,
+     "limbs_with_dl": 15,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_gnd": {
+   "id": 55,
+   "actors": [
+    "Boss_Ganondrof"
+   ],
+   "bytes": 77824,
+   "skeletons": [
+    {
+     "offset": 50960,
+     "limbs": 25,
+     "lod": false,
+     "limbs_with_dl": 16,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_am": {
+   "id": 56,
+   "actors": [
+    "En_Am"
+   ],
+   "bytes": 23376,
+   "skeletons": [
+    {
+     "offset": 22856,
+     "limbs": 13,
+     "lod": false,
+     "limbs_with_dl": 4,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_dekubaba": {
+   "id": 57,
+   "actors": [
+    "En_Dekubaba",
+    "En_Karebaba"
+   ],
+   "bytes": 14784,
+   "skeletons": [
+    {
+     "offset": 10816,
+     "limbs": 7,
+     "lod": false,
+     "limbs_with_dl": 2,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_jj": {
+   "id": 64,
+   "actors": [
+    "En_Scene_Change",
+    "En_Jj"
+   ],
+   "bytes": 47808,
+   "skeletons": [
+    {
+     "offset": 47528,
+     "limbs": 21,
+     "lod": false,
+     "limbs_with_dl": 11,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_horse_zelda": {
+   "id": 70,
+   "actors": [
+    "En_Horse_Zelda"
+   ],
+   "bytes": 29024,
+   "skeletons": [
+    {
+     "offset": 27436,
+     "limbs": 46,
+     "lod": true,
+     "limbs_with_dl": 33,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_warp1": {
+   "id": 72,
+   "actors": [
+    "Door_Warp1"
+   ],
+   "bytes": 11440,
+   "skeletons": [
+    {
+     "offset": 11432,
+     "limbs": 21,
+     "lod": false,
+     "limbs_with_dl": 7,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_dekunuts": {
+   "id": 74,
+   "actors": [
+    "En_Dekunuts"
+   ],
+   "bytes": 13920,
+   "skeletons": [
+    {
+     "offset": 12904,
+     "limbs": 24,
+     "lod": false,
+     "limbs_with_dl": 9,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_vali": {
+   "id": 86,
+   "actors": [
+    "En_Vali"
+   ],
+   "bytes": 18512,
+   "skeletons": [
+    {
+     "offset": 18504,
+     "limbs": 28,
+     "lod": false,
+     "limbs_with_dl": 13,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_fhg": {
+   "id": 90,
+   "actors": [
+    "En_fHG",
+    "En_Fhg_Fire",
+    "Demo_Ext"
+   ],
+   "bytes": 69088,
+   "skeletons": [
+    {
+     "offset": 40088,
+     "limbs": 53,
+     "lod": true,
+     "limbs_with_dl": 40,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_ossan": {
+   "id": 91,
+   "actors": [
+    "En_Syateki_Man"
+   ],
+   "bytes": 39760,
+   "skeletons": [
+    {
+     "offset": 39736,
+     "limbs": 8,
+     "lod": false,
+     "limbs_with_dl": 8,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_Bb": {
+   "id": 93,
+   "actors": [
+    "En_Bb"
+   ],
+   "bytes": 6720,
+   "skeletons": [
+    {
+     "offset": 6704,
+     "limbs": 15,
+     "lod": false,
+     "limbs_with_dl": 6,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_zl2": {
+   "id": 96,
+   "actors": [
+    "En_Zl2",
+    "En_Zl3",
+    "En_Eg"
+   ],
+   "bytes": 68992,
+   "skeletons": [
+    {
+     "offset": 68976,
+     "limbs": 14,
+     "lod": false,
+     "limbs_with_dl": 13,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_po_field": {
+   "id": 109,
+   "actors": [
+    "En_Po_Field",
+    "En_Po_Desert"
+   ],
+   "bytes": 27200,
+   "skeletons": [
+    {
+     "offset": 27184,
+     "limbs": 9,
+     "lod": false,
+     "limbs_with_dl": 9,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_hata": {
+   "id": 118,
+   "actors": [
+    "En_Hata"
+   ],
+   "bytes": 12256,
+   "skeletons": [
+    {
+     "offset": 12240,
+     "limbs": 20,
+     "lod": false,
+     "limbs_with_dl": 9,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_bird": {
+   "id": 119,
+   "actors": [
+    "En_Bird"
+   ],
+   "bytes": 8608,
+   "skeletons": [
+    {
+     "offset": 8592,
+     "limbs": 9,
+     "lod": false,
+     "limbs_with_dl": 3,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_im": {
+   "id": 135,
+   "actors": [
+    "Demo_Im"
+   ],
+   "bytes": 74288,
+   "skeletons": [
+    {
+     "offset": 63368,
+     "limbs": 16,
+     "lod": false,
+     "limbs_with_dl": 15,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_ta": {
+   "id": 136,
+   "actors": [
+    "En_Ta"
+   ],
+   "bytes": 58352,
+   "skeletons": [
+    {
+     "offset": 47032,
+     "limbs": 16,
+     "lod": false,
+     "limbs_with_dl": 15,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_tk": {
+   "id": 137,
+   "actors": [
+    "En_Tk",
+    "En_Po_Relay"
+   ],
+   "bytes": 48720,
+   "skeletons": [
+    {
+     "offset": 48704,
+     "limbs": 17,
+     "lod": false,
+     "limbs_with_dl": 17,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_xc": {
+   "id": 138,
+   "actors": [
+    "En_Xc"
+   ],
+   "bytes": 117536,
+   "skeletons": [
+    {
+     "offset": 79120,
+     "limbs": 16,
+     "lod": false,
+     "limbs_with_dl": 15,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_vm": {
+   "id": 139,
+   "actors": [
+    "En_Vm"
+   ],
+   "bytes": 16240,
+   "skeletons": [
+    {
+     "offset": 16224,
+     "limbs": 10,
+     "lod": false,
+     "limbs_with_dl": 4,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_bv": {
+   "id": 140,
+   "actors": [
+    "Boss_Va"
+   ],
+   "bytes": 122288,
+   "skeletons": [
+    {
+     "offset": 14960,
+     "limbs": 4,
+     "lod": false,
+     "limbs_with_dl": 3,
+     "type": "flex"
+    },
+    {
+     "offset": 83736,
+     "limbs": 63,
+     "lod": false,
+     "limbs_with_dl": 16,
+     "type": "normal"
+    },
+    {
+     "offset": 90264,
+     "limbs": 12,
+     "lod": false,
+     "limbs_with_dl": 5,
+     "type": "flex"
+    },
+    {
+     "offset": 93128,
+     "limbs": 10,
+     "lod": false,
+     "limbs_with_dl": 3,
+     "type": "flex"
+    },
+    {
+     "offset": 95344,
+     "limbs": 8,
+     "lod": false,
+     "limbs_with_dl": 3,
+     "type": "flex"
+    },
+    {
+     "offset": 99744,
+     "limbs": 7,
+     "lod": false,
+     "limbs_with_dl": 4,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_sd": {
+   "id": 151,
+   "actors": [
+    "En_Heishi1",
+    "En_Heishi2",
+    "En_Heishi3",
+    "En_Heishi4"
+   ],
+   "bytes": 50912,
+   "skeletons": [
+    {
+     "offset": 47816,
+     "limbs": 16,
+     "lod": false,
+     "limbs_with_dl": 15,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_rd": {
+   "id": 152,
+   "actors": [
+    "En_Rd"
+   ],
+   "bytes": 61424,
+   "skeletons": [
+    {
+     "offset": 15832,
+     "limbs": 25,
+     "lod": false,
+     "limbs_with_dl": 15,
+     "type": "flex"
+    },
+    {
+     "offset": 59256,
+     "limbs": 25,
+     "lod": false,
+     "limbs_with_dl": 15,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_po_sisters": {
+   "id": 153,
+   "actors": [
+    "En_Po_Sisters",
+    "Bg_Po_Event"
+   ],
+   "bytes": 58304,
+   "skeletons": [
+    {
+     "offset": 26056,
+     "limbs": 11,
+     "lod": false,
+     "limbs_with_dl": 9,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_fd": {
+   "id": 156,
+   "actors": [
+    "Boss_Fd",
+    "Bg_Vb_Sima",
+    "En_Vb_Ball"
+   ],
+   "bytes": 66160,
+   "skeletons": [
+    {
+     "offset": 65568,
+     "limbs": 18,
+     "lod": false,
+     "limbs_with_dl": 18,
+     "type": "flex"
+    },
+    {
+     "offset": 65760,
+     "limbs": 6,
+     "lod": false,
+     "limbs_with_dl": 6,
+     "type": "normal"
+    },
+    {
+     "offset": 65952,
+     "limbs": 6,
+     "lod": false,
+     "limbs_with_dl": 6,
+     "type": "normal"
+    },
+    {
+     "offset": 66144,
+     "limbs": 6,
+     "lod": false,
+     "limbs_with_dl": 5,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_du": {
+   "id": 157,
+   "actors": [
+    "En_Du",
+    "Demo_Du"
+   ],
+   "bytes": 75312,
+   "skeletons": [
+    {
+     "offset": 74408,
+     "limbs": 17,
+     "lod": false,
+     "limbs_with_dl": 16,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_fw": {
+   "id": 158,
+   "actors": [
+    "En_Fd",
+    "En_Fw"
+   ],
+   "bytes": 32224,
+   "skeletons": [
+    {
+     "offset": 22544,
+     "limbs": 26,
+     "lod": false,
+     "limbs_with_dl": 21,
+     "type": "flex"
+    },
+    {
+     "offset": 31792,
+     "limbs": 10,
+     "lod": false,
+     "limbs_with_dl": 8,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_horse_link_child": {
+   "id": 160,
+   "actors": [
+    "En_Horse_Link_Child"
+   ],
+   "bytes": 35616,
+   "skeletons": [
+    {
+     "offset": 31520,
+     "limbs": 46,
+     "lod": true,
+     "limbs_with_dl": 33,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_ru1": {
+   "id": 163,
+   "actors": [
+    "En_Ru1"
+   ],
+   "bytes": 80512,
+   "skeletons": [
+    {
+     "offset": 75520,
+     "limbs": 16,
+     "lod": false,
+     "limbs_with_dl": 15,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_fd2": {
+   "id": 165,
+   "actors": [
+    "Boss_Fd2"
+   ],
+   "bytes": 72336,
+   "skeletons": [
+    {
+     "offset": 72312,
+     "limbs": 36,
+     "lod": false,
+     "limbs_with_dl": 35,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_dh": {
+   "id": 166,
+   "actors": [
+    "En_Dh",
+    "En_Dha"
+   ],
+   "bytes": 37056,
+   "skeletons": [
+    {
+     "offset": 3032,
+     "limbs": 3,
+     "lod": false,
+     "limbs_with_dl": 3,
+     "type": "flex"
+    },
+    {
+     "offset": 32392,
+     "limbs": 15,
+     "lod": false,
+     "limbs_with_dl": 14,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_rl": {
+   "id": 167,
+   "actors": [
+    "En_Rl"
+   ],
+   "bytes": 31568,
+   "skeletons": [
+    {
+     "offset": 31544,
+     "limbs": 10,
+     "lod": false,
+     "limbs_with_dl": 9,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_brob": {
+   "id": 172,
+   "actors": [
+    "En_Brob"
+   ],
+   "bytes": 6816,
+   "skeletons": [
+    {
+     "offset": 5592,
+     "limbs": 9,
+     "lod": false,
+     "limbs_with_dl": 5,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_nb": {
+   "id": 179,
+   "actors": [
+    "En_Nb"
+   ],
+   "bytes": 98784,
+   "skeletons": [
+    {
+     "offset": 98760,
+     "limbs": 18,
+     "lod": false,
+     "limbs_with_dl": 17,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_sb": {
+   "id": 181,
+   "actors": [
+    "En_Sb"
+   ],
+   "bytes": 11424,
+   "skeletons": [
+    {
+     "offset": 11248,
+     "limbs": 8,
+     "lod": false,
+     "limbs_with_dl": 4,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_sa": {
+   "id": 188,
+   "actors": [
+    "Demo_Sa",
+    "En_Sa"
+   ],
+   "bytes": 86576,
+   "skeletons": [
+    {
+     "offset": 45472,
+     "limbs": 16,
+     "lod": false,
+     "limbs_with_dl": 15,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_in": {
+   "id": 192,
+   "actors": [
+    "En_In"
+   ],
+   "bytes": 101456,
+   "skeletons": [
+    {
+     "offset": 80776,
+     "limbs": 19,
+     "lod": false,
+     "limbs_with_dl": 18,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_tr": {
+   "id": 193,
+   "actors": [
+    "En_Tr"
+   ],
+   "bytes": 77360,
+   "skeletons": [
+    {
+     "offset": 50480,
+     "limbs": 26,
+     "lod": false,
+     "limbs_with_dl": 26,
+     "type": "flex"
+    },
+    {
+     "offset": 71304,
+     "limbs": 26,
+     "lod": false,
+     "limbs_with_dl": 26,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_oF1d_map": {
+   "id": 201,
+   "actors": [
+    "Demo_Go",
+    "En_Gm",
+    "En_Go",
+    "En_Go2"
+   ],
+   "bytes": 66976,
+   "skeletons": [
+    {
+     "offset": 65264,
+     "limbs": 17,
+     "lod": false,
+     "limbs_with_dl": 15,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_ru2": {
+   "id": 202,
+   "actors": [
+    "En_Ru2"
+   ],
+   "bytes": 63696,
+   "skeletons": [
+    {
+     "offset": 50944,
+     "limbs": 22,
+     "lod": false,
+     "limbs_with_dl": 21,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_ma2": {
+   "id": 208,
+   "actors": [
+    "En_Ma2",
+    "En_Ma3"
+   ],
+   "bytes": 40688,
+   "skeletons": [
+    {
+     "offset": 36240,
+     "limbs": 18,
+     "lod": false,
+     "limbs_with_dl": 16,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_tw": {
+   "id": 211,
+   "actors": [
+    "Boss_Tw"
+   ],
+   "bytes": 236464,
+   "skeletons": [
+    {
+     "offset": 28896,
+     "limbs": 26,
+     "lod": false,
+     "limbs_with_dl": 26,
+     "type": "flex"
+    },
+    {
+     "offset": 129160,
+     "limbs": 26,
+     "lod": false,
+     "limbs_with_dl": 26,
+     "type": "flex"
+    },
+    {
+     "offset": 199712,
+     "limbs": 43,
+     "lod": false,
+     "limbs_with_dl": 43,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_anubice": {
+   "id": 214,
+   "actors": [
+    "En_Anubice",
+    "En_Anubice_Fire"
+   ],
+   "bytes": 14752,
+   "skeletons": [
+    {
+     "offset": 14736,
+     "limbs": 15,
+     "lod": false,
+     "limbs_with_dl": 8,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_ma1": {
+   "id": 224,
+   "actors": [
+    "En_Ma1"
+   ],
+   "bytes": 36224,
+   "skeletons": [
+    {
+     "offset": 33888,
+     "limbs": 18,
+     "lod": false,
+     "limbs_with_dl": 17,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_ganon": {
+   "id": 225,
+   "actors": [
+    "Boss_Ganon",
+    "Bg_Ganon_Otyuka",
+    "En_Ganon_Organ"
+   ],
+   "bytes": 65792,
+   "skeletons": [
+    {
+     "offset": 65768,
+     "limbs": 25,
+     "lod": false,
+     "limbs_with_dl": 24,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_sst": {
+   "id": 226,
+   "actors": [
+    "Boss_Sst",
+    "Bg_Sst_Floor"
+   ],
+   "bytes": 104368,
+   "skeletons": [
+    {
+     "offset": 19936,
+     "limbs": 26,
+     "lod": false,
+     "limbs_with_dl": 15,
+     "type": "flex"
+    },
+    {
+     "offset": 41808,
+     "limbs": 26,
+     "lod": false,
+     "limbs_with_dl": 15,
+     "type": "flex"
+    },
+    {
+     "offset": 92224,
+     "limbs": 44,
+     "lod": false,
+     "limbs_with_dl": 30,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_fr": {
+   "id": 230,
+   "actors": [
+    "En_Fr"
+   ],
+   "bytes": 46256,
+   "skeletons": [
+    {
+     "offset": 46232,
+     "limbs": 23,
+     "lod": false,
+     "limbs_with_dl": 22,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_ani": {
+   "id": 236,
+   "actors": [
+    "En_Ani"
+   ],
+   "bytes": 30464,
+   "skeletons": [
+    {
+     "offset": 240,
+     "limbs": 15,
+     "lod": false,
+     "limbs_with_dl": 15,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_md": {
+   "id": 251,
+   "actors": [
+    "En_Md"
+   ],
+   "bytes": 41296,
+   "skeletons": [
+    {
+     "offset": 32696,
+     "limbs": 16,
+     "lod": false,
+     "limbs_with_dl": 15,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_zo": {
+   "id": 254,
+   "actors": [
+    "En_Diving_Game",
+    "En_Zo"
+   ],
+   "bytes": 49216,
+   "skeletons": [
+    {
+     "offset": 49064,
+     "limbs": 19,
+     "lod": false,
+     "limbs_with_dl": 19,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_kz": {
+   "id": 255,
+   "actors": [
+    "En_Kz"
+   ],
+   "bytes": 34528,
+   "skeletons": [
+    {
+     "offset": 34512,
+     "limbs": 11,
+     "lod": false,
+     "limbs_with_dl": 11,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_ik": {
+   "id": 262,
+   "actors": [
+    "En_Ik",
+    "Demo_Ik"
+   ],
+   "bytes": 132560,
+   "skeletons": [
+    {
+     "offset": 123256,
+     "limbs": 29,
+     "lod": false,
+     "limbs_with_dl": 24,
+     "type": "flex"
+    },
+    {
+     "offset": 132544,
+     "limbs": 29,
+     "lod": false,
+     "limbs_with_dl": 24,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_skj": {
+   "id": 266,
+   "actors": [
+    "En_Skj",
+    "En_Skjneedle"
+   ],
+   "bytes": 36400,
+   "skeletons": [
+    {
+     "offset": 24384,
+     "limbs": 18,
+     "lod": false,
+     "limbs_with_dl": 17,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_ds": {
+   "id": 271,
+   "actors": [
+    "En_Ds"
+   ],
+   "bytes": 18304,
+   "skeletons": [
+    {
+     "offset": 18280,
+     "limbs": 5,
+     "lod": false,
+     "limbs_with_dl": 4,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_ane": {
+   "id": 272,
+   "actors": [
+    "En_Niw_Lady"
+   ],
+   "bytes": 28592,
+   "skeletons": [
+    {
+     "offset": 240,
+     "limbs": 15,
+     "lod": false,
+     "limbs_with_dl": 15,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_boj": {
+   "id": 273,
+   "actors": [
+    "En_Guest"
+   ],
+   "bytes": 23744,
+   "skeletons": [
+    {
+     "offset": 240,
+     "limbs": 15,
+     "lod": false,
+     "limbs_with_dl": 15,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_ge1": {
+   "id": 278,
+   "actors": [
+    "En_Ge1"
+   ],
+   "bytes": 42160,
+   "skeletons": [
+    {
+     "offset": 816,
+     "limbs": 15,
+     "lod": false,
+     "limbs_with_dl": 15,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_toryo": {
+   "id": 289,
+   "actors": [
+    "En_Toryo"
+   ],
+   "bytes": 29024,
+   "skeletons": [
+    {
+     "offset": 29008,
+     "limbs": 16,
+     "lod": false,
+     "limbs_with_dl": 16,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_daiku": {
+   "id": 290,
+   "actors": [
+    "En_Daiku",
+    "En_Daiku_Kakariko"
+   ],
+   "bytes": 34928,
+   "skeletons": [
+    {
+     "offset": 31064,
+     "limbs": 16,
+     "lod": false,
+     "limbs_with_dl": 16,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_ms": {
+   "id": 295,
+   "actors": [
+    "En_Ms"
+   ],
+   "bytes": 15824,
+   "skeletons": [
+    {
+     "offset": 15808,
+     "limbs": 8,
+     "lod": false,
+     "limbs_with_dl": 7,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_hs": {
+   "id": 296,
+   "actors": [
+    "En_Hs",
+    "En_Hs2"
+   ],
+   "bytes": 25200,
+   "skeletons": [
+    {
+     "offset": 25184,
+     "limbs": 15,
+     "lod": false,
+     "limbs_with_dl": 13,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_owl": {
+   "id": 305,
+   "actors": [
+    "En_Owl"
+   ],
+   "bytes": 65728,
+   "skeletons": [
+    {
+     "offset": 49384,
+     "limbs": 20,
+     "lod": false,
+     "limbs_with_dl": 20,
+     "type": "flex"
+    },
+    {
+     "offset": 65712,
+     "limbs": 15,
+     "lod": false,
+     "limbs_with_dl": 14,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_mk": {
+   "id": 306,
+   "actors": [
+    "En_Mk"
+   ],
+   "bytes": 24064,
+   "skeletons": [
+    {
+     "offset": 24048,
+     "limbs": 12,
+     "lod": false,
+     "limbs_with_dl": 12,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_fu": {
+   "id": 307,
+   "actors": [
+    "En_Fu"
+   ],
+   "bytes": 27808,
+   "skeletons": [
+    {
+     "offset": 27792,
+     "limbs": 15,
+     "lod": false,
+     "limbs_with_dl": 15,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_mm": {
+   "id": 316,
+   "actors": [
+    "En_Mm",
+    "En_Mm2"
+   ],
+   "bytes": 32880,
+   "skeletons": [
+    {
+     "offset": 24088,
+     "limbs": 15,
+     "lod": false,
+     "limbs_with_dl": 15,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_js": {
+   "id": 324,
+   "actors": [
+    "En_Js"
+   ],
+   "bytes": 24368,
+   "skeletons": [
+    {
+     "offset": 24224,
+     "limbs": 12,
+     "lod": false,
+     "limbs_with_dl": 11,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_cs": {
+   "id": 325,
+   "actors": [
+    "En_Cs"
+   ],
+   "bytes": 34128,
+   "skeletons": [
+    {
+     "offset": 34112,
+     "limbs": 15,
+     "lod": false,
+     "limbs_with_dl": 15,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_ganon2": {
+   "id": 339,
+   "actors": [
+    "Boss_Ganon2"
+   ],
+   "bytes": 215024,
+   "skeletons": [
+    {
+     "offset": 148848,
+     "limbs": 46,
+     "lod": false,
+     "limbs_with_dl": 45,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_ka": {
+   "id": 340,
+   "actors": [
+    "En_Kakasi",
+    "En_Kakasi2",
+    "En_Kakasi3"
+   ],
+   "bytes": 26560,
+   "skeletons": [
+    {
+     "offset": 26032,
+     "limbs": 27,
+     "lod": false,
+     "limbs_with_dl": 23,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_ts": {
+   "id": 341,
+   "actors": [
+    "En_Takara_Man"
+   ],
+   "bytes": 20464,
+   "skeletons": [
+    {
+     "offset": 20448,
+     "limbs": 9,
+     "lod": false,
+     "limbs_with_dl": 9,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_fish": {
+   "id": 347,
+   "actors": [
+    "Fishing"
+   ],
+   "bytes": 87536,
+   "skeletons": [
+    {
+     "offset": 10688,
+     "limbs": 15,
+     "lod": false,
+     "limbs_with_dl": 12,
+     "type": "flex"
+    },
+    {
+     "offset": 34296,
+     "limbs": 8,
+     "lod": false,
+     "limbs_with_dl": 8,
+     "type": "flex"
+    },
+    {
+     "offset": 69720,
+     "limbs": 11,
+     "lod": false,
+     "limbs_with_dl": 11,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_ssh": {
+   "id": 350,
+   "actors": [
+    "En_Ssh"
+   ],
+   "bytes": 23552,
+   "skeletons": [
+    {
+     "offset": 21216,
+     "limbs": 29,
+     "lod": false,
+     "limbs_with_dl": 10,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_bigokuta": {
+   "id": 351,
+   "actors": [
+    "En_Bigokuta"
+   ],
+   "bytes": 27600,
+   "skeletons": [
+    {
+     "offset": 27584,
+     "limbs": 19,
+     "lod": false,
+     "limbs_with_dl": 19,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_bg": {
+   "id": 352,
+   "actors": [
+    "En_Bom_Bowl_Man"
+   ],
+   "bytes": 29376,
+   "skeletons": [
+    {
+     "offset": 28336,
+     "limbs": 10,
+     "lod": false,
+     "limbs_with_dl": 10,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_hintnuts": {
+   "id": 356,
+   "actors": [
+    "En_Hintnuts"
+   ],
+   "bytes": 12608,
+   "skeletons": [
+    {
+     "offset": 9144,
+     "limbs": 9,
+     "lod": false,
+     "limbs_with_dl": 9,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_gla": {
+   "id": 359,
+   "actors": [
+    "En_Ge2"
+   ],
+   "bytes": 40688,
+   "skeletons": [
+    {
+     "offset": 35176,
+     "limbs": 21,
+     "lod": false,
+     "limbs_with_dl": 18,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_shopnuts": {
+   "id": 360,
+   "actors": [
+    "En_Dns",
+    "En_Shopnuts"
+   ],
+   "bytes": 17808,
+   "skeletons": [
+    {
+     "offset": 16808,
+     "limbs": 17,
+     "lod": false,
+     "limbs_with_dl": 17,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_geldb": {
+   "id": 361,
+   "actors": [
+    "En_GeldB",
+    "En_Ge3"
+   ],
+   "bytes": 46832,
+   "skeletons": [
+    {
+     "offset": 42072,
+     "limbs": 23,
+     "lod": false,
+     "limbs_with_dl": 19,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_gr": {
+   "id": 362,
+   "actors": [
+    "En_Niw_Girl"
+   ],
+   "bytes": 40080,
+   "skeletons": [
+    {
+     "offset": 39240,
+     "limbs": 16,
+     "lod": false,
+     "limbs_with_dl": 15,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_dog": {
+   "id": 363,
+   "actors": [
+    "En_Dog"
+   ],
+   "bytes": 29344,
+   "skeletons": [
+    {
+     "offset": 29328,
+     "limbs": 12,
+     "lod": false,
+     "limbs_with_dl": 10,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_dns": {
+   "id": 369,
+   "actors": [
+    "En_Dnt_Jiji"
+   ],
+   "bytes": 14288,
+   "skeletons": [
+    {
+     "offset": 13280,
+     "limbs": 12,
+     "lod": false,
+     "limbs_with_dl": 12,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_mu": {
+   "id": 386,
+   "actors": [
+    "En_Tg",
+    "En_Mu"
+   ],
+   "bytes": 44624,
+   "skeletons": [
+    {
+     "offset": 20336,
+     "limbs": 15,
+     "lod": false,
+     "limbs_with_dl": 13,
+     "type": "flex"
+    },
+    {
+     "offset": 44608,
+     "limbs": 20,
+     "lod": false,
+     "limbs_with_dl": 17,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_wf": {
+   "id": 387,
+   "actors": [
+    "En_Wf"
+   ],
+   "bytes": 42240,
+   "skeletons": [
+    {
+     "offset": 15296,
+     "limbs": 21,
+     "lod": false,
+     "limbs_with_dl": 19,
+     "type": "flex"
+    },
+    {
+     "offset": 38544,
+     "limbs": 21,
+     "lod": false,
+     "limbs_with_dl": 19,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_skb": {
+   "id": 388,
+   "actors": [
+    "En_Skb"
+   ],
+   "bytes": 18448,
+   "skeletons": [
+    {
+     "offset": 16888,
+     "limbs": 19,
+     "lod": false,
+     "limbs_with_dl": 17,
+     "type": "normal"
+    }
+   ]
+  },
+  "object_ps": {
+   "id": 393,
+   "actors": [
+    "En_Gb"
+   ],
+   "bytes": 51456,
+   "skeletons": [
+    {
+     "offset": 49696,
+     "limbs": 11,
+     "lod": false,
+     "limbs_with_dl": 10,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_cow": {
+   "id": 395,
+   "actors": [
+    "En_Cow"
+   ],
+   "bytes": 20144,
+   "skeletons": [
+    {
+     "offset": 16400,
+     "limbs": 5,
+     "lod": false,
+     "limbs_with_dl": 5,
+     "type": "flex"
+    },
+    {
+     "offset": 19504,
+     "limbs": 5,
+     "lod": false,
+     "limbs_with_dl": 5,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_door_killer": {
+   "id": 398,
+   "actors": [
+    "Door_Killer"
+   ],
+   "bytes": 7136,
+   "skeletons": [
+    {
+     "offset": 7112,
+     "limbs": 8,
+     "lod": true,
+     "limbs_with_dl": 8,
+     "type": "flex"
+    }
+   ]
+  },
+  "object_zl4": {
+   "id": 401,
+   "actors": [
+    "En_Zl4"
+   ],
+   "bytes": 118304,
+   "skeletons": [
+    {
+     "offset": 57400,
+     "limbs": 17,
+     "lod": false,
+     "limbs_with_dl": 16,
+     "type": "flex"
+    }
+   ]
+  }
+ },
+ "scenes": 101,
+ "scene_table": [
+  959552,
+  101
+ ]
+}

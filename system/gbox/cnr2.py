@@ -68,60 +68,8 @@ def prs_decompress(data: bytes, size: int) -> bytes:
     following byte).  Port of GNTool PRSUncompressor (tpu / Luigi Auriemma QuickBMS spec).
     Verified byte-equal against the loose disc copies of all 3,599 shipped RNYEDA entries that
     have one (chr/*/0000.brres 307200 B included)."""
-    out = bytearray(size)
-    i = bits_left = o = 0
-    flag = 0
-
-    def byte() -> int:
-        nonlocal i
-        if i >= len(data):
-            raise ValueError("truncated PRS stream")
-        b = data[i]
-        i += 1
-        return b
-
-    def getbits(n: int) -> int:
-        nonlocal i, bits_left, flag
-        v = 0
-        for _ in range(n):
-            v <<= 1
-            if bits_left == 0:
-                flag = byte()
-                bits_left = 8
-            if flag & 0x80:
-                v |= 1
-            flag = (flag << 1) & 0xFF
-            bits_left -= 1
-        return v
-
-    while i < len(data):
-        if getbits(1) == 1:
-            if o < size:
-                out[o] = byte()
-                o += 1
-            else:
-                byte()
-        else:
-            if getbits(1) == 0:  # short copy
-                length = getbits(2) + 2
-                pos = (byte() | 0xFFFFFF00) - 0x100000000  # signed back-offset
-            else:  # long copy
-                pos = (byte() << 8) | 0xFFFF0000
-                pos |= byte()
-                pos -= 0x100000000
-                length = pos & 0x07
-                pos >>= 3
-                if length == 0:
-                    length = byte() + 1
-                else:
-                    length += 2
-            pos += o
-            for _ in range(length):
-                if o < size:
-                    out[o] = out[pos]
-                    o += 1
-                    pos += 1
-    return bytes(out)
+    from .formats.lz import prs_msb_decompress       # shared Eighting PRS codec (also con2_inventory)
+    return prs_msb_decompress(data, size, strict=False, zero_window=False)
 
 
 def prs_compress(data: bytes) -> bytes:
@@ -225,10 +173,10 @@ def fpk_decompress(data: bytes) -> list[tuple[str, bytes]]:
     return out
 
 
-def fpk_pack(entries: list[tuple[str, bytes]], compress: bool = True) -> bytes:
+def fpk_pack(entries: list[tuple[str, bytes]], compress: bool = True, *, allow_unverified_raw: bool = False) -> bytes:
     """Rebuild an Eighting .fpk pack from (name, raw bytes) entries.
 
-    Each payload is PRS-compressed and stored raw when that is not smaller (an entry with
+    Each payload is PRS-compressed. Raw fallback requires explicit allow_unverified_raw (an entry with
     stored == original; the shipped packs only use that for zero-length placeholders, so the
     loader's handling of non-empty raw entries is still to be confirmed in main.dol).  The
     header u32 checksum (byte sum of every stored payload) is recomputed.  Entry order and
@@ -242,12 +190,63 @@ def fpk_pack(entries: list[tuple[str, bytes]], compress: bool = True) -> bytes:
         if not nb or len(nb) > 0x1F or b"\0" in nb:
             raise ValueError(f"invalid fpk entry name {name!r}")
         blob = prs_compress(raw) if compress else raw
-        if len(blob) >= len(raw):
+        if raw and (not compress or len(blob) >= len(raw)):
+            if not allow_unverified_raw:
+                raise ValueError('Non-empty raw FPK entries are not verified in the game loader')
             blob = raw
         rows += nb.ljust(0x20, b"\0") + struct.pack(">4I", 0, table + 0x30 * len(entries) + len(body), len(blob), len(raw))
         body += blob
     total = table + 0x30 * len(entries) + len(body)
     return struct.pack(">4I", sum(body) & 0xFFFF, len(entries), table, total) + bytes(rows) + bytes(body)
+
+
+def fpk_repack(source: bytes, replacements: dict[str, bytes]) -> bytes:
+    """Edit existing compressed members within their original occupied extent.
+
+    Unchanged packs round-trip byte-identically. Unchanged members, padding and
+    unknown header fields remain untouched; only changed compressed bytes, their
+    stored/original sizes and the checksum are rewritten. Growing beyond the
+    occupied member needs a separately verified relocation writer.
+    """
+    entries = fpk_index(source)
+    expected = struct.unpack_from('>I', source, 0)[0] & 0xffff
+    if fpk_checksum(source) != expected:
+        raise ValueError('Source FPK checksum mismatch')
+    names = [e['name'] for e in entries]
+    if len(set(names)) != len(names):
+        raise ValueError('Ambiguous duplicate FPK member names')
+    if set(replacements) - set(names):
+        raise ValueError('Replacement member is not in this FPK')
+    table = struct.unpack_from('>I', source, 8)[0]
+    table_end = table + len(entries) * 0x30
+    if table < 0x10:
+        raise ValueError('FPK table overlaps its header')
+    spans = sorted((e['offset'], e['offset'] + e['stored']) for e in entries if e['stored'])
+    if any(a < table_end for a, _ in spans) or any(b > c for (_, b), (c, _) in zip(spans, spans[1:])):
+        raise ValueError('FPK payload overlaps another member or metadata')
+    out = bytearray(source)
+    for i, entry in enumerate(entries):
+        if entry['name'] not in replacements:
+            continue
+        offset, stored = entry['offset'], entry['stored']
+        old_blob = source[offset:offset + stored]
+        raw = replacements[entry['name']]
+        original = prs_decompress(old_blob, entry['size']) if entry['compressed'] else old_blob
+        if raw == original:
+            continue
+        blob = prs_compress(raw)
+        if raw and len(blob) == len(raw):
+            raise ValueError('Compressed size is ambiguous with unverified raw FPK storage')
+        if len(blob) > stored:
+            raise ValueError('Replacement exceeds the original FPK member extent')
+        out[offset:offset + len(blob)] = blob
+        struct.pack_into('>II', out, table + i * 0x30 + 0x28, len(blob), len(raw))
+    if out == source:
+        return source
+    checksum = fpk_checksum(out)
+    high = struct.unpack_from('>I', source, 0)[0] & 0xffff0000
+    struct.pack_into('>I', out, 0, high | checksum)
+    return bytes(out)
 
 
 def _name(data: bytes, ptr: int) -> str:

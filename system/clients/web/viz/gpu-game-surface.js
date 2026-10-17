@@ -59,7 +59,7 @@
       if (!e.ctrlKey && !e.altKey) v.focus({ preventScroll: true });
     });
     v.addEventListener("contextmenu", e => {
-      e.preventDefault();
+      e.preventDefault(); e.stopPropagation();
       if (typeof env.pipMenu === "function") env.pipMenu(e.clientX, e.clientY);
       else console.log("GBOX:" + JSON.stringify({ ev: "gamecontext", x: e.clientX, y: e.clientY }));
     });
@@ -227,7 +227,7 @@
     return c.toDataURL("image/png");
   }
   function layer(url) {
-    const frame = doc.createElement("iframe"); frame.src = url; frame.tabIndex = -1;
+    const frame = doc.createElement("iframe"); frame.src = url; frame.tabIndex = -1; frame.className = "gbox-game-overlay";
     frame.setAttribute("aria-hidden", "true");
     Object.assign(frame.style, { border: "0", background: "transparent", colorScheme: "dark", pointerEvents: "none" });
     return frame;
@@ -263,7 +263,7 @@
   }
   function voice(st, url) {
     if (!st.on) { voiceLayer?.remove(); voiceLayer = null; voiceReady = false; voiceState = null; return; }
-    voiceState = { level: st.level, beat: st.beat };
+    voiceState = { level: st.level, beat: st.beat, ...(st.mode ? { mode: st.mode } : {}) };   // mode: a fresh random visual (#250)
     if (!voiceLayer && url) {
       const frame = voiceLayer = layer(url); frame.style.opacity = "0.42";
       frame.addEventListener("load", () => {

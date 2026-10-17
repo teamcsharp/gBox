@@ -171,7 +171,7 @@ def test_fpk_pack_roundtrip_and_checksum():
 def test_fpk_pack_stored_raw_entries():
     # compress=False stores non-empty entries raw (stored == size); fpk_decompress passes them through.
     entries = [("chr/nrt/0000.brplt", b"\x01\x02\x03\x04"), ("chr/nrt/0000.seq", b"hello world")]
-    d = cnr2.fpk_pack(entries, compress=False)
+    d = cnr2.fpk_pack(entries, compress=False, allow_unverified_raw=True)
     assert [e["compressed"] for e in cnr2.fpk_index(d)] == [False, False]
     assert struct.unpack_from(">I", d, 0)[0] == cnr2.fpk_checksum(d)
     assert dict(cnr2.fpk_decompress(d)) == dict(entries)
@@ -193,3 +193,49 @@ def test_real_disc_fpk_repack_noop_roundtrip():
     got = dict(cnr2.fpk_decompress(repacked))
     for name in ["0000.seq", "0000.brres", "0000.mot", "0000.brtex", "0000.brplt"]:
         assert got[f"chr/nrt/{name}"] == (DISC / "chr/nrt" / name).read_bytes()
+
+
+def test_unverified_nonempty_raw_fallback_requires_explicit_opt_in():
+    for compress in (True, False):
+        with pytest.raises(ValueError, match='not verified'):
+            cnr2.fpk_pack([('a', b'x')], compress=compress)
+
+
+def test_repack_preserves_original_bytes_and_changes_only_requested_member():
+    entries = [('first', bytes(range(128))*8), ('second', b'unchanged'*100)]
+    source = cnr2.fpk_pack(entries)
+    assert cnr2.fpk_repack(source, {}) == source
+    assert cnr2.fpk_repack(source, dict(entries)) == source
+    changed = b'a'*1024
+    result = cnr2.fpk_repack(source, {'first': changed})
+    assert len(result) == len(source)
+    assert cnr2.fpk_decompress(result) == [('first', changed), entries[1]]
+    before, after = cnr2.fpk_index(source), cnr2.fpk_index(result)
+    assert before[1] == after[1]
+    e = before[1]
+    assert result[e['offset']:e['offset']+e['stored']] == source[e['offset']:e['offset']+e['stored']]
+    assert cnr2.fpk_checksum(result) == struct.unpack_from('>I', result)[0]
+
+
+def test_repack_rejects_unknown_member_growth_and_bad_checksum():
+    source = cnr2.fpk_pack([('first', b'a'*1024)])
+    for changes in ({'missing':b'x'}, {'first':bytes(range(256))*4}):
+        with pytest.raises(ValueError):
+            cnr2.fpk_repack(source, changes)
+    corrupt = bytearray(source)
+    corrupt[-1] ^= 1
+    with pytest.raises(ValueError, match='checksum'):
+        cnr2.fpk_repack(bytes(corrupt), {})
+
+
+@pytest.mark.skipif(not (DISC / 'fpack/chr/nrt/0000.fpk').is_file(), reason='owned RNYEDA pack not mounted')
+def test_owned_fpk_actual_byte_identical_noop_and_changed_member():
+    source = (DISC / 'fpack/chr/nrt/0000.fpk').read_bytes()
+    entries = cnr2.fpk_decompress(source)
+    assert cnr2.fpk_repack(source, dict(entries)) == source
+    name, raw = entries[0]
+    # A changed payload proves the container writer, not gameplay-valid content.
+    changed = b'\0'*len(raw)
+    result = cnr2.fpk_repack(source, {name:changed})
+    assert cnr2.fpk_decompress(result) == [(name,changed), *entries[1:]]
+    assert result != source and len(result) == len(source)

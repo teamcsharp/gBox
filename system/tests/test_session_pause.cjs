@@ -78,3 +78,30 @@ test('an older background read cannot overwrite a newly confirmed toggle', async
   await control.toggle(); finish({ state: 'PLAYING' }); await refresh;
   assert.equal(e.paints.at(-1).paused, true);
 });
+
+test('the icon flips before the emulator answers and a confirming reply needs no polling', async () => {
+  const e = emulator(); let reads = 0, finish;
+  const read = e.io.read; e.io.read = async () => { reads++; return read(); };
+  const pending = new Promise(resolve => { finish = resolve; });
+  const command = e.io.command;
+  e.io.command = async op => { await pending; await command(op); return { state: 'PAUSED', running: true }; };
+  const click = create(e.io).toggle();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(e.paints.at(-1), { paused: true, busy: true });
+  assert.deepEqual(e.commands, []);
+  finish(); await click;
+  assert.equal(reads, 1);
+  assert.deepEqual(e.paints.at(-1), { paused: true, busy: false });
+  assert.equal(e.messages.at(-1).error, false);
+});
+
+test('a stale command reply falls back to reading the emulator', async () => {
+  const e = emulator(); let reads = 0;
+  const read = e.io.read; e.io.read = async () => { reads++; return read(); };
+  const command = e.io.command;
+  e.io.command = async op => { await command(op); return { state: 'PLAYING' }; };
+  await create(e.io).toggle();
+  assert.deepEqual(e.commands, ['pause']);
+  assert.equal(reads, 2);
+  assert.deepEqual(e.paints.at(-1), { paused: true, busy: false });
+});
