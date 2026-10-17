@@ -905,6 +905,14 @@ def create_app(config: Config) -> FastAPI:
                     raise HTTPException(409, 'Prepared replacement returned an invalid cache folder') from error
                 if launch_mod != mod and not launch_mod.startswith(mod + filemods.STAGED_SEP):
                     raise HTTPException(409, 'Prepared replacement returned another mod folder')
+        if running:
+            # Preparing the replacement can take minutes (a large mod fetch); the session may
+            # have ended meanwhile, leaving no moment to preserve and no game to "keep running".
+            live = store.get("session", sid)
+            if not live or live.get("state") != "running":
+                running = False
+                notes.append("Your previous session had already ended while the replacement was prepared; "
+                             "no moment was saved and the replacement starts fresh.")
         if running and keep_state:
             say(62, "Saving your current moment before applying the replacement")
             try:
@@ -918,7 +926,14 @@ def create_app(config: Config) -> FastAPI:
             except HTTPException as e:
                 if str(e.detail).startswith("cancelled by the operator"):
                     raise
-                raise HTTPException(409, f"Replacement was not applied: the current state could not be saved ({e.detail}). Your game was kept running.")
+                if (store.get("session", sid) or {}).get("state") != "running":
+                    # The game ended before its moment could be saved: nothing to preserve and
+                    # nothing to "keep running", so start the replacement fresh instead of 409ing.
+                    running = False
+                    notes.append("Your previous session ended before its moment could be saved; "
+                                 "the replacement starts fresh.")
+                else:
+                    raise HTTPException(409, f"Replacement was not applied: the current state could not be saved ({e.detail}). Your game was kept running.")
             except KeyError as e:
                 raise HTTPException(409, f"Replacement was not applied: the current state could not be saved ({getattr(e, 'detail', e)}). Your game was kept running.")
         if stop():
