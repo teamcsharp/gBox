@@ -161,13 +161,18 @@ class Model:
             parent = self.parents[i]
             if parent != 255 and not 0 <= parent < nb:
                 raise ValueError('MOD bone parent outside hierarchy')
-            self.world[i] = self.local[i] if parent == 255 else visit(parent) @ self.local[i]
+            with np.errstate(over='ignore', invalid='ignore'):
+                self.world[i] = self.local[i] if parent == 255 else visit(parent) @ self.local[i]
+            finite(self.world[i], 'MOD accumulated world matrix')
             state[i] = 2
             return self.world[i]
         for i in range(nb):
             visit(i)
-        self.bind_error = float(np.max(np.abs(self.world @ self.inverse_bind - np.eye(4))))
-        if self.bind_error > .002:
+        with np.errstate(over='ignore', invalid='ignore'):
+            bind_products = self.world @ self.inverse_bind
+        finite(bind_products, 'MOD bind matrix products')
+        self.bind_error = float(np.max(np.abs(bind_products - np.eye(4))))
+        if not math.isfinite(self.bind_error) or self.bind_error > .002:
             raise ValueError('MOD local and inverse bind matrices disagree')
         map_at = bones + nb * 152
         self.bone_map = data[map_at:map_at + 256]
@@ -298,7 +303,9 @@ def export_glb(model, textures, path, *, name='re5ps3', lod=1, scale=.01):
         blob.extend(data)
         return len(views) - 1
     def acc(values, dtype, component, kind, extrema=False):
-        a = np.asarray(values, dtype=dtype)
+        with np.errstate(over='ignore', invalid='ignore'):
+            a = np.asarray(values, dtype=dtype)
+        finite(a, 'GLB ' + kind + ' accessor')
         r = dict(bufferView=view(a.tobytes()), componentType=component, count=len(a), type=kind)
         if extrema:
             r.update(min=a.min(axis=0).tolist(), max=a.max(axis=0).tolist())
@@ -334,7 +341,10 @@ def export_glb(model, textures, path, *, name='re5ps3', lod=1, scale=.01):
         materials.append(record)
     primitives = []
     for m in selected:
-        attrs = dict(POSITION=acc(m['positions'] * scale, '<f4', 5126, 'VEC3', True),
+        with np.errstate(over='ignore', invalid='ignore'):
+            positions = m['positions'] * scale
+        finite(positions, 'GLB scaled positions')
+        attrs = dict(POSITION=acc(positions, '<f4', 5126, 'VEC3', True),
                      NORMAL=acc(m['normals'], '<f4', 5126, 'VEC3'),
                      TEXCOORD_0=acc(m['uv'], '<f4', 5126, 'VEC2'))
         for slot in range(m['joints'].shape[1] // 4):
@@ -345,7 +355,12 @@ def export_glb(model, textures, path, *, name='re5ps3', lod=1, scale=.01):
                                extras={k: m[k] for k in ('index', 'group', 'lod', 'palette', 'alpha_priority')}))
     nodes = [dict(name=name, children=[1]), dict(name=name + '_mesh', mesh=0, skin=0)]
     for i, parent in enumerate(model.parents):
-        local = model.local[i].copy(); local[:3, 3] *= scale
+        local = model.local[i].copy()
+        with np.errstate(over='ignore', invalid='ignore'):
+            local[:3, 3] *= scale
+            local_float32 = local.astype('<f4')
+        finite(local, 'GLB scaled node matrix')
+        finite(local_float32, 'GLB node matrix float32 conversion')
         node = dict(name=f'j{i:03d}', matrix=local.T.reshape(-1).tolist(), extras=dict(native_anim_map=model.anim_map[i]))
         children = [j + 2 for j, p in enumerate(model.parents) if p == i]
         if children:
@@ -353,7 +368,10 @@ def export_glb(model, textures, path, *, name='re5ps3', lod=1, scale=.01):
         nodes.append(node)
     roots = [i + 2 for i, p in enumerate(model.parents) if p == 255]
     nodes[0]['children'].extend(roots)
-    inverse = model.inverse_bind.copy(); inverse[:, :3, 3] *= scale
+    inverse = model.inverse_bind.copy()
+    with np.errstate(over='ignore', invalid='ignore'):
+        inverse[:, :3, 3] *= scale
+    finite(inverse, 'GLB scaled inverse bind matrices')
     skin = dict(joints=list(range(2, len(nodes))), inverseBindMatrices=acc(inverse.transpose(0, 2, 1).reshape(-1, 16), '<f4', 5126, 'MAT4'))
     if len(roots) == 1:
         skin['skeleton'] = roots[0]
@@ -370,7 +388,7 @@ def export_glb(model, textures, path, *, name='re5ps3', lod=1, scale=.01):
                nodes=nodes, skins=[skin], meshes=[dict(primitives=primitives)], materials=materials,
                images=images, textures=gltextures, samplers=[dict(magFilter=9729, minFilter=9729, wrapS=10497, wrapT=10497)],
                bufferViews=views, accessors=accessors, buffers=[dict(byteLength=len(blob))], extras=receipt)
-    raw = json.dumps(doc, separators=(',', ':')).encode(); raw += b' ' * (-len(raw) % 4)
+    raw = json.dumps(doc, separators=(',', ':'), allow_nan=False).encode(); raw += b' ' * (-len(raw) % 4)
     blob.extend(bytes(-len(blob) % 4))
     result = struct.pack('<3I', 0x46546c67, 2, 28 + len(raw) + len(blob))
     result += struct.pack('<2I', len(raw), 0x4e4f534a) + raw + struct.pack('<2I', len(blob), 0x004e4942) + blob

@@ -24,8 +24,8 @@ def texture(kind='DXT1'):
     return bytes(data)
 
 
-def model(eight=False):
-    nb, nm, nmat, nv, nt, ng, npal = 2, 1, 1, 3, 1, 1, 1
+def model(eight=False, bone_count=2):
+    nb, nm, nmat, nv, nt, ng, npal = bone_count, 1, 1, 3, 1, 1, 1
     bones = 176; groups = bones + nb * 152 + 256 + 68
     mats = groups + 32; meshes = mats + 64 + 160
     vertices = meshes + 56; indices = vertices + 96
@@ -34,8 +34,8 @@ def model(eight=False):
                      nt, ng, npal, bones, groups, mats, meshes, vertices, indices, indices)
     struct.pack_into('>3f', data, 96, 0, 0, 0); struct.pack_into('>3f', data, 112, 2, 2, 2)
     data[140] = 2
-    for i in range(2):
-        data[bones + i * 24] = i; data[bones + i * 24 + 1] = 255 if i == 0 else 0
+    for i in range(nb):
+        data[bones + i * 24] = i; data[bones + i * 24 + 1] = 255 if i == 0 else i - 1
         local = np.eye(4); local[:3, 3] = [0, 1, 0] if i == 0 else [1, 0, 0]
         world = np.eye(4); world[:3, 3] = [i, 1, 0]
         struct.pack_into('>16f', data, bones + nb * 24 + i * 64, *local.T.reshape(-1))
@@ -149,6 +149,50 @@ def test_missing_texture_and_invalid_lod_create_no_artifact(tmp_path):
         export_glb(Model(model()), {}, out)
     with pytest.raises(ValueError, match='LOD'):
         export_glb(Model(model()), {}, out, lod=3)
+    assert not out.exists()
+
+
+@pytest.mark.parametrize('bone_count, error', [(10, 'accumulated world'), (8, 'bind matrix products')])
+def test_finite_native_matrices_cannot_overflow_into_accepted_bind(tmp_path, bone_count, error):
+    b = bytearray(model(bone_count=bone_count))
+    bones = struct.unpack_from('>I', b, 44)[0]
+    for i in range(bone_count):
+        for base in (bones + bone_count * 24, bones + bone_count * 88):
+            for diagonal in (0, 5, 10):
+                struct.pack_into('>f', b, base + i * 64 + diagonal * 4, 3e38)
+    out = tmp_path / 'overflow.glb'
+    with pytest.raises(ValueError, match=error):
+        export_glb(Model(b), {'pawn\\test\\body': texture()}, out)
+    assert not out.exists()
+
+
+@pytest.mark.parametrize('scale, error', [(1e40, 'accessor'), (1e308, 'scaled positions')])
+def test_extreme_scale_cannot_write_nonfinite_glb(tmp_path, scale, error):
+    out = tmp_path / 'overflow.glb'
+    with pytest.raises(ValueError, match=error):
+        export_glb(Model(model()), {'pawn\\test\\body': texture()}, out, scale=scale)
+    assert not out.exists()
+
+
+@pytest.mark.parametrize('field,value,scale,error', [
+    ('local', 1e42, .01, 'node matrix'),
+    ('inverse_bind', 1e42, .01, 'MAT4 accessor'),
+    ('local', 1e308, 100, 'scaled node matrix'),
+    ('inverse_bind', 1e308, 100, 'scaled inverse bind')])
+def test_matrix_float32_conversion_is_checked_before_write(tmp_path, field, value, scale, error):
+    m = Model(model())
+    getattr(m, field)[0, 0, 3] = value
+    out = tmp_path / 'matrix-overflow.glb'
+    with pytest.raises(ValueError, match=error):
+        export_glb(m, {'pawn\\test\\body': texture()}, out, scale=scale)
+    assert not out.exists()
+
+
+def test_nonfinite_receipt_cannot_escape_through_json(tmp_path):
+    m = Model(model()); m.bind_error = float('nan')
+    out = tmp_path / 'nan-json.glb'
+    with pytest.raises(ValueError, match='JSON compliant'):
+        export_glb(m, {'pawn\\test\\body': texture()}, out)
     assert not out.exists()
 
 
