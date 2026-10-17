@@ -1697,8 +1697,9 @@ class Agent:
         j = self._job("rom_export", inp, "linux", 7200)
         res = (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
         if op == "export" and res.get("files"):          # keep the chat reply short: what's there and where
-            res = {k: res.get(k) for k in ("title", "game", "platform", "image", "rel_dir", "patches", "cheat_files",
-                                           "components", "warning", "note")}
+            res = {k: res.get(k) for k in ("title", "game", "game_id", "platform", "image", "rel_dir", "patches", "cheat_files",
+                                           "components", "warning", "note", "mode", "ready", "status", "state", "error",
+                                           "success", "ok", "verified", "overlay_error")}
         return res
 
     def script_patch(self, session_id, op="status", preset=""):
