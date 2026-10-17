@@ -90,6 +90,11 @@ CLASSES = (
                "The mod's files could not be fetched from the collection or staged on this PC (a timeout, an "
                "incomplete copy or a stale staged folder).",
                "restage_mod"),
+    ErrorClass("mod_not_built",
+               re.compile(r"no built mod .+ for this game", re.I),
+               "The launch asked for a mod that was never built: it is neither on this PC nor in the central "
+               "collection. Build the mod first (Special builds or a cast build), or launch the stock game without a mod.",
+               "none"),
     ErrorClass("emulator_crash",
                re.compile(r"\b(?P<emu>[a-z0-9_]+) exited (?:with code )?(?P<code>-?\d+)|crashed|access violation|"
                           r"segmentation fault|0xc0000005", re.I),
@@ -165,6 +170,7 @@ def classify(error: str, *, adapter: str = "", session_exit: dict | None = None)
                      "worker_restarted": "the worker restarted during the launch",
                      "worker_unavailable": "no PC could take the launch",
                      "state_restore": "the saved moment could not be restored after the swap",
+                     "mod_not_built": "the mod was never built for this game",
                      "timeout": "the launch timed out"}[c.cls]
         return {"cls": c.cls, "label": label, "diagnosis": c.diagnosis, "remedy": c.remedy, "detail": g}
     first = (error.strip().splitlines() or ["launch failed"])[0]
