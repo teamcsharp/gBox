@@ -78,6 +78,34 @@ def overlay_on(guest_pid: int, host_pid: int, rects: list[list[float]]) -> dict:
     return {"guest_window": gh, "host_window": hh, "area": [x, y, wd, ht], "rects": len(rects)}
 
 
+def pip_box(box: list[float], x: int, y: int, width: int, height: int) -> tuple[int, int, int, int]:
+    """Fractional (x, y, w, h) box inside a host picture at (x, y, width, height) -> screen (left, top, w, h)."""
+    bx, by, bw, bh = box
+    return x + round(bx * width), y + round(by * height), round(bw * width), round(bh * height)
+
+
+def pip_on(guest_pid: int, host_pid: int, box: list[float]) -> dict:
+    """Picture-in-picture: the whole guest window, borderless and on top, in a box of the host's picture (the host is
+    frozen behind it). overlay_off restores the guest window."""
+    u = ctypes.windll.user32
+    gh, hh = game_window(guest_pid), game_window(host_pid)
+    if not gh or not hh:
+        raise RuntimeError("both game windows must be open")
+    r = w.RECT()
+    u.GetWindowRect(hh, ctypes.byref(r))
+    left, top, wd, ht = pip_box(box, r.left, r.top, r.right - r.left, r.bottom - r.top)
+    if gh not in _saved:
+        old = w.RECT()
+        u.GetWindowRect(gh, ctypes.byref(old))
+        _saved[gh] = (u.GetParent(gh), u.GetWindowLongPtrW(gh, GWL_STYLE), u.GetWindowLongPtrW(gh, GWL_EXSTYLE), old)
+    u.SetParent(gh, None)
+    u.SetWindowLongPtrW(gh, GWL_STYLE, WS_POPUP | WS_VISIBLE)
+    u.SetWindowLongPtrW(gh, GWL_EXSTYLE, WS_EX_TOPMOST | WS_EX_TOOLWINDOW)
+    u.SetWindowRgn(gh, None, True)
+    u.SetWindowPos(gh, HWND_TOPMOST, left, top, wd, ht, SWP_SHOWWINDOW | SWP_FRAMECHANGED)
+    return {"guest_window": gh, "host_window": hh, "area": [left, top, wd, ht]}
+
+
 def overlay_off(guest_pid: int) -> dict:
     u = ctypes.windll.user32
     gh = game_window(guest_pid)
@@ -96,6 +124,7 @@ def overlay_off(guest_pid: int) -> dict:
 
 def _selftest():
     assert scaled([[0.25, 0.1, 0.5, 0.8]], 1280, 720) == [(320, 72, 960, 648)]
+    assert pip_box([0.5, 0.0, 0.5, 0.5], 100, 50, 1280, 720) == (740, 50, 640, 360)
     print("overlay selftest ok")
 
 

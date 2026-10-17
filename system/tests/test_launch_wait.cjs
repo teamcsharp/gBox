@@ -44,17 +44,52 @@ function deferred() {
 }
 function launchHarness(api) {
   let clock = NOW;
-  const msgs = [], fails = [], shown = [];
+  const msgs = [], fails = [], shown = [], hidden = [];
   const el = { style: {}, onclick: null };
   const ctx = vm.createContext({ console, encodeURIComponent, addEventListener() {},
     Date: { now: () => (clock += 1000) }, setTimeout: f => setImmediate(f), api,
     runJob: async () => ({}), $: () => el, bootGet: () => ({}),
     show: (...args) => shown.push(args), WHERE: 'local', window: { GBOX_LOCAL: { worker: 'i9-NUC' } },
-    loader: { show() {}, hide() {}, progress: (p, m) => msgs.push(m), fail: m => fails.push(m) } });
+    loader: { show() {}, hide() { hidden.push(true); }, progress: (p, m) => msgs.push(m), fail: m => fails.push(m) } });
   vm.runInContext(source + '\nthis.play = play; this.cancelLoad = cancelLoad; this.state = () => ({ LOADING, LAST_LAUNCH });', ctx);
-  return { ctx, msgs, fails, shown };
+  return { ctx, msgs, fails, shown, hidden };
 }
 const catalog = () => ({ title: 'Dead or Alive', core: 'pcsx_rearmed', platform: 'psx' });
+
+test('failed switch dismisses its loader and returns to the game kept running on that PC', async () => {
+  const h = launchHarness(async url => {
+    if (url.startsWith('/api/catalog/')) return catalog();
+    if (url.startsWith('/api/games/')) return { id: 'switch', require_worker: 'local' };
+    if (url === '/api/jobs/switch') return { state: 'failed', error: 'previous game could not be saved' };
+    if (url === '/api/sessions') return [
+      { session_id: 'other-test', state: 'running', started: 200, detail: { worker_name: 'other' } },
+      { session_id: 'local-game', state: 'running', started: 100, detail: { worker_name: 'i9-NUC' } }];
+    throw new Error('unexpected ' + url);
+  });
+  await h.ctx.play('game');
+  assert.equal(h.ctx.state().LOADING, null);
+  assert.equal(h.hidden.length, 1);
+  assert.deepEqual(h.shown.at(-1), ['Sessions', 'local-game']);
+  assert.match(h.ctx.state().LAST_LAUNCH.error, /previous game could not be saved/);
+});
+
+test('failed switch session lookup cannot navigate over a newer launch', async () => {
+  const sessions = deferred(), lookup = deferred(), poll = deferred(), started = deferred();
+  const h = launchHarness(async url => {
+    if (url.startsWith('/api/catalog/')) return catalog();
+    if (url.startsWith('/api/games/first')) return { id: 'old' };
+    if (url.startsWith('/api/games/second')) return { id: 'new' };
+    if (url === '/api/jobs/old') return { state: 'failed', error: 'failed switch' };
+    if (url === '/api/sessions') { lookup.resolve(); return sessions.promise; }
+    if (url === '/api/jobs/new') { started.resolve(); return poll.promise; }
+    throw new Error('unexpected ' + url);
+  });
+  const old = h.ctx.play('first'); await lookup.promise;
+  const next = h.ctx.play('second'); await started.promise;
+  sessions.resolve([]); await old;
+  assert.equal(h.shown.length, 0);
+  poll.resolve({ state: 'succeeded', output: { session_id: 'new-game' } }); await next;
+});
 
 test('late success after Esc cannot reopen the cancelled game', async () => {
   const polling = deferred(), started = deferred();

@@ -27,6 +27,7 @@ def memory(monkeypatch):
     ad = Memory()
     monkeypatch.setattr(oot, "_rd", lambda a, p, n: a.read(p, n))
     monkeypatch.setattr(oot, "_wr", lambda a, p, b: a.write(p, b))
+    monkeypatch.setattr(oot, "layout", lambda a: {"version": "ntsc-1.2", "save": oot.SAVE, "play": oot.PLAY, "play_checked": True})
     monkeypatch.setattr(live, "object_slots", lambda a: [{"id": 42, "segment": a.base}])
     monkeypatch.setattr(live, "u32", lambda a, p: a.base if p == oot.PLAY + live.OBJECT_CTX else a.base + 16)
     monkeypatch.setattr(live, "actors", lambda a: [{"object": 42, "drawn": True, "id": 12}])

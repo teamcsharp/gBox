@@ -1,0 +1,428 @@
+"""Inventory an owned Super Smash Bros. N64 build: USA (NALE) or Europe (NALP).
+
+The USA build is the decomp's baserom.us.z64 (sha1 e2929e10...), so its file
+IDs are the decomp IDs unchanged; detect_region() reads the cart ID and
+to_us_id()/fighters_for() pick the right numbering (#1605).
+
+Super Smash Bros. stores ~2.1k relocatable asset files in a table of
+12-byte LBTableEntry records (src/lb/lbreloc.c in the US decompilation
+https://github.com/VetriTheRetri/ssb-decomp-re). Layout of one entry,
+all big-endian:
+
+    u32  flags          bit31: is_compressed (VPK0); bits30..0: data_offset,
+                       ROM offset of the file data relative to the end of
+                       the table (rom_table_hi).
+    u16  reloc_intern_offset   word offset of the internal relocation chain
+                       inside the file data (0xFFFF = none).
+    u16  compressed_size       file size in words (stored form).
+    u16  reloc_extern_offset   word offset of the external relocation chain
+                       inside the file data (0xFFFF = none).
+    u16  decompressed_size     size in words after VPK0 decompression
+                       (== compressed_size when not compressed).
+
+File data begins immediately after the table: rom_table_hi =
+table_addr + (file_count + 1) * 12. The decompressed_size stored in the
+table counts only the *words* of the file body; for compressed files the
+VPK0 stream starts with a 4-byte big-endian size that equals
+decompressed_size * 4. Compressed files use the VPK0 codec
+(src/sys/dma.c syDmaDecodeVpk0): u32 BE size, u8 sample method, two
+Huffman trees (offsets, lengths), then the LZ bitstream (MSB first).
+
+File IDs -> asset names are taken from the US decomp's
+tools/relocFileDescriptions.us.txt (shipped as ssb64_names_us.txt). The EUR
+build does NOT share the US IDs: 13 files are inserted at EUR IDs 0..12 and
+4 more at EUR IDs 268..271, shifting the rest (see eur_to_us). Character
+files are EUR IDs 215..263 (US IDs 202..250).
+
+CLI:
+    python -m gbox.ssb64_inventory ROM.z64 --out manifest.json
+
+ROMs must be normalized big-endian .z64 (see gbox.n64_rom.normalize).
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import struct
+from dataclasses import dataclass
+from pathlib import Path
+from .formats.lz import vpk0_decode  # noqa: F401  (shared codec, moved to gbox.formats)
+
+ENTRY_SIZE = 12
+TABLE_SCAN_LO = 0x150000
+TABLE_SCAN_HI = 0xB00000
+TABLE_MAX_FILES = 4096
+EXPECTED_FILES_LO = 2000
+EXPECTED_FILES_HI = 2400
+
+_NAMES_FILE = Path(__file__).with_name("ssb64_names_us.txt")
+
+# EUR<->US file ID mapping.  The EUR table inserts 13 files at EUR IDs
+# 0..12 and 4 more at EUR IDs 268..271:
+#     EUR = US + 13   for US IDs 0..254 (EUR 13..267)
+#     EUR = US + 17   for US IDs 255..2131 (EUR 272..)
+# Verified against decompressed sizes of 84 known-size US masters with 0
+# mismatches, and byte-level against the MarioMain / MarioMainMotion
+# masters (tests/test_ssb64_analysis.py).
+EUR_ONLY_SPANS = ((0, 12), (268, 271))
+
+
+def eur_to_us(eur_id: int) -> int | None:
+    """US file ID for a EUR file ID, or None when the EUR ID is EUR-only."""
+    if not 0 <= eur_id:
+        return None
+    for lo, hi in EUR_ONLY_SPANS:
+        if lo <= eur_id <= hi:
+            return None
+    if eur_id < EUR_ONLY_SPANS[1][0]:
+        return eur_id - 13
+    return eur_id - 17
+
+
+def us_to_eur(us_id: int) -> int:
+    """EUR file ID for a US file ID (inverse of eur_to_us)."""
+    if not 0 <= us_id:
+        raise ValueError(f"us_id {us_id} out of range")
+    if us_id <= EUR_ONLY_SPANS[1][0] - 14:
+        return us_id + 13
+    return us_id + 17
+
+
+# Fighter file IDs and their meaning (from the US decomp descriptions).
+# US IDs in parentheses; the EUR build shifts them (see eur_to_us).
+US_FIGHTERS = {
+    "mario":   (202, 204), "mmario": (205, 206), "nmario":  (207, 207),
+    "fox":     (208, 210), "nfox":   (211, 211),
+    "donkey":  (212, 213), "ndonkey": (214, 214), "gdonkey": (215, 215),
+    "samus":   (216, 218), "nsamus": (219, 219),
+    "luigi":   (220, 222), "nluigi": (223, 223),
+    "link":    (224, 226), "nlink":  (227, 227),
+    "kirby":   (228, 230), "nkirby": (231, 231),
+    "purin":   (232, 233), "npurin": (234, 234),
+    "captain": (235, 236), "ncaptain": (237, 237),
+    "ness":    (238, 240), "nness":  (241, 241),
+    "pikachu": (242, 244), "npikachu": (245, 245),
+    "yoshi":   (246, 247), "nyoshi": (248, 248),
+    "boss":    (249, 250),  # Master Hand
+}
+
+# EUR file IDs.  The EUR table inserts 13 files at IDs 0..12 and 4 more at
+# IDs 268..271, so EUR = US + 13 for US IDs 0..254 and EUR = US + 17 for
+# US IDs 255..2131.  Verified against decompressed sizes of 84 known-size
+# US masters (0 mismatches) and byte-level against the MarioMain /
+# MarioMainMotion masters (see tests/test_ssb64_analysis.py).
+FIGHTERS = {name: (us_to_eur(lo), us_to_eur(hi)) for name, (lo, hi) in US_FIGHTERS.items()}
+FIGHTERS_COSTUMES = 4  # default + red/blue/green team palettes per fighter
+
+# Fighting Polygon Team: low-poly variants, one per fighter.
+POLYGON_TEAM = (
+    "nmario", "nfox", "ndonkey", "nsamus", "nluigi", "nlink",
+    "nkirby", "npurin", "ncaptain", "nness", "npikachu", "nyoshi",
+)
+ROSTER = tuple(
+    name for name in FIGHTERS
+    if name not in POLYGON_TEAM and name not in ("mmario", "gdonkey", "boss")
+)
+
+# ---- build / region identity -------------------------------------------
+# Cart header (z64 order): +0x20 internal name, +0x3B..0x3E cart ID
+# ("NAL" + region), +0x3F version.  NALE = USA, NALP = Europe.
+REGIONS = {"E": "us", "P": "eur"}
+GAME_TITLES = {
+    "us": "Super Smash Bros. (USA)",
+    "eur": "Super Smash Bros. (Europe) (En,Fr,De)",
+}
+# sha1 of the decomp's baserom.us.z64 (ssb-decomp-re); the owned hyperspin
+# "Super Smash Bros. (USA).zip" (.n64 byte-swapped) normalizes to it.
+US_BASEROM_SHA1 = "e2929e10fccc0aa84e5776227e798abc07cedabf"
+US_FILE_COUNT = 2132
+
+
+def detect_region(rom: bytes) -> str:
+    """'us' or 'eur' from a normalized (z64) SSB64 cart header."""
+    if len(rom) < 0x40 or rom[:4] != b"\x80\x37\x12\x40":
+        raise ValueError("not a normalized (z64) N64 ROM")
+    cart = rom[0x3B:0x3F]
+    if cart[:3] != b"NAL":
+        raise ValueError(f"cart ID {cart!r} is not Super Smash Bros. (NAL*)")
+    region = REGIONS.get(chr(cart[3]))
+    if region is None:
+        raise ValueError(f"unsupported SSB64 region {cart!r} (only NALE/NALP)")
+    return region
+
+
+def to_us_id(region: str, file_id: int) -> int | None:
+    """US (decomp) file ID for a file ID of the given build."""
+    if region == "us":
+        return file_id
+    if region == "eur":
+        return eur_to_us(file_id)
+    raise ValueError(f"unknown region {region!r}")
+
+
+def fighters_for(region: str) -> dict[str, tuple[int, int]]:
+    """Fighter file-ID ranges in the given build's own numbering."""
+    if region == "us":
+        return dict(US_FIGHTERS)
+    if region == "eur":
+        return dict(FIGHTERS)
+    raise ValueError(f"unknown region {region!r}")
+
+
+@dataclass
+class TableEntry:
+    file_id: int
+    data_offset: int
+    is_compressed: bool
+    reloc_intern: int
+    compressed_size: int
+    reloc_extern: int
+    decompressed_size: int
+
+    @property
+    def stored_bytes(self) -> int:
+        return self.compressed_size * 4
+
+    @property
+    def decompressed_bytes(self) -> int:
+        return self.decompressed_size * 4
+
+
+def parse_entry(raw: bytes, file_id: int) -> TableEntry:
+    if len(raw) != ENTRY_SIZE:
+        raise ValueError(f"entry {file_id}: {len(raw)} bytes, want {ENTRY_SIZE}")
+    flags, reloc_intern, compressed_size, reloc_extern, decompressed_size = struct.unpack(
+        ">IHHHH", raw)
+    return TableEntry(
+        file_id=file_id,
+        data_offset=flags & 0x7FFFFFFF,
+        is_compressed=bool(flags & 0x80000000),
+        reloc_intern=reloc_intern,
+        compressed_size=compressed_size,
+        reloc_extern=reloc_extern,
+        decompressed_size=decompressed_size,
+    )
+
+
+def _entry_plausible(e: TableEntry, data_end: int, data_begin: int) -> bool:
+    if e.compressed_size == 0:
+        return False
+    if e.decompressed_size == 0:
+        return False
+    if e.compressed_size > e.decompressed_size + 0x1000:
+        # VPK0 can expand a little over the count rounding, but not wildly.
+        return False
+    if data_begin + e.data_offset + e.stored_bytes > data_end:
+        return False
+    # Relocation chains are walked in the DECOMPRESSED buffer
+    # (ram_dst + reloc * 4 in lbRelocLoadAndRelocFile), so word offsets
+    # are bounded by decompressed_size, not compressed_size.
+    for reloc in (e.reloc_intern, e.reloc_extern):
+        if reloc != 0xFFFF and reloc > e.decompressed_size:
+            return False
+    return True
+
+
+def load_names() -> dict[int, str]:
+    names: dict[int, str] = {}
+    if not _NAMES_FILE.is_file():
+        return names
+    for line in _NAMES_FILE.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line.startswith("-"):
+            continue
+        tag, _, name = line[1:].partition(":")
+        try:
+            names[int(tag)] = name.strip()
+        except ValueError:
+            continue
+    return names
+
+
+def locate_table(rom: bytes) -> tuple[int, int] | None:
+    """Find (table_addr, file_count) of the LBTableEntry table.
+
+    Scans for a run of plausible entries long enough to be the file table
+    and validates that the first entry's data starts right at the table
+    end (entry 0, MNCommon, always has data_offset 0). Returns None when
+    no coherent table is found.
+    """
+    n = len(rom)
+    best = None
+    for cand in range(TABLE_SCAN_LO, min(TABLE_SCAN_HI, n - ENTRY_SIZE), 4):
+        # Entry 0 of the real table has data_offset 0, so its flags word
+        # is either 0x00000000 or 0x80000000. Strong prefilter.
+        flags0 = int.from_bytes(rom[cand:cand + 4], "big")
+        if flags0 not in (0x00000000, 0x80000000):
+            continue
+        count = 0
+        for fid in range(TABLE_MAX_FILES):
+            off = cand + fid * ENTRY_SIZE
+            if off + ENTRY_SIZE > n:
+                break
+            e = parse_entry(rom[off:off + ENTRY_SIZE], fid)
+            if not _entry_plausible(e, n, 0):
+                break
+            count += 1
+        if count < EXPECTED_FILES_LO:
+            continue
+        # Data begins right after count+1 entries.
+        data_begin = cand + (count + 1) * ENTRY_SIZE
+        if data_begin > n:
+            continue
+        # Validate the first 64 and the last 8 entries against the real
+        # data window, and require entry 0 to start at data_begin.
+        first = parse_entry(rom[cand:cand + ENTRY_SIZE], 0)
+        if first.data_offset != 0:
+            continue
+        ok = True
+        for fid in list(range(min(64, count))) + list(range(max(0, count - 8), count)):
+            off = cand + fid * ENTRY_SIZE
+            e = parse_entry(rom[off:off + ENTRY_SIZE], fid)
+            if not _entry_plausible(e, n, data_begin):
+                ok = False
+                break
+        if not ok:
+            continue
+        if best is None or count > best[1]:
+            best = (cand, count)
+        if count > EXPECTED_FILES_HI:
+            break
+    return best
+
+
+def fighter_links(rom: bytes, region: str) -> dict[str, dict]:
+    """Per fighter: its *Main file and the files its extern relocation
+    chain points at (model, shield pose, specials, motion), named through
+    the US decomp descriptions.  This is the check that the build's file
+    numbering is the one assumed: a wrong ID map links Mario to non-Mario
+    files."""
+    from . import ssb64_analysis as an  # local: ssb64_analysis imports us
+
+    names = load_names()
+    out: dict[str, dict] = {}
+    for fighter, (lo, hi) in fighters_for(region).items():
+        main = None
+        for fid in range(lo, hi + 1):
+            nm = names.get(to_us_id(region, fid) or -1, "")
+            if nm.endswith("Main") and "Motion" not in nm:
+                main = fid
+        if main is None:
+            raise ValueError(f"{fighter}: no *Main file in IDs {lo}..{hi}")
+        ids = sorted(set(an.extern_file_ids(rom, an.read_table_entry(rom, main))))
+        linked = {str(i): names.get(to_us_id(region, i) or -1, "unknown") for i in ids}
+        models = [int(i) for i, n in linked.items() if n.endswith("Model")
+                  and "Boomerang" not in n]
+        out[fighter] = {"main": main, "linked": linked, "models": models}
+    return out
+
+
+def decode_all(rom: bytes, table_addr: int, file_count: int) -> dict[str, int]:
+    """Decode every file once; counts of ok/failed bodies."""
+    data_begin = table_addr + (file_count + 1) * ENTRY_SIZE
+    ok = failed = 0
+    for fid in range(file_count):
+        off = table_addr + fid * ENTRY_SIZE
+        e = parse_entry(rom[off:off + ENTRY_SIZE], fid)
+        src = rom[data_begin + e.data_offset:data_begin + e.data_offset + e.stored_bytes]
+        if e.is_compressed:
+            try:
+                body = vpk0_decode(src, e.decompressed_bytes)
+            except ValueError:
+                body = None
+            good = body is not None and len(body) == e.decompressed_bytes
+        else:
+            good = len(src) == e.decompressed_bytes
+        ok += good
+        failed += not good
+    return {"ok": ok, "failed": failed}
+
+
+def inventory(rom_path: str | Path, out: str | Path | None = None,
+              *, verify: bool = False) -> dict:
+    rom = Path(rom_path).read_bytes()
+    region = detect_region(rom)
+    located = locate_table(rom)
+    if located is None:
+        raise ValueError("no LBTableEntry table found; is this a normalized SSB64 z64 ROM?")
+    table_addr, file_count = located
+    if region == "us" and file_count != US_FILE_COUNT:
+        raise ValueError(f"USA table has {file_count} files, want {US_FILE_COUNT}")
+    data_begin = table_addr + (file_count + 1) * ENTRY_SIZE
+    names = load_names()
+
+    files = []
+    for fid in range(file_count):
+        off = table_addr + fid * ENTRY_SIZE
+        e = parse_entry(rom[off:off + ENTRY_SIZE], fid)
+        us_id = to_us_id(region, fid)
+        files.append({
+            "id": fid,
+            "name": (names.get(us_id, "unknown") if us_id is not None
+                     else f"EUR-only-{fid}"),
+            "rom_offset": data_begin + e.data_offset,
+            "stored_bytes": e.stored_bytes,
+            "decompressed_bytes": e.decompressed_bytes,
+            "compressed": e.is_compressed,
+            "reloc_intern": None if e.reloc_intern == 0xFFFF else e.reloc_intern,
+            "reloc_extern": None if e.reloc_extern == 0xFFFF else e.reloc_extern,
+        })
+
+    fighters = {}
+    for name, (lo, hi) in fighters_for(region).items():
+        fighters[name] = files[lo:hi + 1]
+
+    sha1 = hashlib.sha1(rom).hexdigest()
+    manifest = {
+        "game": GAME_TITLES[region],
+        "platform": "n64",
+        "region": region,
+        "cart_id": rom[0x3B:0x3F].decode("ascii"),
+        "rom_version": rom[0x3F],
+        "rom_sha256": hashlib.sha256(rom).hexdigest(),
+        "rom_sha1": sha1,
+        "decomp_baserom": region == "us" and sha1 == US_BASEROM_SHA1,
+        "rom_bytes": len(rom),
+        "table_addr": table_addr,
+        "file_count": file_count,
+        "data_begin": data_begin,
+        "compressed_files": sum(1 for f in files if f["compressed"]),
+        "raw_files": sum(1 for f in files if not f["compressed"]),
+        "characters": {
+            "roster": list(ROSTER),
+            "variants": ["mmario", "gdonkey"],
+            "polygon_team": list(POLYGON_TEAM),
+            "bosses": ["boss"],
+            "costumes_per_fighter": FIGHTERS_COSTUMES,
+        },
+        "fighters": fighters,
+        "names_ref": ("US decomp relocFileDescriptions (IDs identical on USA; "
+                      "EUR mapped by eur_to_us)"),
+        "files": files,
+    }
+    if verify:
+        manifest["decode"] = decode_all(rom, table_addr, file_count)
+        manifest["fighter_links"] = fighter_links(rom, region)
+    if out is not None:
+        Path(out).write_text(json.dumps(manifest, indent=1), encoding="utf-8")
+    return manifest
+
+
+def main() -> None:
+    import argparse
+    ap = argparse.ArgumentParser(description="Inventory an SSB64 (USA/Europe) z64 ROM")
+    ap.add_argument("rom")
+    ap.add_argument("--out", default="ssb64_manifest.json")
+    ap.add_argument("--verify", action="store_true",
+                    help="decode every file and resolve fighter extern links")
+    args = ap.parse_args()
+    m = inventory(args.rom, args.out, verify=args.verify)
+    print(
+        f"{m['game']} [{m['cart_id']}] "
+        f"table=0x{m['table_addr']:X} files={m['file_count']} "
+        f"data=0x{m['data_begin']:X} "
+        f"compressed={m['compressed_files']} raw={m['raw_files']} -> {args.out}")
+
+
+if __name__ == "__main__":
+    main()

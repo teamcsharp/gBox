@@ -53,19 +53,21 @@ G_SETTILESIZE = 0xF2
 G_TRI1 = 0xBF
 G_TRI2 = 0xB1
 G_VTX = 0x04
-G_ENDDL = 0xDF
+G_ENDDL = 0xB8  # F3DEX/GBI1; 0xDF belongs to GBI2
 
 FMT = {0: "RGBA", 1: "YUV", 2: "CI", 3: "IA", 4: "I"}
 SIZ = {0: 4, 1: 8, 2: 16, 3: 32}
 
 
 def _w(rom: bytes, off: int) -> int:
+    if off<0 or off+4>len(rom):
+        raise ValueError("Word outside input")
     return struct.unpack_from(">I", rom, off)[0]
 
 
 def prologue(rom: bytes, rec: int) -> bool:
     """True when ``rec`` looks like a frame record (G_VTX prologue at +0x3F8)."""
-    if rec + FRAME_SIZE > len(rom):
+    if rec<0 or rec + FRAME_SIZE > len(rom):
         return False
     return _w(rom, rec + PROLOGUE_OFFSET) == 0x0400617F and _w(rom, rec + PROLOGUE_OFFSET + 4) == 0x03000200
 
@@ -78,12 +80,16 @@ def frame_records(rom: bytes, start: int = 0xB58B0) -> list[int]:
     atlas that precedes the frame bank (e.g. 0x9E6800) contains the 8-byte
     prologue pattern by coincidence and must not be counted as a record.
     """
+    if start<0:
+        raise ValueError("Frame scan start must be nonnegative")
     first = (start + FRAME_ALIGN - 1) // FRAME_ALIGN * FRAME_ALIGN
     return [off for off in range(first, len(rom) - FRAME_SIZE + 1, FRAME_ALIGN)
             if rom[off] == G_SETTIMG and prologue(rom, off)]
 
 
 def decode_vertex(rom: bytes, off: int) -> dict:
+    if off<0 or off+VTX_SIZE>len(rom):
+        raise ValueError("Vertex outside input")
     x, y, z, flag, s, t = struct.unpack_from(">hhhHhh", rom, off)
     r, g, b, a = rom[off + 12:off + 16]
     return {"x": x, "y": y, "z": z, "flag": flag, "s": s, "t": t,
@@ -92,13 +98,15 @@ def decode_vertex(rom: bytes, off: int) -> dict:
 
 def decode_vertices(rom: bytes, rec: int) -> list[dict]:
     """Decode the 24 vertices stored at ``rec + 0x200``."""
+    if rec<0 or rec+FRAME_SIZE>len(rom):
+        raise ValueError("Frame outside input")
     return [decode_vertex(rom, rec + VTX_OFFSET + i * VTX_SIZE) for i in range(NV)]
 
 
 def _tri_indices(w0: int, w1: int) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
-    # GBI1 gsSP2Triangles: v00/v01/v02 in w0, v10/v11/v12 in w1 (6-bit indices).
-    return ((w0 >> 17) & 0x3F, (w0 >> 9) & 0x3F, (w0 >> 1) & 0x3F), \
-           ((w1 >> 17) & 0x3F, (w1 >> 9) & 0x3F, (w1 >> 1) & 0x3F)
+    # GBI1 gsSP2Triangles: v00/v01/v02 in w0, v10/v11/v12 in w1 (indices multiplied by two).
+    return ((w0 >> 17) & 0x7F, (w0 >> 9) & 0x7F, (w0 >> 1) & 0x7F), \
+           ((w1 >> 17) & 0x7F, (w1 >> 9) & 0x7F, (w1 >> 1) & 0x7F)
 
 
 def parse_frame(rom: bytes, rec: int) -> dict:
@@ -114,17 +122,21 @@ def parse_frame(rom: bytes, rec: int) -> dict:
     for i in range(0, VTX_OFFSET, 8):
         op = rom[rec + i]
         w0, w1 = _w(rom, rec + i), _w(rom, rec + i + 4)
+        if op == G_ENDDL:
+            break
         if op == G_SETTIMG:
+            if w1>>24!=3:
+                raise ValueError("Unsupported frame texture segment")
             fmt, siz = (w0 >> 21) & 7, (w0 >> 19) & 3
             seg3 = w1 & 0xFFFFFF
             if fmt == 0:  # RGBA -> TLUT image
                 tlut_seg3, cur = seg3, None
             else:
                 cur = {"fmt": FMT.get(fmt, str(fmt)), "bpp": SIZ[siz], "seg3": seg3,
-                       "texels": 0, "tris": []}
+                       "texels": 0, "load_units": 0, "load_bpp":SIZ[siz], "tris": []}
                 tiles.append(cur)
         elif op == G_LOADTLUT:
-            tlut = {"seg3": tlut_seg3, "colors": ((w1 >> 14) & 0x3FF) + 1}
+            tlut = {"seg3": tlut_seg3, "colors": ((w1 >> 14) & 0x7FF) + 1}
         elif op == G_SETTILE and cur is not None:
             # The render descriptor (last G_SETTILE before G_SETTILESIZE) carries
             # the sampled format: CI8 tiles are loaded 16bpp into TMEM but drawn
@@ -133,16 +145,29 @@ def parse_frame(rom: bytes, rec: int) -> dict:
             cur["fmt"] = FMT.get(fmt, str(fmt))
             cur["bpp"] = SIZ[siz]
         elif op == G_LOADBLOCK and cur is not None:
-            cur["texels"] = ((w1 >> 12) & 0xFFF) + 1
+            cur["load_units"] = ((w1 >> 12) & 0xFFF) + 1
+        elif op == G_SETTILESIZE and cur is not None:
+            uls,ult=(w0>>12)&0xfff,w0&0xfff
+            lrs,lrt=(w1>>12)&0xfff,w1&0xfff
+            if lrs<uls or lrt<ult:
+                raise ValueError("Reversed frame tile bounds")
+            cur["width"]=(lrs-uls)//4+1
+            cur["height"]=(lrt-ult)//4+1
         elif op == G_TRI2 and cur is not None:
             a, b = _tri_indices(w0, w1)
             cur["tris"].extend([a, b])
             tris.extend([a, b])
         elif op == G_TRI1 and cur is not None:
-            a = ((w0 >> 17) & 0x3F, (w0 >> 9) & 0x3F, (w0 >> 1) & 0x3F)
+            a = ((w1 >> 17) & 0x7F, (w1 >> 9) & 0x7F, (w1 >> 1) & 0x7F)
             cur["tris"].append(a)
             tris.append(a)
-    return {"rom": rec, "tlut": tlut, "tiles": tiles, "triangles": tris,
+    if any(i>=NV for tri in tris for i in tri):
+        raise ValueError("Triangle references vertex outside frame block")
+    for tile in tiles:
+        bits=tile["load_units"]*tile["load_bpp"]
+        tile["load_bytes"]=(bits+7)//8
+        tile["texels"]=bits//tile["bpp"]
+    return {"rom": rec, "textured":False, "tlut": tlut, "tiles": tiles, "triangles": tris,
             "vertices": decode_vertices(rom, rec)}
 
 
@@ -156,16 +181,21 @@ def render_frame_png(rom: bytes, rec: int, path, scale: int = 10, pad: int = 4):
     """Rasterise a frame's quads to a PNG (flat-shaded; texture atlas pending)."""
     from PIL import Image, ImageDraw
 
+    if not isinstance(scale,int) or not isinstance(pad,int) or scale<=0 or pad<0:
+        raise ValueError("Preview scale must be positive and padding nonnegative")
     f = parse_frame(rom, rec)
     verts = f["vertices"]
     tris = f["triangles"]
     if not tris:
         raise ValueError(f"frame at 0x{rec:X} has no triangles")
-    xs = [v["x"] for v in verts if v["x"] or v["y"]]
-    ys = [v["y"] for v in verts if v["x"] or v["y"]]
+    used={i for tri in tris for i in tri}
+    xs = [verts[i]["x"] for i in used]
+    ys = [verts[i]["y"] for i in used]
     minx, maxx, miny, maxy = min(xs), max(xs), min(ys), max(ys)
     w = (maxx - minx + 1) * scale + 2 * pad
     h = (maxy - miny + 1) * scale + 2 * pad
+    if w>8192 or h>8192 or w*h>16*1024*1024:
+        raise ValueError("Frame preview exceeds pixel limit")
     img = Image.new("RGB", (w, h), (24, 24, 24))
     d = ImageDraw.Draw(img)
 
@@ -174,11 +204,11 @@ def render_frame_png(rom: bytes, rec: int, path, scale: int = 10, pad: int = 4):
 
     # colour each triangle by the tile it belongs to
     tri_colour = []
-    for tile in f["tiles"]:
-        tri_colour.extend([_tile_palette(f["tiles"].index(tile))] * len(tile["tris"]))
+    for i,tile in enumerate(f["tiles"]):
+        tri_colour.extend([_tile_palette(i)] * len(tile["tris"]))
     for k, (i0, i1, i2) in enumerate(tris):
         d.polygon([px(verts[i0]), px(verts[i1]), px(verts[i2])],
                   fill=tri_colour[k] if k < len(tri_colour) else (255, 255, 255))
     img.save(path)
-    return {"path": str(path), "size": (w, h), "bbox": (minx, miny, maxx, maxy),
+    return {"path": str(path), "textured":False, "size": (w, h), "bbox": (minx, miny, maxx, maxy),
             "triangles": len(tris), "tiles": len(f["tiles"])}

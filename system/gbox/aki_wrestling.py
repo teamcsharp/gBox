@@ -12,6 +12,8 @@ code copied or run; checked against the operator's ROMs and in Ghidra, see docs/
     frame (arms down, facing +Z, his left = +X); the engine poses each part with its own matrix (G_MOVEMEM 0x0E,
     forced MVP) about its joint.
   * Ci8 texture: {w-1, h-1, u16 colours, mirror s, mirror t, log2 w, log2 h} + w*h indices; palette 256 x RGBA5551.
+    The loaders 0x8000d688/0x8000e784 test header byte 2: == 1 is CI8 (256-colour TLUT), anything else CI4 with
+    (w*h+1)/2 bytes, high nibble first, on the palette's first 16 colours (the shared neck 0x1F6A says 32 colours).
 WWF No Mercy (NTSC-U Rev A, NW4E 1.1), RAM addresses from Ghidra on an RDRAM image (gBox DecompileAll, MIPS:BE:32):
   * 0x80003ab0 loads the file table (ROM 0x16C31D8, 0x1300C bytes = 0x4C03 entries, FirstFile 0x1BD150) into the heap
     and precomputes file sizes; 0x80003bd0 resolves a file id (ids 1..0x4C02).
@@ -47,6 +49,10 @@ NO_MERCY = {"23a346e48b6368a6": "WWF No Mercy (USA)", "2e8850a2a6c53375": "WWF N
 REVENGE = {"bca7ec4ecf71d164": "WCW-nWo Revenge (USA)", "061264c636cc284d": "WCW-nWo Revenge (Europe)"}
 WORLD_TOUR = {"59bf059d2eadd372": "WCW vs. nWo: World Tour (USA)"}
 GAME_IDS = {**NO_MERCY, **REVENGE, **WORLD_TOUR}
+# Extraction covers more releases than the native writers. Keep availability tied to
+# the same accepted catalog IDs as use(), rather than advertising every readable ROM.
+WRITER_GAME_IDS = {"23a346e48b6368a6": NO_MERCY["23a346e48b6368a6"], **WORLD_TOUR,
+                   "bca7ec4ecf71d164": REVENGE["bca7ec4ecf71d164"]}
 
 # ROM profiles (z64 offsets), by product code + revision. Only NW4E rev 1 has the writer; the others read.
 PROFILES = {
@@ -109,29 +115,9 @@ def profile(rom: bytes) -> dict:
 
 def lzss(d: bytes) -> bytes:
     """Asmik LZSS (4 KB ring, start 0xFEE): header 00 + 24-bit length, flag byte LSB first, 1 = literal."""
+    from .formats.lz import lzss_decompress          # shared Okumura LZSS (4 KiB ring at 0xFEE)
     n = int.from_bytes(d[1:4], "big")
-    out = bytearray()
-    i, cmd = 4, 0
-    while len(out) < n:
-        cmd >>= 1
-        if cmd < 2:
-            cmd = d[i] | 0x100
-            i += 1
-        if cmd & 1:
-            out.append(d[i])
-            i += 1
-        else:
-            p, ln = d[i], d[i + 1]
-            i += 2
-            p = ((p | ((ln << 4) & 0xF00)) + 0x12) & 0xFFF
-            p -= len(out) & 0xFFF
-            if p >= 0:
-                p -= 0x1000
-            p += len(out)
-            for _ in range((ln & 0xF) + 3):
-                out.append(out[p] if p >= 0 else 0)
-                p += 1
-    return bytes(out[:n])
+    return lzss_decompress(d, 4, n)[0]
 
 
 def lzss_store(d: bytes, depth: int = 96) -> bytes:
@@ -275,11 +261,34 @@ def rgba5551(c) -> np.ndarray:
     return np.stack([r * 255 // 31, g * 255 // 31, b * 255 // 31, a * 255], -1).astype(np.uint8)
 
 
-def ci8_decode(tex: bytes, pal: bytes) -> np.ndarray:
+def tex_format(tex: bytes) -> str:
+    """'ci8' or 'ci4' by the game's rule (header byte 2 == 1 -> CI8, see gbox.nomercy_analysis); raises ValueError
+    on a truncated file."""
+    if len(tex) < 8:
+        raise ValueError("truncated AKI texture header")
+    fmt = "ci8" if tex[2] == 1 else "ci4"
+    px = (tex[0] + 1) * (tex[1] + 1)
+    need = 8 + (px if fmt == "ci8" else (px + 1) // 2)
+    if len(tex) < need:
+        raise ValueError(f"truncated AKI {fmt} texture: {len(tex)} < {need} bytes")
+    return fmt
+
+
+def tex_decode(tex: bytes, pal: bytes) -> np.ndarray:
+    """CI8 or CI4 texture + RGBA5551 palette -> RGBA (h, w, 4). CI4 uses palette entries 0-15 (16-colour TLUT)."""
     w, h = tex[0] + 1, tex[1] + 1
-    idx = np.frombuffer(tex, np.uint8, w * h, 8).reshape(h, w)
-    p = rgba5551(np.frombuffer(pal[:512].ljust(512, b"\0"), ">u2"))
+    if tex_format(tex) == "ci8":
+        idx, n = np.frombuffer(tex, np.uint8, w * h, 8).reshape(h, w), 256
+    else:
+        b = np.frombuffer(tex, np.uint8, (w * h + 1) // 2, 8)
+        idx, n = np.stack([b >> 4, b & 15], 1).reshape(-1)[:w * h].reshape(h, w), 16
+    p = rgba5551(np.frombuffer(pal[:2 * n].ljust(2 * n, b"\0"), ">u2"))
     return p[idx]
+
+
+def ci8_decode(tex: bytes, pal: bytes) -> np.ndarray:
+    """Any AKI model texture (CI8 or CI4) -> RGBA; kept for existing callers (see tex_decode)."""
+    return tex_decode(tex, pal)
 
 
 def quantize(img: np.ndarray, n: int = 256) -> tuple[np.ndarray, np.ndarray]:
@@ -412,9 +421,9 @@ def part_list_static(rom: bytes, wrestler: int, costume: int = 0) -> dict:
     """A wrestler's parts from the ROM tables (body + face). Attire layers are not composited (see extract)."""
     cs = costumes(rom)
     c = cs[4 * (wrestler - 1) + costume]
-    bp, _ = body_parts(rom, c[0])
+    bp, cls = body_parts(rom, c[0])
     out = {o: list(v) for o, v in bp.items()}
-    out[0x20] = [0x14FF, 0x1F6A, 0x1F6B]
+    out[0x20] = [0x14FF, 0x1F6A, 0x1F6D if cls >= 6 else 0x1F6B]       # 0x80018C7C-0x80018C9C: palette by body class
     out.update(head_parts(rom, c))
     return out
 
@@ -745,6 +754,11 @@ def _sample_source(src: dict, pts: np.ndarray, mats: list) -> np.ndarray:
     out = np.zeros((len(pts), 3), np.uint8)
     if not len(T):
         return out
+    step = max(256, int(2e7 // max(len(T), 1)))            # bound the (points x triangles) distance table (~160 MB)
+    if len(pts) > step:                                    # big pages (Def Jam's 512 x 512): the same result in chunks
+        for i in range(0, len(pts), step):
+            out[i:i + step] = _sample_source(src, pts[i:i + step], mats)
+        return out
     k = min(6, len(T))
     d2 = ((pts[:, None, :] - cen[None]) ** 2).sum(2)
     cand = np.argsort(d2, 1)[:, :k]
@@ -910,6 +924,8 @@ def fit_character(rom: bytes, model: Path, roles: dict, body_type: int, work: Pa
     prims, rep = retarget(rig, tgt, scale, {k: v for k, v in jmap.items() if k in
                                            ("hip", "chest", "head", "l_upper", "l_fore", "l_hand", "r_upper", "r_fore",
                                             "r_hand", "l_thigh", "l_shin", "l_foot", "r_thigh", "r_shin", "r_foot")})
+    from . import fit_events as FE
+    FE.weights(prims, names={i: f"{j} (bone {i})" for i, j in enumerate(JOINTS)}, skeleton=len(JOINTS))
     work = Path(work)
     work.mkdir(parents=True, exist_ok=True)
     rigged = write_rigged(prims, tgt, work / "aki_rigged.gltf", name)
@@ -1014,6 +1030,11 @@ def fit_character(rom: bytes, model: Path, roles: dict, body_type: int, work: Pa
         out[o] = (model_encode(vp, np.tile([0, 0, 1.0], (3, 1)), np.zeros((3, 2)), np.array([[0, 1, 2]]),
                                ((tw // 8) << 4) | (th // 8)), g, None)
         report[PARTS[o][0]] = {"verts": 3, "faces": 1, "placeholder": True, "texture_group": str(g)}
+    faces = sum(v["faces"] for v in report.values() if not v.get("placeholder"))
+    FE.stage("decimate", "done" if faces < tris_src else "skipped",
+             {"from": tris_src, "triangles": faces, "parts": len(geo), "budget": "the game's own part sizes",
+              "dropped": sum(v.get("dropped", 0) for v in report.values())},
+             prims=FE.mesh(geo.values()) if faces < tris_src else None)
     # one 256-colour palette for the whole character
     allpx = np.concatenate([v[0].reshape(-1, 4) for v in gtex.values()])[None]
     _idx, pal = quantize(allpx)
@@ -1104,9 +1125,12 @@ def build_rom(rom: bytes, jobs: list[dict], work: Path, blender=None, progress=l
                                       for jb in jobs if jb.get("ring_name", True)})
     except Exception as e:                                 # noqa: BLE001 - names are cosmetic
         renamed = {"error": str(e)}
+    from . import fit_events as FE
     for k, jb in enumerate(jobs):
         w = ros[jb["wrestler"] - 1]
         body = w["body"][0]
+        if jb.get("fit_key"):                             # the cast's model for this wrestler (the Fitting pop-up)
+            FE.model(jb["fit_key"])
         fit = fit_character(rom, jb["model"], jb["roles"], body, Path(work) / f"w{w['number']}", jb["name"],
                             jb.get("props", ()), jb.get("scale"), blender,
                             progress=lambda p, m, k=k: progress(5 + (k * 80 + p * 0.8) / max(1, len(jobs)), m))
@@ -1120,6 +1144,11 @@ def build_rom(rom: bytes, jobs: list[dict], work: Path, blender=None, progress=l
         keys = w["face_tex"]
         others = {k2 for x in ros if x["number"] != w["number"] for k2 in x["face_tex"]}
         wr.add_template(keys, entries)
+        FE.stage("encode", data={"bytes": sum(len(mb) for mb, _g, _p in fit["parts"].values())
+                                 + sum(len(t) for t in fit["textures"].values()) + len(fit["palette"]),
+                                 "parts": len(fit["parts"]), "textures": len(fit["textures"]),
+                                 "triangles": fit["report"]["triangles"], "files_added": len(entries) + len(tex_id) + 1,
+                                 "relocated": True, "where": "new files appended; the file table moves to the ROM's end"})
         reports.append({"wrestler": w["name"], "number": w["number"], "character": jb["name"], "keys": [hex(x) for x in keys],
                         "shared_faces": [x["name"] for x in ros if x["number"] != w["number"] and set(x["face_tex"]) & set(keys)],
                         "rigged": str(fit["rigged"]), **fit["report"]})
@@ -1491,6 +1520,16 @@ def slug_of(name: str) -> str:
     return "nm_" + re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
 
 
+def cast_slots(game: dict | None = None) -> list[dict]:
+    """The cast menu / whole-cast swap: No Mercy's default wrestlers by name (op=match resolves them on the ROM);
+    `player` (player 1's wrestler) overlaps them. The WCW titles' tables come off their ROMs (gbox.aki_wcw)."""
+    out = [{"slot": "player", "name": "player 1's wrestler", "kind": "player", "aggregate": True,
+            "writer": "gbox.aki_wrestling"}]
+    if game is not None and game.get("game_id") not in NO_MERCY:
+        return out
+    return out + [{"slot": n, "name": n, "kind": "wrestler", "writer": "gbox.aki_wrestling"} for n in NM_ROSTER[:64]]
+
+
 def roster_entries(rom: bytes | None = None) -> list[dict]:
     """characters.DEDICATED roster (No Mercy default wrestlers)."""
     out = []
@@ -1628,7 +1667,8 @@ def build_mod(cfg, game: dict, pairs: list[tuple[dict, dict]], progress=lambda p
         if "hip" not in roles:
             raise ValueError(f"{meta['name']} has no body roles (rig.roles): can't map it onto a wrestler")
         jobs.append({"wrestler": w["number"], "model": root / meta["slug"] / meta["model"], "roles": roles, "name": meta["name"],
-                     "props": [p["node"] for p in meta.get("props") or []], "scale": (meta.get("rig") or {}).get("scale")})
+                     "props": [p["node"] for p in meta.get("props") or []], "scale": (meta.get("rig") or {}).get("scale"),
+                     "fit_key": w.get("fit_key")})
     name = mod_name(pairs, title)
     work = Path(cfg.cache) / "characters_build" / name
     shutil.rmtree(work, ignore_errors=True)
@@ -1658,6 +1698,12 @@ def build_mod(cfg, game: dict, pairs: list[tuple[dict, dict]], progress=lambda p
     if stale.exists():
         stale.unlink()
     shutil.rmtree(work, ignore_errors=True)
+    from . import fit_events as FE
+    for (_meta, w), r in zip(pairs, b["reports"]):       # every wrestler's template, in the one rebuilt ROM
+        if w.get("fit_key"):
+            FE.model(w["fit_key"])
+        FE.stage("write", data={"mod": name, "image": img, "rom_bytes": len(b["rom"]), "wrestler": w["name"],
+                                "triangles": r.get("triangles")})
     return {"mod": name, "image": img, "previews": previews,
             "reports": [{k: v for k, v in r.items() if k != "rigged"} for r in b["reports"]]}
 
@@ -1754,7 +1800,9 @@ def match(ctx, chars: list, game: dict, inp, pairs_in: list[tuple[str, str]], ti
         if w["number"] in used:
             raise ValueError(f"{w['name']} is already replaced in this match")
         used.add(w["number"])
-        pairs.append((meta, w))
+        pairs.append((meta, dict(w, fit_key=wq or w["name"])))   # the Fitting pop-up's model: the cast slot
+    from . import fit_events as FE                         # every wrestler of the match up front (Fitting k/N)
+    FE.plan([(w["fit_key"], m["slug"], f"{m['name']} -> {w['name']}") for m, w in pairs])
     return use(ctx, pairs[0][0], game, inp, pairs, title)
 
 

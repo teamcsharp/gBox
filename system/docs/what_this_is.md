@@ -101,7 +101,8 @@ system/
     ninja.py                 Sega Ninja formats: PRS, BML archives, NJCM chunk models, PVM/PVR textures → UAP
     psomap.py                PSO map data: collision REL (GC/DC) → walkable grid
     gcdisc.py gdrom.py       read-only GameCube ISO and Dreamcast GD-ROM (.gdi) filesystems; DOL/RAM → ELF
-  profiles/                  semantic state profiles: pso-gc-plus-us.json, pso-v2-dc-us.json (with evidence)
+  profiles/                  semantic state profiles: pso-gc-plus-us.json, pso-v2-dc-us.json, auf-gcn-us.json (with evidence)
+    entity_probe.py          generic entity/camera probe for table-of-records games (007 AUF; docs/auf-entity-analysis.md)
   adapters/ghidra/           Ghidra scripts: ExportAnalysis.java, ExplainAddresses.java
   clients/
     web/index.html           browser UI (library, sessions, inspect: memory/tiles/CPU/game state, controllers, ops)
@@ -239,7 +240,8 @@ are not used by gBox at runtime.
   CPU halt; RetroArch RAM reads in 16 KB UDP requests (16 MB Dreamcast RAM in ~17 s); `player_only` state reads for
   movement loops.
 * Catalog: SQLite FTS5 with chunked upserts; thumbnail cache; library staging cache (Spark 150 GB, Windows D: 250 GB,
-  LRU) for large discs.
+  LRU) for large discs. The Spark's cache has two tiers (docs/cache-tiers.md): a 100 GB NVMe hot tier with the
+  character library pinned, and the Elements HDD behind it; idle-time LRU demotion per game, promotion on use.
 * Windows native play for zero input lag; Spark streaming for anything else.
 
 ## 14. DGX Spark integration guide (condensed)
@@ -259,7 +261,7 @@ are not used by gBox at runtime.
 * Repo (code + docs + brand assets): a few MB; `gBox.exe` ≈ 8 MB.
 * Spark `gbox-data/` ≈ 3.1 GB (SQLite catalog/state, artifacts incl. MP4 recordings and UAP packages, thumbnails,
   runtime: RetroArch build, ~45 libretro cores, BIOS copies, save states, Dolphin user dir).
-* Spark `~/gbox-cache` ≈ 7.3 GB (staged discs, extracted Dreamcast GD-ROM ≈ 1.3 GB, debug scratch).
+* Spark `~/gbox-cache`: the NVMe hot tier (≤ 100 GB); cold games are symlinks into `~/samples/gbox-cache` (HDD).
 * Windows `D:\gBox` (cache up to 250 GB, runtime: RetroArch-win + cores, Ghidra ≈ 1 GB, JDK 21, recordings),
   `%LOCALAPPDATA%\gbox` (Electron runtime + branded exe, worker venv).
 
@@ -299,6 +301,27 @@ Spark containers: `searxng` (:8081), `wyoming-whisper` (:10300), `wyoming-piper`
 * PSO V2 DC (2OEF): entity table 0x8C477D40, entity id +0x20, room +0x2C, pos +0x3C, angle +0x64, HP +0x330; serial
   check bypass = write 0xE001 (`mov #1,r0`, bytes 01 E0) at 0x8C1E743E and 0x8C2670B6; movement needs the analog stick;
   L trigger re-centres the camera.
+* PSO V2 DC (2OEF) `pso_mods` ops added for inbox asks (addresses cross-checked against 1ST_READ.BIN capstone SH-4
+  disassembly, load base 0x8C010000, and a Flycast savestate RAM image of this disc):
+  * `key_bypass` (#564, "mod me past key entry"): the Hunter's License serial/access-key check. Two near-identical
+    validators at 0x8C1E73E4 and 0x8C26705C count the 8 serial characters (char table 0x8C291360) and call the key
+    verifier (0x8C23DA74 / 0x8C23D9E4, which transform the string and call a method on the key object 0x8C527CA0) at a
+    `jsr @r0` - 0x8C1E743E and 0x8C2670B6, both bytes `0b 40`. Patch each `jsr` to `mov #1,r0` (bytes `01 e0`) so the
+    verifier is skipped and any key is accepted. Matches the long-standing bypass in docs §18 and `gbox/re_seeds.py`.
+    Needs no live player, so it applies on the key screen itself. HIGH confidence.
+  * `move_speed` (#279, "run three times faster"): the per-frame player move step (analog magnitude x a speed constant,
+    applied through 0x8C02AE70, which calls into the root-motion appliers; the walk/run state is chosen in 0x8C021842
+    from stick-magnitude thresholds 20/150/400) advances inside TObjPlayer::update (0x8C0216F4). `move_speed` reuses the
+    verified CAVE2 update wrapper (the same cave as attack_speed) to run that update N-1 extra times per frame, so the
+    player moves N x faster. Independent of attack_speed (its own var at SPEED_VARS+0x10). MEDIUM-HIGH confidence (the
+    extra-update mechanism is the one the operator verified on screen for attack_speed/rapid-fire).
+  * `rare_drops` ("every enemy drops the rarest items"): offline enemy kills roll the ItemRT rare table the game copied
+    into RAM for the current difficulty+section (found by its on-disc `ItemRT.afs` content signature; the loaded copy was
+    at 0x8CB19440 in the Forest-1 test image). `rare_drops` rewrites every monster slot and box rare slot to an item from
+    a configurable rarest-items list at the format's max probability (0xFF) and fills the box-area map; the game's offline
+    drop path then drops a rare via the floor-item create at 0x8C1631C8. Original 640-byte table saved and restored on
+    off. Same proven table-rewrite as `pso_drops` op=item (operator-verified on screen). MEDIUM confidence (a drop still
+    needs the enemy's own drop-anything roll, as noted in `pso_drops`).
 * Forest 1 collision is identical on GC and DC (1,455 triangles); A* on the rasterised grid drives navigation.
 * Unreal Engine 3 (`gbox/ue3.py`, tools `unreal_script` + `script_patch`): cooked PS3 packages are fully compressed
   (64 KiB zlib blocks); v375/licensee 25 function script size at +0x28. Disassembler covers ~92% of Stranglehold's

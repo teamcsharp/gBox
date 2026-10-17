@@ -138,4 +138,4 @@ def test_windows_session_uses_sdl_and_correct_select_hotkey(tmp_path, monkeypatc
     assert 'input_joypad_driver = "sdl3"' in cfg
     assert 'input_autodetect_enable = "true"' in cfg
     assert 'input_enable_hotkey_btn = "4"' in cfg
-    assert 'input_rewind_axis = "+4"' in cfg
+    assert 'input_rewind_axis = "nul"' in cfg          # worker owns the chord, avoiding duplicate native rewind

@@ -696,6 +696,23 @@ def _ollama_models() -> list[dict] | None:
         return None
 
 
+def llm_data() -> dict:
+    """What the llm step shows: Ollama state, every model installed on this PC, and whether the configured
+    tools/vision models are among them. Refreshed live by the 'scan' action, so a model the operator just
+    installed is detected (and becomes selectable in the wizard) without re-running the step."""
+    vram = (S("machine")["data"].get("gpu") or {}).get("vram_gb") or 0
+    rec = recommend_models(vram)
+    models = _ollama_models()
+    have = [m["name"] for m in models or []]
+    agent = STATE["overlay"].get("agent") or {}
+    want = [agent.get("model") or rec["tools"], agent.get("vision_model") or rec["vision"]]
+    ready = models is not None and all(any(h == w or h == w + ":latest" for h in have) for w in want)
+    return {"installed": bool(_ollama_exe()), "running": models is not None, "models": have, "recommend": rec,
+            "chosen": agent, "want": want, "ready": ready, "vram_gb": vram,
+            "sizes": {"gpt-oss:20b": "13 GB", "qwen3:8b": "5.2 GB", "qwen3:4b": "2.6 GB", "qwen2.5vl:7b": "6.0 GB",
+                      "qwen2.5vl:3b": "3.2 GB"}}
+
+
 def s_llm(p):
     st = "llm"
     act = p.get("action") or "plan"
@@ -744,18 +761,11 @@ def s_llm(p):
                                      "tts_engine": "xtts", "voice_library": ""}
         write_overlay()
         say(st, f"gBox will use {STATE['overlay']['agent']['model']} (tools) and {STATE['overlay']['agent']['vision_model']} (vision)")
-    models = _ollama_models()
-    have = [m["name"] for m in models or []]
-    agent = STATE["overlay"].get("agent") or {}
-    want = [agent.get("model") or rec["tools"], agent.get("vision_model") or rec["vision"]]
-    ready = models is not None and all(any(h == w or h == w + ":latest" for h in have) for w in want)
-    S(st)["data"] = {"installed": bool(_ollama_exe()), "running": models is not None, "models": have, "recommend": rec,
-                     "chosen": agent, "want": want, "ready": ready, "vram_gb": vram,
-                     "sizes": {"gpt-oss:20b": "13 GB", "qwen3:8b": "5.2 GB", "qwen3:4b": "2.6 GB", "qwen2.5vl:7b": "6.0 GB",
-                               "qwen2.5vl:3b": "3.2 GB"}}
-    say(st, ("Ollama is running" if models is not None else "Ollama is installed but not running" if _ollama_exe() else
-             "Ollama is not installed") + (f"; models here: {', '.join(have) or 'none'}" if models is not None else ""))
-    if not ready:
+    S(st)["data"] = llm_data()
+    d = S(st)["data"]
+    say(st, ("Ollama is running" if d["running"] else "Ollama is installed but not running" if d["installed"] else
+             "Ollama is not installed") + (f"; models here: {', '.join(d['models']) or 'none'}" if d["running"] else ""))
+    if not d["ready"]:
         S(st)["status_after"] = "waiting"
 
 
@@ -1026,6 +1036,13 @@ class H(BaseHTTPRequestHandler):
                 step = p.rsplit("/", 1)[-1]
                 if step not in RUNNERS:
                     return self._json({"error": f"no step {step}"}, 404)
+                if step == "llm" and body.get("action") == "scan":
+                    # Light model refresh: the UI polls this while the llm step is open so a model the operator
+                    # just installed is detected (and becomes selectable) without re-running the step.
+                    if S("llm")["status"] != "running":
+                        S("llm")["data"] = llm_data()
+                        _save()
+                    return self._json(flow())
                 run_step(step, body)
                 return self._json({"started": step})
             if p == "/api/offline":
