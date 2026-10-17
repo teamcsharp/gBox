@@ -18,6 +18,9 @@ TITLE_WORK = {
         'reader': 'gbox.re2gc_native',
         'command': 'python -m gbox.re2gc_native OWNED_GCZ --out NEW_MANIFEST.json',
         'model_reader': 'gbox.re2gc_models',
+        'state_reader': 'gbox.re2gc_state',
+        'state_command': 'python -m gbox.re2gc_state --dol OWNED_main.dol --rel OWNED_scenario.rel --snapshot CAPTURE.mem1 --out NEW_STATE.json',
+        'state_scope': 'Exact Leon/Claire sources; source-attested read-only MEM1 inventory/equipment decoder and corrected Ghidra analysis images. No live writes or verified unlock profile. See docs/re2gc-state.md.',
         'model_command': 'python -m gbox.re2gc_models OWNED_PLAYER.pld --out NEW_MODEL.glb',
         'validated_scope': '40 player PLD containers; bounded MD1 reader and guarded native writer; 23 textured 15-bone bind-pose GLBs via normal collection routing; 17 extra-part variants explicitly pending; native animation bytes retained but not exported',
         'separate_work': ['17 player variants need proven extra-part attachments; Sonic/Mario donor retargeting and EMD enemy coverage',
@@ -125,6 +128,10 @@ def prompt(game_id, *, stage='inventory', fingerprint=None):
                   title['identity_warning'], 'Validated engineering scope: ' + title['validated_scope']]
         if title.get('command'):
             lines.append('Native source inventory: ' + title['command'])
+        if title.get('state_command'):
+            lines.append('State engineering command: ' + title['state_command'])
+        if title.get('state_scope'):
+            lines.append('State engineering scope: ' + title['state_scope'])
         if title.get('collection_command'):
             lines.append('Normal collection: ' + title['collection_command'])
         if title.get('model_command'):

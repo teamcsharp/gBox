@@ -69,7 +69,7 @@ class JobResult(BaseModel):
 class JobRequest(BaseModel):
     tool: str
     input: dict = {}
-    require_os: str | None = None
+    require_os: Literal["windows", "linux"] | None = None
     require_worker: str | None = None
     parent_request_id: str | None = None
     agent_use: bool = False
@@ -2720,6 +2720,9 @@ def create_app(config: Config) -> FastAPI:
             if named:
                 job.require_worker = named
             job.require_worker = _wid(job.require_worker)
+            from .job_routing import conflict
+            if why := conflict(job.require_os, store.get("worker", job.require_worker)):
+                raise HTTPException(422, why)
         if t.name == "launch_game" and job.agent_use and actor != "gbox-agent" and job.state == JobState.QUEUED:
             # One emulator per PC: an automated launch where the operator is playing would save and close their game
             # (a black screen mid-match). The in-app chat agent (gbox-agent) acts on the operator's own words and is
