@@ -738,6 +738,16 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
                 ctx.progress(20, f"Fetching mod {inp.mod} from the central collection (Spark)")
                 launch_mod = filemods.stage(ctx.config, ctx.server, ctx.headers, g.game_id, inp.mod, ctx.progress)
             src = local_mod or filemods.launch_path(ctx.config, g.game_id, src, launch_mod)
+            if g.platform == "n64" and src.is_file() and src.suffix.lower() in (".z64", ".n64", ".v64"):
+                from . import n64_mod_finalize           # verified copy for recognized stale header CRC
+                src, fin = n64_mod_finalize.launch_image(src)
+                if fin:
+                    diag["n64_finalize"] = fin
+                    if fin.get("status") == "normalized":
+                        ctx.progress(26, f"Normalized N64 header checksum ({fin['crc_before']} -> {fin['crc']}); "
+                                         "using a verified copy of the unchanged-size build")
+                    else:
+                        ctx.progress(26, "N64 header checksum left unchanged: " + fin["reason"])
             ctx.progress(28, f"Using local build: {launch_mod}")
             diag["staged_mod"] = launch_mod
         lap("mod_s")
