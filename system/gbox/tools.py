@@ -4061,6 +4061,7 @@ def analyze_binary(inp: GhidraIn, ctx: Ctx):
 
 class ProvisionIn(BaseModel):
     with_ghidra: bool = True
+    archives_only: bool = False
 
 class ProvisionOut(BaseModel):
     receipts: list[dict]
@@ -4072,9 +4073,17 @@ class ProvisionOut(BaseModel):
       validation="every setup step reports ok/installed")
 def provision_node(inp: ProvisionIn, ctx: Ctx):
     """Resolve and install this node's dependencies (same as `gbox setup`)."""
-    receipts = provision.setup(ctx.config, inp.with_ghidra, log=lambda m: ctx.log.append(m))
+    receipts = ([provision._receipt('archives', 'ok', provision._seven_zip())] if inp.archives_only else
+                provision.setup(ctx.config, inp.with_ghidra, log=lambda m: ctx.log.append(m)))
     ctx.artifact("provision.json", json.dumps(receipts, indent=1).encode(), "application/json")
     return {"receipts": receipts, "failed": [r["step"] for r in receipts if r["status"] in ("failed", "missing")]}
+
+
+@tool('provision_archives', '1.0', ProvisionIn, ProvisionOut, capabilities=['provision'], permissions=[P.INSTALL],
+      timeout_s=1800, side_effects=['installs missing platform archive tools'], artifacts=['provision.json'])
+def provision_archives(inp: ProvisionIn, ctx: Ctx):
+    """Install/verify only this worker's archive backend. Older workers cannot accidentally run full setup."""
+    return provision_node(ProvisionIn(archives_only=True), ctx)
 
 
 # --- Ghidra: run any installed Ghidra script headlessly (every script in the Tools table is dispatchable) ---

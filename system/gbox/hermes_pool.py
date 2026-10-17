@@ -41,6 +41,8 @@ def pool_limit():
 
 def _sync_cron_capacity(capacity):
     from . import hermes_task_mode as M
+    from . import hermes_build_supervisor
+    capacity += int(bool(hermes_build_supervisor.status().get('enabled')))
     if (M._config().get('cron') or {}).get('max_parallel_jobs') == capacity:
         return
     try:

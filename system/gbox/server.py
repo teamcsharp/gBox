@@ -5318,9 +5318,30 @@ def create_app(config: Config) -> FastAPI:
         store.audit(actor, "request.import", "requests", {"added": added})
         return {"added": added, "total": len(store.all("request"))}
 
+    @app.get('/api/analysis/sources')
+    def analysis_sources(actor=Depends(auth)):
+        from .shared_sources import inventory
+        return inventory()
+
+    @app.get('/api/analysis/sources/file')
+    def analysis_source_file(path: str, actor=Depends(auth)):
+        from .shared_sources import read
+        import hashlib
+        try:
+            data = read(path)
+        except (ValueError, OSError) as e:
+            raise HTTPException(404, str(e)) from e
+        return Response(data, media_type='text/plain', headers={'x-content-sha256': hashlib.sha256(data).hexdigest()})
+
     @app.get("/api/requests/export")
-    def req_export(actor=Depends(auth)):
+    def req_export(prompts_only: bool = False, actor=Depends(auth)):
         """The whole request history, oldest first, as one Markdown transcript."""
+        if prompts_only:
+            from .prompt_history import markdown
+            with store.lock:
+                transcript = markdown(store.all('request'), store.all('chat'), redact=_redact)
+            return PlainTextResponse(transcript, media_type='text/markdown',
+                                     headers={'content-disposition': 'attachment; filename="gbox-prompt-history.md"'})
         import datetime as _dt
         from zoneinfo import ZoneInfo
         ct = ZoneInfo("America/Chicago")                   # the operator's time, whatever the Spark's clock says
