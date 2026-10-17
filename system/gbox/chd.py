@@ -250,20 +250,24 @@ class Chd:
     def __init__(self, path):
         self.path = Path(path)
         self.f = open(self.path, "rb")
-        self.size = self.path.stat().st_size
-        self.h = header(self.f.read(124))
-        if self.h["unit_bytes"] != FRAME:
-            raise ChdError(f"unit bytes {self.h['unit_bytes']}: not a CD CHD")
-        if int(self.h["parent_sha1"], 16):
-            raise ChdError("CHD with a parent (delta image) is not supported")
-        self.hunkbytes = self.h["hunk_bytes"]
-        if self.hunkbytes % FRAME or not 0 < self.hunkbytes <= 1 << 20:
-            raise ChdError(f"hunk bytes {self.hunkbytes}")
-        self.frames_per_hunk = self.hunkbytes // FRAME
-        self.nhunks = -(-self.h["logical_bytes"] // self.hunkbytes)
-        self.tracks = self._tracks()
-        self._map()
-        self._hunk = lru_cache(256)(self._read_hunk)
+        try:
+            self.size = self.path.stat().st_size
+            self.h = header(self.f.read(124))
+            if self.h["unit_bytes"] != FRAME:
+                raise ChdError(f"unit bytes {self.h['unit_bytes']}: not a CD CHD")
+            if int(self.h["parent_sha1"], 16):
+                raise ChdError("CHD with a parent (delta image) is not supported")
+            self.hunkbytes = self.h["hunk_bytes"]
+            if self.hunkbytes % FRAME or not 0 < self.hunkbytes <= 1 << 20:
+                raise ChdError(f"hunk bytes {self.hunkbytes}")
+            self.frames_per_hunk = self.hunkbytes // FRAME
+            self.nhunks = -(-self.h["logical_bytes"] // self.hunkbytes)
+            self.tracks = self._tracks()
+            self._map()
+            self._hunk = lru_cache(256)(self._read_hunk)
+        except BaseException:
+            self.f.close()
+            raise
 
     def close(self):
         self.f.close()
@@ -401,16 +405,23 @@ class ChdDisc:
 
     def __init__(self, path):
         self.chd = Chd(path)
-        t = (self.chd.tracks or [{"TYPE": "MODE1"}])[0]
-        self.track_type = t.get("TYPE", "MODE1")
-        self.frames = int(t.get("FRAMES", 0) or 0)
-        self.files: dict[str, tuple[int, int]] = {}
-        pvd = self.sector(16)
-        if pvd[1:6] != b"CD001":
-            raise ChdError("no ISO9660 primary volume descriptor at sector 16")
-        self.pvd = pvd
-        root = pvd[156:190]
-        self._walk(struct.unpack_from("<I", root, 2)[0], struct.unpack_from("<I", root, 10)[0], "", 0)
+        try:
+            t = (self.chd.tracks or [{"TYPE": "MODE1"}])[0]
+            self.track_type = t.get("TYPE", "MODE1")
+            self.frames = int(t.get("FRAMES", 0) or 0)
+            self.files: dict[str, tuple[int, int]] = {}
+            pvd = self.sector(16)
+            if pvd[1:6] != b"CD001":
+                raise ChdError("no ISO9660 primary volume descriptor at sector 16")
+            self.pvd = pvd
+            root = pvd[156:190]
+            self._walk(struct.unpack_from("<I", root, 2)[0], struct.unpack_from("<I", root, 10)[0], "", 0)
+        except BaseException:
+            self.chd.close()
+            raise
+
+    def close(self):
+        self.chd.close()
 
     def sector(self, lba: int) -> bytes:
         if self.frames and not 0 <= lba < self.frames:

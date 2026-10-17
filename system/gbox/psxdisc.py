@@ -12,21 +12,28 @@ class CHD:
 
     def __init__(self, path):
         self.f = open(path, "rb")
-        h = self.f.read(0x6C)
-        if h[:8] != b"MComprHD":
-            raise ValueError("not a CHD")
-        hlen, ver = struct.unpack_from(">II", h, 8)
-        if ver != 4:
-            raise NotImplementedError(f"CHD v{ver} not supported (v4 only)")
-        _flags, self.comp, self.nhunks = struct.unpack_from(">III", h, 16)
-        self.logical, _meta = struct.unpack_from(">QQ", h, 28)
-        self.hunkbytes = struct.unpack_from(">I", h, 44)[0]
-        self.f.seek(hlen)
-        raw = self.f.read(16 * self.nhunks)
-        self.map = [struct.unpack_from(">QIHBB", raw, 16 * i) for i in range(self.nhunks)]
-        self.frame = 2448                                  # 2352 sector + 96 subcode
-        self.frames_per_hunk = self.hunkbytes // self.frame
-        self._hunk = lru_cache(64)(self._read_hunk)
+        try:
+            h = self.f.read(0x6C)
+            if h[:8] != b"MComprHD":
+                raise ValueError("not a CHD")
+            hlen, ver = struct.unpack_from(">II", h, 8)
+            if ver != 4:
+                raise NotImplementedError(f"CHD v{ver} not supported (v4 only)")
+            _flags, self.comp, self.nhunks = struct.unpack_from(">III", h, 16)
+            self.logical, _meta = struct.unpack_from(">QQ", h, 28)
+            self.hunkbytes = struct.unpack_from(">I", h, 44)[0]
+            self.f.seek(hlen)
+            raw = self.f.read(16 * self.nhunks)
+            self.map = [struct.unpack_from(">QIHBB", raw, 16 * i) for i in range(self.nhunks)]
+            self.frame = 2448                                  # 2352 sector + 96 subcode
+            self.frames_per_hunk = self.hunkbytes // self.frame
+            self._hunk = lru_cache(64)(self._read_hunk)
+        except BaseException:
+            self.f.close()
+            raise
+
+    def close(self):
+        self.f.close()
 
     def _read_hunk(self, i: int) -> bytes:
         off, crc, lo, hi, flags = self.map[i]
@@ -57,19 +64,32 @@ class CHD:
 class PSXDisc:
     def __init__(self, path):
         self.chd = CHD(path)
-        pvd = self.data(16)
-        assert pvd[1:6] == b"CD001", "no ISO9660 PVD"
-        root = pvd[156:156 + 34]
-        self.files: dict[str, tuple[int, int]] = {}
-        self._walk(struct.unpack_from("<I", root, 2)[0], struct.unpack_from("<I", root, 10)[0], "")
+        try:
+            pvd = self.data(16)
+            assert pvd[1:6] == b"CD001", "no ISO9660 PVD"
+            root = pvd[156:156 + 34]
+            self.files: dict[str, tuple[int, int]] = {}
+            self._walk(struct.unpack_from("<I", root, 2)[0], struct.unpack_from("<I", root, 10)[0], "")
+        except BaseException:
+            self.chd.close()
+            raise
+
+    def close(self):
+        self.chd.close()
 
     def data(self, lba: int) -> bytes:
         s = self.chd.sector(lba)
         return s[24:24 + 2048] if s[15] == 2 else s[16:16 + 2048]
 
-    def read(self, name: str) -> bytes:
-        lba, size = self.files[name]
-        return b"".join(self.data(lba + i) for i in range((size + 2047) // 2048))[:size]
+    def read(self, name: str, offset: int = 0, size: int | None = None) -> bytes:
+        lba, length = self.files[name]
+        size = length - offset if size is None else size
+        if offset < 0 or size < 0 or offset + size > length:
+            raise ValueError(f"{name}: read outside {length} bytes")
+        first, last = offset // 2048, (offset + size + 2047) // 2048
+        data = b"".join(self.data(lba + i) for i in range(first, last))
+        start = offset - first * 2048
+        return data[start:start + size]
 
     def _walk(self, lba, size, prefix):
         from .formats import iso9660                      # the shared ISO9660 walk (gbox.formats)
