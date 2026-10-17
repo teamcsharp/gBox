@@ -344,3 +344,9 @@ def test_kmd_and_prims_render_offline(tmp_path):
     out = ER.render_model(glb, tmp_path / "m.png", size=96)
     from gbox.characters import check_preview
     assert check_preview(out)["coverage"] > 0.02
+
+
+def test_required_os_does_not_redirect_an_explicit_linux_selection():
+    ws = [worker("test", "TestPC", idle=1200), worker("spark", "lilspark", "linux", None)]
+    with pytest.raises(EC.EvidenceError, match="needs a windows worker"):
+        EC.pick_node("linux", ws, [], needs={"launch_game"}, required_os="windows")

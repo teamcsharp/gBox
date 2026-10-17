@@ -252,6 +252,8 @@ def pick_node(node: str, workers: list[dict], live_sessions: list[dict], *, need
         if reason:
             raise EvidenceError(f"Can't capture on {node}: {reason}. Nothing was started.")
         return w
+    if required_os and node in ("windows", "linux") and node != required_os:
+        raise EvidenceError(f"Can't capture on {node}: this game needs a {required_os} worker. Nothing was started.")
     oses = [required_os] if required_os else ([node] if node in ("windows", "linux") else (prefer_os or ["windows", "linux"]))
     for os_ in oses:
         cands = [w for w in workers if w.get("os") == os_]

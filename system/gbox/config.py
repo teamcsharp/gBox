@@ -6,7 +6,7 @@ import tomllib
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 HOST_OS = platform.system().lower()          # "windows" | "linux"
 
@@ -156,6 +156,15 @@ class HermesLocalConfig(BaseModel):
     provider: str = "spark-local"     # the Hermes custom provider name the supervisor registers
     model: str = "gpt-oss:20b"        # best tool caller on the GB10: MoE (3.6B active), native tool calls, 128k context
     upstream: str = "http://127.0.0.1:11434"   # Ollama on the Spark (native /api/chat: the only API that sets num_ctx)
+    api_format: Literal['ollama', 'openai'] = 'ollama'
+    host_name: str = 'lilspark'
+    shared_with_games: bool = True   # false for an operator-designated dedicated inference machine
+    max_parallel_jobs: int = Field(1, ge=1, le=32)
+    allow_large_tasks: bool = False  # dedicated local models can work bounded milestones on any inbox task
+    enable_thinking: bool | None = None
+    upstream_key_env: str = ''       # optional credential environment variable; never returned in status
+    nodes: dict[str, dict] = {}       # named inference endpoints; operator switches live in local-nodes.json
+    pool_max_parallel_jobs: int = Field(5, ge=1, le=64)
     proxy_url: str | None = None      # what Hermes calls; default http://127.0.0.1:<api_port>/api/llm/local/v1
     context_tokens: int = 65536       # num_ctx the proxy asks Ollama for; prompts are capped to fit (per-model: contexts)
     contexts: dict[str, int] = {}     # model -> its context limit, when a non-default model is chosen
@@ -239,7 +248,7 @@ class Config(BaseModel):
                    "vision_model": "qwen2.5vl:7b", "voice_director": "http://127.0.0.1:8090", "tts_engine": "xtts",
                    "voice_library": "/home/ehm_eckx/pinevoice-stack/spark-agent/data/voices"}   # in-app chat agent (Spark-local Ollama + SearXNG)
     emulators: dict[str, EmulatorConfig] = {}   # platform -> backend override (defaults come from systems.py)
-    examine_ready: bool = True        # Windows: local-window emulators start with RenderDoc inside (Examine 3D, gbox.scene_capture)
+    examine_ready: bool = False       # Windows: opt-in RenderDoc injection for Examine 3D. Off by default — injecting renderdoc.dll into every launch hung Dolphin's D3D12 renderer (Soul Calibur II froze ~70 s into attract mode with 0% GPU, #1973). Captures relaunch a dedicated Vulkan-layer session instead (gbox.scene_support.relay).
     examine_capture_worker: str = "JAYBUILTFINALE"   # Examine 3D capture sessions run here first (gbox/scene_relay.py)
     rewind: RewindConfig = RewindConfig()   # [rewind] checkpoint rewind for emulators without a native one
     audio_cpp: AudioCppConfig = AudioCppConfig()   # [audio_cpp] local audio.cpp speech service (docs/audio_cpp.md)
