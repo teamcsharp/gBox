@@ -8,8 +8,10 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
 from pathlib import Path
 import struct
+import tempfile
 
 import numpy as np
 from PIL import Image
@@ -19,6 +21,7 @@ from .re5ps3_models import Model, Texture, finite, extent, MAX_TEXTURE
 from .re5ps3_collection import CHRIS, SHEVA, FILES
 
 MAX_GLB = 128 * 1024 * 1024
+MAX_EDIT_BYTES = 256 * 1024 * 1024
 
 
 def _array(value, shape, label):
@@ -321,35 +324,109 @@ def replace_texture(data, image, *, expected_sha256):
                     'mips': texture.mips, 'compression_error': errors, 'gameplay_verified': False}
 
 
-def write_archive(source, member, output, *, expected_sha256, geometry_glb=None, texture_image=None):
+def _publish_archive(data, output):
+    """Validate a private same-directory file, then publish without overwriting.
+
+    The hard link is an atomic, exclusive directory entry on supported local
+    filesystems. Failure before publication leaves no destination or temp file.
+    """
+    output = Path(output)
+    fd, temporary = tempfile.mkstemp(prefix='.gbox-re5-', suffix='.tmp', dir=output.parent)
+    try:
+        with os.fdopen(fd, 'w+b') as stream:
+            if stream.write(data) != len(data):
+                raise OSError('short ARC output write')
+            stream.flush()
+            os.fsync(stream.fileno())
+            stream.seek(0)
+            if stream.read() != data:
+                raise OSError('written ARC readback mismatch')
+        os.link(temporary, output)
+    finally:
+        Path(temporary).unlink()
+
+
+def write_archive_edits(source, edits, output, *, expected_sha256):
+    """Validate all edits against the immutable original, then publish one ARC.
+
+    Each edit names one native member and contains geometry_glb bytes or a
+    texture_image. Duplicate native resources and mixed/unknown fields fail.
+    """
     if sha(source) != expected_sha256 or expected_sha256 not in (FILES[CHRIS][1], FILES[SHEVA][1]):
         raise ValueError('writer requires an exact owned BLUS30491 normal Chris/Sheva ARC')
-    if (geometry_glb is None) == (texture_image is None):
-        raise ValueError('choose exactly one native geometry or texture edit')
     archive = Arc(source)
-    magic = b'\0DOM' if geometry_glb is not None else b'\0XET'
-    found = [(e, archive.read(e)) for e in archive.entries if e.name == member]
-    found = [(e, data) for e, data in found if data[:4] == magic]
-    if len(found) != 1:
-        raise ValueError('expected one exact native resource of the requested format')
-    entry, data = found[0]
-    if geometry_glb is not None:
-        changed, receipt = model_from_glb(data, geometry_glb, expected_sha256=sha(data))
-    else:
-        changed, receipt = replace_texture(data, texture_image, expected_sha256=sha(data))
-    built = archive.replace(member, entry.type_hash, changed, expected_sha256=expected_sha256)
+    if not isinstance(edits, (list, tuple)) or not 1 <= len(edits) <= len(archive.entries):
+        raise ValueError('expected a nonempty bounded native edit list')
+    pending = {}
+    edit_bytes = 0
+    for edit in edits:
+        if not isinstance(edit, dict) or set(edit) - {'member', 'geometry_glb', 'texture_image'}:
+            raise ValueError('unsupported native edit fields')
+        member = edit.get('member')
+        if not isinstance(member, str) or not member:
+            raise ValueError('native edit requires an exact member name')
+        geometry, texture = edit.get('geometry_glb'), edit.get('texture_image')
+        if (geometry is None) == (texture is None):
+            raise ValueError('choose exactly one native geometry or texture edit')
+        if geometry is not None:
+            if not isinstance(geometry, bytes) or len(geometry) > MAX_GLB:
+                raise ValueError('expected bounded binary GLB edit bytes')
+            edit_bytes += len(geometry)
+        else:
+            if not isinstance(texture, Image.Image):
+                raise ValueError('expected a decoded texture image')
+            edit_bytes += texture.width * texture.height * 4
+        if edit_bytes > MAX_EDIT_BYTES:
+            raise ValueError('combined native edits exceed byte limit')
+        magic = b'\0DOM' if geometry is not None else b'\0XET'
+        found = [(e, archive.read(e)) for e in archive.entries if e.name == member]
+        found = [(e, data) for e, data in found if data[:4] == magic]
+        if len(found) != 1:
+            raise ValueError('expected one exact native resource of the requested format')
+        entry, data = found[0]
+        if entry.key in pending:
+            raise ValueError('duplicate native resource in edit list')
+        pending[entry.key] = (entry, data, geometry, texture)
+    replacements, receipts = {}, []
+    # Native table order makes equivalent edit lists produce identical bytes,
+    # regardless of manifest ordering. Every conversion uses original bytes.
+    for entry in archive.entries:
+        if entry.key not in pending:
+            continue
+        _, data, geometry, texture = pending[entry.key]
+        if geometry is not None:
+            changed, receipt = model_from_glb(data, geometry, expected_sha256=sha(data))
+            edit_source = {'format': 'glb', 'sha256': sha(geometry)}
+        else:
+            changed, receipt = replace_texture(data, texture, expected_sha256=sha(data))
+            edit_source = {'format': 'rgba8', 'width': texture.width, 'height': texture.height,
+                           'sha256': sha(texture.convert('RGBA').tobytes())}
+        replacements[entry.key] = changed
+        receipts.append({'member': entry.name, 'type_hash': entry.type_hash,
+                         'edit_source': edit_source, 'native_edit': receipt})
+    built = source
+    for entry in archive.entries:
+        if entry.key in replacements:
+            built = Arc(built).replace(entry.name, entry.type_hash, replacements[entry.key], expected_sha256=sha(built))
     checked = Arc(built)
     for old in archive.entries:
         current = checked.read(checked.find(*old.key))
-        if current != (changed if old.key == entry.key else archive.read(old)):
+        expected = replacements[old.key] if old.key in replacements else archive.read(old)
+        if current != expected:
             raise ValueError('copied ARC resource readback mismatch')
-    with Path(output).open('xb') as stream:
-        stream.write(built)
-    if Path(output).read_bytes() != built:
-        raise OSError('written ARC readback mismatch')
+    _publish_archive(built, output)
     return {'source_archive_sha256': sha(source), 'sha256': sha(built), 'output': str(output),
-            'member': member, 'native_edit': receipt, 'unchanged_members_verified': len(archive.entries) - 1,
+            'edits': receipts, 'edited_members_verified': len(replacements),
+            'unchanged_members_verified': len(archive.entries) - len(replacements),
+            'noop_identical': built == source,
             'gameplay_verified': False, 'scope': 'fixed topology/rig and same-size TEX only; no full-cast writer'}
+
+
+def write_archive(source, member, output, *, expected_sha256, geometry_glb=None, texture_image=None):
+    """Single-resource compatibility API, using the transactional batch writer."""
+    edit = {'member': member, 'geometry_glb': geometry_glb, 'texture_image': texture_image}
+    receipt = write_archive_edits(source, [edit], output, expected_sha256=expected_sha256)
+    return dict(receipt, member=member, native_edit=receipt['edits'][0]['native_edit'])
 
 
 def _bounded_file(path, maximum):
@@ -362,25 +439,67 @@ def _bounded_file(path, maximum):
     return data
 
 
+def _png(path):
+    image = Image.open(io.BytesIO(_bounded_file(path, MAX_TEXTURE)))
+    if image.format != 'PNG' or image.width * image.height > 16 * 1024 * 1024:
+        raise ValueError('expected bounded PNG texture replacement')
+    image.load()
+    return image
+
+
+def read_edit_manifest(path):
+    """Read version-1 edits; input files must remain inside the manifest folder."""
+    path = Path(path)
+    doc = json.loads(_bounded_file(path, 1024 * 1024))
+    if not isinstance(doc, dict) or set(doc) != {'version', 'edits'} or type(doc['version']) is not int or doc['version'] != 1:
+        raise ValueError('expected version 1 native edit manifest')
+    if not isinstance(doc['edits'], list) or not 1 <= len(doc['edits']) <= 79:
+        raise ValueError('expected 1..79 native resource edits')
+    root = path.resolve().parent
+    edits = []
+    edit_bytes = 0
+    for edit in doc['edits']:
+        if not isinstance(edit, dict) or set(edit) not in ({'member', 'geometry_glb'}, {'member', 'texture_png'}):
+            raise ValueError('manifest edit requires member and one geometry_glb or texture_png')
+        kind = 'geometry_glb' if 'geometry_glb' in edit else 'texture_png'
+        relative = edit[kind]
+        if not isinstance(relative, str) or not relative or Path(relative).is_absolute():
+            raise ValueError('manifest inputs must be relative paths inside its folder')
+        source = (root / relative).resolve()
+        if not source.is_relative_to(root):
+            raise ValueError('manifest input escapes its folder')
+        value = _bounded_file(source, MAX_GLB) if kind == 'geometry_glb' else _png(source)
+        edit_bytes += len(value) if kind == 'geometry_glb' else value.width * value.height * 4
+        if edit_bytes > MAX_EDIT_BYTES:
+            raise ValueError('combined native edits exceed byte limit')
+        edits.append({'member': edit['member'], 'geometry_glb' if kind == 'geometry_glb' else 'texture_image': value})
+    return edits
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('archive', type=Path)
-    parser.add_argument('--member', required=True)
+    parser.add_argument('--member', help='Exact native resource name for a single edit')
     parser.add_argument('--expected-sha256', required=True)
     edit = parser.add_mutually_exclusive_group(required=True)
     edit.add_argument('--geometry-glb', type=Path, help='Our native GLB with vertex edits; fixed topology and rig')
     edit.add_argument('--texture-png', type=Path, help='Same native dimensions; existing mip chain is regenerated')
+    edit.add_argument('--edits-json', type=Path, help='Version-1 manifest: combine native resource edits transactionally')
     parser.add_argument('--out', type=Path, required=True)
     args = parser.parse_args()
-    image = None
-    if args.texture_png:
-        image = Image.open(io.BytesIO(_bounded_file(args.texture_png, MAX_TEXTURE)))
-        if image.format != 'PNG' or image.width * image.height > 16 * 1024 * 1024:
-            parser.error('expected bounded PNG texture replacement')
-    receipt = write_archive(_bounded_file(args.archive, MAX_ARCHIVE), args.member, args.out,
-                            expected_sha256=args.expected_sha256,
-                            geometry_glb=_bounded_file(args.geometry_glb, MAX_GLB) if args.geometry_glb else None,
-                            texture_image=image)
+    if args.edits_json:
+        if args.member is not None:
+            parser.error('--member is specified by each manifest edit')
+        edits = read_edit_manifest(args.edits_json)
+        receipt = write_archive_edits(_bounded_file(args.archive, MAX_ARCHIVE), edits, args.out,
+                                      expected_sha256=args.expected_sha256)
+    else:
+        if not args.member:
+            parser.error('--member is required for a single native edit')
+        receipt = write_archive(_bounded_file(args.archive, MAX_ARCHIVE), args.member, args.out,
+                                expected_sha256=args.expected_sha256,
+                                geometry_glb=_bounded_file(args.geometry_glb, MAX_GLB) if args.geometry_glb else None,
+                                texture_image=_png(args.texture_png) if args.texture_png else None)
     print(json.dumps(receipt, allow_nan=False))
 
 

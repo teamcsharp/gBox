@@ -206,12 +206,117 @@ def test_worker_handoff_exposes_bounded_writer_cli(monkeypatch, capsys):
     assert args[:3] == ['python', '-m', 'gbox.re5ps3_write']
     assert args[args.index('--member') + 1] == r'pawn\pl\pl00\model\pl0000'
     assert command in prompt('e7ca89bbeb67360d', stage='writer')
-    assert 'one native resource per output' in title['validated_scope']
+    assert 'transactional multi-resource' in title['validated_scope']
+    batch = title['native_multi_write_command']
+    assert batch in prompt('e7ca89bbeb67360d', stage='writer')
+    assert shlex.split(batch)[-4:] == ['--edits-json', 'edits.json', '--out', 'NEW_CHRIS.arc']
     monkeypatch.setattr(sys, 'argv', [args[2], '--help'])
     with pytest.raises(SystemExit) as stopped:
         W.main()
     assert stopped.value.code == 0
     assert '--texture-png' in capsys.readouterr().out
+
+
+def test_publication_is_exclusive_and_cleans_failed_staging(tmp_path, monkeypatch):
+    target = tmp_path / 'output.arc'
+    target.write_bytes(b'existing')
+    with pytest.raises(FileExistsError):
+        W._publish_archive(b'new', target)
+    assert target.read_bytes() == b'existing'
+    assert list(tmp_path.iterdir()) == [target]
+    fresh = tmp_path / 'fresh.arc'
+    def unavailable(*args):
+        raise OSError('hard-link publication unavailable')
+    monkeypatch.setattr(W.os, 'link', unavailable)
+    with pytest.raises(OSError, match='publication unavailable'):
+        W._publish_archive(b'complete output', fresh)
+    assert not fresh.exists() and list(tmp_path.iterdir()) == [target]
+
+
+@pytest.mark.parametrize('doc,match', [
+    ({'version': 2, 'edits': []}, 'version 1'),
+    ({'version': True, 'edits': []}, 'version 1'),
+    ({'version': 1, 'edits': []}, '1..79'),
+    ({'version': 1, 'edits': [{}] * 80}, '1..79'),
+    ({'version': 1, 'edits': [{'member': 'a', 'geometry_glb': '../outside.glb'}]}, 'escapes'),
+    ({'version': 1, 'edits': [{'member': 'a', 'geometry_glb': 'a.glb', 'texture_png': 'a.png'}]}, 'one geometry'),
+])
+def test_manifest_rejects_ambiguous_schema_and_outside_files(tmp_path, doc, match):
+    manifest = tmp_path / 'edits.json'
+    manifest.write_text(json.dumps(doc))
+    with pytest.raises(ValueError, match=match):
+        W.read_edit_manifest(manifest)
+
+
+@pytest.mark.parametrize('tag', ['uPl00ChrisNormal', 'uPl01ShebaNormal'])
+def test_owned_transaction_combines_resources_deterministically_or_creates_nothing(tmp_path, tag, monkeypatch, capsys):
+    import sys
+    root = Path(os.environ.get('GBOX_RE5_EVIDENCE', str(Path.home() / 'gbox-pr-audit-20261017/re-export-evidence')))
+    paths = list(root.glob(f're5/**/{tag}.arc'))
+    if not paths:
+        pytest.skip('owned RE5 PS3 archive evidence unavailable')
+    assert len(paths) == 1
+    original = paths[0].read_bytes(); archive = Arc(original)
+    native_entry = next(e for e in archive.entries if archive.read(e)[:4] == b'\0DOM')
+    native = archive.read(native_entry)
+    model_path = tmp_path / 'model.glb'
+    export_archive(archive, native_entry.name, model_path)
+    original_glb = model_path.read_bytes()
+    def move(doc, blob):
+        at = attr_offset(doc, 'POSITION')
+        struct.pack_into('<f', blob, at, struct.unpack_from('<f', blob, at)[0] + .0001)
+    changed_glb = edited_glb(model_path, move)
+    model_path.write_bytes(changed_glb)
+    tex_entries = [e for e in archive.entries if archive.read(e)[:4] == b'\0XET'][:2]
+    noop = tmp_path / 'noop-batch.arc'
+    noop_receipt = W.write_archive_edits(original, [
+        {'member': native_entry.name, 'geometry_glb': original_glb},
+        {'member': tex_entries[0].name, 'texture_image': Texture(archive.read(tex_entries[0])).image()},
+    ], noop, expected_sha256=sha(original))
+    assert noop.read_bytes() == original and noop_receipt['noop_identical']
+    edits = [{'member': native_entry.name, 'geometry_glb': changed_glb}]
+    manifest_edits = [{'member': native_entry.name, 'geometry_glb': model_path.name}]
+    expected = {native_entry.key: W.model_from_glb(native, changed_glb, expected_sha256=sha(native))[0]}
+    for index, entry in enumerate(tex_entries):
+        raw = archive.read(entry); tex = Texture(raw)
+        im = Image.new('RGBA', (tex.width, tex.height), (0, 255 if index == 0 else 0, 255, 255))
+        png = tmp_path / f'texture{index}.png'; im.save(png)
+        edits.append({'member': entry.name, 'texture_image': im})
+        manifest_edits.append({'member': entry.name, 'texture_png': png.name})
+        expected[entry.key] = W.replace_texture(raw, im, expected_sha256=sha(raw))[0]
+    manifest = tmp_path / 'edits.json'
+    manifest.write_text(json.dumps({'version': 1, 'edits': manifest_edits}))
+    output = tmp_path / 'combined.arc'
+    monkeypatch.setattr(sys, 'argv', ['gbox.re5ps3_write', str(paths[0]), '--edits-json', str(manifest),
+                                    '--expected-sha256', sha(original), '--out', str(output)])
+    W.main()
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt['edited_members_verified'] == 3
+    assert receipt['unchanged_members_verified'] == len(archive.entries) - 3
+    assert {e['edit_source']['format'] for e in receipt['edits']} == {'glb', 'rgba8'}
+    assert next(e for e in receipt['edits'] if e['edit_source']['format'] == 'glb')['edit_source']['sha256'] == sha(changed_glb)
+    actual = Arc(output.read_bytes())
+    for entry in archive.entries:
+        raw = archive.read(entry)
+        got = actual.read(actual.find(*entry.key))
+        assert got == expected.get(entry.key, raw)
+        assert (got != raw) == (entry.key in expected)
+    reverse = tmp_path / 'reversed.arc'
+    W.write_archive_edits(original, list(reversed(edits)), reverse, expected_sha256=sha(original))
+    assert reverse.read_bytes() == output.read_bytes()
+    for malformed, match in [
+        (edits + [edits[0]], 'duplicate'),
+        (edits + [{'member': tex_entries[0].name, 'texture_image': Image.new('RGBA', (1, 1))}], 'duplicate'),
+        (edits[:-1] + [{'member': tex_entries[1].name, 'texture_image': Image.new('RGBA', (1, 1))}], 'dimensions'),
+        (edits[:-1] + [{'member': 'missing', 'texture_image': edits[1]['texture_image']}], 'exact native'),
+        ([], 'nonempty'),
+    ]:
+        bad = tmp_path / 'bad.arc'
+        before = sorted(p.name for p in tmp_path.iterdir())
+        with pytest.raises(ValueError, match=match):
+            W.write_archive_edits(original, malformed, bad, expected_sha256=sha(original))
+        assert not bad.exists() and sorted(p.name for p in tmp_path.iterdir()) == before
+    assert paths[0].read_bytes() == original
 
 
 def test_owned_model_and_texture_arc_roundtrips_and_independent_readback(tmp_path):
