@@ -28,6 +28,16 @@ DATA_SFO = 'dev_hdd0/game/NPMG00020/PARAM.SFO'
 FIRMWARE = 'dev_flash/vsh/module/vsh.self'
 SCHEMA = 'gbox-savemgo-bundle-v1'
 RECEIPT = '.gbox-savemgo-receipt.json'
+UPDATE_RECEIPT = '.gbox-savemgo-launcher-update.json'
+UPDATE_SCHEMA = 'gbox-savemgo-applied-launcher-update-v1'
+DATA_UPDATE_RECEIPT = '.gbox-savemgo-data-update.json'
+DATA_UPDATE_SCHEMA = 'gbox-savemgo-verified-data-update-v1'
+UPDATE_ZIP = 'dev_hdd0/tmp/NPMG00010.zip'
+UPDATE_PREFIX = 'dev_hdd0/game/NPMG00010/'
+UPDATE_FILES = {'USRDIR/EBOOT.BIN': 32 * 2**20, 'PARAM.SFO': 64 * 1024,
+                'ICON0.PNG': 2 * 2**20, 'PIC1.PNG': 16 * 2**20, 'PS3LOGO.DAT': 64 * 1024}
+UPDATE_PATHS = {UPDATE_PREFIX + name for name in UPDATE_FILES}
+LAUNCHER_TEMP_FILES = {'dev_hdd0/tmp/mgo_launcher.txt'}
 class BundleError(ValueError):
     """Invalid or busy owned package; user cancellation exceptions stay separate."""
 
@@ -65,7 +75,8 @@ def _mutable(name):
     lower = name.casefold()
     return (lower.split('/')[0] in MUTABLE_DIRS or lower.startswith('dev_hdd0/home/')
             or lower.startswith('dev_hdd0/vsh/') or lower.startswith('dev_hdd0/locks/')
-            or lower in {'rpcs3.buf', 'update_history.log'} or lower.startswith('rpcs3.log'))
+            or lower in {'rpcs3.buf', 'update_history.log'} or lower.startswith('rpcs3.log')
+            or lower in LAUNCHER_TEMP_FILES)
 
 
 def _absolute(path):
@@ -238,11 +249,303 @@ def _hash_file(path, progress=None, percent=0, text='Checking SaveMGO content', 
     return {'size': size, 'sha256': digest.hexdigest(), 'crc32': f'{crc & 0xffffffff:08x}'}
 
 
-def verify_install(root, profile, *, progress=None, _cache=None, _percent=5):
+def _read_receipt(path):
+    path = _guard(path)
+    if not path.is_file() or path.stat().st_size > 4 * 2**20 or path.stat().st_nlink != 1:
+        raise BundleError('SaveMGO receipt is missing, linked or unbounded; existing profile left unchanged')
+    try:
+        result = json.loads(path.read_text(encoding='utf8'))
+    except (ValueError, UnicodeError):
+        raise BundleError('SaveMGO receipt is malformed; existing profile left unchanged') from None
+    if not isinstance(result, dict):
+        raise BundleError('SaveMGO receipt is malformed; existing profile left unchanged')
+    return result
+
+
+def _base_receipt(receipt, profile):
+    expected = {row['path']: row for row in profile['immutable_manifest']}
+    files = receipt.get('immutable_files')
+    if (receipt.get('schema') != SCHEMA or receipt.get('source_fingerprint') != profile['source_fingerprint']
+            or not re.fullmatch('[0-9a-f]{64}', str(receipt.get('archive_sha256', '')))
+            or not isinstance(files, dict) or not expected.keys() <= files.keys()
+            or files.keys() - expected.keys() - LAUNCHER_TEMP_FILES):
+        raise BundleError('SaveMGO base receipt identity or inventory differs')
+    for name, row in expected.items():
+        prior = files[name]
+        if (not isinstance(prior, dict) or prior.get('size') != row['size'] or prior.get('crc32') != row['crc32']
+                or not re.fullmatch('[0-9a-f]{64}', str(prior.get('sha256', '')))
+                or name in profile['critical_sha256'] and prior['sha256'] != profile['critical_sha256'][name]):
+            raise BundleError('SaveMGO base receipt content differs')
+
+
+def _revision(value):
+    if not isinstance(value, str) or not re.fullmatch(r'00\.[0-9]{2}', value) or not '00.30' < value <= '00.99':
+        raise BundleError('SaveMGO launcher update revision is outside the supported monotonic range')
+    return value
+
+
+def _launcher_sfo(data):
+    from .catalog import param_sfo
+    try:
+        values = param_sfo(data) if data.startswith(b'\0PSF') else {}
+    except (ValueError, IndexError, KeyError, struct.error):
+        values = {}
+    if values.get('TITLE_ID') != 'NPMG00010' or values.get('CATEGORY') != 'HG':
+        raise BundleError('SaveMGO launcher update title/category differs')
+    return _revision(values.get('APP_VER'))
+
+
+def _update_archive(path):
+    """Validate an update already downloaded/applied by the bundled game; never extract it."""
+    path = _guard(path)
+    before = path.stat()
+    if not path.is_file() or not 0 < before.st_size <= 16 * 2**20 or before.st_nlink != 1:
+        raise BundleError('SaveMGO launcher update ZIP is linked or exceeds its budget')
+    files, expanded = {}, 0
+    try:
+        with zipfile.ZipFile(path) as archive:
+            entries, seen = archive.infolist(), set()
+            if len(entries) not in (5, 6):
+                raise BundleError('SaveMGO launcher update must contain only its five allowed files')
+            for entry in entries:
+                name = _safe_name(entry.orig_filename)
+                if name.casefold() in seen:
+                    raise BundleError('SaveMGO launcher update has colliding paths')
+                seen.add(name.casefold())
+                mode = stat.S_IFMT(entry.external_attr >> 16)
+                if (mode not in (0, stat.S_IFREG, stat.S_IFDIR) or entry.external_attr & 0x400
+                        or entry.flag_bits & 1 or entry.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)):
+                    raise BundleError('Unsupported launcher update member attributes')
+                if entry.is_dir() and name == 'USRDIR':
+                    continue
+                if entry.is_dir() or name not in UPDATE_FILES or not 0 < entry.file_size <= UPDATE_FILES[name]:
+                    raise BundleError('SaveMGO launcher update contains a forbidden path or member size')
+                expanded += entry.file_size
+                if expanded > 32 * 2**20:
+                    raise BundleError('SaveMGO launcher update expanded-size budget exceeded')
+                data = archive.read(entry)  # ZIP CRC is checked; the member is bounded above.
+                if len(data) != entry.file_size:
+                    raise BundleError('SaveMGO launcher update member size differs')
+                if name == 'USRDIR/EBOOT.BIN' and not data.startswith(b'SCE\0'):
+                    raise BundleError('SaveMGO launcher update executable is not a PS3 SELF')
+                if name.endswith('.PNG') and not data.startswith(b'\x89PNG\r\n\x1a\n'):
+                    raise BundleError('SaveMGO launcher update image type differs')
+                if name == 'PARAM.SFO':
+                    revision = _launcher_sfo(data)
+                files[UPDATE_PREFIX + name] = {'size': len(data), 'crc32': f'{entry.CRC:08x}',
+                                               'sha256': hashlib.sha256(data).hexdigest()}
+        if files.keys() != UPDATE_PATHS:
+            raise BundleError('SaveMGO launcher update is incomplete')
+        archive_sha = _hash_file(path)['sha256']
+    except (zipfile.BadZipFile, RuntimeError, zlib.error, EOFError):
+        raise BundleError('SaveMGO launcher update ZIP failed integrity validation') from None
+    after = path.stat()
+    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        raise BundleError('SaveMGO launcher update changed during validation')
+    return {'app_ver': revision, 'update_sha256': archive_sha, 'files': files}
+
+
+def _update_receipt(receipt, base, profile):
+    files = receipt.get('files')
+    if (receipt.get('schema') != UPDATE_SCHEMA or receipt.get('source_fingerprint') != profile['source_fingerprint']
+            or receipt.get('base_archive_sha256') != base['archive_sha256']
+            or receipt.get('provenance') != 'local ZIP already applied by bundled launcher; not vendor-signature authenticated'
+            or not re.fullmatch('[0-9a-f]{64}', str(receipt.get('update_sha256', '')))
+            or not isinstance(files, dict) or files.keys() != UPDATE_PATHS):
+        raise BundleError('SaveMGO launcher update receipt identity or inventory differs')
+    _revision(receipt.get('app_ver'))
+    for name, row in files.items():
+        maximum = UPDATE_FILES[name[len(UPDATE_PREFIX):]]
+        if (not isinstance(row, dict) or type(row.get('size')) is not int or not 0 < row['size'] <= maximum
+                or not re.fullmatch('[0-9a-f]{8}', str(row.get('crc32', '')))
+                or not re.fullmatch('[0-9a-f]{64}', str(row.get('sha256', '')))):
+            raise BundleError('SaveMGO launcher update receipt content differs')
+
+
+def _overlay_profile(profile, base, update, *, full=False):
+    files = update['files']
+    if not UPDATE_PATHS <= {r['path'] for r in profile['immutable_manifest']}:
+        raise BundleError('SaveMGO base does not contain the complete launcher update scope')
+    critical = dict(profile['critical_sha256'])
+    if full:
+        critical.update({name: row['sha256'] for name, row in base['immutable_files'].items()})
+    critical.update({name: row['sha256'] for name, row in files.items()})
+    rows = [dict(row, **{k: files[row['path']][k] for k in ('size', 'crc32')}) if row['path'] in files else row
+            for row in profile['immutable_manifest']]
+    return profile | {'immutable_manifest': rows, 'critical_sha256': critical}
+
+
+def _check_added_immutable(home, profile):
+    expected = {row['path'] for row in profile['files']}
+    allowed = {RECEIPT, UPDATE_RECEIPT, DATA_UPDATE_RECEIPT, '.gbox-savemgo-running.lock', UPDATE_ZIP}
+    count = 0
+    for directory, directories, names in os.walk(home, followlinks=False):
+        here = Path(directory)
+        directories[:] = [name for name in directories if not _mutable((here / name).relative_to(home).as_posix() + '/')]
+        for name in directories:
+            _guard(here / name)
+        for name in names:
+            relative = (here / name).relative_to(home).as_posix()
+            count += 1
+            if count > 20000:
+                raise BundleError('SaveMGO installed inventory exceeds its bounded verification budget')
+            if not _mutable(relative) and relative not in expected | allowed:
+                raise BundleError('Unexpected immutable file outside the SaveMGO launcher update scope')
+
+
+def _record_update(path, value):
+    _guard(path)
+    fd, temporary = tempfile.mkstemp(prefix='.gbox-savemgo-update-', suffix='.tmp', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf8') as stream:
+            json.dump(value, stream, sort_keys=True)
+            stream.flush(); os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def _data_overlay(home, profile, base):
+    """Use a separately verified CDN receipt for already-applied game data.
+
+    Creating this receipt requires an explicit comparison with the fixed HTTPS
+    CDN. The launcher log alone is not evidence; no changed file is auto-trusted.
+    The original archive receipt remains unchanged, and updated bytes are always
+    rehashed. Scope excludes the host emulator, firmware, launcher and profiles.
+    """
+    path = _guard(home / DATA_UPDATE_RECEIPT)
+    if not path.exists():
+        return profile, base
+    update = _read_receipt(path)
+    files = update.get('files')
+    if (update.get('schema') != DATA_UPDATE_SCHEMA
+            or update.get('source_fingerprint') != profile['source_fingerprint']
+            or update.get('base_archive_sha256') != base['archive_sha256']
+            or update.get('provenance') != 'installed bytes compared with https://cdn.mgo2.net/'
+            or not isinstance(files, dict) or not 0 < len(files) <= 512):
+        raise BundleError('SaveMGO data update receipt identity or inventory differs')
+    prefix = 'dev_hdd0/game/NPMG00020/'
+    expected = {r['path'] for r in profile['immutable_manifest']}
+    total = 0
+    for name, row in files.items():
+        _safe_name(name)
+        if (name not in expected or not (name.startswith(DATA_ROOT + '/') or name == prefix + 'plugin.sprx')
+                or not isinstance(row, dict) or type(row.get('size')) is not int
+                or not 0 < row['size'] <= MAX_MEMBER
+                or row.get('url') != 'https://cdn.mgo2.net/' + name[len(prefix):]
+                or not re.fullmatch('[0-9a-f]{8}', str(row.get('crc32', '')))
+                or not re.fullmatch('[0-9a-f]{64}', str(row.get('sha256', '')))):
+            raise BundleError('SaveMGO data update receipt scope or content differs')
+        total += row['size']
+    if total > 2 * 2**30:
+        raise BundleError('SaveMGO data update exceeds its budget')
+    rows = [dict(row, **{k: files[row['path']][k] for k in ('size', 'crc32')}) if row['path'] in files else row
+            for row in profile['immutable_manifest']]
+    critical = profile['critical_sha256'] | {name: row['sha256'] for name, row in files.items()}
+    return (profile | {'immutable_manifest': rows, 'critical_sha256': critical},
+            base | {'immutable_files': base['immutable_files'] | files})
+
+
+def _verify_managed(home, profile, base, progress, *, source_archive=None):
+    _base_receipt(base, profile)
+    profile, base = _data_overlay(home, profile, base)
+    path = _guard(home / UPDATE_RECEIPT)
+    previous = _read_receipt(path) if path.exists() else None
+    if previous is not None:
+        _update_receipt(previous, base, profile)
+    archive = _guard(home / UPDATE_ZIP)
+    candidate = _update_archive(archive) if archive.exists() else None
+    adopt = candidate is not None and (previous is None or candidate['update_sha256'] != previous['update_sha256'])
+    if adopt:
+        if previous is not None and candidate['app_ver'] <= previous['app_ver']:
+            raise BundleError('SaveMGO launcher update is not newer than the adopted revision')
+        update = candidate | {'schema': UPDATE_SCHEMA, 'source_fingerprint': profile['source_fingerprint'],
+            'base_archive_sha256': base['archive_sha256'],
+            'provenance': 'local ZIP already applied by bundled launcher; not vendor-signature authenticated'}
+        with runtime_lease(home):  # do not race a running bundled launcher or replace its game files
+            _check_added_immutable(home, profile)
+            overlay = _overlay_profile(profile, base, update, full=True)
+            result = verify_install(home, overlay, progress=progress)
+            # The exact installed payload must match every ZIP member, including images/logo.
+            if any(result['immutable_files'][name]['sha256'] != row['sha256'] for name, row in update['files'].items()):
+                raise BundleError('SaveMGO launcher update is only partially applied')
+            _record_update(path, update)
+        previous = update
+    else:
+        if previous and candidate and any(candidate[k] != previous[k] for k in ('app_ver', 'files')):
+            raise BundleError('SaveMGO launcher update ZIP and receipt differ')
+        if previous:
+            _check_added_immutable(home, profile)
+        overlay = _overlay_profile(profile, base, previous) if previous else profile
+        cached = dict(base, immutable_files=dict(base['immutable_files']))
+        if previous:
+            for name, row in previous['files'].items():
+                cached['immutable_files'][name] = row
+        if source_archive is not None:
+            with runtime_lease(home):
+                result = verify_install(home, overlay, progress=progress, _cache=cached, archive=source_archive)
+        else:
+            result = verify_install(home, overlay, progress=progress, _cache=cached)
+    if previous and _launcher_sfo((home / SFO).read_bytes()) != previous['app_ver']:
+        raise BundleError('SaveMGO installed launcher revision and update receipt differ')
+    return result | {'launcher_revision': previous['app_ver'] if previous else profile['app_ver'],
+                     'launcher_update_sha256': previous['update_sha256'] if previous else None}
+
+
+def _heal_file(path, archive, name, row, profile):
+    """Restore one drifted member from the verified source archive, atomically.
+
+    The archive was fingerprinted and its critical identity validated before the
+    verify pass, so its members are the trusted content. The restored file must
+    match the manifest row and, for critical files, the pinned identity; the
+    replacement lands with os.replace so the home never holds a partial file.
+    """
+    if name.startswith(DATA_ROOT + '/') or name == 'dev_hdd0/game/NPMG00020/plugin.sprx':
+        raise BundleError(f'SaveMGO game data differs and needs update verification; left unchanged: {name}')
+    fd, tmp = tempfile.mkstemp(prefix='.heal-', dir=str(path.parent))
+    digest, crc, size = hashlib.sha256(), 0, 0
+    try:
+        with zipfile.ZipFile(archive) as zipped:
+            info = zipped.getinfo(PREFIX + name)
+            if info.file_size != row['size']:
+                raise BundleError(f'SaveMGO source archive member differs from its manifest: {name}')
+            with os.fdopen(fd, 'wb') as dst, zipped.open(info) as src:
+                for block in iter(lambda: src.read(BLOCK), b''):
+                    size += len(block)
+                    if size > row['size']:
+                        raise BundleError(f'SaveMGO source archive member exceeded its declared size: {name}')
+                    dst.write(block); digest.update(block); crc = zlib.crc32(block, crc)
+        if size != row['size'] or f'{crc & 0xffffffff:08x}' != row['crc32']:
+            raise BundleError(f'SaveMGO source archive member CRC differs from its manifest: {name}')
+        result = {'size': size, 'crc32': row['crc32'], 'sha256': digest.hexdigest()}
+        if name in profile['critical_sha256'] and result['sha256'] != profile['critical_sha256'][name]:
+            raise BundleError(f'SaveMGO source archive critical file differs from its pinned identity: {name}')
+        try:
+            os.replace(tmp, path)
+        except OSError as exc:
+            raise BundleError(f'SaveMGO drifted file is locked and could not be restored: {name}') from exc
+        info = path.stat()
+        if not path.is_file() or info.st_size != size:
+            raise BundleError(f'Restored SaveMGO file did not settle: {name}')
+        return result | {'mtime_ns': info.st_mtime_ns}
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def verify_install(root, profile, *, progress=None, _cache=None, _percent=5, archive=None):
     """Verify local immutable files; leave personal configuration/saves/caches untouched.
 
     A private previous staging receipt can reuse unchanged file stats. Critical
     files are always rehashed; initial adoption hashes/CRC-checks every immutable file.
+
+    When `archive` is given (the just-fingerprinted source package), a file whose
+    content drifted from the manifest is restored from the archive and re-checked
+    instead of failing the launch. Files that are changing while they are read are
+    never restored: a live writer is reported, not fought. Restored paths are
+    returned as `healed_files` so the launch surface reports them.
     """
     root = _guard(root)
     if not root.is_dir() or profile.get('schema') != SCHEMA:
@@ -251,15 +554,39 @@ def verify_install(root, profile, *, progress=None, _cache=None, _percent=5):
         raise BundleError('Discovery profile has the wrong pinned SaveMGO executable')
     expected = profile['immutable_manifest']
     cached = (_cache or {}).get('immutable_files', {}) if (_cache or {}).get('source_fingerprint') == profile['source_fingerprint'] else {}
-    verified = {}
+    verified, healed = {}, []
     for index, row in enumerate(expected):
         name = row['path']
         _safe_name(name)
         path = _guard(root / name)
-        info = path.stat()
-        if not path.is_file() or info.st_size != row['size'] or info.st_nlink != 1:
-            raise BundleError('SaveMGO immutable installation file is missing, linked or differs')
+        try:
+            info = path.stat()
+        except FileNotFoundError:
+            if archive is not None:
+                verified[name] = _heal_file(path, archive, name, row, profile)
+                healed.append(name)
+                if index % 32 == 0:
+                    _notify(progress, _percent, f'Verifying local SaveMGO immutable files: {index + 1:,} / {len(expected):,} checked')
+                continue
+            raise BundleError(f'SaveMGO immutable installation file is missing: {name}')
+        if not path.is_file() or info.st_nlink != 1:
+            if archive is not None:
+                verified[name] = _heal_file(path, archive, name, row, profile)
+                healed.append(name)
+                if index % 32 == 0:
+                    _notify(progress, _percent, f'Verifying local SaveMGO immutable files: {index + 1:,} / {len(expected):,} checked')
+                continue
+            raise BundleError(f'SaveMGO immutable installation file is missing, linked or differs: {name}')
         previous = cached.get(name, {})
+        if info.st_size != row['size']:
+            if archive is not None:
+                verified[name] = _heal_file(path, archive, name, row, profile)
+                healed.append(name)
+                if index % 32 == 0:
+                    _notify(progress, _percent, f'Verifying local SaveMGO immutable files: {index + 1:,} / {len(expected):,} checked')
+                continue
+            raise BundleError(f'SaveMGO immutable installation file differs: {name} '
+                              f'(expected size {row["size"]}, found {info.st_size})')
         if (name not in profile['critical_sha256'] and Path(name).suffix.casefold() not in ('.exe', '.dll')
                 and previous.get('size') == info.st_size
                 and previous.get('mtime_ns') == info.st_mtime_ns and previous.get('crc32') == row['crc32']
@@ -268,12 +595,24 @@ def verify_install(root, profile, *, progress=None, _cache=None, _percent=5):
         else:
             result = _hash_file(path, progress, _percent, 'Verifying local SaveMGO immutable files')
         after = path.stat()
-        if ((info.st_size, info.st_mtime_ns) != (after.st_size, after.st_mtime_ns)
-                or result['size'] != row['size'] or result['crc32'] != row['crc32']
-                or previous.get('sha256') and result['sha256'] != previous['sha256']
-                or name in profile['critical_sha256'] and result['sha256'] != profile['critical_sha256'][name]):
-            raise BundleError('SaveMGO immutable content integrity differs')
-        verified[name] = result | {'mtime_ns': info.st_mtime_ns}
+        if (info.st_size, info.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            raise BundleError(f'SaveMGO immutable file changed during verification: {name}')
+        problem = None
+        if result['size'] != row['size']:
+            problem = f'size differs (expected {row["size"]}, found {result["size"]})'
+        elif result['crc32'] != row['crc32']:
+            problem = f'CRC differs (expected {row["crc32"]}, found {result["crc32"]})'
+        elif previous.get('sha256') and result['sha256'] != previous['sha256']:
+            problem = 'content differs from the verified receipt'
+        elif name in profile['critical_sha256'] and result['sha256'] != profile['critical_sha256'][name]:
+            problem = 'critical identity differs'
+        if problem:
+            if archive is None:
+                raise BundleError(f'SaveMGO immutable content integrity differs: {name} ({problem})')
+            verified[name] = _heal_file(path, archive, name, row, profile)
+            healed.append(name)
+        else:
+            verified[name] = result | {'mtime_ns': info.st_mtime_ns}
         if index % 32 == 0:
             _notify(progress, _percent, f'Verifying local SaveMGO immutable files: {index + 1:,} / {len(expected):,} checked')
     # Unknown DLLs beside the executable could change what the pinned runner loads.
@@ -284,7 +623,8 @@ def verify_install(root, profile, *, progress=None, _cache=None, _percent=5):
     return {'home': root, 'executable': root / 'rpcs3.exe', 'eboot': root / EBOOT,
             'data_root': root / DATA_ROOT,
             'source_fingerprint': profile['source_fingerprint'], 'verified': True,
-            'immutable_files': verified, 'reused': True, 'profile_values_read': False}
+            'immutable_files': verified, 'reused': True, 'profile_values_read': False,
+            'healed_files': healed}
 
 
 @contextmanager
@@ -338,11 +678,16 @@ def prepare(archive, config, progress=None, *, existing_root=None, expected_fing
             receipt_path = _guard(home / RECEIPT)
             if not receipt_path.is_file() or receipt_path.stat().st_size > 4 * 2**20:
                 raise BundleError('Existing SaveMGO home has no bounded verified receipt; left unchanged')
-            receipt = json.loads(receipt_path.read_text(encoding='utf8'))
+            receipt = _read_receipt(receipt_path)
             if (receipt.get('schema') != SCHEMA or receipt.get('source_fingerprint') != fingerprint
                     or not re.fullmatch('[0-9a-f]{64}', str(receipt.get('archive_sha256', '')))):
                 raise BundleError('SaveMGO receipt identity differs; existing profile left unchanged')
-            result = verify_install(home, profile, progress=progress, _cache=receipt)
+            result = _verify_managed(home, profile, receipt, progress, source_archive=archive)
+            if result.get('healed_files'):
+                for name in result['healed_files']:
+                    receipt['immutable_files'][name] = result['immutable_files'][name]
+                _record_update(receipt_path, receipt)
+                _notify(progress, 8, 'Restored drifted SaveMGO file(s): ' + ', '.join(result['healed_files']))
             return result | {'archive_sha256': receipt['archive_sha256']}
         # The existing office package is adopted read-only, never copied to another PC.
         existing = Path(existing_root) if existing_root is not None else None
@@ -361,7 +706,8 @@ def prepare(archive, config, progress=None, *, existing_root=None, expected_fing
                            'archive_sha256': source['sha256'], 'installed_root': str(_absolute(existing)),
                            'immutable_files': result['immutable_files']}
                 receipt_path.write_text(json.dumps(receipt, sort_keys=True), encoding='utf8')
-                return result | {'archive_sha256': source['sha256'], 'adopted_existing': True}
+                return result | {'archive_sha256': source['sha256'], 'adopted_existing': True,
+                                 'launcher_revision': profile['app_ver'], 'launcher_update_sha256': None}
         if shutil.disk_usage(base).free < profile['expanded_bytes'] + 512 * 2**20:
             raise BundleError('Not enough local disk space for SaveMGO plus safety margin')
         before = archive.stat()
@@ -404,7 +750,8 @@ def prepare(archive, config, progress=None, *, existing_root=None, expected_fing
             stage.rename(home)
             return result | {'home': home, 'executable': home / 'rpcs3.exe', 'eboot': home / EBOOT,
                              'data_root': home / DATA_ROOT,
-                             'archive_sha256': source['sha256'], 'reused': False}
+                             'archive_sha256': source['sha256'], 'reused': False,
+                             'launcher_revision': profile['app_ver'], 'launcher_update_sha256': None}
         except BaseException:
             # Only our unpublished, uniquely named stage is removed; never any existing profile.
             if stage.parent == base and stage.name.startswith('.stage-' + fingerprint[:12] + '-'):

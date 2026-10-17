@@ -1858,20 +1858,37 @@ async function tkProvidersLoad() {
   if (TK.providersBusy) return;
   TK.providersBusy = true;
   const want = TK.providersWindow;
-  let r;
-  try { r = await gbox.api(`/api/hermes/providers?window=${encodeURIComponent(want)}`); } finally { TK.providersBusy = false; }
+  let r, pool;
+  try { [r, pool] = await Promise.all([gbox.api(`/api/hermes/providers?window=${encodeURIComponent(want)}`),
+    gbox.api('/api/hermes/local/nodes')]); } finally { TK.providersBusy = false; }
   if (!$("#taskpanel").classList.contains("on")) return;
   if (want !== TK.providersWindow) { tkProvidersLoad(); return; }
   TK.providers = r.ok ? r.data : { error: r.error || "request failed" };
+  if (pool?.ok) TK.providers.pool = pool.data;
   tkProvidersRender();
 }
 function tkProvidersRender() {
+  if (TK.capacitySaving || document.activeElement?.matches('[data-tkp-capacity]')) return;
   const P = window.GBoxProviders; if (!P) return;
   const box = $("#tkv-providers"), html = P.cards(TK.providers, { window: TK.providersWindow });
   if (box.tkHtml !== html) { box.innerHTML = html; box.tkHtml = html; }
   tkRender($("#tk-providers"), P.table(TK.providers, { window: TK.providersWindow }), $("#tk-technical"));
 }
-function tkProvidersWindow(e) {
+async function tkProvidersWindow(e) {
+  const node = e.target.closest('[data-tkp-node]');
+  const model = e.target.closest('[data-tkp-model]');
+  if (node || model) {
+    const control = node || model; control.disabled = true;
+    try {
+      const r = node ? await gbox.api(`/api/hermes/local/nodes/${encodeURIComponent(node.dataset.tkpNode)}`,
+        { enabled: node.checked }) : await gbox.api('/api/hermes/local/models/action',
+        { action: model.dataset.tkpModel, model: model.dataset.model });
+      if (!r.ok) toast(r.error || 'Could not update local task machine', 9000);
+      else toast(node ? `${node.dataset.tkpNode} ${node.checked ? 'enabled' : 'disabled'} for new task calls` : 'Model action queued on sparkDeux');
+    } catch (error) { toast(error.message, 9000); }
+    finally { control.disabled = false; tkProvidersLoad(); }
+    return;
+  }
   const b = e.target.closest("[data-tkp-window]"); if (!b || b.dataset.tkpWindow === TK.providersWindow) return;
   TK.providersWindow = b.dataset.tkpWindow;
   try { localStorage.setItem("gbox.tasks.providersWindow", TK.providersWindow); } catch {}
@@ -1879,6 +1896,27 @@ function tkProvidersWindow(e) {
 }
 $("#tkv-providers").onclick = tkProvidersWindow;
 $("#tk-providers").onclick = tkProvidersWindow;
+function tkCapacityPreview(e) {
+  const slider = e.target.closest('[data-tkp-capacity]'); if (!slider) return;
+  const capacity = Number(slider.dataset.choices.split(',')[Number(slider.value)]);
+  slider.closest('label').querySelector('[data-tkp-capacity-value]').textContent = capacity;
+  slider.setAttribute('aria-valuetext', `${capacity} tasks`);
+}
+async function tkCapacityChange(e) {
+  const slider = e.target.closest('[data-tkp-capacity]'); if (!slider) return;
+  const capacity = Number(slider.dataset.choices.split(',')[Number(slider.value)]);
+  TK.capacitySaving = true; slider.disabled = true;
+  try {
+    const r = await gbox.api(`/api/hermes/local/nodes/${encodeURIComponent(slider.dataset.tkpCapacity)}/capacity`, { capacity });
+    if (!r.ok) toast(r.error || 'Could not change task capacity', 9000);
+    else toast(`${slider.dataset.tkpCapacity}: attempting up to ${capacity} concurrent tasks`);
+  } catch (error) { toast(error.message, 9000); }
+  finally { slider.disabled = false; slider.blur(); TK.capacitySaving = false; tkProvidersLoad(); }
+}
+for (const id of ['#tkv-providers', '#tk-providers']) {
+  $(id).oninput = tkCapacityPreview;
+  $(id).onchange = tkCapacityChange;
+}
 $("#tk-visual-tab").onclick = () => tkView("visual");
 $("#tk-technical-tab").onclick = () => tkView("technical");
 $("#tkv-side").onclick = e => {
@@ -3021,10 +3059,10 @@ $("#reqnew").onclick = () => {
 };
 $("#reqexport").onclick = async () => {                  // the whole request history, oldest first, as Markdown
   const s = await gbox.settings(), t = await gbox.token();
-  const r = await fetch(s.apiUrl + "/api/requests/export", { headers: { authorization: `Bearer ${t}` } });
+  const r = await fetch(s.apiUrl + "/api/requests/export?prompts_only=true", { headers: { authorization: `Bearer ${t}` } });
   if (!r.ok) return alert("Export failed: " + r.status);
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(await r.blob()); a.download = `gbox-request-history-${new Date().toISOString().slice(0, 10)}.md`;
+  a.href = URL.createObjectURL(await r.blob()); a.download = `gbox-prompt-history-${new Date().toISOString().slice(0, 10)}.md`;
   a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 };
 let requestFilter = localStorage.getItem("gbox_request_filter") || "all";

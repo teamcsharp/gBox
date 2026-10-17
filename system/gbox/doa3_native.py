@@ -211,9 +211,10 @@ def prepare_play_disc(source: Path, config, game: dict, progress=lambda *_: None
     source = source.absolute()
     original = _original_xbe(source)
     game_id = game["game_id"]  # supports_game restricts this to reviewed catalog identities.
-    parent = (config.runtime / "xbox" / "doa3-native-play" / game_id).absolute()
-    disc, marker = parent / "disc", parent / "disc-receipt.json"
-    _plain_path(parent)
+    base_parent = (config.runtime / "xbox" / "doa3-native-play" / game_id).absolute()
+    mod = game.get('mod') or ''
+    if not isinstance(mod, str) or len(mod) > 160 or any(c in mod for c in '\x00\r\n'):
+        raise ToolUnavailable('Native DOA3 needs a bounded build identity')
     progress(35, "Checking the DOA3 disc and its persistent save folder")
     inventory = []
     for relative, path in _disc_files(source.parent):
@@ -221,6 +222,13 @@ def prepare_play_disc(source: Path, config, game: dict, progress=lambda *_: None
                           "size": path.stat().st_size,
                           "sha256": XBE_SHA256 if path == source else _sha(path)})
     fingerprint = hashlib.sha256(json.dumps(inventory, sort_keys=True).encode()).hexdigest()
+    # Original saves keep their existing path. Every asset build/revision gets
+    # its own verified play view and native storage, without replacing a prior
+    # build or importing the operator's personal saves into an exported mod.
+    parent = (base_parent / 'builds' / hashlib.sha256(mod.encode('utf8')).hexdigest()[:24] / fingerprint[:24]
+              if mod else base_parent)
+    disc, marker = parent / 'disc', parent / 'disc-receipt.json'
+    _plain_path(parent)
     with _LOCK:
         _plain_path(parent)
         if disc.exists() or marker.exists():
@@ -231,7 +239,7 @@ def prepare_play_disc(source: Path, config, game: dict, progress=lambda *_: None
                 receipt = json.loads(marker.read_text(encoding="utf8"))
             except (OSError, ValueError) as error:
                 raise ToolUnavailable("Existing DOA3 play disc has no valid receipt; it was left intact") from error
-            if not isinstance(receipt, dict) or receipt.get("format") != 1 or receipt.get("game_id") != game_id or receipt.get("fingerprint") != fingerprint:
+            if not isinstance(receipt, dict) or receipt.get("format") != 1 or receipt.get("game_id") != game_id or receipt.get("fingerprint") != fingerprint or receipt.get('mod', '') != mod:
                 raise ToolUnavailable("Existing DOA3 play disc differs from this source; its saves were left intact")
             actual = {name: path for name, path in _disc_files(disc)}
             if set(actual) != {item["name"] for item in inventory}:
@@ -259,7 +267,7 @@ def prepare_play_disc(source: Path, config, game: dict, progress=lambda *_: None
                     shutil.copy2(src, target)
                 if _sha(target) != item["sha256"]:
                     raise ToolUnavailable("DOA3 disc changed while its private copy was being prepared")
-            receipt = {"format": 1, "game_id": game_id, "fingerprint": fingerprint, "files": inventory}
+            receipt = {"format": 1, "game_id": game_id, "mod": mod, "fingerprint": fingerprint, "files": inventory}
             receipt_path = Path(temporary) / "receipt.json"
             receipt_path.write_text(json.dumps(receipt), encoding="utf8")
             os.replace(stage, disc)

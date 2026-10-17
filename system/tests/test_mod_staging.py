@@ -403,3 +403,18 @@ def test_dropped_download_resumes_from_the_partial_file(tmp_path, monkeypatch):
     assert calls['range'] == 'bytes=5-'        # the retry resumed, it did not restart from zero
     assert (out / 'big.bin').read_bytes() == data
     assert not (out / 'big.bin.part').exists()
+
+
+def test_resumable_download_creates_an_empty_manifest_file(tmp_path, monkeypatch):
+    data = {"empty.bin": b""}
+    files = [{"path": "empty.bin", "size": 0, "sha256": hashlib.sha256(b"").hexdigest()}]
+    class Stream:
+        status_code, headers = 200, {}
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def raise_for_status(self): pass
+        def iter_bytes(self, size): return iter(())
+    monkeypatch.setattr(httpx, "stream", lambda *a, **k: Stream())
+    filemods._fetch(SimpleNamespace(cache=tmp_path), "http://t", {}, "g", "amy", files=files, dest=tmp_path)
+    assert (tmp_path / "empty.bin").read_bytes() == b""
+    assert not (tmp_path / "empty.bin.part").exists()

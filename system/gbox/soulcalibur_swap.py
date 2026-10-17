@@ -48,10 +48,76 @@ FIGHTER_SIZE = {"AST": 1.25, "ROC": 1.15, "NIG": 1.08, "SIE": 1.05, "LIZ": 1.05,
 
 def writer_fingerprint() -> str:
     digest = hashlib.sha256()
-    for name in ("soulcalibur_swap", "soulcalibur_dc", "doa2_weighted_retarget", "retarget_profile", "gdrom"):
+    for name in ("soulcalibur_swap", "soulcalibur_dc", "doa2_weighted_retarget", "retarget_profile", "gdrom",
+                 "sm64_swap", "shape_lattice", "re4gc_models", "re4gc_enemies"):
         digest.update(name.encode())
         digest.update(Path(__file__).with_name(name + ".py").read_bytes())
     return digest.hexdigest()
+
+
+def _sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def build_recipe(library, plan: list[dict], human: bytes, exe: bytes, *, random_select: bool) -> dict:
+    """Exact source revision for cache reuse, including textures/buffers outside a glTF and fitting metadata.
+
+    A writer-only cache key kept old geometry after a donor or its retarget profile changed. Paths are local to
+    each character; the receipt contains hashes, never native image/model bytes.
+    """
+    from urllib.parse import unquote, urlsplit
+    donors = {}
+    for slug in sorted({r["character"] for r in plan}):
+        directory = (Path(library) / slug).resolve()
+        if not directory.is_relative_to(Path(library).resolve()):
+            raise ValueError("donor must stay inside its character library")
+        meta_bytes = (directory / "meta.json").read_bytes()
+        meta = json.loads(meta_bytes)
+        model = (directory / meta["model"]).resolve()
+        if not model.is_relative_to(directory):
+            raise ValueError("donor model must stay inside its character directory")
+        data = model.read_bytes()
+        if model.suffix.casefold() == ".glb":
+            if len(data) < 20 or data[:4] != b"glTF" or data[16:20] != b"JSON":
+                raise ValueError(f"{slug}: invalid GLB header")
+            n = struct.unpack_from("<I", data, 12)[0]
+            gl = json.loads(data[20:20 + n])
+        elif model.suffix.casefold() == ".gltf":
+            gl = json.loads(data)
+        else:
+            raise ValueError(f"{slug}: expected a GLB or glTF donor")
+        files = {model.relative_to(directory).as_posix(): _sha(data)}
+        for row in gl.get("buffers", []) + gl.get("images", []):
+            uri = row.get("uri")
+            if not uri or uri.startswith("data:"):
+                continue
+            parts = urlsplit(uri)
+            if parts.scheme or parts.netloc or parts.query or parts.fragment:
+                raise ValueError(f"{slug}: donor dependencies must be local files")
+            dep = (model.parent / unquote(parts.path)).resolve()
+            if not dep.is_relative_to(directory):
+                raise ValueError(f"{slug}: donor dependency leaves its character directory")
+            files[dep.relative_to(directory).as_posix()] = _sha(dep.read_bytes())
+        donors[slug] = {"meta_sha256": _sha(meta_bytes), "model": model.relative_to(directory).as_posix(),
+                        "model_sha256": _sha(data), "files": files}
+    recipe = {"version": 1, "writer_sha256": writer_fingerprint(), "random_select": bool(random_select),
+              "source": {D.HUMAN: _sha(human), "1ST_READ.BIN": _sha(exe)},
+              "plan": [{k: r[k] for k in ("fighter", "costume", "entry", "character")} for r in plan],
+              "donors": donors}
+    return recipe | {"sha256": _sha(json.dumps(recipe, sort_keys=True, separators=(",", ":")).encode())}
+
+
+def cache_matches(cached: dict, recipe: dict, out: Path) -> bool:
+    """Only reuse a complete, verified read-back of this exact source/plan/donor revision."""
+    report = cached.get("report") or {}
+    rows = report.get("costumes") or []
+    planned = {(r["entry"], r["character"]) for r in recipe["plan"]}
+    written = {(r.get("entry"), r.get("character")) for r in rows}
+    image = Path(str(cached.get("image") or ""))
+    return bool(cached.get("recipe") == recipe and not report.get("failures") and
+                (cached.get("verification") or {}).get("ok") is True and
+                len(rows) == len(recipe["plan"]) and written == planned and
+                image.name == str(image) and (Path(out) / image).is_file())
 
 
 def fighter_slot(slot: str) -> tuple[str, int | None]:
@@ -802,6 +868,34 @@ SONIC_VS_MARIO = {
     "INF": ["sa2_super_shadow", "sm64ds_metal_wario", "sonic"], "CER": ["sa2_knuckles", "sm64ds_koopa_troopa"],
 }
 
+# #1765 / #1961: the DS cutscene Peach has an open back of the head and stretched geometry before fitting.
+# The three replacements below are the complete, privately reviewed Render96 donor, not a blanket Mario upgrade.
+COMPLETE_PEACH_SHA256 = "29489efddb22125a189e2caca2d250d163904b840cba993edbb20065932c0381"
+PEACH_REPAIR_SLOTS = {("SEU", 1), ("SOP", 1), ("IVY", 1)}
+PEACH_REPAIR_MOD = "sc_sonic_vs_mario_peach_complete_v6"
+
+
+def complete_peach(library) -> str:
+    """Fail clearly without the exact complete donor; never quietly rebuild the reported incomplete DS figure."""
+    directory = Path(library) / "peach_hd"
+    try:
+        meta = json.loads((directory / "meta.json").read_text(encoding="utf-8"))
+        model = directory / "peach_hd.glb"
+        if (meta.get("slug") != "peach_hd" or meta.get("character") != "peach" or
+                meta.get("model") != model.name or _sha(model.read_bytes()) != COMPLETE_PEACH_SHA256):
+            raise ValueError("the complete Peach donor differs from the reviewed source")
+    except (OSError, ValueError, KeyError) as error:
+        raise ValueError("SoulCalibur Peach repair needs the reviewed complete peach_hd model in the character "
+                         "library; the incomplete sm64ds_peach donor cannot be used as its fallback") from error
+    return "peach_hd"
+
+
+def repaired_assignments(library) -> dict[str, list[str]]:
+    """The exact v5 roster choices, with only its three incomplete Peach costumes replaced."""
+    peach = complete_peach(library)
+    return {key: [peach if (key, c) in PEACH_REPAIR_SLOTS else slug for c, slug in enumerate(donors)]
+            for key, donors in SONIC_VS_MARIO.items()}
+
 
 def franchise(slug: str) -> str:
     """SM64DS = the Mario side: SM64 DS, SM64 (sm64_* / mario) and HD (*_hd) donors."""
@@ -816,6 +910,8 @@ def mario_group(library, assignments: dict[str, list[str]] = SONIC_VS_MARIO) -> 
     from . import cast_swap
     slugs = sorted({s for v in assignments.values() for s in v})
     up = cast_swap.upgrade_slugs(slugs, cast_swap.library_metas(Path(library)))
+    if "sm64ds_peach" in slugs:
+        up["sm64ds_peach"] = complete_peach(library)
     return {k: [up.get(s, s) for s in v] for k, v in assignments.items()}
 
 
@@ -846,6 +942,7 @@ def build_roster(gdi, donors_root, out_dir, name: str, plan: list[dict], *, rand
     exe = disc.read("1ST_READ.BIN")
     if hashlib.sha256(exe).hexdigest() != D.EXECUTABLE_SHA256:
         raise ValueError("unsupported SoulCalibur executable (the writer is verified on T-1401N USA)")
+    recipe = build_recipe(donors_root, plan, human, exe, random_select=random_select)
     entries = D.olnk(human)
     FE.plan([(f"fighter:{r['fighter']}:{r['costume']}", r["character"],
               f"{r['character']} -> {r['name']} (costume {r['costume']})") for r in plan])
@@ -867,6 +964,8 @@ def build_roster(gdi, donors_root, out_dir, name: str, plan: list[dict], *, rand
                            {"fit": {k: rep["fit"].get(k) for k in ("scale", "head_scale", "limb_stretch", "donor",
                                                                     "max_influences", "model_sha256",
                                                                     "retarget_profile_digest")}})
+    if build_recipe(donors_root, plan, human, exe, random_select=random_select) != recipe:
+        raise ValueError("SoulCalibur donor sources changed during fitting; rebuild from a stable library")
     human2 = replace_entries(human, changes)
     files = {D.HUMAN: human2}
     if random_select:
@@ -880,7 +979,10 @@ def build_roster(gdi, donors_root, out_dir, name: str, plan: list[dict], *, rand
         if r["entry"] in changes:
             FE.model(f"fighter:{r['fighter']}:{r['costume']}")
             FE.stage("write", data={"mod": name, "entry": r["entry"], "bytes": len(changes[r["entry"]])})
+    if build_recipe(donors_root, plan, human, exe, random_select=random_select) != recipe:
+        raise ValueError("SoulCalibur donor sources changed while writing; the build has not been published")
     return {"image": Path(image), "reports": reports, "failures": failures, "verification": verification,
+            "recipe": recipe,
             "random_select": verify_random_patch(files["1ST_READ.BIN"]) if random_select else None}
 
 
@@ -955,7 +1057,8 @@ def marker(name: str, game_id: str, image: Path, plan: list[dict], result: dict,
     return {"name": name, "game_id": game_id, "image": Path(image).name, "character": ",".join(chars),
             "files": [D.HUMAN, "1ST_READ.BIN"] if result.get("random_select") else [D.HUMAN],
             "report": {"costumes": result["reports"], "failures": result["failures"], "gameplay_verified": False},
-            "writer_sha256": writer_fingerprint(), "profile_digest": "", "gameplay_verified": False,
+            "writer_sha256": writer_fingerprint(), "recipe": result.get("recipe"),
+            "profile_digest": "", "gameplay_verified": False,
             "roster": list(roster.values()), "title": title,
             "cast_source": "Sonic Adventure 2 (USA) + " + mario_side(c for c in chars if franchise(c) == "SM64DS")[0],
             "cast_mapping": "mixed_random",
@@ -1025,14 +1128,18 @@ def use_roster(ctx, meta, game, inp) -> dict:
     from . import characters as C, filemods
     from .gdrom import GDRom
     gdi = C._dc_gdi(ctx, game)
-    human = GDRom(str(gdi)).read(D.HUMAN)
+    disc = GDRom(str(gdi))
+    human, exe = disc.read(D.HUMAN), disc.read("1ST_READ.BIN")
     pairs = [(str(p.get("slot") or ""), str(p.get("character") or "")) for p in (inp.pairs or [])]
     from .cast_swap import GROUPS
     mario = (getattr(inp, "source", "") or "").strip().lower() in {"mario", *GROUPS["mario"]["aliases"]}
     plan = _plan_from_pairs(human, pairs) if pairs else plan_costumes(
-        human, mario_group(C.library_root(ctx.config)) if mario else SONIC_VS_MARIO)
+        human, mario_group(C.library_root(ctx.config)) if mario else repaired_assignments(C.library_root(ctx.config)))
+    recipe = build_recipe(C.library_root(ctx.config), plan, human, exe, random_select=True)
+    if not pairs and (recipe["donors"].get("peach_hd") or {}).get("model_sha256") != COMPLETE_PEACH_SHA256:
+        raise ValueError("the reviewed complete Peach donor changed while planning; retry from a stable library")
     digest = hashlib.sha256(json.dumps([(r["entry"], r["character"]) for r in plan]).encode()).hexdigest()[:8]
-    name = (("sc_sonic_vs_mario_hd_random" if mario else "sc_sonic_vs_mario_random") if not pairs
+    name = (("sc_sonic_vs_mario_hd_random" if mario else PEACH_REPAIR_MOD) if not pairs
             else f"sc_roster_{digest}")
     out = filemods.mod_dir(ctx.config, game["game_id"], name)
     try:
@@ -1040,11 +1147,16 @@ def use_roster(ctx, meta, game, inp) -> dict:
     except (OSError, ValueError):
         cached = {}
     result = None
-    if inp.rebuild or cached.get("writer_sha256") != writer_fingerprint():
+    if inp.rebuild or not cache_matches(cached, recipe, out):
         res = build_roster(gdi, C.library_root(ctx.config), out, name, plan, random_select=True,
                            progress=ctx.progress)
-        _write_marker(out, name, game["game_id"], plan, res,
-                      f"{game.get('title', 'SoulCalibur')}: Sonic Adventure 2 vs Super Mario 64 DS, random costume")
+        if res.get("recipe") != recipe:
+            raise ValueError("SoulCalibur sources changed after planning; the new build has not been published")
+        title = (f"{game.get('title', 'SoulCalibur')}: custom roster, random costume" if pairs else
+                 f"{game.get('title', 'SoulCalibur')}: Sonic Adventure 2 vs Mario, "
+                 + ("best model per character" if mario else "complete HD Peach; other v5 choices retained")
+                 + ", random costume")
+        _write_marker(out, name, game["game_id"], plan, res, title)
         result = {"built": len(res["reports"]), "failures": res["failures"], "verification": res["verification"]["ok"]}
         for slug in sorted({r["character"] for r in plan}):
             C._api(ctx, "POST", f"/api/characters/{slug}/targets",
@@ -1064,6 +1176,11 @@ def use(ctx, meta, game, inp) -> dict:
     if (inp.slot or "").strip().casefold() in ("roster", "cast", "everyone", "all fighters", "sonic vs mario", "random"):
         return use_roster(ctx, meta, game, inp)
     key, costume = fighter_slot(inp.slot or "")
+    gdi = C._dc_gdi(ctx, game)
+    disc = GDRom(str(gdi))
+    human, exe = disc.read(D.HUMAN), disc.read("1ST_READ.BIN")
+    plan = _plan_from_pairs(human, [(inp.slot, meta["slug"])])
+    recipe = build_recipe(C.library_root(ctx.config), plan, human, exe, random_select=False)
     name = f"sc_{key.lower()}{'' if costume is None else costume}_{meta['slug']}"
     out = filemods.mod_dir(ctx.config, game["game_id"], name)
     try:
@@ -1071,12 +1188,11 @@ def use(ctx, meta, game, inp) -> dict:
     except (OSError, ValueError):
         cached = {}
     result = None
-    if inp.rebuild or cached.get("writer_sha256") != writer_fingerprint():
-        gdi = C._dc_gdi(ctx, game)
-        human = GDRom(str(gdi)).read(D.HUMAN)
-        plan = _plan_from_pairs(human, [(inp.slot, meta["slug"])])
+    if inp.rebuild or not cache_matches(cached, recipe, out):
         res = build_roster(gdi, C.library_root(ctx.config), out, name, plan, random_select=False,
                            progress=ctx.progress)
+        if res.get("recipe") != recipe:
+            raise ValueError("SoulCalibur sources changed after planning; the new build has not been published")
         if not res["reports"]:
             raise ValueError(f"no costume could take {meta['slug']}: {res['failures'][:2]}")
         _write_marker(out, name, game["game_id"], plan, res, f"{game.get('title', 'SoulCalibur')}: {meta['name']} as {key}")
@@ -1110,7 +1226,7 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     from .gdrom import GDRom
     human = GDRom(a.gdi).read(D.HUMAN)
-    assignments = mario_group(a.donors) if a.mario_group else SONIC_VS_MARIO
+    assignments = mario_group(a.donors) if a.mario_group else repaired_assignments(a.donors)
     plan = plan_costumes(human, assignments)
     res = build_roster(a.gdi, a.donors, a.out, a.name, plan, random_select=not a.no_random,
                        progress=lambda p, m: print(f"{p:5.1f}% {m}", flush=True))

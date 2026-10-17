@@ -415,7 +415,7 @@ def _download_file(cfg, server, headers, game_id, name, row, tmp, dst, out, prog
         if offset > size:
             tmp.unlink(missing_ok=True)
             offset = 0
-        if offset == size:
+        if offset == size and tmp.is_file():
             with tmp.open("rb") as stream:
                 valid = not digest or hashlib.file_digest(stream, "sha256").hexdigest() == digest
             if valid:

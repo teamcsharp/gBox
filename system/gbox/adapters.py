@@ -2104,6 +2104,15 @@ D-Pad/Right = `H`
         (gs / f"{self.gecko_id}.ini").write_text("\n".join(body) + "\n", encoding="utf-8")
         (gs / f"{self.gecko_id}.gbox-enabled.json").write_text(json.dumps([c["desc"] for c in self.cheats if c["enable"]]))
 
+    def _title_options(self) -> dict:
+        # SC2 USA (#1922, #1973): the original GRSEAF disc hit Dolphin's
+        # "GFX FIFO: Unknown Opcode" CPU/GPU desync warning. Windows' speed
+        # defaults below force dual core on, so override it for this exact
+        # header identity. The command-line layer leaves saved profiles intact.
+        if getattr(self, 'gecko_id', None) == 'GRSEAF':
+            return {'Dolphin.Core.CPUThread': 'False'}
+        return {}
+
     def cheat_set(self, index: int, on: bool) -> dict:
         """Dolphin applies Gecko codes when the game boots: the choice is saved now and takes effect on the next start."""
         if not 0 <= index < len(self.cheats):
@@ -2140,6 +2149,7 @@ D-Pad/Right = `H`
             from . import memory_card_sessions
             memory_card_sessions.journal(self.memory_card_context)
         extra=[f'--filesystem={getattr(self,"memory_card_context",{}).get("work_dir")}'] if getattr(self,'memory_card_context',None) else []
+        opts.update(self._title_options())
         return ["flatpak", "run", "--die-with-parent", f"--filesystem={user}", *extra, self.flatpak, "-b", "-u", str(user),
                 *[a for k, v in opts.items() for a in ("-C", f"{k}={v}")], "-e", rom]
 
@@ -2338,6 +2348,7 @@ D-Pad/Right = `Pad E`
         if getattr(self,'memory_card_context',None):
             from . import memory_card_sessions
             memory_card_sessions.journal(self.memory_card_context)
+        opts.update(self._title_options())
         return [str(exe), "-b", "-u", str(user), *[a for k, v in opts.items() for a in ("-C", f"{k}={v}")], "-e", rom]
 
     def cheat_set(self, index: int, on: bool) -> dict:
@@ -2800,8 +2811,10 @@ class SaveMGOAdapter(Adapter):
         lease.__enter__()
         self._lease = lease
         try:
-            # Keep the vendor command, CWD and configuration. In particular, do
-            # not call ensure_rpcs3, write YAML, change pads or inject a layer.
+            # Keep the vendor runtime and account/graphics configuration. Bind
+            # only its stock DualSense selection to a connected local XInput pad.
+            from . import gamepads
+            gamepads.bind_savemgo_xinput(self.home, gamepads.xinput_devices())
             self.proc = subprocess.Popen([str(self.bundle['executable']), '--no-gui', rom],
                                          cwd=self.home, startupinfo=hidden_start())
             keep_offscreen(self.proc.pid)
@@ -2820,7 +2833,8 @@ class SaveMGOAdapter(Adapter):
                 'bundled_runtime': {'kind': 'savemgo_bundle', 'verified': True,
                     'source_fingerprint': self.bundle['source_fingerprint'],
                     'archive_sha256': self.bundle['archive_sha256'],
-                    'reused': self.bundle['reused'], 'settings': 'bundled, per-PC'},
+                    'reused': self.bundle['reused'], 'settings': 'bundled, per-PC',
+                    'healed_files': self.bundle.get('healed_files', [])},
                 'startup': 'process running; awaiting game window'}
 
     def stop_game(self) -> dict:
@@ -3196,8 +3210,10 @@ def for_game(game: dict, config: Config, debug: bool = False, *, mod: str | None
         if HOST_OS != "windows":
             raise ToolUnavailable("Original Xbox games run in Cxbx-Reloaded on a Windows worker")
         from .doa3_native import Doa3NativeAdapter, supports_game
-        if not mod and not game.get("mod") and supports_game(game):
-            return Doa3NativeAdapter(config, game)
+        if supports_game(game):
+            # Asset-only variants keep the exact pinned guest executable. The
+            # native adapter verifies that hash before it creates a play disc.
+            return Doa3NativeAdapter(config, game | {"mod": mod or game.get("mod") or ""})
         return XboxAdapter(config)
     from . import systems
     if game.get("core") and plat != "arcade" and systems.core_for(plat)[0] is None:

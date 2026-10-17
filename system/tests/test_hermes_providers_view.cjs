@@ -16,6 +16,25 @@ function load() {
   return ctx.GBoxProviders;
 }
 const NOW = 1_760_400_000;
+test('pool renders separate switches, real host counters and guarded model actions', () => {
+  const html = load().poolCards({capacity: 5, nodes: [
+    {name: 'lilspark', enabled: true, primary: true, model: 'small', capacity: 1},
+    {name: 'sparkDeux', enabled: false, model: '<large>', capacity: 4, calls_ok: 23, tokens: 4000}],
+    model_management: {access: {ready: true}, recommendation: {model: 'candidate', title: 'Agent candidate',
+      source: 'https://example.com', downloaded: false}, job: {}}});
+  assert.match(html, /data-tkp-node="lilspark" checked/);
+  assert.match(html, /data-tkp-node="sparkDeux"  aria/);
+  assert.match(html, /&lt;large&gt;/);
+  assert.match(html, /data-tkp-model="start"[^>]*disabled/);
+  assert.match(html, /Calls \(24h\)<\/dt><dd>23/);
+});
+test('dedicated Spark banner identifies the inference host and capacity', () => {
+  const html = load().cards({routes: [], local: {enabled: true, active: true, host_name: 'sparkDeux',
+    provider: 'sparkDeux-inbox', model: 'Qwen', upstream: 'http://10.89.1.225:8101/v1', api_format: 'openai', capacity: 2}});
+  assert.match(html, /sparkDeux/);
+  assert.match(html, /vLLM \/ OpenAI API/);
+  assert.match(html, /2 concurrent runs/);
+});
 const OPUS = 'anthropic/claude-opus-5.5';
 const data = {
   window: 'today', window_label: 'Today', generated_at: NOW,
@@ -110,7 +129,9 @@ test('run label and number formats', () => {
 });
 
 test('desktop wiring: containers, the 5 s poll, window toggle and provider on run nodes and details', () => {
-  assert.match(desktop, /<script src="task-activity\.js"><\/script>\r?\n<script src="hermes-providers\.js"><\/script>/);
+  assert.match(desktop, /<script src="task-activity\.js"><\/script>/);
+  assert.match(desktop, /<script src="hermes-providers\.js"><\/script>/);
+  assert.ok(desktop.indexOf('src="task-activity.js"') < desktop.indexOf('src="hermes-providers.js"'));
   assert.match(desktop, /<div class="tkv-stats" id="tkv-stats"><\/div>\r?\n\s*<div class="tkp" id="tkv-providers"><\/div>/);
   assert.match(desktop, /hidden><div id="tk-providers"><\/div><div id="tk-local"><\/div>/);
   assert.match(desktop, /gbox\.api\(`\/api\/hermes\/providers\?window=\$\{encodeURIComponent\(want\)\}`\)/);
@@ -156,4 +177,31 @@ test('local mode banner and the Spark helper card (docs/hermes-local-fallback.md
   assert.match(table, /<td><b>Inbox triage<\/b><\/td>\s*<td>2m ago<\/td><td>ok<\/td>/);
   assert.equal(P.localBanner({ enabled: false }), '');
   assert.equal(P.gruntCard(null), '');
+});
+
+test('task slider shows discrete limits and submits 24 to the backend', async () => {
+  const P = load();
+  const html = P.poolCards({ capacity: 25, nodes: [{ name: 'sparkDeux', capacity: 24,
+    enabled: true, concurrency_choices: [4, 8, 12, 16, 24, 32] }] });
+  assert.match(html, /type="range"[^>]*min="0" max="5" step="1"/);
+  assert.match(html, /value="4" data-tkp-capacity="sparkDeux"/);
+  assert.match(html, /aria-valuetext="24 tasks"/);
+  for (const n of [4, 8, 12, 16, 24, 32]) assert.ok(html.includes(`<span>${n}</span>`));
+  const banner = P.localBanner({ enabled: true, host_name: 'sparkDeux', capacity: 2, upstream: 'local' },
+    NOW, { nodes: [{ name: 'sparkDeux', capacity: 24 }] });
+  assert.match(banner, /24 concurrent runs/);
+  const source = fs.readFileSync(path.join(__dirname, '../clients/desktop/index.html'), 'utf8');
+  const handlers = source.slice(source.indexOf('function tkCapacityPreview('), source.indexOf("for (const id of ['#tkv-providers'"));
+  const calls = [], output = {}, TK = {};
+  const slider = { value: '4', dataset: { choices: '4,8,12,16,24,32', tkpCapacity: 'sparkDeux' },
+    closest: () => ({ querySelector: () => output }), setAttribute: () => {}, blur: () => {} };
+  const context = { TK, gbox: { api: async (...args) => { calls.push(args); return { ok: true }; } },
+    toast: () => {}, tkProvidersLoad: () => {}, event: { target: { closest: () => slider } } };
+  vm.createContext(context);
+  vm.runInContext(handlers + ';tkCapacityPreview(event);', context);
+  assert.equal(output.textContent, 24);
+  await vm.runInContext('tkCapacityChange(event)', context);
+  assert.equal(calls[0][0], '/api/hermes/local/nodes/sparkDeux/capacity');
+  assert.equal(calls[0][1].capacity, 24);
+  assert.equal(TK.capacitySaving, false);
 });
