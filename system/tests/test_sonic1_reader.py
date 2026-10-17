@@ -161,3 +161,25 @@ def test_dedicated_registration():
     roster = row[2]()
     assert [r["slug"] for r in roster] == ["sonic1_shadow"]
     assert roster[0]["slot"] == "sonic" and roster[0]["key"] == "shadow"
+
+
+@pytest.mark.parametrize('w,h,idx', [(0,1,b''),(1,0,b''),(1,1,bytes([16]))])
+def test_invalid_indexed_png_is_rejected(w,h,idx):
+    with pytest.raises(R.ReaderError): R.indexed_png(w,h,idx,[(0,0,0)]*16)
+
+
+@pytest.mark.parametrize('cues', [[(-1,1)],[(0,2)],[(0,0)]])
+def test_invalid_dplc_cues_are_rejected(cues):
+    with pytest.raises(R.ReaderError): R._stream_tiles(bytes(32),cues)
+
+
+def test_missing_streamed_tile_is_not_silently_blank():
+    piece = {'x':0,'y':0,'w':1,'h':1,'tile':1,'hflip':False,'vflip':False}
+    with pytest.raises(R.ReaderError, match='unstreamed'):
+        R.assemble(bytes(32),[piece],[(0,1)])
+
+
+def test_reader_version_is_registered():
+    from gbox import characters as C
+    assert C.reader_version('sonic1_shadow') == R.READER_VERSION
+    assert not C.reader_status({'sonic1_shadow_reader':R.READER_VERSION}, 'sonic1_shadow')['stale']

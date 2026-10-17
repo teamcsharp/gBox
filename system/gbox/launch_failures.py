@@ -90,6 +90,11 @@ CLASSES = (
                "The mod's files could not be fetched from the collection or staged on this PC (a timeout, an "
                "incomplete copy or a stale staged folder).",
                "restage_mod"),
+    ErrorClass("mod_not_built",
+               re.compile(r"no built mod .+ for this game", re.I),
+               "The launch asked for a mod that was never built: it is neither on this PC nor in the central "
+               "collection. Build the mod first (Special builds or a cast build), or launch the stock game without a mod.",
+               "none"),
     ErrorClass("emulator_crash",
                re.compile(r"\b(?P<emu>[a-z0-9_]+) exited (?:with code )?(?P<code>-?\d+)|crashed|access violation|"
                           r"segmentation fault|0xc0000005", re.I),
@@ -165,6 +170,7 @@ def classify(error: str, *, adapter: str = "", session_exit: dict | None = None)
                      "worker_restarted": "the worker restarted during the launch",
                      "worker_unavailable": "no PC could take the launch",
                      "state_restore": "the saved moment could not be restored after the swap",
+                     "mod_not_built": "the mod was never built for this game",
                      "timeout": "the launch timed out"}[c.cls]
         return {"cls": c.cls, "label": label, "diagnosis": c.diagnosis, "remedy": c.remedy, "detail": g}
     first = (error.strip().splitlines() or ["launch failed"])[0]
@@ -270,9 +276,21 @@ class Ledger:
         return cur
 
     # ---- what happened ----
+    def _resolve_worker_id(self, wid: str | None) -> str:
+        """A restarted worker re-registers with a new id; follow worker_alias to the current one (server._wid)."""
+        if not wid:
+            return wid or ""
+        for _ in range(20):
+            a = self.store.get("worker_alias", wid)
+            if not a or not a.get("to") or a["to"] == wid:
+                break
+            wid = str(a["to"])
+        return wid
+
     def _worker(self, wid: str | None) -> dict:
         if not wid:
             return {}
+        wid = self._resolve_worker_id(wid)
         return next((w for w in self.h.workers() if w.get("id") == wid or w.get("name") == wid), None) or \
             (self.store.get("worker", wid) or {"id": wid})
 
@@ -729,10 +747,11 @@ class Ledger:
         age = self.h.now() - (facts.get("finished") or 0)
         if age > RELAUNCH_MAX_AGE_S:
             return f"the failure is {int(age // 60)} min old; the operator may have moved on"
-        w = self._worker(facts["worker_id"])
+        wid = self._resolve_worker_id(facts["worker_id"])
+        w = self._worker(wid)
         if not w.get("online"):
             return f"{facts['worker']} is offline"
-        running = self._running_on(facts["worker_id"])
+        running = self._running_on(wid)
         if running:
             return (f"{running[0].get('title') or running[0].get('session_id')} is running on {facts['worker']}; "
                     "a relaunch would close it")
@@ -747,7 +766,7 @@ class Ledger:
                     "AND COALESCE(json_extract(body,'$.created'),0) > ? AND json_extract(body,'$.id') != ? "
                     "AND (json_extract(body,'$.worker_id')=? OR json_extract(body,'$.require_worker')=? "
                     "OR json_extract(body,'$.input.game.game_id')=? OR json_extract(body,'$.input.game_id')=?)",
-                    (job.get("created") or 0, job.get("id") or "", facts["worker_id"], facts["worker_id"],
+                    (job.get("created") or 0, job.get("id") or "", wid, wid,
                      facts["game_id"], facts["game_id"])).fetchone()[0]
         except AttributeError:
             newer = 0
@@ -769,12 +788,13 @@ class Ledger:
             return                                               # the ticket body already says why
         tried = []
         try:
+            wid = self._resolve_worker_id(facts["worker_id"])
             if c["remedy"] == "restage_mod" and facts["mod"] and facts.get("game"):
-                w = self._worker(facts["worker_id"])
+                w = self._worker(wid)
                 if not w.get("online"):
                     self._remedy_note(sig, "re-stage the mod", f"{facts['worker']} is offline; not re-staged", "skipped")
                     return
-                pj = self.h.submit_job("prepare_mod", {"game": facts["game"], "mod": facts["mod"]}, facts["worker_id"])
+                pj = self.h.submit_job("prepare_mod", {"game": facts["game"], "mod": facts["mod"]}, wid)
                 self._mark_remedy(pj["id"], sig)
                 done = self._wait_job(pj["id"], 1800)
                 ok = done.get("state") == "succeeded"
@@ -793,7 +813,7 @@ class Ledger:
                 secs = float((c.get("detail") or {}).get("secs") or 30)
                 boot = max(LONG_BOOT_S, 3 * secs)
                 inp["boot_timeout_s"] = boot
-            nj = self.h.submit_job("launch_game", inp, facts["worker_id"])
+            nj = self.h.submit_job("launch_game", inp, wid)
             self._mark_remedy(nj["id"], sig)
             self._remedy_note(sig, "relaunch", f"Relaunching on {facts['worker']}"
                               + (f" with a {int(boot)} s boot timeout" if boot else "") + f" (job {nj['id']}).",

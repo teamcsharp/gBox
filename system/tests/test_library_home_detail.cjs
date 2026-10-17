@@ -93,7 +93,7 @@ test('browser: download failures show honest fallback and do not request any wor
   await evaluate(`document.body.innerHTML='<div id="detail"></div>';var apiCalls=[];var ctl=GBoxHomeDetail.mount(document.querySelector('#detail'),${JSON.stringify(pictured)},{api:p=>apiCalls.push(p),loadViewer:async()=>{throw Error('WebGL unavailable');}});ctl.ready;`);
   assert.equal(await evaluate(`document.querySelector('[data-ghd-stage] img').getAttribute('src')`),illustration);
   assert.ok(await evaluate(`document.querySelector('[data-ghd-model-status]').textContent.includes('WebGL unavailable')`));
-  assert.deepEqual(await evaluate('apiCalls'),[]);
+  assert.deepEqual(await evaluate('apiCalls'),['/api/title-assets/'+data.game.game_id]); // read-only status; no work dispatched
   await evaluate(`document.querySelector('[data-ghd-action=play]').click();new Promise(r=>setTimeout(r,10));`);
   assert.ok(await evaluate(`document.querySelector('[data-ghd-action-status]').textContent.includes('unavailable')`));
   await evaluate('ctl.dispose()');
@@ -114,7 +114,7 @@ test('browser: live activity refresh preserves the viewer and playing media whil
   assert.equal(await evaluate(`document.querySelector('[data-ghd-assets-refresh]').hidden`),false);
   await evaluate(`document.querySelector('[data-ghd-build]').click();document.querySelector('[data-ghd-report]').click();document.querySelector('[data-ghd-action=refresh-assets]').click();new Promise(r=>setTimeout(r,10));`);
   assert.deepEqual(await evaluate('opened'),[[data.game.game_id,{mod:'new_swap'}],'new-report']);assert.equal(await evaluate('refreshed'),1);
-  await evaluate('ctl.dispose();ctl.refresh()');assert.equal(await evaluate('calls.length'),1);assert.equal(await evaluate('disposed'),1);
+  await evaluate('ctl.dispose();ctl.refresh()');assert.equal(await evaluate('calls.length'),2);assert.equal(await evaluate('disposed'),1);
  });
 });
 

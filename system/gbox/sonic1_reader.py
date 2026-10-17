@@ -63,7 +63,7 @@ def _chunk(tag: bytes, data: bytes) -> bytes:
 
 def indexed_png(w: int, h: int, indices: bytes, palette: list[tuple[int, int, int]]) -> bytes:
     """An 8-bit indexed PNG: palette line 0 (16 colours), index 0 transparent."""
-    if len(indices) != w * h or len(palette) != 16:
+    if w <= 0 or h <= 0 or len(indices) != w * h or len(palette) != 16 or any(v > 15 for v in indices):
         raise ReaderError("indexed_png needs w*h indices and a 16-colour palette")
     raw = b"".join(b"\x00" + indices[y * w:(y + 1) * w] for y in range(h))
     ihdr = struct.pack(">IIBBBBB", w, h, 8, 3, 0, 0, 0)
@@ -78,6 +78,8 @@ def indexed_png(w: int, h: int, indices: bytes, palette: list[tuple[int, int, in
 
 def _stream_tiles(art: bytes, cues: list[tuple[int, int]]):
     """The tiles one frame's DPLC streams, as an (n, 8, 8) index array."""
+    if any(t < 0 or n <= 0 or 32*(t+n) > len(art) for t, n in cues):
+        raise ReaderError('DPLC cue exceeds the native art extent')
     raw = b"".join(art[32 * t:32 * (t + n)] for t, n in cues)
     return M.tiles_to_indices(raw)
 
@@ -92,6 +94,8 @@ def assemble(art: bytes, pieces: list[dict], cues: list[tuple[int, int]]):
     tiles = _stream_tiles(art, cues)
     if not pieces:
         return None
+    if any(not 1 <= p['w'] <= 4 or not 1 <= p['h'] <= 4 or p['tile'] < 0 for p in pieces):
+        raise ReaderError('Invalid native sprite dimensions or tile index')
     x0 = min(p["x"] for p in pieces)
     y0 = min(p["y"] for p in pieces)
     x1 = max(p["x"] + 8 * p["w"] for p in pieces)
@@ -103,7 +107,7 @@ def assemble(art: bytes, pieces: list[dict], cues: list[tuple[int, int]]):
             for r in range(p["h"]):
                 t = p["tile"] + c * p["h"] + r
                 if t >= len(tiles):
-                    continue
+                    raise ReaderError("Mapping references an unstreamed tile")
                 tile = tiles[t]
                 if p["hflip"]:
                     tile = tile[:, ::-1]
@@ -131,6 +135,8 @@ def read_player(src) -> dict:
         raise ReaderError(f"{len(maps)} mapping frames but {len(cues)} DPLC frames")
     tiles_n = max((t + n for f in cues for t, n in f), default=0)
     art = d[loc["art"]:loc["art"] + 32 * tiles_n]
+    if len(art) != 32 * tiles_n:
+        raise ReaderError("Truncated native art")
     pal = I.palette(d, loc["palette"])
     frame_tiles = [sum(n for _, n in f) for f in cues]
     an = A.animation_rules(d, loc, A.call_map(d), frame_tiles)
@@ -276,8 +282,8 @@ def extract_run(ctx, game: dict, entry: dict, work) -> dict:
                              f"DPLC 0x{p['tables']['dplc']:x}, art 0x{p['tables']['art']:x}, "
                              f"animations 0x{p['tables']['animations']:x}"],
             "notes": f"{p['frame_count']} mapping frames + {p['animation']['scripts']} animations "
-                     f"decoded from the ROM; Nemesis art and import-ready pieces/DPLC in manifest.json",
-            "extra": {"picture": "2d", "animations": animations,
+                     f"decoded from the ROM; import-ready pieces/DPLC in manifest.json. Other Nemesis art is available through nemesis_art",
+            "extra": {"picture": "2d", "sonic1_shadow_reader": READER_VERSION, "animations": animations,
                       "sonic1_reader": {"version": READER_VERSION, "game": "sonic1",
                                         "character": "shadow", "slot": SLOT,
                                         "rom": p["source"]}}}
