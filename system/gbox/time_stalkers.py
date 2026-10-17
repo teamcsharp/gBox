@@ -69,7 +69,7 @@ def main_bin_strings(data: bytes) -> dict[str, int]:
 
 
 def sh4_movl_xrefs(data: bytes, file_off: int) -> list[int]:
-    """File offsets of every SH-4 ``mov.l @(disp,pc),Rn`` whose literal-pool word points at ``file_off``.
+    """File offsets of every SH-4 ``mov.l @(disp,pc),Rn`` that loads the literal-pool word at ``file_off``.
 
     SH-4 encodes the instruction as ``0xDn <disp8>`` with effective literal address
     ``((pc + 4) & ~3) + disp * 4`` (all in file offsets; add ``LINK_BASE`` for runtime addresses). These are
@@ -81,9 +81,7 @@ def sh4_movl_xrefs(data: bytes, file_off: int) -> list[int]:
         op = struct.unpack_from("<H", data, i)[0]
         if (op >> 12) == 0xD:
             disp = op & 0xFF
-            if disp >= 0x80:
-                disp -= 0x100
-            if ((i + 4) & ~3) + disp * 4 == file_off:
+            if ((i + 4) & ~3) + disp * 4 == file_off and 0 <= file_off <= len(data) - 4:
                 refs.append(i)
     return refs
 

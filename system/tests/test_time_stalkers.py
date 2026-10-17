@@ -240,3 +240,13 @@ def test_owned_disc_man00000_link_chains():
     d1 = g.read("LANDERS/MANDATA/MAN00001.BIN")
     nodes1 = ts.parse_man(d1)["nodes"]
     assert len(nodes1) == 18 and ts.man_link_chains(nodes1) != chains
+
+
+@pytest.mark.parametrize("disp", [0x7f, 0x80, 0xff])
+def test_sh4_movl_displacement_is_unsigned_and_forward(disp):
+    target = 4 + disp * 4
+    data = bytearray(target + 4)
+    struct.pack_into("<H", data, 0, 0xD100 | disp)
+    struct.pack_into("<I", data, target, 0x8C011000)
+    assert ts.sh4_movl_xrefs(bytes(data), target) == [0]
+    assert ts.sh4_movl_xrefs(bytes(data[:-1]), target) == []

@@ -163,3 +163,69 @@ def organize(requests):
             seen.add(parent)
             parent = by_id.get(parent, {}).get("parent_request_id")
     return out
+
+
+# --- #1788: one inbox entry per kind of automated ticket -------------------------------------------------------------
+# Presentation only (nothing is closed or deleted). clients/desktop/inbox-groups.js applies the same rules in the app.
+GROUP_LABELS = {
+    "launch_failure": "Launch failures",
+    "readiness": "Character replacement readiness",
+    "observer": "Session observer and gap reports",
+    "agent_message": "Agent messages",
+    "review": "Scheduled request reviews",
+    "automation": "Other automated reports",
+}
+_OPERATOR_SOURCES = {"chat", "app", "gbox-chat"}
+
+
+def group_key(request):
+    """The automated group a request collapses into, or None for operator-written requests and build reports."""
+    title = request.get("title") or ""
+    body = (request.get("body") or title).lstrip()
+    context = request.get("context") or {}
+    low = title.lower()
+    if low.startswith("build report"):
+        return None
+    if context.get("launch_failure") or low.startswith("launch failed:"):
+        return "launch_failure"
+    if low.startswith("character replacement readiness"):
+        return "readiness"
+    if body.startswith(("<agent-message", "<task-notification")):
+        return "agent_message"
+    if body.startswith("gBox request review"):
+        return "review"
+    if request.get("source") == "gap" or re.match(r"session (observation|models)\b", low):
+        return "observer"
+    if (request.get("source") in _OPERATOR_SOURCES and (request.get("author") or "operator") == "operator"
+            and not request.get("automated")):
+        return None
+    if request.get("source") == "automation" or request.get("automated"):
+        return "automation"
+    return None
+
+
+def grouped(requests, minimum=2):
+    """requests (newest first) as entries in the same order: each request unchanged, except that every kind of automated
+    ticket with at least `minimum` members becomes one group entry at the place of its newest member:
+    {"group": key, "label", "count", "pending", "newest", "latest": {id, number, title, status, created}, "ids": [...]}."""
+    keys = [group_key(r) for r in requests]
+    counts = {}
+    for k in keys:
+        if k:
+            counts[k] = counts.get(k, 0) + 1
+    out, groups = [], {}
+    for r, k in zip(requests, keys):
+        if not k or counts[k] < minimum:
+            out.append(r)
+            continue
+        if k not in groups:
+            groups[k] = {"group": k, "label": GROUP_LABELS[k], "members": []}
+            out.append(groups[k])
+        groups[k]["members"].append(r)
+    for g in groups.values():
+        members = g.pop("members")
+        latest = max(members, key=lambda r: r.get("created") or 0)
+        g.update(count=len(members), pending=sum(r.get("status") != "done" for r in members),
+                 newest=latest.get("created") or 0, ids=[r["id"] for r in members],
+                 latest={k: latest.get(k) for k in ("id", "number", "title", "status", "created")})
+    return out

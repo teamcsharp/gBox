@@ -33,6 +33,9 @@ Register with:  from . import gta_mods_tool  # noqa: F401
 import re
 import struct
 import time
+import threading
+import weakref
+from functools import wraps
 
 from pydantic import BaseModel
 
@@ -44,6 +47,35 @@ CAVE = 0x000FA000          # code (executed by the EE -> never rewritten from ou
 DATA = 0x000F9000          # data / mailbox page (never executed)
 MAGIC = 0x33584247         # 'GBX3'
 VERSION = 2
+_TRANSACTION_GUARD = threading.Lock()
+_TRANSACTIONS = weakref.WeakKeyDictionary()
+
+
+def transaction(adapter):
+    """One shared native mailbox transaction for every GTA tool on this adapter."""
+    with _TRANSACTION_GUARD:
+        lock = _TRANSACTIONS.get(adapter)
+        if lock is None:
+            lock = threading.RLock()
+            _TRANSACTIONS[adapter] = lock
+        return lock
+
+
+def _mem_serialized(fn):
+    @wraps(fn)
+    def locked(mem, *args, **kwargs):
+        with transaction(mem.ad):
+            return fn(mem, *args, **kwargs)
+    return locked
+
+
+def _adapter_serialized(fn):
+    @wraps(fn)
+    def locked(adapter, *args, **kwargs):
+        if adapter is None:return fn(adapter,*args,**kwargs)  # read-only game catalogue needs no session
+        with transaction(adapter):
+            return fn(adapter, *args, **kwargs)
+    return locked
 
 # DATA layout
 D_MAGIC, D_BOOT, D_FRAME, D_VER = 0x000, 0x004, 0x008, 0x00C
@@ -1025,9 +1057,13 @@ def wait_frames(m: Mem, n=2, timeout=5.0):
     return False
 
 
+@_mem_serialized
 def queue_patches(m: Mem, patches: list, timeout=5.0):
     """Have the EE store words into code (applied by the dispatcher next frame)."""
+    waiting = time.monotonic()
     while m.u32(DATA + D_PQ_N):
+        if time.monotonic() - waiting >= timeout:
+            raise RuntimeError("another native patch batch is still pending; no new patches were queued")
         time.sleep(0.03)
     for i in range(0, len(patches), 16):
         chunk = patches[i:i + 16]
@@ -1043,10 +1079,14 @@ def queue_patches(m: Mem, patches: list, timeout=5.0):
             raise RuntimeError(f"code patch at {a:#x} not applied")
 
 
+@_mem_serialized
 def call(m: Mem, calls: list, timeout=10.0) -> list:
     """Run game functions on the EE in one frame. calls: dicts fn, a0..a3, t0, f12..f14, a0_prev/a1_prev."""
     assert len(calls) <= CQ_MAX
+    waiting = time.monotonic()
     while m.u32(DATA + D_CQ_N):
+        if time.monotonic() - waiting >= timeout:
+            raise RuntimeError("another native call batch is still pending; no new calls were queued")
         time.sleep(0.03)
     blob = b""
     for c in calls:
@@ -1056,7 +1096,21 @@ def call(m: Mem, calls: list, timeout=10.0) -> list:
                             c.get("f12", 0.0), c.get("f13", 0.0), c.get("f14", 0.0), 0, fl)
     m.wr(DATA + D_CQ, blob)
     done0 = m.u32(DATA + D_CQ_DONE)
-    m.w32(DATA + D_CQ_N, len(calls))
+    try:
+        m.w32(DATA + D_CQ_N, len(calls))
+    except RuntimeError:
+        # The native dispatcher consumes/clears N in the same frame. Accept a
+        # transient read-back mismatch only when this exact batch completed
+        # once. The return word is the only field the EE may change in a slot.
+        returned = m.rd(DATA + D_CQ, len(blob))
+        payload_matches = all(returned[i:i + 0x24] == blob[i:i + 0x24]
+                              and returned[i + 0x28:i + CQ_SIZE] == blob[i + 0x28:i + CQ_SIZE]
+                              for i in range(0, len(blob), CQ_SIZE))
+        if not (payload_matches and m.u32(DATA + D_MAGIC) == MAGIC
+                and m.u32(DATA + D_VER) == VERSION and m.u32(DATA + D_BOOT) == 1
+                and m.u32(DATA + D_CQ_N) == 0
+                and m.u32(DATA + D_CQ_DONE) == ((done0 + 1) & 0xFFFFFFFF)):
+            raise
     t = time.time()
     while m.u32(DATA + D_CQ_DONE) == done0:
         if time.time() - t > timeout:
@@ -1065,6 +1119,7 @@ def call(m: Mem, calls: list, timeout=10.0) -> list:
     return [m.u32(DATA + D_CQ + i * CQ_SIZE + 0x24) for i in range(len(calls))]
 
 
+@_mem_serialized
 def install(m: Mem, g) -> dict:
     code, syms = build_cave(g)
     if installed(m, g):
@@ -1104,7 +1159,22 @@ def install(m: Mem, g) -> dict:
         pq.append((g["punch_site"], jal_word(syms["punch"])))
     m.wr(DATA + D_PQ, b"".join(struct.pack("<II", a, v) for a, v in pq))
     m.w32(DATA + D_PQ_N, len(pq))
-    m.w32(g["boot_vt"], syms["boot"])                 # the EE runs boot within a frame (player ped processed)
+    native_restore_ack = False
+    try:
+        m.w32(g["boot_vt"], syms["boot"])             # the EE runs boot within a frame (player ped processed)
+    except RuntimeError:
+        # The EE immediately restores this slot. A read-back transport can see
+        # that restored value and report a mismatch after a successful boot.
+        # Acknowledge only the complete native result; never repeat the write.
+        if not (m.rd(CAVE, len(code)) == code
+                and m.u32(DATA + D_MAGIC) == MAGIC
+                and m.u32(DATA + D_VER) == VERSION
+                and m.u32(DATA + D_BOOT) == 1
+                and m.u32(DATA + D_PQ_N) == 0
+                and m.u32(g["boot_vt"]) == g["boot_fn"]
+                and all(m.u32(address) == value for address, value in pq)):
+            raise
+        native_restore_ack = True
     t = time.time()
     while m.u32(DATA + D_BOOT) != 1:
         if time.time() - t > 8:
@@ -1114,6 +1184,7 @@ def install(m: Mem, g) -> dict:
     if not wait_frames(m, 2):
         raise RuntimeError("dispatcher not running after install")
     return {"installed": True, "fresh": True, "cave": hex(CAVE), "code_bytes": len(code),
+            **({"bootstrap_ack": "native restored vtable, exact cave/header/hooks and advancing dispatcher"} if native_restore_ack else {}),
             "hooks": {k: hex(g[k]) for k in ("hook_frame", "hook_post", "punch_site") if k in g}}
 
 
@@ -1161,6 +1232,7 @@ def status(m, g):
     return {"installed": installed(m, g), "frame": _frame(m), "ops": supported_ops(g), **cj, **pr, **gta3}
 
 
+@_adapter_serialized
 def run(ad, title, op, on=True, value=None, model=None, radius=None, height=None, explosion=None, button=None,
         count=None, behaviour=None, max_height=None):
     m = Mem(ad)

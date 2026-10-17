@@ -2,10 +2,72 @@ import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/+esm";
 import { GLTFLoader } from "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js/+esm";
 import { OrbitControls } from "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js/+esm";
 
-export async function createCharacterViewer(container, url) {
+// Resolve sidecars through the same authenticated collection-file route as the model.
+// GLTFLoader.parseAsync has no source URL, so a raw glTF otherwise requests /mesh.bin.
+export function resolveCharacterResource(uri, options = {}, model = options.model || '') {
+  if (!options.fileUrl || /^(?:[a-z][a-z\d+.-]*:|\/|\\)/i.test(uri)) return uri;
+  const match = String(uri).match(/^([^?#]*)(\?[^#]*)?(#.*)?$/);
+  if (!match || !match[1]) return uri;
+  const base = String(model).replace(/\\/g, '/').split('/').slice(0, -1), parts = base.filter(Boolean);
+  for (const encoded of match[1].split('/')) {
+    const part = decodeURIComponent(encoded);
+    if (!part || part === '.') continue;
+    if (part === '..') { if (!parts.length) throw new Error('Model sidecar escapes its collection'); parts.pop(); }
+    else { if (/[\\/\u0000]/.test(part)) throw new Error('Invalid model sidecar path'); parts.push(part); }
+  }
+  const mapped = options.fileUrl(parts.join('/'));
+  return mapped + (match[2] ? (mapped.includes('?') ? '&' : '?') + match[2].slice(1) : '') + (match[3] || '');
+}
+
+async function parseModel(bytes, options, model) {
+  const manager = new THREE.LoadingManager();
+  if (options.fileUrl) manager.setURLModifier(uri => resolveCharacterResource(uri, options, model));
+  return new GLTFLoader(manager).parseAsync(bytes, '');
+}
+
+function paintUvAttribute(material) {
+  // Three r160 Mesh.raycast exposes uv/uv1. Its deprecated uv2 is an alias for uv1, not UV set 2.
+  const channel = material?.map?.channel ?? 0;
+  return material?.map && (channel === 0 || channel === 1) ? (channel === 0 ? 'uv' : 'uv1') : null;
+}
+
+export function characterPaintHit(hit) {
+  if (!hit) return null;
+  const material = Array.isArray(hit.object?.material) ? hit.object.material[hit.face?.materialIndex ?? 0] : hit.object?.material;
+  const attribute = paintUvAttribute(material), point = attribute && hit[attribute];
+  if (!attribute || !hit.object?.geometry?.attributes?.[attribute] || !point || typeof point.clone !== 'function' || typeof material.map.transformUv !== 'function' || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return null;
+  const uv = point.clone(); material.map.transformUv(uv);
+  return Number.isFinite(uv.x) && Number.isFinite(uv.y) ? {u:uv.x,v:uv.y,material:material.name,materialId:material.uuid} : null;
+}
+
+export function characterUvLines(model, materialName, limit = 12000) {
+  const lines = [];
+  model.traverse(object => {
+    if (!object.isMesh || lines.length >= limit) return;
+    const geometry = object.geometry, materials = [].concat(object.material || []);
+    const groups = geometry?.groups?.length ? geometry.groups : [{start:0,count:geometry?.index?.count || geometry?.attributes?.position?.count || 0,materialIndex:0}];
+    for (const group of groups) {
+      const material = materials[group.materialIndex || 0];
+      if (material?.name !== materialName) continue;
+      const attribute = paintUvAttribute(material), uv = attribute && geometry.attributes?.[attribute];
+      if (!uv) continue;
+      const end = Math.min(group.start + group.count, geometry.index?.count || uv.count);
+      for (let i = group.start; i + 2 < end && lines.length < limit; i += 3) {
+        const ids = [0,1,2].map(n => geometry.index ? geometry.index.getX(i+n) : i+n);
+        if (ids.some(id => !Number.isInteger(id) || id < 0 || id >= uv.count)) continue;
+        const line = ids.map(id => [uv.getX(id),uv.getY(id)]);
+        if (line.every(point => point.every(Number.isFinite))) lines.push(line);
+      }
+    }
+  });
+  return lines;
+}
+
+// options.fileUrl(rel): URL of another file of this collection entry, including glTF sidecars and clip GLBs.
+export async function createCharacterViewer(container, url, options = {}) {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`model download returned ${response.status}`);
-  const gltf = await new GLTFLoader().parseAsync(await response.arrayBuffer(), "");
+  const gltf = await parseModel(await response.arrayBuffer(), options, options.model || '');
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
@@ -15,29 +77,85 @@ export async function createCharacterViewer(container, url) {
   const scene = new THREE.Scene();
   scene.add(new THREE.HemisphereLight(0xffffff, 0x405070, 2.2));
   const sun = new THREE.DirectionalLight(0xffffff, 2); sun.position.set(3, 5, 4); scene.add(sun);
-  scene.add(gltf.scene);
+  const holder = new THREE.Group();                     // the mixer root: model first, then clip GLBs (bones bind by name)
+  holder.add(gltf.scene); scene.add(holder);
   const bounds = new THREE.Box3().setFromObject(gltf.scene);
   const center = bounds.getCenter(new THREE.Vector3());
   const size = Math.max(bounds.getSize(new THREE.Vector3()).length(), 0.1);
   gltf.scene.position.sub(center);
   const camera = new THREE.PerspectiveCamera(40, 1, Math.max(0.001, size / 1000), size * 50);
-  camera.position.set(size * 0.55, size * 0.35, size * 3);
+  camera.position.set(size * 0.55, size * 0.35, size * (options.distance ?? 3));
   const controls = new OrbitControls(camera, renderer.domElement);
-  controls.enableDamping = true; controls.autoRotate = true; controls.autoRotateSpeed = 1;
-  let dead = false, frameId = 0;
+  controls.enableDamping = true; controls.autoRotate = options.autoRotate ?? true; controls.autoRotateSpeed = 1;
+  let dead = false, frameId = 0, player = null;
+  let paintHandler=null;const paintTextures=new Set(),generatedTextures=new Map(),raycaster=new THREE.Raycaster();
+  function paintEvent(event){
+    if(!paintHandler||event.button>0||event.type==='pointermove'&&!(event.buttons&1))return;
+    const rect=renderer.domElement.getBoundingClientRect();raycaster.setFromCamera(new THREE.Vector2((event.clientX-rect.left)/rect.width*2-1,1-(event.clientY-rect.top)/rect.height*2),camera);
+    // Do not paint through an unsupported front surface into another mesh behind it.
+    const hit=characterPaintHit(raycaster.intersectObject(gltf.scene,true)[0]);
+    if(hit)paintHandler({...hit,event});
+    event.preventDefault();event.stopImmediatePropagation();
+  }
+  renderer.domElement.addEventListener('pointerdown',paintEvent,true);renderer.domElement.addEventListener('pointermove',paintEvent,true);
+  const clock = new THREE.Clock(), files = new Map();
   const resize = () => {
     const w = Math.max(1, container.clientWidth), h = Math.max(1, container.clientHeight);
     renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
   };
   const observer = new ResizeObserver(resize); observer.observe(container); resize();
-  function frame() { if (dead) return; frameId = requestAnimationFrame(frame); controls.update(); renderer.render(scene, camera); }
+  const getView=()=>({position:camera.position.toArray().map(x=>x/size),target:controls.target.toArray().map(x=>x/size)});
+  controls.addEventListener('change',()=>options.onViewChange?.(getView()));
+  function frame() { if (dead) return; frameId = requestAnimationFrame(frame); const dt = clock.getDelta(); player?.update(dt); controls.update(); renderer.render(scene, camera); }
   frame();
-  return { dispose() {
-    if (dead) return;
-    dead = true; cancelAnimationFrame(frameId); observer.disconnect(); controls.dispose();
-    gltf.scene.traverse(o => { if (!o.isMesh) return; o.geometry?.dispose();
-      for (const material of [].concat(o.material || [])) { for (const value of Object.values(material)) if (value?.isTexture) value.dispose(); material.dispose(); }
-    });
-    renderer.dispose(); renderer.domElement.remove();
-  } };
+  // the clips of one GLB of this entry: the model's own, or a sibling clip file loaded once and kept under holder
+  async function clipsOf(file) {
+    if (!file || file === options.model) return gltf.animations;
+    if (!files.has(file)) files.set(file, (async () => {
+      if (!options.fileUrl) throw new Error("no clip file URL");
+      const r = await fetch(options.fileUrl(file));
+      if (!r.ok) throw new Error(`clip file download returned ${r.status}`);
+      const g = await parseModel(await r.arrayBuffer(), options, file);
+      if (dead) return [];
+      g.scene.visible = false; holder.add(g.scene);
+      return g.animations;
+    })());
+    return files.get(file);
+  }
+  return {
+    THREE, holder, gltf, paintMaterialIds:true,
+    materials(){const names=new Set();gltf.scene.traverse(o=>{if(o.isMesh)for(const m of [].concat(o.material||[]))if(m.map)names.add(m.name);});return [...names];},
+    uvLines(materialName,limit=12000){return characterUvLines(gltf.scene,materialName,limit);},
+    paint(handler){paintHandler=handler;controls.enabled=!handler;controls.autoRotate=handler?false:(options.autoRotate??true);},
+    texture(image,materialName){
+      let texture=generatedTextures.get(materialName);
+      if(texture){texture.image=image;texture.needsUpdate=true;return;}
+      texture=new THREE.CanvasTexture(image);texture.flipY=false;texture.colorSpace=THREE.SRGBColorSpace;
+      let original;gltf.scene.traverse(o=>{if(o.isMesh&&!original)original=[].concat(o.material||[]).find(m=>m.name===materialName)?.map;});
+      if(original){texture.channel=original.channel??0;texture.wrapS=original.wrapS;texture.wrapT=original.wrapT;texture.repeat.copy(original.repeat);texture.offset.copy(original.offset);texture.center.copy(original.center);texture.rotation=original.rotation;texture.updateMatrix();}
+      paintTextures.add(texture);generatedTextures.set(materialName,texture);
+      gltf.scene.traverse(o=>{if(o.isMesh)for(const m of [].concat(o.material||[]))if(m.name===materialName){if(m.map)paintTextures.add(m.map);m.map=texture;m.needsUpdate=true;}});
+    },
+    getView,
+    setView(pose) {
+      if(!pose||![pose.position,pose.target].every(a=>Array.isArray(a)&&a.length===3&&a.every(Number.isFinite)))return;
+      camera.position.fromArray(pose.position.map(x=>x*size));controls.target.fromArray(pose.target.map(x=>x*size));controls.update();
+    },
+    snapshot() { renderer.render(scene,camera); return renderer.domElement.toDataURL('image/png'); },
+    embedded: gltf.animations.map(a => ({ name: a.name, duration: a.duration })),
+    async clip(row) {
+      const found = (await clipsOf(row.file)).find(a => a.name === row.name);
+      if (!found) throw new Error(`${row.name} is not in ${row.file || "the model"}`);
+      return found;
+    },
+    setPlayer(p) { player = p; },
+    dispose() {
+      if (dead) return;
+      dead = true; cancelAnimationFrame(frameId); observer.disconnect(); controls.dispose(); player?.dispose?.(); player = null;
+      paintHandler=null;for(const texture of paintTextures)texture.dispose();paintTextures.clear();generatedTextures.clear();
+      gltf.scene.traverse(o => { if (!o.isMesh) return; o.geometry?.dispose();
+        for (const material of [].concat(o.material || [])) { for (const value of Object.values(material)) if (value?.isTexture) value.dispose(); material.dispose(); }
+      });
+      renderer.dispose(); renderer.domElement.remove();
+    } };
 }

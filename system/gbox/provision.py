@@ -11,6 +11,7 @@ import platform
 import re
 import shutil
 import subprocess
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -192,6 +193,88 @@ def ensure_platform(cfg: Config, platform_: str, core: str | None = None) -> tup
     return path, ensure_bios(cfg, bios)
 
 
+# --- the runtime check of a launch, remembered per emulator version ------------------------------------------------
+# A RetroArch launch checked the core, its assets and the BIOS every time. The BIOS check walks the drive's BIOS folder
+# over SMB (Dreamcast "dc": 68 files): 1.4 s warm, 18.7 s cold on JAYBUILTFINALE (2026-10-13). The result is kept in
+# <runtime>/runtime-check.json keyed by platform + core, valid while the core file and the RetroArch executable are the
+# same files (size + mtime) and the BIOS files it found are still in the local system folder; past RUNTIME_RECHECK_S
+# the drive is re-scanned in the background (it only ever adds missing files), never on the launch's path.
+
+RUNTIME_CHECK = "runtime-check.json"
+RUNTIME_RECHECK_S = 6 * 3600.0
+_RC_LOCK = threading.Lock()
+_RC_REFRESHING: set[str] = set()
+
+
+def _file_ident(p) -> list[int] | None:
+    try:
+        st = Path(p).stat()
+        return [st.st_size, st.st_mtime_ns]
+    except (OSError, TypeError):
+        return None
+
+
+def _rc_load(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def _rc_set(path: Path, key: str, value: dict) -> None:
+    with _RC_LOCK:
+        db = _rc_load(path)
+        db[key] = value
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(db, indent=1))
+        tmp.replace(path)
+
+
+def _bios_local_names(names: list[str]) -> list[str]:
+    return [n.split("->")[-1] for n in names]
+
+
+def _refresh_bios_later(cfg: Config, path: Path, key: str, rec: dict) -> None:
+    if key in _RC_REFRESHING:
+        return
+    _RC_REFRESHING.add(key)
+
+    def run():
+        try:
+            copied = ensure_bios(cfg, rec.get("bios") or [])
+            dest = cfg.runtime / "system"
+            _rc_set(path, key, rec | {"at": time.time(), "bios_local": [n for n in _bios_local_names(rec.get("bios") or [])
+                                                                        if (dest / n).exists()],
+                                      "bios_copied_later": copied})
+        except Exception as e:                       # noqa: BLE001 - the next stale launch tries again
+            print(f"gBox: background BIOS check for {key} failed: {e}", flush=True)
+        finally:
+            _RC_REFRESHING.discard(key)
+    threading.Thread(target=run, daemon=True, name=f"bios-{key}").start()
+
+
+def runtime_check(cfg: Config, platform_: str, core: str | None = None, exe: str | None = None) -> dict:
+    """ensure_platform for a launch, remembered per emulator version (core file + RetroArch executable).
+    {"core": Path, "bios_copied": [...], "cached": bool}."""
+    core0, bios = systems.core_for(platform_)
+    key = f"{platform_}|{core or core0}"
+    path = cfg.runtime / RUNTIME_CHECK
+    rec = _rc_load(path).get(key) or {}
+    exe_ident = _file_ident(exe) if exe else None
+    dest = cfg.runtime / "system"
+    if (rec.get("core") and _file_ident(rec["core"]) == rec.get("core_ident") and rec.get("exe_ident") == exe_ident
+            and rec.get("bios") == list(bios) and all((dest / n).exists() for n in rec.get("bios_local") or [])):
+        if time.time() - rec.get("at", 0) > RUNTIME_RECHECK_S:
+            _refresh_bios_later(cfg, path, key, rec)
+        return {"core": Path(rec["core"]), "bios_copied": [], "cached": True, "checked_at": rec.get("at")}
+    core_path_, copied = ensure_platform(cfg, platform_, core)
+    _rc_set(path, key, {"core": str(core_path_), "core_ident": _file_ident(core_path_), "exe": exe, "exe_ident": exe_ident,
+                        "bios": list(bios), "bios_local": [n for n in _bios_local_names(list(bios)) if (dest / n).exists()],
+                        "at": time.time()})
+    return {"core": core_path_, "bios_copied": copied, "cached": False}
+
+
 def retroarch_exe(cfg: Config) -> str:
     """libretro's own nightly RetroArch build. Ubuntu's arm64 package is OpenGL-ES only, which cannot host
     desktop-GL cores such as the buildbot Flycast ('Requesting OpenGL context, but RetroArch is compiled against
@@ -252,9 +335,21 @@ def ensure_virtualgl() -> dict:
 
 def _seven_zip() -> str:
     """7-Zip CLI (libretro's Windows archives use BCJ2, which pure-Python extractors can't decode)."""
-    for c in (shutil.which("7z"), "C:/Program Files/7-Zip/7z.exe", "C:/Program Files (x86)/7-Zip/7z.exe"):
+    for c in (shutil.which("7zz"), shutil.which("7z"), "C:/Program Files/7-Zip/7z.exe", "C:/Program Files (x86)/7-Zip/7z.exe"):
         if c and Path(c).exists():
             return c
+    if HOST_OS == 'linux':
+        try:
+            apt_packages(['7zip'])
+        except ProvisionError:
+            apt_packages(['p7zip-full'])
+        found = shutil.which('7zz') or shutil.which('7z')
+        if not found:
+            apt_packages(['p7zip-full'])
+            found = shutil.which('7z')
+        if not found:
+            raise ProvisionError('7-Zip install failed')
+        return found
     _run(["winget", "install", "-e", "--id", "7zip.7zip", "--silent", "--accept-source-agreements", "--accept-package-agreements"], 900)
     c = "C:/Program Files/7-Zip/7z.exe"
     if not Path(c).exists():
@@ -314,11 +409,18 @@ def _retroarch_windows(cfg: Config) -> str:
     return str(branded)
 
 
+_RA_WIN: dict[str, str] = {}             # runtime root -> retroarch.exe (globbing the whole tree took ~0.5 s a launch)
+
+
 def _retroarch_windows_raw(cfg: Config) -> str:
     """Native RetroArch for local play on a Windows node (full FPS, real audio, XInput pads, no stream)."""
     root = cfg.runtime / "retroarch-win"
+    known = _RA_WIN.get(str(root))
+    if known and Path(known).is_file():
+        return known
     found = sorted(root.glob("**/retroarch.exe"))
     if found:
+        _RA_WIN[str(root)] = str(found[0])
         return str(found[0])
     seven = _seven_zip()
     url = f"{BUILDBOT}/windows/x86_64/RetroArch.7z"
@@ -482,12 +584,30 @@ def ensure_ghidra(cfg: Config) -> dict:
 
 _blender_cache: dict[tuple, tuple[float, str | None]] = {}
 
+_EM_X86_64, _EM_AARCH64 = 62, 183
+
+
+def _elf_machine(path: Path) -> int | None:
+    """e_machine of an ELF executable (0x3e = x86-64, 0xb7 = aarch64); None when not an ELF or unreadable."""
+    try:
+        head = open(path, "rb").read(20)
+    except OSError:
+        return None
+    if len(head) < 20 or head[:4] != b"\x7fELF":
+        return None
+    return int.from_bytes(head[18:20], "little")
+
 
 def find_blender(cfg: Config) -> str | None:
     """Newest Blender under blender_search. Builds sit 1-3 folders deep (Builds/daily/blender-x/blender.exe);
-    a full rglob of a build library took ~100 s, so search shallow and cache for 10 min."""
+    a full rglob of a build library took ~100 s, so search shallow and cache for 10 min.
+    On Linux the chosen binary must match the host architecture: an x86-64 Blender on aarch64 dies with
+    'ld-linux-x86-64.so.2', and PATH order alone hands back /usr/local/bin/blender before /usr/bin/blender."""
     if cfg.blender_path and Path(cfg.blender_path).exists():
-        return cfg.blender_path
+        foreign = (HOST_OS == "linux" and ARCH == "aarch64"
+                   and _elf_machine(Path(cfg.blender_path)) == _EM_X86_64)
+        if not foreign:
+            return cfg.blender_path
     key = tuple(cfg.blender_search)
     hit = _blender_cache.get(key)
     if hit and time.time() - hit[0] < 600 and (hit[1] is None or Path(hit[1]).exists()):
@@ -495,7 +615,25 @@ def find_blender(cfg: Config) -> str | None:
     exe = "blender.exe" if HOST_OS == "windows" else "blender"
     found = [p for d in cfg.blender_search if Path(d).is_dir()
              for pat in (exe, f"*/{exe}", f"*/*/{exe}", f"*/*/*/{exe}") for p in Path(d).glob(pat)]
-    best = str(max(found, key=lambda p: p.stat().st_mtime)) if found else shutil.which("blender")   # newest build
+    if not found and HOST_OS == "windows":
+        # A shared config can name another PC's user directory. Discover local
+        # installations before declaring conversion unavailable on this worker.
+        roots = [Path.home() / "Desktop" / "Blender Builds"]
+        roots += [Path(value) / "Blender Foundation" for key in ("ProgramFiles", "ProgramFiles(x86)")
+                  if (value := os.environ.get(key))]
+        found = [p for d in dict.fromkeys(roots) if d.is_dir()
+                 for pat in (exe, f"*/{exe}", f"*/*/{exe}", f"*/*/*/{exe}")
+                 for p in d.glob(pat) if p.is_file()]
+    if not found:
+        cands = [shutil.which("blender")] if HOST_OS == "windows" else \
+                [shutil.which("blender"), "/usr/local/bin/blender", "/usr/bin/blender"]
+        found = [Path(c) for c in dict.fromkeys(cands) if c and Path(c).exists()]
+    if found and HOST_OS == "linux" and ARCH in ("aarch64", "x86_64"):
+        native = _EM_AARCH64 if ARCH == "aarch64" else _EM_X86_64
+        nat = [p for p in found if _elf_machine(p) == native]
+        if nat:
+            found = nat                                 # never run an emulated foreign-arch Blender
+    best = str(max(found, key=lambda p: p.stat().st_mtime)) if found else None   # newest build
     _blender_cache[key] = (time.time(), best)
     return best
 
@@ -543,6 +681,7 @@ def ensure_ffmpeg() -> dict:
 
 def setup(cfg: Config, with_ghidra: bool = True, log=print) -> list[dict]:
     steps = []
+    steps.append(('archives', lambda: _receipt('archives', 'ok', _seven_zip())))
     from .rea import install as install_rea
     steps.append(("rea", lambda: install_rea(cfg)))
     if HOST_OS == "linux":

@@ -13,51 +13,56 @@ from .registry import ToolUnavailable
 
 def xinput_devices() -> list[int]:
     """Connected Xbox/XInput slots, independent of browser gamepad activation."""
-    if os.name != "nt":
-        return []
-    import ctypes
-    class Gamepad(ctypes.Structure):
-        _fields_ = [("buttons", ctypes.c_ushort), ("lt", ctypes.c_ubyte), ("rt", ctypes.c_ubyte),
-                    ("lx", ctypes.c_short), ("ly", ctypes.c_short), ("rx", ctypes.c_short), ("ry", ctypes.c_short)]
-    class State(ctypes.Structure):
-        _fields_ = [("packet", ctypes.c_uint), ("gamepad", Gamepad)]
-    for name in ("xinput1_4", "xinput9_1_0"):
-        try:
-            dll = getattr(ctypes.windll, name)
-        except OSError:
-            continue
-        dll.XInputGetState.argtypes = [ctypes.c_uint, ctypes.POINTER(State)]
-        dll.XInputGetState.restype = ctypes.c_uint
-        return [slot for slot in range(4) if dll.XInputGetState(slot, ctypes.byref(State())) == 0]
-    return []
+    from . import xinput
+    fn = xinput.load()                     # shared binding (#1638): never retype the DLL's cached function
+    return [slot for slot in range(4) if xinput.read(fn, slot) is not None] if fn is not None else []
 
 
-def xinput_snapshot() -> list[dict]:
-    """Live pad state for the desktop glyph, independent of Chromium focus."""
-    if os.name != "nt":
-        return []
-    import ctypes
-    class Gamepad(ctypes.Structure):
-        _fields_ = [("buttons", ctypes.c_ushort), ("lt", ctypes.c_ubyte), ("rt", ctypes.c_ubyte),
-                    ("lx", ctypes.c_short), ("ly", ctypes.c_short), ("rx", ctypes.c_short), ("ry", ctypes.c_short)]
-    class State(ctypes.Structure):
-        _fields_ = [("packet", ctypes.c_uint), ("gamepad", Gamepad)]
-    for name in ("xinput1_4", "xinput9_1_0"):
-        try:
-            dll = getattr(ctypes.windll, name)
-        except OSError:
-            continue
-        dll.XInputGetState.argtypes = [ctypes.c_uint, ctypes.POINTER(State)]
-        dll.XInputGetState.restype = ctypes.c_uint
-        out = []
-        for slot in range(4):
-            state = State()
-            if dll.XInputGetState(slot, ctypes.byref(state)) == 0:
-                pad = state.gamepad
-                out.append({"slot": slot, "buttons": pad.buttons, "lt": pad.lt, "rt": pad.rt,
-                            "lx": pad.lx, "ly": pad.ly, "rx": pad.rx, "ry": pad.ry})
-        return out
-    return []
+def xinput_snapshot(slots=range(4)) -> list[dict]:
+    """Live pad state for the desktop app (controller glyph, and Player 1 of a streamed game), independent of Chromium focus."""
+    from . import xinput
+    fn = xinput.load()                     # shared binding (#1638): never retype the DLL's cached function
+    out = []
+    for slot in (slots if fn is not None else ()):
+        state = xinput.read(fn, slot)
+        if state is not None:
+            pad = state.gamepad
+            out.append({"slot": slot, "buttons": pad.buttons, "lt": pad.lt, "rt": pad.rt,
+                        "lx": pad.lx, "ly": pad.ly, "rx": pad.rx, "ry": pad.ry})
+    return out
+
+
+def bind_savemgo_xinput(home: Path, slots: list[int]) -> bool:
+    """Replace only the portable package's stale DualSense selection, per PC.
+
+    Existing custom mappings and non-XInput setups are left intact. Keep a byte
+    exact backup and preserve every setting outside the six device/face bindings.
+    """
+    if not slots or any(type(s) is not int or not 0 <= s < 4 for s in slots):
+        return False
+    from .savemgo import _guard
+    path = _guard(home / 'config/input_configs/global/Default.yml')
+    if not path.is_file():
+        return False
+    original = path.read_bytes()
+    body = original.decode('utf-8')
+    sections = re.split(r'(?m)(?=^Player [2-7] Input:)', body, maxsplit=1)
+    first = sections[0]
+    if not (first.startswith('Player 1 Input:')
+            and re.search(r'^  Handler: SDL\s*$', first, re.M)
+            and re.search(r'^  Device: DualSense Wireless Controller 1\s*$', first, re.M)):
+        return False
+    replacements = {'Handler': 'XInput', 'Device': f'"XInput Pad #{min(slots) + 1}"',
+                    'Square': 'X', 'Cross': 'A', 'Circle': 'B', 'Triangle': 'Y'}
+    for key, value in replacements.items():
+        first, count = re.subn(r'(?m)^(\s*' + key + r': )[^\r\n]*', lambda m: m[1] + value, first)
+        if count != 1:
+            raise ValueError('Incomplete bundled MGO controller mapping')
+    backup = _guard(path.with_name(path.name + '.gbox-original'))
+    if not backup.exists():
+        backup.write_bytes(original)
+    path.write_bytes((first + ''.join(sections[1:])).encode('utf-8'))
+    return True
 
 
 def sdl2_xbox_guid(dll_path: Path) -> str | None:
@@ -262,10 +267,42 @@ def emulator_environment(source: dict[str, str]) -> dict[str, str]:
     return env
 
 
+def _signature(pads: list[dict]) -> tuple:
+    """What counts as a change: every button exactly; triggers and sticks coarsely, so resting-stick jitter stays quiet."""
+    stick = lambda v: int(v / 1024)                          # toward zero: jitter around the centre is one bucket
+    return tuple((p["slot"], p["buttons"], p["lt"] >> 4, p["rt"] >> 4,
+                  stick(p["lx"]), stick(p["ly"]), stick(p["rx"]), stick(p["ry"])) for p in pads)
+
+
+def watch(emit, read=xinput_snapshot, sleep=time.sleep, clock=time.monotonic,
+          poll: float = 0.008, heartbeat: float = 0.25, rescan: float = 1.0, ticks: int | None = None) -> None:
+    """Stream XInput state to the desktop app: a line the moment anything changes (~8 ms polls), else a heartbeat.
+
+    The desktop view forwards this as Player 1 of a streamed game (#1532), so a change must not wait for a fixed 20 Hz
+    tick. Querying an empty XInput slot is slow, so only connected slots are polled; the others once a second.
+    """
+    last, sent_at, scanned_at, slots = None, float("-inf"), float("-inf"), []
+    while ticks is None or ticks > 0:
+        now = clock()
+        if now - scanned_at >= rescan:
+            pads, scanned_at = read(), now
+            slots = [p["slot"] for p in pads]
+        else:
+            pads = read(slots)
+            if len(pads) != len(slots):                      # one went away: look at every slot now
+                pads, scanned_at = read(), now
+                slots = [p["slot"] for p in pads]
+        sig = _signature(pads)
+        if sig != last or now - sent_at >= heartbeat:
+            emit(json.dumps(pads, separators=(",", ":")))
+            last, sent_at = sig, now
+        if ticks is not None:
+            ticks -= 1
+        sleep(poll)
+
+
 if __name__ == "__main__":
     if "--watch" in sys.argv:
-        while True:
-            print(json.dumps(xinput_snapshot(), separators=(",", ":")), flush=True)
-            time.sleep(0.05)
+        watch(lambda line: print(line, flush=True))
     else:
         print(json.dumps(xinput_devices()))

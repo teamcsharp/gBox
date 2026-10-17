@@ -47,6 +47,25 @@ class FakeRetroArch(threading.Thread):
                 self.s.sendto(f"WRITE_CORE_MEMORY {cmd[1]} {len(bs)}".encode(), addr)
 
 
+class DeferredToggleRetroArch(FakeRetroArch):
+    """Like RetroArch itself: PAUSE_TOGGLE is a virtual hotkey press applied after the command poll that received it,
+    so a status read in that same poll still reports the previous state (#1123)."""
+
+    def run(self):
+        pending = False
+        while True:
+            data, addr = self.s.recvfrom(65536)
+            cmd = data.decode().split()[0]
+            self.log.append(cmd)
+            if cmd == "GET_STATUS":
+                shown = self.paused
+                if pending:
+                    self.paused, pending = not self.paused, False
+                self.s.sendto(f"GET_STATUS {'PAUSED' if shown else 'PLAYING'} dreamcast,PSO,crc32=0".encode(), addr)
+            elif cmd == "PAUSE_TOGGLE":
+                pending = True
+
+
 @pytest.fixture
 def ra():
     fake = FakeRetroArch()
@@ -130,6 +149,26 @@ def test_windows_dolphin_can_scroll_with_c_stick(monkeypatch):
                     {"key": "a", "down": True}]
 
 
+def test_windows_dolphin_launches_vulkan_not_d3d12(tmp_path, monkeypatch):
+    from gbox import game_audio
+    ad = adapters.DolphinWinAdapter(Config(), "gamecube")
+    exe = tmp_path / "Dolphin.exe"
+    exe.write_bytes(b"x")
+    monkeypatch.setattr(ad, "_exe", lambda: exe)
+    monkeypatch.setattr(ad, "_claim_lane", lambda: "F13")
+    monkeypatch.setattr(ad, "_gecko_setup", lambda user, rom: None)
+    monkeypatch.setattr(adapters, "_audio_selection", lambda ad, wait_s=1.0: {})
+    monkeypatch.setattr(game_audio, "dolphin_backend", lambda sel: "Cubeb")
+    argv = ad._argv("rom.iso")
+    assert "Dolphin.Core.GFXBackend=Vulkan" in argv
+    assert not any("D3D12" in a for a in argv)
+    # an agent-owned capture session keeps Vulkan and mutes audio (RenderDoc's layer captures it off-screen)
+    ad.capture_backend = {"driver": "vulkan", "attach": "layer"}
+    argv2 = ad._argv("rom.iso")
+    assert "Dolphin.Core.GFXBackend=Vulkan" in argv2
+    assert "Dolphin.DSP.Backend=No Audio Output" in argv2
+
+
 def test_graphics_panel_uses_active_emulator(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from gbox import graphics, tools
@@ -177,3 +216,49 @@ def test_get_frame_real_capture(tmp_path):
     t = REGISTRY["get_frame"]
     assert (out["width"], out["height"]) == (32, 24)
     assert t.validate(t.Out.model_validate(out), arts) == []
+
+
+def test_retroarch_pause_reports_the_state_its_toggle_produces():
+    """#1123: a status read sent straight behind PAUSE_TOGGLE is stale; pause/resume wait for an observed new state,
+    stay idempotent and never send a blind toggle."""
+    fake = DeferredToggleRetroArch()
+    fake.start()
+    ad = adapters.RetroArchAdapter(EmulatorConfig(adapter="retroarch", executable="x", core="y"), port=fake.port)
+    assert ad.pause()["state"] == "PAUSED" and fake.paused
+    assert fake.log == ["GET_STATUS", "PAUSE_TOGGLE", "GET_STATUS", "GET_STATUS"]
+    assert ad.pause()["state"] == "PAUSED" and fake.paused and fake.log.count("PAUSE_TOGGLE") == 1
+    assert ad.resume()["state"] == "PLAYING" and not fake.paused and fake.log.count("PAUSE_TOGGLE") == 2
+    assert ad.resume()["content"] == "dreamcast,PSO,crc32=0" and not fake.paused and fake.log.count("PAUSE_TOGGLE") == 2
+
+
+def test_retroarch_pause_never_claims_an_unconfirmed_transition(monkeypatch):
+    ad = adapters.RetroArchAdapter(EmulatorConfig(adapter="retroarch", executable="x", core="y"))
+    sent = []
+    monkeypatch.setattr(ad, "query_runtime", lambda: {"state": "PLAYING"})
+    monkeypatch.setattr(ad, "cmd", lambda *args, **kwargs: sent.append(args))
+    monkeypatch.setattr(adapters.time, "sleep", lambda _: None)
+    with pytest.raises(RuntimeError, match="did not confirm pause"):
+        ad.pause()
+    assert len(sent) == 1
+
+
+@pytest.mark.parametrize("reference", ["../escape.bin", "sub/escape.bin", r"sub\escape.bin", "C:escape.bin"])
+def test_gd_list_links_cannot_escape_staging(tmp_path, reference):
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    (stage / "data.bin").write_bytes(b"original")
+    lst = stage / "game.lst"
+    lst.write_text('1 0 4 2352 "' + reference + '" 0\n')
+    with pytest.raises(ValueError, match="sibling filename"):
+        adapters._link_lst_names(lst)
+    assert sorted(p.name for p in stage.iterdir()) == ["data.bin", "game.lst"]
+    assert not (tmp_path / "escape.bin").exists()
+
+
+def test_gd_list_repairs_a_missing_sibling_name(tmp_path):
+    (tmp_path / "data.bin").write_bytes(b"original")
+    lst = tmp_path / "game.lst"
+    lst.write_text('1 0 4 2352 "expected.bin" 0\n')
+    assert adapters._link_lst_names(lst) == ["expected.bin"]
+    assert (tmp_path / "expected.bin").read_bytes() == b"original"
+    assert adapters._link_lst_names(lst) == []
