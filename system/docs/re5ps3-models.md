@@ -18,6 +18,43 @@ masks `1`, `2`, and `4` select one native distance level, including primitives
 marked visible at multiple levels. Other levels remain available by exporting
 them explicitly. No original source is modified.
 
+## Normal Models collection
+
+Use the existing job/tool route `characters op=collect game_id=e7ca89bbeb67360d`.
+`gbox.re5ps3_collection` registers exactly two targets: Chris Redfield and Sheva
+Alomar in their normal player costumes. The catalog ID and PS3 platform must
+match. The adapter accepts the owned folder, `PS3_GAME`, `EBOOT.BIN`, or the
+catalog's `.7z`; it does not require a launched game or emulator process.
+
+For the solid `.7z`, the adapter selects only the exact `PARAM.SFO`, `EBOOT.BIN`,
+`uPl00ChrisNormal.arc` and `uPl01ShebaNormal.arc` under one unambiguous
+`PS3_GAME` root. A single 7-Zip pass flattens these four members into
+`<cache>/re5ps3-native/<source-key>`; unrelated files and the full game are not
+unpacked. A new source path/size/mtime gets a new key. Failed extraction does not
+publish a cache. Every target export rehashes the actual SFO, executable and its
+character pack against the owned-build fingerprints. Folder members cannot
+escape their PS3_GAME root. The outer 7z is identified by path/size/mtime, not
+mislabelled with a content hash; actual member SHA-256 values are recorded.
+
+Missing or corrupt character packs produce individual failed rows while the
+other target can still collect. Models metadata retains source member paths,
+actual hashes, platform/revision, archive/model resource identity, reader
+version, native formats and explicit two-target coverage. Normal collection
+exports LOD mask 1; the CLI still exposes all three validated masks.
+
+These entries deliberately set `role_mapping_policy=explicit_only`. Shared
+replacement readiness keeps verified numeric joints without inferring semantic
+body roles from their shape. Operator-authored roles remain possible, but the
+reader does not claim them. Thus the initial collection reports two verified
+models and **zero retargetable characters**, with `status=partial`. Coverage
+does not represent the entire cast or a working native MOD/TEX writer.
+
+The collection tests exercise real normal collection and preview verification,
+readiness, independent GLB readback, reuse, source immutability, exact-build
+rejection, per-target failure and a four-member 7z/cache round trip. Set
+`GBOX_RE5_EVIDENCE` to the evidence root with `re5/**/PS3_GAME/PARAM.SFO` and the
+three other owned files. No owned bytes are committed.
+
 ## Proven format details
 
 The owned release is catalog game `e7ca89bbeb67360d`, PS3 `BLUS30491`, disc
