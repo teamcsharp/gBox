@@ -33,9 +33,9 @@ TITLE_WORK = {
         'command': 'python -m gbox.re5ps3_arc OWNED_CHARACTER.arc --out NEW_MANIFEST.json',
         'model_reader': 'gbox.re5ps3_models',
         'model_command': r"python -m gbox.re5ps3_models OWNED_CHRIS.arc --model 'pawn\pl\pl00\model\pl0000' --lod 1 --out NEW_CHRIS.glb",
-        'validated_scope': 'PS3 ARC v8 reader/writer verified with all 151 Chris/Sheva pack resources; bounded MOD 156 revision 1 / TEX 102 reader exports textured rigged bind-pose GLBs at LOD masks 1/2/4; Chris/Sheva are editable targets for Sonic/Mario fitting, with numeric joint IDs and native animation-map metadata, not guessed semantic bone roles; offline Blender checks only; no native MOD/TEX writer, full-cast replacement or gameplay acceptance; existing re5 save unlock code is not gameplay-verified',
-        'separate_work': ['register the exact owned roster and reader version through the normal character collection route; the current model reader is a standalone CLI',
-                          'PS3 native MOD/TEX writer, semantic bone-role proof and Sonic/Mario retargeting across players, NPCs, enemies and cutscenes',
+        'validated_scope': 'PS3 ARC v8 reader/writer verified with all 151 Chris/Sheva pack resources; bounded MOD 156 revision 1 / TEX 102 reader exports textured rigged bind-pose GLBs at LOD masks 1/2/4; Chris/Sheva normal models are registered through gbox.re5ps3_collection for exact-build normal character collection from the owned folder/7z; two-target partial coverage, editable targets for Sonic/Mario fitting, with numeric joint IDs and native animation-map metadata, not guessed semantic bone roles; offline Blender checks only; no native MOD/TEX writer, full-cast replacement or gameplay acceptance; existing re5 save unlock code is not gameplay-verified',
+        'collection_command': 'characters op=collect game_id=e7ca89bbeb67360d',
+        'separate_work': ['PS3 native MOD/TEX writer, semantic bone-role proof and Sonic/Mario retargeting across players, NPCs, enemies and cutscenes',
                           'confirm every unlock category including Mercenaries/Reunion roster and stages',
                           'PS3-specific live inventory/equip routines and sidebar integration',
                           'complete folder-game mod/export with isolated save overlay and runtime acceptance'],
@@ -125,6 +125,8 @@ def prompt(game_id, *, stage='inventory', fingerprint=None):
                   title['identity_warning'], 'Validated engineering scope: ' + title['validated_scope']]
         if title.get('command'):
             lines.append('Native source inventory: ' + title['command'])
+        if title.get('collection_command'):
+            lines.append('Normal collection: ' + title['collection_command'])
         if title.get('model_command'):
             lines.append('Editable native model: ' + title['model_command'])
         lines.append('Still required: ' + '; '.join(title['separate_work']))

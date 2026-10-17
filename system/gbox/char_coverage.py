@@ -206,11 +206,10 @@ def cast_slots(game: dict) -> list[dict]:
 
 def extractor_for(game: dict) -> tuple[str | None, list[dict]]:
     from . import characters as C
-    t, plat = (game.get("title") or "").lower(), game.get("platform") or ""
     for name, test, roster, _run in C.DEDICATED:
         if name == 're2gc' and game.get('game_id') != 'c6adbfa00c20aaf9':
             continue
-        if test(t, plat):
+        if C.reader_matches(name, test, game):
             try:
                 return name, [r for r in roster() if r.get("kind", "character") == "character"]
             except Exception:                              # noqa: BLE001
@@ -269,6 +268,7 @@ def coverage(ctx, api) -> dict:
                      "favorite": bool(g.get('favorite')), "library": g.get('library'),
                      "capabilities": capabilities, "backlog": GC.backlog(capabilities),
                      "rip": {"extractor": ex or (tools[0] if tools else None), "roster": len(roster),
+                             "scope": C.reader_scope(ex),
                              "in_collection": sorted(slugs), "usable": sorted(m["slug"] for m in have
                                                                              if (m.get("rig") or {}).get("roles")),
                              "not_ripped": missing},
