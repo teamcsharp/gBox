@@ -208,7 +208,8 @@ def launch_path(cfg, game_id: str, rom: Path, name: str) -> Path:
     out = mod_dir(cfg, game_id, name)
     marker = _file_path(out, ".gbox-mod.json")
     if not marker.exists():
-        raise ValueError(f"no built mod {name!r} for this game")
+        raise ValueError(f"no built mod {name!r} for this game: it is neither on this PC nor in the central "
+                         f"collection. Build the mod first, or launch the stock game without a mod")
     meta = json.loads(marker.read_text())
     if meta.get("launchable") is False:                # universal-modder staged files (um_mod): an overlay, not a game copy
         raise ValueError(f"mod {name!r} is a staged file set ({meta.get('kind', 'files')}), not a launchable copy of the "
@@ -257,6 +258,10 @@ def _files(d: Path, hashes: bool = False) -> list[dict]:
 
 STAGED_SEP = "~"                     # <mod>~<build>: a rebuilt mod staged beside a copy the running game holds open
 STAGED_MARK = ".gbox-staged-of"     # inside such a folder: the collection name it mirrors (never pushed back or listed)
+
+
+# Allow cold storage reads the same per-request timeout as the manifest.
+MOD_FETCH_TIMEOUT_S = 900
 
 
 class ModInUse(PermissionError):
@@ -346,7 +351,7 @@ def stage(cfg, server: str, headers: dict, game_id: str, name: str, progress=Non
         if progress:
             progress(20, f"Checking build {name} against the central collection (Spark)")
         # the Spark hashes a new or just-restarted build's disc image (1+ GB on its HDD) before answering
-        r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=900)
+        r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=MOD_FETCH_TIMEOUT_S)
         if r.status_code == 404:
             return name  # Local-only mods still have a local completed marker.
         r.raise_for_status()
@@ -397,14 +402,86 @@ def _replace(tmp: Path, dst: Path, out: Path):
         raise ModInUse(e.errno, f"{dst.name} is open in a running game", str(dst)) from e
 
 
-def _fetch(cfg, server: str, headers: dict, game_id: str, name: str, progress=None, retry=True, dest: Path | None = None,
+_FETCH_RETRIES = 5                     # resume attempts after a transient drop on a multi-GB mod download
+_FETCH_RETRY_DELAY = 2.0               # seconds to wait before each resume attempt
+
+
+def _download_file(cfg, server, headers, game_id, name, row, tmp, dst, out, progress,
+                   base, total, reported) -> None:
+    """Download one manifest file into `tmp` (a `.part` beside its real path), resuming a partial
+    download and retrying transient transport drops. The collection serves multi-GB images and can
+    close a stream before its Content-Length is fully sent (`httpx.RemoteProtocolError`); resuming
+    from the `.part` offset recovers without re-fetching the bytes already on disk."""
+    import httpx
+    size, digest = row["size"], row.get("sha256")
+    reason = "incomplete"
+    for _ in range(_FETCH_RETRIES + 1):
+        offset = tmp.stat().st_size if tmp.exists() else 0
+        if offset > size:
+            tmp.unlink(missing_ok=True)
+            offset = 0
+        if offset == size and tmp.is_file():
+            with tmp.open("rb") as stream:
+                valid = not digest or hashlib.file_digest(stream, "sha256").hexdigest() == digest
+            if valid:
+                _replace(tmp, dst, out)
+                return
+            tmp.unlink(missing_ok=True)
+            offset = 0
+        request_headers = dict(headers)
+        if offset:
+            request_headers["Range"] = f"bytes={offset}-"
+        written = offset
+        try:
+            with httpx.stream("GET", f"{server}/api/modfiles/{game_id}/{name}/file/{row['path']}",
+                              headers=request_headers, timeout=httpx.Timeout(MOD_FETCH_TIMEOUT_S, connect=30)) as s:
+                s.raise_for_status()
+                if offset and s.status_code == 206:
+                    if not s.headers.get("Content-Range", "").startswith(f"bytes {offset}-"):
+                        raise ValueError("mod server returned an unexpected resume range")
+                else:
+                    offset = 0
+                written = offset
+                with open(tmp, "ab" if offset else "wb") as fh:
+                    for chunk in s.iter_bytes(1 << 20):
+                        fh.write(chunk)
+                        written += len(chunk)
+                        now = time.monotonic()
+                        if progress and now - reported[0] >= .5:
+                            progress(20 + round(8 * (base + written) / total, 2),
+                                     f"Fetching mod {name} from the collection: {(base + written) >> 20}/{total >> 20} MB")
+                            reported[0] = now
+        except httpx.TransportError:
+            reason = "incomplete"
+            time.sleep(_FETCH_RETRY_DELAY)
+            continue
+        if tmp.stat().st_size != size:
+            reason = "incomplete"
+            time.sleep(_FETCH_RETRY_DELAY)
+            continue
+        if digest:
+            with tmp.open("rb") as stream:
+                valid = hashlib.file_digest(stream, "sha256").hexdigest() == digest
+            if not valid:
+                tmp.unlink(missing_ok=True)
+                reason = "checksum"
+                time.sleep(_FETCH_RETRY_DELAY)
+                continue
+        _replace(tmp, dst, out)
+        return
+    raise (ValueError(f"Mod checksum mismatch: {row['path']}") if reason == "checksum"
+           else ValueError(f"incomplete mod transfer: {row['path']}"))
+
+
+def _fetch(cfg, server: str, headers: dict, game_id: str, name: str, progress=None, dest: Path | None = None,
            files: list[dict] | None = None) -> bool:
     """A mod built elsewhere: download it from the central collection (the Spark) into this machine's cache. Resumable:
-    files already here with the right size are kept. Returns False if the collection doesn't have it either."""
+    files already here with the right size are kept, and a dropped transfer resumes from its `.part`. Returns False if
+    the collection doesn't have it either."""
     import httpx
     out = dest or mod_dir(cfg, game_id, name)
     if files is None:
-        r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=900)
+        r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=MOD_FETCH_TIMEOUT_S)
         if r.status_code == 404:
             return False
         r.raise_for_status()
@@ -414,7 +491,7 @@ def _fetch(cfg, server: str, headers: dict, game_id: str, name: str, progress=No
         dst = _file_path(out, row["path"])
         _file_path(out, row["path"] + ".part")
     total, done = sum(f["size"] for f in files) or 1, 0
-    reported = 0
+    reported = [0.0]
     for f in sorted(files, key=lambda f: f["path"] == ".gbox-mod.json"):    # the marker last: a half copy isn't a mod
         dst = _file_path(out, f["path"])
         if dst.exists() and dst.stat().st_size == f["size"]:
@@ -424,39 +501,9 @@ def _fetch(cfg, server: str, headers: dict, game_id: str, name: str, progress=No
                 done += f["size"]; continue
         dst.parent.mkdir(parents=True, exist_ok=True)
         tmp = dst.with_name(dst.name + ".part")
-        offset = tmp.stat().st_size if tmp.exists() else 0
-        if offset > f['size']: offset = 0
-        if offset == f['size']:
-            with tmp.open('rb') as stream:
-                valid = not f.get('sha256') or hashlib.file_digest(stream, 'sha256').hexdigest() == f['sha256']
-            if valid: _replace(tmp, dst, out); done += offset; continue
-            offset = 0
-        request_headers = dict(headers)
-        if offset: request_headers['Range'] = f'bytes={offset}-'
-        with httpx.stream("GET", f"{server}/api/modfiles/{game_id}/{name}/file/{f['path']}", headers=request_headers,
-                          timeout=httpx.Timeout(60, connect=30)) as s:
-            s.raise_for_status()
-            if offset and s.status_code == 206:
-                if not s.headers.get('Content-Range', '').startswith(f'bytes {offset}-'):
-                    raise ValueError('mod server returned an unexpected resume range')
-            else: offset = 0
-            done += offset
-            with open(tmp, "ab" if offset else "wb") as fh:
-                for chunk in s.iter_bytes(1 << 20):
-                    fh.write(chunk)
-                    done += len(chunk)
-                    if progress and time.monotonic() - reported >= .5:
-                        progress(20 + round(8 * done / total, 2), f"Fetching mod {name} from the collection: {done >> 20}/{total >> 20} MB")
-                        reported = time.monotonic()
-        if tmp.stat().st_size != f['size']:
-            raise ValueError(f"incomplete mod transfer: {f['path']}")
-        if f.get('sha256'):
-            with tmp.open('rb') as stream: valid = hashlib.file_digest(stream, 'sha256').hexdigest() == f['sha256']
-            if not valid:
-                tmp.unlink()
-                if retry: return _fetch(cfg, server, headers, game_id, name, progress, retry=False, dest=dest, files=files)
-                raise ValueError(f"Mod checksum mismatch: {f['path']}")
-        _replace(tmp, dst, out)
+        _download_file(cfg, server, headers, game_id, name, f, tmp, dst, out, progress,
+                       base=done, total=total, reported=reported)
+        done += f["size"]
     return (out / ".gbox-mod.json").exists()
 
 
@@ -470,7 +517,7 @@ def push_missing(cfg, server: str, headers: dict) -> list[str]:
         d, game_id, name = meta.parent, meta.parent.parent.name, meta.parent.name
         if (d / STAGED_MARK).exists():
             continue                                       # a local staging copy of a collection mod, not a new build
-        r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=900)
+        r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=MOD_FETCH_TIMEOUT_S)
         have = {f["path"]: f["size"] for f in r.json().get("files", [])} if r.status_code == 200 else {}
         todo = [f for f in _files(d) if have.get(f["path"]) != f["size"] and not f["path"].endswith(".part")]
         for f in sorted(todo, key=lambda f: f["path"] == ".gbox-mod.json"):

@@ -8,9 +8,10 @@ touched 16 KiB blocks via ``gbox.gcz``).  Mod builds later unpack it once with
 
 Fingerprint correction (the assimilate fingerprint guessed "RenderWare clump (DFF) x4" for the
 models and pointed at ``gbox.gta_rw``/``gbox.gta_vc_models`` -- that is WRONG for the cars).  This
-disc's playable-vehicle models are Criterion "Src Engine" GameCube containers, NOT RenderWare DFF:
+disc stores playable-vehicle assets in Criterion GameCube banks; identifying those outer
+banks does not exclude nested RenderWare data or establish a complete vehicle decoder:
 
-  main.dol          1,934,336-byte PowerPC ELF-ish DOL at the header 0x420 offset (not in the FST).
+  main.dol          1,934,336-byte PowerPC DOL at the header 0x420 offset (not in the FST).
   playcars/<car>/   9 playable vehicles (the roster).  Per car:
                     <car>.cfg          physics (CRLF text, ``mName = value``).
                     <car>.esm          engine-SOUND model (text "Src Engine Model Definition";
@@ -25,15 +26,15 @@ disc's playable-vehicle models are Criterion "Src Engine" GameCube containers, N
                     likely packs RenderWare clumps).
   tracks/<t>/       <t>{1..N}gcn.sgd = "SGDVER 7" Criterion streamed geometry; <t>.PSW/.PSS/.p1w =
                     RenderWare world streams.  10 tracks: usa2 usa3 usa4 usam eu2 eu3 eu4 eum rev.
-  misc/             the ONLY RenderWare DFF clumps on disc: start.dff check.dff finish.dff
+  misc/             the loose RenderWare DFF files found in the FST: start.dff check.dff finish.dff
                     (1,488 B each) + global/shadowr.dff (2,552 B) -- UI/start-line props, not cars.
   frontend|misc/    .dic = RenderWare TXD texture dictionaries (frontend.dic 4.7 MB, texture.dic,
                     loading.dic, global.dic); .tpl = GameCube TPL (burnout.tpl fxcorona.tpl icon.tpl).
   audio/            .ulw music (Dolby/Mono), .gcb sfx.
 
-The character-replacement target is a playable car; the reader must decode the Criterion
-.ac/.pc/.gcb car containers (and the .sgd track format), not RenderWare DFF.  Nearest already-read
-titles (gta3_swap, gta_vc_models) share only the RenderWare *texture/world* layer, not the car mesh.
+The replacement target is a playable car. Analyze the .ac/.pc visual banks and their loader
+before claiming a mesh format; .gcb files identified here are audio banks. Reuse of existing
+RenderWare readers depends on confirming nested payload signatures and layout.
 
 ``python -m gbox.burnout_inventory <disc .gcz> --source <gcz> --source-sha256 SHA --out manifest.json``
 writes the manifest (game identity, DOL hash, per-top-dir layout, 9-car roster with per-file
@@ -56,9 +57,10 @@ GC_MAGIC = 0xC2339F3D
 TPL_MAGIC = 0x0020AF30
 GX_FORMATS = {0: "I4", 1: "I8", 2: "IA4", 3: "IA8", 4: "RGB565", 5: "RGB5A3", 6: "RGBA8", 8: "C4",
               9: "C8", 10: "C14X2", 14: "CMPR"}
-# RenderWare big-endian chunk types we recognise (Clump, TextureDictionary, Struct, GeometryList).
-RW_CHUNK_NAMES = {0x01: "Struct", 0x0E: "Atomic", 0x10: "Clump", 0x14: "Geometry",
-                  0x15: "GeometryList", 0x16: "TextureDictionary", 0x1C: "Material", 0x1E: "Texture"}
+# RenderWare chunk IDs; stream headers on the inspected files are little-endian.
+RW_CHUNK_NAMES = {0x01:"Struct",0x02:"String",0x03:"Extension",0x06:"Texture",0x07:"Material",
+                  0x08:"MaterialList",0x0E:"FrameList",0x0F:"Geometry",0x10:"Clump",
+                  0x14:"Atomic",0x15:"TextureNative",0x16:"TextureDictionary",0x1A:"GeometryList"}
 # The 9 playable vehicles.  "fire"/"default" appear in main.dol strings but are not on this disc.
 CAR_EXT_PART = {"cfg": "physics", "esm": "engine-sound model", "gcb": "engine-audio bank",
                 "ac2": "asset bank (ptr table)", "ac3": "asset bank (ptr table)",
@@ -91,7 +93,7 @@ def tpl_images(b: bytes) -> list[dict]:
     if len(b) < 12 or struct.unpack_from(">I", b, 0)[0] != TPL_MAGIC:
         raise ValueError("not a TPL (magic 0x0020AF30)")
     n, table = struct.unpack_from(">II", b, 4)
-    if table + 8 * n > len(b):
+    if table<12 or table + 8 * n > len(b):
         raise ValueError("TPL image table runs past the end")
     out = []
     for i in range(n):
@@ -99,31 +101,21 @@ def tpl_images(b: bytes) -> list[dict]:
         if ih + 12 > len(b):
             raise ValueError(f"TPL image header {i} outside the file")
         h, w, fmt, data = struct.unpack_from(">HHII", b, ih)
-        if data > len(b):
+        if not w or not h or data > len(b):
             raise ValueError(f"TPL image {i} data outside the file")
         out.append({"w": w, "h": h, "fmt": GX_FORMATS.get(fmt, str(fmt))})
     return out
 
 
 def rw_chunks(b: bytes) -> list[dict]:
-    """Walk RenderWare chunk tree.  NB: on this GameCube build the RenderWare chunk headers are
-    LITTLE-endian (u32 type,size,version) even though the surrounding GameCube data (TPL, Criterion
-    .ac/.pc pointer tables) is big-endian.  Returns the top-level chunks (bounded; refuses a size
-    that leaves the buffer)."""
-    out, o = [], 0
-    while o + 12 <= len(b):
-        typ, size, ver = struct.unpack_from("<III", b, o)
-        if size == 0:                         # RenderWare end-of-stream terminator (type 0x03, size 0)
-            break
-        if size < 12 or o + size > len(b):
-            raise ValueError(f"RenderWare chunk at {o:#x} has bad size {size}")
-        out.append({"type": RW_CHUNK_NAMES.get(typ, hex(typ)), "size": size,
-                    "version": hex(ver)})
-        if typ == 0x10:  # clump is a single top-level chunk; nested geometry stays out of scope
-            break
-        o += size
-        if o >= len(b):
-            break
+    """Read top-level RenderWare records; size excludes the 12-byte header."""
+    out=[];off=0
+    while off<len(b):
+        if off+12>len(b):raise ValueError('Truncated RenderWare header')
+        typ,size,version=struct.unpack_from('<III',b,off)
+        if size>len(b)-off-12:raise ValueError('RenderWare payload outside buffer')
+        out.append({'type':RW_CHUNK_NAMES.get(typ,hex(typ)),'size':size,'version':hex(version),'offset':off})
+        off+=12+size
     return out
 
 
@@ -138,7 +130,7 @@ def esm_samples(b: bytes) -> dict:
 
 def asset_bank(b: bytes) -> dict:
     """Analyse the Criterion .ac/.pc/.tra family: a leading run of big-endian u32s in the
-    0x80000000..0x817FFFFF GameCube RAM range (a load-address/pointer table).  Bounded to the first
+    0x80000000..0x817FFFFF GameCube RAM range (a pointer-like candidate run; loader interpretation remains unverified).  Bounded to the first
     4096 bytes; reports the table shape and where the table ends."""
     n = 0
     end = 0
@@ -150,16 +142,16 @@ def asset_bank(b: bytes) -> dict:
         end += 4
     return {"ptr_table_entries": n, "ptr_table_bytes": end,
             "first": hex(struct.unpack_from(">I", b, 0)[0]) if len(b) >= 4 else None,
-            "data_region_starts": end}
+            "candidate_prefix_ends": end}
 
 
 def sgd_header(b: bytes) -> dict:
     """Criterion streamed-geometry header ('SGDVER 7')."""
     if len(b) < 0x40 or b[:8] != b"SGDVER 7":
         raise ValueError("not an SGD (want 'SGDVER 7')")
-    # first block of u32s after the magic are the stream section offsets/sizes
+    # Raw words after the magic; section semantics require loader analysis
     vals = struct.unpack_from(">12I", b, 0x08)
-    return {"sections": list(vals)}
+    return {"raw_header_words": list(vals), "layout_verified":False}
 
 
 def car_components(disc, car: str) -> list[dict]:
@@ -178,69 +170,79 @@ def car_components(disc, car: str) -> list[dict]:
 def inventory(iso: Path, source: Path | None = None, source_sha256: str | None = None) -> dict:
     from .gcdisc import GCDisc
 
+    digest=hashlib.sha256()
+    with open(iso,"rb") as stream:
+        for chunk in iter(lambda:stream.read(1024*1024),b""):
+            digest.update(chunk)
+    actual_hash=digest.hexdigest()
+    if source_sha256 is not None and source_sha256.lower()!=actual_hash:
+        raise ValueError("Source SHA-256 mismatch")
     disc = GCDisc(iso)
-    hdr = disc_header(disc._r(0, 0x440), disc._r(0x440, 0x20))
-    if hdr["disc_id"] != DISC_ID:
-        raise ValueError(f"{iso}: disc id {hdr['disc_id']}, expected {DISC_ID}")
-    dol = disc.dol()
+    try:
+        hdr = disc_header(disc._r(0, 0x440), disc._r(0x440, 0x20))
+        if hdr["disc_id"] != DISC_ID:
+            raise ValueError(f"{iso}: disc id {hdr['disc_id']}, expected {DISC_ID}")
+        dol = disc.dol()
 
-    # per-top-dir layout + extension histogram
-    dirs, sizes = defaultdict(Counter), Counter()
-    for name, (_off, size) in disc.files.items():
-        top = name.split("/", 1)[0] if "/" in name else "<root>"
-        ext = name.rsplit(".", 1)[-1].lower() if "." in name.rsplit("/", 1)[-1] else ""
-        dirs[top][ext] += 1
-        sizes[top] += size
+        # per-top-dir layout + extension histogram
+        dirs, sizes = defaultdict(Counter), Counter()
+        for name, (_off, size) in disc.files.items():
+            top = name.split("/", 1)[0] if "/" in name else "<root>"
+            ext = name.rsplit(".", 1)[-1].lower() if "." in name.rsplit("/", 1)[-1] else ""
+            dirs[top][ext] += 1
+            sizes[top] += size
 
-    cars = sorted({n.split("/")[1] for n in disc.files
-                   if n.startswith("playcars/") and "/" in n[9:] and n.split("/")[1] != "global"})
-    roster = []
-    for car in cars:
-        comps = car_components(disc, car)
-        fp = b"".join(c["sha256"].encode("ascii") for c in comps)
-        roster.append({"car": car, "files": comps, "bytes": sum(c["size"] for c in comps),
-                       "sha256": _sha(fp)})
-    traffic = disc.read("trafcars/trafficgcn.tra")
-    tracks = sorted({n.split("/")[1] for n in disc.files if n.startswith("tracks/") and "/" in n[7:]})
-    sgd_file = next((n for n in sorted(disc.files) if n.endswith(".sgd")
-                     and disc._r(disc.files[n][0], 8) == b"SGDVER 7"), None)
-    rpc_sgds = [n for n in sorted(disc.files) if n.endswith("rpcgcn.sgd")]
+        cars = sorted({n.split("/")[1] for n in disc.files
+                       if n.startswith("playcars/") and "/" in n[9:] and n.split("/")[1] != "global"})
+        roster = []
+        for car in cars:
+            comps = car_components(disc, car)
+            fp = b"".join(c["sha256"].encode("ascii") for c in comps)
+            roster.append({"car": car, "files": comps, "bytes": sum(c["size"] for c in comps),
+                           "sha256": _sha(fp)})
+        traffic = disc.read("trafcars/trafficgcn.tra")
+        tracks = sorted({n.split("/")[1] for n in disc.files if n.startswith("tracks/") and "/" in n[7:]})
+        sgd_file = next((n for n in sorted(disc.files) if n.endswith(".sgd")
+                         and disc._r(disc.files[n][0], 8) == b"SGDVER 7"), None)
+        rpc_sgds = [n for n in sorted(disc.files) if n.endswith("rpcgcn.sgd")]
 
-    # format probes
-    probes = {}
-    for n in ("misc/start.dff", "misc/check.dff", "misc/finish.dff", "playcars/global/shadowr.dff"):
-        try:
-            probes[n] = {"chunks": rw_chunks(disc.read(n))}
-        except ValueError as e:
-            probes[n] = {"error": str(e)}
-    probes["frontend/frontend.dic"] = {"chunks": rw_chunks(disc.read("frontend/frontend.dic"))[:3]}
-    probes["misc/burnout.tpl"] = {"images": tpl_images(disc.read("misc/burnout.tpl"))}
-    probes["playcars/coupe/coupegcn.pc1"] = asset_bank(disc.read("playcars/coupe/coupegcn.pc1"))
-    probes["playcars/coupe/coupegcn.ac2"] = asset_bank(disc.read("playcars/coupe/coupegcn.ac2"))
-    probes["playcars/coupe/coupee.gcb"] = asset_bank(disc.read("playcars/coupe/coupee.gcb"))
-    probes["trafcars/trafficgcn.tra"] = asset_bank(traffic)
-    probes["coupe.esm"] = esm_samples(disc.read("playcars/coupe/coupe.esm"))
+        # format probes
+        probes = {}
+        for n in ("misc/start.dff", "misc/check.dff", "misc/finish.dff", "playcars/global/shadowr.dff"):
+            try:
+                probes[n] = {"chunks": rw_chunks(disc.read(n))}
+            except ValueError as e:
+                probes[n] = {"error": str(e)}
+        probes["frontend/frontend.dic"] = {"chunks": rw_chunks(disc.read("frontend/frontend.dic"))[:3]}
+        probes["misc/burnout.tpl"] = {"images": tpl_images(disc.read("misc/burnout.tpl"))}
+        probes["playcars/coupe/coupegcn.pc1"] = asset_bank(disc.read("playcars/coupe/coupegcn.pc1"))
+        probes["playcars/coupe/coupegcn.ac2"] = asset_bank(disc.read("playcars/coupe/coupegcn.ac2"))
+        probes["playcars/coupe/coupee.gcb"] = asset_bank(disc.read("playcars/coupe/coupee.gcb"))
+        probes["trafcars/trafficgcn.tra"] = asset_bank(traffic)
+        probes["coupe.esm"] = esm_samples(disc.read("playcars/coupe/coupe.esm"))
 
-    return {
-        "game_id": next(iter(GAME_IDS)), "title": GAME_IDS[next(iter(GAME_IDS))],
-        "source": {"catalog_rel_path": SOURCE_REL, "path": str(source) if source else None,
-                   "sha256": source_sha256, "format": "Dolphin GCZ (zlib blocks)", "image": str(iso)},
-        "disc": hdr, "files": len(disc.files),
-        "dol": {"size": len(dol), "sha256": _sha(dol), "entry": hex(struct.unpack_from(">I", dol, 0xE0)[0])},
-        "layout": {d: {"files": sum(c.values()), "bytes": sizes[d], "ext": dict(c)}
-                   for d, c in sorted(dirs.items())},
-        "roster": roster, "roster_size": len(roster),
-        "traffic": {"file": "trafcars/trafficgcn.tra", "size": len(traffic), "sha256": _sha(traffic)},
-        "tracks": tracks,
-        "sgd_file": sgd_file,
-        "sgd_sections": sgd_header(disc.read(sgd_file)) if sgd_file else None,
-        "reflection_probe_sgds": rpc_sgds,
-        "format_probes": probes,
-        "launch": {"core": "dolphin (catalog runtimes retroarch/dolphin, rocketlauncher windows-node)",
-                   "mod_base": "filemods.gcz_to_iso -> cache/modbase/<game_id>/<stem>.iso; mods are "
-                               "copies (filemods.build_image), the GCZ stays untouched",
-                   "region": hdr["region"], "players": 1},
-    }
+        return {
+            "game_id": next(iter(GAME_IDS)), "title": GAME_IDS[next(iter(GAME_IDS))],
+            "source": {"catalog_rel_path": SOURCE_REL, "path": str(iso), "label":str(source) if source else None,
+                       "sha256": actual_hash, "format": "Dolphin GCZ" if str(iso).lower().endswith(".gcz") else "GameCube ISO", "image": str(iso)},
+            "disc": hdr, "files": len(disc.files),
+            "dol": {"size": len(dol), "sha256": _sha(dol), "entry": hex(struct.unpack_from(">I", dol, 0xE0)[0])},
+            "layout": {d: {"files": sum(c.values()), "bytes": sizes[d], "ext": dict(c)}
+                       for d, c in sorted(dirs.items())},
+            "roster": roster, "roster_size": len(roster),
+            "traffic": {"file": "trafcars/trafficgcn.tra", "size": len(traffic), "sha256": _sha(traffic)},
+            "tracks": tracks,
+            "sgd_file": sgd_file,
+            "sgd_sections": sgd_header(disc.read(sgd_file)) if sgd_file else None,
+            "reflection_probe_sgds": rpc_sgds,
+            "format_probes": probes,
+            "launch": {"core": "dolphin (catalog runtimes retroarch/dolphin, rocketlauncher windows-node)",
+                       "mod_base": "filemods.gcz_to_iso -> cache/modbase/<game_id>/<stem>.iso; mods are "
+                                   "copies (filemods.build_image), the GCZ stays untouched",
+                       "region": hdr["region"], "players": 1},
+        }
+    finally:
+        disc.f.close()
 
 
 def main(argv=None) -> int:

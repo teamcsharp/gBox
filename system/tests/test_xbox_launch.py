@@ -38,8 +38,11 @@ def test_verified_doa3_catalog_title_uses_its_native_runtime_without_rerouting_o
     game = legacy_entry() | {"game_id": GAME_ID}
     assert isinstance(adapters.for_game(game, cfg), Doa3NativeAdapter)
     assert adapters.for_game(game | {"game_id": "another-xbox-game"}, cfg).name == "cxbx"
-    assert adapters.for_game(game, cfg, mod="texture-build").name == "cxbx"
-    assert adapters.for_game(game | {"mod": "texture-build"}, cfg).name == "cxbx"
+    build = adapters.for_game(game, cfg, mod="texture-build")
+    assert isinstance(build, Doa3NativeAdapter)
+    assert build.game["mod"] == "texture-build"
+    assert adapters.for_game({**game, "mod": "saved-build"}, cfg).game["mod"] == "saved-build"
+    assert isinstance(adapters.for_game(game | {"mod": "texture-build"}, cfg), Doa3NativeAdapter)
     from gbox.doa3_native import QUICKSWAP_GAME_ID, QUICKSWAP_LIBRARY, QUICKSWAP_ROM
     alias = {"platform": "xbox", "game_id": QUICKSWAP_GAME_ID, "library": QUICKSWAP_LIBRARY,
              "rel_path": QUICKSWAP_ROM}
