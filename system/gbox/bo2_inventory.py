@@ -63,10 +63,12 @@ def goefile_names(data: bytes, limit: int = 1 << 16) -> list[str]:
         j = i + 1
         if j >= len(data) or not (0x21 <= data[j] < 0x7F):
             continue
-        end = data.find(b"\x00", j)
+        end = data.find(b"\x00", j, min(len(data), limit, j + 64))
         if end == -1 or end - j > 63:
             continue
-        name = data[j:end].decode("latin-1")
+        if not all(0x21 <= byte < 0x7f for byte in data[j:end]):
+            continue
+        name = data[j:end].decode("ascii")
         if len(name) >= 3 and name not in seen:
             seen.add(name)
             out.append(name)
@@ -90,8 +92,9 @@ def character_etypes(list_txt: bytes) -> dict:
             continue
         cat = rest.split("/", 1)[0] if "/" in rest else "root"
         name = leaf[:-4]
-        if name not in chars.setdefault(cat, []):
-            chars[cat].append(name)
+        if name in chars.setdefault(cat, []):
+            continue
+        chars[cat].append(name)
         low = name.lower()
         if not ("common" in low or "proto" in low or low.endswith("actor")):
             primary += 1
@@ -197,7 +200,7 @@ def inventory(gcz: Path, source_sha256: str | None = None, source_path: str | No
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Blood Omen 2 (GC, GO2E4F) owned-disc inventory manifest")
     ap.add_argument("gcz", type=Path, help="the owned .gcz (or plain .iso) disc image")
-    ap.add_argument("--source-sha256", default=SOURCE_SHA256)
+    ap.add_argument("--source-sha256", default=None, help="precomputed hash of this source image")
     ap.add_argument("--source-path", default=None)
     ap.add_argument("--out", type=Path, default=None)
     a = ap.parse_args(argv)

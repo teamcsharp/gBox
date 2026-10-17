@@ -117,3 +117,13 @@ def test_manifest_roundtrip_json(tmp_path):
     loaded = json.loads(out.read_text())
     assert loaded["game_id"] == "af354bb8263e7b32"
     assert loaded["disc_id"] == "GO2E4F"
+
+
+def test_duplicate_actor_paths_are_counted_once():
+    line = b"assets/etypes/characters/vm/voradvm.etp\n"
+    assert bo2_inventory.character_etypes(line * 2)["actor_count"] == 1
+
+
+def test_section_names_respect_byte_limit_and_ascii():
+    assert bo2_inventory.goefile_names(b"\xffvalid\x00", limit=4) == []
+    assert bo2_inventory.goefile_names(b"\xffa\x01bc\x00") == []
