@@ -119,6 +119,32 @@ def resource_reason(store, worker, policy, jobs, *, require_gpu=False, now=None)
     return None
 
 
+def build_input(plan, key, *, normalized=True):
+    """Freeze the same validated input that server submission stores."""
+    inp = dict(plan['recipe']['input'], launch=False, rebuild=True,
+               mod_name='inspect_'+key[:16], feedback_ack=plan['feedback_ack'])
+    if not normalized:
+        return inp
+    from .characters import CharIn
+    return CharIn.model_validate(inp).model_dump(mode='json')
+
+
+def reservation_matches(plan, run, job):
+    """Compare against the reviewed recipe, including server-added defaults.
+
+    Legacy reservations hashed the sparse recipe. Accept them only when that exact
+    recipe still hashes to the reservation and the job is its full validated form.
+    Never derive authorization from the submitted job's own digest.
+    """
+    try:
+        expected = build_input(plan, run['id'])
+        accepted = {digest(expected), digest(build_input(plan, run['id'], normalized=False))}
+        return (run.get('input_digest') in accepted and build_job(job)
+                and job['input'].get('launch') is False and digest(job['input']) == digest(expected))
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def claim_reason(store, worker, job):
     """Authoritative recheck under the normal claim lock; no broad idle bypass."""
     run_id = (job.get('origin') or {}).get('inspection_run')
@@ -138,7 +164,7 @@ def claim_reason(store, worker, job):
     if any(worker.get('build_sources', {}).get(path) != sha for path, sha in expected.items()):
         return 'Worker must refresh safely to load the changed writer code.'
     # A malicious/stale job cannot borrow a real reservation to launch a game.
-    if not build_job(job) or digest(job['input']) != run['input_digest'] or job['input'].get('launch') is not False:
+    if not reservation_matches(plan, run, job):
         return 'Inspection recipe or launch policy does not match its reservation.'
     return resource_reason(store, worker, p, store.jobs(states=('running',)), require_gpu=plan['requires_gpu'])
 
@@ -208,7 +234,7 @@ class Controller:
                     save('waiting', 'Hourly inspection-build limit reached; latest revision remains queued.'); continue
                 if any(w.get('build_sources', {}).get(path) != sha for path, sha in sources.items()):
                     save('waiting', 'Worker must refresh safely to load changed writer code.'); continue
-                inp = dict(plan['recipe']['input'], launch=False, rebuild=True, mod_name='inspect_'+key[:16], feedback_ack=plan['feedback_ack'])
+                inp = build_input(plan, key)
                 run = {'id':key, 'game_id':gid, 'plan_revision':plan['revision'], 'sources':sources,
                        'input_digest':digest(inp), 'created':now, 'node':policy['node']}
                 # Claim and linkage are atomic relative to worker admission. A crash after
