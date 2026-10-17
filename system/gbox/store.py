@@ -28,6 +28,21 @@ def canon(obj) -> bytes:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str).encode()
 
 
+def append_audit(db, actor, action, subject, data=None, *, ts=None):
+    """Append an audit event in the caller's transaction; never commit here."""
+    # Serialize the read of the predecessor across processes, including maintenance CLIs.
+    if not db.in_transaction:
+        db.execute("BEGIN IMMEDIATE")
+    last = db.execute("SELECT hash FROM audit ORDER BY seq DESC LIMIT 1").fetchone()
+    prev = last[0] if last else "0" * 64
+    ts = time.time() if ts is None else ts
+    payload = canon({"ts": ts, "actor": actor, "action": action, "subject": subject, "data": data or {}})
+    h = sha256(prev.encode() + payload)
+    cur = db.execute("INSERT INTO audit(ts,actor,action,subject,data,prev,hash) VALUES(?,?,?,?,?,?,?)",
+                     (ts, actor, action, subject, json.dumps(data or {}, default=str), prev, h))
+    return cur.lastrowid
+
+
 class Store:
     def __init__(self, data_dir: Path):
         self.dir = Path(data_dir)
@@ -427,15 +442,9 @@ class Store:
     # --- audit ledger ---
     def audit(self, actor: str, action: str, subject: str, data: dict | None = None) -> int:
         with self.lock:
-            last = self.db.execute("SELECT hash FROM audit ORDER BY seq DESC LIMIT 1").fetchone()
-            prev = last[0] if last else "0" * 64
-            ts = time.time()
-            payload = canon({"ts": ts, "actor": actor, "action": action, "subject": subject, "data": data or {}})
-            h = sha256(prev.encode() + payload)
-            cur = self.db.execute("INSERT INTO audit(ts,actor,action,subject,data,prev,hash) VALUES(?,?,?,?,?,?,?)",
-                                  (ts, actor, action, subject, json.dumps(data or {}, default=str), prev, h))
+            seq = append_audit(self.db, actor, action, subject, data)
             self.db.commit()
-            return cur.lastrowid
+            return seq
 
     def audit_log_last_seq(self) -> int:
         with self.lock:
