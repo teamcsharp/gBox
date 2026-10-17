@@ -161,6 +161,8 @@ def _operation_result_state(text: str, name: str, args: dict) -> str:
         status = str(layer.get('status') or '').lower()
         if _creates_game_files(name, args) and (layer.get('ready') is False or
                 {state, status} & {'unsupported', 'partial', 'needs_selection', 'needs_writer'} or
+                (name == 'rom_export' and layer.get('mode') in {'original', 'modified'} and
+                 (layer['mode'] == 'original') != (args.get('original') is True)) or
                 (args.get('game_id') and layer.get('game_id') and layer['game_id'] != args['game_id'])):
             return 'failed'
         if (layer.get('error') or layer.get('overlay_error') or

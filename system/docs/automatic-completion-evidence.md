@@ -14,7 +14,11 @@ job, a plan, a README, or a later successful read is insufficient.
 ROM exports require their export directory and an image/folder or cheat files.
 An explicit game ID must match any returned ID and the export directory. Existing
 original-file exports, saved-mod selection, cheat-only exports and shortened chat
-receipts remain supported. File builds require the requested mod name, its
+receipts remain supported. The short receipt retains game identity, export mode
+and failure/status flags; an explicitly returned original/modified mode must
+match the request. A cheat-file receipt proves only that tool's supported export,
+not that a request for a modified game image was fulfilled.
+File builds require the requested mod name, its
 directory and nonempty changed-file paths. Explicit failure, pending, unsupported,
 partial or not-ready results cannot be hidden by those fields. Direct tools and
 the typed `run_tool` wrapper use the same guard.

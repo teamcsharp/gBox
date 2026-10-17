@@ -277,3 +277,33 @@ def test_not_ready_repeat_cannot_reuse_a_previous_success():
     events = operation('rom_export', EXPORT, EXPORT_RESULT)
     events += operation('rom_export', EXPORT, {'repeat': True, 'ready': False})
     assert required_operation_outcome(events, _modifies_game)['unresolved']
+
+
+@pytest.mark.parametrize('extra', [
+    {'mode': 'original'}, {'status': 'partial'}, {'ready': False},
+    {'game_id': 'other_game'}, {'state': 'failed'}, {'error': 'writer failed'},
+    {'verified': False}, {'success': False}, {'ok': False}, {'overlay_error': 'native swap unavailable'},
+])
+def test_short_export_receipt_retains_identity_and_negative_evidence(extra):
+    from types import SimpleNamespace
+    from gbox.agent import Agent
+    result = EXPORT_RESULT | {'files': [{'path': 'modified.iso', 'size': 100}]} | extra
+    def job(_tool, inp, *_a):
+        return {'state': 'succeeded', 'output': {'result': {'ready': True} if inp['op'] == 'plan' else result}}
+    short = Agent.rom_export(SimpleNamespace(_job=job), **EXPORT)
+    assert all(short[k] == value for k, value in extra.items())
+    assert required_operation_outcome(operation('rom_export', EXPORT, short), _modifies_game)['unresolved']
+
+
+def test_short_original_export_is_accepted_only_when_explicitly_requested():
+    from types import SimpleNamespace
+    from gbox.agent import Agent
+    args = {'game_id': 're2', 'original': True}
+    result = EXPORT_RESULT | {'mode': 'original', 'files': [{'path': 'original.gcz', 'size': 100}]}
+    def job(_tool, inp, *_a):
+        return {'state': 'succeeded', 'output': {'result': {'ready': True} if inp['op'] == 'plan' else result}}
+    short = Agent.rom_export(SimpleNamespace(_job=job), **args)
+    assert short['mode'] == 'original' and short['game_id'] == 're2'
+    assert not required_operation_outcome(operation('rom_export', args, short), _modifies_game)['unresolved']
+    assert required_operation_outcome(operation('rom_export', args | {'original': False}, short), _modifies_game)['unresolved']
+    assert required_operation_outcome(operation('rom_export', args, short | {'mode': 'modified'}), _modifies_game)['unresolved']
