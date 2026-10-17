@@ -123,3 +123,24 @@ def test_remote_failed_model_start_restores_original(monkeypatch):
     with pytest.raises(RuntimeError, match='launch failed'):
         R.main({'action': 'start', 'model': M.MODEL, 'container': 'original', 'id': '123'})
     assert calls[-1] == ['docker', 'start', 'original']
+
+
+def test_queue_report_handoff_retries_and_deduplicates_without_closing_task(pool, monkeypatch):
+    from gbox import hermes_work_queue as Q
+    item = {'local': True, 'request_id': 'a'*16}
+    run = {'id': 'b'*32}
+    monkeypatch.setattr(Q, '_final_report', lambda r: 'Partial inventory. Artifact abc. Next: verify build hash.')
+    messages, attempts = [], []
+    def api(path, body=None):
+        if body is None:
+            return {'messages': messages, 'status': 'open'}
+        assert path.endswith('/messages') and 'status' not in body
+        attempts.append(body)
+        messages.append(body)
+        if len(attempts) == 1:
+            raise TimeoutError('acknowledgment lost after the server stored the report')
+    monkeypatch.setattr(Q, '_api', api)
+    Q._preserve_report(item, run)
+    assert item['final_report'].startswith('Partial inventory') and item['report_error'] == 'TimeoutError'
+    Q._preserve_report(item, run)
+    assert item['report_posted_run'] == run['id'] and len(attempts) == 1

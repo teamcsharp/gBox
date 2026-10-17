@@ -32,5 +32,8 @@ Spark's standalone gBox Ghidra bridge has its PyGhidra environment installed.
 REA 6's bundled Ghidra provider rejects Linux ARM; route those binary sessions to
 an available x64 worker and check `rea_binary_session` before opening binaries.
 The standing inbox parent records the worker probes and analysis artifacts.
-Hermes's normal provider fallback continues small inventory tasks locally while
-larger implementations wait for an eligible paid route.
+The two-Spark local task pool assigns small inventories to lilspark when it has
+headroom and larger implementation milestones to sparkDeux. Both hosts retain
+checkpoints on the prime Spark. Local-only mode keeps newly available cloud
+credit out of the inbox route. See `hermes-local-fallback.md` for machine
+switches, capacity, budget limits and explicit model-management controls.

@@ -143,6 +143,43 @@ def next_stage(item):
     return next((stage for stage in STAGES if (item.get('stages', {}).get(stage) or {}).get('status') != 'verified'), None)
 
 
+def _final_report(run):
+    from . import hermes_summaries as summaries, hermes_tasks
+    home = mode._home()
+    state = hermes_tasks._db(home / 'state.db')
+    if not state:
+        return ''
+    try:
+        session = summaries._session_at(state, run['job_id'], _stamp(run['started_at']))
+        return summaries._response(home, run['job_id'], _stamp(run.get('finished_at')), state, session['id'])[:12000] if session else ''
+    finally:
+        state.close()
+
+
+def _preserve_report(item, run):
+    """The durable dispatch claim owns this report even if legacy tool attribution cannot decode it."""
+    if (not item.get('local') or not ID.fullmatch(str(item.get('request_id', '')))
+            or not re.fullmatch('[0-9a-f]{32}', str(run.get('id', '')))):
+        return
+    if item.get('report_posted_run') == run['id']:
+        return
+    try:
+        if item.get('report_run') != run['id']:
+            report = _final_report(run)
+            if not report:
+                return
+            item.update(report_run=run['id'], final_report=report)
+        marker = f"Local queue checkpoint {run['id']}:"
+        request = _api('/api/requests/' + item['request_id'])
+        if not any(marker in m.get('text', '') for m in request.get('messages', [])):
+            _api('/api/requests/' + item['request_id'] + '/messages', {'author': 'agent',
+                'text': marker + '\nModel-reported result; acceptance still requires verification.\n\n' + item['final_report']})
+        item['report_posted_run'] = run['id']
+        item.pop('report_error', None)
+    except Exception as exc:  # retain the report locally and retry posting next tick
+        item['report_error'] = type(exc).__name__
+
+
 def reconcile(data, jobs, latest, active, *, now):
     """One completed occurrence advances the queue exactly once, even after a crash."""
     by_name = {j.get('name'): j for j in jobs}
@@ -160,10 +197,13 @@ def reconcile(data, jobs, latest, active, *, now):
         if jid in active or job and job.get('enabled'):
             continue
         run = latest.get(jid)
-        if not run or run['id'] == item.get('last_run_id'):
+        if not run:
             continue
         if _stamp(run['started_at']) < item.get('last_dispatched', 0) - 2:
             continue  # Old history cannot settle a newer queued occurrence.
+        _preserve_report(item, run)
+        if run['id'] == item.get('last_run_id'):
+            continue
         item.update(last_run_id=run['id'], dispatch_state='finished', last_finished=now)
         advanced = item.get('checkpoint_at', 0) >= item.get('last_dispatched', 0)
         failures = 0 if advanced else item.get('no_progress_runs', 0) + 1
@@ -512,6 +552,12 @@ def tick(*, now=None):
             _ensure_request(data, item, requests)
             name = PREFIX + ('favorite ' + item['game_id'] if item['lane'] == 'favorite' else 'inbox ' + item['request_id'])
             prompt = _prompt(item, titles)
+            if item.get('final_report'):
+                prompt += '\nPrevious local run reported (verify claims before use):\n' + item['final_report'][-8000:]
+            if (by_id.get(item.get('request_id'), {}).get('context') or {}).get('read_only'):
+                prompt += ('\nREAD-ONLY REQUEST: do not edit source, saves or memory, install dependencies, '
+                           'or prepare implementation changes. Inventory existing evidence, post unknowns '
+                           'and missing evidence on the request, then finish this bounded inventory.')
             run_settings = hermes_pool.node_settings()[node['name']] if node else local_settings
             run_route = hermes_local.route(run_settings) if node else dict(primary)
             pin = ['--model', run_settings.model, '--provider', run_settings.provider] if node else []

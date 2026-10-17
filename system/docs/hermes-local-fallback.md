@@ -307,6 +307,10 @@ The proxy counts tool calls in the supplied queue transcript before trimming its
 context. With six calls left it requests a saved checkpoint; at the configured
 budget it disables further tool choice and asks for a factual final report.
 Incomplete acceptance criteria stay pending. Interactive conversations are exempt.
+Queue claims also persist final reports and attach them idempotently to the
+assigned inbox request, even when an older Hermes transcript cannot attribute
+its tools. A lost reply acknowledgment is checked before retrying. Reports are
+model claims requiring verification; posting one never closes the request.
 
 The operator's local-only setting prevents newly replenished cloud credit from
 changing this policy. An unavailable pool leaves work queued. Per-host health,
