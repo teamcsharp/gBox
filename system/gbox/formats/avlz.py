@@ -12,8 +12,8 @@ The stream is decoded with flag bytes read LSB-first (bit set = literal byte, bi
 2-byte back-reference: index = ((b1 & 0xF0) << 4) | b0, count = (b1 & 0x0F) + 3, both into
 a 4096-byte ring buffer that starts zero-filled at position N-F = 4078).
 
-Reference: RaphaelTetreault/GameCube.AmusementVision (Lz.cs, LzDecoder.cs, LzssParameters.cs),
-ported here so gBox has a shared codec (one implementation per codec).
+Uses the existing gbox.formats.lz LZSS implementation. Header variants are
+recognized, but a space-initialized ring variant is not supported by this wrapper.
 """
 from __future__ import annotations
 
@@ -44,50 +44,23 @@ def _header(data: bytes) -> tuple[int, int]:
     )
 
 
-def decompress(data: bytes) -> bytes:
+def decompress(data: bytes, *, max_output_size: int = 64 * 1024 * 1024) -> bytes:
     """Decompress a full AvLz buffer (header + stream)."""
     comp_size, out_size = _header(data)
-    return decompress_stream(data[8:8 + comp_size], out_size)
+    return decompress_stream(data[8:8 + comp_size], out_size, max_output_size=max_output_size)
 
 
-def decompress_stream(src: bytes, out_size: int) -> bytes:
-    """Decode an AvLz LZSS stream to exactly `out_size` bytes."""
-    ring = bytearray([BUFF_INIT]) * N
-    out = bytearray()
-    pos = 0           # read position in src
-    rp = N - F        # ring buffer write position
-    flags = 0
-    while pos < len(src) and len(out) < out_size:
-        if (flags & 0xFF00) == 0:
-            if pos >= len(src):
-                raise AvLzError("AvLz stream truncated at flag byte")
-            flags = src[pos] | 0x8000
-            pos += 1
-        if flags & 1:
-            if pos >= len(src):
-                raise AvLzError("AvLz stream truncated at literal")
-            c = src[pos]
-            pos += 1
-            out.append(c)
-            ring[rp % N] = c
-            rp += 1
-        else:
-            if pos + 2 > len(src):
-                raise AvLzError("AvLz stream truncated at back-reference")
-            b0 = src[pos]
-            b1 = src[pos + 1]
-            pos += 2
-            index = ((b1 & 0xF0) << 4) | b0
-            count = (b1 & 0x0F) + THRESHOLD
-            for i in range(count):
-                c = ring[(index + i) % N]
-                out.append(c)
-                ring[rp % N] = c
-                rp += 1
-        flags >>= 1
-    if len(out) != out_size:
-        raise AvLzError(f"AvLz decoded {len(out)} bytes, expected {out_size}")
-    return bytes(out)
+def decompress_stream(src: bytes, out_size: int, *, max_output_size: int = 64 * 1024 * 1024) -> bytes:
+    """Decode the zero-ring variant with bounded output and exact stream consumption."""
+    if type(out_size) is not int or type(max_output_size) is not int or not 0 <= out_size <= max_output_size:
+        raise AvLzError("AvLz output size exceeds the configured bound")
+    if out_size > len(src) * 9:
+        raise AvLzError("AvLz declared output cannot fit the compressed stream")
+    from .lz import lzss_decompress
+    out, consumed = lzss_decompress(src, out_size=out_size)
+    if len(out) != out_size or consumed != len(src):
+        raise AvLzError("AvLz truncated output or trailing compressed data")
+    return out
 
 
 U8_MAGIC = b"\x55\xaa\x38\x2d"

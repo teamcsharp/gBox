@@ -80,6 +80,8 @@ def roster(disc) -> list[str]:
         if not p.startswith("chara/"):
             continue
         leaf = p.rsplit("/", 1)[-1]
+        if leaf.endswith(".lz"):
+            leaf = leaf[:-3]
         for suf in ("_500.gma", "_100.gma", "_face.gma"):
             if leaf.endswith(suf):
                 names.add(leaf[: -len(suf)])
@@ -101,57 +103,60 @@ def build_manifest(src: str) -> dict:
     from gbox.gcdisc import GCDisc
 
     disc = GCDisc(src)
-    head = disc._r(0, 0x440)
-    bi2 = disc._r(0x440, 0x2000)
-    hdr = disc_header(head, bi2)
-    if hdr["disc_id"] != DISC_ID:
-        raise ValueError(f"expected {DISC_ID}, got {hdr['disc_id']}")
+    try:
+        head = disc._r(0, 0x440)
+        bi2 = disc._r(0x440, 0x2000)
+        hdr = disc_header(head, bi2)
+        if hdr["disc_id"] != DISC_ID:
+            raise ValueError(f"expected {DISC_ID}, got {hdr['disc_id']}")
 
-    dol = disc.dol()
+        dol = disc.dol()
 
-    exts = Counter()
-    tops = Counter()
-    for p in disc.files:
-        leaf = p.rsplit("/", 1)[-1]
-        exts[leaf.rsplit(".", 1)[-1].lower() if "." in leaf else "(none)"] += 1
-        tops[p.split("/")[0]] += 1
+        exts = Counter()
+        tops = Counter()
+        for p in disc.files:
+            leaf = p.rsplit("/", 1)[-1]
+            exts[leaf.rsplit(".", 1)[-1].lower() if "." in leaf else "(none)"] += 1
+            tops[p.split("/")[0]] += 1
 
-    chars = roster(disc)
+        chars = roster(disc)
 
-    samples = {}
-    for p in [
-        "chara/arc/arrow_sel.arc.lz", "bg/bg_big.tpl.lz", "bg/bg_big.gma.lz",
-        "bmp_e/bmp_cardt.arc",
-    ]:
-        if p in disc.files:
-            samples[p] = probe(disc, p)
+        samples = {}
+        for p in [
+            "chara/arc/arrow_sel.arc.lz", "bg/bg_big.tpl.lz", "bg/bg_big.gma.lz",
+            "bmp_e/bmp_cardt.arc",
+        ]:
+            if p in disc.files:
+                samples[p] = probe(disc, p)
 
-    manifest = {
-        "game_id": GAME_ID,
-        "title": hdr["title"],
-        "disc_id": hdr["disc_id"],
-        "region": hdr["region"],
-        "platform": "gamecube",
-        "source_rel": SOURCE_REL,
-        "source_sha256": _sha_file(src),
-        "source_size": Path(src).stat().st_size,
-        "dol": {"sha256": _sha(dol), "size": len(dol)},
-        "fst": {"offset": hdr["fst_offset"], "size": hdr["fst_size"],
-                "num_files": len(disc.files)},
-        "extensions": dict(exts.most_common()),
-        "top_dirs": dict(tops.most_common()),
-        "roster": chars,
-        "roster_count": len(chars),
-        "containers": {
-            "u8_archive_plain": exts.get("arc", 0),
-            "u8_archive_lz": sum(1 for p in disc.files if p.endswith(".arc.lz")),
-            "avlz": exts.get("lz", 0),
-            "rel_modules": sum(1 for p in disc.files if p.endswith(".rel")),
-        },
-        "samples": samples,
-        "launch": {"core": "dolphin", "format": "gcz", "library": "hyperspin"},
-    }
-    return manifest
+        manifest = {
+            "game_id": GAME_ID,
+            "title": hdr["title"],
+            "disc_id": hdr["disc_id"],
+            "region": hdr["region"],
+            "platform": "gamecube",
+            "source_rel": SOURCE_REL,
+            "source_sha256": _sha_file(src),
+            "source_size": Path(src).stat().st_size,
+            "dol": {"sha256": _sha(dol), "size": len(dol)},
+            "fst": {"offset": hdr["fst_offset"], "size": hdr["fst_size"],
+                    "num_files": len(disc.files)},
+            "extensions": dict(exts.most_common()),
+            "top_dirs": dict(tops.most_common()),
+            "roster": chars,
+            "roster_count": len(chars),
+            "containers": {
+                "u8_archive_plain": exts.get("arc", 0),
+                "u8_archive_lz": sum(1 for p in disc.files if p.endswith(".arc.lz")),
+                "avlz": exts.get("lz", 0),
+                "rel_modules": sum(1 for p in disc.files if p.endswith(".rel")),
+            },
+            "samples": samples,
+            "launch": {"core": "dolphin", "format": "gcz", "library": "hyperspin"},
+        }
+        return manifest
+    finally:
+        disc.f.close()
 
 
 def main(argv=None) -> int:
