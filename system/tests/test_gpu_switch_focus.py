@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gbox import adapters, tools
+from gbox import adapters
 
 
 def user32(foreground=10, foreground_pid=100):
@@ -13,15 +13,16 @@ def user32(foreground=10, foreground_pid=100):
     return SimpleNamespace(GetForegroundWindow=lambda: foreground, GetWindowThreadProcessId=pid)
 
 
-def test_dolphin_hotkeys_accept_gpu_host_without_accepting_other_apps(monkeypatch):
-    monkeypatch.setattr(tools, '_exe_name', lambda pid: 'gbox.exe')
+def test_dolphin_hotkeys_accept_any_foreground_app_without_accepting_pad_input(monkeypatch):
+    # Focus-free Dolphin hotkeys (hidden_ok=True) are safe no matter which app is in front: nothing else
+    # binds F13-F15 and Dolphin reads them without focus, so a save-before-switch no longer fails with
+    # "gBox or the emulator must be active" while the operator is in another app (launch-failure #1729).
     assert adapters._win_input_in_front(user32(), 20, True)
     assert adapters._win_input_in_front(user32(), None, True)
-    assert not adapters._win_input_in_front(user32(), 20, False)
-    monkeypatch.setattr(tools, '_exe_name', lambda pid: 'notepad.exe')
-    assert not adapters._win_input_in_front(user32(), 20, True)
-    assert not adapters._win_input_in_front(user32(0), None, True)
-    assert adapters._win_input_in_front(user32(), 10, False)
+    assert adapters._win_input_in_front(user32(), 20, True)          # another app (notepad pid) in front: still send
+    assert not adapters._win_input_in_front(user32(), 20, False)     # pad input never types into another app
+    assert not adapters._win_input_in_front(user32(0), None, True)   # locked screen / no foreground: never send
+    assert adapters._win_input_in_front(user32(), 10, False)         # the emulator itself in front satisfies pad input
 
 
 @pytest.mark.parametrize('visible', [True, False])
@@ -34,7 +35,6 @@ def test_save_chord_reaches_dolphin_without_focusing_offscreen_window(monkeypatc
     u.SendInput = lambda count, packet, size: sent.append((packet._obj.ki.wScan, packet._obj.ki.dwFlags)) or 1
     monkeypatch.setattr(ctypes, 'windll', SimpleNamespace(user32=u, kernel32=SimpleNamespace()), raising=False)
     monkeypatch.setattr(adapters, '_pid_window', lambda pid: 20 if visible else None)
-    monkeypatch.setattr(tools, '_exe_name', lambda pid: 'gbox.exe')
     monkeypatch.setattr(adapters.time, 'sleep', sleeps.append)
     seq = [{'key': k, 'down': down} for k, down in [('Control_R', True), ('Shift_R', True),
           ('F13', True), ('F13', False), ('Shift_R', False), ('Control_R', False)]]

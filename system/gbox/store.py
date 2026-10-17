@@ -38,6 +38,16 @@ class Store:
             PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS docs(kind TEXT, id TEXT, body TEXT, PRIMARY KEY(kind, id));
             CREATE INDEX IF NOT EXISTS docs_kind ON docs(kind);
+            CREATE TRIGGER IF NOT EXISTS slabel_identity_insert AFTER INSERT ON docs
+                WHEN NEW.kind='slabel' AND json_extract(NEW.body,'$.session_id') IS NOT NEW.id
+                BEGIN UPDATE docs SET body=json_set(body,'$.session_id',NEW.id)
+                    WHERE kind=NEW.kind AND id=NEW.id; END;
+            CREATE TRIGGER IF NOT EXISTS slabel_identity_update AFTER UPDATE OF body,id,kind ON docs
+                WHEN NEW.kind='slabel' AND json_extract(NEW.body,'$.session_id') IS NOT NEW.id
+                BEGIN UPDATE docs SET body=json_set(body,'$.session_id',NEW.id)
+                    WHERE kind=NEW.kind AND id=NEW.id; END;
+            UPDATE docs SET body=json_set(body,'$.session_id',id)
+                WHERE kind='slabel' AND json_extract(body,'$.session_id') IS NOT id;
             CREATE INDEX IF NOT EXISTS docs_queued_jobs ON docs(json_extract(body,'$.state')) WHERE kind='job';
             CREATE INDEX IF NOT EXISTS docs_session_state ON docs(json_extract(body,'$.state')) WHERE kind='session';
             CREATE INDEX IF NOT EXISTS docs_resolution_requests_created
