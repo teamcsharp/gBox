@@ -314,6 +314,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/texture-review.js"></script>
 <script src="/viz/photo-skin.js"></script>
 <script src="/viz/selfie-models.js"></script>
+<script src="/viz/game-model-library.js"></script>
 <script src="/viz/retarget-editor.js"></script>
 <script src="/viz/pick-whip.js"></script>
 <script src="/viz/gpu-game-surface.js"></script>
@@ -796,11 +797,13 @@ homeView.after = () => {
 };
 
 // The game's extracted models live here, separate from the boot/mod selector.
+const GAME_MODEL_LIBRARY_STATE = {};
+function openGameModelLibrary(){return GBoxGameModelLibrary.open({api,openGame:(gid,title)=>show("GameModels",gid,title)},GAME_MODEL_LIBRARY_STATE);}
 async function selfieModelsView() {
   return '<div class="bar"><h2 style="margin:0">Models · Selfies</h2><button class="act" id="selfie-library">Game library</button></div><p class="mut">Each source image collects its custom donors, Blender edits and fitted models. Analyze the rotating model, export to Blender, or download a self-contained GLB.</p><div id="selfie-models"></div>';
 }
 selfieModelsView.after=()=>{
-  $('#selfie-library').onclick=()=>show('Library');
+  $('#selfie-library').onclick=openGameModelLibrary;
   const face=document.createElement('button');face.className='act';face.id='native-face-editor-open';face.textContent='Liquify / lattice face editor';
   face.onclick=()=>GBoxNativeFaceEditor.open({}, {api,url:bnUrl});$('#selfie-library').after(face);
   const paint=document.createElement('button');paint.className='act';paint.id='photocraft-open';paint.textContent='PhotoCraft image / texture editor';paint.onclick=()=>photocraftOpen();face.after(paint);
@@ -812,7 +815,7 @@ tabs.GameModels = async (gid, title) => {
   const all = await api(`/api/characters?game_id=${encodeURIComponent(gid)}`);
   const models = all.filter(m => m.source?.game_id === gid);
   GAME_MODELS.models = models;
-  return `<div class="bar"><button class="act" id="models-back">← Library</button><h2 style="margin:0">${esc(title || "Game")} · Models</h2><span class="mut">${models.length} extracted</span><button class="act" id="models-selfies">Selfie models</button></div>
+  return `<div class="bar"><button class="act" id="models-back">Choose game</button><h2 style="margin:0">${esc(title || "Game")} · Models</h2><span class="mut">${models.length} extracted</span><button class="act" id="models-selfies">Selfie models</button></div>
     <div class="game-models"><div class="game-model-list" id="game-model-list">${models.length ? models.map(gameModelTile).join("") : '<p class="mut">No extracted models for this game yet.</p>'}
       <button class="act" id="models-collect">Extract this game's models</button><div id="models-collect-status" class="mut"></div></div>
       <section style="min-width:0"><div class="game-model-stage"><div id="game-model-preview" class="game-model-preview"><p class="mut" style="padding:15px">Select a model to inspect it.</p></div><aside id="model-clips" aria-label="Animation clips" hidden></aside></div>
@@ -822,7 +825,7 @@ tabs.GameModels.after = (gid, title) => {
   const page = $("#game-model-list"), preview = $("#game-model-preview"), detail = $("#game-model-detail");
   const revision = viewRevision;
   const models = GAME_MODELS.models;
-  $("#models-back").onclick = () => show("Library");
+  $("#models-back").onclick = openGameModelLibrary;
   $("#models-selfies").onclick = () => show("Models");
   $("#models-collect").onclick = async e => {
     const button = e.currentTarget;
