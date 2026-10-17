@@ -153,3 +153,49 @@ def test_op_on_a_session_the_worker_no_longer_holds_says_relaunch():
         tools.SESSIONS['gone-session']
     assert isinstance(e.value, KeyError) and 'gone-session' in str(e.value)
 
+
+def test_switch_uses_native_save_for_non_transfer_adapter(monkeypatch, tmp_path):
+    """Switching away from an emulator state_transfer can't move uses its own save_state (RPCS3/Xenia/...)."""
+    calls = []
+    ad = SimpleNamespace(name='rpcs3', proc=None, stop_game=lambda: calls.append('stop'),
+                         save_state=lambda: calls.append('save_state') or {'saved': True})
+    monkeypatch.setattr(tools, 'SESSIONS', {'old': (ad, {'game_id': 'g', 'title': 'Stranglehold'})})
+    monkeypatch.setattr(tools, 'state_transfer', lambda *a, **k: (_ for _ in ()).throw(AssertionError('must not run')))
+    monkeypatch.setattr(tools, 'track_emulator', lambda *a, **k: None)
+    ctx = SimpleNamespace(server=None, headers={}, config=SimpleNamespace(runtime=tmp_path), progress=lambda *a: None)
+    snapshots = tools._close_previous_games(ctx)
+    assert calls == ['save_state', 'stop']
+    assert snapshots == [{'session_id': 'old', 'game_id': 'g', 'artifact': None, 'saved': True}]
+    assert 'old' not in tools.SESSIONS
+
+
+def test_switch_with_no_save_state_still_blocks(monkeypatch, tmp_path):
+    """An emulator that cannot save at all still refuses the switch instead of losing progress."""
+    ad = SimpleNamespace(name='cxbx', proc=None, stop_game=lambda: None,
+                         save_state=lambda: (_ for _ in ()).throw(Unsupported('cxbx does not support save_state')))
+    monkeypatch.setattr(tools, 'SESSIONS', {'old': (ad, {'game_id': 'g', 'title': 'Dead or Alive Ultimate'})})
+    monkeypatch.setattr(tools, 'state_transfer', lambda *a, **k: (_ for _ in ()).throw(AssertionError('must not run')))
+    ctx = SimpleNamespace(server=None, headers={}, config=SimpleNamespace(runtime=tmp_path), progress=lambda *a: None)
+    with pytest.raises(Unsupported, match='Dead or Alive Ultimate'):
+        tools._close_previous_games(ctx)
+    assert 'old' in tools.SESSIONS
+
+
+def test_native_save_state_uploads_artifact_for_resume(monkeypatch, tmp_path):
+    """A save_state that reports a path becomes a resumable checkpoint (sha256 artifact), like state_transfer."""
+    import hashlib
+    state = tmp_path / 'savestates' / 'game.sav'
+    state.parent.mkdir()
+    state.write_bytes(b'state-bytes')
+    uploaded = []
+    ad = SimpleNamespace(name='rpcs3', proc=None, stop_game=lambda: None,
+                         save_state=lambda: {'saved': True, 'path': str(state)})
+    monkeypatch.setattr(tools, 'SESSIONS', {'old': (ad, {'game_id': 'g'})})
+    monkeypatch.setattr(tools, 'state_transfer', lambda *a, **k: (_ for _ in ()).throw(AssertionError('must not run')))
+    monkeypatch.setattr(tools, 'track_emulator', lambda *a, **k: None)
+    ctx = SimpleNamespace(server=None, headers={}, config=SimpleNamespace(runtime=tmp_path),
+                          progress=lambda *a: None, artifact=lambda *a, **kw: uploaded.append((a[0], kw)))
+    snapshots = tools._close_previous_games(ctx)
+    assert snapshots[0]['artifact'] == hashlib.sha256(b'state-bytes').hexdigest()
+    assert uploaded and uploaded[0][0] == 'game.sav'
+    assert uploaded[0][1]['session'] == 'old'
