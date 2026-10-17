@@ -24,7 +24,7 @@ def test_expected_hash_must_match(tmp_path):
     with pytest.raises(ValueError,match='SHA-256 mismatch'):I.inventory(p,source_sha256='0'*64)
 
 def test_owned_prime2():
-    path=Path(os.environ.get('GBOX_PRIME2_ISO','/mnt/gbox/hyperspin/Arcade/collections/Nintendo GameCube/roms/Metroid Prime 2 - Echoes (USA).iso'))
+    path=Path(os.environ.get('GBOX_PRIME2_ISO','/mnt/gbox/hyperspin/Arcade/collections/Nintendo GameCube/roms/Metroid Prime 2 - Echoes (USA).gcz'))
     if not path.exists():pytest.skip('Owned Prime 2 source not mounted')
     result=I.inventory(path)
     assert result['disc']['disc_id']==I.DISC_ID and result['files']==215

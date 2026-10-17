@@ -1,8 +1,8 @@
 """Metroid Prime 2 - Echoes (GameCube, G2ME01 USA) -- owned-disc inventory for character-replacement work.
 
 The assigned catalog game b1d99fc6a49a6d53 is the HyperSpin Dolphin image
-"collections/Nintendo GameCube/roms/Metroid Prime 2 - Echoes (USA).iso"; the same bytes are also
-present in the gc-iso QuickSwap2 library.  This module only READS the plain image through
+"collections/Nintendo GameCube/roms/Metroid Prime 2 - Echoes (USA).gcz"; a plain ISO also
+exists in the QuickSwap2 library. This module reads either representation through
 `gcdisc.GCDisc` (the source is never modified); the executable is `default.dol` in the FST.
 
 This is Retro Studios' proprietary engine (NOT Unreal: the assimilation fingerprint's "Unreal Engine
@@ -109,7 +109,7 @@ def inventory(iso: Path, source: Path | None = None, source_sha256: str | None =
         return {
             "game_id": next(iter(GAME_IDS)), "title": GAME_IDS[next(iter(GAME_IDS))],
             "source": {"path": str(iso), "sha256": actual_sha256, "label": str(source) if source else None,
-                       "format": "GameCube ISO (plain .iso)", "image": str(iso)},
+                       "format": "Dolphin GCZ" if str(iso).lower().endswith(".gcz") else "GameCube ISO", "image": str(iso)},
             "disc": hdr, "files": len(disc.files),
             "dol": {"name": "default.dol", "size": len(dol), "sha256": _SHA(dol),
                     "entry": hex(struct.unpack_from(">I", dol, 0xE0)[0])},
