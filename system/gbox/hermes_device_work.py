@@ -7,6 +7,7 @@ historical device attribution. Missing evidence remains explicit.
 from __future__ import annotations
 
 import json
+import math
 import platform
 import re
 import sqlite3
@@ -246,6 +247,7 @@ def pr_note(provenance):
 
 def _empty_metrics():
     return dict(active_runs=0, ended_runs=0, failed_runs=0, prs_opened=0, prs_merged=0,
+        prs_reviewed_contributions=0,
         requests_resolved=0, calls_ok=None, calls_failed=None, tokens_in=None, tokens_out=None,
         wall_s=0.0, peak_concurrency=0, observed_run_count=0, inference_wall_s=None,
         mean_call_s=None, call_success_rate=None, ended_runs_with_delivery=0, ended_run_delivery_rate=None)
@@ -260,11 +262,35 @@ def _peak(intervals):
     return maximum
 
 
-def aggregate(runs, sessions, nodes, receipts, requests, merges, calls, since, now):
+def publication_routes(routes, stamp):
+    """Only immutable observations of successful calls before publication."""
+    if not isinstance(routes, list):
+        return []
+    valid = []
+    for route in routes:
+        if (not isinstance(route, dict) or route.get('source') not in
+                ('logged_endpoint', 'logged_named_provider', 'logged_provider', 'unknown_device')
+                or not isinstance(route.get('device_id'), str)
+                or type(route.get('calls_ok')) is not int or route['calls_ok'] < 1
+                or not all(type(route.get(k)) in (int, float) and math.isfinite(route[k]) for k in ('first', 'last'))
+                or not 0 <= route['first'] <= route['last'] <= stamp):
+            return []  # partial routes must not hide another observed provider
+        valid.append(route)
+    return valid
+
+
+def route_device(routes):
+    ids = {r['device_id'] for r in routes}
+    return next(iter(ids)) if len(ids) == 1 else 'mixed' if ids else 'unknown'
+
+
+def aggregate(runs, sessions, nodes, receipts, requests, merges, calls, since, now, *, contributions=None):
     """Pure aggregation: no dispatch, health probes, GitHub calls or inference."""
     devices = {n['id']: {k: n[k] for k in ('id', 'name', 'provider', 'model')} | {'metrics': _empty_metrics()}
                for n in nodes}
+    from . import hermes_publication_evidence as E
     out, by_id = [], {}
+    contributions = [] if contributions is None else contributions
     def ensure(device):
         return devices.setdefault(device, {'id': device, 'name': friendly(device), 'provider': None,
             'model': None, 'metrics': _empty_metrics()})
@@ -294,20 +320,53 @@ def aggregate(runs, sessions, nodes, receipts, requests, merges, calls, since, n
             run['title'] = f'#{tickets[0].get("number")}: {tickets[0].get("title") or run["title"]}'
         ensure(device)
         out.append(run); by_id[run['id']] = run
-    # Receipts assign delivery to exact captured run IDs. Legacy receipts only
-    # attach when one confirmed request run contains the publication timestamp.
+    # Receipts assign delivery to exact captured observed run IDs. A temporal
+    # overlap alone cannot distinguish a local worker from a supervisor publish.
+    seen = set()
     for rec in receipts:
-        stamp = rec['published_at']
-        candidates = [by_id[r['run_id']] for r in rec.get('provenance', {}).get('runs', []) if r.get('run_id') in by_id]
-        candidates = [r for r in candidates if r['started'] <= stamp <= (r.get('finished') or now) + 5]
-        if not candidates:
-            candidates = [r for r in out if rec['request_id'] in r.get('request_ids', [])
-                          and r['started'] <= stamp <= (r.get('finished') or now) + 5]
-        if len(candidates) != 1:
+        identity = E.key(rec)
+        if identity in seen:
             continue
-        run = candidates[0]
+        seen.add(identity)
+        stamp = rec['published_at']
+        source = ((merges.get('publication_sources') or {}).get(identity) or {}).get('evidence') or {}
+        if (source.get('source') != 'successful_publish_response_and_model_calls'
+                or any(source.get(k) != rec.get(k) for k in
+                       ('request_id', 'commit', 'pr_number', 'url', 'published_at'))):
+            source = {}
+        if source:
+            # Exact publisher identity overrides overlapping task runs. A
+            # supervisor may publish while a local worker is still active.
+            source = source | {'routes': publication_routes(source.get('routes'), stamp)}
+            candidates = [r for r in out if r.get('session_id') == source.get('session_id')
+                          and r['device_id'] == route_device(source['routes'])]
+        else:
+            provenance = rec.get('provenance') or {}
+            candidates = []
+            if provenance.get('status') == 'observed' and provenance.get('request_id') == rec['request_id']:
+                for captured in provenance.get('runs', []):
+                    candidate = by_id.get(captured.get('run_id'))
+                    routes = publication_routes(captured.get('routes'), stamp)
+                    if candidate and routes and candidate['device_id'] == route_device(routes):
+                        candidates.append(candidate)
+        candidates = [r for r in candidates if r['started'] <= stamp <= (r.get('finished') or now) + 5]
+        if len(candidates) == 1:
+            run = candidates[0]
+        else:
+            provenance = rec.get('provenance') or {}
+            routes = source.get('routes', []) if source else publication_routes(
+                [route for r in provenance.get('runs', []) for route in r.get('routes', [])], stamp
+            ) if provenance.get('status') == 'observed' and provenance.get('request_id') == rec['request_id'] else []
+            device = route_device(routes)
+            request = requests.get(rec['request_id'])
+            run = {'id': 'pr:' + identity, 'request_id': rec['request_id'], 'run_id': None,
+                'ticket': {k: request.get(k) for k in ('id', 'number', 'title', 'status')} if request else None,
+                'device_id': device, 'published_at': stamp, 'outcomes': [],
+                'attribution': source or {'source': 'publication_receipt', 'routes': routes,
+                    'boundary': 'Historical publication; no unique retained execution or publisher session was established.'}}
         evidence = {'source': 'verified_publication_receipt', 'commit': rec['commit'],
-                    'validation': rec.get('checks', []), 'provenance': rec.get('provenance', {})}
+                    'validation': rec.get('checks', []), 'provenance': rec.get('provenance', {}),
+                    'publisher': source}
         if since <= stamp <= now:
             run['outcomes'].append({'kind': 'pr_published', 'title': f'PR #{rec["pr_number"]} published for review',
                 'url': rec['url'], 'request_id': rec['request_id'], 'status': 'published', 'verified': True,
@@ -322,12 +381,20 @@ def aggregate(runs, sessions, nodes, receipts, requests, merges, calls, since, n
                     'boundary': 'Contributor evidence only; reviewer/merger identity is not attributed to the model.'}})
         elif (merge.get('state') == 'MERGED' and merge.get('baseRefName') == 'main'
                 and merged_at and since <= merged_at <= now and merge.get('headRefOid') != rec['commit']):
+            ancestry = (merges.get('ancestry') or {}).get(identity)
+            verified = E.valid_ancestry(rec, merge, ancestry)
             run['outcomes'].append({'kind': 'pr_reviewed_merge',
-                'title': f'PR #{rec["pr_number"]} merged at a different head; contribution unverified',
-                'url': rec['url'], 'request_id': rec['request_id'], 'status': 'merged_at_different_head',
-                'verified': False, 'observed_at': merged_at,
-                'evidence': evidence | {'github_observation': merge,
-                    'boundary': 'Additional commits/review changed the head. No merge credit without exact-head or ancestry evidence.'}})
+                'title': f'PR #{rec["pr_number"]} merged after further changes' if verified else
+                         f'PR #{rec["pr_number"]} merged at a different head; contribution unverified',
+                'url': rec['url'], 'request_id': rec['request_id'],
+                'status': 'merged_after_review' if verified else 'merged_at_different_head',
+                'verified': verified, 'observed_at': merged_at,
+                'evidence': evidence | {'github_observation': merge, 'ancestry': ancestry,
+                    'boundary': 'Published commit is contained in the reviewed head; later changes and review remain separate contributions. No autonomous merge or task-completion credit.' if verified else
+                                'Additional commits/review changed the head. No merge credit without exact-head or ancestry evidence.'}})
+        if 'run_id' in run and run['outcomes']:
+            ensure(run['device_id'])
+            contributions.append(run)
     # A currently done request alone cannot prove which device resolved it.
     # Its completion is shown as context, never counted as a model delivery.
     for run in out:
@@ -365,9 +432,10 @@ def aggregate(runs, sessions, nodes, receipts, requests, merges, calls, since, n
             m['mean_call_s'] = m['inference_wall_s'] / len(ok) if ok and duration is not None else None
         row['model_source'] = 'current_configuration' if row.get('model') else 'unknown'
         row['models_seen'] = sorted({c['model'] for c in matched if c.get('model')})
-        outcomes = [o for r in out if r['device_id'] == device for o in r['outcomes'] if o['verified']]
+        outcomes = [o for r in [*out, *contributions] if r['device_id'] == device for o in r['outcomes'] if o['verified']]
         m['prs_opened'] = len({o['url'] for o in outcomes if o['kind'] == 'pr_published'})
         m['prs_merged'] = len({o['url'] for o in outcomes if o['kind'] == 'pr_merged'})
+        m['prs_reviewed_contributions'] = len({o['url'] for o in outcomes if o['kind'] == 'pr_reviewed_merge'})
         m['requests_resolved'] = len({o['request_id'] for o in outcomes if o['kind'] == 'request_resolved'})
         m['ended_runs_with_delivery'] = sum(r['state'] not in ACTIVE and any(o['verified'] and o['kind'] in
             ('pr_published', 'pr_merged', 'request_resolved') for o in r['outcomes'])
@@ -387,17 +455,20 @@ def summary(store, window='today', now=None):
         sessions = _scan(now)
     except (OSError, ValueError):
         sessions = {}; notes.append('Provider logs are unavailable; inference devices remain unknown.')
-    requests = {rid: row for rid in {rid for r in runs for rid in r['request_ids']}
+    receipts = publications()
+    requests = {rid: row for rid in ({rid for r in runs for rid in r['request_ids']} | {r['request_id'] for r in receipts})
                 if (row := store.get('request', rid))}
     from . import llm_proxy
     calls = [c for c in llm_proxy.read_log(since) if since <= (c.get('ts') or 0) <= now]
-    devices, rows = aggregate(runs, sessions, _nodes(), publications(), requests,
-                             _read(D.state_dir() / 'merges.json'), calls, since, now)
+    contributions = []
+    devices, rows = aggregate(runs, sessions, _nodes(), receipts, requests,
+                             _read(D.state_dir() / 'merges.json'), calls, since, now, contributions=contributions)
     notes += ['Model-call counts come from the retained local proxy ledger; they are not completed tasks.',
               'Ended executions are not completed requests. Current done status is not credited to a device without a resolving-run receipt.',
               'Run wall seconds sum overlapping executions and are not GPU time. Call duration includes proxy wait/handling; tokens per second is not reported.',
               'Log rotation and legacy receipts may omit historical attribution or merge evidence; unknown counts are null.',
               'PR merges are credited only when a recorded GitHub main-merge observation matches the published commit.',
+              'Historical contributions have no invented execution or duration. Verified ancestor contributions after review are counted separately from exact-head merges.',
               'Ended-run delivery rate is the fraction of returned ended runs with a recorded publication, exact-head merge, or new request completion in this window; it is not an acceptance score.']
     return {'generated_at': now, 'window': {'key': window, 'label': P.WINDOWS[window], 'start': since, 'end': now},
         'coverage': {'partial': True, 'notes': notes, 'sources': ['Hermes executions and sessions',
@@ -406,7 +477,7 @@ def summary(store, window='today', now=None):
                 'calls_start': min((c.get('ts') for c in calls if c.get('ts')), default=None),
                 'calls_end': max((c.get('ts') for c in calls if c.get('ts')), default=None)},
             'run_limit': LIMIT, 'metrics_scope': 'Observed evidence in the selected window, not lifetime totals.'},
-        'devices': devices, 'runs': rows}
+        'devices': devices, 'runs': rows, 'contributions': contributions}
 
 
 def install(app, store, auth):

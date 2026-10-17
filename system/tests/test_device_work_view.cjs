@@ -56,6 +56,27 @@ test('desktop defaults to the dedicated read-only device view and suspends it on
   assert.match(desktop,/if \(pop === "#taskpanel"\)[^\n]+deviceView\?\.setActive\(false\)/);
   assert.match(desktop.slice(desktop.indexOf('async function tvOpen('),desktop.indexOf('async function tvOpen(')+400),/deviceView\?\.setActive\(false\)/);
 });
+function historyFixture() {
+  const d=fixture();
+  d.devices.find(x=>x.id==='sparkDeux').metrics.prs_reviewed_contributions=1;
+  const recorded={id:'publication:42:abc',request_id:'historical-request',run_id:null,device_id:'sparkDeux',published_at:NOW-20000,
+    ticket:{id:'historical-request',number:2200,title:'Historical native model reader',status:'in_progress'},
+    attribution:{source:'exact_historical_session',scope:'Observed inference contribution; review is separate.',boundary:'Recorded model assistance does not establish sole authorship.'},
+    outcomes:[{kind:'pr_reviewed_merge',title:'PR #42 included after review',url:'https://github.com/teamcsharp/gBox/pull/42',request_id:'historical-request',status:'merged_after_review',verified:true,evidence:{boundary:'Published commit is an ancestor of the reviewed merge; task acceptance is separate.'}}]};
+  d.contributions=[recorded,{...recorded,id:'unknown-history',device_id:'unknown',ticket:{title:'Unattributed contribution <img onerror=attack()>'},attribution:{source:'unknown'}},{...recorded,id:'already-linked',run_id:'delivered'}];
+  return d;
+}
+test('historical contributions stay separate from run counts and unknown attribution',()=>{
+  const d=historyFixture();
+  assert.equal(P.visibleRuns(d,'sparkDeux').length,27);
+  assert.equal(P.visibleContributions(d,'sparkDeux').length,1);
+  assert.equal(P.visibleContributions(d,'sparkDeux','results','native').length,1);
+  assert.equal(P.visibleContributions(d,'sparkDeux','active').length,0);
+  assert.equal(P.visibleContributions(d,'unknown').length,1);
+  assert.equal(P.visibleContributions(d,'sparkDeux','all','unattributed').length,0);
+  const row=P.contributionRow(d.contributions[1],null);
+  assert.doesNotMatch(row,/<img|dw-time|data-run=/);assert.match(row,/&lt;img/);assert.match(row,/run timing unavailable/);
+});
 const skip=!findChrome()&&'no Chromium installed';
 async function setup(evaluate,send) {
   await send('Emulation.setDeviceMetricsOverride',{width:1500,height:950,deviceScaleFactor:1,mobile:false});
@@ -105,5 +126,23 @@ test('real browser: old-server 404 shows live activity with unknown completion a
     assert.equal(result.rows,1);assert.equal(result.active,24);assert.equal(result.merged,null);assert.equal(result.logHidden,true);assert.match(result.notice,/server update is pending/);
     const upgraded=await evaluate(`(async()=>{reply=()=>Promise.resolve({ok:true,data:structuredClone(snapshot)});await view.refresh();return {rows:document.querySelectorAll('.dw-row.active').length,hidden:document.querySelector('.dw-notice').hidden}})()`);
     assert.equal(upgraded.rows,24);assert.equal(upgraded.hidden,true);
+  });
+});
+
+test('real browser: retained contributions expose receipts without invented runs or duration',{skip},async()=>{
+  await withPage(async(evaluate,send)=>{
+    await setup(evaluate,send);
+    await evaluate(`snapshot=${JSON.stringify(historyFixture())};view.refresh()`);
+    const history=await evaluate(`(()=>{const button=document.querySelector('[data-contribution="publication:42:abc"]');button.focus();button.click();return {history:document.querySelectorAll('.dw-contribution').length,rows:document.querySelectorAll('.dw-row').length,active:document.querySelectorAll('.dw-row.active').length,selected:view.state.contribution,runLinks:document.querySelectorAll('[data-open-run]').length,detail:document.querySelector('.dw-detail').textContent,merged:document.querySelectorAll('.dw-metrics b')[1].textContent}})()`);
+    assert.equal(history.history,1);assert.equal(history.rows,27);assert.equal(history.active,24);assert.equal(history.runLinks,0);assert.equal(history.selected,'publication:42:abc');assert.equal(history.merged,'1');
+    assert.match(history.detail,/No uniquely attributed execution is linked/);assert.match(history.detail,/task acceptance is separate/);assert.match(history.detail,/does not establish sole authorship/);assert.match(history.detail,/Contributions in reviewed PRs1/);assert.match(history.detail,/PR merged after further changes/);
+    assert.deepEqual(await evaluate(`(()=>{document.querySelector('[data-outcome="0"]').click();document.querySelector('[data-request]').click();return opened})()`),[['url','https://github.com/teamcsharp/gBox/pull/42'],['request','historical-request']]);
+    assert.equal(await evaluate(`(async()=>{await view.refresh();return view.state.contribution})()`),'publication:42:abc');
+    assert.equal(await evaluate(`(()=>{const filter=document.querySelector('[data-filter]');filter.value='active';filter.dispatchEvent(new Event('change'));return document.querySelector('.dw-history').hidden})()`),true);
+    const unknown=await evaluate(`(()=>{const filter=document.querySelector('[data-filter]');filter.value='all';filter.dispatchEvent(new Event('change'));document.querySelector('[data-device="unknown"]').click();document.querySelector('[data-contribution="unknown-history"]').click();return {rows:document.querySelectorAll('.dw-row').length,history:document.querySelectorAll('.dw-contribution').length,images:document.querySelectorAll('.dw-history img,.dw-detail img').length,text:document.querySelector('.dw-attribution').textContent}})()`);
+    assert.equal(unknown.rows,0);assert.equal(unknown.history,1);assert.equal(unknown.images,0);assert.match(unknown.text,/unknown/);
+    await send('Emulation.setDeviceMetricsOverride',{width:700,height:900,deviceScaleFactor:1,mobile:false});
+    assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'),true);
+    if(process.env.GBOX_CONTRIBUTION_SCREENSHOT){const shot=await send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(process.env.GBOX_CONTRIBUTION_SCREENSHOT,Buffer.from(shot.result.data,'base64'));}
   });
 });

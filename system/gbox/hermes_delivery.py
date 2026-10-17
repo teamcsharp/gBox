@@ -244,6 +244,10 @@ def publish(request_id: str, title: str, files: list[str], tests: list[str]) -> 
         confirmed = _read_pull(root, number, workspace['branch'], commit)
         if local:
             workspace['local_model'] = _mark_local(root, number, existing is not None)
+        else:
+            # A reused workspace may carry a legacy global-route label receipt.
+            # It is not evidence about this publication's actual contributor.
+            workspace.pop('local_model', None)
         workspace.update(commit=commit, url=confirmed['url'], pr_number=number, pr_state=confirmed['state'],
                          base_head=_run(['git', 'rev-parse', 'origin/main'], root),
                          checks=checks, files=files, published_at=time.time(), provenance=provenance)

@@ -95,7 +95,7 @@ def _records(root):
                 continue
 
 
-def reconcile(api, *, gh=_gh, carriers=_carriers, now=None, force=False):
+def reconcile(api, *, gh=_gh, carriers=_carriers, now=None, force=False, evidence_backfill=None):
     """Post a reply for every published PR that merged or closed since the last pass."""
     now = time.time() if now is None else now
     root = hermes_delivery.state_dir()
@@ -153,6 +153,14 @@ def reconcile(api, *, gh=_gh, carriers=_carriers, now=None, force=False):
             posted.append({'request_id': rid, 'number': report.get('number'), 'pr': number,
                            'state': pull['state']})
         finished[rid] = sorted(done)
+    # Producer-side bounded historical joins; the activity endpoint never
+    # queries GitHub or scans publication transcripts on a UI poll.
+    from . import hermes_device_work, hermes_publication_evidence
+    try:
+        errors += (evidence_backfill or hermes_publication_evidence.backfill)(
+            saved, hermes_device_work.publications(), now=now)
+    except (OSError, ValueError, TypeError) as error:
+        errors.append('Publication evidence: ' + type(error).__name__)
     saved['checked_at'] = now
     with hermes_delivery.locked('merges'):
         path.write_text(json.dumps(saved, indent=2))

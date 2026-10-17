@@ -53,6 +53,9 @@ def test_publish_runs_tests_and_pushes_actual_commit_before_pr(tracked_repo, mon
     _, origin, git = tracked_repo
     from pathlib import Path
     task = delivery.prepare('abcdef0123456789', 12)
+    record = delivery._record_path(task['request_id'])
+    saved = json.loads(record.read_text()); saved['local_model'] = {'label': 'local model', 'labelled': True}
+    record.write_text(json.dumps(saved))
     (Path(task['workdir']) / 'gbox/value.py').write_text('VALUE = 2\n')
     real_run = subprocess.run
     def fake_gh(args, **kw):
@@ -71,6 +74,7 @@ def test_publish_runs_tests_and_pushes_actual_commit_before_pr(tracked_repo, mon
     assert result['commit'] == git('rev-parse', 'refs/heads/' + task['branch'], cwd=origin)
     assert result['url'].endswith('/pull/123')
     assert result['provenance']['status'] == 'unknown'
+    assert 'local_model' not in result  # no inherited claim from an earlier global route
     receipt = delivery.state_dir() / 'publications' / ('123-' + result['commit'] + '.json')
     assert json.loads(receipt.read_text())['provenance'] == result['provenance']
 
