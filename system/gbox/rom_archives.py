@@ -1,5 +1,6 @@
 """Inspect ROM archives and prepare complete disc sets in a local, reusable cache."""
 import hashlib
+from contextlib import contextmanager
 import json
 import os
 import re
@@ -95,8 +96,9 @@ def boot_member(entries):
     return max(choices, key=lambda e: e["size"])["name"] if choices else None
 
 
-def prefix(src, member, size):
-    """Read a bounded disc header without unpacking a multi-gigabyte game during indexing."""
+@contextmanager
+def open_member(src, member):
+    """Read one validated member as a stream; bound and reap external extractors."""
     safe_name(member)
     if _tar(src):
         with tarfile.open(src) as archive:
@@ -104,24 +106,31 @@ def prefix(src, member, size):
             if not item.isfile():
                 raise ValueError('Archive member is not a regular file')
             with archive.extractfile(item) as stream:
-                return stream.read(size)
+                yield stream
+        return
     if Path(src).suffix.lower() == ".zip":
-        with zipfile.ZipFile(src) as z, z.open(member) as stream:
-            return stream.read(size)
-    proc = subprocess.Popen([seven_zip(), "x", "-so", "-spd", "--", str(Path(src).resolve()), member], stdout=subprocess.PIPE,
-                            stdin=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
+        with zipfile.ZipFile(src) as archive, archive.open(member) as stream:
+            yield stream
+        return
+    proc = subprocess.Popen([seven_zip(), "x", "-so", "-spd", "--", str(Path(src).resolve()), member],
+                            stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     timer = threading.Timer(60, proc.kill)
     timer.start()
     try:
-        return proc.stdout.read(size)
+        yield proc.stdout
     finally:
         timer.cancel()
         if proc.poll() is None:
             proc.kill()
         proc.wait()
         proc.stdout.close()
+
+
+def prefix(src, member, size):
+    """Read a bounded disc header without unpacking a multi-gigabyte game during indexing."""
+    with open_member(src, member) as stream:
+        return stream.read(size)
 
 
 def repair_cue(path):

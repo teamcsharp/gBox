@@ -5,6 +5,7 @@ every file and the main executable: what the fingerprinter (gbox.assimilate) and
   .iso (PS1/PS2), .bin      formats.iso9660      .chd (PS1 v4)   psxdisc.PSXDisc
   .gdi / .cdi (Dreamcast)   gdrom.GDRom          .z64/.v64/.n64  n64_rom (no filesystem: magic scan of the ROM)
   .nds (Nintendo DS)         formats.nitro NitroFS (LZ77 members listed decompressed)
+  .7z                       its members (system 7z, streamed heads)
   .zip                      its members          folder (PC/Steam, extracted disc)  the files
 
 listing() never writes and reads at most `head` bytes of at most `max_files` files (the rest are listed by name and
@@ -89,6 +90,17 @@ def listing(path: str | Path, *, head: int = 64, max_files: int = 4000, exe_limi
         def read(name, n):
             return rom_archives.prefix(p, name, exe_limit if n is None else n)
         L = Listing(str(p), "zip" if suf == '.zip' else "archive", files)
+        isos = [f for f in files if f["path"].lower().endswith((".iso", ".xiso"))]
+        if len(isos) == 1:
+            img = isos[0]["path"]
+            try:
+                with rom_archives.open_member(p, img) as stream:
+                    xf, en, ex, nt = xdvdfs_stream_listing(stream, head=head, exe_limit=exe_limit, deep=deep,
+                                                          deep_bytes=deep_bytes, max_files=max_files)
+            except ValueError:
+                pass  # Other disc formats retain the ordinary archive member listing.
+            else:
+                return Listing(str(p), "xdvdfs", xf, ex, en, notes=[f"archive member {img}"] + nt)
         roms = [f for f in files if f["path"].lower().endswith((".z64", ".v64", ".n64"))]
         if roms:
             L.kind = "n64_rom"
@@ -204,3 +216,130 @@ def _n64_scan(L: Listing) -> None:
                 L.files.append({"path": f"rom@{i:08X}", "size": 0, "head": rom[i:i + 64]})
             i = rom.find(m, i + 1)
     L.notes.append(f"N64 ROM {len(rom)} bytes; {len(L.files)} codec headers")
+
+
+# ------------------------------------------------------------------ XDVDFS image streamed out of a .7z (one pass)
+
+XDVD_MAGIC = b"MICROSOFT*XBOX*MEDIA"
+XDVD_PARTITIONS = (0, 0x2080000, 0xFD90000, 0x18300000)       # plain xiso / XGD3 / XGD2 / XGD1 game partition
+XBE_NAMES = ("default.xbe",)
+
+
+def parse_xdvdfs_dir(table: bytes, prefix: str = "") -> list[tuple[str, int, int, bool]]:
+    """One XDVDFS directory table -> [(path, sector, size, is_dir)] (binary-tree order, bounded, cycle-safe)."""
+    out, stack, seen = [], [0], set()
+    while stack:
+        idx = stack.pop()
+        off = idx * 4
+        if idx in seen or off + 14 > len(table):
+            continue
+        seen.add(idx)
+        left, right, sec, size, attr, nl = struct.unpack_from("<HHIIBB", table, off)
+        if left == 0xFFFF or off + 14 + nl > len(table):
+            continue
+        name = table[off + 14:off + 14 + nl].decode("latin-1")
+        if left:
+            stack.append(left)
+        if right:
+            stack.append(right)
+        out.append((f"{prefix}{name}", sec, size, bool(attr & 0x10)))
+    return out
+
+
+class _Stream:
+    """Forward-only reader over a byte stream (e.g. `7z e -so`)."""
+
+    def __init__(self, fh):
+        self.fh, self.pos = fh, 0
+
+    def read(self, n: int) -> bytes:
+        b = self.fh.read(n)
+        self.pos += len(b)
+        return b
+
+    def skip(self, to: int) -> None:
+        while self.pos < to:
+            if not self.read(min(8 << 20, to - self.pos)):
+                raise ValueError(f"stream ended at {self.pos} before offset {to}")
+
+
+def xdvdfs_stream_listing(fh, *, head: int = 64, exe_limit: int = 64 << 20, deep: int = 12,
+                          deep_bytes: int = 1 << 20, max_files: int = 4000, max_dir: int = 1 << 22):
+    """List an XDVDFS image from a forward-only stream in ONE pass (no seeks, nothing written to disk).
+
+    Returns (files, executable_name, executable, notes). files: [{path, size, head, sample?}]. Entries whose data
+    lies before an already-passed offset (out-of-order directories) are listed without bytes and noted."""
+    import heapq
+    s = _Stream(fh)
+    part = root = rsize = None
+    for p in XDVD_PARTITIONS:
+        s.skip(p + 32 * 2048)
+        h = s.read(28)
+        if h[:20] == XDVD_MAGIC:
+            part, (root, rsize) = p, struct.unpack("<II", h[20:28])
+            break
+    if part is None:
+        raise ValueError("not an XDVDFS (Xbox) disc image")
+    files, notes, pending, active, behind = [], [], [], [], 0
+    big: list[int] = []                                    # min-heap of the `deep` largest sizes seen so far
+    tie = 0
+
+    def push(start, want, kind, ref):
+        nonlocal tie, behind
+        if start < s.pos:
+            behind += 1
+            return
+        tie += 1
+        heapq.heappush(pending, (start, tie, want, kind, ref))
+
+    push(part + root * 2048, min(rsize, max_dir), "dir", "")
+    while pending or active:
+        if not active:
+            s.skip(pending[0][0])
+        while pending and pending[0][0] == s.pos:
+            start, _t, want, kind, ref = heapq.heappop(pending)
+            active.append([start + want, kind, ref, bytearray()])
+        stop = min([a[0] for a in active] + ([pending[0][0]] if pending else []))
+        chunk = s.read(min(1 << 20, max(stop - s.pos, 0))) if stop > s.pos else b""
+        if stop > s.pos - len(chunk) and not chunk:
+            raise ValueError(f"image stream ended at {s.pos}")
+        for a in active:
+            a[3] += chunk
+        for a in [a for a in active if a[0] <= s.pos]:
+            active.remove(a)
+            end, kind, ref, buf = a
+            if kind == "dir":
+                for path, sec, size, is_dir in parse_xdvdfs_dir(bytes(buf), ref):
+                    if is_dir:
+                        if size:
+                            push(part + sec * 2048, min(size, max_dir), "dir", path + "/")
+                        continue
+                    if len(files) >= max_files:
+                        continue
+                    f = {"path": path, "size": size, "head": b""}
+                    files.append(f)
+                    want = min(size, head)
+                    if path.lower() in XBE_NAMES or path.lower().endswith(".xbe") and "/" not in path:
+                        want = min(size, max(want, exe_limit))
+                    if deep and size > deep_bytes and (len(big) < deep or size > big[0]):
+                        heapq.heappush(big, size)
+                        if len(big) > deep:
+                            heapq.heappop(big)
+                        want = max(want, min(size, deep_bytes))
+                    if want:
+                        push(part + sec * 2048, want, "file", f)
+            else:
+                ref["head"] = bytes(buf[:head])
+                if len(buf) > head:
+                    ref["sample"] = bytes(buf[:deep_bytes])
+                    if ref["path"].lower().endswith(".xbe"):
+                        ref["_exe"] = bytes(buf)
+    if behind:
+        notes.append(f"{behind} XDVDFS entries lie before an earlier offset and were listed without bytes")
+    exe_name, exe = "", b""
+    for f in files:
+        if "_exe" in f and (not exe_name or f["path"].lower() in XBE_NAMES):
+            exe_name, exe = f["path"], f.pop("_exe")
+    for f in files:
+        f.pop("_exe", None)
+    return files, exe_name, exe, notes
