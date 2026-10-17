@@ -109,6 +109,37 @@ def _operation_key(name: str, args: dict) -> str:
     return name + ':' + json.dumps(identity, sort_keys=True, default=str)
 
 
+def _creates_game_files(name: str, args: dict) -> bool:
+    """File builds need completion evidence but must not trigger live bookmarks."""
+    return ((name == 'rom_export' and args.get('op', 'export') == 'export') or
+            (name == 'file_mod' and args.get('op') == 'build'))
+
+
+def _file_deliverable(layers: list[dict], name: str, args: dict) -> bool:
+    """Recognize the producers' returned deliverable, not a job's terminal state.
+
+    This checks the tool's output contract, not whether the built game satisfies
+    all requested gameplay changes. Keep native gameplay verification separate.
+    """
+    def text(value):
+        return isinstance(value, str) and bool(value.strip())
+
+    def paths(value):
+        return isinstance(value, list) and bool(value) and all(text(v) for v in value)
+
+    if name == 'rom_export':
+        # Export summaries intentionally omit the full file manifest. Both a
+        # built image/folder and an explicit cheat-file export are supported;
+        # a plan, README or generic succeeded wrapper is not a deliverable.
+        return any(text(layer.get('rel_dir')) and
+                   (not args.get('game_id') or layer['rel_dir'].split('/')[:2] == ['exports', args['game_id']]) and
+                   (text(layer.get('image')) or paths(layer.get('cheat_files')))
+                   for layer in layers)
+    return any(text(layer.get('dir')) and text(layer.get('mod')) and
+               layer['mod'] == args.get('name') and paths(layer.get('files'))
+               for layer in layers)
+
+
 def _operation_result_state(text: str, name: str, args: dict) -> str:
     """Read explicit tool/job failures without treating null error metadata as failure."""
     try:
@@ -128,6 +159,10 @@ def _operation_result_state(text: str, name: str, args: dict) -> str:
     for layer in layers:
         state = str(layer.get('state') or '').lower()
         status = str(layer.get('status') or '').lower()
+        if _creates_game_files(name, args) and (layer.get('ready') is False or
+                {state, status} & {'unsupported', 'partial', 'needs_selection', 'needs_writer'} or
+                (args.get('game_id') and layer.get('game_id') and layer['game_id'] != args['game_id'])):
+            return 'failed'
         if (layer.get('error') or layer.get('overlay_error') or
                 state in {'failed', 'blocked', 'invalid', 'cancelled', 'canceled', 'timeout', 'timed_out'} or
                 status in {'failed', 'blocked', 'missing', 'unsupported'} or
@@ -139,13 +174,20 @@ def _operation_result_state(text: str, name: str, args: dict) -> str:
                 return 'failed'
         pending |= state in {'queued', 'running'} or status in {'queued', 'running'}
         repeat |= layer.get('repeat') is True
-    return 'unresolved' if pending else 'repeat' if repeat else 'complete'
+    if pending:
+        return 'unresolved'
+    if repeat:
+        return 'repeat'
+    if _creates_game_files(name, args) and not _file_deliverable(layers, name, args):
+        return 'unresolved'
+    return 'complete'
 
 
 def required_operation_outcome(events: list[dict], modifies_game) -> dict:
-    """Keep failed game changes pending; successful reads cannot resolve them.
+    """Keep failed game changes/builds pending; successful reads cannot resolve them.
 
-    Reuses the caller's existing change/read classifier. Recovery is deliberately
+    Uses the caller's live change/read classifier plus explicit file-creation
+    contracts, without classifying file builds as live mutations. Recovery is deliberately
     limited to the same tool and exact arguments/target, or the documented cheat
     enable-with-codes -> add-with-the-same-codes correction. This does not infer
     success from the assistant's prose or prove gameplay beyond the tool result.
@@ -162,7 +204,8 @@ def required_operation_outcome(events: list[dict], modifies_game) -> dict:
             operation_name, operation_args = name, args
             if name == 'run_tool' and isinstance(args.get('input'), dict):
                 operation_name, operation_args = args.get('name'), args['input']
-            required = modifies_game(operation_name, operation_args)
+            required = (modifies_game(operation_name, operation_args) or
+                        _creates_game_files(operation_name, operation_args))
             call = None
             if required:
                 key = _operation_key(operation_name, operation_args)

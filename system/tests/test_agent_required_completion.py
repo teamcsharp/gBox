@@ -161,3 +161,119 @@ def test_read_only_failures_are_outside_the_narrow_game_change_guard():
 
 def test_no_tool_calls_does_not_block_an_informational_answer():
     assert next(data for action, data in run_hub([]) if action == 'status')['status'] == 'done'
+
+
+EXPORT = {'game_id': 're2', 'op': 'export', 'mods': ['sonic_cast']}
+EXPORT_RESULT = {'game_id': 're2', 'image': 'modified.iso', 'rel_dir': 'exports/re2/sonic_cast',
+                 'cheat_files': [], 'patches': []}
+BUILD = {'game_id': 're5', 'op': 'build', 'name': 'mario_cast',
+         'changes': {'PS3_GAME/USRDIR/player.arc': {'patch': [{'offset': 0, 'hex': '01'}]}}}
+BUILD_RESULT = {'mod': 'mario_cast', 'dir': '/cache/mods/re5/mario_cast',
+                'files': ['PS3_GAME/USRDIR/player.arc']}
+
+
+@pytest.mark.parametrize('name,args', [('rom_export', EXPORT), ('rom_export', {'game_id': 're2'}), ('file_mod', BUILD)])
+@pytest.mark.parametrize('result', [
+    {'ready': False, 'status': 'needs_selection', 'options': []},
+    {'status': 'unsupported', 'reason': 'No native writer'},
+    {'state': 'unsupported'}, {'state': 'queued'}, {'state': 'running'},
+    {'state': 'failed', 'error': 'ValueError: no mods given'},
+    {'state': 'succeeded'}, {'status': 'complete', 'files': [{'path': 'README.txt', 'size': 100}]},
+])
+def test_file_creation_without_a_deliverable_stays_pending_even_after_successful_read(name, args, result):
+    events = operation(name, args, result) + operation('list_sessions', {}, [])
+    assert next(data for action, data in run_hub(events) if action == 'status')['status'] == 'in_progress'
+
+
+def test_actual_empty_export_preflight_keeps_chat_request_pending():
+    from types import SimpleNamespace
+    from gbox.agent import Agent
+    plan = {'ready': False, 'status': 'needs_selection', 'options': []}
+    stub = SimpleNamespace(_job=lambda *a, **kw: {'state': 'succeeded', 'output': {'result': plan}})
+    result = Agent.rom_export(stub, game_id='re2')
+    actions = run_hub(operation('rom_export', {'game_id': 're2'}, result))
+    assert next(data for action, data in actions if action == 'status')['status'] == 'in_progress'
+
+
+@pytest.mark.parametrize('name,args,result', [
+    ('rom_export', EXPORT, EXPORT_RESULT),
+    ('rom_export', EXPORT, EXPORT_RESULT | {'image': 'game/'}),
+    ('rom_export', {'game_id': 're2', 'original': True}, EXPORT_RESULT | {'mode': 'original'}),
+    ('rom_export', EXPORT, EXPORT_RESULT | {'image': None, 'cheat_files': ['GHAE08.ini']}),
+    ('file_mod', BUILD, BUILD_RESULT),
+    ('rom_export', EXPORT, {'state': 'succeeded', 'output': {'result': EXPORT_RESULT}}),
+    ('file_mod', BUILD, {'state': 'succeeded', 'output': {'result': BUILD_RESULT}}),
+])
+def test_returned_export_and_build_deliverables_satisfy_file_operation_contract(name, args, result):
+    assert next(data for action, data in run_hub(operation(name, args, result)) if action == 'status')['status'] == 'done'
+
+
+@pytest.mark.parametrize('result', [
+    EXPORT_RESULT | {'ready': False}, EXPORT_RESULT | {'state': 'failed'},
+    EXPORT_RESULT | {'game_id': 'other_game'}, EXPORT_RESULT | {'image': None},
+    EXPORT_RESULT | {'image': None, 'cheat_files': [None]},
+    EXPORT_RESULT | {'state': 'succeeded', 'status': 'partial'},
+    EXPORT_RESULT | {'rel_dir': 'exports/another_game/sonic_cast'},
+])
+def test_export_failure_or_wrong_identity_cannot_be_hidden_by_output_fields(result):
+    assert required_operation_outcome(operation('rom_export', EXPORT, result), _modifies_game)['unresolved']
+
+
+@pytest.mark.parametrize('result', [BUILD_RESULT | {'mod': 'another_build'}, BUILD_RESULT | {'files': []}])
+def test_build_requires_the_requested_mod_and_changed_files(result):
+    assert required_operation_outcome(operation('file_mod', BUILD, result), _modifies_game)['unresolved']
+
+
+def test_typed_file_creation_and_exact_retry_use_the_same_completion_guard():
+    args = {'name': 'rom_export', 'input': EXPORT}
+    failed = operation('run_tool', args, {'state': 'failed', 'error': 'worker disappeared'})
+    assert required_operation_outcome(failed, _modifies_game)['unresolved']
+    assert not required_operation_outcome(failed + operation('run_tool', args, EXPORT_RESULT), _modifies_game)['unresolved']
+
+
+def test_export_for_another_game_cannot_resolve_the_failed_export():
+    events = operation('rom_export', EXPORT, {'state': 'failed'})
+    events += operation('rom_export', EXPORT | {'game_id': 'other_game'}, EXPORT_RESULT | {'game_id': 'other_game'})
+    assert required_operation_outcome(events, _modifies_game)['unresolved']
+
+
+@pytest.mark.parametrize('name,args,result', [
+    ('rom_export', {'game_id': 're2', 'op': 'plan'}, {'ready': False, 'status': 'needs_selection'}),
+    ('rom_export', {'op': 'list'}, {'exports': []}),
+    ('file_mod', {'game_id': 're5', 'op': 'list'}, {'mods': []}),
+])
+def test_file_planning_and_listing_remain_informational(name, args, result):
+    assert next(data for action, data in run_hub(operation(name, args, result)) if action == 'status')['status'] == 'done'
+
+
+def test_file_creation_does_not_become_a_live_mutation_or_bookmark():
+    assert not _modifies_game('rom_export', EXPORT)
+    assert not _modifies_game('file_mod', BUILD)
+
+
+def test_export_without_explicit_game_id_preserves_saved_mod_selection():
+    args = {'mod_id': 'saved_mod_for_re2'}
+    assert not required_operation_outcome(operation('rom_export', args, EXPORT_RESULT), _modifies_game)['unresolved']
+
+
+def test_file_operation_with_missing_result_stays_pending():
+    events = [{'type': 'tool_call', 'name': 'rom_export', 'args': EXPORT}]
+    events += operation('rom_export', {'op': 'list'}, {'exports': []})
+    assert required_operation_outcome(events, _modifies_game)['unresolved']
+
+
+def test_agent_short_export_receipt_remains_sufficient():
+    from types import SimpleNamespace
+    from gbox.agent import Agent
+    result = EXPORT_RESULT | {'files': [{'path': 'modified.iso', 'size': 100}]}
+    def job(_tool, inp, *_a):
+        return {'state': 'succeeded', 'output': {'result': {'ready': True} if inp['op'] == 'plan' else result}}
+    short = Agent.rom_export(SimpleNamespace(_job=job), **EXPORT)
+    assert 'files' not in short
+    assert not required_operation_outcome(operation('rom_export', EXPORT, short), _modifies_game)['unresolved']
+
+
+def test_not_ready_repeat_cannot_reuse_a_previous_success():
+    events = operation('rom_export', EXPORT, EXPORT_RESULT)
+    events += operation('rom_export', EXPORT, {'repeat': True, 'ready': False})
+    assert required_operation_outcome(events, _modifies_game)['unresolved']
