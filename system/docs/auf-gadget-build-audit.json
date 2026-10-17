@@ -1,0 +1,388 @@
+{
+  "schema": 1,
+  "checked_at": "2026-10-15",
+  "scope": "First campaign mission exterior and interior packages and executable equality; static disc audit, not a gameplay test.",
+  "game_id": "65b7187589166b26",
+  "disc_revision": "GW7E69 disc 0 revision 1",
+  "level": "maps/orc_1.ngc",
+  "source_level_sha256": "01daceb1ba8f47c3af0c6de24fff24fa31f5881f381b0878102559998a256105",
+  "mission_script": {
+    "path": "maps/orc_1.scr",
+    "sha256": "e9c72283af524c0bfe608ee28a230acd822ae9731a5a365da350e4c4177ce17f",
+    "initial_loadout": [
+      {
+        "type": "weapon",
+        "model": "p2kns_pickup.men"
+      },
+      {
+        "type": "weapon",
+        "model": "qclaw_pickup.men"
+      },
+      {
+        "type": "gadget",
+        "model": "gadget_qlaser.men"
+      },
+      {
+        "type": "gadget",
+        "model": "gadget_qdecryptor.men"
+      }
+    ],
+    "selected_after_intro": "gadget_qdecryptor"
+  },
+  "gadget_resources": [
+    {
+      "name": "models/qclaw_grapple.men",
+      "sha256": "50c8f50125686b1820f907e9973adc931a6ebfbd54cf94cc79e036aaf58ddc60"
+    },
+    {
+      "name": "models/anims/qlaser_raise.gca",
+      "sha256": "f357ce77940e883945c4fe0770a2b9b633ac59ac3abe82c5628c2458310b8051"
+    },
+    {
+      "name": "models/anims/qclaw_raise.gca",
+      "sha256": "cd10afb3cd29f028d38ba7097e91697384b01310cfb7eed3a61b254f6cbdc50c"
+    },
+    {
+      "name": "models/qclaw_pickup.men",
+      "sha256": "c14c29b13d2cda80d8f9682f77b9bcf3f2f8c5a16e44477c0b84add9dbbb3976"
+    },
+    {
+      "name": "models/weapons/qclaw/qclaw_grapple.gcm",
+      "sha256": "6c4f282ef2aa6fb77f66ad47aa38f3f060489af1525177c20ca0ccda38d640bd"
+    },
+    {
+      "name": "models/anims/qclaw_idle.gca",
+      "sha256": "09a86b5924a060d5a25f44a40b01b1193840d3df96190dee8417bc790df86a6c"
+    },
+    {
+      "name": "models/weapons/qclaw/qclaw_view.gcm",
+      "sha256": "3809bd52444369af0e35dcf6e2730d03a6feb868b3b8b06f1af1c72f16716088"
+    },
+    {
+      "name": "models/weapons/impacts/impact_laser.men",
+      "sha256": "58f3b1dfe0934689014bb4e394fbeddc960b2660615af1a72e41d6898eab3b9a"
+    },
+    {
+      "name": "models/weapons/impacts/impact_lasermiss.men",
+      "sha256": "f9af2a22a2a45ff15986fc8f654ad5bf60c5fe354e129a00f3bffe8499bbe43c"
+    },
+    {
+      "name": "models/gadget_qlaser.men",
+      "sha256": "76b1e7c64e3cb5b6faa375ad8ad845656cb82f1826d7e90078645a5f1841ff7b"
+    },
+    {
+      "name": "models/weapons/qlaser/qlaser_view.gcm",
+      "sha256": "a806d8d306c227d988469ecb372f066597b560ccd8505bbaa109e1cee1390eca"
+    },
+    {
+      "name": "models/anims/qlaser_idle.gca",
+      "sha256": "d4f7fd13a3c735134fcabda5d9c696b42be18c159846ee77114c482a6a84a264"
+    },
+    {
+      "name": "models/anims/qlaser_fire_fast.gca",
+      "sha256": "931cadcc41ed39af2e2b8a79c9b7f685702bcd4e51fcd7ff0ef58c764a8203cd"
+    },
+    {
+      "name": "models/qclaw_view.men",
+      "sha256": "c91ca8be30cf944b6b4d94554190cf8fb31949de09a398912c38e916e60ae390"
+    },
+    {
+      "name": "models/qlaser_view.men",
+      "sha256": "8e47068598615aa5a86713b31bad327f273f543de396f35c1f62996b79b61fa1"
+    },
+    {
+      "name": "models/anims/qlaser_lower.gca",
+      "sha256": "990cf66d8175cd0769cf5b0cf2bcff5fe335eca8d3f6bf07e28bdc98d8d4e1e8"
+    },
+    {
+      "name": "models/anims/qclaw_fire.gca",
+      "sha256": "2a9779a517e2e028d11ce84a041e41ca2f732899bb3ea01dfab91db60ae1b123"
+    },
+    {
+      "name": "models/anims/qclaw_lower.gca",
+      "sha256": "30bb0b0bc210d128038d11507d5b22566a2b7e9dea90545a9c1bc55941a6f8be"
+    }
+  ],
+  "executables": {
+    "base.elf": "22cc9ec3ec53652cf7c3a05bc050a88a9a2c0ed2c5e2bea9ab7f5ef073f961be",
+    "Bond.elf": "1a9c0d19fb7bab09c2fd6ef56bd8158e88e507f72ba982d0ca292bc8145e716f",
+    "boot.elf": "29b2a3b48badbfef7b62542d14a0ca41f4bfc72a728bb4644c012bc69061446d",
+    "driving.elf": "fcb6f28c96d2e503524e4657c05c82c86006a74e3a7c795a4b79a850d9a305e8",
+    "Movie.elf": "408014af8990ed7d7e449d7614f6dc4e46c8981c2dc7e551932b0d3b22da8ac7"
+  },
+  "main_dol_sha256": "2f082f5b7b3f060746ed28d3ee8970eec2e8613f97136733b2e374173e23d26b",
+  "builds": [
+    {
+      "name": "auf_cast_jgr_defjam",
+      "writer": "gbox.auf_swap",
+      "level_sha256": "49588f073a3b67b8da3eca46d5061b462e44d369d20883a4cfb8925d83020279",
+      "level_modified": true,
+      "resource_count": 773,
+      "missing_resources": [],
+      "additional_resources": [],
+      "changed_character_models": 10,
+      "changed_noncharacter_resources": [],
+      "changed_nonvisual_chunks": [],
+      "visual_preservation_problems": [],
+      "gadgets_unchanged": true,
+      "main_dol_unchanged": true,
+      "executables_unchanged": true,
+      "mission_script_unchanged": true
+    },
+    {
+      "name": "auf_cast_jgr_defjam_v2",
+      "writer": "gbox.auf_swap",
+      "level_sha256": "c57f8ee272590878857da3c93c8c048aae4ed08f4ae73da11d3f0355b0205cad",
+      "level_modified": true,
+      "resource_count": 773,
+      "missing_resources": [],
+      "additional_resources": [],
+      "changed_character_models": 10,
+      "changed_noncharacter_resources": [],
+      "changed_nonvisual_chunks": [],
+      "visual_preservation_problems": [],
+      "gadgets_unchanged": true,
+      "main_dol_unchanged": true,
+      "executables_unchanged": true,
+      "mission_script_unchanged": true
+    },
+    {
+      "name": "auf_cast_sonic_random",
+      "writer": "gbox.auf_swap",
+      "level_sha256": "1038244a4f26e09df709e536ea987e42f868ad7172f9f045435c6198468c0dd1",
+      "level_modified": true,
+      "resource_count": 773,
+      "missing_resources": [],
+      "additional_resources": [],
+      "changed_character_models": 10,
+      "changed_noncharacter_resources": [],
+      "changed_nonvisual_chunks": [],
+      "visual_preservation_problems": [],
+      "gadgets_unchanged": true,
+      "main_dol_unchanged": true,
+      "executables_unchanged": true,
+      "mission_script_unchanged": true
+    },
+    {
+      "name": "auf_cast_wrestlers",
+      "writer": "gbox.auf_swap",
+      "level_sha256": "6a29ba181ae0ad7e8aa813c1efe733376fd6f30e23a35d72f1f95b2d0ba8f87f",
+      "level_modified": true,
+      "resource_count": 773,
+      "missing_resources": [],
+      "additional_resources": [],
+      "changed_character_models": 10,
+      "changed_noncharacter_resources": [],
+      "changed_nonvisual_chunks": [],
+      "visual_preservation_problems": [],
+      "gadgets_unchanged": true,
+      "main_dol_unchanged": true,
+      "executables_unchanged": true,
+      "mission_script_unchanged": true
+    },
+    {
+      "name": "auf_dm1_bondcombat_uwbthug",
+      "writer": null,
+      "level_sha256": "01daceb1ba8f47c3af0c6de24fff24fa31f5881f381b0878102559998a256105",
+      "level_modified": false,
+      "resource_count": 773,
+      "missing_resources": [],
+      "additional_resources": [],
+      "changed_character_models": 0,
+      "changed_noncharacter_resources": [],
+      "changed_nonvisual_chunks": [],
+      "visual_preservation_problems": [],
+      "gadgets_unchanged": true,
+      "main_dol_unchanged": true,
+      "executables_unchanged": true,
+      "mission_script_unchanged": true
+    }
+  ],
+  "conclusion": "These five builds retain the original first-mission gadget grants, definitions, animations and models. This does not establish the inventory or selection state of a particular running session.",
+  "interior": {
+    "level": "maps/orc_2.ngc",
+    "source_level_sha256": "7d55631740db7e8862705f2bf713c3cabf2afa3c641c574d911fb3c010b1be68",
+    "gadget_resources": [
+      {
+        "name": "models/qclaw_grapple.men",
+        "sha256": "3063a309a957ff7b4de37df3e201ab729144d4fc67bd599c099c4baabd6e9741"
+      },
+      {
+        "name": "models/anims/qlaser_raise.gca",
+        "sha256": "f357ce77940e883945c4fe0770a2b9b633ac59ac3abe82c5628c2458310b8051"
+      },
+      {
+        "name": "models/anims/qclaw_raise.gca",
+        "sha256": "cd10afb3cd29f028d38ba7097e91697384b01310cfb7eed3a61b254f6cbdc50c"
+      },
+      {
+        "name": "models/objects/industrial/lock_qlaser/lock_qlaser_intact.gcm",
+        "sha256": "ceebea4802388c2f916c61b5f7fc28a04e8742d869e19d3cf6abd796adecab9f"
+      },
+      {
+        "name": "models/qclaw_pickup.men",
+        "sha256": "537624e6b080abf9b3460e000c34c534045e2c0e8ded4c61eae30b42b043133a"
+      },
+      {
+        "name": "models/weapons/qclaw/qclaw_grapple.gcm",
+        "sha256": "6c4f282ef2aa6fb77f66ad47aa38f3f060489af1525177c20ca0ccda38d640bd"
+      },
+      {
+        "name": "models/anims/qclaw_idle.gca",
+        "sha256": "09a86b5924a060d5a25f44a40b01b1193840d3df96190dee8417bc790df86a6c"
+      },
+      {
+        "name": "models/obj_lock_qlaser.men",
+        "sha256": "d41a02cac86d412de8c8e0675832417fd403d82ee0d9be83a1efd7bbf34b263d"
+      },
+      {
+        "name": "models/objects/industrial/lock_qlaser/lock_qlaser_broken.gcm",
+        "sha256": "6d5583640b9661204ddd4c5e3f2b5799d49069cee7516a778715b838f5a4f4a7"
+      },
+      {
+        "name": "models/weapons/qclaw/qclaw_view.gcm",
+        "sha256": "3809bd52444369af0e35dcf6e2730d03a6feb868b3b8b06f1af1c72f16716088"
+      },
+      {
+        "name": "models/weapons/impacts/impact_laser.men",
+        "sha256": "8c41aa43b7ba67fd80894b6bc4e6ec8473be01f88863d93eeb7652ee572bc703"
+      },
+      {
+        "name": "models/weapons/impacts/impact_lasermiss.men",
+        "sha256": "0f16682526ae5f7aee971040e7fc2da984c46dff0b2a6a11982bf455b5785c11"
+      },
+      {
+        "name": "models/gadget_qlaser.men",
+        "sha256": "65f846cf059c194c8559a548f34bd5969212158e0f3a88d5b0928dd6235f0266"
+      },
+      {
+        "name": "models/weapons/qlaser/qlaser_view.gcm",
+        "sha256": "a806d8d306c227d988469ecb372f066597b560ccd8505bbaa109e1cee1390eca"
+      },
+      {
+        "name": "models/anims/qlaser_idle.gca",
+        "sha256": "d4f7fd13a3c735134fcabda5d9c696b42be18c159846ee77114c482a6a84a264"
+      },
+      {
+        "name": "models/anims/qlaser_fire_fast.gca",
+        "sha256": "931cadcc41ed39af2e2b8a79c9b7f685702bcd4e51fcd7ff0ef58c764a8203cd"
+      },
+      {
+        "name": "models/qclaw_view.men",
+        "sha256": "52e752b243449bc3e6ee48e52cecd759c15701731dcaf3caec0a54c96b28bd98"
+      },
+      {
+        "name": "models/qlaser_view.men",
+        "sha256": "243bc9a308365297b6e374173d2292c736c3060ddccc7800370c4a4274f2ea98"
+      },
+      {
+        "name": "models/anims/qlaser_lower.gca",
+        "sha256": "990cf66d8175cd0769cf5b0cf2bcff5fe335eca8d3f6bf07e28bdc98d8d4e1e8"
+      },
+      {
+        "name": "models/anims/qclaw_fire.gca",
+        "sha256": "2a9779a517e2e028d11ce84a041e41ca2f732899bb3ea01dfab91db60ae1b123"
+      },
+      {
+        "name": "models/anims/qclaw_lower.gca",
+        "sha256": "30bb0b0bc210d128038d11507d5b22566a2b7e9dea90545a9c1bc55941a6f8be"
+      },
+      {
+        "name": "models/obj_lock_qlaser_broken.men",
+        "sha256": "6c30b979694531f78d27401cfb083d4d3c4ecea720c3417986013ffafa0cccea"
+      }
+    ],
+    "scripts": [
+      {
+        "path": "global/common.scr",
+        "sha256": "03e83f3ca4fffcf468b4c2770ec14e6b02e85a024ffadbf4c77b238b722cc118"
+      },
+      {
+        "path": "maps/orc_2.scr",
+        "sha256": "0cbd96260e0654829d33f6cdfd124fe89762e445f9cf7dc664e51d15487b0bf8"
+      }
+    ],
+    "builds": [
+      {
+        "name": "auf_cast_jgr_defjam",
+        "writer": "gbox.auf_swap",
+        "level_sha256": "c4f9cf80d25f33ca11b2538b2da62001769062cc0649de10785309a00b836d74",
+        "level_modified": true,
+        "resource_count": 757,
+        "missing_resources": [],
+        "additional_resources": [],
+        "changed_character_models": 9,
+        "changed_noncharacter_resources": [],
+        "changed_nonvisual_chunks": [],
+        "visual_preservation_problems": [],
+        "gadgets_unchanged": true,
+        "main_dol_unchanged": true,
+        "executables_unchanged": true
+      },
+      {
+        "name": "auf_cast_jgr_defjam_v2",
+        "writer": "gbox.auf_swap",
+        "level_sha256": "60c18f956029e4605b09df7d738bced0d642520aba4bd11f5952d15854b49986",
+        "level_modified": true,
+        "resource_count": 757,
+        "missing_resources": [],
+        "additional_resources": [],
+        "changed_character_models": 9,
+        "changed_noncharacter_resources": [],
+        "changed_nonvisual_chunks": [],
+        "visual_preservation_problems": [],
+        "gadgets_unchanged": true,
+        "main_dol_unchanged": true,
+        "executables_unchanged": true
+      },
+      {
+        "name": "auf_cast_sonic_random",
+        "writer": "gbox.auf_swap",
+        "level_sha256": "0dc9d88b7b7bed61af8cb09167f398d8599da877b4ba478464871abb70f911d8",
+        "level_modified": true,
+        "resource_count": 757,
+        "missing_resources": [],
+        "additional_resources": [],
+        "changed_character_models": 9,
+        "changed_noncharacter_resources": [],
+        "changed_nonvisual_chunks": [],
+        "visual_preservation_problems": [],
+        "gadgets_unchanged": true,
+        "main_dol_unchanged": true,
+        "executables_unchanged": true
+      },
+      {
+        "name": "auf_cast_wrestlers",
+        "writer": "gbox.auf_swap",
+        "level_sha256": "9e2693625a090b6411d5db181594d778d308d51f65bdee513cc00a8f8cf6846d",
+        "level_modified": true,
+        "resource_count": 757,
+        "missing_resources": [],
+        "additional_resources": [],
+        "changed_character_models": 9,
+        "changed_noncharacter_resources": [],
+        "changed_nonvisual_chunks": [],
+        "visual_preservation_problems": [],
+        "gadgets_unchanged": true,
+        "main_dol_unchanged": true,
+        "executables_unchanged": true
+      },
+      {
+        "name": "auf_dm1_bondcombat_uwbthug",
+        "writer": null,
+        "level_sha256": "7d55631740db7e8862705f2bf713c3cabf2afa3c641c574d911fb3c010b1be68",
+        "level_modified": false,
+        "resource_count": 757,
+        "missing_resources": [],
+        "additional_resources": [],
+        "changed_character_models": 0,
+        "changed_noncharacter_resources": [],
+        "changed_nonvisual_chunks": [],
+        "visual_preservation_problems": [],
+        "gadgets_unchanged": true,
+        "main_dol_unchanged": true,
+        "executables_unchanged": true
+      }
+    ]
+  }
+}

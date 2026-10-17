@@ -11,6 +11,37 @@ from gbox.characters import CharIn
 from gbox.tools import CheatIn
 
 
+@pytest.mark.parametrize('name', ['pso_face', 'gta3_items', 'auf_live', 'game_live_controls'])
+def test_native_face_and_inventory_jobs_stay_on_the_session_worker(name):
+    agent = object.__new__(Agent)
+    agent._live_session = lambda _: None
+    sent = []
+    agent.api = SimpleNamespace(post=lambda path, json: (
+        sent.append((path, json)) or SimpleNamespace(json=lambda: {'state': 'succeeded'})))
+    op = 'inspect' if name in ('auf_live', 'game_live_controls') else 'list'
+    agent._job(name, {'session_id': 'worker-session', 'op': op})
+    assert sent == [('/api/jobs', {'tool': name, 'input': {'session_id': 'worker-session', 'op': op}, 'require_worker': 'worker'})]
+
+
+@pytest.mark.parametrize('name,op', [('auf_live', 'noclip'), ('game_live_controls', 'apply')])
+def test_live_mod_requests_get_short_deadlines_without_extending_expired_commands(name, op):
+    import time
+    agent = object.__new__(Agent)
+    agent._live_session = lambda _: None
+    sent = []
+    agent.api = SimpleNamespace(post=lambda path, json: (
+        sent.append(json) or SimpleNamespace(json=lambda: {'state': 'succeeded'})))
+    before = time.time()
+    original = {'session_id': 'worker-session', 'op': op}
+    agent._job(name, original)
+    assert before < sent[0]['input']['expires'] <= time.time() + 15
+    assert len(sent[0]['input']['command_id']) >= 16
+    assert 'expires' not in original
+    agent._job(name, original | {'command_id': 'original-command', 'expires': 1})
+    assert sent[1]['input']['expires'] == 1
+    assert sent[1]['input']['command_id'] == 'original-command'
+
+
 def test_missing_character_is_rejected_before_any_job_or_session_lookup():
     agent = object.__new__(Agent)
     agent._job = agent._live_session = lambda *_a, **_k: pytest.fail('no dispatch expected')

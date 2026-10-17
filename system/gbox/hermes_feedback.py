@@ -176,6 +176,7 @@ def scan(*, home: Path | None = None, now: float | None = None) -> dict:
         db.close()
         if state:
             state.close()
+        apply_exhaustion(data, _provider_health(home, now), now)
         data['processed'] = data['processed'][-512:]
         data['lessons'] = data['lessons'][-100:]
         data['cooldowns'] = {k: v for k, v in data['cooldowns'].items() if v > now}
@@ -184,6 +185,76 @@ def scan(*, home: Path | None = None, now: float | None = None) -> dict:
         data['new_lessons'] = len(added)
         _save(target, data)
         return data
+
+
+def _provider_health(home, now) -> dict:
+    try:
+        from . import hermes_providers
+        return hermes_providers.provider_health(home, now)
+    except Exception:                          # noqa: BLE001 - a log that cannot be read never blocks the scan
+        return {}
+
+
+def apply_exhaustion(data: dict, health: dict, now: float, *, local_provider: str | None = None) -> dict:
+    """Cool every route of a provider whose latest model call failed out of credit or at its usage limit.
+
+    A run's final error names only the last provider it tried. When the primary answers "out of credit" (Nous sends
+    HTTP 404 "requires available credits ... balance is too low") or "monthly usage limit" (Ollama Cloud, HTTP 429),
+    Hermes falls through to its next fallback and the run ends on that provider's error, or keeps running there. The
+    exhausted provider was then never cooled, stayed eligible, and the supervisor kept routing to it. Here the agent
+    log's per-call errors (hermes_providers.provider_health) decide instead.
+
+    ``data['exhausted'][provider]`` = {kind, error_at, failures, until, model, text} remembers the error a wait was
+    started for. A newer error of the same kind after the wait (the probe failed) doubles the wait; a successful call
+    after the error drops the record. A longer cooldown already in place (a measured reset) is never shortened.
+    Returns the records."""
+    records = data.setdefault('exhausted', {})
+    cooldowns = data.setdefault('cooldowns', {})
+    details = data.setdefault('cooldown_details', {})
+    if local_provider is None:
+        try:
+            from . import hermes_local
+            local_provider = hermes_local.settings().provider
+        except Exception:                      # noqa: BLE001
+            local_provider = 'spark-local'
+    local = str(local_provider or '').casefold()
+    for provider, seen in (health or {}).items():
+        if not provider or provider.casefold() == local:
+            continue
+        err, ok = seen.get('last_error') or {}, seen.get('last_ok') or 0
+        if err.get('kind') not in hermes_quota.EXHAUSTED_KINDS or ok >= (err.get('ts') or 0):
+            # Never exhausted, or a call worked after the error (credit was added): the route is back now.
+            if records.pop(provider, None):
+                for key in [k for k, d in details.items() if k.split('/', 1)[0].casefold() == provider.casefold()
+                            and (d or {}).get('source') == hermes_quota.EXHAUSTED_SOURCE]:
+                    cooldowns.pop(key, None)
+                    details.pop(key, None)
+            continue
+        previous = records.get(provider) or {}
+        if previous.get('error_at') == err['ts'] and previous.get('kind') == err['kind']:
+            continue                           # the wait for this error is already running (or was lifted)
+        failures = previous.get('failures', 0) + 1 if previous else 1
+        wait = hermes_quota.exhaustion_wait(err['kind'], err.get('text'), err['ts'], failures=failures)
+        records[provider] = {'kind': err['kind'], 'error_at': err['ts'], 'failures': failures, 'until': wait['until'],
+                             'model': err.get('model'), 'text': str(err.get('text') or '')[:200]}
+    names = {}
+    for item in [*(data.get('routes') or []), data.get('current_route') or {}]:
+        if isinstance(item, dict) and item.get('provider') and item.get('model'):
+            names.setdefault(str(item['provider']).casefold(), set()).add(item['provider'] + '/' + item['model'])
+    for provider, record in records.items():
+        if record.get('until', 0) <= now:
+            continue                           # the wait is over: the next run on this route is the probe
+        keys = set(names.get(provider.casefold(), ()))
+        if record.get('model'):
+            keys.add(provider + '/' + record['model'])
+        for key in keys:
+            if cooldowns.get(key, 0) > record['until']:
+                continue
+            cooldowns[key] = record['until']
+            details[key] = {'until': record['until'], 'source': hermes_quota.EXHAUSTED_SOURCE, 'category': 'quota',
+                            'kind': record['kind'], 'failures': record['failures'], 'observed_at': record['error_at'],
+                            'last_failure_at': record['error_at'], 'quota_balance_known': False}
+    return records
 
 
 def hermes_task_mode_session(state, job_id, started):
@@ -289,32 +360,49 @@ def adjust_routes() -> dict:
         if result.returncode:
             raise RuntimeError('Hermes canonical MCP configuration update failed')
     cron = config.get('cron') or {}
+    from . import hermes_local
+    local = hermes_local.settings()
     routes = hermes_quota.routes(config, data.get('routes') or [])
     primary = {'provider': cron.get('model_provider'), 'model': cron.get('model')}
-    if primary not in routes and all(primary.values()):
+    if (primary not in routes and all(primary.values()) and primary['provider'].casefold() not in hermes_quota.excluded_providers()
+            and not hermes_local.is_local(primary, local)):
         routes.insert(0, primary)
-    eligible = [r for r in routes if r['provider'] + '/' + r['model'] not in data['cooldowns']]
-    # Rotation is done only between agent runs. Never mutate an in-flight route.
-    busy = any(hermes_task_mode._active(j['id']) and not j.get('no_agent') for j in hermes_task_mode._jobs())
-    if busy or not eligible:
+    # The local route is never a paid route's fallback: it is chosen alone, only when no paid route is left.
+    paid = [r for r in routes if not hermes_local.is_local(r, local)]
+    lifted = _lift_recovered_credit(data)
+    # Rotation is done only between agent runs. Never mutate an in-flight route. A run past its deadline no longer
+    # holds rotation: a run that fell through to a CPU fallback can crawl for hours and would keep every route as is.
+    running = [j['id'] for j in hermes_task_mode._jobs() if not j.get('no_agent') and hermes_task_mode._active(j['id'])]
+    overdue = overdue_runs(running)
+    late = {o['job_id'] for o in overdue}
+    busy = any(job not in late for job in running)
+    pick = hermes_local.choose(paid, data['cooldowns'], time.time(), primary=primary,
+                               rotation_pending=bool(data.get('rotation_pending')), busy=busy, s=local)
+    shown = paid + ([hermes_local.route(local)] if local.enabled else [])   # the Providers view lists the local route
+    if busy or pick['mode'] == 'none':
         path = hermes_delivery.state_dir() / 'feedback.json'
         with hermes_delivery.locked('feedback'):
             saved = json.loads(path.read_text())
-            saved['routes'] = routes
+            saved['routes'] = shown
             saved['completed_usage'] = accounting
+            saved['overdue_runs'] = overdue
             _save(path, saved)
         return {'changed': False, 'reason': 'Agent run is active' if busy else 'All connected routes are cooling down',
                 'route': primary, 'agent_busy': busy, 'cooldowns': data['cooldowns'],
                 'new_lessons': data['new_lessons'], 'providers': provider_status(data, config),
-                'completed_usage': accounting}
-    chosen = primary
-    if primary not in eligible or (data.get('rotation_pending') and not busy):
-        index = eligible.index(primary) if primary in eligible else -1
-        chosen = eligible[(index + 1) % len(eligible)]
+                'completed_usage': accounting, 'credit_recovered': lifted, 'overdue_runs': overdue,
+                # Rewritten on the next pass between runs; until then Hermes may still fall through to these.
+                'excluded_fallbacks': excluded_fallbacks(config)}
+    chosen = pick['route']
+    registered = False
+    if pick['mode'] == 'local' and hermes_local.merged_providers(config.get('custom_providers'), local) is not None:
+        # In-process edit of config.yaml: `hermes config set custom_providers` would put every provider's api_key
+        # on a command line. Done before the route switch, so Hermes never runs on an unknown provider.
+        registered = hermes_local.register_provider(hermes_task_mode._home() / 'config.yaml', local)
     changes = {'cron.model_provider': chosen['provider'], 'cron.model': chosen['model'],
-               'fallback_providers': [r for r in eligible if r != chosen]}
+               'fallback_providers': pick['fallbacks']}
     for key, value in changes.items():
-        old = config.get(key) if key == 'fallback_providers' else cron.get(key.split('.')[1])
+        old = config.get(key) if '.' not in key else cron.get(key.split('.')[1])
         if old != value:
             result = subprocess.run([cli, 'config', 'set', key, json.dumps(value) if isinstance(value, list) else value],
                                     capture_output=True, text=True, timeout=30)
@@ -323,16 +411,106 @@ def adjust_routes() -> dict:
     path = hermes_delivery.state_dir() / 'feedback.json'
     with hermes_delivery.locked('feedback'):
         saved = json.loads(path.read_text())
-        saved.update(routes=routes, current_route=chosen, completed_usage=accounting)
+        saved.update(routes=shown, current_route=chosen, completed_usage=accounting, overdue_runs=overdue)
+        previous = saved.get('local_mode') or {}
+        now = time.time()
+        if pick['mode'] == 'local':
+            saved['local_mode'] = {'active': True, 'reason': pick['reason'], 'next_paid_at': pick['next_paid_at'],
+                                   'since': previous.get('since') if previous.get('active') else now}
+        else:
+            saved['local_mode'] = {'active': False, 'reason': pick['reason'], 'next_paid_at': None,
+                                   'since': previous.get('since') if previous and not previous.get('active') else now}
         if chosen != primary or not busy:
             saved['rotation_pending'] = False
         _save(path, saved)
     from .hermes_recovery import recover
-    return {'route': chosen, 'cooldowns': data['cooldowns'], 'new_lessons': data['new_lessons'], 'agent_busy': busy,
+    return {'route': chosen, 'mode': pick['mode'], 'mode_reason': pick['reason'],
+            'cooldowns': data['cooldowns'], 'new_lessons': data['new_lessons'], 'agent_busy': busy,
             'providers': provider_status(saved, config), 'recovery': recover(saved),
             'completed_usage': accounting, 'merges': merges, 'summaries': summaries,
-            'capped': capped, 'cleanup': cleanup,
-            'repairs': ['canonical_mcp_workspace'] if repaired else []}
+            'capped': capped, 'cleanup': cleanup, 'credit_recovered': lifted, 'local_provider_registered': registered,
+            'overdue_runs': overdue, 'repairs': ['canonical_mcp_workspace'] if repaired else []}
+
+
+# A Hermes run normally ends within an hour (paid runs on 2026-10-13 took 1-32 minutes). One still running after
+# this long has stalled or fell through to a CPU fallback: it stops holding route rotation and is listed in
+# feedback.json's overdue_runs for the operator to stop. Nothing here stops a run; Hermes owns its runs.
+# GBOX_HERMES_RUN_DEADLINE_S overrides.
+RUN_DEADLINE_S = 2 * 3600
+
+
+def run_deadline() -> float:
+    import os
+    try:
+        return float(os.environ.get('GBOX_HERMES_RUN_DEADLINE_S') or RUN_DEADLINE_S)
+    except ValueError:
+        return float(RUN_DEADLINE_S)
+
+
+def overdue_runs(job_ids, *, now: float | None = None, home: Path | None = None) -> list[dict]:
+    """[{job_id, execution_id, started_at, age_s}]: running executions of these jobs that started more than
+    run_deadline() ago. A missing or unreadable executions.db gives none (every run keeps holding rotation)."""
+    if not job_ids:
+        return []
+    from .hermes_tasks import _stamp
+    now = time.time() if now is None else now
+    path = (home or hermes_task_mode._home()) / 'cron/executions.db'
+    if not path.is_file():
+        return []
+    try:
+        db = sqlite3.connect(f'file:{path.as_posix()}?mode=ro', uri=True, timeout=1)
+        try:
+            marks = ','.join('?' * len(job_ids))
+            rows = db.execute("SELECT id,job_id,started_at FROM executions WHERE status IN ('claimed','running') "
+                              f"AND job_id IN ({marks})", list(job_ids)).fetchall()
+        finally:
+            db.close()
+    except sqlite3.Error:
+        return []
+    limit, out = run_deadline(), []
+    for execution_id, job_id, started in rows:
+        stamp = float(started) if isinstance(started, (int, float)) else (_stamp(started) or 0)
+        if stamp and now - stamp > limit:
+            out.append({'job_id': job_id, 'execution_id': execution_id, 'started_at': stamp,
+                        'age_s': round(now - stamp)})
+    return sorted(out, key=lambda o: o['started_at'])
+
+
+def excluded_fallbacks(config: dict) -> list[dict]:
+    """Entries of Hermes's fallback_providers that hermes_quota excludes (CPU llama.cpp, EhmBird). The supervisor's
+    next write of fallback_providers (between runs) leaves them out."""
+    skip = hermes_quota.excluded_providers()
+    return [{'provider': x.get('provider'), 'model': x.get('model')} for x in config.get('fallback_providers') or []
+            if isinstance(x, dict) and str(x.get('provider') or '').casefold() in skip]
+
+
+def _lift_recovered_credit(data, *, balance=None, now=None) -> list[str]:
+    """End an OpenRouter quota cooldown early when its account shows credit again (the operator topped it up)."""
+    from . import hermes_local
+    now = time.time() if now is None else now
+    if not any(v > now and k.startswith('openrouter/') for k, v in data.get('cooldowns', {}).items()):
+        return []
+    if balance is None:
+        try:
+            from .hermes_providers import openrouter_balance
+            balance = openrouter_balance(wait=True)
+        except Exception:                      # noqa: BLE001 - a balance check never blocks route supervision
+            return []
+    keys = hermes_local.credit_recovered(data['cooldowns'], data.get('cooldown_details', {}), balance, now)
+    if not keys:
+        return []
+    path = hermes_delivery.state_dir() / 'feedback.json'
+    with hermes_delivery.locked('feedback'):
+        saved = json.loads(path.read_text()) if path.exists() else {}
+        for target in (data, saved):
+            for key in keys:
+                target.get('cooldowns', {}).pop(key, None)
+                target.get('cooldown_details', {}).pop(key, None)
+                record = (target.get('exhausted') or {}).get(key.split('/', 1)[0])
+                if record:
+                    record['until'] = now          # lifted: the same error does not cool the route again
+        _save(path, saved)
+    return keys
 
 
 def _recorded_usage(now):

@@ -149,6 +149,34 @@ def gc_used_end(f, disc) -> int:
     return (end + 0x7FFF) & ~0x7FFF
 
 
+def gc_used_regions(f, disc) -> list[tuple[int, int]]:
+    """(start, end) of everything the disc uses: boot header + apploader, the DOL, the FST and every file."""
+    f.seek(0x2454)
+    app_size, app_trailer = struct.unpack(">II", f.read(8))
+    f.seek(0x420)
+    dol, fst, fst_size = struct.unpack(">III", f.read(12))
+    f.seek(dol)
+    h = f.read(0x100)
+    offs, sizes = struct.unpack_from(">18I", h, 0), struct.unpack_from(">18I", h, 0x90)
+    regions = [(0, 0x2460 + app_size + app_trailer), (dol, dol + max(o + s for o, s in zip(offs, sizes))),
+               (fst, fst + fst_size)]
+    regions += [(o, o + s) for o, s in disc.files.values() if s]
+    return sorted(regions)
+
+
+def gc_find_gap(f, disc, size: int, align: int = 0x8000) -> int | None:
+    """The first 32 KiB-aligned unused stretch of at least `size` bytes between used regions (Nintendo masters fill
+    unused disc space with junk data, so a full image still has room between files), or None."""
+    end = 0
+    for a, b in gc_used_regions(f, disc):
+        start = (end + align - 1) & ~(align - 1)
+        if a - start >= size:
+            return start
+        end = max(end, b)
+    start = (end + align - 1) & ~(align - 1)
+    return start if start + size <= GC_DISC_SIZE else None
+
+
 def gc_put_file(f, disc, key: str, data: bytes) -> dict:
     """Replace a file on an open (r+b) GameCube image: in its slot when it fits, else moved to free space after the
     last used byte (FST entry offset + size rewritten). Updates disc.files."""
@@ -162,9 +190,11 @@ def gc_put_file(f, disc, key: str, data: bytes) -> dict:
         disc.files[key] = (off, len(data))
         return {"file": key, "mode": "in place", "size": len(data)}
     new = gc_used_end(f, disc)
-    if new + len(data) > GC_DISC_SIZE:
-        raise ValueError(f"{key}: {len(data)} bytes don't fit on the disc (free space after the last file: "
-                         f"{max(0, GC_DISC_SIZE - new)} bytes)")
+    if new + len(data) > GC_DISC_SIZE:                     # a full disc (PSO Ep I&II ends on the last byte):
+        new = gc_find_gap(f, disc, len(data))              # an unused stretch between files (mastering filler)
+        if new is None:
+            raise ValueError(f"{key}: {len(data)} bytes don't fit on the disc (no free space after the last file "
+                             f"and no gap between files that large)")
     f.seek(new)
     f.write(data)
     f.seek(ent + 4)
@@ -205,24 +235,11 @@ def patch_dol(f, dol_base: int, patches: list[dict]) -> list[dict]:
 # ================================================================ ISO9660 (PS2, PS1 data tracks, ...)
 
 def _iso_walk(f, lba: int, size: int, prefix: str, out: dict):
-    f.seek(lba * 2048)
-    buf, i = f.read(size), 0
-    while i < len(buf):
-        n = buf[i]
-        if n == 0:                                         # records don't cross sectors: skip to the next one
-            i = (i // 2048 + 1) * 2048
-            continue
-        rec = buf[i:i + n]
-        elba, esize, flags, nl = struct.unpack_from("<I", rec, 2)[0], struct.unpack_from("<I", rec, 10)[0], rec[25], rec[32]
-        name = rec[33:33 + nl]
-        if name not in (b"\0", b"\1"):
-            nm = name.decode("latin-1").split(";")[0].rstrip(".")
-            path = prefix + nm
-            if flags & 2:
-                _iso_walk(f, elba, esize, path + "/", out)
-            else:
-                out[path.upper()] = (lba * 2048 + i, elba, esize)
-        i += n
+    from .formats import iso9660                          # the shared ISO9660 walk (gbox.formats)
+    for parts, rec, dlba in iso9660.walk(iso9660.file_reader(f), lba, size):
+        if not rec.is_dir:
+            path = prefix + "".join(p.rstrip(".") + "/" for p in parts) + rec.name.rstrip(".")
+            out[path.upper()] = (dlba * 2048 + rec.offset, rec.lba, rec.size)
 
 
 def iso_files(f) -> dict:

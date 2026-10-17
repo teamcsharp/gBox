@@ -1,0 +1,74 @@
+{
+  "schema": 1,
+  "scope": "Native texture-only PSO class/NPC build; review candidate, not an all-character likeness approval",
+  "build": "pso_bla_faces_65d99957_718bb75a32",
+  "game_id": "436e0bb84d5337d1",
+  "native_disc_id": "GPOE8P",
+  "photo_sha256": "65d99957ebf5ac4a00558f6913bfcbddbee86b1ce4e2a0c44e893d1812781786",
+  "iso_sha256": "9e143347f7e8b63d5d16082bdf47ba6ad1575cd99eae3295696ac3e574161ba8",
+  "original_iso_sha256": "2f1c56b66f2143ed7b15a75c071116b08d6578f16b569f2e831011ad32e1f963",
+  "original_iso_unchanged": true,
+  "coverage": {
+    "player_face_surfaces": 660,
+    "npc_face_surfaces": 64,
+    "total": 724,
+    "classes": [
+      "FOmar",
+      "FOmarl",
+      "FOnewearl",
+      "FOnewm",
+      "HUcaseal",
+      "HUcast",
+      "HUmar",
+      "HUnewearl",
+      "RAcaseal",
+      "RAcast",
+      "RAmar",
+      "RAmarl"
+    ],
+    "changed_disc_files": 46,
+    "other_disc_files_byte_identical": 3464,
+    "unmodified_named_npc_containers": []
+  },
+  "native_format": "Original CMPR format, dimensions and GVR headers retained; untouched blocks byte-identical",
+  "geometry": "Original bodies, heads, skeletons, weights and motions retained",
+  "portable_originals": {
+    "entries": 724,
+    "bytes": 1278760,
+    "all_original_chunks_verified": true
+  },
+  "selfie_grouped_models": 36,
+  "native_mesh_before_after_pairs": 6,
+  "isolated_native_proof": {
+    "pioneer2_loaded": true,
+    "new_disc_npc_faces_resident": 28,
+    "copied_private_checkpoint_used": true,
+    "original_fst_guard_matched": true,
+    "new_disc_fst_readback": true,
+    "operator_sessions_touched": false,
+    "private_emulator_stopped": true
+  },
+  "cold_boot": {
+    "tested_earlier_texture_variant": "pso_bla_faces_65d99957_e41ac5694b",
+    "title_screen_reached": true,
+    "complete_controller_driven_cold_playthrough_verified": false,
+    "same_title_navigation_issue_observed_on_owned_original": true
+  },
+  "visual_review": {
+    "static_original_mesh_comparisons": true,
+    "ramar_duplicate_original_eyes_removed": true,
+    "robotic_helmet_face_patches": "experimental; further per-head artist review required",
+    "all_likenesses_approved": false,
+    "prerecorded_cinematics": "unchanged"
+  },
+  "checks": {
+    "focused_passed": 17,
+    "owned_asset_tests_skipped_locally": 3,
+    "actual_owned_disc_validation": "performed separately on Spark"
+  },
+  "local_evidence": [
+    "gbox-data/pso-bla-native-head-before-after.png",
+    "gbox-data/pso-bla-faces-before-after.png",
+    "gbox-data/pso-bla-final-pioneer2.png"
+  ]
+}

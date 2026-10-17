@@ -107,6 +107,33 @@ Parts retain their stored coordinates. No inferred game placement or selection, 
 
 Private evidence lives under `gbox-data/inbox-continuation-20261011/native-audit`; owned game data and generated stage packages are not included in Git.
 
+## Character select: confirm, commit and the random costume (inbox #1652)
+
+Found statically in the pinned executable (capstone SH-4 disassembly and a headless Ghidra 12.1.4 import at
+0x8c010000); exercised by an interpreted run of the original bytes (`doa2_random_select.simulate`). No emulator
+session was used.
+
+- **Selection tables.** `0x8c239d50` (render slot) and `0x8c239d64` (costume) are `u16[2 sides][5]`; `0x8c239d20` and
+  `0x8c239d34` mirror them. The actor set-up at `0x8c024154..0x8c024270` copies them into actor `+1` / `+2`
+  (`0x8c2376b8 + 0x68 * n`, see `doa2_context`).
+- **Human confirm.** The handler at `0x8c0262e0..0x8c02631e` (cursor record `r14` = select base `r12` + player << 7,
+  `+1` slot, `+2` costume) plays sound 36 (`0x8c01235a`) and calls the commit routine through the literal-pool word
+  `0x8c02638c` (= `0x8c02a1ca`). That word has no other user.
+- **Commit** `0x8c02a1ca(base, player)` writes cursor `+1` / `+2` into all four tables at index `cursor+37`, for team
+  modes (mode byte `0x8c239388` 9/11/13) and the others.
+- **CPU pick** `0x8c02ac04..0x8c02aca8`: slot from `0x8c235171[idx]` (it re-rolls slots 17 and 24, Tengu and Leon),
+  costume from the per-slot unlocked list `0x8c2351d8[idx][rand() % count]`.
+- **rand()** `0x8c120cf0`: LCG, seed `0x8c1e64e0`, `seed = seed * 0x41c64e6d + 12345`, returns `seed >> 16 & 0x7fff`.
+  It saves `macl` and clobbers `r1..r4`. `0x8c12d898` is the signed modulo helper the CPU pick uses.
+- **Free space.** The boot header is 0x80 bytes (the startup's section table at `0x8c17a78c` names
+  `0x8c010000..0x8c010080`). Code starts at `0x8c011000`, and nothing in the executable points into
+  `0x8c010080..0x8c011000`.
+
+`gbox.doa2_random_select` puts a 0x80-byte hook at `0x8c010100` and a 25 x 16-byte costume-pool table at
+`0x8c010200`, and redirects only the pool word `0x8c02638c` to the hook. The cursor costume is drawn from the
+fighter's pool before the native commit runs, so every table, the loader and the render script see the same index.
+Build and design: `docs/doa2_mixed_random.md`.
+
 ## Primary format references
 
 Independent implementation acknowledges VincentNL, EgregiousGuy and The_Zocker160:

@@ -1,6 +1,7 @@
 """Focused tests for gbox.kinst_bootrom (Killer Instinct boot ROM, request #1372)."""
 
 import os
+import hashlib
 import struct
 from pathlib import Path
 
@@ -48,9 +49,23 @@ CACHE = Path(os.environ.get("GBOX_KINST_CACHE", str(Path.home() / "gbox-cache" /
 @pytest.mark.skipif(not (CACHE / "ki-l15d.u98").exists(), reason="owned boot ROM not staged")
 def test_owned_boot_rom_bootstrap_header():
     rom = (CACHE / "ki-l15d.u98").read_bytes()
+    assert len(rom) == kb.BOOT_ROM_SIZE
+    assert hashlib.sha1(rom).hexdigest() == kb.BOOT_ROM_SHA1
     h = kb.bootstrap_header(rom)
     assert h["serial_magic"] == 0x7262
     assert h["block_count"] == 3
     assert h["sentinel"] == 0
     assert h["first_block_load"] == 0x88000000  # second stage entry in RAM2 KSEG0
     assert h["load_phys"] == 0x08000000        # start of the 8 MiB second RAM bank
+
+
+@pytest.mark.parametrize('offset',[-12,-1,5,100])
+def test_invalid_header_offset_is_rejected(offset):
+    with pytest.raises(ValueError): kb.bootstrap_header(bytes(16),offset)
+
+
+def test_explicit_header_offset_reads_only_selected_bytes():
+    raw=b'ignored!'+bytes.fromhex('62720300b02c030000000088')
+    header=kb.bootstrap_header(raw,8)
+    assert header['first_block_size']==0x32cb0
+    assert header['first_block_load']==0x88000000

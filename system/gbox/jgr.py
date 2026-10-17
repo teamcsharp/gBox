@@ -364,15 +364,70 @@ def play_model_roots(data: bytes, play_off: int, size: int | None = None) -> lis
     return roots
 
 
-def play_model(buf: bytes, root: int):
-    """Walk one PLAY model tree with the shared Ninja chunk parser (:class:`gbox.ninja.NJ`)."""
+FLAT_BASE = 0x10000   # play_model(materials=True): strip classes other than plain textured are keyed FLAT_BASE + i
+
+
+def play_model(buf: bytes, root: int, materials: bool = False):
+    """Walk one PLAY model tree with the shared Ninja chunk parser (:class:`gbox.ninja.NJ`).
+
+    materials=True files every strip chunk by what it is, read from the chunk itself: a lit textured strip stays under
+    its texture id; any other strip is keyed ``FLAT_BASE + i`` with ``.materials[i]`` = {"outline": the strip's
+    ignore-light flag (NJD_FST_IL, bit 0 of the strip chunk flags), "texture": its texture id or None (chunk 0x40/43/
+    46/49 carry no UVs), "colour": the (r, g, b, a) material diffuse}. On the cast's gameplay bodies the
+    ignore-light strips are the cel-shading outline: an inverted hull ~0.1 unit outside the body with reversed normals,
+    drawn black (or with the shared tiny GBIX 2 texture); an ordinary viewer draws it as a dark shell around the
+    character (#1396). The default keeps the shared parser's behaviour (one list per texture id)."""
     from .ninja import NJ
 
     class _PlayNJ(NJ):
         def __init__(self, d: bytes, start: int):
-            self.e, self.d = "<", d
+            self.e, self.d = "<", bytearray(d) if materials else d
             self.bones, self.vbuf, self.tris, self.tex, self.plcache = [], {}, {}, 0, {}
+            self.materials, self._diffuse = [], (255, 255, 255, 255)
             self._walk(start, None, [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]])
+            if materials:
+                self.d = bytes(self.d)
+
+        def _polys(self, o):
+            if not materials:
+                return super()._polys(o)
+            p = o
+            while True:
+                typ, fl = self.d[p], self.d[p + 1]
+                if typ == 0xFF:
+                    return
+                if typ in (4, 5):
+                    raise ValueError(f"cached polygon list chunk at +{p:#x}: not a JGR body strip list")
+                if typ < 8:
+                    p += 2
+                elif typ in (8, 9):
+                    self.tex = self.u("H", p + 2)[0] & 0x1FFF
+                    p += 4
+                elif 0x10 <= typ <= 0x3A:
+                    if typ <= 0x17 and typ & 1:                    # material with diffuse: BGRA bytes
+                        b, g, r, a = self.d[p + 4:p + 8]
+                        self._diffuse = (r, g, b, a)
+                    p += 4 + self.u("H", p + 2)[0] * 2
+                elif 0x40 <= typ <= 0x4B:
+                    end = p + 4 + self.u("H", p + 2)[0] * 2
+                    textured = typ not in (0x40, 0x43, 0x46, 0x49)
+                    key = self.tex
+                    if fl & 1 or not textured:
+                        mat = {"outline": bool(fl & 1), "texture": self.tex if textured else None,
+                               "colour": self._diffuse}
+                        if mat not in self.materials:
+                            self.materials.append(mat)
+                        key = FLAT_BASE + self.materials.index(mat)
+                    # decode this one strip chunk with the shared parser: end the list right after it for the call
+                    saved, self.tex, tail = self.tex, key, bytes(self.d[end:end + 2])
+                    self.d[end:end + 2] = b"\xff\x00"
+                    try:
+                        super()._polys(p)
+                    finally:
+                        self.d[end:end + 2], self.tex = tail, saved
+                    p = end
+                else:
+                    return                                         # unknown chunk: stop, as the shared parser does
 
     if not 0 <= root <= len(buf) - 0x34:
         raise ValueError(f"root +{root:#x} outside the PLAY chunk")
@@ -420,9 +475,196 @@ def export_play_glb(data: bytes, play_off: int, root: int, out_dir: str, name: s
     return str(glb)
 
 
+# ---------------------------------------------------------------- draw groups and their texture lists (#1396)
+# PLAY+8 points at the character's binding record: int32 native ID, then one 16-byte slot per draw group (the group's
+# root object, repeated four times). PTEX+8 points at a record of the same shape whose slots are NJS_TEXLIST pointers
+# ({NJS_TEXNAME *names (count x 12 zero bytes, filled at load), u32 count}, followed by `count` pointers to GBIX+PVRT
+# data in the PTEX), ended by -1. A strip's texture id indexes ITS group's texlist, not the PTEX file order: Yo-Yo's
+# spray-can body binds id 0 to the shared can texture (GBIX 760) and id 1 to the body atlas, and Gum's body atlas is
+# PTEX texture 1. The six groups have the same roles on all 16 USA characters (checked on the owned disc):
+GROUP_ROLES = ("body",            # 0: gameplay body, high detail (what the player sees while skating)
+               "body_lod",        # 1: the same body, low detail
+               "body_spray",      # 2: high-detail body with the spray can in the right hand (shared texture GBIX 760)
+               "body_spray_lod",  # 3: low-detail body with the can
+               "shadow",          # 4: shadow volume: 20 nodes, vertices only, no strips
+               "head")            # 5: separate 4-node head (face-expression sheet); a single empty node on Goji/Pots
+GROUP_COUNT = len(GROUP_ROLES)
+CHARACTER_GROUP = 0
+
+
+def _record_slots(chunk: bytes, what: str, variant: int = 0) -> tuple[int, list[int]]:
+    """(native ID, slot `variant` of each of the GROUP_COUNT draw groups) from a PLAY/PTEX binding record. Each group
+    has four slots; they are equal except on the rival leaders' PTEX, whose slots 1-3 name alternate colour atlases
+    (GBIX 355000 / 455000 ...). Slot 0 is the default look."""
+    if len(chunk) < 12:
+        raise ValueError(f"{what}: truncated chunk")
+    rec = struct.unpack_from("<I", chunk, 8)[0]
+    if rec % 4 or rec < 12 or rec + 4 + 16 * GROUP_COUNT > len(chunk):
+        raise ValueError(f"{what}: binding record offset {rec:#x} is outside the chunk")
+    nid = struct.unpack_from("<i", chunk, rec)[0]
+    return nid, [struct.unpack_from("<4I", chunk, rec + 4 + 16 * k)[variant] for k in range(GROUP_COUNT)]
+
+
+def play_groups(data: bytes, play_off: int) -> list[int | None]:
+    """Root object of each draw group (GROUP_ROLES order) from the PLAY binding record; None for an empty slot."""
+    buf = play_bytes(data, play_off)
+    _, roots = _record_slots(buf, f"PLAY +{play_off:#x}")
+    out = []
+    for k, r in enumerate(roots):
+        if r and not _is_object(buf, r):
+            raise ValueError(f"PLAY +{play_off:#x}: draw group {k} root +{r:#x} is not an object")
+        out.append(r or None)
+    return out
+
+
+def ptex_texlists(data: bytes, ptex_off: int) -> list[list[int]]:
+    """Per draw group (GROUP_ROLES order): the PTEX texture index (``ptex_textures`` order) of each Ninja texture id."""
+    size = entry_size(data, ptex_off)
+    chunk = bytes(data[ptex_off:ptex_off + size])
+    if chunk[:4] != PTEX_MAGIC:
+        raise ValueError(f"+{ptex_off:#x} is not a PTEX chunk")
+    _, lists = _record_slots(chunk, f"PTEX +{ptex_off:#x}")
+    index = {t["offset"]: i for i, t in enumerate(ptex_textures(data, ptex_off, size))}
+    out = []
+    for k, p in enumerate(lists):
+        if not p:
+            out.append([])
+            continue
+        if p % 4 or p + 8 > len(chunk):
+            raise ValueError(f"PTEX +{ptex_off:#x}: texlist {k} at {p:#x} is outside the chunk")
+        _names, count = struct.unpack_from("<II", chunk, p)
+        if count > 64 or p + 8 + 4 * count > len(chunk):
+            raise ValueError(f"PTEX +{ptex_off:#x}: texlist {k} has an implausible count {count}")
+        ptrs = struct.unpack_from(f"<{count}I", chunk, p + 8)
+        if any(q not in index for q in ptrs):
+            raise ValueError(f"PTEX +{ptex_off:#x}: texlist {k} points outside its GBIX/PVRT textures")
+        out.append([index[q] for q in ptrs])
+    return out
+
+
+def atlas_texture(data: bytes, ptex_off: int, texlists: list[list[int]] | None = None) -> int:
+    """PTEX index of the gameplay body's atlas: the largest texture in group 0's texlist (Gum's is PTEX 1, the
+    Poison Jam leaders' PTEX 1; texture 0 is an 8x8 / face sheet there)."""
+    texlists = ptex_texlists(data, ptex_off) if texlists is None else texlists
+    texs = ptex_textures(data, ptex_off)
+    if not texlists or not texlists[CHARACTER_GROUP]:
+        raise ValueError(f"PTEX +{ptex_off:#x}: the body group has no texture list")
+    return max(texlists[CHARACTER_GROUP], key=lambda i: (texs[i]["width"] * texs[i]["height"], -i))
+
+
+def group_manifest(data: bytes, play_off: int, root: int, texlist: list[int], name: str,
+                   texture_files: list[str] | None, source: dict, outline: bool | None = False):
+    """uap manifest of one draw group: texture ids bound through the group's own texlist (``texture_files`` in PTEX
+    order), untextured strips as flat diffuse-colour materials, skinned to the group's node skeleton.
+
+    outline: False = without the cel-shading outline strips (play_model's ignore-light class), True = those alone,
+    None = everything. Returns (manifest, model, triangle count)."""
+    from types import SimpleNamespace
+    from .ninja import to_manifest
+    nj = play_model(play_bytes(data, play_off), root, materials=True)
+
+    def keep(key):
+        if outline is None:
+            return True
+        is_outline = key >= FLAT_BASE and nj.materials[key - FLAT_BASE]["outline"]
+        return is_outline == outline
+    tris = {k: v for k, v in nj.tris.items() if keep(k)}
+    files = None
+    if texture_files is not None:
+        files = [texture_files[i] if 0 <= i < len(texture_files) else None for i in texlist]
+    flat_files = {}
+    for k in tris:
+        if k >= FLAT_BASE:
+            t = nj.materials[k - FLAT_BASE]["texture"]
+            flat_files[k] = files[t] if files is not None and t is not None and t < len(texlist) else None
+    m = to_manifest(SimpleNamespace(tris=tris, vbuf=nj.vbuf, bones=nj.bones), name, source, None)
+    for mat, mesh in zip(m.materials, m.meshes):
+        tid = mat.source.get("ninja_texture_id", -1)
+        if tid >= FLAT_BASE:
+            info = nj.materials[tid - FLAT_BASE]
+            r, g, b, a = info["colour"]
+            kind = "outline" if info["outline"] else "flat"
+            mat.name = mesh.name = f"{name}_{kind}{tid - FLAT_BASE}"
+            mat.texture = flat_files.get(tid)
+            mat.base_color = [1, 1, 1, 1] if mat.texture else [round(r / 255, 4), round(g / 255, 4),
+                                                                round(b / 255, 4), round(a / 255, 4)]
+            mat.source = {"strip_class": kind, "ninja_texture_id": info["texture"],
+                          "ptex_index": texlist[info["texture"]] if info["texture"] is not None
+                          and info["texture"] < len(texlist) else None,
+                          "diffuse": f"#{r:02x}{g:02x}{b:02x}{a:02x}"}
+        else:
+            known = 0 <= tid < len(texlist)
+            mat.texture = files[tid] if files is not None and known else None
+            mat.source = {"strip_class": "textured", "ninja_texture_id": tid, "ptex_index": texlist[tid] if known else None}
+    return m, nj, sum(len(t) for t in tris.values())
+
+
+def export_character(data: bytes, index: int, out_dir: str, name: str) -> dict:
+    """Write character *index* as its gameplay body alone, with everything else as separate parts (#1396).
+
+    ``<name>.glb`` (+ manifest.json, textures/) is draw group 0, the body the game draws while skating, textured
+    through its own PTEX texlist and without its cel-shading outline hull. ``parts/`` gets the outline hull
+    (``<name>_outline.glb``) and every other draw group that draws anything: the spray-can bodies, the low-detail
+    bodies and the separate head (``<name>_<role>.glb``, complete with their own outlines). The shadow volume has no
+    strips and is listed only. Returns {glb, root, triangles, parts: [{role, draw_group, root, triangles, file?}],
+    texlists}."""
+    from . import uap
+    from .ninja import png
+    out = Path(out_dir)
+    play, ptex = character_pair(data, index)
+    groups, texlists = play_groups(data, play), ptex_texlists(data, ptex)
+    (out / "textures").mkdir(parents=True, exist_ok=True)
+    files = []
+    for i, tex in enumerate(ptex_textures(data, ptex)):
+        w, h, rgba = decode_texture(tex)
+        rel = f"textures/{name}_tex{i:02d}_gbix{tex['gbix']}.png"
+        (out / rel).write_bytes(png(w, h, rgba))
+        files.append(rel)
+    base = {"game": GAME_IDS["4187aeab4d67638c"], "files": [PLAYER_AFS], "play_offset": play, "ptex_offset": ptex,
+            "extraction_method": "gbox.jgr (draw groups + PTEX texlists)"}
+    root = groups[CHARACTER_GROUP]
+    if root is None:
+        raise ValueError(f"PLAY {index:02d} has no gameplay body group")
+    body_list = texlists[CHARACTER_GROUP] if texlists else []
+    m, _nj, tris = group_manifest(data, play, root, body_list, name, files,
+                                  base | {"root": root, "draw_group": CHARACTER_GROUP, "role": GROUP_ROLES[CHARACTER_GROUP]})
+    if not m.meshes:
+        raise ValueError(f"PLAY {index:02d}: the gameplay body draws nothing besides its outline")
+    (out / "manifest.json").write_text(m.model_dump_json())
+    glb = out / f"{name}.glb"
+    glb.write_bytes(uap.to_glb(m, out))
+    parts = []
+
+    def part(role, k, r, texlist, which):
+        row = {"role": role, "draw_group": k, "root": None if r is None else f"{r:#x}", "triangles": 0}
+        if r is not None:
+            pm, pnj, n = group_manifest(data, play, r, texlist, f"{name}_{role}", files,
+                                        base | {"root": r, "draw_group": k, "role": role}, which)
+            row["nodes"], row["triangles"] = len(pnj.bones), n
+            if pm.meshes:
+                (out / "parts").mkdir(exist_ok=True)
+                path = out / "parts" / f"{name}_{role}.glb"
+                path.write_bytes(uap.to_glb(pm, out))
+                row["file"] = f"parts/{path.name}"
+        parts.append(row)
+    part("outline", CHARACTER_GROUP, root, body_list, True)
+    for k, (role, r) in enumerate(zip(GROUP_ROLES, groups)):
+        if k != CHARACTER_GROUP:
+            part(role, k, r, texlists[k] if k < len(texlists) else [], None)
+    return {"glb": str(glb), "root": root, "triangles": tris, "parts": parts, "texlists": texlists}
+
+
 # ---------------------------------------------------------------- native collection (gbox.characters)
 PLAYER_AFS = "JETRADIO/PLAYER.AFS"
 CHARACTER_COUNT = 16
+# 2: draw group 0 alone through its PTEX texlist, extras as parts/ (#1396). Collection entries of an older reader
+# (largest-triangle spray-can body, texture ids bound to PTEX file order) are re-extracted by characters.collect.
+READER_VERSION = 2
+
+
+def needs_refresh(meta: dict) -> bool:
+    """A collection entry this reader made before READER_VERSION (characters.extract_dedicated re-extracts it)."""
+    return "gbox.jgr" in (meta.get("extraction_tool") or "") and meta.get("jgr_reader", 1) < READER_VERSION
 
 
 # Verified USA PLAYER.AFS directory order and 1ST_READ debug labels at 0x8c10df40.
@@ -553,15 +795,24 @@ def extract_run(ctx, game: dict, e: dict, work) -> dict:
     work = Path(work)
     data = GDRom(str(_dc_gdi(ctx, game))).read(PLAYER_AFS)
     play, ptex = character_pair(data, int(e["key"]))
-    root = body_root(data, play)
-    ctx.progress(50, f"Decoding PLAY +{play:#x} body root +{root:#x}")
-    glb = export_play_glb(data, play, root, str(work), e["slug"], ptex)
-    out = {"files": [glb, work / "textures", work / "manifest.json"], "tool": "gbox.jgr + gbox.ninja",
+    ctx.progress(50, f"Decoding PLAY +{play:#x} draw groups")
+    x = export_character(data, int(e["key"]), str(work), e["slug"])
+    root, glb = x["root"], x["glb"]
+    files = [glb, work / "textures", work / "manifest.json"]
+    if (work / "parts").is_dir():
+        files.append(work / "parts")
+    extras = [p for p in x["parts"] if p.get("file")]
+    out = {"files": files, "tool": "gbox.jgr + gbox.ninja",
            "source_files": [f"{PLAYER_AFS} PLAY #{int(e['key'])} (+{play:#x}, root +{root:#x})",
                             f"{PLAYER_AFS} PTEX #{int(e['key'])} (+{ptex:#x})"],
-           "notes": "Bind-pose body selected by largest-triangle heuristic; native drawn group is unverified. "
-                    "Texture ids bind to PTEX order (ids 0-2 verified on character 00 only). "
-                    "Offline experimental writer available; visible native replacement remains unverified."}
+           "extra": {"jgr_reader": READER_VERSION, "draw_group": GROUP_ROLES[CHARACTER_GROUP],
+                     "parts": [{k: p[k] for k in ("role", "draw_group", "root", "triangles", "file") if k in p}
+                               for p in x["parts"]]},
+           "notes": "The gameplay body (draw group 0 of the PLAY binding record) alone, textured through its own "
+                    "PTEX texture list; untextured strips keep their flat material colour. "
+                    f"{len(extras)} other draw groups (spray-can and low-detail bodies, separate head) are separate "
+                    "files under parts/; the shadow volume has no strips. Offline experimental writer available; "
+                    "visible native replacement remains unverified."}
     try:
         out["roles"] = body_roles(glb)
     except Exception as exc:                               # noqa: BLE001 - report instead of inventing roles
@@ -572,7 +823,7 @@ def extract_run(ctx, game: dict, e: dict, work) -> dict:
 # ---- native swap writer: a library character -> one PLAYER.AFS body (gbox.ninja_swap pipeline, as gbox.sa2_chars) ----
 BUDGETS = (1400, 1150, 950, 800, 650, 500, 400, 300, 270, 240, 200)   # char 00's 5 big lists need 4 holes:
 # at 300 triangles two of them overshoot the biggest hole by 28 bytes, so smaller steps follow (#1155)
-ATLAS_TEXTURE = 0                       # the PTEX texture the new strips draw (it's replaced by the character's atlas)
+ATLAS_TEXTURE = 0       # legacy (PTEX texture 0 / id 0): the writer now finds both per group (group_texture_ids)
 HEAD_NODES = {10, 11}
 
 
@@ -651,7 +902,13 @@ def swap_index(slot: str | None, data=None, active_id: int | None = None) -> int
     return int(digits)
 
 
-CACHE_VERSION = 3  # Multi-root writer invalidates prior single-root caches.
+CACHE_VERSION = 7  # 7: each object owns its model record (native loader relocates pointers in place).
+# 3: multi-root writer. 4 was taken by #1151's branch builds (mod ..._a80947d49d022a3a), which
+                   # put new vertices past the native cache span and drew no body in gameplay (#1153 live).
+                   # 5: new vertices stay inside every group's native span (#1156).
+                   # 6: the atlas is the body group's largest texlist texture and every group draws it under its
+                   #    own texlist id (PTEX texture 0 / id 0 painted Gum, Code, Reco, Yo-Yo and the Poison Jam
+                   #    leaders with the wrong texture; #1396).
 
 
 def donor_fingerprint(model, roles: dict, scale=None) -> str:
@@ -779,12 +1036,32 @@ def pack_blobs(holes: list[tuple[int, int]], sizes: dict, home: dict | None = No
     raise first
 
 
-def body_twins(buf: bytes, data: bytes, play: int, root: int) -> dict[int, list[dict]]:
-    """Other textured full-body groups with exactly equivalent native bind state.
+def group_texture_ids(data: bytes, play: int, ptex: int, roots: list[int]) -> tuple[int, dict[int, int]]:
+    """(PTEX index of the body atlas, {draw-group root: the Ninja texture id that draws it in that group's texlist})."""
+    groups, texlists = play_groups(data, play), ptex_texlists(data, ptex)
+    atlas = atlas_texture(data, ptex, texlists)
+    out = {}
+    for r in roots:
+        if r not in groups:
+            raise ValueError(f"JGR body {r:#x} is not a draw group of the PLAY binding record")
+        tl = texlists[groups.index(r)]
+        if atlas not in tl:
+            raise ValueError(f"JGR draw group {groups.index(r)} ({r:#x}) has no texture id for the body atlas "
+                             f"(PTEX texture {atlas}); its texlist is {tl}")
+        out[r] = tl.index(atlas)
+    return atlas, out
 
-    Parent counts alone cannot establish interchangeable local model coordinates.
-    Refuse a matching body graph with different transforms/evaluation flags before
-    fitting or rewriting. Selection of these groups remains runtime-unverified.
+
+def body_twins(buf: bytes, data: bytes, play: int, root: int) -> dict[int, list[dict]]:
+    """Other textured full-body groups on the same 20-node graph, whose nodes may sit, turn or scale differently.
+
+    Parent counts alone cannot establish interchangeable local model coordinates, so build_swap re-expresses the
+    new geometry of every node whose bind matrix differs in that group's own node frame (`twin_transforms`:
+    inv(W_twin) @ W_primary), and the group's bind pose matches the primary's. Archive 04's gameplay bodies move
+    hand node 15 only (a translation); the spray-can bodies of Bis, Combo and the Love Shockers' leader also turn
+    or scale it (eval flags UNIT_ANG / UNIT_SCL differ), and Gum's low-detail body rescales whole limbs. Groups whose
+    traversal differs (eval flags other than UNIT_POS/ANG/SCL, HIDE and ZXY_ANG) are refused before fitting.
+    Selection of these groups remains runtime-unverified.
     """
     from . import ninja
     primary = ninja.tree_nodes(buf, root)
@@ -804,12 +1081,65 @@ def body_twins(buf: bytes, data: bytes, play: int, root: int) -> dict[int, list[
             raise ValueError(f"Cannot classify JGR draw group {candidate:#x}") from error
         if not any(texture >= 0 and faces for texture, faces in geometry.tris.items()):
             continue
-        if any(a["trs"] != b["trs"] or (a["flags"] & ~8) != (b["flags"] & ~8)
-               for a, b in zip(primary, nodes)):
+        if any((a["flags"] & ~TWIN_FLAGS) != (b["flags"] & ~TWIN_FLAGS) for a, b in zip(primary, nodes)):
             raise ValueError(f"JGR body group {candidate:#x} has a different native bind/evaluation state; "
                              "independent retargeting is required before rewriting it")
         out[candidate] = nodes
     return out
+
+
+TWIN_FLAGS = 0x1 | 0x2 | 0x4 | 0x8 | 0x20   # Ninja eval bits a twin may differ in: UNIT_POS/ANG/SCL, HIDE, ZXY_ANG
+
+
+def _bind_world(nodes: list[dict]) -> list:
+    """World bind matrices of a depth-first node list (Ninja UNIT_POS/ANG/SCL and ZXY_ANG flags honoured)."""
+    from .ninja import _mat_mul, _node_matrix
+    out = []
+    for nd in nodes:
+        fl = nd["flags"]
+        pos = (0.0, 0.0, 0.0) if fl & 1 else struct.unpack_from("<3f", nd["trs"], 0)
+        ang = (0, 0, 0) if fl & 2 else struct.unpack_from("<3i", nd["trs"], 12)
+        scl = (1.0, 1.0, 1.0) if fl & 4 else struct.unpack_from("<3f", nd["trs"], 24)
+        local = _node_matrix(pos, ang, scl, bool(fl & 0x20))
+        out.append(local if nd["parent"] is None else _mat_mul(out[nd["parent"]], local))
+    return out
+
+
+def twin_offsets(primary: list[dict], twin: list[dict], tol: float = 1e-6) -> dict[int, tuple[float, float, float]]:
+    """{node: local offset} that re-expresses primary-frame geometry in a translation-only twin's node frame.
+
+    body_twins guarantees equal rotations, scales and evaluation flags, so inv(W_twin) @ W_primary is a pure
+    translation for every node; adding it to the new vertices keeps the twin's bind pose identical."""
+    import numpy as np
+    out = {}
+    for j, (a, b) in enumerate(zip(_bind_world(primary), _bind_world(twin))):
+        m = np.linalg.inv(np.array(b, float)) @ np.array(a, float)
+        if not np.allclose(m[:3, :3], np.eye(3), atol=1e-5):
+            raise ValueError(f"JGR twin node {j} differs by more than a translation; independent retargeting is required")
+        if float(np.abs(m[:3, 3]).max()) > tol:
+            out[j] = tuple(float(x) for x in m[:3, 3])
+    return out
+
+
+def twin_transforms(primary: list[dict], twin: list[dict], tol: float = 1e-6) -> dict[int, tuple]:
+    """{node: 3x4 row-major affine (12 floats, rounded to 1e-6)} re-expressing primary-frame geometry in a twin's node
+    frame: inv(W_twin) @ W_primary. Nodes whose bind matrices agree are left out; a degenerate twin node is refused."""
+    import numpy as np
+    out = {}
+    for j, (a, b) in enumerate(zip(_bind_world(primary), _bind_world(twin))):
+        B = np.array(b, float)
+        if abs(float(np.linalg.det(B[:3, :3]))) < 1e-9:
+            raise ValueError(f"JGR twin node {j} has a degenerate bind matrix; independent retargeting is required")
+        m = np.linalg.inv(B) @ np.array(a, float)
+        if not np.allclose(m, np.eye(4), atol=tol):
+            out[j] = tuple(round(float(x), 6) + 0.0 for x in m[:3, :4].reshape(-1))
+    return out
+
+
+def _translation(m: tuple) -> tuple | None:
+    """The offset of a pure-translation twin_transforms entry, else None."""
+    return (m[3], m[7], m[11]) if (m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]) == (1, 0, 0, 0, 1, 0, 0, 0, 1) \
+        else None
 
 
 def _material(buf: bytes, nodes: list[dict]) -> tuple[bytes, int, int, int]:
@@ -821,17 +1151,22 @@ def _material(buf: bytes, nodes: list[dict]) -> tuple[bytes, int, int, int]:
 
 
 def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender: str | None = None,
-               progress=lambda p, m: None, scale: dict | None = None) -> dict:
+               progress=lambda p, m: None, scale: dict | None = None, data: bytes | None = None) -> dict:
     """-> {files {PLAYER_AFS: bytes}, report, rigged, atlas}: character `index`'s high-detail body drawn as `model`
-    (rig `roles`). Its 20 node structs stay (so its motions drive the new mesh); every node keeps its original vertex
-    chunks (the game's skinning reads them), the new vertices go after them in the vertex cache and the new strips
-    draw those with PTEX texture 0, which becomes the character's atlas. The PLAY and PTEX entries are rewritten in
+    (rig `roles`). Its 20 node structs stay (so its motions drive the new mesh). Each rewritten node carries only its
+    own new vertices (JGR vertex chunks are plain 0x29, not SA2's weighted ones, so no original chunk has to run
+    first), placed at the node's native cache base and clamped so every slot stays inside the native vertex span of
+    EVERY group that draws the shared models (`vertex_slots`): on Beat, slots 368-529 past the stock 0-354 (low LOD
+    0-178) drew no body at all in gameplay while the cutscene renderer drew it (#1153 live, #1156). The new strips
+    draw the body atlas (atlas_texture: the gameplay body's largest texlist texture, which becomes the character's
+    atlas) under each group's own texlist id for it (group_texture_ids; #1396). The PLAY and PTEX entries are rewritten in
     their own AFS room, so PLAYER.AFS keeps its size; the model is decimated until it fits."""
     import numpy as np
     from pathlib import Path
     from . import ninja, ninja_swap as NS
     from .gdrom import GDRom
-    data = GDRom(str(gdi)).read(PLAYER_AFS)
+    if data is None:                     # data: a staged PLAYER.AFS (the cast swap chains one slot onto the previous one)
+        data = GDRom(str(gdi)).read(PLAYER_AFS)
     play, ptex = character_pair(data, index)
     room = entry_room(data, play)
     buf = play_bytes(data, play)
@@ -844,6 +1179,36 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
     mat, tiny_fl, tex_fl, strip_fl = _material(buf, nodes)
     twins = body_twins(buf, data, play, root)
     twin_nodes = [nd for group in twins.values() for nd in group]
+    xforms = {g: twin_transforms(nodes, group) for g, group in twins.items()}
+    # Each group draws the atlas under ITS texlist's id for it (Yo-Yo's spray-can bodies: id 1, the gameplay bodies:
+    # id 0; #1396), so a twin whose id differs from the primary's gets its own copy of the strips, like a moved node.
+    atlas, tex_ids = group_texture_ids(data, play, ptex, [root, *twins])
+    prim_tex = tex_ids[root]
+
+    def _copy_id(g, j):
+        d, t = xforms[g].get(j), tex_ids[g]
+        return None if d is None and t == prim_tex else (j, d or (1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0), t)
+    copies = {}                                    # equal twins may share list bytes, never mutable model records
+    for g in twins:
+        for j in range(len(nodes)):
+            if _copy_id(g, j) is not None:
+                copies.setdefault(_copy_id(g, j), len(nodes) + len(copies))
+
+    def copy_key(g, j):
+        c = _copy_id(g, j)
+        return None if c is None else copies[c]
+    groups = {root: nodes, **twins}
+
+    def geometry_key(g, j):
+        key = copy_key(g, j) if g != root else None
+        return j if key is None else key
+    spans = {}
+    for group_root in [root, *twins]:
+        cache = nj.vbuf if group_root == root else play_model(buf, group_root).vbuf
+        if not cache:
+            raise ValueError(f"JGR body group {group_root:#x} writes no vertex cache slots")
+        spans[group_root] = max(cache) + 1
+    vlimit = min(spans.values())                           # every group must find each new slot in its own span
     mine = {nd["off"] for nd in nodes + twin_nodes}
     others = []
     for r in play_model_roots(data, play):
@@ -909,37 +1274,62 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
     tail = (len(buf) + 3) & ~3
     spare = [(tail, room)] if room - tail >= 4 else []     # the AFS padding after the entry: a last resort
 
-    def orig_vlist(nd):
+    def orig_base(nd):
         if not nd["model"]:
-            return b""
+            return 0
         vl = struct.unpack_from("<I", buf, nd["model"])[0]
-        return buf[vl:vl + ninja.chunk_list_len(buf, vl, "v") - 4] if vl else b""
-    vbase = (max(nj.vbuf) + 1 + 15) & ~15 if nj.vbuf else 0
+        return struct.unpack_from("<H", buf, vl + 4)[0] if vl else 0
     homes = {}                                             # where each node's old vlist / plist / model sat
     for j, nd in enumerate(nodes):
         if nd["model"]:
             vl, pl_ = struct.unpack_from("<II", buf, nd["model"])
-            homes.update({("v", j): vl or nd["model"], ("p", j): pl_ or nd["model"], ("m", j): nd["model"]})
+            homes.update({("v", j): vl or nd["model"], ("p", j): pl_ or nd["model"]})
+    for g, group in twins.items():                         # a re-expressed copy goes back where its twin's lists sat
+        for j, nd in enumerate(group):
+            key = copy_key(g, j)
+            if key is not None and nd["model"] and ("v", key) not in homes:
+                vl, pl_ = struct.unpack_from("<II", buf, nd["model"])
+                homes.update({("v", key): vl or nd["model"], ("p", key): pl_ or nd["model"]})
+    for g, group in groups.items():
+        for j, nd in enumerate(group):
+            if nd["model"]:
+                homes[("m", (g, j))] = nd["model"]
 
     def encode(geo):
-        # every blob (vertex lists, which carry the kept original chunks, poly lists, model structs) is sized
+        # every blob (new-only vertex lists, poly lists, model structs) is sized
         # first, then packed into the freed holes + the entry's AFS padding together (pack_blobs), so a node
         # whose new lists outgrow its own hole no longer spills past the entry while other holes sit empty
         built, blobs = {}, {}
         for j, nd in enumerate(nodes):
-            keep = orig_vlist(nd)
             if j in geo:
                 P, N, T = geo[j]
-                built[j] = ninja.cnk_model_lists(P, N, T, ATLAS_TEXTURE, mat, tiny_fl, tex_fl, strip_fl,
-                                                 base=vbase, keep_vlist=keep)
+                if len(P) > vlimit:                         # ValueError: fit() retries a smaller budget
+                    raise ValueError(f"node {j}: {len(P)} vertices > {vlimit} native vertex cache slots")
+                built[j] = ninja.cnk_model_lists(P, N, T, prim_tex, mat, tiny_fl, tex_fl, strip_fl,
+                                                 base=min(orig_base(nd), vlimit - len(P)))
                 blobs[("v", j)] = built[j][0]
                 blobs[("p", j)] = built[j][1]
-            elif keep:
-                blobs[("v", j)] = keep + struct.pack("<I", 0xFF)
-            if nd["model"]:
-                blobs[("m", j)] = bytes(24)
-        if any(nd["model"] and j not in built for j, nd in enumerate(nodes)):
-            blobs[("e", 0)] = struct.pack("<HH", 0xFF, 0)
+        for (j, d, t), key in copies.items():              # the same strips in a twin's own node frame / texlist
+            if j in geo:
+                P, N, T = geo[j]
+                M = np.array(d, float).reshape(3, 4)
+                moved = (np.asarray(P, float) @ M[:, :3].T + M[:, 3]).tolist()
+                nn = np.asarray(N, float) @ np.linalg.inv(M[:, :3])      # inverse-transpose for the normals
+                nn = (nn / np.maximum(np.linalg.norm(nn, axis=1, keepdims=True), 1e-9)).tolist()
+                built[key] = ninja.cnk_model_lists(moved, nn, T, t, mat, tiny_fl, tex_fl, strip_fl,
+                                                   base=min(orig_base(nodes[j]), vlimit - len(P)))
+                blobs[("v", key)] = built[key][0]
+                blobs[("p", key)] = built[key][1]
+        # US FUN_8c0c7278 adds the PLAY base into vlist/plist on every object visit.
+        # Even identical geometry must have a separate 24-byte model per object;
+        # sharing these records adds the base twice and corrupts the pointers.
+        for g, group in groups.items():
+            for j, nd in enumerate(group):
+                key = geometry_key(g, j)
+                if nd["model"] or key in built:
+                    blobs[("m", (g, j))] = bytes(24)
+                    if key not in built:
+                        blobs[("e", 0)] = struct.pack("<HH", 0xFF, 0)
         sizes = {k: len(v) for k, v in blobs.items()}
         at, err = None, None
         for hs in ([tuple(h) for h in holes], [tuple(h) for h in holes] + spare):   # inside the old entry first
@@ -955,45 +1345,56 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
             raise ValueError(f"PLAY {index:02d}: {err}")
         out = bytearray(body)
         out += bytes(max(0, max(at[k] + len(v) for k, v in blobs.items()) - len(out)))
-        for j, nd in enumerate(nodes):
-            if j in built:
-                _vl, _pl, c, r = built[j]
-                blobs[("m", j)] = struct.pack("<II4f", at[("v", j)], at[("p", j)], *c, r)
-            elif nd["model"]:
-                c_r = struct.unpack_from("<4f", buf, nd["model"] + 8)
-                blobs[("m", j)] = struct.pack("<II4f", at.get(("v", j), 0), at[("e", 0)], *c_r)
+        for g, group in groups.items():
+            for j, nd in enumerate(group):
+                key, record = geometry_key(g, j), ("m", (g, j))
+                if key in built:
+                    _vl, _pl, c, r = built[key]
+                    blobs[record] = struct.pack("<II4f", at[("v", key)], at[("p", key)], *c, r)
+                elif nd["model"]:
+                    c_r = struct.unpack_from("<4f", buf, nd["model"] + 8)
+                    blobs[record] = struct.pack("<II4f", 0, at[("e", 0)], *c_r)
         for k, v in blobs.items():
             out[at[k]:at[k] + len(v)] = v
-        for j, nd in enumerate(nodes):
-            flags = nd["flags"] & ~0x8 if j in geo else nd["flags"]
-            struct.pack_into("<II", out, nd["off"], flags, at.get(("m", j), 0))
-        for group in twins.values():
+        for g, group in groups.items():
             for j, nd in enumerate(group):
                 flags = nd["flags"] & ~0x8 if j in geo else nd["flags"]
-                struct.pack_into("<II", out, nd["off"], flags, at.get(("m", j), 0))
+                struct.pack_into("<II", out, nd["off"], flags, at.get(("m", (g, j)), 0))
         if len(out) > room:
             raise ValueError(f"PLAY {index:02d}: {len(out)} bytes > {room} bytes of AFS room")
         return bytes(out)
     progress(20, f"Fitting {name} to JGR character {index:02d}'s {len(nodes)} nodes")
     r = NS.fit(Path(model), roles, tgt, Path(work), name, BUDGETS, blender, encode, 256, scale, progress)
-    progress(80, "Encoding the texture atlas (PVR, PTEX texture 0's format)")
+    progress(80, f"Encoding the texture atlas (PVR, PTEX texture {atlas}'s format)")
     from .ninja import pvr_like
     texs = ptex_textures(data, ptex)
-    t0 = texs[ATLAS_TEXTURE]
+    t0 = texs[atlas]
     new_t = pvr_like(t0["bytes"], r["atlas"])
     if len(new_t) != len(t0["bytes"]):
-        raise ValueError(f"PTEX texture {ATLAS_TEXTURE}: re-encoded {len(new_t)} bytes != {len(t0['bytes'])}")
+        raise ValueError(f"PTEX texture {atlas}: re-encoded {len(new_t)} bytes != {len(t0['bytes'])}")
     size = entry_size(data, ptex)
     pt = bytearray(data[ptex:ptex + size])
     pt[t0["offset"]:t0["offset"] + len(new_t)] = new_t
     afs = replace_entries(data, {play: r["data"], ptex: bytes(pt)})
+    from . import fit_events as FE                         # the PLAY entry, rebuilt in its own AFS room
+    FE.stage("encode", data={"bytes": len(r["data"]), "budget": room, "atlas_bytes": len(new_t),
+                             "triangles": r["report"].get("triangles"), "nodes": len(r["report"].get("nodes") or []),
+                             "relocated": False, "where": f"PLAY {index:02d} in place (PLAYER.AFS keeps its size)"})
     rep = r["report"] | {"character": f"{index:02d}", "archive_index": index,
                          "native_id": native_id_for_archive(data, index),
                          "source_afs_sha256": hashlib.sha256(data).hexdigest(),
                          "body_root": f"{root:#x}", "body_groups": [f"{r:#x}" for r in [root, *twins]],
+                         "bind_offsets": {f"{g:#x}": {str(j): [round(x, 5) for x in _translation(m)]
+                                                      for j, m in sorted(o.items()) if _translation(m)}
+                                          for g, o in xforms.items() if any(_translation(m) for m in o.values())},
+                         "bind_transforms": {f"{g:#x}": {str(j): [round(x, 5) for x in m]
+                                                         for j, m in sorted(o.items()) if not _translation(m)}
+                                             for g, o in xforms.items() if any(not _translation(m) for m in o.values())},
                          "body_selection": "max_triangles_unverified",
                          "runtime_verified": False, "play_bytes": len(r["data"]), "play_room": room,
-                         "atlas": list(r["atlas"].size), "atlas_texture": ATLAS_TEXTURE, "vertex_base": vbase}
+                         "atlas": list(r["atlas"].size), "atlas_texture": atlas,
+                         "texture_ids": {f"{g:#x}": t for g, t in tex_ids.items()}, "vertex_slots": vlimit,
+                         "group_vertex_spans": {f"{k:#x}": v for k, v in spans.items()}}
     return {"files": {PLAYER_AFS: afs}, "report": rep, "rigged": r["rigged"], "atlas": r["atlas"]}
 
 

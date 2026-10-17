@@ -313,7 +313,8 @@ def atlas_primitives(primitives: list[dict], capacities: list[dict], *, allow_do
         tile_size = placement['tile']
         resized = tile_size != source_size
         if resized:
-            resample = Image.Resampling.NEAREST if material['alpha'] == 'binary' else Image.Resampling.LANCZOS
+            # area average / replication: no Lanczos ringing (doa2_textures.fit_image); binary alpha stays binary
+            resample = Image.Resampling.NEAREST if material['alpha'] == 'binary' else Image.Resampling.BOX
             rgba = np.asarray(Image.fromarray(rgba).resize(tile_size, resample))
         if placement['direct']:
             image.paste(Image.fromarray(rgba), (0, 0))

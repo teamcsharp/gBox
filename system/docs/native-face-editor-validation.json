@@ -1,0 +1,68 @@
+{
+  "format": "native-face-editor-owned-preview-qa-v1",
+  "profile": "DOA2/AYA00.CHR",
+  "photo_sha256": "65d99957ebf5ac4a00558f6913bfcbddbee86b1ce4e2a0c44e893d1812781786",
+  "baseline_native_encoding_unchanged": true,
+  "edited_native_sha256": "cc8a28d442b950d5b65e7f3361018b9e0d2a2e2596fc805ff167a17f94b0d360",
+  "baseline_native_sha256": "f93d4de4c8c7c5c726f4788c1edd4dd7af018e195990c0046dc2536ddec7bd54",
+  "native_texture_size_unchanged": true,
+  "edited_preview_matches_builder_payload": true,
+  "geometry_unchanged": true,
+  "unselected_bank_bytes_unchanged": true,
+  "projection_outside_mask_unchanged": true,
+  "native_quantization_outside_mask_changed_pixels": 8156,
+  "native_format": 3,
+  "native_dimensions": [
+    256,
+    256
+  ],
+  "deformation": {
+    "version": 1,
+    "strokes": [
+      {
+        "x": 0.48828125,
+        "y": 0.54296875,
+        "dx": 0.04,
+        "dy": -0.01,
+        "radius": 0.3
+      }
+    ]
+  },
+  "implementation": {
+    "gbox/native_face_editor.py": "97ac7d320ebd14e46a8db6f950f5b506b25140ef71d6b6168e3a46c6b57aff12",
+    "gbox/native_face_projection.py": "ede405e472be77f908a4fdc6c936124591dabff4742bfa7a9249009b14aa73d0",
+    "gbox/face_warp.py": "58a4e1799ed5649411f45053eec0d1b77a2ffb9e99cfef63fe0a874dcf57866b",
+    "gbox/doa2_faces.py": "dc4da7149fdd5cbe16dafabac4a8f78a49d9ed497a8c8a359bb7bcdd98b0d2c3",
+    "gbox/doa2_textures.py": "8d0e90e6e7830a8149730b4c3f5d9daaf6b6470bd7a839ac47d3c05d6c781978",
+    "gbox/doa2_geometry.py": "f1e229c507e132efe3967885f3db1df620343f6bdd534aa1470c40d6a786b00c",
+    "gbox/doa2_bindings.py": "7dee7fe03a7480b9e36184472d5eccb96c454c03c3aba940c65a7b4fb6e9fb7f"
+  },
+  "production_recipes_saved": 0,
+  "production_builds_queued": 0,
+  "operator_sessions_touched": 0,
+  "scope": "Owned DOA2 LE Japan AYA00 face texture preview and prepare() payload parity only; no new disc image or emulator run was created for this change.",
+  "review_status": "Mechanical deformation QA, not operator likeness approval. No production mapping was accepted.",
+  "native_codec_limit": "The native VQ codebook is re-encoded for the selected texture, so pixels outside the projected face mask within that texture can quantize. The original geometry and every unselected BIN byte remain unchanged. The editor displays the actual decoded native encoding before approval.",
+  "tests": {
+    "integration": {
+      "python_passed": 169,
+      "javascript_passed": 18,
+      "scope": "Deformation/projection/native builders, photo lineage, server/tool compatibility, interactive editor, selfie entry points and normal game context menu regression."
+    },
+    "python": {
+      "command": "python -m pytest tests/test_native_face_editor.py tests/test_native_face_builds.py -q --disable-warnings",
+      "passed": 14
+    },
+    "javascript": {
+      "command": "node --test tests/test_native_face_editor.cjs",
+      "passed": 4,
+      "browser_tests": 3
+    }
+  },
+  "preview_png_sha256": {
+    "original": "554116dffea398e0fe302f50e7c66559fa2feff51d1ea0bdad2f210db55a8be9",
+    "baseline": "f156da922d5548a277a3cbd3d3e8db44ff9128ac3e379fa1cb50ccb8967d3a97",
+    "liquify": "def900b342c1f5ae78aac91e09958c38ed8b78fb560bb001c502b14ff3fb4f80"
+  },
+  "ui_fixture": "Browser screenshot uses labeled synthetic layers, separately from the owned-native-texture verification."
+}

@@ -34,6 +34,7 @@ class Material(BaseModel):
     base_color: list[float] = [1, 1, 1, 1]
     texture: str | None = None                 # path relative to package dir
     source: dict = {}                          # original shader/material params, preserved verbatim
+    double_sided: bool = False                 # the source game draws both faces (glTF doubleSided)
 
 
 class Bone(BaseModel):
@@ -243,7 +244,8 @@ def to_gltf(m: Manifest) -> dict:
             images.append({"uri": mat.texture})
             textures.append({"source": len(images) - 1})
             pbr["baseColorTexture"] = {"index": len(textures) - 1}
-        materials.append({"name": mat.name, "pbrMetallicRoughness": pbr, "extras": {"source": mat.source}})
+        materials.append({"name": mat.name, "pbrMetallicRoughness": pbr, "extras": {"source": mat.source},
+                          **({"doubleSided": True} if mat.double_sided else {})})
 
     # scene nodes first, then bones (bone node index = len(scene nodes) + bone index)
     nodes = [{"name": n.name, "translation": n.translation, "rotation": n.rotation, "scale": n.scale,

@@ -15,6 +15,10 @@ const helpers = between('function singleFlightPoll(work)', 'const fmtDur');
 const inbox = between('function refreshInbox(explicit', '$("#reqlist").addEventListener("change"');
 const audit = between('function auditPoll(explicit', 'function auGroup(rows)');
 const status = between('function statusRight(explicit', 'statusRight(false).catch');
+const shared = between('const LIVE_SESSIONS', 'document.querySelectorAll("aside button[data-s]").forEach');
+const GBoxLivePoll = require('../clients/desktop/live-poll.js');
+const GBoxInboxGroups = require('../clients/desktop/inbox-groups.js');
+const GBoxRequestTokens = require('../clients/desktop/request-tokens.js');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function deferred() {
   let resolve, reject;
@@ -23,7 +27,7 @@ function deferred() {
 }
 function setup(visible = false) {
   const nodes = new Map(), calls = [], active = new Map(), maximum = new Map();
-  let renders = 0, tokens = 0, auditRenders = 0;
+  let renders = 0, tokens = 0, auditRenders = 0; const operationJobs=[];
   function node(id) {
     if (!nodes.has(id)) nodes.set(id, { id, innerHTML: '', textContent: '', style: {}, dataset: {},
       classes: new Set(), attrs: {}, setAttribute(k, v) { this.attrs[k] = v; },
@@ -35,7 +39,8 @@ function setup(visible = false) {
   node('#d-svc').classes.add('ok');
   const filters = ['all', 'pending', 'completed'].map(mode => ({ dataset: { requestFilter: mode },
     style: {}, setAttribute() {} }));
-  const context = vm.createContext({ console, Date, Set, Map, Promise,
+  const context = vm.createContext({ console, Date, Set, Map, Promise, GBoxLivePoll, GBoxInboxGroups, GBoxRequestTokens,
+    requestTokenCounter: { enter() {}, update() {}, leave() {} },
     $: node, esc: value => String(value ?? ''),
     document: { activeElement: null, querySelectorAll: () => filters },
     gbox: { api(url) {
@@ -46,18 +51,19 @@ function setup(visible = false) {
     }, token: async () => { tokens++; return 'fixture-token'; } },
     requestFilter: 'all', inboxSolverRequests: [], openThreads: new Set(), replyAtt: {},
     S: { apiUrl: 'https://fixture.invalid' }, REG: { tools: {} }, MODS: { list: [] },
-    GBoxRequestSolvers: { badge: () => '' }, fmtDur: String, fmtTok: String,
+    GBoxRequestSolvers: { badge: () => '' }, GBoxReportStory: { disclosureHtml: () => '', reattach() {} }, fmtDur: String, fmtTok: String,
     updateInboxView(host, key, render) { renders++; host.innerHTML = render(); host.key = key; },
     AUD: { rows: [], after: 0 }, activity: { remote() {} }, processPopupSync() {},
+    GAME_OUTPUT: { observe: job=>operationJobs.push(job), audit() {} },
     AU_ACTION: [], AU_ACTOR: [], auIcon: () => '*', auBadge: () => '',
     auGroup: rows => rows.map(row => [row]), auditRender: () => { auditRenders++; }, EMU_ICON: {}
   });
-  vm.runInContext(helpers + '\n' + inbox + '\n' + audit + '\n' + status, context);
+  vm.runInContext(shared + '\n' + helpers + '\n' + inbox + '\n' + audit + '\n' + status, context);
   return { context, node, calls, active, maximum,
     run: code => vm.runInContext(code, context),
     count: url => calls.filter(call => call.url === url).length,
     request: (url, n = 0) => calls.filter(call => call.url === url)[n],
-    renders: () => renders, tokens: () => tokens, auditRenders: () => auditRenders };
+    renders: () => renders, tokens: () => tokens, auditRenders: () => auditRenders, operationJobs };
 }
 function request(status = 'open') {
   return { id: 'request-1', number: 1, title: 'Actual request', status, source: 'app', kind: 'text',
@@ -88,6 +94,22 @@ test('automatic ticks share pending work without queuing extra fetches', async (
   assert.equal(x.count('/api/requests'), 1);
   assert.equal(x.node('#tb-count').textContent, 1);
   assert.equal(x.tokens(), 0); assert.equal(x.count('/api/mods'), 0);
+});
+
+test('project tokens include every status and update while a reply draft protects the list', async () => {
+  const x = setup(true), measured = [];
+  x.context.requestTokenCounter = { enter() {}, update(snapshot) { measured.push(snapshot.total); } };
+  x.context.document.activeElement = { host: x.node('#reqlist'), closest: selector => selector.includes('input') ? {} : null };
+  const rows = [request('done'), { ...request('in_progress'), id: 'request-2' }];
+  rows[0].metrics = { tokens_in: 3_000_000_000, tokens_out: 100, files_changed: [] };
+  rows[1].metrics = { tokens_in: 400, tokens_out: 20, files_changed: [] };
+  for (const [index, filter] of ['pending', 'completed'].entries()) {
+    x.context.requestFilter = filter;
+    const pass = x.run('refreshInbox()'); await tick();
+    x.request('/api/requests', index).resolve({ ok: true, data: rows }); await pass;
+  }
+  assert.deepEqual(measured, [3_000_000_520n, 3_000_000_520n]);
+  assert.equal(x.renders(), 0); assert.equal(x.count('/api/mods'), 0);
 });
 
 test('many explicit refreshes retain one latest pass after a mutation', async () => {
@@ -184,12 +206,14 @@ test('desktop popup receives the shared jobs result without introducing a second
   x.request('/api/jobs?state=queued,running&limit=100').resolve({ ok: true, data: jobs });
   x.request('/api/audit?tail=500').resolve({ ok: true, data: [] }); await p;
   assert.deepEqual(received, [jobs]);
+  assert.deepEqual(x.operationJobs,jobs,'the text overlay reuses the same shared job snapshot');
   assert.equal(x.count('/api/jobs?state=queued,running&limit=100'), 1);
 });
 
 test('desktop waits for its API credentials before creating the donor preview URL', async () => {
   const ready = deferred(), received = []; let options, mounts = 0;
   const context = vm.createContext({ SBX_READY: ready.promise, SBX: { api: '', tok: '' }, encodeURIComponent,
+    document:{querySelector:()=>null},WORKERS:{get:async()=>({ok:true,data:[]})},S:{workerName:'fixture'},
     window: { GBoxProcessPopup: { mount(opts) { mounts++; options = opts; return { sync: jobs => received.push(jobs) }; } } } });
   vm.runInContext(between('let PROCESS_POPUP = null;', 'function auditPoll(explicit'), context);
   const pending = vm.runInContext('processPopupSync([{id:"model"}])', context); await tick();
@@ -205,9 +229,36 @@ test('status ticks cannot duplicate an unsettled workers or sessions fetch', asy
   for (let i = 0; i < 30; i++) assert.equal(x.run('statusRight(false)'), p);
   x.request('/api/workers').resolve({ ok: true, data: [] }); await tick();
   assert.equal(x.run('statusRight(false)'), p);
-  x.request('/api/sessions').resolve({ ok: true, data: [] }); await p;
+  x.request(LIVE).resolve({ ok: true, data: [] }); await p;
   assert.match(x.node('#sb-right').innerHTML, /Spark API/);
-  assert.equal(x.count('/api/workers'), 1); assert.equal(x.count('/api/sessions'), 1);
+  assert.equal(x.count('/api/workers'), 1); assert.equal(x.count(LIVE), 1);
+  assert.equal(x.count('/api/sessions'), 0, 'the status bar never downloads the whole session history');
+});
+
+const LIVE = '/api/sessions?include_ended=false';
+test('#712: status bar, chat context and the docked-game loop share one running-sessions read', async () => {
+  const x = setup();
+  const a = x.run('liveSessions()'), b = x.run('liveSessions()'), c = x.run('statusRight(false)'); await tick();
+  assert.equal(x.count(LIVE), 1);
+  x.request(LIVE).resolve({ ok: true, data: [{ session_id: 's1', state: 'running' }] });
+  x.request('/api/workers').resolve({ ok: true, data: [] });
+  await Promise.all([a, b, c]);
+  assert.equal(x.run('LIVE_SESSIONS.peek().data[0].session_id'), 's1');
+  await x.run('liveSessions()');                               // still fresh: no new request
+  assert.equal(x.count(LIVE), 1);
+});
+
+test('#712: an ended session is looked up in the cached history, once', async () => {
+  const x = setup();
+  const one = x.run('sessionById("old")'); await tick();
+  x.request(LIVE).resolve({ ok: true, data: [] }); await tick();
+  x.request('/api/sessions').resolve({ ok: true, data: [{ session_id: 'old', state: 'ended', game_id: 'g' }] });
+  assert.equal((await one).game_id, 'g');
+  x.run('LIVE_SESSIONS.invalidate()');
+  const two = x.run('sessionById("old")'); await tick();
+  x.request(LIVE, 1).resolve({ ok: true, data: [] });
+  assert.equal((await two).game_id, 'g');
+  assert.equal(x.count('/api/sessions'), 1, 'history is reused for 30 s');
 });
 
 test('closing Requests during a slow mods fetch does not redraw or reopen it', async () => {
@@ -237,6 +288,40 @@ test('opening Requests triggers an explicit refresh rather than waiting for a ti
 });
 
 test('timer wiring always uses automatic mode and consumes timer rejections', () => {
-  for (const [name, interval] of [['refreshInbox', 5000], ['auditPoll', 3000], ['statusRight', 5000]])
+  for (const [name, interval] of [['auditPoll', 3000], ['statusRight', 5000]])
     assert.ok(html.includes(`setInterval(() => ${name}(false).catch(() => {}), ${interval})`));
+  assert.ok(html.includes('refreshInbox(false).catch(() => {});'));
+});
+
+test('#712: an unchanged request history (same ETag) is neither copied into the page nor keyed by its contents', async () => {
+  const x = setup(true), seen = [];
+  x.context.gbox.apiTagged = async (p, etag) => { seen.push([p, etag]);
+    return etag === 'A' ? { ok: true, etag: 'A', unchanged: true } : { ok: true, etag: 'A', data: [request()] }; };
+  const first = x.run('refreshInbox(false)'); await tick(); await tick();
+  x.request('/api/mods').resolve({ ok: true, data: [] }); await first;
+  const key = x.node('#reqlist').key;
+  assert.ok(key.includes('"A"') && !key.includes('Actual request'), 'the re-render key is the tag, not 8 MB of JSON');
+  const second = x.run('refreshInbox(false)'); await tick(); await tick();
+  x.request('/api/mods', 1).resolve({ ok: true, data: [] }); await second;
+  assert.deepEqual(seen, [['/api/requests', null], ['/api/requests', 'A']]);
+  assert.equal(x.node('#reqlist').key, key, 'same answer, same key: updateInboxView keeps the DOM');
+  assert.equal(x.count('/api/requests'), 0, 'the tagged path replaces the plain one');
+  assert.equal(x.node('#tb-count').textContent, 1);
+});
+
+test('#712: the 8 MB request history is polled every 5 s only while Requests is on screen', () => {
+  const timer = between('var inboxAt = 0;', 'function popups()');
+  let tickFn = null, polls = 0, now = 1000000;
+  const on = new Set();
+  const context = vm.createContext({ GBoxLivePoll: { due: (at, vis, fast, slow) => GBoxLivePoll.due(at, vis, fast, slow, now) },
+    $: () => ({ classList: { contains: k => on.has(k) } }),
+    setInterval: fn => { tickFn = fn; }, refreshInbox: () => { polls++; context.inboxAt = now; return Promise.resolve(); } });
+  vm.runInContext(timer, context);
+  context.inboxAt = now;
+  for (let i = 0; i < 11; i++) { now += 5000; tickFn(); }    // 55 s hidden: no poll
+  assert.equal(polls, 0);
+  now += 5000; tickFn(); assert.equal(polls, 1);             // a minute: the badge refreshes
+  on.add('on');
+  for (let i = 0; i < 4; i++) { now += 5000; tickFn(); }
+  assert.equal(polls, 5);                                    // visible: every 5 s
 });

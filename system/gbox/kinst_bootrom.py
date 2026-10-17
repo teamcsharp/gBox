@@ -39,6 +39,8 @@ import struct
 
 BOOT_ROM_BASE = 0xBFC00000
 BOOT_ROM_SIZE = 0x80000  # 512 KiB
+# MAME default v1.5d ROM identity (src/mame/rare/kinst.cpp).
+BOOT_ROM_SHA1 = "607394d4ba1713f38c2cb5159303cace9cde991e"
 
 RAM = (0x00000000, 0x00080000)
 RAM2 = (0x08000000, 0x08800000)
@@ -68,7 +70,7 @@ def bootstrap_header(rom: bytes, offset: int = STREAM_OFFSET) -> dict:
     Returns the serial magic, block count, sentinel, and the first block's size
     and load address (which is also the second-stage entry point).
     """
-    if offset + 12 > len(rom):
+    if offset < 0 or offset + 12 > len(rom):
         raise ValueError("rom too small for bootstrap header")
     magic, = struct.unpack_from("<H", rom, offset)
     count, zero = rom[offset + 2], rom[offset + 3]
