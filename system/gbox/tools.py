@@ -4226,6 +4226,7 @@ def _load_tool_modules(names=("native_face_editor", "auf_live", "twin_snakes_fac
                               "title_assets",  # bounded exact-title native exports and durable extraction plans
                               "pickwhip",      # pickwhip: pick_name (local-LLM naming of a pick whip target)
                               "rea_tool",      # complete pinned REA CLI/MCP capability catalog
+                              "native_decomp",  # DecompPipeline local tasks, XenonRecomp and RexGlue SDK
                               "decomp_tools",  # decomp_tools: decomp_me (opt-in REST), ida (headless export), n64recomp
                               "ninja_ripper",  # ninja_ripper: NinjaRipper launch/attach/rip on agent test PCs, .rip -> GLB
                               "stage_warp",    # stage_warp: put the player on a named stage/level of the live game

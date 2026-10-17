@@ -23,6 +23,7 @@ STAGES = {
         'deliverable': 'A reproducible format description and bounded probe for the exact asset.',
         'checks': [
             'Reuse a hash-identified executable/project; confirm CPU, load address, pointer width and endianness before interpreting code.',
+            'For Dreamcast SH-4, use decomp_pipeline status/init/setup/prepare/task/check; local models consume task packets and only the independent checker can verify. For Xbox 360 use xenonrecomp or rexglue status/init/analyze/codegen as supported; generated code still requires runtime validation.',
             'Trace the loader and its callers to prove field meanings, relative offsets, compression and skeleton/animation ownership.',
             'Compare a sample with an independent specification, emulator implementation, or the game routine oracle; label unproved fields as hypotheses.',
         ],

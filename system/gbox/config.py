@@ -233,6 +233,7 @@ class Config(BaseModel):
     blender_search: list[str] = []    # dirs searched for the newest blender executable when blender_path is unset
     ghidra_home: str | None = None
     ida_home: str | None = None           # IDA Pro install folder (idat64.exe / idat.exe) for the `ida` tool
+    native_decomp: dict = {}  # per-engine home and optional DecompPipeline ghidra_home/java_home/vcvars
     n64recomp_path: str | None = None     # N64Recomp executable or its folder for the `n64recomp` tool
     decomp_me_enabled: bool = False       # opt-in: the `decomp_me` tool only talks to the network when true
     decomp_me_url: str = "https://decomp.me/api"
