@@ -20,6 +20,7 @@ from pathlib import Path
 
 from .formats.lz import yaz0_decompress
 from .gcdisc import GCDisc
+from .formats.rarc import parse as _rarc_parse, walk as _rarc_walk
 
 GCZ = "/mnt/gbox/hyperspin/Arcade/collections/Nintendo GameCube/roms/Legend of Zelda, The - Twilight Princess (USA).gcz"
 ISO = "/mnt/gbox/quickswap2/Emulation/_emulation/GC ISO/Legend of Zelda, The - Twilight Princess (USA).iso"
@@ -56,16 +57,19 @@ def sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
+def _identity(d):
+    if d.game_id!=GAME_ID:
+        raise ValueError(f"Expected {GAME_ID}, got {d.game_id}")
+    dol=d.dol()
+    return {'game_id':d.game_id,'title':d.title,'file_count':len(d.files),
+            'main_dol_size':len(dol),'main_dol_sha256':hashlib.sha256(dol).hexdigest()}
+
 def disc_identity(disc_path: str) -> dict:
-    d = GCDisc(disc_path)
-    dol = d.dol()
-    return {
-        "game_id": d.game_id,
-        "title": d.title,
-        "file_count": len(d.files),
-        "main_dol_size": len(dol),
-        "main_dol_sha256": hashlib.sha256(dol).hexdigest(),
-    }
+    d=GCDisc(disc_path)
+    try:
+        return _identity(d)
+    finally:
+        d.f.close()
 
 
 def fst_layout(disc: GCDisc) -> dict:
@@ -76,7 +80,7 @@ def fst_layout(disc: GCDisc) -> dict:
         cats[_cat(path)] += 1
         exts[Path(path).suffix.lower()] += 1
         parts = Path(path).parts
-        t = parts[1] if len(parts) > 1 else "(root)"
+        t = parts[0] if len(parts) > 1 else "(root)"
         top[t][0] += 1
         top[t][1] += size
     return {
@@ -87,93 +91,64 @@ def fst_layout(disc: GCDisc) -> dict:
 
 
 def rarc_parse(raw: bytes) -> dict:
-    """Parse a (Yaz0-decoded) RARC archive header and scan its string table for filenames.
-
-    Header layout (the node/entry/string metadata header sits at `data_header`, its offsets are
-    RELATIVE to `data_header`):
-        0x00 "RARC"; 0x04 size; 0x08 data_header (0x20); 0x0C file-data offset; 0x10 file-data size.
-        @data_header: node_count, node_off, entry_count, entry_off, str_size, str_off (relative).
-
-    We validate the header counts/offsets and enumerate the string table (NUL-terminated names of
-    directories and files). Full node/entry record decoding (data offsets + sizes) is reader-stage
-    work and is deliberately not claimed here.
-    """
-    if raw[:4] != b"RARC":
-        raise ValueError(f"not a RARC: {raw[:4]!r}")
-    size = struct.unpack_from(">I", raw, 0x04)[0]
-    dh = struct.unpack_from(">I", raw, 0x08)[0]
-    data_off = struct.unpack_from(">I", raw, 0x0C)[0]
-    data_size = struct.unpack_from(">I", raw, 0x10)[0]
-    node_count = struct.unpack_from(">I", raw, dh)[0]
-    node_off = dh + struct.unpack_from(">I", raw, dh + 4)[0]
-    entry_count = struct.unpack_from(">I", raw, dh + 8)[0]
-    entry_off = dh + struct.unpack_from(">I", raw, dh + 12)[0]
-    str_size = struct.unpack_from(">I", raw, dh + 16)[0]
-    str_off = dh + struct.unpack_from(">I", raw, dh + 20)[0]
-
-    # sanity: header counts must not overflow the file
-    valid = (dh + 0x20 <= len(raw) and str_off + str_size <= len(raw)
-             and data_off + data_size <= size and node_count < 0x10000 and entry_count < 0x10000)
-
-    # node inlined names (4 bytes each; directory names are short)
-    dirs = []
-    for i in range(min(node_count, 512)):
-        o = node_off + 0x10 * i
-        if o + 4 > len(raw):
-            break
-        nm4 = raw[o:o + 4].rstrip(b"\0")
-        dirs.append(nm4.decode("latin-1", "replace") if all(32 <= c < 127 for c in nm4) else "")
-
-    # string table -> NUL-terminated filenames
-    strtab = raw[str_off:str_off + str_size]
-    names = [s.decode("latin-1", "replace") for s in strtab.split(b"\0") if s]
-    j3d = Counter(Path(n).suffix.lower() for n in names if Path(n).suffix.lower() in _J3D_EXT)
-
-    return {
-        "size": size, "data_off": data_off, "data_size": data_size,
-        "node_count": node_count, "entry_count": entry_count, "str_size": str_size,
-        "dirs": dirs, "name_count": len(names), "j3d_assets": dict(j3d),
-        "sample_names": [n for n in names if Path(n).suffix.lower() in _J3D_EXT][:24],
-        "valid": valid,
-    }
+    """Validate RARC table/member bounds and directory links; summarize named files."""
+    table=_rarc_parse(raw)
+    members=_rarc_walk(raw)
+    names=[name for name,_,_ in members]
+    kinds=Counter(Path(name).suffix.lower() for name in names if Path(name).suffix.lower() in _J3D_EXT)
+    return {'size':table['size'],'data_off':table['data_off'],'data_size':table['data_size'],
+            'node_count':len(table['nodes']),'entry_count':len(table['files']),
+            'str_size':table['str_size'],'dirs':[n['name'] for n in table['nodes']],
+            'name_count':len(names),'j3d_assets':dict(kinds),
+            'sample_names':[n for n in names if Path(n).suffix.lower() in _J3D_EXT][:24],
+            'valid':True}
 
 
 def inventory(disc_path: str = GCZ) -> dict:
     """Full read-only inventory of the owned disc."""
     d = GCDisc(disc_path)
-    ident = disc_identity(disc_path)
-    layout = fst_layout(d)
+    try:
+        ident = _identity(d)
+        layout = fst_layout(d)
 
-    arcs = []
-    for path, (_o, size) in d.files.items():
-        if path.lower().endswith((".arc", ".szs", ".szp")):
-            arcs.append((path, size))
+        arcs = []
+        for path, (_o, size) in d.files.items():
+            if path.lower().endswith((".arc", ".szs", ".szp")):
+                arcs.append((path, size))
 
-    yaz0_wrapped = raw_rarc = 0
-    for path, _s in arcs:
-        h4 = d.read(path)[:4]
-        if h4 == b"Yaz0":
-            yaz0_wrapped += 1
-        elif h4 == b"RARC":
-            raw_rarc += 1
+        yaz0_wrapped = raw_rarc = 0
+        for path, _s in arcs:
+            off,size=d.files[path]
+            h4 = d._r(off,min(4,size))
+            if len(h4)!=min(4,size):
+                raise ValueError("Truncated archive prefix")
+            if h4 == b"Yaz0":
+                yaz0_wrapped += 1
+            elif h4 == b"RARC":
+                raw_rarc += 1
 
-    # decompress + validate a sample of the largest archives (bounded)
-    sample = sorted(arcs, key=lambda t: -t[1])[:6]
-    parsed = {}
-    for path, _s in sample:
-        blob = d.read(path)
-        if blob[:4] == b"Yaz0":
-            blob = yaz0_decompress(blob)
-        if blob[:4] == b"RARC":
-            parsed[path] = rarc_parse(blob)
+        # decompress + validate a sample of the largest archives (bounded)
+        sample = sorted(arcs, key=lambda t: -t[1])[:6]
+        parsed = {}
+        for path, _s in sample:
+            if _s>64*1024*1024:
+                raise ValueError("Archive exceeds inventory size limit")
+            blob = d.read(path)
+            if blob[:4] == b"Yaz0":
+                blob = yaz0_decompress(blob,max_output=64*1024*1024)
+            if blob[:4] == b"RARC":
+                parsed[path] = rarc_parse(blob)
 
-    return {
-        "source": {"gcz": GCZ, "iso": ISO, **ident},
-        "hashes": {"main_dol": MAIN_DOL_SHA256, "disc_iso": DISC_SHA256},
-        "layout": layout,
-        "archives": {"total": len(arcs), "yaz0_wrapped": yaz0_wrapped, "raw_rarc": raw_rarc},
-        "sample_archives": parsed,
-    }
+        return {
+            "source": {"path":str(disc_path),"sha256":sha256_file(disc_path), **ident},
+            "hashes": {"main_dol": ident["main_dol_sha256"]},
+            "reference_hashes": {"main_dol": MAIN_DOL_SHA256, "disc_iso": DISC_SHA256},
+            "layout": layout,
+            "archives": {"total": len(arcs), "yaz0_wrapped": yaz0_wrapped, "raw_rarc": raw_rarc},
+            "sample_archives": parsed,
+        }
+    finally:
+        d.f.close()
 
 
 if __name__ == "__main__":

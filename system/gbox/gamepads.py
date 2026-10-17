@@ -32,6 +32,39 @@ def xinput_snapshot(slots=range(4)) -> list[dict]:
     return out
 
 
+def bind_savemgo_xinput(home: Path, slots: list[int]) -> bool:
+    """Replace only the portable package's stale DualSense selection, per PC.
+
+    Existing custom mappings and non-XInput setups are left intact. Keep a byte
+    exact backup and preserve every setting outside the six device/face bindings.
+    """
+    if not slots or any(type(s) is not int or not 0 <= s < 4 for s in slots):
+        return False
+    from .savemgo import _guard
+    path = _guard(home / 'config/input_configs/global/Default.yml')
+    if not path.is_file():
+        return False
+    original = path.read_bytes()
+    body = original.decode('utf-8')
+    sections = re.split(r'(?m)(?=^Player [2-7] Input:)', body, maxsplit=1)
+    first = sections[0]
+    if not (first.startswith('Player 1 Input:')
+            and re.search(r'^  Handler: SDL\s*$', first, re.M)
+            and re.search(r'^  Device: DualSense Wireless Controller 1\s*$', first, re.M)):
+        return False
+    replacements = {'Handler': 'XInput', 'Device': f'"XInput Pad #{min(slots) + 1}"',
+                    'Square': 'X', 'Cross': 'A', 'Circle': 'B', 'Triangle': 'Y'}
+    for key, value in replacements.items():
+        first, count = re.subn(r'(?m)^(\s*' + key + r': )[^\r\n]*', lambda m: m[1] + value, first)
+        if count != 1:
+            raise ValueError('Incomplete bundled MGO controller mapping')
+    backup = _guard(path.with_name(path.name + '.gbox-original'))
+    if not backup.exists():
+        backup.write_bytes(original)
+    path.write_bytes((first + ''.join(sections[1:])).encode('utf-8'))
+    return True
+
+
 def sdl2_xbox_guid(dll_path: Path) -> str | None:
     """SDL GUID for the connected Xbox controller as Yuzu sees it."""
     if os.name != "nt" or not dll_path.is_file() or not xinput_devices():
