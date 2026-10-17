@@ -195,3 +195,17 @@ test('wiring: the web tray renders through build-notes, Play = the game menu lau
   const pre = fs.readFileSync(path.join(__dirname, '..', 'clients', 'desktop', 'preload.js'), 'utf8');
   assert.match(pre, /osNotify: n => ipcRenderer\.invoke\("notify:os", n\)/);
 });
+
+
+test('ROM export failures offer review instead of resubmitting the unchanged failed recipe', async () => {
+ const item={...FAIL,tool:'rom_export',retry:{tool:'rom_export',input:{op:'export',game_id:'re2',mods:[]}}};
+ const note={...ERR,items:[item]};
+ const html=BN.trayHTML([note],{state:{}});
+ assert.ok(html.includes('data-bn="export"'));
+ assert.ok(!html.includes('data-bn="retry"'));
+ const reviewed=[],posted=[];
+ const target={closest:()=>({dataset:{bn:'export',id:note.id,i:'0'}})};
+ await BN.click(target,{notes:()=>[note],state:{},api:(...a)=>{posted.push(a);return Promise.resolve({});},repairExport:it=>reviewed.push(it)});
+ assert.equal(reviewed[0],item);
+ assert.ok(posted.every(x=>x[0].startsWith('/api/notify/')));
+});

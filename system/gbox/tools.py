@@ -3348,6 +3348,7 @@ def build_local(inp: BuildLocalIn, ctx: Ctx):
 
 
 class RomExportIn(BaseModel):
+    original: bool = False                # explicitly export unchanged complete library file/archive
     op: str = "export"                     # export | plan (what can be baked, no build) | list | remove
     mod_id: str = ""                       # a saved mod (/api/mods): its file mod + code patches + cheat codes
     game_id: str = ""                      # default: the game of the saved mod's file mod
@@ -3373,28 +3374,25 @@ def rom_export(inp: RomExportIn, ctx: Ctx):
         return {"result": {"exports": RX.list_exports(ctx.config, inp.game_id)}}
     if inp.op == "remove":
         return {"result": {"removed": RX.remove(ctx.config, inp.game_id, inp.name)}}
-    saved = {m["id"]: m for m in httpx.get(f"{ctx.server}/api/mods", headers=ctx.headers, timeout=60).json()}
-    ids = ([inp.mod_id] if inp.mod_id else []) + [m for m in inp.mods if m in saved]
-    if inp.mod_id and inp.mod_id not in saved:
-        raise ValueError(f"no saved mod {inp.mod_id}")
-    docs = [saved[i] for i in dict.fromkeys(ids)]
-    names = [m for m in inp.mods if m not in saved]
-    gid = inp.game_id or next((c["input"].get("game_id") for d in docs for c in d.get("calls") or []
-                               if c.get("tool") == "@launch" and c.get("input", {}).get("game_id")), None)
-    gid = gid or (docs[0]["game_id"] if docs else "")
-    if not gid:
-        raise ValueError("game_id (or a saved mod_id) is required")
-    if inp.op == "plan":
-        return {"result": {"game_id": gid, "components": [c for d in docs for c in RX.classify(d, ctx.config)]
-                           + [{"kind": "file_mod", "name": n} for n in names]}}
+    from . import romexport_recovery as recovery
+    response = httpx.get(f"{ctx.server}/api/mods", headers=ctx.headers, timeout=60)
+    response.raise_for_status()
+    saved = response.json()
+    gid, docs, names = recovery.selection(inp.model_dump(), saved)
     r = httpx.get(f"{ctx.server}/api/catalog/{gid}", headers=ctx.headers, timeout=30)
     r.raise_for_status()
     g = CatalogEntry.model_validate(r.json())
+    plan = recovery.plan(ctx.config, g.model_dump(), docs, names, inp.changes, saved, inp.original)
+    if inp.op == "plan":
+        return {"result": plan}
+    if inp.op != "export":
+        raise ValueError("Unknown ROM export operation; use plan, export, list or remove")
+    recovery.require_ready(plan)
     try:
         rom = rom_path(g, ctx.config)
     except ToolUnavailable:
         rom = Path(g.rel_path or "")
-    res = RX.export(ctx.config, g.model_dump(), rom, mods=docs, file_mods=names, changes=inp.changes, name=inp.name,
+    res = recovery.export_original(ctx.config, g.model_dump(), rom, inp.name, ctx.progress) if inp.original else RX.export(ctx.config, g.model_dump(), rom, mods=docs, file_mods=names, changes=inp.changes, name=inp.name,
                     formats=tuple(inp.formats), wii_format=inp.wii_format, server=ctx.server, headers=ctx.headers,
                     progress=ctx.progress)
     ctx.progress(99, "Export ready")

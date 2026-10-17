@@ -779,10 +779,10 @@ def tool_specs() -> list[dict]:
            "flash cart / modded console / emulator (N64 .z64 with fixed CRC, GameCube .iso, Wii .iso/.rvz, PS2 .iso, PS3/360 "
            "extracted folder) + a shareable BPS/IPS patch with no game data + cheat files for codes. mod_id = a saved mod "
            "(its file mod, re_mods code patches and cheat codes are baked; live memory mods are reported as not bakeable); "
-           "mods = more file-mod names / saved mod ids to stack; op=plan shows what can be baked without building; "
+           "mods = more file-mod names / saved mod ids to stack; op=plan checks selection, lists available mods, tools and concrete repair steps without building. Never retry an empty selection or unsupported live patch unchanged. "
            "op=list shows finished exports. Output stays on this gBox (exports/); tell the operator to download it from the "
            "mod card's 'Export ROM hack' button.",
-           {"op": s, "mod_id": s, "game_id": s, "mods": {"type": "array", "items": s}, "name": s}, []),
+           {"op": s, "mod_id": s, "game_id": s, "mods": {"type": "array", "items": s}, "name": s, "changes": {"type": "object"}, "formats": {"type": "array", "items": s}, "wii_format": s, "original": {"type": "boolean"}}, []),
         fn("script_patch", "Live UnrealScript patches from the game's profile on a running session (PS3 UE3 games). op: status, "
            "locate (find the profile's script functions in RAM), preset (preset=name, e.g. Stranglehold 'god' = infinite life, "
            "'hit' = precision-aim shots always lethal, 'miss' = always miss, 'god_hit'/'god_miss' = both, 'off' = original "
@@ -1684,9 +1684,17 @@ class Agent:
         j = self._job("file_mod", {"game_id": game_id, "op": op, "name": name, "changes": changes or {}}, "windows", 7200)
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
-    def rom_export(self, op="export", mod_id="", game_id="", mods=None, name=""):
-        j = self._job("rom_export", {"op": op, "mod_id": mod_id, "game_id": game_id, "mods": mods or [], "name": name},
-                      "linux", 7200)
+    def rom_export(self, op="export", mod_id="", game_id="", mods=None, name="", changes=None,
+                   formats=None, wii_format="iso", original=False):
+        inp = {"op": op, "mod_id": mod_id, "game_id": game_id, "mods": mods or [], "name": name,
+               "changes": changes or {}, "formats": formats if formats is not None else ["bps", "ips", "xdelta"],
+               "wii_format": wii_format, "original": original}
+        if op == "export":
+            checked = self._job("rom_export", inp | {"op": "plan"}, "linux", 600)
+            plan = (checked.get("output") or {}).get("result") or {}
+            if not plan.get("ready"):
+                return plan or {"state": checked["state"], "error": checked.get("error")}
+        j = self._job("rom_export", inp, "linux", 7200)
         res = (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
         if op == "export" and res.get("files"):          # keep the chat reply short: what's there and where
             res = {k: res.get(k) for k in ("title", "game", "platform", "image", "rel_dir", "patches", "cheat_files",

@@ -3776,6 +3776,7 @@ def create_app(config: Config) -> FastAPI:
 
     # --- Export ROM hack (gbox/romexport.py): bootable modded image of the operator's own game + shareable patch ---
     class RomExportReq(BaseModel):
+        original: bool = False
         mod_id: str = ""
         game_id: str = ""
         mods: list[str] = []
@@ -3785,9 +3786,24 @@ def create_app(config: Config) -> FastAPI:
         wii_format: str = "iso"
         node: str = "linux"                 # where the mod collection lives (the Spark); "windows" or a worker name
 
+    @app.post("/api/romexport/plan")
+    def romexport_plan(r: RomExportReq, actor=Depends(auth)):
+        """Read-only selection review: no job, source extraction, downloads or game launch."""
+        from . import romexport_recovery as recovery
+        try:
+            saved = store.all("mod")
+            gid, docs, names = recovery.selection(r.model_dump(), saved)
+            game = store.catalog_get(gid) or _404()
+            return recovery.plan(config, game, docs, names, r.changes, saved, r.original)
+        except ValueError as error:
+            raise HTTPException(422, str(error))
+
     @app.post("/api/romexport")
     def romexport_start(r: RomExportReq, actor=Depends(auth)):
         """Start an export job (progress on /api/jobs/{id}); the result lists the files to download."""
+        plan = romexport_plan(r, actor)
+        if not plan["ready"]:
+            raise HTTPException(422, {"message": "Review the export selection before retrying", "plan": plan})
         inp = r.model_dump(exclude={"node"}) | {"op": "export"}
         req = JobRequest(tool="rom_export", input=inp)
         if r.node in ("linux", "windows"):

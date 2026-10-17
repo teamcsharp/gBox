@@ -53,7 +53,7 @@
         data-opt="${ESC(o.id)}">▶ ${ESC(optLabel(o, here))}</button>`).join("") + `</div>`;
     } else if (it.kind === "error") {
       b += it.request_id ? `<button class="act" type="button" data-bn="request" ${at}>Open request</button>` : "";
-      b += it.retry ? `<button class="act" type="button" data-bn="retry" ${at} title="Build it again on the Spark from its recipe (never launches)">⟳ Retry build</button>` : "";
+      b += it.tool === "rom_export" ? `<button class="act" type="button" data-bn="export" ${at}>Review export</button>` : it.retry ? `<button class="act" type="button" data-bn="retry" ${at} title="Build it again on the Spark from its recipe (never launches)">⟳ Retry build</button>` : "";
     } else if (it.kind === "collect" && it.game_id) {
       b += `<button class="act" type="button" data-bn="models" ${at}>Open models</button>`;
     }
@@ -145,6 +145,11 @@
     if (act === "mods") { read(); io.close && io.close(); io.openMods && io.openMods(it.game_id, it.mod); return true; }
     if (act === "request") { read(); io.close && io.close(); io.openRequest && io.openRequest({ id: it.request_id }); return true; }
     if (act === "models") { read(); io.close && io.close(); io.openModels && io.openModels(it.game_id, it.game_title || ""); return true; }
+    if (act === "export") {
+      read(); io.close && io.close();
+      return Promise.resolve(io.repairExport ? io.repairExport(it) : io.openMods && io.openMods(it.game_id, ""))
+        .catch(err => say(String(err && err.message || err)));
+    }
     if (act === "retry") {
       if (!it.retry) return true;
       read(); say("queueing the rebuild on the Spark…");
