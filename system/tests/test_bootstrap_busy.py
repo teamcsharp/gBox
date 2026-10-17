@@ -11,7 +11,7 @@ from gbox import hermes_activation
 @pytest.mark.parametrize('reason,code', [('Waiting for active gBox worker jobs to finish.', 75),
                                         ('Waiting for a complete canonical activation safety snapshot.', 75), ('', 0)])
 def test_bootstrap_preflight_uses_canonical_work_guard(monkeypatch, tmp_path, reason, code):
-    monkeypatch.setattr(hermes_activation, 'activation_snapshot', lambda root, api: {'reason': reason})
+    monkeypatch.setattr(hermes_activation, 'activation_snapshot', lambda root, api, **kwargs: {'reason': reason})
     assert hermes_activation.check_idle(tmp_path) == code
 
 

@@ -130,30 +130,40 @@ def read_cron_snapshot(home: Path, *, now: float | None = None, imminent_s: floa
 
 
 def activation_snapshot(root: Path, api, *, home: Path | None = None, now: float | None = None,
-                        imminent_s: float = 60) -> dict:
+                        imminent_s: float = 60, drain_owner: str = '') -> dict:
     """Collect a fresh bounded guard using pure HTTP readers plus canonical files."""
     sessions = []
     try:
         chats, sessions, workers = api('/api/chat'), api('/api/sessions'), api('/api/workers')
         if not isinstance(workers, list) or any(not isinstance(w, dict) for w in workers):
             raise ValueError('Worker inventory unavailable')
-        cron = read_cron_snapshot(home or Path(os.environ.get('GBOX_HERMES_HOME') or Path.home() / '.hermes'),
+        home = home or Path(os.environ.get('GBOX_HERMES_HOME') or Path.home() / '.hermes')
+        cron = read_cron_snapshot(home,
                                   now=now, imminent_s=imminent_s)
         tasks = {'jobs': read_active_jobs(root),
                  'machines': [{'worker_id': w.get('id'), 'os': w.get('os')} for w in workers],
                  'hermes': cron['hermes'], 'resolutions': []}
         reason = idle_reason(chats, tasks, sessions)
+        drain = None
+        if drain_owner:
+            from .hermes_drain import acknowledgment
+            drain = acknowledgment(home, drain_owner, now=now)
+            if not drain['acknowledged'] and not reason:
+                reason = 'Waiting for the deployment owner\'s live gateway drain acknowledgment.'
         if not reason and cron['imminent_or_overdue']:
-            reason = 'Waiting for imminent or overdue Hermes schedules to finish.'
-        return {'reason': reason, 'sessions': sessions, 'tasks': tasks, 'cron': cron}
+            if drain and drain['acknowledged']:
+                cron['held_by_external_drain'] = list(cron['imminent_or_overdue'])
+            else:
+                reason = 'Waiting for imminent or overdue Hermes schedules to finish.'
+        return {'reason': reason, 'sessions': sessions, 'tasks': tasks, 'cron': cron, 'drain': drain}
     except (OSError, ValueError, TypeError, KeyError, RuntimeError, OverflowError, sqlite3.Error):
         return {'reason': 'Waiting for a complete canonical activation safety snapshot.', 'sessions': sessions}
 
 
-def check_idle(root: Path) -> int:
+def check_idle(root: Path, *, drain_owner: str = '') -> int:
     """Bootstrap preflight: a busy or unknown runtime must not be restarted."""
     from .hermes_work_queue import _api
-    reason = activation_snapshot(root, _api)['reason']
+    reason = activation_snapshot(root, _api, drain_owner=drain_owner)['reason']
     if reason:
         print('gBox update deferred: ' + reason + ' Running work is preserved.', flush=True)
         return 75
@@ -261,4 +271,6 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='Check whether a gBox backend refresh would interrupt work.')
     parser.add_argument('--check-idle', required=True, type=Path)
-    raise SystemExit(check_idle(parser.parse_args().check_idle))
+    parser.add_argument('--drain-owner', default='', help='Require this exact acknowledged external drain owner')
+    args = parser.parse_args()
+    raise SystemExit(check_idle(args.check_idle, drain_owner=args.drain_owner))
