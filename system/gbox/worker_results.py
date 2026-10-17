@@ -69,15 +69,17 @@ def _windows_pid_reused(kernel, handle, recorded_at):
 
 
 def _windows_pid_reused_fallback(pid, recorded_at):
-    """System process information can prove reuse when a query handle is denied."""
+    """System process information can prove absence/reuse when a handle is denied."""
     import math
     if type(recorded_at) not in (int, float) or not math.isfinite(recorded_at) or recorded_at <= 0:
         return False
+    import psutil
     try:
         # A fresh psutil Process can obtain creation time through Windows system
         # process information even when OpenProcess is denied. No extra rights.
-        import psutil
         born = psutil.Process(pid).create_time()
+    except psutil.NoSuchProcess:
+        return True  # a stale denied handle must not hold activation forever
     except Exception:
         return False  # independent query uncertainty must keep the game protected
     return (type(born) in (int, float) and math.isfinite(born) and born > 0

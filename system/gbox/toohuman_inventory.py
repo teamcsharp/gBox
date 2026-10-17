@@ -32,7 +32,7 @@ from . import re6
 
 XEX_MAGIC = b"XEX2"
 ZZZ_MAGIC = b"\xf0\x0d\xca\xfe"          # Silicon Knights zzz container, gzip-wrapped
-TITLE_KEY = b"\x00\x04\x00\x01"          # XEX2 optional header key 0x00040001 (title/execution id)
+EXECUTION_INFO_KEY = 0x00040006  # XEX2 optional execution-info record
 
 # Root-level character asset naming (the character models are single .zzz.gz files
 # at the disc root, not inside an archive table).
@@ -53,17 +53,27 @@ XMA = re.compile(r"\.xma$", re.I)                           # XMA2 audio
 
 
 def xex_info(data: bytes) -> dict:
-    """Identity fields of default.xex. The XGD3 header table is not parsed; the
-    title id is read from the XEX2 optional-header key 0x00040001 (big-endian, as
-    stored on disc) and the build string is scanned for. Fields that need Ghidra
-    (security layout, exact header table) are left for the analysis stage."""
-    if data[:4] != XEX_MAGIC:
-        raise ValueError("not an XEX2 executable")
-    mod_flags, header_size = struct.unpack_from("<II", data, 4)
-    title_id = None
-    tid_off = data.find(TITLE_KEY, 0x18, min(len(data), 0x4000))
-    if tid_off >= 0:
-        title_id = int.from_bytes(data[tid_off + 4 : tid_off + 8], "big")
+    """Read big-endian XEX2 identity and its pointed-to execution-info record.
+
+    Layout: xenia-project/xenia src/xenia/kernel/util/xex2_info.h.
+    """
+    if len(data) < 24 or data[:4] != XEX_MAGIC:
+        raise ValueError("not a complete XEX2 header")
+    mod_flags, header_size = struct.unpack_from(">II", data, 4)
+    count = struct.unpack_from(">I", data, 20)[0]
+    table_end = 24 + 8 * count
+    if not table_end <= header_size <= len(data):
+        raise ValueError("XEX2 optional header table outside header")
+    title_id, tid_off = None, -1
+    for at in range(24, table_end, 8):
+        key, offset = struct.unpack_from(">II", data, at)
+        if key != EXECUTION_INFO_KEY:
+            continue
+        if offset < table_end or offset + 24 > header_size:
+            raise ValueError("XEX2 execution info outside header")
+        tid_off = offset + 12
+        title_id = struct.unpack_from(">I", data, tid_off)[0]
+        break
     build = None
     for m in re.finditer(rb"[\x20-\x7e]{8,}", data[:0x8000]):
         s = m.group().decode("ascii", "replace")
@@ -145,7 +155,7 @@ def inventory(iso, source_sha256: str | None = None) -> dict:
     disc = re6.XDVD(iso)
     try:
         files = disc.files
-        xex_path = next(p for p in files if p.lower().endswith(".xex"))
+        xex_path = next(p for p in files if p.lower() == "/default.xex")
         xex = disc.read(xex_path)
         top = Counter(p.split("/", 2)[1] if p.count("/") >= 1 else "(root)" for p in files)
         exts = Counter(p.rsplit(".", 1)[-1].lower() if "." in p else "(none)" for p in files)

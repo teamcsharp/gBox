@@ -55,6 +55,12 @@ def running_old_build(tmp_path, monkeypatch):
     return cfg, old
 
 
+def test_launch_path_missing_mod_raises_a_clear_error(tmp_path):
+    cfg = SimpleNamespace(cache=tmp_path)
+    with pytest.raises(ValueError, match="no built mod 'nope' for this game.*Build the mod first"):
+        filemods.launch_path(cfg, 'g', tmp_path / 'game.bin', 'nope')
+
+
 def test_locked_running_copy_stages_new_build_beside_it(tmp_path, monkeypatch):
     cfg, old = running_old_build(tmp_path, monkeypatch)
     before = {p.name: p.read_bytes() for p in old.iterdir()}
@@ -353,3 +359,68 @@ def test_removed_asset_selects_a_new_stage_without_altering_the_previous_copy(tm
     assert new != previous and not (new / 'obsolete.bin').exists()
     assert before == {p.name: p.read_bytes() for p in previous.iterdir()}
     assert {p.name for p in new.iterdir()} == set(NEW) | {filemods.STAGED_MARK}
+
+
+def test_dropped_download_resumes_from_the_partial_file(tmp_path, monkeypatch):
+    """The collection can close a multi-GB stream before its Content-Length is sent
+    (httpx.RemoteProtocolError). A resumable fetch must retry from the .part offset instead of
+    failing the whole launch; this was the GTA LCS / lcs_sonic launch failure (3824 MB mod dropped
+    at ~266 MB)."""
+    data = b'NEW-PLAY-DATA'
+    files = [{'path': 'big.bin', 'size': len(data), 'sha256': hashlib.sha256(data).hexdigest()}]
+    monkeypatch.setattr(filemods, '_FETCH_RETRY_DELAY', 0)
+    monkeypatch.setattr(httpx, 'get', lambda *a, **k: httpx.Response(
+        200, json={'files': files}, request=httpx.Request('GET', 'http://t')))
+
+    calls = {'stream': 0, 'range': None}
+
+    class DropStream:
+        def __init__(self, url, headers=None, **kw):
+            calls['stream'] += 1
+            calls['range'] = (headers or {}).get('Range')
+            if calls['stream'] == 1:
+                self.status_code, self.headers = 200, {}
+            else:
+                self.status_code, self.headers = 206, {'Content-Range': 'bytes 5-12/13'}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+        def raise_for_status(self):
+            pass
+
+        def iter_bytes(self, n):
+            if calls['stream'] == 1:
+                yield data[:5]                 # 5 bytes land, then the peer drops the connection
+                raise httpx.RemoteProtocolError(
+                    'peer closed connection without sending complete message body')
+            yield data[5:]                     # the resume serves only the remainder
+
+    monkeypatch.setattr(httpx, 'stream', lambda method, url, headers=None, **kw: DropStream(url, headers, **kw))
+
+    out = tmp_path / 'out'
+    out.mkdir()
+    filemods._fetch(SimpleNamespace(cache=tmp_path), 'http://t', {}, 'g', 'amy', files=files, dest=out)
+
+    assert calls['stream'] == 2
+    assert calls['range'] == 'bytes=5-'        # the retry resumed, it did not restart from zero
+    assert (out / 'big.bin').read_bytes() == data
+    assert not (out / 'big.bin.part').exists()
+
+
+def test_resumable_download_creates_an_empty_manifest_file(tmp_path, monkeypatch):
+    data = {"empty.bin": b""}
+    files = [{"path": "empty.bin", "size": 0, "sha256": hashlib.sha256(b"").hexdigest()}]
+    class Stream:
+        status_code, headers = 200, {}
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def raise_for_status(self): pass
+        def iter_bytes(self, size): return iter(())
+    monkeypatch.setattr(httpx, "stream", lambda *a, **k: Stream())
+    filemods._fetch(SimpleNamespace(cache=tmp_path), "http://t", {}, "g", "amy", files=files, dest=tmp_path)
+    assert (tmp_path / "empty.bin").read_bytes() == b""
+    assert not (tmp_path / "empty.bin.part").exists()
