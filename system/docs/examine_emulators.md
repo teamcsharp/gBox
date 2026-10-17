@@ -91,7 +91,7 @@ tab; *Capture again* takes a new one. Failures say why and that the game keeps r
 | RetroArch N64, Mupen64Plus-Next | relaunch_under_capture (relay) | glcore + GLideN64 | injected | not live-checked |
 | RetroArch N64, ParaLLEl N64 | unsupported | - | - | no draw calls (ParaLLEl-RDP) / compat GL; 2D frame only |
 | RetroArch, software core (Snes9x, Genesis Plus GX, mGBA, FBNeo, ...) | unsupported | - | - | 2D frame only |
-| Dolphin (Windows, D3D12) with Examine 3D on | supported | (current) | injected at launch | |
+| Dolphin (Windows, Vulkan) with Examine 3D on | supported | (current) | injected at launch | |
 | Dolphin started without Examine 3D | relaunch_under_capture (relay) | vulkan (-C Dolphin.Core.GFXBackend=Vulkan) | Vulkan layer | test PC only; capture held 1 draw (open) |
 | Yuzu / RPCS3 on Vulkan with Examine 3D on | supported | (current) | Vulkan layer at launch | |
 | Yuzu / RPCS3 started without Examine 3D | relaunch_under_capture | relaunch the game | Vulkan layer | states can't be carried |
