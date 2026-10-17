@@ -29,6 +29,8 @@ from . import oot_writer as OW
 OBJECT_ID_MAX = 0x192            # gObjectTable entries in every retail build (object_ids 0..0x191)
 BYTE_ORDERS = {b"\x80\x37\x12\x40": "z64 (big-endian)", b"\x37\x80\x40\x12": "v64 (halfword-swapped)",
                b"\x40\x12\x37\x80": "n64 (word-swapped)"}
+# big-endian md5 -> human-readable build label recorded in the manifest's source block
+BUILD_LABELS = {"1618403427e4344a57833043db5ce3c3": "Master Quest debug (NZLP, PAL GameCube disc)"}
 
 
 def _names() -> dict:
@@ -166,7 +168,8 @@ def inventory(src: str | Path, objects: bool = True) -> dict:
         "source": {"file": src.name, "sha256": hashlib.sha256(container).hexdigest(), "size": len(container),
                    "member": member, "member_byte_order": byte_order(raw),
                    "normalized_sha256": hashlib.sha256(data).hexdigest(), "normalized_md5": hashlib.md5(data).hexdigest(),
-                   "rom_size": len(data), "version": rom.version, "version_by_md5": hashlib.md5(data).hexdigest() in OW.MD5},
+                   "rom_size": len(data), "version": rom.version, "version_by_md5": hashlib.md5(data).hexdigest() in OW.MD5,
+                   "build_label": BUILD_LABELS.get(hashlib.md5(data).hexdigest(), "")},
         "header": header(data),
         "launch": {"core": "parallel_n64 (RetroArch)", "bios": "none", "cic": "CIC-NUS-6105", "save": "SRAM 32 KiB",
                    "expansion_pak": "not required", "crc_valid": struct.unpack_from(">II", data, 0x10) == OW.crc6105(data)},
