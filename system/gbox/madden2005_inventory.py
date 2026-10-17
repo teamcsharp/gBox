@@ -11,9 +11,9 @@ The assimilation fingerprint claimed the engine is "HAL sysdolphin (HSD)"
 ``gbox.melee_models``.  This module proves that is wrong for this build: every
 data file is an Electronic Arts archive — a ``TERF`` archive (``.dat``) or a
 ``QL01``/``FILS`` archive (``.qkl``) — plus one ``DB`` and one ``BNR`` banner.
-There is no HSD/sysdolphin or Melee layout anywhere on the disc, so the EA
-reader path (``gbox.refpack`` / TERF index) is the correct starting point, not
-``gbox.melee_models``.
+The outer container census supports starting with the EA archive index. It
+does not identify every nested payload or establish that no HSD data exists
+inside those archives; nested codecs still require loader and payload analysis.
 
 Usage::
 
@@ -73,8 +73,8 @@ def engine_finding(kinds: dict[str, int]) -> dict:
     """Derive the engine conclusion from the container-magic census.
 
     Returns a dict with ``engine``, ``confidence`` and ``evidence``; the
-    conclusion is deterministic, not a guess: TERF/QKL archives are EA's
-    own on-disc container formats.
+    conclusion identifies outer archive families only; it does not prove the
+    inner model format or exclude another format nested inside an archive.
     """
     ea = kinds.get("terf", 0) + kinds.get("qkl", 0)
     platform = kinds.get("db", 0) + kinds.get("bnr", 0)
@@ -82,11 +82,11 @@ def engine_finding(kinds: dict[str, int]) -> dict:
     evidence = {k: v for k, v in sorted(kinds.items())}
     if ea > 0 and other == 0:
         return {"engine": "ea_terf_qkl", "confidence": 1.0,
-                "refutes": "hal_sysdolphin", "evidence": evidence,
+                "refutes": None, "scope": "outer containers only", "evidence": evidence,
                 "platform_files": platform}
     return {"engine": "unknown", "confidence": 0.0,
             "refutes": None, "evidence": evidence,
-            "hsd_containers": other}
+            "unclassified_containers": other}
 
 
 def _disc(src: str):
@@ -94,35 +94,52 @@ def _disc(src: str):
     return GCDisc(src)
 
 
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def inventory(src: str) -> dict:
     """Walk the owned disc and return the full inventory manifest."""
     d = _disc(src)
-    kinds: Counter[str] = Counter()
-    char_assets: dict[str, dict] = {}
-    files: list[dict] = []
-    for name, (off, size) in sorted(d.files.items()):
-        head = d.read(name)[:8] if size else b""
-        kind = classify_magic(head)
-        kinds[kind] += 1
-        rec = {"name": name, "offset": off, "size": size, "magic": head[:4].hex(" ") or None,
-               "kind": kind}
-        files.append(rec)
-        if name in CHARACTER_CONTAINERS:
-            char_assets[name] = {"role": CHARACTER_CONTAINERS[name],
-                                 "size": size, "offset": off, "magic": head[:4].decode("latin-1")}
-    dol = d.dol()
-    return {
-        "title": TITLE,
-        "platform": "gamecube",
-        "build_id": d.game_id,
-        "disc_title": d.title,
-        "main_dol": {"size": len(dol), "sha256": hashlib.sha256(dol).hexdigest()},
-        "file_count": len(files),
-        "kinds": dict(kinds),
-        "engine": engine_finding(dict(kinds)),
-        "character_containers": char_assets,
-        "files": files,
-    }
+    try:
+        if d.game_id != BUILD_ID:
+            raise ValueError(f"Expected {BUILD_ID}, got {d.game_id}")
+        kinds: Counter[str] = Counter()
+        char_assets: dict[str, dict] = {}
+        files: list[dict] = []
+        for name, (off, size) in sorted(d.files.items()):
+            head = d._r(off, min(size, 8)) if size else b""
+            if len(head) != min(size, 8):
+                raise ValueError("Truncated archive header: " + name)
+            kind = classify_magic(head)
+            kinds[kind] += 1
+            rec = {"name": name, "offset": off, "size": size, "magic": head[:4].hex(" ") or None,
+                   "kind": kind}
+            files.append(rec)
+            if name in CHARACTER_CONTAINERS:
+                char_assets[name] = {"role": CHARACTER_CONTAINERS[name],
+                                     "size": size, "offset": off, "magic": head[:4].decode("latin-1")}
+        dol = d.dol()
+        return {
+            "source_path": str(src),
+            "source_sha256": sha256_file(src),
+            "title": TITLE,
+            "platform": "gamecube",
+            "build_id": d.game_id,
+            "disc_title": d.title,
+            "main_dol": {"size": len(dol), "sha256": hashlib.sha256(dol).hexdigest()},
+            "file_count": len(files),
+            "kinds": dict(kinds),
+            "engine": engine_finding(dict(kinds)),
+            "character_containers": char_assets,
+            "files": files,
+        }
+    finally:
+        d.f.close()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -132,7 +149,6 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     m = inventory(a.src)
     m["source_path"] = a.src
-    m["source_sha256"] = hashlib.sha256(Path(a.src).read_bytes()).hexdigest()
     text = json.dumps(m, indent=1)
     (Path(a.out).write_text(text) if a.out else print(text))
     return 0

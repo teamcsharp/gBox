@@ -42,6 +42,7 @@ PLATFORM_CPU = {
     "n64": ("mips_be", "MIPS:BE:32:default", 8, True),
     "gba": ("arm", "ARM:LE:32:v4t", 40, False),
     "xbox360": ("ppc64", None, 20, True),      # Xenon: ELF loader's PowerPC:BE:32 default; VMX128 opcodes won't decode
+    "xbox": ("x86", None, 3, False),         # Original Xbox: 32-bit little-endian x86
 }
 DC_BASE = 0x8C010000
 GBA_BASE = 0x08000000
@@ -188,12 +189,17 @@ def _iso_read(f, files: dict, name: str) -> bytes:
 
 
 def _rom_bytes(rom: Path, exts: tuple[str, ...]) -> bytes:
-    if rom.suffix.lower() == ".zip":
-        with zipfile.ZipFile(rom) as z:
-            names = [n for n in z.namelist() if n.lower().endswith(exts)] or z.namelist()
-            return z.read(max(names, key=lambda n: z.getinfo(n).file_size))
-    if rom.suffix.lower() == ".7z":
-        raise ValueError(f"{rom.name}: 7z ROMs aren't unpacked here; use source=ram with a running session")
+    from . import rom_archives
+    if rom_archives.is_archive(rom):
+        entries = rom_archives.members(rom)
+        choices = [e for e in entries if e['name'].lower().endswith(exts)]
+        if not choices:
+            raise ValueError(f'{rom.name}: no matching ROM member ({exts})')
+        entry = max(choices, key=lambda e: e['size'])
+        data = rom_archives.prefix(rom, entry['name'], entry['size'])
+        if len(data) != entry['size']:
+            raise ValueError(f"Incomplete archive member: {entry['name']}")
+        return data
     return rom.read_bytes()
 
 

@@ -2180,7 +2180,8 @@ sessionsView.after = (sid, mode) => {
   active = { sid, title, local: mode === "examine" ? $("#exam")?.dataset.local === "1" : !$("#scr") && mode !== "inspect" }; pip();   // controllers + PiP follow this game from now on
   if (mode === "inspect") return inspectView.after(sid);
   if (mode === "examine") return examineAfter(sid);
-    window.PadGlyph?.mount($("#padglyph"), null, { sid });               // live controller: your presses and gBox's
+  const padSession = SESSIONBUILD.session?.session_id === sid ? SESSIONBUILD.session : {};
+  window.PadGlyph?.mount($("#padglyph"), padSession.platform, { sid, token: tok, adapter: padSession.adapter });
   padStatus();
   if (!$("#scr")) return;                                      // native local window: input goes straight to RetroArch
   const send = (key, down) => api(`/api/sessions/${encodeURIComponent(sid)}/input`, { events: [{ key, down }] });
