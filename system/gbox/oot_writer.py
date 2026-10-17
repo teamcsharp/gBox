@@ -31,11 +31,15 @@ VERSIONS = {
     "pal-1.1": {"dma": 0x7950, "code": 28, "link_anim": 6, "player": 35, "kaleido": 34, "code_vram": 0x800116E0},
     "gc-us": {"dma": 0x7170, "code": 27, "link_anim": 7, "player": 33, "kaleido": 32, "code_vram": 0x80010EE0},
     "gc-eu": {"dma": 0x7170, "code": 28, "link_anim": 6, "player": 34, "kaleido": 33, "code_vram": 0x80010F00},
+    # Build identity: https://github.com/zeldaret/oot/blob/main/README.md (gc-eu-mq).
+    # Master Quest retail ROM shipped on the PAL GameCube disc (NZLP): same dmadata/code layout as gc-eu, its own name.
+    "gc-eu-mq": {"dma": 0x7170, "code": 28, "link_anim": 6, "player": 34, "kaleido": 33, "code_vram": 0x80010F00},
 }
 # md5 of the big-endian ROM -> exact version (the decomp's checksum files); others are told apart by layout
 MD5 = {"5bd1fe107bf8106b2ab6650abecd54d6": "ntsc-1.0", "721fdcc6f5f34be55c43a807f2a16af4": "ntsc-1.1",
        "57a9719ad547c516342e1a15d5c28c3d": "ntsc-1.2", "e040de91a74b61e3201db0e2323f768a": "pal-1.0",
-       "d714580dd74c2c033f5e1b6dc0aeac77": "pal-1.1"}
+       "d714580dd74c2c033f5e1b6dc0aeac77": "pal-1.1",
+       "1618403427e4344a57833043db5ce3c3": "gc-eu-mq"}
 OBJECT_LINK_BOY, OBJECT_LINK_CHILD, OBJECT_GAMEPLAY_KEEP = 0x14, 0x15, 0x01
 
 
