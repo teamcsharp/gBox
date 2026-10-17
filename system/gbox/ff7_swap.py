@@ -36,6 +36,34 @@ from . import ff7_models as F
 
 GAME_IDS = {"6703ee6f461a2ea5": "Final Fantasy VII (USA) (Disc 1)", "52d73a58e6b29209": "Final Fantasy VII (USA) (Disc 2)",
             "18581bf582f81eb2": "Final Fantasy VII (USA) (Disc 3)"}
+# The replaceable party roster: (slot, field .BCX name, battle .LZS name, label). Field and battle file names differ
+# for several members (Barret: BALLET / BARRETT; Red XIII: RED / RED13; Vincent: VINCENT / VINSENT). Every member has a
+# field model (FIELD/<X>.BCX) and a battle model (ENEMY6/<X>.LZS); the player slot is Cloud (the existing single-slot
+# path), the other eight are the rest of the party.
+PARTY = [
+    ("player",    "CLOUD",   "CLOUD",   "Cloud Strife"),
+    ("barret",    "BALLET",  "BARRETT", "Barret Wallace"),
+    ("tifa",      "TIFA",    "TIFA",    "Tifa Lockhart"),
+    ("aerith",    "EARITH",  "EARITH",  "Aerith Gainsborough"),
+    ("red13",     "RED",     "RED13",   "Red XIII"),
+    ("cait_sith", "KETCY",   "KETCY",   "Cait Sith"),
+    ("yuffie",    "YUFI",    "YUFI",    "Yuffie Kisaragi"),
+    ("vincent",   "VINCENT", "VINSENT", "Vincent Valentine"),
+    ("cid",       "CID",     "CID",     "Cid Highwind"),
+]
+
+
+def cast_slots() -> list[dict]:
+    """The FF7 party, for the cast menu (characters op=collect \"slots\", char_coverage.cast_slots): the player (Cloud)
+    then the eight other party members. Each slot replaces that member's own field (FIELD/<X>.BCX) and battle
+    (ENEMY6/<X>.LZS) models, so the donor is fitted onto the member's own skeleton, not Cloud's. Members whose skeleton
+    doesn't follow the humanoid party layout (Red XIII, Cait Sith) still list: the fit reports them as skipped."""
+    rows = []
+    for slot, field, battle, label in PARTY:
+        rows.append({"slot": slot, "name": f"{label} (field + battle)",
+                     "kind": "player" if slot == "player" else "character",
+                     "context": {"field": f"FIELD/{field}.BCX", "battle": f"ENEMY6/{battle}.LZS"}})
+    return rows
 C = np.diag([1.0, -1.0, -1.0])                     # PSX (y down) <-> y up
 FIELD_NORMALS_AT = 0x3F520                         # FIELD.BIN (gunzipped): 240 x (s16 x, y, z, 0), 4096 = 1
 NORMALS = 240
@@ -50,34 +78,53 @@ BATTLE_ROLES = {"hip": 1, "chest": 2, "head": 3, "armA": (6, 7, 8), "armB": (11,
 
 # ---------------------------------------------------------------- LZS (FF7) encoder
 
-def lzs_encode(data: bytes) -> bytes:
+def lzs_encode(data: bytes, thorough: bool = False) -> bytes:
     """Greedy LZSS in FF7's LZS format (u32 compressed size, flag bytes LSB first, 1 = literal, references into a
-    4 KiB ring that starts at 0xFEE, 3..18 bytes). ff7_models.lzs() decodes it."""
+    4 KiB ring that starts at 0xFEE, 3..18 bytes). ff7_models.lzs() decodes it. thorough: scan every candidate and
+    use lazy matching (better ratio, slower) - the default path keeps the historical output byte-identical."""
     n = len(data)
     out = bytearray()
     heads: dict[bytes, list[int]] = {}
     i = 0
+
+    def best(k: int) -> tuple[int, int]:
+        key = data[k:k + 3]
+        if len(key) < 3:
+            return 0, 0
+        cands = heads.get(key, [])
+        best_len, best_pos = 0, 0
+        for j in reversed(cands if thorough else cands[-64:]):
+            if k - j > 4078:
+                break
+            ln = 3
+            while ln < 18 and k + ln < n and data[j + ln] == data[k + ln]:
+                ln += 1
+            if ln > best_len:
+                best_len, best_pos = ln, j
+                if ln == 18:
+                    break
+        return best_len, best_pos
+
     while i < n:
         flag_pos = len(out)
         out.append(0)
         flags = 0
-        for bit in range(8):
-            if i >= n:
-                break
-            best_len, best_pos = 0, 0
-            key = data[i:i + 3]
-            if len(key) == 3:
-                cands = heads.get(key, [])
-                for j in reversed(cands[-64:]):
-                    if i - j > 4078:
+        bit = 0
+        while bit < 8 and i < n:
+            best_len, best_pos = best(i)
+            if thorough and best_len >= 3 and i + 1 < n:
+                nxt_len, nxt_pos = best(i + 1)
+                if nxt_len > best_len:
+                    # lazy matching: a literal here and the longer match at i+1 wins
+                    flags |= 1 << bit
+                    out.append(data[i])
+                    if i + 3 <= n:
+                        heads.setdefault(data[i:i + 3], []).append(i)
+                    i += 1
+                    bit += 1
+                    if bit >= 8:
                         break
-                    ln = 3
-                    while ln < 18 and i + ln < n and data[j + ln] == data[i + ln]:
-                        ln += 1
-                    if ln > best_len:
-                        best_len, best_pos = ln, j
-                        if ln == 18:
-                            break
+                    best_len, best_pos = nxt_len, nxt_pos
             if best_len >= 3:
                 o = (best_pos + 0xFEE) & 0xFFF
                 out += bytes([o & 0xFF, ((o >> 4) & 0xF0) | (best_len - 3)])
@@ -90,6 +137,7 @@ def lzs_encode(data: bytes) -> bytes:
                 if k + 3 <= n:
                     heads.setdefault(data[k:k + 3], []).append(k)
             i += step
+            bit += 1
         out[flag_pos] = flags
     return struct.pack("<I", len(out)) + bytes(out)
 
@@ -343,13 +391,12 @@ def field_normals(disc) -> np.ndarray:
     return np.frombuffer(fb[FIELD_NORMALS_AT:FIELD_NORMALS_AT + 8 * NORMALS], "<i2").reshape(-1, 4)[:, :3] / 4096.0
 
 
-def field_spec(fm: dict) -> dict | None:
-    """Body roles of a field skeleton from its topology (FF7 party layout: root -> pelvis 1 -> chest 2 -> head; each arm
-    hangs off the pelvis through mesh-less joints, then upper / fore / hand; each leg off the root through a mesh-less
-    joint, then thigh / shin / foot). None when the skeleton doesn't follow it (Cait Sith)."""
-    bones = fm["bones"]
+def _detect_spec(bones: list[dict], W: list[np.ndarray], has_mesh) -> dict | None:
+    """Body roles of a party skeleton from its topology, shared by the field and battle readers (FF7 party layout:
+    root -> pelvis 1 -> chest -> head; each arm hangs off the pelvis through mesh-less joints, then upper / fore /
+    hand; each leg off the root through a mesh-less joint, then thigh / shin / foot). None when the skeleton doesn't
+    follow it (Cait Sith, Red XIII's quadruped battle rig)."""
     kids = {i: [k for k, b in enumerate(bones) if b["parent"] == i] for i in range(len(bones))}
-    W = F.field_pose(bones, fm["anims"][0][0] if fm["anims"] else None)
     y = {i: -W[i][1, 3] for i in range(len(bones))}       # height (PSX y is down)
 
     def depth(i):
@@ -358,21 +405,40 @@ def field_spec(fm: dict) -> dict | None:
     def chain(start):                                     # the first three mesh bones down the deepest branch
         out, cur = [], start
         while cur is not None and len(out) < 3:
-            if bones[cur]["has_mesh"]:
+            if has_mesh(cur):
                 out.append(cur)
             cur = max(kids[cur], key=depth) if kids[cur] else None
         return tuple(out) if len(out) == 3 else None
-    if len(bones) < 4 or not bones[1]["has_mesh"] or not kids.get(1):
+    if len(bones) < 4 or not has_mesh(1) or not kids.get(1):
         return None
-    chest = next((k for k in kids[1] if bones[k]["has_mesh"]), None)
-    head = next((k for k in kids.get(chest, []) if bones[k]["has_mesh"]), None) if chest is not None else None
-    arms = [c for c in (chain(k) for k in kids[1] if k != chest and not bones[k]["has_mesh"]) if c]
+    chest = next((k for k in kids[1] if has_mesh(k)), None)
+    head = next((k for k in kids.get(chest, []) if has_mesh(k)), None) if chest is not None else None
+    arms = [c for c in (chain(k) for k in kids[1] if k != chest and not has_mesh(k)) if c]
     legs = sorted((c for c in (chain(k) for k in kids[0] if k != 1) if c), key=lambda c: y[c[2]])[:2]   # lowest ends
     if len(arms) > 2:                                     # e.g. a tail: keep the two chains reaching furthest sideways
         arms = sorted(arms, key=lambda c: -abs(W[c[2]][0, 3] - W[1][0, 3]))[:2]
     if head is None or len(arms) != 2 or len(legs) != 2:
         return None
     return {"hip": 1, "chest": chest, "head": head, "armA": arms[0], "armB": arms[1], "legA": legs[0], "legB": legs[1]}
+
+
+def field_spec(fm: dict) -> dict | None:
+    """Body roles of a field skeleton from its topology (FF7 party layout: root -> pelvis 1 -> chest -> head; each arm
+    hangs off the pelvis through mesh-less joints, then upper / fore / hand; each leg off the root through a mesh-less
+    joint, then thigh / shin / foot). None when the skeleton doesn't follow it (Cait Sith)."""
+    bones = fm["bones"]
+    W = F.field_pose(bones, fm["anims"][0][0] if fm["anims"] else None)
+    return _detect_spec(bones, W, lambda i: bones[i]["has_mesh"])
+
+
+def battle_spec(bm: dict) -> dict | None:
+    """Body roles of a battle skeleton from its topology (same party layout as the field reader; the battle bones carry
+    their mesh on the bone itself, and bone lengths place each child at its parent's END). None when the skeleton
+    isn't the humanoid party layout (Red XIII, Cait Sith)."""
+    bones = bm["bones"]
+    frames = F.read_animation(bm["raw"], bm["anims"][0], len(bones) - 1) if bm["anims"] else []
+    W = F.pose(bones, frames[0] if frames else None)
+    return _detect_spec(bones, W, lambda i: bones[i]["mesh"] is not None)
 
 
 def field_target(fm: dict) -> dict:
@@ -468,7 +534,10 @@ def battle_target(bm: dict, anim: int = 0) -> dict:
     W = F.pose(bm["bones"], frames[0] if frames else None)
     verts = {i: (np.c_[b["mesh"]["verts"], np.ones(len(b["mesh"]["verts"]))] @ W[i].T)[:, :3]
              for i, b in enumerate(bm["bones"]) if b["mesh"]}
-    return make_target(W, verts, BATTLE_ROLES, FIELD_FIT_HEIGHT)
+    spec = battle_spec(bm)
+    if spec is None:
+        raise ValueError("this battle skeleton doesn't have the party layout (two arms off the pelvis, two legs off the root)")
+    return make_target(W, verts, spec, FIELD_FIT_HEIGHT)
 
 
 def write_battle(bm: dict, geo: dict[int, dict], tim: bytes | None = None) -> tuple[bytes, dict]:
@@ -576,21 +645,22 @@ def _fit_loop(name: str, tgt: dict, model: Path, roles: dict, work: Path, blende
     raise ValueError(f"{name} doesn't fit: {last}")
 
 
-def build(disc: Path, model_path: Path, roles: dict, work: Path, name: str, out_bin: Path, base_bin: Path | None = None,
-          battle: bool = True, blender: str | None = None, progress=lambda p, m: None, scale=None, props=()) -> dict:
-    from . import psxdisc
+def _fit_character(src, name: str, model_path: Path, roles: dict, work: Path, blender, progress, scale, props,
+                   field_file: str = "FIELD/CLOUD.BCX", battle_file: str = "ENEMY6/CLOUD.LZS", battle: bool = True,
+                   cloud_textures: bool | None = None) -> tuple[list, dict]:
+    """Fit one donor onto one party member's field + battle skeletons against a read-only RawBin `src` (the caller
+    owns and closes it). -> (writes [(path, bytes)], report). cloud_textures (None = auto) keeps the field face atlas
+    (FIELD.TDB/FIELD.BIN) for Cloud only: other members draw their few face polygons in vertex colours, so their donors
+    are baked to Gouraud."""
+    from .ff7_field_textures import FieldAtlas, face_tim
     work = Path(work)
     work.mkdir(parents=True, exist_ok=True)
-    if base_bin is None:
-        base_bin = work / "base.bin"
-        if not base_bin.exists():
-            progress(3, "Unpacking the disc to a raw image")
-            psxdisc.chd_to_bin(disc, base_bin)
-    src = psxdisc.RawBin(base_bin, writable=False)
-    bcx_lba, bcx_size = src.files["FIELD/CLOUD.BCX"]
-    fm = F.read_field_model(src.read("FIELD/CLOUD.BCX"))
+    if cloud_textures is None:
+        cloud_textures = field_file.upper().endswith("CLOUD.BCX")
+    bcx_lba, bcx_size = src.files[field_file]
+    fm = F.read_field_model(src.read(field_file))
     normals = field_normals(src)
-    # lighting normals point outward; check the sign on Cloud's own vertices
+    # lighting normals point outward; check the sign on the member's own vertices
     dots = []
     for p in fm["parts"]:
         cen = p["verts"].mean(0)
@@ -600,17 +670,16 @@ def build(disc: Path, model_path: Path, roles: dict, work: Path, name: str, out_
                     dots.append(float((p["verts"][vi] - cen) @ normals[ni]))
     nsign = 1.0 if np.mean(np.sign(dots)) >= 0 else -1.0
     res = {"normal_sign": nsign}
-    progress(10, f"Fitting {name} onto Cloud's field skeleton")
+    progress(10, f"Fitting {name} onto the field skeleton")
     ftgt = field_target(fm)
     mesh_bones = {p["bone"] for p in fm["parts"]}
-    field_atlas=None
+    field_atlas = None
 
     def make_field(rp):
         nonlocal field_atlas
-        if field_atlas is None and any(p['tex'] is not None for p in rp):
-            from .ff7_field_textures import FieldAtlas
-            field_atlas=FieldAtlas(src.read('FIELD/FIELD.TDB'),src.read('FIELD/FIELD.BIN'),rp)
-        geo = bone_geometry(ftgt, rp, mesh_bones,field_atlas)
+        if field_atlas is None and cloud_textures and any(p['tex'] is not None for p in rp):
+            field_atlas = FieldAtlas(src.read('FIELD/FIELD.TDB'), src.read('FIELD/FIELD.BIN'), rp)
+        geo = bone_geometry(ftgt, rp, mesh_bones, field_atlas)
         try:
             raw, r = write_field(fm, geo, normals, nsign)
         except ValueError as e:
@@ -623,23 +692,23 @@ def build(disc: Path, model_path: Path, roles: dict, work: Path, name: str, out_
         ok = len(comp) <= bcx_size and r["bytes"] <= r["budget_bytes"] and r["gpu_buffer"] <= r["budget_gpu_buffer"]
         k = min(bcx_size / len(comp), r["budget_bytes"] / r["bytes"], r["budget_gpu_buffer"] / max(r["gpu_buffer"], 1))
         return comp, r, ok, k
-    bcx, frep, frig = _fit_loop("ff7_field", ftgt, model_path, roles, work, blender, make_field, 640, progress, scale, props,protect_textures=True)
-    encoded_field=F.read_field_model(bcx)
+    bcx, frep, frig = _fit_loop("ff7_field", ftgt, model_path, roles, work, blender, make_field, 640, progress, scale,
+                                props, protect_textures=True)
+    encoded_field = F.read_field_model(bcx)
     if field_atlas:
-        from .ff7_field_textures import face_tim
-        encoded_field['tim']=face_tim(field_atlas.tdb,field_atlas.field)
-    native_preview=work/'ff7_field_native.gltf'
-    F.field_to_gltf(encoded_field,native_preview)
+        encoded_field['tim'] = face_tim(field_atlas.tdb, field_atlas.field)
+    native_preview = work / 'ff7_field_native.gltf'
+    F.field_to_gltf(encoded_field, native_preview)
     res["field"] = frep
     res["rigged_field"] = str(native_preview)
-    writes = [("FIELD/CLOUD.BCX", bcx)]
+    writes = [(field_file, bcx)]
     if field_atlas:
-        frep['textures']=field_atlas.report
-        writes.extend([('FIELD/FIELD.TDB',field_atlas.tdb),('FIELD/FIELD.BIN',field_atlas.field)])
+        frep['textures'] = field_atlas.report
+        writes.extend([('FIELD/FIELD.TDB', field_atlas.tdb), ('FIELD/FIELD.BIN', field_atlas.field)])
     if battle:
-        progress(45, f"Fitting {name} onto Cloud's battle skeleton")
-        blba, bsize = src.files["ENEMY6/CLOUD.LZS"]
-        bm = F.read_battle_model(src.read("ENEMY6/CLOUD.LZS"))
+        progress(45, f"Fitting {name} onto the battle skeleton")
+        blba, bsize = src.files[battle_file]
+        bm = F.read_battle_model(src.read(battle_file))
         btgt = battle_target(bm)
         bbones = {i for i, b in enumerate(bm["bones"]) if b["mesh"]}
 
@@ -658,8 +727,27 @@ def build(disc: Path, model_path: Path, roles: dict, work: Path, name: str, out_
         F.read_battle_model(blz)
         res["battle"] = brep
         res["rigged_battle"] = str(brig)
-        writes.append(("ENEMY6/CLOUD.LZS", blz))
-    src.close()
+        writes.append((battle_file, blz))
+    return writes, res
+
+
+def build(disc: Path, model_path: Path, roles: dict, work: Path, name: str, out_bin: Path, base_bin: Path | None = None,
+          battle: bool = True, blender: str | None = None, progress=lambda p, m: None, scale=None, props=(),
+          field_file: str = "FIELD/CLOUD.BCX", battle_file: str = "ENEMY6/CLOUD.LZS") -> dict:
+    from . import psxdisc
+    work = Path(work)
+    work.mkdir(parents=True, exist_ok=True)
+    if base_bin is None:
+        base_bin = work / "base.bin"
+        if not base_bin.exists():
+            progress(3, "Unpacking the disc to a raw image")
+            psxdisc.chd_to_bin(disc, base_bin)
+    src = psxdisc.RawBin(base_bin, writable=False)
+    try:
+        writes, res = _fit_character(src, name, model_path, roles, work, blender, progress, scale, props,
+                                     field_file, battle_file, battle)
+    finally:
+        src.close()
     progress(75, "Copying the disc image")
     out_bin = Path(out_bin)
     out_bin.parent.mkdir(parents=True, exist_ok=True)
@@ -670,6 +758,299 @@ def build(disc: Path, model_path: Path, roles: dict, work: Path, name: str, out_
     out_bin.with_suffix(".cue").write_text(f'FILE "{out_bin.name}" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
     res |= {"bin": str(out_bin), "cue": str(out_bin.with_suffix(".cue"))}
     return res
+
+
+def build_cast(ctx, game: dict, pairs: list, name: str, inp) -> dict:
+    """Whole-party replacement (gbox.cast_swap pairs builder): every (slot, donor) fitted onto that member's own
+    field + battle skeletons and written into ONE disc image. Members whose skeleton isn't the humanoid party layout
+    (Red XIII, Cait Sith) are skipped with the reason. -> {mod, slots, detail}."""
+    from . import characters as Cm
+    from . import filemods, psxdisc
+    from .pe_swap import base_bin
+    gid = game["game_id"]
+    progress = ctx.progress
+    base = base_bin(ctx.config, game, progress)
+    work_root = Path(ctx.config.cache) / "characters_build" / gid / name
+    work_root.mkdir(parents=True, exist_ok=True)
+    by_slot = {slot: (field, battle) for slot, field, battle, _label in PARTY}
+    writes: dict[str, bytes] = {}
+    per: dict[str, dict] = {}
+    src = psxdisc.RawBin(base, writable=False)
+    try:
+        total = len(pairs)
+        for i, (slot, meta) in enumerate(pairs):
+            entry = by_slot.get(slot)
+            if entry is None:
+                per[slot] = {"status": "failed", "reason": f"unknown FF7 slot {slot!r}"}
+                continue
+            field_nm, battle_nm = entry
+            roles = (meta.get("rig") or {}).get("roles") or {}
+            if "hip" not in roles:
+                per[slot] = {"status": "failed", "reason": f"{meta.get('name')} has no body roles (rig.roles)"}
+                continue
+            label = meta.get("name") or meta["slug"]
+            progress(None, f"{label} -> {slot} ({i + 1}/{total})")
+            try:
+                w, rep = _fit_character(
+                    src, label, Path(Cm.library_root(ctx.config)) / meta["slug"] / meta["model"], roles,
+                    work_root / slot, Cm._blender(ctx.config),
+                    lambda p, m: progress(p, f"{slot}: {m}" if m else None),
+                    (meta.get("rig") or {}).get("scale"), [p["node"] for p in meta.get("props") or []],
+                    f"FIELD/{field_nm}.BCX", f"ENEMY6/{battle_nm}.LZS", True)
+            except Exception as e:                        # noqa: BLE001 - one member never stops the cast
+                per[slot] = {"status": "failed", "reason": str(e)[:500]}
+                continue
+            for path, data in w:
+                writes[path] = data
+            per[slot] = {"status": "built", **{k: rep.get(k) for k in ("field", "battle") if k in rep}}
+        # In-engine cutscenes: the special-scene BSX files carry their own copy of Cloud's mesh (22 bones, the body
+        # parts plus his sword). Replace those body parts with the player's fitted field geometry so the whole-party
+        # cast also covers the cutscene models.
+        if "FIELD/CLOUD.BCX" in writes:
+            bsx = {}
+            orig_fm = F.read_field_model(src.read("FIELD/CLOUD.BCX"))
+            donor_fm = F.read_field_model(writes["FIELD/CLOUD.BCX"])
+            for name, (_lba, size) in sorted(src.files.items()):
+                if not name.upper().endswith(".BSX"):
+                    continue
+                u = F.lzs(src.read(name))
+                if not any(m["id"] == 0 and m["nb"] == 22 for m in bsx_models(u)):
+                    continue
+                try:
+                    new_u, rep = patch_bsx_cloud(u, orig_fm, donor_fm)
+                except ValueError as e:
+                    bsx[name] = {"status": "skipped", "reason": str(e)[:200]}
+                    continue
+                comp = lzs_encode(new_u, thorough=True)
+                if len(comp) > size:
+                    bsx[name] = {"status": "skipped", "reason": f"compressed {len(comp)}B > file budget {size}B"}
+                    continue
+                writes[name] = comp
+                bsx[name] = {"status": "patched", **rep}
+            per.setdefault("player", {}).setdefault("cutscenes", {}).update(
+                {"bsx_files": len([v for v in bsx.values() if v["status"] == "patched"]),
+                 "bsx_skipped": {k: v for k, v in bsx.items() if v["status"] != "patched"}})
+    finally:
+        src.close()
+    if not writes:
+        return {"mod": None, "slots": per}
+    progress(75, "Copying the disc image")
+    d = filemods.mod_dir(ctx.config, gid, name)
+    if d.exists():
+        shutil.rmtree(d)
+    d.mkdir(parents=True, exist_ok=True)
+    disc_no = {"52d73a58e6b29209": "2", "18581bf582f81eb2": "3"}.get(gid, "1")
+    img = f"Final Fantasy VII - Cast (USA) (Disc {disc_no}).bin"
+    out_bin = d / img
+    shutil.copyfile(base, out_bin)
+    rb = psxdisc.RawBin(out_bin)
+    sectors = sum(rb.write_file(k, 0, data) for k, data in writes.items())
+    rb.close()
+    out_bin.with_suffix(".cue").write_text(f'FILE "{out_bin.name}" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
+    (d / ".gbox-mod.json").write_text(json.dumps({"name": name, "game_id": gid, "image": img, "built": time.time(),
+                                                  "files": sorted(writes), "writer": "gbox.ff7_swap (cast)"}))
+    shutil.rmtree(work_root, ignore_errors=True)
+    return {"mod": name, "slots": per, "detail": {"files": sorted(writes), "sectors_written": sectors}}
+
+
+# ---------------------------------------------------------------- BSX (special-scene cutscene models)
+
+BSX_POLYS = (("qct", 24, 4, True), ("tct", 20, 3, True), ("qmt", 12, 4, True), ("tmt", 12, 3, True),
+             ("tm", 8, 3, False), ("qm", 8, 4, False), ("tc", 16, 3, False), ("qc", 20, 4, False))
+
+
+def bsx_models(u: bytes) -> list[dict]:
+    """Decompressed BSX -> model records. [] when the file has no models section (placeholder BSX files)."""
+    if len(u) < 12:
+        return []
+    _size, off_models = struct.unpack_from("<II", u, 0)
+    if off_models <= 8 or off_models + 16 > len(u):
+        return []
+    psx_mem, num_models, _tex_ptr, _buf_size = struct.unpack_from("<IIII", u, off_models)
+    if psx_mem & 0x7FFFFFFF != off_models or not 0 < num_models <= 64:
+        return []
+    out = []
+    for i in range(num_models):
+        q = off_models + 16 + 48 * i
+        if q + 48 > len(u):
+            return []
+        mid, scale = struct.unpack_from("<HH", u, q)
+        off_skel = struct.unpack_from("<I", u, q + 4)[0]
+        nb, np_, na = u[q + 23], u[q + 35], u[q + 47]
+        out.append({"id": mid, "scale": scale, "record": q, "skel": q + off_skel, "nb": nb, "np": np_, "na": na})
+    return out
+
+
+def _bsx_poly_bytes(part: dict) -> int:
+    n = 0
+    for key, size, _verts, _tex in BSX_POLYS:
+        n += part["counts"].get(key, 0) * size
+    return n
+
+
+def _bsx_block_len(part: dict) -> int:
+    """Byte length of one part's self-contained block (4-byte blank + vertices + polygons + flags + texcoords +
+    control), the same layout in BCX and BSX part data."""
+    n = 4 + 8 * part["nv"] + _bsx_poly_bytes(part)
+    n = max(n, part["opoly"] + _bsx_poly_bytes(part))
+    n = max(n, part["otc"] + 2 * part["ntc"], part["ofl"] + 4 * part["flags"], part["octl"] + part["controls"])
+    return (n + 3) // 4 * 4
+
+
+def patch_bsx_cloud(u: bytes, orig_fm: dict, donor_fm: dict) -> tuple[bytes, dict]:
+    """Replace Cloud's body mesh inside one decompressed BSX with the donor-encoded field model (fitted onto the same
+    22-bone skeleton, e.g. the player slot's new FIELD/CLOUD.BCX).
+
+    Body parts are matched to the original BCX by (bone, vertex count); BSX parts without a BCX counterpart (Cloud's
+    sword) and every other model's data are byte-preserved. All part blocks and animation data keep their original
+    order; every absolute pointer (part vertex offsets, animation data offsets, the models-section offset) is
+    recomputed. -> (new decompressed BSX bytes, report). Raises ValueError with a reason when the file can't be
+    patched safely.
+    """
+    models = bsx_models(u)
+    if not models:
+        raise ValueError("no models section")
+    off_models = struct.unpack_from("<I", u, 4)[0]
+    body_sig = {(p["bone"], p["nv"]) for p in orig_fm["parts"]}
+    donor_by_bone = {p["bone"]: p for p in donor_fm["parts"]}
+
+    # Every part of every model: table position, block start and payload (the block bytes, self-contained).
+    part_items = []
+    for mi, m in enumerate(models):
+        if m["nb"] or m["np"] or m["na"]:
+            if m["skel"] < off_models:
+                raise ValueError(f"model {m['id']} tables sit below the models section")
+        for pi in range(m["np"]):
+            q = m["skel"] + 4 * m["nb"] + 32 * pi
+            if q + 32 > len(u):
+                raise ValueError(f"model {mi} part {pi} table runs past the file")
+            f = struct.unpack_from("<12B2B5H2I", u, q)
+            ovx = f[19] & 0x7FFFFFFF
+            if not 8 <= ovx < off_models:
+                raise ValueError(f"model {mi} part {pi} vertex offset 0x{ovx:x} outside the data region")
+            part = {"raw": bytes(f[0:12]), "bone": f[1], "nv": f[2], "ntc": f[3],
+                    "counts": dict(zip([k for k, *_ in BSX_POLYS], f[4:12])), "flags": f[12], "controls": f[13],
+                    "opoly": f[14], "otc": f[15], "ofl": f[16], "octl": f[17], "buffer": f[18], "ovx": ovx,
+                    "prec": f[20], "q": q, "mi": mi}
+            n = _bsx_block_len(part)
+            if ovx + n > len(u):
+                raise ValueError(f"model {mi} part {pi} block runs past the file")
+            part["len"], part["payload"] = n, u[ovx:ovx + n]
+            part_items.append(part)
+
+    # Animation data blobs (absolute pointers from every model's animation table).
+    anim_items = {}
+    for m in models:
+        for k in range(m["na"]):
+            aq = m["skel"] + 4 * m["nb"] + 32 * m["np"] + 16 * k
+            if aq + 16 > len(u):
+                raise ValueError(f"model {m['id']} animation {k} table runs past the file")
+            off = struct.unpack_from("<I", u, aq + 12)[0] & 0x7FFFFFFF
+            if not 8 <= off < off_models:
+                raise ValueError(f"model {m['id']} animation {k} data offset 0x{off:x} outside the data region")
+            anim_items.setdefault(off, aq)
+
+    # Identify Cloud models (id 0 with the party skeleton) and the parts to replace. A part is replaced only when
+    # its block is owned exclusively by Cloud models (shared scene actors render from the same data region) and the
+    # model carries the complete body (all 15 body parts of the original BCX): partial variants (disguise scenes)
+    # are left as they are.
+    cloud = [m for m in models if m["id"] == 0 and m["nb"] == 22]
+    if not cloud:
+        raise ValueError("no Cloud (id 0) model with the 22-bone skeleton")
+    cloud_idx = {models.index(m) for m in cloud}
+    owners = {}
+    for p in part_items:
+        owners.setdefault(p["ovx"], set()).add(p["mi"])
+    by_model = {mi: [p for p in part_items if p["mi"] == mi] for mi in cloud_idx}
+    replaced = {}
+    for mi, plist in by_model.items():
+        matches = [p for p in plist if (p["bone"], p["nv"]) in body_sig]
+        if len(matches) != 15:
+            continue                                    # disguise / partial variant: leave the whole model alone
+        for p in matches:
+            if owners[p["ovx"]] - cloud_idx:
+                continue                                # the block is shared with a non-Cloud actor
+            if p["bone"] in donor_by_bone:
+                replaced[id(p)] = donor_by_bone[p["bone"]]
+    if not replaced:
+        raise ValueError("no Cloud model carries the complete body mesh")
+
+    # Rebuild: keep every item's original order; replaced parts carry the donor block. Items must not overlap.
+    items = [(p["ovx"], p) for p in part_items] + [(off, None) for off in anim_items]
+    items.sort(key=lambda t: t[0])
+    starts = [s for s, _ in items]
+    sized = []
+    seen = set()
+    for start, it in items:
+        if it is None:
+            end = next((s for s in starts if s > start), off_models)
+            sized.append((start, u[start:end]))
+        elif start in seen:
+            continue                          # shared part block (two models, one data region)
+        elif id(it) in replaced:
+            dp = replaced[id(it)]
+            payload = donor_fm["raw"][dp["ovx"]:dp["ovx"] + _bsx_block_len(dp)]
+            if len(payload) != _bsx_block_len(dp):
+                raise ValueError("donor part block is truncated")
+            sized.append((start, payload))
+            seen.add(start)
+        else:
+            sized.append((start, it["payload"]))
+            seen.add(start)
+    for (a, it), (nxt, _) in zip(items, items[1:]):
+        if a < nxt and it is not None and a + it["len"] > nxt:
+            raise ValueError(f"original part block at 0x{a:x} overlaps the next item at 0x{nxt:x}")
+    body = bytearray(u[0:8])
+    if sized[0][0] > 8:
+        body += u[8:sized[0][0]]
+    cur = len(body)
+    new_ovx = {}
+    for start, payload in sized:
+        new_ovx[start] = cur
+        body += payload
+        cur += len(payload)
+    new_off_models = cur
+    body += u[off_models:]
+    delta = len(body) - len(u)
+
+    # Patch the models section in place: part tables (counts / offsets / buffer / vertex offset) and the header.
+    for p in part_items:
+        q, ovx_new = p["q"] + delta, new_ovx[p["ovx"]]
+        if id(p) in replaced:
+            dp = replaced[id(p)]
+            counts = tuple(dp["counts"].get(k, 0) for k, *_ in F.FIELD_POLYS)
+            struct.pack_into("<12B2B5H2I", body, q, p["raw"][0], p["bone"], dp["nv"], dp["ntc"], *counts, dp["flags"],
+                             dp["controls"], dp["opoly"], dp["otc"], dp["ofl"], dp["octl"], dp["buffer"],
+                             ovx_new | 0x80000000, p["prec"])
+        else:
+            struct.pack_into("<I", body, q + 24, ovx_new | 0x80000000)
+    for start, aq in anim_items.items():
+        struct.pack_into("<I", body, aq + delta + 12, new_ovx[start] | 0x80000000)
+    struct.pack_into("<II", body, 0, len(body), new_off_models)
+    struct.pack_into("<I", body, new_off_models, new_off_models | 0x80000000)
+
+    # Validate the result: re-parse and verify the byte-preservation promises.
+    check = bsx_models(bytes(body))
+    if len(check) != len(models):
+        raise ValueError("rebuilt BSX lost models")
+    for p in part_items:
+        q = p["q"] + delta
+        f = struct.unpack_from("<12B2B5H2I", body, q)
+        ovx = f[19] & 0x7FFFFFFF
+        part = {"raw": bytes(f[0:12]), "bone": f[1], "nv": f[2], "ntc": f[3],
+                "counts": dict(zip([k for k, *_ in F.FIELD_POLYS], f[4:12])), "flags": f[12], "controls": f[13],
+                "opoly": f[14], "otc": f[15], "ofl": f[16], "octl": f[17], "buffer": f[18], "ovx": ovx}
+        n = _bsx_block_len(part)
+        if id(p) in replaced:
+            dp = replaced[id(p)]
+            assert part["nv"] == dp["nv"] and part["buffer"] == dp["buffer"], "donor part table not written"
+            assert body[ovx:ovx + n] == donor_fm["raw"][dp["ovx"]:dp["ovx"] + n], "donor part block not written"
+        else:
+            assert body[ovx:ovx + n] == p["payload"], f"untouched part {p['q']:#x} changed"
+    n_replaced = len(replaced)
+    return bytes(body), {"cloud_models": len(cloud), "body_parts_replaced": n_replaced,
+                         "parts_kept": len(part_items) - n_replaced, "bytes": len(body),
+                         "budget_bytes": len(u)}
 
 
 # ---------------------------------------------------------------- characters op=use
