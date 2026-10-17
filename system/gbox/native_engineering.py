@@ -8,6 +8,37 @@ from __future__ import annotations
 from copy import deepcopy
 import re
 
+# Exact catalog identities prevent reconnaissance for another port from being
+# accepted as progress on the requested export. These are engineering aids,
+# never entries in char_coverage.WRITERS or verified unlock profiles.
+TITLE_WORK = {
+    'c6adbfa00c20aaf9': {
+        'platform': 'gamecube', 'disc_id': 'GHAE08',
+        'source_format': 'GCZ or ISO; GCDisc reads GCZ directly without extracting an ISO',
+        'reader': 'gbox.re2gc_native',
+        'command': 'python -m gbox.re2gc_native OWNED_GCZ --out NEW_MANIFEST.json',
+        'validated_scope': '40 player PLD containers; bounded MD1 mesh reader and guarded native geometry writer; native rig and animation references retained',
+        'separate_work': ['Sonic/Mario donor retargeting and EMD enemy coverage',
+                          'GameCube-specific unlock routine and complete category inventory',
+                          'live inventory and equip routines for the sidebar',
+                          'isolated complete disc build and runtime acceptance'],
+        'identity_warning': 'N64 game 46eec2fc627c8f58 / gbox.re2_inventory and PSX game 2d8ef2bdbd4a58fd are different targets; their addresses and acceptance do not apply.',
+    },
+    'e7ca89bbeb67360d': {
+        'platform': 'ps3', 'edition': 'Resident Evil 5 Gold USA v02.00',
+        'source_format': '7z folder game; list/extract exact PS3_GAME members, retain PARAM.SFO identity',
+        'reader': 'gbox.re5ps3_arc',
+        'command': 'python -m gbox.re5ps3_arc OWNED_CHARACTER.arc --out NEW_MANIFEST.json',
+        'validated_scope': 'PS3 ARC v8 reader/writer verified with all 151 Chris/Sheva pack resources; MOD header counts only; existing re5 save unlock code is not gameplay-verified',
+        'separate_work': ['PS3 ARC/MOD/TEX reader, writer and Sonic/Mario donor retargeting',
+                          'confirm every unlock category including Mercenaries/Reunion roster and stages',
+                          'PS3-specific live inventory/equip routines and sidebar integration',
+                          'complete folder-game mod/export with isolated save overlay and runtime acceptance'],
+        'identity_warning': 'Do not reuse RE6 Xbox 360 memory addresses, ARC compression or texture tiling. Existing re5_tool.COVERAGE explicitly leaves Mercenaries characters/stages unconfirmed.',
+    },
+}
+
+
 STAGES = {
     'inventory': {
         'playbooks': ['study-title', 'magic-census'],
@@ -69,6 +100,7 @@ def plan(game_id, *, stage='inventory', fingerprint=None):
     fp = fingerprint or {}
     return {
         'game_id': game_id, 'next_stage': stage,
+        'title_work': deepcopy(TITLE_WORK.get(game_id)),
         'scope': 'Engineering plan only; no reader, writer or runtime support is inferred.',
         'start_from': fp.get('start_from') or fp.get('engine_reader') or '',
         'reuse': 'Read re_dossier for this game and re_playbook native-reader-writer. Verify fingerprint suggestions against the owned build before reusing a module.',
@@ -82,6 +114,13 @@ def prompt(game_id, *, stage='inventory', fingerprint=None):
     packet = plan(game_id, stage=stage, fingerprint=fingerprint)
     stages = [stage] if stage else list(STAGES)
     lines = ['Native reader/writer engineering for game_id=' + game_id + ':', packet['reuse']]
+    if packet.get('title_work'):
+        title = packet['title_work']
+        lines += ['Exact target: ' + title['platform'] + '; ' + title['source_format'],
+                  title['identity_warning'], 'Validated engineering scope: ' + title['validated_scope']]
+        if title.get('command'):
+            lines.append('Native source inventory: ' + title['command'])
+        lines.append('Still required: ' + '; '.join(title['separate_work']))
     if packet['start_from']:
         lines.append('Candidate module (verify compatibility): ' + str(packet['start_from']))
     for name in stages:
