@@ -62,15 +62,14 @@ def test_xdvdfs_locate():
 
 
 def test_parse_xex_header():
-    blob = bytearray(0x40)
+    blob = bytearray(0x60)
     blob[:4] = b"XEX2"
-    struct.pack_into("<I", blob, 4, 0x30)  # base header size 0x30
-    struct.pack_into("<II", blob, 0x18, 0x00040001, 0x12345678)  # entry point
-    struct.pack_into("<II", blob, 0x20, 0x00040401, 0x454107DC)  # title id
-    struct.pack_into("<II", blob, 0x28, 0, 0)  # terminator
-    h = parse_xex_header(bytes(blob))
-    assert h[0x00040001] == 0x12345678
-    assert h[0x00040401] == 0x454107DC
+    struct.pack_into(">I", blob, 4, 1)
+    struct.pack_into(">I", blob, 8, len(blob))
+    struct.pack_into(">I", blob, 20, 2)
+    struct.pack_into(">II", blob, 0x18, 0x00010100, 0x82000000)
+    struct.pack_into(">II", blob, 0x20, 0x00040006, 0x40)
+    assert parse_xex_header(bytes(blob)) == {0x00010100: 0x82000000, 0x00040006: 0x40}
 
 
 def test_bf64_header_real_observed_fields():
@@ -100,3 +99,22 @@ def test_classify():
     assert classify(b"3BDS\x00\x04") == "Xenon compiled shader database"
     assert classify(b"XEX2\x00\x00") == "Xbox 360 executable"
     assert classify(b"\x00\x01\x02\x03") is None
+
+
+def test_small_inventory_hash_is_json_serializable(tmp_path):
+    import hashlib, json
+    from gbox.naruto_bb_inventory import inventory
+    blob, _, _, _ = _build_xdvdfs({})
+    path = tmp_path / "small.iso"
+    path.write_bytes(blob)
+    result = inventory(str(path))
+    assert result["source"]["sha256"] == hashlib.sha256(blob).hexdigest()
+    json.dumps(result)
+
+
+def test_binary_headers_reject_truncated_data():
+    import pytest
+    with pytest.raises(ValueError):
+        parse_xex_header(b"XEX2" + bytes(16))
+    with pytest.raises(ValueError):
+        bf64_header(b"BF64" + bytes(8))

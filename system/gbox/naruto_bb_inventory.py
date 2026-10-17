@@ -60,13 +60,13 @@ def xdvdfs_locate(fh, partitions=PARTITIONS) -> tuple[int, int, int]:
     for p in partitions:
         fh.seek(p + 32 * SECTOR)
         hdr = fh.read(28)
-        if hdr[:20] == XDVDFS_MAGIC:
+        if len(hdr) == 28 and hdr[:20] == XDVDFS_MAGIC:
             root_sector, root_size = struct.unpack("<II", hdr[20:28])
             return p, root_sector, root_size
     fh.seek(0)
     buf = fh.read(0x4000000)
     idx = buf.find(XDVDFS_MAGIC)
-    if idx < 0:
+    if idx < 32 * SECTOR or idx % SECTOR or idx + 28 > len(buf):
         raise ValueError("no XDVDFS volume descriptor found")
     base = idx & ~(SECTOR - 1)
     root_sector, root_size = struct.unpack("<II", buf[base + 20:base + 28])
@@ -88,7 +88,7 @@ def xdvdfs_walk(fh, part: int, root_sector: int, root_size: int) -> dict[str, tu
 
     def walk(sector, size, path, depth=0):
         if depth > 10:
-            return
+            raise ValueError("XDVDFS directory nesting exceeds probe limit")
         fh.seek(part + sector * SECTOR)
         d = fh.read(size)
         stack = [0]
@@ -119,24 +119,19 @@ def xdvdfs_walk(fh, part: int, root_sector: int, root_size: int) -> dict[str, tu
 
 
 def parse_xex_header(blob: bytes) -> dict:
-    """Decode a XEX2 executable's optional-header table.
+    """Return raw big-endian XEX2 optional key/value pairs from the counted table.
 
-    Optional headers are (u32 key, u32 value) pairs at 0x18..base_header_size.
-    0x00040001 = entry point (RVA), 0x00040401 = title id, 0x00010100 = image
-    base address.  Returns raw key/value pairs; not all keys are documented.
+    Reference: xenia-project/xenia src/xenia/kernel/util/xex2_info.h.
+    Values may be immediate fields or offsets, depending on the key.
     """
-    if blob[:4] != b"XEX2" or len(blob) < 8:
-        raise ValueError("not a XEX2 image")
-    hsize = struct.unpack("<I", blob[4:8])[0]
-    out = {}
-    off = 0x18
-    while off + 8 <= hsize:
-        key = struct.unpack("<I", blob[off:off + 4])[0]
-        if key == 0:
-            break
-        out[key] = struct.unpack("<I", blob[off + 4:off + 8])[0]
-        off += 8
-    return out
+    if len(blob) < 24 or blob[:4] != b"XEX2":
+        raise ValueError("not a complete XEX2 image header")
+    header_size = struct.unpack_from(">I", blob, 8)[0]
+    count = struct.unpack_from(">I", blob, 20)[0]
+    end = 24 + count * 8
+    if not end <= header_size <= len(blob):
+        raise ValueError("XEX2 optional table outside header")
+    return dict(struct.unpack_from(">II", blob, off) for off in range(24, end, 8))
 
 
 def bf64_header(blob: bytes) -> dict:
@@ -145,7 +140,7 @@ def bf64_header(blob: bytes) -> dict:
     Only the words the community tooling names are captured; the tree-walk of the
     file/folder info tables is the analysis-stage opener, not this function.
     """
-    if blob[:4] != b"BF64":
+    if len(blob) < 68 or blob[:4] != b"BF64":
         raise ValueError("not a BF64 BigFile")
     v = struct.unpack("<I", blob[4:8])[0]
     words = struct.unpack("<11I", blob[8:8 + 44])
@@ -180,7 +175,7 @@ def inventory(path: str) -> dict:
     if not src.is_file():
         raise FileNotFoundError(path)
 
-    iso_sha = hashlib.sha256(src.read_bytes()) if src.stat().st_size < 64 * 1024 * 1024 else None
+    iso_sha = hashlib.sha256(src.read_bytes()).hexdigest() if src.stat().st_size < 64 * 1024 * 1024 else None
 
     with open(path, "rb") as fh:
         part, root_sector, root_size = xdvdfs_locate(fh)
