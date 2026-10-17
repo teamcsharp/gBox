@@ -663,6 +663,8 @@ def stale(root: Path, meta: dict) -> bool:
 def _roles_digest(meta: dict) -> str:
     import hashlib
     roles = (meta.get("rig") or {}).get("roles") or {}
+    if meta.get("role_mapping_policy") == "explicit_only":
+        roles = {"roles": roles, "mapping_policy": "explicit_only"}
     return hashlib.sha1(json.dumps(roles, sort_keys=True).encode()).hexdigest()[:10]
 
 
@@ -690,7 +692,10 @@ def compute(root: Path | None, meta: dict, model: Path | None = None, fix: bool 
     roles = dict(rig.get("roles") or {})
     src = rig.get("roles_source") or ("guessed" if rig.get("roles_guessed") else "reader" if roles else "")
     is_sprite = ckind == "sprites" or an.get("format") == "png"
-    if fix and an and not is_sprite and ckind not in PROP_KINDS and pos:
+    explicit_roles = meta.get("role_mapping_policy") == "explicit_only"
+    if explicit_roles and not roles:
+        limiting.append("semantic joint roles require explicit verification; automatic mapping disabled by reader")
+    if fix and an and not is_sprite and ckind not in PROP_KINDS and pos and not explicit_roles:
         case = match_case(roles, pos)
         if case:
             roles = roles | case
