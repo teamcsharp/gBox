@@ -309,11 +309,13 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/builds.js"></script>
 <script src="/viz/toast-stack.js"></script>
 <script src="/viz/build-notes.js"></script>
+<script src="/viz/rom-export-repair.js"></script>
 <script src="/viz/launch-mods.js"></script>
 <script src="/viz/retarget-handles.js"></script>
 <script src="/viz/texture-review.js"></script>
 <script src="/viz/photo-skin.js"></script>
 <script src="/viz/selfie-models.js"></script>
+<script src="/viz/game-model-library.js"></script>
 <script src="/viz/retarget-editor.js"></script>
 <script src="/viz/pick-whip.js"></script>
 <script src="/viz/gpu-game-surface.js"></script>
@@ -485,6 +487,7 @@ function bnAnnounce(n) {                                       // a new build en
 }
 window.gboxBuildNoteOpen = () => { TRAY.open = true; trayPop(); };   // the desktop shell: its OS notification was clicked
 const buildNoteIO = () => ({ api, notes: () => TRAY.notes, state: TRAY.bn, here: window.GBOX_LOCAL?.worker || "",
+  repairExport: item => GBoxRomExportRepair.open(item,{api}),
   launch: (gid, x) => gameMenuIO().launch(gid, x),
   openMods: (gid, mod) => { MODSG.focus = { q: mod || "", game: gid || "" }; show("Mods"); },
   openRequest: async r => {
@@ -796,11 +799,13 @@ homeView.after = () => {
 };
 
 // The game's extracted models live here, separate from the boot/mod selector.
+const GAME_MODEL_LIBRARY_STATE = {};
+function openGameModelLibrary(){return GBoxGameModelLibrary.open({api,openGame:(gid,title)=>show("GameModels",gid,title)},GAME_MODEL_LIBRARY_STATE);}
 async function selfieModelsView() {
   return '<div class="bar"><h2 style="margin:0">Models · Selfies</h2><button class="act" id="selfie-library">Game library</button></div><p class="mut">Each source image collects its custom donors, Blender edits and fitted models. Analyze the rotating model, export to Blender, or download a self-contained GLB.</p><div id="selfie-models"></div>';
 }
 selfieModelsView.after=()=>{
-  $('#selfie-library').onclick=()=>show('Library');
+  $('#selfie-library').onclick=openGameModelLibrary;
   const face=document.createElement('button');face.className='act';face.id='native-face-editor-open';face.textContent='Liquify / lattice face editor';
   face.onclick=()=>GBoxNativeFaceEditor.open({}, {api,url:bnUrl});$('#selfie-library').after(face);
   const paint=document.createElement('button');paint.className='act';paint.id='photocraft-open';paint.textContent='PhotoCraft image / texture editor';paint.onclick=()=>photocraftOpen();face.after(paint);
@@ -812,7 +817,7 @@ tabs.GameModels = async (gid, title) => {
   const all = await api(`/api/characters?game_id=${encodeURIComponent(gid)}`);
   const models = all.filter(m => m.source?.game_id === gid);
   GAME_MODELS.models = models;
-  return `<div class="bar"><button class="act" id="models-back">← Library</button><h2 style="margin:0">${esc(title || "Game")} · Models</h2><span class="mut">${models.length} extracted</span><button class="act" id="models-selfies">Selfie models</button></div>
+  return `<div class="bar"><button class="act" id="models-back">Choose game</button><h2 style="margin:0">${esc(title || "Game")} · Models</h2><span class="mut">${models.length} extracted</span><button class="act" id="models-selfies">Selfie models</button></div>
     <div class="game-models"><div class="game-model-list" id="game-model-list">${models.length ? models.map(gameModelTile).join("") : '<p class="mut">No extracted models for this game yet.</p>'}
       <button class="act" id="models-collect">Extract this game's models</button><div id="models-collect-status" class="mut"></div></div>
       <section style="min-width:0"><div class="game-model-stage"><div id="game-model-preview" class="game-model-preview"><p class="mut" style="padding:15px">Select a model to inspect it.</p></div><aside id="model-clips" aria-label="Animation clips" hidden></aside></div>
@@ -822,7 +827,7 @@ tabs.GameModels.after = (gid, title) => {
   const page = $("#game-model-list"), preview = $("#game-model-preview"), detail = $("#game-model-detail");
   const revision = viewRevision;
   const models = GAME_MODELS.models;
-  $("#models-back").onclick = () => show("Library");
+  $("#models-back").onclick = openGameModelLibrary;
   $("#models-selfies").onclick = () => show("Models");
   $("#models-collect").onclick = async e => {
     const button = e.currentTarget;
@@ -1483,7 +1488,7 @@ function card(g) {
     <div class="t">${esc(g.title)}</div>
     <div class="s">${esc(g.system || g.platform)}${g.year ? " · " + esc(g.year) : ""}${g.manufacturer ? " · " + esc(g.manufacturer) : ""}</div>
     <div class="s">${g.size ? (g.size / 2 ** 20).toFixed(g.size > 2 ** 30 ? 0 : 1) + " MB · " : ""}${g.last_played ? "played " + new Date(g.last_played * 1000).toLocaleDateString() + " · " : ""}${(g.cached_on || []).length ? "cached · " : ""}${esc(where)} · <span class="${/failed/.test(g.playable) ? "bad" : /launches/.test(g.playable) ? "ok" : ""}">${esc(g.playable)}</span>${launchReportBadge(g)}</div>
-    <div class="row"><button class="act pri" title="${window.GBOX_LOCAL?.worker && g.core ? "Play natively on this PC (full FPS)" : "Play"}" onclick='play(${JSON.stringify(g.game_id)})'>Play</button>
+    <div class="row"><button class="act pri" title="${WHERE === "local" && window.GBOX_LOCAL?.worker ? "Play on this PC (" + esc(window.GBOX_LOCAL.worker) + ")" : "Play"}" onclick='play(${JSON.stringify(g.game_id)})'>Play</button>
       ${g.core && window.GBOX_LOCAL?.worker ? (WHERE === "local"
           ? `<button class="act" title="Run on the DGX Spark GPU and stream it here" onclick='play(${JSON.stringify(g.game_id)},"linux")'>Spark</button>`
           : `<button class="act" title="Run natively on this PC (full FPS)" onclick='play(${JSON.stringify(g.game_id)},window.GBOX_LOCAL.worker)'>This PC</button>`) : ""}
@@ -1566,10 +1571,10 @@ async function play(id, node, debug, boot) {
   const g = await api("/api/catalog/" + id).catch(() => ({ title: "Game" }));
   if (LOADING !== launch) return;
   boot = boot || bootGet(id);
-  // default from the toggle: THIS PC (native, full FPS, zero input lag) when the system has a core, else the Spark
-  // PS3 has no libretro core but runs natively here (RPCS3): keep it on this PC instead of whichever worker answers first
-  if (!node && WHERE === "local" && window.GBOX_LOCAL?.worker && (g.core || g.platform === "ps3")) node = window.GBOX_LOCAL.worker;
-  if (!node && WHERE === "spark" && g.core) node = "linux";
+  // The selected computer applies to every runtime, including Cxbx and native PC games.
+  // Missing local runtimes or an offline worker must never redirect play to another PC.
+  if (!node && WHERE === "local" && window.GBOX_LOCAL?.worker) node = window.GBOX_LOCAL.worker;
+  if (!node && WHERE === "spark") node = "linux";
   if (debug) node = "linux";
   Object.assign(launch, { title: g.title, core: g.core || "", node: node || "auto" });
   const where = node === "linux" ? "DGX Spark (stream)" : node === "windows" ? "Windows node" : node ? `this PC (${node}) · native` : "auto";

@@ -516,6 +516,9 @@ def classify(mod: dict, cfg=None) -> list[dict]:
                         "label": label})
         elif tool == "@launch":
             out.append({"kind": "none", "label": label, "why": "launches the plain game: nothing to bake"})
+        elif tool == "pso_mods" and inp.get("op") == "crit_always" and inp.get("on", True):
+            out.append({"kind": "pso_code_patch", "patch": "crit_always", "label": label,
+                        "game_id": inp.get("game_id") or mod.get("game_id")})
         elif tool == "re_mods":
             op = str(inp.get("op", "")).strip().lower().replace(" ", "_").replace("-", "_")
             op = RE_PATCH_ALIASES.get(op, op)
@@ -733,6 +736,12 @@ def export(cfg, game: dict, rom: Path, mods: list[dict] | None = None, file_mods
     plat, gid = game.get("platform", ""), game["game_id"]
     comps = [c for m in (mods or []) for c in classify(m, cfg)]
     comps += [{"kind": "file_mod", "game_id": gid, "name": n, "label": f"file mod {n}"} for n in (file_mods or [])]
+    if any(c["kind"] == "pso_code_patch" for c in comps):
+        if plat != "dreamcast" or changes or any(c["kind"] != "pso_code_patch" or
+                (c.get("game_id") and c["game_id"] != gid) for c in comps):
+            raise ValueError("Export the PSO US v2 critical-hit modification alone; mixed changes need a verified combined writer")
+        from . import pso_rom_export
+        return pso_rom_export.export(cfg, game, rom, name, progress)
     fms = []
     for c in comps:
         if c["kind"] == "file_mod":
@@ -946,7 +955,8 @@ def _finish(res: dict, out: Path) -> dict:
     img = res.get("image")
     (out / "README.txt").write_text(README.format(
         title=res["title"], game=res.get("game"), platform=res["platform"], when=time.strftime("%Y-%m-%d %H:%M"),
-        image_line=(f"Bootable image: {img}" if img and img != "game/" else
+        image_line=(f"Original library file: {img} (unchanged; archives may require extraction)" if res.get("mode") == "original" else
+                    f"Bootable image: {img}" if img and img != "game/" else
                     f"Bootable folder: game/ ({res['folder_files']} files)" if img else "No image"),
         patches="\n".join(f"  {p.get('file', '?')} ({p['format']})" + (f" - apply to: {res['source']['vanilla_image']} "
                           f"(crc32 {res['source'].get('crc32', '?')})" if res.get("source") else "")
