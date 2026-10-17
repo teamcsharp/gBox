@@ -89,8 +89,9 @@ overlaps.
 Topology, skeleton, animation maps, palettes, material flags, tangents, culling
 metadata and unknown records are preserved. Large deformations may need new
 bounds/tangents or other engine metadata: they have not been proven by this
-writer. Numeric bone IDs remain numerical identities; they do not establish
-semantic roles or motion compatibility.
+writer. Exact original Chris/Sheva sources now have separately verified [offline body
+anchors](re5ps3-roles.md). Changed or unknown MOD bytes receive no automatic role
+map. Neither body-region evidence nor fixed-layout edits prove motion compatibility.
 
 ## Texture edits
 
@@ -127,7 +128,7 @@ layout and preserved unknown bytes. Invalid geometry, identity, dimensions,
 non-finite values and unsupported edits create no output artifact.
 
 The API/CLI combines fixed-layout resources from the original exact-build pack.
-Arbitrary Sonic/Mario donor topology, semantic retargeting roles, rebuilt bounds/tangents,
+Arbitrary Sonic/Mario donor topology, fitted donor deformation, rebuilt bounds/tangents,
 animation acceptance, full cast discovery, an installable modified game,
 unlocks and live sidebar inventory/equipment remain separate work. No gameplay
 or full-cast completion is claimed.

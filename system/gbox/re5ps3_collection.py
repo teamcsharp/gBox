@@ -14,8 +14,9 @@ import threading
 
 from .re5ps3_arc import Arc, sha
 from .re5ps3_models import GAME_ID, TITLE_ID, export_archive
+from .re5ps3_roles import CHRIS_MODEL, SHEVA_MODEL, NATIVE_ROLES, ROLE_VERSION
 
-READER_VERSION = 1
+READER_VERSION = 2
 _LOCK = threading.Lock()
 SFO = 'PS3_GAME/PARAM.SFO'
 EBOOT = 'PS3_GAME/USRDIR/EBOOT.BIN'
@@ -41,10 +42,11 @@ def roster():
 def collection_scope():
     return {'scope': 'two_normal_player_models', 'known_targets': 2, 'full_cast': False,
             'native_formats': ['PS3 ARC v8', 'MOD 156 revision 1', 'TEX 102'],
-            'lod_mask': 1, 'textures': 'diffuse only', 'semantic_roles': 'unverified',
+            'lod_mask': 1, 'textures': 'diffuse only', 'semantic_roles': '18 exact-source offline body anchors',
             'native_model_writer': False, 'gameplay_verified': False,
-            'pending': ['other costumes, NPCs, enemies and cutscenes', 'semantic joint roles and animations',
-                        'native MOD/TEX writer and Sonic/Mario fitting', 'unlock and live inventory/equip validation']}
+            'native_asset_writer': 'transactional fixed-layout MOD/TEX edits only',
+            'pending': ['other costumes, NPCs, enemies and cutscenes', 'native animations and motion compatibility',
+                        'arbitrary donor topology and Sonic/Mario fitting', 'unlock and live inventory/equip validation']}
 
 
 def needs_refresh(meta):
@@ -58,6 +60,10 @@ def needs_refresh(meta):
     target = next((r['key'] for r in roster() if meta.get('slug') in
                    (r['slug'], r['slug'] + '_' + GAME_ID)), None)
     model = r'pawn\pl\pl00\model\pl0000' if member == CHRIS else r'pawn\pl\pl01\model\pl0100'
+    model_hash = CHRIS_MODEL if member == CHRIS else SHEVA_MODEL
+    roles = evidence.get('role_evidence') or {}
+    if not isinstance(roles, dict):
+        return True
     return not (meta.get('re5ps3_reader') == READER_VERSION and
                 source.get('game_id') == GAME_ID and source.get('platform') == 'ps3' and
                 meta.get('role_mapping_policy') == 'explicit_only' and
@@ -66,6 +72,10 @@ def needs_refresh(meta):
                 evidence.get('game_id') == GAME_ID and evidence.get('title_id') == TITLE_ID and
                 evidence.get('disc_version') == '02.00' and evidence.get('app_version') == '01.00' and
                 evidence.get('model_member') == model and
+                evidence.get('source_sha256') == model_hash and
+                roles.get('version') == ROLE_VERSION and roles.get('source_model_sha256') == model_hash and
+                roles.get('native_joint_ids') == NATIVE_ROLES[model_hash] and
+                roles.get('roles') == {r: f'j{j:03d}' for r, j in NATIVE_ROLES[model_hash].items()} and
                 evidence.get('archive_sha256') == FILES[member][1] and
                 evidence.get('source_files_sha256') == {m: FILES[m][1] for m in (SFO, EBOOT, member)})
 
@@ -207,10 +217,14 @@ def extract_run(ctx, game, entry, work):
     result = export_archive(Arc(pack), model, output, lod=1)
     result.update(game_id=GAME_ID, title_id=TITLE_ID, disc_version='02.00', app_version='01.00',
                   source=source, source_files_sha256=hashes, archive_member=row['key'])
-    return {'files': [output], 'roles': {}, 'tool': 'gbox.re5ps3_collection',
+    roles = result.get('role_evidence')
+    if not roles:
+        raise ValueError('exact native model is missing verified offline body roles')
+    return {'files': [output], 'roles': roles['roles'], 'tool': 'gbox.re5ps3_collection',
             'source_files': [f'{m} SHA256 {h}' for m, h in hashes.items()] + [model],
             'notes': 'Native PS3 normal player model, LOD mask 1, diffuse textures and original weighted numeric joints. '
-                     'Only Chris/Sheva normal models are covered. Semantic roles and animations remain unverified; '
-                     'no native MOD/TEX writer, full cast swap, unlock/inventory or gameplay acceptance.',
+                     'Only Chris/Sheva normal models are covered. Eighteen exact-source body anchors were verified '
+                     'by controlled offline poses. Native animation compatibility remains unverified; '
+                     'bounded MOD/TEX edits do not establish a full cast swap, unlock/inventory or gameplay acceptance.',
             'extra': {'re5ps3_reader': READER_VERSION, 'native_evidence': result,
                       'native_coverage': collection_scope(), 'role_mapping_policy': 'explicit_only'}}

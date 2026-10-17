@@ -92,7 +92,8 @@ def test_re5_reader_handoff_exposes_model_cli_without_writer_acceptance(monkeypa
     help_text = capsys.readouterr().out
     assert '--model' in help_text and '--lod' in help_text and '--out' in help_text
     assert 'editable targets for Sonic/Mario fitting' in prompt
-    assert 'numeric joint IDs' in prompt and 'not guessed semantic bone roles' in prompt
+    assert 'numeric joint IDs' in prompt and '18 exact-source body anchors' in prompt
+    assert 'changed or unknown native MOD hashes get no semantic role map' in prompt
     assert 'no arbitrary donor topology, full-cast replacement or gameplay acceptance' in prompt
     assert title['collection_command'] in prompt
     assert 'two-target partial coverage' in prompt and 'exact-build normal character collection' in prompt

@@ -19,7 +19,7 @@ from PIL import Image
 
 from .re5ps3_arc import Arc, MAX_ARCHIVE, sha
 
-READER_VERSION = 1
+READER_VERSION = 2
 GAME_ID = 'e7ca89bbeb67360d'
 TITLE_ID = 'BLUS30491'
 MAX_MODEL = 64 * 1024 * 1024
@@ -375,7 +375,9 @@ def export_glb(model, textures, path, *, name='re5ps3', lod=1, scale=.01):
     skin = dict(joints=list(range(2, len(nodes))), inverseBindMatrices=acc(inverse.transpose(0, 2, 1).reshape(-1, 16), '<f4', 5126, 'MAT4'))
     if len(roots) == 1:
         skin['skeleton'] = roots[0]
+    from .re5ps3_roles import role_evidence
     receipt = dict(reader_version=READER_VERSION, source_sha256=sha(model.data), bones=len(model.parents),
+                   role_evidence=role_evidence(model),
                    primitives=len(selected), native_meshes=len(model.meshes), lod_mask=lod,
                    triangles=sum(len(m['triangles']) for m in selected),
                    vertices=sum(len(m['positions']) for m in selected), textures=texture_evidence,
