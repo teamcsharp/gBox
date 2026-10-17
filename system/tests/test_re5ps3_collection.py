@@ -117,8 +117,9 @@ def test_owned_normal_collection_has_real_models_provenance_and_partial_scope(tm
     before = {m: sha((owned / m).read_bytes()) for m in R.FILES}
     ctx, root = context(tmp_path, monkeypatch, owned / 'PS3_GAME' / 'USRDIR' / 'EBOOT.BIN')
     result = C.collect(ctx, None)
-    assert (result['status'], result['collected'], result['total'], result['retargetable']) == ('partial', 2, 2, 0), result
+    assert (result['status'], result['collected'], result['total'], result['retargetable']) == ('partial', 2, 2, 2), result
     assert result['scope'] == R.collection_scope() and result['scope']['full_cast'] is False
+    assert result['roster_complete'] is True
     assert not result['slots']
     for row, bones, triangles in zip(R.roster(), (130, 147), (18633, 18070)):
         meta = C.get(root, row['slug'])
@@ -126,19 +127,23 @@ def test_owned_normal_collection_has_real_models_provenance_and_partial_scope(tm
         assert meta['source']['game_id'] == GAME['game_id'] and meta['source']['platform'] == 'ps3'
         assert meta['re5ps3_reader'] == R.READER_VERSION
         assert C.reader_status(meta)['stale'] is False
-        assert meta['role_mapping_policy'] == 'explicit_only' and not meta['rig'].get('roles')
+        assert meta['role_mapping_policy'] == 'explicit_only' and len(meta['rig']['roles']) == 18
+        assert not meta['rig'].get('roles_guessed')
         assert meta['native_coverage'] == result['scope']
         ev = meta['native_evidence']
         assert ev['source_files_sha256'] == {m: before[m] for m in (R.SFO, R.EBOOT, row['key'])}
         assert ev['archive_member'] == row['key'] and ev['title_id'] == R.TITLE_ID
         assert ev['bones'] == bones and ev['triangles'] == triangles
         assert ev['gameplay_verified'] is False
+        assert ev['role_evidence']['roles'] == meta['rig']['roles']
+        assert ev['role_evidence']['animation_compatibility_verified'] is False
         doc, _binary, _acc = glb(root / row['slug'] / meta['model'])
         assert len(doc['skins'][0]['joints']) == bones and doc['images']
         assert all(doc['nodes'][j]['name'].startswith('j') for j in doc['skins'][0]['joints'])
     # Normal refresh must preserve coverage, and repeat collection reuses verified entries.
     refreshed = C.refresh_collection(root, result)
-    assert refreshed['scope'] == result['scope'] and refreshed['retargetable'] == 0
+    assert refreshed['scope'] == result['scope'] and refreshed['retargetable'] == 2
+    assert refreshed['status'] == 'partial' and refreshed['roster_complete'] is True
     monkeypatch.setattr(C, '_rom', lambda *a: pytest.fail('verified entries should be reused'))
     assert {r['status'] for r in C.collect(ctx, None)['entries']} == {'in_collection'}
     assert {m: sha((owned / m).read_bytes()) for m in R.FILES} == before
@@ -154,6 +159,9 @@ def test_verified_legacy_entry_cannot_bypass_exact_source_reader(tmp_path, monke
                        ('slug', R.roster()[1]['slug']), ('native_evidence', ['malformed'])]:
         assert R.needs_refresh(first | {key: value})
     assert not R.needs_refresh(first | {'slug': first['slug'] + '_' + R.GAME_ID})
+    for broken in ({}, {'version': 1, 'source_model_sha256': R.SHEVA_MODEL},
+                   first['native_evidence']['role_evidence'] | {'native_joint_ids': {'head': 23}}):
+        assert R.needs_refresh(first | {'native_evidence': first['native_evidence'] | {'role_evidence': broken}})
     legacy = first.copy()
     for key in ('re5ps3_reader', 'native_evidence', 'role_mapping_policy'):
         legacy.pop(key)
@@ -163,7 +171,7 @@ def test_verified_legacy_entry_cannot_bypass_exact_source_reader(tmp_path, monke
     monkeypatch.setattr(C, '_rom', lambda *a: accesses.append(True) or owned)
     result = C.extract_dedicated(ctx, GAME, 'Chris', root)
     assert result['status'] == 'extracted' and len(accesses) == 1
-    assert not R.needs_refresh(result['entry']) and not result['entry']['rig'].get('roles')
+    assert not R.needs_refresh(result['entry']) and len(result['entry']['rig']['roles']) == 18
 
 
 def test_missing_target_is_reported_without_hiding_successful_target(tmp_path, monkeypatch, owned):

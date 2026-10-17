@@ -42,12 +42,14 @@ actual hashes, platform/revision, archive/model resource identity, reader
 version, native formats and explicit two-target coverage. Normal collection
 exports LOD mask 1; the CLI still exposes all three validated masks.
 
-These entries deliberately set `role_mapping_policy=explicit_only`. Shared
-replacement readiness keeps verified numeric joints without inferring semantic
-body roles from their shape. Operator-authored roles remain possible, but the
-reader does not claim them. Thus the initial collection reports two verified
-models and **zero retargetable characters**, with `status=partial`. Coverage
-does not represent the entire cast or a working native MOD/TEX writer.
+These entries set `role_mapping_policy=explicit_only`. Reader version 2 supplies
+18 body anchors verified against each exact native MOD by controlled offline
+skin poses; it never guesses roles for other source hashes. Numeric joint names
+remain intact. See [the role evidence and literal mappings](re5ps3-roles.md).
+Normal collection reports two verified, retargetable models while preserving
+`status=partial`, `roster_complete=true` and `full_cast=false`: these two targets
+do not represent the full cast. The fixed-layout MOD/TEX batch writer remains
+separate from arbitrary donor topology and gameplay acceptance.
 
 The collection tests exercise real normal collection and preview verification,
 readiness, independent GLB readback, reuse, source immutability, exact-build

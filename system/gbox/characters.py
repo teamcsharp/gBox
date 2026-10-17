@@ -1919,23 +1919,29 @@ def collect(ctx, inp):
     noun = 'characters' if len(chars) == len(entries) else 'models'
     ctx.progress(100, f"Collected {len(entries)} {noun} from {game['title']}")
     from . import char_coverage
-    return collection_status(results) | {
+    scope = reader_scope(name)
+    return collection_status(results, scope=scope) | {
         'game_id': game['game_id'], 'extractor': name, 'reader_version': reader_version(name),
-        'scope': reader_scope(name),
+        'scope': scope,
         # the slots this game's writer can put a collection character into (the cast menu: player, enemy:<name>...)
         'slots': char_coverage.cast_slots(game)}
 
 
-def collection_status(results: list[dict]) -> dict:
+def collection_status(results: list[dict], *, scope: dict | None = None) -> dict:
     """A roster's collection summary from its entry rows: complete when every entry is verified and every character
-    (kind 'character'; props, vehicles and sprite sets don't need a rig) is retargetable (verified + body roles)."""
+    (kind 'character'; props, vehicles and sprite sets don't need a rig) is retargetable (verified + body roles).
+    A reader that explicitly covers only part of the cast stays partial, with roster_complete tracking its subset."""
     chars = [r for r in results if r.get('kind', 'character') == 'character']
     good = sum(bool(r.get('verified')) for r in results)
     mapped = sum(bool(r.get('retargetable')) for r in chars)
-    return {'status': 'complete' if results and good == len(results) and mapped == len(chars) else 'partial',
+    roster_complete = bool(results and good == len(results) and mapped == len(chars))
+    summary = {'status': 'complete' if roster_complete else 'partial',
             'collected': good, 'total': len(results), 'retargetable': mapped, 'characters': len(chars),
             'replacement_ready': sum(1 for r in results if (r.get('replacement') or {}).get('status') == 'ready'),
             'entries': results}
+    if isinstance(scope, dict) and scope.get('full_cast') is False:
+        summary.update(status='partial', roster_complete=roster_complete)
+    return summary
 
 
 def refresh_collection(root: Path, result: dict) -> dict:
@@ -1965,7 +1971,7 @@ def refresh_collection(root: Path, result: dict) -> dict:
             if ready or (kind != 'character' and checked['ok']):
                 r['message'] = ''
         rows.append(r)
-    return result | collection_status(rows)
+    return result | collection_status(rows, scope=result.get('scope'))
 
 
 def _collect_stages(model: Path, meta: dict, state: str, data: dict, preview: bool = True):
