@@ -1690,16 +1690,23 @@ def _gcheat_apply(ad, ops):
             ad.write_memory(a, d)
 
 
-def _gcheat_loop(sid: str, c: dict):
+def _gcheat_loop(sid: str, c: dict, on=None):
+    from contextlib import nullcontext
     ad, _ = SESSIONS[sid]
     dbg = getattr(ad, "dbg", None)
-    while c["on"].is_set() and sid in SESSIONS:
+    on = c["on"] if on is None else on     # capture before thread start, not after a later re-enable
+    while on.is_set() and sid in SESSIONS:
         try:
-            if dbg is not None:
-                with dbg.paused():                         # one halt for the whole batch on debugger sessions
+            with c.get("lock") or nullcontext():
+                # Native-table handoff clears the event under this same lock.
+                # Recheck here so a waiting iteration cannot write after transfer.
+                if not on.is_set() or sid not in SESSIONS:
+                    break
+                if dbg is not None:
+                    with dbg.paused():                     # one halt for the whole batch on debugger sessions
+                        _gcheat_apply(ad, c["ops"])
+                else:
                     _gcheat_apply(ad, c["ops"])
-            else:
-                _gcheat_apply(ad, c["ops"])
         except Exception:
             pass
         time.sleep(0.05)
@@ -1720,15 +1727,40 @@ def cheats_tool(inp: CheatIn, ctx: Ctx):
             ad.cheat_source = hits[0].name
     ra = list(getattr(ad, "cheats", []) or [])
     mine = GCHEATS.setdefault(inp.session_id, [])
+    from . import native_cheat_runtime as NCR
+    def probe_native(index, ops):
+        before = []
+        for kind, address, data in ops:
+            original = ad.read_memory(address, len(data))
+            if len(original) != len(data):
+                raise RuntimeError(f"Native cheat read returned too few bytes at {address:#x}")
+            before.append({"address": hex(address), "bytes": original.hex()})
+        ctx.artifact("cheat_before.json", json.dumps(before).encode(), "application/json",
+                     note="rollback data before native cheat enable", index=index)
+        _gcheat_apply(ad, ops)
+        for kind, address, data in ops:
+            if ad.read_memory(address, len(data)) != data:
+                raise RuntimeError(f"Native cheat write did not read back correctly at {address:#x}; freeze was not enabled")
+    native = NCR.runtime(ad, g.get("platform", ""), mine,
+                         lambda c: threading.Thread(target=_gcheat_loop, args=(inp.session_id, c, c["on"]), daemon=True).start()) \
+        if any(NCR.is_native(e) for e in ra) or getattr(ad, '_gbox_native_cheats', None) is not None else None
     if inp.op in ("list", "search"):
         q = inp.query.lower()
         rows = [{"index": i, "desc": e.get("desc", ""), "enabled": e["enable"], "engine": "emulator",
                  "code": e.get("code") or (f"addr {e.get('address')} = {e.get('value')}" if e.get("address") else "")}
                 for i, e in enumerate(ra)]
-        rows += [{"index": len(ra) + i, "desc": c["desc"], "enabled": c["on"].is_set(), "engine": "gbox",
+        for row in rows:
+            if native is not None and row["index"] in native.logical:
+                row["enabled"] = native.enabled(row["index"])
+                if any(c.get("native_runtime") is native and c.get("native_index") == row["index"] for c in mine):
+                    row["engine"] = native.engine(row["index"])
+        rows += [{"index": len(ra) + i, "desc": c["desc"],
+                  "enabled": c["native_runtime"].enabled(c["native_index"]) if "native_runtime" in c else c["on"].is_set(),
+                  "engine": c["native_runtime"].engine(c["native_index"]) if "native_runtime" in c else "gbox",
                   "code": " / ".join(c["lines"])} for i, c in enumerate(mine)]
         if q:
-            rows = [r for r in rows if q in r["desc"].lower() or q in r["code"].lower()]
+            rows = [r for r, s in sorted(((r, C.match_query(q, r["desc"], r["code"])) for r in rows),
+                                         key=lambda x: -x[1]) if s > 0]
         return {"result": {"source": getattr(ad, "cheat_source", None), "count": len(rows), "cheats": rows[:400]},
                 "session_id": inp.session_id}
     if inp.op == "add":
@@ -1750,7 +1782,9 @@ def cheats_tool(inp: CheatIn, ctx: Ctx):
             raise ValueError("index required")
         if inp.index < len(ra):
             e = ra[inp.index]
-            ops, bad = C.decode(g.get("platform", ""), e.get("code", "")) if e.get("code") else ([], ["no code"])
+            if native is not None and NCR.is_native(e):
+                return {"result": native.set(inp.index, on, probe=probe_native), "session_id": inp.session_id}
+            ops, bad = C.decode(g.get("platform", ""), e.get("code", "") or "")
             if ops and not bad:                          # gBox can apply this code itself: verified writes on any core
                 import threading as _t
                 key = f"db{inp.index}"
@@ -1768,6 +1802,10 @@ def cheats_tool(inp: CheatIn, ctx: Ctx):
                         "session_id": inp.session_id}
             return {"result": ad.cheat_set(inp.index, on) | {"engine": "emulator"}, "session_id": inp.session_id}
         c = mine[inp.index - len(ra)]
+        if "native_runtime" in c:
+            result = c["native_runtime"].set(c["native_index"], on, probe=probe_native)
+            return {"result": result | {"index": inp.index, "database_index": c["native_index"]},
+                    "session_id": inp.session_id}
         if on and not c["on"].is_set():
             import threading as _t
             c["on"].set()
