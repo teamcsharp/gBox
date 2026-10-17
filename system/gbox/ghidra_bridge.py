@@ -123,10 +123,8 @@ class Session:
         env.update(self.config.rea_env)
         if home := ghidra_install_dir(self.config):
             env["GHIDRA_INSTALL_DIR"] = str(Path(home).resolve())
-        if "JAVA_HOME" not in env:
-            from .provision import jdk21
-            if java := jdk21(self.config):
-                env["JAVA_HOME"] = str(java.resolve())
+        from .analysis_runtime import apply_java_home
+        apply_java_home(self.config, env)
         env["PYTHONIOENCODING"] = "utf-8"
         return env
 
