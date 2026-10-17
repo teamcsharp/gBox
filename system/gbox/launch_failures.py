@@ -273,8 +273,18 @@ class Ledger:
     def _worker(self, wid: str | None) -> dict:
         if not wid:
             return {}
-        return next((w for w in self.h.workers() if w.get("id") == wid or w.get("name") == wid), None) or \
-            (self.store.get("worker", wid) or {"id": wid})
+        w = next((w for w in self.h.workers() if w.get("id") == wid or w.get("name") == wid), None)
+        if w:
+            return w
+        for _ in range(20):                        # a restarted worker re-registers under a new id: follow the alias
+            a = self.store.get("worker_alias", wid)
+            if not a:
+                break
+            wid = a.get("to") or a.get("id") or wid
+            w = next((w for w in self.h.workers() if w.get("id") == wid), None)
+            if w:
+                return w
+        return self.store.get("worker", wid) or {"id": wid}
 
     def _job_artifacts(self, job: dict) -> list[dict]:
         receipt = self.store.get("receipt", job.get("receipt_id") or "") or {}
@@ -793,7 +803,8 @@ class Ledger:
                 secs = float((c.get("detail") or {}).get("secs") or 30)
                 boot = max(LONG_BOOT_S, 3 * secs)
                 inp["boot_timeout_s"] = boot
-            nj = self.h.submit_job("launch_game", inp, facts["worker_id"])
+            nj = self.h.submit_job("launch_game", inp,
+                                   (self._worker(facts["worker_id"]) or {}).get("id") or facts["worker_id"])
             self._mark_remedy(nj["id"], sig)
             self._remedy_note(sig, "relaunch", f"Relaunching on {facts['worker']}"
                               + (f" with a {int(boot)} s boot timeout" if boot else "") + f" (job {nj['id']}).",
