@@ -59,7 +59,8 @@ def test_mixed_provider_run_is_not_credited_solely_to_last_model():
 
 def receipt(**extra):
     return dict(request_id=RID, commit='a'*40, pr_number=123, url='https://github.com/teamcsharp/gBox/pull/123',
-                published_at=145, checks=['4 passed'], provenance={'runs': [{'run_id': 'run-a'}]}) | extra
+                published_at=145, checks=['4 passed'], provenance={'status': 'observed', 'request_id': RID,
+                    'runs': [{'run_id': 'run-a', 'routes': W.observed_routes({'calls': [call()]}, NODES)}]}) | extra
 
 
 def test_exact_publication_merge_identity_and_reopened_ticket():

@@ -23,6 +23,17 @@
       && (!q || [r.title,r.current_action,...(r.tickets || []).map(t=>t.title)].join(' ').toLowerCase().includes(q)))
       .sort((a,b) => Number(active(b))-Number(active(a)) || Number(b.started || 0)-Number(a.started || 0) || String(a.id).localeCompare(String(b.id)));
   }
+  function visibleContributions(data, device, filter='all', query='') {
+    if(filter==='active')return [];
+    const q=query.toLowerCase();
+    return (data.contributions || []).filter(c => c.run_id==null && (!device || c.device_id===device)
+      && (!q || [c.ticket?.title,c.ticket?.number,c.request_id,...(c.outcomes || []).map(o=>o.title)].join(' ').toLowerCase().includes(q)))
+      .sort((a,b)=>Number(b.published_at || 0)-Number(a.published_at || 0) || String(a.id).localeCompare(String(b.id)));
+  }
+  const contributionTitle=c=>c.ticket?.title ? (c.ticket.number?'#'+c.ticket.number+': ':'')+c.ticket.title : c.outcomes?.[0]?.title || 'Published contribution';
+  function contributionRow(c,selected) {
+    return `<button type="button" class="dw-contribution${c.id===selected?' selected':''}" data-contribution="${esc(c.id)}" aria-pressed="${c.id===selected}"><strong>${esc(contributionTitle(c))}</strong><span>${esc((c.outcomes || []).map(outcomeLabel).join(' / '))}</span><small>${Number.isFinite(c.published_at)?'Published '+esc(timeLabel(c.published_at,true)):'Publication time unavailable'}; run timing unavailable</small></button>`;
+  }
   function concurrency(runs, bounds) {
     const changes=new Map();let count=0;
     const change=(at,n)=>changes.set(at,(changes.get(at)||0)+n);
@@ -63,19 +74,19 @@
       <span class="dw-run-result"><em>${esc(stateLabel(r))}</em><small>${esc((r.outcomes || []).map(outcomeLabel).join(' · ') || 'No linked outcome yet')}</small></span></button>`;
   }
   function mount(host, options) {
-    const state={data:null,device:null,selected:null,filter:'all',query:'',hours:6,window:'today',active:false,busy:false,serial:0,error:'',outcomes:[]};
+    const state={data:null,device:null,selected:null,contribution:null,filter:'all',query:'',hours:6,window:'today',active:false,busy:false,serial:0,error:'',outcomes:[]};
     host.classList.add('dw');
     host.innerHTML=`<header class="dw-heading"><div><div class="dw-eyebrow">DEVICE WORK</div><h2>What is getting done?</h2><p>Concurrent tasks, delivered changes, and the evidence behind them.</p></div><div class="dw-window"><label>Measure over <select data-window aria-label="Measurement window"><option value="today">Today</option><option value="7d">7 days</option></select></label><button type="button" data-refresh>Refresh</button></div></header>
       <div class="dw-notice" role="status" hidden></div><nav class="dw-devices" aria-label="Work device"></nav><div class="dw-metrics"></div>
       <div class="dw-layout"><section class="dw-main" aria-label="Concurrent tasks"><div class="dw-chart-head"><div><h3>Concurrent agent runs</h3><span>Includes model calls, tool use, and waiting.</span></div><label>Graph range <select data-range aria-label="Graph time range"><option value="1">Last hour</option><option value="6" selected>Last 6 hours</option><option value="0">Whole window</option></select></label></div>
       <div class="dw-chart"></div><div class="dw-filters"><label class="dw-search"><span>Find a task</span><input type="search" data-search placeholder="Game, request, or current action" aria-label="Find a task"></label><select data-filter aria-label="Tasks to show"><option value="all">All observed tasks</option><option value="active">Active tasks</option><option value="results">Tasks with outcomes</option></select><span class="dw-count"></span></div>
-      <div class="dw-columns"><span>Task / latest recorded action</span><span>Run duration / position in range</span><span>State / outcome</span></div><div class="dw-runs" role="region" aria-label="Concurrent task timeline" tabindex="0"></div></section>
+      <div class="dw-history" hidden></div><div class="dw-columns"><span>Task / latest recorded action</span><span>Run duration / position in range</span><span>State / outcome</span></div><div class="dw-runs" role="region" aria-label="Concurrent task timeline" tabindex="0"></div></section>
       <aside class="dw-detail" aria-label="Selected task evidence"></aside></div><footer class="dw-foot"></footer>`;
     const $=s=>host.querySelector(s);
     function replace(el,html) {
       if(el.dwHTML===html)return;
       const top=el.scrollTop, focused=el.contains(document.activeElement)?document.activeElement:null;
-      const key=focused?.dataset, target=key?['run','device','openRun','request','outcome'].find(k=>key[k]!=null):null;
+      const key=focused?.dataset, target=key?['run','contribution','device','openRun','request','outcome'].find(k=>key[k]!=null):null;
       const value=target?key[target]:null;
       el.innerHTML=html;el.dwHTML=html;el.scrollTop=top;
       if(target) [...el.querySelectorAll('button')].find(b=>b.dataset[target]===value)?.focus({preventScroll:true});
@@ -92,18 +103,27 @@
       const cards=[['Active runs',metrics.active_runs,'Currently executing or waiting'],['PRs merged',metrics.prs_merged,'Linked changes merged in this window'],['Requests resolved',metrics.requests_resolved,'Attributed completion evidence'],['Runs ended',metrics.ended_runs,`${number(metrics.failed_runs)} failed · ending is not task acceptance`]];
       replace($('.dw-metrics'),cards.map(([name,val,note])=>`<div><span>${esc(name)}</span><b>${number(val)}</b><small>${esc(note)}</small></div>`).join(''));
       const all=visibleRuns(d,state.device), runs=visibleRuns(d,state.device,state.filter,state.query), bounds=range(d,state.hours);
-      if(!runs.some(r=>r.id===state.selected))state.selected=runs[0]?.id || null;
+      const contributions=visibleContributions(d,state.device,state.filter,state.query);
+      const contribution=contributions.find(c=>c.id===state.contribution);
+      if(!contribution)state.contribution=null;
+      if(contribution)state.selected=null;
+      else if(!runs.some(r=>r.id===state.selected))state.selected=runs[0]?.id || null;
       replace($('.dw-chart'),graph(all,bounds));
       $('.dw-count').textContent=`${runs.length} of ${all.length} observed runs`;
+      $('.dw-history').hidden=!contributions.length;
+      replace($('.dw-history'),contributions.length?`<h3>Contributions without linked runs <small>${contributions.length}</small></h3><p>Publication and merge receipts remain available. These entries add no run duration or concurrency.</p><div class="dw-contributions" role="region" aria-label="Historical contribution evidence" tabindex="0">${contributions.map(c=>contributionRow(c,state.contribution)).join('')}</div>`:'');
       replace($('.dw-runs'),runs.length?runs.map(r=>row(r,bounds,state.selected)).join(''):'<div class="dw-empty">No tasks match this device and filter.</div>');
       const selected=runs.find(r=>r.id===state.selected);
       const calls=metrics.calls_ok==null || metrics.calls_failed==null?null:Number(metrics.calls_ok)+Number(metrics.calls_failed);
       const callFailure=metrics.calls_failed==null || metrics.calls_ok==null || !calls?'—':(100*Number(metrics.calls_failed)/calls).toFixed(1)+'%';
       const tokens=metrics.tokens_in==null || metrics.tokens_out==null?metrics.tokens_total??null:Number(metrics.tokens_in)+Number(metrics.tokens_out);
       const modelLabel=device?.models_seen?.length?'Observed models: '+device.models_seen.join(', '):device?.model?'Current model: '+device.model:'Model not recorded';
-      let detail=`<div class="dw-device-title">${esc(friendly(device))}<small>${esc(modelLabel)}</small></div><div class="dw-efficiency"><h3>Efficiency · ${esc(d.window?.label || state.window)}</h3><dl><div><dt>Model calls</dt><dd>${number(calls)}</dd></div><div><dt>Call failure rate</dt><dd>${esc(callFailure)}</dd></div><div><dt>Observed tokens</dt><dd>${compact(tokens)}</dd></div><div><dt>Agent time</dt><dd>${duration(metrics.wall_s)}</dd></div><div><dt>Peak concurrent runs</dt><dd>${number(metrics.peak_concurrency)}</dd></div><div><dt>PRs published</dt><dd>${number(metrics.prs_opened)}</dd></div><div><dt>Avg. successful call</dt><dd>${duration(metrics.mean_call_s)}</dd></div><div><dt>Ended runs with outcomes</dt><dd>${number(metrics.ended_runs_with_delivery)} / ${number(metrics.ended_runs)}</dd></div></dl><p>Agent time adds overlapping runs. Call time includes waiting. Outcomes mean recorded PR publication/merge or request completion; model-call success is not task acceptance.</p></div>`;
-      state.outcomes=selected?.outcomes || [];
-      if(selected) {
+      let detail=`<div class="dw-device-title">${esc(friendly(device))}<small>${esc(modelLabel)}</small></div><div class="dw-efficiency"><h3>Efficiency · ${esc(d.window?.label || state.window)}</h3><dl><div><dt>Model calls</dt><dd>${number(calls)}</dd></div><div><dt>Call failure rate</dt><dd>${esc(callFailure)}</dd></div><div><dt>Observed tokens</dt><dd>${compact(tokens)}</dd></div><div><dt>Agent time</dt><dd>${duration(metrics.wall_s)}</dd></div><div><dt>Peak concurrent runs</dt><dd>${number(metrics.peak_concurrency)}</dd></div><div><dt>PRs published</dt><dd>${number(metrics.prs_opened)}</dd></div><div><dt>Contributions in reviewed PRs</dt><dd>${number(metrics.prs_reviewed_contributions)}</dd></div><div><dt>Avg. successful call</dt><dd>${duration(metrics.mean_call_s)}</dd></div><div><dt>Ended runs with outcomes</dt><dd>${number(metrics.ended_runs_with_delivery)} / ${number(metrics.ended_runs)}</dd></div></dl><p>Agent time adds overlapping runs. Call time includes waiting. Outcomes mean recorded PR publication/merge or request completion; model-call success is not task acceptance.</p></div>`;
+      state.outcomes=contribution?.outcomes || selected?.outcomes || [];
+      if(contribution) {
+        const ticket=contribution.ticket;
+        detail+=`<section class="dw-inspect"><span class="dw-state">Recorded contribution</span><h3>${esc(contributionTitle(contribution))}</h3><p class="dw-action">No uniquely attributed execution is linked. Run duration and current activity are unknown.</p><div class="dw-attribution">Device evidence: ${esc((contribution.attribution?.source || 'Unavailable').replaceAll('_',' '))}${contribution.attribution?.scope?'<br>'+esc(contribution.attribution.scope):''}${contribution.attribution?.note?'<br>'+esc(contribution.attribution.note):''}${contribution.attribution?.boundary?'<br>'+esc(contribution.attribution.boundary):''}</div><div class="dw-links">${contribution.request_id?`<button type="button" data-request="${esc(contribution.request_id)}">${ticket?.number?'#'+esc(ticket.number)+' ':''}${esc(ticket?.title || 'Open request')}${ticket?.status?' / '+esc(ticket.status):''}</button>`:''}</div><h4>Recorded outcomes</h4>${state.outcomes.map(outcome).join('')}<p class="dw-empty-result">A published or merged contribution does not establish completed gameplay or request acceptance.</p></section>`;
+      } else if(selected) {
         detail+=`<section class="dw-inspect"><span class="dw-state">${esc(stateLabel(selected))}</span><h3>${esc(selected.title || 'Untitled run')}</h3><p class="dw-action">${esc(selected.current_action || 'No current action recorded.')}</p><div class="dw-attribution">Device evidence: ${esc((selected.attribution?.source || 'Unavailable').replaceAll('_',' '))}${selected.attribution?.scope?'<br>'+esc(selected.attribution.scope):''}${selected.attribution?.note?'<br>'+esc(selected.attribution.note):''}</div><div class="dw-links"><button type="button" data-open-run="${esc(selected.id)}">Open run and tool log</button>${(selected.tickets || []).map(t=>`<button type="button" data-request="${esc(t.id)}">#${esc(t.number || '—')} ${esc(t.title || 'Open request')} · ${esc(t.status || 'unknown')}</button>`).join('')}</div><h4>Linked outcomes</h4>${state.outcomes.length?state.outcomes.map(outcome).join(''):'<p class="dw-empty-result">No linked deliverable has been recorded for this run yet.</p>'}</section>`;
       } else detail+='<p class="dw-empty-result">Select a task to inspect its evidence.</p>';
       replace($('.dw-detail'),detail);
@@ -129,21 +149,22 @@
     }
     host.addEventListener('click',e=>{
       const b=e.target.closest('button');if(!b)return;
-      if(b.dataset.device){state.device=b.dataset.device;state.selected=null;render();}
-      else if(b.dataset.run){state.selected=b.dataset.run;render();}
+      if(b.dataset.device){state.device=b.dataset.device;state.selected=null;state.contribution=null;render();}
+      else if(b.dataset.run){state.selected=b.dataset.run;state.contribution=null;render();}
+      else if(b.dataset.contribution){state.contribution=b.dataset.contribution;state.selected=null;render();}
       else if(b.hasAttribute('data-refresh'))refresh();
       else if(b.dataset.openRun)options.onRun?.(b.dataset.openRun);
       else if(b.dataset.request)options.onRequest?.(b.dataset.request);
-      else if(b.hasAttribute('data-outcome')){const o=state.outcomes[Number(b.dataset.outcome)];if(!o)return;const link=url(o.url);if(link)options.onExternal?.(link);else if(o.request_id)options.onRequest?.(o.request_id);else if(options.onEvidence)options.onEvidence(o);else options.onRun?.(state.selected);}
+      else if(b.hasAttribute('data-outcome')){const o=state.outcomes[Number(b.dataset.outcome)];if(!o)return;const link=url(o.url);if(link)options.onExternal?.(link);else if(o.request_id)options.onRequest?.(o.request_id);else if(options.onEvidence)options.onEvidence(o);else if(state.selected)options.onRun?.(state.selected);}
     });
-    $('[data-window]').addEventListener('change',e=>{state.window=e.target.value;state.serial++;state.selected=null;refresh();});
+    $('[data-window]').addEventListener('change',e=>{state.window=e.target.value;state.serial++;state.selected=null;state.contribution=null;refresh();});
     $('[data-range]').addEventListener('change',e=>{state.hours=Number(e.target.value);render();});
     $('[data-filter]').addEventListener('change',e=>{state.filter=e.target.value;render();});
     $('[data-search]').addEventListener('input',e=>{state.query=e.target.value;render();});
     render();
     return {refresh,setActive(on){state.active=on;state.serial++;if(on)refresh();},state};
   }
-  const api={mount,range,visibleRuns,concurrency,graph,row,active,friendly,url,outcomeLabel,stateLabel};
+  const api={mount,range,visibleRuns,visibleContributions,contributionRow,concurrency,graph,row,active,friendly,url,outcomeLabel,stateLabel};
   if(typeof module==='object' && module.exports)module.exports=api;
   root.GBoxDeviceWork=api;
 })(typeof window==='undefined'?globalThis:window);
