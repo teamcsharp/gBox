@@ -84,6 +84,38 @@ def test_authenticated_switch_and_failover_preserve_tools(pool, monkeypatch):
     assert client.post('/api/llm/local/nodes/sparkDeux/v1/chat/completions', headers=headers, json=body).status_code == 503
 
 
+def test_capacity_slider_persists_and_drains_without_disabling(pool, monkeypatch):
+    cron = []
+    monkeypatch.setattr(P, '_sync_cron_capacity', cron.append)
+    client, headers = _app(monkeypatch)
+    path = '/api/hermes/local/nodes/sparkDeux/capacity'
+    assert client.post(path, json={'capacity': 24}).status_code == 401
+    for invalid in (0, 5, 20, 33, '24', True):
+        assert client.post(path, headers=headers, json={'capacity': invalid}).status_code in (400, 422)
+    for capacity in (4, 8, 12, 16, 24, 32, 4):
+        response = client.post(path, headers=headers, json={'capacity': capacity})
+        assert response.status_code == 200
+        assert cron[-1] == capacity + 1
+        nodes = P.node_settings()
+        assert nodes['sparkDeux'].max_parallel_jobs == capacity and nodes['sparkDeux'].enabled
+        assert nodes['lilspark'].max_parallel_jobs == 1
+        active = {str(n): {'job_id': str(n), 'inference_node': 'sparkDeux'} for n in range(24)}
+        state = [{'name': n, 'primary': s.shared_with_games, 'enabled': True, 'capable': True,
+                  'capacity': s.max_parallel_jobs} for n, s in nodes.items()]
+        slots, limit = P.assignments(state, active, set(active))
+        assert limit == capacity + 1
+        assert len(slots) == max(0, capacity + 1 - 24)
+    assert client.post('/api/hermes/local/nodes/lilspark/capacity', headers=headers,
+                       json={'capacity': 24}).status_code == 400
+    assert client.post('/api/hermes/local/nodes/missing/capacity', headers=headers,
+                       json={'capacity': 24}).status_code == 404
+    def failed(_):
+        raise RuntimeError('Scheduler unavailable')
+    monkeypatch.setattr(P, '_sync_cron_capacity', failed)
+    assert client.post(path, headers=headers, json={'capacity': 24}).status_code == 503
+    assert P.node_settings()['sparkDeux'].max_parallel_jobs == 4
+
+
 def test_partial_tool_stream_is_never_replayed(pool, monkeypatch):
     client, headers = _app(monkeypatch)
     monkeypatch.setattr(P, 'health', lambda *a, **kw: {'capable': True})

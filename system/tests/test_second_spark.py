@@ -78,6 +78,36 @@ def test_remote_capacity_and_error_release():
     assert maximum == 2 and proxy.active == proxy.waiting == 0
 
 
+def test_live_capacity_increases_and_lowering_drains_existing_requests():
+    async def run():
+        cfg = S.model_copy(update={'max_parallel_jobs': 4, 'queue_limit': 40})
+        proxy = P.LocalLLM(lambda: cfg)
+        held = [await proxy.acquire(cfg) for _ in range(4)]
+        waiting = [asyncio.create_task(proxy.acquire(cfg)) for _ in range(20)]
+        await asyncio.sleep(.02)
+        assert proxy.active == 4 and not any(t.done() for t in waiting)
+        cfg.max_parallel_jobs = 24
+        original = held[0][0]
+        assert proxy._lock() is original
+        held += await asyncio.wait_for(asyncio.gather(*waiting), 1)
+        assert proxy.active == 24
+        cfg.max_parallel_jobs = 4
+        assert proxy._lock() is original
+        next_call = asyncio.create_task(proxy.acquire(cfg))
+        for lock, _ in held[:20]:
+            proxy.release(lock)
+        await asyncio.sleep(.02)
+        assert proxy.active == 4 and not next_call.done()
+        proxy.release(held[20][0])
+        acquired, _ = await asyncio.wait_for(next_call, 1)
+        assert proxy.active == 4
+        for lock, _ in held[21:]:
+            proxy.release(lock)
+        proxy.release(acquired)
+        assert proxy.active == proxy.waiting == original.used == 0
+    asyncio.run(run())
+
+
 def test_provider_attribution_requires_observed_endpoint_and_model(monkeypatch, tmp_path):
     monkeypatch.setattr(H, '_local_settings', lambda: S)
     scan = H.Scanner(tmp_path/'agent.log', tmp_path/'audit.jsonl')

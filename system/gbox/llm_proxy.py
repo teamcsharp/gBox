@@ -389,6 +389,41 @@ class Busy(Exception):
         self.status, self.message, self.retry_after = status, message, retry_after
 
 
+class ResizableSlots:
+    """Loop-local permits: lowering capacity drains work without cancelling it."""
+
+    def __init__(self, capacity):
+        self.capacity, self.used = capacity, 0
+        self.waiters = set()
+
+    def locked(self):
+        return self.used >= self.capacity
+
+    def resize(self, capacity):
+        self.capacity = capacity
+        self._wake()
+
+    def _wake(self):
+        for waiter in self.waiters:
+            if not waiter.done():
+                waiter.set_result(None)
+
+    async def acquire(self):
+        while self.locked():
+            waiter = asyncio.get_running_loop().create_future()
+            self.waiters.add(waiter)
+            try:
+                await waiter
+            finally:
+                self.waiters.discard(waiter)
+        self.used += 1
+        return True
+
+    def release(self):
+        self.used -= 1
+        self._wake()
+
+
 class LocalLLM:
     """The single-slot proxy. `settings` returns HermesLocalConfig; `gate` returns why calls must wait (the operator
     plays on the Spark) or None; `transport` is an httpx transport for tests."""
@@ -405,12 +440,13 @@ class LocalLLM:
         self.totals = {'calls': 0, 'ok': 0, 'failed': 0, 'gated': 0, 'busy': 0, 'prompt_tokens': 0,
                        'completion_tokens': 0, 'fixed': 0, 'trimmed': 0}
 
-    def _lock(self) -> asyncio.Semaphore:
+    def _lock(self) -> ResizableSlots:
         """Inference capacity, bound to the serving event loop (uvicorn runs one)."""
         loop = asyncio.get_running_loop()
         with self._mu:
             if self._slot is None or self._slot[0] is not loop:
-                self._slot = (loop, asyncio.Semaphore(self.settings().max_parallel_jobs))
+                self._slot = (loop, ResizableSlots(self.settings().max_parallel_jobs))
+            self._slot[1].resize(self.settings().max_parallel_jobs)
             return self._slot[1]
 
     def _client(self, s) -> httpx.AsyncClient:

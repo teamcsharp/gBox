@@ -55,8 +55,10 @@
     return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
   }
   // "Hermes is on the local model" (or "Local fallback ready"): the Spark's GPU route, why it is used, what it served.
-  function localBanner(local, now) {
+  function localBanner(local, now, pool) {
     if (!local || local.enabled === false) return "";
+    const node = pool?.nodes?.find(n => n.provider === local.provider || n.name === local.host_name);
+    if (node) local = { ...local, capacity: node.capacity };
     const on = !!local.active;
     const why = on ? (local.reason || "Every paid route is cooling down or out of credit")
       : "Standby: used only when every paid route is out of credit";
@@ -91,6 +93,12 @@
       <header><b>${esc(n.name)}</b><label><input type="checkbox" data-tkp-node="${esc(n.name)}" ${n.enabled ? "checked" : ""} aria-label="Enable ${esc(n.name)} for tasks"> Active</label></header>
       <div class="tkp-model" title="${esc(n.upstream)}">${esc(n.model)}</div>
       <div class="tkp-status">${esc(n.reason || (n.capable ? "Ready" : "Unavailable"))}</div>
+      ${n.concurrency_choices?.length ? `<label style="display:block;margin:10px 0">Concurrent tasks: <output data-tkp-capacity-value>${n.capacity}</output>
+        <input type="range" style="display:block;width:100%;margin:8px 0" min="0" max="${n.concurrency_choices.length - 1}" step="1"
+          value="${Math.max(0, n.concurrency_choices.indexOf(n.capacity))}" data-tkp-capacity="${esc(n.name)}"
+          data-choices="${esc(n.concurrency_choices.join(','))}" aria-label="${esc(n.name)} concurrent tasks" aria-valuetext="${n.capacity} tasks">
+        <span style="display:flex;justify-content:space-between;font-size:11px">${n.concurrency_choices.map(v => `<span>${v}</span>`).join('')}</span>
+        <small>Task limit to attempt. Lowering it lets active tasks finish.</small></label>` : ""}
       <dl><div><dt>Inference now</dt><dd>${n.active || 0} / ${n.capacity || 1}</dd></div>
       <div><dt>Waiting calls</dt><dd>${n.waiting || 0}</dd></div><div><dt>Calls (24h)</dt><dd>${n.calls_ok || 0}</dd></div>
       <div><dt>Tokens (24h)</dt><dd>${tokens(n.tokens)}</dd></div></dl>
@@ -101,7 +109,7 @@
     const busy = ["queued", "downloading", "draining", "starting"].includes(job?.state);
     const suggestion = rec ? `<details data-tk-key="tkp-model-recommendation" ${rec.current ? "" : "open"}>
       <summary>${esc(rec.title)}: ${esc(rec.model)}</summary><p>${esc(rec.reason)} <a href="${esc(rec.source)}" target="_blank" rel="noopener">NVIDIA recipe</a></p>
-      <p>Start uses a 90% GPU memory budget, 64k context and four concurrent sequences. The current model drains first and is restored if validation fails.</p>
+      <p>Start uses a 90% GPU memory budget, 64k context and supports up to 32 concurrent sequences. The task slider controls admission. The current model drains first and is restored if validation fails.</p>
       <button type="button" data-tkp-model="pull" data-model="${esc(rec.model)}" ${busy || !m.access?.ready ? "disabled" : ""}>${rec.downloaded ? "Refresh download" : "Pull to sparkDeux"}</button>
       <button type="button" data-tkp-model="start" data-model="${esc(rec.model)}" ${busy || !m.access?.ready || !rec.downloaded || rec.current ? "disabled" : ""}>Start vLLM · 90% memory</button>
       <span role="status">${esc(job?.state ? `${job.state}${job.error ? ": " + job.error : ""}` : m.access?.reason || "")}</span></details>` : "";
@@ -124,7 +132,7 @@
         <div class="tkp-balance" title="${esc(credit)}">${esc(credit)}</div>${errorLine(r.last_error, now)}</article>`;
     }).join("") || '<p class="tkp-empty">No Hermes routes or model calls found on the server.</p>';
     return `<div class="tkp-head"><b>Providers · ${esc(data.window_label || win)}</b>${windowButtons(win)}<span class="tkp-rec">${esc(data.recommendation || "")}</span></div>
-      ${poolCards(data.pool)}${localBanner(data.local, now)}<div class="tkp-cards">${gruntCard(data.grunt, now)}${body}</div>`;
+      ${poolCards(data.pool)}${localBanner(data.local, now, data.pool)}<div class="tkp-cards">${gruntCard(data.grunt, now)}${body}</div>`;
   }
   // Technical tab: the same numbers as a table, per provider and per route, plus recent run attribution.
   function table(data, opts = {}) {
@@ -152,7 +160,7 @@
         <td>${c.last_run ? ago(c.last_run, now) : '<span class="mut">never</span>'}</td><td>${esc(c.last_status || "")}</td>
         <td class="tkp-err">${esc(JSON.stringify(c.last_result || {}).slice(0, 160))}</td></tr>`).join("") : "";
     return `<div class="mc tkp-tech"><div class="mh"><b>Hermes providers · ${esc(data.window_label || win)}</b>${windowButtons(win)}</div>
-      ${poolCards(data.pool)}${localBanner(data.local, now)}
+      ${poolCards(data.pool)}${localBanner(data.local, now, data.pool)}
       <p class="tkp-rec">${esc(data.recommendation || "")}</p>
       ${g ? `<details data-tk-key="tkp-grunt"><summary>${esc(g.label || "Spark helper")}</summary>
         <table><tr><th>Chore</th><th>Last run</th><th>Result</th><th>Details</th></tr>${chores}</table></details>` : ""}

@@ -1868,6 +1868,7 @@ async function tkProvidersLoad() {
   tkProvidersRender();
 }
 function tkProvidersRender() {
+  if (TK.capacitySaving || document.activeElement?.matches('[data-tkp-capacity]')) return;
   const P = window.GBoxProviders; if (!P) return;
   const box = $("#tkv-providers"), html = P.cards(TK.providers, { window: TK.providersWindow });
   if (box.tkHtml !== html) { box.innerHTML = html; box.tkHtml = html; }
@@ -1895,6 +1896,27 @@ async function tkProvidersWindow(e) {
 }
 $("#tkv-providers").onclick = tkProvidersWindow;
 $("#tk-providers").onclick = tkProvidersWindow;
+function tkCapacityPreview(e) {
+  const slider = e.target.closest('[data-tkp-capacity]'); if (!slider) return;
+  const capacity = Number(slider.dataset.choices.split(',')[Number(slider.value)]);
+  slider.closest('label').querySelector('[data-tkp-capacity-value]').textContent = capacity;
+  slider.setAttribute('aria-valuetext', `${capacity} tasks`);
+}
+async function tkCapacityChange(e) {
+  const slider = e.target.closest('[data-tkp-capacity]'); if (!slider) return;
+  const capacity = Number(slider.dataset.choices.split(',')[Number(slider.value)]);
+  TK.capacitySaving = true; slider.disabled = true;
+  try {
+    const r = await gbox.api(`/api/hermes/local/nodes/${encodeURIComponent(slider.dataset.tkpCapacity)}/capacity`, { capacity });
+    if (!r.ok) toast(r.error || 'Could not change task capacity', 9000);
+    else toast(`${slider.dataset.tkpCapacity}: attempting up to ${capacity} concurrent tasks`);
+  } catch (error) { toast(error.message, 9000); }
+  finally { slider.disabled = false; slider.blur(); TK.capacitySaving = false; tkProvidersLoad(); }
+}
+for (const id of ['#tkv-providers', '#tk-providers']) {
+  $(id).oninput = tkCapacityPreview;
+  $(id).onchange = tkCapacityChange;
+}
 $("#tk-visual-tab").onclick = () => tkView("visual");
 $("#tk-technical-tab").onclick = () => tkView("technical");
 $("#tkv-side").onclick = e => {

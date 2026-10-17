@@ -178,3 +178,30 @@ test('local mode banner and the Spark helper card (docs/hermes-local-fallback.md
   assert.equal(P.localBanner({ enabled: false }), '');
   assert.equal(P.gruntCard(null), '');
 });
+
+test('task slider shows discrete limits and submits 24 to the backend', async () => {
+  const P = load();
+  const html = P.poolCards({ capacity: 25, nodes: [{ name: 'sparkDeux', capacity: 24,
+    enabled: true, concurrency_choices: [4, 8, 12, 16, 24, 32] }] });
+  assert.match(html, /type="range"[^>]*min="0" max="5" step="1"/);
+  assert.match(html, /value="4" data-tkp-capacity="sparkDeux"/);
+  assert.match(html, /aria-valuetext="24 tasks"/);
+  for (const n of [4, 8, 12, 16, 24, 32]) assert.ok(html.includes(`<span>${n}</span>`));
+  const banner = P.localBanner({ enabled: true, host_name: 'sparkDeux', capacity: 2, upstream: 'local' },
+    NOW, { nodes: [{ name: 'sparkDeux', capacity: 24 }] });
+  assert.match(banner, /24 concurrent runs/);
+  const source = fs.readFileSync(path.join(__dirname, '../clients/desktop/index.html'), 'utf8');
+  const handlers = source.slice(source.indexOf('function tkCapacityPreview('), source.indexOf("for (const id of ['#tkv-providers'"));
+  const calls = [], output = {}, TK = {};
+  const slider = { value: '4', dataset: { choices: '4,8,12,16,24,32', tkpCapacity: 'sparkDeux' },
+    closest: () => ({ querySelector: () => output }), setAttribute: () => {}, blur: () => {} };
+  const context = { TK, gbox: { api: async (...args) => { calls.push(args); return { ok: true }; } },
+    toast: () => {}, tkProvidersLoad: () => {}, event: { target: { closest: () => slider } } };
+  vm.createContext(context);
+  vm.runInContext(handlers + ';tkCapacityPreview(event);', context);
+  assert.equal(output.textContent, 24);
+  await vm.runInContext('tkCapacityChange(event)', context);
+  assert.equal(calls[0][0], '/api/hermes/local/nodes/sparkDeux/capacity');
+  assert.equal(calls[0][1].capacity, 24);
+  assert.equal(TK.capacitySaving, false);
+});

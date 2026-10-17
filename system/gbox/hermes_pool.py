@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import re
+import subprocess
 import threading
 import time
 
@@ -23,10 +24,56 @@ _HEALTH = {}
 _LOCK = threading.Lock()
 _PROXIES = {}
 _GATE = lambda: None
+CONCURRENCY_CHOICES = (4, 8, 12, 16, 24, 32)
 
 
 class PoolSwitch(BaseModel):
     enabled: bool
+
+
+class PoolCapacity(BaseModel):
+    capacity: int = Field(ge=4, le=32, strict=True)
+
+
+def pool_limit():
+    return int(_state().get('pool_max_parallel_jobs', L.settings().pool_max_parallel_jobs))
+
+
+def _sync_cron_capacity(capacity):
+    from . import hermes_task_mode as M
+    if (M._config().get('cron') or {}).get('max_parallel_jobs') == capacity:
+        return
+    try:
+        result = subprocess.run([str(M._cli()), 'config', 'set', 'cron.max_parallel_jobs', str(capacity)],
+                                capture_output=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        raise RuntimeError('Could not update Hermes task capacity') from None
+    if result.returncode:
+        raise RuntimeError('Could not update Hermes task capacity')
+
+
+def set_capacity(name, capacity):
+    nodes = node_settings()
+    if name not in nodes:
+        raise KeyError(name)
+    if nodes[name].shared_with_games:
+        raise ValueError('The prime Spark keeps its reserved task capacity')
+    if type(capacity) is not int or capacity not in CONCURRENCY_CHOICES:
+        raise ValueError('Choose 4, 8, 12, 16, 24 or 32 tasks')
+    with D.locked('local-nodes'):
+        nodes = node_settings()
+        limit = min(64, sum(capacity if n == name else s.max_parallel_jobs for n, s in nodes.items()))
+        # Update the scheduler before exposing the new admission limit. Existing
+        # runs keep their slots when the limit is reduced; nothing is cancelled.
+        _sync_cron_capacity(limit)
+        data = _state()
+        row = data.setdefault('nodes', {}).setdefault(name, {})
+        row.update(max_parallel_jobs=capacity, changed_at=time.time())
+        data['pool_max_parallel_jobs'] = limit
+        path = D.state_dir() / 'local-nodes.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_suffix('.tmp');temp.write_text(json.dumps(data, indent=2));temp.replace(path)
+    return {'name': name, 'capacity': capacity, 'pool_capacity': limit}
 
 
 def configured():
@@ -53,7 +100,7 @@ def node_settings(base=None):
                    proxy_url=base.proxy_url.rstrip('/').removesuffix('/v1') + f'/nodes/{name}/v1')
         # Endpoint/model configuration cannot be changed by an enable-switch request.
         overrides = state.get(name, {})
-        row.update({k: overrides[k] for k in ('enabled', 'model', 'upstream') if k in overrides})
+        row.update({k: overrides[k] for k in ('enabled', 'model', 'upstream', 'max_parallel_jobs') if k in overrides})
         if overrides.get('maintenance'):
             row['enabled'] = False
         out[name] = HermesLocalConfig.model_validate(row)
@@ -148,12 +195,14 @@ def snapshot():
         row = {'name': name, 'provider': s.provider, 'model': s.model, 'upstream': s.upstream,
                'api_format': s.api_format, 'enabled': s.enabled, 'capacity': s.max_parallel_jobs,
                'primary': s.shared_with_games, 'allow_large_tasks': s.allow_large_tasks, **checks[name]}
+        if not s.shared_with_games:
+            row['concurrency_choices'] = CONCURRENCY_CHOICES
         row.update(llm_proxy.summarize([r for r in records if r.get('host_name') == name]))
         if proxy:
             row.update(active=proxy.active, waiting=proxy.waiting)
         nodes.append(row)
     from . import hermes_models
-    return {'enabled': L.settings().enabled, 'nodes': nodes, 'model_management': hermes_models.status(), 'capacity': min(L.settings().pool_max_parallel_jobs,
+    return {'enabled': L.settings().enabled, 'nodes': nodes, 'model_management': hermes_models.status(), 'capacity': min(pool_limit(),
             sum(n['capacity'] for n in nodes if n['enabled'] and n['capable'])),
             'policy': 'Prime Spark when free; dedicated Spark handles the larger concurrent backlog',
             'checkpoint_owner': 'lilspark'}
@@ -168,7 +217,7 @@ def assignments(nodes, items, reserved):
             continue
         used = sum(i.get('inference_node') == node['name'] for i in active)
         slots.extend([node] * max(0, node['capacity'] - used))
-    limit = min(L.settings().pool_max_parallel_jobs,
+    limit = min(pool_limit(),
                 sum(n['capacity'] for n in nodes if n.get('enabled') and n.get('capable')))
     return slots[:max(0, limit - len(reserved))], limit
 
@@ -206,6 +255,23 @@ def routes(app, config, auth, gate):
             return set_node(name, body.enabled)
         except KeyError:
             raise HTTPException(404, 'Unknown inference machine') from None
+
+    @app.post('/api/hermes/local/nodes/{name}/capacity')
+    async def capacity(name: str, body: PoolCapacity, actor=Depends(auth)):
+        import asyncio
+        try:
+            result = await asyncio.to_thread(set_capacity, name, body.capacity)
+        except KeyError:
+            raise HTTPException(404, 'Unknown inference machine') from None
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        except RuntimeError as exc:
+            raise HTTPException(503, str(exc)) from None
+        # Resize the existing limiter on its serving event loop, including
+        # queued calls; do not replace it while requests hold permits.
+        if name in _PROXIES:
+            _PROXIES[name]._lock()
+        return result
 
     @app.get('/api/llm/local/nodes/{name}/v1/models')
     def models(name: str, actor=Depends(access)):

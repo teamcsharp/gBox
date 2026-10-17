@@ -159,12 +159,12 @@ class HermesLocalConfig(BaseModel):
     api_format: Literal['ollama', 'openai'] = 'ollama'
     host_name: str = 'lilspark'
     shared_with_games: bool = True   # false for an operator-designated dedicated inference machine
-    max_parallel_jobs: int = Field(1, ge=1, le=4)
+    max_parallel_jobs: int = Field(1, ge=1, le=32)
     allow_large_tasks: bool = False  # dedicated local models can work bounded milestones on any inbox task
     enable_thinking: bool | None = None
     upstream_key_env: str = ''       # optional credential environment variable; never returned in status
     nodes: dict[str, dict] = {}       # named inference endpoints; operator switches live in local-nodes.json
-    pool_max_parallel_jobs: int = Field(5, ge=1, le=16)
+    pool_max_parallel_jobs: int = Field(5, ge=1, le=64)
     proxy_url: str | None = None      # what Hermes calls; default http://127.0.0.1:<api_port>/api/llm/local/v1
     context_tokens: int = 65536       # num_ctx the proxy asks Ollama for; prompts are capped to fit (per-model: contexts)
     contexts: dict[str, int] = {}     # model -> its context limit, when a non-default model is chosen

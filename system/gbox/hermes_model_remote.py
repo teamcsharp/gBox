@@ -69,7 +69,7 @@ def main(plan):
     args += [old['Image'], MODEL, '--served-model-name', MODEL, '--host', '0.0.0.0', '--port', '8000',
         '--trust-remote-code', '--tensor-parallel-size', '1', '--kv-cache-dtype', 'fp8',
         '--attention-backend', 'flashinfer', '--moe-backend', 'marlin',
-        '--gpu-memory-utilization', '0.9', '--max-model-len', '65536', '--max-num-seqs', '4',
+        '--gpu-memory-utilization', '0.9', '--max-model-len', '65536', '--max-num-seqs', '32',
         '--max-num-batched-tokens', '8192', '--enable-chunked-prefill', '--async-scheduling',
         '--enable-prefix-caching', '--reasoning-parser', 'qwen3', '--tool-call-parser', 'qwen3_xml',
         '--enable-auto-tool-choice']
