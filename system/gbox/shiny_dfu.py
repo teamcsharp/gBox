@@ -64,27 +64,28 @@ class Dfu:
     """The archive on a disc reader with ``files {NAME: (lba, size)}``, ``size(name)`` and ``read(name, off, n)``
     (gbox.chd.ChdDisc, gbox.defjam_inventory.Iso)."""
 
-    def __init__(self, disc, variant: str = "etm"):
-        self.disc, self.variant = disc, variant
-        self.parts = [p for p in PARTS if p in disc.files]
-        if PARTS[0] not in self.parts:
-            raise DfuError("no WAD1.DFU on this disc")
+    def __init__(self, disc, variant: str = "etm", endian: str = "<", parts=None):
+        self.disc, self.variant, self.endian = disc, variant, endian
+        parts = PARTS if parts is None else tuple(parts)
+        self.parts = [p for p in parts if p in disc.files]
+        if parts[0] not in self.parts:
+            raise DfuError(f"no {parts[0]} on this disc")
         self.part_sizes = [disc.size(p) for p in self.parts]
         self.total = sum(self.part_sizes)
         if self.part_sizes[0] < 0x18:
-            raise DfuError("WAD1.DFU is shorter than its header")
-        h = disc.read(PARTS[0], 0, 0x18)
-        self.count, sa, sb, sc, self.h4, self.flags = struct.unpack("<6I", h)
+            raise DfuError(f"{parts[0]} is shorter than its header")
+        h = disc.read(parts[0], 0, 0x18)
+        self.count, sa, sb, sc, self.h4, self.flags = struct.unpack(endian + "6I", h)
         self.seeds = (sa, sb, sc)
         if not 0 < self.count <= MAX_ENTRIES or 0x18 + 16 * self.count > self.part_sizes[0]:
             raise DfuError(f"implausible entry count {self.count}")
         self.base = (0x18 + 16 * self.count + 0x7FF) & ~0x7FF
-        tab = disc.read(PARTS[0], 0x18, 16 * self.count)
+        tab = disc.read(parts[0], 0x18, 16 * self.count)
         self.entries: list[Entry] = []
         self.by_hash: dict[int, Entry] = {}
         last = -1
         for i in range(self.count):
-            hh, packed, off, size = struct.unpack_from("<4I", tab, 16 * i)
+            hh, packed, off, size = struct.unpack_from(endian + "4I", tab, 16 * i)
             if hh < last:
                 raise DfuError(f"entry {i}: table not sorted by hash")
             if self.base + off + packed > self.total:
@@ -160,8 +161,8 @@ class Dfu:
         for part, off, n in self.spans(e, len(blob)):
             patches.append((part, off, blob[pos:pos + n]))
             pos += n
-        row = struct.pack("<4I", e.hash, len(blob), e.offset, len(data))
-        patches.append((PARTS[0], 0x18 + 16 * e.index, row))
+        row = struct.pack(self.endian + "4I", e.hash, len(blob), e.offset, len(data))
+        patches.append((self.parts[0], 0x18 + 16 * e.index, row))
         return {"entry": e, "packed": len(blob), "size": len(data), "patches": patches}
 
 
