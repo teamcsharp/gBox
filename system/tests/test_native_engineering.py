@@ -33,3 +33,9 @@ def test_native_playbook_reseeding_preserves_local_lessons():
     old['seed_version'] = 0
     re_lab.seed_playbooks(store)
     assert store.get('playbook', 'native-reader-writer')['lessons'] == old['lessons']
+
+
+def test_integration_files_exist_in_the_repository():
+    from pathlib import Path
+    root = Path(engineering.__file__).resolve().parents[1]
+    assert all((root / name).exists() for name in engineering.plan('a' * 16)['integration'])

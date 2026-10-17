@@ -72,7 +72,7 @@ def plan(game_id, *, stage='inventory', fingerprint=None):
         'start_from': fp.get('start_from') or fp.get('engine_reader') or '',
         'reuse': 'Read re_dossier for this game and re_playbook native-reader-writer. Verify fingerprint suggestions against the owned build before reusing a module.',
         'stages': deepcopy(STAGES),
-        'integration': ['gbox/formats', 'gbox/characters.py', 'gbox/char_coverage.py', 'gbox/characters_tool.py'],
+        'integration': ['gbox/formats', 'gbox/characters.py', 'gbox/char_coverage.py', 'gbox/cast_swap.py'],
         'handoff': 'Keep exact source identity, artifact hashes, focused test command/result, commit/PR/deployment state and one executable next step. Preserve pending native job IDs. Never close a native replacement request on inventory/probe success.',
     }
 
