@@ -157,7 +157,7 @@ def manifest(src: str, src_sha256: str | None = None) -> dict:
             def rd(at, n):
                 return g.read(off + at, n)
 
-            names, dir_off, dir_size = find_name_dir(rd, size, count, offsets, sizes, table_end)
+            names, dir_off, dir_size = find_name_dir(rd, size, count, offsets, sizes, table_end) or (None, None, None)
             summary = {
                 "path": rec["path"],
                 "offset": off,

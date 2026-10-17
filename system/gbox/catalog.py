@@ -243,7 +243,8 @@ def scan(roots: list[Path], runtimes: dict[str, str], hash_cache: dict | None = 
         archive = None
         archive_meta = {}
         zplat = None
-        if ext in (".zip", ".7z"):
+        from . import rom_archives
+        if rom_archives.is_archive(f):
             if ext == '.zip':
                 from . import savemgo
                 try:

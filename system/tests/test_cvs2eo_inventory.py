@@ -128,3 +128,12 @@ def test_owned_disc_inventory():
     # afs00.afs is ADX audio, not models (fingerprint correction)
     afs00 = next(s for s in m["afs_archives"] if s["path"].endswith("afs00.afs"))
     assert afs00["name_directory"]["names"][0].endswith(".adx")
+
+
+@pytest.mark.skipif(not GCZ.exists(), reason="owned CvS2 EO GCZ not mounted")
+def test_inventory_retains_unnamed_archives(monkeypatch):
+    monkeypatch.setattr(ci, "find_name_dir", lambda *args: None)
+    manifest = ci.manifest(str(GCZ), ci.SOURCE_SHA256)
+    assert len(manifest["afs_archives"]) == 3
+    assert all(row["name_directory"] is None for row in manifest["afs_archives"])
+    assert manifest["afs02_names"] == []

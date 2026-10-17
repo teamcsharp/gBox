@@ -229,7 +229,7 @@ def test_dolphin_capture_session_switches_backend_on_the_command_line_only(tmp_p
     monkeypatch.setattr(ad, "_exe", lambda: exe, raising=False)
     monkeypatch.setattr(ad, "_gecko_setup", lambda user, rom: None, raising=False)
     argv = ad._argv("game.iso")
-    assert "Dolphin.Core.GFXBackend=D3D12" in argv
+    assert "Dolphin.Core.GFXBackend=Vulkan" in argv          # normal play defaults to Vulkan (D3D12 renderer hung: #1806/#1933)
     ad.capture_backend = cb.plan("dolphin")
     argv = ad._argv("game.iso")
     assert "Dolphin.Core.GFXBackend=Vulkan" in argv and "Dolphin.Core.GFXBackend=D3D12" not in argv
