@@ -58,3 +58,14 @@ def test_re5_brief_does_not_claim_full_unlock_or_re6_compatibility():
     assert 'not gameplay-verified' in text
     assert 'Do not reuse RE6 Xbox 360' in text
     assert 'sidebar' in text and 'Mercenaries' in text
+
+
+def test_re2_worker_prompt_exposes_state_command_and_pending_runtime():
+    text = engineering.prompt('c6adbfa00c20aaf9', stage='analysis')
+    assert ('python -m gbox.re2gc_state --dol OWNED_main.dol --rel OWNED_scenario.rel '
+            '--snapshot CAPTURE.mem1 --out NEW_STATE.json') in text
+    assert 'source-attested read-only MEM1 inventory/equipment decoder' in text
+    assert 'No live writes or verified unlock profile' in text
+    assert 'docs/re2gc-state.md' in text
+    assert 'live inventory and equip routines for the sidebar' in text
+    assert 'State engineering command:' not in engineering.prompt('a' * 16)

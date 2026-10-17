@@ -125,6 +125,10 @@ def prompt(game_id, *, stage='inventory', fingerprint=None):
                   title['identity_warning'], 'Validated engineering scope: ' + title['validated_scope']]
         if title.get('command'):
             lines.append('Native source inventory: ' + title['command'])
+        if title.get('state_command'):
+            lines.append('State engineering command: ' + title['state_command'])
+        if title.get('state_scope'):
+            lines.append('State engineering scope: ' + title['state_scope'])
         lines.append('Still required: ' + '; '.join(title['separate_work']))
     if packet['start_from']:
         lines.append('Candidate module (verify compatibility): ' + str(packet['start_from']))
