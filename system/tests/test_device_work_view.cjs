@@ -6,6 +6,7 @@ const path=require('node:path');
 const P=require('../clients/desktop/device-work.js');
 const {withPage,findChrome}=require('../scripts/browser_lifecycle.cjs');
 const source=fs.readFileSync(path.join(__dirname,'../clients/desktop/device-work.js'),'utf8');
+const legacySource=fs.readFileSync(path.join(__dirname,'../clients/desktop/device-work-legacy.js'),'utf8');
 const css=fs.readFileSync(path.join(__dirname,'../clients/desktop/device-work.css'),'utf8');
 const desktop=fs.readFileSync(path.join(__dirname,'../clients/desktop/index.html'),'utf8');
 const desktopStyles=[...desktop.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)].map(m=>m[1]).join('\n');
@@ -59,7 +60,7 @@ const skip=!findChrome()&&'no Chromium installed';
 async function setup(evaluate,send) {
   await send('Emulation.setDeviceMetricsOverride',{width:1500,height:950,deviceScaleFactor:1,mobile:false});
   await evaluate(`document.head.innerHTML='<style>body{margin:0;background:#090d15;font-family:Segoe UI,Arial,sans-serif}#taskpanel{position:fixed}.th{height:47px;display:flex;align-items:center;padding:0 15px;gap:20px;border-bottom:1px solid #33425d;box-sizing:border-box}.th button{background:#334568;color:white;padding:8px;border:1px solid #5a6b8a;border-radius:5px}</style>';document.body.innerHTML='<div id="taskpanel" class="device-mode"><div class="th"><b>Tasks</b><button>Device work</button><span>Network</span><span>Technical</span><span style="margin-left:auto">Browser test fixture</span></div><div id="tk-devices"></div></div>';`);
-  await evaluate(`{const style=document.createElement('style');style.textContent=${JSON.stringify(desktopStyles+'\n'+css)};document.head.append(style);document.querySelector('#taskpanel').classList.add('on');}${source}`);
+  await evaluate(`{const style=document.createElement('style');style.textContent=${JSON.stringify(desktopStyles+'\n'+css)};document.head.append(style);document.querySelector('#taskpanel').classList.add('on');}${legacySource}${source}`);
   await evaluate(`window.snapshot=${JSON.stringify(fixture())};window.calls=[];window.opened=[];window.reply=()=>Promise.resolve({ok:true,data:structuredClone(snapshot)});window.view=GBoxDeviceWork.mount(document.querySelector('#tk-devices'),{api:p=>{calls.push(p);return reply(p)},onRun:id=>opened.push(['run',id]),onRequest:id=>opened.push(['request',id]),onExternal:url=>opened.push(['url',url])});view.setActive(true);`);
   await evaluate('Promise.resolve().then(()=>Promise.resolve())');
 }
@@ -95,5 +96,14 @@ test('real browser: one in-flight read, stale responses discarded, errors retain
     assert.equal(error.rows,27);assert.match(error.notice,/Last successful snapshot is retained/);assert.equal(error.scripts,0);
     const closed=await evaluate(`(async()=>{reply=()=>new Promise(r=>resolveOld=r);view.refresh();view.setActive(false);const before=calls.length;resolveOld({ok:true,data:{...snapshot,devices:[]}});await Promise.resolve();await view.refresh();return {before,after:calls.length,devices:view.state.data.devices.length}})()`);
     assert.equal(closed.before,closed.after);assert.equal(closed.devices,3);
+  });
+});
+test('real browser: old-server 404 shows live activity with unknown completion and upgrades automatically',{skip},async()=>{
+  await withPage(async(evaluate,send)=>{
+    await setup(evaluate,send);
+    const result=await evaluate(`(async()=>{window.old={generated_at:200,window_start:100,providers:[{provider:'gbox-sparkDeux',runs_running:24,runs_completed:5,runs_failed:2,calls_ok:10,calls_failed:1,tokens:2000}],routes:[],runs_total:70,runs:[{session_id:'actual',name:'Actual running task',provider:'gbox-sparkDeux',attribution:'log',status:'running',start:150}]};reply=p=>Promise.resolve(p.startsWith('/api/tasks/device-work')?{ok:false,error:'404 {"detail":"Not Found"}'}:{ok:true,data:old});await view.refresh();return {rows:document.querySelectorAll('.dw-row').length,notice:document.querySelector('.dw-notice').textContent,active:view.state.data.devices[0].metrics.active_runs,merged:view.state.data.devices[0].metrics.prs_merged,logHidden:document.querySelector('[data-open-run]').hidden}})()`);
+    assert.equal(result.rows,1);assert.equal(result.active,24);assert.equal(result.merged,null);assert.equal(result.logHidden,true);assert.match(result.notice,/server update is pending/);
+    const upgraded=await evaluate(`(async()=>{reply=()=>Promise.resolve({ok:true,data:structuredClone(snapshot)});await view.refresh();return {rows:document.querySelectorAll('.dw-row.active').length,hidden:document.querySelector('.dw-notice').hidden}})()`);
+    assert.equal(upgraded.rows,24);assert.equal(upgraded.hidden,true);
   });
 });
