@@ -14,15 +14,12 @@ from gbox.burnout_revenge_inventory import (
 
 
 def _xex(build=b"Burnout4_External.pe", title_id=TITLE_ID):
-    # XEX2 header: magic, module_flags(BE), header_size(BE), reserved, security_off(BE), then a
-    # big-endian title id embedded in the certificate area so xex_info can find it.
-    hdr = b"XEX2" + struct.pack(">IIII", 1, 0x3000, 0, 0x98)
-    hdr += bytes(0x17C0)                    # pad to the region where the title id sits
-    hdr += struct.pack(">I", title_id)
-    hdr += b"\x00" * 16
-    hdr = hdr[:0x17CC] + struct.pack(">I", title_id) + hdr[0x17D0:]
-    # rebuild cleanly: place build string near 0x16c4 like the real image
-    data = bytearray(hdr)
+    data = bytearray(0x3000)
+    data[:4] = b"XEX2"
+    struct.pack_into(">II", data, 4, 1, len(data))
+    struct.pack_into(">II", data, 16, 0x98, 1)
+    struct.pack_into(">II", data, 24, 0x00040006, 0x17c0)
+    struct.pack_into(">I", data, 0x17cc, title_id)
     data[0x16C4:0x16C4 + len(build)] = build
     return bytes(data)
 
@@ -102,3 +99,17 @@ def test_detect_formats_reads_magics():
     assert "Gnsu" in out[2]["kind"]
     assert "TXD" in out[3]["kind"]
     assert out[4]["error"] == "not on disc"
+
+
+def test_title_id_bytes_outside_execution_info_do_not_identify_the_game():
+    import pytest
+    data = bytearray(_xex(title_id=0x12345678))
+    struct.pack_into(">I", data, 0x2000, TITLE_ID)
+    with pytest.raises(ValueError, match="execution info"):
+        xex_info(bytes(data))
+
+
+def test_corrupt_zlib_is_reported_as_invalid():
+    disc = _FakeXDVD({"bad.bgv": (0, 8)})
+    disc.f = BytesIO(b"\x78\xdabroken")
+    assert detect_formats(disc, ["bad.bgv"])[0]["kind"] == "invalid zlib stream"

@@ -86,9 +86,11 @@ The owned catalog entry `b8edf7040116f3aa` and the independently verified
 The collection's TC-001 executable uses SDK 3925; its Cxbx session remained
 black while reporting `Unknown blend source factor: 0x40348`. Creating a stable
 window did not establish a working game. Other Xbox titles keep their existing
-Cxbx routing, including manually configured command overrides. Custom DOA3
-builds retain Cxbx routing: the native program is verified only for the
-unmodified USA disc, and mod playability is not established by this exception.
+Cxbx routing, including manually configured command overrides. DOA3 asset builds
+use the same native runtime, provided their executable still matches the exact
+supported USA checksum. Builds that modify guest executable code fail this check;
+they are not silently routed to Cxbx. Native routing alone does not establish
+that replacement geometry, textures or animations are playable.
 The QuickSwap alias is restricted to that library and the exact relative path
 `Dead or Alive 3 (USA) (En,Ja).7z`. A real extraction produced the supported XBE
 SHA-256 `e523dd15d0765899a43a1824c023e0219d129e9a8b41e8213e4e645755d2bfa3`.
@@ -114,6 +116,11 @@ Its archive, executable, DLLs, release receipt and generated-program checksums
 must match the reviewed build. Installation is local under the worker's runtime
 directory. Each reviewed catalog identity has its own persistent play-disc holding
 native `.recomp-storage` saves; the original entry's existing location stays the same.
+Each named asset build and each content revision gets a separate play-disc and
+save directory, keyed by the build identity and the complete source inventory.
+Switching between cast variants cannot overwrite the original disc or its saves.
+An unchanged build reuses its verified view; rebuilding changed assets retains
+the prior revision and its saves. Personal saves are not imported into mod builds.
 Replacing runtime binaries does not delete saves. Mismatched files or unsafe
 linked paths fail with an explanation and leave existing saves intact.
 

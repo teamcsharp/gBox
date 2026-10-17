@@ -4,7 +4,7 @@ support(adapter, core, driver) -> {"status": "supported" | "relaunch_under_captu
 "attach", "relay", "verified", "fallback", "adapter", "core"}
 
 * supported: RenderDoc captures this renderer as it runs (a Direct3D/Vulkan RetroArch core with RenderDoc inside,
-  Dolphin on D3D12, Yuzu / RPCS3 on Vulkan with RenderDoc's Vulkan layer).
+  Dolphin on Vulkan, Yuzu / RPCS3 on Vulkan with RenderDoc's Vulkan layer).
 * relaunch_under_capture: capturable in a capture session. `driver` names the backend it runs ("vulkan" first,
   "glcore" for GL-only cores), `attach` how RenderDoc gets in ("layer" = RenderDoc's Vulkan layer, no injection;
   "inject" = renderdoc.dll loaded at process start). `relay` = True: *Capture again* keeps the operator's game
@@ -132,7 +132,7 @@ def _matrix(adapter: str, core: str | None = None, driver: str | None = None, *,
             return _out(RELAUNCH, "This Dolphin session was started without RenderDoc inside." + _RELAY +
                         " The capture session renders with Dolphin's Vulkan backend (a -C override for that session "
                         "only) under RenderDoc's Vulkan layer.", "vulkan", adapter, c, attach="layer", relay=True)
-        return _out(SUPPORTED, "Dolphin renders with Direct3D 12; RenderDoc captures it.", None, adapter, c)
+        return _out(SUPPORTED, "Dolphin renders with Vulkan; RenderDoc captures it.", None, adapter, c)
     if adapter in _VULKAN_STANDALONE:
         name = _VULKAN_STANDALONE[adapter]
         if drv and drv != "vulkan":
@@ -234,7 +234,7 @@ MATRIX_DOC = """\
 | RetroArch N64, Mupen64Plus-Next | relaunch_under_capture (relay) | glcore + GLideN64 | injected | not live-checked |
 | RetroArch N64, ParaLLEl N64 | unsupported | - | - | no draw calls (ParaLLEl-RDP) / compat GL; 2D frame only |
 | RetroArch, software core (Snes9x, Genesis Plus GX, mGBA, FBNeo, ...) | unsupported | - | - | 2D frame only |
-| Dolphin (Windows, D3D12) with Examine 3D on | supported | (current) | injected at launch | |
+| Dolphin (Windows, Vulkan) with Examine 3D on | supported | (current) | injected at launch | |
 | Dolphin started without Examine 3D | relaunch_under_capture (relay) | vulkan (-C Dolphin.Core.GFXBackend=Vulkan) | Vulkan layer | test PC only; capture held 1 draw (open) |
 | Yuzu / RPCS3 on Vulkan with Examine 3D on | supported | (current) | Vulkan layer at launch | |
 | Yuzu / RPCS3 started without Examine 3D | relaunch_under_capture | relaunch the game | Vulkan layer | states can't be carried |

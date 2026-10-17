@@ -144,6 +144,7 @@ def test_classifies_the_operator_examples_and_the_known_errors():
         "JAYBUILTFINALE can't run launch_game: not installed there": "worker_unavailable",
         "Replacement state restore failed (load timed out). The original checkpoint is retained": "state_restore",
         "launch_game: timed out after 900 s": "timeout",
+        "ValueError: no built mod 'mgs_vr_bighead_test' for this game": "mod_not_built",
     }
     for err, cls in cases.items():
         assert LF.classify(err, adapter="retroarch")["cls"] == cls, err
@@ -314,6 +315,22 @@ def test_no_relaunch_over_a_running_game_or_for_old_failures(plane):
     ledger2 = LF.Ledger(p.store, p.hooks())
     ledger2.observe_job(old | {"id": "other"})
     assert not p.submitted
+
+
+def test_worker_restarted_relaunches_on_the_workers_new_id(plane):
+    p, ledger = plane
+    NEW = "wjay2"
+    # the worker restarted: its old id aliases a fresh id with the same name, and only the new one is listed now
+    p.store.put("worker_alias", PC, {"to": NEW, "name": "JAYBUILTFINALE"})
+    p.workers_list = [w for w in p.workers_list if w["id"] != PC]
+    p.workers_list.append({"id": NEW, "name": "JAYBUILTFINALE", "os": "windows", "online": True, "idle_seconds": 900})
+    rec = ledger.observe_job(failed_launch(p, err="worker JAYBUILTFINALE restarted while running"))
+    assert rec["error_class"] == "worker_restarted"
+    # the automatic remedy resolves the restarted worker and relaunches on its new id, not the retired one
+    assert [(t, w) for t, _i, w, _j in p.submitted] == [("launch_game", NEW)]
+    req = p.store.get("request", rec["request_id"])
+    assert any("Relaunching on JAYBUILTFINALE" in m["text"] for m in req["messages"])
+    assert any("The relaunch worked" in m["text"] for m in req["messages"])
 
 
 def test_mod_fetch_restages_the_mod_then_relaunches(plane):

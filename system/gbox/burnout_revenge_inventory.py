@@ -46,24 +46,33 @@ FORMAT_MAGICS = {
 
 def xex_info(data: bytes) -> dict:
     """Identity fields of default.xex (XEX2 header; title id + build string)."""
-    if data[:4] != XEX_MAGIC:
-        raise ValueError("not an XEX2 executable")
+    if len(data) < 24 or data[:4] != XEX_MAGIC:
+        raise ValueError("not an XEX2 executable header")
     mod_flags, header_size = struct.unpack_from(">II", data, 4)
+    count = struct.unpack_from(">I", data, 20)[0]
+    table_end = 24 + 8 * count
+    if not table_end <= header_size <= len(data):
+        raise ValueError("XEX2 optional header table outside header")
+    title_id, tid_off = None, -1
+    for at in range(24, table_end, 8):
+        key, offset = struct.unpack_from(">II", data, at)
+        if key != 0x00040006:
+            continue
+        if offset < table_end or offset + 24 > header_size:
+            raise ValueError("XEX2 execution info outside header")
+        tid_off = offset + 12
+        title_id = struct.unpack_from(">I", data, tid_off)[0]
+        break
+    if title_id != TITLE_ID:
+        raise ValueError("XEX2 execution info does not identify Burnout Revenge")
     sec_off = struct.unpack_from(">I", data, 16)[0]
-    pat = struct.pack(">I", TITLE_ID)
-    off = data.find(pat)
-    if off < 0:
-        pat = struct.pack("<I", TITLE_ID)
-        off = data.find(pat)
-    if off < 0:
-        raise ValueError(f"title id {TITLE_ID:#x} not found in XEX header")
     build = None
     m = BUILD_PAT.search(data[:0x4000])
     if m:
         build = m.group().decode("ascii", "replace")
     return {"magic": "XEX2", "module_flags": f"{mod_flags:#x}", "header_size": f"{header_size:#x}",
             "security_offset": f"{sec_off:#x}", "title_id": f"{TITLE_ID:#x}",
-            "title_id_offset": off, "build_string": build, "size": len(data)}
+            "title_id_offset": tid_off, "build_string": build, "size": len(data)}
 
 
 def classify_vehicles(files: dict) -> dict:
@@ -99,7 +108,7 @@ def detect_formats(xdvd, paths: list[str]) -> list:
             continue
         off, size = xdvd.files[p]
         xdvd.f.seek(off)
-        h = xdvd.f.read(64)
+        h = xdvd.f.read(min(size, 64))
         kind = None
         if h[:2] in (b"\x78\x9c", b"\x78\xda", b"\x78\x01"):
             kind = "zlib"
@@ -108,7 +117,7 @@ def detect_formats(xdvd, paths: list[str]) -> list:
                 d = zlib.decompress(xdvd.f.read(size))
                 kind = f"zlib (decompressed {size} -> {len(d)} B, head {d[:8].hex()})"
             except zlib.error:
-                kind = "zlib (stream continues past sample)"
+                kind = "invalid zlib stream"
         elif h[:4] == b"DNBW":
             kind = "DNBW rig buffer"
         elif h[:4] == b"Gnsu":
@@ -142,7 +151,7 @@ def inventory(iso, source_sha256: str | None = None) -> dict:
             "executable": {"path": "/default.xex", "sha256": hashlib.sha256(xex).hexdigest(), **xex_info(xex)},
             "disc": {"partition": disc.part, "files": len(files), "bytes": sum(n for _, n in files.values()),
                      "top_dirs": dict(top), "extensions": dict(exts)},
-            "vehicles": {"cars": len(roster["cars"]), "traffic": len(roster["traffic"]),
+            "vehicles": {"car_count": len(roster["cars"]), "traffic_count": len(roster["traffic"]),
                          "track_game_data": len(roster["tracks"]), **roster,
                          "format_magics": FORMAT_MAGICS, "samples": samples},
             "launch": {
