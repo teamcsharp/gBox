@@ -25,7 +25,7 @@ banks does not exclude nested RenderWare data or establish a complete vehicle de
                     table family; the exe still names "trafcars/models/%s/%s.dff", so the .tra
                     likely packs RenderWare clumps).
   tracks/<t>/       <t>{1..N}gcn.sgd = "SGDVER 7" Criterion streamed geometry; <t>.PSW/.PSS/.p1w =
-                    RenderWare world streams.  10 tracks: usa2 usa3 usa4 usam eu2 eu3 eu4 eum rev.
+                    RenderWare world streams.  track directories are enumerated from the actual FST.
   misc/             the loose RenderWare DFF files found in the FST: start.dff check.dff finish.dff
                     (1,488 B each) + global/shadowr.dff (2,552 B) -- UI/start-line props, not cars.
   frontend|misc/    .dic = RenderWare TXD texture dictionaries (frontend.dic 4.7 MB, texture.dic,
