@@ -136,7 +136,7 @@ def parse_frame(rom: bytes, rec: int) -> dict:
                        "texels": 0, "load_units": 0, "load_bpp":SIZ[siz], "tris": []}
                 tiles.append(cur)
         elif op == G_LOADTLUT:
-            tlut = {"seg3": tlut_seg3, "colors": ((w1 >> 14) & 0x7FF) + 1}
+            tlut = {"seg3": tlut_seg3, "colors": ((w1 >> 14) & 0x3FF) + 1}
         elif op == G_SETTILE and cur is not None:
             # The render descriptor (last G_SETTILE before G_SETTILESIZE) carries
             # the sampled format: CI8 tiles are loaded 16bpp into TMEM but drawn
