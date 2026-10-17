@@ -1,0 +1,8 @@
+[INFO] RetroArch 1.20.0
+[INFO] [Core] Loading dynamic libretro core
+[INFO] [Environ] SET_GEOMETRY: 640x480, Aspect: 1.333.
+[INFO] [NetCMD] bringing_up_command_interface_at_port 54662 (all interfaces).
+[ERROR] [NetCMD] Failed to bind socket.
+[ERROR] Failed to initialize the network command interface.
+[INFO] [Audio] sinc resampler active path: float
+[INFO] [Environ] SET_GEOMETRY: 640x480, Aspect: 1.333.
