@@ -5,6 +5,7 @@ every file and the main executable: what the fingerprinter (gbox.assimilate) and
   .iso (PS1/PS2), .bin      formats.iso9660      .chd (PS1 v4)   psxdisc.PSXDisc
   .gdi / .cdi (Dreamcast)   gdrom.GDRom          .z64/.v64/.n64  n64_rom (no filesystem: magic scan of the ROM)
   .nds (Nintendo DS)         formats.nitro NitroFS (LZ77 members listed decompressed)
+  .7z                       its members (system 7z, streamed heads)
   .zip                      its members          folder (PC/Steam, extracted disc)  the files
 
 listing() never writes and reads at most `head` bytes of at most `max_files` files (the rest are listed by name and
@@ -96,6 +97,9 @@ def listing(path: str | Path, *, head: int = 64, max_files: int = 4000, exe_limi
             L.executable_name, L.executable = roms[0]["path"], read(roms[0]["path"], None)
             _n64_scan(L)
             return L
+    elif suf == ".7z":
+        files, read = _sevenzip(p, exe_limit)
+        L = Listing(str(p), "7z", files)
     elif suf in (".z64", ".v64", ".n64"):
         from .. import n64_rom
         L = Listing(str(p), "n64_rom", [], n64_rom.read(p), p.name)
@@ -183,6 +187,61 @@ def listing(path: str | Path, *, head: int = 64, max_files: int = 4000, exe_limi
         except Exception as e:                            # noqa: BLE001
             L.notes.append(f"executable not read: {type(e).__name__}: {e}")
     return L
+
+
+def _sevenzip_bin() -> str:
+    import shutil
+    for name in ("7z", "7za", "7zz", "7z.exe"):
+        b = shutil.which(name)
+        if b:
+            return b
+    raise ValueError("7z archive needs a 7z/7za/7zz executable on this node")
+
+
+def parse_7z_slt(text: str) -> list[dict]:
+    """Parse `7z l -slt` output into [{path, size}] for regular (non-folder) members."""
+    out, cur, started = [], {}, False
+    for line in text.splitlines() + [""]:
+        if line.startswith("----------"):
+            started, cur = True, {}
+            continue
+        if not started:
+            continue
+        if not line.strip():
+            if cur.get("Path") is not None and cur.get("Folder", "-") != "+" and "D" not in cur.get("Attributes", "")[:1]:
+                out.append({"path": cur["Path"].replace("\\", "/"), "size": int(cur.get("Size") or 0)})
+            cur = {}
+            continue
+        k, sep, v = line.partition(" = ")
+        if sep:
+            cur[k.strip()] = v
+    return out
+
+
+def _sevenzip(p: Path, exe_limit: int):
+    """List a .7z with the system 7z (read-only) and stream at most n bytes of a member to stdout."""
+    import subprocess
+    exe = _sevenzip_bin()
+    r = subprocess.run([exe, "l", "-slt", str(p)], capture_output=True, timeout=120)
+    if r.returncode != 0:
+        raise ValueError(f"{p.name}: 7z could not list it: {r.stderr.decode(errors='replace')[-300:]}")
+    files = parse_7z_slt(r.stdout.decode("utf-8", "replace"))
+
+    def read(name, n):
+        want = exe_limit if n is None else n
+        proc = subprocess.Popen([exe, "e", "-so", "-y", str(p), name], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        try:
+            buf = b""
+            while len(buf) < want:
+                chunk = proc.stdout.read(min(1 << 20, want - len(buf)))
+                if not chunk:
+                    break
+                buf += chunk
+            return buf
+        finally:
+            proc.kill()
+            proc.wait()
+    return files, read
 
 
 def _dol(read, off: int) -> bytes:
