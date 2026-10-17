@@ -3920,6 +3920,9 @@ def create_app(config: Config) -> FastAPI:
             run["tickets"] = tickets
         return runs
 
+    from . import hermes_device_work
+    hermes_device_work.install(app, store, auth)
+
     @app.get("/api/tasks")
     def tasks_all(hermes_limit: int = 20, actor=Depends(auth)):
         """Return the latest machine readings without waiting for slow GPU/process counters.
@@ -5584,24 +5587,30 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(422, f"status must be one of {REQ_STATES}")
         if s.solved_by and s.status != "done":
             raise HTTPException(422, "Solver credit is recorded only for a completed, verified request")
-        r, now = _req(rid), time.time()
-        if s.status == 'done' and (gid := (r.get('context') or {}).get('custom_build_unlocks')):
-            pending = app.state.custom_build_unlocks_pending(gid)
-            if pending:
-                raise HTTPException(409, {'message': 'Unlock-all requires verified receipts for every current custom build',
-                                          'pending_builds': pending})
-        if s.status == "in_progress" and not r["started"]:
-            r["started"] = now
-        if s.status == "done":
-            r["completed"] = now
-            r["metrics"]["duration_s"] = round(now - (r["started"] or r["created"]), 1)
-            r["solved_by"] = s.solved_by.model_dump() if s.solved_by else None
-        r["status"] = s.status
-        if s.note:
-            r["messages"].append({"author": "agent", "text": s.note, "ts": now})
-        store.put("request", rid, r)
-        store.audit(actor, f"request.{s.status}", rid, {"note": s.note[:200]})
-        return _clean(r)
+        # Serialize read/modify/write so simultaneous done acknowledgements
+        # cannot each claim the same completion or replace the original solver.
+        with store.lock:
+            r, now = _req(rid), time.time()
+            previous = r["status"]
+            if s.status == 'done' and (gid := (r.get('context') or {}).get('custom_build_unlocks')):
+                pending = app.state.custom_build_unlocks_pending(gid)
+                if pending:
+                    raise HTTPException(409, {'message': 'Unlock-all requires verified receipts for every current custom build',
+                                              'pending_builds': pending})
+            if s.status == "in_progress" and not r["started"]:
+                r["started"] = now
+            if s.status == "done" and previous != "done":
+                r["completed"] = now
+                r["metrics"]["duration_s"] = round(now - (r["started"] or r["created"]), 1)
+                r["solved_by"] = s.solved_by.model_dump() if s.solved_by else None
+            r["status"] = s.status
+            if s.note:
+                r["messages"].append({"author": "agent", "text": s.note, "ts": now})
+            transition = {"previous": previous, "status": s.status, "changed": previous != s.status, "at": now}
+            store.put("request", rid, r)
+            transition["audit_seq"] = store.audit(actor, f"request.{s.status}", rid,
+                                                  {"note": s.note[:200], **transition})
+            return _clean(r | {"status_transition": transition})
 
     @app.post("/api/requests/{rid}/metrics")
     def req_metrics(rid: str, m: MetricsIn, actor=Depends(auth)):

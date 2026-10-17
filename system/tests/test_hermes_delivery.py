@@ -24,6 +24,7 @@ def tracked_repo(tmp_path, monkeypatch):
     git('remote', 'add', 'origin', str(origin), cwd=repo); git('push', '-u', 'origin', 'main', cwd=repo)
     monkeypatch.setenv('GBOX_HERMES_REPO', str(repo))
     monkeypatch.setenv('GBOX_HERMES_DISPATCH_STATE', str(tmp_path / 'state'))
+    monkeypatch.setenv('GBOX_HERMES_HOME', str(tmp_path / 'missing-hermes'))
     return repo, origin, git
 
 
@@ -69,6 +70,9 @@ def test_publish_runs_tests_and_pushes_actual_commit_before_pr(tracked_repo, mon
     assert '1 passed' in result['checks'][0]
     assert result['commit'] == git('rev-parse', 'refs/heads/' + task['branch'], cwd=origin)
     assert result['url'].endswith('/pull/123')
+    assert result['provenance']['status'] == 'unknown'
+    receipt = delivery.state_dir() / 'publications' / ('123-' + result['commit'] + '.json')
+    assert json.loads(receipt.read_text())['provenance'] == result['provenance']
 
 
 def test_resumed_publication_updates_existing_pr_after_push(tracked_repo, monkeypatch):

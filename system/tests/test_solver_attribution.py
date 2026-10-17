@@ -101,3 +101,25 @@ def test_mcp_forwards_solver_credit_and_provider_usage(monkeypatch):
     asyncio.run(check())
     assert posted[0][1]['solved_by'] == solver
     assert posted[1][1]['provider'] == 'openrouter'
+
+
+def test_duplicate_done_preserves_completion_and_solver(client):
+    rid = client.post('/api/requests', json={'title': 'Do not steal completion', 'source': 'api'}).json()['id']
+    solver = {'service': 'codex', 'model': 'GPT-6', 'system': 'Codex',
+              'verification': 'Owned fixture and actual result verified'}
+    first = client.post(f'/api/requests/{rid}/status', json={'status': 'done', 'solved_by': solver}).json()
+    again = client.post(f'/api/requests/{rid}/status', json={'status': 'done'}).json()
+    assert first['status_transition']['changed'] is True
+    assert again['status_transition']['changed'] is False
+    assert again['status_transition']['previous'] == 'done'
+    assert again['completed'] == first['completed'] and again['solved_by'] == first['solved_by']
+    assert again['status_transition']['audit_seq'] > first['status_transition']['audit_seq']
+
+
+def test_concurrent_done_has_exactly_one_completion_transition(client):
+    from concurrent.futures import ThreadPoolExecutor
+    rid = client.post('/api/requests', json={'title': 'Concurrent completion', 'source': 'api'}).json()['id']
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        rows = list(pool.map(lambda _: client.post(f'/api/requests/{rid}/status', json={'status': 'done'}).json(), range(2)))
+    assert sum(r['status_transition']['changed'] for r in rows) == 1
+    assert rows[0]['completed'] == rows[1]['completed']

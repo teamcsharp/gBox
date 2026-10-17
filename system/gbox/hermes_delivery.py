@@ -215,12 +215,11 @@ def publish(request_id: str, title: str, files: list[str], tests: list[str]) -> 
             raise RuntimeError('No task commit exists; no GitHub progress was claimed')
         _run(['git', 'push', '-u', 'origin', workspace['branch']], root, timeout=90)
         commit = _run(['git', 'rev-parse', 'HEAD'], root)
-        local = _local_run(request_id)
-        note = ''
-        if local:
-            from . import hermes_local
-            head, summary = hermes_local.pr_note(checks)
-            note = f"> **Local model.** {head}\n> {summary}\n\n"
+        from . import hermes_device_work
+        provenance = hermes_device_work.publication_provenance(request_id)
+        local = any(r['device_id'] not in ('unknown', 'mixed') and not r['device_id'].startswith('provider:')
+                    for run in provenance.get('runs', []) for r in run.get('routes', []))
+        note = hermes_device_work.pr_note(provenance)
         body = (note + f"gBox request #{workspace['number']} ({request_id}).\n\n"
                 f"{title}\n\nValidation files: {', '.join(tests)}\n\nValidation:\n```text\n" + '\n'.join(checks) +
                 "\n```\n\nPublished for review. This PR does not by itself verify live emulation or close the inbox ticket.\n")
@@ -247,6 +246,12 @@ def publish(request_id: str, title: str, files: list[str], tests: list[str]) -> 
             workspace['local_model'] = _mark_local(root, number, existing is not None)
         workspace.update(commit=commit, url=confirmed['url'], pr_number=number, pr_state=confirmed['state'],
                          base_head=_run(['git', 'rev-parse', 'origin/main'], root),
-                         checks=checks, files=files, published_at=time.time())
+                         checks=checks, files=files, published_at=time.time(), provenance=provenance)
         record.write_text(json.dumps(workspace, indent=2))
+        receipts = state_dir() / 'publications'
+        receipts.mkdir(parents=True, exist_ok=True)
+        receipt = receipts / f'{number}-{commit}.json'
+        if not receipt.exists():
+            with receipt.open('x', encoding='utf-8') as stream:
+                json.dump(workspace, stream, indent=2)
         return workspace

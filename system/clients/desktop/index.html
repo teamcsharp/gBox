@@ -1210,6 +1210,8 @@ window.taskVizCreate = canvas => {
 <script src="task-activity.js"></script>
 <script src="background-display.js"></script>
 <script src="hermes-providers.js"></script>
+<link rel="stylesheet" href="device-work.css">
+<script src="device-work.js"></script>
 <script src="../web/viz/toast-stack.js"></script>
 <script src="../web/viz/process-popup.js"></script>
 <script src="../web/viz/build-report-image.js"></script>
@@ -1487,10 +1489,12 @@ setInterval(async () => {
 }, 4000);
 // ---- Tasks: every machine's gBox processes + jobs in flight, with what they cost and a hard stop ----
 document.body.insertAdjacentHTML("beforeend", `<div id="taskpanel"><div class="th"><b>Tasks</b>
-  <div class="tk-tabs" role="tablist" aria-label="Task view"><button type="button" id="tk-visual-tab" role="tab" aria-selected="true" aria-controls="tk-visual">Visual</button>
+  <div class="tk-tabs" role="tablist" aria-label="Task view"><button type="button" id="tk-devices-tab" role="tab" aria-selected="true" aria-controls="tk-devices">Device work</button>
+  <button type="button" id="tk-visual-tab" role="tab" aria-selected="false" aria-controls="tk-visual">Network</button>
   <button type="button" id="tk-technical-tab" role="tab" aria-selected="false" aria-controls="tk-technical">Technical</button></div>
   <span class="mut" id="tk-at"></span><button class="act" id="tk-close">Close</button></div>
-  <div id="tk-visual" class="tk-tab-page" role="tabpanel" aria-labelledby="tk-visual-tab">
+  <div id="tk-devices" class="tk-tab-page" role="tabpanel" aria-labelledby="tk-devices-tab"></div>
+  <div id="tk-visual" class="tk-tab-page" role="tabpanel" aria-labelledby="tk-visual-tab" hidden>
     <div class="tkv-head"><div><div class="tkv-kicker">Live task network</div><h2>Work in motion</h2><p>Follow each run from active work to its result.</p></div>
       <span class="tkv-live"><i></i> Refreshes every 5 seconds</span></div>
     <div class="tkv-stats" id="tkv-stats"></div>
@@ -1683,7 +1687,7 @@ $("#rp-close").onclick = () => {
   REMOTE.view = "app"; $("#rp-empty").hidden = true;
   REMOTE.worker = null; clearInterval(REMOTE.timer); clearInterval(REMOTE.pollTimer); REMOTE.pollTimer = null;
 };
-const TK = { t: null, busy: false, view: "visual", graph: null, visualData: [], visualSelected: null, visualVersion: 0,
+const TK = { t: null, busy: false, view: "devices", deviceView: null, graph: null, visualData: [], visualSelected: null, visualVersion: 0,
   focus: false, focusEvents: [], visualOpenSteps: new Set(), artifacts: [],
   expanded: new Set(), localExpanded: new Set(), hermesExpanded: new Set(), resolutionExpanded: new Set(), hermesOutput: new Map(), hermesScroll: new Map(),
   jobDetail: new Map(), pointerDown: 0, scrolledAt: 0, hermesLimit: 20,
@@ -1691,6 +1695,18 @@ const TK = { t: null, busy: false, view: "visual", graph: null, visualData: [], 
 function tkView(view) {
   TK.view = view;
   $("#taskpanel").classList.toggle("visual-mode", view === "visual");
+  $("#taskpanel").classList.toggle("device-mode", view === "devices");
+  $("#tk-devices").hidden = view !== "devices";
+  $("#tk-devices-tab").setAttribute("aria-selected", String(view === "devices"));
+  if (view !== "visual") { TK.graph?.stop(); TK.graph = null; }
+  if (view === "devices" && !TK.deviceView) {
+    TK.deviceView = window.GBoxDeviceWork.mount($("#tk-devices"), {
+      api: path => gbox.api(path), onRun: id => evRun(id), onRequest: id => evRequest(id),
+      onExternal: url => gbox.openExternal(url),
+      onUpdated: at => { $("#tk-at").textContent = "updated " + new Date(at * 1000).toLocaleTimeString(); }
+    });
+  }
+  TK.deviceView?.setActive(view === "devices" && $("#taskpanel").classList.contains("on"));
   $("#tk-visual").hidden = view !== "visual"; $("#tk-technical").hidden = view !== "technical";
   $("#tk-visual-tab").setAttribute("aria-selected", String(view === "visual"));
   $("#tk-technical-tab").setAttribute("aria-selected", String(view === "technical"));
@@ -1699,7 +1715,7 @@ function tkView(view) {
     catch (error) { $("#tkv-side").textContent = `3D task view unavailable: ${error.message}`; }
   }
   if (view === "technical") tasksLocalLoad();
-  else TK.graph?.update(TK.visualData, TK.visualSelected, TK.focus, TK.focusEvents);
+  else if (view === "visual") TK.graph?.update(TK.visualData, TK.visualSelected, TK.focus, TK.focusEvents);
 }
 function tkVisualItems(d) {
   const items = [];
@@ -1918,6 +1934,7 @@ for (const id of ['#tkv-providers', '#tk-providers']) {
   $(id).oninput = tkCapacityPreview;
   $(id).onchange = tkCapacityChange;
 }
+$("#tk-devices-tab").onclick = () => tkView("devices");
 $("#tk-visual-tab").onclick = () => tkView("visual");
 $("#tk-technical-tab").onclick = () => tkView("technical");
 $("#tkv-side").onclick = e => {
@@ -2133,6 +2150,7 @@ async function tasksLocalLoad() {
   if (tkRender($("#tk-local"), html, pane) && top > 0 && top >= before) pane.scrollTop = top + body.offsetTop - before;
 }
 async function tasksLoad() {
+  if (TK.view === "devices") return TK.deviceView?.refresh();
   if (TK.busy) return;
   TK.busy = true;
   let r;
@@ -2296,7 +2314,7 @@ function tvClose(back = true) {
 async function tvOpen(id, kind = "job") {
   tvClose(false); TV.id = id; TV.kind = kind; TV.returnPanel = $("#taskpanel").classList.contains("on");
   $("#taskpanel").classList.remove("on"); clearInterval(TK.t);
-  TK.graph?.stop(); TK.graph = null;
+  TK.deviceView?.setActive(false); TK.graph?.stop(); TK.graph = null;
   $("#taskviz").classList.add("on");
   try { TV.view = window.taskVizCreate($("#tv-canvas")); }
   catch (e) { $("#tv-stages").textContent = `3D view unavailable: ${e.message}`; }
@@ -2339,11 +2357,11 @@ async function testPcMenu(x, y) {                             // which PCs backg
 };
 $("#tb-tasks").onclick = () => { const on = !$("#taskpanel").classList.contains("on"); $("#taskpanel").classList.toggle("on", on);
   clearInterval(TK.t); if (on) { tkView(TK.view); tasksLoad(); TK.t = setInterval(() => { if (TK.view === "technical") tasksLocalLoad(); tasksLoad(); }, 5000); }
-  else { TK.graph?.stop(); TK.graph = null; } };
+  else { TK.deviceView?.setActive(false); TK.graph?.stop(); TK.graph = null; } };
 $("#taskpanel").addEventListener("pointerdown", () => { TK.pointerDown = Date.now(); }, true);
 for (const type of ["pointerup", "pointercancel"]) window.addEventListener(type, () => { TK.pointerDown = 0; }, true);
 $("#taskpanel").addEventListener("scroll", () => { TK.scrolledAt = Date.now(); }, true);
-$("#tk-close").onclick = () => { $("#taskpanel").classList.remove("on"); clearInterval(TK.t); TK.graph?.stop(); TK.graph = null; };
+$("#tk-close").onclick = () => { $("#taskpanel").classList.remove("on"); clearInterval(TK.t); TK.deviceView?.setActive(false); TK.graph?.stop(); TK.graph = null; };
 $("#tk-body").onclick = async e => {
   const resolution = e.target.closest("[data-resolution-evidence]");
   if (resolution) {
@@ -6522,7 +6540,7 @@ function closePops(target) {                                 // target null = a 
     const el = document.querySelector(pop + ".on");
     if (!el || el.closest("#dock") || (target && (el.contains(target) || (opener && target.closest(opener))))) continue;   // docked panels (#262) stay
     el.classList.remove("on");
-    if (pop === "#taskpanel") clearInterval(TK.t);
+    if (pop === "#taskpanel") { clearInterval(TK.t); TK.deviceView?.setActive(false); TK.graph?.stop(); TK.graph = null; }
     if (pop === "#reinv") riStop();
   }
   const pm = $("#pipmenu");                                  // the game's right-click menu
