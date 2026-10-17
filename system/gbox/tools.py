@@ -287,7 +287,21 @@ def rom_path(g: CatalogEntry, config) -> Path:
         if not root:
             raise ToolUnavailable(f"library {g.library} has no path for {HOST_OS}")
         return root / g.rel_path
-    return Path(g.launch["path"])
+    if g.launch.get("path"):
+        return Path(g.launch["path"])
+    # Entries built from a raw path (library=None, launch={"kind": "rom"}) carry only source_paths,
+    # often recorded on another OS. Remap a configured library root to this node's root.
+    for src in g.source_paths or []:
+        s = str(src).replace("\\", "/")
+        for lib in getattr(config, "libraries", []) or []:
+            here = lib.root()
+            for os_, other in (lib.paths or {}).items():
+                o = str(other).replace("\\", "/").rstrip("/")
+                if here and o and (s == o or s.startswith(o + "/")):
+                    return here / s[len(o):].lstrip("/")
+        if Path(src).is_absolute() and Path(src).exists():
+            return Path(src)
+    raise ToolUnavailable(f"{g.title or g.game_id}: no library, launch path or source path resolvable on {HOST_OS}")
 
 
 # --- runtime sessions -----------------------------------------------------------------------
