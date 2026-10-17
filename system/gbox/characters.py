@@ -1707,6 +1707,11 @@ DEDICATED = [
     ("nightfire", lambda t, p: "007" in t and "nightfire" in t and p == "gamecube",
      lambda: __import__("gbox.nightfire_chars", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.nightfire_chars", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # 007 GoldenEye (N64, NGEP): the 80 body-table bodies (Bond's outfits, guards, soldiers, scientists, the cast
+    # heads) as rigged GLBs from the Z-file model format (gbox.goldeneye_reader); texture pixels are the next step
+    ("goldeneye", lambda t, p: ("goldeneye" in t or "golden eye" in t) and p == "n64",
+     lambda: __import__("gbox.goldeneye_reader", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.goldeneye_reader", fromlist=["x"]).extract_run(ctx, game, e, work)),
     # Def Jam: Vendetta PS2 (SLUS_206.39 v1.00): the 58 data.bin WRS wrestlers, BODY + FACE + hands on one rigged
     # skeleton with body roles and the fighter's texture page (#1305; formats in docs/defjam_pipeline.md)
     ("defjam_vendetta_ps2", lambda t, p: "def jam" in t and "vendetta" in t and p == "ps2",

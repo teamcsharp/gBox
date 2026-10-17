@@ -119,7 +119,7 @@ def test_suit_bond_probe_pins_header_and_tree(ge):
     assert p["inflated_sha256"] == "521bc97bbdd7787fa74f2fda73bc2addb7732810de6301d74c55a1be7c8a7afa"
     assert p["header_vram"] == 0x800375AC
     assert p["skeleton_vram"] == 0x80037190 and p["skeleton_joints"] == 16
-    assert (p["num_switches"], p["num_records"], p["num_textures"]) == (7, 21, 14)
+    assert (p["num_switches"], p["num_matrices"], p["num_records"], p["num_textures"]) == (7, 21, 0, 14)
     assert p["root_offset"] == 0xC4
     assert p["node_count"] == 79 and p["position_nodes"] == 15 and p["vertex_dl_nodes"] == 25
     assert p["textures"][0] == {"id": 1642, "w": 32, "h": 48, "fmt": 4}
