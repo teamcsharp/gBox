@@ -302,13 +302,14 @@ def local_prompt(prompt: str, s=None) -> str:
                 'next step so the next local run can continue. Publish tested changes through the task workspace. '
                 'Close a request only after its acceptance criteria are verified; otherwise record progress. '
                 'Protect operator gameplay and preserve original games and saves. ' + prompt)
-    return (f'LOCAL MODEL RUN ({s.provider} · {s.model} on the Spark GPU; paid routes are out of credit). '
+    handoff = 'another enabled local host' if settings().nodes else 'a paid model'
+    return (f'LOCAL MODEL RUN ({s.provider} · {s.model} on {s.host_name}; local task processing). '
             f'Keep this run small: at most {budget} tool calls, the last {reserve} for focused tests, '
             'publish_task_changes and the final reply. Change at most one source file plus its focused test. '
             'Read at most 80 lines per read and search before reading. Prefer inventories, single-file fixes and '
             'running existing tests. If the fix needs more than one source file, engine/reader/writer work or live '
             'emulation, do not start it: post your findings (files, functions, the failing check) on the request and '
-            'finish; it stays queued for a paid model. A local run publishes a draft PR only, with its test summary. '
+            f'finish; it stays queued for {handoff}. A local run publishes a draft PR only, with its test summary. '
             + prompt)
 
 

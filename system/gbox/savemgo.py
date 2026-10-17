@@ -446,7 +446,7 @@ def _data_overlay(home, profile, base):
             base | {'immutable_files': base['immutable_files'] | files})
 
 
-def _verify_managed(home, profile, base, progress):
+def _verify_managed(home, profile, base, progress, *, source_archive=None):
     _base_receipt(base, profile)
     profile, base = _data_overlay(home, profile, base)
     path = _guard(home / UPDATE_RECEIPT)
@@ -481,18 +481,71 @@ def _verify_managed(home, profile, base, progress):
         if previous:
             for name, row in previous['files'].items():
                 cached['immutable_files'][name] = row
-        result = verify_install(home, overlay, progress=progress, _cache=cached)
+        if source_archive is not None:
+            with runtime_lease(home):
+                result = verify_install(home, overlay, progress=progress, _cache=cached, archive=source_archive)
+        else:
+            result = verify_install(home, overlay, progress=progress, _cache=cached)
     if previous and _launcher_sfo((home / SFO).read_bytes()) != previous['app_ver']:
         raise BundleError('SaveMGO installed launcher revision and update receipt differ')
     return result | {'launcher_revision': previous['app_ver'] if previous else profile['app_ver'],
                      'launcher_update_sha256': previous['update_sha256'] if previous else None}
 
 
-def verify_install(root, profile, *, progress=None, _cache=None, _percent=5):
+def _heal_file(path, archive, name, row, profile):
+    """Restore one drifted member from the verified source archive, atomically.
+
+    The archive was fingerprinted and its critical identity validated before the
+    verify pass, so its members are the trusted content. The restored file must
+    match the manifest row and, for critical files, the pinned identity; the
+    replacement lands with os.replace so the home never holds a partial file.
+    """
+    if name.startswith(DATA_ROOT + '/') or name == 'dev_hdd0/game/NPMG00020/plugin.sprx':
+        raise BundleError(f'SaveMGO game data differs and needs update verification; left unchanged: {name}')
+    fd, tmp = tempfile.mkstemp(prefix='.heal-', dir=str(path.parent))
+    digest, crc, size = hashlib.sha256(), 0, 0
+    try:
+        with zipfile.ZipFile(archive) as zipped:
+            info = zipped.getinfo(PREFIX + name)
+            if info.file_size != row['size']:
+                raise BundleError(f'SaveMGO source archive member differs from its manifest: {name}')
+            with os.fdopen(fd, 'wb') as dst, zipped.open(info) as src:
+                for block in iter(lambda: src.read(BLOCK), b''):
+                    size += len(block)
+                    if size > row['size']:
+                        raise BundleError(f'SaveMGO source archive member exceeded its declared size: {name}')
+                    dst.write(block); digest.update(block); crc = zlib.crc32(block, crc)
+        if size != row['size'] or f'{crc & 0xffffffff:08x}' != row['crc32']:
+            raise BundleError(f'SaveMGO source archive member CRC differs from its manifest: {name}')
+        result = {'size': size, 'crc32': row['crc32'], 'sha256': digest.hexdigest()}
+        if name in profile['critical_sha256'] and result['sha256'] != profile['critical_sha256'][name]:
+            raise BundleError(f'SaveMGO source archive critical file differs from its pinned identity: {name}')
+        try:
+            os.replace(tmp, path)
+        except OSError as exc:
+            raise BundleError(f'SaveMGO drifted file is locked and could not be restored: {name}') from exc
+        info = path.stat()
+        if not path.is_file() or info.st_size != size:
+            raise BundleError(f'Restored SaveMGO file did not settle: {name}')
+        return result | {'mtime_ns': info.st_mtime_ns}
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def verify_install(root, profile, *, progress=None, _cache=None, _percent=5, archive=None):
     """Verify local immutable files; leave personal configuration/saves/caches untouched.
 
     A private previous staging receipt can reuse unchanged file stats. Critical
     files are always rehashed; initial adoption hashes/CRC-checks every immutable file.
+
+    When `archive` is given (the just-fingerprinted source package), a file whose
+    content drifted from the manifest is restored from the archive and re-checked
+    instead of failing the launch. Files that are changing while they are read are
+    never restored: a live writer is reported, not fought. Restored paths are
+    returned as `healed_files` so the launch surface reports them.
     """
     root = _guard(root)
     if not root.is_dir() or profile.get('schema') != SCHEMA:
@@ -501,15 +554,39 @@ def verify_install(root, profile, *, progress=None, _cache=None, _percent=5):
         raise BundleError('Discovery profile has the wrong pinned SaveMGO executable')
     expected = profile['immutable_manifest']
     cached = (_cache or {}).get('immutable_files', {}) if (_cache or {}).get('source_fingerprint') == profile['source_fingerprint'] else {}
-    verified = {}
+    verified, healed = {}, []
     for index, row in enumerate(expected):
         name = row['path']
         _safe_name(name)
         path = _guard(root / name)
-        info = path.stat()
-        if not path.is_file() or info.st_size != row['size'] or info.st_nlink != 1:
+        try:
+            info = path.stat()
+        except FileNotFoundError:
+            if archive is not None:
+                verified[name] = _heal_file(path, archive, name, row, profile)
+                healed.append(name)
+                if index % 32 == 0:
+                    _notify(progress, _percent, f'Verifying local SaveMGO immutable files: {index + 1:,} / {len(expected):,} checked')
+                continue
+            raise BundleError(f'SaveMGO immutable installation file is missing: {name}')
+        if not path.is_file() or info.st_nlink != 1:
+            if archive is not None:
+                verified[name] = _heal_file(path, archive, name, row, profile)
+                healed.append(name)
+                if index % 32 == 0:
+                    _notify(progress, _percent, f'Verifying local SaveMGO immutable files: {index + 1:,} / {len(expected):,} checked')
+                continue
             raise BundleError(f'SaveMGO immutable installation file is missing, linked or differs: {name}')
         previous = cached.get(name, {})
+        if info.st_size != row['size']:
+            if archive is not None:
+                verified[name] = _heal_file(path, archive, name, row, profile)
+                healed.append(name)
+                if index % 32 == 0:
+                    _notify(progress, _percent, f'Verifying local SaveMGO immutable files: {index + 1:,} / {len(expected):,} checked')
+                continue
+            raise BundleError(f'SaveMGO immutable installation file differs: {name} '
+                              f'(expected size {row["size"]}, found {info.st_size})')
         if (name not in profile['critical_sha256'] and Path(name).suffix.casefold() not in ('.exe', '.dll')
                 and previous.get('size') == info.st_size
                 and previous.get('mtime_ns') == info.st_mtime_ns and previous.get('crc32') == row['crc32']
@@ -518,12 +595,24 @@ def verify_install(root, profile, *, progress=None, _cache=None, _percent=5):
         else:
             result = _hash_file(path, progress, _percent, 'Verifying local SaveMGO immutable files')
         after = path.stat()
-        if ((info.st_size, info.st_mtime_ns) != (after.st_size, after.st_mtime_ns)
-                or result['size'] != row['size'] or result['crc32'] != row['crc32']
-                or previous.get('sha256') and result['sha256'] != previous['sha256']
-                or name in profile['critical_sha256'] and result['sha256'] != profile['critical_sha256'][name]):
-            raise BundleError(f'SaveMGO immutable content integrity differs: {name}')
-        verified[name] = result | {'mtime_ns': info.st_mtime_ns}
+        if (info.st_size, info.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            raise BundleError(f'SaveMGO immutable file changed during verification: {name}')
+        problem = None
+        if result['size'] != row['size']:
+            problem = f'size differs (expected {row["size"]}, found {result["size"]})'
+        elif result['crc32'] != row['crc32']:
+            problem = f'CRC differs (expected {row["crc32"]}, found {result["crc32"]})'
+        elif previous.get('sha256') and result['sha256'] != previous['sha256']:
+            problem = 'content differs from the verified receipt'
+        elif name in profile['critical_sha256'] and result['sha256'] != profile['critical_sha256'][name]:
+            problem = 'critical identity differs'
+        if problem:
+            if archive is None:
+                raise BundleError(f'SaveMGO immutable content integrity differs: {name} ({problem})')
+            verified[name] = _heal_file(path, archive, name, row, profile)
+            healed.append(name)
+        else:
+            verified[name] = result | {'mtime_ns': info.st_mtime_ns}
         if index % 32 == 0:
             _notify(progress, _percent, f'Verifying local SaveMGO immutable files: {index + 1:,} / {len(expected):,} checked')
     # Unknown DLLs beside the executable could change what the pinned runner loads.
@@ -534,7 +623,8 @@ def verify_install(root, profile, *, progress=None, _cache=None, _percent=5):
     return {'home': root, 'executable': root / 'rpcs3.exe', 'eboot': root / EBOOT,
             'data_root': root / DATA_ROOT,
             'source_fingerprint': profile['source_fingerprint'], 'verified': True,
-            'immutable_files': verified, 'reused': True, 'profile_values_read': False}
+            'immutable_files': verified, 'reused': True, 'profile_values_read': False,
+            'healed_files': healed}
 
 
 @contextmanager
@@ -592,7 +682,12 @@ def prepare(archive, config, progress=None, *, existing_root=None, expected_fing
             if (receipt.get('schema') != SCHEMA or receipt.get('source_fingerprint') != fingerprint
                     or not re.fullmatch('[0-9a-f]{64}', str(receipt.get('archive_sha256', '')))):
                 raise BundleError('SaveMGO receipt identity differs; existing profile left unchanged')
-            result = _verify_managed(home, profile, receipt, progress)
+            result = _verify_managed(home, profile, receipt, progress, source_archive=archive)
+            if result.get('healed_files'):
+                for name in result['healed_files']:
+                    receipt['immutable_files'][name] = result['immutable_files'][name]
+                _record_update(receipt_path, receipt)
+                _notify(progress, 8, 'Restored drifted SaveMGO file(s): ' + ', '.join(result['healed_files']))
             return result | {'archive_sha256': receipt['archive_sha256']}
         # The existing office package is adopted read-only, never copied to another PC.
         existing = Path(existing_root) if existing_root is not None else None

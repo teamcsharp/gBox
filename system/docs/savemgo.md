@@ -32,8 +32,18 @@ firmware retain their original integrity requirements. Already-applied NPMG00020
 data updates can use a separate `.gbox-savemgo-data-update.json` receipt after an
 explicit byte comparison against `https://cdn.mgo2.net/`. Its scope is existing
 USRDIR files and `plugin.sprx`, bound to the original archive fingerprint/hash.
-Updated files are SHA-256 checked on every launch. Unknown later changes still
-fail verification; launcher log entries alone never authorize an update.
+Updated files are SHA-256 checked on every launch. Changes to accepted update
+payloads still fail verification; launcher log entries alone never authorize an update.
+
+Emulators legitimately rewrite some of their own files on first boot. An original immutable file
+whose content drifted from the verified package is restored from the archive
+before the launch (the archive is re-identified on every launch) and the
+restored paths are reported in the launch result as `healed_files`. A file that
+is actively changing while it is read is reported, never overwritten; tampered
+content never runs. Accepted launcher and CDN update payloads are never downgraded
+to archive contents, and first-time update adoption still requires full verification.
+Changed companion game data is left intact pending explicit update verification.
+Repairs require an idle runtime lease so a running game is never overwritten.
 
 Each PC retains its own mutable configuration, shader cache and user data. A
 process-lifetime lease prevents two games sharing the same writable home on one

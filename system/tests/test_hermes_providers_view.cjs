@@ -26,7 +26,7 @@ test('pool renders separate switches, real host counters and guarded model actio
   assert.match(html, /data-tkp-node="sparkDeux"  aria/);
   assert.match(html, /&lt;large&gt;/);
   assert.match(html, /data-tkp-model="start"[^>]*disabled/);
-  assert.match(html, /Calls today<\/dt><dd>23/);
+  assert.match(html, /Calls \(24h\)<\/dt><dd>23/);
 });
 test('dedicated Spark banner identifies the inference host and capacity', () => {
   const html = load().cards({routes: [], local: {enabled: true, active: true, host_name: 'sparkDeux',

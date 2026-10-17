@@ -92,8 +92,8 @@
       <div class="tkp-model" title="${esc(n.upstream)}">${esc(n.model)}</div>
       <div class="tkp-status">${esc(n.reason || (n.capable ? "Ready" : "Unavailable"))}</div>
       <dl><div><dt>Inference now</dt><dd>${n.active || 0} / ${n.capacity || 1}</dd></div>
-      <div><dt>Waiting calls</dt><dd>${n.waiting || 0}</dd></div><div><dt>Calls today</dt><dd>${n.calls_ok || 0}</dd></div>
-      <div><dt>Tokens today</dt><dd>${tokens(n.tokens)}</dd></div></dl>
+      <div><dt>Waiting calls</dt><dd>${n.waiting || 0}</dd></div><div><dt>Calls (24h)</dt><dd>${n.calls_ok || 0}</dd></div>
+      <div><dt>Tokens (24h)</dt><dd>${tokens(n.tokens)}</dd></div></dl>
       <div class="tkp-model">${n.primary ? "First choice when memory is available" : "Dedicated to heavier concurrent work; hands off to prime"}</div>
       ${n.kv_cache_fraction != null ? `<div class="tkp-model">vLLM: ${n.running_requests || 0} running · ${Math.round(n.kv_cache_fraction * 100)}% KV cache</div>` : ""}
       </article>`).join("");

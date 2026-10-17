@@ -2822,7 +2822,8 @@ class SaveMGOAdapter(Adapter):
                 'bundled_runtime': {'kind': 'savemgo_bundle', 'verified': True,
                     'source_fingerprint': self.bundle['source_fingerprint'],
                     'archive_sha256': self.bundle['archive_sha256'],
-                    'reused': self.bundle['reused'], 'settings': 'bundled, per-PC'},
+                    'reused': self.bundle['reused'], 'settings': 'bundled, per-PC',
+                    'healed_files': self.bundle.get('healed_files', [])},
                 'startup': 'process running; awaiting game window'}
 
     def stop_game(self) -> dict:
