@@ -30,7 +30,7 @@ OBJECT_ID_MAX = 0x192            # gObjectTable entries in every retail build (o
 BYTE_ORDERS = {b"\x80\x37\x12\x40": "z64 (big-endian)", b"\x37\x80\x40\x12": "v64 (halfword-swapped)",
                b"\x40\x12\x37\x80": "n64 (word-swapped)"}
 # big-endian md5 -> human-readable build label recorded in the manifest's source block
-BUILD_LABELS = {"1618403427e4344a57833043db5ce3c3": "Master Quest debug (NZLP, PAL GameCube disc)"}
+BUILD_LABELS = {"1618403427e4344a57833043db5ce3c3": "Master Quest retail (NZLP, PAL GameCube disc)"}
 
 
 def _names() -> dict:

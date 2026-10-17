@@ -10,7 +10,9 @@ merged into a title's dossier the first time it is studied. They are not LLM cla
 "documented" ranks between "hypothesis" and "validated".
 """
 
-PLAYBOOKS = [
+from .native_engineering import playbook as native_engineering_playbook
+
+PLAYBOOKS = [native_engineering_playbook(),
     {
         "id": "study-title", "seed_version": 3, "title": "Start reverse-engineering a title (dossier + Ghidra study)",
         "goal": "Have the title's executable in Ghidra with the right processor and registers, and know what gBox "

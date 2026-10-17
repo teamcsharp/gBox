@@ -1,7 +1,7 @@
-"""Owned-build inventory pins for Ocarina of Time Master Quest debug (NZLP, PAL GameCube disc).
+"""Owned-build inventory pins for Ocarina of Time Master Quest retail (NZLP, PAL GameCube disc).
 
 The catalog entry "Legend of Zelda, The - Ocarina of Time - Master Quest (Europe) (GameCube Edition)"
-(platform n64, core parallel_n64) is the 32 MiB NZLP debug ROM from the PAL Master Quest GameCube disc.
+(platform n64, core parallel_n64) is the 32 MiB NZLP retail ROM from the PAL Master Quest GameCube disc.
 Its zip member is stored v64 despite the .z64 name, so the big-endian normalize step matters. The ROM
 shares the gc-eu dmadata/code layout (dmadata 0x7170), which gbox.oot_writer resolves via md5 pin.
 """
@@ -16,14 +16,14 @@ OWNED = Path.home() / "gbox-cache/ff72441b33ff806b/source.zip"
 MD5 = "1618403427e4344a57833043db5ce3c3"
 
 
-def test_md5_pins_the_mq_debug_build():
+def test_md5_pins_the_mq_retail_build():
     assert OW.MD5[MD5] == "gc-eu-mq"
     assert OW.VERSIONS["gc-eu-mq"]["dma"] == 0x7170
     assert OW.VERSIONS["gc-eu-mq"] == OW.VERSIONS["gc-eu"]       # same layout, own name
 
 
-@pytest.mark.skipif(not OWNED.is_file(), reason="owned OoT MQ debug ROM not cached on this host")
-def test_owned_mq_debug_inventory():
+@pytest.mark.skipif(not OWNED.is_file(), reason="owned OoT MQ retail ROM not cached on this host")
+def test_owned_mq_retail_inventory():
     from gbox import oot_inventory as OI
     m = OI.inventory(OWNED)
     s, h = m["source"], m["header"]
@@ -33,7 +33,7 @@ def test_owned_mq_debug_inventory():
     assert s["normalized_sha256"] == "ed392a890d5fab1c4d6863c69a40df6ca966f568160f2b2a9a73e5d02a6e93c2"
     assert s["rom_size"] == 33554432
     assert s["version"] == "gc-eu-mq" and s["version_by_md5"]
-    assert s["build_label"].startswith("Master Quest debug")
+    assert s["build_label"].startswith("Master Quest retail")
     assert h["game_code"] == "NZLP" and h["entry"] == "80000400"
     assert m["launch"]["crc_valid"] and m["launch"]["core"].startswith("parallel_n64")
     L = m["layout"]
@@ -51,7 +51,7 @@ def test_owned_mq_debug_inventory():
     assert m["link"]["shared"]["ovl_player_actor"]["dma_index"] == 34
 
 
-@pytest.mark.skipif(not OWNED.is_file(), reason="owned OoT MQ debug ROM not cached on this host")
-def test_owned_mq_debug_manifest_is_serializable():
+@pytest.mark.skipif(not OWNED.is_file(), reason="owned OoT MQ retail ROM not cached on this host")
+def test_owned_mq_retail_manifest_is_serializable():
     from gbox import oot_inventory as OI
     json.dumps(OI.inventory(OWNED))

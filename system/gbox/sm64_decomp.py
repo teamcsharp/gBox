@@ -1108,16 +1108,14 @@ def split_chest(model: dict, hip: int, upper_roots: list[int], frac: float = 0.5
 
 
 def split_head(model: dict, neck: int) -> int:
-    """SM64 heads pivot at the neck: the pivot joint becomes the neck, a new head joint (at the centre of the head's
-    geometry) takes the head's vertices (and every joint that hung off the pivot, e.g. Peach's hair parts)."""
-    below = descendants(model, neck) | {neck}
+    """SM64 heads pivot at the neck: the pivot joint becomes the neck, a new head joint at the neck (a zero-length
+    pivot, the head's base) takes the head's vertices (and every joint that hung off the pivot, e.g. Peach's hair
+    parts). The head joint sits at the neck, not at the head's vertical centre, so the retarget's head-height
+    reference (the head joint's Y) matches native donors whose head joint is at the neck: a centre-anchored head
+    joint would map the head centre onto the target's neck and sink the head into the shoulders."""
     sel = [(p, np.where(p["J"] == neck)[0]) for p in model["prims"]]
-    head_pts = [p["P"][np.isin(p["J"], list(below))] for p in model["prims"]]
-    head_pts = [x for x in head_pts if len(x)]
-    pts = np.concatenate(head_pts) if head_pts else None
     base = model["joints"][neck]["world"][3, :3]
-    centre = pts.mean(0) if pts is not None else base + np.array([0, 0.05, 0])
-    head = add_joint(model, neck, np.array([base[0], max(centre[1], base[1]), base[2]]), "head")
+    head = add_joint(model, neck, np.array(base), "head")
     for p, i in sel:
         p["J"][i] = head
     for k, jt in enumerate(model["joints"][:-1]):

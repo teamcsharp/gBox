@@ -236,6 +236,24 @@ Per costume:
 
 ## 5. Live check (operator)
 
+### Stock-disc FIFO desync reports (#1922, #1973)
+
+The i9 report #1922 captured Dolphin's `GFX FIFO: Unknown Opcode` warning,
+which identifies a CPU/GPU desync and recommends turning off Dual Core. The
+later JAY report #1973 froze at character selection with the original disc
+(`mod=""`), so this is not evidence of a replacement-writer failure. gBox's
+Windows launch defaults explicitly enabled Dual Core.
+
+For the verified USA disc header `GRSEAF`, both Dolphin launch paths now pass
+`-C Dolphin.Core.CPUThread=False` after their normal options. This follows the
+[official FIFO error guidance](https://github.com/dolphin-emu/dolphin/blob/master/Source/Core/VideoCommon/CommandProcessor.cpp)
+and the [supported Core/CPUThread setting](https://github.com/dolphin-emu/dolphin/blob/master/Source/Core/Core/Config/MainSettings.cpp).
+The override uses the image header, including rebuilt ISO and GCZ images, and
+does not change global preferences or other title defaults. Other regions have
+not been added without matching incident evidence. This workaround still needs
+a fresh character-selection-to-match check; saved-state restoration alone does
+not verify it, and no live game was restarted for this change.
+
 1. Launch `sc2_sonic_vs_mario_random` for Soul Calibur II (USA) in gBox (Dolphin).
 2. Arcade or VS: pick Mitsurugi -> expected one of Shadow / Luigi / Tails with Mitsurugi's katana, moves and
    voice; go back and pick him again a few times: the body should change between picks.
