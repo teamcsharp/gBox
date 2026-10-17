@@ -82,8 +82,8 @@
     }
     function render() {
       const d=state.data;
-      $('.dw-notice').hidden=!state.error;
-      $('.dw-notice').textContent=state.error;
+      $('.dw-notice').hidden=!(state.error||d?.coverage?.notice);
+      $('.dw-notice').textContent=state.error||d?.coverage?.notice||'';
       if(!d) { $('.dw-runs').textContent=state.error?'Device work evidence is unavailable.':'Loading device work evidence…'; return; }
       const devices=d.devices || [];
       if(!devices.some(x=>x.id===state.device))state.device=(devices.find(x=>friendly(x)==='Spark2') || devices[0])?.id || null;
@@ -99,7 +99,7 @@
       const selected=runs.find(r=>r.id===state.selected);
       const calls=metrics.calls_ok==null || metrics.calls_failed==null?null:Number(metrics.calls_ok)+Number(metrics.calls_failed);
       const callFailure=metrics.calls_failed==null || metrics.calls_ok==null || !calls?'—':(100*Number(metrics.calls_failed)/calls).toFixed(1)+'%';
-      const tokens=metrics.tokens_in==null || metrics.tokens_out==null?null:Number(metrics.tokens_in)+Number(metrics.tokens_out);
+      const tokens=metrics.tokens_in==null || metrics.tokens_out==null?metrics.tokens_total??null:Number(metrics.tokens_in)+Number(metrics.tokens_out);
       const modelLabel=device?.models_seen?.length?'Observed models: '+device.models_seen.join(', '):device?.model?'Current model: '+device.model:'Model not recorded';
       let detail=`<div class="dw-device-title">${esc(friendly(device))}<small>${esc(modelLabel)}</small></div><div class="dw-efficiency"><h3>Efficiency · ${esc(d.window?.label || state.window)}</h3><dl><div><dt>Model calls</dt><dd>${number(calls)}</dd></div><div><dt>Call failure rate</dt><dd>${esc(callFailure)}</dd></div><div><dt>Observed tokens</dt><dd>${compact(tokens)}</dd></div><div><dt>Agent time</dt><dd>${duration(metrics.wall_s)}</dd></div><div><dt>Peak concurrent runs</dt><dd>${number(metrics.peak_concurrency)}</dd></div><div><dt>PRs published</dt><dd>${number(metrics.prs_opened)}</dd></div><div><dt>Avg. successful call</dt><dd>${duration(metrics.mean_call_s)}</dd></div><div><dt>Ended runs with outcomes</dt><dd>${number(metrics.ended_runs_with_delivery)} / ${number(metrics.ended_runs)}</dd></div></dl><p>Agent time adds overlapping runs. Call time includes waiting. Outcomes mean recorded PR publication/merge or request completion; model-call success is not task acceptance.</p></div>`;
       state.outcomes=selected?.outcomes || [];
@@ -107,6 +107,8 @@
         detail+=`<section class="dw-inspect"><span class="dw-state">${esc(stateLabel(selected))}</span><h3>${esc(selected.title || 'Untitled run')}</h3><p class="dw-action">${esc(selected.current_action || 'No current action recorded.')}</p><div class="dw-attribution">Device evidence: ${esc((selected.attribution?.source || 'Unavailable').replaceAll('_',' '))}${selected.attribution?.scope?'<br>'+esc(selected.attribution.scope):''}${selected.attribution?.note?'<br>'+esc(selected.attribution.note):''}</div><div class="dw-links"><button type="button" data-open-run="${esc(selected.id)}">Open run and tool log</button>${(selected.tickets || []).map(t=>`<button type="button" data-request="${esc(t.id)}">#${esc(t.number || '—')} ${esc(t.title || 'Open request')} · ${esc(t.status || 'unknown')}</button>`).join('')}</div><h4>Linked outcomes</h4>${state.outcomes.length?state.outcomes.map(outcome).join(''):'<p class="dw-empty-result">No linked deliverable has been recorded for this run yet.</p>'}</section>`;
       } else detail+='<p class="dw-empty-result">Select a task to inspect its evidence.</p>';
       replace($('.dw-detail'),detail);
+      const runLink=$('.dw-detail [data-open-run]');
+      if(runLink)runLink.hidden=selected?.log_available===false;
       const notes=Array.isArray(d.coverage?.notes)?d.coverage.notes:[];
       const coverageOpen=$('.dw-foot details')?.open;
       replace($('.dw-foot'),`<span>Updated ${esc(timeLabel(d.generated_at || bounds.end,true))} · ${esc(d.window?.label || state.window)}</span><details${coverageOpen?' open':''}><summary>${esc(d.coverage?.partial?'Partial evidence coverage':'Evidence coverage')}</summary>${notes.map(note=>'<p>'+esc(note)+'</p>').join('')}</details>`);
@@ -115,7 +117,8 @@
       if(!state.active || state.busy)return;
       state.busy=true; const serial=state.serial, windowKey=state.window;
       try {
-        const r=await options.api('/api/tasks/device-work?window='+encodeURIComponent(windowKey));
+        let r=await options.api('/api/tasks/device-work?window='+encodeURIComponent(windowKey));
+        if(root.GBoxDeviceWorkLegacy?.missing(r)&&state.active&&serial===state.serial)r=await root.GBoxDeviceWorkLegacy.read(options.api,windowKey);
         if(!state.active || serial!==state.serial)return;
         if(!r?.ok)throw new Error(r?.error || 'Device evidence endpoint unavailable');
         if(!r.data || !Array.isArray(r.data.devices) || !Array.isArray(r.data.runs))throw new Error('Device evidence response is incomplete');
