@@ -11,7 +11,7 @@ The tile/mapping formats are pinned byte-for-byte against the skdisasm sources
 for this build (``Map - Sonic.asm``, ``DPLC - Sonic.asm``): a mapping piece is
 ``s8 y, u8 ((w-1)<<2 | (h-1)), u16 (pri<<15 | pal<<13 | vf<<12 | hf<<11 | tile),
 s16 x`` and a DPLC entry is ``u16 ((tiles-1)<<12 | first_tile)``.  A piece's
-``tile`` indexes the *frame's* DPLC stream (contiguous ``w*h`` tiles in row
+``tile`` indexes the *frame's* DPLC stream (contiguous ``w*h`` tiles in column
 major order), not the art bank directly.
 
 CLI: ``python -m gbox.sk_render SRC [--char sonic|knuckles] [--frame N] [--png out.png] [--sheet out.png]``
@@ -30,9 +30,9 @@ BANK = 0x20000  # 128 KiB: the DMA-queue granularity an art run must not cross
 
 def crgb(word: int) -> tuple[int, int, int]:
     """Genesis CRAM word (0000BBB0GGG0RRR0) -> 24-bit (r, g, b)."""
-    r = (word >> 9) & 7
+    r = (word >> 1) & 7
     g = (word >> 5) & 7
-    b = (word >> 1) & 7
+    b = (word >> 9) & 7
     return ((r << 5) | (r << 2) | (r >> 1),
             (g << 5) | (g << 2) | (g >> 1),
             (b << 5) | (b << 2) | (b >> 1))
@@ -73,7 +73,9 @@ def render_frame(d: bytes, art: int, dplc_ents: list[tuple[int, int]],
     for pc in pieces:
         for ty in range(pc["h"]):
             for tx in range(pc["w"]):
-                k = pc["tile"] + ty * pc["w"] + tx
+                sx = pc["w"] - 1 - tx if pc["hf"] else tx
+                sy = pc["h"] - 1 - ty if pc["vf"] else ty
+                k = pc["tile"] + sx * pc["h"] + sy
                 placed.append((pc["x"] + tx * 8, pc["y"] + ty * 8, k, pc["hf"], pc["vf"]))
     if not placed:
         return {"rgba": b"", "w": 0, "h": 0, "bounds": None, "tiles": 0, "opaque": 0}
@@ -86,7 +88,7 @@ def render_frame(d: bytes, art: int, dplc_ents: list[tuple[int, int]],
     canvas = bytearray(w * h * 4)
     opaque = 0
     for px, py, k, hf, vf in placed:
-        if k >= len(stream):
+        if not 0 <= k < len(stream):
             raise SkError(f"mapping tile {k} beyond a {len(stream)}-tile DPLC stream")
         idx = stream[k]
         px8 = decode_tile(d[art + 32 * idx: art + 32 * idx + 32])
@@ -138,6 +140,8 @@ def png_bytes(rgba: bytes, w: int, h: int) -> bytes:
         return (struct.pack(">I", len(data)) + typ + data
                 + struct.pack(">I", zlib.crc32(typ + data) & 0xFFFFFFFF))
 
+    if w <= 0 or h <= 0 or len(rgba) != w * h * 4:
+        raise SkError("PNG dimensions must be positive and match the RGBA buffer")
     raw = bytearray()
     for y in range(h):
         raw.append(0)  # filter None

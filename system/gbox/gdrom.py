@@ -3,8 +3,17 @@
 The .gdi lists tracks as: <n> <start_lba> <type 4=data/0=audio> <sector size> <file> 0. ISO9660 directory records
 carry absolute LBAs, so each sector is found in whichever data track contains it.
 """
+import re
 import struct
 from pathlib import Path
+
+_GDI_FIELD = re.compile(r'"[^"]*"|\S+')
+
+
+def gdi_fields(line: str) -> list[str]:
+    """Split one .gdi track line into fields. Redump/TOSEC sets quote file names that contain spaces
+    (`3 45000 4 2352 "Game (USA) (Track 3).bin" 0`), which a plain str.split() cuts into pieces."""
+    return [f[1:-1] if len(f) >= 2 and f[0] == f[-1] == '"' else f for f in _GDI_FIELD.findall(line)]
 
 
 class CDIRom:
@@ -231,9 +240,9 @@ class GDRom:
         lines = gdi.read_text().split("\n")[1:]
         self.tracks = []                        # (start_lba, sector_size, path)
         for ln in lines:
-            parts = ln.split()
+            parts = gdi_fields(ln)
             if len(parts) >= 6 and parts[2] == "4":
-                self.tracks.append((int(parts[1]), int(parts[3]), gdi.parent / parts[4].strip('"')))
+                self.tracks.append((int(parts[1]), int(parts[3]), gdi.parent / parts[4]))
         self.tracks.sort()
         self._fh = {}
         # the first high-density data track (LBA 45000) holds the volume descriptor; games with audio tracks in
@@ -265,23 +274,13 @@ class GDRom:
         raise ValueError(f"LBA {lba} not in a data track")
 
     def _walk(self, lba, size, prefix):
-        self.metadata_ranges.append((lba, lba + (size + 2047) // 2048))
-        data = b"".join(self.sector(lba + i) for i in range((size + 2047) // 2048))
-        o = 0
-        while o < len(data):
-            n = data[o]
-            if n == 0:
-                o = (o // 2048 + 1) * 2048       # records never span sectors; skip padding
-                continue
-            ext, ln, flags, nl = struct.unpack_from("<I", data, o + 2)[0], struct.unpack_from("<I", data, o + 10)[0], data[o + 25], data[o + 32]
-            name = data[o + 33:o + 33 + nl].decode("latin-1").split(";")[0]
-            if name not in ("\x00", "\x01"):
-                if flags & 2:
-                    self._walk(ext, ln, f"{prefix}{name}/")
-                else:
-                    self.files[f"{prefix}{name}"] = (ext, ln)
-                    self.records[f"{prefix}{name}"] = (lba + o // 2048, o % 2048)
-            o += n
+        from .formats import iso9660                      # the shared ISO9660 walk (gbox.formats)
+        for parts, rec, dlba in iso9660.walk(iso9660.sector_reader(self.sector), lba, size,
+                                             on_dir=lambda a, n: self.metadata_ranges.append((a, a + (n + 2047) // 2048))):
+            if not rec.is_dir:
+                key = prefix + "".join(p + "/" for p in parts) + rec.name
+                self.files[key] = (rec.lba, rec.size)
+                self.records[key] = (dlba + rec.offset // 2048, rec.offset % 2048)
 
     def read(self, name: str) -> bytes:
         lba, size = self.files[name]
@@ -396,8 +395,8 @@ def patch_gdi(src_gdi: str | Path, out_dir: str | Path, name: str, files: dict[s
     lines = [ln for ln in src_gdi.read_text().splitlines() if ln.strip()]
     new_lines, dst_of = [lines[0]], {}
     for ln in lines[1:]:
-        parts = ln.split()
-        src = src_gdi.parent / parts[4].strip('"')
+        parts = gdi_fields(ln)
+        src = src_gdi.parent / parts[4]
         dst = out_dir / f"{name}.track{int(parts[0]):02d}{src.suffix}"
         if dst.exists():
             dst.unlink()
@@ -411,7 +410,7 @@ def patch_gdi(src_gdi: str | Path, out_dir: str | Path, name: str, files: dict[s
             except OSError:
                 shutil.copyfile(src, dst)
         dst_of[src] = dst
-        parts[4] = dst.name
+        parts[4] = f'"{dst.name}"' if any(c.isspace() for c in dst.name) else dst.name
         new_lines.append(" ".join(parts))
     with open(dst_of[tpath], "r+b") as f:
         def put(lba, data):

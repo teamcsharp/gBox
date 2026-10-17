@@ -6,7 +6,7 @@ Hooks (configured in .claude/settings.json):
   stop     Stop: reads this session's transcript and adds the turn's real usage to the active request:
            tokens in/out (incl. cache), tools used, files changed, agent time.
 CLI (for the agent):
-  list [status]          open reports first
+  list [status] [--group]  open reports first; --group: one line per kind of automated ticket
   show ID                full report; downloads the sketched screenshot and prints its path
   claim ID               mark in_progress; this turn's metrics are attributed to it
   reply ID "text"        message in the request thread (shown in the app)
@@ -238,6 +238,26 @@ def hook_stop(ev: dict):
 
 # --- CLI --------------------------------------------------------------------------------------
 
+def group_line(g: dict) -> str:
+    """One line for a group of automated tickets (#1788): kind, count, pending, newest ticket and the ticket numbers."""
+    latest = g["latest"]
+    when = datetime.fromtimestamp(g["newest"]).strftime("%Y-%m-%d %H:%M") if g.get("newest") else "?"
+    nums = " ".join(f"#{n}" for n in g["numbers"][:12]) + (f" (+{len(g['numbers']) - 12} more)" if len(g["numbers"]) > 12 else "")
+    return (f"[{g['label']}] {g['count']} automated ({g['pending']} not done), newest #{latest.get('number')} {when} "
+            f"{(latest.get('title') or '')[:70]}\n  tickets: {nums}  (show ID for one)")
+
+
+def list_grouped(rows: list) -> str:
+    """`list --group`: operator requests and build reports in full, each kind of automated ticket as one line."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))   # this checkout's rules, deployed or not
+    from gbox.inbox import grouped
+    numbers = {r["id"]: r.get("number") for r in rows}
+    out = []
+    for e in grouped(rows):
+        out.append(group_line(dict(e, numbers=[numbers[i] for i in e["ids"]])) if "group" in e else describe(e))
+    return "\n".join(out)
+
+
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "list"
     try:
@@ -246,9 +266,14 @@ def main():
             (hook_prompt if cmd == "prompt" else hook_stop)(ev)
             return
         if cmd == "list":
-            status = sys.argv[2] if len(sys.argv) > 2 else "open,in_progress,blocked"
-            for r in api(f"/api/requests?status={status}"):
-                print(describe(r))
+            args = [a for a in sys.argv[2:] if a != "--group"]
+            status = args[0] if args else "open,in_progress,blocked"
+            rows = api(f"/api/requests?status={status}")
+            if "--group" in sys.argv[2:]:
+                print(list_grouped(rows))
+            else:
+                for r in rows:
+                    print(describe(r))
         elif cmd == "show":
             print(describe(api(f"/api/requests/{sys.argv[2]}"), full=True))
         elif cmd == "claim":

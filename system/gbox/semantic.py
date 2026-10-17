@@ -50,6 +50,7 @@ class Extractor:
         self.p, self.read = profile, read
         self.end = ">" if profile.get("endian", "little") == "big" else "<"
         self._names: dict = {}
+        self.diagnostics: list[str] = []
 
     def _fields(self, blob: bytes, fields: dict) -> dict:
         out = {}
@@ -84,6 +85,12 @@ class Extractor:
 
     def entities(self, limit: int | None = None) -> list[dict]:
         ent = self.p["entities"]
+        if ent.get("layout") == "struct_array":              # table of records + per-entity objects: gbox/entity_probe
+            from . import entity_probe
+            probe = entity_probe.Probe(self.p, self.read)
+            out = probe.entities()
+            self.diagnostics = probe.diagnostics
+            return out[:int(limit)] if limit else out
         n = int(limit or ent.get("max", 256))
         table = self.read(_int(ent["table"]), 4 * n)
         ptrs = struct.unpack(self.end + f"{n}I", table)
@@ -117,6 +124,8 @@ class Extractor:
             g |= self._fields(self.read(_int(addr), n), {name: (typ, 0)})
         st = {"profile": self.p["id"], "globals": g, "entities": ents,
               "player": next((e for e in ents if e["kind"] == "player"), None)}
+        if self.diagnostics:
+            st["diagnostics"] = list(self.diagnostics)
         st["checks"] = self.check(st)
         st["verified"] = all(c["ok"] for c in st["checks"])
         return st

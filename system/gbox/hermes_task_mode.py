@@ -118,7 +118,7 @@ def status() -> dict:
     job, config = _job() or {}, _config()
     model_config, agent_config, cron = (config.get(k) or {} for k in ('model', 'agent', 'cron'))
     last_status, last_error = job.get("last_status"), job.get("last_error")
-    if job.get("id") and last_status == "ok":
+    if job.get("id") and last_status == "ok" and not job.get('no_agent'):
         # Hermes's "ok" only means its process exited; it does not mean an inbox request was solved.
         last_status = "unverified"
         last_error = "Hermes finished, but no completed inbox result has been independently verified."
@@ -133,6 +133,7 @@ def status() -> dict:
         except (OSError, ValueError):
             pass
     return {"enabled": bool(job.get("enabled")), "available": _cli().is_file(),
+            "dispatch_mode": "continuous_queue" if job.get('no_agent') else "legacy_interval",
             "job_id": job.get("id"), "model": job.get("model") or cron.get('model') or model_config.get('default'),
             "provider": job.get('provider') or cron.get('model_provider') or model_config.get('provider'),
             "reasoning_effort": job.get('reasoning_effort') or agent_config.get('reasoning_effort'),
@@ -168,6 +169,9 @@ def _run(*args: str) -> None:
 
 
 def _kickoff(job: dict) -> None:
+    if job.get('no_agent'):
+        # The one-minute pump admits work after checking capacity and ownership.
+        return
     # `hermes cron run` waits for the entire agent run, so it can time out the
     # checkbox API. Let the gateway launch a one-shot job on its next tick.
     if job.get('id') and _active(job['id']):
@@ -195,8 +199,10 @@ def set_enabled(enabled: bool) -> dict:
             _run("edit", job["id"], "--unpin")
             job = _job()
         if enabled and not job:
+            from .hermes_work_queue import install_script
             model, note = _model()
-            args = ["create", "every 30m", _PROMPT.read_text(encoding="utf-8"), "--name", NAME,
+            args = ["create", "every 1m", "Dispatch bounded inbox and favorite-game work", "--name", NAME,
+                    "--script", install_script(), "--no-agent",
                     "--workdir", str(_PROMPT.parents[2]),
                     "--deliver", "local", "--failure-deliver", "local", "--reasoning-effort", "high", "--continuity"]
             if model:
@@ -208,11 +214,15 @@ def set_enabled(enabled: bool) -> dict:
             _kickoff(_job() or {})
             return result | {"model_note": note}
         if job and enabled and not job.get("enabled"):
-            _run("edit", job["id"], "--clear-skills", "--prompt", _PROMPT.read_text(encoding="utf-8"))
+            if not job.get('no_agent'):
+                _run("edit", job["id"], "--clear-skills", "--prompt", _PROMPT.read_text(encoding="utf-8"))
             _run("resume", job["id"])
             _kickoff(_job() or {})
         elif job and not enabled and job.get("enabled"):
             _run("pause", job["id"])
+            if job.get('no_agent'):
+                from .hermes_work_queue import pause_pending
+                pause_pending()
             pending = json.loads((_home() / 'cron/jobs.json').read_text()).get('jobs', [])
             for item in pending:
                 if item.get('enabled') and item.get('name', '').startswith(NAME + ' activation '):
@@ -223,10 +233,17 @@ def set_enabled(enabled: bool) -> dict:
         return result
 
 
-def dispatch_request(request_id: str, number: int) -> str:
-    """Queue a cloud investigation after the incident's immediate recovery finishes."""
+def dispatch_request(request_id: str, number: int, *, task: str | None = None, name: str | None = None) -> str:
+    """Queue a cloud investigation after the incident's immediate recovery finishes. `task` replaces the emulation
+    incident instructions (a launch failure report, gbox/launch_failures.py) and `name` the job name."""
+    from . import hermes_local
+    if hermes_local.active():
+        # A root-cause investigation (emulation incident or launch failure) is too big for the Spark's local model:
+        # the open report stays in the work queue and is dispatched on a paid route once one recovers.
+        raise RuntimeError('Hermes is on the local model while the paid routes are out of credit; '
+                           'the investigation stays queued for a paid route')
     with _LOCK:
-        name = f"gBox emulation investigation #{number}"
+        name = name or f"gBox emulation investigation #{number}"
         jobs = _jobs()
         existing = next((j for j in reversed(jobs) if j.get('name') == name
                          or j.get('name', '').startswith(name + ' retry ')), None)
@@ -253,7 +270,7 @@ def dispatch_request(request_id: str, number: int) -> str:
             # identifiable replacement occurrence for the same report.
             previous = existing['id']
             name += ' retry ' + previous
-        prompt = (f"Investigate and resolve gBox emulation report #{number}, request_id={request_id}. "
+        prompt = task or (f"Investigate and resolve gBox emulation report #{number}, request_id={request_id}. "
                   "Your first substantive action is mcp_gbox_get_request for this request ID. "
                   "If the report is already done, verify its completion reply and finish without reopening it. "
                   "Read the attached emulation-diagnostics Markdown, screenshots, save state and recovery results. Identify the "

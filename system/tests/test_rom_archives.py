@@ -1,3 +1,4 @@
+import os
 import zipfile
 from pathlib import Path
 
@@ -6,10 +7,10 @@ import pytest
 from gbox import catalog, rom_archives
 
 
-def make_disc(path):
+def make_disc(path, track_byte=0):
     with zipfile.ZipFile(path, "w") as z:
         z.writestr("Disc/game.cue", 'FILE "track.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
-        z.writestr("Disc/track.bin", bytes(300000))
+        z.writestr("Disc/track.bin", bytes([track_byte]) * 300000)
         z.writestr("Disc/audio.bin", bytes(500))
         z.writestr("readme.txt", "Not bootable")
 
@@ -31,6 +32,83 @@ def test_disc_archive_catalog_and_complete_cache(tmp_path, cfg):
     with zipfile.ZipFile(src, "a") as z:
         z.writestr("new.txt", "Changed archive")
     assert rom_archives.prepare(src, cfg, entry.launch["archive_member"]) != boot
+
+
+def test_staged_archive_reuses_extraction_after_lru_mtime_touch(tmp_path, cfg, monkeypatch):
+    src = tmp_path / "Game.zip"
+    make_disc(src)
+    staged = Path(catalog.stage(src, "disc", cfg)["dst"])
+    # Use an old access timestamp so the real staging reuse must change mtime,
+    # independently of the filesystem clock resolution.
+    os.utime(staged, ns=(1_000_000_000, 1_000_000_000))
+    record = catalog._db_load(cfg.cache)[str(staged)]
+    catalog._db_set(cfg.cache, str(staged), record | {"ident": catalog._ident(staged.stat())})
+    before = staged.stat().st_mtime_ns
+    boot = rom_archives.prepare(staged, cfg, "Disc/game.cue")
+    extracted_mtime = boot.stat().st_mtime_ns
+
+    reused = catalog.stage(src, "disc", cfg)
+    assert not reused["copied"] and not reused["hashed"]
+    assert staged.stat().st_mtime_ns != before
+    monkeypatch.setattr(rom_archives, "members", lambda *_: pytest.fail("unchanged staged content must not unpack again"))
+    assert rom_archives.prepare(staged, cfg, "Disc/game.cue") == boot
+    assert boot.stat().st_mtime_ns == extracted_mtime
+
+
+def test_restaged_same_size_content_gets_a_new_extraction(tmp_path, cfg):
+    src = tmp_path / "Game.zip"
+    make_disc(src)
+    first = catalog.stage(src, "disc", cfg)
+    staged = Path(first["dst"])
+    old_boot = rom_archives.prepare(staged, cfg, "Disc/game.cue")
+    previous = src.stat()
+    make_disc(src, track_byte=1)
+    os.utime(src, ns=(previous.st_atime_ns, previous.st_mtime_ns + 1_000_000_000))
+    assert src.stat().st_size == previous.st_size
+
+    changed = catalog.stage(src, "disc", cfg)
+    assert changed["copied"] and changed["sha1"] != first["sha1"]
+    boot = rom_archives.prepare(staged, cfg, "Disc/game.cue")
+    assert boot != old_boot
+    assert (boot.parent / "track.bin").read_bytes() == bytes([1]) * 300000
+    assert (old_boot.parent / "track.bin").read_bytes() == bytes(300000)
+
+
+def test_stale_stage_hash_cannot_reuse_changed_archive(tmp_path, cfg):
+    src = tmp_path / "Game.zip"
+    make_disc(src)
+    staged = Path(catalog.stage(src, "disc", cfg)["dst"])
+    boot = rom_archives.prepare(staged, cfg, "Disc/game.cue")
+    previous = staged.stat()
+    make_disc(staged, track_byte=2)
+    os.utime(staged, ns=(previous.st_atime_ns, previous.st_mtime_ns + 1_000_000_000))
+    assert staged.stat().st_size == previous.st_size
+    assert catalog._db_load(cfg.cache)[str(staged)]["ident"] != catalog._ident(staged.stat())
+
+    changed = rom_archives.prepare(staged, cfg, "Disc/game.cue")
+    assert changed != boot
+    assert (changed.parent / "track.bin").read_bytes() == bytes([2]) * 300000
+
+
+def test_ordinary_archive_keeps_mtime_identity(tmp_path, cfg):
+    src = tmp_path / "Game.zip"
+    make_disc(src)
+    boot = rom_archives.prepare(src, cfg, "Disc/game.cue")
+    previous = src.stat()
+    os.utime(src, ns=(previous.st_atime_ns, previous.st_mtime_ns + 1_000_000_000))
+    assert rom_archives.prepare(src, cfg, "Disc/game.cue") != boot
+
+
+def test_staged_content_identity_keeps_boot_member_distinct(tmp_path, cfg):
+    src = tmp_path / "Game.zip"
+    with zipfile.ZipFile(src, "w") as archive:
+        archive.writestr("first.nes", b"NES\x1aFIRST")
+        archive.writestr("second.nes", b"NES\x1aSECOND")
+    staged = Path(catalog.stage(src, "disc", cfg)["dst"])
+    first = rom_archives.prepare(staged, cfg, "first.nes")
+    second = rom_archives.prepare(staged, cfg, "second.nes")
+    assert first.parent != second.parent
+    assert first.read_bytes() == b"NES\x1aFIRST" and second.read_bytes() == b"NES\x1aSECOND"
 
 
 def test_scan_excludes_bios_and_supports_flat_roots(tmp_path):

@@ -193,8 +193,11 @@ def tick(now=None):
                 if http == 200 and isinstance(result.get('choices'), list) and result['choices']:
                     _available_route(now)
                     # Re-arm a genuine one-shot; its pin prevents fallback attribution to Z.AI.
-                    hermes_task_mode._run('resume', job['id'], '--run-now')
-                    state.update(status='work_dispatched', dispatched_at=now,
+                    controller = hermes_task_mode._job() or {}
+                    managed = controller.get('no_agent')
+                    if not managed:
+                        hermes_task_mode._run('resume', job['id'], '--run-now')
+                    state.update(status='available_to_work_queue' if managed else 'work_dispatched', dispatched_at=now,
                                  next_check_at=now + 120, next_quota_check_at=now + 120,
                                  probe_usage=result.get('usage') or {})
                 else:

@@ -1,0 +1,27 @@
+{
+  "date": "2026-10-15",
+  "scope": "Private native Spark PSO GameCube observed-action scheduler conformance",
+  "operator_sessions_touched": false,
+  "private_process_stopped": true,
+  "checks_passed": true,
+  "checkpoint": {"slot": 8, "bytes": 24172825, "private_user_directory": true},
+  "fast_forward": {"on": true, "released_to_normal": true},
+  "scheduler": {"pads": 2, "actions": 4, "restores": 1, "completed": true},
+  "native_readbacks": [
+    {"action": "set ATP", "shown_now": 900, "verified": true},
+    {"action": "drop resolved SABER items", "spawned": 2, "verified": true},
+    {"action": "restore private checkpoint", "slot": 8},
+    {"action": "set ATP", "shown_now": 900, "verified": true},
+    {"action": "drop resolved SABER items", "spawned": 2, "verified": true}
+  ],
+  "limitations": [
+    "This proves native PSO actions and checkpoint branch replay, not an entire Forest level or historical user run.",
+    "Observed-input demos use sampled wall-clock inputs with analog values quantized to injected directions; they are not frame-exact TAS.",
+    "The full Windows archive-download/launch path has automated API and isolation tests but was not exercised by this Linux native conformance test.",
+    "Exact native Dolphin DTM capture/replay has not been integrated or verified."
+  ],
+  "primary_references": [
+    "https://github.com/dolphin-emu/dolphin/blob/master/Source/Core/Core/Movie.cpp",
+    "https://github.com/dolphin-emu/dolphin/blob/master/Source/Core/Core/State.cpp"
+  ]
+}

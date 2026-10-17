@@ -31,67 +31,7 @@ test('every Technical refresh path keeps the reader place', () => {
   assert.match(job, /holder\.tkHtml !== filesHtml/);
 });
 
-function findChrome() {
-  if (process.env.GBOX_CHROME && fs.existsSync(process.env.GBOX_CHROME)) return process.env.GBOX_CHROME;
-  if (process.platform === 'win32') {
-    for (const p of [path.join(process.env['PROGRAMFILES(X86)'] || '', 'Microsoft/Edge/Application/msedge.exe'),
-      path.join(process.env.PROGRAMFILES || '', 'Google/Chrome/Application/chrome.exe')]) {
-      if (fs.existsSync(p)) return p;
-    }
-  }
-  const root = path.join(os.homedir(), '.cache/ms-playwright');
-  if (!fs.existsSync(root)) return null;
-  for (const dir of fs.readdirSync(root).sort().reverse()) {
-    for (const rel of ['chrome-linux/headless_shell', 'headless_shell', 'chrome-linux/chrome', 'chrome-linux64/chrome']) {
-      const p = path.join(root, dir, rel);
-      if (/^chromium/.test(dir) && fs.existsSync(p)) return p;
-    }
-  }
-  return null;
-}
-
-async function withPage(fn) {
-  const chrome = findChrome();
-  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'gbox-tk-'));
-  const proc = spawn(chrome, ['--headless', '--no-sandbox', '--disable-gpu', '--remote-debugging-port=0',
-    `--user-data-dir=${profile}`, 'about:blank'], { stdio: 'ignore', windowsHide: true });
-  const exited = new Promise(resolve => proc.once('exit', resolve));
-  let ws;
-  try {
-    const portFile = path.join(profile, 'DevToolsActivePort');
-    for (let i = 0; i < 200 && !fs.existsSync(portFile); i++) await new Promise(r => setTimeout(r, 50));
-    const port = fs.readFileSync(portFile, 'utf8').split('\n')[0];
-    const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-    ws = new WebSocket(targets.find(t => t.type === 'page').webSocketDebuggerUrl);
-    await new Promise((ok, no) => { ws.onopen = ok; ws.onerror = no; });
-    let seq = 0; const waiting = new Map();
-    ws.onmessage = e => { const m = JSON.parse(e.data); waiting.get(m.id)?.(m); waiting.delete(m.id); };
-    const send = (method, params) => new Promise(ok => { const id = ++seq; waiting.set(id, ok); ws.send(JSON.stringify({ id, method, params })); });
-    const evaluate = async expression => {
-      const r = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-      if (r.result.exceptionDetails) throw new Error(JSON.stringify(r.result.exceptionDetails));
-      return r.result.result.value;
-    };
-    await fn(evaluate);
-  } finally {
-    // Close only the browser created for this temporary profile, including its child processes.
-    if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ id: 1000000, method: 'Browser.close' }));
-    const delay = ms => new Promise(resolve => { const timer = setTimeout(resolve, ms); timer.unref(); });
-    await Promise.race([exited, delay(3000)]);
-    if (proc.exitCode === null && proc.signalCode === null) {
-      proc.kill('SIGKILL'); await Promise.race([exited, delay(3000)]);
-    }
-    ws?.close();
-    // Windows can retain a profile file handle briefly after the parent browser exits.
-    for (let i = 0; i < 80; i++) {
-      try { fs.rmSync(profile, { recursive: true, force: true }); break; }
-      catch (error) {
-        if (i === 79 || !['EPERM', 'EBUSY', 'ENOTEMPTY'].includes(error.code)) throw error;
-        await new Promise(resolve => setTimeout(resolve, 50));
-      }
-    }
-  }
-}
+const {findChrome,withPage}=require('../scripts/browser_lifecycle.cjs');
 
 test('a refresh keeps the panel scroll, open logs and expanded rows in a real browser', { skip: !findChrome() && 'no Chromium installed' }, async () => {
   await withPage(async evaluate => {
@@ -159,7 +99,7 @@ const setup = `
 document.body.innerHTML='<style>#tk-technical{height:300px;overflow:auto}#taskpanel pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:220px;overflow:auto}#taskpanel .task-detail pre{margin:6px 0;padding:8px}#taskpanel .mc{padding:8px}</style><div id="taskpanel" class="on"><div id="tk-at"></div><div id="tk-technical"><div id="tk-local"></div><div id="tk-body"></div></div></div>';
 const $=s=>document.querySelector(s),esc=v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
 const TK={busy:false,expanded:new Set(['j1']),localExpanded:new Set(),hermesExpanded:new Set(),resolutionExpanded:new Set(),hermesOutput:new Map(),hermesScroll:new Map(),jobDetail:new Map(),pointerDown:0,scrolledAt:0};
-const tkVisualUpdate=()=>{},tkAge=()=>'',tkTokenSummary=()=>'',tkBar=()=>'',tkProgress=()=>'';
+const tkVisualUpdate=()=>{},tkProvidersLoad=()=>{},tkAge=()=>'',tkTokenSummary=()=>'',tkBar=()=>'',tkProgress=()=>'';
 const S={apiUrl:'https://fixture.invalid',tok:'fixture'};
 const lines=n=>Array.from({length:n},(_,i)=>'trace '+i).join('\\n');
 const F={job:{id:'j1',state:'running',input:{},progress_log:['short progress'],log_sha:'abc'},longLog:lines(1000),hermesLog:lines(1000),pauseLog:false,resolveLog:null,data:{hermes:[],resolutions:[],machines:[{worker_id:'w',name:'Worker',totals:{cpu_pct:1},tasks:[]}],jobs:[{id:'j1',state:'running',tool:'characters',created:1}],recent:[]}};

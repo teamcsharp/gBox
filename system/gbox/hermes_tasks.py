@@ -240,6 +240,11 @@ def list_runs(limit: int = DEFAULT_RUNS) -> list[dict]:
                 "THEN 0 ELSE 1 END, started_at DESC LIMIT ?", (max(200, limit * 25),),
             ).fetchall()
         names = _jobs(home)
+        try:
+            from .hermes_work_queue import claims
+            queue_claims = claims()
+        except (OSError, ValueError, KeyError):
+            queue_claims = {}
         out, terminal_scripts = [], set()
         for r in rows:
             if len(out) >= limit:
@@ -252,11 +257,13 @@ def list_runs(limit: int = DEFAULT_RUNS) -> list[dict]:
                 terminal_scripts.add(r['job_id'])
             out.append({"id": r["id"], "job_id": r["job_id"], "name": names.get(r["job_id"], r["job_id"]),
                         "state": r["status"], "started": started, "finished": _stamp(r["finished_at"]),
+                        "session_id": session["id"] if session else None,
                         "model": session["model"] if session else None,
                         "provider": session['billing_provider'] if session and 'billing_provider' in session.keys() else None,
                         **_usage(session),
-                        "request_ids": _owned_requests(state, session['id'])
-                                       if session else [],
+                        "request_ids": sorted(set(_owned_requests(state, session['id']) if session else []) |
+                                              ({queue_claims[r['job_id']]} if r['status'] in ('claimed', 'running')
+                                               and r['job_id'] in queue_claims else set())),
                         "progress": _last_action(state, session["id"]) if session else
                                     ('Maintenance is running' if r['status'] in ('claimed', 'running') else
                                      'Completed without inference' if r['status'] == 'completed' else 'Run failed before inference'),

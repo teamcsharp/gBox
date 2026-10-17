@@ -34,8 +34,11 @@ def test_mutation_requires_permission(plane):
     assert job["state"] == "rejected" and "memory_write" in job["error"]
 
 
-def test_unavailable_tool_never_claimed(plane):
-    # no blender configured -> worker does not advertise it; UI shows the reason
+def test_unavailable_tool_never_claimed(monkeypatch, request):
+    from gbox import provision
+    monkeypatch.setattr(provision, 'find_blender', lambda config: None)
+    plane = request.getfixturevalue('plane')
+    # This test owns its missing-program condition, independent of host tools.
     t = next(t for t in plane.get("/api/tools").json() if t["name"] == "open_in_blender")
     assert t["workers"] == [] and "blender_path" in t["unavailable"]["test-worker"]
 

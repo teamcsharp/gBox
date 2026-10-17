@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 import struct
 import time
+import uuid
 import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -322,7 +323,7 @@ def read_ped(b: bytes) -> PedModel:
     r = Reloc(b)
     if r.ident != MDL_IDENT:
         raise ValueError("not a .mdl chunk")
-    eg = r.u32(0x24)
+    eg = 0x20 if r.u32(0x20) == 2 else r.u32(0x24)   # cutscene models: a bare element group, no CColModel
     if r.u8(eg) != 2:
         raise ValueError("not a ped model (no element group at +4)")
     nodes: list[Node] = []
@@ -636,13 +637,13 @@ def lcs_roles(m: PedModel) -> dict[str, int]:
     return {r: names.index(n) for r, n in LCS_ROLES.items() if n in names}
 
 
-def retarget_onto(m: PedModel, src_model: Path, src_roles: dict) -> list[dict]:
+def retarget_onto(m: PedModel, src_model: Path, src_roles: dict, scale: dict | None = None) -> list[dict]:
     """A library character (glTF + {role: joint name}) -> prims on the LCS skeleton: pos/nrm in the .mdl's model
     space (metres, Z up), J[:,0] = skin bone (hierarchy index), uv, tris, tex (RGBA or None), color."""
     from .characters import rig_from_gltf
     from .re4gc_enemies import retarget
     rig = rig_from_gltf(Path(src_model), src_roles)
-    prims = retarget(rig, _Template(m), roles=lcs_roles(m), height_range=(1600.0, 1950.0))
+    prims = retarget(rig, _Template(m), roles=lcs_roles(m), height_range=(1600.0, 1950.0), scale=scale)
     inv = np.linalg.inv(LCS_TO_GLTF)[:3, :3]
     for p in prims:
         p["pos"] = (np.asarray(p["pos"], float) / 1000.0) @ inv.T
@@ -973,6 +974,9 @@ def replace_chk(orig: bytes, images: dict[str, np.ndarray]) -> bytes:
 # ------------------------------------------------------------------------------------------------- swap / extract
 def txd_for(disc: LcsDisc, name: str) -> tuple[int, int]:
     """(sector, sectors) of a special model's TXD: the TXD slot with the model's name ('player' = slot 56)."""
+    if name.startswith("ped:"):
+        from .gta_lcs_cast import entry
+        return entry(disc, name)["txd_sector"]
     pool = disc.game.u32(0x20 + 0x40)
     for slot in range(disc.game.u32(pool + 8)):
         if disc.txd_name(slot).lower() == name.lower():
@@ -1000,13 +1004,14 @@ def texture_slots(m: PedModel, texs: list[Tex]) -> list[dict]:
 
 
 def swap_files(disc: LcsDisc, src_model: Path, src_roles: dict, entry: str = "player", work: Path | None = None,
-               blender: str | None = None, progress=None) -> dict:
+               blender: str | None = None, progress=None, scale: dict | None = None) -> dict:
     """Build the replacement .mdl + .chk for one special model (default 'player' = Toni): the library character
     retargeted onto the model's own 24-bone skeleton (bone count/order/hierarchy, collision and skin matrices kept,
     so every animation still drives it), textures packed into the model's own texture slots (same sizes, depths,
     mips). Decimates (Blender) until the .mdl fits the model's sectors in the IMG."""
     progress = progress or (lambda p, m: None)
-    e = disc.special(entry)
+    from .gta_lcs_cast import entry as ped_entry
+    e = ped_entry(disc, entry) if entry.startswith("ped:") else disc.special(entry)
     orig = disc.file_at(e["sector"])
     m = read_ped(orig)
     ts, tn = txd_for(disc, entry)
@@ -1016,9 +1021,10 @@ def swap_files(disc: LcsDisc, src_model: Path, src_roles: dict, entry: str = "pl
     budget = e["sectors"] * SECTOR
     src, tried = Path(src_model), []
     work = Path(work or Path(src_model).parent)
-    for attempt in range(5):
+    previous_target = None
+    for attempt in range(7):
         progress(20 + attempt * 12, f"Retargeting onto {entry}'s skeleton ({len(m.bone_names())} bones)")
-        prims = retarget_onto(m, src, src_roles)
+        prims = retarget_onto(m, src, src_roles, **({"scale": scale} if scale else {}))
         atlases, maps = pack_atlases(prims, [s["size"] for s in slots])
         groups: dict = {}
         for p, (a, uv) in zip(prims, maps):
@@ -1041,9 +1047,15 @@ def swap_files(disc: LcsDisc, src_model: Path, src_roles: dict, entry: str = "pl
         if not blender:
             raise ValueError(f"{len(mdl)} bytes > the {budget} the IMG slot holds and no Blender here to decimate")
         target = int(stats["triangles"] * (budget / len(mdl)) * 0.93)
+        # Always decimate the original donor, but tighten the requested budget monotonically.
+        # Collapse can stall or round above a target (notably multi-material DOA meshes);
+        # recomputing from that result alone can otherwise repeat the same oversized mesh.
+        if previous_target is not None:
+            target = min(target, max(2, int(previous_target * .75)))
+        previous_target = target
         progress(25 + attempt * 12, f"Too big ({len(mdl)} > {budget} bytes): decimating to ~{target} triangles")
         from .re4gc_enemies import decimate
-        src = decimate(Path(src_model), work / f"_lcs_dec_{entry}_{attempt}.glb", target, blender)
+        src = decimate(Path(src_model), work / f"_lcs_dec_{entry.replace(':', '_')}_{attempt}.glb", target, blender)
     else:
         raise ValueError(f"doesn't fit {entry}.mdl's {e['sectors']} sectors: {tried}")
     new_chk = replace_chk(chk, {s["texture"]: a for s, a in zip(slots, atlases)})
@@ -1114,6 +1126,13 @@ def lcs_iso_from_rom(rom: Path, dst: Path, progress=None) -> Path:
 #     directory (*(CStreaming*)0x3D0CC8 + 0x1E328), SetTexDictionary 0x1B7B18 (TXD = the model's name, else "generic")
 #   CModelInfo::ms_modelInfoPtrs 0x3D8720 (pointer to the array), numModelInfos 0x3D9BA0
 #   CPed: +0x30 position, +0x58 s16 modelIndex (CEntity), +0x534 CVehicle* (m_pMyVehicle), +0x538 in-vehicle flag
+#   GAME.DTZ loader 0x1045A8 (open cdrom0:\CHK\PS2\GAME.DTZ -> inflate -> GTAG table at +0x20 -> dispatch):
+#     hdr[0x18] = 0x4A1C14 -> CAnimManager (DAT_003d9d24): 444 anims (0x24 stride, data_ptr+name+bones+frame_time)
+#     at 0x395098 + 55 anim-block names at 0x394738; anim key data ~0x3FC400+. Player anim load (slot 0):
+#     0x2FBAF0 -> RequestSpecialModel(0, "player", 5) -> FindItem on the special-model dir -> .mdl/TXD by name.
+#   Identity: the decompile ~/gbox-cache/lcs_re/lcs_decomp_gp.c (gp=0x3D6EF0) is of THIS exe (sha256 65bc2ec3...):
+#     ELF LOAD vaddr 0x100000 = file 0x1000, so 0x18FF80 -> file 0x90F80 = addiu sp,-0x60 / lui a0,0x3E /
+#     lw a0,-0x6460(a0) = DAT_003d9ba0, and "player"@0x3D84A8, "generic"@0x3D0D60 match the decompile's data refs.
 LIVE = {"players": 0x408E40, "focus": 0x3D9BC8, "mi_ptrs": 0x3D8720, "mi_count": 0x3D9BA0, "streaming": 0x3D0CC8,
         "ped_model": 0x58, "ped_pos": 0x30, "ped_vehicle": 0x534, "ped_in_vehicle": 0x538, "movies": (0x1F3744, 0x1F3758, 0x1F376C, 0x1F3780)}
 # Toni's outfits = special models loaded into model slot 0 (+ the TXD of the same name). The story starts in plr3.
@@ -1156,7 +1175,7 @@ def identify(ctx, sid: str) -> dict:
 
 
 def build_mod(cfg, game: dict, rom: Path, src_model: Path, roles: dict, name: str, entries: list[str] | None = None,
-              skip_movies: bool = False, progress=None) -> dict:
+              skip_movies: bool = False, progress=None, scale: dict | None = None) -> dict:
     """The disc-image mod: every Toni outfit (or `entries`) replaced by the library character. Unpacks the CHD once
     per node (cache/modbase/<game>/<stem>.iso), builds every .mdl/.chk first (all must fit their IMG slots), then
     copies the image and writes them in."""
@@ -1180,7 +1199,7 @@ def build_mod(cfg, game: dict, rom: Path, src_model: Path, roles: dict, name: st
     files, report, src = [], [], Path(src_model)
     for k, entry in enumerate(entries):
         progress(10 + 60 * k / len(entries), f"Writing {entry}.mdl ({OUTFITS.get(entry, '')})")
-        r = swap_files(disc, src, roles, entry, work, bl)
+        r = swap_files(disc, src, roles, entry, work, bl, **({"scale": scale} if scale else {}))
         e = disc.special(entry)
         files += [(e["sector"], e["sectors"], r["mdl"]), (r["chk_sector"], r["chk_sectors"], r["chk"])]
         report.append({"entry": entry, "outfit": OUTFITS.get(entry), "mdl_bytes": len(r["mdl"]), "slot_bytes": e["sectors"] * SECTOR,
@@ -1230,6 +1249,9 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
     sess = C._session(ctx, inp.session_id) if inp.session_id else None
     node = sess["session_id"].split("-")[0] if sess else C.HOST_OS
     from . import filemods
+    if meta.get("retarget_profile_digest"):
+        name += "_fit" + meta["retarget_profile_digest"]
+    if inp.rebuild:name += '_r'+uuid.uuid4().hex[:10]
     have = name in {m["name"] for m in filemods.list_mods(ctx.config, gid)}
     built = None
     if inp.rebuild or not have:
@@ -1238,7 +1260,7 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
             if not roles:
                 raise ValueError(f"{meta['name']} has no body roles (rig.roles): can't fit it to Toni's skeleton")
             built = build_mod(ctx.config, game, C._rom(ctx, game), C._local_or_fetch(ctx, meta, meta["model"]), roles,
-                              name, progress=ctx.progress)
+                              name, progress=ctx.progress, scale=(meta.get("rig") or {}).get("scale"))
             C._api(ctx, "POST", f"/api/characters/{meta['slug']}/targets",
                    json={"game_id": gid, "slot": "player", "mod": name, "nodes": [C.HOST_OS],
                          "notes": f"replaces Toni in all {len(built['outfits'])} outfits (his 24-bone skeleton and "
@@ -1295,3 +1317,13 @@ def roster() -> list[dict]:
              "aliases": ["Toni", "Toni Cipriani", "LCS Toni", "LCS player", "Liberty City Stories player"], "kind": "character"}] + [
         {"key": k, "slug": f"toni_{k}", "name": f"Toni Cipriani ({v.split(' (')[0]})", "aliases": [f"Toni {v.split(' (')[0]}"],
          "kind": "character"} for k, v in OUTFITS.items() if k != "plr3"]
+
+
+def cast_slots():
+    """US PS2 streamed pedestrian roster; actual streaming allocations are revalidated before writing."""
+    return json.loads(Path(__file__).with_name("lcs_ped_roster.json").read_text())
+
+
+def cast_slots_live(ctx, game):
+    from .gta_lcs_cast import cast_slots_live as discover
+    return discover(ctx, game)

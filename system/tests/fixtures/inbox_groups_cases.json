@@ -1,0 +1,21 @@
+{
+  "about": "#1788: which automated inbox group a request collapses into (null: stays top level). Shared by tests/test_inbox_groups.cjs (clients/desktop/inbox-groups.js) and tests/test_inbox_groups.py (gbox/inbox.py) so both keep the same rules.",
+  "cases": [
+    {"key": "launch_failure", "request": {"title": "Launch failed: SoulCalibur (USA) (sc_sonic_vs_mario_random) on i9-NUC: state not saved", "source": "automation", "author": "system", "automated": true, "context": {"launch_failure": true, "auto_report": true}}},
+    {"key": "launch_failure", "request": {"title": "Launch failed: Tetris DS (USA) on 8f3c51b05ba84926", "source": "app", "author": "system", "automated": true}},
+    {"key": "readiness", "request": {"title": "Character replacement readiness: Crazy Taxi (USA)", "source": "automation", "author": "agent", "automated": true}},
+    {"key": "observer", "request": {"title": "Session observation: Soul Calibur", "source": "gap", "author": "agent", "automated": true}},
+    {"key": "observer", "request": {"title": "Session models: Metal Gear Solid", "source": "gap", "author": "agent", "automated": true}},
+    {"key": "observer", "request": {"title": "GAP: the session could not show the model", "source": "gap", "author": "operator", "automated": true}},
+    {"key": "agent_message", "request": {"title": "<agent-message from=\"a6d6854369e6a7bed\">", "body": "<agent-message from=\"a6d6854369e6a7bed\">done</agent-message>", "source": "chat", "author": "operator", "automated": true}},
+    {"key": "review", "request": {"title": "gBox request review (recurring)", "body": "gBox request review (recurring): check the inbox", "source": "chat", "author": "operator", "automated": true}},
+    {"key": "automation", "request": {"title": "Auto report: characters use failed in unknown game", "source": "automation", "author": "system", "automated": true, "context": {"auto_report": true}}},
+    {"key": "automation", "request": {"title": "Model extraction: the character sheet", "source": "characters", "author": "operator", "automated": true}},
+    {"key": null, "request": {"title": "Build report: sc_sonic_vs_mario_random (SoulCalibur (USA)): character looks broken", "source": "app", "kind": "screenshot", "author": "operator", "automated": false}},
+    {"key": null, "request": {"title": "Build report: mgs_vr_hucast_fit (MGS VR Missions): HUcast destroyed", "source": "api", "author": "system", "automated": true, "context": {"auto_report": true}}},
+    {"key": null, "request": {"title": "In the inbox, group automated messages under a single message", "source": "chat", "author": "operator", "automated": false}},
+    {"key": null, "request": {"title": "thumbnails disappear", "source": "app", "kind": "screenshot", "author": "operator", "automated": false}},
+    {"key": null, "request": {"title": "Pick whip in Jet Grind Radio", "source": "gbox-chat", "author": "operator", "automated": false}},
+    {"key": null, "request": {"title": "Launch the game", "source": "chat", "automated": false}}
+  ]
+}

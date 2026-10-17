@@ -10,12 +10,32 @@ from __future__ import annotations
 from pathlib import Path
 import re
 import numpy as np
+from gbox import attachments
 from gbox import sm64_swap as S
 from gbox.re4gc_enemies import _role_of_joint
 
 
 def _normal(v):
     return v / np.maximum(np.linalg.norm(v, axis=-1, keepdims=True), 1e-12)
+
+
+def winding_normals(pos: np.ndarray, tris: np.ndarray) -> np.ndarray:
+    """Per-vertex unit normals of a mesh that carries none: the area-weighted normals of its counter-clockwise (glTF)
+    triangles, summed over vertices at the same position, so they agree with the winding by construction."""
+    pos = np.asarray(pos, float)
+    tris = np.asarray(tris, int).reshape(-1, 3)
+    out = np.zeros_like(pos)
+    if not len(tris):
+        return np.tile([0., 1, 0], (len(pos), 1))
+    face = np.cross(pos[tris[:, 1]] - pos[tris[:, 0]], pos[tris[:, 2]] - pos[tris[:, 0]])
+    _, weld = np.unique(np.round(pos, 6), axis=0, return_inverse=True)
+    weld = weld.reshape(-1)
+    acc = np.zeros((weld.max() + 1, 3))
+    for c in range(3):
+        np.add.at(acc, weld[tris[:, c]], face)
+    out = acc[weld]
+    out[np.linalg.norm(out, axis=1) < 1e-12] = (0., 1, 0)
+    return _normal(out)
 
 
 class _LogicalVertices:
@@ -59,6 +79,22 @@ def _merge(joints, weights):
     return out_j, out_w
 
 
+POLY_BACK = 0x40          # Nintendo DS POLYGON_ATTR bit 6: draw back surfaces
+
+
+def double_sided(material: dict) -> bool:
+    """Does the donor draw this material's back faces? The source game's own flag when the material carries it (SM64DS
+    POLYGON_ATTR bit 0x40 in the glTF source extras), else glTF doubleSided. Writers that cull (SoulCalibur's strips)
+    must emit a back copy of these triangles or the open shells (Peach's dress and body) vanish from behind."""
+    source = (material.get('extras') or {}).get('source') or {}
+    if isinstance(source, dict) and 'polygon_attr' in source:
+        try:
+            return bool(int(str(source['polygon_attr']), 0) & POLY_BACK)
+        except ValueError:
+            pass
+    return bool(material.get('doubleSided', False))
+
+
 def load_rig(path: Path, roles: dict, props=()):
     """Load all glTF JOINTS/WEIGHTS sets and evaluate their complete bind pose."""
     from gbox.re4gc_models import _gltf_load, _node_world
@@ -97,7 +133,8 @@ def load_rig(path: Path, roles: dict, props=()):
             node = par_node.get(node)
         return ri['hip']
 
-    props, cache, primitives = set(props or ()), {}, []
+    # Blender-marked attachments (glTF extras, gbox.attachments) are props too
+    props, cache, primitives = attachments.prop_nodes(gl, props), {}, []
     for node_id, node in enumerate(gl['nodes']):
         if 'mesh' not in node:
             continue
@@ -137,8 +174,19 @@ def load_rig(path: Path, roles: dict, props=()):
                 joints[:, 0], weights[:, 0] = to_main(node_id), 1
             n = _normal(n)
             tris = acc(primitive['indices']).reshape(-1, 3).astype(int) if 'indices' in primitive else np.arange(len(p) // 3 * 3).reshape(-1, 3)
+            # a donor without normals (the SM64DS library) gets its own winding's normals, never a constant +Y: S._orient
+            # would otherwise judge each material's facing by a placeholder and turn whole parts inside out (#1765:
+            # Peach's single-sided face, which sits below the head joint's centroid, was flipped and culled in game)
+            from_winding = 'NORMAL' not in attributes
+            if from_winding:
+                n = winding_normals(p, tris)
             texture, color, wrap = None, (255, 255, 255, 255), (10497, 10497)
-            if (material_id := primitive.get('material')) is not None:
+            material_id = primitive.get('material')
+            gl_material = gl['materials'][material_id] if material_id is not None else {}
+            # an attachment: its own unskinned node, or (a fitted intermediate) a prop-named material
+            prop_node = node.get('name') if skin is None and node.get('name') in props else \
+                attachments.node_of_material(gl['materials'][material_id].get('name') if material_id is not None else None)
+            if material_id is not None:
                 material = gl['materials'][material_id].get('pbrMetallicRoughness', {})
                 color = tuple(int(round(value * 255)) for value in material.get('baseColorFactor', [1, 1, 1, 1]))
                 if (reference := material.get('baseColorTexture')) is not None:
@@ -151,17 +199,22 @@ def load_rig(path: Path, roles: dict, props=()):
                     wrap = (settings.get('wrapS', 10497), settings.get('wrapT', 10497))
             primitives.append({'pos': p, 'nrm': n, 'uv': uv, 'tris': tris, 'J': joints, 'W': weights,
                                'owner': joints[:, 0], 'tex': texture, 'color': color, 'wrap': wrap,
-                               'prop': node.get('name') in props, 'source_mesh_node': node_id,
-                               'source_primitive': primitive_id})
+                               'double_sided': double_sided(gl_material), 'normals_from_winding': from_winding,
+                               'material_name': gl_material.get('name'),
+                               'prop': prop_node is not None, 'source_mesh_node': node_id,
+                               'source_primitive': primitive_id, **({'prop_node': prop_node} if prop_node else {})})
     if not primitives:
         raise ValueError('DOA donor has no triangle primitives')
+    attachments.note('loaded', primitives, source=path)
     return {'joints': np.array([wn[node][:3, 3] for node in jn]), 'parent': parents,
-            'roles': ri, 'prims': primitives, 'names': names,
+            'roles': ri, 'prims': primitives, 'names': names, 'source': str(path),
             'influence_policy': 'all glTF influence sets preserved; no strongest-owner reduction'}
 
 
 def retarget(rig: dict, target: dict, scale=None, jmap=None):
     """Fit bind geometry continuously and preserve each mapped native influence."""
+    from gbox.retarget_profile import move_joints, profile_of
+    rig, moved = move_joints(rig, profile_of(scale))      # the Retarget editor's joint moves: pivots + segments
     jmap = jmap or target['jmap']
     hip_joint, chest_joint = jmap['hip'], jmap.get('chest', jmap['hip'])
     basis = S.facing(rig)
@@ -257,22 +310,33 @@ def retarget(rig: dict, target: dict, scale=None, jmap=None):
                 p[selected] += factor * positions
                 n[selected] += factor * normals
         native_j, native_w = _merge(native_j, weights)
+        if primitive.get('prop') and len(native_j):          # an attachment stays rigid on ONE joint (its bone's)
+            bone = int(np.bincount(np.asarray(native_j[:, 0], int)).argmax())
+            native_j, native_w = np.zeros_like(native_j), np.zeros_like(native_w)
+            native_j[:, 0], native_w[:, 0] = bone, 1.
         logical = np.empty(len(p), np.int64)
         for vertex in range(len(p)):
             influences = tuple((int(j), round(float(w), 9)) for j, w in zip(source_j[vertex], weights[vertex]) if w > 0)
             key = (primitive.get('source_mesh_node', 0), tuple(np.round(primitive['pos'][vertex] / extent, 8)), influences)
             logical[vertex] = logical_keys.add(key, p[vertex], native_j[vertex], native_w[vertex])
         out.append({**primitive, 'pos': p, 'nrm': _normal(n), 'J': native_j, 'W': native_w,
-                    'owner': native_j[:, 0], 'logical_vertex_id': logical, 'name': f'm{primitive_id}'})
+                    'owner': native_j[:, 0], 'logical_vertex_id': logical,
+                    'name': (attachments.material_name(primitive.get('prop_node') or 'prop', primitive_id)
+                             if primitive.get('prop') else f'm{primitive_id}')})
+    attachments.note('fitted', out)
     flipped = S._orient(out)
     influence_counts = np.concatenate([np.count_nonzero(p['W'] > 1e-8, axis=1) for p in out])
-    return out, {'influence_policy': 'all mapped weights preserved; weighted role fit; no native seam reduction',
+    report = {'influence_policy': 'all mapped weights preserved; weighted role fit; no native seam reduction',
                  'logical_vertices': logical_keys.count, 'vertices': len(influence_counts),
                  'blended_vertices': int(np.count_nonzero(influence_counts > 1)),
                  'max_influences': int(influence_counts.max()),
                  'scale': s, 'torso_up': upper / s, 'torso_down': lower / s, 'shoulder_widen': widen,
                  'head_scale': head_scale, 'limb_stretch': stretch, 'normals_flipped': flipped,
                  'roles_used': sorted(ri), 'facing': basis.tolist(), 'runtime_verified': False}
+    if moved['moved']:
+        report['joints_moved'] = moved
+    # Fitting pop-up stages and the operator's retarget profile (weights blend the role adjustments per vertex).
+    return S._profiled(rig, target, out, report, scale, destination, jmap)
 
 
 def read_rigged(path: Path, target_roles: dict):
@@ -282,7 +346,9 @@ def read_rigged(path: Path, target_roles: dict):
     Target role IDs are passed explicitly; no DOA skeleton order is invented.
     """
     roles = {role: f'j{joint:02d}' for role, joint in target_roles.items()}
-    rig = load_rig(path, roles)
+    with attachments.paused():                             # an intermediate, not a donor: no new ledger model
+        rig = load_rig(path, roles)
+    attachments.note('budget', rig['prims'], file=Path(path).name)
     ids = []
     for name in rig['names']:
         match = re.fullmatch(r'j(\d+)', name)

@@ -1,0 +1,45 @@
+{
+  "date": "2026-10-15",
+  "game": "Phantasy Star Online Episode I & II Plus (USA)",
+  "disc_revision": "GPOE8P disc 0 revision 2 / 3OE2",
+  "owned_executable": {
+    "name": "PsoV3.dol",
+    "sha256": "1f80fb82b41c05b26b6d0545b1ba9c0aa60b52e6589cf32fbb2ffe644692a61a",
+    "bundled": false
+  },
+  "implementation": {
+    "module": "gbox/pso_accuracy.py",
+    "native_resolvers": ["0x80015DE8", "0x800162E0"],
+    "patch_sites": ["0x80015F00", "0x80016384"],
+    "scratch_range": ["0x80006800", "0x80006900"],
+    "scope": "Only the local offline player's accuracy rolls. Ordinary enemy accuracy, player stats, targeting/range/hitboxes, invulnerability and special-effect resistance are unchanged.",
+    "warm_jit": "Existing native game-thread dispatcher executes dcbst/sync/icbi/isync for both hook code and both patch sites.",
+    "default": "always_hit=true; a saved false value restores the exact original instructions",
+    "dreamcast": "Unsupported until an independent revision-specific hit-resolution patch is verified. No GameCube addresses or ATA substitute are applied."
+  },
+  "native_test": {
+    "host": "Spark",
+    "emulator": "Dolphin, separate process and private runtime",
+    "setup": "A copied offline test state initializes the game. A private copied receiver has EVP=32767 and both actual native resolvers receive a zero accuracy multiplier, so an ordinary accuracy roll cannot succeed.",
+    "stock_impossible_hit_results": [0, 0],
+    "enabled_local_attacker_results": [1, 1],
+    "enabled_other_attacker_results": [0, 0],
+    "disabled_restored_results": [0, 0],
+    "exact_original_instructions_restored": true,
+    "operator_sessions_or_saves_touched": false,
+    "private_emulator_stopped": true,
+    "passed": true
+  },
+  "reconnect_native_test": {
+    "setup": "Remove only the private test emulator's dispatcher pointer after warming the accuracy routines, then call pso_rehook.recover with the saved preferences retrieved from the real local backend.",
+    "reconnected": true,
+    "same_emulator_pid": true,
+    "state_load_save_or_restart_during_recovery": false,
+    "after_reconnect_local_impossible_hit_results": [1, 1],
+    "original_accuracy_bytes_restored_after_test": true,
+    "operator_sessions_or_saves_touched": false,
+    "private_emulator_stopped": true,
+    "passed": true
+  },
+  "limits": "These are native routine and recovery checks, not a claim to bypass attacks that never contact a target, invulnerability phases, or every weapon special-effect resistance. No online accuracy change is enabled."
+}

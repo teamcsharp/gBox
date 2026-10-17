@@ -1,0 +1,22 @@
+{
+  "validation": "read-only owned-disc metadata; no operator session mutation",
+  "catalog_schema": 3,
+  "gamecube": {
+    "catalog_entries": 1257,
+    "s_rank_axe_variants": 17,
+    "axe_family": "S-Rank Axe",
+    "hell_code": "00a90a",
+    "gush_code": "00a90e",
+    "community_codes": ["003200", "002f01", "008903", "003000", "001200", "004b00", "004500", "001e00", "000406", "001d00"],
+    "all_12_classes_have_10_distinct_atp_ranked_weapons": true
+  },
+  "dreamcast_v2": {
+    "catalog_entries": 545,
+    "community_items_resolved": 8,
+    "unavailable_community_items": ["Black King Bar", "Sange & Yasha"],
+    "all_9_classes_have_10_distinct_atp_ranked_weapons": true
+  },
+  "wiki_image_metadata_verified": ["ES_Axe", "Dark_Flow", "Tsumikiri_J-Sword", "Spread_Needle", "Guld_Milla", "Black_King_Bar", "Double_Cannon", "Frozen_Shooter", "Vjaya", "Heaven_Punisher", "Saber", "Psycho_Wand", "Red_Sword", "Rainbow_Baton"],
+  "native_floor_spawn": "existing verified implementation reused; no new native mutation claimed",
+  "personal_assets_or_rom_bytes_in_repository": false
+}
