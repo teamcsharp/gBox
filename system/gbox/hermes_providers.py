@@ -136,6 +136,20 @@ def error_kind(text: str, code: int | None = None) -> str:
     return 'failing'
 
 
+def inference_provider(provider, model, base_url=None):
+    """Name a custom local route only when its model AND observed endpoint match."""
+    if provider != 'custom' or not base_url:
+        return provider
+    s = _local_settings()
+    if s is not None:
+        from . import hermes_pool
+        for candidate in [s, *hermes_pool.node_settings().values()] if s.nodes else [s]:
+            if model == candidate.model and base_url.rstrip('/') in {
+                    (candidate.proxy_url or '').rstrip('/'), candidate.upstream.rstrip('/')}:
+                return candidate.provider
+    return provider
+
+
 def is_local(provider: str, base_url: str | None = None) -> bool:
     extra = {p.strip().lower() for p in (os.environ.get('GBOX_HERMES_LOCAL_PROVIDERS') or '').split(',') if p.strip()}
     if (provider or '').lower() in LOCAL_NAMES | extra:
@@ -143,6 +157,10 @@ def is_local(provider: str, base_url: str | None = None) -> bool:
     local = _local_settings()
     if local is not None and (provider or '').casefold() == local.provider.casefold():
         return True
+    if local is not None and local.nodes:
+        from . import hermes_pool
+        if any((provider or '').casefold() == s.provider.casefold() for s in hermes_pool.node_settings().values()):
+            return True
     host = urllib.parse.urlsplit(base_url or '').hostname or ''
     if host in ('localhost',) or host.endswith('.local') or host.endswith('.lan'):
         return True
@@ -263,18 +281,23 @@ class Scanner:
         kv = dict(_KV.findall(message))
         provider, model = kv.get('provider'), kv.get('model')
         session = self._session(tag, ts, tz) if tag else None
+        observed_url = kv.get('base_url')
+        if provider == 'custom' and not observed_url and session:
+            observed_url = next((c.get('base_url') for c in reversed(session['calls'])
+                                 if c.get('model') == model and c.get('base_url')), None)
+        provider = inference_provider(provider, model, observed_url)
         if provider and kv.get('base_url'):
             self.base_urls[provider] = kv['base_url']
         if _CREATED.search(message) and provider:
             self.events.append({'ts': ts, 'kind': 'call', 'provider': provider, 'model': model, 'tag': tag})
             if session:
                 session['calls'].append({'provider': provider, 'model': model, 'ts': ts, 'state': 'open',
-                                         'tokens': 0})
+                                         'tokens': 0, 'base_url': observed_url})
             return
         ok = _OK.search(message)
         if ok:
             self.has_ok_lines = True
-            model, provider = ok[1], ok[2]
+            model, provider = ok[1], inference_provider(ok[2], ok[1], observed_url)
             tokens = sum(int(x) for x in (ok[3], ok[4]) if x.isdigit())
             self.events.append({'ts': ts, 'kind': 'ok', 'provider': provider, 'model': model, 'tag': tag,
                                 'tokens': tokens})
@@ -929,10 +952,15 @@ def local_summary(s, feedback: dict, route_rows: list[dict], since: float) -> di
     current = feedback.get('current_route') if isinstance(feedback.get('current_route'), dict) else {}
     row = next((r for r in route_rows if r['provider'].casefold() == s.provider.casefold()), None) or {}
     try:
-        proxy = llm_proxy.summarize(llm_proxy.read_log(since))
+        records = [r for r in llm_proxy.read_log(since)
+                   if (r.get('provider') == s.provider and r.get('model') == s.model)
+                   or (not r.get('provider') and s.provider == 'spark-local' and r.get('model') in (None, s.model))]
+        proxy = llm_proxy.summarize(records)
     except Exception:  # noqa: BLE001
         proxy = {}
     return {'enabled': s.enabled, 'provider': s.provider, 'model': s.model,
+            'host_name': s.host_name, 'upstream': s.upstream, 'api_format': s.api_format,
+            'capacity': s.max_parallel_jobs, 'allow_large_tasks': s.allow_large_tasks,
             'active': str(current.get('provider') or '').casefold() == s.provider.casefold(),
             'reason': mode.get('reason'), 'since': mode.get('since'), 'next_paid_at': mode.get('next_paid_at'),
             'runs_completed': row.get('runs_completed', 0), 'runs_failed': row.get('runs_failed', 0),

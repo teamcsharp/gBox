@@ -1774,7 +1774,7 @@ def dedicated_entries(config, game, name, roster):
 # the cast swap's donor gate): JGR v2 draws the body without the cel-shading outline shell, with per-group textures.
 # AUF v2 extracts every body (v1 listed the writer's slots only); collect() records the version it ran with, so a
 # stored collection made by an older reader is collected again at the next launch (character_collection).
-READER_VERSIONS = {"jgr": ("gbox.jgr", "jgr_reader"), "auf": ("gbox.auf_chars", "auf_reader"),
+READER_VERSIONS = {"smb3": ("gbox.smb3_sprites", "smb3_reader"), "jgr": ("gbox.jgr", "jgr_reader"), "auf": ("gbox.auf_chars", "auf_reader"),
                    "twin_snakes": ("gbox.twin_snakes", "tts_reader"), "sm64ds": ("gbox.sm64ds_chars", "sm64ds_reader"),
                    "soulcalibur": ("gbox.soulcalibur_dc", "sc_reader"),
                    "soulcalibur2": ("gbox.soulcalibur2", "sc2_reader"),

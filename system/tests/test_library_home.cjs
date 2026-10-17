@@ -253,7 +253,7 @@ test('changing cover art preserves the open Info selection and refreshes thumbna
 });
 
 test('Library and Home build cover actions search for the catalog game title',async()=>{
- const attach=indexHTML.match(/async function attachCover\([\s\S]*?\n}\n/)?.[0];
+ const attach=indexHTML.match(/async function attachCover\([\s\S]*?\r?\n}\r?\n/)?.[0];
  assert.ok(attach,'shared application cover action exists');
  await withPage(async evaluate=>{
   await evaluate(`document.body.innerHTML='<div id="gmenu" class="on"></div><article id="library" data-title="Sonic 2"><strong>Library display title</strong></article><button id="home-build"><strong>My newest Sonic face swap build</strong></button>';window.coverCalls=[];window.api=async()=>({title:'Sonic the Hedgehog 2 (World)'});window.$=s=>document.querySelector(s);window.bnUrl=u=>u;window.blToast=()=>{};window.coverArtworkChanged=async()=>{};window.GBoxCoverPicker={open:o=>coverCalls.push({gid:o.gid,title:o.title})};`);

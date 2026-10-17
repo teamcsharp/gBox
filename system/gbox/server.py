@@ -35,6 +35,20 @@ BRAND = Path(__file__).resolve().parent.parent / "assets" / "brand"
 # the running copy first there (launch_game saves it before closing, and refuses if it can't)
 RELAUNCH_BESIDE_UNSAFE = {"mgba"}
 
+# The replacement launch child runs up to its registered tool timeout once claimed (launch_game:
+# 900 s) and may spend up to SWAP_LAUNCH_QUEUE_S queued first. Waiting exactly that long races the
+# child's own timeout: the parent can read the job as still "running" a beat before its terminal
+# "failed/TimeoutError" lands, and then misreport the swap as "launch_game failed: running" instead
+# of the real cause (#1731). Wait past the queue window + child timeout so the parent always
+# observes the terminal state.
+SWAP_LAUNCH_QUEUE_S = 180.0      # the target worker must start the replacement launch within this (or nothing changes)
+SWAP_LAUNCH_MARGIN_S = 120.0     # extra time for the child's terminal transition to land and be polled
+
+
+def swap_launch_wait_s(queue_wait_s: float = 0.0) -> float:
+    """How long session_swap waits for its replacement launch_game child (see SWAP_LAUNCH_MARGIN_S)."""
+    return float(queue_wait_s) + float(REGISTRY["launch_game"].timeout_s) + SWAP_LAUNCH_MARGIN_S
+
 
 class ArtifactUpload(BaseModel):
     name: str
@@ -853,8 +867,6 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(409, f"no online gBox worker '{to}'")
         return hit
 
-    SWAP_LAUNCH_QUEUE_S = 180.0      # the target worker must start the replacement launch within this (or nothing changes)
-
     def session_swap(sid: str, mod: str, to: str, actor: str, keep_state: bool = True, progress=None,
                      should_stop=None, keep_old: bool = False, parent_job: str = "") -> dict:
         """keep_old: on the same worker, the replacement starts beside the running copy (launch_game keep_session), which
@@ -893,6 +905,14 @@ def create_app(config: Config) -> FastAPI:
                     raise HTTPException(409, 'Prepared replacement returned an invalid cache folder') from error
                 if launch_mod != mod and not launch_mod.startswith(mod + filemods.STAGED_SEP):
                     raise HTTPException(409, 'Prepared replacement returned another mod folder')
+        if running:
+            # Preparing the replacement can take minutes (a large mod fetch); the session may
+            # have ended meanwhile, leaving no moment to preserve and no game to "keep running".
+            live = store.get("session", sid)
+            if not live or live.get("state") != "running":
+                running = False
+                notes.append("Your previous session had already ended while the replacement was prepared; "
+                             "no moment was saved and the replacement starts fresh.")
         if running and keep_state:
             say(62, "Saving your current moment before applying the replacement")
             try:
@@ -906,7 +926,14 @@ def create_app(config: Config) -> FastAPI:
             except HTTPException as e:
                 if str(e.detail).startswith("cancelled by the operator"):
                     raise
-                raise HTTPException(409, f"Replacement was not applied: the current state could not be saved ({e.detail}). Your game was kept running.")
+                if (store.get("session", sid) or {}).get("state") != "running":
+                    # The game ended before its moment could be saved: nothing to preserve and
+                    # nothing to "keep running", so start the replacement fresh instead of 409ing.
+                    running = False
+                    notes.append("Your previous session ended before its moment could be saved; "
+                                 "the replacement starts fresh.")
+                else:
+                    raise HTTPException(409, f"Replacement was not applied: the current state could not be saved ({e.detail}). Your game was kept running.")
             except KeyError as e:
                 raise HTTPException(409, f"Replacement was not applied: the current state could not be saved ({getattr(e, 'detail', e)}). Your game was kept running.")
         if stop():
@@ -915,7 +942,8 @@ def create_app(config: Config) -> FastAPI:
         beside = keep_old and running and tw["id"] == _wid(old_w) and sess.get("adapter") not in RELAUNCH_BESIDE_UNSAFE
         try:
             new = _run_job("launch_game", {"game": game, "mod": launch_mod, **({"keep_session": sid} if beside else {})},
-                           actor, worker=tw["id"], wait=900, should_stop=stop, on_cancel_deferred=defer_cancel,
+                           actor, worker=tw["id"], wait=swap_launch_wait_s(SWAP_LAUNCH_QUEUE_S),
+                           should_stop=stop, on_cancel_deferred=defer_cancel,
                            queue_wait=SWAP_LAUNCH_QUEUE_S, origin=origin)
         except HTTPException as e:
             if str(e.detail).startswith('cancelled by the operator before the replacement started'):
@@ -935,7 +963,7 @@ def create_app(config: Config) -> FastAPI:
                 say(60, "That didn't start: putting your game back")
                 try:
                     back = _run_job("launch_game", {"game": game,
-                        "mod": sess.get("launch_mod") or sess.get("staged_mod") or sess.get("mod") or ""}, actor, worker=old_w, wait=900)
+                        "mod": sess.get("launch_mod") or sess.get("staged_mod") or sess.get("mod") or ""}, actor, worker=old_w, wait=swap_launch_wait_s())
                     if art:
                         time.sleep(6)
                         _run_job("state_transfer", {"session_id": back["session_id"], "op": "import", "artifact": art}, actor,
@@ -976,7 +1004,7 @@ def create_app(config: Config) -> FastAPI:
                     say(75, 'State restore failed; recovering the original game and checkpoint')
                     try:
                         back = _run_job('launch_game', {'game': game,
-                            'mod': sess.get('launch_mod') or sess.get('staged_mod') or sess.get('mod') or ''}, actor, worker=old_w, wait=900)
+                            'mod': sess.get('launch_mod') or sess.get('staged_mod') or sess.get('mod') or ''}, actor, worker=old_w, wait=swap_launch_wait_s())
                         time.sleep(6)
                         _run_job('state_transfer', {'session_id': back['session_id'], 'op': 'import', 'artifact': art}, actor, worker=old_w, wait=90)
                         store.put('session', sid, (store.get('session', sid) or {}) | {'state': 'ended', 'replaced_by': back['session_id']})
@@ -2669,7 +2697,15 @@ def create_app(config: Config) -> FastAPI:
         if t.name == 'characters' and inp.get('op') == 'collect' and not job.parent_request_id:
             job.parent_request_id = auto_collection.policy().get('parent_request_id')
         if t.name == "characters" and inp.get("op") in ("extract", "collect", "add", "blender"):
-            job.require_worker, job.require_os = None, "linux"   # they write the collection (Spark); captures go to the session's PC
+            # Collection normally chooses any Linux collection worker. The
+            # exact-title route already selected a source-capable Linux worker;
+            # preserve only that trusted in-server pin, never a client header.
+            scoped = (inp.get('op') == 'collect' and origin.get('via') == 'title_assets'
+                      and origin.get('game_id') == inp.get('game_id')
+                      and origin.get('source_worker') == job.require_worker and bool(job.require_worker))
+            if not scoped:
+                job.require_worker = None
+            job.require_os = "linux"
         elif t.name in ("re_executable", "assimilate"):
             # Analysis output belongs on Spark; RAM is read remotely through the
             # session RPC. Pinning this to a Windows session makes Linux work unrunnable.
@@ -5318,9 +5354,30 @@ def create_app(config: Config) -> FastAPI:
         store.audit(actor, "request.import", "requests", {"added": added})
         return {"added": added, "total": len(store.all("request"))}
 
+    @app.get('/api/analysis/sources')
+    def analysis_sources(actor=Depends(auth)):
+        from .shared_sources import inventory
+        return inventory()
+
+    @app.get('/api/analysis/sources/file')
+    def analysis_source_file(path: str, actor=Depends(auth)):
+        from .shared_sources import read
+        import hashlib
+        try:
+            data = read(path)
+        except (ValueError, OSError) as e:
+            raise HTTPException(404, str(e)) from e
+        return Response(data, media_type='text/plain', headers={'x-content-sha256': hashlib.sha256(data).hexdigest()})
+
     @app.get("/api/requests/export")
-    def req_export(actor=Depends(auth)):
+    def req_export(prompts_only: bool = False, actor=Depends(auth)):
         """The whole request history, oldest first, as one Markdown transcript."""
+        if prompts_only:
+            from .prompt_history import markdown
+            with store.lock:
+                transcript = markdown(store.all('request'), store.all('chat'), redact=_redact)
+            return PlainTextResponse(transcript, media_type='text/markdown',
+                                     headers={'content-disposition': 'attachment; filename="gbox-prompt-history.md"'})
         import datetime as _dt
         from zoneinfo import ZoneInfo
         ct = ZoneInfo("America/Chicago")                   # the operator's time, whatever the Spark's clock says
@@ -5615,6 +5672,11 @@ def create_app(config: Config) -> FastAPI:
                 "hypotheses": sum(1 for e in edges if e["status"] == "hypothesis"),
                 "jobs_by_state": {s: sum(1 for j in jobs if j["state"] == s) for s in JobState},
                 "artifact_bytes": sum(a["size"] for a in arts), "artifacts": len(arts)}
+
+    from . import title_assets
+    title_assets.routes(app, store, config, auth, workers,
+        lambda body, actor: submit(JobRequest(**body), actor, origin={'via': 'title_assets',
+            'game_id': body['input']['game_id'], 'source_worker': body.get('require_worker')}).model_dump(mode='json'))
 
     return app
 

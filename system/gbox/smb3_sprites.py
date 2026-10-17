@@ -55,6 +55,10 @@ def roster() -> list[dict]:
 
 def encode_tile(rows) -> bytes:
     """8x8 colour indices 0..3 -> the 16-byte 2bpp CHR tile (plane 0, then plane 1)."""
+    if len(rows) != 8 or any(len(row) != 8 for row in rows):
+        raise ValueError('CHR tile must be exactly 8 by 8')
+    if any(not isinstance(v, int) or not 0 <= v <= 3 for row in rows for v in row):
+        raise ValueError('CHR indices must be integers from 0 to 3')
     lo = bytearray(8)
     hi = bytearray(8)
     for y in range(8):
@@ -77,6 +81,10 @@ def tile_roundtrip(chr_: bytes, index: int) -> bool:
 
 def indexed_png_bytes(w: int, h: int, indices: bytes, palette, transparent: int = 0) -> bytes:
     """A colour-type-3 (indexed) PNG: pixel byte = palette index, entry 0 transparent."""
+    if w <= 0 or h <= 0 or len(indices) != w*h or not 1 <= len(palette) <= 256:
+        raise ValueError('Invalid indexed PNG dimensions or palette')
+    if any(v >= len(palette) for v in indices) or not 0 <= transparent < len(palette):
+        raise ValueError('PNG index is outside the palette')
     import struct
     import zlib
 
@@ -84,7 +92,7 @@ def indexed_png_bytes(w: int, h: int, indices: bytes, palette, transparent: int 
         return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
     ihdr = struct.pack(">IIBBBBB", w, h, 8, 3, 0, 0, 0)
     plte = b"".join(bytes(int(c[i]) & 0xFF for i in range(3)) for c in palette)
-    trns = bytes([0])                     # index 0 alpha 0; every later entry is opaque
+    trns = bytes(0 if i == transparent else 255 for i in range(len(palette)))
     raw = b"".join(b"\x00" + indices[y * w:(y + 1) * w] for y in range(h))
     return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"PLTE", plte)
             + chunk(b"tRNS", trns) + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
@@ -275,7 +283,7 @@ def extract_run(ctx, game: dict, entry: dict, work) -> dict:
                   f"(every tile kept) and a slot->page/tile frame map. Luigi is Mario with a palette swap. "
                   f"CHR round-trip: {rt['checked']} referenced tiles re-encode byte-identical "
                   f"({'ok' if rt['byte_identical'] else 'MISMATCH'})."),
-        "extra": {"picture": "2d", "smb3": {"reader": READER_VERSION, "frame_map": str(work / "frames.json"),
+        "extra": {"picture": "2d", "smb3_reader": READER_VERSION, "smb3": {"reader": READER_VERSION, "frame_map": "frames.json",
                                             "sheets": "sheets", "atlases": "atlases",
                                             "roundtrip": rt, "palettes": fm["palettes"]}},
     }
