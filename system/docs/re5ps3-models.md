@@ -117,7 +117,9 @@ passes, normal/mask maps, texture color correction, and original blend behavior
 are not reproduced by the preview material. The preview uses a 0.5 alpha
 cutoff; original material flag, shader, blend-state, and alpha bytes are retained
 in GLB metadata. Animation clips, semantic bone-role mapping, full NPC/enemy/
-cutscene roster coverage, native MOD/TEX writing, retargeted motion acceptance,
+cutscene roster coverage, arbitrary-topology native MOD writing, retargeted motion acceptance,
 an installable PS3 build, unlocks, and sidebar inventory/equipment controls still
 need implementation and gameplay verification. No writer is registered and no
 full-cast request should be closed because this reader passes.
+
+The separate [bounded native writer](re5ps3-writer.md) now supports fixed-layout vertex edits and same-size TEX replacement in copied owned packs. It is not registered as a cast writer.
