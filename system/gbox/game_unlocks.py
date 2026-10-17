@@ -13,6 +13,29 @@ RE6_ID = '0871eee3b68cdea3'
 RE6_TEMPLATE_SHA256 = '194cb5b71858f65feeb2b1703642ddc4ffde09b9a087119189b29b0ad7b83f11'
 
 
+def pre_launch(game: dict, ctx, mod: str = '') -> dict:
+    """Fast reviewed launch hooks; background research supplies additional games.
+
+    Never run REA/Ghidra here or infer a write from a title string. Existing RE6
+    opt-out settings remain authoritative and its writer retains the save backup.
+    """
+    profile = profile_for(game)
+    if not profile['verified']:
+        return {'state': 'research_pending', 'applied': False, 'reason': profile['reason']}
+    if game.get('game_id') == RE6_ID and game.get('platform') == 'xbox360':
+        from . import re6_tool
+        try:
+            result = re6_tool.pre_launch(ctx, mod)
+        except Exception as exc:
+            return {'state': 'failed', 'applied': False, 'reason': str(exc)[:500]}
+        unlock = result.get('unlock') or {}
+        state = ('disabled' if not result.get('everything_unlocked') else
+                 'pending_save' if unlock.get('error') else 'applied')
+        return {'state': state, 'applied': state == 'applied', 'profile': profile['profile'],
+                'scope': profile['scope'], 'exclusions': profile['exclusions'], 'detail': result}
+    return {'state': 'implementation_pending', 'applied': False}
+
+
 def profile_for(game: dict) -> dict:
     if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,

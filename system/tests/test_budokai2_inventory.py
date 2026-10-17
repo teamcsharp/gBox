@@ -62,3 +62,16 @@ def test_live_inventory_and_roster():
     names = [r["name"] for r in inv["roster"]]
     assert "GOTAN (GOKOU)" in names                      # fusion/absorption entries are recorded
     assert all(r["code"] is None for r in inv["roster"] if "(" in r["name"])
+
+
+@pytest.mark.parametrize("size", range(4, 12))
+def test_chunk_header_rejects_every_truncated_word_pair(size):
+    assert b2.chunk_header((b"#CCM" + bytes(8))[:size]) is None
+
+
+def test_cli_prints_fusion_without_a_code(monkeypatch, capsys):
+    value = dict(image={}, main_dol={}, fst_files=0, chunk_magics={}, containers="",
+                 roster=[dict(index=0, code=None, name="GOTAN (GOKOU)")])
+    monkeypatch.setattr(b2, "inventory", lambda *args: value)
+    assert b2.main(["unused.gcz"]) == 0
+    assert "GOTAN (GOKOU)" in capsys.readouterr().out

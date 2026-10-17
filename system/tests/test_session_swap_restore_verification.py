@@ -136,3 +136,54 @@ def test_transport_failure_keeps_existing_checkpoint_recovery(swap_route):
     assert store.get('session', 'w-live')['replaced_by'] == 'w-recovered'
     assert store.artifact_path(checkpoint).read_bytes() == original
     assert not any(r['action'] == 'session.swap' for r in store.audit_log())
+
+
+def test_session_ending_during_prepare_skips_state_save_and_starts_fresh(swap_route):
+    """#1755: the session can end while prepare_mod fetches a large mod; the swap must
+    start the replacement fresh instead of 409ing about a moment it can no longer save."""
+    _, _, store, swap, _ = swap_route
+    calls, launches = [], []
+    def run(tool, inp, *args, **kwargs):
+        calls.append((tool, dict(inp)))
+        if tool == 'prepare_mod':
+            store.put('session', 'w-live', store.get('session', 'w-live') | {'state': 'ended'})
+            return {'ready': True, 'mod': 'amy'}
+        if tool == 'launch_game':
+            launches.append(inp['mod'])
+            store.put('session', 'w-new', {'session_id': 'w-new', 'game_id': 'g', 'state': 'running', 'mod': inp['mod']})
+            return {'session_id': 'w-new'}
+        pytest.fail('Unexpected tool: ' + tool)
+    enclosed(swap, '_run_job').cell_contents = run
+    response = invoke(swap_route)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result['session_id'] == 'w-new' and launches == ['amy']
+    assert not any(t in ('state_transfer', 'get_frame') for t, _ in calls)
+    assert any('already ended' in n for n in result['notes'])
+
+
+def test_state_save_failing_after_session_ended_starts_fresh_not_409(swap_route):
+    """#1755: even if the session ends in the small window between the liveness re-check
+    and the export job, the swap degrades to a fresh launch rather than a 409."""
+    _, _, store, swap, _ = swap_route
+    calls, launches = [], []
+    def run(tool, inp, *args, **kwargs):
+        calls.append((tool, dict(inp)))
+        if tool == 'prepare_mod':
+            return {'ready': True, 'mod': 'amy'}
+        if tool == 'get_frame':
+            return {'mean_luma': 20}
+        if tool == 'state_transfer' and inp['op'] == 'export':
+            store.put('session', 'w-live', store.get('session', 'w-live') | {'state': 'ended'})
+            raise HTTPException(409, 'state_transfer failed: game session ended before the job could run')
+        if tool == 'launch_game':
+            launches.append(inp['mod'])
+            store.put('session', 'w-new', {'session_id': 'w-new', 'game_id': 'g', 'state': 'running', 'mod': inp['mod']})
+            return {'session_id': 'w-new'}
+        pytest.fail('Unexpected tool: ' + tool)
+    enclosed(swap, '_run_job').cell_contents = run
+    response = invoke(swap_route)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result['session_id'] == 'w-new' and launches == ['amy']
+    assert any('ended before' in n for n in result['notes'])

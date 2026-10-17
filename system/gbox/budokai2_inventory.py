@@ -69,7 +69,7 @@ def chunk_header(data: bytes) -> dict | None:
     offsets from 0x10.  `#CSK` and `#SPX` differ (see module docstring) so their first u32 is NOT a
     count; the returned dict keeps the raw words so callers can special-case them.
     """
-    if len(data) < 8 or data[0] != 0x23:              # 0x23 = '#'
+    if len(data) < 12 or data[0] != 0x23:              # 0x23 = '#'
         return None
     magic = data[:4]
     label = CHUNK_MAGICS.get(magic)
@@ -189,7 +189,7 @@ def main(argv=None) -> int:
     print(json.dumps({k: m[k] for k in ("image", "main_dol", "fst_files", "chunk_magics",
                                          "containers")}, indent=1))
     for r in m["roster"]:
-        print(f"  {r['index']:3d}  {r.get('code', '?'):6s}  {r['name']}")
+        print(f"  {r['index']:3d}  {(r.get('code') or '?'):6s}  {r['name']}")
     return 0
 
 

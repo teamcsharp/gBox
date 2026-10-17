@@ -143,6 +143,43 @@ def next_stage(item):
     return next((stage for stage in STAGES if (item.get('stages', {}).get(stage) or {}).get('status') != 'verified'), None)
 
 
+def _final_report(run):
+    from . import hermes_summaries as summaries, hermes_tasks
+    home = mode._home()
+    state = hermes_tasks._db(home / 'state.db')
+    if not state:
+        return ''
+    try:
+        session = summaries._session_at(state, run['job_id'], _stamp(run['started_at']))
+        return summaries._response(home, run['job_id'], _stamp(run.get('finished_at')), state, session['id'])[:12000] if session else ''
+    finally:
+        state.close()
+
+
+def _preserve_report(item, run):
+    """The durable dispatch claim owns this report even if legacy tool attribution cannot decode it."""
+    if (not item.get('local') or not ID.fullmatch(str(item.get('request_id', '')))
+            or not re.fullmatch('[0-9a-f]{32}', str(run.get('id', '')))):
+        return
+    if item.get('report_posted_run') == run['id']:
+        return
+    try:
+        if item.get('report_run') != run['id']:
+            report = _final_report(run)
+            if not report:
+                return
+            item.update(report_run=run['id'], final_report=report)
+        marker = f"Local queue checkpoint {run['id']}:"
+        request = _api('/api/requests/' + item['request_id'])
+        if not any(marker in m.get('text', '') for m in request.get('messages', [])):
+            _api('/api/requests/' + item['request_id'] + '/messages', {'author': 'agent',
+                'text': marker + '\nModel-reported result; acceptance still requires verification.\n\n' + item['final_report']})
+        item['report_posted_run'] = run['id']
+        item.pop('report_error', None)
+    except Exception as exc:  # retain the report locally and retry posting next tick
+        item['report_error'] = type(exc).__name__
+
+
 def reconcile(data, jobs, latest, active, *, now):
     """One completed occurrence advances the queue exactly once, even after a crash."""
     by_name = {j.get('name'): j for j in jobs}
@@ -160,10 +197,13 @@ def reconcile(data, jobs, latest, active, *, now):
         if jid in active or job and job.get('enabled'):
             continue
         run = latest.get(jid)
-        if not run or run['id'] == item.get('last_run_id'):
+        if not run:
             continue
         if _stamp(run['started_at']) < item.get('last_dispatched', 0) - 2:
             continue  # Old history cannot settle a newer queued occurrence.
+        _preserve_report(item, run)
+        if run['id'] == item.get('last_run_id'):
+            continue
         item.update(last_run_id=run['id'], dispatch_state='finished', last_finished=now)
         advanced = item.get('checkpoint_at', 0) >= item.get('last_dispatched', 0)
         failures = 0 if advanced else item.get('no_progress_runs', 0) + 1
@@ -448,12 +488,18 @@ def tick(*, now=None):
             return {'status': 'waiting_for_route_supervisor', 'favorites': data['favorites_count']}
         from . import hermes_local
         local = hermes_local.is_local(primary)
-        if local:
+        from . import hermes_pool
+        pooled = local and hermes_pool.configured()
+        pool_state = _api('/api/hermes/local/nodes') if pooled else None
+        if local and not pooled:
             # The Spark's GPU model: one run at a time, never while the operator plays a game on the Spark.
             gate = local_gate()
             if gate:
                 return {'status': 'waiting_for_operator', 'reason': gate, 'favorites': data['favorites_count']}
-        limit = 1 if local else min(4, max(1, int((config.get('cron') or {}).get('max_parallel_jobs') or 1)))
+        local_settings = hermes_local.settings()
+        limit = local_settings.max_parallel_jobs if local else min(4, max(1, int((config.get('cron') or {}).get('max_parallel_jobs') or 1)))
+        if pooled:
+            limit = pool_state['capacity']
         script_ids = {j['id'] for j in jobs if j.get('no_agent')}
         reserved = active - script_ids
         reserved.update(j['id'] for j in jobs if not j.get('no_agent') and j.get('enabled')
@@ -476,22 +522,29 @@ def tick(*, now=None):
             limit = min(limit, cap)
         titles = (gate or {}).get('games') or []
         deferred = 0
-        if local:
+        if local and not pooled and not local_settings.allow_large_tasks:
             # Small, well-scoped tasks only; big multi-file work stays queued for a paid route.
             by_id = {r['id']: r for r in requests}
             small = [v for v in options if hermes_local.dispatch_size(v[1], by_id.get(v[1].get('request_id')))['size'] == 'small']
             deferred = len(options) - len(small)
             options = small
         dispatched = []
-        for _ in range(max(0, limit - len(reserved))):
+        slots = hermes_pool.assignments(pool_state['nodes'], data['items'], reserved)[0] if pooled else [None] * max(0, limit - len(reserved))
+        slots = slots[:max(0, limit - len(reserved))]
+        by_id = {r['id']: r for r in requests}
+        for node in slots:
             # Give both backlogs capacity; spare slots go to whichever has work.
             counts = {lane: sum(j.get('name', '').startswith(PREFIX + lane + ' ') and
                                j['id'] in reserved for j in jobs) +
                       sum(d['lane'] == lane for d in dispatched) for lane in ('inbox', 'favorite')}
             least = min((counts[v[1]['lane']] for v in options), default=0)
-            chosen = choose([v for v in options if counts[v[1]['lane']] == least], data)
+            choices = [v for v in options if counts[v[1]['lane']] == least]
+            if node and node.get('primary'):
+                narrow = [v for v in options if hermes_local.dispatch_size(v[1], by_id.get(v[1].get('request_id')))['size'] == 'small']
+                choices = narrow or (choices if node.get('allow_large_tasks') else [])
+            chosen = choose(choices, data)
             if not chosen:
-                break
+                continue
             key, item = chosen
             options.remove(chosen)
             if item.get('game_id'):
@@ -499,8 +552,21 @@ def tick(*, now=None):
             _ensure_request(data, item, requests)
             name = PREFIX + ('favorite ' + item['game_id'] if item['lane'] == 'favorite' else 'inbox ' + item['request_id'])
             prompt = _prompt(item, titles)
+            if item.get('final_report'):
+                prompt += '\nPrevious local run reported (verify claims before use):\n' + item['final_report'][-8000:]
+            if (by_id.get(item.get('request_id'), {}).get('context') or {}).get('read_only'):
+                prompt += ('\nREAD-ONLY REQUEST: do not edit source, saves or memory, install dependencies, '
+                           'or prepare implementation changes. Inventory existing evidence, post unknowns '
+                           'and missing evidence on the request, then finish this bounded inventory.')
+            run_settings = hermes_pool.node_settings()[node['name']] if node else local_settings
+            run_route = hermes_local.route(run_settings) if node else dict(primary)
+            pin = ['--model', run_settings.model, '--provider', run_settings.provider] if node else []
             if local:
-                prompt = hermes_local.local_prompt(prompt)
+                prompt = hermes_local.local_prompt(prompt, run_settings)
+                if node:
+                    prompt += (' The prime Spark retains the request, workspace and artifacts. Read the latest '
+                               'request checkpoints before work, including work from the other inference host. '
+                               'Keep exact job IDs and evidence on the request so another local run can resume safely.')
             existing = [j for j in jobs if j.get('name') == name]
             if len(existing) > 1:
                 raise RuntimeError('Ambiguous queue job identity')
@@ -509,15 +575,18 @@ def tick(*, now=None):
                 break
             attempt_kind = 'followup' if item.get('last_dispatched') else 'new'
             item.update(job_name=name, dispatch_state='uncertain', last_dispatched=now,
-                        attempts=item.get('attempts', 0) + 1, local=local, route=dict(primary))
+                        attempts=item.get('attempts', 0) + 1, local=local, route=run_route,
+                        inference_node=node['name'] if node else None)
             _save(data)
             if existing:
                 job = existing[0]
-                mode._run('edit', job['id'], '--prompt', prompt, '--no-continuity', '--unpin')
+                mode._run('edit', job['id'], '--prompt', prompt, '--no-continuity',
+                          '--reasoning-effort', run_settings.reasoning_effort if local else 'high',
+                          *(pin or ['--unpin']))
                 mode._run('resume', job['id'], '--run-now')
             else:
                 mode._run('create', mode._once(), prompt, '--name', name, '--repeat', '1',
-                          '--reasoning-effort', hermes_local.settings().reasoning_effort if local else 'high',
+                          '--reasoning-effort', run_settings.reasoning_effort if local else 'high', *pin,
                           '--workdir', str(mode._PROMPT.parents[2]),
                           '--deliver', 'local', '--failure-deliver', 'local')
                 found = [j for j in mode._jobs() if j.get('name') == name]
@@ -529,7 +598,8 @@ def tick(*, now=None):
             data['last_' + item['lane'] + '_kind'] = attempt_kind
             _save(data)
             dispatched.append({'job_id': job['id'], 'request_id': item['request_id'],
-                               'game_id': item.get('game_id'), 'lane': item['lane'], 'local': local})
+                               'game_id': item.get('game_id'), 'lane': item['lane'], 'local': local,
+                               **({'inference_node': node['name']} if node else {})})
         return {'status': 'dispatched' if dispatched else 'waiting', 'dispatched': dispatched,
                 'active_or_queued': len(reserved) + len(dispatched), 'capacity': limit,
                 'favorites': data['favorites_count'], 'eligible_tasks': len(options),
