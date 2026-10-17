@@ -101,3 +101,14 @@ def test_disc_inventory_smoke():
     assert not any("error" in r for r in m["big_archives"])
     assert m["bigf"]["total_members"] >= 600
     json.dumps(m)  # manifest must be JSON-serialisable
+
+
+@pytest.mark.parametrize("size", range(2, 12))
+def test_viv_header_rejects_truncation(size):
+    with pytest.raises(ValueError):
+        viv_header((b"\xc0\xfb" + bytes(10))[:size])
+
+
+def test_bigf_rejects_negative_base():
+    with pytest.raises(ValueError):
+        parse_bigf(_bigf(["a.bin"], [4]), -4)

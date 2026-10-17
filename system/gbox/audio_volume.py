@@ -16,28 +16,12 @@ import psutil
 
 
 def keep_pc_at_two_percent() -> int:
-    """Set every active Windows playback device's master volume to 2% during agent work."""
-    from comtypes import CoInitialize, CoUninitialize
-    from pycaw.pycaw import AudioUtilities
-    from pycaw.constants import DEVICE_STATE, EDataFlow
+    """Compatibility hook: agent work must leave Windows master volume alone.
 
-    CoInitialize()
-    changed = 0
-    try:
-        devices = AudioUtilities.GetAllDevices(EDataFlow.eRender.value, DEVICE_STATE.ACTIVE.value)
-        for device in devices:
-            try:
-                endpoint = device.EndpointVolume
-                if abs(endpoint.GetMasterVolumeLevelScalar() - 0.02) > 0.005:
-                    endpoint.SetMasterVolumeLevelScalar(0.02, None)
-                changed += 1
-            except Exception:
-                continue
-    finally:
-        CoUninitialize()
-    if not changed:
-        raise RuntimeError("No active Windows playback device accepted the 2% volume setting")
-    return changed
+    Playback volume is controlled through gBox's own audio sessions instead.
+    Keep this hook harmless for workers that still call it during agent jobs.
+    """
+    return 0
 
 
 def belongs_to_gbox(process, owner_pid: int, runtime: Path) -> bool:

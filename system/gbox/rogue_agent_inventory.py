@@ -53,7 +53,7 @@ MODEL_EXT = {"msh", "gsh", "lfc", "mvd", "cpt", "rtc", "cdb", "stf", "gfn"}
 
 def parse_bigf(buf: bytes, base: int = 0) -> tuple[int, list[tuple[str, int, int]]]:
     """(extra, [(name, absolute offset, size)]) for a BIGF archive at buf[base]."""
-    if buf[base:base + 4] != BIGF_MAGIC or base + 16 > len(buf):
+    if base < 0 or buf[base:base + 4] != BIGF_MAGIC or base + 16 > len(buf):
         raise ValueError(f"no BIGF at {base:#x}")
     total = struct.unpack_from("<I", buf, base + 4)[0]     # little-endian, not used as a bound
     count = struct.unpack_from(">I", buf, base + 8)[0]
@@ -89,7 +89,7 @@ def _member_blob(buf: bytes, name: str, off: int, size: int) -> dict:
 
 def viv_header(buf: bytes) -> dict:
     """The 12-byte .viv header: magic, the two unknown u32/u16 fields, and count at +6."""
-    if buf[:2] != VIV_MAGIC:
+    if len(buf) < 12 or buf[:2] != VIV_MAGIC:
         raise ValueError("not a VIV archive")
     f02, f06, f08 = struct.unpack_from(">IHI", buf, 2)
     return {"magic": "c0fb", "field_02": f02, "count_06": f06, "field_08": f08}
@@ -117,6 +117,12 @@ def viv_entries(buf: bytes) -> list[tuple[str, int, int]]:
 
 def inventory(gcz: Path | str) -> dict:
     d = GCDisc(str(gcz))
+    if d.game_id != "GOYE69":
+        raise ValueError(f"expected GOYE69, found {d.game_id}")
+    source_hash = hashlib.sha256()
+    with open(gcz, "rb") as stream:
+        for chunk in iter(lambda: stream.read(1 << 20), b""):
+            source_hash.update(chunk)
     files = d.files
     exts = Counter()
     for p in files:
@@ -180,13 +186,13 @@ def inventory(gcz: Path | str) -> dict:
         "disc_game_id": d.game_id,
         "platform": "gamecube",
         "engine": "EA EAGL (BIG/RefPack + VIV)",
-        "source": {"path": str(gcz), "sha256": SOURCE_SHA256, "fst_files": len(files)},
+        "source": {"path": str(gcz), "sha256": source_hash.hexdigest(), "fst_files": len(files)},
         "executables": elfs,
         "launch": {"main_elf": MAIN_ELF, "byte_order": "big-endian (PPC); BIGF total-size field is little-endian"},
         "layout": {
             "fst_ext_counts": dict(sorted(exts.items())),
             "big_archives": n_big, "viv_archives": n_viv,
-            "big_are_refpack": all("error" not in r or r["error"].startswith("refpack") for r in big_rows),
+            "big_are_refpack": bool(big_rows) and all(r.get("refpack_wrapped", False) and "error" not in r for r in big_rows),
         },
         "bigf": {
             "archives": n_big,
