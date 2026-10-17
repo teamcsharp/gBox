@@ -1202,6 +1202,7 @@ window.taskVizCreate = canvas => {
 <script src="request-tokens.js"></script>
 <script src="inbox-groups.js"></script>
 <script src="live-poll.js"></script>
+<script src="last-closed.js"></script>
 <script src="dock.js"></script>
 <script src="report-graph.js"></script>
 <script src="../web/viz/report-story.js"></script>
@@ -2910,11 +2911,18 @@ async function issueDiagnostics(shot) {
     const wv = document.querySelector("#wv");
     const pg = wv ? await wv.executeJavaScript(REPORT_PROBE).catch(() => ({})) : {};
     const ss = await liveSessions(0), run = (ss.ok ? ss.data : []).filter(s => s.state === "running");
-    const sid = pg.launch ? "" : (pg.sid || EMB.sid || run[0]?.session_id || ""), sess = run.find(s => s.session_id === sid) || await sessionById(sid) || {};
+    let sid = pg.launch ? "" : (pg.sid || EMB.sid || run[0]?.session_id || ""), sess = run.find(s => s.session_id === sid) || await sessionById(sid) || {};
     const [con, st, jr, wr] = await Promise.all([
       gbox.consoleTail(200000).catch(() => ""), gbox.settings().catch(() => ({})),
       pg.launch ? gbox.api("/api/jobs?limit=100").catch(() => ({})) : Promise.resolve({}),
       pg.launch ? gbox.api("/api/workers").catch(() => ({})) : Promise.resolve({})]);
+    // A game the operator closed (e.g. it froze on the character-select screen and they quit) still
+    // deserves a report anchored to that game, not "no game running" with a null game_id (#1982).
+    // Fall back to the most recently ended session on this PC when nothing is live.
+    if (!sid && !pg.launch) {
+      sess = (GBoxLastClosed && GBoxLastClosed.lastClosedSession(await ALL_SESSIONS.get(), st.workerName || S?.workerName || "")) || {};
+      if (sess.session_id) sid = sess.session_id;
+    }
     const jobs = jr.ok && Array.isArray(jr.data) ? jr.data : [];
     const launchJob = pg.launch?.job ? jobs.find(j => j.id === pg.launch.job) : jobs.find(j =>
       j.tool === "launch_game" && j.input?.game_id === pg.launch?.id &&

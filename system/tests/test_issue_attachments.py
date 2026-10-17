@@ -383,3 +383,33 @@ def test_internal_job_flood_cannot_displace_operator_diagnostics_from_the_recent
     body = response.json()["body"]
     assert "operator-requested diagnostic retained" in body
     assert "internal-report diagnostic timeout" not in body
+
+
+def test_issue_anchors_to_a_closed_game_without_a_running_session(cfg):
+    """#1982: a game the operator closed (froze on character select) still names itself in the report."""
+    import time
+    app = create_app(cfg)
+    route = next(r for r in app.routes if getattr(r, "path", "") == "/api/requests/issue")
+    closure = dict(zip(route.endpoint.__code__.co_freevars, route.endpoint.__closure__))
+    closure["_issue_log"].cell_contents = lambda sid, session: ("", "not available in test")
+    closure["_issue_chat"].cell_contents = lambda sid: []
+    sid = "testworker-closed"
+    app.state.store.put("session", sid, {
+        "session_id": sid, "game_id": "sc2", "title": "Soul Calibur II (USA)",
+        "state": "ended", "adapter": "dolphin", "mod": "sc2_sonic_vs_mario_hd_random",
+        "detail": {"worker_name": "JAYBUILTFINALE"}, "ended": time.time(), "started": time.time() - 60})
+    client = TestClient(app, headers={"Authorization": f"Bearer {cfg.token()}"})
+    response = client.post("/api/requests/issue", json={
+        "session_id": sid, "what": "Report issue (Capture icon)",
+        "image_b64": base64.b64encode(b"image").decode()})
+    assert response.status_code == 200, response.text
+    report = response.json()
+    assert report["context"]["game_id"] == "sc2"
+    assert report["context"]["session_id"] == sid
+    assert "Soul Calibur II (USA)" in report["body"]
+    assert "sc2_sonic_vs_mario_hd_random" in report["body"]
+    # No save-state capture is attempted against an already-ended session.
+    assert "state_job_id" not in report["context"]
+    saves = [j for j in app.state.store.all("job") if j.get("tool") == "session_op"
+             and (j.get("input") or {}).get("op") == "save_state"]
+    assert saves == []
