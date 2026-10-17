@@ -216,48 +216,77 @@ def decode(platform: str, code: str) -> tuple[list[tuple], list[str]]:
 
 
 def match_query(query: str, desc: str, code: str) -> int:
-    """Token-overlap score for a cheat-search query against one row, or 0 for no match.
-
-    The query is split on non-alphanumerics; a row scores one point per query token present in
-    the lowercased desc+code. 'unlock all characters' therefore surfaces every 'Unlock <name>'
-    code (token 'unlock') ahead of rows that only share 'all'; zero-scoring rows are filtered.
-    """
-    toks = [t for t in re.split(r"[^a-z0-9]+", (query or "").lower()) if t]
-    if not toks:
+    """Rank meaningful whole-word overlap, retaining the database's stable indexes."""
+    def tokens(text):
+        return {t[:-1] if t == "characters" else t for t in re.findall(r"[a-z0-9]+", text.lower())}
+    wanted = tokens(query or "") - {"all", "every", "the", "a", "an", "please", "and", "for"}
+    if not wanted:
         return 1
-    hay = f"{desc} {code}".lower()
-    return sum(1 for t in toks if t in hay)
+    return len(wanted & tokens(f"{desc} {code}"))
+
+
+def _native_uint(entry, key, default=None):
+    """Strict unsigned .cht integer (RetroArch uses strtoul with base zero)."""
+    value = entry.get(key, default)
+    if type(value) is int:
+        number = value
+    elif isinstance(value, str):
+        value = value.strip()
+        if not re.fullmatch(r"(?:0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)", value):
+            raise ValueError(f"{key} is not an unsigned integer")
+        base = 16 if value.lower().startswith("0x") else 8 if len(value) > 1 and value[0] == "0" else 10
+        number = int(value, base)
+    else:
+        raise ValueError(f"{key} is not an unsigned integer")
+    if not 0 <= number <= 0xffffffff:
+        raise ValueError(f"{key} exceeds the unsigned 32-bit field")
+    return number
 
 
 def decode_native(platform: str, entry: dict) -> tuple[list[tuple], list[str]]:
-    """A RetroArch-native memory-cheat entry -> gBox write ops.
+    """Decode one independent RetroArch native constant write for Dreamcast RAM.
 
-    libretro-database .cht files for memory-addressing cores (Flycast/Dreamcast) carry no `code`
-    field; they state `address`/`value`/`memory_search_size`/`big_endian` directly (e.g. Soul
-    Calibur 'Unlock Hwang' address=3370494 value=1). gBox applies the plain constant write
-    itself, exactly like a decoded CodeBreaker code, so no emulator cheat engine is required.
-    Returns (ops, unsupported); conditional cheat types stay unsupported and fall back to the
-    emulator's own engine.
+    memory_search_size is log2(bits), not a byte count: 3/4/5 mean 1/2/4 bytes.
+    Source: libretro/RetroArch cheat_manager.h, item_cheat; cheat_manager.c,
+    cheat_manager_setup_search_meta. Native conditional sequences and other
+    operations remain owned by the emulator as a complete table (tools.py).
+    Only Dreamcast's verified 16 MiB RAM translation is supported here; other
+    platforms, sub-byte masks, repeat programs and rumble use the emulator.
+    This validates encoding, not the game's meaning or correctness of an address.
     """
-    ctype = str(entry.get("cheat_type", "1")).strip()
-    if ctype not in ("", "1"):
-        return [], [f"cheat_type {ctype or '?'} is conditional, not a plain write"]
+    if platform != "dreamcast":
+        return [], [f"native RAM mapping for {platform!r} requires the emulator"]
     try:
-        addr = int(str(entry.get("address", "")).strip())
-        val = int(str(entry.get("value", "")).strip())
-    except (TypeError, ValueError):
-        return [], ["address/value not parseable"]
-    try:
-        size = int(entry.get("memory_search_size") or 4)
-    except (TypeError, ValueError):
-        size = 4
-    if size not in (1, 2, 4):
-        return [], [f"memory_search_size {size} unsupported (want 1/2/4)"]
-    big_endian = str(entry.get("big_endian", "false")).strip().lower() == "true"
-    if platform in ("dreamcast", "naomi"):                 # .cht stores a raw RAM offset
-        addr = 0x8C000000 | (addr & 0x00FFFFFF)
-    order = "big" if big_endian else "little"
-    return [("w", addr, (val & ((1 << (8 * size)) - 1)).to_bytes(size, order))], []
+        if _native_uint(entry, "handler", 0) != 1:
+            raise ValueError("entry is not a RetroArch-native memory cheat")
+        if _native_uint(entry, "cheat_type", 1) != 1:
+            raise ValueError("native nonconstant operations require the emulator table")
+        enum = _native_uint(entry, "memory_search_size", 3)
+        if enum not in (3, 4, 5):
+            raise ValueError("native sub-byte masks or unsupported widths require the emulator")
+        width = 1 << (enum - 3)
+        addr = _native_uint(entry, "address")
+        value = _native_uint(entry, "value")
+        if addr + width > 0x1000000:
+            raise ValueError("native write is outside Dreamcast's 16 MiB RAM; no address wrapping")
+        if _native_uint(entry, "repeat_count", 1) != 1:
+            raise ValueError("native repeat programs require the emulator")
+        # Parse all numeric fields even when a single iteration makes its increments inert.
+        _native_uint(entry, "repeat_add_to_address", 1)
+        _native_uint(entry, "repeat_add_to_value", 0)
+        if _native_uint(entry, "rumble_type", 0) != 0:
+            raise ValueError("native rumble operations require the emulator")
+        endian = entry.get("big_endian", False)
+        if type(endian) is bool:
+            big_endian = endian
+        elif isinstance(endian, str) and endian.strip().lower() in ("true", "false"):
+            big_endian = endian.strip().lower() == "true"
+        else:
+            raise ValueError("big_endian must be true or false")
+    except ValueError as exc:
+        return [], [str(exc)]
+    data = (value & ((1 << (8 * width)) - 1)).to_bytes(width, "big" if big_endian else "little")
+    return [("w", 0x8c000000 + addr, data)], []
 
 
 def _selftest():
