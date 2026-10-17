@@ -15,6 +15,8 @@ from .re2gc_native import DISC_ID, DOL_SHA256, GAME_ID
 
 RAM_BASE = 0x80000000
 RAM_SIZE = 24 * 1024 * 1024
+DOL_SIZE = 800672
+REL_SIZES = {'leon': 2330660, 'claire': 2330228}
 MODULE_POINTER = 0x8015FCFC
 INVENTORY = 0x80168C6C
 ITEM_BOX = 0x80168C98
@@ -53,11 +55,39 @@ def _ram(data, address, count):
     return _extent(data, address - RAM_BASE, count)
 
 
+def _allocation(address, size, label):
+    if type(address) is not int or not 0 <= address <= 0xffffffff or address & 31:
+        raise ValueError(f'{label} requires a 32-byte-aligned 32-bit address')
+    if type(size) is not int or size <= 0 or address < RAM_BASE or size > RAM_BASE + RAM_SIZE - address:
+        raise ValueError(f'{label} allocation lies outside GameCube MEM1')
+
+
+def _source_bytes(data, sizes, label):
+    if not isinstance(data, (bytes, bytearray, memoryview)):
+        raise ValueError(f'{label} requires a byte buffer')
+    size = data.nbytes if isinstance(data, memoryview) else len(data)
+    if size not in sizes:
+        raise ValueError(f'unrecognized GHAE08 {label} size')
+    return bytes(data)
+
+
+def _read_bounded(path, sizes, label):
+    # Never trust stat followed by read_bytes: files can grow between them.
+    # Reading one sentinel byte beyond the largest exact size detects excess
+    # without allocating the remainder of an oversized or growing file.
+    with path.open('rb') as stream:
+        data = stream.read(max(sizes) + 1)
+    if len(data) not in sizes:
+        raise ValueError(f'{label} size differs from exact supported size(s) {sorted(sizes)}')
+    return data
+
+
 class Build:
     """Owned DOL and one scenario REL, validated before interpreting any offsets."""
 
     def __init__(self, dol: bytes, rel: bytes):
-        self.dol, self.rel = bytes(dol), bytes(rel)
+        self.dol = _source_bytes(dol, {DOL_SIZE}, 'DOL')
+        self.rel = _source_bytes(rel, set(REL_SIZES.values()), 'REL')
         if sha(self.dol) != DOL_SHA256:
             raise ValueError('unrecognized GHAE08 DOL SHA-256')
         self.scenario = next((n for n, h in REL_SHA256.items() if h == sha(self.rel)), None)
@@ -80,6 +110,17 @@ class Build:
         OSLink allocates BSS separately. A live address must come from its
         relocated section table, never the synthetic analysis ELF layout.
         """
+        _allocation(base, len(self.rel), 'REL image')
+        _allocation(bss, self.bss_size, 'REL BSS')
+        if base < bss + self.bss_size and bss < base + len(self.rel):
+            raise ValueError('REL BSS overlaps module image')
+        main_addresses, main_sizes = (struct.unpack_from('>18I', self.dol, x)
+                                     for x in (0x48, 0x90))
+        main_bss, main_size = struct.unpack_from('>II', self.dol, 0xd8)
+        for start, size in [(a, n) for a, n in zip(main_addresses, main_sizes) if n] + [(main_bss, main_size)]:
+            for allocated, count in ((base, len(self.rel)), (bss, self.bss_size)):
+                if start < allocated + count and allocated < start + size:
+                    raise ValueError('REL allocation overlaps main executable state')
         image = bytearray(self.rel)
         addresses = [bss if size and not (off & ~1) else base + (off & ~1)
                      for off, size in self.sections]
@@ -126,6 +167,7 @@ class Build:
         integer-data-flow analysis. This artifact must never be launched.
         """
         from .gcdisc import depair
+        _allocation(base, len(self.rel), 'analysis REL image')
         bss = (base + len(self.rel) + 31) & ~31
         image = self.linked_rel(base, bss)
         offsets, addresses, sizes = (struct.unpack_from('>18I', self.dol, x)
@@ -154,6 +196,8 @@ class Build:
         data_offset = 52 + 32 * len(segs)
         for data, a, n, flags in segs:
             data = depair(data) if flags == 5 else data
+            if data:
+                body += bytes((a - data_offset - len(body)) % 4)
             # Ghidra rejects some filesz=0 segments whose offset equals EOF.
             ph += struct.pack('>8I', 1, data_offset + len(body) if data else 0,
                               a, a, len(data), n, flags, 4)
@@ -302,7 +346,8 @@ def main():
     operation.add_argument('--snapshot', type=Path)
     p.add_argument('--out', type=Path, help='New JSON receipt file; otherwise print JSON')
     args = p.parse_args()
-    build = Build(args.dol.read_bytes(), args.rel.read_bytes())
+    build = Build(_read_bounded(args.dol, {DOL_SIZE}, 'DOL'),
+                  _read_bounded(args.rel, set(REL_SIZES.values()), 'REL'))
     if args.analysis_elf:
         data = build.analysis_elf()
         with args.analysis_elf.open('xb') as stream:
@@ -311,9 +356,7 @@ def main():
                   'synthetic_rel_base': 0x80400000, 'executable_artifact': False,
                   'paired_single_reduced': True, 'pending': list(PENDING)}
     else:
-        if args.snapshot.stat().st_size != RAM_SIZE:
-            raise ValueError('snapshot must be exactly 24 MiB')
-        report = build.read_snapshot(args.snapshot.read_bytes())
+        report = build.read_snapshot(_read_bounded(args.snapshot, {RAM_SIZE}, 'snapshot'))
     text = json.dumps(report, indent=2)
     if args.out:
         with args.out.open('x', encoding='utf8') as stream:

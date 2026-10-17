@@ -1,4 +1,5 @@
 import json
+import io
 import os
 import struct
 from pathlib import Path
@@ -54,8 +55,35 @@ def snapshot(build, *, bss=0x80800000):
 
 
 def test_rejects_unknown_revision_without_analysis():
-    with pytest.raises(ValueError, match='DOL SHA'):
+    with pytest.raises(ValueError, match='DOL size'):
         state.Build(b'not this game', b'not a REL')
+
+
+def test_bounded_read_uses_one_sentinel_byte_and_never_stat():
+    class Tracked(io.BytesIO):
+        def read(self, size=-1):
+            reads.append(size)
+            return super().read(size)
+
+    class Input:
+        def __init__(self, data):
+            self.data = data
+
+        def stat(self):
+            raise AssertionError('a previous stat cannot bound a later read')
+
+        def open(self, mode):
+            assert mode == 'rb'
+            return Tracked(self.data)
+
+    reads = []
+    assert state._read_bounded(Input(b'abcd'), {2, 4}, 'test') == b'abcd'
+    assert reads == [5]
+    for data in (b'a', b'abc', b'x' * 100000):
+        reads.clear()
+        with pytest.raises(ValueError, match='size differs'):
+            state._read_bounded(Input(data), {2, 4}, 'test')
+        assert reads == [5]
 
 
 def test_owned_analysis_image_maps_bss_without_overlaps(build):
@@ -69,12 +97,35 @@ def test_owned_analysis_image_maps_bss_without_overlaps(build):
     assert any(p[2] <= state.INVENTORY < p[2] + p[5] and p[4] == 0 for p in segments)
     assert all(p[1] == 0 for p in segments if p[4] == 0)
     assert all(p[1] + p[4] <= len(data) for p in segments)
+    assert all(p[1] % p[7] == p[2] % p[7] for p in segments)
     # Existing linker is an independent cross-check at its default contiguous BSS layout.
     from gbox.gcdisc import rel_link
     bss = (0x80400000 + len(build.rel) + 31) & ~31
     assert build.linked_rel(0x80400000, bss) == rel_link(build.rel, 0x80400000)
     with pytest.raises(ValueError, match='overlaps'):
         build.analysis_elf(base=0x80100000)
+
+
+def test_owned_relocation_rejects_invalid_allocations_before_linking(build):
+    for invalid in (True, 1.5, '0x80400000', -32, 0x80400002, 0x100000000,
+                    0xffffffe0, 0, 0x81800000, 0x81700000):
+        with pytest.raises(ValueError, match='address|MEM1'):
+            build.analysis_elf(base=invalid)
+        with pytest.raises(ValueError, match='address|MEM1'):
+            build.linked_rel(invalid, 0x80800000)
+    for invalid in (False, 1.5, None, -32, 0x80800002, 0x100000000,
+                    0xffffffe0, 0, 0x81800000):
+        with pytest.raises(ValueError, match='address|MEM1'):
+            build.linked_rel(0x80400000, invalid)
+    for base, bss in ((0x80400000, 0x80410000), (0x80100000, 0x80800000),
+                      (0x80400000, 0x80100000)):
+        with pytest.raises(ValueError, match='overlaps'):
+            build.linked_rel(base, bss)
+    data = build.analysis_elf(base=0x80400020)
+    phoff = struct.unpack_from('>I', data, 28)[0]
+    count = struct.unpack_from('>H', data, 44)[0]
+    segments = [struct.unpack_from('>8I', data, phoff + i * 32) for i in range(count)]
+    assert all(p[1] % p[7] == p[2] % p[7] for p in segments)
 
 
 def test_owned_snapshot_resolves_two_different_dynamic_bss_allocations(build):
@@ -165,3 +216,36 @@ def test_owned_cli_exclusive_output(build, tmp_path, monkeypatch, capsys):
     assert receipt['sha256'] == state.sha(output.read_bytes())
     with pytest.raises(FileExistsError):
         state.main()
+
+
+def test_owned_cli_rejects_growing_snapshot_with_a_bounded_read(build, tmp_path, monkeypatch):
+    dol, rel, capture = (tmp_path / n for n in ('main.dol', 'scenario.rel', 'capture.mem1'))
+    dol.write_bytes(build.dol)
+    rel.write_bytes(build.rel)
+    requests = []
+    real_open, real_stat = Path.open, Path.stat
+
+    class GrowingCapture(io.BytesIO):
+        def read(self, size=-1):
+            requests.append(size)
+            return super().read(size)
+
+    def open_path(path, mode='r', *args, **kwargs):
+        if path == capture:
+            assert mode == 'rb'
+            # At open/read time a formerly exact-size capture has grown.
+            return GrowingCapture(bytes(state.RAM_SIZE + 1000))
+        return real_open(path, mode, *args, **kwargs)
+
+    def stat_path(path, *args, **kwargs):
+        if path == capture:
+            raise AssertionError('do not trust stat to bound the capture read')
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'open', open_path)
+    monkeypatch.setattr(Path, 'stat', stat_path)
+    monkeypatch.setattr('sys.argv', ['re2gc_state', '--dol', str(dol), '--rel', str(rel),
+                                    '--snapshot', str(capture)])
+    with pytest.raises(ValueError, match='snapshot size differs'):
+        state.main()
+    assert requests == [state.RAM_SIZE + 1]

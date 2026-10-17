@@ -139,6 +139,12 @@ artifact: paired-single operations are reduced to support integer data-flow
 analysis and it must not be launched. Its BSS layout splits the overlapping DOL
 BSS envelope around initialized sections and uses file offset zero for zero-fill
 segments; the older generic conversion produced importer failures for this title.
+REL image/BSS addresses must be 32-byte-aligned 32-bit addresses wholly within
+MEM1, without overlaps with each other or main state. ELF file offsets preserve
+each segment's virtual-address alignment. Invalid placements are rejected before
+relocation. CLI inputs use bounded reads of the largest exact supported size
+plus one sentinel byte, including snapshots; no preceding file stat is trusted
+to prevent growth during the read.
 
 Tests use the owned sources plus **synthetic** RAM fixtures with two different
 BSS allocations. They verify relocation, source-code attestation, inventory
