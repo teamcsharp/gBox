@@ -439,3 +439,45 @@ test('play() shows the offline worker, keeps waiting, then opens the game when i
   assert.equal(cancelled, 0);
   assert.equal(ctx.state().LOADING, null);
 });
+
+
+// "This PC" is a host choice, independent of a libretro core or adapter.
+for (const platform of ['xbox', 'xbox360', 'windows_native', 'switch', 'ps2', 'ps3', 'gamecube']) {
+  test(`This PC pins ${platform} without a core to i9-NUC`, async () => {
+    let request;
+    const h = launchHarness(async url => {
+      if (url.startsWith('/api/catalog/')) return { title: 'Standalone game', platform, core: null };
+      if (url.startsWith('/api/games/')) { request=url; throw Error('stop after routing'); }
+      throw Error('unexpected '+url);
+    });
+    await h.ctx.play('game', undefined, false, { disc: 'custom build', label: 'My build' });
+    const params = new URL(request, 'http://test').searchParams;
+    assert.equal(params.get('node'), 'i9-NUC');
+    assert.equal(params.get('mod'), 'custom build');
+    assert.equal(h.ctx.state().LAST_LAUNCH.node, 'i9-NUC');
+  });
+}
+test('catalog lookup failure still pins This PC instead of delegating automatically', async () => {
+  let request;
+  const h = launchHarness(async url => {
+    if (url.startsWith('/api/catalog/')) throw Error('catalog unavailable');
+    request=url;throw Error('stop after routing');
+  });
+  await h.ctx.play('game');
+  assert.equal(new URL(request,'http://test').searchParams.get('node'),'i9-NUC');
+});
+for (const [where, explicit, debug, expected] of [
+  ['local','JAYBUILTFINALE',false,'JAYBUILTFINALE'],
+  ['spark',undefined,false,'linux'], ['local',undefined,true,'linux']
+]) {
+  test(`explicit launch selection remains ${expected}: ${where}/${explicit}/${debug}`, async () => {
+    let request;
+    const h = launchHarness(async url => {
+      if (url.startsWith('/api/catalog/')) return {title:'Standalone game',platform:'xbox',core:null};
+      request=url;throw Error('stop after routing');
+    });
+    h.ctx.WHERE=where;
+    await h.ctx.play('game',explicit,debug);
+    assert.equal(new URL(request,'http://test').searchParams.get('node'),expected);
+  });
+}
