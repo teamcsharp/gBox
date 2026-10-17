@@ -12,8 +12,12 @@ Layout of the owned USA Disc 1 (chdman extractcd of the catalog CHD -> 2048-byte
   - Z_DATA (11 entries) is MPEG-2 program streams (FMV, ``00 00 01 BA``).
 * ``MOMO`` package: "MOMO", u32 count, then count (u32 offset, u32 size) pairs relative to the package start.
   Packages nest (a child can itself be MOMO).
-* Some X_DATA entries are compressed: two flag bytes followed by a literal-first stream, so the original magic
-  appears at +2 (``00 00 'MOMO'``, ``41 04 'TIM2'``).  The decompressor is analysis-stage work.
+* Some X_DATA entries are compressed: a 2-byte flag then a literal-first LZ stream, so the original magic
+  appears at +2.  Verified on the owned disc: the flag's HIGH byte is the container type (``0x00`` = MOMO,
+  ``0x04`` = TIM2) and its LOW byte is a mode/level (MOMO ``{0x00,0x02,0x04,0x06,0x08,0x20,0x24,0x8c}``,
+  TIM2 ``{0x00,0x40,0x41}``).  The stream opens with a literal run that reproduces the container header
+  ("MOMO" + count + leading table entries, or the TIM2 header) and then switches to back-references; the
+  back-ref word encoding is still analysis-stage work (see ``compressed_entry_probe``).
 * Model children start ``<b0> <b1> <b2> 01`` followed by u32 part count and u32 byte size (<= child size), then
   16-byte part records (u16 kind, u16 count, u32 offset, 0, 0).  Texture banks start u32 n followed by n
   u32 0x21 type words; textures are ``TIM2``.
@@ -240,6 +244,69 @@ def mesh_probe(b: bytes) -> dict:
             "nan_count": nans,
             "quad_flagged": [p for p in parts if p["kind"] in (3, 4) and
                              (p["flags"], p["z2"]) == QUAD_FLAGS]}
+
+
+# --- compressed entry probe --------------------------------------------------------------
+# Verified on the owned disc.  Compressed X_DATA entries put their container magic at +2:
+# ``00 00 'MOMO'`` / ``41 04 'TIM2'``.  The 2-byte flag's high byte selects the type
+# (0x00 MOMO, 0x04 TIM2) and the low byte is a mode; the stream is a literal-first LZ.  The
+# literal run reproduces the container header before the first back-reference.  The AFS
+# loader that feeds these buffers is the CRI ADXT library in SLUS_204.84 (ADXT_EntryAfs
+# FUN_00131aa8, ADXT_StartAfs FUN_00139968, read FUN_00131260, AFS index globals 0x548220 /
+# 0x548340); the LZ back-ref decoder itself is the remaining analysis gap.
+
+MOMO_FLAGS = (0x00, 0x02, 0x04, 0x06, 0x08, 0x20, 0x24, 0x8c)
+TIM2_FLAGS = (0x00, 0x40, 0x41)
+COMPRESSED_TYPE = {b"MOMO": "momo", b"TIM2": "tim2"}
+
+
+def compressed_entry_probe(b: bytes) -> dict:
+    """Characterise a compressed X_DATA entry (container magic at +2).
+
+    Pins the 2-byte flag, its type/mode bytes and the length of the literal header run so a
+    candidate back-ref decoder can be validated against X:105/106 (MOMO) and X:2631 (TIM2).
+    """
+    if len(b) < 10 or b[2:6] not in COMPRESSED_TYPE:
+        raise ValueError(f"not a compressed DMC2 entry (magic at +2 = {b[2:6]!r})")
+    flag = struct.unpack_from("<H", b, 0)[0]
+    typ = COMPRESSED_TYPE[b[2:6]]
+    out = {"flag": flag, "flag_hi": flag >> 8, "flag_lo": flag & 0xff,
+           "type": typ, "magic": b[2:6].decode(), "size": len(b)}
+    out["literal_prefix"] = _momo_literal_prefix(b, 2) if typ == "momo" else _tim2_literal_prefix(b, 2)
+    return out
+
+
+def _momo_literal_prefix(b: bytes, off: int) -> int:
+    """Bytes from ``off`` that parse as a contiguous MOMO header ("MOMO" + count + table entries).
+
+    Walks (u32 offset, u32 size) pairs until one fails sanity: offsets are package-relative
+    and grow with each child, so a valid literal entry has a positive size and a strictly
+    increasing offset that stays under a generous decompression bound (64x the compressed
+    size); anything larger is the compressed stream resuming.  Returns the total literal byte
+    count including the magic.
+    """
+    if b[off:off + 4] != b"MOMO":
+        return 0
+    n = struct.unpack_from("<I", b, off + 4)[0]
+    if not (1 <= n <= 512):
+        return 0
+    run, prev_end, bound = 8, 0, len(b) * 64
+    for j in range(n):
+        if off + run + 8 > len(b):
+            break
+        o, s = struct.unpack_from("<II", b, off + run)
+        if o <= 0 or s <= 0 or o > bound or (j and o < prev_end):
+            break
+        prev_end = o + s
+        run += 8
+    return run
+
+
+def _tim2_literal_prefix(b: bytes, off: int) -> int:
+    """Bytes from ``off`` forming the literal TIM2 header prefix ("TIM2" v4 + format/count)."""
+    if b[off:off + 4] != b"TIM2" or b[off + 4] != 4:
+        return 0
+    return 8  # conservative: magic + version + format + u16 picture_count
 
 
 def inventory(iso: Path, deep: bool = True) -> dict:

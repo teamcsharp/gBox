@@ -149,6 +149,26 @@ def test_windows_dolphin_can_scroll_with_c_stick(monkeypatch):
                     {"key": "a", "down": True}]
 
 
+def test_windows_dolphin_launches_vulkan_not_d3d12(tmp_path, monkeypatch):
+    from gbox import game_audio
+    ad = adapters.DolphinWinAdapter(Config(), "gamecube")
+    exe = tmp_path / "Dolphin.exe"
+    exe.write_bytes(b"x")
+    monkeypatch.setattr(ad, "_exe", lambda: exe)
+    monkeypatch.setattr(ad, "_claim_lane", lambda: "F13")
+    monkeypatch.setattr(ad, "_gecko_setup", lambda user, rom: None)
+    monkeypatch.setattr(adapters, "_audio_selection", lambda ad, wait_s=1.0: {})
+    monkeypatch.setattr(game_audio, "dolphin_backend", lambda sel: "Cubeb")
+    argv = ad._argv("rom.iso")
+    assert "Dolphin.Core.GFXBackend=Vulkan" in argv
+    assert not any("D3D12" in a for a in argv)
+    # an agent-owned capture session keeps Vulkan and mutes audio (RenderDoc's layer captures it off-screen)
+    ad.capture_backend = {"driver": "vulkan", "attach": "layer"}
+    argv2 = ad._argv("rom.iso")
+    assert "Dolphin.Core.GFXBackend=Vulkan" in argv2
+    assert "Dolphin.DSP.Backend=No Audio Output" in argv2
+
+
 def test_graphics_panel_uses_active_emulator(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from gbox import graphics, tools

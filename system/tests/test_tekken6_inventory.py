@@ -14,7 +14,7 @@ from gbox import tekken6_inventory as t6
 
 ISO = Path(os.environ.get("GBOX_TEKKEN6_ISO", t6.DEFAULT_ISO))
 
-pytestmark = pytest.mark.skipif(not ISO.exists(), reason="Tekken 6 ISO not present")
+owned_disc = pytest.mark.skipif(not ISO.exists(), reason="Tekken 6 ISO not present")
 
 
 def test_classify_magics():
@@ -26,6 +26,7 @@ def test_classify_magics():
     assert t6.classify(b"\x00" * 16) == "unknown"
 
 
+@owned_disc
 def test_inventory_layout():
     inv = t6.inventory(ISO)
 
@@ -61,6 +62,7 @@ def test_inventory_layout():
         assert idx[i]["records"] > 0, f"{i} has no records"
 
 
+@owned_disc
 def test_idx_records_are_big_endian_pairs():
     inv = t6.inventory(ISO)
     idx = {i["path"].upper(): i for i in inv["indexes"]}
@@ -70,3 +72,19 @@ def test_idx_records_are_big_endian_pairs():
     assert records[1] == (1, 0x30)
     # records are (key, value) u32 pairs; first field of the first record is the key
     assert all(isinstance(k, int) and isinstance(v, int) for k, v in records)
+
+
+@pytest.mark.parametrize("base", [0, 0x2080000])
+def test_partition_offsets_survive_file_listing(tmp_path, base):
+    iso = tmp_path / "small.iso"
+    name = b"Default.xex"
+    entry = struct.pack("<HHIIBB", 0, 0, 34, 16, 0, len(name)) + name
+    with iso.open("wb") as stream:
+        stream.seek(base + 32 * t6.SECTOR)
+        stream.write(t6.XDVDFS_MAGIC + struct.pack("<II", 33, len(entry)))
+        stream.seek(base + 33 * t6.SECTOR)
+        stream.write(entry)
+        stream.seek(base + 34 * t6.SECTOR)
+        stream.write(b"XEX2" + bytes(12))
+    assert t6.xdvdfs_files(iso)["Default.xex"] == (base // t6.SECTOR + 34, 16)
+    assert t6.inventory(iso)["boot"]["format"] == "xex2"

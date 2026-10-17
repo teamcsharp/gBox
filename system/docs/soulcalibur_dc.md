@@ -337,6 +337,27 @@ Known limits:
 - VS BATTLE and TEAM BATTLE wait for "PRESS 2P START". `evidence_capture` only drives the player-1 pad, so the
   in-game frames are Arcade fights, player 1 against the CPU. Both fighters still load through the patched loader.
 
+### Narrow complete-Peach repair (#1765 / #1961)
+
+The default Sonic-versus-Mario roster now uses `sc_sonic_vs_mario_peach_complete_v6`. It retains every v5 donor
+choice except `SEU1`, `SOP1` and `IVY1`: these use the complete `peach_hd` body instead of `sm64ds_peach`.
+The DS cutscene model's open head and stretched primitives are present before the native writer fits it; duplicating
+its back faces and fixing its face normals did not provide the missing geometry. The exact reviewed complete GLB
+is SHA-256 `29489efddb22125a189e2caca2d250d163904b840cba993edbb20065932c0381`.
+If that donor is absent or different, the default build reports an error instead of silently falling back to the
+incomplete DS figure. Explicit custom slot/donor assignments remain explicit. The `--mario-group` / `source=mario`
+route still upgrades the other Mario donors and also requires this complete Peach.
+
+Old v3/v4/v5 builds are unchanged. Their existence, a successful archive read-back, or an offline front/back render
+does not close either report: actual gameplay proof of the requested costumes is still required. This narrow repair
+does not claim to repair Koopa's source spikes, Metal Wario's appearance, or every other issue mentioned in #1765.
+No donor models, source ROMs or generated native costume data are included in the source change.
+
+Every newly written marker includes its exact `recipe`: target `HUMAN.DAT` and executable hashes, costume-to-donor
+plan, random-costume mode, writer dependency hashes, donor GLB/glTF hashes, external buffer/texture hashes, and donor
+metadata (including roles and retarget profiles). Old markers without this recipe, partial builds, missing images,
+and changed sources are rebuilt. A donor change during fitting/writing prevents publication of the new marker.
+
 ### The HD build: `sc_sonic_vs_mario_hd_random` (#1748)
 
 `python -m gbox.soulcalibur_swap build disc.gdi D:\gBox\cache\characters_mirror <out> sc_sonic_vs_mario_hd_random

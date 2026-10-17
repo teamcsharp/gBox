@@ -57,7 +57,7 @@ def _read(stream, at: int, size: int) -> bytes:
 
 
 def xdvdfs_files(path: str | Path) -> dict[str, tuple[int, int]]:
-    """Walk the XDVDFS volume; returns {logical path: (sector, size)}.
+    """Walk the XDVDFS volume; returns {logical path: (absolute image sector, size)}.
 
     Mirrors the read-only walk in gbox.re6.XDVD but is self-contained so the
     inventory has no dependency on the RE6 module.
@@ -65,8 +65,9 @@ def xdvdfs_files(path: str | Path) -> dict[str, tuple[int, int]]:
     path = str(path)
     with open(path, "rb") as stream:
         for base in XDVDFS_BASES:
-            block = _read(stream, base + 32 * SECTOR, 28)
-            if block[:20] == XDVDFS_MAGIC:
+            stream.seek(base + 32 * SECTOR)
+            block = stream.read(28)
+            if len(block) == 28 and block[:20] == XDVDFS_MAGIC:
                 root_sector, root_size = struct.unpack("<II", block[20:28])
                 part = base
                 break
@@ -75,8 +76,12 @@ def xdvdfs_files(path: str | Path) -> dict[str, tuple[int, int]]:
 
         files: dict[str, tuple[int, int]] = {}
         stack: list[tuple[int, int, str]] = [(root_sector, root_size, "")]
+        visited_dirs = set()
         while stack:
             sector, size, prefix = stack.pop()
+            if (sector, size) in visited_dirs:
+                raise ValueError("cyclic or repeated XDVDFS directory")
+            visited_dirs.add((sector, size))
             directory = _read(stream, part + sector * SECTOR, size)
             pending = [0]
             seen: set[int] = set()
@@ -91,6 +96,8 @@ def xdvdfs_files(path: str | Path) -> dict[str, tuple[int, int]]:
                 left, right, child_sector, child_size, attr, name_len = struct.unpack(
                     "<HHIIBB", directory[offset:offset + 14]
                 )
+                if offset + 14 + name_len > len(directory):
+                    raise ValueError("truncated XDVDFS filename")
                 name = directory[offset + 14:offset + 14 + name_len].decode("latin-1")
                 if left not in (0, 0xFFFF):
                     pending.append(left)
@@ -101,7 +108,7 @@ def xdvdfs_files(path: str | Path) -> dict[str, tuple[int, int]]:
                     if child_size:
                         stack.append((child_sector, child_size, full))
                 else:
-                    files[full] = (child_sector, child_size)
+                    files[full] = (part // SECTOR + child_sector, child_size)
         return files
 
 
