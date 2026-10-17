@@ -72,23 +72,10 @@ class PSXDisc:
         return b"".join(self.data(lba + i) for i in range((size + 2047) // 2048))[:size]
 
     def _walk(self, lba, size, prefix):
-        buf = b"".join(self.data(lba + i) for i in range((size + 2047) // 2048))
-        o = 0
-        while o < len(buf):
-            ln = buf[o]
-            if ln == 0:
-                o = (o // 2048 + 1) * 2048
-                continue
-            elba, esize = struct.unpack_from("<I", buf, o + 2)[0], struct.unpack_from("<I", buf, o + 10)[0]
-            flags, nl = buf[o + 25], buf[o + 32]
-            name = buf[o + 33:o + 33 + nl]
-            if name not in (b"\0", b"\1"):
-                n = name.decode("latin-1").split(";")[0]
-                if flags & 2:
-                    self._walk(elba, esize, f"{prefix}{n}/")
-                else:
-                    self.files[f"{prefix}{n}"] = (elba, esize)
-            o += ln
+        from .formats import iso9660                      # the shared ISO9660 walk (gbox.formats)
+        for parts, rec, _d in iso9660.walk(iso9660.sector_reader(self.data), lba, size):
+            if not rec.is_dir:
+                self.files[prefix + "".join(p + "/" for p in parts) + rec.name] = (rec.lba, rec.size)
 
 
 # ---------------------------------------------------------------- writing: raw MODE2/2352 .bin images (mods)

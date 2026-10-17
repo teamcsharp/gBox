@@ -1,5 +1,6 @@
 """Inspect ROM archives and prepare complete disc sets in a local, reusable cache."""
 import hashlib
+from contextlib import contextmanager
 import json
 import os
 import re
@@ -9,15 +10,29 @@ import subprocess
 import tempfile
 import threading
 import zipfile
+import tarfile
 
 _LOCK = threading.Lock()
+ARCHIVE_SUFFIXES = {'.zip', '.7z', '.rar', '.tar', '.gz', '.bz2', '.xz', '.lzma', '.zst',
+                    '.tgz', '.tbz', '.tbz2', '.txz', '.tzst', '.cab', '.arj', '.lzh', '.lha',
+                    '.wim', '.swm', '.esd', '.cpio', '.rpm', '.deb', '.xar', '.001'}
+
+
+def is_archive(src):
+    return Path(src).suffix.lower() in ARCHIVE_SUFFIXES
+
+
+def _tar(src):
+    return str(src).lower().endswith(('.tar', '.tar.gz', '.tgz', '.tar.bz2', '.tbz', '.tbz2', '.tar.xz', '.txz'))
 
 
 def seven_zip():
-    for exe in (shutil.which("7z"), shutil.which("7zz"), "C:/Program Files/7-Zip/7z.exe"):
+    for exe in (shutil.which("7zz"), shutil.which("7z"), "C:/Program Files/7-Zip/7z.exe",
+                "C:/Program Files (x86)/7-Zip/7z.exe"):
         if exe and Path(exe).is_file():
             return exe
-    raise RuntimeError("7-Zip is required to read this ROM archive; run gBox setup")
+    raise RuntimeError("7-Zip is required on this worker. Run provision_node (archive tools) or gBox setup; "
+                       "Linux: install 7zip / p7zip-full; Windows: winget install 7zip.7zip")
 
 
 def safe_name(name):
@@ -30,6 +45,18 @@ def safe_name(name):
 
 def members(src):
     src = Path(src)
+    if _tar(src):
+        with tarfile.open(src) as archive:
+            out = []
+            for item in archive:
+                if item.isdir() and item.name in ('.', './'):
+                    continue
+                safe_name(item.name)
+                if not (item.isfile() or item.isdir()):
+                    raise ValueError('ROM archives cannot contain links or special files')
+                if item.isfile():
+                    out.append({'name': item.name, 'size': item.size})
+            return out
     if src.suffix.lower() == ".zip":
         with zipfile.ZipFile(src) as z:
             out = []
@@ -41,7 +68,7 @@ def members(src):
                     out.append({"name": safe_name(m.filename), "size": m.file_size})
             return out
     p = subprocess.run([seven_zip(), "l", "-slt", "-ba", "-sccUTF-8", str(src)],
-                       capture_output=True, timeout=60, encoding="utf8", errors="replace")
+                       capture_output=True, stdin=subprocess.DEVNULL, timeout=60, encoding="utf8", errors="replace")
     if p.returncode:
         raise ValueError(f"Cannot read ROM archive {src.name}: {p.stderr[:300]}")
     out = []
@@ -61,7 +88,7 @@ def members(src):
 def boot_member(entries):
     from .catalog import EXT_PLATFORM, SNIFF_EXT
     # A disc descriptor references ALL tracks; selecting the largest BIN loses audio/data tracks.
-    for suffix in ("/ps3_game/usrdir/eboot.bin", ".m3u", ".gdi", ".cue"):
+    for suffix in ("/ps3_game/usrdir/eboot.bin", "/default.xbe", ".m3u", ".gdi", ".cue", ".lst"):
         choices = sorted(e["name"] for e in entries if ("/" + e["name"].lower()).endswith(suffix))
         if choices:
             return choices[0]
@@ -69,24 +96,41 @@ def boot_member(entries):
     return max(choices, key=lambda e: e["size"])["name"] if choices else None
 
 
-def prefix(src, member, size):
-    """Read a bounded disc header without unpacking a multi-gigabyte game during indexing."""
+@contextmanager
+def open_member(src, member):
+    """Read one validated member as a stream; bound and reap external extractors."""
+    safe_name(member)
+    if _tar(src):
+        with tarfile.open(src) as archive:
+            item = archive.getmember(member)
+            if not item.isfile():
+                raise ValueError('Archive member is not a regular file')
+            with archive.extractfile(item) as stream:
+                yield stream
+        return
     if Path(src).suffix.lower() == ".zip":
-        with zipfile.ZipFile(src) as z, z.open(member) as stream:
-            return stream.read(size)
-    proc = subprocess.Popen([seven_zip(), "x", "-so", str(src), member], stdout=subprocess.PIPE,
-                            stderr=subprocess.DEVNULL,
+        with zipfile.ZipFile(src) as archive, archive.open(member) as stream:
+            yield stream
+        return
+    proc = subprocess.Popen([seven_zip(), "x", "-so", "-spd", "--", str(Path(src).resolve()), member],
+                            stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     timer = threading.Timer(60, proc.kill)
     timer.start()
     try:
-        return proc.stdout.read(size)
+        yield proc.stdout
     finally:
         timer.cancel()
         if proc.poll() is None:
             proc.kill()
         proc.wait()
         proc.stdout.close()
+
+
+def prefix(src, member, size):
+    """Read a bounded disc header without unpacking a multi-gigabyte game during indexing."""
+    with open_member(src, member) as stream:
+        return stream.read(size)
 
 
 def repair_cue(path):
@@ -102,12 +146,28 @@ def repair_cue(path):
     path.write_text(text.replace('"' + missing[0] + '"', '"' + candidates[0].name + '"'), encoding="utf8")
 
 
+def _source_identity(src, config, member):
+    from . import catalog
+    stat = src.stat()
+    identity = {"source": str(src.resolve()), "size": stat.st_size, "member": member}
+    # Staging touches mtime on every use for LRU. Its recorded content hash is
+    # reusable only while the record still describes this exact file version.
+    db = catalog._db_load(config.cache)
+    record = db.get(str(src)) if isinstance(db, dict) else None
+    digest = record.get("sha1") if isinstance(record, dict) else None
+    if isinstance(digest, str) and re.fullmatch(r"[0-9a-fA-F]{40}", digest) \
+            and record.get("ident") == catalog._ident(stat):
+        identity["sha1"] = digest.lower()
+    else:
+        identity["mtime_ns"] = stat.st_mtime_ns
+    return identity
+
+
 def prepare(src, config, member, progress=lambda *_: None):
     """Extract once, retain relative track paths, and publish a cache only after extraction succeeds."""
     src = Path(src)
     member = safe_name(member)
-    stat = src.stat()
-    identity = {"source": str(src.resolve()), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns, "member": member}
+    identity = _source_identity(src, config, member)
     key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:24]
     root = config.runtime / "extract"
     out = root / ("rom-" + key)
@@ -126,7 +186,14 @@ def prepare(src, config, member, progress=lambda *_: None):
         progress(32, f"Unpacking {src.name}")
         with tempfile.TemporaryDirectory(prefix="rom-part-", dir=root) as temp:
             work = Path(temp)
-            if src.suffix.lower() == ".zip":
+            if _tar(src):
+                with tarfile.open(src) as archive:
+                    for e in entries:
+                        dst = work / e['name']
+                        dst.parent.mkdir(parents=True, exist_ok=True)
+                        with archive.extractfile(e['name']) as reader, dst.open('wb') as writer:
+                            shutil.copyfileobj(reader, writer)
+            elif src.suffix.lower() == ".zip":
                 with zipfile.ZipFile(src) as z:
                     for info in z.infolist():
                         name = safe_name(info.filename)
@@ -138,7 +205,7 @@ def prepare(src, config, member, progress=lambda *_: None):
                             shutil.copyfileobj(reader, writer)
             else:
                 p = subprocess.run([seven_zip(), "x", "-y", "-sccUTF-8", f"-o{work}", str(src)],
-                                   capture_output=True, timeout=1800)
+                                   capture_output=True, stdin=subprocess.DEVNULL, timeout=1800)
                 if p.returncode:
                     raise RuntimeError(f"ROM extraction failed: {p.stderr.decode('utf8', 'replace')[:300]}")
             for e in entries:

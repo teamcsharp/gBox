@@ -214,6 +214,26 @@ class Branches:
         return {'number': int(match[1]), 'url': url}
 
 
+VERIFY_NOTE = ("This ticket's published fix is fully on main (branch head {sha}). Check that the Spark runtime "
+               "has it, then verify the acceptance criteria live and mark the ticket done with solved_by, or post "
+               "the exact remaining gap. Do this before starting new work: a merged fix nobody verifies is "
+               "never resolved.")
+
+
+def on_main_requests(root=None) -> dict[str, str]:
+    """{request_id: branch head} for tickets whose published task branch is fully on main (#1308).
+
+    Reads the state `reconcile_branches` saved. Advisory only: a missing or
+    unreadable file returns {} so listing requests never breaks."""
+    try:
+        saved = json.loads(((root or hermes_delivery.state_dir()) / 'branches.json').read_text())
+        reported = saved.get('reported') or {}
+        return {rid: state.split(':', 1)[1] for rid, state in reported.items()
+                if isinstance(rid, str) and isinstance(state, str) and state.startswith('on_main:')}
+    except (OSError, ValueError, AttributeError, TypeError):
+        return {}
+
+
 def _default_branches():
     root = hermes_delivery.repository()
     return Branches(root) if (root / '.git').exists() else None

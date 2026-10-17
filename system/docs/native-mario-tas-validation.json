@@ -1,0 +1,61 @@
+{
+  "scope": "Isolated owned-ROM conformance tests, not a replay of the earlier operator completion",
+  "protocol_source_sha256": "efacabac39e0d6bed4b1620459ec323a0e9fd423dd1afae99dd9bc0efd9fc185",
+  "core_sha256": "62b5e59c5fd71f3aeadd7e8f11558f25519281a6c1f4762f3cca4bb018d976fe",
+  "core_boundary": {
+    "original": {
+      "state": "finished",
+      "reason": "",
+      "frame": 1600,
+      "loops": 0,
+      "mismatches": 0
+    },
+    "sonic": {
+      "state": "finished",
+      "reason": "",
+      "frame": 1600,
+      "loops": 0,
+      "mismatches": 0
+    },
+    "mario2": {
+      "state": "finished",
+      "reason": "",
+      "frame": 1600,
+      "loops": 0,
+      "mismatches": 0
+    },
+    "mario3": {
+      "state": "finished",
+      "reason": "",
+      "frame": 1600,
+      "loops": 0,
+      "mismatches": 0
+    },
+    "smw": {
+      "state": "finished",
+      "reason": "",
+      "frame": 1600,
+      "loops": 0,
+      "mismatches": 0
+    }
+  },
+  "retroarch_frontend": {
+    "capture_frames": 885,
+    "state_restores": 31,
+    "rewind_commands": 30,
+    "disk_state_loads": 1,
+    "tape_sha256": "b700037e647d308df071afa143fb98959748d734e085008f395da98fb33b0818",
+    "playback": {
+      "state": "finished",
+      "reason": "",
+      "frame": 885,
+      "loops": 0,
+      "mismatches": 0
+    }
+  },
+  "automated_checks": {
+    "python": 81,
+    "node_browser": 8
+  },
+  "ui_image": "Browser fixture; real emulator validation is recorded separately"
+}

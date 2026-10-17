@@ -51,7 +51,42 @@ def _verified_ack(ack, record):
             and isinstance(ack.get('receipt'), str) and bool(ack['receipt']))
 
 
-def _pid_alive(pid):
+def _windows_pid_reused(kernel, handle, recorded_at):
+    """A process born after ownership was recorded cannot be that emulator."""
+    import math
+    if type(recorded_at) not in (int, float) or not math.isfinite(recorded_at) or recorded_at <= 0:
+        return False  # legacy/unknown identity remains protected
+    import ctypes
+    from ctypes import wintypes
+    created, exited, kernel_time, user_time = (wintypes.FILETIME() for _ in range(4))
+    kernel.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+    kernel.GetProcessTimes.restype = wintypes.BOOL
+    if not kernel.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited),
+                                  ctypes.byref(kernel_time), ctypes.byref(user_time)):
+        return False  # query failure must never release a potentially live game
+    born = ((created.dwHighDateTime << 32) | created.dwLowDateTime) / 10_000_000 - 11_644_473_600
+    return born > recorded_at + 1  # tolerate timestamp rounding
+
+
+def _windows_pid_reused_fallback(pid, recorded_at):
+    """System process information can prove absence/reuse when a handle is denied."""
+    import math
+    if type(recorded_at) not in (int, float) or not math.isfinite(recorded_at) or recorded_at <= 0:
+        return False
+    import psutil
+    try:
+        # A fresh psutil Process can obtain creation time through Windows system
+        # process information even when OpenProcess is denied. No extra rights.
+        born = psutil.Process(pid).create_time()
+    except psutil.NoSuchProcess:
+        return True  # a stale denied handle must not hold activation forever
+    except Exception:
+        return False  # independent query uncertainty must keep the game protected
+    return (type(born) in (int, float) and math.isfinite(born) and born > 0
+            and born > recorded_at + 1)
+
+
+def _pid_alive(pid, *, recorded_at=None):
     if type(pid) is not int or pid <= 0:
         raise RuntimeError('Invalid owned emulator PID; activation was stopped')
     if os.name == 'nt':
@@ -63,11 +98,18 @@ def _pid_alive(pid):
         kernel.OpenProcess.restype = wintypes.HANDLE
         handle = kernel.OpenProcess(0x1000, False, pid)
         if not handle:
-            return ctypes.get_last_error() != 87  # unknown/access denied also blocks activation
+            error = ctypes.get_last_error()
+            if error == 87:
+                return False
+            if error == 5:  # ERROR_ACCESS_DENIED: try read-only process information.
+                return not _windows_pid_reused_fallback(pid, recorded_at)
+            return True  # unknown failures still block activation
         try:
             code = wintypes.DWORD()
             kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
-            return not kernel.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value == 259
+            if kernel.GetExitCodeProcess(handle, ctypes.byref(code)) and code.value != 259:
+                return False
+            return not _windows_pid_reused(kernel, handle, recorded_at)
         finally:
             kernel.CloseHandle.argtypes = [wintypes.HANDLE]
             kernel.CloseHandle(handle)
@@ -296,7 +338,7 @@ class ResultOutbox:
                 acknowledged.append(jid)
         return acknowledged
 
-    def protected_sessions(self, running_file: Path, *, is_alive=_pid_alive):
+    def protected_sessions(self, running_file: Path, *, is_alive=None):
         """An acknowledged native launch must not fall into startup orphan killing.
 
         A retained PID record cannot prove a process is dead or safely reattach its
@@ -311,6 +353,8 @@ class ResultOutbox:
         for sid, record in running.items():
             if not isinstance(sid, str) or not isinstance(record, dict):
                 raise RuntimeError('Invalid native ownership manifest; activation was stopped')
-            if is_alive(record.get('pid')):
+            alive = (is_alive(record.get('pid')) if is_alive is not None
+                     else _pid_alive(record.get('pid'), recorded_at=record.get('ts')))
+            if alive:
                 protected.append(sid)
         return sorted(protected)

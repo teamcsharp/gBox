@@ -33,6 +33,7 @@ from pathlib import Path
 import numpy as np
 
 from . import re4gc_models as R
+from .formats.rig import role_of_joint as _role_of_joint  # noqa: F401  (shared, moved to gbox.formats)
 
 GANADO_ROLES = {"pelvis": 17, "hip": 1, "chest": 2, "neck": 3, "head": 4,
                 "r_clav": 5, "r_upper": 7, "r_fore": 8, "r_hand": 9, "r_hand_end": 10,
@@ -96,18 +97,6 @@ def _rot_between(a, b):
     return np.eye(3) + vx + vx @ vx / (1 + c)
 
 
-def _role_of_joint(rig: dict) -> list[str]:
-    """Each source joint -> the body role of its nearest ancestor that has one (default: hip)."""
-    roles = {j: r for r, j in rig["roles"].items()}
-    out = []
-    for j in range(len(rig["parent"])):
-        k = j
-        while k >= 0 and k not in roles:
-            k = rig["parent"][k]
-        out.append(roles.get(k, "hip"))
-    return out
-
-
 def retarget(rig: dict, tmpl: R.Bin, roles: dict = GANADO_ROLES, max_stretch: float = 1.8,
              height_range=(1450.0, 2050.0), scale: dict | None = None, fit_shoulders: bool = False) -> list[dict]:
     """Rigid per-limb retarget of a source rig onto an RE4 enemy skeleton (template BIN). Returns glTF-ready prims
@@ -120,6 +109,8 @@ def retarget(rig: dict, tmpl: R.Bin, roles: dict = GANADO_ROLES, max_stretch: fl
     hip->feet below it (skirts reach the feet). Head/neck ride the target neck. Limbs: source segment rotated onto
     the target segment and stretched along it (clamped), hands/feet keep the forearm/shin rotation, sit on the wrist
     / ankle. Every vertex follows the rule of its owner joint's nearest ancestor with a role."""
+    from .retarget_profile import move_joints, profile_of
+    rig, _moved = move_joints(rig, profile_of(scale))      # the Retarget editor's joint moves: pivots + segments
     S = np.asarray(rig["joints"], float)
     rr = rig["roles"]
     bw = tmpl.bone_world()
@@ -213,6 +204,32 @@ def retarget(rig: dict, tmpl: R.Bin, roles: dict = GANADO_ROLES, max_stretch: fl
         W[:, 0] = 1
         out.append({**{k: v for k, v in p.items() if k not in ("pos", "nrm", "J", "W", "owner")},
                     "pos": P, "nrm": N, "J": J, "W": W})
+    return _profiled(rig, out, scale, T, {tidx[b]: r for r, b in roles.items() if b in tidx}, s, sy_up, sy_dn)
+
+
+def _profiled(rig, out, scale, T, joint_role, s, sy_up, sy_dn):
+    """Fitting pop-up stages (gbox.fit_events) + the operator's retarget profile (gbox.retarget_profile)."""
+    from . import fit_events as FE, retarget_profile as RP
+    if FE.active():
+        FE.auto_model(rig.get("source"))
+        FE.stage("scale", data={"scale": float(s), "torso_up": float(sy_up / s), "torso_down": float(sy_dn / s)}
+                 | FE.donor_numbers(rig, fitted_height=FE.height(out)), prims=FE.donor(rig))   # the donor as loaded
+        S = np.asarray(rig["joints"], float)               # the rig is already upright (left +X, up +Y, front +Z)
+        allp = np.concatenate([np.asarray(p["pos"], float).reshape(-1, 3) for p in rig["prims"]])
+        feet = [T[r][1] for r in ("l_foot", "r_foot") if r in T]
+        FE.stage("retarget", data={"roles": len(rig["roles"]), "vertices": int(sum(len(p["pos"]) for p in out))},
+                 prims=out, goals=RP.goals({r: S[j] for r, j in rig["roles"].items()},
+                                           {r: v for r, v in T.items() if r in RP.ROLES},
+                                           float(allp[:, 1].min()) if len(allp) else None,
+                                           min(feet) if feet else None))
+    prof = RP.profile_of(scale)
+    if prof is None:
+        FE.stage("proportion", "skipped", {"profile": "none"})
+        return out
+    feet = [T[r][1] for r in ("l_foot", "r_foot") if r in T]
+    pos = {r: v for r, v in T.items() if r in RP.ROLES}
+    out, rep = RP.apply_roles(out, pos, joint_role, prof, min(feet) if feet else None)
+    FE.stage("proportion", data=rep, prims=out)
     return out
 
 
@@ -232,13 +249,19 @@ def write_rigged_gltf(prims: list[dict], tmpl: R.Bin, path: Path, name: str = "e
 # ---------------------------------------------------------------- building
 def blender_exe() -> str | None:
     import glob
+    import shutil
     cands = sorted(glob.glob("C:/Users/maste/Desktop/Blender Builds/Builds/stable/blender-4.5*/blender.exe")) + \
         sorted(glob.glob("/usr/bin/blender"))
+    if not cands:                                          # a standard Windows install, or blender on PATH
+        cands = sorted(glob.glob("C:/Program Files/Blender Foundation/Blender */blender.exe")) + \
+            [p for p in [shutil.which("blender")] if p]
     return cands[-1] if cands else None
 
 
 def decimate(src: Path, dst: Path, amount: float, blender: str | None = None) -> Path:
-    script = Path(__file__).resolve().parents[1] / "scripts" / "decimate_gltf.py"
+    script = Path(__file__).resolve().parent / "decimate_gltf.py"
+    if not script.exists():        # pre-PR #r1292 layout
+        script = Path(__file__).resolve().parents[1] / "scripts" / "decimate_gltf.py"
     exe = blender or blender_exe()
     r = subprocess.run([exe, "--background", "--factory-startup", "--python", str(script), "--", str(src), str(dst),
                         str(amount)], capture_output=True, text=True, timeout=600)

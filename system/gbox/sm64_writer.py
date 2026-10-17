@@ -322,7 +322,9 @@ def inject(rom: bytes, parts: dict, materials: list) -> bytes:
     struct.pack_into(">BBHII", out, sm.LOAD_SEG04, 0x17, 0x0C, 0x0004, DATA, DATA + len(seg4))
     counts = _patch_geo(out, mem, dls)
     assert all(c == 20 for c in counts), f"Mario body variants with {counts} joints (expected 20)"
-    return bytes(fix_crc(out))
+    from .sm64_startup import apply as native_startup
+    out,_startup=native_startup(bytes(out))
+    return bytes(fix_crc(bytearray(out)))
 
 
 # ---------------------------------------------------------------- inputs

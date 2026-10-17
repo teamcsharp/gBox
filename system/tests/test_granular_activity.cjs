@@ -1,0 +1,57 @@
+const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
+const factory=require('../clients/web/viz/process-popup.js'),P=factory({});
+const {withPage}=require('../scripts/browser_lifecycle.cjs');
+const worker={id:'local',name:'i9-NUC'};
+const re={id:'re',worker_id:'local',state:'running',tool:'re_agent',agent_use:true,input:{op:'reverse'},progress:{pct:1,msg:'Checking reconstructed function',ts:100},progress_log:Array.from({length:45},(_,n)=>`Inspecting function ${n}: return value + ${n};`)};
+const fit={id:'mesh',worker_id:'local',state:'running',agent_use:true,tool:'characters',input:{op:'cast_swap'},fitting:{order:['old','sonic'],current:'sonic',models:{old:{snapshot:'/api/jobs/mesh/fitting/files/old.glb'},sonic:{label:'Sonic → native fighter',donor:'sonic',state:'running',current:'retarget',snapshot:'/api/jobs/mesh/fitting/files/sonic.glb',stages:{scale:{state:'done',data:{donor_height:120,fitted_height:100}},retarget:{state:'running',data:{roles:15,vertices:1800}}}}}},progress:{pct:42,msg:'Retargeting Sonic onto native fighter',ts:101}};
+test('local activity includes actual RE/service jobs, excludes idle polls and remote or unassigned work',()=>{
+ assert.equal(P.activityJob(re),true);assert.equal(P.classify(re),false);
+ assert.equal(P.activityJob({...re,input:{op:'status'}}),false);
+ assert.equal(P.onWorker(re,worker),true);assert.equal(P.onWorker({...re,worker_id:'remote'},worker),false);
+ assert.equal(P.onWorker({...re,state:'queued',require_worker:null},worker),false);
+ assert.equal(P.onWorker({...re,state:'queued',require_worker:'i9-NUC'},worker),true);
+ assert.equal(P.onWorker(re,null),false);
+});
+test('current donor never displays a different character snapshot; details escape code and expose measurements',()=>{
+ assert.match(P.activityModelPath(fit),/sonic.glb$/);
+ const pending=JSON.parse(JSON.stringify(fit));delete pending.fitting.models.sonic.snapshot;
+ assert.equal(P.activityModelPath(pending),'/api/characters/sonic/model');
+ assert.match(P.detailHTML(fit,150),/49s ago/);assert.match(P.detailHTML(fit),/vertices/);
+ const html=P.detailHTML({...re,admission_wait:{reason:'<script>bad</script>'}});
+ assert.doesNotMatch(html,/<script>/);assert.match(html,/Verification pending/);
+});
+test('browser: show only a loaded task sprite; hide queued, nonvisual, failed and unconfirmed work',async()=>{
+ await withPage(async(evaluate,send)=>{
+  await send('Emulation.setDeviceMetricsOverride',{width:1350,height:1000,deviceScaleFactor:1,mobile:false});
+  await evaluate(fs.readFileSync(path.join(__dirname,'../clients/web/viz/process-popup.js'),'utf8'));
+  await evaluate(`document.body.style='background:#080e1a;color:white;font:16px system-ui';
+   document.body.innerHTML='<h2>Background task visual fixture</h2>';
+   window.waitFor=async(fn)=>{for(let n=0;n<200;n++){if(fn())return;await new Promise(r=>setTimeout(r,10));}throw Error('Visual timeout');};
+   window.worker=${JSON.stringify(worker)};window.re=${JSON.stringify(re)};window.fit=${JSON.stringify(fit)};
+   const canvas=document.createElement('canvas');canvas.width=32;canvas.height=32;
+   const c=canvas.getContext('2d');c.fillStyle='#28bf85';c.fillRect(12,2,8,8);c.fillRect(8,10,16,16);window.sprite=canvas.toDataURL();
+   delete fit.fitting.models.sonic.snapshot;fit.fitting.models.sonic.preview=sprite;
+   fit.progress_log=Array.from({length:45},(_,n)=>'Fitting vertex '+n);
+   window.ctl=GBoxProcessPopup.mount({activity:true,worker:()=>worker,now:()=>Date.now(),loadModules:async()=>{throw Error('Renderer unavailable');}});
+   ctl.sync([re,{...re,id:'cleanup',state:'queued',tool:'file_mod',input:{op:'quarantine_build'}}]);`);
+  assert.equal(await evaluate(`document.querySelector('.gbox-pp')===null`),true);
+  await evaluate(`ctl.sync([fit,re,{...fit,id:'remote',worker_id:'remote'}]);waitFor(()=>document.querySelector('.gbox-pp')?.hidden===false);`);
+  assert.equal(await evaluate(`document.querySelectorAll('[aria-label="Operation to inspect"] option').length`),1);
+  assert.equal(await evaluate(`document.querySelector('.pp-pic').naturalWidth`),32);
+  assert.equal(await evaluate(`document.querySelector('.pp-stage').querySelectorAll('canvas').length`),1,'no decorative renderer, only existing close-effect canvas');
+  await evaluate(`document.querySelector('.pp-controls button:last-child').click();fit.progress_log.push('PAUSED NEW LINE');ctl.sync([fit]);`);
+  assert.doesNotMatch(await evaluate(`document.querySelector('.pp-log').textContent`),/PAUSED NEW LINE/);
+  await evaluate(`document.querySelector('.pp-controls button:last-child').click();`);
+  assert.match(await evaluate(`document.querySelector('.pp-log').textContent`),/PAUSED NEW LINE/);
+  assert.match(await evaluate(`document.querySelector('.pp-detail').textContent`),/1800/);
+  await evaluate(`ctl.stale();`);assert.equal(await evaluate(`document.querySelector('.gbox-pp')===null`),true);
+  await evaluate(`ctl.sync([fit]);waitFor(()=>document.querySelector('.gbox-pp')?.hidden===false);`);
+  await evaluate(`ctl.sync([{...fit,state:'queued'}]);`);assert.equal(await evaluate(`document.querySelector('.gbox-pp')===null`),true);
+  await evaluate(`fit.fitting.models.sonic.preview='data:image/png;base64,invalid';ctl.sync([fit]);waitFor(()=>!document.querySelector('.gbox-pp'));ctl.sync([fit]);`);
+  assert.equal(await evaluate(`document.querySelector('.gbox-pp')===null`),true);
+  await evaluate(`fit.fitting.models.sonic.preview=sprite+'#updated';ctl.sync([fit]);waitFor(()=>document.querySelector('.gbox-pp')?.hidden===false);`);
+  await evaluate(`delete fit.fitting.models.sonic.preview;fit.fitting.models.sonic.snapshot='/current-task.glb';ctl.sync([fit]);waitFor(()=>!document.querySelector('.gbox-pp'));`);
+  assert.equal(await evaluate(`document.querySelector('.gbox-pp')===null`),true,'renderer failure cannot fall back to a generic globe');
+  await evaluate(`ctl.dispose()`);
+ });
+});

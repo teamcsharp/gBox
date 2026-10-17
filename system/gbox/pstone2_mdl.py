@@ -34,8 +34,9 @@ Layout (all multi-byte integers little-endian, SH-4):
 
 Verified against the owned disc's PL00/PL10 slot-0 body models and CMN_MODEL_VQ.MDL
 (see tests/test_pstone2_mdl.py). The PL-id mapping uses 1ST_READ.BIN's file-name table:
-the 18 ``PLxy_CONNECT.BIN`` files occupy load IDs 3..20 contiguously, so the loader indexes
-a character by ``load_id - 3``; the PL code's high nibble is the 0..15 character index and
+the 18 ``PLxy_CONNECT.BIN`` files occupy name-table positions 3..20. These positions
+are not character indices: alternate costumes shift subsequent positions. The PL
+code's high nibble labels the 0..15 character family and
 the low nibble is the costume variant (0 base, 2 alternate).
 """
 from __future__ import annotations
@@ -80,6 +81,8 @@ def chunk_records(blob: bytes) -> list[ChunkRec]:
     h = mdl_header(blob)
     n = h["chunk_count"]
     end = 0x20 + n * RECORD_BYTES
+    if not end <= h["geom_base"] <= len(blob):
+        raise ValueError("geometry base overlaps the chunk table or exceeds the file")
     if end > len(blob):
         raise ValueError(f"chunk table overruns the file ({end} > {len(blob)})")
     recs = []
@@ -100,6 +103,8 @@ def parse_mdl(blob: bytes) -> dict:
     chunks = []
     for i, r in enumerate(recs):
         e = r.end or (recs[i + 1].offset if i + 1 < len(recs) else len(blob) - h["geom_base"])
+        if not 0 <= r.offset <= e <= len(blob) - h["geom_base"]:
+            raise ValueError("chunk extent exceeds geometry or has reversed bounds")
         chunks.append({"type": r.type, "offset": r.offset, "end": e,
                        "abs_start": h["geom_base"] + r.offset, "abs_end": h["geom_base"] + e,
                        "extra": r.extra})
@@ -109,22 +114,26 @@ def parse_mdl(blob: bytes) -> dict:
 
 def chunk_bytes(blob: bytes, rec: ChunkRec, recs: list[ChunkRec], i: int) -> bytes:
     """Slice one chunk's payload out of the blob (offsets relative to geom_base)."""
-    h = mdl_header(blob)
-    e = rec.end or (recs[i + 1].offset if i + 1 < len(recs) else len(blob) - h["geom_base"])
-    return blob[h["geom_base"] + rec.offset:h["geom_base"] + e]
+    actual = chunk_records(blob)
+    if recs != actual or not 0 <= i < len(actual) or rec != actual[i]:
+        raise ValueError("chunk record does not belong to this container")
+    chunk = parse_mdl(blob)["chunks"][i]
+    return blob[chunk["abs_start"]:chunk["abs_end"]]
 
 
 def pl_character(pl_code: str) -> tuple[int, int]:
     """Map a 2-char ``PLxy`` code to (character_index 0..15, variant)."""
+    if not re.fullmatch(r"[0-9A-Fa-f]{2}", pl_code):
+        raise ValueError("expected a two-digit PL code")
     return int(pl_code[0], 16), int(pl_code[1], 16)
 
 
 def pl_load_ids(exe: bytes, at: int = NAME_TABLE) -> list[dict]:
     """The 1ST_READ file-name table's PL entries: load ID, code, character index, variant.
 
-    The loader indexes characters by load ID (the table position); the 18 ``PLxy_CONNECT.BIN``
-    files sit at load IDs 3..20 in code order, so ``character_index == load_id - 3`` for the
-    base costume and the variants (PL12/PL72) share their base character's index.
+    The 18 ``PLxy_CONNECT.BIN`` files sit at name-table positions 3..20 in code order.
+    The exported load_id is that table position, not a proven loader character index.
+    Family labels use the PL high nibble; PL12/PL72 share their base family.
     """
     out = []
     for i, n in enumerate(name_table(exe, at)):

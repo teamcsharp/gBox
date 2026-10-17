@@ -38,7 +38,7 @@ async function gpuGamePresent(mine, rect, pipNow, hidden, wv, onPlay) {
       GPU_GAME.pid = mine.detail.pid; GPU_GAME.source = r.sourceId; GPU_GAME.checked = Date.now();
     }
     const st = { pid: GPU_GAME.pid, sid: mine.session_id, sourceId: GPU_GAME.source };
-    const host = !!rect && (pipNow || VIEW.mode === "full");
+    const host = !!rect && (pipNow || VIEW.mode === "full" || VIEW.mode === "compact");
     const visible = !!rect && !hidden && rect.h > 40;
     const root = await window.GBoxGPUVideo.sync({ ...st, host: "root", rect, visible: host && visible });
     if (!root.ready) throw new Error(root.error || "No decoded game frame");

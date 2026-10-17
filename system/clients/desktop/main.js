@@ -1,9 +1,12 @@
 // gBox desktop manager (Electron main process).
 // Manages: the Spark control plane (over SSH: install/update, start/stop, logs), the local Windows worker,
 // dependency setup on both nodes, and hosts the gBox web UI with the API token injected.
-const { app, BrowserWindow, ipcMain, shell, desktopCapturer, session, screen, dialog, clipboard, nativeImage, globalShortcut, Menu, nativeTheme } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, desktopCapturer, session, screen, dialog, clipboard, nativeImage, globalShortcut, Menu, nativeTheme, Notification, powerSaveBlocker } = require("electron");
 const { spawn, execFile, execFileSync } = require("child_process");
 const embedGeometry = require("./embed-geometry");
+const operationConsole = require('../web/viz/operation-console.js');
+const operationOutput = require('./operation-output-window.cjs')({BrowserWindow,getWin:()=>win});
+ipcMain.handle('operation-console:frame',(_e,state)=>{operationOutput.update(state);});
 // The shell and its guest are one dark app, including native controls and first paint.
 nativeTheme.themeSource = "dark";
 
@@ -30,6 +33,7 @@ function cleanupSessions(sync) {
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const recordingExport = require('./recording-export.cjs');
 
 app.setPath("userData", STANDALONE ? path.join(STANDALONE, ".tools", "desktop-profile")       // standalone: own profile + single-instance lock
                                   : path.join(app.getPath("appData"), "gbox-desktop"));   // keep settings where they were (productName = gBox)
@@ -47,9 +51,20 @@ const DEFAULTS = {
   autoStartWorker: true,
   volume: 30,
 };
+// Managed LAN desktops share exports; each desktop profile can override this folder.
+const RECORDING_DEFAULTS = { ...recordingExport.DEFAULTS, exportDir: STANDALONE ? '' : '\\\\10.89.1.246\\spark_ext\\samples_grabbed\\user\\gBox' };
 if (STANDALONE) Object.assign(DEFAULTS, { sshHost: "", apiUrl: process.env.GBOX_API_URL || "http://127.0.0.1:8765",
   repoLocal: path.join(STANDALONE, "system"), repoShare: path.join(STANDALONE, "system"), repoRemote: "" });
+// Every API call reads the settings (#712): parse the file only when it changed, not 2-3 times per request.
+let settingsCache = null, settingsStamp = null;
 const settings = () => {
+  let stamp = "none";
+  try { const st = fs.statSync(SETTINGS); stamp = `${st.mtimeMs}:${st.size}`; } catch {}
+  if (settingsCache && stamp === settingsStamp) return { ...settingsCache };
+  settingsCache = readSettings(); settingsStamp = stamp;
+  return { ...settingsCache };
+};
+const readSettings = () => {
   const s = { ...DEFAULTS, ...(fs.existsSync(SETTINGS) ? JSON.parse(fs.readFileSync(SETTINGS, "utf8")) : {}) };
   // layout migration: everything moved under <root>/system (root = gBox.exe + system/)
   if (/[\\/]gBox$/i.test(s.repoShare || "")) s.repoShare += "\\system";
@@ -67,7 +82,8 @@ app.on("gpu-info-update", () => { try { fs.writeFileSync(path.join(app.getPath("
 const venvPython = () => STANDALONE ? path.join(STANDALONE, ".venv", "Scripts", "python.exe")
                                    : path.join(process.env.LOCALAPPDATA, "gbox", "venv", "Scripts", "python.exe");
 
-let win, worker = null, workerStopRequested = false;
+let win, worker = null, workerStopRequested = false, backgroundPower = null;
+ipcMain.handle('background:power', () => backgroundPower?.snapshot() || {active:false,reason:'Display policy not started'});
 const procs = new Map();                              // id -> child process (streamed tasks)
 const taskLogs = new Map();                           // recent app commands and their streamed output
 // console output of the whole app (main process, renderer + gBox webview, worker / task streams) for issue reports
@@ -81,10 +97,12 @@ app.on("web-contents-created", (_e, wc) => {
   }
   wc.on("console-message", (ev, level, message, line, source) => {
   const m = ev?.message ?? message, lv = ev?.level ?? level, src = ev?.sourceId ?? source, ln = ev?.lineNumber ?? line;
+  if (m === 'GBOX:{"ev":"layout"}') return;                 // the embedded view's menu-changed signal (#1081), not a log line
   logPush(`${wc.getType()}:${lv}`, `${m}${src ? `  (${String(src).split("/").pop()}:${ln})` : ""}`);
   });
   wc.on("render-process-gone", (_e, details) => {
     logPush(`${wc.getType()}:error`, `render-process-gone: reason=${details?.reason} exitCode=${details?.exitCode}`);
+    if (wc.getType() === "window" && win && !win.isDestroyed() && wc === win.webContents) pickHoldReleaseAll("window crashed");
   });
 });
 ipcMain.handle("console:tail", (_e, n = 200000) => CONSOLE.slice(-n));
@@ -137,15 +155,31 @@ async function token() {
   return cachedToken;
 }
 
-async function api(p, body) {
-  const t = await token();
-  const r = await fetch(settings().apiUrl + p, {
-    method: body ? "POST" : "GET", body: body && JSON.stringify(body),
-    headers: { authorization: `Bearer ${t}`, "content-type": "application/json" },
-    signal: AbortSignal.timeout(p === "/api/tasks" || p.startsWith("/api/tasks?") ? 35000 : 8000),
+// GET answers the control plane tags (ETag): re-asking costs a 304, not a download and a parse (#712: /api/requests ~8 MB)
+const ETAGS = new Map();                              // path -> { etag, data }
+async function api(p, body, method) {
+  return operationConsole.trace(event=>send('operation-console',event),p,body,async()=>{
+    const data=await apiRaw(p,body,method);
+    if(p.startsWith('/api/jobs/')&&data?.id&&data?.state)send('operation-console',{job:data});
+    return data;
   });
+}
+async function apiRaw(p, body, method) {               // method: PATCH / PUT / DELETE when asked, else POST with a body
+  const t = await token();
+  method = /^(GET|POST|PUT|PATCH|DELETE)$/.test(String(method || "").toUpperCase()) ? String(method).toUpperCase() : (body ? "POST" : "GET");
+  const known = method === "GET" && !body && ETAGS.get(p);
+  const r = await fetch(settings().apiUrl + p, {
+    method, body: body && method !== "GET" ? JSON.stringify(body) : undefined,
+    headers: { authorization: `Bearer ${t}`, "content-type": "application/json", ...(known ? { "if-none-match": known.etag } : {}) },
+    // long polls get 35 s; asset listings 20 s (the control plane may still be indexing a slow HDD); the rest 8 s
+    signal: AbortSignal.timeout(p === "/api/tasks" || p.startsWith("/api/tasks?") ? 35000
+      : p.startsWith("/api/asset-groups") || p.startsWith("/api/assets?") ? 20000 : 8000),
+  });
+  if (r.status === 304 && known) return known.data;
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
-  return r.json();
+  const data = await r.json(), etag = method === "GET" && r.headers.get("etag");
+  if (etag) ETAGS.set(p, { etag, data }); else ETAGS.delete(p);
+  return data;
 }
 
 // Windows keeps one mixer volume per playback session. This helper follows gBox's
@@ -174,7 +208,7 @@ ipcMain.handle("audio:volume", (_e, value) => {
     const volume = volumePercent(value);
     const s = settings();
     fs.mkdirSync(path.dirname(SETTINGS), { recursive: true });
-    fs.writeFileSync(SETTINGS, JSON.stringify({ ...s, volume }, null, 1));
+    fs.writeFileSync(SETTINGS, JSON.stringify({ ...s, volume }, null, 1)); settingsStamp = null;
     audioVolumeFailures = 0;
     if (!audioVolumeHelper) startAudioVolumeHelper();
     try { audioVolumeHelper?.stdin.write(String(volume) + "\n"); }
@@ -183,13 +217,62 @@ ipcMain.handle("audio:volume", (_e, value) => {
   return { volume: volumePercent(settings().volume), available: process.platform === "win32" && !!audioVolumeHelper };
 });
 app.on("before-quit", () => shutdownSessions());
+// Last played (gbox/last_played.py): before this PC's games close with the app (quit, update & relaunch), save each
+// one's moment so the web shell's pop-up can offer "Reload with your last moment". Best effort, 7 s at most in all.
+let momentsKept = false;
+async function keepMoments(limitMs = 7000) {
+  if (momentsKept || !FIRST) return;
+  momentsKept = true;
+  const work = (async () => {
+    const s = settings(), auth = { authorization: `Bearer ${await token()}` };
+    const r = await fetch(`${s.apiUrl}/api/sessions?include_ended=false`, { headers: auth, signal: AbortSignal.timeout(2500) });
+    const mine = (await r.json() || []).filter(x => x.state === "running" && x.detail?.worker_name === s.workerName);
+    await Promise.all(mine.map(x => fetch(`${s.apiUrl}/api/sessions/${encodeURIComponent(x.session_id)}/moment?wait=5`,
+      { method: "POST", headers: auth, signal: AbortSignal.timeout(limitMs - 500) }).catch(() => null)));
+  })().catch(() => {});
+  await Promise.race([work, new Promise(r => setTimeout(r, limitMs))]);
+}
+app.on("will-quit", () => { hotkeys.release(); try { globalShortcut.unregisterAll(); } catch {} });   // no key stays taken
 
 // ---------------- IPC ----------------
 ipcMain.handle("settings:get", () => settings());
-ipcMain.handle("settings:save", (_e, s) => { fs.mkdirSync(path.dirname(SETTINGS), { recursive: true }); fs.writeFileSync(SETTINGS, JSON.stringify({ ...settings(), ...s }, null, 1)); cachedToken = null; return settings(); });
+function saveSettings(s) {
+  const next = { ...settings(), ...s };
+  if (Object.hasOwn(s, 'recording')) next.recording = recordingExport.preferences(s.recording);
+  fs.mkdirSync(path.dirname(SETTINGS), { recursive: true });
+  fs.writeFileSync(SETTINGS, JSON.stringify(next, null, 1)); settingsStamp = null; cachedToken = null;
+  return settings();
+}
+ipcMain.handle("settings:save", (_e, s) => saveSettings(s));
+ipcMain.handle('rec:preferences', () => recordingExport.preferences({ ...RECORDING_DEFAULTS, ...settings().recording }));
+ipcMain.handle('rec:preferences-save', (_e, p) => saveSettings({ recording: recordingExport.preferences(p) }).recording);
 ipcMain.handle("token", () => token());
 ipcMain.handle("settings:reset-token", () => { cachedToken = null; return true; });
-ipcMain.handle("api", async (_e, p, body) => { try { return { ok: true, data: await api(p, body) }; } catch (e) { return { ok: false, error: e.message }; } });
+// Pick whip pause hold (gbox/pickwhip.py): the renderer pauses the game through POST /api/pickwhip/{sid}/hold. Main
+// remembers every hold it forwarded, so a crashed or closed window resumes the game at once instead of waiting for the
+// server's lease watchdog (which still covers main itself dying).
+const PICK_HOLDS = new Map();                         // sid -> holder
+function pickHoldTrack(p, body) {
+  const m = /^\/api\/pickwhip\/([^/?]+)\/hold$/.exec(p || ""); if (!m || !body) return;
+  const sid = decodeURIComponent(m[1]);
+  if (body.op === "pause") PICK_HOLDS.set(sid, body.holder || "app");
+  else if (body.op === "release") PICK_HOLDS.delete(sid);
+}
+function pickHoldReleaseAll(why) {
+  for (const [sid, holder] of PICK_HOLDS) {
+    logPush("main:log", `pick whip: resuming ${sid} (${why})`);
+    api(`/api/pickwhip/${encodeURIComponent(sid)}/hold`, { op: "release", holder }).catch(() => {});
+  }
+  PICK_HOLDS.clear();
+}
+ipcMain.handle("api", async (_e, p, body, method) => { try { pickHoldTrack(p, body); return { ok: true, data: await api(p, body, method) }; } catch (e) { return { ok: false, error: e.message }; } });
+// a GET whose answer the renderer already holds (same tag) comes back without the data: no copy into the page either
+ipcMain.handle("api:tagged", async (_e, p, have) => {
+  try {
+    const data = await api(p), etag = ETAGS.get(p)?.etag || null;
+    return etag && etag === have ? { ok: true, etag, unchanged: true } : { ok: true, etag, data };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
 
 ipcMain.handle("spark:status", async () => {
   const s = settings();
@@ -333,6 +416,35 @@ function startPadWatcher() {
 }
 
 ipcMain.handle("open:external", (_e, url) => shell.openExternal(url));
+// #1639 the download icon on the Mods cards / Builds rows: Export… picks a folder on this PC (the export job runs on this
+// PC's worker and writes there); Show in folder / Open folder open Explorer. Folders only: never runs a file.
+ipcMain.handle("dialog:folder", async (_e, o = {}) => {
+  const start = typeof o.defaultPath === "string" && o.defaultPath && fs.existsSync(o.defaultPath) ? o.defaultPath : undefined;
+  const r = await dialog.showOpenDialog(win, { title: String(o.title || "Choose a folder").slice(0, 200), defaultPath: start,
+    buttonLabel: "Export here", properties: ["openDirectory", "createDirectory", "promptToCreate", "dontAddToRecent"] });
+  return r.canceled ? "" : (r.filePaths[0] || "");
+});
+ipcMain.handle("shell:show", (_e, p) => {
+  if (typeof p !== "string" || !p || !fs.existsSync(p)) return false;
+  shell.showItemInFolder(path.normalize(p)); return true;
+});
+ipcMain.handle("shell:open", async (_e, p) => {
+  if (typeof p !== "string" || !p) return false;
+  try { if (!fs.statSync(p).isDirectory()) return false; } catch { return false; }
+  return (await shell.openPath(path.normalize(p))) === "";
+});
+// a finished build (the embedded view's bell tray, gbox/build_notify.py): an OS notification while gBox is not in front;
+// a click brings the window back with the tray open. Kept referenced until closed (a collected one loses its click).
+const OS_NOTES = new Set();
+ipcMain.handle("notify:os", (_e, n = {}) => {
+  if (!Notification.isSupported() || (win && win.isVisible() && win.isFocused() && !win.isMinimized())) return false;
+  const note = new Notification({ title: String(n.title || "gBox").slice(0, 120), body: String(n.body || "").slice(0, 240) });
+  OS_NOTES.add(note);
+  note.on("click", () => { OS_NOTES.delete(note); if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); win.webContents.send("notify:click", n.id || ""); } });
+  note.on("close", () => OS_NOTES.delete(note));
+  note.show();
+  return true;
+});
 
 ipcMain.handle("report:clipboard-files", async () => {
   if (process.platform !== "win32") return [];
@@ -420,31 +532,53 @@ const runExe = (exe, args) => new Promise((res, rej) => {
   p.on("close", code => { procs.delete("rec-fit"); taskDone("rec-fit", code);
     code === 0 ? res() : rej(new Error(`${path.basename(exe)} exit ${code}: ${err.split("\n").slice(-3).join(" ")}`)); });
 });
-ipcMain.handle("rec:fit", async (_e, file, o) => {
-  const target = (o.targetMB || 10) * 1048576, size = fs.statSync(file).size;
-  if (size <= target) return { file, bytes: size, compressed: false };
-  const dur = Math.max(1, o.seconds || 1), preset = { fast: "veryfast", balanced: "medium", best: "slow" }[o.speed] || "medium";
+let recFitBusy = false;
+ipcMain.handle("rec:fit", async (_e, file, options) => {
+  if (recFitBusy) throw Error('Another recording is being processed; this original is still saved locally');
+  recFitBusy = true;
+  let temporary;
+  try {
+  file = await recordingExport.ownedOriginal(file, REC_DIR);
+  const o = recordingExport.preferences({ ...RECORDING_DEFAULTS, ...settings().recording, ...options });
+  const originalStamp = await recordingExport.fingerprint(file);
+  const target = o.targetMB * 1048576, size = fs.statSync(file).size;
+  const finish = candidate => recordingExport.finish({ original: file, candidate, exportDir: o.exportDir, keep: o.keep, originalStamp });
+  if (!target || size <= target) return { ...await finish(file), bytes: size, compressed: false };
+  const dur = Math.max(1, Number.isFinite(options?.seconds) ? options.seconds : 1), preset = { fast: "veryfast", balanced: "medium", best: "slow" }[o.speed] || "medium";
   const hb = findExe("HandBrakeCLI.exe"), ff = findExe("ffmpeg.exe");
   if (!hb && !ff) throw new Error("neither HandBrakeCLI nor ffmpeg is installed (winget install HandBrake.HandBrake.CLI)");
   const audioKbps = 128;
   let kbps = Math.max(120, Math.floor(target * 8 * 0.92 / 1000 / dur) - audioKbps);
   for (let attempt = 0; attempt < 3; attempt++) {
     const h = kbps >= 3500 ? 1080 : kbps >= 1800 ? 720 : kbps >= 900 ? 540 : kbps >= 450 ? 360 : 240, fps = kbps < 900 ? 30 : 60;
-    const out = file.replace(/\.(mp4|webm)$/i, "") + `-${o.targetMB}MB.mp4`;
+    const out = temporary = path.join(REC_DIR, `.gbox-fit-${require('crypto').randomUUID()}.mp4`);
     send("task", "rec", `compressing ${path.basename(file)} to ≤${o.targetMB} MB: ${kbps} kbps, ${h}p, ${fps} fps (${hb ? "HandBrake" : "ffmpeg"})\n`);
     if (hb) await runExe(hb, ["-i", file, "-o", out, "-e", "x264", "--encoder-preset", preset, "-b", String(kbps), "--multi-pass", "--turbo",
                               "--maxHeight", String(h), "-r", String(fps), "--pfr", "-a", "1", "-E", "av_aac", "-B", String(audioKbps), "-O"]);
     else await runExe(ff, ["-y", "-i", file, "-map", "0:v:0", "-map", "0:a:0?", "-c:a", "aac", "-b:a", `${audioKbps}k`, "-vf", `scale=-2:'min(${h},ih)'`, "-r", String(fps), "-c:v", "libx264", "-preset", preset,
                            "-b:v", `${kbps}k`, "-maxrate", `${kbps}k`, "-bufsize", `${kbps * 2}k`, "-movflags", "+faststart", out]);
     const got = fs.statSync(out).size;
-    if (got <= target) {
-      let final = out;
-      if (!o.keep) { fs.unlinkSync(file); final = file.replace(/\.webm$/i, ".mp4"); fs.renameSync(out, final); }
-      return { file: final, bytes: got, compressed: true, original: size, kbps, height: h, tool: hb ? "HandBrake" : "ffmpeg" };
+    if (!got) throw Error('The encoder produced an empty recording; original retained');
+    if (got > 0 && got <= target) {
+      const name = path.basename(file).replace(/\.(mp4|webm)$/i, '') + `-${o.targetMB}MB.mp4`;
+      const local = await recordingExport.publish(out, REC_DIR, name);
+      return { ...await finish(local), bytes: got, compressed: true, original: size, kbps, height: h, tool: hb ? "HandBrake" : "ffmpeg" };
     }
     fs.unlinkSync(out); kbps = Math.max(80, Math.floor(kbps * target / got * 0.9));   // overshot: aim lower and retry
   }
   throw new Error(`couldn't get ${path.basename(file)} under ${o.targetMB} MB`);
+  } finally {
+    if (temporary) await fs.promises.unlink(temporary).catch(() => {});
+    recFitBusy = false;
+  }
+});
+// Replay export uses this desktop profile's current folder, never a browser download directory.
+ipcMain.handle('rec:save-clip', async (_e, clip) => {
+  const o = recordingExport.preferences({ ...RECORDING_DEFAULTS, ...settings().recording });
+  return recordingExport.saveReplay({ clip, directory: REC_DIR, exportDir: o.exportDir,
+    fetchArtifact: async sha => fetch(settings().apiUrl + '/api/artifacts/' + sha, {
+      headers: { authorization: `Bearer ${await token()}` }, redirect: 'error', signal: AbortSignal.timeout(120000),
+    }) });
 });
 // chat export: printable HTML -> PDF (Save dialog); a PNG data URL -> the system clipboard as an image
 ipcMain.handle("export:pdf", async (_e, html, name) => {
@@ -467,14 +601,15 @@ app.on("web-contents-created", (_e, wc) => wc.on("before-input-event", (ev, inpu
   }
   if (input.type !== "keyDown") return;
   const toggle = input.key === "F11" || (input.alt && input.key === "Enter");
-  if (input.key === "Escape" && win.isFullScreen()) { win.setFullScreen(false); win.webContents.send("fullscreen", false); ev.preventDefault(); }
+  if (input.key === "Escape" && compactWindow.state().on) { compactWindow.restore().catch(error => logPush('compact', error.message)); ev.preventDefault(); }
+  else if (input.key === "Escape" && win.isFullScreen()) { win.setFullScreen(false); win.webContents.send("fullscreen", false); ev.preventDefault(); }
   else if (toggle) { win.webContents.send("hotkey", "fullscreen"); ev.preventDefault(); }   // the page's view mode follows
   else if (input.key === "F2" && (input.shift || input.control) && !input.alt) { win.webContents.send("hotkey", input.shift ? "slot+" : "slot-"); ev.preventDefault(); }
   else if (GAME_KEYS[input.key] && !input.control && !input.alt && !input.shift) { win.webContents.send("hotkey", GAME_KEYS[input.key]); ev.preventDefault(); }
 }));
 // Universal game hotkeys, the same for every emulator: F2 save state, F4 load state, F3 autoplay on/off.
 // Inside gBox (any page, the streamed view included) they arrive here; while a native game window has the keyboard they come
-// through global shortcuts (registered only while a game is docked, see f3()).
+// through global shortcuts, held only while a game is docked AND gBox is the foreground window (see f3(), hotkey-scope.js).
 const GAME_KEYS = { F2: "save", F3: "autoplay", F4: "load", F5: "reset" };   // F5 = the console's reset switch
 ipcMain.handle("win:fullscreen", (_e, on) => { win.setFullScreen(!!on); return win.isFullScreen(); });
 ipcMain.handle("clip:image", (_e, dataUrl) => { clipboard.writeImage(nativeImage.createFromDataURL(dataUrl)); return true; });
@@ -488,12 +623,37 @@ function embedCmd(cmd) {
     embedder = spawn(venvPython(), ["-u", path.join(__dirname, "winembed.py")], { windowsHide: true });
     embedder.stdout.on("data", d => { embedBuf += d; let i; while ((i = embedBuf.indexOf("\n")) >= 0) { const l = embedBuf.slice(0, i); embedBuf = embedBuf.slice(i + 1); const m = JSON.parse(l);
       if (m.event === "whip") { pickWhip(m); continue; }
+      if (m.event === "foreground") { hotkeys.setFront(!!m.front); continue; }   // gBox gained / lost the foreground
+      if (m.event === 'piprestore') { compactWindow.restore().catch(error => logPush('compact', error.message)); continue; }
       if (m.event) { if (win) { const k = screen.getDisplayMatching(win.getBounds()).scaleFactor; win.webContents.send("embed:event", { ...m, x: m.x / k, y: m.y / k }); } continue; }
       const r = embedQ.shift(); r && r(m); } });
-    embedder.on("close", () => { embedder = null; embedded = null; embedQ.splice(0).forEach(r => r({ ok: false })); });
+    embedder.on("close", () => { embedder = null; embedded = null; fgWatched = 0; hotkeys.setFront(false); embedQ.splice(0).forEach(r => r({ ok: false }));
+      if (!quitting && compactWindow.state().on && !compactRecoveryPending) {
+        compactRecoveryPending = true;
+        compactWindow.restore().catch(error => logPush('compact', error.message));
+      } });
   }
   return new Promise(res => { embedQ.push(res); embedder.stdin.write(JSON.stringify(cmd) + "\n"); });
 }
+let compactChromeBits = null, compactRecoveryPending = false;
+const compactWindow = require('./compact-window.cjs').create({ getWin: () => win, screen,
+  nativeChrome: async on => {
+    if (!win || win.isDestroyed()) return { ok: false, error: 'The gBox window is unavailable.' };
+    if (process.platform !== 'win32') { win.setWindowButtonVisibility?.(!on); return { ok: true }; }
+    const appWindow = Number(win.getNativeWindowHandle().readBigUInt64LE(0));
+    const watched = await embedCmd({ op: 'watch', app: appWindow });
+    if (!watched.ok) return watched;
+    const result = await embedCmd({ op: 'appchrome', app: appWindow, pid: process.pid, on,
+      ...(!on && compactChromeBits !== null ? { bits: compactChromeBits } : {}) });
+    if (result.ok) { compactChromeBits = on ? result.bits : null; compactRecoveryPending = false; }
+    return result;
+  },
+  emit: state => { if (win && !win.isDestroyed()) win.webContents.send('compact:view', state); }
+});
+ipcMain.handle('compact:view', (event, state) => {
+  if (!win || event.sender !== win.webContents || (event.senderFrame && event.senderFrame !== win.webContents.mainFrame)) throw Error('Only the gBox app can change picture-in-picture mode.');
+  return compactWindow.update(state);
+});
 let embedded = null, gpuSurface = false;                          // active presentation uses Chromium's compositor
 // Pick whip: Alt + drag over the game draws a line from one thing to another; on release the frame (with the line) goes
 // to the chat as "swap this with that". The line lives on a transparent click-through window above the docked game.
@@ -540,14 +700,28 @@ async function pickWhip(m) {
 // Overlay swap (overlay.js): a collection model tracked over the player's character in the docked game, any game
 const OV = require("./overlay")({ app, ipcMain, BrowserWindow, getWin: () => win, venvPython, settings, token, send });
 // F3 = autoplay while a game is docked: the game window owns the keyboard, so it has to be a global shortcut.
-// ponytail: F3 is taken system-wide only while a game is docked in gBox; scope it to foreground if that ever bites.
+// F2 save · Shift/Ctrl+F2 slot ± · F4 load · Alt+Enter / F11 = full screen on/off (the docked game owns the keyboard, so
+// without these there is no way out of full screen from inside the game; Esc stays the game's own key).
+// Scoped to gBox: held only while a game is docked AND gBox (or the game docked in it) is the foreground window. Any other
+// application in front (Blender: F2 rename, F3 search, Ctrl+I invert, F11...) gets its keys; nothing is registered then.
+const hotkeys = require("./hotkey-scope")({ globalShortcut, onKey: a => win && win.webContents.send("hotkey", a),
+  keys: { ...GAME_KEYS, "Shift+F2": "slot+", "CommandOrControl+F2": "slot-", "CommandOrControl+I": "eyedropper",
+          "Alt+Enter": "fullscreen", "F11": "fullscreen" } });
+let fgWatched = 0;                                               // the gBox HWND winembed.py reports the foreground for
+const appHwnd = () => win && !win.isDestroyed() ? Number(win.getNativeWindowHandle().readBigUInt64LE(0)) : 0;
+// Ask winembed.py whether gBox is in front now (and have it report every change from then on). Only for a docked game,
+// which runs the helper anyway; with no answer the hotkeys stay released.
+async function checkFront() {
+  const hwnd = appHwnd();
+  if (!hwnd || process.platform !== "win32") return hotkeys.setFront(false);
+  fgWatched = hwnd;
+  const r = await embedCmd({ op: "watch", app: hwnd }).catch(() => null);
+  if (!(r && r.ok)) fgWatched = 0;
+  return hotkeys.setFront(!!(r && r.ok && r.front));
+}
 function f3(on) {
-  // F2 save · Shift/Ctrl+F2 slot ± · F4 load · Alt+Enter / F11 = full screen on/off (the docked game owns the keyboard, so
-  // without these there is no way out of full screen from inside the game; Esc stays the game's own key)
-  const keys = { ...GAME_KEYS, "Shift+F2": "slot+", "CommandOrControl+F2": "slot-", "CommandOrControl+I": "eyedropper",
-                 "Alt+Enter": "fullscreen", "F11": "fullscreen" };
-  try { if (on && !globalShortcut.isRegistered("F3")) Object.entries(keys).forEach(([k, a]) => globalShortcut.register(k, () => win && win.webContents.send("hotkey", a)));
-        else if (!on && globalShortcut.isRegistered("F3")) Object.keys(keys).forEach(k => globalShortcut.unregister(k)); } catch {}
+  hotkeys.setDocked(on);
+  if (on && appHwnd() !== fgWatched) checkFront();
 }
 let embedSyncQueue = Promise.resolve();
 const syncGameSurface = require("./game-surface-main")({ getWin: () => win, embedCmd,
@@ -580,14 +754,15 @@ async function syncEmbeddedGame(st) {
 }
 // Update pending = app or worker code on disk changed after this app started (the logo click applies it).
 const APP_START = Date.now();
-ipcMain.handle("update:pending", () => {
+ipcMain.handle("update:pending", async () => {
+  // asynchronous (#712): the synchronous walk of ~320 files blocked the app's main thread ~25 ms every 20 s
   const root = settings().repoLocal;
   let newest = 0, file = "";
-  const walk = d => { for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+  const walk = async d => { for (const e of await fs.promises.readdir(d, { withFileTypes: true })) {
     if (["__pycache__", "node_modules", ".git"].includes(e.name)) continue;
     const p = path.join(d, e.name);
-    if (e.isDirectory()) walk(p); else { const m = fs.statSync(p).mtimeMs; if (m > newest) { newest = m; file = p; } } } };
-  try { ["clients/desktop", "gbox"].forEach(d => { const p = path.join(root, d); if (fs.existsSync(p)) walk(p); }); } catch {}
+    if (e.isDirectory()) await walk(p); else { const m = (await fs.promises.stat(p)).mtimeMs; if (m > newest) { newest = m; file = p; } } } };
+  try { for (const d of ["clients/desktop", "gbox"]) { const p = path.join(root, d); if (fs.existsSync(p)) await walk(p); } } catch {}
   return { pending: newest > APP_START + 2000, changed: newest ? new Date(newest).toLocaleString() : "", file: file && path.relative(root, file) };
 });
 // AutoBrowse: gBox's browser (pages from search results / chat links, and the download queue)
@@ -615,8 +790,11 @@ ipcMain.handle("viz:overlay", (_e, st) => {
     vizOv.loadURL(settings().apiUrl + "/viz/overlay.html" + (st.mode ? "?mode=" + encodeURIComponent(st.mode) : ""));
   }
   vizOv.setBounds(bounds); vizOv.setOpacity(Math.max(0.1, Math.min(0.9, st.opacity ?? 0.42)));
+  // the app's menus and panels over the game stay above the visualizer, as they do above the game itself (#1081)
+  try { vizOv.setShape(embedGeometry.shapeMinusHoles(bounds.width, bounds.height, st.holes || [], z)); } catch {}
   if (!vizOv.isVisible()) vizOv.showInactive();
-  if (st.level != null) vizOv.webContents.executeJavaScript(`window.gboxVoice && gboxVoice(${JSON.stringify({ level: +st.level || 0, beat: !!st.beat })})`).catch(() => {});
+  // a fresh conversation (#250) starts a new random transition visual; the level and beats follow who is talking
+  if (st.level != null) vizOv.webContents.executeJavaScript(`window.gboxVoice && gboxVoice(${JSON.stringify({ level: +st.level || 0, beat: !!st.beat, ...(st.restart ? { mode: st.mode || "random" } : {}) })})`).catch(() => {});
   return { on: true };
 });
 ipcMain.handle("embed:kill", async () => { const r = embedded ? await embedCmd({ op: "kill" }) : { ok: false }; embedded = null; return r; });
@@ -649,7 +827,7 @@ ipcMain.handle("mini:open", async (_e, sid, title) => {
     title: "gBox · " + (title || "game"), icon: path.join(__dirname, "..", "..", "assets", "brand", "gbox.ico"),
     webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true } });
   mini.loadFile(path.join(__dirname, "mini.html"), { query: { src: `${s.apiUrl}/api/sessions/${encodeURIComponent(sid)}/mjpeg?token=${encodeURIComponent(t)}`, title: title || "" } });
-  mini.on("closed", () => { mini = null; if (win && !win.isDestroyed()) win.show(); });
+  mini.on("closed", () => { mini = null; if (win && !win.isDestroyed()) { win.webContents.send("mini:closed"); win.show(); } });
   win.hide();
   return true;
 });
@@ -702,6 +880,8 @@ ipcMain.handle("app:relaunch", async () => {
   } else {
     log("! no SSH to the Spark from this PC: skipped the Spark rebuild (the app still relaunches)\n");
   }
+  log("keeping the moment of this PC's running games (Reload with your last moment)…\n");
+  await keepMoments();                                          // before the worker (and its games) go
   if (worker) { workerStopRequested = true; execFile("taskkill", ["/T", "/F", "/PID", String(worker.pid)]); worker = null; }
   log("relaunching…\n");
   setTimeout(() => { shutdownSessions(); app.relaunch(); app.exit(0); }, 800);
@@ -771,15 +951,35 @@ app.whenReady().then(() => {
   appMenu();
   session.defaultSession.setPermissionRequestHandler((_wc, perm, cb) => cb(["media", "audioCapture", "clipboard-read", "clipboard-sanitized-write"].includes(perm)));
   session.defaultSession.setPermissionCheckHandler((_wc, perm) => ["media", "audioCapture"].includes(perm));
-  session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
-    // Loopback captures the PC's playback audio, including native and streamed games; never the microphone.
-    if (!rec || request.frame !== win?.webContents.mainFrame) return callback({});
-    try {
-      const sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width: 0, height: 0 } });
-      const source = sources.find(s => s.display_id === String(rec?.display.id));
-      callback(source ? { video: source, audio: "loopback" } : {});
-    } catch { callback({}); }
-  });
+  // <display-media-handler>
+  // Electron's display-media callback is one-time. The old handler answered again from its catch when the first
+  // answer threw, so the real refusal was replaced by "One-time callback was called more than once" (an unhandled
+  // rejection) and the recording aborted (#1118). Answer exactly once, log the first refusal, and offer loopback
+  // audio only when the request asked for audio.
+  function displayMediaHandler(getRec, getWin, capturer, log = (...a) => console.warn(...a)) {
+    return async (request, callback) => {
+      let answered = false;
+      const answer = streams => {
+        if (answered) return false;
+        answered = true;
+        try { callback(streams); return true; }
+        catch (error) { log("[recording] screen capture answer refused:", error?.message || String(error)); return false; }
+      };
+      // Loopback captures the PC's playback audio, including native and streamed games; never the microphone.
+      if (!getRec() || request.frame !== getWin()?.webContents.mainFrame) return answer({});
+      let source = null;
+      try {
+        const sources = await capturer.getSources({ types: ["screen"], thumbnailSize: { width: 0, height: 0 } });
+        source = sources.find(s => s.display_id === String(getRec()?.display.id)) || null;
+      } catch (error) {
+        log("[recording] screen sources unavailable:", error?.message || String(error));
+      }
+      if (!source || !getRec()) return answer({});
+      return answer(request.audioRequested === false ? { video: source } : { video: source, audio: "loopback" });
+    };
+  }
+  // </display-media-handler>
+  session.defaultSession.setDisplayMediaRequestHandler(displayMediaHandler(() => rec, () => win, desktopCapturer));
   win = new BrowserWindow({
     width: 1500, height: 950, title: "gBox", backgroundColor: "#16161a", autoHideMenuBar: true,
     icon: path.join(__dirname, "..", "..", "assets", "brand", "gbox.ico"),
@@ -791,8 +991,27 @@ app.whenReady().then(() => {
     win.setAppDetails({ appId: "com.gbox.desktop", relaunchDisplayName: "gBox", appIconPath: path.join(__dirname, "..", "..", "assets", "brand", "gbox.ico"),
                         relaunchCommand: `"${process.execPath}" "${app.getAppPath()}"` });
   win.loadFile(path.join(__dirname, "index.html"));
+  backgroundPower = require('./background-power').create({powerSaveBlocker,
+    status:()=>api('/api/background/workers/'+encodeURIComponent(settings().workerName)+'/status')});
+  backgroundPower.start();
+  win.webContents.on("did-start-navigation", (_e, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) {
+    pickHoldReleaseAll("window reloaded");
+    if (compactWindow.state().on) compactWindow.restore().catch(error => logPush('compact', error.message));
+  } });
+  win.on("closed", () => pickHoldReleaseAll("window closed"));
   startPadWatcher();
-  win.on("focus", () => win.webContents.send("app-focus"));   // coming back to gBox: the renderer decides whether the game gets focus
+  win.on("focus", () => { win.webContents.send("app-focus"); if (hotkeys.docked) checkFront(); });   // coming back to gBox: the renderer decides whether the game gets focus
+  // Another app took the foreground / gBox minimized: release the game hotkeys at once, then confirm with the helper (a
+  // blur can also mean the docked game took the keyboard inside gBox, which keeps them).
+  win.on("blur", () => { hotkeys.setFront(false); if (hotkeys.docked) checkFront(); });
+  win.on("minimize", () => hotkeys.setFront(false));
+  win.on("hide", () => hotkeys.setFront(false));
+  win.on("restore", () => { if (hotkeys.docked) checkFront(); });
+  win.on("close", e => {                                      // the docked game dies with this window: keep its moment first
+    if (momentsKept || !FIRST) return;
+    e.preventDefault();
+    keepMoments().finally(() => { if (win && !win.isDestroyed()) win.close(); });
+  });
   cleanupSessions(false).then(out => {                        // leftovers from a previous run, before this run's worker starts
     if (out.trim()) send("task", "win-worker", "closed leftover gBox processes:\n" + out);
     if (settings().autoStartWorker) startWorker();
@@ -801,6 +1020,8 @@ app.whenReady().then(() => {
 });
 let sessionsShutDown = false;
 function shutdownSessions() {
+  backgroundPower?.dispose();
+  pickHoldReleaseAll("gBox quitting");
   if (sessionsShutDown) return;
   sessionsShutDown = true;
   quitting = true;

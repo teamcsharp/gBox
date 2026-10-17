@@ -53,10 +53,11 @@ def test_report_immediately_keeps_markdown_screenshot_and_deduplicates(cfg, monk
     assert 'private-token' not in console
     assert job['tool'] == 'emulation_recovery' and job['parent_request_id'] == report['id']
     assert client.post('/api/sessions/worker-session/emulation-issue', json={}).json()['job']['id'] == job['id']
-    assert len(targets) == 1
+    # one recovery thread (create_app's own character-library warm-up thread is not this report's)
+    assert len([t for t in targets if getattr(t, "__name__", "") != "_refresh_list"]) == 1
 
 
-def make_incident(cfg, frame_colors, state_failure=False, resume_failure=False, covered_points=None):
+def make_incident(cfg, frame_colors, state_failure=False, resume_failure=False, covered_points=None, frame_images=None):
     app = create_app(cfg)
     store = app.state.store
     game, session, worker = setup_session(store)
@@ -67,12 +68,16 @@ def make_incident(cfg, frame_colors, state_failure=False, resume_failure=False, 
     store.put('job', job.id, job.model_dump())
     calls = []
     colors = iter(frame_colors)
+    images = iter(frame_images) if frame_images is not None else None
     coverage = iter(covered_points) if covered_points is not None else None
     def run(tool, data, wid, wait):
         calls.append((tool, data))
         if tool == 'get_frame':
             buf = io.BytesIO()
-            Image.new('RGB', (64, 48), next(colors, 'black')).save(buf, format='PNG')
+            if images is not None:
+                next(images).save(buf, format='PNG')
+            else:
+                Image.new('RGB', (64, 48), next(colors, 'black')).save(buf, format='PNG')
             ref = store.put_artifact(buf.getvalue(), 'frame.png', 'image/png', {})
             out = {'sha256': ref.sha256}
             if coverage is not None:
@@ -167,6 +172,30 @@ def test_clearing_an_occluder_is_not_moving_gameplay(cfg, colors, coverage):
 
 def test_two_clear_frames_can_prove_motion_after_occlusion(cfg):
     incident, _ = make_incident(cfg, ['white', 'white', 'red', 'green'], covered_points=[9, 1, 0, 0])
+    assert incident.observe() == {'visible': True, 'motion': True}
+
+
+def banded_frame(body, hud=None, size=(96, 72), band_rows=14):  # top ~20% HUD band of the probe frame
+    from PIL import ImageDraw
+    img = Image.new('RGB', size, body)
+    if hud is not None:
+        ImageDraw.Draw(img).rectangle((0, 0, size[0], band_rows - 1), fill=hud)  # PIL bottom edge is inclusive
+    return img
+
+
+def test_hud_timer_ticking_on_black_scene_is_not_recovery_motion(cfg):
+    # MK4 with angrylion+HLE: every 3D layer is black while the CPU-drawn HUD
+    # timer keeps counting down. That must not be accepted as restored gameplay.
+    frames = [banded_frame('black', hud=c) for c in ('white', 'red', 'blue', 'green')]
+    incident, _ = make_incident(cfg, [], frame_images=frames)
+    observed = incident.observe()
+    assert observed['visible'] is True and observed['motion'] is False
+
+
+def test_playfield_change_with_static_hud_is_recovery_motion(cfg):
+    frames = [banded_frame('black', hud='white'), banded_frame('green', hud='white'),
+              banded_frame('red', hud='white'), banded_frame('blue', hud='white')]
+    incident, _ = make_incident(cfg, [], frame_images=frames)
     assert incident.observe() == {'visible': True, 'motion': True}
 
 
