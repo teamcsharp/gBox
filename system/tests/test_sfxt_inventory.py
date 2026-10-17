@@ -51,3 +51,22 @@ def test_inventory_owned_iso():
     assert result["executable"]["magic"] == "XEX2"
     assert result["executable"]["name"] == "default.xex"
     assert any(e["path"] == "archive/CMN/CMN.eaf" for e in result["eaf_archives"])
+
+
+@pytest.mark.parametrize("size", range(4, 24))
+def test_eaf_header_rejects_truncated_words(size):
+    with pytest.raises(ValueError, match="truncated EAF"):
+        eaf_header((b"#EAF" + bytes(20))[:size])
+
+
+def test_image_reads_and_hashing_reject_truncation():
+    from io import BytesIO
+    from gbox.sfxt_inventory import XDVDFS
+    image = XDVDFS.__new__(XDVDFS)
+    image.f, image.base, image.size = BytesIO(b"abc"), 0, 3
+    with pytest.raises(ValueError):
+        image.read(0, 4)
+    with pytest.raises(ValueError):
+        image.read(0, -1)
+    with pytest.raises(ValueError, match="hashing"):
+        image.sha256(0, 4)
