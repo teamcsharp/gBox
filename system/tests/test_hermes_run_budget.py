@@ -62,6 +62,38 @@ def test_batched_attempts_are_individual_and_duplicate_outer_id_counts_once(hist
     assert B.measure(conversation(batch, batch, call('c2')), URL, home=home)['attempts'] == 3
 
 
+def test_unpersisted_newest_call_is_unioned_with_anchored_compacted_history(history):
+    home, add = history
+    items = [call(f'c{i}') for i in range(40)]
+    add(items)
+    pending = call('pending', 'tool_call', {'calls': [{'name': 'a'}, {'name': 'b'}]})
+    result = B.measure(conversation(*items[-4:], pending), URL, home=home)
+    assert result['source'] == 'durable_transcript' and result['attempts'] == 42
+
+
+def test_unpersisted_tail_without_recent_persisted_anchor_does_not_borrow(history):
+    home, add = history
+    add([call('old'), call('anchor')])
+    result = B.measure(conversation(call('anchor'), *[call(f'pending{i}') for i in range(8)]), URL, home=home)
+    assert result['source'] == 'visible_messages' and result['attempts'] == 9
+
+
+def test_matching_recent_anchor_does_not_hide_conflicting_known_call(history):
+    home, add = history
+    items = [call(f'c{i}') for i in range(40)]
+    add(items)
+    result = B.measure(conversation(call('c0', args={'command': 'different'}), *items[-4:], call('pending')), URL, home=home)
+    assert result['source'] == 'visible_messages' and result['reason'] == 'conflicting_call_identity'
+
+
+def test_shared_anchor_with_unpersisted_tail_is_ambiguous(history):
+    home, add = history
+    add([call('one'), call('anchor')])
+    add([call('two'), call('anchor')], sid='cron_111111111111_20261017_150000', job='111111111111', execution='run2')
+    result = B.measure(conversation(call('anchor'), call('pending')), URL, home=home)
+    assert result['source'] == 'visible_messages' and result['reason'] == 'ambiguous_run_identity'
+
+
 def test_same_ticket_new_execution_never_inherits_previous_run_budget(history):
     home, add = history
     add([call(f'old{i}') for i in range(100)], status='completed', ended=START+10)

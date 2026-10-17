@@ -139,8 +139,13 @@ def measure(messages, endpoint, *, home=None):
                 if read_rows > MAX_ROWS or read_bytes > MAX_TOTAL_BYTES or any(r['calls'] is None for r in rows):
                     return result | {'reason': 'transcript_read_bound'}
                 durable, missing, consistent = calls([{'role': 'assistant', 'tool_calls': json.loads(r['calls'])} for r in rows])
-                if missing or not consistent or not all(durable.get(k) == v for k, v in recent.items()):
+                # Hermes may send the newest call before persisting that row.
+                # At least one recent immutable call must anchor this run; all
+                # IDs already present must still agree, including older calls.
+                if missing or not consistent or not any(durable.get(k) == v for k, v in recent.items()):
                     continue
+                if any(k in durable and durable[k] != v for k, v in visible.items()):
+                    return result | {'reason': 'conflicting_call_identity'}
                 matches.append((run, session, durable))
             if len(matches) != 1:
                 return result | {'reason': 'ambiguous_run_identity' if matches else 'unconfirmed_run_identity'}
