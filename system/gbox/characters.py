@@ -1734,6 +1734,11 @@ DEDICATED = [
     # mappings + Ani scripts + palette) as 2D sprites entries with clips (spin dash, jump, level complete, every named
     # animation); gbox.sonic2d_sprites, docs/sonic2d_sprites.md
     *[_sonic2d(k) for k in ("sonic1", "sonic2", "sonic3", "s3k", "sk")],
+    # Super Mario Bros. 3 (NES): the player (Mario; Luigi = palette swap) as editable indexed 4-colour sprite sheets,
+    # CHR page atlases and a slot->page/tile frame map (gbox.smb3_sprites)
+    ("smb3", lambda t, p: __import__("gbox.smb3_sprites", fromlist=["x"]).title_test(t, p),
+     lambda: __import__("gbox.smb3_sprites", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.smb3_sprites", fromlist=["x"]).extract_run(ctx, game, e, work)),
     # Shadow In Sonic 1 (Mega Drive): the Sonic 1 REV00 disassembly-rebuild hack whose player is Shadow in the Sonic
     # slot (object 01). gbox.sonic1_reader exports every mapping frame as an indexed PNG + an import-ready
     # pieces/DPLC/origin manifest, the walk/run animation map and the Nemesis title/continue/signpost/lives/ending art.
@@ -1775,7 +1780,7 @@ def dedicated_entries(config, game, name, roster):
 # the cast swap's donor gate): JGR v2 draws the body without the cel-shading outline shell, with per-group textures.
 # AUF v2 extracts every body (v1 listed the writer's slots only); collect() records the version it ran with, so a
 # stored collection made by an older reader is collected again at the next launch (character_collection).
-READER_VERSIONS = {"sonic1_shadow": ("gbox.sonic1_reader", "sonic1_shadow_reader"), "jgr": ("gbox.jgr", "jgr_reader"), "auf": ("gbox.auf_chars", "auf_reader"),
+READER_VERSIONS = {"sonic1_shadow": ("gbox.sonic1_reader", "sonic1_shadow_reader"), "smb3": ("gbox.smb3_sprites", "smb3_reader"), "jgr": ("gbox.jgr", "jgr_reader"), "auf": ("gbox.auf_chars", "auf_reader"),
                    "twin_snakes": ("gbox.twin_snakes", "tts_reader"), "sm64ds": ("gbox.sm64ds_chars", "sm64ds_reader"),
                    "soulcalibur": ("gbox.soulcalibur_dc", "sc_reader"),
                    "soulcalibur2": ("gbox.soulcalibur2", "sc2_reader"),
