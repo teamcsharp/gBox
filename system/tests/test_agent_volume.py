@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from gbox.audio_volume import keep_pc_at_two_percent
 
 
-def test_agent_use_holds_every_active_output_at_two_percent(monkeypatch):
+def test_agent_use_preserves_every_active_output_volume(monkeypatch):
     levels = [0.7, 0.3]
 
     class Endpoint:
@@ -26,5 +26,5 @@ def test_agent_use_holds_every_active_output_at_two_percent(monkeypatch):
     monkeypatch.setitem(sys.modules, "pycaw.constants", SimpleNamespace(
         EDataFlow=SimpleNamespace(eRender=SimpleNamespace(value=0)),
         DEVICE_STATE=SimpleNamespace(ACTIVE=SimpleNamespace(value=1))))
-    assert keep_pc_at_two_percent() == 2
-    assert levels == [0.02, 0.02]
+    assert keep_pc_at_two_percent() == 0
+    assert levels == [0.7, 0.3]

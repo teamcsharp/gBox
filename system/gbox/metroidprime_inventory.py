@@ -49,8 +49,12 @@ TEXTURE_TYPES = {"TXTR"}
 
 def _read_string(data: bytes, off: int) -> tuple[str, int]:
     """u32 length + bytes (CStringExtras::ReadString)."""
+    if off + 4 > len(data):
+        raise ValueError("truncated pak string length")
     (n,) = struct.unpack_from(">I", data, off)
     off += 4
+    if off + n > len(data):
+        raise ValueError("truncated pak string")
     return data[off : off + n].decode("latin-1"), off + n
 
 
@@ -64,12 +68,18 @@ def pak_directory(data: bytes) -> dict:
     off = 12
     names = []
     for _ in range(name_count):
+        if off + 12 > len(data):
+            raise ValueError("truncated pak name record")
         fourcc, rid = struct.unpack_from(">2I", data, off)
         off += 8
         name, off = _read_string(data, off)
         names.append({"type": fourcc, "id": rid, "name": name})
+    if off + 4 > len(data):
+        raise ValueError("truncated pak resource count")
     (res_count,) = struct.unpack_from(">I", data, off)
     off += 4
+    if off + res_count * 20 > len(data):
+        raise ValueError("truncated pak resource table")
     resources = []
     for _ in range(res_count):
         flags, fourcc, rid, size, offset = struct.unpack_from(">5I", data, off)
@@ -99,6 +109,8 @@ def disc_identity(src: Path) -> dict:
     from .gcdisc import GCDisc
 
     disc = GCDisc(str(src))
+    if disc.game_id != DISC_ID:
+        raise ValueError(f"expected {DISC_ID}, found {disc.game_id}")
     dol = disc.dol()
     entry = struct.unpack(">I", dol[0xE0:0xE4])[0]
     return {
@@ -117,8 +129,12 @@ def build_manifest(src: Path, out: Path) -> dict:
 
     disc = GCDisc(str(src))
     ident = disc_identity(src)
+    digest = hashlib.sha256()
+    with src.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(chunk)
     manifest = {
-        "source_sha256": hashlib.sha256(src.read_bytes()).hexdigest(),
+        "source_sha256": digest.hexdigest(),
         "identity": ident,
         "engine": "Retro Studios 'Kyoto' (proprietary); assimilation fingerprint 'Unreal 4/5' is a false positive",
         "paks": {},

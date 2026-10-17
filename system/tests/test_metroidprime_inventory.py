@@ -88,3 +88,14 @@ def test_owned_disc_inventory():
         assert cc in type_hist, f"missing {cc}: {sorted(type_hist)}"
     # Retro 'Kyoto' engine, not Unreal: no UE-flavoured resource fourCCs.
     assert not any(k.startswith(("UASS", "UEXP")) for k in type_hist)
+
+
+@pytest.mark.parametrize("blob", [
+    struct.pack(">3I", mi.PAK_VERSION, 0, 0),
+    struct.pack(">3I", mi.PAK_VERSION, 0, 1) + bytes(8),
+    struct.pack(">3I", mi.PAK_VERSION, 0, 1) + bytes(8) + struct.pack(">I", 100),
+    struct.pack(">4I", mi.PAK_VERSION, 0, 0, 0xffffffff),
+])
+def test_pak_rejects_truncated_tables_without_struct_error(blob):
+    with pytest.raises(ValueError, match="truncated pak"):
+        mi.pak_directory(blob)

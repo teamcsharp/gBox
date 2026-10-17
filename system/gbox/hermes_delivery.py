@@ -125,7 +125,7 @@ def prepare(request_id: str, number: int) -> dict:
         if record.exists():
             workspace = json.loads(record.read_text())
             if (Path(workspace['path']) / '.git').exists():
-                return workspace | {'reused': True}
+                return workspace | {'reused': True, 'shared_sources': _shared_sources(workspace)}
             raise RuntimeError('The recorded task workspace is missing; preserve its history before retrying')
         _run(['git', 'fetch', 'origin', 'main'], repo)
         branch = f'hermes/request-{int(number)}-{time.time_ns()}'
@@ -138,7 +138,12 @@ def prepare(request_id: str, number: int) -> dict:
                      'workdir': str(path / 'system'), 'branch': branch,
                      'baseline': _run(['git', 'rev-parse', 'HEAD'], path)}
         record.write_text(json.dumps(workspace, indent=2))
-        return workspace
+        return workspace | {'shared_sources': _shared_sources(workspace)}
+
+
+def _shared_sources(workspace):
+    from .shared_sources import references
+    return references(workspace['path'], state_dir() / 'source-references' / workspace['request_id'])
 
 
 def publish(request_id: str, title: str, files: list[str], tests: list[str]) -> dict:
