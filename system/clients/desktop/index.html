@@ -3059,10 +3059,10 @@ $("#reqnew").onclick = () => {
 };
 $("#reqexport").onclick = async () => {                  // the whole request history, oldest first, as Markdown
   const s = await gbox.settings(), t = await gbox.token();
-  const r = await fetch(s.apiUrl + "/api/requests/export", { headers: { authorization: `Bearer ${t}` } });
+  const r = await fetch(s.apiUrl + "/api/requests/export?prompts_only=true", { headers: { authorization: `Bearer ${t}` } });
   if (!r.ok) return alert("Export failed: " + r.status);
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(await r.blob()); a.download = `gbox-request-history-${new Date().toISOString().slice(0, 10)}.md`;
+  a.href = URL.createObjectURL(await r.blob()); a.download = `gbox-prompt-history-${new Date().toISOString().slice(0, 10)}.md`;
   a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 };
 let requestFilter = localStorage.getItem("gbox_request_filter") || "all";
