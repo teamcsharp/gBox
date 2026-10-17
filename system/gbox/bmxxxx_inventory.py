@@ -60,15 +60,25 @@ def iff_chunks(data: bytes, off: int = 0, depth: int = 0) -> list[dict]:
 
 def zal_index(data: bytes) -> list[dict]:
     """Parse a ZAL directory -> one dict per entry {name, grid, flag, length, offset, type}."""
-    if data[:4] != b"ZDIR":
+    if len(data) < 8 or data[:4] != b"ZDIR":
         raise ValueError("not a ZAL archive")
     dsize = struct.unpack_from("<I", data, 4)[0]
     end = 8 + dsize
+    if end > len(data):
+        raise ValueError("truncated ZAL directory")
     o = 8
     count = grid = dlen = ofst = names = None
     while o < end:
+        if o + 8 > end:
+            raise ValueError("truncated ZAL directory chunk")
         tag = data[o:o + 4].decode("latin-1")
         size = struct.unpack_from("<I", data, o + 4)[0]
+        if o + 8 + size > end:
+            raise ValueError("ZAL chunk exceeds directory")
+        if tag in ("GRID", "DLEN", "OFST") and size % 4:
+            raise ValueError("unaligned ZAL table")
+        if tag == "DIDF" and size < 4:
+            raise ValueError("truncated ZAL count")
         blob = data[o + 8:o + 8 + size]
         if tag == "DIDF":
             count = struct.unpack_from("<I", blob, 0)[0]
@@ -81,13 +91,15 @@ def zal_index(data: bytes) -> list[dict]:
         elif tag == "NAME":
             names = [x.decode("latin-1") for x in blob.split(b"\0") if x]
         o += 8 + size
-    if not ofst:
-        raise ValueError("ZAL directory has no OFST table")
+    if count is None or any(table is None or len(table) != count for table in (grid, dlen, ofst)):
+        raise ValueError("missing or inconsistent ZAL directory tables")
     out = []
     for i in range(len(ofst)):
         eoff = ofst[i]
         elen = dlen[i] & 0x0FFFFFFF
         flag = dlen[i] >> 28
+        if eoff < end or eoff + elen > len(data):
+            raise ValueError("ZAL entry outside payload")
         etag = data[eoff:eoff + 4].decode("latin-1") if eoff + 4 <= len(data) else "?"
         etype = data[eoff + 8:eoff + 12].decode("latin-1") if eoff + 12 <= len(data) else "?"
         out.append({"name": names[i] if names and i < len(names) else "",

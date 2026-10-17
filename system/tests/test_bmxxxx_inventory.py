@@ -80,3 +80,23 @@ def test_real_disc_inventory_if_present():
     assert m["image"]["disc_id"] == "GB3E51"
     assert m["fst_files"] > 300
     assert any(z["path"].endswith("models.zal") for z in m["zal_archives"])
+
+
+def test_zal_rejects_truncated_header_and_directory():
+    import pytest
+    for blob in [b"ZDIR", b"ZDIR" + struct.pack("<I", 100), _chunk("ZDIR", b"GRID")]:
+        with pytest.raises(ValueError):
+            zal_index(blob)
+
+
+def test_zal_rejects_missing_tables_and_out_of_range_payload():
+    import pytest
+    with pytest.raises(ValueError):
+        zal_index(_chunk("ZDIR", _chunk("OFST", struct.pack("<I", 64))))
+    blob = _zal([("one", bytes(16))])
+    with pytest.raises(ValueError):
+        zal_index(blob[:-1])
+
+
+def test_zal_accepts_empty_complete_directory():
+    assert zal_index(_zal([])) == []
