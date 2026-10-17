@@ -1685,6 +1685,10 @@ DEDICATED = [
     # RE4 (2023, Steam): the Windows PC unpacks the paks + converts in Blender (gbox/re4r.py), the result lands here
     ("re4r", lambda t, p: "resident evil 4" in t and p == "pc_steam", lambda: __import__("gbox.re4r", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.re4r", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # RE4 (2005, PS2, SLUS-21134): PS2-native BIN mesh (VU1 V4-16 stream) + TPL C4/C8 textures -> GLB (gbox/re4ps2_reader)
+    ("re4_ps2", lambda t, p: "resident evil 4" in t and p == "ps2",
+     lambda: __import__("gbox.re4ps2_reader", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.re4ps2_reader", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("nomercy", lambda t, p: "no mercy" in t and p == "n64", lambda: __import__("gbox.aki_wrestling", fromlist=["x"]).roster_entries(),
      lambda ctx, game, e, work: __import__("gbox.aki_wrestling", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("smackdown2", lambda t, p: "smackdown! 2" in t and p == "psx", lambda: __import__("gbox.yukes_sd", fromlist=["x"]).roster_entries(),

@@ -145,6 +145,30 @@ def inventory(path, source_sha256: str | None = None) -> dict:
         f.close()
 
 
+def read_char_dat(path, cid: str) -> bytes:
+    """Read the `xxNN.dat` model pack for a character id (e.g. 'pl00') from the owned disc/cso."""
+    from .romexport import iso_files
+    f = open_source(path)
+    try:
+        files = iso_files(f)
+        _r, lba, size = files["DATA/BIO4DAT.AFS"]
+        base = lba * 2048
+        f.seek(base)
+        n = struct.unpack_from("<I", f.read(8), 4)[0]
+        f.seek(base)
+        ent, (doff, dsize) = afs_table(f.read(16 + 8 * n))
+        f.seek(base + doff)
+        names = afs_names(f.read(dsize), n)
+        want = f"{cid.lower()}.dat"
+        for i, (nm, (off, sz)) in enumerate(zip(names, ent)):
+            if nm.lower() == want and sz:
+                f.seek(base + off)
+                return f.read(sz)
+        raise FileNotFoundError(f"{want} not found in DATA/BIO4DAT.AFS")
+    finally:
+        f.close()
+
+
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
