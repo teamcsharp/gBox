@@ -2,7 +2,7 @@
 every file and the main executable: what the fingerprinter (gbox.assimilate) and the inventory stage start from.
 
   .iso/.gcm (GameCube/Wii)  gcdisc FST           .gcz            gcz + formats.gcfst
-  .iso (PS1/PS2), .bin      formats.iso9660      .chd (PS1 v4)   psxdisc.PSXDisc
+  .iso (PS1/PS2), .bin      formats.iso9660      .chd (v4/v5)   psxdisc.PSXDisc / chd.ChdDisc
   .gdi / .cdi (Dreamcast)   gdrom.GDRom          .z64/.v64/.n64  n64_rom (no filesystem: magic scan of the ROM)
   .nds (Nintendo DS)         formats.nitro NitroFS (LZ77 members listed decompressed)
   .7z                       its members (system 7z, streamed heads)
@@ -74,6 +74,10 @@ def listing(path: str | Path, *, head: int = 64, max_files: int = 4000, exe_limi
             deep: int = 12, deep_bytes: int = 1 << 20) -> Listing:
     """deep / deep_bytes: the first deep_bytes of the `deep` largest files are kept as f["sample"] (archives such as
     AFS, DATA.BIN or .IMG show their inner formats only there)."""
+    for name, value in (('head', head), ('max_files', max_files), ('exe_limit', exe_limit),
+                        ('deep', deep), ('deep_bytes', deep_bytes)):
+        if type(value) is not int or value < 0:
+            raise ValueError(f'{name} must be a nonnegative integer')
     p = Path(path)
     suf = p.suffix.lower()
     from .. import rom_archives
@@ -132,13 +136,7 @@ def listing(path: str | Path, *, head: int = 64, max_files: int = 4000, exe_limi
             return g.read(name)[: (exe_limit if n is None else n)]
         L = Listing(str(p), "gdrom", files)
     elif suf == ".chd":
-        from ..psxdisc import PSXDisc
-        d = PSXDisc(p)
-        files = [{"path": k, "size": v[1]} for k, v in d.files.items()]
-
-        def read(name, n):
-            return d.read(name)[: (exe_limit if n is None else n)]
-        L = Listing(str(p), "iso9660", files)
+        return _chd_listing(p, head, max_files, exe_limit, deep, deep_bytes)
     elif suf == ".gcz":
         from ..gcz import GCZ
         z = GCZ(str(p))
@@ -180,6 +178,10 @@ def listing(path: str | Path, *, head: int = 64, max_files: int = 4000, exe_limi
             L = Listing(str(p), "iso9660", files)
         else:
             raise ValueError(f"{p.name}: not a disc image, ROM, archive or folder gBox can list")
+    return _populate(L, read, head, max_files, deep, deep_bytes)
+
+
+def _populate(L, read, head, max_files, deep, deep_bytes):
     _fill(L.files, read, head, max_files)
     for f in sorted(L.files, key=lambda f: -f["size"])[:deep]:
         try:
@@ -194,6 +196,32 @@ def listing(path: str | Path, *, head: int = 64, max_files: int = 4000, exe_limi
         except Exception as e:                            # noqa: BLE001
             L.notes.append(f"executable not read: {type(e).__name__}: {e}")
     return L
+
+
+def _chd_listing(path, head, max_files, exe_limit, deep, deep_bytes):
+    with path.open('rb') as stream:
+        header = stream.read(16)
+    if len(header) != 16 or header[:8] != b'MComprHD':
+        raise ValueError('Not a complete CHD header')
+    version = struct.unpack_from('>I', header, 12)[0]
+    if version == 4:
+        from ..psxdisc import PSXDisc as Reader
+    elif version == 5:
+        from ..chd import ChdDisc as Reader
+    else:
+        raise ValueError(f'CHD v{version}: no listing reader')
+    disc = Reader(path)
+    try:
+        files = [{'path': name, 'size': entry[1]} for name, entry in disc.files.items()]
+
+        def read(name, count):
+            # Bound the actual decompression/read, not a slice of a whole file.
+            size = min(disc.files[name][1], exe_limit if count is None else count)
+            return disc.read(name, offset=0, size=size)
+
+        return _populate(Listing(str(path), 'iso9660', files), read, head, max_files, deep, deep_bytes)
+    finally:
+        disc.close()
 
 
 def _dol(read, off: int) -> bytes:
