@@ -422,13 +422,24 @@ def _close_previous_games(ctx, keep: str = ""):
             checkpoints.append({'session_id': sid, 'game_id': game.get('game_id'), 'artifact': None, 'orphan': True})
             continue
         ctx.progress(71, 'Saving the previous game before switching')
-        try:
-            saved = state_transfer(StateXIn(session_id=sid, op='export'), ctx)['result']
-        except Exception as exc:
-            title = game.get('title') or game.get('game_id') or sid
-            raise Unsupported(f"The previous game ({title}) could not be saved: {exc}. It was kept running. Stop it in Sessions "
-                              "(or close its emulator window) before starting another game.") from exc
-        checkpoints.append({'session_id': sid, 'game_id': game.get('game_id'), **saved})
+        if getattr(ad, 'checkpoint_state', None) in ('path', 'dir'):
+            # Only RetroArch ("path") and Dolphin ("dir") export a portable save state (state_transfer). For every
+            # other adapter the export raises "can't move between machines", which must not block a same-worker switch.
+            try:
+                saved = state_transfer(StateXIn(session_id=sid, op='export'), ctx)['result']
+            except Exception as exc:
+                title = game.get('title') or game.get('game_id') or sid
+                raise Unsupported(f"The previous game ({title}) could not be saved: {exc}. It was kept running. Stop it in Sessions "
+                                  "(or close its emulator window) before starting another game.") from exc
+            checkpoints.append({'session_id': sid, 'game_id': game.get('game_id'), **saved})
+        else:
+            # No portable save state (cxbx, rpcs3, savemgo, ...). The game's own saves persist through the clean stop
+            # below, so nothing blocks switching games; only the exact save-state moment is not captured (the same
+            # result as the operator closing the emulator window).
+            reason = (getattr(ad, 'checkpoint_reason', None)
+                      or f"{getattr(ad, 'name', None) or '?'} save states can't move between machines")
+            checkpoints.append({'session_id': sid, 'game_id': game.get('game_id'),
+                                'artifact': None, 'save_state': 'unsupported', 'reason': reason})
     for sid, ad, _ in previous:
         if sid not in SESSIONS:
             continue
