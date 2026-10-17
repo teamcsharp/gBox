@@ -111,6 +111,37 @@ def test_agent_sessions_block_the_node_too_and_missing_tools_are_named():
         EC.pick_node("A", [worker("a", "A")], [{"session_id": "a-agent", "state": "running"}], needs={"launch_game"})
 
 
+def test_required_os_pins_windows_only_platforms():
+    assert EC.required_os({"platform": "xbox"}) == "windows"
+    assert EC.required_os({"platform": "ps3"}) == "windows"
+    assert EC.required_os({"platform": "xbox360"}) == "windows"
+    assert EC.required_os({"platform": "switch"}) == "windows"
+    assert EC.required_os({"launch": {"kind": "savemgo_bundle"}}) == "windows"
+    assert EC.required_os({"platform": "gamecube"}) is None
+    assert EC.required_os({}) is None
+
+
+def test_windows_only_game_never_falls_back_to_a_linux_worker():
+    # Every Windows PC is refused; the Spark (linux) can't run cxbx, so the capture
+    # must refuse instead of silently launching an Xbox game on Linux.
+    ws = [worker("op", "i9-NUC", idle=20), worker("spark", "lilspark", "linux", None)]
+    with pytest.raises(EC.EvidenceError, match="was used 20 s ago"):
+        EC.pick_node("auto", ws, [], needs={"launch_game"}, required_os="windows")
+
+
+def test_required_os_refuses_an_explicit_linux_worker_name():
+    ws = [worker("spark", "lilspark", "linux", None)]
+    with pytest.raises(EC.EvidenceError, match="needs a windows worker"):
+        EC.pick_node("lilspark", ws, [], needs={"launch_game"}, required_os="windows")
+
+
+def test_windows_only_game_uses_the_idle_windows_pc():
+    ws = [worker("op", "i9-NUC"), worker("test", "JAYBUILTFINALE", idle=1200),
+          worker("spark", "lilspark", "linux", None)]
+    live = [{"session_id": "op-s1", "state": "running", "title": "DOA2"}]
+    assert EC.pick_node("auto", ws, live, needs={"launch_game"}, required_os="windows")["name"] == "JAYBUILTFINALE"
+
+
 # ------------------------------------------------------------------------------------------------ the capture
 
 def test_mod_and_stock_runs_reach_gameplay_shoot_and_stop_only_their_own_sessions():

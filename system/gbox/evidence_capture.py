@@ -186,8 +186,26 @@ def recipe_for(game_id: str, variant: str = "", recipes: dict | None = None, rec
 
 # ------------------------------------------------------------------------------------------------ where it runs
 
+def required_os(game: dict) -> str | None:
+    """The only worker OS that can run this game's platform, or None when either OS can.
+
+    Mirrors adapters.for_game's Windows-only guards: cxbx (Xbox), RPCS3 (PS3), Xenia
+    (Xbox 360) and Yuzu (Switch) raise ToolUnavailable on a Linux worker, so an evidence
+    capture must never fall through to Linux for them."""
+    from .xbox import is_xbox_game
+    g = game or {}
+    if is_xbox_game(g):
+        return "windows"
+    if g.get("platform") in ("ps3", "xbox360", "switch"):
+        return "windows"
+    if (g.get("launch") or {}).get("kind") == "savemgo_bundle":
+        return "windows"
+    return None
+
+
 def pick_node(node: str, workers: list[dict], live_sessions: list[dict], *, needs: set[str],
-              prefer_os: list[str] | None = None, worker_of=lambda s: s.split("-")[0],
+              prefer_os: list[str] | None = None, required_os: str | None = None,
+              worker_of=lambda s: s.split("-")[0],
               idle_min_s: float = IDLE_MIN_S, running_jobs: dict | None = None) -> dict:
     """The worker the test session runs on. Never one with any running game (the operator's above all: launch_game
     keeps one game per node and would close it), never an unticked or busy one, a Windows PC only when nobody has
@@ -198,6 +216,8 @@ def pick_node(node: str, workers: list[dict], live_sessions: list[dict], *, need
 
     def refuse(w: dict, explicit: bool) -> str | None:
         name = w.get("name") or w.get("id")
+        if required_os and w.get("os") != required_os:
+            return f"{name} is {w.get('os') or 'unknown-OS'}; this game needs a {required_os} worker"
         if not w.get("online"):
             return f"{name} is offline"
         missing = needs - set(w.get("tools") or [])
@@ -232,7 +252,7 @@ def pick_node(node: str, workers: list[dict], live_sessions: list[dict], *, need
         if reason:
             raise EvidenceError(f"Can't capture on {node}: {reason}. Nothing was started.")
         return w
-    oses = [node] if node in ("windows", "linux") else (prefer_os or ["windows", "linux"])
+    oses = [required_os] if required_os else ([node] if node in ("windows", "linux") else (prefer_os or ["windows", "linux"]))
     for os_ in oses:
         cands = [w for w in workers if w.get("os") == os_]
         ok = []
@@ -311,6 +331,7 @@ def run(inp: EvidenceIn, game: dict, *, run_job, workers, live_sessions, recipes
     if moment and moment.get("slot") is not None and moment.get("worker") and node in ("auto", ""):
         node = moment["worker"]                          # a slot lives on the node that saved it
     w = pick_node(node, workers(), live_sessions(), needs=needs, prefer_os=recipe.get("prefer_os"),
+                  required_os=required_os(game),
                   worker_of=worker_of, running_jobs=running_jobs() if callable(running_jobs) else running_jobs)
     wid, wname = w["id"], w.get("name") or w["id"]
     title = game.get("title") or inp.game_id
