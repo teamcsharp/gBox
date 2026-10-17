@@ -208,6 +208,8 @@ def extractor_for(game: dict) -> tuple[str | None, list[dict]]:
     from . import characters as C
     t, plat = (game.get("title") or "").lower(), game.get("platform") or ""
     for name, test, roster, _run in C.DEDICATED:
+        if name == 're2gc' and game.get('game_id') != 'c6adbfa00c20aaf9':
+            continue
         if test(t, plat):
             try:
                 return name, [r for r in roster() if r.get("kind", "character") == "character"]

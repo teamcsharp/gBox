@@ -9,7 +9,7 @@ model, or partial unlock routine does not satisfy that result.
 
 | Target | Identity | Implemented engineering scope | Remaining product work |
 | --- | --- | --- | --- |
-| RE2 GameCube | `c6adbfa00c20aaf9`, `GHAE08` | `gbox.re2gc_native`: validates 40 owned player PLDs, animations, skeletons, indexed textures and mesh indices; byte-exact no-op; hash-guarded vertex/complete mesh writer | Donor retargeting, EMD enemy geometry, collection/cast writer routing, unlocks, live inventory/equip, complete disc and gameplay proof |
+| RE2 GameCube | `c6adbfa00c20aaf9`, `GHAE08` | `gbox.re2gc_native`: validates 40 owned player PLDs, animations, skeletons, indexed textures and mesh indices; byte-exact no-op; hash-guarded vertex/complete mesh writer; `gbox.re2gc_models` extracts 23 textured, skinned bind-pose player variants through the collection | 17 extra-part player attachments, donor retargeting, EMD enemy geometry, cast writer routing, unlocks, live inventory/equip, complete disc and gameplay proof |
 | RE5 Gold PS3 USA v02.00 | `e7ca89bbeb67360d`, `BLUS30491` | `gbox.re5ps3_arc`: big-endian ARC v8 reader/writer; all 151 resources of Chris/Sheva normal packs decoded; unchanged members preserved and replacement readback checked | PS3 MOD/TEX conversion, rigged donor retargeting, collection/cast routing, complete unlock categories, live inventory/equip, complete folder-game export and gameplay proof |
 
 Neither module is registered as a complete `char_coverage.WRITERS` capability.
@@ -60,6 +60,43 @@ MD1 offsets start after its 12-byte header. This matches the
 and the owned GameCube bytes. The PLD section directory is at the end of the
 file; it must not be included in the TIM payload. Unknown bytes and aliases are
 preserved on a no-op or direct vertex edit.
+
+## RE2 editable model collection
+
+`gbox.re2gc_models` converts the native MD1 geometry, per-polygon texture page
+and CLUT, and EMR bind translations into a textured GLB with rigid skin weights.
+The normal `characters.extract_dedicated` route recognizes only the exact
+GameCube catalog ID and validates disc ID plus executable hash. Source member,
+source hash, reader version, output hash and mapped rig roles are recorded in
+the collection entry. No complete cast writer is registered.
+
+```sh
+python -m gbox.re2gc_models OWNED_PLAYER.pld --out NEW_MODEL.glb
+```
+
+The owned 40-member roster currently yields **23 complete bind-pose extracts**.
+The other **17** have more MD1 objects than EMR bones; extraction rejects them
+until their extra-part attachment semantics are proven. It never drops those
+parts to manufacture a successful result. Enemy EMDs remain separate work.
+Native animations are not exported. Nonzero TIM semitransparent colors are
+currently opaque; zero colors are masked. The default coordinate scale is a
+viewer convention, not a claim about physical dimensions.
+
+Native quads use corners `(0,1,3)` and `(0,2,3)`, matching the pinned
+[OpenBiohazard2 geometry reference](https://github.com/OpenBiohazard2/OpenBiohazard2/blob/173f900d174a41af56bd478692892254a2e31aae/geometry/quad.go).
+Stored normals determine front-face winding; materials do not hide errors with
+blanket double-sided rendering. Front/back previews were inspected for Leon.
+Its source PL00 SHA256 is
+`02ccf44b0a3b1123e004db054e1bf47f1817d4d41184b1d00516715545f5996a`;
+the corrected proof GLB has 721 triangles, 15 bones and two palettes, SHA256
+`345c66cfa7b685a78829c26819b678202481821a37a05e58d6a21f1dd776623f`.
+This is editable model evidence, not gameplay or a modified ROM.
+
+The focused model/native/coverage/staleness/roster/collection suite passed all
+60 tests with `GBOX_RE2GC_SOURCE` pointing to the owned image (no skipped tests).
+It checks independent GLB structure, palette alpha, quad topology, missing-part
+failures, all owned player members, source immutability and normal collection
+provenance.
 
 ## RE5 source and commands
 
