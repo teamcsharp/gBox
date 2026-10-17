@@ -317,6 +317,22 @@ def test_no_relaunch_over_a_running_game_or_for_old_failures(plane):
     assert not p.submitted
 
 
+def test_worker_restarted_relaunches_on_the_workers_new_id(plane):
+    p, ledger = plane
+    NEW = "wjay2"
+    # the worker restarted: its old id aliases a fresh id with the same name, and only the new one is listed now
+    p.store.put("worker_alias", PC, {"to": NEW, "name": "JAYBUILTFINALE"})
+    p.workers_list = [w for w in p.workers_list if w["id"] != PC]
+    p.workers_list.append({"id": NEW, "name": "JAYBUILTFINALE", "os": "windows", "online": True, "idle_seconds": 900})
+    rec = ledger.observe_job(failed_launch(p, err="worker JAYBUILTFINALE restarted while running"))
+    assert rec["error_class"] == "worker_restarted"
+    # the automatic remedy resolves the restarted worker and relaunches on its new id, not the retired one
+    assert [(t, w) for t, _i, w, _j in p.submitted] == [("launch_game", NEW)]
+    req = p.store.get("request", rec["request_id"])
+    assert any("Relaunching on JAYBUILTFINALE" in m["text"] for m in req["messages"])
+    assert any("The relaunch worked" in m["text"] for m in req["messages"])
+
+
 def test_mod_fetch_restages_the_mod_then_relaunches(plane):
     p, ledger = plane
     rec = ledger.observe_job(failed_launch(p, err="RuntimeError: Fetching mod doa2_roster_59d8ed0e from the collection "
