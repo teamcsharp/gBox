@@ -72,6 +72,89 @@ def prs_decompress(data: bytes, size: int) -> bytes:
     return prs_msb_decompress(data, size, strict=False, zero_window=False)
 
 
+def prs_compress(data: bytes) -> bytes:
+    """Compress `data` to an Eighting PRS stream (the fpack payload codec).
+
+    Greedy LZ77 with a 3-byte hash table.  Back-references encode as the inverse of
+    `prs_decompress`: flag bits are 1 = literal, 0 0 = short copy (2 length bits + one data byte
+    `256 - offset`), 0 1 = long copy (two data bytes `(8192 - offset) << 3 | length_code`, plus a
+    third `length - 1` byte when length_code == 0).  Offsets reach 8192, copies reach 256 bytes.
+    Round-trips byte-exact through `prs_decompress`; the exact bytes need not match `fpack -a -b`.
+    """
+    n = len(data)
+    out = bytearray()
+    flag = 0
+    bit = 0
+    flag_pos = -1
+
+    def put_flag(b):
+        nonlocal flag, bit, flag_pos
+        if bit == 0:              # first bit of a new flag byte: reserve its slot up front
+            flag_pos = len(out)
+            out.append(0)
+        flag = (flag << 1) | (1 if b else 0)
+        bit += 1
+        if bit == 8:
+            out[flag_pos] = flag  # flag byte precedes its group's data bytes
+            flag = 0
+            bit = 0
+            flag_pos = -1
+
+    def put_bits(value, count):
+        for k in range(count - 1, -1, -1):
+            put_flag((value >> k) & 1)
+
+    buckets: dict[bytes, list[int]] = {}
+    o = 0
+    while o < n:
+        match_off = 0
+        match_len = 0
+        if o + 3 <= n:
+            key = data[o:o + 3]
+            cands = buckets.get(key)
+            if cands:
+                max_len = min(0x100, n - o)
+                for cand in reversed(cands[-256:]):
+                    off = o - cand
+                    if off > 0x2000:
+                        break
+                    l = 0
+                    while l < max_len and data[cand + l] == data[o + l]:
+                        l += 1
+                    if l > match_len:
+                        match_len = l
+                        match_off = off
+                        if l == max_len:
+                            break
+            buckets.setdefault(key, []).append(o)
+
+        if match_len >= 2:
+            if match_len <= 5 and match_off <= 0x100:
+                put_flag(0)
+                put_flag(0)
+                put_bits(match_len - 2, 2)
+                out.append(0x100 - match_off)
+            else:
+                put_flag(0)
+                put_flag(1)
+                off_field = 0x2000 - match_off
+                lc = (match_len - 2) if match_len <= 9 else 0
+                field = (off_field << 3) | lc
+                out.append(field >> 8)     # 13-bit offset + 3-bit length code = two DATA bytes
+                out.append(field & 0xFF)
+                if lc == 0:
+                    out.append(match_len - 1)
+            o += match_len
+        else:
+            put_flag(1)
+            out.append(data[o])
+            o += 1
+
+    if bit:
+        out[flag_pos] = flag << (8 - bit)  # left-align the partial flag byte (MSB-first)
+    return bytes(out)
+
+
 def fpk_checksum(data: bytes) -> int:
     """The low 16 bits of the header u32: the byte sum of every entry payload (224/224 packs)."""
     total = 0
@@ -88,6 +171,31 @@ def fpk_decompress(data: bytes) -> list[tuple[str, bytes]]:
         blob = data[e["offset"]:e["offset"] + e["stored"]]
         out.append((e["name"], blob if not e["compressed"] else prs_decompress(blob, e["size"])))
     return out
+
+
+def fpk_pack(entries: list[tuple[str, bytes]], compress: bool = True) -> bytes:
+    """Rebuild an Eighting .fpk pack from (name, raw bytes) entries.
+
+    Each payload is PRS-compressed and stored raw when that is not smaller (an entry with
+    stored == original; the shipped packs only use that for zero-length placeholders, so the
+    loader's handling of non-empty raw entries is still to be confirmed in main.dol).  The
+    header u32 checksum (byte sum of every stored payload) is recomputed.  Entry order and
+    names are preserved by the caller, which is what lets a writer swap one costume's files.
+    """
+    table = 0x10
+    rows = bytearray()
+    body = bytearray()
+    for name, raw in entries:
+        nb = name.encode("ascii")
+        if not nb or len(nb) > 0x1F or b"\0" in nb:
+            raise ValueError(f"invalid fpk entry name {name!r}")
+        blob = prs_compress(raw) if compress else raw
+        if len(blob) >= len(raw):
+            blob = raw
+        rows += nb.ljust(0x20, b"\0") + struct.pack(">4I", 0, table + 0x30 * len(entries) + len(body), len(blob), len(raw))
+        body += blob
+    total = table + 0x30 * len(entries) + len(body)
+    return struct.pack(">4I", sum(body) & 0xFFFF, len(entries), table, total) + bytes(rows) + bytes(body)
 
 
 def _name(data: bytes, ptr: int) -> str:
