@@ -8,6 +8,7 @@ const {withPage,findChrome}=require('../scripts/browser_lifecycle.cjs');
 const source=fs.readFileSync(path.join(__dirname,'../clients/desktop/device-work.js'),'utf8');
 const css=fs.readFileSync(path.join(__dirname,'../clients/desktop/device-work.css'),'utf8');
 const desktop=fs.readFileSync(path.join(__dirname,'../clients/desktop/index.html'),'utf8');
+const desktopStyles=[...desktop.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)].map(m=>m[1]).join('\n');
 const NOW=1792272000;
 function fixture() {
   const metrics={active_runs:24,ended_runs:3,failed_runs:1,prs_opened:1,prs_merged:1,requests_resolved:0,calls_ok:90,calls_failed:10,tokens_in:10000,tokens_out:2000,wall_s:7200,peak_concurrency:24};
@@ -58,7 +59,7 @@ const skip=!findChrome()&&'no Chromium installed';
 async function setup(evaluate,send) {
   await send('Emulation.setDeviceMetricsOverride',{width:1500,height:950,deviceScaleFactor:1,mobile:false});
   await evaluate(`document.head.innerHTML='<style>body{margin:0;background:#090d15;font-family:Segoe UI,Arial,sans-serif}#taskpanel{position:fixed}.th{height:47px;display:flex;align-items:center;padding:0 15px;gap:20px;border-bottom:1px solid #33425d;box-sizing:border-box}.th button{background:#334568;color:white;padding:8px;border:1px solid #5a6b8a;border-radius:5px}</style>';document.body.innerHTML='<div id="taskpanel" class="device-mode"><div class="th"><b>Tasks</b><button>Device work</button><span>Network</span><span>Technical</span><span style="margin-left:auto">Browser test fixture</span></div><div id="tk-devices"></div></div>';`);
-  await evaluate(`{const style=document.createElement('style');style.textContent=${JSON.stringify(css)};document.head.append(style);}${source}`);
+  await evaluate(`{const style=document.createElement('style');style.textContent=${JSON.stringify(desktopStyles+'\n'+css)};document.head.append(style);document.querySelector('#taskpanel').classList.add('on');}${source}`);
   await evaluate(`window.snapshot=${JSON.stringify(fixture())};window.calls=[];window.opened=[];window.reply=()=>Promise.resolve({ok:true,data:structuredClone(snapshot)});window.view=GBoxDeviceWork.mount(document.querySelector('#tk-devices'),{api:p=>{calls.push(p);return reply(p)},onRun:id=>opened.push(['run',id]),onRequest:id=>opened.push(['request',id]),onExternal:url=>opened.push(['url',url])});view.setActive(true);`);
   await evaluate('Promise.resolve().then(()=>Promise.resolve())');
 }
@@ -66,6 +67,7 @@ test('real browser: 24 active lanes, device selection, evidence links, and stabl
   await withPage(async(evaluate,send)=>{
     await setup(evaluate,send);
     assert.deepEqual(await evaluate(`({device:view.state.device,rows:document.querySelectorAll('.dw-row.active').length,count:document.querySelector('.dw-count').textContent})`),{device:'sparkDeux',rows:24,count:'27 of 27 observed runs'});
+    assert.equal(await evaluate(`getComputedStyle(document.querySelector('.dw-main')).display!=='none'&&document.querySelector('.dw-main').getBoundingClientRect().width>500&&getComputedStyle(document.querySelector('.dw-inspect')).display!=='none'`),true,'native desktop section styles cannot hide the timeline or evidence');
     const stable=await evaluate(`(async()=>{const pane=document.querySelector('.dw-runs');pane.scrollTop=600;const row=document.querySelector('[data-run="r8"]');row.focus({preventScroll:true});row.click();const before=pane.scrollTop;snapshot.generated_at+=20;snapshot.window.end+=20;await view.refresh();return {before,after:pane.scrollTop,selected:view.state.selected,focus:document.activeElement.dataset.run,calls:calls.length}})()`);
     assert.equal(stable.before,stable.after);assert.equal(stable.selected,'r8');assert.equal(stable.focus,'r8');assert.equal(stable.calls,2);
     assert.deepEqual(await evaluate(`(()=>{document.querySelector('[data-run="delivered"]').click();document.querySelector('[data-open-run]').click();document.querySelector('[data-request]').click();document.querySelector('[data-outcome="0"]').click();return opened})()`),[['run','delivered'],['request','request1'],['url','https://github.com/teamcsharp/gBox/pull/999']]);
