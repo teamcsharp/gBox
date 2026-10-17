@@ -50,3 +50,37 @@ def finalize_file(src: Path, dst: Path) -> dict:
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_bytes(out)
     return report
+
+
+def needs_finalize(data: bytes) -> bool:
+    """True when a written N64 image would hang in IPL3: odd cart size or stale header CRC."""
+    rom = n64_to_z64(data)
+    if len(rom) < 0x101000 or len(rom) % 0x100000:     # stock 12 MiB carts are fine; 12 MiB + 1996 is not
+        return True
+    return tuple(struct.unpack_from(">II", rom, 0x10)) != tuple(n64_crc(rom, n64_cic(rom)))
+
+
+def launch_image(image: Path) -> tuple[Path, dict | None]:
+    """Launch-side guard for built N64 mods (#2366).
+
+    Returns ``(path, report)``. A valid image is returned unchanged (report None). A stale one is
+    finalized into a hidden sibling folder beside the mod folder (not inside it: the mod folder's
+    file list is its manifest), keyed by the source size+mtime so it is rebuilt only when the mod
+    changes. The built mod itself is never edited.
+    """
+    image = Path(image)
+    data = image.read_bytes()
+    if not needs_finalize(data):
+        return image, None
+    st = image.stat()
+    out_dir = image.parent.parent / f".{image.parent.name}.n64final"
+    dst = out_dir / f"{st.st_size}-{st.st_mtime_ns}-{image.stem}.z64"
+    if dst.is_file() and not needs_finalize(dst.read_bytes()):
+        return dst, {"cached": True, "path": str(dst)}
+    out, report = finalize_bytes(data)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_suffix(".part")
+    tmp.write_bytes(out)
+    tmp.replace(dst)
+    report["path"] = str(dst)
+    return dst, report

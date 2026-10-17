@@ -39,3 +39,27 @@ def test_refuses_in_place(tmp_path):
     p = tmp_path / "a.z64"; p.write_bytes(_rom(4 * 2**20))
     with pytest.raises(ValueError):
         f.finalize_file(p, p)
+
+
+def test_launch_image_finalizes_copy_and_caches(tmp_path):
+    mod = tmp_path / "ge_mod"; mod.mkdir()
+    img = mod / "007.z64"; src = _rom(8 * 2**20 + 1996); img.write_bytes(src)
+    path, rep = f.launch_image(img)
+    assert path != img and path.parent.name == ".ge_mod.n64final"   # outside the manifest folder
+    assert img.read_bytes() == src                                  # built mod untouched
+    assert not f.needs_finalize(path.read_bytes()) and rep["crc_fixed"]
+    again, rep2 = f.launch_image(img)
+    assert again == path and rep2["cached"]
+    assert list(mod.iterdir()) == [img]
+
+
+def test_launch_image_passthrough_when_valid(tmp_path):
+    good, _ = f.finalize_bytes(_rom(8 * 2**20))
+    img = tmp_path / "ok.z64"; img.write_bytes(good)
+    assert f.launch_image(img) == (img, None)
+
+
+def test_valid_12mib_image_not_rewritten(tmp_path):
+    r = bytearray(_rom(12 * 2**20)); struct.pack_into(">II", r, 0x10, *n64_crc(bytes(r), "6102"))
+    img = tmp_path / "ge.z64"; img.write_bytes(bytes(r))
+    assert not f.needs_finalize(bytes(r)) and f.launch_image(img) == (img, None)
