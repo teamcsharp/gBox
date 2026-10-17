@@ -20,7 +20,7 @@ from pathlib import Path
 
 from . import gcfst, iso9660
 
-EXECUTABLE_NAMES = ("main.dol", "1st_read.bin", "default.xex", "eboot.bin", "boot.bin", "start.dol")
+EXECUTABLE_NAMES = ("main.dol", "1st_read.bin", "default.xbe", "default.xex", "eboot.bin", "boot.bin", "start.dol")
 
 
 @dataclass
@@ -76,6 +76,7 @@ def listing(path: str | Path, *, head: int = 64, max_files: int = 4000, exe_limi
     AFS, DATA.BIN or .IMG show their inner formats only there)."""
     p = Path(path)
     suf = p.suffix.lower()
+    from .. import rom_archives
     if p.is_dir():
         files = [{"path": q.relative_to(p).as_posix(), "size": q.stat().st_size} for q in sorted(p.rglob("*")) if q.is_file()]
 
@@ -83,40 +84,29 @@ def listing(path: str | Path, *, head: int = 64, max_files: int = 4000, exe_limi
             with open(p / name, "rb") as fh:
                 return fh.read(exe_limit if n is None else n)
         L = Listing(str(p), "folder", files)
-    elif suf == ".zip":
-        z = zipfile.ZipFile(p)
-        files = [{"path": i.filename, "size": i.file_size} for i in z.infolist() if not i.is_dir()]
+    elif rom_archives.is_archive(p):
+        files = [{'path': e['name'], 'size': e['size']} for e in rom_archives.members(p)]
 
         def read(name, n):
-            with z.open(name) as fh:
-                return fh.read(exe_limit if n is None else n)
-        L = Listing(str(p), "zip", files)
+            return rom_archives.prefix(p, name, exe_limit if n is None else n)
+        L = Listing(str(p), "zip" if suf == '.zip' else "archive", files)
+        isos = [f for f in files if f["path"].lower().endswith((".iso", ".xiso"))]
+        if len(isos) == 1:
+            img = isos[0]["path"]
+            try:
+                with rom_archives.open_member(p, img) as stream:
+                    xf, en, ex, nt = xdvdfs_stream_listing(stream, head=head, exe_limit=exe_limit, deep=deep,
+                                                          deep_bytes=deep_bytes, max_files=max_files)
+            except ValueError:
+                pass  # Other disc formats retain the ordinary archive member listing.
+            else:
+                return Listing(str(p), "xdvdfs", xf, ex, en, notes=[f"archive member {img}"] + nt)
         roms = [f for f in files if f["path"].lower().endswith((".z64", ".v64", ".n64"))]
         if roms:
             L.kind = "n64_rom"
             L.executable_name, L.executable = roms[0]["path"], read(roms[0]["path"], None)
             _n64_scan(L)
             return L
-    elif suf == ".7z":
-        files, read = _sevenzip(p, exe_limit)
-        isos = [f for f in files if f["path"].lower().endswith((".iso", ".xiso"))]
-        if len(isos) == 1:                                # Xbox disc image inside: walk XDVDFS in one stream pass
-            img = isos[0]["path"]
-            import subprocess
-            proc = subprocess.Popen([_sevenzip_bin(), "e", "-so", "-y", str(p), img],
-                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-            try:
-                xf, en, ex, nt = xdvdfs_stream_listing(proc.stdout, head=head, exe_limit=exe_limit, deep=deep,
-                                                       deep_bytes=deep_bytes, max_files=max_files)
-            except ValueError:
-                xf = None
-            finally:
-                proc.kill()
-                proc.wait()
-            if xf is not None:
-                L = Listing(str(p), "xdvdfs", xf, ex, en, notes=[f"7z member {img}"] + nt)
-                return L
-        L = Listing(str(p), "7z", files)
     elif suf in (".z64", ".v64", ".n64"):
         from .. import n64_rom
         L = Listing(str(p), "n64_rom", [], n64_rom.read(p), p.name)
@@ -204,61 +194,6 @@ def listing(path: str | Path, *, head: int = 64, max_files: int = 4000, exe_limi
         except Exception as e:                            # noqa: BLE001
             L.notes.append(f"executable not read: {type(e).__name__}: {e}")
     return L
-
-
-def _sevenzip_bin() -> str:
-    import shutil
-    for name in ("7z", "7za", "7zz", "7z.exe"):
-        b = shutil.which(name)
-        if b:
-            return b
-    raise ValueError("7z archive needs a 7z/7za/7zz executable on this node")
-
-
-def parse_7z_slt(text: str) -> list[dict]:
-    """Parse `7z l -slt` output into [{path, size}] for regular (non-folder) members."""
-    out, cur, started = [], {}, False
-    for line in text.splitlines() + [""]:
-        if line.startswith("----------"):
-            started, cur = True, {}
-            continue
-        if not started:
-            continue
-        if not line.strip():
-            if cur.get("Path") is not None and cur.get("Folder", "-") != "+" and "D" not in cur.get("Attributes", "")[:1]:
-                out.append({"path": cur["Path"].replace("\\", "/"), "size": int(cur.get("Size") or 0)})
-            cur = {}
-            continue
-        k, sep, v = line.partition(" = ")
-        if sep:
-            cur[k.strip()] = v
-    return out
-
-
-def _sevenzip(p: Path, exe_limit: int):
-    """List a .7z with the system 7z (read-only) and stream at most n bytes of a member to stdout."""
-    import subprocess
-    exe = _sevenzip_bin()
-    r = subprocess.run([exe, "l", "-slt", str(p)], capture_output=True, timeout=120)
-    if r.returncode != 0:
-        raise ValueError(f"{p.name}: 7z could not list it: {r.stderr.decode(errors='replace')[-300:]}")
-    files = parse_7z_slt(r.stdout.decode("utf-8", "replace"))
-
-    def read(name, n):
-        want = exe_limit if n is None else n
-        proc = subprocess.Popen([exe, "e", "-so", "-y", str(p), name], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        try:
-            buf = b""
-            while len(buf) < want:
-                chunk = proc.stdout.read(min(1 << 20, want - len(buf)))
-                if not chunk:
-                    break
-                buf += chunk
-            return buf
-        finally:
-            proc.kill()
-            proc.wait()
-    return files, read
 
 
 def _dol(read, off: int) -> bytes:

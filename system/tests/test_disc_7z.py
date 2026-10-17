@@ -5,37 +5,6 @@ import pytest
 
 from gbox.formats import disc
 
-SLT = r"""
-7-Zip [64] 16.02
-
-Listing archive: x.7z
-
---
-Path = x.7z
-Type = 7z
-
-----------
-Path = game
-Size = 0
-Attributes = D....
-Folder = +
-
-----------
-Path = game\default.xbe
-Size = 12
-Folder = -
-
-Path = game\media\a.bin
-Size = 3
-Folder = -
-"""
-
-
-def test_parse_slt_skips_folders_and_normalises_paths():
-    files = disc.parse_7z_slt(SLT)
-    assert files == [{"path": "game/default.xbe", "size": 12}, {"path": "game/media/a.bin", "size": 3}]
-
-
 @pytest.mark.skipif(not (shutil.which("7z") or shutil.which("7za")), reason="no 7z")
 def test_listing_7z_reads_members_and_executable(tmp_path):
     src = tmp_path / "src"
@@ -47,7 +16,7 @@ def test_listing_7z_reads_members_and_executable(tmp_path):
     subprocess.run([exe, "a", "-y", str(arc), "default.xbe", "media"], cwd=src, check=True, capture_output=True)
     before = arc.read_bytes()
     L = disc.listing(arc, head=8)
-    assert L.kind == "7z"
+    assert L.kind == "archive"
     paths = {f["path"]: f for f in L.files}
     assert paths["default.xbe"]["head"] == b"XBEH\0\0\0\0"
     assert paths["media/a.bin"]["size"] == 400
@@ -118,3 +87,22 @@ def test_listing_7z_with_single_xiso_member(tmp_path):
     assert L.kind == "xdvdfs" and L.executable_name == "default.xbe" and L.executable == xbe
     assert {f["path"] for f in L.files} == {"default.xbe", "Media/a.bin"}
     assert arc.read_bytes() == before
+
+
+def test_xbox_image_in_zip_uses_the_shared_stream_reader(tmp_path):
+    import zipfile
+    xbe = b"XBEH" + b"x" * 5000
+    arc = tmp_path / "game.zip"
+    with zipfile.ZipFile(arc, "w") as archive:
+        archive.writestr("game.iso", _xiso({"default.xbe": xbe}, {}))
+    result = disc.listing(arc, head=4)
+    assert result.kind == "xdvdfs" and result.executable == xbe
+
+
+def test_non_xbox_archive_retains_member_listing(tmp_path):
+    import zipfile
+    arc = tmp_path / "game.zip"
+    with zipfile.ZipFile(arc, "w") as archive:
+        archive.writestr("game.iso", b"other disc format")
+    result = disc.listing(arc, head=4)
+    assert result.kind == "zip" and result.files[0]["head"] == b"othe"
