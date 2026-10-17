@@ -140,3 +140,38 @@ def test_draft_enrollment_never_acknowledges_feedback_or_builds():
     assert r.status_code==200 and r.json()['state']=='needs_review'
     assert r.json()['requests_ack']=={} and r.json()['reviewed'] is False
     c.tick();advance(100);c.tick();assert not calls
+
+
+def test_real_submission_defaults_preserve_reservation(monkeypatch):
+    from gbox.characters import CharIn
+    s,w,c,calls,advance=rig()
+    original=c.submit
+    def submit(body,key):
+        return original(body | {'input':CharIn.model_validate(body['input']).model_dump(mode='json')},key)
+    c.submit=submit;c.tick();advance(11);c.tick();job=calls[0]
+    run=s.all(I.RUN)[0]
+    assert run['input_digest']==I.digest(job['input'])
+    w['resources']['sampled_at']=time.time()
+    monkeypatch.setattr(I,'dependencies',lambda _: {'gbox/cast_swap.py':'a'})
+    assert I.claim_reason(s,w,job) is None
+
+
+def test_legacy_sparse_reservation_is_bound_to_exact_reviewed_plan(monkeypatch):
+    s,w,c,calls,advance=rig();c.tick();advance(11);c.tick();job=calls[0]
+    run=s.all(I.RUN)[0];p=s.get(I.PLAN,'g')
+    run['input_digest']=I.digest(I.build_input(p,run['id'],normalized=False));s.put(I.RUN,run['id'],run)
+    w['resources']['sampled_at']=time.time()
+    monkeypatch.setattr(I,'dependencies',lambda _: {'gbox/cast_swap.py':'a'})
+    assert I.claim_reason(s,w,job) is None
+    for changed in [{'launch':True},{'source':'different'},{'scale':{'x':2}},{'unknown':True},{'mod_name':'other'}]:
+        assert 'recipe' in I.claim_reason(s,w,job | {'input':job['input'] | changed})
+    p['recipe']['input']['source']='different';s.put(I.PLAN,'g',p)
+    assert 'recipe' in I.claim_reason(s,w,job)
+
+
+def test_arbitrary_reservation_digest_cannot_authorize_job():
+    s,w,c,calls,advance=rig();c.tick();advance(11);c.tick();job=calls[0]
+    run=s.all(I.RUN)[0];p=s.get(I.PLAN,'g')
+    changed=job | {'input':job['input'] | {'source':'unreviewed'}}
+    run['input_digest']=I.digest(changed['input'])
+    assert not I.reservation_matches(p,run,changed)

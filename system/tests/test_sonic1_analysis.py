@@ -9,7 +9,7 @@ import pytest
 from gbox import sonic1_analysis as A
 from gbox import sonic1_inventory as I
 
-ROM = Path(os.path.expanduser('~/gbox-cache/1fff93531f10c256/rom.bin'))
+ROM = Path(os.environ.get('GBOX_SHADOW_SONIC1_SRC', Path.home() / 'gbox-cache/1fff93531f10c256/source.zip'))
 ROM_SHA = 'a22564d49d28bfab70e2046b1c08d7a6a19f6bf4183491e0280ef916fb4863ce'
 
 
