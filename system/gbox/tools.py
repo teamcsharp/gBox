@@ -328,7 +328,7 @@ class LaunchIn(BaseModel):
     debug: bool = False                    # prefer an emulator with a full CPU debugger (registers/breakpoints)
     mod: str = ""                          # launch a file mod built with file_mod (folder games, e.g. PS3)
     mod_title: str = ""                    # the operator's name for that build (labels only: launch bar, loader)
-    examine:bool | None = None            # RenderDoc inside the emulator for Examine 3D (None = config examine_ready)
+    examine: bool | None = None            # RenderDoc inside the emulator for Examine 3D (None = config examine_ready, off by default)
     rewind: bool | None = None             # Select+L2 checkpoint rewind where the emulator has no native one (None = gbox.toml [rewind])
     keep_session: str = ""                 # game_link: launch alongside the named live session instead of closing games first
     capture_backend: str = ""              # Examine 3D capture session (#971): "auto" | "vulkan" | "glcore"; agent-owned,
@@ -630,6 +630,20 @@ def _capture_plan(ad, g, want: str, ctx) -> dict:
     return plan | {"renderdoc": str(rd)}
 
 
+def _examine_for_launch(inp_examine, examine_ready, host_os):
+    """RenderDoc injection (Examine 3D) is opt-in for normal gameplay. Injecting renderdoc.dll
+    into every Windows launch hung Dolphin's D3D12 renderer: Soul Calibur II froze ~70 s into
+    attract mode with 0% GPU / 0.1% CPU and renderdoc.dll loaded (#1973). A scene capture that
+    needs RenderDoc relaunches a dedicated capture session through scene_support.relay() (Vulkan
+    layer, no injection), so gameplay never needs RenderDoc resident. Explicit inp.examine and
+    the config examine_ready flag remain the two opt-in routes."""
+    if host_os != "windows":
+        return False
+    if inp_examine is not None:
+        return bool(inp_examine)
+    return bool(examine_ready)
+
+
 def _launch_game(inp: LaunchIn, ctx: Ctx):
     g = inp.game
     launch_mod = inp.mod
@@ -658,7 +672,7 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     if inp.boot_timeout_s:
         ad.boot_timeout_s = float(inp.boot_timeout_s)
     ad.game_id, ad.serial = g.game_id, g.serial            # per-game settings (graphics) applied at launch
-    ad.examine = HOST_OS == "windows" and (inp.examine if inp.examine is not None else ctx.config.examine_ready)
+    ad.examine = _examine_for_launch(inp.examine, ctx.config.examine_ready, HOST_OS)
     if inp.capture_backend:
         ad.capture_backend = _capture_plan(ad, g, inp.capture_backend, ctx)
         ad.examine = True
