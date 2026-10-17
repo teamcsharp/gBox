@@ -108,6 +108,7 @@ def reconcile(api, *, gh=_gh, carriers=_carriers, now=None, force=False):
         return {'skipped': 'interval'}
     finished = saved.setdefault('finished', {})
     posted, errors, open_prs = [], [], 0
+    backfilled = 0
     for record in _records(root):
         rid = record.get('request_id')
         current = pr_number(record)
@@ -122,11 +123,24 @@ def reconcile(api, *, gh=_gh, carriers=_carriers, now=None, force=False):
         texts = [m.get('text') or '' for m in report.get('messages', [])]
         numbers = {int(n) for t in texts for n in PUBLISHED.findall(t)} | {current}
         done |= {int(n) for t in texts for n in NOTICE.findall(t)}
-        for number in sorted(numbers - done):
+        unseen = {n for n in numbers if str(n) not in saved.get('observations', {})}
+        # Migrate existing notices without reposting them or fetching every old
+        # PR in one pass. The ordinary open-PR reconciliation remains unchanged.
+        backfill = set(sorted(unseen & done)[:max(0, 20 - backfilled)])
+        backfilled += len(backfill)
+        for number in sorted((numbers - done) | backfill):
             try:
                 pull = gh(number)
             except Exception as error:
                 errors.append(f'#{number}: {error}')
+                continue
+            # Preserve the exact GitHub observation for the read-only device
+            # evidence view. A notice string alone cannot prove head identity.
+            saved.setdefault('observations', {})[str(number)] = {
+                key: pull.get(key) for key in ('number', 'state', 'mergedAt', 'closedAt',
+                    'mergeCommit', 'headRefOid', 'baseRefName', 'url')}
+            saved['observations'][str(number)]['observed_at'] = now
+            if number in done:
                 continue
             text = notice(pull, record, carriers)
             if text is None:
