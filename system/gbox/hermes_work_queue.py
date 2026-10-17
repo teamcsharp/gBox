@@ -105,7 +105,11 @@ def sync(data, favorites, requests, *, now):
             'last_dispatched': 0, 'created': now})
         item.update(title=game.get('title') or gid, platform=game.get('platform'),
                     favorite=True, in_catalog=game.get('in_catalog') is True)
-        if gid in children:
+    # Non-favorite showcase games also own durable child requests. Recover a
+    # lost POST response for them before a dispatcher can create a duplicate.
+    for item in data['items'].values():
+        gid = item.get('game_id')
+        if item['lane'] == 'favorite' and gid in children:
             item.update(request_id=children[gid]['id'], number=children[gid]['number'])
             item.pop('request_uncertain', None)
     for request in requests:
@@ -397,10 +401,15 @@ def _prompt(item, playing=None):
                        'or successful tool exit is not completion. Require gameplay evidence of the actual '
                        'replacement, animations and controls. Record exact pending job IDs and the next step; '
                        'keep the request open until verified, or name a concrete external blocker. ')
+            if ID.fullmatch(str(item.get('game_id') or '')):
+                from .native_engineering import prompt
+                header += '\n' + prompt(item['game_id'], stage=None) + '\n'
         header += ('Its published branch is recorded on main. Confirm the exact deployed files and perform '
                    'the outstanding acceptance check before writing more source. ' if item.get('on_main') else '')
         return header + mode._handoff()
     stage = next_stage(item)
+    from .native_engineering import prompt
+    engineering = prompt(item['game_id'], stage=stage, fingerprint=item.get('fingerprint'))
     template = Path(__file__).resolve().parents[1] / 'hermes/gbox/FAVORITE_WORK.md'
     fp = item.get('fingerprint') or {}
     hint = ''
@@ -412,7 +421,7 @@ def _prompt(item, playing=None):
                 '\nNo fingerprint yet: run assimilate op=fingerprint for this game_id first (start_job).')
     return header + f"\nGame: {item['title']} ({item['platform']}), game_id={item['game_id']}. " + (
         f"Next unfinished stage: {stage}. Preserved checkpoint: " + json.dumps(item.get('stages', {}))
-        + hint + '\n' + template.read_text(encoding='utf-8') + mode._handoff())
+        + hint + '\n' + engineering + '\n' + template.read_text(encoding='utf-8') + mode._handoff())
 
 
 FINGERPRINT = None  # (game_id, title, platform, api=) -> compact dict; None = gbox.assimilate.ticket_fingerprint
@@ -665,19 +674,31 @@ def ensure_item(game, *, fingerprint=None, source='showcase', now=None):
 
 
 def snapshot(game_id=''):
+    from .native_engineering import plan
+    if game_id and not ID.fullmatch(str(game_id)):
+        raise ValueError('Invalid game ID')
     data = _read()
     games = [{k: item.get(k) for k in ('game_id', 'title', 'platform', 'in_catalog', 'request_id',
-             'number', 'dispatch_state', 'job_id', 'attempts', 'retry_at', 'stages')}
+             'number', 'dispatch_state', 'job_id', 'attempts', 'retry_at', 'stages', 'favorite', 'showcase')}
              | {'next_stage': next_stage(item)} for item in data['items'].values()
-             if item['lane'] == 'favorite' and item.get('favorite')]
-    count, ready = len(games), sum(g['next_stage'] is None for g in games)
+             if item['lane'] == 'favorite' and (item.get('favorite') or item.get('showcase')
+                                               or game_id and item['game_id'] == game_id)]
+    count = sum(bool(g.get('favorite')) for g in games)
+    ready = sum(bool(g.get('favorite')) and g['next_stage'] is None for g in games)
+    queued_count = len(games)
     if game_id:
         games = [g for g in games if g['game_id'] == game_id]
     else:
         games = [{k: v for k, v in g.items() if k != 'stages'} |
                  {'stages': {k: v.get('status') for k, v in (g.get('stages') or {}).items()}} for g in games]
-    return {'synced_at': data.get('synced_at'), 'favorites': count,
-            'verified_native_replacement': ready, 'games': games}
+    result = {'synced_at': data.get('synced_at'), 'favorites': count, 'tracked_games': queued_count,
+              'verified_native_replacement': ready, 'games': games}
+    if game_id:
+        item = data['items'].get('favorite:' + game_id)
+        result['engineering'] = plan(game_id, stage=next_stage(item) if item else 'inventory',
+                                     fingerprint=(item or {}).get('fingerprint'))
+        result['queued'] = item is not None
+    return result
 
 
 def checkpoint(game_id, request_id, stage, status, note, *, source_sha256='', artifacts=(), next_step='', now=None):

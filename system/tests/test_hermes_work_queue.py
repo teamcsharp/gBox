@@ -52,6 +52,55 @@ def test_recover_lost_child_creation_from_durable_context(env):
     assert 'inbox:' + R not in env['items']
 
 
+def test_nonfavorite_child_recovery_and_exact_game_snapshot(env):
+    q.ensure_item(favorite(), now=1)
+    data = q._read()
+    data['items']['favorite:' + G]['request_uncertain'] = True
+    child = request(context={'hermes_favorite_game': G}, automated=True, parent_request_id=P)
+    q.sync(data, {'count': 0, 'items': []}, [child], now=2)
+    q._save(data)
+    item = data['items']['favorite:' + G]
+    assert item['request_id'] == R and 'request_uncertain' not in item
+    assert 'inbox:' + R not in data['items']
+    assert len(q.candidates(data, [child], [], set(), set(), now=3)) == 1
+    result = q.snapshot(G)
+    assert result['favorites'] == 0 and result['tracked_games'] == 1
+    assert result['games'][0]['game_id'] == G and result['queued']
+    assert result['engineering']['next_stage'] == 'inventory'
+    assert q.snapshot()['games'][0]['game_id'] == G
+
+
+def test_unqueued_game_has_plan_without_mutating_queue(env):
+    before = q._read()
+    result = q.snapshot(G)
+    assert result['games'] == [] and result['queued'] is False
+    assert result['engineering']['game_id'] == G
+    assert set(result['engineering']['stages']) == set(q.STAGES)
+    assert q._read() == before
+    with pytest.raises(ValueError, match='Invalid game ID'):
+        q.snapshot('../not-a-game')
+
+
+def test_nonfavorite_verification_does_not_inflate_favorite_count(env):
+    q.ensure_item(favorite(), now=1)
+    data = q._read()
+    data['items']['favorite:' + G]['stages'] = {s: {'status': 'verified'} for s in q.STAGES}
+    q._save(data)
+    result = q.snapshot()
+    assert result['verified_native_replacement'] == 0 and result['favorites'] == 0
+    assert result['tracked_games'] == 1 and result['games'][0]['next_stage'] is None
+
+
+def test_favorite_and_repair_prompts_include_engineering_contract(env):
+    q.sync(env, {'count': 1, 'items': [favorite()]}, [], now=1)
+    item = env['items']['favorite:' + G]
+    item.update(request_id=R, number=5, stages={s: {'status': 'verified'} for s in ('inventory', 'analysis', 'reader')})
+    text = q._prompt(item)
+    assert 'char_coverage.WRITERS' in text and 'read it back independently' in text
+    text = q._prompt({'lane': 'inbox', 'request_id': R, 'number': 5, 'repair': True, 'game_id': G})
+    assert 'native-reader-writer' in text and 'truncated names' in text
+
+
 def test_pending_native_and_active_ownership_suppress_duplicates(env):
     child = request(context={'hermes_favorite_game': G})
     q.sync(env, {'count': 1, 'items': [favorite()]}, [child], now=1)
