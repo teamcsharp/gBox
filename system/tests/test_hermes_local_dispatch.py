@@ -105,6 +105,43 @@ def test_local_route_waits_while_the_operator_plays(monkeypatch, tmp_path):
     assert out['status'] == 'waiting_for_operator' and 'Soulcalibur' in out['reason'] and calls == []
 
 
+def test_dedicated_local_route_dispatches_large_inbox_work_and_respects_checkbox(monkeypatch, tmp_path):
+    reqs = [{'id': P, 'number': 1, 'title': 'parent', 'status': 'open'},
+            {'id': 'b' * 16, 'number': 5, 'title': 'Write the verified unlock writer', 'status': 'open'},
+            {'id': 'd' * 16, 'number': 6, 'title': 'Fix the emulator launch', 'status': 'open'}]
+    calls = _env(monkeypatch, tmp_path, reqs, [])
+    dedicated = S.model_copy(update={'host_name': 'sparkDeux', 'max_parallel_jobs': 2,
+                                     'allow_large_tasks': True, 'shared_with_games': False})
+    monkeypatch.setattr(hermes_local, 'settings', lambda: dedicated)
+    out = q.tick(now=1000)
+    assert len(out['dispatched']) == 2 and out['capacity'] == 2 and out['deferred_for_paid_route'] == 0
+    assert all('one concrete, reviewable milestone' in c[2] for c in calls)
+    monkeypatch.setattr(q.mode, '_job', lambda: {'enabled': False, 'no_agent': True})
+    assert q.tick(now=1100)['status'] == 'disabled_or_legacy_controller' and len(calls) == 2
+
+
+def test_pool_pins_each_host_and_keeps_durable_handoff(monkeypatch, tmp_path):
+    from gbox import hermes_pool as pool
+    reqs = [{'id': P, 'number': 1, 'title': 'parent', 'status': 'open'}] + [
+        {'id': str(n)*16, 'number': n, 'title': 'Fix typo' if n == 1 else 'Implement verified game reader', 'status': 'open'}
+        for n in range(1, 7)]
+    calls = _env(monkeypatch, tmp_path, reqs, [])
+    s = S.model_copy(update={'nodes': {'lilspark': {'provider': 'prime', 'max_parallel_jobs': 1},
+        'sparkDeux': {'provider': 'second', 'model': 'large', 'max_parallel_jobs': 4,
+                      'shared_with_games': False, 'allow_large_tasks': True}}})
+    monkeypatch.setattr(hermes_local, 'settings', lambda: s)
+    original = q._api
+    monkeypatch.setattr(q, '_api', lambda path, body=None: {'capacity': 5, 'nodes': [
+        {'name': name, 'primary': v.shared_with_games, 'enabled': True, 'capable': True, 'capacity': v.max_parallel_jobs}
+        for name, v in pool.node_settings().items()]} if path == '/api/hermes/local/nodes' else original(path, body))
+    out = q.tick(now=1000)
+    assert [d['inference_node'] for d in out['dispatched']] == ['lilspark'] + ['sparkDeux']*4
+    assert [c[c.index('--provider')+1] for c in calls] == ['prime'] + ['second']*4
+    assert all('Read the latest request checkpoints' in c[2] for c in calls)
+    assert sum(i.get('inference_node') == 'sparkDeux' for i in q._read()['items'].values()) == 4
+    assert q.tick(now=1010)['dispatched'] == []
+
+
 def test_local_policy_and_the_stream_stability_gate_both_apply(monkeypatch, tmp_path):
     reqs = [{'id': P, 'number': 1, 'title': 'parent', 'status': 'open'},
             {'id': 'd' * 16, 'number': 6, 'title': 'Fix the typo in the inbox tooltip', 'status': 'open', 'created': 2}]

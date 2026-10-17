@@ -65,7 +65,8 @@
       + (local.refused_while_playing ? ` · ${local.refused_while_playing} held while you played` : "")
       + (local.trimmed_calls ? ` · ${local.trimmed_calls} trimmed to fit` : "");
     return `<div class="tkp-local ${on ? "active" : "standby"}" data-tkp-local="${on ? "active" : "standby"}">
-      <b>${on ? "Hermes is on the local model" : "Local fallback ready"}</b><span class="tkp-tag local">${esc(local.provider)} · ${esc(local.model)}</span>
+      <b>${on ? "Hermes is on the local model" : "Local fallback ready"}</b><span class="tkp-tag local">${esc(local.host_name || local.provider)} · ${esc(local.model)}</span>
+      ${local.upstream ? `<span class="tkp-local-host" title="${esc(local.upstream)}">${esc(local.api_format === "openai" ? "vLLM / OpenAI API" : "Ollama")} · ${esc(local.capacity || 1)} concurrent runs</span>` : ""}
       <span class="tkp-local-why">${esc(why + next)}</span><span class="tkp-local-stats">${esc(stats)}</span></div>`;
   }
   // The Spark helper's card: "Spark helper: doing X", or why it waits, and its last finished chore.
@@ -84,6 +85,29 @@
   function errorLine(err, now) {
     return err ? `<div class="tkp-error" title="${esc(err.text)}">${esc(String(err.text).slice(0, 110))} · ${ago(err.ts, now)}</div>` : "";
   }
+  function poolCards(pool) {
+    if (!pool?.nodes?.length) return "";
+    const cards = pool.nodes.map(n => `<article class="tkp-card ${n.active ? "working" : "idle"}" data-tkp-machine="${esc(n.name)}">
+      <header><b>${esc(n.name)}</b><label><input type="checkbox" data-tkp-node="${esc(n.name)}" ${n.enabled ? "checked" : ""} aria-label="Enable ${esc(n.name)} for tasks"> Active</label></header>
+      <div class="tkp-model" title="${esc(n.upstream)}">${esc(n.model)}</div>
+      <div class="tkp-status">${esc(n.reason || (n.capable ? "Ready" : "Unavailable"))}</div>
+      <dl><div><dt>Inference now</dt><dd>${n.active || 0} / ${n.capacity || 1}</dd></div>
+      <div><dt>Waiting calls</dt><dd>${n.waiting || 0}</dd></div><div><dt>Calls today</dt><dd>${n.calls_ok || 0}</dd></div>
+      <div><dt>Tokens today</dt><dd>${tokens(n.tokens)}</dd></div></dl>
+      <div class="tkp-model">${n.primary ? "First choice when memory is available" : "Dedicated to heavier concurrent work; hands off to prime"}</div>
+      ${n.kv_cache_fraction != null ? `<div class="tkp-model">vLLM: ${n.running_requests || 0} running · ${Math.round(n.kv_cache_fraction * 100)}% KV cache</div>` : ""}
+      </article>`).join("");
+    const m = pool.model_management, rec = m?.recommendation, job = m?.job;
+    const busy = ["queued", "downloading", "draining", "starting"].includes(job?.state);
+    const suggestion = rec ? `<details data-tk-key="tkp-model-recommendation" ${rec.current ? "" : "open"}>
+      <summary>${esc(rec.title)}: ${esc(rec.model)}</summary><p>${esc(rec.reason)} <a href="${esc(rec.source)}" target="_blank" rel="noopener">NVIDIA recipe</a></p>
+      <p>Start uses a 90% GPU memory budget, 64k context and four concurrent sequences. The current model drains first and is restored if validation fails.</p>
+      <button type="button" data-tkp-model="pull" data-model="${esc(rec.model)}" ${busy || !m.access?.ready ? "disabled" : ""}>${rec.downloaded ? "Refresh download" : "Pull to sparkDeux"}</button>
+      <button type="button" data-tkp-model="start" data-model="${esc(rec.model)}" ${busy || !m.access?.ready || !rec.downloaded || rec.current ? "disabled" : ""}>Start vLLM · 90% memory</button>
+      <span role="status">${esc(job?.state ? `${job.state}${job.error ? ": " + job.error : ""}` : m.access?.reason || "")}</span></details>` : "";
+    return `<div data-tkp-pool><div class="tkp-head"><b>Local task machines</b><span>Up to ${pool.capacity || 0} runs · shared checkpoints on lilspark</span></div>
+      <div class="tkp-cards">${cards}</div>${suggestion}</div>`;
+  }
   // Visual tab: the recommendation and one card per route.
   function cards(data, opts = {}) {
     const win = opts.window || data?.window || "today", now = opts.now;
@@ -100,7 +124,7 @@
         <div class="tkp-balance" title="${esc(credit)}">${esc(credit)}</div>${errorLine(r.last_error, now)}</article>`;
     }).join("") || '<p class="tkp-empty">No Hermes routes or model calls found on the server.</p>';
     return `<div class="tkp-head"><b>Providers · ${esc(data.window_label || win)}</b>${windowButtons(win)}<span class="tkp-rec">${esc(data.recommendation || "")}</span></div>
-      ${localBanner(data.local, now)}<div class="tkp-cards">${gruntCard(data.grunt, now)}${body}</div>`;
+      ${poolCards(data.pool)}${localBanner(data.local, now)}<div class="tkp-cards">${gruntCard(data.grunt, now)}${body}</div>`;
   }
   // Technical tab: the same numbers as a table, per provider and per route, plus recent run attribution.
   function table(data, opts = {}) {
@@ -128,7 +152,7 @@
         <td>${c.last_run ? ago(c.last_run, now) : '<span class="mut">never</span>'}</td><td>${esc(c.last_status || "")}</td>
         <td class="tkp-err">${esc(JSON.stringify(c.last_result || {}).slice(0, 160))}</td></tr>`).join("") : "";
     return `<div class="mc tkp-tech"><div class="mh"><b>Hermes providers · ${esc(data.window_label || win)}</b>${windowButtons(win)}</div>
-      ${localBanner(data.local, now)}
+      ${poolCards(data.pool)}${localBanner(data.local, now)}
       <p class="tkp-rec">${esc(data.recommendation || "")}</p>
       ${g ? `<details data-tk-key="tkp-grunt"><summary>${esc(g.label || "Spark helper")}</summary>
         <table><tr><th>Chore</th><th>Last run</th><th>Result</th><th>Details</th></tr>${chores}</table></details>` : ""}
@@ -137,5 +161,5 @@
       ${runs ? `<details data-tk-key="tkp-runs"><summary>Recent runs and who served them (${data.runs_total || 0} in window${data.runs_unattributed ? `, ${data.runs_unattributed} without a successful call` : ""})</summary>
         <table><tr><th>Started</th><th>Job</th><th>Served by</th><th>Status</th><th>Tokens</th><th>Wall</th><th>Fell through</th></tr>${runs}</table></details>` : ""}</div>`;
   }
-  root.GBoxProviders = { cards, table, runLabel, balance, tokens, duration, ago, STATE, localBanner, gruntCard };
+  root.GBoxProviders = { cards, table, runLabel, balance, tokens, duration, ago, STATE, localBanner, gruntCard, poolCards };
 })(typeof window !== "undefined" ? window : globalThis);

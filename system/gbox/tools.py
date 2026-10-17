@@ -634,6 +634,7 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     g = inp.game
     launch_mod = inp.mod
     timings, staging = {}, None
+    unlock_result = {'state': 'research_pending', 'applied': False}
     diag = getattr(_LAUNCH_DIAG, "d", None)
     diag = {} if diag is None else diag
     diag["timings"] = timings                                 # filled as the stages pass (a failure shows how far it got)
@@ -699,14 +700,10 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
             ad.serial = ad.serial or catalog.ps3_title_id(eboot)    # per-game RPCS3 config (Sessions -> Graphics)
             ctx.progress(8, f"PS3 game: {eboot}")
             src = eboot
-        if g.game_id == "0871eee3b68cdea3":                # Resident Evil 6 (X360): boot profile "Everything unlocked"
-            try:
-                from . import re6_tool
-                pre = re6_tool.pre_launch(ctx, inp.mod)
-                if (pre.get("unlock") or {}).get("bytes_changed"):
-                    ctx.progress(18, "RE6 save: everything unlocked (original backed up)")
-            except Exception as e:                         # noqa: BLE001 - never block the launch
-                print(f"gBox: re6 pre-launch failed: {e}", flush=True)
+        from . import game_unlocks
+        unlock_result = game_unlocks.pre_launch(g.model_dump(), ctx, inp.mod)
+        if unlock_result.get('applied'):
+            ctx.progress(18, 'Applying verified on-load unlock profile (original save backed up)')
         if inp.mod:
             from . import filemods
             if not (filemods.mod_dir(ctx.config, g.game_id, inp.mod) / ".gbox-mod.json").exists() and ctx.server:
@@ -770,6 +767,7 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     lap("emulator_start_s")                                   # the adapter returns once the content runs (first frames)
     timings["total_s"] = round(time.monotonic() - t_start, 3)
     detail["timings"] = timings                               # #1506: where a launch's time went, per stage
+    detail['unlocks'] = unlock_result
     if staging is not None:
         detail["staging"] = staging
     ctx.progress(100, "Running natively in its own window" if detail.get("local_window") else "Running — connecting the stream")

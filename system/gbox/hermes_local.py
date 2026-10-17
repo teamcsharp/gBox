@@ -70,7 +70,8 @@ def route(s=None) -> dict:
 
 def is_local(item, s=None) -> bool:
     s = s or settings()
-    return isinstance(item, dict) and str(item.get('provider') or '').casefold() == s.provider.casefold()
+    providers = {s.provider.casefold(), *(str(n.get('provider', '')).casefold() for n in s.nodes.values())}
+    return isinstance(item, dict) and str(item.get('provider') or '').casefold() in providers
 
 
 # ---------------------------------------------------------------------------------------------- operator switch
@@ -293,6 +294,14 @@ def local_prompt(prompt: str, s=None) -> str:
     budget, reserve = max(6, int(s.tool_budget)), max(3, min(6, int(s.tool_budget) // 3))
     prompt = re.sub(r'Use a \d+-tool-call work budget with the final \d+ calls',
                     f'Use a {budget}-tool-call work budget with the final {reserve} calls', prompt)
+    if s.allow_large_tasks:
+        return (f'LOCAL MODEL RUN ({s.provider} on {s.host_name}; {s.model}). '
+                f'Use at most {budget} tool calls, reserving the last {reserve} for tests and a durable checkpoint. '
+                'Work the assigned inbox request through one concrete, reviewable milestone. Use bounded searches '
+                'and reuse existing analysis artifacts. For larger work, preserve exact job IDs, findings and the '
+                'next step so the next local run can continue. Publish tested changes through the task workspace. '
+                'Close a request only after its acceptance criteria are verified; otherwise record progress. '
+                'Protect operator gameplay and preserve original games and saves. ' + prompt)
     return (f'LOCAL MODEL RUN ({s.provider} · {s.model} on the Spark GPU; paid routes are out of credit). '
             f'Keep this run small: at most {budget} tool calls, the last {reserve} for focused tests, '
             'publish_task_changes and the final reply. Change at most one source file plus its focused test. '
@@ -337,6 +346,8 @@ def status(s=None) -> dict:
     feedback = _feedback()
     mode = feedback.get('local_mode') or {}
     return {'enabled': s.enabled, 'provider': s.provider, 'model': s.model, 'proxy_url': s.proxy_url,
+            'host_name': s.host_name, 'api_format': s.api_format, 'max_parallel_jobs': s.max_parallel_jobs,
+            'allow_large_tasks': s.allow_large_tasks,
             'upstream': s.upstream, 'context_tokens': context_limit(s), 'local_only': local_only(s),
             'active': active(feedback, s), 'reason': mode.get('reason'), 'since': mode.get('since'),
             'next_paid_at': mode.get('next_paid_at'), 'current_route': feedback.get('current_route')}
@@ -352,6 +363,9 @@ def pr_note(checks: list[str], s=None) -> tuple[str, str]:
         word = 'errors' if word == 'error' else word
         counts[word] = counts.get(word, 0) + int(n)
     summary = ', '.join(f'{v} {k}' for k, v in counts.items()) or ('no Python tests ran' if not text.strip() else 'see validation')
+    if s.allow_large_tasks:
+        return (f'Produced by Hermes using the local model {s.model} on {s.host_name} ({s.provider}). '
+                'Review the recorded tests and acceptance evidence.', 'Test summary: ' + summary)
     head = (f'Produced by Hermes on the Spark\'s local model ({s.provider} · {s.model}) while the paid routes were '
             'out of credit. Review it as a draft from a small model.')
     return head, 'Test summary: ' + summary

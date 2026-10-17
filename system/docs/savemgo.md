@@ -10,7 +10,7 @@ and `mgo` find this same entry in Library and Home.
 Play selects a Windows worker and uses the package's custom `rpcs3.exe`, with
 `--no-gui` and `dev_hdd0/game/NPMG00010/USRDIR/EBOOT.BIN`, from its portable home.
 The companion `NPMG00020` game data and bundled firmware/configuration stay with
-that executable. Generic RPCS3 provisioning, updates, graphics/pad rewrites and
+that executable. Generic RPCS3 provisioning, updates, graphics rewrites and
 RenderDoc injection are bypassed. The existing `E:\_downloads\SaveMGO` copy is
 left untouched.
 
@@ -22,10 +22,28 @@ several minutes. Later launches reuse the local home, rehash the runner and DLLs
 check critical game/firmware identity and validate cached bulk-file metadata.
 Changed bulk files are rehashed. Changes to the source archive require a rescan.
 
+After the bundled launcher updates itself, gBox accepts a newer NPMG00010 launcher
+only when all five installed update files match its local downloaded ZIP. The
+first acceptance rehashes the original immutable files, retains the original
+receipt, and records a separate update receipt. Later launches verify that receipt.
+The launcher status file in `dev_hdd0/tmp/mgo_launcher.txt` remains mutable.
+This verifies the locally applied payload, not a vendor signature. Emulator DLLs,
+firmware retain their original integrity requirements. Already-applied NPMG00020
+data updates can use a separate `.gbox-savemgo-data-update.json` receipt after an
+explicit byte comparison against `https://cdn.mgo2.net/`. Its scope is existing
+USRDIR files and `plugin.sprx`, bound to the original archive fingerprint/hash.
+Updated files are SHA-256 checked on every launch. Unknown later changes still
+fail verification; launcher log entries alone never authorize an update.
+
 Each PC retains its own mutable configuration, shader cache and user data. A
 process-lifetime lease prevents two games sharing the same writable home on one
 PC. Runtime homes on UNC shares or mapped network drives are rejected. No account
 settings, saved games or credentials are included in asset extraction reports.
+If the stock profile selects `DualSense Wireless Controller 1` and Windows has an
+XInput pad, player one binds to the first connected XInput slot. Face buttons map
+A/B/X/Y to Cross/Circle/Square/Triangle. The original profile is backed up beside
+it; custom profiles and other player settings are retained. gBox draws the PS3
+controller from the session platform independently of the physical input device.
 Normal native controller handling stays with the supplied emulator. Memory writes,
 save-state rewind and draw-call capture are not advertised for this custom fork.
 

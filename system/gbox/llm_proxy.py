@@ -405,17 +405,20 @@ class LocalLLM:
         self.totals = {'calls': 0, 'ok': 0, 'failed': 0, 'gated': 0, 'busy': 0, 'prompt_tokens': 0,
                        'completion_tokens': 0, 'fixed': 0, 'trimmed': 0}
 
-    def _lock(self) -> asyncio.Lock:
-        """The single model slot, bound to the serving event loop (uvicorn runs one)."""
+    def _lock(self) -> asyncio.Semaphore:
+        """Inference capacity, bound to the serving event loop (uvicorn runs one)."""
         loop = asyncio.get_running_loop()
         with self._mu:
             if self._slot is None or self._slot[0] is not loop:
-                self._slot = (loop, asyncio.Lock())
+                self._slot = (loop, asyncio.Semaphore(self.settings().max_parallel_jobs))
             return self._slot[1]
 
     def _client(self, s) -> httpx.AsyncClient:
         timeout = httpx.Timeout(s.request_timeout_s, connect=10.0)
-        return httpx.AsyncClient(base_url=s.upstream.rstrip('/'), timeout=timeout, transport=self.transport)
+        key = os.environ.get(s.upstream_key_env, '') if s.upstream_key_env else ''
+        headers = {'Authorization': 'Bearer ' + key} if key else {}
+        return httpx.AsyncClient(base_url=s.upstream.rstrip('/') + '/', timeout=timeout,
+                                 transport=self.transport, headers=headers)
 
     # -- logging
     def log(self, record: dict) -> None:
@@ -443,6 +446,8 @@ class LocalLLM:
 
     # -- gate
     def gate_reason(self):
+        if not self.settings().shared_with_games:
+            return None
         try:
             return self.gate()
         except Exception:                          # noqa: BLE001 - an unknown state never blocks Hermes forever
@@ -450,7 +455,7 @@ class LocalLLM:
 
     async def _maybe_unload(self, s):
         """The operator started playing: free the GPU memory the model holds (Ollama keep_alive 0), once."""
-        if not self.last_call_at or self.unloaded_at >= self.last_call_at:
+        if s.api_format != 'ollama' or not self.last_call_at or self.unloaded_at >= self.last_call_at:
             return
         self.unloaded_at = self.clock()
         with contextlib.suppress(Exception):
@@ -462,6 +467,7 @@ class LocalLLM:
         with self._mu:
             totals = dict(self.totals)
         return {'enabled': s.enabled, 'model': s.model, 'provider': s.provider, 'upstream': s.upstream,
+                'host_name': s.host_name, 'api_format': s.api_format, 'capacity': s.max_parallel_jobs,
                 'context_tokens': _ctx(s), 'active': self.active, 'waiting': self.waiting,
                 'queue_limit': s.queue_limit, 'gated': self.gate_reason(), 'last_call_at': self.last_call_at or None,
                 'totals_since_start': totals}
@@ -480,8 +486,17 @@ class LocalLLM:
         max_out = min(int(asked), s.max_output_tokens) if isinstance(asked, int) and asked > 0 else s.max_output_tokens
         fixed, fixes = fix_messages(messages)
         capped, info = cap_context(fixed, body.get('tools'), ctx - max_out - MARGIN_TOKENS, s.chars_per_token)
-        payload = to_ollama(body, capped, s, model=model, max_out=max_out, ctx=ctx)
-        meta = {'model': model, 'fixes': sorted(set(fixes)), 'dropped': info['dropped'], 'cut': info['cut'],
+        if s.api_format == 'openai':
+            payload = {k: body[k] for k in ('tools', 'tool_choice', 'parallel_tool_calls', 'temperature',
+                       'top_p', 'stop', 'response_format', 'presence_penalty', 'frequency_penalty') if k in body}
+            payload.update(model=model, messages=capped, max_tokens=max_out)
+            if s.enable_thinking is not None:
+                payload['chat_template_kwargs'] = {'enable_thinking': s.enable_thinking}
+        else:
+            payload = to_ollama(body, capped, s, model=model, max_out=max_out, ctx=ctx)
+        meta = {'model': model, 'provider': s.provider, 'host_name': s.host_name,
+                'upstream': s.upstream, 'api_format': s.api_format,
+                'fixes': sorted(set(fixes)), 'dropped': info['dropped'], 'cut': info['cut'],
                 'est_prompt_tokens': info['tokens'], 'stream': bool(body.get('stream')),
                 'tools': len(body.get('tools') or [])}
         return s, payload, meta
@@ -534,13 +549,17 @@ class LocalLLM:
             raise
         try:
             async with self._client(s) as client:
-                r = await client.post('/api/chat', json=payload | {'stream': False})
+                r = await client.post('chat/completions' if s.api_format == 'openai' else '/api/chat',
+                                      json=payload | {'stream': False})
             if r.status_code >= 400:
-                raise Busy(502 if r.status_code >= 500 else r.status_code, 'Ollama: ' + _error_text(r))
+                raise Busy(502 if r.status_code >= 500 else r.status_code, 'Local inference: ' + _error_text(r))
             data = r.json()
-            out = from_ollama(data, meta['model'], 'chatcmpl-' + uuid.uuid4().hex[:24], int(t0))
+            out = data if s.api_format == 'openai' else from_ollama(
+                data, meta['model'], 'chatcmpl-' + uuid.uuid4().hex[:24], int(t0))
+            if not isinstance(out, dict) or not out.get('choices') or 'message' not in out['choices'][0]:
+                raise Busy(502, 'Local inference returned an invalid completion')
             self.log(meta | {'ts': t0, 'status': 'ok', 'queued_s': round(waited, 2),
-                             'duration_s': round(self.clock() - t0, 2), **out['usage'],
+                             'duration_s': round(self.clock() - t0, 2), **(out.get('usage') or {}),
                              'tool_calls': len(out['choices'][0]['message'].get('tool_calls') or [])})
             return out
         except Busy as e:
@@ -548,7 +567,7 @@ class LocalLLM:
             raise
         except (httpx.HTTPError, ValueError) as e:
             self.log(meta | {'ts': t0, 'status': 'error', 'error': type(e).__name__})
-            raise Busy(502, f'Ollama unreachable or invalid answer ({type(e).__name__})') from None
+            raise Busy(502, f'Local inference unreachable or invalid answer ({type(e).__name__})') from None
         finally:
             self.release(lock)
 
@@ -564,13 +583,16 @@ class LocalLLM:
         include_usage = True
         client = self._client(s)
         try:
-            request = client.build_request('POST', '/api/chat', json=payload | {'stream': True})
+            if s.api_format == 'openai':
+                payload['stream_options'] = {'include_usage': True}
+            request = client.build_request('POST', 'chat/completions' if s.api_format == 'openai' else '/api/chat',
+                                            json=payload | {'stream': True})
             response = await client.send(request, stream=True)
         except httpx.HTTPError as e:
             await client.aclose()
             self.release(lock)
             self.log(meta | {'ts': t0, 'status': 'error', 'error': type(e).__name__})
-            raise Busy(502, f'Ollama unreachable ({type(e).__name__})') from None
+            raise Busy(502, f'Local inference unreachable ({type(e).__name__})') from None
         if response.status_code >= 400:
             await response.aread()
             text = _error_text(response)
@@ -578,7 +600,34 @@ class LocalLLM:
             await client.aclose()
             self.release(lock)
             self.log(meta | {'ts': t0, 'status': 'error', 'error': text[:300]})
-            raise Busy(502 if response.status_code >= 500 else response.status_code, 'Ollama: ' + text)
+            raise Busy(502 if response.status_code >= 500 else response.status_code, 'Local inference: ' + text)
+        if s.api_format == 'openai':
+            async def openai_events():
+                usage, calls, done, error = {}, set(), False, None
+                try:
+                    async for line in response.aiter_lines():
+                        if line.startswith('data: '):
+                            value = line[6:]
+                            if value == '[DONE]':
+                                done = True
+                            else:
+                                part = json.loads(value)
+                                if part.get('error'):
+                                    error = 'Upstream inference returned a stream error'
+                                usage = part.get('usage') or usage
+                                for choice in part.get('choices') or []:
+                                    for call in (choice.get('delta') or {}).get('tool_calls') or []:
+                                        calls.add((choice.get('index', 0), call.get('index', 0)))
+                        yield line + '\n'
+                finally:
+                    await response.aclose()
+                    await client.aclose()
+                    self.release(lock)
+                    error = error or (None if done else 'Local inference stream interrupted before completion')
+                    self.log(meta | {'ts': t0, 'status': 'error' if error else 'ok',
+                                     'queued_s': round(waited, 2), 'duration_s': round(self.clock() - t0, 2),
+                                     'tool_calls': len(calls), **usage, **({'error': error} if error else {})})
+            return openai_events()
         cid, created = 'chatcmpl-' + uuid.uuid4().hex[:24], int(t0)
         translator = StreamTranslator(meta['model'], cid, created, include_usage)
 
@@ -697,6 +746,8 @@ def routes(app, config, auth, gate=None, transport=None) -> LocalLLM:
 
     @app.post('/api/llm/local/v1/chat/completions')
     async def local_chat(request: Request, actor=Depends(local_auth)):
+        if config.hermes.local.nodes:
+            return await app.state.local_pool_chat(config.hermes.local.host_name, request, actor)
         try:
             body = await request.json()
         except ValueError:
@@ -722,4 +773,6 @@ def routes(app, config, auth, gate=None, transport=None) -> LocalLLM:
     def local_status(actor=Depends(local_auth)):
         return proxy.status()
 
+    from . import hermes_pool
+    hermes_pool.routes(app, config, auth, gate)
     return proxy

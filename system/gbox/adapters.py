@@ -2800,8 +2800,10 @@ class SaveMGOAdapter(Adapter):
         lease.__enter__()
         self._lease = lease
         try:
-            # Keep the vendor command, CWD and configuration. In particular, do
-            # not call ensure_rpcs3, write YAML, change pads or inject a layer.
+            # Keep the vendor runtime and account/graphics configuration. Bind
+            # only its stock DualSense selection to a connected local XInput pad.
+            from . import gamepads
+            gamepads.bind_savemgo_xinput(self.home, gamepads.xinput_devices())
             self.proc = subprocess.Popen([str(self.bundle['executable']), '--no-gui', rom],
                                          cwd=self.home, startupinfo=hidden_start())
             keep_offscreen(self.proc.pid)

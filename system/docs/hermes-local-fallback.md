@@ -263,3 +263,72 @@ never_nodes = ["JAYBUILTFINALE"]
 | `tests/test_spark_grunt.py` | The registry (one chore per tick, cooldowns, persistence, force, disable, give-way, errors), the build and operator gates, triage, draft PR tests, verification node rules, job cancel on give-way, fingerprints, manifests, and the `/api/grunt` endpoint |
 | `tests/test_hermes_local_dispatch.py` | The dispatch size policy, the local prompt, PR marking, and local-mode queue ticks |
 | `tests/test_hermes_providers_view.cjs` | The local banner and the Spark helper card |
+# Dedicated vLLM inference machine
+
+The local inbox route can use an operator-configured second Spark. Set
+`[hermes.local] api_format = "openai"`, `upstream` to its `/v1` endpoint,
+`host_name` to its machine name, and `model` to the ID returned by `/v1/models`.
+Use a distinct `provider` name for the inbox proxy so the original Hermes custom
+provider remains intact. The existing local-only switch keeps paid providers out
+of inbox processing; the task checkbox still controls admission of new work.
+
+For a dedicated inference host, `shared_with_games = false` removes only the
+inference gate for games on lilspark. Game-launch admission and operator-session
+protection still apply. `max_parallel_jobs` sets both queue and proxy capacity
+(1–4); `allow_large_tasks = true` permits bounded implementation milestones on
+larger requests, with durable checkpoints, tests and draft PRs. It does not mark
+those requests complete or imply a model can resolve every task.
+
+The proxy forwards OpenAI tool calls and streaming fragments without converting
+them through Ollama. It records the actual provider, host, model and endpoint.
+The Tasks banner shows the configured machine and capacity, and call attribution
+requires an observed matching endpoint and model. Historical lilspark usage is
+excluded from the second Spark's counters. Optional `upstream_key_env` names an
+environment variable for endpoint credentials; credentials are never status data.
+
+## Two-Spark task pool
+
+`[hermes.local.nodes.lilspark]` and `[hermes.local.nodes.sparkDeux]` override the
+base local settings. Set distinct provider names, endpoints and model IDs. The
+prime host uses one slot and requires 12 GiB of available memory; the dedicated
+host uses four slots. `pool_max_parallel_jobs = 5` caps agent runs, including
+older runs without a host assignment. Hermes's cron capacity must also be at
+least five. Both switches persist in `hermes-dispatch/local-nodes.json`.
+
+The Tasks window shows each host's enable switch, readiness, in-flight calls,
+capacity and successful inference counters from the last 24 hours. These count
+actual model calls, not resolved inbox items. The toolbar checkbox controls new
+task admission. Disabling a machine lets its current stream finish and sends its
+next call to another enabled, healthy local host. A partial tool-call stream is
+never replayed by the proxy. Tasks, workspaces and evidence remain on lilspark.
+Each new queue run pins its host's provider and model and reads previous request
+checkpoints. Larger implementation tasks go to the dedicated host.
+
+The operator's local-only setting prevents newly replenished cloud credit from
+changing this policy. An unavailable pool leaves work queued. Per-host health,
+model availability, primary-host game activity and memory headroom are checked
+before inference; vLLM's KV cache at 90% pauses new admission to that host.
+
+## Model offers and management
+
+The Tasks window offers NVIDIA's
+[Qwen3.6 35B agent recipe](https://github.com/NVIDIA/dgx-spark-playbooks/blob/main/nvidia/vllm/README.md#run-agent-ready-qwen36-35b-model-with-vllm)
+as a coding/agent throughput candidate. It is not a measured improvement over
+the currently served model. Compare completed tasks and correctness before
+keeping a replacement. Pull and Start are separate explicit actions.
+
+Configure `management` under the sparkDeux node with `host`, `user`,
+`identity_file` and the existing Docker `container` name. Strict SSH host-key
+checking and a dedicated key are required; no password is saved in gBox.
+Downloads reuse the current container's authenticated Hugging Face cache.
+Starting drains existing requests, retains the original container, launches the
+installed immutable image with the candidate, and validates model health and a
+native tool call before changing the route. Launch failure restores the original
+container. Progress survives UI closure in `model-management.json`.
+
+The requested `--gpu-memory-utilization 0.9` reserves GPU memory; it is not a
+90% compute-utilization target. The offer uses 64k context and four sequences.
+It does not change the current model's memory reservation until Start is used.
+On unified-memory systems, an unsuccessful 90% launch rolls back automatically.
+Do not restart the control service while a management action is running; inspect
+an interrupted action and its retained containers before retrying.

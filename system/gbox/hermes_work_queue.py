@@ -448,12 +448,18 @@ def tick(*, now=None):
             return {'status': 'waiting_for_route_supervisor', 'favorites': data['favorites_count']}
         from . import hermes_local
         local = hermes_local.is_local(primary)
-        if local:
+        from . import hermes_pool
+        pooled = local and hermes_pool.configured()
+        pool_state = _api('/api/hermes/local/nodes') if pooled else None
+        if local and not pooled:
             # The Spark's GPU model: one run at a time, never while the operator plays a game on the Spark.
             gate = local_gate()
             if gate:
                 return {'status': 'waiting_for_operator', 'reason': gate, 'favorites': data['favorites_count']}
-        limit = 1 if local else min(4, max(1, int((config.get('cron') or {}).get('max_parallel_jobs') or 1)))
+        local_settings = hermes_local.settings()
+        limit = local_settings.max_parallel_jobs if local else min(4, max(1, int((config.get('cron') or {}).get('max_parallel_jobs') or 1)))
+        if pooled:
+            limit = pool_state['capacity']
         script_ids = {j['id'] for j in jobs if j.get('no_agent')}
         reserved = active - script_ids
         reserved.update(j['id'] for j in jobs if not j.get('no_agent') and j.get('enabled')
@@ -476,22 +482,29 @@ def tick(*, now=None):
             limit = min(limit, cap)
         titles = (gate or {}).get('games') or []
         deferred = 0
-        if local:
+        if local and not pooled and not local_settings.allow_large_tasks:
             # Small, well-scoped tasks only; big multi-file work stays queued for a paid route.
             by_id = {r['id']: r for r in requests}
             small = [v for v in options if hermes_local.dispatch_size(v[1], by_id.get(v[1].get('request_id')))['size'] == 'small']
             deferred = len(options) - len(small)
             options = small
         dispatched = []
-        for _ in range(max(0, limit - len(reserved))):
+        slots = hermes_pool.assignments(pool_state['nodes'], data['items'], reserved)[0] if pooled else [None] * max(0, limit - len(reserved))
+        slots = slots[:max(0, limit - len(reserved))]
+        by_id = {r['id']: r for r in requests}
+        for node in slots:
             # Give both backlogs capacity; spare slots go to whichever has work.
             counts = {lane: sum(j.get('name', '').startswith(PREFIX + lane + ' ') and
                                j['id'] in reserved for j in jobs) +
                       sum(d['lane'] == lane for d in dispatched) for lane in ('inbox', 'favorite')}
             least = min((counts[v[1]['lane']] for v in options), default=0)
-            chosen = choose([v for v in options if counts[v[1]['lane']] == least], data)
+            choices = [v for v in options if counts[v[1]['lane']] == least]
+            if node and node.get('primary'):
+                narrow = [v for v in options if hermes_local.dispatch_size(v[1], by_id.get(v[1].get('request_id')))['size'] == 'small']
+                choices = narrow or (choices if node.get('allow_large_tasks') else [])
+            chosen = choose(choices, data)
             if not chosen:
-                break
+                continue
             key, item = chosen
             options.remove(chosen)
             if item.get('game_id'):
@@ -499,8 +512,15 @@ def tick(*, now=None):
             _ensure_request(data, item, requests)
             name = PREFIX + ('favorite ' + item['game_id'] if item['lane'] == 'favorite' else 'inbox ' + item['request_id'])
             prompt = _prompt(item, titles)
+            run_settings = hermes_pool.node_settings()[node['name']] if node else local_settings
+            run_route = hermes_local.route(run_settings) if node else dict(primary)
+            pin = ['--model', run_settings.model, '--provider', run_settings.provider] if node else []
             if local:
-                prompt = hermes_local.local_prompt(prompt)
+                prompt = hermes_local.local_prompt(prompt, run_settings)
+                if node:
+                    prompt += (' The prime Spark retains the request, workspace and artifacts. Read the latest '
+                               'request checkpoints before work, including work from the other inference host. '
+                               'Keep exact job IDs and evidence on the request so another local run can resume safely.')
             existing = [j for j in jobs if j.get('name') == name]
             if len(existing) > 1:
                 raise RuntimeError('Ambiguous queue job identity')
@@ -509,15 +529,16 @@ def tick(*, now=None):
                 break
             attempt_kind = 'followup' if item.get('last_dispatched') else 'new'
             item.update(job_name=name, dispatch_state='uncertain', last_dispatched=now,
-                        attempts=item.get('attempts', 0) + 1, local=local, route=dict(primary))
+                        attempts=item.get('attempts', 0) + 1, local=local, route=run_route,
+                        inference_node=node['name'] if node else None)
             _save(data)
             if existing:
                 job = existing[0]
-                mode._run('edit', job['id'], '--prompt', prompt, '--no-continuity', '--unpin')
+                mode._run('edit', job['id'], '--prompt', prompt, '--no-continuity', *(pin or ['--unpin']))
                 mode._run('resume', job['id'], '--run-now')
             else:
                 mode._run('create', mode._once(), prompt, '--name', name, '--repeat', '1',
-                          '--reasoning-effort', hermes_local.settings().reasoning_effort if local else 'high',
+                          '--reasoning-effort', run_settings.reasoning_effort if local else 'high', *pin,
                           '--workdir', str(mode._PROMPT.parents[2]),
                           '--deliver', 'local', '--failure-deliver', 'local')
                 found = [j for j in mode._jobs() if j.get('name') == name]
@@ -529,7 +550,8 @@ def tick(*, now=None):
             data['last_' + item['lane'] + '_kind'] = attempt_kind
             _save(data)
             dispatched.append({'job_id': job['id'], 'request_id': item['request_id'],
-                               'game_id': item.get('game_id'), 'lane': item['lane'], 'local': local})
+                               'game_id': item.get('game_id'), 'lane': item['lane'], 'local': local,
+                               **({'inference_node': node['name']} if node else {})})
         return {'status': 'dispatched' if dispatched else 'waiting', 'dispatched': dispatched,
                 'active_or_queued': len(reserved) + len(dispatched), 'capacity': limit,
                 'favorites': data['favorites_count'], 'eligible_tasks': len(options),

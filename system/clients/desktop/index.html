@@ -1858,11 +1858,13 @@ async function tkProvidersLoad() {
   if (TK.providersBusy) return;
   TK.providersBusy = true;
   const want = TK.providersWindow;
-  let r;
-  try { r = await gbox.api(`/api/hermes/providers?window=${encodeURIComponent(want)}`); } finally { TK.providersBusy = false; }
+  let r, pool;
+  try { [r, pool] = await Promise.all([gbox.api(`/api/hermes/providers?window=${encodeURIComponent(want)}`),
+    gbox.api('/api/hermes/local/nodes')]); } finally { TK.providersBusy = false; }
   if (!$("#taskpanel").classList.contains("on")) return;
   if (want !== TK.providersWindow) { tkProvidersLoad(); return; }
   TK.providers = r.ok ? r.data : { error: r.error || "request failed" };
+  if (pool?.ok) TK.providers.pool = pool.data;
   tkProvidersRender();
 }
 function tkProvidersRender() {
@@ -1871,7 +1873,21 @@ function tkProvidersRender() {
   if (box.tkHtml !== html) { box.innerHTML = html; box.tkHtml = html; }
   tkRender($("#tk-providers"), P.table(TK.providers, { window: TK.providersWindow }), $("#tk-technical"));
 }
-function tkProvidersWindow(e) {
+async function tkProvidersWindow(e) {
+  const node = e.target.closest('[data-tkp-node]');
+  const model = e.target.closest('[data-tkp-model]');
+  if (node || model) {
+    const control = node || model; control.disabled = true;
+    try {
+      const r = node ? await gbox.api(`/api/hermes/local/nodes/${encodeURIComponent(node.dataset.tkpNode)}`,
+        { enabled: node.checked }) : await gbox.api('/api/hermes/local/models/action',
+        { action: model.dataset.tkpModel, model: model.dataset.model });
+      if (!r.ok) toast(r.error || 'Could not update local task machine', 9000);
+      else toast(node ? `${node.dataset.tkpNode} ${node.checked ? 'enabled' : 'disabled'} for new task calls` : 'Model action queued on sparkDeux');
+    } catch (error) { toast(error.message, 9000); }
+    finally { control.disabled = false; tkProvidersLoad(); }
+    return;
+  }
   const b = e.target.closest("[data-tkp-window]"); if (!b || b.dataset.tkpWindow === TK.providersWindow) return;
   TK.providersWindow = b.dataset.tkpWindow;
   try { localStorage.setItem("gbox.tasks.providersWindow", TK.providersWindow); } catch {}

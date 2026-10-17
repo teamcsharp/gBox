@@ -16,6 +16,25 @@ function load() {
   return ctx.GBoxProviders;
 }
 const NOW = 1_760_400_000;
+test('pool renders separate switches, real host counters and guarded model actions', () => {
+  const html = load().poolCards({capacity: 5, nodes: [
+    {name: 'lilspark', enabled: true, primary: true, model: 'small', capacity: 1},
+    {name: 'sparkDeux', enabled: false, model: '<large>', capacity: 4, calls_ok: 23, tokens: 4000}],
+    model_management: {access: {ready: true}, recommendation: {model: 'candidate', title: 'Agent candidate',
+      source: 'https://example.com', downloaded: false}, job: {}}});
+  assert.match(html, /data-tkp-node="lilspark" checked/);
+  assert.match(html, /data-tkp-node="sparkDeux"  aria/);
+  assert.match(html, /&lt;large&gt;/);
+  assert.match(html, /data-tkp-model="start"[^>]*disabled/);
+  assert.match(html, /Calls today<\/dt><dd>23/);
+});
+test('dedicated Spark banner identifies the inference host and capacity', () => {
+  const html = load().cards({routes: [], local: {enabled: true, active: true, host_name: 'sparkDeux',
+    provider: 'sparkDeux-inbox', model: 'Qwen', upstream: 'http://10.89.1.225:8101/v1', api_format: 'openai', capacity: 2}});
+  assert.match(html, /sparkDeux/);
+  assert.match(html, /vLLM \/ OpenAI API/);
+  assert.match(html, /2 concurrent runs/);
+});
 const OPUS = 'anthropic/claude-opus-5.5';
 const data = {
   window: 'today', window_label: 'Today', generated_at: NOW,
@@ -110,7 +129,9 @@ test('run label and number formats', () => {
 });
 
 test('desktop wiring: containers, the 5 s poll, window toggle and provider on run nodes and details', () => {
-  assert.match(desktop, /<script src="task-activity\.js"><\/script>\r?\n<script src="hermes-providers\.js"><\/script>/);
+  assert.match(desktop, /<script src="task-activity\.js"><\/script>/);
+  assert.match(desktop, /<script src="hermes-providers\.js"><\/script>/);
+  assert.ok(desktop.indexOf('src="task-activity.js"') < desktop.indexOf('src="hermes-providers.js"'));
   assert.match(desktop, /<div class="tkv-stats" id="tkv-stats"><\/div>\r?\n\s*<div class="tkp" id="tkv-providers"><\/div>/);
   assert.match(desktop, /hidden><div id="tk-providers"><\/div><div id="tk-local"><\/div>/);
   assert.match(desktop, /gbox\.api\(`\/api\/hermes\/providers\?window=\$\{encodeURIComponent\(want\)\}`\)/);
