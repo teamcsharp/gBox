@@ -580,7 +580,9 @@ def tick(*, now=None):
             _save(data)
             if existing:
                 job = existing[0]
-                mode._run('edit', job['id'], '--prompt', prompt, '--no-continuity', *(pin or ['--unpin']))
+                mode._run('edit', job['id'], '--prompt', prompt, '--no-continuity',
+                          '--reasoning-effort', run_settings.reasoning_effort if local else 'high',
+                          *(pin or ['--unpin']))
                 mode._run('resume', job['id'], '--run-now')
             else:
                 mode._run('create', mode._once(), prompt, '--name', name, '--repeat', '1',

@@ -166,6 +166,12 @@ def provider_entry(s=None, template: dict | None = None) -> dict:
     """The custom_providers entry Hermes needs for the local route (OpenAI-compatible, pointed at gBox's proxy).
     The proxy answers loopback clients without the gBox token, so no secret is written into Hermes's config."""
     s = s or settings()
+    # The cron default can name a pool provider. Keep its node endpoint and
+    # active model, rather than overwriting it with the legacy shared proxy.
+    if s.nodes:
+        from . import hermes_pool
+        s = next((node for node in hermes_pool.node_settings(s).values()
+                  if node.provider.casefold() == s.provider.casefold()), s)
     # Shape from the template (Hermes on the Spark: name, base_url, model, models, models_discovered, api_key), but
     # never its key or what Hermes discovered from the template's own server.
     entry = {k: v for k, v in (template or {}).items()

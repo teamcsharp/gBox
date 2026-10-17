@@ -41,8 +41,8 @@ def _state():
         return {'nodes': {}}
 
 
-def node_settings():
-    base = L.settings()
+def node_settings(base=None):
+    base = base or L.settings()
     state = _state().get('nodes', {})
     out = {}
     for name, values in base.nodes.items():

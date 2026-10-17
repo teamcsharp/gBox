@@ -105,6 +105,18 @@ def test_local_route_waits_while_the_operator_plays(monkeypatch, tmp_path):
     assert out['status'] == 'waiting_for_operator' and 'Soulcalibur' in out['reason'] and calls == []
 
 
+def test_reused_local_job_replaces_stale_reasoning_effort(monkeypatch, tmp_path):
+    rid = 'd' * 16
+    reqs = [{'id': rid, 'number': 6, 'title': 'Fix typo', 'status': 'open'}]
+    calls = _env(monkeypatch, tmp_path, reqs, [])
+    q.mode._jobs().append({'id': 'old-job', 'name': 'gBox queue inbox ' + rid,
+                          'enabled': False, 'reasoning_effort': 'max'})
+    assert q.tick(now=1000)['status'] == 'dispatched'
+    edit = next(c for c in calls if c[0] == 'edit')
+    assert edit[edit.index('--reasoning-effort') + 1] == 'medium'
+    assert calls[-1] == ('resume', 'old-job', '--run-now')
+
+
 def test_dedicated_local_route_dispatches_large_inbox_work_and_respects_checkbox(monkeypatch, tmp_path):
     reqs = [{'id': P, 'number': 1, 'title': 'parent', 'status': 'open'},
             {'id': 'b' * 16, 'number': 5, 'title': 'Write the verified unlock writer', 'status': 'open'},

@@ -46,6 +46,15 @@ def test_switch_and_maintenance_persist_without_overwriting_operator(pool):
     assert L.is_local({'provider': 'prime'})
 
 
+def test_cron_default_keeps_canonical_node_endpoint_and_active_model(pool):
+    base = pool.model_copy(update={'provider': 'second', 'model': 'old-model'})
+    node = P.node_settings(base)['sparkDeux']
+    entry = L.provider_entry(base)
+    assert entry['base_url'] == node.proxy_url
+    assert entry['model'] == node.model
+    assert L.merged_providers([entry], base) is None
+
+
 def _app(monkeypatch):
     app = FastAPI()
     def auth(request: Request):

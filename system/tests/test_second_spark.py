@@ -29,10 +29,11 @@ def test_vllm_preserves_tools_and_records_actual_host(tmp_path):
             'usage': {'prompt_tokens': 30, 'completion_tokens': 10, 'total_tokens': 40}})
     proxy = P.LocalLLM(lambda: S, gate=lambda: 'lilspark game', log_path=tmp_path/'calls.jsonl',
                        transport=httpx.MockTransport(handle))
-    result = asyncio.run(proxy.complete(BODY))
+    result = asyncio.run(proxy.complete(dict(BODY, reasoning_effort='max', reasoning={'effort': 'max'})))
     assert result['choices'][0]['message']['tool_calls'] == [CALL]
     assert seen[0]['tools'] == BODY['tools'] and 'options' not in seen[0]
     assert seen[0]['chat_template_kwargs'] == {'enable_thinking': False}
+    assert 'reasoning_effort' not in seen[0] and 'reasoning' not in seen[0]
     record = json.loads((tmp_path/'calls.jsonl').read_text())
     assert record['host_name'] == 'sparkDeux' and record['provider'] == S.provider
     assert record['total_tokens'] == 40 and proxy.status()['capacity'] == 2
