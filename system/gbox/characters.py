@@ -1734,6 +1734,12 @@ DEDICATED = [
     # mappings + Ani scripts + palette) as 2D sprites entries with clips (spin dash, jump, level complete, every named
     # animation); gbox.sonic2d_sprites, docs/sonic2d_sprites.md
     *[_sonic2d(k) for k in ("sonic1", "sonic2", "sonic3", "s3k", "sk")],
+    # Shadow In Sonic 1 (Mega Drive): the Sonic 1 REV00 disassembly-rebuild hack whose player is Shadow in the Sonic
+    # slot (object 01). gbox.sonic1_reader exports every mapping frame as an indexed PNG + an import-ready
+    # pieces/DPLC/origin manifest, the walk/run animation map and the Nemesis title/continue/signpost/lives/ending art.
+    ("sonic1_shadow", lambda t, p: __import__("gbox.sonic1_reader", fromlist=["x"]).title_test(t, p),
+     lambda: __import__("gbox.sonic1_reader", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.sonic1_reader", fromlist=["x"]).extract_run(ctx, game, e, work)),
 ]
 
 
