@@ -28,6 +28,11 @@ class CHD:
         self.frames_per_hunk = self.hunkbytes // self.frame
         self._hunk = lru_cache(64)(self._read_hunk)
 
+    def close(self):
+        """Idempotent close of the underlying file (uniform disc-reader cleanup)."""
+        if not self.f.closed:
+            self.f.close()
+
     def _read_hunk(self, i: int) -> bytes:
         off, crc, lo, hi, flags = self.map[i]
         ln = lo | (hi << 16)
@@ -62,6 +67,10 @@ class PSXDisc:
         root = pvd[156:156 + 34]
         self.files: dict[str, tuple[int, int]] = {}
         self._walk(struct.unpack_from("<I", root, 2)[0], struct.unpack_from("<I", root, 10)[0], "")
+
+    def close(self):
+        """Close the underlying CHD (safe to call twice; mirrors RawBin.close)."""
+        self.chd.close()
 
     def data(self, lba: int) -> bytes:
         s = self.chd.sector(lba)
