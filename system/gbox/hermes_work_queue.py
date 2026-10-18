@@ -469,6 +469,40 @@ def _ensure_request(data, item, requests):
     _save(data)
 
 
+
+def _pinned_local_reservations(jobs, reserved, config, settings):
+    """Only explicit pins to registered, configured local routes leave the cloud lane.
+
+    Queue history, model labels and the current primary route are not pin evidence.
+    Unknown, unpinned or conflicting routes still consume cloud capacity.
+    """
+    from . import hermes_pool
+    configured = [settings, *hermes_pool.node_settings(settings).values()]
+    known = {(s.provider, s.model, s.proxy_url.rstrip('/')) for s in configured}
+    providers = {}
+    for entry in config.get('custom_providers') or []:
+        if isinstance(entry, dict):
+            providers.setdefault(entry.get('name'), []).append(entry)
+    by_id = {}
+    for job in jobs:
+        by_id.setdefault(job['id'], []).append(job)
+    local = set()
+    for jid in reserved:
+        matches = by_id.get(jid, [])
+        if len(matches) != 1:
+            continue
+        job = matches[0]
+        provider, model = job.get('provider'), job.get('model')
+        entries = providers.get(provider, [])
+        if not provider or not model or len(entries) != 1:
+            continue
+        endpoint = str(entries[0].get('base_url') or '').rstrip('/')
+        if ((provider, model, endpoint) in known
+                and (not job.get('base_url') or str(job['base_url']).rstrip('/') == endpoint)):
+            local.add(jid)
+    return local
+
+
 def tick(*, now=None):
     now = time.time() if now is None else now
     with delivery.locked('work-queue'):
@@ -506,7 +540,8 @@ def tick(*, now=None):
             if gate:
                 return {'status': 'waiting_for_operator', 'reason': gate, 'favorites': data['favorites_count']}
         local_settings = hermes_local.settings()
-        limit = local_settings.max_parallel_jobs if local else min(4, max(1, int((config.get('cron') or {}).get('max_parallel_jobs') or 1)))
+        global_limit = max(1, int((config.get('cron') or {}).get('max_parallel_jobs') or 1))
+        limit = local_settings.max_parallel_jobs if local else min(4, global_limit)
         if pooled:
             limit = pool_state['capacity']
         script_ids = {j['id'] for j in jobs if j.get('no_agent')}
@@ -529,6 +564,7 @@ def tick(*, now=None):
         options, cap, gate = operator_gate(options, playing, throttled)
         if cap is not None:
             limit = min(limit, cap)
+            global_limit = min(global_limit, cap)
         titles = (gate or {}).get('games') or []
         deferred = 0
         if local and not pooled and not local_settings.allow_large_tasks:
@@ -538,8 +574,11 @@ def tick(*, now=None):
             deferred = len(options) - len(small)
             options = small
         dispatched = []
-        slots = hermes_pool.assignments(pool_state['nodes'], data['items'], reserved)[0] if pooled else [None] * max(0, limit - len(reserved))
-        slots = slots[:max(0, limit - len(reserved))]
+        lane_reserved = reserved if local else reserved - _pinned_local_reservations(
+            jobs, reserved, config, local_settings)
+        free = max(0, min(limit - len(lane_reserved), global_limit - len(reserved)))
+        slots = hermes_pool.assignments(pool_state['nodes'], data['items'], reserved)[0] if pooled else [None] * free
+        slots = slots[:free]
         by_id = {r['id']: r for r in requests}
         for node in slots:
             # Give both backlogs capacity; spare slots go to whichever has work.
@@ -611,6 +650,8 @@ def tick(*, now=None):
                                **({'inference_node': node['name']} if node else {})})
         return {'status': 'dispatched' if dispatched else 'waiting', 'dispatched': dispatched,
                 'active_or_queued': len(reserved) + len(dispatched), 'capacity': limit,
+                'global_capacity': global_limit,
+                **({'cloud_active_or_queued': len(lane_reserved) + len(dispatched)} if not local else {}),
                 'favorites': data['favorites_count'], 'eligible_tasks': len(options),
                 'local_route': local, 'deferred_for_paid_route': deferred,
                 **({'operator_playing': gate} if gate else {})}
