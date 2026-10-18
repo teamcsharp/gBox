@@ -2461,6 +2461,7 @@ def create_app(config: Config) -> FastAPI:
                 raise HTTPException(409, 'finished job does not verify this exact worker result')
             receipt = Receipt.model_validate(saved)
             if j.get('result_acceptance') == 'complete':
+                _extraction_handoff(j)
                 return _result_ack(wid, j, receipt)
             # Known local callbacks can resume after an interrupted admission.
             # Unknown callbacks need review; a terminal job alone is not an ACK.
@@ -2544,6 +2545,16 @@ def create_app(config: Config) -> FastAPI:
         _result_docs(j, receipt, admission=True)
         return receipt, out, state, refs, problems
 
+    def _extraction_handoff(j):
+        if j.get('tool') == 'characters' and (j.get('input') or {}).get('op') in ('collect', 'extract'):
+            from .extraction_failures import observe
+            try:
+                observe(store, j['id'], redact=_redact)
+            except Exception as exc:
+                # Accepted results stay accepted. Retry this idempotent handoff
+                # on a duplicate delivery, or explicitly from its retained receipt.
+                store.audit('gbox-auto', 'extraction.engineering.error', j['id'], {'error': str(exc)[:500]})
+
     def _result_followups(j, r, t, state, actor):
         # Journal operator manipulations beside the input run, without copying
         # arbitrary RAM buffers, credentials, or interpreting success as gameplay proof.
@@ -2563,6 +2574,7 @@ def create_app(config: Config) -> FastAPI:
                 'job_id':j['id'],'state':str(state),'evidence':'tool receipt; in-game effect not independently verified'},
                 token='action:'+j['id'])
         build_notes.job_ended(j)                      # a finished build / collect / failed build -> the bell tray
+        _extraction_handoff(j)
         attempt = j.get("input") or {}
         op = attempt.get("op") or ""
         if t.name == "launch_game" and state != JobState.SUCCEEDED:

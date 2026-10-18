@@ -135,6 +135,7 @@ def sync(data, favorites, requests, *, now):
             'lane': 'inbox', 'request_id': request['id'], 'attempts': 0, 'last_dispatched': 0,
             'created': request.get('created', now)})
         item.update(number=request.get('number'), title=request.get('title'), repair=repair,
+                    extraction_engineering=context.get('extraction_engineering') is True,
                     session_observer=bool(context.get('session_observer')),
                     launch_failure=bool(context.get('launch_failure')),
                     operator_requested=bool(context.get('replacement_requested')),
@@ -329,7 +330,7 @@ def launches_emulator(item) -> bool:
     in a running game) and inbox repairs that need gameplay acceptance."""
     if item.get('lane') == 'favorite':
         return next_stage(item) in EMULATOR_STAGES
-    return bool(item.get('repair'))
+    return bool(item.get('repair')) and not item.get('extraction_engineering')
 
 
 def throttle_sandboxes(playing, throttle=None):
@@ -389,6 +390,16 @@ def _prompt(item, playing=None):
                        'reset, move, relaunch, or capture GPU draws on the operator session. Work from '
                        'owned files with REA/Ghidra and publish tested readers and reusable assets. '
                        'Keep replacement testing on a separate agent-owned session. ')
+        elif item.get('extraction_engineering'):
+            header += ('This is offline native extraction engineering. Read the exact failed job, accepted '
+                       'receipt, source selection and every failed entry on the request. Diagnose source access '
+                       'first, then use REA/Ghidra to repair or develop the bounded native model reader. Preserve '
+                       'source hashes, publish focused tests and independently validate the requested extracted '
+                       'assets. Do not launch, capture, pause or stop games or change saves/memory. Do not '
+                       'substitute a replacement/gameplay task, and do not close after a plan or PR alone. ')
+            if ID.fullmatch(str(item.get('game_id') or '')):
+                from .native_engineering import prompt
+                header += '\n' + prompt(item['game_id'], stage='reader') + '\n'
         elif item.get('repair'):
             header += ('This is unfinished native character work. Follow the request scope: extraction needs an '
                        'identified reusable native asset with validation; replacement additionally needs gameplay '
