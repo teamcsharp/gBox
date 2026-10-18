@@ -65,22 +65,36 @@ class Dfu:
     (gbox.chd.ChdDisc, gbox.defjam_inventory.Iso)."""
 
     def __init__(self, disc, variant: str = "etm", endian: str = "<", parts=None):
-        self.disc, self.variant, self.endian = disc, variant, endian
+        if endian not in ("<", ">"):
+            raise DfuError("archive byte order must be '<' or '>'")
+        if parts is not None and not isinstance(parts, (list, tuple)):
+            raise DfuError("archive parts must be an ordered list or tuple")
         parts = PARTS if parts is None else tuple(parts)
+        if not parts or any(not isinstance(p, str) or not p for p in parts) or len(set(parts)) != len(parts):
+            raise DfuError("archive parts must be nonempty unique filenames")
+        self.disc, self.variant, self.endian = disc, variant, endian
         self.parts = [p for p in parts if p in disc.files]
         if parts[0] not in self.parts:
             raise DfuError(f"no {parts[0]} on this disc")
+        missing = False
+        for part in parts:
+            if part not in disc.files:
+                missing = True
+            elif missing:
+                raise DfuError("archive parts have a missing middle part")
         self.part_sizes = [disc.size(p) for p in self.parts]
+        if any(type(n) is not int or n < 0 for n in self.part_sizes):
+            raise DfuError("archive part sizes must be nonnegative integers")
         self.total = sum(self.part_sizes)
         if self.part_sizes[0] < 0x18:
             raise DfuError(f"{parts[0]} is shorter than its header")
-        h = disc.read(parts[0], 0, 0x18)
+        h = self._read_part(parts[0], 0, 0x18)
         self.count, sa, sb, sc, self.h4, self.flags = struct.unpack(endian + "6I", h)
         self.seeds = (sa, sb, sc)
         if not 0 < self.count <= MAX_ENTRIES or 0x18 + 16 * self.count > self.part_sizes[0]:
             raise DfuError(f"implausible entry count {self.count}")
         self.base = (0x18 + 16 * self.count + 0x7FF) & ~0x7FF
-        tab = disc.read(parts[0], 0x18, 16 * self.count)
+        tab = self._read_part(parts[0], 0x18, 16 * self.count)
         self.entries: list[Entry] = []
         self.by_hash: dict[int, Entry] = {}
         last = -1
@@ -97,6 +111,15 @@ class Dfu:
             self.by_hash.setdefault(hh, e)
             last = hh
         self.duplicates = self.count - len(self.by_hash)
+
+    def _read_part(self, part: str, offset: int, size: int) -> bytes:
+        limit = self.part_sizes[self.parts.index(part)]
+        if type(offset) is not int or type(size) is not int or offset < 0 or size < 0 or offset + size > limit:
+            raise DfuError(f"{part}: read leaves the archive part")
+        data = self.disc.read(part, offset, size)
+        if len(data) != size:
+            raise DfuError(f"{part}: short read ({len(data)} of {size} bytes)")
+        return data
 
     def hash(self, name: str) -> int:
         return name_hash(name, self.seeds, self.variant)
@@ -125,16 +148,24 @@ class Dfu:
         return out
 
     def raw(self, e: Entry) -> bytes:
-        return b"".join(self.disc.read(p, o, n) for p, o, n in self.spans(e))
+        return b"".join(self._read_part(p, o, n) for p, o, n in self.spans(e))
 
-    def read(self, name_or_entry) -> bytes:
+    def read(self, name_or_entry, *, max_size: int | None = None) -> bytes:
         e = name_or_entry if isinstance(name_or_entry, Entry) else self.entry(name_or_entry)
         if e is None:
             raise KeyError(name_or_entry)
+        if max_size is not None:
+            if type(max_size) is not int or max_size < 0:
+                raise DfuError("read size limit must be a nonnegative integer")
+            if e.size > max_size:
+                raise DfuError(f"entry {e.index}: declared size {e.size} exceeds read limit {max_size}")
         b = self.raw(e)
         if e.compressed:
             try:
-                b = zlib.decompress(b)
+                decoder = zlib.decompressobj()
+                b = decoder.decompress(b, e.size + 1)
+                if len(b) > e.size or not decoder.eof:
+                    raise DfuError(f"entry {e.index}: zlib output exceeds its size or is incomplete")
             except zlib.error as x:
                 raise DfuError(f"entry {e.index}: zlib stream does not inflate ({x})") from None
         if len(b) != e.size:
@@ -167,11 +198,14 @@ class Dfu:
 
 
 def image_patches(disc, plan: dict) -> list[tuple[int, bytes]]:
-    """A replace_plan's patches as absolute byte offsets in the disc image (2048-byte sectors)."""
+    """A replace_plan's patches as absolute byte offsets; readers declare offset_unit=1 for byte-based FSTs."""
+    unit = getattr(disc, "offset_unit", 2048)
+    if type(unit) is not int or unit not in (1, 2048):
+        raise DfuError("disc offset unit must be bytes or 2048-byte sectors")
     out = []
     for part, off, blob in plan["patches"]:
         lba, size = disc.files[part]
-        if off + len(blob) > size:
-            raise DfuError(f"{part}: patch at 0x{off:x} runs past the file")
-        out.append((lba * 2048 + off, blob))
+        if type(off) is not int or off < 0 or off + len(blob) > size:
+            raise DfuError(f"{part}: invalid patch offset {off!r} or range past the file")
+        out.append((lba * unit + off, blob))
     return out

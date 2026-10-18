@@ -1,36 +1,20 @@
 """Enter the Matrix (USA, GameCube GMXE70, Disc 2): exact build identity and disc inventory.
 
-The GameCube build packs the same Shiny Entertainment content as the PS2 SLUS-20454 disc
-(gbox.etm_inventory) into ``wad2.dfu`` (Disc 2) / ``wad2_b.dfu``, one hashed archive read by
+The GameCube build uses a Shiny Entertainment archive, also used by PS2 SLUS-20454
+(gbox.etm_inventory), named ``wad2.dfu`` (Disc 2) / ``wad2_b.dfu``, one hashed archive read by
 ``gbox.shiny_dfu``.  Two endian rules, recovered from the owned disc and verified against the files:
 
 * the DFU archive header + directory are BIG-endian on the GameCube (PowerPC): the shared
   ``Dfu`` reader is called with ``endian=">"`` and ``parts=("wad2.dfu", "wad2_b.dfu")``.
 * the tables INSIDE the archive (``Actors\\ActorHeadersV4.Bin``, ``Actors\\ModelHeadersV4.Bin``)
-  are little-endian data, byte-for-byte the PC/PS2 authoring format; the archive directory is the
-  only thing the GameCube executable stores in its native byte order.
+  use little-endian model indices and class fields. This observation does not establish the
+  byte order or layout of the unresolved character assets themselves.
 
-Facts (Disc 2, ``Enter the Matrix (USA) (Disc 2).gcz``, sha256 043f94ad…):
-  * disc header game id ``GMXE70``, title ``Enter The Matrix``; main.dol 4,074,880 B
-    (sha256 43487093…); FST lists 197 files.
-  * ``wad2.dfu`` 932,722,688 B + ``wad2_b.dfu`` 0 B (empty on Disc 2) = 5,874 entries, seeds
-    (22313, 2067, 674), flags 0x20, data base 0x17000, 3 duplicate name-hashes.
-  * ``movies/*.vid`` 34 files (``VID1`` container), ``text/*.bin`` 159 files (LE u32 offset tables),
-    ``wad_adh.dfu`` 750,848 B (smallest part: 6,948 x 128-byte raw records), ``opening.bnr``.
-  * roster: ``Actors\\ModelHeadersV4.Bin`` (288 x 0x50 path records) + ``Actors\\ActorHeadersV4.Bin``
-    (404 x 0x60 records, LE ``flags / name[16] / model / class``).  Characters: Niobe (costumes
-    1-5 + phase), Ghost, Trinity, Morpheus, AgentSmith, Seraph, Twins, Sparks, … (the same 69-entry
-    roster as the PS2 build, gbox.etm_models.roster()).
-  * model format ``actors\\*.dcn`` "DC patch models" (gbox.etm_models: bicubic Bezier quad /
-    cubic Bezier triangle / plain-triangle patches, one 89-joint skeleton, checksum 0x002e5ea3,
-    4/8-bit palettised textures in-model).  Animations ``animation\\*.asb``, levels ``levels\\*.3d2``.
-
-Known gap (analysis stage): the header tables and list files resolve by their plaintext name-hash
-(``Actors\\ActorHeadersV4.Bin`` etc.), but the *content* files (``actors\\*.dcn``, ``animation\\*.asb``,
-``levels\\*.3d2``) do NOT resolve under their PS2 names on the GameCube — the content names hash
-differently here, so the character models can be enumerated from ModelHeadersV4.Bin but not yet
-extracted by name.  This is the next reverse-engineering step (recover the GameCube content-name
-hash from ``main.dol``'s DFU lookup).
+The exact owned Disc 2 exposes 5,874 archive entries, 288 model-path records and 387 named
+actors in 404 actor records. These are inventory facts, not a verified GameCube model reader.
+The named .dcn paths do not currently resolve with the existing ETM name hash. Whether this is a
+name transformation, another hash, or another storage mapping remains unverified. No GameCube
+model/skeleton/texture byte layout or character replacement is claimed by this module.
 
     python -m gbox.etm_gc_inventory <disc2.gcz> [--json out.json]
 """
@@ -68,6 +52,8 @@ class GcDisc:
     """Adapt a read-only gbox.gcdisc.GCDisc to the shiny_dfu ``Dfu`` disc interface
     (``files {NAME: (off, size)}``, ``size(name)``, ``read(name, off, n)`` — byte offsets, no sectors)."""
 
+    offset_unit = 1  # FST offsets are bytes; PS2 ISO readers use 2048-byte sectors.
+
     def __init__(self, disc: GCDisc):
         self.disc = disc
         self.files = disc.files
@@ -76,22 +62,42 @@ class GcDisc:
         return self.disc.files[name][1]
 
     def read(self, name: str, off: int, n: int) -> bytes:
-        return self.disc._r(self.disc.files[name][0] + off, n)
+        start, size = self.disc.files[name]
+        if type(off) is not int or type(n) is not int or off < 0 or n < 0 or off + n > size:
+            raise FormatError(f"{name}: read leaves the FST file")
+        data = self.disc._r(start + off, n)
+        if len(data) != n:
+            raise FormatError(f"{name}: short read ({len(data)} of {n} bytes)")
+        return data
 
 
 def identify(disc: GCDisc) -> dict:
-    dol = disc.dol()
+    # Bound the executable read before trusting its section offsets. The generic disc.dol()
+    # follows the DOL header's extent; this inventory accepts only the known exact extent.
+    header = disc._r(0, 0x440)
+    if len(header) != 0x440:
+        raise FormatError("short disc header")
+    dol_offset = struct.unpack_from(">I", header, 0x420)[0]
+    dh = disc._r(dol_offset, 0x100)
+    if len(dh) != 0x100:
+        raise FormatError("short DOL header")
+    offsets, sizes = struct.unpack_from(">18I", dh, 0), struct.unpack_from(">18I", dh, 0x90)
+    sections = [(o, n) for o, n in zip(offsets, sizes) if n]
+    extent = max((o + n for o, n in sections), default=0)
+    bounded = bool(sections) and all(o >= 0x100 and o + n <= DOL_SIZE for o, n in sections)
+    dol = disc._r(dol_offset, DOL_SIZE) if bounded and extent == DOL_SIZE else b""
+    digest = hashlib.sha256(dol).hexdigest() if len(dol) == DOL_SIZE else None
     wads = {n: disc.files[n][1] for n in DFU_PARTS if n in disc.files}
     return {"game_id": disc.game_id, "title": disc.title, "num_files": len(disc.files),
-            "dol_size": len(dol), "dol_sha256": hashlib.sha256(dol).hexdigest(),
-            "wad_sizes": wads,
-            "exact_build": disc.game_id == GAME_ID and hashlib.sha256(dol).hexdigest() == DOL_SHA256
-            and wads.get("wad2.dfu") == 932722688}
+            "disc_number": header[6], "revision": header[7],
+            "dol_size": extent, "dol_sha256": digest, "wad_sizes": wads,
+            "exact_build": disc.game_id == GAME_ID and header[6:8] == b"\x01\x00"
+            and digest == DOL_SHA256 and wads == {"wad2.dfu": 932722688, "wad2_b.dfu": 0}}
 
 
 def roster_paths(dfu: Dfu) -> list[str]:
     """All model paths named by the (little-endian) ModelHeadersV4.Bin table."""
-    m = dfu.read(MODEL_HEADERS)
+    m = dfu.read(MODEL_HEADERS, max_size=288 * MODEL_REC)
     if len(m) % MODEL_REC:
         raise FormatError("ModelHeadersV4.Bin is not whole 0x50 records")
     return [m[i:i + MODEL_REC].split(b"\0")[0].decode("latin-1")
@@ -99,7 +105,7 @@ def roster_paths(dfu: Dfu) -> list[str]:
 
 
 def actors(dfu: Dfu) -> list[dict]:
-    a = dfu.read(ACTOR_HEADERS)
+    a = dfu.read(ACTOR_HEADERS, max_size=404 * ACTOR_REC)
     if len(a) % ACTOR_REC:
         raise FormatError("ActorHeadersV4.Bin is not whole 0x60 records")
     models = roster_paths(dfu)
@@ -118,36 +124,42 @@ def actors(dfu: Dfu) -> list[dict]:
 
 def inventory(path) -> dict:
     disc = GCDisc(str(path))
-    ident = identify(disc)
-    if not ident["exact_build"]:
-        raise FormatError(f"not the owned Disc 2 build: {ident}")
     try:
-        dfu = Dfu(GcDisc(disc), "etm", endian=">", parts=DFU_PARTS)
-    except DfuError as e:
-        raise FormatError(f"{DFU_PARTS[0]}: {e}") from None
-    acts = actors(dfu)
-    paths = roster_paths(dfu)
-    from . import etm_models as M
-    roster = [r["model"] for r in M.roster()]
-    # content-name hash does not resolve on GC: report which header tables do.
-    return {
-        "identity": ident,
-        "archive": {"parts": dfu.parts, "sizes": dfu.part_sizes, "entries": dfu.count,
-                    "seeds": dfu.seeds, "flags": hex(dfu.flags), "data_base": hex(dfu.base),
-                    "duplicate_hashes": dfu.duplicates,
-                    "compressed": sum(e.compressed for e in dfu.entries),
-                    "named_headers": [n for n in (ACTOR_HEADERS, MODEL_HEADERS,
-                                                  "Animation\\AnimList.txt", "Levels\\LevelList.txt")
-                                      if n in dfu]},
-        "models": len(paths), "actors": len(acts),
-        "character_models": [p for p in paths if p.lower().endswith(".dcn")],
-        "roster_matches": sorted(set(roster) & set(paths)),
-        "formats": {"character": "actors\\*.dcn (gbox.etm_models, DC patch models)",
-                    "animations": "animation\\*.asb (not decoded)",
-                    "levels": "levels\\*.3d2", "movies": "movies\\*.vid (VID1)",
-                    "skeleton_checksum": "0x002e5ea3"},
-        "gap": "content names (.dcn/.asb/.3d2) do not resolve by PS2 name-hash on GC",
-    }
+        ident = identify(disc)
+        if not ident["exact_build"]:
+            raise FormatError(f"not the owned Disc 2 build: {ident}")
+        try:
+            dfu = Dfu(GcDisc(disc), "etm", endian=">", parts=DFU_PARTS)
+            if (dfu.count, dfu.seeds, dfu.flags, dfu.base) != (DFU_COUNT, SEEDS, 0x20, 0x17000):
+                raise FormatError("the archive directory differs from the owned Disc 2 layout")
+            acts, paths = actors(dfu), roster_paths(dfu)
+            if len(paths) != 288 or len(dfu.read(ACTOR_HEADERS, max_size=404 * ACTOR_REC)) != 404 * ACTOR_REC:
+                raise FormatError("the header table counts differ from the owned Disc 2 layout")
+            from . import etm_models as M
+            roster = [r["model"] for r in M.roster()]
+            content = [p for p in paths if p.lower().endswith(".dcn")]
+            resolved = [p for p in content if p in dfu]
+            return {
+                "identity": ident,
+                "archive": {"parts": dfu.parts, "sizes": dfu.part_sizes, "entries": dfu.count,
+                            "endian": "big", "seeds": dfu.seeds, "flags": hex(dfu.flags),
+                            "data_base": hex(dfu.base), "duplicate_hashes": dfu.duplicates,
+                            "compressed": sum(e.compressed for e in dfu.entries),
+                            "named_headers": [n for n in (ACTOR_HEADERS, MODEL_HEADERS,
+                                "Animation\\AnimList.txt", "Levels\\LevelList.txt") if n in dfu]},
+                "models": len(paths), "actors": len(acts), "character_models": content,
+                "roster_matches": sorted(set(roster) & set(paths)),
+                "resolved_model_names": resolved,
+                "model_names_resolved": len(resolved),
+                "capabilities": {"archive_inventory": True, "character_extraction": False,
+                                 "character_replacement": False, "gameplay_verified": False},
+                "gap": "GameCube model lookup/format and replacement remain unverified; "
+                       "a path-table match is not an extracted character model",
+            }
+        except DfuError as error:
+            raise FormatError(f"{DFU_PARTS[0]}: {error}") from None
+    finally:
+        disc.f.close()
 
 
 def main(argv=None) -> int:
