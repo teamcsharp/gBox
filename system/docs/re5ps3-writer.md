@@ -8,7 +8,10 @@ written, and no emulator is launched.
 
 This is a fixed-layout asset writer, not the complete Sonic/Mario cast writer.
 It is deliberately absent from `char_coverage.WRITERS`: that interface promises
-cast-replacement slots and needs arbitrary donor geometry and verified fitting.
+cast-replacement slots and needs broader verified fitting and game acceptance.
+The separate [experimental exact-donor fitter](re5ps3-fitting.md) now emits new
+Sonic/Peach body draw lists for the two original normal packs; its offline proof
+does not turn the fixed-layout API into a complete cast writer.
 
 ## Combined model and texture edits
 
@@ -128,7 +131,8 @@ layout and preserved unknown bytes. Invalid geometry, identity, dimensions,
 non-finite values and unsupported edits create no output artifact.
 
 The API/CLI combines fixed-layout resources from the original exact-build pack.
-Arbitrary Sonic/Mario donor topology, fitted donor deformation, rebuilt bounds/tangents,
-animation acceptance, full cast discovery, an installable modified game,
+The separate exact-donor experiment rebuilds bounded body topology, bounds and
+tangents with offline readback. Arbitrary donor support, animation acceptance,
+full cast discovery, an installable modified game,
 unlocks and live sidebar inventory/equipment remain separate work. No gameplay
 or full-cast completion is claimed.
