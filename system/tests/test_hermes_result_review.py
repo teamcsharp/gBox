@@ -109,7 +109,7 @@ class ResultReviewTests(ReviewFixture, unittest.TestCase):
 
     def test_paid_response_persisted_before_outbox_and_no_repeat(self):
         R.record_result(self.item, self.run)
-        response = {'content': json.dumps(self.verdict()), 'usage': {'total_tokens': 32}}
+        response = {'content': json.dumps(self.verdict()), 'usage': {'total_tokens': 32}, 'finish_reason': 'stop'}
         with patch.object(R, 'packet', return_value={'evidence': 'retained'}), patch.object(R, 'review', return_value=response) as paid:
             self.assertEqual(R.process_one(), self.key)
             self.assertIsNone(R.process_one())
@@ -149,7 +149,7 @@ class ResultReviewTests(ReviewFixture, unittest.TestCase):
         R.record_result(self.item, self.run)
         with closing(R.connect()) as db, db:
             db.execute("UPDATE reviews SET state='reviewing',next_at=0")
-        with patch.object(R, 'packet', return_value={}), patch.object(R, 'review', return_value={'content': json.dumps(self.verdict())}):
+        with patch.object(R, 'packet', return_value={}), patch.object(R, 'review', return_value={'content': json.dumps(self.verdict()), 'finish_reason': 'stop'}):
             self.assertEqual(R.process_one(), self.key)
         self.assertEqual(R.result(self.key)['state'], 'reviewed')
 
@@ -174,7 +174,7 @@ class ResultReviewTests(ReviewFixture, unittest.TestCase):
         for n in range(3):
             R.record_result(self.item, self.run | {'id': str(n), 'started_at': f'2026-10-18T0{n}:00:00'})
         def response(packet):
-            return {'content': json.dumps(self.verdict(packet['review_key']))}
+            return {'content': json.dumps(self.verdict(packet['review_key'])), 'finish_reason': 'stop'}
         with patch.object(R, 'packet', side_effect=lambda row: {'review_key': row['key']}), patch.object(R, 'review', side_effect=response):
             self.assertEqual(R.process_one(newest=True), 'run:2')
             self.assertEqual(R.process_one(newest=False), 'run:0')
@@ -183,6 +183,16 @@ class ResultReviewTests(ReviewFixture, unittest.TestCase):
         with patch.object(R.M, '_job', return_value={'enabled': False}), patch.object(R, 'discover') as discover:
             self.assertEqual(R.tick(), {'state': 'paused'})
         discover.assert_not_called()
+
+    def test_truncated_paid_response_and_usage_are_retained_without_acceptance(self):
+        R.record_result(self.item, self.run)
+        response = {'content': '', 'finish_reason': 'length', 'usage': {'total_tokens': 5000}}
+        with patch.object(R, 'packet', return_value={}), patch.object(R, 'review', return_value=response):
+            self.assertIsNone(R.process_one())
+        row = R.result(self.key)
+        self.assertEqual(row['state'], 'retry')
+        self.assertEqual(json.loads(Path(row['response_file']).read_text())['usage']['total_tokens'], 5000)
+        self.assertIsNone(row['verdict'])
 
     def test_scope_and_pause_checked_before_transport(self):
         from gbox import hermes_provider_scope as scope
@@ -209,6 +219,19 @@ class ResultReviewTests(ReviewFixture, unittest.TestCase):
         self.assertTrue(model_packet['partial_evidence'])
         self.assertEqual(model_packet['review_key'], self.key)
         self.assertLess(len(json.dumps(model_packet)), 240000)
+
+    def test_credential_envelopes_are_redacted_but_evidence_ids_survive(self):
+        value = {'api_key': 'private-value', 'output': 'Authorization: Bearer secret-token-value-123456\n'
+                 'DEEPSEEK_API_KEY=abcdef0123456789\npassword: "abcdefghijklmnop"\n'
+                 '-----BEGIN RSA PRIVATE KEY-----\nprivate\n-----END RSA PRIVATE KEY-----',
+                 'source_sha256': 'a' * 64, 'usage': {'prompt_tokens': 123}}
+        cleaned = R.redact(value)
+        self.assertNotIn('private-value', json.dumps(cleaned))
+        self.assertNotIn('secret-token-value', json.dumps(cleaned))
+        self.assertNotIn('abcdef0123456789', json.dumps(cleaned))
+        self.assertNotIn('abcdefghijklmnop', json.dumps(cleaned))
+        self.assertEqual(cleaned['source_sha256'], 'a' * 64)
+        self.assertEqual(cleaned['usage']['prompt_tokens'], 123)
 
     def test_installer_does_not_enable_gate_on_uncertain_cron_creation(self):
         from gbox import hermes_provider_scope as scope

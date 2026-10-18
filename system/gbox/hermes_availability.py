@@ -180,6 +180,7 @@ def tick(now=None):
             observed = quota_status(quota, now) if http == 200 else {
                 'status': 'unknown', 'next_check_at': now + 300, 'windows': [], 'quota_balance_known': False}
             state.update(observed, checked_at=now, next_quota_check_at=min(observed['next_check_at'], now + 300))
+            state.pop('error_type', None)
             if observed['status'] == 'quota_wait' and not supervision_only:
                 _waiting_route(observed['next_check_at'])
             if work_active:

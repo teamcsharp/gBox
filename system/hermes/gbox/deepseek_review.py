@@ -27,7 +27,7 @@ def main():
         req = Request('https://api.deepseek.com/' + path,
                       data=json.dumps(body).encode() if body is not None else None,
                       headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
-        with urlopen(req, timeout=180 if body is not None else 20) as response:
+        with urlopen(req, timeout=300 if body is not None else 20) as response:
             raw = response.read(2_000_001)
         if len(raw) > 2_000_000:
             raise ValueError('Response exceeded limit')
@@ -44,7 +44,8 @@ def main():
             return {'balance': balance}
         result = call('chat/completions', {
             'model': 'deepseek-v4-pro', 'messages': packet['messages'],
-            'response_format': {'type': 'json_object'}, 'max_tokens': 5000,
+            'thinking': {'type': 'enabled'}, 'reasoning_effort': 'low',
+            'response_format': {'type': 'json_object'}, 'max_tokens': 16000 if packet.get('review_kind') == 'pr' else 8000,
         })
         return {'balance': balance, 'usage': result.get('usage'),
                 'finish_reason': result['choices'][0].get('finish_reason'),
