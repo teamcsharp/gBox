@@ -109,3 +109,15 @@ function compiled with its SDK headers and executed on ARM64, returning 7 for in
 
 Sources: [DecompPipeline](https://github.com/GeneralAtrox/DecompPipeline),
 [XenonRecomp](https://github.com/hedge-dev/XenonRecomp), [RexGlue SDK](https://github.com/rexglue/rexglue-sdk).
+
+## Status admission
+
+Stored `op=status` for `decomp_pipeline`, `xenonrecomp`, and `rexglue` remains
+claimable while a worker is busy or excluded from background compute, matching
+the existing Ollama discovery exemption. These paths inspect a bounded local
+configuration and a fixed list of program paths; they start no subprocesses and
+create no project files. Worker pinning, OS matching, tool advertisement, and
+other claim controls still apply. The API already defaults an omitted operation to
+`status` before storing a job, so those diagnostic requests receive the same treatment.
+All other stored operations, raw job records without `op=status`, and status calls
+for unreviewed tools retain existing admission rules.
