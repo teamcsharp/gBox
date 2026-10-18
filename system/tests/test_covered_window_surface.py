@@ -112,3 +112,16 @@ def test_compositor_covered_frames_still_do_not_prove_recovery(cfg):
     incident = surface_incident(cfg, ['red', 'green', 'blue', 'white'], [9] * 4, ['desktop-compositor'] * 4)
     observed = incident.observe()
     assert observed['visible'] is False and observed['motion'] is False
+
+
+@pytest.mark.parametrize('source,covered',[(None,0),('cxbx-print-window',0),
+    ('cxbx-print-window',9),('cxbx-desktop-compositor',0)])
+def test_cxbx_popup_or_unverified_motion_never_proves_recovery(cfg,source,covered):
+    incident=surface_incident(cfg,['red','green','blue','white'],[covered]*4,[source]*4)
+    incident.session['adapter']='cxbx'
+    observed=incident.observe()
+    assert observed['visible'] is False and observed['motion'] is False
+    assert observed['errors'] and 'unverified' in observed['errors'][0]
+    messages=incident.store.get('request',incident.rid)['messages']
+    captures=[m for m in messages if m.get('attachments')]
+    assert len(captures)==4 and all('diagnostic capture' in m['text'] for m in captures)

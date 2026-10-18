@@ -187,7 +187,11 @@ def test_launch_requires_renderer_and_reports_owned_child_pid(tmp_path, monkeypa
     assert calls == [[str(tmp_path / "cxbx.exe"), str(xbe.resolve())]]
     assert out["pid"] == ad.proc.pid == 202 and out["launch_pid"] == 101
     assert out["owned_pids"] == [101, 202] and out["local_window"]
-    assert "stable" in out["boot_validation"]
+    assert "stable" in out["boot_validation"] and "not verified" in out["boot_validation"]
+    assert out["window_ready"] and not out["rendering_verified"] and not out["gameplay_verified"]
+    runtime = ad.query_runtime()
+    assert runtime["ready"] and runtime["window_ready"]
+    assert runtime["rendering_verified"] is False and runtime["gameplay_verified"] is False
     assert ad.query_runtime()["running"]
     ad._output.close()
 

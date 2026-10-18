@@ -5,7 +5,7 @@ be analysed.* This page is the pipeline that produces those pictures and attache
 
 | Piece | What it makes | Kind label |
 |---|---|---|
-| `evidence_capture` tool (`gbox/evidence_capture.py`) | frames of the build in a running emulator, optional stock-vs-mod pairs | **in-game frame** |
+| `evidence_capture` tool (`gbox/evidence_capture.py`) | frames of the build in a running emulator, optional stock-vs-mod pairs | **session screenshot** (gameplay unverified) |
 | `scripts/evidence_offline.py` | stock slot model next to the fitted donor, fit-event snapshots | **offline render** |
 | `scripts/ui_evidence.py` | headless-browser screenshots of a branch's UI against fixture data | **UI screenshot** |
 | `scripts/pr_evidence.py` | pushes the pictures to the `pr-evidence` branch, adds the gallery to the PR body | - |
@@ -30,7 +30,7 @@ POST /api/jobs {"tool": "evidence_capture", "input": {
 ```
 
 Output (`job.output`): `{game_id, mod, recipe, worker, runs: [{variant: mod|stock, session_id, reached, frames,
-stopped, notes, error?}], frames: [{run, label, sha256, url, kind: "in-game frame", width, height, mean_luma, dark?}],
+stopped, notes, error?}], frames: [{run, label, sha256, url, kind: "session screenshot", gameplay_verified: false, width, height, mean_luma, capture_source, capture_occlusion, dark?}],
 pairs: [{label, stock, mod, composite, url}], artifacts: [sha256...], notes}`. Frames and pair pictures are artifacts
 (`GET /api/artifacts/<sha256>`); finished captures are listed at `GET /api/evidence?game_id=&mod=`.
 
@@ -127,10 +127,38 @@ python system/scripts/pr_evidence.py --pr 296 --job <evidence_capture job id> --
   `git push origin <commit>:refs/heads/pr-evidence`.
 * The PR body gets an `## Evidence` section between `<!-- pr-evidence:start -->` / `<!-- pr-evidence:end -->` (a
   rerun replaces it; it goes above a trailing "Generated with" line), one captioned image per picture marked
-  *(in-game frame)*, *(offline render)* or *(UI screenshot)*, linked as
+  *(session screenshot)*, *(in-game frame)* (independently reviewed), *(offline render)* or *(UI screenshot)*, linked as
   `https://github.com/teamcsharp/gBox/blob/pr-evidence/pr-<N>/<file>?raw=true`.
 * The new body is always printed. With `--gh` the current body is read (`gh pr view N --json body`) and the new one
   written (`gh pr edit N --body-file -`). `--dry-run` commits and edits nothing; `--no-push` commits locally only.
 
 Tests: `tests/test_evidence_capture.py` (fake sessions: node choice, stop-own-session, yield, recipes, server
 route, pictures), `tests/test_pr_evidence.py` (picture checks, shrinking, body generation, orphan-branch commit).
+
+
+### Screenshot verification limits
+
+`get_frame` records pixels, dimensions and their hash; it does not verify gameplay.
+`gameplay_verified` is always false for automatic screenshots. `mean_luma` is
+brightness, which can come from a popup, emulator menu or loading screen.
+`evidence_capture` retains diagnostic PNGs and stock/mod composites under the
+`session screenshot` label, including capture provenance. Its `reached` field
+records recipe steps performed, not a verified game milestone. A reviewer must
+separately establish the requested gameplay and modification.
+
+Cxbx launch success means the owned render window was responsive and stable;
+`window_ready` retains that technical result while `rendering_verified` and
+`gameplay_verified` remain false. Cxbx capture uses per-execution metadata bound
+to the exact PNG, process and window. It checks identity and geometry before and
+after capture, and samples nine window hit-test points before and after.
+`capture_occlusion` is `unknown`, `occluded`, or `sampled-clear`; the latter does
+not prove the entire image is unobscured. The legacy `covered: 0` field alone is
+not proof of anything: it is also returned when no coverage evidence exists.
+
+PrintWindow PNGs remain available for diagnosis even when covered or coverage is
+unknown. Cxbx screen-compositor fallback retains its stricter sampled-clear
+requirement. Neither method independently identifies game content, so Cxbx
+frames cannot automatically prove emulation recovery from brightness or pixel
+motion. No emulator, ROM, save, launch setting or operator session is changed by
+these evidence classifications. Actual native rendering and gameplay acceptance
+remain separate checks.

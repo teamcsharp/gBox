@@ -12,7 +12,7 @@
    mktree, commit-tree): no checkout, the working tree and index are never touched. Images already there for the PR
    are replaced; other PRs' folders are kept. Then `git push <remote> <commit>:refs/heads/pr-evidence`.
 3. The PR body gets (or has replaced) an "Evidence" gallery between <!-- pr-evidence:start/end --> markers, each image
-   captioned and marked "in-game frame", "offline render" or "UI screenshot", linked as
+   captioned and marked "session screenshot", independently reviewed "in-game frame", "offline render" or "UI screenshot", linked as
    https://github.com/<repo>/blob/pr-evidence/pr-<N>/<file>?raw=true. The body is printed; with --gh it is also
    read from and written back to the PR (`<gh> pr view N -R repo --json body -q .body`, `<gh> pr edit N -R repo
    --body-file -`).
@@ -33,11 +33,11 @@ from pathlib import Path
 
 REPO = "teamcsharp/gBox"
 BRANCH = "pr-evidence"
-KINDS = ("in-game frame", "offline render", "UI screenshot")
+KINDS = ("session screenshot", "in-game frame", "offline render", "UI screenshot")
 KIND_ALIASES = {"ingame": "in-game frame", "ingameframe": "in-game frame", "frame": "in-game frame",
                 "game": "in-game frame", "offline": "offline render", "render": "offline render",
                 "offlinerender": "offline render", "ui": "UI screenshot", "screenshot": "UI screenshot",
-                "uiscreenshot": "UI screenshot"}
+                "uiscreenshot": "UI screenshot", "sessionscreenshot": "session screenshot"}
 START, END = "<!-- pr-evidence:start -->", "<!-- pr-evidence:end -->"
 MAGIC = {b"\x89PNG\r\n\x1a\n": ".png", b"\xff\xd8\xff": ".jpg", b"GIF87a": ".gif", b"GIF89a": ".gif"}
 MAX_KB = 1000
@@ -218,11 +218,11 @@ def from_job(api: str, token: str, job: str) -> list[dict]:
     out = j.get("output") or {}
     items = []
     for p in out.get("pairs") or []:
-        items.append({"sha": p["composite"], "caption": f"{p['label']}: stock vs {out.get('mod')}", "kind": "in-game frame"})
+        items.append({"sha": p["composite"], "caption": f"{p['label']}: stock vs {out.get('mod')} (gameplay unverified)", "kind": "session screenshot"})
     for f in out.get("frames") or []:
-        if f.get("kind") == "in-game frame":
-            items.append({"sha": f["sha256"], "caption": f"{f['label']} ({f.get('run')}, {out.get('worker')})",
-                          "kind": "in-game frame"})
+        if f.get("kind") in ("in-game frame", "session screenshot"):
+            items.append({"sha": f["sha256"], "caption": f"{f['label']} ({f.get('run')}, {out.get('worker')}; gameplay unverified)",
+                          "kind": "session screenshot"})
     for it in items:
         it["data"] = httpx.get(f"{api}/api/artifacts/{it.pop('sha')}", headers=h, timeout=60).content
     return items

@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from typing import Literal
 
 import httpx
 from pydantic import BaseModel, Field, model_validator
@@ -1834,9 +1835,11 @@ class FrameOut(BaseModel):
     width: int
     height: int
     sha256: str
-    mean_luma: float | None = None         # 0-255; ~0 means a black screen (content not drawing)
+    mean_luma: float | None = None         # Pixel brightness only; does not establish game rendering.
     covered: int = Field(default=0, ge=0, le=9)  # Window occlusion points, when confirmed for this captured PNG.
     capture_source: str | None = None
+    capture_occlusion: Literal["unknown", "sampled-clear", "occluded"] = "unknown"
+    gameplay_verified: Literal[False] = False  # A screenshot alone never verifies gameplay.
 
 def _png_validate(out: FrameOut, arts):
     d = arts.get("frame.png", b"")
@@ -1845,17 +1848,20 @@ def _png_validate(out: FrameOut, arts):
     w, h = int.from_bytes(d[16:20], "big"), int.from_bytes(d[20:24], "big")
     return [] if (w, h) == (out.width, out.height) and sha256(d) == out.sha256 else ["PNG header/hash mismatch"]
 
-@tool("get_frame", "1.1", FrameIn, FrameOut, capabilities=["video"], artifacts=["frame.png"],
+@tool("get_frame", "1.2", FrameIn, FrameOut, capabilities=["video"], artifacts=["frame.png"],
       validate=_png_validate, validation="PNG signature + IHDR size + hash",
       check=lambda c: None if shutil.which("ffmpeg") else "ffmpeg not on PATH")
 def get_frame(inp: FrameIn, ctx: Ctx):
     """Capture one frame of a session display or the host desktop via ffmpeg (x11grab / gdigrab)."""
-    capture = {'covered': 0}
+    capture = {'covered': 0, 'capture_occlusion': 'unknown', 'gameplay_verified': False}
     if inp.session_id:
         ad, g = SESSIONS[inp.session_id]
         d = ad.get_frame()
         if HOST_OS == 'windows':
-            state = adapters.win_grab_state()
+            own_state = getattr(ad, 'frame_capture_state', None)
+            state = own_state() if callable(own_state) else None
+            if state is None:  # Subclasses with their own get_frame may still use win_grab.
+                state = adapters.win_grab_state()
             pid = getattr(getattr(ad, 'proc', None), 'pid', None)
             # win_grab_state is shared: accept only metadata for the exact returned PNG and current emulator PID.
             if pid and state.get('pid') == pid and state.get('sha256') == sha256(d):
@@ -1863,6 +1869,9 @@ def get_frame(inp: FrameIn, ctx: Ctx):
                 if type(covered) is int and 0 <= covered <= 9:
                     capture['covered'] = covered
                     capture['capture_source'] = state.get('source')
+                    occlusion = state.get('occlusion', 'unknown')
+                    if occlusion in ('unknown', 'sampled-clear', 'occluded'):
+                        capture['capture_occlusion'] = occlusion
         ctx.artifact("frame.png", d, "image/png", session=inp.session_id, game=g["game_id"], **capture)
     else:
         d = adapters.grab_png(None, inp.region)

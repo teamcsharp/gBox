@@ -370,6 +370,8 @@ class XboxAdapter:
         self.ready = False
         self.log_path = None
         self._render_missing_since = None
+        import threading
+        self._capture_local = threading.local()
 
     def get_capabilities(self):
         from .adapters import OPS
@@ -471,7 +473,9 @@ class XboxAdapter:
                         keep_offscreen(self.render_pid)
                         return {"pid": self.render_pid, "launch_pid": self.launcher.pid, "owned_pids": sorted(live),
                                 "rom": str(xbe), "local_window": True, "worker_name": __import__("platform").node(),
-                                "boot_validation": "CxbxRender window stable for 3 seconds", "log": str(self.log_path)}
+                                "boot_validation": "CxbxRender window stable for 3 seconds; rendering and gameplay not verified",
+                                "window_ready": True, "rendering_verified": False, "gameplay_verified": False,
+                                "log": str(self.log_path)}
                 else:
                     stable_since, stable_hwnd = None, None
                 time.sleep(0.25)
@@ -493,7 +497,8 @@ class XboxAdapter:
         running = self._running()
         return {"running": running, "pid": self.render_pid if running else None,
                 "launch_pid": self.launcher.pid if self.launcher else None,
-                "owned_pids": sorted(self._live()), "ready": running and self.ready}
+                "owned_pids": sorted(self._live()), "ready": running and self.ready,
+                "window_ready": running and self.ready, "rendering_verified": False, "gameplay_verified": False}
 
     def stop_game(self):
         import psutil
@@ -515,46 +520,28 @@ class XboxAdapter:
             self._output.close()
         return {"stopped": not self._live(), "returncode": self.launcher.poll() if self.launcher else None}
 
+    def frame_capture_state(self):
+        state = getattr(vars(self).get("_capture_local"), "state", None)
+        return dict(state) if state is not None else None
+
     def get_frame(self):
-        from .adapters import _print_window_png
-        if not self._running():
+        from .cxbx_capture import capture_window
+        import threading
+        local = vars(self).setdefault("_capture_local", threading.local())
+        local.state = {}
+        if not self._running() or not self.render_window:
             raise RuntimeError("The Xbox game render window is not running")
-        import ctypes
-        from ctypes import wintypes as w
-        hwnd = self.render_window["hwnd"]
-        user = ctypes.windll.user32
-        user.GetClientRect.argtypes = [w.HWND, ctypes.POINTER(w.RECT)]
-        user.GetWindowRect.argtypes = [w.HWND, ctypes.POINTER(w.RECT)]
-        user.ClientToScreen.argtypes = [w.HWND, ctypes.POINTER(w.POINT)]
-        user.WindowFromPoint.argtypes = [w.POINT]
-        user.WindowFromPoint.restype = w.HWND
-        rect, outer, origin = w.RECT(), w.RECT(), w.POINT(0, 0)
-        if not user.GetClientRect(hwnd, ctypes.byref(rect)) or not user.ClientToScreen(hwnd, ctypes.byref(origin)):
-            raise RuntimeError("The Xbox game render window is no longer available")
-        width, height = rect.right - rect.left, rect.bottom - rect.top
-        if width < 2 or height < 2:
-            raise RuntimeError("The Xbox render window is minimized; no game frame is available")
-        import io
-        from PIL import Image, ImageGrab
-        if user.GetWindowRect(hwnd, ctypes.byref(outer)):
-            data = _print_window_png(hwnd, outer.right - outer.left, outer.bottom - outer.top)
-            if data:
-                image = Image.open(io.BytesIO(data))
-                x, y = origin.x - outer.left, origin.y - outer.top
-                result = io.BytesIO()
-                image.crop((x, y, x + width, y + height)).save(result, "PNG")
-                return result.getvalue()
-        # GPU windows may reject PrintWindow. Screen pixels are acceptable only
-        # when every sampled point belongs to this verified game render process.
-        for fx, fy in ((.1, .1), (.5, .1), (.9, .1), (.1, .5), (.5, .5), (.9, .5), (.1, .9), (.5, .9), (.9, .9)):
-            point = w.POINT(round(origin.x + width * fx), round(origin.y + height * fy))
-            owner = w.DWORD()
-            top = user.WindowFromPoint(point)
-            if not top or not user.GetWindowThreadProcessId(top, ctypes.byref(owner)) or owner.value != self.render_pid:
-                raise RuntimeError("The Xbox render window is covered or off-screen; no verified game frame is available")
-        result = io.BytesIO()
-        ImageGrab.grab((origin.x, origin.y, origin.x + width, origin.y + height), all_screens=True).save(result, "PNG")
-        return result.getvalue()
+        pid, hwnd = self.render_pid, self.render_window["hwnd"]
+        born = self._owned.get(pid)
+        if born is None or pid not in self._live():
+            raise RuntimeError("The Xbox render process identity is unavailable")
+        data, state = capture_window(hwnd, pid, render_class=self.render_class, source_prefix=self.name)
+        # A reboot/replacement during capture cannot authorize an old image.
+        if (not self.render_window or pid != self.render_pid or hwnd != self.render_window["hwnd"]
+                or born != self._owned.get(pid) or pid not in self._live()):
+            raise RuntimeError("The Xbox render process changed during capture")
+        local.state = state
+        return data
 
     def __getattr__(self, operation):
         from .adapters import OPS

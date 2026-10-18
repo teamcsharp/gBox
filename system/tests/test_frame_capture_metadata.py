@@ -40,7 +40,8 @@ def test_exact_capture_metadata_survives_output_schema_and_artifact_provenance(m
     assert result['covered'] == covered and result['capture_source'] == source
     assert result['sha256'] == metadata['sha256'] and (result['width'],result['height']) == (16,12)
     assert artifacts[0][0][1] == data
-    assert artifacts[0][1] == {'session':'capture-metadata','game':'owned-game','covered':covered,'capture_source':source}
+    assert artifacts[0][1] == {'session':'capture-metadata','game':'owned-game','covered':covered,'capture_source':source,
+        'capture_occlusion':'unknown','gameplay_verified':False}
     assert 'covered_titles' not in result and 'pid' not in result and 'frame_age_s' not in result
     assert tools._png_validate(tools.FrameOut.model_validate(result), {'frame.png':data}) == []
 
@@ -55,7 +56,8 @@ def test_stale_or_other_process_capture_metadata_is_not_forwarded(monkeypatch, m
     ctx, artifacts = session(monkeypatch,data,metadata,pid=None if mismatch == 'missing_proc' else 123)
     result = tools.FrameOut.model_validate(tools.get_frame(tools.FrameIn(session_id='capture-metadata'),ctx)).model_dump()
     assert result['covered'] == 0 and result['capture_source'] is None
-    assert artifacts[0][1] == {'session':'capture-metadata','game':'owned-game','covered':0}
+    assert artifacts[0][1] == {'session':'capture-metadata','game':'owned-game','covered':0,
+        'capture_occlusion':'unknown','gameplay_verified':False}
 
 
 @pytest.mark.parametrize('invalid', [-1,10,True,'9',None])
@@ -82,7 +84,7 @@ def test_desktop_capture_does_not_reuse_session_metadata(monkeypatch):
     monkeypatch.setattr(adapters,'win_grab_state',lambda:pytest.fail('Desktop capture must not read session metadata'))
     result = tools.FrameOut.model_validate(tools.get_frame(tools.FrameIn(),ctx))
     assert result.covered == 0 and result.capture_source is None
-    assert artifacts[0][1] == {'covered':0}
+    assert artifacts[0][1] == {'covered':0,'capture_occlusion':'unknown','gameplay_verified':False}
 
 
 def window(monkeypatch, tmp_path, foreign=2, fail=False):
@@ -152,3 +154,18 @@ def test_real_adapter_metadata_reaches_covered_frame_consumers(monkeypatch,tmp_p
     output = tools.FrameOut.model_validate(tools.get_frame(tools.FrameIn(session_id='capture-metadata'),ctx)).model_dump()
     assert output['covered'] == artifacts[0][1]['covered'] == 2
     assert output['capture_source'] == 'desktop-compositor'
+
+
+@pytest.mark.parametrize("mismatch", ["pid", "png", "unknown-status"])
+def test_adapter_metadata_cannot_smuggle_another_frame_or_claim_gameplay(monkeypatch,mismatch):
+    data=png();ctx,arts=session(monkeypatch,data,{})
+    ad=tools.SESSIONS['capture-metadata'][0]
+    meta={'pid':123,'sha256':hashlib.sha256(data).hexdigest(),'covered':0,
+          'source':'cxbx-print-window','occlusion':'sampled-clear','gameplay_verified':True}
+    if mismatch=='pid':meta['pid']=999
+    if mismatch=='png':meta['sha256']='bad'
+    if mismatch=='unknown-status':meta['occlusion']='uncovered'
+    ad.frame_capture_state=lambda:meta
+    result=tools.FrameOut.model_validate(tools.get_frame(tools.FrameIn(session_id='capture-metadata'),ctx))
+    assert result.capture_occlusion=='unknown' and result.gameplay_verified is False
+    if mismatch!='unknown-status':assert result.capture_source is None

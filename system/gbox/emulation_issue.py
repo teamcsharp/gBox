@@ -123,11 +123,15 @@ class Incident:
         luma = ImageStat.Stat(image.convert('L')).mean[0]
         covered = out.get('covered', 0)
         self.frame_source = out.get('capture_source')
+        self.frame_diagnostic_only = (self.session.get('adapter') == 'cxbx'
+                                      or str(self.frame_source or '').startswith('cxbx-'))
         surface = covered and self.frame_source == WINDOW_SURFACE
-        self.step(label, f'Game screenshot captured; mean RGB luminance {luma:.2f}'
+        self.step(label, f'Session screenshot captured; mean RGB luminance {luma:.2f}'
                          + (f'; {covered}/9 capture points covered by another window'
                             + (", pixels rendered from the emulator's own window." if surface else '.')
-                            if covered else '.'),
+                            if covered else '.')
+                         + (' Cxbx diagnostic capture; game content and gameplay are not verified.'
+                            if self.frame_diagnostic_only else ''),
                   attachment={'sha256': ref['sha256'], 'name': label.replace(' ', '-') + '.png',
                               'type': 'image/png', 'size': ref['size']})
         return image, luma, covered
@@ -153,6 +157,12 @@ class Incident:
             self.sleep(delay)
             try:
                 image, luma, covered = self.frame('verify recovery frame')
+                if getattr(self, 'frame_diagnostic_only', False):
+                    previous = None
+                    reason = 'Cxbx window screenshots cannot verify recovery: game content and gameplay remain unverified'
+                    if reason not in errors:
+                        errors.append(reason)
+                    continue
                 # PrintWindow renders the emulator's own surface, so its pixels are the game even when
                 # another window covers it. Compare only frames captured the same way (#1057).
                 source = WINDOW_SURFACE if covered and getattr(self, 'frame_source', None) == WINDOW_SURFACE else 'screen'
