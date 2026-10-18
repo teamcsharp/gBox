@@ -2437,16 +2437,24 @@ D-Pad/Right = `Pad E`
 
     paused_tids: list | None = None
 
+    def _memory_control_lock(self):
+        # DolphinProcMem is the cached debugger() object used by all memory
+        # reads and writes, including generic tools and cheat freezes.
+        from contextlib import nullcontext
+        return getattr(getattr(self, 'dbg', None), 'lock', None) or nullcontext()
+
     def pause(self) -> dict:
         """Dolphin has no pause command gBox can send; its emulation threads are suspended instead (window stays live)."""
-        if not self.paused_tids:
-            self.paused_tids = win_suspend_emulation(self.proc.pid)
-        return {"state": "PAUSED", "threads": len(self.paused_tids)}
+        with self._memory_control_lock():
+            if not self.paused_tids:
+                self.paused_tids = win_suspend_emulation(self.proc.pid)
+            return {"state": "PAUSED", "threads": len(self.paused_tids)}
 
     def resume(self) -> dict:
-        n = win_resume_threads(self.paused_tids or [])
-        self.paused_tids = None
-        return {"state": "PLAYING", "threads": n}
+        with self._memory_control_lock():
+            n = win_resume_threads(self.paused_tids or [])
+            self.paused_tids = None
+            return {"state": "PLAYING", "threads": n}
 
     def query_runtime(self) -> dict:
         return {"running": bool(self.proc and self.proc.poll() is None), "emulator": self.name,

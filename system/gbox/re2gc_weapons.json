@@ -1,0 +1,135 @@
+{
+  "disc_id": "GHAE08",
+  "evidence": "Owned PLW hashes; 15-bone weapon animation streams, not gameplay compatibility proof",
+  "characters": {
+    "0": {
+      "0": {
+        "path": "Pl0/PLD/PL00W00.PLW",
+        "size": 32928,
+        "sha256": "46662f13ce2f2111ab74917fae7d124822f8cf9ad9650c14bd5b8a536dff854d"
+      },
+      "1": {
+        "path": "Pl0/PLD/PL00W01.PLW",
+        "size": 34524,
+        "sha256": "f599aca6f0b62a9b90e529e3a1d605aef57768267b1747432461cc28a9445d20"
+      },
+      "2": {
+        "path": "Pl0/PLD/PL00W02.PLW",
+        "size": 33928,
+        "sha256": "c8398ddd1859e2dfa5523b0f7ed5f1dff37e477ecbc01ca2de531a4979fb93a0"
+      },
+      "4": {
+        "path": "Pl0/PLD/PL00W04.PLW",
+        "size": 36024,
+        "sha256": "3e88c6447597e7e18f6e72a9de1acbed188f51fe05691ec800a6177a1f99e946"
+      },
+      "5": {
+        "path": "Pl0/PLD/PL00W05.PLW",
+        "size": 36716,
+        "sha256": "aff44f808a95e6229bfdcd487fe7668351bb9d6381284532232de2374dffa4a5"
+      },
+      "6": {
+        "path": "Pl0/PLD/PL00W06.PLW",
+        "size": 42724,
+        "sha256": "181ef467b38345dbede5e631a5d15dc61463ca618e6a0b89f96ee4c4639c83e8"
+      },
+      "7": {
+        "path": "Pl0/PLD/PL00W07.PLW",
+        "size": 40884,
+        "sha256": "905e075f22dd255306cd1ab08dfa73e5db943ebd37512867cc0675797f5f701e"
+      },
+      "8": {
+        "path": "Pl0/PLD/PL00W08.PLW",
+        "size": 46976,
+        "sha256": "df9f4707fed7b637292848b69c4522c92645fcbc85c4d4345ec129c78c220c40"
+      },
+      "13": {
+        "path": "Pl0/PLD/PL00W0D.PLW",
+        "size": 34192,
+        "sha256": "0ca6633ecf9c11e5b07e300567e0948d215c4e564bb9b3f7b68a4b0cd572cd0b"
+      },
+      "15": {
+        "path": "Pl0/PLD/PL00W0F.PLW",
+        "size": 38720,
+        "sha256": "e6dfd79d22521931dd5fd9b2ba5735b805613da24add914a480b8ce27e4001c2"
+      },
+      "16": {
+        "path": "Pl0/PLD/PL00W10.PLW",
+        "size": 36944,
+        "sha256": "898a40ce113b8a272e0eb5a242d9567b7638b786349b6103ff2eb09f161312a2"
+      },
+      "17": {
+        "path": "Pl0/PLD/PL00W11.PLW",
+        "size": 30108,
+        "sha256": "24878d0bc6906b6ee8f0bab3244126b257d859b00b2f003314d1c8f65f9b15b8"
+      },
+      "18": {
+        "path": "Pl0/PLD/PL00W12.PLW",
+        "size": 34588,
+        "sha256": "bedeb288cc63e4bc953e29fbb8755e143398a299b639e2ab1171f72c93ef34f2"
+      }
+    },
+    "1": {
+      "0": {
+        "path": "Pl1/PLD/PL01W00.PLW",
+        "size": 33008,
+        "sha256": "b16da56af03e637b52c646bfb7c2571f9f81b2bb178c29b1e1edc31ba4aa242e"
+      },
+      "1": {
+        "path": "Pl1/PLD/PL01W01.PLW",
+        "size": 34524,
+        "sha256": "154ee0abfdd39bc98601ceff67b61ed20def2917c0ac467063d2519499dc5de3"
+      },
+      "3": {
+        "path": "Pl1/PLD/PL01W03.PLW",
+        "size": 33928,
+        "sha256": "a757013e26dc3a569d4352efd78c884bc6b4fb34d8ab3ba733a1ecc88bd63b92"
+      },
+      "9": {
+        "path": "Pl1/PLD/PL01W09.PLW",
+        "size": 37832,
+        "sha256": "f208a22433f5d1f0a6e4f896f2e9c904bb154fdbabca80d50dcf5ee9f14bb047"
+      },
+      "10": {
+        "path": "Pl1/PLD/PL01W0A.PLW",
+        "size": 37832,
+        "sha256": "f208a22433f5d1f0a6e4f896f2e9c904bb154fdbabca80d50dcf5ee9f14bb047"
+      },
+      "11": {
+        "path": "Pl1/PLD/PL01W0B.PLW",
+        "size": 37832,
+        "sha256": "f208a22433f5d1f0a6e4f896f2e9c904bb154fdbabca80d50dcf5ee9f14bb047"
+      },
+      "12": {
+        "path": "Pl1/PLD/PL01W0C.PLW",
+        "size": 40284,
+        "sha256": "56b8d0d7268a5d352f53000e50c09f64e424ec7da0876c61d755ba4aa2a6c7df"
+      },
+      "13": {
+        "path": "Pl1/PLD/PL01W0D.PLW",
+        "size": 32920,
+        "sha256": "8f08c81fb06756c8660d363661c6f198afe824a6383974ac135dbd54aa36e611"
+      },
+      "14": {
+        "path": "Pl1/PLD/PL01W0E.PLW",
+        "size": 37784,
+        "sha256": "1beb50c6353dfcc58b446ccd0a5a157f90f69f9d77450d71a18efc830f4e4d16"
+      },
+      "15": {
+        "path": "Pl1/PLD/PL01W0F.PLW",
+        "size": 38960,
+        "sha256": "ec4029214fcec3987507eecc0312b28cd362df0e556367ecccda1d662966b396"
+      },
+      "17": {
+        "path": "Pl1/PLD/PL01W11.PLW",
+        "size": 30172,
+        "sha256": "c6457d3b0dc9c128ac3b86056f8cc4f634848e4972c6a53ce7cd295c9876113d"
+      },
+      "18": {
+        "path": "Pl1/PLD/PL01W12.PLW",
+        "size": 34500,
+        "sha256": "03aac559694c6993fe8f92357da23080eceb6181e2e9d6e0cdee9d334e5a1c68"
+      }
+    }
+  }
+}

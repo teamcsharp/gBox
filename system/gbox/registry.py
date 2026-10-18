@@ -1,5 +1,6 @@
 """Typed tool registry. Tools run on workers; validation and acceptance run on the control plane."""
 import concurrent.futures
+from contextvars import ContextVar
 import platform
 import time
 import traceback
@@ -10,6 +11,8 @@ from pydantic import BaseModel
 
 from .config import Config
 from .models import Permission, ToolInfo
+
+_execution_deadline = ContextVar('gbox_execution_deadline', default=None)
 
 HOST_OS = platform.system().lower()          # "windows" | "linux" | "darwin"
 
@@ -34,6 +37,16 @@ class Ctx:
         self.headers: dict = {}
         self.artifacts: list[tuple[str, bytes, str, dict]] = []
         self.log: list[str] = []
+
+    @property
+    def execution_deadline_monotonic(self):
+        """Absolute deadline captured before executor submission, scoped to this run.
+
+        Context-local storage prevents a reused Ctx or overlapping timed-out
+        executions from replacing another execution's deadline.
+        """
+        active = _execution_deadline.get()
+        return active[1] if active is not None and active[0] is self else None
 
     # A launch must not wait on the control plane: each progress POST took 1-3.5 s there (the server serializes them
     # behind its store lock; a 404 for an unknown job took 0.9-1.6 s on 2026-10-13), which made runtime_s 7.1 s and
@@ -176,17 +189,19 @@ def tool(name: str, version: str, In: type[BaseModel], Out: type[BaseModel], **k
 _pool = concurrent.futures.ThreadPoolExecutor(max_workers=8)
 
 
-def _run_with_fitting(fn, inp, ctx: "Ctx"):
+def _run_with_fitting(fn, inp, ctx: "Ctx", execution_deadline=None):
     """A tool run with a fitting-event sink (gbox.fit_events): the writers' per-model stages reach this job's progress
     stream, and their snapshot files are removed once the job has uploaded them."""
     import shutil
     from pathlib import Path
     from . import fit_events
     work = Path(getattr(ctx.config, "cache", None) or ".") / "fitting" / str(ctx.job_id)
+    deadline_token = _execution_deadline.set((ctx, execution_deadline))
     try:
         with fit_events.job(ctx.progress, work):
             return fn(inp, ctx)
     finally:
+        _execution_deadline.reset(deadline_token)
         if ctx.server:
             shutil.rmtree(work, ignore_errors=True)
 
@@ -208,7 +223,8 @@ def _execute(t, inp, ctx: Ctx) -> dict:
         ctx.artifacts.clear()
         try:
             # ponytail: a timed-out thread keeps running in the background; move tools to subprocesses if that bites.
-            out = _pool.submit(_run_with_fitting, t.fn, inp, ctx).result(timeout=t.timeout_s)
+            deadline = time.monotonic() + t.timeout_s
+            out = _pool.submit(_run_with_fitting, t.fn, inp, ctx, deadline).result(timeout=t.timeout_s)
             return t.Out.model_validate(out).model_dump(mode="json")
         except (ToolUnavailable, Unsupported, Cancelled):
             raise
