@@ -5282,7 +5282,11 @@ def create_app(config: Config) -> FastAPI:
             time.sleep(90)                            # workers re-register first; a test server is long gone by then
             while True:
                 try:
-                    launch_ledger.scan(time.time() - 3600)    # failures no hook saw (worker restart, timeouts, retired)
+                    # Failures no hook saw (worker restart, timeouts, retired). A worker restart never reports its
+                    # own result, so the scan is the only path that files it; pass remedy=True so its documented
+                    # relaunch actually runs. _relaunch_blocker still skips old failures, a busy/offline PC and
+                    # anything already relaunched, so this never relaunches stale or intrusive failures.
+                    launch_ledger.scan(time.time() - 3600, remedy=True)
                     launch_ledger.tick()
                 except Exception as exc:              # noqa: BLE001
                     print(f"gBox: launch failure loop: {type(exc).__name__}: {exc}", flush=True)

@@ -350,6 +350,27 @@ def test_remedies_can_be_switched_off(plane):
     assert not p.submitted and "switched off" in p.store.get("request", rec["request_id"])["body"]
 
 
+def test_a_fresh_worker_restart_found_by_scan_gets_its_relaunch_remedy(plane):
+    p, ledger = plane
+    failed_launch(p, err="worker JAYBUILTFINALE restarted while running", mod="")
+    out = ledger.scan(p.t - 3600, remedy=True)                   # the server loop's call (no result hook for a restart)
+    assert out["filed"]
+    assert [(t, w) for t, _i, w, _j in p.submitted] == [("launch_game", PC)]
+    rec = p.store.all(LF.KIND)[0]
+    assert rec["error_class"] == "worker_restarted"
+    # the remedy's own relaunch is not filed as another failure
+    assert ledger.observe_job(p.store.get("job", p.submitted[0][3]) | {"state": "failed",
+        "error": "worker JAYBUILTFINALE restarted while running"}) is None
+
+
+def test_an_old_worker_restart_found_by_scan_is_not_relaunched(plane):
+    p, ledger = plane
+    p.t += 1000                                                 # the failure is now well past RELAUNCH_MAX_AGE_S
+    failed_launch(p, err="worker JAYBUILTFINALE restarted while running", mod="", finished=p.t - 1000)
+    ledger.scan(p.t - 3600, remedy=True)
+    assert not p.submitted                                      # the age guard keeps the scan from relaunching it
+
+
 # ------------------------------------------------------------------------------------------------ investigation
 
 def test_each_new_ticket_is_queued_for_hermes_and_marked_in_progress(plane):
