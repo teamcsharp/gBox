@@ -64,7 +64,7 @@ def boot_phase(log: str) -> dict:
 
 class BootWatch:
     """The launch's patience while a RetroArch session boots. observe() each poll with the log so far; decide() says
-    'ready' | 'wait' | 'fallback' (relaunch with the next audio driver) | 'fail' (gave up: not an audio problem, or
+    'ready' | 'wait' | 'netcmd' (retry the command port) | 'fallback' (next audio driver) | 'fail' (gave up: not an audio problem, or
     audio still not open after extended_wait_s)."""
 
     def __init__(self, t0: float, boot_wait_s: float = 30.0, extended_wait_s: float = 120.0, init_grace_s: float = 3.0,
@@ -100,12 +100,13 @@ class BootWatch:
 
     def decide(self, now: float, running: bool) -> str:
         p, seen = self.phase, self.seen
-        if running:
-            return "ready"
         if p.get("netcmd_down"):
-            # no command interface: gBox can neither confirm the content is running nor control the session
+            # A status reply on this occupied port can belong to another session.
+            # The owned process's bind-failure log takes priority over that reply.
             self.reason = "the network command interface failed to bind; gBox cannot query or control the session"
             return "netcmd"
+        if running:
+            return "ready"
         pending = p["audio_started"] and not p["audio_done"]
         if pending and now - seen["audio_started"] >= self.init_grace_s or p["audio_slow"]:
             self.warning = AUDIO_WARNING

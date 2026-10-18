@@ -1,8 +1,18 @@
-[INFO] RetroArch 1.20.0
-[INFO] [Core] Loading dynamic libretro core
-[INFO] [Environ] SET_GEOMETRY: 640x480, Aspect: 1.333.
+retroarch started but content not running after 30s: rophone] Initialized microphone driver.
+[INFO] [Display] Found display driver: "gl".
 [INFO] [NetCMD] bringing_up_command_interface_at_port 54662 (all interfaces).
 [ERROR] [NetCMD] Failed to bind socket.
 [ERROR] Failed to initialize the network command interface.
+[INFO] [Network] Bringing up remote interface on port 57387.
+[INFO] [Environ] SET_INPUT_DESCRIPTORS.
+[ERROR] [Environ] GET_VARIABLE: reicast_dump_unique_textures - Invalid value.
+[INFO] [Playlist] Loading favorites file: "D:\gBox\runtime\retroarch-win\RetroArch-Win64\playlists\builtin\content_favorites.lpl".
+[INFO] [Playlist] Loading history file: "D:\gBox\runtime\retroarch-win\RetroArch-Win64\playlists\builtin\content_history.lpl".
+[INFO] [Playlist] Loading history file: "D:\gBox\runtime\retroarch-win\RetroArch-Win64\playlists\builtin\content_image_history.lpl".
+[INFO] [Playlist] Loading history file: "D:\gBox\runtime\retroarch-win\RetroArch-Win64\playlists\builtin\content_music_history.lpl".
+[INFO] [Playlist] Loading history file: "D:\gBox\runtime\retroarch-win\RetroArch-Win64\playlists\builtin\content_video_history.lpl".
+[INFO] [Playlist] Written to file: "D:\gBox\runtime\retroarch-win\RetroArch-Win64\playlists\builtin\content_history.lpl".
+[INFO] [Input] Controllers of the "sdl3" driver are read through a snapshot taken once a poll.
+[INFO] [Input] Device 1, "XInput Controller" (045e:02ff, sdl3): new, in slot 0.
 [INFO] [Audio] sinc resampler active path: float
 [INFO] [Environ] SET_GEOMETRY: 640x480, Aspect: 1.333.
