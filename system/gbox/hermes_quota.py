@@ -42,15 +42,18 @@ def excluded_providers():
     return {n.strip().casefold() for n in names if n.strip()}
 
 
-def routes(config, saved=()):
+def routes(config, saved=(), *, include_restricted=False):
+    from . import hermes_provider_scope as scope
     cron = config.get('cron') or {}
     candidates = [{'provider': cron.get('model_provider'), 'model': cron.get('model')},
-                  *(config.get('fallback_providers') or []), *saved]
+                  *scope.inherited_fallbacks(config), *saved]
+    policy = scope.read()
     skip = excluded_providers()
     result = []
     for item in candidates:
         clean = route(item)
-        if clean and clean not in result and clean['provider'].casefold() not in skip:
+        if (clean and clean not in result and clean['provider'].casefold() not in skip
+                and (include_restricted or not scope.reason(item, config, policy=policy))):
             result.append(clean)
     return result
 

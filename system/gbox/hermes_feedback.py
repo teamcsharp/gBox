@@ -364,7 +364,8 @@ def adjust_routes() -> dict:
     local = hermes_local.settings()
     routes = hermes_quota.routes(config, data.get('routes') or [])
     primary = {'provider': cron.get('model_provider'), 'model': cron.get('model')}
-    if (primary not in routes and all(primary.values()) and primary['provider'].casefold() not in hermes_quota.excluded_providers()
+    from . import hermes_provider_scope as scope
+    if (not scope.reason(primary, config) and primary not in routes and all(primary.values()) and primary['provider'].casefold() not in hermes_quota.excluded_providers()
             and not hermes_local.is_local(primary, local)):
         routes.insert(0, primary)
     # The local route is never a paid route's fallback: it is chosen alone, only when no paid route is left.
@@ -380,8 +381,10 @@ def adjust_routes() -> dict:
                                     'model': cron.get('preferred_model')})
     pick = hermes_local.choose(paid, data['cooldowns'], time.time(), primary=primary,
                                rotation_pending=bool(data.get('rotation_pending')), busy=busy, s=local,
-                               preferred=preferred)
-    shown = paid + ([hermes_local.route(local)] if local.enabled else [])   # the Providers view lists the local route
+                               preferred=preferred, config=config)
+    restricted = [r for r in hermes_quota.routes(config, data.get('routes') or [], include_restricted=True)
+                  if scope.reason(r, config)]
+    shown = paid + restricted + ([hermes_local.route(local)] if local.enabled else [])
     if busy or pick['mode'] == 'none':
         path = hermes_delivery.state_dir() / 'feedback.json'
         with hermes_delivery.locked('feedback'):
@@ -619,12 +622,18 @@ def provider_status(data=None, config=None):
         except (ValueError, OSError):
             pass
     result = []
-    for item in hermes_quota.routes(config, data.get('routes') or []):
+    from . import hermes_provider_scope as scope
+    policy = scope.read()
+    for item in hermes_quota.routes(config, data.get('routes') or [], include_restricted=True):
         key = item['provider'] + '/' + item['model']
         until = data.get('cooldowns', {}).get(key, 0)
         entry = item | {'availability': 'cooling_down' if until > now else 'not_observed',
                         'quota_balance_known': False, 'retry_at': until if until > now else None,
                         'retry_source': (data.get('cooldown_details', {}).get(key) or {}).get('source')}
+        scope_reason = scope.reason(item, config, policy=policy)
+        entry.update(private_backlog_eligible=not bool(scope_reason), provider_scope_reason=scope_reason)
+        if scope_reason:
+            entry['availability'] = 'scope_restricted'
         if key in usage:
             entry['recorded_usage'] = usage[key]
         if (item['provider'] == 'zai' and item['model'] == 'glm-5.3' and observed.get('windows')

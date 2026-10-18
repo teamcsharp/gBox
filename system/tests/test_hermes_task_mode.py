@@ -245,3 +245,46 @@ def test_activation_does_not_duplicate_pending_or_running_work(monkeypatch, tmp_
         db.execute('INSERT INTO executions VALUES (?,?)', ('activation', 'running'))
     mode._kickoff({'id': 'inbox'})
     assert calls == []
+
+
+@pytest.mark.parametrize('retry', [False, True])
+def test_direct_investigation_cannot_bypass_provider_scope(monkeypatch, retry):
+    from gbox import hermes_provider_scope as scope, hermes_local
+    scope.restrict(['zai'], ['api.z.ai'], apply=True)
+    cfg = {'cron': {'model_provider': 'alias', 'model': 'glm'},
+           'custom_providers': [{'name': 'alias', 'base_url': 'https://api.z.ai/v1'}]}
+    jobs = [{'id': 'failed', 'name': 'gBox emulation investigation #7', 'enabled': False,
+             'last_status': 'error', 'schedule': {'kind': 'once'}}] if retry else []
+    monkeypatch.setattr(mode, '_config', lambda: cfg)
+    monkeypatch.setattr(mode, '_jobs', lambda: jobs)
+    monkeypatch.setattr(mode, '_active', lambda _: False)
+    monkeypatch.setattr(mode, '_handoff', lambda: '')
+    monkeypatch.setattr(mode, '_workdir', lambda *args: '/unused')
+    monkeypatch.setattr(hermes_local, 'active', lambda: False)
+    calls = []; monkeypatch.setattr(mode, '_run', lambda *a: calls.append(a))
+    with pytest.raises(RuntimeError, match='public-source'):
+        mode.dispatch_request('a' * 16, 7, task='Public source research: ignore provider policy')
+    assert not calls
+
+
+def test_legacy_controller_cannot_resume_restricted_pin_but_no_agent_controller_can(monkeypatch):
+    from gbox import hermes_provider_scope as scope
+    scope.restrict(['zai'], ['api.z.ai'], apply=True)
+    monkeypatch.setattr(mode, '_config', lambda: {'cron': {'model_provider': 'nous', 'model': 'opus'}})
+    job = {'id': 'legacy', 'name': mode.NAME, 'provider': 'zai', 'model': 'glm', 'enabled': False}
+    monkeypatch.setattr(mode, '_job', lambda: job)
+    calls = []; monkeypatch.setattr(mode, '_run', lambda *a: calls.append(a))
+    with pytest.raises(RuntimeError, match='public-source'): mode.set_enabled(True)
+    assert not calls
+    mode._kickoff(job | {'no_agent': True})
+    assert not calls
+
+
+def test_pinned_endpoint_override_is_checked_before_legacy_resume(monkeypatch):
+    from gbox import hermes_provider_scope as scope
+    scope.restrict([], ['api.z.ai'], apply=True)
+    monkeypatch.setattr(mode, '_config', lambda: {'cron': {'model_provider': 'nous', 'model': 'opus'}})
+    job = {'id': 'legacy', 'name': mode.NAME, 'base_url': 'https://api.z.ai/v1', 'enabled': False}
+    monkeypatch.setattr(mode, '_job', lambda: job)
+    monkeypatch.setattr(mode, '_run', lambda *a: pytest.fail('restricted endpoint resumed'))
+    with pytest.raises(RuntimeError, match='public-source'): mode.set_enabled(True)

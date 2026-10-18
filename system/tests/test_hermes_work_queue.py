@@ -415,3 +415,36 @@ def test_tick_throttles_sandboxes_and_warns_agents_while_the_operator_plays(env,
     # Throttling runs even when the dispatcher itself is switched off.
     jobs[0]['enabled'] = False
     assert q.tick(now=1060)['status'] == 'disabled_or_legacy_controller' and throttled == [1, 1]
+
+
+@pytest.mark.parametrize('restricted_at', ['initial', 'final'])
+def test_private_queue_scope_blocks_new_and_reused_jobs_without_claims(env, monkeypatch, restricted_at):
+    from gbox import hermes_provider_scope as scope, hermes_recovery
+    scope.restrict(['zai'], ['api.z.ai'], apply=True)
+    jobs = [{'id': 'controller', 'enabled': True, 'no_agent': True},
+            {'id': 'old', 'name': q.PREFIX + 'inbox ' + R, 'enabled': False, 'schedule': {'kind': 'once'}}]
+    monkeypatch.setattr(q.mode, '_job', lambda: jobs[0])
+    monkeypatch.setattr(q.mode, '_jobs', lambda: jobs)
+    monkeypatch.setattr(q, '_executions', lambda: ({}, set()))
+    monkeypatch.setattr(q, '_native_jobs', lambda: [])
+    monkeypatch.setattr(q, '_operator_playing', lambda: [])
+    monkeypatch.setattr(q, 'throttle_sandboxes', lambda _: [])
+    monkeypatch.setattr(q.mode, '_handoff', lambda: '')
+    monkeypatch.setattr(hermes_recovery, '_active_requests', lambda: set())
+    monkeypatch.setattr(q, '_api', lambda path: [request(context={'purpose': 'public_source_research'})]
+                        if path == '/api/requests' else {'count': 0, 'items': []})
+    count = [0]
+    def config():
+        count[0] += 1
+        cfg = {'cron': {'model_provider': 'nous', 'model': 'opus', 'max_parallel_jobs': 4}}
+        if restricted_at == 'initial' or count[0] > 1:
+            cfg['fallback_providers'] = [{'provider': 'zai', 'model': 'glm'}]
+        return cfg
+    monkeypatch.setattr(q.mode, '_config', config)
+    calls = []
+    monkeypatch.setattr(q.mode, '_run', lambda *a: calls.append(a))
+    result = q.tick(now=1000)
+    assert result['status'] == 'waiting_for_provider_scope' and not calls
+    assert 'public-source' in result['reason']
+    item = q._read()['items']['inbox:' + R]
+    assert item.get('attempts', 0) == 0 and item.get('dispatch_state') != 'uncertain'

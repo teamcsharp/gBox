@@ -251,3 +251,23 @@ def test_completed_usage_does_not_assign_deferred_or_unacknowledged_owners(tmp_p
     assert len(result) == 10 and len(state['usage_reconciliation']) == 10
     assert state['request_ids'] == ['0123456789abcdef']
     assert state['last_usage_request'] == '0123456789abcdef' and state['last_usage_session'] == 'confirmed-earlier'
+
+
+def test_public_quota_probe_is_preserved_but_private_zai_resume_is_denied(lane, monkeypatch):
+    from gbox import hermes_provider_scope as scope
+    path, _, calls = lane
+    scope.restrict(['zai'], ['api.z.ai'], apply=True)
+    monkeypatch.setattr(availability.hermes_task_mode, '_config', lambda: {
+        'cron': {'model_provider': 'nous', 'model': 'opus'}})
+    probes = []
+    def respond(kind, key, body=None):
+        probes.append((kind, body))
+        return (200, quota({'type': 'CREDIT_LIMIT', 'remaining': 20})) if kind == 'quota' else (
+            200, {'choices': [{'message': {'content': 'OK'}}]})
+    monkeypatch.setattr(availability, '_zai', respond)
+    result = availability.tick(1000)
+    assert result['status'] == 'waiting_provider_scope' and not calls
+    assert [p[0] for p in probes] == ['quota', 'probe']
+    assert probes[1][1]['messages'] == [{'role': 'user', 'content': 'Reply OK.'}]
+    assert 'public-source' in result['scope_reason']
+    assert 'dispatched_at' not in json.loads(path.read_text())

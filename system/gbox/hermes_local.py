@@ -101,7 +101,7 @@ def set_local_only(on: bool, *, now: float | None = None) -> dict:
 
 # ---------------------------------------------------------------------------------------------- route choice
 
-def choose(routes, cooldowns, now, *, primary, rotation_pending=False, busy=False, s=None, only_local=None, preferred=None) -> dict:
+def choose(routes, cooldowns, now, *, primary, rotation_pending=False, busy=False, s=None, only_local=None, preferred=None, config=None) -> dict:
     """Pick the cron route. Paid routes first (rotating among those not cooling, as before); the local route only
     when none is left or the operator set local only. Returns {mode, route, fallbacks, reason, next_paid_at}.
 
@@ -110,14 +110,22 @@ def choose(routes, cooldowns, now, *, primary, rotation_pending=False, busy=Fals
     s = s or settings()
     only_local = local_only(s) if only_local is None else only_local
     cooldowns = cooldowns or {}
-    paid = [r for r in routes if not is_local(r, s)]
+    from . import hermes_provider_scope as scope
+    policy = scope.read()
+    config = config or {}
+    paid = [r for r in routes if not is_local(r, s) and not scope.reason(r, config, policy=policy)]
     eligible = [r for r in paid if r['provider'] + '/' + r['model'] not in cooldowns]
     pending = [v for k, v in cooldowns.items() if v > now and k.split('/', 1)[0].casefold() != s.provider.casefold()]
     next_paid = min(pending) if pending and not eligible else None
     local = route(s)
-    if s.enabled and only_local:
+    local_reason = scope.reason(local, config, policy=policy)
+    local_enabled = s.enabled and not local_reason
+    if local_enabled and only_local:
         return {'mode': 'local', 'route': local, 'fallbacks': [], 'reason': 'The operator set Hermes to local only',
                 'next_paid_at': None}
+    if only_local and local_reason:
+        return {'mode': 'none', 'route': None, 'fallbacks': [],
+                'reason': local_reason or 'Local route is disabled', 'next_paid_at': None}
     if eligible:
         preferred_available = preferred in eligible
         chosen = preferred if preferred_available else primary if primary in eligible else None
@@ -129,10 +137,10 @@ def choose(routes, cooldowns, now, *, primary, rotation_pending=False, busy=Fals
                   else 'Paid route available')
         return {'mode': 'paid', 'route': chosen, 'fallbacks': [r for r in eligible if r != chosen], 'reason': reason,
                 'next_paid_at': None}
-    if s.enabled:
+    if local_enabled:
         return {'mode': 'local', 'route': local, 'fallbacks': [],
                 'reason': 'Every paid route is cooling down or out of credit', 'next_paid_at': next_paid}
-    return {'mode': 'none', 'route': None, 'fallbacks': [], 'reason': 'All connected routes are cooling down',
+    return {'mode': 'none', 'route': None, 'fallbacks': [], 'reason': local_reason or 'All connected routes are cooling down',
             'next_paid_at': next_paid}
 
 
