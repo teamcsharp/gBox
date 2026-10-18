@@ -2,22 +2,25 @@
 
 The inventory (`gbox.sbam_inventory`) established the -RA- containers, the CMP3
 codec and the TIM2 sprite census.  This module records what disassembly of the
-owned executable (MIPS R5900, little-endian) proves about the *loader*, so a
-same-size sprite writer can target the right structures.
+owned executable (MIPS R5900, little-endian) proves about the *loader*, as a
+read-only engineering aid. No native replacement writer is provided.
 
 The boot ELF has a single PT_LOAD: file offset ``f`` maps to vaddr ``f + 0xFF000``
 (segment offset 0x1000 at vaddr 0x100000), so ``vaddr_to_file(v) = v - 0xFF000``.
 
-Addresses below are vaddrs in the loaded image and were verified with capstone
-(CS_MODE_MIPS32 | CS_MODE_LITTLE_ENDIAN); they are stable for this exact build
+Addresses below are candidate function labels in the loaded image. Selected
+instruction words and data are checked against this exact build
 (ELF sha256 ``eeb913a6…d965``).
 """
 from __future__ import annotations
 
+import hashlib
+import re
 import struct
 
 # --- boot ELF identity -------------------------------------------------------
 BOOT_ELF_SHA256 = "eeb913a6eac79a58d8424dc18190310f1ae5d14d762dec5a339f44ad9870d965"
+BOOT_ELF_BYTES = 4673508
 SEG_OFFSET = 0x1000   # PT_LOAD file offset
 SEG_VADDR = 0x100000  # PT_LOAD vaddr
 SEG_FILESZ = 0x471DAC
@@ -33,13 +36,11 @@ DAT_INDEX_TABLE = 0x56D780     # 153 x 0x20 file-name strings, descending
 DAT_INDEX_COUNT = 153
 DAT_INDEX_STRIDE = 0x20
 
-# The loader treats an entry whose first 4 bytes are 0x00000000 as *raw* and
-# copies src+4.. (VB ADPCM bodies open with a 16-byte zero block); every other
-# entry is decompressed as CMP3 ("CMP3" + u32 decoded_size + LZSS).  This is the
-# complement of the inventory's "starts with CMP3 -> compressed" rule and matters
-# for the writer: a raw entry MUST begin with 4 zero bytes, a compressed entry
-# must NOT (it begins with "CMP3").
-RAW_ENTRY_MARKER = b"\x00\x00\x00\x00"
+# The dispatcher compares four bytes against NOCM at 0x571DA0, addressed
+# through ELF .reginfo GP 0x5790F0 - 0x7350. Its equal branch copies src+4.
+# This does NOT establish that arbitrary raw -RA- audio entries use this route.
+RAW_ENTRY_MARKER = b"NOCM"
+RAW_ENTRY_MARKER_VADDR = 0x571DA0
 CMP3_MAGIC = b"CMP3"
 
 # TIM2 picture header (48 bytes) field layout used by this game's TIM2 library.
@@ -53,26 +54,36 @@ CLUT_TYPE_32BIT = 3                                   # RGBA8888 (4 bytes/colour
 
 def vaddr_to_file(v: int) -> int:
     """vaddr -> file offset for the single PT_LOAD segment."""
-    if not (SEG_VADDR <= v < SEG_VADDR + SEG_FILESZ):
-        raise ValueError("vaddr 0x%x outside PT_LOAD" % v)
+    if type(v) is not int or not (SEG_VADDR <= v < SEG_VADDR + SEG_FILESZ):
+        raise ValueError("vaddr must be an integer inside the pinned PT_LOAD")
     return v - SEG_VADDR + SEG_OFFSET
 
 
 def file_to_vaddr(f: int) -> int:
-    if not (SEG_OFFSET <= f < SEG_OFFSET + SEG_FILESZ):
-        raise ValueError("file offset 0x%x outside PT_LOAD" % f)
+    if type(f) is not int or not (SEG_OFFSET <= f < SEG_OFFSET + SEG_FILESZ):
+        raise ValueError("file offset must be an integer inside the pinned PT_LOAD")
     return f - SEG_OFFSET + SEG_VADDR
 
 
+def _require_elf(elf: bytes) -> None:
+    if (type(elf) is not bytes or len(elf) != BOOT_ELF_BYTES or
+            hashlib.sha256(elf).hexdigest() != BOOT_ELF_SHA256):
+        raise ValueError("unsupported boot ELF: exact SLUS_201.15 SHA256 required")
+
+
 def dat_index_table(elf: bytes) -> list[str]:
-    """The 153-entry DAT file-name table at ``DAT_INDEX_TABLE`` (descending)."""
+    """Exact-build 153-entry DAT file table; modified or truncated ELFs fail."""
+    _require_elf(elf)
     f = vaddr_to_file(DAT_INDEX_TABLE)
     out = []
     for i in range(DAT_INDEX_COUNT):
         rec = elf[f + i * DAT_INDEX_STRIDE: f + (i + 1) * DAT_INDEX_STRIDE]
-        raw = rec.split(b"\x00", 1)[0].decode("ascii", "replace")
-        name = raw.replace("\\", "/").lstrip("/").split(";", 1)[0]
-        out.append(name)
+        raw = rec.split(b"\x00", 1)[0]
+        if not re.fullmatch(rb"\\DATA\\DATA[0-9A-F]{2}\\DATA[0-9A-F]{2}\.DAT;1", raw):
+            raise ValueError("invalid pinned DAT table entry")
+        out.append(raw.decode("ascii").replace("\\", "/")[1:-2])
+    if len(set(out)) != DAT_INDEX_COUNT:
+        raise ValueError("duplicate pinned DAT table entry")
     return out
 
 
@@ -84,10 +95,11 @@ def dat_index(elf: bytes) -> dict[str, int]:
 def cmp3_decoder_constant_words(elf: bytes) -> dict:
     """Read the 0xFEE (ring cursor) immediates that pin the CMP3 decoder.
 
-    The decoder zeroes the 4 KiB ring then sets the write cursor to 0xFEE at
+    The decoder explicitly zeroes ring bytes [0, 0xFEE), then sets the cursor at
     0x1C5940; the zero-fill loop bound sits at 0x1C5904.  Returns the raw
     instruction words so a test can assert they carry the 0xFEE immediate.
     """
+    _require_elf(elf)
     f_loop = vaddr_to_file(0x1C5904)
     f_cursor = vaddr_to_file(0x1C5940)
     return {
@@ -98,9 +110,10 @@ def cmp3_decoder_constant_words(elf: bytes) -> dict:
     }
 
 
-def tim2_library_strings(elf: bytes) -> dict[str, int]:
+def tim2_library_strings(elf: bytes) -> dict[str, int | None]:
     """vaddrs of the TIM2 library debug strings (evidence the game uses a TIM2
     upload lib: ``Tim2CheckFileHeader`` / ``Tim2GetPictureHeader``)."""
+    _require_elf(elf)
     marks = {
         # the shipped string carries the upstream typo "Heaer" (not "Header")
         b"Tim2CheckFileHeaer": "Tim2CheckFileHeader",
@@ -109,125 +122,135 @@ def tim2_library_strings(elf: bytes) -> dict[str, int]:
     }
     out = {}
     for needle, name in marks.items():
-        off = elf.find(needle)
+        off = elf.find(needle, SEG_OFFSET, SEG_OFFSET + SEG_FILESZ)
         out[name] = file_to_vaddr(off) if off >= 0 else None
     return out
 
 
-# --- TIM2 decode (the actionable format probe) -------------------------------
-def _clut_rgba(clut: bytes, clut_type: int, count: int) -> bytes:
-    """Decode a CLUT to RGBA8888 bytes (count * 4)."""
-    if clut_type == CLUT_TYPE_32BIT:          # RGBA8888, 4 bytes/colour
-        return clut[: count * 4]
-    if clut_type == 1:                        # RGBA5551, 2 bytes/colour
-        out = bytearray()
-        for i in range(count):
-            v = struct.unpack_from("<H", clut, i * 2)[0]
-            r = (v & 0x1F) << 3
-            g = ((v >> 5) & 0x1F) << 3
-            b = ((v >> 10) & 0x1F) << 3
-            a = 0xFF if (v >> 15) else 0
-            out += bytes((r, g, b, a))
-        return bytes(out)
-    raise ValueError("unsupported clut_type %d" % clut_type)
+def loader_marker(elf: bytes) -> bytes:
+    """Marker from the exact GP-relative compare; not an inventory codec rule."""
+    _require_elf(elf)
+    off = vaddr_to_file(RAW_ENTRY_MARKER_VADDR)
+    return elf[off:off + 4]
 
 
-def tim2_picture_rgba(payload: bytes, picture_index: int = 0) -> tuple[int, int, bytes]:
-    """Decode one TIM2 picture to ``(width, height, RGBA8888 bytes)``.
-
-    Supports 4bpp (16-colour CLUT), 8bpp (256-colour CLUT) and 32bpp direct.
-    4bpp pixels are packed low-nibble-first (PS2 PSMCT4: left pixel in the low
-    nibble).
-    """
-    if payload[:4] != b"TIM2" or len(payload) < 16:
-        raise ValueError("not a TIM2 file")
-    fmt = payload[5]
-    count = struct.unpack_from("<H", payload, 6)[0]
-    base = 128 if fmt == 1 else 16
-    for idx in range(count):
-        if base + 48 > len(payload):
-            raise ValueError("TIM2 picture header past end of data")
-        total, clut_size, image_size, header_size, clut_colors = struct.unpack_from(
-            "<IIIHH", payload, base
-        )
-        _pict_format, _mipmaps, clut_type, image_type = payload[base + 16: base + 20]
-        width, height = struct.unpack_from("<HH", payload, base + 20)
-        if idx != picture_index:
-            base += total
-            continue
-        img = payload[base + header_size: base + header_size + image_size]
-        clut = payload[base + header_size + image_size:
-                       base + header_size + image_size + clut_size]
-        bpp = IMAGE_TYPE_BPP.get(image_type)
-        if bpp is None:
-            raise ValueError("unsupported image_type %d" % image_type)
-        rgba = bytearray(width * height * 4)
-        if bpp == 4:
-            palette = _clut_rgba(clut, clut_type, clut_colors)
-            for y in range(height):
-                row = img[y * (width // 2): (y + 1) * (width // 2)]
-                for x in range(width):
-                    b = row[x // 2]
-                    ci = (b & 0xF) if (x & 1) == 0 else (b >> 4)
-                    rgba[(y * width + x) * 4:(y * width + x) * 4 + 4] = palette[ci * 4: ci * 4 + 4]
-        elif bpp == 8:
-            palette = _clut_rgba(clut, clut_type, clut_colors)
-            for y in range(height):
-                row = img[y * width: (y + 1) * width]
-                for x in range(width):
-                    ci = row[x]
-                    rgba[(y * width + x) * 4:(y * width + x) * 4 + 4] = palette[ci * 4: ci * 4 + 4]
-        elif bpp == 32:
-            rgba[:] = img[: width * height * 4]
-        else:
-            raise ValueError("unhandled bpp %d" % bpp)
-        return width, height, bytes(rgba)
-    raise IndexError("picture %d not found" % picture_index)
+# Bounded offline preview profile, not a universal TIM2/GS renderer.
+MAX_PAYLOAD_BYTES = 16 * 1024 * 1024
+MAX_PICTURES = 64
+MAX_PIXELS = 4 * 1024 * 1024  # aggregate across the file, <=16 MiB decoded RGBA
 
 
 def tim2_picture_meta(payload: bytes) -> list[dict]:
-    """Header summary of every picture in a TIM2 payload."""
-    if payload[:4] != b"TIM2" or len(payload) < 16:
-        raise ValueError("not a TIM2 file")
-    fmt = payload[5]
+    """Validate every picture extent before returning any metadata.
+
+    Single-level, linear TIM2 v4 pictures only. Unknown palette layouts remain
+    inspectable as metadata but tim2_picture_rgba rejects them explicitly.
+    """
+    if type(payload) is not bytes or not 16 <= len(payload) <= MAX_PAYLOAD_BYTES:
+        raise ValueError("TIM2 payload must be bytes within the 16 MiB limit")
+    if payload[:4] != b"TIM2" or payload[4] != 4 or payload[5] not in (0, 1):
+        raise ValueError("unsupported TIM2 signature/version/alignment")
     count = struct.unpack_from("<H", payload, 6)[0]
-    base = 128 if fmt == 1 else 16
-    out = []
+    if not 1 <= count <= MAX_PICTURES:
+        raise ValueError("TIM2 picture count outside the supported bound")
+    base = 128 if payload[5] == 1 else 16
+    out, pixels = [], 0
     for _ in range(count):
         if base + 48 > len(payload):
             raise ValueError("TIM2 picture header past end of data")
         total, clut_size, image_size, header_size, clut_colors = struct.unpack_from(
-            "<IIIHH", payload, base
-        )
-        _pf, _mip, clut_type, image_type = payload[base + 16: base + 20]
+            "<IIIHH", payload, base)
+        pf, mip, clut_type, image_type = payload[base + 16:base + 20]
         width, height = struct.unpack_from("<HH", payload, base + 20)
+        tex0 = struct.unpack_from("<Q", payload, base + 24)[0]
+        bpp = IMAGE_TYPE_BPP.get(image_type)
+        if header_size < 48 or total != header_size + image_size + clut_size:
+            raise ValueError("TIM2 inconsistent picture/header/image/CLUT extents")
+        if base + total > len(payload):
+            raise ValueError("TIM2 picture extends past payload")
+        if pf != 0 or mip != 1 or bpp is None:
+            raise ValueError("unsupported TIM2 format, mipmaps or image type")
+        pixels += width * height
+        if not width or not height or pixels > MAX_PIXELS:
+            raise ValueError("TIM2 dimensions exceed the aggregate pixel limit")
+        if bpp == 4 and width % 2:
+            raise ValueError("odd-width 4bpp layout is not verified")
+        pixel_bytes = width * height * bpp // 8
+        if image_size not in (pixel_bytes, (pixel_bytes + 15) & ~15):
+            raise ValueError("TIM2 image size does not match packed/aligned dimensions")
+        if any(payload[base + header_size + pixel_bytes:base + header_size + image_size]):
+            raise ValueError("TIM2 image tail alignment must contain zero bytes")
+        if bpp in (4, 8):
+            stride = {1: 2, 2: 3, 3: 4}.get(clut_type & 15)
+            if not stride or not clut_colors or clut_size != clut_colors * stride:
+                raise ValueError("TIM2 palette size/type/count mismatch")
+        elif clut_size or clut_colors or clut_type:
+            raise ValueError("direct TIM2 image unexpectedly has a palette")
         out.append({
-            "width": width, "height": height,
-            "bpp": IMAGE_TYPE_BPP.get(image_type),
+            "width": width, "height": height, "bpp": bpp,
             "clut_colors": clut_colors, "clut_type": clut_type,
             "image_size": image_size, "clut_size": clut_size,
+            "header_size": header_size, "total_size": total, "pixel_bytes": pixel_bytes,
+            "offset": base, "image_offset": base + header_size,
+            "clut_offset": base + header_size + image_size,
+            "image_type": image_type, "gs_tex0": tex0,
         })
-        if total <= 0:
-            break
         base += total
+    if base != len(payload):
+        raise ValueError("TIM2 trailing data is outside the verified profile")
     return out
 
 
-# --- writer constraints (documented for the next stage) ----------------------
+def _display_rgba(raw: bytes) -> bytes:
+    # GS alpha 0x80 is 1.0; values above saturate for a conventional preview.
+    # This cannot reproduce the game's blend/texture-function state.
+    out = bytearray(raw)
+    for i in range(3, len(out), 4):
+        out[i] = min(255, out[i] * 2)
+    return bytes(out)
+
+
+def tim2_picture_rgba(payload: bytes, picture_index: int = 0) -> tuple[int, int, bytes]:
+    """Return bounded display RGBA for the verified single-palette profile.
+
+    Supports even-width linear PSMT4 with exactly 16 RGBA32 colors, PSMT8
+    with 256 CSM1 RGBA32 colors, and direct RGBA32. Palette banks, other GS
+    layouts and pixel types fail explicitly; no palette bank is guessed.
+    This is an offline texture preview, not a native gameplay rendering proof.
+    """
+    pictures = tim2_picture_meta(payload)
+    if type(picture_index) is not int or not 0 <= picture_index < len(pictures):
+        raise ValueError("picture index must identify a declared picture")
+    p = pictures[picture_index]
+    bpp, tex0 = p["bpp"], p["gs_tex0"]
+    if bpp not in (4, 8, 32):
+        raise ValueError("unsupported preview pixel type")
+    if (tex0 >> 20) & 63 != {4: 20, 8: 19, 32: 0}[bpp]:
+        raise ValueError("TIM2 GS pixel layout does not match image type")
+    start = p["image_offset"]
+    img = payload[start:start + p["pixel_bytes"]]
+    if bpp == 32:
+        return p["width"], p["height"], _display_rgba(img)
+    if ((tex0 >> 51) & 15 or (tex0 >> 55) & 1 or (tex0 >> 56) & 31 or
+            p["clut_type"] != 3 or p["clut_colors"] != (16 if bpp == 4 else 256)):
+        raise ValueError("unsupported palette bank/storage format; selection is unverified")
+    start = p["clut_offset"]
+    palette = _display_rgba(payload[start:start + p["clut_size"]])
+    if bpp == 8:
+        # CSM1: interchange blocks 1/2 within each group of 32 palette colors.
+        palette = b"".join(palette[j:j + 4] for i in range(256)
+                          for j in [((i & ~24) | ((i & 8) << 1) | ((i & 16) >> 1)) * 4])
+    out = bytearray(p["width"] * p["height"] * 4)
+    for i in range(p["width"] * p["height"]):
+        ci = img[i] if bpp == 8 else (img[i // 2] >> ((i & 1) * 4)) & 15
+        out[i * 4:i * 4 + 4] = palette[ci * 4:ci * 4 + 4]
+    return p["width"], p["height"], bytes(out)
+
+
 FORMAT_CONSTRAINTS = {
-    "character_sprites_are_2d": True,
-    "image_types": {4: "4bpp indexed, 16-colour CLUT (the character frames)",
-                    5: "8bpp indexed, 256-colour CLUT",
-                    3: "32bpp direct RGBA8888"},
-    "clut_type_3": "RGBA8888, 4 bytes/colour (clut_size == clut_colors * 4)",
-    "4bpp_packing": "2 pixels/byte, low nibble = left pixel (PSMCT4)",
-    "transparent_index": 0,
-    "picture_header_size": 48,
-    "same_size_writer_rule": (
-        "a replacement sprite must keep the original picture's width/height and "
-        "image_type, fit in the original image_size (w*h*bpp//8) with the same "
-        "16-colour RGBA8888 CLUT, and be re-packed as CMP3 (cmp3_compress_literal "
-        "is a valid all-literal encoding) or raw (4-zero-byte prefix) at the same "
-        "-RA- entry size or smaller"
-    ),
+    "image_types": {4: "4bpp indexed", 5: "8bpp indexed", 3: "32bpp direct"},
+    "4bpp_packing": "even width, low nibble first (PSMT4)",
+    "alpha": "palette/pixel alpha controls transparency; no fixed transparent index",
+    "writer_verified": False,
+    "character_bank_mapping_verified": False,
 }
