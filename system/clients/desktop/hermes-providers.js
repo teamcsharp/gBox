@@ -114,7 +114,7 @@
       <button type="button" data-tkp-model="start" data-model="${esc(rec.model)}" ${busy || !m.access?.ready || !rec.downloaded || rec.current ? "disabled" : ""}>Start vLLM · 90% memory</button>
       <span role="status">${esc(job?.state ? `${job.state}${job.error ? ": " + job.error : ""}` : m.access?.reason || "")}</span></details>` : "";
     return `<div data-tkp-pool><div class="tkp-head"><b>Local task machines</b><span>Up to ${pool.capacity || 0} runs · shared checkpoints on lilspark</span></div>
-      <div class="tkp-cards">${cards}</div>${suggestion}</div>`;
+      <div class="tkp-cards" data-tk-scroll="providers:machines">${cards}</div>${suggestion}</div>`;
   }
   // Visual tab: the recommendation and one card per route.
   function cards(data, opts = {}) {
@@ -132,7 +132,7 @@
         <div class="tkp-balance" title="${esc(credit)}">${esc(credit)}</div>${errorLine(r.last_error, now)}<button type="button" data-tkp-open-work>View outcomes</button></article>`;
     }).join("") || '<p class="tkp-empty">No Hermes routes or model calls found on the server.</p>';
     return `<div class="tkp-head"><b>Providers · ${esc(data.window_label || win)}</b>${windowButtons(win)}<span class="tkp-rec">${esc(data.recommendation || "")}</span></div>
-      ${poolCards(data.pool)}${localBanner(data.local, now, data.pool)}<div class="tkp-cards">${gruntCard(data.grunt, now)}${body}</div>`;
+      ${poolCards(data.pool)}${localBanner(data.local, now, data.pool)}<div class="tkp-cards" data-tk-scroll="providers:routes">${gruntCard(data.grunt, now)}${body}</div>`;
   }
   // Technical tab: the same numbers as a table, per provider and per route, plus recent run attribution.
   function table(data, opts = {}) {

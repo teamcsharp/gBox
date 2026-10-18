@@ -47,8 +47,8 @@ def test_gesture_target_uses_the_window_under_the_point_not_the_rectangle():
     assert g(BLENDER, True, APP, GAME, front=True, needs_front=True) is None
     assert g(BLENDER, False, APP, GAME, front=False, needs_front=True) is None     # over gBox's sidebar area: Alt+drag
     # gBox visible under the cursor
-    assert g(APP, True, APP, GAME, front=True, needs_front=False) == "game"        # right-click on the game
-    assert g(APP, True, APP, GAME, front=False, needs_front=False) == "game"       # plain right-click on a visible gBox
+    assert g(APP, True, APP, GAME, front=True, needs_front=False, game_hit=True) == "game"        # right-click on the game
+    assert g(APP, True, APP, GAME, front=False, needs_front=False, game_hit=True) == "game"       # plain right-click on a visible gBox
     assert g(APP, False, APP, GAME, front=True, needs_front=True) == "app"         # Alt+drag from the sidebar
     # Ctrl+click / Alt+drag while another app has the keyboard: not gBox's gesture
     assert g(APP, True, APP, GAME, front=False, needs_front=True) is None
@@ -162,3 +162,50 @@ def test_scoped_hotkeys_are_wired_with_the_right_scope():
     assert "_scoped_hotkey(" in rewind and "docked_ok=True" in rewind and "RegisterHotKey" not in rewind
     assert "_scoped_hotkey(" in ps3 and "docked_ok=False" in ps3 and "RegisterHotKey" not in ps3
     assert len(re.findall(r"\.RegisterHotKey\(", src)) == 1, "every hotkey goes through _scoped_hotkey"
+
+
+@pytest.mark.parametrize("hit,root,is_child,expected", [
+    (555, APP, False, []),             # Chromium popup revealed through the native game's clipped hole
+    (APP, APP, False, []),             # app canvas inside the old game bounding rectangle
+    (GAME, APP, False, [{"event": "gameclick"}]),
+    (201, APP, True, [{"event": "gameclick"}]),  # actual control owned by the game
+    (BLENDER_CHILD, BLENDER, False, []),
+])
+def test_actual_mouse_hook_does_not_dismiss_popups_through_game_region_holes(hit, root, is_child, expected):
+    """Run the real nested target/over/proc functions; install no native hook."""
+    from ctypes import wintypes as w
+    tree = ast.parse(WINEMBED.read_text(encoding="utf8"))
+    outer = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "rclick_hook")
+    body = [n for n in outer.body if isinstance(n, ast.FunctionDef) and n.name in {"target", "over", "proc"}]
+    for n in body:
+        n.decorator_list = []
+    assert len(body) == 3
+
+    class MS(ctypes.Structure):
+        _fields_ = [("pt", w.POINT), ("mouseData", w.DWORD), ("flags", w.DWORD),
+                    ("time", w.DWORD), ("extra", ctypes.c_size_t)]
+
+    class U:
+        def IsWindow(self, h): return True
+        def WindowFromPoint(self, pt): return hit
+        def GetAncestor(self, h, mode): return root
+        def IsChild(self, parent, child):
+            assert (parent, child) == (GAME, hit)
+            return is_child
+        def GetAsyncKeyState(self, key): return 0
+        def GetDoubleClickTime(self): return 500
+        def GetSystemMetrics(self, index): return 4
+        def CallNextHookEx(self, *args): return 73
+
+    emitted = []
+    ns = winembed_functions("gesture_target")
+    ns.update(u32=U(), ctypes=ctypes, wintypes=w, MS=MS,
+              state={"parent": APP, "hwnd": GAME, "compact": False},
+              in_game_rect=lambda pt: True, front_now=lambda: True,
+              compact={"click": None, "release": False, "hover": False}, whip={"on": False},
+              compact_click=lambda *args: (None, False), emit=emitted.append,
+              WM_LBUTTONDOWN=0x201, WM_LBUTTONUP=0x202, WM_RBUTTONDOWN=0x204, WM_RBUTTONUP=0x205)
+    exec(compile(ast.Module(body=body, type_ignores=[]), str(WINEMBED), "exec"), ns)
+    event = MS(w.POINT(75, 75), 0, 0, 1, 0)
+    assert ns["proc"](0, 0x201, ctypes.addressof(event)) == 73
+    assert emitted == expected
