@@ -340,3 +340,12 @@ It does not change the current model's memory reservation until Start is used.
 On unified-memory systems, an unsuccessful 90% launch rolls back automatically.
 Do not restart the control service while a management action is running; inspect
 an interrupted action and its retained containers before retrying.
+
+
+An operator can prefer an already configured paid route by setting both
+`cron.preferred_provider` and `cron.preferred_model` in Hermes. The route
+supervisor keeps that route across completed runs while it is eligible. This
+preference does not register credentials, override measured quota/backoff,
+change an active run, or override the local-only switch. If it is unavailable,
+normal eligible-route recovery and local fallback continue. Remove both keys
+to resume ordinary rotation.
