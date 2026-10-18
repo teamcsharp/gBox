@@ -45,6 +45,9 @@ AUDIO_DONE = re.compile(r'\[Audio\] Driver "[^"]+" reports a|\[Microphone\]|\[Di
                         r'\[NetCMD\]|\[Audio\] Failed to initialize|\[WASAPI\] .*(?:[Ii]nitialized|Using)')
 AUDIO_FAILED = re.compile(r"\[Audio\] Failed to initialize audio driver|[Aa]udio driver.*failed")
 AUDIO_FLOWING = re.compile(r"\[Audio\] sinc resampler active path")
+# RetroArch could not bind its network command interface (gBox polls it with GET_STATUS): the session can never be
+# queried or controlled, so gBox must restart on a fresh port instead of false-failing "content not running".
+NETCMD_DOWN = re.compile(r"\[NetCMD\] Failed to bind socket|Failed to initialize the network command interface")
 
 
 def boot_phase(log: str) -> dict:
@@ -55,12 +58,13 @@ def boot_phase(log: str) -> dict:
     return {"content": bool(CONTENT.search(log)), "audio_started": bool(start), "audio_slow": bool(slow),
             "audio_driver": slow.group(1) if slow else None,
             "audio_done": bool(start and AUDIO_DONE.search(tail)), "audio_failed": bool(AUDIO_FAILED.search(tail)),
-            "audio_flowing": bool(AUDIO_FLOWING.search(log)), "netcmd": "[NetCMD]" in log}
+            "audio_flowing": bool(AUDIO_FLOWING.search(log)), "netcmd": "[NetCMD]" in log,
+            "netcmd_down": bool(NETCMD_DOWN.search(log))}
 
 
 class BootWatch:
     """The launch's patience while a RetroArch session boots. observe() each poll with the log so far; decide() says
-    'ready' | 'wait' | 'fallback' (relaunch with the next audio driver) | 'fail' (gave up: not an audio problem, or
+    'ready' | 'wait' | 'netcmd' (retry the command port) | 'fallback' (next audio driver) | 'fail' (gave up: not an audio problem, or
     audio still not open after extended_wait_s)."""
 
     def __init__(self, t0: float, boot_wait_s: float = 30.0, extended_wait_s: float = 120.0, init_grace_s: float = 3.0,
@@ -96,6 +100,11 @@ class BootWatch:
 
     def decide(self, now: float, running: bool) -> str:
         p, seen = self.phase, self.seen
+        if p.get("netcmd_down"):
+            # A status reply on this occupied port can belong to another session.
+            # The owned process's bind-failure log takes priority over that reply.
+            self.reason = "the network command interface failed to bind; gBox cannot query or control the session"
+            return "netcmd"
         if running:
             return "ready"
         pending = p["audio_started"] and not p["audio_done"]

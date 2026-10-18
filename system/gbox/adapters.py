@@ -1336,6 +1336,21 @@ class RetroArchAdapter(CommandAdapter):
         self.audio_driver = chain[0]
         return {"ga": ga, "chain": chain, "sel": sel, "remembered": first}
 
+    def _rebind_port(self, failed_ports=()) -> None:
+        """Choose an ephemeral UDP port without touching the conflicting listener.
+        The probe cannot reserve a port for RetroArch; another collision is handled
+        by the launch's bounded retry count. Never reuse a failed attempt's port.
+        """
+        excluded = {*failed_ports, self.addr[1]}
+        for _ in range(8):
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.bind((self.addr[0], 0))
+                port = sock.getsockname()[1]
+            if port not in excluded:
+                self.addr = (self.addr[0], port)
+                return
+        raise RuntimeError("Could not allocate a fresh network command interface port")
+
     def launch_game(self, rom: str) -> dict:
         try:
             return self._launch_game(rom)
@@ -1388,14 +1403,19 @@ class RetroArchAdapter(CommandAdapter):
         # [game_audio] boot_wait_s; content loaded with audio still opening extends past it (extended_wait_s)
         boot_s = float(getattr(self, "boot_timeout_s", None) or ga.boot_wait_s)
         boot_started = time.monotonic()
-        for n, driver in enumerate(chain):
-            if n:                                              # the previous driver stalled: same session, next driver
+        n = 0
+        netcmd_retries = 0
+        failed_ports = set()
+        verdict = None
+        while n < len(chain):
+            driver = chain[n]
+            if n and attempts[-1]["outcome"] == "fallback":   # only an audio stall changes drivers
                 self.audio_driver = driver
                 self._write_cfg()
             self.proc = _popen(self, argv, env=env, stdout=open(self.log_path, "wb"), stderr=subprocess.STDOUT, cwd=work)
             from . import memory_card_sessions
             memory_card_sessions.launched(self)
-            if n == 0:
+            if not attempts or attempts[-1]["outcome"] == "netcmd":
                 self._p(78, "Emulator process started" + (" on the GPU (VirtualGL)" if argv[0] == VGLRUN else "")
                         + (" · Examine 3D ready" if _examine_ok(self.proc) else ""))
             else:
@@ -1404,17 +1424,45 @@ class RetroArchAdapter(CommandAdapter):
                                          ga.stall_s, can_fallback=n + 1 < len(chain))
             t0 = time.monotonic()
             verdict, st = self._wait_boot(watch)
-            attempts.append({"driver": driver, "outcome": verdict, "s": round(time.monotonic() - t0, 2),
+            attempts.append({"driver": driver, "outcome": verdict, "port": self.addr[1], "log": str(self.log_path),
+                             "s": round(time.monotonic() - t0, 2),
                              "audio_init_s": watch.audio_init_s(time.monotonic()), "reason": watch.reason})
             if verdict == "ready":
                 break
+            if verdict == "netcmd":
+                # Retry only this failed launch. A peer occupying the port stays
+                # untouched; the same audio driver, ROM, core and input port remain.
+                if netcmd_retries >= 2 or self.config is None or "--config" not in argv:
+                    tail = self.log_tail()
+                    self.stop_game()
+                    raise RuntimeError("retroarch network command interface failed to bind "
+                                       f"after {netcmd_retries} port retries: {tail}")
+                _kill_tree(self.proc)
+                failed_ports.add(self.addr[1])
+                netcmd_retries += 1
+                try:
+                    self._rebind_port(failed_ports)
+                    cfg = self._write_cfg()
+                    argv[argv.index("--config") + 1] = str(cfg)
+                    self.log_path = logs / f"retroarch-{self.addr[1]}.log"
+                    self._p(80, "Network command interface could not bind; restarting on a fresh port "
+                                f"(attempt {netcmd_retries})")
+                except Exception:
+                    self.stop_game()
+                    raise
+                continue                                  # keep the current audio-chain position
             _kill_tree(self.proc)                              # stuck in its audio init: nothing to save yet
             try:                                               # keep the stalled attempt's log as evidence
                 shutil.copyfile(self.log_path, self.log_path.with_name(f"{self.log_path.stem}-{driver}.log"))
             except OSError:
                 pass
+            n += 1
+        if verdict != "ready":
+            tail = self.log_tail()
+            self.stop_game()
+            raise RuntimeError(f"retroarch started but {getattr(watch, 'reason', None) or 'boot did not become ready'}: {tail}")
         boot_finished = time.monotonic()
-        if len(attempts) > 1 and self.config is not None:
+        if any(a["outcome"] == "fallback" for a in attempts) and self.config is not None:
             game_audio.remember(self.config.runtime, ((plan["sel"] or {}).get("chosen") or {}).get("id"),
                                 self.audio_driver, attempts[0]["driver"])
         warning = next((a["reason"] for a in attempts if a["outcome"] == "fallback"), None) or \
@@ -1435,8 +1483,26 @@ class RetroArchAdapter(CommandAdapter):
                                  "report_s": round(time.monotonic() - boot_finished, 3)}
         return out
 
+    def _owns_command_port(self) -> bool:
+        """Windows launches own their direct Popen PID, not a UDP reply's sender.
+        Windows bootstrap installs psutil>=5.9; support both its old and new API
+        names. Missing permissions/process/API evidence never confirms ownership.
+        """
+        try:
+            import psutil
+        except ImportError:
+            return False
+        try:
+            process = psutil.Process(self.proc.pid)
+            connections = getattr(process, "net_connections", None) or process.connections
+            return self.proc.poll() is None and any(
+                c.laddr and c.laddr.port == self.addr[1] and c.laddr.ip in (self.addr[0], "0.0.0.0")
+                for c in connections(kind="udp4"))
+        except (psutil.Error, OSError, AttributeError):
+            return False
+
     def _wait_boot(self, watch) -> tuple[str, dict | None]:
-        """Poll until the content runs ('ready'), the audio driver stalls ('fallback'), or the watch gives up (raises).
+        """Poll until ready, audio fallback, a command-port bind failure, or a terminal failure.
         The deadline is the watch's: content loaded with audio still opening waits longer instead of failing."""
         i = 0
         while True:
@@ -1457,16 +1523,24 @@ class RetroArchAdapter(CommandAdapter):
                 if self.display:
                     self.display.close()
                 raise RuntimeError(f"retroarch exited {self.proc.returncode}: {self.log_tail()}")
+            if watch.phase.get("netcmd_down"):
+                # Do not query the colliding listener: it is not this process.
+                return watch.decide(time.monotonic(), False), None
             st, running = None, False
             try:
                 st = self.query_runtime(timeout=0.3)
                 running = st.get("state") in ("PLAYING", "PAUSED")
             except RuntimeError:
                 pass
+            unowned_reply = running and HOST_OS == "windows" and not self._owns_command_port()
+            if unowned_reply:
+                running = False
             verdict = watch.decide(time.monotonic(), running)
-            if verdict in ("ready", "fallback"):
+            if verdict in ("ready", "fallback", "netcmd"):
                 return verdict, st
             if verdict == "fail":
+                if unowned_reply:
+                    watch.reason = "the network command interface binding could not be verified for the owned process"
                 tail = self.log_tail()
                 self.stop_game()
                 raise RuntimeError(f"retroarch started but {watch.reason}: {tail}")
