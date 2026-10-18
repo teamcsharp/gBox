@@ -142,6 +142,7 @@ class DolphinProcMem(Debugger):
 
     def __init__(self, pid: int):
         import ctypes
+        self.lock = threading.RLock()
         self.k = ctypes.WinDLL("kernel32", use_last_error=True)
         self.k.OpenProcess.restype = ctypes.c_void_p
         self.h = self.k.OpenProcess(0x0010 | 0x0020 | 0x0008 | 0x0400, False, pid)   # VM_READ | VM_WRITE | VM_OPERATION | QUERY
@@ -195,14 +196,16 @@ class DolphinProcMem(Debugger):
         return base + off
 
     def read(self, address, length):
-        return self._raw(self._host(address, length), length)
+        with self.lock:
+            return self._raw(self._host(address, length), length)
 
     def write(self, address, data: bytes):
-        import ctypes
-        host, n = self._host(address, len(data)), ctypes.c_size_t()
-        if not self.k.WriteProcessMemory(ctypes.c_void_p(self.h), ctypes.c_void_p(host), data, len(data), ctypes.byref(n)) or n.value != len(data):
-            raise Unavailable(f"Dolphin memory write failed at {address:#x}")
-        return {"written": len(data), "via": "process memory"}
+        with self.lock:
+            import ctypes
+            host, n = self._host(address, len(data)), ctypes.c_size_t()
+            if not self.k.WriteProcessMemory(ctypes.c_void_p(self.h), ctypes.c_void_p(host), data, len(data), ctypes.byref(n)) or n.value != len(data):
+                raise Unavailable(f"Dolphin memory write failed at {address:#x}")
+            return {"written": len(data), "via": "process memory"}
 
     def paused(self):
         import contextlib
@@ -215,9 +218,10 @@ class DolphinProcMem(Debugger):
     resume = step = set_breakpoint = remove_breakpoint = halt
 
     def close(self):
-        if self.h:
-            self.k.CloseHandle(__import__("ctypes").c_void_p(self.h))
-            self.h = None
+        with self.lock:
+            if self.h:
+                self.k.CloseHandle(__import__("ctypes").c_void_p(self.h))
+                self.h = None
 
 
 class XeniaProcMem(Debugger):

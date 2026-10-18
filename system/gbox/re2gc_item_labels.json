@@ -1,0 +1,405 @@
+{
+  "source": "Reference names from the existing RE2 PSX item catalog; labels only, not GameCube gameplay proof or memory evidence",
+  "items": [
+    {
+      "id": 0,
+      "name": "Empty"
+    },
+    {
+      "id": 1,
+      "name": "Knife"
+    },
+    {
+      "id": 2,
+      "name": "Hand Gun (Leon, VP70)"
+    },
+    {
+      "id": 3,
+      "name": "Hand Gun (Claire, Browning)"
+    },
+    {
+      "id": 4,
+      "name": "C. Hand Gun"
+    },
+    {
+      "id": 5,
+      "name": "Magnum"
+    },
+    {
+      "id": 6,
+      "name": "C. Magnum"
+    },
+    {
+      "id": 7,
+      "name": "Shotgun"
+    },
+    {
+      "id": 8,
+      "name": "C. Shotgun"
+    },
+    {
+      "id": 9,
+      "name": "G. Launcher (grenade rounds)"
+    },
+    {
+      "id": 10,
+      "name": "G. Launcher (flame rounds)"
+    },
+    {
+      "id": 11,
+      "name": "G. Launcher (acid rounds)"
+    },
+    {
+      "id": 12,
+      "name": "Bow Gun"
+    },
+    {
+      "id": 13,
+      "name": "Colt S.A.A."
+    },
+    {
+      "id": 14,
+      "name": "Spark Shot"
+    },
+    {
+      "id": 15,
+      "name": "S. Machine Gun"
+    },
+    {
+      "id": 16,
+      "name": "Flamethrower"
+    },
+    {
+      "id": 17,
+      "name": "R. Launcher"
+    },
+    {
+      "id": 18,
+      "name": "Gatling Gun"
+    },
+    {
+      "id": 19,
+      "name": "Hand Gun (alt.)"
+    },
+    {
+      "id": 20,
+      "name": "H. Gun Bullets"
+    },
+    {
+      "id": 21,
+      "name": "Shotgun Shells"
+    },
+    {
+      "id": 22,
+      "name": "M. Bullets"
+    },
+    {
+      "id": 23,
+      "name": "Fuel"
+    },
+    {
+      "id": 24,
+      "name": "G. Rounds"
+    },
+    {
+      "id": 25,
+      "name": "Flame Rounds"
+    },
+    {
+      "id": 26,
+      "name": "Acid Rounds"
+    },
+    {
+      "id": 27,
+      "name": "M.G. Bullets"
+    },
+    {
+      "id": 28,
+      "name": "S. Shot Bullets"
+    },
+    {
+      "id": 29,
+      "name": "Bow Gun Bolts"
+    },
+    {
+      "id": 30,
+      "name": "Ink Ribbon"
+    },
+    {
+      "id": 31,
+      "name": "Small Key"
+    },
+    {
+      "id": 32,
+      "name": "H. Gun Parts"
+    },
+    {
+      "id": 33,
+      "name": "Magnum Parts"
+    },
+    {
+      "id": 34,
+      "name": "Shotgun Parts"
+    },
+    {
+      "id": 35,
+      "name": "F. Aid Spray"
+    },
+    {
+      "id": 36,
+      "name": "Antivirus bomb"
+    },
+    {
+      "id": 37,
+      "name": "Chemical AC-W24"
+    },
+    {
+      "id": 38,
+      "name": "Green Herb"
+    },
+    {
+      "id": 39,
+      "name": "Red Herb"
+    },
+    {
+      "id": 40,
+      "name": "Blue Herb"
+    },
+    {
+      "id": 41,
+      "name": "Mixed Herb (G+G)"
+    },
+    {
+      "id": 42,
+      "name": "Mixed Herb (G+R)"
+    },
+    {
+      "id": 43,
+      "name": "Mixed Herb (G+B)"
+    },
+    {
+      "id": 44,
+      "name": "Mixed Herb (G+G+G)"
+    },
+    {
+      "id": 45,
+      "name": "Mixed Herb (G+G+B)"
+    },
+    {
+      "id": 46,
+      "name": "Mixed Herb (G+R+B)"
+    },
+    {
+      "id": 47,
+      "name": "Lighter"
+    },
+    {
+      "id": 48,
+      "name": "Lockpick"
+    },
+    {
+      "id": 49,
+      "name": "Picture"
+    },
+    {
+      "id": 50,
+      "name": "Valve Handle"
+    },
+    {
+      "id": 51,
+      "name": "Red Jewel"
+    },
+    {
+      "id": 52,
+      "name": "Red Card Key"
+    },
+    {
+      "id": 53,
+      "name": "Blue Card Key"
+    },
+    {
+      "id": 54,
+      "name": "Serpent Stone"
+    },
+    {
+      "id": 55,
+      "name": "Jaguar Stone"
+    },
+    {
+      "id": 56,
+      "name": "Blue Stone (1)"
+    },
+    {
+      "id": 57,
+      "name": "Blue Stone (2)"
+    },
+    {
+      "id": 58,
+      "name": "Eagle Stone"
+    },
+    {
+      "id": 59,
+      "name": "Bishop Plug"
+    },
+    {
+      "id": 60,
+      "name": "Rook Plug"
+    },
+    {
+      "id": 61,
+      "name": "Knight Plug"
+    },
+    {
+      "id": 62,
+      "name": "King Plug"
+    },
+    {
+      "id": 63,
+      "name": "W. Box Key"
+    },
+    {
+      "id": 64,
+      "name": "Detonator"
+    },
+    {
+      "id": 65,
+      "name": "Plastic Bomb"
+    },
+    {
+      "id": 66,
+      "name": "Bomb & Det."
+    },
+    {
+      "id": 67,
+      "name": "Crank"
+    },
+    {
+      "id": 68,
+      "name": "Film (A)"
+    },
+    {
+      "id": 69,
+      "name": "Film (B)"
+    },
+    {
+      "id": 70,
+      "name": "Film (C)"
+    },
+    {
+      "id": 71,
+      "name": "Unicorn Medal"
+    },
+    {
+      "id": 72,
+      "name": "Eagle Medal"
+    },
+    {
+      "id": 73,
+      "name": "Wolf Medal"
+    },
+    {
+      "id": 74,
+      "name": "G. Cogwheel"
+    },
+    {
+      "id": 75,
+      "name": "Manhole Opener"
+    },
+    {
+      "id": 76,
+      "name": "Main Fuse"
+    },
+    {
+      "id": 77,
+      "name": "Fuse Case"
+    },
+    {
+      "id": 78,
+      "name": "Vaccine"
+    },
+    {
+      "id": 79,
+      "name": "Vaccine Cart."
+    },
+    {
+      "id": 80,
+      "name": "Film (D)"
+    },
+    {
+      "id": 81,
+      "name": "Base Vaccine"
+    },
+    {
+      "id": 82,
+      "name": "G-virus"
+    },
+    {
+      "id": 83,
+      "name": "Special Key"
+    },
+    {
+      "id": 84,
+      "name": "Joint S Plug"
+    },
+    {
+      "id": 85,
+      "name": "Joint N Plug"
+    },
+    {
+      "id": 86,
+      "name": "Cord"
+    },
+    {
+      "id": 87,
+      "name": "Picture (2)"
+    },
+    {
+      "id": 88,
+      "name": "Cabin Key"
+    },
+    {
+      "id": 89,
+      "name": "Precinct Key (1)"
+    },
+    {
+      "id": 90,
+      "name": "Precinct Key (2)"
+    },
+    {
+      "id": 91,
+      "name": "Precinct Key (3)"
+    },
+    {
+      "id": 92,
+      "name": "Precinct Key (4)"
+    },
+    {
+      "id": 93,
+      "name": "C. Panel Key (1)"
+    },
+    {
+      "id": 94,
+      "name": "C. Panel Key (2)"
+    },
+    {
+      "id": 95,
+      "name": "P. Room Key"
+    },
+    {
+      "id": 96,
+      "name": "MO disk"
+    },
+    {
+      "id": 97,
+      "name": "Lab Card Key"
+    },
+    {
+      "id": 98,
+      "name": "Master Key"
+    },
+    {
+      "id": 99,
+      "name": "Platform Key"
+    }
+  ]
+}

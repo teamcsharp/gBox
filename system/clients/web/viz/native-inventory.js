@@ -1,9 +1,10 @@
 /* Native inventory operations stay on the running session's worker. */
 (function(root){
  'use strict';
- function supported(s){return s?.platform==='ps2'&&['265819390074bb4e','82173dff3bf1ad6d'].includes(s.game_id);}
+ function supported(s){return root.GBoxRE2Inventory?.supported(s)||s?.platform==='ps2'&&['265819390074bb4e','82173dff3bf1ad6d'].includes(s.game_id);}
  function mount(host,session,io){
   if(!host||!supported(session))return null;
+  if(root.GBoxRE2Inventory?.supported(session))return root.GBoxRE2Inventory.mount(host,session,io);
   const sid=session.session_id||session.sid,worker=sid.split('-')[0];let dead=false,busy=false,ready=false,uncertain=false;
   const d=document.createElement('details');d.dataset.dock='native-items';d.open=true;
   d.innerHTML='<summary>Weapon inventory</summary><p data-inventory-status role=status>Reading the native GTA III weapon slots...</p><label>Weapon <select data-weapon></select></label><label>Ammo <input data-ammo type=number min=1 max=99999 value=9999 style="width:75px"></label><div class="bar"><button class=act data-give disabled>Give weapon</button><button class=act data-all disabled>Give all 11 weapons</button><button class=act data-refresh title="Read the current inventory">&#8635;</button></div><div data-owned class=mut></div><p class=mut>Uses the game’s own weapon functions. Detonators and mission objects require their native game flows.</p>';
