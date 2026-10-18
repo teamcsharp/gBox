@@ -376,8 +376,11 @@ def adjust_routes() -> dict:
     overdue = overdue_runs(running)
     late = {o['job_id'] for o in overdue}
     busy = any(job not in late for job in running)
+    preferred = hermes_quota.route({'provider': cron.get('preferred_provider'),
+                                    'model': cron.get('preferred_model')})
     pick = hermes_local.choose(paid, data['cooldowns'], time.time(), primary=primary,
-                               rotation_pending=bool(data.get('rotation_pending')), busy=busy, s=local)
+                               rotation_pending=bool(data.get('rotation_pending')), busy=busy, s=local,
+                               preferred=preferred)
     shown = paid + ([hermes_local.route(local)] if local.enabled else [])   # the Providers view lists the local route
     if busy or pick['mode'] == 'none':
         path = hermes_delivery.state_dir() / 'feedback.json'

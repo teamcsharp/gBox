@@ -300,3 +300,55 @@ def test_a_run_past_its_deadline_no_longer_holds_the_switch_to_local(supervisor,
     assert json.loads(sv.path.read_text())['overdue_runs'][0]['job_id'] == 'stuck'
     monkeypatch.setenv('GBOX_HERMES_RUN_DEADLINE_S', str(4 * 3600))
     assert hermes_feedback.overdue_runs(['stuck'], home=home) == []
+
+
+@pytest.mark.parametrize('primary', [NOUS, ROUTER, LOCAL])
+def test_operator_preference_stays_selected_across_completed_runs(primary):
+    preferred = {'provider': 'zai', 'model': 'glm-5.3'}
+    result = hermes_local.choose([NOUS, preferred, ROUTER], {}, 1000,
+        primary=primary, preferred=preferred, rotation_pending=True, s=S, only_local=False)
+    assert result['route'] == preferred
+    assert result['fallbacks'] == [NOUS, ROUTER]
+    assert 'preferred' in result['reason']
+
+
+def test_preference_does_not_override_quota_or_add_an_unconfigured_route():
+    preferred = {'provider': 'zai', 'model': 'glm-5.3'}
+    cooling = {'zai/glm-5.3': 2000}
+    result = hermes_local.choose([preferred, NOUS], cooling, 1000,
+        primary=preferred, preferred=preferred, s=S, only_local=False)
+    assert result['route'] == NOUS and result['fallbacks'] == []
+    result = hermes_local.choose([NOUS], {}, 1000,
+        primary=NOUS, preferred=preferred, s=S, only_local=False)
+    assert result['route'] == NOUS
+    result = hermes_local.choose([preferred], cooling, 1000,
+        primary=preferred, preferred=preferred, s=S, only_local=False)
+    assert result['mode'] == 'local'
+
+
+def test_local_only_switch_still_overrides_paid_preference():
+    result = hermes_local.choose([NOUS, ROUTER], {}, 1000,
+        primary=NOUS, preferred=ROUTER, s=S, only_local=True)
+    assert result['mode'] == 'local' and result['route'] == LOCAL
+
+
+@pytest.mark.parametrize('busy', [False, True])
+def test_supervisor_reads_preference_but_preserves_active_runs(supervisor, monkeypatch, busy):
+    import yaml
+    sv = supervisor
+    preferred = {'provider': 'zai', 'model': 'glm-5.3'}
+    config = sv.config
+    config['cron'].update(preferred_provider='zai', preferred_model='glm-5.3')
+    sv.config_path.write_text(yaml.safe_dump(config))
+    sv.data['routes'].append(preferred)
+    sv.data['rotation_pending'] = True
+    monkeypatch.setattr(hermes_feedback.hermes_task_mode, '_jobs', lambda: [{'id': 'active'}] if busy else [])
+    monkeypatch.setattr(hermes_feedback.hermes_task_mode, '_active', lambda _: busy)
+    monkeypatch.setattr(hermes_feedback, 'overdue_runs', lambda _: [])
+    result = hermes_feedback.adjust_routes()
+    assert result['route'] == (NOUS if busy else preferred)
+    if busy:
+        assert not sv.sets
+    else:
+        assert sv.config['cron']['model_provider'] == 'zai'
+        assert sv.config['cron']['preferred_provider'] == 'zai'
