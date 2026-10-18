@@ -119,3 +119,12 @@ def test_re5_worker_handoff_exposes_bounded_fitting_cli_and_actual_options(capsy
     assert 'motion, culling and gameplay unverified' in prompt
     assert 'other costumes, NPCs, enemies and cutscenes' in prompt
     assert 'Experimental exact-donor fitting:' not in engineering.prompt('a' * 16)
+
+
+def test_re2_worker_prompt_exposes_read_only_save_inspection_without_unlock_claim():
+    from gbox.native_engineering import prompt
+    text = prompt('c6adbfa00c20aaf9')
+    assert 'python -m gbox.re2gc_save --dol OWNED_main.dol --rel OWNED_scenario.rel COPIED_SAVE.gci' in text
+    assert 'Award bits do not create playable HUNK/Tofu/Extreme Battle saves.' in text
+    assert 'No save writer, native gameplay acceptance or complete-unlock claim.' in text
+    assert 'docs/re2gc-save.md' in text
