@@ -4,7 +4,7 @@ import threading
 import time
 
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from .models import Permission as P
 from .registry import tool, ToolUnavailable
 
@@ -167,6 +167,14 @@ class AssistIn(BaseModel):
     op: str = 'analyze'
     prompt: str = Field('', max_length=32768)
     purpose: str = Field('decompilation review', max_length=200)
+
+    @model_validator(mode='after')
+    def valid_operation(self):
+        if self.op not in ('status', 'analyze'):
+            raise ValueError('Use status or analyze with a nonempty evidence prompt')
+        if self.op == 'analyze' and not self.prompt.strip():
+            raise ValueError('Analyze requires a nonempty evidence prompt')
+        return self
 
 
 class AssistOut(BaseModel):
