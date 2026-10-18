@@ -4252,7 +4252,7 @@ AGENTS = [
 # pso_mods_tool: PSO Ver.2 DC mods | re_mods_tool: RE4 GC items/ammo/Mercenaries | zelda_tool: every Zelda
 # ac_mods_tool: Armored Core | characters: character library (list / get / use / extract)
 # scene_capture: Examine 3D (pause + RenderDoc frame -> glTF scene)
-def _load_tool_modules(names=("native_face_editor", "auf_live", "twin_snakes_faces", "doa2_faces", "gta3_face_takeover", "gta3_items", "re2gc_items", "pso_face_build", "pso_faces", "pso_loadouts", "gameplay_demo", "sprite_faces", "smb1_sprite_build", "photo_skin", "gameplay_memory", "tas_tool", "ollama_assist", "inspection_builds", "live_controls", "pso_mods_tool", "re_mods_tool", "zelda_tool", "ac_mods_tool", "characters", "scene_capture", "tasks_tool", "blender_copy", "texture_review", "mesh_workspace", "hops_workspace",
+def _load_tool_modules(names=("cxbx_diagnostics_tool", "native_face_editor", "auf_live", "twin_snakes_faces", "doa2_faces", "gta3_face_takeover", "gta3_items", "re2gc_items", "pso_face_build", "pso_faces", "pso_loadouts", "gameplay_demo", "sprite_faces", "smb1_sprite_build", "photo_skin", "gameplay_memory", "tas_tool", "ollama_assist", "inspection_builds", "live_controls", "pso_mods_tool", "re_mods_tool", "zelda_tool", "ac_mods_tool", "characters", "scene_capture", "tasks_tool", "blender_copy", "texture_review", "mesh_workspace", "hops_workspace",
                               "live_link",   # live_link: Blender Live Link push -> build, validate, hot-swap into the running game
                               "re4r",   # re4r: Resident Evil 4 (2023, Steam) via REFramework + gBox's Lua bridge
                               "ue_steam",   # ue_steam: generic Unreal Engine Steam game static analysis (locomotion/animation)

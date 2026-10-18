@@ -59,6 +59,12 @@ def describe(config: Config, name: str, wid: str | None = None) -> WorkerInfo:
     return info
 
 
+def _quiet_agent_job(job: dict) -> bool:
+    # This fixed, read-only collector neither creates audio nor launches a game.
+    # Keep truthful agent attribution without mutating volume merely to read files.
+    return bool(job.get("agent_use")) and job.get("tool") != "cxbx_diagnostics"
+
+
 def _run_job(job: dict, config: Config, wid: str, server: str, h: dict, client: httpx.Client,
              active: set, active_agent: set, quiet_sessions: set, outbox: ResultOutbox):
     ctx = Ctx(config, job_id=job["id"], worker=wid)
@@ -68,7 +74,7 @@ def _run_job(job: dict, config: Config, wid: str, server: str, h: dict, client: 
     # job, and an agent job's callbacks count as automation (never swapping the operator's game; stream-stability.md)
     ctx.server, ctx.headers = server, h | {"x-gbox-parent-job": job["id"]}
     res = {"job_id": job["id"], "ok": True}
-    if job.get("agent_use") and HOST_OS == "windows":
+    if _quiet_agent_job(job) and HOST_OS == "windows":
         from .audio_volume import keep_pc_at_two_percent
         if not deps.install_for("pycaw"):
             res.update(ok=False, error="Cannot keep this PC at 2% volume: pycaw is unavailable")
@@ -341,6 +347,6 @@ def run(server: str, token: str, config: Config, name: str | None = None,
                 if stop.is_set(): break
                 cleanup_job = job['id']
             active.add(job["id"])
-            if job.get("agent_use"):
+            if _quiet_agent_job(job):
                 active_agent.add(job["id"])
             threading.Thread(target=_run_job, args=(job, config, info.id, server, h, c, active, active_agent, quiet_sessions, outbox), daemon=True).start()
