@@ -1,24 +1,24 @@
-"""evidence_capture: in-game screenshots that show a mod working, for pull requests (docs/pr-evidence.md).
+"""evidence_capture: diagnostic session screenshots for pull requests (docs/pr-evidence.md).
 
-The operator's rule: a PR that changes what a game shows carries pictures of it actually working. This tool takes
-them without touching the operator's play:
+A PR needs independently reviewed gameplay evidence. This tool executes a recipe and preserves screenshots
+for that review without touching the operator's play; capture success does not verify the game or modification:
 
   1. node       an idle node that may run agent tests: a Windows worker nobody used for IDLE_MIN_S seconds (ticked
                 for background testing in the Tasks menu, no jobs running), else the Spark - and never a node with
                 any running game (the operator's or another agent's: launch_game would close it). node="<name>" pins
                 it, with the same refusals. One evidence capture runs at a time (the server refuses a second).
   2. session    launch_game with the mod (agent_use: 2% volume on Windows), labelled owner=agent ("shown dimmed").
-  3. gameplay   the recipe's moment (a saved state: an exported artifact, or a slot on the node that saved it) and
+  3. recipe     the recipe's moment (a saved state: an exported artifact, or a slot on the node that saved it) and
                 the recipe's steps after it (inputs that make the game load its models again from the modded disc -
                 a state holds the models that were in RAM when it was saved), or the boot input steps when there is
                 no moment. Steps are pad presses, waits, a few session-scoped tools (zelda_oot goto, mgs_vr ...) and
                 inline shots.
-  4. shots      get_frame (or scene_capture) at {at_s} after gameplay is reached or right {after_inputs} step k.
+  4. shots      get_frame (or scene_capture) at {at_s} after recipe steps finish or right {after_inputs} step k.
   5. stock      compare_stock: the same recipe on the unmodded game, then a before/after picture per shot label.
   6. close      the tool's own session is stopped whatever happened, and only that one. If someone starts using the
                 node (input on that PC, a game started there), the capture stops its session and reports "yielded".
 
-Frames are artifacts (sha256 ids); every frame is marked "in-game frame". The recipes (per game_id: moment, steps,
+Frames are artifacts (sha256 ids), marked "session screenshot" until gameplay is independently verified. The recipes (per game_id: moment, steps,
 shots, which camera shows the replaced characters) live in gbox/evidence_recipes.json; a moment the operator
 records later (POST /api/evidence/moments) overrides the seed. Everything that talks to the control plane is
 injected (run_job, workers, sessions, labels, operator_active, ...), so the flow is tested without a server or an
@@ -65,7 +65,7 @@ class Yielded(EvidenceError):
 
 class Shot(BaseModel):
     label: str
-    at_s: float | None = None              # seconds after gameplay is reached (moment loaded + steps done)
+    at_s: float | None = None              # seconds after the recipe steps finish
     after_inputs: int | str | None = None  # right after step k (0-based) or the step labelled so
     kind: str = "frame"                    # frame (get_frame PNG) | scene (scene_capture GLB, Examine 3D)
 
@@ -100,17 +100,17 @@ class EvidenceOut(BaseModel):
     recipe: str = ""
     worker: str = ""
     runs: list[dict] = []                  # [{variant: mod|stock, session_id, reached, frames, stopped, notes}]
-    frames: list[dict] = []                # [{run, label, sha256, url, kind: "in-game frame", width, height, mean_luma}]
+    frames: list[dict] = []                # [{run, label, sha256, url, kind: "session screenshot", width, height, mean_luma}]
     pairs: list[dict] = []                 # [{label, stock, mod, composite}] (compare_stock)
     artifacts: list[str] = []              # every PNG this capture made (frames + composites)
     notes: list[str] = []
 
 
-@tool(TOOL, "1.0", EvidenceIn, EvidenceOut, capabilities=["video", "runtime", "evidence"], timeout_s=3600,
+@tool(TOOL, "1.1", EvidenceIn, EvidenceOut, capabilities=["video", "runtime", "evidence"], timeout_s=3600,
       artifacts=["frame.png", "pair.png"], validation="frames are get_frame PNG artifacts; composites PNG")
 def evidence_capture(inp: EvidenceIn, ctx):
-    """In-game PR evidence: launch the build in an agent-owned test session on an idle node, reach gameplay (saved
-    moment or scripted inputs), grab frames, optionally the stock game too (before/after), stop its own session.
+    """Diagnostic PR screenshots: launch an agent-owned test session on an idle node, execute the saved-moment/input
+    recipe, capture images and optional stock/mod pairs, then stop that session. Gameplay needs independent review.
     Runs inside the control plane (POST /api/jobs tool=evidence_capture); never on a worker."""
     raise Unsupported("evidence_capture runs inside the control plane: POST /api/jobs {tool: evidence_capture}")
 
@@ -363,7 +363,7 @@ def run(inp: EvidenceIn, game: dict, *, run_job, workers, live_sessions, recipes
                 break
     if inp.compare_stock and inp.mod and put_artifact and read_artifact:
         from . import evidence_render as ER
-        by = {r["variant"]: {f["label"]: f for f in r["frames"] if f.get("kind") == "in-game frame"} for r in out["runs"]}
+        by = {r["variant"]: {f["label"]: f for f in r["frames"] if f.get("kind") == "session screenshot"} for r in out["runs"]}
         for lab, mf in (by.get("mod") or {}).items():
             sf = (by.get("stock") or {}).get(lab)
             if not sf:
@@ -371,12 +371,13 @@ def run(inp: EvidenceIn, game: dict, *, run_job, workers, live_sessions, recipes
             try:
                 png = ER.before_after(read_artifact(sf["sha256"]), read_artifact(mf["sha256"]),
                                       f"{title}: {lab}. Left: stock game; right: {inp.mod}. Same recipe, same node "
-                                      f"({wname}).", kind="in-game frame", before_title="Stock",
+                                      f"({wname}). Gameplay and modification not verified.", kind="session screenshot", before_title="Stock",
                                       after_title=f"Mod: {inp.mod}")
                 sha = put_artifact(png, f"evidence-{_slug(lab)}.png", "image/png",
-                                   {"evidence": TOOL, "game": inp.game_id, "mod": inp.mod, "label": lab})
+                                   {"evidence": TOOL, "game": inp.game_id, "mod": inp.mod, "label": lab,
+                                     "kind": "session screenshot", "gameplay_verified": False})
                 out["pairs"].append({"label": lab, "stock": sf["sha256"], "mod": mf["sha256"], "composite": sha,
-                                     "url": f"/api/artifacts/{sha}", "kind": "in-game frame"})
+                                     "url": f"/api/artifacts/{sha}", "kind": "session screenshot", "gameplay_verified": False})
                 out["artifacts"].append(sha)
             except Exception as e:                        # noqa: BLE001 - a missing pair never loses the frames
                 out["notes"].append(f"pair {lab}: {e}")
@@ -397,7 +398,8 @@ def _capture_once(variant, mod, game, title, w, moment, steps_boot, steps_after,
                   label, end_session, operator_active, say, stopped_by, sleep, clock) -> dict:
     wid, wname = w["id"], w.get("name") or w["id"]
     rec = {"variant": variant, "mod": mod, "session_id": "", "reached": "", "frames": [], "stopped": False,
-           "notes": [], "steps_done": 0}
+           "notes": ["Screenshots and completed recipe steps do not verify gameplay or the requested modification."],
+           "gameplay_verified": False, "steps_done": 0}
 
     def guard():
         if stopped_by():
@@ -414,9 +416,10 @@ def _capture_once(variant, mod, game, title, w, moment, steps_boot, steps_after,
                                   "url": f"/api/artifacts/{cap.get('glb')}"})
             return
         fr = run_job("get_frame", {"session_id": nsid}, wid, 45)
-        f = {"label": lab, "sha256": fr["sha256"], "url": f"/api/artifacts/{fr['sha256']}", "kind": "in-game frame",
+        f = {"label": lab, "sha256": fr["sha256"], "url": f"/api/artifacts/{fr['sha256']}", "kind": "session screenshot", "gameplay_verified": False,
              "width": fr.get("width"), "height": fr.get("height"), "mean_luma": fr.get("mean_luma"),
-             "covered": fr.get("covered", 0), "t": round(clock() - t_launch, 1)}
+             "covered": fr.get("covered", 0), "capture_source": fr.get("capture_source"),
+             "capture_occlusion": fr.get("capture_occlusion", "unknown"), "t": round(clock() - t_launch, 1)}
         if f["mean_luma"] is not None and f["mean_luma"] <= DARK_LUMA:
             f["dark"] = True
             rec["notes"].append(f"{lab}: the frame is black (loading or not drawing)")
@@ -475,7 +478,7 @@ def _capture_once(variant, mod, game, title, w, moment, steps_boot, steps_after,
             steps = steps_after
         else:
             rec["reached"] = "boot"
-        say(35, f"{len(steps)} input step(s) to gameplay")
+        say(35, f"{len(steps)} input step(s) in the capture recipe")
         for k, st in enumerate(steps):
             do_step(st, k)
         if steps:

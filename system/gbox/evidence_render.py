@@ -2,7 +2,8 @@
 
 Two kinds of evidence, never mixed up in a caption:
 
-* "in-game frame"  - a frame grabbed from a running emulator session (gbox.evidence_capture), and
+* "session screenshot" - diagnostic pixels from a session; gameplay is not automatically verified,
+* "in-game frame"  - a game frame independently reviewed by the caller, and
 * "offline render" - a headless render of a model file (characters.render_preview: no GPU, no emulator): the stock
                      slot model next to the fitted donor, or a writer's fit-event snapshot (gbox.fit_events).
 
@@ -22,7 +23,7 @@ BG = (38, 40, 48)                     # characters.render_preview's background
 BAR = (24, 25, 31)
 INK = (236, 238, 244)
 MUTED = (160, 166, 180)
-KIND_COLOURS = {"in-game frame": (92, 200, 120), "offline render": (110, 160, 255), "UI screenshot": (230, 180, 90)}
+KIND_COLOURS = {"session screenshot": (230, 180, 90), "in-game frame": (92, 200, 120), "offline render": (110, 160, 255), "UI screenshot": (230, 180, 90)}
 KINDS = tuple(KIND_COLOURS)
 PALETTE = [(200, 200, 200), (143, 230, 168), (79, 140, 255), (255, 181, 107), (217, 153, 255), (242, 230, 128),
            (255, 120, 120), (120, 220, 230)]

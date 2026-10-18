@@ -162,7 +162,8 @@ def test_mod_and_stock_runs_reach_gameplay_shoot_and_stop_only_their_own_session
     assert presses[:2] == [{"key": "start", "down": True}, {"key": "start", "down": False}]
     labs = [f["label"] for f in out["frames"] if f["run"] == "mod"]
     assert labs == ["after title", "select screen", "fight"]
-    assert all(f["kind"] == "in-game frame" for f in out["frames"])
+    assert all(f["kind"] == "session screenshot" and f["gameplay_verified"] is False for f in out["frames"])
+    assert all(p["kind"] == "session screenshot" and p["gameplay_verified"] is False for p in out["pairs"])
     assert {p["label"] for p in out["pairs"]} == {"after title", "select screen", "fight"}
     pair = arts[out["pairs"][0]["composite"]]
     assert pair[:8] == b"\x89PNG\r\n\x1a\n"
@@ -238,7 +239,7 @@ def test_dark_frames_are_flagged():
             r = super().__call__(tool, inp, worker_id, wait, progress)
             return r | {"mean_luma": 1.0} if tool == "get_frame" else r
     out, *_ = capture(Dark(), [worker("t", "JAY")], inp={"game_id": "g1", "recipe": "boot"})
-    assert out["frames"][0]["dark"] and "black" in out["runs"][0]["notes"][0]
+    assert out["frames"][0]["dark"] and any("black" in n for n in out["runs"][0]["notes"])
 
 
 # ------------------------------------------------------------------------------------------------ recipes
@@ -350,3 +351,20 @@ def test_required_os_does_not_redirect_an_explicit_linux_selection():
     ws = [worker("test", "TestPC", idle=1200), worker("spark", "lilspark", "linux", None)]
     with pytest.raises(EC.EvidenceError, match="needs a windows worker"):
         EC.pick_node("linux", ws, [], needs={"launch_game"}, required_os="windows")
+
+
+@pytest.mark.parametrize("source,occlusion,covered", [(None,"unknown",0),
+    ("cxbx-print-window","occluded",3),("cxbx-print-window","sampled-clear",0)])
+def test_bright_diagnostic_capture_keeps_provenance_without_gameplay_claim(source,occlusion,covered):
+    jobs=Jobs()
+    def diagnostic(tool,inp,worker_id,wait,progress=None):
+        out=jobs(tool,inp,worker_id,wait,progress)
+        if tool=='get_frame':out.update(capture_source=source,capture_occlusion=occlusion,covered=covered)
+        return out
+    out,*_=capture(diagnostic,[worker('t','Test')])
+    assert out['frames'] and all(f['mean_luma']>3 for f in out['frames'])
+    for f in out['frames']:
+        assert (f['capture_source'],f['capture_occlusion'],f['covered'])==(source,occlusion,covered)
+        assert f['kind']=='session screenshot' and f['gameplay_verified'] is False
+    assert all(r['gameplay_verified'] is False for r in out['runs'])
+    assert any('do not verify gameplay' in n for r in out['runs'] for n in r['notes'])

@@ -119,3 +119,25 @@ def test_main_dry_run_prints_the_body_and_ssh_gh_arguments_are_quoted(tmp_path, 
     assert seen["cmd"][-1] == "'.body x'"
     PE._run_gh("gh", ["pr", "view", "7", "-q", ".body x"])
     assert seen["cmd"] == ["gh", "pr", "view", "7", "-q", ".body x"]
+
+
+@pytest.mark.parametrize('kind',['session screenshot','in-game frame'])
+def test_automatic_job_screenshots_are_retained_without_promoting_them_to_verified_gameplay(monkeypatch,kind):
+    import httpx
+    from types import SimpleNamespace
+    payload={'output':{'mod':'fixture-mod','worker':'fixture-worker',
+        'frames':[{'kind':kind,'sha256':'frame','label':'capture','run':'mod'},
+                  {'kind':'scene capture (GLB)','sha256':'model','label':'scene'}],
+        'pairs':[{'kind':kind,'composite':'pair','label':'compare'}]}}
+    requested=[]
+    def get(url,**kwargs):
+        requested.append(url)
+        return SimpleNamespace(json=lambda:payload,content=png())
+    monkeypatch.setattr(httpx,'get',get)
+    items=PE.from_job('https://fixture.invalid','fixture-token','capture-job')
+    assert len(items)==2 and requested==['https://fixture.invalid/api/jobs/capture-job',
+        'https://fixture.invalid/api/artifacts/pair','https://fixture.invalid/api/artifacts/frame']
+    assert all(it['kind']=='session screenshot' and 'gameplay unverified' in it['caption'] for it in items)
+    images=PE.prepare(items)
+    gallery=PE.gallery(1,images)
+    assert '2 session screenshots' in gallery and 'in-game frame' not in gallery
