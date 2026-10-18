@@ -16,6 +16,18 @@ function load() {
   return ctx.GBoxProviders;
 }
 const NOW = 1_760_400_000;
+test('model trials hold unprepared and cluster starts while allowing served-model adoption', () => {
+  const html = load().poolCards({nodes: [{name: 'sparkDeux'}], model_management: {
+    access: {ready: true}, profiles: [
+      {id: 'coder', model: 'coder', title: 'Coder', prepared: false},
+      {id: 'glm', model: 'glm', title: 'GLM', prepared: true, cluster_only: true},
+      {id: 'bolt', model: 'bolt', title: 'Bolt', prepared: true}], job: {state: 'ready'}}});
+  assert.match(html, /data-tkp-model="trial_start" data-model="coder" disabled/);
+  assert.match(html, /data-tkp-model="trial_start" data-model="glm" disabled/);
+  assert.match(html, /data-tkp-model="trial_start" data-model="bolt" >/);
+  assert.match(html, /data-tkp-model="trial_adopt" data-model="glm" >/);
+  assert.match(html, /Installed recipe requires two Sparks/);
+});
 test('pool renders separate switches, real host counters and guarded model actions', () => {
   const html = load().poolCards({capacity: 5, nodes: [
     {name: 'lilspark', enabled: true, primary: true, model: 'small', capacity: 1},

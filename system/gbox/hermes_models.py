@@ -74,6 +74,9 @@ def status():
     if not settings():
         return {'configured': False}
     data = _read()
+    from . import hermes_model_trials as trials
+    if value := trials.status():
+        return {'configured': True, 'access': access(), **value}
     return {'configured': True, 'access': access(), 'job': data,
         'recommendation': {'model': MODEL, 'source': SOURCE,
             'title': 'Agent and coding throughput candidate',
@@ -84,11 +87,17 @@ def status():
 
 
 def submit(action, model):
+    if action.startswith('trial_'):
+        from . import hermes_model_trials as trials
+        return trials.submit(action, model)
     if action not in ('pull', 'start') or model != MODEL:
         raise ValueError('Unknown model action')
     if not access()['ready']:
         raise RuntimeError(access()['reason'])
     with D.locked('model-management'):
+        from . import hermes_model_trials as trials
+        if (trials.read().get('job') or {}).get('state') in trials.BUSY:
+            raise RuntimeError('A model trial action is already running')
         data = _read()
         if data.get('state') in ('queued', 'downloading', 'draining', 'starting'):
             pid = data.get('pid')

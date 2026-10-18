@@ -1903,7 +1903,7 @@ async function tkProvidersWindow(e) {
         { enabled: node.checked }) : await gbox.api('/api/hermes/local/models/action',
         { action: model.dataset.tkpModel, model: model.dataset.model });
       if (!r.ok) toast(r.error || 'Could not update local task machine', 9000);
-      else toast(node ? `${node.dataset.tkpNode} ${node.checked ? 'enabled' : 'disabled'} for new task calls` : 'Model action queued on sparkDeux');
+      else toast(node ? `${node.dataset.tkpNode} ${node.checked ? 'enabled' : 'disabled'} for new task calls` : 'Model action queued on lilspark2');
     } catch (error) { toast(error.message, 9000); }
     finally { control.disabled = false; tkProvidersLoad(); }
     return;
