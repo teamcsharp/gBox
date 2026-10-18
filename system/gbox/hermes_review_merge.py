@@ -40,6 +40,8 @@ def pull(number):
 def discover():
     pulls = json.loads(gh('pr', 'list', '--repo', D.REPOSITORY, '--state', 'open', '--base', 'main',
                          '--limit', '1000', '--json', 'number,headRefOid,headRefName'))
+    if len(pulls) >= 1000:
+        raise RuntimeError('Open-PR inventory reached its limit; do not infer missing publications')
     base = gh('api', f'repos/{D.REPOSITORY}/git/ref/heads/main', '--jq', '.object.sha').strip()
     if not re.fullmatch('[0-9a-f]{40}', base):
         raise RuntimeError('Main commit discovery is incomplete')
@@ -56,10 +58,25 @@ def discover():
         key = f"pr:{p['number']}:{p['headRefOid']}:{p['baseRefOid']}"
         keys.add(key)
         R.enqueue(key, 'pr', publications.get(p['number'], ''), p)
-    with closing(R.connect()) as db, db:
-        for row in db.execute("SELECT key FROM reviews WHERE kind='pr' AND state NOT IN ('merged','superseded')"):
-            if row['key'] not in keys:
-                db.execute("UPDATE reviews SET state='superseded',updated=? WHERE key=?", (time.time(), row['key']))
+    with closing(R.connect()) as db:
+        previous = [dict(r) for r in db.execute("SELECT key,payload FROM reviews WHERE kind='pr' "
+                                                "AND state NOT IN ('merged','closed','superseded')")]
+    open_numbers = {p['number'] for p in pulls}
+    for row in previous:
+        if row['key'] in keys:
+            continue
+        expected = json.loads(row['payload'])
+        state = 'superseded'
+        if expected['number'] not in open_numbers:
+            observed = pull(expected['number'])
+            if observed.get('state') == 'MERGED' and observed.get('headRefOid') == expected['headRefOid']:
+                state = 'merged'  # Includes a merge whose successful response was lost.
+            elif observed.get('state') == 'CLOSED':
+                state = 'closed'
+            elif observed.get('state') == 'OPEN':
+                continue  # Incomplete/transient GitHub discovery is not a deletion receipt.
+        with closing(R.connect()) as db, db:
+            db.execute('UPDATE reviews SET state=?,updated=? WHERE key=?', (state, time.time(), row['key']))
 
 
 def identity(p, expected):

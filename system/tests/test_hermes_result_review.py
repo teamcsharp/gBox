@@ -320,6 +320,13 @@ class MergeReviewTests(ReviewFixture, unittest.TestCase):
             self.assertEqual(G.deliver_one(), key)
         gh.assert_not_called()
 
+    def test_discovery_recovers_lost_merge_ack_before_superseding(self):
+        key = self.seed_pr(self.good_evidence())
+        with patch.object(G, 'gh', side_effect=['[]', 'd' * 40]), \
+                patch.object(G, 'pull', return_value=self.pull | {'state': 'MERGED'}):
+            G.discover()
+        self.assertEqual(R.result(key)['state'], 'merged')
+
     def test_operator_pause_before_merge_prevents_mutation(self):
         self.seed_pr(self.good_evidence())
         with patch.object(R.M, '_job', side_effect=[{'enabled': True}, {'enabled': False}]), \

@@ -5492,18 +5492,21 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/api/requests/{rid}/messages")
     def req_message(rid: str, m: MessageIn, actor=Depends(auth)):
-        r = _req(rid)
-        entry = {"author": m.author, "text": m.text, "ts": time.time(), "attachments": _attach(rid, m.attachments)}
-        if m.task_step and m.author == "agent":
-            entry["task_step"] = {k: str(m.task_step.get(k, ""))[:4000] for k in ("action", "attempt", "result", "status")}
-        r["messages"].append(entry)
-        if m.author == "operator" and r["status"] == "done":
-            r["status"], r["completed"] = "open", None      # a follow-up reopens the request
-        elif m.author == "operator" and r["status"] == "blocked":
-            r["status"] = "open"                            # the operator answered what the agent asked
-        store.put("request", rid, r)
-        store.audit(actor, "request.message", rid, {"author": m.author, "chars": len(m.text)})
-        return _clean(r)
+        # Keep concurrent operator, worker and reviewer messages, including a
+        # status transition that uses the same store lock.
+        with store.lock:
+            r = _req(rid)
+            entry = {"author": m.author, "text": m.text, "ts": time.time(), "attachments": _attach(rid, m.attachments)}
+            if m.task_step and m.author == "agent":
+                entry["task_step"] = {k: str(m.task_step.get(k, ""))[:4000] for k in ("action", "attempt", "result", "status")}
+            r["messages"].append(entry)
+            if m.author == "operator" and r["status"] == "done":
+                r["status"], r["completed"] = "open", None
+            elif m.author == "operator" and r["status"] == "blocked":
+                r["status"] = "open"
+            store.put("request", rid, r)
+            store.audit(actor, "request.message", rid, {"author": m.author, "chars": len(m.text)})
+            return _clean(r)
 
     class IncompleteIn(BaseModel):
         explanation: str

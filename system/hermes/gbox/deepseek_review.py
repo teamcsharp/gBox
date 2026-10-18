@@ -44,8 +44,11 @@ def main():
             return {'balance': balance}
         result = call('chat/completions', {
             'model': 'deepseek-v4-pro', 'messages': packet['messages'],
-            'thinking': {'type': 'enabled'}, 'reasoning_effort': 'low',
-            'response_format': {'type': 'json_object'}, 'max_tokens': 16000 if packet.get('review_kind') == 'pr' else 8000,
+            # Reviews must produce actionable structured output within a bounded
+            # call. Explicit thinking consumed entire 16k budgets without a verdict
+            # in live preflight; ZAI supplies the separate deeper supervision lane.
+            'thinking': {'type': 'disabled'},
+            'response_format': {'type': 'json_object'}, 'max_tokens': 6000,
         })
         return {'balance': balance, 'usage': result.get('usage'),
                 'finish_reason': result['choices'][0].get('finish_reason'),
