@@ -19,6 +19,47 @@ from . import hermes_delivery
 MAX_POLICY_BYTES = 65536
 SCOPE = 'public_source_only'
 
+# Provider spelling aliases observed in Hermes providers.py; identity normalization,
+# not a restriction. Policies remain installation-specific and opt-in.
+_ALIAS_GROUPS = {'openrouter': ('openai',),
+ 'zai': ('glm', 'z-ai', 'z.ai', 'zhipu'),
+ 'xai': ('x-ai', 'x.ai', 'grok'),
+ 'xai-oauth': ('grok-oauth', 'xai-oauth', 'x-ai-oauth', 'xai-grok-oauth'),
+ 'nvidia': ('nim', 'nvidia-nim', 'build-nvidia', 'nemotron'),
+ 'kimi-for-coding': ('kimi', 'kimi-coding', 'kimi-coding-cn', 'moonshot'),
+ 'stepfun': ('step', 'stepfun-coding-plan'),
+ 'minimax-cn': ('minimax-china', 'minimax_cn'),
+ 'anthropic': ('claude', 'claude-code'),
+ 'github-copilot': ('copilot', 'github'),
+ 'copilot-acp': ('github-copilot-acp',),
+ 'openai-codex': ('chatgpt', 'chatgpt-codex'),
+ 'vercel': ('ai-gateway', 'aigateway', 'vercel-ai-gateway'),
+ 'opencode': ('opencode-zen', 'zen'),
+ 'opencode-go': ('go', 'opencode-go-sub'),
+ 'kilo': ('kilocode', 'kilo-code', 'kilo-gateway'),
+ 'deepseek': ('deep-seek',),
+ 'alibaba': ('dashscope', 'aliyun', 'qwen', 'alibaba-cloud'),
+ 'alibaba-coding-plan': ('alibaba_coding', 'alibaba-coding', 'alibaba_coding_plan'),
+ 'huggingface': ('hf', 'hugging-face', 'huggingface-hub'),
+ 'novita': ('novita-ai', 'novitaai'),
+ 'xiaomi': ('mimo', 'xiaomi-mimo'),
+ 'tencent-tokenhub': ('tencent', 'tokenhub', 'tencent-cloud', 'tencentmaas'),
+ 'tencent-tokenplan': ('tokenplan', 'tencent-lkeap'),
+ 'bedrock': ('aws', 'aws-bedrock', 'amazon-bedrock', 'amazon'),
+ 'arcee': ('arcee-ai', 'arceeai'),
+ 'gmi': ('gmi-cloud', 'gmicloud'),
+ 'fireworks': ('fireworks-ai', 'fw'),
+ 'upstage': ('solar',),
+ 'actual': ('actual-computer', 'actualcomputer', 'aci'),
+ 'nebius-token-factory': ('nebius',
+                          'nebius-tokenfactory',
+                          'nebius-tf',
+                          'token-factory',
+                          'tokenfactory'),
+ 'lmstudio': ('lmstudio', 'lm-studio', 'lm_studio'),
+ 'custom': ('ollama', 'local', 'vllm', 'llamacpp', 'llama.cpp', 'llama-cpp')}
+_ALIASES = {alias: canonical for canonical, names in _ALIAS_GROUPS.items() for alias in names}
+
 
 def path():
     return hermes_delivery.state_dir() / 'provider-scopes.json'
@@ -67,8 +108,50 @@ def read():
         if len(raw) > MAX_POLICY_BYTES:
             raise ValueError('policy size')
         return validate(json.loads(raw))
-    except (ValueError, TypeError, UnicodeError):
+    except (ValueError, TypeError, UnicodeError, RecursionError):
         return {'error': 'Provider scope policy is invalid; private backlog admission deferred'}
+
+
+def _identities(value):
+    name = str(value or '').strip().casefold().replace(' ', '-')
+    named = name.removeprefix('custom:')
+    identities = {name, named}
+    if not name.startswith('custom:'):
+        identities.add(_ALIASES.get(name, name))
+    return identities - {''}
+
+
+def _model(config):
+    raw = config.get('model') or {}
+    model = dict(raw) if isinstance(raw, dict) else {}
+    default = model.get('default') or model.get('model') or model.get('name')
+    if isinstance(default, dict):
+        model['provider'] = model.get('provider') or default.get('provider')
+    model['provider'] = model.get('provider') or config.get('provider')
+    model['base_url'] = (model.get('base_url') or model.get('api_base') or
+                         config.get('base_url') or config.get('api_base'))
+    return model
+
+
+def _endpoint(entry):
+    """Installed config_providers.py URL order, without credentials or env expansion."""
+    attempted = False
+    for key in ('base_url', 'baseUrl', 'url', 'api'):
+        value = entry.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        attempted = True
+        if '{' in value or '}' in value:
+            raise ValueError('unresolved endpoint template')
+        try:
+            parsed = urlsplit(value)
+            if parsed.scheme and parsed.hostname:
+                return value
+        except ValueError:
+            pass
+    if attempted:
+        raise ValueError('unresolved endpoint')
+    return None
 
 
 def reason(item, config, *, policy=None):
@@ -80,25 +163,62 @@ def reason(item, config, *, policy=None):
         return None
     if not isinstance(item, dict) or not isinstance(item.get('provider'), str) or not item['provider'].strip():
         return 'Provider identity is unavailable; private backlog admission deferred'
-    provider = item['provider'].strip().casefold()
-    endpoints = [item.get('base_url')]
-    for entry in config.get('custom_providers') or []:
-        if isinstance(entry, dict) and str(entry.get('name') or '').strip().casefold() == provider:
-            endpoints.append(entry.get('base_url'))
-    hosts = set()
-    for endpoint in endpoints:
-        if endpoint:
-            try:
-                host = urlsplit(str(endpoint)).hostname
-                if not host:
-                    return 'Provider endpoint identity is invalid; private backlog admission deferred'
-                hosts.add(host.casefold().rstrip('.'))
-            except ValueError:
-                return 'Provider endpoint identity is invalid; private backlog admission deferred'
+    identities = _identities(item['provider'])
     for rule in policy['rules']:
-        if provider in rule['providers'] or hosts.intersection(rule['endpoint_hosts']):
+        if any(identities.intersection(_identities(name)) for name in rule['providers']):
+            return 'Operator policy restricts this provider to public-source research; private backlog is not authorized'
+    endpoints, matched = [], False
+    try:
+        endpoint = _endpoint(item)
+        if endpoint:
+            endpoints.append(endpoint)
+        legacy = config.get('custom_providers') or []
+        providers = config.get('providers') or {}
+        if not isinstance(legacy, list) or not isinstance(providers, dict):
+            raise ValueError('invalid endpoint registry')
+        entries = [(None, e) for e in legacy] + list(providers.items())
+        for key, entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            names = _identities(key) | _identities(entry.get('name')) | _identities(entry.get('provider_key'))
+            if identities.intersection(names):
+                matched = True
+                endpoint = _endpoint(entry)
+                if not endpoint:
+                    raise ValueError('named endpoint unresolved')
+                endpoints.append(endpoint)
+        model = _model(config)
+        # Bare custom uses the configured endpoint even with cron.model_provider.
+        # Registered-provider overrides use it only for the same provider identity.
+        if ('custom' in identities or identities.intersection(_identities(model.get('provider')))):
+            endpoint = _endpoint(model)
+            if endpoint:
+                endpoints.append(endpoint)
+        if item['provider'].strip().casefold().startswith('custom:') and not matched and not endpoints:
+            raise ValueError('named endpoint unresolved')
+        if 'custom' in identities and not endpoints:
+            raise ValueError('bare custom endpoint unresolved')
+        if 'auto' in identities:
+            raise ValueError('automatic provider identity unresolved')
+        hosts = {urlsplit(url).hostname.casefold().rstrip('.') for url in endpoints}
+    except (ValueError, AttributeError, TypeError):
+        return 'Provider endpoint identity is unresolved; private backlog admission deferred'
+    for rule in policy['rules']:
+        if hosts.intersection(rule['endpoint_hosts']):
             return 'Operator policy restricts this provider to public-source research; private backlog is not authorized'
     return None
+
+
+def inherited_fallbacks(config):
+    # Installed fallback_config merges both keys, each accepting a list or dict.
+    # Preserve malformed entries for the private admission check to fail closed.
+    rows = []
+    for key in ('fallback_providers', 'fallback_model'):
+        value = config.get(key)
+        if value is None:
+            continue
+        rows.extend(value if isinstance(value, list) else [value])
+    return rows
 
 
 def admission(config, selected=None):
@@ -109,12 +229,9 @@ def admission(config, selected=None):
     """
     policy = read()
     cron = config.get('cron') or {}
-    model = config.get('model') or {}
-    model = model if isinstance(model, dict) else {}
+    model = _model(config)
     primary = {'provider': cron.get('model_provider') or model.get('provider'),
                'model': cron.get('model') or model.get('default')}
-    if not cron.get('model_provider') and model.get('base_url'):
-        primary['base_url'] = model['base_url']
     if not primary['provider'] and selected is not None:
         primary = selected
     routes = [('primary', primary)]
@@ -122,10 +239,7 @@ def admission(config, selected=None):
         effective = dict(primary)
         effective.update({k: v for k, v in selected.items() if v is not None})
         routes.append(('selected', effective))
-    fallbacks = config.get('fallback_providers') or []
-    if policy.get('rules') and not isinstance(fallbacks, list):
-        return {'route': 'fallback', 'reason': 'Inherited provider fallback identity is invalid; private backlog admission deferred'}
-    routes += [('fallback', item) for item in fallbacks]
+    routes += [('fallback', item) for item in inherited_fallbacks(config)]
     for kind, item in routes:
         why = reason(item, config, policy=policy)
         if why:

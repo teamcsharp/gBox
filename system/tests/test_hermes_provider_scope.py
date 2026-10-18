@@ -75,15 +75,15 @@ def test_hosts_match_exactly_not_by_substring_and_raw_fallback_url_is_checked():
 
 def test_selected_node_and_raw_inherited_fallback_are_checked_even_when_local_only():
     policy()
-    cfg = config('local', fallback_providers=[route()])
-    assert scope.admission(cfg, route('local'))['route'] == 'fallback'
+    cfg = config('private-node', fallback_providers=[route()])
+    assert scope.admission(cfg, route('private-node'))['route'] == 'fallback'
     assert scope.admission(config(), route())['route'] == 'selected'
-    assert scope.admission(config(), route('local')) is None
+    assert scope.admission(config(), route('private-node')) is None
 
 
 @pytest.mark.parametrize('bad', [b'{', b'[]', b'{"schema":true,"rules":[]}',
     b'{"schema":1,"rules":[{"scope":"all","providers":["zai"],"endpoint_hosts":[]}]}',
-    b'x' * (scope.MAX_POLICY_BYTES + 1)])
+    b'x' * (scope.MAX_POLICY_BYTES + 1), b'[' * 2000 + b']' * 2000])
 def test_invalid_present_policy_fails_closed_for_all_private_routes(bad):
     scope.path().write_bytes(bad)
     assert scope.admission(config()) and hermes_quota.routes(config()) == []
@@ -127,3 +127,75 @@ def test_base_url_only_pin_uses_effective_provider_but_cannot_hide_restricted_en
     assert not scope.admission(config(), {'base_url': 'https://safe.example/v1'})
     assert scope.admission({'model': {'provider': 'zai', 'default': 'glm'}})
     assert scope.admission(config(), {'provider': 'alias', 'base_url': 'invalid-relative-url'})
+
+
+@pytest.mark.parametrize('provider', ['glm', 'z-ai', 'Z.AI', 'zhipu'])
+def test_installed_builtin_provider_aliases_obey_generic_name_policy(provider):
+    policy()
+    assert scope.admission(config(provider))
+    assert hermes_quota.routes(config(provider)) == []
+
+
+@pytest.mark.parametrize('provider', ['named-endpoint', 'custom:named-endpoint', 'Custom:Named Endpoint'])
+@pytest.mark.parametrize('shape', ['legacy', 'mapping_key', 'mapping_name'])
+@pytest.mark.parametrize('url_key', ['base_url', 'baseUrl', 'url', 'api'])
+def test_actual_named_custom_runtime_forms_cannot_escape_endpoint_policy(provider, shape, url_key):
+    scope.restrict([], ['api.z.ai'], apply=True)
+    entry = {url_key: 'https://API.Z.AI/v1', 'api_key': 'never-expose'}
+    cfg = config(provider)
+    if shape == 'legacy': cfg['custom_providers'] = [entry | {'name': 'Named Endpoint'}]
+    elif shape == 'mapping_key': cfg['providers'] = {'named-endpoint': entry}
+    else: cfg['providers'] = {'other-key': entry | {'name': 'Named Endpoint'}}
+    assert scope.admission(cfg) and not hermes_quota.routes(cfg)
+    assert 'never-expose' not in json.dumps(scope.admission(cfg))
+
+
+@pytest.mark.parametrize('provider', ['custom', 'openrouter', 'custom:alias'])
+def test_model_endpoint_override_is_checked_with_explicit_cron_provider(provider):
+    scope.restrict([], ['api.z.ai'], apply=True)
+    cfg = config(provider, model={'provider': provider, 'base_url': 'https://api.z.ai/v1'})
+    assert scope.admission(cfg)
+    assert not hermes_quota.routes(cfg)
+
+
+def test_stale_foreign_model_endpoint_does_not_reclassify_known_route():
+    scope.restrict([], ['api.z.ai'], apply=True)
+    cfg = config('nous', model={'provider': 'openrouter', 'base_url': 'https://api.z.ai/v1'})
+    assert scope.admission(cfg) is None
+
+
+@pytest.mark.parametrize('model', [
+    {'provider': 'custom', 'api_base': 'https://api.z.ai/v1'},
+    {'default': {'provider': 'custom', 'model': 'glm'}, 'base_url': 'https://api.z.ai/v1'}])
+def test_raw_model_alias_normalization_matches_runtime_without_loading_credentials(model):
+    scope.restrict([], ['api.z.ai'], apply=True)
+    assert scope.admission({'model': model})
+    assert scope.admission({'provider': 'custom', 'api_base': 'https://api.z.ai/v1'})
+
+
+@pytest.mark.parametrize('provider,extra', [
+    ('custom', {}), ('auto', {}), ('custom:missing', {}),
+    ('custom:alias', {'providers': {'alias': {'api': 'https://${PROVIDER_HOST}/v1'}}}),
+    ('custom', {'model': {'base_url': '${PROVIDER_URL}'}}),
+])
+def test_unresolved_runtime_endpoint_identity_defers_private_work(provider, extra):
+    policy()
+    assert 'unresolved' in scope.admission(config(provider, **extra))['reason']
+
+
+@pytest.mark.parametrize('provider', ['route-x', 'custom:route-x'])
+def test_legacy_provider_key_alias_has_the_same_endpoint_restriction(provider):
+    scope.restrict([], ['api.z.ai'], apply=True)
+    cfg = config(provider, custom_providers=[{'name': 'Research', 'provider_key': 'route-x',
+                                             'base_url': 'https://api.z.ai/v1'}])
+    assert scope.admission(cfg) and not hermes_quota.routes(cfg)
+
+
+@pytest.mark.parametrize('key', ['fallback_model', 'fallback_providers'])
+@pytest.mark.parametrize('as_list', [False, True])
+def test_legacy_and_current_fallback_dictionary_or_list_cannot_bypass_scope(key, as_list):
+    policy()
+    entry = {'provider': 'custom:legacy', 'model': 'glm'}
+    cfg = config(**{key: [entry] if as_list else entry}, providers={'legacy': {'api': 'https://api.z.ai/v1'}})
+    assert scope.admission(cfg)['route'] == 'fallback'
+    assert hermes_quota.routes(cfg) == [route('nous')]

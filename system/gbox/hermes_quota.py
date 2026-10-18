@@ -43,10 +43,10 @@ def excluded_providers():
 
 
 def routes(config, saved=(), *, include_restricted=False):
+    from . import hermes_provider_scope as scope
     cron = config.get('cron') or {}
     candidates = [{'provider': cron.get('model_provider'), 'model': cron.get('model')},
-                  *(config.get('fallback_providers') or []), *saved]
-    from . import hermes_provider_scope as scope
+                  *scope.inherited_fallbacks(config), *saved]
     policy = scope.read()
     skip = excluded_providers()
     result = []

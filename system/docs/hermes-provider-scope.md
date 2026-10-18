@@ -51,8 +51,16 @@ Example policy:
 ```
 
 Names and hosts match case-insensitively. Hosts are obtained with URL parsing
-from explicit route endpoints and matching `custom_providers` entries, including
-aliases. Host matching is exact, with an optional trailing DNS dot normalized;
+from explicit route endpoints and matching `custom_providers`/`providers`
+entries, including `custom:<name>`, display-name and legacy provider-key aliases.
+The bounded resolver also covers installed built-in spelling aliases and
+matching-provider `model.base_url`/`api_base` overrides, including bare `custom`
+with an explicit cron provider. An automatic route, unresolved custom endpoint
+or environment template defers admission; no credentials are resolved to guess
+its identity. The installed scheduler has per-job `base_url`, but no independent
+`cron.base_url` override. Normalization derives from the installed Hermes
+`d923a5eb487a17c0a68801bba9ef0f56c81040a8` source; exact file hashes are in the
+review receipt `hermes-provider-scope-runtime-shapes.json`. Host matching is exact, with an optional trailing DNS dot normalized;
 it does not treat `api.z.ai.evil.example` as `api.z.ai`. Unknown upstream routing
 behind an otherwise unrelated proxy is not inferred. Operator policy should
 also name such a proxy explicitly if it forwards to the restricted provider.
@@ -67,9 +75,12 @@ safe `provider_scope_reason` containing no endpoint credentials.
 
 New queue work, checkpoint recovery, direct incident dispatch/retries, legacy
 agent-controller resume and availability-triggered resume check the actual inherited primary
-and raw fallback list. A stale restricted fallback blocks admission even if the
+and raw fallback lists, including the installed legacy `fallback_model` key
+and dictionary form. A stale restricted fallback blocks admission even if the
 filtered route list looks safe. The existing supervisor can remove it at its
-normal safe route-change boundary; this policy does not interrupt active runs.
+normal safe route-change boundary; a restricted legacy `fallback_model` entry
+also remains an explicit admission blocker until the operator removes or
+updates that legacy field. This policy does not interrupt active runs.
 A fresh policy/config check immediately before a create/resume protects against
 changes during queue selection. It is a bounded admission check, not an atomic
 transaction with an external scheduler or simultaneous operator config writes.
