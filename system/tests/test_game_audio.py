@@ -215,6 +215,7 @@ def test_retroarch_restarts_with_wasapi_when_xaudio_stalls(tmp_path, monkeypatch
             return {"running": True, "state": "PLAYING", "content": "dreamcast,doa2,crc32=0"}
         raise RuntimeError("retroarch did not answer GET_STATUS")
     monkeypatch.setattr(ad, "query_runtime", status)
+    monkeypatch.setattr(ad, "_owns_command_port", lambda: True)       # this fake process represents the owned listener
     rom = tmp_path / "doa2.chd"
     rom.write_bytes(b"chd")
     t = time.monotonic()

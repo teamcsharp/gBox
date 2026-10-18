@@ -29,6 +29,7 @@ def launch(monkeypatch, tmp_path, outcomes, *, foreign_status=False, configured=
     monkeypatch.setattr(ad, '_argv', lambda rom: ['retroarch', *(['--config',str(ad._write_cfg())] if configured else []),
                                                '-L','flycast',rom])
     launches = []; killed = []; closed = []; queried = []
+    monkeypatch.setattr(ad,'_owns_command_port',lambda:True)  # fake launch owns its simulated listener
     ad.display = SimpleNamespace(name='owned-display', close=lambda:closed.append(True))
     def popen(_ad, argv, **kw):
         text = Path(argv[argv.index('--config')+1]).read_text() if '--config' in argv else ''
@@ -132,3 +133,54 @@ def test_rebind_preserves_an_unrelated_udp_listener():
             sender.sendto(b'peer remains alive',peer.getsockname())
         peer.settimeout(1)
         assert peer.recv(100)==b'peer remains alive'
+
+
+@pytest.mark.parametrize('initial_log',['','[INFO] [Core] Loading dynamic libretro core\n'])
+def test_delayed_bind_failure_cannot_accept_an_early_peer_reply(monkeypatch,tmp_path,initial_log):
+    ad,attempts,killed,closed,queried=launch(monkeypatch,tmp_path,['netcmd','ready'],foreign_status=True)
+    original=adapters._popen
+    def popen(*a,**kw):
+        proc=original(*a,**kw)
+        if len(attempts)==1:ad.log_path.write_text(initial_log)
+        return proc
+    monkeypatch.setattr(adapters,'_popen',popen)
+    def query(timeout):
+        queried.append(ad.addr[1])
+        if len(attempts)==1:ad.log_path.write_text(log('netcmd_bind_failed.log'))
+        return {'state':'PLAYING','content':'unrelated peer' if len(attempts)==1 else 'owned game'}
+    monkeypatch.setattr(ad,'query_runtime',query)
+    monkeypatch.setattr(ad,'_owns_command_port',lambda:len(attempts)>1)
+    out=ad.launch_game('owned.chd')
+    assert len(attempts)==2 and queried==[a['port'] for a in attempts]
+    assert out['status']['content']=='owned game'
+    assert killed==[attempts[0]['proc']] and attempts[1]['proc'].alive
+
+
+@pytest.mark.parametrize('api_name',['connections','net_connections'])
+def test_owned_port_requires_exact_pid_port_and_local_address(monkeypatch,api_name):
+    import psutil
+    ad=adapters.RetroArchAdapter(EmulatorConfig(core='x'),port=50123)
+    ad.proc=SimpleNamespace(pid=7654,poll=lambda:None)
+    calls=[];rows=[]
+    def process(pid):
+        calls.append(pid)
+        return SimpleNamespace(**{api_name:lambda kind:rows})
+    monkeypatch.setattr(psutil,'Process',process)
+    assert not ad._owns_command_port()
+    rows.append(SimpleNamespace(laddr=SimpleNamespace(ip='127.0.0.1',port=50124)))
+    rows.append(SimpleNamespace(laddr=SimpleNamespace(ip='127.0.0.2',port=50123)))
+    assert not ad._owns_command_port()
+    rows.append(SimpleNamespace(laddr=SimpleNamespace(ip='0.0.0.0',port=50123)))
+    assert ad._owns_command_port() and set(calls)=={7654}
+
+
+def test_denied_socket_ownership_never_counts_as_ready(monkeypatch,tmp_path):
+    import psutil
+    ad,attempts,killed,closed,queried=launch(monkeypatch,tmp_path,['ready'],foreign_status=True)
+    monkeypatch.setattr(ad,'_owns_command_port',lambda:adapters.RetroArchAdapter._owns_command_port(ad))
+    def denied(pid):raise psutil.AccessDenied(pid)
+    monkeypatch.setattr(psutil,'Process',denied)
+    ad.boot_timeout_s=.03
+    with pytest.raises(RuntimeError,match='binding could not be verified for the owned process'):
+        ad.launch_game('owned.chd')
+    assert len(attempts)==1 and not attempts[0]['proc'].alive and closed

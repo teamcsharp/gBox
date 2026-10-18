@@ -1483,6 +1483,24 @@ class RetroArchAdapter(CommandAdapter):
                                  "report_s": round(time.monotonic() - boot_finished, 3)}
         return out
 
+    def _owns_command_port(self) -> bool:
+        """Windows launches own their direct Popen PID, not a UDP reply's sender.
+        Windows bootstrap installs psutil>=5.9; support both its old and new API
+        names. Missing permissions/process/API evidence never confirms ownership.
+        """
+        try:
+            import psutil
+        except ImportError:
+            return False
+        try:
+            process = psutil.Process(self.proc.pid)
+            connections = getattr(process, "net_connections", None) or process.connections
+            return self.proc.poll() is None and any(
+                c.laddr and c.laddr.port == self.addr[1] and c.laddr.ip in (self.addr[0], "0.0.0.0")
+                for c in connections(kind="udp4"))
+        except (psutil.Error, OSError, AttributeError):
+            return False
+
     def _wait_boot(self, watch) -> tuple[str, dict | None]:
         """Poll until ready, audio fallback, a command-port bind failure, or a terminal failure.
         The deadline is the watch's: content loaded with audio still opening waits longer instead of failing."""
@@ -1514,10 +1532,15 @@ class RetroArchAdapter(CommandAdapter):
                 running = st.get("state") in ("PLAYING", "PAUSED")
             except RuntimeError:
                 pass
+            unowned_reply = running and HOST_OS == "windows" and not self._owns_command_port()
+            if unowned_reply:
+                running = False
             verdict = watch.decide(time.monotonic(), running)
             if verdict in ("ready", "fallback", "netcmd"):
                 return verdict, st
             if verdict == "fail":
+                if unowned_reply:
+                    watch.reason = "the network command interface binding could not be verified for the owned process"
                 tail = self.log_tail()
                 self.stop_game()
                 raise RuntimeError(f"retroarch started but {watch.reason}: {tail}")
