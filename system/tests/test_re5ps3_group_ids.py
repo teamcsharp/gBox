@@ -88,7 +88,7 @@ def test_owned_sparse_groups_export_all_lods_without_relabeling_or_source_mutati
 
 
 @pytest.mark.parametrize('name,member,error', [
-    ('uPl02JillCos1.arc', r'pawn\pl\pl02\model\Pl0200', 'mesh vertex range or stride'),
+    ('uPl02JillCos1.arc', r'pawn\pl\pl02\model\Pl0200', 'MOD UVs has a non-finite'),
     ('uPl03WeskerCos1.arc', r'pawn\pl\pl15\model\pl1500', 'MOD UVs has a non-finite'),
     ('uPl05ExcellaNormal.arc', r'pawn\pl\pl1e\model\pl1e00', 'MOD UVs has a non-finite'),
     ('uPl86Irving.arc', r'pawn\em\em86\model\em8600', 'material vertex/shader declaration'),

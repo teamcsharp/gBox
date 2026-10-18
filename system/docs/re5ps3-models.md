@@ -125,10 +125,38 @@ The seven-pack census and source/resource hashes are retained in
 to original request1885. Set `GBOX_RE5_EVIDENCE` to that evidence root for
 `test_re5ps3_group_ids.py`. No new semantic roles, collection entries or writer
 targets are inferred from these exports. Other observed failures remain strict:
-Jill's differing vertex range, referenced non-finite UVs in Jill/Wesker/Excella,
+Referenced non-finite UVs in Jill/Wesker/Excella,
 Irving's vertex-type4 declaration, and zero-bone effect MODs require separate
 format evidence. The group-ID correction does not invent replacement UV values
 or broaden supported vertex types.
+
+## Allocated and referenced vertex ranges
+
+The mesh's `vertexStart` and `numVertices` describe its allocation; `startIndex`
+and `endIndex` bound the strip's referenced vertices inside that allocation.
+The reader retains every allocated vertex, rebases non-restart indices by
+`vertexStart`, and requires `vertexStart <= startIndex <= endIndex <
+vertexStart + numVertices`. Both vertex streams must contain the complete
+allocation, and every non-restart strip index must stay inside the declared
+referenced range. Unsupported strides and nonzero index-value offsets remain
+rejected. This follows the pinned [RevilLib span/index interpretation](https://github.com/PredatorCZ/RevilLib/blob/e17f9718ea571f040a7e1f331c28a4d45a6066b5/src/mtf_mod/common.cpp#L365).
+
+Owned `uPl02JillCos1.arc` SHA-256
+`91dcabf061cf6c164114609d16c5b141aed2ced044cef8a0ffe7c97903dcf585`
+contains `pawn\pl\pl02\model\Pl0200`, MOD SHA-256
+`3371880dc7c213b4604bb73e3c2cc51dde6798ed6655a65128e8c90a105dc5fb`.
+Its mesh 13 allocates 208 vertices at 5418, while its actual strip references
+5420 through 5625. The two unused prefix vertices are retained. Independently
+cropping to the referenced range and rebasing by 5420 produces the same triangle
+positions, normals, UVs and skin weights. Synthetic regressions also cover
+unused suffix vertices, restart markers, nonzero stream offsets, four/eight
+weights, secondary-stream bounds, and malformed declared/referenced ranges.
+
+This corrects one reader error. The unchanged owned Jill model still fails at
+mesh 96's referenced non-finite UVs and creates no GLB. No UV values are invented,
+no new writer/collection target is registered, and no native gameplay or
+full-cast acceptance is implied. `test_re5ps3_vertex_ranges.py` checks that
+remaining rejection against the exact owned pack without modifying it.
 
 ## What remains for the requested modified export
 
