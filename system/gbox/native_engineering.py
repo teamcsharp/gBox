@@ -36,11 +36,13 @@ TITLE_WORK = {
         'command': 'python -m gbox.re5ps3_arc OWNED_CHARACTER.arc --out NEW_MANIFEST.json',
         'model_reader': 'gbox.re5ps3_models',
         'model_command': r"python -m gbox.re5ps3_models OWNED_CHRIS.arc --model 'pawn\pl\pl00\model\pl0000' --lod 1 --out NEW_CHRIS.glb",
-        'validated_scope': 'PS3 ARC v8 reader/writer verified with all 151 Chris/Sheva pack resources; bounded MOD 156 revision 1 / TEX 102 reader exports textured rigged bind-pose GLBs at LOD masks 1/2/4; Chris/Sheva normal models are registered through gbox.re5ps3_collection for exact-build normal character collection from the owned folder/7z; two-target partial coverage, editable targets for Sonic/Mario fitting, with numeric joint IDs/native animation maps and 18 exact-source body anchors verified by controlled offline Blender skin poses; changed or unknown native MOD hashes get no semantic role map; motion/gameplay compatibility is unverified; bounded fixed-layout MOD vertex and same-size TEX writer with exact owned ARC readback; transactional multi-resource geometry/texture outputs from the immutable original ARC, no arbitrary donor topology, full-cast replacement or gameplay acceptance; existing re5 save unlock code is not gameplay-verified',
+        'validated_scope': 'PS3 ARC v8 reader/writer verified with all 151 Chris/Sheva pack resources; bounded MOD 156 revision 1 / TEX 102 reader exports textured rigged bind-pose GLBs at LOD masks 1/2/4; Chris/Sheva normal models are registered through gbox.re5ps3_collection for exact-build normal character collection from the owned folder/7z; two-target partial coverage, editable targets for Sonic/Mario fitting, with numeric joint IDs/native animation maps and 18 exact-source body anchors verified by controlled offline Blender skin poses; changed or unknown native MOD hashes get no semantic role map; motion/gameplay compatibility is unverified; bounded fixed-layout MOD vertex and same-size TEX writer with exact owned ARC readback; transactional multi-resource geometry/texture outputs from the immutable original ARC; experimental exact-donor Sonic (blue library texture, not super-yellow) and Peach complete-body draw lists can be fitted to Chris/Sheva normal packs with source weights and native skeleton preserved; offline readback and controlled pose evidence only, no arbitrary donor topology, full-cast replacement or gameplay acceptance; existing re5 save unlock code is not gameplay-verified',
         'collection_command': 'characters op=collect game_id=e7ca89bbeb67360d',
         'native_write_command': r"python -m gbox.re5ps3_write OWNED_CHRIS.arc --member 'pawn\pl\pl00\model\pl0000' --expected-sha256 51df8884b6a114101356e19fcc608b69c196e7c0cd56c626a3f7660aeb99d867 --geometry-glb EDITED_CHRIS.glb --out NEW_CHRIS.arc",
         'native_multi_write_command': 'python -m gbox.re5ps3_write OWNED_CHRIS.arc --expected-sha256 51df8884b6a114101356e19fcc608b69c196e7c0cd56c626a3f7660aeb99d867 --edits-json edits.json --out NEW_CHRIS.arc',
-        'separate_work': ['expand the bounded MOD/TEX writer to combined edits, arbitrary donor topology and proven engine bounds/tangents; semantic bone-role proof and Sonic/Mario retargeting across players, NPCs, enemies and cutscenes',
+        'native_fit_command': 'python -m gbox.re5ps3_fit OWNED_CHRIS.arc --donor-glb EXACT_SONIC.glb --expected-sha256 51df8884b6a114101356e19fcc608b69c196e7c0cd56c626a3f7660aeb99d867 --out NEW_CHRIS.arc',
+        'native_fit_scope': 'docs/re5ps3-fitting.md: exact owned donor hashes only; experimental one-body draw list at all LODs; ground/foot gap and every mapped source weight checked; native shader, motion, culling and gameplay unverified; never install or claim full cast from offline proof',
+        'separate_work': ['validate experimental native envelopes, runtime groups/materials, motion, culling and camera behavior; expand verified donor fitting across other costumes, NPCs, enemies and cutscenes',
                           'confirm every unlock category including Mercenaries/Reunion roster and stages',
                           'PS3-specific live inventory/equip routines and sidebar integration',
                           'complete folder-game mod/export with isolated save overlay and runtime acceptance'],
@@ -142,6 +144,9 @@ def prompt(game_id, *, stage='inventory', fingerprint=None):
             lines.append('Bounded native asset writer: ' + title['native_write_command'])
         if title.get('native_multi_write_command'):
             lines.append('Transactional native asset batch: ' + title['native_multi_write_command'])
+        if title.get('native_fit_command'):
+            lines.append('Experimental exact-donor fitting: ' + title['native_fit_command'])
+            lines.append('Experimental fitting scope: ' + title['native_fit_scope'])
         lines.append('Still required: ' + '; '.join(title['separate_work']))
     if packet['start_from']:
         lines.append('Candidate module (verify compatibility): ' + str(packet['start_from']))

@@ -97,3 +97,25 @@ def test_re5_reader_handoff_exposes_model_cli_without_writer_acceptance(monkeypa
     assert 'no arbitrary donor topology, full-cast replacement or gameplay acceptance' in prompt
     assert title['collection_command'] in prompt
     assert 'two-target partial coverage' in prompt and 'exact-build normal character collection' in prompt
+
+
+def test_re5_worker_handoff_exposes_bounded_fitting_cli_and_actual_options(capsys):
+    import importlib
+    import shlex
+    import pytest
+    title = engineering.plan('e7ca89bbeb67360d', stage='writer')['title_work']
+    prompt = engineering.prompt('e7ca89bbeb67360d', stage='writer')
+    assert title['native_fit_command'] in prompt and title['native_fit_scope'] in prompt
+    command = shlex.split(title['native_fit_command'])
+    assert command[:3] == ['python', '-m', 'gbox.re5ps3_fit']
+    assert command[command.index('--donor-glb') + 1] == 'EXACT_SONIC.glb'
+    module = importlib.import_module(command[2])
+    with pytest.raises(SystemExit) as stopped:
+        module.main(['--help'])
+    assert stopped.value.code == 0
+    help_text = capsys.readouterr().out
+    assert all(option in help_text for option in ('--donor-glb', '--expected-sha256', '--out'))
+    assert 'exact owned donor hashes only' in prompt and 'not super-yellow' in prompt
+    assert 'motion, culling and gameplay unverified' in prompt
+    assert 'other costumes, NPCs, enemies and cutscenes' in prompt
+    assert 'Experimental exact-donor fitting:' not in engineering.prompt('a' * 16)

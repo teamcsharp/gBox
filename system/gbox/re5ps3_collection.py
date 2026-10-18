@@ -44,9 +44,9 @@ def collection_scope():
             'native_formats': ['PS3 ARC v8', 'MOD 156 revision 1', 'TEX 102'],
             'lod_mask': 1, 'textures': 'diffuse only', 'semantic_roles': '18 exact-source offline body anchors',
             'native_model_writer': False, 'gameplay_verified': False,
-            'native_asset_writer': 'transactional fixed-layout MOD/TEX edits only',
+            'native_asset_writer': 'transactional fixed-layout MOD/TEX edits; experimental exact two-donor body fitting via gbox.re5ps3_fit',
             'pending': ['other costumes, NPCs, enemies and cutscenes', 'native animations and motion compatibility',
-                        'arbitrary donor topology and Sonic/Mario fitting', 'unlock and live inventory/equip validation']}
+                        'native gameplay acceptance and expansion beyond two exact offline donor fits', 'unlock and live inventory/equip validation']}
 
 
 def needs_refresh(meta):
