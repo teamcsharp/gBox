@@ -138,6 +138,12 @@ class Model:
         occupied.sort()
         if any(a[1] > b[0] for a, b in zip(occupied, occupied[1:])):
             raise ValueError('overlapping MOD section extents')
+        # Mesh group fields name the stored native IDs, not positions in this
+        # table. Owned player models use sparse IDs (for example 0, 4, 5).
+        self.group_ids = tuple(struct.unpack_from('>I', data, groups + i * 32)[0] for i in range(ng))
+        group_ids = set(self.group_ids)
+        if len(group_ids) != ng:
+            raise ValueError('duplicate MOD group IDs')
         self.bbox_min = np.array(struct.unpack_from('>3f', data, 96))
         self.bbox_max = np.array(struct.unpack_from('>3f', data, 112))
         finite([self.bbox_min, self.bbox_max], 'MOD bounds')
@@ -232,7 +238,7 @@ class Model:
             # Packed 32-bit skinInfo is byte-reversed on PS3, unlike the PC
             # declaration's separate byte fields.
             palette = data[at + 46]
-            if material >= nmat or group >= ng or palette >= npal or not count or visible not in (0, 1):
+            if material >= nmat or group not in group_ids or palette >= npal or not count or visible not in (0, 1):
                 raise ValueError('MOD mesh references absent material/group/palette')
             if stride != 32 or stride2 not in (0, 4, 8) or minimum != start or base != 0 or maximum - minimum + 1 != count:
                 raise ValueError('unsupported MOD mesh vertex range or stride')

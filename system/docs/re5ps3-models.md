@@ -111,6 +111,25 @@ Set `GBOX_RE5_EVIDENCE` to the local audit evidence root containing the extracte
 `GBOX_RE5PS3_ARCS` pointing directly to the folder with the two character ARCs.
 No copyrighted model/texture data is committed.
 
+## Sparse native group IDs
+
+Mesh group fields refer to the 32-bit IDs stored in the native 32-byte group
+records. They are not ordinal positions in that table. The reader preserves
+the ID in mesh/GLB metadata, rejects IDs absent from the table, and rejects
+duplicate table IDs. This corrects a reader failure on owned Josh (`0,1,3,5,20`),
+Barry (`0,4,5`) and Rebecca (`0,8,9,10,11`) packs; all three now export at LOD
+masks 1, 2 and 4 with their original numeric skeletons and source identities.
+
+The seven-pack census and source/resource hashes are retained in
+`re-export-evidence/re5-expanded-cast-v1/engineering-handoff.json` and attached
+to original request1885. Set `GBOX_RE5_EVIDENCE` to that evidence root for
+`test_re5ps3_group_ids.py`. No new semantic roles, collection entries or writer
+targets are inferred from these exports. Other observed failures remain strict:
+Jill's differing vertex range, referenced non-finite UVs in Jill/Wesker/Excella,
+Irving's vertex-type4 declaration, and zero-bone effect MODs require separate
+format evidence. The group-ID correction does not invent replacement UV values
+or broaden supported vertex types.
+
 ## What remains for the requested modified export
 
 This reader supplies editable native targets for fitting the user's randomly
