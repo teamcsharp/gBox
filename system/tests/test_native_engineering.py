@@ -128,3 +128,25 @@ def test_re2_worker_prompt_exposes_read_only_save_inspection_without_unlock_clai
     assert 'Award bits do not create playable HUNK/Tofu/Extreme Battle saves.' in text
     assert 'No save writer, native gameplay acceptance or complete-unlock claim.' in text
     assert 'docs/re2gc-save.md' in text
+
+
+def test_re5_worker_handoff_exposes_shader_evidence_without_uv_repair(capsys):
+    import importlib
+    import shlex
+    import pytest
+    title = engineering.plan('e7ca89bbeb67360d', stage='analysis')['title_work']
+    text = engineering.prompt('e7ca89bbeb67360d', stage='analysis')
+    assert title['shader_command'] in text and title['shader_scope'] in text
+    command = shlex.split(title['shader_command'])
+    assert command[:3] == ['python', '-m', title['shader_reader']]
+    assert command.count('--material') == 3
+    reader = importlib.import_module(command[2])
+    with pytest.raises(SystemExit) as stopped:
+        reader.main(['--help'])
+    assert stopped.value.code == 0
+    help_text = capsys.readouterr().out
+    assert '--material' in help_text and '--out' in help_text
+    assert 'no NaN UV repair, full-cast export or gameplay acceptance' in text
+    assert 'runtime reachability and vertex/texture binding are unverified' in text
+    assert 'native ELF vertex-buffer assembly offline' in text
+    assert 'Read-only shader evidence:' not in engineering.prompt('c6adbfa00c20aaf9')
