@@ -180,3 +180,35 @@ def test_policy_revocation_between_chunks_closes_stream(monkeypatch):
     monkeypatch.setattr(O,'authorization',auth)
     with pytest.raises(ToolUnavailable,match='Gaming mode'):O.analyze(O.AssistIn(prompt='code'),ctx)
     assert p and not a and not O.LOCK.locked()
+
+
+@pytest.mark.parametrize('payload', [
+    {}, {'op': 'analyze'}, {'prompt': ''}, {'prompt': ' \n\t'},
+    {'op': 'unknown', 'prompt': 'evidence'},
+])
+def test_invalid_evidence_is_rejected_before_queueing(cfg, payload):
+    from gbox.server import create_app
+    app = create_app(cfg)
+    client = TestClient(app, headers={'Authorization': f'Bearer {cfg.token()}'})
+    before = list(app.state.store.all('job'))
+    response = client.post('/api/jobs', json={'tool': 'ollama_assist', 'input': payload,
+                                            'agent_use': True})
+    assert response.status_code == 422, response.text
+    assert 'evidence prompt' in response.json()['detail']
+    assert list(app.state.store.all('job')) == before
+
+
+@pytest.mark.parametrize('payload', [
+    {'op': 'status'}, {'op': 'analyze', 'prompt': ' int f(){return 1;} '},
+    {'prompt': 'int f(){return 1;}'},
+])
+def test_status_and_nonempty_evidence_are_still_accepted(cfg, payload):
+    from gbox.server import create_app
+    app = create_app(cfg)
+    client = TestClient(app, headers={'Authorization': f'Bearer {cfg.token()}'})
+    response = client.post('/api/jobs', json={'tool': 'ollama_assist', 'input': payload,
+                                            'agent_use': True})
+    assert response.status_code == 200, response.text
+    row = app.state.store.get('job', response.json()['id'])
+    assert row['state'] == 'queued'
+    assert row['input']['prompt'] == payload.get('prompt', '')
