@@ -19,6 +19,8 @@ TITLE_WORK = {
         'command': 'python -m gbox.re2gc_native OWNED_GCZ --out NEW_MANIFEST.json',
         'model_reader': 'gbox.re2gc_models',
         'state_reader': 'gbox.re2gc_state',
+        'save_command': 'python -m gbox.re2gc_save --dol OWNED_main.dol --rel OWNED_scenario.rel COPIED_SAVE.gci',
+        'save_scope': 'Read-only exact-build GCI checksum, saved-mode dispatch and progression award records. Award bits do not create playable HUNK/Tofu/Extreme Battle saves. No save writer, native gameplay acceptance or complete-unlock claim. See docs/re2gc-save.md.',
         'state_command': 'python -m gbox.re2gc_state --dol OWNED_main.dol --rel OWNED_scenario.rel --snapshot CAPTURE.mem1 --out NEW_STATE.json',
         'state_scope': 'Exact Leon/Claire sources; source-attested read-only MEM1 inventory/equipment decoder and corrected Ghidra analysis images. No live writes or verified unlock profile. See docs/re2gc-state.md.',
         'model_command': 'python -m gbox.re2gc_models OWNED_PLAYER.pld --out NEW_MODEL.glb',
@@ -132,6 +134,10 @@ def prompt(game_id, *, stage='inventory', fingerprint=None):
                   title['identity_warning'], 'Validated engineering scope: ' + title['validated_scope']]
         if title.get('command'):
             lines.append('Native source inventory: ' + title['command'])
+        if title.get('save_command'):
+            lines.append('Read-only save inspection: ' + title['save_command'])
+        if title.get('save_scope'):
+            lines.append('Save inspection scope: ' + title['save_scope'])
         if title.get('state_command'):
             lines.append('State engineering command: ' + title['state_command'])
         if title.get('state_scope'):
