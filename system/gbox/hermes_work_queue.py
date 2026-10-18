@@ -207,6 +207,8 @@ def reconcile(data, jobs, latest, active, *, now):
         if _stamp(run['started_at']) < item.get('last_dispatched', 0) - 2:
             continue  # Old history cannot settle a newer queued occurrence.
         _preserve_report(item, run)
+        from . import hermes_result_review
+        hermes_result_review.record_result(item, run)
         if run['id'] == item.get('last_run_id'):
             continue
         item.update(last_run_id=run['id'], dispatch_state='finished', last_finished=now)
@@ -234,6 +236,10 @@ def candidates(data, requests, native, owned, on_main, *, now):
                 or item.get('request_uncertain') or item.get('dispatch_state') in ('queued', 'uncertain')):
             continue
         req = by_id.get(rid, {})
+        from . import hermes_result_review
+        item['review_hold'] = hermes_result_review.gate(item)
+        if item['review_hold']:
+            continue
         if item['lane'] == 'favorite':
             # a recently played title the Sonic showcase found without a writer (ensure_item) is worked like a favorite
             if (not (item.get('favorite') or item.get('showcase')) or not item.get('in_catalog')
@@ -360,6 +366,11 @@ def _prompt(item, playing=None):
     header = (f"Assigned queue task: request #{item['number']} ({rid}). Work ONLY this request; "
               "the dispatcher has reserved it. Read get_request and get_dispatch_feedback first. "
               "Do not select a different ticket from list_requests. ")
+    if item.get('review_guidance'):
+        header += ('Previous result review (guidance to verify against current evidence): '
+                   + json.dumps(item['review_guidance'])
+                   + '\nResolve the diagnosed cause and run its focused verification before retrying. '
+                   'Preserve the previous work and pending job IDs; do not repeat the same failed action. ')
     header += ('For game-build changes, keep supplying reviewed native inspection plans through the '
                'inspection_builds tool: op=plan for request revisions and reports, then implement the change and '
                'op=publish a launch:false cast_swap recipe with change_id, relevant writer dependencies, '
@@ -573,6 +584,7 @@ def tick(*, now=None):
                          if c.get('busy') and c.get('id') in chat_ids)
         native = _native_jobs()
         options = candidates(data, requests, native, owned, _on_main(), now=now)
+        _save(data)  # Preserve review holds/guidance even when there are no free slots.
         # Both gates apply and the stricter wins: the operator's game on the Spark defers emulator-launching items
         # and caps dispatch at 1 (docs/stream-stability.md); the local route allows only small tasks, one at a time
         # (and returned above while the operator plays, through the proxy's gate).
