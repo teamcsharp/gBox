@@ -240,11 +240,15 @@ class Model:
             palette = data[at + 46]
             if material >= nmat or group not in group_ids or palette >= npal or not count or visible not in (0, 1):
                 raise ValueError('MOD mesh references absent material/group/palette')
-            if stride != 32 or stride2 not in (0, 4, 8) or minimum != start or base != 0 or maximum - minimum + 1 != count:
+            # The allocation starts at vertexStart; min/max bound the strip's
+            # referenced vertices. Jill mesh 13 leaves two allocated prefix
+            # vertices unused. Keep the whole allocation and rebase by start.
+            if (stride != 32 or stride2 not in (0, 4, 8) or base != 0
+                    or not start <= minimum <= maximum < start + count):
                 raise ValueError('unsupported MOD mesh vertex range or stride')
             if first + ni > self.header['index_count']:
                 raise ValueError('MOD mesh indices outside index section')
-            if off + (minimum + count) * stride > size_v:
+            if off + (start + count) * stride > size_v:
                 raise ValueError('MOD mesh vertices outside vertex section')
             if stride2:
                 if off2 + (start + count) * stride2 > size_v2:
@@ -253,8 +257,8 @@ class Model:
             valid = idx != 65535
             if np.any(idx[valid] < minimum) or np.any(idx[valid] > maximum):
                 raise ValueError('MOD strip index outside mesh vertices')
-            idx[valid] -= minimum
-            raw = np.frombuffer(data, dtype=np.uint8, count=count * stride, offset=vertices + off + minimum * stride).reshape(count, stride)
+            idx[valid] -= start
+            raw = np.frombuffer(data, dtype=np.uint8, count=count * stride, offset=vertices + off + start * stride).reshape(count, stride)
             packed = np.frombuffer(raw.tobytes(), dtype='>i2').reshape(count, 16)[:, :3].astype(float)
             pos = packed / 32767 * (self.bbox_max - self.bbox_min) + self.bbox_min
             influences = 8 if self.materials[material]['vertex_type'] else 4

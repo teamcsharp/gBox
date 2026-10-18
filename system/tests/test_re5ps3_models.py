@@ -214,7 +214,7 @@ def test_native_corruption_rejected(case, error):
     elif case == 'palette_size': struct.pack_into('>I', b, bones + 304 + 256, 65)
     elif case == 'palette_bone': b[bones + 304 + 260] = 2
     elif case == 'mesh_palette': b[meshes + 46] = 1
-    elif case == 'vertex_range': struct.pack_into('>H', b, meshes + 42, 1)
+    elif case == 'vertex_range': struct.pack_into('>H', b, meshes + 14, 3)
     elif case == 'vertex_budget': struct.pack_into('>I', b, 12, 2)
     elif case == 'index_range': struct.pack_into('>H', b, indices, 3)
     elif case == 'weights': b[vertices + 12] = 0
