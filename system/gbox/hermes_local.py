@@ -101,7 +101,7 @@ def set_local_only(on: bool, *, now: float | None = None) -> dict:
 
 # ---------------------------------------------------------------------------------------------- route choice
 
-def choose(routes, cooldowns, now, *, primary, rotation_pending=False, busy=False, s=None, only_local=None) -> dict:
+def choose(routes, cooldowns, now, *, primary, rotation_pending=False, busy=False, s=None, only_local=None, preferred=None) -> dict:
     """Pick the cron route. Paid routes first (rotating among those not cooling, as before); the local route only
     when none is left or the operator set local only. Returns {mode, route, fallbacks, reason, next_paid_at}.
 
@@ -119,11 +119,13 @@ def choose(routes, cooldowns, now, *, primary, rotation_pending=False, busy=Fals
         return {'mode': 'local', 'route': local, 'fallbacks': [], 'reason': 'The operator set Hermes to local only',
                 'next_paid_at': None}
     if eligible:
-        chosen = primary if primary in eligible else None
-        if chosen is None or (rotation_pending and not busy):
+        preferred_available = preferred in eligible
+        chosen = preferred if preferred_available else primary if primary in eligible else None
+        if chosen is None or (rotation_pending and not busy and not preferred_available):
             index = eligible.index(primary) if primary in eligible else -1
             chosen = eligible[(index + 1) % len(eligible)]
-        reason = ('A paid route recovered; rotated back from the local model' if is_local(primary, s)
+        reason = ('Operator-preferred paid route available' if preferred_available else
+                  'A paid route recovered; rotated back from the local model' if is_local(primary, s)
                   else 'Paid route available')
         return {'mode': 'paid', 'route': chosen, 'fallbacks': [r for r in eligible if r != chosen], 'reason': reason,
                 'next_paid_at': None}
