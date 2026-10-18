@@ -73,10 +73,24 @@ def import_file(sid,ad,game,ctx,slot,path):
 
 
 def checkout(sid,ad,game,ctx):
-    """Before launch, lease selected cloud revisions and stage exact local copies."""
+    """Before launch, lease selected cloud revisions and stage exact local copies.
+
+    Cloud cards are an enhancement, not a precondition: when the control plane is
+    unreachable or slow (an httpx transport error) the launch falls back to local
+    cards instead of failing, and no cloud sync starts for this session.
+    """
     if game.get('platform') not in ('dreamcast','gamecube') or not ctx.server:return None
     if not supported(ad,game):return None
     if getattr(ad,'tas_playback',None) or getattr(ad,'capture_backend',None) or getattr(ctx,'agent_use',False):return None
+    try:
+        return _checkout(sid,ad,game,ctx)
+    except httpx.HTTPError as error:
+        ad.memory_card_unavailable=f'{type(error).__name__}: {error}'
+        print(f'gBox: cloud memory cards unavailable at launch ({ad.memory_card_unavailable}); playing from local cards', flush=True)
+        return None
+
+
+def _checkout(sid,ad,game,ctx):
     platform=game['platform'];listing=api(ctx,f'/api/memory-cards?platform={platform}&game_id={game["game_id"]}')
     selected=dict(listing['selection']);cards={r['id']:r for r in listing['cards']}
     warnings=[]
