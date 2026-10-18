@@ -143,6 +143,12 @@ def recover(feedback, *, now=None):
                 item['status'] = 'waiting_pinned_provider'
                 outcome = {'status': item['status'], 'job_id': job['id']}
                 continue
+            from . import hermes_provider_scope as scope
+            blocked = scope.admission(config)
+            if blocked:
+                item.update(status='waiting_provider_scope', scope_reason=blocked['reason'])
+                outcome = {'status': item['status'], **blocked, 'job_id': job['id']}
+                continue
             if not eligible:
                 item['status'] = 'waiting_provider'
                 outcome = {'status': item['status']}
@@ -162,6 +168,12 @@ def recover(feedback, *, now=None):
                 continue  # Never reopen a ticket just because its API could not be read.
             if not remaining:
                 item['status'] = 'resolved'
+                continue
+            from . import hermes_provider_scope as scope
+            blocked = scope.admission(hermes_task_mode._config())
+            if blocked:
+                item.update(status='waiting_provider_scope', scope_reason=blocked['reason'])
+                outcome = {'status': item['status'], **blocked, 'job_id': job['id']}
                 continue
             # Save the launch intent first. A timeout/crash may have launched work;
             # do not repeat an uncertain occurrence automatically on restart.
@@ -186,7 +198,7 @@ def status():
         return []
     try:
         with hermes_delivery.locked('provider-recovery'):
-            return [{k: item.get(k) for k in ('job_id', 'request_ids', 'status', 'checkpoint_at', 'session_id')}
+            return [{k: item.get(k) for k in ('job_id', 'request_ids', 'status', 'checkpoint_at', 'session_id', 'scope_reason')}
                     | {'resume_count': len(item.get('resumes', []))} for item in _read()['jobs'].values()]
     except (OSError, ValueError):
         return [{'status': 'checkpoint_temporarily_unavailable'}]

@@ -195,6 +195,16 @@ def tick(now=None):
                     # Re-arm a genuine one-shot; its pin prevents fallback attribution to Z.AI.
                     controller = hermes_task_mode._job() or {}
                     managed = controller.get('no_agent')
+                    from . import hermes_provider_scope as scope
+                    blocked = scope.admission(hermes_task_mode._config(), job if any(job.get(k) for k in ('provider', 'model', 'base_url')) else
+                                              {'provider': 'zai', 'model': MODEL})
+                    if blocked:
+                        state.update(status='waiting_provider_scope', scope_reason=blocked['reason'],
+                                     next_check_at=now + 300, next_quota_check_at=now + 300,
+                                     probe_usage=result.get('usage') or {})
+                        _save(path, state)
+                        return {k: state.get(k) for k in ('status', 'scope_reason', 'work_job_id',
+                                                         'windows', 'probe_http', 'probe_checked_at')}
                     if not managed:
                         hermes_task_mode._run('resume', job['id'], '--run-now')
                     state.update(status='available_to_work_queue' if managed else 'work_dispatched', dispatched_at=now,

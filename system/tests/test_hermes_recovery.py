@@ -169,3 +169,21 @@ def test_tool_quota_is_a_lesson_without_cooling_inference_provider(monkeypatch, 
                    json.dumps({'error': 'Remote screenshot service usage limit reached'}), 'screenshot'))
     result = hermes_feedback.scan(home=home, now=1030)
     assert result['lessons'][0]['category'] == 'quota' and not result['cooldowns']
+
+
+@pytest.mark.parametrize('restricted_at', ['initial', 'final'])
+def test_scope_policy_prevents_recovery_without_consuming_retry(lane, monkeypatch, restricted_at):
+    from gbox import hermes_provider_scope as scope
+    _, _, calls, _ = lane
+    scope.restrict(['zai'], ['api.z.ai'], apply=True)
+    safe = {'cron': {'model_provider': 'deepseek', 'model': 'available'}}
+    blocked = safe | {'fallback_providers': [{'provider': 'zai', 'model': 'glm'}]}
+    count = [0]
+    def config():
+        count[0] += 1
+        return blocked if restricted_at == 'initial' or count[0] > 1 else safe
+    monkeypatch.setattr(recovery.hermes_task_mode, '_config', config)
+    result = recovery.recover({}, now=1100)
+    assert result['status'] == 'waiting_provider_scope' and not calls
+    assert recovery.status()[0]['resume_count'] == 0
+    assert 'public-source' in recovery.status()[0]['scope_reason']

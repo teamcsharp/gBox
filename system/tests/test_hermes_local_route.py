@@ -352,3 +352,24 @@ def test_supervisor_reads_preference_but_preserves_active_runs(supervisor, monke
     else:
         assert sv.config['cron']['model_provider'] == 'zai'
         assert sv.config['cron']['preferred_provider'] == 'zai'
+
+
+def test_scope_restriction_survives_primary_preference_reinsertion_and_saved_feedback(supervisor):
+    import yaml
+    from gbox import hermes_provider_scope as scope
+    scope.restrict(['zai'], ['api.z.ai'], apply=True)
+    sv = supervisor
+    cfg = sv.config
+    cfg['cron'].update(model_provider='zai', model='glm', preferred_provider='zai', preferred_model='glm')
+    cfg['fallback_providers'] = [NOUS]
+    sv.config_path.write_text(yaml.safe_dump(cfg))
+    sv.data['routes'] = [{'provider': 'zai', 'model': 'glm'}, NOUS]
+    result = hermes_feedback.adjust_routes()
+    assert result['route'] == NOUS
+    assert sv.config['cron']['model_provider'] == 'nous'
+    assert all(r['provider'] != 'zai' for r in sv.config['fallback_providers'])
+    rows = hermes_feedback.provider_status(sv.data, cfg)
+    denied = next(r for r in rows if r['provider'] == 'zai')
+    assert not denied['private_backlog_eligible'] and denied['availability'] == 'scope_restricted'
+    assert 'public-source' in denied['provider_scope_reason']
+    assert 'sk-secret' not in json.dumps(result)

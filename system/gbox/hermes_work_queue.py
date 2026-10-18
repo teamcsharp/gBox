@@ -532,6 +532,10 @@ def tick(*, now=None):
         reconcile(data, jobs, latest, active, now=now)
         _save(data)
         config = mode._config()
+        from . import hermes_provider_scope as scope
+        blocked = scope.admission(config)
+        if blocked:
+            return {'status': 'waiting_for_provider_scope', **blocked, 'favorites': data['favorites_count']}
         path = delivery.state_dir() / 'feedback.json'
         feedback = json.loads(path.read_text()) if path.exists() else {}
         routes = hermes_quota.routes(config, feedback.get('routes') or [])
@@ -629,6 +633,12 @@ def tick(*, now=None):
             existing = [j for j in jobs if j.get('name') == name]
             if len(existing) > 1:
                 raise RuntimeError('Ambiguous queue job identity')
+            # Recheck the separate operator policy and inherited config immediately
+            # before admission; request text never supplies a public-purpose override.
+            blocked = scope.admission(mode._config(), run_route)
+            if blocked:
+                return {'status': 'waiting_for_provider_scope', **blocked, 'dispatched': dispatched,
+                        'favorites': data['favorites_count']}
             # Recheck the operator switch immediately before admission.
             if not (mode._job() or {}).get('enabled'):
                 break

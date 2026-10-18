@@ -168,6 +168,14 @@ def _run(*args: str) -> None:
         raise RuntimeError((done.stderr or done.stdout or "Hermes cron command failed").strip()[-1000:])
 
 
+def _require_private_scope(job=None):
+    from . import hermes_provider_scope as scope
+    selected = job if job and any(job.get(k) for k in ('provider', 'model', 'base_url')) else None
+    blocked = scope.admission(_config(), selected)
+    if blocked:
+        raise RuntimeError(blocked['reason'])
+
+
 def _kickoff(job: dict) -> None:
     if job.get('no_agent'):
         # The one-minute pump admits work after checking capacity and ownership.
@@ -184,6 +192,7 @@ def _kickoff(job: dict) -> None:
             '--workdir', str(_PROMPT.parents[2]), '--deliver', 'local',
             '--failure-deliver', 'local', '--reasoning-effort', 'high']
     args += _route_args(job)
+    _require_private_scope(job if '--provider' in args else None)
     _run(*args)
 
 
@@ -215,7 +224,10 @@ def set_enabled(enabled: bool) -> dict:
             return result | {"model_note": note}
         if job and enabled and not job.get("enabled"):
             if not job.get('no_agent'):
+                _require_private_scope(job)
                 _run("edit", job["id"], "--clear-skills", "--prompt", _PROMPT.read_text(encoding="utf-8"))
+            if not job.get('no_agent'):
+                _require_private_scope(job)
             _run("resume", job["id"])
             _kickoff(_job() or {})
         elif job and not enabled and job.get("enabled"):
@@ -262,7 +274,9 @@ def dispatch_request(request_id: str, number: int, *, task: str | None = None, n
                         '--reasoning-effort', 'high']
                 if not _route_args(_job() or {}):
                     args += ['--unpin']
+                _require_private_scope(existing if '--unpin' not in args else None)
                 _run(*args)
+                _require_private_scope(existing if '--unpin' not in args else None)
                 _run('resume', existing['id'], '--run-now')
                 return existing['id']
             # Hermes cannot re-arm an exhausted legacy interval, or convert its
@@ -298,6 +312,7 @@ def dispatch_request(request_id: str, number: int, *, task: str | None = None, n
                 '--reasoning-effort', 'high']
         inbox = _job() or {}
         args += _route_args(inbox)
+        _require_private_scope(inbox if '--provider' in args else None)
         _run(*args)
         jobs = json.loads((_home() / 'cron/jobs.json').read_text()).get('jobs', [])
         job = next((j for j in jobs if j.get('name') == name), None)
