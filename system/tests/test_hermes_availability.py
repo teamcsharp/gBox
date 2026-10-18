@@ -90,6 +90,34 @@ def test_pending_native_analysis_does_not_burn_more_inference(lane, monkeypatch)
     assert availability.tick(1000)['status'] == 'waiting_for_native_analysis'
 
 
+def test_supervision_probe_survives_deleted_work_job_without_dispatch(lane, monkeypatch):
+    path, _, calls = lane
+    path.write_text(json.dumps({'work_job_id': 'deleted', 'supervision_only': True, 'request_ids': ['old']}))
+    monkeypatch.setattr(availability.hermes_task_mode, '_jobs', lambda: [])
+    monkeypatch.setattr(availability, '_native_pending', lambda _: pytest.fail('Old work cannot block supervisor quota'))
+    monkeypatch.setattr(availability, '_available_route', lambda _: pytest.fail('Do not rotate the implementation route'))
+    monkeypatch.setattr(availability, '_zai', lambda kind, *args: (
+        (200, quota({'type': 'CREDIT_LIMIT', 'remaining': 20})) if kind == 'quota' else
+        (200, {'choices': [{'message': {'content': 'OK'}}]})))
+    result = availability.tick(1000)
+    assert result['status'] == 'available_to_supervisor' and result['probe_http'] == 200
+    assert not calls
+
+
+def test_supervision_quota_wait_does_not_modify_local_route(lane, monkeypatch):
+    path, _, calls = lane
+    path.write_text(json.dumps({'supervision_only': True}))
+    monkeypatch.setattr(availability.hermes_task_mode, '_jobs', lambda: [])
+    monkeypatch.setattr(availability, '_waiting_route', lambda *a, **k: pytest.fail('Leave implementation route alone'))
+    kinds = []
+    def respond(kind, *args):
+        kinds.append(kind)
+        return 200, quota({'type': 'CREDIT_LIMIT', 'remaining': 0})
+    monkeypatch.setattr(availability, '_zai', respond)
+    assert availability.tick(1000)['status'] == 'quota_wait'
+    assert kinds == ['quota'] and not calls
+
+
 def test_probe_exception_never_exposes_credentials(lane, monkeypatch):
     def fail():
         raise RuntimeError('private-secret-value')

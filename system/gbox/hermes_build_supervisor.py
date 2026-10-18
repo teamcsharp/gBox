@@ -70,6 +70,7 @@ def _save(data):
 
 def snapshot(report_id):
     from . import hermes_work_queue as Q
+    from . import hermes_result_review
     jobs = _api('/api/jobs?limit=30')
     requests = _api('/api/requests')
     progress = _api('/api/requests/' + report_id)
@@ -85,10 +86,15 @@ def snapshot(report_id):
     queue = Q._read()
     owners = {i.get('request_id'): i.get('inference_node') for i in queue.get('items', {}).values()
               if i.get('dispatch_state') == 'queued'}
+    # The operator renamed the second host lilspark2; retain legacy attribution
+    # while already-pinned sparkDeux runs drain and preserve their checkpoints.
     spark_tasks = [i for i in queue.get('items', {}).values()
-                   if i.get('inference_node') == 'sparkDeux']
+                   if i.get('inference_node') in ('lilspark2', 'sparkDeux')]
     spark_tasks.sort(key=lambda i: max(i.get('checkpoint_at') or 0, i.get('last_finished') or 0), reverse=True)
     return {'observed_at': time.time(), 'progress_request_id': report_id,
+        'result_reviews': hermes_result_review.summary(),
+        'review_holds': [{k: i.get(k) for k in ('request_id', 'number', 'review_hold', 'no_progress_runs')}
+                         for i in queue.get('items', {}).values() if i.get('review_hold')][:20],
         'spark2_checkpoints': [{k: i.get(k) for k in ('request_id', 'number', 'title',
             'dispatch_state', 'checkpoint_at', 'last_finished', 'no_progress_runs', 'job_id')} |
             {'stages': {name: {k: str(stage.get(k) or '')[:1800] for k in ('status', 'note', 'next_step')}
@@ -181,6 +187,10 @@ def _tick():
             'identify loops or unsupported claims, and leave precise corrections on the owned requests. '
             'Do not take over active implementation tasks. Prioritize concrete next steps with focused checks '
             'and expected artifacts. Do not modify provider policy or the shared runtime.\n')
+        instructions += ('\nInspect result_reviews and review_holds. Diagnose repeated failures and leave '
+            'new, specific corrective evidence on the affected request so DeepSeek can re-review it. '
+            'Do not merely restate a previous retry. Check PR objections, current main and deployment '
+            'before proposing source work; source delivery and runtime acceptance are separate milestones.\n')
     prompt.write_text(instructions + '\nSNAPSHOT:\n' + json.dumps(packet, indent=2), encoding='utf-8')
     output = folder / (stamp + '.report.txt')
     if blocked := admission(provider, model):

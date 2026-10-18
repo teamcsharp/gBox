@@ -157,13 +157,14 @@ def tick(now=None):
         except (OSError, ValueError, sqlite3.Error) as exc:
             state['usage_error_type'] = type(exc).__name__
         _save(path, state)
-        job = next((j for j in hermes_task_mode._jobs() if j['id'] == state['work_job_id']), None)
-        if job is None:
+        supervision_only = state.get('supervision_only') is True
+        job = next((j for j in hermes_task_mode._jobs() if j['id'] == state.get('work_job_id')), None)
+        if job is None and not supervision_only:
             raise RuntimeError('Registered Z.AI work job is missing')
-        work_active = job.get('enabled') or hermes_task_mode._active(job['id'])
+        work_active = not supervision_only and (job.get('enabled') or hermes_task_mode._active(job['id']))
         if work_active and now - state.get('checked_at', 0) < 300:
             return {'status': 'work_queued_or_running', 'job_id': job['id'], 'provider': 'zai', 'model': MODEL}
-        if _native_pending(state.get('request_ids') or []):
+        if not supervision_only and _native_pending(state.get('request_ids') or []):
             return {'status': 'waiting_for_native_analysis', 'job_id': job['id']}
         next_quota_check = state.get('next_quota_check_at',
             min(state.get('next_check_at', 0), state.get('checked_at', 0) + 300))
@@ -179,7 +180,8 @@ def tick(now=None):
             observed = quota_status(quota, now) if http == 200 else {
                 'status': 'unknown', 'next_check_at': now + 300, 'windows': [], 'quota_balance_known': False}
             state.update(observed, checked_at=now, next_quota_check_at=min(observed['next_check_at'], now + 300))
-            if observed['status'] == 'quota_wait':
+            state.pop('error_type', None)
+            if observed['status'] == 'quota_wait' and not supervision_only:
                 _waiting_route(observed['next_check_at'])
             if work_active:
                 _save(path, state)
@@ -191,12 +193,13 @@ def tick(now=None):
                     'thinking': {'type': 'disabled'}, 'messages': [{'role': 'user', 'content': 'Reply OK.'}]})
                 state.update(probe_http=http, probe_error_code=result.get('error_code'), probe_checked_at=now)
                 if http == 200 and isinstance(result.get('choices'), list) and result['choices']:
-                    _available_route(now)
+                    if not supervision_only:
+                        _available_route(now)
                     # Re-arm a genuine one-shot; its pin prevents fallback attribution to Z.AI.
                     controller = hermes_task_mode._job() or {}
                     managed = controller.get('no_agent')
                     from . import hermes_provider_scope as scope
-                    blocked = scope.admission(hermes_task_mode._config(), job if any(job.get(k) for k in ('provider', 'model', 'base_url')) else
+                    blocked = scope.admission(hermes_task_mode._config(), job if not supervision_only and any(job.get(k) for k in ('provider', 'model', 'base_url')) else
                                               {'provider': 'zai', 'model': MODEL})
                     if blocked:
                         state.update(status='waiting_provider_scope', scope_reason=blocked['reason'],
@@ -205,9 +208,9 @@ def tick(now=None):
                         _save(path, state)
                         return {k: state.get(k) for k in ('status', 'scope_reason', 'work_job_id',
                                                          'windows', 'probe_http', 'probe_checked_at')}
-                    if not managed:
+                    if not managed and not supervision_only:
                         hermes_task_mode._run('resume', job['id'], '--run-now')
-                    state.update(status='available_to_work_queue' if managed else 'work_dispatched', dispatched_at=now,
+                    state.update(status='available_to_supervisor' if supervision_only else 'available_to_work_queue' if managed else 'work_dispatched', dispatched_at=now,
                                  next_check_at=now + 120, next_quota_check_at=now + 120,
                                  probe_usage=result.get('usage') or {})
                 else:
@@ -216,7 +219,8 @@ def tick(now=None):
                         category = hermes_quota.provider_failure(json.dumps(result)) or 'rate_limit'
                         wait = hermes_quota.failure_wait(result, category, now)
                         state['next_check_at'] = wait['until']
-                        _waiting_route(wait['until'], source=wait['source'], quota_balance_known=False)
+                        if not supervision_only:
+                            _waiting_route(wait['until'], source=wait['source'], quota_balance_known=False)
                     state['next_quota_check_at'] = state['next_check_at']
         except (OSError, ValueError, RuntimeError, TypeError, AttributeError) as exc:
             # Exception text can include authentication material. Emit only its class.

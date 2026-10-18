@@ -295,6 +295,12 @@ host uses four slots. `pool_max_parallel_jobs = 5` caps agent runs, including
 older runs without a host assignment. Hermes's cron capacity must also be at
 least five. Both switches persist in `hermes-dispatch/local-nodes.json`.
 
+The second host is now named `lilspark2`. Existing installations and pinned runs
+may still use the logical route key `sparkDeux`; preserve that route until its
+active calls drain when migrating configuration. Supervision includes checkpoints
+under both names. A hostname change alone does not migrate provider pins, proxy
+URLs, admission settings or historical run attribution.
+
 The Tasks window shows each host's enable switch, readiness, in-flight calls,
 capacity and successful inference counters from the last 24 hours. These count
 actual model calls, not resolved inbox items. The toolbar checkbox controls new
@@ -325,7 +331,7 @@ as a coding/agent throughput candidate. It is not a measured improvement over
 the currently served model. Compare completed tasks and correctness before
 keeping a replacement. Pull and Start are separate explicit actions.
 
-Configure `management` under the sparkDeux node with `host`, `user`,
+Configure `management` under the dedicated node's existing `sparkDeux` route with `host`, `user`,
 `identity_file` and the existing Docker `container` name. Strict SSH host-key
 checking and a dedicated key are required; no password is saved in gBox.
 Downloads reuse the current container's authenticated Hugging Face cache.
