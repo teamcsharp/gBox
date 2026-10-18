@@ -10,6 +10,7 @@ from gbox import hermes_build_supervisor as S, hermes_work_queue as Q, hermes_po
 def supervisor(tmp_path, monkeypatch):
     monkeypatch.setenv('GBOX_HERMES_DISPATCH_STATE', str(tmp_path))
     monkeypatch.setattr(S.M, '_job', lambda: {'enabled': True})
+    monkeypatch.setattr(S.M, '_config', lambda: {})
     monkeypatch.setattr(S.D, 'repository', lambda: tmp_path)
     monkeypatch.setattr(S, 'snapshot', lambda rid: {'repair_requests': [{'id': 'a'*16}]})
     monkeypatch.setattr(P, '_sync_cron_capacity', lambda capacity: None)
@@ -82,3 +83,57 @@ def test_slider_keeps_one_nous_scheduler_slot(tmp_path, monkeypatch):
 def test_malformed_priority_output_is_ignored():
     assert S.priorities('NEXT_REQUESTS: [not json]', {'a'}) == []
     assert S.priorities('NEXT_REQUESTS: [1, "a", "a", "b"]', {'a'}) == ['a']
+
+
+def test_zai_scope_blocks_before_reading_private_snapshot(supervisor, monkeypatch):
+    from gbox import hermes_provider_scope as scope
+    scope.restrict(['zai'], ['api.z.ai'], apply=True)
+    S._save({'enabled': True, 'request_id': 'b'*16, 'supervision_provider': 'zai'})
+    monkeypatch.setattr(S, 'snapshot', lambda _: pytest.fail('Private snapshot must not be read'))
+    assert S.tick()['state'] == 'waiting_provider_scope'
+    assert not supervisor[1]
+
+
+@pytest.mark.parametrize('age,remaining,http', [(601, 10, 200), (0, 0, 200), (0, 10, 429)])
+def test_zai_requires_fresh_available_quota_and_probe(supervisor, age, remaining, http):
+    S._save({'enabled': True, 'request_id': 'b'*16, 'supervision_provider': 'zai'})
+    (S.D.state_dir()/'zai-availability.json').write_text(json.dumps({
+        'checked_at': S.time.time()-age, 'probe_http': http,
+        'windows': [{'type': 'CREDIT_LIMIT', 'remaining': remaining}]}))
+    assert S.tick()['state'] == 'waiting_provider_quota'
+    assert not supervisor[1]
+
+
+def test_zai_pin_guidance_and_report_attribution(supervisor, monkeypatch):
+    S._save({'enabled': True, 'request_id': 'b'*16, 'supervision_provider': 'zai'})
+    (S.D.state_dir()/'zai-availability.json').write_text(json.dumps({
+        'checked_at': S.time.time(), 'probe_http': 200,
+        'windows': [{'type': 'CREDIT_LIMIT', 'remaining': 10}]}))
+    def run(args, **kwargs):
+        assert args[args.index('--provider')+1] == 'zai'
+        assert args[args.index('--model')+1] == 'glm-5.3'
+        prompt = S.Path(args[args.index('--query-file')+1]).read_text()
+        assert 'Do not take over active implementation tasks' in prompt
+        return SimpleNamespace(returncode=0, stdout='Guidance posted. NEXT_REQUESTS: []')
+    monkeypatch.setattr(S.subprocess, 'run', run)
+    assert S.tick()['state'] == 'completed'
+    assert S.status()['provider'] == 'zai'
+    assert supervisor[0][0]['text'].startswith('zai build supervision ')
+
+
+def test_policy_rechecked_after_snapshot(supervisor, monkeypatch):
+    from gbox import hermes_provider_scope as scope
+    def snapshot(_):
+        scope.restrict(['nous'], [], apply=True)
+        return {'repair_requests': []}
+    monkeypatch.setattr(S, 'snapshot', snapshot)
+    assert S.tick()['state'] == 'waiting_provider_scope'
+    assert not supervisor[1]
+
+
+def test_zai_does_not_borrow_other_provider_fallbacks(supervisor, monkeypatch):
+    S._save({'enabled': True, 'request_id': 'b'*16, 'supervision_provider': 'zai'})
+    monkeypatch.setattr(S.M, '_config', lambda: {
+        'fallback_model': {'provider': 'nous', 'model': S.MODEL}})
+    assert S.tick()['state'] == 'waiting_provider_config'
+    assert not supervisor[1]
