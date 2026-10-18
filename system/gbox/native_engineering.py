@@ -37,6 +37,9 @@ TITLE_WORK = {
         'reader': 'gbox.re5ps3_arc',
         'command': 'python -m gbox.re5ps3_arc OWNED_CHARACTER.arc --out NEW_MANIFEST.json',
         'model_reader': 'gbox.re5ps3_models',
+        'shader_reader': 'gbox.re5ps3_shaders',
+        'shader_command': 'python -m gbox.re5ps3_shaders OWNED_shader.arc --material 30800000 --material 30844000 --material 40844000 --out NEW_SHADER_EVIDENCE.json',
+        'shader_scope': 'docs/re5ps3-shaders.md: bounded standard-material BFX selector and static Cg instruction operands with exact source/program hashes; immediate branch targets are recorded, runtime reachability and vertex/texture binding are unverified; no NaN UV repair, full-cast export or gameplay acceptance. Next inspect the exact-build native ELF vertex-buffer assembly offline.',
         'model_command': r"python -m gbox.re5ps3_models OWNED_CHRIS.arc --model 'pawn\pl\pl00\model\pl0000' --lod 1 --out NEW_CHRIS.glb",
         'validated_scope': 'PS3 ARC v8 reader/writer verified with all 151 Chris/Sheva pack resources; bounded MOD 156 revision 1 / TEX 102 reader exports textured rigged bind-pose GLBs at LOD masks 1/2/4; Chris/Sheva normal models are registered through gbox.re5ps3_collection for exact-build normal character collection from the owned folder/7z; two-target partial coverage, editable targets for Sonic/Mario fitting, with numeric joint IDs/native animation maps and 18 exact-source body anchors verified by controlled offline Blender skin poses; changed or unknown native MOD hashes get no semantic role map; motion/gameplay compatibility is unverified; bounded fixed-layout MOD vertex and same-size TEX writer with exact owned ARC readback; transactional multi-resource geometry/texture outputs from the immutable original ARC; experimental exact-donor Sonic (blue library texture, not super-yellow) and Peach complete-body draw lists can be fitted to Chris/Sheva normal packs with source weights and native skeleton preserved; offline readback and controlled pose evidence only, no arbitrary donor topology, full-cast replacement or gameplay acceptance; existing re5 save unlock code is not gameplay-verified',
         'collection_command': 'characters op=collect game_id=e7ca89bbeb67360d',
@@ -144,6 +147,9 @@ def prompt(game_id, *, stage='inventory', fingerprint=None):
             lines.append('State engineering scope: ' + title['state_scope'])
         if title.get('collection_command'):
             lines.append('Normal collection: ' + title['collection_command'])
+        if title.get('shader_command'):
+            lines.append('Read-only shader evidence: ' + title['shader_command'])
+            lines.append('Shader evidence scope: ' + title['shader_scope'])
         if title.get('model_command'):
             lines.append('Editable native model: ' + title['model_command'])
         if title.get('native_write_command'):
