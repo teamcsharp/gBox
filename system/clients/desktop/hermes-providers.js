@@ -89,7 +89,7 @@
   }
   function poolCards(pool) {
     if (!pool?.nodes?.length) return "";
-    const cards = pool.nodes.map(n => `<article class="tkp-card ${n.active ? "working" : "idle"}" data-tkp-machine="${esc(n.name)}">
+    const cards = pool.nodes.map(n => `<article class="tkp-card ${n.active ? "working" : "idle"}" data-tkp-machine="${esc(n.name)}" data-tkp-work-provider="${esc(n.name)}">
       <header><b>${esc(n.name)}</b><label><input type="checkbox" data-tkp-node="${esc(n.name)}" ${n.enabled ? "checked" : ""} aria-label="Enable ${esc(n.name)} for tasks"> Active</label></header>
       <div class="tkp-model" title="${esc(n.upstream)}">${esc(n.model)}</div>
       <div class="tkp-status">${esc(n.reason || (n.capable ? "Ready" : "Unavailable"))}</div>
@@ -104,7 +104,7 @@
       <div><dt>Tokens (24h)</dt><dd>${tokens(n.tokens)}</dd></div></dl>
       <div class="tkp-model">${n.primary ? "First choice when memory is available" : "Dedicated to heavier concurrent work; hands off to prime"}</div>
       ${n.kv_cache_fraction != null ? `<div class="tkp-model">vLLM: ${n.running_requests || 0} running · ${Math.round(n.kv_cache_fraction * 100)}% KV cache</div>` : ""}
-      </article>`).join("");
+      <button type="button" data-tkp-open-work>View outcomes</button></article>`).join("");
     const m = pool.model_management, rec = m?.recommendation, job = m?.job;
     const busy = ["queued", "downloading", "draining", "starting"].includes(job?.state);
     const suggestion = rec ? `<details data-tk-key="tkp-model-recommendation" ${rec.current ? "" : "open"}>
@@ -123,13 +123,13 @@
     const routes = data.routes || [];
     const body = routes.map(r => {
       const s = r.status || {}, credit = r.local ? "Local model: no credit needed" : balance(r.balance, win);
-      return `<article class="tkp-card ${esc(s.state || "idle")}${r.current ? " current" : ""}" data-tkp-route="${esc(r.key)}">
+      return `<article class="tkp-card ${esc(s.state || "idle")}${r.current ? " current" : ""}" data-tkp-route="${esc(r.key)}" data-tkp-work-provider="${esc(r.provider)}">
         <header><b>${esc(r.provider)}</b>${tags(r)}</header><div class="tkp-model" title="${esc(r.model)}">${esc(r.model)}</div>
         <div class="tkp-status"><i></i>${esc(s.label || STATE[s.state] || "Unknown")}</div>
         <dl><div><dt>Runs done</dt><dd>${r.runs_completed || 0}${r.runs_failed ? ` <small>· ${r.runs_failed} failed</small>` : ""}</dd></div>
           <div><dt>Model calls</dt><dd>${r.calls_ok || 0}${r.calls_failed ? ` <small>· ${r.calls_failed} failed</small>` : ""}</dd></div>
           <div><dt>Tokens</dt><dd>${tokens(r.tokens)}</dd></div><div><dt>Wall time</dt><dd>${duration(r.wall_s)}</dd></div></dl>
-        <div class="tkp-balance" title="${esc(credit)}">${esc(credit)}</div>${errorLine(r.last_error, now)}</article>`;
+        <div class="tkp-balance" title="${esc(credit)}">${esc(credit)}</div>${errorLine(r.last_error, now)}<button type="button" data-tkp-open-work>View outcomes</button></article>`;
     }).join("") || '<p class="tkp-empty">No Hermes routes or model calls found on the server.</p>';
     return `<div class="tkp-head"><b>Providers · ${esc(data.window_label || win)}</b>${windowButtons(win)}<span class="tkp-rec">${esc(data.recommendation || "")}</span></div>
       ${poolCards(data.pool)}${localBanner(data.local, now, data.pool)}<div class="tkp-cards">${gruntCard(data.grunt, now)}${body}</div>`;
@@ -140,14 +140,14 @@
     if (!data || data.error) return `<div class="mc"><div class="mh"><b>Hermes providers</b>${windowButtons(win)}</div><p class="mut">${esc(data?.error ? `Providers unavailable: ${data.error}` : "Loading providers…")}</p></div>`;
     const routes = (data.routes || []).map(r => {
       const s = r.status || {};
-      return `<tr class="tkp-row ${esc(s.state || "idle")}"><td><b>${esc(r.provider)}</b> ${tags(r)}<div class="mut">${esc(r.model)}</div></td>
+      return `<tr class="tkp-row ${esc(s.state || "idle")}"><td><button type="button" data-tkp-work-provider="${esc(r.provider)}">${esc(r.provider)} outcomes</button> ${tags(r)}<div class="mut">${esc(r.model)}</div></td>
         <td><span class="tkp-dot"></span>${esc(s.label || STATE[s.state] || "")}</td><td>${r.runs_completed || 0}</td><td>${r.runs_failed || 0}</td>
         <td>${r.calls_ok || 0} / ${r.calls_failed || 0}</td><td>${tokens(r.tokens)}</td><td>${duration(r.wall_s)}</td>
         <td>${r.local ? '<span class="mut">local</span>' : r.balance?.available ? esc(balance(r.balance, win))
           : `<span class="mut" title="${esc(balance(r.balance, win))}">not available</span>`}</td>
         <td class="tkp-err">${r.last_error ? `${esc(String(r.last_error.text).slice(0, 160))} <span class="mut">${ago(r.last_error.ts, now)}</span>` : '<span class="mut">—</span>'}</td></tr>`;
     }).join("") || '<tr><td colspan="9" class="mut" style="text-align:left">No Hermes routes or model calls found on the server.</td></tr>';
-    const providers = (data.providers || []).map(p => `<tr><td><b>${esc(p.provider)}</b>${p.local ? ' <span class="tkp-tag local">local</span>' : ""}</td>
+    const providers = (data.providers || []).map(p => `<tr><td><button type="button" data-tkp-work-provider="${esc(p.provider)}">${esc(p.provider)} outcomes</button>${p.local ? ' <span class="tkp-tag local">local</span>' : ""}</td>
         <td>${esc(p.status?.label || "")}</td><td>${p.runs_completed || 0}</td><td>${p.calls_ok || 0} / ${p.calls_failed || 0}</td>
         <td>${tokens(p.tokens)}</td><td>${duration(p.wall_s)}</td>
         <td>${p.spend_usd != null ? `${usd(p.spend_usd)} <span class="mut">${esc(p.spend_source || "")}</span>` : '<span class="mut">unknown</span>'}</td>

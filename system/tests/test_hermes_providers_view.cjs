@@ -98,7 +98,7 @@ test('Technical table: per route, per provider spend and recent run attribution'
   assert.match(html, /<b>Hermes providers · Today<\/b>/);
   assert.match(html, /<th>Route<\/th><th>Status now<\/th><th>Runs done<\/th><th>Runs failed<\/th><th>Calls ok \/ failed<\/th><th>Tokens<\/th><th>Wall time<\/th><th>Credit<\/th><th>Last error<\/th>/);
   assert.equal((html.match(/<tr class="tkp-row/g) || []).length, 3);
-  assert.match(html, /<tr class="tkp-row out_of_credit"><td><b>nous<\/b>/);
+  assert.match(html, /<tr class="tkp-row out_of_credit"><td><button type="button" data-tkp-work-provider="nous">nous outcomes<\/button>/);
   assert.match(html, /<span class="mut" title="Balance not available \(Nous has no balance API\)[^"]*">not available<\/span>/);
   assert.match(html, /<td>\$0\.12 left · \$24\.85 today · of \$125 credit · key limit \$150<\/td>/);
   assert.match(html, /<td><span class="mut">local<\/span><\/td>/);

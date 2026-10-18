@@ -8,7 +8,7 @@
   const clock = v => new Date(v*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
   const timeLabel = (v, dated=false) => dated ? new Date(v*1000).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : clock(v);
   const active = r => ['running','claimed','queued','in_progress','waiting'].includes(r.state);
-  const friendly = d => /sparkdeux|spark2/i.test(d?.id+' '+d?.name) ? 'Spark2' : d?.id==='unknown' ? 'Unattributed' : d?.name || d?.id || 'Unknown device';
+  const friendly = d => /sparkdeux|spark2/i.test(d?.id+' '+d?.name) ? 'Spark2' : d?.id==='unknown' ? 'Unattributed' : d?.id?.startsWith('provider:') ? d.id.slice(9) : d?.name || d?.id || 'Unknown device';
   const url = value => { try { const u = new URL(value); return ['https:','http:'].includes(u.protocol) ? u.href : ''; } catch { return ''; } };
   const outcomeLabel = o => o.kind === 'pr_reviewed_merge' ? 'PR merged after further changes' : o.kind === 'pr' || /pull_request|pr_/.test(o.kind || '') ? (o.status === 'merged' ? 'PR merged' : 'PR '+(o.status || 'published')) : o.kind === 'request_resolved' ? 'Request resolved' : /request/.test(o.kind || '') ? 'Request '+(o.status || 'updated') : o.title || o.kind || 'Recorded evidence';
   const stateLabel = r => active(r) ? (r.state === 'running' ? 'Running' : r.state.replaceAll('_',' ')) : ['completed','succeeded','done'].includes(r.state) ? 'Run ended' : r.state === 'failed' ? 'Failed' : r.state || 'Unknown';
@@ -74,15 +74,20 @@
       <span class="dw-run-result"><em>${esc(stateLabel(r))}</em><small>${esc((r.outcomes || []).map(outcomeLabel).join(' · ') || 'No linked outcome yet')}</small></span></button>`;
   }
   function mount(host, options) {
-    const state={data:null,device:null,selected:null,contribution:null,filter:'all',query:'',hours:6,window:'today',active:false,busy:false,serial:0,error:'',outcomes:[]};
+    const state={data:null,device:null,selected:null,contribution:null,filter:'all',query:'',hours:6,window:'today',mode:'activity',requestedProvider:null,active:false,busy:false,serial:0,error:'',outcomes:[]};
     host.classList.add('dw');
     host.innerHTML=`<header class="dw-heading"><div><div class="dw-eyebrow">DEVICE WORK</div><h2>What is getting done?</h2><p>Concurrent tasks, delivered changes, and the evidence behind them.</p></div><div class="dw-window"><label>Measure over <select data-window aria-label="Measurement window"><option value="today">Today</option><option value="7d">7 days</option></select></label><button type="button" data-refresh>Refresh</button></div></header>
-      <div class="dw-notice" role="status" hidden></div><nav class="dw-devices" aria-label="Work device"></nav><div class="dw-metrics"></div>
-      <div class="dw-layout"><section class="dw-main" aria-label="Concurrent tasks"><div class="dw-chart-head"><div><h3>Concurrent agent runs</h3><span>Includes model calls, tool use, and waiting.</span></div><label>Graph range <select data-range aria-label="Graph time range"><option value="1">Last hour</option><option value="6" selected>Last 6 hours</option><option value="0">Whole window</option></select></label></div>
+      <nav class="dw-view" aria-label="Device work view"><button type="button" data-mode="activity" aria-pressed="true">Activity timeline</button><button type="button" data-mode="outcomes" aria-pressed="false">Expanded outcomes</button></nav><div class="dw-notice" role="status" hidden></div><nav class="dw-devices" aria-label="Work device"></nav><div class="dw-metrics"></div>
+      <div class="dw-layout"><section class="dw-main" aria-label="Device work"><div class="dw-activity"><div class="dw-chart-head"><div><h3>Concurrent agent runs</h3><span>Includes model calls, tool use, and waiting.</span></div><label>Graph range <select data-range aria-label="Graph time range"><option value="1">Last hour</option><option value="6" selected>Last 6 hours</option><option value="0">Whole window</option></select></label></div>
       <div class="dw-chart"></div><div class="dw-filters"><label class="dw-search"><span>Find a task</span><input type="search" data-search placeholder="Game, request, or current action" aria-label="Find a task"></label><select data-filter aria-label="Tasks to show"><option value="all">All observed tasks</option><option value="active">Active tasks</option><option value="results">Tasks with outcomes</option></select><span class="dw-count"></span></div>
-      <div class="dw-history" hidden></div><div class="dw-columns"><span>Task / latest recorded action</span><span>Run duration / position in range</span><span>State / outcome</span></div><div class="dw-runs" role="region" aria-label="Concurrent task timeline" tabindex="0"></div></section>
+      <div class="dw-history" hidden></div><div class="dw-columns"><span>Task / latest recorded action</span><span>Run duration / position in range</span><span>State / outcome</span></div><div class="dw-runs" role="region" aria-label="Concurrent task timeline" tabindex="0"></div></div><div class="dw-outcomes-host" hidden></div></section>
       <aside class="dw-detail" aria-label="Selected task evidence"></aside></div><footer class="dw-foot"></footer>`;
     const $=s=>host.querySelector(s);
+    const outcomeView=root.GBoxDeviceOutcomes?.mount($('.dw-outcomes-host'),{
+      outcomeLabel,stateLabel,onExternal:options.onExternal,onRequest:options.onRequest,
+      onSelect:r=>{state.filter='all';state.query='';$('[data-filter]').value='all';$('[data-search]').value='';
+        state.selected=r.kind==='run'?r.id:null;state.contribution=r.kind==='contribution'?r.id:null;render();}
+    });
     function replace(el,html) {
       if(el.dwHTML===html)return;
       const top=el.scrollTop, focused=el.contains(document.activeElement)?document.activeElement:null;
@@ -96,7 +101,16 @@
       $('.dw-notice').hidden=!(state.error||d?.coverage?.notice);
       $('.dw-notice').textContent=state.error||d?.coverage?.notice||'';
       if(!d) { $('.dw-runs').textContent=state.error?'Device work evidence is unavailable.':'Loading device work evidence…'; return; }
-      const devices=d.devices || [];
+      const devices=[...(d.devices || [])];
+      if(state.requestedProvider){
+        const provider=state.requestedProvider;
+        const routes=devices.filter(x=>x.provider===provider);
+        let match=devices.find(x=>x.id===provider) || devices.find(x=>x.id==='provider:'+provider) || (routes.length===1?routes[0]:null);
+        if(!match){match={id:'provider:'+provider,name:provider,provider,metrics:{}};devices.push(match);}
+        state.device=match.id;
+      }
+      $('.dw-activity').hidden=state.mode!=='activity';$('.dw-outcomes-host').hidden=state.mode!=='outcomes';
+      host.querySelectorAll('[data-mode]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.mode===state.mode)));
       if(!devices.some(x=>x.id===state.device))state.device=(devices.find(x=>friendly(x)==='Spark2') || devices[0])?.id || null;
       const device=devices.find(x=>x.id===state.device), metrics=device?.metrics || {};
       replace($('.dw-devices'),devices.map(x=>`<button type="button" data-device="${esc(x.id)}" aria-pressed="${x.id===state.device}"><span class="dw-device-dot ${Number(x.metrics?.active_runs)>0?'active':''}"></span><strong>${esc(friendly(x))}</strong><small>${number(x.metrics?.active_runs)} active</small></button>`).join(''));
@@ -114,6 +128,7 @@
       replace($('.dw-history'),contributions.length?`<h3>Contributions without linked runs <small>${contributions.length}</small></h3><p>Publication and merge receipts remain available. These entries add no run duration or concurrency.</p><div class="dw-contributions" role="region" aria-label="Historical contribution evidence" tabindex="0">${contributions.map(c=>contributionRow(c,state.contribution)).join('')}</div>`:'');
       replace($('.dw-runs'),runs.length?runs.map(r=>row(r,bounds,state.selected)).join(''):'<div class="dw-empty">No tasks match this device and filter.</div>');
       const selected=runs.find(r=>r.id===state.selected);
+      outcomeView?.update(d,state.device,friendly(device),state.contribution?'contribution:'+state.contribution:state.selected?'run:'+state.selected:null);
       const calls=metrics.calls_ok==null || metrics.calls_failed==null?null:Number(metrics.calls_ok)+Number(metrics.calls_failed);
       const callFailure=metrics.calls_failed==null || metrics.calls_ok==null || !calls?'—':(100*Number(metrics.calls_failed)/calls).toFixed(1)+'%';
       const tokens=metrics.tokens_in==null || metrics.tokens_out==null?metrics.tokens_total??null:Number(metrics.tokens_in)+Number(metrics.tokens_out);
@@ -148,8 +163,10 @@
       } finally {state.busy=false;if(state.active && serial!==state.serial)refresh();}
     }
     host.addEventListener('click',e=>{
+      if(e.target.closest('.dwo'))return;
       const b=e.target.closest('button');if(!b)return;
-      if(b.dataset.device){state.device=b.dataset.device;state.selected=null;state.contribution=null;render();}
+      if(b.dataset.mode){state.mode=b.dataset.mode;render();}
+      else if(b.dataset.device){state.requestedProvider=null;state.device=b.dataset.device;state.selected=null;state.contribution=null;render();}
       else if(b.dataset.run){state.selected=b.dataset.run;state.contribution=null;render();}
       else if(b.dataset.contribution){state.contribution=b.dataset.contribution;state.selected=null;render();}
       else if(b.hasAttribute('data-refresh'))refresh();
@@ -162,7 +179,7 @@
     $('[data-filter]').addEventListener('change',e=>{state.filter=e.target.value;render();});
     $('[data-search]').addEventListener('input',e=>{state.query=e.target.value;render();});
     render();
-    return {refresh,setActive(on){state.active=on;state.serial++;if(on)refresh();},state};
+    return {refresh,showProvider(provider,windowKey='today'){state.requestedProvider=provider;state.mode='outcomes';state.selected=null;state.contribution=null;if(state.window!==windowKey){state.window=windowKey;$('[data-window]').value=windowKey;state.serial++;}render();refresh();},setActive(on){state.active=on;state.serial++;if(on)refresh();},state};
   }
   const api={mount,range,visibleRuns,visibleContributions,contributionRow,concurrency,graph,row,active,friendly,url,outcomeLabel,stateLabel};
   if(typeof module==='object' && module.exports)module.exports=api;

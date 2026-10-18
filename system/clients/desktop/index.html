@@ -1212,6 +1212,7 @@ window.taskVizCreate = canvas => {
 <script src="hermes-providers.js"></script>
 <link rel="stylesheet" href="device-work.css">
 <script src="device-work-legacy.js"></script>
+<script src="device-outcomes.js"></script>
 <script src="device-work.js"></script>
 <script src="../web/viz/toast-stack.js"></script>
 <script src="../web/viz/process-popup.js"></script>
@@ -1906,6 +1907,10 @@ async function tkProvidersWindow(e) {
     } catch (error) { toast(error.message, 9000); }
     finally { control.disabled = false; tkProvidersLoad(); }
     return;
+  }
+  const work = e.target.closest('[data-tkp-work-provider]');
+  if (work && !e.target.closest('input,select,label,a,summary,details')) {
+    tkView('devices'); TK.deviceView?.showProvider(work.dataset.tkpWorkProvider, TK.providersWindow); return;
   }
   const b = e.target.closest("[data-tkp-window]"); if (!b || b.dataset.tkpWindow === TK.providersWindow) return;
   TK.providersWindow = b.dataset.tkpWindow;
