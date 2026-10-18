@@ -1890,7 +1890,7 @@ function tkProvidersRender() {
   if (TK.capacitySaving || document.activeElement?.matches('[data-tkp-capacity]')) return;
   const P = window.GBoxProviders; if (!P) return;
   const box = $("#tkv-providers"), html = P.cards(TK.providers, { window: TK.providersWindow });
-  if (box.tkHtml !== html) { box.innerHTML = html; box.tkHtml = html; }
+  tkRender(box, html, $("#tk-visual"));
   tkRender($("#tk-providers"), P.table(TK.providers, { window: TK.providersWindow }), $("#tk-technical"));
 }
 async function tkProvidersWindow(e) {
@@ -2097,14 +2097,19 @@ function tkKey(el, host) {
   return `${id}|${[...scope.querySelectorAll("pre")].indexOf(el)}`;
 }
 function tkSnap(host) {
-  const pres = new Map(), open = new Set();
+  const pres = new Map(), open = new Map(), scrolls = new Map();
   host.querySelectorAll("pre").forEach(el => pres.set(tkKey(el, host), { top: el.scrollTop,
     follow: el.scrollTop > 0 && el.scrollTop + el.clientHeight >= el.scrollHeight - 20 }));
-  host.querySelectorAll("details[data-tk-key][open]").forEach(el => open.add(el.dataset.tkKey));
-  return { pres, open };
+  host.querySelectorAll("details[data-tk-key]").forEach(el => open.set(el.dataset.tkKey, el.open));
+  host.querySelectorAll("[data-tk-scroll]").forEach(el => scrolls.set(el.dataset.tkScroll, { top: el.scrollTop, left: el.scrollLeft }));
+  return { pres, open, scrolls };
 }
 function tkRestore(host, snap) {
-  host.querySelectorAll("details[data-tk-key]").forEach(el => { if (snap.open.has(el.dataset.tkKey)) el.open = true; });
+  host.querySelectorAll("details[data-tk-key]").forEach(el => { if (snap.open.has(el.dataset.tkKey)) el.open = snap.open.get(el.dataset.tkKey); });
+  host.querySelectorAll("[data-tk-scroll]").forEach(el => {
+    const p = snap.scrolls.get(el.dataset.tkScroll);
+    if (p) { el.scrollTop = p.top; el.scrollLeft = p.left; }
+  });
   host.querySelectorAll("pre").forEach(el => {
     const p = snap.pres.get(tkKey(el, host));
     if (p) el.scrollTop = p.follow ? el.scrollHeight : p.top;
@@ -2112,6 +2117,8 @@ function tkRestore(host, snap) {
 }
 // The reader is busy: dragging a scrollbar, mid-scroll, or holding a text selection in this list.
 function tkReading(host) {
+  const panel = host.closest("#taskpanel");
+  if (panel && !panel.classList.contains("on")) return false;
   const now = Date.now();
   if (TK.pointerDown && now - TK.pointerDown < 10000) return true;
   if (now - TK.scrolledAt < 1200) return true;
@@ -2121,11 +2128,7 @@ function tkReading(host) {
 // Replace host's markup only when it changed, keeping the scroll pane, open logs and keyed details where they were.
 function tkRender(host, html, pane) {
   if (host.tkHtml === html) return false;
-  if (host.tkHtml !== undefined && tkReading(host)) {
-    host.tkWait ||= Date.now();
-    if (Date.now() - host.tkWait < 30000) return false;
-  }
-  host.tkWait = 0;
+  if (host.tkHtml !== undefined && tkReading(host)) return false;
   const snap = tkSnap(host), top = pane ? pane.scrollTop : 0;
   // Retain the actual open job contents, including loaded previews and their refresh state.
   // Replaying cached HTML alone loses tkMain and briefly shrinks a full console to progress_log.

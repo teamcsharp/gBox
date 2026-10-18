@@ -366,7 +366,7 @@ def gbox_in_front(fg, fg_root, app, game) -> bool:
     return fg == app or fg_root == app or bool(game and (fg == game or fg_root == game))
 
 
-def gesture_target(pt_root, in_game: bool, app, game, front: bool, needs_front: bool):
+def gesture_target(pt_root, in_game: bool, app, game, front: bool, needs_front: bool, *, game_hit: bool = False):
     """Who a mouse gesture at a screen point belongs to: "game" (the docked game is what's under the cursor), "app" (the gBox
     window), or None: another application's window is the one under the point (it covers gBox there), or the gesture uses a
     keyboard modifier (Ctrl+click, Alt+drag) while another application has the foreground. None = pass it on untouched."""
@@ -374,7 +374,9 @@ def gesture_target(pt_root, in_game: bool, app, game, front: bool, needs_front: 
         return None
     if needs_front and not front:
         return None
-    return "game" if in_game else "app"
+    # The app and docked game share a root. A popup revealed by a clipped game
+    # region is still inside its bounding rectangle; only the actual hit proves game input.
+    return "game" if in_game and game_hit else "app"
 
 
 def front_now() -> bool:
@@ -488,6 +490,8 @@ def rclick_hook():
         _fields_ = [("pt", wintypes.POINT), ("mouseData", wintypes.DWORD), ("flags", wintypes.DWORD),
                     ("time", wintypes.DWORD), ("extra", ctypes.c_size_t)]
     PROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+    u32.IsChild.argtypes = [wintypes.HWND, wintypes.HWND]
+    u32.IsChild.restype = wintypes.BOOL
     u32.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM]
     u32.CallNextHookEx.restype = ctypes.c_ssize_t
     u32.SetWindowsHookExW.argtypes = [ctypes.c_int, PROC, wintypes.HINSTANCE, wintypes.DWORD]
@@ -512,7 +516,8 @@ def rclick_hook():
         hit = u32.WindowFromPoint(wintypes.POINT(pt.x, pt.y))
         root = u32.GetAncestor(hit, GA_ROOTOWNER) if hit else None
         front = front_now() if needs_front else False
-        return gesture_target(root, in_game_rect(pt), p, h, front, needs_front)
+        game_hit = bool(hit and (hit == h or u32.IsChild(h, hit)))
+        return gesture_target(root, in_game_rect(pt), p, h, front, needs_front, game_hit=game_hit)
 
     def over(pt, needs_front=False):
         return target(pt, needs_front) == "game"
