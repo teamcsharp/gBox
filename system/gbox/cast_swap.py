@@ -1,7 +1,7 @@
 """Whole-cast swap: replace the entire cast of one game with the entire cast of another ("everyone in Phantasy Star
 Online as the Def Jam wrestlers", "the Jet Grind Radio crew as the SmackDown! 2 roster"), built as ONE mod.
 
-`characters op=cast_swap target_game=<id|title> source=<game id|title|group> [mapping=auto|random|by_role]
+`characters op=cast_swap target_game=<id|title> source=<game id|title|group> [mapping=auto|random|by_role|alternate]
 [assign=random] [seed] [prefer=<source>] [slots=all|main|enemies|bots|campaign|<comma list>]
 [assignments=[{slot, character}]] [plan_only] [launch]` routes here. `assign=random` (any game) deals the source's
 donors at random over the chosen slots: seeded, no donor repeats before every donor has been used, every character name
@@ -245,6 +245,9 @@ def resolve_source(spec: str, chars: list[dict], kind: str = "character") -> dic
     the available sources when nothing matches."""
     pool = _candidates(chars, kind)
     picked: dict[str, dict] = {}
+    groups: dict[str, str] = {}
+    pool_order: list[str] = []
+    same_members: dict[frozenset[str], str] = {}
     labels, best_groups = [], []
     for part in [p.strip() for p in re.split(r"[,+]|\band\b", spec or "") if p.strip()]:
         q = part.lower()
@@ -253,17 +256,20 @@ def resolve_source(spec: str, chars: list[dict], kind: str = "character") -> dic
         if grp:
             hits = [m for m in pool if in_group(m, grp)]
             labels.append(GROUPS[grp]["label"])
+            pool_key = grp
             if GROUPS[grp].get("best_per_character"):
                 best_groups.append(grp)
         elif re.fullmatch(r"[0-9a-f]{16}", q):
             hits = [m for m in pool if (m.get("source") or {}).get("game_id") == q]
             labels.append(next(((m["source"].get("game_title")) for m in hits), q))
+            pool_key = "game:" + q
         else:
             from . import characters as C
             names = {n for n, *_r in C.DEDICATED}
             if q in names:
                 hits = [m for m in pool if extractor_of(m) == q]
                 labels.append(next((m["source"]["game_title"] for m in hits), q))
+                pool_key = "extractor:" + q
             else:
                 want = _words(expand(part))
                 titles: dict[str, int] = {}
@@ -280,14 +286,22 @@ def resolve_source(spec: str, chars: list[dict], kind: str = "character") -> dic
                         keep -= sequel
                     hits = [m for m in pool if m["source"]["game_title"] in keep]
                     labels.append(" / ".join(sorted(keep)))
+                    pool_key = "titles:" + " | ".join(sorted(t.casefold() for t in keep))
         if not hits:
             have = ", ".join(f"{g['label']} ({g['count']})" for g in source_groups(chars)) or "nothing yet"
             raise ValueError(f"no {kind} entries in the collection match source {part!r}; sources: {have}")
+        # A requested component is one pool even if it matches several games. Aliases
+        # with identical members share a pool; otherwise the first component owns overlaps.
+        pool_key = same_members.setdefault(frozenset(m["slug"] for m in hits), pool_key)
+        if pool_key not in pool_order:
+            pool_order.append(pool_key)
         for m in hits:
             picked.setdefault(m["slug"], m)
+            groups.setdefault(m["slug"], pool_key)
     if not picked:
         raise ValueError("source is empty: name a game, a game id or a group (wrestlers, fighters, ...)")
-    return {"label": " + ".join(labels), "entries": list(picked.values()), "best_per_character": best_groups}
+    return {"label": " + ".join(labels), "entries": list(picked.values()), "best_per_character": best_groups,
+            "groups": groups, "pool_order": pool_order}
 
 
 def dedupe(entries: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -491,13 +505,16 @@ def slot_sets(rows: list[dict]) -> list[list[str]]:
 
 # ---------------------------------------------------------------- the mapping
 
-def assign(slots: list[dict], donors: list[dict], mapping: str = "auto", seed: str = "") -> list[dict]:
-    """[(slot, donor)] for every buildable slot: deterministic for (slots, donors, mapping, seed); a donor repeats
-    only once every donor has been used. by_role: lead donors on player slots, then the tallest (relative to their
-    own game) on the largest slots; random: a seeded shuffle."""
+def assign(slots: list[dict], donors: list[dict], mapping: str = "auto", seed: str = "", *,
+           pool_order: list[str] | None = None) -> list[dict]:
+    """Deterministic assignments for slots/donors/mapping/seed. by_role places leads on player slots
+    and taller donors on larger slots; random shuffles the donor deck. alternate balances source
+    pool counts, deals every distinct name once per pool pass, and rotates each name's variants
+    without replacement. Unequal pools/name-variant counts can repeat a donor before all donors
+    globally have appeared; alternate guarantees name passes, not global donor exhaustion."""
     mapping = (mapping or "auto").lower().replace("-", "_")
-    if mapping not in ("auto", "random", "by_role"):
-        raise ValueError(f"mapping={mapping!r}: auto | random | by_role")
+    if mapping not in ("auto", "random", "by_role", "alternate"):
+        raise ValueError(f"mapping={mapping!r}: auto | random | by_role | alternate")
     todo = [s for s in slots if not s.get("skip")]
     if not donors or not todo:
         return []
@@ -515,6 +532,8 @@ def assign(slots: list[dict], donors: list[dict], mapping: str = "auto", seed: s
             d = deck.pop(0)
             out.append((s, d, "random (seeded" + (", preferred source)" if d.get("preferred") else ")")))
         return [_row(s, d, why) for s, d, why in out]
+    if mapping == "alternate":
+        return _alternate(todo, donors, rng, pool_order=pool_order)
     # by_role (auto is by_role: it falls back to the seeded order when sizes are unknown)
     tie = {d["slug"]: rng.random() for d in donors}
     leads = sorted([d for d in donors if d.get("lead")], key=lambda d: (not d.get("preferred"), tie[d["slug"]]))
@@ -567,6 +586,65 @@ def spread(deck: list[dict]) -> list[dict]:
 def _row(s: dict, d: dict, why: str) -> dict:
     return {"slot": s["slot"], "slot_name": s.get("name") or s["slot"], "kind": s["kind"], "character": d["slug"],
             "donor": d["name"], "source": d.get("source"), "preview_url": d.get("preview_url"), "why": why}
+
+
+def _alternate(todo: list[dict], donors: list[dict], rng: random.Random, *,
+               pool_order: list[str] | None = None) -> list[dict]:
+    """mapping=alternate: round-robin the donors across their source pools, one donor per pool per pass.
+
+    A donor's pool is its `pool` tag (the source group it came from), else its source game id / title, else its
+    slug. Requested component order wins when supplied, otherwise pools keep first-seen order.
+    Each seeded pool pass deals each distinct name once; variants of a name rotate without
+    replacement. An exhausted name pass reshuffles. Pool slot counts stay within one."""
+    pools: dict[str, list[dict]] = {}
+    order: list[str] = []
+    for d in donors:
+        key = str(d.get("pool") or d.get("source_game_id") or d.get("source") or d["slug"])
+        if key not in pools:
+            pools[key] = []
+            order.append(key)
+        pools[key].append(d)
+
+    if pool_order is not None:
+        missing = [key for key in pool_order if key not in pools]
+        if missing:
+            raise ValueError(f"alternate source pools have no eligible donors: {', '.join(missing)}")
+        order = list(dict.fromkeys(pool_order)) + [key for key in order if key not in pool_order]
+
+    # Each pass contains each distinct character name exactly once. A character
+    # with several game/costume variants must not crowd out the other names.
+    variants: dict[str, dict[str, list[dict]]] = {}
+    remaining: dict[str, dict[str, list[dict]]] = {}
+    for key in order:
+        variants[key] = {}
+        for donor in pools[key]:
+            variants[key].setdefault(donor.get("name_key") or donor["slug"], []).append(donor)
+        remaining[key] = {name: [] for name in variants[key]}
+
+    def fresh(key: str) -> list[dict]:
+        names = list(variants[key])
+        rng.shuffle(names)
+        deck = []
+        for name in names:
+            choices = remaining[key][name]
+            if not choices:
+                choices.extend(variants[key][name])
+                rng.shuffle(choices)
+            deck.append(choices.pop())
+        return deck
+
+    decks = {k: fresh(k) for k in order}
+    idx = {k: 0 for k in order}
+    out = []
+    for i, s in enumerate(todo):
+        key = order[i % len(order)]
+        if idx[key] >= len(decks[key]):
+            decks[key] = fresh(key)
+            idx[key] = 0
+        d = decks[key][idx[key]]
+        idx[key] += 1
+        out.append((s, d, f"alternate pool {key}"))
+    return [_row(s, d, why) for s, d, why in out]
 
 
 def apply_edits(plan: list[dict], edits: list[dict], donors: list[dict], slots: list[dict]) -> list[dict]:
@@ -774,6 +852,7 @@ def plan(game: dict, chars: list[dict], source: str, mapping: str = "auto", seed
             if s is not first and not s.get("skip"):
                 s["skip"] = (f"{w['writer']} has no multi-slot path (pairs API or chained step) yet: one mod holds "
                              f"one slot; build it alone with characters op=use slot={s['slot']}")
+    mapping = (mapping or "auto").lower().replace("-", "_")
     src = resolve_source(source, chars, kind)
     entries, costumes = dedupe(src["entries"])
     donors, refused, refreshed = gate(entries, root, kind, refresh)
@@ -795,6 +874,11 @@ def plan(game: dict, chars: list[dict], source: str, mapping: str = "auto", seed
         donors = [m for m in donors if not member(m) or m["slug"] in kept]
     pos = {m["slug"]: i for i, m in enumerate(entries)}    # the source's own order, re-extracted or not: same plan
     rows = donor_rows(sorted((m for m in donors if m['slug']!=lead_character), key=lambda m: pos.get(m["slug"], 1 << 30)), root)
+    for r in rows:
+        pool_key = src.get("groups", {}).get(r["slug"])
+        if mapping == "alternate" and pool_key is None:
+            raise ValueError(f"refreshed donor {r['slug']} has no source-component attribution; replan the source")
+        r["pool"] = pool_key or r.get("source_game_id") or r.get("source")
     pref = {m["slug"] for m in resolve_source(prefer, chars, kind)["entries"]} if (prefer or "").strip() else set()
     for r in rows:
         if r["slug"] in stale:
@@ -810,7 +894,7 @@ def plan(game: dict, chars: list[dict], source: str, mapping: str = "auto", seed
                 if s["slot"] == e.get("slot") and not s.get("skip"):
                     s["skip"] = f"donor {e['character']} refused: {why[e['character']]}"
     dealt=[s for s in chosen if not (lead_character and (s['slot']==lead_slot or (lead_slot=='player' and s.get('lead_slot'))))]
-    out = assign(dealt, rows, mapping, seed)
+    out = assign(dealt, rows, mapping, seed, pool_order=src.get("pool_order") if mapping == "alternate" else None)
     if assignments:
         out = apply_edits(out, texture_assignment_aliases([e for e in assignments if e.get("character") not in why and not (lead_character and e.get('slot')==lead_slot)],chars,rows), rows,
                           [s for s in chosen if not s.get("skip")])
@@ -876,7 +960,7 @@ def _target_game(ctx, inp) -> dict:
 
 
 def mapping_of(inp) -> str:
-    """assign= (random | by_role | auto) wins over mapping=: `assign=random seed=x` deals the source's donors at random
+    """assign= (random | by_role | auto | alternate) wins over mapping=: `assign=random seed=x` deals the source's donors at random
     over the chosen slots for any game (seeded, no donor repeats before every donor has been used once, every
     character name once before any name repeats, prefer= donors first)."""
     a = str(getattr(inp, "assign", "") or "").strip().lower()
