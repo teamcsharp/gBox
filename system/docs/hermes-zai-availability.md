@@ -1,5 +1,20 @@
 # Z.AI availability and favorites work
 
+## Optional task supervision
+
+The existing build supervisor supports `supervision_provider: "zai"` in
+`hermes-dispatch/build-supervisor.json`. It pins GLM-5.3, reviews recent
+Spark2 checkpoints, and leaves implementation guidance on existing requests.
+The default remains Nous. The Tasks switch, single-run lock, 24-turn limit,
+eight-minute run budget, and durable report delivery apply to either provider.
+
+Z.AI supervision checks the operator's provider-scope policy before reading
+the task snapshot and again before launching. It also requires a quota observation
+no older than ten minutes, available inference windows, and a successful probe
+from the existing availability watcher. A fallback to another provider blocks
+launch. A public-source-only restriction must be explicitly lifted by the operator
+before private task supervision can run; selecting Z.AI does not change that policy.
+
 The 2026-10-10 operator request supplied a 16:48 America/Chicago reset hint.
 An actual account check already reported 2,000 five-hour credits remaining,
 and GLM-5.3 accepted a completion with 15 prompt tokens and one output token.
