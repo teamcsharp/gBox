@@ -7,6 +7,7 @@ const P=require('../clients/desktop/device-work.js');
 const {withPage,findChrome}=require('../scripts/browser_lifecycle.cjs');
 const source=fs.readFileSync(path.join(__dirname,'../clients/desktop/device-work.js'),'utf8');
 const legacySource=fs.readFileSync(path.join(__dirname,'../clients/desktop/device-work-legacy.js'),'utf8');
+const outcomesSource=fs.readFileSync(path.join(__dirname,'../clients/desktop/device-outcomes.js'),'utf8');
 const css=fs.readFileSync(path.join(__dirname,'../clients/desktop/device-work.css'),'utf8');
 const desktop=fs.readFileSync(path.join(__dirname,'../clients/desktop/index.html'),'utf8');
 const desktopStyles=[...desktop.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)].map(m=>m[1]).join('\n');
@@ -81,7 +82,7 @@ const skip=!findChrome()&&'no Chromium installed';
 async function setup(evaluate,send) {
   await send('Emulation.setDeviceMetricsOverride',{width:1500,height:950,deviceScaleFactor:1,mobile:false});
   await evaluate(`document.head.innerHTML='<style>body{margin:0;background:#090d15;font-family:Segoe UI,Arial,sans-serif}#taskpanel{position:fixed}.th{height:47px;display:flex;align-items:center;padding:0 15px;gap:20px;border-bottom:1px solid #33425d;box-sizing:border-box}.th button{background:#334568;color:white;padding:8px;border:1px solid #5a6b8a;border-radius:5px}</style>';document.body.innerHTML='<div id="taskpanel" class="device-mode"><div class="th"><b>Tasks</b><button>Device work</button><span>Network</span><span>Technical</span><span style="margin-left:auto">Browser test fixture</span></div><div id="tk-devices"></div></div>';`);
-  await evaluate(`{const style=document.createElement('style');style.textContent=${JSON.stringify(desktopStyles+'\n'+css)};document.head.append(style);document.querySelector('#taskpanel').classList.add('on');}${legacySource}${source}`);
+  await evaluate(`{const style=document.createElement('style');style.textContent=${JSON.stringify(desktopStyles+'\n'+css)};document.head.append(style);document.querySelector('#taskpanel').classList.add('on');}${legacySource}${outcomesSource}${source}`);
   await evaluate(`window.snapshot=${JSON.stringify(fixture())};window.calls=[];window.opened=[];window.reply=()=>Promise.resolve({ok:true,data:structuredClone(snapshot)});window.view=GBoxDeviceWork.mount(document.querySelector('#tk-devices'),{api:p=>{calls.push(p);return reply(p)},onRun:id=>opened.push(['run',id]),onRequest:id=>opened.push(['request',id]),onExternal:url=>opened.push(['url',url])});view.setActive(true);`);
   await evaluate('Promise.resolve().then(()=>Promise.resolve())');
 }
