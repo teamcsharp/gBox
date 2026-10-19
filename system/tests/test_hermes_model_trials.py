@@ -20,6 +20,14 @@ def test_solo_commands_never_start_a_cluster():
         assert profile[2] in args
 
 
+def test_remote_payload_is_complete_python_without_package_imports():
+    source = Path(T.__file__).read_text().rsplit("if __name__ == '__main__':", 1)[0]
+    scope = {}
+    exec(compile(source, 'remote-model-trials', 'exec'), scope)
+    assert callable(scope['remote'])
+    assert scope['PROFILES'] == T.PROFILES
+
+
 def test_adopt_requires_native_tool_and_followup(monkeypatch):
     replies = [
         {'data': [{'id': 'model', 'max_model_len': 32768}]},

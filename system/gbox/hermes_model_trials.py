@@ -160,7 +160,7 @@ def worker(job_id):
             if action != 'trial_adopt':
                 plan = {'id': job_id, 'action': action, 'profile': profile,
                         'container': data.get('container', 'vllm_node')}
-                source = Path(__file__).read_text().split("if __name__ == '__main__':")[0]
+                source = Path(__file__).read_text().rsplit("if __name__ == '__main__':", 1)[0]
                 wire = 'exec(compile(' + repr(source) + ',"model-trial-remote","exec")); remote(' + repr(plan) + ')'
                 p = subprocess.Popen(M.ssh_args() + ['python3 -'], stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
