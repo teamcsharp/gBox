@@ -16,6 +16,9 @@ SCHEMA = 1
 NAME = 'gBox favorite and played-game unlock research'
 KEY = 'unlock_on_load'
 CATEGORIES = ('characters', 'hidden_characters', 'modes', 'levels', 'stages', 'costumes', 'items', 'extras')
+# Offline artifact kinds for the bounded DOAPP inventory evidence report.
+# Runtime hooks stay in game_unlocks; the dump itself never touches them.
+DOAPP_EVIDENCE_KIND = 'doapp_inventory_report'
 
 
 def instructions(game):
@@ -51,6 +54,42 @@ def instructions(game):
         'partial inventory or code-only PR is not unlock-all completion. Keep this child in_progress until the '
         'on-load routine is deployed and its complete scope is runtime-verified; otherwise checkpoint one bounded '
         'milestone with the exact next step so Hermes continues. Use at most 45 tool calls per run.')
+
+
+def doapp_inventory_report(inventory, game_id):
+    """Bounded offline evidence artifact for one game's DOAPP unlock research.
+
+    Summarizes a prior doapp_inventory.build() result for the request report:
+    entry/category counts, hidden-costume candidates, and a per-category sample
+    of entry names. This is evidence only. It never registers runtime hooks
+    (that stays in game_unlocks) and never mutates ROMs, saves, or builds.
+    Raises ValueError when the game is absent from the inventory.
+    """
+    games = (inventory or {}).get('games') or {}
+    if game_id not in games:
+        raise ValueError(f'game {game_id} is not in the DOAPP inventory')
+    game = games[game_id]
+    entries = game.get('entries') or {}
+    categories = {name: list(names) for name, names in (game.get('categories') or {}).items()}
+    hidden = [n for n, meta in entries.items() if meta.get('hidden_costume')]
+    samples = {name: names[:10] for name, names in sorted(categories.items())}
+    return {
+        'kind': DOAPP_EVIDENCE_KIND,
+        'game_id': game_id,
+        'title': game.get('title') or game_id,
+        'title_source': game.get('title_source') or 'unresolved',
+        'files': game.get('files', 0),
+        'entries': len(entries),
+        'entry_kinds': dict(sorted(game.get('entry_kinds', {}).items())),
+        'categories': {name: len(names) for name, names in sorted(categories.items())},
+        'category_samples': samples,
+        'hidden_costumes': sorted(hidden),
+        'hidden_costume_count': len(hidden),
+        'warnings': list(game.get('warnings') or []),
+        'source': (inventory or {}).get('source', ''),
+        'inventory_generated': (inventory or {}).get('generated'),
+        'runtime_hooks': 'none (evidence only; see gbox.game_unlocks profile_for)',
+    }
 
 
 def targets(favorites, sessions, since):
