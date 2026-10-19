@@ -448,3 +448,14 @@ def test_private_queue_scope_blocks_new_and_reused_jobs_without_claims(env, monk
     assert 'public-source' in result['reason']
     item = q._read()['items']['inbox:' + R]
     assert item.get('attempts', 0) == 0 and item.get('dispatch_state') != 'uncertain'
+
+
+def test_an_extraction_without_a_reader_queues_the_title_for_reader_work(env):
+    """#2388: characters.collect on a title with no reader puts it in the readiness lane; candidates admit it."""
+    row = q.ensure_item({'game_id': 'ab' * 8, 'title': 'Readerless', 'platform': 'xbox'}, source='collect', now=5)
+    assert row['new']
+    data = q._read()
+    item = data['items']['favorite:' + 'ab' * 8]
+    assert item['collect'] is True and item['in_catalog'] is True and 'collect' in item['requested_by']
+    assert [item['game_id'] for _key, item in q.candidates(data, [], [], set(), set(), now=6)] == ['ab' * 8]
+    assert [g['game_id'] for g in q.snapshot()['games']] == ['ab' * 8]

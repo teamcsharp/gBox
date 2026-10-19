@@ -242,7 +242,7 @@ def candidates(data, requests, native, owned, on_main, *, now):
             continue
         if item['lane'] == 'favorite':
             # a recently played title the Sonic showcase found without a writer (ensure_item) is worked like a favorite
-            if (not (item.get('favorite') or item.get('showcase')) or not item.get('in_catalog')
+            if (not (item.get('favorite') or item.get('showcase') or item.get('collect')) or not item.get('in_catalog')
                     or item['game_id'] in busy_games or not next_stage(item)):
                 continue
             if heavy >= 2 and next_stage(item) in ('inventory', 'analysis'):
@@ -721,7 +721,8 @@ def ensure_item(game, *, fingerprint=None, source='showcase', now=None):
     """Put a catalog title in the readiness queue (the favorite lane: inventory -> analysis -> reader -> writer ->
     runtime, worked by Hermes with Ghidra / REA) with the assimilate fingerprint attached. Used by the Sonic showcase
     for a title without a writer: a favorite is already there (sync); a recently played one is added with
-    `showcase: true`, which candidates() admits after the starred favorites. Never resets stages or a ticket.
+    `showcase: true`, which candidates() admits after the starred favorites; an operator's extraction of a title
+    without a reader adds it with `collect: true` (#2388), admitted the same way. Never resets stages or a ticket.
     Raises BlockingIOError while the queue's tick holds the lock (the caller retries on its next pass)."""
     now = time.time() if now is None else now
     gid = str(game.get('game_id') or '')
@@ -755,7 +756,7 @@ def snapshot(game_id=''):
     games = [{k: item.get(k) for k in ('game_id', 'title', 'platform', 'in_catalog', 'request_id',
              'number', 'dispatch_state', 'job_id', 'attempts', 'retry_at', 'stages', 'favorite', 'showcase')}
              | {'next_stage': next_stage(item)} for item in data['items'].values()
-             if item['lane'] == 'favorite' and (item.get('favorite') or item.get('showcase')
+             if item['lane'] == 'favorite' and (item.get('favorite') or item.get('showcase') or item.get('collect')
                                                or game_id and item['game_id'] == game_id)]
     count = sum(bool(g.get('favorite')) for g in games)
     ready = sum(bool(g.get('favorite')) and g['next_stage'] is None for g in games)
