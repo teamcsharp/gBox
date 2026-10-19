@@ -10,6 +10,7 @@ keeps its size, layout and every offset.
 """
 from __future__ import annotations
 
+import hashlib
 import struct
 from dataclasses import dataclass
 
@@ -20,6 +21,9 @@ TILE = {0: (8, 8, 4), 1: (8, 4, 8), 2: (8, 4, 8), 3: (4, 4, 16), 4: (4, 4, 16), 
         8: (8, 8, 4), 9: (8, 4, 8), 10: (4, 4, 16), 14: (8, 8, 4)}
 FORMAT_NAMES = {0: "I4", 1: "I8", 2: "IA4", 3: "IA8", 4: "RGB565", 5: "RGB5A3", 6: "RGBA8", 8: "C4", 9: "C8",
                 10: "C14X2", 14: "CMPR"}
+
+
+_ENCODED: dict = {}                                       # (format, size, palette, texels sha1) -> encoded bytes
 
 
 def _al(v: int, a: int) -> int:
@@ -87,14 +91,19 @@ class TextureSet:
         """New texels for one image, same size and format (C4 / C8 get a fresh palette in place)."""
         from PIL import Image as PI
         rgba = np.asarray(PI.fromarray(np.asarray(rgba, np.uint8)).convert("RGBA").resize((img.w, img.h), PI.LANCZOS))
-        if img.fmt in (8, 9):
-            idx, pal = quantize(rgba, min(img.pal_count, 16 if img.fmt == 8 else 256), img.pal_fmt)
-            raw = encode(img.fmt, img.w, img.h, idx)
-            pal = pal + bytes(2 * img.pal_count - len(pal))
+        key = (img.fmt, img.w, img.h, img.pal_fmt, img.pal_count, hashlib.sha1(rgba.tobytes()).digest())
+        if key not in _ENCODED:                            # the same atlas lands in many stages' copies of a set
+            if len(_ENCODED) > 512:
+                _ENCODED.clear()
+            if img.fmt in (8, 9):
+                idx, pal = quantize(rgba, min(img.pal_count, 16 if img.fmt == 8 else 256), img.pal_fmt)
+                _ENCODED[key] = (encode(img.fmt, img.w, img.h, idx), pal + bytes(2 * img.pal_count - len(pal)))
+            else:
+                _ENCODED[key] = (encode(img.fmt, img.w, img.h, rgba), None)
+        raw, pal = _ENCODED[key]
+        if pal is not None:
             o = self.tpl + img.pal_off
             self.data[o:o + len(pal)] = pal
-        else:
-            raw = encode(img.fmt, img.w, img.h, rgba)
         o = self.tpl + img.data_off
         assert len(raw) == image_size(img.fmt, img.w, img.h)
         self.data[o:o + len(raw)] = raw
