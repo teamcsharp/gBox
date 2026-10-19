@@ -74,7 +74,8 @@ def test_reject_unknown_profile_and_action():
 
 
 @pytest.mark.skipif(os.name == 'nt', reason='Remote worker uses the Spark flock API')
-def test_failed_launch_restarts_retained_container_and_script(tmp_path, monkeypatch):
+@pytest.mark.parametrize('restores', [True, False])
+def test_failed_launch_restarts_retained_container_and_script(tmp_path, monkeypatch, capsys, restores):
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     (tmp_path / 'spark-vllm-docker').mkdir()
     monkeypatch.setattr(T.urllib.request, 'urlopen', lambda *a, **k: io.BytesIO(
@@ -85,11 +86,21 @@ def test_failed_launch_restarts_retained_container_and_script(tmp_path, monkeypa
         if '--daemon' in args:
             raise T.subprocess.CalledProcessError(1, args)
     monkeypatch.setattr(T.subprocess, 'run', run)
+    def restored(model, timeout):
+        assert model == 'original-model' and timeout == 300
+        if not restores:
+            raise RuntimeError('not served')
+        return {'model': model}
+    monkeypatch.setattr(T, 'wait_ready', restored)
     with pytest.raises(T.subprocess.CalledProcessError):
-        T.remote({'id': '123456abcdef', 'action': 'trial_start', 'profile': 'qwen-coder', 'container': 'old_model'})
+        T.remote({'id': '123456abcdef', 'action': 'trial_start', 'profile': 'qwen-coder',
+                  'container': 'old_model', 'previous_model': 'original-model'})
     assert ['docker', 'start', 'old_model'] in commands
     assert any(c[:4] == ['docker', 'exec', '-d', 'old_model'] and '/workspace/exec-script.sh' in c[-1] for c in commands)
     assert not any(c[:2] == ['docker', 'rm'] for c in commands)
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert events[-1]['state'] == ('rolled_back' if restores else 'rollback_failed')
+    assert not any(e['state'] == 'ready' for e in events)
 
 
 def test_failed_adoption_leaves_route_unchanged_and_does_not_restart(tmp_path, monkeypatch):

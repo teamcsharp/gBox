@@ -159,7 +159,8 @@ def worker(job_id):
                 P.maintenance('sparkDeux', True); changed = True
             if action != 'trial_adopt':
                 plan = {'id': job_id, 'action': action, 'profile': profile,
-                        'container': data.get('container', 'vllm_node')}
+                        'container': data.get('container', 'vllm_node'),
+                        'previous_model': P.node_settings()['sparkDeux'].model}
                 source = Path(__file__).read_text().rsplit("if __name__ == '__main__':", 1)[0]
                 wire = 'exec(compile(' + repr(source) + ',"model-trial-remote","exec")); remote(' + repr(plan) + ')'
                 p = subprocess.Popen(M.ssh_args() + ['python3 -'], stdin=subprocess.PIPE,
@@ -190,11 +191,14 @@ def worker(job_id):
             P.set_capacity('sparkDeux', 4)
             data.setdefault('history', []).append({'job': job_id, 'profile': profile, **receipt})
             update(state='ready', receipt=receipt)
+            if action == 'trial_adopt':
+                P.maintenance('sparkDeux', False)
         except Exception as exc:
             # No raw SSH/HTTP bodies or environment values are persisted.
-            update(state='failed', error=str(exc)[:180] if isinstance(exc, RuntimeError) else type(exc).__name__)
+            update(state='rollback_failed' if job.get('state') == 'rollback_failed' else 'failed',
+                   error=str(exc)[:180] if isinstance(exc, RuntimeError) else type(exc).__name__)
         finally:
-            if changed:
+            if changed and job.get('state') != 'rollback_failed':
                 P.maintenance('sparkDeux', False)
 
 
@@ -203,6 +207,16 @@ def recipe_args(root, profile, name):
         raise ValueError('No single-Spark recipe for this profile')
     return [sys.executable, str(root / 'run-recipe.py'), PROFILES[profile][2], '--solo',
             '--tp', '1', '--port', '8000', '--max-model-len', '65536', '--name', name, '-j', '2']
+
+
+def wait_ready(model, timeout):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            return probe('http://127.0.0.1:8000/v1', model)
+        except Exception:
+            time.sleep(5)
+    raise RuntimeError('Model did not pass tool validation before the deadline')
 
 
 def remote(plan):
@@ -248,21 +262,21 @@ def remote(plan):
             run(['docker', 'stop', '-t', '30', old], 60)
             emit('starting')
             run(args + ['--daemon', '--earlyoom'], 300)
-            deadline = time.monotonic() + 1800
-            while time.monotonic() < deadline:
-                try:
-                    receipt = probe('http://127.0.0.1:8000/v1', PROFILES[plan['profile']][1])
-                    emit('ready', container=name, rollback_container=old, receipt=receipt); return
-                except Exception:
-                    time.sleep(5)
-            raise RuntimeError('New model did not pass tool validation')
+            receipt = wait_ready(PROFILES[plan['profile']][1], 1800)
+            emit('ready', container=name, rollback_container=old, receipt=receipt); return
         except BaseException:
             if stopped:
                 emit('rolling_back')
                 subprocess.run(['docker', 'stop', '-t', '10', name], stdout=log, stderr=log, timeout=30)
-                run(['docker', 'start', old])
-                run(['docker', 'exec', '-d', old, 'bash', '-c', '/workspace/exec-script.sh >> /proc/1/fd/1 2>&1'])
-                emit('failed', error='Model launch failed; original container restarted', rollback_container=old)
+                try:
+                    run(['docker', 'start', old])
+                    run(['docker', 'exec', '-d', old, 'bash', '-c', '/workspace/exec-script.sh >> /proc/1/fd/1 2>&1'])
+                    receipt = wait_ready(plan['previous_model'], 300)
+                    emit('rolled_back', error='Trial failed; original model passed tool validation',
+                         rollback_container=old, rollback_receipt=receipt)
+                except Exception:
+                    emit('rollback_failed', error='Original model could not be validated; maintenance remains active',
+                         rollback_container=old)
             raise
 
 
