@@ -123,3 +123,18 @@ def requester_worker(workers, remote: str | None, require_os: str | None = None,
                 and (not require_os or w.get("os") == require_os)):
             return w
     return None
+
+
+def collect_here(workers, origin: dict | None) -> dict | None:
+    """#2407: where an operator's collect runs when the Spark cannot take it now.
+
+    A collect normally runs on a Linux worker with the characters tool (the Spark: the library lives in its cache).
+    When none is online and admitted (admission denied while it is busy, or offline), the PC the request came from
+    collects locally when it carries the characters tool and ships the entries back (characters.collect
+    deliver=True, characters._collect_accept). Otherwise None: the collect queues for the Spark as before."""
+    linux = [w for w in workers or () if w.get("os") == "linux" and w.get("online")
+             and "characters" in (w.get("tools") or ())]
+    if any((w.get("admission") or {}).get("allowed", True) for w in linux):
+        return None
+    here = requester_worker(workers, (origin or {}).get("remote"), None, tool="characters")
+    return here if here and here.get("os") != "linux" else None

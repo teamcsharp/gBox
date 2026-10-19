@@ -690,6 +690,7 @@ class CharIn(BaseModel):
     strict_cutscenes: bool = Field(default=True, description="Ocarina of Time cast builds: include cutscene layers in object-memory budgets. Character replacements include cutscenes by default; false is an explicit gameplay-only diagnostic.")
     launch: bool = True                   # use: launch after building
     kind: str = "character"                # extract / add: character | vehicle | object | environment
+    deliver: bool = False                  # collect on a PC (#2407): ship each entry to the control plane's library as an artifact
     target: str = ""                       # use / live_use: what the pick whip identified there ("soldier", "Snake")
     x: float | None = None                 # extract: the thing's screen point, fractions of the game picture (0..1)
     y: float | None = None
@@ -1945,9 +1946,10 @@ def collect(ctx, inp):
     ctx.progress(100, f"Collected {len(entries)} {noun} from {game['title']}")
     from . import char_coverage
     scope = reader_scope(name)
+    delivered = deliver_entries(ctx, root, [r['slug'] for r in results if r.get('status') != 'failed']) if inp.deliver else []
     return collection_status(results, scope=scope) | {
         'game_id': game['game_id'], 'extractor': name, 'reader_version': reader_version(name),
-        'scope': scope,
+        'scope': scope, 'delivered': delivered,
         # the slots this game's writer can put a collection character into (the cast menu: player, enemy:<name>...)
         'slots': char_coverage.cast_slots(game)}
 
@@ -2884,8 +2886,100 @@ def characters_tool(inp: CharIn, ctx):
     return {"result": out | char_coverage.no_writer(ctx, _api, meta, game, need, inp)}
 
 
+# ---------------------------------------------------------------------------------------------------------------
+# #2407: a collect that ran on a PC (the Spark could not take it) ships its entries back to the library here
+
+def pack_entry(root: Path, slug: str) -> bytes:
+    """One collection entry folder as a tar, paths relative to the entry."""
+    import io
+    import tarfile
+    base = root / slug
+    if not (base / "meta.json").is_file():
+        raise ValueError(f"no collection entry {slug} under {root}")
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for p in sorted(x for x in base.rglob("*") if x.is_file()):
+            tar.add(p, arcname=p.relative_to(base).as_posix())
+    return buf.getvalue()
+
+
+def deliver_entries(ctx, root: Path, slugs: list[str]) -> list[dict]:
+    """Each collected entry as a job artifact (collection-<slug>.tar) with its sha256, for _collect_accept."""
+    import hashlib
+    out = []
+    for slug in slugs:
+        try:
+            data = pack_entry(root, slug)
+        except (OSError, ValueError) as exc:
+            out.append({"slug": slug, "error": str(exc)[:200]})
+            continue
+        ctx.artifact(f"collection-{slug}.tar", data, "application/x-tar", slug=slug, kind="collection-entry")
+        out.append({"slug": slug, "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)})
+    return out
+
+
+def import_entry(root: Path, slug: str, data: bytes) -> list[str]:
+    """Unpack a delivered entry into root/<slug>, replacing what is there. Only plain files at relative paths inside
+    the entry are written; any other member fails the import with nothing touched."""
+    import io
+    import tarfile
+    import tempfile
+    from pathlib import PurePosixPath
+    slug = slugify(slug)
+    if not slug:
+        raise ValueError("entry slug missing")
+    names = []
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r") as tar:
+        members = tar.getmembers()
+        for m in members:
+            rel = PurePosixPath(m.name)
+            if not m.isfile() or rel.is_absolute() or not rel.parts or ".." in rel.parts or m.name.startswith("/"):
+                raise ValueError(f"refusing entry member {m.name!r}")
+            names.append(rel.as_posix())
+        if "meta.json" not in names:
+            raise ValueError("a collection entry needs meta.json")
+        root.mkdir(parents=True, exist_ok=True)
+        work = Path(tempfile.mkdtemp(prefix=f".{slug}.part-", dir=root))
+        try:
+            for m in members:
+                dst = work / m.name
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                with tar.extractfile(m) as src, dst.open("wb") as fh:
+                    shutil.copyfileobj(src, fh)
+            final = root / slug
+            if final.exists():
+                shutil.rmtree(final)
+            os.replace(work, final)
+        except BaseException:
+            shutil.rmtree(work, ignore_errors=True)
+            raise
+    with _LIST_LOCK:
+        _LIST_CACHE.pop(str(root), None)
+    return names
+
+
+def _collect_accept(store, out, actor):
+    """A delivered collect (#2407) lands in this control plane's library. The collection worker's own collects
+    deliver nothing and change nothing here; one bad entry never blocks the result's acceptance."""
+    import tarfile
+    result = out.result if hasattr(out, "result") else dict(out or {})
+    landed = []
+    for d in result.get("delivered") or []:
+        if not d.get("sha256"):
+            continue
+        data = store.read_artifact(d["sha256"])
+        if data is None:
+            continue
+        try:
+            import_entry(library_root(getattr(store, "config", None)), d["slug"], data)
+            landed.append(d["slug"])
+        except (OSError, ValueError, tarfile.TarError):
+            continue
+    return landed
+
+
 @tool("characters", "1.3", CharIn, CharOut, capabilities=["mod", "asset", "extract"], permissions=[P.EXECUTE], timeout_s=14400,
-      artifacts=["preview.png"],
+      artifacts=["preview.png", "collection-<slug>.tar"], on_accept=_collect_accept,
       side_effects=["use: may build a disc-image mod under cache/mods and launch it", "use/extract: may file a request",
                     "extract/add: writes a collection entry (characters/ or environments/ in the cache)",
                     "extract: may capture the frame (pauses the session briefly)", "blender: replaces the gBox clipboard",
