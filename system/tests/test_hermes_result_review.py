@@ -455,3 +455,33 @@ class UnreviewableRunTests(ReviewFixture, unittest.TestCase):
         self.assertTrue(packet['evidence']['transcript_unavailable'])
         self.assertEqual(packet['evidence']['final_report'], 'Reader parsed 3 of 7 entries')
         self.assertEqual(packet['current_checkpoint'], checkpoint)
+
+
+class ReviewerWithoutPydanticTests(ReviewFixture, unittest.TestCase):
+    """Hermes's own interpreter runs the review tick without pydantic or fastapi; local only must still apply."""
+
+    def test_local_reviewer_from_toml_when_typed_config_is_unavailable(self):
+        from gbox import hermes_local, hermes_pool
+        toml = self.root / 'gbox.toml'
+        toml.write_text(
+            '[hermes.local]\nprovider = "gbox-sparkDeux"\nmodel = "nvidia/Qwen3.8-27B-NVFP4"\n'
+            'proxy_url = "http://127.0.0.1:8765/api/llm/local/v1"\nmax_parallel_jobs = 2\n'
+            '[hermes.local.nodes.lilspark]\nprovider = "gbox-lilspark"\nmodel = "gpt-oss:20b"\n'
+            'max_parallel_jobs = 1\nallow_large_tasks = false\n'
+            '[hermes.local.nodes.sparkDeux]\nprovider = "gbox-sparkDeux"\nmodel = "nvidia/Qwen3.8-27B-NVFP4"\n'
+            'max_parallel_jobs = 4\nallow_large_tasks = true\n', encoding='utf-8')
+        R.D.state_dir().mkdir(parents=True, exist_ok=True)
+        (R.D.state_dir() / 'local-nodes.json').write_text(json.dumps({'nodes': {
+            'sparkDeux': {'enabled': True, 'model': 'Qwen/Qwen3-Coder-Next-FP8', 'max_parallel_jobs': 32}}}))
+        boom = ImportError("No module named 'pydantic'")
+        with patch.object(hermes_local, '_config_path', return_value=toml), \
+                patch.object(hermes_local, 'local_only', side_effect=boom), \
+                patch.object(hermes_pool, 'node_settings', side_effect=boom):
+            self.assertFalse(R.reviewer()['local'])                       # switch off: cloud
+            (R.D.state_dir() / 'local-only.json').write_text(json.dumps({'local_only': True}))
+            with patch.object(hermes_local, '_flag_path', return_value=R.D.state_dir() / 'local-only.json'):
+                who = R.reviewer()
+        self.assertTrue(who['local'])
+        self.assertEqual((who['provider'], who['model']), ('gbox-sparkDeux', 'Qwen/Qwen3-Coder-Next-FP8'))
+        self.assertEqual(who['proxy_url'], 'http://127.0.0.1:8765/api/llm/local/nodes/sparkDeux/v1')
+        self.assertEqual(who['label'], 'Local (sparkDeux)')
