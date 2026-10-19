@@ -260,22 +260,78 @@ def redact(value):
     return value
 
 
+CLOUD_REVIEWER = {'provider': 'deepseek', 'model': 'deepseek-v4-pro', 'local': False, 'label': 'DeepSeek'}
+DEFAULT_PROXY_URL = 'http://127.0.0.1:8765/api/llm/local/v1'
+
+
+def _local_from_toml(hermes_local) -> dict | None:
+    """The local reviewer from gbox.toml and local-nodes.json without the typed configuration (Hermes's own
+    interpreter has no pydantic). Mirrors hermes_pool.node_settings: node rows inherit [hermes.local], the
+    operator's switches in local-nodes.json override enabled/model/max_parallel_jobs, maintenance disables."""
+    import tomllib
+    try:
+        data = tomllib.loads(hermes_local._config_path().read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    local = (data.get('hermes') or {}).get('local') or {}
+    if not local:
+        return None
+    try:
+        overrides = json.loads((D.state_dir() / 'local-nodes.json').read_text(encoding='utf-8')).get('nodes', {})
+    except (OSError, ValueError):
+        overrides = {}
+    base = {k: v for k, v in local.items() if k != 'nodes'}
+    proxy_base = (base.get('proxy_url') or DEFAULT_PROXY_URL).rstrip('/').removesuffix('/v1')
+    rows = []
+    for name, values in (local.get('nodes') or {}).items():
+        row = base | values | {'host_name': name, 'proxy_url': proxy_base + f'/nodes/{name}/v1'}
+        row.update({k: overrides[name][k] for k in ('enabled', 'model', 'max_parallel_jobs')
+                    if name in overrides and k in overrides[name]})
+        if (overrides.get(name) or {}).get('maintenance'):
+            row['enabled'] = False
+        rows.append(row)
+    enabled = [r for r in rows if r.get('enabled', True)]
+    pick = (max(enabled, key=lambda r: (bool(r.get('allow_large_tasks')), int(r.get('max_parallel_jobs') or 1)))
+            if enabled else base | {'host_name': base.get('host_name', 'lilspark'),
+                                    'proxy_url': base.get('proxy_url') or DEFAULT_PROXY_URL})
+    if not pick.get('provider') or not pick.get('model'):
+        return None
+    return {'provider': pick['provider'], 'model': pick['model'], 'local': True,
+            'label': 'Local (' + str(pick['host_name']) + ')', 'proxy_url': pick['proxy_url']}
+
+
+def _local_only_flag(hermes_local) -> bool:
+    """The operator's local-only switch (POST /api/hermes/local) as the flag file records it."""
+    try:
+        return bool(json.loads(hermes_local._flag_path().read_text(encoding='utf-8')).get('local_only'))
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 def reviewer() -> dict:
     """Who reviews: DeepSeek (paid) unless the operator set Hermes to local only, then the local route through
     gBox's proxy, preferring the dedicated node that takes large tasks. A review must never wait for cloud credit
-    the operator has chosen not to use."""
-    cloud = {'provider': 'deepseek', 'model': 'deepseek-v4-pro', 'local': False, 'label': 'DeepSeek'}
+    the operator has chosen not to use. Works under Hermes's own interpreter (no pydantic/fastapi) as well."""
+    cloud = dict(CLOUD_REVIEWER)
     try:
-        from . import hermes_local, hermes_pool
-        if not hermes_local.local_only():
+        from . import hermes_local
+        try:
+            only = hermes_local.local_only()
+        except ImportError:
+            only = _local_only_flag(hermes_local)
+        if not only:
             return cloud
-        nodes = [n for n in hermes_pool.node_settings().values() if n.enabled]
-        s = max(nodes, key=lambda n: (n.allow_large_tasks, n.max_parallel_jobs)) if nodes else hermes_local.settings()
-        proxy_url = s.proxy_url or hermes_local.settings().proxy_url or 'http://127.0.0.1:8765/api/llm/local/v1'
+        try:
+            from . import hermes_pool
+            nodes = [n for n in hermes_pool.node_settings().values() if n.enabled]
+            s = max(nodes, key=lambda n: (n.allow_large_tasks, n.max_parallel_jobs)) if nodes else hermes_local.settings()
+            proxy_url = s.proxy_url or hermes_local.settings().proxy_url or DEFAULT_PROXY_URL
+            return {'provider': s.provider, 'model': s.model, 'local': True, 'label': 'Local (' + s.host_name + ')',
+                    'proxy_url': proxy_url}
+        except ImportError:
+            return _local_from_toml(hermes_local) or cloud
     except Exception:  # noqa: BLE001 - a broken local configuration falls back to the paid reviewer
         return cloud
-    return {'provider': s.provider, 'model': s.model, 'local': True, 'label': 'Local (' + s.host_name + ')',
-            'proxy_url': proxy_url}
 
 
 def _post_json(url: str, body: dict, timeout: float) -> dict:
