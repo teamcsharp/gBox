@@ -15,7 +15,9 @@ Layouts recovered from the owned disc (``gbox.mgs2_inventory`` reads the archive
          u32 x3 0
     positions: s16 x, y, z, w   (model space of the mesh's bone, mm; w = the bone's weight in 1/4096, the rest goes
                to the parent bone: parts with flags & 1 blend two bones)
-    normals:   s16 x, y, z (1/4096), u16 flags (0x8000 = strip restart: no triangle ends on this vertex)
+    normals:   s16 x, y, z (1/4096), u16 flags (0x8000 = strip restart: no triangle ends on this vertex).
+               Stored pointing INTO the body (measured on every character: 21% of them point outward as stored,
+               against 72-85% for other readers' models); negated on read so glTF faces wind outward (#2367).
     uvs:       s16 u, v (1/4096 of the texture's sub-rectangle)
     every part is one triangle strip.
 
@@ -101,7 +103,8 @@ def parse_kms(b: bytes) -> dict:
                     raise FormatError(f"mesh {i} part {k}: uv2 outside the file")
                 UV2 = np.frombuffer(b, "<i2", nv * 2, o2).reshape(nv, 2)
             parts.append({"flags": pf, "tex": (t1, t2, t3), "pos": P[:, :3].astype(np.float64),
-                          "w": P[:, 3].astype(np.float64) / FIXED, "nrm": N[:, :3].astype(np.float64) / FIXED,
+                          "w": P[:, 3].astype(np.float64) / FIXED,
+                          "nrm": -N[:, :3].astype(np.float64) / FIXED,   # stored into the body; outward from here on
                           "restart": (N[:, 3].astype(np.int32) & RESTART) != 0, "uv": UV.astype(np.float64) / FIXED,
                           "uv2": None if UV2 is None else UV2.astype(np.float64) / FIXED,
                           "offsets": (op, on, ou, o2)})
