@@ -152,7 +152,16 @@ def worker(job_id):
         action, profile = job['action'], job['profile']
         def update(**event):
             with management_lock():
-                job.update(event, updated_at=time.time()); data['job'] = job; save(data)
+                fresh = read()
+                if fresh['job']['id'] != job_id:
+                    raise RuntimeError('Model job identity changed')
+                merged = fresh['job'] | job | event | {'updated_at': time.time()}
+                job.clear(); job.update(merged)
+                for field in ('prepared', 'container', 'history'):
+                    if field in data:
+                        fresh[field] = data[field]
+                fresh['job'] = job
+                data.clear(); data.update(fresh); save(data)
         changed = False
         try:
             if action == 'trial_start':

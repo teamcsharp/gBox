@@ -129,3 +129,31 @@ def test_fast_worker_can_claim_lock_without_losing_progress(tmp_path, monkeypatc
     job = T.submit('trial_prepare', 'nemotron-bolt')
     assert job['state'] == T.read()['job']['state'] == 'preparing'
     assert T.read()['job']['pid'] == 42
+
+
+@pytest.mark.parametrize('remote_state', ['ready', 'rolled_back', 'rollback_failed'])
+def test_worker_maintenance_and_receipts_follow_actual_recovery(tmp_path, monkeypatch, remote_state):
+    from types import SimpleNamespace
+    from gbox import hermes_pool as P
+    monkeypatch.setattr(D, 'state_dir', lambda: tmp_path)
+    T.save({'enabled': True, 'job': {'id': 'test', 'action': 'trial_start', 'profile': 'qwen-coder', 'state': 'queued'}})
+    maintenance = []
+    monkeypatch.setattr(P, 'maintenance', lambda name, active: maintenance.append(active))
+    monkeypatch.setattr(P, 'node_settings', lambda: {'sparkDeux': SimpleNamespace(model='original')})
+    monkeypatch.setattr(P, '_state', lambda: {'nodes': {}})
+    monkeypatch.setattr(P, 'register_providers', lambda: None)
+    monkeypatch.setattr(P, 'set_capacity', lambda *a: None)
+    monkeypatch.setattr(M, 'ssh_args', lambda: ['ssh', 'fixture'])
+    monkeypatch.setattr(T, 'probe', lambda *a: {'model': T.PROFILES['qwen-coder'][1], 'context_tokens': 65536})
+    def spawn(*a, **k):
+        # Simulate the parent's PID receipt arriving after the child read state.
+        data = T.read(); data['job']['pid'] = 42; T.save(data)
+        event = {'state': remote_state, 'container': 'new', 'rollback_receipt': {'model': 'original'}}
+        return SimpleNamespace(stdin=io.StringIO(), stdout=[json.dumps(event)], wait=lambda: 0 if remote_state == 'ready' else 1)
+    monkeypatch.setattr(T.subprocess, 'Popen', spawn)
+    T.worker('test')
+    job = T.read()['job']
+    assert job['pid'] == 42 and job['rollback_receipt']['model'] == 'original'
+    assert maintenance == ([True] if remote_state == 'rollback_failed' else [True, False])
+    assert job['state'] == {'ready': 'ready', 'rolled_back': 'failed', 'rollback_failed': 'rollback_failed'}[remote_state]
+    assert (tmp_path / 'local-nodes.json').exists() == (remote_state == 'ready')
