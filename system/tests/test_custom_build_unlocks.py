@@ -120,3 +120,42 @@ def test_request_cannot_close_with_unverified_custom_builds(tmp_path):
         assert 'g1_patch' in r.json()['detail']['pending_builds']
         rows=c.get('/api/builds',headers=headers).json()['items']
         assert next(b for b in rows if b['name']=='g1_local_only')['unlocks']['status']=='pending'
+
+
+def test_get_profile_returns_existing_unlock_support_for_unsupported_game(tmp_path):
+    store, rows, c, reconcile, created, dispatched, sha = rig(tmp_path)
+    c.post('/api/custom-build-unlocks/g/profile',json=profile(sha))
+    body=c.get('/api/custom-build-unlocks/g/profile').json()
+    assert 'profile' in body and body['profile']['inventory_complete']
+    assert 'existing_unlock_support' in body
+    assert body['existing_unlock_support']['status']=='unsupported'
+    assert body['existing_unlock_support']['verified'] is False
+
+
+def test_get_profile_returns_existing_unlock_support_for_re6_game(tmp_path):
+    store, rows, c, reconcile, created, dispatched, sha = rig(tmp_path)
+    store.catalog_get = lambda gid: (
+        {'game_id':'0871eee3b68cdea3','title':'RE6','platform':'xbox360'}
+        if gid=='0871eee3b68cdea3' else {'game_id':gid,'title':'Example '+gid,'platform':'dreamcast'}
+    )
+    body=c.get('/api/custom-build-unlocks/0871eee3b68cdea3/profile').json()
+    assert body['existing_unlock_support']['status']=='verified_profile'
+    assert body['existing_unlock_support']['verified'] is True
+    assert body['existing_unlock_support']['profile']=='re6-x360-native-save-template-v1'
+
+
+def test_reconcile_propagates_existing_unlock_support_into_dispatch_instructions(tmp_path):
+    from gbox.game_unlocks import RE6_ID, profile_for as re6_profile_for
+    store, rows, c, reconcile, created, dispatched, sha = rig(tmp_path)
+    store.catalog_get = lambda gid: (
+        {'game_id':RE6_ID,'title':'RE6','platform':'xbox360'}
+        if gid==RE6_ID else {'game_id':gid,'title':'Example '+gid,'platform':'dreamcast'}
+    )
+    c.post('/api/custom-build-unlocks/policy',json={'enabled':True})
+    rows[0]['game_id']=RE6_ID; rows[0]['meta']['game_id']=RE6_ID
+    reconcile()
+    assert created, 'reconcile should create a request for the RE6 game'
+    text=created[0]['body']
+    assert 'existing_unlock_support' not in text or 're6-x360-native-save-template-v1' in text
+    support=re6_profile_for({'game_id':RE6_ID,'platform':'xbox360'})
+    assert support['status']=='verified_profile'
