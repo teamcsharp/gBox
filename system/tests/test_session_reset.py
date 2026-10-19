@@ -172,3 +172,31 @@ def test_an_ended_game_is_not_reset(reset_route):
 def test_reset_is_an_in_server_job_retired_after_a_restart():
     from gbox.job_maintenance import SERVER_TOOLS
     assert 'session_reset' in SERVER_TOOLS
+
+
+def test_a_frozen_game_is_closed_and_started_fresh_without_a_moment_save(reset_route):
+    """#2369: SC2 froze and its console reset never answered. Reset must not spend the full wait, a moment save and a
+    copy beside the frozen emulator: the frozen copy is closed first and the same build started fresh."""
+    _, _, store, session_reset = reset_route
+    calls = []
+
+    def run(tool, inp, *args, **kwargs):
+        calls.append((tool, dict(inp)))
+        if tool == 'session_op' and inp['op'] == 'reset':
+            raise HTTPException(409, 'session_op failed: running')       # the wait ran out: no answer from the emulator
+        if tool == 'session_op' and inp['op'] == 'stop_game':
+            store.put('session', 'w-live', store.get('session', 'w-live') | {'state': 'ended'})
+            return {'ended': True}
+        if tool == 'launch_game':
+            assert 'keep_session' not in inp, 'a frozen copy is closed before the fresh one starts'
+            store.put('session', 'w-new', {'session_id': 'w-new', 'game_id': 'ts', 'state': 'running',
+                                           'mod': inp.get('mod', ''), 'adapter': 'dolphin'})
+            return {'session_id': 'w-new'}
+        pytest.fail('Unexpected tool: ' + tool)
+    enclosed(session_reset, '_run_job').cell_contents = run
+    r = post(reset_route)
+    assert r.status_code == 200, r.text
+    assert [(t, i.get('op')) for t, i in calls] == [('session_op', 'reset'), ('session_op', 'stop_game'), ('launch_game', None)]
+    assert r.json()['session_id'] == 'w-new' and any('did not answer' in n for n in r.json()['notes'])
+    assert calls[2][1]['mod'] == 'tts_sonic_full_cast~9a1b', 'the same build comes back'
+    assert store.get('session', 'w-live')['replaced_by'] == 'w-new'
