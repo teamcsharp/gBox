@@ -83,10 +83,17 @@ def expected_bytes(field: str) -> bytes:
 
 
 def cht_token(field: str) -> str:
-    """The exact installed-database token (prefix and address as printed in the .cht)."""
+    """The exact installed-database token as printed in the pinned .cht.
+
+    The installed cheat6/cheat5 lines are ``221B77A9+0000001E`` and
+    ``221B77C1+0000001E``: an 8-hex-digit operation-prefixed token (top byte
+    ``22`` = 16-bit write, low 24 bits = main-RAM address) ``+`` an 8-hex-digit
+    value. Reproduce that literal exactly so the test binds this module to the
+    installed database byte-for-byte.
+    """
     prefix, address, value, _width, _ = UNLOCK_FIELDS[field]
-    # the database prints the operation-prefixed 24-bit address in its own format
-    return f"{prefix:04X}+{(address & 0x00FFFFFF):07X}"
+    token_addr = ((prefix & 0xFF) << 24) | (address & 0x00FFFFFF)
+    return f"{token_addr:08X}+{value:08X}"
 
 
 def verification_plan(session_id: str) -> dict:
@@ -104,6 +111,33 @@ def verification_plan(session_id: str) -> dict:
         "rollback": "Restore the step-2 pre-state bytes if any read-back mismatches.",
         "audio_policy": "2% volume on the agent session; never JAYBUILTFINALE",
     }
+
+
+def live_acceptance_plan(session_id: str) -> dict:
+    """Job plans for the live read-back acceptance on an authorized agent session.
+
+    ``poke`` with hold=True keeps a data-plane field pinned while the emulator
+    re-computes menu state (the same path the chat sliders use) and reports the
+    per-address read-back itself, so steps 3 and 4 are self-verifying. Rollback
+    re-pokes the recorded pre-state hex. This plans jobs; it never dispatches.
+    """
+    jobs = []
+    for op in unlock_ops():
+        jobs.append({"tool": "poke", "agent_use": True,
+                     "input": {"session_id": session_id, "address": hex(op["address"]),
+                               "type": "u16", "value": op["value"], "hold": True}})
+    rollback = [{"tool": "poke", "agent_use": True,
+                 "input": {"session_id": session_id, "address": hex(op["address"]),
+                           "type": "u16", "hold": True}}
+                for op in unlock_ops()]
+    return {"game_id": GAME_ID, "session_id": session_id,
+            "preconditions": ["list_workers/list_sessions to confirm a live authorized agent session "
+                              "on i9-NUC or the Spark (never JAYBUILTFINALE)",
+                              "rom_guard(nds) ok before any write",
+                              "read_memory both addresses and record the pre-state for rollback"],
+            "jobs": jobs, "rollback_jobs": rollback,
+            "success_criterion": "both poke read_back values == 30 (0x1E) and menu UI evidence captured",
+            "executed": False}
 
 
 def profile() -> dict:
