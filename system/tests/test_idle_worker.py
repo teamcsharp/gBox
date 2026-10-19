@@ -83,3 +83,42 @@ def test_a_failed_task_is_retried_as_a_linked_new_job(cfg):
     assert new["require_worker"] == "testpc" and new["agent_use"] is True and new["state"] == "queued"
     assert new["origin"]["via"] == "retry" and new["origin"]["retry_of"] == job["id"]
     assert app.state.store.get("job", job["id"])["retried_by"] == new["id"]
+
+
+def test_collect_runs_on_the_requesting_pc_only_when_the_spark_cannot_take_it():
+    """#2407: a collect queues for the Linux collection worker; when none is online and admitted, the PC it was
+    asked from collects (it ships the entries back), and only when that PC carries the characters tool."""
+    from gbox import job_routing as JR
+    spark = {"id": "s", "os": "linux", "online": True, "tools": ["characters"], "admission": {"allowed": True}}
+    pc = {"id": "p", "name": "JAYBUILTFINALE", "os": "windows", "online": True, "tools": ["characters", "launch_game"],
+          "address": "10.0.0.5"}
+    origin = {"remote": "10.0.0.5"}
+    assert JR.collect_here([spark, pc], origin) is None, "the Spark takes it"
+    busy = spark | {"admission": {"allowed": False, "reason": "the operator is playing on it"}}
+    assert JR.collect_here([busy, pc], origin)["id"] == "p"
+    assert JR.collect_here([spark | {"online": False}, pc], origin)["id"] == "p"
+    assert JR.collect_here([busy, pc | {"tools": ["launch_game"]}], origin) is None, "no characters tool there"
+    assert JR.collect_here([busy, pc], {"remote": "10.0.0.9"}) is None, "not from a PC gBox knows"
+    assert JR.collect_here([busy], {}) is None and JR.collect_here([], None) is None
+
+
+def test_an_operator_collect_is_pinned_to_the_requesting_pc_when_the_spark_is_away(cfg):
+    """#2407 end to end at submit: the Spark offline, a collect from the PC runs there with deliver=True; from a PC
+    gBox does not know it queues for the Spark as before."""
+    app = create_app(cfg)
+    now = time.time()
+    app.state.store.put("worker", "spark", {"id": "spark", "name": "lilspark", "os": "linux", "tools": ["characters"],
+        "unavailable": {}, "last_seen": now - 3600, "idle_seconds": 600, "active_jobs": 0})
+    app.state.store.put("worker", "jay", {"id": "jay", "name": "JAYBUILTFINALE", "os": "windows",
+        "tools": ["characters", "launch_game"], "unavailable": {}, "last_seen": now, "idle_seconds": 600,
+        "active_jobs": 0, "address": "10.89.1.13"})
+    headers = {"Authorization": f"Bearer {cfg.token()}"}
+    body = {"tool": "characters", "input": {"op": "collect", "game_id": "g" * 16}}
+    jay = TestClient(app, headers=headers, client=("10.89.1.13", 50000))
+    job = jay.post("/api/jobs", json=body)
+    assert job.status_code == 200, job.text
+    assert job.json()["require_worker"] == "jay" and job.json()["require_os"] == "windows"
+    assert job.json()["input"]["deliver"] is True, "the PC ships its entries back"
+    other = TestClient(app, headers=headers, client=("10.89.1.99", 50000))
+    job = other.post("/api/jobs", json=body).json()
+    assert job["require_worker"] is None and job["require_os"] == "linux" and job["input"]["deliver"] is False

@@ -108,6 +108,7 @@ def _is_stop_job(job: dict) -> bool:
 
 def create_app(config: Config) -> FastAPI:
     store = Store(config.data_dir)
+    store.config = config                    # acceptance hooks that place files (characters._collect_accept) find the cache
     token = config.token()
     from . import cache_tiers                     # two-tier cache: recover + migrate before anything reads the cache
     cache_tiers.install(config)
@@ -2743,6 +2744,14 @@ def create_app(config: Config) -> FastAPI:
             if not scoped:
                 job.require_worker = None
             job.require_os = "linux"
+            if inp.get("op") == "collect" and not scoped and actor == "operator":
+                from .job_routing import collect_here
+                if here := collect_here(workers(), origin if isinstance(origin, dict) else {}):
+                    # #2407: the Spark cannot take this collect now (offline, or admission denied while it is busy):
+                    # the PC it was asked from collects and ships the entries back (characters.collect deliver=True;
+                    # characters._collect_accept lands them in the library here)
+                    job = job.model_copy(update={"require_worker": here["id"], "require_os": here.get("os"),
+                                                 "input": {**inp, "deliver": True}})
         elif t.name in ("re_executable", "assimilate"):
             # Analysis output belongs on Spark; RAM is read remotely through the
             # session RPC. Pinning this to a Windows session makes Linux work unrunnable.
