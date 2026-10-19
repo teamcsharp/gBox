@@ -548,6 +548,19 @@ def free_pages(model_bytes: bytes, n_pages: int) -> list[int]:
     return pages[1:] if flags and n_pages > 1 else pages
 
 
+def _close_open_shells(prims: list[dict], slug: str) -> list[dict]:
+    """Super Mario 64 DS donors are front-facing open shells: the DS culls the back faces of their single-sided
+    materials (POLYGON_ATTR 0x81, e.g. Peach's face, hair, neck and sleeves), so in a full-3D fighter they are
+    invisible from behind. Mark those prims double-sided so encode_model's with_back_faces emits a back copy
+    (#1961: Peach's back half was missing in the SoulCalibur build). Closed donors keep their authored flags."""
+    if not str(slug or "").startswith("sm64ds_"):
+        return prims
+    for p in prims:
+        if not p.get("double_sided"):
+            p["double_sided"] = True
+    return prims
+
+
 def fit_donor(stock_model: bytes, character_dir: Path, slot_key: str, *, scale=None) -> tuple[list[dict], dict]:
     """Load + retarget a collection donor onto the costume's rest skeleton (library frame)."""
     from .doa2_weighted_retarget import load_rig, retarget
@@ -564,6 +577,7 @@ def fit_donor(stock_model: bytes, character_dir: Path, slot_key: str, *, scale=N
     tgt = target(D.parse_model(stock_model))
     rig = load_rig(model_path, roles, [p["node"] for p in meta.get("props") or []])
     prims, fit = retarget(rig, tgt, scale if scale is not None else (meta.get("rig") or {}).get("scale"), tgt["jmap"])
+    prims = _close_open_shells(prims, meta.get("slug") or directory.name)
     fit["donor"] = meta.get("slug") or directory.name
     fit["retarget_profile_digest"] = meta.get("retarget_profile_digest", "")
     if FE.active():
