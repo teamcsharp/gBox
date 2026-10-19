@@ -2286,6 +2286,7 @@ setInterval(async () => {                                  // a session replaced
   if (!ss.some(x => x.session_id === sid)) { ss = await api("/api/sessions").catch(() => null); if (!ss) return; }
   const s = ss.find(x => x.session_id === sid);
   if (s?.state === "ended" && s.replaced_by) followSession(sid, s.replaced_by);
+  else if (s && s.state !== "running" && active?.sid === sid && cur !== "Sessions") { active = null; pip(); }   // #1934: a game that ended takes its picture-in-picture with it
   else if (cur === "Sessions" && sessionMode === "examine" && s?.state !== "running") {
     const live = liveExamineSession(ss, sid);
     if (live) followSession(sid, live.session_id); else show("Sessions", sid, "examine");
