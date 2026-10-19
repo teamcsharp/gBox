@@ -62,3 +62,24 @@ def test_operator_play_boots_on_the_pc_it_came_from(cfg):
     other = TestClient(app, headers=headers, client=("10.89.1.99", 50000))
     job = other.post(f"/api/games/{'g' * 16}/launch", params={"node": "windows"})
     assert job.status_code == 200 and job.json()["require_worker"] is None and job.json()["require_os"] == "windows"
+
+
+def test_a_failed_task_is_retried_as_a_linked_new_job(cfg):
+    """#2398: right-click a failed task, Retry: dispatched again with the same tool, input and pins; running tasks are not duplicated."""
+    app = create_app(cfg)
+    now = time.time()
+    app.state.store.put("worker", "testpc", {"id": "testpc", "name": "Test PC", "os": "windows", "tools": ["get_frame"],
+        "unavailable": {}, "last_seen": now, "idle_seconds": 600, "active_jobs": 0})
+    client = TestClient(app, headers={"Authorization": f"Bearer {cfg.token()}"})
+    posted = client.post("/api/jobs", json={"tool": "get_frame", "input": {}, "require_worker": "testpc", "agent_use": True})
+    assert posted.status_code == 200, posted.text
+    job = posted.json()
+    assert client.post(f"/api/jobs/{job['id']}/retry").status_code == 409, "a queued task is not duplicated"
+    app.state.store.put("job", job["id"], app.state.store.get("job", job["id"]) | {"state": "failed", "error": "worker restarted"})
+    r = client.post(f"/api/jobs/{job['id']}/retry")
+    assert r.status_code == 200, r.text
+    new = r.json()
+    assert new["id"] != job["id"] and new["tool"] == "get_frame" and new["input"] == job["input"]   # the stored (normalised) input
+    assert new["require_worker"] == "testpc" and new["agent_use"] is True and new["state"] == "queued"
+    assert new["origin"]["via"] == "retry" and new["origin"]["retry_of"] == job["id"]
+    assert app.state.store.get("job", job["id"])["retried_by"] == new["id"]

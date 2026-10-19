@@ -2920,6 +2920,25 @@ def create_app(config: Config) -> FastAPI:
         store.audit(actor, "job.cancel", jid, {"state": j["state"]})
         return {"id": jid, "state": j["state"], "cancel_requested": j.get("cancel", False)}
 
+    @app.post("/api/jobs/{jid}/retry")
+    def job_retry(jid: str, actor=Depends(auth), origin=Depends(request_origin)):
+        """#2398: a failed, rejected or invalid task dispatched again as a new job with the same tool, input and pins,
+        through the normal submit path (placement rules and guards apply); the two jobs are linked. A task still
+        queued or running is not duplicated."""
+        j = store.get("job", jid) or _404()
+        if j["state"] in (JobState.QUEUED, JobState.RUNNING):
+            raise HTTPException(409, f"This task is still {j['state']}; cancel it first or wait for it to end.")
+        req = JobRequest(tool=j["tool"], input=j.get("input") or {}, require_os=j.get("require_os"),
+                         require_worker=j.get("require_worker"), parent_request_id=j.get("parent_request_id"),
+                         agent_use=bool(j.get("agent_use")), low_priority=bool(j.get("low_priority")))
+        origin = {**(origin if isinstance(origin, dict) else {}), "via": "retry", "retry_of": jid}
+        new = submit(req, actor, origin)
+        new_id = new["id"] if isinstance(new, dict) else getattr(new, "id", None)
+        with store.lock:
+            store.put("job", jid, (store.get("job", jid) or j) | {"retried_by": new_id})
+        store.audit(actor, "job.retry", jid, {"new": new_id, "tool": j["tool"]})
+        return new
+
     def retire_unrunnable_jobs(worker_snapshot=None):
         """Keep dead sessions and long-gone workers out of the visible active queue."""
         from .job_maintenance import retire_orphaned_server_jobs, retire_stalled_snapshots

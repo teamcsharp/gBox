@@ -2203,8 +2203,8 @@ async function tasksLoad() {
         ${tkProgress(j.pct, true)}<div class="task-detail">${TK.expanded.has(j.id) ? TK.jobDetail.get(j.id) || "Loading task details…" : ""}</div></details>
         <button class="x" data-job="${j.id}" title="Cancel this job">✕ Cancel</button></div>`).join("") || '<span class="mut">none</span>'}</div>` +
     `<div class="mc"><div class="mh"><b>Recent jobs</b><span class="mut">${(d.recent || []).length}</span></div>
-      ${(d.recent || []).map(j => `<div class="job-card"><details data-detail-job="${j.id}" ${TK.expanded.has(j.id) ? "open" : ""}>
-        <summary>${kind(j.state)} <span class="nm">${esc(j.tool)}</span> <span class="mut">${esc(j.worker)} · ${tkAge(j.created)} · ${esc(j.progress || "")}</span></summary>
+      ${(d.recent || []).map(j => `<div class="job-card"><details data-detail-job="${j.id}" data-job-state="${esc(j.state)}" ${TK.expanded.has(j.id) ? "open" : ""}>
+        <summary>${kind(j.state)} <span class="nm">${esc(j.tool)}</span> <span class="mut">${esc(j.worker)} · ${tkAge(j.created)} · ${esc(j.progress || "")}</span>${["failed", "rejected", "invalid"].includes(j.state) ? ' <span class="mut" title="Right-click: retry this task">↻ right-click to retry</span>' : ""}</summary>
         ${tkProgress(j.pct, false)}<div class="task-detail">${TK.expanded.has(j.id) ? TK.jobDetail.get(j.id) || "Loading task details…" : ""}</div></details></div>`).join("") || '<span class="mut">none</span>'}</div>`, $("#tk-technical"));
   $("#tk-body").querySelectorAll("details[data-detail-hermes][open]").forEach(detail => {
     const pre = detail.querySelector("pre"), position = TK.hermesScroll.get(detail.dataset.detailHermes);
@@ -2399,6 +2399,22 @@ $("#tk-body").onclick = async e => {
   if (!r.ok) { b.textContent = "failed"; b.title = r.error; }
   tasksLoad();
 };
+// #2398: a failed task is dispatched again from its card (same tool, input and PC), as a new job linked to the old one
+function taskRetryMenu(x, y, id, label) {
+  let m = $("#whipmenu"); if (!m) { m = document.createElement("div"); m.id = "whipmenu"; document.body.append(m); }
+  m.style.left = (x - 20) + "px"; m.style.top = (y + 14) + "px";
+  m.innerHTML = `<b>Failed task</b><div class="mut">${esc(label.trim().slice(0, 140))}</div><button data-c="retry"><span>↻</span>Retry this task</button>`;
+  m.classList.add("on"); fitMenu(m, x - 20, y + 14, 8, 40);
+  m.onclick = async e => { const b = e.target.closest("button[data-c]"); if (!b) return; m.classList.remove("on");
+    const r = await gbox.api(`/api/jobs/${id}/retry`, {});
+    toast(r.ok ? `Dispatched again as task ${String(r.data?.id || "").slice(0, 8)}` : (r.error || "Could not retry this task"));
+    tasksLoad(); };
+}
+$("#tk-technical").addEventListener("contextmenu", e => {
+  const d = e.target.closest("details[data-detail-job]"); if (!d || !["failed", "rejected", "invalid"].includes(d.dataset.jobState)) return;
+  e.preventDefault(); e.stopPropagation();
+  taskRetryMenu(e.clientX, e.clientY, d.dataset.detailJob, d.querySelector("summary")?.textContent || "");
+});
 $("#tk-body").addEventListener("toggle", async e => {
   const resolution = e.target.closest?.("[data-resolution-id]");
   if (resolution) {
