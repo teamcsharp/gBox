@@ -93,16 +93,156 @@ def c04_identity(report: dict) -> str:
     return "jorge (jorg/yor texture prefix on C04.NJ; the fifth playable model)"
 
 
+GBIX_HEADER = 16   # "GBIX" + u32 size(8) + u32 global_index + u32 pad
+PVRT_META = 16     # "PVRT" + u32 payload_size + u16 fmt + u16 pad + u16 w + u16 h
+VQ_CODEBOOK = 0x800  # 256 entries x 8 B, prepended to every VQ texture payload
+
+
+def _pvr_slot(cm: bytes, gbix_pos: int) -> dict | None:
+    """Decode the PVRT chunk that immediately follows a GBIX header.
+
+    Verified against the owned disc (all 25 playable slots, 2026-10-18):
+    "PVRT" + u32 payload_size (bytes after the 8-byte chunk header) + u16
+    format word (0x0301/0x0302 observed) + u16 pad + u16 width @+12 + u16
+    height @+14.  Texture data starts at PVRT+16 and follows the VQ law
+    payload_size - 8 == width*height//4 + 0x800 (2 bits/pixel indices plus a
+    256-entry 8-byte codebook), i.e. the chunk exactly fills its slot.
+    """
+    at = gbix_pos + GBIX_HEADER
+    if cm[at : at + 4] != b"PVRT":
+        return None
+    payload_size, fmt = struct.unpack_from("<IH", cm, at + 4)
+    w, h = struct.unpack_from("<HH", cm, at + 12)
+    return {"payload_size": int(payload_size), "fmt": int(fmt),
+            "w": int(w), "h": int(h)}
+
+
+def cmck_decode(path: str, stems: tuple[str, ...] = PLAYABLE) -> dict:
+    """Deep-decode the CMCK (character motion chunk) for each playable.
+
+    CMCK layout (verified 2026-10-18 against the owned disc, all 5 playables):
+      +0x00  u32 count (=5)  |  u32 stride (=0x18)          -- header
+      +0x08  4-entry u32 texture-pointer table (CMCK-relative, GBIX-aligned)
+      +0x18  slot 0 begins: GBIX@0x18 (NOT covered by the table)
+      ...    slot k: GBIX(16 B) + PVRT chunk (8 B hdr + 8 B meta + VQ data);
+             the PVRT payload_size exactly fills the slot up to the next GBIX
+             (or CMCK end).  header(0x18) + 5 slots == 141496 B == the whole
+             CMCK: there is NO inter-GBIX motion data in CMCK; motion lives in
+             the separate PMC banks (671 on the owned disc).
+
+    Returns a per-character report:
+      * count / stride from the 8-byte CMCK header; offsets = the 4 table u32s
+        starting at byte 8 (the 5th word at +0x18 is the "GBIX" magic itself,
+        not a fifth table entry)
+      * gbix_positions (5), pvr_dims per slot, PVRT format words
+      * texture bounds per slot (data start GBIX+0x20, chunk-law end) and
+        vq_exact_fit: payload_size - 8 == w*h//4 + 0x800 for every slot
+      * offsets_match_gbix: every table entry equals a GBIX position;
+        unmatched_gbix == [0x18] (slot 0 is the one slot the table omits)
+
+    Pinned cross-character facts (verified against the owned disc):
+      * All 5 playables have CMCK size = 141496 (0x228b8) and 5 GBIX slots.
+      * C00/C01A table: [0x4838, 0x9058, 0xd878, 0x1e098] (5 slots at 0x18 +
+        the table); C02A/C03/C04 table: [0x10838, 0x15058, 0x19878, 0x1e098].
+    """
+    g = GDRom(path)
+    out = {}
+    for stem in stems:
+        disk_name = _disk_name(stem)
+        d = g.read(disk_name)
+        cm: bytes = b""
+        cm_off: int = 0
+        size: int = 0
+        CHUNK = struct.Struct("<4sI")
+        o = 0
+        while o + 8 <= len(d):
+            typ, size = CHUNK.unpack_from(d, o)
+            if typ == b"CMCK":
+                cm_off = o
+                cm = d[o + 8 : o + 8 + size]
+                break
+            o += 8 + size
+        else:
+            raise ValueError(f"{stem}: no CMCK chunk in {disk_name}")
+
+        count, stride = struct.unpack_from("<II", cm, 0)
+        # The table holds `count - 1` u32 texture pointers starting at byte 8;
+        # the word at 8 + (count-1)*4 == 0x18 is the first GBIX magic itself.
+        offsets = [struct.unpack_from("<I", cm, 8 + i * 4)[0] for i in range(count - 1)]
+
+        # Find GBIX markers
+        gbix: list[int] = []
+        pos = 0
+        while True:
+            i = cm.find(b"GBIX", pos)
+            if i < 0:
+                break
+            gbix.append(i)
+            pos = i + 4
+
+        # Per-slot layout: GBIX hdr(16) + PVRT chunk (8 B header + 8 B meta +
+        # VQ texture).  The PVRT payload_size exactly fills the slot up to the
+        # next GBIX (or CMCK end): no inter-GBIX motion data lives in CMCK.
+        blob_sizes = []
+        pvr_dims = []
+        fmts = []
+        tex_bounds = []
+        vq_exact_fit = []
+        for k, gp in enumerate(gbix):
+            blob_sizes.append(struct.unpack_from("<I", cm, gp + 4)[0])
+            slot = _pvr_slot(cm, gp)
+            slot_end = gbix[k + 1] if k + 1 < len(gbix) else len(cm)
+            if slot is None:
+                pvr_dims.append(None)
+                fmts.append(None)
+                tex_bounds.append(None)
+                vq_exact_fit.append(None)
+                continue
+            pvr_dims.append({"w": slot["w"], "h": slot["h"]})
+            fmts.append(slot["fmt"])
+            start = gp + GBIX_HEADER + PVRT_META  # texture data start (GBIX+0x20)
+            end = gp + GBIX_HEADER + 8 + slot["payload_size"]  # chunk law == slot_end
+            tex_bounds.append({"start": start, "end": end})
+            vq_exact_fit.append(slot["payload_size"] - 8 ==
+                                slot["w"] * slot["h"] // 4 + VQ_CODEBOOK)
+
+        # Verify: every table entry equals a GBIX position (the offsets ARE the
+        # texture-slot pointers); slot 0 at 0x18 is the one the table omits.
+        gbix_set = set(gbix)
+        match = all(off in gbix_set for off in offsets)
+        unmatched = [gp for gp in gbix if gp not in offsets]
+
+        out[stem] = {
+            "cmck_offset": cm_off,
+            "cmck_size": size,
+            "count": count,
+            "stride": stride,
+            "offsets": offsets,
+            "gbix_positions": gbix,
+            "blob_sizes": blob_sizes,
+            "pvr_dims": pvr_dims,
+            "fmt": fmts,
+            "tex_bounds": tex_bounds,
+            "vq_exact_fit": vq_exact_fit,
+            "offsets_match_gbix": match,
+            "unmatched_gbix": unmatched,
+        }
+    return out
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("gdi")
     ap.add_argument("--out")
     args = ap.parse_args(argv)
     rep = decode_report(args.gdi)
+    cmck = cmck_decode(args.gdi)
     doc = {"game": "Illbleed (USA)", "platform": "dreamcast", "source_sha256": CHD_SHA,
            "executable_sha256": EXE_SHA, "reader": "gbox.ninja.NJ",
            "models": rep, "c04_identity": c04_identity(rep),
-           "open": ["CMCK animation chunk decode (141496 bytes, identical size across all 5 models)",
+           "cmck": cmck,
+           "open": ["CMCK fully accounted: header(0x18) + 5 VQ texture chunks == 141496 B; "
+                    "motion/keyframe data is NOT in CMCK -- decode the PMC motion banks next",
                     "executable model-load table (Ghidra, analysis stage)"]}
     text = json.dumps(doc, indent=1)
     if args.out:

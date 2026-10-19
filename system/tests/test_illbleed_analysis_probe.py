@@ -70,3 +70,70 @@ def test_full_disc_probe(disc_gdi):
     # enemies decode through the same reader
     for stem in ap.ENEMY_SAMPLE:
         assert rep[stem]["bones"] >= 2, f"{stem} did not decode"
+
+
+# ---- CMCK deep-dive ----
+
+def test_cmck_decode_all_playables(disc_gdi):
+    """All 5 playables have CMCK 141496 B, count=5, stride=0x18, 5 GBIX markers
+    (first at +0x18), a 4-entry table at +0x08 whose entries equal GBIX
+    positions, and slot 0 at 0x18 as the one GBIX the table omits."""
+    cmck = ap.cmck_decode(disc_gdi)
+    assert set(cmck) == set(ap.PLAYABLE)
+    for stem, c in cmck.items():
+        assert c["cmck_size"] == 141496, f"{stem}: CMCK size {c['cmck_size']} != 141496"
+        assert c["count"] == 5, f"{stem}: count {c['count']} != 5"
+        assert c["stride"] == 0x18, f"{stem}: stride {c['stride']:#x} != 0x18"
+        assert len(c["offsets"]) == 4, f"{stem}: table should hold count-1 = 4 entries"
+        assert len(c["gbix_positions"]) == 5, f"{stem}: expected 5 GBIX"
+        assert c["gbix_positions"][0] == 0x18, f"{stem}: first GBIX not at +0x18"
+        assert c["offsets_match_gbix"], f"{stem}: table entries are not GBIX positions"
+        assert c["unmatched_gbix"] == [0x18], f"{stem}: only slot 0 should be off-table"
+
+
+def test_cmck_texture_slots_exact_vq_fit(disc_gdi):
+    """Each slot's PVRT payload_size exactly fills the slot: texture data ends
+    at the next GBIX (or CMCK end) and every payload follows the VQ law
+    payload_size - 8 == w*h//4 + 0x800 (256-entry codebook + 2bpp indices).
+    CMCK therefore holds only the 5 textures -- no inter-GBIX motion data."""
+    cmck = ap.cmck_decode(disc_gdi)
+    for stem, c in cmck.items():
+        assert all(f is not None for f in c["fmt"]), f"{stem}: missing PVRT meta"
+        assert all(c["vq_exact_fit"]), f"{stem}: VQ size law violated"
+        ends = [tb["end"] for tb in c["tex_bounds"]]
+        starts = [tb["start"] for tb in c["tex_bounds"]]
+        assert ends[:-1] == c["gbix_positions"][1:], (
+            f"{stem}: slot texture end != next GBIX ({[hex(e) for e in ends]})")
+        assert ends[-1] == c["cmck_size"], f"{stem}: last slot does not fill CMCK"
+        for k, (gp, s) in enumerate(zip(c["gbix_positions"], starts)):
+            assert s == gp + 0x20, f"{stem} slot {k}: texture start {s:#x} != GBIX+0x20"
+
+
+def test_cmck_blob_sizes_and_pvr_dims(disc_gdi):
+    """All 5 GBIX per playable carry the fixed GBIX blob_size 0x8, a PVRT
+    header and positive power-of-two dimensions."""
+    cmck = ap.cmck_decode(disc_gdi)
+    for stem, c in cmck.items():
+        assert len(c["blob_sizes"]) == 5, f"{stem}: expected 5 blob sizes"
+        assert all(b == 8 for b in c["blob_sizes"]), f"{stem}: unexpected blob size"
+        assert len(c["pvr_dims"]) == 5, f"{stem}: expected 5 PVR dims"
+        for i, d in enumerate(c["pvr_dims"]):
+            assert d is not None, f"{stem}: GBIX {i} missing PVRT dims"
+            assert d["w"] > 0 and d["h"] > 0, f"{stem}: GBIX {i} has non-positive dims {d}"
+            assert d["w"] & (d["w"] - 1) == 0 and d["h"] & (d["h"] - 1) == 0, (
+                f"{stem}: GBIX {i} dims {d} not power-of-two")
+
+
+def test_cmck_cross_character_layout(disc_gdi):
+    """Cross-character layout check: C00/C01A (small texture variant) has
+    offsets [0x4838, 0x9058, 0xd878, 0x1e098] and C02A/C03/C04 (large texture
+    variant) has [0x10838, 0x15058, 0x19878, 0x1e098]."""
+    cmck = ap.cmck_decode(disc_gdi)
+    small = [0x4838, 0x9058, 0xd878, 0x1e098]
+    large = [0x10838, 0x15058, 0x19878, 0x1e098]
+    for stem, expected in [("C00", small), ("C01A", small), ("C02A", large),
+                           ("C03", large), ("C04", large)]:
+        assert cmck[stem]["offsets"] == expected, (
+            f"{stem}: offsets {[hex(o) for o in cmck[stem]['offsets']]} "
+            f"expected {[hex(o) for o in expected]}"
+        )
