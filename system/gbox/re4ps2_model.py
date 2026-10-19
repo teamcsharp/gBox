@@ -230,20 +230,30 @@ def dma_chain(b: bytes, o: int, limit: int = 1 << 16) -> list[dict]:
 
 
 def probe(pack: bytes, pairs: list[dict]) -> list[dict]:
-    """Decode the header of every BIN/TPL pair a setModel uses from this pack."""
+    """Decode the header of every BIN/TPL pair a setModel uses from this pack.
+
+    Non-Leon DAT layouts legitimately bind two BIN slots (the Ashley setModel passes slot 4/7 as
+    BIN/BIN), so a non-TPL second slot is recorded explicitly as ``tpl: null`` with a reason instead
+    of raising.
+    """
     slots = dat_slots(pack)
     out = []
     for p in pairs:
         bk, tk = p["bin_slot"], p["tpl_slot"]
-        if slots[bk][1] != "BIN" or slots[tk][1] != "TPL":
+        if slots[bk][1] != "BIN":
             raise ValueError(f"slot pair {bk}/{tk} is {slots[bk][1]}/{slots[tk][1]}, not BIN/TPL")
         bb = slot_bytes(pack, bk)
         bh = bin_header(bb)
-        th = tpl_header(slot_bytes(pack, tk))
-        out.append({**p, "bin_offset": slots[bk][0], "tpl_offset": slots[tk][0],
-                    "bin": {k: v for k, v in bh.items() if k != "bones"},
-                    "root_bones": [b["id"] for b in bh["bones"] if b["parent"] == 0xFF],
-                    "objects": bin_objects(bb), "tpl": th})
+        rec = {**p, "bin_offset": slots[bk][0], "tpl_offset": slots[tk][0],
+               "bin": {k: v for k, v in bh.items() if k != "bones"},
+               "root_bones": [b["id"] for b in bh["bones"] if b["parent"] == 0xFF],
+               "objects": bin_objects(bb)}
+        if slots[tk][1] == "TPL":
+            rec["tpl"] = tpl_header(slot_bytes(pack, tk))
+        else:
+            rec["tpl"] = None
+            rec["tpl_reason"] = f"second slot {tk} is {slots[tk][1]}, not TPL (non-Leon pack layout)"
+        out.append(rec)
     return out
 
 

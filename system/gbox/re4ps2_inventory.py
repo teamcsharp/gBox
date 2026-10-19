@@ -124,7 +124,8 @@ def inventory(path, source_sha256: str | None = None) -> dict:
             chars.append({"id": cid, "variant": "low" if m.group(3) else "", "afs_index": i, "name": nm,
                           "offset": off, "size": sz, "sections": dict(Counter(e for _o, e in secs if e)),
                           "slots": len(secs), "snd_index": snd, "rel_index": rel,
-                          "rel_name": names[rel] if rel is not None else None, "label": KNOWN.get(cid)})
+                          "rel_name": names[rel] if rel is not None else None, "label": KNOWN.get(cid),
+                          "unknown": cid not in KNOWN, "variant_of": None})
         return {
             "game_id": GAME_ID, "platform": "ps2", "container": Path(path).suffix.lower().lstrip("."),
             "source_sha256": source_sha256, "volume_date": vol_date,
