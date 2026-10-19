@@ -3046,15 +3046,36 @@ def create_app(config: Config) -> FastAPI:
     def facets(actor=Depends(auth)):
         return store.facets()
 
+    # spoken or typed platform / region words that are not in titles (#2375: "Resident Evil 2 Dual Shock PS1 USA")
+    PLATFORM_WORDS = {"ps1": "psx", "psx": "psx", "psone": "psx", "playstation": "psx", "ps2": "ps2", "ps3": "ps3",
+                      "psp": "psp", "n64": "n64", "nintendo64": "n64", "gamecube": "gamecube", "gc": "gamecube",
+                      "ngc": "gamecube", "wii": "wii", "wiiu": "wiiu", "snes": "snes", "sfc": "snes", "nes": "nes",
+                      "xbox": "xbox", "xbox360": "xbox360", "x360": "xbox360", "dreamcast": "dreamcast", "dc": "dreamcast",
+                      "saturn": "saturn", "genesis": "genesis", "megadrive": "genesis", "gba": "gba", "gbc": "gbc",
+                      "gb": "gb", "gameboy": "gb", "nds": "nds", "ds": "nds", "3ds": "3ds", "switch": "switch",
+                      "arcade": "arcade", "mame": "arcade", "naomi": "naomi", "dos": "dos"}
+    REGION_WORDS = {"usa", "us", "ntsc", "ntscu", "pal", "japan", "jp", "jpn", "europe", "eu", "world"}
+
     def rank_games(query: str, limit: int = 10) -> list[dict]:
         """Best matches for a spoken/typed title: exact/prefix title > all words in title > elsewhere;
-        originals over hacks/prototypes/bootlegs; USA/World over other regions; playable cores first."""
+        originals over hacks/prototypes/bootlegs; USA/World over other regions; playable cores first.
+        Platform and region words that no title carries are dropped when the full query has no hit; the platform
+        stays as a filter, then as a bonus (#2375)."""
         import re as _re
         q = _re.sub(r"[^a-z0-9 ]+", " ", query.lower()).strip()
         if not q:
             return []
         _, items = store.search(query, limit=400)
         words = q.split()
+        hint = ""
+        if not items:
+            kept = [w for w in words if w not in PLATFORM_WORDS and w not in REGION_WORDS]
+            if kept and len(kept) < len(words):
+                hint = next((PLATFORM_WORDS[w] for w in words if w in PLATFORM_WORDS), "")
+                q, words = " ".join(kept), kept
+                _, items = store.search(q, platform=hint, limit=400)
+                if not items and hint:
+                    _, items = store.search(q, limit=400)
 
         def norm(t):
             return _re.sub(r"\s*[\(\[].*?[\)\]]", "", t.lower())
@@ -3069,6 +3090,7 @@ def create_app(config: Config) -> FastAPI:
             if "(usa" in full or "(world" in full: s += 12
             elif "(europe" in full: s += 6
             if g.get("core"): s += 5
+            if hint and g.get("platform") == hint: s += 15
             if g.get("clone_of"): s -= 8
             if (g.get("playable") or "").startswith(("verified", "launches")): s += 4
             return s - len(tt) * 0.05
