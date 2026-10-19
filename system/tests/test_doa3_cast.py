@@ -105,6 +105,56 @@ def make_cat_lnk_groups(at: int = 0x9A40, size: int = 0x4000) -> bytes:
     return bytes(body)
 
 
+def make_cat_lnk_sections(polys: list[list[int]] | None = None,
+                          residual_u16: int = 4, stride: int = 24,
+                          n_sections: int = 2, at: int = 0x9A40,
+                          size: int = 0x4000) -> bytes:
+    """A CAT whose LNK body has one link-group block (also the C1 sub-table)
+    with a data region shaped like the measured kas00 blocks: a link table
+    (count-prefixed polygon list + zero terminator + residual) followed by
+    N equal-length flat u16 triangle sections (stride bytes, a multiple of 6).
+
+    The single C0 entry (index 0) points at ``body + 8`` (the C1 sub-table the
+    body parser reads), so the block header ``{N, header_size, N+1 lengths}``
+    must satisfy ``header_size < lens[0] < lens[1] < ...`` for ``cat_lnk_body``
+    to accept it - hence the default link table is larger than ``4*(N+3)``.
+    """
+    bo = at + 8 + 4 * doa3_cast.LNK_HEADER_WORDS
+    polys = polys if polys is not None else [[5, 6], [7, 8, 9]]
+    table = []
+    for p in polys:
+        table.append(len(p))
+        table += p
+    table.append(0)                      # polygon-list terminator
+    table += [0] * residual_u16          # unresolved residual u16
+    link_table_bytes = 2 * len(table)
+    N = n_sections
+    header_size = 4 * (N + 3)
+    if link_table_bytes <= header_size:
+        raise ValueError("fixture link table must exceed the block header size")
+    lens = [link_table_bytes]
+    for _ in range(n_sections):
+        lens.append(lens[-1] + stride)
+    block = bo + 8                       # C0 entry 0 -> body + 8 (the C1 sub-table)
+    body = bytearray(bo + size)
+    struct.pack_into("<8I", body, 0, 1, 0x14, 0x5C0, at, bo + size, 0x100, 1, 0x18)
+    body[at:at + 4] = b"LNK\x00"
+    body[at + 4:at + 8] = b"0100"
+    struct.pack_into("<6I", body, at + 8, *doa3_cast.LNK_HEADER, size, 0, 0)
+    struct.pack_into("<I", body, bo, 1)          # C0 = 1
+    struct.pack_into("<I", body, bo + 4, 8)      # entry 0 -> body + 8
+    struct.pack_into("<I", body, block, N)
+    struct.pack_into("<I", body, block + 4, header_size)
+    struct.pack_into(f"<{N + 1}I", body, block + 8, *lens)
+    data_start = block + header_size
+    struct.pack_into(f"<{len(table)}H", body, data_start, *table)
+    tri = [1, 2, 3, 2, 3, 4] * (stride // 6)
+    for k in range(N):
+        struct.pack_into(f"<{len(tri)}H", body,
+                         data_start + link_table_bytes + k * stride, *tri)
+    return bytes(body)
+
+
 def make_afs(entries: list[bytes]) -> bytes:
     """Minimal AFS without a CRI name directory: header, offset/size table, data."""
     n = len(entries)
@@ -419,6 +469,66 @@ def test_cat_lnk_groups_rejects_truncated_block():
         doa3_cast.cat_lnk_groups(bytes(body))
 
 
+# ----------------------------------------------------------------- LNK sections
+
+def test_cat_lnk_sections_decodes_partition():
+    res = doa3_cast.cat_lnk_sections(make_cat_lnk_sections())
+    assert res is not None
+    assert res["link_group_count"] == 1
+    g = res["groups"][0]
+    assert g["present"] and g["index"] == 0
+    assert g["link_table_bytes"] == 24
+    assert g["polygon_count"] == 2
+    assert g["polygons"] == [[5, 6], [7, 8, 9]]
+    assert g["link_table_residual_bytes"] == 8
+    assert g["link_sections"] == 2
+    assert g["link_section_stride"] == 24
+    assert g["triangles_per_section"] == 4
+
+
+def test_cat_lnk_sections_absent_returns_none():
+    body = bytearray(0x30)
+    struct.pack_into("<8I", body, 0, 1, 0x14, 1, 0x20, 1, 0x100, 1, 0x18)
+    assert doa3_cast.cat_lnk_sections(bytes(body)) is None
+
+
+def test_cat_lnk_sections_rejects_unequal_strides():
+    body = bytearray(make_cat_lnk_sections())
+    bo = 0x9A40 + 8 + 4 * doa3_cast.LNK_HEADER_WORDS
+    block = bo + 8
+    struct.pack_into("<I", body, block + 8 + 2 * 4, 78)   # lens[2]: 48..78 = 30 vs 24..48 = 24
+    with pytest.raises(ValueError, match="not equal length"):
+        doa3_cast.cat_lnk_sections(bytes(body))
+
+
+def test_cat_lnk_sections_rejects_non_triangle_stride():
+    body = bytearray(make_cat_lnk_sections())
+    bo = 0x9A40 + 8 + 4 * doa3_cast.LNK_HEADER_WORDS
+    block = bo + 8
+    struct.pack_into("<I", body, block + 8 + 4, 46)       # lens[1]: stride 22
+    struct.pack_into("<I", body, block + 8 + 8, 68)       # lens[2]: stride 22
+    with pytest.raises(ValueError, match="not a whole number of triangles"):
+        doa3_cast.cat_lnk_sections(bytes(body))
+
+
+def test_cat_lnk_sections_rejects_unaligned_link_table():
+    body = bytearray(make_cat_lnk_sections())
+    bo = 0x9A40 + 8 + 4 * doa3_cast.LNK_HEADER_WORDS
+    block = bo + 8
+    struct.pack_into("<I", body, block + 8, 25)           # lens[0] odd (> header_size)
+    with pytest.raises(ValueError, match="u16-aligned"):
+        doa3_cast.cat_lnk_sections(bytes(body))
+
+
+def test_cat_lnk_sections_rejects_unterminated_polygon_list():
+    body = bytearray(make_cat_lnk_sections(polys=[[5, 6]], residual_u16=7))
+    bo = 0x9A40 + 8 + 4 * doa3_cast.LNK_HEADER_WORDS
+    data_start = bo + 8 + 4 * (2 + 3)                     # block + header_size (20)
+    struct.pack_into("<H", body, data_start + 6, 300)     # terminator u16[3] -> n=300
+    with pytest.raises(ValueError, match="beyond"):
+        doa3_cast.cat_lnk_sections(bytes(body))
+
+
 def test_cat_sections_rejects_non_increasing_offsets():
     body = make_cat(header=(1, 0x14, 0x9A40, 0x9A40, 0x4F5C0, 0x100, 1, 0x18))
     with pytest.raises(ValueError, match="increasing"):
@@ -468,6 +578,7 @@ def test_cast_writer_status_is_honest():
     assert st["mdl_geometry_decode"] and st["mdl_geometry_encode"]
     assert st["mdl_descriptor_table"]
     assert st["cat_lnk_groups"]
+    assert st["cat_lnk_sections"]
     assert "no-op" in st["mdl_geometry_encode_note"]
     assert not st["donor_retarget"] and not st["playable"]
 
