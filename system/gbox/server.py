@@ -1136,9 +1136,12 @@ def create_app(config: Config) -> FastAPI:
             seen.add(sid); sid = sess['replaced_by']; sess = store.get('session', sid) or _404()
         return sid, sess
 
-    def session_relaunch(sid: str, actor: str, original: bool = False, progress=None, should_stop=None) -> dict:
+    def session_relaunch(sid: str, actor: str, original: bool = False, progress=None, should_stop=None,
+                         save_moment: bool = True) -> dict:
         """The running game from boot again: the exact build folder it booted (a staged <mod>~<build> copy included: no
-        rebuild, no staging), or the original game (original=True, the hard reset), same worker, launched beside it."""
+        rebuild, no staging), or the original game (original=True, the hard reset), same worker, launched beside it.
+        save_moment=False (#2369, the game is not responding): no moment save, the frozen copy is closed first and the
+        fresh one started in its place."""
         say = progress or (lambda pct, msg: None)
         sid, sess = _live_session(sid)
         if sess.get("state") != "running":
@@ -1148,18 +1151,32 @@ def create_app(config: Config) -> FastAPI:
         tw = _swap_target(old_w, "")
         launch_mod = "" if original else (sess.get("launch_mod") or sess.get("staged_mod") or sess.get("mod") or "")
         build = "" if original else BM.session_build(sess)
-        beside = sess.get("adapter") not in RELAUNCH_BESIDE_UNSAFE
+        beside = sess.get("adapter") not in RELAUNCH_BESIDE_UNSAFE and save_moment
         what = f"{game['title']}" + (f" ({build})" if build else " (original game)" if original else "")
-        try:                                              # last played: the moment before the restart (best effort)
-            say(10, "Saving your current moment first (Reload with your last moment can bring it back)")
-            moment = _run_job("state_transfer", {"session_id": sid, "op": "export"}, actor, worker=old_w, wait=25,
-                              should_stop=should_stop)["result"]["artifact"]
-            store.put("session", sid, (store.get("session", sid) or {}) | {"checkpoint": moment, "moment_ts": time.time()})
-        except HTTPException as e:
-            if str(e.detail).startswith("cancelled by the operator"):
-                raise
-        except (KeyError, TypeError):
-            pass
+        notes, stopped_first = [], False
+        if not save_moment:
+            # #2369: the game is not responding. Saving a moment would hang the same way, and a copy started beside a
+            # frozen emulator fights it for the GPU and the window: close it now, then start fresh.
+            say(10, "The game is not responding: closing it now, then starting it fresh")
+            try:
+                _run_job("session_op", {"session_id": sid, "op": "stop_game", "args": {}}, actor, worker=old_w, wait=60,
+                         should_stop=should_stop)
+                stopped_first = True
+            except HTTPException as e:
+                if str(e.detail).startswith("cancelled by the operator"):
+                    raise
+                notes.append(f"The frozen copy did not confirm it closed ({e.detail}); it is replaced anyway.")
+        else:
+            try:                                          # last played: the moment before the restart (best effort)
+                say(10, "Saving your current moment first (Reload with your last moment can bring it back)")
+                moment = _run_job("state_transfer", {"session_id": sid, "op": "export"}, actor, worker=old_w, wait=25,
+                                  should_stop=should_stop)["result"]["artifact"]
+                store.put("session", sid, (store.get("session", sid) or {}) | {"checkpoint": moment, "moment_ts": time.time()})
+            except HTTPException as e:
+                if str(e.detail).startswith("cancelled by the operator"):
+                    raise
+            except (KeyError, TypeError):
+                pass
         say(20, f"Starting a fresh {what} on {tw['name']}" + ("; your game keeps running until it is up" if beside else ""))
         try:
             new = _run_job("launch_game", {"game": game, "mod": launch_mod, **({"keep_session": sid} if beside else {})},
@@ -1179,13 +1196,13 @@ def create_app(config: Config) -> FastAPI:
             keep = {k: sess[k] for k in ("mod", "collection_mod", "staged_mod", "launch_mod") if sess.get(k)}
             with store.lock:
                 store.put("session", nsid, store.get("session", nsid) | keep)
-        notes = []
         if nsid != sid:
-            say(85, "Closing the previous copy")
-            try:
-                _run_job("session_op", {"session_id": sid, "op": "stop_game", "args": {}}, actor, worker=old_w, wait=60)
-            except HTTPException as e:
-                notes.append(f"The previous copy did not confirm it closed ({e.detail}); close it from Sessions.")
+            if not stopped_first:
+                say(85, "Closing the previous copy")
+                try:
+                    _run_job("session_op", {"session_id": sid, "op": "stop_game", "args": {}}, actor, worker=old_w, wait=60)
+                except HTTPException as e:
+                    notes.append(f"The previous copy did not confirm it closed ({e.detail}); close it from Sessions.")
             s_ = store.get("session", sid) or {}
             store.put("session", sid, s_ | {"state": "ended", "ended": s_.get("ended") or time.time(), "replaced_by": nsid,
                                             "exit": s_.get("exit") or {"by": actor, "via": "relaunch", "to": nsid}})
@@ -1194,6 +1211,7 @@ def create_app(config: Config) -> FastAPI:
                 "notes": notes}
 
     RESET_MODES = {"reset": "reset", "restart": "restart", "hard": "hard_reset"}   # mode -> the intent it needs
+    RESET_ANSWER_S = 20.0    # a console reset answers in seconds; no answer by then means the emulator is frozen (#2369)
 
     def session_reset(sid: str, actor: str, mode: str = "reset", progress=None, should_stop=None, parent_job: str = "") -> dict:
         """reset: the console's reset switch (the emulator's own reset), else a relaunch of the same game + build.
@@ -1203,19 +1221,22 @@ def create_app(config: Config) -> FastAPI:
         sid, sess = _live_session(sid)
         if sess.get("state") != "running":
             raise HTTPException(409, "This game has already ended, so there is nothing to reset: use Play again.")
-        notes = []
+        notes, frozen = [], False
         boot_build = (sess.get("collection_mod") or sess.get("mod") or "").split(BM.STAGED_SEP)[0]
         live = bool(sess.get("live_mod")) and sess["live_mod"] != boot_build    # a hot-swapped model in memory (#Blender)
         if mode == "reset" and not live:
             say(5, "Pressing the console's reset")
             try:
-                r = _run_job("session_op", {"session_id": sid, "op": "reset"}, actor, worker=sid.split("-")[0], wait=40,
-                             should_stop=stop)
+                r = _run_job("session_op", {"session_id": sid, "op": "reset"}, actor, worker=sid.split("-")[0],
+                             wait=RESET_ANSWER_S, should_stop=stop)
                 return {"session_id": sid, "from": sid, "mode": "native", "result": r.get("result"), "notes": notes}
             except HTTPException as e:
                 if str(e.detail).startswith("cancelled by the operator"):
                     raise
-                notes.append(f"No console reset reached the game ({e.detail}); it was relaunched instead.")
+                # still "running" when the wait ran out: the emulator is not answering at all (#2369, SC2 frozen)
+                frozen = str(e.detail).endswith(": running")
+                notes.append(f"The game did not answer its reset within {RESET_ANSWER_S:.0f} s; it was closed and started fresh."
+                             if frozen else f"No console reset reached the game ({e.detail}); it was relaunched instead.")
         if stop():
             raise HTTPException(409, "cancelled by the operator before the relaunch started; your current game was kept running")
         if live and mode != "hard":                    # the model in memory is the build to restart (a reset would boot
@@ -1223,7 +1244,8 @@ def create_app(config: Config) -> FastAPI:
             out = session_swap(sid, sess["live_mod"], "", actor, keep_state=False, progress=say, should_stop=stop,
                                keep_old=True, parent_job=parent_job)
         else:
-            out = session_relaunch(sid, actor, original=mode == "hard", progress=say, should_stop=stop)
+            out = session_relaunch(sid, actor, original=mode == "hard", progress=say, should_stop=stop,
+                                   save_moment=not frozen)
         return out | {"mode": "hard" if mode == "hard" else "relaunch", "notes": notes + (out.get("notes") or [])}
 
     def reset_job(sid: str, mode: str, actor: str, origin=None) -> Job:
