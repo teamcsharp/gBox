@@ -278,12 +278,45 @@ def prepare_play_disc(source: Path, config, game: dict, progress=lambda *_: None
 class Doa3NativeAdapter(XboxAdapter):
     name = "doa3_native"
     render_class = "DOAXBVRecompPresenterWindow"
+    supported = XboxAdapter.supported | {"read_memory", "query_memory_map"}
     checkpoint_reason = "The DOA3 native runtime has no verified in-place save-state interface"
 
     def __init__(self, config, game):
         super().__init__(config)
         self.game = game
         self.boot_frame_paths = []
+        self._guest_memory = None
+        self._memory_source = None
+
+    def _memory(self):
+        from .doa3_memory import GuestMemory
+        from .registry import Unsupported
+        if not self._running() or not self.ready or not self._memory_source:
+            raise Unsupported("Native DOA3 guest memory needs this adapter's verified running session")
+        if self._guest_memory is None:
+            self._guest_memory = GuestMemory(self, install_dir(self.config) / "runner.exe", self._memory_source,
+                                             RUNNER_SHA256, XBE_SHA256)
+        return self._guest_memory
+
+    def query_memory_map(self):
+        return self._memory().memory_map()
+
+    def read_memory(self, address, length):
+        return self._memory().read(address, length)
+
+    def regions(self):
+        memory = self.query_memory_map()
+        return [(row["address"], row["size"]) for row in memory["regions"]]
+
+    def query_runtime(self):
+        from .registry import Unsupported
+        result = super().query_runtime()
+        if result["running"]:
+            try:
+                result["guest_memory"] = self.query_memory_map()
+            except (Unsupported, OSError, ValueError) as error:
+                result["guest_memory"] = {"verified": False, "reason": str(error)}
+        return result
 
     def _boot_frame(self, *, fresh=False):
         """Only this runner's bounded back-buffer dumps can prove native output."""
@@ -324,6 +357,7 @@ class Doa3NativeAdapter(XboxAdapter):
         exe = ensure_runtime(self.config, getattr(self, "api_server", ""), getattr(self, "api_headers", {}), progress)
         source = prepare_xbe(rom, self.config, progress)
         xbe = prepare_play_disc(source, self.config, self.game, progress)
+        self._memory_source, self._guest_memory = xbe, None
         progress(65, "Launching the verified DOA3 native disc")
         logs = xbe.parent.parent / "logs"
         _plain_path(logs)

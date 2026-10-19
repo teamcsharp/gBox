@@ -121,7 +121,8 @@ def sync(data, favorites, requests, *, now):
         context = request.get('context') or {}
         body = str(request.get('body') or request.get('title') or '').lstrip()
         actionable = request.get('source') in ('gap', 'characters')
-        repair = bool(context.get('auto_report') or context.get('native_replacement')
+        unlock_work = bool(context.get('custom_build_unlocks'))
+        repair = bool(unlock_work or context.get('auto_report') or context.get('native_replacement')
                       or actionable and (context.get('character') or context.get('what')
                                          or body.startswith('Extract ') or 'pick whip' in body.lower()))
         operator_child = (request.get('parent_request_id') and request.get('author') == 'operator'
@@ -136,6 +137,8 @@ def sync(data, favorites, requests, *, now):
             'created': request.get('created', now)})
         item.update(number=request.get('number'), title=request.get('title'), repair=repair,
                     extraction_engineering=context.get('extraction_engineering') is True,
+                    unlock_work=unlock_work,
+                    favorite_unlock_work=bool(context.get('favorite_default')),
                     session_observer=bool(context.get('session_observer')),
                     launch_failure=bool(context.get('launch_failure')),
                     operator_requested=bool(context.get('replacement_requested')),
@@ -229,6 +232,12 @@ def candidates(data, requests, native, owned, on_main, *, now):
                       if i.get('dispatch_state') in ('queued', 'uncertain') or i.get('request_id') in owned)
     heavy = sum(j.get('tool') in ('analyze_binary', 'ghidra_script', 'characters', 'doa2_assets') for j in native)
     result = []
+    unlock_admission = data.get('unlock_admission') or {}
+    cap = unlock_admission.get('dispatch_per_hour', 0)
+    cap = cap if type(cap) is int and 1 <= cap <= 4 else 0
+    unlock_recent = sum(sum(1 for stamp in i.get('unlock_dispatch_times', [i.get('last_dispatched', 0)])
+                            if type(stamp) in (int, float) and stamp > 0 and now - 3600 < stamp <= now)
+                        for i in data['items'].values() if i.get('unlock_work'))
     for key, item in data['items'].items():
         rid = item.get('request_id')
         if (rid and rid in busy_requests or item.get('retry_at', 0) > now
@@ -239,6 +248,9 @@ def candidates(data, requests, native, owned, on_main, *, now):
         from . import hermes_result_review
         item['review_hold'] = hermes_result_review.gate(item)
         if item['review_hold']:
+            continue
+        if item.get('unlock_work') and (unlock_admission.get('allowed') is not True
+                or rid not in unlock_admission.get('request_ids', []) or unlock_recent >= cap):
             continue
         if item['lane'] == 'favorite':
             # a recently played title the Sonic showcase found without a writer (ensure_item) is worked like a favorite
@@ -255,7 +267,11 @@ def candidates(data, requests, native, owned, on_main, *, now):
         item['on_main'] = rid in on_main
         result.append((key, item))
     repair_games = {i.get('game_id') for _, i in result if i.get('repair') and i.get('game_id')}
-    return [(k, i) for k, i in result if i['lane'] != 'favorite' or i['game_id'] not in repair_games]
+    result = [(k, i) for k, i in result if i['lane'] != 'favorite' or i['game_id'] not in repair_games]
+    # One unlock investigation per managed tick, even with spare global slots.
+    unlocks = [v for v in result if v[1].get('unlock_work')]
+    first = min(unlocks, key=lambda v: (v[1].get('last_dispatched', 0), v[1].get('created', 0)), default=None)
+    return [v for v in result if not v[1].get('unlock_work') or v is first]
 
 
 def priority_rank(item, data) -> int:
@@ -371,6 +387,25 @@ def _prompt(item, playing=None):
                    + json.dumps(item['review_guidance'])
                    + '\nResolve the diagnosed cause and run its focused verification before retrying. '
                    'Preserve the previous work and pending job IDs; do not repeat the same failed action. ')
+    if item.get('unlock_work'):
+        scope = ('This is exact-game unlock research for the original favorite and its current builds. '
+                 if item.get('favorite_unlock_work') else 'This is the standing exact-build custom unlock requirement. ')
+        application = (
+            'Publish a reusable exact-revision boot_apply recipe only with complete stored runtime coverage, '
+            'native revision/mode guards and exact-build receipts. Never launch an emulator automatically, '
+            'copy/rebuild a ROM for discovery, or alter a current game. '
+            if item.get('favorite_unlock_work') else
+            'Implement the reusable unlock step in the existing custom-build writer and pin each resulting '
+            'exact-build receipt. Follow the request acceptance scope; preserve its existing character/stage edits. ')
+        return header + scope + (
+            'Reuse saved '
+            'REA/Ghidra analysis, executable hashes, published native controls and custom_build_unlocks profiles. '
+            'Inventory all characters, hidden_characters, levels, stages, costumes, modes, items and extras. '
+            'Every absent category needs evidence; a subset, generic verified flag or successful tool exit is not '
+            'unlock-all. Preserve personal saves and base ROMs. ') + application + (
+            'Do static analysis and implement bounded reusable support; if fresh runtime proof is unavailable, '
+            'leave the request pending with the precise missing evidence. Yield when any operator activity begins. '
+            'Do not turn this into character replacement work. ') + mode._handoff()
     header += ('For game-build changes, keep supplying reviewed native inspection plans through the '
                'inspection_builds tool: op=plan for request revisions and reports, then implement the change and '
                'op=publish a launch:false cast_swap recipe with change_id, relevant writer dependencies, '
@@ -583,6 +618,10 @@ def tick(*, now=None):
             owned.update(chat_ids[c['id']] for c in _api('/api/chat')
                          if c.get('busy') and c.get('id') in chat_ids)
         native = _native_jobs()
+        try:
+            data['unlock_admission'] = _api('/api/custom-build-unlocks/dispatch-admission')
+        except Exception:
+            data['unlock_admission'] = {'allowed': False}  # unrelated queue work remains eligible
         options = candidates(data, requests, native, owned, _on_main(), now=now)
         _save(data)  # Preserve review holds/guidance even when there are no free slots.
         # Both gates apply and the stricter wins: the operator's game on the Spark defers emulator-launching items
@@ -654,10 +693,20 @@ def tick(*, now=None):
             # Recheck the operator switch immediately before admission.
             if not (mode._job() or {}).get('enabled'):
                 break
+            if item.get('unlock_work'):
+                admission = _api('/api/custom-build-unlocks/dispatch-admission')
+                if admission.get('allowed') is not True or item['request_id'] not in admission.get('request_ids', []):
+                    continue  # a new conversation/game wins before actual dispatch
             attempt_kind = 'followup' if item.get('last_dispatched') else 'new'
             item.update(job_name=name, dispatch_state='uncertain', last_dispatched=now,
                         attempts=item.get('attempts', 0) + 1, local=local, route=run_route,
                         inference_node=node['name'] if node else None)
+            if item.get('unlock_work'):
+                from .hermes_unlock_guard import dispatch_scope
+                request = next(r for r in requests if r['id'] == item['request_id'])
+                item['unlock_scope'] = dispatch_scope(request, now)
+                item['unlock_dispatch_times'] = [stamp for stamp in item.get('unlock_dispatch_times', [])
+                                                 if now - 3600 < stamp <= now] + [now]
             _save(data)
             if existing:
                 job = existing[0]

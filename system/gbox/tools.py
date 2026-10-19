@@ -870,6 +870,9 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     except Exception as error:                         # noqa: BLE001 - never turns a running game into a failed launch
         detail['unlocks'] = {**(detail.get('unlocks') or {}), 'state': 'failed', 'reason': str(error)[:240]}
     if not inp.capture_backend:
+        from . import custom_build_unlocks
+        detail['unlocks'] = custom_build_unlocks.on_launch(sid, ctx, requested_mod=inp.mod)
+    if not inp.capture_backend:
         try:
             from . import gameplay_actions
             detail['action_capture']=gameplay_actions.start(sid,ad,gd,ctx)
