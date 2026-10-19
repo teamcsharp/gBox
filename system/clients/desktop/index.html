@@ -3388,6 +3388,7 @@ async function modsGalleryPlay(m, { node, moment }) {
 }
 async function modsGalleryRequest(t) {
   if (!t.id) { toast(`Request #${t.number} is not in the inbox`); return; }
+  if (t.build_report) return reportStoryOpen(t.id);        // #2393: a build report opens its three.js presentation at once
   openThreads.add(t.id);
   document.querySelector('aside button[data-s="requests"]').click();
   await Promise.resolve(refreshInbox()).catch(() => {});
