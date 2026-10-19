@@ -187,6 +187,16 @@ def ensure_cxbx(config: Config, progress=lambda *_: None) -> Path:
     return exe
 
 
+def log_settings(debug: bool, log_path: Path) -> dict[str, str]:
+    """Cxbx [core] logging keys for a launch. A debug launch (launch_game debug=True) logs every HLE module at
+    DEBUG so the kernel log shows what the game does after the Direct3D caps dump (JSRF black screen, #2412); a
+    normal launch writes INFO back so a previous debug run never slows the operator's game."""
+    core = {"KrnlDebugMode": "0x2", "KrnlDebugLogFile": str(log_path), "LogLevel": "0" if debug else "1"}
+    if debug:
+        core["LoggedModules"] = "0xFFFFFFFF"     # the first 32 modules: D3D8, DSOUND, XAPI, kernel, file system...
+    return core
+
+
 def _set_ini(path: Path, sections: dict[str, dict[str, str]]):
     """Edit only requested keys; Cxbx's repeated profile/history keys are meaningful."""
     source = path.read_text(encoding="utf8", errors="replace") if path.exists() else ""
@@ -369,6 +379,7 @@ class XboxAdapter:
         self.render_pid, self.render_window, self._owned = None, None, {}
         self.ready = False
         self.log_path = None
+        self.debug = False                     # launch_game debug=True: full kernel log (log_settings)
         self._render_missing_since = None
         import threading
         self._capture_local = threading.local()
@@ -427,7 +438,7 @@ class XboxAdapter:
         self.log_path = exe.parent / "gbox-kernel.log"
         # One active launch per worker; do not rewrite settings of a running Cxbx instance.
         _set_ini(exe.parent / "settings.ini", {
-            "core": {"KrnlDebugMode": "0x2", "KrnlDebugLogFile": str(self.log_path)},
+            "core": log_settings(bool(getattr(self, "debug", False)), self.log_path),
             "video": {"FullScreen": "false", "MaintainAspect": "true"},
         })
         self.output_path = exe.parent / "gbox-launch.log"
