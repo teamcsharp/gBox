@@ -12,6 +12,10 @@ import bpy
 
 argv = sys.argv[sys.argv.index("--") + 1:]
 src, out, amount = argv[0], argv[1], float(argv[2])
+# Optional 4th arg: comma-separated vertex-group name substrings to PROTECT from the collapse
+# (head/face bones). Vertices in a matching group keep their faces while the body absorbs the
+# reduction, so a character forced into a tiny slot still keeps a recognisable face.
+protect = [p.strip().lower() for p in argv[3].split(",") if p.strip()] if len(argv) > 3 else []
 bpy.ops.wm.read_factory_settings(use_empty=True)
 bpy.ops.import_scene.gltf(filepath=src)
 arm = next(o for o in bpy.data.objects if o.type == "ARMATURE")
@@ -55,13 +59,35 @@ def _weld(me) -> int:
     return len(bad)
 
 
-def _collapse(o, r: float) -> None:
+def _collapse(o, r: float, vg: str = "") -> None:
     bpy.context.view_layer.objects.active = o
     d = o.modifiers.new("dec", "DECIMATE")
     d.decimate_type = "COLLAPSE"
     d.ratio = r
     d.use_collapse_triangulate = True
+    if vg:
+        # Blender's collapse keeps low-weight vertices and collapses high-weight ones first
+        # (verified against Blender 4.0.2): the protect group tags head/face verts 0 and body 1.
+        d.vertex_group = vg
+        d.vertex_group_factor = 1.0
     bpy.ops.object.modifier_apply(modifier=d.name)
+
+
+def _protect_group(o, substrings: list[str]) -> bool:
+    """Tag head/face vertices 0.5 and everything else 1.0 in a 'protect' vertex group. Blender's collapse
+    removes high-weight vertices first (verified against 4.0.2), so the face collapses at half the body's
+    priority: the face keeps ~2x the triangles a uniform cut would leave, while the body absorbs the rest.
+    Returns False when no group matches, so callers fall back to the plain uniform collapse."""
+    if not substrings:
+        return False
+    keep = {g.index for g in o.vertex_groups if any(s in g.name.lower() for s in substrings)}
+    if not keep:
+        return False
+    vg = o.vertex_groups.new(name="protect")
+    for v in o.data.vertices:
+        w = 0.5 if any(g.group in keep and g.weight > 0 for g in v.groups) else 1.0
+        vg.add([v.index], w, "REPLACE")
+    return True
 
 
 for o in meshes:
@@ -69,14 +95,16 @@ for o in meshes:
     for m in list(o.modifiers):                    # the armature deform is re-added after decimating the rest mesh
         o.modifiers.remove(m)
     if ratio < 0.999:
-        n0, raw = _tris(o.data), o.data.copy()
+        n0 = _tris(o.data)
+        protect_vg = _protect_group(o, protect)    # added before the copy so the retry mesh also carries it
+        raw = o.data.copy()
         split = _weld(o.data)
-        _collapse(o, ratio)
+        _collapse(o, ratio, "protect" if protect_vg else "")
         got, how = _tris(o.data), "welded"
         if got > max(n0 * ratio * STALL, n0 * ratio + 50):  # still stalled: the unwelded mesh always gets there
             welded, o.data = o.data, raw
             bpy.data.meshes.remove(welded)
-            _collapse(o, ratio)
+            _collapse(o, ratio, "protect" if protect_vg else "")
             how = f"unwelded (the welded collapse stopped at {got})"
         else:
             bpy.data.meshes.remove(raw)
