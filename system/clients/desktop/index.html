@@ -3774,8 +3774,8 @@ function pipMenu(x, y) {
   let m = $("#pipmenu");
   if (!m) { m = document.createElement("div"); m.id = "pipmenu"; document.body.append(m); dragAnywhere(m);
     addEventListener("mousedown", e => { if (!e.target.closest("#pipmenu") && m.style.display === "block") { m.style.display = "none"; GM.menu = false; EMB.last = ""; } }, true); }
+  const noStates = capMissing("save_state");                   // #2518: Save / Load need an emulator with save states
   GM.at = [x, y];                                              // Report… files a problem at this spot
-  const noStates = capMissing("save_state");
   const items = [["report", "⚑ Report…"], ["-"], ...(isFull() ? [["main", "⤡ Exit full screen   Alt+Enter"], ["-"]] : []), ["autoplay", GM.auto ? "🤖 Hand control back (stop autoplay)" : "🤖 Take control (autoplay)  F3"],
                  ...(GM.auto ? [] : [["autoplay+", "🛡 Take control, invincible (holds HP)"]]),
                  ["talk", TALK.on ? "🎙 Stop talking" : "🎙 Talk to gBox"], ["orb", ORB.on ? "💬 End conversation" : "💬 Start conversation"],
