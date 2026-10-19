@@ -353,3 +353,79 @@ class MergeReviewTests(ReviewFixture, unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class LocalReviewTests(ReviewFixture, unittest.TestCase):
+    """When the operator set Hermes to local only, reviews run on the local route instead of waiting for credit."""
+
+    def local(self):
+        return {'provider': 'gbox-sparkDeux', 'model': 'Qwen/Qwen3-Coder-Next-FP8', 'local': True,
+                'label': 'Local (sparkDeux)', 'proxy_url': 'http://127.0.0.1:8765/api/llm/local/nodes/sparkDeux/v1'}
+
+    def test_local_only_reviews_on_the_local_route_without_deepseek(self):
+        from gbox import hermes_provider_scope as scope
+        R.record_result(self.item, self.run)
+        self.assertEqual(R.gate(self.item), 'Waiting for durable cloud result review')
+        calls = []
+
+        def post(url, body, timeout):
+            calls.append((url, body))
+            return {'model': 'Qwen/Qwen3-Coder-Next-FP8', 'usage': {'total_tokens': 900},
+                    'choices': [{'finish_reason': 'stop', 'message': {'content':
+                        '```json\n' + json.dumps(self.verdict()) + '\n```'}}]}
+        with patch.object(R, 'reviewer', return_value=self.local()), patch.object(R, 'packet', return_value={}), \
+                patch.object(R.M, '_job', return_value={'enabled': True}), \
+                patch.object(R, '_post_json', side_effect=post), \
+                patch.object(scope, 'admission', return_value={'reason': 'restricted'}), \
+                patch.object(R.subprocess, 'run') as transport:
+            self.assertEqual(R.gate(self.item), 'Waiting for the local result review')
+            self.assertEqual(R.process_one(), self.key)
+        transport.assert_not_called()
+        self.assertEqual(calls[0][0], 'http://127.0.0.1:8765/api/llm/local/nodes/sparkDeux/v1/chat/completions')
+        self.assertEqual(calls[0][1]['model'], 'Qwen/Qwen3-Coder-Next-FP8')
+        self.assertEqual(calls[0][1]['messages'][0]['role'], 'system')
+        row = R.result(self.key)
+        self.assertEqual(row['state'], 'reviewed')
+        self.assertEqual(json.loads(row['verdict'])['verdict'], 'retry')
+        self.assertIsNone(R.gate(self.item))            # guidance recorded: the next dispatch may go ahead
+        self.assertEqual(self.item['review_guidance']['diagnosis'], 'Missing parser bounds check')
+
+    def test_local_only_tick_ignores_the_paid_provider_scope(self):
+        from gbox import hermes_provider_scope as scope
+        with patch.object(R, 'reviewer', return_value=self.local()), \
+                patch.object(R.M, '_job', return_value={'enabled': True}), \
+                patch.object(R, 'discover'), patch.object(R, 'deliver'), patch.object(R, 'refresh_holds'), \
+                patch.object(scope, 'admission', return_value={'reason': 'restricted'}), \
+                patch.object(R, 'process_one', return_value=None) as process:
+            state = R.tick()
+        self.assertNotEqual(state.get('state'), 'waiting_provider_scope')
+        self.assertTrue(state['local'])
+        process.assert_called()
+
+    def test_local_answer_without_a_json_object_is_retried_not_accepted(self):
+        R.record_result(self.item, self.run)
+        bad = {'choices': [{'finish_reason': 'stop', 'message': {'content': 'I could not review this run.'}}]}
+        with patch.object(R, 'reviewer', return_value=self.local()), patch.object(R, 'packet', return_value={}), \
+                patch.object(R.M, '_job', return_value={'enabled': True}), \
+                patch.object(R, '_post_json', return_value=bad):
+            self.assertIsNone(R.process_one())
+        row = R.result(self.key)
+        self.assertEqual(row['state'], 'retry')
+        self.assertIn('invalid_provider_response', row['error'])
+
+    def test_cloud_reviewer_unless_operator_chose_local_only(self):
+        from gbox import hermes_local, hermes_pool
+        with patch.object(hermes_local, 'local_only', return_value=False):
+            self.assertFalse(R.reviewer()['local'])
+        node = SimpleNamespace(enabled=True, allow_large_tasks=True, max_parallel_jobs=32, provider='gbox-sparkDeux',
+                               model='Qwen/Qwen3-Coder-Next-FP8', host_name='sparkDeux',
+                               proxy_url='http://127.0.0.1:8765/api/llm/local/nodes/sparkDeux/v1')
+        small = SimpleNamespace(enabled=True, allow_large_tasks=False, max_parallel_jobs=1, provider='gbox-lilspark',
+                                model='gpt-oss:20b', host_name='lilspark',
+                                proxy_url='http://127.0.0.1:8765/api/llm/local/nodes/lilspark/v1')
+        with patch.object(hermes_local, 'local_only', return_value=True), \
+                patch.object(hermes_pool, 'node_settings', return_value={'lilspark': small, 'sparkDeux': node}):
+            who = R.reviewer()
+        self.assertTrue(who['local'])
+        self.assertEqual((who['provider'], who['model']), ('gbox-sparkDeux', 'Qwen/Qwen3-Coder-Next-FP8'))
+        self.assertEqual(who['proxy_url'], node.proxy_url)
