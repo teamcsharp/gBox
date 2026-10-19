@@ -180,16 +180,27 @@ def _quiet_volume_loop(stop: threading.Event, active_agent: set, quiet_sessions:
 
 
 def _heartbeat_loop(stop, current_info, active, server, headers):
-    """Keep saturated workers visible without claiming another job."""
+    """Keep saturated workers visible without claiming another job. On Windows this same thread keeps the display
+    awake while gBox uses the PC (gbox/display_keep.py, #1881: a worker without the desktop app went blank)."""
+    from . import display_keep
+    keeper, asked = display_keep.Keeper(), 0.0
     with httpx.Client(base_url=server, headers=headers, timeout=10) as client:
         while not stop.wait(HEARTBEAT_S):
             try:
                 info = current_info().model_copy(update={'idle_seconds': user_idle_seconds(),
                                                         'active_jobs': len(active)})
                 client.post('/api/workers/register', json=info.model_dump()).raise_for_status()
-            except (httpx.HTTPError, OSError):
+                if display_keep.HOST_OS == "windows" and time.time() - asked >= display_keep.STATUS_EVERY_S:
+                    asked = time.time()
+                    try:
+                        status = client.get(f'/api/background/workers/{info.name}/status').json()
+                        keeper.apply(*display_keep.wanted(status, len(active)))
+                    except Exception:                 # noqa: BLE001 - the display policy never breaks the heartbeat
+                        pass
+            except (httpx.HTTPError, OSError, ValueError):
                 # Re-registration is safe to retry. A job itself is never rerun.
                 continue
+    keeper.release()
 
 
 def _desktop_stream(stop: threading.Event, wid: str, server: str, h: dict, config: Config):
