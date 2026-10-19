@@ -111,6 +111,11 @@ CONVENIENCE = {
     "list_favorites": ("List favorited games, including ROMs queued for background model collection.", obj({"limit": I})),
     "game_roster": ("Show a game's native model reader, character roster, and background collection job state.",
                     obj({"game_id": S}, ["game_id"])),
+    "favorite_unlocks": ("Read or publish evidence-backed unlock metadata for this exact active favorite request. "
+                         "Never starts a game or applies a control. Existing server validation rejects incomplete profiles/receipts.",
+                         obj({"game_id": S, "request_id": S, "op": {"type":"string", "enum":[
+                             "status", "native_profile", "unlock_profile", "manifest", "verify"]},
+                              "build": S, "body": {"type":"object"}}, ["game_id", "request_id"])),
     "start_job": ("Dispatch any gBox registry tool as a background job and return its ID immediately. Use require_worker=idle to choose the other Windows PC, then pin later work to its worker_id.",
                   obj({"tool": S, "input": {"type": "object"}, "require_os": S, "require_worker": S,
                        "parent_request_id": S}, ["tool", "input"])),
@@ -255,6 +260,9 @@ def build(base_url: str, token: str) -> Server:
                 "choices": [{"question": e["question"], "options": e["options"]} for e in ev if e["type"] == "choices"]}
 
     async def convenience(name, a):
+        if name == 'favorite_unlocks':
+            from .unlock_metadata import run
+            return await run(a, get, post)
         if name == 'get_dispatch_feedback':
             from . import hermes_feedback
             data = await asyncio.to_thread(hermes_feedback.scan)

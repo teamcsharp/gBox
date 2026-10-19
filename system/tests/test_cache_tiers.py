@@ -103,6 +103,48 @@ def test_registry_execute_promotes_units_its_input_names(tmp_path, monkeypatch):
     assert t.tier("g1") == "hot"
 
 
+def test_ram_capture_runs_without_promoting_rom_and_still_holds_busy_guard(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from pydantic import BaseModel
+    from gbox.registry import Ctx, REGISTRY, execute
+    t, _ = make(tmp_path)
+    game(t.hot)
+    t.demote("g1")
+    monkeypatch.setattr(cache_tiers, "ACTIVE", t)
+    original = (t.cold / "g1/disc.iso").stat()
+    class Output(BaseModel):
+        captured: bool
+    def capture(inp, ctx):
+        assert inp.source == "ram" and inp.session_id == "worker-session"
+        assert t.busy_reason() == "1 job(s) running on this node"
+        assert t.tier("g1") == "cold"
+        return {"captured": True}
+    monkeypatch.setitem(REGISTRY, "re_executable", replace(REGISTRY["re_executable"], fn=capture, Out=Output))
+    assert execute("re_executable", {"game_id": "g1", "source": "ram", "session_id": "worker-session"},
+                   Ctx(Config(data_dir=tmp_path / "data"))) == {"captured": True}
+    assert t.tier("g1") == "cold" and not t._queue and t.busy_reason() is None
+    assert (t.cold / "g1/disc.iso").stat().st_ino == original.st_ino
+    assert all(os.path.islink(t.hot / part) for part in parts())
+
+
+@pytest.mark.parametrize("tool,source", [("re_executable", "path"), ("ghidra_bridge", None),
+    ("ghidra_script", None), ("analyze_binary", None), ("rea_open_binary", None), ("rea_decompile", None)])
+def test_explicit_code_analysis_never_promotes_the_entire_game_unit(tmp_path, tool, source):
+    t, _ = make(tmp_path)
+    game(t.hot)
+    t.demote("g1")
+    assert t.promote_for(tool, {"game_id": "g1", "source": source}) == []
+    assert t.tier("g1") == "cold" and not t._queue
+
+
+def test_disc_extraction_still_promotes_the_rom_it_actually_reads(tmp_path):
+    t, _ = make(tmp_path)
+    game(t.hot)
+    t.demote("g1")
+    assert t.promote_for("re_executable", {"game_id": "g1", "source": "disc"})[0]["op"] == "promote"
+    assert t.tier("g1") == "hot"
+
+
 def test_launch_waits_only_for_a_quick_promotion(tmp_path, monkeypatch):
     t, clock = make(tmp_path, promote_wait_s=60)
     game(t.hot)

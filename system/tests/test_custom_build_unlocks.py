@@ -10,8 +10,10 @@ from gbox import custom_build_unlocks as U
 from tests.test_build_quarantine import Memory
 
 
-def rig(tmp_path):
+def rig(tmp_path, *, admission=lambda:'', workers=lambda:[]):
     store = Memory()
+    store.put(U.POLICY, 'idle-state', {'last_busy': 0})
+    store.put(U.POLICY, 'default', {'enabled': False, 'dispatch_per_hour': 4})
     store.catalog_get = lambda gid: {'game_id':gid, 'title':'Example '+gid, 'platform':'dreamcast'}
     sha = hashlib.sha256(b'Ghidra and runtime fixture evidence').hexdigest()
     store.read_artifact = lambda value: b'evidence' if value == sha else None
@@ -29,7 +31,7 @@ def rig(tmp_path):
         r = body | {'id':str(len(created)+1),'number':len(created)+1,'status':'open','messages':[]}
         created.append(r); store.put('request',r['id'],r); return r
     def investigate(*args, **kwargs): dispatched.append(args); return {'mode':'queue'}
-    reconcile = U.routes(app,store,SimpleNamespace(cache=tmp_path),lambda:'operator',create,investigate)
+    reconcile = U.routes(app,store,SimpleNamespace(cache=tmp_path),lambda:'operator',create,investigate,workers=workers,admission=admission)
     return store, rows, TestClient(app), reconcile, created, dispatched, sha
 
 

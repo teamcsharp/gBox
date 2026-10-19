@@ -1440,6 +1440,14 @@ class Tiers:
     # -- job hook
     def promote_for(self, tool: str, raw_input, progress=None) -> list[dict]:
         """Units a job names come up before it runs; a launch waits only for a quick one (the rest: when idle)."""
+        # These jobs consume a captured image or an explicit analysis file, not
+        # the game's ROM/mod unit. A game_id in their provenance must not move
+        # several GiB before the first RAM read or Ghidra query. job_scope still
+        # marks the node busy, so idle cache maintenance continues to give way.
+        if tool in {"analyze_binary", "ghidra_script", "ghidra_bridge", "read_rea_result"} or tool.startswith("rea_"):
+            return []
+        if tool == "re_executable" and isinstance(raw_input, dict) and raw_input.get("source") in {"ram", "path"}:
+            return []
         if tool == 'title_assets':
             # This reader resolves an already available source and streams only
             # selected members. Do not move the entire ROM/mod unit first.
