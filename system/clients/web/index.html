@@ -2426,6 +2426,42 @@ function modWatch(gid, sid, mods) {                       // re-apply kept patch
   tick(); MODWATCH.t = setInterval(tick, 20000);
 }
 const observerWatch = { timer: null };
+// #2433: a panel that rebuilds itself on a timer must not close what the operator opened or is pointing at.
+// keepPanel(el, html) replaces el's markup only when it changed and the operator is not reading it (pointer over it
+// and moved in the last 30 s, held, scrolled or typed moments ago, or text selected in it); expanded sections and
+// scroll positions survive the replacement. Returns true when the markup was replaced.
+function keepPanel(el, html) {
+  const r = el._gboxReading ||= (() => {
+    const state = { down: 0, moved: 0, scrolled: 0, keys: 0, hover: false };
+    const stamp = key => () => { state[key] = Date.now(); };
+    el.addEventListener("pointerdown", stamp("down"), true);
+    el.addEventListener("pointermove", stamp("moved"), true);
+    el.addEventListener("wheel", stamp("scrolled"), { capture: true, passive: true });
+    el.addEventListener("scroll", stamp("scrolled"), { capture: true, passive: true });
+    el.addEventListener("keydown", stamp("keys"), true);
+    el.addEventListener("pointerenter", () => { state.hover = true; });
+    el.addEventListener("pointerleave", () => { state.hover = false; });
+    document.addEventListener("pointerup", () => { state.down = 0; }, true);
+    return state;
+  })();
+  if (el._gboxPanelHtml === html) return false;
+  if (el._gboxPanelHtml !== undefined) {
+    const now = Date.now(), sel = window.getSelection ? window.getSelection() : null;
+    const reading = (r.down && now - r.down < 10000) || now - r.scrolled < 2000 || now - r.keys < 5000
+      || (r.hover && now - r.moved < 30000)
+      || !!(sel && !sel.isCollapsed && sel.rangeCount && el.contains(sel.getRangeAt(0).commonAncestorContainer));
+    if (reading) return false;
+  }
+  const key = d => d.dataset.dock || d.dataset.key || d.querySelector(":scope > summary")?.textContent || "";
+  const open = new Map(); el.querySelectorAll("details").forEach(d => open.set(key(d), d.open));
+  const scrolls = new Map(); el.querySelectorAll("*").forEach(n => { if (n.scrollTop) scrolls.set(key(n.closest("details") || n) + "|" + n.tagName, n.scrollTop); });
+  const top = el.scrollTop;
+  el.innerHTML = html; el._gboxPanelHtml = html;
+  el.querySelectorAll("details").forEach(d => { if (open.has(key(d))) d.open = open.get(key(d)); });
+  el.querySelectorAll("*").forEach(n => { const v = scrolls.get(key(n.closest("details") || n) + "|" + n.tagName); if (v) n.scrollTop = v; });
+  el.scrollTop = top;
+  return true;
+}
 // What each session agent is after, in plain words, so the operator can set it up (goal / now / looking for /
 // you can help / blocked by). The server derives these (session_observers.agent_goals); this only renders them.
 function observerGoalsHtml(r) {
@@ -2455,7 +2491,7 @@ function sessionObserverWatch(sid) {
       const latest = r.latest || {}, models = r.models || {}, result = models.result || {};
       const state = r.service_online ? (r.gameplay_state || r.state) : 'Observer service offline';
       const list = (label, values) => values?.length ? `<p><b>${label}</b> ${values.map(esc).join('; ')}</p>` : '';
-      element.innerHTML = `${observerGoalsHtml(r)}
+      const panelHtml = `${observerGoalsHtml(r)}
         <p class="obs-actions"><b>${esc(state || 'Waiting')}</b> <button data-observer-look title="Tell the observer you set up what an agent is looking for: it takes a fresh frame now (it never sends input)"${r.goals?.look_requested || r.look_requested ? ' disabled' : ''}>${r.goals?.look_requested || r.look_requested ? 'Looking...' : 'Done, look now'}</button> <button data-observer-toggle>${r.enabled === false ? 'Resume observers' : 'Pause observers'}</button></p>
         <p>Models:${esc(models.state || 'Waiting')}${result.collected != null ? ` · ${+result.collected} / ${+result.total} collected` : ''}</p>
         ${models.request_id ? `<p>Model repair tracked in inbox <code>${esc(models.request_id)}</code></p>` : ''}
@@ -2464,8 +2500,9 @@ function sessionObserverWatch(sid) {
         ${list('Actors:', latest.actors)}${list('Changes:', latest.changes)}${list('HUD:', latest.hud)}
         ${list('Possible mechanics:', latest.mechanics_hypotheses)}${list('Uncertain:', latest.uncertainties)}
         ${r.error || r.service_error ? `<p class="mut">${esc(r.error || r.service_error)}</p>` : ''}
-        <details><summary>Recent observations</summary>${(r.history || []).slice(-10).reverse().map(o =>
+        <details data-key="observations"><summary>Recent observations</summary>${(r.history || []).slice(-10).reverse().map(o =>
           `<p>${new Date(o.captured * 1000).toLocaleTimeString()} · ${esc(o.summary)} <a target="_blank" href="/api/artifacts/${encodeURIComponent(o.frame)}?${tq()}">Frame</a></p>`).join('')}</details>`;
+      if (!keepPanel(element, panelHtml)) { clearTimeout(observerWatch.timer); if (element.isConnected) observerWatch.timer = setTimeout(tick, 5000); return; }
       element.querySelector('[data-observer-toggle]').onclick = async e => {
         e.currentTarget.disabled = true;
         try { await api(path, { enabled: r.enabled === false }); await tick(); }
