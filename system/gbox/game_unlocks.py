@@ -11,6 +11,7 @@ from pathlib import Path
 
 RE6_ID = '0871eee3b68cdea3'
 RE6_TEMPLATE_SHA256 = '194cb5b71858f65feeb2b1703642ddc4ffde09b9a087119189b29b0ad7b83f11'
+DOAPP_ID = '59c55e95af61abbe'  # Dead Or Alive ++ (Korea), platform=arcade
 NDS_WCW_GAME_ID = 'd9467f457f53f2c7'  # Call of Duty: World at War (USA), NDS
 
 
@@ -22,6 +23,16 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
     """
     profile = profile_for(game)
     if not profile['verified']:
+        if game.get('game_id') == DOAPP_ID and game.get('platform') == 'arcade':
+            # Registration point for the DOA++ (Korea) arcade unlock work. The
+            # fast Play path must never guess a write: report the live static
+            # evidence state and hand off to the background research task.
+            from . import doapp_unlock
+            record = doapp_unlock.profile()
+            return {'state': 'research_pending', 'applied': False,
+                    'reason': record['reason'],
+                    'proven_revisions': record['proven_revisions'],
+                    'unknown_counts': record['unknown_counts']}
         return {'state': 'research_pending', 'applied': False, 'reason': profile['reason']}
     if game.get('game_id') == RE6_ID and game.get('platform') == 'xbox360':
         from . import re6_tool
