@@ -262,6 +262,7 @@ def redact(value):
 
 CLOUD_REVIEWER = {'provider': 'deepseek', 'model': 'deepseek-v4-pro', 'local': False, 'label': 'DeepSeek'}
 DEFAULT_PROXY_URL = 'http://127.0.0.1:8765/api/llm/local/v1'
+LOCAL_REVIEW_TIMEOUT_S = 1500   # a saturated local pool queues the call (proxy queue_wait_s 900) before a long prefill
 
 
 def _local_from_toml(hermes_local) -> dict | None:
@@ -363,7 +364,7 @@ def _review_local(who: dict, messages: list) -> dict:
     url = who['proxy_url'].rstrip('/') + '/chat/completions'
     try:
         result = _post_json(url, {'model': who['model'], 'messages': messages, 'max_tokens': 6000,
-                                  'temperature': 0.2}, 345)
+                                  'temperature': 0.2}, LOCAL_REVIEW_TIMEOUT_S)
         choice = result['choices'][0]
         content = _json_object(choice['message']['content'] or '')
         return {'provider': who['provider'], 'model': result.get('model') or who['model'], 'usage': result.get('usage'),
