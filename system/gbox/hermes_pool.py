@@ -104,7 +104,7 @@ def node_settings(base=None):
                    proxy_url=base.proxy_url.rstrip('/').removesuffix('/v1') + f'/nodes/{name}/v1')
         # Endpoint/model configuration cannot be changed by an enable-switch request.
         overrides = state.get(name, {})
-        row.update({k: overrides[k] for k in ('enabled', 'model', 'upstream', 'max_parallel_jobs') if k in overrides})
+        row.update({k: overrides[k] for k in ('enabled', 'model', 'upstream', 'max_parallel_jobs', 'context_tokens') if k in overrides})
         if overrides.get('maintenance'):
             row['enabled'] = False
         out[name] = HermesLocalConfig.model_validate(row)
