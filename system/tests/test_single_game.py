@@ -31,7 +31,7 @@ def test_switch_checkpoints_all_games_before_stopping_any(monkeypatch, tmp_path)
     events = []
     sessions = {}
     for sid in ('old1', 'old2'):
-        ad = SimpleNamespace(proc=None, stop_game=lambda sid=sid: events.append(('stop', sid)))
+        ad = SimpleNamespace(checkpoint_state='path', proc=None, stop_game=lambda sid=sid: events.append(('stop', sid)))
         sessions[sid] = (ad, {'game_id': sid})
     monkeypatch.setattr(tools, 'SESSIONS', sessions)
     monkeypatch.setattr(tools, 'state_transfer', lambda inp, ctx: events.append(('save', inp.session_id)) or {'result': {'artifact': inp.session_id}})
@@ -45,7 +45,7 @@ def test_switch_checkpoints_all_games_before_stopping_any(monkeypatch, tmp_path)
 
 def test_failed_checkpoint_keeps_all_previous_games(monkeypatch, tmp_path):
     events = []
-    sessions = {s: (SimpleNamespace(proc=None, stop_game=lambda: events.append('stop')), {'game_id': s}) for s in ('old1', 'old2')}
+    sessions = {s: (SimpleNamespace(checkpoint_state='path', proc=None, stop_game=lambda: events.append('stop')), {'game_id': s}) for s in ('old1', 'old2')}
     monkeypatch.setattr(tools, 'SESSIONS', sessions)
     def save(inp, ctx):
         if inp.session_id == 'old2': raise RuntimeError('save failed')
@@ -59,7 +59,7 @@ def test_failed_checkpoint_keeps_all_previous_games(monkeypatch, tmp_path):
 
 
 def test_emulator_that_does_not_stop_blocks_another_game(monkeypatch, tmp_path):
-    ad = SimpleNamespace(proc=SimpleNamespace(poll=lambda: None), stop_game=lambda: None)
+    ad = SimpleNamespace(checkpoint_state='path', proc=SimpleNamespace(poll=lambda: None), stop_game=lambda: None)
     monkeypatch.setattr(tools, 'SESSIONS', {'old': (ad, {'game_id': 'g'})})
     monkeypatch.setattr(tools, 'state_transfer', lambda *a: {'result': {'artifact': 'backup'}})
     ctx = SimpleNamespace(config=SimpleNamespace(runtime=tmp_path), progress=lambda *a: None)
@@ -69,7 +69,7 @@ def test_emulator_that_does_not_stop_blocks_another_game(monkeypatch, tmp_path):
 
 
 def test_stopped_session_is_published_before_it_leaves_worker(monkeypatch, tmp_path):
-    sessions = {'old': (SimpleNamespace(proc=None, stop_game=lambda: None), {'game_id': 'g'})}
+    sessions = {'old': (SimpleNamespace(checkpoint_state='path', proc=None, stop_game=lambda: None), {'game_id': 'g'})}
     monkeypatch.setattr(tools, 'SESSIONS', sessions)
     monkeypatch.setattr(tools, 'state_transfer', lambda *a: {'result': {'artifact': 'backup'}})
     monkeypatch.setattr(tools, 'track_emulator', lambda *a, **kw: None)
@@ -110,7 +110,7 @@ def test_orphan_session_ended_on_server_is_closed_without_saving(monkeypatch, tm
 
 
 def test_live_session_save_failure_names_the_game(monkeypatch, tmp_path):
-    ad = SimpleNamespace(proc=None, stop_game=lambda: None)
+    ad = SimpleNamespace(checkpoint_state='path', proc=None, stop_game=lambda: None)
     monkeypatch.setattr(tools, 'SESSIONS', {'old': (ad, {'game_id': 'g', 'title': 'Crazy Taxi'})})
     monkeypatch.setattr(tools, 'state_transfer', lambda inp, ctx: (_ for _ in ()).throw(RuntimeError("gBox isn't the active window")))
     monkeypatch.setattr(tools, '_session_ended_on_server', lambda ctx, sid: False)
@@ -120,11 +120,32 @@ def test_live_session_save_failure_names_the_game(monkeypatch, tmp_path):
     assert 'old' in tools.SESSIONS
 
 
+@pytest.mark.parametrize('ad_kwargs', [
+    {'name': 'cxbx', 'checkpoint_reason': 'Cxbx-Reloaded has no verified in-place save-state interface'},
+    {'name': 'rpcs3', 'checkpoint_reason': 'RPCS3 reloads the game on every save state (no in-place rewind)'},
+])
+def test_adapter_without_portable_save_state_switches_without_blocking(monkeypatch, tmp_path, ad_kwargs):
+    """A cxbx/rpcs3 adapter has no in-place save state, so switching games must close it normally (its own saves
+    persist) instead of failing the export and blocking every launch on this PC (operator report 2026-10-16)."""
+    events = []
+    ad = SimpleNamespace(checkpoint_state=False, proc=None, stop_game=lambda: events.append('stop'), **ad_kwargs)
+    monkeypatch.setattr(tools, 'SESSIONS',
+                        {'old': (ad, {'game_id': 'g', 'title': 'Dead or Alive Ultimate (Disc 1) (USA)'})})
+    monkeypatch.setattr(tools, 'state_transfer', lambda inp, ctx: events.append('save'))  # must never run
+    monkeypatch.setattr(tools, 'track_emulator', lambda *a, **k: None)
+    ctx = SimpleNamespace(server=None, headers={}, config=SimpleNamespace(runtime=tmp_path), progress=lambda *a: None)
+    snapshots = tools._close_previous_games(ctx)
+    assert events == ['stop']
+    assert snapshots == [{'session_id': 'old', 'game_id': 'g', 'artifact': None,
+                          'save_state': 'unsupported', 'reason': ad_kwargs['checkpoint_reason']}]
+    assert 'old' not in tools.SESSIONS
+
+
 def test_keep_session_leaves_link_host_running(monkeypatch, tmp_path):
     events = []
     sessions = {}
     for sid in ('host', 'other'):
-        ad = SimpleNamespace(proc=None, stop_game=lambda sid=sid: events.append(('stop', sid)))
+        ad = SimpleNamespace(checkpoint_state='path', proc=None, stop_game=lambda sid=sid: events.append(('stop', sid)))
         sessions[sid] = (ad, {'game_id': sid})
     monkeypatch.setattr(tools, 'SESSIONS', sessions)
     monkeypatch.setattr(tools, 'state_transfer', lambda inp, ctx: events.append(('save', inp.session_id)) or {'result': {'artifact': inp.session_id}})
@@ -138,7 +159,7 @@ def test_keep_session_leaves_link_host_running(monkeypatch, tmp_path):
 
 def test_keep_unknown_session_still_closes_all(monkeypatch, tmp_path):
     events = []
-    sessions = {'old': (SimpleNamespace(proc=None, stop_game=lambda: events.append('stop')), {'game_id': 'old'})}
+    sessions = {'old': (SimpleNamespace(checkpoint_state='path', proc=None, stop_game=lambda: events.append('stop')), {'game_id': 'old'})}
     monkeypatch.setattr(tools, 'SESSIONS', sessions)
     monkeypatch.setattr(tools, 'state_transfer', lambda inp, ctx: {'result': {'artifact': 'backup'}})
     monkeypatch.setattr(tools, 'track_emulator', lambda *a, **k: None)
@@ -169,16 +190,19 @@ def test_switch_uses_native_save_for_non_transfer_adapter(monkeypatch, tmp_path)
     assert 'old' not in tools.SESSIONS
 
 
-def test_switch_with_no_save_state_still_blocks(monkeypatch, tmp_path):
-    """An emulator that cannot save at all still refuses the switch instead of losing progress."""
+def test_switch_with_no_save_state_closes_without_blocking(monkeypatch, tmp_path):
+    """An emulator with no save state at all (cxbx) is closed normally: its own saves persist, and refusing the switch
+    would block every launch on this PC (operator report #2014)."""
     ad = SimpleNamespace(name='cxbx', proc=None, stop_game=lambda: None,
                          save_state=lambda: (_ for _ in ()).throw(Unsupported('cxbx does not support save_state')))
     monkeypatch.setattr(tools, 'SESSIONS', {'old': (ad, {'game_id': 'g', 'title': 'Dead or Alive Ultimate'})})
     monkeypatch.setattr(tools, 'state_transfer', lambda *a, **k: (_ for _ in ()).throw(AssertionError('must not run')))
+    monkeypatch.setattr(tools, 'track_emulator', lambda *a, **k: None)
     ctx = SimpleNamespace(server=None, headers={}, config=SimpleNamespace(runtime=tmp_path), progress=lambda *a: None)
-    with pytest.raises(Unsupported, match='Dead or Alive Ultimate'):
-        tools._close_previous_games(ctx)
-    assert 'old' in tools.SESSIONS
+    snapshots = tools._close_previous_games(ctx)
+    assert snapshots == [{'session_id': 'old', 'game_id': 'g', 'artifact': None, 'save_state': 'unsupported',
+                          'reason': 'cxbx does not support save_state'}]
+    assert 'old' not in tools.SESSIONS
 
 
 def test_native_save_state_uploads_artifact_for_resume(monkeypatch, tmp_path):

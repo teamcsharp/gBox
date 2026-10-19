@@ -421,10 +421,13 @@ def _save_previous_game(ad, game: dict, sid: str, ctx) -> dict:
     adapter keeps the historical state_transfer path.
     """
     kind = getattr(ad, "name", "")
-    if not kind or kind in ("retroarch", "dolphin"):
+    if getattr(ad, "checkpoint_state", None) in ("path", "dir") or not kind or kind in ("retroarch", "dolphin"):
         return state_transfer(StateXIn(session_id=sid, op="export"), ctx)["result"]
+    save = getattr(ad, "save_state", None)
+    if save is None:
+        raise Unsupported(f"{kind} does not support save_state")
     with rewind.guard(sid, "save_state"):
-        saved = ad.save_state()                       # raises Unsupported("<name> does not support save_state")
+        saved = save()                                # raises Unsupported("<name> does not support save_state")
     if not isinstance(saved, dict):
         saved = {"value": str(saved)[:200]}
     artifact = None
@@ -469,6 +472,18 @@ def _close_previous_games(ctx, keep: str = ""):
         ctx.progress(71, 'Saving the previous game before switching')
         try:
             saved = _save_previous_game(ad, game, sid, ctx)
+        except Unsupported as exc:
+            if getattr(ad, 'checkpoint_state', None) in ('path', 'dir'):
+                title = game.get('title') or game.get('game_id') or sid
+                raise Unsupported(f"The previous game ({title}) could not be saved: {exc}. It was kept running. Stop it in "
+                                  "Sessions (or close its emulator window) before starting another game.") from exc
+            # No save state at all (cxbx, rpcs3 without an in-place state, ...). The game's own saves persist through
+            # the clean stop below, so nothing blocks switching games (operator report #2014); only the exact moment is
+            # not captured, the same result as the operator closing the emulator window.
+            reason = getattr(ad, 'checkpoint_reason', None) or str(exc)
+            checkpoints.append({'session_id': sid, 'game_id': game.get('game_id'), 'artifact': None,
+                                'save_state': 'unsupported', 'reason': reason})
+            continue
         except Exception as exc:
             title = game.get('title') or game.get('game_id') or sid
             raise Unsupported(f"The previous game ({title}) could not be saved: {exc}. It was kept running. Stop it in Sessions "
