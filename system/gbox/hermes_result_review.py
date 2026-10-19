@@ -48,6 +48,13 @@ safe next action. 'approve_merge' is ONLY for a PR: inspect the complete supplie
 source, acceptance scope, prior review objections, and machine-generated integration-test receipt. Never
 approve incomplete/truncated evidence, skipped/unexecuted tests, placeholder implementations, fake IDs,
 unchecked writes, save loss or unbounded probes. Name remaining runtime acceptance separately.
+For a PR, judge merge readiness against its declared bounded source scope. A complete, useful,
+independently tested reader, diagnostic fix or regression-test milestone can be approve_merge while
+the parent implementation/gameplay request remains open. Do not withhold source delivery solely
+because that larger request, a later milestone or runtime acceptance is unfinished. Explain any
+concrete defect or missing check in this PR itself. Test-only changes must exercise meaningful existing
+behavior; inventory-only changes must provide truthful reusable functionality, not placeholders.
+Never equate approve_merge with task completion, deployment, or verified gameplay.
 '''
 
 

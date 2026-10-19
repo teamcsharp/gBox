@@ -46,6 +46,12 @@ branches are preserved. Automatic delivery requires all of:
 - The operator Tasks switch and automatic merge opt-in still enabled immediately
   before ready/merge operations. Merge uses `--match-head-commit`, never `--admin`.
 
+PR acceptance follows the declared source milestone. A useful, fully tested
+reader, diagnostic repair or regression-test change may merge while its larger
+inbox request remains open. The reviewer must identify a defect or missing check
+in that PR to hold it; unfinished later milestones alone do not block source
+delivery. Task closure still requires its own full acceptance evidence.
+
 Unsupported changes, absent coverage, failures, conflicts and oversized evidence
 remain held for further work. The reviewer cannot mark a task complete. A source
 merge does not establish deployed files, artifacts or gameplay acceptance.
