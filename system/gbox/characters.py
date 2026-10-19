@@ -1823,7 +1823,8 @@ READER_VERSIONS = {"re5ps3": ("gbox.re5ps3_collection", "re5ps3_reader"), "re2gc
                    "stranglehold": ("gbox.stranglehold_models", "stranglehold_reader"),
                    "pso_gc": ("gbox.pso_gc", "pso_gc_reader"),
                    "crazy_taxi2": ("gbox.crazy_taxi2", "ct2_reader"),
-                   "defjam_vendetta": ("gbox.defjam_vendetta", "djv_gc_reader")}
+                   "defjam_vendetta": ("gbox.defjam_vendetta", "djv_gc_reader"),
+                   "mgs2": ("gbox.mgs2_models", "mgs2_reader")}
 
 
 def reader_version(extractor: str | None) -> int | None:

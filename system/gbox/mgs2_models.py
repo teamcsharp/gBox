@@ -51,6 +51,7 @@ from .ps2_gs import GSMemory, alpha_to_8bit, csm1
 HDR, MESH, PART, TEXREC = 0x40, 0x40, 0x30, 0xA0
 FIXED = 4096.0
 GLTF_SCALE = 0.001                     # millimetres -> metres
+READER_VERSION = 2                     # 2: normals exported outward (#2367); entries without mgs2_reader are v1
 RESTART = 0x8000
 F_BLEND, F_UV2 = 0x1, 0x200
 
@@ -557,7 +558,7 @@ def extract_run(ctx, game: dict, e: dict, work: Path) -> dict:
             "notes": (f"Native {inv.SERIAL} kms model: {r['meshes']} bones, {r['triangles']} triangles from triangle "
                       f"strips, two-bone skin weights (bone + parent), {r['textures']} PS2 CLUT textures from its "
                       f"texture pack, {r['height_m']} m tall. Writer slot: {e.get('slot')} (gbox.mgs2_swap)."),
-            "extra": {"mgs2_model": f"{h:06x}", "mgs2_slot": e.get("slot")}}
+            "extra": {"mgs2_model": f"{h:06x}", "mgs2_slot": e.get("slot"), "mgs2_reader": READER_VERSION}}
 
 
 def extract_all(path, out_dir: Path, slugs=None) -> dict:

@@ -470,3 +470,13 @@ def test_stored_normals_point_into_the_body_and_export_outward():
     nrm = np.array([[0.0, 1.0, 0.0]])
     stored = np.clip(np.round(-nrm * 4095), -4095, 4095)
     assert stored.tolist() == [[0.0, -4095.0, 0.0]]
+
+
+def test_reader_version_two_re_extracts_inside_out_entries():
+    """#2367: entries made before the normal fix (no mgs2_reader field) are stale and collected again."""
+    from gbox import characters as C
+    assert M.READER_VERSION == 2
+    assert C.READER_VERSIONS["mgs2"] == ("gbox.mgs2_models", "mgs2_reader")
+    old = {"source": {"game_title": "Metal Gear Solid 2 - Substance", "platform": "ps2"}}
+    assert C.reader_status(old) == {"extractor": "mgs2", "entry": 1, "current": 2, "stale": True}
+    assert not C.reader_status({**old, "mgs2_reader": 2})["stale"]
