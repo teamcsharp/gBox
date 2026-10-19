@@ -3304,7 +3304,9 @@ def for_game(game: dict, config: Config, debug: bool = False, *, mod: str | None
             # Asset-only variants keep the exact pinned guest executable. The
             # native adapter verifies that hash before it creates a play disc.
             return Doa3NativeAdapter(config, game | {"mod": mod or game.get("mod") or ""})
-        return XboxAdapter(config)
+        ad = XboxAdapter(config)
+        ad.debug = bool(debug)      # a debug launch writes Cxbx's full kernel log (xbox.log_settings)
+        return ad
     from . import systems
     if game.get("core") and plat != "arcade" and systems.core_for(plat)[0] is None:
         game = game | {"core": None}                       # catalog still has a core the platform rule has since dropped
