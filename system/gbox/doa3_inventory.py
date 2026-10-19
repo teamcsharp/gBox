@@ -532,6 +532,153 @@ def build(game_dir: str | Path, *, source_7z: str | Path | None = None,
     }
 
 
+# --------------------------------------------------------------------------- Cxbx-Reloaded unlock
+#
+# DOA3 on Cxbx-Reloaded uses a save-file unlock, not a memory patch.  The Xbox
+# save (``UDATA``) lives in the emulator's save directory and is a binary blob
+# that the game reads at the character-select screen.  The unlock path is:
+#
+#   1.  Pin the exact XBE (title ID ``B8EDF704``) so we know which save layout
+#       we are targeting.
+#   2.  Locate the existing save in the Cxbx-Reloaded save directory
+#       (``<save_root>/UDATA/<profile>/``).
+#   3.  Plan a save-file write that sets every character slot to "owned"
+#       and every stage / item / bonus to "unlocked".
+#   4.  The actual write is performed by a Cxbx-Reloaded save-editor helper
+#       (``cxbx_save_editor``), invoked through the existing
+#       ``start_job`` / ``get_job`` remote path on the designated worker.
+#
+# This function only *plans*; it does not write the save.  A later writer
+# must keep every write inside the save's own room and must back up the
+# original save before the first write.
+
+
+DOA3_TITLE_ID = "B8EDF704"
+DOA3_UNLOCK_PROFILE = "doa3-cxbx-save-unlock-v1"
+
+
+def cxbx_unlock_plan(
+    game: dict,
+    worker: dict,
+    *,
+    session_id: str = "",
+    save_root: str = "",
+    allow_save_upgrade: bool = False,
+) -> dict:
+    """Plan the Cxbx-Reloaded DOA3 save-unlock job.
+
+    Parameters
+    ----------
+    game:
+        Catalog game record; must carry ``game_id == GAME_ID`` and
+        ``platform == "xbox"``.
+    worker:
+        Worker record; must target the designated testing worker
+        (``i9-NUC`` or ``sparkDeux`` — never ``JAYBUILTFINALE``).
+    session_id:
+        Optional live session id; required for the live write job.
+    save_root:
+        Root directory of the Cxbx-Reloaded save partition.  When empty the
+        planner marks the plan as ``save_root_required`` and refuses to emit
+        a write job.
+    allow_save_upgrade:
+        Must be ``True`` to get a write job; the save is modified.
+
+    Returns a dict with ``status``, ``profile``, ``jobs`` (empty until all
+    prerequisites are met), and ``reason``.  No jobs are dispatched.
+    """
+    # --- gate: exact game identity ----------------------------------------
+    if game.get("game_id") != GAME_ID or game.get("platform") != "xbox":
+        return {
+            "status": "unsupported_game",
+            "profile": None,
+            "jobs": [],
+            "reason": f"DOA3 Cxbx unlock requires exact game_id={GAME_ID!r} on xbox; got {game.get('game_id')!r}/{game.get('platform')!r}.",
+        }
+
+    # --- gate: designated testing worker ------------------------------------
+    allowed_workers = {"i9-nuc", "sparkdeux"}
+    wname = (worker.get("name") or "").casefold()
+    if wname not in allowed_workers:
+        return {
+            "status": "wrong_worker",
+            "profile": None,
+            "jobs": [],
+            "reason": f"DOA3 Cxbx unlock must target i9-NUC or sparkDeux; got {wname!r}. Never target the operator play PC.",
+        }
+
+    # --- gate: save upgrade opt-in ------------------------------------------
+    if not allow_save_upgrade:
+        return {
+            "status": "save_upgrade_opt_in_required",
+            "profile": DOA3_UNLOCK_PROFILE,
+            "jobs": [],
+            "reason": "DOA3 save unlock modifies the save file; explicit allow_save_upgrade=True is required.",
+        }
+
+    # --- gate: save root ----------------------------------------------------
+    if not save_root:
+        return {
+            "status": "save_root_required",
+            "profile": DOA3_UNLOCK_PROFILE,
+            "jobs": [],
+            "reason": "save_root (Cxbx-Reloaded save partition directory) is required before a write job can be planned.",
+        }
+
+    # --- gate: live session for the write ------------------------------------
+    if not session_id:
+        return {
+            "status": "session_required",
+            "profile": DOA3_UNLOCK_PROFILE,
+            "jobs": [],
+            "reason": "A live Cxbx-Reloaded session_id is required to plan the save-write job. Launch the game first, then call cxbx_unlock_plan with the returned session id.",
+        }
+
+    # --- plan the jobs -------------------------------------------------------
+    common = {
+        "require_worker": worker["id"],
+        "agent_use": True,
+        "parent_request_id": None,
+    }
+    backup_job = common | {
+        "tool": "doa3_cxbx_save",
+        "input": {
+            "op": "backup_save",
+            "save_root": save_root,
+            "title_id": DOA3_TITLE_ID,
+            "session_id": session_id,
+        },
+    }
+    write_job = common | {
+        "tool": "doa3_cxbx_save",
+        "input": {
+            "op": "unlock_all",
+            "save_root": save_root,
+            "title_id": DOA3_TITLE_ID,
+            "session_id": session_id,
+            "chars": list(ROSTER),
+        },
+    }
+    verify_job = common | {
+        "tool": "doa3_cxbx_save",
+        "input": {
+            "op": "verify_unlock",
+            "save_root": save_root,
+            "title_id": DOA3_TITLE_ID,
+            "session_id": session_id,
+        },
+    }
+    return {
+        "status": "planned",
+        "profile": DOA3_UNLOCK_PROFILE,
+        "jobs": [backup_job, write_job, verify_job],
+        "executed": False,
+        "roster": list(ROSTER),
+        "audio_policy": "agent_use on the designated worker enforces 2% volume",
+        "save_policy": "Original save is backed up before the first write; the write is monotonic (only upgrades slots).",
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n", 1)[0])
     ap.add_argument("game_dir")
