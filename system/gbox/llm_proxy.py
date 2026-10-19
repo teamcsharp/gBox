@@ -29,12 +29,16 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+import re
 import threading
 import time
 import uuid
 
 import httpx
 from fastapi import Depends, Request
+
+# the queue header names the run's lane; an inbox-lane run may have a larger tool budget (#2399, hermes_local.lane_budget)
+LANE = re.compile(r'Assigned queue task: request #\d+ \([0-9a-f]{16}\) \[lane (inbox|favorite)\]')
 from fastapi.responses import JSONResponse, StreamingResponse
 
 LOG_NAME = 'local-llm-calls.jsonl'
@@ -524,10 +528,12 @@ class LocalLLM:
         # Queue runs must yield a result instead of consuming a slot indefinitely.
         # Count before context trimming so the proxy cannot erase its own budget.
         queued = any('Assigned queue task: request #' in str(m.get('content', '')) for m in messages if isinstance(m, dict))
-        from . import hermes_run_budget
+        from . import hermes_local, hermes_run_budget
         usage = await asyncio.to_thread(hermes_run_budget.measure, messages, s.proxy_url) if queued else None
         used = usage['attempts'] if usage else 0
-        budget = max(6, int(s.tool_budget))
+        lane = next((m.group(1) for m in (LANE.search(str(msg.get('content', ''))) for msg in messages
+                                          if isinstance(msg, dict)) if m), None) if queued else None
+        budget = hermes_local.lane_budget(s, lane)
         final = queued and used >= budget
         instruction = None
         if queued and used >= budget - 6:

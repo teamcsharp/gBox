@@ -152,3 +152,20 @@ def test_queue_budget_warns_then_forces_final_checkpoint(api_format):
     messages[0]['content'] = 'Unrelated interactive conversation'
     _, payload, meta = asyncio.run(proxy.prepare(dict(BODY, messages=messages)))
     assert not meta['budget_final'] and payload.get('tools')
+
+
+def test_the_proxy_budget_follows_the_lane_in_the_queue_header():
+    """#2399: the proxy enforces tool_budget_inbox for an inbox-lane run and tool_budget for a favorite, read from
+    the queue header the dispatcher writes, so the prompt and the proxy agree."""
+    s = S.model_copy(update={'tool_budget': 8, 'tool_budget_inbox': 12})
+    proxy = P.LocalLLM(lambda: s)
+
+    def meta_for(lane):
+        messages = [{'role': 'user', 'content': f'Assigned queue task: request #7 ({"ab" * 8}) [lane {lane}]. Read the inventory.'}]
+        for n in range(8):
+            call = dict(CALL, id='call-' + str(n))
+            messages += [{'role': 'assistant', 'content': None, 'tool_calls': [call]},
+                         {'role': 'tool', 'tool_call_id': call['id'], 'content': 'bounded result'}]
+        return asyncio.run(proxy.prepare(dict(BODY, messages=messages)))[2]
+    assert meta_for('favorite')['budget_final'], 'a favorite run at 8 of 8 calls ends'
+    assert not meta_for('inbox')['budget_final'], 'an inbox run at 8 of 12 calls continues'
