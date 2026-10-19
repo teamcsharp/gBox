@@ -2252,7 +2252,8 @@ def create_app(config: Config) -> FastAPI:
         return wid
 
     @app.post("/api/workers/register")
-    def register(w: WorkerInfo, actor=Depends(auth)):
+    def register(w: WorkerInfo, request: Request, actor=Depends(auth)):
+        w.address = request.client.host if request.client else ""      # a Play from this PC stays on this PC (#2386)
         with store.lock:
             return _register(w, actor)
 
@@ -2283,12 +2284,14 @@ def create_app(config: Config) -> FastAPI:
         return {"id": w.id}
 
     @app.post("/api/workers/{wid}/claim")
-    def claim(wid: str, activity: WorkerActivity | None = None, actor=Depends(auth)):
+    def claim(wid: str, request: Request, activity: WorkerActivity | None = None, actor=Depends(auth)):
         w = store.get("worker", wid)
         if not w:
             raise HTTPException(404, "unknown worker; register first")
         with store.lock:
             w["last_seen"] = time.time()
+            if request.client and request.client.host:
+                w["address"] = request.client.host
             if activity:
                 w["idle_seconds"] = activity.idle_seconds
                 w["active_jobs"] = activity.active_jobs
@@ -3382,6 +3385,12 @@ def create_app(config: Config) -> FastAPI:
             from . import systems                          # the platform rule wins over a core stored at scan time
             has_core = e.get("core") and (e.get("platform") == "arcade" or systems.core_for(e.get("platform", ""))[0])
             req.require_os = "linux" if has_core else "windows"
+        if not req.require_worker and actor == "operator":
+            # #2386: the operator's own Play that names no PC boots on the PC it was asked from, never on another one.
+            from .job_routing import requester_worker
+            here = requester_worker(workers(), origin.get("remote"), req.require_os)
+            if here:
+                req.require_worker, req.require_os = here["id"], None
         return submit(req, actor, origin)
 
     @app.get("/api/profiles/{gid}")
