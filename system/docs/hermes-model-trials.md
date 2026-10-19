@@ -19,8 +19,8 @@ The physical host name is `lilspark2`. Recipes live in
    updates Hermes without restarting vLLM. Use this after switching models with
    the Spark recipe tools yourself.
 
-New trials start with four concurrent task slots. Increase admission only after
-observing completed work, tests, failed calls, queue latency and KV memory. The
+Model switches preserve the operator's concurrent task setting and scheduler
+capacity. Assess completed work, tests, failed calls, queue latency and KV memory. The
 proxy records the model actually serving each call, even when an older task is
 pinned to a previous model. A completed call is not a completed inbox task.
 Use the same bounded tasks and acceptance tests when comparing models; keep
