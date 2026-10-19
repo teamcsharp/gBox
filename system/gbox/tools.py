@@ -861,6 +861,14 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     if g.launch.get("kind") != "steam" and not isinstance(ad, adapters.RocketLauncherAdapter):
         gd["_rom_path"] = str(src)                     # for the inspector's ROM viewer
     SESSIONS[sid] = (ad, gd)
+    try:                                               # unlock-on-load by held codes (#1986: Soul Calibur II)
+        from . import game_unlocks
+        held = game_unlocks.post_launch(sid, gd, _gcheat_hold)
+        if held:
+            detail['unlocks'] = {**(detail.get('unlocks') or {}), **held}
+            ctx.progress(100, f"Unlock-on-load: {', '.join(held['held'])}" if held['held'] else "Unlock-on-load codes failed")
+    except Exception as error:                         # noqa: BLE001 - never turns a running game into a failed launch
+        detail['unlocks'] = {**(detail.get('unlocks') or {}), 'state': 'failed', 'reason': str(error)[:240]}
     if not inp.capture_backend:
         try:
             from . import gameplay_actions
@@ -1744,6 +1752,23 @@ def _gcheat_apply(ad, ops):
             skip = ad.read_memory(a, len(d)) != d          # condition false -> skip the next op
         else:
             ad.write_memory(a, d)
+
+
+def _gcheat_hold(sid: str, codes: list[str], desc: str) -> dict:
+    """Hold decoded constant writes in a running session (what cheats op=add does), for unlock-on-load code profiles
+    (gbox/game_unlocks.py post_launch). The entry shows in cheats op=list and can be disabled there."""
+    import threading as _t
+    from . import cheats as C
+    ad, g = SESSIONS[sid]
+    ops, bad = C.decode(g.get("platform", ""), "\n".join(codes))
+    if not ops:
+        raise ValueError(f"no code lines gBox can apply itself for {g.get('platform')}: {bad}")
+    c = {"desc": desc, "lines": list(codes), "ops": ops, "unsupported": bad, "on": _t.Event()}
+    mine = GCHEATS.setdefault(sid, [])
+    mine.append(c)
+    c["on"].set()
+    _t.Thread(target=_gcheat_loop, args=(sid, c), daemon=True).start()
+    return {"index": len(mine) - 1, "ops": len(ops), "unsupported": bad}
 
 
 def _gcheat_loop(sid: str, c: dict, on=None):

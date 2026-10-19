@@ -120,3 +120,42 @@ def launch_plan(game: dict, worker: dict, *, mod: str = '', enable_unlock: bool 
             'next': 'Call launch_plan with the returned session_id to produce the opted-in unlock job.' if enable_unlock else None,
             'audio_policy': 'agent_use on the designated worker enforces 2% volume',
             'existing_re6_boot_policy': 'Existing RE6 boot settings are unchanged by this planner.'}
+
+
+# ---- unlock-on-load from held cheat codes (#1986: Soul Calibur II keeps its unlock flags in RAM, loaded from the save)
+
+def code_profile(game: dict) -> dict | None:
+    """profiles/gamedata/<game_id>-codes.json: published cheat codes verified in gBox for this exact catalog game
+    (platform must match; `verified` must be true). None when the game has no such profile."""
+    gid = str(game.get('game_id') or '')
+    if not gid or not gid.isalnum():
+        return None
+    path = Path(__file__).resolve().parent.parent / 'profiles/gamedata' / f'{gid}-codes.json'
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    if data.get('platform') != game.get('platform') or data.get('verified') is not True or not data.get('codes'):
+        return None
+    return data
+
+
+def post_launch(sid: str, game: dict, hold) -> dict | None:
+    """Unlock-on-load for a game with a code profile: once the session runs, each code is held in it (hold(sid,
+    lines, desc), what cheats op=add does), so the flags stay set however the game reloads them. The save is never
+    edited; the game autosaves what it unlocks. None when the game has no profile."""
+    prof = code_profile(game)
+    if not prof:
+        return None
+    held, failed = [], []
+    for entry in prof['codes']:
+        try:
+            hold(sid, list(entry['lines']), str(entry.get('desc') or 'unlock code'))
+            held.append(entry.get('desc') or 'unlock code')
+        except Exception as exc:                       # noqa: BLE001 - one bad code never fails the launch
+            failed.append(f"{entry.get('desc') or 'unlock code'}: {str(exc)[:160]}")
+    return {'state': 'applied' if held and not failed else ('partial' if held else 'failed'), 'applied': bool(held),
+            'profile': prof.get('profile'), 'held': held, 'failed': failed, 'scope': prof.get('scope') or [],
+            'evidence': prof.get('evidence') or {}}
