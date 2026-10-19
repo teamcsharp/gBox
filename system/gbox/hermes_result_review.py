@@ -464,11 +464,26 @@ def deliver():
             continue  # Outbox survives acknowledgement loss without another model call.
 
 
+def retire_stale_run_reviews(db, now) -> int:
+    """A run review older than the hold limit holds nothing (gate: REVIEW_WAIT_MAX_S) and, once a newer run of the
+    same request exists, its guidance would reach a run that already happened: retire it so the oldest-first slot
+    reaches reviews a next run can still use (232 pending at 14 hours on 2026-10-19, ~24 reviews an hour). The only
+    run of a request keeps its review however old; PR reviews are untouched."""
+    cur = db.execute("UPDATE reviews SET state='superseded',updated=?,"
+                     "error='A newer run of this request exists; nothing waits on this review' "
+                     "WHERE kind='run' AND state IN ('pending','retry') AND created<? AND EXISTS ("
+                     "SELECT 1 FROM reviews r2 WHERE r2.kind='run' AND r2.request_id=reviews.request_id "
+                     "AND r2.created>reviews.created)", (now, now - REVIEW_WAIT_MAX_S))
+    return cur.rowcount
+
+
 def process_one(kind='run', *, newest=False):
     now = time.time()
     with closing(connect()) as db, db:
         db.execute("UPDATE reviews SET state='retry',error='Interrupted review; evidence retained' "
                    "WHERE state='reviewing' AND next_at<=?", (now,))
+        if kind == 'run':
+            retire_stale_run_reviews(db, now)
         order = "json_extract(payload,'$.run.started_at') DESC,created,key" if newest else 'created,key'
         row = db.execute("SELECT * FROM reviews WHERE kind=? AND state IN ('pending','retry') "
                          "AND next_at<=? ORDER BY " + order + " LIMIT 1", (kind, now)).fetchone()
