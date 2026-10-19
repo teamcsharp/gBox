@@ -1691,6 +1691,10 @@ DEDICATED = [
     # RE4 (2023, Steam): the Windows PC unpacks the paks + converts in Blender (gbox/re4r.py), the result lands here
     ("re4r", lambda t, p: "resident evil 4" in t and p == "pc_steam", lambda: __import__("gbox.re4r", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.re4r", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # RE4 (2005, PS2, SLUS-21134): PS2-native BIN mesh (VU1 V4-16 stream) + TPL C4/C8 textures -> GLB (gbox/re4ps2_reader)
+    ("re4_ps2", lambda t, p: "resident evil 4" in t and p == "ps2",
+     lambda: __import__("gbox.re4ps2_reader", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.re4ps2_reader", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("nomercy", lambda t, p: "no mercy" in t and p == "n64", lambda: __import__("gbox.aki_wrestling", fromlist=["x"]).roster_entries(),
      lambda ctx, game, e, work: __import__("gbox.aki_wrestling", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("smackdown2", lambda t, p: "smackdown! 2" in t and p == "psx", lambda: __import__("gbox.yukes_sd", fromlist=["x"]).roster_entries(),
@@ -1713,6 +1717,11 @@ DEDICATED = [
     ("nightfire", lambda t, p: "007" in t and "nightfire" in t and p == "gamecube",
      lambda: __import__("gbox.nightfire_chars", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.nightfire_chars", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # 007 GoldenEye (N64, NGEP): the 80 body-table bodies (Bond's outfits, guards, soldiers, scientists, the cast
+    # heads) as rigged GLBs from the Z-file model format (gbox.goldeneye_reader); texture pixels are the next step
+    ("goldeneye", lambda t, p: ("goldeneye" in t or "golden eye" in t) and p == "n64",
+     lambda: __import__("gbox.goldeneye_reader", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.goldeneye_reader", fromlist=["x"]).extract_run(ctx, game, e, work)),
     # Def Jam: Vendetta PS2 (SLUS_206.39 v1.00): the 58 data.bin WRS wrestlers, BODY + FACE + hands on one rigged
     # skeleton with body roles and the fighter's texture page (#1305; formats in docs/defjam_pipeline.md)
     ("defjam_vendetta_ps2", lambda t, p: "def jam" in t and "vendetta" in t and p == "ps2",
@@ -2713,6 +2722,11 @@ def characters_tool(inp: CharIn, ctx):
     from . import doa2_swap
     if gid in doa2_swap.GAME_IDS:
         return {"result": out | doa2_swap.use(ctx, meta, game, inp)}
+    from . import doa3_cast
+    if gid in doa3_cast.GAME_IDS and doa3_cast.is_slot(inp.slot):
+        # DOA3 (Xbox): the native cast writer is in progress — use() answers writer_in_progress (never a build) until
+        # donor retarget and texture write land
+        return {"result": out | doa3_cast.use(ctx, meta, game, inp)}
     from . import soulcalibur_swap
     if gid in soulcalibur_swap.GAME_IDS:
         return {"result": out | soulcalibur_swap.use(ctx, meta, game, inp)}

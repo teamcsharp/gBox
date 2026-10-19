@@ -45,6 +45,63 @@ REGIONS = {0x1: "NA", 0x2: "JP", 0x4: "ROW", 0x80000000: "MFG"}
 ROSTER = ["Kasumi", "Ayane", "Hitomi", "Leifang", "Tina", "Helena", "Christie", "Ryu Hayabusa",
           "Jann Lee", "Zack", "Bass", "Gen Fu", "Brad Wong", "Bayman", "Ein", "Omega"]
 
+# --------------------------------------------------------------------- fighter display names
+#
+# The loadfile.afs names 20 fighter families by a mix of real-name nicknames (kasumi, bayman,
+# ...) and codenames (karate, ninja, koryu, suiken, gokei, chin, sambo, bosnin, hika). The
+# display name is NOT derivable from the archive alone, so the XBE select data is the source.
+#
+# Measured in default.xbe (sha256 e523dd15...) two 19-entry packed tables:
+#   * the character-code table at file offset 0x1E7BD8 -- 19 null-padded 4-byte costume codes
+#     in order (gok, sui, bni, kor, nin, sam, "   ", aya, lei, bas, bay, hik, gen, kas, ryu,
+#     kte, jan, tin, zac). The blank ("   ") slot is tengu, which owns no costume; the ``chi``
+#     family (chin, a story-only person) is NOT in this table.
+#   * the display-name table at file offset 0x2FD650 -- the same 19 roster in a different
+#     (select-screen) order, ASCII upper-case with hyphens: ZACK, TINA, JANN-LEE, EIN,
+#     HAYABUSA, KASUMI, GEN-FU, HELENA, LEON, BASS, LEIFANG, AYANE, TENGU, BAYMAN, HAYATE,
+#     HITOMI, GENRA, BRAD-WONG, CHRISTIE.
+# The exact code->name link still needs the XBE character-table RE stage; until then the
+# mapping below pins what is certain and lists the rest as pending instead of guessing.
+
+XBE_SELECT_CODE_TABLE_OFFSET = 0x1E7BD8
+XBE_SELECT_NAME_TABLE_OFFSET = 0x2FD650
+# Ordered 4-byte (3 chars + NUL) costume codes of the XBE select table.
+XBE_SELECT_CODE_TABLE = ("gok", "sui", "bni", "kor", "nin", "sam", "   ",
+                         "aya", "lei", "bas", "bay", "hik", "gen", "kas",
+                         "ryu", "kte", "jan", "tin", "zac")
+# Ordered display names of the XBE select table, canonical (space) spelling.
+XBE_SELECT_NAMES = ("Zack", "Tina", "Jann Lee", "Ein", "Hayabusa", "Kasumi",
+                    "Gen Fu", "Helena", "Leon", "Bass", "Leifang", "Ayane",
+                    "Tengu", "Bayman", "Hayate", "Hitomi", "Genra", "Brad Wong",
+                    "Christie")
+
+# Nickname -> display name for the families whose identity is certain from the archive name
+# plus the XBE tokens (KASUMI, RYU HAYABUSA, EIN + "Karate Instructor", HAYATE, BRAD WONG,
+# GENRA, LEON, ...). Codename rationale: karate=Ein (the karate instructor), ninja=Hayate,
+# suiken (drunken fist)=Brad Wong, bosnin (boss ninja)=Genra, sambo=Leon (the grappling
+# character; Bayman already has a real-name family).
+FIGHTER_DISPLAY = {
+    "kasumi": "Kasumi", "ayane": "Ayane", "leifang": "Leifang", "tina": "Tina",
+    "zack": "Zack", "bass": "Bass", "genfu": "Gen Fu", "bayman": "Bayman",
+    "janlee": "Jann Lee", "tengu": "Tengu", "ryu": "Ryu Hayabusa",
+    "karate": "Ein", "ninja": "Hayate", "suiken": "Brad Wong", "bosnin": "Genra",
+    "sambo": "Leon",
+}
+# Families whose display name is not yet resolved: hika/koryu/gokei are Hitomi, Helena and
+# Christie in some order (their XBE tokens all exist but the code->name link is still RE),
+# and chin is a story-only person absent from the select table.
+DISPLAY_MAPPING_PENDING = frozenset({"hika", "koryu", "gokei", "chin"})
+
+# Slots that are not on the base select screen: tengu (hidden boss, owns no costume) and
+# bosnin (Genra, the boss family). chin is a story-only person absent from the select table.
+HIDDEN_SLOTS = frozenset({"tengu", "bosnin"})
+STORY_ONLY = frozenset({"chin"})
+
+
+def fighter_display_name(nick: str) -> str | None:
+    """Display name for a fighter-family nickname, or None when still pending."""
+    return FIGHTER_DISPLAY.get(nick)
+
 
 def sha256_file(path: str | Path, chunk: int = 1 << 22) -> str:
     h = hashlib.sha256()
@@ -312,7 +369,109 @@ def fighter_families(entries: list[dict]) -> list[dict]:
         codes = sorted({c[:3] for c in f["costumes"]})
         f["code"] = codes[0] if len(codes) == 1 else (codes or None)
         f["complete_costumes"] = sorted(c for c, v in f["costumes"].items() if {"xpr", "cat"} <= set(v))
+        f["display"] = fighter_display_name(f["nick"])
+        f["display_pending"] = f["nick"] in DISPLAY_MAPPING_PENDING
     return fams
+
+
+# ----------------------------------------------------------------------------- XBE select tables
+
+def xbe_select_code_table(data: bytes) -> list[str]:
+    """Recover the 19-entry character-code table from a DOA3 ``default.xbe``.
+
+    The table is a packed run of 19 null-padded 4-byte costume codes; this verifies the pinned
+    layout by locating the exact 76-byte signature and returning the codes actually read there.
+    Raises ``ValueError`` when the signature is absent (not this build).
+    """
+    sig = b"".join(c.encode("latin-1") + b"\x00" for c in XBE_SELECT_CODE_TABLE)
+    off = data.find(sig)
+    if off < 0:
+        raise ValueError("DOA3 XBE select code table signature not found")
+    return [data[off + 4 * i:off + 4 * i + 4].rstrip(b"\x00").decode("latin-1")
+            for i in range(len(XBE_SELECT_CODE_TABLE))]
+
+
+def xbe_select_name_table(data: bytes) -> list[str]:
+    """Recover the 19-entry display-name table from a DOA3 ``default.xbe``.
+
+    Walks the null-terminated ASCII strings from the pinned offset until 19 printable names are
+    read (the region after the 19th name is unrelated data). Raises ``ValueError`` if the table
+    does not yield the expected roster.
+    """
+    names: list[str] = []
+    i = XBE_SELECT_NAME_TABLE_OFFSET
+    limit = min(len(data), XBE_SELECT_NAME_TABLE_OFFSET + 0x100)
+    while i < limit and len(names) < 19:
+        j = data.find(b"\x00", i)
+        if j < 0:
+            break
+        s = data[i:j].decode("latin-1")
+        if s and all(0x20 <= b < 0x7F for b in data[i:j]):
+            names.append(s)
+        i = j + 1
+    if names != [n.upper().replace(" ", "-") for n in XBE_SELECT_NAMES]:
+        raise ValueError(f"DOA3 XBE select name table mismatch: {names!r}")
+    return names
+
+
+# ----------------------------------------------------------------------------- cast slots
+
+def slot_inventory(manifest: dict) -> dict:
+    """Cast slot rows and exact coverage gaps from a ``doa3_inventory`` manifest.
+
+    One row per fighter family with its resolved display name (``fighter_display_name``),
+    hidden/boss/story classification, motion banks and costume coverage. The display name is
+    always recomputed from the pinned ``FIGHTER_DISPLAY``/``DISPLAY_MAPPING_PENDING``, so the
+    report is correct even for a manifest written before those fields were added. Coverage
+    gaps are listed explicitly: families whose display name is still pending, families with
+    no complete ``xpr``+``cat`` costume pair, and roster names no family covers yet.
+    """
+    fams = manifest.get("fighter_families", []) or []
+    slots = []
+    covered: set[str] = set()
+    for f in fams:
+        nick = f.get("nick")
+        if not nick:
+            continue
+        display = fighter_display_name(nick)
+        if display:
+            covered.add(display)
+        slots.append({
+            "nick": nick,
+            "code": f.get("code"),
+            "display_name": display,
+            "display_pending": nick in DISPLAY_MAPPING_PENDING,
+            "hidden": nick in HIDDEN_SLOTS,
+            "story_only": nick in STORY_ONLY,
+            "motion_banks": f.get("mot") or [],
+            "complete_costumes": f.get("complete_costumes") or [],
+            "costume_count": len(f.get("complete_costumes") or []),
+        })
+    gaps: list[dict] = []
+    for s in slots:
+        if s["display_pending"]:
+            gaps.append({"kind": "display_name_pending", "slot": s["nick"],
+                         "detail": "code->name link needs the XBE character-table RE stage"})
+        if s["costume_count"] == 0:
+            gaps.append({"kind": "no_complete_costumes", "slot": s["nick"],
+                         "detail": "family has no complete xpr+cat costume pair"})
+    roster = manifest.get("roster_expected") or ROSTER
+    for name in roster:
+        if name not in covered:
+            gaps.append({"kind": "roster_not_covered", "slot": name,
+                         "detail": "roster name not matched to any fighter family"})
+    slots.sort(key=lambda s: (s["display_pending"], s["nick"]))
+    return {
+        "game_id": manifest.get("game_id", GAME_ID),
+        "title": manifest.get("title"),
+        "slot_count": len(slots),
+        "slots": slots,
+        "costume_total": sum(s["costume_count"] for s in slots),
+        "roster_expected": roster,
+        "resolved_display": sorted(covered),
+        "display_pending": sorted(s["nick"] for s in slots if s["display_pending"]),
+        "coverage_gaps": gaps,
+    }
 
 
 # ----------------------------------------------------------------------------- build
@@ -370,6 +529,153 @@ def build(game_dir: str | Path, *, source_7z: str | Path | None = None,
                                        if c.get("xpr_header", {}).get("first_tag") == "MDL")},
         "movies": sorted(f["name"] for f in files if f["name"].endswith(".sfd")),
         "roster_expected": ROSTER,
+    }
+
+
+# --------------------------------------------------------------------------- Cxbx-Reloaded unlock
+#
+# DOA3 on Cxbx-Reloaded uses a save-file unlock, not a memory patch.  The Xbox
+# save (``UDATA``) lives in the emulator's save directory and is a binary blob
+# that the game reads at the character-select screen.  The unlock path is:
+#
+#   1.  Pin the exact XBE (title ID ``B8EDF704``) so we know which save layout
+#       we are targeting.
+#   2.  Locate the existing save in the Cxbx-Reloaded save directory
+#       (``<save_root>/UDATA/<profile>/``).
+#   3.  Plan a save-file write that sets every character slot to "owned"
+#       and every stage / item / bonus to "unlocked".
+#   4.  The actual write is performed by a Cxbx-Reloaded save-editor helper
+#       (``cxbx_save_editor``), invoked through the existing
+#       ``start_job`` / ``get_job`` remote path on the designated worker.
+#
+# This function only *plans*; it does not write the save.  A later writer
+# must keep every write inside the save's own room and must back up the
+# original save before the first write.
+
+
+DOA3_TITLE_ID = "B8EDF704"
+DOA3_UNLOCK_PROFILE = "doa3-cxbx-save-unlock-v1"
+
+
+def cxbx_unlock_plan(
+    game: dict,
+    worker: dict,
+    *,
+    session_id: str = "",
+    save_root: str = "",
+    allow_save_upgrade: bool = False,
+) -> dict:
+    """Plan the Cxbx-Reloaded DOA3 save-unlock job.
+
+    Parameters
+    ----------
+    game:
+        Catalog game record; must carry ``game_id == GAME_ID`` and
+        ``platform == "xbox"``.
+    worker:
+        Worker record; must target the designated testing worker
+        (``i9-NUC`` or ``sparkDeux`` — never ``JAYBUILTFINALE``).
+    session_id:
+        Optional live session id; required for the live write job.
+    save_root:
+        Root directory of the Cxbx-Reloaded save partition.  When empty the
+        planner marks the plan as ``save_root_required`` and refuses to emit
+        a write job.
+    allow_save_upgrade:
+        Must be ``True`` to get a write job; the save is modified.
+
+    Returns a dict with ``status``, ``profile``, ``jobs`` (empty until all
+    prerequisites are met), and ``reason``.  No jobs are dispatched.
+    """
+    # --- gate: exact game identity ----------------------------------------
+    if game.get("game_id") != GAME_ID or game.get("platform") != "xbox":
+        return {
+            "status": "unsupported_game",
+            "profile": None,
+            "jobs": [],
+            "reason": f"DOA3 Cxbx unlock requires exact game_id={GAME_ID!r} on xbox; got {game.get('game_id')!r}/{game.get('platform')!r}.",
+        }
+
+    # --- gate: designated testing worker ------------------------------------
+    allowed_workers = {"i9-nuc", "sparkdeux"}
+    wname = (worker.get("name") or "").casefold()
+    if wname not in allowed_workers:
+        return {
+            "status": "wrong_worker",
+            "profile": None,
+            "jobs": [],
+            "reason": f"DOA3 Cxbx unlock must target i9-NUC or sparkDeux; got {wname!r}. Never target the operator play PC.",
+        }
+
+    # --- gate: save upgrade opt-in ------------------------------------------
+    if not allow_save_upgrade:
+        return {
+            "status": "save_upgrade_opt_in_required",
+            "profile": DOA3_UNLOCK_PROFILE,
+            "jobs": [],
+            "reason": "DOA3 save unlock modifies the save file; explicit allow_save_upgrade=True is required.",
+        }
+
+    # --- gate: save root ----------------------------------------------------
+    if not save_root:
+        return {
+            "status": "save_root_required",
+            "profile": DOA3_UNLOCK_PROFILE,
+            "jobs": [],
+            "reason": "save_root (Cxbx-Reloaded save partition directory) is required before a write job can be planned.",
+        }
+
+    # --- gate: live session for the write ------------------------------------
+    if not session_id:
+        return {
+            "status": "session_required",
+            "profile": DOA3_UNLOCK_PROFILE,
+            "jobs": [],
+            "reason": "A live Cxbx-Reloaded session_id is required to plan the save-write job. Launch the game first, then call cxbx_unlock_plan with the returned session id.",
+        }
+
+    # --- plan the jobs -------------------------------------------------------
+    common = {
+        "require_worker": worker["id"],
+        "agent_use": True,
+        "parent_request_id": None,
+    }
+    backup_job = common | {
+        "tool": "doa3_cxbx_save",
+        "input": {
+            "op": "backup_save",
+            "save_root": save_root,
+            "title_id": DOA3_TITLE_ID,
+            "session_id": session_id,
+        },
+    }
+    write_job = common | {
+        "tool": "doa3_cxbx_save",
+        "input": {
+            "op": "unlock_all",
+            "save_root": save_root,
+            "title_id": DOA3_TITLE_ID,
+            "session_id": session_id,
+            "chars": list(ROSTER),
+        },
+    }
+    verify_job = common | {
+        "tool": "doa3_cxbx_save",
+        "input": {
+            "op": "verify_unlock",
+            "save_root": save_root,
+            "title_id": DOA3_TITLE_ID,
+            "session_id": session_id,
+        },
+    }
+    return {
+        "status": "planned",
+        "profile": DOA3_UNLOCK_PROFILE,
+        "jobs": [backup_job, write_job, verify_job],
+        "executed": False,
+        "roster": list(ROSTER),
+        "audio_policy": "agent_use on the designated worker enforces 2% volume",
+        "save_policy": "Original save is backed up before the first write; the write is monotonic (only upgrades slots).",
     }
 
 

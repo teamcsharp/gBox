@@ -411,6 +411,39 @@ def _session_ended_on_server(ctx, sid) -> bool:
         return False
 
 
+def _save_previous_game(ad, game: dict, sid: str, ctx) -> dict:
+    """Save a running game before the single-game switch closes it.
+
+    state_transfer's export moves a save state between machines, which only RetroArch cores and standalone
+    Dolphin (the same release on both) support. Every other emulator can still save its own game: fall back
+    to the adapter's save_state — the same primitive the Stop flow uses — so switching away from RPCS3 /
+    Xenia / PCSX2 / ... is not refused as a "save states can't move between machines" failure. An unnamed
+    adapter keeps the historical state_transfer path.
+    """
+    kind = getattr(ad, "name", "")
+    if getattr(ad, "checkpoint_state", None) in ("path", "dir") or not kind or kind in ("retroarch", "dolphin"):
+        return state_transfer(StateXIn(session_id=sid, op="export"), ctx)["result"]
+    save = getattr(ad, "save_state", None)
+    if save is None:
+        raise Unsupported(f"{kind} does not support save_state")
+    with rewind.guard(sid, "save_state"):
+        saved = save()                                # raises Unsupported("<name> does not support save_state")
+    if not isinstance(saved, dict):
+        saved = {"value": str(saved)[:200]}
+    artifact = None
+    path = saved.get("path")
+    if path:
+        try:
+            data = Path(path).read_bytes()
+        except OSError:
+            data = b""
+        if data:
+            ctx.artifact(Path(path).name, data, "application/octet-stream",
+                         note="state transfer", game=game.get("game_id"), session=sid)
+            artifact = sha256(data)
+    return {"artifact": artifact, **saved}
+
+
 def _close_previous_games(ctx, keep: str = ""):
     """One emulator per worker, except the session named by `keep` stays up (game_link host + guest on one worker).
     Preserve every current game before stopping any of them."""
@@ -438,7 +471,19 @@ def _close_previous_games(ctx, keep: str = ""):
             continue
         ctx.progress(71, 'Saving the previous game before switching')
         try:
-            saved = state_transfer(StateXIn(session_id=sid, op='export'), ctx)['result']
+            saved = _save_previous_game(ad, game, sid, ctx)
+        except Unsupported as exc:
+            if getattr(ad, 'checkpoint_state', None) in ('path', 'dir'):
+                title = game.get('title') or game.get('game_id') or sid
+                raise Unsupported(f"The previous game ({title}) could not be saved: {exc}. It was kept running. Stop it in "
+                                  "Sessions (or close its emulator window) before starting another game.") from exc
+            # No save state at all (cxbx, rpcs3 without an in-place state, ...). The game's own saves persist through
+            # the clean stop below, so nothing blocks switching games (operator report #2014); only the exact moment is
+            # not captured, the same result as the operator closing the emulator window.
+            reason = getattr(ad, 'checkpoint_reason', None) or str(exc)
+            checkpoints.append({'session_id': sid, 'game_id': game.get('game_id'), 'artifact': None,
+                                'save_state': 'unsupported', 'reason': reason})
+            continue
         except Exception as exc:
             title = game.get('title') or game.get('game_id') or sid
             raise Unsupported(f"The previous game ({title}) could not be saved: {exc}. It was kept running. Stop it in Sessions "

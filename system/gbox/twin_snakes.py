@@ -83,6 +83,47 @@ CAST = [
      "stage": {1: "nja_def", 2: "nja_def"}, "role": "boss"},
 ]
 
+# Who a model is, by its texture set (header +0x0c): every gameplay, cut-scene and close-up model of a character
+# draws from that character's sets. Identified on both discs by strcode names (sna_def, mrl_dmo, liq_coat_dmo ...)
+# and, for unnamed sets, by rendering every humanoid model (148 on disc 1, 26 more on disc 2; docs/twin_snakes.md).
+# Sets of items drawn on the skeleton (guns 0x49e8c3, armour / gas mask 0xcba219, snow decals 0xcc73a9) and models
+# whose set is not in their own stage are not characters here.
+IDENTITIES = {
+    "snake": ("Solid Snake", ["413aa8", "69b995", "d34a29", "35a87a", "083577", "a5346d", "a53576", "413bb1",
+                              "b13aa8", "23eb63"]),
+    "meryl": ("Meryl Silverburgh", ["f13930", "f139bd", "f13a39", "27476f", "302832", "603414", "f1627a", "6f4c92",
+                                    "f4985c", "c675db"]),
+    "otacon": ("Otacon", ["683fc2", "721b33", "730bad"]),
+    "liquid": ("Liquid Snake", ["4139e8", "f38a4a", "26c3bc", "4138df", "323452"]),
+    "ocelot": ("Revolver Ocelot", ["26f2c6", "f86750", "aa06fb"]),
+    "wolf": ("Sniper Wolf", ["313aa9", "313bb2", "4f5aec"]),
+    "mantis": ("Psycho Mantis", ["65abf6", "c13afc", "c139f3", "f38b6a"]),
+    "raven": ("Vulcan Raven", ["f13b76", "f13c7f", "0ad1d2", "c85014", "f882e5", "cb3cb3", "2f60d0", "f17b04"]),
+    "ninja": ("Cyborg Ninja", ["413960", "c3c1bd", "274d59", "b5ab6b"]),
+    "decoy": ("Decoy Octopus", ["288a7a"]),
+    "anderson": ("Donald Anderson (DARPA chief)", ["4136ec", "725667"]),
+    "baker": ("Kenneth Baker", ["313635", "31373e"]),
+    "naomi": ("Naomi Hunter", ["213a58"]),
+    "campbell": ("Roy Campbell", ["013798", "270b21"]),
+    "johnny": ("Johnny Sasaki", ["737a80"]),
+    "soldier_arctic": ("Genome Soldier (arctic)", ["26e012", "dc0276"]),
+    "soldier_indoor": ("Genome Soldier (indoor)", ["23e574"]),
+    "soldier_gas": ("Genome Soldier (gas mask)", ["112bec", "4516e3", "f7935d"]),
+    "soldier_heavy": ("Genome heavy guard", ["914575"]),
+}
+TEXSET_IDENTITY = {int(t, 16): k for k, (_n, ts) in IDENTITIES.items() for t in ts}
+# Codec portraits (shared/face.dat: one stage per call setup f00a .. f20a, one .tri set per speaker)
+CODEC = {0xB7F564: "snake", 0x045793: "meryl", 0x721B33: "otacon", 0x35D30D: "campbell", 0x124A10: "naomi",
+         0x2B343F: "mei_ling", 0x75E28E: "nastasha", 0xB7680D: "miller", 0x3D49E6: "wolf", 0x01D464: "houseman"}
+CODEC_NAMES = {"mei_ling": "Mei Ling", "nastasha": "Nastasha Romanenko", "miller": "Master Miller",
+               "houseman": "Jim Houseman (old man in a suit; name not in the data)"}
+PORTRAIT = (104, 178)
+
+
+def identity_of(model: bytes) -> str | None:
+    """A model's character (IDENTITIES key) from its texture set, else None."""
+    return TEXSET_IDENTITY.get(struct.unpack_from(">I", model, 0x0C)[0] & 0xFFFFFF) if len(model) >= 0x10 else None
+
 
 def model_hash(key: str) -> int:
     return int(key[1:], 16) if key.startswith("#") else S.strcode(key)

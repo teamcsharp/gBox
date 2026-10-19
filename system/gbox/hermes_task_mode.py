@@ -249,9 +249,11 @@ def dispatch_request(request_id: str, number: int, *, task: str | None = None, n
     """Queue a cloud investigation after the incident's immediate recovery finishes. `task` replaces the emulation
     incident instructions (a launch failure report, gbox/launch_failures.py) and `name` the job name."""
     from . import hermes_local
-    if hermes_local.active():
-        # A root-cause investigation (emulation incident or launch failure) is too big for the Spark's local model:
-        # the open report stays in the work queue and is dispatched on a paid route once one recovers.
+    if hermes_local.active() and not hermes_local.local_only():
+        # A root-cause investigation (emulation incident or launch failure) is too big for the Spark's fallback model:
+        # the open report stays in the work queue and is dispatched on a paid route once one recovers. When the
+        # operator set Hermes to local only, the local route (the dedicated node's coder model) takes it instead of
+        # parking every operator report until credit the operator does not want to spend appears.
         raise RuntimeError('Hermes is on the local model while the paid routes are out of credit; '
                            'the investigation stays queued for a paid route')
     with _LOCK:

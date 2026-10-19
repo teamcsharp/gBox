@@ -11,6 +11,8 @@ from pathlib import Path
 
 RE6_ID = '0871eee3b68cdea3'
 RE6_TEMPLATE_SHA256 = '194cb5b71858f65feeb2b1703642ddc4ffde09b9a087119189b29b0ad7b83f11'
+DOAPP_ID = '59c55e95af61abbe'  # Dead Or Alive ++ (Korea), platform=arcade
+NDS_WCW_GAME_ID = 'd9467f457f53f2c7'  # Call of Duty: World at War (USA), NDS
 
 
 def pre_launch(game: dict, ctx, mod: str = '') -> dict:
@@ -21,6 +23,16 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
     """
     profile = profile_for(game)
     if not profile['verified']:
+        if game.get('game_id') == DOAPP_ID and game.get('platform') == 'arcade':
+            # Registration point for the DOA++ (Korea) arcade unlock work. The
+            # fast Play path must never guess a write: report the live static
+            # evidence state and hand off to the background research task.
+            from . import doapp_unlock
+            record = doapp_unlock.profile()
+            return {'state': 'research_pending', 'applied': False,
+                    'reason': record['reason'],
+                    'proven_revisions': record['proven_revisions'],
+                    'unknown_counts': record['unknown_counts']}
         return {'state': 'research_pending', 'applied': False, 'reason': profile['reason']}
     if game.get('game_id') == RE6_ID and game.get('platform') == 'xbox360':
         from . import re6_tool
@@ -33,10 +45,25 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
                  'pending_save' if unlock.get('error') else 'applied')
         return {'state': state, 'applied': state == 'applied', 'profile': profile['profile'],
                 'scope': profile['scope'], 'exclusions': profile['exclusions'], 'detail': result}
+    if game.get('game_id') == NDS_WCW_GAME_ID and game.get('platform') == 'nds':
+        from . import nds_wcw_unlock
+        # Candidate (not gameplay-verified) profile: report the pinned database ops and
+        # the live-acceptance plan; never claim verified unlocks here.
+        return {'state': 'candidate_pending_verification', 'applied': False,
+                'profile': 'nds-wcw-database-candidate-v1',
+                'scope': nds_wcw_unlock.profile()['scope'],
+                'ops': nds_wcw_unlock.unlock_ops(),
+                'next': 'Run live_acceptance_plan on an authorized agent session (i9-NUC/Spark, 2% audio).'}
     return {'state': 'implementation_pending', 'applied': False}
 
 
 def profile_for(game: dict) -> dict:
+    from . import doax2_unlock
+    if game.get('game_id') == doax2_unlock.GAME_ID and game.get('platform') == doax2_unlock.PLATFORM:
+        # Honest gate for DOAX2: research pending, no verified write targets exist.
+        # pre_launch below short-circuits on verified=False, so no writer is reachable.
+        return {'status': 'pending_research', 'profile': None, 'verified': False,
+                'scope': list(doax2_unlock.CATEGORIES), **doax2_unlock.profile_gate()}
     if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,
                 'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}

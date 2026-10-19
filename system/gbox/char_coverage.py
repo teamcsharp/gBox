@@ -18,6 +18,9 @@ import time
 # GAME_IDS also includes games that only support extraction.
 WRITERS = [
     ("doa2_swap", ["fighter:<name>:<costume>"], "DOA2 LE Japan: native body replacement; fighter motions preserved, per-donor gameplay verification"),
+    ("doa3_cast", ["fighter:<nick>[:<costume>]", "cast"],
+     "Dead or Alive 3 (Xbox): native cast writer in progress — XPR0/CAT/MDL/LNK decode and the AFS patch path are "
+     "implemented, donor retarget and texture write are not (not playable); use() reports writer_in_progress"),
     ("soulcalibur_swap", ["fighter:<name>[:<costume>]", "roster"],
      "SoulCalibur DC (USA): any of the 19 fighters, every costume rebuilt natively on the fighter's own skeleton "
      "(motions, weapons, cloth and face bones kept; donor textures in the YUV422 pages); slot=roster builds the Sonic "

@@ -3,7 +3,9 @@
 No tool access is granted to the reviewer. Model findings are guidance, never a
 task-completion receipt. All terminal queue occurrences are inventoried, including
 older runs missed by the dispatcher's latest-run view. Delivery is independently
-retryable and cannot require another paid call.
+retryable and cannot require another paid call. When the operator set Hermes to local only
+(hermes_local.local_only), the review runs on the local route through gBox's proxy instead of
+waiting for cloud credit the operator chose not to use.
 """
 from __future__ import annotations
 
@@ -12,15 +14,20 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import socket
 import sqlite3
 import subprocess
 import sys
 import time
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from . import hermes_delivery as D, hermes_task_mode as M
 from .hermes_availability import _api
 
 STATE = 'result-review.json'
+UNREVIEWED_GRACE_S = 2 * 3600     # a last run the ledger never recorded stops holding the task after this long
+TRANSCRIPT_ATTEMPTS = 3           # transcript-less attempts before the review proceeds from the request thread
 NAME = 'gBox DeepSeek result review'
 TERMINAL = ('completed', 'failed', 'cancelled', 'canceled', 'success', 'succeeded', 'error', 'finished',
             'timed_out', 'interrupted', 'abandoned')
@@ -137,8 +144,14 @@ def gate(item):
     if not config().get('enabled') or not item.get('last_run_id'):
         return None
     row = result('run:' + item['last_run_id'])
+    if not row:
+        # The ledger never saw this run (its execution row is gone, or it ended before the gate was enabled), so no
+        # review can ever arrive; after a grace period the next dispatch goes ahead instead of waiting forever.
+        finished = float(item.get('last_finished') or item.get('last_dispatched') or 0)
+        if finished and time.time() - finished > UNREVIEWED_GRACE_S:
+            return None
     if not row or row['state'] != 'reviewed':
-        return 'Waiting for durable cloud result review'
+        return 'Waiting for the local result review' if reviewer()['local'] else 'Waiting for durable cloud result review'
     review = json.loads(row['verdict'])
     item['review_guidance'] = review
     if review['verdict'] == 'blocked':
@@ -176,8 +189,9 @@ def summary():
         counts = {r[0]: r[1] for r in db.execute('SELECT state,count(*) FROM reviews GROUP BY state')}
         held = [dict(r) for r in db.execute("SELECT key,request_id,error,verdict FROM reviews WHERE "
             "state IN ('retry','escalated') OR json_extract(verdict,'$.verdict')='blocked' ORDER BY updated LIMIT 12")]
+    who = reviewer()
     return {'enabled': True, 'counts': counts, 'attention': held,
-            'provider': 'deepseek', 'model': 'deepseek-v4-pro'}
+            'provider': who['provider'], 'model': who['model'], 'local': who['local']}
 
 
 def feedback_signature(request):
@@ -212,10 +226,16 @@ def packet(row):
         evidence = merge.prepare(data)
     else:
         evidence = T.get_run(data['run']['id'])
-        if not evidence:
+        if not evidence and row.get('attempts', 0) < TRANSCRIPT_ATTEMPTS:
             raise RuntimeError('Run transcript is unavailable; review remains pending')
     current = next((i for i in Q._read().get('items', {}).values()
                     if i.get('request_id') == row['request_id']), {})
+    if row['kind'] != 'pr' and not evidence:
+        # The transcript is gone for good (gateway restart, pruned session). Holding the task forever helps nobody:
+        # review what is durable, the request thread and the queue checkpoint, and say so.
+        evidence = {'transcript_unavailable': True, 'final_report': current.get('final_report'),
+                    'note': 'The run transcript is unavailable; judge from the request thread and checkpoint only. '
+                            'Missing evidence means pending checks, never success.'}
     return {'review_key': row['key'], 'kind': row['kind'], 'request': request,
             'feedback_signature': feedback_signature(request),
             'recorded': data, 'current_checkpoint': current, 'evidence': evidence,
@@ -240,11 +260,77 @@ def redact(value):
     return value
 
 
+def reviewer() -> dict:
+    """Who reviews: DeepSeek (paid) unless the operator set Hermes to local only, then the local route through
+    gBox's proxy, preferring the dedicated node that takes large tasks. A review must never wait for cloud credit
+    the operator has chosen not to use."""
+    cloud = {'provider': 'deepseek', 'model': 'deepseek-v4-pro', 'local': False, 'label': 'DeepSeek'}
+    try:
+        from . import hermes_local, hermes_pool
+        if not hermes_local.local_only():
+            return cloud
+        nodes = [n for n in hermes_pool.node_settings().values() if n.enabled]
+        s = max(nodes, key=lambda n: (n.allow_large_tasks, n.max_parallel_jobs)) if nodes else hermes_local.settings()
+        proxy_url = s.proxy_url or hermes_local.settings().proxy_url or 'http://127.0.0.1:8765/api/llm/local/v1'
+    except Exception:  # noqa: BLE001 - a broken local configuration falls back to the paid reviewer
+        return cloud
+    return {'provider': s.provider, 'model': s.model, 'local': True, 'label': 'Local (' + s.host_name + ')',
+            'proxy_url': proxy_url}
+
+
+def _post_json(url: str, body: dict, timeout: float) -> dict:
+    req = Request(url, data=json.dumps(body).encode(), headers={'Content-Type': 'application/json'})
+    with urlopen(req, timeout=timeout) as response:
+        raw = response.read(2_000_001)
+    if len(raw) > 2_000_000:
+        raise ValueError('Response exceeded limit')
+    return json.loads(raw)
+
+
+def _json_object(text: str) -> dict:
+    """The verdict object from a local model's answer, with or without a code fence or prose around it."""
+    try:
+        value = json.loads(text)
+    except ValueError:
+        start, end = text.find('{'), text.rfind('}')
+        if start < 0 or end <= start:
+            raise ValueError('No JSON object in the review answer') from None
+        value = json.loads(text[start:end + 1])
+    if not isinstance(value, dict):
+        raise ValueError('Review answer is not a JSON object')
+    return value
+
+
+def _review_local(who: dict, messages: list) -> dict:
+    """One bounded chat completion on the local route, returning the same sanitized envelope as the paid transport
+    ({content, finish_reason, usage} or {error}). The proxy on the loopback needs no credential."""
+    url = who['proxy_url'].rstrip('/') + '/chat/completions'
+    try:
+        result = _post_json(url, {'model': who['model'], 'messages': messages, 'max_tokens': 6000,
+                                  'temperature': 0.2}, 345)
+        choice = result['choices'][0]
+        content = _json_object(choice['message']['content'] or '')
+        return {'provider': who['provider'], 'model': result.get('model') or who['model'], 'usage': result.get('usage'),
+                'finish_reason': choice.get('finish_reason') or 'stop', 'content': json.dumps(content)}
+    except HTTPError as exc:
+        return {'provider': who['provider'], 'error': 'http_' + str(exc.code)}
+    except URLError as exc:
+        return {'provider': who['provider'], 'error': 'provider_timeout'
+                if isinstance(exc.reason, (TimeoutError, socket.timeout)) else 'network_unavailable'}
+    except (TimeoutError, socket.timeout):
+        return {'provider': who['provider'], 'error': 'provider_timeout'}
+    except OSError:
+        return {'provider': who['provider'], 'error': 'network_unavailable'}
+    except (ValueError, KeyError, TypeError, IndexError) as exc:
+        return {'provider': who['provider'], 'error': 'invalid_provider_response: ' + str(exc)[:200]}
+
+
 def review(packet_data):
-    from . import hermes_provider_scope as scope
-    blocked = scope.admission(M._config(), {'provider': 'deepseek', 'model': 'deepseek-v4-pro'})
-    if blocked:
-        raise RuntimeError('provider_scope_blocked')
+    who = reviewer()
+    if not who['local']:
+        from . import hermes_provider_scope as scope
+        if scope.admission(M._config(), {'provider': who['provider'], 'model': who['model']}):
+            raise RuntimeError('provider_scope_blocked')
     if not config().get('enabled') or not (M._job() or {}).get('enabled'):
         raise RuntimeError('Review paused by operator')
     helper = Path(__file__).resolve().parents[1] / 'hermes/gbox/deepseek_review.py'
@@ -263,9 +349,11 @@ def review(packet_data):
             'failed_steps': [json.dumps(s)[:4000] for s in run.get('steps', []) if s.get('status') == 'failed'][-8:]})
     if len(encoded) > 240000:
         raise RuntimeError('Evidence exceeds review budget; retain it for bounded subdivision')
-    response = subprocess.run([sys.executable, str(helper)], input=json.dumps({'review_kind': packet_data.get('kind'), 'messages': [
-        {'role': 'system', 'content': INSTRUCTIONS}, {'role': 'user', 'content': encoded}]}),
-        capture_output=True, text=True, encoding='utf-8', timeout=345)
+    messages = [{'role': 'system', 'content': INSTRUCTIONS}, {'role': 'user', 'content': encoded}]
+    if who['local']:
+        return _review_local(who, messages)
+    response = subprocess.run([sys.executable, str(helper)], input=json.dumps({'review_kind': packet_data.get('kind'),
+        'messages': messages}), capture_output=True, text=True, encoding='utf-8', timeout=345)
     if response.returncode:
         raise RuntimeError('review_transport_failed')
     result_data = json.loads(response.stdout)
@@ -305,7 +393,7 @@ def deliver():
             if not any(marker in (m.get('text') or m.get('body') or '') for m in request.get('messages', [])):
                 v = json.loads(row['verdict'])
                 _api('/api/requests/' + row['request_id'] + '/messages', {'author': 'agent', 'text':
-                    marker + '\nDeepSeek review guidance; this does not close or accept the task.\n'
+                    marker + '\n' + reviewer()['label'] + ' review guidance; this does not close or accept the task.\n'
                     + '\n'.join(k + ': ' + v[k] for k in ('verdict', 'diagnosis', 'next_action', 'verification'))
                     + '\nEvidence: ' + '; '.join(v['evidence'])})
             with closing(connect()) as db, db:
@@ -374,9 +462,11 @@ def tick():
             refresh_holds()
             if time.time() < state.get('next_at', 0):
                 return {'state': 'waiting', **summary()}
-            from . import hermes_provider_scope as scope
-            if scope.admission(M._config(), {'provider': 'deepseek', 'model': 'deepseek-v4-pro'}):
-                return {'state': 'waiting_provider_scope', **summary()}
+            who = reviewer()
+            if not who['local']:
+                from . import hermes_provider_scope as scope
+                if scope.admission(M._config(), {'provider': who['provider'], 'model': who['model']}):
+                    return {'state': 'waiting_provider_scope', **summary()}
             for index in range(3):
                 if not process_one('run', newest=index < 2):
                     break
@@ -395,7 +485,8 @@ def tick():
 def install(*, auto_merge=False):
     """Explicit operator opt-in. Register the scheduler before enabling retry gates."""
     from . import hermes_provider_scope as scope
-    if scope.admission(M._config(), {'provider': 'deepseek', 'model': 'deepseek-v4-pro'}):
+    who = reviewer()
+    if not who['local'] and scope.admission(M._config(), {'provider': who['provider'], 'model': who['model']}):
         raise RuntimeError('DeepSeek provider policy blocks private task review')
     root = Path(__file__).resolve().parents[1]
     script = M._home() / 'scripts/gbox-result-review.py'
