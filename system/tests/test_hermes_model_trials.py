@@ -93,3 +93,20 @@ def test_failed_adoption_leaves_route_unchanged_and_does_not_restart(tmp_path, m
     monkeypatch.setattr(P, '_state', lambda: pytest.fail('Failed validation must not change routing'))
     T.worker('test')
     assert T.read()['job']['state'] == 'failed'
+
+
+def test_fast_worker_can_claim_lock_without_losing_progress(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(D, 'state_dir', lambda: tmp_path)
+    monkeypatch.setattr(M, '_read', lambda: {})
+    T.save({'enabled': True})
+    def spawn(*args, **kwargs):
+        with D.locked('model-management'):
+            data = T.read()
+            data['job']['state'] = 'preparing'
+            T.save(data)
+        return SimpleNamespace(pid=42)
+    monkeypatch.setattr(T.subprocess, 'Popen', spawn)
+    job = T.submit('trial_prepare', 'nemotron-bolt')
+    assert job['state'] == T.read()['job']['state'] == 'preparing'
+    assert T.read()['job']['pid'] == 42

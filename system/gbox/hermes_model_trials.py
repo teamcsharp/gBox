@@ -6,6 +6,7 @@ Model names are an allowlist; no arbitrary commands arrive through the API.
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager, ExitStack
 import os
 from pathlib import Path
 import re
@@ -39,6 +40,23 @@ def save(data):
     p = D.state_dir() / 'model-trials.json'
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix('.tmp'); tmp.write_text(json.dumps(data, indent=2)); tmp.replace(p)
+
+
+@contextmanager
+def management_lock():
+    # D.locked is nonblocking. Brief parent/worker state updates must retry
+    # contention instead of abandoning a durable action at startup.
+    from . import hermes_delivery as D
+    with ExitStack() as stack:
+        for _ in range(100):
+            try:
+                stack.enter_context(D.locked('model-management'))
+                break
+            except BlockingIOError:
+                time.sleep(.05)
+        else:
+            raise RuntimeError('Model management is busy; retry after its state update')
+        yield
 
 
 def status():
@@ -94,7 +112,7 @@ def submit(action, profile):
         raise ValueError('Unknown model trial action')
     if PROFILES[profile][3]:
         raise ValueError('This checkpoint requires about 166 GiB; the installed cluster recipe cannot run on this 128 GB Spark')
-    with D.locked('model-management'):
+    with management_lock():
         data = read()
         if not data.get('enabled'):
             raise ValueError('Model trials are not configured')
@@ -105,26 +123,35 @@ def submit(action, profile):
         job = {'id': uuid.uuid4().hex[:12], 'action': action, 'profile': profile,
                'state': 'queued', 'created_at': time.time()}
         data['job'] = job; save(data)
-        try:
-            process = subprocess.Popen([sys.executable, '-m', 'gbox.hermes_model_trials', '--worker', job['id']],
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-            job['pid'] = process.pid; save(data)
-        except OSError:
-            job.update(state='failed', error='Could not launch model worker'); save(data)
-            raise
+    # The child also needs this lock; release it before spawning. Re-read state
+    # when recording its PID so a fast worker's progress is never overwritten.
+    try:
+        process = subprocess.Popen([sys.executable, '-m', 'gbox.hermes_model_trials', '--worker', job['id']],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        with management_lock():
+            data = read()
+            if data['job']['id'] == job['id']:
+                data['job']['pid'] = process.pid; save(data)
+                job = data['job']
+    except OSError:
+        with management_lock():
+            data = read()
+            if data['job']['id'] == job['id']:
+                data['job'].update(state='failed', error='Could not launch model worker'); save(data)
+        raise
     return job
 
 
 def worker(job_id):
     from . import hermes_delivery as D, hermes_models as M, hermes_pool as P
     with D.locked('model-trial-worker'):
-        with D.locked('model-management'):
+        with management_lock():
             data = read(); job = data['job']
             if job['id'] != job_id:
                 raise RuntimeError('Model job identity changed')
         action, profile = job['action'], job['profile']
         def update(**event):
-            with D.locked('model-management'):
+            with management_lock():
                 job.update(event, updated_at=time.time()); data['job'] = job; save(data)
         changed = False
         try:
