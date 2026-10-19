@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 RE6_ID = '0871eee3b68cdea3'
+DOA5_ID = '75957a5c46d70c90'
 RE6_TEMPLATE_SHA256 = '194cb5b71858f65feeb2b1703642ddc4ffde09b9a087119189b29b0ad7b83f11'
 
 
@@ -21,7 +22,8 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
     """
     profile = profile_for(game)
     if not profile['verified']:
-        return {'state': 'research_pending', 'applied': False, 'reason': profile['reason']}
+        return {'state': 'research_pending', 'applied': False,
+                'reason': profile.get('reason', 'No verified unlock profile for this exact catalog game/build.')}
     if game.get('game_id') == RE6_ID and game.get('platform') == 'xbox360':
         from . import re6_tool
         try:
@@ -37,6 +39,9 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
 
 
 def profile_for(game: dict) -> dict:
+    if game.get('game_id') == DOA5_ID and game.get('platform') == 'sega_arcade_pc':
+        from . import doa5_arcade_unlock
+        return doa5_arcade_unlock.profile()
     if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,
                 'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}
