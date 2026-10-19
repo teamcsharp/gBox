@@ -3533,6 +3533,7 @@ async function embedTick() {
       if (pref === "full") setTimeout(() => viewAction("full", true), 600); else if (VIEW.mode === "full") viewAction("main", true);
     }
     EMB.sid = mine.session_id; EMB.pid = mine.detail.pid;
+    EMB.adapter = mine.adapter || ""; EMB.caps = mine.capabilities || {};       // #2518: what this emulator can do drives the menu
     const overlay = $("#report").classList.contains("on") || $("#task-evidence").classList.contains("on") || !!$("#issue-modal") || !!document.querySelector('dialog[open]') || FLOW.on || !!$("#reportgraph.on") || GBoxReportStory.isFullOpen()
       || (document.querySelector("section.on")?.id === "play" && !$("#playhost").hidden);      // full-window overlays: the game steps aside
     const onPlay = document.querySelector("section.on")?.id === "play";
@@ -3761,11 +3762,20 @@ function pipHandle(rect, title) {
   Object.assign(h.style, { display: "flex", left: rect.x + "px", top: (rect.y - 26) + "px", width: rect.w + "px" });
 }
 const isFull = () => VIEW.mode === "full" || !!document.fullscreenElement || window.outerHeight >= screen.height && window.outerWidth >= screen.width;
+// #2518: an emulator without save states (Cxbx-Reloaded) gets no Save / Load job that can only fail and notify:
+// the menu says what is missing, the actions and the typed one-liners answer in words
+const CAP_WORDS = { save_state: "has no save states", load_state: "has no save states", pause: "cannot pause", resume: "cannot resume" };
+function capMissing(op) {
+  const caps = EMB.caps || {};
+  if (caps[op] !== "unsupported") return "";
+  return `${EMB.adapter ? "The " + EMB.adapter + " emulator" : "This emulator"} ${CAP_WORDS[op] || "does not support " + op.replace(/_/g, " ")} in gBox`;
+}
 function pipMenu(x, y) {
   let m = $("#pipmenu");
   if (!m) { m = document.createElement("div"); m.id = "pipmenu"; document.body.append(m); dragAnywhere(m);
     addEventListener("mousedown", e => { if (!e.target.closest("#pipmenu") && m.style.display === "block") { m.style.display = "none"; GM.menu = false; EMB.last = ""; } }, true); }
   GM.at = [x, y];                                              // Report… files a problem at this spot
+  const noStates = capMissing("save_state");
   const items = [["report", "⚑ Report…"], ["-"], ...(isFull() ? [["main", "⤡ Exit full screen   Alt+Enter"], ["-"]] : []), ["autoplay", GM.auto ? "🤖 Hand control back (stop autoplay)" : "🤖 Take control (autoplay)  F3"],
                  ...(GM.auto ? [] : [["autoplay+", "🛡 Take control, invincible (holds HP)"]]),
                  ["talk", TALK.on ? "🎙 Stop talking" : "🎙 Talk to gBox"], ["orb", ORB.on ? "💬 End conversation" : "💬 Start conversation"],
@@ -3773,15 +3783,17 @@ function pipMenu(x, y) {
                  ["pwrclick", `⌖ Right-click a character: character menu (${GBoxPickWhip.settings().rclick ? "on" : "off"})`],
                  ["pwpause", `⏸ Pause the game while picking (${GBoxPickWhip.settings().pause ? "on" : "off"})`],
                  ["ask", "❓ Ask a question…"], ["-"],
-                 ["save", "💾 Save state"], ["load", "📂 Load state"], ["slot+", `Save slot: ${GM.slot}  ▸ next`], ["slot-", "Save slot ◂ previous"],
-                 ["strip", "⏪ Rewind / save-state film strip"], ...(/phantasy star/i.test(EMB.title || "") ? [["items", "🎒 Items & equipment…"]] : []),
+                 ["save", "💾 Save state", noStates], ["load", "📂 Load state", noStates], ["slot+", `Save slot: ${GM.slot}  ▸ next`, noStates], ["slot-", "Save slot ◂ previous", noStates],
+                 ["strip", "⏪ Rewind / save-state film strip", noStates], ...(/phantasy star/i.test(EMB.title || "") ? [["items", "🎒 Items & equipment…"]] : []),
                  ...(RI.cur ? [["reinv", "🎒 Inventory (change / give items)…"]] : []),
                  ...(/zelda/i.test(EMB.title || "") ? [["equip", "🗡 Equip screen (items, gear, upgrades)…"]] : []), ["-"],
                  ["prefs", "⚙ Preferences"], ["perf", "⏱ Performance options"], ["display", "🖥 Display settings"], ["aa", "✨ Anti-aliasing"],
                  ["pad", "🎮 Controller settings (emulator menu)"], ["mapping", "🕹 Controller mapping"], ["trouble", "🛠 Troubleshoot gameplay…"], ["-"],
                  ["main", "↩ Main view"], ["pip", "▣ Picture-in-picture"], isFull() ? ["main", "⤡ Exit full screen   Alt+Enter"] : ["full", "⛶ Full screen   Alt+Enter"],
                  ["S", "Size: small"], ["M", "Size: medium"], ["L", "Size: large"]];
-  m.innerHTML = items.map(([a, t]) => a === "-" ? "<hr>" : `<button data-a="${a}">${t}</button>`).join("");
+  m.innerHTML = items.map(([a, t, off]) => a === "-" ? "<hr>" : off
+    ? `<button data-a="${a}" disabled title="${esc(off)}" style="opacity:.55">${t} <span class="mut">· ${esc(off)}</span></button>`
+    : `<button data-a="${a}">${t}</button>`).join("");
   m.onclick = e => { const a = e.target.closest("button")?.dataset.a; if (a) { m.style.display = "none"; GM.menu = false; EMB.last = ""; gameAction(a); } };
   GM.menu = true; EMB.last = ""; embedTick();
   Object.assign(m.style, { display: "block", left: x + "px", top: y + "px" }); fitMenu(m, x, y, 8, 40);
@@ -3856,6 +3868,7 @@ async function gameAction(a) {
     else if (a === "report") await pwReport(GM.at);
     else if (a === "pwrclick") { const s = GBoxPickWhip.saveSettings({ rclick: !GBoxPickWhip.settings().rclick }); toast(s.rclick ? "⌖ Right-click a character in the game for its menu (Replace, Copy, Blender…)" : "⌖ Right-click on the game opens the game menu"); }
     else if (a === "pwpause") { const s = GBoxPickWhip.saveSettings({ pause: !GBoxPickWhip.settings().pause }); toast(s.pause ? "⏸ The game pauses while the pick whip is open" : "⏸ The game keeps running while you pick"); }
+    else if ((a === "save" || a === "load" || a === "strip") && capMissing("save_state")) toast(capMissing("save_state"));   // #2518: no job, no failure
     else if (a === "save") { toast("💾 Saving…"); const r = await gameJob("session_op", { op: "save_state", args: { slot: GM.slot } }); stripAdd(r); toast(`💾 Saved (slot ${r.slot ?? GM.slot})`); }
     else if (a === "load") { toast("📂 Loading…"); await gameJob("session_op", { op: "load_state", args: { slot: GM.slot } }); toast(`📂 Loaded slot ${GM.slot}`); }
     else if (a === "slot+" || a === "slot-") { GM.slot = Math.max(0, Math.min(9, GM.slot + (a === "slot+" ? 1 : -1))); toast(`Save slot ${GM.slot}`); }
@@ -5868,6 +5881,7 @@ async function sessionCommand(text, context = null) {
   const hit = SESSION_CMDS.find(([rx]) => rx.test(text.trim())); if (!hit) return null;
   const ctx = context || await chatContext();
   if (!ctx.session_id) return { say: "No game is running right now." };
+  if (ctx.session_id === EMB.sid && capMissing(hit[1])) return { say: capMissing(hit[1]) + "." };   // #2518: no job that can only fail
   let j = (await gbox.api("/api/jobs", { tool: "session_op", input: { session_id: ctx.session_id, op: hit[1], args: {} },
                                            require_worker: ctx.session_id.split("-")[0] })).data;
   for (let i = 0; i < 60 && j && ["queued", "running"].includes(j.state); i++) {
