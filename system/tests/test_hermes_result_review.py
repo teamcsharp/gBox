@@ -485,3 +485,16 @@ class ReviewerWithoutPydanticTests(ReviewFixture, unittest.TestCase):
         self.assertEqual((who['provider'], who['model']), ('gbox-sparkDeux', 'Qwen/Qwen3-Coder-Next-FP8'))
         self.assertEqual(who['proxy_url'], 'http://127.0.0.1:8765/api/llm/local/nodes/sparkDeux/v1')
         self.assertEqual(who['label'], 'Local (sparkDeux)')
+
+
+class LateReviewTests(ReviewFixture, unittest.TestCase):
+    def test_a_review_late_by_six_hours_stops_holding_the_task(self):
+        R.record_result(self.item, self.run)
+        self.assertIn('Waiting', R.gate(self.item))
+        with closing(R.connect()) as db, db:
+            db.execute('UPDATE reviews SET created=? WHERE key=?', (time.time() - 7 * 3600, self.key))
+        self.assertIsNone(R.gate(self.item), 'a late review no longer blocks the next dispatch')
+        self.assertEqual(R.result(self.key)['state'], 'pending', 'the review itself still runs later')
+        with closing(R.connect()) as db, db:
+            db.execute('UPDATE reviews SET created=? WHERE key=?', (time.time() - 3600, self.key))
+        self.assertIn('Waiting', R.gate(self.item), 'a recent result still waits for its review')

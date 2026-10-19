@@ -28,6 +28,7 @@ from .hermes_availability import _api
 STATE = 'result-review.json'
 UNREVIEWED_GRACE_S = 2 * 3600     # a last run the ledger never recorded stops holding the task after this long
 TRANSCRIPT_ATTEMPTS = 3           # transcript-less attempts before the review proceeds from the request thread
+REVIEW_WAIT_MAX_S = 6 * 3600      # a review this late no longer holds its task; its guidance still attaches when it arrives
 NAME = 'gBox DeepSeek result review'
 TERMINAL = ('completed', 'failed', 'cancelled', 'canceled', 'success', 'succeeded', 'error', 'finished',
             'timed_out', 'interrupted', 'abandoned')
@@ -151,6 +152,10 @@ def gate(item):
         if finished and time.time() - finished > UNREVIEWED_GRACE_S:
             return None
     if not row or row['state'] != 'reviewed':
+        if row and time.time() - float(row['created'] or 0) > REVIEW_WAIT_MAX_S:
+            # The reviewer is behind (2026-10-19: 223 results pending on the local model, ten minutes each). A task
+            # must not starve for a day waiting on guidance: it goes on, and the review still runs and attaches later.
+            return None
         return 'Waiting for the local result review' if reviewer()['local'] else 'Waiting for durable cloud result review'
     review = json.loads(row['verdict'])
     item['review_guidance'] = review
