@@ -43,6 +43,10 @@ FLYCAST_CHECKPOINT_MIN_S = 20.0
 # angrylion is an LLE RDP: it needs the LLE cxd4 RSP. With rspplugin "auto"/"hle" the core runs HLE graphics tasks that
 # angrylion never draws, so every 3D/textured layer stays black while CPU-drawn text still updates (#1322, MK4).
 N64_WINDOWS_OPTS = {"parallel-n64-gfxplugin": "angrylion", "parallel-n64-rspplugin": "cxd4"}
+# parallel_n64's Ari64 dynarec only recompiles for x86/x86_64 (and 32-bit ARM). On aarch64 the core logs
+# "Init new dynarec" but never produces code, so the ROM never boots and RetroArch times out with
+# "retroarch started but content not running after Ns" (#1695). The cached interpreter runs R4300 code on ARM64.
+N64_AARCH64_OPTS = {"parallel-n64-cpucore": "cached_interpreter"}
 
 
 def _set_core_opts(path: Path, values: dict[str, str]) -> None:
@@ -1052,6 +1056,8 @@ class RetroArchAdapter(CommandAdapter):
             co = capture_backend.core_options_file(co, {}, work)
         if (self.platform or "") == "n64" and HOST_OS == "windows":       # docked + resized windows: the GL plugins (Glide64)
             _set_core_opts(co, N64_WINDOWS_OPTS)                          # draw at launch size -> squeezed/cropped picture
+        if (self.platform or "") == "n64" and HOST_OS == "linux" and provision.ARCH == "aarch64":
+            _set_core_opts(co, N64_AARCH64_OPTS)                          # Ari64 dynarec is x86-only (#1695)
         if (self.platform or "") in FLYCAST_PLATFORMS:
             _set_core_opts(co, FLYCAST_STATE_OPTS)
         if not self.rewind_on:
