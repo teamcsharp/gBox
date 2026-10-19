@@ -498,3 +498,26 @@ class LateReviewTests(ReviewFixture, unittest.TestCase):
         with closing(R.connect()) as db, db:
             db.execute('UPDATE reviews SET created=? WHERE key=?', (time.time() - 3600, self.key))
         self.assertIn('Waiting', R.gate(self.item), 'a recent result still waits for its review')
+
+
+class StaleRunReviews(ReviewFixture, unittest.TestCase):
+    def test_a_run_review_past_the_hold_limit_is_retired_once_a_newer_run_exists(self):
+        """232 pending run reviews at 14 hours (2026-10-19): one past the hold limit whose request already ran again
+        is superseded; the newer one and the only run of another request stay pending."""
+        rid = self.item['request_id']
+        old, newer, lone = dict(self.run, id='2' * 32), dict(self.run, id='3' * 32), dict(self.run, id='4' * 32)
+        R.enqueue('run:' + old['id'], 'run', rid, {'run': old, 'item': self.item})
+        R.enqueue('run:' + newer['id'], 'run', rid, {'run': newer, 'item': self.item})
+        R.enqueue('run:' + lone['id'], 'run', 'b' * 16, {'run': lone, 'item': dict(self.item, request_id='b' * 16)})
+        now = time.time()
+        with closing(R.connect()) as db, db:
+            for key in ('run:' + old['id'], 'run:' + lone['id']):
+                db.execute("UPDATE reviews SET created=? WHERE key=?", (now - R.REVIEW_WAIT_MAX_S - 60, key))
+            self.assertEqual(R.retire_stale_run_reviews(db, now), 1)
+            self.assertEqual(R.retire_stale_run_reviews(db, now), 0, 'idempotent')
+            states = {k: s for k, s in db.execute("SELECT key, state FROM reviews").fetchall()}
+            error = db.execute("SELECT error FROM reviews WHERE key=?", ('run:' + old['id'],)).fetchone()[0]
+        self.assertEqual(states['run:' + old['id']], 'superseded')
+        self.assertIn('newer run of this request', error)
+        self.assertEqual(states['run:' + newer['id']], 'pending', 'the newer run review stays')
+        self.assertEqual(states['run:' + lone['id']], 'pending', 'old but the only run of its request: still reviewed')
