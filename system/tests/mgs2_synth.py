@@ -106,7 +106,8 @@ def humanoid_kms(tex_pack: int, tex: int, radius: int = 40, extra: int = 0) -> b
         for i in range(0, len(v), 30):                  # parts of 30 vertices (10 triangles)
             chunk = v[i:i + 30]
             pos = np.array([[*c, 4096 if (par < 0 or b % 2) else 2048] for c, _n, _r in chunk], np.int16)
-            nrm = np.array([[*np.round(n * 4095), (0x8FFF if r else 0x0FFF)] for _c, n, r in chunk]).astype(np.int64)
+            # stored the way the game stores them: pointing into the body (gbox.mgs2_models negates on read, #2367)
+            nrm = np.array([[*np.round(-n * 4095), (0x8FFF if r else 0x0FFF)] for _c, n, r in chunk]).astype(np.int64)
             nrm = nrm.astype(np.uint16).view(np.int16).reshape(-1, 4)
             uv = np.array([[int(4096 * ((j % 3) / 2)), int(4096 * ((j // 3) % 2))] for j in range(len(chunk))], np.int16)
             parts.append((b, pos, nrm, uv))
