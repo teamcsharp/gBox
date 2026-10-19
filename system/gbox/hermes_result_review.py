@@ -26,6 +26,8 @@ from . import hermes_delivery as D, hermes_task_mode as M
 from .hermes_availability import _api
 
 STATE = 'result-review.json'
+UNREVIEWED_GRACE_S = 2 * 3600     # a last run the ledger never recorded stops holding the task after this long
+TRANSCRIPT_ATTEMPTS = 3           # transcript-less attempts before the review proceeds from the request thread
 NAME = 'gBox DeepSeek result review'
 TERMINAL = ('completed', 'failed', 'cancelled', 'canceled', 'success', 'succeeded', 'error', 'finished',
             'timed_out', 'interrupted', 'abandoned')
@@ -142,6 +144,12 @@ def gate(item):
     if not config().get('enabled') or not item.get('last_run_id'):
         return None
     row = result('run:' + item['last_run_id'])
+    if not row:
+        # The ledger never saw this run (its execution row is gone, or it ended before the gate was enabled), so no
+        # review can ever arrive; after a grace period the next dispatch goes ahead instead of waiting forever.
+        finished = float(item.get('last_finished') or item.get('last_dispatched') or 0)
+        if finished and time.time() - finished > UNREVIEWED_GRACE_S:
+            return None
     if not row or row['state'] != 'reviewed':
         return 'Waiting for the local result review' if reviewer()['local'] else 'Waiting for durable cloud result review'
     review = json.loads(row['verdict'])
@@ -218,10 +226,16 @@ def packet(row):
         evidence = merge.prepare(data)
     else:
         evidence = T.get_run(data['run']['id'])
-        if not evidence:
+        if not evidence and row.get('attempts', 0) < TRANSCRIPT_ATTEMPTS:
             raise RuntimeError('Run transcript is unavailable; review remains pending')
     current = next((i for i in Q._read().get('items', {}).values()
                     if i.get('request_id') == row['request_id']), {})
+    if row['kind'] != 'pr' and not evidence:
+        # The transcript is gone for good (gateway restart, pruned session). Holding the task forever helps nobody:
+        # review what is durable, the request thread and the queue checkpoint, and say so.
+        evidence = {'transcript_unavailable': True, 'final_report': current.get('final_report'),
+                    'note': 'The run transcript is unavailable; judge from the request thread and checkpoint only. '
+                            'Missing evidence means pending checks, never success.'}
     return {'review_key': row['key'], 'kind': row['kind'], 'request': request,
             'feedback_signature': feedback_signature(request),
             'recorded': data, 'current_checkpoint': current, 'evidence': evidence,

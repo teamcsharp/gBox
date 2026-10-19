@@ -429,3 +429,29 @@ class LocalReviewTests(ReviewFixture, unittest.TestCase):
         self.assertTrue(who['local'])
         self.assertEqual((who['provider'], who['model']), ('gbox-sparkDeux', 'Qwen/Qwen3-Coder-Next-FP8'))
         self.assertEqual(who['proxy_url'], node.proxy_url)
+
+
+class UnreviewableRunTests(ReviewFixture, unittest.TestCase):
+    """A run the ledger cannot review must not hold its task forever."""
+
+    def test_unrecorded_last_run_releases_after_grace_period(self):
+        item = self.item | {'last_run_id': '9' * 32, 'last_finished': time.time() - 3 * 3600}
+        self.assertIsNone(R.gate(item))
+        recent = self.item | {'last_run_id': '9' * 32, 'last_finished': time.time() - 600}
+        self.assertIn('Waiting', R.gate(recent))
+        self.assertIn('Waiting', R.gate(self.item | {'last_run_id': '9' * 32}))   # never finished: still fresh
+
+    def test_missing_transcript_reviews_from_the_thread_after_three_attempts(self):
+        R.record_result(self.item, self.run)
+        from gbox import hermes_tasks as T
+        with closing(R.connect()) as db:
+            row = dict(db.execute('SELECT * FROM reviews WHERE key=?', (self.key,)).fetchone())
+        checkpoint = {'request_id': self.item['request_id'], 'final_report': 'Reader parsed 3 of 7 entries'}
+        with patch.object(T, 'get_run', return_value=None), patch.object(R, '_api', return_value={'number': 12}), \
+                patch.object(Q, '_read', return_value={'items': {'x': checkpoint}}):
+            with self.assertRaises(RuntimeError):
+                R.packet(row | {'attempts': 2})
+            packet = R.packet(row | {'attempts': 3})
+        self.assertTrue(packet['evidence']['transcript_unavailable'])
+        self.assertEqual(packet['evidence']['final_report'], 'Reader parsed 3 of 7 entries')
+        self.assertEqual(packet['current_checkpoint'], checkpoint)
