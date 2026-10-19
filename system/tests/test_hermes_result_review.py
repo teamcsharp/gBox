@@ -270,12 +270,28 @@ class MergeReviewTests(ReviewFixture, unittest.TestCase):
 
     def test_base_commit_uses_supported_rest_api_with_head_consistency(self):
         with patch.object(G, 'gh', side_effect=[json.dumps(self.pull),
-                json.dumps({'head': 'b' * 40, 'base': 'c' * 40})]) as gh:
+                json.dumps({'head': 'b' * 40, 'base': 'c' * 40, 'base_name': 'main'}), 'c' * 40]) as gh:
             self.assertEqual(G.pull(7)['baseRefOid'], 'c' * 40)
         self.assertNotIn('baseRefOid', gh.call_args_list[0].args[-1])
         with patch.object(G, 'gh', side_effect=[json.dumps(self.pull),
-                json.dumps({'head': 'd' * 40, 'base': 'c' * 40})]), self.assertRaises(RuntimeError):
+                json.dumps({'head': 'd' * 40, 'base': 'c' * 40, 'base_name': 'main'})]), self.assertRaises(RuntimeError):
             G.pull(7)
+
+    def test_stale_pr_base_uses_current_main_and_still_invalidates_old_review(self):
+        with patch.object(G, 'gh', side_effect=[json.dumps(self.pull),
+                json.dumps({'head': 'b' * 40, 'base': 'a' * 40, 'base_name': 'main'}), 'c' * 40]):
+            current = G.pull(7)
+        G.identity(current, self.expected)
+        self.assertEqual(current['reportedBaseRefOid'], 'a' * 40)
+        with self.assertRaises(RuntimeError):
+            G.identity(current, self.expected | {'baseRefOid': 'a' * 40})
+
+    def test_target_branch_race_and_incomplete_main_identity_fail_closed(self):
+        for refs, extra in (({'head': 'b' * 40, 'base': 'c' * 40, 'base_name': 'other'}, []),
+                            ({'head': 'b' * 40, 'base': 'c' * 40, 'base_name': 'main'}, [''])):
+            with self.subTest(refs=refs, extra=extra), patch.object(G, 'gh',
+                    side_effect=[json.dumps(self.pull), json.dumps(refs), *extra]), self.assertRaises(RuntimeError):
+                G.pull(7)
 
     def test_head_or_base_move_invalidates_review(self):
         for field in ('headRefOid', 'baseRefOid'):

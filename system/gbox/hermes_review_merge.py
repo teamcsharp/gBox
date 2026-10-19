@@ -31,10 +31,18 @@ def pull(number):
     p = json.loads(gh('pr', 'view', str(number), '--repo', D.REPOSITORY, '--json', FIELDS))
     # Older deployed gh versions do not expose baseRefOid through `pr --json`.
     refs = json.loads(gh('api', f'repos/{D.REPOSITORY}/pulls/{number}', '--jq',
-                         '{head: .head.sha, base: .base.sha}'))
-    if refs['head'] != p['headRefOid']:
-        raise RuntimeError('PR head moved during discovery')
-    return p | {'baseRefOid': refs['base']}
+                         '{head: .head.sha, base: .base.sha, base_name: .base.ref}'))
+    if refs['head'] != p['headRefOid'] or refs['base_name'] != p['baseRefName']:
+        raise RuntimeError('PR head or target branch moved during discovery')
+    # A PR's REST base.sha can lag the target branch (observed on PR603 after
+    # PR601 merged). Review the actual current integration target, just as
+    # discover() does; prepare() verifies it against the subsequent Git fetch.
+    base = refs['base']
+    if p['baseRefName'] == 'main':
+        base = gh('api', f'repos/{D.REPOSITORY}/git/ref/heads/main', '--jq', '.object.sha').strip()
+        if not re.fullmatch('[0-9a-f]{40}', base):
+            raise RuntimeError('Main commit discovery is incomplete')
+    return p | {'baseRefOid': base, 'reportedBaseRefOid': refs['base']}
 
 
 def discover():
