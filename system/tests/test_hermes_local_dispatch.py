@@ -209,3 +209,16 @@ def test_emulation_investigations_wait_for_a_paid_route(monkeypatch, tmp_path):
     monkeypatch.setattr(hermes_task_mode, '_run', no_job)
     with pytest.raises(RuntimeError, match='queued for a paid route'):
         hermes_task_mode.dispatch_request('a' * 16, 7)
+
+
+def test_an_inbox_lane_run_gets_the_larger_inbox_budget():
+    """#2399: a 45-call local run on an operator ticket read for 23 turns and published nothing. tool_budget_inbox
+    raises the inbox lane's budget (prompt and proxy alike); favorites keep tool_budget."""
+    s = S.model_copy(update={'tool_budget': 20, 'tool_budget_inbox': 60})
+    assert hermes_local.lane_budget(s, 'inbox') == 60 and hermes_local.lane_budget(s, 'favorite') == 20
+    assert hermes_local.lane_budget(S.model_copy(update={'tool_budget': 20}), 'inbox') == 20, 'unset: the plain budget'
+    assert hermes_local.lane_budget(S.model_copy(update={'tool_budget': 70, 'tool_budget_inbox': 60}), 'inbox') == 70
+    base = 'Assigned queue task. Use a 45-tool-call work budget with the final 10 calls reserved for tests.'
+    out = hermes_local.local_prompt(base, s, lane='inbox')
+    assert 'Use a 60-tool-call work budget with the final 6 calls' in out and 'at most 60 tool calls' in out
+    assert 'at most 20 tool calls' in hermes_local.local_prompt(base, s, lane='favorite')

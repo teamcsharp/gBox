@@ -161,6 +161,7 @@ class HermesLocalConfig(BaseModel):
     shared_with_games: bool = True   # false for an operator-designated dedicated inference machine
     max_parallel_jobs: int = Field(1, ge=1, le=32)
     allow_large_tasks: bool = False  # dedicated local models can work bounded milestones on any inbox task
+    tool_budget_inbox: int = 0       # #2399: tool budget of an inbox-lane (operator) run when larger than tool_budget; 0 = same
     enable_thinking: bool | None = None
     upstream_key_env: str = ''       # optional credential environment variable; never returned in status
     nodes: dict[str, dict] = {}       # named inference endpoints; operator switches live in local-nodes.json

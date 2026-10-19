@@ -363,7 +363,7 @@ def operator_gate(options, playing, throttled=None):
 
 def _prompt(item, playing=None):
     rid = item['request_id']
-    header = (f"Assigned queue task: request #{item['number']} ({rid}). Work ONLY this request; "
+    header = (f"Assigned queue task: request #{item['number']} ({rid}) [lane {item['lane']}]. Work ONLY this request; "
               "the dispatcher has reserved it. Read get_request and get_dispatch_feedback first. "
               "Do not select a different ticket from list_requests. ")
     if item.get('review_guidance'):
@@ -637,7 +637,7 @@ def tick(*, now=None):
             run_route = hermes_local.route(run_settings) if node else dict(primary)
             pin = ['--model', run_settings.model, '--provider', run_settings.provider] if node else []
             if local:
-                prompt = hermes_local.local_prompt(prompt, run_settings)
+                prompt = hermes_local.local_prompt(prompt, run_settings, lane=item['lane'])
                 if node:
                     prompt += (' The prime Spark retains the request, workspace and artifacts. Read the latest '
                                'request checkpoints before work, including work from the other inference host. '

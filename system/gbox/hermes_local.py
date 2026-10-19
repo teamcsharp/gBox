@@ -303,11 +303,23 @@ def dispatch_size(item: dict, request: dict | None = None) -> dict:
     return {'size': 'large', 'reason': 'scope not clearly narrow'}
 
 
-def local_prompt(prompt: str, s=None) -> str:
+def lane_budget(s=None, lane: str | None = None) -> int:
+    """A run's tool budget. An inbox-lane run (an operator's ticket, a launch failure, a session observer) gets
+    [hermes.local] tool_budget_inbox when that is set and larger (#2399: a 45-call run read for 23 turns and published
+    nothing); favorites keep tool_budget. The proxy enforces the same number (llm_proxy reads the lane from the queue
+    header), so the prompt never promises calls the proxy will refuse."""
+    s = s or settings()
+    base = max(6, int(s.tool_budget))
+    inbox = int(getattr(s, 'tool_budget_inbox', 0) or 0)
+    return max(base, inbox) if lane == 'inbox' and inbox > 0 else base
+
+
+def local_prompt(prompt: str, s=None, lane: str | None = None) -> str:
     """Tighten a queue prompt for the local model: smaller tool budget, one file, bounded reads, and an explicit way
     out (record findings and stop) so a task that turns out large waits for a paid route instead of failing."""
     s = s or settings()
-    budget, reserve = max(6, int(s.tool_budget)), max(3, min(6, int(s.tool_budget) // 3))
+    budget = lane_budget(s, lane)
+    reserve = max(3, min(6, budget // 3))
     prompt = re.sub(r'Use a \d+-tool-call work budget with the final \d+ calls',
                     f'Use a {budget}-tool-call work budget with the final {reserve} calls', prompt)
     if s.allow_large_tasks:

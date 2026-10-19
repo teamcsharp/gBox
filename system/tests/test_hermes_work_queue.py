@@ -459,3 +459,10 @@ def test_an_extraction_without_a_reader_queues_the_title_for_reader_work(env):
     assert item['collect'] is True and item['in_catalog'] is True and 'collect' in item['requested_by']
     assert [item['game_id'] for _key, item in q.candidates(data, [], [], set(), set(), now=6)] == ['ab' * 8]
     assert [g['game_id'] for g in q.snapshot()['games']] == ['ab' * 8]
+
+
+def test_the_queue_header_names_the_lane_for_the_budget(monkeypatch):
+    """#2399: the proxy reads the lane from the header to pick the run's tool budget (hermes_local.lane_budget)."""
+    monkeypatch.setattr(q.mode, '_handoff', lambda: ' handoff')
+    text = q._prompt({'lane': 'inbox', 'request_id': 'ab' * 8, 'number': 5})
+    assert text.startswith('Assigned queue task: request #5 (' + 'ab' * 8 + ') [lane inbox]. Work ONLY this request; ')
