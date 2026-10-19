@@ -26,9 +26,11 @@ pinned to a previous model. A completed call is not a completed inbox task.
 Use the same bounded tasks and acceptance tests when comparing models; keep
 DeepSeek result review and ZAI supervision enabled.
 
-The installed GLM recipe is cluster-only. Its Prepare and Start controls are
-disabled here; it can be adopted if an operator-configured cluster already
-serves it. This controller never borrows the prime Spark for cluster inference.
+The installed GLM recipe is cluster-only. NVIDIA documents approximately
+166 GiB of VRAM for this checkpoint, exceeding lilspark2's 128 GB shared memory.
+Its controls are held with this reason; reducing context does not make its
+weights fit. This controller never borrows the prime Spark for cluster inference.
+Source: https://huggingface.co/nvidia/GLM-5.3-Flash-FP4-Local
 
 State lives in `hermes-dispatch/model-trials.json`; successful connection
 receipts retain model, time, token usage and validation latency. Remote build

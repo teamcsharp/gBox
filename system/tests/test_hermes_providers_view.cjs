@@ -25,7 +25,7 @@ test('model trials hold unprepared and cluster starts while allowing served-mode
   assert.match(html, /data-tkp-model="trial_start" data-model="coder" disabled/);
   assert.match(html, /data-tkp-model="trial_start" data-model="glm" disabled/);
   assert.match(html, /data-tkp-model="trial_start" data-model="bolt" >/);
-  assert.match(html, /data-tkp-model="trial_adopt" data-model="glm" >/);
+  assert.match(html, /data-tkp-model="trial_adopt" data-model="glm" disabled/);
   assert.match(html, /Installed recipe requires two Sparks/);
 });
 test('pool renders separate switches, real host counters and guarded model actions', () => {

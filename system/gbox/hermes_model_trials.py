@@ -92,8 +92,8 @@ def submit(action, profile):
     from . import hermes_delivery as D, hermes_models as M
     if action not in ('trial_prepare', 'trial_start', 'trial_adopt') or profile not in PROFILES:
         raise ValueError('Unknown model trial action')
-    if PROFILES[profile][3] and action != 'trial_adopt':
-        raise ValueError('This installed recipe requires a cluster; single-Spark launch is unavailable')
+    if PROFILES[profile][3]:
+        raise ValueError('This checkpoint requires about 166 GiB; the installed cluster recipe cannot run on this 128 GB Spark')
     with D.locked('model-management'):
         data = read()
         if not data.get('enabled'):
@@ -175,7 +175,7 @@ def recipe_args(root, profile, name):
     if profile not in PROFILES or PROFILES[profile][3]:
         raise ValueError('No single-Spark recipe for this profile')
     return [sys.executable, str(root / 'run-recipe.py'), PROFILES[profile][2], '--solo',
-            '--tp', '1', '--port', '8000', '--max-model-len', '65536', '--name', name]
+            '--tp', '1', '--port', '8000', '--max-model-len', '65536', '--name', name, '-j', '2']
 
 
 def remote(plan):
