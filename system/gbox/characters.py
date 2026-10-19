@@ -1874,13 +1874,28 @@ def backfill_roles(root: Path, extractor: str, meta: dict) -> dict:
     return put_meta(root, {**meta, "rig": {**rig, "roles": roles}})
 
 
+def _queue_reader_work(game: dict) -> dict | None:
+    """#2388/#2392: an extraction that finds no reader does not end in an error. The title goes into the readiness
+    queue (inventory -> analysis -> reader -> writer, worked by Hermes with Ghidra / REA on the Spark), the same lane
+    the favorites use. Never raises: the queue's own tick may hold its lock, and a title outside the catalog has no
+    id to queue; the caller then reports the plain unsupported state."""
+    try:
+        from . import hermes_work_queue as Q
+        return Q.ensure_item({**game, "in_catalog": True}, source="collect")
+    except Exception:  # noqa: BLE001 - queue lock held by its tick, or no catalog id
+        return None
+
+
 def collect(ctx, inp):
     """Collect a supported disc roster without vision/LLM calls or gameplay interruption."""
     game, root = _game(ctx, inp), library_root(ctx.config)
     reader = next((r for r in DEDICATED if reader_matches(r[0], r[1], game)), None)
     if reader is None:
-        return {"status": "unsupported", "game_id": game['game_id'],
-                "message": "No native model reader for this game; no unrigged capture was substituted."}
+        work = _queue_reader_work(game)
+        return {"status": "unsupported", "game_id": game['game_id'], "reader_work": work,
+                "message": ("No native model reader for this game yet. The Spark is queued to build one "
+                            "(inventory, analysis, reader), and the models land here when it does."
+                            if work else "No native model reader for this game; no unrigged capture was substituted.")}
     name, _, roster, _ = reader
     # Characters always; other kinds only when the reader opts a fully assembled entry in (`collect`: True), e.g. the
     # posed cab the operator drives in Crazy Taxi (#1369). Those need a verified model, not a mapped rig.
