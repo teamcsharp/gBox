@@ -196,8 +196,7 @@ def worker(job_id):
                 path = D.state_dir() / 'local-nodes.json'
                 temp = path.with_suffix('.tmp'); temp.write_text(json.dumps(state, indent=2)); temp.replace(path)
             P.register_providers()
-            # Trials begin at four task slots; increase only after observing results.
-            P.set_capacity('sparkDeux', 4)
+            # Model selection preserves the operator's node and scheduler capacity.
             data.setdefault('history', []).append({'job': job_id, 'profile': profile, **receipt})
             update(state='ready', receipt=receipt)
             if action == 'trial_adopt':
