@@ -111,8 +111,9 @@ class ModelHeader:
     skeleton_vram: int
     switches: int
     num_switches: int
-    num_records: int
+    num_matrices: int
     radius: float
+    num_records: int
     num_textures: int
     skeleton_joints: int | None = None
 
@@ -198,12 +199,17 @@ class GoldenEyeROM:
         return out
 
     def model_header(self, vram: int) -> ModelHeader:
+        # ModelFileHeader (bondtypes.h): {RootNode*, Skeleton*, Switches**,
+        # s16 numSwitches, s16 numMatrices, f32 BoundingVolumeRadius,
+        # s16 numRecords, s16 numTextures, ModelFileTextures*}.  The reader
+        # used to call numMatrices "num_records" and drop numRecords (the pad
+        # slot); both are now named to match the decomp.
         o = self.d_off(vram)
-        root, skel, sw, nsw, nrec, radius, _pad, ntex = struct.unpack_from(">IIIhhfhh", self.data, o)
+        root, skel, sw, nsw, nmat, radius, nrec, ntex = struct.unpack_from(">IIIhhfhh", self.data, o)
         joints = None
         if skel:
             joints = struct.unpack_from(">h", self.data, self.d_off(skel))[0]
-        return ModelHeader(vram, root, skel, sw, nsw, nrec, radius, ntex, joints)
+        return ModelHeader(vram, root, skel, sw, nsw, nmat, radius, nrec, ntex, joints)
 
 
 def walk_nodes(model: bytes, root_off: int) -> list[tuple[int, int, int]]:
@@ -262,6 +268,7 @@ def probe_character(ge: GoldenEyeROM, filename: str) -> dict:
         "skeleton_vram": hdr.skeleton_vram,
         "skeleton_joints": hdr.skeleton_joints,
         "num_switches": hdr.num_switches,
+        "num_matrices": hdr.num_matrices,
         "num_records": hdr.num_records,
         "radius": round(hdr.radius, 3),
         "num_textures": hdr.num_textures,
