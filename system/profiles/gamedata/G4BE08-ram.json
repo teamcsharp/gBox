@@ -79,7 +79,7 @@
                     "description": "Slots in the array (80)", "source": "manual", "evidence": "gbox/re_games.py EmMgr +4"},
     "emmgr.stride": {"address": "0x8027DF28", "type": "u32", "format": "hex", "group": "emmgr",
                      "description": "Bytes per slot (0xDE0)", "source": "manual", "evidence": "gbox/re_games.py EmMgr +8"},
-    "enemies": {"pointer": {"base": "0x8027DF20", "offsets": ["0x0"]}, "type": "struct", "stride": "0xDE0",
+    "enemies": {"pointer": {"base": "0x8027DF20", "offsets": ["0x0"]}, "type": "struct", "stride": "@emmgr.stride",
                 "count": "@emmgr.count", "first": 1, "max": 128, "group": "enemies",
                 "live": {"all": [{"field": "flags", "mask": "0x601", "ne": 0}, {"field": "esl", "ne": 255}]},
                 "description": "Live Ganados: EmMgr slots 1..count whose flags & 0x601 are set and that have an ESL entry",

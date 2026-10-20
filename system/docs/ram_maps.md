@@ -87,7 +87,7 @@ is the group unless `group` says otherwise. A struct's sub-fields have plain nam
 | `type` | `u8` `u16` `u32` `u64` `s8` `s16` `s32` `s64` `f32` `f64`, `bool` (one byte, non-zero), `ptr` (unsigned, `pointer_size` bytes, shown hex), `bytes` / `str` (with `length`; `str` is ASCII up to the first NUL), `struct` (with `fields`) |
 | `length` | bytes, for `bytes` / `str` |
 | `endian` | overrides the map's |
-| `count`, `stride`, `first`, `max` | an array: `count` elements (a number, or `"@field.name"`: another field's value), `stride` bytes apart (default: the type's size, so `"type": "f32", "count": 3` is a vector), starting at element `first` (default 0), never more than `max` (default 256) elements |
+| `count`, `stride`, `first`, `max` | an array: `count` elements, `stride` bytes apart (either a number, or `"@field.name"`: another field's value, read first), starting at element `first` (default 0), never more than `max` (default 256) elements. The stride defaults to the type's size, so `"type": "f32", "count": 3` is a vector. |
 | `fields` | `"type": "struct"`: its sub-fields, each at an `offset` (every field key but `address` / `pointer`) |
 | `live` | struct arrays: which elements are reported (a condition, below); the others are left out |
 | `mask`, `shift` | value = (raw & mask) >> shift (bit fields; one bit of a flag byte) |

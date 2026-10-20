@@ -4591,7 +4591,7 @@ def create_app(config: Config) -> FastAPI:
     def session_rpc(sid: str, req: Rpc, actor=Depends(auth)):
         """Inspector peeks (read_memory / read_rom / info) and CPU debugger ops (debug_*), answered by the worker over the
         session channel. Debugger control (halt/step/breakpoints) changes execution, not memory, and is audited."""
-        if req.op not in ("read_memory", "read_rom", "info", "state", "reset", "menu", "pause", "resume", "normal_speed", "pso_controls", "memory_cards", "pso_face") \
+        if req.op not in ("read_memory", "read_ranges", "read_rom", "info", "state", "reset", "menu", "pause", "resume", "normal_speed", "pso_controls", "memory_cards", "pso_face") \
                 and not req.op.startswith("debug_"):
             raise HTTPException(422, "read-only, reset, pause/resume and debug_* ops only; edits go through the write_memory job")
         if req.op in ("reset", "pause", "resume", "normal_speed", "debug_halt", "debug_resume", "debug_step", "debug_break", "debug_unbreak"):
@@ -4648,11 +4648,12 @@ def create_app(config: Config) -> FastAPI:
             lv["cond"].notify_all()
         return {"ok": True}
 
-    def _rpc_quick(sid: str, op: str, wait: float = 3.0):
-        """session_rpc with a short wait, for the pick whip's pause hold: a session without the live channel answers
-        through the job queue instead, and an unanswered request is withdrawn so a late worker never applies it."""
+    def _rpc_quick(sid: str, op: str, wait: float = 3.0, args: dict | None = None):
+        """session_rpc with a short wait, for the pick whip's pause hold and the RAM inspector's reads: a session
+        without the live channel answers through the job queue instead, and an unanswered request is withdrawn so a
+        late worker never applies it."""
         rid, lv = new_id(), _live(sid)
-        item = {"rpc": rid, "op": op, "args": {}}
+        item = {"rpc": rid, "op": op, "args": args or {}}
         with lv["cond"]:
             lv["input"].append(item)
             lv["cond"].notify_all()
@@ -5288,6 +5289,16 @@ def create_app(config: Config) -> FastAPI:
 
     emulation_issue.routes(app, store, auth, lambda body, actor: req_create(RequestIn(**body), actor),
                            _incident_job, _incident_dispatch)
+
+    # --- RAM inspector (gbox/ram_inspector.py, docs/ram_maps.md): a session's memory by name (the game's RAM map),
+    # its state changes as events, hex, and a search with labels; read-only, within a read budget per session ---
+    from . import ram_inspector
+
+    def _stream_frame(sid: str):
+        lv = live.get(sid)
+        return (lv["frame"], lv["seq"], lv["ts"]) if lv and lv.get("frame") else None
+    ram_inspector.routes(app, store, auth, rpc=lambda sid, op, args, wait: _rpc_quick(sid, op, wait, args),
+                         frame=_stream_frame, data_dir=config.data_dir)
 
     # --- autoplay coaching (gbox/coaching.py): the Sessions header's note box -> one ticket per game, each note's
     # moment (frame, save state through gBox's own slot, main RAM) captured on the session's worker ---

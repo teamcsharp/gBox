@@ -203,9 +203,14 @@ class ShmRam:
         if HOST_OS != "linux" or getattr(ad, "name", "") != "dolphin":
             return None
         pid = getattr(getattr(ad, "proc", None), "pid", None)
-        if not pid:
+        return cls.find_pid(int(pid)) if pid else None
+
+    @classmethod
+    def find_pid(cls, pid: int) -> "ShmRam | None":
+        """The RAM views of the Dolphin that is pid or runs under it (the RAM inspector also starts from a pid)."""
+        if HOST_OS != "linux":
             return None
-        for p in _descendants(int(pid)):                        # flatpak run -> bwrap -> dolphin-emu: this session's
+        for p in [pid, *_descendants(pid)]:                     # flatpak run -> bwrap -> dolphin-emu: this session's
             views = _views(p)
             hosts = {}
             for base, size in SHM_SIZES.items():

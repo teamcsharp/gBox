@@ -1365,6 +1365,9 @@ def session_rpc(sid: str, op: str, args: dict, ctx=None):
     if op == "read_memory":
         n = max(1, min(int(args.get("length", 256)), 1 << 20))       # up to 1 MiB per call (one CPU halt on debug stubs)
         return ad.read_memory(int(args["address"]), n).hex()
+    if op == "read_ranges":                            # the RAM inspector's batched reads (gbox/ram_reader.py serve)
+        from . import ram_reader
+        return ram_reader.serve(sid, ad, args)
     if op == "read_rom":
         data = _rom_bytes(g["_rom_path"])
         off, n = int(args.get("offset", 0)), max(1, min(int(args.get("length", 4096)), 65536))
@@ -1393,7 +1396,7 @@ def session_rpc(sid: str, op: str, args: dict, ctx=None):
         if not callable(getattr(type(ad), "reset", None)):
             raise Unsupported(f"{getattr(ad, 'name', 'this emulator')} has no reset")
         return ad.reset() or {"reset": True}
-    raise ValueError(f"rpc op {op} not allowed (read_memory, read_rom, info, state, reset, pause, resume, debug_*)")
+    raise ValueError(f"rpc op {op} not allowed (read_memory, read_ranges, read_rom, info, state, reset, pause, resume, debug_*)")
 
 
 def _semantic_state(ad, g: dict, player_only: bool = False):
