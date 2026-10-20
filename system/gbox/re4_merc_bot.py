@@ -10,7 +10,11 @@ twice more). play() then drives Leon from RAM at ~20 Hz:
   * teleports next to the target when it is far away or Leon is stuck on scenery (every copy of his position,
     like re_mods teleport);
   * a target that soaks 6 s of fire without the combo moving (on a roof, behind a wall) is skipped for 10 s;
-  * the Mercenaries clock stops while a prompt is up ("Take the Handgun Ammo?", a time pillar): answer Yes (A).
+  * the Mercenaries clock stops while a prompt is up ("Take the Handgun Ammo?", a time pillar): answer Yes (A);
+  * between rounds (results, the Mercenaries title, character / stage select, the briefing) it presses A until the
+    next round starts: GAME START, Leon, the first stage, go - the hack package stays in RAM, so every round is
+    played the same way and no menu stays on screen (operator 2026-10-20: "I want to see Leon destroying
+    Mercenaries mode", and earlier "I don't like seeing it sit on menus forever").
 Measured 2026-10-20 on the Spark (Dolphin, real frames): 18 kills, 13,370 points, 18 in a row, two stars, from a
 stage-select save state (no menus); unmodded rooftop spinning had made 8 kills / 2,840.
 
@@ -28,6 +32,7 @@ GAME_IDS = {"G4BE08"}
 EMMGR, P_PLAYER, P_GLOBAL = 0x8027DF20, 0x802B9780 - 0x673C, 0x802B2280
 G_ROOM, MERC_TIMER, MERC = 0x4FA8, 0x80279308, 0x8021392C
 FIRE_RANGE, HOP_FAR, HOP_SHORT = 2600.0, 5500.0, 1400.0
+MENU_AFTER, MENU_EVERY = 2.0, 1.5                 # out of a stage this long: press A this often (next round)
 PACKAGE = [("mercenaries_unlock", {"on": True}),
            ("merc_loadout", {"character": "leon", "items": ["handcannon", "handcannon ammo:200"], "on": True}),
            ("weapon_mod", {"item": "handcannon", "fire_rate": "auto", "damage": "99.9"}),
@@ -201,10 +206,17 @@ def setup(ad) -> list[str]:
     return failed
 
 
-def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05) -> dict:
-    """Drive Leon until stopped(); send(rows) presses keys. Returns the run's stats."""
+def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stats: dict | None = None,
+         clock=time.time) -> dict:
+    """Drive Leon until stopped(); send(rows) presses keys. Returns the run's stats (stats, when given, is filled live:
+    the watch panel shows it): hops, prompts, max_combo, combo, timer, rounds, menu_presses."""
     m = m or memory(ad)
-    bot, held = Bot(m), set()
+    bot, held = Bot(m, clock=clock), set()
+    if stats is not None:
+        stats.update(bot.stats)
+        bot.stats = stats
+    bot.stats.update(rounds=1, menu_presses=0)
+    out_since, last_press, was_in = None, 0.0, True
 
     def hold(keys):
         nonlocal held
@@ -214,6 +226,24 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05) -> d
         held = set(keys)
     while not stopped():
         s = snapshot(m)
+        now = clock()
+        if not in_mercenaries(s):                  # results, the Mercenaries title, select screens, the briefing
+            hold(set())
+            out_since = out_since or now
+            if now - out_since > MENU_AFTER and now - last_press > MENU_EVERY:
+                send([{"key": "a", "down": True}])
+                sleep(0.2)
+                send([{"key": "a", "down": False}])
+                last_press = clock()
+                bot.stats["menu_presses"] += 1
+            was_in = False
+            sleep(0.25)
+            continue
+        if not was_in:
+            bot.stats["rounds"] += 1
+            was_in = True
+        out_since = None
+        bot.stats.update(combo=s["combo"], timer=s["timer"])
         act = bot.tick(s)
         if "tap" in act:
             hold(set())
