@@ -216,8 +216,9 @@ header when it was open there. Tabs: **Live** (by group; a changed value flashes
 (newest first, with the frame of the moment), **Hex** (address, length, pointer chain, live; click a byte to follow
 the word there as a pointer) and **Search** (start with type / region / mislabels ok; Event on / Event off / Sample;
 a filter; an auto-labeler; candidates with their values per label and "Add to map"). Screenshots:
-`docs/evidence/ram-inspector/` (the panel drawn by the web shell headless, answering the RAM values recorded read-only
-from the live RE4 agent session on the Spark; the Search tab's candidates are synthetic, see below).
+`docs/evidence/ram-inspector/` (the panel drawn by the web shell headless, answering what the inspector read
+read-only from the live RE4 agent session on the Spark: the map's values, events and bytes, and the field-labeled
+search below; the game picture is that session's own frame).
 
 ## Live check, 2026-10-20 (Spark)
 
@@ -234,6 +235,15 @@ branch's modules in a scratch copy, against RE4 GameCube agent sessions on lilsp
   prompt within about half a second, so the labeler got 2 "on" samples in the first run (before the confirmation
   window and the tolerance existed) and none in the second, which ended with Leon dead. A slower driver (the
   operator, or a bot that waits on a prompt) gives it the samples it needs;
+* the same search labeled by a RAM-map field (`prompt.kind != 0`, #724's address; tolerance 1) ran 4 minutes while
+  the bot played and left 23 of 25,165,824 bytes after 8 on / 37 off samples, among them the prompt's own state
+  found independently of #724's static analysis: 0x80279320 (prompt.kind) on {11 ×5, 1 ×3} off {0 ×37} (11 = SHAKE
+  OFF, 1 = A), 0x80278B26 (prompt.valid) on {1} off {0}, 0x80213E6B (the low byte of prompt.label_shown) on {1, 3}
+  off {0}, 0x80278B24 (prompt.count, 1 mislabel), plus unmapped ones to look at: 0x8097D5A0 / 0x8097D810 /
+  0x8097D6D8 (255 off, 45 or 13 on), 0x80241D6C-73, 0x8027F5E3;
+* `pad.held` (0x80287E9E in the first map) is the previous frame's buttons: polled every 2 ms, each change showed at
+  0x80287EA2 one game frame (29-43 ms) earlier (65 of 65 in 20 s). The map now has `pad.held` at 0x80287EA2 and
+  `pad.held_prev` at 0x80287E9E; the whole 45-field map read from that session;
 * seen on the way: after Leon died the game sat on "You Are Dead · Continue Yes / No" for minutes while RAM still
   read as a running round (room 0x0400, player present, clock frozen at 302.1 s, hp 0): `player.hp == 0` tells that
   screen apart where `in_mercenaries` does not.

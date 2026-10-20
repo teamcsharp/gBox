@@ -290,7 +290,7 @@
       background:var(--bg,#16161a);color:var(--fg,#e8e8ee);border-radius:4px}
     #ram-inspector .ri-b{font:inherit;padding:3px 8px;border:1px solid var(--line,#2c2c34);background:var(--bg,#16161a);color:var(--fg,#e8e8ee);border-radius:4px;cursor:pointer}
     #ram-inspector .ri-b.on{background:#1a7f37;border-color:#1a7f37;color:#fff} #ram-inspector .ri-b.off{background:#5a2424;border-color:#7a3030;color:#fff}
-    #ram-inspector .ri-b:disabled{opacity:.5;cursor:default}
+    #ram-inspector .ri-b:disabled{opacity:.5;cursor:default} #ram-inspector .ri-add{white-space:nowrap;padding:1px 6px}
     #ram-inspector .ri-hex{font-family:ui-monospace,Consolas,monospace;font-size:11px;white-space:pre;overflow-x:auto}
     #ram-inspector .ri-hb{padding:0 2px;cursor:pointer;border-radius:2px} #ram-inspector .ri-hb:hover{background:var(--line,#2c2c34)}
     #ram-inspector .ri-ha{color:var(--mut,#9a9aa6)} #ram-inspector .ri-hs{color:var(--mut,#9a9aa6)}
