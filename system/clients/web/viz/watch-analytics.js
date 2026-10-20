@@ -9,6 +9,9 @@
   "use strict";
   const ESC = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
   const ANALYSIS = /ghidra|re_study|analyze_binary|decomp|rea_|rea$|re_lab|disasm|n64recomp|xenonrecomp|rexglue|assimilate/i;
+  const LABELS = { fights_s: "Time in fights (s)", jumps: "Jump-state skips", routes: "Menu walks", saves: "Jump states saved",
+    safety: "Health top-ups", fighting: "In a fight", p1_hp: "P1 health", p2_hp: "P2 health", hung: "Hung",
+    ff_s: "Fast-forwarded (s)", bursts: "Moves played", novelty: "Novelty", kills: "Kills", score: "Score" };
   let el = null, timer = null, sid = null, io = null, collapsed = false;
 
   function fmt(v) {
@@ -24,7 +27,7 @@
     if (tel && tel.running !== undefined) {
       out.bot.push(["Autoplay", tel.running ? "playing" : "stopped"]);
       if (tel.mission) out.bot.push(["Doing", tel.mission]);
-      for (const [k, v] of Object.entries(tel.stats || {})) out.bot.push([k.replace(/_/g, " "), fmt(v)]);
+      for (const [k, v] of Object.entries(tel.stats || {})) out.bot.push([LABELS[k] || k.replace(/_/g, " "), fmt(v)]);
       if (tel.age_s != null) out.bot.push(["Updated", `${Math.round(tel.age_s)} s ago`]);
     }
     for (const j of (status && status.active) || []) {

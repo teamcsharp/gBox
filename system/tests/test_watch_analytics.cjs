@@ -8,7 +8,7 @@ const m = W.model(
     coordinator: { runs: [{ name: "rea_assimilate DOA2", state: "running", progress: "3/9" }, { name: "inbox triage", state: "running" }] },
     recent_results: [{ tool: "cheats", state: "done" }] });
 assert.deepStrictEqual(m.bot[0], ["Autoplay", "playing"]);
-assert(m.bot.some(([k, v]) => k === "fights s" && v === "312.50"));
+assert(m.bot.some(([k, v]) => k === "Time in fights (s)" && v === "312.50"));
 assert(m.bot.some(([k, v]) => k === "Updated" && v === "2 s ago"));
 assert.deepStrictEqual(m.analysis.map(r => r.tool), ["ghidra_analyze", "rea_assimilate DOA2"]);
 assert.deepStrictEqual(m.jobs.map(r => r.tool), ["stream_frames"]);
