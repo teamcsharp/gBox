@@ -173,3 +173,14 @@ def test_a_verified_unlock_on_load_code_profile_verifies_every_build(tmp_path, m
                         if game['game_id']=='g' else None)
     b=U.badge(store,rows[0])
     assert b['status']=='verified' and b['code_profile']=='p1' and 'characters, stages' in b['label']
+
+
+def test_pending_accepts_code_profile_games_without_a_receipt(tmp_path, monkeypatch):
+    """2026-10-19 22:20: closing a code-profile game's request crashed pending() (no per-build receipt -> None.get)."""
+    store, rows, c, reconcile, created, dispatched, sha = rig(tmp_path)
+    c.post('/api/custom-build-unlocks/policy',json={'enabled':True})
+    from gbox import game_unlocks
+    monkeypatch.setattr(game_unlocks,'code_profile',lambda game: {'profile':'p1','scope':['characters']} if game['game_id']=='g' else None)
+    assert c.app.state.custom_build_unlocks_pending('g') == []
+    monkeypatch.setattr(game_unlocks,'code_profile',lambda game: None)
+    assert c.app.state.custom_build_unlocks_pending('g'), 'without the profile the builds are pending again'

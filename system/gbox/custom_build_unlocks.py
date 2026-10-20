@@ -360,10 +360,12 @@ def routes(app, store, cfg, auth, create_request, investigate, workers=lambda: [
             key = f'{gid}/{rec["name"]}'
             broken = store.get(Q.KIND, key)
             if broken and broken.get('state') != 'deleted': continue
-            accepted = (badge(store, rec) or {}).get('status') == 'verified'
-            if accepted and not rec.get('base'):
-                receipt = store.get(RECEIPT, key)
-                try: accepted = stat_signature(filemods.mod_dir(cfg, gid, rec['name'])) == receipt.get('signature')
+            b = badge(store, rec) or {}
+            accepted = b.get('status') == 'verified'
+            # a code profile holds the unlocks in every build of the game: no per-build receipt exists or is needed
+            if accepted and not rec.get('base') and not b.get('code_profile'):
+                receipt = store.get(RECEIPT, key) or {}
+                try: accepted = bool(receipt) and stat_signature(filemods.mod_dir(cfg, gid, rec['name'])) == receipt.get('signature')
                 except (OSError, ValueError): accepted = False
             if not accepted: names.append(rec['name'])
         return names
