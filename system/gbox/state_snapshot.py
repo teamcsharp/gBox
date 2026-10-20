@@ -1,8 +1,11 @@
 """A save state of a live game taken through gBox's own slot: the operator's save slots are never written or left switched.
 
-state_transfer op=snapshot uses it (autoplay coaching notes, gbox.coaching). op=export saves through the emulator's
-working slot instead: on standalone Dolphin that is slot 1, the operator's own Save state / Load state slot, and on
-RetroArch it leaves the emulator switched to the transfer slot, so the operator's next save lands there. Here:
+state_transfer op=snapshot uses it for every moment gBox keeps without the operator pressing Save: autoplay coaching
+notes (gbox.coaching), issue / failed-action / disputed-completion reports (server.py), emulation incidents
+(gbox.emulation_issue), pickwhip gap reports (gbox.char_coverage), last played (Stop, a game switch, a restart, the
+desktop app quitting), scene relay captures and evidence moments. op=export saves through the emulator's working slot
+instead: on standalone Dolphin that is slot 1, the operator's own Save state / Load state slot, and on RetroArch it
+leaves the emulator switched to the transfer slot, so the operator's next save lands there. Here:
 
 - Dolphin (Windows and the Spark's flatpak): its demo slot 10 (adapter.jump_save, the jump-state slot no key loads). The
   slot file is copied out and removed, so Dolphin's undo-save backup (lastState.sav) is left alone as well; the operator
@@ -24,6 +27,7 @@ from pathlib import Path
 from .registry import Unsupported
 
 SLOT = 9                     # RetroArch: gBox's slot (state_transfer's default, gbox.jumpstate.SLOT)
+ADAPTERS = frozenset({"dolphin", "retroarch"})   # session adapters with a slot of gBox's own (take() refuses the rest)
 
 
 def take(ad, g: dict, states: Path | None = None) -> tuple[bytes, dict]:

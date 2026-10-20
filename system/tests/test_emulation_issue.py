@@ -83,11 +83,12 @@ def make_incident(cfg, frame_colors, state_failure=False, resume_failure=False, 
             if coverage is not None:
                 out['covered'] = next(coverage, 0)
             return out
-        if tool == 'state_transfer' and data['op'] == 'export':
+        if tool == 'state_transfer' and data['op'] == 'snapshot':      # gBox's own slot (gbox/state_snapshot.py)
             if state_failure:
                 raise RuntimeError('Emulator did not write a state')
-            ref = store.put_artifact(b'preserved-state', 'Game.state81', 'application/octet-stream', {})
-            return {'result': {'artifact': ref.sha256, 'file': 'Game.state81', 'bytes': ref.size}}
+            ref = store.put_artifact(b'preserved-state', 'Game.state9', 'application/octet-stream', {})
+            return {'result': {'artifact': ref.sha256, 'file': 'Game.state9', 'bytes': ref.size, 'slot': 9,
+                               'via': "RetroArch slot 9 (gBox's slot): switched back to your slot 0"}}
         if tool == 'session_op' and data['op'] == 'resume' and resume_failure:
             raise RuntimeError('Emulator did not answer')
         if tool == 'launch_game':
@@ -103,7 +104,7 @@ def test_capture_precedes_recovery_and_paused_game_resumes_without_restart(cfg):
     incident.run()
     ops = [data['op'] for tool, data in calls if tool == 'session_op']
     assert 'resume' in ops
-    export = next(i for i, (tool, data) in enumerate(calls) if tool == 'state_transfer' and data['op'] == 'export')
+    export = next(i for i, (tool, data) in enumerate(calls) if tool == 'state_transfer' and data['op'] == 'snapshot')
     resume = next(i for i, (tool, data) in enumerate(calls) if tool == 'session_op' and data['op'] == 'resume')
     assert export < resume
     assert not any(tool == 'launch_game' for tool, _ in calls)
@@ -113,7 +114,7 @@ def test_capture_precedes_recovery_and_paused_game_resumes_without_restart(cfg):
     assert report['status'] == 'open'  # recovery is distinct from completing the root-cause report
     assert report['context']['hermes_job_id'] == 'hermes-cloud-job'
     names = [a['name'] for m in report['messages'] for a in m.get('attachments', [])]
-    assert 'Game.state81' in names and 'emulation-diagnostics-complete.md' in names and 'emulation-recovery.md' in names
+    assert 'Game.state9' in names and 'emulation-diagnostics-complete.md' in names and 'emulation-recovery.md' in names
 
 
 @pytest.mark.parametrize('mod', ['', 'active-mod'])
@@ -222,7 +223,7 @@ def test_gpu_recipe_preserves_settings_and_checkpoint_before_applying(cfg):
     incident, calls = make_incident(cfg, ['black', 'red', 'green'])
     incident.action = 'best_graphics'
     incident.run()
-    exported = next(i for i, (tool, data) in enumerate(calls) if tool == 'state_transfer' and data['op'] == 'export')
+    exported = next(i for i, (tool, data) in enumerate(calls) if tool == 'state_transfer' and data['op'] == 'snapshot')
     applied = next(i for i, (tool, data) in enumerate(calls) if tool == 'graphics' and data['op'] == 'best')
     launched = next(i for i, (tool, _) in enumerate(calls) if tool == 'launch_game')
     assert exported < applied < launched

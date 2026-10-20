@@ -35,7 +35,7 @@ class Jobs:
             raise RuntimeError(f"{tool} failed: boom")
         if progress:
             progress(50, "working")
-        if tool == "state_transfer" and inp["op"] == "export":
+        if tool == "state_transfer" and inp["op"] == "snapshot":
             return {"result": {"artifact": "a" * 64}}
         if tool == "state_transfer":
             return {"result": {"load_requested": True, "load_verified": False}}
@@ -58,7 +58,7 @@ def test_relay_runs_on_the_test_pc_and_keeps_the_operators_game_running():
     jobs = Jobs()
     out, labels, ended = run(jobs, [worker("opw", "i9-NUC"), worker("jay", "JAYBUILTFINALE")])
     tools = [(t, i.get("op"), w) for t, i, w in jobs.calls]
-    assert tools == [("state_transfer", "export", "opw"), ("launch_game", None, "jay"),
+    assert tools == [("state_transfer", "snapshot", "opw"), ("launch_game", None, "jay"),
                      ("state_transfer", "import", "jay"), ("scene_capture", None, "jay"), ("session_op", "stop_game", "jay")]
     launch = jobs.calls[1][1]
     assert launch["capture_backend"] == "vulkan" and launch["examine"] is True
@@ -113,7 +113,7 @@ def test_dolphin_never_runs_beside_the_operators_dolphin():
 
 
 def test_unsaved_moment_captures_nothing():
-    jobs = Jobs(fail={("state_transfer", "export", "opw")})
+    jobs = Jobs(fail={("state_transfer", "snapshot", "opw")})
     with pytest.raises(sr.RelayError, match="could not be saved.*keeps running"):
         run(jobs, [worker("opw", "i9-NUC"), worker("jay", "JAYBUILTFINALE")])
     assert [t for t, i, w in jobs.calls] == ["state_transfer"]

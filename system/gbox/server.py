@@ -25,10 +25,12 @@ from . import operator_guard
 from .config import HOST_OS, Config
 from .models import Job, JobState, new_id, KnowledgeEdge, Receipt, RunRecord, WorkerInfo
 from .registry import REGISTRY
+from .state_snapshot import ADAPTERS as SNAPSHOT_ADAPTERS
 from .store import Store, canon, sha256
 from .worker_results import result_digest
 
 WORKER_TTL = 30.0
+MOMENT_WAIT_S = 240.0            # a report's moment snapshot: state_transfer's own limit is 180 s, a queued job gets the rest
 WEB = Path(__file__).resolve().parent.parent / "clients" / "web" / "index.html"
 BRAND = Path(__file__).resolve().parent.parent / "assets" / "brand"
 # adapters whose second copy can't run beside the first on one PC (mGBA's GDB stub port is fixed): a relaunch closes
@@ -81,25 +83,6 @@ class Evaluation(BaseModel):
     passed: bool
     metrics: dict[str, float] = {}
     notes: str = ""
-
-
-def _checkpoint_slot(result: dict, adapter: str) -> int:
-    """Use native checkpoint evidence, never the slot requested before a dropped command."""
-    if result.get("verified") is False:
-        raise RuntimeError("the emulator did not verify the captured checkpoint")
-    slot = result.get("slot")
-    path = str(result.get("path") or result.get("file") or "")
-    match = re.search(r"\.state(-?\d+)?$", path)
-    native = (int(match[1] or 0) if match and adapter == "retroarch" else
-              (1 if adapter == "dolphin" and path.endswith(".s01") else None))
-    if adapter == "dolphin" and slot is not None and slot != 1:
-        raise RuntimeError("Dolphin's captured checkpoint does not identify native slot 1")
-    if slot is not None and (type(slot) is not int or (native is not None and native != slot)):
-        raise RuntimeError("the captured checkpoint slot disagrees with its native filename")
-    actual = slot if slot is not None else native
-    if actual is None:
-        raise RuntimeError("the captured checkpoint did not identify its actual native slot")
-    return actual
 
 
 def _is_stop_job(job: dict) -> bool:
@@ -1199,7 +1182,8 @@ def create_app(config: Config) -> FastAPI:
         else:
             try:                                          # last played: the moment before the restart (best effort)
                 say(10, "Saving your current moment first (Reload with your last moment can bring it back)")
-                moment = _run_job("state_transfer", {"session_id": sid, "op": "export"}, actor, worker=old_w, wait=25,
+                # through gBox's own slot (op=snapshot): op=export would save it through Dolphin's slot 1, the operator's
+                moment = _run_job("state_transfer", {"session_id": sid, "op": "snapshot"}, actor, worker=old_w, wait=25,
                                   should_stop=should_stop)["result"]["artifact"]
                 store.put("session", sid, (store.get("session", sid) or {}) | {"checkpoint": moment, "moment_ts": time.time()})
             except HTTPException as e:
@@ -1535,8 +1519,9 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/api/evidence/moments")
     def evidence_moment_put(m: EvidenceMomentIn, actor=Depends(auth)):
-        """Record the game's gameplay moment for evidence captures: a state export of a running session (the game is
-        not paused or stopped). Only on an explicit request that names the session."""
+        """Record the game's gameplay moment for evidence captures: a save state of a running session taken through
+        gBox's own slot (state_transfer op=snapshot: the game is not paused or stopped, its save slots are left alone).
+        Only on an explicit request that names the session."""
         from . import evidence_capture as EC
         sess = store.get("session", m.session_id) or _404()
         if sess.get("state") != "running":
@@ -1550,11 +1535,11 @@ def create_app(config: Config) -> FastAPI:
                     raise HTTPException(422, f"after_moment[{k}]: {e}")
                 if s_.tool and (s_.tool not in EC.STEP_TOOLS or s_.input.get("op") not in EC.STEP_TOOLS[s_.tool]):
                     raise HTTPException(422, f"after_moment[{k}]: tool {s_.tool} is not allowed")
-        out = _run_job("state_transfer", {"session_id": m.session_id, "op": "export"}, actor,
+        out = _run_job("state_transfer", {"session_id": m.session_id, "op": "snapshot"}, actor,
                        worker=m.session_id.split("-")[0], wait=120)
         art = (out.get("result") or {}).get("artifact")
         if not art:
-            raise HTTPException(409, "the state export returned no artifact")
+            raise HTTPException(409, "the state snapshot returned no artifact")
         with store.lock:
             allm = store.get("setting", EVIDENCE_MOMENTS) or {}
             rec = {"artifact": art, "label": m.label or "recorded gameplay moment", "session_id": m.session_id,
@@ -1935,12 +1920,13 @@ def create_app(config: Config) -> FastAPI:
     @app.post("/api/sessions/{sid}/moment")
     def session_moment(sid: str, wait: float = 6.0, actor=Depends(auth)):
         """Save the running game's moment now and keep it as the session's last-played checkpoint (the desktop app calls
-        this for its games just before it quits; best effort within `wait` seconds)."""
+        this for its games just before it quits; best effort within `wait` seconds). Saved through gBox's own slot
+        (state_transfer op=snapshot), never into the operator's save slot."""
         s_ = store.get("session", sid) or _404()
         if s_.get("state") != "running":
             return {"saved": False, "reason": "not running"}
         try:
-            art = _run_job("state_transfer", {"session_id": sid, "op": "export"}, actor, worker=sid.split("-")[0],
+            art = _run_job("state_transfer", {"session_id": sid, "op": "snapshot"}, actor, worker=sid.split("-")[0],
                            wait=max(1.0, min(float(wait), 30.0)))["result"]["artifact"]
         except (HTTPException, KeyError, TypeError) as e:
             return {"saved": False, "reason": str(getattr(e, "detail", e))[:300]}
@@ -4897,6 +4883,82 @@ def create_app(config: Config) -> FastAPI:
                                               + (f"\n  -> {(res.get('text') or '')[:500]}" if res else "")))
         return [t for _, t in sorted(out, key=lambda x: x[0])[-15:]]
 
+    # --- a report's game moment through gBox's own save slot (gbox/state_snapshot.py) ---------------------------------
+    # Issue reports, failed-action auto reports and disputed completions keep the moment they were filed at. On Dolphin
+    # and RetroArch that is ONE state_transfer op=snapshot job: the state is saved through gBox's own slot (Dolphin's
+    # demo slot 10; RetroArch's slot 9, switched back to the operator's slot after) and uploaded as an artifact. The
+    # session_op save_state used before pressed Dolphin's slot 1 hotkey whatever slot it was given (the operator's own
+    # Save state / Load state slot: 2026-10-20 an RE4 report wrote G4BE08.s01 and the game froze) and left RetroArch on
+    # the report's slot, so the operator's next quick save went there. The job is recorded where that save and its
+    # export were: state_job_id and state_export_job_id both name it, state_snapshot says no emulator slot holds the
+    # moment (so no state_slot), and state_artifact / state_file follow once it has run (_moment_attach). A snapshot
+    # that fails (e.g. a PC still on a gBox from before op=snapshot) is reported as a moment that could not be captured:
+    # nothing ever falls back to a save into the operator's slot.
+    def _moment_failed(action: str, why: str) -> dict:
+        return {"author": "agent", "text": f"The game moment could not be captured: {why}. Nothing was saved into your "
+                "save slots instead.", "ts": time.time(), "attachments": [],
+                "task_step": {"action": action, "attempt": "1", "result": why[:400], "status": "failed"}}
+
+    def _snapshot_error(job: dict) -> str:
+        if job.get("state") == "succeeded":
+            return "the snapshot job uploaded no state file"
+        why = str(job.get("error") or job.get("state") or "no result")
+        if "export_saved | import" in why and "snapshot" not in why:      # state_transfer from before op=snapshot
+            why += " (that PC runs a gBox from before gBox-slot snapshots: it needs an update)"
+        return why[:600]
+
+    def _moment_snapshot(report: dict, sid: str, actor: str, action: str, doing: str):
+        """Queue the snapshot of the report's moment (it runs on the session's PC) and record it on the report, which
+        is stored. The Job, or None when it could not be queued (said on the report). The caller watches it:
+        _moment_attach(rid, _moment_wait(job.id), action)."""
+        rid = report["id"]
+        try:
+            job = submit(JobRequest(tool="state_transfer", input={"session_id": sid, "op": "snapshot"},
+                                    parent_request_id=rid), actor)
+        except Exception as exc:                                  # noqa: BLE001 - the report is filed either way
+            report["messages"].append(_moment_failed(action, str(getattr(exc, "detail", None) or exc)))
+            store.put("request", rid, report)
+            return None
+        report.setdefault("context", {}).update(state_job_id=job.id, state_export_job_id=job.id, state_snapshot=True)
+        report["messages"].append({"author": "agent", "text": f"{doing} through gBox's own save slot (job {job.id}); "
+                                   "your own save slots are left as they are.", "ts": time.time(), "attachments": [],
+                                   "task_step": {"action": action, "attempt": "1", "result": job.state, "status": job.state}})
+        store.put("request", rid, report)
+        return job
+
+    def _moment_wait(jid: str, seconds: float = MOMENT_WAIT_S) -> dict:
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            job = store.get("job", jid) or {}
+            if job.get("state") not in ("queued", "running"):
+                return job
+            time.sleep(.5)
+        return {"state": "timeout", "error": f"the snapshot job {jid} did not finish within {seconds:g} s"}
+
+    def _moment_attach(rid: str, job: dict, action: str) -> bool:
+        """A finished snapshot job onto report rid: its state file attached (context state_artifact, state_file), or a
+        message that the moment could not be captured. True when attached."""
+        info = ((job.get("output") or {}).get("result") or {}) if job.get("state") == "succeeded" else {}
+        meta = store.get("artifact", info.get("artifact")) if info.get("artifact") else None
+        if meta:
+            name, via = info.get("file") or meta["name"], info.get("via") or "gBox's own save slot"
+            text = (f"Game moment attached: {name} ({meta['size']} bytes), saved through {via}."
+                    + (f" {info['warning']}." if info.get("warning") else ""))
+            entry = {"author": "agent", "text": text, "ts": time.time(),
+                     "attachments": [{"sha256": meta["sha256"], "name": name, "type": meta["media_type"], "size": meta["size"]}],
+                     "task_step": {"action": action, "attempt": "1", "result": "state attached", "status": "finished"}}
+            context = {"state_artifact": meta["sha256"], "state_file": name}
+        else:
+            entry, context = _moment_failed(action, _snapshot_error(job)), {}
+        with store.lock:
+            latest = store.get("request", rid)
+            if not latest:
+                return False
+            latest.setdefault("context", {}).update(context)
+            latest.setdefault("messages", []).append(entry)
+            store.put("request", rid, latest)
+        return bool(meta)
+
     @app.post("/api/requests/issue")
     def req_issue(r: IssueIn, actor=Depends(auth)):
         s_ = store.get("session", r.session_id) or {} if r.session_id else {}
@@ -4987,58 +5049,29 @@ def create_app(config: Config) -> FastAPI:
         if not r.save_state or not r.session_id or s_.get("state") != "running":
             return report
         rid = report["id"]
+        if (s_.get("adapter") or "").lower() in SNAPSHOT_ADAPTERS:
+            # Dolphin / RetroArch: one job saves the moment through gBox's own slot and uploads it (_moment_snapshot);
+            # the operator's save slots stay theirs. Hermes waits for that job before reproducing the failure.
+            snap = _moment_snapshot(report, r.session_id, actor, "save reported game moment",
+                                    "Capturing the reported game moment")
+            if snap is not None:
+                threading.Thread(target=lambda: _moment_attach(rid, _moment_wait(snap.id), "save reported game moment"),
+                                 daemon=True, name=f"issue-state-{rid[:8]}").start()
+            return report
         try:
-            # A dedicated slot leaves the operator's ordinary quick save alone. The job is linked to the
-            # report so Hermes can wait for its actual result before trying to reproduce the failure.
+            # Any other emulator has no save slot of gBox's own: the emulator's own save state (session_op save_state;
+            # its slot argument only counts where the emulator takes one). The job is linked to the report so Hermes
+            # can wait for its actual result before trying to reproduce the failure.
             slot = 60 + sum(1 for old in store.all("request") if old["id"] != rid and
                             (old.get("context") or {}).get("session_id") == r.session_id and
                             (old.get("context") or {}).get("state_job_id"))
             saved = submit(JobRequest(tool="session_op", input={"session_id": r.session_id, "op": "save_state", "args": {"slot": slot}},
                                       parent_request_id=rid), actor)
             report["context"].update(state_job_id=saved.id, state_slot=slot)
-            report["messages"].append({"author": "agent", "text": f"Capturing the reported game moment in slot {slot} (job {saved.id}).",
+            report["messages"].append({"author": "agent", "text": f"Saving the reported game moment with the emulator's own save state (job {saved.id}).",
                                        "ts": time.time(), "attachments": [], "task_step": {"action": "save reported game moment",
                                        "attempt": "1", "result": saved.state, "status": saved.state}})
             store.put("request", rid, report)
-
-            # Supported cores can also export a portable artifact for Hermes or a client on another PC.
-            # Upload the existing checkpoint; saving again would capture a later game moment.
-            if (s_.get("adapter") or "").lower() in ("retroarch", "dolphin"):
-                def export_issue_state():
-                    deadline = time.time() + 120
-                    while time.time() < deadline:
-                        current = store.get("job", saved.id) or {}
-                        if current.get("state") not in ("queued", "running"):
-                            break
-                        time.sleep(0.5)
-                    if current.get("state") != "succeeded":
-                        return
-                    try:
-                        # the checkpoint job reports the slot the emulator ACTUALLY wrote; export that one
-                        saved_slot = _checkpoint_slot((current.get("output") or {}).get("result") or {},
-                                                      (s_.get("adapter") or "").lower())
-                        exported = submit(JobRequest(tool="state_transfer", input={"session_id": r.session_id,
-                                                     "op": "export_saved", "slot": saved_slot,
-                                                     "not_before": current.get("started") or current.get("created") or 0},
-                                                     parent_request_id=rid), actor)
-                        with store.lock:
-                            latest = store.get("request", rid) or {}
-                            if not latest:
-                                return
-                            latest.setdefault("context", {}).update(state_export_job_id=exported.id,
-                                state_slot=saved_slot, state_requested_slot=slot)
-                            latest.setdefault("messages", []).append({"author": "agent", "text": f"Portable save-state export queued (job {exported.id}).",
-                                "ts": time.time(), "attachments": [], "task_step": {"action": "export reported game moment",
-                                "attempt": "1", "result": exported.state, "status": exported.state}})
-                            store.put("request", rid, latest)
-                    except Exception as exc:
-                        with store.lock:
-                            latest = store.get("request", rid) or {}
-                            if latest:
-                                latest.setdefault("messages", []).append({"author": "agent", "text": f"Portable export unavailable: {exc}",
-                                    "ts": time.time(), "attachments": []})
-                                store.put("request", rid, latest)
-                threading.Thread(target=export_issue_state, daemon=True, name=f"issue-state-{rid[:8]}").start()
         except Exception as exc:
             report["messages"].append({"author": "agent", "text": f"Save state unavailable: {exc}", "ts": time.time(), "attachments": []})
             store.put("request", rid, report)
@@ -5147,7 +5180,12 @@ def create_app(config: Config) -> FastAPI:
                                                             "replacement_requested": f.replacement_requested,
                                                             "job_id": f.job_id, "auto_report": True}), actor)
         rid = report["id"]
-        if f.session_id and s_.get("state") == "running":
+        own_slot = (s_.get("adapter") or "").lower() in SNAPSHOT_ADAPTERS
+        if f.session_id and s_.get("state") == "running" and own_slot:
+            # Dolphin / RetroArch: through gBox's own slot, saved and uploaded in one job (_moment_snapshot);
+            # _preserve_failure below attaches it
+            _moment_snapshot(report, f.session_id, actor, "save game moment", "Saving this moment")
+        elif f.session_id and s_.get("state") == "running":
             try:
                 slot = 40 + sum(1 for old in store.all("request") if old["id"] != rid and
                                 (old.get("context") or {}).get("session_id") == f.session_id and
@@ -5156,7 +5194,7 @@ def create_app(config: Config) -> FastAPI:
                                           parent_request_id=rid), actor)
                 report["context"]["state_job_id"] = saved.id
                 report["context"]["state_slot"] = slot
-                report["messages"].append({"author": "agent", "text": f"Save state requested for this moment (job {saved.id}, slot {slot}). Its result is shown in the detailed report.",
+                report["messages"].append({"author": "agent", "text": f"Save state of this moment requested from the emulator itself (job {saved.id}). Its result is shown in the detailed report.",
                                            "ts": time.time(), "attachments": [], "task_step": {"action": "save game moment", "attempt": "1", "result": saved.state, "status": saved.state}})
             except Exception as exc:
                 report["messages"].append({"author": "agent", "text": f"Save state unavailable: {exc}", "ts": time.time(), "attachments": []})
@@ -5215,7 +5253,7 @@ def create_app(config: Config) -> FastAPI:
 
                 try:
                     saved_id = (store.get("request", rid) or {}).get("context", {}).get("state_job_id")
-                    saved_job = completed(saved_id) if saved_id else {"state": "unavailable"}
+                    saved_job = completed(saved_id, MOMENT_WAIT_S if own_slot else 120) if saved_id else {"state": "unavailable"}
                     frame = next((a for a in store.all("artifact") if (a.get("provenance") or {}).get("job") == saved_id
                                   and a.get("media_type") == "image/png"), None) if saved_id else None
                     if frame:
@@ -5230,39 +5268,16 @@ def create_app(config: Config) -> FastAPI:
                                            "result": "game frame attached", "status": "finished"}), "gbox-auto"))
                         except Exception as exc:
                             add(f"Game screenshot unavailable: {exc}", "capture failed moment", str(exc)[:400], "failed")
+                    if own_slot:                 # Dolphin / RetroArch: the snapshot job saved AND uploaded it
+                        if saved_id:             # (a snapshot that could not even be queued is on the report already)
+                            _moment_attach(rid, saved_job, "save game moment")
+                        return
                     if saved_job.get("state") != "succeeded":
                         add(f"Save state failed: {saved_job.get('error') or saved_job.get('state')}",
                             "save game moment", str(saved_job.get("error") or saved_job.get("state"))[:400], "failed")
                         return
-                    if (s_.get("adapter") or "").lower() not in ("retroarch", "dolphin"):
-                        add("This emulator cannot export a portable state; the local checkpoint remains available.",
-                            "export game moment", "unsupported emulator", "unavailable")
-                        return
-                    # the checkpoint job reports the slot the emulator ACTUALLY wrote; export exactly that file
-                    saved_slot = _checkpoint_slot((saved_job.get("output") or {}).get("result") or {},
-                                                  (s_.get("adapter") or "").lower())
-                    exported = submit(JobRequest(tool="state_transfer", input={"session_id": f.session_id,
-                        "op": "export_saved", "slot": saved_slot, "not_before": saved_job.get("started") or 0},
-                        parent_request_id=rid), "gbox-auto")
-                    add(f"Exporting the exact saved checkpoint (job {exported.id}).", "export game moment",
-                        exported.id, exported.state, state_export_job_id=exported.id,
-                        state_slot=saved_slot, state_requested_slot=slot)
-                    result = completed(exported.id)
-                    if result.get("state") != "succeeded":
-                        add(f"Portable checkpoint unavailable: {result.get('error') or result.get('state')}",
-                            "export game moment", str(result.get("error") or result.get("state"))[:400], "failed")
-                        return
-                    info = (result.get("output") or {}).get("result") or {}
-                    meta = store.get("artifact", info.get("artifact")) if info.get("artifact") else None
-                    if not meta:
-                        raise RuntimeError("checkpoint export did not upload its artifact")
-                    att = {"sha256": meta["sha256"], "name": meta["name"], "type": meta["media_type"], "size": meta["size"]}
-                    actual_slot = _checkpoint_slot(info, (s_.get("adapter") or "").lower())
-                    if actual_slot != saved_slot:
-                        raise RuntimeError("the portable export belongs to a different saved moment")
-                    add(f"Portable save state attached: {info['file']} ({info['bytes']} bytes).",
-                        "export game moment", "checkpoint attached", "finished", att,
-                        state_artifact=meta["sha256"], state_file=info["file"], state_slot=actual_slot)
+                    add("This emulator cannot export a portable state; the local checkpoint remains available.",
+                        "export game moment", "unsupported emulator", "unavailable")
                 except Exception as exc:
                     add(f"Automatic evidence preservation failed: {exc}", "preserve failed moment", str(exc)[:400], "failed")
             threading.Thread(target=_preserve_failure, daemon=True, name=f"auto-failure-{rid[:8]}").start()
@@ -5695,13 +5710,21 @@ def create_app(config: Config) -> FastAPI:
                                    "result": explanation[:4000], "status": "running"}})
         session_id = complaint.session_id
         session = store.get("session", session_id) or {} if session_id else {}
-        if session.get("state") == "running" and not session.get("ended"):
+        snap = None
+        if session.get("state") == "running" and not session.get("ended") \
+                and (session.get("adapter") or "").lower() in SNAPSHOT_ADAPTERS:
+            # Dolphin / RetroArch: through gBox's own slot, saved and uploaded in one job (_moment_snapshot); its
+            # file is attached once the report below is stored (the thread at the end)
+            snap = _moment_snapshot(report, session_id, actor, "save failed moment", "Saving the failed moment")
+            if snap is not None:
+                report["context"]["session_id"] = session_id
+        elif session.get("state") == "running" and not session.get("ended"):
             try:
                 slot = 40 + sum(1 for old in store.all("request") if (old.get("context") or {}).get("session_id") == session_id)
                 saved = submit(JobRequest(tool="session_op", input={"session_id": session_id, "op": "save_state",
                                           "args": {"slot": slot}}, parent_request_id=rid), actor)
                 report["context"].update(session_id=session_id, state_job_id=saved.id)
-                report["messages"].append({"author": "agent", "text": f"Requested save state for the failed moment (job {saved.id}, slot {slot}).",
+                report["messages"].append({"author": "agent", "text": f"Requested the emulator's own save state for the failed moment (job {saved.id}).",
                                            "ts": time.time(), "attachments": [], "task_step": {"action": "save failed moment",
                                            "attempt": "1", "result": saved.state, "status": saved.state}})
             except Exception as exc:
@@ -5737,6 +5760,9 @@ def create_app(config: Config) -> FastAPI:
                 except Exception as exc:
                     store.audit("gbox-auto", "request.capture.error", rid, {"error": str(exc)[:500]})
             threading.Thread(target=_capture_disputed, daemon=True).start()
+        if snap is not None:
+            threading.Thread(target=lambda: _moment_attach(rid, _moment_wait(snap.id), "save failed moment"),
+                             daemon=True, name=f"incomplete-state-{rid[:8]}").start()
         return _clean(report)
 
     class RequestCaptureIn(BaseModel):
