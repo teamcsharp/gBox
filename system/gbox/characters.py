@@ -1283,7 +1283,7 @@ def _ff7_run(ctx, game, e, work):
         out = work / f"ff7_{nm.lower()}_field.gltf"
         F.field_to_gltf(fm, out)
         try:
-            roles = {r: f"j{b:02d}" for r, b in field_target(fm)["jmap"].items()}
+            roles = {r: f"j{b:02d}" for r, b in field_target(fm, nm)["jmap"].items()}
         except ValueError:
             roles = None
         return {"files": [out], "tool": "gbox.ff7_models (field model, read_field_model)", "source_files": [f"FIELD/{nm}.BCX"],

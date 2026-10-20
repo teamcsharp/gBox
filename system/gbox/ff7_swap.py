@@ -48,6 +48,38 @@ BATTLE_ROLES = {"hip": 1, "chest": 2, "head": 3, "armA": (6, 7, 8), "armB": (11,
                 "legB": (20, 21, 22)}
 
 
+# Dedicated body-role maps (#1902), read off each skeleton's bones (parent, mesh, rest position) where the topology
+# finder (field_spec / battle_spec) picks the wrong bones or none. Sides need no order: make_target sorts them by x.
+#   TIFA battle: bones 4-8 are her ponytail (the finder took its tip for the head); head = 2, torso 1, hip 9 (legs).
+#   EARITH battle: bones 4-8 are her braid (the finder took its tip for the head and 5-7 for an arm); head = 3.
+#   YUFI field: the right arm ends in a mesh-less joint, so its hand is the forearm; battle: 5/6 are headband ends.
+#   KETCY (Cait Sith): the cat's body, head and arms on the moogle's body and legs (moogle arms carry no donor part).
+#   RED / RED13 (Red XIII, a quadruped): donor arms on the front legs, donor legs on the hind legs; the tail and the
+#   mane/ear bones carry no donor part (the field finder took the tail for a leg).
+#   VINSENT battle: bones 11-26 are four cape strips (the finder took one for an arm); arms are 40-42 (claw), 45-47.
+FIELD_SPECS = {
+    "YUFI": {"hip": 1, "chest": 2, "head": 3, "armA": (9, 10, 10), "armB": (14, 15, 16), "legA": (18, 19, 20),
+             "legB": (22, 23, 24)},
+    "KETCY": {"hip": 1, "chest": 9, "head": 10, "armA": (13, 14, 15), "armB": (20, 21, 22), "legA": (24, 25, 25),
+              "legB": (27, 28, 28)},
+    "RED": {"hip": 1, "chest": 2, "head": 3, "armA": (6, 7, 9), "armB": (12, 13, 15), "legA": (17, 18, 20),
+            "legB": (26, 27, 29)},
+}
+BATTLE_SPECS = {
+    "TIFA": {"hip": 9, "chest": 1, "head": 2, "armA": (26, 27, 28), "armB": (31, 32, 32), "legA": (11, 12, 13),
+             "legB": (18, 19, 20)},
+    "EARITH": {"hip": 1, "chest": 2, "head": 3, "armA": (11, 12, 13), "armB": (16, 17, 18), "legA": (20, 21, 22),
+               "legB": (28, 29, 30)},
+    "YUFI": {"hip": 1, "chest": 2, "head": 3, "armA": (9, 10, 11), "armB": (17, 18, 19), "legA": (21, 22, 23),
+             "legB": (27, 28, 29)},
+    "KETCY": {"hip": 7, "chest": 14, "head": 15, "armA": (18, 19, 20), "armB": (23, 24, 25), "legA": (2, 3, 3),
+              "legB": (5, 6, 6)},
+    "RED13": {"hip": 1, "chest": 3, "head": 5, "armA": (17, 19, 21), "armB": (23, 25, 27), "legA": (29, 31, 33),
+              "legB": (42, 44, 46)},
+    "VINSENT": {"hip": 1, "chest": 2, "head": 4, "armA": (40, 41, 42), "armB": (45, 46, 47), "legA": (29, 30, 31),
+                "legB": (34, 35, 36)},
+}
+
 # ---------------------------------------------------------------- whole cast (characters op=cast_swap)
 
 # slot -> (field model FIELD/<field>.BCX, battle model ENEMY6/<battle>.LZS, display name)
@@ -65,17 +97,12 @@ def is_slot(slot: str) -> bool:
 
 def cast_slots(game=None):
     """FF7's replaceable cast: each party member's field model (FIELD/<name>.BCX) and battle model
-    (ENEMY6/<key>.LZS) replaced together on that member's own skeletons. Yuffie's and Cait Sith's field
-    skeletons don't follow the party layout (field_spec returns None), so those slots are not_working."""
-    reasons = {"yuffie": "its field skeleton doesn't follow the FF7 party layout (no pelvis/chest/head chain)",
-               "caitsith": "its field skeleton doesn't follow the FF7 party layout (no pelvis/chest/head chain)",
-               "red13": "its quadruped battle skeleton has no party layout for donor limbs (a dedicated role map is needed)",
-               "vincent": "its battle skeleton's extra chains (cloak/gun) fail the party-layout sanity check",
-               "aerith": "its battle skeleton's bind pose hides one arm chain; a dedicated role map is needed",
-               "barret": "its battle skeleton's gun arm defeats the topology heuristic; a dedicated role map is needed"}
+    (ENEMY6/<key>.LZS) replaced together on that member's own skeletons. Members whose skeletons the topology finder
+    misreads use the dedicated maps FIELD_SPECS / BATTLE_SPECS (#1902), so every slot builds; those maps are
+    unverified in game until a build is played."""
     return [{"slot": s, "name": f"{n} (field + battle)", "kind": "player" if s == "player" else "character",
              "field": f, "battle": b,
-             **({"status": "not_working", "reason": reasons[s]} if s in reasons else {})}
+             **({"roles": "dedicated map (unverified in game)"} if f in FIELD_SPECS or b in BATTLE_SPECS else {})}
             for s, f, b, n in CAST]
 
 
@@ -191,6 +218,37 @@ def _corner_colour(p: dict, i: int) -> tuple[int, int, int]:
 
 
 class BattleAtlas:
+    @staticmethod
+    def _pack(unique: dict, width: int, height: int, scale: float):
+        """Shelf-pack every unique donor texture (resized by `scale`) into a width x height canvas; None when it
+        doesn't fit."""
+        from PIL import Image
+        canvas = np.zeros((height, width, 4), np.uint8)
+        rects = {}
+        x = y = row_height = 0
+        for key, p in unique.items():
+            image = np.asarray(p['tex'], dtype=np.uint8)
+            if scale < 1.0:
+                h0, w0 = image.shape[:2]
+                image = np.asarray(Image.fromarray(image).resize((max(1, round(w0 * scale)), max(1, round(h0 * scale))),
+                                                                 Image.LANCZOS))
+            h, w = image.shape[:2]
+            if w > width or h > height:
+                return None
+            if x+w > width:
+                x = 0
+                y += row_height
+                row_height = 0
+            if y+h > height:
+                return None
+            patch = canvas[y:y+h, x:x+w]
+            patch[..., :3] = np.clip(image[..., :3].astype(float) * np.asarray(p['color'][:3]) / 255, 0, 255)
+            patch[..., 3] = image[..., 3] if image.ndim == 3 and image.shape[2] == 4 else 255
+            rects[key] = (x, y, w, h)
+            x += w
+            row_height = max(row_height, h)
+        return canvas, rects
+
     """Keep donor texture interiors in Cloud's existing 4-bit TIM allocation.
 
     Cloud's weapons use untextured polygons. Refuse other layouts rather than
@@ -206,31 +264,22 @@ class BattleAtlas:
         height, width = tim['idx'].shape
         self.page = tim['x'] // 64 | (tim['y'] // 256) << 4
         self.clut = tim['clut']['x'] // 16 | tim['clut']['y'] << 6
-        self.rects = {}
-        canvas = np.zeros((height, width, 4), np.uint8)
-        x = y = row_height = 0
+        unique = {}
         for p in prims:
-            if p['tex'] is None:
-                continue
-            key = self.key(p)
-            if key in self.rects:
-                continue
-            image = np.asarray(p['tex'], dtype=np.uint8)
-            h, w = image.shape[:2]
-            if w > width or h > height:
-                raise ValueError('FF7 battle donor texture exceeds the native TIM allocation')
-            if x+w > width:
-                x = 0
-                y += row_height
-                row_height = 0
-            if y+h > height:
+            if p['tex'] is not None and self.key(p) not in unique:
+                unique[self.key(p)] = p
+        # Donor textures larger than this member's TIM are scaled down evenly until they pack (#1902: Tifa, Aerith,
+        # Barret, Yuffie and Vincent have smaller TIMs than Cloud). Face UVs are fractions of their rectangle, so a
+        # resized texture keeps its mapping; self.scale records the factor.
+        self.scale = 1.0
+        while True:
+            packed = self._pack(unique, width, height, self.scale)
+            if packed is not None:
+                canvas, self.rects = packed
+                break
+            if self.scale < 0.08:
                 raise ValueError('FF7 battle donor textures do not fit the native TIM allocation')
-            patch = canvas[y:y+h, x:x+w]
-            patch[..., :3] = np.clip(image[..., :3].astype(float) * np.asarray(p['color'][:3]) / 255, 0, 255)
-            patch[..., 3] = image[..., 3] if image.shape[2] == 4 else 255
-            self.rects[key] = (x, y, w, h)
-            x += w
-            row_height = max(row_height, h)
+            self.scale *= 0.85
         # Quantize only occupied opaque texels, so unused VRAM cannot consume a
         # palette entry. Index zero remains transparent; opaque black is 0x8000.
         mask = canvas[..., 3] >= 128
@@ -485,10 +534,11 @@ def battle_spec(bm: dict) -> dict | None:
             "legA": legs[0], "legB": legs[1]}
 
 
-def field_target(fm: dict) -> dict:
+def field_target(fm: dict, name: str | None = None) -> dict:
+    """name: the field model (FIELD/<name>.BCX) when known, for its dedicated role map (FIELD_SPECS)."""
     W = F.field_pose(fm["bones"], fm["anims"][0][0])
     verts = {p["bone"]: (np.c_[p["verts"], np.ones(len(p["verts"]))] @ W[p["bone"]].T)[:, :3] for p in fm["parts"]}
-    spec = field_spec(fm)
+    spec = FIELD_SPECS.get(str(name or "").upper()) or field_spec(fm)
     if spec is None:
         raise ValueError("this field skeleton doesn't have the party layout (two arms off the pelvis, two legs off the root)")
     return make_target(W, verts, spec, FIELD_FIT_HEIGHT)
@@ -572,7 +622,7 @@ def write_field(fm: dict, geo: dict[int, dict], normals: np.ndarray, nsign: floa
 
 # ---------------------------------------------------------------- battle (ENEMY6/CLOUD.LZS)
 
-def battle_target(bm: dict, anim: int = 0, legacy_roles: dict | None = None) -> dict:
+def battle_target(bm: dict, anim: int = 0, legacy_roles: dict | None = None, name: str | None = None) -> dict:
     """The target skeleton of a battle model: its own party-layout roles detected from topology (battle_spec),
     or Cloud's fixed layout (legacy_roles) when detection fails and the caller knows the model is Cloud's."""
     nb = len(bm["bones"]) - 1
@@ -580,7 +630,7 @@ def battle_target(bm: dict, anim: int = 0, legacy_roles: dict | None = None) -> 
     W = F.pose(bm["bones"], frames[0] if frames else None)
     verts = {i: (np.c_[b["mesh"]["verts"], np.ones(len(b["mesh"]["verts"]))] @ W[i].T)[:, :3]
              for i, b in enumerate(bm["bones"]) if b["mesh"]}
-    spec = legacy_roles or battle_spec(bm)
+    spec = legacy_roles or BATTLE_SPECS.get(str(name or "").upper()) or battle_spec(bm)
     if spec is None:
         raise ValueError("this battle skeleton doesn't follow the FF7 party layout (no pelvis/chest/head chain)")
     return make_target(W, verts, spec, FIELD_FIT_HEIGHT)
@@ -719,7 +769,7 @@ def build(disc: Path, model_path: Path, roles: dict, work: Path, name: str, out_
         nsign = 1.0 if np.mean(np.sign(dots)) >= 0 else -1.0
         res = {"normal_sign": nsign}
         progress(10, f"Fitting {name} onto Cloud's field skeleton")
-        ftgt = field_target(fm)
+        ftgt = field_target(fm, field_file)
         mesh_bones = {p["bone"] for p in fm["parts"]}
         field_atlas=None
 
@@ -741,7 +791,10 @@ def build(disc: Path, model_path: Path, roles: dict, work: Path, name: str, out_
             ok = len(comp) <= bcx_size and r["bytes"] <= r["budget_bytes"] and r["gpu_buffer"] <= r["budget_gpu_buffer"]
             k = min(bcx_size / len(comp), r["budget_bytes"] / r["bytes"], r["budget_gpu_buffer"] / max(r["gpu_buffer"], 1))
             return comp, r, ok, k
-        bcx, frep, frig = _fit_loop("ff7_field", ftgt, model_path, roles, work, blender, make_field, 640, progress, scale, props,protect_textures=True)
+        # textured donor faces are protected from decimation only when they are drawn with field textures (the player
+        # slot); every other member decimates them like the rest to fit its own field budget (#1902)
+        bcx, frep, frig = _fit_loop("ff7_field", ftgt, model_path, roles, work, blender, make_field, 640, progress, scale, props,
+                                    protect_textures=use_field_textures)
         encoded_field=F.read_field_model(bcx)
         if field_atlas:
             from .ff7_field_textures import face_tim
@@ -758,7 +811,7 @@ def build(disc: Path, model_path: Path, roles: dict, work: Path, name: str, out_
             progress(45, f"Fitting {name} onto the battle skeleton")
             blba, bsize = src.files[f"ENEMY6/{battle_file}.LZS"]
             bm = F.read_battle_model(src.read(f"ENEMY6/{battle_file}.LZS"))
-            btgt = battle_target(bm, legacy_roles=BATTLE_ROLES if battle_file == "CLOUD" else None)
+            btgt = battle_target(bm, legacy_roles=BATTLE_ROLES if battle_file == "CLOUD" else None, name=battle_file)
             bbones = {i for i, b in enumerate(bm["bones"]) if b["mesh"]}
 
             def make_battle(rp):
@@ -956,10 +1009,18 @@ def build_cast(cfg, game: dict, pairs, name: str, progress=lambda p, m: None, ro
             field,battle,_=CAST_BY_SLOT[slot]
             roles=(meta.get('rig') or {}).get('roles') or {}
             if 'hip' not in roles:raise ValueError('Donor has no hip body role')
-            rep=build(base,root/meta['slug']/meta['model'],roles,work/slot,meta['name'],out_bin,base,
-                      battle=True,blender=Cm._blender(cfg),progress=lambda p,m:None,
-                      scale=(meta.get('rig') or {}).get('scale'),props=[p['node'] for p in meta.get('props') or []],
-                      field_file=field,battle_file=battle,use_field_textures=slot=='player',prepare_only=True)
+            kw=dict(battle=True,blender=Cm._blender(cfg),progress=lambda p,m:None,
+                    scale=(meta.get('rig') or {}).get('scale'),props=[p['node'] for p in meta.get('props') or []],
+                    field_file=field,battle_file=battle,prepare_only=True)
+            try:
+                rep=build(base,root/meta['slug']/meta['model'],roles,work/slot,meta['name'],out_bin,base,
+                          use_field_textures=slot=='player',**kw)
+            except ValueError as exc:
+                if slot!='player' or 'field textures' not in str(exc):raise
+                # the donor's field textures overflow FIELD.TDB / FIELD.BIN: keep the member with flat colours
+                rep=build(base,root/meta['slug']/meta['model'],roles,work/(slot+'_flat'),meta['name'],out_bin,base,
+                          use_field_textures=False,**kw)
+                rep['field_textures']=f'dropped: {exc}'[:300]
             pending=dict(rep['writes'])
             if len(pending)!=len(rep['writes']) or any(key in writes for key in pending):
                 raise ValueError('Conflicting FF7 replacement file ownership')
