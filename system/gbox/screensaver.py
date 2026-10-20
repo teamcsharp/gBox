@@ -37,6 +37,7 @@ START_GRACE = 20                            # s after the session is up before a
 COOLDOWN = 60 * 60                          # a game played on any PC within this rests unless nothing else is left
 ACTOR = "autoplay-screensaver"
 LOG_KEEP = 300
+BAD_ENDS = {"black": "the game showed only black: next game", "hung": "the game froze: next game"}
 
 
 PENDING = "autoplay_on_launch"            # launch job id -> {game_id, at}: start autoplay when that game is up
@@ -307,11 +308,17 @@ class Screensaver:
         return True
 
     def report(self, sid: str, result: dict) -> bool:
+        """The worker's autoplay result. One that ended because the game froze or showed only black (bad_end) moves this
+        PC on to its next game at the next tick (autoplay never leaves a frozen or black game on screen)."""
         with self.lock:
             run = self._by_session(sid)
             if not run:
                 return False
-            self.store.put(STATE, run["worker"], run | {"result": result})
+            upd = {"result": (run.get("result") or {}) | result}
+            bad = result.get("bad_end")
+            if bad and not run.get("yield"):
+                upd["yield"] = BAD_ENDS.get(bad, f"{bad}: next game")
+            self.store.put(STATE, run["worker"], run | upd)
             return True
 
     def status(self) -> dict:

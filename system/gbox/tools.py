@@ -2442,15 +2442,100 @@ def _telemetry(run, ctx, title: str = "") -> None:
 
 
 def _ended(run):
-    """An autoplay run finished (stopped, failed or done): note when, and tell the screensaver what happened."""
+    """An autoplay run finished (stopped, failed or done): note when, and tell the screensaver what happened. A run that
+    ended because the game froze or showed only black (run["bad_end"]) then gets the game back (_bad_end)."""
     run["ended"] = time.time()
     d = run.get("driver")
     res = run.get("result") or {}
     _saver_post(d, "result", {"session_id": run.get("sid", ""), "result": {
         "mode": run.get("mode"), "mission": run.get("mission"), "took_over": bool(run.get("took_over")),
+        **({"bad_end": run["bad_end"]} if run.get("bad_end") else {}),
         **({"knobs": res["knobs"]} if isinstance(res.get("knobs"), dict) else {}),
         **{k: v for k, v in res.items() if isinstance(v, (int, float, str, bool)) and k != "error"},
         **({"error": str(res["error"])[:300]} if res.get("error") else {})}})
+    if run.get("bad_end") and not run.get("took_over"):
+        threading.Thread(target=_bad_end, args=(run,), daemon=True, name=f"autoplay-recover-{run.get('sid', '')}").start()
+
+
+BLACK_LUMA, BLACK_FOR = 6.0, 45.0      # mean grey (0..255) of a black frame; how long only black means the game is gone
+RELAUNCH_WAIT = 300
+
+
+def _black(ad) -> bool | None:
+    """True when the game's picture is (nearly) black, False when it shows something, None when there is no frame."""
+    import base64
+    from . import imitate
+    try:
+        px = base64.b64decode(imitate.thumb(ad.get_frame()))
+    except Exception:                                          # noqa: BLE001 - no frame now: no verdict
+        return None
+    return bool(px) and sum(px) / len(px) < BLACK_LUMA
+
+
+def _black_watch(run, d, ad, clock=time.time, sleep=time.sleep):
+    """The operator tunes in and sees only black (operator 2026-10-20: "any time I look at gameplay it actually shows
+    gameplay"): BLACK_FOR seconds of black frames while autoplay plays end the run with bad_end "black" (_bad_end)."""
+    if not hasattr(ad, "get_frame"):
+        return
+
+    def watch():
+        since = None
+        while not d.stopped and (run.get("thread") is None or run["thread"].is_alive()):
+            b = _black(ad)
+            now = clock()
+            if b:
+                since = since or now
+                if now - since >= BLACK_FOR:
+                    run["bad_end"] = "black"
+                    d.stopped = True
+                    return
+            elif b is False:
+                since = None
+            sleep(5)
+    threading.Thread(target=watch, daemon=True, name=f"autoplay-black-{run.get('sid', '')}").start()
+
+
+def _bad_end(run, sleep=time.sleep):
+    """The game froze or showed only black: a screensaver demo moves on to its next game (the screensaver takes the
+    report); any other autoplay game (the Spark launched with autoplay) is relaunched - same game and build, same PC -
+    and autoplay starts again on it with the same settings. The server refuses this for the operator's own games."""
+    ctx, sid, inp = run.get("ctx"), run.get("sid", ""), run.get("inp")
+    if ctx is None or not sid:
+        return
+    try:
+        r = httpx.post(f"{ctx.server}/api/autoplay-screensaver/result", headers=ctx.headers, timeout=15,
+                       json={"session_id": sid, "result": {"bad_end": run["bad_end"]}})
+        if r.status_code < 400 and r.json().get("saved"):
+            return                                              # a screensaver run: it moves on by itself
+    except (httpx.HTTPError, ValueError):
+        pass
+    try:
+        r = httpx.post(f"{ctx.server}/api/sessions/{sid}/reset", headers=ctx.headers, json={"mode": "restart"}, timeout=30)
+        if r.status_code >= 400:
+            run["recovery"] = f"relaunch refused: {r.text[:200]}"
+            return
+        jid, new, waited = r.json().get("id"), None, 0
+        while waited < RELAUNCH_WAIT and jid:
+            sleep(3)
+            waited += 3
+            job = httpx.get(f"{ctx.server}/api/jobs/{jid}", headers=ctx.headers, timeout=15).json()
+            if job.get("state") == "succeeded":
+                out = job.get("output") or {}
+                new = out.get("session_id") or (out.get("result") or {}).get("session_id")
+                break
+            if job.get("state") in ("failed", "rejected", "cancelled", "invalid"):
+                run["recovery"] = f"relaunch {job.get('state')}: {str(job.get('error') or '')[:200]}"
+                return
+        if not new:
+            run["recovery"] = "relaunch did not finish"
+            return
+        httpx.post(f"{ctx.server}/api/jobs", headers=ctx.headers, timeout=30, json={
+            "tool": "autoplay", "require_worker": new.split("-")[0], "agent_use": True,
+            "input": {"session_id": new, "op": "start", "mode": getattr(inp, "mode", "auto") or "auto",
+                      "screensaver": bool(getattr(inp, "screensaver", False)), "style": getattr(inp, "style", None) or {}}})
+        run["recovery"] = f"relaunched as {new}, autoplay started again"
+    except (httpx.HTTPError, ValueError) as e:
+        run["recovery"] = f"relaunch failed: {type(e).__name__}"
 
 
 AUTOPLAY_HACKS = MISSIONS.parent / "autoplay"            # profiles/autoplay/<game_id>.json: codes held while gBox plays
@@ -2501,7 +2586,8 @@ def _playbook(ad, g):
 def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> dict:
     sid = inp.session_id
     name = pb.__name__.rsplit(".", 1)[-1]
-    run = AUTOPLAY[sid] = {"driver": d, "sid": sid, "since": since, "mode": "playbook", "mission": f"playbook: {name}"}
+    run = AUTOPLAY[sid] = {"driver": d, "sid": sid, "since": since, "mode": "playbook", "mission": f"playbook: {name}",
+                           "ctx": ctx, "inp": inp}
 
     def go():
         try:
@@ -2519,17 +2605,15 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
                 except Exception:                              # noqa: BLE001 - no recorded play: the playbook's own way
                     pass
             stats = pb.play(ad, _screensaver_send(ad) if run.get("screensaver") else ad.send_input, lambda: d.stopped, **kw)
-            if stats.get("hung") and ctx is not None:         # the game froze: relaunch the same build
-                try:
-                    httpx.post(f"{ctx.server}/api/sessions/{sid}/reset", headers=ctx.headers, json={"mode": "reset"}, timeout=30)
-                except httpx.HTTPError:
-                    pass
+            if stats.get("hung"):                              # the game froze: _ended gets it back (_bad_end)
+                run["bad_end"] = "hung"
             run["result"] = {"ok": True, "playbook": name, **stats, **({"setup_failed": len(failed)} if failed else {})}
         except Exception as e:
             run["result"] = {"ok": False, "error": str(e)}
         _release_all(sid)
         _ended(run)
     _takeover(run, d, sid, since)
+    _black_watch(run, d, ad)                                   # only black on screen: get the game back
     run["thread"] = threading.Thread(target=go, daemon=True)
     run["thread"].start()
     _telemetry(run, ctx, (g or {}).get("title") or "")
@@ -2564,7 +2648,7 @@ def _start_imitation(inp, ctx, d, ad, g, game_id, since) -> dict:
     runs = _recorded_play(ctx, game_id)
     platform = g.get("platform")
     sid = inp.session_id
-    run = {"driver": d, "sid": sid, "since": since, "mode": inp.mode}
+    run = {"driver": d, "sid": sid, "since": since, "mode": inp.mode, "ctx": ctx, "inp": inp}
     send = _screensaver_send(ad) if inp.screensaver else (lambda rows: ad.send_input(rows))
     if inp.mode == "replay":
         rec = imitate.pick_run(runs, ad.name, inp.run_id)
@@ -2632,6 +2716,7 @@ def _start_imitation(inp, ctx, d, ad, g, game_id, since) -> dict:
         objective = f"playing in your style: {len(model['bursts'])} moves learned from {len(own)} recorded sessions"
     AUTOPLAY[sid] = run
     _takeover(run, d, sid, since)
+    _black_watch(run, d, ad)                                   # only black on screen: get the game back
     run["thread"] = threading.Thread(target=go, daemon=True)
     run["thread"].start()
     _telemetry(run, ctx, g.get("title") or "")
