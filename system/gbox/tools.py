@@ -2597,6 +2597,9 @@ def _autoplay_hacks(sid: str, g: dict) -> list[str]:
 
 
 PLAYBOOKS = ("re4_merc_bot", "doa2_bot")              # game-specific autoplay bots: matches(ad, g), setup(ad), play(ad, send, stopped)
+# playbook -> the module that reads its game's button prompts from RAM (for_adapter(ad, stats) -> a prompt source):
+# play(..., ram_prompt=) asks it before the screen watcher
+RAM_PROMPTS = {"re4_merc_bot": "re4_ram_prompts"}
 
 
 def _playbook(ad, g):
@@ -2619,15 +2622,22 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
 
     def go():
         try:
+            import importlib
             import inspect
             failed = pb.setup(ad)
             kw = {}
             if "stats" in inspect.signature(pb.play).parameters:
                 kw["stats"] = run["live"] = {}                 # the playbook fills it as it plays (watch panel)
+            if "ram_prompt" in inspect.signature(pb.play).parameters and RAM_PROMPTS.get(name):
+                try:                                           # the game's own prompt state in RAM: asked first
+                    rp = importlib.import_module(f".{RAM_PROMPTS[name]}", __package__)
+                    kw["ram_prompt"] = rp.for_adapter(ad, kw.get("stats"))
+                except Exception:                              # noqa: BLE001 - no RAM view: the screen alone
+                    pass
             if "prompt" in inspect.signature(pb.play).parameters and hasattr(ad, "get_frame"):
-                from . import screen_prompt                    # the game's on-screen button prompts (A TAKE / JUMP OVER)
+                from . import screen_prompt                    # the game's on-screen button prompts (A TAKE / JUMP OVER):
                 watcher = run["prompt_watcher"] = screen_prompt.Watcher(lambda: ad.get_frame(), hz=6.0).start()
-                kw["prompt"] = lambda: watcher.visible(0.5)
+                kw["prompt"] = lambda: watcher.visible(0.5)    # after RAM, when RAM can't tell
             if "style" in inspect.signature(pb.play).parameters and ctx is not None and game_id:
                 try:                                           # the operator's learned style does the fighting
                     from . import imitate
