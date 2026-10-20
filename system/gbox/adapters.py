@@ -2168,6 +2168,12 @@ class DolphinAdapter(StandaloneAdapter):
     flatpak = "org.DolphinEmu.dolphin-emu"
     screen = (640, 480)                          # GameCube output size; Dolphin's window opens at exactly this
     checkpoint_state, state_glob = "dir", "*.s08"   # gBox's checkpoint ring lives in Dolphin's slot 8 (Shift+F8 / F8)
+    # Demo jump states (gbox/jumpstate.py) are saved through Dolphin's slot 10, which only gBox's demos use: the operator
+    # keeps slot 1 and the checkpoint ring slot 8. Only the save is bound: a jump state is loaded at boot (jump_boot),
+    # never into a running game, so no key can load slot 10.
+    JUMP_SLOT = 10
+    jump_from: Path | None = None                # the jump state this launch boots straight into (Dolphin's --save_state)
+    STATE_WAIT_S = 20.0                          # Dolphin compresses and writes a state on its own thread
     # gBox pad -> keys; GCPadNew.ini binds the same keys to the GameCube pad (Dolphin names letter keys in upper case)
     keys = {"up": "Up", "down": "Down", "left": "Left", "right": "Right", "a": "x", "b": "z", "x": "s", "y": "a",
             "l": "q", "r": "w", "l2": "q", "r2": "w", "select": "e", "z": "e", "start": "Return",
@@ -2272,7 +2278,8 @@ D-Pad/Right = `H`
             'Save State/Save State Slot 8 = `Shift_L` & `F8`\n'
             'Load State/Load State Slot 8 = !`Shift_L` & `F8`\n'
             'Save State/Save State Slot 1 = `Shift_L` & `F1`\n'
-            'Load State/Load State Slot 1 = !`Shift_L` & `F1`\n')
+            'Load State/Load State Slot 1 = !`Shift_L` & `F1`\n'
+            'Save State/Save State Slot 10 = `Shift_L` & `F10`\n')     # demo jump states only (jump_save)
         self._gecko_setup(user, rom)
         opts = {"Dolphin.General.GDBPort": self.port, "Dolphin.Core.GFXBackend": "Vulkan", "Dolphin.Core.EnableCheats": "True",
                 "Dolphin.General.HotkeysRequireFocus": "False",  # private Xvfb has no window manager to give Qt focus
@@ -2290,9 +2297,12 @@ D-Pad/Right = `H`
             from . import memory_card_sessions
             memory_card_sessions.journal(self.memory_card_context)
         extra=[f'--filesystem={getattr(self,"memory_card_context",{}).get("work_dir")}'] if getattr(self,'memory_card_context',None) else []
+        if self.jump_from:                       # the flatpak reads host files read-only already; say so for this one
+            extra.append(f"--filesystem={Path(self.jump_from).parent}:ro")
         opts.update(self._title_options())
+        opts.update(self._jump_opts())
         return ["flatpak", "run", "--die-with-parent", f"--filesystem={user}", *extra, self.flatpak, "-b", "-u", str(user),
-                *[a for k, v in opts.items() for a in ("-C", f"{k}={v}")], "-e", rom]
+                *[a for k, v in opts.items() for a in ("-C", f"{k}={v}")], *self._jump_args(), "-e", rom]
 
     def _debugger(self):
         from .debug import GdbDebugger
@@ -2323,6 +2333,65 @@ D-Pad/Right = `H`
     def checkpoint_load(self) -> dict:
         self._xdo('keydown', 'F8', 'sleep', '0.1', 'keyup', 'F8')
         return {"slot": 8}
+
+    def _wait_state(self, slot: int, t0: float, timeout: float | None = None) -> Path:
+        """The state file Dolphin wrote for this hotkey: <game id>.sNN in StateSaves, newer than t0, size settled."""
+        folder, pattern = self.state_dir(), f"*.s{slot:02d}"
+        deadline = time.time() + (self.STATE_WAIT_S if timeout is None else timeout)
+        last = None
+        while time.time() < deadline:
+            try:
+                fresh = [f for f in folder.glob(pattern) if f.is_file() and f.stat().st_mtime >= t0 - 1]
+            except OSError:
+                fresh = []
+            f = max(fresh, key=lambda p: p.stat().st_mtime) if fresh else None
+            size = f.stat().st_size if f else 0
+            if f and size > 0 and last == (f, size):
+                return f
+            last = (f, size) if f else None
+            time.sleep(0.3)
+        raise RuntimeError(f"Dolphin did not write a save state (slot {slot}) within "
+                           f"{self.STATE_WAIT_S if timeout is None else timeout:g} s in {folder}")
+
+    # ---- demo jump states (gbox/jumpstate.py): demos and autoplay start in gameplay, not on a title screen ----
+    def jump_boot(self, src) -> None:
+        """Boot this launch straight into a jump state. Only gbox/jumpstate.arm_boot calls it, for a launch that asks
+        for a jump (the screensaver, autoplay on launch) when this PC has one for the same game and build."""
+        self.jump_from = Path(src)
+
+    def _jump_args(self) -> list[str]:
+        """Dolphin's -s / --save_state (UICommon/CommandLineParse.cpp): the state loads on the CPU thread before the
+        game's first instruction and before the GDB stub's boot hold, so not even a logo shows. A state this Dolphin
+        can't use (another game id, another Dolphin version) only shows a message and the game boots the usual way."""
+        return ["-s", str(self.jump_from)] if self.jump_from else []
+
+    def _jump_opts(self) -> dict:
+        # a damaged state file is a panic alert (a modal dialog) in Dolphin: an unattended demo must never stop on one.
+        # The command-line layer is never saved, so the operator's own launches keep their dialogs.
+        return {"Dolphin.Interface.UsePanicHandlers": "False"} if self.jump_from else {}
+
+    def _jump_save_key(self) -> None:
+        self._xdo('keydown', 'Shift_L', 'keydown', 'F10', 'sleep', '0.1', 'keyup', 'F10', 'keyup', 'Shift_L')
+
+    def jump_save(self, dest: Path) -> int:
+        """Save a jump state through the demo slot (JUMP_SLOT) and copy it to dest. The operator's slot 1 file is never
+        written; the demo slot's file is removed once copied, so the next save has nothing to move into Dolphin's undo
+        backup (lastState.sav). Confirmed by the file Dolphin writes, or it raises."""
+        if self.ff_on:                           # Windows: the held speed-limit key is the lane key of every gBox
+            raise RuntimeError("fast-forward is on: no jump state now")   # chord, so other chords would match first
+        t0 = time.time()
+        self._jump_save_key()
+        written = self._wait_state(self.JUMP_SLOT, t0)
+        dest = Path(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_suffix(".tmp")
+        shutil.copyfile(written, tmp)
+        tmp.replace(dest)
+        try:
+            written.unlink()
+        except OSError:
+            pass
+        return dest.stat().st_size
 
 
 class DolphinWinAdapter(DolphinAdapter):
@@ -2370,12 +2439,14 @@ D-Pad/Right = `Pad E`
         "Save State/Save State Slot 1": ("RCONTROL", "RSHIFT"),
         "Load State/Load State Slot 8": ("LCONTROL",),                 # gBox's checkpoint ring (gbox/rewind.py)
         "Save State/Save State Slot 8": ("LCONTROL", "RSHIFT"),
+        # demo jump states (gbox/jumpstate.py): saved only, loaded at boot. Its chord holds every modifier, so with
+        # fast-forward off (the lane key up) no other chord is ever true while it is pressed.
+        "Save State/Save State Slot 10": ("RCONTROL", "LCONTROL", "RSHIFT"),
     }
     _MOD_KEY = {"RCONTROL": "Control_R", "RSHIFT": "Shift_R", "LCONTROL": "Control_L"}   # win_send_keys names
     _lanes: dict[str, object] = {}              # lane key -> the adapter holding it (this worker process)
     _lanes_lock = threading.Lock()
     lane = "F13"
-    STATE_WAIT_S = 20.0                         # Dolphin compresses and writes a state on its own thread
 
     @classmethod
     def hotkeys_ini(cls, lane: str) -> str:
@@ -2415,24 +2486,8 @@ D-Pad/Right = `Pad E`
             raise RuntimeError('Dolphin hotkey was interrupted before completion; the game was kept running')
         return result
 
-    def _wait_state(self, slot: int, t0: float, timeout: float | None = None) -> Path:
-        """The state file Dolphin wrote for this hotkey: <game id>.sNN in StateSaves, newer than t0, size settled."""
-        folder, pattern = self.state_dir(), f"*.s{slot:02d}"
-        deadline = time.time() + (self.STATE_WAIT_S if timeout is None else timeout)
-        last = None
-        while time.time() < deadline:
-            try:
-                fresh = [f for f in folder.glob(pattern) if f.is_file() and f.stat().st_mtime >= t0 - 1]
-            except OSError:
-                fresh = []
-            f = max(fresh, key=lambda p: p.stat().st_mtime) if fresh else None
-            size = f.stat().st_size if f else 0
-            if f and size > 0 and last == (f, size):
-                return f
-            last = (f, size) if f else None
-            time.sleep(0.3)
-        raise RuntimeError(f"Dolphin did not write a save state (slot {slot}) within "
-                           f"{self.STATE_WAIT_S if timeout is None else timeout:g} s in {folder}")
+    def _jump_save_key(self) -> None:
+        self._hotkey("Save State/Save State Slot 10")
 
     def _exe(self) -> Path:
         for c in (self.config.runtime / "dolphin" / "Dolphin-x64" / "Dolphin.exe", Path("D:/gBox/runtime/dolphin/Dolphin-x64/Dolphin.exe")):
@@ -2494,7 +2549,9 @@ D-Pad/Right = `Pad E`
             from . import memory_card_sessions
             memory_card_sessions.journal(self.memory_card_context)
         opts.update(self._title_options())
-        return [str(exe), "-b", "-u", str(user), *[a for k, v in opts.items() for a in ("-C", f"{k}={v}")], "-e", rom]
+        opts.update(self._jump_opts())
+        return [str(exe), "-b", "-u", str(user), *[a for k, v in opts.items() for a in ("-C", f"{k}={v}")],
+                *self._jump_args(), "-e", rom]
 
     def cheat_set(self, index: int, on: bool) -> dict:
         if not 0 <= index < len(self.cheats):

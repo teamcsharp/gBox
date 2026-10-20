@@ -352,6 +352,9 @@ class LaunchIn(BaseModel):
     boot_timeout_s: float | None = Field(default=None, ge=10, le=600)   # how long the emulator may take to report the
                                            # game running (None = the adapter's default, 30 s for RetroArch); the
                                            # launch failure remedy relaunches a slow boot with a longer one
+    jump: bool = False                     # a demo (the screensaver, autoplay on launch): boot straight into this game and
+                                           # build's jump state where the emulator can (Dolphin) and this PC has one
+                                           # (gbox.jumpstate). Never set for the operator's own Play.
 
 class LaunchOut(BaseModel):
     session_id: str
@@ -707,7 +710,7 @@ def _examine_for_launch(inp_examine, examine_ready, host_os):
 def _launch_game(inp: LaunchIn, ctx: Ctx):
     g = inp.game
     launch_mod = inp.mod
-    timings, staging = {}, None
+    timings, staging, jump = {}, None, None
     unlock_result = {'state': 'research_pending', 'applied': False}
     diag = getattr(_LAUNCH_DIAG, "d", None)
     diag = {} if diag is None else diag
@@ -839,9 +842,19 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         memory_card_sessions.recover_pending(ctx)
         ad.memory_card_rom=str(src)
         memory_card_sessions.checkout(f'{ctx.worker}-{ctx.job_id}',ad,g.model_dump(),ctx)
-        ctx.progress(72, f"Starting {ad.name} with {src.name}")
+        if inp.jump and not inp.capture_backend:            # a demo: straight into gameplay (gbox.jumpstate)
+            from . import jumpstate
+            jump = diag["jump"] = jumpstate.arm_boot(ad, {"game_id": g.game_id, "mod": launch_mod or ""})
+        ctx.progress(72, f"Starting {ad.name} with {src.name}"
+                         + (f", straight into gameplay ({jump['file']})" if jump and jump.get("booted") else ""))
         diag["stage"] = "start the emulator"
-        detail = ad.launch_game(str(src))
+        try:
+            detail = ad.launch_game(str(src))
+        except Exception:
+            if jump and jump.get("booted"):                 # never let a jump state keep a game from starting:
+                from . import jumpstate                     # the next launch boots the usual way
+                jumpstate.drop_boot(ad)
+            raise
         if callable(getattr(type(ad), '_boot_frame', None)):
             frame = ad._boot_frame()
             if frame:
@@ -852,6 +865,8 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     timings["total_s"] = round(time.monotonic() - t_start, 3)
     detail["timings"] = timings                               # #1506: where a launch's time went, per stage
     detail['unlocks'] = unlock_result
+    if jump is not None:
+        detail["jump"] = jump                                 # session.detail.jump: the screensaver starts at once
     if staging is not None:
         detail["staging"] = staging
     ctx.progress(100, "Running natively in its own window" if detail.get("local_window") else "Running — connecting the stream")
@@ -2320,7 +2335,9 @@ def autoplay(inp: AutoplayIn, ctx: Ctx):
             return {"result": _start_playbook(pb, inp, d, ad, since, ctx, g, game_id) | ({"hacks": hacks} if hacks else {})}
         if inp.mode == "playbook":
             raise ValueError(f"no playbook plays {g.get('title')} where it is now (have: {', '.join(PLAYBOOKS)})")
-    if inp.mode == "auto" and not inp.mission and game_id and since - float(started or 0) < AT_BOOT:
+    from . import jumpstate
+    if inp.mode == "auto" and not inp.mission and game_id and since - float(started or 0) < AT_BOOT \
+            and not jumpstate.booted(ad, g):                   # booted into its jump state: past the boot already
         try:                                                   # the chord at the title screen: your recorded run from boot
             return {"result": _start_imitation(inp.model_copy(update={"mode": "replay"}), ctx, d, ad, g, game_id, since)}
         except ValueError:
@@ -2683,6 +2700,7 @@ def _start_imitation(inp, ctx, d, ad, g, game_id, since) -> dict:
                         stuck = _stuck(ad)
                         st = imitate.Style(model, knobs=inp.style)
                         stats = run["live"] = {}
+                        _jump_watch(run, d, ad, g, stuck, stats, after_replay=True)
                         run["result"]["bursts"] = imitate.play_style(st, send=send, stopped=lambda: d.stopped,
                                                                      sleep=time.sleep, stuck=stuck, ff=_ff(ad),
                                                                      stats=stats)
@@ -2764,10 +2782,13 @@ def _ff(ad):
     return None
 
 
-def _jump_watch(run, d, ad, g, stuck, stats):
-    """Boot jump state beside the learned style (gbox.jumpstate): start in gameplay next time, not on a title."""
+def _jump_watch(run, d, ad, g, stuck, stats, after_replay=False):
+    """Boot jump state beside the learned style (gbox.jumpstate): start in gameplay next time, not on a title.
+    after_replay: the screensaver goes on in your style after replaying your run from boot. Only an emulator that
+    boots into its jump state (Dolphin) saves one there, or the games you recorded runs of would never get one;
+    RetroArch's stays as it was (learned autoplay only: it loads its jump state when that starts)."""
     from . import jumpstate
-    if jumpstate.supported(ad):
+    if jumpstate.supported(ad) and (not after_replay or jumpstate.strategy(ad) == "boot"):
         threading.Thread(target=jumpstate.watch, args=(ad, g, stuck, stats,
                                                         lambda: d.stopped or not run["thread"].is_alive()),
                          daemon=True, name=f"jumpstate-{run['sid']}").start()
