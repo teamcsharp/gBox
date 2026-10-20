@@ -343,7 +343,8 @@
       ${[...Array(10).keys()].map(i => `<option value="${i}" ${String(st.boot.slot) === String(i) ? "selected" : ""}>slot ${i}</option>`).join("")}</select></label>
       <div class="mut" style="font-size:11px">F2 saves to the current slot in game; Shift/Ctrl+F2 change the slot.</div></div>`,
     play: st => `<div class="gmb"><button class="act pri" data-go="">▶ Play</button>${st.worker ? '<button class="act" data-go="linux">Play on Spark</button>' : ""}
-      <button class="act" data-go="plain" title="Ignore the boot setup this once">Play original</button></div>`,
+      <button class="act" data-go="plain" title="Ignore the boot setup this once">Play original</button>
+      <button class="act" data-go="autoplay" title="The Spark plays this game by itself (your style, its hacks, straight into gameplay) and streams it here">🤖 Autoplay on Spark</button></div>`,
   };
   const ORDER = ["head", "actions", "chars", "mods", "special", "collect", "slot", "play"];
   const LABEL = { head: "The title", actions: "Models / cover / cast", chars: "Play as", mods: "Boot with a mod", special: "Special builds",

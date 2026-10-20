@@ -207,3 +207,12 @@ test('wiring: both clients load the module; the card handler opens it without aw
   assert.match(web, /m\.id = "issuemenu"; m\.setAttribute\("role", "menu"\)/, '"Request about…" is cut out of a docked game like the other guest menus');
   assert.match(desk, /EMB_GUEST_MENUS = "#gmenu, [^"]*\[role=menu\]/);
 });
+
+test('the Play section offers "Autoplay on Spark" and index.html launches it on the Spark with autoplay', () => {
+  const html = GM.SECTIONS.play({ worker: 'w', boot: {} });
+  assert.match(html, /data-go="autoplay"/);
+  assert.match(html, /Autoplay on Spark/);
+  const page = fs.readFileSync(path.join(__dirname, '..', 'clients', 'web', 'index.html'), 'utf8');
+  assert.match(page, /go === "autoplay" \? \{ autoplay: true \}/);
+  assert.match(page, /if \(opts\.autoplay\) auto = true;/);
+});
