@@ -5375,7 +5375,8 @@ def create_app(config: Config) -> FastAPI:
         if head.startswith(sha):
             return True
         from . import hermes_delivery
-        for repo in (Path.home() / "gBox-src", hermes_delivery.repository()):
+        from .side_dirs import side_dir
+        for repo in (side_dir("gBox-src"), hermes_delivery.repository()):
             if (repo / ".git").exists():
                 r = subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", sha, head],
                                    capture_output=True, timeout=30)

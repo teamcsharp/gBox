@@ -5,7 +5,7 @@ import pytest
 
 from gbox import time_stalkers as ts
 
-GDI = Path.home() / "gbox-cache" / "dc" / ts.GAME_ID / "disc.gdi"
+GDI = Path.home() / "gBox_alt/gbox-cache" / "dc" / ts.GAME_ID / "disc.gdi"
 
 
 def _node(pos, scl=(1.0, 1.0, 1.0), link=0, offs=(0, 0)):
@@ -214,7 +214,7 @@ def test_sh4_absolute_refs_modal_bucket_is_link_base():
 
 @pytest.mark.skipif(not GDI.exists(), reason="owned Time Stalkers GD-ROM not unpacked on this node")
 def test_owned_disc_main_bin_loaders():
-    d = Path.home() / "gbox-cache" / "time_stalkers" / "MAIN.BIN"
+    d = Path.home() / "gBox_alt/gbox-cache" / "time_stalkers" / "MAIN.BIN"
     if not d.exists():
         pytest.skip("MAIN.BIN not copied locally")
     data = d.read_bytes()

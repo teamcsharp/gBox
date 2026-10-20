@@ -1,7 +1,7 @@
 """Tests for gbox.kigold_analysis — pinned to the exact owned KI Gold build.
 
 ROM-dependent tests skip unless the normalized rom.z64 is present at
-GBOX_KIGOLD_ROM (default ~/gbox-cache/407771fca8e3cd17/rom.z64); the loaded
+GBOX_KIGOLD_ROM (default ~/gBox_alt/gbox-cache/407771fca8e3cd17/rom.z64); the loaded
 image is hash-checked against the No-Intro Rev 2 build.
 """
 
@@ -24,7 +24,7 @@ from gbox.kigold_analysis import (
 
 ROM = Path(os.environ.get(
     "GBOX_KIGOLD_ROM",
-    Path.home() / "gbox-cache" / "407771fca8e3cd17" / "rom.z64",
+    Path.home() / "gBox_alt/gbox-cache" / "407771fca8e3cd17" / "rom.z64",
 ))
 ROM_SHA256 = "f80cae340efadf5725cd0f75441addb9186be9860267595be2b4a2d317b05f8a"
 SIZE_LADDER = [9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83,

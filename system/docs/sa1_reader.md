@@ -98,7 +98,7 @@ Tests: `python -m pytest tests/test_sa1_chars.py tests/test_cast_swap.py -q -p n
 * `tests/test_sa1_chars.py`: PRS round trip; basic meshsets (tris, quads, flipped strips, per-corner UVs, textured /
   colour-only materials); a synthetic flat humanoid -> bones, `FACE_Z`, all 15 roles, the chest bone (re-parented
   arms and head, upper torso rebound, joints unmoved), GLB + Crazy Taxi segments; overlay load addresses; the
-  `DEDICATED` row (matches SA1, not SA2). Owned disc (skipped unless `GBOX_SA1_GDI`, `~/gbox-cache/dc/<id>/disc.gdi`
+  `DEDICATED` row (matches SA1, not SA2). Owned disc (skipped unless `GBOX_SA1_GDI`, `~/gBox_alt/gbox-cache/dc/<id>/disc.gdi`
   or the share's `//10.89.1.246/ehm_eckx/samples/gbox-cache/dc/<id>/disc.gdi` is readable): all 8 characters export
   with the roots, node and triangle counts above, textures on disk, and every Crazy Taxi part non-empty.
 * `tests/test_cast_swap.py`: synthetic SA1 donors -> sources (`Sonic Adventure`, `sa1`, id; the `sonic` group), the

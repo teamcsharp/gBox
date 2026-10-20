@@ -9,9 +9,9 @@ import pytest
 from gbox import sd2_analysis as a
 from gbox import yukes_sd as y
 
-EXE = Path.home() / "gbox-cache/sdk_re/sd2/SLUS_012.34"
-RAM = Path.home() / "gbox-cache/sdk_re/ghidra_ram.bin"
-BIN = Path.home() / "gbox-cache/modbase/276334ad218ffb46/WWF SmackDown! 2 - Know Your Role (USA).bin"
+EXE = Path.home() / "gBox_alt/gbox-cache/sdk_re/sd2/SLUS_012.34"
+RAM = Path.home() / "gBox_alt/gbox-cache/sdk_re/ghidra_ram.bin"
+BIN = Path.home() / "gBox_alt/gbox-cache/modbase/276334ad218ffb46/WWF SmackDown! 2 - Know Your Role (USA).bin"
 
 
 def _tim(bpp: int, clut: tuple | None, rect=(0x300, 0x100, 4, 2)) -> bytes:

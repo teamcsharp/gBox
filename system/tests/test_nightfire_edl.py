@@ -8,7 +8,7 @@ import pytest
 from gbox import nightfire_analysis as na
 from gbox import nightfire_edl as edl
 
-ISO = Path(os.environ.get("GBOX_NIGHTFIRE_ISO", Path.home() / "gbox-cache/modbase/744ba3bc797403bf/007 - Nightfire (USA).iso"))
+ISO = Path(os.environ.get("GBOX_NIGHTFIRE_ISO", Path.home() / "gBox_alt/gbox-cache/modbase/744ba3bc797403bf/007 - Nightfire (USA).iso"))
 
 
 class _W:

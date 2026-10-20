@@ -16,10 +16,11 @@
 # to any older main version is a stale copy and is overwritten (with the usual backup). A deferred restart is remembered in
 # gbox-data/deploy-restart-pending and retried on later rounds even when no further file changes.
 #
-# Install (once, on the Spark):   crontab -l | { cat; echo '*/15 * * * * $HOME/bin/deploy_main.sh >> $HOME/gbox-deploy.log 2>&1'; } | crontab -
+# Install (once, on the Spark):   crontab -l | { cat; echo '*/15 * * * * $HOME/bin/deploy_main.sh >> $HOME/gBox_alt/logs/gbox-deploy.log 2>&1'; } | crontab -
 set -euo pipefail
 REPO_URL="https://github.com/teamcsharp/gBox.git"
-SRC="${GBOX_SRC:-$HOME/gBox-src}"
+SRC="${GBOX_SRC:-$HOME/gBox_alt/gBox-src}"         # the deploy clone lives in ~/gBox_alt (out of the home root)
+[ -n "${GBOX_SRC:-}" ] || [ -d "$SRC/.git" ] || [ ! -d "$HOME/gBox-src/.git" ] || SRC="$HOME/gBox-src"   # not moved yet
 DST="${GBOX_DST:-$HOME/gBox/system}"
 STATE="$DST/gbox-data/deployed-main.txt"
 PENDING="$DST/gbox-data/deploy-restart-pending"    # runtime code was deployed but the service has not been refreshed yet

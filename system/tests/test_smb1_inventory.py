@@ -11,7 +11,7 @@ import pytest
 
 from gbox import smb1_inventory
 
-ROM_PATH = pathlib.Path.home() / "gbox-cache" / "49b6a2f65aca26a2" / "rom" / "Super Mario Bros. (World).nes"
+ROM_PATH = pathlib.Path.home() / "gBox_alt/gbox-cache" / "49b6a2f65aca26a2" / "rom" / "Super Mario Bros. (World).nes"
 SOURCE_SHA256 = "fb16c56ad6e0f2db925b09468f477de911ac8c52db0ea62a8553a72df2851883"
 
 

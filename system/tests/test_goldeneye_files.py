@@ -2,7 +2,7 @@
 
 The ROM-backed tests need the owned, normalised PAL z64 (sha256 40ff3643...).
 Point GBOX_GOLDENEYE_PAL_Z64 at it, or keep the cached copy at
-~/gbox-cache/eecd1708cb2b8d14/rom.z64; otherwise they skip.
+~/gBox_alt/gbox-cache/eecd1708cb2b8d14/rom.z64; otherwise they skip.
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from gbox import goldeneye_files as g
 def _rom_path() -> Path | None:
     for cand in (
         os.environ.get("GBOX_GOLDENEYE_PAL_Z64", ""),
-        str(Path.home() / "gbox-cache/eecd1708cb2b8d14/rom.z64"),
+        str(Path.home() / "gBox_alt/gbox-cache/eecd1708cb2b8d14/rom.z64"),
         str(Path(__file__).resolve().parents[1] / "artifacts/source/007_GoldenEye_Europe_norm.z64"),
     ):
         if cand and Path(cand).is_file():

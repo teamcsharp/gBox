@@ -9,7 +9,7 @@ import pytest
 
 from gbox import ninja, pso_gc as G, pso_player
 
-ISO = Path(os.environ.get("GBOX_PSO_GC_ISO", Path.home() / "gbox-cache" / "gc" / "436e0bb84d5337d1" / "disc.iso"))
+ISO = Path(os.environ.get("GBOX_PSO_GC_ISO", Path.home() / "gBox_alt/gbox-cache" / "gc" / "436e0bb84d5337d1" / "disc.iso"))
 
 
 # ------------------------------------------------------------------ GSL
