@@ -132,3 +132,19 @@ def test_turning_it_off_stops_running_games_and_starts_none():
     s.delete("session", "w1-job0")
     tick(60)
     assert calls[-1]["input"]["op"] == "stop_game"
+
+
+def test_api_takes_json_bodies():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    s = Store()
+    app = FastAPI()
+    S.install(app, s, None, lambda: "operator", lambda *a, **k: None, lambda: [], Archive())
+    c = TestClient(app)
+    r = c.post("/api/autoplay-screensaver", json={"enabled": False, "workers": ["lilspark"]})
+    assert r.status_code == 200 and r.json()["settings"]["enabled"] is False
+    assert r.json()["settings"]["workers"] == ["lilspark"]
+    assert c.post("/api/autoplay-screensaver", json={"idle_minutes": 0}).status_code == 422
+    assert c.post("/api/autoplay-screensaver/yield", json={"session_id": "x", "reason": "mouse"}).json() == {"yielded": False}
+    assert c.post("/api/autoplay-screensaver/result", json={"session_id": "x", "result": {"a": 1}}).json() == {"saved": False}
+    assert [g["game_id"] for g in c.get("/api/autoplay-screensaver").json()["games"]] == ["pso", "sc"]
