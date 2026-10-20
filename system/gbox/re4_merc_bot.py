@@ -57,6 +57,11 @@ import struct
 import time
 from pathlib import Path
 
+try:
+    from . import re4_ram_prompts                 # the game's own action-button state: prompts from RAM, vision after
+except ImportError:                              # a tree without it: vision only
+    re4_ram_prompts = None
+
 GAME_IDS = {"G4BE08"}
 EMMGR, P_PLAYER, P_GLOBAL = 0x8027DF20, 0x802B9780 - 0x673C, 0x802B2280
 G_ROOM, MERC_TIMER, MERC = 0x4FA8, 0x80279308, 0x8021392C
@@ -646,9 +651,14 @@ def learn_dir_for(ad) -> Path:
 
 
 def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stats: dict | None = None,
-         clock=time.time, learn_dir: Path | None = None, rerun=None, prompt=None) -> dict:
+         clock=time.time, learn_dir: Path | None = None, rerun=None, prompt=None, ram_prompt=None) -> dict:
     """Drive Leon until stopped(); send(rows) presses keys. Returns the run's stats (stats, when given, is filled live:
-    the watch panel shows it): hops, prompts, max_combo, combo, timer, rounds, menu_presses."""
+    the watch panel shows it): hops, prompts, max_combo, combo, timer, rounds, menu_presses.
+
+    The button prompts come from RAM first (ram_prompt: () -> button | None, raising re4_ram_prompts.Unknown when
+    RAM can't tell; default: gbox.re4_ram_prompts on m, False = none) and from prompt (vision, gbox.screen_prompt)
+    only when RAM fails or can't tell (operator 2026-10-20: "Vision analysis to me should be the last level that we
+    have to fall back to"). stats["prompt_source"] says which one answered last."""
     m = m or memory(ad)
     bot, held = Bot(m, clock=clock, learn_dir=learn_dir or learn_dir_for(ad)), set()
     if stats is not None:
@@ -659,6 +669,23 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
     bot.stats["prompt_presses"] = 0
     prompt_taps: list = []                         # times the current prompt was pressed
     prompt_rest = 0.0
+    if ram_prompt is None and re4_ram_prompts is not None:
+        ram_prompt = re4_ram_prompts.source(m, bot.stats)
+    unknown = re4_ram_prompts.Unknown if re4_ram_prompts is not None else LookupError
+
+    def ask():
+        """The button the game asks for: RAM (the game's own action state), else vision."""
+        if ram_prompt:
+            try:
+                button = ram_prompt()
+                bot.stats["prompt_source"] = "ram"
+                return button
+            except unknown:
+                pass                               # not a state RAM can name: the screen decides
+        if prompt is not None:
+            bot.stats["prompt_source"] = "vision"
+            return prompt()
+        return None
 
     def hold(keys):
         nonlocal held
@@ -711,16 +738,21 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
             was_in = True
         out_since = None
         bot.stats.update(combo=s["combo"], timer=s["timer"])
-        button = prompt() if prompt is not None and now >= prompt_rest else None
+        button = ask() if now >= prompt_rest else None
         if button:                                     # the game asks for a button: press it (not aiming: A acts)
             prompt_taps = [t for t in prompt_taps if now - t < 3.0]
             if len(prompt_taps) >= PROMPT_BURST:
                 prompt_rest, prompt_taps = now + PROMPT_REST, []
             elif not prompt_taps or now - prompt_taps[-1] >= PROMPT_EVERY:
                 hold(set())
-                send([{"key": button, "down": True}])
-                sleep(0.12)
-                send([{"key": button, "down": False}])
+                # one button, a QTE's pair pressed together (A+B, L+R), or SHAKE OFF's run of stick flicks and A / B
+                chords = re4_ram_prompts.KEYS.get(button, [(button,)]) if re4_ram_prompts is not None else [(button,)]
+                for chord in chords:
+                    send([{"key": k, "down": True} for k in chord])
+                    sleep(0.12 if len(chords) == 1 else 0.06)
+                    send([{"key": k, "down": False} for k in chord])
+                    if len(chords) > 1:
+                        sleep(0.04)
                 prompt_taps.append(clock())
                 bot.stats["prompt_presses"] += 1
                 sleep(0.15)
