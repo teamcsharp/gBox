@@ -161,3 +161,15 @@ def test_reconcile_propagates_existing_unlock_support_into_dispatch_instructions
     assert 'existing_unlock_support' not in text or 're6-x360-native-save-template-v1' in text
     support=re6_profile_for({'game_id':RE6_ID,'platform':'xbox360'})
     assert support['status']=='verified_profile'
+
+
+def test_a_verified_unlock_on_load_code_profile_verifies_every_build(tmp_path, monkeypatch):
+    """2026-10-19: a game whose unlocks are held from launch by a code profile is no longer 'Unlock-all pending'."""
+    store, rows, c, reconcile, created, dispatched, sha = rig(tmp_path)
+    c.post('/api/custom-build-unlocks/policy',json={'enabled':True})
+    assert U.badge(store,rows[0])['status']=='pending'
+    from gbox import game_unlocks
+    monkeypatch.setattr(game_unlocks,'code_profile',lambda game: {'profile':'p1','scope':['characters','stages']}
+                        if game['game_id']=='g' else None)
+    b=U.badge(store,rows[0])
+    assert b['status']=='verified' and b['code_profile']=='p1' and 'characters, stages' in b['label']

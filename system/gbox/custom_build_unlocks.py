@@ -126,10 +126,20 @@ def badge(store, rec):
                     and receipt.get('profile_revision') == profile['revision'])
     if rec.get('base') and not (profile or {}).get('boot_apply'):
         verified = False
+    held = None
+    if not verified:
+        # A verified unlock-on-load code profile (profiles/gamedata/<game_id>-codes.json, gbox.game_unlocks) holds its
+        # unlocks in every session of the game from launch, stock or custom build alike (2026-10-19).
+        from .game_unlocks import code_profile
+        game = (store.catalog_get(gid) if hasattr(store, 'catalog_get') else None) or {}
+        held = code_profile({'game_id': gid, 'platform': game.get('platform') or rec.get('platform')})
+        verified = bool(held)
+    label = ('Unlocks held on load: ' + ', '.join(held.get('scope') or [])[:120]) if held else \
+        ('All unlocks verified' if verified else 'Unlock-all pending')
     return {'status': 'verified' if verified else 'pending', 'required': True,
             'number': task.get('number'), 'request_id': task.get('request_id'),
-            'label': 'All unlocks verified' if verified else 'Unlock-all pending',
-            'categories': list(CATEGORIES), 'error': task.get('error')}
+            'label': label, 'categories': list(CATEGORIES), 'error': task.get('error'),
+            **({'code_profile': held.get('profile')} if held else {})}
 
 
 def artifacts(store, values, label):
