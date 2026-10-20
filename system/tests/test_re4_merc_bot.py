@@ -158,3 +158,12 @@ def test_between_rounds_it_presses_a_until_the_next_round_and_counts_it():
     presses = [r for r in sent if r == [{"key": "a", "down": True}]]
     assert len(presses) >= 3 and live["menu_presses"] == len(presses)
     assert live["rounds"] == 2 and "timer" in live and "max_combo" in live    # live stats for the watch panel
+
+
+def test_the_result_screen_is_not_a_round():
+    m = world([], room=0x400, timer_s=0.0)                          # the Result screen: Mercenaries room, clock at 0
+    now, sent = [0.0], []
+    steps = iter(range(30))
+    B.play(None, sent.append, lambda: next(steps, None) is None, sleep=lambda s: now.__setitem__(0, now[0] + s), m=m,
+           clock=lambda: now[0])
+    assert [{"key": "a", "down": True}] in sent                       # pressed on: the next round
