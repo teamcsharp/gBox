@@ -36,27 +36,30 @@ bits; the pad map `0x80207380` ties those bits to A / B / X / Y / L / R). The la
    owner = Leon); slot 1's message pointer sat 0xC bytes into TAKE (so the module looks the label up by the message
    that contains the pointer, not by its start).
 2. **Live, read only** (session `e2771e1c892e46e9-d7dbf0129c4f4b1b` on lilspark, display :90, the agent's Mercenaries
-   bot playing the Village, 2026-10-20 16:59-17:12 CST): `action_from_ram()` and `screen_prompt.detect()` at 12 Hz
-   on the same moments (Dolphin's shared RAM view through `/proc/<pid>/mem`; the X display read with `XGetImage`),
-   8,374 samples in rounds, frames saved at every change:
+   bot playing the Village, 2026-10-20 16:59-17:07 CST, until Leon died): `action_from_ram()` and
+   `screen_prompt.detect()` at 12 Hz on the same moments (Dolphin's shared RAM view through `/proc/<pid>/mem`; the X
+   display read with `XGetImage`), 4,908 samples while the Mercenaries clock ran, frames saved at every change:
 
    | RAM \ screen detector | none | A icon | B icon |
    |---|---|---|---|
-   | no prompt | 8,097 | 19 (the screen one sample behind) | 1 (fire behind Leon: a false B) |
+   | no prompt | 4,631 | 19 (the screen one sample behind) | 1 (fire behind Leon: a false B) |
    | A (TAKE, OPEN, JUMP DOWN, KICK) | 27 (RAM one sample ahead) | 175 | - |
    | SHAKE OFF (`wiggle`) | 53 | - | 2 (the stick icon's red arrows) |
 
    32 prompts came up: TAKE 19, OPEN 6, SHAKE OFF 4, KICK 2, JUMP DOWN 1, every one with the text the screen showed.
-   The screen detector saw 27 of them (it never sees SHAKE OFF's stick icon as a button). RAM leads the picture by
-   one sample at both ends (median 84 ms, at most 96 ms).
+   The screen detector caught 27 of them: it missed three of the four SHAKE OFFs (a stick icon, no button; the fourth
+   it read as a B) and one short TAKE and OPEN. RAM leads the picture by one sample at both ends (median 84 ms, at
+   most 96 ms).
 3. **The node behind each prompt** (same run): TAKE = dispatch 2 (area event), priority 8, the item handler
    `0x8014E308`, data = the ITA entry (`aev.kind` item); OPEN = a door object (callback `0x800DD8C4`, data = the door
    em, em id 0x41); KICK = priority 0xB, data = the stunned Ganado's em, callback in the Ganado's code module loaded at
    `0x8172AB80`; JUMP DOWN = Leon's context check, callback `0x8013CF7C`; SHAKE OFF = no callback (the grab code counts
    the presses itself, Leon +0x518).
 4. **A door opening** (same run): right after each OPEN press, Leon +0xFC..0xFF went to `04 00 01 00` with the door em
-   (em id 0x41, EmMgr slot 23) at +0x3B8 and `0x800DDA0C` at `0x801F4C14`, while the picture showed him pushing the door
-   (`door-opening.png`). A kick gives the same routine 4 with a Ganado (em id 0x16) and a routine in its code module.
+   (em id 0x41, EmMgr slot 23) at +0x3B8 and a door routine at `0x801F4C14` (`0x800DDDC8` at 16:59:42, `0x800DDA0C` at
+   a later door), while the picture showed him pushing the door (`door-opening.png`). The Village has six door ems
+   (EmMgr slots 2-4, 7, 22, 23). A kick gives the same routine 4 with the Ganado at +0x3B8 and a routine in its code
+   module (`0x8170C53C`); a grab is `01 00 01 00` while SHAKE OFF is up.
 
 ## Frames
 
@@ -69,16 +72,17 @@ Each is a real frame of the run with the RAM values read at the same moment writ
 | `jump-down.png` | A JUMP DOWN (off the start roof) |
 | `kick.png` | A KICK (a stunned Ganado) |
 | `shake-off.png` | SHAKE OFF (a grab: the stick icon; the screen detector read it as a B) |
-| `door-opening.png` | no prompt: Leon opening the door (RAM: door object, routine `0x800DDA0C`) |
+| `door-opening.png` | no prompt: Leon opening the door (RAM: door object, routine `0x800DDDC8`) |
 | `no-prompt-false-b.png` | no prompt in RAM while the screen detector saw a B in the fire |
 
 ## Not seen in the game yet
 
-Static analysis only, no live moment yet: the QTEs (DODGE / JUMP with A+B or L+R, kinds 4 / 3: the Village has
-none), JUMP OVER (fences), JUMP IN / JUMP OUT (windows), CLIMB UP / CLIMB DOWN (the ladder AEV and the ladders the
-Ganados raise), KNOCK DOWN, X / Y prompts (kinds 6 / 7), and an area-event door (pG+0x20 = 4: the Village has no AEV
-doors). Kinds 9 / 0xA (story QTEs in the stage modules) are pressed by their own code: RAM reports them as unknown and
-the playbook asks the screen.
+Static analysis only, none came up in this run: the QTEs (DODGE / JUMP with A+B or L+R, kinds 4 / 3), JUMP OVER
+(fences), JUMP IN / JUMP OUT (windows), CLIMB UP / CLIMB DOWN (the ladder AEV and the ladders the Ganados raise),
+KNOCK DOWN, X / Y prompts (kinds 6 / 7), and an area-event door (pG+0x20 = 4: the Village's AEV table has no door).
+Kinds 9 / 0xA (story QTEs in the stage modules) are pressed by their own code: RAM reports them as unknown and the
+playbook asks the screen. Which of Leon's +0xFD values means aiming is not pinned down either (the action check
+`0x8013E3D0` refuses prompts while it is 5, 7, 8, 9, 0xC, 0xE or 0x10; KICK came up with `00 06 02 01`).
 
 ## Files
 
