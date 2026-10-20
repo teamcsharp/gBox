@@ -477,6 +477,30 @@ def retire_stale_run_reviews(db, now) -> int:
     return cur.rowcount
 
 
+def inbox_requests() -> set[str]:
+    """Request ids in the queue's inbox lane (the operator's tickets, launch failures, session observers); empty
+    when the queue file is missing or unreadable, which keeps the previous review order."""
+    try:
+        data = json.loads((D.state_dir() / 'work-queue.json').read_text(encoding='utf-8'))
+        return {v.get('request_id') for k, v in (data.get('items') or {}).items()
+                if str(k).startswith('inbox:') and v.get('request_id')}
+    except (OSError, ValueError, AttributeError):
+        return set()
+
+
+def next_review(db, kind, now, *, newest=False, first=()):
+    """The next pending review: runs of the requests in `first` (the inbox lane) before the rest, then the newest
+    run first or the oldest row first as before."""
+    order = "json_extract(payload,'$.run.started_at') DESC,created,key" if newest else 'created,key'
+    first = sorted(x for x in first if isinstance(x, str) and x.isalnum())
+    prefer, params = '', [kind, now]
+    if first:
+        prefer = 'CASE WHEN request_id IN (' + ','.join('?' for _ in first) + ') THEN 0 ELSE 1 END,'
+        params = [kind, now, *first]
+    return db.execute("SELECT * FROM reviews WHERE kind=? AND state IN ('pending','retry') "
+                      "AND next_at<=? ORDER BY " + prefer + order + " LIMIT 1", params).fetchone()
+
+
 def process_one(kind='run', *, newest=False):
     now = time.time()
     with closing(connect()) as db, db:
@@ -484,9 +508,7 @@ def process_one(kind='run', *, newest=False):
                    "WHERE state='reviewing' AND next_at<=?", (now,))
         if kind == 'run':
             retire_stale_run_reviews(db, now)
-        order = "json_extract(payload,'$.run.started_at') DESC,created,key" if newest else 'created,key'
-        row = db.execute("SELECT * FROM reviews WHERE kind=? AND state IN ('pending','retry') "
-                         "AND next_at<=? ORDER BY " + order + " LIMIT 1", (kind, now)).fetchone()
+        row = next_review(db, kind, now, newest=newest, first=inbox_requests() if kind == 'run' else ())
         if not row:
             return None
         row = dict(row)
