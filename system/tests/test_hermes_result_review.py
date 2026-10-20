@@ -521,3 +521,26 @@ class StaleRunReviews(ReviewFixture, unittest.TestCase):
         self.assertIn('newer run of this request', error)
         self.assertEqual(states['run:' + newer['id']], 'pending', 'the newer run review stays')
         self.assertEqual(states['run:' + lone['id']], 'pending', 'old but the only run of its request: still reviewed')
+
+
+class InboxFirstReviews(ReviewFixture, unittest.TestCase):
+    def test_runs_of_inbox_lane_requests_are_reviewed_before_favorites(self):
+        """2026-10-19: three operator tickets waited 2 to 4 hours behind 200 favorite runs; the pick now prefers
+        runs of the queue's inbox-lane requests, then the previous newest / oldest order."""
+        fav, op = 'f' * 16, 'a' * 16
+        for n, (rid, started) in enumerate(((fav, '2026-10-19T12:00:00+00:00'), (op, '2026-10-19T10:00:00+00:00'),
+                                             (fav, '2026-10-19T11:00:00+00:00'))):
+            run = dict(self.run, id=str(n + 5) * 32, started_at=started)
+            R.enqueue('run:' + run['id'], 'run', rid, {'run': run, 'item': self.item | {'request_id': rid}})
+        (self.root / 'work-queue.json').write_text(json.dumps({'items': {'inbox:' + op: {'request_id': op, 'lane': 'inbox'},
+                                                                          'favorite:' + fav: {'request_id': fav, 'lane': 'favorite'}}}))
+        self.assertEqual(R.inbox_requests(), {op})
+        now = time.time()
+        with closing(R.connect()) as db:
+            self.assertEqual(R.next_review(db, 'run', now, newest=True, first=R.inbox_requests())['request_id'], op,
+                             'the operator run goes first although it is the oldest')
+            self.assertEqual(R.next_review(db, 'run', now, newest=True)['request_id'], fav, 'without the lane: newest first')
+            self.assertEqual(R.next_review(db, 'run', now, newest=True)['key'], 'run:' + '5' * 32)
+            self.assertEqual(R.next_review(db, 'run', now, first={'../x'})['key'], 'run:' + '5' * 32, 'odd ids are ignored')
+        (self.root / 'work-queue.json').write_text('{not json')
+        self.assertEqual(R.inbox_requests(), set(), 'an unreadable queue keeps the previous order')
