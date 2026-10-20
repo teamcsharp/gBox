@@ -74,7 +74,8 @@ def re4_ram(cls=FakeRam, room=0x400, timer_s=87.3, combo=12, leon=(1000.0, 0.0, 
     m.ram[o + 0x398 - MEM1] = 0xFF
     m.put(R.MERC_TIMER, ">I", round(timer_s * 30))
     m.put(R.MERC + 0x28, ">II", combo, 150)
-    m.put(0x80287E9E, ">H", pad)
+    m.put(0x80287EA2, ">H", pad)                         # this frame's buttons (pad.held)
+    m.put(0x80287E9E, ">H", 0)                           # the frame before (pad.held_prev)
     m.ram[0x80279320 - MEM1] = prompt                   # prompt.kind: the button of the prompt drawn this frame
     mgr, aev, ita = 0x80289B3C, 0x80700000, 0x80701000      # AevMgr: +0 / +8 table headers (+6 count), +4 / +C entries
     m.put(0x802B3178, ">I", mgr)
@@ -113,7 +114,7 @@ def test_the_re4_map_reads_what_the_mercenaries_bot_reads():
     assert v["player.facing"] == pytest.approx(snap["player"]["rot"])
     assert v["player.aim_pitch"] == pytest.approx(-0.25) and v["player.hp"] == 1860
     assert v["game.money"] == 4500 and v["game.disc_id"] == "G4BE08"
-    assert v["pad.held"] == 0x120 and v.label("pad.held") == "R, A"
+    assert v["pad.held"] == 0x120 and v.label("pad.held") == "R, A" and v.label("pad.held_prev") == "none"
     assert v.label("save.extras") == "Mercenaries: Ada, Mercenaries: HUNK, Mercenaries: Krauser, Mercenaries: Wesker"
     rows = v["enemies"]
     assert [r["index"] for r in rows] == [e["slot"] for e in snap["enemies"]] == [1, 2]    # the dead slot is left out

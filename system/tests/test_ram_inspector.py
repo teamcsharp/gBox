@@ -85,7 +85,7 @@ def test_state_changes_are_events_with_the_streams_frame(app):
     first = live(app)
     frame = jpeg()
     app.post(f"/api/sessions/{SID}/frame", content=frame).raise_for_status()
-    app.fake.put(0x80287E9E, ">H", 0x0100)                 # R let go, A still held
+    app.fake.put(0x80287EA2, ">H", 0x0100)                 # R let go, A still held
     app.fake.put(0x8027F7D0 + 0x4FA8, ">H", 0x0401)        # another room
     insp = ram_inspector._INSPECTORS[SID]
     insp.last_at = -1e9                                     # read now (the watcher may already have)
@@ -167,7 +167,7 @@ def test_a_ram_map_field_labels_the_search(app):
     flag = 0x80401234
     took = []
     for held in (True, True, False, True, False, False):
-        app.fake.put(0x80287E9E, ">H", 0x100 if held else 0)
+        app.fake.put(0x80287EA2, ">H", 0x100 if held else 0)
         app.fake.ram[flag - MEM1] = 1 if held else 0
         insp.last_at = -1e9                                   # a fresh read for each check
         took.append(auto.step())
