@@ -38,9 +38,12 @@ def state(rd) -> dict:
             "fighting": demo == 0 and 0 < p1 <= HP_MAX and 0 < p2 <= HP_MAX}
 
 
-def play(ad, send, stopped, style=None, clock=time.time, sleep=time.sleep) -> dict:
+def play(ad, send, stopped, style=None, clock=time.time, sleep=time.sleep, stats: dict | None = None) -> dict:
+    """stats (optional, filled live for the watch panel): fights_s, jumps, routes, saves, safety, hung, plus the
+    current p1/p2 health and whether a fight is on."""
     rd = lambda a, n: bytes(ad.read_memory(a, n))
-    stats = {"fights_s": 0.0, "jumps": 0, "routes": 0, "saves": 0, "safety": 0, "hung": False}
+    stats = stats if stats is not None else {}
+    stats.update({"fights_s": 0.0, "jumps": 0, "routes": 0, "saves": 0, "safety": 0, "hung": False})
     jump_ok, fight_since, out_since, last_ram, frozen_since = False, None, None, None, None
     while not stopped():
         now = clock()
@@ -58,6 +61,7 @@ def play(ad, send, stopped, style=None, clock=time.time, sleep=time.sleep) -> di
         else:
             frozen_since = None
         last_ram = ram
+        stats.update(fighting=st["fighting"], p1_hp=st["p1"], p2_hp=st["p2"])
         if st["fighting"]:
             out_since = None
             fight_since = fight_since or now

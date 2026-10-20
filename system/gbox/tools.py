@@ -2414,6 +2414,33 @@ def _takeover(run, d, sid, since):
     threading.Thread(target=watch, daemon=True).start()
 
 
+def _telemetry(run, ctx, title: str = "") -> None:
+    """While the run plays, post what it is doing every 5 s (mode, mission, live stats) for the watch panel."""
+    if ctx is None:
+        return
+
+    def body(running):
+        live = run.get("live") or {}
+        stats = {k: v for k, v in live.items() if isinstance(v, (int, float, str, bool))}
+        return {"running": running, "mode": run.get("mode") or "", "mission": run.get("mission") or "",
+                "title": title, "stats": stats}
+
+    def post(running):
+        try:
+            httpx.post(f"{ctx.server}/api/autoplay/telemetry/{run['sid']}", headers=ctx.headers, json=body(running),
+                       timeout=10)
+        except httpx.HTTPError:
+            pass
+
+    def loop():
+        time.sleep(1)
+        while run.get("thread") is not None and run["thread"].is_alive():
+            post(True)
+            time.sleep(5)
+        post(False)
+    threading.Thread(target=loop, daemon=True, name=f"autoplay-telemetry-{run['sid']}").start()
+
+
 def _ended(run):
     """An autoplay run finished (stopped, failed or done): note when, and tell the screensaver what happened."""
     run["ended"] = time.time()
@@ -2481,6 +2508,8 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
             import inspect
             failed = pb.setup(ad)
             kw = {}
+            if "stats" in inspect.signature(pb.play).parameters:
+                kw["stats"] = run["live"] = {}                 # the playbook fills it as it plays (watch panel)
             if "style" in inspect.signature(pb.play).parameters and ctx is not None and game_id:
                 try:                                           # the operator's learned style does the fighting
                     from . import imitate
@@ -2503,6 +2532,7 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
     _takeover(run, d, sid, since)
     run["thread"] = threading.Thread(target=go, daemon=True)
     run["thread"].start()
+    _telemetry(run, ctx, (g or {}).get("title") or "")
     return {"started": run["mission"], "mode": "playbook", "objective": (pb.__doc__ or name).strip().splitlines()[0]}
 
 
@@ -2568,7 +2598,7 @@ def _start_imitation(inp, ctx, d, ad, g, game_id, since) -> dict:
                         run["mission"] = f"learned: your style ({len(model['bursts'])} moves), after your run"
                         stuck = _stuck(ad)
                         st = imitate.Style(model, knobs=inp.style)
-                        stats = {}
+                        stats = run["live"] = {}
                         run["result"]["bursts"] = imitate.play_style(st, send=send, stopped=lambda: d.stopped,
                                                                      sleep=time.sleep, stuck=stuck, ff=_ff(ad),
                                                                      stats=stats)
@@ -2589,6 +2619,7 @@ def _start_imitation(inp, ctx, d, ad, g, game_id, since) -> dict:
         def go():
             try:
                 stuck, stats = _stuck(ad), {}
+                run["live"] = stats
                 run["result"] = {"ok": True, "bursts": imitate.play_style(style, send=send, stopped=lambda: d.stopped,
                                                                           sleep=time.sleep, stuck=stuck, ff=_ff(ad),
                                                                           stats=stats)}
@@ -2602,6 +2633,7 @@ def _start_imitation(inp, ctx, d, ad, g, game_id, since) -> dict:
     _takeover(run, d, sid, since)
     run["thread"] = threading.Thread(target=go, daemon=True)
     run["thread"].start()
+    _telemetry(run, ctx, g.get("title") or "")
     return {"started": run["mission"], "mode": inp.mode, "objective": objective}
 
 

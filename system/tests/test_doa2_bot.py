@@ -103,3 +103,13 @@ def test_frozen_ram_reports_a_hang():
     ad.read_memory = lambda a, n, _r=ad.ram: bytes(_r[a - 0x8C000000:a - 0x8C000000 + n])   # nothing changes
     stats, _ = run(ad, [lambda t: None] * 100)
     assert stats["hung"] is True
+
+
+def test_live_stats_fill_the_callers_dict():
+    ad = FakeDC()
+    ad.set(0, 200, 150)
+    live = {}
+    now = [0.0]
+    B.play(ad, lambda r: None, iter([False, False, True]).__next__, clock=lambda: now[0],
+           sleep=lambda s: now.__setitem__(0, now[0] + s), stats=live)
+    assert live["fighting"] is True and live["p1_hp"] == 200 and live["p2_hp"] == 150 and "jumps" in live
