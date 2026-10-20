@@ -178,6 +178,33 @@ GROUP_LABELS = {
 _OPERATOR_SOURCES = {"chat", "app", "gbox-chat"}
 
 
+# --- #2801: standing per-game background work is not an inbox message ------------------------------------------------
+STANDING_LABELS = {
+    "readiness": "Character replacement readiness",
+    "unlock_on_load": "Unlock on load",
+    "unlock_everything": "Unlock everything",
+    "extraction": "Extraction engineering",
+    "policy": "Standing policies and supervision",
+}
+
+
+def standing_key(request):
+    """The Background work kind of a standing per-game task the Hermes queue keeps open, or None for an inbox entry.
+    clients/desktop/inbox-groups.js standingKey() keeps the same rules."""
+    context = request.get("context") or {}
+    if context.get("hermes_favorite_game"):
+        return "readiness"
+    if context.get("unlock_on_load") or context.get("unlock_inventory"):
+        return "unlock_on_load"
+    if context.get("custom_build_unlocks"):
+        return "unlock_everything"
+    if context.get("extraction_engineering"):
+        return "extraction"
+    if context.get("unlock_research_parent") or context.get("standing_policy") or context.get("nous_build_supervision"):
+        return "policy"
+    return None
+
+
 def group_key(request):
     """The automated group a request collapses into, or None for operator-written requests and build reports."""
     title = request.get("title") or ""

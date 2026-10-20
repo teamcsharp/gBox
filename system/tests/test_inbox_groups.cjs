@@ -58,3 +58,29 @@ test('an open group stays open when its count changes (keyed by kind, not by sum
   const src = fs.readFileSync(path.join(DESKTOP, 'inbox-view.js'), 'utf8');
   assert.match(src, /detail\.dataset\.groupKey \? "group:" \+ detail\.dataset\.groupKey/);
 });
+
+// #2801: standing per-game background work leaves the inbox for the Background work view
+const { standingKey, standing, STANDING_LABELS } = require('../clients/desktop/inbox-groups.js');
+const STANDING = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'inbox_standing_cases.json'), 'utf8')).cases;
+
+test('standing background work is recognised by its context, the same table gbox/inbox.py is tested against', () => {
+  for (const c of STANDING) assert.equal(standingKey(c.request), c.key, c.request.title);
+  for (const c of STANDING) if (c.key) assert.ok(STANDING_LABELS[c.key], `label for ${c.key}`);
+  assert.equal(standing(STANDING.find(c => c.key).request), true);
+  assert.equal(standing({ title: 'JSRF not playing', source: 'app', author: 'operator' }), false);
+});
+
+test('the Background work view groups by standing kind and keeps every request', () => {
+  const list = STANDING.filter(c => c.key).map((c, i) => ({ id: `s${i}`, number: i, status: 'open', created: 100 - i, ...c.request }));
+  const out = group(list, { min: 1, key: standingKey, labels: STANDING_LABELS });
+  assert.ok(out.every(e => e.type === 'group'));
+  assert.deepEqual(out.flatMap(e => e.items.map(r => r.id)).sort(), list.map(r => r.id).sort());
+  assert.ok(out.every(e => e.label === STANDING_LABELS[e.key]));
+});
+
+test('the desktop inbox, Pending and the badge leave standing work out and list it under Background work', () => {
+  const html = fs.readFileSync(path.join(DESKTOP, 'index.html'), 'utf8');
+  assert.match(html, /data-request-filter="background"/);
+  assert.ok(html.includes('background = r.data.filter(GBoxInboxGroups.standing), all = r.data.filter(x => !GBoxInboxGroups.standing(x))'));
+  assert.ok(html.includes('"all", "pending", "completed", "background"'));
+});

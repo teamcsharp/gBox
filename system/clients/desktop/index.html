@@ -1136,7 +1136,7 @@ window.taskVizCreate = canvas => {
       <pre id="con"></pre>
     </div></section>
     <section id="requests"><div class="pane" style="max-width:1100px">
-      <div class="rt-heading"><div><h2>Requests</h2><div class="rt-heading-actions"><div id="reqfilters" role="group" aria-label="Filter requests" style="display:flex;gap:6px"><button class="act" data-request-filter="all" aria-pressed="true">All</button><button class="act" data-request-filter="pending" aria-pressed="false">Pending</button><button class="act" data-request-filter="completed" aria-pressed="false">Completed</button></div><button class="act" id="reqnew" title="New request: describe something to fix or build (paste or drop images)" aria-label="New request" style="padding:4px 9px;font-size:16px;line-height:1">✉</button></div></div><div id="reqtokens"></div></div>
+      <div class="rt-heading"><div><h2>Requests</h2><div class="rt-heading-actions"><div id="reqfilters" role="group" aria-label="Filter requests" style="display:flex;gap:6px"><button class="act" data-request-filter="all" aria-pressed="true">All</button><button class="act" data-request-filter="pending" aria-pressed="false">Pending</button><button class="act" data-request-filter="completed" aria-pressed="false">Completed</button><button class="act" data-request-filter="background" aria-pressed="false" title="Per-game work Hermes keeps doing in the background (character readiness, unlock on load, unlock everything, extraction engineering). These are not inbox messages and are not counted in the badge.">Background work</button></div><button class="act" id="reqnew" title="New request: describe something to fix or build (paste or drop images)" aria-label="New request" style="padding:4px 9px;font-size:16px;line-height:1">✉</button></div></div><div id="reqtokens"></div></div>
       <div class="bar"><span class="mut" id="reqsum"></span>
         <button class="act" id="reqbenchmarks" title="Compare verified results by service and model">Solver results</button><button class="act" id="reqexport" title="Every request, oldest first, as one Markdown transcript">Export history</button></div>
       <details id="reqtoken-analysis" class="rt-analysis"><summary>Token usage analysis</summary></details>
@@ -3124,7 +3124,7 @@ document.addEventListener('click', e => {
   const button = e.target.closest('[data-solver-benchmark]'); if (!button) return;
   e.stopImmediatePropagation(); GBoxRequestSolvers.show(inboxSolverRequests, button.dataset.solverBenchmark);
 });
-if (!["all", "pending", "completed"].includes(requestFilter)) requestFilter = "all";
+if (!["all", "pending", "completed", "background"].includes(requestFilter)) requestFilter = "all";
 $("#reqfilters").addEventListener("click", e => {
   const button = e.target.closest("[data-request-filter]"); if (!button) return;
   requestFilter = button.dataset.requestFilter;
@@ -3149,18 +3149,20 @@ const REQUESTS = GBoxLivePoll.cachedRead(async () => {
 const inboxPoll = singleFlightPoll(async () => {
   inboxAt = Date.now();
   const r = await REQUESTS.get(INBOX_PAGE.reuse ? 120000 : 0); INBOX_PAGE.reuse = false; if (!r.ok) return;
-  const all = r.data, roots = all.filter(x => (!x.automated || x.context?.auto_report) && !x.parent_request_id), children = new Map();
-  inboxSolverRequests = all;
+  // #2801: standing per-game background work (kept open for the Hermes queue) is listed under Background work only
+  const background = r.data.filter(GBoxInboxGroups.standing), all = r.data.filter(x => !GBoxInboxGroups.standing(x));
+  const roots = all.filter(x => (!x.automated || x.context?.auto_report) && !x.parent_request_id), children = new Map();
+  inboxSolverRequests = r.data;
   const ids = new Set(all.map(x => x.id));
   all.forEach(x => { if (x.parent_request_id && ids.has(x.parent_request_id)) { const list = children.get(x.parent_request_id) || []; list.push(x); children.set(x.parent_request_id, list); } });
   const unresolved = all.filter(x => x.automated && !x.context?.auto_report && (!x.parent_request_id || !ids.has(x.parent_request_id)));
   const hasPending = x => x.status !== "done" || (children.get(x.id) || []).some(hasPending);
   const pending = roots.filter(hasPending).length;
   $("#tb-count").textContent = pending;
-  const counts = { all: roots.length, pending, completed: roots.length - pending };
+  const counts = { all: roots.length, pending, completed: roots.length - pending, background: background.filter(x => x.status !== "done").length };
   for (const button of document.querySelectorAll("[data-request-filter]")) {
     const mode = button.dataset.requestFilter;
-    button.textContent = `${mode === "all" ? "All" : mode === "pending" ? "Pending" : "Completed"} (${counts[mode]})`;
+    button.textContent = mode === "background" ? `Background work (${counts.background} active)` : `${mode === "all" ? "All" : mode === "pending" ? "Pending" : "Completed"} (${counts[mode]})`;
     button.setAttribute("aria-pressed", String(mode === requestFilter));
     button.style.background = mode === requestFilter ? "var(--accent, #8190ff)" : "";
     button.style.color = mode === requestFilter ? "#fff" : "";
@@ -3216,10 +3218,13 @@ const inboxPoll = singleFlightPoll(async () => {
   const renderGroup = g => `<details class="req-group" data-group-key="${esc(g.key)}"><summary><b>${esc(g.label)}</b><span class="chip">${g.count}</span>${g.pending ? `<span class="chip open">${g.pending} pending</span>` : `<span class="chip done">all done</span>`}<span class="chip">automated</span><span class="gl">newest ${new Date(g.newest * 1000).toLocaleString()} · #${g.latest.number} ${esc(g.latest.title || "")}</span></summary><div class="req-group-items">${g.items.slice(0, GROUP_SHOW).map(renderRequest).join("")}${g.count > GROUP_SHOW ? `<p class="mut">Showing the newest ${GROUP_SHOW} of ${g.count}. Export history lists them all.</p>` : ""}</div></details>`;
   const renderEntries = entries => entries.map(e => e.type === "group" ? renderGroup(e) : renderRequest(e.request)).join("");
   const matches = x => requestFilter === "all" || (requestFilter === "pending" ? hasPending(x) : !hasPending(x));
-  const visibleRoots = roots.filter(matches), visibleUnresolved = unresolved.filter(matches);
-  const rootEntries = GBoxInboxGroups.group(visibleRoots, { pending: hasPending });
+  const backgroundView = requestFilter === "background";
+  const visibleRoots = backgroundView ? [] : roots.filter(matches), visibleUnresolved = backgroundView ? [] : unresolved.filter(matches);
+  const rootEntries = backgroundView
+    ? GBoxInboxGroups.group(background, { min: 1, key: GBoxInboxGroups.standingKey, labels: GBoxInboxGroups.STANDING_LABELS })
+    : GBoxInboxGroups.group(visibleRoots, { pending: hasPending });
   const shownRoots = rootEntries.slice(0, INBOX_PAGE.limit), olderRoots = rootEntries.length - shownRoots.length;
-  updateInboxView(host, JSON.stringify([requestFilter, INBOX_PAGE.limit, r.etag || all, MODS.list]), () => (renderEntries(shownRoots) || `<p class="mut">${requestFilter === "all" ? "No requests yet. Use Capture or Eyedropper in the title bar, or just ask in chat." : requestFilter === "pending" ? "No pending requests. Choose All to view your request history." : "No completed requests yet. Choose All to view your request history."}</p>`)
+  updateInboxView(host, JSON.stringify([requestFilter, INBOX_PAGE.limit, r.etag || all, MODS.list]), () => (renderEntries(shownRoots) || `<p class="mut">${requestFilter === "all" ? "No requests yet. Use Capture or Eyedropper in the title bar, or just ask in chat." : requestFilter === "pending" ? "No pending requests. Choose All to view your request history." : backgroundView ? "No background work queued." : "No completed requests yet. Choose All to view your request history."}</p>`)
     + (olderRoots ? `<button class="act" id="reqmore" style="width:100%;margin:2px 0 12px">Show ${Math.min(olderRoots, INBOX_PAGE.step)} older entries (${olderRoots} not shown)</button>` : "")
     + (visibleUnresolved.length ? `<details class="unlinked-system"><summary>${visibleUnresolved.length} automated entries awaiting an original request</summary><p class="mut">These entries are preserved separately because their originating prompt could not be identified.</p><div style="display:flex;gap:8px"><select id="req-link-child"><option value="">Automated entry to link…</option>${visibleUnresolved.map(x => `<option value="${x.id}">#${x.number} ${esc(x.title)}</option>`).join("")}</select><select data-link-request=""><option value="">Choose your original request…</option>${roots.map(p => `<option value="${p.id}">#${p.number} ${esc(p.title)}</option>`).join("")}</select></div>${renderEntries(GBoxInboxGroups.group(visibleUnresolved, { pending: hasPending }).slice(0, INBOX_PAGE.limit))}</details>` : ""), replyAtt);
   GBoxReportStory.reattach(host);                             // the open Detailed report keeps running in its re-rendered row
