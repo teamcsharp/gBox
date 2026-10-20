@@ -1,0 +1,34 @@
+{
+ "game_id": "6334be1925fbe016",
+ "title": "Project Justice (USA)",
+ "platform": "dreamcast",
+ "profile": "cheatdb-unlocks-v1",
+ "verified": true,
+ "codes": [
+  {
+   "desc": "Unlock Everything",
+   "lines": [
+    "02301014 FFFFFFFF"
+   ]
+  },
+  {
+   "desc": "Unlock Everything (Continued)",
+   "lines": [
+    "02301018 FFFFFFFF"
+   ]
+  },
+  {
+   "desc": "Unlock Everything (Continued)",
+   "lines": [
+    "022FBF00 FFFFFFFF"
+   ]
+  }
+ ],
+ "scope": [
+  "Unlock Everything"
+ ],
+ "evidence": {
+  "source": "libretro-database cht/Sega - Dreamcast/Project Justice.cht",
+  "read_back": "2026-10-19 22:17 CST, i9-NUC agent session: every code held with cheats op=add; all 3 written values read back unchanged. Gameplay screens not captured (the NUC's frame capture was black until its relaunch)."
+ }
+}
