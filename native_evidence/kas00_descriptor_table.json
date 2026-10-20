@@ -1,0 +1,23 @@
+{
+  "stage": "header-tail data descriptor table (vertex + texture) pinned",
+  "measured_against": "owned USA build loadfile.afs (read-only), kas00.xpr entry 296 / kas01.xpr 301 / kas02.xpr 306",
+  "layout": "between the last OBJ record and header_size",
+  "vertex_descriptors": {
+    "flag": "0x00800001", "bytes": 12, "shape": [0, 0],
+    "count": "obj_count", "semantics": "cumulative vertex byte offset (sum of preceding vcount*32), first=0"
+  },
+  "texture_descriptors": {
+    "flag": "0x00040001", "bytes": 20, "shape": [0, "format", 0],
+    "count": "tex_count", "semantics": "cumulative data-region byte offset from header_size, strictly increasing"
+  },
+  "terminator": "0xFFFFFFFF (4 bytes)", "fill": "0xAD to header_size",
+  "data_region": {"start": "header_size", "end": "total", "tiling": "vertices, alignment gap, textures; exact to total"},
+  "per_costume": {
+    "kas00": {"obj": 72, "tex": 87, "vertex_bytes": "0x9dee0", "gap": "0x20", "last_tex_size": "0x1080", "pad": 384},
+    "kas01": {"obj": 72, "tex": 86, "vertex_bytes": "0xa1260", "gap": "0x20", "last_tex_size": "0x1300", "pad": 1136},
+    "kas02": {"obj": 74, "tex": 95, "vertex_bytes": "0x9f520", "gap": "0x60", "last_tex_size": "0x600", "pad": 820}
+  },
+  "format_word_observation": "byte0 always 0x2A; byte2 in {0x41,0x51,0x61,0x71,0x81}; byte3 in {0x04..0x08}; D3D surface semantics unresolved (needs doa3-re XBE loader)",
+  "unresolved": ["texture pixel format", "draw-packet semantics", "CAT LNK body", "donor retarget", "playable"],
+  "published": {"pr": "https://github.com/teamcsharp/gBox/pull/449", "commit": "b1cb3a7"}
+}

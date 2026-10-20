@@ -1,0 +1,26 @@
+{
+  "stage": "CAT LNK section envelope pinned (this run)",
+  "measured_against": "owned USA build loadfile.afs (read-only); all 69 complete costumes across 20 fighter families",
+  "counts": {"complete_costumes": 69, "with_lnk_section": 68, "without_lnk_section": ["kor00"]},
+  "lnk_section": {
+    "magic": "LNK\\0",
+    "name": "0100 (4 bytes, constant on all 68)",
+    "header_words": 6,
+    "header": {"w0": 2, "w1": 16, "w2": 32, "w3": "size", "w4": 0, "w5": 0},
+    "constants_verified": {"w0_w1_w2": "(2,16,32) on 68/68", "w4_w5": "(0,0) on 68/68"},
+    "size": {
+      "semantics": "4-aligned byte count (link-data size)",
+      "alignment": "multiple of 4 on 68/68",
+      "varies_per_costume": true,
+      "example": "kas00=0x457f0, jan01=0x390c0, gok00=0x36a60, bni00=0x35280"
+    }
+  },
+  "offsets_layout_header": {
+    "word1_4": "{0x14, s2, s3, s4} strictly increasing within the file on 24/24 offsets-layout costumes",
+    "word3_is_lnk_offset": "23/24 (kor00 has no LNK section)"
+  },
+  "unresolved": ["LNK joint-link body", "CAT trailing near-EOF table", "texture pixel format",
+                 "draw-packet semantics", "donor retarget", "playable cast build"],
+  "capability": "gbox.doa3_cast.cat_lnk (new); cat_sections gains section_offsets",
+  "published": {"branch": "hermes/request-1979-1792124638320176196"}
+}
