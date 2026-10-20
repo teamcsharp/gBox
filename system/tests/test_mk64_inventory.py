@@ -9,7 +9,7 @@ import pytest
 from gbox import mk64_inventory as inv
 from gbox.sm64_writer import crc6102
 
-OWNED = Path(os.environ.get("GBOX_MK64_SOURCE", Path.home() / "gbox-cache" / "7f5c674909d63b5f" / "source.zip"))
+OWNED = Path(os.environ.get("GBOX_MK64_SOURCE", Path.home() / "gBox_alt/gbox-cache" / "7f5c674909d63b5f" / "source.zip"))
 
 
 def _rom() -> bytes:

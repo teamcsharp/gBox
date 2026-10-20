@@ -39,6 +39,7 @@ import numpy as np
 
 from . import defjam_inventory as inv
 from .defjam_inventory import FormatError
+from .side_dirs import side_dir
 
 NODE_SIZE = 0x190
 NODE_BASE = 0x10
@@ -785,11 +786,11 @@ def _source_iso(ctx, game: dict) -> Path:
         if p and str(p).lower().endswith(".iso") and Path(str(p)).exists():
             return Path(str(p))
     gid = game.get("game_id") or game.get("id")
-    for cache in (Path(getattr(getattr(ctx, "config", None), "cache", "") or Path.home() / "gbox-cache") / str(gid) / "source.iso",
-                  Path.home() / "gbox-cache" / str(gid) / "source.iso"):
+    for cache in (Path(getattr(getattr(ctx, "config", None), "cache", "") or side_dir("gbox-cache")) / str(gid) / "source.iso",
+                  side_dir("gbox-cache") / str(gid) / "source.iso"):
         if cache.exists():
             return cache
-    raise FormatError(f"no unpacked ISO for {gid}: stage it at ~/gbox-cache/{gid}/source.iso")
+    raise FormatError(f"no unpacked ISO for {gid}: stage it at ~/gBox_alt/gbox-cache/{gid}/source.iso")
 
 
 def extract_run(ctx, game: dict, e: dict, work: Path) -> dict:

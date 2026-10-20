@@ -5291,6 +5291,14 @@ def create_app(config: Config) -> FastAPI:
     emulation_issue.routes(app, store, auth, lambda body, actor: req_create(RequestIn(**body), actor),
                            _incident_job, _incident_dispatch)
 
+    # --- autoplay coaching (gbox/coaching.py): the Sessions header's note box -> one ticket per game, each note's
+    # moment (frame, save state through gBox's own slot, main RAM) captured on the session's worker ---
+    from . import coaching
+    coaching.routes(app, store, auth, create_request=lambda body, actor: req_create(RequestIn(**body), actor),
+                    submit=lambda tool, inp, rid, actor: submit(
+                        JobRequest(tool=tool, input=inp, parent_request_id=rid), actor,
+                        {"via": "autoplay coach", "request_id": rid}).model_dump(mode="json"))
+
     # --- launch failure reports (gbox/launch_failures.py, docs/launch-failure-reports.md) ---
     from . import launch_failures as LF
 
@@ -5375,7 +5383,8 @@ def create_app(config: Config) -> FastAPI:
         if head.startswith(sha):
             return True
         from . import hermes_delivery
-        for repo in (Path.home() / "gBox-src", hermes_delivery.repository()):
+        from .side_dirs import side_dir
+        for repo in (side_dir("gBox-src"), hermes_delivery.repository()):
             if (repo / ".git").exists():
                 r = subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", sha, head],
                                    capture_output=True, timeout=30)

@@ -35,7 +35,7 @@ def test_invalid_roster_bound(count):
 
 def test_owned_executable_targets():
     from gbox.ctr_romfs import CtrImage,blz_decompress
-    source=Path.home()/'gbox-cache/3ds/0ed22ae742e1b56b/Resident Evil - The Mercenaries.3ds'
+    source=Path.home()/'gBox_alt/gbox-cache/3ds/0ed22ae742e1b56b/Resident Evil - The Mercenaries.3ds'
     extracted=source.parent/'inventory/code.bin'
     if extracted.exists():
         code=extracted.read_bytes()

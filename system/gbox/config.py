@@ -203,7 +203,8 @@ class HermesConfig(BaseModel):
 class Config(BaseModel):
     gameplay_memory_enabled: bool = True  # operator gameplay journal and native capture on supported new launches
     gameplay_native_replay_enabled: bool = False  # experimental: BSV can change native load-state behavior
-    data_dir: Path = Path("gbox-data")
+    data_dir: Path = Path(__file__).resolve().parents[1] / "gbox-data"   # never the working directory's (a script run
+                                                                         # from the Spark's home made ~/gbox-data/cache)
     libraries: list[Library] = []
     smb_credentials: str | None = None   # linux credentials file for SMB mounts (never stored in the TOML)
     steam_root: Path | None = None
@@ -264,7 +265,8 @@ class Config(BaseModel):
     @property
     def cache(self) -> Path:
         if d := self.cache_dirs.get(HOST_OS):
-            return Path(os.path.expandvars(d))
+            from .side_dirs import moved
+            return moved(Path(os.path.expandvars(d)))      # ~/gbox-cache is ~/gBox_alt/gbox-cache once moved
         return self.cache_dir or self.data_dir / "cache"
 
     @property

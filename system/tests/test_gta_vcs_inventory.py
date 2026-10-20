@@ -1,7 +1,7 @@
 """Focused tests for gbox.gta_vcs_inventory (#1376).
 
 The synthetic tests always run. The disc-backed test runs only when the owned VCS ISO is staged
-(GBOX_VCS_ISO, default ~/gbox-cache/ps2/6f5a05916536492b/disc.iso, extracted from the catalog CHD
+(GBOX_VCS_ISO, default ~/gBox_alt/gbox-cache/ps2/6f5a05916536492b/disc.iso, extracted from the catalog CHD
 sha256 e21887a8...8884 with `chdman extractcd`).
 """
 import os
@@ -14,7 +14,7 @@ import pytest
 from gbox import gta_vcs_inventory as inv
 from gbox.gta_stories_models import read_chk, write_chk
 
-ISO = Path(os.environ.get("GBOX_VCS_ISO", str(Path.home() / "gbox-cache/ps2/6f5a05916536492b/disc.iso")))
+ISO = Path(os.environ.get("GBOX_VCS_ISO", str(Path.home() / "gBox_alt/gbox-cache/ps2/6f5a05916536492b/disc.iso")))
 
 
 def test_system_cnf_boot2():

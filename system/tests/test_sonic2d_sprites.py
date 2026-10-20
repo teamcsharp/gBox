@@ -4,7 +4,7 @@ gbox.formats.sega_md).
 Synthetic tests build the codecs' streams, the three engines' mapping/DPLC/script formats and a small Sonic 2 shaped
 ROM (loader / Animate / palette code shapes) so discovery, the frame-exact simulation, canvas alignment and the clip
 files are checked without a cartridge. The owned-ROM tests pin what discovery finds in the operator's dumps (cached at
-~/gbox-cache/<game_id>/source.zip, identified by the ROM's SHA-1) and skip when a dump is not on this machine.
+~/gBox_alt/gbox-cache/<game_id>/source.zip, identified by the ROM's SHA-1) and skip when a dump is not on this machine.
 """
 from __future__ import annotations
 
@@ -384,7 +384,7 @@ def test_collage_reads_clip_folders(tmp_path):
 
 # ------------------------------------------------------------------------------------------------ owned ROMs
 
-CACHE = Path(os.environ.get("GBOX_ROM_CACHE", Path.home() / "gbox-cache"))
+CACHE = Path(os.environ.get("GBOX_ROM_CACHE", Path.home() / "gBox_alt/gbox-cache"))
 OWNED = {  # game_id: ROM sha1
     "sonic1": ("f82de5b1456da0ce", "69e102855d4389c3fd1a8f3dc7d193f8eee5fe5b"),
     "sonic2": ("938e4ca5b120e344", "14dd06fc3aa19a59a818ea1f6de150c9061b14d4"),

@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from gbox import clayfighter_sc as cf  # noqa: E402
 
 ROM = os.path.expanduser(
-    "~/gbox-cache/f87ec3e2f6b266a1/unpacked/Clay Fighter - Sculptor's Cut (USA).n64"
+    "~/gBox_alt/gbox-cache/f87ec3e2f6b266a1/unpacked/Clay Fighter - Sculptor's Cut (USA).n64"
 )
 
 

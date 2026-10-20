@@ -14,7 +14,7 @@ import pytest
 from gbox import auf_ngc, auf_ngc_writer as W
 
 GCZ = os.environ.get("GBOX_AUF_GCZ",
-                     os.path.expanduser("~/gbox-cache/gc/65b7187589166b26/source.gcz"))
+                     os.path.expanduser("~/gBox_alt/gbox-cache/gc/65b7187589166b26/source.gcz"))
 
 
 def test_hash_string_matches_owned_restable_records():

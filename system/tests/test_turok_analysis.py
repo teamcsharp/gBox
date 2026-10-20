@@ -16,7 +16,7 @@ from gbox import turok_inventory as ti
 
 ROM_PATH = os.environ.get(
     "TUROK_ROM",
-    str(Path.home() / "gbox-cache" / "34ab9ef38aebcaac" / "rom.z64"),
+    str(Path.home() / "gBox_alt/gbox-cache" / "34ab9ef38aebcaac" / "rom.z64"),
 )
 
 

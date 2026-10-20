@@ -7,7 +7,7 @@ import pytest
 
 from gbox import raidou2_inventory as r2
 
-ISO = Path(os.environ.get("GBOX_RAIDOU2_ISO", str(Path.home() / "gbox-cache/ps2/999eb37d21991092/disc.iso")))
+ISO = Path(os.environ.get("GBOX_RAIDOU2_ISO", str(Path.home() / "gBox_alt/gbox-cache/ps2/999eb37d21991092/disc.iso")))
 
 
 def _ddt(tree):

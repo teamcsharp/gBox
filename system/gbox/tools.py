@@ -2284,7 +2284,8 @@ class AutoplayIn(BaseModel):
     style: dict = {}                       # learned style knobs (imitate.KNOBS: follow, pace, favor); the screensaver
                                            # picks them per game from earlier runs' novelty scores
     screensaver: bool = False              # the idle-PC screensaver runs this (gbox.screensaver): a replay goes on in the
-                                           # learned style, a mouse move also hands back, the end is reported
+                                           # learned style, a mouse move hands the game over (it plays on), the end
+                                           # is reported
 
 class AutoplayOut(BaseModel):
     result: dict
@@ -2417,23 +2418,26 @@ def _saver_post(d, path, body):
 
 def _takeover(run, d, sid, since):
     """The operator touches their own pad after autoplay started: hand control back at once (every mode). In
-    screensaver mode a mouse move does too, and the control plane is told so it closes the game."""
+    screensaver mode a mouse move hands the game over without stopping: autoplay plays on until the operator presses
+    Stop (operator 2026-10-20: "let it continue playing until I click the stop button"). The control plane is told
+    either way and keeps the game up."""
     from . import padstate
     run["screensaver"] = bool(getattr(d, "screensaver", None))
-    start_cursor = _cursor() if run["screensaver"] else None
+    cursor = _cursor() if run["screensaver"] else None
 
     def watch():
+        nonlocal cursor
         while not d.stopped and (run.get("thread") is None or run["thread"].is_alive()):
-            why = "pad" if padstate.touched_after(sid, since) else None
-            if why is None and start_cursor is not None:
-                c = _cursor()
-                if c and abs(c[0] - start_cursor[0]) + abs(c[1] - start_cursor[1]) > 8:
-                    why = "mouse"
-            if why:
+            if padstate.touched_after(sid, since):           # they play: autoplay lets go of the pad
                 d.stopped, run["took_over"] = True, True
                 _release_all(sid)
-                _saver_post(d, "yield", {"session_id": sid, "reason": why})
+                _saver_post(d, "yield", {"session_id": sid, "reason": "pad"})
                 return
+            if cursor is not None:
+                c = _cursor()
+                if c and abs(c[0] - cursor[0]) + abs(c[1] - cursor[1]) > 8:
+                    cursor, run["handed_over"] = None, True    # theirs now; only the pad (or Stop) ends the autoplay
+                    _saver_post(d, "yield", {"session_id": sid, "reason": "mouse"})
             time.sleep(0.1)
     threading.Thread(target=watch, daemon=True).start()
 
@@ -3624,7 +3628,8 @@ def _bevy_resolve(ctx, items: list[dict]) -> list[tuple[Path, dict]]:
     # collection entries ({character: slug} / {environment: slug}) are read where the collection lives (the Spark's
     # cache, the same folder through the share on Windows)
     from . import characters as K
-    croot = K.library_root(ctx.config).parent if HOST_OS != "windows" else Path("//10.89.1.246/ehm_eckx/gbox-cache")
+    from .side_dirs import spark_share
+    croot = K.library_root(ctx.config).parent if HOST_OS != "windows" else spark_share("gbox-cache")
     files = []                                             # (absolute model file, item options)
     for it in items:
         opts = {k: v for k, v in it.items() if k not in ("package", "character", "environment")}
@@ -4256,7 +4261,8 @@ def extract_pso_area(inp: PsoAreaIn, ctx: Ctx):
     world space + the area's PVM textures + the collision mesh (c.rel), ready for glTF/Blender/engines."""
     from . import ninja, psomap
     from .gdrom import GDRom
-    disc = GDRom(inp.disc)
+    from .side_dirs import moved
+    disc = GDRom(str(moved(inp.disc)))
     base = f"PSO/SCENE/MAP_{inp.area.upper()}"
     # areas with variants (Pioneer 2: MAP_CITY00_00D.REL + MAP_CITY00.PVM) keep the textures under the plain name
     rel_base = base if base + "D.REL" in disc.files else next((base + v for v in ("_00", "_01") if base + v + "D.REL" in disc.files), base)
@@ -4312,7 +4318,8 @@ def extract_pso_model(inp: PsoModelIn, ctx: Ctx):
         disc = GCDisc(inp.disc)
     else:
         from .gdrom import GDRom
-        disc = GDRom(inp.disc)
+        from .side_dirs import moved
+        disc = GDRom(str(moved(inp.disc)))
     ctx.progress(10, f"reading {inp.archive}")
     raw = disc.read(inp.archive)
     arc = ninja.bml(raw, be)
@@ -4913,6 +4920,7 @@ def _load_tool_modules(names=("cxbx_diagnostics_tool", "native_face_editor", "au
                               "gta_live",        # gta_live: GTA pools/player/vehicles/weather/time/wanted/spawn (Ariane ops)
                               "audio_cpp",       # audio_cpp: local audio.cpp speech service (status/start/stop/speak/transcribe)
                               "evidence_capture",   # evidence_capture: PR evidence frames (runs in the control plane)
+                              "ram_dump",      # ram_dump: a session's main RAM as one gzip artifact + JSON header (coaching)
                               "pick_tool")):     # pick_identify / pick_replace (+ pick_prepare, pick_ghidra): the pick whip backend
     import importlib
     import subprocess
@@ -4944,6 +4952,7 @@ _load_tool_modules()
 class StateXIn(BaseModel):
     session_id: str
     op: str = "export"                      # export: save + upload | export_saved: upload an existing checkpoint | import: load
+                                            # | snapshot: save through gBox's own slot + upload (gbox/state_snapshot.py)
     artifact: str = ""                      # import: digest of the exported state
     slot: int | None = None                 # export/import: default 9; export_saved: exact slot, or latest when omitted
     not_before: float = 0                    # export_saved: reject a stale checkpoint
@@ -4978,7 +4987,7 @@ def _validate_state_container(data: bytes, adapter_name: str) -> None:
         raise RuntimeError(f'Saved checkpoint container could not be validated: {error}') from error
 
 
-@tool("state_transfer", "1.3", StateXIn, StateXOut, capabilities=["runtime"], permissions=[P.EXECUTE], timeout_s=180)
+@tool("state_transfer", "1.4", StateXIn, StateXOut, capabilities=["runtime"], permissions=[P.EXECUTE], timeout_s=180)
 def state_transfer(inp: StateXIn, ctx: Ctx):
     with _STATE_TRANSFER_LOCK, rewind.guard(inp.session_id, "transfer"):   # no checkpoint while the state moves
         return _state_transfer(inp, ctx)
@@ -5002,6 +5011,15 @@ def _state_transfer(inp: StateXIn, ctx: Ctx):
         pattern = "*.s01"                                       # the adapter's save/load hotkeys use slot 1
     else:
         raise Unsupported(f"{kind or '?'} save states can't move between machines (different emulator builds)")
+    if inp.op == "snapshot":
+        # the moment as it is now, saved through gBox's own slot: the operator's slots are never written or left
+        # switched (export saves through Dolphin's slot 1, the operator's own, and leaves RetroArch on the transfer slot)
+        from . import state_snapshot
+        data, details = state_snapshot.take(ad, g, states)
+        name = details.pop("file")
+        ctx.artifact(name, data, "application/octet-stream", note="state snapshot (gBox's own slot)",
+                     game=g.get("game_id"), session=inp.session_id, snapshot=True, **details)
+        return {"result": {"artifact": sha256(data), "bytes": len(data), "file": name, **details}}
     requested_slot = 9 if inp.slot is None else inp.slot
 
     def matches_game(f):
@@ -5119,7 +5137,7 @@ def _state_transfer(inp: StateXIn, ctx: Ctx):
         if verified:
             result['loaded'] = True
         return {'result': result}
-    raise ValueError("op: export | export_saved | import")
+    raise ValueError("op: export | export_saved | import | snapshot")
 
 
 # ---- no hidden games left behind: emulators this worker started are recorded; a restarted worker closes the old ones ----

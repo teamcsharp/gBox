@@ -522,7 +522,7 @@ def test_cast_swap_builds_oot_through_build_cast(tmp_path, monkeypatch):
 # ---------------------------------------------------------------- the operator's ROM (skipped when not cached)
 
 OWNED = [Path(os.environ["GBOX_OOT_ROM"])] if os.environ.get("GBOX_OOT_ROM") else [
-    Path.home() / "gbox-cache/446e8e442d726e31/rom.z64", Path.home() / "gbox-cache/1aa2e4bb5797493f/source.zip"]
+    Path.home() / "gBox_alt/gbox-cache/446e8e442d726e31/rom.z64", Path.home() / "gBox_alt/gbox-cache/1aa2e4bb5797493f/source.zip"]
 
 
 @pytest.fixture(scope="module")

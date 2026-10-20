@@ -21,7 +21,7 @@ No running game or save was changed during this review.
   characters/EX costumes and three disc stages, figures/emblems/titles/extras.
   It explicitly excludes No Hope, No Mercy and absent DLC/retro costumes.
 - The cached `source.iso` is 8,091,336,704 bytes at
-  `/home/ehm_eckx/gbox-cache/0871eee3b68cdea3/source.iso`. File existence/size
+  `/home/ehm_eckx/gBox_alt/gbox-cache/0871eee3b68cdea3/source.iso`. File existence/size
   is inventory evidence, not a new complete-disc integrity check.
 
 ## Remaining acceptance

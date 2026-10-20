@@ -8,7 +8,7 @@ import pytest
 
 from gbox import smb3_inventory as si
 
-REAL = Path.home() / "gbox-cache/213e4208929ec3e9/source.zip"
+REAL = Path.home() / "gBox_alt/gbox-cache/213e4208929ec3e9/source.zip"
 
 
 def synth_rom(table_at=29 * 0x2000 + 0x0C00):

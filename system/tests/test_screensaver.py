@@ -100,7 +100,7 @@ def test_launch_then_autoplay_then_rotate_after_session_minutes():
     assert s.get(S.STATE, "i9-NUC") is None
 
 
-def test_operator_coming_back_ends_it_at_once():
+def test_operator_coming_back_takes_the_game_over_and_it_plays_on():
     s, w, saver, calls, tick = rig()
     tick()
     gid = calls[0]["input"]["game"]["game_id"]
@@ -109,11 +109,13 @@ def test_operator_coming_back_ends_it_at_once():
     tick(S.START_GRACE)
     w["idle_seconds"] = 0                                      # the operator is back (worker posts /yield on mouse/pad)
     assert saver.yield_to_operator("w1-job0", "mouse")
-    assert calls[-1]["input"]["op"] == "stop_game"
-    assert "operator came back (mouse)" in s.all(S.LOG)[0]["why"]
-    s.delete("session", "w1-job0")
-    tick(30)
-    assert len(calls) == 3                                     # no new game while the operator uses the PC
+    assert all(c["input"].get("op") != "stop_game" for c in calls)   # never closed: it plays on until they press Stop
+    assert "handed to the operator (mouse)" in s.all(S.LOG)[0]["why"] and s.get(S.STATE, "i9-NUC") is None
+    assert s.get("slabel", "w1-job0")["owner"] == "you"         # theirs: nothing automated closes or resets it
+    w["idle_seconds"] = 3600
+    tick(20 * 60)
+    tick(20 * 60)
+    assert len(calls) == 2 and all(c["input"].get("op") != "stop_game" for c in calls)   # no rotation, no new game
 
 
 def test_failed_launch_is_logged_and_the_pc_frees_up():

@@ -9,7 +9,7 @@ import pytest
 
 from gbox import nds_wcw_unlock as W
 
-NDS = Path("/home/ehm_eckx/gbox-cache/d9467f457f53f2c7/2905 - Call of Duty - World at War (U)(Venom).nds")
+NDS = Path("/home/ehm_eckx/gBox_alt/gbox-cache/d9467f457f53f2c7/2905 - Call of Duty - World at War (U)(Venom).nds")
 CHT = Path("/home/ehm_eckx/gBox/system/gbox-data/cheatdb/libretro-database/cht/Nintendo - Nintendo DS/Call of Duty - World at War (USA).cht")
 
 

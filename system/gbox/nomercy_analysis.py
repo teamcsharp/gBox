@@ -1,7 +1,7 @@
 """WWF No Mercy (USA) Rev A (NW4E rev 1) analysis probe (#1329): the asset loaders, the decompressor and the
 character texture rules that the reader and writer depend on, pinned to instruction words of the exact owned build.
 
-Evidence: the Oct 7 RDRAM-image Ghidra project ~/gbox-cache/aki_re/ghidra/proj.gpr (program nm_ram4.bin,
+Evidence: the Oct 7 RDRAM-image Ghidra project ~/gBox_alt/gbox-cache/aki_re/ghidra/proj.gpr (program nm_ram4.bin,
 MIPS:BE:32:default, 2156 functions), re-read on Oct 12 with a read-only headless script (function entries, sizes,
 callers, callees and disassembly). The 2530 instructions of the functions below that lie in the main code segment
 are byte-identical to the owned ROM (RAM 0x80000400 = ROM 0x1000), so the project describes this build.

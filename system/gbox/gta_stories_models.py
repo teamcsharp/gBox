@@ -1165,7 +1165,7 @@ def lcs_iso_from_rom(rom: Path, dst: Path, progress=None) -> Path:
 #     hdr[0x18] = 0x4A1C14 -> CAnimManager (DAT_003d9d24): 444 anims (0x24 stride, data_ptr+name+bones+frame_time)
 #     at 0x395098 + 55 anim-block names at 0x394738; anim key data ~0x3FC400+. Player anim load (slot 0):
 #     0x2FBAF0 -> RequestSpecialModel(0, "player", 5) -> FindItem on the special-model dir -> .mdl/TXD by name.
-#   Identity: the decompile ~/gbox-cache/lcs_re/lcs_decomp_gp.c (gp=0x3D6EF0) is of THIS exe (sha256 65bc2ec3...):
+#   Identity: the decompile ~/gBox_alt/gbox-cache/lcs_re/lcs_decomp_gp.c (gp=0x3D6EF0) is of THIS exe (sha256 65bc2ec3...):
 #     ELF LOAD vaddr 0x100000 = file 0x1000, so 0x18FF80 -> file 0x90F80 = addiu sp,-0x60 / lui a0,0x3E /
 #     lw a0,-0x6460(a0) = DAT_003d9ba0, and "player"@0x3D84A8, "generic"@0x3D0D60 match the decompile's data refs.
 LIVE = {"players": 0x408E40, "focus": 0x3D9BC8, "mi_ptrs": 0x3D8720, "mi_count": 0x3D9BA0, "streaming": 0x3D0CC8,

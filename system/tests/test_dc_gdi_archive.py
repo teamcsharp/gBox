@@ -24,7 +24,7 @@ from gbox import characters as C
 GAME = {"game_id": "3dd7e33362597f85", "title": "Dead or Alive 2"}
 US_FIRST_READ_SHA256 = "105056d9ffef86bf5e470fa28dc5907443156f9ab1c6bc009f73661d9c047a85"
 OWNED_GDI = Path(os.environ.get("GBOX_DOA2_US_7Z_GDI",
-                                Path.home() / "gbox-cache" / "dc" / GAME["game_id"] / "disc.gdi"))
+                                Path.home() / "gBox_alt/gbox-cache" / "dc" / GAME["game_id"] / "disc.gdi"))
 needs_7z = pytest.mark.skipif(shutil.which("7z") is None, reason="7z CLI not installed on this node")
 
 

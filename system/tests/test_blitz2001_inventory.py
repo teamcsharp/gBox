@@ -7,7 +7,7 @@ import pytest
 
 from gbox import blitz2001_inventory as B
 
-GDI = Path(os.environ.get("GBOX_BLITZ2001_GDI", Path.home() / "gbox-cache/dc/b0d6166c71562f78/disc.gdi"))
+GDI = Path(os.environ.get("GBOX_BLITZ2001_GDI", Path.home() / "gBox_alt/gbox-cache/dc/b0d6166c71562f78/disc.gdi"))
 
 
 def _sbm(nv=4, bones=((0, 2), (1, 2))):

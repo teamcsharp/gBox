@@ -100,7 +100,7 @@ def test_ambiguous_or_invalid_tables_raise(tmp_path):
         inv.inventory(_zip(tmp_path, _rom(table=(0, 0, 2, 6, 3, 7, 1, 5))))
 
 
-OWNED = Path(os.environ.get("GBOX_SMB2_SRC", str(Path.home() / "gbox-cache/768145c187bf6dd0/source.zip")))
+OWNED = Path(os.environ.get("GBOX_SMB2_SRC", str(Path.home() / "gBox_alt/gbox-cache/768145c187bf6dd0/source.zip")))
 
 
 @pytest.mark.skipif(not OWNED.exists(), reason="owned SMB2 source not cached")

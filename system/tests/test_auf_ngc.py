@@ -123,7 +123,7 @@ def test_gcm_rejects_non_object():
 
 
 GCZ = os.environ.get("GBOX_AUF_GCZ",
-                     os.path.expanduser("~/gbox-cache/gc/65b7187589166b26/source.gcz"))
+                     os.path.expanduser("~/gBox_alt/gbox-cache/gc/65b7187589166b26/source.gcz"))
 
 
 @pytest.mark.skipif(not os.path.exists(GCZ), reason="owned AUF GCZ not cached")

@@ -9,7 +9,7 @@ import pytest
 from gbox import sk_lockon_analysis as ska
 from gbox.sk_sprites import SkError
 
-CACHE = Path.home() / "gbox-cache" / "286b3fae79e33f17"
+CACHE = Path.home() / "gBox_alt/gbox-cache" / "286b3fae79e33f17"
 SRC = CACHE / "source.zip"
 REF = CACHE / "sk_world.zip"
 SOURCE_SHA256 = "4526806489260bb6dbc5d2342d85bfdf6a476034e58d7ac3f39988d37b46ffe1"
