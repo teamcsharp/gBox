@@ -3421,7 +3421,7 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/api/games/{gid}/launch")
     def launch(gid: str, node: str = "auto", debug: bool = False, mod: str = "", swap: bool = False,
-               actor=Depends(auth), origin=Depends(request_origin)):
+               autoplay: bool = False, actor=Depends(auth), origin=Depends(request_origin)):
         """Launch on the requested node; automatic PS2/PS3 play uses Windows, other cores prefer Linux.
         debug=true: on the Spark with a full-debugger emulator (Dolphin / mGBA / DuckStation / MAME) where one exists.
         With a mod and the game already running, the mod is swapped into that session (same PC, moment kept) only
@@ -3480,7 +3480,11 @@ def create_app(config: Config) -> FastAPI:
             here = requester_worker(workers(), origin.get("remote"), req.require_os)
             if here:
                 req.require_worker, req.require_os = here["id"], None
-        return submit(req, actor, origin)
+        job = submit(req, actor, origin)
+        if autoplay and not debug:                          # Spark button: the game plays itself once it is up
+            from . import screensaver
+            screensaver.autoplay_on_launch(store, getattr(job, "id", None) or "", gid)
+        return job
 
     @app.get("/api/profiles/{gid}")
     def profile(gid: str, actor=Depends(auth)):

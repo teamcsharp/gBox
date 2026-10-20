@@ -151,3 +151,31 @@ def test_api_takes_json_bodies():
     assert c.post("/api/autoplay-screensaver/yield", json={"session_id": "x", "reason": "mouse"}).json() == {"yielded": False}
     assert c.post("/api/autoplay-screensaver/result", json={"session_id": "x", "result": {"a": 1}}).json() == {"saved": False}
     assert [g["game_id"] for g in c.get("/api/autoplay-screensaver").json()["games"]] == ["pso", "sc"]
+
+
+def test_spark_launch_with_autoplay_starts_it_once_the_game_is_up():
+    s, w, saver, calls, tick = rig()
+    s.put("setting", S.SETTING, S.settings(s) | {"enabled": False})     # works whether or not the screensaver is on
+    S.autoplay_on_launch(s, "L1", "sc")
+    s.put("job", "L1", {"id": "L1", "state": "running"})
+    tick(5)
+    assert not calls                                            # not up yet
+    s.put("session", "spark-L1", {"session_id": "spark-L1", "game_id": "sc", "state": "running"})
+    tick(5)
+    tick(5)
+    assert not calls                                            # boot grace
+    out = tick(S.START_GRACE)
+    assert out["launches"] == ["spark-L1"]
+    assert calls[0]["tool"] == "autoplay" and calls[0]["input"]["session_id"] == "spark-L1"
+    assert calls[0]["require_worker"] == "spark" and s.all(S.PENDING) == []
+    tick(60)
+    assert len(calls) == 1                                      # once
+
+
+def test_a_failed_or_forgotten_launch_drops_its_autoplay_request():
+    s, w, saver, calls, tick = rig()
+    s.put("setting", S.SETTING, S.settings(s) | {"enabled": False})
+    S.autoplay_on_launch(s, "L2", "sc")
+    s.put("job", "L2", {"id": "L2", "state": "failed"})
+    tick(5)
+    assert s.all(S.PENDING) == [] and not calls

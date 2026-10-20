@@ -1589,7 +1589,10 @@ async function play(id, node, debug, boot) {
   $("#ldlocal").onclick = async () => { await cancelLoad(); play(id, window.GBOX_LOCAL.worker); };
   let job;
   try {
-    job = await api(`/api/games/${id}/launch?node=${encodeURIComponent(node || "auto")}${debug ? "&debug=true" : ""}${boot.disc ? "&mod=" + encodeURIComponent(boot.disc) : ""}`, {}, "POST", 30000);
+    // On the Spark the game plays itself (autoplay: your run, your style, through the menus); touch the pad to take over
+    let auto = node === "linux" && !debug;
+    try { if (localStorage.getItem("gbox.sparkAutoplay") === "off") auto = false; } catch {}
+    job = await api(`/api/games/${id}/launch?node=${encodeURIComponent(node || "auto")}${debug ? "&debug=true" : ""}${boot.disc ? "&mod=" + encodeURIComponent(boot.disc) : ""}${auto ? "&autoplay=true" : ""}`, {}, "POST", 30000);
   } catch (err) {
     if (LOADING !== launch) return;
     launch.error = `Could not confirm the launch request: ${err.message}`;
