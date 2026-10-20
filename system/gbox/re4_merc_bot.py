@@ -1,15 +1,18 @@
 """Resident Evil 4 (GameCube G4BE08) Mercenaries autoplay playbook: an "any means necessary" run, played like a game.
 
-setup() applies the hack package through re_mods (Mercenaries unlocked, Leon's loadout = a full-auto Hand Cannon with
-explosive rounds, infinite ammo, unlimited health, time pickups x3, combo window x3 and frozen, every Ganado cloned
-twice more). play() then drives Leon from RAM at ~20 Hz with the pad only, the way a player would (operator
-2026-10-20: "I want the game to be played like a normal game" - no facing writes, so no arm aiming behind him, and no
-teleports):
+setup() applies the hack package through re_mods (Mercenaries unlocked, Leon's loadout = the Hand Cannon at its own
+fire rate with x99.9 damage and explosive rounds, infinite ammo, unlimited health, time pickups x3, combo window x3 and
+frozen, every Ganado cloned twice more; not full auto: that restarted the magnum's recoil every 3 frames and bent
+Leon's arm back over his head). play() then drives Leon from RAM at ~20 Hz with the pad only, the way a player would
+(operator 2026-10-20: "I want the game to be played like a normal game"; "it is unnatural and nightmare fuel"): it
+reads Leon and never writes him - no facing, aim pitch or position writes:
   * reads Leon (player em: *0x802B3044, +0x94 position, +0xA4 facing) and every live Ganado (EmMgr 0x8027DF20 slots:
     flags & 0x601 and +0x398 != 0xFF, +0x94 position);
   * steering is closed loop on his real facing: the stick turns him (left = +heading, ~140-230 deg/s measured on the
     Spark), R aims (the stick then fine-turns ~30 deg/s), A fires once the aim is within FIRE_TOL (2 degrees); the aim
-    pitch (+0x258) is written straight at the Ganado's head while aiming - headshots, the pose follows naturally;
+    height the same way: while R is held the stick moves the game's own pitch (+0x258, read) towards the Ganado's
+    head, pulsed when close, and A fires within PITCH_TOL; which stick direction raises it is learned from what a push
+    does (an inverted aim setting just flips it);
   * fights any Ganado within ENGAGE;
   * with the disc's level map (gbox.re4_navmap: collision, the stage's item hourglasses, line of sight) it takes the
     reachable Time Bonus hourglasses in the planner's order (exact tour from where the round starts): runs its path
@@ -33,9 +36,10 @@ teleports):
     inside SHOOT_RANGE, not steeper down than STEEP_DOWN (that is the roof edge in front of him), and backs off a
     Ganado closer than POINT_BLANK (an explosive round there blows up on Leon); further out he closes in; up on the
     start roof (HIGH_GROUND above the Ganados) he first runs to the edge towards them and jumps down;
-  * blocked while running (moved < STUCK_MOVE in STUCK_S): taps A ("JUMP OVER" / "CLIMB" prompts), then detours; still
-    blocked after that, a short hop past the obstacle (a teleport of every copy of his position: a hack, but no pose
-    change) - the last resort until the level map (gbox.re4_navmap) routes him round it;
+  * blocked while running (moved < STUCK_MOVE in STUCK_S, up and down included: a ladder moves him up, not along):
+    taps A ("JUMP OVER" / "CLIMB" prompts), then detours; still blocked after that, backs off for BACK_S and tries the
+    other side (no teleports: a position write mid-climb crashed the game with "Invalid read" in its area-event code,
+    2026-10-20);
   * a target that soaks 6 s of fire without the combo moving (on a roof, behind a wall) is skipped for 10 s;
   * the Mercenaries clock stops while a prompt is up ("Take the Handgun Ammo?", a time pillar): answer Yes (A);
   * between rounds (results, the Mercenaries title, character / stage select, the briefing) it presses A until the
@@ -60,13 +64,14 @@ from pathlib import Path
 GAME_IDS = {"G4BE08"}
 EMMGR, P_PLAYER, P_GLOBAL = 0x8027DF20, 0x802B9780 - 0x673C, 0x802B2280
 G_ROOM, MERC_TIMER, MERC = 0x4FA8, 0x80279308, 0x8021392C
-FIRE_RANGE, HOP_FAR, HOP_SHORT = 2600.0, 5500.0, 1400.0
 ENGAGE = 3800.0                                  # Ganados this close are fought, else Leon goes for the time bonuses
 TURN_TOL, FIRE_TOL = 0.35, 0.035                 # radians: turn with the stick until within TURN_TOL, aim-turn to FIRE_TOL
-AIM_PITCH = 0x258                                # Leon (player em) +0x258: aim pitch, radians, + up (found 2026-10-20: a
-                                                 # value written while R is held moves the laser; the aim pose follows)
+AIM_PITCH = 0x258                                # Leon (player em) +0x258: aim pitch, radians, + up (found 2026-10-20);
+                                                 # read only: the stick moves it while R is held
 HEAD_H, GUN_H, HOURGLASS_H = 1550.0, 1400.0, 900.0   # above the feet: a Ganado's head, Leon's gun, an hourglass
-PITCH_MAX, PITCH_AFTER = 0.5, 0.25              # radians either way; write it only once R has been held this long
+PITCH_MAX, PITCH_AFTER = 0.5, 0.25              # aim no further up / down (radians); read it once R is held this long
+PITCH_TOL, PITCH_FINE, PITCH_LIMIT_S = 0.05, 0.15, 0.5   # fire within PITCH_TOL of the head; closer than PITCH_FINE the
+                                                         # stick is pulsed; a push that moves nothing this long: the limit
 SHOOT_RANGE, POINT_BLANK = 2400.0, 700.0         # fire inside this; closer than POINT_BLANK the blast is on Leon
 STEEP_DOWN = -0.5                                # a shot this far down (radians) hits the ledge in front: move instead
 HIGH_GROUND = 1500.0                             # Leon this far above the Ganados (the start roof): get down first
@@ -74,10 +79,13 @@ TAKE_R, VAULT_R = 450.0, 900.0                   # take an item hourglass this c
 COMBO_CROWD, COMBO_NEAR = 5, 3500.0              # this many Ganados this close: take a combo bonus first (TAS route)
 EM_HP = 0x320                                    # Ganado (EmMgr slot) +0x320 s16 health, +0x322 s16 max (found
                                                  # 2026-10-20: 1000 / 1800 at full, falls with hits, 0 at death)
-HIT_WINDOW, MISSES_TO_ADJUST = 0.6, 3            # firing this long without his health falling is a miss
+HIT_WINDOW, MISSES_TO_ADJUST = 1.5, 3            # firing this long without his health falling is a miss
+                                                 # (longer than the Hand Cannon's 35 frames between shots)
 PITCH_STEPS = (0.0, -0.05, 0.05, -0.1, 0.1, -0.15, 0.15)   # aim-height offsets tried in turn after misses (radians)
 CELL = 400.0                                     # the learned map's grid (world units)
-STUCK_S, STUCK_MOVE = 0.9, 250.0                 # running but moved less than this in that long: blocked
+STUCK_S, STUCK_MOVE = 0.9, 250.0                 # running but moved less than this in that long (any way): blocked
+BACK_S = 0.6                                     # still blocked after a vault and a detour: back off this long
+BONUS_MAX = 400.0                                # the clock jumps up to this much for one bonus (time pickups x3: 270 s)
 ARRIVE = 650.0                                   # a waypoint this close is reached
 COLLECT_R, COLLECT_TRY_S = 1500.0, 4.0           # shoot an hourglass from this close; give up on it after this long
 # Village (r400) time bonuses: the room's four small AEV events (live RAM 2026-10-20), (x, z) in world units
@@ -90,7 +98,7 @@ MENU_KEYS = ("up", "a")                          # each menu step: up (GAME STAR
                                                  # left: Select Player wraps from Leon to Wesker (live 2026-10-20)
 PACKAGE = [("mercenaries_unlock", {"on": True}),
            ("merc_loadout", {"character": "leon", "items": ["handcannon", "handcannon ammo:200"], "on": True}),
-           ("weapon_mod", {"item": "handcannon", "fire_rate": "auto", "damage": "99.9"}),
+           ("weapon_mod", {"item": "handcannon", "reset": True, "damage": "99.9"}),   # its own fire rate (see above)
            ("infinite_ammo", {"on": True}), ("unlimited_health", {"on": True}),
            ("explosive_rounds", {"items": ["handcannon"], "on": True}),
            ("merc_time_bonus", {"multiplier": 3}), ("combo_time", {"multiplier": 3}),
@@ -158,14 +166,15 @@ def u32(m, a):
 
 
 def snapshot(m) -> dict:
-    """room, Merc clock (s), combo, Leon {ptr, pos, rot}, live Ganados [{slot, pos}]."""
+    """room, Merc clock (s), combo, Leon {ptr, pos, rot, pitch}, live Ganados [{slot, pos, hp, hp_max}]."""
     pg = u32(m, P_GLOBAL)
     room = struct.unpack(">H", m.rd(pg + G_ROOM, 2))[0] if ptr_ok(pg) else None
     pl = u32(m, P_PLAYER)
     player = None
     if ptr_ok(pl):
         player = {"ptr": pl, "pos": struct.unpack(">3f", m.rd(pl + 0x94, 12)),
-                  "rot": struct.unpack(">f", m.rd(pl + 0xA4, 4))[0]}
+                  "rot": struct.unpack(">f", m.rd(pl + 0xA4, 4))[0],
+                  "pitch": struct.unpack(">f", m.rd(pl + AIM_PITCH, 4))[0]}
     base, n, stride = u32(m, EMMGR), u32(m, EMMGR + 4), u32(m, EMMGR + 8)
     enemies = []
     if ptr_ok(base) and 0 < n <= 128 and 0x100 < stride < 0x2000:
@@ -186,18 +195,6 @@ def in_mercenaries(snap: dict) -> bool:
 
 def heading(dx: float, dz: float) -> float:
     return math.atan2(dx, dz)
-
-
-def teleport(m, pl: int, x: float, y: float, z: float) -> int:
-    """Every copy of Leon's position (pos, old pos, collision) moves; returns how many were written."""
-    d = m.rd(pl, 0x300)
-    pos = struct.unpack_from(">3f", d, 0x94)
-    n = 0
-    for o in range(0, 0x2F4, 4):                     # all three coordinates must match: zeros are everywhere
-        if all(abs(a - b) < 2 for a, b in zip(struct.unpack_from(">3f", d, o), pos)):
-            m.wr(pl + o, struct.pack(">3f", x, y, z))
-            n += 1
-    return n
 
 
 def wrap(a: float) -> float:
@@ -310,6 +307,8 @@ class Bot:
         self.r_since = None                           # since when the bot has held R (the aim pose is up after a moment)
         self.shot = None                              # {"slot", "hp", "since"}: the firing window being scored
         self.miss_run, self.pitch_i = 0, 0
+        self.pitch_up, self.pitch_key = "up", None    # the stick direction that raises the aim (learned); held last tick
+        self.pitch_seen, self.pitch_wrong, self.pitch_push = None, 0, None
         self.st, self.items, self.combos, self.ordered = None, [], [], False
         self.hist: list = []
         self.last_timer, self.timer_since = None, clock()
@@ -318,11 +317,12 @@ class Bot:
         self.room = None
         self.bonus: list = []                         # time bonuses left this round [(x, z)]
         self.goal = None                              # {"pos", "since", "path"} the time bonus Leon is going for
-        self.unstick = None                           # {"stage": "vault" | "detour", "until", "dir"}
+        self.unstick = None                           # {"stage": "detour" | "back", "until", "dir"}
         self.detour_dir = 1
-        self.last_hop, self.stuck_n = 0.0, 0
-        self.stats = {"prompts": 0, "max_combo": 0, "vaults": 0, "detours": 0, "hops": 0, "time_bonus": 0, "shots_s": 0.0,
-                      "learned_walls": 0, "replans": 0, "hits": 0, "misses": 0, "accuracy": 0.0, "pitch_offset": 0.0}
+        self.stuck_n = 0
+        self.stats = {"prompts": 0, "max_combo": 0, "vaults": 0, "detours": 0, "backoffs": 0, "time_bonus": 0,
+                      "shots_s": 0.0, "learned_walls": 0, "replans": 0, "hits": 0, "misses": 0, "accuracy": 0.0,
+                      "pitch_offset": 0.0}
 
     # -- the round's time bonuses --
     def _round(self, room):
@@ -414,9 +414,9 @@ class Bot:
             self.r_since = None
             return {"hold": {"down"} | self._turn(err, aiming=False)}
         self.r_since = now if self.r_since is None else self.r_since
-        self._pitch(p, tgt["pos"][1] + HEAD_H, dist)                   # the gun onto his head
-        if abs(err) > FIRE_TOL or now - self.r_since < PITCH_AFTER:
-            return {"hold": self._turn(err, aiming=True)}                # aim (pose up), fine-turn onto him
+        height, level = self._aim_height(p, tgt["pos"][1] + HEAD_H, dist, now)   # the gun onto his head, by stick
+        if abs(err) > FIRE_TOL or not level:
+            return {"hold": self._turn(err, aiming=True) | height}       # aim (pose up), turn and raise onto him
         self.stats["shots_s"] = round(self.stats["shots_s"] + 0.05, 2)
         self._score(tgt, now)
         return {"hold": {"r", "a"}}                                       # on target: fire
@@ -446,18 +446,38 @@ class Bot:
         total = self.stats["hits"] + self.stats["misses"]
         self.stats["accuracy"] = round(self.stats["hits"] / total, 3) if total else 0.0
 
-    def _pitch(self, p, target_y: float, dist: float) -> None:
-        """Aim pitch straight at target_y (an aimbot on the vertical: the game draws the aim pose from it). Only in a live
-        round whose clock runs: a write while the round ends (Leon's object torn down for the evac) is a risk."""
-        if not (self.last_timer or 0) > 2 or self.clock() - self.timer_since > 0.5:
-            return
-        if self.r_since is None or self.clock() - self.r_since < PITCH_AFTER:
-            return                                    # the aim pose is not up yet: the arms would bend to it
-        a = math.atan2(target_y - (p["pos"][1] + GUN_H), max(dist, 1.0)) + PITCH_STEPS[self.pitch_i]
-        try:
-            self.m.wr(p["ptr"] + AIM_PITCH, struct.pack(">f", max(-PITCH_MAX, min(PITCH_MAX, a))))
-        except Exception:                             # noqa: BLE001 - a read-only memory view: level aim
-            pass
+    def _aim_height(self, p, target_y: float, dist: float, now: float) -> tuple[set, bool]:
+        """The stick key that moves the aim towards target_y while R is held, and whether the aim is there. Reads the
+        game's own pitch (+0x258) and never writes it: the game keeps the pose and its limits. Which direction raises
+        it is learned from what the last push did (two contradicting pushes in a row flip it)."""
+        cur = p.get("pitch")
+        if cur is None or self.r_since is None or now - self.r_since < PITCH_AFTER:
+            self.pitch_key, self.pitch_seen, self.pitch_push = None, None, None
+            return set(), False                       # the aim pose is not up yet
+        want = math.atan2(target_y - (p["pos"][1] + GUN_H), max(dist, 1.0)) + PITCH_STEPS[self.pitch_i]
+        want = max(-PITCH_MAX, min(PITCH_MAX, want))
+        seen = self.pitch_seen
+        if seen is not None and seen[2] is not None and abs(cur - seen[1]) > 0.004:   # what the last push did
+            if (cur > seen[1]) == (seen[2] == self.pitch_up):
+                self.pitch_wrong = 0
+            else:
+                self.pitch_wrong += 1
+                if self.pitch_wrong >= 2:             # inverted aim: this stick direction lowers it
+                    self.pitch_up, self.pitch_wrong = ("down" if self.pitch_up == "up" else "up"), 0
+        err = want - cur
+        if abs(err) <= PITCH_TOL:
+            self.pitch_key, self.pitch_seen, self.pitch_push = None, (now, cur, None), None
+            return set(), True
+        key = self.pitch_up if err > 0 else ("down" if self.pitch_up == "up" else "up")
+        if self.pitch_push is None or self.pitch_push[2] != key:
+            self.pitch_push = (now, cur, key)
+        elif now - self.pitch_push[0] > PITCH_LIMIT_S and abs(cur - self.pitch_push[1]) < 0.01:
+            self.pitch_key, self.pitch_seen = None, (now, cur, None)
+            return set(), True                        # pushing moves nothing: the game's limit, as close as it gets
+        if abs(err) < PITCH_FINE and self.pitch_key is not None:
+            key = None                                # close: pulse the stick (a tick on, a tick off), no overshoot
+        self.pitch_key, self.pitch_seen = key, (now, cur, key)
+        return ({key} if key else set()), False
 
     def _take(self, p, h: dict, now, pool: list) -> dict:
         """Run to an item hourglass's stand point on the map's path and take it with A."""
@@ -504,14 +524,16 @@ class Bot:
         return self._go(p, (w[0], w[1]), now)
 
     def _go(self, p, goal_xz, now) -> dict:
-        px, _, pz = p["pos"]
+        px, py, pz = p["pos"]
         if self.unstick and now < self.unstick["until"]:
             if self.unstick["stage"] == "detour":
                 return {"hold": {"up", "b", "left" if self.unstick["dir"] > 0 else "right"}}
+            if self.unstick["stage"] == "back":
+                return {"hold": {"down"}}
         self.unstick = None
-        self.hist = [h for h in self.hist if now - h[0] < STUCK_S + 0.3] + [(now, px, pz)]
+        self.hist = [h for h in self.hist if now - h[0] < STUCK_S + 0.3] + [(now, px, py, pz)]
         span = now - self.hist[0][0]
-        moved = math.hypot(px - self.hist[0][1], pz - self.hist[0][2])
+        moved = math.dist((px, py, pz), self.hist[0][1:])                # up a ladder counts: not blocked
         if span >= STUCK_S and moved < STUCK_MOVE:                       # running into something
             self.hist = []
             self.stuck_n += 1
@@ -521,17 +543,13 @@ class Bot:
                 if self.goal and self.goal.get("pos") and self.st is None:
                     self.goal["path"] = self._path((px, pz), self.goal["pos"])
                     self.stats["replans"] += 1
-            gx, gz = goal_xz
-            dist = math.hypot(gx - px, gz - pz)
             if self.stuck_n == 1:
                 self.stats["vaults"] += 1
                 return {"tap": "a"}                                       # a fence / window: JUMP OVER
-            if self.stuck_n >= 3 and dist > HOP_SHORT and now - self.last_hop > 3:
-                k = min(HOP_SHORT, dist - ARRIVE) / dist        # last resort (a hack): a short hop past the obstacle
-                teleport(self.m, p["ptr"], px + (gx - px) * k, p["pos"][1], pz + (gz - pz) * k)
-                self.last_hop, self.stuck_n = now, 0
-                self.stats["hops"] += 1
-                return {"hold": set()}
+            if self.stuck_n % 3 == 0:                                     # a vault and a detour didn't do it: back
+                self.unstick = {"stage": "back", "until": now + BACK_S}   # off, then the other side
+                self.stats["backoffs"] += 1
+                return {"hold": {"down"}}
             self.detour_dir = -self.detour_dir
             self.unstick = {"stage": "detour", "until": now + 0.8, "dir": self.detour_dir}
             self.stats["detours"] += 1
@@ -558,13 +576,13 @@ class Bot:
             return {"hold": set()}
         self._round(s["room"])
         if s["timer"] != self.last_timer:
-            if self.last_timer is not None and self.last_timer > 1 and 5 < s["timer"] - self.last_timer < 100 and self.bonus:   # a time bonus (not the next round's clock)
+            if self.last_timer is not None and self.last_timer > 1 and 5 < s["timer"] - self.last_timer < BONUS_MAX and self.bonus:   # a time bonus (not the next round's clock)
                 px, _, pz = p["pos"]
                 got = min(self.bonus, key=lambda b: (b[0] - px) ** 2 + (b[1] - pz) ** 2)
                 self.bonus.remove(got)
                 self.stats["time_bonus"] += 1
                 self.goal = None
-            elif self.last_timer is not None and self.last_timer > 1 and 5 < s["timer"] - self.last_timer < 100 \
+            elif self.last_timer is not None and self.last_timer > 1 and 5 < s["timer"] - self.last_timer < BONUS_MAX \
                     and (self.items or self.combos):
                 px, _, pz = p["pos"]
                 pool = self.items + self.combos
@@ -613,8 +631,8 @@ class Bot:
                     self.r_since = None
                     return {"hold": self._turn(err, aiming=False)}
                 self.r_since = now if self.r_since is None else self.r_since
-                self._pitch(p, p["pos"][1] + HOURGLASS_H, d)
-                return {"hold": {"r", "a"} | (self._turn(err, aiming=True) - {"r"})}
+                height, _ = self._aim_height(p, p["pos"][1] + HOURGLASS_H, d, now)
+                return {"hold": {"r", "a"} | (self._turn(err, aiming=True) - {"r"}) | height}
             way = self.goal["path"]
             while len(way) > 1 and math.hypot(way[0][0] - px, way[0][1] - pz) < ARRIVE:
                 way.pop(0)
@@ -648,7 +666,7 @@ def learn_dir_for(ad) -> Path:
 def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stats: dict | None = None,
          clock=time.time, learn_dir: Path | None = None, rerun=None, prompt=None) -> dict:
     """Drive Leon until stopped(); send(rows) presses keys. Returns the run's stats (stats, when given, is filled live:
-    the watch panel shows it): hops, prompts, max_combo, combo, timer, rounds, menu_presses."""
+    the watch panel shows it): backoffs, prompts, max_combo, combo, timer, rounds, menu_presses."""
     m = m or memory(ad)
     bot, held = Bot(m, clock=clock, learn_dir=learn_dir or learn_dir_for(ad)), set()
     if stats is not None:
