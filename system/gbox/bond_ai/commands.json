@@ -2805,7 +2805,8 @@
    "length": 1,
    "description": "Debug Comment\n@return: May have originally printed to stderr on host sgi devkit.",
    "aliases": [],
-   "debug": true
+   "debug": true,
+   "variable": "nul_terminated_text"
   },
   {
    "opcode": 174,

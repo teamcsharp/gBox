@@ -77,9 +77,14 @@ def parse(text: str) -> list[dict]:
         elif line.startswith(("_AI_CMD(", "_AI_DEBUG(")):       # both make an AI_CMD enum entry (bondconstants.h)
             if not name:
                 raise ValueError(f"line {i + 1}: a command without a CMDNAME")
+            body = " ".join(lines[i:i + 12])
+            # a command whose code advances by chraiitemsize() has no fixed size: PRINT (0xAD) is the opcode, then
+            # text up to and including a NUL byte (src/game/chrai.c chraiitemsize)
+            variable = "chraiitemsize" in body.split("break;")[0]
             cmds.append({"opcode": len(cmds), "name": name, "params": params,
                          "length": 1 + sum(p["bytes"] for p in params), "description": desc, "aliases": [],
-                         **({"debug": True} if line.startswith("_AI_DEBUG(") else {})})
+                         **({"debug": True} if line.startswith("_AI_DEBUG(") else {}),
+                         **({"variable": "nul_terminated_text"} if variable else {})})
         elif line.startswith("_AI_CMD_POLYMORPH("):
             chunk = line
             while chunk.count("(") > chunk.count(")") and i + 1 < len(lines):
