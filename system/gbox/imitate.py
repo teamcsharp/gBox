@@ -35,6 +35,9 @@ THUMB = (32, 24)         # anchor thumbnail size (grey)
 ANCHOR_IDLE = 0.7        # s: a press after this long without input saves an anchor (the screen the operator reacted to)
 MATCH = 14.0             # mean absolute grey difference (0-255) under which the live screen matches an anchor
 SYNC_TIMEOUT = 15.0      # s: an anchor that never matches holds the replay this long, then it carries on
+STILL = 12.0             # consecutive thumbnails closer than this: nothing is happening on screen (gameplay is 24+)
+STILL_FOR = 4.0          # s of that = stuck (title screen, "press start", a dialogue box, a results screen)
+MENU_IDLE = 0.8          # s without input before a lone press: how the operator works menus
 
 # Dolphin on Windows (SendInput keyboard binding) wants GameCube names; physical XInput reports are positional RetroPad
 # labels (Xbox A = 'b'). gameplay_demo.pad_events learned this mapping on the observed PSO demos.
@@ -216,7 +219,48 @@ def learn(timeline: list[tuple[float, frozenset]]) -> dict:
             gaps.append(round(start - prev_end, 3))
         prev, prev_end = i, start + b[-1][0]
     return {"bursts": model, "follows": {str(k): dict(v) for k, v in follows.items()}, "gaps": gaps[-500:],
-            "total": len(seq)}
+            "total": len(seq), "menu": menu_keys(timeline)}
+
+
+def menu_keys(timeline: list[tuple[float, frozenset]], top: int = 2) -> list[str]:
+    """The buttons the operator uses to get through menus: lone presses after a pause (MENU_IDLE), most used first.
+    Start always leads (title screens); then the confirm button this player and emulator use (RetroPad 'b' = the
+    bottom button on a Dreamcast, 'a' on Dolphin GameCube...)."""
+    counts, idle_since, prev = Counter(), None, frozenset()
+    for at, keys in timeline:
+        if not keys:
+            if prev:
+                idle_since = at
+        elif not prev and len(keys) == 1 and idle_since is not None and at - idle_since >= MENU_IDLE:
+            counts[next(iter(keys))] += 1
+        prev = keys
+    moves = {"up", "down", "left", "right", "lup", "ldown", "lleft", "lright", "dup", "ddown", "dleft", "dright",
+             "t", "g", "f", "h", "cup", "cdown", "cleft", "cright", "start", "select"}
+    out = ["start"] + [k for k, _ in counts.most_common() if k not in moves]
+    return out[:top + 1]
+
+
+class Stuck:
+    """True once the screen has stayed (nearly) the same for STILL_FOR seconds: autoplay is stuck on a title screen,
+    a "press start", a dialogue box or a results screen, and should press through it."""
+
+    def __init__(self, grab, clock=time.time, still: float = STILL, still_for: float = STILL_FOR):
+        self.grab, self.clock, self.still, self.still_for = grab, clock, still, still_for
+        self.last, self.since = None, None
+
+    def __call__(self) -> bool:
+        try:
+            t = self.grab()
+        except Exception:
+            return False
+        now = self.clock()
+        if self.last is None or distance(t, self.last) >= self.still:
+            self.since = now
+        self.last = t
+        return now - self.since >= self.still_for
+
+    def reset(self):
+        self.since = self.clock()
 
 
 class Style:
@@ -266,10 +310,21 @@ def play_plan(plan, *, send, stopped, clock, sleep, offset: float = 0.0, sync=No
             "held_for_screens": round(held_for, 1)}
 
 
-def play_style(style: Style, *, send, stopped, sleep, limit: int | None = None) -> int:
-    """Loop the learned bursts until stopped (or `limit` bursts). Releases everything it holds between bursts."""
-    n = 0
+def play_style(style: Style, *, send, stopped, sleep, limit: int | None = None, stuck=None) -> int:
+    """Loop the learned bursts until stopped (or `limit` bursts). Releases everything it holds between bursts.
+    With stuck (a Stuck): when the screen stops changing, press the operator's menu buttons (Start, then their
+    confirm button, in turn) until it moves again, instead of fighting a title screen."""
+    n, menu, mi = 0, style.m.get("menu") or ["start"], 0
     while not stopped() and (limit is None or n < limit):
+        if stuck is not None and stuck():
+            key = menu[mi % len(menu)]
+            mi += 1
+            send([{"key": key, "down": True}])
+            sleep(0.15)
+            send([{"key": key, "down": False}])
+            sleep(1.0)
+            stuck.reset()
+            continue
         held, t = frozenset(), 0.0
         for dt, keys in style.next():
             if dt > t:
