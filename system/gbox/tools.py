@@ -735,6 +735,9 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     if inp.boot_timeout_s:
         ad.boot_timeout_s = float(inp.boot_timeout_s)
     ad.game_id, ad.serial = g.game_id, g.serial            # per-game settings (graphics) applied at launch
+    if HOST_OS == "windows" and isinstance(ad, adapters.RetroArchAdapter):
+        from . import padmap                               # native window: the operator's controller map for this
+        ad.pad_map = padmap.fetch(ctx.server, ctx.headers, g.platform)   # console, written as RetroArch's remap file
     ad.examine = _examine_for_launch(inp.examine, ctx.config.examine_ready, HOST_OS)
     if inp.capture_backend:
         ad.capture_backend = _capture_plan(ad, g, inp.capture_backend, ctx)
@@ -844,6 +847,7 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         memory_card_sessions.checkout(f'{ctx.worker}-{ctx.job_id}',ad,g.model_dump(),ctx)
         if inp.jump and not inp.capture_backend:            # a demo: straight into gameplay (gbox.jumpstate)
             from . import jumpstate
+            ad.demo = True                                  # unattended: no modal dialogs, no on-screen messages
             jump = diag["jump"] = jumpstate.arm_boot(ad, {"game_id": g.game_id, "mod": launch_mod or ""})
         ctx.progress(72, f"Starting {ad.name} with {src.name}"
                          + (f", straight into gameplay ({jump['file']})" if jump and jump.get("booted") else ""))
@@ -942,7 +946,10 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         except Exception as e:                                 # never block a game launch
             detail["pso_controls"] = {"state": "unsupported", "reason": str(e)}
         try:
-            detail["rewind"] = rewind.start(sid, ad, ctx.config, gd, inp.rewind, lambda: sid in SESSIONS)
+            # a demo / autoplay launch keeps no checkpoint ring: at most its jump state and the menu state (operator
+            # 2026-10-20: "one game session needs a maximum of two save states"); the ring saved every ~2 s
+            ring = False if (inp.jump and inp.rewind is None) else inp.rewind
+            detail["rewind"] = rewind.start(sid, ad, ctx.config, gd, ring, lambda: sid in SESSIONS)
         except Exception as e:                                 # noqa: BLE001 - never block the launch
             detail["rewind"] = {"rewind": "unsupported", "reason": f"rewind setup failed: {e}"}
         # background gameplay ring (#1084): records while the operator's pad is in use, clipped later with the recording tool
@@ -2616,6 +2623,10 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
             kw = {}
             if "stats" in inspect.signature(pb.play).parameters:
                 kw["stats"] = run["live"] = {}                 # the playbook fills it as it plays (watch panel)
+            if "prompt" in inspect.signature(pb.play).parameters and hasattr(ad, "get_frame"):
+                from . import screen_prompt                    # the game's on-screen button prompts (A TAKE / JUMP OVER)
+                watcher = run["prompt_watcher"] = screen_prompt.Watcher(lambda: ad.get_frame(), hz=6.0).start()
+                kw["prompt"] = lambda: watcher.visible(0.5)
             if "style" in inspect.signature(pb.play).parameters and ctx is not None and game_id:
                 try:                                           # the operator's learned style does the fighting
                     from . import imitate
@@ -2627,6 +2638,8 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
             stats = pb.play(ad, _screensaver_send(ad) if run.get("screensaver") else ad.send_input, lambda: d.stopped, **kw)
             if stats.get("hung"):                              # the game froze: _ended gets it back (_bad_end)
                 run["bad_end"] = "hung"
+            if run.get("prompt_watcher") is not None:
+                run["prompt_watcher"].stop.set()
             run["result"] = {"ok": True, "playbook": name, **stats, **({"setup_failed": len(failed)} if failed else {})}
         except Exception as e:
             run["result"] = {"ok": False, "error": str(e)}

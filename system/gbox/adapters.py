@@ -51,6 +51,14 @@ N64_AARCH64_OPTS = {"parallel-n64-cpucore": "cached_interpreter"}
 # Rage Wars, 2026-10-20) had nowhere to save. A memory pak in every port; the pak lives in the core's save file.
 N64_PAK_OPTS = {**{f"parallel-n64-pak{i}": "memory" for i in range(1, 5)},
                 **{f"mupen64plus-pak{i}": "memory" for i in range(1, 5)}}
+# N64 controls, written out (2026-10-20, the operator couldn't get the C buttons onto the right stick): the cores'
+# standard layout - N64 stick = RetroPad left analog, C buttons = right analog (both cores read RETRO_DEVICE_INDEX_
+# ANALOG_RIGHT as C past half travel), A = RetroPad B, B = Y, Z = L2, holding R2 = "C buttons mode" (face buttons become
+# C-right/C-left/C-down/C-up = mupen64plus' C1..C4 defaults). "Independent C-button Controls" (alt-map) would move L/R and
+# Select onto C buttons and break gBox's controller maps (gbox/padmap.py), which assume this layout.
+N64_INPUT_OPTS = {"parallel-n64-alt-map": "disabled", "mupen64plus-alt-map": "False",
+                  "mupen64plus-r-cbutton": "C1", "mupen64plus-l-cbutton": "C2",
+                  "mupen64plus-d-cbutton": "C3", "mupen64plus-u-cbutton": "C4"}
 
 
 def _set_core_opts(path: Path, values: dict[str, str]) -> None:
@@ -386,10 +394,14 @@ _ANALOG = {"lup": "l_y_minus", "ldown": "l_y_plus", "lleft": "l_x_minus", "lrigh
 
 # Windows: keyboard input into a local emulator window (autoplay on this PC). Scan codes, because RetroArch reads the
 # keyboard through DirectInput. Only while gBox (or the emulator) is the active window: never types into another app.
-# RETRO_DEVICE_ID_JOYPAD_* (libretro.h) and the left stick as RETRO_DEVICE_ANALOG (index 0: id 0 = x, 1 = y)
+# RETRO_DEVICE_ID_JOYPAD_* (libretro.h) and both sticks as RETRO_DEVICE_ANALOG directions: key -> (index, id, value),
+# index 0 = left stick, 1 = right stick; id 0 = x, 1 = y. The right stick is N64's C buttons (parallel-n64 /
+# mupen64plus-next) and GameCube's C-stick (Dolphin core): "cup"/"cdown"/"cleft"/"cright" name it too.
 RETROPAD_ID = {"b": 0, "y": 1, "select": 2, "start": 3, "up": 4, "down": 5, "left": 6, "right": 7, "a": 8, "x": 9,
                "l": 10, "r": 11, "l2": 12, "r2": 13, "l3": 14, "r3": 15}
-STICK = {"lleft": (0, -0x7FFF), "lright": (0, 0x7FFF), "lup": (1, -0x7FFF), "ldown": (1, 0x7FFF)}
+STICK = {"lleft": (0, 0, -0x7FFF), "lright": (0, 0, 0x7FFF), "lup": (0, 1, -0x7FFF), "ldown": (0, 1, 0x7FFF),
+         "rleft": (1, 0, -0x7FFF), "rright": (1, 0, 0x7FFF), "rup": (1, 1, -0x7FFF), "rdown": (1, 1, 0x7FFF)}
+STICK.update({"cleft": STICK["rleft"], "cright": STICK["rright"], "cup": STICK["rup"], "cdown": STICK["rdown"]})
 _SCAN = {"Up": (0x48, 1), "Down": (0x50, 1), "Left": (0x4B, 1), "Right": (0x4D, 1), "Return": (0x1C, 0), "Shift_R": (0x36, 0),
          "8": (0x48, 0), "2": (0x50, 0), "4": (0x4B, 0), "6": (0x4D, 0),
          **{c: (sc, 0) for c, sc in zip("qwertyuiopasdfghjklzxcvbnm", [0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
@@ -1096,6 +1108,7 @@ class RetroArchAdapter(CommandAdapter):
             co = capture_backend.core_options_file(co, {}, work)
         if (self.platform or "") in ("n64", "n64dd"):
             _set_core_opts(co, N64_PAK_OPTS)                              # a Controller Pak (memory card) in every port
+            _set_core_opts(co, N64_INPUT_OPTS)                            # stick = left stick, C buttons = right stick
         if (self.platform or "") == "n64" and HOST_OS == "windows":       # docked + resized windows: the GL plugins (Glide64)
             _set_core_opts(co, N64_WINDOWS_OPTS)                          # draw at launch size -> squeezed/cropped picture
         if (self.platform or "") == "n64" and HOST_OS == "linux" and provision.ARCH == "aarch64":
@@ -1137,6 +1150,12 @@ class RetroArchAdapter(CommandAdapter):
                          # the window is embedded inside the gBox app: no menu bar, no decorations, no companion UI
                          "ui_menubar_enable": "false", "video_window_show_decorations": "false",
                          "ui_companion_enable": "false", "ui_companion_start_on_boot": "false", "video_window_auto_width_max": "0"})
+            # the operator's controller maps (gbox/padmap.py): the core's remap file in gBox's own folder, written at
+            # launch from the map saved on the control plane (_write_pad_remap). RetroArch applies it to the physical pad
+            # only; menu edits are not saved back over it, and no per-controller subfolder hides it.
+            opts.update({"input_remapping_directory": d["retroarch"] / "remaps", "auto_remaps_enable": "true",
+                         "input_remap_binds_enable": "true", "input_remap_sort_by_controller_enable": "false",
+                         "remap_save_on_exit": "false", "notification_show_remap_load": "false"})
             if (self.platform or "") == "ps2":       # pcsx2_libretro's GL path presents black frames on this PC; D3D11 works
                 opts["video_driver"] = "d3d11"
         opts |= _pad_binds()                 # keyboard binds; native gamepads use SDL autoconfig
@@ -1149,6 +1168,7 @@ class RetroArchAdapter(CommandAdapter):
         if cap:                                              # the capture backend: vulkan (layer) or glcore (injected)
             _set_core_opts(co, cap.get("core_options") or {})
             opts = capture_backend.retroarch_cfg(opts, cap, work)
+            opts["auto_remaps_enable"] = "false"            # an agent's session: its input is never the operator's map
             self.states_override = work / "states"
             cfg = work / "retroarch.cfg"
         playback = getattr(self, 'tas_playback', None)
@@ -1164,7 +1184,7 @@ class RetroArchAdapter(CommandAdapter):
                         preemptive_frames_enable='false', savestate_auto_load='false',
                         savestate_auto_save='false', apply_cheats_after_load='false',
                         input_autodetect_enable='false', input_joypad_driver='null',
-                        audio_volume='-34', pause_nonactive='false')
+                        audio_volume='-34', pause_nonactive='false', auto_remaps_enable='false')
             cfg = work/'retroarch.cfg'
             self.states_override = work/'states'
         from . import memory_card_emulators
@@ -1174,6 +1194,19 @@ class RetroArchAdapter(CommandAdapter):
             memory_card_sessions.journal(self.memory_card_context)
         cfg.write_text("".join(f'{k} = "{v}"\n' for k, v in opts.items()))
         return cfg
+
+    def _write_pad_remap(self, core: str, exe: str) -> None:
+        """Native window (Windows): the operator's controller map for this console as the core's RetroArch remap file
+        (gbox/padmap.py; self.pad_map is fetched at launch, None = the server couldn't say). Never fails a launch."""
+        if (HOST_OS != "windows" or self.config is None or getattr(self, "capture_backend", None)
+                or getattr(self, "tas_playback", None)):
+            return
+        from . import padmap
+        try:
+            self.pad_remap = padmap.apply_retroarch(self.config.runtime / "retroarch" / "remaps", core, self.platform,
+                                                    getattr(self, "pad_map", None), info_dirs=(Path(exe).parent / "info",))
+        except Exception as e:                                # noqa: BLE001 - the default layout still plays
+            print(f"gBox: controller map not written ({type(e).__name__}: {e})", flush=True)
 
     def _argv(self, rom: str) -> list[str]:
         core = self.cfg.core
@@ -1186,6 +1219,8 @@ class RetroArchAdapter(CommandAdapter):
         elif not core:
             raise ToolUnavailable("retroarch adapter needs 'core' configured")
         cfg = self._write_cfg() if self.config is not None else None
+        if cfg is not None:
+            self._write_pad_remap(core, exe)
         playback = getattr(self, 'tas_playback', None)
         if playback:
             from . import tas
@@ -1883,8 +1918,9 @@ class RetroArchAdapter(CommandAdapter):
         return self.remote_port
 
     def remote_input(self, events: list[dict]) -> tuple[int, list[dict]]:
-        """Player-1 RetroPad buttons / left stick through RetroArch's network gamepad (focus-independent).
-        Returns (sent, events it couldn't express)."""
+        """Player-1 RetroPad buttons / both sticks through RetroArch's network gamepad (focus-independent).
+        Returns (sent, events it couldn't express). RetroArch keeps one value per stick axis (input_remote_parse_packet):
+        a direction's release centres its axis."""
         import socket
         if not getattr(self, "remote_port", None):
             return 0, events
@@ -1897,9 +1933,9 @@ class RetroArchAdapter(CommandAdapter):
                     continue
                 if k in RETROPAD_ID:                                  # struct remote_message {int port, device, index, id; uint16 state}
                     msg = struct.pack("<iiiiH2x", 0, 1, 0, RETROPAD_ID[k], 1 if down else 0)
-                else:
-                    axis, val = STICK[k]
-                    msg = struct.pack("<iiiiH2x", 0, 5, 0, axis, (val if down else 0) & 0xFFFF)
+                else:                                                 # RETRO_DEVICE_ANALOG, index 0 = left, 1 = right
+                    index, axis, val = STICK[k]
+                    msg = struct.pack("<iiiiH2x", 0, 5, index, axis, (val if down else 0) & 0xFFFF)
                 if not down and sent:
                     time.sleep(0.05)                                  # down+up in one batch: let the game poll a frame
                 sk.sendto(msg, ("127.0.0.1", self.remote_port))
@@ -2366,9 +2402,14 @@ D-Pad/Right = `H`
         return ["-s", str(self.jump_from)] if self.jump_from else []
 
     def _jump_opts(self) -> dict:
-        # a damaged state file is a panic alert (a modal dialog) in Dolphin: an unattended demo must never stop on one.
-        # The command-line layer is never saved, so the operator's own launches keep their dialogs.
-        return {"Dolphin.Interface.UsePanicHandlers": "False"} if self.jump_from else {}
+        # a damaged state file is a panic alert (a modal dialog) in Dolphin: an unattended demo must never stop on one -
+        # nor on the game's own crash ("Invalid read from 0x00000004", 2026-10-20: the headless Spark display showed it
+        # to nobody, Dolphin waited on it and Stop timed out). A demo / autoplay launch (self.demo) also hides the
+        # on-screen messages ("Saved State to G4BE08.s08"). The command-line layer is never saved, so the operator's
+        # own launches keep their dialogs and messages.
+        if not (self.jump_from or getattr(self, "demo", False)):
+            return {}
+        return {"Dolphin.Interface.UsePanicHandlers": "False", "Dolphin.Interface.OnScreenDisplayMessages": "False"}
 
     def _jump_save_key(self) -> None:
         self._xdo('keydown', 'Shift_L', 'keydown', 'F10', 'sleep', '0.1', 'keyup', 'F10', 'keyup', 'Shift_L')
