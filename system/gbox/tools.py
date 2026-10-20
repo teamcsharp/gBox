@@ -140,6 +140,13 @@ def scan_library(inp: ScanIn, ctx: Ctx):
         entries, problems, per["adhoc"] = entries + e, problems + p, {"entries": len(e)}
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(json.dumps(cache))
+    try:                                                # native PC ports of owned ROMs (gbox/native_ports.py)
+        from . import native_ports
+        ported = native_ports.catalog_entries(entries)
+    except Exception as e:                               # noqa: BLE001 - a port listing never fails the scan
+        ported = []
+        problems.append(f"native ports: {type(e).__name__}: {e}")
+    entries += ported
     if inp.include_steam is not False:                   # opt-in auto-detection: an unconfigured PC is not scanned by surprise
         steam_root = cfg.steam_root or (catalog.default_steam_root() if inp.include_steam else None)
         if steam_root:
@@ -2592,7 +2599,7 @@ def _autoplay_hacks(sid: str, g: dict) -> list[str]:
     return held
 
 
-PLAYBOOKS = ("re4_merc_bot", "doa2_bot")              # game-specific autoplay bots: matches(ad, g), setup(ad), play(ad, send, stopped)
+PLAYBOOKS = ("re4_merc_bot", "doa2_bot", "ge007_bots")   # game-specific autoplay bots: matches(ad, g), setup(ad), play(ad, send, stopped)
 
 
 def _playbook(ad, g):
@@ -4904,6 +4911,7 @@ def _load_tool_modules(names=("cxbx_diagnostics_tool", "native_face_editor", "au
                               "audio_cpp",       # audio_cpp: local audio.cpp speech service (status/start/stop/speak/transcribe)
                               "evidence_capture",   # evidence_capture: PR evidence frames (runs in the control plane)
                               "ram_dump",      # ram_dump: a session's main RAM as one gzip artifact + JSON header (coaching)
+                              "native_ports",  # native_port: build/prepare decomp PC ports (GoldenEye 007 + gBox bots)
                               "pick_tool")):     # pick_identify / pick_replace (+ pick_prepare, pick_ghidra): the pick whip backend
     import importlib
     import subprocess

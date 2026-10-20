@@ -3507,6 +3507,8 @@ def create_app(config: Config) -> FastAPI:
         elif node != "auto":
             byname = [w for w in workers() if w["online"] and w["name"] == node]
             req.require_worker = byname[0]["id"] if byname else node
+        elif (e.get("launch") or {}).get("kind") == "native_port":
+            req.require_os = "linux"                      # native ports build and stream from the Linux worker
         elif e.get("platform") in ("ps2", "ps3"):
             # PS2 on the Spark uses an experimental ARM CPU backend. Keep ordinary
             # play on the Windows PC's mature recompiler and direct game display.
