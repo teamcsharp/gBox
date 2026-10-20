@@ -2309,6 +2309,8 @@ def autoplay(inp: AutoplayIn, ctx: Ctx):
     d.assist_hold_hp = inp.assist
     d.screensaver = (ctx.server, dict(ctx.headers)) if inp.screensaver else None
     ad, g = SESSIONS[inp.session_id]
+    if inp.screensaver:
+        _front(ad)                                             # idle PC: the game in front (Dolphin input needs it)
     since = time.time()
     if inp.mode in ("auto", "playbook") and not inp.mission:  # a game-specific bot for where the game is right now
         pb = _playbook(ad, g)
@@ -2444,7 +2446,7 @@ def _start_playbook(pb, inp, d, ad, since) -> dict:
     def go():
         try:
             failed = pb.setup(ad)
-            stats = pb.play(ad, ad.send_input, lambda: d.stopped)
+            stats = pb.play(ad, _screensaver_send(ad) if run.get("screensaver") else ad.send_input, lambda: d.stopped)
             run["result"] = {"ok": True, "playbook": name, **stats, **({"setup_failed": len(failed)} if failed else {})}
         except Exception as e:
             run["result"] = {"ok": False, "error": str(e)}
@@ -2485,7 +2487,7 @@ def _start_imitation(inp, ctx, d, ad, g, game_id, since) -> dict:
     platform = g.get("platform")
     sid = inp.session_id
     run = {"driver": d, "sid": sid, "since": since, "mode": inp.mode}
-    send = lambda rows: ad.send_input(rows)
+    send = _screensaver_send(ad) if inp.screensaver else (lambda rows: ad.send_input(rows))
     if inp.mode == "replay":
         rec = imitate.pick_run(runs, ad.name, inp.run_id)
         if rec is None:
@@ -2558,6 +2560,32 @@ def _novelty(stuck, style) -> dict:
         return {"knobs": style.knobs}
     n = stuck.novelty()
     return {"knobs": style.knobs, "score": n["score"], "moving": n["moving"], "screens": n["screens"]}
+
+
+def _front(ad) -> bool:
+    """Screensaver on Windows: bring gBox / the emulator to the front so its keyboard-driven pad input is accepted."""
+    pid = getattr(getattr(ad, "proc", None), "pid", None)
+    if sys.platform != "win32" or not pid:
+        return False
+    try:
+        return adapters.win_bring_to_front(pid)
+    except Exception:                                           # noqa: BLE001 - best effort
+        return False
+
+
+def _screensaver_send(ad):
+    """send() for screensaver play: the game window comes to the front first; a refused input (gBox not in front)
+    raises it once more and retries instead of ending the run."""
+    _front(ad)
+
+    def send(rows):
+        try:
+            return ad.send_input(rows)
+        except RuntimeError as e:
+            if "must be active" not in str(e) or not _front(ad):
+                raise
+            return ad.send_input(rows)
+    return send
 
 
 def _stuck(ad):

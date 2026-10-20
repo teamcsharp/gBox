@@ -352,3 +352,25 @@ def test_style_knobs_change_pace_and_favour():
     fast = imitate.Style(m, random.Random(0), {"pace": 0.6, "favor": 2.0})
     assert fast.gap() == pytest.approx(0.12) and fast.weights == [81.0, 1.0]
     assert imitate.Style(m, random.Random(0)).gap() == pytest.approx(0.2)
+
+
+def test_screensaver_send_raises_the_window_and_retries_a_refused_input(monkeypatch):
+    from gbox import tools as T
+    fronts = []
+    monkeypatch.setattr(T, "_front", lambda ad: fronts.append(1) or True)
+    calls = []
+
+    def send_input(rows):
+        calls.append(rows)
+        if len(calls) == 1:
+            raise RuntimeError("gBox or the emulator must be active to send emulator input safely")
+        return {"sent": len(rows)}
+    send = T._screensaver_send(SimpleNamespace(send_input=send_input))
+    assert send([{"key": "a", "down": True}]) == {"sent": 1}
+    assert len(calls) == 2 and len(fronts) == 2                 # once up front, once for the refused input
+    calls.clear()
+    monkeypatch.setattr(T, "_front", lambda ad: False)
+    send2 = T._screensaver_send(SimpleNamespace(send_input=lambda rows: (_ for _ in ()).throw(
+        RuntimeError("gBox or the emulator must be active to send emulator input safely"))))
+    with pytest.raises(RuntimeError):
+        send2([{"key": "a", "down": True}])                     # cannot come to the front: the error stands

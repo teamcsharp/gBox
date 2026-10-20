@@ -462,6 +462,32 @@ def _win_input_in_front(user32, root, hidden_ok: bool) -> bool:
     return True
 
 
+def win_bring_to_front(pid: int) -> bool:
+    """Raise the game's top-level window (gBox with the emulator docked in it) to the foreground. Only for the idle-PC
+    screensaver: the PC has had no input for minutes, and the operator's next touch hands control back. Windows lets a
+    background process take the foreground when it attaches to the current foreground thread first."""
+    import ctypes
+    u, k = ctypes.windll.user32, ctypes.windll.kernel32
+    h = _pid_window(pid)
+    if not h:
+        return False
+    root = u.GetAncestor(h, 2) or h
+    if u.GetForegroundWindow() == root:
+        return True
+    fg = u.GetForegroundWindow()
+    me, them = k.GetCurrentThreadId(), u.GetWindowThreadProcessId(fg, None) if fg else 0
+    if them:
+        u.AttachThreadInput(me, them, True)
+    try:
+        u.ShowWindow(root, 9)                                   # SW_RESTORE: a minimized gBox comes back
+        u.BringWindowToTop(root)
+        u.SetForegroundWindow(root)
+    finally:
+        if them:
+            u.AttachThreadInput(me, them, False)
+    return u.GetForegroundWindow() == root
+
+
 def win_send_keys(pid: int, events: list[dict], hidden_ok: bool = False) -> dict:
     """hidden_ok: the keys are emulator hotkeys that need no focus (Dolphin's gBox F13-F15 chords): sent even while the
     game window is hidden (the app hides it the moment Stop is pressed, before the last-played moment is saved)."""
