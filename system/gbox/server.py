@@ -5291,6 +5291,14 @@ def create_app(config: Config) -> FastAPI:
     emulation_issue.routes(app, store, auth, lambda body, actor: req_create(RequestIn(**body), actor),
                            _incident_job, _incident_dispatch)
 
+    # --- autoplay coaching (gbox/coaching.py): the Sessions header's note box -> one ticket per game, each note's
+    # moment (frame, save state through gBox's own slot, main RAM) captured on the session's worker ---
+    from . import coaching
+    coaching.routes(app, store, auth, create_request=lambda body, actor: req_create(RequestIn(**body), actor),
+                    submit=lambda tool, inp, rid, actor: submit(
+                        JobRequest(tool=tool, input=inp, parent_request_id=rid), actor,
+                        {"via": "autoplay coach", "request_id": rid}).model_dump(mode="json"))
+
     # --- launch failure reports (gbox/launch_failures.py, docs/launch-failure-reports.md) ---
     from . import launch_failures as LF
 

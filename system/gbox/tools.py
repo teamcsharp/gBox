@@ -4903,6 +4903,7 @@ def _load_tool_modules(names=("cxbx_diagnostics_tool", "native_face_editor", "au
                               "gta_live",        # gta_live: GTA pools/player/vehicles/weather/time/wanted/spawn (Ariane ops)
                               "audio_cpp",       # audio_cpp: local audio.cpp speech service (status/start/stop/speak/transcribe)
                               "evidence_capture",   # evidence_capture: PR evidence frames (runs in the control plane)
+                              "ram_dump",      # ram_dump: a session's main RAM as one gzip artifact + JSON header (coaching)
                               "pick_tool")):     # pick_identify / pick_replace (+ pick_prepare, pick_ghidra): the pick whip backend
     import importlib
     import subprocess
@@ -4934,6 +4935,7 @@ _load_tool_modules()
 class StateXIn(BaseModel):
     session_id: str
     op: str = "export"                      # export: save + upload | export_saved: upload an existing checkpoint | import: load
+                                            # | snapshot: save through gBox's own slot + upload (gbox/state_snapshot.py)
     artifact: str = ""                      # import: digest of the exported state
     slot: int | None = None                 # export/import: default 9; export_saved: exact slot, or latest when omitted
     not_before: float = 0                    # export_saved: reject a stale checkpoint
@@ -4968,7 +4970,7 @@ def _validate_state_container(data: bytes, adapter_name: str) -> None:
         raise RuntimeError(f'Saved checkpoint container could not be validated: {error}') from error
 
 
-@tool("state_transfer", "1.3", StateXIn, StateXOut, capabilities=["runtime"], permissions=[P.EXECUTE], timeout_s=180)
+@tool("state_transfer", "1.4", StateXIn, StateXOut, capabilities=["runtime"], permissions=[P.EXECUTE], timeout_s=180)
 def state_transfer(inp: StateXIn, ctx: Ctx):
     with _STATE_TRANSFER_LOCK, rewind.guard(inp.session_id, "transfer"):   # no checkpoint while the state moves
         return _state_transfer(inp, ctx)
@@ -4992,6 +4994,15 @@ def _state_transfer(inp: StateXIn, ctx: Ctx):
         pattern = "*.s01"                                       # the adapter's save/load hotkeys use slot 1
     else:
         raise Unsupported(f"{kind or '?'} save states can't move between machines (different emulator builds)")
+    if inp.op == "snapshot":
+        # the moment as it is now, saved through gBox's own slot: the operator's slots are never written or left
+        # switched (export saves through Dolphin's slot 1, the operator's own, and leaves RetroArch on the transfer slot)
+        from . import state_snapshot
+        data, details = state_snapshot.take(ad, g, states)
+        name = details.pop("file")
+        ctx.artifact(name, data, "application/octet-stream", note="state snapshot (gBox's own slot)",
+                     game=g.get("game_id"), session=inp.session_id, snapshot=True, **details)
+        return {"result": {"artifact": sha256(data), "bytes": len(data), "file": name, **details}}
     requested_slot = 9 if inp.slot is None else inp.slot
 
     def matches_game(f):
@@ -5109,7 +5120,7 @@ def _state_transfer(inp: StateXIn, ctx: Ctx):
         if verified:
             result['loaded'] = True
         return {'result': result}
-    raise ValueError("op: export | export_saved | import")
+    raise ValueError("op: export | export_saved | import | snapshot")
 
 
 # ---- no hidden games left behind: emulators this worker started are recorded; a restarted worker closes the old ones ----
