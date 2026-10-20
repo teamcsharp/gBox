@@ -21,6 +21,11 @@ teleports):
     him when he runs into something is wall; paths are planned on it (A*) when the disc's level map is not there, so
     every round knows more of the level than the one before (operator 2026-10-20: "with every round that is played,
     the navigation map needs to improve");
+  * presses what the screen asks for (operator 2026-10-20: "the characters ignore QTE opportunities ... detect that a
+    press A dialogue is being required of them and press it"): prompt() (gbox.screen_prompt.Watcher on the session's
+    picture: the button icon RE4 draws for JUMP OVER / JUMP THROUGH / TAKE / KICK / CLIMB / a grab) -> R let go,
+    the button pressed, every PROMPT_EVERY s while it shows; a prompt still up after PROMPT_BURST presses in 3 s is
+    left alone for PROMPT_REST s;
   * sees his shots: the target's health (EmMgr slot +0x320) scores every firing window a hit or a miss (stats hits /
     misses / accuracy); MISSES_TO_ADJUST misses in a row move the aim height to the next PITCH_STEPS offset, a hit
     keeps it (operator 2026-10-20: "every shot ... setting up the zombies to be stunned or eliminating them");
@@ -79,6 +84,8 @@ COLLECT_R, COLLECT_TRY_S = 1500.0, 4.0           # shoot an hourglass from this 
 HOURGLASS = {0x400: [(19401.0, -6857.0), (-20476.0, -5294.0), (-8452.0, -20283.0), (5592.0, 16384.0)]}
 MENU_AFTER, MENU_EVERY = 2.0, 1.5                 # out of a stage this long: press A this often (next round)
 TRANSIENT_MAX = 20.0                             # a gap in a live Mercenaries room (grabbed, a pickup) waits this long
+PROMPT_EVERY, PROMPT_BURST, PROMPT_REST = 0.6, 3, 5.0   # press a prompt this often; still up after this many presses
+                                                       # within 3 s (a TAKE he can't carry): leave it alone this long
 MENU_KEYS = ("up", "a")                          # each menu step: up (GAME START, the top stage row), then confirm; no
                                                  # left: Select Player wraps from Leon to Wesker (live 2026-10-20)
 PACKAGE = [("mercenaries_unlock", {"on": True}),
@@ -639,7 +646,7 @@ def learn_dir_for(ad) -> Path:
 
 
 def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stats: dict | None = None,
-         clock=time.time, learn_dir: Path | None = None, rerun=None) -> dict:
+         clock=time.time, learn_dir: Path | None = None, rerun=None, prompt=None) -> dict:
     """Drive Leon until stopped(); send(rows) presses keys. Returns the run's stats (stats, when given, is filled live:
     the watch panel shows it): hops, prompts, max_combo, combo, timer, rounds, menu_presses."""
     m = m or memory(ad)
@@ -649,6 +656,9 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
         bot.stats = stats
     bot.stats.update(rounds=1, menu_presses=0)
     out_since, last_press, was_in = None, 0.0, True
+    bot.stats["prompt_presses"] = 0
+    prompt_taps: list = []                         # times the current prompt was pressed
+    prompt_rest = 0.0
 
     def hold(keys):
         nonlocal held
@@ -701,6 +711,22 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
             was_in = True
         out_since = None
         bot.stats.update(combo=s["combo"], timer=s["timer"])
+        button = prompt() if prompt is not None and now >= prompt_rest else None
+        if button:                                     # the game asks for a button: press it (not aiming: A acts)
+            prompt_taps = [t for t in prompt_taps if now - t < 3.0]
+            if len(prompt_taps) >= PROMPT_BURST:
+                prompt_rest, prompt_taps = now + PROMPT_REST, []
+            elif not prompt_taps or now - prompt_taps[-1] >= PROMPT_EVERY:
+                hold(set())
+                send([{"key": button, "down": True}])
+                sleep(0.12)
+                send([{"key": button, "down": False}])
+                prompt_taps.append(clock())
+                bot.stats["prompt_presses"] += 1
+                sleep(0.15)
+                continue
+        else:
+            prompt_taps = []
         act = bot.tick(s)
         if "tap" in act:
             hold(set())

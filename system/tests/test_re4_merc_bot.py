@@ -373,3 +373,41 @@ def test_his_health_scores_the_shots_and_misses_move_the_aim_height():
     assert 0 < bot.stats["accuracy"] < 1
     pitch = struct.unpack(">f", m.rd(PL + B.AIM_PITCH, 4))[0]
     assert pitch == pytest.approx(math.atan2(B.HEAD_H - B.GUN_H, 2000.0) + bot.stats["pitch_offset"], abs=1e-4)
+
+
+def test_an_on_screen_prompt_is_pressed_and_a_stuck_one_is_left_alone():
+    m = world([], room=0x400)                                              # no Ganados: every A is a prompt press
+    facing(m, 0.0)
+    now, sent = [0.0], []
+    steps = iter(range(60))
+    shown = {"on": True}
+
+    def tick_stop():
+        n = next(steps, None)
+        m.put(B.MERC_TIMER, ">I", int((100 - now[0]) * 30))
+        for off in (0x94, 0x1C0):                                          # Leon runs freely: no stuck vault taps
+            m.put(PL + off, ">3f", 0.0, 0.0, 300.0 * (n or 0))
+        return n is None
+    B.play(None, lambda rows: sent.append((now[0], rows)), tick_stop, sleep=lambda s: now.__setitem__(0, now[0] + s),
+           m=m, clock=lambda: now[0], prompt=lambda: "a" if shown["on"] else None)
+    taps = [t for t, rows in sent if rows == [{"key": "a", "down": True}]]
+    assert len(taps) >= 3                                                  # pressed while it showed
+    assert all(b - a >= B.PROMPT_EVERY - 1e-6 for a, b in zip(taps, taps[1:]))
+    early = [t for t in taps if t < 3.0]
+    assert len(early) == B.PROMPT_BURST                                    # then left alone for PROMPT_REST
+
+
+def test_the_prompt_detector_finds_the_a_icon():
+    import numpy as np
+    from gbox import screen_prompt as P
+    img = np.zeros((480, 640, 3), np.uint8)
+    img[:, :] = (90, 80, 60)                                               # brown dirt
+    yy, xx = np.ogrid[:480, :640]
+    disc = (yy - 386) ** 2 + (xx - 259) ** 2 <= 10 ** 2
+    img[disc] = (40, 134, 104)                                             # RE4's A icon, where the game draws it
+    found = P.detect(img)
+    assert found and found["button"] == "a" and 240 < found["box"][0] < 260
+    img2 = img.copy()
+    img2[disc] = (90, 80, 60)
+    img2[440:470, 500:600] = (40, 134, 104)                                # the ammo dial's green: outside the box
+    assert P.detect(img2) is None
