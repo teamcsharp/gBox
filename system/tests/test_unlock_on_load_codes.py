@@ -65,3 +65,17 @@ def test_gcheat_hold_registers_a_held_code_in_the_session():
         for c in T.GCHEATS.pop(sid, []):
             c["on"].clear()
         T.SESSIONS.pop(sid, None)
+
+
+def test_dreamcast_profiles_unlock_every_flag_and_decode():
+    """2026-10-19: DOA2 LE and SoulCalibur held and read back on the i9-NUC; SoulCalibur covers its whole flag table."""
+    from gbox import cheats as C, game_unlocks as G
+    doa2 = G.code_profile({"game_id": "1de2e7634f3161ff", "platform": "dreamcast"})
+    sc = G.code_profile({"game_id": "c747331797369f74", "platform": "dreamcast"})
+    assert doa2 and sc and doa2["verified"] and sc["verified"]
+    assert G.code_profile({"game_id": "c747331797369f74", "platform": "gamecube"}) is None, "platform must match"
+    ops, bad = C.decode("dreamcast", "\n".join(l for c in sc["codes"] for l in c["lines"]))
+    assert not bad and [a for _k, a, _d in ops][:20] == [0x8C336DFA + 4 * i for i in range(1, 21)]
+    assert all(d == b"\x01\x00" for _k, _a, d in ops[:20]) and ops[20][1:] == (0x8C336E54, b"\xff\xff")
+    ops, bad = C.decode("dreamcast", "\n".join(l for c in doa2["codes"] for l in c["lines"]))
+    assert not bad and len(ops) == 4

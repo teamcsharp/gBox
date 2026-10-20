@@ -1,0 +1,49 @@
+{
+ "game_id": "c747331797369f74",
+ "title": "SoulCalibur (USA)",
+ "platform": "dreamcast",
+ "profile": "soulcalibur-dc-usa-flag-table-v2",
+ "verified": true,
+ "codes": [
+  {
+   "desc": "Unlock every fighter (flag table index 1-20: Hwang, Yoshimitsu, Rock, Siegfried, Lizardman, Seung Mina, Cervantes, Edge Master and the rest)",
+   "lines": [
+    "01336DFE 00000001",
+    "01336E02 00000001",
+    "01336E06 00000001",
+    "01336E0A 00000001",
+    "01336E0E 00000001",
+    "01336E12 00000001",
+    "01336E16 00000001",
+    "01336E1A 00000001",
+    "01336E1E 00000001",
+    "01336E22 00000001",
+    "01336E26 00000001",
+    "01336E2A 00000001",
+    "01336E2E 00000001",
+    "01336E32 00000001",
+    "01336E36 00000001",
+    "01336E3A 00000001",
+    "01336E3E 00000001",
+    "01336E42 00000001",
+    "01336E46 00000001",
+    "01336E4A 00000001"
+   ]
+  },
+  {
+   "desc": "Inferno and the extras bitfield (bits 0-15 of 0x8C336E54; the game sets bit 15 for Inferno)",
+   "lines": [
+    "01336E54 0000FFFF"
+   ]
+  }
+ ],
+ "scope": [
+  "all 20 fighter unlock flags",
+  "Inferno",
+  "the extras bits that share Inferno's halfword"
+ ],
+ "evidence": {
+  "source": "libretro-database Soul Calibur.cht gives five flags (Hwang 0x336DFE, Yoshimitsu 0x336E0A, Rock 0x336E16, Siegfried 0x336E1E, Lizardman 0x336E2A). The game's own code (RAM dump of 1ST_READ, SH-4) shows they are entries of one table: 0x8C0E1A5C clears and 0x8C0E1A78 increments the u16 at 0x8C336DFA + 4*i for 1 <= i < 21 (literal at 0x8C0E1AA8), and 0x8C0E1ACE sets bit 0x8000 of the u32 at 0x8C336820 + 0x634 for i == 21 (Inferno). The five database flags are indices 1, 4, 7, 9 and 12.",
+  "read_back": "2026-10-19 ~21:00 CST, i9-NUC, RetroArch Flycast agent session: the codes were held with cheats op=add and read_memory read every written value back after 1-8 s (writes go through RetroArch's RAM view, core_ram, read-back confirmed). Character-select frames are pending: the NUC's frame capture returned one black frame until gBox is relaunched there (PR #662 adds RetroArch's own screenshot). Read back: flags 1..20 all 1, 0x8C336E54 = ffff0000."
+ }
+}
