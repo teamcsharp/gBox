@@ -1240,7 +1240,7 @@ def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
                         game_pad = rewind.feed(sid, pad)      # Consume time chords before injecting game input.
                         ring_record.touch(sid, pad)           # the operator's pad in use: the gameplay ring records
                         run = AUTOPLAY.get(sid)               # replay/learned autoplay presses directly, so anything on
-                        if (run and run.get("mode") in ("replay", "learned")   # this channel is the operator (stream)
+                        if (run and run.get("mode") in ("replay", "learned", "playbook")   # = the operator (stream)
                                 and run.get("thread") is not None and run["thread"].is_alive()):
                             from . import padstate
                             padstate.PLAYER_TOUCH[sid] = time.time()          # -> autoplay hands control back
@@ -2255,7 +2255,7 @@ class AutoplayIn(BaseModel):
     assist: bool = False                   # hold the player's HP while gBox plays (opt-in, released when it stops)
     # auto: a mission that fits (PSO) > the operator's learned style (enough recorded play) > vision.
     # replay: play one of the operator's recorded runs back from boot (reset=True restarts the game first).
-    mode: str = "auto"                     # auto | mission | replay | learned | vision
+    mode: str = "auto"                     # auto | playbook | mission | replay | learned | vision
     run_id: str = ""                       # replay: which recorded run (default: the newest real run on this emulator)
     reset: bool = False                    # replay: restart the game first, so the run starts from boot as recorded
     screensaver: bool = False              # the idle-PC screensaver runs this (gbox.screensaver): a replay goes on in the
@@ -2299,8 +2299,8 @@ def autoplay(inp: AutoplayIn, ctx: Ctx):
                            "last": run and run.get("result"), "steps": run and len(run["driver"].trace)}}
     if inp.op != "start":
         raise ValueError(f"unknown op {inp.op}")
-    if inp.mode not in ("auto", "mission", "replay", "learned", "vision"):
-        raise ValueError("mode: auto | mission | replay | learned | vision")
+    if inp.mode not in ("auto", "playbook", "mission", "replay", "learned", "vision"):
+        raise ValueError("mode: auto | playbook | mission | replay | learned | vision")
     if run and run["thread"].is_alive():
         return {"result": {"already_running": run["mission"]}}
     d = Driver(ctx.server, ctx.headers["authorization"].split()[-1], inp.session_id, log=lambda *a: None)
@@ -2308,6 +2308,12 @@ def autoplay(inp: AutoplayIn, ctx: Ctx):
     d.screensaver = (ctx.server, dict(ctx.headers)) if inp.screensaver else None
     ad, g = SESSIONS[inp.session_id]
     since = time.time()
+    if inp.mode in ("auto", "playbook") and not inp.mission:  # a game-specific bot for where the game is right now
+        pb = _playbook(ad, g)
+        if pb is not None:
+            return {"result": _start_playbook(pb, inp, d, ad, since)}
+        if inp.mode == "playbook":
+            raise ValueError(f"no playbook plays {g.get('title')} where it is now (have: {', '.join(PLAYBOOKS)})")
     if inp.mode == "auto" and not inp.mission and game_id and since - float(started or 0) < AT_BOOT:
         try:                                                   # the chord at the title screen: your recorded run from boot
             return {"result": _start_imitation(inp.model_copy(update={"mode": "replay"}), ctx, d, ad, g, game_id, since)}
@@ -2410,6 +2416,41 @@ def _ended(run):
         "mode": run.get("mode"), "mission": run.get("mission"), "took_over": bool(run.get("took_over")),
         **{k: v for k, v in res.items() if isinstance(v, (int, float, str, bool)) and k != "error"},
         **({"error": str(res["error"])[:300]} if res.get("error") else {})}})
+
+
+PLAYBOOKS = ("re4_merc_bot",)              # game-specific autoplay bots: matches(ad, g), setup(ad), play(ad, send, stopped)
+
+
+def _playbook(ad, g):
+    import importlib
+    for name in PLAYBOOKS:
+        try:
+            mod = importlib.import_module(f".{name}", __package__)
+            if mod.matches(ad, g):
+                return mod
+        except Exception:                                      # noqa: BLE001 - a broken playbook never blocks autoplay
+            continue
+    return None
+
+
+def _start_playbook(pb, inp, d, ad, since) -> dict:
+    sid = inp.session_id
+    name = pb.__name__.rsplit(".", 1)[-1]
+    run = AUTOPLAY[sid] = {"driver": d, "sid": sid, "since": since, "mode": "playbook", "mission": f"playbook: {name}"}
+
+    def go():
+        try:
+            failed = pb.setup(ad)
+            stats = pb.play(ad, ad.send_input, lambda: d.stopped)
+            run["result"] = {"ok": True, "playbook": name, **stats, **({"setup_failed": len(failed)} if failed else {})}
+        except Exception as e:
+            run["result"] = {"ok": False, "error": str(e)}
+        _release_all(sid)
+        _ended(run)
+    _takeover(run, d, sid, since)
+    run["thread"] = threading.Thread(target=go, daemon=True)
+    run["thread"].start()
+    return {"started": run["mission"], "mode": "playbook", "objective": (pb.__doc__ or name).strip().splitlines()[0]}
 
 
 def _recorded_play(ctx, game_id) -> list[dict]:
