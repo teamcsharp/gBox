@@ -79,6 +79,11 @@ classify() {                                       # $1 = rel path -> ACTION new
     ACTION=same
   elif share_edited "$rel"; then
     ACTION=edit
+    # a share-side edit of a Python module that does not even compile is a broken edit, not work to keep: main's
+    # version replaces it (backed up) - 2026-10-19 a Hermes run left gbox/toohuman_inventory.py mis-indented there
+    if [ "${rel%.py}" != "$rel" ] && ! python3 -c 'import sys; compile(open(sys.argv[1], "rb").read(), sys.argv[1], "exec")' "$dst" 2>/dev/null; then
+      ACTION=stale; GUARD_RULE="share edit does not compile"
+    fi
   else
     ACTION=stale
   fi
