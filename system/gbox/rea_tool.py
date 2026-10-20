@@ -72,6 +72,31 @@ def inline_result(result):
     return summary
 
 
+def tool_error_text(result: dict) -> str:
+    """REA's own error message plus the next step, so the agent can recover in the same run (2026-10-19: every REA
+    failure said only 'inspect the preserved result artifact')."""
+    err = ((result.get("structuredContent") or {}).get("error") or {}) if isinstance(result, dict) else {}
+    if not err:
+        for item in result.get("content") or []:
+            try:
+                err = json.loads(item.get("text") or "{}").get("error") or {}
+            except (ValueError, AttributeError):
+                continue
+            if err:
+                break
+    msg = str(err.get("message") or "").strip()
+    if not msg:
+        return "REA reported a tool error; inspect the preserved result artifact"
+    low = msg.lower()
+    hint = ""
+    if "unsupported elf architecture" in low or "unsupported" in low and "architecture" in low:
+        hint = (" REA's providers cannot open this CPU (e.g. a PS2/PSP MIPS ELF): use analyze_binary or ghidra_bridge "
+                "with the matching Ghidra processor (MIPS:LE:32:R5900 for PS2) instead.")
+    elif "no app is open" in low:
+        hint = " Call rea_open_binary with the binary's path first; searches run against the open binary."
+    return f"REA {err.get('code') or 'error'}: {msg[:400]}{hint}"
+
+
 def validate_result(out, artifacts):
     data = artifacts.get("rea-result.json")
     if data is None or hashlib.sha256(data).hexdigest() != out.evidence_sha256:
@@ -85,7 +110,7 @@ def validate_result(out, artifacts):
     if any(record[k] != getattr(out, k) for k in ("upstream_tool", "version", "worker_id")) or inline_result(record["result"]) != out.result:
         return ["REA output differs from preserved result artifact"]
     if record["result"].get("isError"):
-        return ["REA reported a tool error; inspect the preserved result artifact"]
+        return [tool_error_text(record["result"])]
     contract = next(t for t in CATALOG["tools"] if t["name"] == out.upstream_tool)
     structured = record["result"].get("structuredContent")
     if structured is None:
