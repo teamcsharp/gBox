@@ -200,3 +200,32 @@ def test_a_frozen_game_is_closed_and_started_fresh_without_a_moment_save(reset_r
     assert r.json()['session_id'] == 'w-new' and any('did not answer' in n for n in r.json()['notes'])
     assert calls[2][1]['mod'] == 'tts_sonic_full_cast~9a1b', 'the same build comes back'
     assert store.get('session', 'w-live')['replaced_by'] == 'w-new'
+
+
+def test_a_relaunched_agent_session_stays_the_agents(tmp_path, monkeypatch):
+    """2026-10-20: an agent's RE4 test session relaunched through reset came back as the operator's game, so every
+    desktop offered 'Reload with your last moment' over the screensaver. The relaunch keeps the agent label."""
+    cfg = Config(data_dir=tmp_path / 'data', cache_dir=tmp_path / 'cache')
+    app = server.create_app(cfg)
+    store = app.state.store
+    store.upsert_catalog([{'game_id': 'ts', 'title': 'MGS: The Twin Snakes', 'platform': 'gamecube',
+                           'source_paths': [], 'format': 'iso'}])
+    store.put('worker', 'w', {'id': 'w', 'name': 'lilspark', 'os': 'linux', 'last_seen': time.time()})
+    store.put('session', 'w-live', {'session_id': 'w-live', 'game_id': 'ts', 'state': 'running', 'adapter': 'dolphin',
+                                    'started': 1})
+    store.put('slabel', 'w-live', {'owner': 'agent', 'task': 'RE4 Mercenaries playbook test'})
+    route = next(r for r in app.routes if getattr(r, 'path', '') == '/api/sessions/{sid}/reset')
+    reset_job = enclosed(route.endpoint, 'reset_job').cell_contents
+    monkeypatch.setattr(server.time, 'sleep', lambda _: None)
+    transport((cfg, app, store, enclosed(reset_job, 'session_reset').cell_contents))
+    job = reset_job('w-live', 'reset', 'operator')
+    import threading
+    for _ in range(200):
+        if (store.get('job', job.id) or {}).get('state') in ('succeeded', 'failed'):
+            break
+        threading.Event().wait(0.01)
+    assert store.get('job', job.id)['state'] == 'succeeded', store.get('job', job.id)
+    label = store.get('slabel', 'w-new')
+    assert (label['owner'], label['task']) == ('agent', 'RE4 Mercenaries playbook test')
+    from gbox import last_played
+    assert last_played.is_agent_session(store, store.get('session', 'w-new'))

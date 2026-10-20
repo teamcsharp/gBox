@@ -1285,6 +1285,10 @@ def create_app(config: Config) -> FastAPI:
                 j["progress_log"] = (j.get("progress_log") or [])[-49:] + [msg]
                 store.put("job", job.id, j)
 
+        from .background_testing import agent_owned as _agent_owned
+        was_agent = _agent_owned(store.get('slabel', sid), store.get('job', sid.split('-', 1)[-1]))
+        old_label = store.get('slabel', sid) or {}
+
         def go():
             try:
                 out, state, err = session_reset(sid, actor, mode, prog,
@@ -1294,6 +1298,11 @@ def create_app(config: Config) -> FastAPI:
                 out, state, err = None, JobState.FAILED, str(e.detail)
             except Exception as e:                             # noqa: BLE001
                 out, state, err = None, JobState.FAILED, f"{type(e).__name__}: {e}"
+            nsid = (out or {}).get("session_id")
+            if was_agent and nsid and nsid != sid:
+                # an agent's test session relaunched is still the agent's: never the operator's "Reload your game" prompt,
+                # never a game the operator guard protects (2026-10-20: RE4 relaunches showed up on the NUC's screen)
+                store.put("slabel", nsid, old_label | {"owner": "agent"})
             with store.lock:
                 store.put("job", job.id, store.get("job", job.id) | {"state": state, "finished": time.time(), "output": out,
                                                                      "error": err})
