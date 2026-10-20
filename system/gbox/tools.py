@@ -2312,11 +2312,12 @@ def autoplay(inp: AutoplayIn, ctx: Ctx):
     ad, g = SESSIONS[inp.session_id]
     if inp.screensaver:
         _front(ad)                                             # idle PC: the game in front (Dolphin input needs it)
+    hacks = _autoplay_hacks(inp.session_id, g)                 # the game's autoplay hack profile: gBox plays to win
     since = time.time()
     if inp.mode in ("auto", "playbook") and not inp.mission:  # a game-specific bot for where the game is right now
         pb = _playbook(ad, g)
         if pb is not None:
-            return {"result": _start_playbook(pb, inp, d, ad, since)}
+            return {"result": _start_playbook(pb, inp, d, ad, since, ctx, g, game_id) | ({"hacks": hacks} if hacks else {})}
         if inp.mode == "playbook":
             raise ValueError(f"no playbook plays {g.get('title')} where it is now (have: {', '.join(PLAYBOOKS)})")
     if inp.mode == "auto" and not inp.mission and game_id and since - float(started or 0) < AT_BOOT:
@@ -2325,7 +2326,7 @@ def autoplay(inp: AutoplayIn, ctx: Ctx):
         except ValueError:
             pass
     if inp.mode in ("replay", "learned"):
-        return {"result": _start_imitation(inp, ctx, d, ad, g, game_id, since)}
+        return {"result": _start_imitation(inp, ctx, d, ad, g, game_id, since) | ({"hacks": hacks} if hacks else {})}
     m = None
     if inp.mode in ("auto", "mission"):
         if inp.mission:
@@ -2336,7 +2337,8 @@ def autoplay(inp: AutoplayIn, ctx: Ctx):
         raise ValueError(f"no mission fits here (missions: {[x['name'] for x in _missions(game_id)] or 'none for this game'})")
     if m is None and inp.mode == "auto" and game_id:            # the operator's own play, when there is enough of it
         try:
-            return {"result": _start_imitation(inp.model_copy(update={"mode": "learned"}), ctx, d, ad, g, game_id, since)}
+            return {"result": _start_imitation(inp.model_copy(update={"mode": "learned"}), ctx, d, ad, g, game_id, since)
+                    | ({"hacks": hacks} if hacks else {})}
         except ValueError:
             pass                                               # not enough recorded play: vision
     if m is None:                                              # any other game: watch the screen, decide, press
@@ -2424,7 +2426,37 @@ def _ended(run):
         **({"error": str(res["error"])[:300]} if res.get("error") else {})}})
 
 
-PLAYBOOKS = ("re4_merc_bot",)              # game-specific autoplay bots: matches(ad, g), setup(ad), play(ad, send, stopped)
+AUTOPLAY_HACKS = MISSIONS.parent / "autoplay"            # profiles/autoplay/<game_id>.json: codes held while gBox plays
+
+
+def _autoplay_hacks(sid: str, g: dict) -> list[str]:
+    """Hold the game's autoplay hacks (infinite health for the side autoplay plays, one-hit KOs...) in this session,
+    once per session; returns what is held. Never applied to the operator's own play: only autoplay calls it."""
+    path = AUTOPLAY_HACKS / f"{g.get('game_id')}.json"
+    if not path.is_file():
+        return []
+    try:
+        prof = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if prof.get("platform") != g.get("platform"):
+        return []
+    already = {c.get("desc") for c in GCHEATS.get(sid, [])}
+    held = []
+    for h in prof.get("hacks") or []:
+        desc = f"autoplay: {h.get('desc')}"
+        if desc in already:
+            held.append(h.get("desc"))
+            continue
+        try:
+            _gcheat_hold(sid, list(h.get("lines") or []), desc)
+            held.append(h.get("desc"))
+        except Exception:                                      # noqa: BLE001 - a hack that won't hold never stops play
+            pass
+    return held
+
+
+PLAYBOOKS = ("re4_merc_bot", "doa2_bot")              # game-specific autoplay bots: matches(ad, g), setup(ad), play(ad, send, stopped)
 
 
 def _playbook(ad, g):
@@ -2439,15 +2471,30 @@ def _playbook(ad, g):
     return None
 
 
-def _start_playbook(pb, inp, d, ad, since) -> dict:
+def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> dict:
     sid = inp.session_id
     name = pb.__name__.rsplit(".", 1)[-1]
     run = AUTOPLAY[sid] = {"driver": d, "sid": sid, "since": since, "mode": "playbook", "mission": f"playbook: {name}"}
 
     def go():
         try:
+            import inspect
             failed = pb.setup(ad)
-            stats = pb.play(ad, _screensaver_send(ad) if run.get("screensaver") else ad.send_input, lambda: d.stopped)
+            kw = {}
+            if "style" in inspect.signature(pb.play).parameters and ctx is not None and game_id:
+                try:                                           # the operator's learned style does the fighting
+                    from . import imitate
+                    _, model = _style_model(ctx, _recorded_play(ctx, game_id), ad, game_id, (g or {}).get("platform"))
+                    if model["total"] >= imitate.MIN_LEARN_BURSTS:
+                        kw["style"] = imitate.Style(model, knobs=inp.style)
+                except Exception:                              # noqa: BLE001 - no recorded play: the playbook's own way
+                    pass
+            stats = pb.play(ad, _screensaver_send(ad) if run.get("screensaver") else ad.send_input, lambda: d.stopped, **kw)
+            if stats.get("hung") and ctx is not None:         # the game froze: relaunch the same build
+                try:
+                    httpx.post(f"{ctx.server}/api/sessions/{sid}/reset", headers=ctx.headers, json={"mode": "reset"}, timeout=30)
+                except httpx.HTTPError:
+                    pass
             run["result"] = {"ok": True, "playbook": name, **stats, **({"setup_failed": len(failed)} if failed else {})}
         except Exception as e:
             run["result"] = {"ok": False, "error": str(e)}
