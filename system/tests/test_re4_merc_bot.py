@@ -54,29 +54,80 @@ def test_snapshot_reads_leon_the_live_ganados_and_the_merc_state():
     assert B.in_mercenaries(s) and not B.in_mercenaries(B.snapshot(world([], room=0x120)))
 
 
-def test_faces_the_nearest_and_fires_in_range_runs_when_further():
+def facing(m, rot):
+    m.put(PL + 0xA4, ">f", rot)
+
+
+def test_turns_with_the_stick_then_aims_then_fires_never_writing_leon():
     now = [0.0]
-    m = world([((0, 0, 2000), True), ((0, 0, -4000), True)])
-    bot = B.Bot(m, clock=lambda: now[0])
+    m = world([((0, 0, 2000), True)])                  # straight ahead along +z: heading 0
+    before = m.rd(PL, 0x300)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    facing(m, 1.5)                                     # facing far to the left of him
+    assert bot.tick(B.snapshot(m)) == {"hold": {"right"}}             # turn round first, not aiming yet
+    facing(m, 0.2)
+    assert bot.tick(B.snapshot(m)) == {"hold": {"r", "right"}}        # close: aim and fine-turn
+    facing(m, 0.02)
+    assert bot.tick(B.snapshot(m)) == {"hold": {"r", "a"}}            # on him: fire
+    pitch = struct.unpack(">f", m.rd(PL + B.AIM_PITCH, 4))[0]
+    assert pitch == pytest.approx(math.atan2(B.HEAD_H - B.GUN_H, 2000.0), abs=1e-4)   # at his head
+    facing(m, 0.0)
+    assert m.rd(PL, 0x300)[:0xA4] == before[:0xA4]                    # position and the rest: never written
+
+
+def test_no_enemy_near_runs_to_the_nearest_time_bonus_and_shoots_it():
+    now = [0.0]
+    m = world([((30000, 0, 30000), True)], room=0x400, leon=(5592.0, 0.0, 12384.0))   # 4000 short of the (5592, 16384) one
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    facing(m, 0.0)
+    assert bot.tick(B.snapshot(m)) == {"hold": {"up", "b"}}           # run straight at it
+    m.put(PL + 0x94, ">3f", 5592.0, 0.0, 15400.0)
     act = bot.tick(B.snapshot(m))
-    assert act == {"hold": {"r", "a"}}
-    assert struct.unpack(">f", m.rd(PL + 0xA4, 4))[0] == pytest.approx(0.0)        # facing +z, onto the target
-    m2 = world([((3000, 0, 0), True)])
-    bot2 = B.Bot(m2, clock=lambda: now[0])
-    assert bot2.tick(B.snapshot(m2)) == {"hold": {"up", "b"}}                       # sprint in
-    assert struct.unpack(">f", m2.rd(PL + 0xA4, 4))[0] == pytest.approx(math.pi / 2)
+    assert act["hold"] >= {"r", "a"}                                   # in range: shoot the hourglass
 
 
-def test_teleports_next_to_a_far_target_moving_every_position_copy():
-    now = [10.0]
-    m = world([((100, 500, 9000), True)], leon=(100.0, 7.0, 200.0))
-    bot = B.Bot(m, clock=lambda: now[0])
+def test_the_clock_jumping_up_is_a_time_bonus_taken():
+    now = [0.0]
+    m = world([], room=0x400, leon=(5592.0, 0.0, 16000.0), timer_s=60.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
     bot.tick(B.snapshot(m))
-    for off in (0x94, 0x1C0):
-        x, y, z = struct.unpack(">3f", m.rd(PL + off, 12))
-        assert (x, y) == (100, 500) and z == pytest.approx(9000 - B.HOP_SHORT)
-    assert m.rd(PL + 0x200, 12) == bytes(12)           # nothing else in Leon's struct was touched
-    assert bot.stats["hops"] == 1
+    now[0] = 0.5
+    m.put(B.MERC_TIMER, ">I", int(150 * 30))           # +90 s: the bonus
+    bot.tick(B.snapshot(m))
+    assert bot.stats["time_bonus"] == 1 and (5592.0, 16384.0) not in bot.bonus and len(bot.bonus) == 3
+
+
+def test_blocked_while_running_vaults_then_detours():
+    now = [0.0]
+    m = world([], room=0x400, leon=(100.0, 7.0, 200.0), timer_s=100.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    facing(m, B.heading(5592.0 - 100.0, 16384.0 - 200.0))   # towards the nearest hourglass
+    acts = []
+    for t in range(1, 40):                             # Leon never moves: a fence
+        now[0] = t * 0.1
+        m.put(B.MERC_TIMER, ">I", int((100 - now[0]) * 30))
+        acts.append(bot.tick(B.snapshot(m)))
+    assert {"tap": "a"} in acts and bot.stats["vaults"] >= 1           # JUMP OVER first
+    assert bot.stats["detours"] >= 1                                     # then around it
+    assert bot.stats["hops"] >= 1                                        # still blocked: a short hop past it
+    x, y, z = struct.unpack(">3f", m.rd(PL + 0x94, 12))
+    assert math.hypot(x - 100.0, z - 200.0) == pytest.approx(B.HOP_SHORT, rel=0.01) and y == 7.0   # HOP_SHORT along
+    assert B.heading(x - 100.0, z - 200.0) == pytest.approx(B.heading(5592.0 - 100.0, 16384.0 - 200.0), abs=0.01)
+
+
+def test_uses_the_navmap_path_when_there_is_one():
+    class Nav:
+        def stage(self, room):
+            return {"events": [{"kind": "hourglass", "pos": [5000.0, 0.0, 0.0]}]}
+
+        def path(self, stage, start, goal):
+            return [(0.0, 3000.0), goal]                 # round a wall: first north
+    now = [0.0]
+    m = world([], room=0x400, leon=(0.0, 0.0, 0.0))
+    bot = B.Bot(m, clock=lambda: now[0], nav=Nav())
+    facing(m, 0.0)
+    assert bot.tick(B.snapshot(m)) == {"hold": {"up", "b"}}           # heading 0 = +z: the first waypoint
+    assert bot.bonus == [(5000.0, 0.0)]
 
 
 def test_a_stopped_clock_is_a_prompt_answered_yes():
@@ -93,7 +144,8 @@ def test_a_stopped_clock_is_a_prompt_answered_yes():
 def test_a_target_that_soaks_fire_is_skipped():
     now = [0.0]
     m = world([((0, 0, 1000), True), ((0, 0, -1500), True)])
-    bot = B.Bot(m, clock=lambda: now[0])
+    facing(m, 0.0)                                     # on the near one
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
     for t in range(0, 70):
         now[0] = t * 0.1
         m.put(B.MERC_TIMER, ">I", int((100 - now[0]) * 30))
@@ -101,8 +153,7 @@ def test_a_target_that_soaks_fire_is_skipped():
     assert 1 in bot.skip                              # the near one never died
     now[0] = 7.1
     m.put(B.MERC_TIMER, ">I", int((100 - now[0]) * 30))
-    bot.tick(B.snapshot(m))
-    assert struct.unpack(">f", m.rd(PL + 0xA4, 4))[0] == pytest.approx(math.pi)     # now facing the other one
+    assert bot.tick(B.snapshot(m))["hold"] & {"left", "right"}      # turning round to the other one
 
 
 def test_play_presses_and_lets_go(monkeypatch):
@@ -112,6 +163,7 @@ def test_play_presses_and_lets_go(monkeypatch):
     def stopped():
         n[0] += 1
         return n[0] > 3
+    facing(m, 0.0)
     B.play(None, sent.append, stopped, sleep=lambda s: None, m=m)
     assert sent[0] == [{"key": "a", "down": True}, {"key": "r", "down": True}]
     assert sent[-1] == [{"key": "a", "down": False}, {"key": "r", "down": False}]
@@ -167,3 +219,14 @@ def test_the_result_screen_is_not_a_round():
     B.play(None, sent.append, lambda: next(steps, None) is None, sleep=lambda s: now.__setitem__(0, now[0] + s), m=m,
            clock=lambda: now[0])
     assert [{"key": "a", "down": True}] in sent                       # pressed on: the next round
+
+
+def test_the_next_rounds_clock_is_not_a_time_bonus():
+    now = [0.0]
+    m = world([], room=0x400, leon=(5592.0, 0.0, 16000.0), timer_s=0.1)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    bot.tick(B.snapshot(m))
+    now[0] = 0.5
+    m.put(B.MERC_TIMER, ">I", int(120 * 30))           # the next round starts at 2:00
+    bot.tick(B.snapshot(m))
+    assert bot.stats["time_bonus"] == 0
