@@ -91,6 +91,10 @@ def main(argv=None) -> int:
     if a.level:
         levels = {a.level: levels[a.level]}
     out = {name: level_graphs(lists) for name, lists in levels.items()}
+    if not a.level:                                         # the 18 shared lists every level calls into
+        from ..goldeneye_files import GoldenEyeROM
+        from .ailists import global_lists
+        out["global"] = level_graphs(global_lists(GoldenEyeROM.load(a.rom)))
     n = sum(len(v["lists"]) for v in out.values())
     e = sum(len(g["edges"]) for v in out.values() for g in v["lists"].values())
     bad = sum(len(g["unresolved"]) for v in out.values() for g in v["lists"].values())
