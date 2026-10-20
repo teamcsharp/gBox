@@ -165,9 +165,10 @@ def pick_run(runs: list[dict], adapter: str = "", run_id: str = "") -> dict | No
     return max(pool, key=lambda r: r.get("updated") or 0) if pool else None
 
 
-def bursts(timeline: list[tuple[float, frozenset]], gap: float = BURST_GAP) -> list[tuple[float, list[tuple[float, frozenset]]]]:
+def bursts(timeline: list[tuple[float, frozenset]], gap: float | None = None) -> list[tuple[float, list[tuple[float, frozenset]]]]:
     """Split the held timeline into bursts: (start time, [(offset, held)]) from the first press until everything was let
     go for `gap`. Each burst ends with its release step (offset, empty)."""
+    gap = BURST_GAP if gap is None else gap
     out, cur, t0, idle_since = [], [], None, None
     for at, keys in timeline:
         keys = keys - NO_LEARN
