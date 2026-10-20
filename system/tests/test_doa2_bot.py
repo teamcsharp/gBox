@@ -86,7 +86,7 @@ def test_without_a_jump_state_it_presses_through_the_menus():
     stats, sent = run(ad, [lambda t: None] * 40)
     assert stats["routes"] >= 1
     downs = [r[0]["key"] for r in sent if r[0]["down"]]
-    assert downs[:5] == ["start", "start", "right", "b", "b"]
+    assert downs[:6] == ["start", "start", "right", "right", "b", "b"]          # title -> Survival -> fighter
 
 
 def test_p1_never_drops_below_the_safety_line():
@@ -156,3 +156,49 @@ def test_reflex_waits_for_a_new_edge():
     for i in range(5):
         rx.step(i * 0.01)
     assert len(sent) == 1                                   # held input is not re-fired every poll
+
+
+
+def test_after_a_ko_the_game_brings_the_next_opponent_without_a_jump():
+    ad = FakeDC()
+    ad.set(0, 200, 200)
+    ad.on_load = lambda: ad.set(0, 240, 240)
+    ko = [lambda t: ad.set(0, 200, 0)] + [lambda t: None] * 10           # a KO: out of the fight for ~3 s
+    script = [lambda t: None] * 30 + ko + [lambda t: ad.set(0, 240, 240)] + [lambda t: None] * 10
+    stats, _ = run(ad, script)
+    assert stats["saves"] >= 1 and stats["jumps"] == 0 and stats["routes"] == 0   # no cut back to the old fight
+
+
+def test_jumps_that_never_land_in_a_fight_drop_the_jump_state():
+    ad = FakeDC()
+    ad.set(0, 200, 200)
+    ad.on_load = lambda: ad.set(1, 320, 320)                              # the jump state is broken: lands on the title
+    script = [lambda t: None] * 30 + [lambda t: ad.set(1, 320, 320)] + [lambda t: None] * 200
+    stats, _ = run(ad, script)
+    assert stats["jumps"] == 2 and stats["jumps_dropped"] == 1           # two misses, then no more jumps
+    assert stats["routes"] >= 1                                           # the menus instead
+
+
+def test_still_ram_gets_a_nudge_before_it_counts_as_a_hang():
+    ad = FakeDC()
+    ad.set(0, 200, 200)                                                   # a fight, so no menu route runs meanwhile
+    now, sent, moving = [0.0], [], {"on": False, "n": 0}
+    real = ad.read_memory
+
+    def read(a, n):
+        if a == B.WATCH[0]:
+            if not moving["on"]:
+                return bytes(n)                                           # still until something is pressed
+            moving["n"] += 1
+            return bytes([moving["n"] & 0xFF]) + bytes(n - 1)
+        return real(a, n)
+    ad.read_memory = read
+
+    def send(rows):
+        sent.append(rows)
+        if rows[0]["key"] == "start" and rows[0]["down"]:
+            moving["on"] = True                                           # the nudge moved the screen on
+    steps = iter([None] * 120)
+    stats = B.play(ad, send, lambda: next(steps, 1) is not None, clock=lambda: now[0],
+                   sleep=lambda x: now.__setitem__(0, now[0] + x))
+    assert stats["nudges"] == 1 and stats["hung"] is False

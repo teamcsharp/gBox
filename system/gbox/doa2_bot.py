@@ -11,9 +11,13 @@ Holds (Reflex): on that edge P1 presses Free (retropad a = Dreamcast B) with a d
 holds alone. Which direction pays depends on the attack (high / mid punch / mid kick / low) and the side P1 is on, so
 the reflex learns it: each try is scored by damage dealt minus damage taken in the next 0.8 s.
 The loop: in a fight, the operator's learned style plays P1 (imitate.Style), with P1's health topped up when it runs low
-so autoplay never loses on screen; out of a fight (round over, the demo, a title), it loads the jump state saved in an
-earlier confirmed fight (emulator save state) and is back in a fight in about two seconds - until that state exists it
-presses through the menus (Start, Start, Time Attack, fighter). RAM that stops changing for 8 s = a hang: the run ends
+so autoplay never loses on screen (Survival then runs endlessly: one opponent after another). Between fights the game
+brings in the next opponent itself; only on the title / attract demo, or after OUT_JUMP seconds out of a fight
+(results, continue screens), does it load the jump state: an emulator save state taken in a confirmed fight and
+refreshed from a newer fight every JUMP_REFRESH seconds, so jumps land in different matchups. Until a jump state exists
+it presses through the menus (Start, Start, Survival, fighter). Two jumps in a row that don't land in a fight drop the
+jump state (a 2026-10-20 run loaded one 412 times and the game ended up stuck). RAM that stops changing for STILL_FOR
+seconds gets Start / B once (a prompt or a still menu); still nothing NUDGE_WAIT seconds later = a hang: the run ends
 so the caller relaunches. Works on any build of this disc (the operator's MarioVSonic cast build included).
 """
 from __future__ import annotations
@@ -27,7 +31,12 @@ GAME_IDS = {"1de2e7634f3161ff"}                 # Dead or Alive 2 - Limited Edit
 DEMO, P1_HP, P2_HP, HP_MAX = 0x8C200848, 0x8C2376D8, 0x8C237740, 240
 SAFETY_HP = 100                                   # P1 below this is topped up to HP_MAX
 WATCH = (0x8C237000, 4096)                        # fighter data: changes every frame in play (hang check)
-ROUTE = (("start", 3.0), ("start", 3.0), ("right", 1.5), ("b", 3.0), ("b", 3.0))   # title -> Time Attack -> fighter
+ROUTE = (("start", 3.0), ("start", 3.0), ("right", 1.5), ("right", 1.5), ("b", 3.0), ("b", 3.0))   # title -> Survival -> fighter
+OUT_JUMP = 12.0                                   # out of a fight this long (results, continue): jump back in
+JUMP_REFRESH = 180.0                              # take a new jump state from a newer fight at most this often
+JUMP_LAND = 8.0                                   # a jump that shows no fight within this long did not land
+MAX_FAILED_JUMPS = 2
+STILL_FOR, NUDGE_WAIT = 8.0, 10.0
 WARN = 0x8C23A37D                                 # the opponent's attack input (see above)
 FREE = "a"                                        # retropad a = Dreamcast B = Free (hold / guard)
 HOLDS = (("left",), ("right",), ("up", "left"), ("up", "right"), ("down", "left"), ("down", "right"))
@@ -127,7 +136,13 @@ def play(ad, send, stopped, style=None, clock=time.time, sleep=time.sleep, stats
                     time.sleep(0.008)
         threading.Thread(target=reflex_loop, daemon=True, name="doa2-holds").start()
         send = send_locked
-    jump_ok, fight_since, out_since, last_ram, frozen_since = False, None, None, None, None
+    def tap(key):
+        send([{"key": key, "down": True}])
+        sleep(0.3)
+        send([{"key": key, "down": False}])
+    jump_ok, fight_since, out_since, last_ram, still_since, nudged_at = False, None, None, None, None, None
+    saved_at, jumped_at, failed_jumps = None, None, 0
+    stats.update(jumps_dropped=0, nudges=0)
     while not stopped():
         now = clock()
         try:
@@ -137,22 +152,35 @@ def play(ad, send, stopped, style=None, clock=time.time, sleep=time.sleep, stats
             sleep(0.5)
             continue
         if ram == last_ram:
-            frozen_since = frozen_since or now
-            if now - frozen_since > 8:
-                stats["hung"] = True               # the caller relaunches the game
-                break
+            still_since = still_since or now
+            if now - still_since > STILL_FOR:
+                if nudged_at is None:              # a prompt or a still menu: press through it once
+                    tap("start")
+                    tap("b")
+                    nudged_at = clock()
+                    stats["nudges"] += 1
+                elif now - nudged_at > NUDGE_WAIT:
+                    stats["hung"] = True           # the caller relaunches the game
+                    break
         else:
-            frozen_since = None
+            still_since = nudged_at = None
         last_ram = ram
+        if jumped_at is not None and now - jumped_at > JUMP_LAND:
+            jumped_at = None                       # the jump showed no fight
+            failed_jumps += 1
+            if failed_jumps >= MAX_FAILED_JUMPS:
+                jump_ok, failed_jumps = False, 0
+                stats["jumps_dropped"] += 1
         stats.update(fighting=st["fighting"], p1_hp=st["p1"], p2_hp=st["p2"])
         (fighting.set if st["fighting"] else fighting.clear)()
         if st["fighting"]:
-            out_since = None
+            out_since, jumped_at, failed_jumps = None, None, 0
             fight_since = fight_since or now
             if st["p1"] < SAFETY_HP:
                 ad.write_memory(P1_HP, struct.pack("<H", HP_MAX))
                 stats["safety"] += 1
-            if not jump_ok and now - fight_since > 6:
+            if now - fight_since > 6 and (saved_at is None or now - saved_at > JUMP_REFRESH):
+                saved_at = now                     # this fight becomes the jump state (a newer one later)
                 try:
                     ad.save_state()
                     jump_ok = True
@@ -169,16 +197,17 @@ def play(ad, send, stopped, style=None, clock=time.time, sleep=time.sleep, stats
             stats["fights_s"] = round(stats["fights_s"] + now - fight_since, 1)
         fight_since = None
         out_since = out_since or now
-        if jump_ok and now - out_since > 1.5:      # straight back into a fight: no demo, title or menus
+        title = st["demo"] == 1                    # the title / attract demo: never worth watching
+        if jump_ok and jumped_at is None and (title and now - out_since > 1.5 or now - out_since > OUT_JUMP):
             try:
                 ad.load_state()
                 stats["jumps"] += 1
-                out_since = None
+                jumped_at, out_since = clock(), None
                 sleep(2.0)
                 continue
             except Exception:                      # noqa: BLE001
                 jump_ok = False
-        if now - out_since > 3:
+        if not jump_ok and now - out_since > 3 and (title or now - out_since > OUT_JUMP):
             for key, wait in ROUTE:
                 if stopped():
                     break
