@@ -51,7 +51,7 @@ from .ps2_gs import GSMemory, alpha_to_8bit, csm1
 HDR, MESH, PART, TEXREC = 0x40, 0x40, 0x30, 0xA0
 FIXED = 4096.0
 GLTF_SCALE = 0.001                     # millimetres -> metres
-READER_VERSION = 2                     # 2: normals exported outward (#2367); entries without mgs2_reader are v1
+READER_VERSION = 3                     # 3: 4-bit textures use their CSA palette (#2798); 2: normals outward (#2367)
 RESTART = 0x8000
 F_BLEND, F_UV2 = 0x1, 0x200
 
@@ -243,6 +243,14 @@ def bone_name(i: int, roles: dict[str, int]) -> str:
 
 
 # ---------------------------------------------------------------- texture packs
+def csa_palette(clut16x16, csa: int) -> np.ndarray:
+    """The 16 colours a PSMT4 texture uses: CSA picks one 8x2 block inside the 16x16 CSM1 CLUT at CBP (blocks run
+    left, right, then down two rows). MGS2 packs several 16-colour palettes into one CLUT this way (#2798)."""
+    block = np.asarray(clut16x16).reshape(16, 16, 4)
+    n, i = int(csa) & 0xF, np.arange(16)
+    return block[(n >> 1) * 2 + (i >> 3), (n & 1) * 8 + (i & 7)]
+
+
 class TexturePack:
     def __init__(self, b: bytes):
         if len(b) < 0x20:
@@ -292,7 +300,7 @@ class TexturePack:
             pal = csm1(clut.read32(e["cbp"], 1, 16, 16).reshape(256, 4))
         elif e["psm"] == 0x14:
             idx = pix.read4(e["tbp"], e["tbw"], W, H)
-            pal = clut.read32(e["cbp"], 1, 8, 2).reshape(16, 4)
+            pal = csa_palette(clut.read32(e["cbp"], 1, 16, 16), e["csa"])
         else:
             return None
         img = alpha_to_8bit(pal)[idx]
