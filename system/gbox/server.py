@@ -2256,7 +2256,8 @@ def create_app(config: Config) -> FastAPI:
         frame = desktop_frames.get(wid) or {}
         return {"watching": time.time() < desktop_watch.get(wid, 0),
                 "last_frame_age": round(time.time() - frame["ts"], 1) if frame else None,
-                "frames": frame.get("seq", 0), "app_available": frame.get("app_rect") is not None}
+                "frames": frame.get("seq", 0), "app_available": frame.get("app_rect") is not None,
+                "games": sorted(frame.get("game_rects") or {})}      # sessions whose game window that screen shows (#2858)
 
     @app.post("/api/workers/{wid}/desktop/frame")
     async def desktop_frame_upload(wid: str, request: Request, actor=Depends(auth)):
@@ -2272,35 +2273,33 @@ def create_app(config: Config) -> FastAPI:
                 app_rect = None
         except ValueError:
             app_rect = None
+        from .remote_desktop import parse_game_rects
+        game_rects = parse_game_rects(request.headers.get("x-gbox-game-rects", ""))
         with desktop_condition:
             prior = desktop_frames.get(wid) or {}
-            desktop_frames[wid] = {"image": image, "app_rect": app_rect,
+            desktop_frames[wid] = {"image": image, "app_rect": app_rect, "game_rects": game_rects,
                                    "seq": prior.get("seq", 0) + 1, "ts": time.time()}
             desktop_condition.notify_all()
         return {"ok": True}
 
     @app.get("/api/workers/{wid}/desktop/stream")
-    def desktop_stream(wid: str, view: str = "app", actor=Depends(auth)):
+    def desktop_stream(wid: str, view: str = "app", session: str = "", actor=Depends(auth)):
+        """view=app: the gBox window; game (with session): that game's own window (#2858); desktop: everything."""
+        from .remote_desktop import stream_parts
         wid = _wid(wid)
         if not store.get("worker", wid):
             raise HTTPException(404, "worker not found")
-        if view not in ("app", "desktop"):
-            raise HTTPException(422, "view must be app or desktop")
-        def frames():
-            from .remote_desktop import frame_for_view
-            seen = 0
-            while True:
-                desktop_watch[wid] = time.time() + 8
-                with desktop_condition:
-                    desktop_condition.wait_for(lambda: (desktop_frames.get(wid) or {}).get("seq", 0) != seen, timeout=2)
-                    frame = desktop_frames.get(wid) or {}
-                if frame.get("seq") == seen or time.time() - frame.get("ts", 0) > 5:
-                    continue
-                seen = frame["seq"]
-                image = frame_for_view(frame["image"], view, frame.get("app_rect"))
-                if image:
-                    yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + image + b"\r\n"
-        return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=frame",
+        if view not in ("app", "desktop", "game") or (view == "game" and not session):
+            raise HTTPException(422, "view must be app, desktop or game (with a session)")
+
+        def next_frame(seen):
+            with desktop_condition:
+                desktop_condition.wait_for(lambda: (desktop_frames.get(wid) or {}).get("seq", 0) != seen, timeout=2)
+                return desktop_frames.get(wid) or {}
+
+        def renew():                                  # the worker captures its screen while this is in the future
+            desktop_watch[wid] = time.time() + 8
+        return StreamingResponse(stream_parts(next_frame, view, session, renew), media_type="multipart/x-mixed-replace; boundary=frame",
                                  headers={"Cache-Control": "no-store"})
 
     def _wid(wid: str) -> str:

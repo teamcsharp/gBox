@@ -1212,6 +1212,29 @@ def _stream_event_reporter(sid: str, server: str, headers: dict):
     return report
 
 
+NATIVE_STILL_S = 4.0     # a native game's still this often: a picture older than a few of these means "not on its screen"
+
+
+def _native_stills(sid: str, ad, server: str, headers: dict, every: float = NATIVE_STILL_S, grab=None):
+    """A native game's window, posted as the session's frame every few seconds while its PC's screen shows it (#2858):
+    the header icon's picture, the hover preview, and the proof for viewers on other PCs that the game is live. A game
+    the screen doesn't show posts nothing, so its picture goes stale and the Sessions view says so."""
+    if grab is None:
+        if HOST_OS != "windows":
+            return
+        from .remote_desktop import window_still as grab
+    with httpx.Client(base_url=server, headers=headers, timeout=10) as c:
+        while sid in SESSIONS:
+            pid = getattr(getattr(ad, "proc", None), "pid", None)       # RPCS3 relaunches in place: follow the pid
+            try:
+                still = grab(pid) if pid else None
+                if still:
+                    c.post(f"/api/sessions/{sid}/frame", content=still, headers={"content-type": "image/jpeg"})
+            except Exception:                                           # noqa: BLE001 - a missed still never touches the game
+                pass
+            time.sleep(every)
+
+
 def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
     """Live session plumbing, three independent loops so nothing slow can stall the video:
     frames  - pushed the moment the encoder produces one (up to the stream fps, 60),
@@ -1223,8 +1246,8 @@ def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
         stream.on_event = _stream_event_reporter(sid, server, headers)
 
     def frames():
-        if stream is None:                               # local native window: nothing to stream
-            return
+        if stream is None:                               # local native window: no video stream, a still now and then
+            return _native_stills(sid, ad, server, headers)
         # one long-lived upload per session: [4-byte big-endian length][JPEG] ... (a POST per frame capped at ~6 fps)
         def body():
             last, live = -1, _EmulatorLiveness(ad)
