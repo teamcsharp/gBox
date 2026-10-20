@@ -236,8 +236,8 @@ def items_from_ram(mem, entries: list[dict] | None = None) -> list[dict]:
 
 def leon_from_ram(mem) -> dict | None:
     """Leon's routine bytes (+0xFC..0xFF, hex) and, while he works on something (routine 4: a door, a kick -
-    0x80141794), "object" (the em), "object_em" (its em id +0x100: 0x41 door, a Ganado's for a kick) and "fn" (the
-    routine it runs, ACTION_FN: 0x800DDA0C / 0x800DDDC8 for a door, the Ganado code module's for a kick)."""
+    0x80141794), "object" (the em), "object_em" (its em id +0x100: 0x41 a door, 0x16 a village Ganado) and "fn" (the
+    routine it runs, ACTION_FN: 0x800DDA0C / 0x800DDDC8 for a door, one in the Ganado's code module for a kick)."""
     pl = _u32(mem.rd(P_PLAYER, 4))
     if not _ptr(pl):
         return None
@@ -304,10 +304,11 @@ def action_from_ram(mem, with_zones: bool = True) -> dict:
     return out
 
 
-def prompt_from_ram(mem) -> str | None:
+def prompt_from_ram(mem, check_disc: bool = True) -> str | None:
     """The button(s) to press now: "a", "b", "x", "y", "a+b", "l+r", "wiggle" (SHAKE OFF: the stick) or None (no prompt
-    up). Raises Unknown when RAM can't tell. Two small reads while no prompt is up (a playbook asks every tick)."""
-    if mem.rd(0x80000000, 6) != GAME_ID:
+    up). Raises Unknown when RAM can't tell. One byte read while no prompt is up (a playbook asks every tick), plus the
+    disc id unless check_disc is False."""
+    if check_disc and mem.rd(0x80000000, 6) != GAME_ID:
         raise Unknown("not Resident Evil 4 (G4BE08)")
     kind = mem.rd(ACT_KIND, 1)[0]
     if not kind:
@@ -319,10 +320,13 @@ def prompt_from_ram(mem) -> str | None:
 
 def source(mem, stats: dict | None = None):
     """A prompt source for a playbook: () -> button | None, Unknown when RAM can't tell (stats["ram_action"] = the last
-    prompt's text)."""
+    prompt's text). The disc id is checked until it has been RE4 once (a session never changes discs)."""
+    seen = [False]
+
     def ask():
         try:
-            button = prompt_from_ram(mem)
+            button = prompt_from_ram(mem, check_disc=not seen[0])
+            seen[0] = True
             if button and stats is not None:
                 stats["ram_action"] = action_from_ram(mem, with_zones=False)["action"]
         except Unknown:

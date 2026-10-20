@@ -201,6 +201,10 @@ def test_source_reports_unknown_for_a_failed_read():
         R.source(Broken())()
     stats = {}
     assert R.source(ram(kind=1, label=0x28), stats)() == "a" and stats["ram_action"] == "TAKE"
+    m = ram(kind=1, label=0x28)
+    m.wr(0x80000000, b"GZLE01")
+    with pytest.raises(R.Unknown):                                    # another game: never trusted
+        R.source(m)()
 
 
 # -- the Mercenaries playbook: RAM first, vision after --
