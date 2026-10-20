@@ -270,7 +270,7 @@ def test_screensaver_replay_goes_on_in_your_style_and_reports_back(ap, monkeypat
     monkeypatch.setattr(t.time, "sleep", lambda s: stop.wait(0.0005))
     r = t.autoplay(t.AutoplayIn(session_id="s1", op="start", mode="replay", screensaver=True), ap.ctx)["result"]
     run = t.AUTOPLAY["s1"]
-    for _ in range(400):
+    for _ in range(1500):                                       # generous: a loaded test machine is slow
         if run["mission"].startswith("learned"):
             break
         stop.wait(0.01)

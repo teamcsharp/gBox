@@ -3760,8 +3760,12 @@ def create_app(config: Config) -> FastAPI:
     @app.post("/api/sessions/{sid}/input")
     def put_input(sid: str, ev: InputEvents, actor=Depends(auth)):
         lv = _live(sid)
+        # each pad event says who sent it (player / ui / autoplay / agent): the worker hands autoplay back only to the
+        # operator, never to an agent or a bridge pressing buttons in the same session
+        events = [e | {"src": padstate._source(actor, e)} if isinstance(e, dict) and "rpc" not in e and "src" not in e else e
+                  for e in ev.events]
         with lv["cond"]:
-            lv["input"].extend(ev.events)
+            lv["input"].extend(events)
             padstate.record(sid, ev.events, actor)                 # controller glyph: who pressed what
             lv["cond"].notify_all()
         # only the operator's own input is gameplay to learn from: not agents, autoplay, bridges or workers
