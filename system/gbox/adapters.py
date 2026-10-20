@@ -3367,6 +3367,10 @@ def for_game(game: dict, config: Config, debug: bool = False, *, mod: str | None
             # Asset-only variants keep the exact pinned guest executable. The
             # native adapter verifies that hash before it creates a play disc.
             return Doa3NativeAdapter(config, game | {"mod": mod or game.get("mod") or ""})
+        from .xemu import XemuAdapter, wants_xemu
+        if wants_xemu(game, xbox_override):
+            # Titles Cxbx cannot draw (xemu.XEMU_TITLES), or [emulators.xbox] adapter = "xemu" for every title.
+            return XemuAdapter(config)
         ad = XboxAdapter(config)
         ad.debug = bool(debug)      # a debug launch writes Cxbx's full kernel log (xbox.log_settings)
         return ad
