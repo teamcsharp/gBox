@@ -17,12 +17,15 @@ A profile is stored per (donor character, target game[, slot]) in the character'
                                                      #   the donor's height in the editor frame (left +X, up +Y, front
                                                      #   +Z), each component within +-0.25 ("the elbow was guessed too
                                                      #   high": l_fore [0, -0.03, 0])
+        "turn": true,                                # "Turn around": the fit frame turned 180 degrees about up (the
+                                                     #   donor faces -Z with its left on -X) for a slot whose own
+                                                     #   skeleton faces the other way; see turn_frame()
     }
 
 "*" is the game-wide profile; a slot with its own (complete) profile uses that instead. Offsets are fractions of the target
 figure height (game units differ: Mario's skeleton is ~100 units tall, DOA2's ~1.7), rotations are degrees (XYZ).
 
-Writers apply a profile in three places:
+Writers apply a profile in four places:
   1. before fitting: apply_to_meta() returns the meta with the role overrides merged into rig.roles and the profile
      in rig.scale["profile"]; every writer already passes rig.roles to load_rig and rig.scale to retarget.
   2. the donor rig, before the fit: the shared retargets start with move_joints(rig, profile), which moves the donor
@@ -37,6 +40,20 @@ Writers apply a profile in three places:
      FF7, SA2/JGR/PSO through ninja_swap, SmackDown! 2, No Mercy/WCW, Def Jam - doa2_weighted_retarget.retarget and
      re4gc_enemies.retarget) call apply_jmap()/apply_roles() on their output. Crazy Taxi's principal-axis fit scales
      its parts with part_transform().
+  4. "turn" (the editor's Turn around) is applied where the donor is stood in its fit frame: sm64_swap.retarget and
+     doa2_weighted_retarget.retarget fit in turn_frame(facing(rig)), re4gc_enemies.retarget (whose rig arrives already
+     upright) turns the rig about its hip first. The donor frame of joint moves and the shape cage (donor_frame) is
+     NOT turned: the editor's donor views stay facing front. Writers that fit without those three retargets or call
+     them without the profile (RE6, 007 AUF, MGS VR - which applies only the target-space step 3 -, Crazy Taxi,
+     sprites) ignore it, like the joint moves.
+
+"Swap left <-> right" needs nothing here: the editor saves it as ordinary role overrides (every l_* role names its r_*
+twin's bone and back), which apply_to_meta merges into rig.roles like any other assignment.
+
+Flags ("mapped wrong", the pick whip's "Fix this character's mapping"): meta["retarget_flags"][game_id][slot key] =
+[{at, session_id, note, by}] (newest last, at most FLAGS_KEEP). Kept beside the profiles, not in them, so a flag never
+creates a slot profile (which would shadow the game-wide one) nor changes a build's digest; saving or resetting that
+slot's profile clears them (add_flag / flags_of / clear_flags).
 
 The adjustment maths is pure numpy on prims ({pos, nrm, J, W}) and is tested on synthetic skeletons
 (tests/test_retarget_profile.py); clients/web/viz/retarget-handles.js mirrors it for the editor's live preview.
@@ -69,6 +86,8 @@ LIMB_CHAINS = [("l_upper", "l_fore", "l_hand"), ("r_upper", "r_fore", "r_hand"),
                ("l_thigh", "l_shin", "l_foot"), ("r_thigh", "r_shin", "r_foot")]      # = sm64_swap.LIMBS
 ADJUST_DEFAULT = {"length": 1.0, "girth": 1.0, "scale": [1.0, 1.0, 1.0], "offset": [0.0, 0.0, 0.0],
                   "rotate": [0.0, 0.0, 0.0]}
+TURN = np.diag([-1.0, 1.0, -1.0])                        # 180 degrees about up: left -> -X, front -> -Z
+FLAGS_KEEP = 20
 
 
 # ---------------------------------------------------------------- the profile itself
@@ -146,6 +165,8 @@ def normalize(profile: dict | None) -> dict:
         out["plant_feet"] = True
     if profile.get("preserve_geometry") is True:
         out["preserve_geometry"] = True
+    if profile.get("turn") is True:
+        out["turn"] = True
     if isinstance(profile.get("shoe_tops"), dict):
         tops = {s: _num(profile['shoe_tops'][s], .15, 0, .5) for s in ('l', 'r') if s in profile['shoe_tops']}
         if tops: out['shoe_tops'] = tops
@@ -157,7 +178,7 @@ def is_identity(profile: dict | None) -> bool:
     if not profile:
         return True
     p = normalize(profile)
-    return (not p["adjust"] and not p["joints"] and not p.get("lattice") and not p.get("plant_feet") and not p.get('shoe_tops') and not p.get('preserve_geometry') and all(p[k] == DEFAULT[k] for k in ("height", "ground", "head",
+    return (not p["adjust"] and not p["joints"] and not p.get("lattice") and not p.get("plant_feet") and not p.get('shoe_tops') and not p.get('preserve_geometry') and not p.get("turn") and all(p[k] == DEFAULT[k] for k in ("height", "ground", "head",
                                                                                      "torso_width", "arm_length",
                                                                                      "leg_length")))
 
@@ -233,6 +254,71 @@ def profile_of(scale) -> dict | None:
     """The profile a writer passed through rig.scale (None when there is none or it changes nothing)."""
     p = (scale or {}).get("profile") if isinstance(scale, dict) else None
     return None if not p or is_identity(p) else normalize(p)
+
+
+def turned(profile: dict | None) -> bool:
+    """True when the profile asks for Turn around."""
+    return bool(profile) and normalize(profile).get("turn") is True
+
+
+def turn_frame(B, profile: dict | None) -> np.ndarray:
+    """The fit frame (rows: left, up, front) turned 180 degrees about up when the profile says turn: the donor then
+    faces -Z with its left on -X, matching a slot skeleton that faces the other way. B unchanged otherwise."""
+    B = np.asarray(B, float)
+    return TURN @ B if turned(profile) else B
+
+
+def turn_rig(rig: dict, profile: dict | None) -> dict:
+    """An upright rig (left +X, up +Y, front +Z: re4gc_enemies.retarget's input) turned 180 degrees about up through
+    its hip when the profile says turn (a shallow copy); the rig itself otherwise."""
+    if not turned(profile):
+        return rig
+    S = np.asarray(rig["joints"], float)
+    ri = rig.get("roles") or {}
+    c = S[ri["hip"]] if "hip" in ri else S.mean(0)
+    piv = np.array([c[0], 0.0, c[2]])
+    turn = lambda P: (np.asarray(P, float) - piv) @ TURN.T + piv          # noqa: E731
+    prims = [{**p, "pos": turn(p["pos"]), "nrm": np.asarray(p["nrm"], float) @ TURN.T} for p in rig["prims"]]
+    return {**rig, "joints": turn(S), "prims": prims}
+
+
+# ---------------------------------------------------------------- "mapped wrong" flags from gameplay
+
+def flags_of(meta: dict, game_id: str, slot: str | None) -> list[dict]:
+    """The flags raised for this donor in this game's slot (a 'fighter:kas' slot also reads flags kept as 'kas')."""
+    entry = (((meta or {}).get("retarget_flags") or {}).get(game_id)) or {}
+    key = slot_key(slot)
+    got = entry.get(key)
+    if got is None and ":" in key:
+        got = entry.get(key.split(":", 1)[-1])
+    return [dict(f) for f in (got or []) if isinstance(f, dict)]
+
+
+def add_flag(meta: dict, game_id: str, slot: str | None, flag: dict) -> list[dict]:
+    """Record one flag on meta (mutated): {at, session_id, note, by}, strings trimmed, newest last, FLAGS_KEEP kept."""
+    clean = {"at": _num(flag.get("at"), 0.0, 0.0, 1e12), "session_id": str(flag.get("session_id") or "")[:120],
+             "note": str(flag.get("note") or "").strip()[:500], "by": str(flag.get("by") or "")[:80]}
+    entry = meta.setdefault("retarget_flags", {}).setdefault(game_id, {})
+    rows = [f for f in entry.get(slot_key(slot)) or [] if isinstance(f, dict)] + [clean]
+    entry[slot_key(slot)] = rows[-FLAGS_KEEP:]
+    return entry[slot_key(slot)]
+
+
+def clear_flags(meta: dict, game_id: str, slot: str | None) -> int:
+    """Remove the flags a save / reset of that profile answers (meta mutated): the slot's own ('kas' too for
+    'fighter:kas'); the game-wide profile ('*') answers every slot of the game. Returns how many went."""
+    games = (meta or {}).get("retarget_flags") or {}
+    entry = games.get(game_id) or {}
+    key = slot_key(slot)
+    keys = list(entry) if key == "*" else [k for k in (key, key.split(":", 1)[-1]) if k in entry]
+    n = 0
+    for k in dict.fromkeys(keys):
+        n += len(entry.pop(k) or [])
+    if game_id in games and not entry:
+        games.pop(game_id)
+    if "retarget_flags" in (meta or {}) and not games:
+        meta.pop("retarget_flags")
+    return n
 
 
 # ---------------------------------------------------------------- the maths (target space, +Y up)

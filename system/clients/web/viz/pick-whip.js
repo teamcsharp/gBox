@@ -12,6 +12,10 @@
    - Blender: blender_copy (Blender's own Ctrl+V) and the round trip (POST /api/characters/{slug}/blender/copy,
      gbox/blender_roundtrip.py) for library models
    - the mini console: small floating panels next to the pick, one per task, streaming job progress and fit events
+   - "Fix this character's mapping": the donor standing in the picked slot of the session's build (GET
+     /api/sessions/{sid}/cast, gbox/builds.py) opens straight in the Retarget editor's Goals view, flagged as mapped
+     wrong (POST /api/characters/{slug}/retarget_profile/flag); unknown slot / stock game: the donor browser first.
+     The game stays paused (its own hold) until the editor closes.
    Shared verbatim by the web shell (/viz/pick-whip.js) and the desktop app (../web/viz/pick-whip.js). */
 (function (root, factory) {
   const lib = factory(root);
@@ -406,6 +410,7 @@
     const who = label && label.known ? label.name : "this character";
     return [
       { id: "report", icon: "⚑", text: "Report…", hint: "a problem at this spot: the moment, a frame and what was picked go to the inbox" },
+      { id: "fixmap", icon: "✎", text: "Fix this character's mapping…", hint: "mapped wrong? adjust it" },
       { id: "replace", icon: "⇄", text: `Replace ${who} with…`, hint: "live when the game allows it, else a build" },
       { id: "copy", icon: "⧉", text: "Copy to clipboard", hint: asset ? "model + identification" : "identification (extracts the model when it can)" },
       { id: "blender", icon: "⬈", text: "Copy to Blender", hint: "Ctrl+V in a Blender 3D viewport", disabled: !canBlender },
@@ -414,6 +419,40 @@
       { id: "export", icon: "⇪", text: "Export to Blender (round trip)", hint: "gBox add-on: Ctrl+Shift+V, edit, Send to gBox" },
       { id: "assets", icon: "▤", text: "Show in Assets", hint: "" },
     ].concat(canFace ? [{ id: "face", icon: "\u263a", text: "Inspect / paint face...", hint: "captured 3D draw, native face texture, UV placement and mask" }] : [], extra);
+  }
+
+  // ---- which donor stands in the picked slot (the build's cast rows, GET /api/sessions/{sid}/cast) --------------------
+  // rows: [{slot, slot_name, donor, donor_name}] (slot = where the Retarget editor keeps that donor's profile);
+  // label: labelOf(); ident: pick_identify's answer. The picked slot first ('fighter:KAS:1' = 'fighter:KAS' = 'KAS'),
+  // then the picked thing named as a donor or as a slot, then a build with one replaced slot when the pick has no slot
+  // of its own. A slot several donors share (a random costume build) needs the donor named too. null = ask (the donor
+  // browser, castCandidates first).
+  const slotKey = s => String(s || "").trim().toLowerCase().replace(/^(fighter:[^:]+):(?:\d+|all)$/, "$1").replace(/:all$/, "");
+  const slotTail = s => slotKey(s).split(":").pop();
+  function castCandidates(rows, label) {
+    const list = (Array.isArray(rows) ? rows : []).filter(r => r && r.slot && r.donor), l = label || {};
+    if (!l.slot) return [];
+    const k = slotKey(l.slot), t = slotTail(l.slot), exact = list.filter(r => slotKey(r.slot) === k);
+    return exact.length ? exact : list.filter(r => slotTail(r.slot) === t);
+  }
+  function castMatch(rows, label, ident) {
+    const list = (Array.isArray(rows) ? rows : []).filter(r => r && r.slot && r.donor);
+    if (!list.length) return null;
+    const l = label || {}, out = (r, via) => ({ slot: String(r.slot), donor: String(r.donor), donor_name: String(r.donor_name || r.donor), via });
+    const coll = ident && ident.collection && ident.collection.slug;
+    const said = [l.model, coll, typeof (ident && ident.model) === "string" ? ident.model : "", l.known ? l.name : ""]
+      .map(x => String(x || "").trim().toLowerCase()).filter(Boolean);
+    const named = r => said.includes(String(r.donor).toLowerCase()) || said.includes(String(r.donor_name || "").toLowerCase());
+    const inSlot = castCandidates(list, l);
+    if (inSlot.length === 1) return out(inSlot[0], "slot");
+    if (inSlot.length > 1) { const d = inSlot.filter(named); return d.length === 1 ? out(d[0], "slot and donor") : null; }
+    const donors = list.filter(named);
+    if (donors.length === 1 || (donors.length && donors.every(r => r.slot === donors[0].slot))) return out(donors[0], "donor");
+    if (donors.length) return null;                          // that donor stands in several slots: which one?
+    const slot = list.filter(r => said.includes(slotTail(r.slot)) || said.includes(String(r.slot_name || "").toLowerCase()));
+    if (slot.length === 1) return out(slot[0], "slot name");
+    if (list.length === 1 && !l.slot) return out(list[0], "the build's only replaced slot");
+    return null;
   }
 
   // ---- console lines from a job: progress log, fit events, the end --------------------------------------------------
@@ -946,6 +985,7 @@
         return;
       }
       if (o.extra && o.extra.some(x => x.id === id)) { dismiss(id); return o.onExtra && o.onExtra(id); }
+      if (id === "fixmap") return fixMapping(l);
       if (id === "replace" || id === "retarget") {
         const m = doc.getElementById("pwmenu");
         m.innerHTML = `<div class="pw-head"><b>${id === "replace" ? `Replace ${ESC(who)} with…` : "Retarget which donor?"}</b><div class="mut">loading the collection…</div></div>`;
@@ -953,8 +993,8 @@
         try { chars = await io.api("/api/characters" + (o.gid ? "?game_id=" + encodeURIComponent(o.gid) : "")); } catch (e) { io.toast?.("⚠ characters: " + e.message); }
         const rows = rankCharacters(chars, { gid: o.gid, kind: l.kind });
         return browser(m, { title: id === "replace" ? `Replace ${who} with…` : `Retarget into ${l.slot || "this slot"}…`, rows, img: io.img,
-          onPick: c => { dismiss("picked"); return id === "replace" ? doReplace(c, l) :
-            io.retarget && io.retarget({ slug: c.slug, name: c.name, gid: o.gid, slot: l.slot || "player" }); } });
+          onPick: c => { if (id === "retarget") return openMapping({ slug: c.slug, name: c.name, gid: o.gid, slot: l.slot || "player" }, l, false);
+            dismiss("picked"); return doReplace(c, l); } });
       }
       dismiss(id);
       if (id === "identify") {
@@ -1011,6 +1051,45 @@
       if (id === "assets") { io.assets && io.assets(l.model || l.name); return; }
     }
 
+    // "Fix this character's mapping": the donor in this slot of the running build, straight into the Goals view
+    async function fixMapping(l) {
+      const m = doc.getElementById("pwmenu");
+      if (m) m.innerHTML = `<div class="pw-head"><b>Fix this character's mapping</b><div class="mut">finding who stands in ${ESC(l.slot || "this slot")}…</div></div>`;
+      let cast = null;
+      try { if (o.sid) cast = await io.api(`/api/sessions/${encodeURIComponent(o.sid)}/cast`); } catch { cast = null; }
+      if (!open) return null;                                // closed while asking: nothing more to do
+      const gid = o.gid || (cast && cast.game_id) || "", hit = castMatch(cast && cast.rows, l, st.ident);
+      if (hit) return openMapping({ slug: hit.donor, name: hit.donor_name, gid, slot: hit.slot, build_name: (cast && cast.mod) || "" }, l, true);
+      if (!m) return null;
+      const cands = castCandidates(cast && cast.rows, l), slot = cands.length ? cands[0].slot : l.slot || "player";
+      m.innerHTML = `<div class="pw-head"><b>Which donor is this?</b><div class="mut">${cands.length ? `${cands.length} donors share ${ESC(slot)} in ${ESC(cast.mod || "this build")}` : cast && cast.mod ? `no slot of ${ESC(cast.mod)} matches the pick` : "no build cast for this game"}: pick the donor; loading the collection…</div></div>`;
+      let chars = [];
+      try { chars = await io.api("/api/characters" + (gid ? "?game_id=" + encodeURIComponent(gid) : "")); } catch (e) { io.toast?.("⚠ characters: " + e.message); }
+      const here = new Set(cands.map(r => r.donor)), rows = rankCharacters(chars, { gid, kind: l.kind });
+      rows.sort((a, b) => (here.has(b.c.slug) ? 1 : 0) - (here.has(a.c.slug) ? 1 : 0));   // this slot's donors first
+      for (const r of rows) if (here.has(r.c.slug)) r.note = "in this slot of the build";
+      return browser(m, { title: `Fix the mapping in ${cands.length || l.slot ? slot : "this slot"}: which donor?`, rows, img: io.img,
+        onPick: c => openMapping({ slug: c.slug, name: c.name, gid, slot, build_name: (cast && cast.mod) || "" }, l, true) });
+    }
+    // the Retarget editor on {slug, gid, slot}: its own pause hold (taken before the menu lets go of the menu's), the
+    // "mapped wrong" flag first when asked, the Goals view; the hold goes when the editor closes (or never opened)
+    async function openMapping(t, l, flag) {
+      const hold = createHold({ api: io.api, holder: "map-" + Math.random().toString(36).slice(2, 8), enabled: () => settings().pause,
+        sessionOp: io.sessionOp || null, maxMs: 60 * 60 * 1000 });
+      if (o.sid) await Promise.race([hold.acquire(o.sid).catch(() => null), sleep(2500)]);
+      if (flag && /^[0-9a-f]{16}$/.test(t.gid || "")) {
+        const where = `${Math.round(o.at[0] * 100)}% across, ${Math.round(o.at[1] * 100)}% down`;
+        try { await io.api(`/api/characters/${encodeURIComponent(t.slug)}/retarget_profile/flag`, { game_id: t.gid, slot: t.slot, session_id: o.sid || "",
+          note: `${l && l.known ? l.name : "this character"} looked mapped wrong in ${t.slot} (picked at ${where})` }); } catch { /* the editor still opens */ }
+      }
+      dismiss("mapping");
+      let ed = null;
+      try { ed = io.retarget ? await io.retarget(Object.assign({}, t, { view: "goals", flagged: !!flag, onClose: () => hold.releaseAll() })) : null; }
+      catch (e) { io.toast?.("⚠ Retarget editor: " + e.message); }
+      if (!ed || typeof ed.dispose !== "function") hold.releaseAll();   // not opened (no game id): resume now
+      return ed;
+    }
+
     async function doReplace(c, l) {
       const h = task("replace", `Replace ${l.known ? l.name : "character"} → ${c.name}`);
       h.log(`donor ${c.slug}${l.slot ? " · slot " + l.slot : ""}`);
@@ -1030,7 +1109,7 @@
   }
 
   return { settings, saveSettings, windowToPicture, pictureToWindow, clampBox, floodRegion, decodeMask, maskBox, maskEdges, outlineOf,
-    easeBox, labelOf, labelHTML, ramText, createHover, missingTool, startJob, waitJob, runTool, identify, nameLocal, replace, replaceText, rankCharacters,
+    easeBox, labelOf, labelHTML, ramText, createHover, missingTool, startJob, waitJob, runTool, identify, nameLocal, replace, replaceText, rankCharacters, castMatch, castCandidates,
     menuItems, consoleLines, fitLines, ensureCss, paintOutline, placeLabel, openMenu, setMenuHead, closeMenu, browser, createConsole,
     createHold, mountOverlay, characterMenu, reportBody, reportPopup, markedFrame, PICTURE };
 });
