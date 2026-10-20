@@ -1239,6 +1239,11 @@ def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
                     if pad:
                         game_pad = rewind.feed(sid, pad)      # Consume time chords before injecting game input.
                         ring_record.touch(sid, pad)           # the operator's pad in use: the gameplay ring records
+                        run = AUTOPLAY.get(sid)               # replay/learned autoplay presses directly, so anything on
+                        if (run and run.get("mode") in ("replay", "learned")   # this channel is the operator (stream)
+                                and run.get("thread") is not None and run["thread"].is_alive()):
+                            from . import padstate
+                            padstate.PLAYER_TOUCH[sid] = time.time()          # -> autoplay hands control back
                     if pad and "send_input" in ad.supported:
                         ad.send_input(game_pad)
                 except Exception:

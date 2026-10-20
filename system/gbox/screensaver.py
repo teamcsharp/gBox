@@ -33,6 +33,16 @@ ACTOR = "autoplay-screensaver"
 LOG_KEEP = 300
 
 
+PENDING = "autoplay_on_launch"            # launch job id -> {game_id, at}: start autoplay when that game is up
+PENDING_TTL = 15 * 60
+
+
+def autoplay_on_launch(store, job_id: str, game_id: str) -> None:
+    """A launch the operator asked to play itself (the Spark button): the next ticks start autoplay once it runs."""
+    if job_id:
+        store.put(PENDING, job_id, {"job": job_id, "game_id": game_id, "at": time.time()})
+
+
 def _jid(job) -> str:
     """The id of a submitted job (the server's submit returns a Job model; tests pass dicts)."""
     return getattr(job, "id", None) or (job.get("id") or job.get("job_id") if isinstance(job, dict) else "") or ""
@@ -105,6 +115,7 @@ class Screensaver:
         out = {}
         with self.lock:
             running = self.store.running_sessions()
+            out["launches"] = self._pending(running, now)
             for w in self.workers():
                 run = self.store.get(STATE, w["name"])
                 if run:
@@ -113,6 +124,33 @@ class Screensaver:
                     reason = worker_reason(self.store, w, cfg, running, now)
                     out[w["name"]] = reason or self._start(w, cfg, now)
         return out
+
+    def _pending(self, running, now) -> list[str]:
+        """Launches marked autoplay (Spark button): autoplay starts START_GRACE s after the session is up."""
+        from .server import JobRequest
+        done = []
+        for p in self.store.all(PENDING):
+            jid = p.get("job", "")
+            job = self.store.get("job", jid) or {}
+            sess = next((s for s in running if s.get("session_id", "").endswith("-" + jid)), None)
+            if job.get("state") in ("failed", "rejected", "invalid", "cancelled") or now - p.get("at", now) > PENDING_TTL:
+                self.store.delete(PENDING, jid)
+                continue
+            if not sess:
+                continue
+            if "up" not in p:
+                self.store.put(PENDING, jid, p | {"up": now})
+                continue
+            if now - p["up"] < START_GRACE:
+                continue
+            sid = sess["session_id"]
+            self.submit(JobRequest(tool="autoplay", input={"session_id": sid, "op": "start", "mode": "auto",
+                                                           "screensaver": True},
+                                   agent_use=True, require_worker=sid.split("-")[0]), actor=ACTOR,
+                        origin={"via": "autoplay on launch (Spark)", "session_id": sid})
+            self.store.delete(PENDING, jid)
+            done.append(sid)
+        return done
 
     def _recent(self) -> dict[str, float]:
         recent: dict[str, float] = {}
