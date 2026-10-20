@@ -91,6 +91,31 @@ and `re_mods op=addresses` prints it. The Wii Edition (RB4P08) has none of them 
   (amount 0 = the game's default). `merc_loadout_list` shows the records and each character's default guns;
   `item_ids` is the item id table (RE4 ITEM_IDs, same on every release).
 
+## RE4 GC level data: navigation map + hourglasses (2026-10-20)
+
+`gbox/re4_navmap.py` reads a room straight from the game's files and gives the autoplay a top-down map
+(`profiles/gamedata/re4_r400_navmap.json`, ~310 KB, committed; picture: `docs/evidence/re4-navmap/r400.png`, a
+rendering of the decoded data, not a game frame). The full format notes are in the module docstring.
+
+* Room archives `St4/r4xx.das` hold a compressed DAT (gBox decoder `das_unpack`, transcribed from main.dol 0x8018f5cc);
+  inside: `SAT` player collision (triangles + attribute bits), `EAT` enemy collision, `AEV` events, `ITA` items,
+  `RTP` enemy route graph. Spawns are in `etc/omake01.esl` (r400 / r402) and `etc/omake02.esl` (r403 / r404).
+* Village r400: 5 Time Bonus hourglasses (item 0x73, the clock gets amount x 30 frames: +90, +90, +90, +30, +30 s)
+  and 3 Combo Bonus hourglasses (item 0x75, 30 s of minimum-points kills), each of the latter inside an
+  action-button AEV zone - these are the RAM's "small interactive events"; the fourth (AEV[9], type 0x10) is the
+  watchtower ladder. The combo hourglass on the left building's loft (y 3000, ITA[23]) has no on-foot way up in the
+  SAT; the enemy route graph climbs there at about (-21243, -453) -> (-22220, -1788).
+* The map is a layered 200-unit grid (storeys per cell; free / near a wall / vault / wall). Fences and window sills
+  (SAT bits 0x20 / 0x40 under a 0x400 invisible wall) are vault edges ("JUMP OVER"); that reading is inferred from
+  the collision rules and geometry - check one in game. Closed buildings (walled in the SAT, no door events) count as
+  unreachable.
+* API for the bot: `stage("r400")`, `path(st, start, goal)` -> `Waypoint(x, y, z, action)` (action `vault` = press A
+  at the fence / window, `ladder` = climb), `tour(st, start)` -> hourglass visiting order (exact up to 10),
+  `st["grid"].state_at(x, z, y)`, `sight(st, a, b)`; every hourglass event has a `stand` point to walk to.
+* Regenerate (disc read only, a GCZ is read in place, ~20 s):
+  `python -m gbox.re4_navmap --iso "<RE4 (USA) (Disc 1).gcz>" --room r400 --out profiles/gamedata/re4_r400_navmap.json
+  --png docs/evidence/re4-navmap/r400.png`. r402 / r403 / r404 build the same way.
+
 ## RE5 Gold Edition (#1104)
 
 RE5 keeps unlocks in its save (DATA0.DAT), so `re5` edits the save, with the Game Genie for PS3 codes published in
