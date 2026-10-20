@@ -278,7 +278,7 @@ def prepare_play_disc(source: Path, config, game: dict, progress=lambda *_: None
 class Doa3NativeAdapter(XboxAdapter):
     name = "doa3_native"
     render_class = "DOAXBVRecompPresenterWindow"
-    supported = XboxAdapter.supported | {"read_memory", "query_memory_map"}
+    supported = XboxAdapter.supported | {"read_memory", "write_memory", "query_memory_map"}
     checkpoint_reason = "The DOA3 native runtime has no verified in-place save-state interface"
 
     def __init__(self, config, game):
@@ -303,6 +303,9 @@ class Doa3NativeAdapter(XboxAdapter):
 
     def read_memory(self, address, length):
         return self._memory().read(address, length)
+
+    def write_memory(self, address, data):
+        return self._memory().write(address, data)
 
     def regions(self):
         memory = self.query_memory_map()

@@ -56,6 +56,10 @@ class Reader:
     def region(self, address):
         return next(row for row in self.mapping if row["base"] <= address < row["base"] + row["size"])
 
+    def write(self, address, data):
+        self.writes = getattr(self, "writes", []) + [(address, bytes(data))]
+        self.data[address] = bytes(data)
+
     def read(self, address, size):
         self.reads.append((address, size))
         output = bytearray(size)
@@ -176,22 +180,40 @@ def provider(tmp_path, monkeypatch):
     result = memory.GuestMemory(owner, exe, xbe, hashlib.sha256(exe.read_bytes()).hexdigest(),
                                 hashlib.sha256(xbe.read_bytes()).hexdigest())
     reader = Reader(result.expected)
-    monkeypatch.setattr(memory, "_WindowsReader", lambda pid, born: reader)
+    monkeypatch.setattr(memory, "_WindowsReader", lambda pid, born, access=memory.READ_ACCESS: reader.__setattr__("access", access) or reader)
     return result, reader, process
 
 
-def test_mapping_contract_and_alias_reads_are_read_only(tmp_path, monkeypatch):
+def test_mapping_contract_and_alias_reads(tmp_path, monkeypatch):
     result, reader, _ = provider(tmp_path, monkeypatch)
     mapping = result.memory_map()
     assert mapping["verified"] and mapping["processor"] == "x86:LE:32:default"
-    assert mapping["regions"] == [{"address": 0, "size": memory.RAM_SIZE, "kind": "ram", "readable": True, "writable": False}]
+    assert mapping["regions"] == [{"address": 0, "size": memory.RAM_SIZE, "kind": "ram", "readable": True, "writable": True}]
     assert mapping["pid"] == 123 and mapping["process_created"] == 100.25
     assert mapping["analysis_range"] == {"address": 0x10000, "size": 0x4000}
     assert mapping["entry_point"] == 0x11000
     assert mapping["anchors"][0]["mutable_dwords"] == [0x10198, 0x101D0, 0x10208]
     assert [result.read(alias + 0x11000, 12) for alias in memory.ALIASES] == [b"immutable co"] * 3
-    assert memory.READ_ACCESS == 0x410  # Does not include VM_WRITE/VM_OPERATION.
-    assert not hasattr(result, "write")
+    assert memory.READ_ACCESS == 0x410  # Reads never open VM_WRITE/VM_OPERATION.
+    assert memory.WRITE_ACCESS == 0x438
+    assert reader.access == memory.READ_ACCESS
+
+
+def test_writes_go_to_guest_ram_only_and_read_back(tmp_path, monkeypatch):
+    """Unlock-on-load holds (2026-10-19): verified writes into data RAM; the XBE header and code are refused."""
+    result, reader, _ = provider(tmp_path, monkeypatch)
+    result.memory_map()
+    assert result.write(0x80300000, b"\x01\x02") == {"written": 2, "via": "native_guest_ram", "verified": True}
+    assert reader.access == memory.WRITE_ACCESS and reader.writes == [(result.base + 0x300000, b"\x01\x02")]
+    assert result.read(0x300000, 2) == b"\x01\x02"
+    for address, data in ((0x10000, b"x"), (0x11000, b"x"), (0x3FFFFFF, b"xx"), (0xC0000000, b"x"), (0, b""),
+                          (0x300000, b"x" * (memory.MAX_WRITE + 1))):
+        with pytest.raises(ValueError):
+            result.write(address, data)
+    original = reader.write
+    reader.write = lambda address, data: original(address, b"\x00" * len(data))
+    with pytest.raises(RuntimeError, match="did not read back"):
+        result.write(0x300010, b"\x05")
 
 
 @pytest.mark.parametrize("address,length", [(-1, 1), (0x4000000, 1), (0xC0000000, 1),
@@ -246,10 +268,10 @@ def test_changed_text_during_sample_is_rejected_before_return(tmp_path, monkeypa
         result.read(0, 8)
 
 
-def test_adapter_exposes_verified_reads_without_write_or_input(monkeypatch, tmp_path):
+def test_adapter_exposes_verified_reads_and_writes_without_input(monkeypatch, tmp_path):
     ad = native.Doa3NativeAdapter(Config(data_dir=tmp_path / "data", cache_dir=tmp_path / "cache"), {})
-    assert {"read_memory", "query_memory_map"} <= ad.supported
-    assert not {"write_memory", "send_input"} & ad.supported
+    assert {"read_memory", "write_memory", "query_memory_map"} <= ad.supported
+    assert "send_input" not in ad.supported
     with pytest.raises(Unsupported, match="verified running"):
         ad.query_memory_map()
     monkeypatch.setattr(ad, "_running", lambda: True)
@@ -258,10 +280,12 @@ def test_adapter_exposes_verified_reads_without_write_or_input(monkeypatch, tmp_
     assert ad.query_runtime()["guest_memory"]["verified"] is False
     proof = {"verified": True, "regions": [{"address": 0, "size": memory.RAM_SIZE}]}
     ad._memory_source = Path("expected-source")
-    ad._guest_memory = SimpleNamespace(memory_map=lambda: proof, read=lambda address, length: b"verified")
+    ad._guest_memory = SimpleNamespace(memory_map=lambda: proof, read=lambda address, length: b"verified",
+                                       write=lambda address, data: {"written": len(data)})
     assert ad.query_runtime()["guest_memory"] == proof
     assert ad.regions() == [(0, memory.RAM_SIZE)]
     assert ad.read_memory(0, 8) == b"verified"
+    assert ad.write_memory(0x300000, b"ab") == {"written": 2}
 
 
 def fake_kernel(monkeypatch, *, born=100.25, complete=True):
