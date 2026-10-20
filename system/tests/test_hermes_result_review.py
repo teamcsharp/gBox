@@ -544,3 +544,21 @@ class InboxFirstReviews(ReviewFixture, unittest.TestCase):
             self.assertEqual(R.next_review(db, 'run', now, first={'../x'})['key'], 'run:' + '5' * 32, 'odd ids are ignored')
         (self.root / 'work-queue.json').write_text('{not json')
         self.assertEqual(R.inbox_requests(), set(), 'an unreadable queue keeps the previous order')
+        self.assertEqual(R.priority_requests(), [])
+
+    def test_the_queue_priority_order_decides_among_inbox_runs(self):
+        """The inbox lane holds every standing request; the operator's priority list order comes first within it."""
+        a, b, c = 'a' * 16, 'b' * 16, 'c' * 16
+        for n, (rid, started) in enumerate(((a, '2026-10-19T12:00:00+00:00'), (b, '2026-10-19T11:00:00+00:00'),
+                                             (c, '2026-10-19T10:00:00+00:00'))):
+            run = dict(self.run, id=str(n + 5) * 32, started_at=started)
+            R.enqueue('run:' + run['id'], 'run', rid, {'run': run, 'item': self.item | {'request_id': rid}})
+        (self.root / 'work-queue.json').write_text(json.dumps({
+            'priority': [c, b, '../bad'], 'items': {('inbox:' + r): {'request_id': r, 'lane': 'inbox'} for r in (a, b, c)}}))
+        self.assertEqual(R.priority_requests(), [c, b])
+        now = time.time()
+        with closing(R.connect()) as db:
+            pick = R.next_review(db, 'run', now, newest=True, first=R.inbox_requests(), ordered=R.priority_requests())
+            self.assertEqual(pick['request_id'], c, 'first in the priority list, although the oldest run')
+            self.assertEqual(R.next_review(db, 'run', now, newest=True, first=R.inbox_requests())['request_id'], a,
+                             'without the list the newest inbox run comes first')

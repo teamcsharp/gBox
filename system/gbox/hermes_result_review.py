@@ -488,15 +488,29 @@ def inbox_requests() -> set[str]:
         return set()
 
 
-def next_review(db, kind, now, *, newest=False, first=()):
-    """The next pending review: runs of the requests in `first` (the inbox lane) before the rest, then the newest
-    run first or the oldest row first as before."""
+def priority_requests(limit: int = 60) -> list[str]:
+    """The queue's priority list (POST /api/hermes/queue/priority: the operator's tickets first), in order; empty
+    when the queue file is missing or unreadable."""
+    try:
+        data = json.loads((D.state_dir() / 'work-queue.json').read_text(encoding='utf-8'))
+        return [x for x in (data.get('priority') or [])[:limit] if isinstance(x, str) and x.isalnum()]
+    except (OSError, ValueError, AttributeError):
+        return []
+
+
+def next_review(db, kind, now, *, newest=False, first=(), ordered=()):
+    """The next pending review: runs of the requests in `ordered` (the queue priority list) in that order, then
+    runs of the requests in `first` (the inbox lane), then the newest run first or the oldest row first as before."""
     order = "json_extract(payload,'$.run.started_at') DESC,created,key" if newest else 'created,key'
+    ordered = [x for x in ordered if isinstance(x, str) and x.isalnum()]
     first = sorted(x for x in first if isinstance(x, str) and x.isalnum())
     prefer, params = '', [kind, now]
+    if ordered:
+        prefer += 'CASE request_id ' + ' '.join('WHEN ? THEN %d' % i for i in range(len(ordered))) + ' ELSE 100000 END,'
+        params += ordered
     if first:
-        prefer = 'CASE WHEN request_id IN (' + ','.join('?' for _ in first) + ') THEN 0 ELSE 1 END,'
-        params = [kind, now, *first]
+        prefer += 'CASE WHEN request_id IN (' + ','.join('?' for _ in first) + ') THEN 0 ELSE 1 END,'
+        params += first
     return db.execute("SELECT * FROM reviews WHERE kind=? AND state IN ('pending','retry') "
                       "AND next_at<=? ORDER BY " + prefer + order + " LIMIT 1", params).fetchone()
 
@@ -508,7 +522,8 @@ def process_one(kind='run', *, newest=False):
                    "WHERE state='reviewing' AND next_at<=?", (now,))
         if kind == 'run':
             retire_stale_run_reviews(db, now)
-        row = next_review(db, kind, now, newest=newest, first=inbox_requests() if kind == 'run' else ())
+        row = next_review(db, kind, now, newest=newest, first=inbox_requests() if kind == 'run' else (),
+                          ordered=priority_requests() if kind == 'run' else ())
         if not row:
             return None
         row = dict(row)
