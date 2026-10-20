@@ -141,3 +141,20 @@ def test_auto_mode_prefers_a_matching_playbook(monkeypatch, tmp_path):
     monkeypatch.setattr(tools, "_playbook", lambda ad, g: None)
     with pytest.raises(ValueError, match="no playbook"):
         tools.autoplay(tools.AutoplayIn(session_id="s9", op="start", mode="playbook"), ctx)
+
+
+def test_between_rounds_it_presses_a_until_the_next_round_and_counts_it():
+    m = world([((500.0, 0.0, 0.0), True)], room=0x100)              # not a Mercenaries room: results / menus
+    now, sent, live = [0.0], [], {}
+    steps = iter(range(60))
+
+    def stopped():
+        i = next(steps, None)
+        if i == 40:
+            m.put(PG + B.G_ROOM, ">H", 0x400)                         # the presses started the next round
+        return i is None
+    B.play(None, sent.append, stopped, sleep=lambda s: now.__setitem__(0, now[0] + s), m=m, stats=live,
+           clock=lambda: now[0])
+    presses = [r for r in sent if r == [{"key": "a", "down": True}]]
+    assert len(presses) >= 3 and live["menu_presses"] == len(presses)
+    assert live["rounds"] == 2 and "timer" in live and "max_combo" in live    # live stats for the watch panel
