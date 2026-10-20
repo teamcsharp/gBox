@@ -41,6 +41,7 @@ def world(enemies, room=0x400, timer_s=100.0, combo=0, leon=(0.0, 0.0, 0.0)):
         o = EM + k * STRIDE
         m.put(o, ">I", 0x601 if alive else 0)
         m.put(o + 0x94, ">3f", *pos)
+        m.put(o + B.EM_HP, ">hh", 1000, 1000)
     m.put(B.MERC_TIMER, ">I", int(timer_s * 30))
     m.put(B.MERC + 0x28, ">I", combo)
     return m
@@ -255,7 +256,7 @@ def test_between_rounds_it_presses_a_until_the_next_round_and_counts_it():
     presses = [r for r in sent if r == [{"key": "a", "down": True}]]
     assert len(presses) >= 3 and live["menu_presses"] == len(presses)
     downs = [r[0]["key"] for r in sent if r[0]["down"]]
-    assert downs[:3] == ["up", "left", "a"]                               # never an A without up + left first
+    assert downs[:6] == ["up", "a"] * 3                                     # menus: up, A - never left (Leon -> Wesker)
     assert live["rounds"] == 2 and "timer" in live and "max_combo" in live    # live stats for the watch panel
 
 
@@ -345,3 +346,30 @@ def test_a_grab_mid_round_is_not_the_end_of_the_round():
     B.play(None, lambda rows: None, lambda: next(steps, None) is None, sleep=lambda s: now.__setitem__(0, now[0] + s),
            m=m, clock=lambda: now[0], rerun=lambda: calls.append(now[0]))
     assert calls == []                                                     # no rerun: the round goes on
+
+
+def hp(m, slot, value):
+    m.put(EM + slot * STRIDE + B.EM_HP, ">h", value)
+
+
+def test_his_health_scores_the_shots_and_misses_move_the_aim_height():
+    now = [0.0]
+    m = world([((0, 0, 2000), True)])
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+
+    def tick(t, timer=None):
+        now[0] = t
+        m.put(B.MERC_TIMER, ">I", int((100 - t) * 30))
+        return bot.tick(B.snapshot(m))
+    tick(0.0)
+    tick(0.3)                                                             # aim pose up: firing
+    hp(m, 1, 800)
+    tick(0.5)
+    assert bot.stats["hits"] == 1                                          # his health fell: a hit
+    for k in range(1, 12):                                                 # then nothing lands for a while
+        tick(0.5 + k * 0.35)
+    assert bot.stats["misses"] >= 3 and bot.stats["pitch_offset"] != 0.0  # the aim height moves on
+    assert 0 < bot.stats["accuracy"] < 1
+    pitch = struct.unpack(">f", m.rd(PL + B.AIM_PITCH, 4))[0]
+    assert pitch == pytest.approx(math.atan2(B.HEAD_H - B.GUN_H, 2000.0) + bot.stats["pitch_offset"], abs=1e-4)

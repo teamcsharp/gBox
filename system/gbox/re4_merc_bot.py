@@ -21,6 +21,9 @@ teleports):
     him when he runs into something is wall; paths are planned on it (A*) when the disc's level map is not there, so
     every round knows more of the level than the one before (operator 2026-10-20: "with every round that is played,
     the navigation map needs to improve");
+  * sees his shots: the target's health (EmMgr slot +0x320) scores every firing window a hit or a miss (stats hits /
+    misses / accuracy); MISSES_TO_ADJUST misses in a row move the aim height to the next PITCH_STEPS offset, a hit
+    keeps it (operator 2026-10-20: "every shot ... setting up the zombies to be stunned or eliminating them");
   * shoots only what he can hit (operator 2026-10-20: "shooting into walls near him and blowing himself up"): fires
     inside SHOOT_RANGE, not steeper down than STEEP_DOWN (that is the roof edge in front of him), and backs off a
     Ganado closer than POINT_BLANK (an explosive round there blows up on Leon); further out he closes in; up on the
@@ -64,6 +67,10 @@ STEEP_DOWN = -0.5                                # a shot this far down (radians
 HIGH_GROUND = 1500.0                             # Leon this far above the Ganados (the start roof): get down first
 TAKE_R, VAULT_R = 450.0, 900.0                   # take an item hourglass this close to its stand point; vault from here
 COMBO_CROWD, COMBO_NEAR = 5, 3500.0              # this many Ganados this close: take a combo bonus first (TAS route)
+EM_HP = 0x320                                    # Ganado (EmMgr slot) +0x320 s16 health, +0x322 s16 max (found
+                                                 # 2026-10-20: 1000 / 1800 at full, falls with hits, 0 at death)
+HIT_WINDOW, MISSES_TO_ADJUST = 0.6, 3            # firing this long without his health falling is a miss
+PITCH_STEPS = (0.0, -0.05, 0.05, -0.1, 0.1, -0.15, 0.15)   # aim-height offsets tried in turn after misses (radians)
 CELL = 400.0                                     # the learned map's grid (world units)
 STUCK_S, STUCK_MOVE = 0.9, 250.0                 # running but moved less than this in that long: blocked
 ARRIVE = 650.0                                   # a waypoint this close is reached
@@ -72,7 +79,8 @@ COLLECT_R, COLLECT_TRY_S = 1500.0, 4.0           # shoot an hourglass from this 
 HOURGLASS = {0x400: [(19401.0, -6857.0), (-20476.0, -5294.0), (-8452.0, -20283.0), (5592.0, 16384.0)]}
 MENU_AFTER, MENU_EVERY = 2.0, 1.5                 # out of a stage this long: press A this often (next round)
 TRANSIENT_MAX = 20.0                             # a gap in a live Mercenaries room (grabbed, a pickup) waits this long
-MENU_KEYS = ("up", "left", "a")                  # each menu step: the top-left choice, then confirm
+MENU_KEYS = ("up", "a")                          # each menu step: up (GAME START, the top stage row), then confirm; no
+                                                 # left: Select Player wraps from Leon to Wesker (live 2026-10-20)
 PACKAGE = [("mercenaries_unlock", {"on": True}),
            ("merc_loadout", {"character": "leon", "items": ["handcannon", "handcannon ammo:200"], "on": True}),
            ("weapon_mod", {"item": "handcannon", "fire_rate": "auto", "damage": "99.9"}),
@@ -159,7 +167,8 @@ def snapshot(m) -> dict:
             o = k * stride
             if not (struct.unpack_from(">I", d, o)[0] & 0x601) or d[o + 0x398] == 0xFF:
                 continue
-            enemies.append({"slot": k, "pos": struct.unpack_from(">3f", d, o + 0x94)})
+            hp, hp_max = struct.unpack_from(">hh", d, o + EM_HP)
+            enemies.append({"slot": k, "pos": struct.unpack_from(">3f", d, o + 0x94), "hp": hp, "hp_max": hp_max})
     return {"room": room, "timer": round(u32(m, MERC_TIMER) / 30.0, 1), "combo": u32(m, MERC + 0x28),
             "player": player, "enemies": enemies}
 
@@ -292,6 +301,8 @@ class Bot:
         self.learn_dir = learn_dir
         self.learned: LearnedMap | None = None
         self.r_since = None                           # since when the bot has held R (the aim pose is up after a moment)
+        self.shot = None                              # {"slot", "hp", "since"}: the firing window being scored
+        self.miss_run, self.pitch_i = 0, 0
         self.st, self.items, self.combos, self.ordered = None, [], [], False
         self.hist: list = []
         self.last_timer, self.timer_since = None, clock()
@@ -304,7 +315,7 @@ class Bot:
         self.detour_dir = 1
         self.last_hop, self.stuck_n = 0.0, 0
         self.stats = {"prompts": 0, "max_combo": 0, "vaults": 0, "detours": 0, "hops": 0, "time_bonus": 0, "shots_s": 0.0,
-                      "learned_walls": 0, "replans": 0}
+                      "learned_walls": 0, "replans": 0, "hits": 0, "misses": 0, "accuracy": 0.0, "pitch_offset": 0.0}
 
     # -- the round's time bonuses --
     def _round(self, room):
@@ -400,7 +411,33 @@ class Bot:
         if abs(err) > FIRE_TOL or now - self.r_since < PITCH_AFTER:
             return {"hold": self._turn(err, aiming=True)}                # aim (pose up), fine-turn onto him
         self.stats["shots_s"] = round(self.stats["shots_s"] + 0.05, 2)
+        self._score(tgt, now)
         return {"hold": {"r", "a"}}                                       # on target: fire
+
+    def _score(self, tgt, now):
+        """Is the fire landing? His health falling inside HIT_WINDOW is a hit; MISSES_TO_ADJUST misses in a row try the
+        next aim-height offset (kept while it lands)."""
+        hp = tgt.get("hp")
+        if hp is None:
+            return
+        sh = self.shot
+        if sh is None or sh["slot"] != tgt["slot"]:
+            self.shot = {"slot": tgt["slot"], "hp": hp, "since": now}
+            return
+        if hp < sh["hp"]:                                              # he took it
+            self.stats["hits"] += 1
+            self.miss_run = 0
+            self.shot = {"slot": tgt["slot"], "hp": hp, "since": now}
+        elif now - sh["since"] >= HIT_WINDOW:                          # a whole window of fire, nothing landed
+            self.stats["misses"] += 1
+            self.miss_run += 1
+            if self.miss_run >= MISSES_TO_ADJUST:
+                self.pitch_i = (self.pitch_i + 1) % len(PITCH_STEPS)
+                self.stats["pitch_offset"] = PITCH_STEPS[self.pitch_i]
+                self.miss_run = 0
+            self.shot = {"slot": tgt["slot"], "hp": hp, "since": now}
+        total = self.stats["hits"] + self.stats["misses"]
+        self.stats["accuracy"] = round(self.stats["hits"] / total, 3) if total else 0.0
 
     def _pitch(self, p, target_y: float, dist: float) -> None:
         """Aim pitch straight at target_y (an aimbot on the vertical: the game draws the aim pose from it). Only in a live
@@ -409,7 +446,7 @@ class Bot:
             return
         if self.r_since is None or self.clock() - self.r_since < PITCH_AFTER:
             return                                    # the aim pose is not up yet: the arms would bend to it
-        a = math.atan2(target_y - (p["pos"][1] + GUN_H), max(dist, 1.0))
+        a = math.atan2(target_y - (p["pos"][1] + GUN_H), max(dist, 1.0)) + PITCH_STEPS[self.pitch_i]
         try:
             self.m.wr(p["ptr"] + AIM_PITCH, struct.pack(">f", max(-PITCH_MAX, min(PITCH_MAX, a))))
         except Exception:                             # noqa: BLE001 - a read-only memory view: level aim
@@ -644,10 +681,10 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
                 sleep(1.0)
                 continue
             if now - out_since > MENU_AFTER and now - last_press > MENU_EVERY:
-                # up + left before every A: GAME START on the Mercenaries title (a stray "down" from the back-step had
-                # put the cursor on EXIT, the presses went on to the main title's START: a story game with the
-                # Mercenaries hooks in, which crashed Dolphin, 2026-10-20), Leon on Select Player, the Village on
-                # Select Stage (top left); harmless on the Result screen and the briefing
+                # up before every A: GAME START on the Mercenaries title (a stray "down" from the back-step had put the
+                # cursor on EXIT, the presses went on to the main title's START: a story game with the Mercenaries
+                # hooks in, which crashed Dolphin, 2026-10-20); Select Player and Select Stage keep the last round's
+                # choice (Leon, the Village); harmless on the Result screen and the briefing
                 for key in MENU_KEYS:
                     send([{"key": key, "down": True}])
                     sleep(0.12)
