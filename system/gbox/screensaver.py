@@ -65,6 +65,19 @@ def played_games(runs: list[dict], min_pads: int) -> list[dict]:
     return sorted((g for g in games.values() if g["pads"] >= min_pads), key=lambda g: -g["pads"])
 
 
+NO_INPUT = ("does not support send_input",)   # a run that failed like this: the game can't be played by autoplay
+
+
+def unplayable(store) -> set[str]:
+    """Games whose screensaver run showed autoplay cannot press buttons in them (launcher-only adapters...)."""
+    out = set()
+    for row in store.all(LOG):
+        err = str((row.get("result") or {}).get("error") or "")
+        if any(m in err for m in NO_INPUT):
+            out.add(row.get("game_id"))
+    return out
+
+
 def choose(games: list[dict], recent: dict[str, float], now: float, rng: random.Random | None = None,
            pinned: list[str] | None = None) -> dict | None:
     """The next game: pinned games if the operator chose some, else weighted by how much the operator played it
@@ -163,7 +176,9 @@ class Screensaver:
 
     def _start(self, w, cfg, now):
         from .server import JobRequest
-        g = choose(played_games(self.archive.runs(limit=200), cfg["min_pads"]), self._recent(), now, self.rng, cfg["games"])
+        skip = unplayable(self.store)
+        games = [x for x in played_games(self.archive.runs(limit=200), cfg["min_pads"]) if x["game_id"] not in skip]
+        g = choose(games, self._recent(), now, self.rng, cfg["games"])
         game = g and self.store.catalog_get(g["game_id"])
         if not game:
             return "no recorded game to play (play a game for a while first)"

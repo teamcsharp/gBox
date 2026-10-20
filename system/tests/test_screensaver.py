@@ -195,3 +195,26 @@ def test_the_next_run_of_a_game_uses_its_best_scoring_knobs():
     picks = [imitate.choose_knobs(saver.history("pso"), random.Random(seed)) for seed in range(40)]
     assert picks.count(good) >= 20                          # mostly the best average so far
     assert any(p != good for p in picks)                    # sometimes a neighbour: it keeps exploring
+
+
+def test_a_game_autoplay_cannot_press_buttons_in_is_skipped():
+    s, w, saver, calls, tick = rig()
+    s.put(S.LOG, "m1", {"key": "m1", "game_id": "pso", "started": 1,
+                        "result": {"ok": False, "error": "savemgo does not support send_input"}})
+    assert S.unplayable(s) == {"pso"}
+    tick()
+    assert calls[0]["input"]["game"]["game_id"] == "sc"          # PSO had the most play, but it can't take input
+
+
+def test_server_tags_input_with_its_source(tmp_path):
+    from fastapi.testclient import TestClient
+    from gbox.config import Config
+    from gbox.server import create_app
+    cfg = Config(data_dir=tmp_path / "d", cache_dir=tmp_path / "c")
+    app = create_app(cfg)
+    app.state.store.put("session", "w-s", {"session_id": "w-s", "game_id": "g", "state": "running"})
+    c = TestClient(app, headers={"Authorization": f"Bearer {cfg.token()}"})
+    c.post("/api/sessions/w-s/input", json={"events": [{"key": "a", "down": True, "player": 1}]})
+    c.post("/api/sessions/w-s/input", json={"events": [{"key": "b", "down": True}]}, headers={"x-gbox-actor": "hermes"})
+    got = c.get("/api/sessions/w-s/input").json()
+    assert [(e["key"], e["src"]) for e in got] == [("a", "player"), ("b", "agent")]
