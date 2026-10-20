@@ -4,6 +4,12 @@ Game state from RAM (found 2026-10-20 by diffing RAM in the attract demo vs a fi
   0x8C200848  u8   1 = attract demo / title, 0 = a fight the player controls
   0x8C2376D8  u16  P1 health (0..240 in a fight; the attract demo shows 320)
   0x8C237740  u16  P2 health
+  0x8C23A37D  u8   1 while the opponent's attack input is down: rises 100-170 ms before 88% of the hits P1 takes and is
+                   up only 6% of the time otherwise (60 Hz full-RAM recording of 3 minutes of fights, 65 hits on P1)
+Holds (Reflex): on that edge P1 presses Free (retropad a = Dreamcast B) with a direction. Measured against the CPU
+(45 s each): no reaction lost 450-520 health/min and dealt 0; Free+back lost 344-385/min and dealt 193-293/min through
+holds alone. Which direction pays depends on the attack (high / mid punch / mid kick / low) and the side P1 is on, so
+the reflex learns it: each try is scored by damage dealt minus damage taken in the next 0.8 s.
 The loop: in a fight, the operator's learned style plays P1 (imitate.Style), with P1's health topped up when it runs low
 so autoplay never loses on screen; out of a fight (round over, the demo, a title), it loads the jump state saved in an
 earlier confirmed fight (emulator save state) and is back in a fight in about two seconds - until that state exists it
@@ -12,7 +18,9 @@ so the caller relaunches. Works on any build of this disc (the operator's MarioV
 """
 from __future__ import annotations
 
+import random
 import struct
+import threading
 import time
 
 GAME_IDS = {"1de2e7634f3161ff"}                 # Dead or Alive 2 - Limited Edition (Japan)
@@ -20,6 +28,10 @@ DEMO, P1_HP, P2_HP, HP_MAX = 0x8C200848, 0x8C2376D8, 0x8C237740, 240
 SAFETY_HP = 100                                   # P1 below this is topped up to HP_MAX
 WATCH = (0x8C237000, 4096)                        # fighter data: changes every frame in play (hang check)
 ROUTE = (("start", 3.0), ("start", 3.0), ("right", 1.5), ("b", 3.0), ("b", 3.0))   # title -> Time Attack -> fighter
+WARN = 0x8C23A37D                                 # the opponent's attack input (see above)
+FREE = "a"                                        # retropad a = Dreamcast B = Free (hold / guard)
+HOLDS = (("left",), ("right",), ("up", "left"), ("up", "right"), ("down", "left"), ("down", "right"))
+HOLD_S, JUDGE_S, EXPLORE = 0.1, 0.8, 0.2
 
 
 def matches(ad, g: dict) -> bool:
@@ -38,12 +50,83 @@ def state(rd) -> dict:
             "fighting": demo == 0 and 0 < p1 <= HP_MAX and 0 < p2 <= HP_MAX}
 
 
-def play(ad, send, stopped, style=None, clock=time.time, sleep=time.sleep, stats: dict | None = None) -> dict:
+class Reflex:
+    """Hold the opponent's attacks: on the attack-input edge press Free + the direction that has paid best so far
+    (untried ones first, then 20% exploring). step(now) is one poll; the caller runs it every ~10 ms in a fight."""
+
+    def __init__(self, rd, send, stats: dict, rng=None):
+        self.rd, self.send, self.stats, self.rng = rd, send, stats, rng or random.Random()
+        self.score = {h: [0, 0.0] for h in HOLDS}        # direction -> [tries, total reward]
+        self.prev, self.down, self.release_at, self.judge = 0, None, None, None
+        stats.update(holds=0, hold_dealt=0, hold_taken=0)
+
+    def _hp(self):
+        return tuple(struct.unpack("<H", self.rd(a, 2))[0] for a in (P1_HP, P2_HP))
+
+    def choose(self):
+        untried = [h for h in HOLDS if self.score[h][0] == 0]
+        if untried:
+            return untried[0]
+        if self.rng.random() < EXPLORE:
+            return self.rng.choice(HOLDS)
+        return max(HOLDS, key=lambda h: self.score[h][1] / self.score[h][0])
+
+    def step(self, now):
+        if self.release_at is not None and now >= self.release_at:
+            self.send([{"key": k, "down": False} for k in (FREE, *self.down)])
+            self.release_at = None
+        if self.judge is not None and now >= self.judge[0]:
+            _, h, p1, p2 = self.judge
+            n1, n2 = self._hp()
+            dealt, taken = max(0, p2 - n2) if n2 <= HP_MAX else 0, max(0, p1 - n1) if n1 <= HP_MAX else 0
+            self.score[h][0] += 1
+            self.score[h][1] += dealt - taken
+            self.stats["hold_dealt"] += dealt
+            self.stats["hold_taken"] += taken
+            self.stats["hold_best"] = "+".join(max((x for x in HOLDS if self.score[x][0]),
+                                                   key=lambda x: self.score[x][1] / self.score[x][0]))
+            self.judge = None
+        w = self.rd(WARN, 1)[0]
+        if w and not self.prev and self.judge is None and self.release_at is None:
+            h = self.choose()
+            p1, p2 = self._hp()
+            self.send([{"key": k, "down": True} for k in (FREE, *h)])
+            self.down, self.release_at, self.judge = h, now + HOLD_S, (now + JUDGE_S, h, p1, p2)
+            self.stats["holds"] += 1
+        self.prev = w
+
+
+def play(ad, send, stopped, style=None, clock=time.time, sleep=time.sleep, stats: dict | None = None,
+         holds: bool | None = None) -> dict:
     """stats (optional, filled live for the watch panel): fights_s, jumps, routes, saves, safety, hung, plus the
     current p1/p2 health and whether a fight is on."""
-    rd = lambda a, n: bytes(ad.read_memory(a, n))
+    lock = threading.Lock()                       # the reflex thread shares the emulator's memory and input link
+
+    def rd(a, n):
+        with lock:
+            return bytes(ad.read_memory(a, n))
+
+    def send_locked(rows):
+        with lock:
+            send(rows)
     stats = stats if stats is not None else {}
     stats.update({"fights_s": 0.0, "jumps": 0, "routes": 0, "saves": 0, "safety": 0, "hung": False})
+    fighting = threading.Event()
+    if holds is None:
+        holds = clock is time.time                    # real time only: the reflex polls on its own thread
+    if holds:
+        reflex = Reflex(rd, send_locked, stats)
+
+        def reflex_loop():
+            while not stopped() and not stats["hung"]:
+                if fighting.wait(0.5):
+                    try:
+                        reflex.step(time.time())
+                    except Exception:                  # noqa: BLE001 - a read during a load: next poll
+                        pass
+                    time.sleep(0.008)
+        threading.Thread(target=reflex_loop, daemon=True, name="doa2-holds").start()
+        send = send_locked
     jump_ok, fight_since, out_since, last_ram, frozen_since = False, None, None, None, None
     while not stopped():
         now = clock()
@@ -62,6 +145,7 @@ def play(ad, send, stopped, style=None, clock=time.time, sleep=time.sleep, stats
             frozen_since = None
         last_ram = ram
         stats.update(fighting=st["fighting"], p1_hp=st["p1"], p2_hp=st["p2"])
+        (fighting.set if st["fighting"] else fighting.clear)()
         if st["fighting"]:
             out_since = None
             fight_since = fight_since or now
@@ -106,6 +190,7 @@ def play(ad, send, stopped, style=None, clock=time.time, sleep=time.sleep, stats
             out_since = None
             continue
         sleep(0.5)
+    fighting.clear()
     if fight_since is not None:
         stats["fights_s"] = round(stats["fights_s"] + clock() - fight_since, 1)
     return stats

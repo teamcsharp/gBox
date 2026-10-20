@@ -113,3 +113,46 @@ def test_live_stats_fill_the_callers_dict():
     B.play(ad, lambda r: None, iter([False, False, True]).__next__, clock=lambda: now[0],
            sleep=lambda s: now.__setitem__(0, now[0] + s), stats=live)
     assert live["fighting"] is True and live["p1_hp"] == 200 and live["p2_hp"] == 150 and "jumps" in live
+
+
+def test_reflex_holds_on_the_attack_edge_and_learns_what_pays():
+    import random
+    ad = FakeDC()
+    ad.set(0, 200, 200)
+    sent, stats = [], {}
+    rx = B.Reflex(lambda a, n: ad.read_memory(a, n), sent.append, stats, rng=random.Random(1))
+    paying = ("up", "right")
+
+    def attack(t0):
+        ad.ram[B.WARN - 0x8C000000] = 1
+        rx.step(t0)
+        h = tuple(r["key"] for r in sent[-1] if r["key"] != B.FREE)
+        assert sent[-1][0] == {"key": B.FREE, "down": True}
+        ad.ram[B.WARN - 0x8C000000] = 0
+        rx.step(t0 + 0.05)
+        rx.step(t0 + B.HOLD_S)                               # released after HOLD_S
+        assert all(not r["down"] for r in sent[-1])
+        p1, p2 = (struct.unpack("<H", ad.read_memory(a, 2))[0] for a in (B.P1_HP, B.P2_HP))
+        if h == paying:
+            ad.set(0, p1, max(1, p2 - 30))                  # the hold landed: P2 takes the counter
+        else:
+            ad.set(0, max(1, p1 - 20), p2)                  # wrong hold: P1 is hit
+        rx.step(t0 + B.JUDGE_S)
+        ad.set(0, 200, 200)
+        return h
+    tried = [attack(i * 2.0) for i in range(len(B.HOLDS))]
+    assert sorted(tried) == sorted(B.HOLDS)                 # every direction tried once first
+    later = [attack(100 + i * 2.0) for i in range(20)]
+    assert later.count(paying) >= 14                        # then mostly the one that paid
+    assert stats["holds"] == 26 and stats["hold_best"] == "up+right" and stats["hold_dealt"] >= 30
+
+
+def test_reflex_waits_for_a_new_edge():
+    ad = FakeDC()
+    ad.set(0, 200, 200)
+    sent = []
+    rx = B.Reflex(lambda a, n: ad.read_memory(a, n), sent.append, {})
+    ad.ram[B.WARN - 0x8C000000] = 1
+    for i in range(5):
+        rx.step(i * 0.01)
+    assert len(sent) == 1                                   # held input is not re-fired every poll
