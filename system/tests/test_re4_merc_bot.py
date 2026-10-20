@@ -388,7 +388,7 @@ def test_his_health_scores_the_shots_and_misses_move_the_aim_height():
     hp(m, 1, 800)
     tick(t + 0.2)
     assert bot.stats["hits"] == 1                                          # his health fell: a hit
-    for k in range(1, 40):                                                 # then nothing lands for a while
+    for k in range(1, 55):                                                 # then nothing lands for a while
         tick(t + 0.2 + k * 0.1)
     assert bot.stats["misses"] >= 3 and bot.stats["pitch_offset"] != 0.0  # the aim height moves on
     assert 0 < bot.stats["accuracy"] < 1
@@ -495,3 +495,14 @@ def test_autoplay_gives_a_playbook_that_takes_prompts_a_screen_watcher(monkeypat
     inp = tools.AutoplayIn(session_id="s9", op="start", mode="playbook")
     tools._start_playbook(pb, inp, D(), ad, 0.0)
     assert done.wait(5) and seen == ["a"]                                 # the playbook saw the A prompt
+
+
+def test_a_tripled_time_bonus_still_counts():
+    now = [0.0]
+    m = world([], room=0x400, leon=(5592.0, 0.0, 16000.0), timer_s=100.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    bot.tick(B.snapshot(m))
+    now[0] = 0.5
+    m.put(B.MERC_TIMER, ">I", int(370 * 30))          # +270 s: a 90 s pickup with the time bonus x3 hack
+    bot.tick(B.snapshot(m))
+    assert bot.stats["time_bonus"] == 1

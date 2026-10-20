@@ -79,11 +79,13 @@ TAKE_R, VAULT_R = 450.0, 900.0                   # take an item hourglass this c
 COMBO_CROWD, COMBO_NEAR = 5, 3500.0              # this many Ganados this close: take a combo bonus first (TAS route)
 EM_HP = 0x320                                    # Ganado (EmMgr slot) +0x320 s16 health, +0x322 s16 max (found
                                                  # 2026-10-20: 1000 / 1800 at full, falls with hits, 0 at death)
-HIT_WINDOW, MISSES_TO_ADJUST = 0.6, 3            # firing this long without his health falling is a miss
+HIT_WINDOW, MISSES_TO_ADJUST = 1.5, 3            # firing this long without his health falling is a miss
+                                                 # (longer than the Hand Cannon's 35 frames between shots)
 PITCH_STEPS = (0.0, -0.05, 0.05, -0.1, 0.1, -0.15, 0.15)   # aim-height offsets tried in turn after misses (radians)
 CELL = 400.0                                     # the learned map's grid (world units)
 STUCK_S, STUCK_MOVE = 0.9, 250.0                 # running but moved less than this in that long (any way): blocked
 BACK_S = 0.6                                     # still blocked after a vault and a detour: back off this long
+BONUS_MAX = 400.0                                # the clock jumps up to this much for one bonus (time pickups x3: 270 s)
 ARRIVE = 650.0                                   # a waypoint this close is reached
 COLLECT_R, COLLECT_TRY_S = 1500.0, 4.0           # shoot an hourglass from this close; give up on it after this long
 # Village (r400) time bonuses: the room's four small AEV events (live RAM 2026-10-20), (x, z) in world units
@@ -574,13 +576,13 @@ class Bot:
             return {"hold": set()}
         self._round(s["room"])
         if s["timer"] != self.last_timer:
-            if self.last_timer is not None and self.last_timer > 1 and 5 < s["timer"] - self.last_timer < 100 and self.bonus:   # a time bonus (not the next round's clock)
+            if self.last_timer is not None and self.last_timer > 1 and 5 < s["timer"] - self.last_timer < BONUS_MAX and self.bonus:   # a time bonus (not the next round's clock)
                 px, _, pz = p["pos"]
                 got = min(self.bonus, key=lambda b: (b[0] - px) ** 2 + (b[1] - pz) ** 2)
                 self.bonus.remove(got)
                 self.stats["time_bonus"] += 1
                 self.goal = None
-            elif self.last_timer is not None and self.last_timer > 1 and 5 < s["timer"] - self.last_timer < 100 \
+            elif self.last_timer is not None and self.last_timer > 1 and 5 < s["timer"] - self.last_timer < BONUS_MAX \
                     and (self.items or self.combos):
                 px, _, pz = p["pos"]
                 pool = self.items + self.combos
