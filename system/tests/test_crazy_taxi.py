@@ -7,7 +7,7 @@ import pytest
 
 from gbox import crazy_taxi as ct
 
-ISO = Path(os.environ.get("GBOX_CT_ISO", "/home/ehm_eckx/gbox-cache/modbase/bc02bb68790ce2e7/Crazy Taxi (USA).iso"))
+ISO = Path(os.environ.get("GBOX_CT_ISO", "/home/ehm_eckx/gBox_alt/gbox-cache/modbase/bc02bb68790ce2e7/Crazy Taxi (USA).iso"))
 
 CUBE = [(x, y, z) for z in (-1, 1) for y in (-1, 1) for x in (-1, 1)]
 FACES = [(0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3)]

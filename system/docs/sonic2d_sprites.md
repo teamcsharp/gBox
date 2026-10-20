@@ -170,4 +170,4 @@ speed-driven delays, S1 object flip bits, S3K raw scripts, sequences), canvas al
 synthetic Sonic 2 shaped ROM through discovery to the clip files and sheet.json, title tests / DEDICATED
 registration, and the collage (timeline, loops/hold/hide, flip, z-order, reading clip folders). The owned-ROM tests
 pin the discovered offsets and the spin dash / jump / level-complete sequences, and skip when the dumps are not cached
-at `~/gbox-cache/<game_id>/source.zip` (override the folder with `GBOX_ROM_CACHE`).
+at `~/gBox_alt/gbox-cache/<game_id>/source.zip` (override the folder with `GBOX_ROM_CACHE`).

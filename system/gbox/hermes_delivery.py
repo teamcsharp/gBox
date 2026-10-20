@@ -21,7 +21,9 @@ def state_dir() -> Path:
 
 
 def repository() -> Path:
-    return Path(os.environ.get('GBOX_HERMES_REPO') or Path.home() / 'gbox-hermes-repo')
+    from .side_dirs import moved, side_dir           # ~/gBox_alt/gbox-hermes-repo (the old home-root path still resolves)
+    env = os.environ.get('GBOX_HERMES_REPO')
+    return moved(Path(env)) if env else side_dir('gbox-hermes-repo')
 
 
 @contextmanager

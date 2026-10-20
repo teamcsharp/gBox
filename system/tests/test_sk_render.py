@@ -8,7 +8,7 @@ import pytest
 
 from gbox import sk_render, sk_sprites
 
-CACHE = Path.home() / "gbox-cache" / "668e74c15d61a9a7"
+CACHE = Path.home() / "gBox_alt/gbox-cache" / "668e74c15d61a9a7"
 SRC = CACHE / "source.zip"
 SOURCE_SHA256 = "777881572e72f50c9868335bddafbdcc140c8772699b266cbcee7f4c3e68b26b"
 

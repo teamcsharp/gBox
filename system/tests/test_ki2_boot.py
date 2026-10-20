@@ -11,9 +11,9 @@ import pytest
 from gbox import ki2_boot as kb
 
 OWNED_ZIP = Path(os.environ.get(
-    "GBOX_KI2_ZIP", str(Path.home() / "gbox-cache/2e9b5e24e3b5d0bc/kinst2.zip")))
+    "GBOX_KI2_ZIP", str(Path.home() / "gBox_alt/gbox-cache/2e9b5e24e3b5d0bc/kinst2.zip")))
 OWNED_RAW = Path(os.environ.get(
-    "GBOX_KI2_RAW", str(Path.home() / "gbox-cache/2e9b5e24e3b5d0bc/kinst2.raw")))
+    "GBOX_KI2_RAW", str(Path.home() / "gBox_alt/gbox-cache/2e9b5e24e3b5d0bc/kinst2.raw")))
 
 
 def test_bitreader_is_lsb_first_and_aligns():

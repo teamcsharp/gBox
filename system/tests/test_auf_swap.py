@@ -3,7 +3,7 @@
 Synthetic tests build a skeleton, a .gcm, a whole level package (.men scripts, script dictionary, textures, shaders,
 BSP, restable) and a tiny GameCube disc image, so they pin the encoder (reader -> writer -> reader), the package and
 texture-chunk rebuild with their offsets, the disc layout and the slot/cast parsing without the game.  The owned-disc
-tests run where the GCZ is cached (GBOX_AUF_GCZ or ~/gbox-cache/gc/<game>/source.gcz) and skip elsewhere.
+tests run where the GCZ is cached (GBOX_AUF_GCZ or ~/gBox_alt/gbox-cache/gc/<game>/source.gcz) and skip elsewhere.
 """
 import hashlib
 import json
@@ -20,7 +20,7 @@ from gbox import auf_ngc as N
 from gbox import auf_ngc_writer as W
 from gbox import auf_swap as S
 
-GCZ = os.environ.get("GBOX_AUF_GCZ", os.path.expanduser("~/gbox-cache/gc/65b7187589166b26/source.gcz"))
+GCZ = os.environ.get("GBOX_AUF_GCZ", os.path.expanduser("~/gBox_alt/gbox-cache/gc/65b7187589166b26/source.gcz"))
 
 # AUF frame: Z up, the character faces +X, its left is +Y (as on the disc)
 BONES = [  # (parent, world position)

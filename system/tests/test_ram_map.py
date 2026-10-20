@@ -43,8 +43,9 @@ class Batched(FakeRam):
 
 def re4_ram(cls=FakeRam, room=0x400, timer_s=87.3, combo=12, leon=(1000.0, 0.0, 2000.0), rot=0.5, hp=1860,
             ganados=((1000.0, 0.0, 4000.0, 1000, 1000), (5000.0, 0.0, 2000.0, 300, 1800)), dead=(7000.0, 0.0, 0.0),
-            stride=0xDE0, pad=0x0120):
-    """RE4's structures where the bot and the map read them: Leon is EmMgr slot 0, two live Ganados, one dead slot."""
+            stride=0xDE0, pad=0x0120, prompt=0):
+    """RE4's structures where the bot and the map read them: Leon is EmMgr slot 0, two live Ganados, one dead slot;
+    the room's area events (AevMgr: a door, an area) and items (a Time Bonus hourglass, one taken); the prompt kind."""
     m = cls()
     m.ram[:6] = b"G4BE08"
     pg, psys, em = 0x8027F7D0, 0x80287E58, 0x810D3000
@@ -74,6 +75,20 @@ def re4_ram(cls=FakeRam, room=0x400, timer_s=87.3, combo=12, leon=(1000.0, 0.0, 
     m.put(R.MERC_TIMER, ">I", round(timer_s * 30))
     m.put(R.MERC + 0x28, ">II", combo, 150)
     m.put(0x80287E9E, ">H", pad)
+    m.ram[0x80279320 - MEM1] = prompt                   # prompt.kind: the button of the prompt drawn this frame
+    mgr, aev, ita = 0x80289B3C, 0x80700000, 0x80701000      # AevMgr: +0 / +8 table headers (+6 count), +4 / +C entries
+    m.put(0x802B3178, ">I", mgr)
+    m.put(mgr, ">IIII", aev, aev + 0x100, ita, ita + 0x100)
+    m.put(aev + 6, ">H", 2)
+    for i, (kind, label) in enumerate(((1, 0x10), (4, 0x5))):         # a door (OPEN), an area (JUMP OVER)
+        o = aev + 0x100 + i * 0x9C
+        m.ram[o + 0x34 - MEM1], m.ram[o + 0x35 - MEM1], m.ram[o + 0x36 - MEM1], m.ram[o + 0x4A - MEM1] = 1, kind, i, label
+    m.put(ita + 6, ">H", 2)
+    for i, (on, item) in enumerate(((1, 0x73), (0, 0x75))):          # a Time Bonus still there, a Combo Bonus taken
+        o = ita + 0x100 + i * 0x9C
+        m.ram[o + 0x34 - MEM1], m.ram[o + 0x36 - MEM1] = on, 0x80 + i
+        m.put(o + 0x5C, ">3f", 19401.0, 0.0, -6857.0)
+        m.put(o + 0x78, ">H", item)
     return m
 
 
@@ -108,6 +123,12 @@ def test_the_re4_map_reads_what_the_mercenaries_bot_reads():
             assert (r["hp"], r["hp_max"]) == (e["hp"], e["hp_max"])
     assert (rows[1]["hp"], rows[1]["hp_max"]) == (300, 1800) and v.counts["enemies"] == 4
     assert not v.errors
+    # the prompt and area-event fields (#724): read through two-level chains and counts from other fields
+    assert v["prompt.kind"] == 0 and v.label("prompt.kind") == "none"
+    assert [(e["type"], e["label"]) for e in v["aev.entries"]] == [(1, 0x10), (4, 0x5)]
+    assert [(i["item_id"], i["enabled"]) for i in v["aev.items"]] == [(0x73, 1), (0x75, 0)]
+    taking = ram_map.load("G4BE08").read(re4_ram(prompt=1), names=["prompt.kind"])
+    assert taking.label("prompt.kind") == "A"
 
 
 def test_the_enemy_table_follows_the_stride_the_game_reports():
@@ -121,9 +142,10 @@ def test_the_enemy_table_follows_the_stride_the_game_reports():
 
 def test_reads_are_batched_per_pointer_level():
     fake = re4_ram(Batched)
-    v = ram_map.load("G4BE08").read(fake)
-    # static fields + pointer bases, then the pointers' targets, then the counted table: three batches
-    assert len(fake.batches) == 3 and not v.errors
+    m = ram_map.load("G4BE08")
+    v = m.read(fake)
+    # static fields + pointer bases, then each pointer level, then the counted tables: a batch per level, not per field
+    assert len(fake.batches) <= 5 < len(m.fields) and not v.errors
     assert v.reads == sum(len(b) for b in fake.batches) and v.bytes == sum(n for b in fake.batches for _, n in b)
     big = max(n for b in fake.batches for _, n in b)
     assert big < 4 * 0xDE0                                 # live-slot spans, never the whole 80-slot table at once

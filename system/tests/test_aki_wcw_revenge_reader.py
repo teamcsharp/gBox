@@ -1,6 +1,6 @@
 """WCW/nWo Revenge (Europe) analysis + reader probes (#1317).
 
-Ghidra confirmation (USA NW2E build; reused project ~/gbox-cache/aki_re/ghidra/projrv.gpr, RDRAM image
+Ghidra confirmation (USA NW2E build; reused project ~/gBox_alt/gbox-cache/aki_re/ghidra/projrv.gpr, RDRAM image
 rv_ram4.bin, decompile rv_ram.c, MIPS:BE:32 base 0x80000000) locates the loader/model functions:
   * FUN_800034a0 loads the AkiFileTable: malloc(0x77a8) into PTR_DAT_800482e0, reads 0xce2752, then walks
     0x1de9 entries with first-file base 0xdac50 and a 0x77a4-byte sizes buffer (the writer's patch sites).

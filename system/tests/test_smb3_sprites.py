@@ -25,7 +25,7 @@ def test_indexed_png_preserves_indices_and_selected_transparency():
 
 
 def test_owned_collection_paths_and_native_tile_identity(tmp_path, monkeypatch):
-    source = Path.home()/'gbox-cache/213e4208929ec3e9/source.zip'
+    source = Path.home()/'gBox_alt/gbox-cache/213e4208929ec3e9/source.zip'
     if not source.is_file(): pytest.skip('Owned SMB3 ROM is not cached')
     monkeypatch.setattr(tools, 'rom_path', lambda *_: source)
     game = {'game_id':'213e4208929ec3e9','title':'Super Mario Bros. 3 (USA)','platform':'nes',

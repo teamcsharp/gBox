@@ -2287,7 +2287,8 @@ class AutoplayIn(BaseModel):
     style: dict = {}                       # learned style knobs (imitate.KNOBS: follow, pace, favor); the screensaver
                                            # picks them per game from earlier runs' novelty scores
     screensaver: bool = False              # the idle-PC screensaver runs this (gbox.screensaver): a replay goes on in the
-                                           # learned style, a mouse move also hands back, the end is reported
+                                           # learned style, a mouse move hands the game over (it plays on), the end
+                                           # is reported
 
 class AutoplayOut(BaseModel):
     result: dict
@@ -2420,23 +2421,26 @@ def _saver_post(d, path, body):
 
 def _takeover(run, d, sid, since):
     """The operator touches their own pad after autoplay started: hand control back at once (every mode). In
-    screensaver mode a mouse move does too, and the control plane is told so it closes the game."""
+    screensaver mode a mouse move hands the game over without stopping: autoplay plays on until the operator presses
+    Stop (operator 2026-10-20: "let it continue playing until I click the stop button"). The control plane is told
+    either way and keeps the game up."""
     from . import padstate
     run["screensaver"] = bool(getattr(d, "screensaver", None))
-    start_cursor = _cursor() if run["screensaver"] else None
+    cursor = _cursor() if run["screensaver"] else None
 
     def watch():
+        nonlocal cursor
         while not d.stopped and (run.get("thread") is None or run["thread"].is_alive()):
-            why = "pad" if padstate.touched_after(sid, since) else None
-            if why is None and start_cursor is not None:
-                c = _cursor()
-                if c and abs(c[0] - start_cursor[0]) + abs(c[1] - start_cursor[1]) > 8:
-                    why = "mouse"
-            if why:
+            if padstate.touched_after(sid, since):           # they play: autoplay lets go of the pad
                 d.stopped, run["took_over"] = True, True
                 _release_all(sid)
-                _saver_post(d, "yield", {"session_id": sid, "reason": why})
+                _saver_post(d, "yield", {"session_id": sid, "reason": "pad"})
                 return
+            if cursor is not None:
+                c = _cursor()
+                if c and abs(c[0] - cursor[0]) + abs(c[1] - cursor[1]) > 8:
+                    cursor, run["handed_over"] = None, True    # theirs now; only the pad (or Stop) ends the autoplay
+                    _saver_post(d, "yield", {"session_id": sid, "reason": "mouse"})
             time.sleep(0.1)
     threading.Thread(target=watch, daemon=True).start()
 
@@ -2596,6 +2600,9 @@ def _autoplay_hacks(sid: str, g: dict) -> list[str]:
 
 
 PLAYBOOKS = ("re4_merc_bot", "doa2_bot")              # game-specific autoplay bots: matches(ad, g), setup(ad), play(ad, send, stopped)
+# playbook -> the module that reads its game's button prompts from RAM (for_adapter(ad, stats) -> a prompt source):
+# play(..., ram_prompt=) asks it before the screen watcher
+RAM_PROMPTS = {"re4_merc_bot": "re4_ram_prompts"}
 
 
 def _playbook(ad, g):
@@ -2618,15 +2625,22 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
 
     def go():
         try:
+            import importlib
             import inspect
             failed = pb.setup(ad)
             kw = {}
             if "stats" in inspect.signature(pb.play).parameters:
                 kw["stats"] = run["live"] = {}                 # the playbook fills it as it plays (watch panel)
+            if "ram_prompt" in inspect.signature(pb.play).parameters and RAM_PROMPTS.get(name):
+                try:                                           # the game's own prompt state in RAM: asked first
+                    rp = importlib.import_module(f".{RAM_PROMPTS[name]}", __package__)
+                    kw["ram_prompt"] = rp.for_adapter(ad, kw.get("stats"))
+                except Exception:                              # noqa: BLE001 - no RAM view: the screen alone
+                    pass
             if "prompt" in inspect.signature(pb.play).parameters and hasattr(ad, "get_frame"):
-                from . import screen_prompt                    # the game's on-screen button prompts (A TAKE / JUMP OVER)
+                from . import screen_prompt                    # the game's on-screen button prompts (A TAKE / JUMP OVER):
                 watcher = run["prompt_watcher"] = screen_prompt.Watcher(lambda: ad.get_frame(), hz=6.0).start()
-                kw["prompt"] = lambda: watcher.visible(0.5)
+                kw["prompt"] = lambda: watcher.visible(0.5)    # after RAM, when RAM can't tell
             if "style" in inspect.signature(pb.play).parameters and ctx is not None and game_id:
                 try:                                           # the operator's learned style does the fighting
                     from . import imitate
@@ -3617,7 +3631,8 @@ def _bevy_resolve(ctx, items: list[dict]) -> list[tuple[Path, dict]]:
     # collection entries ({character: slug} / {environment: slug}) are read where the collection lives (the Spark's
     # cache, the same folder through the share on Windows)
     from . import characters as K
-    croot = K.library_root(ctx.config).parent if HOST_OS != "windows" else Path("//10.89.1.246/ehm_eckx/gbox-cache")
+    from .side_dirs import spark_share
+    croot = K.library_root(ctx.config).parent if HOST_OS != "windows" else spark_share("gbox-cache")
     files = []                                             # (absolute model file, item options)
     for it in items:
         opts = {k: v for k, v in it.items() if k not in ("package", "character", "environment")}
@@ -4249,7 +4264,8 @@ def extract_pso_area(inp: PsoAreaIn, ctx: Ctx):
     world space + the area's PVM textures + the collision mesh (c.rel), ready for glTF/Blender/engines."""
     from . import ninja, psomap
     from .gdrom import GDRom
-    disc = GDRom(inp.disc)
+    from .side_dirs import moved
+    disc = GDRom(str(moved(inp.disc)))
     base = f"PSO/SCENE/MAP_{inp.area.upper()}"
     # areas with variants (Pioneer 2: MAP_CITY00_00D.REL + MAP_CITY00.PVM) keep the textures under the plain name
     rel_base = base if base + "D.REL" in disc.files else next((base + v for v in ("_00", "_01") if base + v + "D.REL" in disc.files), base)
@@ -4305,7 +4321,8 @@ def extract_pso_model(inp: PsoModelIn, ctx: Ctx):
         disc = GCDisc(inp.disc)
     else:
         from .gdrom import GDRom
-        disc = GDRom(inp.disc)
+        from .side_dirs import moved
+        disc = GDRom(str(moved(inp.disc)))
     ctx.progress(10, f"reading {inp.archive}")
     raw = disc.read(inp.archive)
     arc = ninja.bml(raw, be)

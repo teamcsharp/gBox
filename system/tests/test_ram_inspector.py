@@ -11,7 +11,7 @@ from PIL import Image
 
 from gbox import ram_inspector, ram_map, ram_reader, tools
 from gbox.server import create_app
-from test_ram_map import FakeRam, re4_ram
+from test_ram_map import Batched, FakeRam, re4_ram
 
 GID, SID, MEM1 = "78ab9efa2e310db4", "w1-re4", 0x80000000
 
@@ -260,7 +260,9 @@ def test_a_session_on_another_pc_is_read_through_its_channel(app, monkeypatch):
         out = live(app)
         rows = {r["name"]: r for r in out["rows"]}
         assert out["reader"]["kind"] == "rpc" and rows["merc.combo"]["value"] == 12 and not out["error"]
-        assert set(answered) == {"read_ranges"} and len(answered) % 3 == 0      # one round trip per pointer level
+        batched = re4_ram(Batched)
+        ram_map.load("G4BE08").read(batched)                  # the map's batches: one per pointer level
+        assert set(answered) == {"read_ranges"} and len(answered) % len(batched.batches) == 0   # a round trip each
         assert "procmem" in out["reader"]["how"]
     finally:
         stop.set()

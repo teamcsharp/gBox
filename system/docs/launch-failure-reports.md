@@ -122,7 +122,7 @@ Every minute, each unverified ticket moves through these states:
 
 1. **investigating**: waits for a "PR #N merged to main as <sha>" reply (posted by `hermes_merges.reconcile`).
 2. **merged**: waits until the Spark's deploy carries the commit. That means `gbox-data/deployed-main.txt` contains it
-   (`git merge-base --is-ancestor` in `~/gBox-src` or the Hermes repository) and there is no
+   (`git merge-base --is-ancestor` in `~/gBox_alt/gBox-src` or the Hermes repository) and there is no
    `deploy-restart-pending`. A machine with no deploy record verifies 45 minutes after the merge.
 3. **awaiting_verify**: starts a verification launch of the same game and mod. This is an `evidence_capture` job
    (`inputs: []`, no saved moment, one shot 20 s after boot), which does the following:

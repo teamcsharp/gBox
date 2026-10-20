@@ -13,7 +13,7 @@ import collections
 from gbox import jgr, jgr_inventory
 from gbox.gdrom import GDRom
 
-JGR_GDI = Path(os.environ.get("JGR_GDI", "/home/ehm_eckx/gbox-cache/dc/4187aeab4d67638c/disc.gdi"))
+JGR_GDI = Path(os.environ.get("JGR_GDI", "/home/ehm_eckx/gBox_alt/gbox-cache/dc/4187aeab4d67638c/disc.gdi"))
 
 
 def make_exe_with_debug_names(names: list[str]) -> bytearray:

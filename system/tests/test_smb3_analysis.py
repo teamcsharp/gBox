@@ -18,7 +18,7 @@ from gbox import smb3_analysis as ana  # noqa: E402
 from gbox import smb3_inventory as inv  # noqa: E402
 
 SRC = Path(os.environ.get("GBOX_SMB3_SRC",
-                          str(Path.home() / "gbox-cache/213e4208929ec3e9/source.zip")))
+                          str(Path.home() / "gBox_alt/gbox-cache/213e4208929ec3e9/source.zip")))
 SRC_SHA256 = "4938974428c867c5ec074b8853b496f91bd82014c2cddf9245a6d1a77eb39cfd"
 needs_rom = pytest.mark.skipif(not SRC.is_file(), reason="owned SMB3 source not cached")
 
