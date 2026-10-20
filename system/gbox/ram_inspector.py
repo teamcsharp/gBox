@@ -31,10 +31,11 @@ Nothing here writes game memory, sends input or touches save states: it only rea
   GET  /api/sessions/{sid}/ram/events?since=N     the event log
   GET  /api/sessions/{sid}/ram/frames/{fid}.jpg   the frame kept with an event
   GET  /api/sessions/{sid}/ram/hex?address=&length=&pointer=   bytes now (pointer: "base,off1,off2" chain)
-  POST /api/sessions/{sid}/ram/search             {type, base?, size?}: start (first snapshot taken)
+  POST /api/sessions/{sid}/ram/search             {type, base?, size?, tolerance?}: start (first snapshot taken)
   GET  /api/sessions/{sid}/ram/search?limit=      status + candidates
   POST /api/sessions/{sid}/ram/search/sample      {label?: on|off, op?, value?, lo?, hi?}: one sample
-  POST /api/sessions/{sid}/ram/search/auto        {source: screen_prompt|field|off, field?, cond?, hz?}: labeler
+  POST /api/sessions/{sid}/ram/search/auto        {source: screen_prompt|field|off, button?, field?, cond?, hz?,
+                                                  tolerance?}: a labeler (a read counts once its label held after it)
   DELETE /api/sessions/{sid}/ram/search           end it (frees its memory)
   POST /api/sessions/{sid}/ram/promote            {name, address | pointer, type, description, enum, ...}
 """
@@ -230,13 +231,13 @@ class Inspector:
         except (ImportError, KeyError, IndexError):
             raise SearchError(f"no main-RAM layout for {self.platform or 'this platform'}: give base and size")
 
-    def search_start(self, type: str = "u8", base: int | None = None, size: int | None = None) -> dict:
+    def search_start(self, type: str = "u8", base: int | None = None, size: int | None = None, tolerance: int = 0) -> dict:
         with self.search_lock:
             self._stop_labeler()
             self.search = None
             if base is None or size is None:
                 base, size = self.default_region()
-            s = Search(base, size, type, big_endian=self.big_endian(), clock=self.clock)
+            s = Search(base, size, type, big_endian=self.big_endian(), tolerance=tolerance, clock=self.clock)
             self.search, self.search_info = s, {"started_by": None}
         self._sample(None, None, None, None, None, "first snapshot")
         return self.search_status()
@@ -261,12 +262,17 @@ class Inspector:
             raise RuntimeError(f"{len(bad)} candidate ranges unreadable, first at {ram_map.hexa(bad[0][0])}: {bad[0][1]}")
         return [(a, d) for (a, _), d in zip(ranges, got)]
 
-    def _sample(self, label, op, value, lo, hi, note=""):
+    def _sample(self, label, op, value, lo, hi, note="", data=None, search=None):
+        """Read the search's region (or its candidates) and apply one sample; data / search: a sample read earlier
+        for that search (the labeler confirms its label first)."""
         with self.search_lock:
             s = self.search
             if s is None:
                 raise SearchError("start a search first")
-            data = self._read_sample(s)
+            if search is not None and s is not search:
+                raise SearchError("the search was restarted")
+            if data is None:
+                data = self._read_sample(s)
             if self.search is not s:
                 raise SearchError("the search was restarted")
             return s.sample(data, label=label, op=op, value=value, lo=lo, hi=hi, note=note)
@@ -285,14 +291,16 @@ class Inspector:
             out["auto"] = self.labeler.status()
         return out
 
-    def auto(self, source: str, field: str | None = None, cond: dict | None = None, hz: float = 4.0,
-             button: str | None = None) -> dict:
+    def auto(self, source: str, field: str | None = None, cond: dict | None = None, hz: float = 8.0,
+             button: str | None = None, tolerance: int | None = None) -> dict:
         with self.search_lock:
             if self.search is None:
                 raise SearchError("start a search first")
             self._stop_labeler()
             if source in ("off", "", None):
                 return {"source": "off"}
+            if tolerance is not None:                  # labels from vision are late at the edges: allow a few
+                self.search.tolerance = max(0, int(tolerance))
             if source == "screen_prompt":
                 label_fn = prompt_labeler(self, button)
             elif source == "field":
@@ -385,21 +393,25 @@ def field_labeler(insp: Inspector, field: str | None, cond: dict | None):
 
 
 class AutoLabel:
-    """Samples the search with a labeler's on / off: only once a label has held for `stable` checks and `settle_s`
-    (the stream's frame lags the RAM a little), at every change of label and every `every_s` while it holds (only at
-    changes while the search still keeps whole samples, so a long "off" stretch does not fill memory)."""
+    """Samples the search with a labeler's on / off. The RAM is read once a label has held for `stable` checks and
+    `settle_s`, at every change of label and every `every_s` while it holds (only at changes while the search still
+    keeps whole samples, so a long "off" stretch does not fill memory); that sample counts only if the label still
+    holds `after_s` later. The stream's frame lags the RAM a little, so a read at either edge of a short prompt would
+    carry the wrong label: settle_s covers the start, after_s the end (confirmed / discarded in status())."""
 
-    def __init__(self, insp: Inspector, source: str, label_fn, hz: float = 4.0, stable: int = 2, settle_s: float = 0.4,
-                 every_s: float = 1.5, max_s: float = AUTO_MAX_S, detail: dict | None = None):
+    def __init__(self, insp: Inspector, source: str, label_fn, hz: float = 8.0, stable: int = 2, settle_s: float = 0.25,
+                 after_s: float = 0.3, every_s: float = 1.0, max_s: float = AUTO_MAX_S, detail: dict | None = None):
         self.insp, self.source, self.label_fn = insp, source, label_fn
         self.period = 1.0 / max(0.5, min(float(hz), MAX_HZ))
-        self.stable, self.settle_s, self.every_s, self.max_s = stable, settle_s, every_s, max_s
+        self.stable, self.settle_s, self.after_s, self.every_s, self.max_s = stable, settle_s, after_s, every_s, max_s
         self.detail = {k: v for k, v in (detail or {}).items() if v is not None}
         self.stop_ev = threading.Event()
         self.started = insp.clock()
         self.current, self.since, self.run = None, 0.0, 0
         self.last_sampled, self.last_sample_at = None, 0.0
+        self.pending = None                           # (label, data, read at, search): waiting for its confirmation
         self.samples = {"on": 0, "off": 0}
+        self.discarded = 0
         self.checks, self.note, self.error = 0, "", None
 
     def start(self):
@@ -410,32 +422,50 @@ class AutoLabel:
         self.stop_ev.set()
 
     def step(self) -> str | None:
-        """One check; returns the label sampled, if a sample was taken."""
+        """One check; returns the label of a sample it confirmed (applied to the search) now, if any."""
         insp = self.insp
         self.insp.watch(5.0)
         lab, self.note = self.label_fn()
         self.checks += 1
         now = insp.clock()
-        if lab is None:
-            self.current, self.run = None, 0
-            return None
         if lab != self.current:
+            if self.pending is not None:              # the label changed before the read was confirmed: not this one
+                self.pending = None
+                self.discarded += 1
             self.current, self.since, self.run = lab, now, 1
             return None
-        self.run += 1
-        if self.run < self.stable or now - self.since < self.settle_s:
+        if lab is None:
             return None
+        self.run += 1
         s = insp.search
         if s is None:
             self.stop()
             return None
+        if self.pending is not None:
+            plab, data, at, search = self.pending
+            if now - at < self.after_s:
+                return None
+            self.pending = None
+            insp._sample(plab, None, None, None, None, f"auto {self.source}: {self.note}", data=data, search=search)
+            self.samples[plab] += 1
+            return plab
+        if self.run < self.stable or now - self.since < self.settle_s:
+            return None
         due = lab != self.last_sampled or (not s.dense and now - self.last_sample_at >= self.every_s)
         if not due:
             return None
-        insp._sample(lab, None, None, None, None, f"auto {self.source}: {self.note}")
-        self.samples[lab] += 1
+        self.pending = (lab, insp._read_sample(s), now, s)
         self.last_sampled, self.last_sample_at = lab, now
-        return lab
+        if self.after_s <= 0:                         # no confirmation asked: apply at once
+            return self.step_pending()
+        return None
+
+    def step_pending(self) -> str | None:
+        plab, data, _, search = self.pending
+        self.pending = None
+        self.insp._sample(plab, None, None, None, None, f"auto {self.source}: {self.note}", data=data, search=search)
+        self.samples[plab] += 1
+        return plab
 
     def _loop(self):
         while not self.stop_ev.is_set() and not self.insp.closed:
@@ -452,7 +482,7 @@ class AutoLabel:
 
     def status(self) -> dict:
         return {"source": self.source, **self.detail, "label": self.current, "note": self.note, "samples": dict(self.samples),
-                "checks": self.checks, "running": not self.stop_ev.is_set(), "error": self.error}
+                "discarded": self.discarded, "checks": self.checks, "running": not self.stop_ev.is_set(), "error": self.error}
 
 
 # --- the registry and the routes ----------------------------------------------------------------------------------------
@@ -471,6 +501,7 @@ class SearchIn(BaseModel):
     type: str = "u8"
     base: int | str | None = None
     size: int | str | None = None
+    tolerance: int = Field(default=0, ge=0, le=50)    # labeled samples a candidate may have on the wrong side
 
 
 class SampleIn(BaseModel):
@@ -487,7 +518,8 @@ class AutoIn(BaseModel):
     field: str | None = None
     cond: dict | None = None
     button: str | None = None
-    hz: float = 4.0
+    hz: float = 8.0
+    tolerance: int | None = Field(default=None, ge=0, le=50)
 
 
 class PromoteIn(BaseModel):
@@ -642,7 +674,7 @@ def routes(app, store, auth, rpc=None, frame=None, data_dir=None):
             raise HTTPException(409, f"{len(busy)} RAM searches are running on other sessions: end one first")
         base = _num(body.base, "base") if body.base is not None else None
         size = _num(body.size, "size") if body.size is not None else None
-        out = guard(insp.search_start, body.type, base, size)
+        out = guard(insp.search_start, body.type, base, size, body.tolerance)
         store.audit(actor, "ram.search", sid, {"type": body.type, "base": out.get("base"), "size": out.get("size")})
         return out
 
@@ -661,7 +693,7 @@ def routes(app, store, auth, rpc=None, frame=None, data_dir=None):
 
     @app.post("/api/sessions/{sid}/ram/search/auto")
     def ram_search_auto(sid: str, body: AutoIn, actor=Depends(auth)):
-        return guard(inspector(sid).auto, body.source, body.field, body.cond, body.hz, body.button)
+        return guard(inspector(sid).auto, body.source, body.field, body.cond, body.hz, body.button, body.tolerance)
 
     @app.delete("/api/sessions/{sid}/ram/search")
     def ram_search_end(sid: str, actor=Depends(auth)):

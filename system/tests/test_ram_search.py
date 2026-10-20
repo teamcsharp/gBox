@@ -91,6 +91,31 @@ def test_the_switch_to_sparse_keeps_the_correlation_exact():
     assert sorted(c["address"] - BASE for c in s.candidates()) == [10, 20]
 
 
+def test_tolerance_keeps_an_address_whose_labels_were_late_at_the_edges():
+    # the prompt byte: 3 while the prompt shows, 0 otherwise; the labeler got one "on" sample late (the byte already 0)
+    # and one "off" sample early (still 3); a noise byte overlaps a lot
+    seq = [("on", 3, 7), ("off", 0, 7), ("on", 3, 9), ("off", 0, 9), ("on", 0, 7), ("off", 3, 9), ("on", 3, 9),
+           ("off", 0, 7), ("on", 3, 7), ("off", 0, 9)]
+
+    def run(tolerance, sparse_at):
+        s = S.Search(BASE, 16, "u8", tolerance=tolerance, sparse_at=sparse_at)
+        for lab, prompt, noise in seq:
+            ram = bytearray(16)
+            ram[4], ram[9] = prompt, noise
+            s.sample(bytes(ram), label=lab)
+        return s
+    for sparse_at in (0, 1 << 20):                            # sparse from the start, and dense until the end
+        exact = run(0, sparse_at)
+        assert BASE + 4 not in [c["address"] for c in exact.candidates()]
+        loose = run(2, sparse_at)
+        c = {x["address"] - BASE: x for x in loose.candidates()}
+        assert 4 in c and 9 not in c                          # 2 mislabels allowed: the prompt byte stays, noise goes
+        if not loose.dense:
+            assert loose.candidates()[0]["address"] == BASE + 4 and c[4]["mislabeled"] == 2
+            assert c[4]["on"] == [{"value": 3, "n": 4}, {"value": 0, "n": 1}] and c[4]["off"] == [{"value": 0, "n": 4}, {"value": 3, "n": 1}]
+    assert BASE + 4 not in [c["address"] for c in run(1, 0).candidates()]          # 1 allowed: still too many
+
+
 def test_few_candidates_are_read_as_ranges_around_them():
     ram = region(1 << 16, seed=3)
     s = S.Search(BASE, len(ram), "u32", sparse_at=1 << 20)

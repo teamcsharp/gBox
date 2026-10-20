@@ -298,6 +298,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/game-menu.js"></script>
 <script src="/viz/watch-analytics.js"></script>
 <script src="/viz/autoplay-coach.js"></script>
+<script src="/viz/ram-inspector.js"></script>
 <script src="/viz/game-assets.js"></script>
 <script src="/viz/cover-picker.js"></script>
 <script src="/viz/build-shot.js"></script>
@@ -741,6 +742,7 @@ const EXAM = { sid: null, cache: {}, viewer: null, mod: null, busy: new Map() };
 const GAME_MODELS = { viewer: null, module: null, models: [], selection: 0 };
 const SELFIE_MODELS = { ctl:null, state:{} };
 const COACH = { ctl: null };                    // the Sessions header's "Coach the autoplay" box (viz/autoplay-coach.js)
+const RAMI = { ctl: null };                     // the Sessions header's RAM inspector button + panel (viz/ram-inspector.js)
 $("#tabs").innerHTML = Object.keys(tabs).map(t => `<button data-t="${t}">${t}</button>`).join("");
 $("#tabs").onclick = e => e.target.dataset.t && show(e.target.dataset.t);
 $("#home-brand").onclick = () => show("Home");
@@ -770,6 +772,7 @@ async function show(t, ...args) {
   HOME.ctl?.dispose(); HOME.ctl = null;
   SELFIE_MODELS.ctl?.dispose(); SELFIE_MODELS.ctl=null;
   COACH.ctl?.dispose(); COACH.ctl = null;       // a note still capturing resumes its status when the header is back
+  window.GBoxRamInspector?.detach(); RAMI.ctl = null;   // reopens with the session's header when it was open there
   if (cur === "Builds") BUILDSV.ctl?.stop(); // save its position before replacing the page
   if (EXAM.sid && !(t === "Sessions" && args[0] === EXAM.sid && args[1] === "examine")) examineLeave();
   GAME_MODELS.selection++;
@@ -1742,7 +1745,7 @@ async function sessionsView(sid, mode) {
     ${s.state === "running" ? `<button class="act" id="pausebtn" data-sid="${esc(sid)}" style="${s.game_id ? "" : "margin-left:auto;"}padding:5px 7px;line-height:0" title="Checking emulator pause state" aria-label="Pause or resume emulation" disabled onclick='toggleSessionPause(${JSON.stringify(sid)})'><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg></button>
     <button class="act" id="padbtn" style="padding:5px 7px;line-height:0" title="Controller settings of this emulator, over the game (RetroArch: Quick Menu → Controls → Port 1 Controls; click again to close). Emulators without that menu open gBox's controller mapping" aria-label="Controller settings" aria-pressed="false" onclick='padSettings(${JSON.stringify(sid)}, this)'><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 11h4M8 9v4M15 12h.01M18 10h.01"/><path d="M17.3 5H6.7a4 4 0 0 0-3.9 3.1l-1.2 6.5A2.8 2.8 0 0 0 6.4 17l2.1-2h7l2.1 2a2.8 2.8 0 0 0 4.8-2.4l-1.2-6.5A4 4 0 0 0 17.3 5z"/></svg></button>
     <button class="act" id="pwbtn" style="padding:5px 7px;line-height:0" title="Pick whip: hover a character to outline it, right-click (or click) it for Replace / Copy / Blender / Identify. The game pauses while it is open; Esc closes"
-      aria-label="Pick whip" onclick="window.PWW && PWW.toggle()"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="7"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/></svg></button>
+      aria-label="Pick whip" onclick="window.PWW && PWW.toggle()"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="7"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/></svg></button>${window.GBoxRamInspector ? GBoxRamInspector.button(sid) : ""}
     <button class="act" id="resetbtn" style="padding:5px 7px;line-height:0" title="Reset: restart the game (console reset; emulators without one relaunch the same game + mod)"
       aria-label="Reset" title="Reset (keeps your mods and character swaps) · Ctrl+click twice: hard reset to the original game, clears this game's mod settings" onclick='resetGame(${JSON.stringify(sid)}, this, event.ctrlKey)'><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg></button>
     <button class="act" style="color:var(--bad);border-color:var(--bad);padding:5px 7px;line-height:0" title="Stop: kill the emulator now and end the session"
@@ -2173,6 +2176,8 @@ sessionsView.after = (sid, mode) => {
   if (!head || head.dataset.state !== "running") { playing = null; if (active?.sid === sid) { active = null; pip(); } return; }
   sid = head.dataset.sid; playing = sid;
   COACH.ctl?.dispose(); COACH.ctl = window.GBoxAutoplayCoach?.mount(head, { sid, api }) || null;   // notes for the autoplay
+  RAMI.ctl = window.GBoxRamInspector?.mount(head, { sid, api,                // the game's RAM by name, events, hex, search
+    url: u => `${u}${u.includes("?") ? "&" : "?"}${tq()}` }) || null;
   window.sessionPresentation?.stop();
   const status = document.createElement('p'); status.className = 'mut'; status.setAttribute('role', 'status');
   status.style.cssText = 'padding:8px 12px;border:1px solid var(--line);border-radius:8px';

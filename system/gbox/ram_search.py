@@ -11,6 +11,10 @@ ranges around them: candidate_ranges()), and each sample can:
     labels come from the operator's buttons or a labeler (the screen-prompt watcher, a RAM-map field). Each candidate
     keeps the values it took per label, so value tables fall out: 0x80F3A2C1 on {3, 5} off {0} is "3 = TAKE,
     5 = JUMP OVER" once the prompts are named.
+  * tolerance: a labeler is sometimes wrong at the edges (the stream's frame lags the RAM a little; a prompt the bot
+    answers at once is gone before the sample). With tolerance t a candidate survives while its values could be made
+    disjoint by relabeling at most t samples: cost = sum over the values seen in both labels of min(on count, off
+    count). Candidates list the cleanest first (lowest cost, fewest values).
 
 Memory: while many candidates are left (dense) the candidates are a bool mask over the region and the labeled samples
 are kept whole (each region-sized) so the correlation stays exact; once at most SPARSE_AT are left (one "on" and one
@@ -41,7 +45,7 @@ class SearchError(ValueError):
 
 class Search:
     def __init__(self, base: int, size: int, type: str = "u8", big_endian: bool = True, max_bytes: int = MAX_BYTES,
-                 k: int = K, sparse_at: int = SPARSE_AT, clock=time.time):
+                 k: int = K, sparse_at: int = SPARSE_AT, tolerance: int = 0, clock=time.time):
         if type not in TYPES:
             raise SearchError(f"type is one of {', '.join(TYPES)}")
         if not 0 < size <= MAX_REGION:
@@ -52,13 +56,15 @@ class Search:
         self.size = size - size % self.w
         self.n = self.size // self.w
         self.max_bytes, self.k, self.sparse_at, self.clock = max_bytes, k, sparse_at, clock
+        self.tolerance = max(0, int(tolerance))
         self.native = self.dt.newbyteorder("=")
         self.mask = None                 # dense: bool[n] (None = every address still a candidate)
         self.idx = None                  # sparse: int64[m] element indexes
         self.prev = None                 # dense: values[n]; sparse: values[m]
         self.cur = None                  # the sample being applied
         self.labeled: list[tuple[str, np.ndarray]] = []    # dense: whole labeled samples kept for exact correlation
-        self.sets = None                 # sparse: {"on": (vals[m, k], n[m]), "off": ...}
+        self.sets = None                 # sparse: {"on": (vals[m, k], n[m], counts[m, k]), "off": ...}
+        self.cost = None                 # sparse: int32[m] samples that would need another label (see tolerance)
         self.counts = {"on": 0, "off": 0, "plain": 0}
         self.dropped = {"overlap": 0, "too_many_values": 0, "filtered": 0}
         self.folded = 0
@@ -140,8 +146,9 @@ class Search:
         del self.history[:-200]
         return step
 
-    def _keep(self, keep: np.ndarray, why: str):
-        """Narrow to the candidates where keep (aligned with the current candidates) is True."""
+    def _keep(self, keep: np.ndarray, why: str | None):
+        """Narrow to the candidates where keep (aligned with the current candidates) is True (why: what dropped them,
+        counted here for sparse searches; None when the caller counted already)."""
         if self.dense:
             if self.mask is None:
                 self.mask = keep.copy()
@@ -149,12 +156,14 @@ class Search:
                 self.mask &= keep
             return
         gone = int((~keep).sum())
-        self.dropped[why] += gone
+        if why:
+            self.dropped[why] += gone
         if not gone:
             return
         self.idx = self.idx[keep]
         self.prev = self.prev[keep] if self.prev is not None else None
         self.cur = self.cur[keep] if self.cur is not None else None
+        self.cost = self.cost[keep] if self.cost is not None else None
         if self.sets:
             self.sets = {k: (vals[keep], n[keep], c[keep]) for k, (vals, n, c) in self.sets.items()}
 
@@ -180,46 +189,80 @@ class Search:
             self.dropped["filtered"] += int((~keep).sum())
         self._keep(keep, "filtered")
 
+    def _drop_dense(self, keep: np.ndarray, why: str):
+        self.dropped[why] += int(((self.mask if self.mask is not None else True) & ~keep).sum())
+        self._keep(keep, why)
+
+    def _dense_cost(self) -> np.ndarray | None:
+        """Per address, the fewest kept samples that would need the other label for its on and off values to be
+        disjoint: sum over the on samples i of min(a_i, b_i) / a_i, a_i = on samples equal to on_i, b_i = off samples
+        equal to it (each value v contributes min(on count, off count))."""
+        on = [s for lab, s in self.labeled if lab == "on"]
+        off = [s for lab, s in self.labeled if lab == "off"]
+        if not on or not off:
+            return None
+        cost = np.zeros(self.n, dtype=np.float32)
+        for s in on:
+            a = np.zeros(self.n, dtype=np.float32)
+            b = np.zeros(self.n, dtype=np.float32)
+            for t in on:
+                a += s == t
+            for t in off:
+                b += s == t
+            cost += np.minimum(a, b) / a
+        return np.rint(cost).astype(np.int32)
+
     def _label(self, label: str):
         other = "off" if label == "on" else "on"
         self.counts[label] += 1
         v = self.cur
         if self.dense:
-            for lab, s in self.labeled:
-                if lab == other:
-                    keep = v != s
-                    if self.mask is not None:
-                        self.dropped["overlap"] += int((self.mask & ~keep).sum())
-                    else:
-                        self.dropped["overlap"] += int((~keep).sum())
-                    self._keep(keep, "overlap")
+            if self.tolerance == 0:                    # exact: one equal on / off pair rules an address out
+                for lab, s in self.labeled:
+                    if lab == other:
+                        self._drop_dense(v != s, "overlap")
+                self.labeled.append((label, v))
+                return
             self.labeled.append((label, v))
+            cost = self._dense_cost()
+            if cost is not None:
+                self._drop_dense(cost <= self.tolerance, "overlap")
             return
-        vals, n, _ = self.sets[other]
-        cols = np.arange(self.k)[None, :] < n[:, None]
-        clash = ((vals == v[:, None]) & cols).any(axis=1)
-        self._keep(~clash, "overlap")
         self._add(label, self.cur)
 
     def _add(self, label: str, v: np.ndarray):
-        """v (one value per candidate) into each candidate's set of `label` values (a candidate past K values goes)."""
+        """v (one value per candidate) into each candidate's set of `label` values, its count and the candidate's
+        cost; a candidate past K values in one label, or past the tolerance, goes."""
+        other = "off" if label == "on" else "on"
         vals, n, cnt = self.sets[label]
         cols = np.arange(self.k)[None, :] < n[:, None]
         hit = (vals == v[:, None]) & cols
         have = hit.any(axis=1)
         rows_hit = np.nonzero(have)[0]
-        cnt[rows_hit, hit[rows_hit].argmax(axis=1)] += 1
+        slot = hit[rows_hit].argmax(axis=1)
+        cnt[rows_hit, slot] += 1
         new = np.nonzero(~have)[0]
         full = new[n[new] >= self.k]
         room = new[n[new] < self.k]
         vals[room, n[room]] = v[room]
         cnt[room, n[room]] = 1
         n[room] += 1
-        if full.size:
-            keep = np.ones(n.size, dtype=bool)
-            keep[full] = False
-            self.dropped["too_many_values"] += int(full.size)
-            self._keep(keep, "too_many_values")
+        own = np.zeros(n.size, dtype=np.int32)          # how often this candidate has had v in `label`, now
+        own[rows_hit] = cnt[rows_hit, slot]
+        own[room] = 1
+        ovals, on_, ocnt = self.sets[other]             # min(own, other) grows by one when own is still <= other
+        ohit = (ovals == v[:, None]) & (np.arange(self.k)[None, :] < on_[:, None])
+        theirs = (ocnt * ohit).sum(axis=1)
+        self.cost += ((theirs > 0) & (own <= theirs)).astype(np.int32)
+        keep = np.ones(n.size, dtype=bool)
+        keep[full] = False
+        self.dropped["too_many_values"] += int(full.size)
+        over = self.cost > self.tolerance
+        over[full] = False
+        self.dropped["overlap"] += int(over.sum())
+        keep &= ~over
+        if not keep.all():
+            self._keep(keep, None)
 
     def _maybe_sparse(self, force: bool = False):
         if not self.dense or (self.count() > self.sparse_at and not force):
@@ -231,6 +274,7 @@ class Search:
         m = idx.size
         self.sets = {lab: (np.zeros((m, self.k), dtype=self.native), np.zeros(m, dtype=np.int32),
                            np.zeros((m, self.k), dtype=np.int32)) for lab in ("on", "off")}
+        self.cost = np.zeros(m, dtype=np.int32)
         for lab, s in labeled:                       # the kept samples, in order, give each candidate its value sets
             self._add(lab, s[self.idx])
 
@@ -239,6 +283,7 @@ class Search:
             return ((self.mask.nbytes if self.mask is not None else 0) + (self.prev.nbytes if self.prev is not None else 0)
                     + sum(s.nbytes for _, s in self.labeled))
         return (self.idx.nbytes + (self.prev.nbytes if self.prev is not None else 0)
+                + (self.cost.nbytes if self.cost is not None else 0)
                 + sum(a.nbytes + b.nbytes + c.nbytes for a, b, c in (self.sets or {}).values()))
 
     def _bound(self):
@@ -276,10 +321,12 @@ class Search:
         order = np.arange(self.idx.size)
         if self.sets and (self.counts["on"] or self.counts["off"]):
             nvals = self.sets["on"][1] + self.sets["off"][1]
-            order = np.lexsort((self.idx, nvals))      # fewest distinct values first: the cleanest signals
+            order = np.lexsort((self.idx, nvals, self.cost))   # cleanest first: fewest mislabels, then fewest values
         for j in order[:limit]:
             row = {"address": self.base + int(self.idx[j]) * self.w,
                    "value": self._py(self.prev[j]) if self.prev is not None else None}
+            if self.cost is not None and self.tolerance:
+                row["mislabeled"] = int(self.cost[j])
             if self.sets:
                 for lab in ("on", "off"):
                     vals, n, cnt = self.sets[lab]
@@ -294,6 +341,7 @@ class Search:
     def status(self) -> dict:
         return {"base": self.base, "size": self.size, "type": self.type, "width": self.w, "big_endian": self.big,
                 "candidates": self.count(), "mode": "dense" if self.dense else "sparse", "samples": dict(self.counts),
+                "tolerance": self.tolerance,
                 "dropped": dict(self.dropped), "folded": self.folded, "memory": self.memory(),
                 "partial_reads": self.candidate_ranges() is not None, "history": self.history[-20:],
                 "started": self.started}

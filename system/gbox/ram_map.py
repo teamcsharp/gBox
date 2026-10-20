@@ -373,11 +373,12 @@ class RamValues(dict):
         return out
 
 
-def _show(f: Field, v, raw) -> str:
+def _show(f: Field, v, raw, units: bool = True) -> str:
     if v is None:
         return "null"
-    if isinstance(v, list):
-        return "[" + ", ".join(_show(f, x, r) for x, r in zip(v, raw if isinstance(raw, list) else [None] * len(v))) + "]"
+    if isinstance(v, list):                         # a vector: its numbers, the units once
+        inner = "[" + ", ".join(_show(f, x, r, units=False) for x, r in zip(v, raw if isinstance(raw, list) else [None] * len(v))) + "]"
+        return inner + (f" {f.units}" if f.units and f.format != "deg" else "")
     lab = f.label(raw) if raw is not None else None
     if f.format == "hex" and isinstance(v, int) and not isinstance(v, bool):
         s = f"0x{v:0{max(2, f.size * 2)}X}"
@@ -391,7 +392,7 @@ def _show(f: Field, v, raw) -> str:
         s = f"{v:.6g}"
     else:
         s = str(v)
-    if f.units and f.format != "deg" and not isinstance(v, str):
+    if units and f.units and f.format != "deg" and not isinstance(v, str):
         s += f" {f.units}"
     if lab is not None and (f.enum or f.flags):
         s = f"{lab} ({s})" if f.enum else f"{s} [{lab}]"

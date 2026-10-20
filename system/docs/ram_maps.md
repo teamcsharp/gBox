@@ -115,7 +115,125 @@ watched field (enum / flags by default) as `{seq, t, field, old, new, old_label,
 `enemies[5].hp`. A frame of the game at that moment is kept with the newest events when the control plane has one in
 memory (no encoding, no request to the worker).
 
+A struct element's sub-field is watched when it has an enum / flags table (or `"watch": true`); `"watch": true` on
+the struct itself also logs elements appearing and disappearing (`enemies[5]: None -> live`).
+
 ### Adding fields (another agent, a script)
 
 Add them to `profiles/gamedata/<map id>-ram.json` in a PR, with `source` and `evidence`. `python -m gbox.ram_map check
-<file>` validates a map. The inspector's "add to map" writes the overlay file in gbox-data instead (see Files).
+<file>` validates a map; `python -m gbox.ram_map read G4BE08 --pid <Dolphin pid>` reads it once from a Dolphin on the
+same Linux host (read-only, its shared RAM view). The inspector's "add to map" writes the overlay file in gbox-data
+instead (see Files).
+
+## Python API (playbooks, scripts)
+
+```python
+from gbox import ram_map, ram_reader
+m = ram_map.load("G4BE08")                  # a map id, a disc id, a catalog game id, a session / game dict, or a path
+v = m.read(ram_reader.for_adapter(ad))      # in the worker: Dolphin's shared RAM on Linux, else the adapter's reads
+v["merc.timer"]                             # 87.3 (after scale: seconds)
+v["player.pos"]                             # [x, y, z]; None when the player pointer is null (v.errors says why)
+v.label("pad.held")                         # "R, A"
+v["enemies"]                                # [{"index": 3, "address": ..., "pos": [...], "hp": 1000, ...}] live slots only
+m.read(reader, names=["merc.timer"])        # only these fields (and the fields their counts / strides need)
+```
+
+Any reader works: a function `read(addr, n) -> bytes`, or an object with `read`, `rd` (the RE4 bot's `ShmMem` /
+`AdMem`) or `read_memory` (an adapter). With `read_many([(addr, n)])` (every `gbox.ram_reader.Reader`) one call per
+pointer level reads the whole map: RE4's 21 fields with the 80-slot enemy table are three batched reads, about 1.5 ms
+through Dolphin's shared RAM on the Spark (live 2026-10-20: median 1.52 ms, p95 6.9 ms; at the title 0.39 ms).
+`ram_map.changes(previous, current)` lists the watched fields that changed. `ram_map.detect(read, platform)` finds a
+map from the game's own memory (the disc id at 0x80000000 on GameCube / Wii).
+
+## The inspector (gbox/ram_inspector.py)
+
+One per running session, made on first use, on the control plane:
+
+* **Reader** (`gbox/ram_reader.py`), quickest first, every one read-only and within a budget (bytes and reads per
+  second by how it reads; a read that cannot get its budget in time raises `Throttled` and the panel shows the last
+  values):
+  * the session's adapter when its worker runs in the control plane's process (the Spark's `serve --worker`):
+    Dolphin's shared MEM1 / MEM2 views through `/proc/<pid>/mem` (`ram_dump.ShmRam`, opened read-only, no halt; a
+    24 MiB MEM1 snapshot takes ~80 ms), else the adapter's reads (Windows Dolphin's process memory: no halt;
+    RetroArch's network commands; a GDB stub: a batch per CPU halt, 64 KiB pieces with play between them);
+  * a Dolphin on the same Linux host whose worker is another process: its shared views by the session's pid;
+  * a session on another PC: its worker over the session channel, rpc op `read_ranges` (up to 512 ranges / 2 MiB per
+    request, base64; one CPU halt per batch on a GDB stub). A worker older than this answers "not allowed": the
+    reader then asks `read_memory` per range.
+* **Map**: the session's catalog game id, else the disc id read from RAM (GameCube / Wii), else `match.memory`.
+* **Live values**: the map read at most 10 times a second however many viewers poll; while someone watches (the
+  panel's polls, a labeler) a thread keeps reading (10 Hz shared memory / process memory, 4 Hz adapter commands and
+  the session channel, 2 Hz a GDB stub) and logs events. The last 500 events and the frames of the last 40 are kept.
+* **Hex**: up to 4 KiB at an address or at the end of a pointer chain.
+* **Search** (`gbox/ram_search.py`): a region (default: the map's first region, else the platform's main RAM) at
+  u8 / u16 / u32 / s8 / s16 / s32 / f32. Each sample: the region (or, once 20,000 or fewer candidates are left, only
+  the ranges around them), an optional Cheat Engine filter (changed / unchanged / increased / decreased / equals /
+  not_equals / range) and an optional label. Labeled samples keep the addresses whose "on" values and "off" values
+  never overlap, with the values each label saw: on {3 ×6, 5 ×3} off {0 ×14} reads "3 and 5 while the prompt shows".
+  `tolerance` (mislabels ok) lets a candidate keep up to that many samples on the wrong side: labels from the
+  picture are a little late at the edges. Memory: whole labeled samples while more than a million candidates are
+  left (one on / off pair usually leaves a few hundred thousand), then per candidate its last value and up to 8
+  values per label (more is a counter or a timer, not a state); 320 MiB at most per search, two searches at once.
+* **Labelers**: the screen-prompt watcher (`gbox/screen_prompt.py`) on the stream's newest frame (on while the game
+  draws a button prompt, optionally only A or B), or a RAM-map field's condition (`{"mask": "0x100", "ne": 0}`: A
+  held). A labeler reads the RAM once its label held for two checks and 0.25 s, and the sample counts only if the label
+  still holds 0.3 s later (the frame lags the RAM: a read at either edge of a short prompt would carry the wrong label;
+  `discarded` counts those). While the search keeps whole samples it samples at label changes only; after that, every
+  second while a label holds. A labeler stops after 30 minutes.
+* **Promote**: name, type, description, group, enum (prefilled from the candidate's values) into the overlay, with the
+  search as evidence (`source: scan`), audited.
+
+Nothing in the inspector writes game memory, sends input, pauses or touches save states.
+
+### API
+
+| route | |
+|---|---|
+| `GET /api/ram/maps` | the maps: id, title, platform, fields, promoted fields, catalog game ids |
+| `GET /api/ram/maps/{map_id}` | one map merged with its overlay (`describe()`) |
+| `POST /api/ram/maps/{map_id}/fields` `{name, field}` | add / replace a field in the overlay (checked: the merged map must load) |
+| `DELETE /api/ram/maps/{map_id}/fields/{name}` | remove a promoted field (repo fields change in a PR) |
+| `GET /api/sessions/{sid}/ram` | the inspector: map, reader and its budget, watcher, search |
+| `GET /api/sessions/{sid}/ram/live?since=N` | rows (name, group, value, display, label, address, error, suspect; struct rows), events after seq N, reader, reads / bytes |
+| `GET /api/sessions/{sid}/ram/events?since=N&limit=` | the event log |
+| `GET /api/sessions/{sid}/ram/frames/{fid}.jpg` | the frame kept with an event |
+| `GET /api/sessions/{sid}/ram/hex?address=&length=&pointer=base,off,...` | bytes now (hex), the chain it followed |
+| `POST /api/sessions/{sid}/ram/search` `{type, base?, size?, tolerance?}` | start (the first snapshot is taken) |
+| `GET /api/sessions/{sid}/ram/search?limit=` | status and candidates (address, value, per-label values, mislabeled) |
+| `POST /api/sessions/{sid}/ram/search/sample` `{label?: on/off, op?, value?, lo?, hi?}` | one sample |
+| `POST /api/sessions/{sid}/ram/search/auto` `{source: screen_prompt/field/off, button?, field?, cond?, hz?, tolerance?}` | a labeler |
+| `DELETE /api/sessions/{sid}/ram/search` | end it (frees its memory) |
+| `POST /api/sessions/{sid}/ram/promote` `{name, address or pointer, type, description, group, enum, flags, units, scale}` | add a found field to the session's game map |
+
+Errors: 404 no such session, 409 the session ended (or two searches already run), 422 a bad request (the message
+names it), 429 the read budget is spent, 502 the read failed.
+
+### The panel (clients/web/viz/ram-inspector.js)
+
+The chip button in a running session's header (after the pick whip) opens a floating panel over the session view,
+draggable by its title, placed first under the header and left of the watch panel; it reopens with the session's
+header when it was open there. Tabs: **Live** (by group; a changed value flashes; an address opens Hex), **Events**
+(newest first, with the frame of the moment), **Hex** (address, length, pointer chain, live; click a byte to follow
+the word there as a pointer) and **Search** (start with type / region / mislabels ok; Event on / Event off / Sample;
+a filter; an auto-labeler; candidates with their values per label and "Add to map"). Screenshots:
+`docs/evidence/ram-inspector/` (the panel drawn by the web shell headless, answering the RAM values recorded read-only
+from the live RE4 agent session on the Spark; the Search tab's candidates are synthetic, see below).
+
+## Live check, 2026-10-20 (Spark)
+
+Read-only (shared RAM through `/proc/<pid>/mem` opened O_RDONLY, frames through `GET .../frame.jpg`), with this
+branch's modules in a scratch copy, against RE4 GameCube agent sessions on lilspark while the Mercenaries bot played:
+
+* every field of G4BE08 read as the bot reads it: room 0x0400, Leon (hp 1860, then 0 when he died), position, facing,
+  aim pitch, the clock counting down, EmMgr 80 slots of 0xDE0 with 16 live Ganados (positions, health 1000 / 1400 /
+  1800), the unlock bits; null player pointers at the title and the menus reported as such;
+* events: the pad's A / B presses as the bot pressed them, each with the stream's frame;
+* search: 24 MiB MEM1 snapshot 77 ms, a filter step 70-140 ms dense, 28 ms sparse; at the Select Player menu
+  122,000 bytes change on their own (the frame buffer, audio, animation);
+* the screen-prompt labeled search did not find the prompt byte in two runs (4 and 5.5 minutes): the bot answers a
+  prompt within about half a second, so the labeler got 2 "on" samples in the first run (before the confirmation
+  window and the tolerance existed) and none in the second, which ended with Leon dead. A slower driver (the
+  operator, or a bot that waits on a prompt) gives it the samples it needs;
+* seen on the way: after Leon died the game sat on "You Are Dead · Continue Yes / No" for minutes while RAM still
+  read as a running round (room 0x0400, player present, clock frozen at 302.1 s, hp 0): `player.hp == 0` tells that
+  screen apart where `in_mercenaries` does not.

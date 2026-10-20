@@ -2,10 +2,8 @@
 hex with pointer chains, search with operator labels and labelers, add to map, the session-channel reader (read_ranges
 and the read_memory fallback for older workers) and the read budget. Read-only throughout: the fakes fail any write."""
 import io
-import sys
 import threading
 import time
-import types
 
 import pytest
 from fastapi.testclient import TestClient
@@ -165,7 +163,7 @@ def test_a_ram_map_field_labels_the_search(app):
     app.post(f"/api/sessions/{SID}/ram/search", json={"type": "u8", "base": "0x80400000", "size": 0x10000}).raise_for_status()
     insp = ram_inspector._INSPECTORS[SID]
     label = ram_inspector.field_labeler(insp, "pad.held", {"mask": "0x100", "ne": 0})     # "A held" is the event
-    auto = ram_inspector.AutoLabel(insp, "field", label, stable=1, settle_s=0)
+    auto = ram_inspector.AutoLabel(insp, "field", label, stable=1, settle_s=0, after_s=0)
     flag = 0x80401234
     took = []
     for held in (True, True, False, True, False, False):
@@ -185,28 +183,53 @@ def test_a_ram_map_field_labels_the_search(app):
     assert bad.status_code == 422
 
 
-def test_the_screen_prompt_labels_the_search_from_the_streams_frames(app, monkeypatch):
-    seen = []
-    fake_sp = types.SimpleNamespace(PROFILES={"G4BE08": {}}, DEFAULT="G4BE08", decode=lambda b: b,
-                                    detect=lambda img, profile: seen.append(profile) or ({"button": "a", "px": 200}
-                                                                                          if img == b"A" else None))
-    monkeypatch.setitem(sys.modules, "gbox.screen_prompt", fake_sp)
-    import gbox
-    monkeypatch.setattr(gbox, "screen_prompt", fake_sp, raising=False)
+def prompt_jpeg(shown: bool) -> bytes:
+    """A 640x480 RE4 frame, with the A prompt's teal-green disc where the game draws it when shown."""
+    import numpy as np
+    img = np.zeros((480, 640, 3), np.uint8)
+    img[:, :] = (90, 80, 60)
+    if shown:
+        yy, xx = np.ogrid[:480, :640]
+        img[(yy - 386) ** 2 + (xx - 259) ** 2 <= 100] = (40, 134, 104)
+    out = io.BytesIO()
+    Image.fromarray(img).save(out, "JPEG", quality=95)
+    return out.getvalue()
+
+
+def test_the_screen_prompt_labels_the_search_from_the_streams_frames(app):
     app.post(f"/api/sessions/{SID}/ram/search", json={"type": "u8", "base": "0x80400000", "size": 0x1000}).raise_for_status()
     insp = ram_inspector._INSPECTORS[SID]
-    frames = {"jpeg": None, "seq": 0}
-    insp.frame_fn = lambda sid: (frames["jpeg"], frames["seq"], time.time()) if frames["jpeg"] else None
     label = ram_inspector.prompt_labeler(insp)
     assert label() == (None, "no fresh frame")
-    auto = ram_inspector.AutoLabel(insp, "screen_prompt", label, stable=1, settle_s=0)
+    auto = ram_inspector.AutoLabel(insp, "screen_prompt", label, stable=1, settle_s=0, after_s=0)
+    shown_jpeg, hidden_jpeg = prompt_jpeg(True), prompt_jpeg(False)
     for shown in (True, False, True, False):
-        frames["jpeg"], frames["seq"] = (b"A" if shown else b"-"), frames["seq"] + 1
-        app.fake.ram[0x400100] = 4 if shown else 0
+        app.post(f"/api/sessions/{SID}/frame", content=shown_jpeg if shown else hidden_jpeg).raise_for_status()
+        app.fake.ram[0x400100] = 4 if shown else 0         # the game's own prompt state, which the search is after
         auto.step()
         auto.step()
-    assert auto.samples == {"on": 2, "off": 2} and seen[0] == "G4BE08"
+    assert auto.samples == {"on": 2, "off": 2} and auto.note in ("no prompt", "same frame")
     assert insp.search.candidates(1)[0]["address"] == 0x80400100
+    r = app.post(f"/api/sessions/{SID}/ram/search/auto", json={"source": "screen_prompt", "button": "a"})
+    assert r.status_code == 200 and r.json()["source"] == "screen_prompt" and r.json()["button"] == "a"
+
+
+def test_a_labeled_read_counts_only_when_the_label_still_holds_after_it(app):
+    app.post(f"/api/sessions/{SID}/ram/search", json={"type": "u8", "base": "0x80400000", "size": 0x1000}).raise_for_status()
+    insp = ram_inspector._INSPECTORS[SID]
+    now = [1000.0]
+    insp.clock = lambda: now[0]
+    labels = iter([])
+    auto = ram_inspector.AutoLabel(insp, "test", lambda: (next(labels), "scripted"), stable=2, settle_s=0.25, after_s=0.3)
+    took = []
+    for t, lab, ram in [(0.0, "on", 3), (0.13, "on", 3), (0.26, "on", 3), (0.40, "on", 3), (0.60, "on", 3),   # read, then confirmed
+                        (0.70, "off", 0), (0.83, "off", 3), (0.96, "off", 3), (1.10, "on", 3),   # read at 0.96, the label flips: not counted
+                        (1.20, "on", 3), (1.40, "on", 3), (1.50, "on", 3), (1.80, "on", 3)]:
+        now[0], labels = 1000.0 + t, iter([lab])
+        app.fake.ram[0x400200] = ram
+        took.append(auto.step())
+    assert took == [None, None, None, None, "on", None, None, None, None, None, None, None, "on"]
+    assert auto.samples == {"on": 2, "off": 0} and auto.discarded == 1 and auto.status()["discarded"] == 1
 
 
 def test_a_session_on_another_pc_is_read_through_its_channel(app, monkeypatch):

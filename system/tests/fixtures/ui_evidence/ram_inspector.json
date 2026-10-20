@@ -1,0 +1,979 @@
+{
+ "title": "RAM inspector: the chip button in the Sessions header opens a floating panel (Live / Events / Hex / Search)",
+ "branch": "ram-inspector",
+ "include": [
+  "_web_shell.json"
+ ],
+ "snippets_note": "Live, Events and Hex answer the RAM-map values, events and bytes the inspector read read-only from the live RE4 GameCube agent session e2771e1c892e46e9-d7dbf0129c4f4b1b on the Spark (2026-10-20 17:17 Spark time; renamed w1-re4 here): 16 live Ganados, Leon dead at the Continue screen (hp 0, the clock frozen at 302 s), the bot pressing B. The pictures here are synthetic placeholders. SYNTHETIC search answer (shape of a real one): the live search on the Spark did not converge (candidate values made up to show the per-label value tables).",
+ "local_storage": {
+  "gbox_ram_inspector": {
+   "open": "w1-re4",
+   "tab": "Live"
+  }
+ },
+ "routes": {
+  "/api/sessions": [
+   {
+    "session_id": "w1-re4",
+    "game_id": "78ab9efa2e310db4",
+    "title": "Resident Evil 4 (USA) (Disc 1)",
+    "state": "running",
+    "adapter": "dolphin",
+    "started": "$now-1200",
+    "last_frame_age": 0.1,
+    "agent_owned": true,
+    "detail": {
+     "worker_name": "lilspark",
+     "display": ":90"
+    }
+   }
+  ],
+  "/api/sessions/w1-re4/mjpeg": {
+   "$placeholder": "synthetic frame \u00b7 Resident Evil 4 Mercenaries",
+   "hue": 8,
+   "style": "scene"
+  },
+  "/api/catalog/78ab9efa2e310db4": {
+   "game_id": "78ab9efa2e310db4",
+   "title": "Resident Evil 4 (USA) (Disc 1)",
+   "platform": "gamecube",
+   "favorite": false
+  },
+  "/api/games/*/workbench": {
+   "mods": [],
+   "controls": [],
+   "bookmarks": []
+  },
+  "/api/sessions/w1-re4/ram/live*": {
+   "session_id": "w1-re4",
+   "map": "G4BE08",
+   "map_error": null,
+   "title": "Resident Evil 4 (GameCube, NTSC-U)",
+   "groups": {
+    "game": "Where the game is: room, money, the disc",
+    "player": "Leon (the player em, EmMgr slot 0)",
+    "merc": "The Mercenaries: clock and combo",
+    "pad": "The controller as the game reads it",
+    "emmgr": "The enemy manager (EmMgr 0x8027DF20)",
+    "enemies": "Live Ganados (EmMgr slots 1..count)",
+    "save": "The system save (unlocks)"
+   },
+   "rows": [
+    {
+     "name": "game.disc_id",
+     "group": "game",
+     "type": "str",
+     "units": "",
+     "watch": false,
+     "address": "0x80000000",
+     "value": "G4BE08",
+     "display": "G4BE08"
+    },
+    {
+     "name": "game.global",
+     "group": "game",
+     "type": "ptr",
+     "units": "",
+     "watch": false,
+     "address": "0x802B2280",
+     "value": 2150102992,
+     "display": "0x8027F7D0"
+    },
+    {
+     "name": "game.room",
+     "group": "game",
+     "type": "u16",
+     "units": "",
+     "watch": true,
+     "address": "0x80284778",
+     "value": 1024,
+     "display": "Mercenaries: Pueblo (village) (0x0400)",
+     "label": "Mercenaries: Pueblo (village)",
+     "format": "hex"
+    },
+    {
+     "name": "game.stage",
+     "group": "game",
+     "type": "u16",
+     "units": "",
+     "watch": true,
+     "address": "0x80284778",
+     "value": 4,
+     "display": "The Mercenaries (4)",
+     "label": "The Mercenaries"
+    },
+    {
+     "name": "game.money",
+     "group": "game",
+     "type": "u32",
+     "units": "ptas",
+     "watch": false,
+     "address": "0x80284774",
+     "value": 0,
+     "display": "0 ptas"
+    },
+    {
+     "name": "player.ptr",
+     "group": "player",
+     "type": "ptr",
+     "units": "",
+     "watch": false,
+     "address": "0x802B3044",
+     "value": 2165125120,
+     "display": "0x810D3000"
+    },
+    {
+     "name": "player.hp",
+     "group": "player",
+     "type": "s16",
+     "units": "",
+     "watch": false,
+     "address": "0x80284780",
+     "value": 0,
+     "display": "0"
+    },
+    {
+     "name": "player.pos",
+     "group": "player",
+     "type": "f32",
+     "units": "world units",
+     "watch": false,
+     "address": "0x810D3094",
+     "value": [
+      -17728.6,
+      -0.000732422,
+      5744.27
+     ],
+     "display": "[-17728.6, -0.000732422, 5744.27] world units"
+    },
+    {
+     "name": "player.facing",
+     "group": "player",
+     "type": "f32",
+     "units": "rad",
+     "watch": false,
+     "address": "0x810D30A4",
+     "value": 1.30541,
+     "display": "74.8\u00b0",
+     "format": "deg"
+    },
+    {
+     "name": "player.aim_pitch",
+     "group": "player",
+     "type": "f32",
+     "units": "rad",
+     "watch": false,
+     "address": "0x810D3258",
+     "value": 0.0,
+     "display": "0.0\u00b0",
+     "format": "deg"
+    },
+    {
+     "name": "merc.timer",
+     "group": "merc",
+     "type": "u32",
+     "units": "s",
+     "watch": false,
+     "address": "0x80279308",
+     "value": 302.067,
+     "display": "302.067 s"
+    },
+    {
+     "name": "merc.combo",
+     "group": "merc",
+     "type": "u32",
+     "units": "",
+     "watch": false,
+     "address": "0x80213954",
+     "value": 0,
+     "display": "0"
+    },
+    {
+     "name": "merc.combo_timer",
+     "group": "merc",
+     "type": "u32",
+     "units": "s",
+     "watch": false,
+     "address": "0x80213958",
+     "value": 0.0,
+     "display": "0 s"
+    },
+    {
+     "name": "merc.time_pickup",
+     "group": "merc",
+     "type": "u16",
+     "units": "s",
+     "watch": false,
+     "address": "0x8028474E",
+     "value": 0,
+     "display": "0 s"
+    },
+    {
+     "name": "pad.held",
+     "group": "pad",
+     "type": "u16",
+     "units": "",
+     "watch": true,
+     "address": "0x80287E9E",
+     "value": 0,
+     "display": "0x0000 [none]",
+     "label": "none",
+     "format": "hex"
+    },
+    {
+     "name": "emmgr.base",
+     "group": "emmgr",
+     "type": "ptr",
+     "units": "",
+     "watch": false,
+     "address": "0x8027DF20",
+     "value": 2165125120,
+     "display": "0x810D3000"
+    },
+    {
+     "name": "emmgr.count",
+     "group": "emmgr",
+     "type": "u32",
+     "units": "",
+     "watch": false,
+     "address": "0x8027DF24",
+     "value": 80,
+     "display": "80"
+    },
+    {
+     "name": "emmgr.stride",
+     "group": "emmgr",
+     "type": "u32",
+     "units": "",
+     "watch": false,
+     "address": "0x8027DF28",
+     "value": 3552,
+     "display": "0x00000DE0",
+     "format": "hex"
+    },
+    {
+     "name": "enemies",
+     "group": "enemies",
+     "type": "struct",
+     "units": "",
+     "watch": false,
+     "address": "0x810D3000",
+     "rows": [
+      {
+       "index": 30,
+       "address": "0x810ED040",
+       "flags": 33562727,
+       "pos": [
+        -9518.31,
+        0.00115967,
+        -19369.9
+       ],
+       "facing": 2.95223,
+       "hp": 1000,
+       "hp_max": 1000,
+       "esl": 0
+      },
+      {
+       "index": 31,
+       "address": "0x810EDE20",
+       "flags": 33562727,
+       "pos": [
+        24751.0,
+        1109.03,
+        -1993.34
+       ],
+       "facing": 2.58166,
+       "hp": 1000,
+       "hp_max": 1000,
+       "esl": 1
+      },
+      {
+       "index": 32,
+       "address": "0x810EEC00",
+       "flags": 33562743,
+       "pos": [
+        -15520.9,
+        -0.00427246,
+        7034.97
+       ],
+       "facing": -2.09809,
+       "hp": 1400,
+       "hp_max": 1400,
+       "esl": 85
+      },
+      {
+       "index": 33,
+       "address": "0x810EF9E0",
+       "flags": 33562743,
+       "pos": [
+        7740.67,
+        856.67,
+        23071.4
+       ],
+       "facing": -2.16836,
+       "hp": 1400,
+       "hp_max": 1400,
+       "esl": 6
+      },
+      {
+       "index": 34,
+       "address": "0x810F07C0",
+       "flags": 33562743,
+       "pos": [
+        -18088.4,
+        0.000244141,
+        6719.55
+       ],
+       "facing": 2.78535,
+       "hp": 1400,
+       "hp_max": 1400,
+       "esl": 109
+      },
+      {
+       "index": 35,
+       "address": "0x810F15A0",
+       "flags": 33562743,
+       "pos": [
+        12818.5,
+        891.616,
+        16613.0
+       ],
+       "facing": -1.91256,
+       "hp": 1400,
+       "hp_max": 1400,
+       "esl": 8
+      },
+      {
+       "index": 36,
+       "address": "0x810F2380",
+       "flags": 33562743,
+       "pos": [
+        -13587.6,
+        -0.00256348,
+        1376.37
+       ],
+       "facing": -0.853974,
+       "hp": 1500,
+       "hp_max": 1500,
+       "esl": 114
+      },
+      {
+       "index": 37,
+       "address": "0x810F3160",
+       "flags": 33562727,
+       "pos": [
+        17937.0,
+        1393.44,
+        17492.2
+       ],
+       "facing": 0.725907,
+       "hp": 1000,
+       "hp_max": 1000,
+       "esl": 110
+      },
+      {
+       "index": 38,
+       "address": "0x810F3F40",
+       "flags": 33562727,
+       "pos": [
+        23322.3,
+        1338.7,
+        17184.3
+       ],
+       "facing": 0.670032,
+       "hp": 1000,
+       "hp_max": 1000,
+       "esl": 111
+      },
+      {
+       "index": 39,
+       "address": "0x810F4D20",
+       "flags": 33562727,
+       "pos": [
+        21133.6,
+        1361.5,
+        17333.0
+       ],
+       "facing": 0.977934,
+       "hp": 1000,
+       "hp_max": 1000,
+       "esl": 112
+      },
+      {
+       "index": 40,
+       "address": "0x810F5B00",
+       "flags": 33562727,
+       "pos": [
+        14594.4,
+        1024.26,
+        14697.9
+       ],
+       "facing": -2.36047,
+       "hp": 1000,
+       "hp_max": 1000,
+       "esl": 113
+      },
+      {
+       "index": 41,
+       "address": "0x810F68E0",
+       "flags": 33562743,
+       "pos": [
+        -460.782,
+        3200.0,
+        -13000.4
+       ],
+       "facing": -1.5252,
+       "hp": 1400,
+       "hp_max": 1400,
+       "esl": 87
+      },
+      {
+       "index": 42,
+       "address": "0x810F76C0",
+       "flags": 33562743,
+       "pos": [
+        -9713.07,
+        0.000732422,
+        -1229.88
+       ],
+       "facing": -1.05178,
+       "hp": 1400,
+       "hp_max": 1400,
+       "esl": 83
+      },
+      {
+       "index": 44,
+       "address": "0x810F9280",
+       "flags": 33562743,
+       "pos": [
+        -18354.1,
+        -0.000732422,
+        7953.84
+       ],
+       "facing": 2.86604,
+       "hp": 1600,
+       "hp_max": 1600,
+       "esl": 115
+      },
+      {
+       "index": 46,
+       "address": "0x810FAE40",
+       "flags": 33562743,
+       "pos": [
+        -16148.0,
+        -0.00299072,
+        7212.87
+       ],
+       "facing": -2.31947,
+       "hp": 6500,
+       "hp_max": 6500,
+       "esl": 17
+      },
+      {
+       "index": 50,
+       "address": "0x810FE5C0",
+       "flags": 33562743,
+       "pos": [
+        -18478.8,
+        -0.00341797,
+        4840.56
+       ],
+       "facing": -1.83618,
+       "hp": 6500,
+       "hp_max": 6500,
+       "esl": 18
+      }
+     ],
+     "display": "16 live of 80",
+     "sub": {
+      "flags": {
+       "type": "u32",
+       "units": "",
+       "format": "hex"
+      },
+      "pos": {
+       "type": "f32",
+       "units": "world units",
+       "format": ""
+      },
+      "facing": {
+       "type": "f32",
+       "units": "rad",
+       "format": "deg"
+      },
+      "hp": {
+       "type": "s16",
+       "units": "",
+       "format": ""
+      },
+      "hp_max": {
+       "type": "s16",
+       "units": "",
+       "format": ""
+      },
+      "esl": {
+       "type": "u8",
+       "units": "",
+       "format": ""
+      }
+     },
+     "value": null
+    },
+    {
+     "name": "save.global",
+     "group": "save",
+     "type": "ptr",
+     "units": "",
+     "watch": false,
+     "address": "0x802B2284",
+     "value": 2150137432,
+     "display": "0x80287E58"
+    },
+    {
+     "name": "save.extras",
+     "group": "save",
+     "type": "u32",
+     "units": "",
+     "watch": true,
+     "address": "0x80287E5C",
+     "value": 4282384384,
+     "display": "0xFF400000 [Mercenaries: Ada, Mercenaries: HUNK, Mercenaries: Krauser, Mercenaries: Wesker, 0xF0400000]",
+     "label": "Mercenaries: Ada, Mercenaries: HUNK, Mercenaries: Krauser, Mercenaries: Wesker, 0xF0400000",
+     "format": "hex"
+    }
+   ],
+   "errors": 0,
+   "at": 1792538609.2722776,
+   "age_s": 0.04,
+   "events": [
+    {
+     "seq": 1,
+     "t": 1792538603.569,
+     "field": "pad.held",
+     "old": 0,
+     "new": 512,
+     "old_label": "none",
+     "new_label": "B",
+     "frame": 1
+    },
+    {
+     "seq": 2,
+     "t": 1792538603.769,
+     "field": "pad.held",
+     "old": 512,
+     "new": 0,
+     "old_label": "B",
+     "new_label": "none",
+     "frame": 2
+    },
+    {
+     "seq": 3,
+     "t": 1792538604.37,
+     "field": "pad.held",
+     "old": 0,
+     "new": 512,
+     "old_label": "none",
+     "new_label": "B",
+     "frame": 3
+    },
+    {
+     "seq": 4,
+     "t": 1792538604.57,
+     "field": "pad.held",
+     "old": 512,
+     "new": 0,
+     "old_label": "B",
+     "new_label": "none",
+     "frame": 4
+    },
+    {
+     "seq": 5,
+     "t": 1792538605.17,
+     "field": "pad.held",
+     "old": 0,
+     "new": 512,
+     "old_label": "none",
+     "new_label": "B",
+     "frame": 5
+    },
+    {
+     "seq": 6,
+     "t": 1792538605.471,
+     "field": "pad.held",
+     "old": 512,
+     "new": 0,
+     "old_label": "B",
+     "new_label": "none",
+     "frame": 6
+    },
+    {
+     "seq": 7,
+     "t": 1792538606.492,
+     "field": "pad.held",
+     "old": 0,
+     "new": 512,
+     "old_label": "none",
+     "new_label": "B",
+     "frame": 7
+    },
+    {
+     "seq": 8,
+     "t": 1792538607.148,
+     "field": "pad.held",
+     "old": 512,
+     "new": 0,
+     "old_label": "B",
+     "new_label": "none",
+     "frame": 8
+    },
+    {
+     "seq": 9,
+     "t": 1792538607.75,
+     "field": "pad.held",
+     "old": 0,
+     "new": 512,
+     "old_label": "none",
+     "new_label": "B",
+     "frame": 9
+    },
+    {
+     "seq": 10,
+     "t": 1792538608.052,
+     "field": "pad.held",
+     "old": 512,
+     "new": 0,
+     "old_label": "B",
+     "new_label": "none",
+     "frame": 10
+    },
+    {
+     "seq": 11,
+     "t": 1792538608.553,
+     "field": "pad.held",
+     "old": 0,
+     "new": 512,
+     "old_label": "none",
+     "new_label": "B",
+     "frame": 11
+    },
+    {
+     "seq": 12,
+     "t": 1792538608.953,
+     "field": "pad.held",
+     "old": 512,
+     "new": 0,
+     "old_label": "B",
+     "new_label": "none",
+     "frame": 12
+    }
+   ],
+   "seq": 12,
+   "reader": {
+    "kind": "shm",
+    "bytes_per_s": 268435456,
+    "reads_per_s": 400.0,
+    "spent": 13538352,
+    "throttled": 0,
+    "pid": 1599368,
+    "how": "Dolphin shared memory (/proc/1599368/mem, read-only, no halt)"
+   },
+   "error": null,
+   "hz": 10.0,
+   "reads": 10,
+   "bytes": 282049
+  },
+  "/api/sessions/w1-re4/ram/hex?pointer*": {
+   "address": 2165125268,
+   "address_hex": "0x810D3094",
+   "length": 256,
+   "hex": "c68a8127ba40000045b38232000000003fa717ad000000003f8000003f8000003f8000003f8000003f8000003f8000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008101dba00000009b04000200000077ff000000000000000000000000c68a8127ba40000045b3823200000000000000000000000080af8d04000100070000000000000000000000000000000000000000000000000000000000000000000000003f8000003f80000080ff86e000000000bf4aed8600000000bf1c10a7460e77d3800000003f80000000000000c564077f3f1c10a780000000bf4aed8646fb8837",
+   "chain": [
+    {
+     "at": "0x802B3044",
+     "value": "0x810D3000",
+     "offset": "0x94"
+    }
+   ],
+   "big_endian": true,
+   "at": 1792538609.297
+  },
+  "/api/sessions/w1-re4/ram/hex*": {
+   "address": 2150314052,
+   "address_hex": "0x802B3044",
+   "length": 256,
+   "hex": "810d3000000000008173258c00000000000000000000000000004d000000000000000001000000f680e6b88000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000080ea93000000002c809d15208027f3fc000000000000000080a483e0000000000000005a000000000000000180981a00812072c0000000000000000080440000804cc0008044000042c800004974240043700000c3700000c3a0000043a00000809540c0809cc0800200000080954000809540a0817fa460040400000000000080241960803b000000000000000000000000000080000000000000010000001000000000",
+   "chain": [],
+   "big_endian": true,
+   "at": 1792538609.297
+  },
+  "/api/sessions/w1-re4/ram/search*": {
+   "active": true,
+   "base": 2147483648,
+   "base_hex": "0x80000000",
+   "size": 25165824,
+   "type": "u8",
+   "width": 1,
+   "big_endian": true,
+   "candidates": 3,
+   "mode": "sparse",
+   "samples": {
+    "on": 9,
+    "off": 14,
+    "plain": 1
+   },
+   "tolerance": 2,
+   "dropped": {
+    "overlap": 24907101,
+    "too_many_values": 258719,
+    "filtered": 0
+   },
+   "folded": 0,
+   "memory": 1184,
+   "partial_reads": true,
+   "history": [],
+   "started": "$now-240",
+   "candidates_list": [
+    {
+     "address": 2152047553,
+     "address_hex": "0x8045A3C1",
+     "value": 0,
+     "mislabeled": 1,
+     "on": [
+      {
+       "value": 3,
+       "n": 6
+      },
+      {
+       "value": 5,
+       "n": 3
+      }
+     ],
+     "off": [
+      {
+       "value": 0,
+       "n": 13
+      },
+      {
+       "value": 3,
+       "n": 1
+      }
+     ]
+    },
+    {
+     "address": 2152047556,
+     "address_hex": "0x8045A3C4",
+     "value": 0,
+     "mislabeled": 1,
+     "on": [
+      {
+       "value": 1,
+       "n": 9
+      }
+     ],
+     "off": [
+      {
+       "value": 0,
+       "n": 13
+      },
+      {
+       "value": 1,
+       "n": 1
+      }
+     ]
+    },
+    {
+     "address": 2150097138,
+     "address_hex": "0x8027E0F2",
+     "value": 64,
+     "mislabeled": 2,
+     "on": [
+      {
+       "value": 72,
+       "n": 7
+      },
+      {
+       "value": 64,
+       "n": 2
+      }
+     ],
+     "off": [
+      {
+       "value": 64,
+       "n": 14
+      }
+     ]
+    }
+   ],
+   "auto": {
+    "source": "screen_prompt",
+    "button": "a",
+    "label": "off",
+    "note": "no prompt",
+    "samples": {
+     "on": 9,
+     "off": 14
+    },
+    "discarded": 4,
+    "checks": 1890,
+    "running": true,
+    "error": null
+   }
+  },
+  "/api/sessions/w1-re4/ram/frames/*": {
+   "$placeholder": "synthetic frame kept with an event",
+   "hue": 0
+  },
+  "/api/sessions/w1-re4/coach": {
+   "latest": null,
+   "count": 0
+  }
+ },
+ "shots": [
+  {
+   "name": "ram-inspector-live",
+   "url": "/#token=fixture&session=w1-re4",
+   "viewport": [
+    1400,
+    900
+   ],
+   "actions": [
+    {
+     "wait_for": "#ram-inspector .ri-live .ri-row"
+    },
+    {
+     "wait": 900
+    }
+   ]
+  },
+  {
+   "name": "ram-inspector-header",
+   "url": "/#token=fixture&session=w1-re4",
+   "viewport": [
+    1400,
+    900
+   ],
+   "actions": [
+    {
+     "wait_for": "#ram-inspector .ri-live .ri-row"
+    },
+    {
+     "wait": 500
+    }
+   ],
+   "clip": "#session-head",
+   "pad": 8
+  },
+  {
+   "name": "ram-inspector-events",
+   "url": "/#token=fixture&session=w1-re4",
+   "viewport": [
+    1400,
+    900
+   ],
+   "actions": [
+    {
+     "wait_for": "#ram-inspector .ri-live .ri-row"
+    },
+    {
+     "click": "#ram-inspector .ri-tabs button[data-tab=Events]"
+    },
+    {
+     "wait_for": "#ram-inspector .ri-ev"
+    },
+    {
+     "wait": 500
+    }
+   ],
+   "clip": "#ram-inspector",
+   "pad": 8
+  },
+  {
+   "name": "ram-inspector-hex",
+   "url": "/#token=fixture&session=w1-re4",
+   "viewport": [
+    1400,
+    900
+   ],
+   "actions": [
+    {
+     "wait_for": "#ram-inspector .ri-live .ri-row"
+    },
+    {
+     "click": "#ram-inspector .ri-tabs button[data-tab=Hex]"
+    },
+    {
+     "fill": [
+      "#ram-inspector .ri-ptr",
+      "0x802B3044,0x94"
+     ]
+    },
+    {
+     "click": "#ram-inspector .ri-go"
+    },
+    {
+     "wait_for": "#ram-inspector .ri-hex .ri-hr"
+    },
+    {
+     "wait": 600
+    }
+   ],
+   "clip": "#ram-inspector",
+   "pad": 8
+  },
+  {
+   "name": "ram-inspector-search",
+   "url": "/#token=fixture&session=w1-re4",
+   "viewport": [
+    1400,
+    900
+   ],
+   "actions": [
+    {
+     "wait_for": "#ram-inspector .ri-live .ri-row"
+    },
+    {
+     "click": "#ram-inspector .ri-tabs button[data-tab=Search]"
+    },
+    {
+     "wait_for": "#ram-inspector .ri-cands table"
+    },
+    {
+     "click": "#ram-inspector .ri-add"
+    },
+    {
+     "fill": [
+      "#ram-inspector .ri-pn",
+      "prompt.action"
+     ]
+    },
+    {
+     "fill": [
+      "#ram-inspector .ri-pd",
+      "the action the on-screen prompt offers"
+     ]
+    },
+    {
+     "wait": 400
+    }
+   ],
+   "clip": "#ram-inspector",
+   "pad": 8
+  },
+  {
+   "name": "ram-inspector-narrow",
+   "url": "/#token=fixture&session=w1-re4",
+   "viewport": [
+    760,
+    900
+   ],
+   "actions": [
+    {
+     "wait_for": "#ram-inspector .ri-live .ri-row"
+    },
+    {
+     "wait": 800
+    }
+   ]
+  }
+ ]
+}
