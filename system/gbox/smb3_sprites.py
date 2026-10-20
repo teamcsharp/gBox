@@ -30,7 +30,8 @@ from . import smb3_analysis as ana
 from . import smb3_inventory as inv
 
 VERSION = "1.0"
-READER_VERSION = 1
+READER_VERSION = 2               # 2: the "every sprite and tile" entry (all CHR pages, #2799)
+ALL_COLS = 16                    # pages per row in the every-tile sheet (16 x 64 px = 1024 px wide)
 FPS = 60.0                       # NTSC NES vblank rate
 SHEET_COLS = 9                   # 81 frames as a 9x9 grid of 24x32 cells
 SHEET_ROWS = 9
@@ -44,11 +45,15 @@ def title_test(title: str, platform: str) -> bool:
 
 
 def roster() -> list[dict]:
-    """Mario only: Luigi is drawn by the same tables and CHR pages, differing
-    only by the palette entry for small/big/leaf."""
+    """Mario (Luigi is drawn by the same tables and CHR pages, differing only by the palette entry for
+    small/big/leaf), and every CHR page of the ROM: every sprite and background tile of every character,
+    enemy, item and level (#2799)."""
     return [{"key": "MARIO", "slug": "smb3_mario", "name": "Mario (Super Mario Bros. 3)",
              "char": "mario",
-             "aliases": ["Mario", "SMB3 Mario", "Super Mario Bros. 3 Mario"], "kind": "character"}]
+             "aliases": ["Mario", "SMB3 Mario", "Super Mario Bros. 3 Mario"], "kind": "character"},
+            {"key": "ALL", "slug": "smb3_all_tiles", "name": "Every sprite and tile (Super Mario Bros. 3)",
+             "aliases": ["all sprites", "every sprite", "all tiles", "SMB3 graphics", "every asset"],
+             "kind": "sprites"}]
 
 
 # ------------------------------------------------------------------------------------------------ 2bpp codec
@@ -168,6 +173,56 @@ class SMB3Sprites:
                     idx[(t // 8 * 8 + y) * 64 + (t % 8) * 8 + x] = rows[y][x]
         return indexed_png_bytes(64, 64, bytes(idx), ATLAS_PALETTE)
 
+    def page_count(self) -> int:
+        return len(self.chr) // inv.CHR_PAGE
+
+    def all_pages_png(self) -> bytes:
+        """Every CHR page of the ROM in one tile-exact sheet: ALL_COLS pages per row, each page an 8x8 grid of its
+        64 tiles (64x64 px), 2bpp indices kept (0 transparent)."""
+        n = self.page_count()
+        rows = max(1, -(-n // ALL_COLS))
+        w, h = ALL_COLS * 64, rows * 64
+        idx = bytearray(w * h)
+        for page in range(n):
+            ox, oy = (page % ALL_COLS) * 64, (page // ALL_COLS) * 64
+            for t in range(64):
+                tile_rows = inv.tile(self.chr, page * 64 + t)
+                for y in range(8):
+                    base = (oy + t // 8 * 8 + y) * w + ox + (t % 8) * 8
+                    idx[base:base + 8] = bytes(tile_rows[y])
+        return indexed_png_bytes(w, h, bytes(idx), ATLAS_PALETTE)
+
+    def page_index(self) -> list[dict]:
+        import hashlib
+        player = set(self.pages) | {self.shoe_page}
+        out = []
+        for page in range(self.page_count()):
+            raw = self.chr[page * inv.CHR_PAGE:(page + 1) * inv.CHR_PAGE]
+            blank = sum(1 for t in range(64) if not any(raw[t * 16:t * 16 + 16]))
+            out.append({"page": f"0x{page:02X}", "file": f"pages/page_{page:02x}.png",
+                        "sheet_cell": [page % ALL_COLS, page // ALL_COLS], "tiles": 64, "blank_tiles": blank,
+                        "player_page": page in player, "sha256": hashlib.sha256(raw).hexdigest()})
+        return out
+
+    def export_all(self, work, progress=lambda pct, msg: None) -> list[Path]:
+        """The every-sprite-and-tile entry: all_tiles.png (the whole CHR ROM), one atlas per page, pages.json."""
+        work = Path(work)
+        (work / "pages").mkdir(parents=True, exist_ok=True)
+        n = self.page_count()
+        progress(0, "every CHR page sheet")
+        (work / "all_tiles.png").write_bytes(self.all_pages_png())
+        for page in range(n):
+            if page % 16 == 0:
+                progress(10 + 80 * page / max(n, 1), f"page atlas {page:02X} of {n:02X}")
+            (work / "pages" / f"page_{page:02x}.png").write_bytes(self.atlas_png(page))
+        index = {"tool": f"gbox.smb3_sprites {VERSION}", "reader_version": READER_VERSION,
+                 "game": "Super Mario Bros. 3", "identity": self.ident, "source_sha256": self.source["sha256"],
+                 "chr_bytes": len(self.chr), "page_bytes": inv.CHR_PAGE, "pages": self.page_index(),
+                 "sheet": {"file": "all_tiles.png", "pages_per_row": ALL_COLS, "page_pixels": [64, 64],
+                           "index_meaning": "2bpp CHR indices, 0 = transparent; palettes are applied in game"}}
+        (work / "pages.json").write_text(json.dumps(index, indent=1))
+        return [work / "all_tiles.png", work / "pages", work / "pages.json"]
+
     def kuribo_png(self, tiles: list[int]) -> bytes:
         """The shared shoe-page tiles as a horizontal strip (n*8 x 8 px)."""
         n = len(tiles)
@@ -270,6 +325,20 @@ def extract_run(ctx, game: dict, entry: dict, work) -> dict:
     ex = SMB3Sprites(src)
     work = Path(work)
     prog = getattr(ctx, "progress", lambda p, m: None)
+    if (entry or {}).get("key") == "ALL":
+        files = ex.export_all(work, progress=lambda p, m: prog(20 + 0.7 * p, m))
+        n = ex.page_count()
+        return {
+            "files": files, "roles": {}, "kind": "sprites", "tool": f"gbox.smb3_sprites {VERSION}",
+            "source_files": [f"{Path(src).name}: all {n} CHR pages ({len(ex.chr) // 1024} KB CHR ROM)"],
+            "notes": (f"Every sprite and background tile in the game: all {n} CHR pages as one tile-exact sheet "
+                      f"({ALL_COLS} pages per row) plus one 64x64 atlas per page and pages.json (sha256, blank tiles, "
+                      f"which pages are Mario's). Tiles keep their 2bpp indices; colours come from each object's "
+                      f"palette in game. Mario's assembled frames are the 'Mario (Super Mario Bros. 3)' entry."),
+            "extra": {"picture": "2d", "smb3_reader": READER_VERSION,
+                      "smb3": {"reader": READER_VERSION, "pages": "pages", "page_index": "pages.json",
+                               "chr_pages": n}},
+        }
     files = ex.export(work, progress=lambda p, m: prog(20 + 0.7 * p, m))
     fm = json.loads((work / "frames.json").read_text())
     rt = fm["roundtrip"]
