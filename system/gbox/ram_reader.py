@@ -219,21 +219,33 @@ class AdapterReader(Reader):
 
 
 class RpcReader(Reader):
-    """A session on another PC, through its worker: read_ranges (one round trip per batch), else read_memory."""
+    """A session on another PC, through its worker: read_ranges (one round trip per batch), else read_memory. A worker
+    that does not answer in wait_s is left alone for QUIET_S (its reads fail at once: the last values are served)."""
     kind = "rpc"
+    QUIET_S = 5.0
 
-    def __init__(self, sid: str, rpc, wait_s: float = 8.0, **kw):
-        super().__init__(**kw)
-        self.sid, self.rpc, self.wait_s = sid, rpc, wait_s
+    def __init__(self, sid: str, rpc, wait_s: float = 4.0, clock=time.monotonic, **kw):
+        super().__init__(clock=clock, **kw)
+        self.sid, self.rpc, self.wait_s, self.clock = sid, rpc, wait_s, clock
         self.ranges_op = True                          # False once the worker says it does not know read_ranges
         self.source = None
+        self.quiet_until = 0.0
+
+    def _call(self, op: str, args: dict):
+        if self.clock() < self.quiet_until:
+            raise TimeoutError("the session's worker did not answer: trying again in a moment")
+        try:
+            return self.rpc(self.sid, op, args, self.wait_s)
+        except TimeoutError:
+            self.quiet_until = self.clock() + self.QUIET_S
+            raise
 
     def _many(self, ranges):
         if self.ranges_op:
             try:
-                res = self.rpc(self.sid, "read_ranges", {"ranges": [[a, n] for a, n in ranges]}, self.wait_s)
+                res = self._call("read_ranges", {"ranges": [[a, n] for a, n in ranges]})
             except Exception as e:                       # noqa: BLE001 - an old worker: read_memory per range
-                if "not allowed" not in str(e) and "read_ranges" not in str(e):
+                if "not allowed" not in str(e):
                     return [e] * len(ranges)
                 self.ranges_op = False
             else:
@@ -244,8 +256,8 @@ class RpcReader(Reader):
         out = []
         for a, n in ranges:
             try:
-                out.append(b"".join(bytes.fromhex(self.rpc(self.sid, "read_memory", {"address": a + o, "length": min(MAX_RANGE, n - o)},
-                                                           self.wait_s)) for o in range(0, n, MAX_RANGE)))
+                out.append(b"".join(bytes.fromhex(self._call("read_memory", {"address": a + o, "length": min(MAX_RANGE, n - o)}))
+                                    for o in range(0, n, MAX_RANGE)))
             except Exception as e:                       # noqa: BLE001
                 out.append(e)
         return out

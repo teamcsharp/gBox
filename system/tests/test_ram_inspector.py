@@ -281,6 +281,23 @@ def test_a_session_on_another_pc_is_read_through_its_channel(app, monkeypatch):
         t.join(2)
 
 
+def test_a_worker_that_does_not_answer_is_left_alone_for_a_moment():
+    now, calls = [0.0], []
+
+    def rpc(sid, op, args, wait):
+        calls.append(op)
+        raise TimeoutError("session did not answer")
+    r = ram_reader.RpcReader("w9-x", rpc, clock=lambda: now[0])
+    assert isinstance(r.read_many([(MEM1, 4)])[0], TimeoutError) and calls == ["read_ranges"]
+    assert "did not answer" in str(r.read_many([(MEM1, 4)])[0]) and calls == ["read_ranges"]   # no new request
+    now[0] += ram_reader.RpcReader.QUIET_S + 0.1
+    r.read_many([(MEM1, 4)])
+    assert calls == ["read_ranges", "read_ranges"] and r.ranges_op                               # asked again
+    bad = ram_reader.RpcReader("w9-x", lambda *a: (_ for _ in ()).throw(RuntimeError("ValueError: read_ranges takes 1..512 ranges")))
+    bad.read_many([(MEM1, 4)])
+    assert bad.ranges_op                                     # an error about the request is not an old worker
+
+
 def test_read_ranges_is_an_allowed_read_only_op_with_limits(app):
     assert ram_reader.serve(SID, FakeAd(app.fake), {"ranges": [[0x80279308, 4], [0x90000000, 4]]})["errors"][1]
     with pytest.raises(ValueError, match="1..512 ranges"):
@@ -340,6 +357,22 @@ def test_a_gdb_stub_is_read_in_one_halt_per_batch():
     assert r.kind == "gdb" and r.piece == 64 << 10
     got = r.read_many([(MEM1, 4), (MEM1 + 16, 4), (MEM1 + 0x2000, 4)])
     assert halts == ["halt", "resume"] and isinstance(got[2], ValueError) and got[0] == bytes(4)
+
+
+def test_a_reader_that_reads_nothing_any_more_is_made_again(app):
+    live(app)
+    insp = ram_inspector._INSPECTORS[SID]
+    old = insp.reader
+
+    class Gone(ram_reader.Reader):                         # the emulator process went away under the reader
+        def _many(self, ranges):
+            return [OSError("No such process")] * len(ranges)
+    insp.reader = Gone("shm")
+    insp.last_at = insp.remade_at = -1e9
+    insp.values()
+    assert insp.reader is not old and insp.reader.kind == "procmem" and "reading the session again" in insp.error
+    insp.last_at = -1e9
+    assert insp.values()["merc.combo"] == 12 and insp.error is None
 
 
 def test_ended_sessions_are_refused_and_their_inspectors_closed(app):

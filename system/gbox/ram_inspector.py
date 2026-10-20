@@ -75,9 +75,10 @@ def _safe(v):
 
 
 class Inspector:
-    def __init__(self, sid: str, session: dict, reader, frame=None, clock=time.time, sleep=time.sleep):
+    def __init__(self, sid: str, session: dict, reader, frame=None, clock=time.time, sleep=time.sleep, remake=None):
         self.sid, self.session, self.reader = sid, session, reader
         self.frame_fn, self.clock, self.sleep = frame, clock, sleep
+        self.remake, self.remade_at = remake, -1e9     # a new reader when every read fails (the emulator relaunched)
         self.platform = str(session.get("platform") or "")
         self.game_id = str(session.get("game_id") or "")
         self.disc_id = None
@@ -159,12 +160,29 @@ class Inspector:
             except Exception as e:                   # noqa: BLE001 - the emulator went away / a broken reader
                 self.error = f"{type(e).__name__}: {e}"[:300]
                 return self.last
+            if self.map.fields and len(vals.errors) == len(self.map.fields) and self._remake(now):
+                return self.last                     # nothing read: a new reader tries next time
             self.error = None
             self.evaluations += 1
             if self.last is not None:
                 self._log(ram_map.changes(self.last, vals), now)
             self.last, self.last_at = vals, now
             return vals
+
+    def _remake(self, now: float) -> bool:
+        if self.remake is None or now - self.remade_at < MAP_REFRESH_S:
+            return False
+        self.remade_at = now
+        try:
+            new = self.remake()
+        except Exception:                            # noqa: BLE001
+            new = None
+        if new is None:
+            return False
+        old, self.reader = self.reader, new
+        old.close()
+        self.error = "every read failed: reading the session again (did its emulator restart?)"
+        return True
 
     def _log(self, changes: list[dict], now: float):
         if not changes:
@@ -566,25 +584,34 @@ def routes(app, store, auth, rpc=None, frame=None, data_dir=None):
             raise HTTPException(404, "Session not found")
         with _LOCK:
             insp = _INSPECTORS.get(sid)
-            if s.get("state") != "running":
-                if insp:
-                    insp.close()
-                    _INSPECTORS.pop(sid, None)
-                raise HTTPException(409, "This session has ended: open a running game to inspect its RAM")
+            ended = s.get("state") != "running" and _INSPECTORS.pop(sid, None)
+        if ended:
+            ended.close()
+        if s.get("state") != "running":
+            raise HTTPException(409, "This session has ended: open a running game to inspect its RAM")
+        with _LOCK:
+            gone = []
             for other, i in list(_INSPECTORS.items()):     # inspectors of sessions that ended
                 o = store.get("session", other)
                 if not o or o.get("state") != "running":
-                    i.close()
-                    _INSPECTORS.pop(other, None)
-            if insp is None:
-                game = s
-                if not s.get("platform") and s.get("game_id"):      # session records name the game, not its platform
-                    game = s | {"platform": (store.catalog_get(s["game_id"]) or {}).get("platform")}
-                reader = ram_reader.for_session(sid, s, rpc=rpc)
-                if reader is None:
-                    raise HTTPException(409, "No way to read this session's RAM from here")
-                insp = _INSPECTORS[sid] = Inspector(sid, game, reader, frame=frame)
+                    gone.append(_INSPECTORS.pop(other))
+        for i in gone:
+            i.close()
+        if insp is not None:
             return insp
+        game = s                                       # a new one, made outside the lock (its first read may be slow)
+        if not s.get("platform") and s.get("game_id"):  # session records name the game, not its platform
+            game = s | {"platform": (store.catalog_get(s["game_id"]) or {}).get("platform")}
+        reader = ram_reader.for_session(sid, s, rpc=rpc)
+        if reader is None:
+            raise HTTPException(409, "No way to read this session's RAM from here")
+        made = Inspector(sid, game, reader, frame=frame,
+                         remake=lambda: ram_reader.for_session(sid, store.get("session", sid) or s, rpc=rpc))
+        with _LOCK:
+            insp = _INSPECTORS.setdefault(sid, made)
+        if insp is not made:                           # another request made one meanwhile
+            made.close()
+        return insp
 
     def guard(fn, *a, **k):
         try:
