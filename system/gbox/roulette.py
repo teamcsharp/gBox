@@ -12,7 +12,9 @@ Two halves:
       whose cast writer is routed and not marked in progress) x a donor pool (POOLS, weighted to Sonic and Mario) x a
       fresh seed, as one `characters op=cast_swap launch=false` job on the Linux control plane at low priority. At most
       MAX_PER_GAME roulette builds per game, one roulette job at a time, and a (game, pool) pair that failed FAIL_LIMIT
-      times is not tried again. Each attempt is kept in the store (KIND) with its job and outcome.
+      times is not tried again. Each attempt is kept in the store (KIND) with its job and outcome. A game whose builds
+      wait for the operator's build reports to be reviewed (gbox.build_feedback: 409 build_feedback_review_required)
+      is blocked for BLOCK_TTL and shown with the report numbers; the roulette never acknowledges reports itself.
 """
 from __future__ import annotations
 
@@ -26,6 +28,8 @@ BUILD_EVERY = 10 * 60
 MAX_PER_GAME = 3
 FAIL_LIMIT = 2
 TARGETS_TTL = 6 * 3600
+BLOCK_TTL = 6 * 3600
+GATES = ("build_feedback_review_required", "build_feedback_game_id_required")
 ACTIVE = ("queued", "running", "claimed", "pending")
 DONE_OK = ("succeeded", "completed", "done")
 
@@ -151,9 +155,16 @@ class Builder:
                 out[(r.get("game_id"), r.get("pool"))] = out.get((r.get("game_id"), r.get("pool")), 0) + 1
         return out
 
+    def blocked(self) -> dict[str, dict]:
+        """Games whose builds wait for the operator's reports to be reviewed (newer than BLOCK_TTL)."""
+        now = self.clock()
+        return {r["game_id"]: r for r in self.records()
+                if r.get("state") == "blocked" and now - (r.get("at") or 0) < BLOCK_TTL}
+
     def plan(self) -> dict | None:
         """The next build: {game_id, title, pool, assign, label, seed, mod} or None when nothing is left to build."""
-        targets = self.targets()
+        blocked = self.blocked()
+        targets = [t for t in self.targets() if t["game_id"] not in blocked]
         if not targets:
             return None
         fails = self.failures()
@@ -186,10 +197,24 @@ class Builder:
         p = self.plan()
         if p is None:
             return "every target has its roulette builds"
-        job = self.submit({"tool": "characters", "input": {
-            "op": "cast_swap", "target_game": p["game_id"], "source": p["pool"], "assign": p["assign"],
-            "seed": p["seed"], "slots": "all", "mod_name": p["mod"], "launch": False,
-            "title": f"Roulette: {p['label']} in {p['title']}"}})
+        try:
+            job = self.submit({"tool": "characters", "input": {
+                "op": "cast_swap", "target_game": p["game_id"], "source": p["pool"], "assign": p["assign"],
+                "seed": p["seed"], "slots": "all", "mod_name": p["mod"], "launch": False,
+                "title": f"Roulette: {p['label']} in {p['title']}"}})
+        except Exception as e:                           # noqa: BLE001 - refused at submit (HTTPException from the server)
+            self.last_submit = self.clock()
+            detail = getattr(e, "detail", None)
+            if isinstance(detail, dict) and detail.get("code") in GATES:
+                reports = [f.get("number") for f in detail.get("feedback") or [] if f.get("number")]
+                key = f"blocked:{p['game_id']}"
+                self.store.put(KIND, key, {"mod": key, "game_id": p["game_id"], "title": p["title"], "state": "blocked",
+                                           "reports": reports, "error": str(detail.get("message") or detail["code"])[:300],
+                                           "at": self.last_submit})
+                return f"{p['title']}: review the operator's build reports first ({', '.join(f'#{n}' for n in reports)})"
+            self.store.put(KIND, p["mod"], p | {"state": "failed", "error": f"{type(e).__name__}: {e}"[:300],
+                                                "at": self.last_submit})
+            return f"could not queue {p['label']} in {p['title']}"
         jid = getattr(job, "id", None) or (job.get("id") if isinstance(job, dict) else "") or ""
         state = getattr(job, "state", None) or (job.get("state") if isinstance(job, dict) else "") or "queued"
         self.last_submit = self.clock()
@@ -202,4 +227,6 @@ class Builder:
     def status(self) -> dict:
         rows = sorted(self.records(), key=lambda r: -(r.get("at") or 0))
         return {"recent": [{k: r.get(k) for k in ("mod", "title", "label", "state", "error", "at")} for r in rows[:12]],
-                "built": sum(r.get("state") == "built" for r in rows), "failed": sum(r.get("state") == "failed" for r in rows)}
+                "built": sum(r.get("state") == "built" for r in rows), "failed": sum(r.get("state") == "failed" for r in rows),
+                "blocked": [{"game_id": r["game_id"], "title": r.get("title"), "reports": r.get("reports") or []}
+                            for r in self.blocked().values()]}
