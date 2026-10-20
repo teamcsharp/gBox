@@ -1,0 +1,33 @@
+{
+ "game_id": "fed032780bec11fa",
+ "title": "Shadow the Hedgehog (USA)",
+ "platform": "gamecube",
+ "disc_id": "GUPE8P",
+ "profile": "gecko-unlocks-v1",
+ "verified": true,
+ "codes": [
+  {
+   "desc": "Unlock Expert Mode & Last Story [Link Master]",
+   "lines": [
+    "04578020 FFFFFFFF"
+   ],
+   "kind": "gecko"
+  },
+  {
+   "desc": "Unlock All Songs [Link Master]",
+   "lines": [
+    "0457806C FFFFFFFF",
+    "04578070 FFFFFFFF"
+   ],
+   "kind": "gecko"
+  }
+ ],
+ "scope": [
+  "Unlock All Songs",
+  "Unlock Expert Mode & Last Story"
+ ],
+ "evidence": {
+  "source": "codes.rc24 Gecko list GUPE8P.txt (Dolphin 'Download Codes')",
+  "read_back": "2026-10-20 07:35 CST, lilspark (the Spark's Dolphin) agent session: every code held with cheats op=add; all 3 written values read back unchanged from Dolphin's RAM. Gameplay screens of the unlocked content not captured."
+ }
+}

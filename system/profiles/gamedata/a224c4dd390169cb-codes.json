@@ -1,0 +1,32 @@
+{
+ "game_id": "a224c4dd390169cb",
+ "title": "GoldenEye - Rogue Agent (USA) (Disc 1)",
+ "platform": "gamecube",
+ "disc_id": "GOYE69",
+ "profile": "gecko-unlocks-v1",
+ "verified": true,
+ "codes": [
+  {
+   "desc": "Unlock All Missions",
+   "lines": [
+    "0000314D 00000018"
+   ],
+   "kind": "gecko"
+  },
+  {
+   "desc": "Unlock Multiplayer Maps",
+   "lines": [
+    "000094AC 000000FF"
+   ],
+   "kind": "gecko"
+  }
+ ],
+ "scope": [
+  "Unlock All Missions",
+  "Unlock Multiplayer Maps"
+ ],
+ "evidence": {
+  "source": "codes.rc24 Gecko list GOYE69.txt (Dolphin 'Download Codes')",
+  "read_back": "2026-10-20 07:08 CST, lilspark (the Spark's Dolphin) agent session: every code held with cheats op=add; all 2 written values read back unchanged from Dolphin's RAM. Gameplay screens of the unlocked content not captured."
+ }
+}

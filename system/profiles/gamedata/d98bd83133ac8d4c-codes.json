@@ -1,0 +1,25 @@
+{
+ "game_id": "d98bd83133ac8d4c",
+ "title": "Super Mario Sunshine (USA)",
+ "platform": "gamecube",
+ "disc_id": "GMSE01",
+ "profile": "gecko-unlocks-v1",
+ "verified": true,
+ "codes": [
+  {
+   "desc": "Open All Worlds And Nozzles [Codejunkies]",
+   "lines": [
+    "045789F8 FFFFFFFF",
+    "045789FC FFFFFFFF"
+   ],
+   "kind": "gecko"
+  }
+ ],
+ "scope": [
+  "Open All Worlds And Nozzles"
+ ],
+ "evidence": {
+  "source": "codes.rc24 Gecko list GMSE01.txt (Dolphin 'Download Codes')",
+  "read_back": "2026-10-20 07:27 CST, lilspark (the Spark's Dolphin) agent session: every code held with cheats op=add; all 2 written values read back unchanged from Dolphin's RAM. Gameplay screens of the unlocked content not captured."
+ }
+}

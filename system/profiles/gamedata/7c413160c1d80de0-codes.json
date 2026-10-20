@@ -1,0 +1,41 @@
+{
+ "game_id": "7c413160c1d80de0",
+ "title": "Legend of Zelda, The - The Wind Waker (USA)",
+ "platform": "gamecube",
+ "disc_id": "GZLE01",
+ "profile": "gecko-unlocks-v1",
+ "verified": true,
+ "codes": [
+  {
+   "desc": "Have All Songs [Codejunkies]",
+   "lines": [
+    "003C4CC5 0000003F"
+   ],
+   "kind": "gecko"
+  },
+  {
+   "desc": "Have All Quest Maps [Codejunkies]",
+   "lines": [
+    "023C4CDC 0003FFFF"
+   ],
+   "kind": "gecko"
+  },
+  {
+   "desc": "Have All Element Stones [Codejunkies]",
+   "lines": [
+    "003C4CC7 00000007",
+    "003C524A 00000040"
+   ],
+   "kind": "gecko"
+  }
+ ],
+ "scope": [
+  "Have All Element Stones",
+  "Have All Quest Maps",
+  "Have All Songs"
+ ],
+ "evidence": {
+  "source": "codes.rc24 Gecko list GZLE01.txt (Dolphin 'Download Codes')",
+  "read_back": "2026-10-20 06:57 CST, lilspark (the Spark's Dolphin) agent session: every code held with cheats op=add; all 7 written values read back unchanged from Dolphin's RAM. Gameplay screens of the unlocked content not captured."
+ }
+}
