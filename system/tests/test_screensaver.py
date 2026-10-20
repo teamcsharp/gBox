@@ -173,6 +173,47 @@ def test_spark_launch_with_autoplay_starts_it_once_the_game_is_up():
     assert len(calls) == 1                                      # once
 
 
+def test_every_demo_launch_asks_to_start_in_gameplay():
+    s, w, saver, calls, tick = rig()
+    tick()
+    assert calls[0]["tool"] == "launch_game" and calls[0]["input"]["jump"] is True       # gbox.jumpstate
+
+
+JUMPED = {"jump": {"booted": True, "file": "sc-stock.state"}}         # launch detail: booted straight into gameplay
+
+
+def test_a_demo_that_booted_into_gameplay_starts_autoplay_in_the_same_tick():
+    s, w, saver, calls, tick = rig()
+    tick()
+    gid = calls[0]["input"]["game"]["game_id"]
+    s.put("session", "w1-job0", {"session_id": "w1-job0", "game_id": gid, "state": "running", "detail": JUMPED})
+    assert tick(5)["i9-NUC"].startswith("playing")                    # no START_GRACE: there is no boot to settle
+    assert calls[1]["tool"] == "autoplay" and calls[1]["input"]["mode"] == "auto"
+    run = s.get(S.STATE, "i9-NUC")
+    assert run["phase"] == "playing" and run["jumped"] is True
+
+
+def test_a_demo_that_booted_the_usual_way_still_waits_for_the_boot():
+    s, w, saver, calls, tick = rig()
+    tick()
+    gid = calls[0]["input"]["game"]["game_id"]
+    s.put("session", "w1-job0", {"session_id": "w1-job0", "game_id": gid, "state": "running",
+                                 "detail": {"jump": {"booted": False, "why": "no jump state yet"}}})
+    tick(5)
+    assert len(calls) == 1 and "jumped" not in s.get(S.STATE, "i9-NUC")
+    tick(S.START_GRACE)
+    assert calls[1]["tool"] == "autoplay"
+
+
+def test_spark_autoplay_on_launch_starts_at_once_in_a_jump_state():
+    s, w, saver, calls, tick = rig()
+    s.put("setting", S.SETTING, S.settings(s) | {"enabled": False})
+    S.autoplay_on_launch(s, "L3", "sc")
+    s.put("job", "L3", {"id": "L3", "state": "succeeded"})
+    s.put("session", "spark-L3", {"session_id": "spark-L3", "game_id": "sc", "state": "running", "detail": JUMPED})
+    assert tick(5)["launches"] == ["spark-L3"] and calls[0]["input"]["session_id"] == "spark-L3"
+
+
 def test_a_failed_or_forgotten_launch_drops_its_autoplay_request():
     s, w, saver, calls, tick = rig()
     s.put("setting", S.SETTING, S.settings(s) | {"enabled": False})

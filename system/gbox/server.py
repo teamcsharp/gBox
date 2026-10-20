@@ -3465,8 +3465,11 @@ def create_app(config: Config) -> FastAPI:
                 return swap_job(current['session_id'], mod, '', actor, origin=origin)   # keep_state=True
         from . import built_mods                          # the operator's name for the build: the launch bar shows it
         named = built_mods.label_of(store, gid, mod, "") if mod else ""
+        # autoplay on launch (Spark button): the game plays itself, so it starts in gameplay where it has a jump state
+        # (gbox.jumpstate); a plain Play always boots the usual way
         req = JobRequest(tool="launch_game", input={"game": e, "debug": debug, **({"mod": mod} if mod else {}),
-                                                    **({"mod_title": named} if named and named != mod else {})},
+                                                    **({"mod_title": named} if named and named != mod else {}),
+                                                    **({"jump": True} if autoplay and not debug else {})},
                          agent_use=actor in ("agent", "mcp", "gbox-agent", "hermes") or _automated(actor, origin))
         if debug:
             node = "linux"

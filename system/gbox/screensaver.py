@@ -17,6 +17,10 @@ Roulette (gbox.roulette, setting "roulette"): a demo launches one of the game's 
 operator's starred builds and roulette builds first) rather than the stock game, the operator's favorites with such
 builds join the games (when autoplay can play them well: recorded play or a playbook), and a background builder keeps
 making new random casts from the whole character collection.
+
+Jump states (gbox.jumpstate): every demo launch asks for a jump (launch_game jump=true). Where the emulator boots
+straight into a saved gameplay moment of that game and build (standalone Dolphin) and the PC has one, no logo, title
+or menu shows, the replay from boot is skipped and autoplay starts in the same tick, in the operator's style.
 """
 from __future__ import annotations
 
@@ -47,6 +51,12 @@ def autoplay_on_launch(store, job_id: str, game_id: str) -> None:
     """A launch the operator asked to play itself (the Spark button): the next ticks start autoplay once it runs."""
     if job_id:
         store.put(PENDING, job_id, {"job": job_id, "game_id": game_id, "at": time.time()})
+
+
+def _jumped(sess: dict) -> bool:
+    """The session booted straight into its jump state (gbox.jumpstate, launch detail.jump): it is in gameplay
+    already, so autoplay starts at once instead of waiting START_GRACE for the boot to settle."""
+    return bool(((sess.get("detail") or {}).get("jump") or {}).get("booted"))
 
 
 def _jid(job) -> str:
@@ -177,7 +187,8 @@ class Screensaver:
         return out
 
     def _pending(self, running, now) -> list[str]:
-        """Launches marked autoplay (Spark button): autoplay starts START_GRACE s after the session is up."""
+        """Launches marked autoplay (Spark button): autoplay starts START_GRACE s after the session is up, or at once
+        when the launch booted straight into its jump state."""
         from .server import JobRequest
         done = []
         for p in self.store.all(PENDING):
@@ -190,8 +201,10 @@ class Screensaver:
             if not sess:
                 continue
             if "up" not in p:
-                self.store.put(PENDING, jid, p | {"up": now})
-                continue
+                if not _jumped(sess):
+                    self.store.put(PENDING, jid, p | {"up": now})
+                    continue
+                p = p | {"up": now - START_GRACE}            # in gameplay already: no boot to settle
             if now - p["up"] < START_GRACE:
                 continue
             sid = sess["session_id"]
@@ -222,7 +235,8 @@ class Screensaver:
         if cfg.get("roulette") and self.builds:
             from . import roulette
             build = roulette.demo_build(self.builds(g["game_id"]), self.rng)
-        inp = {"game": game} | ({"mod": build["name"]} if build else {})
+        # jump: the demo starts in gameplay where this PC has a jump state for the game and build (gbox.jumpstate)
+        inp = {"game": game, "jump": True} | ({"mod": build["name"]} if build else {})
         job = self.submit(JobRequest(tool="launch_game", input=inp, agent_use=True, low_priority=True,
                                      require_worker=w["id"]), actor=ACTOR,
                           origin={"via": "autoplay screensaver", "game_id": g["game_id"]})
@@ -242,11 +256,16 @@ class Screensaver:
                 return self._finish(w, run, now, f"launch {job.get('state') or 'timed out'}: {str(job.get('error') or '')[:200]}")
             sess = next((s for s in running if s.get("session_id", "").startswith(run["worker_id"] + "-")
                          and s.get("game_id") == run["game_id"]), None)
-            if sess:
-                self.store.put("slabel", sess["session_id"], {"owner": "agent", "task": f"autoplay screensaver: {run['title']}"})
-                run |= {"phase": "starting", "session_id": sess["session_id"], "up": now}
-                self.store.put(STATE, w["name"], run)
-            return f"launching {run['title']}"
+            if not sess:
+                return f"launching {run['title']}"
+            self.store.put("slabel", sess["session_id"], {"owner": "agent", "task": f"autoplay screensaver: {run['title']}"})
+            jumped = _jumped(sess)                       # booted into gameplay: autoplay starts in this tick
+            run |= {"phase": "starting", "session_id": sess["session_id"], "up": now - START_GRACE if jumped else now,
+                    **({"jumped": True} if jumped else {})}
+            self.store.put(STATE, w["name"], run)
+            if not jumped:
+                return f"launching {run['title']}"
+            phase = "starting"
         sid = run.get("session_id")
         live = any(s.get("session_id") == sid for s in running)
         if not live:
