@@ -825,6 +825,12 @@ BUDGETS = (1400, 1150, 950, 800, 650, 500, 400, 300, 270, 240, 200)   # char 00'
 # at 300 triangles two of them overshoot the biggest hole by 28 bytes, so smaller steps follow (#1155)
 ATLAS_TEXTURE = 0       # legacy (PTEX texture 0 / id 0): the writer now finds both per group (group_texture_ids)
 HEAD_NODES = {10, 11}
+# The body budget is a hard fit (the PLAY entry's AFS room and the native vertex cache), so a 1,384-triangle donor ends
+# near 400: decimating it uniformly destroyed the arms and face (#1889, #1862). The head and arm/hand nodes collapse at
+# a lower priority instead (gbox/decimate_gltf.py protect group: the arms' thin geometry far lower than the head's),
+# so torso and legs absorb the cut. Node -> collapse weight (1.0 = the body's own priority).
+PROTECT_NODES = sorted(HEAD_NODES | {13, 14, 15, 17, 18, 19})
+PROTECT_WEIGHTS = {10: 0.45, 11: 0.45, 13: 0.12, 14: 0.12, 15: 0.3, 17: 0.12, 18: 0.12, 19: 0.3}
 
 
 # Archive position is not the game's character ID. Each PLAY starts "PLAY", u32, u32 binding-record offset (relative to
@@ -1364,7 +1370,8 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
             raise ValueError(f"PLAY {index:02d}: {len(out)} bytes > {room} bytes of AFS room")
         return bytes(out)
     progress(20, f"Fitting {name} to JGR character {index:02d}'s {len(nodes)} nodes")
-    r = NS.fit(Path(model), roles, tgt, Path(work), name, BUDGETS, blender, encode, 256, scale, progress)
+    r = NS.fit(Path(model), roles, tgt, Path(work), name, BUDGETS, blender, encode, 256, scale, progress,
+               protect=[f"j{n:02d}:{PROTECT_WEIGHTS.get(n, 0.5)}" for n in PROTECT_NODES])
     progress(80, f"Encoding the texture atlas (PVR, PTEX texture {atlas}'s format)")
     from .ninja import pvr_like
     texs = ptex_textures(data, ptex)

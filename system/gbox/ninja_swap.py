@@ -49,9 +49,10 @@ def _dedupe_textures(prims: list[dict]) -> None:
 
 
 def fit(model: Path, src_roles: dict, tgt: dict, work: Path, name: str, budgets, blender: str | None, encode,
-        atlas: int = 256, scale: dict | None = None, progress=lambda p, m: None) -> dict:
+        atlas: int = 256, scale: dict | None = None, progress=lambda p, m: None, protect=None) -> dict:
     """Retarget + decimate until encode(geometry) fits. encode({node: (pos, nrm, tris)}) -> bytes or raises
-    ValueError (too big). budgets: triangle counts to try, largest first. -> {data, atlas (PIL), report, rigged}."""
+    ValueError (too big). budgets: triangle counts to try, largest first. protect: rigged joint names (jNN) whose
+    vertices the decimation spares (they collapse at half the rest's priority). -> {data, atlas (PIL), report, rigged}."""
     from . import re6_models, sm64_swap as S
     from .re4gc_enemies import decimate
     work = Path(work)
@@ -81,7 +82,7 @@ def fit(model: Path, src_roles: dict, tgt: dict, work: Path, name: str, budgets,
                 raise ValueError(f"{src_tris} triangles (budget {budget}) and no Blender on this node to decimate")
             progress(40, f"Decimating {name} to {budget} triangles (Blender)")
             FE.stage("decimate", "running", {"from": src_tris, "to": budget})
-            src = decimate(rigged, work / f"dec_{budget}.glb", float(budget), blender)
+            src = decimate(rigged, work / f"dec_{budget}.glb", float(budget), blender, protect=protect)
         rp = S.read_rigged(src)
         if src is not rigged:
             FE.stage("decimate", data={"from": src_tris, "to": budget,

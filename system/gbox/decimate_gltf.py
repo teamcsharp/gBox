@@ -80,12 +80,23 @@ def _protect_group(o, substrings: list[str]) -> bool:
     Returns False when no group matches, so callers fall back to the plain uniform collapse."""
     if not substrings:
         return False
-    keep = {g.index for g in o.vertex_groups if any(s in g.name.lower() for s in substrings)}
+    weights = {}                                   # 'name' = 0.5 (half the body's priority); 'name:0.15' = its own
+    for s in substrings:
+        name, _, w = s.partition(":")
+        try:
+            weights[name] = min(1.0, max(0.0, float(w))) if w else 0.5
+        except ValueError:
+            weights[name] = 0.5
+    keep = {}
+    for g in o.vertex_groups:
+        hit = [w for name, w in weights.items() if name and name in g.name.lower()]
+        if hit:
+            keep[g.index] = min(hit)
     if not keep:
         return False
     vg = o.vertex_groups.new(name="protect")
     for v in o.data.vertices:
-        w = 0.5 if any(g.group in keep and g.weight > 0 for g in v.groups) else 1.0
+        w = min((keep[g.group] for g in v.groups if g.group in keep and g.weight > 0), default=1.0)
         vg.add([v.index], w, "REPLACE")
     return True
 

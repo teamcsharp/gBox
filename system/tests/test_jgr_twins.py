@@ -163,7 +163,7 @@ def test_writer_changes_all_equivalent_groups_and_preserves_shared_storage(monke
     monkeypatch.setattr(jgr, "replace_entries", lambda old, entries: entries)
 
     fit_calls = []
-    def fit(model, roles, target, work, name, budgets, blender, encode, size, scale, progress):
+    def fit(model, roles, target, work, name, budgets, blender, encode, size, scale, progress, protect=None):
         fit_calls.append(1)
         triangle = [((0, 1, 2), ((0, 0), (1, 0), (0, 1)))]
         geo = {i: ([[0, 0, 0], [0.25, 0, 0], [0, 0.25, 0]], [[0, 0, 1]] * 3, triangle)
@@ -224,7 +224,7 @@ def _patched_writer(monkeypatch, original, roots, geo):
     monkeypatch.setattr(ninja_swap, "target_from_nj", lambda *args: object())
     monkeypatch.setattr(jgr, "replace_entries", lambda old, entries: entries)
     monkeypatch.setattr(ninja_swap, "fit", lambda model, roles, target, work, name, budgets, blender, encode, size,
-                        scale, progress: {"data": encode(geo), "atlas": Image.new("RGB", (8, 8)),
+                        scale, progress, protect=None: {"data": encode(geo), "atlas": Image.new("RGB", (8, 8)),
                                           "rigged": "fixture.gltf", "report": {}})
 
 
@@ -318,3 +318,13 @@ def test_node_larger_than_the_native_span_is_refused_for_a_smaller_budget(monkey
 def test_span_clamped_writer_never_reuses_a_pre_1156_cached_build():
     # v3 builds (slots past the native span) drew no body in gameplay; `use` must not serve them again.
     assert jgr.CACHE_VERSION >= 7  # earlier versions share model records and corrupt pointers during native loading
+
+
+def test_decimation_spares_the_head_and_arm_nodes():
+    """#1889: a 1,384-triangle donor ends near 400 in JGR's hard body budget; head and arms collapse last."""
+    from gbox import jgr
+    role_node = {r: int(v[4:]) for r, v in jgr.BODY_ROLES.items()}
+    for role in ("head", "l_upper", "l_fore", "l_hand", "r_upper", "r_fore", "r_hand"):
+        assert role_node[role] in jgr.PROTECT_NODES
+    for role in ("hip", "chest", "l_thigh", "r_shin", "l_foot"):
+        assert role_node[role] not in jgr.PROTECT_NODES
