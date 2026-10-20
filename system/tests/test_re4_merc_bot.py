@@ -254,6 +254,8 @@ def test_between_rounds_it_presses_a_until_the_next_round_and_counts_it():
            clock=lambda: now[0])
     presses = [r for r in sent if r == [{"key": "a", "down": True}]]
     assert len(presses) >= 3 and live["menu_presses"] == len(presses)
+    downs = [r[0]["key"] for r in sent if r[0]["down"]]
+    assert downs[:3] == ["up", "left", "a"]                               # never an A without up + left first
     assert live["rounds"] == 2 and "timer" in live and "max_combo" in live    # live stats for the watch panel
 
 

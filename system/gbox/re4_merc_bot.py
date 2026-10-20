@@ -72,6 +72,7 @@ COLLECT_R, COLLECT_TRY_S = 1500.0, 4.0           # shoot an hourglass from this 
 HOURGLASS = {0x400: [(19401.0, -6857.0), (-20476.0, -5294.0), (-8452.0, -20283.0), (5592.0, 16384.0)]}
 MENU_AFTER, MENU_EVERY = 2.0, 1.5                 # out of a stage this long: press A this often (next round)
 TRANSIENT_MAX = 20.0                             # a gap in a live Mercenaries room (grabbed, a pickup) waits this long
+MENU_KEYS = ("up", "left", "a")                  # each menu step: the top-left choice, then confirm
 PACKAGE = [("mercenaries_unlock", {"on": True}),
            ("merc_loadout", {"character": "leon", "items": ["handcannon", "handcannon ammo:200"], "on": True}),
            ("weapon_mod", {"item": "handcannon", "fire_rate": "auto", "damage": "99.9"}),
@@ -643,9 +644,15 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
                 sleep(1.0)
                 continue
             if now - out_since > MENU_AFTER and now - last_press > MENU_EVERY:
-                send([{"key": "a", "down": True}])
-                sleep(0.2)
-                send([{"key": "a", "down": False}])
+                # up + left before every A: GAME START on the Mercenaries title (a stray "down" from the back-step had
+                # put the cursor on EXIT, the presses went on to the main title's START: a story game with the
+                # Mercenaries hooks in, which crashed Dolphin, 2026-10-20), Leon on Select Player, the Village on
+                # Select Stage (top left); harmless on the Result screen and the briefing
+                for key in MENU_KEYS:
+                    send([{"key": key, "down": True}])
+                    sleep(0.12)
+                    send([{"key": key, "down": False}])
+                    sleep(0.12)
                 last_press = clock()
                 bot.stats["menu_presses"] += 1
             was_in = False
