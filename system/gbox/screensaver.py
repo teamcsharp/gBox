@@ -12,6 +12,11 @@ Results (what played, how long, why it ended, the autoplay result and score when
 
 Every idle PC takes part by default (workers "*"): any PC not unticked in the Tasks menu (background testing) once it
 has been idle long enough; a list of names limits it to those PCs. A game the operator is playing is never touched.
+
+Roulette (gbox.roulette, setting "roulette"): a demo launches one of the game's built casts (Sonic / Mario casts, the
+operator's starred builds and roulette builds first) rather than the stock game, the operator's favorites with such
+builds join the games (when autoplay can play them well: recorded play or a playbook), and a background builder keeps
+making new random casts from the whole character collection.
 """
 from __future__ import annotations
 
@@ -25,7 +30,8 @@ SETTING = "autoplay_screensaver"
 STATE = "autoplay_screensaver_run"          # worker name -> current run
 LOG = "autoplay_screensaver_log"            # run id -> finished run
 DEFAULTS = {"enabled": True, "workers": ["*"], "idle_minutes": 10, "session_minutes": 20,
-            "min_pads": 300, "games": []}
+            "min_pads": 300, "games": [], "roulette": True}
+FAVORITE_MIN_PADS = 50                       # a favorite joins with this much recorded play (or a playbook)
 LAUNCH_TIMEOUT = 15 * 60
 START_GRACE = 20                            # s after the session is up before autoplay starts (boot settles)
 COOLDOWN = 60 * 60                          # a game played on any PC within this rests unless nothing else is left
@@ -115,11 +121,43 @@ def worker_reason(store, worker: dict, cfg: dict, running: list[dict], now: floa
     return background.guarded_reason(store, worker, now=now, require_gpu=False)
 
 
+def playbook_games() -> set[str]:
+    """Catalog games a playbook plays without recorded play (gbox.doa2_bot)."""
+    try:
+        from . import doa2_bot
+        return set(doa2_bot.GAME_IDS)
+    except Exception:                                # noqa: BLE001
+        return set()
+
+
 class Screensaver:
-    def __init__(self, store, archive, submit, workers, rng: random.Random | None = None):
+    def __init__(self, store, archive, submit, workers, rng: random.Random | None = None, builds=None, favorites=None):
+        # builds(game_id) -> [built mod]; favorites() -> [{game_id, title}] (roulette; both optional)
         self.store, self.archive, self.submit, self.workers = store, archive, submit, workers
+        self.builds, self.favorites = builds, favorites
+        self.builder = None
         self.rng = rng or random.Random()
         self.lock = threading.Lock()
+
+    def games(self, cfg) -> list[dict]:
+        """The games a demo may play: the operator's most played, plus (roulette) favorites with demo builds."""
+        skip = unplayable(self.store)
+        runs = self.archive.runs(limit=200)
+        games = [x for x in played_games(runs, cfg["min_pads"]) if x["game_id"] not in skip]
+        if cfg.get("roulette") and self.favorites and self.builds:
+            from . import roulette
+            have = {g["game_id"] for g in games}
+            some = {g["game_id"]: g for g in played_games(runs, FAVORITE_MIN_PADS)}
+            books = playbook_games()
+            for f in self.favorites():
+                gid = f.get("game_id")
+                if not gid or gid in have or gid in skip or not (gid in some or gid in books):
+                    continue
+                if roulette.demo_builds(self.builds(gid)):
+                    games.append({"game_id": gid, "title": f.get("title") or gid,
+                                  "pads": max(cfg["min_pads"], (some.get(gid) or {}).get("pads", 0))})
+                    have.add(gid)
+        return games
 
     # --- schedule ---
     def tick(self, now: float | None = None) -> dict:
@@ -176,19 +214,24 @@ class Screensaver:
 
     def _start(self, w, cfg, now):
         from .server import JobRequest
-        skip = unplayable(self.store)
-        games = [x for x in played_games(self.archive.runs(limit=200), cfg["min_pads"]) if x["game_id"] not in skip]
-        g = choose(games, self._recent(), now, self.rng, cfg["games"])
+        g = choose(self.games(cfg), self._recent(), now, self.rng, cfg["games"])
         game = g and self.store.catalog_get(g["game_id"])
         if not game:
             return "no recorded game to play (play a game for a while first)"
-        job = self.submit(JobRequest(tool="launch_game", input={"game": game}, agent_use=True, low_priority=True,
+        build = None
+        if cfg.get("roulette") and self.builds:
+            from . import roulette
+            build = roulette.demo_build(self.builds(g["game_id"]), self.rng)
+        inp = {"game": game} | ({"mod": build["name"]} if build else {})
+        job = self.submit(JobRequest(tool="launch_game", input=inp, agent_use=True, low_priority=True,
                                      require_worker=w["id"]), actor=ACTOR,
                           origin={"via": "autoplay screensaver", "game_id": g["game_id"]})
         jid = _jid(job)
+        label = build and (build.get("display_name") or build.get("label") or build["name"])
         self.store.put(STATE, w["name"], {"worker": w["name"], "worker_id": w["id"], "phase": "launching", "job": jid,
-                                          "game_id": g["game_id"], "title": g["title"], "started": now})
-        return f"launching {g['title']}"
+                                          "game_id": g["game_id"], "title": g["title"], "started": now,
+                                          **({"mod": build["name"], "build": label} if build else {})})
+        return f"launching {g['title']}" + (f" ({label})" if build else "")
 
     def _advance(self, w, run, cfg, running, now):
         from .server import JobRequest
@@ -274,9 +317,12 @@ class Screensaver:
     def status(self) -> dict:
         cfg = settings(self.store)
         log = sorted(self.store.all(LOG), key=lambda r: -(r.get("started") or 0))[:30]
-        games = played_games(self.archive.runs(limit=200), cfg["min_pads"])
-        return {"settings": cfg, "running": self.store.all(STATE), "log": log,
-                "games": [{k: g[k] for k in ("game_id", "title", "pads")} for g in games[:40]]}
+        games = self.games(cfg)
+        out = {"settings": cfg, "running": self.store.all(STATE), "log": log,
+               "games": [{k: g[k] for k in ("game_id", "title", "pads")} for g in games[:40]]}
+        if self.builder is not None:
+            out["roulette"] = self.builder.status()
+        return out
 
 
 # request bodies (module level: with postponed annotations FastAPI can't see classes defined inside install())
@@ -287,6 +333,7 @@ class Settings(BaseModel):
     session_minutes: float | None = None
     min_pads: int | None = None
     games: list[str] | None = None
+    roulette: bool | None = None
 
 
 class Yield(BaseModel):
@@ -330,8 +377,40 @@ def telemetry_get(sid: str, now: float | None = None) -> dict:
 def install(app, store, config, auth, submit, workers, archive):
     from fastapi import Depends, HTTPException
 
-    saver = Screensaver(store, archive, lambda req, actor, origin: submit(req, actor=actor, origin=origin), workers)
+    def builds_for(gid: str) -> list[dict]:
+        cur = getattr(app.state, "built_mods_current", None)
+        if cur is None:
+            return []
+        try:
+            return [b for b in cur(False)["items"] if b.get("game_id") == gid]
+        except Exception:                            # noqa: BLE001 - no index yet: stock games
+            return []
+
+    def favorites() -> list[dict]:
+        try:
+            return [f for f in store.favorites() if f.get("in_catalog", True)]
+        except Exception:                            # noqa: BLE001
+            return []
+
+    saver = Screensaver(store, archive, lambda req, actor, origin: submit(req, actor=actor, origin=origin), workers,
+                        builds=builds_for, favorites=favorites)
     app.state.autoplay_screensaver = saver
+    from . import roulette
+    from .server import JobRequest
+
+    def roulette_candidates() -> list[dict]:
+        cfg = settings(store)
+        played = {g["game_id"]: g for g in played_games(archive.runs(limit=200), FAVORITE_MIN_PADS)}
+        out = {gid: {"game_id": gid, "title": g["title"], "favorite": False} for gid, g in played.items()}
+        for f in favorites():
+            out[f["game_id"]] = {"game_id": f["game_id"], "title": f.get("title") or f["game_id"], "favorite": True}
+        return [c for c in out.values() if not cfg["games"] or c["game_id"] in cfg["games"]]
+
+    saver.builder = roulette.Builder(
+        store, lambda call: submit(JobRequest(tool=call["tool"], input=call["input"], require_os="linux",
+                                              agent_use=True, low_priority=True),
+                                   actor=roulette.ACTOR, origin={"via": "autoplay roulette"}),
+        builds_for, roulette_candidates)
 
     @app.get("/api/autoplay-screensaver")
     def screensaver_status(actor=Depends(auth)):
@@ -377,5 +456,9 @@ def install(app, store, config, auth, submit, workers, archive):
                 saver.tick()
             except Exception as e:                       # one bad tick must not end the schedule
                 print(f"autoplay screensaver tick failed: {type(e).__name__}: {e}", flush=True)
+            try:
+                saver.builder.tick(bool(settings(store).get("roulette")))
+            except Exception as e:                       # the roulette builder never stops the screensaver
+                print(f"autoplay roulette tick failed: {type(e).__name__}: {e}", flush=True)
     app.on_event("startup")(lambda: threading.Thread(target=loop, daemon=True, name="autoplay-screensaver").start())
     app.on_event("shutdown")(stopped.set)
