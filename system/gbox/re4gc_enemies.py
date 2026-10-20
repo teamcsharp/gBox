@@ -109,8 +109,9 @@ def retarget(rig: dict, tmpl: R.Bin, roles: dict = GANADO_ROLES, max_stretch: fl
     hip->feet below it (skirts reach the feet). Head/neck ride the target neck. Limbs: source segment rotated onto
     the target segment and stretched along it (clamped), hands/feet keep the forearm/shin rotation, sit on the wrist
     / ankle. Every vertex follows the rule of its owner joint's nearest ancestor with a role."""
-    from .retarget_profile import move_joints, profile_of
+    from .retarget_profile import move_joints, profile_of, turn_rig
     rig, _moved = move_joints(rig, profile_of(scale))      # the Retarget editor's joint moves: pivots + segments
+    rig = turn_rig(rig, profile_of(scale))                 # the editor's Turn around: 180 degrees about up, at the hip
     S = np.asarray(rig["joints"], float)
     rr = rig["roles"]
     bw = tmpl.bone_world()

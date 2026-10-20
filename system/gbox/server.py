@@ -517,6 +517,7 @@ def create_app(config: Config) -> FastAPI:
                 "profile": saved.get(key), "game_wide": saved.get("*"), "saved_slots": sorted(saved),
                 "resolved": RP.resolve(m, game_id, slot) if game_id else None,
                 "defaults": RP.DEFAULT, "roles": RP.ROLES, "rig_roles": (m.get("rig") or {}).get("roles") or {},
+                "flagged": RP.flags_of(m, game_id, slot) if game_id else [],
                 "model_url": f"/api/characters/{slug}/file/{m['model']}" if m.get("model") else None,
                 "source": m.get("source") or {}}
 
@@ -561,6 +562,7 @@ def create_app(config: Config) -> FastAPI:
                 games.pop(inp.game_id, None)
             if not games:
                 m.pop("retarget_profiles", None)
+            RP.clear_flags(m, inp.game_id, inp.slot)         # the save answers "mapped wrong" from gameplay
             for t in (m.get("targets") or {}).get(inp.game_id, []):
                 if key == "*" or RP.slot_key(t.get("slot")) in (key, "*"):
                     t["needs_rebuild"] = True
@@ -568,6 +570,33 @@ def create_app(config: Config) -> FastAPI:
         store.audit(actor, "character.retarget_profile", slug, {"game_id": inp.game_id, "slot": key,
                                                                  "reset": clean is None})
         return _profile_view(K, root, slug, inp.game_id, inp.slot)
+
+    class FlagIn(BaseModel):
+        game_id: str
+        slot: str = ""
+        session_id: str = ""
+        note: str = ""
+
+    @app.post("/api/characters/{slug}/retarget_profile/flag")
+    def chars_profile_flag(slug: str, inp: FlagIn, actor=Depends(auth)):
+        """The pick whip's "Fix this character's mapping": this donor looked mapped wrong in this game's slot during
+        gameplay. Kept beside the profiles (retarget_profile.add_flag, newest 20); the Retarget editor shows it until
+        that slot's profile is saved or reset. Changes nothing a build uses."""
+        from . import retarget_profile as RP
+        K, root = _chars()
+        if not re.fullmatch(r"[0-9a-f]{16}", inp.game_id or ""):
+            raise HTTPException(422, "game_id is a catalog game id")
+        with store.lock:
+            try:
+                m = K.get(root, slug)
+            except KeyError:
+                _404()
+            rows = RP.add_flag(m, inp.game_id, inp.slot, {"at": time.time(), "session_id": inp.session_id,
+                                                          "note": inp.note, "by": str(actor)})
+            K.put_meta(root, m)
+        store.audit(actor, "character.retarget_flag", slug, {"game_id": inp.game_id, "slot": RP.slot_key(inp.slot),
+                                                             "session_id": inp.session_id[:120]})
+        return {"slug": slug, "game_id": inp.game_id, "slot": inp.slot or "*", "flagged": rows}
 
     @app.get("/api/retarget/reference")
     def retarget_reference(game_id: str, slot: str = "", actor=Depends(auth)):

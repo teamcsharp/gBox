@@ -10,6 +10,12 @@
 // "joints"; the build moves the rig joint and re-derives the limb segments before fitting); click it to pick which
 // donor bone it is. The target side shows the fitted donor live. "Save and rebuild this slot" saves, then queues the
 // same characters call for this slot only (gbox/special_builds.py recipes), whose progress shows in the pop-up.
+// Flips (both views): "Swap left <-> right" (flip the mapping: every l_* role takes its r_* twin's bone, saved as role
+// overrides) and "Turn around" (flip the body: profile.turn, the fit frame turned 180 degrees about up for a slot whose
+// skeleton faces the other way - retarget_profile.turn_frame; the preview fits in the same frame the build does,
+// including the slot skeleton's own facing from the last build's goals). "Donor over original" sets how solid the
+// fitted donor is over the slot's original (untick T-pose in Goals to see the original under it). Opened from the pick
+// whip's "Fix this character's mapping" it says "Flagged from gameplay" until this slot is saved (the server clears it).
 // Shared by the web shell and the desktop app (../web/viz/retarget-editor.js); the controller renders HTML strings
 // so node tests drive it without a DOM (tests/test_retarget_editor.cjs).
 (function (root) {
@@ -66,11 +72,19 @@
     if (bone && !bones.includes(bone)) opts.push(`<option value="${ESC(bone)}" selected>${ESC(bone)} (not in model)</option>`);
     return opts.join("");
   }
-  // the view switch over the two stages
+  // the view switch over the two stages, the flips and the overlay
+  function flipsHTML(state) {
+    const turn = !!(state.profile && state.profile.turn), ov = Number.isFinite(+state.overlay) ? +state.overlay : 1;
+    return `<span class="rt-flips">
+      <button type="button" class="act" data-rt-go="swap-lr" title="Flip the mapping: every left bone becomes the right one and back - fixes a body that faces backwards or arms that bend the wrong way">⇆ Swap left ↔ right</button>
+      <button type="button" class="act${turn ? " pri" : ""}" data-rt-go="turn" aria-pressed="${turn}" title="Flip the body: turn the donor 180° in the fit, for a slot whose own skeleton faces the other way (the left side stays the left)">↻ Turn around${turn ? " · on" : ""}</button>
+      <label class="rt-ovl" title="How solid the fitted donor is over the original on the right">Donor over original <input type="range" data-rt-overlay min="0.1" max="1" step="0.05" value="${ov}"></label></span>`;
+  }
   function tabsHTML(state) {
     return `<button type="button" class="act${state.mode === "goals" ? " pri" : ""}" data-rt-mode="goals" title="Both figures in a T-pose, a circle on every joint">Goals</button>
       <button type="button" class="act${state.mode === "fit" ? " pri" : ""}" data-rt-mode="fit" title="Bones, proportions and the fit over the stock model">Fit &amp; proportions</button>
       <button type="button" class="act${state.mode === "shape" ? " pri" : ""}" data-rt-mode="shape">Shape cage</button>
+      ${flipsHTML(state)}
       <label class="rt-tp"><input type="checkbox" data-rt-tpose${state.tpose ? " checked" : ""}> T-pose</label>`;
   }
   // the selected circle: which donor bone it is (a list of every bone) and where its pivot moved
@@ -94,12 +108,19 @@
         <em>${ESC(bone || "unassigned")}${moved}${there}</em></div>`;
     }).join("");
   }
+  // "mapped wrong" flags raised from gameplay (the pick whip's "Fix this character's mapping"), newest last
+  function flaggedHTML(state) {
+    const f = (state.flagged || []).filter(Boolean);
+    if (!f.length) return "";
+    const last = f[f.length - 1], when = last.at ? new Date(last.at * 1000).toLocaleString() : "";
+    return `<span class="rt-flag" title="${ESC(f.map(x => [x.at ? new Date(x.at * 1000).toLocaleString() : "", x.note].filter(Boolean).join(": ")).join("\n") || "opened from gameplay")}">⚑ Flagged from gameplay${f.length > 1 ? ` (${f.length}×)` : ""}${last.note ? ": " + ESC(last.note) : when ? " " + ESC(when) : ""}</span>`;
+  }
   function headerHTML(state) {
     const slots = state.slots || [];
     const pick = slots.length ? `<select data-rt="slot">${slots.map(s => `<option value="${ESC(s.slot)}"${s.slot === state.slot ? " selected" : ""}>${ESC(s.name || s.slot)}</option>`).join("")}</select>`
       : `<input data-rt="slot" value="${ESC(state.slot || "")}" size="14" placeholder="slot (player)">`;
     return `<b>Retarget ${ESC(state.name || state.slug)} → ${ESC(state.title || state.gid)}</b> ${pick}
-      <span class="mut rt-saved">${ESC(state.savedNote || "")}</span>`;
+      <span class="mut rt-saved">${ESC(state.savedNote || "")}</span>${flaggedHTML(state)}`;
   }
   function frameHTML() {
     return `<div class="rt-h" data-rt-part-slot="header"></div>
@@ -142,6 +163,16 @@
       target: ["Target · goals", "(the fitted donor, live)"] },
     shape: {donor:["Reference · original donor", "(drag cage circles; Alt-drag changes depth)"],target:["Adjusted · over stock reference", "(cage deformation before retargeting)"]},
     fit: { donor: ["Donor · bones", "(arm a role, click its bone)"], target: ["In the game", "(drag the circles; Shift-drag moves a part)"] } };
+  // the captions with the names in: the left side is the donor being mapped, the right side the game's own slot with
+  // the donor fitted over it (the operator's "original and the one being mapped, overlaid")
+  function captionsFor(state) {
+    const cap = CAPTIONS[state.mode] || CAPTIONS.goals, who = state.name || state.slug || "the donor";
+    const slot = ((state.slots || []).find(s => s.slot === state.slot) || {}).name || state.slot || "this slot";
+    if (state.mode === "goals") return { donor: [`Donor: ${who}`, "— drag the circles to its real joints; click one to pick its bone"],
+      target: [`In game: ${slot} with ${who} fitted over it`, state.tpose ? "(live; untick T-pose to see the original under it)" : "(live, over the original)"] };
+    if (state.mode === "fit") return { donor: [`Donor: ${who} · bones`, cap.donor[1]], target: [`In game: ${slot} with ${who} fitted over it`, cap.target[1]] };
+    return cap;
+  }
 
   // ---- the controller (no DOM) ------------------------------------------------------------
   // io: api(path, body?) -> data (throws), render(part, html), status(text), onChange(state)
@@ -149,7 +180,8 @@
     const st = { slug: opts.slug, name: opts.name || "", gid: opts.gid, title: opts.title || "", slot: opts.slot || "player",
       slots: [], view: null, reference: null, baseRoles: {}, roles: {}, guessed: {}, profile: H.normalize({}), bones: [],
       armed: null, part: null, dirty: false, savedNote: "", mode: opts.view === "fit" ? "fit" : "goals", tpose: true,
-      joint: null, goals: null, rebuild: null };
+      joint: null, goals: null, rebuild: null, flagged: [], overlay: 1 };
+    let askedFlag = !!opts.flagged;                           // opened from gameplay: say so even if the flag post failed
     const q = () => `game_id=${encodeURIComponent(st.gid)}&slot=${encodeURIComponent(st.slot)}`;
     const changed = () => { io.onChange && io.onChange(st); };
     function renderAll() {
@@ -176,6 +208,8 @@
       const p = H.normalize(opts.draftProfile || v.resolved || {});
       st.roles = H.applyOverrides(st.baseRoles, p.roles); st.profile = p; st.dirty = !!opts.draftProfile;
       st.savedNote = v.profile ? "saved for this slot" : v.game_wide ? "using the game-wide profile" : "automatic fit (nothing saved)";
+      st.flagged = Array.isArray(v.flagged) && v.flagged.length ? v.flagged.slice() : askedFlag ? [{ note: "" }] : [];
+      askedFlag = false;
       renderAll();
       io.status(!H.issues(st.roles).ok ? `Assign ${H.issues(st.roles).missing.join(" and ")} first: the fit needs them.`
         : st.mode === "goals" ? "Drag the circles on the donor to where its joints really are; the fit on the right updates live."
@@ -185,6 +219,21 @@
     }
     function setMode(mode) { st.mode = ["fit","shape"].includes(mode) ? mode : "goals"; io.render("tabs", tabsHTML(st)); changed(); }
     function setTpose(on) { st.tpose = !!on; io.render("tabs", tabsHTML(st)); changed(); }
+    // flip the mapping: the left and right roles trade bones (and the joint moves / cage / shoe tops follow their bone)
+    function swapSides() {
+      st.roles = H.swapSides(st.roles); st.profile = H.swapProfileSides(st.profile); st.dirty = true; st.armed = null;
+      renderAll();
+      io.status("Left ↔ right swapped: each left role now uses the bone its right twin had. Check the fit, then save.");
+      changed();
+    }
+    // flip the body: the fit turned 180 degrees about up (profile.turn)
+    function setTurn(on) {
+      st.profile = H.normalize(Object.assign({}, st.profile, { turn: !!on })); st.dirty = true;
+      io.render("tabs", tabsHTML(st));
+      io.status(on ? "Turned around: the donor faces the other way in this slot's fit. Check the fit, then save." : "Turn around off.");
+      changed();
+    }
+    function setOverlay(v) { const n = Number(v); st.overlay = Number.isFinite(n) ? Math.min(1, Math.max(0.1, n)) : 1; changed(); }
     function selectJoint(role) {                              // a circle clicked: its bone list and its move
       st.joint = H.GOALS.includes(role) ? role : null;
       io.render("joint", jointHTML(st)); io.render("legend", legendHTML(st)); changed();
@@ -256,6 +305,7 @@
       io.status("Saving…");
       const v = await io.api(`/api/characters/${encodeURIComponent(st.slug)}/retarget_profile`, payload(scope));
       st.view = v; st.dirty = false;
+      st.flagged = Array.isArray(v && v.flagged) ? v.flagged.slice() : [];   // the save answered the flag (server clears it)
       st.savedNote = scope === "game" ? "saved for the whole game" : "saved for this slot";
       io.render("header", headerHTML(st));
       io.status(`✓ Saved. The next build of ${scope === "game" ? "this game" : st.slot} fits ${st.name || st.slug} with it (marked for rebuild).`);
@@ -304,7 +354,8 @@
       return st.rebuild;
     }
     return { state: st, load, setBones, guess, arm, setRoleBone, clickBone, selectPart, setValue, resetPart, dragTo, settle,
-      payload, save, reset, setSlot, renderAll, setMode, setTpose, selectJoint, dragJoint, resetJoint, rebuildRecipe, saveAndRebuild };
+      payload, save, reset, setSlot, renderAll, setMode, setTpose, selectJoint, dragJoint, resetJoint, rebuildRecipe, saveAndRebuild,
+      swapSides, setTurn, setOverlay };
   }
 
   // ---- the browser: dialog + two three.js views + circles -----------------------------------
@@ -334,6 +385,8 @@
       display:inline-block;font:700 9px/16px ui-monospace,monospace;text-align:center;color:#101318;font-style:normal;flex:none}
     #rtedit .rt-jb{display:grid;grid-template-columns:92px 1fr;gap:4px;align-items:center;font-size:11px;margin-bottom:3px}#rtedit .rt-jb select{min-width:0;font-size:11px}
     #rtedit .rt-goal{display:grid;grid-template-columns:18px 104px 1fr;gap:4px;align-items:center;padding:1px 2px;border-radius:4px;cursor:pointer;font-size:11px}
+    #rtedit .rt-flips{display:flex;gap:6px;align-items:center;flex-wrap:wrap}#rtedit .rt-ovl{display:flex;gap:4px;align-items:center}
+    #rtedit .rt-ovl input{width:80px;accent-color:var(--acc,#4f8cff)}#rtedit .rt-flag{color:#ffb46b;font-size:11px;margin-left:6px}
     #rtedit .rt-goal.sel{background:#ffffff14}#rtedit .rt-goal.miss em{color:#ff8b8b}#rtedit .rt-goal em{font-size:10px;color:#7d8696;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}`;
 
   async function loadThree(io) {
@@ -385,7 +438,7 @@
     });
     const c = controller(ui, opts);
     const pending=new Set(),pendingReview=(kind,on)=>{on?pending.add(kind):pending.delete(kind);c.state.texturePending=!!pending.size;};
-    const accepted=result=>{const draft=H.normalize(c.state.profile),slot=c.state.slot;dispose();open(doc,io,{...opts,slug:result.variant,name:result.name,slot,draftProfile:draft});};
+    const accepted=result=>{const draft=H.normalize(c.state.profile),slot=c.state.slot;dispose(true);open(doc,io,{...opts,slug:result.variant,name:result.name,slot,draftProfile:draft});};
     if(io.editTextures){const paint=doc.createElement('button');paint.type='button';paint.className='act';paint.textContent='Paint donor textures in PhotoCraft';paint.onclick=()=>{const draft=H.normalize(c.state.profile),slot=c.state.slot;dispose();io.editTextures({...opts,character:opts.slug,slot,draftProfile:draft});};q('[data-rt-textures]').before(paint);}
     const textures=root.GBoxTextureReview?.mount(q('[data-rt-textures]'),{api:io.api,url:u=>io.url?io.url(u):u},{slug:opts.slug,onPreview:showTextureCandidate,
       onPending:on=>pendingReview('texture',on),onAccepted:accepted});
@@ -399,6 +452,17 @@
     const I = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
     let THREE = null, Loader = null, donor = null, target = null, R = null, donorRest = {}, donorPos = {}, fit = null, lfit = null,
       cageBounds = null, shapeKey = null, shoeKey = null, cageSlice=1, pivots = {}, tPos = {}, tGround = 0, dGround = 0, Hd = 1, jointsKey = null, donorScene = null, refHolder = null;
+    // the fit frame: the slot skeleton's own facing in the build's target space (the goals' frame, up = +Y) times Turn
+    // around - the build fits the donor's front to +Z of the RAW target space, so the preview turns the donor by the
+    // same frame the editor turned the slot skeleton by (a slot facing -Z shows a backwards donor, like in the game)
+    let slotFrame = I, turnKey = false;
+    const isI = M => M.every((r, i) => r.every((x, j) => x === (i === j ? 1 : 0)));
+    const fitFrame = () => H.turnFrame(slotFrame, c.state.profile);
+    function rotFlat(M, a) {
+      const out = new Float32Array(a.length);
+      for (let i = 0; i < a.length; i += 3) for (let k = 0; k < 3; k++) out[i + k] = M[k][0] * a[i] + M[k][1] * a[i + 1] + M[k][2] * a[i + 2];
+      return out;
+    }
     let previewMeshes = [], posedMeshes = [], drag = null;
     let textureCandidate=null,textureRequest=0;
     function disposeCandidateScene(scene) {
@@ -477,17 +541,21 @@
       shoeKey=JSON.stringify(c.state.profile.shoe_tops||{});
       let shoeFloor=Infinity,shoeTop=-Infinity;
       for(const pm of previewMeshes)if(!pm.src.prop)for(let i=1;i<pm.shaped.length;i+=3){shoeFloor=Math.min(shoeFloor,pm.shaped[i]);shoeTop=Math.max(shoeTop,pm.shaped[i]);}
+      turnKey = !!c.state.profile.turn;
       if (!donor || !donorRest.hip || !donorRest.head) { fit = lfit = null; return; }
-      donorPos = H.movedPositions(donorRest, c.state.profile, Hd);
-      fit = H.baseFit(donorPos, dGround, tPos, tGround);
-      pivots = Object.fromEntries(Object.entries(donorPos).map(([r, p]) => [r, fit.apply(p)]));
-      lfit = H.limbFit(donorPos, dGround, tPos, tGround);
+      donorPos = H.movedPositions(donorRest, c.state.profile, Hd);  // the donor frame: its views and joint moves
+      const G = fitFrame(), same = isI(G);                    // the fit frame (Turn around, the slot's own facing)
+      const fitPos = same ? donorPos : Object.fromEntries(Object.entries(donorPos).map(([r, p]) => [r, H.rotate(G, p)]));
+      fit = H.baseFit(fitPos, dGround, tPos, tGround);
+      pivots = Object.fromEntries(Object.entries(fitPos).map(([r, p]) => [r, fit.apply(p)]));
+      lfit = H.limbFit(fitPos, dGround, tPos, tGround);
       for (const pm of previewMeshes) {
         const n = pm.rest.length / 3, k = pm.k, own = new Array(n);
+        pm.fitSrc = same ? pm.shaped : rotFlat(G, pm.shaped);
         for (let i = 0; i < n; i++) {                         // the strongest influence's role decides the segment
           let best = 0; for (let j = 1; j < k; j++) if (pm.w[i * k + j] > pm.w[i * k + best]) best = j;
           own[i] = pm.roles0[i * k + best];
-          const p = fit.apply([pm.shaped[3 * i], pm.shaped[3 * i + 1], pm.shaped[3 * i + 2]]);
+          const p = fit.apply([pm.fitSrc[3 * i], pm.fitSrc[3 * i + 1], pm.fitSrc[3 * i + 2]]);
           pm.base[3 * i] = p[0]; pm.base[3 * i + 1] = p[1]; pm.base[3 * i + 2] = p[2];
         }
         let now = H.resegment(pm.rest, own, donorRest, donorPos);
@@ -555,7 +623,7 @@
       }
     }
     function captions() {
-      const cap = CAPTIONS[c.state.mode], set = (k, t) => { const n = q(`[data-rt="${k}"]`); if (n && n.textContent !== t) n.textContent = t; };
+      const cap = captionsFor(c.state), set = (k, t) => { const n = q(`[data-rt="${k}"]`); if (n && n.textContent !== t) n.textContent = t; };
       set("donor-cap", cap.donor[0]); set("donor-hint", cap.donor[1]); set("target-cap", cap.target[0]); set("target-hint", cap.target[1]);
       if (el.dataset.mode !== c.state.mode) el.dataset.mode = c.state.mode;
     }
@@ -571,10 +639,15 @@
       q('[data-rt-preserve]').checked=!!st.profile.preserve_geometry;
       q('[data-rt-shoes]').checked=!!st.profile.shoe_tops;
       for(const side of ['l','r']){const input=q('[data-rt-shoe="'+side+'"]');input.disabled=!st.profile.shoe_tops;input.value=st.profile.shoe_tops?.[side]??.15;q('[data-shoe-value="'+side+'"]').textContent=(100*+input.value).toFixed(1)+'%';}
-      if (donor && (JSON.stringify(H.normalize(st.profile).joints) !== jointsKey || JSON.stringify(st.profile.lattice||{}) !== shapeKey || JSON.stringify(st.profile.shoe_tops||{})!==shoeKey)) rejoint();
+      if (donor && (JSON.stringify(H.normalize(st.profile).joints) !== jointsKey || JSON.stringify(st.profile.lattice||{}) !== shapeKey || JSON.stringify(st.profile.shoe_tops||{})!==shoeKey || !!st.profile.turn !== turnKey)) rejoint();
       if (donorScene) donorScene.visible = !goals;
-      if (refHolder) refHolder.visible = !goals;
+      if (refHolder) refHolder.visible = !goals || !st.tpose;  // Goals without the T-pose: the original under the donor
       for (const pm of posedMeshes) pm.mesh.visible = goals;
+      const ov = Number.isFinite(+st.overlay) ? +st.overlay : 1;   // "Donor over original"
+      for (const pm of previewMeshes) {
+        const m = pm.mesh && pm.mesh.material;
+        if (m && m.opacity !== ov) { m.transparent = ov < 1; m.opacity = ov; m.depthWrite = ov >= 1; m.needsUpdate = true; }
+      }
       const dv = views.donor;
       if (dv && donor && goals && donorRest.hip) {
         // Goals, source side: the donor T-posed about its rig's joints, a numbered circle on every joint (moved ones too)
@@ -619,7 +692,7 @@
         const tp = H.tPose(tPos, st.tpose), pts = [];
         if (lfit) {
           const tr = H.compose(tp, H.compose(H.roleTransforms(lfit.pivots, st.profile, tGround), lfit));
-          for (const pm of previewMeshes) updateMesh(pm, pm.shaped||pm.rest, tr);
+          for (const pm of previewMeshes) updateMesh(pm, pm.fitSrc||pm.shaped||pm.rest, tr);
           plantFeet();
           for (const pm of previewMeshes) pts.push(...samples(pm.attr.array, 300));
         }
@@ -744,6 +817,7 @@
 
     // ---- DOM events on the side panel ----
     el.addEventListener("input", e => {
+      if (e.target.matches && e.target.matches("[data-rt-overlay]")) { c.setOverlay(e.target.value); return; }
       if(e.target.matches('[data-rt-shoe]')){const side=e.target.dataset.rtShoe;c.state.profile=H.normalize({...c.state.profile,shoe_tops:{...c.state.profile.shoe_tops,[side]:+e.target.value}});c.state.dirty=true;schedule();return;}
       const s = e.target.closest("[data-rt-set]"); if (!s) return;
       c.setValue(s.dataset.rtSet, s.value);
@@ -784,6 +858,8 @@
         if (what === "close") { if (c.state.dirty && io.confirm && !io.confirm("Close without saving the retarget changes?")) return; dispose(); return; }
         if(what === "shape-reset"){const profile={...c.state.profile};delete profile.lattice;c.state.profile=H.normalize(profile);c.state.dirty=true;schedule();return;}
         if (what === "guess") { c.guess(); refit(); schedule(); return; }
+        if (what === "swap-lr") { c.swapSides(); refit(); schedule(); return; }
+        if (what === "turn") { c.setTurn(!c.state.profile.turn); rejoint(); schedule(); return; }
         if (what === "part-reset") { c.resetPart(go.dataset.role); schedule(); return; }
         if (what === "joint-reset") { c.resetJoint(go.dataset.role); schedule(); return; }
         if (what === "save") await c.save("slot");
@@ -794,7 +870,10 @@
       } catch (err) { ui.status("✗ " + String(err.message || err).slice(0, 300)); }
     });
     const ro = typeof ResizeObserver === "function" ? new ResizeObserver(() => schedule()) : null;
-    function dispose() {
+    // handoff: another editor takes over (an accepted texture variant) - the opener's onClose (the pick whip's pause
+    // hold) stays with that one
+    function dispose(handoff) {
+      if (dead) return;
       dead = true;textureRequest++;textures?.dispose();photos?.dispose(); if (ro) ro.disconnect();
       for (const v of Object.values(views)) if (v && v.renderer) {
         v.scene.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material) [].concat(o.material).forEach(m => m.dispose()); });
@@ -802,6 +881,7 @@
       }
       disposeTextureCandidate();
       el.remove();
+      if (!handoff && typeof opts.onClose === "function") { try { opts.onClose(); } catch (err) { /* the opener's own cleanup */ } }
     }
 
     // ---- load: profile, then the modules and both models ----
@@ -822,6 +902,7 @@
       let tname = ref ? ref.name : "standard skeleton";
       if (goal && goal.target.hip && goal.target.head) {
         const Rg = H.facing(goal.target);
+        if (Rg[1][1] === 1) slotFrame = Rg;                    // the slot's facing in the build's target space
         tPos = Object.fromEntries(Object.entries(goal.target).map(([r, p]) => [r, H.rotate(Rg, p)]));
         tGround = goal.target_ground != null && Rg[1][1] === 1 ? goal.target_ground : Math.min(...Object.values(tPos).map(p => p[1]));
         tname = `${c.state.slot} skeleton (as the last build loaded it)`;
@@ -888,7 +969,7 @@
   }
 
   const api = { controller, open, rolesHTML, globalsHTML, partHTML, headerHTML, frameHTML, readModel, COLORS, tabsHTML, jointHTML,
-    legendHTML, CAPTIONS };
+    legendHTML, CAPTIONS, captionsFor, flipsHTML, flaggedHTML };
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.GBoxRetargetEditor = api;
 })(typeof window !== "undefined" ? window : globalThis);
