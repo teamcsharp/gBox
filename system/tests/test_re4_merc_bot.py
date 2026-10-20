@@ -119,30 +119,70 @@ def test_blocked_while_running_vaults_then_detours():
     assert z > 200.0                                                     # forward, round the learned wall
 
 
-def test_uses_the_navmap_path_when_there_is_one():
-    class Nav:
-        def stage(self, room):
-            return {"events": [{"kind": "hourglass", "pos": [5000.0, 0.0, 0.0]}]}
+class FakeNav:
+    """gbox.re4_navmap's API: stage() with hourglasses, path() -> Waypoints, tour() -> order, sight()."""
 
-        def path(self, stage, start, goal):
-            return [(0.0, 3000.0), goal]                 # round a wall: first north
+    def __init__(self, items, sight=True, path=None):
+        self.items, self.see, self.way = items, sight, path
+
+    def stage(self, room):
+        return {"hourglasses": self.items}
+
+    def path(self, st, start, goal):
+        from gbox.re4_navmap import Waypoint
+        gx, gy, gz = goal if len(goal) == 3 else (goal[0], 0.0, goal[1])
+        return [Waypoint(*w) for w in (self.way or [])] + [Waypoint(gx, gy, gz, None)]
+
+    def tour(self, st, start, targets=None):
+        return list(reversed(range(len(targets))))                  # the planner's order (here: reversed)
+
+    def sight(self, st, a, b):
+        return self.see
+
+
+def item(kind, x, z):
+    return {"kind": kind, "reachable": True, "pos": [x, 0.0, z], "stand": [x, 0.0, z - 300.0], "seconds": 90}
+
+
+def test_with_the_map_takes_the_time_bonuses_in_the_planned_order_with_a():
     now = [0.0]
     m = world([], room=0x400, leon=(0.0, 0.0, 0.0))
-    bot = B.Bot(m, clock=lambda: now[0], nav=Nav())
-    facing(m, 0.0)
-    assert bot.tick(B.snapshot(m)) == {"hold": {"up", "b"}}           # heading 0 = +z: the first waypoint
-    assert bot.bonus == [(5000.0, 0.0)]
+    first, second = item("time_bonus", 0.0, 5000.0), item("time_bonus", 0.0, -5000.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=FakeNav([first, second]))
+    facing(m, math.pi)                                                    # facing -z: the planner's first pick
+    assert bot.tick(B.snapshot(m)) == {"hold": {"up", "b"}}               # run (tour reversed the list: -z first)
+    assert bot.items[0] is second
+    m.put(PL + 0x94, ">3f", 0.0, 0.0, -5200.0)                            # at its stand point (-5300)
+    assert bot.tick(B.snapshot(m)) == {"tap": "a"}                        # TAKE
 
 
-def test_a_stopped_clock_is_a_prompt_answered_yes():
+def test_a_vault_waypoint_is_jumped_with_a():
     now = [0.0]
-    m = world([((0, 0, 1000), True)])
-    bot = B.Bot(m, clock=lambda: now[0])
-    bot.tick(B.snapshot(m))
-    now[0] = 1.5                                      # same timer value 1.5 s later
-    assert bot.tick(B.snapshot(m)) == {"tap": "a"}
-    now[0] = 8.0
-    assert bot.tick(B.snapshot(m)) == {"tap": "b"}     # still stuck: back out
+    m = world([], room=0x400, leon=(0.0, 0.0, 0.0))
+    bonus = item("time_bonus", 0.0, 9000.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=FakeNav([bonus], path=[(0.0, 0.0, 600.0, "vault")]))
+    facing(m, 0.0)
+    assert bot.tick(B.snapshot(m)) == {"tap": "a"}                        # the fence 600 ahead: JUMP OVER
+    assert bot.stats["vaults"] == 1
+
+
+def test_no_line_of_sight_means_move_not_shoot():
+    now = [0.0]
+    m = world([((0, 0, 1500), True)], room=0x400)
+    bot = B.Bot(m, clock=lambda: now[0], nav=FakeNav([], sight=False))
+    facing(m, 0.0)
+    assert bot.tick(B.snapshot(m)) == {"hold": {"up", "b"}}               # behind a wall: go round to him
+
+
+def test_a_crowd_sends_him_for_a_combo_bonus_first():
+    now = [0.0]
+    ganados = [((800.0 * k, 0, 2500), True) for k in range(-2, 3)]       # five close by
+    m = world(ganados, room=0x400)
+    combo = item("combo_bonus", 0.0, 3000.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=FakeNav([combo]))
+    facing(m, 0.0)
+    act = bot.tick(B.snapshot(m))
+    assert act == {"hold": {"up", "b"}} and bot.goal["item"] is combo     # every kill in its 30 s scores more
 
 
 def test_a_target_that_soaks_fire_is_skipped():
@@ -279,3 +319,27 @@ def test_running_into_something_teaches_the_map(tmp_path):
     assert bot.stats["learned_walls"] >= 1 and bot.stats["replans"] >= 1
     bot.save()
     assert (tmp_path / "r400.json").is_file()
+
+
+def test_between_rounds_a_rerun_hook_replaces_the_blind_presses():
+    m = world([], room=0x400, timer_s=0.0)                                # the Result screen
+    now, sent, calls = [0.0], [], []
+    steps = iter(range(40))
+
+    def rerun():
+        calls.append(now[0])
+        m.put(B.MERC_TIMER, ">I", int(120 * 30))                         # the next round is on
+    B.play(None, lambda rows: sent.append((now[0], rows)), lambda: next(steps, None) is None,
+           sleep=lambda s: now.__setitem__(0, now[0] + s), m=m, clock=lambda: now[0], rerun=rerun)
+    assert len(calls) == 1                                                # one rerun
+    assert not [t for t, rows in sent if t <= calls[0] and {"key": "a", "down": True} in rows]   # no blind A before it
+
+
+def test_a_grab_mid_round_is_not_the_end_of_the_round():
+    m = world([], room=0x400, timer_s=21.8)
+    m.put(B.P_PLAYER, ">I", 0)                                              # Leon's pointer gone for a moment (grabbed)
+    now, calls = [0.0], []
+    steps = iter(range(40))                                                # ~10 s of fake time
+    B.play(None, lambda rows: None, lambda: next(steps, None) is None, sleep=lambda s: now.__setitem__(0, now[0] + s),
+           m=m, clock=lambda: now[0], rerun=lambda: calls.append(now[0]))
+    assert calls == []                                                     # no rerun: the round goes on
