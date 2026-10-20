@@ -3489,6 +3489,13 @@ function popups() {                                          // floating things 
   });
 }
 const EMB = { closed: new Set(),  sid: null, pid: null, last: "" };
+// The operator is watching a game: an embedded game window here, or a session shown full-size in the web shell (a Spark
+// stream). background-display.js keeps the idle screensaver away while this is true.
+window.GBoxWatching = async () => {
+  if (EMB.sid) return true;
+  try { return !!(await document.querySelector("#wv")?.executeJavaScript("typeof playing !== 'undefined' && !!playing")); }
+  catch { return false; }
+};
 let operationFrame={sid:'',rows:[]},operationFrameKey='';
 const GAME_OUTPUT=GBoxOperationConsole.create({session:()=>EMB.sid,
   fetchJob:async id=>{const r=await gbox.api('/api/jobs/'+encodeURIComponent(id));if(!r.ok)throw Error(r.error);return r.data;},
