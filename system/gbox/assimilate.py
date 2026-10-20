@@ -643,10 +643,15 @@ def compact(fp: dict) -> dict:
 
 # ------------------------------------------------------------------------------------------- typed tool
 
+OP_ALIASES = {"scan": "fingerprint", "identify": "fingerprint", "inventory": "fingerprint", "analyze": "fingerprint",
+              "fingerprints": "fingerprint", "list": "known", "engines": "known", "titles": "known"}
+
+
 class AssimilateIn(BaseModel):
-    op: str = "fingerprint"            # fingerprint | known | evaluate
+    op: str = "fingerprint"            # fingerprint | known | evaluate (scan / identify / inventory = fingerprint)
     game_id: str = ""
     path: str = ""                     # a disc image / ROM / folder on this worker instead of a catalog game
+    title: str = ""                    # or a game title: the catalog's best match is used
     max_files: int = 4000
 
 
@@ -662,36 +667,45 @@ def assimilate(inp: AssimilateIn, ctx):
     codecs, model/texture/animation formats, engine/middleware, the nearest assimilated titles and a reader skeleton
     to start from. op=known lists what gBox has assimilated; op=evaluate is the leave-one-out accuracy."""
     import json
-    if inp.op == "known":
+    op = OP_ALIASES.get(inp.op.strip().lower(), inp.op.strip().lower())
+    if op == "known":
         return {"op": "known", "result": {"titles": [{k: t.get(k) for k in ("id", "title", "platform", "engines", "reader",
                                                                           "techniques", "effort")} for t in KNOWN_TITLES]}}
-    if inp.op == "evaluate":
+    if op == "evaluate":
         r = evaluate()
         r2 = evaluate(rules=False)
         return {"op": "evaluate", "result": {k: v for k, v in r.items() if k != "rows"} | {
             "learned_only": {k: r2[k] for k in ("engine_top1", "neighbour_top1")}}}
-    if inp.op != "fingerprint":
+    if op != "fingerprint":
         raise ValueError("op: fingerprint | known | evaluate")
     title = platform = ""
+    game_id = inp.game_id.strip()
+    if not inp.path and not game_id and inp.title.strip():
+        from urllib.parse import urlencode
+        from .re_lab_tool import _api
+        hits = _api(ctx, "GET", "/api/catalog/best?" + urlencode({"q": inp.title.strip(), "limit": 1})) or []
+        if not hits:
+            raise ValueError(f"no catalog game matches {inp.title!r}; pass game_id or path")
+        game_id = hits[0]["game_id"]
     if inp.path:
         p = Path(inp.path)
-    elif inp.game_id:
+    elif game_id:
         from .models import CatalogEntry
         from .re_lab_tool import _api
         from .tools import rom_path
-        game = _api(ctx, "GET", f"/api/catalog/{inp.game_id}")
+        game = _api(ctx, "GET", f"/api/catalog/{game_id}")
         title, platform = game.get("title", ""), game.get("platform", "")
         p = rom_path(CatalogEntry.model_validate(game), ctx.config)
     else:
-        raise ValueError("fingerprint needs game_id or path")
+        raise ValueError("fingerprint needs game_id (catalog game), path (a disc/ROM/folder on this worker) or title")
     ctx.progress(5, f"listing {p.name}")
     if not p.exists():
         fp = metadata_fingerprint(title, platform)
         fp["notes"].append(f"{p} isn't readable on this node")
     else:
         fp = fingerprint_path(p, platform, title, max_files=inp.max_files)
-    fp["game_id"] = inp.game_id
+    fp["game_id"] = game_id
     ctx.artifact("fingerprint.json", json.dumps(fp, indent=1, default=str).encode(), "application/json",
-                 game_id=inp.game_id)
+                 game_id=game_id)
     ctx.progress(100, summary(fp)[:200])
     return {"op": "fingerprint", "result": fp | {"summary": summary(fp)}}
