@@ -101,3 +101,23 @@ def test_owned_goldeneye_rom_decodes_every_ai_list():
     levels = L.rom_levels(rom)
     assert len(levels) == 34 and sum(len(v) for v in levels.values()) == 662
     assert all(lst["commands"][-1]["name"] == "EndList" for v in levels.values() for lst in v)
+
+
+def test_behaviour_graph_states_edges_and_handoffs():
+    from gbox.bond_ai import behaviour as B
+    cmd = lambda at, name, **args: {"at": at, "name": name, "args": args}
+    lst = {"id": 0x408, "kind": "character", "offset": 0, "commands": [
+        cmd(0, "SetMyAlertness", CHRBYTE=0), cmd(2, "GotoNext", LABEL=0), cmd(4, "Label", ID=3),
+        cmd(6, "MyTimerStart"), cmd(7, "Label", ID=0), cmd(9, "Yield"), cmd(10, "IFICouldSeeBond", GOTOLABEL=9),
+        cmd(12, "IFMyTimerLessThanTicks", TICKS=300, GOTOLABEL=3), cmd(16, "GotoFirst", LABEL=0),
+        cmd(18, "Label", ID=9), cmd(20, "SetChrAiList", CHR_NUM=0xFD, AI_LIST_ID=2), cmd(24, "EndList")]}
+    g = B.graph(lst)
+    assert set(g["states"]) == {"entry", "3", "0", "9"} and g["unresolved"] == []
+    assert g["states"]["0"]["yields"] == 1 and g["states"]["entry"]["actions"][0]["do"] == "SetMyAlertness"
+    edges = {(e["from"], e["to"], e["when"]) for e in g["edges"]}
+    assert ("entry", "0", "always") in edges and ("3", "0", "fallthrough") in edges
+    assert ("0", "9", "IFICouldSeeBond") in edges and ("0", "3", "IFMyTimerLessThanTicks") in edges
+    assert next(e for e in g["edges"] if e["when"] == "IFMyTimerLessThanTicks")["args"] == {"TICKS": 300}
+    assert g["handoffs"] == [{"from": "9", "list": 2, "chr": 0xFD}]
+    lv = B.level_graphs([lst, dict(lst)])
+    assert set(lv["lists"]) == {"0x0408", "0x0408#2"} and lv["calls"] == [["0x0408", "0x0002"]]
