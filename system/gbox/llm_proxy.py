@@ -48,6 +48,18 @@ ROLE_MAP = {'developer': 'system', 'function': 'tool'}
 ROLES = ('system', 'user', 'assistant', 'tool')
 CONTINUE = 'Continue.'
 MARGIN_TOKENS = 512
+CONTEXT_OVERRUN = re.compile(r"maximum context length is (\d+) tokens.*?prompt contains at least (\d+) input tokens", re.I | re.S)
+
+
+def tighter_cpt(error_text: str, estimated: int, cpt: float) -> float | None:
+    """The chars-per-token to re-cap with when the model reports the prompt overran its context, from the count the
+    model measured against the proxy's estimate (a tenth tighter for safety); None when the error is something else."""
+    m = CONTEXT_OVERRUN.search(error_text or '')
+    if not m or estimated <= 0:
+        return None
+    actual = int(m.group(2))
+    ratio = min(1.0, estimated / max(actual, 1))
+    return round(min(cpt * ratio * 0.9, cpt * 0.95), 3)
 
 
 # ------------------------------------------------------------------------------------------------ message fixes
@@ -513,7 +525,7 @@ class LocalLLM:
                 'totals_since_start': totals}
 
     # -- one call
-    async def prepare(self, body: dict):
+    async def prepare(self, body: dict, cpt: float | None = None):
         s = self.settings()
         if not s.enabled:
             raise Busy(503, 'The local route is switched off ([hermes.local] enabled = false)', s.retry_after_s)
@@ -546,10 +558,12 @@ class LocalLLM:
         # it becomes the sole retained tail group and erases the last tool result
         # precisely when a factual final checkpoint is required.
         reminder = [{'role': 'user', 'content': instruction}] if instruction else []
-        reserve = estimate(reminder, None, s.chars_per_token) if reminder else 0
-        capped, info = cap_context(fixed, body.get('tools'), ctx - max_out - MARGIN_TOKENS - reserve, s.chars_per_token)
+        cpt = cpt or s.chars_per_token
+        reserve = estimate(reminder, None, cpt) if reminder else 0
+        capped, info = cap_context(fixed, body.get('tools'), ctx - max_out - MARGIN_TOKENS - reserve, cpt)
         capped += reminder
-        info['tokens'] = estimate(capped, body.get('tools'), s.chars_per_token)
+        info['tokens'] = estimate(capped, body.get('tools'), cpt)
+        info['cpt'] = cpt
         if s.api_format == 'openai':
             payload = {k: body[k] for k in ('tools', 'tool_choice', 'parallel_tool_calls', 'temperature',
                        'top_p', 'stop', 'response_format', 'presence_penalty', 'frequency_penalty') if k in body}
@@ -620,6 +634,12 @@ class LocalLLM:
             async with self._client(s) as client:
                 r = await client.post('chat/completions' if s.api_format == 'openai' else '/api/chat',
                                       json=payload | {'stream': False})
+                if r.status_code >= 400 and (cpt := tighter_cpt(_error_text(r), meta['est_prompt_tokens'], meta.get('cpt') or s.chars_per_token)):
+                    # the model counted more tokens than the proxy estimated: re-cap from its count and send once more
+                    s, payload, meta = await self.prepare(body, cpt=cpt)
+                    meta['recapped'] = cpt
+                    r = await client.post('chat/completions' if s.api_format == 'openai' else '/api/chat',
+                                          json=payload | {'stream': False})
             if r.status_code >= 400:
                 raise Busy(502 if r.status_code >= 500 else r.status_code, 'Local inference: ' + _error_text(r))
             data = r.json()
@@ -666,10 +686,30 @@ class LocalLLM:
             await response.aread()
             text = _error_text(response)
             await response.aclose()
-            await client.aclose()
-            self.release(lock)
-            self.log(meta | {'ts': t0, 'status': 'error', 'error': text[:300]})
-            raise Busy(502 if response.status_code >= 500 else response.status_code, 'Local inference: ' + text)
+            cpt = tighter_cpt(text, meta['est_prompt_tokens'], meta.get('cpt') or s.chars_per_token)
+            if cpt:                                          # re-cap from the model's own count and send once more
+                try:
+                    s, payload, meta = await self.prepare(body, cpt=cpt)
+                    meta['recapped'] = cpt
+                    if s.api_format == 'openai':
+                        payload['stream_options'] = {'include_usage': True}
+                    request = client.build_request('POST', 'chat/completions' if s.api_format == 'openai' else '/api/chat',
+                                                    json=payload | {'stream': True})
+                    response = await client.send(request, stream=True)
+                except httpx.HTTPError as e:
+                    await client.aclose()
+                    self.release(lock)
+                    self.log(meta | {'ts': t0, 'status': 'error', 'error': type(e).__name__})
+                    raise Busy(502, f'Local inference unreachable ({type(e).__name__})') from None
+                if response.status_code >= 400:
+                    await response.aread()
+                    text = _error_text(response)
+                    await response.aclose()
+            if response.status_code >= 400:
+                await client.aclose()
+                self.release(lock)
+                self.log(meta | {'ts': t0, 'status': 'error', 'error': text[:300]})
+                raise Busy(502 if response.status_code >= 500 else response.status_code, 'Local inference: ' + text)
         if s.api_format == 'openai':
             async def openai_events():
                 usage, calls, done, error = {}, set(), False, None
