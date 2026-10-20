@@ -1,5 +1,6 @@
 """DOA2 LE playbook (gbox.doa2_bot): RAM game state, jump states, menu route, safety net, hang detection."""
 import struct
+import time
 
 from gbox import doa2_bot as B
 
@@ -202,3 +203,26 @@ def test_still_ram_gets_a_nudge_before_it_counts_as_a_hang():
     stats = B.play(ad, send, lambda: next(steps, 1) is not None, clock=lambda: now[0],
                    sleep=lambda x: now.__setitem__(0, now[0] + x))
     assert stats["nudges"] == 1 and stats["hung"] is False
+
+
+
+def test_real_time_play_with_the_hold_reflex_presses_without_deadlocking():
+    """Live 2026-10-20: send_locked called itself through the rebound send, so the first press (the memory-card prompt's
+    Start) deadlocked the playbook for good. Real time (holds on) must still walk the menus."""
+    import threading
+    ad = FakeDC()
+    ad.set(1, 320, 320)                                    # the title: no jump state yet, so the menu route runs
+    sent, done = [], {}
+    stop = threading.Event()
+
+    def go():
+        done["stats"] = B.play(ad, sent.append, stop.is_set, sleep=lambda x: time.sleep(min(x, 0.01)))
+    th = threading.Thread(target=go, daemon=True)
+    th.start()
+    deadline = time.time() + 20
+    while time.time() < deadline and not any(r[0]["key"] == "right" for r in sent):
+        time.sleep(0.05)
+    stop.set()
+    th.join(5)
+    assert not th.is_alive(), "the playbook deadlocked"
+    assert any(r[0]["key"] == "start" and r[0]["down"] for r in sent)

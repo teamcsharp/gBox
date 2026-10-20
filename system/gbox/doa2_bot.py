@@ -115,9 +115,11 @@ def play(ad, send, stopped, style=None, clock=time.time, sleep=time.sleep, stats
         with lock:
             return bytes(ad.read_memory(a, n))
 
+    raw_send = send                                # send_locked must reach the emulator, not itself (send is rebound below)
+
     def send_locked(rows):
         with lock:
-            send(rows)
+            raw_send(rows)
     stats = stats if stats is not None else {}
     stats.update({"fights_s": 0.0, "jumps": 0, "routes": 0, "saves": 0, "safety": 0, "hung": False})
     fighting = threading.Event()

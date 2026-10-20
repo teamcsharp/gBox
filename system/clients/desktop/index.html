@@ -1584,13 +1584,16 @@ async function remoteWatch(workerId = null) {
   const wr = await gbox.api("/api/workers");
   if (!wr.ok) return toast(wr.error || "Could not list computers");
   const windows = wr.data.filter(w => w.online && w.os === "windows");
+  // The other computer, never this one: the idle lookup returned this PC whenever the operator sat watching it
+  // (2026-10-20: "it's not bringing up a window to the other computer"). Idle first, else any other PC that can show
+  // its screen (desktop_stream), else any other PC with frames.
   if (!workerId) {
     REMOTE.view = "app";
+    const others = windows.filter(w => w.name !== S.workerName && w.tools?.includes("get_frame"));
     const idle = await gbox.api("/api/workers/idle?tool=get_frame");
-    if (idle.ok) workerId = idle.data.id;
-    else if (String(idle.error || "").includes("404") && S.workerName)
-      workerId = windows.find(w => w.name !== S.workerName && w.tools?.includes("get_frame"))?.id;
-    if (!workerId) return toast(idle.error || "No other computer is idle");
+    workerId = (idle.ok && others.some(w => w.id === idle.data.id) ? idle.data.id : null)
+      || (others.find(w => w.features?.includes("desktop_stream")) || others[0])?.id;
+    if (!workerId) return toast(others.length ? "The other computer can't show its screen" : "No other computer is online");
   }
   const selected = windows.find(w => w.id === workerId);
   if (!selected) return toast("That computer is offline");
