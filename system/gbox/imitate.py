@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import base64
 import io
+import math
 import random
 import time
 from collections import Counter, defaultdict
@@ -242,11 +243,14 @@ def menu_keys(timeline: list[tuple[float, frozenset]], top: int = 2) -> list[str
 
 class Stuck:
     """True once the screen has stayed (nearly) the same for STILL_FOR seconds: autoplay is stuck on a title screen,
-    a "press start", a dialogue box or a results screen, and should press through it."""
+    a "press start", a dialogue box or a results screen, and should press through it. It also keeps the run's
+    novelty: how often the screen changed between looks and how many distinct screens were seen."""
 
     def __init__(self, grab, clock=time.time, still: float = STILL, still_for: float = STILL_FOR):
         self.grab, self.clock, self.still, self.still_for = grab, clock, still, still_for
         self.last, self.since = None, None
+        self.looks = self.moving = 0
+        self.seen: set[bytes] = set()
 
     def __call__(self) -> bool:
         try:
@@ -254,25 +258,77 @@ class Stuck:
         except Exception:
             return False
         now = self.clock()
+        self.looks += 1
+        self.seen.add(coarse(t))
         if self.last is None or distance(t, self.last) >= self.still:
             self.since = now
+            self.moving += self.last is not None
         self.last = t
         return now - self.since >= self.still_for
+
+    def novelty(self) -> dict:
+        """moving: share of looks where the screen had changed; screens: distinct coarse screens; score combines both."""
+        moving = self.moving / max(1, self.looks - 1)
+        return {"looks": self.looks, "moving": round(moving, 3), "screens": len(self.seen),
+                "score": round(moving * math.log1p(len(self.seen)), 3)}
 
     def reset(self):
         self.since = self.clock()
 
 
-class Style:
-    """Plays a learned model: the next burst follows the last one the way the operator's did (70%), else by frequency."""
+KNOBS = {"follow": (0.4, 0.7, 0.9),           # how often the next move follows the last the way the operator's did
+         "pace": (0.6, 1.0, 1.5),             # gap between moves x pace (lower = faster)
+         "favor": (0.5, 1.0, 2.0)}            # move weights ** favor (higher = the operator's most used moves dominate)
+DEFAULT_KNOBS = {"follow": 0.7, "pace": 1.0, "favor": 1.0}
 
-    def __init__(self, model: dict, rng: random.Random | None = None):
+
+def coarse(thumb: str) -> bytes:
+    """A screen in 8x6 cells of 4 grey levels: equal for the same place, different for a new one."""
+    px = base64.b64decode(thumb)
+    w, h = THUMB
+    if len(px) != w * h:
+        return px[:48]
+    out = bytearray()
+    for cy in range(6):
+        for cx in range(8):
+            cell = [px[(cy * 4 + y) * w + cx * 4 + x] for y in range(4) for x in range(4)]
+            out.append(sum(cell) // len(cell) // 64)
+    return bytes(out)
+
+
+def choose_knobs(history: list[dict], rng: random.Random | None = None, explore: float = 0.3) -> dict:
+    """The knobs for the next run of a game from its earlier runs [{knobs, score}]: mostly the best average so far,
+    sometimes (explore) a neighbour of it or an untried setting, so play keeps improving."""
+    rng = rng or random.Random()
+    totals: dict[tuple, list[float]] = {}
+    for h in history:
+        k = h.get("knobs") or {}
+        if not isinstance(h.get("score"), (int, float)) or set(k) != set(KNOBS):
+            continue
+        totals.setdefault(tuple(sorted(k.items())), []).append(float(h["score"]))
+    if not totals:
+        return dict(DEFAULT_KNOBS)
+    best = dict(max(totals, key=lambda t: sum(totals[t]) / len(totals[t])))
+    if rng.random() >= explore:
+        return best
+    name = rng.choice(sorted(KNOBS))
+    vals = KNOBS[name]
+    i = vals.index(best[name]) if best[name] in vals else 1
+    return best | {name: vals[max(0, min(len(vals) - 1, i + rng.choice((-1, 1))))]}
+
+
+class Style:
+    """Plays a learned model: the next burst follows the last one the way the operator's did (knobs['follow'], 70% by
+    default), else by frequency (weights ** knobs['favor']); gaps scale by knobs['pace']."""
+
+    def __init__(self, model: dict, rng: random.Random | None = None, knobs: dict | None = None):
         self.m, self.rng, self.prev = model, rng or random.Random(), None
-        self.weights = [b["n"] for b in model["bursts"]]
+        self.knobs = DEFAULT_KNOBS | {k: float(v) for k, v in (knobs or {}).items() if k in KNOBS}
+        self.weights = [b["n"] ** self.knobs["favor"] for b in model["bursts"]]
 
     def next(self) -> list[tuple[float, frozenset]]:
         follow = self.m["follows"].get(str(self.prev)) if self.prev is not None else None
-        if follow and self.rng.random() < 0.7:
+        if follow and self.rng.random() < self.knobs["follow"]:
             ids, w = zip(*((int(k), v) for k, v in follow.items()))
             i = self.rng.choices(ids, w)[0]
         else:
@@ -282,7 +338,7 @@ class Style:
 
     def gap(self) -> float:
         g = self.m.get("gaps") or [0.15]
-        return max(0.03, min(0.8, self.rng.choice(g)))
+        return max(0.03, min(0.8, self.rng.choice(g) * self.knobs["pace"]))
 
 
 def play_plan(plan, *, send, stopped, clock, sleep, offset: float = 0.0, sync=None) -> dict:

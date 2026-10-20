@@ -196,8 +196,11 @@ class Screensaver:
         if run.get("yield") or not cfg["enabled"] or not opted_in(self.store, w, cfg):
             return self._stop(w, run, now, run.get("yield") or "screensaver turned off")
         if phase == "starting" and now - run.get("up", now) >= START_GRACE:
+            from . import imitate
+            knobs = imitate.choose_knobs(self.history(run["game_id"]), self.rng)
+            run["knobs"] = knobs
             job = self.submit(JobRequest(tool="autoplay", input={"session_id": sid, "op": "start", "mode": "auto",
-                                                                 "screensaver": True},
+                                                                 "screensaver": True, "style": knobs},
                                          agent_use=True, require_worker=run["worker_id"]), actor=ACTOR,
                               origin={"via": "autoplay screensaver", "session_id": sid})
             run |= {"phase": "playing", "autoplay_job": _jid(job), "playing_since": now}
@@ -206,6 +209,15 @@ class Screensaver:
         if phase == "playing" and now - run.get("playing_since", now) >= cfg["session_minutes"] * 60:
             return self._stop(w, run, now, f"{cfg['session_minutes']} minutes: next game")
         return f"{phase} {run['title']}"
+
+    def history(self, game_id: str) -> list[dict]:
+        """This game's earlier screensaver runs as [{knobs, score}] (the novelty each set of style knobs reached)."""
+        out = []
+        for row in self.store.all(LOG):
+            res = row.get("result") or {}
+            if row.get("game_id") == game_id and isinstance(res.get("score"), (int, float)):
+                out.append({"knobs": res.get("knobs") or row.get("knobs") or {}, "score": res["score"]})
+        return out
 
     def _stop(self, w, run, now, why):
         from .server import JobRequest
