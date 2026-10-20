@@ -374,3 +374,25 @@ def test_screensaver_send_raises_the_window_and_retries_a_refused_input(monkeypa
         RuntimeError("gBox or the emulator must be active to send emulator input safely"))))
     with pytest.raises(RuntimeError):
         send2([{"key": "a", "down": True}])                     # cannot come to the front: the error stands
+
+
+def test_fast_forward_through_a_still_screen_presses_do_not_move():
+    now = [0.0]
+    clock = lambda: now[0]
+
+    def sleep(s):
+        now[0] += s
+    m = {"bursts": [{"steps": [[0, ["x"]], [0.1, []]], "n": 1}], "follows": {}, "gaps": [0.1], "total": 1,
+         "menu": ["start", "b"]}
+    frames = {"img": _png(10)}
+    st = imitate.Stuck(lambda: imitate.thumb(frames["img"]), clock=clock, still_for=4)
+    ffs, stats = [], {}
+
+    def stopped():
+        if now[0] > 30:                                         # the loading screen ends at 30 s: gameplay moves
+            frames["img"] = _png(200 if int(now[0] * 2) % 2 else 60)
+        return now[0] > 60
+    imitate.play_style(imitate.Style(m, random.Random(0)), send=lambda rows: None, stopped=stopped, sleep=sleep,
+                       stuck=st, ff=ffs.append, clock=clock, stats=stats)
+    assert ffs == [True, False]                                 # on while nothing moved, off once the screen moved
+    assert 10 < stats["ff_s"] < 20
