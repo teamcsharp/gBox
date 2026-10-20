@@ -249,6 +249,7 @@ class Stuck:
     def __init__(self, grab, clock=time.time, still: float = STILL, still_for: float = STILL_FOR):
         self.grab, self.clock, self.still, self.still_for = grab, clock, still, still_for
         self.last, self.since = None, None
+        self.changed = 0.0                    # when the screen last really changed (reset() does not count)
         self.looks = self.moving = 0
         self.seen: set[bytes] = set()
 
@@ -261,7 +262,7 @@ class Stuck:
         self.looks += 1
         self.seen.add(coarse(t))
         if self.last is None or distance(t, self.last) >= self.still:
-            self.since = now
+            self.since = self.changed = now
             self.moving += self.last is not None
         self.last = t
         return now - self.since >= self.still_for
@@ -366,21 +367,54 @@ def play_plan(plan, *, send, stopped, clock, sleep, offset: float = 0.0, sync=No
             "held_for_screens": round(held_for, 1)}
 
 
-def play_style(style: Style, *, send, stopped, sleep, limit: int | None = None, stuck=None) -> int:
+FF_AFTER = 2                             # still-screen presses that moved nothing before fast-forward goes on
+
+
+def play_style(style: Style, *, send, stopped, sleep, limit: int | None = None, stuck=None, ff=None,
+               clock=time.time, stats: dict | None = None) -> int:
     """Loop the learned bursts until stopped (or `limit` bursts). Releases everything it holds between bursts.
     With stuck (a Stuck): when the screen stops changing, press the operator's menu buttons (Start, then their
-    confirm button, in turn) until it moves again, instead of fighting a title screen."""
+    confirm button, in turn) until it moves again, instead of fighting a title screen. With ff (fast_forward(on)):
+    when FF_AFTER presses in a row moved nothing (a loading screen, a dialogue that advances by itself), the emulator
+    runs fast until the screen changes, so autoplay doesn't sit through it. stats gets ff_s (seconds fast-forwarded)."""
     n, menu, mi = 0, style.m.get("menu") or ["start"], 0
+    useless, ff_since, last_press = 0, None, None
+    stats = stats if stats is not None else {}
+    stats.setdefault("ff_s", 0.0)
+
+    def ff_off():
+        nonlocal ff_since
+        if ff_since is not None:
+            try:
+                ff(False)
+            except Exception:                       # noqa: BLE001
+                pass
+            stats["ff_s"] = round(stats["ff_s"] + clock() - ff_since, 1)
+            ff_since = None
     while not stopped() and (limit is None or n < limit):
         if stuck is not None and stuck():
+            if last_press is not None and getattr(stuck, "changed", last_press + 1) <= last_press:
+                useless += 1                         # the last press moved nothing
+            else:
+                useless = 0
+            if ff is not None and useless >= FF_AFTER and ff_since is None:
+                try:
+                    ff(True)
+                    ff_since = clock()
+                except Exception:                    # noqa: BLE001 - no fast-forward here: keep pressing
+                    ff = None
             key = menu[mi % len(menu)]
             mi += 1
             send([{"key": key, "down": True}])
             sleep(0.15)
             send([{"key": key, "down": False}])
+            last_press = clock()
             sleep(1.0)
             stuck.reset()
             continue
+        if ff_since is not None and stuck is not None and getattr(stuck, "changed", 0) > ff_since:
+            ff_off()                                 # the screen moves again: normal speed
+            useless = 0
         held, t = frozenset(), 0.0
         for dt, keys in style.next():
             if dt > t:
@@ -396,4 +430,5 @@ def play_style(style: Style, *, send, stopped, sleep, limit: int | None = None, 
             send(diff(held, frozenset()))
         n += 1
         sleep(style.gap())
+    ff_off()
     return n

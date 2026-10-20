@@ -2521,9 +2521,11 @@ def _start_imitation(inp, ctx, d, ad, g, game_id, since) -> dict:
                         run["mission"] = f"learned: your style ({len(model['bursts'])} moves), after your run"
                         stuck = _stuck(ad)
                         st = imitate.Style(model, knobs=inp.style)
+                        stats = {}
                         run["result"]["bursts"] = imitate.play_style(st, send=send, stopped=lambda: d.stopped,
-                                                                     sleep=time.sleep, stuck=stuck)
-                        run["result"] |= _novelty(stuck, st)
+                                                                     sleep=time.sleep, stuck=stuck, ff=_ff(ad),
+                                                                     stats=stats)
+                        run["result"] |= _novelty(stuck, st) | stats
             except Exception as e:
                 run["result"] = {"ok": False, "error": str(e)}
             _release_all(sid)
@@ -2539,10 +2541,11 @@ def _start_imitation(inp, ctx, d, ad, g, game_id, since) -> dict:
 
         def go():
             try:
-                stuck = _stuck(ad)
+                stuck, stats = _stuck(ad), {}
                 run["result"] = {"ok": True, "bursts": imitate.play_style(style, send=send, stopped=lambda: d.stopped,
-                                                                          sleep=time.sleep, stuck=stuck)}
-                run["result"] |= _novelty(stuck, style)
+                                                                          sleep=time.sleep, stuck=stuck, ff=_ff(ad),
+                                                                          stats=stats)}
+                run["result"] |= _novelty(stuck, style) | stats
             except Exception as e:
                 run["result"] = {"ok": False, "error": str(e)}
             _release_all(sid)
@@ -2587,6 +2590,13 @@ def _screensaver_send(ad):
                 raise
             return ad.send_input(rows)
     return send
+
+
+def _ff(ad):
+    """fast_forward(on) for this emulator, or None when it has none."""
+    if "fast_forward" in getattr(ad, "supported", ()) and hasattr(ad, "fast_forward"):
+        return lambda on: ad.fast_forward(on)
+    return None
 
 
 def _stuck(ad):
