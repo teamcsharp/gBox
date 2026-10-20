@@ -135,8 +135,23 @@ def game_folder(ctx: Ctx, session_id: str = "", game_id: str = "", path: str = "
                          "analyze_binary, the game's tool, cheats, mod).")
 
 
+def _closest(name: str, choices: list[str]) -> str | None:
+    """The one choice a near-miss name means (case, a directory prefix, '.md', small typos), or None."""
+    import difflib
+    low = {c.lower(): c for c in choices}
+    if name.lower() in low:
+        return low[name.lower()]
+    hits = difflib.get_close_matches(name.lower(), list(low), n=2, cutoff=0.75)
+    return low[hits[0]] if len(hits) == 1 or (hits and hits[0] == name.lower()) else None
+
+
 def _playbook_text(name: str) -> str:
+    # Agents pass 'engines/unity', 'Unity.md', 'unity playbook'...: resolve a near miss before failing (2026-10-19).
+    name = name.replace("\\", "/").rsplit("/", 1)[-1].strip()
     name = name if name.endswith(".md") else f"{name}.md"
+    if name != "safety.md":
+        known = sorted(x.name for x in (PLAYBOOKS / "engines").glob("*.md"))
+        name = _closest(name, known) or name
     p = PLAYBOOKS / ("safety.md" if name == "safety.md" else f"engines/{name}")
     if not p.resolve().is_relative_to(PLAYBOOKS) or not p.is_file():
         raise ValueError(f"no playbook {name!r}; playbooks: {', '.join(sorted(x.name for x in (PLAYBOOKS / 'engines').glob('*.md')))}")
@@ -203,10 +218,30 @@ def _notes_dir(cfg) -> Path:
     return home(cfg) / "kb" / UM.COMMIT[:12]
 
 
+def resolve_note(rel: str, paths: list[str]) -> str:
+    """The indexed note a near-miss path means: with or without '.md', a unique basename, or the closest path
+    (2026-10-19: agents asked for 'engines/native', 'engines/native.md', 'docs/...md'); unchanged when nothing is close."""
+    rel = rel.replace("\\", "/").strip().lstrip("/")
+    if rel in paths:
+        return rel
+    for cand in (rel + ".md", rel[:-3] if rel.endswith(".md") else None):
+        if cand and cand in paths:
+            return cand
+    base = rel.rsplit("/", 1)[-1]
+    base = base if base.endswith(".md") else base + ".md"
+    same = [x for x in paths if x.rsplit("/", 1)[-1].lower() == base.lower()]
+    if len(same) == 1:
+        return same[0]
+    return _closest(rel if rel.endswith(".md") else rel + ".md", paths) or rel
+
+
 def fetch_note(cfg, rel: str) -> str:
     """One field note: the cached copy, else the pinned commit on GitHub (cached for next time)."""
-    if not NOTE_RE.match(rel) or ".." in rel or rel not in {e["path"] for e in _index()}:
-        raise ValueError(f"{rel!r} is not a note in the universal-modder index (um_kb op=search lists them)")
+    paths = [e["path"] for e in _index()]
+    rel = resolve_note(rel, paths)
+    if not NOTE_RE.match(rel) or ".." in rel or rel not in set(paths):
+        hint = " (engine guides are playbooks: um_kb op=playbook name=<engine>)" if rel.startswith("engines/") else ""
+        raise ValueError(f"{rel!r} is not a note in the universal-modder index (um_kb op=search lists them){hint}")
     p = _notes_dir(cfg) / rel
     if p.is_file():
         return p.read_text(encoding="utf-8")
