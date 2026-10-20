@@ -1,5 +1,10 @@
 """SoulCalibur entries observed in the installed libretro cheat database.
 
+2026-10-19: the game's code shows the five database flags are entries of one table, a u16 unlock flag per fighter
+at 0x8C336DFA + 4*i for 1 <= i < 21 (0x8C0E1A5C clears, 0x8C0E1A78 increments it), with Inferno as bit 0x8000 of
+the u32 at 0x8C336E54 (0x8C0E1ACE). profiles/gamedata/c747331797369f74-codes.json holds the whole table for
+unlock-on-load. The notes below describe the database alone.
+
 These five halfword writes are database evidence, not verified unlock outcomes.
 The database is not bound to an executable hash; test the exact game before
 promoting any entry to a gameplay-verified profile. No complete unlock profile
