@@ -18,6 +18,8 @@ import random
 import threading
 import time
 
+from pydantic import BaseModel
+
 SETTING = "autoplay_screensaver"
 STATE = "autoplay_screensaver_run"          # worker name -> current run
 LOG = "autoplay_screensaver_log"            # run id -> finished run
@@ -203,28 +205,31 @@ class Screensaver:
                 "games": [{k: g[k] for k in ("game_id", "title", "pads")} for g in games[:40]]}
 
 
+# request bodies (module level: with postponed annotations FastAPI can't see classes defined inside install())
+class Settings(BaseModel):
+    enabled: bool | None = None
+    workers: list[str] | None = None
+    idle_minutes: float | None = None
+    session_minutes: float | None = None
+    min_pads: int | None = None
+    games: list[str] | None = None
+
+
+class Yield(BaseModel):
+    session_id: str
+    reason: str = "input"
+
+
+class Report(BaseModel):
+    session_id: str
+    result: dict
+
+
 def install(app, store, config, auth, submit, workers, archive):
     from fastapi import Depends, HTTPException
-    from pydantic import BaseModel
 
     saver = Screensaver(store, archive, lambda req, actor, origin: submit(req, actor=actor, origin=origin), workers)
     app.state.autoplay_screensaver = saver
-
-    class Settings(BaseModel):
-        enabled: bool | None = None
-        workers: list[str] | None = None
-        idle_minutes: float | None = None
-        session_minutes: float | None = None
-        min_pads: int | None = None
-        games: list[str] | None = None
-
-    class Yield(BaseModel):
-        session_id: str
-        reason: str = "input"
-
-    class Report(BaseModel):
-        session_id: str
-        result: dict
 
     @app.get("/api/autoplay-screensaver")
     def screensaver_status(actor=Depends(auth)):
