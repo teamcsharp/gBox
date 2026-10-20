@@ -30,6 +30,11 @@ ACTOR = "autoplay-screensaver"
 LOG_KEEP = 300
 
 
+def _jid(job) -> str:
+    """The id of a submitted job (the server's submit returns a Job model; tests pass dicts)."""
+    return getattr(job, "id", None) or (job.get("id") or job.get("job_id") if isinstance(job, dict) else "") or ""
+
+
 def settings(store) -> dict:
     return DEFAULTS | {k: v for k, v in (store.get("setting", SETTING) or {}).items() if k in DEFAULTS}
 
@@ -116,7 +121,7 @@ class Screensaver:
         job = self.submit(JobRequest(tool="launch_game", input={"game": game}, agent_use=True, low_priority=True,
                                      require_worker=w["id"]), actor=ACTOR,
                           origin={"via": "autoplay screensaver", "game_id": g["game_id"]})
-        jid = job.get("id") or job.get("job_id")
+        jid = _jid(job)
         self.store.put(STATE, w["name"], {"worker": w["name"], "worker_id": w["id"], "phase": "launching", "job": jid,
                                           "game_id": g["game_id"], "title": g["title"], "started": now})
         return f"launching {g['title']}"
@@ -146,7 +151,7 @@ class Screensaver:
                                                                  "screensaver": True},
                                          agent_use=True, require_worker=run["worker_id"]), actor=ACTOR,
                               origin={"via": "autoplay screensaver", "session_id": sid})
-            run |= {"phase": "playing", "autoplay_job": job.get("id") or job.get("job_id"), "playing_since": now}
+            run |= {"phase": "playing", "autoplay_job": _jid(job), "playing_since": now}
             self.store.put(STATE, w["name"], run)
             return f"playing {run['title']}"
         if phase == "playing" and now - run.get("playing_since", now) >= cfg["session_minutes"] * 60:

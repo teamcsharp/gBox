@@ -1,5 +1,6 @@
 """Autoplay screensaver (gbox.screensaver): which PCs, which game, and the launch -> play -> rotate / yield cycle."""
 import random
+from types import SimpleNamespace
 
 from gbox import screensaver as S
 from tests.test_inspection_builds import Store as _Store
@@ -64,7 +65,7 @@ def rig():
              "require_worker": req.require_worker, "agent_use": req.agent_use}
         calls.append(j)
         s.put("job", j["id"], j)
-        return j
+        return SimpleNamespace(**j)                           # the server's submit returns a Job model, not a dict
     saver = S.Screensaver(s, Archive(), submit, lambda: [w], rng=random.Random(1))
 
     def tick(dt=0):
