@@ -68,7 +68,10 @@ def test_turns_with_the_stick_then_aims_then_fires_never_writing_leon():
     facing(m, 0.2)
     assert bot.tick(B.snapshot(m)) == {"hold": {"r", "right"}}        # close: aim and fine-turn
     facing(m, 0.02)
-    assert bot.tick(B.snapshot(m)) == {"hold": {"r", "a"}}            # on him: fire
+    assert bot.tick(B.snapshot(m)) == {"hold": {"r"}}                 # on him, the aim pose coming up: not yet
+    now[0] = 0.3
+    m.put(B.MERC_TIMER, ">I", int((100 - 0.3) * 30))
+    assert bot.tick(B.snapshot(m)) == {"hold": {"r", "a"}}            # pose up: fire
     pitch = struct.unpack(">f", m.rd(PL + B.AIM_PITCH, 4))[0]
     assert pitch == pytest.approx(math.atan2(B.HEAD_H - B.GUN_H, 2000.0), abs=1e-4)   # at his head
     facing(m, 0.0)
@@ -84,6 +87,7 @@ def test_no_enemy_near_runs_to_the_nearest_time_bonus_and_shoots_it():
     m.put(PL + 0x94, ">3f", 5592.0, 0.0, 15400.0)
     act = bot.tick(B.snapshot(m))
     assert act["hold"] >= {"r", "a"}                                   # in range: shoot the hourglass
+    m.put(PL + 0xA4, ">f", 0.0)
 
 
 def test_the_clock_jumping_up_is_a_time_bonus_taken():
@@ -112,7 +116,7 @@ def test_blocked_while_running_vaults_then_detours():
     assert bot.stats["hops"] >= 1                                        # still blocked: a short hop past it
     x, y, z = struct.unpack(">3f", m.rd(PL + 0x94, 12))
     assert math.hypot(x - 100.0, z - 200.0) == pytest.approx(B.HOP_SHORT, rel=0.01) and y == 7.0   # HOP_SHORT along
-    assert B.heading(x - 100.0, z - 200.0) == pytest.approx(B.heading(5592.0 - 100.0, 16384.0 - 200.0), abs=0.01)
+    assert z > 200.0                                                     # forward, round the learned wall
 
 
 def test_uses_the_navmap_path_when_there_is_one():
@@ -164,9 +168,10 @@ def test_play_presses_and_lets_go(monkeypatch):
         n[0] += 1
         return n[0] > 3
     facing(m, 0.0)
-    B.play(None, sent.append, stopped, sleep=lambda s: None, m=m)
-    assert sent[0] == [{"key": "a", "down": True}, {"key": "r", "down": True}]
-    assert sent[-1] == [{"key": "a", "down": False}, {"key": "r", "down": False}]
+    clock = iter([0.0, 0.0, 0.0, 0.1, 0.1, 0.2, 0.4, 0.4, 0.5, 0.6, 0.7, 0.8] + [0.9] * 50)
+    B.play(None, sent.append, stopped, sleep=lambda s: None, m=m, clock=lambda: next(clock))
+    assert sent[0] == [{"key": "r", "down": True}]                     # aim first: the pose comes up
+    assert sent[-1][-1] == {"key": "r", "down": False}                  # and everything is let go at the end
 
 
 def test_auto_mode_prefers_a_matching_playbook(monkeypatch, tmp_path):
@@ -230,3 +235,47 @@ def test_the_next_rounds_clock_is_not_a_time_bonus():
     m.put(B.MERC_TIMER, ">I", int(120 * 30))           # the next round starts at 2:00
     bot.tick(B.snapshot(m))
     assert bot.stats["time_bonus"] == 0
+
+
+def test_shoots_only_what_he_can_hit():
+    now = [0.0]
+    far = world([((0, 0, 3000), True)])                                    # inside ENGAGE, beyond SHOOT_RANGE
+    facing(far, 0.0)
+    assert B.Bot(far, clock=lambda: now[0], nav=False).tick(B.snapshot(far)) == {"hold": {"up", "b"}}   # close in
+    close = world([((0, 0, 400), True)])                                   # point blank
+    facing(close, 0.0)
+    assert B.Bot(close, clock=lambda: now[0], nav=False).tick(B.snapshot(close)) == {"hold": {"down"}}  # step back
+    roof = world([((0, 0, 1500), True)], leon=(0.0, 2600.0, 0.0))          # Leon up on the start roof
+    facing(roof, 0.0)
+    assert B.Bot(roof, clock=lambda: now[0], nav=False).tick(B.snapshot(roof)) == {"hold": {"up", "b"}}  # down to them
+
+
+def test_the_learned_map_routes_round_a_wall_it_ran_into(tmp_path):
+    lm = B.LearnedMap(tmp_path / "r400.json")
+    for i in range(-3, 4):                                                 # a wall across z = 1200, x -1200..1600
+        lm.block(i * B.CELL + 10, 1210.0)
+    for i in range(-5, 6):
+        for j in range(-2, 8):
+            if j != 3:
+                lm.walk(i * B.CELL + 10, j * B.CELL + 10)
+    way = lm.path((10.0, 10.0), (10.0, 2410.0))
+    assert len(way) > 1 and way[-1] == (10.0, 2410.0)
+    assert all(not lm.wall(lm.cell(x, z)) for x, z in way)
+    assert any(abs(x) >= 1400 for x, _ in way)                           # round the end of the wall
+    lm.save()
+    again = B.LearnedMap(tmp_path / "r400.json")                           # the next round starts with it
+    assert again.blocked == lm.blocked and again.walked == lm.walked
+
+
+def test_running_into_something_teaches_the_map(tmp_path):
+    now = [0.0]
+    m = world([], room=0x400, leon=(100.0, 7.0, 200.0), timer_s=100.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False, learn_dir=tmp_path)
+    facing(m, B.heading(5592.0 - 100.0, 16384.0 - 200.0))
+    for t in range(1, 15):
+        now[0] = t * 0.1
+        m.put(B.MERC_TIMER, ">I", int((100 - now[0]) * 30))
+        bot.tick(B.snapshot(m))
+    assert bot.stats["learned_walls"] >= 1 and bot.stats["replans"] >= 1
+    bot.save()
+    assert (tmp_path / "r400.json").is_file()
