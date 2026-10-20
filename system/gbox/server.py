@@ -3785,6 +3785,8 @@ def create_app(config: Config) -> FastAPI:
         events: list[dict]
 
     padstate.register(app, auth)
+    from . import padmap
+    padmap.register(app, auth)                                 # per-console controller maps (the glyph's right-click)
 
     @app.post("/api/sessions/{sid}/input")
     def put_input(sid: str, ev: InputEvents, actor=Depends(auth)):

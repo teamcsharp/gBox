@@ -732,6 +732,9 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     if inp.boot_timeout_s:
         ad.boot_timeout_s = float(inp.boot_timeout_s)
     ad.game_id, ad.serial = g.game_id, g.serial            # per-game settings (graphics) applied at launch
+    if HOST_OS == "windows" and isinstance(ad, adapters.RetroArchAdapter):
+        from . import padmap                               # native window: the operator's controller map for this
+        ad.pad_map = padmap.fetch(ctx.server, ctx.headers, g.platform)   # console, written as RetroArch's remap file
     ad.examine = _examine_for_launch(inp.examine, ctx.config.examine_ready, HOST_OS)
     if inp.capture_backend:
         ad.capture_backend = _capture_plan(ad, g, inp.capture_backend, ctx)

@@ -274,6 +274,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
   #ringpop .rg-empty { padding:10px 0; }
 </style>
 <script src="/padglyph.js"></script>
+<script src="/viz/pad-map.js"></script>
 <script src="/viz/session-pause.js"></script>
 <script src="/viz/session-presentation.js"></script>
 <script src="/viz/session-speed.js"></script>
@@ -632,7 +633,7 @@ document.addEventListener("click", e => { const im = e.target.closest(LB_SOURCES
 // card showed, the session's recent jobs and a frame go into the inbox for a fix); otherwise file a request about that
 // element (#1386): what it is, where it is and what the operator wants done with it
 document.addEventListener("contextmenu", e => {
-  if (e.defaultPrevented || e.target.closest(".tchip, .card[data-gid], [data-lh-game], #photocraft-popup, input, textarea, select, #scr, #nativeslot, .gbox-gpu-video, img.screen, img[src*='/mjpeg'], #pwcanvas, #pwmenu, #pwreport")) return;   // game and editor surfaces keep their own menu
+  if (e.defaultPrevented || e.target.closest(".tchip, .card[data-gid], [data-lh-game], #photocraft-popup, input, textarea, select, #scr, #nativeslot, .gbox-gpu-video, img.screen, img[src*='/mjpeg'], #pwcanvas, #pwmenu, #pwreport, #padglyph, #padmapdlg")) return;   // game and editor surfaces keep their own menu (the controller picture: "Map … to…")
   const scr = document.querySelector(".screen[data-sid]"),
         opt = e.target.closest("button, .chc, .modcard, .card, [data-use], a, label, li, h2, h3, h4, section") || e.target;
   if (!opt) return; e.preventDefault();
@@ -1757,8 +1758,8 @@ async function sessionsView(sid, mode) {
       <div id="dock-main" class="dock" data-zone="main"></div></div>
       <div class="sidecol">${smartSearchHTML()}<div id="dock-top" class="dock" data-zone="top">
         ${GBoxPSO.isPSO(s.title) ? '<details open data-dock="pso" class="sect"><summary draggable="true">PSO controls</summary><div id="pso-controls"></div></details>' : ''}
-        <details open data-dock="pad" class="sect"><summary draggable="true">Controller <span class="mut">live · click to press</span></summary>
-          <div id="padglyph" title="Your controller live · click a button to press it"></div>
+        <details open data-dock="pad" class="sect"><summary draggable="true">Controller <span class="mut">live · click to press · right-click to map</span></summary>
+          <div id="padglyph" title="Your controller live · click a button to press it · right-click a button or stick to map it to a control on your pad"></div>
           <button id="padstat" class="act" style="width:100%;text-align:left;white-space:normal;font-size:11px;margin-top:4px" aria-expanded="false" aria-controls="padpicker" onclick="togglePadPicker()"></button>
           <button class="act" style="width:100%;margin-top:4px;font-size:11px" title="Opens the emulator's own menu over the game (RetroArch: Quick Menu → Controls → Port 1 Controls for binds, analog sensitivity, deadzone, turbo). Press it again to close."
             onclick='padSettings(${JSON.stringify(sid)}, this).then(ok => { this.textContent = ok ? "🎮 Emulator controller settings (open — press again to close)" : "🎮 not available here: gBox controller mapping shown"; })'>🎮 Emulator controller settings</button>
@@ -2199,12 +2200,16 @@ sessionsView.after = (sid, mode) => {
     if (gid && window.GhostRuns && !mode) GhostRuns.mount({ sid, gid, api, tok }).catch(e => shown("Runs", e));
   }
   const title = document.querySelector(".bar b")?.textContent || sid;
-  active = { sid, title, local: mode === "examine" ? $("#exam")?.dataset.local === "1" : !$("#scr") && mode !== "inspect" }; pip();   // controllers + PiP follow this game from now on
+  const padSession = SESSIONBUILD.session?.session_id === sid ? SESSIONBUILD.session : {};
+  // platform / adapter: the controller map this game's forwarded pad goes through (viz/pad-map.js)
+  active = { sid, title, local: mode === "examine" ? $("#exam")?.dataset.local === "1" : !$("#scr") && mode !== "inspect",
+             platform: padSession.platform || "", adapter: padSession.adapter || "" }; pip();   // controllers + PiP follow this game from now on
   if (mode === "inspect") return inspectView.after(sid);
   if (mode === "examine") return examineAfter(sid);
-  const padSession = SESSIONBUILD.session?.session_id === sid ? SESSIONBUILD.session : {};
   window.PadGlyph?.mount($("#padglyph"), padSession.platform, { sid, token: tok, adapter: padSession.adapter });
-  padStatus();
+  padStatus(); loadPadMaps();                                  // maps changed on another PC reach this game's pad too
+  const pg = $("#padglyph");
+  if (pg) pg.oncontextmenu = e => padMapMenu(e, sid);         // right-click a button or the stick: "Map N64 C-up to…"
   if (!$("#scr")) return;                                      // native local window: input goes straight to RetroArch
   const send = (key, down) => api(`/api/sessions/${encodeURIComponent(sid)}/input`, { events: [{ key, down }] });
   const scr = $("#scr"), held = new Set();
@@ -2212,9 +2217,9 @@ sessionsView.after = (sid, mode) => {
   scr.onkeydown = e => { if (e.code === "NumpadSubtract") return; const k = keysym(e); if (!k || e.key === "Escape") return; e.preventDefault(); if (!held.has(k)) { held.add(k); send(k, true); } };
   scr.onkeyup = e => { const k = keysym(e); if (!k) return; e.preventDefault(); held.delete(k); send(k, false); };
   scr.onblur = () => { held.forEach(k => send(k, false)); held.clear(); };
-  const pg = $("#padglyph");                            // click / hold a button on the controller glyph = press it in the game
-  if (pg) {
-    pg.onpointerdown = e => { const g = e.target.closest("[data-k]"); if (!g || !g.dataset.k) return; e.preventDefault();
+  if (pg) {                                             // click / hold a button on the controller glyph = press it in the game
+    pg.onpointerdown = e => { if (e.button !== 0) return;  // the right button opens the map dialog, it presses nothing
+      const g = e.target.closest("[data-k]"); if (!g || !g.dataset.k) return; e.preventDefault();
       const k = g.dataset.k.split(" ")[0]; send(k, true); const up = () => { send(k, false); removeEventListener("pointerup", up); }; addEventListener("pointerup", up); };
   }
   scr.focus();
@@ -3443,6 +3448,35 @@ const XBOX_DEFAULT = { 0: "b", 1: "a", 2: "y", 3: "x", 4: "l", 5: "r", 6: "l2", 
 const XBOX_NAMES = ["A", "B", "X", "Y", "LB", "RB", "LT", "RT", "View", "Menu", "LS", "RS", "D-Up", "D-Down", "D-Left", "D-Right", "Guide"];
 let padCfg = {}; try { padCfg = JSON.parse(localStorage.getItem("gbox_pads") || "{}"); } catch {}
 const savePads = () => { try { localStorage.setItem("gbox_pads", JSON.stringify(padCfg)); } catch {} };
+// Console controller maps (viz/pad-map.js, gbox/padmap.py): per console, which control on the pad drives which of its
+// functions - right-click a button or the stick on the controller picture. Saved on the server for every PC (a native
+// RetroArch window gets it as the core's remap file at launch); this browser keeps a copy, so a streamed game's pad is
+// mapped from its first press. A console without a map plays its default layout (N64: stick = left stick, C buttons =
+// right stick).
+let padMaps = {}; try { padMaps = JSON.parse(localStorage.getItem("gbox_pad_maps") || "{}") || {}; } catch {}
+let padCapture = false;      // the map dialog is listening for a control: nothing reaches the game meanwhile
+const padMapLib = () => (typeof GBoxPadMap !== "undefined" ? GBoxPadMap : null);
+const padMapCache = () => { try { localStorage.setItem("gbox_pad_maps", JSON.stringify(padMaps)); } catch {} };
+async function loadPadMaps() {
+  if (!padMapLib()) return;
+  try { const r = await api("/api/controller-maps", undefined, "GET", 8000); if (r && r.maps) { padMaps = r.maps; padMapCache(); } } catch {}
+}
+async function savePadMap(platform, map) {
+  const fam = padMapLib().family(platform);
+  const r = await api(`/api/controller-maps/${encodeURIComponent(fam)}`, { map });
+  if (r.map && Object.keys(r.map).length) padMaps[fam] = r.map; else delete padMaps[fam];
+  padMapCache();
+  return r.map || {};
+}
+const PAD_PLATFORMS = new Map();        // sid -> platform for a session shown outside the play view (the mini window)
+const padPlatform = sid => (active && active.sid === sid && active.platform) || PAD_PLATFORMS.get(sid) || "";
+function padKeys(gp, c, sid) {          // what this controller sends the game: through its console's controller map
+  const L = padMapLib(), plat = padPlatform(sid);
+  if (!L || !plat) return pressed(gp, c);
+  const prof = L.profile(plat), map = padMaps[prof.fam];
+  if (!prof.sticks && !(map && Object.keys(map).length)) return pressed(gp, c);   // no map: exactly as before
+  return L.read(gp, c.map, prof, map || {}, { stickAsDpad: c.stick }).keys;
+}
 // 3Dconnexion's physical devices AND its virtual KMJ joystick must never drive a game.
 const blockedPad = gp => /space\s*(mouse|navigator|pilot|explorer|travell?er|ball)|3dconnexion|3dxkmj|vendor:\s*256f|256f[-:]|vendor:\s*beef\W+product:\s*046d|beef[-:]046d|(?:vendor:\s*046d\W+product:\s*|046d[-:])(c603|c605|c606|c621|c623|c625|c626|c627|c628|c629|c62b)/i.test(gp.id);
 const xboxPad = gp => /xbox|xinput|vendor:\s*045e|045e[-:]/i.test(gp.id);
@@ -3553,12 +3587,12 @@ function padTick() {
   for (const key of Object.keys(held)) if (!seen.has(key)) releasePad(key);
   const topology = JSON.stringify([sources.map(([gp]) => [padKey(gp), gp.mapping]), primaryPad]);
   if (topology !== padTopology) { padTopology = topology; padStatus(); }
-  const sid = padSid();
+  const sid = padCapture ? null : padSid();      // binding a control in the map dialog: what was held is released
   for (const [gp, c] of sources) {
     const key = padKey(gp);
     if (held[key] && (held[key].player !== c.player || held[key].sid !== sid || remap?.key === key)) releasePad(key);
     if (remap && remap.key === key) { remapStep(gp); continue; }
-    const now = c.player && sid ? pressed(gp, c) : new Set(), prev = held[key]?.buttons || new Set(), events = [];
+    const now = c.player && sid ? padKeys(gp, c, sid) : new Set(), prev = held[key]?.buttons || new Set(), events = [];
     now.forEach(b => !prev.has(b) && events.push({ key: b, down: true, player: c.player }));
     prev.forEach(b => !now.has(b) && events.push({ key: b, down: false, player: c.player }));
     held[key] = { buttons:now, player:c.player, sid };
@@ -3577,6 +3611,8 @@ window.gboxNativePad = state => {
 };
 window.gboxPadTarget = sid => {
   padTarget = sid || null;
+  if (sid && padMapLib() && !padPlatform(sid))                 // its console: the controller map its pad goes through
+    api(`/api/sessions/${encodeURIComponent(sid)}/pad`).then(j => { if (j && j.platform) PAD_PLATFORMS.set(sid, j.platform); }).catch(() => {});
   try { padTick(); } catch (e) { console.warn("controller target:", e); }
 };
 addEventListener("gamepadconnected", () => { padStatus(); if (cur === "Controllers") show("Controllers"); });
@@ -3629,10 +3665,69 @@ async function controllersView() {
   }).join("") : nativeXboxSlots().length ? `<p class="mut">Xbox controller connected on XInput slot ${nativeXboxSlots().join(", ")}. Native emulators can use it now. Press a controller button once to make its browser mapping available here.</p>`
     : `<p class="mut">No controller detected. Connect an Xbox (or any XInput/standard) controller and press a button — browsers only report a controller after it is used.</p>`;
   return `<h3>Controllers</h3><p class="mut">Controllers drive whichever game is open or in picture-in-picture${active ? `: <b>${esc(active.title)}</b>` : " (none right now)"}.
-    Xbox layout works out of the box; mappings are saved on this computer.</p><div class="padrow">${padPickerHTML()}</div>` + body;
+    Xbox layout works out of the box; mappings are saved on this computer.</p><div class="padrow">${padPickerHTML()}</div>` + body + padMapsHTML();
+}
+// Controllers page: each console's map from the controller picture's right-click dialog, with a reset
+function padMapsHTML() {
+  const L = padMapLib(); if (!L) return "";
+  const rows = Object.entries(padMaps).filter(([, m]) => m && Object.keys(m).length).map(([fam, m]) => {
+    const prof = L.profile(fam), none = L.unbound(prof, m).filter(f => f.id !== "cmode").map(f => f.label);
+    return `<div class="bar"><b>${esc(prof.generic ? fam.toUpperCase() : prof.name)}</b> ${L.summary(prof, m).map(x => `<span class="pill">${esc(x.name)} → ${esc(x.does)}</span>`).join(" ")}
+      ${none.length ? `<span class="mut">no control: ${esc(none.join(", "))}</span>` : ""}
+      <button class="act" onclick='resetPadMap(${JSON.stringify(fam)})'>Reset to default</button></div>`;
+  }).join("");
+  return `<h3>Console controls</h3><p class="mut">Right-click a button or the stick on a game's controller picture to choose the control on your pad that
+    drives it. Saved for every PC: a streamed game uses a change at once, a game in a RetroArch window from its next start.
+    Nintendo 64 by default: stick = left stick, C buttons = right stick, A = A, B = X, Z = LT, L / R = LB / RB, Start = Menu
+    (holding RT turns the face buttons into C buttons too).</p>` + (rows || `<p class="mut">Every console uses its default layout.</p>`);
+}
+async function resetPadMap(fam) {
+  try { await savePadMap(fam, {}); } catch (e) { const el = $("#sopres"); if (el) el.textContent = "Couldn't reset the controls: " + e.message; }
+  if (cur === "Controllers") show("Controllers");
+}
+// The controller picture's "you" layer: Player 1's pad as the game receives it (its console's controller map); the
+// desktop's XInput reading first, which keeps updating while Chromium's Gamepad API is quiet.
+function padGlyphLocal() {
+  const L = padMapLib(), native = nativeGamepad(), chosen = selectedPad(), gp = native || chosen;
+  if (!L || !gp) return null;
+  const c = gp === chosen ? cfgFor(gp) : (chosen ? padBase(chosen) : { map: { ...XBOX_DEFAULT }, stick: true });
+  const prof = L.profile((active && active.platform) || "");
+  const r = L.read(gp, c.map, prof, padMaps[prof.fam] || {}, { stickAsDpad: c.stick !== false });
+  return { held: r.held, stick: r.stick, rstick: r.rstick };
+}
+if (window.PadGlyph && padMapLib()) PadGlyph.local = padGlyphLocal;
+const padPartLabel = g => { const b = g.dataset.btn || ""; return b ? (b.length <= 2 ? b.toUpperCase() : b[0].toUpperCase() + b.slice(1)) : (g.textContent || "").trim(); };
+// Right-click on the controller picture: "Map N64 C-up to…" (viz/pad-map.js) - pick or press the control that drives it.
+function padMapMenu(e, sid) {
+  e.preventDefault(); e.stopPropagation();
+  const L = padMapLib(), part = e.target.closest && e.target.closest("[data-k]");
+  if (!L || !part || !part.dataset.k) return;
+  const on = active && active.sid === sid ? active : {}, plat = on.platform || SESSIONBUILD.session?.platform || "", prof = L.profile(plat);
+  const labels = {};                                         // the console's button names on this picture (other consoles)
+  for (const g of document.querySelectorAll("#padglyph [data-k]")) { const k = g.dataset.k.split(" ")[0]; if (k && !labels[k]) labels[k] = padPartLabel(g); }
+  const native = !!on.local, retroarch = on.adapter === "retroarch";
+  L.dialog({ x: e.clientX, y: e.clientY, platform: plat, labels, map: padMaps[prof.fam] || {},
+    name: document.querySelector("#padglyph .pg-name")?.textContent || "",
+    part: { keys: part.dataset.k.split(" "), label: padPartLabel(part), stick: part.classList.contains("pg-stk") },
+    save: map => savePadMap(plat, map),
+    read: () => { const gp = nativeGamepad() || selectedPad() || pads()[0]; return gp ? { gp, map: gp.native ? XBOX_DEFAULT : cfgFor(gp).map } : null; },
+    capturing: v => { padCapture = !!v; }, retroarchWindow: native && retroarch,
+    note: !native ? "Streamed game: a change works at once." : retroarch
+      ? "This game runs in its own RetroArch window, which reads controller maps when it starts: restart it to use a change."
+      : `${on.adapter || "This emulator"} reads your controller itself: these maps apply to RetroArch games and streamed games.`,
+    apply: native && retroarch ? { label: "Restart now (keeps your moment)", run: say => padMapRelaunch(sid, say) } : null });
+}
+async function padMapRelaunch(sid, say) {   // the same game + build again on this PC with the moment carried over (session_swap)
+  const ss = await api("/api/sessions"), s = ss.find(x => x.session_id === sid) || {};
+  if (s.state !== "running") throw new Error("This game has ended: start it again to use the new controls.");
+  say("Saving your moment and starting the game again with the new controls…");
+  let j = await api(`/api/sessions/${encodeURIComponent(sid)}/swap`, { mod: (s.collection_mod || s.mod || "").split("~")[0], keep_state: true });
+  while (/queued|running/.test(j.state)) { await new Promise(r => setTimeout(r, 700)); j = await api("/api/jobs/" + j.id); if (j.progress?.msg) say(j.progress.msg + "…"); }
+  if (j.state !== "succeeded") throw new Error((j.error || j.state) + " Your game was kept running.");
+  followSession(sid, j.output.session_id);
 }
 async function snap(sid) { const j = await runJob({ tool: "get_frame", input: { session_id: sid } }); const el = $("#sopres"); if (el) el.innerHTML = j.receipt_id ? `snapshot ${state(j.state)} — receipt <code>${j.receipt_id}</code>` : esc(j.error); }
-
+loadPadMaps();                                             // the console controller maps (refreshed when a game opens)
 
 // ---------------- Inspect view: live game + memory (hex, edit, search) + tile/sprite viewer + copy to Blender ----------------
 const I = { src: "ram", addr: 0, len: 256, auto: true, bytes: null, tsrc: "rom", toff: 0, fmt: "nes", cols: 16, rows: 16, zoom: 3,
