@@ -532,6 +532,13 @@
       cageBounds={min:mn,max:mx};shapeKey=null;
       jointsKey = null;
       rejoint();
+      placeDonor();
+    }
+    // the donor model in the Fit view's donor side stands in the same frame as its bone dots (a swap flips it)
+    function placeDonor() {
+      const d = views.donor && views.donor.group;
+      if (!d || !R) return;
+      d.matrixAutoUpdate = false; d.matrix.set(...R[0], 0, ...R[1], 0, ...R[2], 0, 0, 0, 0, 1); d.matrixWorldNeedsUpdate = true;
     }
     // joint moves changed: the moved pivots, the limb segments they re-derive (retarget_profile.move_joints), the fits
     function rejoint() {
@@ -949,7 +956,7 @@
             views.donor.posed.add(pmesh); posedMeshes.push({ src: pm, geo: pgeo, attr: pattr, mesh: pmesh });
           }
           refit();
-          if (R) { const d = views.donor.group; d.matrixAutoUpdate = false; d.matrix.set(...R[0], 0, ...R[1], 0, ...R[2], 0, 0, 0, 0, 1); d.matrixWorldNeedsUpdate = true; }
+          placeDonor();
         } catch (err) { ui.status("✗ donor model: " + String(err.message || err).slice(0, 200)); }
       }
       schedule();

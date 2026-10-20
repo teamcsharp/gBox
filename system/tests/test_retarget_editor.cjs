@@ -376,6 +376,15 @@ test('a slot skeleton facing the other way shows the donor backwards until Turn 
   const after = shoulder();
   near(after, [0.25, 1.45, 0], 0.02);                                     // on the slot's own left shoulder
   assert.equal(c.payload('slot').profile.turn, true);
+  // Swap left <-> right: the roles trade bones, the donor's facing flips and its model turns with its bone dots
+  c.setRoleBone('r_upper', 'r_upper'); r.el.on.change({ target: { closest: s => (s === '[data-rt-bone]' ? { dataset: { rtBone: 'r_upper' }, value: 'r_upper' } : null), matches: () => false } });
+  await tick();
+  assert.equal(r.views.donor.group.m[0], 1);
+  r.el.on.click({ target: { closest: s => (s === '[data-rt-go]' ? { dataset: { rtGo: 'swap-lr' } } : null) } });
+  await tick();
+  assert.equal(c.state.roles.l_upper, 'r_upper'); assert.equal(c.state.roles.r_upper, 'l_upper');
+  assert.equal(r.views.donor.group.m[0], -1);                              // the Fit view's donor mesh follows
+  assert.deepEqual(c.payload('slot').profile.roles, { head: 'head', l_upper: 'r_upper', r_upper: 'l_upper', r_fore: 'l_fore', r_hand: 'l_hand' });
   assert.equal(closed, 0); r.dispose(); assert.equal(closed, 1);          // the opener's hold goes with the editor
   r.dispose(); assert.equal(closed, 1);
 });

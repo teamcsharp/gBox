@@ -205,3 +205,33 @@ test('fix mapping and the web / desktop shells: both route io.retarget into the 
   assert.match(read('web/index.html'), /GBoxRetargetEditor\.open\(document, \{[\s\S]{0,400}\}, o\)/);   // opts (onClose, view, flagged) pass through
   assert.match(read('desktop/index.html'), /GBoxRetargetEditor\.open\(document, \{[\s\S]{0,600}\}, o\)/);
 });
+
+test('castMatch: a costume slot is its fighter; a slot two donors share needs the donor named', () => {
+  const sc2 = [{ slot: 'fighter:taki', slot_name: 'Taki', donor: 'luigi', donor_name: 'Luigi' },
+    { slot: 'fighter:taki', slot_name: 'Taki', donor: 'wario', donor_name: 'Wario' },
+    { slot: 'fighter:maxi', slot_name: 'Maxi', donor: 'wario', donor_name: 'Wario' }];
+  assert.equal(PW.castMatch(sc2, { slot: 'fighter:maxi:2' }).donor, 'wario');
+  assert.equal(PW.castMatch(sc2, { slot: 'fighter:taki:1' }), null);                      // Luigi or Wario?
+  assert.deepEqual(PW.castCandidates(sc2, { slot: 'fighter:taki:1' }).map(r => r.donor), ['luigi', 'wario']);
+  assert.equal(PW.castMatch(sc2, { slot: 'taki', name: 'Wario', known: true }).via, 'slot and donor');
+  assert.equal(PW.castMatch(sc2, { slot: '', name: 'Wario', known: true }), null);        // Wario stands in two slots
+  assert.equal(PW.castMatch(sc2, { slot: '', name: 'Luigi', known: true }).slot, 'fighter:taki');
+});
+
+test('fix mapping: a slot several donors share lists them first in the browser and opens the canonical slot', async () => {
+  const rows = [{ slot: 'fighter:taki', slot_name: 'Taki', donor: 'luigi', donor_name: 'Luigi' },
+    { slot: 'fighter:taki', slot_name: 'Taki', donor: 'wario', donor_name: 'Wario' }];
+  const fx = menu({ picked: { class: 'fighter', kind: 'player', slot: 'fighter:taki:2' } }, {
+    '/api/sessions/w1-s1/cast': { game_id: '0123456789abcdef', mod: 'sc2_random', rows },
+    '/api/characters?game_id=0123456789abcdef': [{ slug: 'amy', name: 'Amy', model: 'a', kind: 'character', ready: [{ mod: 'x' }] },
+      { slug: 'wario', name: 'Wario', model: 'w', kind: 'character' }, { slug: 'luigi', name: 'Luigi', model: 'l', kind: 'character' }],
+    '/api/characters/wario/retarget_profile/flag': {} });
+  await tick();
+  await fx.menu.onPick('fixmap'); await tick();
+  const grid = fx.doc.getElementById('pwmenu').querySelector('.pw-grid').innerHTML;
+  assert.ok(grid.indexOf('Luigi') < grid.indexOf('Amy') && grid.indexOf('Wario') < grid.indexOf('Amy'), grid);
+  assert.match(grid, /in this slot of the build/);
+  fx.doc.getElementById('pwmenu').onclick({ target: { closest: () => ({ dataset: { slug: 'wario' }, disabled: false }) } }); await tick();
+  assert.equal(fx.seen.retarget[0].slot, 'fighter:taki');                  // where the SC2 writer reads its profile
+  assert.equal(fx.seen.retarget[0].build_name, 'sc2_random');
+});

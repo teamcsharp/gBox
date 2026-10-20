@@ -139,9 +139,11 @@ def test_build_cast_lists_the_slots_donors_without_failed_slots(tmp_path):
         assert app.state.built_mods.wait(10)
         r = get(c, h, "/api/builds/g1/cast_g1_wrestlers/cast")
         assert r["mod"] == "cast_g1_wrestlers"
-        assert r["rows"] == [{"slot": "neo", "slot_name": "neo", "donor": "kane", "donor_name": "Kane", "status": "built"}]
+        assert r["rows"] == [{"slot": "neo", "slot_name": "neo", "donor": "kane", "donor_name": "Kane", "status": "built",
+                              "build_slot": "neo"}]
         one = get(c, h, "/api/builds/g2/g2_hucast/cast")["rows"]
-        assert one == [{"slot": "player", "slot_name": "player", "donor": "kane", "donor_name": "Kane", "status": ""}]
+        assert one == [{"slot": "player", "slot_name": "player", "donor": "kane", "donor_name": "Kane", "status": "",
+                        "build_slot": "player"}]
         assert get(c, h, "/api/builds/g1/no_such_build/cast")["rows"] == []
 
 
@@ -160,3 +162,83 @@ def test_session_cast_follows_the_build_the_session_shows(tmp_path):
                                                           "note": "the original game: no build"}
         assert get(c, h, "/api/sessions/w1-s3/cast")["mod"] == "g2_hucast"   # a live hot-swap wins
         get(c, h, "/api/sessions/nope/cast", 404)
+
+
+# ---------------------------------------------------------------- the writers' own cast records and profile slots
+
+def test_cast_rows_read_soulcalibur2_pairs_and_doa2_rosters_under_their_profile_slots():
+    from gbox import builds as B
+    lib = {"get": lambda slug: {"name": slug.title()}}
+    sc2 = {"cast": [["maxi:1", "wario"], ["taki:1", "luigi"], ["taki:2", "luigi"], ["taki:3", "sonic"]],
+           "cast_names": {"taki": "Taki", "maxi": "Maxi"}}
+    rows = B.cast_rows(sc2, None, lib)
+    assert [(r["slot"], r["slot_name"], r["donor"], r["donor_name"]) for r in rows] == [
+        ("fighter:maxi", "Maxi", "wario", "Wario"), ("fighter:taki", "Taki", "luigi", "Luigi"),
+        ("fighter:taki", "Taki", "sonic", "Sonic")]                       # one row per donor a fighter's costumes use
+    roster = B.cast_rows({"roster": [{"fighter": "KAS", "character": "luigi"}, {"fighter": "RYU", "character": "wario"}]},
+                         None, lib)
+    assert [(r["slot"], r["slot_name"], r["donor"]) for r in roster] == [("fighter:KAS", "Kasumi", "luigi"),
+                                                                       ("fighter:RYU", "Ryu Hayabusa", "wario")]
+    single = B.cast_rows({"character": "luigi", "report": {"fighter": "KAS", "costume": 1}}, None, lib)
+    assert [(r["slot"], r["donor"]) for r in single] == [("fighter:KAS", "luigi")]   # not "player"
+    plan = B.cast_rows({"cast": [{"slot": "fighter:taki:2", "character": "sonic", "status": "built"},
+                                 {"slot": "ped:12", "character": "kane", "status": "built"}]}, None, lib)
+    assert [(r["slot"], r["build_slot"]) for r in plan] == [("fighter:taki", "fighter:taki:2"), ("ped:12", "ped:12")]
+
+
+def _sc2_library(tmp_path):
+    lib = tmp_path / "characters"
+    roles = {"hip": "pelvis", "head": "head", "l_upper": "armL", "r_upper": "armR"}
+    for slug in ("wario", "sonic"):
+        (lib / slug).mkdir(parents=True)
+        meta = {"slug": slug, "name": slug.title(), "model": f"{slug}.glb", "rig": {"roles": dict(roles)},
+                "source": {"game_title": "Mario"}}
+        if slug == "wario":                    # the editor's Swap left <-> right + Turn around for Taki only
+            meta["retarget_profiles"] = {GID: {"fighter:taki": {"roles": {"l_upper": "armR", "r_upper": "armL"},
+                                                                "turn": True}}}
+        (lib / slug / "meta.json").write_text(json.dumps(meta))
+    return lib
+
+
+def test_soulcalibur2_fits_each_fighter_slot_with_its_retarget_profile(tmp_path, monkeypatch):
+    """SC2 re-read the raw meta.json for its donors, so no Retarget editor profile (swap, turn, proportions) reached its
+    builds; profiled_donors resolves each fighter slot's profile and loads one rig per distinct fit."""
+    from gbox import soulcalibur2_swap as W
+    lib, loads = _sc2_library(tmp_path), []
+    monkeypatch.setattr(W, "load_donor", lambda slug, glb, roles, name="", scale=None, source="":
+                        loads.append((slug, dict(roles or {}), scale)) or W.Donor(slug, name, glb, roles, scale))
+    donors = W.profiled_donors(lib, GID, {("taki", 0): "wario", ("taki", 1): "wario", ("maxi", 0): "wario",
+                                          ("mina", 0): "sonic"})
+    assert donors[("taki", 0)] is donors[("taki", 1)]                    # one rig per distinct fit
+    taki, maxi = donors[("taki", 0)], donors[("maxi", 0)]
+    assert taki.roles["l_upper"] == "armR" and taki.roles["r_upper"] == "armL"
+    assert taki.scale["profile"]["turn"] is True
+    assert maxi.roles["l_upper"] == "armL" and not maxi.scale                # Maxi has no profile: as it was
+    assert sorted(s for s, _r, _sc in loads) == ["sonic", "wario", "wario"]
+
+
+def test_soulcalibur2_cast_build_fits_the_profiled_metas_it_is_given(tmp_path, monkeypatch):
+    from gbox import soulcalibur2_swap as W
+    from gbox.config import Config
+    lib = _sc2_library(tmp_path)
+    monkeypatch.setenv("GBOX_CHARACTERS", str(lib))
+    monkeypatch.setattr(W, "load_donor", lambda slug, glb, roles, name="", scale=None, source="":
+                        W.Donor(slug, name, glb, roles, scale))
+    monkeypatch.setattr("gbox.tools.rom_path", lambda g, cfg: tmp_path / "sc2.iso")
+    seen = {}
+
+    def stop(image, out_dir, plan, **kw):
+        seen.update(plan)
+        raise RuntimeError("stop before writing")
+    monkeypatch.setattr(W, "build_image", stop)
+    raw = json.loads((lib / "wario" / "meta.json").read_text())
+    game = {"game_id": GID, "title": "Soul Calibur II", "platform": "gamecube", "source_paths": ["sc2.iso"],
+            "format": "iso", "profile_id": "gc"}
+    res = W.build_cast(Config(data_dir=tmp_path / "data", cache_dir=tmp_path / "cache"), game,
+                       [("fighter:taki", RP.apply_to_meta(raw, GID, "fighter:taki")),
+                        ("fighter:maxi", RP.apply_to_meta(raw, GID, "fighter:maxi"))], "sc2_cast_test")
+    assert res["mod"] is None                                             # stopped before writing anything
+    taki = next(d for (k, _c), d in seen.items() if k == "taki")
+    maxi = next(d for (k, _c), d in seen.items() if k == "maxi")
+    assert taki.roles["l_upper"] == "armR" and taki.scale["profile"]["turn"] is True
+    assert maxi.roles["l_upper"] == "armL" and taki is not maxi
