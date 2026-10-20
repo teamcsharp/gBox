@@ -227,7 +227,7 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
     while not stopped():
         s = snapshot(m)
         now = clock()
-        if not in_mercenaries(s):                  # results, the Mercenaries title, select screens, the briefing
+        if not in_mercenaries(s) or s["timer"] <= 0:   # the Result screen (same room, clock at 0), the title, select
             hold(set())
             out_since = out_since or now
             if now - out_since > MENU_AFTER and now - last_press > MENU_EVERY:
