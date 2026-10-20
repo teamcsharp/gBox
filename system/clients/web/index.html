@@ -1567,7 +1567,7 @@ function launchWaitNote(job, workers, node, now) {
   return "";
 }
 const DEBUG_EMU = { gamecube: "Dolphin", wii: "Dolphin", gba: "mGBA", psx: "DuckStation", arcade: "MAME" };
-async function play(id, node, debug, boot) {
+async function play(id, node, debug, boot, opts = {}) {
   if (LOADING?.job) cancelLaunchJob(LOADING.job);
   const launch = LOADING = LAST_LAUNCH = { id, job: null, started: Date.now() };
   const g = await api("/api/catalog/" + id).catch(() => ({ title: "Game" }));
@@ -1592,6 +1592,7 @@ async function play(id, node, debug, boot) {
     // On the Spark the game plays itself (autoplay: your run, your style, through the menus); touch the pad to take over
     let auto = node === "linux" && !debug;
     try { if (localStorage.getItem("gbox.sparkAutoplay") === "off") auto = false; } catch {}
+    if (opts.autoplay) auto = true;                          // right-click "Autoplay on Spark": always
     job = await api(`/api/games/${id}/launch?node=${encodeURIComponent(node || "auto")}${debug ? "&debug=true" : ""}${boot.disc ? "&mod=" + encodeURIComponent(boot.disc) : ""}${auto ? "&autoplay=true" : ""}`, {}, "POST", 30000);
   } catch (err) {
     if (LOADING !== launch) return;
@@ -2977,7 +2978,7 @@ const gameMenuIO = () => ({ el: $("#gmenu"), api, img: u => `${u}${u.includes("?
   place: (el, x, y) => fitMenu(el, x, y), refit: el => { if (el._fitXY) refitMenu(el); },
   models: (gid, title) => show("GameModels", gid, title), cover: (gid, card, btn) => attachCover(gid, document.querySelector(`.card[data-gid="${CSS.escape(gid)}"]`) || card, btn),   // the card on screen now
   cast: (gid, title) => castSwapOpen(gid, title),
-  play: (gid, go) => play(gid, go === "linux" ? "linux" : undefined, false, go === "plain" ? { disc: "", slot: "" } : undefined),
+  play: (gid, go) => play(gid, go === "linux" || go === "autoplay" ? "linux" : undefined, false, go === "plain" ? { disc: "", slot: "" } : undefined, go === "autoplay" ? { autoplay: true } : undefined),
   // "Special builds ▸" (gbox/special_builds.py): launch a build (this PC / a PC / saved moment / debugger) through the
   // usual launch + loader, open it or its request in the Mods page, rebuilds followed in the process pop-up
   launch: (gid, x) => play(gid, x.node === "auto" ? undefined : x.node, !!x.debug, { disc: x.mod, slot: x.slot === "" || x.slot == null ? "" : String(x.slot), character: "",
