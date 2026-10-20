@@ -284,6 +284,37 @@ def test_screensaver_replay_goes_on_in_your_style_and_reports_back(ap, monkeypat
     padstate.PLAYER_TOUCH.pop("s1", None)
 
 
+def test_a_mouse_move_hands_the_screensaver_game_over_and_autoplay_plays_on(ap, monkeypatch):
+    t = ap.tools
+    posts = []
+    monkeypatch.setattr(t.httpx, "post", lambda url, **k: posts.append((url.rsplit("/", 1)[-1], k["json"])))
+    monkeypatch.setattr(t, "LEARNED", {})
+    monkeypatch.setattr(t, "_recorded_play", lambda ctx, gid: [{"id": "r1", "events": {"pad": 500}, "adapter": "retroarch",
+                                                                "started": 0.0, "updated": 1}])
+    many = []
+    for i in range(30):
+        many += [pad(i * 0.01, [("x", True)], {"x": 0.9, "y": 0}), pad(i * 0.01 + 0.005, [("x", False)])]
+    monkeypatch.setattr(t, "_run_events", lambda ctx, rid: many)
+    monkeypatch.setattr(imitate, "BURST_GAP", 0.003)
+    where = {"at": (100, 100)}
+    monkeypatch.setattr(t, "_cursor", lambda: where["at"])
+    stop = threading.Event()
+    monkeypatch.setattr(t.time, "sleep", lambda s: stop.wait(0.0005))
+    t.autoplay(t.AutoplayIn(session_id="s1", op="start", mode="replay", screensaver=True), ap.ctx)
+    run = t.AUTOPLAY["s1"]
+    where["at"] = (400, 300)                                    # the operator takes the mouse
+    for _ in range(1500):
+        if run.get("handed_over"):
+            break
+        stop.wait(0.01)
+    assert run.get("handed_over") and not run.get("took_over") and run["thread"].is_alive()   # it plays on
+    assert ("yield", {"session_id": "s1", "reason": "mouse"}) in posts
+    padstate.PLAYER_TOUCH["s1"] = t.time.time() + 1            # then the pad: they play, autoplay lets go
+    run["thread"].join(5)
+    assert run["took_over"]
+    padstate.PLAYER_TOUCH.pop("s1", None)
+
+
 # --- getting to gameplay ---
 
 def test_menu_keys_are_the_lone_presses_after_a_pause_with_start_first():
