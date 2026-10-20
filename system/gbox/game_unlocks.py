@@ -13,6 +13,8 @@ RE6_ID = '0871eee3b68cdea3'
 RE6_TEMPLATE_SHA256 = '194cb5b71858f65feeb2b1703642ddc4ffde09b9a087119189b29b0ad7b83f11'
 DOAPP_ID = '59c55e95af61abbe'  # Dead Or Alive ++ (Korea), platform=arcade
 NDS_WCW_GAME_ID = 'd9467f457f53f2c7'  # Call of Duty: World at War (USA), NDS
+RE2_N64_ID = '46eec2fc627c8f58'  # Resident Evil 2 (USA), Nintendo 64
+RE5_ID = 'e7ca89bbeb67360d'  # Resident Evil 5 Gold Edition (USA/Europe), PS3
 
 
 def pre_launch(game: dict, ctx, mod: str = '') -> dict:
@@ -54,6 +56,12 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
                 'scope': nds_wcw_unlock.profile()['scope'],
                 'ops': nds_wcw_unlock.unlock_ops(),
                 'next': 'Run live_acceptance_plan on an authorized agent session (i9-NUC/Spark, 2% audio).'}
+    if game.get('game_id') == RE5_ID and game.get('platform') == 'ps3':
+        from . import re5_unlocks
+        # RE5 Gold Edition: save unlock, verifies checksum, creates backup, unlocks default groups.
+        return {'state': 'verified', 'applied': False, 'profile': 're5-ps3-gold-edition-save-template-v1',
+                'scope': re5_unlocks.profile()['scope'], 'exclusions': re5_unlocks.profile()['exclusions'],
+                'next': 'Call pre_launch with RPCS3 home path to apply unlock before launch.'}
     return {'state': 'implementation_pending', 'applied': False}
 
 
@@ -64,6 +72,14 @@ def profile_for(game: dict) -> dict:
         # pre_launch below short-circuits on verified=False, so no writer is reachable.
         return {'status': 'pending_research', 'profile': None, 'verified': False,
                 'scope': list(doax2_unlock.CATEGORIES), **doax2_unlock.profile_gate()}
+    from . import re2_unlocks
+    if game.get('game_id') == re2_unlocks.RE2_N64_ID and game.get('platform') == 'n64':
+        # RE2 N64: static analysis verified; ROM-patch only, no save writes.
+        return re2_unlocks.profile_for_re2()
+    if game.get('game_id') == RE5_ID and game.get('platform') == 'ps3':
+        from . import re5_unlocks
+        # RE5 Gold Edition: save unlock profile.
+        return re5_unlocks.profile()
     if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,
                 'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}
@@ -98,6 +114,17 @@ def launch_plan(game: dict, worker: dict, *, mod: str = '', enable_unlock: bool 
         raise ValueError('Background launch plans must target the designated JAYBUILTFINALE testing worker.')
     if session_id and not session_id.startswith(worker['id'] + '-'):
         raise ValueError('The session identifier must belong to the designated testing worker.')
+    from . import re2_unlocks
+    if game.get('game_id') == re2_unlocks.RE2_N64_ID and game.get('platform') == 'n64':
+        # RE2 N64: ROM-patch plan via inventory + optional mesh_probe.
+        return re2_unlocks.launch_plan(game, worker, mod=mod, session_id=session_id,
+                                       parent_request_id=parent_request_id)
+    if game.get('game_id') == RE5_ID and game.get('platform') == 'ps3':
+        from . import re5_unlocks
+        # RE5 Gold Edition: save unlock plan.
+        return re5_unlocks.launch_plan(game, worker, mod=mod, session_id=session_id,
+                                       parent_request_id=parent_request_id,
+                                       allow_save_upgrade=allow_save_upgrade)
     profile = profile_for(game)
     if enable_unlock and not profile['verified']:
         return {'status': 'unsupported_unlock', 'profile': profile, 'jobs': [],
