@@ -2620,6 +2620,7 @@ def _start_imitation(inp, ctx, d, ad, g, game_id, since) -> dict:
             try:
                 stuck, stats = _stuck(ad), {}
                 run["live"] = stats
+                _jump_watch(run, d, ad, g, stuck, stats)
                 run["result"] = {"ok": True, "bursts": imitate.play_style(style, send=send, stopped=lambda: d.stopped,
                                                                           sleep=time.sleep, stuck=stuck, ff=_ff(ad),
                                                                           stats=stats)}
@@ -2676,6 +2677,15 @@ def _ff(ad):
     if "fast_forward" in getattr(ad, "supported", ()) and hasattr(ad, "fast_forward"):
         return lambda on: ad.fast_forward(on)
     return None
+
+
+def _jump_watch(run, d, ad, g, stuck, stats):
+    """Boot jump state beside the learned style (gbox.jumpstate): start in gameplay next time, not on a title."""
+    from . import jumpstate
+    if jumpstate.supported(ad):
+        threading.Thread(target=jumpstate.watch, args=(ad, g, stuck, stats,
+                                                        lambda: d.stopped or not run["thread"].is_alive()),
+                         daemon=True, name=f"jumpstate-{run['sid']}").start()
 
 
 def _stuck(ad):

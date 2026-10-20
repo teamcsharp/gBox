@@ -408,7 +408,7 @@ def play_style(style: Style, *, send, stopped, sleep, limit: int | None = None, 
             send([{"key": key, "down": True}])
             sleep(0.15)
             send([{"key": key, "down": False}])
-            last_press = clock()
+            last_press = stats["menu_at"] = clock()
             sleep(1.0)
             stuck.reset()
             continue
