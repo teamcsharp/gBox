@@ -135,5 +135,10 @@ def test_server_input_and_physical_pad_are_archived_without_injection(cfg):
     assert c.post('/api/sessions/pc-human/input',json=payload).status_code==200
     assert c.post('/api/sessions/pc-human/pad',json=payload|{'source':'player'}).status_code==200
     assert len(app.state.gameplay_memory.events('pc-human'))==2
+    # autoplay / agents pressing buttons is not the operator's play: never archived as something to learn from
+    for actor in ('autoplay','gbox-agent','hermes','worker:i9-nuc'):
+        assert c.post('/api/sessions/pc-human/input',json=payload,headers={'x-gbox-actor':actor}).status_code==200
+    assert len(app.state.gameplay_memory.events('pc-human'))==2
+    assert len(c.get('/api/gameplay-memory/runs/pc-human',params={'limit':1}).json()['events'])==1
     assert c.get('/api/gameplay-memory').status_code==200
 

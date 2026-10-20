@@ -1248,6 +1248,8 @@ def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
     threading.Thread(target=inputs, daemon=True).start()
     if sys.platform == "win32":                                  # mirror the operator's own pad to the controller glyph
         from . import padstate
+        padstate.CHORD[sid] = lambda: autoplay_chord(sid, ctx)    # hold Select/View + press A: autoplay on/off
+        padstate.ANCHOR[sid] = lambda at: _save_anchor(sid, ad, ctx, at)  # replay waits for these screens
         threading.Thread(target=padstate.watch_xinput, args=(server, headers, sid, lambda: sid in SESSIONS), daemon=True).start()
     with httpx.Client(base_url=server, headers=headers, timeout=10) as c:
         pid = getattr(getattr(ad, "proc", None), "pid", None)
@@ -2246,11 +2248,17 @@ class AutoplayIn(BaseModel):
     goal: str = ""                         # games without missions: what to do ("make progress", "win this race"...)
     record: bool = False
     assist: bool = False                   # hold the player's HP while gBox plays (opt-in, released when it stops)
+    # auto: a mission that fits (PSO) > the operator's learned style (enough recorded play) > vision.
+    # replay: play one of the operator's recorded runs back from boot (reset=True restarts the game first).
+    mode: str = "auto"                     # auto | mission | replay | learned | vision
+    run_id: str = ""                       # replay: which recorded run (default: the newest real run on this emulator)
+    reset: bool = False                    # replay: restart the game first, so the run starts from boot as recorded
 
 class AutoplayOut(BaseModel):
     result: dict
 
-AUTOPLAY: dict[str, dict] = {}             # session_id -> {driver, thread, mission, result}
+AUTOPLAY: dict[str, dict] = {}             # session_id -> {driver, thread, mission, mode, result}
+AT_BOOT = 60.0                             # s: autoplay (auto) asked for this soon after launch replays the operator's run
 MISSIONS = Path(__file__).resolve().parent.parent / "profiles" / "missions"
 
 
@@ -2264,10 +2272,11 @@ def autoplay(inp: AutoplayIn, ctx: Ctx):
     """Let gBox play the live game (take control): runs a scripted mission (navigate / interact / fight) through the
     session's debugger. op=start | stop (hand control back) | status | list."""
     from .autoplay import Driver
-    game_id = None
+    game_id, started = None, None
     if inp.session_id:
         r = httpx.get(f"{ctx.server}/api/sessions", headers=ctx.headers, timeout=30)
-        game_id = next((s.get("game_id") for s in r.json() if s["session_id"] == inp.session_id), None)
+        game_id, started = next(((s.get("game_id"), s.get("started")) for s in r.json() if s["session_id"] == inp.session_id),
+                                (None, None))
     if inp.op == "list":
         return {"result": {"missions": [{"name": m["name"], "objective": m.get("objective"), "game_id": m.get("game_id")}
                                         for m in _missions(game_id)]}}
@@ -2279,25 +2288,46 @@ def autoplay(inp: AutoplayIn, ctx: Ctx):
         return {"result": {"stopped": bool(run), "mission": run and run["mission"]}}
     if inp.op == "status":
         return {"result": {"running": bool(run and run["thread"].is_alive()), "mission": run and run["mission"],
+                           "mode": run and run.get("mode"), "took_over": bool(run and run.get("took_over")),
                            "last": run and run.get("result"), "steps": run and len(run["driver"].trace)}}
     if inp.op != "start":
         raise ValueError(f"unknown op {inp.op}")
+    if inp.mode not in ("auto", "mission", "replay", "learned", "vision"):
+        raise ValueError("mode: auto | mission | replay | learned | vision")
     if run and run["thread"].is_alive():
         return {"result": {"already_running": run["mission"]}}
     d = Driver(ctx.server, ctx.headers["authorization"].split()[-1], inp.session_id, log=lambda *a: None)
     d.assist_hold_hp = inp.assist
     ad, g = SESSIONS[inp.session_id]
+    since = time.time()
+    if inp.mode == "auto" and not inp.mission and game_id and since - float(started or 0) < AT_BOOT:
+        try:                                                   # the chord at the title screen: your recorded run from boot
+            return {"result": _start_imitation(inp.model_copy(update={"mode": "replay"}), ctx, d, ad, g, game_id, since)}
+        except ValueError:
+            pass
+    if inp.mode in ("replay", "learned"):
+        return {"result": _start_imitation(inp, ctx, d, ad, g, game_id, since)}
     m = None
-    if inp.mission:
-        m = next((x for x in _missions() if x["name"] == inp.mission), None)
-    elif _missions(game_id):
-        m = _takeover_mission(d, g, game_id)                   # continue from where the player is right now
+    if inp.mode in ("auto", "mission"):
+        if inp.mission:
+            m = next((x for x in _missions() if x["name"] == inp.mission), None)
+        elif _missions(game_id):
+            m = _takeover_mission(d, g, game_id)               # continue from where the player is right now
+    if m is None and inp.mode == "mission":
+        raise ValueError(f"no mission fits here (missions: {[x['name'] for x in _missions(game_id)] or 'none for this game'})")
+    if m is None and inp.mode == "auto" and game_id:            # the operator's own play, when there is enough of it
+        try:
+            return {"result": _start_imitation(inp.model_copy(update={"mode": "learned"}), ctx, d, ad, g, game_id, since)}
+        except ValueError:
+            pass                                               # not enough recorded play: vision
     if m is None:                                              # any other game: watch the screen, decide, press
-        run = AUTOPLAY[inp.session_id] = {"driver": d, "mission": "vision: " + (inp.goal or "make progress")}
+        run = AUTOPLAY[inp.session_id] = {"driver": d, "mission": "vision: " + (inp.goal or "make progress"), "mode": "vision",
+                                          "sid": inp.session_id, "since": since}
         run["thread"] = threading.Thread(target=_vision_play, args=(run, ad, g, inp.goal, ctx.server), daemon=True)
         run["thread"].start()
-        return {"result": {"started": run["mission"], "objective": "vision autoplay (any game): screen -> model -> buttons"}}
-    run = AUTOPLAY[inp.session_id] = {"driver": d, "mission": m["name"]}
+        return {"result": {"started": run["mission"], "mode": "vision",
+                           "objective": "vision autoplay (any game): screen -> model -> buttons"}}
+    run = AUTOPLAY[inp.session_id] = {"driver": d, "mission": m["name"], "mode": "mission", "sid": inp.session_id, "since": since}
     cache = ctx.config.runtime / "autoplay"
     cache.mkdir(parents=True, exist_ok=True)
 
@@ -2311,12 +2341,152 @@ def autoplay(inp: AutoplayIn, ctx: Ctx):
                 run["result"] = {"ok": False, "error": str(e)}
             if not run["result"].get("ok") or d.stopped:
                 break
+            cur = next((x for x in _missions() if x["name"] == cur.get("then")), None)
         if getattr(d, "_assist_release", None):                  # stopped / failed mid-run: never leave HP held
             d._assist_release()
-            cur = next((x for x in _missions() if x["name"] == cur.get("then")), None)
+        run["ended"] = time.time()
+    _takeover(run, d, inp.session_id, since)
     run["thread"] = threading.Thread(target=go, daemon=True)
     run["thread"].start()
-    return {"result": {"started": m["name"], "objective": m.get("objective")}}
+    return {"result": {"started": m["name"], "mode": "mission", "objective": m.get("objective")}}
+
+
+def _takeover(run, d, sid, since):
+    """The operator touches their own pad after autoplay started: hand control back at once (every mode)."""
+    from . import padstate
+
+    def watch():
+        while not d.stopped and (run.get("thread") is None or run["thread"].is_alive()):
+            if padstate.touched_after(sid, since):
+                d.stopped, run["took_over"] = True, True
+                _release_all(sid)
+                return
+            time.sleep(0.1)
+    threading.Thread(target=watch, daemon=True).start()
+
+
+def _recorded_play(ctx, game_id) -> list[dict]:
+    r = httpx.get(f"{ctx.server}/api/gameplay-memory", params={"game_id": game_id}, headers=ctx.headers, timeout=60)
+    r.raise_for_status()
+    return r.json().get("runs") or []
+
+
+def _run_events(ctx, run_id) -> list[dict]:
+    out, after = [], 0
+    with httpx.Client(base_url=ctx.server, headers=ctx.headers, timeout=60) as c:
+        while True:
+            page = c.get(f"/api/gameplay-memory/runs/{run_id}", params={"after": after, "limit": 500}).json().get("events") or []
+            out += page
+            if len(page) < 100:
+                return out
+            after = page[-1]["id"]
+
+
+LEARNED: dict[tuple, dict] = {}            # (game_id, adapter, run ids) -> learned style model (worker process cache)
+
+
+def _start_imitation(inp, ctx, d, ad, g, game_id, since) -> dict:
+    """replay / learned autoplay from the operator's recorded play of this game (gbox.imitate)."""
+    from . import imitate
+    if not game_id:
+        raise ValueError("replay / learned autoplay needs the session's game")
+    runs = _recorded_play(ctx, game_id)
+    platform = g.get("platform")
+    sid = inp.session_id
+    run = {"driver": d, "sid": sid, "since": since, "mode": inp.mode}
+    send = lambda rows: ad.send_input(rows)
+    if inp.mode == "replay":
+        rec = imitate.pick_run(runs, ad.name, inp.run_id)
+        if rec is None:
+            raise ValueError(f"no recorded run of this game to replay ({len(runs)} runs, none with "
+                             f"{imitate.MIN_REPLAY_PADS}+ pad reports)" if not inp.run_id else f"run {inp.run_id} not found")
+        events = _run_events(ctx, rec["id"])
+        marks = imitate.anchors(events)
+        plan = imitate.replay_plan(imitate.held_timeline(events, ad.name, platform), float(rec.get("started") or 0),
+                                   marks=marks)
+        if not plan:
+            raise ValueError(f"run {rec['id']} has no controller input to replay")
+        run["mission"] = f"replay: your run {rec['id'][-13:]}"
+        if inp.reset:
+            ad.reset()
+            offset = 0.0
+        else:                                                   # already past boot: start at the first recorded input
+            offset = max(0.0, min(plan[0][0], time.time() - float(_session_started(ctx, sid) or since)))
+
+        def go():
+            try:
+                sync = (lambda mark: imitate.wait_for_screen(mark, lambda: imitate.thumb(ad.get_frame()),
+                                                             lambda: d.stopped)) if marks else None
+                run["result"] = imitate.play_plan(plan, send=send, stopped=lambda: d.stopped, clock=time.time,
+                                                  sleep=time.sleep, offset=offset, sync=sync) | {
+                    "run_id": rec["id"], "steps": len(plan), "anchors": len(marks)}
+            except Exception as e:
+                run["result"] = {"ok": False, "error": str(e)}
+            _release_all(sid)
+            run["ended"] = time.time()
+        objective = (f"replaying your recorded run ({len(plan)} input changes, {plan[-1][0]:.0f} s) from boot"
+                     + (f", in step with {len(marks)} saved screens" if marks else ", on its recorded timing"))
+    else:
+        own = [r for r in runs if (r.get("events") or {}).get("pad", 0)]
+        key = (game_id, ad.name, tuple(sorted(r["id"] for r in own)))
+        model = LEARNED.get(key)
+        if model is None:
+            timeline = []
+            for r in own:
+                timeline += imitate.held_timeline(_run_events(ctx, r["id"]), ad.name, platform)
+            model = LEARNED[key] = imitate.learn(timeline)
+        if model["total"] < imitate.MIN_LEARN_BURSTS:
+            raise ValueError(f"only {model['total']} input bursts recorded for this game; play it a little longer first")
+        style = imitate.Style(model)
+        run["mission"] = f"learned: your style ({len(model['bursts'])} moves from {model['total']} bursts)"
+
+        def go():
+            try:
+                run["result"] = {"ok": True, "bursts": imitate.play_style(style, send=send, stopped=lambda: d.stopped,
+                                                                          sleep=time.sleep)}
+            except Exception as e:
+                run["result"] = {"ok": False, "error": str(e)}
+            _release_all(sid)
+            run["ended"] = time.time()
+        objective = f"playing in your style: {len(model['bursts'])} moves learned from {len(own)} recorded sessions"
+    AUTOPLAY[sid] = run
+    _takeover(run, d, sid, since)
+    run["thread"] = threading.Thread(target=go, daemon=True)
+    run["thread"].start()
+    return {"started": run["mission"], "mode": inp.mode, "objective": objective}
+
+
+def _save_anchor(sid, ad, ctx, at):
+    """The operator pressed after a pause: keep a thumbnail of the screen they reacted to (gameplay memory 'frame').
+    Not while autoplay plays (that's not the operator's play)."""
+    from . import imitate
+    run = AUTOPLAY.get(sid)
+    if run and run["thread"].is_alive():
+        return
+    try:
+        t = imitate.thumb(ad.get_frame())
+        httpx.post(f"{ctx.server}/api/gameplay-memory/runs/{sid}/observe", headers=ctx.headers, timeout=10,
+                   json={"kind": "frame", "payload": {"thumb": t, "size": list(imitate.THUMB), "why": "press after a pause"},
+                         "token": f"{sid}-anchor-{at:.2f}", "at": at})
+    except Exception:
+        pass
+
+
+def _session_started(ctx, sid):
+    try:
+        r = httpx.get(f"{ctx.server}/api/sessions", headers=ctx.headers, timeout=30)
+        return next((s.get("started") for s in r.json() if s["session_id"] == sid), None)
+    except Exception:
+        return None
+
+
+def autoplay_chord(sid: str, ctx) -> dict:
+    """The operator's pad chord (hold Select/View, press A): stop autoplay if it runs (or just handed control back on
+    the chord's own Select), else start it in auto mode."""
+    run = AUTOPLAY.get(sid)
+    if run and (run["thread"].is_alive() or time.time() - run.get("ended", 0) < 1.5):
+        return autoplay(AutoplayIn(session_id=sid, op="stop"), ctx)["result"]
+    return autoplay(AutoplayIn(session_id=sid, op="start", mode="auto"), ctx)["result"]
 
 
 class InvIn(BaseModel):
@@ -2654,17 +2824,8 @@ def _vision_play(run, ad, g, goal, server):
     d, host = run["driver"], urlparse(server).hostname
     llm = "http://127.0.0.1:11434/v1" if host in ("127.0.0.1", "localhost") else f"http://{host}:11434/v1"
     run["log"] = []
-    from . import padstate
     sid = _sid_of(run, ad)
-
-    def takeover():                                            # the operator grabs the controller: hand control back at once
-        while not d.stopped:
-            if padstate.player_active(sid):
-                d.stopped, run["took_over"] = True, True
-                _release_all(sid)
-                return
-            time.sleep(0.1)
-    threading.Thread(target=takeover, daemon=True).start()
+    _takeover(run, d, sid, run.get("since") or time.time())    # the operator grabs the controller: hand control back
     while not d.stopped:
         try:
             png = ad.get_frame()
@@ -2683,6 +2844,7 @@ def _vision_play(run, ad, g, goal, server):
             run["result"] = {"ok": False, "error": str(e)}
             time.sleep(2)
     run["result"] = {"ok": True, "stopped": True, "thoughts": run.get("log", [])[-5:]}
+    run["ended"] = time.time()
 
 
 class MemSearchIn(BaseModel):

@@ -3751,7 +3751,8 @@ def create_app(config: Config) -> FastAPI:
             lv["input"].extend(ev.events)
             padstate.record(sid, ev.events, actor)                 # controller glyph: who pressed what
             lv["cond"].notify_all()
-        if actor not in ('agent','mcp','hermes','gbox-agent') and hasattr(app.state,'capture_gameplay'):
+        # only the operator's own input is gameplay to learn from: not agents, autoplay, bridges or workers
+        if padstate._source(actor, {}) in ('player','ui') and hasattr(app.state,'capture_gameplay'):
             app.state.capture_gameplay(sid,'pad',{'events':ev.events[:100],'timing':'received input events; not a core-frame TAS'})
         return {"queued": len(ev.events)}
 

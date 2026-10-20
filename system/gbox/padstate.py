@@ -135,10 +135,28 @@ _XI = {0x0001: "up", 0x0002: "down", 0x0004: "left", 0x0008: "right", 0x0010: "s
 
 
 PLAYER_TOUCH: dict[str, float] = {}     # sid -> last time the operator pressed/moved their own pad (worker process)
+CHORD: dict[str, object] = {}           # sid -> callable run when the operator holds Select/View and presses A (autoplay)
+CHORD_KEYS = frozenset({"select", "b"})  # physical Xbox A is RetroPad 'b' here (positional labels, see _XI)
+ANCHOR: dict[str, object] = {}          # sid -> callable(at): save the screen the operator reacted to (gbox.imitate)
 
 
 def player_active(sid: str, within: float = 0.6) -> bool:
     return time.time() - PLAYER_TOUCH.get(sid, 0) < within
+
+
+def touched_after(sid: str, t: float) -> bool:
+    """The operator pressed or moved their own pad after time t (the autoplay chord itself doesn't count)."""
+    return PLAYER_TOUCH.get(sid, 0) > t
+
+
+def chord_step(sid: str, before: set, now: set, moved: bool, chording: bool) -> tuple[bool, bool]:
+    """One pad report: (fire the chord now, still chording). While the chord's own keys are held (and nothing else),
+    the report is not a touch, so autoplay the chord just started doesn't hand control straight back."""
+    fire = CHORD_KEYS <= now and "b" not in before
+    chording = (chording or fire) and bool(now) and now <= CHORD_KEYS and not moved
+    if not chording and (now or moved):
+        PLAYER_TOUCH[sid] = time.time()                  # the operator is playing: autoplay hands control back
+    return fire, chording
 
 
 def watch_xinput(server: str, headers: dict, sid: str, alive) -> None:
@@ -149,7 +167,8 @@ def watch_xinput(server: str, headers: dict, sid: str, alive) -> None:
     get_state = xinput.load()      # the shared binding: a private ST class here died on an argtypes clash (#1638)
     if get_state is None:
         return
-    st, held, last_pkt, last_stick = xinput.XInputState(), set(), -1, (0.0, 0.0, 0.0, 0.0)
+    st, held, last_pkt, last_stick, chording = xinput.XInputState(), set(), -1, (0.0, 0.0, 0.0, 0.0), False
+    last_active = 0.0
     ax = lambda v: 0.0 if abs(v) < 7849 else round(max(-1.0, v / 32767), 2)      # XInput's recommended deadzone
     with httpx.Client(base_url=server, headers=headers, timeout=3) as c:
         while alive():
@@ -162,9 +181,16 @@ def watch_xinput(server: str, headers: dict, sid: str, alive) -> None:
             ev = [{"key": k, "down": True} for k in now - held] + [{"key": k, "down": False} for k in held - now]
             if not ev and stick == last_stick:
                 continue
-            held, last_stick = now, stick
-            if now or any(abs(v) > 0.3 for v in stick):
-                PLAYER_TOUCH[sid] = time.time()                  # the operator is playing: autoplay hands control back
+            before, held, last_stick = held, now, stick
+            moved = any(abs(v) > 0.3 for v in stick)
+            fire, chording = chord_step(sid, before, now, moved, chording)
+            if fire and CHORD.get(sid):
+                threading.Thread(target=CHORD[sid], daemon=True).start()
+            if now or moved:                                 # a press after a pause: keep the screen it answered
+                t = time.time()
+                if t - last_active >= 0.7 and not chording and ANCHOR.get(sid):
+                    threading.Thread(target=ANCHOR[sid], args=(t,), daemon=True).start()
+                last_active = t
             try:
                 c.post(f"/api/sessions/{sid}/pad", json={"events": ev, "source": "player",
                                                         "stick": {"x": stick[0], "y": stick[1]}, "rstick": {"x": stick[2], "y": stick[3]}})
