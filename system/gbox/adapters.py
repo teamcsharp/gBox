@@ -2402,9 +2402,14 @@ D-Pad/Right = `H`
         return ["-s", str(self.jump_from)] if self.jump_from else []
 
     def _jump_opts(self) -> dict:
-        # a damaged state file is a panic alert (a modal dialog) in Dolphin: an unattended demo must never stop on one.
-        # The command-line layer is never saved, so the operator's own launches keep their dialogs.
-        return {"Dolphin.Interface.UsePanicHandlers": "False"} if self.jump_from else {}
+        # a damaged state file is a panic alert (a modal dialog) in Dolphin: an unattended demo must never stop on one -
+        # nor on the game's own crash ("Invalid read from 0x00000004", 2026-10-20: the headless Spark display showed it
+        # to nobody, Dolphin waited on it and Stop timed out). A demo / autoplay launch (self.demo) also hides the
+        # on-screen messages ("Saved State to G4BE08.s08"). The command-line layer is never saved, so the operator's
+        # own launches keep their dialogs and messages.
+        if not (self.jump_from or getattr(self, "demo", False)):
+            return {}
+        return {"Dolphin.Interface.UsePanicHandlers": "False", "Dolphin.Interface.OnScreenDisplayMessages": "False"}
 
     def _jump_save_key(self) -> None:
         self._xdo('keydown', 'Shift_L', 'keydown', 'F10', 'sleep', '0.1', 'keyup', 'F10', 'keyup', 'Shift_L')

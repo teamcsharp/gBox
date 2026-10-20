@@ -847,6 +847,7 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         memory_card_sessions.checkout(f'{ctx.worker}-{ctx.job_id}',ad,g.model_dump(),ctx)
         if inp.jump and not inp.capture_backend:            # a demo: straight into gameplay (gbox.jumpstate)
             from . import jumpstate
+            ad.demo = True                                  # unattended: no modal dialogs, no on-screen messages
             jump = diag["jump"] = jumpstate.arm_boot(ad, {"game_id": g.game_id, "mod": launch_mod or ""})
         ctx.progress(72, f"Starting {ad.name} with {src.name}"
                          + (f", straight into gameplay ({jump['file']})" if jump and jump.get("booted") else ""))
@@ -945,7 +946,10 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         except Exception as e:                                 # never block a game launch
             detail["pso_controls"] = {"state": "unsupported", "reason": str(e)}
         try:
-            detail["rewind"] = rewind.start(sid, ad, ctx.config, gd, inp.rewind, lambda: sid in SESSIONS)
+            # a demo / autoplay launch keeps no checkpoint ring: at most its jump state and the menu state (operator
+            # 2026-10-20: "one game session needs a maximum of two save states"); the ring saved every ~2 s
+            ring = False if (inp.jump and inp.rewind is None) else inp.rewind
+            detail["rewind"] = rewind.start(sid, ad, ctx.config, gd, ring, lambda: sid in SESSIONS)
         except Exception as e:                                 # noqa: BLE001 - never block the launch
             detail["rewind"] = {"rewind": "unsupported", "reason": f"rewind setup failed: {e}"}
         # background gameplay ring (#1084): records while the operator's pad is in use, clipped later with the recording tool

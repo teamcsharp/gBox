@@ -446,3 +446,28 @@ def test_autoplay_on_launch_asks_for_the_jump_and_a_plain_play_never_does(tmp_pa
         debug = client.post("/api/games/sc2/launch?node=linux&autoplay=true&debug=true").json()
     assert auto["input"]["jump"] is True                                 # the job's input, filled in with LaunchIn
     assert plain["input"].get("jump") is False and debug["input"].get("jump") is False
+
+
+def test_a_demo_launch_keeps_no_checkpoint_ring_and_is_marked_a_demo(tmp_path, monkeypatch):
+    from gbox import rewind
+    seen = []
+    monkeypatch.setattr(rewind, "start", lambda sid, ad, config, game, enabled, alive=None: seen.append(enabled) or
+                        {"mode": "off" if enabled is False else "checkpoint"})
+    ad, out = launch(tmp_path, monkeypatch, jump=True)                   # the screensaver / autoplay on launch
+    assert seen == [False] and getattr(ad, "demo", False) is True       # "a maximum of two save states"
+    seen.clear()
+    ad, out = launch(tmp_path, monkeypatch, jump=False)                  # the operator's own Play
+    assert seen == [None] and not getattr(ad, "demo", False)             # gbox.toml decides, as before
+
+
+@pytest.mark.parametrize("cls", [adapters.DolphinAdapter, adapters.DolphinWinAdapter])
+def test_a_demo_dolphin_never_stops_on_a_dialog_and_shows_no_messages(tmp_path, monkeypatch, cls):
+    from tests.test_dolphin_sc2_compatibility import disc, prepare
+    ad, _, _ = prepare(tmp_path, monkeypatch, cls)
+    rom = disc(tmp_path / "sc2.iso", b"GRSE69")
+    plain = ad._argv(rom)
+    assert not any("UsePanicHandlers" in a or "OnScreenDisplayMessages" in a for a in plain)   # the operator's Play
+    ad.demo = True                                                       # a demo, no jump state yet
+    argv = ad._argv(rom)
+    assert "Dolphin.Interface.UsePanicHandlers=False" in argv            # a game crash doesn't freeze it on a dialog
+    assert "Dolphin.Interface.OnScreenDisplayMessages=False" in argv     # no "Saved State to ..s08" on screen
