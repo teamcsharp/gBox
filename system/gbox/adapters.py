@@ -595,6 +595,16 @@ def _print_window_png(hwnd, width: int, height: int) -> bytes | None:
         return None
 
 
+def frame_is_black(png: bytes, limit: float = 4.0) -> bool:
+    """True for a frame whose mean luma is under `limit` (of 255): a sleeping display or a hidden window."""
+    import io
+    from PIL import Image, ImageStat
+    try:
+        return ImageStat.Stat(Image.open(io.BytesIO(png)).convert("L")).mean[0] < limit
+    except Exception:
+        return False
+
+
 def print_window_bitmap_png(bgra: bytes, width: int, height: int) -> bytes | None:
     """Encode a top-down BGRA PrintWindow bitmap; None for an empty (one-colour) result."""
     import io
@@ -1784,7 +1794,28 @@ class RetroArchAdapter(CommandAdapter):
         if getattr(self, "capture_backend", None) and getattr(self, "states_override", None):
             return self._screenshot(Path(self.states_override).parent / "shots")
         if HOST_OS == "windows":
-            return win_grab(self.proc.pid if self.proc else 0)
+            # The window grab (or the desktop app's GPU-surface frame) is black while the PC's display sleeps or the
+            # window is hidden (2026-10-19, i9-NUC: one identical black frame for every game). RetroArch's own
+            # SCREENSHOT reads its framebuffer whatever the window shows, so a black or failed grab falls back to it.
+            global _last_grab
+            grab, why = None, ""
+            try:
+                grab = win_grab(self.proc.pid if self.proc else 0)
+                if not frame_is_black(grab):
+                    return grab
+                why = "black window grab"
+            except RuntimeError as e:
+                why = str(e)
+            try:
+                shot = self._screenshot(Path(self.config.runtime) / "screenshots")
+            except (RuntimeError, OSError):
+                if grab is not None:
+                    return grab
+                raise RuntimeError(why or "no frame") from None
+            from hashlib import sha256 as _sha
+            _last_grab = dict(pid=self.proc.pid if self.proc else 0, covered=0, source="retroarch-screenshot",
+                              sha256=_sha(shot).hexdigest(), frame_age_s=0, fallback_reason=why)
+            return shot
         return grab_png(self.display.name if self.display else None)
 
     def _screenshot(self, shots: Path, timeout: float = 6.0) -> bytes:
