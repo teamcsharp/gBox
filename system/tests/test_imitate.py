@@ -199,3 +199,56 @@ def test_unknown_mode_is_refused(ap):
     t = ap.tools
     with pytest.raises(ValueError, match="mode"):
         t.autoplay(t.AutoplayIn(session_id="s1", op="start", mode="dance"), ap.ctx)
+
+
+# --- screen anchors ---
+
+def _png(level, box=None):
+    import io as _io
+    from PIL import Image
+    im = Image.new("RGB", (320, 240), (level, level, level))
+    if box:
+        im.paste((255, 255, 255), box)
+    b = _io.BytesIO()
+    im.save(b, "PNG")
+    return b.getvalue()
+
+
+def test_thumbnails_match_the_same_screen_and_not_another():
+    title, menu = imitate.thumb(_png(20)), imitate.thumb(_png(20, (0, 0, 320, 120)))
+    assert imitate.distance(title, imitate.thumb(_png(22))) < imitate.MATCH       # same screen, slightly different
+    assert imitate.distance(title, menu) > imitate.MATCH
+
+
+def test_replay_plan_puts_each_anchor_on_the_press_it_preceded():
+    tl = [(10.0, frozenset({"start"})), (10.2, frozenset()), (30.0, frozenset({"b"})), (30.1, frozenset())]
+    plan = imitate.replay_plan(tl, 0.0, marks=[(9.9, "T"), (25.0, "far"), (30.0, "M")])
+    assert [p[2] for p in plan] == ["T", None, "M", None]   # 25.0 is 5 s before any press: not an anchor
+
+
+def test_play_plan_holds_at_an_anchor_and_shifts_the_rest():
+    now = [0.0]
+    clock = lambda: now[0]
+    def sleep(s): now[0] += max(s, 0.01)
+    sent = []
+    def sync(mark):                                          # the game loads 4 s slower than when it was recorded
+        now[0] += 4.0
+        return 4.0
+    plan = [(1.0, "start", "T"), (2.0, "a", None), (3.0, "b", None)]
+    out = imitate.play_plan(plan, send=lambda r: sent.append((r, round(now[0], 1))), stopped=lambda: False,
+                            clock=clock, sleep=sleep, sync=sync)
+    assert [r for r, _ in sent] == ["start", "a", "b"]
+    assert sent[1][1] - sent[0][1] == pytest.approx(1.0, abs=0.06)   # the gaps after the anchor keep their timing
+    assert out["synced"] == 1 and out["held_for_screens"] == 4.0
+
+
+def test_wait_for_screen_returns_when_the_screen_matches_or_times_out():
+    now = [0.0]
+    clock = lambda: now[0]
+    def sleep(s): now[0] += s
+    target = imitate.thumb(_png(200))
+    shots = iter([_png(10), _png(10), _png(200)])
+    held = imitate.wait_for_screen(target, lambda: imitate.thumb(next(shots)), lambda: False, clock=clock, sleep=sleep)
+    assert held == pytest.approx(0.4)
+    held = imitate.wait_for_screen(target, lambda: imitate.thumb(_png(10)), lambda: False, clock=clock, sleep=sleep, timeout=2)
+    assert held >= 2

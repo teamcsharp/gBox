@@ -10,11 +10,18 @@ as a 'pad' event (buttons pressed/released plus both sticks, server-time stamped
            a jump) with their own hold times, and which burst tends to follow which. Played as a loop; it never presses
            Start/Select. Fighting games (SoulCalibur survival) play best with it.
 
+Screen anchors keep a replay in step with loading times: while the operator plays, every press after a pause
+(ANCHOR_IDLE) saves a 32x24 grey thumbnail of the screen they reacted to (gameplay memory 'frame'). Replay waits at
+each anchor until the live screen matches it (or SYNC_TIMEOUT passes) and shifts the rest of the run by the wait.
+
 The operator touching their pad hands control back (tools._takeover). Nothing here reads or writes game memory.
 """
 from __future__ import annotations
 
+import base64
+import io
 import random
+import time
 from collections import Counter, defaultdict
 
 IDLE_CAP = 20.0          # s: a longer gap in a recording plays as this long
@@ -24,6 +31,10 @@ NO_LEARN = frozenset({"start", "select", "l3", "r3"})   # pause / menus / camera
 MIN_REPLAY_PADS = 200    # a run with fewer pad reports is a test poke, not a run worth replaying
 MIN_LEARN_BURSTS = 20
 STICK_ON = 0.3           # stick deflection that counts as a direction (same threshold as gameplay_demo)
+THUMB = (32, 24)         # anchor thumbnail size (grey)
+ANCHOR_IDLE = 0.7        # s: a press after this long without input saves an anchor (the screen the operator reacted to)
+MATCH = 14.0             # mean absolute grey difference (0-255) under which the live screen matches an anchor
+SYNC_TIMEOUT = 15.0      # s: an anchor that never matches holds the replay this long, then it carries on
 
 # Dolphin on Windows (SendInput keyboard binding) wants GameCube names; physical XInput reports are positional RetroPad
 # labels (Xbox A = 'b'). gameplay_demo.pad_events learned this mapping on the observed PSO demos.
@@ -77,9 +88,35 @@ def diff(before: frozenset, after: frozenset) -> list[dict]:
     return [{"key": k, "down": False} for k in sorted(before - after)] + [{"key": k, "down": True} for k in sorted(after - before)]
 
 
-def replay_plan(timeline: list[tuple[float, frozenset]], started: float, idle_cap: float = IDLE_CAP) -> list[tuple[float, list[dict]]]:
-    """[(t, rows)]: t seconds after the recorded session started, gaps over idle_cap shortened to idle_cap."""
+def thumb(image: bytes) -> str:
+    """A frame (PNG/JPEG) as a 32x24 grey thumbnail, base64: small enough for a gameplay-memory event."""
+    from PIL import Image
+    im = Image.open(io.BytesIO(image)).convert("L").resize(THUMB, Image.BILINEAR)
+    return base64.b64encode(im.tobytes()).decode()
+
+
+def distance(a: str, b: str) -> float:
+    """Mean absolute grey difference of two thumbnails (0 = same screen, 255 = inverse)."""
+    x, y = base64.b64decode(a), base64.b64decode(b)
+    if len(x) != len(y) or not x:
+        return 255.0
+    return sum(abs(p - q) for p, q in zip(x, y)) / len(x)
+
+
+def anchors(events: list[dict]) -> list[tuple[float, str]]:
+    """[(at, thumbnail)] saved while the operator played (kind 'frame')."""
+    return [(float(e["at"]), e["payload"]["thumb"]) for e in events
+            if e.get("kind") == "frame" and isinstance((e.get("payload") or {}).get("thumb"), str)]
+
+
+def replay_plan(timeline: list[tuple[float, frozenset]], started: float, idle_cap: float = IDLE_CAP,
+                marks: list[tuple[float, str]] | None = None) -> list[tuple]:
+    """[(t, rows)]: t seconds after the recorded session started, gaps over idle_cap shortened to idle_cap.
+    With marks (anchors), each entry is (t, rows, thumbnail or None): an anchor sits on the first input change at or
+    after it (within a second), so replay checks the screen right before pressing."""
     plan, held, shift, last = [], frozenset(), 0.0, started
+    marks = sorted(marks or [])
+    mi = 0
     for at, keys in timeline:
         if at < started:
             continue
@@ -89,11 +126,33 @@ def replay_plan(timeline: list[tuple[float, frozenset]], started: float, idle_ca
         last = at
         rows = diff(held, keys)
         if rows:
-            plan.append((round(at - started - shift, 3), rows))
+            item = (round(at - started - shift, 3), rows)
+            if marks:
+                mark = None
+                while mi < len(marks) and marks[mi][0] <= at:
+                    if at - marks[mi][0] <= 1.0:
+                        mark = marks[mi][1]
+                    mi += 1
+                item += (mark,)
+            plan.append(item)
             held = keys
     if held:
-        plan.append((plan[-1][0] + 0.1, diff(held, frozenset())))
+        plan.append((plan[-1][0] + 0.1, diff(held, frozenset())) + ((None,) if marks else ()))
     return plan
+
+
+def wait_for_screen(mark: str, grab, stopped, *, clock=time.time, sleep=time.sleep, timeout: float = SYNC_TIMEOUT,
+                    match: float = MATCH) -> float:
+    """Hold until the live screen (grab() -> thumbnail) matches the anchor, or timeout. Returns the seconds held."""
+    t0 = clock()
+    while not stopped() and clock() - t0 < timeout:
+        try:
+            if distance(grab(), mark) <= match:
+                break
+        except Exception:
+            pass
+        sleep(0.2)
+    return clock() - t0
 
 
 def pick_run(runs: list[dict], adapter: str = "", run_id: str = "") -> dict | None:
@@ -181,21 +240,29 @@ class Style:
         return max(0.03, min(0.8, self.rng.choice(g)))
 
 
-def play_plan(plan, *, send, stopped, clock, sleep, offset: float = 0.0) -> dict:
-    """Send each [(t, rows)] at its time (t >= offset; rows before offset are skipped). Stops when stopped() is true."""
-    began, sent = clock() - offset, 0
-    for t, rows in plan:
+def play_plan(plan, *, send, stopped, clock, sleep, offset: float = 0.0, sync=None) -> dict:
+    """Send each [(t, rows[, anchor])] at its time (t >= offset; rows before offset are skipped). At an anchor,
+    sync(anchor) holds until the screen matches and the rest of the plan shifts by the hold. Stops when stopped()."""
+    began, sent, held_for, synced = clock() - offset, 0, 0.0, 0
+    for item in plan:
+        t, rows = item[0], item[1]
         if t < offset:
             continue
         while clock() - began < t:
             if stopped():
-                return {"completed": False, "sent": sent, "at": round(clock() - began, 2)}
+                return {"completed": False, "sent": sent, "at": round(clock() - began, 2), "synced": synced}
             sleep(min(0.05, max(0.0, t - (clock() - began))))
+        if len(item) > 2 and item[2] and sync is not None:
+            h = sync(item[2])
+            began += h
+            held_for += h
+            synced += 1
         if stopped():
-            return {"completed": False, "sent": sent, "at": round(clock() - began, 2)}
+            return {"completed": False, "sent": sent, "at": round(clock() - began, 2), "synced": synced}
         send(rows)
         sent += 1
-    return {"completed": True, "sent": sent, "at": round(clock() - began, 2)}
+    return {"completed": True, "sent": sent, "at": round(clock() - began, 2), "synced": synced,
+            "held_for_screens": round(held_for, 1)}
 
 
 def play_style(style: Style, *, send, stopped, sleep, limit: int | None = None) -> int:

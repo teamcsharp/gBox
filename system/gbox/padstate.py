@@ -137,6 +137,7 @@ _XI = {0x0001: "up", 0x0002: "down", 0x0004: "left", 0x0008: "right", 0x0010: "s
 PLAYER_TOUCH: dict[str, float] = {}     # sid -> last time the operator pressed/moved their own pad (worker process)
 CHORD: dict[str, object] = {}           # sid -> callable run when the operator holds Select/View and presses A (autoplay)
 CHORD_KEYS = frozenset({"select", "b"})  # physical Xbox A is RetroPad 'b' here (positional labels, see _XI)
+ANCHOR: dict[str, object] = {}          # sid -> callable(at): save the screen the operator reacted to (gbox.imitate)
 
 
 def player_active(sid: str, within: float = 0.6) -> bool:
@@ -167,6 +168,7 @@ def watch_xinput(server: str, headers: dict, sid: str, alive) -> None:
     if get_state is None:
         return
     st, held, last_pkt, last_stick, chording = xinput.XInputState(), set(), -1, (0.0, 0.0, 0.0, 0.0), False
+    last_active = 0.0
     ax = lambda v: 0.0 if abs(v) < 7849 else round(max(-1.0, v / 32767), 2)      # XInput's recommended deadzone
     with httpx.Client(base_url=server, headers=headers, timeout=3) as c:
         while alive():
@@ -180,9 +182,15 @@ def watch_xinput(server: str, headers: dict, sid: str, alive) -> None:
             if not ev and stick == last_stick:
                 continue
             before, held, last_stick = held, now, stick
-            fire, chording = chord_step(sid, before, now, any(abs(v) > 0.3 for v in stick), chording)
+            moved = any(abs(v) > 0.3 for v in stick)
+            fire, chording = chord_step(sid, before, now, moved, chording)
             if fire and CHORD.get(sid):
                 threading.Thread(target=CHORD[sid], daemon=True).start()
+            if now or moved:                                 # a press after a pause: keep the screen it answered
+                t = time.time()
+                if t - last_active >= 0.7 and not chording and ANCHOR.get(sid):
+                    threading.Thread(target=ANCHOR[sid], args=(t,), daemon=True).start()
+                last_active = t
             try:
                 c.post(f"/api/sessions/{sid}/pad", json={"events": ev, "source": "player",
                                                         "stick": {"x": stick[0], "y": stick[1]}, "rstick": {"x": stick[2], "y": stick[3]}})

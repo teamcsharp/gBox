@@ -1249,6 +1249,7 @@ def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
     if sys.platform == "win32":                                  # mirror the operator's own pad to the controller glyph
         from . import padstate
         padstate.CHORD[sid] = lambda: autoplay_chord(sid, ctx)    # hold Select/View + press A: autoplay on/off
+        padstate.ANCHOR[sid] = lambda at: _save_anchor(sid, ad, ctx, at)  # replay waits for these screens
         threading.Thread(target=padstate.watch_xinput, args=(server, headers, sid, lambda: sid in SESSIONS), daemon=True).start()
     with httpx.Client(base_url=server, headers=headers, timeout=10) as c:
         pid = getattr(getattr(ad, "proc", None), "pid", None)
@@ -2399,8 +2400,10 @@ def _start_imitation(inp, ctx, d, ad, g, game_id, since) -> dict:
         if rec is None:
             raise ValueError(f"no recorded run of this game to replay ({len(runs)} runs, none with "
                              f"{imitate.MIN_REPLAY_PADS}+ pad reports)" if not inp.run_id else f"run {inp.run_id} not found")
-        plan = imitate.replay_plan(imitate.held_timeline(_run_events(ctx, rec["id"]), ad.name, platform),
-                                   float(rec.get("started") or 0))
+        events = _run_events(ctx, rec["id"])
+        marks = imitate.anchors(events)
+        plan = imitate.replay_plan(imitate.held_timeline(events, ad.name, platform), float(rec.get("started") or 0),
+                                   marks=marks)
         if not plan:
             raise ValueError(f"run {rec['id']} has no controller input to replay")
         run["mission"] = f"replay: your run {rec['id'][-13:]}"
@@ -2412,13 +2415,17 @@ def _start_imitation(inp, ctx, d, ad, g, game_id, since) -> dict:
 
         def go():
             try:
+                sync = (lambda mark: imitate.wait_for_screen(mark, lambda: imitate.thumb(ad.get_frame()),
+                                                             lambda: d.stopped)) if marks else None
                 run["result"] = imitate.play_plan(plan, send=send, stopped=lambda: d.stopped, clock=time.time,
-                                                  sleep=time.sleep, offset=offset) | {"run_id": rec["id"], "steps": len(plan)}
+                                                  sleep=time.sleep, offset=offset, sync=sync) | {
+                    "run_id": rec["id"], "steps": len(plan), "anchors": len(marks)}
             except Exception as e:
                 run["result"] = {"ok": False, "error": str(e)}
             _release_all(sid)
             run["ended"] = time.time()
-        objective = f"replaying your recorded run ({len(plan)} input changes, {plan[-1][0]:.0f} s) from boot"
+        objective = (f"replaying your recorded run ({len(plan)} input changes, {plan[-1][0]:.0f} s) from boot"
+                     + (f", in step with {len(marks)} saved screens" if marks else ", on its recorded timing"))
     else:
         own = [r for r in runs if (r.get("events") or {}).get("pad", 0)]
         key = (game_id, ad.name, tuple(sorted(r["id"] for r in own)))
@@ -2447,6 +2454,22 @@ def _start_imitation(inp, ctx, d, ad, g, game_id, since) -> dict:
     run["thread"] = threading.Thread(target=go, daemon=True)
     run["thread"].start()
     return {"started": run["mission"], "mode": inp.mode, "objective": objective}
+
+
+def _save_anchor(sid, ad, ctx, at):
+    """The operator pressed after a pause: keep a thumbnail of the screen they reacted to (gameplay memory 'frame').
+    Not while autoplay plays (that's not the operator's play)."""
+    from . import imitate
+    run = AUTOPLAY.get(sid)
+    if run and run["thread"].is_alive():
+        return
+    try:
+        t = imitate.thumb(ad.get_frame())
+        httpx.post(f"{ctx.server}/api/gameplay-memory/runs/{sid}/observe", headers=ctx.headers, timeout=10,
+                   json={"kind": "frame", "payload": {"thumb": t, "size": list(imitate.THUMB), "why": "press after a pause"},
+                         "token": f"{sid}-anchor-{at:.2f}", "at": at})
+    except Exception:
+        pass
 
 
 def _session_started(ctx, sid):
