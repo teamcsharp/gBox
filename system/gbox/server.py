@@ -4173,6 +4173,8 @@ def create_app(config: Config) -> FastAPI:
     gameplay_memory.install(app, store, config, auth)
     from . import gameplay_demo
     gameplay_demo.install(app,store,config,auth,submit,workers,app.state.gameplay_memory)
+    from . import screensaver                    # idle PCs play the operator's games in the operator's style
+    screensaver.install(app, store, config, auth, submit, workers, app.state.gameplay_memory)
     from . import tas_api
     tas_api.install(app, store, config, auth, submit, workers)
 

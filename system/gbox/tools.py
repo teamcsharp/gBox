@@ -2253,6 +2253,8 @@ class AutoplayIn(BaseModel):
     mode: str = "auto"                     # auto | mission | replay | learned | vision
     run_id: str = ""                       # replay: which recorded run (default: the newest real run on this emulator)
     reset: bool = False                    # replay: restart the game first, so the run starts from boot as recorded
+    screensaver: bool = False              # the idle-PC screensaver runs this (gbox.screensaver): a replay goes on in the
+                                           # learned style, a mouse move also hands back, the end is reported
 
 class AutoplayOut(BaseModel):
     result: dict
@@ -2298,6 +2300,7 @@ def autoplay(inp: AutoplayIn, ctx: Ctx):
         return {"result": {"already_running": run["mission"]}}
     d = Driver(ctx.server, ctx.headers["authorization"].split()[-1], inp.session_id, log=lambda *a: None)
     d.assist_hold_hp = inp.assist
+    d.screensaver = (ctx.server, dict(ctx.headers)) if inp.screensaver else None
     ad, g = SESSIONS[inp.session_id]
     since = time.time()
     if inp.mode == "auto" and not inp.mission and game_id and since - float(started or 0) < AT_BOOT:
@@ -2344,25 +2347,64 @@ def autoplay(inp: AutoplayIn, ctx: Ctx):
             cur = next((x for x in _missions() if x["name"] == cur.get("then")), None)
         if getattr(d, "_assist_release", None):                  # stopped / failed mid-run: never leave HP held
             d._assist_release()
-        run["ended"] = time.time()
+        _ended(run)
     _takeover(run, d, inp.session_id, since)
     run["thread"] = threading.Thread(target=go, daemon=True)
     run["thread"].start()
     return {"result": {"started": m["name"], "mode": "mission", "objective": m.get("objective")}}
 
 
+def _cursor():
+    """The mouse position on Windows (None elsewhere): the screensaver ends when it moves."""
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    from ctypes import wintypes
+    p = wintypes.POINT()
+    return (p.x, p.y) if ctypes.windll.user32.GetCursorPos(ctypes.byref(p)) else None
+
+
+def _saver_post(d, path, body):
+    if getattr(d, "screensaver", None):
+        server, headers = d.screensaver
+        try:
+            httpx.post(f"{server}/api/autoplay-screensaver/{path}", headers=headers, json=body, timeout=15)
+        except httpx.HTTPError:
+            pass
+
+
 def _takeover(run, d, sid, since):
-    """The operator touches their own pad after autoplay started: hand control back at once (every mode)."""
+    """The operator touches their own pad after autoplay started: hand control back at once (every mode). In
+    screensaver mode a mouse move does too, and the control plane is told so it closes the game."""
     from . import padstate
+    run["screensaver"] = bool(getattr(d, "screensaver", None))
+    start_cursor = _cursor() if run["screensaver"] else None
 
     def watch():
         while not d.stopped and (run.get("thread") is None or run["thread"].is_alive()):
-            if padstate.touched_after(sid, since):
+            why = "pad" if padstate.touched_after(sid, since) else None
+            if why is None and start_cursor is not None:
+                c = _cursor()
+                if c and abs(c[0] - start_cursor[0]) + abs(c[1] - start_cursor[1]) > 8:
+                    why = "mouse"
+            if why:
                 d.stopped, run["took_over"] = True, True
                 _release_all(sid)
+                _saver_post(d, "yield", {"session_id": sid, "reason": why})
                 return
             time.sleep(0.1)
     threading.Thread(target=watch, daemon=True).start()
+
+
+def _ended(run):
+    """An autoplay run finished (stopped, failed or done): note when, and tell the screensaver what happened."""
+    run["ended"] = time.time()
+    d = run.get("driver")
+    res = run.get("result") or {}
+    _saver_post(d, "result", {"session_id": run.get("sid", ""), "result": {
+        "mode": run.get("mode"), "mission": run.get("mission"), "took_over": bool(run.get("took_over")),
+        **{k: v for k, v in res.items() if isinstance(v, (int, float, str, bool)) and k != "error"},
+        **({"error": str(res["error"])[:300]} if res.get("error") else {})}})
 
 
 def _recorded_play(ctx, game_id) -> list[dict]:
@@ -2420,21 +2462,21 @@ def _start_imitation(inp, ctx, d, ad, g, game_id, since) -> dict:
                 run["result"] = imitate.play_plan(plan, send=send, stopped=lambda: d.stopped, clock=time.time,
                                                   sleep=time.sleep, offset=offset, sync=sync) | {
                     "run_id": rec["id"], "steps": len(plan), "anchors": len(marks)}
+                if run["result"].get("completed") and not d.stopped and getattr(d, "screensaver", None):
+                    _release_all(sid)                       # the screensaver keeps playing: your style from here
+                    _, model = _style_model(ctx, runs, ad, game_id, platform)
+                    if model["total"] >= imitate.MIN_LEARN_BURSTS:
+                        run["mission"] = f"learned: your style ({len(model['bursts'])} moves), after your run"
+                        run["result"]["bursts"] = imitate.play_style(imitate.Style(model), send=send,
+                                                                     stopped=lambda: d.stopped, sleep=time.sleep)
             except Exception as e:
                 run["result"] = {"ok": False, "error": str(e)}
             _release_all(sid)
-            run["ended"] = time.time()
+            _ended(run)
         objective = (f"replaying your recorded run ({len(plan)} input changes, {plan[-1][0]:.0f} s) from boot"
                      + (f", in step with {len(marks)} saved screens" if marks else ", on its recorded timing"))
     else:
-        own = [r for r in runs if (r.get("events") or {}).get("pad", 0)]
-        key = (game_id, ad.name, tuple(sorted(r["id"] for r in own)))
-        model = LEARNED.get(key)
-        if model is None:
-            timeline = []
-            for r in own:
-                timeline += imitate.held_timeline(_run_events(ctx, r["id"]), ad.name, platform)
-            model = LEARNED[key] = imitate.learn(timeline)
+        own, model = _style_model(ctx, runs, ad, game_id, platform)
         if model["total"] < imitate.MIN_LEARN_BURSTS:
             raise ValueError(f"only {model['total']} input bursts recorded for this game; play it a little longer first")
         style = imitate.Style(model)
@@ -2447,13 +2489,27 @@ def _start_imitation(inp, ctx, d, ad, g, game_id, since) -> dict:
             except Exception as e:
                 run["result"] = {"ok": False, "error": str(e)}
             _release_all(sid)
-            run["ended"] = time.time()
+            _ended(run)
         objective = f"playing in your style: {len(model['bursts'])} moves learned from {len(own)} recorded sessions"
     AUTOPLAY[sid] = run
     _takeover(run, d, sid, since)
     run["thread"] = threading.Thread(target=go, daemon=True)
     run["thread"].start()
     return {"started": run["mission"], "mode": inp.mode, "objective": objective}
+
+
+def _style_model(ctx, runs, ad, game_id, platform):
+    """(the runs with the operator's pad input, the style learned from them); cached per set of runs."""
+    from . import imitate
+    own = [r for r in runs if (r.get("events") or {}).get("pad", 0)]
+    key = (game_id, ad.name, tuple(sorted(r["id"] for r in own)))
+    model = LEARNED.get(key)
+    if model is None:
+        timeline = []
+        for r in own:
+            timeline += imitate.held_timeline(_run_events(ctx, r["id"]), ad.name, platform)
+        model = LEARNED[key] = imitate.learn(timeline)
+    return own, model
 
 
 def _save_anchor(sid, ad, ctx, at):
@@ -2844,7 +2900,7 @@ def _vision_play(run, ad, g, goal, server):
             run["result"] = {"ok": False, "error": str(e)}
             time.sleep(2)
     run["result"] = {"ok": True, "stopped": True, "thoughts": run.get("log", [])[-5:]}
-    run["ended"] = time.time()
+    _ended(run)
 
 
 class MemSearchIn(BaseModel):

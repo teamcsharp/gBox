@@ -252,3 +252,33 @@ def test_wait_for_screen_returns_when_the_screen_matches_or_times_out():
     assert held == pytest.approx(0.4)
     held = imitate.wait_for_screen(target, lambda: imitate.thumb(_png(10)), lambda: False, clock=clock, sleep=sleep, timeout=2)
     assert held >= 2
+
+
+def test_screensaver_replay_goes_on_in_your_style_and_reports_back(ap, monkeypatch):
+    t = ap.tools
+    posts = []
+    monkeypatch.setattr(t.httpx, "post", lambda url, **k: posts.append((url.rsplit("/", 1)[-1], k["json"])))
+    monkeypatch.setattr(t, "LEARNED", {})
+    monkeypatch.setattr(t, "_recorded_play", lambda ctx, gid: [{"id": "r1", "events": {"pad": 500}, "adapter": "retroarch",
+                                                                "started": 0.0, "updated": 1}])
+    many = []
+    for i in range(30):
+        many += [pad(i * 0.01, [("x", True)], {"x": 0.9, "y": 0}), pad(i * 0.01 + 0.005, [("x", False)])]
+    monkeypatch.setattr(t, "_run_events", lambda ctx, rid: many)
+    monkeypatch.setattr(imitate, "BURST_GAP", 0.003)          # the recording is compressed 40x for the test
+    stop = threading.Event()
+    monkeypatch.setattr(t.time, "sleep", lambda s: stop.wait(0.0005))
+    r = t.autoplay(t.AutoplayIn(session_id="s1", op="start", mode="replay", screensaver=True), ap.ctx)["result"]
+    run = t.AUTOPLAY["s1"]
+    for _ in range(400):
+        if run["mission"].startswith("learned"):
+            break
+        stop.wait(0.01)
+    assert run["mission"].startswith("learned: your style")    # the replay finished: the screensaver keeps playing
+    padstate.PLAYER_TOUCH["s1"] = t.time.time() + 1            # the operator grabs the pad
+    run["thread"].join(5)
+    assert run["took_over"]
+    kinds = [k for k, _ in posts]
+    assert "yield" in kinds and "result" in kinds
+    assert dict(posts)["yield"] == {"session_id": "s1", "reason": "pad"}
+    padstate.PLAYER_TOUCH.pop("s1", None)
