@@ -1,4 +1,4 @@
-"""Read-only, identity-checked guest RAM for the reviewed DOA3 native runner."""
+"""Identity-checked guest RAM for the reviewed DOA3 native runner: reads, and read-back-verified writes outside the code."""
 from __future__ import annotations
 
 import hashlib
@@ -10,6 +10,8 @@ from .registry import ToolUnavailable, Unsupported
 RAM_SIZE = 0x04000000
 ALIASES = (0, 0x80000000, 0xF0000000)
 READ_ACCESS = 0x0400 | 0x0010  # PROCESS_QUERY_INFORMATION | PROCESS_VM_READ only.
+WRITE_ACCESS = READ_ACCESS | 0x0020 | 0x0008  # + PROCESS_VM_WRITE | PROCESS_VM_OPERATION, for verified guest RAM writes
+MAX_WRITE = 4096
 
 
 def _sha(path):
@@ -121,8 +123,8 @@ def discover(reader, expected: list[dict]) -> int:
 
 
 class _WindowsReader:
-    """A scoped read/query handle; no write or process-operation access is requested."""
-    def __init__(self, pid, born):
+    """A scoped process handle: read/query only by default; WRITE_ACCESS adds VM write for a verified guest RAM write."""
+    def __init__(self, pid, born, access=READ_ACCESS):
         import ctypes
         from ctypes import wintypes as w
         if ctypes.sizeof(ctypes.c_void_p) != 8:
@@ -154,9 +156,10 @@ class _WindowsReader:
         self.maximum_address = int(info.maximum or 0)
         if not 0 < self.maximum_address <= 0x7FFFFFFFFFFF:
             raise Unsupported("Native Windows address-space bounds could not be verified")
-        self.handle = self.kernel.OpenProcess(READ_ACCESS, False, pid)
+        self.handle = self.kernel.OpenProcess(access, False, pid)
         if not self.handle:
-            raise Unsupported("Cannot open the owned native DOA3 process for read-only inspection")
+            raise Unsupported("Cannot open the owned native DOA3 process for "
+                              + ("read-only inspection" if access == READ_ACCESS else "a guest RAM write"))
         try:
             created, exited, kernel, user = (w.FILETIME() for _ in range(4))
             if not self.kernel.GetProcessTimes(self.handle, ctypes.byref(created), ctypes.byref(exited), ctypes.byref(kernel), ctypes.byref(user)):
@@ -208,6 +211,21 @@ class _WindowsReader:
             raise Unsupported("Owned native DOA3 memory could not be read completely")
         return buffer.raw
 
+    def write(self, address, data: bytes):
+        if not 0 <= address <= 0x7FFFFFFFFFFF or not 0 < len(data) <= MAX_WRITE:
+            raise Unsupported("Native memory write is outside its supported bounds")
+        w, ctypes = self.w, self.ctypes
+        self.kernel.WriteProcessMemory.argtypes = [w.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
+        self.kernel.WriteProcessMemory.restype = w.BOOL
+        buffer, put = self.ctypes.create_string_buffer(bytes(data), len(data)), self.ctypes.c_size_t()
+        if not self.kernel.WriteProcessMemory(self.handle, self.ctypes.c_void_p(address), buffer, len(data), self.ctypes.byref(put)) or put.value != len(data):
+            raise Unsupported("Owned native DOA3 memory could not be written completely")
+
+
+def _overlaps_anchor(expected, offset, length) -> bool:
+    """True when [offset, offset+length) touches the mapped XBE header or an immutable code section."""
+    return any(item["guest"] < offset + length and offset < item["guest"] + len(item["data"]) for item in expected)
+
 
 class GuestMemory:
     def __init__(self, owner, exe: Path, xbe: Path, runner_sha256: str, xbe_sha256: str):
@@ -251,7 +269,7 @@ class GuestMemory:
             self._identity()
         return {"verified": True, "address_space": "guest", "platform": "xbox", "processor": "x86:LE:32:default",
                 "endianness": "little", "bits": 32, "pid": self.pid, "process_created": self.born,
-                "host_base": hex(self.base), "regions": [{"address": 0, "size": RAM_SIZE, "kind": "ram", "readable": True, "writable": False}],
+                "host_base": hex(self.base), "regions": [{"address": 0, "size": RAM_SIZE, "kind": "ram", "readable": True, "writable": True}],
                 "aliases": list(ALIASES), "runner_sha256": self.runner_sha256, "xbe_sha256": self.xbe_sha256, **self.layout,
                 "anchors": [{"address": item["guest"], "length": len(item["data"]), "sha256": item["sha256"], "kind": item["kind"],
                              "mutable_dwords": [item["guest"] + offset for offset in item.get("mutable_dwords", [])]} for item in self.expected],
@@ -270,3 +288,25 @@ class GuestMemory:
             validate(reader, self.base, self.expected)
             self._identity()
             return data
+
+    def write(self, address, data: bytes) -> dict:
+        """Write guest RAM of the owned, identity-checked runner (unlock-on-load holds, cheats). The mapped XBE header
+        and immutable code sections are refused, and every write is read back."""
+        data = bytes(data)
+        if type(address) is not int or not 0 < len(data) <= MAX_WRITE:
+            raise ValueError("DOA3 memory writes require an integer address and 1..4096 bytes")
+        window, offset = address & ~0x03FFFFFF, address & 0x03FFFFFF
+        if address < 0 or window not in ALIASES or offset + len(data) > RAM_SIZE:
+            raise ValueError("DOA3 memory write leaves verified guest RAM")
+        if _overlaps_anchor(self.expected, offset, len(data)):
+            raise ValueError("DOA3 memory write would touch the XBE header or immutable code")
+        self._identity()
+        with _WindowsReader(self.pid, self.born, WRITE_ACCESS) as handle:
+            self._verified(handle)
+            handle.write(self.base + offset, data)
+            back = handle.read(self.base + offset, len(data))
+            validate(handle, self.base, self.expected)
+            self._identity()
+        if back != data:
+            raise RuntimeError(f"DOA3 memory write at {address:#x} did not read back")
+        return {"written": len(data), "via": "native_guest_ram", "verified": True}
