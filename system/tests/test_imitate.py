@@ -282,3 +282,42 @@ def test_screensaver_replay_goes_on_in_your_style_and_reports_back(ap, monkeypat
     assert "yield" in kinds and "result" in kinds
     assert dict(posts)["yield"] == {"session_id": "s1", "reason": "pad"}
     padstate.PLAYER_TOUCH.pop("s1", None)
+
+
+# --- getting to gameplay ---
+
+def test_menu_keys_are_the_lone_presses_after_a_pause_with_start_first():
+    f = frozenset
+    tl = [(0, f()), (2.0, f({"b"})), (2.1, f()), (4.0, f({"b"})), (4.1, f()), (6.0, f({"lup"})), (6.2, f()),
+          (8.0, f({"x"})), (8.1, f()), (8.2, f({"x"})), (8.3, f())]          # the second x follows too soon: not a menu press
+    assert imitate.menu_keys(tl) == ["start", "b", "x"]
+
+
+def test_stuck_fires_on_a_still_screen_and_not_during_play():
+    now = [0.0]
+    frames = iter([_png(10)] * 3 + [_png(10, (0, 0, 160, 240)), _png(200)] + [_png(200)] * 10)
+    st = imitate.Stuck(lambda: imitate.thumb(next(frames)), clock=lambda: now[0], still_for=4)
+    seen = []
+    for _ in range(12):
+        seen.append(st())
+        now[0] += 1
+    assert seen[:4] == [False, False, False, False]          # the screen changes at 3 s and 4 s
+    assert seen[8] is True and not any(seen[:8])               # 4 s after the last change
+
+
+def test_play_style_presses_through_a_stuck_screen():
+    m = {"bursts": [{"steps": [[0, ["x"]], [0.1, []]], "n": 1}], "follows": {}, "gaps": [0.1], "total": 1,
+         "menu": ["start", "b"]}
+    calls = iter([True, True, False, False])
+
+    class S:
+        def __call__(self):
+            return next(calls, False)
+
+        def reset(self):
+            pass
+    sent = []
+    imitate.play_style(imitate.Style(m, random.Random(0)), send=sent.append, stopped=lambda: False, sleep=lambda s: None,
+                       limit=2, stuck=S())
+    downs = [r[0]["key"] for r in sent if r and r[0]["down"]]
+    assert downs[:2] == ["start", "b"] and "x" in downs[2:]

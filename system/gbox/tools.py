@@ -2468,7 +2468,8 @@ def _start_imitation(inp, ctx, d, ad, g, game_id, since) -> dict:
                     if model["total"] >= imitate.MIN_LEARN_BURSTS:
                         run["mission"] = f"learned: your style ({len(model['bursts'])} moves), after your run"
                         run["result"]["bursts"] = imitate.play_style(imitate.Style(model), send=send,
-                                                                     stopped=lambda: d.stopped, sleep=time.sleep)
+                                                                     stopped=lambda: d.stopped, sleep=time.sleep,
+                                                                     stuck=_stuck(ad))
             except Exception as e:
                 run["result"] = {"ok": False, "error": str(e)}
             _release_all(sid)
@@ -2485,7 +2486,7 @@ def _start_imitation(inp, ctx, d, ad, g, game_id, since) -> dict:
         def go():
             try:
                 run["result"] = {"ok": True, "bursts": imitate.play_style(style, send=send, stopped=lambda: d.stopped,
-                                                                          sleep=time.sleep)}
+                                                                          sleep=time.sleep, stuck=_stuck(ad))}
             except Exception as e:
                 run["result"] = {"ok": False, "error": str(e)}
             _release_all(sid)
@@ -2496,6 +2497,12 @@ def _start_imitation(inp, ctx, d, ad, g, game_id, since) -> dict:
     run["thread"] = threading.Thread(target=go, daemon=True)
     run["thread"].start()
     return {"started": run["mission"], "mode": inp.mode, "objective": objective}
+
+
+def _stuck(ad):
+    """A stuck-screen watch for this session (title screens, dialogue): None when the emulator gives no frames."""
+    from . import imitate
+    return imitate.Stuck(lambda: imitate.thumb(ad.get_frame())) if hasattr(ad, "get_frame") else None
 
 
 def _style_model(ctx, runs, ad, game_id, platform):
