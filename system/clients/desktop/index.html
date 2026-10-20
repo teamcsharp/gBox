@@ -3781,8 +3781,8 @@ function pipMenu(x, y) {
     addEventListener("mousedown", e => { if (!e.target.closest("#pipmenu") && m.style.display === "block") { m.style.display = "none"; GM.menu = false; EMB.last = ""; } }, true); }
   const noStates = capMissing("save_state");                   // #2518: Save / Load need an emulator with save states
   GM.at = [x, y];                                              // Report… files a problem at this spot
-  const items = [["report", "⚑ Report…"], ["-"], ...(isFull() ? [["main", "⤡ Exit full screen   Alt+Enter"], ["-"]] : []), ["autoplay", GM.auto ? "🤖 Hand control back (stop autoplay)" : "🤖 Take control (autoplay)  F3"],
-                 ...(GM.auto ? [] : [["autoplay+", "🛡 Take control, invincible (holds HP)"]]),
+  const items = [["report", "⚑ Report…"], ["-"], ...(isFull() ? [["main", "⤡ Exit full screen   Alt+Enter"], ["-"]] : []), ["autoplay", GM.auto ? "🤖 Hand control back (stop autoplay)" : "🤖 Take control (autoplay)  F3 · pad: View+A"],
+                 ...(GM.auto ? [] : [["autoplay+", "🛡 Take control, invincible (holds HP)"], ["autoplay-replay", "▶ Replay my recorded run from boot (restarts the game)"]]),
                  ["talk", TALK.on ? "🎙 Stop talking" : "🎙 Talk to gBox"], ["orb", ORB.on ? "💬 End conversation" : "💬 Start conversation"],
                  ["vov", VOV.enabled ? "✨ Voice overlay on the game: on" : "✨ Voice overlay on the game: off"],
                  ["pwrclick", `⌖ Right-click a character: character menu (${GBoxPickWhip.settings().rclick ? "on" : "off"})`],
@@ -3864,8 +3864,12 @@ function gameSettings(anchor) {
 }
 async function gameAction(a) {
   try {
-    if (a === "autoplay" || a === "autoplay+") {
-      const r = await gameJob("autoplay", { op: GM.auto ? "stop" : "start", assist: a === "autoplay+" });
+    if (a === "autoplay" || a === "autoplay+" || a === "autoplay-replay") {
+      // autoplay also starts from the pad chord and stops when you touch the pad: ask the worker, not a local flag
+      const st = await gameJob("autoplay", { op: "status" }).catch(() => null);
+      if (st) GM.auto = !!st.running;
+      const r = await gameJob("autoplay", GM.auto ? { op: "stop" } : { op: "start", assist: a === "autoplay+",
+        ...(a === "autoplay-replay" ? { mode: "replay", reset: true } : {}) });
       GM.auto = !GM.auto && !!r.started; toast(GM.auto ? `🤖 gBox has control: ${r.objective || r.started}` : r.error || "You have control again");
     } else if (a === "talk") TALK.on ? talkStop() : talkStart();
     else if (a === "orb") ORB.on ? orbClose() : orbOpen();
