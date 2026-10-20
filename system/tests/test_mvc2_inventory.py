@@ -12,8 +12,8 @@ START = 45000
 # The owned USA disc wherever this node unpacked it: the #1417 favorite's cache dir (the characters._dc_gdi
 # convention), the #1315 unpack test_mvc2_dat.py reads, or the ad-hoc CHD extract. First that exists; none -> skip.
 _OWNED_DIRS = ("86184244a61f816e", "02db6d37c0e20375", "mvc2_usa_chd")
-OWNED = next((p for p in (Path.home() / "gbox-cache/dc" / d / "disc.gdi" for d in _OWNED_DIRS) if p.exists()),
-             Path.home() / "gbox-cache/dc" / _OWNED_DIRS[0] / "disc.gdi")
+OWNED = next((p for p in (Path.home() / "gBox_alt/gbox-cache/dc" / d / "disc.gdi" for d in _OWNED_DIRS) if p.exists()),
+             Path.home() / "gBox_alt/gbox-cache/dc" / _OWNED_DIRS[0] / "disc.gdi")
 
 
 def _rec(extent: int, size: int, flags: int, name: bytes) -> bytes:

@@ -33,6 +33,7 @@ import numpy as np
 from . import doapp_inventory as D
 from . import doapp_models as M
 from . import doapp_motion as DM
+from .side_dirs import side_dir
 
 SCALE = 0.001
 FLIP = np.diag([1.0, -1.0, -1.0])
@@ -426,7 +427,7 @@ def _program(ctx, src_dir: Path) -> tuple[bytes, bytes]:
     parent = src_dir / "doapp.zip"
     with zipfile.ZipFile(parent) as z:
         key = hashlib.sha1(z.read("doapp119.bin") + z.read("doapp120.bin")).hexdigest()[:16]
-    cache = Path(getattr(getattr(ctx, "config", None), "cache", "") or Path.home() / "gbox-cache") / "doapp" / f"{key}.ram"
+    cache = Path(getattr(getattr(ctx, "config", None), "cache", "") or side_dir("gbox-cache")) / "doapp" / f"{key}.ram"
     banked = D.merge_parent(str(parent))
     if cache.is_file() and cache.stat().st_size == 0x200000:
         return cache.read_bytes(), banked

@@ -157,8 +157,8 @@ def test_bsx_cloud_patch_rejects_shared_actor_blocks():
     assert f[2] == 14                                      # the shared part kept its own mesh
 
 
-DISC = "/home/ehm_eckx/gbox-cache/modbase/6703ee6f461a2ea5/Final Fantasy VII (USA) (Disc 1).bin"
-MODDED = "/home/ehm_eckx/gbox-cache/mods/6703ee6f461a2ea5/ff7_mario_v4_field_probe_2/FF7 Mario field detail.bin"
+DISC = "/home/ehm_eckx/gBox_alt/gbox-cache/modbase/6703ee6f461a2ea5/Final Fantasy VII (USA) (Disc 1).bin"
+MODDED = "/home/ehm_eckx/gBox_alt/gbox-cache/mods/6703ee6f461a2ea5/ff7_mario_v4_field_probe_2/FF7 Mario field detail.bin"
 
 
 @pytest.mark.skipif(__import__("os").path.exists(DISC) is False or

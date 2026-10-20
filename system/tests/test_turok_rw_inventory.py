@@ -7,7 +7,7 @@ import pytest
 
 from gbox import turok_rw_inventory as rw
 
-ROM_CACHE = Path.home() / "gbox-cache" / "ab1614e77bd3b522" / "source.zip"
+ROM_CACHE = Path.home() / "gBox_alt/gbox-cache" / "ab1614e77bd3b522" / "source.zip"
 SOURCE = Path(os.environ.get("GBOX_TUROK_RW_SOURCE", ROM_CACHE))
 SOURCE_SHA256 = "c2ff373e2f54b272775215258953c96223503c9764312a1ee4ee978670b02fb3"
 ROM_SHA256 = "0433043aaba2649bdd1fe717c4020550ac663c0362527aa082490f5977a3e46b"

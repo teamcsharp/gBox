@@ -10,7 +10,7 @@ import pytest
 from gbox import defjam_inventory as I
 from gbox import defjam_models as M
 
-ISO = Path(os.environ.get("GBOX_DEFJAM_PS2_ISO") or Path.home() / "gbox-cache" / "deabd11481aa5a0c" / "source.iso")
+ISO = Path(os.environ.get("GBOX_DEFJAM_PS2_ISO") or Path.home() / "gBox_alt/gbox-cache" / "deabd11481aa5a0c" / "source.iso")
 
 
 def _qf(*v):

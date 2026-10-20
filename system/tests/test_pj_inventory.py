@@ -1,7 +1,7 @@
 """Focused tests for gbox.pj_inventory (Project Justice USA Dreamcast inventory).
 
 The real-disc test is gated on the staged cache at
-~/gbox-cache/dc/6334be1925fbe016/disc.gdi and skips otherwise.
+~/gBox_alt/gbox-cache/dc/6334be1925fbe016/disc.gdi and skips otherwise.
 """
 
 import struct
@@ -19,7 +19,7 @@ from gbox.pj_inventory import (
     sniff_afs,
 )
 
-CACHE = Path.home() / "gbox-cache/dc/6334be1925fbe016"
+CACHE = Path.home() / "gBox_alt/gbox-cache/dc/6334be1925fbe016"
 
 
 def build_afs(entries: list[bytes]) -> bytes:

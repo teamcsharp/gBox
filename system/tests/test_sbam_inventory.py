@@ -214,7 +214,7 @@ def test_inventory_on_synthetic_iso(tmp_path):
     assert m["iop_modules"][0]["path"] == "IOP/PADMAN.IRX"
 
 
-REAL_ISO = os.path.expanduser("~/gbox-cache/ps2/6cd93f2e36885f31/disc.iso")
+REAL_ISO = os.path.expanduser("~/gBox_alt/gbox-cache/ps2/6cd93f2e36885f31/disc.iso")
 
 
 @pytest.mark.skipif(not os.path.exists(REAL_ISO), reason="owned Super Bust-A-Move ISO not staged")

@@ -217,7 +217,7 @@ def test_successful_launch_result_schedules_collection_on_control_plane(tmp_path
 def test_parallel_builds_preserve_all_character_targets(plane, cfg):
     import json
     root = C.library_root(cfg)
-    assert str(root).startswith(str(cfg.cache))        # the test's own library, never ~/gbox-cache/characters
+    assert str(root).startswith(str(cfg.cache))        # the test's own library, never ~/gBox_alt/gbox-cache/characters
     C.put_meta(root, {'slug': 'donor', 'name': 'Donor', 'targets': {}})
     def save_target(i):
         response = plane.post('/api/characters/donor/targets', json={

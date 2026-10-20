@@ -43,7 +43,7 @@ def test_bootstrap_header_rejects_short_rom():
         kb.bootstrap_header(b"\x00" * 8)
 
 
-CACHE = Path(os.environ.get("GBOX_KINST_CACHE", str(Path.home() / "gbox-cache" / "6d3a16492c9b09ee")))
+CACHE = Path(os.environ.get("GBOX_KINST_CACHE", str(Path.home() / "gBox_alt/gbox-cache" / "6d3a16492c9b09ee")))
 
 
 @pytest.mark.skipif(not (CACHE / "ki-l15d.u98").exists(), reason="owned boot ROM not staged")

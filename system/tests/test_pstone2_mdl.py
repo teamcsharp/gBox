@@ -40,7 +40,7 @@ def test_table_position_is_not_character_index():
 
 def test_owned_character_model_containers():
     from gbox.gdrom import GDRom
-    path=Path(os.environ.get('GBOX_PSTONE2_GDI',str(Path.home()/'gbox-cache/dc/690a402443c15668/disc.gdi')))
+    path=Path(os.environ.get('GBOX_PSTONE2_GDI',str(Path.home()/'gBox_alt/gbox-cache/dc/690a402443c15668/disc.gdi')))
     if not path.exists(): pytest.skip('Owned Power Stone 2 GDI not mounted')
     disc=GDRom(path);exe=disc.read('1ST_READ.BIN')
     assert hashlib.sha256(exe).hexdigest()==I.FIRST_READ_SHA256

@@ -8,7 +8,7 @@ import pytest
 from gbox import sbam_analysis as A
 from gbox.sbam_inventory import Iso9660, cmp3_decompress, parse_ra
 
-CACHE = os.path.expanduser("~/gbox-cache/ps2/6cd93f2e36885f31")
+CACHE = os.path.expanduser("~/gBox_alt/gbox-cache/ps2/6cd93f2e36885f31")
 ISO = os.path.join(CACHE, "disc.iso")
 ELF = os.path.join(CACHE, "inventory", "SLUS_201.15")
 

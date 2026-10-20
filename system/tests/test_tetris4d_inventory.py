@@ -6,7 +6,7 @@ import pytest
 from gbox.tetris4d_inventory import ensure_inventory, inventory, sha256_file, split_cue_bin_to_gdi, SECTOR_SIZE
 
 CHD = Path("/mnt/gbox/hyperspin/Arcade/collections/Sega Dreamcast/roms/Tetris 4D (Japan).chd")
-CACHE = Path.home() / "gbox-cache" / "dc" / "864538c6473a986e"
+CACHE = Path.home() / "gBox_alt/gbox-cache" / "dc" / "864538c6473a986e"
 
 
 @pytest.mark.skipif(not CHD.exists(), reason="owned CHD not mounted")

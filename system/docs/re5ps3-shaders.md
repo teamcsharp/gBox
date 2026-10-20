@@ -71,7 +71,7 @@ USA Gold v02.00 / BLUS30491, game `e7ca89bbeb67360d`:
 The single extraction completed in 468.77 seconds and verified member CRC32
 `20562A9D`. The outer 7z size/mtime remained unchanged; no outer-content SHA
 was computed or claimed. Durable receipts are under
-`~/gbox-pr-audit-20261017/re-export-evidence/re5-shader-evidence-v2/`:
+`~/gBox_alt/gbox-pr-audit-20261017/re-export-evidence/re5-shader-evidence-v2/`:
 `source-receipt.json`, `resource-inventory.json`, `shader-reader-proof.json`
 and `references/shader-reader-source-receipt.json`.
 

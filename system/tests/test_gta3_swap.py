@@ -9,8 +9,8 @@ import pytest
 from gbox import gta_rw as R
 from gbox import gta3_swap as S
 
-ISO = Path.home() / "gbox-cache/ps2/265819390074bb4e/Grand Theft Auto III (USA, Canada).iso"
-AMY = Path.home() / "gbox-cache/characters/sa2_amy_rose"
+ISO = Path.home() / "gBox_alt/gbox-cache/ps2/265819390074bb4e/Grand Theft Auto III (USA, Canada).iso"
+AMY = Path.home() / "gBox_alt/gbox-cache/characters/sa2_amy_rose"
 
 
 def _raster(w=64, h=64):

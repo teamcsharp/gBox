@@ -16,7 +16,7 @@ OWNED_ZIP_SHA256 = "424730aea5572e0d30aa4165346b586e552cb46d956b7180686a3d57e696
 ROM_SHA256 = "6c8ec2083adeb6eb7bc0aad865384f77a8f89a98ff21b74a630dd85e8256ebf8"
 SRC = Path(os.environ.get(
     "GBOX_TUROK2_SOURCE",
-    Path.home() / "gbox-cache" / "96c6d766ba6202ca" / "source.zip"))
+    Path.home() / "gBox_alt/gbox-cache" / "96c6d766ba6202ca" / "source.zip"))
 
 
 def _set(blocks: list[bytes]) -> bytes:

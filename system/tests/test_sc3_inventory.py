@@ -90,7 +90,7 @@ def test_elf_olk_table_reads_names_and_counts():
 
 
 def test_real_disc_when_staged():
-    iso = os.path.expanduser("~/gbox-cache/ps2/afe447a632bd5e6b/disc.iso")
+    iso = os.path.expanduser("~/gBox_alt/gbox-cache/ps2/afe447a632bd5e6b/disc.iso")
     if not os.path.exists(iso):
         pytest.skip("owned SC3 disc image not staged")
     m = s.inventory(iso)

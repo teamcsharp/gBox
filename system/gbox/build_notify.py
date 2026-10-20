@@ -56,7 +56,7 @@ KEEP = 500                          # notifications kept (oldest pruned)
 
 NOT_BUILD_TOOLS = frozenset({"launch_game", "@launch", "get_frame", "session_op", "session_swap", "scene_capture",
                              "scene_relay", "tasks", "autoplay", "recording", "video", "state_transfer", "stage_warp",
-                             "pick", "pick_preview", "llm_complete"})
+                             "pick", "pick_preview", "llm_complete", "ram_dump"})
 NOT_BUILD_OPS = frozenset({"list", "get", "status", "plan", "remove", "delete", "rollback", "verify", "coverage",
                            "environments", "live_use", "overlay", "place", "unplace", "blender", "extract", "add",
                            "load_state", "save_state", "scan", "search", "read", "info", "query", "check"})

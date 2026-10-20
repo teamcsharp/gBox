@@ -61,8 +61,9 @@ from pathlib import Path
 from typing import Callable
 
 from .formats.iso9660 import pvd_root, walk
+from .side_dirs import side_dir
 
-DISC = Path.home() / "gbox-cache" / "modbase" / "858ac1ab12044c9c" / "Black (USA).iso"
+DISC = side_dir("gbox-cache") / "modbase" / "858ac1ab12044c9c" / "Black (USA).iso"
 ELF = (Path.home() / "gBox" / "system" / "gbox-data" / "analysis" / "re" / "858ac1ab12044c9c"
        / "SLUS_213.76.elf")
 ELF_SHA256 = "141b05209570458af9c8e27ab1911f258da6353909d813cd572df026254ffe4c"

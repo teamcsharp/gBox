@@ -1,6 +1,6 @@
 """Pinned checks for gbox.illbleed_inventory: NJTL header/chunk parsing on synthetic data, plus the
 full-disc inventory pinned to the owned Illbleed (USA) GD-ROM when its cache is present
-(GBOX_ILLBLEED_GDI, default ~/gbox-cache/dc/81a90290abc15a37/disc.gdi)."""
+(GBOX_ILLBLEED_GDI, default ~/gBox_alt/gbox-cache/dc/81a90290abc15a37/disc.gdi)."""
 import json
 import os
 import struct
@@ -12,7 +12,7 @@ from gbox import illbleed_inventory as iv
 
 CHD_SHA = "cc63a6ba7d9b918a5969a39df3f24af0486fe0f9a998d5ca62f717fb454edaf7"
 EXE_SHA = "af9686e11df9efc02bcf97b7e5e744a4d981cfebdab7e1fe8a0281396461cee7"
-DEFAULT_GDI = "~/gbox-cache/dc/81a90290abc15a37/disc.gdi"
+DEFAULT_GDI = "~/gBox_alt/gbox-cache/dc/81a90290abc15a37/disc.gdi"
 
 
 def synth_nj(names, chunks=()):

@@ -408,8 +408,8 @@ def test_registered_writer_and_extractor():
 
 def _owned_rom():
     cands = [os.environ.get("GBOX_CLAYFIGHTER_ROM", ""),
-             str(Path.home() / "gbox-cache" / S.GAME_ID / "rom.z64")]
-    cache = Path.home() / "gbox-cache" / "n64-rom"
+             str(Path.home() / "gBox_alt/gbox-cache" / S.GAME_ID / "rom.z64")]
+    cache = Path.home() / "gBox_alt/gbox-cache" / "n64-rom"
     if cache.is_dir():
         cands += [str(p) for p in cache.glob("*.z64") if p.stat().st_size == 0x1000000]
     for c in cands:

@@ -25,7 +25,8 @@ def cache_dir() -> Path | None:
     v = os.environ.get(CACHE_ENV)
     if v is not None:
         return Path(v) if v.strip() else None
-    return Path.home() / "gbox-cache" / "n64-rom"
+    from .side_dirs import side_dir
+    return side_dir("gbox-cache") / "n64-rom"
 
 
 def _cache_file(path: Path) -> Path | None:

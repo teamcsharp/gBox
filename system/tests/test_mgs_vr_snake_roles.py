@@ -17,7 +17,7 @@ LOCAL = [(0, 0, 0), (0, 0, 0), (-190, 265, -29), (0, -260, -50), (0, -249, 47), 
          (90, -253, -11), (0, -312, 39), (0, -508, -47)]
 NAMES = ["bone_0", "bone_1", "bone_4", "bone_7", "bone_8", "bone_5", "bone_9", "bone_6", "bone_10", "bone_11",
          "bone_2", "bone_12", "bone_13", "bone_3", "bone_14", "bone_15"]
-LIBRARY_GLB = Path(os.environ.get("GBOX_CHARACTERS", "/home/ehm_eckx/gbox-cache/characters")) / "mgs_vr_snake/mgs_vr_snake.glb"
+LIBRARY_GLB = Path(os.environ.get("GBOX_CHARACTERS", "/home/ehm_eckx/gBox_alt/gbox-cache/characters")) / "mgs_vr_snake/mgs_vr_snake.glb"
 
 
 def _snake_glb(path: Path, mirror: bool = False, toes: float = 120.0, parents=None) -> Path:

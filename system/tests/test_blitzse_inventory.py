@@ -8,7 +8,7 @@ import pytest
 from gbox import blitzse_inventory as bi
 
 SOURCE = Path(os.environ.get("GBOX_BLITZSE_SOURCE",
-                             Path.home() / "gbox-cache" / bi.GAME_ID / "source.zip"))
+                             Path.home() / "gBox_alt/gbox-cache" / bi.GAME_ID / "source.zip"))
 
 
 def _fs(files, base=0x40, size=None):

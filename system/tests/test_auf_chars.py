@@ -3,7 +3,7 @@
 Synthetic tests reuse test_auf_swap's level package (entity scripts, body + head models, textures, shaders) and tiny
 GameCube disc image, so the roster -> extraction calls, the head merge, the library frame, the entry meta and the
 cast-swap donor gate are pinned without the game. The owned-disc tests run where the GCZ is cached (GBOX_AUF_GCZ or
-~/gbox-cache/gc/<game>/source.gcz) and skip elsewhere.
+~/gBox_alt/gbox-cache/gc/<game>/source.gcz) and skip elsewhere.
 """
 import os
 from pathlib import Path
@@ -19,7 +19,7 @@ from gbox import auf_swap as S
 from gbox import characters as C
 from test_auf_swap import gc_image, level_package
 
-GCZ = os.environ.get("GBOX_AUF_GCZ", os.path.expanduser("~/gbox-cache/gc/65b7187589166b26/source.gcz"))
+GCZ = os.environ.get("GBOX_AUF_GCZ", os.path.expanduser("~/gBox_alt/gbox-cache/gc/65b7187589166b26/source.gcz"))
 GAME = {"game_id": S.GAME_ID, "title": "007 - Agent Under Fire (USA)", "platform": "gamecube"}
 
 

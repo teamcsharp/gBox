@@ -1,7 +1,7 @@
 """Focused tests for gbox.re2_analysis.
 
 Synthetic tests always run. The owned-ROM tests use the verified ROM at
-GBOX_RE2_N64_ROM (default ~/gbox-cache/46eec2fc627c8f58/rom.z64) and skip
+GBOX_RE2_N64_ROM (default ~/gBox_alt/gbox-cache/46eec2fc627c8f58/rom.z64) and skip
 when it is absent. They exercise the overlay xref scanner and the 0x01410000
 mesh probe.
 """
@@ -15,7 +15,7 @@ import pytest
 from gbox import re2_analysis as ra
 from gbox import re2_inventory as ri
 
-ROM_PATH = Path(os.environ.get("GBOX_RE2_N64_ROM", Path.home() / "gbox-cache" / "46eec2fc627c8f58" / "rom.z64"))
+ROM_PATH = Path(os.environ.get("GBOX_RE2_N64_ROM", Path.home() / "gBox_alt/gbox-cache" / "46eec2fc627c8f58" / "rom.z64"))
 needs_rom = pytest.mark.skipif(not ROM_PATH.exists(), reason="owned RE2 N64 rom.z64 not cached")
 
 

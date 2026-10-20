@@ -10,7 +10,7 @@ import pytest
 from gbox import mk4_inventory as mk4
 
 SOURCE = Path(os.environ.get(
-    "GBOX_MK4_SOURCE", str(Path.home() / "gbox-cache" / mk4.GAME_ID / "source.zip")))
+    "GBOX_MK4_SOURCE", str(Path.home() / "gBox_alt/gbox-cache" / mk4.GAME_ID / "source.zip")))
 
 
 def test_check_build_refuses_other_roms():

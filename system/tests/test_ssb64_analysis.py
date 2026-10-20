@@ -4,7 +4,7 @@ probe (one animation script + the FTAttributes model header).
 
 ROM-backed tests need the normalized EUR .z64 ROM and skip otherwise:
 
-    GBOX_SSB64_EUR_ROM=~/gbox-cache/34af4e9323891bd2/rom_norm.z64 pytest
+    GBOX_SSB64_EUR_ROM=~/gBox_alt/gbox-cache/34af4e9323891bd2/rom_norm.z64 pytest
 """
 from __future__ import annotations
 

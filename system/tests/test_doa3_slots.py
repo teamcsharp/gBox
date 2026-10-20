@@ -22,7 +22,7 @@ FAMILIES = [
     ("suiken", "sui", 3), ("gokei", "gok", 3), ("chin", "chi", 1), ("sambo", "sam", 3),
 ]
 
-REAL_MANIFEST = "/home/ehm_eckx/gbox-cache/b8edf7040116f3aa/doa3_manifest.json"
+REAL_MANIFEST = "/home/ehm_eckx/gBox_alt/gbox-cache/b8edf7040116f3aa/doa3_manifest.json"
 
 
 def _manifest(families=FAMILIES) -> dict:

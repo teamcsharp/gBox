@@ -81,7 +81,7 @@ def test_wrong_build_refused():
         m.check_build(bytes(0x2000))
 
 
-ROM = Path(os.environ.get("GBOX_MADDEN2001_ROM", Path.home() / "gbox-cache/9b4aa1ef62e4ff07/rom.z64"))
+ROM = Path(os.environ.get("GBOX_MADDEN2001_ROM", Path.home() / "gBox_alt/gbox-cache/9b4aa1ef62e4ff07/rom.z64"))
 
 
 @pytest.mark.skipif(not ROM.exists(), reason="owned Madden NFL 2001 ROM not cached")
