@@ -48,9 +48,10 @@ def test_linux_and_other_platforms_keep_their_rsp_choice(tmp_path, monkeypatch):
     before = 'parallel-n64-gfxplugin = "gliden64"\nparallel-n64-rspplugin = "auto"\n'
     co.write_text(before)
     _write(tmp_path, monkeypatch, "n64", host="linux", arch="x86_64")
-    assert co.read_text() == before
+    assert [l for l in co.read_text().splitlines() if "plugin" in l] == before.splitlines()
+    after_n64 = co.read_text()
     _write(tmp_path, monkeypatch, "psx")
-    assert co.read_text() == before
+    assert co.read_text() == after_n64
 
 
 def test_linux_aarch64_n64_forces_cached_interpreter(tmp_path, monkeypatch):
@@ -66,7 +67,7 @@ def test_linux_x86_64_n64_keeps_dynarec_default(tmp_path, monkeypatch):
     before = 'parallel-n64-cpucore = "dynamic_recompiler"\n'
     co.write_text(before)
     _write(tmp_path, monkeypatch, "n64", host="linux", arch="x86_64")
-    assert co.read_text() == before
+    assert [l for l in co.read_text().splitlines() if "cpucore" in l] == before.splitlines()
 
 
 def test_other_platforms_on_aarch64_keep_their_cpucore_choice(tmp_path, monkeypatch):
@@ -75,3 +76,14 @@ def test_other_platforms_on_aarch64_keep_their_cpucore_choice(tmp_path, monkeypa
     co.write_text(before)
     _write(tmp_path, monkeypatch, "psx", host="linux", arch="aarch64")
     assert co.read_text() == before
+
+
+def test_every_n64_port_gets_a_memory_pak(tmp_path, monkeypatch):
+    co = _co(tmp_path)
+    co.write_text('parallel-n64-pak1 = "none"\nparallel-n64-pak2 = "rumble"\nreicast_enable_rttb = "enabled"\n')
+    for host, arch in (("windows", "x86_64"), ("linux", "aarch64")):
+        lines = _write(tmp_path, monkeypatch, "n64", host=host, arch=arch).read_text().splitlines()
+        for i in range(1, 5):
+            assert [l for l in lines if l.startswith(f"parallel-n64-pak{i} ")] == [f'parallel-n64-pak{i} = "memory"']
+            assert f'mupen64plus-pak{i} = "memory"' in lines
+        assert 'reicast_enable_rttb = "enabled"' in lines
