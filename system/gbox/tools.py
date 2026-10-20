@@ -2258,6 +2258,8 @@ class AutoplayIn(BaseModel):
     mode: str = "auto"                     # auto | playbook | mission | replay | learned | vision
     run_id: str = ""                       # replay: which recorded run (default: the newest real run on this emulator)
     reset: bool = False                    # replay: restart the game first, so the run starts from boot as recorded
+    style: dict = {}                       # learned style knobs (imitate.KNOBS: follow, pace, favor); the screensaver
+                                           # picks them per game from earlier runs' novelty scores
     screensaver: bool = False              # the idle-PC screensaver runs this (gbox.screensaver): a replay goes on in the
                                            # learned style, a mouse move also hands back, the end is reported
 
@@ -2414,6 +2416,7 @@ def _ended(run):
     res = run.get("result") or {}
     _saver_post(d, "result", {"session_id": run.get("sid", ""), "result": {
         "mode": run.get("mode"), "mission": run.get("mission"), "took_over": bool(run.get("took_over")),
+        **({"knobs": res["knobs"]} if isinstance(res.get("knobs"), dict) else {}),
         **{k: v for k, v in res.items() if isinstance(v, (int, float, str, bool)) and k != "error"},
         **({"error": str(res["error"])[:300]} if res.get("error") else {})}})
 
@@ -2513,9 +2516,11 @@ def _start_imitation(inp, ctx, d, ad, g, game_id, since) -> dict:
                     _, model = _style_model(ctx, runs, ad, game_id, platform)
                     if model["total"] >= imitate.MIN_LEARN_BURSTS:
                         run["mission"] = f"learned: your style ({len(model['bursts'])} moves), after your run"
-                        run["result"]["bursts"] = imitate.play_style(imitate.Style(model), send=send,
-                                                                     stopped=lambda: d.stopped, sleep=time.sleep,
-                                                                     stuck=_stuck(ad))
+                        stuck = _stuck(ad)
+                        st = imitate.Style(model, knobs=inp.style)
+                        run["result"]["bursts"] = imitate.play_style(st, send=send, stopped=lambda: d.stopped,
+                                                                     sleep=time.sleep, stuck=stuck)
+                        run["result"] |= _novelty(stuck, st)
             except Exception as e:
                 run["result"] = {"ok": False, "error": str(e)}
             _release_all(sid)
@@ -2526,13 +2531,15 @@ def _start_imitation(inp, ctx, d, ad, g, game_id, since) -> dict:
         own, model = _style_model(ctx, runs, ad, game_id, platform)
         if model["total"] < imitate.MIN_LEARN_BURSTS:
             raise ValueError(f"only {model['total']} input bursts recorded for this game; play it a little longer first")
-        style = imitate.Style(model)
+        style = imitate.Style(model, knobs=inp.style)
         run["mission"] = f"learned: your style ({len(model['bursts'])} moves from {model['total']} bursts)"
 
         def go():
             try:
+                stuck = _stuck(ad)
                 run["result"] = {"ok": True, "bursts": imitate.play_style(style, send=send, stopped=lambda: d.stopped,
-                                                                          sleep=time.sleep, stuck=_stuck(ad))}
+                                                                          sleep=time.sleep, stuck=stuck)}
+                run["result"] |= _novelty(stuck, style)
             except Exception as e:
                 run["result"] = {"ok": False, "error": str(e)}
             _release_all(sid)
@@ -2543,6 +2550,14 @@ def _start_imitation(inp, ctx, d, ad, g, game_id, since) -> dict:
     run["thread"] = threading.Thread(target=go, daemon=True)
     run["thread"].start()
     return {"started": run["mission"], "mode": inp.mode, "objective": objective}
+
+
+def _novelty(stuck, style) -> dict:
+    """The run's novelty score and the knobs it played with (the screensaver learns which knobs suit each game)."""
+    if stuck is None:
+        return {"knobs": style.knobs}
+    n = stuck.novelty()
+    return {"knobs": style.knobs, "score": n["score"], "moving": n["moving"], "screens": n["screens"]}
 
 
 def _stuck(ad):

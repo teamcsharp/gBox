@@ -87,8 +87,9 @@ def test_launch_then_autoplay_then_rotate_after_session_minutes():
     tick(5)                                                     # session up: labelled agent-owned, autoplay waits for boot
     assert s.get("slabel", "w1-job0")["owner"] == "agent" and len(calls) == 1
     tick(S.START_GRACE)
+    from gbox import imitate
     assert calls[1]["tool"] == "autoplay" and calls[1]["input"] == {"session_id": "w1-job0", "op": "start", "mode": "auto",
-                                                                    "screensaver": True}
+                                                                    "screensaver": True, "style": imitate.DEFAULT_KNOBS}
     saver.report("w1-job0", {"mode": "replay", "completed": True})
     tick(60)
     assert len(calls) == 2                                     # still playing
@@ -179,3 +180,18 @@ def test_a_failed_or_forgotten_launch_drops_its_autoplay_request():
     s.put("job", "L2", {"id": "L2", "state": "failed"})
     tick(5)
     assert s.all(S.PENDING) == [] and not calls
+
+
+def test_the_next_run_of_a_game_uses_its_best_scoring_knobs():
+    from gbox import imitate
+    s, w, saver, calls, tick = rig()
+    good = {"follow": 0.9, "pace": 0.6, "favor": 1.0}
+    bad = dict(imitate.DEFAULT_KNOBS)
+    for i, (k, score) in enumerate([(good, 2.0), (good, 1.8), (bad, 0.3)]):
+        s.put(S.LOG, f"x{i}", {"key": f"x{i}", "game_id": "pso", "started": 1, "result": {"knobs": k, "score": score}})
+    s.put(S.LOG, "y", {"key": "y", "game_id": "sc", "started": 1, "result": {"knobs": bad, "score": 9.0}})
+    assert sorted(h["score"] for h in saver.history("pso")) == [0.3, 1.8, 2.0]
+    saver.rng = random.Random(5)
+    picks = [imitate.choose_knobs(saver.history("pso"), random.Random(seed)) for seed in range(40)]
+    assert picks.count(good) >= 20                          # mostly the best average so far
+    assert any(p != good for p in picks)                    # sometimes a neighbour: it keeps exploring

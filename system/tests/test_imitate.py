@@ -321,3 +321,34 @@ def test_play_style_presses_through_a_stuck_screen():
                        limit=2, stuck=S())
     downs = [r[0]["key"] for r in sent if r and r[0]["down"]]
     assert downs[:2] == ["start", "b"] and "x" in downs[2:]
+
+
+# --- the screensaver improving over time ---
+
+def test_choose_knobs_defaults_then_prefers_the_best_average():
+    assert imitate.choose_knobs([]) == imitate.DEFAULT_KNOBS
+    a = {"follow": 0.4, "pace": 1.0, "favor": 1.0}
+    b = {"follow": 0.9, "pace": 1.5, "favor": 2.0}
+    hist = [{"knobs": a, "score": 1.0}, {"knobs": a, "score": 1.0}, {"knobs": b, "score": 3.0}, {"knobs": b, "score": 0.5}]
+    assert imitate.choose_knobs(hist, random.Random(0), explore=0) == b          # mean 1.75 beats 1.0
+    n = imitate.choose_knobs(hist, random.Random(3), explore=1)                  # exploring: one knob one step away
+    assert sum(n[k] != b[k] for k in b) <= 1 and all(n[k] in imitate.KNOBS[k] for k in n)
+
+
+def test_novelty_rewards_a_moving_varied_screen():
+    now = [0.0]
+    still = imitate.Stuck(lambda: imitate.thumb(_png(10)), clock=lambda: now[0])
+    shots = iter([_png(10 * i, (0, 0, 32 * i, 240)) for i in range(1, 9)])
+    lively = imitate.Stuck(lambda: imitate.thumb(next(shots)), clock=lambda: now[0])
+    for _ in range(8):
+        still(); lively(); now[0] += 1
+    assert still.novelty()["score"] == 0 and still.novelty()["screens"] == 1
+    assert lively.novelty()["moving"] > 0.8 and lively.novelty()["screens"] >= 4 and lively.novelty()["score"] > 1
+
+
+def test_style_knobs_change_pace_and_favour():
+    m = {"bursts": [{"steps": [[0, ["x"]], [0.1, []]], "n": 9}, {"steps": [[0, ["a"]], [0.1, []]], "n": 1}],
+         "follows": {}, "gaps": [0.2], "total": 10}
+    fast = imitate.Style(m, random.Random(0), {"pace": 0.6, "favor": 2.0})
+    assert fast.gap() == pytest.approx(0.12) and fast.weights == [81.0, 1.0]
+    assert imitate.Style(m, random.Random(0)).gap() == pytest.approx(0.2)
