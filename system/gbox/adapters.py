@@ -47,6 +47,10 @@ N64_WINDOWS_OPTS = {"parallel-n64-gfxplugin": "angrylion", "parallel-n64-rspplug
 # "Init new dynarec" but never produces code, so the ROM never boots and RetroArch times out with
 # "retroarch started but content not running after Ns" (#1695). The cached interpreter runs R4300 code on ARM64.
 N64_AARCH64_OPTS = {"parallel-n64-cpucore": "cached_interpreter"}
+# Every console gets its memory card: the N64 cores default to no Controller Pak, so games that save to one (Turok:
+# Rage Wars, 2026-10-20) had nowhere to save. A memory pak in every port; the pak lives in the core's save file.
+N64_PAK_OPTS = {**{f"parallel-n64-pak{i}": "memory" for i in range(1, 5)},
+                **{f"mupen64plus-pak{i}": "memory" for i in range(1, 5)}}
 
 
 def _set_core_opts(path: Path, values: dict[str, str]) -> None:
@@ -1064,6 +1068,8 @@ class RetroArchAdapter(CommandAdapter):
             for sub in ("states", "saves", "shots"):
                 (work / sub).mkdir(parents=True, exist_ok=True)
             co = capture_backend.core_options_file(co, {}, work)
+        if (self.platform or "") in ("n64", "n64dd"):
+            _set_core_opts(co, N64_PAK_OPTS)                              # a Controller Pak (memory card) in every port
         if (self.platform or "") == "n64" and HOST_OS == "windows":       # docked + resized windows: the GL plugins (Glide64)
             _set_core_opts(co, N64_WINDOWS_OPTS)                          # draw at launch size -> squeezed/cropped picture
         if (self.platform or "") == "n64" and HOST_OS == "linux" and provision.ARCH == "aarch64":

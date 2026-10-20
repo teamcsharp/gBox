@@ -197,7 +197,12 @@ def enable_yuzu_mouse_touch(config_path: Path) -> bool:
 
 def retroarch_driver(executable: str) -> str:
     path = Path(executable)
-    driver = _driver(str(path), path.stat().st_mtime_ns if path.is_file() else 0)
+    try:
+        driver = _driver(str(path), path.stat().st_mtime_ns if path.is_file() else 0)
+    except _ProbeTimeout:
+        # 2026-10-20: the probe timed out on the operator's busy PC and the whole Turok launch failed. Every RetroArch
+        # gBox ships has SDL2; play now, ask again next launch (the timeout is not cached).
+        return "sdl2"
     if path.is_file() and driver == "sdl3":
         install_sdl3_xbox_profile(path.parent / "autoconfig")
     return driver
@@ -230,19 +235,25 @@ def install_sdl3_xbox_profile(directory: Path) -> Path:
     return profile
 
 
+class _ProbeTimeout(Exception):
+    """`retroarch --features` didn't answer in time (a PC busy with a game or a build): not cached, probed again next launch."""
+
+
 @lru_cache(maxsize=8)
 def _driver(executable: str, modified: int) -> str:
     # RetroArch's Windows "xinput" driver also enumerates DirectInput joysticks.
     # Use SDL so its per-process device exclusions apply, including on hotplug.
     try:
         result = subprocess.run([executable, "--features"], capture_output=True, text=True,
-                                errors="replace", timeout=10,
+                                errors="replace", timeout=30,
                                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         # Prefer SDL2 when available; SDL3-only builds get an explicit Xbox profile.
         for version in (2, 3):
             if re.search(rf"^\s*SDL{version}\b[^\r\n]*\byes\s*$", result.stdout, re.M | re.I):
                 return f"sdl{version}"
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired as exc:
+        raise _ProbeTimeout(str(exc)) from exc
+    except OSError as exc:
         raise ToolUnavailable(f"Could not check RetroArch controller support: {exc}") from exc
     raise ToolUnavailable("This RetroArch build needs SDL2 or SDL3 controller support to exclude SpaceMouse devices.")
 
