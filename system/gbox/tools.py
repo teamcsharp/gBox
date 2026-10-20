@@ -2284,7 +2284,8 @@ class AutoplayIn(BaseModel):
     style: dict = {}                       # learned style knobs (imitate.KNOBS: follow, pace, favor); the screensaver
                                            # picks them per game from earlier runs' novelty scores
     screensaver: bool = False              # the idle-PC screensaver runs this (gbox.screensaver): a replay goes on in the
-                                           # learned style, a mouse move also hands back, the end is reported
+                                           # learned style, a mouse move hands the game over (it plays on), the end
+                                           # is reported
 
 class AutoplayOut(BaseModel):
     result: dict
@@ -2417,23 +2418,26 @@ def _saver_post(d, path, body):
 
 def _takeover(run, d, sid, since):
     """The operator touches their own pad after autoplay started: hand control back at once (every mode). In
-    screensaver mode a mouse move does too, and the control plane is told so it closes the game."""
+    screensaver mode a mouse move hands the game over without stopping: autoplay plays on until the operator presses
+    Stop (operator 2026-10-20: "let it continue playing until I click the stop button"). The control plane is told
+    either way and keeps the game up."""
     from . import padstate
     run["screensaver"] = bool(getattr(d, "screensaver", None))
-    start_cursor = _cursor() if run["screensaver"] else None
+    cursor = _cursor() if run["screensaver"] else None
 
     def watch():
+        nonlocal cursor
         while not d.stopped and (run.get("thread") is None or run["thread"].is_alive()):
-            why = "pad" if padstate.touched_after(sid, since) else None
-            if why is None and start_cursor is not None:
-                c = _cursor()
-                if c and abs(c[0] - start_cursor[0]) + abs(c[1] - start_cursor[1]) > 8:
-                    why = "mouse"
-            if why:
+            if padstate.touched_after(sid, since):           # they play: autoplay lets go of the pad
                 d.stopped, run["took_over"] = True, True
                 _release_all(sid)
-                _saver_post(d, "yield", {"session_id": sid, "reason": why})
+                _saver_post(d, "yield", {"session_id": sid, "reason": "pad"})
                 return
+            if cursor is not None:
+                c = _cursor()
+                if c and abs(c[0] - cursor[0]) + abs(c[1] - cursor[1]) > 8:
+                    cursor, run["handed_over"] = None, True    # theirs now; only the pad (or Stop) ends the autoplay
+                    _saver_post(d, "yield", {"session_id": sid, "reason": "mouse"})
             time.sleep(0.1)
     threading.Thread(target=watch, daemon=True).start()
 
