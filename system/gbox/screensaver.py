@@ -299,6 +299,34 @@ class Report(BaseModel):
     result: dict
 
 
+class Telemetry(BaseModel):
+    running: bool = True
+    mode: str = ""
+    mission: str = ""
+    title: str = ""
+    stats: dict = {}
+
+
+TELEMETRY: dict[str, dict] = {}           # session id -> what autoplay is doing right now (in memory: live view only)
+TELEMETRY_TTL = 600
+
+
+def telemetry_put(sid: str, body: dict, now: float | None = None) -> None:
+    now = time.time() if now is None else now
+    TELEMETRY[sid] = body | {"at": now}
+    for k in [k for k, v in TELEMETRY.items() if now - v["at"] > TELEMETRY_TTL]:
+        TELEMETRY.pop(k, None)
+
+
+def telemetry_get(sid: str, now: float | None = None) -> dict:
+    now = time.time() if now is None else now
+    t = TELEMETRY.get(sid)
+    if not t or now - t["at"] > TELEMETRY_TTL:
+        return {}
+    return {k: v for k, v in t.items() if k != "at"} | {"age_s": round(now - t["at"], 1),
+                                                         "running": t.get("running", True) and now - t["at"] < 30}
+
+
 def install(app, store, config, auth, submit, workers, archive):
     from fastapi import Depends, HTTPException
 
@@ -329,6 +357,17 @@ def install(app, store, config, auth, submit, workers, archive):
         if len(str(body.result)) > 8000:
             raise HTTPException(413, "result too large")
         return {"saved": saver.report(body.session_id, body.result)}
+
+    @app.post("/api/autoplay/telemetry/{sid}")
+    def autoplay_telemetry_put(sid: str, body: Telemetry, actor=Depends(auth)):
+        if len(str(body.stats)) > 4000:
+            raise HTTPException(413, "stats too large")
+        telemetry_put(sid, body.model_dump())
+        return {"ok": True}
+
+    @app.get("/api/autoplay/telemetry/{sid}")
+    def autoplay_telemetry_get(sid: str, actor=Depends(auth)):
+        return telemetry_get(sid)
 
     stopped = threading.Event()
 

@@ -295,6 +295,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/build-report-image.js"></script>
 <script src="/viz/decimation-review.js"></script>
 <script src="/viz/game-menu.js"></script>
+<script src="/viz/watch-analytics.js"></script>
 <script src="/viz/game-assets.js"></script>
 <script src="/viz/cover-picker.js"></script>
 <script src="/viz/build-shot.js"></script>
@@ -752,6 +753,15 @@ function watchSessionLayout() {
   fitSessionLayout();
 }
 addEventListener("resize", fitSessionLayout);
+// Watching a game another PC plays (the Spark's autoplay): what the bot, Ghidra and that PC's jobs are doing, beside it.
+async function watchPanel() {
+  const W = window.GBoxWatchAnalytics, sid = playing; if (!W) return;
+  if (!sid) return W.hide();
+  const s = window.GBOX_LOCAL?.worker && (await api("/api/sessions").catch(() => [])).find(x => x.session_id === sid);
+  if (sid !== playing) return;                                   // moved on while asking
+  if (s && sessionWorkerName(s) === window.GBOX_LOCAL.worker) return W.hide();   // it plays on this PC's own screen
+  W.show(sid, { api: path => api(path), worker: id => id.split("-")[0] });
+}
 async function show(t, ...args) {
   const revision = ++viewRevision;
   HOME.ctl?.dispose(); HOME.ctl = null;
@@ -766,6 +776,7 @@ async function show(t, ...args) {
   playing = t === "Sessions" && args[0] ? args[0] : null;          // the session shown full-size, if any
   sessionMode = t === "Sessions" ? args[1] || null : null;
   pip();                                                         // leaving a game -> picture-in-picture
+  watchPanel();                                                  // watching a streamed game -> bot + Ghidra + jobs beside it
   try { const html = await tabs[t](...args); if (revision !== viewRevision) return;
     $("#view").innerHTML = html; tabs[t].after && tabs[t].after(...args); watchSessionLayout(); }
   catch (e) { if (revision === viewRevision) $("#view").innerHTML = `<p class="bad">${esc(e.message)}</p>`; }
