@@ -126,3 +126,28 @@ def test_roulette_off_plays_stock():
                           builds=lambda gid: [{"name": "a_cast", "kind": "cast"}], favorites=lambda: [])
     saver.tick(now)
     assert "mod" not in calls[0]
+
+
+
+def test_a_game_waiting_for_report_review_is_blocked_not_retried(monkeypatch):
+    monkeypatch.setattr(R, "writer_ok", lambda game: True)
+    s, clock = Store(), [100_000.0]
+
+    class Gate(Exception):
+        detail = {"code": "build_feedback_review_required", "message": "Review the operator reports first",
+                  "feedback": [{"id": "r1", "number": 1816, "revision": 1}]}
+    calls = []
+
+    def refuse(call):
+        calls.append(call)
+        raise Gate()
+    b = R.Builder(s, refuse, lambda gid: [], lambda: [{"game_id": "doa2", "title": "DOA2", "favorite": True}],
+                  rng=random.Random(5), clock=lambda: clock[0])
+    assert "#1816" in b.tick()
+    assert [(x["game_id"], x["reports"]) for x in b.status()["blocked"]] == [("doa2", [1816])]
+    clock[0] += R.BUILD_EVERY + 1
+    assert b.tick() == "every target has its roulette builds" and len(calls) == 1     # not retried while blocked
+    assert not b.failures()                                                             # and no pool counted as failed
+    clock[0] += R.BLOCK_TTL
+    b.tick()
+    assert len(calls) == 2                                                              # tried again after BLOCK_TTL
