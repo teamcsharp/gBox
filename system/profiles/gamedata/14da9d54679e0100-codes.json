@@ -1,0 +1,23 @@
+{
+ "game_id": "14da9d54679e0100",
+ "title": "Yoshi's Story (USA)",
+ "platform": "n64",
+ "profile": "cheatdb-unlocks-v1",
+ "verified": true,
+ "codes": [
+  {
+   "desc": "Enable All Levels (Trial Mode)",
+   "lines": [
+    "810F8E5C 7FFF",
+    "810F8E5E FFFF"
+   ]
+  }
+ ],
+ "scope": [
+  "Enable All Levels"
+ ],
+ "evidence": {
+  "source": "libretro-database cht/Nintendo - Nintendo 64/Yoshi's Story (USA) (En,Ja).cht",
+  "read_back": "2026-10-19 21:40 CST, i9-NUC agent session: every code held with cheats op=add; all 2 written values read back unchanged. Gameplay screens not captured (the NUC's frame capture was black until its relaunch)."
+ }
+}
