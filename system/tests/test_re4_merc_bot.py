@@ -411,3 +411,42 @@ def test_the_prompt_detector_finds_the_a_icon():
     img2[disc] = (90, 80, 60)
     img2[440:470, 500:600] = (40, 134, 104)                                # the ammo dial's green: outside the box
     assert P.detect(img2) is None
+
+
+def test_autoplay_gives_a_playbook_that_takes_prompts_a_screen_watcher(monkeypatch):
+    import io
+    import threading
+    import numpy as np
+    from PIL import Image
+    from gbox import tools, autoplay as apmod
+
+    class D:
+        def __init__(self, *a, **k):
+            self.stopped, self.trace = False, []
+    monkeypatch.setattr(apmod, "Driver", D)
+    monkeypatch.setattr(tools.httpx, "get", lambda *a, **k: SimpleNamespace(json=lambda: []))
+    monkeypatch.setattr(tools.httpx, "post", lambda *a, **k: SimpleNamespace(status_code=200, json=lambda: {}, text=""))
+    img = np.zeros((480, 640, 3), np.uint8)
+    yy, xx = np.ogrid[:480, :640]
+    img[(yy - 386) ** 2 + (xx - 259) ** 2 <= 100] = (40, 134, 104)       # RE4's A prompt on screen
+    buf = io.BytesIO()
+    Image.fromarray(img).save(buf, "PNG")
+    ad = SimpleNamespace(name="dolphin", supported={"send_input"}, send_input=lambda rows: None,
+                         get_frame=lambda: buf.getvalue())
+    monkeypatch.setitem(tools.SESSIONS, "s9", (ad, {"platform": "gamecube", "title": "RE4"}))
+    monkeypatch.setattr(tools, "AUTOPLAY", {})
+    seen, done = [], threading.Event()
+
+    def play(ad, send, stopped, prompt=None):
+        for _ in range(40):
+            if prompt():
+                seen.append(prompt())
+                break
+            import time as _t
+            _t.sleep(0.05)
+        done.set()
+        return {}
+    pb = SimpleNamespace(__name__="gbox.re4_merc_bot", __doc__="RE4 bot.", setup=lambda ad: [], play=play)
+    inp = tools.AutoplayIn(session_id="s9", op="start", mode="playbook")
+    tools._start_playbook(pb, inp, D(), ad, 0.0)
+    assert done.wait(5) and seen == ["a"]                                 # the playbook saw the A prompt

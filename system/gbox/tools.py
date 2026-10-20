@@ -2620,6 +2620,10 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
             kw = {}
             if "stats" in inspect.signature(pb.play).parameters:
                 kw["stats"] = run["live"] = {}                 # the playbook fills it as it plays (watch panel)
+            if "prompt" in inspect.signature(pb.play).parameters and hasattr(ad, "get_frame"):
+                from . import screen_prompt                    # the game's on-screen button prompts (A TAKE / JUMP OVER)
+                watcher = run["prompt_watcher"] = screen_prompt.Watcher(lambda: ad.get_frame(), hz=6.0).start()
+                kw["prompt"] = lambda: watcher.visible(0.5)
             if "style" in inspect.signature(pb.play).parameters and ctx is not None and game_id:
                 try:                                           # the operator's learned style does the fighting
                     from . import imitate
@@ -2631,6 +2635,8 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
             stats = pb.play(ad, _screensaver_send(ad) if run.get("screensaver") else ad.send_input, lambda: d.stopped, **kw)
             if stats.get("hung"):                              # the game froze: _ended gets it back (_bad_end)
                 run["bad_end"] = "hung"
+            if run.get("prompt_watcher") is not None:
+                run["prompt_watcher"].stop.set()
             run["result"] = {"ok": True, "playbook": name, **stats, **({"setup_failed": len(failed)} if failed else {})}
         except Exception as e:
             run["result"] = {"ok": False, "error": str(e)}
