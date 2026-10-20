@@ -45,7 +45,10 @@ def test_choose_rests_recent_games_and_honours_pinned():
 def test_worker_reason_needs_opt_in_idle_and_a_free_pc():
     s, cfg, now = Store(), S.settings(Store()), 10_000
     assert S.worker_reason(s, worker(now), cfg, [], now) is None
-    assert "opted in" in S.worker_reason(s, worker(now, name="JAYBUILTFINALE"), cfg, [], now)   # the play PC: never by default
+    assert S.worker_reason(s, worker(now, name="JAYBUILTFINALE"), cfg, [], now) is None        # every idle PC by default
+    s.put("setting", "background_testing", {"excluded": ["JAYBUILTFINALE"]})                 # unticked in the Tasks menu
+    assert "opted in" in S.worker_reason(s, worker(now, name="JAYBUILTFINALE"), cfg, [], now)
+    assert "opted in" in S.worker_reason(s, worker(now, name="i9-NUC"), cfg | {"workers": ["lilspark"]}, [], now)
     assert "10 minutes" in S.worker_reason(s, worker(now, idle=120), cfg, [], now)
     assert "already running" in S.worker_reason(s, worker(now), cfg, [{"session_id": "w1-abc"}], now)
     assert S.worker_reason(s, worker(now, name="lilspark", idle=None, os="linux"), cfg, [], now) is None

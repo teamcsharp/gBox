@@ -10,7 +10,8 @@ The control plane runs the schedule (tick every 30 s); each PC's progress is a s
   launching -> starting (session up, autoplay asked) -> playing -> (stop_game) -> idle again.
 Results (what played, how long, why it ended, the autoplay result and score when the worker sends one) go to the log.
 
-Opt-in per PC by name. The defaults are the i9-NUC and the Spark; the operator's own play PC is never in the defaults.
+Every idle PC takes part by default (workers "*"): any PC not unticked in the Tasks menu (background testing) once it
+has been idle long enough; a list of names limits it to those PCs. A game the operator is playing is never touched.
 """
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ from pydantic import BaseModel
 SETTING = "autoplay_screensaver"
 STATE = "autoplay_screensaver_run"          # worker name -> current run
 LOG = "autoplay_screensaver_log"            # run id -> finished run
-DEFAULTS = {"enabled": True, "workers": ["i9-NUC", "lilspark"], "idle_minutes": 10, "session_minutes": 20,
+DEFAULTS = {"enabled": True, "workers": ["*"], "idle_minutes": 10, "session_minutes": 20,
             "min_pads": 300, "games": []}
 LAUNCH_TIMEOUT = 15 * 60
 START_GRACE = 20                            # s after the session is up before autoplay starts (boot settles)
@@ -67,11 +68,19 @@ def choose(games: list[dict], recent: dict[str, float], now: float, rng: random.
     return rng.choices(pool, [max(1.0, g["pads"]) ** 0.5 for g in pool])[0]
 
 
+def opted_in(store, worker: dict, cfg: dict) -> bool:
+    """'*' = every PC background testing may use (not unticked in the Tasks menu); else the named PCs."""
+    from . import background_testing as background
+    if "*" in cfg["workers"]:
+        return background.allowed(worker, background.excluded(store)) and worker.get("background_testing") is not False
+    return worker.get("name") in cfg["workers"]
+
+
 def worker_reason(store, worker: dict, cfg: dict, running: list[dict], now: float | None = None) -> str | None:
     """Why this PC may not start a screensaver game now (None = it may)."""
     from . import background_testing as background
-    if worker.get("name") not in cfg["workers"]:
-        return "not opted in to the autoplay screensaver"
+    if not opted_in(store, worker, cfg):
+        return "not opted in to the autoplay screensaver (Tasks menu or the screensaver's PC list)"
     if not worker.get("online"):
         return "offline"
     if worker.get("active_jobs"):
@@ -146,7 +155,7 @@ class Screensaver:
         live = any(s.get("session_id") == sid for s in running)
         if not live:
             return self._finish(w, run, now, run.get("yield") or "the game ended")
-        if run.get("yield") or not cfg["enabled"] or w.get("name") not in cfg["workers"]:
+        if run.get("yield") or not cfg["enabled"] or not opted_in(self.store, w, cfg):
             return self._stop(w, run, now, run.get("yield") or "screensaver turned off")
         if phase == "starting" and now - run.get("up", now) >= START_GRACE:
             job = self.submit(JobRequest(tool="autoplay", input={"session_id": sid, "op": "start", "mode": "auto",
