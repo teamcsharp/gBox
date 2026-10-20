@@ -30,7 +30,7 @@ def test_partial_final_pointer_is_not_read():
 
 def test_owned_usa_names_and_identity():
     from gbox.gdrom import GDRom
-    path=Path(os.environ.get('GBOX_DOA2_USA_GDI',str(Path.home()/'gbox-cache/dc/5f08ad9a86ebcc9a/disc.gdi')))
+    path=Path(os.environ.get('GBOX_DOA2_USA_GDI',str(Path.home()/'gBox_alt/gbox-cache/dc/5f08ad9a86ebcc9a/disc.gdi')))
     if not path.exists(): pytest.skip('Owned USA GDI not mounted')
     exe=GDRom(path).read('1ST_READ.BIN')
     assert hashlib.sha256(exe).hexdigest()==B.USA_EXECUTABLE_SHA256

@@ -6,7 +6,7 @@ import pytest
 
 from gbox.gta_lcs_inventory import classify_special, inventory, parse_dir, parse_system_cnf
 
-ISO = Path.home() / "gbox-cache/modbase/002b9dca58a18ea1/Grand Theft Auto - Liberty City Stories (USA).iso"
+ISO = Path.home() / "gBox_alt/gbox-cache/modbase/002b9dca58a18ea1/Grand Theft Auto - Liberty City Stories (USA).iso"
 ISO_SHA256 = "9e45271f8835f6b77213c8a7ff3bd1e4307fffa9c3f4434cf8498a5a7b59c4fe"
 CHD_SHA256 = "77b5f5c9a0e26045f7ea27fe945ab1dcb65dbc4b41a32979cf156a7fe481e7ca"
 

@@ -20,7 +20,7 @@ import gta_vc_synth as Y
 OWNED_BAT = Path("//10.89.1.125/HyperSpin Attraction/Arcade/collections/PC Games/roms/Grand Theft Auto Vice City.bat")
 GANON = next((p for p in [Path(os.environ.get("GBOX_TEST_DONOR", "")),
                           Path("D:/gBox/cache/characters/melee_ganondorf/melee_Ganondorf.gltf"),
-                          Path.home() / "gbox-cache/characters/melee_ganondorf/melee_Ganondorf.gltf"] if p.is_file()), None)
+                          Path.home() / "gBox_alt/gbox-cache/characters/melee_ganondorf/melee_Ganondorf.gltf"] if p.is_file()), None)
 # melee_ganondorf's rig.roles as the collection records them (GET /api/characters/melee_ganondorf, 2026-10-12)
 GANON_ROLES = {"hip": "j004_HipN", "chest": "j017_BustN", "neck": "j017_BustN", "head": "j017_BustN",
                "l_clav": "j020_LShoulderJA", "l_upper": "j022_LArmJ", "l_fore": "j023_LHandN", "l_hand": "j025_L1stNa",

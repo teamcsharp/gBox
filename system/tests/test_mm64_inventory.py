@@ -11,7 +11,7 @@ from gbox import mm64_inventory as mm
 
 SOURCE = Path(os.environ.get(
     "GBOX_MM64_SOURCE",
-    Path.home() / "gbox-cache" / "7815f5fed884d651" / "source.zip"))
+    Path.home() / "gBox_alt/gbox-cache" / "7815f5fed884d651" / "source.zip"))
 
 
 def test_lzss_zero_ring_backrefs_rebuild_u32_table():

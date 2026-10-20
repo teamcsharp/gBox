@@ -17,9 +17,9 @@ import pytest
 from gbox import crazy_taxi as ct
 from gbox import crazy_taxi_swap as cs
 
-ISO = Path(os.environ.get("GBOX_CT_ISO", "/home/ehm_eckx/gbox-cache/modbase/bc02bb68790ce2e7/Crazy Taxi (USA).iso"))
+ISO = Path(os.environ.get("GBOX_CT_ISO", "/home/ehm_eckx/gBox_alt/gbox-cache/modbase/bc02bb68790ce2e7/Crazy Taxi (USA).iso"))
 BANK_FILE = os.environ.get("GBOX_CT_BANK", "")          # or a loose copy of the disc's ct/polDC0.all
-LIB = Path(os.environ.get("GBOX_CHARACTERS", "/home/ehm_eckx/gbox-cache/characters"))
+LIB = Path(os.environ.get("GBOX_CHARACTERS", "/home/ehm_eckx/gBox_alt/gbox-cache/characters"))
 GID = "bc02bb68790ce2e7"
 
 

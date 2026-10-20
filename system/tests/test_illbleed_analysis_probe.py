@@ -1,7 +1,7 @@
 """Pinned checks for gbox.illbleed_analysis_probe: the shared Ninja reader decodes Illbleed's .NJ
 character models, C04's identity is pinned from texture names, and the probe's synthetic-header
 helpers behave.  The full-disc probe is pinned to the owned Illbleed (USA) GD-ROM cache when present
-(GBOX_ILLBLEED_GDI, default ~/gbox-cache/dc/81a90290abc15a37/disc.gdi)."""
+(GBOX_ILLBLEED_GDI, default ~/gBox_alt/gbox-cache/dc/81a90290abc15a37/disc.gdi)."""
 import os
 import struct
 from pathlib import Path
@@ -51,7 +51,7 @@ def test_playable_and_enemy_sample_lists():
 
 @pytest.fixture(scope="module")
 def disc_gdi():
-    p = Path(os.environ.get("GBOX_ILLBLEED_GDI", "~/gbox-cache/dc/81a90290abc15a37/disc.gdi")).expanduser()
+    p = Path(os.environ.get("GBOX_ILLBLEED_GDI", "~/gBox_alt/gbox-cache/dc/81a90290abc15a37/disc.gdi")).expanduser()
     if not p.exists():
         pytest.skip("Illbleed disc cache not present")
     return str(p)

@@ -17,7 +17,7 @@ file, so it re-checks any retail version `oot_writer.Rom` opens:
 * the draw chain Player_Draw -> Player_DrawGameplay -> Player_DrawImpl -> SkelAnime_DrawFlexLod (see draw_chain).
 
 USA Rev B (ntsc-1.2, the #1325 owned build), cross-checked with a local Ghidra 12.1 MIPS:BE:32 project of code at
-0x800116E0 + ovl_player_actor at 0x808301C0 (~/gbox-cache/1aa2e4bb5797493f/ghidra/oot12.gpr, scripts/OotXrefs.java):
+0x800116E0 + ovl_player_actor at 0x808301C0 (~/gBox_alt/gbox-cache/1aa2e4bb5797493f/ghidra/oot12.gpr, scripts/OotXrefs.java):
 Player_Draw 0x80848704 calls Player_DrawGameplay 0x80848284 twice; that calls Player_DrawImpl 0x8007A5D8(play,
 skeleton=this+0x1A8, jointTable=this+0x1C4, dListCount, lod, tunic, boots, face, override, Player_PostLimbDrawGameplay
 0x8007BDC4, this). Player_DrawImpl sets segments 8/9 from sEyeTextures 0x800F80F8 / sMouthTextures 0x800F8118, the

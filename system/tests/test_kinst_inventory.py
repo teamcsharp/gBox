@@ -120,7 +120,7 @@ def test_ascii_hits():
     assert hits == {"JAGO": 1, "Jago": 1, "EYEDOL": 0, "Eyedol": 0}
 
 
-CACHE = Path(os.environ.get("GBOX_KINST_CACHE", str(Path.home() / "gbox-cache" / ki.GAME_ID)))
+CACHE = Path(os.environ.get("GBOX_KINST_CACHE", str(Path.home() / "gBox_alt/gbox-cache" / ki.GAME_ID)))
 
 
 @pytest.mark.skipif(not (CACHE / "kinst.chd").exists() or shutil.which("chdman") is None,

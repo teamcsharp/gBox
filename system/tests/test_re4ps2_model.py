@@ -8,7 +8,7 @@ import pytest
 
 from gbox import re4ps2_model as m
 
-RE = Path(os.environ.get("GBOX_RE4PS2_RE", str(Path.home() / "gbox-cache/109d8ee7747a7dd8/re")))
+RE = Path(os.environ.get("GBOX_RE4PS2_RE", str(Path.home() / "gBox_alt/gbox-cache/109d8ee7747a7dd8/re")))
 
 
 def _bin(nb=3, nobj=1, ids=None):

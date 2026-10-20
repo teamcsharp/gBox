@@ -349,7 +349,7 @@ def test_committed_r400_map():
 
 def _disc():
     cands = [os.environ.get("GBOX_RE4GC_DISC", "")]
-    for root in (Path("D:/gBox/cache"), Path.home() / "gbox-cache", Path.home() / "gbox-cache/modbase"):
+    for root in (Path("D:/gBox/cache"), Path.home() / "gBox_alt/gbox-cache", Path.home() / "gBox_alt/gbox-cache/modbase"):
         for ext in ("gcz", "iso"):
             cands.append(str(root / "78ab9efa2e310db4" / f"Resident Evil 4 (USA) (Disc 1).{ext}"))
     return next((Path(c) for c in cands if c and Path(c).is_file()), None)

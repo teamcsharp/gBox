@@ -7,7 +7,7 @@ import pytest
 
 from gbox import merc3d_mod as mm
 
-REAL_MOD = Path(os.path.expanduser("~/gbox-cache/3ds/0ed22ae742e1b56b/inventory/pl0000.mod"))
+REAL_MOD = Path(os.path.expanduser("~/gBox_alt/gbox-cache/3ds/0ed22ae742e1b56b/inventory/pl0000.mod"))
 
 # pl0000 (Chris): the joint ids of the 20-bone table == the mesh joint-id set.
 PL0000_JOINTS = [0x00, 0x01, 0x02, 0x14, 0x18, 0x1C, 0x28, 0x2F, 0x30, 0x37,

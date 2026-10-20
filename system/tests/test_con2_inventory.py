@@ -8,7 +8,7 @@ import pytest
 
 from gbox import con2_inventory as ci
 
-ISO = Path(os.environ.get("GBOX_CON2_ISO", Path.home() / "gbox-cache/modbase/68913550d6c4eae8"
+ISO = Path(os.environ.get("GBOX_CON2_ISO", Path.home() / "gBox_alt/gbox-cache/modbase/68913550d6c4eae8"
                           / "Naruto - Clash of Ninja 2 (USA).iso"))
 
 

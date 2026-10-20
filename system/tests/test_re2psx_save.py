@@ -11,7 +11,7 @@ import pytest
 
 from gbox import re2psx_save as save
 
-CACHE = Path.home() / "gbox-cache" / "2d8ef2bdbd4a58fd" / "extracted"
+CACHE = Path.home() / "gBox_alt/gbox-cache" / "2d8ef2bdbd4a58fd" / "extracted"
 MEM_CARD = CACHE / "MEM_CARD.BIN"
 MEM_CARD_SIZE = 23932
 MEM_CARD_SHA256 = None  # pinned dynamically below after first read

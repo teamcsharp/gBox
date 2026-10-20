@@ -11,7 +11,7 @@ from gbox import mkmyth_inventory as mk
 
 SOURCE = Path(os.environ.get(
     "GBOX_MKMYTH_SOURCE",
-    Path.home() / "gbox-cache" / "6d46221997228c6a" / "source.zip"))
+    Path.home() / "gBox_alt/gbox-cache" / "6d46221997228c6a" / "source.zip"))
 
 
 def _lui(rt: int, imm: int) -> int:

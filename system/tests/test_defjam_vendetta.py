@@ -8,7 +8,7 @@ import pytest
 
 from gbox import defjam_vendetta as D
 
-ISO = Path.home() / "gbox-cache/modbase/8b37766f557e1f5f/Def Jam - Vendetta (USA).iso"
+ISO = Path.home() / "gBox_alt/gbox-cache/modbase/8b37766f557e1f5f/Def Jam - Vendetta (USA).iso"
 
 
 def _pad(b: bytearray, a=32):

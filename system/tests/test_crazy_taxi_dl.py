@@ -21,7 +21,7 @@ import pytest
 from gbox import crazy_taxi as ct
 from gbox import crazy_taxi_swap as cs
 
-ISO = Path(os.environ.get("GBOX_CT_ISO", "/home/ehm_eckx/gbox-cache/modbase/bc02bb68790ce2e7/Crazy Taxi (USA).iso"))
+ISO = Path(os.environ.get("GBOX_CT_ISO", "/home/ehm_eckx/gBox_alt/gbox-cache/modbase/bc02bb68790ce2e7/Crazy Taxi (USA).iso"))
 BANK_FILE = os.environ.get("GBOX_CT_BANK", "")
 
 BOX = [(x, y, z) for x in (0.0, 4.0) for y in (-1.0, 1.0) for z in (-1.0, 1.0)]

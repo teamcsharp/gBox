@@ -9,7 +9,7 @@ import pytest
 
 from gbox import doa3_inventory as d3
 
-REAL_XBE = ("/home/ehm_eckx/gbox-cache/b8edf7040116f3aa/extract/"
+REAL_XBE = ("/home/ehm_eckx/gBox_alt/gbox-cache/b8edf7040116f3aa/extract/"
             "Dead or Alive 3/default.xbe")
 
 EXPECTED_DISPLAY = {

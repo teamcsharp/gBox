@@ -10,7 +10,7 @@ import pytest
 
 from gbox import mvc2_chars as C
 
-GDI = Path.home() / "gbox-cache/dc/02db6d37c0e20375/disc.gdi"
+GDI = Path.home() / "gBox_alt/gbox-cache/dc/02db6d37c0e20375/disc.gdi"
 
 
 @pytest.mark.skipif(not GDI.exists(), reason="unpacked MVC2 disc cache not present")

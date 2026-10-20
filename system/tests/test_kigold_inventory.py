@@ -12,7 +12,7 @@ import pytest
 from gbox import kigold_inventory as ki
 from gbox import n64_rom
 
-REAL_ROM = Path.home() / "gbox-cache" / "407771fca8e3cd17" / "rom.z64"
+REAL_ROM = Path.home() / "gBox_alt/gbox-cache" / "407771fca8e3cd17" / "rom.z64"
 
 
 def _make_z64(size: int = 12 * 1024 * 1024) -> bytes:
@@ -82,7 +82,7 @@ def test_inventory_manifest_on_zip(tmp_path):
     json.dumps(manifest)  # serializable
 
 
-@pytest.mark.skipif(not REAL_ROM.exists(), reason="owned ROM not staged in ~/gbox-cache")
+@pytest.mark.skipif(not REAL_ROM.exists(), reason="owned ROM not staged in ~/gBox_alt/gbox-cache")
 def test_owned_build_identity():
     rom = REAL_ROM.read_bytes()
     ident = ki.identity(rom)
@@ -92,7 +92,7 @@ def test_owned_build_identity():
     assert ident["md5"] == ki.KNOWN["md5"]
 
 
-@pytest.mark.skipif(not REAL_ROM.exists(), reason="owned ROM not staged in ~/gbox-cache")
+@pytest.mark.skipif(not REAL_ROM.exists(), reason="owned ROM not staged in ~/gBox_alt/gbox-cache")
 def test_owned_build_header_and_layout():
     rom = REAL_ROM.read_bytes()
     header = ki.parse_header(rom)

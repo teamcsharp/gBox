@@ -8,9 +8,9 @@ import pytest
 
 from gbox import re4ps2_reader as r
 
-RE = Path(os.environ.get("GBOX_RE4PS2_RE", str(Path.home() / "gbox-cache/109d8ee7747a7dd8/re")))
+RE = Path(os.environ.get("GBOX_RE4PS2_RE", str(Path.home() / "gBox_alt/gbox-cache/109d8ee7747a7dd8/re")))
 ISO = Path(os.environ.get("GBOX_RE4PS2_ISO",
-                          str(Path.home() / "gbox-cache/modbase/109d8ee7747a7dd8/Resident Evil 4 (USA).iso")))
+                          str(Path.home() / "gBox_alt/gbox-cache/modbase/109d8ee7747a7dd8/Resident Evil 4 (USA).iso")))
 
 
 def test_unswizzle_8_roundtrip():
@@ -117,7 +117,7 @@ def test_dedicated_roster_and_extract(tmp_path):
 
     class _Ctx:
         class _Cfg:
-            cache = str(Path.home() / "gbox-cache")
+            cache = str(Path.home() / "gBox_alt/gbox-cache")
         config = _Cfg()
 
         def progress(self, *_a, **_k):

@@ -179,7 +179,7 @@ def test_bounded_input_rejects_oversize_growth_and_truncated_order(tmp_path, mon
     ("MARIO", "b7aecee966090bfa/sm64_writer_rt/Super Mario 64 writer-roundtrip (USA).z64"),
 ])
 def test_owned_real_ipl3_all_byte_orders_and_copy_integrity(tmp_path, name, relative):
-    path = Path(os.environ.get("GBOX_N64_" + name, str(Path.home() / "gbox-cache/mods" / relative)))
+    path = Path(os.environ.get("GBOX_N64_" + name, str(Path.home() / "gBox_alt/gbox-cache/mods" / relative)))
     if not path.is_file():
         pytest.skip("owned N64 evidence unavailable")
     original = f._read_bounded(path)

@@ -7,7 +7,7 @@ import pytest
 
 from gbox import sk_inventory as sk
 
-REAL = Path.home() / "gbox-cache/286b3fae79e33f17/source.zip"
+REAL = Path.home() / "gBox_alt/gbox-cache/286b3fae79e33f17/source.zip"
 REAL_ROM_SHA256 = "840acb121e10f12bf12a4e09780d004f00dc354c98f7cadd90fcbb5c29ee560a"
 REAL_ZIP_SHA256 = "4526806489260bb6dbc5d2342d85bfdf6a476034e58d7ac3f39988d37b46ffe1"
 

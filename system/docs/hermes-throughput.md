@@ -13,8 +13,8 @@ estimates of the subscription's remaining allowance.
 ## Delivery
 
 `prepare_task_workspace` creates a reusable per-ticket worktree from origin/main
-in `/home/ehm_eckx/gbox-hermes-tasks`. Its repository is the tracked clone at
-`/home/ehm_eckx/gbox-hermes-repo`. Dirty patches survive subsequent attempts.
+in `/home/ehm_eckx/gBox_alt/gbox-hermes-tasks`. Its repository is the tracked clone at
+`/home/ehm_eckx/gBox_alt/gbox-hermes-repo`. Dirty patches survive subsequent attempts.
 Agents edit this worktree, never the shared live runtime concurrently.
 
 `publish_task_changes` validates explicit source files and focused Python tests,

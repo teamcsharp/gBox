@@ -7,7 +7,7 @@ import pytest
 
 from gbox import gcdisc, pso_gc
 
-ISO = Path(os.environ.get("GBOX_PSO_GC_ISO", Path.home() / "gbox-cache" / "gc" / "436e0bb84d5337d1" / "disc.iso"))
+ISO = Path(os.environ.get("GBOX_PSO_GC_ISO", Path.home() / "gBox_alt/gbox-cache" / "gc" / "436e0bb84d5337d1" / "disc.iso"))
 
 
 def _gvm(names, flags=0x000F):

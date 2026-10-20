@@ -82,7 +82,7 @@ def test_brres_index_rejects_little_endian():
         cnr2.brres_index(b"bres\xff\xfe" + b"\0" * 32)
 
 
-DISC = cnr2.Path.home() / "gbox-cache/modbase/00063327fc44eced/disc/DATA/files"
+DISC = cnr2.Path.home() / "gBox_alt/gbox-cache/modbase/00063327fc44eced/disc/DATA/files"
 
 
 @pytest.mark.skipif(not (DISC / "chr/nrt/0000.brres").is_file(), reason="extracted RNYEDA disc not on this node")

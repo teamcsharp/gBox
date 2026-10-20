@@ -1,6 +1,6 @@
 """Pinned extraction tests for Clay Fighter: Sculptor's Cut (USA, N64).
 
-Requires the cached normalized ROM (~/gbox-cache/f87ec3e2f6b266a1/rom.z64);
+Requires the cached normalized ROM (~/gBox_alt/gbox-cache/f87ec3e2f6b266a1/rom.z64);
 set GBOX_CLAYFIGHTER_ROM to override. Skipped when the cache is absent.
 """
 import os
@@ -27,7 +27,7 @@ def _rom_path() -> Path:
     override = os.environ.get("GBOX_CLAYFIGHTER_ROM")
     if override:
         return Path(override)
-    return Path.home() / "gbox-cache/f87ec3e2f6b266a1/rom.z64"
+    return Path.home() / "gBox_alt/gbox-cache/f87ec3e2f6b266a1/rom.z64"
 
 
 @pytest.fixture(scope="module")

@@ -109,11 +109,11 @@ def test_crc32_helper():
 
 
 @pytest.mark.skipif(
-    not Path("/home/ehm_eckx/gbox-cache/warzone/source.zip").exists(),
+    not Path("/home/ehm_eckx/gBox_alt/gbox-cache/warzone/source.zip").exists(),
     reason="owned WWF War Zone (USA) zip not staged locally",
 )
 def test_inventory_owned_build():
-    man = wz.inventory("/home/ehm_eckx/gbox-cache/warzone/source.zip")
+    man = wz.inventory("/home/ehm_eckx/gBox_alt/gbox-cache/warzone/source.zip")
     assert man["source"]["zip_sha256"] == wz.ZIP_SHA256
     assert man["source"]["normalized_z64"]["crc32"] == "2FBB5507"
     assert man["source"]["normalized_z64"]["game_code"] == "NWWE"

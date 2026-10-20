@@ -94,7 +94,7 @@ def test_owned_goldeneye_rom_decodes_every_ai_list():
     """On the Spark: every AI list of the owned PAL ROM's 34 setup files decodes to its EndList (662 lists)."""
     from pathlib import Path
     from gbox.bond_ai import ailists as L
-    rom = Path.home() / "gbox-cache/eecd1708cb2b8d14/rom.z64"
+    rom = Path.home() / "gBox_alt/gbox-cache/eecd1708cb2b8d14/rom.z64"
     if not rom.is_file():
         import pytest
         pytest.skip("owned GoldenEye ROM is not cached here")
@@ -127,7 +127,7 @@ def test_owned_goldeneye_rom_global_lists():
     """On the Spark: the 18 shared lists (g_GlobalAILists in the data segment) decode in the decomp's order."""
     from pathlib import Path
     from gbox.bond_ai import ailists as L
-    rom = Path.home() / "gbox-cache/eecd1708cb2b8d14/rom.z64"
+    rom = Path.home() / "gBox_alt/gbox-cache/eecd1708cb2b8d14/rom.z64"
     if not rom.is_file():
         import pytest
         pytest.skip("owned GoldenEye ROM is not cached here")

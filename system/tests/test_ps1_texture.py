@@ -11,7 +11,7 @@ from PIL import Image
 
 from gbox import ps1_texture as T
 
-LIBRARY_GLB = Path(os.environ.get("GBOX_CHARACTERS", "/home/ehm_eckx/gbox-cache/characters")) / "mgs_vr_snake/mgs_vr_snake.glb"
+LIBRARY_GLB = Path(os.environ.get("GBOX_CHARACTERS", "/home/ehm_eckx/gBox_alt/gbox-cache/characters")) / "mgs_vr_snake/mgs_vr_snake.glb"
 
 
 def _glb(path: Path, images) -> Path:

@@ -5,7 +5,7 @@ import pytest
 
 from gbox import naomilib
 
-GDI = Path.home() / 'gbox-cache/dc/1de2e7634f3161ff/disc.gdi'  # owned DOA2 LE (Japan)
+GDI = Path.home() / 'gBox_alt/gbox-cache/dc/1de2e7634f3161ff/disc.gdi'  # owned DOA2 LE (Japan)
 
 
 def _vertex(x, y, z, u, v):

@@ -1,7 +1,7 @@
 """Universal character library: every character model gBox extracted from the operator's games, reusable in any other
 game ("play as Leon in ...", "replace this character with Aya").
 
-Library (on the control-plane node, <cache>/characters, e.g. /home/ehm_eckx/gbox-cache/characters):
+Library (on the control-plane node, <cache>/characters, e.g. /home/ehm_eckx/gBox_alt/gbox-cache/characters):
   <slug>/meta.json      name, source game (title + game_id), extraction tool, rig (joints, body roles), stats,
                         licence note, targets {game_id: [{slot, mod, nodes, rig}]} = built swap mods per target game
   <slug>/<model>        the cleanest source model (.glb / .gltf, textures embedded or next to it)
@@ -43,7 +43,8 @@ LEON_ROLES = {"pelvis": "b017", "hip": "b001", "chest": "b002", "neck": "b003", 
 def library_root(cfg=None) -> Path:
     if os.environ.get("GBOX_CHARACTERS"):
         return Path(os.environ["GBOX_CHARACTERS"])
-    return Path(cfg.cache if cfg is not None else "/home/ehm_eckx/gbox-cache") / "characters"
+    from .side_dirs import side_dir
+    return Path(cfg.cache if cfg is not None else side_dir("gbox-cache")) / "characters"
 
 
 def slugify(s: str) -> str:

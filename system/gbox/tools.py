@@ -3614,7 +3614,8 @@ def _bevy_resolve(ctx, items: list[dict]) -> list[tuple[Path, dict]]:
     # collection entries ({character: slug} / {environment: slug}) are read where the collection lives (the Spark's
     # cache, the same folder through the share on Windows)
     from . import characters as K
-    croot = K.library_root(ctx.config).parent if HOST_OS != "windows" else Path("//10.89.1.246/ehm_eckx/gbox-cache")
+    from .side_dirs import spark_share
+    croot = K.library_root(ctx.config).parent if HOST_OS != "windows" else spark_share("gbox-cache")
     files = []                                             # (absolute model file, item options)
     for it in items:
         opts = {k: v for k, v in it.items() if k not in ("package", "character", "environment")}
@@ -4246,7 +4247,8 @@ def extract_pso_area(inp: PsoAreaIn, ctx: Ctx):
     world space + the area's PVM textures + the collision mesh (c.rel), ready for glTF/Blender/engines."""
     from . import ninja, psomap
     from .gdrom import GDRom
-    disc = GDRom(inp.disc)
+    from .side_dirs import moved
+    disc = GDRom(str(moved(inp.disc)))
     base = f"PSO/SCENE/MAP_{inp.area.upper()}"
     # areas with variants (Pioneer 2: MAP_CITY00_00D.REL + MAP_CITY00.PVM) keep the textures under the plain name
     rel_base = base if base + "D.REL" in disc.files else next((base + v for v in ("_00", "_01") if base + v + "D.REL" in disc.files), base)
@@ -4302,7 +4304,8 @@ def extract_pso_model(inp: PsoModelIn, ctx: Ctx):
         disc = GCDisc(inp.disc)
     else:
         from .gdrom import GDRom
-        disc = GDRom(inp.disc)
+        from .side_dirs import moved
+        disc = GDRom(str(moved(inp.disc)))
     ctx.progress(10, f"reading {inp.archive}")
     raw = disc.read(inp.archive)
     arc = ninja.bml(raw, be)

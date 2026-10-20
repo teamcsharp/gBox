@@ -6,7 +6,7 @@ import pytest
 
 from gbox import nightfire_inventory as nf
 
-ISO = Path.home() / "gbox-cache" / "modbase" / "744ba3bc797403bf" / "007 - Nightfire (USA).iso"
+ISO = Path.home() / "gBox_alt/gbox-cache" / "modbase" / "744ba3bc797403bf" / "007 - Nightfire (USA).iso"
 
 
 def _pack(entries, table=None):

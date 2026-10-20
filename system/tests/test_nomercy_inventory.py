@@ -8,7 +8,7 @@ import pytest
 
 from gbox import nomercy_inventory as I
 
-SRC = Path.home() / "gbox-cache/23a346e48b6368a6/source.zip"     # owned WWF No Mercy (USA) (Rev A) zip copy
+SRC = Path.home() / "gBox_alt/gbox-cache/23a346e48b6368a6/source.zip"     # owned WWF No Mercy (USA) (Rev A) zip copy
 
 
 def _put(buf: bytearray, ram: int, w: int) -> None:

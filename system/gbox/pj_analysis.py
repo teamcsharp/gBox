@@ -5,7 +5,7 @@ load base 0x8C010000). Inventory (gbox.pj_inventory) mapped the container;
 this module identifies the character/asset binary formats and the roster.
 
 Findings (all reproduced from the owned bytes in
-``~/gbox-cache/dc/6334be1925fbe016``):
+``~/gBox_alt/gbox-cache/dc/6334be1925fbe016``):
 
 1. Character definition table
    A 0x50-byte-record array at vaddr 0x8c19c620 (file offset 0x18c620). Each

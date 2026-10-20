@@ -12,7 +12,7 @@ from gbox import defjam_writer as W
 
 from test_defjam_models import _alpha, _fighter, _local, _texture_slot, _wrs
 
-ISO = Path(os.environ.get("GBOX_DEFJAM_PS2_ISO") or Path.home() / "gbox-cache" / "deabd11481aa5a0c" / "source.iso")
+ISO = Path(os.environ.get("GBOX_DEFJAM_PS2_ISO") or Path.home() / "gBox_alt/gbox-cache" / "deabd11481aa5a0c" / "source.iso")
 
 
 def _grid(n):
