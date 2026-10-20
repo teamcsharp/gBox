@@ -50,7 +50,7 @@ def describe(config: Config, name: str, wid: str | None = None) -> WorkerInfo:
             reason = f'availability check failed: {type(exc).__name__}: {exc}'
         (bad.__setitem__(t.name, reason) if reason else ok.append(t.name))
     bad.update({f"module {n}": why for n, why in _builtin.LOAD_ERRORS.items()})
-    features = ['independent_heartbeat', 'durable_result_delivery', 'resource_telemetry'] + (["idle_telemetry", "desktop_stream", "two_percent_audio"] if HOST_OS == "windows" else [])
+    features = ['independent_heartbeat', 'durable_result_delivery', 'resource_telemetry'] + (["idle_telemetry", "desktop_stream", "desktop_game_crop", "session_stills", "two_percent_audio"] if HOST_OS == "windows" else [])
     info = WorkerInfo(name=name, os=HOST_OS, tools=ok, unavailable=bad, idle_seconds=user_idle_seconds(), features=features)
     from .ollama_assist import inventory
     info.ollama = inventory()
@@ -203,16 +203,29 @@ def _heartbeat_loop(stop, current_info, active, server, headers):
     keeper.release()
 
 
+def _game_rects() -> dict:
+    """The windows of this PC's live games that its screen shows, so a viewer elsewhere can watch the game alone (#2858).
+    Never raises: the gBox window and desktop pictures keep flowing without it."""
+    try:
+        from .remote_desktop import game_window_rects
+        pids = {sid: pid for sid, entry in list(_builtin.SESSIONS.items())
+                if (pid := getattr(getattr(entry[0], "proc", None), "pid", None))}
+        return game_window_rects(pids)
+    except Exception:                                 # noqa: BLE001 - a missing crop must not end the desktop stream
+        return {}
+
+
 def _desktop_stream(stop: threading.Event, wid: str, server: str, h: dict, config: Config):
-    """Send the Windows desktop only while a gBox remote-PC picture-in-picture viewer is open."""
+    """Send the Windows desktop only while a gBox remote-PC viewer is open (picture-in-picture, or a game this PC plays
+    opened in another PC's Sessions view)."""
     if HOST_OS != "windows":
         return
     from .adapters import MjpegStream
-    from .remote_desktop import gbox_window_rect
+    from .remote_desktop import game_rects_header, gbox_window_rect
 
     stream = None
     seen = 0
-    rect, rect_at = None, 0.0
+    rect, rect_at, games = None, 0.0, {}
     with httpx.Client(base_url=server, headers=h, timeout=15) as client:
         while not stop.is_set():
             try:
@@ -231,9 +244,12 @@ def _desktop_stream(stop: threading.Event, wid: str, server: str, h: dict, confi
                         seen = stream.seq
                         if time.monotonic() - rect_at >= 1:
                             rect, rect_at = gbox_window_rect(), time.monotonic()
+                            games = _game_rects()
                         frame_headers = {"content-type": "image/jpeg"}
                         if rect:
                             frame_headers["x-gbox-app-rect"] = ",".join(f"{v:.6f}" for v in rect)
+                        if games:
+                            frame_headers["x-gbox-game-rects"] = game_rects_header(games)
                         client.post(f"/api/workers/{wid}/desktop/frame", content=stream.latest,
                                     headers=frame_headers, timeout=10).raise_for_status()
                 else:
