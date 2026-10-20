@@ -1,0 +1,23 @@
+{
+ "game_id": "9cb579d94b6d2167",
+ "title": "WCW Mayhem (Europe)",
+ "platform": "n64",
+ "profile": "cheatdb-unlocks-v1",
+ "verified": true,
+ "codes": [
+  {
+   "desc": "Have All Cheats/Wrestlers",
+   "lines": [
+    "810B6F5A FFFF",
+    "810B6F5C FFFF"
+   ]
+  }
+ ],
+ "scope": [
+  "Have All Cheats/Wrestlers"
+ ],
+ "evidence": {
+  "source": "libretro-database cht/Nintendo - Nintendo 64/WCW Mayhem (Europe).cht",
+  "read_back": "2026-10-20 00:56 CST, i9-NUC agent session: every code held with cheats op=add; all 2 written values read back unchanged. Gameplay screens not captured (the NUC's frame capture was black until its relaunch)."
+ }
+}
