@@ -121,3 +121,27 @@ def test_behaviour_graph_states_edges_and_handoffs():
     assert g["handoffs"] == [{"from": "9", "list": 2, "chr": 0xFD}]
     lv = B.level_graphs([lst, dict(lst)])
     assert set(lv["lists"]) == {"0x0408", "0x0408#2"} and lv["calls"] == [["0x0408", "0x0002"]]
+
+
+def test_owned_goldeneye_rom_global_lists():
+    """On the Spark: the 18 shared lists (g_GlobalAILists in the data segment) decode in the decomp's order."""
+    from pathlib import Path
+    from gbox.bond_ai import ailists as L
+    rom = Path.home() / "gbox-cache/eecd1708cb2b8d14/rom.z64"
+    if not rom.is_file():
+        import pytest
+        pytest.skip("owned GoldenEye ROM is not cached here")
+    from gbox.goldeneye_files import GoldenEyeROM
+    gl = L.global_lists(GoldenEyeROM.load(rom))
+    assert [g["id"] for g in gl] == list(range(18)) and gl[0]["name"] == "AIM_AT_BOND"
+    assert [c["name"] for c in gl[0]["commands"]][:1] == ["TRYFireOrAimAtTarget"]
+    assert [c["name"] for c in gl[1]["commands"]] == ["Label", "Yield", "GotoFirst", "EndList"]
+    assert gl[15]["commands"][0]["name"] == "EndLevel"
+
+
+def test_global_table_finder():
+    import struct
+    from gbox.bond_ai import ailists as L
+    base = 0x80000000
+    data = bytearray(64) + b"".join(struct.pack(">II", base + 8, i) for i in (2, 0, 1, *range(3, 18))) + bytes(8)
+    assert L.find_global_table(bytes(data), base) == 64

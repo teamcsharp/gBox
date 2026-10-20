@@ -92,6 +92,39 @@ def text(lst: dict) -> str:
     return "\n".join(rows)
 
 
+GLOBAL_NAMES = ("AIM_AT_BOND", "DEAD_AI", "STANDARD_GUARD", "PLAY_IDLE_ANIMATION", "BASH_KEYBOARD", "SIMPLE_GUARD_DEAF",
+                "ATTACK_BOND", "SIMPLE_GUARD", "RUN_TO_BOND", "SIMPLE_GUARD_ALARM_RAISER", "STARTLE_AND_RUN_TO_BOND",
+                "TRY_CLONE_SEND_OR_RUN_TO_BOND", "STANDARD_CLONE", "PERSISTENTLY_CHASE_AND_ATTACK_BOND",
+                "WAIT_ONE_SECOND", "END_LEVEL", "DRAW_TT33_AND_ATTCK_BOND", "REMOVE_CHR")   # chraidata.c table order
+
+
+def find_global_table(data: bytes, base_vram: int) -> int:
+    """Offset of g_GlobalAILists in the game's data segment: {u32 list pointer, u32 id} records whose ids are
+    0x00..0x11 in some order, every pointer inside the segment, then a {0, 0} terminator."""
+    n = len(GLOBAL_NAMES)
+    hi = base_vram + len(data)
+    for o in range(0, len(data) - 8 * (n + 1) + 1, 4):
+        recs = [struct.unpack_from(">II", data, o + 8 * k) for k in range(n + 1)]
+        if recs[-1] != (0, 0) or sorted(r[1] for r in recs[:-1]) != list(range(n)):
+            continue
+        if all(base_vram <= r[0] < hi for r in recs[:-1]):
+            return o
+    raise DecodeError("g_GlobalAILists not found in the data segment")
+
+
+def global_lists(ge, table: dict[int, dict] | None = None) -> list[dict]:
+    """GoldenEye's shared AI lists (ids 0x00-0x11: patrol, combat, chase, flee ...) from the data segment."""
+    from ..goldeneye_files import DATA_VRAM
+    table = table or C.by_opcode()
+    o = find_global_table(ge.data, DATA_VRAM)
+    out = []
+    for k in range(len(GLOBAL_NAMES)):
+        ptr, lid = struct.unpack_from(">II", ge.data, o + 8 * k)
+        out.append({"id": lid, "kind": "global", "name": GLOBAL_NAMES[lid] if lid < len(GLOBAL_NAMES) else "",
+                    "offset": ptr - DATA_VRAM, "commands": decode_list(ge.data, ptr - DATA_VRAM, table)})
+    return out
+
+
 def rom_levels(rom_path) -> dict[str, list[dict]]:
     from ..goldeneye_files import GoldenEyeROM
     ge = GoldenEyeROM.load(rom_path)
