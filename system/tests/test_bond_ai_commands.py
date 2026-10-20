@@ -60,6 +60,44 @@ def test_committed_table_matches_goldeneye_opcode_range():
     assert names[0xAD]["name"] == "PRINT" and names[0xAD].get("debug")
     assert names[0xFC]["name"] == "ObjectRocketLaunch"
     for c in cs:
-        assert c["length"] == 1 + sum(p["bytes"] for p in c["params"])
+        assert c["length"] == 1 + sum(p["bytes"] for p in c["params"])           # PRINT's text comes on top
         assert all(1 <= p["bytes"] <= 4 for p in c["params"]) and c["description"]
     assert len({c["name"] for c in cs}) == 253
+
+
+def test_print_is_variable_length_text():
+    assert A.by_opcode()[0xAD].get("variable") == "nul_terminated_text"
+
+
+def test_ai_list_decoder_walks_commands_and_print_text():
+    import struct
+    from gbox.bond_ai import ailists as L
+    t = A.by_opcode()
+    lst = bytes([0x00, 0x05]) + bytes([0xAD]) + b"run" + bytes(1) + bytes([0x05, 0x01, 0x00, 0x07]) + bytes([0x04])
+    setup = bytearray(40)
+    struct.pack_into(">10I", setup, 0, 0, 0, 0, 0, 0, 40, 0, 0, 0, 0)
+    setup += struct.pack(">II", 56, 0x401) + struct.pack(">II", 0, 0) + lst
+    out = L.ai_lists(bytes(setup), t)
+    assert [(x["id"], x["kind"]) for x in out] == [(0x401, "character")]
+    cmds = out[0]["commands"]
+    assert [c["name"] for c in cmds] == ["GotoNext", "PRINT", "SetChrAiList", "EndList"]
+    assert cmds[1]["args"] == {"TEXT": "run"} and cmds[2]["args"] == {"CHR_NUM": 1, "AI_LIST_ID": 7}
+    assert "SetChrAiList(CHR_NUM=1, AI_LIST_ID=7)" in L.text(out[0])
+    try:
+        L.decode_list(bytes([0x00, 0x05, 0xFD]), 0, t)
+        raise AssertionError("an unknown opcode must stop the decoder")
+    except L.DecodeError as e:
+        assert "0xfd" in str(e)
+
+
+def test_owned_goldeneye_rom_decodes_every_ai_list():
+    """On the Spark: every AI list of the owned PAL ROM's 34 setup files decodes to its EndList (662 lists)."""
+    from pathlib import Path
+    from gbox.bond_ai import ailists as L
+    rom = Path.home() / "gbox-cache/eecd1708cb2b8d14/rom.z64"
+    if not rom.is_file():
+        import pytest
+        pytest.skip("owned GoldenEye ROM is not cached here")
+    levels = L.rom_levels(rom)
+    assert len(levels) == 34 and sum(len(v) for v in levels.values()) == 662
+    assert all(lst["commands"][-1]["name"] == "EndList" for v in levels.values() for lst in v)
