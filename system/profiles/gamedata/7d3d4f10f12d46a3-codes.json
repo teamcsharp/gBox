@@ -1,0 +1,52 @@
+{
+ "game_id": "7d3d4f10f12d46a3",
+ "title": "Dead to Rights (USA)",
+ "platform": "gamecube",
+ "disc_id": "GDREAF",
+ "profile": "gecko-unlocks-v1",
+ "verified": true,
+ "codes": [
+  {
+   "desc": "All Levels",
+   "lines": [
+    "012E0D83 08000000",
+    "041B5710 0000000F"
+   ],
+   "kind": "gecko"
+  },
+  {
+   "desc": "All Movies",
+   "lines": [
+    "012E0D84 08000000",
+    "041B570C 00000001",
+    "041B5718 00000001",
+    "041B571C 00000001",
+    "041B5720 00000001",
+    "041B5724 00000001",
+    "041B5728 00000001",
+    "041B572C 00000001",
+    "041B5730 00000001",
+    "041B5734 00000001",
+    "041B5738 00000001",
+    "041B573C 00000001",
+    "041B5740 00000001",
+    "041B5744 00000001",
+    "041B5748 00000001",
+    "041B574C 00000001",
+    "041B5750 00000001",
+    "041B5754 00000001",
+    "041B5758 00000001",
+    "041B575C 00000001"
+   ],
+   "kind": "gecko"
+  }
+ ],
+ "scope": [
+  "All Levels",
+  "All Movies"
+ ],
+ "evidence": {
+  "source": "codes.rc24 Gecko list GDREAF.txt (Dolphin 'Download Codes')",
+  "read_back": "2026-10-20 07:00 CST, lilspark (the Spark's Dolphin) agent session: every code held with cheats op=add; all 4118 written values read back unchanged from Dolphin's RAM. Gameplay screens of the unlocked content not captured."
+ }
+}
