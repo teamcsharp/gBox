@@ -69,6 +69,7 @@ except ImportError:                              # a tree without it: vision onl
 GAME_IDS = {"G4BE08"}
 EMMGR, P_PLAYER, P_GLOBAL = 0x8027DF20, 0x802B9780 - 0x673C, 0x802B2280
 G_ROOM, MERC_TIMER, MERC = 0x4FA8, 0x80279308, 0x8021392C
+G_HP = 0x4FB0                                    # pG+0x4FB0 s16: Leon's health (0 on "You Are Dead")
 ENGAGE = 3800.0                                  # Ganados this close are fought, else Leon goes for the time bonuses
 TURN_TOL, FIRE_TOL = 0.35, 0.035                 # radians: turn with the stick until within TURN_TOL, aim-turn to FIRE_TOL
 AIM_PITCH = 0x258                                # Leon (player em) +0x258: aim pitch, radians, + up (found 2026-10-20);
@@ -171,9 +172,10 @@ def u32(m, a):
 
 
 def snapshot(m) -> dict:
-    """room, Merc clock (s), combo, Leon {ptr, pos, rot, pitch}, live Ganados [{slot, pos, hp, hp_max}]."""
+    """room, Merc clock (s), combo, Leon's health, Leon {ptr, pos, rot, pitch}, live Ganados [{slot, pos, hp, hp_max}]."""
     pg = u32(m, P_GLOBAL)
     room = struct.unpack(">H", m.rd(pg + G_ROOM, 2))[0] if ptr_ok(pg) else None
+    hp = struct.unpack(">h", m.rd(pg + G_HP, 2))[0] if ptr_ok(pg) else None
     pl = u32(m, P_PLAYER)
     player = None
     if ptr_ok(pl):
@@ -190,7 +192,7 @@ def snapshot(m) -> dict:
                 continue
             hp, hp_max = struct.unpack_from(">hh", d, o + EM_HP)
             enemies.append({"slot": k, "pos": struct.unpack_from(">3f", d, o + 0x94), "hp": hp, "hp_max": hp_max})
-    return {"room": room, "timer": round(u32(m, MERC_TIMER) / 30.0, 1), "combo": u32(m, MERC + 0x28),
+    return {"room": room, "hp": hp, "timer": round(u32(m, MERC_TIMER) / 30.0, 1), "combo": u32(m, MERC + 0x28),
             "player": player, "enemies": enemies}
 
 
@@ -325,6 +327,7 @@ class Bot:
         self.unstick = None                           # {"stage": "detour" | "back", "until", "dir"}
         self.detour_dir = 1
         self.stuck_n = 0
+        self.dead = False                              # on the death screen (counted once per death)
         self.stats = {"prompts": 0, "max_combo": 0, "vaults": 0, "detours": 0, "backoffs": 0, "time_bonus": 0,
                       "shots_s": 0.0, "learned_walls": 0, "replans": 0, "hits": 0, "misses": 0, "accuracy": 0.0,
                       "pitch_offset": 0.0}
@@ -596,8 +599,14 @@ class Bot:
                 self.stats["time_bonus"] += 1
                 self.goal = None
             self.last_timer, self.timer_since = s["timer"], now
+            self.dead = False
         elif now - self.timer_since > 1.2 and s["timer"] > 0:           # the clock stopped: a prompt is up
             self.stats["prompts"] += 1
+            if s.get("hp") is not None and s["hp"] <= 0:                 # "You Are Dead - Continue Yes / No": Yes
+                if not self.dead:
+                    self.dead = True
+                    self.stats["deaths"] = self.stats.get("deaths", 0) + 1
+                return {"tap": "a"}
             return {"tap": "b" if now - self.timer_since > 6 else "a"}
         px, _, pz = p["pos"]
         pool = [e for e in s["enemies"] if self.skip.get(e["slot"], float("-inf")) < now]

@@ -33,6 +33,7 @@ def world(enemies, room=0x400, timer_s=100.0, combo=0, leon=(0.0, 0.0, 0.0)):
     m = FakeMem()
     m.put(B.P_GLOBAL, ">I", PG)
     m.put(PG + B.G_ROOM, ">H", room)
+    m.put(PG + B.G_HP, ">h", 1000)                    # Leon alive
     m.put(B.P_PLAYER, ">I", PL)
     for off in (0x94, 0x1C0):                         # Leon keeps two copies of his position
         m.put(PL + off, ">3f", *leon)
@@ -506,3 +507,17 @@ def test_a_tripled_time_bonus_still_counts():
     m.put(B.MERC_TIMER, ">I", int(370 * 30))          # +270 s: a 90 s pickup with the time bonus x3 hack
     bot.tick(B.snapshot(m))
     assert bot.stats["time_bonus"] == 1
+
+
+def test_you_are_dead_is_answered_yes_and_counted_once():
+    now = [0.0]
+    m = world([], room=0x400, timer_s=60.0)
+    m.put(PG + B.G_HP, ">h", 1200)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    bot.tick(B.snapshot(m))
+    m.put(PG + B.G_HP, ">h", 0)                       # dead: the clock stops on "Continue Yes / No"
+    taps = []
+    for k in range(1, 120):                           # a minute on that screen
+        now[0] = k * 0.5
+        taps.append(bot.tick(B.snapshot(m)).get("tap"))
+    assert set(t for t in taps if t) == {"a"} and bot.stats["deaths"] == 1   # Yes, never B
