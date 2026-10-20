@@ -1,4 +1,4 @@
-"""RE4 Mercenaries playbook (gbox.re4_merc_bot): RAM reading, targeting, teleport, prompts, and autoplay picking it."""
+"""RE4 Mercenaries playbook (gbox.re4_merc_bot): RAM reading, targeting, the aim by stick, prompts, autoplay picking it."""
 import math
 import struct
 from types import SimpleNamespace
@@ -70,13 +70,17 @@ def test_turns_with_the_stick_then_aims_then_fires_never_writing_leon():
     assert bot.tick(B.snapshot(m)) == {"hold": {"r", "right"}}        # close: aim and fine-turn
     facing(m, 0.02)
     assert bot.tick(B.snapshot(m)) == {"hold": {"r"}}                 # on him, the aim pose coming up: not yet
+    head = math.atan2(B.HEAD_H - B.GUN_H, 2000.0)                    # his head: 0.075 rad above the gun
     now[0] = 0.3
     m.put(B.MERC_TIMER, ">I", int((100 - 0.3) * 30))
-    assert bot.tick(B.snapshot(m)) == {"hold": {"r", "a"}}            # pose up: fire
-    pitch = struct.unpack(">f", m.rd(PL + B.AIM_PITCH, 4))[0]
-    assert pitch == pytest.approx(math.atan2(B.HEAD_H - B.GUN_H, 2000.0), abs=1e-4)   # at his head
-    facing(m, 0.0)
-    assert m.rd(PL, 0x300)[:0xA4] == before[:0xA4]                    # position and the rest: never written
+    assert bot.tick(B.snapshot(m)) == {"hold": {"r", "up"}}          # pose up, the aim level: raise it with the stick
+    now[0] = 0.35
+    m.put(PL + B.AIM_PITCH, ">f", head - 0.01)                         # the game raised it
+    assert bot.tick(B.snapshot(m)) == {"hold": {"r", "a"}}            # at his head: fire
+
+    def mine(b):                                                       # all but what this test itself moved
+        return b[:0xA4] + b[0xA8:B.AIM_PITCH] + b[B.AIM_PITCH + 4:]
+    assert mine(m.rd(PL, 0x300)) == mine(before)                        # Leon: never written by the bot
 
 
 def test_no_enemy_near_runs_to_the_nearest_time_bonus_and_shoots_it():
@@ -108,16 +112,27 @@ def test_blocked_while_running_vaults_then_detours():
     bot = B.Bot(m, clock=lambda: now[0], nav=False)
     facing(m, B.heading(5592.0 - 100.0, 16384.0 - 200.0))   # towards the nearest hourglass
     acts = []
-    for t in range(1, 40):                             # Leon never moves: a fence
+    for t in range(1, 60):                             # Leon never moves: a fence
         now[0] = t * 0.1
         m.put(B.MERC_TIMER, ">I", int((100 - now[0]) * 30))
         acts.append(bot.tick(B.snapshot(m)))
     assert {"tap": "a"} in acts and bot.stats["vaults"] >= 1           # JUMP OVER first
     assert bot.stats["detours"] >= 1                                     # then around it
-    assert bot.stats["hops"] >= 1                                        # still blocked: a short hop past it
-    x, y, z = struct.unpack(">3f", m.rd(PL + 0x94, 12))
-    assert math.hypot(x - 100.0, z - 200.0) == pytest.approx(B.HOP_SHORT, rel=0.01) and y == 7.0   # HOP_SHORT along
-    assert z > 200.0                                                     # forward, round the learned wall
+    assert bot.stats["backoffs"] >= 1 and {"hold": {"down"}} in acts    # still blocked: back off, then the other side
+    assert struct.unpack(">3f", m.rd(PL + 0x94, 12)) == (100.0, 7.0, 200.0)   # never moved by a write: no teleports
+
+
+def test_a_climb_is_not_blocked():
+    now = [0.0]
+    m = world([], room=0x400, leon=(100.0, 0.0, 200.0), timer_s=100.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    facing(m, B.heading(5592.0 - 100.0, 16384.0 - 200.0))
+    for t in range(1, 40):                             # up a ladder: along nothing, up 400 a second
+        now[0] = t * 0.1
+        m.put(B.MERC_TIMER, ">I", int((100 - now[0]) * 30))
+        m.put(PL + 0x94, ">3f", 100.0, 40.0 * t, 200.0)
+        bot.tick(B.snapshot(m))
+    assert bot.stats["vaults"] == bot.stats["detours"] == bot.stats["backoffs"] == 0
 
 
 class FakeNav:
@@ -212,7 +227,7 @@ def test_play_presses_and_lets_go(monkeypatch):
     clock = iter([0.0, 0.0, 0.0, 0.1, 0.1, 0.2, 0.4, 0.4, 0.5, 0.6, 0.7, 0.8] + [0.9] * 50)
     B.play(None, sent.append, stopped, sleep=lambda s: None, m=m, clock=lambda: next(clock))
     assert sent[0] == [{"key": "r", "down": True}]                     # aim first: the pose comes up
-    assert sent[-1][-1] == {"key": "r", "down": False}                  # and everything is let go at the end
+    assert {"key": "r", "down": False} in sent[-1] and not any(r["down"] for r in sent[-1])   # all let go at the end
 
 
 def test_auto_mode_prefers_a_matching_playbook(monkeypatch, tmp_path):
@@ -358,21 +373,51 @@ def test_his_health_scores_the_shots_and_misses_move_the_aim_height():
     facing(m, 0.0)
     bot = B.Bot(m, clock=lambda: now[0], nav=False)
 
-    def tick(t, timer=None):
+    def tick(t):
         now[0] = t
         m.put(B.MERC_TIMER, ">I", int((100 - t) * 30))
-        return bot.tick(B.snapshot(m))
-    tick(0.0)
-    tick(0.3)                                                             # aim pose up: firing
+        act = bot.tick(B.snapshot(m))
+        keys = act.get("hold", set())
+        pitch = struct.unpack(">f", m.rd(PL + B.AIM_PITCH, 4))[0]               # the game, under the stick
+        m.put(PL + B.AIM_PITCH, ">f", pitch + 0.02 * (("up" in keys) - ("down" in keys)))
+        return act
+    t = 0.0
+    while "a" not in tick(t).get("hold", set()):                           # raise the aim to his head, then fire
+        t += 0.05
+        assert t < 3
     hp(m, 1, 800)
-    tick(0.5)
+    tick(t + 0.2)
     assert bot.stats["hits"] == 1                                          # his health fell: a hit
-    for k in range(1, 12):                                                 # then nothing lands for a while
-        tick(0.5 + k * 0.35)
+    for k in range(1, 40):                                                 # then nothing lands for a while
+        tick(t + 0.2 + k * 0.1)
     assert bot.stats["misses"] >= 3 and bot.stats["pitch_offset"] != 0.0  # the aim height moves on
     assert 0 < bot.stats["accuracy"] < 1
     pitch = struct.unpack(">f", m.rd(PL + B.AIM_PITCH, 4))[0]
-    assert pitch == pytest.approx(math.atan2(B.HEAD_H - B.GUN_H, 2000.0) + bot.stats["pitch_offset"], abs=1e-4)
+    want = math.atan2(B.HEAD_H - B.GUN_H, 2000.0) + bot.stats["pitch_offset"]
+    assert abs(pitch - want) <= B.PITCH_TOL + 0.02                         # the stick took it to the new height
+
+
+def test_an_inverted_aim_stick_is_learned():
+    now = [0.0]
+    m = world([((0, 0, 2000), True)])
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    head = math.atan2(B.HEAD_H - B.GUN_H, 2000.0)
+    fired = False
+    for k in range(80):                                                    # this game: up LOWERS the aim
+        now[0] = k * 0.05
+        m.put(B.MERC_TIMER, ">I", int((100 - now[0]) * 30))
+        keys = bot.tick(B.snapshot(m)).get("hold", set())
+        fired = fired or "a" in keys
+        pitch = struct.unpack(">f", m.rd(PL + B.AIM_PITCH, 4))[0]
+        m.put(PL + B.AIM_PITCH, ">f", pitch + 0.02 * (("down" in keys) - ("up" in keys)))
+    assert bot.pitch_up == "down" and fired
+    assert abs(struct.unpack(">f", m.rd(PL + B.AIM_PITCH, 4))[0] - head) <= B.PITCH_TOL + 0.02
+
+
+def test_the_hand_cannon_keeps_its_own_fire_rate():
+    wm = dict(B.PACKAGE)["weapon_mod"]
+    assert "fire_rate" not in wm and wm.get("reset") is True              # full auto bent Leon's arm over his head
 
 
 def test_an_on_screen_prompt_is_pressed_and_a_stuck_one_is_left_alone():
