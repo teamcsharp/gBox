@@ -40,6 +40,7 @@ class Engine:
         self.attack_at = None         # the frame of the last attack the engine started
         self.lat_input: deque[int] = deque(maxlen=200)
         self.lat_reaction: deque[int] = deque(maxlen=200)
+        self.on_judged = None         # callable(answer, label, reward, world): evidence capture, coaching
         for k in ("attacks", "answers", "answered_ok", "parried", "hits_taken", "damage_taken", "damage_dealt",
                   "punishes", "feints_skipped", "out_of_reach"):
             self.stats.setdefault(k, 0)
@@ -133,6 +134,11 @@ class Engine:
                       met=met, outcome=label, sent=p["press_at"], seen=p.get("seen"),
                       input_f=None if p.get("seen") is None else p["seen"] - p["press_at"],
                       reaction_f=None if p.get("seen") is None or not t else p["seen"] - t["onset"])
+            if self.on_judged is not None:
+                try:
+                    self.on_judged(p["answer"], label, reward, w)
+                except Exception:                      # noqa: BLE001 - an observer never stops the fight
+                    pass
             if p["answer"].kind == "answer" and reward > 0 and self.active is None and w.p1.can_act():
                 pun = self.title.punish(w, label)
                 if pun is not None:

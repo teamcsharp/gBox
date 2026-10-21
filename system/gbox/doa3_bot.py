@@ -54,7 +54,36 @@ class Deployment:
         self.book = book or Book(root / doa3_xbox.MAP_ID / "book.json" if root else None)
         self.lessons = lessons if lessons is not None else Run(root, doa3_xbox.MAP_ID)
         self.engine = Engine(self.title, self.book, self.lessons, stats)
+        self.engine.on_judged = self.evidence
+        self.frames_dir = root / doa3_xbox.MAP_ID / "frames" if root else None
+        self.captured = 0
         self.WATCH = doa3_xbox.CLOCK               # the frame clock: still = the game loop stopped
+
+    EVIDENCE_FIRST, EVIDENCE_EVERY, EVIDENCE_DELAY_S = 6, 25, 0.15
+
+    def evidence(self, answer, label, reward, w):
+        """A hold that paid: the game's own frame of it a moment later (the hold animation), saved next to the
+        lessons as real-frame evidence. The capture runs on its own thread: the fight loop never waits for it."""
+        if answer.kind != "answer" or reward <= 0 or self.frames_dir is None or not hasattr(self.ad, "get_frame"):
+            return
+        self.paid = getattr(self, "paid", 0) + 1
+        if self.captured >= self.EVIDENCE_FIRST and self.paid % self.EVIDENCE_EVERY:
+            return
+        self.captured += 1
+        name = f"{self.lessons.run_id}-f{w.frame}-{answer.name}-{label}.png"
+
+        def grab():
+            import time as _t
+            _t.sleep(self.EVIDENCE_DELAY_S)
+            try:
+                data = self.ad.get_frame()
+                self.frames_dir.mkdir(parents=True, exist_ok=True)
+                (self.frames_dir / name).write_bytes(data)
+                self.lessons.log("evidence", w.frame, file=name, answer=answer.name, outcome=label, reward=reward)
+            except Exception as error:             # noqa: BLE001 - no frame now: the next success tries again
+                self.lessons.log("evidence_failed", w.frame, error=str(error)[:200])
+        import threading
+        threading.Thread(target=grab, daemon=True, name="doa3-evidence").start()
 
     def reader(self, ad):
         return ad.channel().read
