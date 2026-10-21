@@ -156,6 +156,16 @@ def _brief(cap: dict) -> dict:
     return {k: cap[k] for k in ("state", "job", "sha256", "name", "size", "detail", "timed_out") if cap.get(k) is not None}
 
 
+def _lesson(game: dict, kind: str, text: str, **kw) -> bool:
+    """A note on a Mercenaries title (its RAM map has a "mercs" block) also goes to the title's run-lessons log, which
+    the engine reads before its next round (gbox.mercs_bot.note_lesson). Other titles: nothing. Never raises."""
+    try:
+        from . import mercs_bot
+        return mercs_bot.note_lesson(game, mercs_bot.lesson(kind, text, **kw))
+    except Exception:                                # noqa: BLE001 - the note is filed either way
+        return False
+
+
 # --- a note -------------------------------------------------------------------------------------------------------------
 def add_note(store, create_request, submit, sid: str, text: str, actor: str = "operator",
              now: float | None = None) -> dict:
@@ -211,6 +221,8 @@ def add_note(store, create_request, submit, sid: str, text: str, actor: str = "o
                                             "telemetry": {k: tel.get(k) for k in ("running", "mode", "mission")} if tel else None,
                                             "captures": {k: _brief(v) for k, v in captures.items()}, "summary": None})
     store.audit(actor, "request.coach_note", rid, {"session": sid, "note": n, "jobs": jobs})
+    _lesson(dict(game, game_id=gid), "coach", text, session_id=sid, worker=worker, telemetry=tel or None,
+            captures={k: _brief(v) for k, v in captures.items()}, request_id=rid, note=n, ts=now)
     return {"request_id": rid, "number": req.get("number"), "message_id": mid, "note": n, "game_id": gid,
             "jobs": {k: jobs.get(k) for k in CAPTURES}, "captures": captures}
 

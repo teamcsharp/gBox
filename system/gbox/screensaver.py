@@ -50,12 +50,38 @@ BAD_ENDS = {"black": "the game showed only black: next game", "hung": "the game 
 
 PENDING = "autoplay_on_launch"            # launch job id -> {game_id, at}: start autoplay when that game is up
 PENDING_TTL = 15 * 60
+BOT_DEMO = "bot_demo"                     # launch job id -> {game_id, by, at}: a bot demo (launched with autoplay on)
+BOT_DEMO_KEEP = 300
+DEMO_ACTOR = "autoplay"                   # who starts a bot demo's autoplay (the worker's own calls say the same)
 
 
-def autoplay_on_launch(store, job_id: str, game_id: str) -> None:
-    """A launch the operator asked to play itself (the Spark button): the next ticks start autoplay once it runs."""
+def autoplay_on_launch(store, job_id: str, game_id: str, actor: str = "operator", agent: bool = False) -> None:
+    """A launch asked to play itself: a bot demo ("Bot demo on <PC>" on any PC, the operator's own included; the Spark
+    button). The next ticks start autoplay once it runs, and the session is marked a bot demo (GET /api/sessions
+    bot_demo: the Sessions header says so; autoplay may relaunch it when it freezes, gbox.tools._bad_end)."""
     if job_id:
-        store.put(PENDING, job_id, {"job": job_id, "game_id": game_id, "at": time.time()})
+        now = time.time()
+        store.put(PENDING, job_id, {"job": job_id, "game_id": game_id, "at": now, "actor": actor, "agent": bool(agent)})
+        store.put(BOT_DEMO, job_id, {"job": job_id, "game_id": game_id, "by": actor, "agent": bool(agent), "at": now})
+        old = store.all(BOT_DEMO)
+        for row in sorted(old, key=lambda r: r.get("at") or 0)[:max(0, len(old) - BOT_DEMO_KEEP)]:
+            store.delete(BOT_DEMO, row.get("job", ""))
+
+
+def bot_demo(store, sid: str) -> dict | None:
+    """The bot-demo record of a session (session ids are <worker>-<launch job>), or None."""
+    jid = (sid or "").split("-", 1)[-1] if "-" in (sid or "") else ""
+    return store.get(BOT_DEMO, jid) if jid else None
+
+
+def carry_bot_demo(store, old_sid: str, new_sid: str) -> bool:
+    """A bot demo relaunched (autoplay's _bad_end, a reset) stays a bot demo under its new session id."""
+    rec = bot_demo(store, old_sid)
+    if not rec or not new_sid or new_sid == old_sid or "-" not in new_sid:
+        return False
+    jid = new_sid.split("-", 1)[-1]
+    store.put(BOT_DEMO, jid, rec | {"job": jid, "relaunched_from": old_sid, "at": time.time()})
+    return True
 
 
 def _jumped(sess: dict) -> bool:
@@ -195,8 +221,10 @@ class Screensaver:
         return out
 
     def _pending(self, running, now) -> list[str]:
-        """Launches marked autoplay (Spark button): autoplay starts START_GRACE s after the session is up, or at once
-        when the launch booted straight into its jump state."""
+        """Launches marked autoplay (bot demos on any PC, the Spark button): autoplay starts START_GRACE s after the
+        session is up, or at once when the launch booted straight into its jump state. It starts as a bot demo
+        (demo: plays on, polite input on a PC someone uses), as autoplay's own job; agent_use only when an agent
+        launched the demo (its callbacks then count as automation, which never touches the operator's games)."""
         from .server import JobRequest
         done = []
         for p in self.store.all(PENDING):
@@ -216,10 +244,10 @@ class Screensaver:
             if now - p["up"] < START_GRACE:
                 continue
             sid = sess["session_id"]
-            self.submit(JobRequest(tool="autoplay", input={"session_id": sid, "op": "start", "mode": "auto",
-                                                           "screensaver": True},
-                                   agent_use=True, require_worker=sid.split("-")[0]), actor=ACTOR,
-                        origin={"via": "autoplay on launch (Spark)", "session_id": sid})
+            self.submit(JobRequest(tool="autoplay", input={"session_id": sid, "op": "start", "mode": "auto", "demo": True},
+                                   agent_use=bool(p.get("agent", False)), require_worker=sid.split("-")[0]),
+                        actor=DEMO_ACTOR, origin={"via": "bot demo (autoplay on launch)", "session_id": sid,
+                                                  "launched_by": p.get("actor") or "operator"})
             self.store.delete(PENDING, jid)
             done.append(sid)
         return done
@@ -264,8 +292,9 @@ class Screensaver:
             job = self.store.get("job", run.get("job")) or {}
             if job.get("state") in ("failed", "rejected", "invalid", "cancelled") or now - run["started"] > LAUNCH_TIMEOUT:
                 return self._finish(w, run, now, f"launch {job.get('state') or 'timed out'}: {str(job.get('error') or '')[:200]}")
-            sess = next((s for s in running if s.get("session_id", "").startswith(run["worker_id"] + "-")
-                         and s.get("game_id") == run["game_id"]), None)
+            # its own launch's session only (sessions are named <worker>-<launch job>): never adopt someone else's
+            # session of the same game on that PC
+            sess = next((s for s in running if s.get("session_id") == f"{run['worker_id']}-{run.get('job')}"), None)
             if not sess:
                 return f"launching {run['title']}"
             self.store.put("slabel", sess["session_id"], {"owner": "agent", "task": f"autoplay screensaver: {run['title']}"})
@@ -354,12 +383,37 @@ class Screensaver:
             self.store.put(STATE, run["worker"], run | upd)
             return True
 
+    def pcs(self, cfg: dict, now: float | None = None) -> list[dict]:
+        """Each PC, and why the screensaver would not start a game there now (reason None: it may at its next tick).
+        starts_in_s: a Windows PC's idle time still to go before it may (the Sessions view's "nothing is playing")."""
+        now = time.time() if now is None else now
+        running = self.store.running_sessions()
+        out = []
+        for w in self.workers():
+            run = self.store.get(STATE, w.get("name"))
+            if run:
+                reason = f"playing {run.get('title') or run.get('game_id') or 'a demo'}"
+            elif not cfg["enabled"]:
+                reason = "the autoplay screensaver is off"
+            else:
+                try:
+                    reason = worker_reason(self.store, w, cfg, running, now)
+                except Exception as e:                       # noqa: BLE001 - one PC's check never hides the others
+                    reason = f"unknown ({type(e).__name__})"
+            idle = w.get("idle_seconds")
+            left = (max(0.0, cfg["idle_minutes"] * 60 - idle) if w.get("os") == "windows" and idle is not None
+                    and w.get("online") else None)
+            out.append({"name": w.get("name"), "id": w.get("id"), "os": w.get("os"), "online": bool(w.get("online")),
+                        "demo": bool(run), "reason": reason, "starts_in_s": round(left) if left is not None else None})
+        return out
+
     def status(self) -> dict:
         cfg = settings(self.store)
         log = sorted(self.store.all(LOG), key=lambda r: -(r.get("started") or 0))[:30]
         games = self.games(cfg)
         out = {"settings": cfg, "running": self.store.all(STATE), "log": log,
-               "games": [{k: g[k] for k in ("game_id", "title", "pads")} for g in games[:40]]}
+               "games": [{k: g[k] for k in ("game_id", "title", "pads")} for g in games[:40]],
+               "pcs": self.pcs(cfg)}
         if self.builder is not None:
             out["roulette"] = self.builder.status()
         return out
@@ -392,6 +446,7 @@ class Telemetry(BaseModel):
     mission: str = ""
     title: str = ""
     stats: dict = {}
+    demo: bool = False                    # a bot demo plays (the Sessions header says so)
 
 
 TELEMETRY: dict[str, dict] = {}           # session id -> what autoplay is doing right now (in memory: live view only)

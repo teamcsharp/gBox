@@ -563,6 +563,129 @@ def ensure_rpcs3(cfg: Config, progress=None) -> dict:
     return _receipt("rpcs3", "ok", str(exe))
 
 
+# --- PS3 on a Linux node (the Spark, aarch64) ---------------------------------------------------------------------------
+RPCS3_LINUX_REPO = {"aarch64": "RPCS3/rpcs3-binaries-linux-arm64", "x86_64": "RPCS3/rpcs3-binaries-linux"}
+PS3_UPDATE_LIST = "http://fus01.ps3.update.playstation.net/update/ps3/list/us/ps3-updatelist.txt"
+
+
+def rpcs3_linux_home(cfg: Config) -> Path:
+    """gBox's own RPCS3 on Linux: the extracted AppImage (squashfs-root) and RPCS3's XDG folders."""
+    return cfg.runtime / "rpcs3-linux"
+
+
+def rpcs3_linux_env(cfg: Config) -> dict:
+    """RPCS3 on Linux keeps config.yml, dev_flash, dev_hdd0 (game data, saves), input configs and save states under
+    $XDG_CONFIG_HOME/rpcs3 and its PPU/SPU/shader caches and RPCS3.log under $XDG_CACHE_HOME/rpcs3: gBox's own here,
+    never the user's ~/.config."""
+    home = rpcs3_linux_home(cfg)
+    return {"XDG_CONFIG_HOME": str(home / "config"), "XDG_CACHE_HOME": str(home / "cache"),
+            "XDG_DATA_HOME": str(home / "data")}
+
+
+def rpcs3_linux_dir(cfg: Config) -> Path:
+    """RPCS3's own folder (config.yml, dev_flash, dev_hdd0, input_configs, savestates)."""
+    return rpcs3_linux_home(cfg) / "config" / "rpcs3"
+
+
+def rpcs3_linux_exe(cfg: Config) -> Path:
+    """What starts RPCS3: [rpcs3_appimage] when it names an AppRun or an rpcs3 binary (a folder: its AppRun), else the
+    AppImage gBox extracted into its home (no FUSE needed)."""
+    p = Path(cfg.rpcs3_appimage).expanduser() if cfg.rpcs3_appimage else None
+    if p and p.is_dir():
+        for c in (p / "AppRun", p / "squashfs-root" / "AppRun", p / "usr" / "bin" / "rpcs3"):
+            if c.is_file():
+                return c
+    if p and p.is_file() and not p.name.lower().endswith(".appimage"):
+        return p
+    return rpcs3_linux_home(cfg) / "squashfs-root" / "AppRun"
+
+
+def _rpcs3_appimage_extract(appimage: Path, home: Path) -> None:
+    """--appimage-extract into home/squashfs-root (the AppImage runs without FUSE afterwards)."""
+    appimage.chmod(0o755)
+    shutil.rmtree(home / "squashfs-root", ignore_errors=True)
+    subprocess.run([str(appimage), "--appimage-extract"], cwd=home, check=True, capture_output=True, timeout=600)
+    if not (home / "squashfs-root" / "AppRun").is_file():
+        raise RuntimeError(f"{appimage.name} did not extract an AppRun")
+
+
+def rpcs3_installfw_linux(exe: Path, pup: Path, env: dict, done: Path, timeout_s: float = 900.0) -> bool:
+    """`rpcs3 --installfw` asks "Install firmware: <path>?" (default No) before installing, and RPCS3 needs its GUI for
+    it: run it on a private Xvfb display and answer Yes with the box's own mnemonic (Alt+Y) once it shows; done = the
+    file the install writes last (dev_flash/vsh/module/vsh.self)."""
+    from .adapters import Display, _kill_tree
+    disp = Display(1024, 768)
+    e = {**os.environ, **env, "DISPLAY": disp.name, "QT_QPA_PLATFORM": "xcb"}
+    p = subprocess.Popen([str(exe), "--installfw", str(pup)], env=e, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+    try:
+        t0 = time.time()
+        while time.time() - t0 < timeout_s and not done.exists() and p.poll() is None:
+            box = subprocess.run(["xdotool", "search", "--onlyvisible", "--name", "Firmware"], env=e,
+                                 capture_output=True, text=True).stdout.split()
+            if box:
+                subprocess.run(["xdotool", "windowfocus", box[0], "key", "alt+y"], env=e, capture_output=True)
+            time.sleep(2)
+        if done.exists():
+            time.sleep(5)                                  # let the installer finish writing the last modules
+        return done.exists()
+    finally:
+        _kill_tree(p)
+        disp.close()
+
+
+def ensure_rpcs3_linux(cfg: Config, progress=None) -> dict:
+    """PS3 on a Linux node: RPCS3's official AppImage for this CPU (GitHub release, checked against the sha256 digest
+    GitHub publishes for it) or [rpcs3_appimage], extracted once, + Sony's PS3 system software installed into gBox's
+    own RPCS3 folder (verified on the Spark, aarch64, 2026-10-20: RPCS3 0.0.43 runs RE5 Gold at ~60 fps)."""
+    if HOST_OS != "linux":
+        raise ToolUnavailable("rpcs3 (linux): Linux nodes only; Windows nodes use ensure_rpcs3")
+    home = rpcs3_linux_home(cfg)
+    home.mkdir(parents=True, exist_ok=True)
+    exe = rpcs3_linux_exe(cfg)
+    conf = Path(cfg.rpcs3_appimage).expanduser() if cfg.rpcs3_appimage else None
+    if conf and conf.is_file() and conf.name.lower().endswith(".appimage"):
+        mark, stat = home / "squashfs-root.from", f"{conf} {conf.stat().st_size} {int(conf.stat().st_mtime)}"
+        if not exe.is_file() or not mark.is_file() or mark.read_text() != stat:
+            progress and progress(12, f"Unpacking {conf.name}")
+            _rpcs3_appimage_extract(conf, home)
+            mark.write_text(stat)
+    elif not exe.is_file():
+        repo = RPCS3_LINUX_REPO.get(ARCH)
+        if not repo:
+            raise ToolUnavailable(f"no RPCS3 Linux build for {ARCH}")
+        rel = httpx.get(f"https://api.github.com/repos/{repo}/releases/latest", timeout=60).json()
+        a = next(x for x in rel["assets"] if x["name"].endswith(".AppImage"))
+        want = str(a.get("digest") or "").removeprefix("sha256:").lower()
+        if not want:
+            raise RuntimeError(f"GitHub publishes no sha256 digest for {a['name']}: not running it unchecked")
+        progress and progress(10, f"Downloading RPCS3 {a['name']}")
+        img, h = home / a["name"], __import__("hashlib").sha256()
+        with httpx.stream("GET", a["browser_download_url"], timeout=1800, follow_redirects=True) as r, open(img, "wb") as f:
+            for chunk in r.iter_bytes(1 << 20):
+                h.update(chunk)
+                f.write(chunk)
+        if h.hexdigest() != want:
+            img.unlink(missing_ok=True)
+            raise RuntimeError("RPCS3 download failed its sha256 check")
+        _rpcs3_appimage_extract(img, home)
+        img.unlink()
+    done = rpcs3_linux_dir(cfg) / "dev_flash" / "vsh" / "module" / "vsh.self"
+    if not done.exists():
+        lst = httpx.get(PS3_UPDATE_LIST, timeout=60).text
+        url = re.search(r"CDN=(\S+?PS3UPDAT\.PUP)", lst)[1]
+        progress and progress(30, "Downloading PS3 system software from Sony")
+        pup = home / "PS3UPDAT.PUP"
+        with httpx.stream("GET", url, timeout=1800) as r, open(pup, "wb") as f:
+            for chunk in r.iter_bytes(1 << 20):
+                f.write(chunk)
+        progress and progress(50, "Installing PS3 system software into RPCS3")
+        if not rpcs3_installfw_linux(exe, pup, rpcs3_linux_env(cfg), done):
+            raise RuntimeError("PS3 firmware install did not complete")
+        pup.unlink()
+    return _receipt("rpcs3", "ok", str(exe))
+
+
 def ensure_ghidra(cfg: Config) -> dict:
     ensure_jdk21(cfg)
     if (h := ghidra_home(cfg)) and (h / "support").exists():

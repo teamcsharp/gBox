@@ -9,8 +9,12 @@
 // tooltip keeps every detail (ticket, each capture, the RE4 summary). The shell's dictation adds its 🎤 to the box like
 // to every text field. The desktop app shows this same header (its Play view embeds the web shell), so the box is there.
 //   GBoxAutoplayCoach.html(sid)                  the box's markup for the header
-//   GBoxAutoplayCoach.mount(root, {sid, api})    wires the box inside root; an unsent draft survives a re-render, and a
-//                                                note still capturing keeps its status when the header is drawn again
+//   GBoxAutoplayCoach.mount(root, {sid, api, onSent})  wires the box inside root; an unsent draft survives a re-render,
+//                                                a note still capturing keeps its status when the header is drawn again;
+//                                                onSent(answer) after each note is filed (the Sessions page gives a bot
+//                                                demo on this PC the keyboard back then). The box shows on every running
+//                                                session, so on a bot demo on any PC; each note reaches the agents at once
+//                                                (scripts/agent_ledger.py: the inbox hook and `list`)
 //   GBoxAutoplayCoach.create({sid, api, render}) the same without a DOM (tests)
 (function (root) {
   "use strict";
@@ -138,7 +142,7 @@
     }
   }
 
-  function mount(host, { sid, api, ...opts }) {
+  function mount(host, { sid, api, onSent, ...opts }) {
     style(host && host.ownerDocument);
     const box = host && (host.matches && host.matches("[data-coach]") ? host : host.querySelector("[data-coach]"));
     const input = box && box.querySelector("input"), status = box && box.querySelector("[data-coach-status]");
@@ -155,7 +159,8 @@
       const text = input.value;
       if (!text.trim()) return;
       input.value = ""; drafts.delete(sid);
-      ctl.send(text).catch(() => { if (!input.value) { input.value = text; drafts.set(sid, text); } });   // keep the words
+      ctl.send(text).then(out => { if (out && onSent) { try { onSent(out); } catch {} } },   // e.g. the game gets the keys back
+        () => { if (!input.value) { input.value = text; drafts.set(sid, text); } });   // not sent: keep the words
     });
     for (const ev of ["keyup", "keypress"]) input.addEventListener(ev, e => e.stopPropagation());
     ctl.resume();
