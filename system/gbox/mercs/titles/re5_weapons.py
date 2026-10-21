@@ -68,7 +68,7 @@ def clearance(snap, impact, radius):
 
 
 def fire_policy(wid, snap, target, impact):
-    """Additional weapon constraint AFTER a current first-hit enemy overlap. Never authorizes a wall shot."""
+    """Weapon-specific limits; the caller separately rejects measured cover and gates splash on first-hit overlap."""
     weapon = WEAPONS.get(wid)
     if weapon is None:
         return False, "unknown weapon"

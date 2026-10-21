@@ -61,7 +61,7 @@ HEAL_IDS = {0x301, 0x302, 0x303, 0x304, 0x307, 0x309}   # Green / Red / Yellow H
                                        # (the item tables, from the RE5 mods agent 2026-10-21)
 HEAL_AT = 0.4                          # use one below this share of health
 WEAPON_NAMES = {0x02: "M92F", 0x03: "VZ61", 0x0B: "M29", 0x12: "Barry's handgun", 0x15: "Gatling", 0x20: "Dragunov"}
-ENGAGE, SHOOT_RANGE, TOO_CLOSE = 3000.0, 2200.0, 110.0
+ENGAGE, SHOOT_RANGE, TOO_CLOSE = re5_combat.ENGAGE_R, 2200.0, 110.0
 CLOSE_ESCAPE_S, CLOSE_ACQUIRE_S = 0.25, 1.0  # escape briefly, then give the gun time to become ready
 BODY_R = 35.0                          # half a body: a shot inside atan(BODY_R / dist) hits
 TURN_TOL = math.radians(12)            # turn with the stick (not aiming) until within this
