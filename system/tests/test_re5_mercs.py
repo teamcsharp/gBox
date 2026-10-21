@@ -361,9 +361,9 @@ def test_resuscitate_uses_repeated_circle_at_engine_mash_cadence_without_combat(
     assert stats.get("deaths", 0) == stats.get("continue_presses", 0) == 0
 
 
-def with_prompt(mem, kind, owner, target, *, visible=True, mode=1, index=1, second=False):
+def with_prompt(mem, kind, owner, target, *, visible=True, mode=1, index=1, second=False, btn=0x328E1FE0):
     """Verified displayed ButtonMgr unit, independent of manager+0x34's active-array count."""
-    ab, btn = 0x3883_8370, 0x328E_1FE0
+    ab = 0x3883_8370
     unit = ab + R.QTE_UNITS[bool(second)]
     mem.u32(R.S_ACTION, ab)
     mem.put(ab + R.AB_ENABLED, b"\x01")
@@ -372,7 +372,7 @@ def with_prompt(mem, kind, owner, target, *, visible=True, mode=1, index=1, seco
     mem.u32(ab + R.AB_INPUT_MODE, 0)
     mem.u32(ab + R.AB_ALTERNATE_CONTROLLER, 0xFFFFFFFF)
     mem.put(R.QTE_INPUT_TABLE, R.QTE_INPUT_SIGNATURE)
-    for address, expected in R.QTE_SIGNATURES.items():
+    for address, expected in (R.QTE_SIGNATURES | R.QTE_STICK_SIGNATURES).items():
         mem.put(address, expected)
     mem.put(unit + 4, bytes((1, int(visible))))
     mem.u32(unit + 0x0C, btn)
@@ -427,7 +427,7 @@ def test_qte_rejects_stale_inactive_mismatched_or_unknown_requests():
         memory = with_prompt(world(), 2, PLAYER, 0, mode=5, index=25)
         memory.put(address, raw)
         assert R.prompt(memory) is None
-    for mode, index in ((0, 1), (6, 1), (7, 1), (8, 1), (9, 1), (99, 1), (1, 20), (1, 29)):
+    for mode, index in ((0, 1), (99, 1), (1, 20), (1, 29)):
         assert R.prompt(with_prompt(world(), 2, PLAYER, 0, mode=mode, index=index)) is None
     assert R.RE5PS3().prompt_keys("mash:circle+unknown") == []
     assert R.RE5PS3().prompt_keys("mash:circle+circle") == []
@@ -491,6 +491,99 @@ def test_generic_qte_chord_uses_engine_fast_cadence(monkeypatch, tmp_path):
     assert sent == [{"key": key, "down": down} for _ in range(4) for down in (True, False)
                     for key in ("cross", "circle")]
     assert sleeps == [0.045, 0.035] * 4 and stats["qte_presses"] == 4
+
+
+def test_verified_self_resuscitation_preempts_a_second_displayed_request(tmp_path):
+    memory = with_prompt(world(hp=1, action=7), 2, PLAYER, 0, mode=5, index=25)
+    memory.put(PLAYER + R.P_DYING_TIMER, struct.pack(">f", 6.74))
+    memory.u32(PLAYER + R.P_RECOVER_BUTTON, 0x328E1FE0)
+    memory.u32(0x328E1FE0 + 0x1C, 63)
+    with_prompt(memory, 2, PLAYER, 0, mode=1, index=1, second=True, btn=0x328E3000)
+    memory.u32(0x328E3000 + 0x1C, 0)
+    assert R.prompt(memory) == "mash"                 # a lower numeric priority cannot hide verified self-recovery
+    assert R.selected_prompt(memory)["button"] == 0x328E1FE0
+    memory.u32(PLAYER + R.P_RECOVER_BUTTON, 0)
+    assert R.prompt(memory) == "mash:square"          # ordinary requests retain the normal priority ordering
+
+
+def test_qte_stick_modes_require_verified_handlers_and_consistent_nonzero_index():
+    for mode, token in R.QTE_STICK_MODES.items():
+        memory = with_prompt(world(), 2, PLAYER, 0, mode=mode, index=20)
+        assert R.QTE_MASKS[20] == 0 and R.prompt(memory) == token
+        memory.u32(0x328E1FE0 + 0x20, 0)
+        assert R.prompt(memory) is None              # index0 is explicitly display-only in the evaluator
+        memory.u32(0x328E1FE0 + 0x20, 1)
+        assert R.prompt(memory) is None              # stale copied mask cannot authorize a stick request
+        memory.u32(0x38838370 + R.QTE_UNITS[0] + 0x18, R.QTE_MASKS[1])
+        assert R.prompt(memory) == token             # these modes use directions independently of the digital mask
+        memory.put(PLAYER + R.P_HP, struct.pack(">h", 0))
+        assert R.prompt(memory) is None
+    for address in R.QTE_STICK_SIGNATURES:
+        memory = with_prompt(world(), 2, PLAYER, 0, mode=7, index=21)
+        memory.put(address, b"bad!")
+        assert R.prompt(memory) is None
+    assert R.RE5PS3().prompt_keys("stick:unknown") == []
+    assert R.RE5PS3().prompt_keys("mash:wiggle+circle") == []
+
+
+def test_qte_wiggle_uses_alternating_real_edges_at_fast_cadence(tmp_path):
+    memory = with_prompt(world(), 2, PLAYER, 0, mode=6, index=20)
+    stats, sent, sleeps, count = {}, [], [], [0]
+    def stopped():
+        count[0] += 1
+        return count[0] > 4
+    bot = R.Bot(stats=stats, learn_dir=tmp_path)
+    engine.play_round({"driver": "gbox.mercs.titles.re5_ps3"}, memory, sent.extend, stopped, stats,
+                      brain=bot, sleep=sleeps.append, clock=lambda: count[0] * 0.08)
+    assert sent == [{"key": key, "down": down} for key in ("lleft", "lright", "lleft", "lright")
+                    for down in (True, False)]
+    assert sleeps == [0.045, 0.035] * 4 and stats["qte_presses"] == 4
+
+
+def test_qte_rotation_keeps_adjacent_directions_held_and_releases_on_stop(tmp_path):
+    memory = with_prompt(world(), 2, PLAYER, 0, mode=7, index=21)
+    count, held, states = [0], set(), []
+    def stopped():
+        count[0] += 1
+        return count[0] > 9
+    def send(rows):
+        for row in rows:
+            if row["down"]:
+                held.add(row["key"])
+            else:
+                held.discard(row["key"])
+        states.append(set(held))
+    now = lambda: count[0] * 0.081
+    bot = R.Bot(learn_dir=tmp_path, clock=now)
+    driver = R.RE5PS3()
+    assert driver.prompt_source(memory, {})() is None
+    assert driver.prompt_keys("stick:rotate") == []
+    engine.play_round({"driver": "gbox.mercs.titles.re5_ps3"}, memory, send, stopped, {},
+                      brain=bot, sleep=lambda seconds: None, clock=now)
+    assert states == [set(keys) for keys in (*R.QTE_ROTATION, R.QTE_ROTATION[0])] + [set()]
+    assert all(states[:-1]) and not held              # no neutral frame occurs within the circular sequence
+
+
+def test_qte_rotation_delays_never_skip_directions_and_axis_requests_hold_until_end(tmp_path):
+    memory = with_prompt(world(), 2, PLAYER, 0, mode=7, index=21)
+    now = [0.0]
+    bot = R.Bot(learn_dir=tmp_path, clock=lambda: now[0])
+    assert bot.tick(R.snapshot(memory)) == {"hold": {"lup"}}
+    now[0] = 0.01
+    assert bot.tick(R.snapshot(memory)) == {"hold": {"lup"}}
+    now[0] = 2.0
+    assert bot.tick(R.snapshot(memory)) == {"hold": {"lup", "lleft"}}
+    for mode, key in ((8, "lup"), (9, "lleft")):
+        with_prompt(memory, 2, PLAYER, 0, mode=mode, index=26)
+        assert R.RE5PS3().prompt_source(memory, {})() is None
+        assert bot.tick(R.snapshot(memory)) == {"hold": {key}}
+        now[0] += 2
+        assert bot.tick(R.snapshot(memory)) == {"hold": {key}}
+    with_prompt(memory, 2, PLAYER, 0, mode=2, index=1)
+    assert bot.tick(R.snapshot(memory)) == {"hold": set()}
+    assert bot._stick_token is None
+    with_prompt(memory, 2, PLAYER, 0, mode=7, index=21)
+    assert bot.tick(R.snapshot(memory)) == {"hold": {"lup"}}
 
 
 HOURGLASS_VT = 0x0159_0000
