@@ -143,6 +143,12 @@ def play(t, ad, send, stopped, style=None, clock=time.time, sleep=time.sleep, st
                 menu_at = clock()
                 stats["menu_presses"] = stats.get("menu_presses", 0) + 1
                 continue
+            if key is None and now - (menu_at or out_since) > getattr(t, "MENU_IDLE", 30.0):
+                for k in getattr(t, "NUDGE_KEYS", ("start", "b")):   # a screen nothing maps: push it along
+                    tap(k)
+                menu_at = clock()
+                stats["menu_nudges"] = stats.get("menu_nudges", 0) + 1
+                continue
             sleep(0.1)
             continue
         if route and not jump_ok and now - out_since > 3 and (title or now - out_since > t.OUT_JUMP):
