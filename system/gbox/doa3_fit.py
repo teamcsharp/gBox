@@ -48,7 +48,8 @@ LIMB_FRAMES = {
     "l_shin": ((1, 0, 0), (0, 0, -1), (0, 1, 0)),
     "r_shin": ((1, 0, 0), (0, 0, -1), (0, 1, 0)),
 }
-STRETCH = (0.6, 1.7)
+STRETCH = (0.6, 3.0)              # a limb reaches the native joint below it (SA1 Sonic's shins need 3x)
+THICKEN_FROM = 1.7                # past this stretch a limb also thickens by sqrt(stretch / 1.7)
 HEAD_GROWTH = 2.0                 # a donor head may stand up to 2x the native head's height (and width)
 HAND_GROWTH = 1.3                 # gloves reach up to 1.3x the native hand
 LIMB_THICKNESS = 1.3              # a donor limb is at most 1.3x as thick as the native limb
@@ -212,21 +213,22 @@ def fit(rig: dict, geometry: dict, roles: dict, *, texture_limit: int = 256, slo
         native = part_extent(geometry, primary[role], role)
         k = float(np.clip(native / max(scale * length, 1e-9), *STRETCH)) if length > 1e-9 else 1.0
         d = np.array(CANON[role], float)
-        # thickness: across the bone the donor limb keeps its own shape, at most LIMB_THICKNESS x the native limb
-        thick = 1.0
+        # thickness: across the bone the donor limb keeps its own shape (a long stretch thickens it a little), at
+        # most LIMB_THICKNESS x the native limb
+        thick = float(np.sqrt(k / THICKEN_FROM)) if k > THICKEN_FROM else 1.0
         Q = (segment(role) - origin) @ (scale * straighten).T
         if len(Q):
             across = np.linalg.norm(Q - np.outer(Q @ d, d), axis=1)
             Pn = np.array([v[:3] for v in geometry["objects"][primary[role]]["vertices"]])
             t_donor = float(np.percentile(across, 95))
             t_native = float(np.percentile(np.linalg.norm(Pn[:, :2], axis=1), 95))
-            if t_donor > LIMB_THICKNESS * t_native > 0:
+            if t_donor * thick > LIMB_THICKNESS * t_native > 0:
                 thick = LIMB_THICKNESS * t_native / t_donor
         stretch_m = thick * np.eye(3) + (k - thick) * np.outer(d, d)
         frame = np.array(LIMB_FRAMES[role], float)
         rules[role] = (frame @ stretch_m @ (scale * straighten), origin, np.zeros(3))
         stretch[role] = k
-        if thick < 1.0:
+        if thick != 1.0:
             sizes[role] = round(thick, 3)
         straightened[role] = straighten
     for role in ("chest", "hip"):
