@@ -364,6 +364,10 @@ class LaunchIn(BaseModel):
                                            # (gbox.jumpstate). Never set for the operator's own Play.
     memory_cards: str = ""                 # "operator": an agent-owned demo (the screensaver) inserts the cards the operator
                                            # selected for this game, so their saved characters load (#2817)
+    pad: str = ""                          # "keyboard": a bot drives this session with send_input where the emulator reads
+                                           # one input device per player (PS3 in RPCS3 on Windows: player 1 = gBox's
+                                           # keyboard pad, not the operator's controller). jump (a demo) implies it there.
+                                           # "" = the operator's controller (normal Play)
 
 class LaunchOut(BaseModel):
     session_id: str
@@ -738,6 +742,7 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     diag["stage"] = "pick emulator"
     ad = adapters.for_game(g.model_dump(), ctx.config, debug=inp.debug, mod=inp.mod)
     ad.capture_gameplay = not getattr(ctx,'agent_use',False) and not inp.capture_backend
+    ad.input_pad = inp.pad                                # "keyboard": a bot plays (RPCS3 on Windows: gBox's keyboard pad)
     ad.api_server, ad.api_headers = ctx.server or '', ctx.headers
     ad.tas_server, ad.tas_headers = ctx.server or '', ctx.headers
     ad.progress = ctx.progress
