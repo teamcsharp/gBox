@@ -86,6 +86,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
   .tchip img { width:34px; height:24px; object-fit:cover; border-radius:4px; background:#000; } .tchip:hover { border-color:var(--acc); }
   .tchip .where { flex:none; opacity:.75; }
   .tchip.cur { border-color:var(--acc); box-shadow:0 0 0 1px var(--acc) inset; } .tchip.agent { opacity:.55; } .tchip i { font-style:normal; font-size:9.5px; color:var(--mut); }
+  .tchip.nopic img { filter:grayscale(1) brightness(.55); } .tchip i.np { color:var(--bad); }   /* no recent picture of that game (#2858) */
   .tbell { position:relative; flex:none; display:grid; place-items:center; width:30px; height:30px; border-radius:8px; border:1px solid var(--line);
     background:var(--card); color:var(--fg); cursor:pointer; } .tbell.new { border-color:var(--acc); color:var(--acc); }
   .tbell b { position:absolute; top:-5px; right:-5px; min-width:15px; height:15px; border-radius:8px; background:var(--acc); color:#fff; font-size:10px; line-height:15px; }
@@ -279,6 +280,8 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/session-presentation.js"></script>
 <script src="/viz/session-speed.js"></script>
 <script src="/viz/session-move.js"></script>
+<script src="/viz/remote-game.js"></script>
+<script src="/viz/session-live.js"></script>
 <script src="/viz/session-build.js"></script>
 <script src="/viz/image-pan-zoom.js"></script>
 <script src="/viz/cast-mapper.js"></script>
@@ -525,15 +528,19 @@ async function trayTick() {
     if (TRAY.seen === null) TRAY.seen = GBoxBuildNotes.seenOf(notes);       // opening the page announces nothing old
     else GBoxBuildNotes.fresh(notes, TRAY.seen).slice(0, 4).reverse().forEach(bnAnnounce);   // stacked: the newest ends on top
     const unread = GBoxBuildNotes.unread(notes), cur = (window.active || {}).sid;
-    const chip = x => { const l = labels[x.session_id] || {}, agent = l.owner === "agent";
-      return `<button class="tchip${agent ? " agent" : ""}${x.session_id === cur ? " cur" : ""}" data-sid="${esc(x.session_id)}"
-        title="${esc((l.label ? l.label + " · " : "") + (x.title || "") + (x.mod_title ? " · " + x.mod_title : "") + (agent ? " (an agent's test session)" : "") + " · " + (sessionIsLocal(x) ? "This PC" : "Remote: " + (sessionWorkerName(x) || "another computer")) + " · " + x.session_id)}">
+    // #2858: a game elsewhere with no recent picture is marked, not offered as watchable (its view says why)
+    const nowS = Date.now() / 1000, pics = new Map(run.map(x => [x.session_id, sessionIsLocal(x) ? { live: true } : GBoxSessionLive.judge(x, ws, nowS)]));
+    const chipTitle = x => { const l = labels[x.session_id] || {}, agent = l.owner === "agent", v = pics.get(x.session_id);
+      return (l.label ? l.label + " · " : "") + (x.title || "") + (x.mod_title ? " · " + x.mod_title : "") + (agent ? " (an agent's test session)" : "") + " · " + (sessionIsLocal(x) ? "This PC" : "Remote: " + (sessionWorkerName(x) || "another computer")) + (v.live ? "" : " · " + v.text) + " · " + x.session_id; };
+    const chip = x => { const l = labels[x.session_id] || {}, agent = l.owner === "agent", v = pics.get(x.session_id);
+      return `<button class="tchip${agent ? " agent" : ""}${v.live ? "" : " nopic"}${x.session_id === cur ? " cur" : ""}" data-sid="${esc(x.session_id)}"
+        title="${esc(chipTitle(x))}">
         <img alt="" src="/api/sessions/${encodeURIComponent(x.session_id)}/frame.jpg?${tq()}&t=${Math.floor(Date.now() / 15000)}" onload="this.style.visibility='visible'" onerror="this.style.visibility='hidden'">
         ${sessionIsLocal(x) ? ICON_LOCAL : ICON_REMOTE}
-        <span>${esc((l.label || x.title || "game").replace(/\s*\(.*$/, "").slice(0, 14))}</span>${agent ? '<i>agent</i>' : ""}</button>`; };
+        <span>${esc((l.label || x.title || "game").replace(/\s*\(.*$/, "").slice(0, 14))}</span>${agent ? '<i>agent</i>' : ""}${v.live ? "" : '<i class="np">no picture</i>'}</button>`; };
     run.sort((a, b) => ((labels[a.session_id] || {}).owner === "agent") - ((labels[b.session_id] || {}).owner === "agent"));
     const signature = JSON.stringify(run.map(x => [x.session_id, x.title, x.mod_title, labels[x.session_id]?.label, labels[x.session_id]?.owner,
-      x.session_id === cur, sessionWorkerName(x), sessionIsLocal(x)]));
+      x.session_id === cur, sessionWorkerName(x), sessionIsLocal(x), pics.get(x.session_id).live]));
     const tray = $("#tray"), frameKey = Math.floor(Date.now() / 15000);
     if (TRAY.signature !== signature) {
       tray.innerHTML = run.map(chip).join("") +
@@ -542,6 +549,8 @@ async function trayTick() {
       tray.querySelectorAll(".tchip img").forEach(img => img.dataset.frameKey = frameKey);
     } else {
       tray.querySelectorAll(".tchip").forEach(button => {
+        const x = run.find(r => r.session_id === button.dataset.sid);
+        if (x) button.title = chipTitle(x);                      // "no picture from … for N s" stays current
         const img = button.querySelector("img");
         if (+img.dataset.frameKey === frameKey) return;
         img.dataset.frameKey = frameKey;
@@ -1718,13 +1727,20 @@ function liveExamineSession(ss, sid) {
 }
 async function sessionsView(sid, mode) {
   const ss = await api("/api/sessions");
-  if (!sid) return `<p class="mut">Open a running game to watch and control it, or reopen any game from your history (relaunches its ROM).</p>` +
-    table(["Game", "State", "Adapter", "Frame age", "", "Session"], ss.slice(0, 200).map(s => `<tr>
+  if (!sid) {
+    // #2858: a game elsewhere is offered to Watch only while a picture of it comes; otherwise the row says why
+    const ws = await api("/api/workers").catch(() => null), nowS = Date.now() / 1000;
+    const pic = s => s.state === "running" && !sessionIsLocal(s) ? GBoxSessionLive.judge(s, ws, nowS) : { live: true };
+    return `<p class="mut">Watch a running game, or reopen any game from your history (relaunches its ROM). A game with no recent picture says why when you open it.</p>` +
+    table(["Game", "State", "Adapter", "Frame age", "", "Session"], ss.slice(0, 200).map(s => { const v = pic(s); return `<tr>
       <td><a href="#" onclick='${s.state === "running" ? `show("Sessions",${JSON.stringify(s.session_id)})` : `play(${JSON.stringify(s.game_id)})`};return false'><b>${esc(s.title)}</b></a></td>
-      <td>${s.state === "running" ? (s.stopping ? '<span class="mut">stopping…</span>' : '<span class="ok">running</span>') : '<span class="mut">ended</span>'}</td><td>${esc(s.adapter)}</td><td>${s.last_frame_age ?? "–"}s</td>
-      <td>${s.state === "running" ? `<button class="act pri" onclick='show("Sessions",${JSON.stringify(s.session_id)})'>Open</button>` : ""}
+      <td>${s.state === "running" ? (s.stopping ? '<span class="mut">stopping…</span>' : v.live ? '<span class="ok">running</span>'
+        : `<span class="bad" title="${esc(v.why)}">${esc(v.text)}</span>`) : '<span class="mut">ended</span>'}</td><td>${esc(s.adapter)}</td><td>${s.last_frame_age ?? "–"}s</td>
+      <td>${s.state === "running" ? (v.live ? `<button class="act pri" onclick='show("Sessions",${JSON.stringify(s.session_id)})'>${sessionIsLocal(s) ? "Open" : "Watch"}</button>`
+        : `<button class="act" title="${esc(v.why)}" onclick='show("Sessions",${JSON.stringify(s.session_id)})'>Open</button>`) : ""}
           ${s.game_id ? `<button class="act" onclick='play(${JSON.stringify(s.game_id)})'>Reopen</button>` : ""}</td>
-      <td><code class="mut">${esc(s.session_id)}</code></td></tr>`));
+      <td><code class="mut">${esc(s.session_id)}</code></td></tr>`; }));
+  }
   const original = ss.find(x => x.session_id === sid);
   const s = (mode === "examine" ? liveExamineSession(ss, sid) : original) || original || {};
   sid = s.session_id || sid;
@@ -1753,13 +1769,20 @@ async function sessionsView(sid, mode) {
   if (s.state !== "running") return head + `<p class="mut">This session has ended. Open a running game to examine it${s.game_id ? ', or reopen this game' : ''}.</p>${s.game_id ? `<button class="act pri" onclick='play(${JSON.stringify(s.game_id)})'>Reopen game</button>` : ''}`;
   if (mode === "inspect") return head + await inspectView(sid);
   if (mode === "examine") return head + examineView(sid, s);
+  // a game another PC plays natively (#2858): its live screen where the game goes, Pull it to this PC in a bar under it.
+  // A game elsewhere with no recent picture (its PC offline, nothing on its screen or stream) is never an empty view: why,
+  // with Retry / Stop / Relaunch under it, until a picture comes
+  const elsewhere = local && s.detail.worker_name !== window.GBOX_LOCAL?.worker, here = local && !elsewhere;
+  const workers = here ? null : await api("/api/workers").catch(() => null);
+  const hostPC = (workers || []).find(w => w.id === sid.split("-")[0]);
+  const verdict = here ? null : GBoxSessionLive.judge(s, workers, Date.now() / 1000);
   return head + `
     <div class="play fit"><div>
-      ${local ? (s.detail.worker_name === window.GBOX_LOCAL?.worker
+      ${verdict && !verdict.live ? GBoxSessionLive.html({ sid, verdict, title: s.title, auth: tq(), online: !!hostPC?.online })
+      : local ? (here
         ? `<div id="nativeslot" data-sid="${esc(sid)}" class="screen" style="background:#000"></div>`
-        : `<div class="screen" style="display:flex;align-items:center;justify-content:center;min-height:300px;padding:20px;text-align:center">
-        <div><h3>Running natively on ${esc(s.detail.worker_name || "another PC")}</h3><p class="mut">This game is playing on that PC's screen. Inspect, memory edits and Blender copy still work from here.</p>
-        ${window.GBOX_LOCAL?.worker && s.state === "running" ? `<button class="act pri" title="Save state there, start the same game (and mod) on this PC, load it, close the other copy" onclick='moveHere(${JSON.stringify(sid)}, this)'>Pull it to this PC</button>` : ""}</div></div>`)
+        : GBoxRemoteGame.html({ sid, wid: sid.split("-")[0], worker: s.detail.worker_name || "another PC", title: s.title, auth: tq(),
+            crop: !!hostPC?.features?.includes("desktop_game_crop"), pull: !!window.GBOX_LOCAL?.worker }))
       : `<img id="scr" data-sid="${esc(sid)}" title="Ctrl+click: pick the object under the cursor (3D model)" class="screen" tabindex="0" alt="Live game view — click, then use the keyboard" src="/api/sessions/${encodeURIComponent(sid)}/mjpeg?${tq()}">`}
       ${s.game_id ? `<div id="wb" data-gid="${esc(s.game_id)}" data-sid="${esc(sid)}"><p class="mut">loading your controls…</p></div>` : ""}
       <div id="dock-main" class="dock" data-zone="main"></div></div>
@@ -2220,6 +2243,9 @@ sessionsView.after = (sid, mode) => {
   padStatus(); loadPadMaps();                                  // maps changed on another PC reach this game's pad too
   const pg = $("#padglyph");
   if (pg) pg.oncontextmenu = e => padMapMenu(e, sid);         // right-click a button or the stick: "Map N64 C-up to…"
+  const stop = btn => hardStop(sid, btn), relaunch = btn => relaunchSession(sid, btn);
+  if ($("#remote-game")) GBoxRemoteGame.mount(document, { api, auth: tq, pull: btn => moveHere(sid, btn), stop, relaunch });   // another PC's game: watched, never driven
+  if ($("#no-picture")) GBoxSessionLive.mount(document, { sid, api, stop, relaunch, onLive: () => show("Sessions", sid, mode) });   // shows it once a picture comes
   if (!$("#scr")) return;                                      // native local window: input goes straight to RetroArch
   const send = (key, down) => api(`/api/sessions/${encodeURIComponent(sid)}/input`, { events: [{ key, down }] });
   const scr = $("#scr"), held = new Set();
@@ -3081,6 +3107,18 @@ async function moveHere(sid, btn) {                        // pull the game onto
     show("Sessions", j.output.session_id);
   }
   catch (e) { btn.disabled = false; btn.textContent = "Can't move: " + e.message.slice(0, 90); btn.title = e.message; }
+}
+// Relaunch a game that shows no picture (#2858): in place on its PC while that PC answers (same game, build and PC; the
+// view follows the new copy), else where you play (same game and build)
+async function relaunchSession(sid, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const [ss, ws] = await Promise.all([api("/api/sessions"), api("/api/workers").catch(() => [])]);
+    const s = ss.find(x => x.session_id === sid) || {};
+    if (s.state === "running" && ws.some(w => w.id === sid.split("-")[0] && w.online)) return await restartGame(sid, btn);
+    if (s.game_id) play(s.game_id, undefined, false, { disc: (s.collection_mod || s.mod || "").split("~")[0], slot: "" });
+  } catch (e) { if (btn) btn.title = "Relaunch failed: " + e.message; }
+  finally { if (btn) btn.disabled = false; }
 }
 async function runJob(body) {
   let j = await api("/api/jobs", body);
