@@ -40,15 +40,24 @@ HEAD_BYTES = 0x8010
 Inspect = Callable[[str], 'tuple[bytes | None, int | None]']
 
 
-def refusals(files: Iterable[str], inspect: Inspect | None = None) -> list[str]:
+# Where Hermes work lives. Run output (checkpoints, manifests, debug scripts) at the repository or system root is not
+# work: it was pushed from task worktrees straight into system/ until the pre-push hook refused it.
+HOMES = ('system/gbox/', 'system/tests/', 'system/clients/', 'system/docs/', 'system/hermes/', 'system/profiles/',
+         'system/scripts/', 'system/adapters/')
+
+
+def refusals(files: Iterable[str], inspect: Inspect | None = None, homes: tuple[str, ...] | None = None) -> list[str]:
     """One reason per file that must never be published. `inspect(path)` -> (first HEAD_BYTES bytes, size), or
-    (None, None) for a deleted or unreadable file (nothing to publish)."""
+    (None, None) for a deleted or unreadable file (nothing to publish). `homes`: the only folders a push may touch."""
     out = []
     for name in files:
         path = str(name).replace('\\', '/')
         suffix = PurePosixPath(path).suffix.lower()
         head, size = inspect(path) if inspect else (None, None)
         if inspect and head is None and size is None:
+            continue
+        if homes and not path.startswith(homes):
+            out.append(f'{path}: outside the source, test, docs, profiles and client folders (run output stays in the workspace)')
             continue
         fixture = path.startswith(FIXTURE_HOME) and size is not None and size <= FIXTURE_MAX
         kind = next((what for at, magic, what in MAGIC if head and head[at:at + len(magic)] == magic), None)
@@ -112,7 +121,7 @@ def pre_push_main(stdin=None, root: Path | None = None) -> int:
             continue                                   # a deleted ref publishes nothing
         local, remote = parts[1], parts[3]
         base = 'origin/main' if set(remote) == {'0'} else remote
-        bad += refusals(changed_files(root, base, local), commit_inspector(root, local))
+        bad += refusals(changed_files(root, base, local), commit_inspector(root, local), HOMES)
     if bad:
         print('gBox refused this push: game data and binaries are never published to the public repository:',
               *bad[:20], sep='\n  ', file=sys.stderr)

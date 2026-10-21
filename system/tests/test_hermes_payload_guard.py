@@ -94,3 +94,11 @@ def test_installed_hook_refuses_a_real_push_of_game_data(repo):
     (repo / 'system/gbox/a.py').write_text('A = 3\n')
     git('commit', '-am', 'source only', cwd=repo)
     assert subprocess.run(['git', 'push', 'origin', 'hermes/request-2-1'], cwd=repo, capture_output=True).returncode == 0
+
+
+def test_run_output_outside_the_work_folders_is_refused_on_push():
+    junk = {'system/.checkpoint.json': b'{}', 'system/debug_probe.py': b'print(1)\n', 'tetris_nes_build.json': b'{}',
+            'system/docs/notes.md': b'# ok\n', 'system/profiles/gamedata/x-ram.json': b'{}'}
+    out = G.refusals(junk, files(**junk), G.HOMES)
+    assert sorted(o.split(':')[0] for o in out) == ['system/.checkpoint.json', 'system/debug_probe.py', 'tetris_nes_build.json']
+    assert all('outside' in o for o in out)

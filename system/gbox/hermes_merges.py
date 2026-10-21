@@ -219,8 +219,8 @@ class Branches:
 
     def refused(self, sha):
         """Why the branch's changes since main must never be published (gbox/hermes_payload_guard.py), or []."""
-        from .hermes_payload_guard import changed_files, commit_inspector, refusals
-        return refusals(changed_files(self.root, 'origin/main', sha), commit_inspector(self.root, sha))
+        from .hermes_payload_guard import HOMES, changed_files, commit_inspector, refusals
+        return refusals(changed_files(self.root, 'origin/main', sha), commit_inspector(self.root, sha), HOMES)
 
     def open_pull(self, branch, record, pending):
         """Open a draft PR for stranded commits; return {number, url}."""
