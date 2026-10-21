@@ -28,6 +28,36 @@ def obj(props, req=()):
     return {"type": "object", "properties": props, "required": list(req)}
 
 
+def _job_input_defaults(value, schema):
+    """Compare omitted fields with the declared defaults the HTTP validator stores."""
+    if not isinstance(value, dict):
+        return value
+    properties = schema.get('properties', {}) if isinstance(schema, dict) else {}
+    defaults = {key: field['default'] for key, field in properties.items()
+                if isinstance(field, dict) and 'default' in field}
+    return defaults | value
+
+
+def _generic_job_body(arguments, schema):
+    """Recover misplaced routing metadata only when the tool schema proves it is not tool input."""
+    body = {k: arguments[k] for k in ('tool', 'input', 'require_os', 'require_worker', 'parent_request_id')
+            if k in arguments}
+    body['input'] = dict(body.get('input') or {})
+    properties = schema.get('properties') if isinstance(schema, dict) else None
+    if isinstance(properties, dict) and schema.get('type') == 'object':
+        for key in ('require_os', 'require_worker', 'parent_request_id'):
+            if key not in body['input'] or key in properties:
+                continue
+            value = body['input'].pop(key)
+            if key in body and body[key] != value:
+                raise ValueError(f'Conflicting {key}; put one routing value beside tool and input.')
+            body[key] = value
+    body['agent_use'] = True
+    if sid := body['input'].get('session_id'):
+        body['require_worker'] = sid.split('-')[0]
+    return body
+
+
 METRIC_FIELDS = {
     "model": S, "provider": S, "system": S, "tokens_in": I, "tokens_out": I,
     # SDK token metadata also contains strings, nested objects and null costs.
@@ -254,6 +284,9 @@ def build(base_url: str, token: str) -> Server:
         return chosen | {'operator_worker_id': protected, 'selection': 'configured test PC' if assigned else 'protected operator PC excluded'}
 
     async def start_background(body):
+        if body['tool'] not in registry:
+            registry.update({t['name']: t for t in (await get('/api/registry'))['tools']})
+        schema = registry.get(body['tool'], {}).get('input_schema') or {}
         if body.get('require_worker') in ('idle', 'other'):
             body = body | {'require_worker': (await select_background_worker(body['tool']))['id']}
         target = body.get('require_worker')
@@ -267,7 +300,9 @@ def build(base_url: str, token: str) -> Server:
         # Retrying an MCP call must not multiply model swaps on the same session.
         active = await get('/api/jobs', state='queued,running', limit=100)
         for job in active:
-            if (job.get('tool') == body['tool'] and job.get('input') == body.get('input', {})
+            if (job.get('tool') == body['tool']
+                    and _job_input_defaults(job.get('input', {}), schema)
+                    == _job_input_defaults(body.get('input', {}), schema)
                     and job.get('require_worker') == body.get('require_worker')
                     and job.get('require_os') == body.get('require_os')
                     and job.get('parent_request_id') == body.get('parent_request_id')):
@@ -415,10 +450,9 @@ def build(base_url: str, token: str) -> Server:
         if name == "game_roster":
             return await get(f"/api/games/{a['game_id']}/roster")
         if name == "start_job":
-            body = {k: a[k] for k in ("tool", "input", "require_os", "require_worker", "parent_request_id") if k in a}
-            body["agent_use"] = True
-            if sid := body.get('input', {}).get('session_id'):
-                body['require_worker'] = sid.split('-')[0]
+            if a['tool'] not in registry:
+                registry.update({t['name']: t for t in (await get('/api/registry'))['tools']})
+            body = _generic_job_body(a, registry.get(a['tool'], {}).get('input_schema') or {})
             return await start_background(body)
         if name == "get_job":
             return await get(f"/api/jobs/{a['job_id']}")
