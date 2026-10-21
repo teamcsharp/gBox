@@ -59,6 +59,10 @@ test('web shell: the card, the right-click menu and the Sessions header offer it
   assert.match(web, /GBoxBotDemo\.pcs\(TRAY\.ws, window\.GBOX_LOCAL\?\.worker\)/);
   // a coach note sent while the game runs on this PC: the game gets the keyboard back (desktop: gamefocus)
   assert.match(web, /onSent: \(\) => \{[\s\S]{0,300}console\.log\("GBOX:" \+ JSON\.stringify\(\{ ev: "gamefocus", sid \}\)\)/);
+  // the operator's kept mods switch themselves on only in the operator's own play: never in a bot demo or an agent's
+  // session (2026-10-20: they landed three times on an agent's RE4 session, once while a stage loaded, and it froze)
+  assert.match(web, /modWatch\(gid, sid, mods, !\(viewed && \(viewed\.bot_demo \|\| viewed\.agent_owned\)\)\)/);
+  assert.match(web, /function modWatch\(gid, sid, mods, auto = true\) \{[\s\S]{0,120}if \(!auto\) \{[\s\S]{0,400}MODWATCH\.mods = \[\]; MODWATCH\.tick = null;[\s\S]{0,400}return;/);
 });
 
 test('desktop shell: the docked game\'s right-click menu and the game chip offer it, launched through the view', () => {

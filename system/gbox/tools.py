@@ -2679,7 +2679,10 @@ def _autoplay_hacks(sid: str, g: dict) -> list[str]:
     return held
 
 
-PLAYBOOKS = ("re4_merc_bot", "doa2_bot", "ge007_bots")   # game-specific autoplay bots: matches(ad, g), setup(ad), play(ad, send, stopped)
+# game-specific autoplay bots: matches(ad, g), setup(ad), play(ad, send, stopped). mercs_bot (the Mercenaries on any
+# title whose RAM map has a "mercs" block) comes first and matches once the engine is installed (gbox.mercs.engine);
+# until then RE4 plays through re4_merc_bot
+PLAYBOOKS = ("mercs_bot", "re4_merc_bot", "doa2_bot", "ge007_bots")
 # playbook -> the module that reads its game's button prompts from RAM (for_adapter(ad, stats) -> a prompt source):
 # play(..., ram_prompt=) asks it before the screen watcher
 RAM_PROMPTS = {"re4_merc_bot": "re4_ram_prompts"}

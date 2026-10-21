@@ -186,6 +186,46 @@ def lessons_writer(map_id: str, run: str | None = None):
     return lambda entry: L.append(map_id, entry, run=run)
 
 
+# --- coaching notes and improvement reports -> the run-lessons log ------------------------------------------------------
+LESSON_KEYS = ("ts", "kind", "text", "session_id", "worker", "telemetry", "captures", "summary", "request_id", "note")
+
+
+def lesson(kind: str, text: str, **kw) -> dict:
+    """One entry of a title's run-lessons log in the schema agreed with the engine (LESSON_KEYS): kind "coach" (a live
+    coaching note typed while the bot played: gbox.coaching) or "report" (a ⚑ report filed on a session of the title:
+    POST /api/requests/issue); note is the coaching note's number."""
+    e = dict.fromkeys(LESSON_KEYS)
+    e.update({k: v for k, v in kw.items() if k in LESSON_KEYS})
+    e.update(kind=kind, text=text, ts=e["ts"] if e["ts"] is not None else round(time.time(), 3))
+    return e
+
+
+def map_id_for(g: dict | None) -> str | None:
+    """The RAM map id of a Mercenaries title (its map has a "mercs" block) by the game / session dict, else None."""
+    from . import ram_map
+    try:
+        rm = ram_map.find(g or {})
+    except Exception:                                       # noqa: BLE001 - a map that does not load: no lessons
+        return None
+    block = (getattr(rm, "spec", None) or {}).get("mercs") if rm is not None else None
+    return rm.id if isinstance(block, dict) else None
+
+
+def note_lesson(g: dict | None, entry: dict) -> bool:
+    """Append a coaching note or a report on a Mercenaries title to its run-lessons log, which the engine reads before
+    its next round. False when nothing was written (another title, or the engine's lessons module not installed);
+    never raises: the note or report is filed either way."""
+    try:
+        mid = map_id_for(g)
+        write = lessons_writer(mid) if mid else None
+        if write is None:
+            return False
+        write(entry)
+        return True
+    except Exception:                                       # noqa: BLE001
+        return False
+
+
 def apply_ops(ad, ops) -> list[str]:
     """Run [[op, kwargs], ...] through re_mods in this process; returns the ones that failed."""
     from . import re_mods_tool as RM
@@ -241,17 +281,22 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
     lessons = lessons_writer(prof["map_id"], run)
     stats.setdefault("rounds", 0)
     stats["profile"] = prof["map_id"]
+    fresh = True                                            # a round counts once, however often the engine hands back
     while not stopped():
         scr = menus.screen(m)
         if scr.get("where") == "playing" and E is not None:
-            stats["rounds"] += 1
+            if fresh:
+                stats["rounds"] += 1
+                fresh = False
             out = E.play_round(prof, m, send, stopped, stats, lessons)
             if out == "lost":
                 stats.update(hung=True, wandered="the round was lost (no player, or black too long)")
                 break
             if out == "stopped":
                 break
+            sleep(POLL_S)                                   # never a busy loop on an engine that hands straight back
             continue
+        fresh = True
         why = boot.tick(clock(), scr=scr)
         if why:
             stats.update(hung=True, wandered=why)

@@ -4837,6 +4837,24 @@ def create_app(config: Config) -> FastAPI:
         mods_on: list[str] = []            # mod cards showing as on / applied in the app ("title: status")
         kept_mods: list[str] = []          # mod ids the operator keeps on for this game
 
+    def _issue_lesson(report: dict, r: IssueIn, s_: dict) -> bool:
+        """A ⚑ report on a session of a Mercenaries title (its RAM map has a "mercs" block) is an improvement report for
+        the engine too: one "report" entry in the title's run-lessons log, read before its next round
+        (gbox.mercs_bot.note_lesson; docs/autoplay.md). Other titles: nothing. Never raises."""
+        gid = s_.get("game_id") or r.context.get("game_id")
+        if not gid:
+            return False
+        try:
+            from . import mercs_bot
+            from .screensaver import telemetry_get
+            text = "\n".join(x for x in (report.get("title"), r.note, r.detail) if x)
+            worker = (s_.get("detail") or {}).get("worker_name") or (r.session_id.split("-")[0] if r.session_id else None)
+            return mercs_bot.note_lesson({"game_id": gid}, mercs_bot.lesson(
+                "report", text, session_id=r.session_id or None, worker=worker,
+                telemetry=(telemetry_get(r.session_id) if r.session_id else None) or None, request_id=report.get("id")))
+        except Exception:                             # noqa: BLE001 - the report is filed either way
+            return False
+
     def _issue_log(sid: str, s_: dict) -> tuple[str, str]:
         """The session's emulator log tail (worker session_op log_tail); a Spark session's log file is also readable here.
 
@@ -5066,6 +5084,7 @@ def create_app(config: Config) -> FastAPI:
                                                            "game": game,
                                                            "save_state_requested": r.save_state,
                                                            "issue_capture_key": capture_key}), actor)
+        _issue_lesson(report, r, s_)
         if not r.save_state or not r.session_id or s_.get("state") != "running":
             return report
         rid = report["id"]
