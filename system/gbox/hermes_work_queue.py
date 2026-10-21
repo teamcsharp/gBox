@@ -147,6 +147,18 @@ def sync(data, favorites, requests, *, now):
     data.update(favorites_count=len(favorite_ids), synced_at=now)
 
 
+def _run_workdir(item) -> str:
+    """A dispatched run starts in its request's own Git worktree (hermes_delivery.prepare), so relative edits, rg and
+    git land in the tracked workspace - never in the deployed runtime (~/gBox/system), where queue runs used to start
+    and edited the live code (2026-10-20: the Dolphin -C keys stripped from the share's adapters.py broke every Linux
+    Dolphin pad; a "cron" Git repository appeared in the share). A neutral folder when no worktree can be prepared."""
+    try:
+        return mode._workdir(item['request_id'], int(item['number']))
+    except Exception as error:  # noqa: BLE001 - the run still starts, away from the live code
+        item['workspace_error'] = f'{type(error).__name__}: {error}'[:300]
+        return mode._neutral_workdir()
+
+
 def next_stage(item):
     return next((stage for stage in STAGES if (item.get('stages', {}).get(stage) or {}).get('status') != 'verified'), None)
 
@@ -708,16 +720,17 @@ def tick(*, now=None):
                 item['unlock_dispatch_times'] = [stamp for stamp in item.get('unlock_dispatch_times', [])
                                                  if now - 3600 < stamp <= now] + [now]
             _save(data)
+            workdir = _run_workdir(item)
             if existing:
                 job = existing[0]
                 mode._run('edit', job['id'], '--prompt', prompt, '--no-continuity',
                           '--reasoning-effort', run_settings.reasoning_effort if local else 'high',
-                          *(pin or ['--unpin']))
+                          '--workdir', workdir, *(pin or ['--unpin']))
                 mode._run('resume', job['id'], '--run-now')
             else:
                 mode._run('create', mode._once(), prompt, '--name', name, '--repeat', '1',
                           '--reasoning-effort', run_settings.reasoning_effort if local else 'high', *pin,
-                          '--workdir', str(mode._PROMPT.parents[2]),
+                          '--workdir', workdir,
                           '--deliver', 'local', '--failure-deliver', 'local')
                 found = [j for j in mode._jobs() if j.get('name') == name]
                 if len(found) != 1:
