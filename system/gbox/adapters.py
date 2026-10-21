@@ -3179,18 +3179,34 @@ class SaveMGOAdapter(Adapter):
 class RPCS3Adapter(Adapter):
     """Windows node: PS3 games (extracted disc folders) in RPCS3. Guest memory is read/written straight from the
     emulator process (PS3 addresses map 1:1 onto a 4 GiB-aligned host reservation); pause/resume freeze the whole
-    emulator, which is how a mechanic can be held mid-flight while something else decides its outcome."""
+    emulator, which is how a mechanic can be held mid-flight while something else decides its outcome.
+
+    Player 1 is the operator's controller (input_configs/global/Default.yml, XInput). A launch a bot drives
+    (LaunchIn.pad = "keyboard", or a demo / autoplay launch: LaunchIn.jump) starts RPCS3 with --input-config
+    gbox-keyboard instead: player 1 is RPCS3's keyboard pad (RPCS3_KEYBOARD_INPUT, the Linux sessions' layout) and
+    send_input posts its keys to the game window (no focus needed, see send_input). RPCS3 gives a player one input
+    handler, so that session does not read the operator's controller; Play launches it again with their pad."""
     name = "rpcs3"
     # no stream_session: the game plays in its own native window, and a 60 fps gdigrab desktop capture next to a
     # GPU-rendered game made it stutter (same reason RetroArch native windows aren't streamed)
     supported = {"launch_game", "stop_game", "query_runtime", "get_frame", "read_memory", "write_memory", "pause", "resume",
-                 "save_state", "load_state"}
+                 "save_state", "load_state"}                # + send_input on a keyboard-pad (bot) launch, per session
     # save state = F2 "save and continue" (RPCS3 reloads the game from it), load = a relaunch: no in-place checkpoint
     # every two seconds; Select+L2 reports itself unsupported here (gbox/rewind.py)
     checkpoint_state, checkpoint_reason = False, "RPCS3 reloads the game on every save state (no in-place rewind)"
+    PAD_CONFIG = "gbox-keyboard"                              # input_configs/global/<name>.yml, for --input-config
+    keyboard_pad = False                                      # this session's player 1 is the keyboard pad (bot input)
 
     def __init__(self, config: Config):
         self.config, self.proc, self.stream, self.base, self.paused = config, None, None, None, False
+
+    def bot_pad(self) -> bool:
+        """A launch a bot drives: LaunchIn.pad = "keyboard" (ad.input_pad), or a demo / autoplay launch (LaunchIn.jump ->
+        ad.demo). Not agent_use: the in-app chat agent launches the operator's own games with it."""
+        return getattr(self, "input_pad", "") == "keyboard" or bool(getattr(self, "demo", False))
+
+    def _pad_args(self) -> list[str]:
+        return ["--input-config", self.PAD_CONFIG] if self.keyboard_pad else []
 
     def prepare_audio(self):
         if not getattr(self, "capture_backend", None):
@@ -3204,6 +3220,12 @@ class RPCS3Adapter(Adapter):
         if not pad.exists():                               # fresh install has no pad: Xbox controller as player 1
             pad.parent.mkdir(parents=True, exist_ok=True)
             pad.write_text(RPCS3_XINPUT, encoding="utf-8")
+        # the keyboard pad for bot input lives next to it under its own name; only --input-config picks it, so the
+        # operator's Default.yml (and every launch of theirs) is untouched
+        (pad.parent / f"{self.PAD_CONFIG}.yml").write_text(RPCS3_KEYBOARD_INPUT, encoding="utf-8")
+        self.keyboard_pad = self.bot_pad()
+        if self.keyboard_pad:
+            self.supported = type(self).supported | {"send_input"}
         if getattr(self, "serial", None):                  # per-game graphics settings (Sessions -> Graphics)
             from . import graphics
             cc = home / "config" / "custom_configs" / f"config_{self.serial}.yml"
@@ -3224,7 +3246,7 @@ class RPCS3Adapter(Adapter):
         gui.write_text(ini, encoding="utf-8")
         self.home = home
         __import__("gbox.graphics", fromlist=["x"]).prefer_gpu(home / "rpcs3.exe")   # the discrete GPU
-        argv = [str(home / "rpcs3.exe"), "--no-gui"]
+        argv = [str(home / "rpcs3.exe"), "--no-gui", *self._pad_args()]
         cap = getattr(self, "capture_backend", None)
         if cap:                                            # agent-owned capture session (#971): Vulkan in a config file of
             from .capture_backend import rpcs3_renderer_yaml      # its own, passed with --config (never the shared one)
@@ -3247,7 +3269,8 @@ class RPCS3Adapter(Adapter):
         backend = game_audio.rpcs3_audio_yaml(sel).split("Renderer: ")[1].strip() if sel else "RPCS3 global setting"
         return {"pid": self.proc.pid, "eboot": rom, "local_window": True, "worker_name": __import__("platform").node(),
                 "examine": _examine_ok(self.proc, 15.0) if getattr(self, "examine", False) else False,
-                "audio": game_audio.session_detail(sel or {}, backend)}
+                "audio": game_audio.session_detail(sel or {}, backend),
+                "pad": "keyboard pad (bot input: send_input)" if self.keyboard_pad else "the operator's controller"}
 
     def stop_game(self) -> dict:
         if self.stream:
@@ -3331,7 +3354,8 @@ class RPCS3Adapter(Adapter):
     # reloads for tools that cache addresses (script_patch). ---
     generation = 0
 
-    def _hotkey(self, vk: int):
+    def _game_window(self) -> int:
+        """RPCS3's game window (gs_frame): top-level, or docked inside the gBox app as a child window."""
         import ctypes
         import ctypes.wintypes as w
         u = ctypes.windll.user32
@@ -3350,11 +3374,53 @@ class RPCS3Adapter(Adapter):
         u.EnumChildWindows(u.GetDesktopWindow(), cb, 0)    # top-level or docked inside the gBox app (child window)
         if not found:
             raise RuntimeError("RPCS3 game window not found")
+        return found[0]
+
+    @staticmethod
+    def _post_key(hwnd: int, vk: int, down: bool, extended: bool = False) -> None:
+        """WM_KEYDOWN / WM_KEYUP posted to one window: Qt turns it into that window's key event, whatever window is in
+        front or has the focus."""
+        import ctypes
+        u = ctypes.windll.user32
+        lp = wm_key_lparam(u.MapVirtualKeyW(vk, 0), down, extended)
+        if not u.PostMessageW(hwnd, 0x0100 if down else 0x0101, vk, lp):
+            raise RuntimeError("RPCS3's game window refused the key (it closed?)")
+
+    def _hotkey(self, vk: int):
         # posted straight to the game window: no focus needed, works while embedded (plain F-keys need no modifiers)
-        sc = u.MapVirtualKeyW(vk, 0)
-        u.PostMessageW(found[0], 0x0100, vk, 1 | sc << 16)                # WM_KEYDOWN
+        h = self._game_window()
+        self._post_key(h, vk, True)
         time.sleep(0.08)
-        u.PostMessageW(found[0], 0x0101, vk, 1 | sc << 16 | 0xC0 << 24)   # WM_KEYUP
+        self._post_key(h, vk, False)
+
+    def send_input(self, events: list[dict]) -> dict:
+        """Bot input, on a keyboard-pad launch (bot_pad). Each pad event is posted to RPCS3's game window as the key
+        RPCS3_KEYPAD binds (WM_KEYDOWN / WM_KEYUP, as _hotkey posts F2), so it needs no focus and nothing moves to the
+        front: RPCS3's keyboard pad reads the game window's key events with no focus check (keyboard_pad_handler::
+        eventFilter, 0.0.43), and pads keep running unfocused while "Background input enabled" is on (RPCS3's default;
+        is_input_allowed). Nothing is typed anywhere else: the keys go to that one window, never through SendInput.
+        Names: PS3 (cross, l1, lup...) and gBox's RetroPad names (RPCS3_PAD_ALIASES); others are skipped. Player 1
+        only. The game window losing focus releases held keys (RPCS3's FocusOut): the next press works again."""
+        if not self.keyboard_pad:
+            raise Unsupported("this RPCS3 session reads the operator's controller (player 1 = Default.yml): bot input "
+                              "needs a demo / autoplay or agent launch, which starts RPCS3 with the gBox keyboard pad")
+        hwnd, sent, pressed, skipped = self._game_window(), 0, set(), set()
+        for ev in events:
+            if int(ev.get("player", 1)) != 1:
+                continue
+            name = RPCS3_PAD_ALIASES.get(ev.get("key"), ev.get("key"))
+            qt = RPCS3_KEYPAD.get(name)
+            if not qt:
+                skipped.add(str(ev.get("key")))
+                continue
+            vk = _RPCS3_VK.get(qt) or ord(qt.upper())
+            down = ev.get("down", True)
+            if not down and name in pressed:
+                time.sleep(0.06)                            # down + up in one batch: the game reads the pad per frame
+            pressed.add(name) if down else None
+            self._post_key(hwnd, vk, down, extended=qt in _RPCS3_VK_EXTENDED)
+            sent += 1
+        return {"sent": sent} | ({"skipped": sorted(skipped)} if skipped else {})
 
     def save_state(self, slot: int | None = None) -> dict:
         self.resume()
@@ -3376,7 +3442,8 @@ class RPCS3Adapter(Adapter):
                 break
             time.sleep(0.25)
         __import__("gbox.graphics", fromlist=["x"]).prefer_gpu(home / "rpcs3.exe")   # the discrete GPU
-        self.proc = subprocess.Popen([str(home / "rpcs3.exe"), "--no-gui", str(states[-1])], cwd=home, startupinfo=hidden_start())
+        self.proc = subprocess.Popen([str(home / "rpcs3.exe"), "--no-gui", *self._pad_args(), str(states[-1])], cwd=home,
+                                     startupinfo=hidden_start())     # the same pad as the launch (bot or operator)
         keep_offscreen(self.proc.pid)
         self._handle, self.base, self.paused = None, None, False
         self.generation += 1
@@ -3429,6 +3496,16 @@ RPCS3_KEYPAD = {"cross": "X", "circle": "C", "square": "Z", "triangle": "V", "l1
 RPCS3_PAD_ALIASES = {"b": "cross", "a": "circle", "y": "square", "x": "triangle", "l": "l1", "r": "r1",
                      "up": "dup", "down": "ddown", "left": "dleft", "right": "dright",
                      "cup": "rup", "cdown": "rdown", "cleft": "rleft", "cright": "rright"}
+# Windows (RPCS3Adapter.send_input): the keyboard pad's non-letter keys as virtual-key codes (a letter is its own code).
+# The arrows are extended keys: without that bit Qt reads them as the numeric keypad's, which the pad's "Up" doesn't match
+_RPCS3_VK = {"Return": 0x0D, "Space": 0x20, "Left": 0x25, "Up": 0x26, "Right": 0x27, "Down": 0x28}
+_RPCS3_VK_EXTENDED = {"Left", "Up", "Right", "Down"}
+
+
+def wm_key_lparam(scan: int, down: bool, extended: bool = False) -> int:
+    """lParam of a posted WM_KEYDOWN / WM_KEYUP: repeat count 1, the scan code, the extended-key bit; a key-up also sets
+    the previous-state and transition bits (as the keyboard itself would)."""
+    return 1 | (scan & 0xFF) << 16 | (1 << 24 if extended else 0) | (0 if down else 0xC0 << 24)
 _RPCS3_CFG_NAMES = [("Left Stick Left", "lleft"), ("Left Stick Down", "ldown"), ("Left Stick Right", "lright"),
                     ("Left Stick Up", "lup"), ("Right Stick Left", "rleft"), ("Right Stick Down", "rdown"),
                     ("Right Stick Right", "rright"), ("Right Stick Up", "rup"), ("Start", "start"), ("Select", "select"),
