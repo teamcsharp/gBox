@@ -86,6 +86,7 @@ BONUS_WALK = True                      # walk to the far ones along the game's n
 BONUS_HUNT = True                      # go for them (taken with the "□ Time bonus" prompt at the hourglass:
                                        # the Gatling's fire, knife slashes and walking over it do not take one)
 BONUS_TAKE = 140.0                     # this close (and on its level): face it, square on its prompt
+BONUS_REACH = 400.0                    # this close: finish taking it even with a Majini near (the press is quick)
 BONUS_NEAR = 650.0                     # walked to within this, then shot from where he stands...
 BONUS_STEEP = math.radians(-18)        # ...no steeper than this (the aim stops near -20 deg: step back)
 BONUS_LEVEL_DY = 150.0                 # ...and from its own level (not from a roof above it)
@@ -787,7 +788,11 @@ class Bot:
         if not standing or not BONUS_HUNT:
             self.stats["bonus_target"] = None
             return None
-        if any(self._threat(p, e) for e in live):
+        # about to take one (right on it, on its level): finish the square press even with a Majini near - it is quick
+        near = min(standing, key=lambda b: math.hypot(b["pos"][0] - px, b["pos"][2] - pz))
+        at_bonus = math.hypot(near["pos"][0] - px, near["pos"][2] - pz) < BONUS_REACH \
+            and abs(near["pos"][1] - py) < BONUS_LEVEL_DY
+        if not at_bonus and any(self._threat(p, e) for e in live):
             self.stats["phase"] = "fight"
             return None
         if mesh is not None and (self.route_len is None or now - self.route_len_at > ROUTE_LEN_S

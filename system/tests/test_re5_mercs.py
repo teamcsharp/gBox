@@ -331,9 +331,11 @@ def test_a_time_bonus_is_taken_with_its_prompt(monkeypatch):
     assert act == {"tap": "square"} and bot.stats["bonus_presses"] == 1           # "□ Time bonus"
     act, _ = tick(with_bonuses(world(enemies=far_majini), [(-100.0, 13.0, 0.0)])) # 1 m to the right: turn to it
     assert act == {"hold": {"rright"}}
-    close = [((0.0, 0.0, 250.0), 800, 800)]                                       # a Majini 2.5 m away: him first
-    act, bot = tick(with_bonuses(world(action=2, enemies=close), [(0.0, 13.0, 100.0)]))
-    assert bot.target == 0
+    close = [((0.0, 0.0, 250.0), 800, 800)]                                       # a Majini 2.5 m away, bonus 6 m off:
+    act, bot = tick(with_bonuses(world(action=2, enemies=close), [(0.0, 13.0, 600.0)]))
+    assert bot.target == 0                                                        # him first
+    act, bot = tick(with_bonuses(world(enemies=close), [(0.0, 13.0, 100.0)]))     # but a bonus 1 m off (in reach):
+    assert str(bot.target).startswith("bonus")                                    # finish the quick press
 
 
 def test_a_bonus_without_its_prompt_is_left_alone_for_a_while(monkeypatch):
