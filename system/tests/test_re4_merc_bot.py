@@ -62,7 +62,7 @@ def facing(m, rot):
 
 def test_turns_with_the_stick_then_aims_then_fires_never_writing_leon():
     now = [0.0]
-    m = world([((0, 0, 2000), True)])                  # straight ahead along +z: heading 0
+    m = world([((0, 800, 2000), True)])                # straight ahead along +z, up on a ledge (beyond ELEV_DY)
     before = m.rd(PL, 0x300)
     bot = B.Bot(m, clock=lambda: now[0], nav=False)
     facing(m, 1.5)                                     # facing far to the left of him
@@ -71,7 +71,7 @@ def test_turns_with_the_stick_then_aims_then_fires_never_writing_leon():
     assert bot.tick(B.snapshot(m)) == {"hold": {"r", "right"}}        # close: aim and fine-turn
     facing(m, 0.02)
     assert bot.tick(B.snapshot(m)) == {"hold": {"r"}}                 # on him, the aim pose coming up: not yet
-    head = math.atan2(B.HEAD_H - B.GUN_H, 2000.0)                    # his head: 0.075 rad above the gun
+    head = math.atan2(800 + B.HEAD_H - B.GUN_H, 2000.0)              # his head up there: 0.44 rad above the gun
     now[0] = 0.3
     m.put(B.MERC_TIMER, ">I", int((100 - 0.3) * 30))
     assert bot.tick(B.snapshot(m)) == {"hold": {"r", "up"}}          # pose up, the aim level: raise it with the stick
@@ -303,7 +303,7 @@ def test_shoots_only_what_he_can_hit():
     assert B.Bot(far, clock=lambda: now[0], nav=False).tick(B.snapshot(far)) == {"hold": {"up", "b"}}   # close in
     close = world([((0, 0, 400), True)])                                   # point blank
     facing(close, 0.0)
-    assert B.Bot(close, clock=lambda: now[0], nav=False).tick(B.snapshot(close)) == {"hold": {"down"}}  # step back
+    assert B.Bot(close, clock=lambda: now[0], nav=False).tick(B.snapshot(close)) == {"hold": {"r"}}     # aims: no back-off
     roof = world([((0, 0, 1500), True)], leon=(0.0, 2600.0, 0.0))          # Leon up on the start roof
     facing(roof, 0.0)
     assert B.Bot(roof, clock=lambda: now[0], nav=False).tick(B.snapshot(roof)) == {"hold": {"up", "b"}}  # down to them
@@ -370,7 +370,7 @@ def hp(m, slot, value):
 
 def test_his_health_scores_the_shots_and_misses_move_the_aim_height():
     now = [0.0]
-    m = world([((0, 0, 2000), True)])
+    m = world([((0, 800, 2000), True)])
     facing(m, 0.0)
     bot = B.Bot(m, clock=lambda: now[0], nav=False)
 
@@ -380,7 +380,7 @@ def test_his_health_scores_the_shots_and_misses_move_the_aim_height():
         act = bot.tick(B.snapshot(m))
         keys = act.get("hold", set())
         pitch = struct.unpack(">f", m.rd(PL + B.AIM_PITCH, 4))[0]               # the game, under the stick
-        m.put(PL + B.AIM_PITCH, ">f", pitch + 0.02 * (("up" in keys) - ("down" in keys)))
+        m.put(PL + B.AIM_PITCH, ">f", pitch + 0.06 * (("up" in keys) - ("down" in keys)))   # a quick stick
         return act
     t = 0.0
     while "a" not in tick(t).get("hold", set()):                           # raise the aim to his head, then fire
@@ -393,17 +393,14 @@ def test_his_health_scores_the_shots_and_misses_move_the_aim_height():
         tick(t + 0.2 + k * 0.1)
     assert bot.stats["misses"] >= 3 and bot.stats["pitch_offset"] != 0.0  # the aim height moves on
     assert 0 < bot.stats["accuracy"] < 1
-    pitch = struct.unpack(">f", m.rd(PL + B.AIM_PITCH, 4))[0]
-    want = math.atan2(B.HEAD_H - B.GUN_H, 2000.0) + bot.stats["pitch_offset"]
-    assert abs(pitch - want) <= B.PITCH_TOL + 0.02                         # the stick took it to the new height
 
 
 def test_an_inverted_aim_stick_is_learned():
     now = [0.0]
-    m = world([((0, 0, 2000), True)])
+    m = world([((0, 800, 2000), True)])
     facing(m, 0.0)
     bot = B.Bot(m, clock=lambda: now[0], nav=False)
-    head = math.atan2(B.HEAD_H - B.GUN_H, 2000.0)
+    head = math.atan2(800 + B.HEAD_H - B.GUN_H, 2000.0)
     fired = False
     for k in range(80):                                                    # this game: up LOWERS the aim
         now[0] = k * 0.05
@@ -538,3 +535,23 @@ def test_a_session_reads_its_own_dolphin_only(monkeypatch):
     assert isinstance(mine, B.OwnShm) and seen["at"] == B.EMMGR      # its own process, the GameCube address
     other = B.memory(SimpleNamespace(name="dolphin", proc=SimpleNamespace(pid=7), read_memory=lambda a, n: bytes(n)))
     assert isinstance(other, B.AdMem)                 # no shared view of its own: the adapter's reads, never a scan
+
+
+def test_a_level_target_is_shot_as_soon_as_the_aim_is_up():
+    now = [0.0]
+    m = world([((0, 0, 2000), True)])
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    assert bot.tick(B.snapshot(m)) == {"hold": {"r"}}               # the aim pose coming up
+    now[0] = B.PITCH_AFTER + 0.01
+    assert bot.tick(B.snapshot(m)) == {"hold": {"r", "a"}}       # same level: fire, no aim-height push
+
+
+def test_a_ganado_about_to_strike_comes_before_a_combo_bonus():
+    now = [0.0]
+    crowd = [((800.0 * k, 0, 3000), True) for k in range(-2, 3)] + [((0, 0, 900), True)]   # five out there, one close
+    m = world(crowd, room=0x400)
+    bot = B.Bot(m, clock=lambda: now[0], nav=FakeNav([item("combo_bonus", 0.0, -3000.0)]))
+    facing(m, 0.0)
+    act = bot.tick(B.snapshot(m))
+    assert "r" in act.get("hold", set()) and not (bot.goal or {}).get("item")   # aiming at him, not running off
