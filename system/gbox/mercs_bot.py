@@ -358,6 +358,22 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
     stats.setdefault("rounds", 0)
     stats["profile"] = prof["map_id"]
     pub = tactical_publisher(tactical, prof)
+    damage_outbox = None
+    if callable(getattr(tactical, "damage", None)):
+        from pathlib import Path
+        import hashlib
+        import uuid
+        from .mercs import damage as damage_reports
+        root = Path(ad.config.data_dir) / "player-damage-outbox" / hashlib.sha256(tactical.sid.encode()).hexdigest()
+        damage_outbox = damage_reports.Outbox(root, tactical.sid, tactical, stats)
+        if damage_outbox.capacity_blocked:
+            stats.update(player_damage_status="backpressure", stopped_reason="pending reserved damage receipt must be delivered before play")
+            damage_outbox.close()
+            if pub is not None:
+                pub.close()
+            return stats
+        damage_run = uuid.uuid4().hex
+        stats["player_damage_run"] = damage_run
     fresh = True                                            # a round counts once, however often the engine hands back
     playing_ops = [tuple(x) for x in prof.get("playing_ops") or []]
     playing_initialized = False
@@ -372,7 +388,13 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
                 if fresh:
                     stats["rounds"] += 1
                     fresh = False
-                out = E.play_round(prof, m, send, stopped, stats, lessons, **({"tactical": pub} if pub else {}))
+                options = {"tactical": pub} if pub else {}
+                if damage_outbox is not None:
+                    options["damage"] = damage_reports.Observer(damage_outbox.emit, damage_run, prof["map_id"], stats)
+                out = E.play_round(prof, m, send, stopped, stats, lessons, **options)
+                if out == "evidence_backpressure":
+                    stats["stopped_reason"] = "damage evidence could not be retained; pending events were not evicted"
+                    break
                 if out == "lost":
                     stats.update(hung=True, wandered="the round was lost (no player, or black too long)")
                     break
@@ -389,6 +411,8 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
                 break
             sleep(POLL_S)
     finally:
+        if damage_outbox is not None:
+            damage_outbox.close()
         if pub is not None:
             pub.close()
     return stats

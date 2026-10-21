@@ -5413,6 +5413,13 @@ def create_app(config: Config) -> FastAPI:
                         {"via": "autoplay coach", "request_id": rid}).model_dump(mode="json"),
                     moment_provider=lambda sid: coaching_evidence.cached(
                         sid, live, getattr(app.state, "tactical_map", None), screensaver.TELEMETRY, ram_inspector))
+    from . import player_damage
+    player_damage.routes(app, store, auth,
+        create_request=lambda body, actor: req_create(RequestIn(**body), actor),
+        submit=lambda tool, inp, rid, actor: submit(JobRequest(tool=tool, input=inp, parent_request_id=rid, agent_use=True), actor,
+            {"via": "player damage evidence", "request_id": rid}).model_dump(mode="json"),
+        moment_provider=lambda sid: coaching_evidence.cached(
+            sid, live, getattr(app.state, "tactical_map", None), screensaver.TELEMETRY, ram_inspector))
 
     # --- launch failure reports (gbox/launch_failures.py, docs/launch-failure-reports.md) ---
     from . import launch_failures as LF

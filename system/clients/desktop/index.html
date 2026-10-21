@@ -1199,6 +1199,7 @@ window.taskVizCreate = canvas => {
 <script src="floating.js"></script>
 <script src="gameplay-memory.js"></script>
 <script src="inbox-view.js"></script>
+<script src="player-damage-view.js"></script>
 <script src="request-tokens.js"></script>
 <script src="inbox-groups.js"></script>
 <script src="live-poll.js"></script>
@@ -3252,7 +3253,7 @@ const inboxPoll = singleFlightPoll(async () => {
       <div class="thread">
         ${x.element ? `<div class="eltag">${esc(x.element.view || "")}\n${esc(x.element.selector)}\n${esc(x.element.path || "")}</div>` : ""}
         ${x.image ? `<img class="shot" loading="lazy" decoding="async" src="${S.apiUrl}/api/artifacts/${x.image}?token=${encodeURIComponent(tok)}" alt="report screenshot">` : ""}
-        ${x.messages.map(mm => `<div class="msg ${mm.author}"><b>${mm.author === "agent" ? "Agent" : x.automated ? "System" : "You"}</b> · <span class="mut">${new Date(mm.ts * 1000).toLocaleTimeString()}</span>\n${esc(mm.text)}${(mm.attachments || []).map(a => (a.type || "image/").startsWith("image/") ? `<br><img class="att-img" loading="lazy" decoding="async" alt="${esc(a.name)}" src="${S.apiUrl}/api/artifacts/${a.sha256}?token=${encodeURIComponent(tok)}">`
+        ${x.messages.map(mm => `<div class="msg ${mm.author}"><b>${mm.author === "agent" ? "Agent" : x.automated ? "System" : "You"}</b> · <span class="mut">${new Date(mm.ts * 1000).toLocaleTimeString()}</span>\n${esc(mm.text)}${GBoxPlayerDamage.button(mm.damage_run)}${(mm.attachments || []).map(a => (a.type || "image/").startsWith("image/") ? `<br><img class="att-img" loading="lazy" decoding="async" alt="${esc(a.name)}" src="${S.apiUrl}/api/artifacts/${a.sha256}?token=${encodeURIComponent(tok)}">`
           : `<br><a class="att-file" href="#" data-url="${S.apiUrl}/api/artifacts/${a.sha256}?token=${encodeURIComponent(tok)}">📎 ${esc(a.name)}${a.size ? ` (${Math.ceil(a.size / 1024)} KB)` : ""}</a>`).join("")}</div>`).join("")}
         ${ms.map(mm => `<details class="howto" open><summary>How gBox does it: ${esc(mm.title)} <span class="mut">(${esc(mm.game_title || "")}, ${mm.verified ? "verified" : "not verified yet"})</span></summary>
           ${mm.calls.map(c => `<div class="howcall"><b>${esc(c.tool)}</b> <span class="mut">${esc((REG.tools?.[c.tool] || "").split("\n")[0].slice(0, 260))}</span><pre>${esc(JSON.stringify(c.input))}</pre></div>`).join("")}
@@ -3499,6 +3500,14 @@ function reportGraphOpen(id) {
 document.addEventListener("click", async e => {
   const card = e.target.closest(".req"); if (!card) return;
   const id = card.dataset.id;
+  const damage = e.target.closest('[data-damage-ledger]');
+  if (damage) {
+    e.stopPropagation();
+    const token = await gbox.token();
+    GBoxPlayerDamage.open(damage.dataset.damageLedger, { api: path => gbox.api(path),
+      artifact: sha => `${S.apiUrl}/api/artifacts/${sha}?token=${encodeURIComponent(token)}` });
+    return;
+  }
   if (e.target.closest(".reportincomplete")) { e.stopPropagation(); await evRequest(id); $("#ev-incomplete").click(); return; }
   if (e.target.closest("[data-report-detail]")) { e.stopPropagation(); reportStoryOpen(id); return; }
   if (e.target.closest("img.shot, img.att-img")) {

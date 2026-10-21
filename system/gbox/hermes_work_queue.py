@@ -90,6 +90,24 @@ def is_live_coaching(request) -> bool:
     return request.get('source') == 'coach' or (request.get('context') or {}).get('coaching') is True
 
 
+def requested_player_damage(request) -> bool:
+    """Only this standing operator request's server-persisted run batch admits generated damage reports."""
+    context = request.get('context') or {}
+    sid, run = context.get('session_id'), context.get('damage_run_id')
+    if (request.get('source') != 'player_damage' or request.get('author') != 'agent'
+            or request.get('kind') != 'report' or context.get('operator_requested') is not True
+            or context.get('player_damage') is not True or request.get('status') not in ('open', 'in_progress')
+            or not isinstance(sid, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,120}', sid)
+            or not isinstance(run, str) or not re.fullmatch(r'[A-Za-z0-9_-]{8,96}', run)):
+        return False
+    try:
+        ledger = _api(f'/api/sessions/{sid}/damage/runs/{run}?limit=1')
+        return (ledger.get('session_id') == sid and ledger.get('run_id') == run and ledger.get('total', 0) > 0
+                and ledger.get('request_id') == request['id'] and ledger.get('game_id') == context.get('game_id'))
+    except Exception:
+        return False                               # missing/unreachable durable owner is not authorization
+
+
 def _prioritized_handoff(data, request) -> bool:
     """A dated agent handoff explicitly selected by request, not just by its game."""
     handoff = (request.get('context') or {}).get('handoff')
@@ -138,8 +156,15 @@ def sync(data, favorites, requests, *, now):
         context = request.get('context') or {}
         body = str(request.get('body') or request.get('title') or '').lstrip()
         actionable = request.get('source') in ('gap', 'characters')
+        damage_report = requested_player_damage(request)
+        if request.get('source') == 'player_damage' and not damage_report:
+            old = data['items'].get('inbox:' + request['id'])
+            if old is not None:
+                old['damage_batch_verified'] = False
+                old['damage_batch_hold'] = 'damage ledger or request identity is unavailable/invalid'
+            continue                                # auto_report alone cannot forge a persisted damage batch
         unlock_work = bool(context.get('custom_build_unlocks'))
-        repair = bool(unlock_work or context.get('auto_report') or context.get('native_replacement')
+        repair = bool(damage_report or unlock_work or context.get('auto_report') or context.get('native_replacement')
                       or actionable and (context.get('character') or context.get('what')
                                          or body.startswith('Extract ') or 'pick whip' in body.lower()))
         operator_child = (request.get('parent_request_id') and request.get('author') == 'operator'
@@ -168,9 +193,11 @@ def sync(data, favorites, requests, *, now):
                     favorite_unlock_work=bool(context.get('favorite_default')),
                     session_observer=bool(context.get('session_observer')),
                     launch_failure=bool(context.get('launch_failure')),
-                    operator_requested=bool(context.get('replacement_requested')),
+                    operator_requested=bool(context.get('replacement_requested') or damage_report),
                     game_id=context.get('game_id'), target=context.get('target'),
                     character=context.get('character'))
+        if damage_report:
+            item.update(damage_batch_verified=True, damage_batch_hold='')
     data.update(favorites_count=len(favorite_ids), synced_at=now)
 
 
@@ -284,6 +311,9 @@ def candidates(data, requests, native, owned, on_main, *, now):
                 or item.get('request_uncertain') or item.get('dispatch_state') in ('queued', 'uncertain')):
             continue
         req = by_id.get(rid, {})
+        if (req.get('source') == 'player_damage' or 'damage_batch_verified' in item) \
+                and (item.get('damage_batch_verified') is not True or not requested_player_damage(req)):
+            continue                            # a later failed sync cannot leave an old eligibility proof usable
         if item.get('lane') == 'inbox' and is_live_coaching(req):
             continue                                       # live coaching: the agents' inbox hook, never Hermes
         from . import hermes_result_review
