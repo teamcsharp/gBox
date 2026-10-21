@@ -135,9 +135,14 @@ only its already owned renderer PID with query/read rights, checks its creation
 time and exact executable/source checksums, and requires one unique 64 MiB RAM
 allocation matching the reviewed XBE's mapped header and all immutable executable
 sections. The only normalized header fields are the documented section reference
-counts changed by upstream's load/unload-section routines; their exact addresses
-are included in the verification metadata. Other changed header or code bytes,
-ambiguous allocations and changed process identities fail closed.
+counts changed by upstream's load/unload-section routines. The only normalized
+section bytes are the kernel thunk-table slots of the eleven kernel data exports
+the runner fills at boot (runner.cpp v0.2 `materializeKernelDataExports`; DOA3's
+table is in .rdata at 0x1ED0E0, seven of its slots). Their exact addresses are
+included in the verification metadata. Other changed header or code bytes,
+ambiguous allocations and changed process identities fail closed. Before this
+normalization every live read failed: "no unique verified allocation (found 0)"
+(i9-NUC, 2026-10-20).
 
 `query_memory_map` reports the verified x86 little-endian guest address space,
 the source-derived image analysis range and retail entry point. Reads support

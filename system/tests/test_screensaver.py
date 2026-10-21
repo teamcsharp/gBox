@@ -179,6 +179,7 @@ def test_every_demo_launch_asks_to_start_in_gameplay():
     s, w, saver, calls, tick = rig()
     tick()
     assert calls[0]["tool"] == "launch_game" and calls[0]["input"]["jump"] is True       # gbox.jumpstate
+    assert calls[0]["input"]["memory_cards"] == "operator"     # #2817: the operator's own cards, so their saves load
 
 
 JUMPED = {"jump": {"booted": True, "file": "sc-stock.state"}}         # launch detail: booted straight into gameplay
@@ -261,3 +262,32 @@ def test_server_tags_input_with_its_source(tmp_path):
     c.post("/api/sessions/w-s/input", json={"events": [{"key": "b", "down": True}]}, headers={"x-gbox-actor": "hermes"})
     got = c.get("/api/sessions/w-s/input").json()
     assert [(e["key"], e["src"]) for e in got] == [("a", "player"), ("b", "agent")]
+
+
+def test_a_demo_never_adopts_another_launch_of_the_same_game():
+    """An agent's session of the same game on that PC is not the demo's: no label, no autoplay started on it."""
+    s, w, saver, calls, tick = rig()
+    tick()
+    gid = calls[0]["input"]["game"]["game_id"]
+    s.put("session", "w1-agentjob", {"session_id": "w1-agentjob", "game_id": gid, "state": "running"})
+    tick(5)
+    tick(S.START_GRACE)
+    assert s.get("slabel", "w1-agentjob") is None and len(calls) == 1
+
+
+def test_claim_drops_a_queued_demo_launch_when_the_pc_already_runs_a_game(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from gbox.config import Config
+    from gbox.server import create_app
+    cfg = Config(data_dir=tmp_path / "data")
+    app = create_app(cfg)
+    client = TestClient(app, headers={"Authorization": f"Bearer {cfg.token()}"})
+    store = app.state.store
+    store.put("worker", "w1", {"id": "w1", "name": "i9-NUC", "os": "windows", "tools": ["launch_game"], "last_seen": 1})
+    store.put("job", "demo1", {"id": "demo1", "tool": "launch_game", "state": "queued", "actor": S.ACTOR,
+                               "require_os": None, "require_worker": "w1", "input": {}, "created": 1})
+    store.put("session", "w1-agentjob", {"session_id": "w1-agentjob", "state": "running", "worker_id": "w1"})
+    r = client.post("/api/workers/w1/claim", json={"idle_seconds": 9999, "active_jobs": 0})
+    assert r.status_code == 204, r.text
+    job = store.get("job", "demo1")
+    assert job["state"] == "failed" and "another game" in job["error"]

@@ -41,6 +41,23 @@ def gc_game(game_id=b"G4BE08"):
     return ad, g
 
 
+def test_game_calls_wait_for_a_running_room():
+    # the dispatcher runs every frame, room loads included: a call queued during a load runs on a player and an attache
+    # case being rebuilt (RE4 froze in a load right after `equip`, 2026-10-20), so calls need a running room
+    ad, g = gc_game()
+    pg = 0x80300000
+    ad.put(R.P_GLOBAL, struct.pack(">I", pg))
+    ad.put(pg + 0x20, bytes([2]))                                        # pG+0x20 2: a room loading
+    with pytest.raises(RuntimeError, match="loading a room"):
+        g.call(R.F_TAKE_ITEM, 0x35, 0, 0)
+    assert not ad.writes                                                 # nothing queued, no hook installed
+    ad.put(pg + 0x20, bytes([3]))
+    ad.put(R.P_PLAYER, struct.pack(">I", 0x80400000))
+    assert g.in_room() is True
+    ad.put(R.P_PLAYER, struct.pack(">I", 0))                              # no Leon (a cutscene, a menu over the room)
+    assert g.in_room() is False
+
+
 # ------------------------------------------------------------------------------------------- address table
 
 def test_every_new_address_has_a_source_and_is_not_live_checked_yet():

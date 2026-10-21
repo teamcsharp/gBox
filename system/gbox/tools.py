@@ -362,6 +362,8 @@ class LaunchIn(BaseModel):
     jump: bool = False                     # a demo (the screensaver, autoplay on launch): boot straight into this game and
                                            # build's jump state where the emulator can (Dolphin) and this PC has one
                                            # (gbox.jumpstate). Never set for the operator's own Play.
+    memory_cards: str = ""                 # "operator": an agent-owned demo (the screensaver) inserts the cards the operator
+                                           # selected for this game, so their saved characters load (#2817)
 
 class LaunchOut(BaseModel):
     session_id: str
@@ -853,7 +855,8 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         from . import memory_card_sessions
         memory_card_sessions.recover_pending(ctx)
         ad.memory_card_rom=str(src)
-        memory_card_sessions.checkout(f'{ctx.worker}-{ctx.job_id}',ad,g.model_dump(),ctx)
+        memory_card_sessions.checkout(f'{ctx.worker}-{ctx.job_id}',ad,g.model_dump(),ctx,
+                                      operator_cards=inp.memory_cards == "operator")
         if inp.jump and not inp.capture_backend:            # a demo: straight into gameplay (gbox.jumpstate)
             from . import jumpstate
             ad.demo = True                                  # unattended: no modal dialogs, no on-screen messages
@@ -1300,7 +1303,11 @@ def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
                             from . import padstate
                             padstate.PLAYER_TOUCH[sid] = time.time()          # -> autoplay hands control back
                     if pad and "send_input" in ad.supported:
-                        ad.send_input(game_pad)
+                        demo = getattr((AUTOPLAY.get(sid) or {}).get("driver"), "demo", False)
+                        if demo and game_pad and all(e.get("src") == "autoplay" for e in pad):
+                            _polite_send(ad, game_pad)            # a bot demo's own presses (vision / missions)
+                        else:
+                            ad.send_input(game_pad)
                 except Exception:
                     time.sleep(0.5)
 
@@ -2321,6 +2328,10 @@ class AutoplayIn(BaseModel):
     screensaver: bool = False              # the idle-PC screensaver runs this (gbox.screensaver): a replay goes on in the
                                            # learned style, a mouse move hands the game over (it plays on), the end
                                            # is reported
+    demo: bool = False                     # a bot demo (launched with autoplay on, any PC, the operator's own included):
+                                           # plays on like the screensaver (a replay goes on in the learned style), never
+                                           # brings a window to the front or takes the keyboard from someone using the
+                                           # PC (polite input), and a frozen game is relaunched as a bot demo again
 
 class AutoplayOut(BaseModel):
     result: dict
@@ -2328,6 +2339,15 @@ class AutoplayOut(BaseModel):
 AUTOPLAY: dict[str, dict] = {}             # session_id -> {driver, thread, mission, mode, result}
 AT_BOOT = 60.0                             # s: autoplay (auto) asked for this soon after launch replays the operator's run
 MISSIONS = Path(__file__).resolve().parent.parent / "profiles" / "missions"
+AUTOPLAY_ACTOR = "autoplay"                # who the worker's autoplay calls to the control plane are: never the operator
+
+
+def _ap_headers(ctx_or_headers) -> dict:
+    """The control-plane headers for autoplay's own requests on the worker: the session's auth plus x-gbox-actor
+    autoplay. Without it a request carries the worker's token alone and the server records it as the operator's (a
+    relaunch by _bad_end showed up as "launched by operator", 2026-10-20)."""
+    h = ctx_or_headers if isinstance(ctx_or_headers, dict) else (getattr(ctx_or_headers, "headers", None) or {})
+    return dict(h) | {"x-gbox-actor": AUTOPLAY_ACTOR}
 
 
 def _missions(game_id=None):
@@ -2342,7 +2362,7 @@ def autoplay(inp: AutoplayIn, ctx: Ctx):
     from .autoplay import Driver
     game_id, started = None, None
     if inp.session_id:
-        r = httpx.get(f"{ctx.server}/api/sessions", headers=ctx.headers, timeout=30)
+        r = httpx.get(f"{ctx.server}/api/sessions", headers=_ap_headers(ctx), timeout=30)
         game_id, started = next(((s.get("game_id"), s.get("started")) for s in r.json() if s["session_id"] == inp.session_id),
                                 (None, None))
     if inp.op == "list":
@@ -2366,10 +2386,14 @@ def autoplay(inp: AutoplayIn, ctx: Ctx):
         return {"result": {"already_running": run["mission"]}}
     d = Driver(ctx.server, ctx.headers["authorization"].split()[-1], inp.session_id, log=lambda *a: None)
     d.assist_hold_hp = inp.assist
-    d.screensaver = (ctx.server, dict(ctx.headers)) if inp.screensaver else None
+    d.screensaver = (ctx.server, _ap_headers(ctx)) if inp.screensaver else None
+    d.demo = bool(inp.demo) and not inp.screensaver
+    d.agent_use = bool(getattr(ctx, "agent_use", True))       # the next autoplay job after a relaunch keeps it
     ad, g = SESSIONS[inp.session_id]
     if inp.screensaver:
         _front(ad)                                             # idle PC: the game in front (Dolphin input needs it)
+    elif d.demo:
+        _demo_front(ad)                                        # only when nobody uses that PC right now
     hacks = _autoplay_hacks(inp.session_id, g)                 # the game's autoplay hack profile: gBox plays to win
     since = time.time()
     if inp.mode in ("auto", "playbook") and not inp.mission:  # a game-specific bot for where the game is right now
@@ -2494,11 +2518,11 @@ def _telemetry(run, ctx, title: str = "") -> None:
         live = run.get("live") or {}
         stats = {k: v for k, v in live.items() if isinstance(v, (int, float, str, bool))}
         return {"running": running, "mode": run.get("mode") or "", "mission": run.get("mission") or "",
-                "title": title, "stats": stats}
+                "title": title, "stats": stats, "demo": bool(getattr(run.get("driver"), "demo", False))}
 
     def post(running):
         try:
-            httpx.post(f"{ctx.server}/api/autoplay/telemetry/{run['sid']}", headers=ctx.headers, json=body(running),
+            httpx.post(f"{ctx.server}/api/autoplay/telemetry/{run['sid']}", headers=_ap_headers(ctx), json=body(running),
                        timeout=10)
         except httpx.HTTPError:
             pass
@@ -2545,15 +2569,29 @@ def _black(ad) -> bool | None:
 
 def _black_watch(run, d, ad, clock=time.time, sleep=time.sleep):
     """The operator tunes in and sees only black (operator 2026-10-20: "any time I look at gameplay it actually shows
-    gameplay"): BLACK_FOR seconds of black frames while autoplay plays end the run with bad_end "black" (_bad_end)."""
+    gameplay"): BLACK_FOR seconds of black frames while autoplay plays end the run with bad_end "black" (_bad_end).
+    RAM is trusted over the picture: a playbook that reads the game's state reports it in run["live"] (ram_progress
+    counts up as the menus change, timer is RE4's round clock), and black frames while either moves are a fade, a load
+    or a stream hiccup, not a hang (2026-10-20: a demo was relaunched after 45 s of black while its round clock ran)."""
     if not hasattr(ad, "get_frame"):
         return
 
+    def progress():                                    # the playbook's own RAM signals: menus moving, the round clock
+        live = run.get("live") or {}
+        return live.get("ram_progress"), live.get("timer")
+
     def watch():
-        since = None
+        since, seen = None, progress()
         while not d.stopped and (run.get("thread") is None or run["thread"].is_alive()):
             b = _black(ad)
             now = clock()
+            prog = progress()
+            if prog != seen:                                   # the game's own state moved on: not a hang
+                seen, since = prog, None
+                if b:
+                    run["black_but_running"] = run.get("black_but_running", 0) + 1
+                sleep(5)
+                continue
             if b:
                 since = since or now
                 if now - since >= BLACK_FOR:
@@ -2568,20 +2606,23 @@ def _black_watch(run, d, ad, clock=time.time, sleep=time.sleep):
 
 def _bad_end(run, sleep=time.sleep):
     """The game froze or showed only black: a screensaver demo moves on to its next game (the screensaver takes the
-    report); any other autoplay game (the Spark launched with autoplay) is relaunched - same game and build, same PC -
-    and autoplay starts again on it with the same settings. The server refuses this for the operator's own games."""
+    report); any other autoplay game (a bot demo: launched with autoplay on, any PC) is relaunched - same game and
+    build, same PC - and autoplay starts again on it with the same settings. Every request here says it is autoplay's
+    (x-gbox-actor), so the relaunch is recorded as autoplay's, never as the operator's, and the server refuses it for
+    the operator's own games (only bot demos and agent test sessions are relaunched)."""
     ctx, sid, inp = run.get("ctx"), run.get("sid", ""), run.get("inp")
     if ctx is None or not sid:
         return
+    headers = _ap_headers(ctx)
     try:
-        r = httpx.post(f"{ctx.server}/api/autoplay-screensaver/result", headers=ctx.headers, timeout=15,
+        r = httpx.post(f"{ctx.server}/api/autoplay-screensaver/result", headers=headers, timeout=15,
                        json={"session_id": sid, "result": {"bad_end": run["bad_end"]}})
         if r.status_code < 400 and r.json().get("saved"):
             return                                              # a screensaver run: it moves on by itself
     except (httpx.HTTPError, ValueError):
         pass
     try:
-        r = httpx.post(f"{ctx.server}/api/sessions/{sid}/reset", headers=ctx.headers, json={"mode": "restart"}, timeout=30)
+        r = httpx.post(f"{ctx.server}/api/sessions/{sid}/reset", headers=headers, json={"mode": "restart"}, timeout=30)
         if r.status_code >= 400:
             run["recovery"] = f"relaunch refused: {r.text[:200]}"
             return
@@ -2589,7 +2630,7 @@ def _bad_end(run, sleep=time.sleep):
         while waited < RELAUNCH_WAIT and jid:
             sleep(3)
             waited += 3
-            job = httpx.get(f"{ctx.server}/api/jobs/{jid}", headers=ctx.headers, timeout=15).json()
+            job = httpx.get(f"{ctx.server}/api/jobs/{jid}", headers=headers, timeout=15).json()
             if job.get("state") == "succeeded":
                 out = job.get("output") or {}
                 new = out.get("session_id") or (out.get("result") or {}).get("session_id")
@@ -2600,10 +2641,12 @@ def _bad_end(run, sleep=time.sleep):
         if not new:
             run["recovery"] = "relaunch did not finish"
             return
-        httpx.post(f"{ctx.server}/api/jobs", headers=ctx.headers, timeout=30, json={
-            "tool": "autoplay", "require_worker": new.split("-")[0], "agent_use": True,
+        d = run.get("driver")
+        httpx.post(f"{ctx.server}/api/jobs", headers=headers, timeout=30, json={
+            "tool": "autoplay", "require_worker": new.split("-")[0], "agent_use": bool(getattr(d, "agent_use", True)),
             "input": {"session_id": new, "op": "start", "mode": getattr(inp, "mode", "auto") or "auto",
-                      "screensaver": bool(getattr(inp, "screensaver", False)), "style": getattr(inp, "style", None) or {}}})
+                      "screensaver": bool(getattr(inp, "screensaver", False)), "style": getattr(inp, "style", None) or {},
+                      **({"demo": True} if getattr(inp, "demo", False) else {})}})
         run["recovery"] = f"relaunched as {new}, autoplay started again"
     except (httpx.HTTPError, ValueError) as e:
         run["recovery"] = f"relaunch failed: {type(e).__name__}"
@@ -2639,7 +2682,10 @@ def _autoplay_hacks(sid: str, g: dict) -> list[str]:
     return held
 
 
-PLAYBOOKS = ("re4_merc_bot", "doa2_bot", "ge007_bots")   # game-specific autoplay bots: matches(ad, g), setup(ad), play(ad, send, stopped)
+# game-specific autoplay bots: matches(ad, g), setup(ad), play(ad, send, stopped). mercs_bot (the Mercenaries on any
+# title whose RAM map has a "mercs" block) comes first and matches once the engine is installed (gbox.mercs.engine);
+# until then RE4 plays through re4_merc_bot
+PLAYBOOKS = ("mercs_bot", "re4_merc_bot", "doa2_bot", "ge007_bots")
 # playbook -> the module that reads its game's button prompts from RAM (for_adapter(ad, stats) -> a prompt source):
 # play(..., ram_prompt=) asks it before the screen watcher
 RAM_PROMPTS = {"re4_merc_bot": "re4_ram_prompts"}
@@ -2661,12 +2707,15 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
     sid = inp.session_id
     name = pb.__name__.rsplit(".", 1)[-1]
     run = AUTOPLAY[sid] = {"driver": d, "sid": sid, "since": since, "mode": "playbook", "mission": f"playbook: {name}",
-                           "ctx": ctx, "inp": inp}
+                           "ctx": ctx, "inp": inp, "live": {}}
 
     def go():
         try:
             import importlib
             import inspect
+            # no key left down from before (an earlier run cut short, a crash): a stuck stick-left read as left on
+            # every RE4 menu and Select Stage never moved (live 2026-10-20)
+            _release_all(sid)
             failed = pb.setup(ad)
             kw = {}
             if "stats" in inspect.signature(pb.play).parameters:
@@ -2689,7 +2738,9 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
                         kw["style"] = imitate.Style(model, knobs=inp.style)
                 except Exception:                              # noqa: BLE001 - no recorded play: the playbook's own way
                     pass
-            stats = pb.play(ad, _screensaver_send(ad) if run.get("screensaver") else ad.send_input, lambda: d.stopped, **kw)
+            if "game" in inspect.signature(pb.play).parameters:
+                kw["game"] = dict(g or {})                     # its game and build (a playbook's own jump / menu state)
+            stats = pb.play(ad, _autoplay_send(ad, d), lambda: d.stopped, **kw)
             if stats.get("hung"):                              # the game froze: _ended gets it back (_bad_end)
                 run["bad_end"] = "hung"
             if run.get("prompt_watcher") is not None:
@@ -2708,14 +2759,14 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
 
 
 def _recorded_play(ctx, game_id) -> list[dict]:
-    r = httpx.get(f"{ctx.server}/api/gameplay-memory", params={"game_id": game_id}, headers=ctx.headers, timeout=60)
+    r = httpx.get(f"{ctx.server}/api/gameplay-memory", params={"game_id": game_id}, headers=_ap_headers(ctx), timeout=60)
     r.raise_for_status()
     return r.json().get("runs") or []
 
 
 def _run_events(ctx, run_id) -> list[dict]:
     out, after = [], 0
-    with httpx.Client(base_url=ctx.server, headers=ctx.headers, timeout=60) as c:
+    with httpx.Client(base_url=ctx.server, headers=_ap_headers(ctx), timeout=60) as c:
         while True:
             page = c.get(f"/api/gameplay-memory/runs/{run_id}", params={"after": after, "limit": 500}).json().get("events") or []
             out += page
@@ -2736,7 +2787,7 @@ def _start_imitation(inp, ctx, d, ad, g, game_id, since) -> dict:
     platform = g.get("platform")
     sid = inp.session_id
     run = {"driver": d, "sid": sid, "since": since, "mode": inp.mode, "ctx": ctx, "inp": inp}
-    send = _screensaver_send(ad) if inp.screensaver else (lambda rows: ad.send_input(rows))
+    send = _autoplay_send(ad, d)
     if inp.mode == "replay":
         rec = imitate.pick_run(runs, ad.name, inp.run_id)
         if rec is None:
@@ -2762,8 +2813,9 @@ def _start_imitation(inp, ctx, d, ad, g, game_id, since) -> dict:
                 run["result"] = imitate.play_plan(plan, send=send, stopped=lambda: d.stopped, clock=time.time,
                                                   sleep=time.sleep, offset=offset, sync=sync) | {
                     "run_id": rec["id"], "steps": len(plan), "anchors": len(marks)}
-                if run["result"].get("completed") and not d.stopped and getattr(d, "screensaver", None):
-                    _release_all(sid)                       # the screensaver keeps playing: your style from here
+                if run["result"].get("completed") and not d.stopped and (getattr(d, "screensaver", None)
+                                                                         or getattr(d, "demo", False)):
+                    _release_all(sid)                       # the screensaver / a bot demo plays on: your style from here
                     _, model = _style_model(ctx, runs, ad, game_id, platform)
                     if model["total"] >= imitate.MIN_LEARN_BURSTS:
                         run["mission"] = f"learned: your style ({len(model['bursts'])} moves), after your run"
@@ -2845,6 +2897,74 @@ def _screensaver_send(ad):
     return send
 
 
+DEMO_FRONT_IDLE_S = 60.0                   # a bot demo brings its game to the front only on a PC nobody used this long
+
+
+def _demo_front(ad) -> bool:
+    """A bot demo starting on Windows: the game comes to the front only when nobody is using that PC (the demo was
+    launched there from another PC); on the PC the operator is using, it never takes the foreground from them."""
+    if sys.platform != "win32":
+        return False
+    try:
+        from .worker import user_idle_seconds
+        idle = user_idle_seconds()
+    except Exception:                                           # noqa: BLE001 - unknown: leave the foreground alone
+        idle = None
+    return bool(idle is not None and idle >= DEMO_FRONT_IDLE_S and _front(ad))
+
+
+def _demo_send(ad):
+    """send() for a bot demo: the emulator's polite input where it has one (Windows Dolphin: never takes the keyboard
+    from the operator, gbox.adapters.polite_verdict). Presses it holds back while they type are pressed again with the
+    bot's next input, so the game's held keys follow what the bot wants; releases always go out."""
+    import inspect
+    try:
+        polite = "polite" in inspect.signature(ad.send_input).parameters
+    except (TypeError, ValueError):
+        polite = False
+    if not polite:
+        return ad.send_input
+    want, have = set(), set()
+    lock = threading.Lock()
+
+    def send(rows):
+        with lock:
+            both = {r["key"] for r in rows if r.get("down", True)} & {r["key"] for r in rows if not r.get("down", True)}
+            for r in rows:
+                (want.add if r.get("down", True) else want.discard)(r["key"])
+            ups = [{"key": k, "down": False} for k in sorted(have - want - both)]
+            downs = [{"key": k, "down": True} for k in sorted(want - have - both)]
+            taps = [r for r in rows if r["key"] in both]       # a tap inside one batch (down, then up): in its order
+            out = ad.send_input(ups + downs + taps, polite=True)
+            if isinstance(out, dict) and out.get("held"):
+                have.difference_update(r["key"] for r in ups)       # the releases went out, the presses wait
+            else:
+                have.clear()
+                have.update(want)
+            return out
+    return send
+
+
+def _polite_send(ad, rows):
+    """One batch of a bot demo's presses through the emulator's polite input when it has one (else as usual)."""
+    import inspect
+    try:
+        polite = "polite" in inspect.signature(ad.send_input).parameters
+    except (TypeError, ValueError):
+        polite = False
+    return ad.send_input(rows, polite=True) if polite else ad.send_input(rows)
+
+
+def _autoplay_send(ad, d):
+    """The send() autoplay plays with: the screensaver's (an idle PC: the game in front), a bot demo's (polite: never
+    takes the operator's keyboard) or the emulator's own."""
+    if getattr(d, "screensaver", None):
+        return _screensaver_send(ad)
+    if getattr(d, "demo", False):
+        return _demo_send(ad)
+    return ad.send_input
+
+
 def _ff(ad):
     """fast_forward(on) for this emulator, or None when it has none."""
     if "fast_forward" in getattr(ad, "supported", ()) and hasattr(ad, "fast_forward"):
@@ -2902,7 +3022,7 @@ def _save_anchor(sid, ad, ctx, at):
 
 def _session_started(ctx, sid):
     try:
-        r = httpx.get(f"{ctx.server}/api/sessions", headers=ctx.headers, timeout=30)
+        r = httpx.get(f"{ctx.server}/api/sessions", headers=_ap_headers(ctx), timeout=30)
         return next((s.get("started") for s in r.json() if s["session_id"] == sid), None)
     except Exception:
         return None

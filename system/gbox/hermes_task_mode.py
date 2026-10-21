@@ -105,11 +105,21 @@ def _handoff() -> str:
             'Never infer subscription allowance from token counters or repeatedly retry an exhausted route.' + brief())
 
 
+def _neutral_workdir() -> str:
+    """Where an agent run starts when it has no task worktree: a scratch folder in the dispatch state, never the
+    deployed runtime. Runs that started in ~/gBox/system edited the live code there and made it a Git repository
+    (2026-10-20: a share-only adapters.py change broke every Linux Dolphin pad; a "cron" repository in the share)."""
+    from . import hermes_delivery
+    folder = hermes_delivery.state_dir() / 'run-cwd'
+    folder.mkdir(parents=True, exist_ok=True)
+    return str(folder)
+
+
 def _workdir(request_id: str, number: int) -> str:
     from . import hermes_delivery
     if (hermes_delivery.repository() / '.git').exists():
         return hermes_delivery.prepare(request_id, number)['workdir']
-    return str(_PROMPT.parents[2])
+    return _neutral_workdir()
 
 
 def status() -> dict:

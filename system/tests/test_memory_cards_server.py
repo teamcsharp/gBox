@@ -102,7 +102,7 @@ def launch_fixture(cfg, tmp_path, monkeypatch, platform='nes', monitor_error=Fal
     for module in (tools.rewind, tools.ring_record, tools.ghost_runs, gameplay_replay, tas):
         monkeypatch.setattr(module, 'start', lambda *args, **kwargs: {})
     if monitor_error:
-        def checked_out(*args):
+        def checked_out(*args, operator_cards=False):
             ad.memory_card_context = {'platform': platform, 'slots': {}}
         def failed_monitor(*args):
             raise RuntimeError('Card monitor interrupted after game started')
