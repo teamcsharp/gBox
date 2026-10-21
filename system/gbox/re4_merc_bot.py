@@ -2,17 +2,20 @@
 
 setup() applies the hack package through re_mods (Mercenaries unlocked, Leon's loadout = the Hand Cannon at its own
 fire rate with x99.9 damage (no explosive rounds: they kept him from firing close), infinite ammo, unlimited health, time pickups x3, combo window x3 and
-frozen, every Ganado cloned twice more; not full auto: that restarted the magnum's recoil every 3 frames and bent
-Leon's arm back over his head). play() then drives Leon from RAM at ~20 Hz with the pad only, the way a player would
+frozen, every Ganado cloned twice more, the aim's stick speed x3 (a game constant: the aim routine's scale); not full
+auto: that restarted the magnum's recoil every 3 frames and bent Leon's arm back over his head). play() then drives
+Leon from RAM at ~20 Hz with the pad only, the way a player would
 (operator 2026-10-20: "I want the game to be played like a normal game"; "it is unnatural and nightmare fuel"): it
 reads Leon and never writes him - no facing, aim pitch or position writes:
   * reads Leon (player em: *0x802B3044, +0x94 position, +0xA4 facing) and every live Ganado (EmMgr 0x8027DF20 slots:
     flags & 0x601 and +0x398 != 0xFF, +0x94 position);
   * steering is closed loop on his real facing: the stick turns him (left = +heading, ~140-230 deg/s measured on the
-    Spark), R aims (the stick then fine-turns ~30 deg/s), A fires once the aim is within FIRE_TOL (2 degrees); the aim
-    height the same way: while R is held the stick moves the game's own pitch (+0x258, read) towards the Ganado's
-    head, pulsed when close, and A fires within PITCH_TOL; which stick direction raises it is learned from what a push
-    does (an inverted aim setting just flips it);
+    Spark; a target behind him: the quick turn, back + B), R aims (the stick then fine-turns, pulsed when close: the
+    package sets the game's aim sensitivity x AIM_SPEED_X, ~30 -> ~90 deg/s), A is pressed once per shot once the aim
+    is within FIRE_TOL (2 degrees) - the Hand Cannon fires on a press, so A held down fired once and then nothing; the
+    aim height the same way: while R is held the stick moves the game's own pitch (+0x258, read) towards the target,
+    pulsed when close, and A fires within PITCH_TOL; which stick direction raises it is learned from what a push does
+    (an inverted aim setting just flips it);
   * fights any Ganado within ENGAGE;
   * with the disc's level map (gbox.re4_navmap: collision, the stage's item hourglasses, line of sight) it takes the
     reachable Time Bonus hourglasses in the planner's order (exact tour from where the round starts): runs its path
@@ -29,17 +32,25 @@ reads Leon and never writes him - no facing, aim pitch or position writes:
     picture: the button icon RE4 draws for JUMP OVER / JUMP THROUGH / TAKE / KICK / CLIMB / a grab) -> R let go,
     the button pressed, every PROMPT_EVERY s while it shows; a prompt still up after PROMPT_BURST presses in 3 s is
     left alone for PROMPT_REST s;
-  * sees his shots: the target's health (EmMgr slot +0x320) scores every firing window a hit or a miss (stats hits /
-    misses / accuracy); MISSES_TO_ADJUST misses in a row move the aim height to the next PITCH_STEPS offset, a hit
-    keeps it (operator 2026-10-20: "every shot ... setting up the zombies to be stunned or eliminating them");
+  * sees his shots (gbox.re4_threats.Shots): a press the gun could fire (35 frames since the last) is a shot; any
+    Ganado's health falling, or one starting to die, within HIT_S of it is a hit (the Hand Cannon goes through
+    bodies), else a miss (stats shots / hits / misses / kills / accuracy); MISSES_TO_ADJUST misses in a row at a raised
+    or lowered target move the aim height to the next PITCH_STEPS offset, a hit keeps it (operator 2026-10-20: "every
+    shot ... setting up the zombies to be stunned or eliminating them");
   * shoots only what he can hit (operator 2026-10-20: "shooting into walls near him and blowing himself up"): fires
     inside SHOOT_RANGE, not steeper down than STEEP_DOWN (that is the roof edge in front of him), at any range (no
     explosive rounds, so a point-blank shot is safe); further out he closes in; up on the start roof (HIGH_GROUND
     above the Ganados) he first runs to the edge towards them and jumps down;
-  * threats first (operator 2026-10-20: "too often I see Leon just sitting there just accepting an attack ... he
-    should be proactive and shoot any attacking enemy"): a Ganado within THREAT_R is shot before any bonus or route,
-    and a level shot (target within ELEV_DY of Leon's height) fires as soon as the aim pose is up, with no aim-height
-    adjustment (the Hand Cannon x99.9 kills with a body shot; the stick moves the pitch at only ~10 deg/s);
+  * threats first, from RAM (gbox.re4_threats; operator 2026-10-20: "too often I see Leon just sitting there just
+    accepting an attack ... he should be proactive and shoot any attacking enemy", "shoot it out the air", "walking
+    out of their attacks"): every tick ranks the Ganados by what their own code is doing - an attack (routine
+    r_no_1 in the attack table) by the seconds until its hit frames (read ahead in the motion's event words), a
+    weapon thrown at him (em 0x42) by its time to reach him, then the others by distance (dying ones are never
+    shot at, knocked-down ones last); the most urgent is shot (lead for its speed; a level shot at the chest), or,
+    when it lands before a shot can leave the gun (turn + aim pose + the gun's rate), run out of its reach (the
+    quick turn when the way out is behind him; away from walls and other Ganados on the level map) or across a
+    thrown weapon's line; two or more on top of him, or one there as he gets up from a hit: out first, then one by
+    one. While he is hit or held (his routine 1) the game has him: play() presses SHAKE OFF / the QTE from RAM;
   * blocked while running (moved < STUCK_MOVE in STUCK_S, up and down included: a ladder moves him up, not along):
     taps A ("JUMP OVER" / "CLIMB" prompts), then detours; still blocked after that, backs off for BACK_S and tries the
     other side (no teleports: a position write mid-climb crashed the game with "Invalid read" in its area-event code,
@@ -69,6 +80,7 @@ try:
     from . import re4_ram_prompts                 # the game's own action-button state: prompts from RAM, vision after
 except ImportError:                              # a tree without it: vision only
     re4_ram_prompts = None
+from . import re4_threats as threats_ram         # who is attacking right now, what is thrown at him (RAM)
 
 GAME_IDS = {"G4BE08"}
 EMMGR, P_PLAYER, P_GLOBAL = 0x8027DF20, 0x802B9780 - 0x673C, 0x802B2280
@@ -84,6 +96,20 @@ PITCH_TOL, PITCH_FINE, PITCH_LIMIT_S = 0.05, 0.15, 0.5   # fire within PITCH_TOL
                                                          # stick is pulsed; a push that moves nothing this long: the limit
 SHOOT_RANGE = 2400.0                             # fire inside this
 THREAT_R = 1600.0                                # a Ganado this close is about to strike: him first, before bonuses
+PRESS_HOLD, PRESS_GAP = 0.09, 0.22               # the trigger: down this long, then up; a press at most this often
+QUICK_TURN_ERR, QUICK_TURN_S = 2.3, 0.9          # a target this far round (radians): the quick turn (back + B), at
+                                                 # most once in QUICK_TURN_S
+TURN_RATE = 3.0                                  # radians a second, the stick turning him (not aiming)
+URGENT_S = 2.5                                   # an attack landing within this is fought (or dodged) before anything
+EVADE_S, EVADE_MARGIN = 0.8, 0.15                # run out of a swing this long; dodge when it lands this much sooner
+                                                 # than he can shoot
+CROWD_R, CROWD_N = 750.0, 2                      # this many Ganados this close: get out, then fight them one by one
+AIM_SPEED_X = 3.0                                # the aim's stick speed x3 (re_mods aim_turn_speed: the constant pi at
+                                                 # 0x801ED930 the aim routine scales the stick by): ~30 deg/s -> ~90
+AIM_FINE = 0.12                                  # aiming, this close to the target (radians): the stick in pulses
+EVADE_LOOK = 1500.0                              # a way out is clear this far ahead (the level map, other Ganados)
+RECOVER_S = 1.2                                  # just up from a hit, a Ganado within CROWD_R: out of reach first
+                                                 # (operator: "getting slapped on by these people over and over")
 ELEV_DY = 600.0                                  # a target this far above / below: raise or lower the aim; else level
 REAIM_PITCH = 0.15                               # a level target with the aim still this far up / down: aim again
 STEEP_DOWN = -0.5                                # a shot this far down (radians) hits the ledge in front: move instead
@@ -92,8 +118,7 @@ TAKE_R, VAULT_R = 450.0, 900.0                   # take an item hourglass this c
 COMBO_CROWD, COMBO_NEAR = 5, 3500.0              # this many Ganados this close: take a combo bonus first (TAS route)
 EM_HP = 0x320                                    # Ganado (EmMgr slot) +0x320 s16 health, +0x322 s16 max (found
                                                  # 2026-10-20: 1000 / 1800 at full, falls with hits, 0 at death)
-HIT_WINDOW, MISSES_TO_ADJUST = 1.5, 3            # firing this long without his health falling is a miss
-                                                 # (longer than the Hand Cannon's 35 frames between shots)
+MISSES_TO_ADJUST = 3                             # misses in a row at a raised / lowered target: the next aim height
 PITCH_STEPS = (0.0, -0.05, 0.05, -0.1, 0.1, -0.15, 0.15)   # aim-height offsets tried in turn after misses (radians)
 CELL = 400.0                                     # the learned map's grid (world units)
 STUCK_S, STUCK_MOVE = 0.9, 250.0                 # running but moved less than this in that long (any way): blocked
@@ -114,7 +139,8 @@ PACKAGE = [("mercenaries_unlock", {"on": True}),
            ("weapon_mod", {"item": "handcannon", "reset": True, "damage": "99.9"}),   # its own fire rate (see above)
            ("infinite_ammo", {"on": True}), ("unlimited_health", {"on": True}),
            ("merc_time_bonus", {"multiplier": 3}), ("combo_time", {"multiplier": 3}),
-           ("combo_freeze", {"on": True}), ("spawn_multiplier", {"count": 3, "on": True})]
+           ("combo_freeze", {"on": True}), ("spawn_multiplier", {"count": 3, "on": True}),
+           ("aim_turn_speed", {"multiplier": AIM_SPEED_X})]   # the game's aim sensitivity (a constant, not Leon)
 
 
 def ptr_ok(p: int) -> bool:
@@ -195,7 +221,9 @@ def u32(m, a):
 
 
 def snapshot(m) -> dict:
-    """room, Merc clock (s), combo, Leon's health, Leon {ptr, pos, rot, pitch}, live Ganados [{slot, pos, hp, hp_max}]."""
+    """room, Merc clock (s), combo, Leon's health, Leon {ptr, pos, rot, pitch, r (his routine bytes)}, live Ganados
+    [{slot, pos, hp, hp_max} + gbox.re4_threats.em_fields: r (routine bytes), motion events, frame, ...], the thrown
+    weapons in the air [{slot, pos}]."""
     pg = u32(m, P_GLOBAL)
     room = struct.unpack(">H", m.rd(pg + G_ROOM, 2))[0] if ptr_ok(pg) else None
     hp = struct.unpack(">h", m.rd(pg + G_HP, 2))[0] if ptr_ok(pg) else None
@@ -204,19 +232,23 @@ def snapshot(m) -> dict:
     if ptr_ok(pl):
         player = {"ptr": pl, "pos": struct.unpack(">3f", m.rd(pl + 0x94, 12)),
                   "rot": struct.unpack(">f", m.rd(pl + 0xA4, 4))[0],
-                  "pitch": struct.unpack(">f", m.rd(pl + AIM_PITCH, 4))[0]}
+                  "pitch": struct.unpack(">f", m.rd(pl + AIM_PITCH, 4))[0],
+                  "r": tuple(m.rd(pl + threats_ram.EM_ROUTINE, 4))}
     base, n, stride = u32(m, EMMGR), u32(m, EMMGR + 4), u32(m, EMMGR + 8)
-    enemies = []
+    enemies, thrown = [], []
     if ptr_ok(base) and 0 < n <= 128 and 0x100 < stride < 0x2000:
         d = m.rd(base, n * stride)
         for k in range(1, n):
             o = k * stride
-            if not (struct.unpack_from(">I", d, o)[0] & 0x601) or d[o + 0x398] == 0xFF:
+            if (not (struct.unpack_from(">I", d, o)[0] & 0x601) or d[o + 0x398] == 0xFF
+                    or d[o + threats_ram.EM_ID] == threats_ram.THROWN_ID):
                 continue
             hp, hp_max = struct.unpack_from(">hh", d, o + EM_HP)
-            enemies.append({"slot": k, "pos": struct.unpack_from(">3f", d, o + 0x94), "hp": hp, "hp_max": hp_max})
+            enemies.append({"slot": k, "pos": struct.unpack_from(">3f", d, o + 0x94), "hp": hp, "hp_max": hp_max,
+                            **threats_ram.em_fields(d, o)})
+        thrown = threats_ram.thrown(d, n, stride)
     return {"room": room, "hp": hp, "timer": round(u32(m, MERC_TIMER) / 30.0, 1), "combo": u32(m, MERC + 0x28),
-            "player": player, "enemies": enemies}
+            "player": player, "enemies": enemies, "thrown": thrown}
 
 
 def in_mercenaries(snap: dict) -> bool:
@@ -335,7 +367,6 @@ class Bot:
         self.learn_dir = learn_dir
         self.learned: LearnedMap | None = None
         self.r_since = None                           # since when the bot has held R (the aim pose is up after a moment)
-        self.shot = None                              # {"slot", "hp", "since"}: the firing window being scored
         self.miss_run, self.pitch_i = 0, 0
         self.pitch_up, self.pitch_key = "up", None    # the stick direction that raises the aim (learned); held last tick
         self.pitch_seen, self.pitch_wrong, self.pitch_push = None, 0, None
@@ -352,9 +383,20 @@ class Bot:
         self.detour_dir = 1
         self.stuck_n = 0
         self.dead = False                              # on the death screen (counted once per death)
+        self.tracker = threats_ram.Tracker(m)         # who is attacking, what is thrown (RAM)
+        self.shots = threats_ram.Shots()              # every shot scored by the Ganados' health
+        self.trigger = {"down": False, "at": float("-inf")}   # A: pressed once per shot (the Hand Cannon is not auto)
+        self.evade = None                             # {"slot", "since", "until", "turned"}: getting out of a swing
+        self.leon_r0 = 0                              # his routine byte last tick (1: hit / held)
+        self.target_slot = None
+        self.qturn_at = float("-inf")
+        self.recovered_at = float("-inf")              # when he last got up from a hit / a hold
+        self._last_enemies: list = []
         self.stats = {"prompts": 0, "max_combo": 0, "vaults": 0, "detours": 0, "backoffs": 0, "time_bonus": 0,
                       "shots_s": 0.0, "learned_walls": 0, "replans": 0, "hits": 0, "misses": 0, "accuracy": 0.0,
-                      "pitch_offset": 0.0}
+                      "pitch_offset": 0.0, "shots": 0, "kills": 0, "hits_taken": 0, "evades": 0,
+                      "attacks_seen": 0, "attacks_prevented": 0, "attacks_avoided": 0, "attacks_landed": 0,
+                      "thrown_seen": 0, "thrown_shot": 0, "quick_turns": 0}
 
     # -- the round's time bonuses --
     def _round(self, room):
@@ -415,10 +457,15 @@ class Bot:
     # -- steering --
     def _turn(self, err: float, aiming: bool) -> set:
         keys = {"r"} if aiming else set()
-        if err > (FIRE_TOL if aiming else TURN_TOL):
-            keys.add("left")
-        elif err < -(FIRE_TOL if aiming else TURN_TOL):
-            keys.add("right")
+        tol = FIRE_TOL if aiming else TURN_TOL
+        if abs(err) <= tol:
+            self.fine_pulse = False
+            return keys
+        if aiming and abs(err) < AIM_FINE:            # close: a tick on, a tick off (no overshoot at the faster aim)
+            self.fine_pulse = not getattr(self, "fine_pulse", False)
+            if not self.fine_pulse:
+                return keys
+        keys.add("left" if err > 0 else "right")
         return keys
 
     def _fight(self, p, tgt, now, s) -> dict:
@@ -433,65 +480,202 @@ class Bot:
             return {"hold": set()}
         dist = math.hypot(tx - px, tz - pz)
         down = math.atan2(tgt["pos"][1] + HEAD_H - (p["pos"][1] + GUN_H), max(dist, 1.0))
-        if p["pos"][1] - tgt["pos"][1] > HIGH_GROUND or down < STEEP_DOWN:   # up on a roof: get down to them
-            self.r_since = None
-            return self._go(p, (tx, tz), now)
-        if dist > SHOOT_RANGE or not self._sight(p, (tx, tgt["pos"][1] + HEAD_H, tz)):   # can't hit him from here
-            self.r_since = None
-            return self._run_to(p, (tx, tgt["pos"][1], tz), now)
+        if not tgt.get("thrown"):                                      # (a weapon in the air: shoot it from here)
+            if p["pos"][1] - tgt["pos"][1] > HIGH_GROUND or down < STEEP_DOWN:   # up on a roof: get down to them
+                self.r_since = None
+                return self._go(p, (tx, tz), now)
+            if dist > SHOOT_RANGE or not self._sight(p, (tx, tgt["pos"][1] + HEAD_H, tz)):   # can't hit him here
+                self.r_since = None
+                return self._run_to(p, (tx, tgt["pos"][1], tz), now)
         if abs(err) > TURN_TOL:
             self.r_since = None
+            if abs(err) > QUICK_TURN_ERR and now - self.qturn_at > QUICK_TURN_S:   # behind him: the quick turn
+                self.qturn_at = now                                             # (back + B), half a second for 180
+                self.stats["quick_turns"] += 1
+                return {"hold": {"down", "b"}}
             return {"hold": self._turn(err, aiming=False)}               # turn round first (fast)
         self.r_since = now if self.r_since is None else self.r_since
-        if abs(tgt["pos"][1] - p["pos"][1]) < ELEV_DY:                 # on his level: the gun level, at his chest
-            cur = p.get("pitch")
-            if (cur is not None and abs(cur) > REAIM_PITCH and now - self.r_since >= PITCH_AFTER
-                    and now - self.reaim_at > 1.5):                     # still up from a higher one (the laser over his
-                self.reaim_at, self.r_since = now, None                 # head, live 2026-10-20): lower and aim again
-                return {"hold": set()}
-            height, level = self._aim_height(p, p["pos"][1] + GUN_H, dist, now)
+        if tgt.get("thrown") or abs(tgt["pos"][1] - p["pos"][1]) < ELEV_DY:
+            if tgt.get("thrown"):                                       # a weapon in the air: at its own height
+                height, level = self._aim_height(p, tgt["pos"][1], dist, now)
+            else:                                                       # on his level: the gun level, at his chest
+                cur = p.get("pitch")
+                if (cur is not None and abs(cur) > REAIM_PITCH and now - self.r_since >= PITCH_AFTER
+                        and now - self.reaim_at > 1.5):                 # still up from a higher one (the laser over his
+                    self.reaim_at, self.r_since = now, None             # head, live 2026-10-20): lower and aim again
+                    return {"hold": set()}
+                height, level = self._aim_height(p, p["pos"][1] + GUN_H, dist, now, offset=False)
         else:
             height, level = self._aim_height(p, tgt["pos"][1] + HEAD_H, dist, now)   # up / down: the aim by stick
         if abs(err) > FIRE_TOL or not level:
+            self.trigger["down"] = False
             return {"hold": self._turn(err, aiming=True) | height}       # aim (pose up), turn and raise onto him
         self.stats["shots_s"] = round(self.stats["shots_s"] + 0.05, 2)
-        self._score(tgt, now)
-        return {"hold": {"r", "a"}}                                       # on target: fire
+        return {"hold": {"r"} | self._pull(now, tgt)}                    # on target: fire
 
-    def _score(self, tgt, now):
-        """Is the fire landing? His health falling inside HIT_WINDOW is a hit; MISSES_TO_ADJUST misses in a row try the
-        next aim-height offset (kept while it lands)."""
-        hp = tgt.get("hp")
-        if hp is None:
-            return
-        sh = self.shot
-        if sh is None or sh["slot"] != tgt["slot"]:
-            self.shot = {"slot": tgt["slot"], "hp": hp, "since": now}
-            return
-        if hp < sh["hp"]:                                              # he took it
-            self.stats["hits"] += 1
+    def _pull(self, now, tgt) -> set:
+        """The trigger: pressed for a moment, then let go (the Hand Cannon fires once per press: A held down fired one
+        shot and then nothing, which the old scoring counted as misses). A press the gun can fire is a shot."""
+        tr = self.trigger
+        if tr["down"]:
+            if now - tr["at"] < PRESS_HOLD:
+                return {"a"}
+            tr["down"] = False
+            return set()
+        if now - tr["at"] < PRESS_GAP:
+            return set()
+        tr["down"], tr["at"] = True, now
+        if self.shots.press(now):
+            self.target_slot = tgt["slot"]
+            if tgt.get("thrown"):
+                self.stats["thrown_shot"] += 1
+        return {"a"}
+
+    # -- combat: the threats first --
+    def _ready_in(self, p, t, now) -> float:
+        """Seconds until a shot at threat t can leave the gun: the turn (the quick turn for anything behind), the aim
+        pose, the gun's own rate."""
+        px, _, pz = p["pos"]
+        err = abs(wrap(heading(t.pos[0] - px, t.pos[2] - pz) - p["rot"]))
+        turn = 0.0 if err <= FIRE_TOL else (0.55 if err > QUICK_TURN_ERR else err / TURN_RATE)
+        pose = PITCH_AFTER
+        if self.r_since is not None and err <= TURN_TOL:
+            pose = max(0.0, PITCH_AFTER - (now - self.r_since))
+        gun = max(0.0, self.shots.last_shot + self.shots.GUN_GAP - now)
+        return max(turn + pose, gun) + 0.1
+
+    @staticmethod
+    def _as_target(t) -> dict:
+        e = dict(t.enemy) if t.kind != "thrown" else {"thrown": True}
+        e.update(slot=t.slot if t.kind != "thrown" else -t.slot, pos=t.pos)
+        return e
+
+    def _watch(self, p, s, threats, now):
+        """Combat stats from RAM: hits taken (his routine going to 1: hit or held), attacks seen and how they ended:
+        prevented (the attacker died in it), avoided (over without a hit), landed (Leon hit while it ran)."""
+        r0 = (p.get("r") or (0,))[0]
+        if r0 == 1 and self.leon_r0 != 1:
+            self.stats["hits_taken"] += 1
+        if r0 != 1 and self.leon_r0 == 1:
+            self.recovered_at = now                                 # on his feet again: out before the next one
+        self.leon_r0 = r0
+        for k in ("attacks_seen", "thrown_seen"):
+            self.stats[k] = self.tracker.stats[k]
+        for k in ("prevented", "avoided", "landed"):                # how each attack ended (re4_threats.Tracker)
+            self.stats[f"attacks_{k}"] = self.tracker.stats.get(k, 0)
+
+    def _way_out(self, p, t) -> float:
+        """The heading to run: away from the attacker, turned up to 60 degrees towards open ground - no wall in the
+        next EVADE_LOOK (the level map's line of sight), no other Ganado near where it leads."""
+        px, py, pz = p["pos"]
+        away = heading(px - t.pos[0], pz - t.pos[2])
+        others = [e["pos"] for e in self._last_enemies if e["slot"] != t.slot and not threats_ram.dying(e)]
+        best, best_cost = away, float("inf")
+        for turn in (0.0, 0.5, -0.5, 1.0, -1.0):
+            h = away + turn
+            ex, ez = px + math.sin(h) * EVADE_LOOK, pz + math.cos(h) * EVADE_LOOK
+            cost = abs(turn) * 300.0
+            if not self._sight(p, (ex, py + GUN_H, ez)):
+                cost += 5000.0
+            for ox, _, oz in others:
+                d = math.hypot(ox - ex, oz - ez)
+                if d < 1200.0:
+                    cost += 1200.0 - d
+            if cost < best_cost:
+                best, best_cost = h, cost
+        return best
+
+    def _evade(self, p, t, now, side: bool = False) -> dict:
+        """Out of the way of an attack he can't stop in time: away from the attacker at a run (the quick turn first
+        when the way out is behind him), for EVADE_S; side: across a thrown weapon's line (the side it passes on)."""
+        px, py, pz = p["pos"]
+        self.r_since = None
+        self.trigger["down"] = False
+        if self.evade is None or self.evade["slot"] != t.slot or now > self.evade["until"]:
+            if side:
+                vx, vz = t.vel[0], t.vel[2]
+                cross = vx * (pz - t.pos[2]) - vz * (px - t.pos[0])     # which side of its line Leon is on
+                away = heading(vz, -vx) if cross < 0 else heading(-vz, vx)
+            else:
+                away = self._way_out(p, t)
+            self.evade = {"slot": t.slot, "since": now, "until": now + EVADE_S, "turned": False, "away": away}
+            self.stats["evades"] += 1
+        away = self.evade["away"]
+        err = wrap(away - p["rot"])
+        if abs(err) > QUICK_TURN_ERR and not self.evade["turned"] and now - self.qturn_at > QUICK_TURN_S:
+            self.evade["turned"] = True
+            self.qturn_at = now
+            self.stats["quick_turns"] += 1
+            return {"hold": {"down", "b"}}
+        keys = {"up", "b"}
+        if err > TURN_TOL / 2:
+            keys.add("left")
+        elif err < -TURN_TOL / 2:
+            keys.add("right")
+        return {"hold": keys}
+
+    def _combat(self, p, s, now) -> dict | None:
+        """The fight, threats first (operator 2026-10-20: "shoot any attacking enemy to prevent them from attacking
+        him", "shoot it out the air", "walking out of their attacks"): a Ganado in an attack (gbox.re4_threats: his
+        routine in the attack table, the hit frames by its motion) is shot - the one closest to landing first - or,
+        when it lands before a shot can leave the gun, dodged; a thrown weapon coming at him is shot; two or more on
+        top of him: get out first. None: no fight here (the route goes on)."""
+        threats = self.tracker.update(s, now)
+        self._last_enemies = s["enemies"]
+        self._watch(p, s, threats, now)
+        self._score(s, now)
+        if (p.get("r") or (0,))[0] == 1:                             # hit or held: the game has him (play() presses
+            self.r_since, self.trigger["down"] = None, False       # SHAKE OFF / the QTE from RAM)
+            return {"hold": set()}
+        if self.evade and now < self.evade["until"]:
+            t = next((x for x in threats if x.slot == self.evade["slot"] and x.kind != "thrown"), None)
+            if t is not None and t.dist < threats_ram.REACH.get(t.kind, 900.0) + 500.0:
+                return self._evade(p, t, now)
+        live = [t for t in threats if self.skip.get(t.slot, float("-inf")) < now or t.kind not in ("near", "down")]
+        urgent = [t for t in live if t.kind not in ("near", "down") and t.eta < URGENT_S]
+        for t in urgent:
+            late = t.eta + EVADE_MARGIN < self._ready_in(p, t, now)
+            if t.kind == "thrown" and late:                       # can't shoot it in time: out of its line
+                return self._evade(p, t, now, side=True)
+            if t.kind in threats_ram.MELEE and t.dist < threats_ram.REACH.get(t.kind, 900.0) + 300.0 and late:
+                return self._evade(p, t, now)                      # it lands first: out of its way
+            return self._fight(p, self._as_target(t), now, s)
+        close = [t for t in live if t.kind == "near" and t.dist < CROWD_R]
+        if len(close) >= CROWD_N or (close and now - self.recovered_at < RECOVER_S):
+            return self._evade(p, close[0], now)                    # on top of him / just hit: out, then one by one
+        near = [t for t in live if t.kind == "near" and t.dist < THREAT_R]
+        near += [t for t in live if t.kind == "down" and t.dist < THREAT_R]   # knocked down: after the standing ones
+        if near:
+            return self._fight(p, self._as_target(near[0]), now, s)
+        return None
+
+    def _score(self, s, now):
+        """What the shots did (gbox.re4_threats.Shots: a shot hit when a Ganado's health fell or one started dying
+        within HIT_S of it). MISSES_TO_ADJUST misses in a row at a raised / lowered target try the next aim-height
+        offset (kept while it lands); a level shot at the chest keeps no offset."""
+        before = self.shots.stats["misses"], self.shots.stats["hits"]
+        self.shots.update(s["enemies"], now)
+        misses = self.shots.stats["misses"] - before[0]
+        if self.shots.stats["hits"] > before[1]:
             self.miss_run = 0
-            self.shot = {"slot": tgt["slot"], "hp": hp, "since": now}
-        elif now - sh["since"] >= HIT_WINDOW:                          # a whole window of fire, nothing landed
-            self.stats["misses"] += 1
-            self.miss_run += 1
-            if self.miss_run >= MISSES_TO_ADJUST:
-                self.pitch_i = (self.pitch_i + 1) % len(PITCH_STEPS)
-                self.stats["pitch_offset"] = PITCH_STEPS[self.pitch_i]
-                self.miss_run = 0
-            self.shot = {"slot": tgt["slot"], "hp": hp, "since": now}
-        total = self.stats["hits"] + self.stats["misses"]
-        self.stats["accuracy"] = round(self.stats["hits"] / total, 3) if total else 0.0
+        self.miss_run += misses
+        if self.miss_run >= MISSES_TO_ADJUST:
+            self.pitch_i = (self.pitch_i + 1) % len(PITCH_STEPS)
+            self.stats["pitch_offset"] = PITCH_STEPS[self.pitch_i]
+            self.miss_run = 0
+        for k in ("shots", "hits", "misses", "kills", "accuracy"):
+            self.stats[k] = self.shots.stats[k]
 
-    def _aim_height(self, p, target_y: float, dist: float, now: float) -> tuple[set, bool]:
+    def _aim_height(self, p, target_y: float, dist: float, now: float, offset: bool = True) -> tuple[set, bool]:
         """The stick key that moves the aim towards target_y while R is held, and whether the aim is there. Reads the
         game's own pitch (+0x258) and never writes it: the game keeps the pose and its limits. Which direction raises
-        it is learned from what the last push did (two contradicting pushes in a row flip it)."""
+        it is learned from what the last push did (two contradicting pushes in a row flip it). offset: add the aim
+        height learned from misses (not for a level shot at the chest)."""
         cur = p.get("pitch")
         if cur is None or self.r_since is None or now - self.r_since < PITCH_AFTER:
             self.pitch_key, self.pitch_seen, self.pitch_push = None, None, None
             return set(), False                       # the aim pose is not up yet
-        want = math.atan2(target_y - (p["pos"][1] + GUN_H), max(dist, 1.0)) + PITCH_STEPS[self.pitch_i]
+        want = math.atan2(target_y - (p["pos"][1] + GUN_H), max(dist, 1.0)) + (PITCH_STEPS[self.pitch_i] if offset else 0.0)
         want = max(-PITCH_MAX, min(PITCH_MAX, want))
         seen = self.pitch_seen
         if seen is not None and seen[2] is not None and abs(cur - seen[1]) > 0.004:   # what the last push did
@@ -638,11 +822,12 @@ class Bot:
                 return {"tap": "a"}
             return {"tap": "b" if now - self.timer_since > 6 else "a"}
         px, _, pz = p["pos"]
-        pool = [e for e in s["enemies"] if self.skip.get(e["slot"], float("-inf")) < now]
+        act = self._combat(p, s, now)                                     # attacks, thrown weapons, a Ganado on him:
+        if act is not None:                                               # before any bonus or route
+            return act
+        pool = [e for e in s["enemies"] if self.skip.get(e["slot"], float("-inf")) < now and not threats_ram.dying(e)]
         near = min(pool, key=lambda e: (e["pos"][0] - px) ** 2 + (e["pos"][2] - pz) ** 2) if pool else None
         dist = math.hypot(near["pos"][0] - px, near["pos"][2] - pz) if near else None
-        if near and dist < THREAT_R:                                      # about to strike: him first, before anything
-            return self._fight(p, near, now, s)
         crowd = sum(1 for e in pool if math.hypot(e["pos"][0] - px, e["pos"][2] - pz) < COMBO_NEAR)
         if self.st is not None and self.combos and crowd >= COMBO_CROWD:     # a combo window while they crowd in
             c = min(self.combos, key=lambda h: math.hypot(h["stand"][0] - px, h["stand"][2] - pz))

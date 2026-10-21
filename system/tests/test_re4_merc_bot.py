@@ -555,3 +555,93 @@ def test_a_ganado_about_to_strike_comes_before_a_combo_bonus():
     facing(m, 0.0)
     act = bot.tick(B.snapshot(m))
     assert "r" in act.get("hold", set()) and not (bot.goal or {}).get("item")   # aiming at him, not running off
+
+
+# -- combat: threats from RAM (gbox.re4_threats) ------------------------------------------------------------------------
+def act_state(m, slot, r, ev=0):
+    m.put(EM + slot * STRIDE + 0xFC, ">4B", *r)
+    m.put(EM + slot * STRIDE + 0x288, ">I", ev)
+
+
+def run(bot, m, now, t, n=1):
+    acts = []
+    for _ in range(n):
+        now[0] = t
+        m.put(B.MERC_TIMER, ">I", int((100 - t) * 30))
+        acts.append(bot.tick(B.snapshot(m)))
+        t += 0.05
+    return acts
+
+
+def test_an_attacking_ganado_is_shot_before_a_nearer_one_that_only_walks():
+    now = [0.0]
+    m = world([((0, 0, 900), True), ((-1300, 0, 1300), True)])             # the near one walks; the other swings
+    act_state(m, 1, (1, 0x03, 0, 0))
+    act_state(m, 2, (1, 0x27, 1, 0))
+    facing(m, B.heading(-1300, 1300))                                        # already facing the attacker
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    run(bot, m, now, 0.0)
+    acts = run(bot, m, now, B.PITCH_AFTER + 0.05, 2)
+    assert any("a" in a.get("hold", set()) for a in acts) and bot.target_slot == 2
+
+
+def test_a_swing_that_lands_before_he_can_shoot_is_run_out_of():
+    now = [0.0]
+    m = world([((0, 0, -700), True)])                                        # right behind him
+    act_state(m, 1, (1, 0x26, 1, 0), ev=B.threats_ram.EV_SWING)
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    bot.tracker.update(B.snapshot(m), -0.6)                                  # the swing started 0.6 s ago
+    act = run(bot, m, now, 0.0)[0]
+    assert act["hold"] >= {"up", "b"} and bot.stats["evades"] == 1          # away from it at a run, not turning to aim
+
+
+def test_the_trigger_is_pressed_once_per_shot_not_held():
+    now = [0.0]
+    m = world([((0, 0, 1500), True)])
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    acts = run(bot, m, now, 0.0, 60)                                         # 3 s on target
+    downs = [i for i, (a, b) in enumerate(zip(acts, acts[1:]))
+             if "a" not in a.get("hold", set()) and "a" in b.get("hold", set())]
+    assert len(downs) >= 5                                                   # pressed again and again, never just held
+    assert bot.stats["shots"] == 3                                           # the gun fires at its own rate (35 frames)
+
+
+def test_dying_ganados_are_not_shot_at():
+    now = [0.0]
+    m = world([((0, 0, 900), True), ((0, 0, -1400), True)])
+    act_state(m, 1, (3, 1, 0, 0))                                            # dying in front of him
+    hp(m, 1, 0)
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    act = run(bot, m, now, 0.0)[0]
+    assert act["hold"] & {"left", "right"} or act["hold"] == {"down", "b"}   # turning to the live one behind him
+
+
+def test_held_by_a_ganado_the_bot_lets_the_game_and_the_prompts_have_him():
+    now = [0.0]
+    m = world([((0, 0, 300), True)])
+    act_state(m, 1, (1, 0x2E, 1, 0))
+    m.put(PL + 0xFC, ">4B", 1, 0, 1, 0)                                      # Leon held (SHAKE OFF)
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    assert run(bot, m, now, 0.0)[0] == {"hold": set()} and bot.stats["hits_taken"] == 1
+
+
+def test_a_thrown_axe_coming_at_him_is_aimed_at_where_it_will_be():
+    now = [0.0]
+    m = world([((0, 0, 6000), True)])                                       # the thrower, far out
+    axe = EM + 2 * STRIDE
+    m.put(B.EMMGR, ">3I", EM, 3, STRIDE)
+    m.put(axe, ">I", 1)
+    m.put(axe + 0x100, ">B", B.threats_ram.THROWN_ID)
+    m.put(axe + 0xFC, ">4B", 1, 0, 0, 0)
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    for k in range(4):
+        m.put(axe + 0x94, ">3f", 0.0, 1400.0, 4000.0 - 150.0 * k)            # 3000 units / s straight at him
+        run(bot, m, now, 0.05 * k)
+    assert bot.tracker.stats["thrown_seen"] == 1
+    t = bot.tracker.update(B.snapshot(m), 0.2)
+    assert t[0].kind == "thrown" and t[0].pos[2] < 3550.0
