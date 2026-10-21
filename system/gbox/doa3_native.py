@@ -204,8 +204,43 @@ def _disc_files(root: Path):
     return sorted(files)
 
 
+def _changed_disc_files(source: Path, game_id: str, mod: str) -> set[str] | None:
+    """Use a completed asset build's change list; unknown layouts keep private copies."""
+    if not mod:
+        return None
+    marker = source.parent.parent / ".gbox-mod.json"
+    _plain_path(marker)
+    try:
+        if marker.stat().st_size > 4 * 1024 * 1024:
+            return None
+        meta = json.loads(marker.read_text(encoding="utf8"))
+    except (OSError, ValueError):
+        return None
+    if (not isinstance(meta, dict) or meta.get("game_id") != game_id
+            or meta.get("image") != source.relative_to(marker.parent).as_posix()
+            or not isinstance(meta.get("files"), list)):
+        return None
+    names = list(meta["files"])
+    changes = meta.get("file_changes", [])
+    if not isinstance(changes, list) or any(not isinstance(row, dict) for row in changes):
+        return None
+    names.extend(row.get("path") for row in changes)
+    changed = set()
+    for name in names:
+        if not isinstance(name, str) or not name or any(c in name for c in "\\:\x00\r\n"):
+            return None
+        parts = name.split("/")
+        if any(part in ("", ".", "..") for part in parts):
+            return None
+        # The DOA3 writer's files are disc-relative; file_changes are build-relative.
+        changed.add(name.lower())
+        if parts[0].lower() == source.parent.name.lower():
+            changed.add("/".join(parts[1:]).lower())
+    return changed
+
+
 def prepare_play_disc(source: Path, config, game: dict, progress=lambda *_: None) -> Path:
-    """Copy once, preserve existing saves, and fail closed on mismatched disc views."""
+    """Share unchanged build assets, preserve saves, and reject mismatched disc views."""
     if not supports_game(game):
         raise ToolUnavailable("This native adapter is restricted to the owned DOA3 USA catalog title")
     source = source.absolute()
@@ -253,6 +288,7 @@ def prepare_play_disc(source: Path, config, game: dict, progress=lambda *_: None
                 _disc_files(disc / ".recomp-storage")
             return disc / "default.xbe"
         parent.mkdir(parents=True, exist_ok=True)
+        changed = _changed_disc_files(source, game_id, mod)
         with tempfile.TemporaryDirectory(prefix="disc-stage-", dir=parent) as temporary:
             stage = Path(temporary) / "disc"
             stage.mkdir()
@@ -264,7 +300,16 @@ def prepare_play_disc(source: Path, config, game: dict, progress=lambda *_: None
                 else:
                     src = source.parent / item["name"]
                     _plain_path(src)
-                    shutil.copy2(src, target)
+                    if changed is not None and item["name"].lower() not in changed:
+                        # Disc assets are read-only to the runner; only .recomp-storage
+                        # is writable. Keep rebuilt assets private so a later rebuild
+                        # cannot change an older play view or its saved revision.
+                        try:
+                            os.link(src, target)
+                        except OSError:  # Cross-volume caches and filesystems without links.
+                            shutil.copy2(src, target)
+                    else:
+                        shutil.copy2(src, target)
                 if _sha(target) != item["sha256"]:
                     raise ToolUnavailable("DOA3 disc changed while its private copy was being prepared")
             receipt = {"format": 1, "game_id": game_id, "mod": mod, "fingerprint": fingerprint, "files": inventory}
