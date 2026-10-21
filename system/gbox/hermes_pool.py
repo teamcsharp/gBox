@@ -235,7 +235,7 @@ def register_providers():
 def routes(app, config, auth, gate):
     global _GATE
     _GATE = gate or (lambda: None)
-    from .llm_proxy import LocalLLM, Busy, _loopback
+    from .llm_proxy import LocalLLM, Busy, _loopback, retry_after_headers
     from fastapi.responses import JSONResponse, StreamingResponse
 
     def access(request: Request):
@@ -299,6 +299,7 @@ def routes(app, config, auth, gate):
         candidates = [name] + [n for n in settings if n != name]
         if not L.settings().enabled:
             raise HTTPException(503, 'Local task pool is disabled')
+        retry_headers = {'Retry-After': '30'}
         for target in candidates:
             s = settings[target]
             if not s.enabled:
@@ -316,11 +317,15 @@ def routes(app, config, auth, gate):
                 return JSONResponse(await p.complete(body, request.is_disconnected),
                                     headers={'X-gBox-Inference-Host': target})
             except Busy as exc:
+                headers = retry_after_headers(exc.retry_after)
                 if exc.status < 500:
-                    return JSONResponse({'error': {'message': exc.message}}, status_code=exc.status)
+                    return JSONResponse({'error': {'message': exc.message}}, status_code=exc.status,
+                                        headers=headers)
+                if headers:
+                    retry_headers = headers
                 continue
         return JSONResponse({'error': {'message': 'Enabled local inference machines are unavailable; task retained'}},
-                            status_code=503, headers={'Retry-After': '30'})
+                            status_code=503, headers=retry_headers)
 
     from . import hermes_models
     hermes_models.routes(app, auth)

@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from datetime import timezone
+from email.utils import format_datetime, parsedate_to_datetime
 import ipaddress
 import json
 import os
@@ -399,8 +401,26 @@ def stream_chunks(lines, model: str, cid: str, created: int, *, include_usage: b
 
 # ------------------------------------------------------------------------------------------------ the proxy
 
+def retry_after_headers(value) -> dict[str, str]:
+    """Forward valid delay-seconds or HTTP dates; malformed hints are omitted."""
+    text = str(value).strip() if value is not None else ''
+    if not text or len(text) > 128 or '\r' in text or '\n' in text:
+        return {}
+    if re.fullmatch(r'[0-9]+', text):
+        text = str(int(text))
+    else:
+        try:
+            date = parsedate_to_datetime(text)
+            if date.tzinfo is None:
+                return {}
+            text = format_datetime(date.astimezone(timezone.utc), usegmt=True)
+        except (ValueError, TypeError, OverflowError):
+            return {}
+    return {'Retry-After': text}
+
+
 class Busy(Exception):
-    def __init__(self, status: int, message: str, retry_after: int | None = None):
+    def __init__(self, status: int, message: str, retry_after: int | str | None = None):
         super().__init__(message)
         self.status, self.message, self.retry_after = status, message, retry_after
 
@@ -550,10 +570,14 @@ class LocalLLM:
         instruction = None
         if queued and used >= budget - 6:
             instruction = ('This run has reached its tool budget. Return a factual final checkpoint now: verified '
-                           'results, artifact/job IDs, tests, blockers and the exact next step. Do not claim incomplete '
+                           'results, artifact/job IDs, tests, blockers and the exact next step. Include actual test '
+                           'results and returned commit/PR receipts. Publication without a returned receipt remains pending. Do not claim incomplete '
                            'acceptance criteria are resolved. The scheduler retains this report for the next run.'
                            if final else f'Only {budget-used} tool calls remain. Stop exploration and use them to save '
-                           'a checkpoint on the assigned request, record tests and blockers, then return your result.')
+                           'a checkpoint on the assigned request: run the focused verification, use publish_task_changes '
+                           'for passing source changes and keep its commit/PR receipt, then record actual results, '
+                           'pending job IDs and the next acceptance step. Reuse existing work and do not start duplicate '
+                           'jobs. Close only a fully verified request; keep partial work in_progress. Then return your result.')
         # Reserve the reminder's space, then append it AFTER trimming. Otherwise
         # it becomes the sole retained tail group and erases the last tool result
         # precisely when a factual final checkpoint is required.
@@ -641,7 +665,8 @@ class LocalLLM:
                     r = await client.post('chat/completions' if s.api_format == 'openai' else '/api/chat',
                                           json=payload | {'stream': False})
             if r.status_code >= 400:
-                raise Busy(502 if r.status_code >= 500 else r.status_code, 'Local inference: ' + _error_text(r))
+                raise Busy(502 if r.status_code >= 500 else r.status_code, 'Local inference: ' + _error_text(r),
+                           retry_after_headers(r.headers.get('Retry-After')).get('Retry-After'))
             data = r.json()
             out = data if s.api_format == 'openai' else from_ollama(
                 data, meta['model'], 'chatcmpl-' + uuid.uuid4().hex[:24], int(t0))
@@ -709,7 +734,8 @@ class LocalLLM:
                 await client.aclose()
                 self.release(lock)
                 self.log(meta | {'ts': t0, 'status': 'error', 'error': text[:300]})
-                raise Busy(502 if response.status_code >= 500 else response.status_code, 'Local inference: ' + text)
+                raise Busy(502 if response.status_code >= 500 else response.status_code, 'Local inference: ' + text,
+                           retry_after_headers(response.headers.get('Retry-After')).get('Retry-After'))
         if s.api_format == 'openai':
             async def openai_events():
                 usage, calls, done, error = {}, set(), False, None
@@ -847,7 +873,7 @@ def routes(app, config, auth, gate=None, transport=None) -> LocalLLM:
         return auth(request)
 
     def error(status, message, retry_after=None):
-        headers = {'Retry-After': str(int(retry_after))} if retry_after else {}
+        headers = retry_after_headers(retry_after)
         # Not "rate_limit": Hermes's failure classifier would cool the local route for a wait that is the operator's game.
         kind = 'service_unavailable' if status == 503 else 'api_error'
         return JSONResponse({'error': {'message': message, 'type': kind, 'code': status}}, status_code=status,

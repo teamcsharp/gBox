@@ -142,9 +142,13 @@ def test_queue_budget_warns_then_forces_final_checkpoint(api_format):
                      {'role': 'tool', 'tool_call_id': call['id'], 'content': 'bounded result'}]
     _, warning, meta = asyncio.run(proxy.prepare(dict(BODY, messages=messages[:-2])))
     assert 'save a checkpoint' in str(warning['messages']) and not meta['budget_final']
+    assert 'publish_task_changes' in str(warning['messages'])
+    assert 'commit/PR receipt' in str(warning['messages']) and 'keep partial work in_progress' in str(warning['messages'])
+    assert warning.get('tool_choice') != 'none' and warning.get('tools'), 'handoff calls remain available'
     _, final, meta = asyncio.run(proxy.prepare(dict(BODY, messages=messages)))
     assert meta['budget_final'] and meta['queue_tool_calls'] == 8
     assert 'factual final checkpoint' in str(final['messages'])
+    assert 'Publication without a returned receipt remains pending' in str(final['messages'])
     if api_format == 'openai':
         assert final['tool_choice'] == 'none'
     else:

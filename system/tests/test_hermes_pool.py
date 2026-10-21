@@ -134,6 +134,51 @@ def test_partial_tool_stream_is_never_replayed(pool, monkeypatch):
                     json={'stream': True, 'messages': []})
 
 
+@pytest.mark.parametrize('stream', [False, True])
+@pytest.mark.parametrize('hint,expected', [
+    (19, '19'), ('0', '0'), ('Wed, 21 Oct 2026 19:00:00 GMT', 'Wed, 21 Oct 2026 19:00:00 GMT'),
+    ('invalid', None), ('-4', None), ('20\r\nInjected: true', None), (None, None),
+])
+def test_pool_forwards_rate_limit_retry_after_without_failover(pool, monkeypatch, stream, hint, expected):
+    from gbox.llm_proxy import Busy
+    client, headers = _app(monkeypatch)
+    monkeypatch.setattr(P, 'health', lambda *a, **kw: {'capable': True})
+    calls = []
+    class Limited:
+        async def complete(self, *args):
+            calls.append('sparkDeux')
+            raise Busy(429, 'Local inference: busy', hint)
+        stream = complete
+    class Prime:
+        async def complete(self, *args):
+            raise AssertionError('429 must retain its existing no-failover behavior')
+        stream = complete
+    P._PROXIES.update(sparkDeux=Limited(), lilspark=Prime())
+    response = client.post('/api/llm/local/nodes/sparkDeux/v1/chat/completions', headers=headers,
+                           json={'stream': stream, 'messages': [{'role': 'user', 'content': 'continue'}]})
+    assert response.status_code == 429 and response.headers.get('retry-after') == expected
+    assert calls == ['sparkDeux'] and P.node_settings()['sparkDeux'].max_parallel_jobs == 4
+
+
+@pytest.mark.parametrize('hint,expected', [(None, '30'), ('invalid', '30'), (45, '45'),
+    ('Wed, 21 Oct 2026 19:00:00 GMT', 'Wed, 21 Oct 2026 19:00:00 GMT')])
+def test_exhausted_failover_retains_valid_retry_hint(pool, monkeypatch, hint, expected):
+    from gbox.llm_proxy import Busy
+    client, headers = _app(monkeypatch)
+    monkeypatch.setattr(P, 'health', lambda *a, **kw: {'capable': True})
+    calls = []
+    class Unavailable:
+        def __init__(self, name): self.name = name
+        async def complete(self, *args):
+            calls.append(self.name)
+            raise Busy(502, 'Local inference: unavailable', hint if self.name == 'sparkDeux' else None)
+    P._PROXIES.update(sparkDeux=Unavailable('sparkDeux'), lilspark=Unavailable('lilspark'))
+    response = client.post('/api/llm/local/nodes/sparkDeux/v1/chat/completions', headers=headers,
+                           json={'messages': [{'role': 'user', 'content': 'continue'}]})
+    assert response.status_code == 503 and response.headers['retry-after'] == expected
+    assert calls == ['sparkDeux', 'lilspark']
+
+
 def test_model_actions_are_allowlisted_and_require_download(pool, monkeypatch):
     monkeypatch.setattr(M, 'access', lambda: {'ready': True})
     with pytest.raises(ValueError, match='Unknown'):
