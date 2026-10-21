@@ -579,6 +579,64 @@ def test_verified_self_resuscitation_preempts_a_second_displayed_request(tmp_pat
     assert R.prompt(memory) == "mash:square"          # ordinary requests retain the normal priority ordering
 
 
+def test_hidden_recovery_preserves_hp_and_waits_without_inventing_a_prompt(monkeypatch, tmp_path):
+    from gbox import re5_mods_tool
+    from types import SimpleNamespace
+    memory = with_prompt(world(hp=1, action=7), 2, PLAYER, 0, mode=5, index=25, visible=False)
+    memory.put(PLAYER + R.P_DYING_TIMER, struct.pack(">f", 6.74))
+    memory.u32(PLAYER + R.P_RECOVER_BUTTON, 0x328E1FE0)
+    memory.put(0x328E1FE0 + 0x0A, b"\0")       # hidden and inactive during a hit animation
+    memory.put(PLAYER + 0x1D0B, b"\1")
+    memory.u32(PLAYER + 0x1220, 0x7B)         # transient callback pause does not finish the DYING state
+    assert R.recovery_active(memory) and R.RE5PS3().recovery_active(memory)
+    snapshot = R.snapshot(memory)
+    assert snapshot["recovery_active"] and snapshot["prompt"] is None
+    bot = R.Bot(learn_dir=tmp_path)
+    bot.m = SimpleNamespace(adapter=object())
+    def unexpected_health(*args, **kwargs):
+        raise AssertionError("hidden recovery must not be refilled")
+    monkeypatch.setattr(re5_mods_tool, "maintain_health", unexpected_health)
+    assert bot.tick(snapshot) == {"hold": set()} and bot.stats["resuscitating"]
+    now = [0.0]
+    driver = R.RE5PS3(clock=lambda: now[0])
+    assert driver.screen(memory, snapshot) == "playing"
+    now[0] = R.HANG_S + 1
+    assert driver.screen(memory, snapshot) == "playing"  # a recovery-paused clock is not a lost game
+    memory.put(PLAYER + R.P_HP, struct.pack(">h", 1000))
+    assert not R.recovery_active(memory)
+
+
+def test_recovery_state_requires_current_hp_one_countdown_and_owned_button():
+    def dying():
+        memory = with_prompt(world(hp=1, action=7), 2, PLAYER, 0, mode=5, index=25, visible=False)
+        memory.put(PLAYER + R.P_DYING_TIMER, struct.pack(">f", 6.74))
+        memory.u32(PLAYER + R.P_RECOVER_BUTTON, 0x328E1FE0)
+        return memory
+    for address, raw in ((PLAYER + R.P_HP, struct.pack(">h", 0)),
+                         (PLAYER + R.P_HP, struct.pack(">h", 2)),
+                         (PLAYER + R.P_DYING_TIMER, struct.pack(">f", 0.0)),
+                         (PLAYER + R.P_DYING_TIMER, struct.pack(">f", float("nan"))),
+                         (PLAYER + R.P_DYING_TIMER, struct.pack(">f", float("inf"))),
+                         (PLAYER + R.P_RECOVER_BUTTON, struct.pack(">I", 0x328E1FE1)),
+                         (0x328E1FE0, struct.pack(">I", 0)),
+                         (0x328E1FE0 + 4, struct.pack(">I", ENEMIES[0]))):
+        memory = dying()
+        memory.put(address, raw)
+        assert not R.recovery_active(memory)
+    assert not R.recovery_active(dying(), PLAYER + 4)
+    memory = dying()
+    rd = memory.rd
+    reads = [0]
+    def swap_on_read(address, size):
+        if address == 0x328E1FE0 and size == 8:
+            reads[0] += 1
+            if reads[0] == 1:
+                memory.u32(SPLAYER + 0x28, PLAYER + 0x1000)
+        return rd(address, size)
+    memory.rd = swap_on_read
+    assert not R.recovery_active(memory)
+
+
 def test_qte_stick_modes_require_verified_handlers_and_consistent_nonzero_index():
     for mode, token in R.QTE_STICK_MODES.items():
         memory = with_prompt(world(), 2, PLAYER, 0, mode=mode, index=20)

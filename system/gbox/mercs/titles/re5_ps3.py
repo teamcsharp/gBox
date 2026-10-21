@@ -228,6 +228,10 @@ def snapshot(m) -> dict:
         snap["player"] = {"ptr": p, "pos": pos, "rot": wrap(yaw_of(rot)), "pitch": pitch, "action": action,
                           "state": ACTIONS.get(action, action), "hp": hp, "hp_max": hp_max}
         try:
+            snap["recovery_active"] = hp == 1 and recovery_active(m, p)
+        except (ValueError, OSError, struct.error, IndexError):
+            snap["recovery_active"] = False          # health maintenance independently rereads and refuses read errors
+        try:
             snap["inventory"] = inventory(m, p)
         except (ValueError, OSError, struct.error):
             snap["inventory"] = []
@@ -486,6 +490,33 @@ QTE_BUTTON_VT = 0x016332A8
 P_DYING_TIMER, P_RECOVER_BUTTON = 0x1CEC, 0x22DC
 
 
+def recovery_active(m, player=None) -> bool:
+    """Verified solo DYING state, including frames when its button is hidden; this never authorizes input.
+
+    The recovery callback reads HP1, the positive countdown and this owned button independently of display flags.
+    Read failures propagate so a health writer cannot interpret an unreadable state as permission to refill.
+    """
+    sp = u32(m, S_PLAYER)
+    if not ptr_ok(sp) or sp % 4 or sp > 0x40000000 - 0x2C:
+        return False
+    pl = u32(m, sp + 0x28)
+    if not ptr_ok(pl) or pl % 4 or pl > 0x40000000 - P_RECOVER_BUTTON - 4 \
+            or player is not None and player != pl or struct.unpack(">h", m.rd(pl + P_HP, 2))[0] != 1:
+        return False
+    countdown = struct.unpack(">f", m.rd(pl + P_DYING_TIMER, 4))[0]
+    btn = u32(m, pl + P_RECOVER_BUTTON)
+    if not math.isfinite(countdown) or countdown <= 0 or not ptr_ok(btn) or btn % 4 or btn > 0x40000000 - 8:
+        return False
+    identity = m.rd(btn, 8)
+    if struct.unpack(">2I", identity) != (QTE_BUTTON_VT, pl):
+        return False
+    # Countdown may legitimately decrease between reads, but the living player and owned button must stay current.
+    countdown = struct.unpack(">f", m.rd(pl + P_DYING_TIMER, 4))[0]
+    return math.isfinite(countdown) and countdown > 0 and u32(m, S_PLAYER) == sp \
+        and u32(m, sp + 0x28) == pl and u32(m, pl + P_RECOVER_BUTTON) == btn \
+        and m.rd(btn, 8) == identity and struct.unpack(">h", m.rd(pl + P_HP, 2))[0] == 1
+
+
 def prompt_chord(token, prefix):
     """Resolve only known pad chords; a malformed token never becomes an input event."""
     if not isinstance(token, str) or not token.startswith(prefix + ":"):
@@ -735,8 +766,8 @@ class Bot:
         p = snap.get("player")
         if where != "playing" or snap.get("prompt") not in ("stick:rotate", "stick:x", "stick:y"):
             self._stick_token = None
-        self.stats["resuscitating"] = snap.get("prompt") == "mash"
-        if where == "playing" and p and snap.get("prompt") != "mash" and getattr(self.m, "adapter", None) is not None:
+        self.stats["resuscitating"] = bool(snap.get("recovery_active") or snap.get("prompt") == "mash")
+        if where == "playing" and p and not self.stats["resuscitating"] and getattr(self.m, "adapter", None) is not None:
             from ...re5_mods_tool import maintain_health
             health = maintain_health(self.m.adapter, snap)
             self.stats["unlimited_health_enabled"] = health.get("unlimited_health", False)
@@ -855,6 +886,9 @@ class Bot:
         self.stats["max_combo"] = max(self.stats["max_combo"], snap.get("combo") or 0)
         if not p:
             return {"hold": set()}
+        if snap.get("recovery_active") and not snap.get("prompt"):
+            self.aiming_since = None
+            return {"hold": set()}                     # wait through hidden recovery frames; no unseen circle presses
         stick_token = snap.get("prompt")
         if stick_token in ("stick:rotate", "stick:x", "stick:y"):
             self.aiming_since = None
@@ -1318,10 +1352,13 @@ class RE5PS3(Driver):
     def snapshot(self, m) -> dict:
         return snapshot(m)
 
+    def recovery_active(self, m) -> bool:
+        return recovery_active(m)
+
     def screen(self, m, snap: dict | None) -> str:
         snap = self.snapshot(m) if snap is None else snap
         where = own_screen(snap)
-        if where == "playing" and snap.get("prompt") == "mash":
+        if where == "playing" and (snap.get("prompt") == "mash" or snap.get("recovery_active")):
             self._timer = (snap.get("timer"), self.clock())
         elif where == "playing":
             now, t = self.clock(), snap.get("timer")

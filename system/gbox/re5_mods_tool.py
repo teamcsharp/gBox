@@ -315,6 +315,7 @@ def _hit_immunity(g: RE5, pl: int, on: bool) -> dict:
 
 
 def _maintain_health(g: RE5, snap=None) -> dict:
+    from .mercs.titles.re5_ps3 import recovery_active
     state = g.orig.setdefault("health", {})
     result = {"unlimited_health": True, "active": False, "verified": False, "hit_immunity": False}
     pl = _health_player(g)
@@ -323,11 +324,20 @@ def _maintain_health(g: RE5, snap=None) -> dict:
     hp, maximum = struct.unpack(">hh", g.rd(pl + P_HP, 4))
     if not 0 < hp <= maximum <= 32767:
         return {**result, "reason": "waiting for a living player with valid health", "hp": hp, "hp_max": maximum}
+    if hp == 1 and recovery_active(g, pl):
+        return {**result, "resuscitating": True, "reason": "waiting for game-controlled resuscitation",
+                "hp": hp, "hp_max": maximum}
     if state.get("player") != pl or maximum != state.get("boosted_max"):
         state.update(player=pl, original_max=maximum, boosted_max=max(maximum, HEALTH_MAX))
     target = state["boosted_max"]
     if _health_player(g) != pl:              # A respawn must never send a write to the previous allocation.
         return {**result, "reason": "player changed during health check"}
+    hp, latest_max = struct.unpack(">hh", g.rd(pl + P_HP, 4))
+    if not 0 < hp <= latest_max <= 32767 or latest_max != maximum:
+        return {**result, "reason": "health changed during maintenance", "hp": hp, "hp_max": latest_max}
+    if hp == 1 and recovery_active(g, pl):
+        return {**result, "resuscitating": True, "reason": "waiting for game-controlled resuscitation",
+                "hp": hp, "hp_max": maximum}
     wanted = struct.pack(">hh", target, target)
     verified = (hp == maximum == target) or g.wr(pl + P_HP, wanted)
     if verified and snap is not None:
