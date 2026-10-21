@@ -399,7 +399,8 @@ COSTUME_BUFFER = 0x200000
 def fit_costume(xpr: bytes, cat: bytes, rig: dict, *, native_slots: bool = True, budget: int = COSTUME_BUFFER):
     """One costume rewrite within ``budget`` bytes (callers pass the original AFS entry size: the archive keeps its
     layout). In order until it fits: the donor part also on the lower-detail copies, then those copies hidden, then
-    free native texture slots the donor did not take shrunk to 4x4 stand-ins (largest first).
+    free native texture slots the donor did not take shrunk to 4x4 stand-ins (largest first), then (the only step
+    that costs detail) the donor images appended at 128, then 64 pixels with every free native slot shrunk.
     -> (blob, fit result, hidden OBJs, the budget steps taken)."""
     geo = C.costume_geometry(xpr)
     table = C.mdl_descriptor_table(xpr)
@@ -425,4 +426,15 @@ def fit_costume(xpr: bytes, cat: bytes, rig: dict, *, native_slots: bool = True,
         if len(blob) <= budget:
             steps.append(f"{len(shrink)} unused native textures shrunk")
             return blob, res, hide, steps
+    if spare:
+        steps.append(f"{len(blob)} bytes with {len(shrink)} unused native textures shrunk")
+    shrink = {index for index, _word in slots or []}
+    for limit in (128, 64):
+        res = fit(rig, geo, roles, texture_limit=limit, slots=None, lod_copies=False)
+        hide = hidden_parts(roles, set(res["parts"]), geo["object_count"])
+        blob = W.encode_costume(xpr, res["parts"], res["textures"], hide=hide, shrink_textures=shrink)
+        if len(blob) <= budget:
+            steps.append(f"donor images appended at most {limit} px, {len(shrink)} free native textures shrunk")
+            return blob, res, hide, steps
+        steps.append(f"{len(blob)} bytes with donor images at most {limit} px")
     raise ValueError(f"the rewritten costume is {len(blob)} bytes; the game's costume slot holds {budget}")

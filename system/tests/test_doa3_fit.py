@@ -98,6 +98,19 @@ def fifteen_part_costume():
     return W.encode_costume(seed, parts), render_list_cat([(0xFE, list(range(15)))])
 
 
+def test_fit_costume_appends_smaller_donor_images_when_the_slot_is_tight():
+    xpr, cat = fifteen_part_costume()
+    rig = stick_rig()
+    rig["prims"][0]["tex"] = np.full((256, 256, 4), 255, np.uint8)     # one opaque 256x256 donor image
+    full, _res, _hide, steps = F.fit_costume(xpr, cat, rig, native_slots=False)
+    assert steps == []
+    small, res, _hide, steps = F.fit_costume(xpr, cat, rig, native_slots=False, budget=len(full) - 1)
+    assert len(small) < len(full) and steps[-1].startswith("donor images appended at most 128 px")
+    assert C.costume_geometry(small)["object_count"] == 15
+    with pytest.raises(ValueError, match="costume slot holds 4096"):
+        F.fit_costume(xpr, cat, rig, native_slots=False, budget=4096)
+
+
 def test_fit_places_every_role_in_its_joint_frame_and_encodes():
     xpr, cat = fifteen_part_costume()
     geo = C.costume_geometry(xpr)
