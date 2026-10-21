@@ -121,6 +121,11 @@ save directory, keyed by the build identity and the complete source inventory.
 Switching between cast variants cannot overwrite the original disc or its saves.
 An unchanged build reuses its verified view; rebuilding changed assets retains
 the prior revision and its saves. Personal saves are not imported into mod builds.
+For completed asset builds, unchanged disc files are hard-linked from the staged
+build when the filesystem permits. The restored XBE and files listed as changed
+in the build marker remain private copies; saves stay in the play view's own
+`.recomp-storage`. Missing or invalid change metadata and unsupported hard links
+fall back to copies. Existing play views are verified and reused without migration.
 Replacing runtime binaries does not delete saves. Mismatched files or unsafe
 linked paths fail with an explanation and leave existing saves intact.
 
