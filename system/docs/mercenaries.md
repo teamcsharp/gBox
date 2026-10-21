@@ -169,15 +169,33 @@ the title screen (RPCS3 rereads the host DATA0.DAT at each load) and read off th
   * It targets the nearest Majini in front, skipping crows (health 1), rooftops and the dead.
   * It turns with the right stick, aims with L1, puts the crosshair on the head and fires with R1.
   * It steps back when a Majini is on top of it and runs to them when far.
-  * Between rounds it reads the screen from RAM (no player = menus or loading, clock 0 = results, health 0 =
-    "Continue?") and presses START and cross in turn. START leaves the results. Cross picks the last stage and
-    character and answers "Continue? Yes". Rounds loop without help.
+  * Between rounds it reads the screen from the interface's own units. sUnit keeps every unit in move lines
+    (+0x24 + 0x20 per line: +0xC the line's first unit; a unit's +8 is the next). The interface units in lines 0,
+    26, 27 and 28, told apart by their vtables:
+
+    | Unit | Screen | Press |
+    |---|---|---|
+    | uIdStartUp21 | STAGE SELECT | cross (the last stage played) |
+    | uIdStartUp22 | CHARACTER SELECT | cross (the last character played) |
+    | uIdNowLoading00, uIdSaving00 | loading, saving the records | none |
+    | uIdTopMenu00, uIdTitle00, uIdTitle02 alone | the title's menus (between the selects, or the main menu) | none |
+    | none of these, the clock at 0 | the results | START |
+    | uIdMerce00 (with the player) | a round (the HUD) | the bot plays |
+
+    Health 0 in a round is "You Are Dead - Continue?": cross (Yes). The driver never presses on the title's main
+    menu, so it never starts a story game. `mercs.menus` in the map is the driver module (`screen` / `step` /
+    `wandered`).
+  * Grabs: player action 4 (+0x845) means a Majini is holding him, with the "Break free" prompt (left stick) on
+    screen. The driver's prompt source answers "wiggle", which the engine mashes (left / right) until he is free.
+  * Melee finishers ("Hook", "Uppercut", button square) show in sActionButton: +0x34 bit 1 is set while a prompt is
+    up (bit 0: the weapon is raised), and +0x2A4 points to the cActionButton on screen (+0x4 its owner, the player).
+    "Jump over" (square) and other prompts look the same there, so the bot does not press square yet.
   * Live on Public Assembly with Chris (Heavy Metal), whose Gatling has infinite ammo, three rounds back to back
     (2026-10-21, the Spark's scratch RPCS3): 14, 20 and 17 kills; 4,460, 7,460 and 6,260 points; best combo 7.
     The first version (aim from the player's pitch) got 2-4 kills a round.
   * A health freeze was on for those rounds. It is a scratch-only tool, never part of the driver. The bot only
     presses buttons.
-  * Not yet: grabs ("Break free" is a left-stick wiggle), melee finishers on prompt, time bonuses and routes.
+  * Not yet: melee finishers on prompt (the field that tells a finisher from "Jump over"), time bonuses and routes.
 
 ## Live checks (to run once, then flip `live_checked`)
 
