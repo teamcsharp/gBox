@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import shutil
 import struct
+import sys
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -248,6 +249,17 @@ def run(home: Path, serial: str, op: str = "status", groups=None, on: bool = Tru
     return res
 
 
+def node_home(cfg) -> Path:
+    """This node's RPCS3 folder (the one holding dev_hdd0): the Linux RPCS3's (provision.rpcs3_linux_dir, the Spark)
+    when it has one, else the Windows layout (provision.rpcs3_home)."""
+    from . import provision
+    homes = []
+    if sys.platform.startswith("linux"):
+        homes.append(provision.rpcs3_linux_dir(cfg))
+    homes.append(provision.rpcs3_home(cfg))
+    return next((h for h in homes if (Path(h) / "dev_hdd0").is_dir()), homes[0])
+
+
 class Re5In(BaseModel):
     session_id: str = ""   # a running RE5 session (its RPCS3 folder + serial); empty = this node's RPCS3, serial below
     op: str = "status"     # status | unlock_all | revert | groups | addresses
@@ -276,8 +288,7 @@ def re5_tool(inp: Re5In, ctx):
         serial = getattr(ad, "serial", None) or g.get("serial") or inp.serial
         running = True
     else:
-        from . import provision
-        home, serial = provision.rpcs3_home(ctx.config), inp.serial or "BLUS30491"
+        home, serial = node_home(ctx.config), inp.serial or "BLUS30491"
     if not home:
         raise RuntimeError("re5: this session has no RPCS3 folder (not an RPCS3 session)")
     return {"result": run(Path(home), serial or "", inp.op, inp.groups, inp.on, running)}
