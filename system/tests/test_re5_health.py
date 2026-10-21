@@ -66,6 +66,63 @@ def test_full_signed_health_range_stays_in_bounds():
     assert read_health(m) == (32767, 32767)
 
 
+def recovery_state(m):
+    from gbox.mercs.titles import re5_ps3 as R
+    health(m, 1)
+    m.f32(PLAYER + R.P_DYING_TIMER, 6.74)
+    m.u32(PLAYER + R.P_RECOVER_BUTTON, 0x328E1FE0)
+    m.u32(0x328E1FE0, R.QTE_BUTTON_VT)
+    m.u32(0x328E1FE0 + 4, PLAYER)         # no selected manager or visible glyph is needed to preserve recovery
+
+
+def test_direct_health_enable_and_maintenance_wait_for_hidden_recovery_without_writing():
+    m = FakeRE5()
+    recovery_state(m)
+    result = T.run(m, "unlimited_health")
+    assert result["unlimited_health"] and result["resuscitating"] and not result["active"] and not m.writes
+    snap = {"player": {"ptr": PLAYER, "hp": 1, "hp_max": 1000}}
+    result = T.maintain_health(m, snap)
+    assert result["resuscitating"] and not result["verified"] and read_health(m) == (1, 1000)
+    assert snap["player"]["hp"] == 1 and not m.writes
+    health(m, 1000)                     # the game's actual recovery callback completed
+    assert T.maintain_health(m, snap)["active"] and snap["player"]["hp"] == T.HEALTH_MAX
+
+
+def test_health_rechecks_a_new_recovery_or_death_before_refill(monkeypatch):
+    for dying in (True, False):
+        T.ORIG.clear()
+        m = FakeRE5()
+        health(m, 500)
+        original = T._health_player
+        calls = [0]
+        def transition(g):
+            calls[0] += 1
+            if calls[0] == 2:
+                recovery_state(m) if dying else health(m, 0)
+            return original(g)
+        monkeypatch.setattr(T, "_health_player", transition)
+        result = T.run(m, "unlimited_health")
+        assert not result["active"] and not m.writes
+        assert read_health(m)[0] == (1 if dying else 0)
+        if dying:
+            assert result["resuscitating"]
+        monkeypatch.setattr(T, "_health_player", original)
+
+
+def test_unreadable_hidden_recovery_never_becomes_permission_to_refill(monkeypatch):
+    from gbox.mercs.titles import re5_ps3 as R
+    m = FakeRE5()
+    recovery_state(m)
+    T.run(m, "unlimited_health")
+    read = m.read_memory
+    def unreadable(address, size):
+        if address == PLAYER + R.P_DYING_TIMER:
+            raise OSError("lost recovery page")
+        return read(address, size)
+    monkeypatch.setattr(m, "read_memory", unreadable)
+    assert not T.maintain_health(m)["active"] and not m.writes
+
+
 def test_snapshot_and_current_player_must_agree():
     m = FakeRE5()
     health(m)
