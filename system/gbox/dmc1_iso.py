@@ -86,10 +86,30 @@ def walk_dir(f, lba: int, nbytes: int) -> list[tuple[str, int, bool, int]]:
 
 
 def parse_pld_children(f, lba: int, size: int) -> tuple[int, list[tuple[int, int]]]:
-    """(child_count, [(offset, length)]) for a .PLD container header."""
+    """(child_count, [(offset, length)]) for a .PLD container header.
+    
+    Standard format: child_count at offset 0, followed by child_count u32 offsets.
+    Variant format (PL01-PL04/PL06): child_count=0 at offset 0, embedded children
+    at offset 32 as (offset, size) u32 pairs.
+    """
     f.seek(lba * SECTOR)
-    head = f.read(4 + 4 * 64)
+    head = f.read(160)  # Enough for 32 child entries (standard or variant)
     n = struct.unpack_from("<I", head, 0)[0]
+    
+    if n == 0:
+        # Variant format: check for embedded children at offset 32
+        # embedded_count at offset 32, then (offset, size) pairs
+        embedded_n = struct.unpack_from("<I", head, 32)[0]
+        if embedded_n > 0 and embedded_n <= 32:
+            children = []
+            for i in range(embedded_n):
+                off = struct.unpack_from("<I", head, 36 + i * 8)[0]
+                sz = struct.unpack_from("<I", head, 40 + i * 8)[0]
+                if off > 0 and sz > 0:
+                    children.append((off, sz))
+            return 0, children
+    
+    # Standard format: n children at offsets 4, 8, ...
     offs = list(struct.unpack_from(f"<{n}I", head, 4)) if n else []
     out = []
     for o in offs:
