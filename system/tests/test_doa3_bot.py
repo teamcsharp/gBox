@@ -86,6 +86,17 @@ def test_a_caught_attack_is_judged_by_the_games_paired_move_flag():
     assert t.read(ram).p2.has("held") and not t.read(ram).p1.has("held")
 
 
+def test_back_follows_the_games_own_flip_flag():
+    ram, t = Ram(), D.Doa3()
+    w = t.read(ram)
+    assert w.p1.side == 1 and t.back(w) == "left"                 # flag 0: forward is right, back is left
+    ram.ram[0x3C2594] = 1
+    w = t.read(ram)
+    assert w.p1.side == -1 and t.back(w) == "right" and t.forward(w) == "left"
+    hold = next(a for a in t.answers(Attack(), w) if a.name == "hold_mid")
+    assert hold.at(0) == ("right", D.FREE)
+
+
 def test_punishes_are_options_the_first_a_string():
     t = D.Doa3()
     options = t.punish(None, "held")
