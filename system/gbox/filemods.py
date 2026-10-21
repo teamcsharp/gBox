@@ -335,6 +335,43 @@ def _matches(out: Path, files: list[dict]) -> bool:
     return True
 
 
+MARKER = ".gbox-mod.json"
+CURRENCY_TIMEOUT_S = 20             # the launch-time currency check never holds a launch longer than this
+
+
+def collection_marker_sha(server: str, headers: dict, game_id: str, name: str,
+                          timeout: float = CURRENCY_TIMEOUT_S) -> str | None:
+    """SHA-256 of the collection's build marker for `name` (every rebuild writes a new marker: its build time and
+    manifest), or None when the collection doesn't have the mod or can't answer in time."""
+    import httpx
+    try:
+        r = httpx.get(f"{server}/api/modfiles/{game_id}/{name}", headers=headers, timeout=timeout)
+        if r.status_code != 200:
+            return None
+        row = next((f for f in r.json().get("files") or [] if isinstance(f, dict) and f.get("path") == MARKER), None)
+    except (httpx.HTTPError, ValueError):
+        return None
+    digest = row.get("sha256") if row else None
+    return digest if isinstance(digest, str) and re.fullmatch("[0-9a-f]{64}", digest) else None
+
+
+def current_local_copy(cfg, server: str, headers: dict, game_id: str, name: str) -> str | None:
+    """The local folder (the mod itself or a ~staged copy of a rebuild) that holds the collection's CURRENT build of
+    `name`, judged by its marker digest. A collection that doesn't have the mod or can't answer leaves the local copy
+    in charge (returns `name` when it has a marker). None: the local copies are stale, the caller stages the build."""
+    base = mod_dir(cfg, game_id, name)
+    want = collection_marker_sha(server, headers, game_id, name) if server else None
+    if want is None:
+        return name if (base / MARKER).is_file() else None
+    candidates = [base] + sorted((p for p in base.parent.glob(name + STAGED_SEP + "*") if p.is_dir()),
+                                 key=lambda p: p.stat().st_mtime, reverse=True)
+    for folder in candidates:
+        marker = folder / MARKER
+        if marker.is_file() and _sha(marker) == want:
+            return folder.name
+    return None
+
+
 def stage(cfg, server: str, headers: dict, game_id: str, name: str, progress=None) -> str:
     """Prepare a pinned build without modifying any existing game copy or checkpoint.
 

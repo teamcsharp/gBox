@@ -778,9 +778,16 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
             from . import filemods
             folder = filemods.mod_dir(ctx.config, g.game_id, inp.mod)
             if (folder / ".gbox-mod.json").is_file():
-                candidate = filemods.launch_path(ctx.config, g.game_id, src, inp.mod)
-                if candidate.is_file():
-                    local_mod = candidate
+                # a build rebuilt under the same name must not keep launching the old local copy: only the copy
+                # whose marker matches the collection's current one counts (or the local one when it can't tell)
+                current = filemods.current_local_copy(ctx.config, ctx.server, ctx.headers, g.game_id, inp.mod) \
+                    if ctx.server else inp.mod
+                if current is None:
+                    ctx.progress(19, f"The collection has a newer build of {inp.mod}; fetching it")
+                else:
+                    candidate = filemods.launch_path(ctx.config, g.game_id, src, current)
+                    if candidate.is_file():
+                        local_mod, launch_mod = candidate, current
         if local_mod is None and not src.exists():
             raise FileNotFoundError(f"ROM not reachable from this node: {src}")
         lap("rom_s")
@@ -798,7 +805,7 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
             ctx.progress(18, 'Applying verified on-load unlock profile (original save backed up)')
         if inp.mod:
             from . import filemods
-            if not (filemods.mod_dir(ctx.config, g.game_id, inp.mod) / ".gbox-mod.json").exists() and ctx.server:
+            if local_mod is None and ctx.server:            # not here yet, or the local copies are an older build
                 ctx.progress(20, f"Fetching mod {inp.mod} from the central collection (Spark)")
                 launch_mod = filemods.stage(ctx.config, ctx.server, ctx.headers, g.game_id, inp.mod, ctx.progress)
             src = local_mod or filemods.launch_path(ctx.config, g.game_id, src, launch_mod)
