@@ -11,7 +11,19 @@ Holds: on that edge P1 presses Free (retropad a = Dreamcast B) with a direction 
 against the CPU (45 s each): no reaction lost 450-520 health/min and dealt 0; Free+back lost 344-385/min and dealt
 193-293/min through holds alone. Which direction pays depends on the attack (high / mid punch / mid kick / low) and the
 side P1 is on, so the reflex learns it: each try is scored by damage dealt minus damage taken in the next 0.8 s.
-No frame clock or attack signatures are mapped yet, so DOA2 runs the reflex (fightbot.reflex), not the frame engine."""
+No frame clock or attack signatures are mapped yet, so DOA2 runs the reflex (fightbot.reflex), not the frame engine.
+
+Towards the frame engine (2026-10-21, from the 60 Hz recording ~/gBox_alt/scratch/agent/doa_rec1.npz on the Spark,
+180 s of fights): DOA2 LE lays its fighters out like DOA3 (gbox/fightbot/titles/doa3_xbox.py), two 0x68-byte blocks:
+  0x8C2376B8  fighter 0 (P1)      0x8C237720  fighter 1 (P2)
+  +0x20  u16 health (the mapped P1_HP / P2_HP are these: 0x8C2376D8 / 0x8C237740)
+  +0x2E  u16 move id   (0x8C2376E6 / 0x8C23774E: 108 / 96 distinct values, 496 / 390 changes in 180 s)
+  +0x33  u8  move class (0x8C2376EB / 0x8C237753: values 0..16, as DOA3's 0x484C7B: attacker 4 / 6, victim 0xA / 0xB there)
+  +0x32  u8  paired flag (DOA3: 1 for the victim of a hold / throw) and +0x00 active: constant in that recording.
+Next: a private RetroArch + flycast_libretro on the Spark (nice'd, its own Xvfb, vglrun -d egl, network_cmd_port for
+READ_CORE_RAM, network_remote_base_port for the UDP retropad, gbox/adapters.py 1536-1562 and 2002-2050 show both),
+a frame counter (dc_framectr.py over a new recording), then a Doa2 Title with p2.move / p2.move_class signatures and
+the attack-input edge as warn, like Doa3, and the same holds (Free + up/back, back, down/back, forward)."""
 from __future__ import annotations
 
 import struct
