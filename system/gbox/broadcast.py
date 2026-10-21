@@ -428,9 +428,9 @@ def choose(pin: dict, watch: dict | None, rows: list[dict], *, current: str | No
             watched = successor(watched)
         if watched in running:
             return watched, why or "following what you watch"
-    if current in running:
-        return current, why or "still on air"
     pool = [r for r in rows if auto_agents or not r.get("agent_owned")]
+    if current in running and (running[current].get("fresh") or not any(r.get("fresh") for r in pool)):
+        return current, why or "still on air"          # stays while it has a picture, or while nothing else does
     if not pool:
         return None, why or "no game is running"
     best = max(pool, key=lambda r: (bool(r.get("fresh")), not r.get("agent_owned"), r.get("started") or 0))

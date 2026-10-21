@@ -189,6 +189,13 @@ def test_choose_follows_what_the_operator_watches_then_sticks():
     assert B.choose(pin, None, [], current="a", now=0, watch_ttl_s=60) == (None, "no game is running")
     stale = rows(("a", "lilspark", False, False, 5), ("c", "lilspark", True, True, 1))
     assert B.choose(pin, None, stale, current=None, now=0, watch_ttl_s=60)[0] == "c", "a picture beats none"
+    assert B.choose(pin, None, stale, current="a", now=0, watch_ttl_s=60) == ("c", "newest game with a picture"), \
+        "auto leaves a game that lost its picture for one that has one"
+    dark = rows(("a", "lilspark", False, False, 5), ("c", "lilspark", False, True, 1))
+    assert B.choose(pin, None, dark, current="c", now=0, watch_ttl_s=60) == ("c", "still on air"), \
+        "...but never hops between games that all lack a picture"
+    assert B.choose(pin, {"session_id": "a", "at": 0}, stale, current="c", now=1, watch_ttl_s=60) == \
+        ("a", "following what you watch"), "what the operator watches goes on air, picture or not"
 
 
 def test_choose_pins_and_follows_a_relaunch():
