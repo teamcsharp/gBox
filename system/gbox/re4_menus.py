@@ -203,8 +203,9 @@ def step(scr: dict) -> str | None:
     if where == "title":
         return "start"                                      # logos, the warning, PRESS START: all skip with START
     if where == "main_menu":
-        if target is None:                                  # no THE MERCENARIES on this menu (extras locked): back
-            return "b"
+        if target is None:                                  # no THE MERCENARIES on this menu (built before the unlock
+            return None                                     # bits went in): wait for it to idle back to the title
+                                                            # and be built again with them; never pick on it
         if cur is None:
             return None
         return "a" if cur == target else DPAD["down"] if cur < target else DPAD["up"]

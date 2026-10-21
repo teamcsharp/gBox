@@ -50,7 +50,9 @@ test('the menu picks a PC and launches there', () => {
 test('web shell: the card, the right-click menu and the Sessions header offer it; the header says Bot demo', () => {
   const web = read('web/index.html');
   assert.match(web, /<script src="\/viz\/bot-demo\.js"><\/script>/);
-  assert.match(web, /onclick='botDemoMenu\(event, \$\{JSON\.stringify\(g\.game_id\)\}, \$\{JSON\.stringify\(g\.title\)\}\)'>🤖<\/button>/);
+  // the title comes from the card's data-title: a title with an apostrophe never breaks the single-quoted onclick
+  assert.match(web, /onclick='botDemoMenu\(event, \$\{JSON\.stringify\(g\.game_id\)\}, this\.closest\("\.card"\)\?\.dataset\.title\)'>🤖<\/button>/);
+  assert.match(web, /data-title="\$\{esc\(s\.title \|\| ""\)\}" onclick='botDemoMenu\(event, \$\{JSON\.stringify\(s\.game_id\)\}, this\.dataset\.title\)'/);
   assert.match(web, /GBoxBotDemo\.badgeHTML\(s\)/);
   assert.match(web, /id="session-bot-demo"[^>]*botDemoMenu\(event/);
   assert.match(web, /aria-label="Stop" onclick='hardStop/);                       // Stop stays

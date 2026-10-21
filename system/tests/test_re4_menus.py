@@ -142,10 +142,11 @@ def test_the_main_menu_goes_to_the_mercenaries_only(cur, key):
     assert RM.step(s) == key
 
 
-def test_a_main_menu_without_the_mercenaries_is_backed_out_of_never_picked():
+def test_a_main_menu_without_the_mercenaries_is_never_picked_on():
     g = FakeRE4(routine=5, step=1, menu_cursor=0, unlocked=False)
     s = RM.screen(g)
-    assert s["items"] == ["NEW GAME", "LOAD", "OPTIONS"] and s["target"] is None and RM.step(s) == "b"
+    assert s["items"] == ["NEW GAME", "LOAD", "OPTIONS"] and s["target"] is None
+    assert RM.step(s) is None                     # waits for it to idle back to the title and be built with the unlock
 
 
 @pytest.mark.parametrize("where,cur,key", [
