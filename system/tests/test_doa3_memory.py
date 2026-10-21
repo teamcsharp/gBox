@@ -415,9 +415,23 @@ def test_channel_proves_once_then_reads_without_rehashing(tmp_path, monkeypatch)
     now[0] = ch.REVALIDATE_S                                           # anchors + process, still no hashing
     ch.read(0, 1)
     assert len(reader.reads) > 101 and len(hashes) == 4
-    now[0] = ch.IDENTITY_S                                             # the full proof again
+    now[0] = ch.IDENTITY_S                                             # the full proof again, off this thread
     ch.read(0, 1)
-    assert len(hashes) == 6
+    import time
+    for _ in range(200):
+        if not ch.hashing:
+            break
+        time.sleep(0.01)
+    assert len(hashes) == 6 and not ch.broken
+    ch.guest.exe.write_bytes(b"swapped runner")                       # a failed background proof closes it
+    now[0] = 2 * ch.IDENTITY_S
+    ch.read(0, 1)
+    for _ in range(200):
+        if not ch.hashing:
+            break
+        time.sleep(0.01)
+    with pytest.raises(Unsupported, match="closed"):
+        ch.read(0, 1)
 
 
 def test_channel_writes_only_its_block_and_reads_each_back(tmp_path, monkeypatch):

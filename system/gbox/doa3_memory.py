@@ -411,7 +411,7 @@ class Channel:
     creation-time-checked process handle: that handle can't follow its PID to another process. Then
       * every call: the adapter still owns that process (ready, same PID and birth);
       * every REVALIDATE_S: the process (birth, path, alive) and the anchors (mapped header + immutable code);
-      * every IDENTITY_S: the full proof again, hashes included;
+      * every IDENTITY_S: the full proof again, hashes included, on a thread of its own (it takes tens of ms);
     a failed check closes the channel for good (the caller makes a new one). Writes go only to the `writable` ranges
     (the virtual pad's block: doa3_pad.BLOCK), never to the header or code, and each is read back."""
     REVALIDATE_S = 2.0
@@ -438,17 +438,27 @@ class Channel:
         self.checked = self.identified = self.clock()
         self.reads = self.writes = 0
 
+    def _rehash(self):
+        """The full proof's file hashes (tens of ms) off the caller's thread: a bot's frame never waits for them."""
+        try:
+            self.guest._identity()
+        except Exception as error:                      # noqa: BLE001 - any failure closes the channel
+            self.broken = f"DOA3 channel closed: {error}"
+        finally:
+            self.hashing = False
+
     def _check(self):
         if self.broken:
+            self.close(self.broken)
             raise Unsupported(self.broken)
         try:
             self.guest._owner_check()
             now = self.clock()
-            if now - self.identified >= self.IDENTITY_S:
-                self.guest._identity()
-                validate(self.handle, self.base, self.guest.expected)
-                self.identified = self.checked = now
-            elif now - self.checked >= self.REVALIDATE_S:
+            if now - self.identified >= self.IDENTITY_S and not getattr(self, "hashing", False):
+                import threading
+                self.identified, self.hashing = now, True
+                threading.Thread(target=self._rehash, daemon=True, name="doa3-channel-proof").start()
+            if now - self.checked >= self.REVALIDATE_S:
                 self.guest._identity(hashes=False)
                 validate(self.handle, self.base, self.guest.expected)
                 self.checked = now
