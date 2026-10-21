@@ -90,6 +90,16 @@ def is_live_coaching(request) -> bool:
     return request.get('source') == 'coach' or (request.get('context') or {}).get('coaching') is True
 
 
+def _prioritized_handoff(data, request) -> bool:
+    """A dated agent handoff explicitly selected by request, not just by its game."""
+    handoff = (request.get('context') or {}).get('handoff')
+    if (request.get('author') != 'agent' or not isinstance(handoff, str)
+            or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', handoff)):
+        return False
+    selected = data.get('priority') or []
+    return request['id'] in selected or str(request.get('number')) in selected
+
+
 def sync(data, favorites, requests, *, now):
     """Inventory every durable favorite, including missing catalog entries."""
     if (not isinstance(favorites, dict) or not isinstance(favorites.get('items'), list)
@@ -134,7 +144,10 @@ def sync(data, favorites, requests, *, now):
                                          or body.startswith('Extract ') or 'pick whip' in body.lower()))
         operator_child = (request.get('parent_request_id') and request.get('author') == 'operator'
                           and request.get('source') not in {'characters', 'gap', 'system', 'automation', 'agent', 'review'})
-        if ((request.get('automated') and not repair and not operator_child and not actionable)
+        # Agent-filed resume tickets carry automated=True too. Explicit request
+        # priority admits a dated handoff without admitting unrelated auto noise.
+        handoff = _prioritized_handoff(data, request)
+        if ((request.get('automated') and not repair and not operator_child and not actionable and not handoff)
                 or body.startswith(('gBox request review', '<agent-message', '<task-notification'))):
             continue
         if is_live_coaching(request):
