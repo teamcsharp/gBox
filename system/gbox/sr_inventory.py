@@ -215,7 +215,7 @@ def main(argv=None) -> int:
     ap.add_argument("--no-hash", action="store_true",
                     help="skip streaming the source hash (use the recorded digest)")
     args = ap.parse_args(argv)
-    sha = None if args.no_hash else None
+    sha = OWNED_SOURCE_SHA256 if args.no_hash else None
     manifest = build_manifest(args.source, source_sha256=sha)
     text = json.dumps(manifest, indent=1, sort_keys=False)
     if args.out:

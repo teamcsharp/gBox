@@ -81,7 +81,7 @@ def test_manifest_maps_owned_build():
     assert m["disc"]["file_count"] == 1669
     assert m["disc"]["fst_offset"] == 0x144000
     assert m["disc"]["fst_size"] == 0x72B1
-    assert sorted(m["cri_afs"]) == ["V_CHAO_E.AFS", "VOICE_E.AFS"]
+    assert sorted(m["cri_afs"]) == ["VOICE_E.AFS", "V_CHAO_E.AFS"]
     assert m["character_slot_count"] == 16
     assert m["target_slot"] == "10SONIC.DAT"
     sonic = [s for s in m["character_slots"] if s["name"] == "10SONIC.DAT"][0]
