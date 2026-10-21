@@ -1132,6 +1132,18 @@ def disc_dir(ctx, game) -> Path:
     return xbe.parent
 
 
+def donor_problem(meta: dict) -> str | None:
+    """cast_swap's writer gate: why a library character can't be a DOA3 fighter, else None. The fit maps the
+    donor's legs onto the native thighs, shins and feet, so a donor without them (a Boo, a Dorrie) is refused before
+    the deal instead of failing every costume of its fighter."""
+    from .doa3_fit import DONOR_ROLES
+    roles = (meta.get("rig") or {}).get("roles") or {}
+    missing = [r for r in DONOR_ROLES if r not in roles]
+    if missing:
+        return "a DOA3 fighter needs two legs: the donor's body roles lack " + ", ".join(missing)
+    return None
+
+
 def _load_donor(ctx, meta):
     from . import characters as CH
     from .doa2_weighted_retarget import load_rig

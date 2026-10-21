@@ -867,6 +867,18 @@ def plan(game: dict, chars: list[dict], source: str, mapping: str = "auto", seed
         refused = [r for r in refused if r["slug"] not in stale]
         refreshed = [{"slug": r["slug"], "name": r["name"], "reader": r["reader"], "status": "will be re-extracted "
                       f"(reader v{r['reader']['entry']} -> v{r['reader']['current']})"} for r in flagged if r["slug"] in stale]
+    # the writer's own donor requirement (doa3_cast.donor_problem: a DOA3 fighter needs two legs) refuses a donor
+    # before the deal, so a group's best model per character and the alternate passes count only buildable donors
+    problem = getattr(CC._mod(w["writer"].split(".")[-1]), "donor_problem", None)
+    if callable(problem):
+        usable = []
+        for m in donors:
+            why = problem(m)
+            if why:
+                refused.append({"slug": m["slug"], "name": m.get("name"), "reason": why})
+            else:
+                usable.append(m)
+        donors = usable
     superseded = []
     if src.get("best_per_character"):                      # source=mario: the best gated model of each character
         def member(m):

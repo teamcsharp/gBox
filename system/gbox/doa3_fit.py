@@ -132,13 +132,17 @@ def _stance(rig: dict):
     return joints, prims, B
 
 
+# a DOA3 fighter stands on two legs: the fit needs these donor roles (arms are optional)
+DONOR_ROLES = ("hip", "head", "l_thigh", "l_shin", "l_foot", "r_thigh", "r_shin", "r_foot")
+
+
 def fit(rig: dict, geometry: dict, roles: dict, *, texture_limit: int = 256, slots=None,
         lod_copies: bool = True) -> dict:
     """-> {"parts": {OBJ: encode_costume part}, "textures": [(word, payload)], "report": {...}}."""
     from .re4gc_enemies import _rot_between
     joints, prims, _basis = _stance(rig)
     ri = {r: j for r, j in rig["roles"].items()}
-    missing = [r for r in ("hip", "head", "l_thigh", "l_shin", "l_foot", "r_thigh", "r_shin", "r_foot") if r not in ri]
+    missing = [r for r in DONOR_ROLES if r not in ri]
     if missing:
         raise ValueError(f"donor lacks the roles {missing}")
     vertex_roles = _donor_role_per_vertex(rig)
