@@ -1,5 +1,4 @@
-"""RE5 Gold (BLUS30491) Mercenaries: the combat layer - only landed shots (operator 2026-10-21: "i am absolutely tired
-of seeing missed shots in mercenaries ... I want only landed shots happening"; "I need him doing only headshots").
+"""RE5 Gold (BLUS30491) Mercenaries: fire while acquiring and tracking nearby living enemies.
 
 The game's own laser sight is the truth about a shot: the bullet goes from the laser's origin (the muzzle) to the laser
 dot, the first thing the ray hits (uLaserSight, an FxCore unit: +0x200 origin, +0x30 dot). The camera ray is not the
@@ -10,9 +9,9 @@ anything but the dot misses. So every tick:
     = the ray hits something else first (the floor, a wall, a prop) or passes him;
   * the aim approaches a preferred anatomical zone until any body region is exposed, then keeps that exposed
     region under the dot. Stick correction follows the measured shot ray rather than the camera ray;
-  * the trigger is pulled immediately while the first-hit dot overlaps his head, body or leg. A verified rapid-fire
-    patch holds R1 continuously on exposed targets; otherwise weapon-specific taps/holds are learned. Front-camera
-    geometry only chooses candidates: it never establishes visibility or authorizes a shot;
+  * a loaded direct-fire gun holds L1 + R1 during acquisition and tracking, including off-reticle frames. This is
+    the operator's later continuous-fire policy, not a claim that every shot will land. Confirmed cover lowers the
+    gun for repositioning. Splash weapons still require first-hit overlap and safe impact clearance;
   * every shot the game fires is seen in RAM (the player's current action object, player +0x30B0, entering the
     weapon-fire action 0x0163DFC0 / its frame counter +0x20 starting over) and scored: a hit when any Majini's health
     fell within HIT_S, a headshot when the dot was on the head as it left; a miss is classified by what the dot was on
@@ -91,6 +90,7 @@ STUN_S, STUN_NEAR, STUN_FAR = 2.2, 110.0, 700.0   # a headshot stuns this long: 
 HIT_RATE_WANT = 0.95                   # a round under this tightens the aim
 TUNABLES_FILE = "re5_combat.json"      # under the learn dir (gbox-data/mercs/learned/BLUS30491)
 EMPTY_RELOAD_EVERY_S = 1.5             # L1 + cross this often while the weapon is empty
+ENGAGE_R = 3000.0                     # shared with the driver's existing engagement range; cm, not visibility
 
 CHARACTERS = {0x016172B8: "barry"}     # the player's vtable -> the character (the rest named by their vtable)
 ENABLED = True                         # the title driver's Bot hands the fight here (False: its own aim loop)
@@ -506,7 +506,7 @@ class Combat:
         enemies = [e for e in enemies if (e.get("hp") or 0) > 0]
         ray = self.observe_awareness(snap, p, now)
         # Immediate threats outrank distant crosshair targets, bonus routes and score optimizations.
-        # Unknown sight lines authorize acquisition only; tick still requires a current first-hit overlap to fire.
+        # Unknown sight lines remain explicitly unknown; direct-fire guns fire during acquisition by operator policy.
         close = [e for e in enemies if math.dist(p["pos"], e["pos"]) <= 350
                  and self.blocked_until.get(e.get("ptr", e.get("slot")), 0) <= now]
         if close:
@@ -561,6 +561,11 @@ class Combat:
 
     # --- the tick ---
     def tick(self, snap: dict, p: dict, tgt: dict, now: float, *, observed=False) -> dict:
+        if (not p or (p.get("hp") or 0) <= 0 or not tgt or (tgt.get("hp") or 0) <= 0
+                or snap.get("recovery_active")
+                or (snap.get("prompt") and not self.optional_prompt_blocked(snap))):
+            self.stats["combat"] = "waiting: no living target or priority prompt/recovery"
+            return {"hold": set()}
         if not observed:
             # Standalone callers own a new decision, and may reuse a mutable snapshot fixture between ticks.
             self._observed_snap = None
@@ -570,6 +575,9 @@ class Combat:
         foot = tgt["pos"]
         lead = self._lead(tgt, now)
         dist = math.hypot(foot[0] - p["pos"][0], foot[2] - p["pos"][2])
+        if dist > ENGAGE_R:
+            self.stats["combat"] = "target outside engagement range"
+            return {"hold": set()}
         zone = zone_for(tgt, dist, snap.get("combo_timer"), snap.get("combo"))
         self.zone = zone
         aim_at = (foot[0] + lead[0], foot[1] + (HEAD_H if zone == "head" else THIGH_H), foot[2] + lead[1])
@@ -580,36 +588,55 @@ class Combat:
             if where is not None:
                 aim_at = (foot[0] + lead[0], lz[1][1], foot[2] + lead[1])  # keep the exposed region under the dot
         self.last_dot = (where, tgt.get("ptr"), lz, foot, now)
+        key = tgt.get("ptr", tgt.get("slot"))
+        if self._ready(p) and lz is not None:
+            if where is not None:
+                self.blocked_until.pop(key, None)
+            elif self.ray_blocked(lz, foot):
+                self.blocked_until[key] = now + BLOCKED_S
+        if self.blocked_until.get(key, 0) > now:
+            return self.seek_target(snap, p, [tgt], now)
+        from .re5_weapons import DIRECT, WEAPONS, fire_policy
+        weapon = WEAPONS.get(wid)
+        direct = weapon is not None and weapon.family in DIRECT
+        permitted, policy = fire_policy(wid, snap, tgt, lz[1] if lz else None)
+        self.stats["weapon_policy"] = policy
+        loaded = rounds is not None and rounds > 0
+        tracking_fire = direct and permitted and loaded
+        rapid = self._rapid_fire(wid, now)              # observed package status, independent of fire intent
+        if p.get("action") == 4:                      # prompts own escape from a grab
+            self.stats["combat"] = "waiting: grab animation"
+            return {"hold": set()}
+        if rounds == 0:
+            if now - self.reload_at > EMPTY_RELOAD_EVERY_S:
+                self.reload_at = now
+                self.stats["reloads"] += 1
+                return {"hold": {"l1", "cross"}}
+            return {"hold": {"l1"}}
         if not self._ready(p) or lz is None:
+            # Queue aim/fire through hit recovery too; waiting for the pose byte to clear can perpetuate stunlock.
+            # The game decides when the gun can fire, and only its RAM shot events enter the counters.
             self.dot_head_since = self.dot_body_since = None
-            self.stats["combat"] = f"readying: action={p.get('action')} laser={'yes' if lz else 'no'}"
-            return {"hold": {"l1"} | self._face(p, foot)}
+            self.stats["combat"] = (f"readying: action={p.get('action')} laser={'yes' if lz else 'no'} "
+                                    f"{'tracking FIRE' if tracking_fire else policy}")
+            return {"hold": {"l1"} | ({"r1"} if tracking_fire else set()) | self._face(p, foot)}
         # steer the dot onto the zone (his head, or his thighs for the stun)
         yaw_err, pitch_err = ray_error(lz[0], lz[1], aim_at)
         keys = {"l1"}
         keys |= self._yaw(yaw_err)
         keys |= self._pitch(pl, p, pitch_err, now)
-        # A current first-hit overlap authorizes the shot immediately; a preferred anatomical zone does not delay it.
-        on_target = where in ("head", "body", "leg") and (rounds is None or rounds > 0)
-        from .re5_weapons import fire_policy
-        permitted, policy = fire_policy(wid, snap, tgt, lz[1])
-        on_target = on_target and permitted
-        self.stats["weapon_policy"] = policy
-        if rounds == 0:
-            if now - self.reload_at > EMPTY_RELOAD_EVERY_S:   # empty: reload (the driver switches weapons)
-                self.reload_at = now
-                self.stats["reloads"] += 1
-                return {"hold": {"l1", "cross"}}
-            return {"hold": {"l1"}}
+        # Direct fire continues while the stick corrects aim. Splash/unknown policies remain separate.
+        firing = tracking_fire or (where in ("head", "body", "leg") and loaded and permitted)
         trig = self.triggers.get(wid)
         if trig is None:
             trig = self.triggers[wid] = Trigger(tune["mode"])
-        rapid = self._rapid_fire(wid, now)
-        keys |= ({"r1"} if on_target else set()) if rapid else trig.keys(now, on_target, shot)
+        if direct:
+            trig.mode = "hold"
+        keys |= ({"r1"} if firing else set()) if direct or rapid else trig.keys(now, firing, shot)
         tune["mode"] = trig.mode
         weapon_label = hex(wid) if isinstance(wid, int) else "unknown"
         self.stats["combat"] = (f"{self.character} w{weapon_label} {zone} dot {where} yaw {math.degrees(yaw_err):+.1f} "
-                                f"pitch {math.degrees(pitch_err):+.1f} {'rapid hold' if rapid else trig.mode} {'FIRE' if on_target else ''}")
+                                f"pitch {math.degrees(pitch_err):+.1f} {'rapid hold' if rapid else trig.mode} {'FIRE' if firing else ''}")
         return {"hold": keys}
 
     def _lead(self, tgt, now) -> tuple:

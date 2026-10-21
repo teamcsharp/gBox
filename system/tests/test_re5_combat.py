@@ -1,5 +1,4 @@
-"""RE5 combat layer (gbox.mercs.titles.re5_combat): the laser dot decides the shot, the trigger per weapon, shots
-seen from the action object, headshots scored, the aim pitch written, the tunables kept."""
+"""RE5 combat: continuous direct fire while tracking, measured cover avoidance, and independent RAM shot counts."""
 import json
 import math
 import struct
@@ -100,7 +99,7 @@ def test_tracking_small_diagonal_errors_does_not_starve_either_axis(tmp_path, ya
         actions.append(bot.tick(s, s["player"], s["enemies"][0], frame * 0.05)["hold"])
     assert sum(yaw_key in keys for keys in actions) >= 2
     assert sum(pitch_key in keys for keys in actions) >= 2
-    assert all("r1" not in keys for keys in actions)  # diagonal correction never authorizes a speculative shot
+    assert all({"l1", "r1"} <= keys for keys in actions)  # firing continues while both tracking axes correct
 
 
 def test_fires_immediately_on_an_exposed_body_and_keeps_the_dot_on_it():
@@ -123,14 +122,15 @@ def test_fires_immediately_on_an_exposed_body_and_keeps_the_dot_on_it():
     assert fired                                                        # settled on the head: the trigger
 
 
-def test_no_shot_with_the_dot_beside_him_or_on_the_floor():
+def test_direct_fire_continues_with_the_dot_beside_below_or_past_the_target():
     for dot in ((90.0, 120.0, 400.0), (0.0, 30.0, 400.0), (0.0, 160.0, 900.0)):
         m = world(laser_dot=dot)
         bot = C.Combat(m, {}, clock=lambda: 0.0)
         s = snap(m)
         for k in range(30):
             act = bot.tick(s, s["player"], s["enemies"][0], k * 0.02)
-            assert "r1" not in act["hold"], dot
+            assert {"l1", "r1"} <= act["hold"], dot
+        assert bot.stats["shots"] == 0                 # held fire is intent, not a fabricated shot event
 
 
 def test_a_body_shot_does_not_wait_for_a_preferred_head_or_leg_zone():
@@ -349,7 +349,7 @@ def test_fresh_combat_resets_all_shot_classification_counters_together():
     assert all(stats[k] == 0 for k in ("shots", "hits", "headshots", "legshots", "misses", "miss_short", "miss_moved"))
 
 
-def test_verified_rapid_fire_holds_only_while_the_first_hit_is_on_an_enemy():
+def test_confirmed_cover_lowers_the_gun_until_cooldown_then_acquisition_can_fire():
     m = world(laser_dot=(0.0, 110.0, 1000.0))
     m.put(C.FIRE_TIMER_FPS, ">f", C.FIRE_TIMER_ORIG * 80)
     m.put(C.WEAPON_TABLE + 0x12 * C.WEAPON_STRIDE + C.WEAPON_INTERVAL, ">f", 0.0)
@@ -359,9 +359,10 @@ def test_verified_rapid_fire_holds_only_while_the_first_hit_is_on_an_enemy():
         assert "r1" in bot.tick(s, s["player"], s["enemies"][0], t)["hold"]
     assert bot.stats["rapid_fire_verified"] is True
     m.put(LASER + C.LASER_DOT, ">3f", 0.0, 135.0, 400.0)  # first hit on intervening cover
-    assert "r1" not in bot.tick(s, s["player"], s["enemies"][0], 0.2)["hold"]
+    assert not ({"l1", "r1"} & bot.tick(s, s["player"], s["enemies"][0], 0.2)["hold"])
     s["laser"] = None
     assert "r1" not in bot.tick(s, s["player"], s["enemies"][0], 0.25)["hold"]
+    assert {"l1", "r1"} <= bot.tick(s, s["player"], s["enemies"][0], 1.1)["hold"]
     assert "laser=no" in bot.stats["combat"]
 
 
@@ -416,7 +417,7 @@ def test_measured_cover_switches_target_but_an_off_target_ray_does_not_claim_cov
     assert not bot.blocked_until and bot.stats["target_evidence"] == "front candidate; visibility unconfirmed"
 
 
-def test_close_rear_enemy_outranks_distant_front_enemy_but_does_not_authorize_blind_fire():
+def test_close_rear_enemy_outranks_distant_front_enemy_and_fire_tracks_the_turn():
     m = world(laser_dot=(90.0, 110.0, 400.0))
     bot = C.Combat(m, {}, lessons=lambda e: None)
     s = snap(m, enemy=(0.0, 0.0, 1000.0))
@@ -424,7 +425,8 @@ def test_close_rear_enemy_outranks_distant_front_enemy_but_does_not_authorize_bl
     front = s["enemies"][0]
     behind = {"slot": 1, "ptr": ENEMY + 1, "pos": (0.0, 0.0, -200.0), "hp": 800, "hp_max": 800}
     assert bot.choose_target(s, s["player"], [behind, front], 0.0) is behind
-    assert "r1" not in bot.tick(s, s["player"], behind, 0.0)["hold"]
+    action = bot.tick(s, s["player"], behind, 0.0)["hold"]
+    assert {"l1", "r1"} <= action and {"rleft", "rright"} & action
     behind["pos"] = (0, 0, -1000)
     assert bot.choose_target(s, s["player"], [behind, front], 0.1) is front
 
@@ -452,8 +454,9 @@ def test_weapon_ready_action_and_first_hit_allow_fire_when_pose_byte_lags():
     bot = C.Combat(m, {}, lessons=lambda e: None)
     s = snap(m, enemy=(0.0, 0.0, 1000.0))
     assert "r1" in bot.tick(s, s["player"], s["enemies"][0], 0.0)["hold"]
-    s["player"]["action"] = 5  # taking a hit is not a usable aim pose
-    assert "r1" not in bot.tick(s, s["player"], s["enemies"][0], 0.1)["hold"]
+    s["player"]["action"] = 5  # queue the held input through hit recovery; do not count it as a fired shot
+    assert {"l1", "r1"} <= bot.tick(s, s["player"], s["enemies"][0], 0.1)["hold"]
+    assert bot.stats["shots"] == 0
 
 
 def test_close_hourglass_punch_still_wins_over_an_exposed_enemy(tmp_path):
@@ -465,3 +468,102 @@ def test_close_hourglass_punch_still_wins_over_an_exposed_enemy(tmp_path):
     s["bonuses"] = [{"ptr": 1, "pos": (0.0, 13.0, 100.0), "kind": "time"}]
     assert bot.tick(s) == {"tap": "square"}
     assert bot.stats["bonus_presses"] == 1
+
+
+@pytest.mark.parametrize("wid", [0x02, 0x09, 0x19, 0x05, 0x0B, 0x1A, 0x1B])
+def test_loaded_direct_guns_raise_with_trigger_and_hold_while_acquiring(tmp_path, wid):
+    m = world(aiming=False, act_vt=0)
+    m.put(PL + C.P_INV + 3 * C.INV_SLOT + C.INV_ID, ">I", 0x100 | wid)
+    bot = C.Combat(m, {}, learn_dir=tmp_path, lessons=lambda row: None)
+    s = snap(m, enemy=(180, 0, 150))
+    s["laser"] = None
+    for now in (0.0, 0.05, 0.5, 1.0):
+        keys = bot.tick(s, s["player"], s["enemies"][0], now)["hold"]
+        assert {"l1", "r1", "rleft"} <= keys
+    assert bot.stats["shots"] == 0 and bot.round_counts["shots"] == 0
+
+
+@pytest.mark.parametrize("condition", ["dead_player", "dead_target", "missing_target", "far", "recovery", "qte"])
+def test_direct_fire_releases_for_invalid_targets_and_priority_recovery(tmp_path, condition):
+    m = world()
+    bot = C.Combat(m, {}, learn_dir=tmp_path, lessons=lambda row: None)
+    s = snap(m)
+    target = s["enemies"][0]
+    if condition == "dead_player": s["player"]["hp"] = 0
+    if condition == "dead_target": target["hp"] = 0
+    if condition == "missing_target": target = None
+    if condition == "far": target["pos"] = (0, 0, C.ENGAGE_R + 1)
+    if condition == "recovery": s["recovery_active"] = True
+    if condition == "qte": s["prompt"] = "mash:circle"
+    assert bot.tick(s, s["player"], target, 0.0) == {"hold": set()}
+
+
+@pytest.mark.parametrize("wid", [0x0D, 0x0C, 0x0F, 0x99])
+def test_splash_unknown_and_unverified_weapons_do_not_inherit_tracking_fire(tmp_path, wid):
+    m = world(laser_dot=(160, 110, 1500))
+    m.put(PL + C.P_INV + 3 * C.INV_SLOT + C.INV_ID, ">I", 0x100 | wid)
+    bot = C.Combat(m, {}, learn_dir=tmp_path, lessons=lambda row: None)
+    s = snap(m, enemy=(0, 0, 1500))
+    s["weapon_round_type"] = "explosive"
+    assert "r1" not in bot.tick(s, s["player"], s["enemies"][0], 0.0)["hold"]
+    s["laser"] = None
+    assert "r1" not in bot.tick(s, s["player"], s["enemies"][0], 0.1)["hold"]
+
+
+def test_unknown_ammo_never_counts_as_loaded_for_tracking(tmp_path):
+    m = world()
+    bot = C.Combat(m, {}, learn_dir=tmp_path, lessons=lambda row: None)
+    s = snap(m)
+    s["inventory"] = [{"hand": True, "item": 0x1A, "rounds": None}]
+    assert "r1" not in bot.tick(s, s["player"], s["enemies"][0], 0.0)["hold"]
+
+
+@pytest.mark.parametrize("override", ["qte", "recovery", "heal", "dead", "no_enemy"])
+def test_bot_priority_actions_override_continuous_fire(tmp_path, override):
+    from gbox.mercs.titles import re5_ps3 as R
+    m = world(laser_dot=(100, 110, 180))
+    bot = R.Bot(m, clock=lambda: 10.0, learn_dir=tmp_path, lessons=lambda row: None)
+    s = snap(m, enemy=(0, 0, 180))
+    if override == "qte": s["prompt"] = "mash:circle"
+    if override == "recovery": s["recovery_active"] = True
+    if override == "dead": s["player"]["hp"] = 0
+    if override == "no_enemy": s["enemies"] = []
+    if override == "heal":
+        s["player"]["hp"] = 100
+        s["inventory"] = [{"type": 2, "id": next(iter(R.HEAL_IDS)), "item": 0, "slot": 4,
+                           "grid": 1, "hand": 0, "rounds": 1}]
+    result = bot.tick(s)
+    assert not ({"l1", "r1"} & result.get("hold", set()))
+    if override == "heal": assert result == {"tap": "dup"}
+
+
+def test_bot_nearby_off_reticle_target_keeps_gun_and_trigger_up(tmp_path):
+    from gbox.mercs.titles import re5_ps3 as R
+    m = world(laser_dot=(100, 110, 180), aiming=False, act_vt=0)
+    bot = R.Bot(m, clock=lambda: 10.0, learn_dir=tmp_path, lessons=lambda row: None)
+    s = snap(m, enemy=(0, 0, 180))
+    s["laser"] = None
+    assert {"l1", "r1"} <= bot.tick(s)["hold"]
+    assert bot.stats["shots"] == 0 and bot.stats["phase"] == "clear_nearby"
+
+
+def test_hit_recovery_never_waits_to_reacquire_and_mandatory_escape_still_wins(tmp_path):
+    from gbox.mercs.titles import re5_ps3 as R
+    now = [10.0]
+    m = world(aiming=False, act_vt=0)
+    bot = R.Bot(m, clock=lambda: now[0], learn_dir=tmp_path, lessons=lambda row: None)
+    for pose in (5, 5, 0, 2):
+        s = snap(m, enemy=(0, 0, 60))
+        s["player"]["action"] = pose
+        s["laser"] = None
+        assert {"l1", "r1"} <= bot.tick(s)["hold"]
+        now[0] += 0.1
+    assert bot.stats["shots"] == 0 and bot.stats["backoffs"] == 0
+    s = snap(m, enemy=(0, 0, 60))
+    s["player"]["action"] = 5
+    s["prompt"] = "mash:circle"
+    assert bot.tick(s) == {"hold": set()}
+    now[0] += 0.1
+    s = snap(m, enemy=(0, 0, 60))
+    s["player"]["action"] = 4
+    assert bot.tick(s) == {"hold": set()}
