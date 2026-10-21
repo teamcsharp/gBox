@@ -960,6 +960,8 @@ class Hub:
         self.program_sid: str | None = None
         self.thread: threading.Thread | None = None
         self.stopping = False
+        self.wake = threading.Event()                          # a switch or a watch report: tick now, not in 100 ms
+        self.ticks = 0
 
     # program choice, persisted --------------------------------------------------------------------------------------
     def _load_pin(self) -> dict:
@@ -975,12 +977,24 @@ class Hub:
             self.pin = pin
         self.store.put("setting", PROGRAM_SETTING, pin)
         self.ensure_thread()
+        self.wake.set()
         return pin
 
     def report_watch(self, sid: str | None, client: str = "", remote: str = "") -> dict:
         with self.lock:
             self.watch = {"session_id": sid or None, "at": self.wall(), "client": client[:40], "remote": remote[:64]}
-            return dict(self.watch)
+            watch = dict(self.watch)
+        self.wake.set()
+        return watch
+
+    def wait_tick(self, timeout: float = 0.5):
+        """Until the hub has run a full tick after now (a switch shows in the answer), at most `timeout`."""
+        thread = self.thread
+        if thread is None or not thread.is_alive():
+            return
+        target, end = self.ticks + 2, time.monotonic() + timeout
+        while self.ticks < target and time.monotonic() < end:
+            time.sleep(0.02)
 
     def successor(self, sid: str) -> str | None:
         """The running session a swap or reset relaunch put in place of `sid` (its replaced_by chain)."""
@@ -1139,7 +1153,8 @@ class Hub:
                     if not self.feeds and not self.encoders:
                         self.thread = None
                         return
-            time.sleep(TICK_S)
+            self.wake.wait(TICK_S)
+            self.wake.clear()
 
     def tick(self) -> bool:
         """One housekeeping step. False when nothing is read any more."""
@@ -1168,6 +1183,7 @@ class Hub:
         for _, enc in encoders:
             if not enc.closed:
                 enc.retap(now)
+        self.ticks += 1
         with self.lock:
             return bool(self.feeds or self.encoders)
 
@@ -1474,6 +1490,7 @@ def register(app, store, config, *, live: dict, desktop_frames: dict, desktop_wa
             pin = hub.set_program("pc", pc, by=v["who"])
         store.audit(v["who"], "broadcast.program", pin.get("target") or "auto", {"mode": pin["mode"]})
         hub.refresh(force=True)
+        hub.wait_tick()
         return {"pin": pin, "program": hub.program_status()}
 
     @app.post("/api/broadcast/watching")
@@ -1488,6 +1505,7 @@ def register(app, store, config, *, live: dict, desktop_frames: dict, desktop_wa
         watch = hub.report_watch(sid, request.headers.get("x-gbox-client", ""),
                                  request.client.host if request.client else "")
         hub.refresh(force=True)
+        hub.wait_tick()
         return {"watch": watch, "program": hub.program_status()}
 
     # --- tokens ------------------------------------------------------------------------------------------------

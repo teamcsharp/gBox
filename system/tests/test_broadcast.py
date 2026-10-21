@@ -841,7 +841,9 @@ def test_mjpeg_program_keeps_a_constant_rate_through_a_switch_and_a_session_end(
                 t = time.time() - t0
                 if t > 1.0 and not marks:
                     marks.append(len(parts(bytes(buf))))
-                    c.post("/api/broadcast/program", json={"session_id": "spark-b"})
+                    switched = c.post("/api/broadcast/program", json={"session_id": "spark-b"}).json()["program"]
+                    assert (switched["session_id"], switched["why"]) == ("spark-b", "pinned"), \
+                        "the answer shows the switch done (the hub ticked)"
                 if t > 2.5 and not ended:
                     ended = True
                     marks.append(len(parts(bytes(buf))))

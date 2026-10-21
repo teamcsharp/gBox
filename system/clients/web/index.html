@@ -1729,9 +1729,17 @@ function liveExamineSession(ss, sid) {
     || running.find(s => s.detail?.worker_name === window.GBOX_LOCAL?.worker)
     || running[0];
 }
+// the Sessions list's Broadcast bar (viz/broadcast.js): what is on air, Auto, media-source links. Mounted once the list
+// is in the page; its picture is fetched with the token in a header (the gBox token never goes in a broadcast URL).
+function mountBroadcastPanel() {
+  BCAST.panel?.stop();
+  BCAST.panel = window.GBoxBroadcast?.mountPanel(document.getElementById("broadcast-panel"),
+    { api, fetch: path => fetch(path, { headers: { authorization: "Bearer " + tok } }) }) || null;
+}
 async function sessionsView(sid, mode) {
   const ss = await api("/api/sessions");
   if (!sid) {
+    setTimeout(mountBroadcastPanel, 0);                        // after show() puts the list in the page
     // #2858: a game elsewhere is offered to Watch only while a picture of it comes; otherwise the row says why
     const ws = await api("/api/workers").catch(() => null), nowS = Date.now() / 1000;
     const pic = s => s.state === "running" && !sessionIsLocal(s) ? GBoxSessionLive.judge(s, ws, nowS) : { live: true };
@@ -2197,11 +2205,7 @@ function sessionBuildChanged(ev, info) {
   if (bnEmbedded()) console.log("GBOX:" + JSON.stringify({ ev, ...info }));   // the desktop app: its launch bar and Mods page
 }
 sessionsView.after = (sid, mode) => {
-  if (!sid) {                                                 // the list: the Broadcast bar (program, Auto, media-source links)
-    BCAST.panel = window.GBoxBroadcast?.mountPanel(document.getElementById("broadcast-panel"),
-      { api, fetch: path => fetch(path, { headers: { authorization: "Bearer " + tok } }) }) || null;
-    return;
-  }
+  if (!sid) return;
   syncSessionFav();
   const head = $("#session-head");
   sessionBuildMount(head);
