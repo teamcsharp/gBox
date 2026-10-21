@@ -241,7 +241,9 @@ class Screensaver:
             from . import roulette
             build = roulette.demo_build(self.builds(g["game_id"]), self.rng)
         # jump: the demo starts in gameplay where this PC has a jump state for the game and build (gbox.jumpstate)
-        inp = {"game": game, "jump": True} | ({"mod": build["name"]} if build else {})
+        # memory_cards: the operator's own cards go in, so their saved characters load (#2817: "get my memory card ...
+        # you need to use it with screensaver for playing the game"); their own launch elsewhere takes a card back
+        inp = {"game": game, "jump": True, "memory_cards": "operator"} | ({"mod": build["name"]} if build else {})
         job = self.submit(JobRequest(tool="launch_game", input=inp, agent_use=True, low_priority=True,
                                      require_worker=w["id"]), actor=ACTOR,
                           origin={"via": "autoplay screensaver", "game_id": g["game_id"]})
