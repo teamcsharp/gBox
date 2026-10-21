@@ -244,13 +244,19 @@ def note_lesson(g: dict | None, entry: dict) -> bool:
         return False
 
 
-def apply_ops(ad, ops) -> list[str]:
-    """Run [[op, kwargs], ...] through re_mods in this process; returns the ones that failed."""
-    from . import re_mods_tool as RM
+def apply_ops(ad, ops, prof: dict | None = None) -> list[str]:
+    """Run [[op, kwargs], ...] through the title's mods tool in this process (re_mods for RE4 on GameCube / Wii,
+    re5_mods for RE5 on PS3, by the profile's platform); returns the ones that failed."""
+    if (prof or {}).get("platform") == "ps3":
+        from . import re5_mods_tool as RM
+        make = RM.RE5
+    else:
+        from . import re_mods_tool as RM
+        make = RM.RE4
     failed = []
     try:
-        g = RM.RE4(ad)
-    except Exception as e:                                  # noqa: BLE001 - this title has no re_mods: say so
+        g = make(ad)
+    except Exception as e:                                  # noqa: BLE001 - this title has no mods tool: say so
         return [f"{op}: {e}" for op, _ in ops]
     for op, kw in ops:
         try:
@@ -322,11 +328,11 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
     package = [tuple(x) for x in prof.get("package") or []]
     early = set(prof.get("early_ops") or [])
     if ad is not None and early:
-        failed = apply_ops(ad, [x for x in package if x[0] in early])
+        failed = apply_ops(ad, [x for x in package if x[0] in early], prof)
         if failed:
             stats["early_failed"] = "; ".join(failed)[:300]
     boot = Boot(menus, m, send, sleep=sleep, clock=clock, stats=stats, ad=ad, game=game,
-                hooks=(lambda: apply_ops(ad, [x for x in package if x[0] not in early])) if ad is not None else None,
+                hooks=(lambda: apply_ops(ad, [x for x in package if x[0] not in early], prof)) if ad is not None else None,
                 jump_at=prof.get("jump_at") or "select_player")
     run = time.strftime("%Y%m%d-%H%M%S", time.localtime(clock()))
     lessons = lessons_writer(prof["map_id"], run)

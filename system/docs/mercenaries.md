@@ -20,10 +20,13 @@ the extra Mercenaries mods. Status as of 2026-10-07. "Verified" means checked in
 | "punch them hundreds of feet in the air" | `super_melee on=true force=<feet> direction=up\|away\|both` | explodes on landing with explosive_melee |
 | "machine-gun hand cannon" | `weapon_mod item=handcannon fire_rate=auto` (+ `infinite_ammo`) | |
 | "spin while firing" | `auto_spin on=true speed=<deg/s> target=fire\|aim\|always` | |
-| "turn faster while aiming" | `aim_turn_speed multiplier=N` | |
+| "turn faster while aiming" | `aim_turn_speed multiplier=N` (RE4); `re5_mods op=turn_speed multiplier=N` (RE5, aimed and not; "max" = 10) | |
+| "fire 80 times faster, a pistol like a machine gun" (RE5) | `re5_mods op=fire_rate multiplier=80` | every weapon; semi-auto guns repeat while R1 is held |
+| "unlimited ammo" (RE5) | `re5_mods op=infinite_ammo on=true` | the Gatling's no-ammo flag on every gun: the HUD's infinity sign |
+| "more powerful bullets" (RE5) | `re5_mods op=bullet_damage multiplier=N` | firepower x N at every upgrade level (not yet seen live) |
 | "play as Aya" | `characters op=use character=Aya game=<release>` | builds/launches the swap mod |
 
-Tools: `re_mods` (RE4 GameCube + Wii), `re5` (RE5 Gold PS3: `unlock_all` save edit, `status`, `revert`), `re6` (RE6 X360: `unlock_all` (= unlock, boot default), `give`/`set_loadout` (= loadout_set)/`auto`, live `give_now`/`remove_item`/`set_slot`), `re4r` (RE4 2023: `set`/`freeze`/hooks; blocked until the
+Tools: `re_mods` (RE4 GameCube + Wii), `re5` (RE5 Gold PS3: `unlock_all` save edit, `status`, `revert`), `re5_mods` (RE5 Gold PS3 live: `turn_speed`, `fire_rate`, `infinite_ammo`, `bullet_damage`, `revert_all`, `status`, `addresses`), `re6` (RE6 X360: `unlock_all` (= unlock, boot default), `give`/`set_loadout` (= loadout_set)/`auto`, live `give_now`/`remove_item`/`set_slot`), `re4r` (RE4 2023: `set`/`freeze`/hooks; blocked until the
 operator accepts Capcom's EULA in Steam - gBox never accepts it).
 
 ## Matrix
@@ -42,7 +45,7 @@ operator accepts Capcom's EULA in Steam - gBox never accepts it).
 | Mercenaries 3D (0ed22ae742e1b56b) | citra_libretro, Spark (boots to the Capcom logo) | **missing**: unlocks are save-based (the 3DS save cannot be erased in game: back it up first); the core exposes no memory map to gBox, so live flags are not possible here | **missing**: MT Framework Mobile writer | none |
 | RE6 X360 (0871eee3b68cdea3) | Xenia PC | **verified**: `re6 op=unlock_all` = boot default "Everything unlocked": all 3 stages on the disc, all 9 characters + EX costumes, Agent Hunt, every campaign/chapter/difficulty, skills (save template from the game's own unlock routine; live too). Boots to the title (logo movie skipped) | `re6_<slug>` (Aya, SM64 Mario verified) | **verified**: any weapon in any character's loadout (EK fired), give_now of guns the stage didn't load (resources preloaded; Lightning Hawk fired), remove_item / set_slot, infinite_health/ammo, auto_qte (default on). No Mercy / DLC stages not on the 360 disc. See docs/re6.md |
 | RE4 2023 Steam (steam-2050650) | native + REFramework | by the RE4R agent; blocked on Capcom's EULA (operator) | by the RE4R agent | live stats/hooks |
-| RE5 Gold Edition PS3 (e7ca89bbeb67360d, BLUS30491) | RPCS3 (Windows node; Spark arm64 in scratch) | `re5 op=unlock_all` = Bonus Features, Files, cutscenes, figurines, every chapter, BSAA emblems, Item Management (published Game Genie offsets; chapters, bonus features and emblems seen in the menus) **+ The Mercenaries Reunion, Desperate Escape, all 8 Reunion stages and all 8 characters (gBox's own offsets, **verified** live 2026-10-20)**. The original THE MERCENARIES (story-clear gate): not found yet | **missing** | RAM map `profiles/gamedata/BLUS30491-ram.json` (clock, score, kills, combo, combo window, player, enemies) and the Mercenaries engine driver `gbox/mercs/titles/re5_ps3.py` (aims and kills, live) |
+| RE5 Gold Edition PS3 (e7ca89bbeb67360d, BLUS30491) | RPCS3 (Windows node; Spark arm64 in scratch) | `re5 op=unlock_all` = Bonus Features, Files, cutscenes, figurines, every chapter, BSAA emblems, Item Management (published Game Genie offsets; chapters, bonus features and emblems seen in the menus) **+ The Mercenaries Reunion, Desperate Escape, all 8 Reunion stages and all 8 characters (gBox's own offsets, **verified** live 2026-10-20)**. The original THE MERCENARIES (story-clear gate): not found yet | **missing** | RAM map `profiles/gamedata/BLUS30491-ram.json` (clock, score, kills, combo, combo window, player, enemies) and the Mercenaries engine driver `gbox/mercs/titles/re5_ps3.py` (aims and kills, live); **`re5_mods`** live: turn_speed, fire_rate x80, infinite_ammo (**verified** live 2026-10-21, applied at every round start), bullet_damage (written, not yet seen on an enemy) |
 
 ## RE4 notes
 
@@ -262,6 +265,36 @@ the title screen (RPCS3 rereads the host DATA0.DAT at each load) and read off th
     In round 10 the emulator froze (the game's clock stopped at 1:48, RPCS3 still busy).
   * Not yet: a time bonus taken live, and routes between levels the player can take (ladders and stairs, not the
     Majini-only drops). Also the enemies' attack states, and item pick-ups ("□ Pick up", the same stage prompt).
+
+## RE5 Gold: live mods, applied at every Mercenaries round start (2026-10-21)
+
+`re5_mods` (gbox/re5_mods_tool.py) writes the running game's data, every write read back, the originals kept
+(`revert_all`; a relaunch is the full revert too). The RE5 profile's `mercs` package is `turn_speed x2`,
+`fire_rate x80`, `infinite_ammo`, applied in the worker by `mercs_bot` at `select_player` before each run (the
+operator's request: "80x fire rate ... even with a pistol he's able to fire it like a machine gun with unlimited
+ammo and unlimited rotation speed"). Found in the executable dump (BLUS30491 app 01.01, PPU-a9b0ce57...) and live on
+the Spark's RPCS3; the frames in `docs/evidence/re5-mods/` are real frames of the agent session bd055f... that day.
+
+* **Turn speed:** sParameter (the global tunables object, pointer at 0x017FEB08): +0x2C walk/run turn deg/s (110),
+  +0x68 / +0x6C the stick-to-turn range (0.2 / 1.2, also the stand-still turn animation's speed), +0x2D0 aim pitch
+  deg/s and +0x2D4 aim yaw deg/s (57.9; the aim controller 0x86E1EC scales it by the zoom). Live: the bot's aim yaw
+  rate p90 85 -> 140 -> 231 deg/s and the stand-still turn 150 -> 250 -> 398 deg/s at x1 / x2 / x3. Default x2
+  because the bot aims on 50 ms pulses (4.5 deg a pulse at x3); the operator can pick x3 or "max" (x10).
+* **Fire rate:** the weapon upgrade table (0x01823E1C, 0x1E8 per weapon id, group 1 = frames between shots per
+  upgrade level: M92F 26, VZ61 5, M29 45) / N, the definition table's interval offset (0x01817530 + id*0x140 + 0x90:
+  -10 handguns, +5 machine guns) set to 0, and the fire action's only frames-per-second constant (0x0169E098, 60.0,
+  the re-fire timer of semi-auto weapons) x N. Live x80: Barry's handgun 1.6 -> 8.1 casing ejections/s and 3 -> 6
+  kills per 40 s; Sheva's P226 0.65 -> 6.7/s and 0 -> 4 kills in the round's last 41 s, the bot still tapping R1.
+* **Infinite ammo:** the definition table's +0x14 = 1, the Gatling's own "needs no ammo" flag, on every gun and
+  grenade (knives untouched): the can-fire check (0x9D4DE4) passes and the consume check (0x9D3C70) skips the
+  round, the HUD shows the infinity sign. Live: rounds 28/30 and 4/4 untouched through whole phases of fire.
+* **Bullet damage:** upgrade group 0 (firepower per level, M92F 150...) x N. Written and read back, not yet seen
+  on an enemy's health (next window).
+* **Not done yet** (the operator's list): grenade bullets, self-immunity, loadout replacement with campaign
+  weapons, weapon switching, the per-round randomizer. The inventory is player+0x22E0 (24 slots x 0x30: +0x8 id
+  word 0xTTII, +0xC rounds, +0x10 capacity, +0x20 in hand, byte +0x2D in use; weapons are table 1, ammo 2,
+  herbs/sprays 3); replacing a weapon needs the game's own item-create path (the slot's unit at +0x0 is the uWp
+  object), so loadout/switch wait for that.
 
 ## Live checks (to run once, then flip `live_checked`)
 

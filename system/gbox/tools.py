@@ -5104,6 +5104,7 @@ def _load_tool_modules(names=("cxbx_diagnostics_tool", "native_face_editor", "au
                               "ue_steam",   # ue_steam: generic Unreal Engine Steam game static analysis (locomotion/animation)
                               "re6_tool",   # re6_tool: Resident Evil 6 (X360 in Xenia): Mercenaries loadouts, items, swaps
                               "re5_tool",   # re5_tool: Resident Evil 5 Gold (PS3 in RPCS3): unlock all (save edit)
+                              "re5_mods_tool",   # re5_mods: RE5 Gold (PS3) live mods: turn speed, fire rate, infinite ammo, damage
                               "oot_live",   # oot_live: OoT actors at a picture point, statues kept in rooms (gbox.oot_swap)
                               "twin_snakes_live",   # twin_snakes_live: Twin Snakes GC loaded cast + live body writes
                               "re_inventory",   # re_inventory: any Resident Evil's live inventory (give/remove/set/loadout)

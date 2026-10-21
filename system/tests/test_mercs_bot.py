@@ -66,7 +66,7 @@ def test_play_boots_from_the_title_and_hands_each_round_to_the_engine(monkeypatc
     g = FakeRE4(routine=4, step=0, menu_cursor=3)
     now, ops, rounds = [0.0], [], []
     monkeypatch.setattr(MB, "profile_for", lambda ad, game: PROFILE)
-    monkeypatch.setattr(MB, "apply_ops", lambda ad, x: ops.append([op for op, _ in x]) or [])
+    monkeypatch.setattr(MB, "apply_ops", lambda ad, x, prof=None: ops.append([op for op, _ in x]) or [])
     monkeypatch.setattr(MB, "save_menu_moment", lambda ad, game: "G4BE08.sav")
 
     def play_round(prof, m, send, stopped, stats, lesson):
