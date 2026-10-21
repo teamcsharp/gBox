@@ -127,6 +127,18 @@ class FakeRE4:
         self.put(B.MERC_TIMER, ">I", 120 * 30)
 
 
+def test_the_ram_maps_menu_group_reads_the_same_work_area():
+    # profiles/gamedata/G4BE08-ram.json "menu": the inspector's view of what re4_menus reads (TW at stack top - 0x34)
+    from gbox import ram_map
+    g = FakeRE4(routine=6, step=8)
+    g.put(TW + RM.TW_PLAYER_CURSOR, "B", 2)
+    v = ram_map.load("G4BE08").read(g)
+    assert v["menu.task0_entry"] == RM.TITLE_ENTRY and v["menu.title_work"] == TW
+    assert (v["menu.title_routine"], v["menu.title_step"]) == (6, 8)
+    assert (v["menu.main_items"], v["menu.player_cursor"], v["menu.stage_cursor"]) == (5, 2, 3)
+    assert RM.screen(g)["cursor"] == 2 and not {k for k in v.errors if k.startswith("menu.")}
+
+
 def test_the_title_tasks_work_area_is_found_on_its_stack():
     g = FakeRE4(routine=6, step=8)
     assert RM.tw(g) == TW

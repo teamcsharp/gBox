@@ -50,6 +50,12 @@ def test_it_plays_only_once_the_engine_is_installed(monkeypatch):
     monkeypatch.setitem(sys.modules, "gbox.mercs", None)                          # no gbox.mercs package yet
     assert MB.engine() is None and not MB.matches(None, {"game_id": "re4"})
     assert MB.lessons_writer("G4BE08") is None
+    pkg = types.ModuleType("gbox.mercs")
+    pkg.engine = SimpleNamespace(play_round=lambda *a: "round", READY=False)       # installed, not ready yet
+    monkeypatch.setitem(sys.modules, "gbox.mercs", pkg)
+    assert MB.engine() is None and not MB.matches(None, {"game_id": "re4"})
+    pkg.engine.READY = True
+    assert MB.engine() is pkg.engine and MB.matches(None, {"game_id": "re4"})
     monkeypatch.setattr(MB, "engine", lambda: SimpleNamespace(play_round=lambda *a: "round"))
     assert MB.matches(None, {"game_id": "re4"}) and not MB.matches(None, {"game_id": "doa2"})
     from gbox import tools

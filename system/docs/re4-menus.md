@@ -52,6 +52,26 @@ The same fields are in the RAM map (`profiles/gamedata/G4BE08-ram.json`, group `
 them. The map's pointer chain reads TW at stack top - 0x34, which holds while the task waits in its main loop. Check
 `menu.task0_entry` first: in a room the chain points at garbage.
 
+**Signatures, before any of it is trusted (`re4_menus.SIGNATURES`, `signed(m)`):** the first 16 code bytes of the
+title task (`0x80161738`), the main menu handler (`0x801621F0`), the extra games' routine (`0x801633BC`) and Select
+Stage (`0x801644C0`), and the routine table's first entries (`0x8020CC10`), as main.dol puts them in RAM. All of them
+must match, else `screen()` says `unknown` (with an `error`) and `step()` presses nothing: another build, another
+region or another game at these addresses is never read as RE4's menus. A match is remembered on the memory view
+(`_re4_signed`), so the check costs one compare per run.
+
+**In a room** (task 0 is the game loop) the screen comes from pG and the Mercenaries snapshot
+(`re4_merc_bot.snapshot`):
+
+| where | when |
+|---|---|
+| playing | a Mercenaries room (0x4xx) running (pG+0x20 = 3, or 4 changing rooms), with a player and time on the clock |
+| results | the same, with the clock at 0 |
+| dead | the player's health at 0 ("You Are Dead") |
+| loading | the stage still loading (pG+0x20 0-2: the clock then shows the last round's time), or no player yet |
+| story | a room outside the Mercenaries' (and not the title's 0x120): the run is off the path for good |
+
+There is no `paused` yet: the pause menu is not read.
+
 ## The way to a round (`re4_menus.step`)
 
 | screen | press |
@@ -63,13 +83,16 @@ them. The map's pointer chain reads TW at stack top - 0x34, which holds while th
 | Select Player | left / right to Leon (the shorter way round), then A |
 | Select Stage | to the Village, then A |
 | a room: results (clock at 0), "You Are Dead" | A (next; Continue Yes) |
-| setup, loading, starting | nothing: wait |
+| setup, loading, starting, an attract movie as it ends | nothing: wait (START skips a movie only while it plays) |
+| unknown (RAM can't name it, or the code doesn't match) | nothing |
 
-**How presses are made:**
+**How presses are made** (`gbox.mercs_bot.Navigator`, shared by every title's menus):
 - One press at a time, held 0.3 s (0.18 s for the D-pad). The menus move on the repeat word, and a longer hold can
   step twice.
 - The next press waits until RAM shows the last one took, or 1.2 s passed.
 - `stats["ram_progress"]` counts every screen or cursor change. The black watch trusts it.
+- Before a playbook starts, every pad key is released: a driver killed with a key down left the stick held, which
+  read as "left" on every menu, and Select Stage never moved (2026-10-20).
 
 **Off the path:** a story game starting from the main menu, or a story room, ends the run with `stats["hung"]`
 (a bot demo is then relaunched). So do 30 s on a screen RAM can't name, or 120 s with nothing moving in RAM.
@@ -80,9 +103,14 @@ them. The map's pointer chain reads TW at stack top - 0x34, which holds while th
   MERCENARIES.
 - At Select Player, before any code hook, the playbook saves the menu moment: this game and build's jump state
   (gbox.jumpstate, Dolphin's demo slot 10; the operator's slots are never written).
-- Then it applies the rest of the hack package (`merc_loadout` and the code hooks). A Dolphin state saved after the
-  hooks restores into a hang (2026-10-20).
+- Then it applies the rest of the hack package (`merc_loadout` and the code hooks), once per boot. A Dolphin state
+  saved after the hooks restores into a hang. The same Dolphin taking the package a second time, plus the operator's
+  kept mods from the desktop app, ended in a stage load that never finished (2026-10-20).
 - A bot-demo launch, and the relaunch of a frozen one, boots straight into the menu moment.
+- re_mods calls that run game code (`equip`, give items: `RE4.call` through the dispatcher at `0x80122610`, which runs
+  every frame, loads included) wait for a running room (pG+0x20 = 3 and a player); during a load or a menu they
+  refuse with "the game is loading a room or showing a menu".
+- The Sessions view no longer switches the operator's kept mods on by itself in a bot demo or an agent's session.
 
 ## Checked
 
@@ -93,5 +121,16 @@ them. The map's pointer chain reads TW at stack top - 0x34, which holds while th
     THE MERCENARIES, GAME START, Leon, Village, pG+0x54 = 0x50000000.
   - The Village start: task 0 = `0x80116640` (the game loop), room 0x400.
 - **Unit tests** (`tests/test_re4_menus.py`): a simulated title task walked from the title to a round. The only picks
-  are THE MERCENARIES, GAME START, Leon and the Village.
-- **Live:** see the bot-demos-anywhere PR.
+  are THE MERCENARIES, GAME START, Leon and the Village. `tests/test_mercs_bot.py` walks the same simulated RE4 to two
+  rounds through the deployment playbook.
+- **Live, 2026-10-20 on the Spark** (an agent test session, the branch's playbook driven standalone with RAM read from
+  the session's own Dolphin and the pad through the session input API; real frames in
+  `docs/evidence/bot-demos-anywhere/`, each taken when RAM named a new screen; the stream's picture trails RAM by up to
+  a second):
+  - From the attract movie to a Village round in 26 s, by RAM alone: START skipped the movie; the main menu's cursor on
+    LOAD (3), up to THE MERCENARIES (2), A; GAME START; Leon; the Village; the round on (room 0x400, pG+0x20 3, the
+    clock at 120.0).
+  - After the round it went back through the title task (the Mercenaries menu, Select Player, Select Stage) to the
+    Village again.
+  - Select Player's order comes from a real frame: RAM cursor 2 is Jack Krauser.
+  - Not yet seen live: two full rounds in a row, and the menu moment (a jump state needs the worker-side playbook).

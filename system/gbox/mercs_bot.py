@@ -167,12 +167,13 @@ def profile_for(ad, g: dict | None) -> dict | None:
 
 
 def engine():
-    """gbox.mercs.engine when it is installed and has play_round, else None."""
+    """gbox.mercs.engine when it is installed, has play_round and says it is READY (the engine keeps READY False until
+    a title plays at least as well through it as through its own playbook), else None."""
     try:
         from .mercs import engine as E
     except ImportError:
         return None
-    return E if callable(getattr(E, "play_round", None)) else None
+    return E if callable(getattr(E, "play_round", None)) and getattr(E, "READY", True) else None
 
 
 def lessons_writer(map_id: str, run: str | None = None):

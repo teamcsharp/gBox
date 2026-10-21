@@ -94,6 +94,8 @@ SIGNATURES = {
     0x801644C0: bytes.fromhex("9421ff487c0802a6be810088900100bc"),           # Select Stage's cursor
     TITLE_ROUTINES: bytes.fromhex("801617b48016192c80161b4c80161c8480161da0801627c4801633bc80164934"),
 }
+
+
 def signed(m) -> bool:
     """RAM holds the main.dol code this module was built from (SIGNATURES). A match is remembered on the memory view;
     a miss is asked again next time (the code is not in RAM yet while the disc boots)."""
