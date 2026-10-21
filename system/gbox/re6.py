@@ -76,7 +76,10 @@ class XDVD:
                 self.files[p] = (self.part + s * 2048, n)
 
     def read(self, p: str) -> bytes:
-        off, n = self.files[p]
+        # Keys are absolute disc paths ("/default.xex"); accept a bare name too so
+        # callers that guess "default.xex" get the file instead of a KeyError.
+        key = p if p.startswith("/") else "/" + p
+        off, n = self.files[key]
         self.f.seek(off)
         return self.f.read(n)
 
