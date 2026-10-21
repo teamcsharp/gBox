@@ -398,13 +398,39 @@ def costume_replacements(afs_path, plan: dict[str, dict], progress=lambda *_: No
 # (MmAllocateContiguousMemoryEx 0x498000 per fighter, 4 fighters) is split 0x200000 costume | 0x18000 <nick>.bin |
 # 0x80000 CAT | the rest motions. Native costumes reach 1,978,368 bytes (zac02); a larger one overruns the .bin.
 COSTUME_BUFFER = 0x200000
+DECIMATE_STEPS = (0.6, 0.4, 0.25, 0.16, 0.1)    # fractions of the donor's triangles the last budget steps try
+
+
+def decimated_rig(rig: dict, fraction: float) -> dict:
+    """The donor with every primitive reduced to ``fraction`` of its own triangles (gbox.auf_swap.decimate: quadric
+    edge collapse; seams move together, every vertex keeps its normal, UV and skin). Each level starts from the
+    next larger level already made and is cached on the rig, so one donor shared by a family's costumes is reduced
+    once per level."""
+    from .auf_swap import decimate
+    cache = rig.setdefault("_decimated", {})
+    if fraction in cache:
+        return cache[fraction]
+    base = min((f for f in cache if f > fraction), default=None)
+    source = cache[base]["prims"] if base is not None else rig["prims"]
+    prims = []
+    for original, p in zip(rig["prims"], source):
+        tris = np.asarray(p["tris"], int).reshape(-1, 3)
+        target = max(1, int(round(len(np.asarray(original["tris"]).reshape(-1, 3)) * fraction)))
+        if len(tris) > 8 and target < len(tris):
+            pos, kept = decimate(np.asarray(p["pos"], float), tris, target)
+            p = {**p, "pos": pos, "tris": np.asarray(kept, int).reshape(-1, 3)}
+        prims.append(p)
+    lean = {k: v for k, v in rig.items() if k != "_decimated"} | {"prims": prims}
+    cache[fraction] = lean
+    return lean
 
 
 def fit_costume(xpr: bytes, cat: bytes, rig: dict, *, native_slots: bool = True, budget: int = COSTUME_BUFFER):
     """One costume rewrite within ``budget`` bytes (callers pass the original AFS entry size: the archive keeps its
     layout). In order until it fits: the donor part also on the lower-detail copies, then those copies hidden, then
-    free native texture slots the donor did not take shrunk to 4x4 stand-ins (largest first), then (the only step
-    that costs detail) the donor images appended at 128, then 64 pixels with every free native slot shrunk.
+    free native texture slots the donor did not take shrunk to 4x4 stand-ins (largest first), then (the steps that
+    cost detail) the donor images appended at 128, then 64 pixels with every free native slot shrunk, then the
+    donor's triangles reduced (``DECIMATE_STEPS``, images at 128 then 64 pixels on each).
     -> (blob, fit result, hidden OBJs, the budget steps taken)."""
     geo = C.costume_geometry(xpr)
     table = C.mdl_descriptor_table(xpr)
@@ -441,4 +467,16 @@ def fit_costume(xpr: bytes, cat: bytes, rig: dict, *, native_slots: bool = True,
             steps.append(f"donor images appended at most {limit} px, {len(shrink)} free native textures shrunk")
             return blob, res, hide, steps
         steps.append(f"{len(blob)} bytes with donor images at most {limit} px")
+    for fraction in DECIMATE_STEPS:
+        lean = decimated_rig(rig, fraction)
+        for limit in (128, 64):
+            res = fit(lean, geo, roles, texture_limit=limit, slots=None, lod_copies=False)
+            hide = hidden_parts(roles, set(res["parts"]), geo["object_count"])
+            blob = W.encode_costume(xpr, res["parts"], res["textures"], hide=hide, shrink_textures=shrink)
+            if len(blob) <= budget:
+                steps.append(f"donor reduced to {fraction:.0%} of its triangles, images at most {limit} px, "
+                             f"{len(shrink)} free native textures shrunk")
+                res["report"]["decimated"] = fraction
+                return blob, res, hide, steps
+        steps.append(f"{len(blob)} bytes with the donor at {fraction:.0%} of its triangles")
     raise ValueError(f"the rewritten costume is {len(blob)} bytes; the game's costume slot holds {budget}")

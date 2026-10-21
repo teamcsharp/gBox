@@ -111,6 +111,46 @@ def test_fit_costume_appends_smaller_donor_images_when_the_slot_is_tight():
         F.fit_costume(xpr, cat, rig, native_slots=False, budget=4096)
 
 
+def _dense_rig(cuts: int = 6):
+    """The stick rig with every box subdivided into a dense grid (thousands of triangles)."""
+    rig = stick_rig()
+    prims = []
+    for p in rig["prims"]:
+        c = np.asarray(p["pos"]).mean(0)
+        g = np.linspace(-0.04, 0.04, cuts + 1)
+        pos, tris = [], []
+        for axis in range(3):
+            for sign in (-0.04, 0.04):
+                base = len(pos)
+                for a in g:
+                    for b in g:
+                        q = [a, b]
+                        q.insert(axis, sign)
+                        pos.append(c + np.array(q))
+                for i in range(cuts):
+                    for j in range(cuts):
+                        v = base + i * (cuts + 1) + j
+                        tris += [(v, v + 1, v + cuts + 2), (v, v + cuts + 2, v + cuts + 1)]
+        pos = np.array(pos)
+        n = len(pos)
+        prims.append({**p, "pos": pos, "nrm": (pos - c) / np.linalg.norm(pos - c, axis=1, keepdims=True),
+                      "uv": np.zeros((n, 2)), "tris": np.array(tris), "J": np.full((n, 1), p["J"][0, 0]),
+                      "W": np.ones((n, 1)), "owner": np.full(n, p["J"][0, 0])})
+    return rig | {"prims": prims}
+
+
+def test_fit_costume_decimates_a_dense_donor_into_a_tight_slot():
+    xpr, cat = fifteen_part_costume()
+    rig = _dense_rig()
+    full, _res, _hide, steps = F.fit_costume(xpr, cat, rig, native_slots=False)
+    assert steps == []
+    lean, res, _hide, steps = F.fit_costume(xpr, cat, rig, native_slots=False, budget=len(full) - 0x2000)
+    assert len(lean) <= len(full) - 0x2000 and res["report"]["decimated"] in F.DECIMATE_STEPS
+    assert steps[-1].startswith("donor reduced to")
+    assert C.costume_geometry(lean)["triangle_total"] < C.costume_geometry(full)["triangle_total"]
+    assert F.decimated_rig(rig, res["report"]["decimated"]) is F.decimated_rig(rig, res["report"]["decimated"])
+
+
 def test_fit_places_every_role_in_its_joint_frame_and_encodes():
     xpr, cat = fifteen_part_costume()
     geo = C.costume_geometry(xpr)
