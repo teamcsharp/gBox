@@ -149,6 +149,8 @@ class Engine:
                 self.stats["parried"] += label in ("parried", "held")
             elif p["answer"].kind == "punish":
                 self.stats["punish_dealt"] = self.stats.get("punish_dealt", 0) + max(0.0, reward)
+                if p.get("book_key"):
+                    self.book.record(p["book_key"], None, p["answer"].name, reward, met)
             elif p["answer"].kind == "attack":
                 self.book.record(OFFENSE, None, p["answer"].name, reward, met)
                 self.stats["attack_dealt"] = self.stats.get("attack_dealt", 0) + max(0.0, reward)
@@ -163,8 +165,13 @@ class Engine:
                     pass
             if p["answer"].kind == "answer" and reward > 0 and self.active is None and w.p1.can_act():
                 pun = self.title.punish(w, label)
+                key = f"punish:{label}"
+                if isinstance(pun, (list, tuple)):     # several punishes: the book learns which deals most
+                    name = self.book.choose(key, None, [a.name for a in pun])
+                    pun = next((a for a in pun if a.name == name), None)
                 if pun is not None:
                     self._start(pun, w, None)
+                    self.active["book_key"] = key
 
     def _latency(self, w: World):
         p = self.active

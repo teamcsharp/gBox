@@ -42,10 +42,20 @@ def test_frames_follow_the_ring_and_the_counter_when_it_wraps():
     assert t.frame(ram) == 1
     ram.frames(3)
     assert t.frame(ram) == 4                                     # three frames between two polls
-    ram.frames(8)                                                # the ring is back where it was: no change seen
-    assert t.frame(ram) == 4
+    ram.frames(8)                                                # the ring is back where it was: the counter says 8
+    assert t.frame(ram) == 12
     ram.frames(2)
-    assert t.frame(ram) == 14                                    # the counter says 10 frames passed
+    assert t.frame(ram) == 14 and not t.ring_dead                # and the ring moves again: it counts again
+
+
+def test_frames_fall_back_to_the_counter_when_the_ring_never_moves():
+    ram, t = Ram(), D.Doa3()
+    t.frame(ram)
+    for n in (1, 2, 3, 4, 5):
+        qpc = struct.unpack_from("<Q", ram.ram, D.QPC)[0]
+        struct.pack_into("<Q", ram.ram, D.QPC, qpc + int(1000 / 60 * 10_000))   # one frame, the ring still
+        t.frame(ram)
+    assert t.ring_dead and t.count >= 2                          # after 3 still-ring frames it counts by the clock
 
 
 def test_holds_go_back_from_the_side_p1_is_on_and_lead_with_the_signature_height():
@@ -76,10 +86,12 @@ def test_a_caught_attack_is_judged_by_the_games_paired_move_flag():
     assert t.read(ram).p2.has("held") and not t.read(ram).p1.has("held")
 
 
-def test_punish_is_a_string():
+def test_punishes_are_options_the_first_a_string():
     t = D.Doa3()
-    p = t.punish(None, "held")
-    assert p.kind == "punish" and p.length == 21
+    options = t.punish(None, "held")
+    assert [a.name for a in options] == ["ppk", "low_kick", "kick"] and all(a.kind == "punish" for a in options)
+    p = options[0]
+    assert p.length == 21
     assert [p.at(k) for k in (0, 3, 9, 18)] == [(D.PUNCH,), (), (D.PUNCH,), (D.KICK,)]
 
 
@@ -146,6 +158,36 @@ def test_survival_runs_menus_and_fights_from_ram_with_the_virtual_pad(tmp_path):
     assert (tmp_path / "fightbot" / D.MAP_ID / "book.json").is_file()
 
 
+def test_a_cast_build_names_the_fighters_it_swapped(tmp_path):
+    import json
+    marker = {"slots": [{"slot": "fighter:zack", "donor": "sa1_sonic"}, {"slot": "fighter:kasumi", "donor": "x"},
+                        {"slot": "stage:x"}, {"slot": "fighter:hika", "donor": "y"}]}
+    assert D.swapped_fighters(marker) == [0, 5]                  # hika isn't pinned yet: left out
+    cache = tmp_path / "cache"
+    (cache / "mods" / D.MAP_ID / "doa3_zac_sa1_sonic").mkdir(parents=True)
+    (cache / "mods" / D.MAP_ID / "doa3_zac_sa1_sonic" / ".gbox-mod.json").write_text(json.dumps(marker))
+    ad = SimpleNamespace(game={"mod": "doa3_zac_sa1_sonic"}, config=SimpleNamespace(cache=cache, runtime=tmp_path))
+    stats = {}
+    dep = doa3_bot.Deployment(ad, stats=stats)
+    assert dep.title.swapped == [0, 5] and stats["cast_fighters"] == "0,5"
+    ad.game = {"mod": "../escape"}
+    assert doa3_bot.Deployment.cast_fighters(ad) == [] and doa3_bot.Deployment.cast_fighters(SimpleNamespace()) == []
+
+
+def test_the_evidence_sheet_puts_real_frames_side_by_side():
+    import io
+    from PIL import Image
+    frames = []
+    for color in ((255, 0, 0), (0, 255, 0)):
+        buf = io.BytesIO()
+        Image.new("RGB", (640, 480), color).save(buf, "PNG")
+        frames.append(buf.getvalue())
+    out = Image.open(io.BytesIO(doa3_bot.sheet([(0.05, frames[0]), (0.25, frames[1])], "hold_mid -> held")))
+    assert out.size == (960, 382)                                  # two 480x360 frames and a caption strip
+    assert out.getpixel((100, 200)) == (255, 0, 0) and out.getpixel((700, 200)) == (0, 255, 0)
+    assert doa3_bot.sheet([(0, b"not an image")], "x") == b"not an image"
+
+
 def test_start_is_refused_in_a_game_unless_p1_is_the_virtual_pad(tmp_path):
     ram = Ram()
     dep = doa3_bot.Deployment(SimpleNamespace(config=SimpleNamespace(runtime=tmp_path)))
@@ -164,7 +206,7 @@ def test_a_paid_hold_leaves_a_real_frame_as_evidence(tmp_path):
     ad = SimpleNamespace(get_frame=lambda: b"\x89PNG frame", config=SimpleNamespace(runtime=tmp_path))
     stats = {}
     dep = doa3_bot.Deployment(ad, stats=stats, upload=lambda *a, **k: uploads.append((a, k)) or "ab" * 32)
-    dep.EVIDENCE_DELAY_S = 0
+    dep.EVIDENCE_BURST_S = (0, 0)
     hold = D.Doa3().answers(Attack(), World(0, 0, "fight", Fighter(side=1), Fighter(side=-1)))[0]
     dep.evidence(hold, "held", 30.0, World(120, 0, "fight", Fighter(), Fighter()))
     dep.evidence(hold, "taken", -10.0, World(130, 0, "fight", Fighter(), Fighter()))    # didn't pay: no frame

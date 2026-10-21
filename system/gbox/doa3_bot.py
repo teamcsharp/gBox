@@ -24,6 +24,37 @@ from .fightbot.titles import doa3_xbox
 GAME_IDS = doa3_xbox.GAME_IDS
 
 
+def sheet(shots, caption: str) -> bytes:
+    """Real game frames side by side (each labelled with its time after the event), as one PNG. Nothing is drawn
+    on the frames themselves; a frame that isn't an image is left out."""
+    import io
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:                            # no Pillow: the first frame as it came
+        return shots[0][1]
+    frames = []
+    for at, data in shots:
+        try:
+            im = Image.open(io.BytesIO(data)).convert("RGB")
+        except Exception:                          # noqa: BLE001
+            continue
+        im.thumbnail((480, 360))
+        frames.append((at, im))
+    if not frames:
+        return shots[0][1]
+    w, h = sum(im.width for _, im in frames), max(im.height for _, im in frames) + 22
+    out = Image.new("RGB", (w, h), (16, 16, 16))
+    draw = ImageDraw.Draw(out)
+    x = 0
+    for at, im in frames:
+        out.paste(im, (x, 22))
+        draw.text((x + 6, 4), f"+{int(at * 1000)} ms  {caption}", fill=(235, 235, 235))
+        x += im.width
+    buf = io.BytesIO()
+    out.save(buf, "PNG")
+    return buf.getvalue()
+
+
 def matches(ad, g: dict) -> bool:
     return getattr(ad, "name", "") == "doa3_native" and g.get("game_id") in GAME_IDS
 
@@ -57,11 +88,15 @@ class Deployment:
         self.lessons = lessons if lessons is not None else Run(root, doa3_xbox.MAP_ID)
         self.engine = Engine(self.title, self.book, self.lessons, stats)
         self.engine.on_judged = self.evidence
+        self.title.swapped = self.cast_fighters(ad)        # a cast build: pick the fighters it swapped (the show)
+        if stats is not None and self.title.swapped:
+            stats["cast_fighters"] = ",".join(map(str, self.title.swapped))
         self.frames_dir = root / doa3_xbox.MAP_ID / "frames" if root else None
         self.captured = 0
         self.WATCH = doa3_xbox.CLOCK               # the frame clock: still = the game loop stopped
 
-    EVIDENCE_FIRST, EVIDENCE_EVERY, EVIDENCE_DELAY_S = 6, 25, 0.15
+    EVIDENCE_FIRST, EVIDENCE_EVERY = 6, 25
+    EVIDENCE_BURST_S = (0.05, 0.25, 0.5, 0.9)       # seconds after the judgement: four real frames side by side
 
     def evidence(self, answer, label, reward, w):
         """A hold that paid: the game's own frame of it a moment later (the hold animation), saved next to the
@@ -76,9 +111,13 @@ class Deployment:
 
         def grab():
             import time as _t
-            _t.sleep(self.EVIDENCE_DELAY_S)
+            t0 = _t.monotonic()
             try:
-                data = self.ad.get_frame()
+                shots = []
+                for at in self.EVIDENCE_BURST_S:              # a short burst: the hold, then what it did
+                    _t.sleep(max(0.0, t0 + at - _t.monotonic()))
+                    shots.append((at, self.ad.get_frame()))
+                data = sheet(shots, f"{answer.name} -> {label}")
                 self.frames_dir.mkdir(parents=True, exist_ok=True)
                 (self.frames_dir / name).write_bytes(data)
                 sha = self.upload(name, data, "image/png", answer=answer.name, outcome=label,
@@ -92,6 +131,20 @@ class Deployment:
                 self.lessons.log("evidence_failed", w.frame, error=str(error)[:200])
         import threading
         threading.Thread(target=grab, daemon=True, name="doa3-evidence").start()
+
+    @staticmethod
+    def cast_fighters(ad) -> list[int]:
+        """The fighters this session's cast build swapped: its .gbox-mod.json marker in the worker's mod cache
+        (cache/mods/<game id>/<mod>/), written by the cast writer. [] for the stock game or an unreadable marker."""
+        import json
+        try:
+            mod = (getattr(ad, "game", None) or {}).get("mod") or ""
+            if not mod or "/" in mod or "\\" in mod or mod.startswith("."):
+                return []
+            path = ad.config.cache / "mods" / doa3_xbox.MAP_ID / mod / ".gbox-mod.json"
+            return doa3_xbox.swapped_fighters(json.loads(path.read_text(encoding="utf-8")))
+        except Exception:                          # noqa: BLE001 - no marker: any fighter
+            return []
 
     def reader(self, ad):
         """Every read goes to the adapter's current channel: a closed one is replaced at the next read."""
@@ -120,6 +173,8 @@ class Deployment:
 
     def state(self, rd) -> dict:
         w = self.title.read(rd)
+        if self.stats is not None:                 # the game's own clock moving: black frames are a fade, not a hang
+            self.stats["ram_progress"] = self.title.frame(rd)
         return {"screen": w.screen, "fighting": w.screen in self.title.fight_screens, "demo": int(w.screen in ("title", "demo")),
                 "p1": w.p1.hp or 0, "p2": w.p2.hp or 0, "world": w}
 

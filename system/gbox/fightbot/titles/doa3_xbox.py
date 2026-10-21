@@ -22,6 +22,21 @@ from ..title import Answer, Title
 
 MAP_ID = "b8edf7040116f3aa"
 GAME_IDS = {"b8edf7040116f3aa", "f03a801797a90506"}      # the catalog DOA3 (USA) and the QuickSwap copy
+# The cast writer's fighter nicks (a build's .gbox-mod.json "slots": [{"slot": "fighter:<nick>", "donor": ...}]) ->
+# the character index (the select screen's name table 0x368258). hika / koryu / gokei (Hitomi / Helena / Christie in
+# some order) are not pinned yet; Tengu has no costume file and is never swapped.
+NICK_CHARA = {"zack": 0, "tina": 1, "janlee": 2, "karate": 3, "ryu": 4, "kasumi": 5, "genfu": 6, "sambo": 8,
+              "bass": 9, "ninja": 11, "leifang": 12, "ayane": 13, "bosnin": 18, "suiken": 19, "bayman": 24}
+
+
+def swapped_fighters(marker: dict) -> list[int]:
+    """The character indexes a cast build swapped, from its .gbox-mod.json marker (doa3_cast)."""
+    out = []
+    for s in (marker or {}).get("slots") or []:
+        slot = str(s.get("slot") or "")
+        if slot.startswith("fighter:") and slot[8:] in NICK_CHARA and NICK_CHARA[slot[8:]] not in out:
+            out.append(NICK_CHARA[slot[8:]])
+    return out
 FREE, PUNCH, KICK, THROW = "y", "x", "a", "b"
 BITS = {"y": 0x1, "x": 0x2, "a": 0x4, "b": 0x3, "down": 0x10, "up": 0x20, "right": 0x40, "left": 0x80}
 CLOCK = (0x85B988, 0x40)                                   # game.qpc .. game.frame_ring + 4: one read a poll
@@ -42,6 +57,7 @@ class Doa3(Title):
         self._qpc = self._ring = None
         self._hz = None
         self.count = 0                                     # frames since the first poll
+        self.swapped: list[int] = []                       # a cast build's swapped fighters (menus targets_from)
 
     def extra_fields(self):
         return ["game.mode", "game.phase", "game.round_winner", "game.playing_mode", "game.chosen_mode",
@@ -72,11 +88,16 @@ class Doa3(Title):
         if self._ring is None:
             self._qpc, self._ring = qpc, ring
             return self.count
+        by_clock = int(round((qpc - self._qpc) * self.fps / self._hz)) if self._hz and qpc > self._qpc else 0
         if ring == self._ring:
-            return self.count
-        steps = (ring - self._ring) % 8
-        if self._hz and qpc > self._qpc:
-            by_clock = int(round((qpc - self._qpc) * self.fps / self._hz))
+            if by_clock >= 3:                              # the counter ran 3 frames and the ring didn't move: it
+                self.ring_dead = True                      # isn't a per-frame index on this build: the counter it is
+            if not getattr(self, "ring_dead", False) or by_clock < 1:
+                return self.count
+            steps = by_clock
+        else:
+            self.ring_dead = False                         # it moves after all (a long gap between two polls)
+            steps = (ring - self._ring) % 8
             if by_clock >= 8:                              # the ring went all the way round: the counter knows
                 steps = by_clock
         self._qpc, self._ring = qpc, ring
@@ -102,8 +123,12 @@ class Doa3(Title):
         return holds
 
     def punish(self, w, outcome):
-        return Answer("ppk", (), seq=(((PUNCH,), 3), ((), 6), ((PUNCH,), 3), ((), 6), ((KICK,), 3)),
-                      judge=60, kind="punish")
+        """After a hold or a parry that paid: the book learns which of these deals the most (a held opponent ends
+        on the floor, where a low kick still reaches)."""
+        return [Answer("ppk", (), seq=(((PUNCH,), 3), ((), 6), ((PUNCH,), 3), ((), 6), ((KICK,), 3)),
+                       judge=60, kind="punish"),
+                Answer("low_kick", ("down", KICK), frames=3, judge=45, kind="punish"),
+                Answer("kick", (KICK,), frames=3, judge=45, kind="punish")]
 
     def attacks(self, w):
         fwd = self.forward(w)
