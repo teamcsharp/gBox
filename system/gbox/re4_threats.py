@@ -152,13 +152,17 @@ class Shots:
         self.stats = {"shots": 0, "hits": 0, "misses": 0, "kills": 0, "accuracy": 0.0}
 
     def press(self, now: float) -> bool:
-        """A trigger press; True when it counts as a shot (the gun was ready)."""
+        """A trigger press; True when it counts as a shot (the gun was ready). For titles that can't see the shot."""
         if now - self.last_shot < self.GUN_GAP:
             return False
+        self.fired(now)
+        return True
+
+    def fired(self, now: float) -> None:
+        """A shot the game fired (seen in RAM)."""
         self.last_shot = now
         self.pending.append(now)
         self.stats["shots"] += 1
-        return True
 
     def update(self, enemies: list[dict], now: float) -> list[int]:
         """Score the pending shots against this tick's health; returns the slots hurt since the last tick."""

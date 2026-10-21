@@ -85,8 +85,9 @@ field names stay what they are, and `mercs.vocab` says which is which.
 | `projectiles` | struct array | thrown or fired things: `pos` (required), `kind`, `owner` | |
 | `prompt.kind` | enum + signatures | the action prompt / QTE up now, 0 = none | |
 | `prompt.button` | string | what it asks for (`a`, `a+b`, `l+r`, `wiggle`, ...) | |
-| `bonuses` | struct array | `pos`, `kind` (`time`, `combo`, `item`), `taken` | |
-| `partner.pos`, `partner.hp`, `partner.state` | | co-op titles (RE5) | |
+| `bonuses` | struct array | `pos`, `kind` (`time`, `combo`, `item`), `taken`, `hp` (breakable ones) | |
+| `drops` | struct array | what enemies drop: `pos`, `kind` (`ammo`, `health`, `grenade`, `time`, ...) | |
+| `partner.pos`, `partner.hp`, `partner.state` | | co-op titles (unused where Mercenaries is solo) | |
 
 ### The `mercs` block
 
@@ -100,11 +101,13 @@ field names stay what they are, and `mercs.vocab` says which is which.
             "projectiles": "thrown", "prompt.kind": "prompt.kind", "bonuses": "aev.items"},
   "units_per_m": 1000,
   "heading": {"zero": "+z", "positive": "toward +x"},
-  "aim": {"turn_rad_s": 3.0, "aim_turn_rad_s": 1.5, "pitch_rad_s": 0.5, "pose_s": 0.25, "gun_gap_s": 1.167}
+  "aim": {"turn_rad_s": 3.0, "aim_turn_rad_s": 1.5, "pitch_rad_s": 0.5, "pose_s": 0.25, "gun_gap_s": 1.167},
+  "rules": {"melee_kill_time_s": 0, "combo_window_s": 30, "bonus_time_s": 90}
 }
 ```
 
-`driver` is the title's driver module (section 4). `menus`, `package`, `early_ops`, `jump_at` belong to the deployment
+`rules` are the title's Mercenaries rules the strategy and combo engines weigh (RE5 adds clock time for melee kills: stun
+then melee when the clock matters; RE4 does not). `driver` is the title's driver module (section 4). `menus`, `package`, `early_ops`, `jump_at` belong to the deployment
 layer: the menus module (`screen(m, merc)` -> where the game is, `step(scr)` -> one pad key or None, `wandered(scr)` ->
 it left the Mercenaries), the hack package (re_mods ops), the ops that must run before the menus, and the screen at
 which the menu moment is saved (a jump state) and the hooks applied. A map with a `mercs` block is a Mercenaries title
@@ -138,14 +141,16 @@ signature is just a label.
 | `active` | " | `{field, mask}`: the bit that is on during the hit window |
 | `lookahead` | " | a field the driver can read ahead for the exact frames to the hit (RE4: the motion's event words) |
 | `hold` | enemy act | it is holding the player: shoot it, mash |
-| `stunned` | enemy state / act | `{"opportunity": "melee" / "kick" / "suplex", "window_s": ...}`: melee on stun |
+| `stunned` | enemy state / act | `{"opportunity": "melee" / "kick" / "suplex", "window_s": ..., "from": "front" / "behind" / "any", "trigger": "head" / "knee" / "arm" / "any"}`: melee on stun, where to stand, what set it up |
 | `down`, `dying`, `gone` | enemy state | not a threat; dying / gone: never a target |
+| `stun_by`, `emerge` | enemy type | which shot sets up the stun (`head`, `knee`); the type can turn into another threat in the same slot (RE5's Plaga): a type change is a new contact |
 | `qte` | prompt kind | `press`, `mash`, `dodge`, `wiggle`, `counter`, `parry` |
-| `buttons`, `window_s` | prompt kind | what to press, how long it is open |
+| `buttons`, `window_s` | prompt kind | what to press - a list of chords, alternatives allowed: `[["l1", "r1"], ["square", "circle"]]` - and how long it is open |
 | `participate` / `block` | prompt kind | press it / never press it (a prompt that would waste the moment, e.g. a ladder in a fight) |
 | `control`, `aiming`, `hit`, `held`, `down`, `action`, `dead` | player state | |
 | `kind`, `blast_r` | projectile | `axe`, `sickle`, `dynamite`, `molotov`, `arrow`, ...; the blast radius |
 | `priority` | enemy type | shoot first (RE4: the chainsaw) |
+| `take` | bonus kind | how it is taken: `touch` (walk over), `action` (a button: RE4's TAKE), `shoot`, `melee` (RE5's statues); with the bonus's `hp` when it breaks |
 
 `confidence` is `candidate` (proposed by the lessons analyzer, not checked), `static` (found in the code), or `live`
 (checked in the running game, the evidence says how). The engines use `static` and `live`; `candidate` only shows in

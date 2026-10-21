@@ -112,7 +112,9 @@ TURN_COST = 350.0                                # choosing among near ones: a r
 RECOVER_S = 1.2                                  # just up from a hit, a Ganado within CROWD_R: out of reach first
                                                  # (operator: "getting slapped on by these people over and over")
 ELEV_DY = 600.0                                  # a target this far above / below: raise or lower the aim; else level
-REAIM_PITCH = 0.15                               # a level target with the aim still this far up / down: aim again
+BODY_LO, CHEST_H, BODY_HI = 700.0, 1150.0, 1650.0   # a Ganado's body above his feet: a shot anywhere in it lands
+AIM_R1, AIM_READY_R2 = 6, (1, 2)                 # Leon's routine 00 06 01 .. = aiming, 00 06 02 .. = firing: the pose
+                                                 # is up (00 06 00 / 00 06 01 04 while it rises; live 2026-10-20)
 STEEP_DOWN = -0.5                                # a shot this far down (radians) hits the ledge in front: move instead
 HIGH_GROUND = 1500.0                             # Leon this far above the Ganados (the start roof): get down first
 TAKE_R, VAULT_R = 450.0, 900.0                   # take an item hourglass this close to its stand point; vault from here
@@ -371,7 +373,6 @@ class Bot:
         self.miss_run, self.pitch_i = 0, 0
         self.pitch_up, self.pitch_key = "up", None    # the stick direction that raises the aim (learned); held last tick
         self.pitch_seen, self.pitch_wrong, self.pitch_push = None, 0, None
-        self.reaim_at = float("-inf")                 # when the aim was last lowered to come up level again
         self.st, self.items, self.combos, self.ordered = None, [], [], False
         self.hist: list = []
         self.last_timer, self.timer_since = None, clock()
@@ -392,6 +393,7 @@ class Bot:
         self.target_slot = None
         self.qturn_at = float("-inf")
         self.recovered_at = float("-inf")              # when he last got up from a hit / a hold
+        self.shot_ram, self._was_firing, self.target_thrown = False, False, False
         self._last_enemies: list = []
         self.stats = {"prompts": 0, "max_combo": 0, "vaults": 0, "detours": 0, "backoffs": 0, "time_bonus": 0,
                       "shots_s": 0.0, "learned_walls": 0, "replans": 0, "hits": 0, "misses": 0, "accuracy": 0.0,
@@ -496,18 +498,10 @@ class Bot:
                 return {"hold": {"down", "b"}}
             return {"hold": self._turn(err, aiming=False)}               # turn round first (fast)
         self.r_since = now if self.r_since is None else self.r_since
-        if tgt.get("thrown") or abs(tgt["pos"][1] - p["pos"][1]) < ELEV_DY:
-            if tgt.get("thrown"):                                       # a weapon in the air: at its own height
-                height, level = self._aim_height(p, tgt["pos"][1], dist, now)
-            else:                                                       # on his level: the gun level, at his chest
-                cur = p.get("pitch")
-                if (cur is not None and abs(cur) > REAIM_PITCH and now - self.r_since >= PITCH_AFTER
-                        and now - self.reaim_at > 1.5):                 # still up from a higher one (the laser over his
-                    self.reaim_at, self.r_since = now, None             # head, live 2026-10-20): lower and aim again
-                    return {"hold": set()}
-                height, level = self._aim_height(p, p["pos"][1] + GUN_H, dist, now, offset=False)
-        else:
-            height, level = self._aim_height(p, tgt["pos"][1] + HEAD_H, dist, now)   # up / down: the aim by stick
+        if tgt.get("thrown"):                                           # a weapon in the air: at its own height
+            height, level = self._aim_height(p, tgt["pos"][1], dist, now)
+        else:                                                           # a body: any pitch that lands on it
+            height, level = self._aim_body(p, tgt["pos"][1], dist, now)
         if abs(err) > FIRE_TOL or not level:
             self.trigger["down"] = False
             return {"hold": self._turn(err, aiming=True) | height}       # aim (pose up), turn and raise onto him
@@ -515,9 +509,13 @@ class Bot:
         return {"hold": {"r"} | self._pull(now, tgt)}                    # on target: fire
 
     def _pull(self, now, tgt) -> set:
-        """The trigger: pressed for a moment, then let go (the Hand Cannon fires once per press: A held down fired one
-        shot and then nothing, which the old scoring counted as misses). A press the gun can fire is a shot."""
+        """The trigger: pressed for a moment, then let go, every PRESS_GAP while on target (a press while the gun is
+        busy is just ignored; held down, the Hand Cannon also repeats at its own rate - live 2026-10-20 - but a fresh
+        press fires the moment it can). The shots themselves are counted from RAM (his routine going to 00 06 02,
+        _shot_seen); without that, a press the gun could fire counts."""
         tr = self.trigger
+        self.target_slot = tgt["slot"]
+        self.target_thrown = bool(tgt.get("thrown"))
         if tr["down"]:
             if now - tr["at"] < PRESS_HOLD:
                 return {"a"}
@@ -526,11 +524,23 @@ class Bot:
         if now - tr["at"] < PRESS_GAP:
             return set()
         tr["down"], tr["at"] = True, now
-        if self.shots.press(now):
-            self.target_slot = tgt["slot"]
-            if tgt.get("thrown"):
-                self.stats["thrown_shot"] += 1
+        if not self.shot_ram and self.shots.press(now) and tgt.get("thrown"):
+            self.stats["thrown_shot"] += 1
         return {"a"}
+
+    def _shot_seen(self, p, now):
+        """A shot as the game fires it: his routine entering 00 06 02 (the fire motion; live 2026-10-20)."""
+        r = p.get("r")
+        if not r or len(r) < 3:
+            return
+        if r[0] == 0 and r[1] == AIM_R1:
+            self.shot_ram = True                            # this RAM shows the aim states: count shots from it
+        firing = r[0] == 0 and r[1] == AIM_R1 and r[2] == 2
+        if firing and not self._was_firing:
+            self.shots.fired(now)
+            if getattr(self, "target_thrown", False):
+                self.stats["thrown_shot"] += 1
+        self._was_firing = firing
 
     # -- combat: the threats first --
     def _ready_in(self, p, t, now) -> float:
@@ -630,6 +640,7 @@ class Bot:
         top of him: get out first. None: no fight here (the route goes on)."""
         threats = self.tracker.update(s, now)
         self._last_enemies = s["enemies"]
+        self._shot_seen(p, now)
         self._watch(p, s, threats, now)
         self._score(s, now)
         if (p.get("r") or (0,))[0] == 1:                             # hit or held: the game has him (play() presses
@@ -680,6 +691,32 @@ class Bot:
             self.miss_run = 0
         for k in ("shots", "hits", "misses", "kills", "accuracy"):
             self.stats[k] = self.shots.stats[k]
+
+    def _pose_up(self, p, now) -> bool:
+        """The aim pose is up: his routine says so (00 06 01 .. aiming, 00 06 02 .. firing; live 2026-10-20), else
+        PITCH_AFTER since R went down."""
+        r = p.get("r")
+        if r and len(r) >= 3 and r[0] == 0 and r[1] == AIM_R1:
+            return r[2] in AIM_READY_R2
+        return self.r_since is not None and now - self.r_since >= PITCH_AFTER
+
+    def _aim_body(self, p, target_y: float, dist: float, now: float) -> tuple[set, bool]:
+        """A Ganado's body from BODY_LO to BODY_HI above his feet: any aim pitch inside it lands (the game's resting
+        aim, -0.149 rad, does at every range he fights at: no stick needed, he fires as soon as the pose is up);
+        outside it, the stick brings the aim to his chest."""
+        cur = p.get("pitch")
+        if cur is None or self.r_since is None or not self._pose_up(p, now):
+            self.pitch_key, self.pitch_seen, self.pitch_push = None, None, None
+            return set(), False
+        gun = p["pos"][1] + GUN_H
+        off = PITCH_STEPS[self.pitch_i]                      # learned from misses at raised / lowered targets
+        lo = math.atan2(target_y + BODY_LO - gun, max(dist, 1.0)) + off
+        hi = math.atan2(target_y + BODY_HI - gun, max(dist, 1.0)) + off
+        margin = min(0.04, (hi - lo) * 0.2)
+        if lo + margin <= cur <= hi - margin:
+            self.pitch_key, self.pitch_seen, self.pitch_push = None, (now, cur, None), None
+            return set(), True
+        return self._aim_height(p, target_y + CHEST_H, dist, now)
 
     def _aim_height(self, p, target_y: float, dist: float, now: float, offset: bool = True) -> tuple[set, bool]:
         """The stick key that moves the aim towards target_y while R is held, and whether the aim is there. Reads the

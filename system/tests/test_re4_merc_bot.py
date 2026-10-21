@@ -410,7 +410,9 @@ def test_an_inverted_aim_stick_is_learned():
         pitch = struct.unpack(">f", m.rd(PL + B.AIM_PITCH, 4))[0]
         m.put(PL + B.AIM_PITCH, ">f", pitch + 0.02 * (("down" in keys) - ("up" in keys)))
     assert bot.pitch_up == "down" and fired
-    assert abs(struct.unpack(">f", m.rd(PL + B.AIM_PITCH, 4))[0] - head) <= B.PITCH_TOL + 0.02
+    lo = math.atan2(800 + B.BODY_LO - B.GUN_H, 2000.0)                    # the aim ends inside his body (any pitch
+    hi = math.atan2(800 + B.BODY_HI - B.GUN_H, 2000.0)                    # there lands), on its way to the chest
+    assert lo <= struct.unpack(">f", m.rd(PL + B.AIM_PITCH, 4))[0] <= hi and head > lo
 
 
 def test_the_hand_cannon_keeps_its_own_fire_rate():
