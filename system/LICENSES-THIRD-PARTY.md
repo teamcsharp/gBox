@@ -86,6 +86,24 @@ references (read only, no code copied or run):
 Wrestler models and textures are read from the operator's own ROM into the local collection and mod folders; they are
 never redistributed. No community mods or models were downloaded.
 
+## GoldenEye 007 PC port (`gbox/native_ports.py`, `adapters/ge007_port/`)
+
+Not bundled. `native_port op=build` clones the pinned upstream commit on the worker into `<runtime>/ports/ge007/src`
+and compiles it there. `op=prepare` copies the operator's own ROM into that folder and runs the port's converters on
+it. The ROM and every file made from it stay in that runtime folder and never enter the repository.
+
+| Component | Use | License | Source (exact) |
+|---|---|---|---|
+| GoldenEye 007 PC port (James Dansereau): port layer `port/`, build system, `tools_pc/` converters | built and run on the worker | MIT (`LICENSE`) | `github.com/jkdansereau/goldeneye-pc-port` tag `v0.6.0`, commit `5b86a9bbeba89508a0c7d6b797361b7454ceda20` |
+| n64decomp/007 decompilation files carried by that repo (`src/`, `include/`, `assets/`, `tools/`) | compiled into the worker's build | none stated (the port's `NOTICE`) | same commit |
+| `port/fast3d` (software RSP, Perfect Dark port / libultraship lineage) | compiled into the worker's build | MIT (`port/fast3d/LICENSE.txt`) | same commit |
+
+`adapters/ge007_port/gbox_bridge.c` is gBox's own code: the bot bridge, copied into the worker's build. gBox also
+applies two hook lines (`src/boss.c`, `port/src/input.c`) and two aarch64 fixes (`assets/animationtable_data.h`,
+`src/game/bg.c`) as exact string replacements at build time. No upstream file is copied into this repository. The
+bot logic (`gbox/bot_brain.py`, `gbox/ge007_bots.py`) is gBox's own Python. It was written after reading the
+decompilation's guard AI; no code was copied. docs/goldeneye_bots.md cites the functions it follows.
+
 ## REA (`rea-agents` 6.0.0)
 
 The complete tool contract catalog is derived from the MIT-licensed

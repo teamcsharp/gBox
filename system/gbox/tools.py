@@ -140,6 +140,13 @@ def scan_library(inp: ScanIn, ctx: Ctx):
         entries, problems, per["adhoc"] = entries + e, problems + p, {"entries": len(e)}
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(json.dumps(cache))
+    try:                                                # native PC ports of owned ROMs (gbox/native_ports.py)
+        from . import native_ports
+        ported = native_ports.catalog_entries(entries)
+    except Exception as e:                               # noqa: BLE001 - a port listing never fails the scan
+        ported = []
+        problems.append(f"native ports: {type(e).__name__}: {e}")
+    entries += ported
     if inp.include_steam is not False:                   # opt-in auto-detection: an unconfigured PC is not scanned by surprise
         steam_root = cfg.steam_root or (catalog.default_steam_root() if inp.include_steam else None)
         if steam_root:
@@ -417,15 +424,16 @@ def _session_ended_on_server(ctx, sid) -> bool:
 def _save_previous_game(ad, game: dict, sid: str, ctx) -> dict:
     """Save a running game before the single-game switch closes it.
 
-    state_transfer's export moves a save state between machines, which only RetroArch cores and standalone
-    Dolphin (the same release on both) support. Every other emulator can still save its own game: fall back
-    to the adapter's save_state — the same primitive the Stop flow uses — so switching away from RPCS3 /
+    state_transfer moves a save state between machines, which only RetroArch cores and standalone Dolphin (the
+    same release on both) support; their moment is saved through gBox's own slot (op=snapshot: op=export would
+    save it through Dolphin's slot 1, the operator's own). Every other emulator can still save its own game: fall
+    back to the adapter's save_state — the same primitive the Stop flow uses — so switching away from RPCS3 /
     Xenia / PCSX2 / ... is not refused as a "save states can't move between machines" failure. An unnamed
     adapter keeps the historical state_transfer path.
     """
     kind = getattr(ad, "name", "")
     if getattr(ad, "checkpoint_state", None) in ("path", "dir") or not kind or kind in ("retroarch", "dolphin"):
-        return state_transfer(StateXIn(session_id=sid, op="export"), ctx)["result"]
+        return state_transfer(StateXIn(session_id=sid, op="snapshot"), ctx)["result"]
     save = getattr(ad, "save_state", None)
     if save is None:
         raise Unsupported(f"{kind} does not support save_state")
@@ -565,10 +573,11 @@ def _stop_session(sid: str, args: dict, ctx) -> dict:
     if args.get('moment'):
         # last played (gbox/last_played.py): the moment the operator stopped at, uploaded with this result so "Reload with
         # your last moment" can bring it back. Best effort within moment_cap_s; past it the game is closed regardless.
+        # Saved through gBox's own slot (op=snapshot): Stop is not a Save, so the operator's save slots stay as they are.
         cap = float(args.get('moment_cap_s') or STOP_MOMENT_CAP_S)
 
         def keep_moment():
-            out = {'artifact': state_transfer(StateXIn(session_id=sid, op='export'), ctx)['result']['artifact']}
+            out = {'artifact': state_transfer(StateXIn(session_id=sid, op='snapshot'), ctx)['result']['artifact']}
             try:
                 png = ad.get_frame()
                 ctx.artifact('moment.png', png, 'image/png', session=sid, note='last played moment')
@@ -2449,11 +2458,19 @@ def _takeover(run, d, sid, since):
     either way and keeps the game up."""
     from . import padstate
     run["screensaver"] = bool(getattr(d, "screensaver", None))
-    cursor = _cursor() if run["screensaver"] else None
+    cursor = None                                    # where the mouse rested when autoplay took the game, once per run:
+    if run["screensaver"] and not run.get("handed_over"):   # each phase's watch compares with it (a move between counts)
+        if "rest_cursor" not in run:
+            run["rest_cursor"] = _cursor()
+        cursor = run["rest_cursor"]
+
+    def running():                                   # the run's thread is set and started just after this: a thread
+        th = run.get("thread")                       # not started yet (no ident) is not one that ended
+        return th is None or th.ident is None or th.is_alive()
 
     def watch():
         nonlocal cursor
-        while not d.stopped and (run.get("thread") is None or run["thread"].is_alive()):
+        while not d.stopped and running():
             if padstate.touched_after(sid, since):           # they play: autoplay lets go of the pad
                 d.stopped, run["took_over"] = True, True
                 _release_all(sid)
@@ -2622,7 +2639,7 @@ def _autoplay_hacks(sid: str, g: dict) -> list[str]:
     return held
 
 
-PLAYBOOKS = ("re4_merc_bot", "doa2_bot")              # game-specific autoplay bots: matches(ad, g), setup(ad), play(ad, send, stopped)
+PLAYBOOKS = ("re4_merc_bot", "doa2_bot", "ge007_bots")   # game-specific autoplay bots: matches(ad, g), setup(ad), play(ad, send, stopped)
 # playbook -> the module that reads its game's button prompts from RAM (for_adapter(ad, stats) -> a prompt source):
 # play(..., ram_prompt=) asks it before the screen watcher
 RAM_PROMPTS = {"re4_merc_bot": "re4_ram_prompts"}
@@ -4947,6 +4964,7 @@ def _load_tool_modules(names=("cxbx_diagnostics_tool", "native_face_editor", "au
                               "audio_cpp",       # audio_cpp: local audio.cpp speech service (status/start/stop/speak/transcribe)
                               "evidence_capture",   # evidence_capture: PR evidence frames (runs in the control plane)
                               "ram_dump",      # ram_dump: a session's main RAM as one gzip artifact + JSON header (coaching)
+                              "native_ports",  # native_port: build/prepare decomp PC ports (GoldenEye 007 + gBox bots)
                               "pick_tool")):     # pick_identify / pick_replace (+ pick_prepare, pick_ghidra): the pick whip backend
     import importlib
     import subprocess

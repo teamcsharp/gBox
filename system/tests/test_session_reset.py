@@ -61,7 +61,7 @@ def transport(reset_route, *, native=None, launch_fails=False):
             return {'ended': True}
         if tool == 'prepare_mod':
             return {'ready': True, 'mod': inp['mod']}
-        if tool == 'state_transfer' and inp['op'] == 'export':   # last played: the moment before a relaunch
+        if tool == 'state_transfer' and inp['op'] == 'snapshot':   # last played: the moment before a relaunch
             return {'result': {'artifact': 'm' * 64}}
         pytest.fail('Unexpected tool: ' + tool)
     enclosed(session_reset, '_run_job').cell_contents = run
@@ -90,7 +90,7 @@ def test_no_native_reset_relaunches_the_same_build_beside_the_running_copy(reset
     out, store = r.json(), reset_route[2]
     assert out['mode'] == 'relaunch' and out['session_id'] == 'w-new' and out['from'] == 'w-live'
     assert any('relaunched instead' in n for n in out['notes'])
-    assert [(t, i.get('op')) for t, i in calls] == [('session_op', 'reset'), ('state_transfer', 'export'), ('launch_game', None),
+    assert [(t, i.get('op')) for t, i in calls] == [('session_op', 'reset'), ('state_transfer', 'snapshot'), ('launch_game', None),
                                                     ('session_op', 'stop_game')]
     launch = calls[2][1]
     # the exact folder the running copy booted (no rebuild, no staging), started beside it
