@@ -50,16 +50,86 @@ def test_observed_crossing_requires_real_membership_and_an_existing_directed_lin
     assert mesh.route(goal, start) is None                         # the recorded direction is still authoritative
 
 
-def test_nearby_floor_fallback_boundary_and_airborne_positions_are_not_crossing_evidence():
+def test_off_mesh_boundary_and_airborne_positions_are_not_crossing_evidence():
     mesh, learned = floor_pair(), Learning()
     start, goal, nearby = (150.0, 0.0, 50.0), (50.0, 0.0, 150.0), (-10.0, 0.0, 150.0)
-    assert mesh.find(nearby) is not None and mesh.member(nearby) is None
+    assert mesh.find(nearby) is None and mesh.member(nearby) is None
     assert mesh.member((100.0, 0.0, 100.0)) is None                 # shared diagonal has ambiguous membership
     assert mesh.member((50.0, 80.0, 150.0)) is None                 # animation above the floor
     learned.observe(mesh, start, 1.0)
     learned.observe(mesh, nearby, 1.2)
     learned.observe(mesh, goal, 1.4)
     assert not learned.stages[mesh.learning_sig]["crossings"]
+
+
+def floor_grid(cells, blocked=()):
+    """100cm floor cells with links only at their actual shared edges; blocked edges are solid walls."""
+    points, lookup, tris = [], {}, []
+    for x, z in cells:
+        vertices = []
+        for p in ((x * 100., 0., z * 100.), ((x + 1) * 100., 0., z * 100.),
+                  ((x + 1) * 100., 0., (z + 1) * 100.), (x * 100., 0., (z + 1) * 100.)):
+            if p not in lookup:
+                lookup[p] = len(points); points.append(p)
+            vertices.append(lookup[p])
+        a, b, c, d = vertices
+        tris += [(a, b, c), (a, c, d)]
+    edges, links = {}, [[] for _ in tris]
+    for i, tri in enumerate(tris):
+        for edge in range(3):
+            key = frozenset((tri[edge], tri[(edge + 1) % 3]))
+            if key in edges:
+                u, ue = edges[key]
+                if frozenset(points[v] for v in key) not in blocked:
+                    links[u].append((i, ue, 1.)); links[i].append((u, edge, 1.))
+            else:
+                edges[key] = (i, edge)
+    return NavMesh(points, tris, links)
+
+
+def test_off_mesh_goal_cannot_be_projected_into_a_nearby_room():
+    mesh = floor_grid([(0, 0)])
+    start = (20., 0., 50.)
+    for goal in ((110., 0., 50.), (-10., 0., 50.), (400., 0., 50.)):
+        assert mesh.find(goal) is None
+        assert mesh.route(start, goal) is None
+        assert not mesh.floor_segment(start, goal)
+
+
+def test_l_corridor_segment_cannot_cut_its_missing_inside_corner():
+    mesh = floor_grid([(0, 0), (1, 0), (2, 0), (2, 1), (2, 2)])
+    start, corner, goal = (175., 0., 50.), (200., 0., 100.), (250., 0., 250.)
+    assert not mesh.floor_segment(start, goal)
+    assert mesh.floor_segment(start, corner) and mesh.floor_segment(corner, goal)
+    route = mesh.route(start, goal)
+    assert route[-1] == goal and len(route) > 1
+    assert all(mesh.floor_segment(a, b) for a, b in zip([start] + route, route))
+
+
+def test_adjacent_floors_are_not_a_doorway_without_a_link_and_route_uses_real_opening():
+    wall = [frozenset(((100., 0., z), (100., 0., z + 100.))) for z in (0., 200.)]
+    mesh = floor_grid([(x, z) for x in (0, 1) for z in (0, 1, 2)], blocked=wall)
+    start, goal = (50., 0., 50.), (150., 0., 50.)
+    assert not mesh.floor_segment(start, goal)             # floor exists both sides, but this edge is a wall
+    assert mesh.floor_segment((50., 0., 150.), (150., 0., 150.))
+    route = mesh.route(start, goal, pull=False)
+    assert route and any(w[2] >= 100. for w in route)
+    assert all(mesh.floor_segment(a, b) for a, b in zip([start] + route, route))
+
+
+def test_floor_shortcuts_obey_direction_and_do_not_skip_a_climb():
+    mesh = floor_pair()
+    start, goal = (150., 0., 50.), (50., 0., 150.)
+    assert mesh.floor_segment(start, goal) and not mesh.floor_segment(goal, start)
+    climb = NavMesh([(0., 0., 0.), (100., 0., 0.), (0., 300., 100.)], [(0, 1, 2)], [[]])
+    assert not climb.floor_segment((10., 0., 0.), (10., 150., 50.))
+
+
+def test_floor_segments_reject_invalid_positions_and_different_storeys():
+    mesh = floor_grid([(0, 0)])
+    assert not mesh.floor_segment((float("nan"), 0., 0.), (50., 0., 50.))
+    assert not mesh.floor_segment((20., 80., 50.), (50., 80., 50.))
+    assert mesh.floor_segment((20., 0., 50.), (50., 13., 50.))  # hourglass centre lies above the floor
 
 
 def test_a_nonvertical_steep_climb_face_is_not_observed_as_a_floor():

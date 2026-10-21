@@ -1195,6 +1195,108 @@ def test_unreachable_bonuses_are_not_chosen_over_a_real_route():
     assert bot.stats["unreachable_bonuses"] == 1
 
 
+def corner_mesh():
+    from gbox.mercs.titles.re5_nav import NavMesh
+    points = [(x, 0., z) for x, z in ((0., 0.), (200., 0.), (300., 0.), (0., 100.),
+                                    (200., 100.), (300., 100.), (200., 300.), (300., 300.))]
+    tris = [(0, 1, 4), (0, 4, 3), (1, 2, 5), (1, 5, 4), (4, 5, 7), (4, 7, 6)]
+    links = [[] for _ in tris]
+    for i, tri in enumerate(tris):
+        for edge in range(3):
+            shared = {tri[edge], tri[(edge + 1) % 3]}
+            for j, other in enumerate(tris):
+                if j != i and shared <= set(other):
+                    links[i].append((j, edge, 1.))
+    return NavMesh(points, tris, links)
+
+
+def test_nearby_funnel_corner_is_not_skipped_through_the_corridor_wall():
+    mesh, bot = corner_mesh(), R.Bot()
+    corner, goal = (200., 0., 100.), (250., 0., 250.)
+    p = {"pos": (175., 0., 50.), "rot": math.atan2(25., 50.), "action": 0}
+    target = {"ptr": 1, "pos": goal}
+    bot.route, bot.route_for, bot.route_at, bot.route_since = [corner, goal], 1, 10., 10.
+    assert math.dist(p["pos"], corner) < R.WP_REACHED
+    assert bot._follow(p, target, mesh, False, 10.1) == {"hold": {"lup"}}
+    assert bot.route[0] == corner                              # still turns at the real corner, at walking speed
+    p["pos"], p["rot"] = corner, math.atan2(50., 150.)
+    assert "lup" in bot._follow(p, target, mesh, False, 10.2)["hold"]
+    assert bot.route == [goal]                                # advancing is now supported by the actual floor
+
+
+def test_route_turns_in_place_before_forward_motion_into_a_narrow_passage():
+    bot = R.Bot()
+    p = {"pos": (175., 0., 50.), "rot": 0., "action": 0}
+    keys = bot._walk(p, math.radians(30.), 10., precise=True)
+    assert keys == {"rleft"} and not bot.hist
+    assert {"lup", "cross"} <= bot._walk(p, 0., 10.1, precise=True)
+
+
+def test_repeated_stationary_route_stalls_record_blocked_and_leave_the_target(tmp_path):
+    mesh, bot = corner_mesh(), R.Bot(learn_dir=tmp_path)
+    p = {"pos": (20., 0., 50.), "rot": math.pi / 2, "action": 0}
+    target = {"ptr": 1, "pos": (170., 0., 50.)}
+    for now in (10., 10.4, 10.8, 11.3, 11.6, 12.2, 12.6, 13., 13.5):
+        action = bot._follow(p, target, mesh, False, now)
+    assert action == {"hold": set()}
+    assert bot.stats["stuck"] == 2 and bot.stats["routes_blocked"] == 1
+    assert bot.route is None and bot.bonus_skip[1] > 13.5
+    stage = bot.nav_learning.stages[mesh.learning_sig]
+    assert sum(row["blocked"] for row in stage["routes"].values()) == 1
+    assert not stage["crossings"] and not bot.avoid            # failure does not invent a permanently blocked edge
+
+
+def test_combat_gap_does_not_combine_two_independent_route_stalls():
+    mesh, bot = corner_mesh(), R.Bot()
+    p = {"pos": (20., 0., 50.), "rot": math.pi / 2, "action": 0}
+    target = {"ptr": 1, "pos": (170., 0., 50.)}
+    for now in (10., 10.4, 10.8, 11.3):
+        bot._follow(p, target, mesh, False, now)
+    assert bot.route_stall is not None
+    for now in (20., 20.4, 20.8, 21.3):
+        bot._follow(p, target, mesh, False, now)
+    assert bot.stats["stuck"] == 2 and bot.stats.get("routes_blocked", 0) == 0
+    assert bot.route_stall is not None and 1 not in bot.bonus_skip
+
+
+@pytest.mark.parametrize("interruption", ("combat", "qte"))
+def test_subsecond_combat_and_engine_owned_qte_frames_break_route_stall_continuity(tmp_path, interruption):
+    mesh, now = corner_mesh(), [10.]
+    mem = with_inventory(world(player_pos=(20., 0., 50.), action=2,
+                               enemies=[((20., 0., 200.), 800, 800)]), {0: (0x10B, 6, 6, True)})
+    bot = R.Bot(m=mem, clock=lambda: now[0], learn_dir=tmp_path, lessons=lambda row: None)
+    initial = R.snapshot(mem); initial["nav"] = mesh
+    bot.observe_round(initial, "playing", now[0])
+    p = initial["player"] | {"rot": math.pi / 2}
+    target = {"ptr": 1, "pos": (170., 0., 50.)}
+    for i in range(10):
+        now[0] = 10. + .5 * i
+        assert "lup" in bot._follow(p, target, mesh, False, now[0])["hold"]
+        now[0] += .25
+        snap = R.snapshot(mem); snap["nav"] = mesh
+        if interruption == "combat":
+            bot.tick(snap)                                 # an actual combat decision, not an inferred elapsed gap
+        else:
+            snap["prompt"] = "mash:circle"
+            bot.observe_round(snap, "playing", now[0])    # the engine presses this prompt and skips bot.tick()
+        assert not bot.hist and bot.route_stall is None and bot.route_walk_at is None
+    assert bot.stats["stuck"] == bot.stats.get("routes_blocked", 0) == 0
+    assert 1 not in bot.bonus_skip
+
+
+def test_unsupported_portal_rechecks_stop_after_three_attempts_instead_of_idling_at_wall(tmp_path):
+    mesh, bot = corner_mesh(), R.Bot(learn_dir=tmp_path)
+    # find() permits route endpoint height slack, but this position does not prove supported floor travel.
+    p = {"pos": (20., 80., 50.), "rot": math.pi / 2, "action": 0}
+    target = {"ptr": 1, "pos": (170., 0., 50.)}
+    assert mesh.route(p["pos"], target["pos"]) and not mesh.floor_segment(p["pos"], target["pos"])
+    for now in (10., 10.1, 10.2):
+        assert bot._follow(p, target, mesh, False, now) == {"hold": set()}
+    assert bot.stats["routes_blocked"] == 1 and bot.route is None
+    assert bot.bonus_skip[1] > 10.2 and "three route checks" in bot.stats["route"]
+    assert not bot.avoid                                   # an unsupported ray is not a newly observed wall edge
+
+
 def test_distant_unsighted_front_candidate_does_not_starve_time_bonus_navigation(monkeypatch):
     monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
     m = with_bonuses(world(action=2, combo=0, enemies=[((0.0, 0.0, 1800.0), 800, 800)]), [(0.0, 13.0, 2400.0)])

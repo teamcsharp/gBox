@@ -720,6 +720,8 @@ class Bot:
         self.bonus_seen: set = set()
         self.last_timer = None
         self.route, self.route_for, self.route_at, self.route_since = None, None, 0.0, 0.0
+        self.route_midpoints, self.route_stall, self.route_walk_at = False, None, None
+        self.route_rechecks, self._following_route = 0, False
         from .. import lessons as lesson_store
         nav_path = (Path(learn_dir) if learn_dir is not None else lesson_store.ROOT) / NAV_LEARNING_FILE
         self.nav_learning = re5_nav.Learning(nav_path)
@@ -779,6 +781,9 @@ class Bot:
         self._observed_snap = snap
         p = snap.get("player")
         priority_prompt = snap.get("prompt") and not (self.combat is not None and self.combat.optional_prompt_blocked(snap))
+        if priority_prompt or snap.get("recovery_active") or (p or {}).get("action") == P_GRABBED \
+                or where != "playing" or not p:
+            self._interrupt_route_walk()                   # engine-owned prompt frames may never call tick()
         if self.healing is not None and (priority_prompt or snap.get("recovery_active")
                                          or (p or {}).get("action") == P_GRABBED):
             self.healing["at"] = now           # observed mandatory interruptions pause only the bounded healing window
@@ -944,6 +949,21 @@ class Bot:
                 "note": str(self.stats.get("bonus_target") or self.stats.get("aim") or "")[:80]}
 
     def tick(self, snap: dict) -> dict:
+        self._following_route = False
+        try:
+            return self._tick(snap)
+        finally:
+            if not self._following_route:
+                self._interrupt_route_walk()
+
+    def _interrupt_route_walk(self):
+        """Combat, item selection and QTE input break continuous route-motion evidence, even for a single tick."""
+        if self.route_walk_at is not None:
+            self.hist, self.route_stall, self.route_walk_at = [], None, None
+            self.unstick_until, self.stuck_since = 0.0, None
+            self.climb_at = self.climb_pos = self.climb_tick = None
+
+    def _tick(self, snap: dict) -> dict:
         now = self.clock()
         self.observe_round(snap, own_screen(snap), now)
         p = snap.get("player")
@@ -1389,12 +1409,21 @@ class Bot:
         """One step along the navmesh to a time bonus: the route drawn again every REPLAN_S; the next waypoint walked
         to (turn, then run); at a ladder or a drop (the next waypoint straight above / below) the stage's square
         prompt is taken; a bonus followed ROUTE_STALE_S without being reached is left for BONUS_SKIP_S."""
+        self._following_route = True
         pos = p["pos"]
         if self.route_for != tgt["ptr"]:
             self.nav_learning.begin_route(mesh, pos, tgt["pos"])
             self.route, self.route_for, self.route_since = None, tgt["ptr"], now
             self.route_at = -math.inf
             self.climb_at = self.climb_pos = self.climb_tick = None
+            self.route_midpoints, self.route_stall, self.route_walk_at = False, None, None
+            self.route_rechecks = 0
+        if self.route_walk_at is None or now - self.route_walk_at > 1.0:
+            self.hist, self.route_stall = [], None           # combat / a prompt is not stationary walking evidence
+            self.unstick_until = 0.0
+        self.route_walk_at = now
+        if self.route_stall is not None and math.dist(pos, self.route_stall) >= STUCK_MOVE:
+            self.route_stall = None
         if now - self.route_since > ROUTE_STALE_S:
             self.nav_learning.finish_route("timed_out")
             self.bonus_skip[tgt["ptr"]] = now + BONUS_SKIP_S
@@ -1402,7 +1431,8 @@ class Bot:
             self.route_for = None
             return {"hold": set()}
         if mesh is not None and now - self.route_at > REPLAN_S:
-            self.route, self.route_at = mesh.route(pos, tgt["pos"], avoid=self.avoid), now
+            self.route, self.route_at = mesh.route(pos, tgt["pos"], avoid=self.avoid,
+                                                   pull=not self.route_midpoints), now
         if not self.route:
             if mesh is not None:                           # an explicit no-route result must never mean run through it
                 self.nav_learning.finish_route("unreachable")
@@ -1412,6 +1442,12 @@ class Bot:
             return {"hold": self._walk(p, heading(tgt["pos"][0] - pos[0], tgt["pos"][2] - pos[2]), now)}
         while len(self.route) > 1 and math.hypot(self.route[0][0] - pos[0], self.route[0][2] - pos[2]) < WP_REACHED \
                 and abs(self.route[0][1] - pos[1]) < WP_CLIMB:
+            following = self.route[1]
+            if abs(following[1] - pos[1]) < WP_CLIMB:
+                if mesh is not None and not mesh.floor_segment(pos, following):
+                    break                                 # being near a corner does not permit cutting across its wall
+            elif math.hypot(self.route[0][0] - pos[0], self.route[0][2] - pos[2]) > 20.0:
+                break                                     # reach the action link's approach before advancing to its height
             self.route.pop(0)
         w = self.route[0]
         flat = math.hypot(w[0] - pos[0], w[2] - pos[2])
@@ -1441,7 +1477,35 @@ class Bot:
             self.climb_tick = now
             return {"hold": {"lup"}}                        # on to the edge until the prompt shows
         self.climb_at = self.climb_pos = self.climb_tick = None
-        return {"hold": self._walk(p, heading(w[0] - pos[0], w[2] - pos[2]), now)}
+        if mesh is not None and not mesh.floor_segment(pos, w):
+            # A funnel path or stale position that cannot be justified by the current floor must not drive ahead.
+            # Edge midpoints stay inside the original triangle corridor; the next tick checks those too.
+            self.route_rechecks += 1
+            if self.route_rechecks >= 3:
+                return self._block_route(tgt, now, "no supported floor segment after three route checks")
+            self.route_midpoints = True
+            self.route = mesh.route(pos, tgt["pos"], avoid=self.avoid, pull=False)
+            self.route_at, self.hist = now, []
+            self.stats["route"] = "rechecking route through recorded portals"
+            return {"hold": set()}
+        self.route_rechecks = 0
+        stuck = self.stats["stuck"]
+        keys = self._walk(p, heading(w[0] - pos[0], w[2] - pos[2]), now, precise=True, run=flat >= WP_REACHED)
+        if self.stats["stuck"] > stuck:
+            if self.route_stall is not None:
+                return self._block_route(tgt, now, "repeated stationary approach; trying another target")
+            self.route_stall = tuple(pos)
+            self.route_midpoints, self.route_at = True, -math.inf
+        return {"hold": keys}
+
+    def _block_route(self, tgt, now, reason):
+        self.nav_learning.finish_route("blocked")
+        self.bonus_skip[tgt["ptr"]] = now + BONUS_SKIP_S
+        self.stats["routes_blocked"] = self.stats.get("routes_blocked", 0) + 1
+        self.stats["route"] = reason
+        self.route = self.route_for = self.route_len = None
+        self._interrupt_route_walk()
+        return {"hold": set()}
 
     @staticmethod
     def _cost(p, e) -> float:
@@ -1460,25 +1524,28 @@ class Bot:
                 return set()
         return {"rleft"} if err > 0 else {"rright"}         # left = larger heading (measured)
 
-    def _walk(self, p, want: float, now: float) -> set:
+    def _walk(self, p, want: float, now: float, *, precise=False, run=True) -> set:
         """Run toward a heading: turn first (the body turns in place), run (up + cross) once within 60 deg. Stuck
         (pushing forward STUCK_S without STUCK_MOVE of ground): a step back and aside for 0.8 s. Turning in place
         is never "stuck" (live 2026-10-21: it was, and the walk thrashed)."""
+        if not precise:
+            self._interrupt_route_walk()                   # a non-route pursuit must not inherit route stall samples
         px, py, pz = p["pos"]
         if now < self.unstick_until:
             return {"ldown", "lleft" if self.unstick_dir > 0 else "lright"}
         err = wrap(want - p["rot"])
         keys = self._turn(err, aiming=False)
-        if abs(err) >= math.radians(60):
+        if abs(err) > (TURN_TOL if precise else math.radians(60)):
             self.hist = []
             return keys
-        keys |= {"lup", "cross"}                            # run (up + cross)
+        keys |= {"lup", "cross"} if run else {"lup"}         # walk into a nearby corner instead of overshooting it
         self.hist = [h for h in self.hist if now - h[0] < STUCK_S + 0.3] + [(now, px, pz)]
         if now - self.hist[0][0] >= STUCK_S and math.hypot(px - self.hist[0][1], pz - self.hist[0][2]) < STUCK_MOVE:
             self.stuck_since = self.stuck_since or now       # pushing forward against something (a wall, a door)
             self.hist, self.unstick_dir = [], -self.unstick_dir
             self.unstick_until = now + 0.8
             self.stats["stuck"] += 1
+            return {"ldown", "lleft" if self.unstick_dir > 0 else "lright"}
         else:
             self.stuck_since = None
         return keys

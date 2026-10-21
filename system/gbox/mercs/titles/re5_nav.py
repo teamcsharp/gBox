@@ -77,7 +77,7 @@ class NavMesh:
 
     # --- where ---
     def member(self, pos) -> int | None:
-        """An unambiguous containing floor, for observations only; never use find()'s nearby-centre fallback.
+        """An unambiguous containing floor, with stricter membership than the route endpoint lookup.
 
         Vertical faces, shared boundaries and overlapping floors at the same height are not evidence of membership.
         A tight floor-height tolerance also keeps a mid-air animation from proving a traversal.
@@ -106,8 +106,9 @@ class NavMesh:
         return not (neg and pos)
 
     def find(self, pos) -> int | None:
-        """The triangle under a position (x, y, z): the one containing it in x / z whose height is nearest; else the
-        nearest centre within two grid cells (a position just off the mesh: a ledge, a corner)."""
+        """The containing triangle with the nearest floor height; no projection across an unknown gap or wall."""
+        if len(pos) != 3 or not all(math.isfinite(v) for v in pos):
+            return None
         x, y, z = pos
         cell = (int(math.floor(x / CELL)), int(math.floor(z / CELL)))
         best, best_dy = None, Y_SLACK
@@ -119,19 +120,96 @@ class NavMesh:
                 dy = abs(height - y)
                 if dy < best_dy:
                     best, best_dy = i, dy
-        if best is not None:
-            return best
-        near, near_d = None, 2 * CELL
-        for gx in range(cell[0] - 2, cell[0] + 3):
-            for gz in range(cell[1] - 2, cell[1] + 3):
-                for i in self.grid.get((gx, gz), ()):
-                    c = self.centre[i]
-                    if abs(c[1] - y) > Y_SLACK:
+        return best
+
+    def floor_segment(self, start, goal) -> bool:
+        """Whether a centre-line segment stays on linked, non-steep floors in the recorded direction.
+
+        This proves mesh support, not clearance from dynamic objects or the character's collision radius. In
+        particular, adjacent floor faces without a link are not an opening, and a ladder cannot be skipped.
+        """
+        if any(len(p) != 3 or not all(math.isfinite(v) for v in p) for p in (start, goal)):
+            return False
+        ax, az = (math.floor(start[k] / CELL) for k in (0, 2))
+        bx, bz = (math.floor(goal[k] / CELL) for k in (0, 2))
+        if (abs(bx - ax) + 1) * (abs(bz - az) + 1) > 4096:
+            return False
+        candidates = set()
+        for x in range(min(ax, bx), max(ax, bx) + 1):
+            for z in range(min(az, bz), max(az, bz) + 1):
+                candidates.update(self.grid.get((x, z), ()))
+        intervals = {}
+        eps = 1e-7
+        for i in candidates:
+            if self.steep[i]:
+                continue
+            vertices = [self.points[v] for v in self.tris[i]]
+            area = _area2(*vertices)
+            if abs(area) < 1e-6:
+                continue
+            lo, hi = 0.0, 1.0
+            for j in range(3):
+                a, b = vertices[j], vertices[(j + 1) % 3]
+                before, after = _area2(a, b, start) / area, _area2(a, b, goal) / area
+                delta = after - before
+                if abs(delta) < eps:
+                    if before < -eps:
+                        hi = -1.0
+                        break
+                elif delta > 0:
+                    lo = max(lo, -before / delta)
+                else:
+                    hi = min(hi, -before / delta)
+            if lo > hi + eps:
+                continue
+            # The segment must follow the actual floor, not overlap a different storey in x/z.
+            supported = True
+            for t in (lo, hi):
+                p = tuple(start[k] + t * (goal[k] - start[k]) for k in range(3))
+                height = self._height(i, p[0], p[2])
+                if height is None or abs(height - p[1]) >= 40.0:
+                    supported = False
+                    break
+            if supported:
+                intervals[i] = (lo, hi)
+        reached = {i: 0.0 for i, (lo, hi) in intervals.items() if lo <= eps and hi >= -eps}
+        queue = [(0.0, i) for i in reached]
+        heapq.heapify(queue)
+        while queue:
+            entry, u = heapq.heappop(queue)
+            if entry != reached[u]:
+                continue
+            if intervals[u][1] >= 1.0 - eps:
+                return True
+            for v, edge, _ in self.links[u]:
+                if v not in intervals or not 0 <= edge < 3:
+                    continue
+                # Only an actual shared edge authorizes ordinary floor travel. Off-mesh action links keep
+                # their explicit waypoint/prompt handling in route().
+                shared = {self.tris[u][edge], self.tris[u][(edge + 1) % 3]}
+                if not shared <= set(self.tris[v]):
+                    continue
+                p, q = (self.points[x] for x in shared)
+                rx, rz = goal[0] - start[0], goal[2] - start[2]
+                sx, sz = q[0] - p[0], q[2] - p[2]
+                px, pz = p[0] - start[0], p[2] - start[2]
+                cross = rx * sz - rz * sx
+                if abs(cross) > eps:
+                    portal_lo = portal_hi = (px * sz - pz * sx) / cross
+                    along_edge = (px * rz - pz * rx) / cross
+                    if not -eps <= along_edge <= 1.0 + eps:
                         continue
-                    d = math.hypot(c[0] - x, c[2] - z)
-                    if d < near_d:
-                        near, near_d = i, d
-        return near
+                else:
+                    length2 = rx * rx + rz * rz
+                    if length2 <= eps or abs(px * rz - pz * rx) > eps:
+                        continue
+                    portal_lo, portal_hi = sorted(((px * rx + pz * rz) / length2,
+                        ((q[0] - start[0]) * rx + (q[2] - start[2]) * rz) / length2))
+                at = max(entry, intervals[v][0], portal_lo)
+                if at <= min(intervals[u][1], intervals[v][1], portal_hi) + eps and at < reached.get(v, math.inf):
+                    reached[v] = at
+                    heapq.heappush(queue, (at, v))
+        return False
 
     def _height(self, i, x, z):
         """Height on a sloping triangle; its centroid can be metres above a player at the ramp's foot."""
