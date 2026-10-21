@@ -171,8 +171,9 @@ def test_runner_written_kernel_data_slots_are_the_only_normalized_section_bytes(
         item["sha256"] = memory._anchor_digest(item, item["data"])
     with pytest.raises(Unsupported, match="validation changed"):
         memory.validate(runner_mapped(expected), 0x100000000, unnormalized)   # today's mapping, without the fix
-    with pytest.raises(Unsupported, match="found 0"):
+    with pytest.raises(Unsupported, match="found 0") as failed:
         memory.discover(runner_mapped(expected), unnormalized)
+    assert "immutable_text 0x13000: 7 bytes from 0x13100" in str(failed.value)   # where the runner differs
     memory.validate(runner_mapped(expected), 0x100000000, expected)           # with it
     assert memory.discover(runner_mapped(expected), expected) == 0x100000000
     for address, data in ((THUNKS + 4, b"\x00\x00\xF8\x00"),                 # an imported function's slot
