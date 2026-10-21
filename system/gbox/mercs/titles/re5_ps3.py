@@ -35,7 +35,8 @@ P_POS, P_ROT, P_PITCH, P_ACTION, P_HP = 0x30, 0x40, 0x1AA0, 0x845, 0x14A4
 E_POS, E_HP = 0x30, 0x14A4
 GS_TIMER, GS_START, GS_KILLS, GS_COMBO, GS_COMBO_T, GS_SCORE = 0x3E0, 0x3E4, 0x3F4, 0x3FC, 0x404, 0x418
 MAX_ENEMIES = 64
-ACTIONS = {0: "stand", 1: "move", 2: "aim", 5: "hit"}
+ACTIONS = {0: "stand", 1: "move", 2: "aim", 4: "grabbed", 5: "hit"}
+P_GRABBED = 4                          # held by a Majini: "Break free" (wiggle the left stick)
 
 HEAD_H, GUN_H = 160.0, 140.0           # above the feet: a Majini's head, the player's gun (cm)
 ENGAGE, SHOOT_RANGE, TOO_CLOSE = 3000.0, 2200.0, 110.0
@@ -45,6 +46,16 @@ AIM_TOL, PITCH_TOL = math.radians(2.5), math.radians(2.5)   # fire inside these
 FINE = math.radians(6)                 # closer than this: pulse the stick (a tick on, a tick off)
 MAX_DY = 450.0                         # targets this far above / below are out of reach (rooftops): not chosen
 STUCK_S, STUCK_MOVE = 1.0, 60.0
+# The time bonuses: hourglasses (uOm0100, model "sunadokei_360" = hourglass in uOm0100.arc; 9 in Public Assembly),
+# units of sUnit's move line 12 ("OM"), told by their vtable.
+OM_LINE, OM_MAX = 12, 600
+HOURGLASS_VT = 0x015EF5E0              # uOm0100's vtable (BLUS30491 app 01.01; read live 2026-10-21)
+HG_CENTRE, HG_KIND = 0x250, 0x194      # +0x250 f32 x4 bounding sphere (centre, radius: 28 cm, 13 cm above the origin);
+                                       # +0x194 u32 0x00KK..01: 0x90 on 2 of Public Assembly's 9, 0xA0 on the other 7
+BONUS_SHOOT = 1500.0                   # shoot a time bonus from up to this...
+CLEAR_R = 700.0                        # ...when no Majini is nearer than this
+BONUS_GIVE_UP_S, BONUS_SKIP_S = 4.0, 30.0   # fired at one this long and it is still there: leave it this long
+BONUS_WALK = False                     # walk to the far ones (not yet: rooftops and pits need routes)
 
 
 def ptr_ok(p) -> bool:
@@ -66,6 +77,22 @@ def heading(dx: float, dz: float) -> float:
 def yaw_of(q) -> float:
     """The quaternion (x, y, z, w) about +y -> heading (atan2(dx, dz) convention)."""
     return wrap(2.0 * math.atan2(q[1], q[3]))
+
+
+def bonuses(m) -> list:
+    """The time bonuses still standing: [{"ptr", "pos", "kind": "time"}] from the OM line (HOURGLASS_VT)."""
+    su = u32(m, S_UNIT)
+    out: list = []
+    if not HOURGLASS_VT or not ptr_ok(su):
+        return out
+    u, n = u32(m, su + UNIT_LINES + LINE_STRIDE * OM_LINE + LINE_FIRST), 0
+    while ptr_ok(u) and n < OM_MAX:
+        if u32(m, u) == HOURGLASS_VT:
+            cx, cy, cz, r = struct.unpack(">4f", m.rd(u + HG_CENTRE, 16))
+            out.append({"ptr": u, "pos": (cx, cy, cz), "r": r, "kind": "time",
+                        "kind_word": u32(m, u + HG_KIND)})
+        u, n = u32(m, u + UNIT_NEXT), n + 1
+    return out
 
 
 def snapshot(m) -> dict:
@@ -98,6 +125,9 @@ def snapshot(m) -> dict:
     if ptr_ok(cc):
         snap["camera"] = {"eye": struct.unpack(">3f", m.rd(cc + CAM_EYE, 12)),
                           "at": struct.unpack(">3f", m.rd(cc + CAM_AT, 12))}
+    if snap["player"]:
+        snap["bonuses"] = bonuses(m)
+        snap["prompt"] = prompt(m)
     main = u32(m, S_MAIN)
     gs = u32(m, main + MAIN_GAMESYS) if ptr_ok(main) else 0
     if ptr_ok(gs):
@@ -117,6 +147,161 @@ def menu_key(n: int) -> str:
     turn (live 2026-10-20: START leaves the results screen and does nothing on the selects; cross picks the stage and
     the character - the last ones played - and does nothing on the results), so a press never wanders off."""
     return MENU_KEYS[n % len(MENU_KEYS)]
+
+
+# The screens between rounds and on the way from the title, from the interface's own units (live 2026-10-21, one
+# press at a time on a gBox session): sUnit keeps its units in move lines, +0x24 + 0x20 * line: +0xC the line's first
+# unit, and each unit's +8 is the next; a unit's class is told by its vtable (each named by its getDTI). The title's
+# menus are uIdStartUpNN units, not all in the interface lines (Reunion's title is in line 1), so out of a round every
+# line is walked.
+UNIT_LINES, LINE_STRIDE, LINE_FIRST, UNIT_NEXT = 0x24, 0x20, 0xC, 0x8
+UI_LINES = (0, 26, 27, 28)
+N_LINES = 32
+UI_VTABLES = {0x015ABAC8: "uIdMerce00",         # the round's Mercenaries HUD (clock, score, combo)
+              0x015ABE28: "uIdPause00",         # the in-round pause menu (there while a round runs)
+              0x015ABB80: "uIdNowLoading00",    # NOW LOADING
+              0x015ABEE0: "uIdSaving00",        # saving the records on the results screen
+              0x015AB350: "uIdAlert00",         # the title's dialogs: +0x3C names the one up (ALERTS)
+              0x015AC608: "uIdStartUp00",       # the main menu (PLAY GAME, RECORDS ...): cursor +0x44
+              0x015AC5A8: "uIdStartUp01",       # PLAY GAME (cursor +0x44, EXTRA CONTENT = 7); with +0x174 = 1 its
+                                                # EXTRA CONTENT list (cursor +0x188, THE MERCENARIES REUNION = 3)
+              0x015ACA50: "uIdStartUp29",       # Reunion's title (START first); with +0x174 = 1 SOLO / DUO (SOLO first)
+              0x015ACD50: "uIdStartUp21",       # STAGE SELECT (Reunion)
+              0x015ACCF0: "uIdStartUp22",       # CHARACTER SELECT (Reunion)
+              0x015AD690: "uIdTopMenu00",       # the title's menus (around the selects, and the main menu)
+              0x015AD638: "uIdTitle00",         # +0x1F8 = 0x48 on PRESS START
+              0x015AD588: "uIdTitle02"}
+UI_MAX = 64
+ALERT_ID = 0x3C
+ALERTS = {0x22: "alert_signin",                 # "... without signing in. Sign in?": circle = Continue
+          0x08: "alert_ok"}                     # "Load successful.": cross = OK (0x13: loading the save, wait)
+MENU_CURSOR, MENU_SUB, EXTRA_CURSOR = 0x44, 0x174, 0x188
+TITLE_STEP, TITLE_PRESS_START = 0x1F8, 0x48
+MAIN_PLAY_GAME, PLAY_EXTRA_CONTENT, EXTRA_REUNION = 0, 7, 3
+
+
+def ui_units(m, lines=UI_LINES) -> dict:
+    """The interface units up now that UI_VTABLES knows: class name -> the first unit of that class."""
+    su = u32(m, S_UNIT)
+    out: dict = {}
+    if not ptr_ok(su):
+        return out
+    for line in lines:
+        u, n = u32(m, su + UNIT_LINES + LINE_STRIDE * line + LINE_FIRST), 0
+        while ptr_ok(u) and n < UI_MAX:
+            name = UI_VTABLES.get(u32(m, u))
+            if name and name not in out:
+                out[name] = u
+            u, n = u32(m, u + UNIT_NEXT), n + 1
+    return out
+
+
+def screen(m, merc=None) -> dict:
+    """The deployment's menus interface (gbox/mercs_bot.py): where RE5 is, read from RAM. In a round: playing / dead /
+    results (the round's own fields). Out of one (no player), from the interface units: the title's dialogs
+    (alert_signin, alert_ok), title (PRESS START), main_menu / play_game / extra_content (with cursor and target),
+    reunion_title, reunion_solo, select_stage, select_player, loading, menu (the title's menus between those: wait),
+    results (the clock at 0 and none of those up)."""
+    snap = snapshot(m)
+    out = {"where": own_screen(snap), "cursor": None, "target": None}
+    if snap.get("player"):
+        return out
+    ui = ui_units(m, range(N_LINES))
+    alert = u32(m, ui["uIdAlert00"] + ALERT_ID) if "uIdAlert00" in ui else 0
+    where, cursor, target = "unknown", None, None
+    if alert:
+        where = ALERTS.get(alert, "alert")
+    elif "uIdStartUp22" in ui:
+        where = "select_player"
+    elif "uIdStartUp21" in ui:
+        where = "select_stage"
+    elif "uIdStartUp29" in ui:
+        where = "reunion_solo" if u32(m, ui["uIdStartUp29"] + MENU_SUB) == 1 else "reunion_title"
+    elif "uIdStartUp01" in ui:
+        u = ui["uIdStartUp01"]
+        if u32(m, u + MENU_SUB) == 1:
+            where, cursor, target = "extra_content", u32(m, u + EXTRA_CURSOR), EXTRA_REUNION
+        else:
+            where, cursor, target = "play_game", u32(m, u + MENU_CURSOR), PLAY_EXTRA_CONTENT
+    elif "uIdStartUp00" in ui:
+        where, cursor, target = "main_menu", u32(m, ui["uIdStartUp00"] + MENU_CURSOR), MAIN_PLAY_GAME
+    elif ui.keys() & {"uIdNowLoading00", "uIdSaving00"}:
+        where = "loading"
+    elif "uIdTitle00" in ui and "uIdTopMenu00" not in ui and u32(m, ui["uIdTitle00"] + TITLE_STEP) == TITLE_PRESS_START:
+        where = "title"
+    elif ui.keys() & {"uIdTopMenu00", "uIdTitle00", "uIdTitle02"}:
+        where = "menu"
+    elif snap.get("timer") is not None and snap["timer"] <= 0:
+        where = "results"
+    out.update(where=where, cursor=cursor, target=target, ui=sorted(ui))
+    return out
+
+
+STEPS = {"results": "start", "select_stage": "cross", "select_player": "cross", "dead": "cross", "title": "start",
+         "alert_signin": "circle", "alert_ok": "cross", "reunion_title": "cross", "reunion_solo": "cross"}
+CURSORED = ("main_menu", "play_game", "extra_content")
+
+
+def step(scr: dict) -> str | None:
+    """The one press towards the next round. From the title: START, circle on the sign-in question, cross on "Load
+    successful", then the cursor (read from RAM) moved to PLAY GAME, EXTRA CONTENT, THE MERCENARIES REUNION and taken,
+    START and SOLO on Reunion's title. Between rounds: START leaves the results, cross takes the stage and the
+    character the cursors are on (the last ones played), cross answers "Continue? Yes". Nothing anywhere else."""
+    where = scr.get("where")
+    if where in CURSORED:
+        cur, tgt = scr.get("cursor"), scr.get("target")
+        if cur is None or tgt is None:
+            return None
+        if cur == tgt:
+            return "cross"
+        if where == "play_game" and cur == 0:
+            return "dup"                                 # up from the top wraps to EXTRA CONTENT, the last entry
+        return "ddown" if cur < tgt else "dup"
+    return STEPS.get(where)
+
+
+def wandered(scr: dict) -> str | None:
+    """Never: the bot presses only on the screens above, so it never starts a story game."""
+    return None
+
+
+WIGGLE = (("lleft",), ("lright",), ("lleft",), ("lright",))
+# sActionButton (static 0x017B7174): +0x34 u32 the HUD's prompt bits (bit 1: a prompt is up; bit 0: the weapon is up),
+# +0x2A4 -> the cActionButton on screen: +0x04 its owner, +0x14 its kind, +0x40 the Majini it acts on (live 2026-10-21, frames
+# of each): kind 3 owned by the player and aimed at a Majini = a melee finisher ("Hook", "Uppercut", "Straight": square);
+# kind 2 owned by the player = the stage ("Jump over", a ladder: not taken); a button owned by a Majini = his grab.
+AB_HUD, AB_BUTTON, HUD_PROMPT = 0x34, 0x2A4, 0x02
+BTN_OWNER, BTN_KIND, BTN_TARGET = 0x04, 0x14, 0x40
+BTN_MELEE, BTN_STAGE = 3, 2
+
+
+def enemy_ptrs(m) -> set:
+    se = u32(m, S_ENEMY)
+    if not ptr_ok(se):
+        return set()
+    n, arr = u32(m, se + 0x28), u32(m, se + 0x34)
+    if not ptr_ok(arr) or not 0 < n <= MAX_ENEMIES:
+        return set()
+    return {e for e in struct.unpack(f">{n}I", m.rd(arr, 4 * n)) if ptr_ok(e)}
+
+
+def prompt(m) -> str | None:
+    """The prompt the game asks the player to answer, from RAM: "wiggle" while a Majini holds him (action 4, the
+    "Break free" prompt: the left stick wiggled), "square" for a melee finisher on a Majini (the player's own
+    cActionButton of kind 3 aimed at one of sEnemy's), else None (no prompt, or one on the stage: never taken)."""
+    sp = u32(m, S_PLAYER)
+    pl = u32(m, sp + 0x28) if ptr_ok(sp) else 0
+    if not ptr_ok(pl):
+        return None
+    if m.rd(pl + P_ACTION, 1)[0] == P_GRABBED:
+        return "wiggle"
+    ab = u32(m, S_ACTION)
+    if not ptr_ok(ab) or not u32(m, ab + AB_HUD) & HUD_PROMPT:
+        return None
+    btn = u32(m, ab + AB_BUTTON)
+    if not ptr_ok(btn) or u32(m, btn + BTN_OWNER) != pl or u32(m, btn + BTN_KIND) != BTN_MELEE:
+        return None
+    return "square" if u32(m, btn + BTN_TARGET) in enemy_ptrs(m) else None
 
 
 def own_screen(snap: dict) -> str:
@@ -151,6 +336,10 @@ class Bot:
         self.unstick_until = 0.0
         self.unstick_dir = 1
         self.dead_tap = 0.0
+        self.bonus_fired: dict = {}            # hourglass -> seconds fired at it
+        self.bonus_skip: dict = {}             # hourglass -> left alone until
+        self.bonus_seen: set = set()
+        self.last_timer = None
 
     # --- the engine's brain interface ---
     def prompt_ok(self, button, snap, now) -> bool:
@@ -172,18 +361,29 @@ class Bot:
                 return {"tap": "cross"}
             return {"hold": set()}
         self._score_hits(snap)
+        if snap.get("prompt"):                              # a finisher / a grab: the engine presses it; the gun
+            self.aiming_since = None                        # stays down between its presses (L1 would cancel it)
+            self.stats["prompt_holds"] = self.stats.get("prompt_holds", 0) + 1
+            return {"hold": set()}
+        t = snap.get("timer")
+        if self.last_timer is not None and t is not None and self.last_timer > 0 and t > self.last_timer + 2:
+            self.stats["bonus_s"] = round(self.stats.get("bonus_s", 0.0) + t - self.last_timer, 1)
+            self.stats["clock_jumps"] = self.stats.get("clock_jumps", 0) + 1
+        self.last_timer = t
         # Majini and the like: alive, more than 1 health (crows are "enemies" with 1), not far above or below
         live = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and (e.get("hp_max") or 0) > 1
                 and abs(e["pos"][1] - p["pos"][1]) < MAX_DY]
-        if not live:
+        tgt = self._bonus(p, live, snap.get("bonuses") or (), now)
+        if tgt is None and not live:
             self.aiming_since = None
             return {"hold": set()}
         px, py, pz = p["pos"]
-        tgt = min(live, key=lambda e: self._cost(p, e))
+        tgt = tgt or min(live, key=lambda e: self._cost(p, e))
+        aim_h = tgt.get("aim_h", HEAD_H)
         tx, ty, tz = tgt["pos"]
         dist = math.hypot(tx - px, tz - pz)
         want = heading(tx - px, tz - pz)
-        if dist > ENGAGE:                                   # nobody near: walk toward the nearest
+        if dist > ENGAGE or (tgt.get("walk") and dist > TOO_CLOSE * 2):   # walk toward it
             self.aiming_since = None
             return {"hold": self._walk(p, want, now)}
         aiming = p.get("action") == 2
@@ -206,11 +406,11 @@ class Bot:
             (ex, ey, ez), (cx, cy, cz) = cam["eye"], cam["at"]
             look_yaw = heading(cx - ex, cz - ez)
             look_pitch = math.atan2(cy - ey, max(math.hypot(cx - ex, cz - ez), 1e-3))
-            tgt_pitch = math.atan2(ty + HEAD_H - ey, max(math.hypot(tx - ex, tz - ez), 1.0))
+            tgt_pitch = math.atan2(ty + aim_h - ey, max(math.hypot(tx - ex, tz - ez), 1.0))
             yaw_err = wrap(heading(tx - ex, tz - ez) - look_yaw)
             pitch_err = tgt_pitch - look_pitch
         else:
-            tgt_pitch = math.atan2(ty + HEAD_H - (py + GUN_H), max(dist, 1.0))
+            tgt_pitch = math.atan2(ty + aim_h - (py + GUN_H), max(dist, 1.0))
             yaw_err = wrap(want - p["rot"])
             pitch_err = tgt_pitch - (p.get("pitch") or 0.0)
         keys = {"l1"} | self._turn(yaw_err, aiming=True)
@@ -220,9 +420,17 @@ class Bot:
             if not close or self.pulse:
                 keys.add("rup" if pitch_err > 0 else "rdown")
         tol = max(AIM_TOL, math.atan2(BODY_R, max(dist, 1.0)))   # close up the body is wide
-        if abs(yaw_err) <= tol and abs(pitch_err) <= max(PITCH_TOL * 2, tol) and dist <= SHOOT_RANGE:
+        ptol = max(PITCH_TOL * 2, tol)                      # a body is tall
+        if tgt.get("kind") == "time":                       # an hourglass: its own 28 cm, a degree at least
+            tol = ptol = max(math.radians(1.0), math.atan2(tgt.get("r") or 25.0, max(dist, 1.0)))
+        if abs(yaw_err) <= tol and abs(pitch_err) <= ptol and dist <= SHOOT_RANGE:
             keys.add("r1")                                  # on him: fire
             self.stats["shots_s"] = round(self.stats["shots_s"] + 0.05, 2)
+            if tgt.get("kind") == "time":
+                fired = self.bonus_fired[tgt["ptr"]] = self.bonus_fired.get(tgt["ptr"], 0.0) + 0.05
+                if fired > BONUS_GIVE_UP_S:                 # shots don't take it from here (a wall, its kind)
+                    self.bonus_skip[tgt["ptr"]] = now + BONUS_SKIP_S
+                    self.bonus_fired[tgt["ptr"]] = 0.0
         self.target = tgt["slot"]
         self.stats["aim"] = (f"slot {tgt['slot']} d {dist:.0f} dy {ty - py:+.0f} yaw_err {math.degrees(yaw_err):+.1f} "
                              f"pitch {math.degrees(p.get('pitch') or 0):+.1f} want {math.degrees(tgt_pitch):+.1f} "
@@ -230,6 +438,34 @@ class Bot:
         return {"hold": keys}
 
     # --- helpers ---
+    def _bonus(self, p, live, standing, now):
+        """The time bonus to go for now, or None. Only when no Majini is within CLEAR_R: the nearest hourglass not far
+        above / below, shot from up to BONUS_SHOOT (walked to when farther, or once BONUS_GIVE_UP_S of shots did not
+        take it); a farther one waits while Majini are within ENGAGE (the combo first)."""
+        px, py, pz = p["pos"]
+        now_ptrs = {b["ptr"] for b in standing}
+        taken = self.bonus_seen - now_ptrs
+        if taken:
+            self.stats["bonuses_taken"] = self.stats.get("bonuses_taken", 0) + len(taken)
+        self.bonus_seen = now_ptrs
+        standing = [b for b in standing if self.bonus_skip.get(b["ptr"], 0.0) <= now]
+        if not standing:
+            return None
+        near = min((math.hypot(e["pos"][0] - px, e["pos"][2] - pz) for e in live), default=math.inf)
+        if near < CLEAR_R:
+            return None
+        cands = [b for b in standing if abs(b["pos"][1] - py) < MAX_DY]
+        if not cands:
+            return None
+        b = min(cands, key=lambda b: math.hypot(b["pos"][0] - px, b["pos"][2] - pz))
+        d = math.hypot(b["pos"][0] - px, b["pos"][2] - pz)
+        walk = d > BONUS_SHOOT
+        if walk and (near < ENGAGE or not BONUS_WALK):
+            return None                                     # Majini to fight first; the bonus after
+        self.stats["bonus_target"] = f"{b['ptr']:#x} d {d:.0f}" + (" walk" if walk else "")
+        return {"slot": f"bonus {b['ptr']:#x}", "ptr": b["ptr"], "pos": b["pos"], "aim_h": 0.0, "r": b.get("r"),
+                "kind": "time", "walk": walk}
+
     @staticmethod
     def _cost(p, e) -> float:
         px, _, pz = p["pos"]
@@ -283,6 +519,18 @@ class RE5PS3(Driver):
 
     def brain(self, m, stats: dict, clock, learn_dir=None, nav=None):
         return Bot(m, clock=clock, stats=stats)
+
+    def prompt_source(self, m, stats: dict):
+        self._stats = stats
+        return lambda: prompt(m)
+
+    def prompt_keys(self, button) -> list:
+        stats = getattr(self, "_stats", None)
+        if stats is not None:                               # what was answered: presses_square / presses_wiggle
+            stats[f"presses_{button}"] = stats.get(f"presses_{button}", 0) + 1
+        if button == "wiggle":
+            return list(WIGGLE)
+        return [tuple(str(button).split("+"))]
 
     def progress(self, snap: dict) -> dict:
         return {"timer": snap.get("timer"), "combo": snap.get("combo"), "score": snap.get("score"),

@@ -1,6 +1,8 @@
 """Title #2 of the Mercenaries engine: Resident Evil 5 Gold (PS3 BLUS30491) - the RAM map and the driver, on a small RAM
 fixture laid out the way the live game keeps it (found on the Spark's RPCS3, 2026-10-20)."""
 import math
+
+import pytest
 import struct
 
 from gbox import ram_map
@@ -198,3 +200,187 @@ def test_continues_after_you_are_dead_and_walks_the_menus():
     assert bot.tick(R.snapshot(world(hp=0))) == {"tap": "cross"}
     assert bot.tick(R.snapshot(world(hp=0))) == {"hold": set()}      # not again within 1.5 s
     assert [R.menu_key(n) for n in range(4)] == ["start", "cross", "start", "cross"]
+
+
+def with_ui(mem, names, line=27):
+    """sUnit (static 0x0191D700) with the interface units `names` in one move line (+0x24 + 0x20 * line: +0xC the first
+    unit; a unit's +8 the next); a unit is its vtable (UI_VTABLES); a name may come as (name, {offset: u32}) to set
+    its fields (cursors, states)."""
+    sunit, first = 0x3882_5B20, 0x3009_8D00 + 0x10000 * line
+    vt = {v: k for k, v in R.UI_VTABLES.items()}
+    mem.u32(R.S_UNIT, sunit)
+    mem.u32(sunit + R.UNIT_LINES + R.LINE_STRIDE * line + R.LINE_FIRST, first if names else 0)
+    for i, n in enumerate(names):
+        n, fields = (n, {}) if isinstance(n, str) else n
+        u = first + 0x400 * i
+        mem.u32(u, vt[n])
+        for off, val in fields.items():
+            mem.u32(u + off, val)
+        mem.u32(u + R.UNIT_NEXT, u + 0x400 if i + 1 < len(names) else 0)
+    return mem
+
+
+def between_rounds(names):
+    mem = world(timer=0.0)
+    mem.u32(SPLAYER + 0x28, 0)                       # out of a round: sPlayer holds no player
+    return with_ui(mem, names)
+
+
+def test_the_screens_between_rounds_come_from_the_interface_units():
+    assert R.screen(between_rounds(["uIdStartUp21", "uIdTitle00", "uIdTopMenu00"]))["where"] == "select_stage"
+    assert R.screen(between_rounds(["uIdStartUp22", "uIdTitle02", "uIdTopMenu00"]))["where"] == "select_player"
+    assert R.screen(between_rounds(["uIdNowLoading00"]))["where"] == "loading"
+    assert R.screen(between_rounds(["uIdSaving00"]))["where"] == "loading"       # the results, saving the records
+    assert R.screen(between_rounds(["uIdTitle00", "uIdTopMenu00"]))["where"] == "menu"   # between the selects / main menu
+    assert R.screen(between_rounds([]))["where"] == "results"                     # the clock at 0, nothing else up
+    mem = world(enemies=[((0.0, 0.0, 900.0), 800, 800)])
+    assert R.screen(with_ui(mem, ["uIdMerce00", "uIdPause00"]))["where"] == "playing"
+    assert R.screen(world(hp=0))["where"] == "dead"
+
+
+def test_it_presses_only_on_the_reunion_screens():
+    assert R.step({"where": "results"}) == "start"
+    assert R.step({"where": "select_stage"}) == "cross" and R.step({"where": "select_player"}) == "cross"
+    assert R.step({"where": "dead"}) == "cross"
+    for where in ("menu", "loading", "unknown", "playing"):
+        assert R.step({"where": where}) is None, where                       # never a press on the title's menus
+    assert R.wandered({"where": "menu"}) is None
+
+
+def test_a_grab_is_answered_with_a_wiggle():
+    held = world(action=R.P_GRABBED, enemies=[((0.0, 0.0, 60.0), 800, 800)])
+    assert R.prompt(held) == "wiggle"
+    assert R.prompt(world(action=2)) is None
+    drv = R.RE5PS3()
+    assert drv.prompt_source(held, {})() == "wiggle"
+    assert drv.prompt_keys("wiggle") == [("lleft",), ("lright",), ("lleft",), ("lright",)]
+    assert drv.prompt_keys("square") == [("square",)]
+    from gbox.mercs import reactions
+    assert "wiggle" in reactions.MASH                                             # the engine mashes it, never rests
+    assert R.snapshot(held)["player"]["state"] == "grabbed"
+
+
+def with_prompt(mem, kind, owner, target, hud=0x4B):
+    """sActionButton (static 0x017B7174) with a prompt up (+0x34 bit 1) and +0x2A4 -> a cActionButton: +0x04 owner,
+    +0x14 kind, +0x40 the Majini it acts on."""
+    ab, btn = 0x3883_8370, 0x328E_1FE0
+    mem.u32(R.S_ACTION, ab)
+    mem.u32(ab + R.AB_HUD, hud)
+    mem.u32(ab + R.AB_BUTTON, btn)
+    mem.u32(btn + R.BTN_OWNER, owner)
+    mem.u32(btn + R.BTN_KIND, kind)
+    mem.u32(btn + R.BTN_TARGET, target)
+    return mem
+
+
+def test_a_melee_finisher_on_a_majini_is_pressed_with_square():
+    e = [((0.0, 0.0, 150.0), 450, 800)]
+    assert R.prompt(with_prompt(world(enemies=e), R.BTN_MELEE, PLAYER, ENEMIES[0])) == "square"     # "Hook"
+    assert R.prompt(with_prompt(world(enemies=e), R.BTN_MELEE, PLAYER, ENEMIES[0], hud=0x49)) is None   # not up
+    assert R.prompt(with_prompt(world(enemies=e), R.BTN_STAGE, PLAYER, 0)) is None                  # "Jump over"
+    assert R.prompt(with_prompt(world(enemies=e), R.BTN_MELEE, PLAYER, 0x3099_0000)) is None        # not a Majini
+    assert R.prompt(with_prompt(world(enemies=e), 0, ENEMIES[0], 0)) is None                       # his grab button
+    held = with_prompt(world(action=R.P_GRABBED, enemies=e), 0, ENEMIES[0], 0, hud=0x4A)
+    assert R.prompt(held) == "wiggle"                                                             # the grab itself
+    act, _ = tick(with_prompt(world(action=2, enemies=e), R.BTN_MELEE, PLAYER, ENEMIES[0]))
+    assert act == {"hold": set()}                     # the gun down while the engine presses the finisher (no L1)
+
+
+HOURGLASS_VT = 0x0159_0000
+
+
+def with_bonuses(mem, centres, kind=0x00A00C01):
+    """sUnit's OM line with a barrel and hourglasses (uOm0100 = HOURGLASS_VT) whose bounding spheres (+0x250: centre,
+    28 cm radius) sit at `centres`; +0x194 their kind word."""
+    sunit, first = 0x3882_5B20, 0x3040_0000
+    mem.u32(R.S_UNIT, sunit)
+    mem.u32(sunit + R.UNIT_LINES + R.LINE_STRIDE * R.OM_LINE + R.LINE_FIRST, first)
+    units = [(0x0158_8888, (500.0, 0.0, 500.0))] + [(HOURGLASS_VT, q) for q in centres]   # a barrel first
+    for i, (vt, q) in enumerate(units):
+        u = first + 0x1000 * i
+        mem.u32(u, vt)
+        mem.put(u + 0x30, struct.pack(">3f", q[0], q[1] - 13.0, q[2]))           # the origin: 13 cm below the centre
+        mem.put(u + R.HG_CENTRE, struct.pack(">4f", *q, 28.4))
+        mem.u32(u + R.HG_KIND, kind)
+        mem.u32(u + R.UNIT_NEXT, u + 0x1000 if i + 1 < len(units) else 0)
+    return mem
+
+
+def test_time_bonuses_are_read_from_the_om_line(monkeypatch):
+    monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
+    snap = R.snapshot(with_bonuses(world(), [(0.0, 140.0, 1000.0), (-800.0, 50.0, 0.0)]))
+    assert [b["pos"] for b in snap["bonuses"]] == [(0.0, 140.0, 1000.0), (-800.0, 50.0, 0.0)]
+    assert snap["bonuses"][0]["r"] == pytest.approx(28.4) and snap["bonuses"][0]["kind_word"] == 0x00A00C01
+    monkeypatch.setattr(R, "HOURGLASS_VT", 0)                                     # not known: none read
+    assert R.snapshot(with_bonuses(world(), [(0.0, 0.0, 1000.0)]))["bonuses"] == []
+
+
+def test_it_shoots_a_time_bonus_when_no_majini_is_close(monkeypatch):
+    monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
+    far_majini = [((3000.0, 0.0, 0.0), 800, 800)]                                # 30 m away at +x
+    want = math.atan2(20.0 - R.GUN_H, 1000.0)                                     # an hourglass 10 m ahead, 20 cm up
+    act, bot = tick(with_bonuses(world(action=2, pitch_raw=-want, enemies=far_majini), [(0.0, 20.0, 1000.0)]))
+    assert act["hold"] >= {"l1", "r1"} and str(bot.target).startswith("bonus")
+    assert "bonus_target" in bot.stats
+    act, _ = tick(with_bonuses(world(action=2, pitch_raw=-(want + 0.05), enemies=far_majini), [(0.0, 20.0, 1000.0)]))
+    assert "r1" not in act["hold"]                                                # 3 deg off a 28 cm sphere: no shot
+    close = [((0.0, 0.0, 500.0), 800, 800)]                                       # a Majini 5 m away: him first
+    act, bot = tick(with_bonuses(world(action=2, enemies=close), [(0.0, 20.0, 1000.0)]))
+    assert bot.target == 0
+
+
+def test_a_bonus_shots_cannot_take_is_left_alone_for_a_while(monkeypatch):
+    monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
+    want = math.atan2(20.0 - R.GUN_H, 1000.0)
+    clock = [100.0]
+    bot = R.Bot(clock=lambda: clock[0])
+    mem = with_bonuses(world(action=2, pitch_raw=-want), [(0.0, 20.0, 1000.0)])
+    for _ in range(int(R.BONUS_GIVE_UP_S / 0.05) + 2):                           # firing at it, it stays
+        act = bot.tick(R.snapshot(mem))
+    assert "r1" not in act["hold"]                                                # left alone now
+    clock[0] += R.BONUS_SKIP_S + 1
+    assert "r1" in bot.tick(R.snapshot(mem))["hold"]                              # tried again later
+
+
+def test_far_bonuses_wait_and_the_clock_jumps_are_counted(monkeypatch):
+    monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
+    act, bot = tick(with_bonuses(world(), [(0.0, 0.0, 2500.0)]))                  # 25 m ahead, nobody near
+    assert act == {"hold": set()}                                                 # no walking to bonuses yet
+    monkeypatch.setattr(R, "BONUS_WALK", True)
+    act, bot = tick(with_bonuses(world(), [(0.0, 0.0, 2500.0)]))
+    assert {"lup", "cross"} <= act["hold"]                                        # with routes: runs to it
+    bot.tick(R.snapshot(with_bonuses(world(timer=60.0), [])))                     # gone from the line: taken
+    assert bot.stats["bonuses_taken"] == 1
+    bot.tick(R.snapshot(with_bonuses(world(timer=89.5), [])))                     # the clock +29.5 s: a time bonus
+    assert bot.stats["clock_jumps"] == 1 and bot.stats["bonus_s"] == 29.5
+
+
+def boot(names, line=26):
+    mem = world(timer=0.0)
+    mem.u32(SPLAYER + 0x28, 0)                       # the title's menus: no player
+    return with_ui(mem, names, line=line)
+
+
+def where_and_key(names, line=26):
+    scr = R.screen(boot(names, line))
+    return scr["where"], R.step(scr)
+
+
+def test_from_the_title_into_reunion_by_ram():
+    title = [("uIdTitle00", {R.TITLE_STEP: R.TITLE_PRESS_START}), "uIdTitle02"]
+    assert where_and_key(title, line=0) == ("title", "start")
+    assert where_and_key([("uIdTitle00", {R.TITLE_STEP: 0x40}), "uIdTitle02"], line=0) == ("menu", None)  # the logos
+    assert where_and_key([("uIdAlert00", {R.ALERT_ID: 0x22})], line=0) == ("alert_signin", "circle")   # Sign in?
+    assert where_and_key([("uIdAlert00", {R.ALERT_ID: 0x13})], line=0) == ("alert", None)              # loading it
+    assert where_and_key([("uIdAlert00", {R.ALERT_ID: 0x08})], line=0) == ("alert_ok", "cross")        # Load successful
+    assert where_and_key([("uIdStartUp00", {R.MENU_CURSOR: 0})]) == ("main_menu", "cross")             # PLAY GAME
+    assert where_and_key([("uIdStartUp00", {R.MENU_CURSOR: 2})]) == ("main_menu", "dup")
+    assert where_and_key([("uIdStartUp01", {R.MENU_CURSOR: 0})]) == ("play_game", "dup")               # wraps to 7
+    assert where_and_key([("uIdStartUp01", {R.MENU_CURSOR: 4})]) == ("play_game", "ddown")
+    assert where_and_key([("uIdStartUp01", {R.MENU_CURSOR: 7})]) == ("play_game", "cross")             # EXTRA CONTENT
+    extra = {R.MENU_SUB: 1, R.EXTRA_CURSOR: 1}
+    assert where_and_key([("uIdStartUp01", extra)]) == ("extra_content", "ddown")
+    assert where_and_key([("uIdStartUp01", extra | {R.EXTRA_CURSOR: 3})]) == ("extra_content", "cross")  # REUNION
+    assert where_and_key(["uIdStartUp29"], line=1) == ("reunion_title", "cross")                      # START
+    assert where_and_key([("uIdStartUp29", {R.MENU_SUB: 1})], line=1) == ("reunion_solo", "cross")    # SOLO
+    assert where_and_key(["uIdStartUp21", "uIdTopMenu00"]) == ("select_stage", "cross")

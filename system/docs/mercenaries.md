@@ -169,15 +169,70 @@ the title screen (RPCS3 rereads the host DATA0.DAT at each load) and read off th
   * It targets the nearest Majini in front, skipping crows (health 1), rooftops and the dead.
   * It turns with the right stick, aims with L1, puts the crosshair on the head and fires with R1.
   * It steps back when a Majini is on top of it and runs to them when far.
-  * Between rounds it reads the screen from RAM (no player = menus or loading, clock 0 = results, health 0 =
-    "Continue?") and presses START and cross in turn. START leaves the results. Cross picks the last stage and
-    character and answers "Continue? Yes". Rounds loop without help.
-  * Live on Public Assembly with Chris (Heavy Metal), whose Gatling has infinite ammo, three rounds back to back
-    (2026-10-21, the Spark's scratch RPCS3): 14, 20 and 17 kills; 4,460, 7,460 and 6,260 points; best combo 7.
-    The first version (aim from the player's pitch) got 2-4 kills a round.
-  * A health freeze was on for those rounds. It is a scratch-only tool, never part of the driver. The bot only
-    presses buttons.
-  * Not yet: grabs ("Break free" is a left-stick wiggle), melee finishers on prompt, time bonuses and routes.
+  * From the title into Reunion, and between rounds, it reads the screen from the interface's own units. sUnit
+    keeps every unit in move lines (+0x24 + 0x20 per line: +0xC the line's first unit; a unit's +8 is the next).
+    Out of a round all lines are walked (the title's menus are not all in the interface lines), and units are told
+    apart by their vtables. Each row below was found live (2026-10-21) by pressing one key at a time on a gBox
+    session and reading what changed:
+
+    | RAM | Screen | Press |
+    |---|---|---|
+    | uIdTitle00 +0x1F8 = 0x48, no uIdTopMenu00 | PRESS START | START |
+    | uIdAlert00 +0x3C = 0x22 | "... without signing in. Sign in?" | circle (Continue) |
+    | uIdAlert00 +0x3C = 0x13 | "Loading content." | none |
+    | uIdAlert00 +0x3C = 0x08 | "Load successful." | cross (OK) |
+    | uIdStartUp00, cursor +0x44 | the main menu (PLAY GAME = 0) | D-pad to 0, cross |
+    | uIdStartUp01, cursor +0x44 | PLAY GAME (EXTRA CONTENT = 7) | up from 0 wraps to 7, cross |
+    | uIdStartUp01 +0x174 = 1, cursor +0x188 | EXTRA CONTENT (THE MERCENARIES REUNION = 3) | D-pad to 3, cross |
+    | uIdStartUp29 | Reunion's title (START first) | cross |
+    | uIdStartUp29 +0x174 = 1 | SOLO / DUO / SPLIT SCREEN (SOLO first) | cross |
+    | uIdStartUp21 | STAGE SELECT | cross (the last stage played) |
+    | uIdStartUp22 | CHARACTER SELECT | cross (the last character played) |
+    | uIdNowLoading00, uIdSaving00 | loading, saving the records | none |
+    | uIdTopMenu00 / uIdTitle00 / uIdTitle02 otherwise | the title's menus in between | none |
+    | none of these, the clock at 0 | the results | START |
+    | uIdMerce00 (with the player) | a round (the HUD) | the bot plays |
+
+    * Health 0 in a round is "You Are Dead - Continue?": cross (Yes).
+    * The driver presses nowhere else, so it never starts a story game.
+    * `mercs.menus` in the map is the driver module (`screen` / `step` / `wandered`).
+    * PLAY GAME's "?????" entry (index 6) is most likely the locked original THE MERCENARIES.
+  * Hangs: RPCS3 on the Spark (arm64) can freeze mid-round: the game's clock stops while RPCS3 keeps busy (seen once
+    in the first gBox session, after 9 rounds). The session runner (scratch) watches the RAM clock. If it stands
+    still for 60 s mid-round, the runner stops the agent session (session_op stop_game), launches the game again
+    plainly on the same PC, and walks it from the title into Reunion as above. Every hang is logged.
+  * Grabs: player action 4 (+0x845) means a Majini is holding him, with the "Break free" prompt (left stick) on
+    screen. The driver's prompt source answers "wiggle", which the engine mashes (left / right) until he is free.
+  * Prompts come from sActionButton. +0x34 bit 1 is set while a prompt is up (bit 0: the weapon is raised).
+    +0x2A4 points to the cActionButton on screen: +0x04 its owner, +0x14 its kind, +0x40 the Majini it acts on.
+    These were decoded from prompts logged with a frame each:
+
+    | Button | Prompt | The bot |
+    |---|---|---|
+    | the player's, kind 3, +0x40 = a Majini | melee finisher: "Hook", "Uppercut" (square) | presses square, the gun lowered |
+    | the player's, kind 2 | the stage: "Jump over", ladders (square) | leaves it |
+    | a Majini's (player action 4) | his grab: "Break free" (left stick) | wiggles |
+
+    The finisher press is in the driver and tested on RAM fixtures. The first live try ended when the session's game
+    froze, so its live check is still to come.
+  * Time bonuses: the hourglasses (uOm0100; uOm0100.arc's model is "sunadokei_360", hourglass). There are 9 in Public
+    Assembly, units of sUnit's move line 12 ("OM") with vtable 0x015EF5E0. +0x250 holds a bounding sphere (centre 13 cm
+    above the origin, radius 28 cm). +0x194 is 0x0090..01 on 2 of them and 0x00A0..01 on the other 7. The bot shoots
+    one inside 15 m when no Majini is within 7 m, and leaves it for 30 s if 4 s of fire did not take it. From where
+    it fights (the start roof), all 9 are 12-45 m away or on other levels, so taking them needs routes (not yet).
+  * Live in scratch on Public Assembly with Chris (Heavy Metal), whose Gatling has infinite ammo: three rounds back
+    to back (2026-10-21, the Spark's scratch RPCS3) gave 14, 20 and 17 kills; 4,460, 7,460 and 6,260 points; best
+    combo 7. A health freeze was on for those rounds (a scratch-only tool, never part of the driver). The first
+    version (aim from the player's pitch) got 2-4 kills a round.
+  * Live in a gBox session (2026-10-21, the Spark): gBox's RPCS3, the save unlocked with `re5 op=unlock_all`, no
+    health freeze. The bot pressed through the Reunion screens itself and played 9 rounds back to back:
+    * kills 17, 14, 11, 14, 15, 18, 14, 15, 14;
+    * points 6,380, 5,140, 3,490, 4,740, 4,860, 8,640, 4,480, 5,110, 4,780;
+    * best combo 12, no deaths.
+
+    RAM came from the session's RPCS3 (/proc, read only) and the presses went through the session's input API.
+    In round 10 the emulator froze (the game's clock stopped at 1:48, RPCS3 still busy).
+  * Not yet: routes (to the time bonuses), the finisher's live check, the enemies' attack states.
 
 ## Live checks (to run once, then flip `live_checked`)
 
