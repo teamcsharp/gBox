@@ -415,6 +415,13 @@ class HttpSink:
         r.raise_for_status()
         return r.json()
 
+    def damage(self, body: dict) -> dict:
+        # Durable replay can belong to an ended earlier session. Keep its original identity throughout delivery.
+        sid = body.get("session_id") or self.sid
+        r = self.client.post(f"/api/autoplay/damage/{quote(sid, safe='')}", json=body)
+        r.raise_for_status()
+        return r.json()
+
     def close(self):
         try:
             self.client.close()

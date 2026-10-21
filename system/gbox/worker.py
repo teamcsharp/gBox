@@ -310,6 +310,11 @@ def run(server: str, token: str, config: Config, name: str | None = None,
     client_control = worker_client_control.from_environment()
     from . import worker_resources
     resource_sampler = worker_resources.Sampler(config.cache)
+    from .mercs import damage as damage_reports
+    damage_delivery = {}
+    threading.Thread(target=damage_reports.run_delivery,
+                     args=(config.data_dir, server, h | {"x-gbox-actor": f"worker:{name}"}, stop, damage_delivery),
+                     name='player-damage-delivery', daemon=True).start()
     from .inspection_builds import source_inventory
     build_sources = source_inventory()  # Never recompute while old modules remain loaded in this process.
     threading.Thread(target=worker_resources.run, args=(stop, resource_sampler),
@@ -321,7 +326,8 @@ def run(server: str, token: str, config: Config, name: str | None = None,
         except Exception:                           # noqa: BLE001 - liveness never depends on the cache disk
             local = []
         return info.model_copy(update={'pending_results': outbox.pending_count(), 'local_builds': local,
-                                       'resources': resource_sampler.snapshot(), 'build_sources': build_sources})
+                                       'resources': resource_sampler.snapshot() | {'player_damage_delivery': dict(damage_delivery)},
+                                       'build_sources': build_sources})
     threading.Thread(target=_quiet_volume_loop, args=(stop, active_agent, quiet_sessions), daemon=True).start()
     with httpx.Client(base_url=server, headers=h | {"x-gbox-actor": f"worker:{name}"}, timeout=30) as c:
         while not stop.is_set():                    # the control plane may be restarting: keep trying

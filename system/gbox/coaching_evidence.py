@@ -176,7 +176,7 @@ def attach(store, packet, note, rid, renderer=None):
         "limits": ["Sources are sampled independently; source timestamps and ages identify skew or stale data.",
                    "Map includes only published objects and verified geometry; absent items/windows are unknown.",
                    "RAM fields are cached decoded values/raw integers and addresses, not the complete byte dump.",
-                   "Worker frame, RAM dump and supported save state are later asynchronous captures.",
+                   "Capture jobs run asynchronously after receipt; any observation-time cache is identified by its own timing fields.",
                    "No video clip is captured by this report."]}
     try:
         put("moment", _json(manifest), "report-moment.json", "application/json", {})
