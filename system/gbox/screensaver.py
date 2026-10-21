@@ -261,8 +261,9 @@ class Screensaver:
             job = self.store.get("job", run.get("job")) or {}
             if job.get("state") in ("failed", "rejected", "invalid", "cancelled") or now - run["started"] > LAUNCH_TIMEOUT:
                 return self._finish(w, run, now, f"launch {job.get('state') or 'timed out'}: {str(job.get('error') or '')[:200]}")
-            sess = next((s for s in running if s.get("session_id", "").startswith(run["worker_id"] + "-")
-                         and s.get("game_id") == run["game_id"]), None)
+            # its own launch's session only (sessions are named <worker>-<launch job>): never adopt someone else's
+            # session of the same game on that PC
+            sess = next((s for s in running if s.get("session_id") == f"{run['worker_id']}-{run.get('job')}"), None)
             if not sess:
                 return f"launching {run['title']}"
             self.store.put("slabel", sess["session_id"], {"owner": "agent", "task": f"autoplay screensaver: {run['title']}"})
