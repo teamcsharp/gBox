@@ -149,76 +149,119 @@ def menu_key(n: int) -> str:
     return MENU_KEYS[n % len(MENU_KEYS)]
 
 
-# The screens between rounds, from the interface's own units (live 2026-10-21): sUnit keeps its units in move lines,
-# +0x24 + 0x20 * line: +0xC the line's first unit, and each unit's +8 is the next. The interface lives in lines 0
-# (PrePro), 26 (ID1), 27 (ID2) and 28 (Message); a unit's class is told by its vtable (each named by its getDTI).
+# The screens between rounds and on the way from the title, from the interface's own units (live 2026-10-21, one
+# press at a time on a gBox session): sUnit keeps its units in move lines, +0x24 + 0x20 * line: +0xC the line's first
+# unit, and each unit's +8 is the next; a unit's class is told by its vtable (each named by its getDTI). The title's
+# menus are uIdStartUpNN units, not all in the interface lines (Reunion's title is in line 1), so out of a round every
+# line is walked.
 UNIT_LINES, LINE_STRIDE, LINE_FIRST, UNIT_NEXT = 0x24, 0x20, 0xC, 0x8
 UI_LINES = (0, 26, 27, 28)
+N_LINES = 32
 UI_VTABLES = {0x015ABAC8: "uIdMerce00",         # the round's Mercenaries HUD (clock, score, combo)
               0x015ABE28: "uIdPause00",         # the in-round pause menu (there while a round runs)
               0x015ABB80: "uIdNowLoading00",    # NOW LOADING
               0x015ABEE0: "uIdSaving00",        # saving the records on the results screen
+              0x015AB350: "uIdAlert00",         # the title's dialogs: +0x3C names the one up (ALERTS)
+              0x015AC608: "uIdStartUp00",       # the main menu (PLAY GAME, RECORDS ...): cursor +0x44
+              0x015AC5A8: "uIdStartUp01",       # PLAY GAME (cursor +0x44, EXTRA CONTENT = 7); with +0x174 = 1 its
+                                                # EXTRA CONTENT list (cursor +0x188, THE MERCENARIES REUNION = 3)
+              0x015ACA50: "uIdStartUp29",       # Reunion's title (START first); with +0x174 = 1 SOLO / DUO (SOLO first)
               0x015ACD50: "uIdStartUp21",       # STAGE SELECT (Reunion)
               0x015ACCF0: "uIdStartUp22",       # CHARACTER SELECT (Reunion)
               0x015AD690: "uIdTopMenu00",       # the title's menus (around the selects, and the main menu)
-              0x015AD638: "uIdTitle00",
+              0x015AD638: "uIdTitle00",         # +0x1F8 = 0x48 on PRESS START
               0x015AD588: "uIdTitle02"}
 UI_MAX = 64
+ALERT_ID = 0x3C
+ALERTS = {0x22: "alert_signin",                 # "... without signing in. Sign in?": circle = Continue
+          0x08: "alert_ok"}                     # "Load successful.": cross = OK (0x13: loading the save, wait)
+MENU_CURSOR, MENU_SUB, EXTRA_CURSOR = 0x44, 0x174, 0x188
+TITLE_STEP, TITLE_PRESS_START = 0x1F8, 0x48
+MAIN_PLAY_GAME, PLAY_EXTRA_CONTENT, EXTRA_REUNION = 0, 7, 3
 
 
-def ui_units(m) -> set:
-    """The interface units up now, by class name (only the ones UI_VTABLES knows)."""
+def ui_units(m, lines=UI_LINES) -> dict:
+    """The interface units up now that UI_VTABLES knows: class name -> the first unit of that class."""
     su = u32(m, S_UNIT)
-    out: set = set()
+    out: dict = {}
     if not ptr_ok(su):
         return out
-    for line in UI_LINES:
+    for line in lines:
         u, n = u32(m, su + UNIT_LINES + LINE_STRIDE * line + LINE_FIRST), 0
         while ptr_ok(u) and n < UI_MAX:
             name = UI_VTABLES.get(u32(m, u))
-            if name:
-                out.add(name)
+            if name and name not in out:
+                out[name] = u
             u, n = u32(m, u + UNIT_NEXT), n + 1
     return out
 
 
 def screen(m, merc=None) -> dict:
     """The deployment's menus interface (gbox/mercs_bot.py): where RE5 is, read from RAM. In a round: playing / dead /
-    results (the round's own fields). Out of one (no player), from the interface units: select_player (CHARACTER
-    SELECT), select_stage (STAGE SELECT), loading (NOW LOADING, saving the records), menu (the title's menus between the
-    selects, or the main menu: never pressed on), results (the round's results: the clock at 0 and none of those up)."""
+    results (the round's own fields). Out of one (no player), from the interface units: the title's dialogs
+    (alert_signin, alert_ok), title (PRESS START), main_menu / play_game / extra_content (with cursor and target),
+    reunion_title, reunion_solo, select_stage, select_player, loading, menu (the title's menus between those: wait),
+    results (the clock at 0 and none of those up)."""
     snap = snapshot(m)
     out = {"where": own_screen(snap), "cursor": None, "target": None}
     if snap.get("player"):
         return out
-    ui = ui_units(m)
-    if "uIdStartUp22" in ui:
+    ui = ui_units(m, range(N_LINES))
+    alert = u32(m, ui["uIdAlert00"] + ALERT_ID) if "uIdAlert00" in ui else 0
+    where, cursor, target = "unknown", None, None
+    if alert:
+        where = ALERTS.get(alert, "alert")
+    elif "uIdStartUp22" in ui:
         where = "select_player"
     elif "uIdStartUp21" in ui:
         where = "select_stage"
-    elif ui & {"uIdNowLoading00", "uIdSaving00"}:
+    elif "uIdStartUp29" in ui:
+        where = "reunion_solo" if u32(m, ui["uIdStartUp29"] + MENU_SUB) == 1 else "reunion_title"
+    elif "uIdStartUp01" in ui:
+        u = ui["uIdStartUp01"]
+        if u32(m, u + MENU_SUB) == 1:
+            where, cursor, target = "extra_content", u32(m, u + EXTRA_CURSOR), EXTRA_REUNION
+        else:
+            where, cursor, target = "play_game", u32(m, u + MENU_CURSOR), PLAY_EXTRA_CONTENT
+    elif "uIdStartUp00" in ui:
+        where, cursor, target = "main_menu", u32(m, ui["uIdStartUp00"] + MENU_CURSOR), MAIN_PLAY_GAME
+    elif ui.keys() & {"uIdNowLoading00", "uIdSaving00"}:
         where = "loading"
-    elif ui & {"uIdTopMenu00", "uIdTitle00", "uIdTitle02"}:
+    elif "uIdTitle00" in ui and "uIdTopMenu00" not in ui and u32(m, ui["uIdTitle00"] + TITLE_STEP) == TITLE_PRESS_START:
+        where = "title"
+    elif ui.keys() & {"uIdTopMenu00", "uIdTitle00", "uIdTitle02"}:
         where = "menu"
     elif snap.get("timer") is not None and snap["timer"] <= 0:
         where = "results"
-    else:
-        where = "unknown"
-    out.update(where=where, ui=sorted(ui))
+    out.update(where=where, cursor=cursor, target=target, ui=sorted(ui))
     return out
 
 
-STEPS = {"results": "start", "select_stage": "cross", "select_player": "cross", "dead": "cross"}
+STEPS = {"results": "start", "select_stage": "cross", "select_player": "cross", "dead": "cross", "title": "start",
+         "alert_signin": "circle", "alert_ok": "cross", "reunion_title": "cross", "reunion_solo": "cross"}
+CURSORED = ("main_menu", "play_game", "extra_content")
 
 
 def step(scr: dict) -> str | None:
-    """The one press towards the next round: START leaves the results, cross takes the stage and the character the
-    cursors are on (the last ones played), cross answers "Continue? Yes". Nothing on the title's other menus."""
-    return STEPS.get(scr.get("where"))
+    """The one press towards the next round. From the title: START, circle on the sign-in question, cross on "Load
+    successful", then the cursor (read from RAM) moved to PLAY GAME, EXTRA CONTENT, THE MERCENARIES REUNION and taken,
+    START and SOLO on Reunion's title. Between rounds: START leaves the results, cross takes the stage and the
+    character the cursors are on (the last ones played), cross answers "Continue? Yes". Nothing anywhere else."""
+    where = scr.get("where")
+    if where in CURSORED:
+        cur, tgt = scr.get("cursor"), scr.get("target")
+        if cur is None or tgt is None:
+            return None
+        if cur == tgt:
+            return "cross"
+        if where == "play_game" and cur == 0:
+            return "dup"                                 # up from the top wraps to EXTRA CONTENT, the last entry
+        return "ddown" if cur < tgt else "dup"
+    return STEPS.get(where)
 
 
 def wandered(scr: dict) -> str | None:
-    """Never: the bot presses only on the Reunion screens above, so it never starts a story game."""
+    """Never: the bot presses only on the screens above, so it never starts a story game."""
     return None
 
 
@@ -478,9 +521,13 @@ class RE5PS3(Driver):
         return Bot(m, clock=clock, stats=stats)
 
     def prompt_source(self, m, stats: dict):
+        self._stats = stats
         return lambda: prompt(m)
 
     def prompt_keys(self, button) -> list:
+        stats = getattr(self, "_stats", None)
+        if stats is not None:                               # what was answered: presses_square / presses_wiggle
+            stats[f"presses_{button}"] = stats.get(f"presses_{button}", 0) + 1
         if button == "wiggle":
             return list(WIGGLE)
         return [tuple(str(button).split("+"))]

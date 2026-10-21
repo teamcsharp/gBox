@@ -169,22 +169,38 @@ the title screen (RPCS3 rereads the host DATA0.DAT at each load) and read off th
   * It targets the nearest Majini in front, skipping crows (health 1), rooftops and the dead.
   * It turns with the right stick, aims with L1, puts the crosshair on the head and fires with R1.
   * It steps back when a Majini is on top of it and runs to them when far.
-  * Between rounds it reads the screen from the interface's own units. sUnit keeps every unit in move lines
-    (+0x24 + 0x20 per line: +0xC the line's first unit; a unit's +8 is the next). The interface units in lines 0,
-    26, 27 and 28, told apart by their vtables:
+  * From the title into Reunion, and between rounds, it reads the screen from the interface's own units. sUnit
+    keeps every unit in move lines (+0x24 + 0x20 per line: +0xC the line's first unit; a unit's +8 is the next).
+    Out of a round all lines are walked (the title's menus are not all in the interface lines), and units are told
+    apart by their vtables. Each row below was found live (2026-10-21) by pressing one key at a time on a gBox
+    session and reading what changed:
 
-    | Unit | Screen | Press |
+    | RAM | Screen | Press |
     |---|---|---|
+    | uIdTitle00 +0x1F8 = 0x48, no uIdTopMenu00 | PRESS START | START |
+    | uIdAlert00 +0x3C = 0x22 | "... without signing in. Sign in?" | circle (Continue) |
+    | uIdAlert00 +0x3C = 0x13 | "Loading content." | none |
+    | uIdAlert00 +0x3C = 0x08 | "Load successful." | cross (OK) |
+    | uIdStartUp00, cursor +0x44 | the main menu (PLAY GAME = 0) | D-pad to 0, cross |
+    | uIdStartUp01, cursor +0x44 | PLAY GAME (EXTRA CONTENT = 7) | up from 0 wraps to 7, cross |
+    | uIdStartUp01 +0x174 = 1, cursor +0x188 | EXTRA CONTENT (THE MERCENARIES REUNION = 3) | D-pad to 3, cross |
+    | uIdStartUp29 | Reunion's title (START first) | cross |
+    | uIdStartUp29 +0x174 = 1 | SOLO / DUO / SPLIT SCREEN (SOLO first) | cross |
     | uIdStartUp21 | STAGE SELECT | cross (the last stage played) |
     | uIdStartUp22 | CHARACTER SELECT | cross (the last character played) |
     | uIdNowLoading00, uIdSaving00 | loading, saving the records | none |
-    | uIdTopMenu00, uIdTitle00, uIdTitle02 alone | the title's menus (between the selects, or the main menu) | none |
+    | uIdTopMenu00 / uIdTitle00 / uIdTitle02 otherwise | the title's menus in between | none |
     | none of these, the clock at 0 | the results | START |
     | uIdMerce00 (with the player) | a round (the HUD) | the bot plays |
 
-    Health 0 in a round is "You Are Dead - Continue?": cross (Yes). The driver never presses on the title's main
-    menu, so it never starts a story game. `mercs.menus` in the map is the driver module (`screen` / `step` /
-    `wandered`).
+    * Health 0 in a round is "You Are Dead - Continue?": cross (Yes).
+    * The driver presses nowhere else, so it never starts a story game.
+    * `mercs.menus` in the map is the driver module (`screen` / `step` / `wandered`).
+    * PLAY GAME's "?????" entry (index 6) is most likely the locked original THE MERCENARIES.
+  * Hangs: RPCS3 on the Spark (arm64) can freeze mid-round: the game's clock stops while RPCS3 keeps busy (seen once
+    in the first gBox session, after 9 rounds). The session runner (scratch) watches the RAM clock. If it stands
+    still for 60 s mid-round, the runner stops the agent session (session_op stop_game), launches the game again
+    plainly on the same PC, and walks it from the title into Reunion as above. Every hang is logged.
   * Grabs: player action 4 (+0x845) means a Majini is holding him, with the "Break free" prompt (left stick) on
     screen. The driver's prompt source answers "wiggle", which the engine mashes (left / right) until he is free.
   * Prompts come from sActionButton. +0x34 bit 1 is set while a prompt is up (bit 0: the weapon is raised).

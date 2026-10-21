@@ -204,15 +204,19 @@ def test_continues_after_you_are_dead_and_walks_the_menus():
 
 def with_ui(mem, names, line=27):
     """sUnit (static 0x0191D700) with the interface units `names` in one move line (+0x24 + 0x20 * line: +0xC the first
-    unit; a unit's +8 the next); a unit is its vtable (UI_VTABLES)."""
-    sunit, first = 0x3882_5B20, 0x3009_8D00
+    unit; a unit's +8 the next); a unit is its vtable (UI_VTABLES); a name may come as (name, {offset: u32}) to set
+    its fields (cursors, states)."""
+    sunit, first = 0x3882_5B20, 0x3009_8D00 + 0x10000 * line
     vt = {v: k for k, v in R.UI_VTABLES.items()}
     mem.u32(R.S_UNIT, sunit)
     mem.u32(sunit + R.UNIT_LINES + R.LINE_STRIDE * line + R.LINE_FIRST, first if names else 0)
     for i, n in enumerate(names):
-        u = first + 0x100 * i
+        n, fields = (n, {}) if isinstance(n, str) else n
+        u = first + 0x400 * i
         mem.u32(u, vt[n])
-        mem.u32(u + R.UNIT_NEXT, u + 0x100 if i + 1 < len(names) else 0)
+        for off, val in fields.items():
+            mem.u32(u + off, val)
+        mem.u32(u + R.UNIT_NEXT, u + 0x400 if i + 1 < len(names) else 0)
     return mem
 
 
@@ -349,3 +353,34 @@ def test_far_bonuses_wait_and_the_clock_jumps_are_counted(monkeypatch):
     assert bot.stats["bonuses_taken"] == 1
     bot.tick(R.snapshot(with_bonuses(world(timer=89.5), [])))                     # the clock +29.5 s: a time bonus
     assert bot.stats["clock_jumps"] == 1 and bot.stats["bonus_s"] == 29.5
+
+
+def boot(names, line=26):
+    mem = world(timer=0.0)
+    mem.u32(SPLAYER + 0x28, 0)                       # the title's menus: no player
+    return with_ui(mem, names, line=line)
+
+
+def where_and_key(names, line=26):
+    scr = R.screen(boot(names, line))
+    return scr["where"], R.step(scr)
+
+
+def test_from_the_title_into_reunion_by_ram():
+    title = [("uIdTitle00", {R.TITLE_STEP: R.TITLE_PRESS_START}), "uIdTitle02"]
+    assert where_and_key(title, line=0) == ("title", "start")
+    assert where_and_key([("uIdTitle00", {R.TITLE_STEP: 0x40}), "uIdTitle02"], line=0) == ("menu", None)  # the logos
+    assert where_and_key([("uIdAlert00", {R.ALERT_ID: 0x22})], line=0) == ("alert_signin", "circle")   # Sign in?
+    assert where_and_key([("uIdAlert00", {R.ALERT_ID: 0x13})], line=0) == ("alert", None)              # loading it
+    assert where_and_key([("uIdAlert00", {R.ALERT_ID: 0x08})], line=0) == ("alert_ok", "cross")        # Load successful
+    assert where_and_key([("uIdStartUp00", {R.MENU_CURSOR: 0})]) == ("main_menu", "cross")             # PLAY GAME
+    assert where_and_key([("uIdStartUp00", {R.MENU_CURSOR: 2})]) == ("main_menu", "dup")
+    assert where_and_key([("uIdStartUp01", {R.MENU_CURSOR: 0})]) == ("play_game", "dup")               # wraps to 7
+    assert where_and_key([("uIdStartUp01", {R.MENU_CURSOR: 4})]) == ("play_game", "ddown")
+    assert where_and_key([("uIdStartUp01", {R.MENU_CURSOR: 7})]) == ("play_game", "cross")             # EXTRA CONTENT
+    extra = {R.MENU_SUB: 1, R.EXTRA_CURSOR: 1}
+    assert where_and_key([("uIdStartUp01", extra)]) == ("extra_content", "ddown")
+    assert where_and_key([("uIdStartUp01", extra | {R.EXTRA_CURSOR: 3})]) == ("extra_content", "cross")  # REUNION
+    assert where_and_key(["uIdStartUp29"], line=1) == ("reunion_title", "cross")                      # START
+    assert where_and_key([("uIdStartUp29", {R.MENU_SUB: 1})], line=1) == ("reunion_solo", "cross")    # SOLO
+    assert where_and_key(["uIdStartUp21", "uIdTopMenu00"]) == ("select_stage", "cross")
