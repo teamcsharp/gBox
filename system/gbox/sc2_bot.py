@@ -61,6 +61,7 @@ POS = 0x2950                                          # fighter: f32 x, y, z (FU
 
 # fighter struct offsets
 SIDE = 0x07
+CTL = 0x50                                            # u32: who drives the fighter: 0 / 1 the pad, else the CPU
 FIGHTER, COSTUME = 0x62, 0x64
 F_CROUCH, F_AIR, F_DOWN, F_BACK = 0xA2, 0xA3, 0xA4, 0xAA      # u8 state flags (FUN_80093368: flag i at +0xA0 + i)
 F_ATTACKING, F_ACTIVE, F_CONNECTED = 0xBB, 0xC1, 0xC2
@@ -72,6 +73,12 @@ DIST = 0x1660                                         # f32 distance between the
 ATTACK = 0x1690                                       # ptr to the current attack record
 LAYER0, LAYER1 = 0x1C28, 0x1FA8                       # motion layers (0x380 each): stance / actions
 L_MOVE, L_NEXT, L_NOW = 0x02, 0x08, 0x20              # in a layer: s16 move id, f32 next frame, f32 current frame
+L_QUEUED, L_QUEUED_AT = 0x52, 0x60                    # in a layer: s16 the move queued after this one (-1 none; the
+                                                      # string's next part, FUN_80093e08 starts it), f32 the frame of
+                                                      # this move it takes over at
+MOVESET = 0x2764                                      # fighter: ptr to the moveset (FUN_800948a0): bank = moveset +
+                                                      # (id >> 12) * 0xA4 + 0x28; moves *(bank + 8) (0x60 each, +0x58
+                                                      # s16 attack index), attacks *(bank + 0x10) (0x60 each)
 HEAD, MID = (0x0, 0x280), (0x1540, 0x160)             # what one poll reads of a fighter, besides the two layers
 # attack record (0x60 bytes)
 R_FLAGS, R_KIND, R_START, R_END, R_DAMAGE = 0x32, 0x34, 0x36, 0x38, 0x3A
@@ -87,7 +94,7 @@ STAGGERS = set(range(0x23A0, 0x23B0))                 # Guard Impacted (0x23A4 r
                                                       # stagger allows it (frame ~27 / ~38)
 
 # pad (gBox names; the game's Type A layout)
-G, A, B, K = "b", "a", "y", "x"
+G, A, B, K, START = "b", "a", "y", "x", "start"
 DIRECTIONS = ("up", "down", "left", "right")
 FRAME_S = 1 / 60
 GI_AT = 5              # frames before the first active frame the GI command should reach the game: the GI starts on the
@@ -106,11 +113,17 @@ DUCK_LEAD = 10         # throws: crouch this many frames before the grab
 GI_RANGE = 2.3         # GI only when P2 is this close at GI_LEAD (ULTRA HARD Raphael, 10 min: 282 GIs landed, 98%
                        # of them closer than this; the GIs that missed further out let the CPU's next attack in)
 BOOK_MISSES = 2        # a move whose GIs missed this often (and a quarter of the time) is guarded, not impacted
+LONG_ACTIVE = 4.5      # an attack active longer than this (frames) can land anywhere in it (Mitsurugi's 24-34 sweep hit on
+                       # frame ~31): guarded, as a GI covers only about 4 frames either side of the first active frame
+SLOW_MOVE = 0.5        # an attack winding up slower than this (its clock at a tenth of the speed: Kilik 0xF8) has no
+                       # impact frame to time a GI on: it is guarded
 PUNISH_RANGE = 2.2     # punish after a GI only from this close
 PUNISH_KEYS = (B,)     # a vertical: reaches a staggered fighter right in front of P1
 PUNISH_S = 0.08
 PUNISH_WAIT_S = 1.0    # give up a punish this long after the GI
 MENU_AFTER, MENU_EVERY = 4.0, 1.2      # out of a fight this long: press A this often (next round / next fight)
+SEED_BOOK = Path(__file__).resolve().parent.parent / "profiles" / "gamedata" / "GRSEAF-movebook.json"   # what the
+                                       # tests met (a worker's own book is read over it)
 
 
 def ptr_ok(p: int) -> bool:
@@ -122,23 +135,47 @@ def fighter(rd, base: int) -> dict:
     head = rd(base + HEAD[0], HEAD[1])
     mid = rd(base + MID[0], MID[1])
     l0 = rd(base + LAYER0, 0x30)
-    l1 = rd(base + LAYER1, 0x30)
+    l1 = rd(base + LAYER1, 0x64)
     o = lambda off: off - MID[0]
     now, nxt = struct.unpack_from(">f", l1, L_NOW)[0], struct.unpack_from(">f", l1, L_NEXT)[0]
     st = {"side": head[SIDE], "back": head[F_BACK], "crouch": head[F_CROUCH], "air": head[F_AIR], "down": head[F_DOWN],
           "attacking": head[F_ATTACKING], "active": head[F_ACTIVE], "connected": head[F_CONNECTED],
           "gi": struct.unpack_from(">H", head, GI_TYPE)[0], "fighter": struct.unpack_from(">h", head, FIGHTER)[0],
+          "ctl": struct.unpack_from(">I", head, CTL)[0],
           "rounds": mid[o(ROUNDS)], "hp": struct.unpack_from(">f", mid, o(HP))[0],
           "result": struct.unpack_from(">i", mid, o(RESULT))[0], "dist": struct.unpack_from(">f", mid, o(DIST))[0],
           "m0": struct.unpack_from(">H", l0, L_MOVE)[0], "m1": struct.unpack_from(">H", l1, L_MOVE)[0], "f": now,
-          "speed": nxt - now if 0.05 < nxt - now < 4 else 1.0, "atk": None}
+          "speed": nxt - now if 0.05 < nxt - now < 4 else 1.0, "atk": None,
+          "queued": struct.unpack_from(">H", l1, L_QUEUED)[0], "queued_at": struct.unpack_from(">f", l1, L_QUEUED_AT)[0],
+          "queued_alt": [m for m in struct.unpack_from(">3H", l1, L_QUEUED + 2) if m != NEUTRAL],
+          "next_atk": None}
     a = struct.unpack_from(">I", mid, o(ATTACK))[0]
     if ptr_ok(a):
         r = rd(a, 0x40)
-        st["atk"] = {"ptr": a, "flags": struct.unpack_from(">H", r, R_FLAGS)[0], "kind": struct.unpack_from(">H", r, R_KIND)[0],
-                     "start": struct.unpack_from(">h", r, R_START)[0], "end": struct.unpack_from(">h", r, R_END)[0],
-                     "damage": struct.unpack_from(">h", r, R_DAMAGE)[0]}
+        st["atk"] = attack_record(r, a)
     return st
+
+
+def attack_record(r: bytes, ptr: int) -> dict:
+    return {"ptr": ptr, "flags": struct.unpack_from(">H", r, R_FLAGS)[0], "kind": struct.unpack_from(">H", r, R_KIND)[0],
+            "start": struct.unpack_from(">h", r, R_START)[0], "end": struct.unpack_from(">h", r, R_END)[0],
+            "damage": struct.unpack_from(">h", r, R_DAMAGE)[0]}
+
+
+def move_attack(rd, moveset: int, move: int) -> dict | None:
+    """The attack record of one of a fighter's moves, from its moveset (the tables FUN_800948a0 starts moves from)."""
+    if not ptr_ok(moveset) or move in (0xFFFF, NEUTRAL) or move & 0x8000:
+        return None
+    bank = moveset + ((move >> 12) & 0xF) * 0xA4 + 0x28
+    b = rd(bank + 8, 12)
+    moves, attacks = struct.unpack_from(">I", b, 0)[0], struct.unpack_from(">I", b, 8)[0]
+    if not (ptr_ok(moves) and ptr_ok(attacks)):
+        return None
+    index = struct.unpack(">h", rd(moves + (move & 0xFFF) * 0x60 + 0x58, 2))[0]
+    if index < 0 or index & 0x1000:                   # no attack (0x1000: another kind of record)
+        return None
+    a = attacks + index * 0x60
+    return attack_record(rd(a, 0x40), a)
 
 
 def screen_side(rd) -> int | None:
@@ -163,9 +200,20 @@ def screen_side(rd) -> int | None:
 def snapshot(rd, sides: bool = True) -> dict:
     """Both fighters, the frame counter and whether a fight is on."""
     p1, p2 = fighter(rd, P1), fighter(rd, P2)
+    if p2["queued"] != NEUTRAL or p2["queued_alt"]:   # the string's next part, before it starts
+        try:
+            ms = struct.unpack(">I", rd(P2 + MOVESET, 4))[0]
+            p2["next_atk"] = move_attack(rd, ms, p2["queued"]) if p2["queued"] != NEUTRAL else None
+            # the continuations the game picks instead when the attack connects / in other states (FUN_80093e08):
+            # only their unblockables matter (a step must start before them)
+            p2["alt_unblockable"] = [a for a in (move_attack(rd, ms, m) for m in p2["queued_alt"])
+                                     if a is not None and classify(a["flags"]) == "unblockable"]
+        except (struct.error, OSError, ValueError, KeyError):
+            p2["next_atk"], p2["alt_unblockable"] = None, []
     p1["screen_side"] = screen_side(rd) if sides and p1["m1"] in STAGGERS else None
     return {"p1": p1, "p2": p2, "frame": struct.unpack(">I", rd(FRAME, 4))[0],
-            "fight": struct.unpack(">H", rd(FIGHT, 2))[0] != 0 and 0 < p1["hp"] <= 400 and 0 < p2["hp"] <= 400}
+            "fight": struct.unpack(">H", rd(FIGHT, 2))[0] != 0 and 0 < p1["hp"] <= 400 and 0 < p2["hp"] <= 400
+            and p1["ctl"] in (0, 1)}                  # the attract demo's fights are the CPU's (control 3)
 
 
 def classify(flags: int) -> str:
@@ -183,16 +231,37 @@ def classify(flags: int) -> str:
 
 
 def threat(p2: dict) -> dict | None:
-    """P2's attack still to come: {kind, flags, t (game frames to its first active frame), te (to its last)}."""
+    """P2's attack still to come: {kind, flags, t (game frames to its first active frame), te (to its last), queued}.
+    The current move's attack while it is still to come; else the queued next move's (a string's next part), which
+    starts at frame queued_at of the current move (at once from neutral) and hits at its own first active frame."""
     a = p2["atk"]
-    if a is None or p2["connected"]:
+    sp = p2["speed"] or 1.0
+    if a is not None and not p2["connected"]:
+        t, te = (a["start"] - p2["f"]) / sp, (a["end"] - p2["f"]) / sp
+        if te >= -0.5:
+            return {"kind": classify(a["flags"]), "flags": a["flags"], "t": t, "te": te, "span": te - t,
+                    "ptr": a["ptr"], "start": a["start"], "end": a["end"], "move": p2["m1"], "queued": False}
+    n = p2.get("next_atk")
+    wait = 0.0 if p2["m1"] == NEUTRAL else max(0.0, (p2.get("queued_at", 0.0) - p2["f"]) / sp)
+    if n is None or classify(n["flags"]) != "unblockable":
+        n = next(iter(p2.get("alt_unblockable") or []), n)   # an unblockable continuation outranks the rest
+    if n is None:
+        return None
+    t, te = wait + n["start"], wait + n["end"]
+    return {"kind": classify(n["flags"]), "flags": n["flags"], "t": t, "te": te, "span": te - t, "ptr": n["ptr"],
+            "start": n["start"], "end": n["end"], "move": p2["queued"], "queued": True}
+
+
+def queued_unblockable(p2: dict) -> dict | None:
+    """An unblockable among the string's queued continuations, with the frames to its first active frame."""
+    cands = [a for a in [p2.get("next_atk"), *(p2.get("alt_unblockable") or [])]
+             if a is not None and classify(a["flags"]) == "unblockable"]
+    if not cands:
         return None
     sp = p2["speed"] or 1.0
-    t, te = (a["start"] - p2["f"]) / sp, (a["end"] - p2["f"]) / sp
-    if te < -0.5:
-        return None
-    return {"kind": classify(a["flags"]), "flags": a["flags"], "t": t, "te": te, "ptr": a["ptr"], "start": a["start"],
-            "end": a["end"], "move": p2["m1"]}
+    wait = 0.0 if p2["m1"] == NEUTRAL else max(0.0, (p2.get("queued_at", 0.0) - p2["f"]) / sp)
+    n = min(cands, key=lambda a: a["start"])
+    return {"kind": "unblockable", "flags": n["flags"], "t": wait + n["start"], "te": wait + n["end"], "ptr": n["ptr"]}
 
 
 def directions(p1: dict) -> tuple[str, str]:
@@ -236,13 +305,18 @@ class MoveBook:
     Saved under the worker's runtime folder (sc2_learned/movebook.json), so every fight starts from what the last
     ones taught."""
 
-    def __init__(self, path: Path | None = None):
-        self.path, self.moves = path, {}
-        if path is not None:
+    def __init__(self, path: Path | None = None, seed: Path | None = None, cautious: bool = True):
+        """path: this worker's book (read, then saved to); seed: a book shipped in the repo, read first (the moves
+        the playbook met while it was tested); cautious: a move is impacted only once it has reached P1 from this far
+        (its first sight is guarded and learned from)."""
+        self.path, self.moves, self.cautious = path, {}, cautious
+        for f in (seed, path):
+            if f is None:
+                continue
             try:
-                self.moves = json.loads(path.read_text(encoding="utf-8")).get("moves", {})
+                self.moves.update(json.loads(Path(f).read_text(encoding="utf-8")).get("moves", {}))
             except (OSError, ValueError):
-                self.moves = {}
+                pass
 
     @staticmethod
     def key(fighter: int, move: int) -> str:
@@ -251,11 +325,13 @@ class MoveBook:
     def ok(self, fighter: int, move: int, dist: float) -> bool:
         m = self.moves.get(self.key(fighter, move))
         if not m:
-            return True
+            return not self.cautious                 # never seen: guard it and learn its reach
         touched = m.get("land", 0) + m.get("contact", 0)
         empty = m.get("miss", 0) + m.get("none", 0)
         if empty >= BOOK_MISSES and empty * 3 >= touched:
             return False
+        if self.cautious:                            # only from as far as it has reached P1 before
+            return touched > 0 and dist <= m.get("reach", 0.0) + 0.1
         return not (empty and touched and dist > m.get("reach", 0.0) + 0.15)
 
     def _entry(self, fighter: int, move: int) -> dict:
@@ -270,13 +346,27 @@ class MoveBook:
         if landed:
             m["reach"] = round(max(m.get("reach", 0.0), dist), 2)
 
-    def observe(self, fighter: int, move: int, touched: bool, dist: float):
-        """The move (not impacted) touched P1 (guarded / hit) or ended without touching it."""
+    def observe(self, fighter: int, move: int, touched: bool, dist: float, at: float | None = None):
+        """The move (not impacted) touched P1 (guarded / hit) or ended without touching it; at = its frame at the
+        contact counted from its first active frame."""
         m = self._entry(fighter, move)
         k = "contact" if touched else "none"
         m[k] = m.get(k, 0) + 1
         if touched:
             m["reach"] = round(max(m.get("reach", 0.0), dist), 2)
+        self.contact(fighter, move, at)
+
+    def contact(self, fighter: int, move: int, at: float | None):
+        """Where in its active window the move reached P1 (the last 8 times)."""
+        if at is None:
+            return
+        m = self._entry(fighter, move)
+        m["at"] = (m.get("at") or [])[-7:] + [round(float(at), 1)]
+
+    def offset(self, fighter: int, move: int) -> float | None:
+        """The frame after its first active one the move reaches P1 at (the median of the times seen), or None."""
+        at = sorted((self.moves.get(self.key(fighter, move)) or {}).get("at") or [])
+        return at[len(at) // 2] if at else None
 
     def save(self):
         if self.path is None:
@@ -314,10 +404,11 @@ class Brain:
         self.gi_kind, self.sent_at = "high", None
         self.inst, self.inst_key, self.inst_f, self.gi_inst = 0, None, 0.0, None   # P2 attack instances
         self.prev, self.punish_from, self.punish_until = None, None, 0.0
-        self.book = book if book is not None else MoveBook()
+        self.book = book if book is not None else MoveBook(cautious=False)   # play() passes the cautious one
         self.gi_ctx, self.gi_touched, self.wanted = None, False, set()
         self.gi_lat, self.gi_sent, self.confirm_by = None, None, 0.0     # frames a GI command takes to show
         self.obs = None                                                  # the P2 attack instance being watched
+        self.gi_ptr = None                               # the attack record a GI was pressed for while still queued
 
     # -- the key sender, when there is one --
     def _held(self) -> set:
@@ -349,6 +440,8 @@ class Brain:
                 self._observe_end()
                 self.inst += 1
                 self.inst_key = key
+                if self.gi_ptr is not None and a["ptr"] == self.gi_ptr:    # impacted (or tried) while queued
+                    self.gi_inst, self.gi_ptr = self.inst, None
                 self.stats["attacks"] += 1
                 self.stats["last_attack"] = f"{classify(a['flags'])} 0x{a['flags']:02X} f{a['start']}-{a['end']}"
                 self.obs = {"fighter": p2["fighter"], "move": p2["m1"], "dist": None, "touched": False,
@@ -358,7 +451,10 @@ class Brain:
             if o is not None:
                 if o["dist"] is None and (a["start"] - p2["f"]) <= GI_AT + 2:   # the distance a GI is decided at
                     o["dist"] = p2["dist"]
-                o["touched"] |= p1["result"] in GUARDED | HIT | IMPACTED or bool(p2["connected"])
+                contact = p1["result"] in GUARDED | HIT | IMPACTED
+                if contact and o.get("at") is None and (prev is None or prev["p1"]["result"] != p1["result"]):
+                    o["at"] = max(0.0, p2["f"] - a["start"])          # where in its window it reached P1
+                o["touched"] |= contact or bool(p2["connected"])
                 o["gi"] |= self.gi_inst == self.inst
         else:
             self._observe_end()
@@ -409,6 +505,12 @@ class Brain:
         if self.phase == "regrab":                       # G is being let go: a GI needs a fresh G
             gone = self._applied(set(), now)
             if gone is None or now < max(gone, self.until - REGRAB_S) + REGRAB_S:
+                return set()
+            if th is None or th["t"] > self.gi_lead(False) + 1:
+                # the attack slowed down meanwhile (some moves wind up at a tenth of the speed, live: Kilik 0xF8) or
+                # went away: not yet; decide again from the new timing, with nothing held
+                self.phase, self.gi_inst = "guard", None
+                self.stats["gi_tried"] -= 1
                 return set()
             self.phase = "press"
         if self.phase == "press":
@@ -468,7 +570,7 @@ class Brain:
             else:
                 return set()
         if self.phase == "step":
-            if th is not None and th["kind"] == "unblockable" and now < self.until:
+            if th is not None and (th["kind"] == "unblockable" or queued_unblockable(p2)) and now < self.until:
                 return {"up"}
             self.phase = "guard"
         if th is None:
@@ -476,6 +578,10 @@ class Brain:
                 self.phase = "guard"
             # nothing coming: stand ready (no G, so a GI is a single press), or keep guarding in guard stun
             return {G} if 0x2100 <= p1["m1"] < 0x2200 else set()
+        if th["span"] > LONG_ACTIVE:                     # a long active window: time on where it reaches P1
+            off = self.book.offset(p2["fighter"], th["move"])
+            if off is not None:
+                th = dict(th, t=th["t"] + off / (p2["speed"] or 1.0), span=0.0, contact=off)
         kind, t = th["kind"], th["t"]
         holding_g = G in self._held()
         lead = self.gi_lead(holding_g)
@@ -496,6 +602,13 @@ class Brain:
             return {G}
         if self.phase == "duck":
             self.phase = "guard"
+        ub = queued_unblockable(p2) if not th["queued"] else None
+        if ub is not None and ub["t"] <= STEP_LEAD + lead - GI_AT and not self._gi_ok(th, p2, free, p1, lead):
+            # this part will be guarded at best, and the guard stun would hold P1 for the unblockable next part
+            self.stats["steps"] += 1
+            self.phase, self.until = "step", now + STEP_S
+            self.log("step_string", th, ub)
+            return {"up"}
         if kind == "unblockable":
             if t <= STEP_LEAD + lead - GI_AT:
                 self.stats["steps"] += 1
@@ -516,15 +629,19 @@ class Brain:
         lead = self.gi_lead(False) if lead is None else lead
         staggered = p1 is not None and p1["m1"] in STAGGERS          # no guard there: a GI is the only way out
         late = -2 if staggered else GI_LATE + (lead - GI_AT)
+        timed = p2["speed"] >= SLOW_MOVE and th.get("span", 0) <= LONG_ACTIVE        # an impact frame to time on
         return (not th["flags"] & NO_GI and free and late <= th["t"] <= lead and self.inst != self.gi_inst
-                and (staggered or (p2["dist"] <= GI_RANGE and self.book.ok(p2["fighter"], th["move"], p2["dist"]))))
+                and (staggered or (p2["dist"] <= GI_RANGE and timed
+                                   and self.book.ok(p2["fighter"], th["move"], p2["dist"]))))
 
     def _observe_end(self):
         """An attack instance is over: tell the book whether it touched P1 (GIs are booked by _book)."""
         o, self.obs = self.obs, None
+        if o is not None and o["gi"] and o.get("at") is not None:
+            self.book.contact(o["fighter"], o["move"], o["at"])
         if o is None or o["gi"] or o["dist"] is None or o["dist"] > GI_RANGE:
             return
-        self.book.observe(o["fighter"], o["move"], o["touched"], round(o["dist"], 2))
+        self.book.observe(o["fighter"], o["move"], o["touched"], round(o["dist"], 2), o.get("at"))
 
     def _book(self, landed: bool):
         if self.gi_ctx is not None:
@@ -535,6 +652,7 @@ class Brain:
         """Start a GI: dirs "fwd" (6G Repel) or "back" (4G Parry), turned into keys when it is pressed."""
         self.stats["gi_tried"] += 1
         self.gi_dirs, self.gi_inst, self.gi_touched, self.gi_kind = dirs, self.inst, False, th["kind"]
+        self.gi_ptr = th["ptr"] if th.get("queued") else None
         self.gi_keys = ()                                # the press picks the key (and keeps it)
         self.gi_ctx = (p2["fighter"], th["move"], round(p2["dist"], 2)) if p2 is not None else None
         self.log("gi", th, dirs, self.prev["p1"]["m0"] if self.prev else None, round(self.gi_lead(holding_g), 2))
@@ -695,7 +813,7 @@ def play(ad, send, stopped, sleep=time.sleep, clock=time.monotonic, stats: dict 
     rd = m.rd if hasattr(m, "rd") else m
     stats = stats if stats is not None else {}
     if brain is None:
-        book = MoveBook((learn_dir or learn_dir_for(ad)) / "movebook.json")
+        book = MoveBook((learn_dir or learn_dir_for(ad)) / "movebook.json", seed=SEED_BOOK)
         brain = Brain(stats, book=book)
     elif brain.stats is not stats:                     # one stats dict: the watch panel's
         stats.update(brain.stats)
@@ -738,7 +856,9 @@ def _loop(rd, keys, brain, stats, stopped, sleep, clock, poll_s) -> dict:
         was_fight = False
         out_since = out_since or now
         if now - out_since > MENU_AFTER and now - last_menu > MENU_EVERY:
-            keys.tap(A, sleep)                          # results / next stage / continue: on to the next fight
+            # results / next stage / continue: on to the next fight; every fourth press is Start (the title's
+            # PRESS START, and it ends the attract demo)
+            keys.tap(START if stats.get("menu_presses", 0) % 4 == 3 else A, sleep)
             last_menu = clock()
             stats["menu_presses"] = stats.get("menu_presses", 0) + 1
         sleep(0.02)

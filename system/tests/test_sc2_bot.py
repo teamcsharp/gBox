@@ -27,8 +27,26 @@ class Ram:
         return bytes(self.b[o:o + n])
 
     def fighter(self, base, *, side=1, back=0, crouch=0, hp=240.0, result=0, dist=1.5, m0=0, m1=S.NEUTRAL,
-                f=0.0, speed=1.0, atk=None, connected=0, fighter=21, rounds=0):
+                f=0.0, speed=1.0, atk=None, connected=0, fighter=21, rounds=0, ctl=1, queued=None, queued_at=0.0,
+                alt=()):
+        """queued / alt: (move id, (flags, start, end) or None) continuations, built into a fake moveset."""
         self.put(base + S.SIDE, bytes([side]))
+        moveset = 0x80800000 + (base & 0xFFFF) * 0x10
+        self.put(base + S.MOVESET, struct.pack(">I", moveset))
+        bank = moveset + 0x28                                   # bank 0: moves at 0x80900000, attacks at 0x80A00000
+        self.put(bank + 8, struct.pack(">I", 0x80900000 + (base & 0xFFFF) * 0x10))
+        self.put(bank + 0x10, struct.pack(">I", 0x80A00000 + (base & 0xFFFF) * 0x10))
+        conts = [queued] + list(alt) + [None] * (3 - len(alt))
+        for i, c in enumerate(conts[:4]):
+            self.put(base + S.LAYER1 + S.L_QUEUED + 2 * i, struct.pack(">H", c[0] if c else S.NEUTRAL))
+            if c:
+                mv, rec = c
+                moves, atks = 0x80900000 + (base & 0xFFFF) * 0x10, 0x80A00000 + (base & 0xFFFF) * 0x10
+                self.put(moves + (mv & 0xFFF) * 0x60 + 0x58, struct.pack(">h", i if rec else -1))
+                if rec:
+                    self.put(atks + i * 0x60 + S.R_FLAGS, struct.pack(">HHhhh", rec[0], 1, rec[1], rec[2], 30))
+        self.put(base + S.LAYER1 + S.L_QUEUED_AT, struct.pack(">f", queued_at))
+        self.put(base + S.CTL, struct.pack(">I", ctl))
         self.put(base + S.F_BACK, bytes([back]))
         self.put(base + S.F_CROUCH, bytes([crouch]))
         self.put(base + S.F_CONNECTED, bytes([connected]))
@@ -88,6 +106,8 @@ def test_threat_timing_with_speed_and_connection():
 
 def test_no_fight_no_keys():
     assert S.Brain().decide(snap(fight=False), 0.0) == set()
+    s = snap({"ctl": 3}, {"atk": (0x4B, 13, 15), "f": 8.0})          # the attract demo: the CPU drives P1
+    assert not s["fight"] and S.Brain().decide(s, 0.0) == set()
 
 
 LEAD = S.GI_AT                                     # no send latency measured: decide a GI this many frames ahead
@@ -183,6 +203,76 @@ def test_no_gi_when_busy_far_or_flagged():
         assert b.decide(snap(p1, p2), 0.0) == {S.G}, (p1, p2)
 
 
+def test_no_gi_on_slow_windups_and_long_active_windows():
+    b = S.Brain()                                                  # clock at a tenth of the speed: guard it
+    assert b.decide(snap(p2={"atk": (0x6F, 14, 16), "f": 13.6, "speed": 0.1}), 0.0) == {S.G}
+    b = S.Brain()                                                  # active 24-34: it can land anywhere in it
+    assert b.decide(snap(p2={"atk": (0x37, 24, 34), "f": 24 - LEAD}), 0.0) == {"down", S.G}
+
+
+def test_a_gi_waits_again_when_the_attack_slows_down():
+    b = S.Brain()
+    b.wanted = {S.G}
+    lead = b.gi_lead(True)
+    assert b.decide(snap(p2={"atk": (0x6F, 14, 16), "f": 14 - lead}), 0.0) == set() and b.phase == "regrab"
+    # by the press the move winds up at 0.1 a frame: not yet (no keys), no GI counted
+    assert b.decide(snap(p2={"atk": (0x6F, 14, 16), "f": 14 - lead + 1, "speed": 0.1}), S.REGRAB_S + 0.01) == set()
+    assert b.phase == "guard" and b.stats["gi_tried"] == 0
+
+
+def test_queued_follow_up_is_timed_before_it_starts():
+    # P2 in a move at frame 10 that hands over to 0x168 at frame 14; 0x168 hits on its own frame 2: 6 frames away
+    s = snap(p2={"m1": 0x167, "f": 10.0, "queued": (0x168, (0x7F, 2, 9)), "queued_at": 14.0})
+    th = S.threat(s["p2"])
+    assert th["queued"] and th["move"] == 0x168 and th["t"] == pytest.approx(6.0) and th["kind"] == "special_mid"
+    s = snap(p2={"m1": S.NEUTRAL, "f": 40.0, "queued": (0x14E, (0x4B, 25, 27)), "queued_at": 8.0})
+    assert S.threat(s["p2"])["t"] == pytest.approx(25.0)                     # from neutral it starts at once
+
+
+def test_gi_a_queued_attack_once():
+    b = S.Brain()
+    p2q = {"m1": 0x167, "f": 14.0 - (LEAD - 2), "queued": (0x168, (0x7F, 2, 5)), "queued_at": 14.0}
+    assert b.decide(snap(p2=p2q), 0.0) == {"right", S.G} and b.gi_ptr is not None
+    # it starts: same record, now current, 1 frame in: no second GI for it
+    p2c = {"m1": 0x168, "f": 1.0, "atk": (0x7F, 2, 5)}
+    r = Ram()
+    r.fight(True)
+    r.fighter(S.P1)
+    r.fighter(S.P2, side=0, **p2c)
+    # the current record must be the queued one: point +0x1690 at it
+    rec = 0x80A00000 + (S.P2 & 0xFFFF) * 0x10
+    r.put(S.P2 + S.ATTACK, struct.pack(">I", rec))
+    r.put(rec + S.R_FLAGS, struct.pack(">HHhhh", 0x7F, 1, 2, 5, 30))
+    b.decide(S.snapshot(r.rd), 0.05)
+    assert b.stats["gi_tried"] == 1 and b.gi_inst == b.inst
+
+
+def test_long_active_window_is_timed_on_the_learned_contact_frame():
+    book = S.MoveBook(cautious=False)
+    b = S.Brain(book=book)
+    p2 = {"atk": (0x37, 24, 34), "f": 24 - LEAD, "m1": 0x14A, "fighter": 1}
+    assert b.decide(snap(p2=p2), 0.0) == {"down", S.G}                      # first sight: crouch guard it
+    for at in (7, 7, 8):
+        book.contact(1, 0x14A, at)                                          # it reached P1 7-8 frames in
+    b = S.Brain(book=book)
+    assert b.decide(snap(p2=p2), 0.0) == set()                              # not yet: it lands at 31
+    assert b.decide(snap(p2=dict(p2, f=31 - LEAD)), 0.02) == {"left", S.G}  # parry timed on frame 31
+
+
+def test_step_out_of_a_string_whose_next_part_is_unblockable():
+    b = S.Brain()
+    # the current part (a mid) is 1 frame from hitting: too late to impact; the next part is unblockable
+    p2 = {"m1": 0x168, "f": 1.0, "atk": (0x7F, 2, 9), "queued": (0x169, (0x47, 3, 9)), "queued_at": 9.0}
+    assert b.decide(snap(p2=p2), 0.0) == {"up"} and b.stats["steps"] == 1
+    # nothing current, the queued part unblockable: step when it is close
+    b = S.Brain()
+    p2 = {"m1": 0x167, "f": 2.0, "queued": (0x169, (0x47, 3, 9)), "queued_at": 9.0}
+    assert b.decide(snap(p2=p2), 0.0) == {"up"}
+    # an unblockable only among the alternatives (the continuation on a hit) counts too
+    p2 = {"m1": 0x17B, "f": 20.0, "queued": (0x17C, (0x4B, 38, 42)), "alt": [(0x17D, (0x43, 3, 6))], "queued_at": 23.0}
+    assert S.queued_unblockable(snap(p2=p2)["p2"])["t"] == pytest.approx(6.0)
+
+
 def test_staggered_p1_tries_a_gi_even_late():
     b = S.Brain()
     assert b.decide(snap({"m1": 0x23A4, "f": 30.0}, {"atk": (0x49, 13, 15), "f": 12.0}), 0.0) == {"right", S.G}
@@ -232,7 +322,7 @@ def test_sender_applies_the_newest_keys_off_the_poll_thread():
 
 
 def test_move_book_stops_impacting_feints():
-    book = S.MoveBook()
+    book = S.MoveBook(cautious=False)
     assert book.ok(21, 0x13C, 1.0)
     book.record(21, 0x13C, False, 0.6)
     assert book.ok(21, 0x13C, 1.0)
@@ -247,7 +337,7 @@ def test_move_book_stops_impacting_feints():
 
 
 def test_move_book_learns_reach_from_attacks_it_did_not_impact():
-    book = S.MoveBook()
+    book = S.MoveBook(cautious=False)
     for _ in range(4):
         book.observe(21, 0x140, True, 1.4)                 # guarded from 1.4
     book.observe(21, 0x140, False, 2.1)                    # met nothing from 2.1
@@ -265,6 +355,19 @@ def test_brain_books_attacks_that_end_untouched():
         b.decide(snap({"m1": 0x21A3}, {"atk": (0x4B, 20, 22), "f": f, "m1": 0x140, "dist": 1.6}), f / 60)
     b.decide(snap({"m1": 0x21A3}, {"m1": 0x141, "dist": 1.6}), 0.5)
     assert b.book.moves[S.MoveBook.key(21, 0x140)]["none"] == 1
+
+
+def test_cautious_book_guards_a_move_until_it_has_reached_p1(tmp_path):
+    seed = tmp_path / "seed.json"
+    seed.write_text(json.dumps({"moves": {S.MoveBook.key(21, 0xBF): {"land": 3, "miss": 0, "contact": 2, "none": 0,
+                                                                       "reach": 1.6}}}), encoding="utf-8")
+    book = S.MoveBook(tmp_path / "mine.json", seed=seed)
+    assert not book.ok(21, 0x140, 1.0)                     # never seen: guard it first
+    assert book.ok(21, 0xBF, 1.5) and not book.ok(21, 0xBF, 1.9)    # from the seed: impact within its reach
+    book.observe(21, 0x140, True, 1.2)                     # guarded once from 1.2: impact it from there
+    assert book.ok(21, 0x140, 1.2) and not book.ok(21, 0x140, 1.6)
+    b = S.Brain(book=S.MoveBook(cautious=True))
+    assert b.decide(snap(p2={"atk": (0x4B, 13, 15), "f": 13 - LEAD, "m1": 0x150}), 0.0) == {S.G}
 
 
 def test_move_book_round_trip(tmp_path):
