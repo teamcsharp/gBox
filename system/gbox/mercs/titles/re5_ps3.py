@@ -109,6 +109,16 @@ def snapshot(m) -> dict:
     return snap
 
 
+MENU_KEYS = ("start", "cross")         # results: START (OK); stage / character select: cross; "Continue?": cross = Yes
+
+
+def menu_key(n: int) -> str:
+    """The n-th press that walks Reunion's screens back into a round when RAM says no round is up: START and cross in
+    turn (live 2026-10-20: START leaves the results screen and does nothing on the selects; cross picks the stage and
+    the character - the last ones played - and does nothing on the results), so a press never wanders off."""
+    return MENU_KEYS[n % len(MENU_KEYS)]
+
+
 def own_screen(snap: dict) -> str:
     """playing / dead / results / loading from the round's fields: the player present with health and time left =
     playing; health 0 = dead ("You Are Dead - Continue?"); time 0 = results; no player = loading or menus."""
@@ -140,6 +150,7 @@ class Bot:
         self.hp_seen: dict = {}
         self.unstick_until = 0.0
         self.unstick_dir = 1
+        self.dead_tap = 0.0
 
     # --- the engine's brain interface ---
     def prompt_ok(self, button, snap, now) -> bool:
@@ -153,6 +164,12 @@ class Bot:
         p = snap.get("player")
         self.stats["max_combo"] = max(self.stats["max_combo"], snap.get("combo") or 0)
         if not p:
+            return {"hold": set()}
+        if p.get("hp") is not None and p["hp"] <= 0:        # "You Are Dead - Continue? Yes / No": Yes (cross)
+            if now - self.dead_tap > 1.5:
+                self.dead_tap = now
+                self.stats["deaths_continued"] = self.stats.get("deaths_continued", 0) + 1
+                return {"tap": "cross"}
             return {"hold": set()}
         self._score_hits(snap)
         # Majini and the like: alive, more than 1 health (crows are "enemies" with 1), not far above or below

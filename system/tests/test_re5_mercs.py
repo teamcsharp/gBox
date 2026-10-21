@@ -165,3 +165,36 @@ def test_play_round_runs_the_driver_until_the_round_ends():
                             sleep=lambda s: None, clock=lambda: n[0] * 0.5, tick_s=0.0)
     assert why == "round" and stats["timer"] == 100.0 and stats["score"] == 900
     assert {"key": "l1", "down": True} in sent        # pad names, pressed as a diff
+
+
+def with_camera(mem, eye, at):
+    """sBioCamera (static 0x0191CA6C) +0x104 -> uCameraCtrl: eye +0x30, look-at +0x50."""
+    cam_mgr, cam = 0x3827_8170, 0x304F_C760
+    mem.u32(R.S_CAMERA, cam_mgr)
+    mem.u32(cam_mgr + R.CAM_CTRL, cam)
+    mem.put(cam + R.CAM_EYE, struct.pack(">3f", *eye))
+    mem.put(cam + R.CAM_AT, struct.pack(">3f", *at))
+    return mem
+
+
+def test_aims_on_the_cameras_look_ray_when_there_is_one():
+    e = [((0.0, 0.0, 1000.0), 800, 800)]            # head at (0, 160, 1000)
+    eye = (0.0, 200.0, -150.0)                       # over the shoulder, behind the player
+    act, _ = tick(with_camera(world(action=2, enemies=e), eye, (0.0, 600.0, 400.0)))    # well above his head
+    assert "rdown" in act["hold"] and "r1" not in act["hold"]
+    act, _ = tick(with_camera(world(action=2, enemies=e), eye, (0.0, -300.0, 400.0)))   # at the ground
+    assert "rup" in act["hold"] and "r1" not in act["hold"]
+    act, _ = tick(with_camera(world(action=2, enemies=e), eye, (0.0, 160.0, 1000.0)))   # the crosshair on his head
+    assert act["hold"] >= {"l1", "r1"}
+    # facing +z, +x is on the left (the stick's left turns toward larger headings): a look at -x is right of him
+    act, _ = tick(with_camera(world(action=2, enemies=e), eye, (-400.0, 160.0, 1000.0)))
+    assert "rleft" in act["hold"] and "r1" not in act["hold"]
+    act, _ = tick(with_camera(world(action=2, enemies=e), eye, (400.0, 160.0, 1000.0)))   # left of him: turn right
+    assert "rright" in act["hold"] and "r1" not in act["hold"]
+
+
+def test_continues_after_you_are_dead_and_walks_the_menus():
+    bot = R.Bot(clock=lambda: 10.0)
+    assert bot.tick(R.snapshot(world(hp=0))) == {"tap": "cross"}
+    assert bot.tick(R.snapshot(world(hp=0))) == {"hold": set()}      # not again within 1.5 s
+    assert [R.menu_key(n) for n in range(4)] == ["start", "cross", "start", "cross"]

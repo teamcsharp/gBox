@@ -169,9 +169,15 @@ the title screen (RPCS3 rereads the host DATA0.DAT at each load) and read off th
   * It targets the nearest Majini in front, skipping crows (health 1), rooftops and the dead.
   * It turns with the right stick, aims with L1, puts the crosshair on the head and fires with R1.
   * It steps back when a Majini is on top of it and runs to them when far.
-  * Live on Public Assembly with Chris (Heavy Metal), whose Gatling has infinite ammo: 2-4 kills a round, 3x combo,
-    up to 1,220 points.
-  * The health freeze used while mapping was scratch-only. The bot only presses buttons.
+  * Between rounds it reads the screen from RAM (no player = menus or loading, clock 0 = results, health 0 =
+    "Continue?") and presses START and cross in turn. START leaves the results. Cross picks the last stage and
+    character and answers "Continue? Yes". Rounds loop without help.
+  * Live on Public Assembly with Chris (Heavy Metal), whose Gatling has infinite ammo, three rounds back to back
+    (2026-10-21, the Spark's scratch RPCS3): 14, 20 and 17 kills; 4,460, 7,460 and 6,260 points; best combo 7.
+    The first version (aim from the player's pitch) got 2-4 kills a round.
+  * A health freeze was on for those rounds. It is a scratch-only tool, never part of the driver. The bot only
+    presses buttons.
+  * Not yet: grabs ("Break free" is a left-stick wiggle), melee finishers on prompt, time bonuses and routes.
 
 ## Live checks (to run once, then flip `live_checked`)
 
