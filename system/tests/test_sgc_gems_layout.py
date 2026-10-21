@@ -1,9 +1,9 @@
 """Tests for the verified Sonic Gems Collection state layout.
 
-The fixture below is the real first 0xC4 bytes of the shipped
-``state_us__museum01.stm`` (0x00-0x7F header plus the 34 leading
-object records) taken from the owned disc, so these tests assert against
-actual game bytes rather than hand-written samples.
+The fixture is SYNTHETIC: it reproduces the shape of a shipped state save
+(0x00-0x7F header with game code / title / comment fields, then the 34 leading
+unset object records) without committing any bytes copied from the disc - the
+repo is public.
 """
 import os
 import sys
@@ -12,13 +12,17 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from gbox import sgc_gems_layout as L
 
-FIXTURE = bytes.fromhex(
-    "473258453850ff02534f4e49432047454d53425f30370000000000000000000000000000000000000a1bf2f800000040"
-    "0002000204000073001bffff00000000534f4e49432047454d5320434f4c4c454354494f4e0000000000000000000000"
-    "20383a20564543544f524d414e00000000000000000000000000000000000000817f817f817f817f817f817f817f817f"
-    "817f817f817f817f817f817f817f817f817f817f817f817f817f817f817f817f817f817f817f817f817f817f817f817f"
-    "817f817f"
-)
+
+def _fixture() -> bytes:
+    head = bytearray(L.RECORD_TABLE_OFFSET)
+    head[0:6] = b"G2XE8P"
+    head[0x08:0x08 + 13] = b"TESTBANNER_01"
+    head[0x40:0x40 + 21] = b"SONIC GEMS COLLECTION"
+    head[0x60:0x60 + 13] = b" 8: VECTORMAN"
+    return bytes(head) + bytes((0x81, L.UNSET_BYTE)) * L.LEADING_UNSET_RECORDS
+
+
+FIXTURE = _fixture()
 
 
 def test_vm_map_is_linear_and_roundtrips():

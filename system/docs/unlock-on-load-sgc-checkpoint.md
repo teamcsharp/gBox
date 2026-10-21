@@ -128,12 +128,11 @@ UI builder, not a state reader - so that cluster is **not** yet attributed.
   linear VA map, the state/STG filename tables, the 2-byte record decoder,
   header summariser, and the content inventory with an honest
   `CATEGORY_STATUS` (`unknown` = not yet mapped, never "absent").
-- `system/gbox/game_unlocks.py`: SGC `profile_for` and `pre_launch` now carry
-  `inventory`, `inventory_evidence`, `state_layout`; `pre_launch` adds
-  `additional_blockers` + `next_step` (the gate's own `blockers`/`next` are
-  left intact).
-- `system/tests/test_sgc_gems_layout.py` (new): 8 tests over a fixture built
-  from the **real** first `0xC4` bytes of `state_us__museum01.stm`.
+- `system/gbox/game_unlocks.py`: unchanged this run; `sgc_gems_layout` is not
+  wired into `profile_for`/`pre_launch` yet (the probe gate from run 1 still answers).
+- `system/tests/test_sgc_gems_layout.py` (new): 8 tests over a synthetic fixture
+  shaped like the first `0xC4` bytes of `state_us__museum01.stm` (no disc bytes
+  are committed).
 
 ### Tests
 
