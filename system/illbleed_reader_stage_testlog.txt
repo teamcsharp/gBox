@@ -1,0 +1,6 @@
+Illbleed analysis/reader stage focused test run
+command: PYTHONPATH=. pytest -q tests/test_illbleed_analysis_probe.py tests/test_illbleed_inventory.py tests/test_psxdisc_close.py
+source_sha256: cc63a6ba7d9b918a5969a39df3f24af0486fe0f9a998d5ca62f717fb454edaf7
+result:
+..................                                                       [100%]
+18 passed in 1.07s

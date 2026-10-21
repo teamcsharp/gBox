@@ -11,6 +11,31 @@ import pytest
 from gbox import illbleed_analysis_probe as ap
 from gbox.illbleed_inventory import njtl
 
+GAME_ID = "81a90290abc15a37"
+
+
+def _discover_gdi():
+    """Locate the owned Illbleed disc-cache .gdi for the probe.
+
+    Order: $GBOX_ILLBLEED_GDI, ~/gbox-cache/dc/<game_id>/disc.gdi,
+    /home/ehm_eckx/gBox_alt/gbox-cache/dc/<game_id>/disc.gdi.
+    The gBox_alt fallback keeps the probe from silently skipping on hosts
+    whose cache lives in the alt tree instead of ~/gbox-cache.
+    """
+    env = os.environ.get("GBOX_ILLBLEED_GDI")
+    cands = ([env] if env else []) + [
+        "~/gbox-cache/dc/%s/disc.gdi" % GAME_ID,
+        "/home/ehm_eckx/gBox_alt/gbox-cache/dc/%s/disc.gdi" % GAME_ID,
+    ]
+    for c in cands:
+        if not c:
+            continue
+        p = Path(c).expanduser()
+        if p.exists():
+            return p
+    return Path(cands[-1]).expanduser()
+
+
 
 def synth_njtl(names: list[str], payload: bytes) -> bytes:
     """A minimal NJTL file with one NJCM-style payload chunk."""
@@ -51,7 +76,7 @@ def test_playable_and_enemy_sample_lists():
 
 @pytest.fixture(scope="module")
 def disc_gdi():
-    p = Path(os.environ.get("GBOX_ILLBLEED_GDI", "~/gbox-cache/dc/81a90290abc15a37/disc.gdi")).expanduser()
+    p = _discover_gdi()
     if not p.exists():
         pytest.skip("Illbleed disc cache not present")
     return str(p)

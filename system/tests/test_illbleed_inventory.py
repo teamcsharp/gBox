@@ -10,6 +10,31 @@ import pytest
 
 from gbox import illbleed_inventory as iv
 
+GAME_ID = "81a90290abc15a37"
+
+
+def _discover_gdi():
+    """Locate the owned Illbleed disc-cache .gdi for the probe.
+
+    Order: $GBOX_ILLBLEED_GDI, ~/gbox-cache/dc/<game_id>/disc.gdi,
+    /home/ehm_eckx/gBox_alt/gbox-cache/dc/<game_id>/disc.gdi.
+    The gBox_alt fallback keeps the probe from silently skipping on hosts
+    whose cache lives in the alt tree instead of ~/gbox-cache.
+    """
+    env = os.environ.get("GBOX_ILLBLEED_GDI")
+    cands = ([env] if env else []) + [
+        "~/gbox-cache/dc/%s/disc.gdi" % GAME_ID,
+        "/home/ehm_eckx/gBox_alt/gbox-cache/dc/%s/disc.gdi" % GAME_ID,
+    ]
+    for c in cands:
+        if not c:
+            continue
+        p = Path(c).expanduser()
+        if p.exists():
+            return p
+    return Path(cands[-1]).expanduser()
+
+
 CHD_SHA = "cc63a6ba7d9b918a5969a39df3f24af0486fe0f9a998d5ca62f717fb454edaf7"
 EXE_SHA = "af9686e11df9efc02bcf97b7e5e744a4d981cfebdab7e1fe8a0281396461cee7"
 DEFAULT_GDI = "~/gbox-cache/dc/81a90290abc15a37/disc.gdi"
@@ -79,13 +104,13 @@ def test_afs_and_cgam_and_cglc_headers():
 
 @pytest.fixture(scope="module")
 def disc_gdi():
-    p = Path(os.environ.get("GBOX_ILLBLEED_GDI", DEFAULT_GDI)).expanduser()
+    p = _discover_gdi()
     if not p.exists():
         pytest.skip("Illbleed disc cache not present")
     return str(p)
 
 
-@pytest.mark.skipif(not Path(os.environ.get("GBOX_ILLBLEED_GDI", DEFAULT_GDI)).expanduser().exists(),
+@pytest.mark.skipif(not _discover_gdi().exists(),
                     reason="disc cache")
 def test_full_inventory_pins(disc_gdi):
     m = iv.inventory(disc_gdi, CHD_SHA)
