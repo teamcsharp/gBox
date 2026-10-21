@@ -57,6 +57,8 @@ contextBridge.exposeInMainWorld("gbox", {
   clientReload: state => ipcRenderer.invoke('client:reload', state),
   clientHandoff: () => ipcRenderer.invoke('client:handoff'),
   clientHandoffSaved: () => ipcRenderer.invoke('client:handoff-saved'),
+  clientView: () => ipcRenderer.invoke('client:view'),
+  clientViewSave: (state, origin) => ipcRenderer.invoke('client:view-save', state, origin),
   clientVersion: () => ipcRenderer.invoke('client:version'),
   browser: (op, url) => ipcRenderer.invoke("browser:send", op, url),
   embedFocus: () => ipcRenderer.invoke("embed:focus"),

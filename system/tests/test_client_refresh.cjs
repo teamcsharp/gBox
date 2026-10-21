@@ -111,7 +111,8 @@ test('missing saved session restores the original app window and retains retry i
   const html = await fs.readFile(path.join(__dirname, '../clients/desktop/index.html'), 'utf8');
   const src = html.slice(html.indexOf('async function restoreClientView()'), html.indexOf('// Native desktop PiP has no browser gesture restriction.'));
   const calls = [], value = { sid: 'exact-old', compact: true, section: 'play' }, EMB = {};
-  const ctx = vm.createContext({ EMB, clientRefresh: { pending: () => value, done: () => calls.push('consumed') },
+  const ctx = vm.createContext({ EMB, clientViewNavigation: 0, clientViewRestoring: true,
+    clientRefresh: { pending: () => value, retain() {}, remember() {}, done: () => calls.push('consumed') },
     document: { querySelector: selector => selector === '#wv' ? { gboxReady: Promise.resolve(), executeJavaScript: async () => ({ missing: [] }) } : { click() {} } }, loadPlay: async () => calls.push('load'),
     compactController: { enter: async v => { assert.equal(v.sid, 'exact-old'); throw Error('session unavailable'); } },
     gbox: { compactView: async v => calls.push(v.on) }, toast: text => calls.push(text) });
@@ -124,7 +125,9 @@ test('restoration waits for the guest and restores two streams before entering n
   const src=html.slice(html.indexOf('async function restoreClientView()'),html.indexOf('// Native desktop PiP has no browser gesture restriction.'));
   const calls=[], value={sid:'pip-B',compact:true,section:'play',guest:{tab:'Sessions',playing:'main-A',active:'main-A',pip:null}};
   let ready;const wv={gboxReady:new Promise(r=>ready=r),executeJavaScript:async script=>{assert.match(script,/main-A/);calls.push('guest');return {restored:['main-A'],missing:[]};}};
-  const ctx=vm.createContext({EMB:{},clientRefresh:{pending:()=>value,done:()=>calls.push('done')},
+  let pending=value;
+  const ctx=vm.createContext({EMB:{},clientViewNavigation:0,clientViewRestoring:true,
+    clientRefresh:{pending:()=>pending,retain(){},remember(){},done:()=>{pending=null;calls.push('done');}},
     document:{querySelector:s=>s==='#wv'?wv:{click(){}}},loadPlay:async()=>calls.push('load'),
     compactController:{enter:async v=>{assert.equal(v.sid,'pip-B');assert.equal(v.preserveGuest,true);calls.push('compact');}},
     gbox:{compactView:async()=>{}},toast:()=>{}});

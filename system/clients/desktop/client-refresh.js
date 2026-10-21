@@ -14,37 +14,58 @@
       section: typeof value?.section === 'string' && /^[a-z-]{1,40}$/.test(value.section) ? value.section : 'play' };
   }
   function create({ storage, context, readState, reload, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout }) {
-    let busy = null, lastGuest = null;
+    let busy = null, lastGuest = null, retained = null, restoreBaseline = null;
     const remember = value => { if (value && typeof value === 'object' && ('tab' in value || 'playing' in value)) lastGuest = guestState(value); };
     const pending = () => {
+      if (retained) return retained;
       try { const value = JSON.parse(storage.getItem(KEY));
         if (value?.v === 1 && Number.isFinite(value.at) && now() - value.at >= 0 && now() - value.at <= 300000) return snapshot(value, value.at);
       } catch {} return null;
     };
-    const done = () => storage.removeItem(KEY);
-    function checkpoint(guest) {
+    const done = () => { retained = restoreBaseline = null; storage.removeItem(KEY); };
+    function current(guest) {
       remember(guest);
       const before = context(), value = snapshot({ ...before, guest: lastGuest || before.guest,
-        sid: before.compact ? before.sid : lastGuest?.playing || lastGuest?.active || before.sid }, now());
-      storage.setItem(KEY, JSON.stringify(value)); return value;
+        sid: before.compact ? before.sid : lastGuest ? lastGuest.playing || lastGuest.active : before.sid }, now());
+      return value;
+    }
+    function checkpoint(guest) { const value = current(guest); storage.setItem(KEY, JSON.stringify(value)); return value; }
+    const navigation = guest => JSON.stringify({ revision: Number.isSafeInteger(guest?.revision) ? guest.revision : null,
+      guest: guestState(guest), section: context().section, compact: !!context().compact, sid: context().compact ? context().sid : null });
+    function retain(value, guest) {
+      retained = snapshot(value, now()); storage.setItem(KEY, JSON.stringify(retained));
+      restoreBaseline = guest && typeof guest.tab === 'string' ? navigation(guest) : null;
+    }
+    function observe(guest) {
+      if (!guest || typeof guest.tab !== 'string') return null; // unreadable guest must not erase the last good view
+      if (retained) {
+        const next = navigation(guest);
+        if (restoreBaseline === null) restoreBaseline = next;
+        else if (next !== restoreBaseline) done(); // a later selected view or explicit PiP close supersedes missing intent
+      }
+      if (retained) { retain(retained, guest); return retained; }
+      return current(guest);
     }
     function refresh() {
       if (busy) return busy;
       busy = (async () => {
-        const retry = pending();
-        if (retry) { await reload(retry); return retry; } // a partial reconnect must not overwrite the missing stream's intent
+        let retry = pending();
+        if (retry && !retained) { await reload(retry); return retry; }
         let timer;
         // A hung guest renderer must not prevent reloading the shell; its known selected session is the fallback.
         const guest = await Promise.race([Promise.resolve().then(readState).catch(() => ({})),
           new Promise(resolve => { timer = setTimer(() => resolve({}), 1500); })]);
         clearTimer(timer);
+        if (retained) observe(guest);
+        retry = pending();
+        if (retry) { await reload(retry); return retry; } // retain absent streams unless the operator changed views
         const value = checkpoint(guest);
         await reload(value); return value;
       })().finally(() => { busy = null; });
       return busy;
     }
     const adopt = value => { const saved = snapshot(value, now()); storage.setItem(KEY, JSON.stringify(saved)); return saved; };
-    return { refresh, pending, done, checkpoint, remember, adopt };
+    return { refresh, pending, done, checkpoint, current, remember, adopt, retain, observe };
   }
   function changed(baseline, current) {
     if (!baseline || !current) return { pending: false, restart: false };
