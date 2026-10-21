@@ -27,10 +27,19 @@ function fixture({ pref = null, surface: kind = 'native' } = {}) {
   const a = desktop.indexOf('// ---------------- voice overlay (#250)'), b = desktop.indexOf('document.addEventListener("focusin"', a);
   assert.ok(a > 0 && b > a, 'the voice overlay section exists');
   vm.runInContext(desktop.slice(a, b), ctx);
-  Object.assign(ctx, vm.runInContext('({ VOV, vovDecide, vovSignals, vovApply, vovEnable, vovEnabledPref })', ctx));
+  Object.assign(ctx, vm.runInContext('({ VOV, vovDecide, vovSignals, vovApply, vovEnable, vovEnabledPref, vovTick })', ctx));
+  f.tick = ctx.vovTick;                                     // the loop body; its setInterval starts after TALK (below)
   return Object.assign(f, { ctx, calls, store, classes });
 }
 const plain = x => JSON.parse(JSON.stringify(x));
+test('the overlay loop starts only after TALK and PTT are declared (no TDZ throw every 200 ms)', () => {
+  const start = desktop.indexOf('setInterval(vovTick, 200);'), talk = desktop.indexOf('const TALK = {'), ptt = desktop.indexOf('const PTT = {');
+  assert.ok(start > 0 && talk > 0 && ptt > 0, 'loop, TALK and PTT present');
+  assert.ok(start > talk && start > ptt, 'setInterval(vovTick) comes after both declarations');
+  assert.equal(desktop.split('setInterval(vovTick').length - 1, 1, 'one loop');
+  const a = desktop.indexOf('// ---------------- voice overlay (#250)'), b = desktop.indexOf('document.addEventListener("focusin"', a);
+  assert.doesNotMatch(desktop.slice(a, b), /setInterval\(/, 'the overlay section itself starts no timer');
+});
 
 test('the decision: on while someone talks, held briefly across pauses, a new random visual on each fresh start', () => {
   const f = fixture(), { vovDecide } = f.ctx, st = { on: false, last: 0, enabled: true, hold: 1500 };

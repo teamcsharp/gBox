@@ -3697,11 +3697,11 @@ function vovApply(d) {                                            // the GPU sur
   gpuGameVoice({ on: false });
   gbox.vizOverlay?.(d.on ? { on: true, rect: EMB.rect, holes: EMB.holes || [], level: d.level, beat: d.beat, mode: d.mode, restart: d.restart } : { on: false });
 }
-setInterval(() => {
+function vovTick() {                                             // every 200 ms, started where TALK is declared (below)
   const d = vovDecide(vovSignals(), VOV, Date.now());
   if (!d.on && !VOV.on) return;
   VOV.on = d.on; vovApply(d);
-}, 200);
+}
 document.addEventListener("focusin", e => { if (EMB.sid && e.target.closest?.("input, textarea, select, [contenteditable]")) gbox.appFocus?.(); });
 addEventListener("resize", () => { EMB.last = ""; });
 
@@ -5545,6 +5545,10 @@ $("#chatflowbtn").onclick = () => FLOW.on ? flowClose() : flowOpen();
 
 // ---------------- voice conversation: listen -> Spark STT -> agent -> XTTS clone voice; live sidebar ----------------
 const TALK = { on: false, stream: null, ctx: null, audio: null, seen: 0, phase: "idle", lvl: 0 };   // phase: idle | listening | thinking | speaking (#250)
+// The voice overlay loop (vovSignals reads TALK and PTT) starts here, after both exist. Started up with the overlay
+// code, any throw in the page script before this line left TALK in its temporal dead zone and the loop threw
+// "Cannot access 'TALK' before initialization" every 200 ms (2026-10-21, after the client-refresh boot crash).
+setInterval(vovTick, 200);
 const live = (h) => { $("#livefeed").insertAdjacentHTML("beforeend", h); $("#livefeed").scrollTop = $("#livefeed").scrollHeight; };
 const liveStatus = t => $("#livestatus").textContent = t;
 async function liveVoices() {
