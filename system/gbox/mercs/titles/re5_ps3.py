@@ -473,6 +473,15 @@ QTE_KEYS = ((0x8000, "square"), (0x1000, "triangle"), (0x4000, "cross"), (0x2000
             (0x0400, "l2"), (0x0800, "r2"), (0x0100, "l1"), (0x0200, "r1"))
 QTE_ALLOWED_MASK = sum(bit for bit, _ in QTE_KEYS)
 QTE_MODES = {1: "mash", 2: "release", 3: "mash", 4: "mash", 5: "mash"}
+QTE_STICK_MODES = {6: "mash:wiggle", 7: "stick:rotate", 8: "stick:y", 9: "stick:x"}
+QTE_STICK_SIGNATURES = {
+    0x00C2F118: bytes.fromhex("a01d00122b80003f419d028c65290001a01d00102b80003f419d026c65290008"),
+    0x000ABEF4: bytes.fromhex("801b0034540a031e2f8a0000419e00d4801a00142f800000"),
+    0x000ADAE8: bytes.fromhex("809900345489031e2f890000409e00b438000000913f00145403063e4bfffec8"),
+    0x000AD98C: bytes.fromhex("0000003c00000090000000a8000000c0000000dc000000fc0000011c0000013c0000015c0000015c")}
+QTE_ROTATION = (("lup",), ("lup", "lleft"), ("lleft",), ("lleft", "ldown"),
+                ("ldown",), ("ldown", "lright"), ("lright",), ("lright", "lup"))
+QTE_STICK_STEP_S = 0.08
 QTE_BUTTON_VT = 0x016332A8
 P_DYING_TIMER, P_RECOVER_BUTTON = 0x1CEC, 0x22DC
 
@@ -519,16 +528,22 @@ def selected_prompt(m):
             if struct.unpack_from(">I", button)[0] != QTE_BUTTON_VT \
                     or struct.unpack_from(">I", button, 0x70)[0] & 1 \
                     or not button[0x0A] or button[0x0C] or not players & 1 or mode != button_mode \
-                    or mode not in QTE_MODES or not 0 < index < len(QTE_MASKS) \
-                    or mask != QTE_MASKS[index] or not mask or mask & ~QTE_ALLOWED_MASK or label > 0xFF or label == 0x3B:
+                    or (mode not in QTE_MODES and mode not in QTE_STICK_MODES) or not 0 < index < len(QTE_MASKS) \
+                    or mask != QTE_MASKS[index] or label > 0xFF or label == 0x3B:
                 continue
-            chord = tuple(key for bit, key in QTE_KEYS if mask & bit)
-            if not chord:
-                continue
-            token = QTE_MODES[mode] + ":" + "+".join(chord)
+            chord = ()
+            if mode in QTE_STICK_MODES:
+                if any(m.rd(a, len(expected)) != expected for a, expected in QTE_STICK_SIGNATURES.items()):
+                    continue
+                token = QTE_STICK_MODES[mode]          # these handlers read stick directions, not the digital mask
+            else:
+                if not mask or mask & ~QTE_ALLOWED_MASK:
+                    continue
+                chord = tuple(key for bit, key in QTE_KEYS if mask & bit)
+                token = QTE_MODES[mode] + ":" + "+".join(chord)
             hp = struct.unpack(">h", m.rd(pl + P_HP, 2))[0]
             countdown = struct.unpack(">f", m.rd(pl + P_DYING_TIMER, 4))[0]
-            if QTE_MODES[mode] == "mash" and chord == ("circle",) and hp == 1 \
+            if QTE_MODES.get(mode) == "mash" and chord == ("circle",) and hp == 1 \
                     and math.isfinite(countdown) and countdown > 0 \
                     and u32(m, pl + P_RECOVER_BUTTON) == btn:
                 token = "mash"                         # the game's explicit SOLO_DYING_RECOVER button
@@ -539,7 +554,7 @@ def selected_prompt(m):
                                                 "target": struct.unpack_from(">I", button, BTN_TARGET)[0]}))
         if u32(m, S_ACTION) != ab or u32(m, sp + 0x28) != pl:
             return None
-        return min(requests, key=lambda row: row[:2])[2] if requests else None
+        return min(requests, key=lambda row: (row[2]["token"] != "mash", *row[:2]))[2] if requests else None
     except (ValueError, OSError, struct.error, IndexError):
         return None
 
@@ -699,6 +714,7 @@ class Bot:
         self.round_active = False
         self.round_end = None
         self._observed_snap = None
+        self._stick_token, self._stick_at, self._stick_step = None, 0.0, 0
 
     # --- the engine's brain interface ---
     def prompt_ok(self, button, snap, now) -> bool:
@@ -716,6 +732,8 @@ class Bot:
             return
         self._observed_snap = snap
         p = snap.get("player")
+        if where != "playing" or snap.get("prompt") not in ("stick:rotate", "stick:x", "stick:y"):
+            self._stick_token = None
         self.stats["resuscitating"] = snap.get("prompt") == "mash"
         if where == "playing" and p and snap.get("prompt") != "mash" and getattr(self.m, "adapter", None) is not None:
             from ...re5_mods_tool import maintain_health
@@ -810,6 +828,19 @@ class Bot:
         self.stats["max_combo"] = max(self.stats["max_combo"], snap.get("combo") or 0)
         if not p:
             return {"hold": set()}
+        stick_token = snap.get("prompt")
+        if stick_token in ("stick:rotate", "stick:x", "stick:y"):
+            self.aiming_since = None
+            if self._stick_token != stick_token:
+                self._stick_token, self._stick_at, self._stick_step = stick_token, now, 0
+            elif stick_token == "stick:rotate" and now - self._stick_at >= QTE_STICK_STEP_S:
+                # A delayed tick still moves only to the adjacent direction; neutral or skipped turns reset progress.
+                self._stick_step = (self._stick_step + 1) % len(QTE_ROTATION)
+                self._stick_at = now
+            keys = QTE_ROTATION[self._stick_step] if stick_token == "stick:rotate" else \
+                   (("lup",) if stick_token == "stick:y" else ("lleft",))
+            self.stats["qte_stick"] = stick_token
+            return {"hold": set(keys)}
         if prompt_chord(snap.get("prompt"), "release"):
             self.aiming_since = None
             return {"hold": set()}                     # mode2 succeeds when its requested held bits are absent
@@ -1255,6 +1286,7 @@ class RE5PS3(Driver):
     def __init__(self, clock=time.monotonic):
         self.clock = clock
         self._timer = (None, 0.0)              # the round's clock and when it last moved
+        self._wiggle_step = 0
 
     def snapshot(self, m) -> dict:
         return snapshot(m)
@@ -1279,14 +1311,19 @@ class RE5PS3(Driver):
         self._stats = stats
         def source():
             button = prompt(m)
-            return None if prompt_chord(button, "hold") or prompt_chord(button, "release") else button
+            return None if prompt_chord(button, "hold") or prompt_chord(button, "release") \
+                or button in ("stick:rotate", "stick:x", "stick:y") else button
         return source
 
     def prompt_keys(self, button) -> list:
-        if isinstance(button, str) and button.startswith(("hold:", "release:")):
+        if isinstance(button, str) and button.startswith(("hold:", "release:", "stick:")):
             return []                                  # continuous / neutral inputs belong to Bot.tick
         if isinstance(button, str) and button.startswith("mash:"):
-            chord = prompt_chord(button, "mash")
+            if button == "mash:wiggle":
+                chord = WIGGLE[self._wiggle_step % 2]
+                self._wiggle_step += 1
+            else:
+                chord = prompt_chord(button, "mash")
             if chord is None:
                 return []
             stats = getattr(self, "_stats", None)
