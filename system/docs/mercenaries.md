@@ -221,8 +221,9 @@ the title screen (RPCS3 rereads the host DATA0.DAT at each load) and read off th
     | the player's, kind 2 | the stage: "Jump over", ladders (square) | leaves it |
     | a Majini's (player action 4) | his grab: "Break free" (left stick) | wiggles |
 
-    The finisher press is in the driver and tested on RAM fixtures. The first live try ended when the session's game
-    froze, so its live check is still to come.
+    Live (2026-10-21, a gBox session): the bot pressed square on finisher prompts and Chris hit the Majini. Each
+    finisher kill gave the round **+5 seconds** ("+05 Sec." on the clock, counted as `bonus_s`). Frames:
+    `gbox-finisher-pressed-plus-5-sec.jpg`, `gbox-finisher-2-plus-5-sec.jpg`.
   * Time bonuses: the hourglasses (uOm0100; uOm0100.arc's model is "sunadokei_360", hourglass). There are 9 in Public
     Assembly, units of sUnit's move line 12 ("OM") with vtable 0x015EF5E0. Each is a small golden hourglass on the
     ground under a light pillar (frames).
@@ -259,8 +260,8 @@ the title screen (RPCS3 rereads the host DATA0.DAT at each load) and read off th
 
     RAM came from the session's RPCS3 (/proc, read only) and the presses went through the session's input API.
     In round 10 the emulator froze (the game's clock stopped at 1:48, RPCS3 still busy).
-  * Not yet: a time bonus taken live, routes between levels the player can take (ladders and stairs, not the
-    Majini-only drops), the finisher's press seen live (the prompts were), the enemies' attack states.
+  * Not yet: a time bonus taken live, and routes between levels the player can take (ladders and stairs, not the
+    Majini-only drops). Also the enemies' attack states, and item pick-ups ("□ Pick up", the same stage prompt).
 
 ## Live checks (to run once, then flip `live_checked`)
 
