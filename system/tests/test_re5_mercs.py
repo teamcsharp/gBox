@@ -198,3 +198,57 @@ def test_continues_after_you_are_dead_and_walks_the_menus():
     assert bot.tick(R.snapshot(world(hp=0))) == {"tap": "cross"}
     assert bot.tick(R.snapshot(world(hp=0))) == {"hold": set()}      # not again within 1.5 s
     assert [R.menu_key(n) for n in range(4)] == ["start", "cross", "start", "cross"]
+
+
+def with_ui(mem, names, line=27):
+    """sUnit (static 0x0191D700) with the interface units `names` in one move line (+0x24 + 0x20 * line: +0xC the first
+    unit; a unit's +8 the next); a unit is its vtable (UI_VTABLES)."""
+    sunit, first = 0x3882_5B20, 0x3009_8D00
+    vt = {v: k for k, v in R.UI_VTABLES.items()}
+    mem.u32(R.S_UNIT, sunit)
+    mem.u32(sunit + R.UNIT_LINES + R.LINE_STRIDE * line + R.LINE_FIRST, first if names else 0)
+    for i, n in enumerate(names):
+        u = first + 0x100 * i
+        mem.u32(u, vt[n])
+        mem.u32(u + R.UNIT_NEXT, u + 0x100 if i + 1 < len(names) else 0)
+    return mem
+
+
+def between_rounds(names):
+    mem = world(timer=0.0)
+    mem.u32(SPLAYER + 0x28, 0)                       # out of a round: sPlayer holds no player
+    return with_ui(mem, names)
+
+
+def test_the_screens_between_rounds_come_from_the_interface_units():
+    assert R.screen(between_rounds(["uIdStartUp21", "uIdTitle00", "uIdTopMenu00"]))["where"] == "select_stage"
+    assert R.screen(between_rounds(["uIdStartUp22", "uIdTitle02", "uIdTopMenu00"]))["where"] == "select_player"
+    assert R.screen(between_rounds(["uIdNowLoading00"]))["where"] == "loading"
+    assert R.screen(between_rounds(["uIdSaving00"]))["where"] == "loading"       # the results, saving the records
+    assert R.screen(between_rounds(["uIdTitle00", "uIdTopMenu00"]))["where"] == "menu"   # between the selects / main menu
+    assert R.screen(between_rounds([]))["where"] == "results"                     # the clock at 0, nothing else up
+    mem = world(enemies=[((0.0, 0.0, 900.0), 800, 800)])
+    assert R.screen(with_ui(mem, ["uIdMerce00", "uIdPause00"]))["where"] == "playing"
+    assert R.screen(world(hp=0))["where"] == "dead"
+
+
+def test_it_presses_only_on_the_reunion_screens():
+    assert R.step({"where": "results"}) == "start"
+    assert R.step({"where": "select_stage"}) == "cross" and R.step({"where": "select_player"}) == "cross"
+    assert R.step({"where": "dead"}) == "cross"
+    for where in ("menu", "loading", "unknown", "playing"):
+        assert R.step({"where": where}) is None, where                       # never a press on the title's menus
+    assert R.wandered({"where": "menu"}) is None
+
+
+def test_a_grab_is_answered_with_a_wiggle():
+    held = world(action=R.P_GRABBED, enemies=[((0.0, 0.0, 60.0), 800, 800)])
+    assert R.prompt(held) == "wiggle"
+    assert R.prompt(world(action=2)) is None
+    drv = R.RE5PS3()
+    assert drv.prompt_source(held, {})() == "wiggle"
+    assert drv.prompt_keys("wiggle") == [("lleft",), ("lright",), ("lleft",), ("lright",)]
+    assert drv.prompt_keys("square") == [("square",)]
+    from gbox.mercs import reactions
+    assert "wiggle" in reactions.MASH                                             # the engine mashes it, never rests
+    assert R.snapshot(held)["player"]["state"] == "grabbed"

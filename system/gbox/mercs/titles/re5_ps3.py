@@ -35,7 +35,8 @@ P_POS, P_ROT, P_PITCH, P_ACTION, P_HP = 0x30, 0x40, 0x1AA0, 0x845, 0x14A4
 E_POS, E_HP = 0x30, 0x14A4
 GS_TIMER, GS_START, GS_KILLS, GS_COMBO, GS_COMBO_T, GS_SCORE = 0x3E0, 0x3E4, 0x3F4, 0x3FC, 0x404, 0x418
 MAX_ENEMIES = 64
-ACTIONS = {0: "stand", 1: "move", 2: "aim", 5: "hit"}
+ACTIONS = {0: "stand", 1: "move", 2: "aim", 4: "grabbed", 5: "hit"}
+P_GRABBED = 4                          # held by a Majini: "Break free" (wiggle the left stick)
 
 HEAD_H, GUN_H = 160.0, 140.0           # above the feet: a Majini's head, the player's gun (cm)
 ENGAGE, SHOOT_RANGE, TOO_CLOSE = 3000.0, 2200.0, 110.0
@@ -117,6 +118,92 @@ def menu_key(n: int) -> str:
     turn (live 2026-10-20: START leaves the results screen and does nothing on the selects; cross picks the stage and
     the character - the last ones played - and does nothing on the results), so a press never wanders off."""
     return MENU_KEYS[n % len(MENU_KEYS)]
+
+
+# The screens between rounds, from the interface's own units (live 2026-10-21): sUnit keeps its units in move lines,
+# +0x24 + 0x20 * line: +0xC the line's first unit, and each unit's +8 is the next. The interface lives in lines 0
+# (PrePro), 26 (ID1), 27 (ID2) and 28 (Message); a unit's class is told by its vtable (each named by its getDTI).
+UNIT_LINES, LINE_STRIDE, LINE_FIRST, UNIT_NEXT = 0x24, 0x20, 0xC, 0x8
+UI_LINES = (0, 26, 27, 28)
+UI_VTABLES = {0x015ABAC8: "uIdMerce00",         # the round's Mercenaries HUD (clock, score, combo)
+              0x015ABE28: "uIdPause00",         # the in-round pause menu (there while a round runs)
+              0x015ABB80: "uIdNowLoading00",    # NOW LOADING
+              0x015ABEE0: "uIdSaving00",        # saving the records on the results screen
+              0x015ACD50: "uIdStartUp21",       # STAGE SELECT (Reunion)
+              0x015ACCF0: "uIdStartUp22",       # CHARACTER SELECT (Reunion)
+              0x015AD690: "uIdTopMenu00",       # the title's menus (around the selects, and the main menu)
+              0x015AD638: "uIdTitle00",
+              0x015AD588: "uIdTitle02"}
+UI_MAX = 64
+
+
+def ui_units(m) -> set:
+    """The interface units up now, by class name (only the ones UI_VTABLES knows)."""
+    su = u32(m, S_UNIT)
+    out: set = set()
+    if not ptr_ok(su):
+        return out
+    for line in UI_LINES:
+        u, n = u32(m, su + UNIT_LINES + LINE_STRIDE * line + LINE_FIRST), 0
+        while ptr_ok(u) and n < UI_MAX:
+            name = UI_VTABLES.get(u32(m, u))
+            if name:
+                out.add(name)
+            u, n = u32(m, u + UNIT_NEXT), n + 1
+    return out
+
+
+def screen(m, merc=None) -> dict:
+    """The deployment's menus interface (gbox/mercs_bot.py): where RE5 is, read from RAM. In a round: playing / dead /
+    results (the round's own fields). Out of one (no player), from the interface units: select_player (CHARACTER
+    SELECT), select_stage (STAGE SELECT), loading (NOW LOADING, saving the records), menu (the title's menus between the
+    selects, or the main menu: never pressed on), results (the round's results: the clock at 0 and none of those up)."""
+    snap = snapshot(m)
+    out = {"where": own_screen(snap), "cursor": None, "target": None}
+    if snap.get("player"):
+        return out
+    ui = ui_units(m)
+    if "uIdStartUp22" in ui:
+        where = "select_player"
+    elif "uIdStartUp21" in ui:
+        where = "select_stage"
+    elif ui & {"uIdNowLoading00", "uIdSaving00"}:
+        where = "loading"
+    elif ui & {"uIdTopMenu00", "uIdTitle00", "uIdTitle02"}:
+        where = "menu"
+    elif snap.get("timer") is not None and snap["timer"] <= 0:
+        where = "results"
+    else:
+        where = "unknown"
+    out.update(where=where, ui=sorted(ui))
+    return out
+
+
+STEPS = {"results": "start", "select_stage": "cross", "select_player": "cross", "dead": "cross"}
+
+
+def step(scr: dict) -> str | None:
+    """The one press towards the next round: START leaves the results, cross takes the stage and the character the
+    cursors are on (the last ones played), cross answers "Continue? Yes". Nothing on the title's other menus."""
+    return STEPS.get(scr.get("where"))
+
+
+def wandered(scr: dict) -> str | None:
+    """Never: the bot presses only on the Reunion screens above, so it never starts a story game."""
+    return None
+
+
+WIGGLE = (("lleft",), ("lright",), ("lleft",), ("lright",))
+
+
+def prompt(m) -> str | None:
+    """The prompt the game asks the player to answer, from RAM: "wiggle" while a Majini holds him (action 4, the
+    "Break free" prompt: the left stick wiggled; live 2026-10-21), else None."""
+    sp = u32(m, S_PLAYER)
+    pl = u32(m, sp + 0x28) if ptr_ok(sp) else 0
+    if ptr_ok(pl) and m.rd(pl + P_ACTION, 1)[0] == P_GRABBED:
+        return "wiggle"
+    return None
 
 
 def own_screen(snap: dict) -> str:
@@ -283,6 +370,14 @@ class RE5PS3(Driver):
 
     def brain(self, m, stats: dict, clock, learn_dir=None, nav=None):
         return Bot(m, clock=clock, stats=stats)
+
+    def prompt_source(self, m, stats: dict):
+        return lambda: prompt(m)
+
+    def prompt_keys(self, button) -> list:
+        if button == "wiggle":
+            return list(WIGGLE)
+        return [tuple(str(button).split("+"))]
 
     def progress(self, snap: dict) -> dict:
         return {"timer": snap.get("timer"), "combo": snap.get("combo"), "score": snap.get("score"),
