@@ -3586,15 +3586,34 @@ def create_app(config: Config) -> FastAPI:
                                          "cond": threading.Condition()})
 
     @app.get("/api/sessions")
-    def sessions(actor=Depends(auth), include_ended: bool = True):
+    def sessions(actor=Depends(auth), include_ended: bool = True, limit: int = 60):
+        """Every running session, plus the newest `limit` ended ones (0 = the whole archive). The archive holds every
+        session ever played, and a row costs three store reads: building all of them took 45-120 s on the loaded
+        Spark (2026-10-21), which stalled the Sessions view, autoplay ops and every agent that lists sessions."""
         out = []
         now = time.time()
         from . import built_mods
         names = built_mods.display_names(store)       # a session of a renamed build: mod_title (Mini window title)
         favs = built_mods.favorites(store)            # the session header's "★ Favorite this build" offer
-        for s_ in store.all("session", reverse=True):
-            if not include_ended and s_.get('state') != 'running':
-                continue
+        running = store.running_sessions()
+        if not include_ended:
+            rows = sorted(running, key=lambda s: s.get("started") or 0, reverse=True)
+        elif limit > 0:
+            rows = store.recent("session", limit + len(running))          # newest first, as the archive order
+            seen = {s["session_id"] for s in rows}
+            rows += [s for s in running if s["session_id"] not in seen]   # an old session still running
+            ended = 0
+            kept = []
+            for s_ in rows:
+                if s_.get("state") != "running":
+                    ended += 1
+                    if ended > limit:
+                        continue
+                kept.append(s_)
+            rows = kept
+        else:
+            rows = store.all("session", reverse=True)
+        for s_ in rows:
             lv = live.get(s_["session_id"], {})
             row = s_ | {"last_frame_age": round(now - lv["ts"], 1) if lv.get("ts") else None}
             # the build folder it runs (a staged "<mod>~<build>" copy is still that build): the header renames it
