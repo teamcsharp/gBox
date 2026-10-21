@@ -144,6 +144,8 @@ COMBO_CROWD, COMBO_NEAR = 5, 3500.0              # this many Ganados this close:
 EM_HP = 0x320                                    # Ganado (EmMgr slot) +0x320 s16 health, +0x322 s16 max (found
                                                  # 2026-10-20: 1000 / 1800 at full, falls with hits, 0 at death)
 MISSES_TO_ADJUST = 3                             # misses in a row at a raised / lowered target: the next aim height
+BLOCKED_MISSES, BLOCKED_SKIP_S = 3, 5.0          # misses in a row at one Ganado: something is in the way, leave him
+BLOCKED_R = 2500.0                               # ... when he is this close and on Leon's level (a level shot)
 PITCH_STEPS = (0.0, -0.05, 0.05, -0.1, 0.1, -0.15, 0.15)   # aim-height offsets tried in turn after misses (radians)
 CELL = 400.0                                     # the learned map's grid (world units)
 STUCK_S, STUCK_MOVE = 0.9, 250.0                 # running but moved less than this in that long (any way): blocked
@@ -752,13 +754,27 @@ class Bot:
     def _score(self, s, now):
         """What the shots did (gbox.re4_threats.Shots: a shot hit when a Ganado's health fell or one started dying
         within HIT_S of it). MISSES_TO_ADJUST misses in a row at a raised / lowered target try the next aim-height
-        offset (kept while it lands); a level shot at the chest keeps no offset."""
+        offset (kept while it lands); a level shot at the chest keeps no offset. BLOCKED_MISSES misses in a row at one
+        Ganado that is not attacking: something stands between (live 2026-10-21: a water tank the level map's line of
+        sight let through took a clip) - he is left for BLOCKED_SKIP_S, the next one taken."""
         before = self.shots.stats["misses"], self.shots.stats["hits"]
         self.shots.update(s["enemies"], now)
         misses = self.shots.stats["misses"] - before[0]
         if self.shots.stats["hits"] > before[1]:
             self.miss_run = 0
+            self.miss_by = {}
         self.miss_run += misses
+        tgt = self.target_slot
+        e = next((x for x in s["enemies"] if x["slot"] == tgt), None) if misses and tgt is not None and tgt >= 0 else None
+        p = s.get("player")
+        if e is not None and p and abs(e["pos"][1] - p["pos"][1]) < ELEV_DY \
+                and math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2]) < BLOCKED_R:
+            self.miss_by = getattr(self, "miss_by", {})      # (a level shot this close misses for a wall, not the aim)
+            self.miss_by[tgt] = self.miss_by.get(tgt, 0) + misses
+            if self.miss_by[tgt] >= BLOCKED_MISSES:
+                self.skip[tgt] = now + BLOCKED_SKIP_S
+                self.miss_by.pop(tgt)
+                self.stats["blocked_skips"] = self.stats.get("blocked_skips", 0) + 1
         if self.miss_run >= MISSES_TO_ADJUST:
             self.pitch_i = (self.pitch_i + 1) % len(PITCH_STEPS)
             self.stats["pitch_offset"] = PITCH_STEPS[self.pitch_i]

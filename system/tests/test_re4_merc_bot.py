@@ -226,7 +226,8 @@ def test_a_target_that_soaks_fire_is_skipped():
     assert 1 in bot.skip                              # the near one never died
     now[0] = 7.1
     m.put(B.MERC_TIMER, ">I", int((100 - now[0]) * 30))
-    assert bot.tick(B.snapshot(m))["hold"] & {"left", "right"}      # turning round to the other one
+    act = bot.tick(B.snapshot(m))["hold"]
+    assert act & {"left", "right"} or act >= {"down", "b"}           # turning round to the other one (stick / quick turn)
 
 
 def test_play_presses_and_lets_go(monkeypatch):
@@ -769,6 +770,24 @@ def test_the_gun_points_at_his_facing_plus_the_aims_own_offset():
     bot = B.Bot(m, clock=lambda: 0.0, nav=False)
     act = bot.tick(B.snapshot(m))
     assert "a" not in act["hold"] and "left" in act["hold"]
+
+
+def test_a_ganado_that_shots_never_reach_is_left_for_the_next():
+    """BLOCKED_MISSES misses in a row at one (not attacking) Ganado: something is in the way (live 2026-10-21: a water
+    tank took a clip) - he is skipped for BLOCKED_SKIP_S and the other one is shot."""
+    now = [0.0]
+    m = world([((0, 0, 2000), True), ((1500, 0, 1500), True)])          # straight ahead, and one off to his left
+    facing(m, 0.0)
+    m.put(PL + 0xFC, ">4B", 0, 6, 1, 1)                                   # aiming
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    for k in range(B.BLOCKED_MISSES):                                     # three shots, none lands
+        bot.target_slot = 1
+        bot.shots.fired(now[0])
+        now[0] += B.threats_ram.Shots.HIT_S + 0.6
+        bot._score(B.snapshot(m), now[0])
+    assert bot.skip.get(1, 0) > now[0] and bot.stats["blocked_skips"] == 1
+    act = bot.tick(B.snapshot(m))
+    assert bot.aim["slot"] == 2 or "left" in act["hold"]                  # the other one now
 
 
 def test_the_turn_rate_is_measured_from_his_turns():
