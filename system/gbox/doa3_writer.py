@@ -201,24 +201,27 @@ def _material_template(geometry: dict, obj_index: int) -> list[int]:
 
 
 def _part_record(geometry: dict, obj_index: int, part: dict, vertex_floor: int):
-    """(vertex array (N, 8) float32, index list, materials [(header words, packets)]) for a replaced OBJ."""
-    vertices = np.asarray(part["vertices"], np.float32).reshape(-1, 8)
-    if not len(vertices):
+    """(vertex array (N, 8) float32, index list, materials [(header words, packets)], first donor vertex) for a
+    replaced OBJ. The native vertices stay first, untouched and drawn by nothing: whatever the CAT addresses by
+    native vertex number (the face / hand morph links, per-vertex lists) keeps landing on them, never on the donor.
+    The donor's vertices follow and its strips index them from there."""
+    donor = np.asarray(part["vertices"], np.float32).reshape(-1, 8)
+    if not len(donor):
         raise ValueError(f"OBJ {obj_index} replacement has no vertices")
-    pad = max(vertex_floor - len(vertices), 0)
-    if pad:
-        # padding repeats the first vertex: references the CAT keeps by index stay in range, nothing draws them
-        vertices = np.concatenate([vertices, np.repeat(vertices[:1], pad, 0)])
+    native = np.frombuffer(geometry["objects"][obj_index]["vertex_bytes"], "<f4").reshape(-1, 8)
+    base_vertex = len(native)
+    vertices = np.concatenate([native, donor])
     if len(vertices) > 0xFFFF:
-        raise ValueError(f"OBJ {obj_index} replacement has {len(vertices)} vertices; u16 strips address 65535")
+        raise ValueError(f"OBJ {obj_index} replacement needs {len(vertices)} vertices; u16 strips address 65535")
     template = _material_template(geometry, obj_index)
     indices, materials = [], []
     for group in part["materials"]:
         tris = np.asarray(group["triangles"], int).reshape(-1, 3)
         if not len(tris):
             continue
-        if tris.min() < 0 or tris.max() >= len(part["vertices"]):
+        if tris.min() < 0 or tris.max() >= len(donor):
             raise ValueError(f"OBJ {obj_index} triangle references a missing vertex")
+        tris = tris + base_vertex
         strips = stripify(tris)
         local, packets = strip_buffer(strips)
         base = len(indices)
@@ -279,22 +282,21 @@ def encode_costume(template: bytes, parts: dict[int, dict] | None = None, textur
             mat_bytes = b"".join(struct.pack(f"<{C.MAT_HEADER_WORDS}I", *header)
                                  + b"".join(struct.pack("<4I", 32 * (n + 2), off, n, 0) for off, n in packets)
                                  for header, packets in materials)
-            sphere = struct.pack("<4f", *_sphere(vertices[:len(parts[k]["vertices"]), :3]))
+            sphere = struct.pack("<4f", *_sphere(vertices[obj["vertex_count"]:, :3]))
             records.append({"vcount": len(vertices), "groups": len(vertices), "materials": mat_bytes,
                             "indices": indices, "sphere": sphere})
             vertex_blobs.append(vertices.astype("<f4").tobytes())
         else:
             start = obj["offset"]
             mat_bytes = template[start + C.MAT_HEADER_BASE:obj["index_offset"] - 8]
-            vb = obj["vertex_bytes"]
+            indices = list(struct.unpack(f"<{obj['index_count']}H", obj["index_bytes"]))
             if k in hide:
-                v = np.frombuffer(vb, "<f4").reshape(-1, 8).copy()
-                v[:, :3] = v[0, :3]
-                vb = v.tobytes()
+                # every strip collapses onto vertex 0: nothing draws, and vertex data the CAT may still write
+                # (morph links) can never pull a triangle back into view
+                indices = [0] * len(indices)
             records.append({"vcount": obj["vertex_count"], "groups": obj["header"][3], "materials": mat_bytes,
-                            "indices": list(struct.unpack(f"<{obj['index_count']}H", obj["index_bytes"])),
-                            "sphere": template[start + 0x50:start + 0x60]})
-            vertex_blobs.append(vb)
+                            "indices": indices, "sphere": template[start + 0x50:start + 0x60]})
+            vertex_blobs.append(obj["vertex_bytes"])
 
     # ---- textures: native (raw or shrunk) + appended
     native = table["texture_descriptors"]

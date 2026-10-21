@@ -381,6 +381,8 @@ def _decode_strip(indices, off: int, n: int, flags: int, vcount: int) -> tuple[l
     if max(raw) >= vcount:
         raise ValueError(f"strip index {max(raw)} outside the OBJ vertex range {vcount}")
     triangles = _strip_triangles(raw)[:n]
+    if not triangles and len(set(raw)) == 1:
+        return raw, []                    # a strip collapsed onto one vertex: a part the writer hid (never native)
     if len(triangles) != n:
         raise ValueError(f"strip at index {off} yields {len(triangles)} triangles, its packet declares {n}")
     return raw, triangles

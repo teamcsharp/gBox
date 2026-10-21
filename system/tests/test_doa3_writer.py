@@ -109,8 +109,9 @@ def test_stripify_round_trips_through_the_costume_decode_rule():
     assert sum(n for _, n in packets) == len(tris)
 
 
-def test_replaced_part_keeps_native_vertex_floor_and_decodes():
+def test_replaced_part_keeps_the_native_vertices_first_and_decodes():
     seed = _seed(2, ((W.DXT1, 8, 8),))
+    native = C.costume_geometry(seed)["objects"][1]
     verts = np.zeros((3, 8), np.float32)
     verts[:, :3] = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
     verts[:, 5] = 1
@@ -119,8 +120,9 @@ def test_replaced_part_keeps_native_vertex_floor_and_decodes():
                             [(word, payload)])
     geo = C.costume_geometry(blob)
     obj = geo["objects"][1]
-    assert obj["vertex_count"] == 4                                 # padded up to the native 4
-    assert obj["triangles"] == [(0, 1, 2)]
+    assert obj["vertex_count"] == 4 + 3                             # native 4 kept (undrawn) + the donor's 3
+    assert obj["vertices"][:4] == native["vertices"]                # whatever the CAT addresses stays native
+    assert obj["triangles"] == [(4, 5, 6)]
     assert obj["materials"][0]["texture"] == 1
     table = C.mdl_descriptor_table(blob)
     assert table["texture_count"] == 2 and table["texture_descriptors"][1]["format"] == word
@@ -129,12 +131,13 @@ def test_replaced_part_keeps_native_vertex_floor_and_decodes():
     assert sphere[:3] == pytest.approx((0.5, 0.5, 0.0)) and sphere[3] == pytest.approx(0.7071, abs=1e-3)
 
 
-def test_hidden_part_collapses_every_vertex_and_keeps_its_records():
+def test_hidden_part_draws_nothing_and_keeps_its_records_and_vertices():
     seed = _seed(2, ((W.DXT1, 8, 8),))
     blob = W.encode_costume(seed, hide={0})
     a, b = C.costume_geometry(seed)["objects"][0], C.costume_geometry(blob)["objects"][0]
-    assert a["index_bytes"] == b["index_bytes"] and a["materials"][0]["header"] == b["materials"][0]["header"]
-    assert {v[:3] for v in b["vertices"]} == {b["vertices"][0][:3]}
+    assert a["materials"][0]["header"] == b["materials"][0]["header"]
+    assert a["vertex_bytes"] == b["vertex_bytes"]                    # vertex numbering intact for the CAT
+    assert set(b["index_bytes"]) == {0} and b["triangle_count"] == 0
 
 
 def test_shrunk_texture_becomes_a_4x4_stand_in():

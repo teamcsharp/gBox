@@ -340,13 +340,13 @@ def costume_replacements(afs_path, plan: dict[str, dict], progress=lambda *_: No
                 roles = costume_roles(cat, geo["object_count"])
                 res = fit(rig, geo, roles)
                 hide = hidden_parts(roles, set(res["parts"]), geo["object_count"])
-                blob = W.encode_costume(xpr, res["parts"], res["textures"], hide=hide,
-                                        shrink_textures=set(range(geo["chunk"]["tex_count"])))
+                # native textures, CAT and vertex numbering stay as they are: the costume only gains the donor's
+                # vertices (after the native ones), strips, materials and textures
+                blob = W.encode_costume(xpr, res["parts"], res["textures"], hide=hide)
             except Exception as error:  # noqa: BLE001 - the costume stays native; the reason is reported
                 reports.append({"costume": costume, "status": "native_kept", "reason": repr(error)[:300]})
                 continue
             replacements[xe["index"]] = blob
-            replacements[ce["index"]] = W.disable_cat_links(cat)
             reports.append({"costume": costume, "status": "replaced", "donor": rig.get("slug") or rig.get("source"),
                             "xpr_bytes": len(blob), "room": xe.get("room"), "hidden_parts": len(hide),
                             **{k: v for k, v in res["report"].items() if k != "parts"}})
