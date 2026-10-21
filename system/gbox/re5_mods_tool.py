@@ -6,7 +6,7 @@ ops (session_id = a running RE5 session on the Spark; in the worker the Mercenar
 package through run() at round start, gbox/mercs_bot.py):
   status                          what is on: turn / fire / damage multipliers, the no-ammo flag count, the weapon in hand
   turn_speed multiplier=N         the stick turns the player N times faster, aimed and not (2 = default, "max" = 10)
-  fire_rate multiplier=N          every weapon fires N times faster, semi-auto ones repeat while R1 is held (80)
+  fire_rate multiplier=N          scales firing tables and the re-fire timer (80); measured shot rate may differ
   infinite_ammo on=true|false     no weapon spends rounds (the HUD shows the infinity sign; the Gatling's own flag)
   unlimited_health on=true|false full living HP each snapshot, plus exact-signature-verified Muteki hit immunity
   bullet_damage multiplier=N      every weapon's firepower x N at every upgrade level
@@ -435,8 +435,8 @@ def fire_rate(g: RE5, mult) -> dict:
     _, m92 = _upg_group(u, 0x02, G_FIRE)
     return {"fire_rate_x": k, "verified": ok, "fire_timer_fps": round(g.f32(FIRE_TIMER_FPS), 2),
             "m92f_frames_between_shots": round(m92[0], 4),
-            "note": "every weapon's firing-speed table / N and the fire action's re-fire timer x N: semi-auto guns "
-                    "repeat while R1 is held (a handgun fires like a machine gun); 1 restores the game's values"}
+            "note": "firing-speed table / N and fire-action timer x N; held fire still depends on weapon animation "
+                    "and update gates, so N is not measured shots per second; 1 restores the game's values"}
 
 
 def infinite_ammo(g: RE5, on: bool) -> dict:

@@ -713,6 +713,7 @@ class Bot:
         self.close_escape_until = self.close_acquire_until = 0.0
         self.round_active = False
         self.round_end = None
+        self._round_player = None
         self._observed_snap = None
         self._stick_token, self._stick_at, self._stick_step = None, 0.0, 0
 
@@ -746,6 +747,8 @@ class Bot:
             if health.get("refilled"):
                 self.stats["health_refills"] = self.stats.get("health_refills", 0) + 1
         if where != "playing" or not p:
+            if where == "results":
+                self._observe_result(snap)
             self.nav_learning.suspend()
             self.last_timer = None
             self.bonus_seen.clear()
@@ -783,6 +786,7 @@ class Bot:
             self.round_active, self.round_end = True, None
             if self.combat is not None:
                 self.combat.start_round(now)
+        self._round_player = p.get("ptr")
         if self.combat is not None:
             self.combat.observe(snap, now)
         mesh = snap.get("nav")
@@ -805,6 +809,29 @@ class Bot:
         if taken:
             self.stats["bonuses_taken"] = self.stats.get("bonuses_taken", 0) + len(taken)
         self.bonus_seen = standing
+
+    def _observe_result(self, snap):
+        """The score can finish counting after timer0; retain only valid totals from this round's player."""
+        p, timer = snap.get("player") or {}, snap.get("timer")
+        if not (self.round_active or self.round_end == "results") or not self._round_player \
+                or p.get("ptr") != self._round_player or not isinstance(timer, (int, float)) \
+                or not math.isfinite(timer) or timer > 0:
+            return
+        # Result/menu teardown can clear counters before sPlayer disappears. Never replace a known total with that.
+        for key in ("score", "kills"):
+            value, prior = snap.get(key), self.stats.get(key)
+            if type(value) is int and 0 <= value <= 0x7FFFFFFF \
+                    and (not isinstance(prior, (int, float)) or value >= prior):
+                self.stats[key] = value
+        self.stats["timer"] = 0.0
+        combo = snap.get("combo")
+        if type(combo) is int and 0 <= combo <= 0x7FFFFFFF:
+            self.stats["max_combo"] = max(self.stats.get("max_combo", 0), combo)
+        rank = rank_of(self.stats.get("score"))
+        if rank:
+            self.stats["rank"] = rank
+        self.stats.update(ROSTER.observe({"score": self.stats.get("score"), "kills": self.stats.get("kills"),
+                                          "combo": self.stats.get("max_combo")}))
 
     def plan(self) -> dict:
         """What the bot is doing, for the tactical map (gbox/mercs/tactical.py): no RAM reads, only state held."""
@@ -1311,6 +1338,10 @@ class RE5PS3(Driver):
         self._stats = stats
         def source():
             button = prompt(m)
+            if button == "mash:square":
+                request = selected_prompt(m)
+                if request and request["token"] == button and request["kind"] == BTN_MELEE and request["mode"] == 1:
+                    return "square"                    # ordinary finisher: preserve attack timing and boss limit
             return None if prompt_chord(button, "hold") or prompt_chord(button, "release") \
                 or button in ("stick:rotate", "stick:x", "stick:y") else button
         return source
