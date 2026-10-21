@@ -237,6 +237,8 @@ class Config(BaseModel):
     ida_home: str | None = None           # IDA Pro install folder (idat64.exe / idat.exe) for the `ida` tool
     native_decomp: dict = {}  # per-engine home and optional DecompPipeline ghidra_home/java_home/vcvars
     n64recomp_path: str | None = None     # N64Recomp executable or its folder for the `n64recomp` tool
+    rpcs3_appimage: str | None = None     # linux PS3 sessions: an RPCS3 AppImage, its extracted AppRun or an rpcs3 binary
+                                          # (unset: the official build for this CPU from GitHub, sha256-checked)
     decomp_me_enabled: bool = False       # opt-in: the `decomp_me` tool only talks to the network when true
     decomp_me_url: str = "https://decomp.me/api"
     ninja_ripper: dict = {}               # path, dll, launcher_args, hotkey, output_dir (docs/rip_and_decomp_tools.md)
