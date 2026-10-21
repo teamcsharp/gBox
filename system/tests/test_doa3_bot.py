@@ -174,6 +174,20 @@ def test_a_cast_build_names_the_fighters_it_swapped(tmp_path):
     assert doa3_bot.Deployment.cast_fighters(ad) == [] and doa3_bot.Deployment.cast_fighters(SimpleNamespace()) == []
 
 
+def test_the_evidence_sheet_puts_real_frames_side_by_side():
+    import io
+    from PIL import Image
+    frames = []
+    for color in ((255, 0, 0), (0, 255, 0)):
+        buf = io.BytesIO()
+        Image.new("RGB", (640, 480), color).save(buf, "PNG")
+        frames.append(buf.getvalue())
+    out = Image.open(io.BytesIO(doa3_bot.sheet([(0.05, frames[0]), (0.25, frames[1])], "hold_mid -> held")))
+    assert out.size == (960, 382)                                  # two 480x360 frames and a caption strip
+    assert out.getpixel((100, 200)) == (255, 0, 0) and out.getpixel((700, 200)) == (0, 255, 0)
+    assert doa3_bot.sheet([(0, b"not an image")], "x") == b"not an image"
+
+
 def test_start_is_refused_in_a_game_unless_p1_is_the_virtual_pad(tmp_path):
     ram = Ram()
     dep = doa3_bot.Deployment(SimpleNamespace(config=SimpleNamespace(runtime=tmp_path)))
@@ -192,7 +206,7 @@ def test_a_paid_hold_leaves_a_real_frame_as_evidence(tmp_path):
     ad = SimpleNamespace(get_frame=lambda: b"\x89PNG frame", config=SimpleNamespace(runtime=tmp_path))
     stats = {}
     dep = doa3_bot.Deployment(ad, stats=stats, upload=lambda *a, **k: uploads.append((a, k)) or "ab" * 32)
-    dep.EVIDENCE_DELAY_S = 0
+    dep.EVIDENCE_BURST_S = (0, 0)
     hold = D.Doa3().answers(Attack(), World(0, 0, "fight", Fighter(side=1), Fighter(side=-1)))[0]
     dep.evidence(hold, "held", 30.0, World(120, 0, "fight", Fighter(), Fighter()))
     dep.evidence(hold, "taken", -10.0, World(130, 0, "fight", Fighter(), Fighter()))    # didn't pay: no frame
