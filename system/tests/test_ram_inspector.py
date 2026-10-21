@@ -337,6 +337,22 @@ def test_the_read_budget_throttles_and_live_serves_the_last_values(app):
     assert app.get(f"/api/sessions/{SID}/ram/hex", params={"address": "0x80000000", "length": 64}).status_code == 429
 
 
+def test_a_range_longer_than_one_request_is_read_in_pieces_and_joined():
+    fake = FakeRam(4 << 20)
+    fake.ram[:] = bytes(range(256)) * (len(fake.ram) // 256)
+    asked = []
+
+    def rpc(sid, op, args, wait):
+        asked.append([n for _, n in args["ranges"]])
+        return ram_reader.serve("w9-x", type("Ad", (), {"read_memory": lambda self, a, n: fake.read(a, n)})(), args)
+    r = ram_reader.RpcReader("w9-x", rpc)
+    a, b = r.read_many([(MEM1 + 5, (2 << 20) + 3), (MEM1, 16)], wait=5)
+    assert a == bytes(fake.ram[5:5 + (2 << 20) + 3]) and b == bytes(fake.ram[:16])
+    assert all(sum(x) <= r.piece and max(x) <= ram_reader.MAX_RANGE for x in asked)   # within one request's limits
+    bad = r.read_many([(MEM1 + (4 << 20) - 8, 64)], wait=5)[0]
+    assert isinstance(bad, Exception)                           # a piece that fails fails its whole range
+
+
 def test_budget_waits_for_its_bytes_then_refuses():
     now = [0.0]
     slept = []

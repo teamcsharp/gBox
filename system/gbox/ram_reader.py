@@ -95,39 +95,41 @@ class Reader:
         raise NotImplementedError
 
     def read_many(self, ranges, wait: float = 1.0) -> list:
-        """Each (addr, n) -> bytes, or the exception that range raised. Batches of at most `piece` bytes, each taking
-        its share of the budget (Throttled when the budget is not there within `wait`)."""
+        """Each (addr, n) -> bytes, or the exception that range raised. Batches of at most `piece` bytes (a longer
+        range is read in pieces and joined), each taking its share of the budget (Throttled when the budget is not
+        there within `wait`)."""
         ranges = [(int(a), int(n)) for a, n in ranges]
-        out: list = [None] * len(ranges)
+        pieces = [(i, a + o, min(self.piece, n - o)) for i, (a, n) in enumerate(ranges) for o in range(0, max(n, 1), self.piece)]
+        got_p: list = [None] * len(pieces)
         batch, size = [], 0
         batches = []
-        for i, (a, n) in enumerate(ranges):
+        for j, (_, _, n) in enumerate(pieces):
             if batch and (size + n > self.piece or len(batch) >= MAX_RANGES):
                 batches.append(batch)
                 batch, size = [], 0
-            batch.append(i)
+            batch.append(j)
             size += n
         if batch:
             batches.append(batch)
         for k, b in enumerate(batches):
-            self.budget.take(sum(ranges[i][1] for i in b), wait)
+            self.budget.take(sum(pieces[j][2] for j in b), wait)
             if k and self.gap_s:
                 self.sleep(self.gap_s)                   # a halted CPU runs again between pieces
             with self.lock:
-                got = self._many([ranges[i] for i in b])
-            for i, d in zip(b, got):
-                out[i] = d
+                got = self._many([(pieces[j][1], pieces[j][2]) for j in b])
+            for j, d in zip(b, got):
+                got_p[j] = d
+        out: list = [b""] * len(ranges)
+        for (i, _, _), d in zip(pieces, got_p):
+            if isinstance(out[i], Exception):
+                continue
+            out[i] = d if isinstance(d, Exception) else out[i] + bytes(d)
         return out
 
     def read(self, addr: int, n: int, wait: float = 1.0) -> bytes:
-        if n > self.piece:
-            parts = self.read_many([(addr + o, min(self.piece, n - o)) for o in range(0, n, self.piece)], wait)
-        else:
-            parts = self.read_many([(addr, n)], wait)
-        for p in parts:
-            if isinstance(p, Exception):
-                raise p
-        data = b"".join(parts)
+        data = self.read_many([(addr, n)], wait)[0]
+        if isinstance(data, Exception):
+            raise data
         if len(data) < n:
             raise ValueError(f"short read at {addr:#x}: {len(data)} of {n} bytes")
         return data
