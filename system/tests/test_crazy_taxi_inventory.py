@@ -19,7 +19,22 @@ import pytest
 
 import gbox.crazy_taxi as ct
 
-ISO_PATH = Path("/home/ehm_eckx/gbox-cache/modbase/bc02bb68790ce2e7/Crazy Taxi (USA).iso")
+def _owned_iso() -> Path:
+    """The owned disc: GBOX_CT_ISO overrides, then the two known cache roots (this
+    worker's gBox_alt cache and the prime Spark's gbox-cache). A wrong hardcoded
+    path made the whole suite skip silently - see request #2513."""
+    env = os.environ.get("GBOX_CT_ISO")
+    for candidate in (Path(env) if env else None,
+                      Path("/home/ehm_eckx/gBox_alt/gbox-cache/modbase/bc02bb68790ce2e7/"
+                           "Crazy Taxi (USA).iso"),
+                      Path("/home/ehm_eckx/gbox-cache/modbase/bc02bb68790ce2e7/"
+                           "Crazy Taxi (USA).iso")):
+        if candidate is not None and candidate.is_file():
+            return candidate
+    return Path("/nonexistent/Crazy Taxi (USA).iso")
+
+
+ISO_PATH = _owned_iso()
 BANK_ENV = "GBOX_CT_BANK"
 
 EXPECTED_SHAPES = 1586
