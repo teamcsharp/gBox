@@ -57,9 +57,11 @@ QUICK = {1: "dup", 3: "dleft", 5: "dright", 7: "ddown"}
 HOLD_FIRE = {0x15, 0x03, 0x09}         # automatic weapons fired by holding R1 (the Gatling, the VZ61, Chris HM's
 HOLD_CAP = 50                          # uWp09); or any with a big magazine (autos): the rest fire once a press
 TAP_ON, TAP_OFF = 1, 2                 # ticks of R1 down / up when tapping (a magnum's own recovery is longer)
-HEAL_IDS = {0x301, 0x302, 0x303, 0x304, 0x307, 0x309}   # Green / Red / Yellow Herb, First Aid Spray, mixes GG / GR
-                                       # (the item tables, from the RE5 mods agent 2026-10-21)
+# PS3 item table: spray, green herb, GG and GR; uncombined red (0x306) cannot heal.
+# https://astralshade.wordpress.com/2013/12/19/resident-evil-5-ps3-mod-weapons-hack/
+HEAL_IDS = {0x304, 0x305, 0x307, 0x309}
 HEAL_AT = 0.4                          # use one below this share of health
+HEAL_USE_EVERY_S, HEAL_ATTEMPT_S, HEAL_RETRY_S = 0.35, 4.0, 1.0
 WEAPON_NAMES = {0x02: "M92F", 0x03: "VZ61", 0x0B: "M29", 0x12: "Barry's handgun", 0x15: "Gatling", 0x20: "Dragunov"}
 ENGAGE, SHOOT_RANGE, TOO_CLOSE = re5_combat.ENGAGE_R, 2200.0, 110.0
 CLOSE_ESCAPE_S, CLOSE_ACQUIRE_S = 0.25, 1.0  # escape briefly, then give the gun time to become ready
@@ -736,7 +738,8 @@ class Bot:
         self.plan_target = None
         self.flags: dict = {}
         self.reload_until = 0.0
-        self.heal_at = 0.0
+        self.heal_at = -math.inf
+        self.healing = None
         self.switch_at = -math.inf
         self.switch_pending = None
         self.switch_blocked, self.switch_failures = {}, {}
@@ -775,6 +778,10 @@ class Bot:
             return
         self._observed_snap = snap
         p = snap.get("player")
+        priority_prompt = snap.get("prompt") and not (self.combat is not None and self.combat.optional_prompt_blocked(snap))
+        if self.healing is not None and (priority_prompt or snap.get("recovery_active")
+                                         or (p or {}).get("action") == P_GRABBED):
+            self.healing["at"] = now           # observed mandatory interruptions pause only the bounded healing window
         if getattr(self.m, "adapter", None) is not None:
             from ...re5_mods_tool import ORIG
             from . import re5_controls
@@ -801,6 +808,7 @@ class Bot:
             if health.get("refilled"):
                 self.stats["health_refills"] = self.stats.get("health_refills", 0) + 1
         if where != "playing" or not p:
+            self.healing = None
             if self.combat is not None:
                 self.combat.awareness = []
             if where == "results":
@@ -845,6 +853,8 @@ class Bot:
                 self.switch_blocked.clear()
                 self.switch_failures.clear()
                 self.switch_at = -math.inf
+                self.healing = None
+                self.heal_at = -math.inf
             self.round_active, self.round_end = True, None
             if self.combat is not None:
                 self.combat.start_round(now)
@@ -979,6 +989,9 @@ class Bot:
             self.aiming_since = None                        # stays down between its presses (L1 would cancel it)
             self.stats["prompt_holds"] = self.stats.get("prompt_holds", 0) + 1
             return {"hold": set()}
+        heal = self._heal(p, snap, now)                     # equip, confirm in hand, then Square to actually use it
+        if heal:
+            return heal
         if snap.get("stage_prompt") and not close_foes:     # a ladder / jump-down / vault / door / "□ Time bonus" /
             self.aiming_since = None                        # pick up: take it at once, before anything else (operator
             self.stats["stage_presses"] = self.stats.get("stage_presses", 0) + 1   # 2026-10-21: he ignored a ledge
@@ -986,9 +999,6 @@ class Bot:
             if self.stuck_since is not None:                # and a door). A prompt while stuck = it was blocking him.
                 self.stats["stuck_prompts_cleared"] = self.stats.get("stuck_prompts_cleared", 0) + 1
             return {"tap": "square"}
-        heal = self._heal(p, snap, now)                     # low: a herb / a spray from a quick slot
-        if heal:
-            return heal
         if self._control_state is not None:
             from . import re5_controls
             requested = re5_controls.consume(self._control_state, id(self), snap, self._switch_weapon, now,
@@ -1262,25 +1272,93 @@ class Bot:
         return d < FIGHT_R and off < FIGHT_CONE
 
     def _heal(self, p, snap, now):
-        """Below HEAL_AT of his health, with a healing item (HEAL_IDS) in a quick slot: the D-pad uses it (once a
-        4 s); one in a corner slot can't be quick-used (logged). Unknown item ids are logged for the table."""
+        """D-pad equips; Square uses the confirmed recovery item (Capcom PS3 manual, Actions pp16–17).
+
+        https://static.capcom.com/manuals/re5/RE5_PS3_DMNL_EN.pdf
+        Keep combat from switching it away between these two actions. Attempts are bounded and are not heals.
+        """
         inv = snap.get("inventory") or ()
         items = [s for s in inv if s["type"] != 1]
         if items:
             self.stats["items"] = ", ".join(f"{s['id']:#x}x{s['rounds']}@{s['slot']}" for s in items)
         hp, hp_max = p.get("hp") or 0, p.get("hp_max") or 0
-        if hp_max <= 0 or hp > HEAL_AT * hp_max or now - self.heal_at < 4.0 or p.get("action") == P_GRABBED:
+        if hp_max <= 0 or hp <= 1 or snap.get("recovery_active") or p.get("action") == P_GRABBED:
             return None
-        heals = [s for s in items if s["id"] in HEAL_IDS]
+        state, eq = self.healing, equipped(snap)
+        if state is not None:
+            if state["player"] != p.get("ptr"):
+                self.healing = None
+                return None
+            item = next((s for s in items if re5_weapons.inventory_key(s) == state["key"]), None)
+            # Grid/storage relocation is not consumption. Compare all records of the same item ID.
+            count = sum(s.get("rounds", 0) for s in items if s.get("id") == state["id"])
+            consumed = bool(inv) and count < state["count"]
+            if state["uses"] and consumed:
+                self.stats["heal_items_used"] = self.stats.get("heal_items_used", 0) + 1
+                if hp > state["hp"]:
+                    self.stats["heals"] = self.stats.get("heals", 0) + 1
+                self.stats["heal_status"] = "item consumption observed" + ("; HP increased" if hp > state["hp"] else "; HP gain unconfirmed")
+                self.healing, self.heal_at = None, now
+                return self._heal_return_weapon(inv, state, now)
+            if hp > HEAL_AT * hp_max:
+                self.stats["heal_status"] = "health recovered; item use not confirmed"
+                self.healing, self.heal_at = None, now
+                return self._heal_return_weapon(inv, state, now)
+            if now - state["at"] >= HEAL_ATTEMPT_S or state["uses"] >= 12:
+                self.stats["heal_failures"] = self.stats.get("heal_failures", 0) + 1
+                self.stats["heal_status"] = "use unconfirmed; bounded retry"
+                self.healing, self.heal_at = None, now
+                return self._heal_return_weapon(inv, state, now)
+            if item is None or not item.get("rounds"):
+                self.healing, self.heal_at = None, now
+                self.stats["heal_status"] = "selected item unavailable"
+                return self._heal_return_weapon(inv, state, now)
+            self.stats["phase"] = "healing"
+            if item.get("hand"):
+                if now - state["last_use"] >= HEAL_USE_EVERY_S:
+                    state["last_use"], state["uses"] = now, state["uses"] + 1
+                    self.stats["heal_use_presses"] = self.stats.get("heal_use_presses", 0) + 1
+                    self.stats["heal_status"] = "Square use; awaiting consumption and HP"
+                    return {"tap": "square"}
+                return {"hold": set()}             # do not raise the gun or switch away while use is pending
+            if now - state["equip_at"] >= SWITCH_ACK_S and state["equips"] < 2:
+                key = re5_weapons.quick_key(item)
+                if key:
+                    state["equip_at"], state["equips"] = now, state["equips"] + 1
+                    self.stats["heal_equip_attempts"] = self.stats.get("heal_equip_attempts", 0) + 1
+                    return {"tap": key}
+            self.stats["heal_status"] = "awaiting recovery item in hand"
+            return {"hold": set()}
+        if hp > HEAL_AT * hp_max or now - self.heal_at < HEAL_RETRY_S:
+            return None
+        heals = [s for s in items if s["id"] in HEAL_IDS and s.get("rounds", 0) > 0]
         if not heals:
             return None
-        quick = next((s for s in heals if re5_weapons.quick_key(s)), None)
+        quick = next((s for s in heals if s.get("hand")), None) or next((s for s in heals if re5_weapons.quick_key(s)), None)
         if quick is None:
             self.stats["heal_out_of_reach"] = heals[0]["slot"]
             return None
-        self.heal_at = now
-        self.stats["heals"] = self.stats.get("heals", 0) + 1
+        self.switch_pending = None                 # emergency healing owns selection until this bounded sequence ends
+        self.healing = {"key": re5_weapons.inventory_key(quick), "player": p.get("ptr"), "id": quick["id"],
+                        "count": sum(s.get("rounds", 0) for s in items if s.get("id") == quick["id"]),
+                        "hp": hp, "at": now, "last_use": -math.inf, "uses": 0,
+                        "equip_at": now, "equips": 0 if quick.get("hand") else 1,
+                        "return": re5_weapons.inventory_key(eq) if eq and eq.get("type") == 1 else None}
+        self.stats["phase"] = "healing"
+        if quick.get("hand"):
+            return self._heal(p, snap, now)          # the screenshot's already-held spray needs Square, not another D-pad
+        self.stats["heal_equip_attempts"] = self.stats.get("heal_equip_attempts", 0) + 1
+        self.stats["heal_status"] = "equipping recovery item"
         return {"tap": re5_weapons.quick_key(quick)}
+
+    def _heal_return_weapon(self, inv, state, now):
+        guns = [s for s in inv if s.get("type") == 1 and s.get("rounds", 0) > 0 and re5_weapons.quick_key(s)
+                and (re5_weapons.WEAPONS.get(s.get("item")) is not None)
+                and re5_weapons.WEAPONS[s["item"]].family in re5_weapons.DIRECT]
+        gun = next((s for s in guns if re5_weapons.inventory_key(s) == state["return"]), None) or next(iter(guns), None)
+        if gun is not None and not gun.get("hand"):
+            return self._switch_weapon(gun, now, "resume after healing")
+        return None
 
     def _take(self, p, tgt, stage_prompt, now) -> dict:
         """At a time bonus: walk onto it, then tap square to punch it. The "□ Time bonus" prompt is not the kind-2

@@ -848,6 +848,138 @@ def test_live_inventory_storage_order_is_not_the_dpad_grid():
     assert tick(heal)[0] == {"hold": set()}
 
 
+def healing_bot(tmp_path, *, held=False, action=0):
+    now = [100.0]
+    mem = with_inventory(world(hp=100, action=action, enemies=[((0, 0, 180), 800, 800)]),
+                         {0: (0x10B, 6, 6, not held), 6: (0x304, 1, 1, held)}, grids={0: 3, 6: 1})
+    bot = R.Bot(m=mem, clock=lambda: now[0], learn_dir=tmp_path, lessons=lambda row: None)
+    return bot, mem, now
+
+
+def test_heal_equips_then_confirms_in_hand_then_square_without_combat_switching_away(tmp_path):
+    bot, mem, now = healing_bot(tmp_path)
+    assert bot.tick(R.snapshot(mem)) == {"tap": "dup"}
+    assert bot.stats.get("heals", 0) == 0 and bot.stats["heal_equip_attempts"] == 1
+    now[0] += .1
+    assert bot.tick(R.snapshot(mem)) == {"hold": set()}  # selection alone is not healing or permission to use Square
+    mem.u32(PLAYER + R.P_INV + R.INV_HAND, 0)
+    mem.u32(PLAYER + R.P_INV + 6 * R.INV_SLOT + R.INV_HAND, 1)
+    now[0] += .1
+    assert bot.tick(R.snapshot(mem)) == {"tap": "square"}
+    now[0] += .1
+    assert bot.tick(R.snapshot(mem)) == {"hold": set()}
+    assert bot.stats.get("weapon_switch_attempts", 0) == 0
+    assert bot.stats.get("heals", 0) == 0 and bot.stats["heal_use_presses"] == 1
+
+
+def test_held_spray_uses_square_immediately_even_outside_quick_grid_after_hit(tmp_path):
+    bot, mem, now = healing_bot(tmp_path, held=True, action=5)
+    mem.u32(PLAYER + R.P_INV + 6 * R.INV_SLOT + R.INV_GRID, 8)
+    assert bot.tick(R.snapshot(mem)) == {"tap": "square"}
+    now[0] += R.HEAL_USE_EVERY_S + .01
+    assert bot.tick(R.snapshot(mem)) == {"tap": "square"}
+    assert bot.stats["heal_use_presses"] == 2 and bot.stats.get("heals", 0) == 0
+
+
+def test_heal_counts_observed_consumption_and_hp_gain_then_returns_to_loaded_gun(tmp_path):
+    bot, mem, now = healing_bot(tmp_path)
+    bot.tick(R.snapshot(mem))
+    mem.u32(PLAYER + R.P_INV + R.INV_HAND, 0)
+    mem.u32(PLAYER + R.P_INV + 6 * R.INV_SLOT + R.INV_HAND, 1)
+    now[0] += .2
+    assert bot.tick(R.snapshot(mem)) == {"tap": "square"}
+    mem.put(PLAYER + R.P_HP, struct.pack(">h", 1000))
+    mem.put(PLAYER + R.P_INV + 6 * R.INV_SLOT + R.INV_USED, b"\0")
+    now[0] += .5
+    assert bot.tick(R.snapshot(mem)) == {"tap": "dleft"}
+    assert bot.stats["heals"] == bot.stats["heal_items_used"] == 1
+    assert bot.healing is None
+    now[0] += .1
+    bot.tick(R.snapshot(mem))
+    assert bot.stats["heals"] == 1
+
+
+def test_hp_refill_without_item_consumption_is_not_a_claimed_heal(tmp_path):
+    bot, mem, now = healing_bot(tmp_path, held=True)
+    assert bot.tick(R.snapshot(mem)) == {"tap": "square"}
+    mem.put(PLAYER + R.P_HP, struct.pack(">h", 1000))
+    now[0] += .5
+    assert bot.tick(R.snapshot(mem)) == {"tap": "dleft"}
+    assert bot.stats.get("heals", 0) == bot.stats.get("heal_items_used", 0) == 0
+    assert "not confirmed" in bot.stats["heal_status"]
+
+
+def test_relocated_spray_with_external_hp_gain_is_not_consumption_or_healing(tmp_path):
+    bot, mem, now = healing_bot(tmp_path, held=True)
+    assert bot.tick(R.snapshot(mem)) == {"tap": "square"}
+    mem.u32(PLAYER + R.P_INV + 6 * R.INV_SLOT + R.INV_GRID, 7)
+    mem.put(PLAYER + R.P_HP, struct.pack(">h", 1000))
+    now[0] += .5
+    bot.tick(R.snapshot(mem))
+    assert bot.stats.get("heals", 0) == bot.stats.get("heal_items_used", 0) == 0
+    assert bot.healing is None
+
+
+def test_unconfirmed_item_selection_and_use_have_bounded_attempts(tmp_path):
+    bot, mem, now = healing_bot(tmp_path)
+    assert bot.tick(R.snapshot(mem)) == {"tap": "dup"}
+    now[0] += R.SWITCH_ACK_S
+    assert bot.tick(R.snapshot(mem)) == {"tap": "dup"}
+    now[0] += R.HEAL_ATTEMPT_S
+    bot.tick(R.snapshot(mem))
+    assert bot.healing is None and bot.stats["heal_failures"] == 1
+    assert bot.stats["heal_equip_attempts"] == 2 and bot.stats.get("heal_use_presses", 0) == 0
+    bot, mem, now = healing_bot(tmp_path, held=True)
+    bot.tick(R.snapshot(mem))
+    now[0] += R.HEAL_ATTEMPT_S + .1
+    assert bot.tick(R.snapshot(mem)) == {"tap": "dleft"}
+    assert bot.healing is None and bot.stats.get("heals", 0) == 0
+
+
+def test_mandatory_qte_preempts_heal_and_sequence_resumes_afterward(tmp_path):
+    bot, mem, now = healing_bot(tmp_path, held=True)
+    assert bot.tick(R.snapshot(mem)) == {"tap": "square"}
+    now[0] += 10
+    prompt = R.snapshot(mem); prompt["prompt"] = "mash:circle"
+    assert bot.tick(prompt) == {"hold": set()}
+    assert bot.stats["heal_use_presses"] == 1
+    now[0] += .1
+    assert bot.tick(R.snapshot(mem)) == {"tap": "square"}
+    hidden = R.snapshot(mem); hidden["recovery_active"] = True
+    now[0] += .1
+    assert bot.tick(hidden) == {"hold": set()}
+
+
+def test_empty_recovery_item_is_never_selected_or_used(tmp_path):
+    bot, mem, now = healing_bot(tmp_path, held=True)
+    mem.u32(PLAYER + R.P_INV + 6 * R.INV_SLOT + R.INV_ROUNDS, 0)
+    action = bot.tick(R.snapshot(mem))
+    assert action != {"tap": "square"} and bot.healing is None
+
+
+def test_only_verified_usable_recovery_ids_are_selected(tmp_path):
+    for item_id in (0x301, 0x302, 0x303, 0x306, 0x308):
+        bot, mem, now = healing_bot(tmp_path, held=True)
+        mem.u32(PLAYER + R.P_INV + 6 * R.INV_SLOT + R.INV_ID, item_id)
+        assert bot.tick(R.snapshot(mem)) != {"tap": "square"}
+        assert bot.healing is None
+    for item_id in (0x304, 0x305, 0x307, 0x309):
+        bot, mem, now = healing_bot(tmp_path, held=True)
+        mem.u32(PLAYER + R.P_INV + 6 * R.INV_SLOT + R.INV_ID, item_id)
+        assert bot.tick(R.snapshot(mem)) == {"tap": "square"}
+        assert bot.healing["id"] == item_id
+
+
+def test_ignored_optional_melee_does_not_extend_failed_heal_selection_forever(tmp_path):
+    bot, mem, now = healing_bot(tmp_path)
+    assert bot.tick(R.snapshot(mem)) == {"tap": "dup"}
+    now[0] += R.HEAL_ATTEMPT_S + .1
+    snap = R.snapshot(mem); snap["prompt"] = "square"
+    assert bot.combat.optional_prompt_blocked(snap)
+    bot.tick(snap)
+    assert bot.healing is None and bot.stats["heal_failures"] == 1
+
+
 def test_weapon_switch_waits_for_in_hand_ack_and_failed_switch_leaves_combat_running():
     now = [100.0]
     mem = with_inventory(world(enemies=[((0.0, 0.0, 500.0), 800, 800)]),
