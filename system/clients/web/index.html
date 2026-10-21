@@ -305,6 +305,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/autoplay-coach.js"></script>
 <script src="/viz/tactical-map.js"></script>
 <script src="/viz/bot-demo.js"></script>
+<script src="/viz/re5-modifiers.js"></script>
 <script src="/viz/ram-inspector.js"></script>
 <script src="/viz/game-assets.js"></script>
 <script src="/viz/cover-picker.js"></script>
@@ -1541,9 +1542,17 @@ function botDemoPCs() { return window.GBoxBotDemo ? GBoxBotDemo.pcs(TRAY.ws, win
 function botDemoLaunch(gid, pc) { return play(gid, pc, false, undefined, { autoplay: true }); }
 async function botDemoMenu(ev, gid, title) {
   ev?.preventDefault?.(); ev?.stopPropagation?.();
+  const anchor = ev?.currentTarget;
+  const viewed = anchor?.id === "session-bot-demo" ? SESSIONBUILD.session : null;
+  const current = viewed?.session_id === anchor?.closest?.("#session-head")?.dataset.sid ? { ...viewed } : null;
   const x = ev?.clientX ?? 0, y = ev?.clientY ?? 0;
   if (!(TRAY.ws || []).length) TRAY.ws = await api("/api/workers").catch(() => []);   // the tray has not polled yet
-  GBoxBotDemo.open(document, { x, y, gid, title, pcs: botDemoPCs(), launch: botDemoLaunch, place: (el, px, py) => fitMenu(el, px, py) });
+  if (anchor && !anchor.isConnected) return;
+  const modifiers = window.GBoxRE5Modifiers?.eligible(current) ? {
+    html: GBoxRE5Modifiers.sectionHTML(), mount: host => GBoxRE5Modifiers.mount(host, { session: current, api })
+  } : null;
+  GBoxBotDemo.open(document, { x, y, gid, title, pcs: botDemoPCs(), launch: botDemoLaunch,
+    place: (el, px, py) => fitMenu(el, px, py), modifiers });
 }
 async function scan() { await api("/api/jobs", { tool: "scan_library", input: {}, require_os: "linux" }); show("Jobs"); }
 // header search: always available; typing jumps to the Library and filters live
@@ -2352,13 +2361,14 @@ sessionsView.after = (sid, mode) => {
   const send = (key, down) => api(`/api/sessions/${encodeURIComponent(sid)}/input`, { events: [{ key, down }] });
   const scr = $("#scr"), held = new Set();
   scr.addEventListener("keydown", e => { if (e.code === "NumpadSubtract") { e.preventDefault(); e.stopImmediatePropagation(); sop(sid, "rewind"); } }, true);
-  scr.onkeydown = e => { if (e.code === "NumpadSubtract") return; const k = keysym(e); if (!k || e.key === "Escape") return; e.preventDefault(); if (!held.has(k)) { held.add(k); send(k, true); } };
+  scr.onkeydown = e => { if (e.code === "NumpadSubtract") return; const k = keysym(e); if (!k || e.key === "Escape") return; e.preventDefault(); if (streamInputAllowed(sid) && !held.has(k)) { held.add(k); send(k, true); } };
   scr.onkeyup = e => { const k = keysym(e); if (!k) return; e.preventDefault(); held.delete(k); send(k, false); };
   scr.onblur = () => { held.forEach(k => send(k, false)); held.clear(); };
+  scr.addEventListener("gbox-stream-state", e => { if (!e.detail.connected) scr.onblur(); });
   if (pg) {                                             // click / hold a button on the controller glyph = press it in the game
-    pg.onpointerdown = e => { if (e.button !== 0) return;  // the right button opens the map dialog, it presses nothing
+    pg.onpointerdown = e => { if (e.button !== 0 || !streamInputAllowed(sid)) return;  // ignore presses while the picture reconnects
       const g = e.target.closest("[data-k]"); if (!g || !g.dataset.k) return; e.preventDefault();
-      const k = g.dataset.k.split(" ")[0]; send(k, true); const up = () => { send(k, false); removeEventListener("pointerup", up); }; addEventListener("pointerup", up); };
+      const k = g.dataset.k.split(" ")[0]; held.add(k); send(k, true); const up = () => { held.delete(k); send(k, false); removeEventListener("pointerup", up); }; addEventListener("pointerup", up); };
   }
   scr.focus();
 };
@@ -3743,13 +3753,19 @@ function padSources(list) {  // [gamepad, config] per controller; the native Xbo
   return out;
 }
 let padTarget = null;        // desktop mini window: the streamed session it shows while this view is hidden
+let padStreamBlocked = null; // desktop compact view reports its own connection, independently of this hidden image
+let padTextCapture = false; // shell coach typing: release forwarded pads without changing their target session
 const padSid = () => padTarget || (active && !active.local ? active.sid : null);   // native games read the pad themselves
+function streamInputAllowed(sid) {
+  if (sid && padStreamBlocked === sid) return false;
+  return !window.gboxStreamWatchdog || window.gboxStreamWatchdog.inputAllowed($("#scr"), sid);
+}
 function padTick() {
   const list = pads(), sources = padSources(list), seen = new Set(sources.map(([gp]) => padKey(gp)));
   for (const key of Object.keys(held)) if (!seen.has(key)) releasePad(key);
   const topology = JSON.stringify([sources.map(([gp]) => [padKey(gp), gp.mapping]), primaryPad]);
   if (topology !== padTopology) { padTopology = topology; padStatus(); }
-  const sid = padCapture ? null : padSid();      // binding a control in the map dialog: what was held is released
+  const target = padSid(), sid = padCapture || padTextCapture || !streamInputAllowed(target) ? null : target;
   for (const [gp, c] of sources) {
     const key = padKey(gp);
     if (held[key] && (held[key].player !== c.player || held[key].sid !== sid || remap?.key === key)) releasePad(key);
@@ -3772,10 +3788,20 @@ window.gboxNativePad = state => {
   try { padTick(); } catch (e) { console.warn("controller push:", e); }
 };
 window.gboxPadTarget = sid => {
+  padStreamBlocked = null;
   padTarget = sid || null;
   if (sid && padMapLib() && !padPlatform(sid))                 // its console: the controller map its pad goes through
     api(`/api/sessions/${encodeURIComponent(sid)}/pad`).then(j => { if (j && j.platform) PAD_PLATFORMS.set(sid, j.platform); }).catch(() => {});
   try { padTick(); } catch (e) { console.warn("controller target:", e); }
+};
+window.gboxPadStreamState = (sid, connected) => {
+  if (sid !== padTarget) return;
+  padStreamBlocked = connected ? null : sid;
+  try { padTick(); } catch (e) { console.warn('controller stream:', e); }
+};
+window.gboxPadTextCapture = on => {
+  padTextCapture = !!on;
+  try { padTick(); } catch (e) { console.warn('controller typing:', e); }
 };
 addEventListener("gamepadconnected", () => { padStatus(); if (cur === "Controllers") show("Controllers"); });
 addEventListener("gamepaddisconnected", () => { padStatus(); if (cur === "Controllers") show("Controllers"); });

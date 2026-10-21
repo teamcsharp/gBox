@@ -580,8 +580,84 @@
   }
   function detach() { if (current) current.stop(); current = null; }
 
+  // A report image of the same observed frame and map geometry; no browser or new RAM reads.
+  function renderSVG({ frame: f, stage: st = null, width = 960, height = 720 } = {}) {
+    const validPos = p => Array.isArray(p) && p.length === 3 && p.every(Number.isFinite);
+    if (!f || f.v !== 1 || !Object.hasOwn(PER_M, f.units) || !validPos(f.player?.pos) || !Number.isFinite(f.t)
+        || !Number.isInteger(width) || width < 640 || width > 1920
+        || !Number.isInteger(height) || height < 480 || height > 1080) throw Error('Invalid tactical report frame or size');
+    for (const rows of [f.enemies || [], f.bonuses || []]) {
+      if (!Array.isArray(rows) || rows.length > 512 || rows.some(r => !validPos(r.pos))) throw Error('Invalid tactical actors');
+    }
+    const plan = f.plan || {};
+    if ((plan.route || []).length > 64 || (plan.route || []).some(p => !validPos(p))) throw Error('Invalid route');
+    for (const entry of [plan.target, plan.stand, plan.nearest_bonus]) {
+      if (entry?.pos && !validPos(entry.pos)) throw Error('Invalid plan position');
+    }
+    if (st) {
+      if (st.kind !== 'mesh' || st.key !== f.stage || st.units !== f.units || !Array.isArray(st.points)
+          || st.points.length > 90000 || st.points.length % 3 || !st.points.every(Number.isFinite)) throw Error('Invalid or mismatched stage');
+      for (const [key, stride] of [['tris', 3], ['walls', 2], ['cross', 2]]) {
+        const ids = st[key] || [];
+        if (!Array.isArray(ids) || ids.length > 180000 || ids.length % stride
+            || ids.some(n => !Number.isInteger(n) || n < 0 || n >= st.points.length / 3)) throw Error('Invalid stage indices');
+      }
+      if (st.bounds && (st.bounds.length !== 4 || !st.bounds.every(Number.isFinite))) throw Error('Invalid stage bounds');
+      if ((st.climbs || []).length > 2048 || (st.climbs || []).some(c => c.length < 4 || !c.every(Number.isFinite))) throw Error('Invalid climbs');
+    }
+    const parts = [], stack = [];
+    const n = value => { if (!Number.isFinite(value)) throw Error('Non-finite map geometry'); return Number(value.toFixed(2)); };
+    const ctx = {
+      fillStyle: '#fff', strokeStyle: '#000', lineWidth: 1, globalAlpha: 1, font: '11px sans-serif', dash: [], path: '',
+      save() { stack.push({ fillStyle: this.fillStyle, strokeStyle: this.strokeStyle, lineWidth: this.lineWidth,
+        globalAlpha: this.globalAlpha, font: this.font, dash: this.dash.slice() }); },
+      restore() { Object.assign(this, stack.pop()); },
+      beginPath() { this.path = ''; }, closePath() { this.path += 'Z '; },
+      moveTo(x, y) { this.path += `M${n(x)} ${n(y)} `; }, lineTo(x, y) { this.path += `L${n(x)} ${n(y)} `; },
+      arc(x, y, r, a, b) {
+        if (!(r >= 0) || Math.abs(b - a - 2 * Math.PI) > .001) throw Error('Unsupported map arc');
+        this.path += `M${n(x+r)} ${n(y)} A${n(r)} ${n(r)} 0 1 0 ${n(x-r)} ${n(y)} A${n(r)} ${n(r)} 0 1 0 ${n(x+r)} ${n(y)} `;
+      },
+      setLineDash(dash) { this.dash = dash; },
+      paint(fill) { parts.push(`<path d="${this.path}" fill="${fill ? ESC(this.fillStyle) : 'none'}" `
+        + `stroke="${fill ? 'none' : ESC(this.strokeStyle)}" stroke-width="${n(this.lineWidth)}" `
+        + `stroke-dasharray="${this.dash.map(n).join(' ')}" opacity="${n(this.globalAlpha)}"/>`); },
+      fill() { this.paint(true); }, stroke() { this.paint(false); },
+      fillRect(x, y, w, h) { parts.push(`<rect x="${n(x)}" y="${n(y)}" width="${n(w)}" height="${n(h)}" fill="${ESC(this.fillStyle)}"/>`); },
+      measureText(text) { return { width: String(text).length * 6.5 }; },
+      text(text, x, y, stroke) { parts.push(`<text x="${n(x)}" y="${n(y)}" dominant-baseline="middle" font-family="sans-serif" font-size="11" `
+        + `fill="${stroke ? 'none' : ESC(this.fillStyle)}" stroke="${stroke ? ESC(this.strokeStyle) : 'none'}" `
+        + `stroke-width="${n(this.lineWidth)}">${ESC(text)}</text>`); },
+      strokeText(text, x, y) { this.text(text, x, y, true); }, fillText(text, x, y) { this.text(text, x, y, false); },
+    };
+    const mapWidth = width - 300, mapHeight = height - 100, mapSide = Math.min(mapWidth, mapHeight);
+    const mapX = (mapWidth - mapSide) / 2, mapY = 80 + (mapHeight - mapSide) / 2;
+    const view = viewOf({ cx: f.player.pos[0], cz: f.player.pos[2], radius: 20 * perM(f.units), rot: 0 },
+      { w: mapSide, h: mapSide });
+    const rendered = draw(ctx, { frame: f, stage: st, view, theme: THEME_LIGHT });
+    const h = hud({ ...f, seq: f.seq ?? 0 }), time = new Date(f.t * 1000).toISOString();
+    const text = (s, x, y, size = 12) => `<text x="${x}" y="${y}" font-family="sans-serif" font-size="${size}" fill="#20232c">${ESC(s)}</text>`;
+    const nearby = (f.enemies || []).map(e => ({ e, d: Math.hypot(...e.pos.map((x, i) => x - f.player.pos[i])) }))
+      .sort((a, b) => a.d - b.d).slice(0, Math.min(12, Math.floor((height - 180) / 40)));
+    const sidebar = nearby.map(({ e, d }, i) => text(`Enemy ${e.id ?? '?'}: ${e.hp ?? '?'} HP · ${metres(d, f.units)}`, mapWidth + 14, 126 + i * 40)
+      + text(({ clear: 'Clear shot measured', blocked: 'Cover measured', unknown: 'Shot path untested' })[e.visibility] || 'Shot path untested', mapWidth + 14, 142 + i * 40, 11)).join('');
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`
+      + `<title>Report moment tactical map</title><desc>${ESC(rendered.map(m => m.tip).filter(Boolean).join('\n'))}</desc>`
+      + `<rect width="100%" height="100%" fill="#fafbfc"/>${text('Report moment · observed RAM map', 16, 25, 18)}`
+      + text(`${time} · frame ${f.seq ?? '?'} · ${f.title || ''}`, 16, 46)
+      + text(`${h.clock} remaining · ${h.score} · ${h.phase}`, 16, 65)
+      + `<defs><clipPath id="map"><rect width="${mapSide}" height="${mapSide}"/></clipPath></defs>`
+      + `<g transform="translate(${mapX} ${mapY})" clip-path="url(#map)">${parts.join('')}</g>`
+      + text('Nearest observed enemies', mapWidth + 14, 100, 14) + sidebar
+      + text('Blue: player · Red: enemies · Gold: bonuses · Green: route', 16, height - 8, 11)
+      + text(st ? 'Solid: mesh boundary; dashed: crossing' : 'Stage geometry unavailable', mapWidth + 14, height - 28, 10)
+      + '</svg>';
+    if (svg.length > 4 * 1024 * 1024) throw Error('Tactical report exceeds output limit');
+    return svg;
+  }
+
   const api = { html, mount, detach, create, hud, want, viewOf, project, screenDir, marks, draw, phaseLabel, clockText,
-                metres, themeOf, VIEW, _stages: stages };
+                metres, themeOf, renderSVG, VIEW, _stages: stages };
   if (typeof module === "object" && module.exports) module.exports = api;
   root.GBoxTacticalMap = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

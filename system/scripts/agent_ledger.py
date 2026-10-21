@@ -133,6 +133,9 @@ def describe_note(r: dict, m: dict, now: float | None = None) -> str:
              f"  operator: {(m.get('text') or '').strip()[:700]}"]
     if caps:
         lines.append(f"  captured: {caps}  (scripts/agent_ledger.py show {r['id']} downloads them)")
+    if c.get("change_id") and c.get("game_id"):
+        lines.append(f"  queued change: {c['change_id']} — POST /api/autoplay/bots/{c['game_id']}/changes/{c['change_id']} "
+                     'with {"state":"acknowledged"}; applied needs a PR, verified needs a verification summary')
     return "\n".join(lines)
 
 

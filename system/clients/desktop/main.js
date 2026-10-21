@@ -601,7 +601,10 @@ app.on("web-contents-created", (_e, wc) => wc.on("before-input-event", (ev, inpu
   }
   if (input.type !== "keyDown") return;
   const toggle = input.key === "F11" || (input.alt && input.key === "Enter");
-  if (input.key === "Escape" && compactWindow.state().on) { compactWindow.restore().catch(error => logPush('compact', error.message)); ev.preventDefault(); }
+  if (input.key === "Escape" && compactWindow.state().on) {
+    // Shell fields (notably the coach) own Escape. Their guarded DOM handler restores only outside text entry.
+    if (wc !== win.webContents) { compactWindow.restore().catch(error => logPush('compact', error.message)); ev.preventDefault(); }
+  }
   else if (input.key === "Escape" && win.isFullScreen()) { win.setFullScreen(false); win.webContents.send("fullscreen", false); ev.preventDefault(); }
   else if (toggle) { win.webContents.send("hotkey", "fullscreen"); ev.preventDefault(); }   // the page's view mode follows
   else if (input.key === "F2" && (input.shift || input.control) && !input.alt) { win.webContents.send("hotkey", input.shift ? "slot+" : "slot-"); ev.preventDefault(); }
@@ -610,7 +613,7 @@ app.on("web-contents-created", (_e, wc) => wc.on("before-input-event", (ev, inpu
 // Universal game hotkeys, the same for every emulator: F2 save state, F4 load state, F3 autoplay on/off.
 // Inside gBox (any page, the streamed view included) they arrive here; while a native game window has the keyboard they come
 // through global shortcuts, held only while a game is docked AND gBox is the foreground window (see f3(), hotkey-scope.js).
-const GAME_KEYS = { F2: "save", F3: "autoplay", F4: "load", F5: "reset" };   // F5 = the console's reset switch
+const GAME_KEYS = { F2: "save", F3: "autoplay", F4: "load", F5: "client-refresh" }; // F5 reloads only the client
 ipcMain.handle("win:fullscreen", (_e, on) => { win.setFullScreen(!!on); return win.isFullScreen(); });
 ipcMain.handle("clip:image", (_e, dataUrl) => { clipboard.writeImage(nativeImage.createFromDataURL(dataUrl)); return true; });
 ipcMain.handle("rec:open", (_e, file) => file ? shell.showItemInFolder(file) : shell.openPath(REC_DIR));
@@ -636,6 +639,7 @@ function embedCmd(cmd) {
   return new Promise(res => { embedQ.push(res); embedder.stdin.write(JSON.stringify(cmd) + "\n"); });
 }
 let compactChromeBits = null, compactRecoveryPending = false;
+let clientReloading = false;
 const compactWindow = require('./compact-window.cjs').create({ getWin: () => win, screen,
   nativeChrome: async on => {
     if (!win || win.isDestroyed()) return { ok: false, error: 'The gBox window is unavailable.' };
@@ -653,6 +657,18 @@ const compactWindow = require('./compact-window.cjs').create({ getWin: () => win
 ipcMain.handle('compact:view', (event, state) => {
   if (!win || event.sender !== win.webContents || (event.senderFrame && event.senderFrame !== win.webContents.mainFrame)) throw Error('Only the gBox app can change picture-in-picture mode.');
   return compactWindow.update(state);
+});
+ipcMain.handle('client:reload', event => {
+  if (!win || event.sender !== win.webContents || (event.senderFrame && event.senderFrame !== win.webContents.mainFrame)) throw Error('Only the gBox app can reload its client.');
+  if (clientReloading) return false;
+  clientReloading = true;
+  win.webContents.reloadIgnoringCache();
+  return true;
+});
+let clientVersions = null;
+ipcMain.handle('client:version', event => {
+  if (!win || event.sender !== win.webContents || (event.senderFrame && event.senderFrame !== win.webContents.mainFrame)) throw Error('Only the gBox app can inspect its client version.');
+  return clientVersions?.read();
 });
 let embedded = null, gpuSurface = false;                          // active presentation uses Chromium's compositor
 // Pick whip: Alt + drag over the game draws a line from one thing to another; on release the frame (with the line) goes
@@ -947,6 +963,8 @@ const FIRST = app.requestSingleInstanceLock();
 if (!FIRST) app.quit();
 app.on("second-instance", () => { if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); } });
 app.whenReady().then(() => {
+  clientVersions = require('./client-version.cjs').create({ desktop: __dirname, web: path.join(__dirname, '../web'),
+    runtimeFiles: [...new Set([path.join(__dirname, 'main.js'), ...Object.keys(require.cache).filter(p => p.startsWith(__dirname + path.sep))])], apiUrl: () => settings().apiUrl });
   if (!FIRST) return;
   appMenu();
   session.defaultSession.setPermissionRequestHandler((_wc, perm, cb) => cb(["media", "audioCapture", "clipboard-read", "clipboard-sanitized-write"].includes(perm)));
@@ -996,8 +1014,11 @@ app.whenReady().then(() => {
   backgroundPower.start();
   win.webContents.on("did-start-navigation", (_e, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) {
     pickHoldReleaseAll("window reloaded");
-    if (compactWindow.state().on) compactWindow.restore().catch(error => logPush('compact', error.message));
+    if (!clientReloading && compactWindow.state().on) compactWindow.restore().catch(error => logPush('compact', error.message));
   } });
+  win.webContents.on('did-finish-load', () => { clientReloading = false; });
+  win.webContents.on('did-fail-load', (_e, _code, _description, _url, mainFrame) => { if (mainFrame) clientReloading = false; });
+  win.webContents.on('render-process-gone', () => { clientReloading = false; });
   win.on("closed", () => pickHoldReleaseAll("window closed"));
   startPadWatcher();
   win.on("focus", () => { win.webContents.send("app-focus"); if (hotkeys.docked) checkFront(); });   // coming back to gBox: the renderer decides whether the game gets focus

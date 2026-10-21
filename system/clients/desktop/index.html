@@ -1244,7 +1244,19 @@ window.taskVizCreate = canvas => {
 <script src="embed-geometry.js"></script>
 <script src="game-surface.js"></script>
 <script src="compact-game.js"></script>
-<script>window.GBOX_STREAM_HEALTH = false;</script>
+<script src="../web/viz/autoplay-coach.js"></script>
+<script src="compact-coach.js"></script>
+<script src="client-refresh.js"></script>
+<script>
+// file:// cannot fetch the server directly; the authenticated desktop IPC is already bounded by the watchdog.
+window.GBOX_STREAM_FETCH_HEALTH = async src => {
+  const sid = /\/api\/sessions\/([^/?#]+)\/mjpeg/.exec(src)?.[1];
+  if (!sid) throw Error('Unknown stream session');
+  const r = await gbox.api('/api/sessions/' + encodeURIComponent(decodeURIComponent(sid)) + '/stream/health');
+  if (!r.ok) throw Error(r.error || 'Stream health unavailable');
+  return r.data;
+};
+</script>
 <script src="../web/viz/stream-watchdog.js"></script>
 <style id="compact-game-style">
   body.gbox-compact { background:#000; }
@@ -1256,7 +1268,15 @@ window.taskVizCreate = canvas => {
     -webkit-app-region:drag; opacity:0; pointer-events:none; }
   body.gbox-compact #compact-controls { display:flex; }
   body.gbox-compact #compact-controls.shown { opacity:1; pointer-events:auto; }
-  #compact-controls span { flex:1; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+  #compact-controls>.compact-title { flex:0 1 22%; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+  #compact-controls [data-compact-coach] { flex:1 1 180px; min-width:0; -webkit-app-region:no-drag; }
+  #compact-controls .coach { display:flex; align-items:center; gap:5px; min-width:0; }
+  #compact-controls .coach-in { width:100%; min-width:0; height:23px; box-sizing:border-box; border:1px solid #666;
+    border-radius:4px; background:#18181d; color:#fff; padding:2px 6px; font:11px system-ui; -webkit-app-region:no-drag; }
+  #compact-controls .coach-st { max-width:100px; flex:0 1 auto; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; font-size:10px; }
+  #compact-controls .coach-st:empty { display:none; }
+  #compact-controls .coach-st[data-state=error] { color:#ffadad; }
+  @media(max-width:420px) { #compact-controls>.compact-title { display:none; } #compact-controls .coach-st { max-width:75px; } }
   #compact-controls button { -webkit-app-region:no-drag; border:1px solid #666; border-radius:3px; background:#18181d; color:#fff; cursor:pointer; }
 </style>
 <script>
@@ -1327,6 +1347,7 @@ volumeSlider.oninput = () => {
 };
 volumeSlider.onchange = () => { clearTimeout(volumeTimer); gbox.audioVolume(+volumeSlider.value); };
 let S, current = null, playLoaded = false;
+const clientVersionAtLoad = gbox.clientVersion?.().catch(() => null);
 var SBX = { api: "", tok: "" };                              // API base + token for <img> links (filled after settings load)
 // Shared control-plane reads (#712). /api/sessions lists every session ever played (~950 KB, 0.25-1.3 s); the running
 // ones are a few KB. Timers share one request and a short-lived answer instead of each downloading the whole history.
@@ -2556,7 +2577,7 @@ async function loadSettings() {
   $("#sform").innerHTML = FIELDS.map(([k, l, t]) => `<label>${l}<input type="${t || "text"}" name="${k}" value="${esc(S[k])}"></label>`).join("") +
     `<label><span><input type="checkbox" name="autoStartWorker" ${S.autoStartWorker ? "checked" : ""}> Start the Windows worker with the app</span></label>` +
     `<label><span><input type="checkbox" name="voiceOverlay" ${vovEnabledPref() ? "checked" : ""}> Voice overlay on the game: the randomized transition visual over the game while you talk with gBox or it talks back</span></label>` +
-    `<p class="mut" id="hotkey-scope-note"><b>Hotkeys only when gBox is in front.</b> F2 save · F3 autoplay · F4 load · F5 reset · Shift/Ctrl+F2 save slot · Ctrl+I eyedropper · F11 / Alt+Enter full screen · hold ~ to talk · right-click / Ctrl+click / Alt+drag on the game: these work only while gBox (or the game playing in it) is the window in front. Blender and every other application keep all their keys and clicks.</p>`;
+    `<p class="mut" id="hotkey-scope-note"><b>Hotkeys only when gBox is in front.</b> F2 save · F3 autoplay · F4 load · F5 refresh client · Shift/Ctrl+F2 save slot · Ctrl+I eyedropper · F11 / Alt+Enter full screen · hold ~ to talk · right-click / Ctrl+click / Alt+drag on the game: these work only while gBox (or the game playing in it) is the window in front. Blender and every other application keep all their keys and clicks.</p>`;
 }
 $("#ssave").onclick = async () => {
   const f = new FormData($("#sform")), s = Object.fromEntries(FIELDS.map(([k]) => [k, f.get(k)]));
@@ -3673,12 +3694,19 @@ addEventListener("resize", () => { EMB.last = ""; });
 const VIEW = { mode: "auto", pip: null };                    // mode: auto (game in its slot) | pip (forced) | full
 // Compact PiP uses this same window, game and input path. It never launches another emulator.
 let compactStreamUrl = '', compactTitle = '', compactHoverTimer = null;
+let clientUpdateState = { pending: false, restart: false };
+const compactCoach = GBoxCompactCoach.create({ coach:GBoxAutoplayCoach,
+  api:async(path,body) => { const r=await gbox.api(path,body); if(!r.ok) throw new Error(r.error || 'Coaching request failed'); return r.data; },
+  show:visible => compactHover(visible), focusApp:() => gbox.appFocus?.(),
+  gateInput:focused => { document.querySelector('#wv')?.executeJavaScript(`window.gboxPadTextCapture?.(${!!focused})`).catch(() => {}); }
+});
 const compactController = GBoxCompactGame.create({
   mode: () => VIEW.mode,
-  resolve: async () => {
-    const st = await gboxState();
-    const sid = st.playing || st.session || EMB.sid;
+  resolve: async requested => {
+    const st = requested?.sid ? {} : await gboxState();
+    const sid = requested?.sid || st.playing || st.session || EMB.sid;
     let session = sid ? await sessionById(sid) : null;
+    if ((!session || session.state !== 'running') && requested?.sid) throw Error('The selected session is unavailable. Your game was not changed.');
     if (!session || session.state !== 'running') {
       const r = await liveSessions(0);
       session = r.ok && r.data.filter(s => s.state === 'running').sort((a,b) => (b.started || 0) - (a.started || 0))[0];
@@ -3702,18 +3730,20 @@ const compactController = GBoxCompactGame.create({
     let stream = $('#compact-stream'), controls = $('#compact-controls');
     if (state.on && !controls) {
       controls = document.createElement('div'); controls.id = 'compact-controls';
-      controls.innerHTML = '<span></span><button type="button" title="Restore GBox (or double-click the game)">Full app</button>';
+      controls.innerHTML = '<span class="compact-title"></span><span data-compact-coach></span><button type="button" title="Restore GBox (or double-click the game)">Full app</button>';
       controls.querySelector('button').onclick = () => compactRestore().catch(error => toast(error.message)); document.body.append(controls);
       controls.addEventListener('pointerenter', () => compactHover(true));
       controls.addEventListener('pointerleave', () => compactHover(false));
     }
-    if (controls) controls.querySelector('span').textContent = compactTitle;
+    if (controls) controls.querySelector('.compact-title').textContent = compactTitle;
+    compactCoach.update(state, controls?.querySelector('[data-compact-coach]'));
     if (state.on && !state.local) {
       if (!stream) { stream = document.createElement('img'); stream.id = 'compact-stream'; stream.alt = 'Live emulation session'; document.body.append(stream); }
       stream.classList.add('on');
-      if (stream.getAttribute('src') !== compactStreamUrl) stream.src = compactStreamUrl;
+      if (gboxStreamWatchdog.healthUrl(stream.getAttribute('src') || '') !== gboxStreamWatchdog.healthUrl(compactStreamUrl)) stream.src = compactStreamUrl;
     } else if (stream) { stream.classList.remove('on'); stream.removeAttribute('src'); stream.style.backgroundImage = ''; }
     if (!state.on) compactHover(false);
+    renderClientUpdate();
   },
   pad: sid => miniPadTarget(sid),
   present: () => { EMB.last = ''; embedTick(); }
@@ -3721,16 +3751,54 @@ const compactController = GBoxCompactGame.create({
 const COMPACT = compactController.state;
 const compactEnter = () => compactController.enter();
 const compactRestore = () => compactController.restore();
+const clientRefresh = GBoxClientRefresh.create({ storage: sessionStorage, readState: gboxState,
+  context: () => ({ sid: COMPACT.on ? COMPACT.sid : EMB.sid, compact: COMPACT.on, aspect: COMPACT.aspect,
+    returnMode: COMPACT.on ? COMPACT.returnMode : VIEW.mode, section: document.querySelector('section.on')?.id }),
+  reload: async () => {
+    if (!gbox.clientReload) return location.reload();
+    try { return await gbox.clientReload(); }
+    catch (error) { // a new preload can be running inside an older, safely preserved main process
+      if (/No handler registered.*client:reload/.test(String(error))) return location.reload();
+      throw error;
+    }
+  } });
+async function restoreClientView() {
+  const value = clientRefresh.pending(); if (!value) return;
+  if (value.sid) EMB.sid = value.sid; // loadPlay builds the new authenticated URL for this exact session
+  document.querySelector(`aside button[data-s="${value.section}"]`)?.click();
+  await loadPlay();
+  if (value.compact) {
+    try { await compactController.enter(value); }
+    catch (error) {
+      // The requested game may have ended while the client loaded. Restore its app bounds, never pick another game.
+      await gbox.compactView({ on: false }).catch(() => {});
+      toast(error.message + ' Press F5 to retry the view.', 10000); return;
+    }
+  }
+  clientRefresh.done();
+}
+// Native desktop PiP has no browser gesture restriction. The same BrowserWindow keeps its original bounds.
+// Also retain the view for Ctrl+R/navigation reloads that bypass the F5 command.
+addEventListener('beforeunload', () => {
+  if (!clientRefresh.pending()) sessionStorage.setItem('gbox.client.refresh.v1', JSON.stringify(GBoxClientRefresh.snapshot({
+    sid: COMPACT.on ? COMPACT.sid : EMB.sid, compact: COMPACT.on, aspect: COMPACT.aspect,
+    returnMode: COMPACT.on ? COMPACT.returnMode : VIEW.mode, section: document.querySelector('section.on')?.id })));
+});
+document.addEventListener('gbox-stream-state', event => {
+  if (event.target.id !== 'compact-stream' || !COMPACT.on) return;
+  document.querySelector('#wv')?.executeJavaScript(`window.gboxPadStreamState?.(${JSON.stringify(COMPACT.sid)}, ${!!event.detail.connected})`).catch(() => {});
+}, true);
 function compactHover(show) {
+  show = show || compactCoach.pinned();
   clearTimeout(compactHoverTimer);
   const apply = () => { $('#compact-controls')?.classList.toggle('shown', COMPACT.on && show); EMB.last = ''; embedTick(); };
   if (show || !COMPACT.on) apply(); else compactHoverTimer = setTimeout(apply, 450);
 }
 gbox.onCompactView?.(value => compactController.changed(value));
-addEventListener('dblclick', event => { if (COMPACT.on) { event.preventDefault(); event.stopPropagation(); compactRestore().catch(error => toast(error.message)); } }, true);
+addEventListener('dblclick', event => { if (COMPACT.on && !GBoxCompactCoach.isCoachTarget(event.target)) { event.preventDefault(); event.stopPropagation(); compactRestore().catch(error => toast(error.message)); } }, true);
 addEventListener('pointermove', event => { if (COMPACT.on) compactHover(event.clientY < 32); }, { passive:true });
 addEventListener('resize', () => { if (COMPACT.on) requestAnimationFrame(() => embedTick()); });
-addEventListener('keydown', event => { if (COMPACT.on && event.key === 'Escape') { event.preventDefault(); compactRestore().catch(error => toast(error.message)); } });
+addEventListener('keydown', event => { if (COMPACT.on && event.key === 'Escape' && !GBoxCompactCoach.isCoachTarget(event.target)) { event.preventDefault(); compactRestore().catch(error => toast(error.message)); } });
 setInterval(() => {
   if (!COMPACT.on || COMPACT.local) return;
   const image = $('#compact-stream');
@@ -3926,8 +3994,34 @@ async function gameAction(a) {
   } catch (e) { toast("⚠ " + e.message, 6000); }
 }
 // update pending: the logo pulses with a holographic shimmer until it's clicked (update & relaunch)
+function renderClientUpdate() {
+  const value = clientUpdateState;
+  document.body.classList.toggle('client-update-pending', value.pending);
+  let border = $('#client-update-border');
+  if (!border) { border = document.createElement('div'); border.id = 'client-update-border'; document.body.append(border); }
+  const r = GBoxCompactGame.fit(innerWidth, innerHeight, COMPACT.aspect);
+  Object.assign(border.style, { position: 'fixed', pointerEvents: 'none', zIndex: '90', boxSizing: 'border-box',
+    border: '2px solid red', left: r.x + 'px', top: r.y + 'px', width: r.w + 'px', height: r.h + 'px', display: COMPACT.on && value.pending ? 'block' : 'none' });
+  const message = value.restart ? 'Desktop restart required to finish this update. Refreshing the view cannot apply it. Keep current games and jobs running until it is safe to restart.' : 'Client update ready. Press F5 to refresh and keep this game and PiP view.';
+  border.setAttribute('aria-label', message);
+  if ($('#compact-controls')) $('#compact-controls').title = value.pending ? message : '';
+  const b = $('#brand'); b.classList.toggle('upd', value.pending);
+  if (value.pending) b.dataset.tip = message; else delete b.dataset.tip;
+}
+addEventListener('resize', () => renderClientUpdate());
 async function updateCheck() {
+  if (gbox.clientVersion) {
+    const baseline = await clientVersionAtLoad, latest = await gbox.clientVersion().catch(() => null);
+    if (baseline && latest) {
+      const next = GBoxClientRefresh.changed(baseline, latest);
+      if (!latest.remote && clientUpdateState.remote) { next.remote = true; next.pending = true; }
+      clientUpdateState = next;
+    }
+    renderClientUpdate();
+    if (baseline && latest) return;
+  }
   const r = await gbox.updatePending?.().catch(() => null); if (!r) return;
+  clientUpdateState = { pending: !!r.pending, restart: !!r.pending }; renderClientUpdate();
   const b = $("#brand"); b.classList.toggle("upd", r.pending);
   b.querySelector("small").textContent = r.pending ? "update ready · click to relaunch" : "click to update & relaunch";
   if (r.pending) b.dataset.tip = `New code since this app started (${r.file}, ${r.changed})`;
@@ -4179,8 +4273,8 @@ gbox.onEmbedEvent?.(async ev => {
   if (ev.event === "gameclick") return closePops(null);
   if (ev.event === "whip") return whipSend(ev); if (ev.event === "ptt") return ev.down ? pttDown() : pttUp(); if (ev.event === "rclick") pwRightClick(ev.x, ev.y); if (ev.event === "ctrlclick") eyePoint(ev.x, ev.y); });
 gbox.onHotkey?.(k => { if (k === "eyedropper") return eyeStart();
-  if (k === "reset") return document.querySelector("#wv")?.executeJavaScript(          // F5: reset the game being played
-    `(s => s && resetGame(s, document.getElementById("resetbtn")))(${JSON.stringify(EMB.sid || "")} || playing || (active && active.sid))`).catch(() => {}); if (k === "fullscreen") return viewAction(isFull() ? "main" : "full"); if (["autoplay", "save", "load", "slot+", "slot-"].includes(k)) gameAction(k); });
+  if (k === "client-refresh" || k === "reset") return clientRefresh.refresh().catch(error => toast(error.message)); // old main processes still name F5 "reset"
+  if (k === "fullscreen") return viewAction(isFull() ? "main" : "full"); if (["autoplay", "save", "load", "slot+", "slot-"].includes(k)) gameAction(k); });
 addEventListener("keydown", e => {                            // A / F3 = autoplay, when the app (not a text box) has the keyboard
   if (!EMB.sid || e.ctrlKey || e.altKey || e.metaKey || e.target.closest?.("input, textarea, select, video, [contenteditable]")) return;
   if (e.key === "a" || e.key === "A") { e.preventDefault(); gameAction("autoplay"); }   // F2/F3/F4 come from the main process
@@ -6937,7 +7031,7 @@ async function ringAttach() {
 }
 // ---------------- end replay ring pop-up ----------------
 
-loadSettings().then(() => { refresh(); refreshInbox(); });
+loadSettings().then(() => { restoreClientView().catch(error => toast(error.message)); refresh(); refreshInbox(); });
 // Spark status runs ssh + 3 requests: every 15 s while Control is open or the play view still has to connect, else every minute
 let refreshAt = Date.now();
 setInterval(() => {

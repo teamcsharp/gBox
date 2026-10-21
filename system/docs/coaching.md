@@ -1,13 +1,46 @@
-# Coaching from the PiP window (design, not yet built)
+# Coaching from the PiP window
+
+Implemented on 2026-10-21: the compact top bar reuses the session coaching field, keeps typing separate from game
+input, and follows the existing frame/state/RAM captures. Each accepted note has a retry ID, a durable per-title
+change item, and one linked operator implementation request (`source=coach_change`). The ordinary Hermes inbox
+queue admits that child under its existing ownership, game-busy, capacity and review rules. The shared coaching
+parent stays excluded. Creating a request does not itself start a worker or claim the critique is fixed.
+
+`GET /api/autoplay/bots/{game_id}/changes` lists work; `POST` to that path plus `/{change_id}` records
+`acknowledged`, `applied` (requires `pr`) and `verified` (requires a `verification` summary). These are reported
+engineering states; the existing PR/review rules still apply. The inbox hook prints the change ID and evidence
+ticket. Concurrent retries reuse the same message/change/task. A lost creation response is reconciled by the stored
+change ID; unresolved uncertainty is held for inspection instead of creating another task. Store errors are surfaced,
+and queue capacity never silently discards unfinished work.
+
+The useful queue design was adapted from completed Hermes #2969 commit `3aaca405e358658b5af9d1ddd8b5d624c82ccf30`.
+Its tuple playbook mismatch, swallowed persistence failures, and unlocked updates were corrected. The unproven
+favorite/active-owner registry was not installed. No owner labels bypass Hermes admission.
+
+Each report now freezes the exact session's latest stream JPEG, tactical frame and matching stage, telemetry
+(including bot decision/QTE fields), and existing RAM-inspector fields before starting capture jobs. It attaches
+`coach-N-report-frame.jpg`, `coach-N-report-map.svg`, and `coach-N-report-moment.json` when their sources are present.
+The SVG uses the tactical panel's renderer and the saved frame, including published health, proximity and measured
+obstruction data. The JSON records report receipt, each cache's source timestamp, age and sequence, the actual
+published map/telemetry, and cached RAM values, raw integers/hex and resolved addresses. It never starts an inspector
+or reads new memory to make a cached field look contemporaneous. Sources are sampled independently: stale data and
+timestamp skew remain visible, and missing sources/render failures are reported in the PiP acknowledgement.
+
+The complete RAM byte dump and supported save state remain asynchronous worker captures with separate status.
+RPCS3 has no supported coaching save-state operation, so PS3 reports explicitly say no save state was captured.
+Unpublished items/window traversal hooks remain unknown. A three-second video clip is still unimplemented.
+
+## Original design and remaining work
 
 Operator 2026-10-21: "in picture in picture mode with autoplay on cloud, put the chat window here so i can talk to
 the system and put in reports while watching gameplay. I want to point out issues and it files reports with states,
 ram scans, screenshot and 3 second feed of the gameplay ... cause changes to be queued up to be done to the active bot
 for that title. Every title ... that I favorite will need an autoplay bot that can be configured with this system."
 
-This page is the design agreed for branch `pip-coaching` (PR draft). State: **researched and designed; no code yet**.
-What exists today is the Sessions-header coach box (`gbox/coaching.py`, `clients/web/viz/autoplay-coach.js`, #720/#740,
-docs/autoplay.md "Coaching"); everything below extends it rather than adding a second path.
+The original design below was agreed for branch `pip-coaching` (PR draft). The implementation above covers the
+compact field, actionable queue and the bounded evidence bundle above. Other items remain a design, not a claim
+that they are deployed. In particular, the historical `insp.values()` proposal below was replaced with a cache-only
+copy so asynchronous memory reads cannot change the report's captured moment.
 
 ## 1. The coach bar in the PiP window
 
