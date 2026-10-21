@@ -195,6 +195,24 @@ def mod_name(slug: str, slot: str) -> str:
     return f"ge_{slug}_as_{body}"
 
 
+def _resolve_file_name(ge, body_name: str) -> str:
+    """The exact file-table name for a roster body (e.g. 'CdjbondZ')."""
+    try:
+        ge.file_by_name(body_name)
+        return body_name
+    except Exception:
+        pass
+    low = body_name.lower()
+    for entry in (getattr(ge, "files", None) or []):
+        name = getattr(entry, "name", None) or (entry.get("name") if isinstance(entry, dict) else None)
+        if name and name.lower().split(".")[0] == low:
+            return name
+    for key in (getattr(ge, "file_offsets", None) or {}):
+        if key.lower() == low:
+            return key
+    return body_name
+
+
 def _write_body(ge, rom_path, body_name: str, body_data: bytes) -> int:
     """Serialize a retargeted body back into the ROM through the writer.
 
@@ -203,13 +221,14 @@ def _write_body(ge, rom_path, body_name: str, body_data: bytes) -> int:
     file offset would leave the loader an unloadable ROM.
     """
     from gbox import goldeneye_writer as GW
+    fname = _resolve_file_name(ge, body_name)
     try:
-        new_rom = GW.splice_file(ge, body_name, body_data)
+        new_rom = GW.splice_file(ge, fname, body_data)
     except Exception as exc:
         err = getattr(GW, "GoldenEyeFormatError", None)
         if err is None or not isinstance(exc, err):
             raise
-        new_rom = GW.rom_relayout(ge, body_name, body_data)
+        new_rom = GW.rom_relayout(ge, fname, body_data)
     rom_path.write_bytes(new_rom)
     return len(body_data)
 
@@ -296,7 +315,7 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
         
         # Z-file, so the retargeted body must be re-compressed and size-checked
         # (a raw byte write leaves the loader an unloadable ROM).
-                _write_body(ge, mod_rom, body_name, modified_body)
+        _write_body(ge, mod_rom, body_name, modified_body)
         
         # Create mod metadata
         (mod_dir / ".gbox-mod.json").write_text(
@@ -373,7 +392,7 @@ def main(argv=None) -> int:
     
     # Z-file, so the retargeted body must be re-compressed and size-checked
     # (a raw byte write leaves the loader an unloadable ROM).
-                _write_body(ge, mod_rom, body_name, modified_body)
+        _write_body(ge, mod_rom, body_name, modified_body)
     
     print(f"Built {meta['name']} as {body_name} -> {mod_rom}")
     return 0
