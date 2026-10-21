@@ -569,7 +569,8 @@ class Combat:
         rapid = self._rapid_fire(wid, now)
         keys |= ({"r1"} if on_target else set()) if rapid else trig.keys(now, on_target, shot)
         tune["mode"] = trig.mode
-        self.stats["combat"] = (f"{self.character} w{wid:#x} {zone} dot {where} yaw {math.degrees(yaw_err):+.1f} "
+        weapon_label = hex(wid) if isinstance(wid, int) else "unknown"
+        self.stats["combat"] = (f"{self.character} w{weapon_label} {zone} dot {where} yaw {math.degrees(yaw_err):+.1f} "
                                 f"pitch {math.degrees(pitch_err):+.1f} {'rapid hold' if rapid else trig.mode} {'FIRE' if on_target else ''}")
         return {"hold": keys}
 

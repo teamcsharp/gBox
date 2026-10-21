@@ -68,6 +68,16 @@ def test_the_dot_names_where_it_sits_on_a_majini():
     assert C.dot_on((0, 160, 700), (0, 0, 400)) is None                 # past him
 
 
+def test_missing_equipped_weapon_does_not_crash_or_fire():
+    m = world()
+    m.put(PL + C.P_INV + 3 * C.INV_SLOT + C.INV_HAND, ">I", 0)
+    bot = C.Combat(m, {}, learn_dir=None)
+    s = snap(m)
+    action = bot.tick(s, s["player"], s["enemies"][0], 1.0)
+    assert "r1" not in action["hold"]
+    assert "unknown" in bot.stats["combat"]
+
+
 def test_the_ray_error_is_the_turn_that_puts_the_dot_on_the_head():
     yaw, pitch = C.ray_error((0, 150, 0), (0, 150, 1000), (100, 250, 1000))
     assert math.degrees(yaw) == pytest.approx(5.71, abs=0.05) and math.degrees(pitch) == pytest.approx(5.68, abs=0.05)
