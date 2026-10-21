@@ -146,6 +146,30 @@ def test_survival_runs_menus_and_fights_from_ram_with_the_virtual_pad(tmp_path):
     assert (tmp_path / "fightbot" / D.MAP_ID / "book.json").is_file()
 
 
+def test_a_paid_hold_leaves_a_real_frame_as_evidence(tmp_path):
+    import time
+    uploads = []
+    ad = SimpleNamespace(get_frame=lambda: b"\x89PNG frame", config=SimpleNamespace(runtime=tmp_path))
+    stats = {}
+    dep = doa3_bot.Deployment(ad, stats=stats, upload=lambda *a, **k: uploads.append((a, k)) or "ab" * 32)
+    dep.EVIDENCE_DELAY_S = 0
+    hold = D.Doa3().answers(Attack(), World(0, 0, "fight", Fighter(side=1), Fighter(side=-1)))[0]
+    dep.evidence(hold, "held", 30.0, World(120, 0, "fight", Fighter(), Fighter()))
+    dep.evidence(hold, "taken", -10.0, World(130, 0, "fight", Fighter(), Fighter()))    # didn't pay: no frame
+    for _ in range(200):
+        if uploads:
+            break
+        time.sleep(0.01)
+    (name, data, media), prov = uploads[0]
+    assert data == b"\x89PNG frame" and media == "image/png" and prov["outcome"] == "held" and len(uploads) == 1
+    assert (tmp_path / "fightbot" / D.MAP_ID / "frames" / name).read_bytes() == b"\x89PNG frame"
+    for _ in range(200):
+        if stats.get("evidence_n"):
+            break
+        time.sleep(0.01)
+    assert stats["evidence_n"] == 1 and stats["evidence_last"] == "ab" * 32
+
+
 def test_the_playbook_matches_only_the_native_runner_and_claims_the_pad():
     assert doa3_bot.matches(SimpleNamespace(name="doa3_native"), {"game_id": "b8edf7040116f3aa"})
     assert not doa3_bot.matches(SimpleNamespace(name="cxbx"), {"game_id": "b8edf7040116f3aa"})

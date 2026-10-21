@@ -44,8 +44,8 @@ class Deployment:
     MENU_GAP = 0.5
     MENU_IDLE = 20.0                               # a screen no rule maps (name entry ...): START, A
 
-    def __init__(self, ad, title=None, book=None, lessons=None, stats=None):
-        self.ad = ad
+    def __init__(self, ad, title=None, book=None, lessons=None, stats=None, upload=None):
+        self.ad, self.upload, self.stats = ad, upload, stats
         self.title = title or doa3_xbox.Doa3()
         root = None
         try:
@@ -80,7 +80,13 @@ class Deployment:
                 data = self.ad.get_frame()
                 self.frames_dir.mkdir(parents=True, exist_ok=True)
                 (self.frames_dir / name).write_bytes(data)
-                self.lessons.log("evidence", w.frame, file=name, answer=answer.name, outcome=label, reward=reward)
+                sha = self.upload(name, data, "image/png", answer=answer.name, outcome=label,
+                                  frame=w.frame) if self.upload else None
+                if sha and self.stats is not None:
+                    self.stats["evidence_n"] = self.stats.get("evidence_n", 0) + 1
+                    self.stats["evidence_last"] = sha
+                self.lessons.log("evidence", w.frame, file=name, sha256=sha, answer=answer.name, outcome=label,
+                                 reward=reward)
             except Exception as error:             # noqa: BLE001 - no frame now: the next success tries again
                 self.lessons.log("evidence_failed", w.frame, error=str(error)[:200])
         import threading
@@ -108,12 +114,13 @@ class Deployment:
             stats["book"] = self.book.summary()
 
 
-def play(ad, send, stopped, clock=time.time, sleep=time.sleep, stats: dict | None = None) -> dict:
+def play(ad, send, stopped, clock=time.time, sleep=time.sleep, stats: dict | None = None, upload=None) -> dict:
     """stats (filled live for the watch panel): the survival loop's (fights_s, menu presses, hung, the screen) and
     the engine's (attacks seen, answers, parried, hits taken, damage both ways, punishes, input and reaction latency
-    in frames, frames skipped)."""
+    in frames, frames skipped). upload(name, data, media_type, **provenance) -> sha256 (autoplay passes one): the
+    evidence frames go to the control plane as artifacts (stats evidence_n / evidence_last)."""
     stats = stats if stats is not None else {}
-    dep = Deployment(ad, stats=stats)
+    dep = Deployment(ad, stats=stats, upload=upload)
     try:
         return survival.play(dep, ad, send, stopped, clock=clock, sleep=sleep, stats=stats, holds=False)
     finally:

@@ -2674,6 +2674,15 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
             kw = {}
             if "stats" in inspect.signature(pb.play).parameters:
                 kw["stats"] = run["live"] = {}                 # the playbook fills it as it plays (watch panel)
+            if "upload" in inspect.signature(pb.play).parameters and ctx is not None:
+                def upload(fname, data, media_type="application/octet-stream", **provenance):
+                    """Evidence the playbook keeps (frames of a hold that paid): a content-addressed artifact."""
+                    r = httpx.post(f"{ctx.server}/api/artifacts", headers=ctx.headers, content=data, timeout=30,
+                                   params={"name": fname, "media_type": media_type,
+                                           "provenance": json.dumps({"session": sid, "playbook": name, **provenance})})
+                    r.raise_for_status()
+                    return r.json().get("sha256")
+                kw["upload"] = upload
             if "ram_prompt" in inspect.signature(pb.play).parameters and RAM_PROMPTS.get(name):
                 try:                                           # the game's own prompt state in RAM: asked first
                     rp = importlib.import_module(f".{RAM_PROMPTS[name]}", __package__)
