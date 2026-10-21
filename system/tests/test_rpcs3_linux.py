@@ -78,8 +78,24 @@ def test_write_settings_on_rpcs3s_own_config(tmp_path):
         assert line in pad
     ini = (ad.home / "GuiConfigs" / "CurrentSettings.ini").read_text()
     assert "game_window_savestate=F2" in ini and "game_window_restart=Ctrl+Alt+Shift+F11" in ini
+    # RPCS3's welcome dialog covered RE5's boot in the Spark session and took the pad's keys: off, info boxes too
+    assert "[main_window]\n" in ini and "infoBoxEnabledWelcome=false" in ini and "infoBoxEnabledInstallPKG=false" in ini
     ad.write_settings()                                                     # idempotent
     assert (ad.home / "config.yml").read_text() == text
+    assert (ad.home / "GuiConfigs" / "CurrentSettings.ini").read_text() == ini
+
+
+def test_ini_set_keeps_rpcs3s_own_lines():
+    rpcs3 = ("[Meta]\nattachCommandLine=false\n\n[main_window]\ninfoBoxEnabledWelcome=true\n"
+             "lastExplorePathPUP=/home/x\n\n[Shortcuts]\ngame_window_restart=F4\n")
+    t = adapters.ini_set(rpcs3, "main_window", "infoBoxEnabledWelcome", "false")      # replaced in place
+    assert "infoBoxEnabledWelcome=false\nlastExplorePathPUP=/home/x\n" in t and "=true" not in t
+    t = adapters.ini_set(t, "main_window", "restartHint", "false")                     # appended to its own section
+    assert "lastExplorePathPUP=/home/x\nrestartHint=false\n\n[Shortcuts]" in t
+    t = adapters.ini_set(t, "Shortcuts", "game_window_restart", "Ctrl+Alt+Shift+F11")  # off F4 (gBox's load key)
+    assert t.endswith("[Shortcuts]\ngame_window_restart=Ctrl+Alt+Shift+F11\n") and "=F4" not in t
+    assert adapters.ini_set("", "Meta", "a", "1") == "[Meta]\na=1\n"
+    assert adapters.ini_set("[A]\nx=1\n\n", "B", "y", "2") == "[A]\nx=1\n\n[B]\ny=2\n"   # a new section after the rest
 
 
 def test_send_input_presses_the_bound_keys(tmp_path, monkeypatch):

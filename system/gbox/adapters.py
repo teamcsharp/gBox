@@ -3367,7 +3367,9 @@ RPCS3_KEYBOARD_INPUT = ("Player 1 Input:\n  Handler: Keyboard\n  Device: Keyboar
                         + '    PS Button: ""\n')
 # config.yml values gBox sets for Linux sessions (section -> key -> YAML value); RPCS3 fills in every other key
 RPCS3_LINUX_SETTINGS = {
-    # RE5 Gold on the Spark's aarch64 RPCS3 (2026-10-20) hung on a black screen at its first RSX context without it
+    # RE5 Gold on the Spark's aarch64 RPCS3 (2026-10-20) hung on a black screen at its first RSX context without it.
+    # With it, one first boot (RPCS3 still building its shader / SPU caches, load 50 on 20 cores) hung there once too:
+    # RSX thread + 2 SPU threads spinning after sys_rsx_context_iomap. The next boot went through (2026-10-21).
     "Core": {"Accurate RSX reservation access": "true"},
     "Video": {"Renderer": "Vulkan", "Resolution": "1280x720"},
     "Audio": {"Renderer": '"Null"'},                       # Linux sessions stream video only
@@ -3383,6 +3385,17 @@ RPCS3_LINUX_SETTINGS = {
         "Show pressure intensity toggle hint": "false", "Show analog limiter toggle hint": "false",
         "Show mouse and keyboard toggle hint": "false", "Show capture hints": "false",
         "Play music during boot sequence": "false"}}
+# GuiConfigs/CurrentSettings.ini values (Qt INI: section -> key -> value). RPCS3 opens its welcome dialog at every start
+# until it is turned off, --no-gui included: on the Spark (2026-10-21) it covered RE5's boot screen in the session and sat
+# under the parked pointer, where a WM-less display sends the pad's keys. The info / confirmation boxes go too: nobody is
+# at the session's display to close them.
+RPCS3_LINUX_GUI = {
+    "main_window": {"infoBoxEnabledWelcome": "false", "infoBoxEnabledInstallPUP": "false",
+                    "infoBoxEnabledInstallPKG": "false", "confirmationBoxExitGame": "false",
+                    "confirmationBoxBootGame": "false", "confirmationObsoleteCfg": "false",
+                    "sameButtonsWarning": "false", "restartHint": "false"},
+    # F2 = RPCS3's own "save state and continue"; its restart-from-state shortcut moves off F2 / F4 (as on Windows)
+    "Shortcuts": {"game_window_savestate": "F2", "game_window_restart": "Ctrl+Alt+Shift+F11"}}
 
 
 def yaml_set(text: str, section: str, key: str, value: str) -> str:
@@ -3399,6 +3412,28 @@ def yaml_set(text: str, section: str, key: str, value: str) -> str:
             return "\n".join(lines) + "\n"
         i += 1
     lines.insert(s + 1, f"  {key}: {value}")
+    return "\n".join(lines) + "\n"
+
+
+def ini_set(text: str, section: str, key: str, value: str) -> str:
+    """Set `key=value` in one [section] of a Qt INI file (RPCS3's GuiConfigs/CurrentSettings.ini), keeping every other
+    line; a missing section is appended."""
+    lines = text.splitlines()
+    try:
+        s = lines.index(f"[{section}]")
+    except ValueError:
+        while lines and not lines[-1].strip():
+            lines.pop()
+        return "\n".join(lines + ([""] if lines else []) + [f"[{section}]", f"{key}={value}"]) + "\n"
+    i = s + 1
+    while i < len(lines) and not lines[i].startswith("["):
+        if lines[i].split("=", 1)[0].strip() == key:
+            lines[i] = f"{key}={value}"
+            return "\n".join(lines) + "\n"
+        i += 1
+    while i > s + 1 and not lines[i - 1].strip():      # after the section's last line, before the blank separator
+        i -= 1
+    lines.insert(i, f"{key}={value}")
     return "\n".join(lines) + "\n"
 
 
@@ -3467,11 +3502,12 @@ class RPCS3LinuxAdapter(StandaloneAdapter):
         self._mem, self.paused, self.generation, self.rom = None, False, 0, None
 
     def _ensure(self):
+        self.write_settings()                             # first: the firmware install then runs without dialogs too
         provision.ensure_rpcs3_linux(self.config, getattr(self, "progress", None))
-        self.write_settings()
 
     def write_settings(self) -> None:
-        """config.yml (RPCS3_LINUX_SETTINGS), the keyboard pad as player 1, the save-state hotkey."""
+        """config.yml (RPCS3_LINUX_SETTINGS), the keyboard pad as player 1, CurrentSettings.ini (RPCS3_LINUX_GUI: no
+        welcome dialog or info boxes, the save-state hotkey)."""
         d = self.home
         (d / "input_configs" / "global").mkdir(parents=True, exist_ok=True)
         (d / "input_configs" / "global" / "Default.yml").write_text(RPCS3_KEYBOARD_INPUT, encoding="utf-8")
@@ -3484,8 +3520,9 @@ class RPCS3LinuxAdapter(StandaloneAdapter):
         gui = d / "GuiConfigs" / "CurrentSettings.ini"
         gui.parent.mkdir(parents=True, exist_ok=True)
         ini = gui.read_text(encoding="utf-8") if gui.exists() else ""
-        if "game_window_savestate=" not in ini:            # RPCS3's restart-from-state shortcut stays off F2 / F4
-            ini = ini.rstrip("\n") + "\n\n[Shortcuts]\ngame_window_savestate=F2\ngame_window_restart=Ctrl+Alt+Shift+F11\n"
+        for section, kv in RPCS3_LINUX_GUI.items():
+            for k, v in kv.items():
+                ini = ini_set(ini, section, k, v)
         gui.write_text(ini, encoding="utf-8")
 
     def _argv(self, rom: str) -> list[str]:
