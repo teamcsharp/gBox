@@ -895,6 +895,8 @@
       const at = [clamp01((cx - rect.x) / rect.w), clamp01((cy - rect.y) / rect.h)];
       return characterMenu(doc, Object.assign({}, io, { frame: io.frame || frameAt }), { sid, at, aspect: rect.w / rect.h, x: cx, y: cy,
         preview: S.on ? S.preview : null, con, gid: (el.closest && el.closest("[data-gid]")?.dataset.gid) || io.gid?.() || "", view: io.view?.() || "stream",
+        // the session's own entries (web shell: Restart session / Reconnect stream), at the end of the menu
+        extra: (io.sessionExtra && io.sessionExtra(sid)) || [], onExtra: id => io.onSessionExtra && io.onSessionExtra(id, sid),
         anchor: [rect.x + (S.cur ? S.cur[2] : at[0]) * rect.w + 12, rect.y + (S.cur ? S.cur[1] : at[1]) * rect.h],
         onClose: why => { if (cold && why !== "report") stop(); else if (cold) setTimeout(stop, 0); } });   // closing resumes; ⌖ keeps picking open
     }

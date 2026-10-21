@@ -50,7 +50,18 @@
         return io.windowMode({ on: true, aspect: state.aspect });
       });
     }
-    return { state, enter, restore, changed, picture };
+    // The game in PiP was restarted or swapped (a new session id on the same PC): the same window shows the new copy.
+    // A copy of the other kind (a local window instead of a stream) cannot share it: PiP closes. Returns true when followed.
+    function follow(from, session) {
+      return serial(async () => {
+        if (!state.on || !from || state.sid !== from || !session?.sid || session.sid === from) return false;
+        if (!!session.local !== state.local) { await io.windowMode({ on: false }).catch(() => {}); clear(); return false; }
+        state.sid = session.sid;
+        io.render(state); io.pad(state.local ? null : state.sid); io.present();
+        return true;
+      });
+    }
+    return { state, enter, restore, changed, picture, follow };
   }
   const api = { fit, create };
   if (typeof module === 'object' && module.exports) module.exports = api;

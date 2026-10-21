@@ -173,6 +173,36 @@ def test_scoped_hotkeys_are_wired_with_the_right_scope():
 ])
 def test_actual_mouse_hook_does_not_dismiss_popups_through_game_region_holes(hit, root, is_child, expected):
     """Run the real nested target/over/proc functions; install no native hook."""
+    proc, emitted, MS, w = mouse_hook(hit, root, is_child)
+    event = MS(w.POINT(75, 75), 0, 0, 1, 0)
+    assert proc(0, 0x201, ctypes.addressof(event)) == 73
+    assert emitted == expected
+
+
+def test_triple_click_on_the_docked_game_asks_for_picture_in_picture_and_passes_every_click_through():
+    """Operator 2026-10-21: triple-click the game display -> PiP. The hook reports it ("piptriple"), never swallows."""
+    proc, emitted, MS, w = mouse_hook(GAME, APP, False)
+    for t in (1000, 1150, 1300):
+        assert proc(0, 0x201, ctypes.addressof(MS(w.POINT(75, 75), 0, 0, t, 0))) == 73, "the game gets the click"
+    assert emitted == [{"event": "gameclick"}] * 2 + [{"event": "piptriple"}, {"event": "gameclick"}]
+    emitted.clear()                                               # a slow third click starts a new run
+    for t in (5000, 5150, 6000):
+        proc(0, 0x201, ctypes.addressof(MS(w.POINT(75, 75), 0, 0, t, 0)))
+    assert {"event": "piptriple"} not in emitted
+
+
+def test_triple_click_is_not_counted_in_compact_mode_or_off_the_game():
+    proc, emitted, MS, w = mouse_hook(GAME, APP, False, compact_on=True)
+    for t in (1000, 1150, 1300):
+        proc(0, 0x201, ctypes.addressof(MS(w.POINT(75, 75), 0, 0, t, 0)))
+    assert {"event": "piptriple"} not in emitted, "in PiP the double click restores (compact_click), no triple"
+    proc, emitted, MS, w = mouse_hook(555, APP, False)            # a popup over the game's region
+    for t in (1000, 1150, 1300):
+        proc(0, 0x201, ctypes.addressof(MS(w.POINT(75, 75), 0, 0, t, 0)))
+    assert emitted == []
+
+
+def mouse_hook(hit, root, is_child, compact_on=False):
     from ctypes import wintypes as w
     tree = ast.parse(WINEMBED.read_text(encoding="utf8"))
     outer = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "rclick_hook")
@@ -198,14 +228,12 @@ def test_actual_mouse_hook_does_not_dismiss_popups_through_game_region_holes(hit
         def CallNextHookEx(self, *args): return 73
 
     emitted = []
-    ns = winembed_functions("gesture_target")
+    ns = winembed_functions("gesture_target", "triple_click")
     ns.update(u32=U(), ctypes=ctypes, wintypes=w, MS=MS,
-              state={"parent": APP, "hwnd": GAME, "compact": False},
+              state={"parent": APP, "hwnd": GAME, "compact": compact_on},
               in_game_rect=lambda pt: True, front_now=lambda: True,
-              compact={"click": None, "release": False, "hover": False}, whip={"on": False},
+              compact={"click": None, "release": False, "hover": False, "run": None}, whip={"on": False},
               compact_click=lambda *args: (None, False), emit=emitted.append,
               WM_LBUTTONDOWN=0x201, WM_LBUTTONUP=0x202, WM_RBUTTONDOWN=0x204, WM_RBUTTONUP=0x205)
     exec(compile(ast.Module(body=body, type_ignores=[]), str(WINEMBED), "exec"), ns)
-    event = MS(w.POINT(75, 75), 0, 0, 1, 0)
-    assert ns["proc"](0, 0x201, ctypes.addressof(event)) == 73
-    assert emitted == expected
+    return ns["proc"], emitted, MS, w

@@ -73,9 +73,9 @@ test('both desktop PiP entry points use compact mode rather than the old streame
 test('double click and Escape restore the app; native hover reaches the same controls', () => {
   const start=html.indexOf("gbox.onCompactView?.");
   const end=html.indexOf("setInterval(() => {",start);
-  const events={},changed=[], restores=[];
+  const events={},changed=[], restores=[], gesture=[];
   vm.runInNewContext(html.slice(start,end),{
-    gbox:{onCompactView:f=>changed.push(f)},compactController:{changed(){}},COMPACT:{on:true},
+    gbox:{onCompactView:f=>changed.push(f)},compactController:{changed(){}},COMPACT:{on:true},pipGesture:{changed:on=>gesture.push(on)},
     GBoxCompactCoach:require('../clients/desktop/compact-coach'),
     compactRestore:()=>{restores.push('restore'); return Promise.resolve();},compactHover(){},addEventListener:(name,fn)=>{events[name]=fn;}
   });
@@ -83,9 +83,10 @@ test('double click and Escape restore the app; native hover reaches the same con
   events.dblclick({preventDefault(){prevented++;},stopPropagation(){}});
   events.keydown({key:'Escape',preventDefault(){prevented++;}});
   assert.equal(restores.length,2); assert.equal(prevented,2);
+  assert.deepEqual(gesture,[false],'the double-click restore starts the triple-click cooldown (its third click does not reopen PiP)');
   assert.match(html,/ev\.event === 'compact-hover'/);
 });
-function embedding({remote=false,ok=true,ended=false}={}) {
+function embedding({remote=false,ok=true,ended=false,keep=false}={}) {
   const sessions=[{session_id:'picked',state:ended?'ended':'running',started:10,title:'Picked game',adapter:'retroarch',
     detail:{pid:123,local_window:!remote,worker_name:remote?'other':'PC'}},
     {session_id:'newer',state:'running',started:99,title:'Another game',detail:{pid:999,local_window:true,worker_name:'PC'}}];
@@ -96,7 +97,7 @@ function embedding({remote=false,ok=true,ended=false}={}) {
   const ctx=vm.createContext({LIVE_SESSIONS:{peek:()=>({ok,data:sessions})},S:{workerName:'PC'},EMB:emb,COMPACT:compact,
     $:()=>node,document:{querySelector:selector=>selector==='section.on'?{id:'play'}:null},
     GPU_GAME:{pid:null},gpuGameDispose:async()=>{},pipHandle(){},gbox:{embedSync:async value=>seen.syncs.push(value)},
-    compactRestore:async()=>{seen.restores++;compact.on=false;},VIEW:{mode:'compact'},FLOW:{on:false},EYE:{on:false},
+    compactRestore:async()=>{seen.restores++;compact.on=false;},compactKeep:async sid=>{seen.keeps=(seen.keeps||[]).concat(sid);return keep;},VIEW:{mode:'compact'},FLOW:{on:false},EYE:{on:false},
     GBoxReportStory:{isFullOpen:()=>false},GBoxCompactGame:{fit},GBoxEmbedGeometry:require('../clients/desktop/embed-geometry'),
     innerWidth:800,innerHeight:600,gpuGamePresent:async(...args)=>{seen.surfaces.push(args);return true;},embedSoon(){},
     Date,console
@@ -118,4 +119,8 @@ test('remote compact view hides a local native surface without stopping its game
 test('session ending restores the app; a temporary service error leaves PiP intact',async()=>{
   const x=embedding({ended:true}); await x.tick(); assert.equal(x.seen.restores,1);
   const y=embedding({ok:false}); await y.tick(); assert.equal(y.seen.restores,0); assert.equal(y.compact.on,true);
+});
+test('a restarted or replaced game keeps PiP open (compactKeep follows it) instead of restoring the app',async()=>{
+  const x=embedding({ended:true,keep:true}); await x.tick();
+  assert.equal(x.seen.restores,0); assert.equal(x.compact.on,true); assert.deepEqual(x.seen.keeps,['picked']);
 });

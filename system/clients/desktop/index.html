@@ -1245,6 +1245,8 @@ window.taskVizCreate = canvas => {
 <script src="embed-geometry.js"></script>
 <script src="game-surface.js"></script>
 <script src="compact-game.js"></script>
+<script src="pip-gesture.js"></script>
+<script src="../web/viz/session-restart.js"></script>
 <script src="../web/viz/autoplay-coach.js"></script>
 <script src="compact-coach.js"></script>
 <script src="client-refresh.js"></script>
@@ -1261,7 +1263,14 @@ window.GBOX_STREAM_FETCH_HEALTH = async src => {
 <script src="../web/viz/stream-watchdog.js"></script>
 <style id="compact-game-style">
   body.gbox-compact { background:#000; }
-  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(#compact-stream):not(#compact-controls):not(script):not(style) { display:none !important; }
+  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(#compact-stream):not(#compact-controls):not(#compact-menu):not(#compact-status):not(script):not(style) { display:none !important; }
+  #compact-menu { position:fixed; z-index:110; display:none; min-width:210px; background:#1d1d22; border:1px solid #444; border-radius:8px; padding:4px;
+    box-shadow:0 8px 24px #000a; font:13px system-ui; }
+  #compact-menu button { display:block; width:100%; text-align:left; background:none; border:0; color:#e8e8ee; padding:6px 10px; border-radius:5px; cursor:pointer; font:inherit; }
+  #compact-menu button:hover { background:#ffffff14; } #compact-menu hr { border:0; border-top:1px solid #444; margin:4px 0; }
+  #compact-status { position:fixed; left:8px; right:8px; bottom:8px; z-index:105; display:none; padding:6px 10px; border-radius:6px;
+    background:#101014e6; color:#eee; font:12px system-ui; pointer-events:none; }
+  body.gbox-compact #compact-status.on { display:block; } #compact-status.bad { background:#7a1f1fe6; }
   #compact-stream { display:none; position:fixed; inset:0; width:100%; height:100%; object-fit:contain; background:#000; }
   body.gbox-compact #compact-stream.on { display:block; }
   #compact-controls { display:none; position:fixed; inset:0 0 auto; height:28px; z-index:100;
@@ -3587,7 +3596,7 @@ async function embedTick() {
     const mine = r.ok && r.data.filter(s => s.state === "running" && s.detail && s.detail.local_window && s.detail.worker_name === S.workerName
                                           && !EMB.closed.has(s.session_id) && (!COMPACT.on || s.session_id === COMPACT.sid)).sort((a, b) => (b.started || 0) - (a.started || 0))[0];
     if (!r.ok) return;                                       // API blip (Spark restarting): leave the game exactly as it is
-    if (COMPACT.on && !r.data.some(s => s.session_id === COMPACT.sid && s.state === "running")) await compactRestore();
+    if (COMPACT.on && !r.data.some(s => s.session_id === COMPACT.sid && s.state === "running") && !(await compactKeep(COMPACT.sid))) await compactRestore();
     if (COMPACT.on && !COMPACT.local) {
       if (GPU_GAME.pid) await gpuGameDispose();
       pipHandle(null); EMB.rect = null; EMB.vis = false;
@@ -3716,6 +3725,7 @@ const compactCoach = GBoxCompactCoach.create({ coach:GBoxAutoplayCoach,
   show:visible => compactHover(visible), focusApp:() => gbox.appFocus?.(),
   gateInput:focused => { document.querySelector('#wv')?.executeJavaScript(`window.gboxPadTextCapture?.(${!!focused})`).catch(() => {}); }
 });
+const pipGesture = GBoxPipGesture.create();                  // triple-click: PiP in / out (pip-gesture.js)
 const compactController = GBoxCompactGame.create({
   mode: () => VIEW.mode,
   resolve: async requested => {
@@ -3744,6 +3754,7 @@ const compactController = GBoxCompactGame.create({
   },
   windowMode: value => gbox.compactView(value),
   render: state => {
+    pipGesture.changed(state.on);
     VIEW.mode = state.on ? 'compact' : state.returnMode === 'full' ? 'full' : 'auto';
     document.body.classList.toggle('gbox-compact', state.on);
     let stream = $('#compact-stream'), controls = $('#compact-controls');
@@ -3858,7 +3869,7 @@ function compactHover(show) {
   if (show || !COMPACT.on) apply(); else compactHoverTimer = setTimeout(apply, 450);
 }
 gbox.onCompactView?.(value => compactController.changed(value));
-addEventListener('dblclick', event => { if (COMPACT.on && !GBoxCompactCoach.isCoachTarget(event.target)) { event.preventDefault(); event.stopPropagation(); compactRestore().catch(error => toast(error.message)); } }, true);
+addEventListener('dblclick', event => { if (COMPACT.on && !GBoxCompactCoach.isCoachTarget(event.target)) { event.preventDefault(); event.stopPropagation(); pipGesture.changed(false); compactRestore().catch(error => toast(error.message)); } }, true);   // a triple click's third click then does nothing
 addEventListener('pointermove', event => { if (COMPACT.on) compactHover(event.clientY < 32); }, { passive:true });
 addEventListener('resize', () => { if (COMPACT.on) requestAnimationFrame(() => embedTick()); });
 addEventListener('keydown', event => { if (COMPACT.on && event.key === 'Escape' && !GBoxCompactCoach.isCoachTarget(event.target)) { event.preventDefault(); compactRestore().catch(error => toast(error.message)); } });
@@ -3867,6 +3878,110 @@ setInterval(() => {
   const image = $('#compact-stream');
   if (image?.naturalWidth) compactController.picture(image.naturalWidth, image.naturalHeight)?.catch(() => {});
 }, 500);
+// ---- triple-click the game display: picture-in-picture; triple-click the PiP window: back (pip-gesture.js) ----
+// Here: the app's own game pictures (the PiP window's stream, the GPU game surface). The embedded web shell reports its
+// stream's triple click ("gametriple"), a docked native game window the hook's ("piptriple"); both end in pipTriple.
+function pipTriple(sid, modifiers = false) {
+  const d = pipGesture.decide({ clicks: 3, compact: COMPACT.on, onGame: true, modifiers });
+  if (d === 'enter') compactController.enter(sid ? { sid } : undefined).catch(error => toast(error.message));
+  else if (d === 'exit') compactRestore().catch(error => toast(error.message));
+  return d;
+}
+addEventListener('click', event => {
+  if (event.detail !== 3 || event.button !== 0 || GBoxCompactCoach.isCoachTarget(event.target)) return;
+  if (!event.target.closest?.('#compact-stream, #gpu-game, .gbox-gpu-video')) return;
+  pipTriple(COMPACT.on ? COMPACT.sid : EMB.sid, event.ctrlKey || event.altKey || event.shiftKey || event.metaKey);
+}, true);
+// ---- Restart session / Reconnect stream (web/viz/session-restart.js; operator 2026-10-21) ----
+// The PiP window's right-click menu (a streamed game) and the game menu offer them; the web shell's own menus run the
+// same flow in the embedded view. The PiP window follows the new copy and re-attaches its stream.
+async function compactStreamFor(sid) {
+  return `${S.apiUrl}/api/sessions/${encodeURIComponent(sid)}/mjpeg?token=${encodeURIComponent(await gbox.token())}`;
+}
+async function compactFollow(from, to) {
+  if (!COMPACT.on || COMPACT.sid !== from || !to || to === from) return false;
+  const s = await sessionById(to).catch(() => null);
+  if (!s || s.state !== 'running') return false;
+  const local = !!s.detail?.local_window && s.detail.worker_name === S.workerName;
+  if (!local) compactStreamUrl = await compactStreamFor(to);
+  compactTitle = sessionTitle(s) || compactTitle;
+  return compactController.follow(from, { sid: to, local });
+}
+const DESK_RESTARTS = new Set();
+// the PiP game's session is gone from the running list: keep the window while its restart runs, follow its replacement
+async function compactKeep(sid) {
+  if (DESK_RESTARTS.has(sid) || compactKeep.busy) return true;
+  compactKeep.busy = true;
+  try { const s = await sessionById(sid).catch(() => null); return !!(s?.replaced_by && await compactFollow(sid, s.replaced_by)); }
+  finally { compactKeep.busy = false; }
+}
+async function compactReconnect(sid, say = false) {
+  if (!COMPACT.on || COMPACT.local || !COMPACT.sid || (sid && COMPACT.sid !== sid)) return false;
+  compactStreamUrl = await compactStreamFor(COMPACT.sid);
+  const img = $('#compact-stream'); if (img) img.src = GBoxSessionRestart.reconnectUrl(compactStreamUrl, Date.now());
+  if (say) restartStatus('⟳ Stream reconnected', 2500);
+  return true;
+}
+// progress and errors: a line over the PiP picture, else a toast (one card, updated in place)
+function restartStatus(text, ms = 60000, bad = false) {
+  let el = $('#compact-status');
+  if (COMPACT.on) {
+    if (!el) { el = document.createElement('div'); el.id = 'compact-status'; el.setAttribute('role', 'status'); document.body.append(el); }
+    clearTimeout(restartStatus.t);
+    el.textContent = text || ''; el.classList.toggle('on', !!text); el.classList.toggle('bad', !!bad);
+    if (text && ms) restartStatus.t = setTimeout(() => el.classList.remove('on'), ms);
+  } else { el?.classList.remove('on'); if (text) toast(text, ms, { id: 'session-restart', kind: bad ? 'bad' : '' }); }
+}
+async function guestReconnect(sid) {
+  await document.querySelector('#wv')?.executeJavaScript(`typeof streamReconnect === "function" && streamReconnect(${JSON.stringify(sid)}, true)`).catch(() => {});
+}
+async function desktopRestart(sid) {
+  if (!sid) return toast('⚠ No game to restart');
+  if (DESK_RESTARTS.has(sid)) return restartStatus('This game is already restarting.', 4000);
+  const s = await sessionById(sid).catch(() => null);
+  if (!s || s.state !== 'running') return restartStatus('⚠ This game has already ended: use Play again.', 8000, true);
+  const title = sessionTitle(s) || s.title || '';
+  if (!confirm(GBoxSessionRestart.confirmText({ session_id: sid, title, worker: s.detail?.worker_name || sid.split('-')[0], owner: s.label?.owner || s.owner || '' }))) return;
+  DESK_RESTARTS.add(sid);
+  const api = async (path, body) => { const r = await gbox.api(path, body); if (!r.ok) throw new Error(r.error || 'the gBox server did not answer'); return r.data; };
+  try {
+    const r = await GBoxSessionRestart.restart({ api,
+      progress: (pct, msg) => restartStatus(`↻ ${Math.round(pct)}% · ${msg}`),
+      autoplay: (id, input) => gameJob('autoplay', { ...input, session_id: id }),
+      follow: async (from, to) => {
+        if (from === to) return;
+        await compactFollow(from, to);
+        await document.querySelector('#wv')?.executeJavaScript(`typeof followSession === "function" && followSession(${JSON.stringify(from)}, ${JSON.stringify(to)})`).catch(() => {});
+      },
+      reconnect: async id => { await compactReconnect(id); await guestReconnect(id); } }, { sid, title });
+    restartStatus(`↻ ${title || 'The game'} restarted` + (r.autoplay?.ok ? ' · autoplay back on' : '') + (r.notes.length ? ': ' + r.notes.join(' ') : ''), 8000);
+    return r;
+  } catch (e) { restartStatus('⚠ ' + e.message, 15000, true); }
+  finally { DESK_RESTARTS.delete(sid); }
+}
+// right-click the PiP window's streamed game: Restart session / Reconnect stream / back to the full app
+function compactMenu(x, y) {
+  let m = $('#compact-menu');
+  if (!m) {
+    m = document.createElement('div'); m.id = 'compact-menu'; m.setAttribute('role', 'menu'); document.body.append(m);
+    addEventListener('mousedown', e => { if (!e.target.closest?.('#compact-menu')) m.style.display = 'none'; }, true);
+    addEventListener('blur', () => { m.style.display = 'none'; });
+  }
+  const items = [...GBoxSessionRestart.menuItems().map(i => [i.id, `${i.icon} ${i.text}`]), ['-'], ['full', '⤢ Full app (or triple-click the game)']];
+  m.innerHTML = items.map(([a, t]) => a === '-' ? '<hr>' : `<button type="button" data-a="${a}">${esc(t)}</button>`).join('');
+  m.onclick = e => {
+    const a = e.target.closest('button')?.dataset.a; if (!a) return;
+    m.style.display = 'none';
+    if (a === 'restart') desktopRestart(COMPACT.sid);
+    else if (a === 'reconnect') compactReconnect(COMPACT.sid, true);
+    else if (a === 'full') compactRestore().catch(error => toast(error.message));
+  };
+  m.style.display = 'block'; fitMenu(m, x, y, 4, 4);
+}
+document.addEventListener('contextmenu', e => {
+  if (!COMPACT.on || e.target.id !== 'compact-stream') return;
+  e.preventDefault(); e.stopPropagation(); compactMenu(e.clientX, e.clientY);
+}, true);
 try { VIEW.pip = JSON.parse(localStorage.getItem("gbox_pip")); } catch {}
 const PIP_SIZES = { S: [320, 240], M: [480, 360], L: [720, 540] };
 function pipRect() {
@@ -3956,7 +4071,8 @@ function pipMenu(x, y) {
                  ...(RI.cur ? [["reinv", "🎒 Inventory (change / give items)…"]] : []),
                  ...(/zelda/i.test(EMB.title || "") ? [["equip", "🗡 Equip screen (items, gear, upgrades)…"]] : []), ["-"],
                  ["prefs", "⚙ Preferences"], ["perf", "⏱ Performance options"], ["display", "🖥 Display settings"], ["aa", "✨ Anti-aliasing"],
-                 ["pad", "🎮 Controller settings (emulator menu)"], ["mapping", "🕹 Controller mapping"], ["trouble", "🛠 Troubleshoot gameplay…"], ["-"],
+                 ["pad", "🎮 Controller settings (emulator menu)"], ["mapping", "🕹 Controller mapping"], ["trouble", "🛠 Troubleshoot gameplay…"],
+                 ["restart", "↻ Restart session (relaunch it with its mod)"], ["-"],
                  ["main", "↩ Main view"], ["pip", "▣ Picture-in-picture"], isFull() ? ["main", "⤡ Exit full screen   Alt+Enter"] : ["full", "⛶ Full screen   Alt+Enter"],
                  ["S", "Size: small"], ["M", "Size: medium"], ["L", "Size: large"]];
   m.innerHTML = items.map(([a, t, off]) => a === "-" ? "<hr>" : off
@@ -4053,6 +4169,7 @@ async function gameAction(a) {
     else if (a === "pad") await padSettings();
     else if (a === "mapping") { viewAction("main"); document.querySelector("#wv")?.executeJavaScript(`show("Controllers")`).catch(() => {}); }
     else if (a === "trouble") troubleShow();
+    else if (a === "restart") await desktopRestart(EMB.sid);
     else viewAction(a);
   } catch (e) { toast("⚠ " + e.message, 6000); }
 }
@@ -4302,6 +4419,9 @@ setInterval(() => { const wv = document.querySelector("#wv"); if (wv && !wv._gbo
     else if (m.ev === 'emulationissue') reportEmulationIncident(m.sid, m.action);
     else if (m.ev === 'emulationreport') evRequest(m.requestId);
     else if (m.ev === "gameclick") closePops(null);
+    else if (m.ev === "gametriple") pipTriple(m.sid || EMB.sid);                       // triple-click the stream: PiP
+    else if (m.ev === "sessionreplaced") compactFollow(m.from, m.to).catch(() => {});  // restarted there: PiP follows
+    else if (m.ev === "streamreconnect") compactReconnect(m.sid).catch(() => {});
     else if (m.ev === "gamefocus") gameFocus();          // a coach note sent: a bot demo here gets the keyboard back
     else if (m.ev === 'operationconsole') GAME_OUTPUT.ingest(m.event);
     else if (m.ev === "layout") { if (EMB.pid && EMB.surface !== "gpu") embedSoon(); }   // a menu over the docked game opened/closed
@@ -4337,6 +4457,7 @@ gbox.onEmbedEvent?.(async ev => {
     return whipCardMenu(card, [ev.x, ev.y], { shot });
   }
   if (ev.event === "gameup") return;
+  if (ev.event === "piptriple") return pipTriple(EMB.sid);                 // a docked native game window, triple-clicked
   if (ev.event === "gameclick") return closePops(null);
   if (ev.event === "whip") return whipSend(ev); if (ev.event === "ptt") return ev.down ? pttDown() : pttUp(); if (ev.event === "rclick") pwRightClick(ev.x, ev.y); if (ev.event === "ctrlclick") eyePoint(ev.x, ev.y); });
 gbox.onHotkey?.(k => { if (k === "eyedropper") return eyeStart();

@@ -452,6 +452,23 @@ def compact_click(previous, point, when, window, enabled, limit, extent):
     return current, False
 
 
+def triple_click(previous, point, when, window, enabled, limit, extent):
+    """Pure native triple-click counting (the docked game in the main view, scoped before calling this helper): each
+    click within the system double-click time and distance of the one before continues the run; the third one returns
+    True and starts over. Nothing is swallowed: the game gets every click."""
+    if not enabled or not window:
+        return None, False
+    x, y = point
+    count = 1
+    if previous:
+        px, py, pt, pw, pc = previous
+        if pw == window and 0 <= when-pt <= limit and abs(x-px) <= extent[0]/2 and abs(y-py) <= extent[1]/2:
+            count = pc + 1
+    if count >= 3:
+        return None, True
+    return (x, y, when, window, count), False
+
+
 def foreground_watch():
     """EVENT_SYSTEM_FOREGROUND (out of context, every process) + a 100 ms recheck: report gBox gaining/losing the front."""
     WINEVENT = ctypes.WINFUNCTYPE(None, wintypes.HANDLE, wintypes.DWORD, wintypes.HWND, ctypes.c_long, ctypes.c_long,
@@ -506,7 +523,7 @@ def rclick_hook():
         return r.left <= pt.x < r.right and r.top <= pt.y < r.bottom
 
     whip = {"on": False, "t": 0.0}
-    compact = {'click': None, 'release': False, 'hover': False}
+    compact = {'click': None, 'release': False, 'hover': False, 'run': None}
 
     def target(pt, needs_front=False):
         """"game" / "app" (the gBox window, only while a game is docked in it) / None = not gBox's input."""
@@ -557,6 +574,12 @@ def rclick_hook():
                     compact['release'] = True
                     emit({'event': 'piprestore'})
                     return 1
+                if not enabled:                               # main view: a triple click on the game opens PiP
+                    compact['run'], triple = triple_click(compact['run'], (cm.pt.x, cm.pt.y), cm.time,
+                        state.get('hwnd'), plain and over(cm.pt), u32.GetDoubleClickTime(),
+                        (u32.GetSystemMetrics(36), u32.GetSystemMetrics(37)))
+                    if triple:
+                        emit({'event': 'piptriple'})
         if code == 0 and (whip["on"] or wp == WM_LBUTTONDOWN):   # Alt + drag = pick whip: "swap this with that"
             m = ctypes.cast(lp, ctypes.POINTER(MS)).contents
             if whip["on"]:

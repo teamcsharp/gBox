@@ -24,6 +24,19 @@ def test_compact_double_click_requires_same_scoped_game_and_system_distance_and_
         assert not click(prev,point,when,window,enabled,500,(8,8))[1]
 
 
+def test_native_triple_click_counts_three_clicks_in_the_system_double_click_time_and_distance():
+    """Main view: the third click of a run on the docked game opens PiP; the run follows the double-click rules."""
+    triple=functions('triple_click')['triple_click']
+    run,hit=triple(None,(100,200),1000,7,True,500,(8,8))
+    assert not hit and run[-1]==1
+    run,hit=triple(run,(102,199),1300,7,True,500,(8,8))
+    assert not hit and run[-1]==2
+    assert triple(run,(101,201),1700,7,True,500,(8,8))==(None,True), 'each click measured from the one before'
+    for point,when,window,enabled in [((107,200),1700,7,True),((101,201),1900,7,True),((101,201),1700,8,True),((101,201),1700,7,False)]:
+        assert not triple(run,point,when,window,enabled,500,(8,8))[1]
+    assert triple(run,(107,200),1700,7,True,500,(8,8))[0][-1]==1, 'a broken run starts again at one'
+
+
 def chrome_fixture():
     bits=0x00C00000|0x00080000|0x00030000
     class User:

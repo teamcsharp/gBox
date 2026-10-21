@@ -280,6 +280,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/session-presentation.js"></script>
 <script src="/viz/session-speed.js"></script>
 <script src="/viz/session-move.js"></script>
+<script src="/viz/session-restart.js"></script>
 <script src="/viz/remote-game.js"></script>
 <script src="/viz/session-live.js"></script>
 <script src="/viz/session-refresh.js"></script>
@@ -680,10 +681,15 @@ document.addEventListener("contextmenu", e => {
 document.addEventListener("mousedown", e => { const m = $("#issuemenu"); if (m && !m.contains(e.target)) m.style.display = "none"; });
 // a click on the docked native game window never reaches this page: closing on focus loss covers it (#1423)
 addEventListener("blur", () => { const m = $("#issuemenu"); if (m) m.style.display = "none"; $("#gmenu")?.classList.remove("on"); });
-// right-click a session icon: open / bring it to this PC / stop / mark it mine or an agent's
+// right-click a session icon (or the picture-in-picture's picture): open / bring it to this PC / mark it mine or an
+// agent's / Restart session / Reconnect stream / stop
 document.addEventListener("contextmenu", e => {
-  const c = e.target.closest(".tchip"); if (!c) return; e.preventDefault();
-  const sid = c.dataset.sid, agent = (TRAY.labels?.[sid] || {}).owner === "agent";
+  const c = e.target.closest(".tchip, #pipimg"); if (!c) return; e.preventDefault();
+  const sid = c.id === "pipimg" ? c.dataset.sid || active?.sid : c.dataset.sid; if (!sid) return;
+  sessionChipMenu(sid, e.clientX);
+});
+function sessionChipMenu(sid, x) {
+  const agent = (TRAY.labels?.[sid] || {}).owner === "agent";
   let moves = [];                                                                                                        // #1501
   try { moves = window.GBoxSessionMove ? GBoxSessionMove.targets(sid, TRAY.ws, window.GBOX_LOCAL?.worker || "") : []; } catch {}   // never a menu that doesn't open
   const el = $("#traypop");
@@ -691,9 +697,10 @@ document.addEventListener("contextmenu", e => {
       <button data-a="open">Open</button>
       ${moves.map(t => `<button data-a="move" data-to="${esc(t.to)}" data-label="${esc(t.label)}">${esc(t.label)} <span class="mut">(${esc(t.hint)})</span></button>`).join("")}
       <button data-a="${agent ? "mine" : "agent"}">${agent ? "Mark as mine" : "Mark as an agent's test"}</button>
+      ${GBoxSessionRestart.menuItems().map(x => `<button data-a="${x.id}">${x.icon} ${x.text}</button>`).join("")}
       <button data-a="stop" style="color:var(--bad)">Stop</button><div class="mut tmst"></div></div>`;
-  el.style.left = Math.min(innerWidth - 330, e.clientX) + "px"; el.style.right = "auto"; el.classList.add("on"); TRAY.open = true; trayFit();
-});
+  el.style.left = Math.min(innerWidth - 330, x) + "px"; el.style.right = "auto"; el.classList.add("on"); TRAY.open = true; trayFit();
+}
 document.addEventListener("click", async e => {
   const mb = e.target.closest(".tmenu button");
   if (mb) {
@@ -701,6 +708,8 @@ document.addEventListener("click", async e => {
     if (a === "open") { show("Sessions", sid); }
     else if (a === "move") { TRAY.open = false; $("#traypop").classList.remove("on"); $("#traypop").style.left = "";
       moveSession(sid, mb.dataset.to, mb.dataset.label); return; }
+    else if (a === "restart" || a === "reconnect") { TRAY.open = false; $("#traypop").classList.remove("on"); $("#traypop").style.left = "";
+      a === "restart" ? sessionRestart(sid) : streamReconnect(sid); return; }
     else if (a === "stop") { if (!confirm("Stop this game? Unsaved progress is lost.")) return; await sop(sid, "stop_game"); }
     else { await api(`/api/sessions/${encodeURIComponent(sid)}/label`, { owner: a === "mine" ? "you" : "agent", label: "" }).catch(() => {}); }
     TRAY.open = false; $("#traypop").classList.remove("on"); $("#traypop").style.left = ""; trayTick(); return;
@@ -3253,6 +3262,52 @@ async function moveHere(sid, btn) {                        // pull the game onto
   }
   catch (e) { btn.disabled = false; btn.textContent = "Can't move: " + e.message.slice(0, 90); btn.title = e.message; }
 }
+// Restart session / Reconnect stream (viz/session-restart.js; operator 2026-10-21): from the game picture's right-click
+// menu, the session icon's and the picture-in-picture's. Restart relaunches the same game + mod on its PC (the reset
+// endpoint, which relaunches RPCS3 too), the views follow the new copy, the pictures re-attach and an autoplay that was
+// playing starts again. Reconnect only re-attaches the pictures. In the desktop app the shell's PiP window follows too.
+const gboxEmbedded = () => document.documentElement.dataset.embedded === "true" || bnEmbedded();
+const gboxTell = m => { if (gboxEmbedded()) console.log("GBOX:" + JSON.stringify(m)); };
+function streamReconnect(sid, quiet = false) {
+  const n = GBoxSessionRestart.reconnectImages(document, sid);
+  gboxTell({ ev: "streamreconnect", sid });                 // the desktop's picture-in-picture window streams it too
+  if (!quiet) blToast(n ? "⟳ Stream reconnected" : "⟳ Reconnecting the stream (no picture of it is open here)");
+  return n;
+}
+// Triple-click the game picture: the desktop app's picture-in-picture window (operator 2026-10-21: "If I triple click the
+// game display, go into picture in picture mode"); triple-clicking that window brings the app back. Only the third click
+// of a run is used (event.detail 3): single and double clicks and the game's own input are untouched. A plain browser
+// has no PiP window, so nothing happens there.
+document.addEventListener("click", e => {
+  if (e.detail !== 3 || e.button !== 0 || e.ctrlKey || e.altKey || e.shiftKey || e.metaKey || !gboxEmbedded()) return;
+  const v = e.target.closest?.(PW_GAME_VIEW); if (!v || v.id === "pipimg") return;
+  const sid = v.dataset.sid || GBoxSessionRestart.sessionOf(v.getAttribute("src")) || playing || "";
+  gboxTell({ ev: "gametriple", sid });
+});
+const SESSION_RESTARTS = new Set();
+async function sessionRestart(sid) {
+  if (SESSION_RESTARTS.has(sid)) return blToast("This game is already restarting.");
+  const s = (await api("/api/sessions?include_ended=false").catch(() => [])).find(x => x.session_id === sid);
+  if (!s || s.state !== "running") return blToast("⚠ This game has already ended: use Play again.");
+  const info = { session_id: sid, title: s.title || "", worker: sessionWorkerName(s) || sid.split("-")[0], owner: (TRAY.labels?.[sid] || {}).owner || "" };
+  if (!confirm(GBoxSessionRestart.confirmText(info))) return;
+  SESSION_RESTARTS.add(sid);
+  const hideButtons = () => { $("#ldcancel").style.display = $("#ldlocal").style.display = "none"; };
+  try {
+    const r = await GBoxSessionRestart.restart({ api,
+      show: (t, sub) => { loader.show(t, sub, `/api/sessions/${encodeURIComponent(sid)}/frame.jpg?${tq()}&t=${Date.now()}`); hideButtons(); },
+      progress: (p, m) => loader.progress(p, m), fail: m => loader.fail(m),
+      autoplay: async (id, input) => { const j = await runJob({ tool: "autoplay", input: { ...input, session_id: id }, require_worker: id.split("-")[0] });
+        if (j.state !== "succeeded") throw new Error(j.error || j.state); return j.output?.result || {}; },
+      follow: (from, to) => { followSession(from, to); gboxTell({ ev: "sessionreplaced", from, to }); },
+      reconnect: id => { streamReconnect(id, true); if (active?.sid === id) { $("#pipimg").removeAttribute("src"); delete $("#pipimg").dataset.sid; pip(); } } },
+      { sid, title: info.title });
+    setTimeout(() => loader.hide(), 600); trayTick();
+    blToast(`↻ ${info.title || "The game"} restarted` + (r.autoplay ? (r.autoplay.ok ? " · autoplay back on" : "") : "") + (r.notes.length ? ": " + r.notes.join(" ") : ""));
+    return r;
+  } catch { /* the loader keeps the reason (Back closes it) */ }
+  finally { SESSION_RESTARTS.delete(sid); }
+}
 // Relaunch a game that shows no picture (#2858): in place on its PC while that PC answers (same game, build and PC; the
 // view follows the new copy), else where you play (same game and build)
 async function relaunchSession(sid, btn) {
@@ -4635,6 +4690,8 @@ window.PWW = GBoxPickWhip.mountOverlay(document, {
   chatModel: () => ({ name: "" }),                         // the Spark's local default (the desktop passes its header model)
   session: sid => ({ game: active?.title || "", game_id: document.querySelector("#wb[data-gid]")?.dataset.gid || "", worker: String(sid || "").split("-")[0] }),
   view: () => typeof cur === "string" ? (cur === "Sessions" ? `web Sessions · ${sessionMode || "play"}` : "web " + cur) : "web",
+  sessionExtra: sid => sid ? ["-", ...GBoxSessionRestart.menuItems()] : [],          // Restart session / Reconnect stream
+  onSessionExtra: (id, sid) => id === "restart" ? sessionRestart(sid) : id === "reconnect" ? streamReconnect(sid) : null,
   sessionOp: async (sid, op) => { const j = await runJob({ tool: "session_op", input: { session_id: sid, op }, require_worker: sid.split("-")[0] });
     if (j.state !== "succeeded") throw new Error(j.error || j.state); return j.output?.result; },
   fallbackLive: async o => { const sid = active?.sid; const j = await runJob({ tool: "characters", input: { op: "live_use", character: o.character, session_id: sid, x: o.x, y: o.y,
