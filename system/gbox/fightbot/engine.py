@@ -57,6 +57,9 @@ class Engine:
             restarted = cur and f.move_frame is not None and cur[2] is not None and f.move_frame < cur[2]
             if not cur or cur[0] != f.move or restarted:
                 self.move_start[who] = (f.move, w.frame, f.move_frame)
+                if who == "p2" and getattr(self.title, "log_moves", False):     # raw material for signatures:
+                    self._log("p2_move", w.frame, chara=f.chara, move=f.move,   # which moves / classes come
+                              move_class=f.move_class, distance=w.distance)    # before hits (lessons.analyze)
             else:
                 self.move_start[who] = (cur[0], cur[1], f.move_frame)
 

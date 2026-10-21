@@ -224,6 +224,18 @@ def test_hits_taken_log_the_attackers_state_just_before(tmp_path):
     assert L.analyze(tmp_path, "TESTFIGHT") == []                             # the move is tagged: no candidate
 
 
+def test_lessons_rank_p2_move_classes_by_the_hits_that_follow(tmp_path):
+    run = L.Run(tmp_path, "TESTFIGHT", "c1")
+    for i in range(10):                                        # class 3: an attack that hits 12 frames in, 8 of 10
+        run.log("p2_move", 100 * i, move=0x40 + i % 2, move_class=3)
+        if i < 8:
+            run.log("hit_taken", 100 * i + 12, hp_lost=10)
+        run.log("p2_move", 100 * i + 50, move=0, move_class=0)  # class 0: walking / idle, never followed by a hit
+    rows = L.classes(tmp_path, "TESTFIGHT")
+    assert rows[0] == {"move_class": 3, "starts": 10, "hits": 8, "hit_rate": 0.8, "frames_to_hit": [12, 12, 12]}
+    assert rows[1]["move_class"] == 0 and rows[1]["hits"] == 0
+
+
 def test_book_persists_and_prefers_a_paying_class_answer_for_new_moves(tmp_path):
     path = tmp_path / "book.json"
     bk = B.Book(path, rng=random.Random(0))

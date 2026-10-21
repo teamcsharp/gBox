@@ -34,6 +34,7 @@ class Doa3(Title):
     warn_lead = 9                                          # P2's P / K edge (p2.attack_input) to the hit, until learned
     warn_settle = 2                                        # then wait for the move it starts: the book learns per move
     attack_gap = 75
+    log_moves = True                                       # every P2 move change in the lessons: attack candidates
     hold_lead = 2                                          # a hold pressed this many frames before the hit's first frame
 
     def __init__(self, rmap=None):

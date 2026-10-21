@@ -68,12 +68,52 @@ def analyze(root: Path | str, map_id: str) -> list[dict]:
     return out
 
 
+HIT_WITHIN = 60                 # frames: a P2 move followed by a hit on P1 this soon counts as one that hit
+
+
+def classes(root: Path | str, map_id: str) -> list[dict]:
+    """Per P2 move class (and per move): how often it started, how often a hit on P1 followed within HIT_WITHIN
+    frames, and the frames from its start to that hit: the classes with a high hit rate are the attack candidates
+    (logged by titles with log_moves)."""
+    starts: dict[tuple, int] = defaultdict(int)
+    hits: dict[tuple, list] = defaultdict(list)
+    for path in sorted((Path(root) / map_id / "runs").glob("*.jsonl")):
+        recent: list[tuple] = []                   # (frame, class, move) of the last P2 move starts
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            f = row.get("frame")
+            if row.get("kind") == "p2_move" and isinstance(f, int):
+                key = (row.get("move_class"), row.get("move"))
+                starts[key] += 1
+                recent = (recent + [(f, *key)])[-8:]
+            elif row.get("kind") == "hit_taken" and isinstance(f, int):
+                before = [r for r in recent if 0 <= f - r[0] <= HIT_WITHIN]
+                if before:
+                    start, cls, move = before[-1]
+                    hits[(cls, move)].append(f - start)
+    by_class: dict = defaultdict(lambda: {"starts": 0, "hits": 0, "frames": []})
+    for (cls, move), n in starts.items():
+        by_class[cls]["starts"] += n
+        by_class[cls]["hits"] += len(hits.get((cls, move), []))
+        by_class[cls]["frames"] += hits.get((cls, move), [])
+    out = []
+    for cls, r in by_class.items():
+        fr = sorted(r["frames"])
+        out.append({"move_class": cls, "starts": r["starts"], "hits": r["hits"],
+                    "hit_rate": round(r["hits"] / r["starts"], 3) if r["starts"] else 0.0,
+                    "frames_to_hit": [fr[0], fr[len(fr) // 2], fr[-1]] if fr else None})
+    return sorted(out, key=lambda r: (-r["hit_rate"], -r["starts"]))
+
+
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    if len(argv) != 3 or argv[0] != "analyze":
-        print("python -m gbox.fightbot.lessons analyze <root> <map id>")
+    if len(argv) != 3 or argv[0] not in ("analyze", "classes"):
+        print("python -m gbox.fightbot.lessons analyze|classes <root> <map id>")
         return 2
-    for row in analyze(argv[1], argv[2]):
+    for row in (analyze if argv[0] == "analyze" else classes)(argv[1], argv[2]):
         print(json.dumps(row))
     return 0
 
