@@ -62,6 +62,20 @@ def test_holds_go_back_from_the_side_p1_is_on_and_lead_with_the_signature_height
     assert [a.name for a in t.answers(Attack(kind="throw"), w)] == ["throw_escape"]
 
 
+def test_a_caught_attack_is_judged_by_the_games_paired_move_flag():
+    t = D.Doa3()
+    hold = t.answers(Attack(), World(0, 0, "fight", Fighter(side=1), Fighter(side=-1)))[0]
+    before = World(0, 0, "fight", Fighter(side=1), Fighter(side=-1))
+    caught = World(5, 0, "fight", Fighter(side=1), Fighter(side=-1, tags={"state": ["held"]}))
+    assert t.outcome(before, caught, hold) == (30.0, True, "held")               # health unmapped: the flag decides
+    thrown = World(5, 0, "fight", Fighter(side=1, tags={"state": ["held"]}), Fighter(side=-1))
+    assert t.outcome(before, thrown, hold) == (-30.0, True, "thrown")
+    assert t.outcome(before, before, hold) == (0.0, None, "unknown")             # nothing to tell: not a whiff
+    ram = Ram()
+    ram.ram[0x484CE2] = 1                                                      # the map's p2.paired -> state held
+    assert t.read(ram).p2.has("held") and not t.read(ram).p1.has("held")
+
+
 def test_punish_is_a_string():
     t = D.Doa3()
     p = t.punish(None, "held")

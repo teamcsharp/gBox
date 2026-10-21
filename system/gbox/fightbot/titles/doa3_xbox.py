@@ -111,6 +111,20 @@ class Doa3(Title):
                 Answer("throw", (THROW,), frames=3, judge=60, kind="attack"),
                 Answer("fwd_kick", (fwd, KICK), frames=3, judge=45, kind="attack")]
 
+    HELD_REWARD = 30.0                                     # a caught attack counts like this much health
+
+    def outcome(self, before, after, answer):
+        """Health dealt minus taken, plus DOA3's own verdict of a hold or throw: the paired-move flag (pN.paired,
+        +0x32 of the player block) turns 1 for the fighter caught in the other's hold or throw."""
+        reward, met, label = super().outcome(before, after, answer)
+        caught = after.p2.has("held") and not before.p2.has("held")
+        caught_me = after.p1.has("held") and not before.p1.has("held")
+        if caught and not caught_me:
+            return (reward or 0.0) + self.HELD_REWARD, True, "held"
+        if caught_me and not caught:
+            return (reward or 0.0) - self.HELD_REWARD, True, "thrown"
+        return reward, met, label
+
     def input_bits(self, answer, w):
         bits = 0
         for k in answer.at(0):
