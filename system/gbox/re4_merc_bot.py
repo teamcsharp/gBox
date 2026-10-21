@@ -124,6 +124,7 @@ CROWD_R, CROWD_N = 750.0, 2                      # this many Ganados this close:
 AIM_SPEED_X = 3.0                                # the aim's stick speed x3 (re_mods aim_turn_speed: the constant pi at
                                                  # 0x801ED930 the aim routine scales the stick by): ~30 deg/s -> ~90
 AIM_FINE = 0.12                                  # aiming, this close to the target (radians): the stick in pulses
+AIM_KEEP_ERR = 0.8                               # aiming already: the gun stays up and aim-turns within this (radians)
 EVADE_LOOK = 1500.0                              # a way out is clear this far ahead (the level map, other Ganados)
 TURN_COST = 350.0                                # choosing among near ones: a radian to turn costs this many units
 FACING_ERR = 0.6                                 # an attacker this close to his facing (radians) is shot, not run from
@@ -537,11 +538,12 @@ class Bot:
             if dist > SHOOT_RANGE or not self._sight(p, (tx, tgt["pos"][1] + HEAD_H, tz)):   # can't hit him here
                 self.r_since = None
                 return self._run_to(p, (tx, tgt["pos"][1], tz), now)
-        if abs(err) > TURN_TOL:
-            self.r_since = None
-            if abs(err) > QUICK_TURN_ERR and now - self.qturn_at > QUICK_TURN_S:   # behind him: the quick turn
-                self.qturn_at = now                                             # (back + B), half a second for 180
-                self.stats["quick_turns"] += 1
+        aiming = self.r_since is not None                               # the gun is up (or coming up) already
+        if abs(err) > (AIM_KEEP_ERR if aiming else TURN_TOL):          # (up: it stays up and aim-turns unless he is
+            self.r_since = None                                         # far round - lowering it to turn and raising
+            if abs(err) > QUICK_TURN_ERR and now - self.qturn_at > QUICK_TURN_S:   # it again cost 0.6 s and a swing
+                self.qturn_at = now                                             # landed meanwhile, live 2026-10-21)
+                self.stats["quick_turns"] += 1                                  # behind him: the quick turn (back + B)
                 return {"hold": {"down", "b"}}
             return {"hold": self._turn(err, aiming=False)}               # turn round first (fast)
         self.r_since = now if self.r_since is None else self.r_since

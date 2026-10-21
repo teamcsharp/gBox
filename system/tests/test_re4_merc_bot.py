@@ -790,6 +790,21 @@ def test_a_ganado_that_shots_never_reach_is_left_for_the_next():
     assert bot.aim["slot"] == 2 or "left" in act["hold"]                  # the other one now
 
 
+def test_the_gun_stays_up_while_he_aim_turns_onto_a_target_that_moved():
+    """Live 2026-10-21: a lunging Ganado moved his bearing past TURN_TOL; the bot lowered the gun to turn, raised it
+    again (0.6 s of pose) and the swing landed. Already aiming, the gun stays up within AIM_KEEP_ERR."""
+    now = [0.0]
+    m = world([((0, 0, 2000), True)])
+    facing(m, 0.5)                                                        # 0.5 rad off: past TURN_TOL
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    assert "r" not in bot.tick(B.snapshot(m))["hold"]                     # not aiming yet: turn round first
+    bot.r_since = -1.0                                                    # aiming already
+    m.put(PL + 0xFC, ">4B", 0, 6, 1, 1)
+    assert bot.tick(B.snapshot(m))["hold"] >= {"r", "right"}             # the gun stays up, aim-turning
+    facing(m, 1.2)                                                        # far round: then it comes down to turn
+    assert "r" not in bot.tick(B.snapshot(m))["hold"]
+
+
 def test_the_turn_rate_is_measured_from_his_turns():
     """gBox's stick keys give 72 of 127 (live 2026-10-21): the turn is slower than full stick, so the bot measures it
     (and its "can I shoot before that lands" sums use the measured rate)."""
