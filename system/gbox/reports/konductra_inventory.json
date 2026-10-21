@@ -1,0 +1,1438 @@
+{
+ "game_id": "e5bf646a3ab9f344",
+ "title": "Konductra (USA)",
+ "source": {
+  "path": "/home/ehm_eckx/.hermes/cache/scratch/kondu/0646 - Konductra (U)(Legacy).nds",
+  "sha256": "a71cafed14fa6d3871aa117dbf87ff50d0a72f74e21922488ea590aab267a6b1",
+  "size": 16777216,
+  "member": "0646 - Konductra (U)(Legacy).nds",
+  "expected_sha256": "a71cafed14fa6d3871aa117dbf87ff50d0a72f74e21922488ea590aab267a6b1",
+  "identity_ok": true
+ },
+ "header": {
+  "title": "KONDUCTRA",
+  "gamecode": "AQTE",
+  "unitcode": 0,
+  "arm9": {
+   "offset": 16384,
+   "size": 1012376,
+   "entry": 33556480
+  },
+  "arm7": {
+   "offset": 1029120,
+   "size": 165536,
+   "entry": 37224448
+  },
+  "fnt": {
+   "offset": 1195008,
+   "size": 3146
+  },
+  "fat": {
+   "offset": 1198592,
+   "size": 1400
+  },
+  "dir_entry_size": 2,
+  "byte_order": "little-endian"
+ },
+ "file_count": 175,
+ "files": [
+  {
+   "path": "board.narc",
+   "id": 0,
+   "start": 1202688,
+   "end": 1210144,
+   "size": 7456
+  },
+  {
+   "path": "dwc/utility.bin",
+   "id": 6,
+   "start": 1210368,
+   "end": 2279368,
+   "size": 1069000
+  },
+  {
+   "path": "logotextures.narc",
+   "id": 1,
+   "start": 2279424,
+   "end": 2308432,
+   "size": 29008
+  },
+  {
+   "path": "menublocks.nsbmd",
+   "id": 2,
+   "start": 2308608,
+   "end": 2363936,
+   "size": 55328
+  },
+  {
+   "path": "menutextures.narc",
+   "id": 3,
+   "start": 2364416,
+   "end": 2411352,
+   "size": 46936
+  },
+  {
+   "path": "ncprj/SplashRend.NCGR",
+   "id": 156,
+   "start": 2411520,
+   "end": 2477120,
+   "size": 65600
+  },
+  {
+   "path": "ncprj/SplashRend.NCLR",
+   "id": 157,
+   "start": 2477568,
+   "end": 2478120,
+   "size": 552
+  },
+  {
+   "path": "ncprj/blackall.NCLR",
+   "id": 7,
+   "start": 2478592,
+   "end": 2479144,
+   "size": 552
+  },
+  {
+   "path": "ncprj/blktimer.NANR",
+   "id": 8,
+   "start": 2479616,
+   "end": 2480106,
+   "size": 490
+  },
+  {
+   "path": "ncprj/blktimer.NCER",
+   "id": 9,
+   "start": 2480128,
+   "end": 2481206,
+   "size": 1078
+  },
+  {
+   "path": "ncprj/blktimer.NCGR",
+   "id": 10,
+   "start": 2481664,
+   "end": 2514496,
+   "size": 32832
+  },
+  {
+   "path": "ncprj/blktimer.NCLR",
+   "id": 11,
+   "start": 2514944,
+   "end": 2515496,
+   "size": 552
+  },
+  {
+   "path": "ncprj/cellshatter.NCGR",
+   "id": 12,
+   "start": 2515968,
+   "end": 2548800,
+   "size": 32832
+  },
+  {
+   "path": "ncprj/cellshatter.NCLR",
+   "id": 13,
+   "start": 2549248,
+   "end": 2549800,
+   "size": 552
+  },
+  {
+   "path": "ncprj/destroypiece_blue.NANR",
+   "id": 14,
+   "start": 2550272,
+   "end": 2550451,
+   "size": 179
+  },
+  {
+   "path": "ncprj/destroypiece_blue.NCER",
+   "id": 15,
+   "start": 2550784,
+   "end": 2550979,
+   "size": 195
+  },
+  {
+   "path": "ncprj/destroypiece_chain.NANR",
+   "id": 16,
+   "start": 2551296,
+   "end": 2551475,
+   "size": 179
+  },
+  {
+   "path": "ncprj/destroypiece_chain.NCER",
+   "id": 17,
+   "start": 2551808,
+   "end": 2552003,
+   "size": 195
+  },
+  {
+   "path": "ncprj/destroypiece_green.NANR",
+   "id": 18,
+   "start": 2552320,
+   "end": 2552499,
+   "size": 179
+  },
+  {
+   "path": "ncprj/destroypiece_green.NCER",
+   "id": 19,
+   "start": 2552832,
+   "end": 2553027,
+   "size": 195
+  },
+  {
+   "path": "ncprj/destroypiece_orange.NANR",
+   "id": 20,
+   "start": 2553344,
+   "end": 2553523,
+   "size": 179
+  },
+  {
+   "path": "ncprj/destroypiece_orange.NCER",
+   "id": 21,
+   "start": 2553856,
+   "end": 2554051,
+   "size": 195
+  },
+  {
+   "path": "ncprj/destroypiece_purple.NANR",
+   "id": 22,
+   "start": 2554368,
+   "end": 2554547,
+   "size": 179
+  },
+  {
+   "path": "ncprj/destroypiece_purple.NCER",
+   "id": 23,
+   "start": 2554880,
+   "end": 2555075,
+   "size": 195
+  },
+  {
+   "path": "ncprj/destroypiece_red.NANR",
+   "id": 24,
+   "start": 2555392,
+   "end": 2555571,
+   "size": 179
+  },
+  {
+   "path": "ncprj/destroypiece_red.NCER",
+   "id": 25,
+   "start": 2555904,
+   "end": 2556099,
+   "size": 195
+  },
+  {
+   "path": "ncprj/destroypiece_yellow.NANR",
+   "id": 26,
+   "start": 2556416,
+   "end": 2556595,
+   "size": 179
+  },
+  {
+   "path": "ncprj/destroypiece_yellow.NCER",
+   "id": 27,
+   "start": 2556928,
+   "end": 2557123,
+   "size": 195
+  },
+  {
+   "path": "ncprj/enterhiscore.NSCR",
+   "id": 28,
+   "start": 2557440,
+   "end": 2559524,
+   "size": 2084
+  },
+  {
+   "path": "ncprj/entername.NCGR",
+   "id": 29,
+   "start": 2560000,
+   "end": 2584640,
+   "size": 24640
+  },
+  {
+   "path": "ncprj/entername.NCLR",
+   "id": 30,
+   "start": 2585088,
+   "end": 2585640,
+   "size": 552
+  },
+  {
+   "path": "ncprj/entername.NSCR",
+   "id": 31,
+   "start": 2586112,
+   "end": 2588196,
+   "size": 2084
+  },
+  {
+   "path": "ncprj/hiscore.NCGR",
+   "id": 32,
+   "start": 2588672,
+   "end": 2621504,
+   "size": 32832
+  },
+  {
+   "path": "ncprj/hiscore_layer0.NSCR",
+   "id": 33,
+   "start": 2621952,
+   "end": 2624036,
+   "size": 2084
+  },
+  {
+   "path": "ncprj/hiscore_layer1.NSCR",
+   "id": 34,
+   "start": 2624512,
+   "end": 2626596,
+   "size": 2084
+  },
+  {
+   "path": "ncprj/hiscores.NCLR",
+   "id": 35,
+   "start": 2627072,
+   "end": 2627624,
+   "size": 552
+  },
+  {
+   "path": "ncprj/legal.NCGR",
+   "id": 36,
+   "start": 2628096,
+   "end": 2660928,
+   "size": 32832
+  },
+  {
+   "path": "ncprj/legal.NCLR",
+   "id": 37,
+   "start": 2661376,
+   "end": 2661928,
+   "size": 552
+  },
+  {
+   "path": "ncprj/legal.NSCR",
+   "id": 38,
+   "start": 2662400,
+   "end": 2664484,
+   "size": 2084
+  },
+  {
+   "path": "ncprj/main_newtitlesprites.NCGR",
+   "id": 39,
+   "start": 2664960,
+   "end": 2697792,
+   "size": 32832
+  },
+  {
+   "path": "ncprj/main_newtitlesprites.NCLR",
+   "id": 40,
+   "start": 2698240,
+   "end": 2698792,
+   "size": 552
+  },
+  {
+   "path": "ncprj/main_title_start.NCLR",
+   "id": 41,
+   "start": 2699264,
+   "end": 2699816,
+   "size": 552
+  },
+  {
+   "path": "ncprj/mainmenusprites.NCGR",
+   "id": 42,
+   "start": 2700288,
+   "end": 2733120,
+   "size": 32832
+  },
+  {
+   "path": "ncprj/mainmenusprites.NCLR",
+   "id": 43,
+   "start": 2733568,
+   "end": 2734120,
+   "size": 552
+  },
+  {
+   "path": "ncprj/menu_blue.NANR",
+   "id": 44,
+   "start": 2734592,
+   "end": 2734703,
+   "size": 111
+  },
+  {
+   "path": "ncprj/menu_blue.NCER",
+   "id": 45,
+   "start": 2735104,
+   "end": 2735203,
+   "size": 99
+  },
+  {
+   "path": "ncprj/menu_green.NANR",
+   "id": 46,
+   "start": 2735616,
+   "end": 2735727,
+   "size": 111
+  },
+  {
+   "path": "ncprj/menu_green.NCER",
+   "id": 47,
+   "start": 2736128,
+   "end": 2736227,
+   "size": 99
+  },
+  {
+   "path": "ncprj/menu_orange.NANR",
+   "id": 48,
+   "start": 2736640,
+   "end": 2736751,
+   "size": 111
+  },
+  {
+   "path": "ncprj/menu_orange.NCER",
+   "id": 49,
+   "start": 2737152,
+   "end": 2737251,
+   "size": 99
+  },
+  {
+   "path": "ncprj/menu_purple.NANR",
+   "id": 50,
+   "start": 2737664,
+   "end": 2737775,
+   "size": 111
+  },
+  {
+   "path": "ncprj/menu_purple.NCER",
+   "id": 51,
+   "start": 2738176,
+   "end": 2738275,
+   "size": 99
+  },
+  {
+   "path": "ncprj/menu_red.NANR",
+   "id": 52,
+   "start": 2738688,
+   "end": 2738799,
+   "size": 111
+  },
+  {
+   "path": "ncprj/menu_red.NCER",
+   "id": 53,
+   "start": 2739200,
+   "end": 2739299,
+   "size": 99
+  },
+  {
+   "path": "ncprj/menu_yellow.NANR",
+   "id": 54,
+   "start": 2739712,
+   "end": 2739823,
+   "size": 111
+  },
+  {
+   "path": "ncprj/menu_yellow.NCER",
+   "id": 55,
+   "start": 2740224,
+   "end": 2740323,
+   "size": 99
+  },
+  {
+   "path": "ncprj/menutop.NCGR",
+   "id": 56,
+   "start": 2740736,
+   "end": 2773568,
+   "size": 32832
+  },
+  {
+   "path": "ncprj/menutop.NCLR",
+   "id": 57,
+   "start": 2774016,
+   "end": 2774568,
+   "size": 552
+  },
+  {
+   "path": "ncprj/msg_draw.NANR",
+   "id": 58,
+   "start": 2775040,
+   "end": 2775159,
+   "size": 119
+  },
+  {
+   "path": "ncprj/msg_draw.NCER",
+   "id": 59,
+   "start": 2775552,
+   "end": 2775711,
+   "size": 159
+  },
+  {
+   "path": "ncprj/msg_youlost.NANR",
+   "id": 60,
+   "start": 2776064,
+   "end": 2776183,
+   "size": 119
+  },
+  {
+   "path": "ncprj/msg_youlost.NCER",
+   "id": 61,
+   "start": 2776576,
+   "end": 2776747,
+   "size": 171
+  },
+  {
+   "path": "ncprj/msg_youwon.NANR",
+   "id": 62,
+   "start": 2777088,
+   "end": 2777207,
+   "size": 119
+  },
+  {
+   "path": "ncprj/msg_youwon.NCER",
+   "id": 63,
+   "start": 2777600,
+   "end": 2777759,
+   "size": 159
+  },
+  {
+   "path": "ncprj/o3.NCLR",
+   "id": 64,
+   "start": 2778112,
+   "end": 2778664,
+   "size": 552
+  },
+  {
+   "path": "ncprj/o3ent.NSCR",
+   "id": 65,
+   "start": 2779136,
+   "end": 2781220,
+   "size": 2084
+  },
+  {
+   "path": "ncprj/o3logo.NCGR",
+   "id": 66,
+   "start": 2781696,
+   "end": 2847296,
+   "size": 65600
+  },
+  {
+   "path": "ncprj/pen_ui.NANR",
+   "id": 67,
+   "start": 2847744,
+   "end": 2847855,
+   "size": 111
+  },
+  {
+   "path": "ncprj/pen_ui.NCER",
+   "id": 68,
+   "start": 2848256,
+   "end": 2848359,
+   "size": 103
+  },
+  {
+   "path": "ncprj/penanim.NANR",
+   "id": 69,
+   "start": 2848768,
+   "end": 2848926,
+   "size": 158
+  },
+  {
+   "path": "ncprj/penanim.NCER",
+   "id": 70,
+   "start": 2849280,
+   "end": 2849410,
+   "size": 130
+  },
+  {
+   "path": "ncprj/penparticle.NANR",
+   "id": 71,
+   "start": 2849792,
+   "end": 2849971,
+   "size": 179
+  },
+  {
+   "path": "ncprj/penparticle.NCER",
+   "id": 72,
+   "start": 2850304,
+   "end": 2850495,
+   "size": 191
+  },
+  {
+   "path": "ncprj/pinchl.NANR",
+   "id": 73,
+   "start": 2850816,
+   "end": 2850927,
+   "size": 111
+  },
+  {
+   "path": "ncprj/pinchl.NCER",
+   "id": 74,
+   "start": 2851328,
+   "end": 2851451,
+   "size": 123
+  },
+  {
+   "path": "ncprj/pinchlfc.NANR",
+   "id": 75,
+   "start": 2851840,
+   "end": 2851951,
+   "size": 111
+  },
+  {
+   "path": "ncprj/pinchlfc.NCER",
+   "id": 76,
+   "start": 2852352,
+   "end": 2852487,
+   "size": 135
+  },
+  {
+   "path": "ncprj/pinchlhigh1.NANR",
+   "id": 77,
+   "start": 2852864,
+   "end": 2852975,
+   "size": 111
+  },
+  {
+   "path": "ncprj/pinchlhigh1.NCER",
+   "id": 78,
+   "start": 2853376,
+   "end": 2853523,
+   "size": 147
+  },
+  {
+   "path": "ncprj/pinchlhigh2.NANR",
+   "id": 79,
+   "start": 2853888,
+   "end": 2853999,
+   "size": 111
+  },
+  {
+   "path": "ncprj/pinchlhigh2.NCER",
+   "id": 80,
+   "start": 2854400,
+   "end": 2854539,
+   "size": 139
+  },
+  {
+   "path": "ncprj/pinchltask.NANR",
+   "id": 81,
+   "start": 2854912,
+   "end": 2855023,
+   "size": 111
+  },
+  {
+   "path": "ncprj/pinchltask.NCER",
+   "id": 82,
+   "start": 2855424,
+   "end": 2855575,
+   "size": 151
+  },
+  {
+   "path": "ncprj/pinchr.NANR",
+   "id": 83,
+   "start": 2855936,
+   "end": 2856047,
+   "size": 111
+  },
+  {
+   "path": "ncprj/pinchr.NCER",
+   "id": 84,
+   "start": 2856448,
+   "end": 2856571,
+   "size": 123
+  },
+  {
+   "path": "ncprj/pinchrfc.NANR",
+   "id": 85,
+   "start": 2856960,
+   "end": 2857071,
+   "size": 111
+  },
+  {
+   "path": "ncprj/pinchrfc.NCER",
+   "id": 86,
+   "start": 2857472,
+   "end": 2857607,
+   "size": 135
+  },
+  {
+   "path": "ncprj/pinchrhigh1.NANR",
+   "id": 87,
+   "start": 2857984,
+   "end": 2858095,
+   "size": 111
+  },
+  {
+   "path": "ncprj/pinchrhigh1.NCER",
+   "id": 88,
+   "start": 2858496,
+   "end": 2858643,
+   "size": 147
+  },
+  {
+   "path": "ncprj/pinchrhigh2.NANR",
+   "id": 89,
+   "start": 2859008,
+   "end": 2859119,
+   "size": 111
+  },
+  {
+   "path": "ncprj/pinchrhigh2.NCER",
+   "id": 90,
+   "start": 2859520,
+   "end": 2859659,
+   "size": 139
+  },
+  {
+   "path": "ncprj/pinchrtask.NANR",
+   "id": 91,
+   "start": 2860032,
+   "end": 2860143,
+   "size": 111
+  },
+  {
+   "path": "ncprj/pinchrtask.NCER",
+   "id": 92,
+   "start": 2860544,
+   "end": 2860695,
+   "size": 151
+  },
+  {
+   "path": "ncprj/placepiece_blue.NANR",
+   "id": 93,
+   "start": 2861056,
+   "end": 2861207,
+   "size": 151
+  },
+  {
+   "path": "ncprj/placepiece_blue.NCER",
+   "id": 94,
+   "start": 2861568,
+   "end": 2861715,
+   "size": 147
+  },
+  {
+   "path": "ncprj/placepiece_chain.NANR",
+   "id": 95,
+   "start": 2862080,
+   "end": 2862231,
+   "size": 151
+  },
+  {
+   "path": "ncprj/placepiece_chain.NCER",
+   "id": 96,
+   "start": 2862592,
+   "end": 2862739,
+   "size": 147
+  },
+  {
+   "path": "ncprj/placepiece_green.NANR",
+   "id": 97,
+   "start": 2863104,
+   "end": 2863255,
+   "size": 151
+  },
+  {
+   "path": "ncprj/placepiece_green.NCER",
+   "id": 98,
+   "start": 2863616,
+   "end": 2863763,
+   "size": 147
+  },
+  {
+   "path": "ncprj/placepiece_orange.NANR",
+   "id": 99,
+   "start": 2864128,
+   "end": 2864279,
+   "size": 151
+  },
+  {
+   "path": "ncprj/placepiece_orange.NCER",
+   "id": 100,
+   "start": 2864640,
+   "end": 2864787,
+   "size": 147
+  },
+  {
+   "path": "ncprj/placepiece_purple.NANR",
+   "id": 101,
+   "start": 2865152,
+   "end": 2865303,
+   "size": 151
+  },
+  {
+   "path": "ncprj/placepiece_purple.NCER",
+   "id": 102,
+   "start": 2865664,
+   "end": 2865811,
+   "size": 147
+  },
+  {
+   "path": "ncprj/placepiece_red.NANR",
+   "id": 103,
+   "start": 2866176,
+   "end": 2866327,
+   "size": 151
+  },
+  {
+   "path": "ncprj/placepiece_red.NCER",
+   "id": 104,
+   "start": 2866688,
+   "end": 2866835,
+   "size": 147
+  },
+  {
+   "path": "ncprj/placepiece_yellow.NANR",
+   "id": 105,
+   "start": 2867200,
+   "end": 2867351,
+   "size": 151
+  },
+  {
+   "path": "ncprj/placepiece_yellow.NCER",
+   "id": 106,
+   "start": 2867712,
+   "end": 2867859,
+   "size": 147
+  },
+  {
+   "path": "ncprj/pulsepalettes.NCLR",
+   "id": 107,
+   "start": 2868224,
+   "end": 2868776,
+   "size": 552
+  },
+  {
+   "path": "ncprj/sball_blue.NANR",
+   "id": 108,
+   "start": 2869248,
+   "end": 2869387,
+   "size": 139
+  },
+  {
+   "path": "ncprj/sball_blue.NCER",
+   "id": 109,
+   "start": 2869760,
+   "end": 2869899,
+   "size": 139
+  },
+  {
+   "path": "ncprj/sball_chain.NANR",
+   "id": 110,
+   "start": 2870272,
+   "end": 2870659,
+   "size": 387
+  },
+  {
+   "path": "ncprj/sball_chain.NCER",
+   "id": 111,
+   "start": 2870784,
+   "end": 2870967,
+   "size": 183
+  },
+  {
+   "path": "ncprj/sball_green.NANR",
+   "id": 112,
+   "start": 2871296,
+   "end": 2871435,
+   "size": 139
+  },
+  {
+   "path": "ncprj/sball_green.NCER",
+   "id": 113,
+   "start": 2871808,
+   "end": 2871947,
+   "size": 139
+  },
+  {
+   "path": "ncprj/sball_orange.NANR",
+   "id": 114,
+   "start": 2872320,
+   "end": 2872459,
+   "size": 139
+  },
+  {
+   "path": "ncprj/sball_orange.NCER",
+   "id": 115,
+   "start": 2872832,
+   "end": 2872971,
+   "size": 139
+  },
+  {
+   "path": "ncprj/sball_purple.NANR",
+   "id": 116,
+   "start": 2873344,
+   "end": 2873483,
+   "size": 139
+  },
+  {
+   "path": "ncprj/sball_purple.NCER",
+   "id": 117,
+   "start": 2873856,
+   "end": 2873995,
+   "size": 139
+  },
+  {
+   "path": "ncprj/sball_red.NANR",
+   "id": 118,
+   "start": 2874368,
+   "end": 2874507,
+   "size": 139
+  },
+  {
+   "path": "ncprj/sball_red.NCER",
+   "id": 119,
+   "start": 2874880,
+   "end": 2875019,
+   "size": 139
+  },
+  {
+   "path": "ncprj/sball_redorange.NANR",
+   "id": 120,
+   "start": 2875392,
+   "end": 2875531,
+   "size": 139
+  },
+  {
+   "path": "ncprj/sball_redorange.NCER",
+   "id": 121,
+   "start": 2875904,
+   "end": 2876043,
+   "size": 139
+  },
+  {
+   "path": "ncprj/sball_yellow.NANR",
+   "id": 122,
+   "start": 2876416,
+   "end": 2876555,
+   "size": 139
+  },
+  {
+   "path": "ncprj/sball_yellow.NCER",
+   "id": 123,
+   "start": 2876928,
+   "end": 2877067,
+   "size": 139
+  },
+  {
+   "path": "ncprj/sboard.NCGR",
+   "id": 124,
+   "start": 2877440,
+   "end": 2910272,
+   "size": 32832
+  },
+  {
+   "path": "ncprj/sboard.NCLR",
+   "id": 125,
+   "start": 2910720,
+   "end": 2911272,
+   "size": 552
+  },
+  {
+   "path": "ncprj/sboard_clear.NSCR",
+   "id": 126,
+   "start": 2911744,
+   "end": 2913828,
+   "size": 2084
+  },
+  {
+   "path": "ncprj/sboard_clear_grid.NSCR",
+   "id": 127,
+   "start": 2914304,
+   "end": 2916388,
+   "size": 2084
+  },
+  {
+   "path": "ncprj/sboard_demo.NSCR",
+   "id": 128,
+   "start": 2916864,
+   "end": 2918948,
+   "size": 2084
+  },
+  {
+   "path": "ncprj/sboard_demo_grid.NSCR",
+   "id": 129,
+   "start": 2919424,
+   "end": 2921508,
+   "size": 2084
+  },
+  {
+   "path": "ncprj/sboard_pieces.NSCR",
+   "id": 130,
+   "start": 2921984,
+   "end": 2924068,
+   "size": 2084
+  },
+  {
+   "path": "ncprj/sboard_practice.NSCR",
+   "id": 131,
+   "start": 2924544,
+   "end": 2926628,
+   "size": 2084
+  },
+  {
+   "path": "ncprj/sboard_practice_grid.NSCR",
+   "id": 132,
+   "start": 2927104,
+   "end": 2929188,
+   "size": 2084
+  },
+  {
+   "path": "ncprj/sboard_task.NSCR",
+   "id": 133,
+   "start": 2929664,
+   "end": 2931748,
+   "size": 2084
+  },
+  {
+   "path": "ncprj/sboard_task_grid.NSCR",
+   "id": 134,
+   "start": 2932224,
+   "end": 2934308,
+   "size": 2084
+  },
+  {
+   "path": "ncprj/sboard_timed.NSCR",
+   "id": 135,
+   "start": 2934784,
+   "end": 2936868,
+   "size": 2084
+  },
+  {
+   "path": "ncprj/sboard_timed_grid.NSCR",
+   "id": 136,
+   "start": 2937344,
+   "end": 2939428,
+   "size": 2084
+  },
+  {
+   "path": "ncprj/sboard_vs.NSCR",
+   "id": 137,
+   "start": 2939904,
+   "end": 2941988,
+   "size": 2084
+  },
+  {
+   "path": "ncprj/sboard_vs_grid.NSCR",
+   "id": 138,
+   "start": 2942464,
+   "end": 2944548,
+   "size": 2084
+  },
+  {
+   "path": "ncprj/shatter_blue.NANR",
+   "id": 139,
+   "start": 2945024,
+   "end": 2945243,
+   "size": 219
+  },
+  {
+   "path": "ncprj/shatter_blue.NCER",
+   "id": 140,
+   "start": 2945536,
+   "end": 2945787,
+   "size": 251
+  },
+  {
+   "path": "ncprj/shatter_chain.NANR",
+   "id": 141,
+   "start": 2946048,
+   "end": 2946267,
+   "size": 219
+  },
+  {
+   "path": "ncprj/shatter_chain.NCER",
+   "id": 142,
+   "start": 2946560,
+   "end": 2946811,
+   "size": 251
+  },
+  {
+   "path": "ncprj/shatter_green.NANR",
+   "id": 143,
+   "start": 2947072,
+   "end": 2947291,
+   "size": 219
+  },
+  {
+   "path": "ncprj/shatter_green.NCER",
+   "id": 144,
+   "start": 2947584,
+   "end": 2947835,
+   "size": 251
+  },
+  {
+   "path": "ncprj/shatter_orange.NANR",
+   "id": 145,
+   "start": 2948096,
+   "end": 2948315,
+   "size": 219
+  },
+  {
+   "path": "ncprj/shatter_orange.NCER",
+   "id": 146,
+   "start": 2948608,
+   "end": 2948859,
+   "size": 251
+  },
+  {
+   "path": "ncprj/shatter_purple.NANR",
+   "id": 147,
+   "start": 2949120,
+   "end": 2949339,
+   "size": 219
+  },
+  {
+   "path": "ncprj/shatter_purple.NCER",
+   "id": 148,
+   "start": 2949632,
+   "end": 2949883,
+   "size": 251
+  },
+  {
+   "path": "ncprj/shatter_red.NANR",
+   "id": 149,
+   "start": 2950144,
+   "end": 2950363,
+   "size": 219
+  },
+  {
+   "path": "ncprj/shatter_red.NCER",
+   "id": 150,
+   "start": 2950656,
+   "end": 2950907,
+   "size": 251
+  },
+  {
+   "path": "ncprj/shatter_redorange.NANR",
+   "id": 151,
+   "start": 2951168,
+   "end": 2951387,
+   "size": 219
+  },
+  {
+   "path": "ncprj/shatter_redorange.NCER",
+   "id": 152,
+   "start": 2951680,
+   "end": 2951931,
+   "size": 251
+  },
+  {
+   "path": "ncprj/shatter_yellow.NANR",
+   "id": 153,
+   "start": 2952192,
+   "end": 2952411,
+   "size": 219
+  },
+  {
+   "path": "ncprj/shatter_yellow.NCER",
+   "id": 154,
+   "start": 2952704,
+   "end": 2952955,
+   "size": 251
+  },
+  {
+   "path": "ncprj/splash.NSCR",
+   "id": 155,
+   "start": 2953216,
+   "end": 2957348,
+   "size": 4132
+  },
+  {
+   "path": "ncprj/submenu.NCGR",
+   "id": 158,
+   "start": 2957824,
+   "end": 2990656,
+   "size": 32832
+  },
+  {
+   "path": "ncprj/submenu.NCLR",
+   "id": 159,
+   "start": 2991104,
+   "end": 2991656,
+   "size": 552
+  },
+  {
+   "path": "ncprj/submenu_dashboard.NSCR",
+   "id": 160,
+   "start": 2992128,
+   "end": 2994212,
+   "size": 2084
+  },
+  {
+   "path": "ncprj/submenu_fcgrid.NSCR",
+   "id": 161,
+   "start": 2994688,
+   "end": 2996772,
+   "size": 2084
+  },
+  {
+   "path": "ncprj/submenu_fcnumber.NSCR",
+   "id": 162,
+   "start": 2997248,
+   "end": 2999332,
+   "size": 2084
+  },
+  {
+   "path": "ncprj/submenu_taskgrid.NSCR",
+   "id": 163,
+   "start": 2999808,
+   "end": 3001892,
+   "size": 2084
+  },
+  {
+   "path": "ncprj/submenu_taskpreview.NSCR",
+   "id": 164,
+   "start": 3002368,
+   "end": 3004452,
+   "size": 2084
+  },
+  {
+   "path": "ncprj/submenu_textblank.NSCR",
+   "id": 165,
+   "start": 3004928,
+   "end": 3007012,
+   "size": 2084
+  },
+  {
+   "path": "ncprj/title_particle.NANR",
+   "id": 166,
+   "start": 3007488,
+   "end": 3007642,
+   "size": 154
+  },
+  {
+   "path": "ncprj/title_particle.NCER",
+   "id": 167,
+   "start": 3008000,
+   "end": 3008126,
+   "size": 126
+  },
+  {
+   "path": "ncprj/titles.NCGR",
+   "id": 168,
+   "start": 3008512,
+   "end": 3033152,
+   "size": 24640
+  },
+  {
+   "path": "ncprj/titles.NCLR",
+   "id": 169,
+   "start": 3033600,
+   "end": 3034152,
+   "size": 552
+  },
+  {
+   "path": "ncprj/whiteall.NCLR",
+   "id": 170,
+   "start": 3034624,
+   "end": 3035176,
+   "size": 552
+  },
+  {
+   "path": "ncprj/wireless.NANR",
+   "id": 171,
+   "start": 3035648,
+   "end": 3035787,
+   "size": 139
+  },
+  {
+   "path": "ncprj/wireless.NCER",
+   "id": 172,
+   "start": 3036160,
+   "end": 3036299,
+   "size": 139
+  },
+  {
+   "path": "ncprj/wirelesswifi.NANR",
+   "id": 173,
+   "start": 3036672,
+   "end": 3036811,
+   "size": 139
+  },
+  {
+   "path": "ncprj/wirelesswifi.NCER",
+   "id": 174,
+   "start": 3037184,
+   "end": 3037323,
+   "size": 139
+  },
+  {
+   "path": "sound_us.sdat",
+   "id": 4,
+   "start": 3037696,
+   "end": 9808960,
+   "size": 6771264
+  },
+  {
+   "path": "textures.narc",
+   "id": 5,
+   "start": 9809408,
+   "end": 10080572,
+   "size": 271164
+  }
+ ],
+ "counted_by_ext": [
+  {
+   "ext": ".nanr",
+   "count": 56
+  },
+  {
+   "ext": ".ncer",
+   "count": 56
+  },
+  {
+   "ext": ".nscr",
+   "count": 26
+  },
+  {
+   "ext": ".nclr",
+   "count": 17
+  },
+  {
+   "ext": ".ncgr",
+   "count": 13
+  },
+  {
+   "ext": ".narc",
+   "count": 4
+  },
+  {
+   "ext": ".bin",
+   "count": 1
+  },
+  {
+   "ext": ".nsbmd",
+   "count": 1
+  },
+  {
+   "ext": ".sdat",
+   "count": 1
+  }
+ ],
+ "counted_bytes": 8810602,
+ "name_guesses": [
+  {
+   "path": "ncprj/main_newtitlesprites.NCGR",
+   "size": 32832
+  },
+  {
+   "path": "ncprj/main_newtitlesprites.NCLR",
+   "size": 552
+  },
+  {
+   "path": "ncprj/mainmenusprites.NCGR",
+   "size": 32832
+  },
+  {
+   "path": "ncprj/mainmenusprites.NCLR",
+   "size": 552
+  },
+  {
+   "path": "ncprj/penanim.NANR",
+   "size": 158
+  },
+  {
+   "path": "ncprj/penanim.NCER",
+   "size": 130
+  }
+ ],
+ "target_candidates": [
+  {
+   "path": "dwc/utility.bin",
+   "id": 6,
+   "start": 1210368,
+   "end": 2279368,
+   "size": 1069000,
+   "head_hex": "10000000",
+   "lz10": false
+  },
+  {
+   "path": "ncprj/SplashRend.NCGR",
+   "id": 156,
+   "start": 2411520,
+   "end": 2477120,
+   "size": 65600,
+   "head_hex": "5247434e",
+   "lz10": false
+  },
+  {
+   "path": "ncprj/o3logo.NCGR",
+   "id": 66,
+   "start": 2781696,
+   "end": 2847296,
+   "size": 65600,
+   "head_hex": "5247434e",
+   "lz10": false
+  },
+  {
+   "path": "ncprj/blktimer.NCGR",
+   "id": 10,
+   "start": 2481664,
+   "end": 2514496,
+   "size": 32832,
+   "head_hex": "5247434e",
+   "lz10": false
+  },
+  {
+   "path": "ncprj/cellshatter.NCGR",
+   "id": 12,
+   "start": 2515968,
+   "end": 2548800,
+   "size": 32832,
+   "head_hex": "5247434e",
+   "lz10": false
+  },
+  {
+   "path": "ncprj/hiscore.NCGR",
+   "id": 32,
+   "start": 2588672,
+   "end": 2621504,
+   "size": 32832,
+   "head_hex": "5247434e",
+   "lz10": false
+  },
+  {
+   "path": "ncprj/legal.NCGR",
+   "id": 36,
+   "start": 2628096,
+   "end": 2660928,
+   "size": 32832,
+   "head_hex": "5247434e",
+   "lz10": false
+  },
+  {
+   "path": "ncprj/main_newtitlesprites.NCGR",
+   "id": 39,
+   "start": 2664960,
+   "end": 2697792,
+   "size": 32832,
+   "head_hex": "5247434e",
+   "lz10": false
+  },
+  {
+   "path": "ncprj/mainmenusprites.NCGR",
+   "id": 42,
+   "start": 2700288,
+   "end": 2733120,
+   "size": 32832,
+   "head_hex": "5247434e",
+   "lz10": false
+  },
+  {
+   "path": "ncprj/menutop.NCGR",
+   "id": 56,
+   "start": 2740736,
+   "end": 2773568,
+   "size": 32832,
+   "head_hex": "5247434e",
+   "lz10": false
+  }
+ ],
+ "directories": [
+  {
+   "path": "dwc",
+   "id": 61441
+  },
+  {
+   "path": "ncprj",
+   "id": 61442
+  }
+ ],
+ "cross_check": {
+  "ran": true,
+  "reader": "gbox.tetris_ds.NDSRom",
+  "file_count": 175,
+  "agrees": true
+ }
+}
