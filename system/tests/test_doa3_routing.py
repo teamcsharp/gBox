@@ -18,11 +18,11 @@ def test_writer_for_routes_doa3():
     assert w["routed"] is True, "characters_tool must call doa3_cast.use for the writer to count as routed"
 
 
-def test_writer_status_honest_not_playable():
+def test_writer_status_is_honest_about_verification():
     st = doa3_cast.cast_writer_status()
     assert st["afs_patch_path"] is True
-    assert st["donor_retarget"] is False
-    assert st["playable"] is False
+    assert st["donor_retarget"] is True
+    assert st["playable"] is False                     # builds are built_unverified until seen in game per donor
 
 
 def test_is_slot():
@@ -34,13 +34,12 @@ def test_is_slot():
     assert doa3_cast.is_slot(None) is False
 
 
-def test_use_reports_in_progress_without_a_build():
-    r = doa3_cast.use(None, {"name": "x", "slug": "x"}, GAME, _Inp("cast"))
-    assert r["status"] == "writer_in_progress"
-    assert r["writer"] == "gbox.doa3_cast"
-    assert r["playable"] is False
-    assert r["donor_retarget"] is False
-    assert r.get("mod") is None, "a non-playable writer must never fabricate a mod"
+def test_use_refuses_a_slot_it_cannot_build_without_writing_anything():
+    import pytest
+    with pytest.raises(ValueError, match="fighter:<nick"):
+        doa3_cast.use(None, {"name": "x", "slug": "x"}, GAME, _Inp("cast"))
+    with pytest.raises(ValueError, match="no DOA3 fighter family"):
+        doa3_cast.use(None, {"name": "x", "slug": "x"}, GAME, _Inp("fighter:nobody"))
 
 
 def test_cast_swap_whole_cast_is_honestly_unsupported():

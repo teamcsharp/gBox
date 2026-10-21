@@ -279,3 +279,75 @@ def hidden_parts(roles: dict, replaced: set[int], obj_count: int) -> set[int]:
     lower-detail parts the donor had no geometry for. Shadow meshes stay native."""
     keep = set(replaced) | set(roles["shadow"])
     return {k for k in range(obj_count) if k not in keep}
+
+
+# ------------------------------------------------------------------------------------------------ builds
+
+# fighter family nickname (the <nick>.bin / motion bank) -> costume code prefix, from the owned loadfile.afs
+FAMILY_CODES = {"zack": "zac", "tina": "tin", "janlee": "jan", "karate": "kte", "ryu": "ryu", "kasumi": "kas",
+                "genfu": "gen", "hika": "hik", "bayman": "bay", "bass": "bas", "ninja": "nin", "leifang": "lei",
+                "ayane": "aya", "koryu": "kor", "bosnin": "bni", "suiken": "sui", "gokei": "gok", "chin": "chi",
+                "sambo": "sam"}
+NO_COSTUME_FAMILIES = ("tengu",)          # Tengu's model is not a costume XPR/CAT pair: reported, never faked
+
+
+def family_code(name: str) -> str:
+    """'zack' / 'zac' / 'Zack' / a display name -> the costume code prefix."""
+    from .doa3_inventory import FIGHTER_DISPLAY
+    key = (name or "").strip().lower()
+    if key in FAMILY_CODES:
+        return FAMILY_CODES[key]
+    if key in FAMILY_CODES.values():
+        return key
+    for nick, display in FIGHTER_DISPLAY.items():
+        if display.lower() == key and nick in FAMILY_CODES:
+            return FAMILY_CODES[nick]
+    raise ValueError(f"no DOA3 fighter family {name!r} (one of {', '.join(sorted(FAMILY_CODES))})")
+
+
+def costume_entries(entries: list[dict], code: str | None = None) -> list[tuple[dict, dict]]:
+    """[(xpr entry, cat entry)] for every complete costume (optionally one family) in a read_afs entry list."""
+    by_name = {e.get("name"): e for e in entries}
+    out = []
+    for e in entries:
+        n = e.get("name") or ""
+        if len(n) == 9 and n.endswith(".xpr") and n[:3].isalpha() and n[3:5].isdigit() and (code is None or n.startswith(code)):
+            cat = by_name.get(n[:-4] + ".cat")
+            if cat is not None and e.get("size") and cat.get("size"):
+                out.append((e, cat))
+    return out
+
+
+def costume_replacements(afs_path, plan: dict[str, dict], progress=lambda *_: None) -> tuple[dict, list]:
+    """plan: {costume code prefix: loaded donor rig} -> (AFS replacements {index: bytes}, per-costume reports).
+    A costume the writer cannot decode stays native and is reported with its reason."""
+    from .doa3_inventory import read_afs
+    entries = read_afs(afs_path)["entries"]
+    replacements, reports = {}, []
+    pairs = [(x, c) for code in plan for x, c in costume_entries(entries, code)]
+    with open(afs_path, "rb") as stream:
+        def read(entry):
+            stream.seek(entry["offset"])
+            return stream.read(entry["size"])
+        for k, (xe, ce) in enumerate(pairs):
+            costume = xe["name"][:-4]
+            rig = plan[costume[:3]]
+            progress(100 * k / max(len(pairs), 1), f"fitting {costume}")
+            try:
+                xpr, cat = read(xe), read(ce)
+                geo = C.costume_geometry(xpr)
+                C.mdl_descriptor_table(xpr)
+                roles = costume_roles(cat, geo["object_count"])
+                res = fit(rig, geo, roles)
+                hide = hidden_parts(roles, set(res["parts"]), geo["object_count"])
+                blob = W.encode_costume(xpr, res["parts"], res["textures"], hide=hide,
+                                        shrink_textures=set(range(geo["chunk"]["tex_count"])))
+            except Exception as error:  # noqa: BLE001 - the costume stays native; the reason is reported
+                reports.append({"costume": costume, "status": "native_kept", "reason": repr(error)[:300]})
+                continue
+            replacements[xe["index"]] = blob
+            replacements[ce["index"]] = W.disable_cat_links(cat)
+            reports.append({"costume": costume, "status": "replaced", "donor": rig.get("slug") or rig.get("source"),
+                            "xpr_bytes": len(blob), "room": xe.get("room"), "hidden_parts": len(hide),
+                            **{k: v for k, v in res["report"].items() if k != "parts"}})
+    return replacements, reports
