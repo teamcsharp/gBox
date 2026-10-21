@@ -763,6 +763,25 @@ def test_the_gun_points_at_his_facing_plus_the_aims_own_offset():
     assert "a" not in act["hold"] and "left" in act["hold"]
 
 
+def test_the_turn_rate_is_measured_from_his_turns():
+    """gBox's stick keys give 72 of 127 (live 2026-10-21): the turn is slower than full stick, so the bot measures it
+    (and its "can I shoot before that lands" sums use the measured rate)."""
+    now = [0.0]
+    m = world([((-2000, 0, 0), True)])                                       # far to his left (heading -pi/2)
+    rot = 0.0
+    facing(m, rot)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    for k in range(12):
+        now[0] = k * 0.05
+        keys = bot.tick(B.snapshot(m)).get("hold", set())
+        if keys == {"right"}:
+            rot -= 0.075                                                    # 1.5 rad/s
+        elif keys == {"left"}:
+            rot += 0.075
+        facing(m, rot)
+    assert abs(bot.turn_rate - 1.5) < 0.6 and bot.stats["turn_rate"] == round(bot.turn_rate, 2)
+
+
 def test_the_aim_offset_counts_only_while_he_aims_and_motion_values_are_not_the_pitch():
     m = aiming_world(0.3, 0.05)
     m.put(PL + 0xFC, ">4B", 0, 1, 0, 0)               # running: the offset left over from the last aim is stale

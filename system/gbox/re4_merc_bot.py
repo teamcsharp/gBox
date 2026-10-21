@@ -111,7 +111,8 @@ THREAT_R = 1600.0                                # a Ganado this close is about 
 PRESS_HOLD, PRESS_GAP = 0.09, 0.22               # the trigger: down this long, then up; a press at most this often
 QUICK_TURN_ERR, QUICK_TURN_S = 2.3, 0.9          # a target this far round (radians): the quick turn (back + B), at
                                                  # most once in QUICK_TURN_S
-TURN_RATE = 3.0                                  # radians a second, the stick turning him (not aiming)
+TURN_RATE = 3.0                                  # radians a second, the stick turning him (not aiming): the start;
+                                                 # Bot.turn_rate is what the turns he makes measure
 URGENT_S = 2.5                                   # an attack landing within this is fought (or dodged) before anything
 EVADE_S, EVADE_MARGIN = 0.8, 0.15                # run out of a swing this long; dodge when it lands this much sooner
                                                  # than he can shoot
@@ -590,7 +591,7 @@ class Bot:
         dist = math.hypot(t.pos[0] - px, t.pos[2] - pz)
         err = abs(wrap(heading(t.pos[0] - px, t.pos[2] - pz) - p.get("aim_rot", p["rot"])))
         tol = fire_tol(dist)
-        turn = 0.0 if err <= tol else (0.55 if err > QUICK_TURN_ERR else err / TURN_RATE)
+        turn = 0.0 if err <= tol else (0.55 if err > QUICK_TURN_ERR else err / getattr(self, "turn_rate", TURN_RATE))
         pose = 0.0 if self._pose_up(p, now) else PITCH_AFTER
         if not pose and self.r_since is not None and err <= TURN_TOL:
             pose = max(0.0, PITCH_AFTER - (now - self.r_since))
@@ -915,7 +916,32 @@ class Bot:
             keys -= {"up", "b"}
         return {"hold": keys}
 
+    def _learn_turn(self, p, now):
+        """How fast the stick turns him (radians a second, not aiming), from what the last tick's turn did: the pad's
+        stick is not always full (gBox's keys give 72 of 127 - live 2026-10-21), so the rate is measured, not assumed."""
+        last = getattr(self, "_turn_obs", None)
+        if last is not None and p is not None:
+            t0, rot0, key = last
+            dt = now - t0
+            if key and 0.02 < dt < 0.25:
+                rate = abs(wrap(p["rot"] - rot0)) / dt
+                if 0.2 < rate < 12.0:
+                    self.turn_rate = 0.85 * self.turn_rate + 0.15 * rate
+                    self.stats["turn_rate"] = round(self.turn_rate, 2)
+
     def tick(self, s: dict) -> dict:
+        p = s["player"]
+        now = self.clock()
+        if not hasattr(self, "turn_rate"):
+            self.turn_rate = TURN_RATE
+        self._learn_turn(p, now)
+        act = self._tick(s)
+        keys = act.get("hold", set()) if isinstance(act, dict) else set()
+        turning = (keys & {"left", "right"}) and not (keys & {"r", "up", "down", "b"}) and len(keys & {"left", "right"}) == 1
+        self._turn_obs = (now, p["rot"], bool(turning)) if p else None
+        return act
+
+    def _tick(self, s: dict) -> dict:
         now, p = self.clock(), s["player"]
         self.stats["max_combo"] = max(self.stats["max_combo"], s["combo"])
         if not p:
