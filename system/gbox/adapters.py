@@ -3650,6 +3650,7 @@ class RPCS3LinuxAdapter(StandaloneAdapter):
         self.env = provision.rpcs3_linux_env(config)
         self.home = provision.rpcs3_linux_dir(config)     # dev_hdd0 lives here (gbox/re5_tool.py finds saves through it)
         self._mem, self.paused, self.generation, self.rom = None, False, 0, None
+        self._profile_lease = None
 
     def _ensure(self):
         self.write_settings()                             # first: the firmware install then runs without dialogs too
@@ -3677,15 +3678,60 @@ class RPCS3LinuxAdapter(StandaloneAdapter):
 
     def _argv(self, rom: str) -> list[str]:
         self.rom = rom
+        from . import rpcs3_profile
+        rpcs3_profile.native_available(self.env['XDG_CACHE_HOME'])
         return [str(provision.rpcs3_linux_exe(self.config)), "--no-gui", rom]
 
     def _debugger(self):
         return None                                       # RPCS3's GDB stub stays off (see RPCS3_LINUX_SETTINGS)
 
     def launch_game(self, rom: str) -> dict:
-        d = super().launch_game(rom)
-        self._park_pointer()
-        return d | {"emulator": "rpcs3 (linux)", "rpcs3_log": str(Path(self.env["XDG_CACHE_HOME"]) / "rpcs3" / "RPCS3.log")}
+        from . import rpcs3_profile
+        if HOST_OS != 'linux':
+            raise ToolUnavailable('rpcs3 (linux) sessions run on the linux node')
+        if self._profile_lease is not None:
+            raise rpcs3_profile.ProfileBusy('This RPCS3 session already owns its profile')
+        lease = rpcs3_profile.Lease(provision.rpcs3_linux_home(self.config), self.env['XDG_CACHE_HOME']).acquire()
+        self._profile_lease = lease
+        self._mem = None
+        try:
+            d = super().launch_game(rom)
+            self._wait_guest_ready()
+            self._park_pointer()
+            return d | {"emulator": "rpcs3 (linux)", "ready": "guest_memory",
+                        "rpcs3_log": str(Path(self.env["XDG_CACHE_HOME"]) / "rpcs3" / "RPCS3.log")}
+        except BaseException:
+            self.stop_game()                 # Only our process/display; never stop an existing profile owner.
+            raise
+
+    def _wait_guest_ready(self):
+        """A living error dialog is not a booted game; require this process's guest memory."""
+        deadline = time.monotonic() + float(getattr(self, 'boot_timeout_s', None) or 120)
+        self._p(85, 'Waiting for RPCS3 to initialize the PS3 guest')
+        error = None
+        while time.monotonic() < deadline:
+            if not self.proc or self.proc.poll() is not None:
+                raise RuntimeError(f'RPCS3 exited before initializing the PS3 guest: {self.log_tail(2000)}')
+            try:
+                self._guest()
+                if self.proc.poll() is not None:
+                    raise RuntimeError('RPCS3 exited while initializing the PS3 guest')
+                return
+            except (RuntimeError, OSError) as exc:
+                error = exc
+            time.sleep(.25)
+        raise RuntimeError(f'RPCS3 did not initialize PS3 guest memory before the boot deadline ({error}); '
+                           'its process/dialog alone does not confirm a successful launch')
+
+    def stop_game(self) -> dict:
+        result = super().stop_game()
+        if self.proc and self.proc.poll() is None:
+            raise RuntimeError('RPCS3 is still running; its profile lease was retained')
+        if self._profile_lease is not None:
+            lease, self._profile_lease = self._profile_lease, None
+            lease.close()
+        self._mem = None
+        return result
 
     def _park_pointer(self):
         try:                                              # keys go to the window under the pointer (no window manager)
@@ -3788,16 +3834,25 @@ class RPCS3LinuxAdapter(StandaloneAdapter):
 
     def load_state(self, slot: int | None = None) -> dict:
         """Relaunch RPCS3 on this session's display from the newest save state (the stream keeps going)."""
+        if self._profile_lease is None:
+            raise RuntimeError('RPCS3 profile ownership is unavailable; restart the session before loading a state')
         states = sorted((self.home / "savestates").glob("*/*.SAVESTAT*"), key=lambda f: f.stat().st_mtime)
         if not states:
             raise RuntimeError("no save state for this game yet: save one first")
         _kill_tree(self.proc)
-        env = {**os.environ, "DISPLAY": self.display.name, "QT_QPA_PLATFORM": "xcb", **self.env}
-        self.proc = subprocess.Popen([str(provision.rpcs3_linux_exe(self.config)), "--no-gui", str(states[-1])], env=env,
-                                     stdout=open(self.log_path, "ab"), stderr=subprocess.STDOUT)
-        self._mem, self.paused = None, False
-        self.generation += 1
-        self._park_pointer()
+        from . import rpcs3_profile
+        try:
+            rpcs3_profile.native_available(self.env['XDG_CACHE_HOME'])
+            env = {**os.environ, "DISPLAY": self.display.name, "QT_QPA_PLATFORM": "xcb", **self.env}
+            self.proc = subprocess.Popen([str(provision.rpcs3_linux_exe(self.config)), "--no-gui", str(states[-1])], env=env,
+                                         stdout=open(self.log_path, "ab"), stderr=subprocess.STDOUT)
+            self._mem, self.paused = None, False
+            self.generation += 1
+            self._wait_guest_ready()
+            self._park_pointer()
+        except BaseException:
+            self.stop_game()
+            raise
         return {"loaded": states[-1].name, "pid": self.proc.pid}
 
     def send_input(self, events: list[dict]) -> dict:
