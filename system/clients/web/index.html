@@ -1739,10 +1739,10 @@ function mountBroadcastPanel() {
 async function sessionsView(sid, mode) {
   const ss = await api("/api/sessions");
   if (!sid) {
-    setTimeout(mountBroadcastPanel, 0);                        // after show() puts the list in the page
     // #2858: a game elsewhere is offered to Watch only while a picture of it comes; otherwise the row says why
     const ws = await api("/api/workers").catch(() => null), nowS = Date.now() / 1000;
     const pic = s => s.state === "running" && !sessionIsLocal(s) ? GBoxSessionLive.judge(s, ws, nowS) : { live: true };
+    setTimeout(mountBroadcastPanel, 0);                        // no await from here: runs once show() put the list in
     return (window.GBoxBroadcast ? GBoxBroadcast.panelHTML() : "") +
     `<p class="mut">Watch a running game, or reopen any game from your history (relaunches its ROM). A game with no recent picture says why when you open it.</p>` +
     table(["Game", "State", "Adapter", "Frame age", "", "Session"], ss.slice(0, 200).map(s => { const v = pic(s); return `<tr>
