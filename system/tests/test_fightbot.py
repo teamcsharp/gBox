@@ -153,6 +153,18 @@ def test_menu_rules_in_the_map_walk_a_cursor_then_confirm():
     game.screen = 1
     game.write()
     assert title.menu(title.read(game.read)) is None                       # the fight: no menu rules
+    s["fight"]["menus"]["menu"] = [{"cursor": "game.cursor", "targets": [1, 3], "next": "down", "prev": "up",
+                                    "confirm": "b"}]                      # a new fighter each visit
+    title = Holds(ram_map.RamMap(s))
+    game.screen = 2
+    game.write()
+    assert key(0, 1) == "b" and key(0, 3) == "up"                         # first visit: target 1
+    game.screen = 1
+    game.write()
+    title.menu(title.read(game.read))                                      # left the screen ...
+    game.screen = 2
+    game.write()
+    assert key(0, 1) == "down" and key(0, 3) == "b"                       # ... and came back: target 3
 
 
 def test_vocab_check_reports_what_a_map_fills():

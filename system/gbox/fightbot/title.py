@@ -165,7 +165,13 @@ class Title:
 
         A screen's rules are tried in order; `when` is a ram_map condition over the map's fields (field / mask / eq
         ne lt le gt ge in, all / any / not); `cursor` walks the field to `target` (next when below, prev when above),
-        then presses `confirm`; `press` presses its key; `wait` presses nothing."""
+        then presses `confirm`; `targets: [...]` instead picks the next target each time the screen comes back (a
+        new fighter every Survival run); `press` presses its key; `wait` presses nothing."""
+        entered = w.screen != getattr(self, "_menu_screen", None)
+        self._menu_screen = w.screen
+        if entered:                                    # each visit of a screen may pick the next of its targets
+            self._visits = getattr(self, "_visits", {})
+            self._visits[w.screen] = self._visits.get(w.screen, -1) + 1
         rules = (self.block.get("menus") or {}).get(w.screen)
         if rules is None:
             return None
@@ -180,7 +186,11 @@ class Title:
                 cur = values.get(rule["cursor"]) if values is not None else None
                 if not isinstance(cur, (int, float)):
                     return None
-                target = ram_map.num(rule["target"])
+                if rule.get("targets"):                # rotate: the next one each time the screen comes back
+                    targets = rule["targets"]
+                    target = ram_map.num(targets[self._visits.get(w.screen, 0) % len(targets)])
+                else:
+                    target = ram_map.num(rule["target"])
                 if cur == target:
                     return rule.get("confirm")
                 return rule.get("next") if cur < target else rule.get("prev")
