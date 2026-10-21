@@ -430,13 +430,14 @@ def test_bonuses_anywhere_are_walked_to_nearest_first_and_the_clock_jumps_are_co
     assert bot.stats["clock_jumps"] == 1 and bot.stats["bonus_s"] == 29.5
 
 
-def with_inventory(mem, slots):
+def with_inventory(mem, slots, grids=None):
     """The player's inventory (+0x22E0, 0x30 a slot): slots = {k: (id word, rounds, cap, in hand)}."""
     for k, (word, rounds, cap, hand) in slots.items():
         base = PLAYER + R.P_INV + R.INV_SLOT * k
         mem.u32(base + R.INV_ID, word)
         mem.u32(base + R.INV_ROUNDS, rounds)
         mem.u32(base + R.INV_CAP, cap)
+        mem.u32(base + R.INV_GRID, (grids or {}).get(k, k))
         mem.u32(base + R.INV_HAND, 1 if hand else 0)
         mem.put(base + R.INV_USED, b"\x01")
     return mem
@@ -446,17 +447,56 @@ def test_the_inventory_names_the_weapon_in_hand_and_an_empty_one_is_switched_off
     mem = with_inventory(world(), {0: (0x112, 30, 30, True), 3: (0x10B, 6, 6, False), 4: (0x202, 150, 150, False),
                                    12: (0x115, 400, 400, False)})
     snap = R.snapshot(mem)
-    assert [x["slot"] for x in snap["inventory"]] == [0, 3, 4]                   # slot 12 is past the grid, not in hand
+    assert [x["slot"] for x in snap["inventory"]] == [0, 3, 4, 12]  # Every used record, including those past index8.
+    assert snap["inventory"][-1]["grid"] is None
     assert R.equipped(snap)["item"] == 0x12 and snap["inventory"][2]["type"] == 2
     act, bot = tick(with_inventory(world(enemies=[((0.0, 0.0, 900.0), 800, 800)]),
                                    {0: (0x112, 30, 30, True), 3: (0x10B, 6, 6, False)}))
     assert bot.stats["weapon"] == "Barry's handgun 30/30" and "l1" in act["hold"]
     act, bot = tick(with_inventory(world(enemies=[((0.0, 0.0, 900.0), 800, 800)]),
                                    {0: (0x112, 0, 0, True), 3: (0x10B, 6, 6, False)}))
-    assert act == {"tap": "dleft"} and bot.stats["weapon_switches"] == 1          # EMPTY 0/0: the M29 in slot 3 (left)
+    assert act == {"tap": "dleft"} and bot.stats["weapon_switch_attempts"] == 1
+    assert bot.stats.get("weapon_switches", 0) == 0          # A tap is not proof that the gun entered the hand.
     act, bot = tick(with_inventory(world(enemies=[((0.0, 0.0, 900.0), 800, 800)]),
                                    {0: (0x112, 0, 30, True), 3: (0x10B, 6, 6, False)}))
     assert act == {"hold": {"l1", "cross"}} and bot.stats["reloads"] == 1          # 0/30: reload
+
+
+def test_live_inventory_storage_order_is_not_the_dpad_grid():
+    mem = with_inventory(world(), {0: (0x10D, 1, 1, True), 1: (0x119, 10, 10, False),
+                                  6: (0x304, 1, 1, False), 8: (0x101, 1, 1, False),
+                                  12: (0x10B, 6, 6, False)}, grids={0: 3, 1: 5, 6: 1, 8: 9, 12: 7})
+    inv = R.inventory(mem, PLAYER)
+    assert [(i["slot"], i["grid"]) for i in inv] == [(0, 3), (1, 5), (6, 1), (8, None), (12, 7)]
+    assert inv[3]["grid_raw"] == 9
+    empty = with_inventory(world(enemies=[((0.0, 0.0, 500.0), 800, 800)]),
+                           {0: (0x10D, 0, 0, True), 1: (0x119, 10, 10, False)}, grids={0: 3, 1: 5})
+    assert tick(empty)[0] == {"tap": "dright"}
+    heal = with_inventory(world(hp=100), {6: (0x304, 1, 1, False)}, grids={6: 1})
+    assert tick(heal)[0] == {"tap": "dup"}
+    heal.u32(PLAYER + R.P_INV + 6 * R.INV_SLOT + R.INV_GRID, 9)
+    assert tick(heal)[0] == {"hold": set()}
+
+
+def test_weapon_switch_waits_for_in_hand_ack_and_failed_switch_leaves_combat_running():
+    now = [100.0]
+    mem = with_inventory(world(enemies=[((0.0, 0.0, 500.0), 800, 800)]),
+                         {0: (0x10D, 1, 1, True), 1: (0x119, 10, 10, False)}, grids={0: 3, 1: 5})
+    bot = R.Bot(m=mem, clock=lambda: now[0])
+    assert bot.tick(R.snapshot(mem)) == {"tap": "dright"}
+    for elapsed in (0.8, 1.6, 3.0, 8.0):
+        now[0] = 100.0 + elapsed
+        assert "l1" in bot.tick(R.snapshot(mem))["hold"]
+    assert bot.stats["weapon_switch_attempts"] == 1
+    assert bot.stats["weapon_switch_failures"] == 1 and bot.stats.get("weapon_switches", 0) == 0
+    now[0] = 110.0
+    assert bot.tick(R.snapshot(mem)) == {"tap": "dright"}
+    mem.u32(PLAYER + R.P_INV + R.INV_HAND, 0)
+    mem.u32(PLAYER + R.P_INV + R.INV_SLOT + R.INV_HAND, 1)
+    now[0] = 110.8
+    bot.tick(R.snapshot(mem))
+    assert bot.stats["weapon_switches"] == 1 and bot.switch_pending is None
+    assert bot.stats["weapon_switch_status"] == "confirmed in hand"
 
 
 def test_handguns_are_tapped_and_the_gatling_held(monkeypatch):

@@ -3,7 +3,7 @@ from gbox.re5_mods_tool import WEAPONS
 
 
 def slot(wid, n, hand=False):
-    return {"item": wid, "type": 1, "slot": n, "hand": hand, "rounds": 5}
+    return {"item": wid, "type": 1, "slot": n, "grid": n, "hand": hand, "rounds": 5}
 
 
 def scene(distance=500, weapons=()):
@@ -26,7 +26,23 @@ def test_close_splash_switches_to_loaded_magnum_without_guessing_launcher_ammo()
 def test_distant_target_prefers_rifle_to_shotgun_but_only_reachable_quick_slot():
     s, e = scene(2200, [slot(0x19, 1, True), slot(0x05, 3)])
     assert W.best_quick_slot(s, e)["item"] == 0x05
-    s["inventory"][1]["slot"] = 2
+    s["inventory"][1]["grid"] = 2
+    assert W.best_quick_slot(s, e) is None
+
+
+def test_quick_slot_uses_ui_grid_and_never_falls_back_to_storage_index():
+    s, e = scene(200, [slot(0x0D, 0, True), slot(0x19, 1)])
+    other = s["inventory"][1]
+    other["grid"] = 5
+    assert W.best_quick_slot(s, e) is other and W.quick_key(other) == "dright"
+    other["slot"] = 12
+    assert W.best_quick_slot(s, e) is other
+    assert W.best_quick_slot(s, e, {W.inventory_key(other)}) is None
+    other["slot"] = 1
+    for grid in (None, 9, -1, "1", True):
+        other["grid"] = grid
+        assert W.quick_key(other) is None and W.best_quick_slot(s, e) is None
+    del other["grid"]
     assert W.best_quick_slot(s, e) is None
 
 

@@ -131,6 +131,44 @@ def test_bullet_damage_scales_the_firepower_at_every_level():
     assert T.run(m, "bullet_damage", multiplier=1)["status"]["bullet_damage_x"] == 1.0
 
 
+@pytest.mark.parametrize("order", [
+    ("fire_rate", "infinite_ammo", "bullet_damage"),
+    ("bullet_damage", "fire_rate", "infinite_ammo"),
+    ("infinite_ammo", "bullet_damage", "fire_rate"),
+])
+def test_combined_mods_preserve_each_other_and_independent_restoration(order):
+    m = FakeRE5()
+    options = {"fire_rate": {"multiplier": 80}, "infinite_ammo": {"on": True},
+               "bullet_damage": {"multiplier": 10}}
+    def check(fire=80, ammo=1, damage=10):
+        for wid in T.WEAPONS:
+            if wid in T.KNIVES or wid in T.NO_WEAPON:
+                continue
+            interval = m.rf(T.DEF_TABLE + wid * T.DEF_STRIDE + T.DEF_INTERVAL_OFS)
+            assert interval == (0 if fire != 1 else (-10 if wid == 2 else 5))
+            flag = struct.unpack(">I", m.read_memory(T.DEF_TABLE + wid * T.DEF_STRIDE + T.DEF_NOAMMO, 4))[0]
+            assert flag == (ammo or int(wid == T.GATLING))
+            for group, base, multiplier in ((T.G_FIRE, 5 if wid == T.GATLING else 26, 1 / fire),
+                                            (T.G_DAMAGE, 150 if wid == 2 else 150 + 10 * wid, damage)):
+                at = T.UPG_TABLE + wid * T.UPG_STRIDE + T.UPG_GROUP0 + group * T.UPG_GROUP + 4
+                vals = struct.unpack(">14f", m.read_memory(at, 56))
+                assert vals == pytest.approx([(base + level) * multiplier for level in range(14)])
+        assert m.rf(T.FIRE_TIMER_FPS) == 60 * fire
+    for op in order:
+        assert T.run(m, op, **options[op])["verified"]
+    check()
+    # Repeated application scales from originals, never from already boosted data.
+    T.run(m, "bullet_damage", multiplier=10)
+    T.run(m, "fire_rate", multiplier=80)
+    check()
+    T.run(m, "infinite_ammo", on=False)
+    check(ammo=0)
+    T.run(m, "bullet_damage", multiplier=1)
+    check(ammo=0, damage=1)
+    T.run(m, "fire_rate", multiplier=1)
+    check(fire=1, ammo=0, damage=1)
+
+
 def test_revert_all_puts_everything_back_and_a_foreign_timer_is_refused():
     m = FakeRE5()
     T.run(m, "fire_rate", multiplier=80)

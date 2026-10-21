@@ -8,7 +8,7 @@ package through run() at round start, gbox/mercs_bot.py):
   turn_speed multiplier=N         the stick turns the player N times faster, aimed and not (2 = default, "max" = 10)
   fire_rate multiplier=N          every weapon fires N times faster, semi-auto ones repeat while R1 is held (80)
   infinite_ammo on=true|false     no weapon spends rounds (the HUD shows the infinity sign; the Gatling's own flag)
-  unlimited_health on=true|false keep living Mercenaries players at full health on each bot snapshot
+  unlimited_health on=true|false full living HP each snapshot, plus exact-signature-verified Muteki hit immunity
   bullet_damage multiplier=N      every weapon's firepower x N at every upgrade level
   addresses                       this release's address table, with the evidence
 Everything is RAM only: a relaunch of the game is the full revert.
@@ -70,6 +70,17 @@ WEAPONS = {0x02: "M92F", 0x03: "VZ61", 0x04: "Ithaca M37", 0x05: "S75", 0x06: "h
 INV_OFS, INV_SLOTS, SLOT = 0x22E0, 24, 0x30     # the player's inventory: slot +0x8 id word 0x01II, +0xC rounds,
 S_PLAYER = 0x017FEB34                           # +0x10 capacity, +0x20 = 1 in hand, byte +0x2D in use
 P_HP, HEALTH_MAX = 0x14A4, 30000                # verified signed 16-bit current / maximum health pair
+P_MUTEKI, P_HIT_STATE, P_HIT_LIST = 0x2F10, 0x2EFC, 0x13D0
+MUTEKI_MASK, MUTEKI_ON, HIT_STATE_MASK = 0x30, 0x10, 0x40000
+HIT_NODE_ENABLE, HIT_NODE_TYPE, HIT_LIST_LIMIT = 0xBD, 0xC4, 128
+# Muteki's registered setter, its player helper, and its incoming-hit collision setter.
+# Matched against the running BLUS30491 01.01 process on 2026-10-21. No code is modified.
+IMMUNITY_SIGNATURES = {
+    0x009BB0B0: bytes.fromhex("388000006000001038a000015400d07e5400303e901f2f10"),
+    0x008348F4: bytes.fromhex("f821ff717c0802a6fb810070f80100a0fba10078fbe1008881232f10"
+                             "7c681b787c6a1b78552006b47929e7e22f8000003969ffff2f0900007d6b2038409e0078"),
+    0x009C38C8: bytes.fromhex("80e300182f8700004d9e00202f84000040de00702f86000040de0128394000004800000c"),
+}
 _HEALTH_LOCK = threading.RLock()
 # The Mercenaries loadout templates (static .data): 30 blocks of 12 records x 0x2C, one block per character / costume
 # (Barry = 24, Chris Heavy Metal = 18); a record is [item id 0xTTII, count (-1 = the weapon's own), -1, -1, -1, grid
@@ -94,6 +105,10 @@ ADDRESSES = {
     "inventory": {"address": INV_OFS, "source": "player + 0x22E0, the item finder 0x9D309C", "live_checked": True},
     "player_health": {"address": P_HP, "source": "sPlayer + 0x28 -> player; player + 0x14A4: signed 16-bit hp/max, "
                                                 "the verified Mercenaries RAM map", "live_checked": True},
+    "player_hit_immunity": {"address": P_MUTEKI, "source": "Muteki setter 0x9BAFB0: mask 0x30 -> 0x10; "
+        "helper 0x8348F4 clears +0x2EFC bit 0x40000 and disables type-1 incoming-hit nodes from +0x13D0. "
+        "All three code signatures checked before writes; original bits and node bytes restored on disable",
+        "live_checked": True},
 }
 
 
@@ -139,13 +154,18 @@ class RE5:
         return self.orig[what]
 
     def tables(self):
-        d = self.keep("def", lambda: self.rd(DEF_TABLE, N_WEAPONS * DEF_STRIDE))
-        u = self.keep("upg", lambda: self.rd(UPG_TABLE, N_WEAPONS * UPG_STRIDE))
+        self.keep("def", lambda: self.rd(DEF_TABLE, N_WEAPONS * DEF_STRIDE))
+        self.keep("upg", lambda: self.rd(UPG_TABLE, N_WEAPONS * UPG_STRIDE))
         fps = self.keep("fps", lambda: self.rd(FIRE_TIMER_FPS, 4))
         if struct.unpack(">f", fps)[0] != FIRE_TIMER_ORIG and "fps_set" not in self.orig:
             raise RuntimeError(f"the fire timer constant is {struct.unpack('>f', fps)[0]} not 60.0: another tool "
                                "changed it; not touching the fire rate")
-        return bytearray(d), bytearray(u), fps
+        # Each operation owns only its fields. Starting from the saved originals
+        # silently undid the other mods: ammo reset fire intervals, and damage
+        # reset firing-speed upgrades. Keep originals for scaling/restoration,
+        # but preserve every other field from the current live tables.
+        return (bytearray(self.rd(DEF_TABLE, N_WEAPONS * DEF_STRIDE)),
+                bytearray(self.rd(UPG_TABLE, N_WEAPONS * UPG_STRIDE)), fps)
 
     # ---- state ----
     def inventory(self) -> list[dict]:
@@ -184,6 +204,7 @@ class RE5:
         st["inventory"] = inv
         st["unlimited_health"] = bool(self.orig.get("health", {}).get("on"))
         st["health_maintenance"] = self.orig.get("health", {}).get("last")
+        st["hit_immunity"] = bool((st["health_maintenance"] or {}).get("hit_immunity"))
         return st
 
 
@@ -193,9 +214,107 @@ def _health_player(g: RE5) -> int:
     return pl if 0x30000000 <= pl <= 0x40000000 - P_HP - 4 and pl % 4 == 0 else 0
 
 
+def _heap_range(address: int, size: int) -> bool:
+    return address % 4 == 0 and 0x30000000 <= address <= 0x40000000 - size
+
+
+def _hit_list(g: RE5, pl: int) -> tuple[bytes, list[tuple[int, int, int]]]:
+    """Read and validate the player's own bounded collision list before any mutation."""
+    if not _heap_range(pl, P_MUTEKI + 4):
+        raise ValueError("player outside the verified heap")
+    header = g.rd(pl + P_HIT_LIST, 0x1C)
+    _, table, _, _, owner, capacity, count = struct.unpack(">7I", header)
+    if owner != pl or not 0 < count <= capacity <= HIT_LIST_LIMIT or not _heap_range(table, capacity * 4):
+        raise ValueError("waiting for the player's bounded hit list")
+    nodes = []
+    for index, node in enumerate(struct.unpack(f">{count}I", g.rd(table, count * 4))):
+        if not node:
+            continue
+        if not _heap_range(node, HIT_NODE_TYPE + 4):
+            raise ValueError("hit node outside the verified heap")
+        if g.u32(node + HIT_NODE_TYPE) != 1:  # Leave outgoing attacks and other collision kinds alone.
+            continue
+        enabled = g.rd(node + HIT_NODE_ENABLE, 1)[0]
+        if enabled not in (0, 1):
+            raise ValueError("invalid incoming-hit enable byte")
+        nodes.append((index, node, enabled))
+    if not nodes:
+        raise ValueError("waiting for incoming-hit collision nodes")
+    return header, nodes
+
+
+def _hit_list_current(g: RE5, pl: int, header: bytes, index=None, node=None) -> bool:
+    if _health_player(g) != pl or g.rd(pl + P_HIT_LIST, len(header)) != header:
+        return False
+    hp, maximum = struct.unpack(">hh", g.rd(pl + P_HP, 4))
+    if not 0 < hp <= maximum <= 32767:
+        return False
+    if index is not None:
+        table = struct.unpack_from(">I", header, 4)[0]
+        return g.u32(table + index * 4) == node and g.u32(node + HIT_NODE_TYPE) == 1
+    return True
+
+
+def _hit_immunity(g: RE5, pl: int, on: bool) -> dict:
+    """Mirror the game's named Muteki action in RAM; never patch executable instructions."""
+    result = {"hit_immunity": False, "immunity_verified": False}
+    try:
+        if any(g.rd(address, len(expected)) != expected for address, expected in IMMUNITY_SIGNATURES.items()):
+            return {**result, "immunity_reason": "health only: immunity code signatures did not match"}
+        header, nodes = _hit_list(g, pl)
+        state = g.orig["health"].setdefault("immunity", {})
+        if not on and state.get("player") != pl:
+            return {**result, "immunity_verified": True, "immunity_restored": False}
+        if on and state.get("player") != pl:
+            state.clear()
+            state.update(player=pl, flags=g.u32(pl + P_MUTEKI) & MUTEKI_MASK,
+                         hit_state=g.u32(pl + P_HIT_STATE) & HIT_STATE_MASK, nodes={})
+        if on and state.get("header") != header:
+            # A replacement list can reuse node addresses. Never restore bytes from its predecessor.
+            state.update(header=header, nodes={})
+        restore_nodes = state.get("header") == header
+        for _, node, enabled in nodes:
+            if on:
+                state["nodes"].setdefault(node, enabled)
+        changes = ((P_MUTEKI, MUTEKI_MASK, MUTEKI_ON, state["flags"]),
+                   (P_HIT_STATE, HIT_STATE_MASK, 0, state["hit_state"]))
+        for offset, mask, enabled_bits, original in changes:
+            if not _hit_list_current(g, pl, header):
+                raise ValueError("player or hit list changed before flag write")
+            current = g.u32(pl + offset)
+            if not on and current & mask != enabled_bits:
+                continue  # The game changed these bits; do not overwrite its new state.
+            wanted = current & ~mask | (enabled_bits if on else original)
+            if wanted != current and not g.wr(pl + offset, struct.pack(">I", wanted)):
+                raise ValueError("immunity flag readback failed")
+        for index, node, _ in nodes:
+            if not _hit_list_current(g, pl, header, index, node):
+                raise ValueError("player or collision entry changed before node write")
+            current = g.rd(node + HIT_NODE_ENABLE, 1)[0]
+            if current not in (0, 1):
+                raise ValueError("incoming-hit enable byte changed to invalid value")
+            if not on and (not restore_nodes or node not in state["nodes"] or current != 0):
+                continue
+            wanted = 0 if on else state["nodes"][node]
+            if wanted != current and not g.wr(node + HIT_NODE_ENABLE, bytes([wanted])):
+                raise ValueError("incoming-hit collision readback failed")
+        if not _hit_list_current(g, pl, header):
+            raise ValueError("player or hit list changed after immunity update")
+        if on and (g.u32(pl + P_MUTEKI) & MUTEKI_MASK != MUTEKI_ON or
+                   g.u32(pl + P_HIT_STATE) & HIT_STATE_MASK or
+                   any(not _hit_list_current(g, pl, header, index, node) or
+                       g.rd(node + HIT_NODE_ENABLE, 1) != b"\0" for index, node, _ in nodes)):
+            raise ValueError("immunity state changed during verification")
+        return {"hit_immunity": on, "immunity_verified": True, "immunity_colliders": len(nodes),
+                "immunity_restored": not on and restore_nodes,
+                "immunity_restore_skipped": not on and not restore_nodes}
+    except Exception as error:
+        return {**result, "immunity_reason": f"health only: {type(error).__name__}: {error}"}
+
+
 def _maintain_health(g: RE5, snap=None) -> dict:
     state = g.orig.setdefault("health", {})
-    result = {"unlimited_health": True, "active": False, "verified": False}
+    result = {"unlimited_health": True, "active": False, "verified": False, "hit_immunity": False}
     pl = _health_player(g)
     if not pl or (snap is not None and (snap.get("player") or {}).get("ptr") != pl):
         return {**result, "reason": "waiting for the current player"}
@@ -212,14 +331,15 @@ def _maintain_health(g: RE5, snap=None) -> dict:
     if verified and snap is not None:
         snap["player"].update(hp=target, hp_max=target)
     return {**result, "active": verified, "verified": verified, "hp": target if verified else hp,
-            "hp_max": target if verified else maximum, "refilled": verified and hp != target}
+            "hp_max": target if verified else maximum, "refilled": verified and hp != target,
+            **(_hit_immunity(g, pl, True) if verified else {})}
 
 
 def maintain_health(ad, snap=None) -> dict:
     """The Mercenaries observer calls this each snapshot; only an explicitly enabled session is written.
 
-    Resolve the player anew after every respawn and verify the build and each write. A health refill cannot undo
-    an already-triggered death or a scripted instant kill; no unverified invulnerability flag is touched.
+    Resolve the player anew after every respawn and verify the build and each write. Named Muteki hit immunity
+    is enabled only after its three code signatures match. A refill cannot undo an already-triggered death.
     """
     with _HEALTH_LOCK:
         state = ORIG.get(id(ad), {}).get("health", {})
@@ -241,7 +361,8 @@ def unlimited_health(g: RE5, on: bool) -> dict:
         if on:
             result = _maintain_health(g)
         else:
-            result = {"unlimited_health": False, "active": False, "verified": True, "restored": False}
+            result = {"unlimited_health": False, "active": False, "verified": True, "restored": False,
+                      "hit_immunity": False}
             pl = _health_player(g)
             if pl and pl == state.get("player"):
                 hp, maximum = struct.unpack(">hh", g.rd(pl + P_HP, 4))
@@ -249,9 +370,13 @@ def unlimited_health(g: RE5, on: bool) -> dict:
                     original = state["original_max"]
                     result["verified"] = g.wr(pl + P_HP, struct.pack(">hh", min(hp, original), original))
                     result["restored"] = result["verified"]
+                if 0 < hp <= maximum and state.get("immunity"):
+                    result.update(_hit_immunity(g, pl, False))
+                    result["verified"] &= result["immunity_verified"]
         state["last"] = result
         return {**result, "note": "maintained on every Mercenaries bot snapshot, including prompts and walking; "
-                                 "living HP/max refill only, not a scripted-death bypass"}
+                                 "living HP/max refill plus signature-verified Muteki incoming-hit immunity; "
+                                 "does not resurrect an already-dead player"}
 
 
 def _mult(v, default=2.0) -> float:
@@ -487,7 +612,7 @@ def re5_mods(inp: RE5ModsIn, ctx):
     """Resident Evil 5 Gold (PS3, RPCS3) live mods, each write read back: turn_speed multiplier=N (the stick turns N
     times faster, aimed and not; "max" = 10), fire_rate multiplier=N (every gun N times faster, a handgun held fires
     like a machine gun; 80), infinite_ammo on= (no rounds spent, the HUD's infinity sign), unlimited_health on=
-    (living HP refilled each Mercenaries snapshot), bullet_damage multiplier=N,
+    (living HP refill and signature-verified Muteki incoming-hit immunity each snapshot), bullet_damage multiplier=N,
     revert_all, status, addresses. The Mercenaries playbook applies the profile's package at round start."""
     from .tools import SESSIONS
     ad, g = SESSIONS[inp.session_id]
