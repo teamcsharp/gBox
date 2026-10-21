@@ -80,8 +80,8 @@ CONVENIENCE = {
                              ["game_id", "request_id", "stage", "status", "note"])),
     "list_tasks": ("List active gBox jobs and actual Hermes runs, including names, run IDs, progress and token usage. Check this before starting inbox work so you do not duplicate another active investigation. include_finished also returns recent terminal runs; a completed run does not prove its inbox request was solved.",
                    obj({"include_finished": B})),
-    "list_requests": ("List actionable inbox requests in a compact page, newest first. Recurring review check-ins are hidden unless include_recurring=true. A request marked hermes_capped has had 3 inbox runs in a row with no new operator message: choose another actionable request unless none exists. A request marked hermes_on_main (also listed in ready_to_verify across the whole inbox) already has its published fix on main: verify its acceptance live and close it, or post the exact remaining gap, before starting new work.",
-                      obj({"status": S, "source": S, "limit": I, "offset": I, "include_recurring": B})),
+    "list_requests": ("List actionable inbox requests in a compact page, newest first. Recurring review check-ins are hidden unless include_recurring=true; autoplay coaching tickets (live notes for the agents watching a bot demo) are hidden unless include_coaching=true or source=coach. A request marked hermes_capped has had 3 inbox runs in a row with no new operator message: choose another actionable request unless none exists. A request marked hermes_on_main (also listed in ready_to_verify across the whole inbox) already has its published fix on main: verify its acceptance live and close it, or post the exact remaining gap, before starting new work.",
+                      obj({"status": S, "source": S, "limit": I, "offset": I, "include_recurring": B, "include_coaching": B})),
     "get_build_feedback": ("Read durable operator reports and image references for a game, including repair findings and exact revisions that later characters builds must acknowledge. Use read_request_artifact with request_id/sha256 to inspect images.",
                            obj({"game_id":S}, ["game_id"])),
     "get_request": ("Read an inbox request, including the operator's full instructions, replies, image and attachment references, and metrics.",
@@ -295,6 +295,11 @@ def build(base_url: str, token: str) -> Server:
             rows = await get("/api/requests", status=a.get("status", "open,in_progress"), source=a.get("source", ""))
             if not a.get("include_recurring"):
                 rows = [r for r in rows if not (r.get("title") or "").startswith("gBox request review (recurring")]
+            if not a.get("include_coaching") and a.get("source") != "coach":
+                # autoplay coaching tickets are live reporting for the agents at the inbox hook, note by note: the
+                # bulk Hermes queue never takes them (gbox.hermes_work_queue.is_live_coaching)
+                from .hermes_work_queue import is_live_coaching
+                rows = [r for r in rows if not is_live_coaching(r)]
             offset, limit = max(0, int(a.get("offset", 0))), max(1, min(int(a.get("limit", 30)), 100))
             capped = await _capped_requests(rows)
             merged = _on_main_requests(rows)

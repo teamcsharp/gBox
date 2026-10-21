@@ -500,9 +500,62 @@ def win_bring_to_front(pid: int) -> bool:
     return u.GetForegroundWindow() == root
 
 
-def win_send_keys(pid: int, events: list[dict], hidden_ok: bool = False) -> dict:
+POLITE_IDLE_S = 8.0          # polite input gives the game the keyboard back after this long without mouse / keyboard use
+_POLITE_TRUST: dict[int, bool] = {}   # game pid -> this PC reports the focused window's process (checked on a take)
+
+
+def polite_verdict(front: bool, focus_pid: int | None, game_pid: int, idle_s: float | None, trusted: bool = True) -> str:
+    """Autoplay's input on a PC someone may be using right now (bot demos, operator 2026-10-20: "launch bot demos on
+    computers that even I am on and be able to chat about the gameplay"): 'send' when the game window has the keyboard;
+    'take' (give the game the keyboard, then send) when gBox is in front and nobody has touched the mouse or keyboard
+    for POLITE_IDLE_S; else 'wait': the bot never types into the coach box, a search field or another application.
+    trusted=False: this PC's focus report did not name the game even right after gBox gave it the keyboard, so the
+    focus check can't be relied on and the game gets the keyboard each time (the input path before polite mode)."""
+    if not front:
+        return "wait"
+    if focus_pid is not None and focus_pid == game_pid:
+        return "send"
+    if not trusted or (idle_s is not None and idle_s >= POLITE_IDLE_S):
+        return "take"
+    return "wait"
+
+
+def _focus_pid(u) -> int | None:
+    """The process owning the window with the keyboard focus in the foreground (GetGUIThreadInfo), None when unknown."""
+    import ctypes
+    from ctypes import wintypes
+
+    class GUITHREADINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("flags", wintypes.DWORD), ("hwndActive", wintypes.HWND),
+                    ("hwndFocus", wintypes.HWND), ("hwndCapture", wintypes.HWND), ("hwndMenuOwner", wintypes.HWND),
+                    ("hwndMoveSize", wintypes.HWND), ("hwndCaret", wintypes.HWND), ("rcCaret", wintypes.RECT)]
+    info = GUITHREADINFO()
+    info.cbSize = ctypes.sizeof(GUITHREADINFO)
+    try:
+        if not u.GetGUIThreadInfo(0, ctypes.byref(info)) or not info.hwndFocus:
+            return None
+        p = wintypes.DWORD()
+        u.GetWindowThreadProcessId(info.hwndFocus, ctypes.byref(p))
+        return int(p.value) or None
+    except (AttributeError, OSError):
+        return None
+
+
+def _idle_s() -> float | None:
+    try:
+        from .worker import user_idle_seconds
+        return user_idle_seconds()
+    except Exception:                                        # noqa: BLE001 - unknown: the bot waits for the operator
+        return None
+
+
+def win_send_keys(pid: int, events: list[dict], hidden_ok: bool = False, polite: bool = False) -> dict:
     """hidden_ok: the keys are emulator hotkeys that need no focus (Dolphin's gBox F13-F15 chords): sent even while the
-    game window is hidden (the app hides it the moment Stop is pressed, before the last-played moment is saved)."""
+    game window is hidden (the app hides it the moment Stop is pressed, before the last-played moment is saved).
+    polite: autoplay's own input (bot demos) on a PC the operator may be using: never takes the keyboard from them
+    (polite_verdict). While they type in gBox or use another application the key presses are held back and only key
+    releases go out (a release types nothing, and Dolphin reads it in the background: no key is left down); the answer
+    says {"held": why} so the caller can press them again later."""
     import ctypes
     from ctypes import wintypes
     u, k = ctypes.windll.user32, ctypes.windll.kernel32
@@ -512,17 +565,32 @@ def win_send_keys(pid: int, events: list[dict], hidden_ok: bool = False) -> dict
     if not h and not hidden_ok:
         raise RuntimeError("the game window isn't open")
     root = u.GetAncestor(h, 2) if h else None
-    for _ in range(100):                                         # wait (up to 10 s) for the operator to bring gBox back
-        if _win_input_in_front(u, root, hidden_ok):
-            break
-        time.sleep(0.1)
-    else:
-        raise RuntimeError("gBox or the emulator must be active to send emulator input safely")
-    if h and not hidden_ok:                                     # global Dolphin hotkeys need no native-window focus
+
+    def give_focus():
         me, them = k.GetCurrentThreadId(), u.GetWindowThreadProcessId(h, None)
         u.AttachThreadInput(me, them, True)
         u.SetFocus(h)
         u.AttachThreadInput(me, them, False)
+    held_back = None
+    if polite and h and not hidden_ok:
+        front = _win_input_in_front(u, root, False)
+        verdict = polite_verdict(front, _focus_pid(u) if front else None, pid, _idle_s(), _POLITE_TRUST.get(pid, True))
+        if verdict == "wait":
+            held_back = "the operator is using gBox or another application: the bot's key presses wait"
+            events = [e for e in events if not e.get("down", True)]
+        elif verdict == "take":
+            give_focus()
+            if pid not in _POLITE_TRUST:                         # does this PC report the game's focus? (checked once)
+                _POLITE_TRUST[pid] = _focus_pid(u) == pid
+    else:
+        for _ in range(100):                                     # wait (up to 10 s) for the operator to bring gBox back
+            if _win_input_in_front(u, root, hidden_ok):
+                break
+            time.sleep(0.1)
+        else:
+            raise RuntimeError("gBox or the emulator must be active to send emulator input safely")
+        if h and not hidden_ok:                                 # global Dolphin hotkeys need no native-window focus
+            give_focus()
 
     class KI(ctypes.Structure):
         _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD), ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
@@ -547,8 +615,11 @@ def win_send_keys(pid: int, events: list[dict], hidden_ok: bool = False) -> dict
             time.sleep(0.06)                                     # down+up in one batch: the game polls per frame
         pressed.add(name)
         flags = 0x0008 | (0x0001 if ext else 0) | (0 if down else 0x0002)   # SCANCODE | EXTENDED | KEYUP
-        if not _win_input_in_front(u, root, hidden_ok):          # the operator switched apps mid-batch: never type there
+        if down and not _win_input_in_front(u, root, hidden_ok):  # the operator switched apps mid-batch: never type there
             release_injected()                                # don't leave Ctrl/Shift held in the next application
+            return {"sent": len(seq), "stopped": "another application came to the front"}
+        if not down and held_back is None and not _win_input_in_front(u, root, hidden_ok):
+            release_injected()
             return {"sent": len(seq), "stopped": "another application came to the front"}
         inp = INP(type=1, ki=KI(0, sc, flags, 0, 0))
         if u.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INP)) != 1:
@@ -559,7 +630,7 @@ def win_send_keys(pid: int, events: list[dict], hidden_ok: bool = False) -> dict
             held[name] = (sc, ext)
         else:
             held.pop(name, None)
-    return {"sent": len(seq)}
+    return {"sent": len(seq), **({"held": held_back} if held_back else {})}
 
 
 _last_grab = {}
@@ -2702,11 +2773,13 @@ D-Pad/Right = `Pad E`
         return {"running": bool(self.proc and self.proc.poll() is None), "emulator": self.name,
                 "state": "PAUSED" if self.paused_tids else "PLAYING"}
 
-    def send_input(self, events: list[dict]) -> dict:
+    def send_input(self, events: list[dict], polite: bool = False) -> dict:
         # win_send_keys already maps standard pad names to keyboard keys. Translating
         # them here as well makes A -> x -> s (Dolphin X), so menus ignore A.
+        # polite: autoplay's own input on a PC the operator may be using (bot demos): never takes their keyboard
         keymap = {"z": "e", "cup": "k", "cdown": "i", "cleft": "j", "cright": "l"}
-        return win_send_keys(self.proc.pid, [{**e, "key": keymap.get(e["key"], e["key"])} for e in events])
+        rows = [{**e, "key": keymap.get(e["key"], e["key"])} for e in events]
+        return win_send_keys(self.proc.pid, rows, polite=True) if polite else win_send_keys(self.proc.pid, rows)
 
     def save_state(self, slot: int | None = None) -> dict:
         """Dolphin's slot 1 (gBox's Save state / state_transfer). Confirmed by the file Dolphin writes, or it raises."""

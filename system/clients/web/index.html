@@ -302,6 +302,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/game-menu.js"></script>
 <script src="/viz/watch-analytics.js"></script>
 <script src="/viz/autoplay-coach.js"></script>
+<script src="/viz/bot-demo.js"></script>
 <script src="/viz/ram-inspector.js"></script>
 <script src="/viz/game-assets.js"></script>
 <script src="/viz/cover-picker.js"></script>
@@ -1525,7 +1526,18 @@ function card(g) {
       ${g.core && window.GBOX_LOCAL?.worker ? (WHERE === "local"
           ? `<button class="act" title="Run on the DGX Spark GPU and stream it here" onclick='play(${JSON.stringify(g.game_id)},"linux")'>Spark</button>`
           : `<button class="act" title="Run natively on this PC (full FPS)" onclick='play(${JSON.stringify(g.game_id)},window.GBOX_LOCAL.worker)'>This PC</button>`) : ""}
+      <button class="act" title="Bot demo on a PC: it plays this game by itself from boot (any PC, the one you are on included)" aria-haspopup="menu" onclick='botDemoMenu(event, ${JSON.stringify(g.game_id)}, this.closest(".card")?.dataset.title)'>🤖</button>
       <button class="act" onclick='details(${JSON.stringify(g.game_id)})'>Info</button></div></div></div>`;
+}
+// ---- bot demos on any PC (viz/bot-demo.js): "🤖 Bot demo on <PC>" in the cards, the right-click menu and the Sessions
+// header. Your own launch with autoplay on: the game's playbook plays it from boot; the header says "🤖 Bot demo".
+function botDemoPCs() { return window.GBoxBotDemo ? GBoxBotDemo.pcs(TRAY.ws, window.GBOX_LOCAL?.worker) : []; }
+function botDemoLaunch(gid, pc) { return play(gid, pc, false, undefined, { autoplay: true }); }
+async function botDemoMenu(ev, gid, title) {
+  ev?.preventDefault?.(); ev?.stopPropagation?.();
+  const x = ev?.clientX ?? 0, y = ev?.clientY ?? 0;
+  if (!(TRAY.ws || []).length) TRAY.ws = await api("/api/workers").catch(() => []);   // the tray has not polled yet
+  GBoxBotDemo.open(document, { x, y, gid, title, pcs: botDemoPCs(), launch: botDemoLaunch, place: (el, px, py) => fitMenu(el, px, py) });
 }
 async function scan() { await api("/api/jobs", { tool: "scan_library", input: {}, require_os: "linux" }); show("Jobs"); }
 // header search: always available; typing jumps to the Library and filters live
@@ -1610,7 +1622,9 @@ async function play(id, node, debug, boot, opts = {}) {
   if (!node && WHERE === "spark") node = "linux";
   if (debug) node = "linux";
   Object.assign(launch, { title: g.title, core: g.core || "", node: node || "auto" });
-  const where = node === "linux" ? "DGX Spark (stream)" : node === "windows" ? "Windows node" : node ? `this PC (${node}) · native` : "auto";
+  const where = (node === "linux" ? "DGX Spark (stream)" : node === "windows" ? "Windows node"
+    : node ? (node === window.GBOX_LOCAL?.worker ? `this PC (${node}) · native` : `${node} · native`) : "auto")
+    + (opts.autoplay ? " · 🤖 bot demo" : "");
   // a build launched from Mods / Builds / Special builds: the launch screen names it as the operator named it
   loader.show(boot.label ? `${g.title} · ${boot.label}` : g.title, [g.system || g.platform, g.core && "core " + g.core, where].filter(Boolean).join(" · "));
   loader.modsFor?.(id, boot.disc);
@@ -1623,7 +1637,7 @@ async function play(id, node, debug, boot, opts = {}) {
     // On the Spark the game plays itself (autoplay: your run, your style, through the menus); touch the pad to take over
     let auto = node === "linux" && !debug;
     try { if (localStorage.getItem("gbox.sparkAutoplay") === "off") auto = false; } catch {}
-    if (opts.autoplay) auto = true;                          // right-click "Autoplay on Spark": always
+    if (opts.autoplay) auto = true;                          // "🤖 Bot demo on <PC>" (any PC): always
     job = await api(`/api/games/${id}/launch?node=${encodeURIComponent(node || "auto")}${debug ? "&debug=true" : ""}${boot.disc ? "&mod=" + encodeURIComponent(boot.disc) : ""}${auto ? "&autoplay=true" : ""}`, {}, "POST", 30000);
   } catch (err) {
     if (LOADING !== launch) return;
@@ -1769,6 +1783,8 @@ async function sessionsView(sid, mode) {
     ${s.game_id === RE6_GAME && s.state === "running" ? `<button class="act" title="Pick weapons and items (every item, with pictures) for Mercenaries" onclick='re6Loadout(${JSON.stringify(sid)})'>Loadout</button>` : ""}
     ${s.state === "running" ? `<button class="act" id="speedbtn" aria-label="Turn off fast-forward" aria-pressed="false" title="Clear stuck fast-forward" onclick='normalSessionSpeed(${JSON.stringify(sid)})'><span aria-hidden="true">⏩</span></button>` : ""}
     ${s.state==='running' && ['dreamcast','gamecube'].includes(cardPlatform)?`<button class="act" id="memory-card-open" aria-label="Manage memory cards" title="Memory cards · select, make a PSO card, and sync saves with Spark" onclick='openMemoryCards(${JSON.stringify(sid)})' style="padding:5px 7px;line-height:0"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 3h10l3 3v15H5V3z"/><path d="M8 3v6h8V3M8 14h8v7M10 5v2M13 5v2"/></svg></button>`:''}
+    ${s.state === "running" && window.GBoxBotDemo ? GBoxBotDemo.badgeHTML(s) : ""}
+    ${s.game_id && window.GBoxBotDemo ? `<button class="act" id="session-bot-demo" aria-haspopup="menu" title="Bot demo on a PC: this game plays by itself from boot (any PC, the one you are on included)" data-title="${esc(s.title || "")}" onclick='botDemoMenu(event, ${JSON.stringify(s.game_id)}, this.dataset.title)'>🤖 Demo ▾</button>` : ""}
     ${s.state === "running" && window.GBoxAutoplayCoach ? GBoxAutoplayCoach.html(sid) : ""}
     ${s.game_id ? `<button class="act" id="session-fav" data-gid="${esc(s.game_id)}" style="margin-left:auto;padding:4px 8px;font-size:16px;line-height:1;color:var(--warn,#f5c542)" title="Checking favorites" aria-label="Favorite this game" aria-pressed="false" disabled onclick='toggleSessionFav(this)'>☆</button>` : ""}
     ${s.state === "running" ? `<button class="act" id="pausebtn" data-sid="${esc(sid)}" style="${s.game_id ? "" : "margin-left:auto;"}padding:5px 7px;line-height:0" title="Checking emulator pause state" aria-label="Pause or resume emulation" disabled onclick='toggleSessionPause(${JSON.stringify(sid)})'><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg></button>
@@ -2211,7 +2227,14 @@ sessionsView.after = (sid, mode) => {
   sessionBuildMount(head);
   if (!head || head.dataset.state !== "running") { playing = null; if (active?.sid === sid) { active = null; pip(); } return; }
   sid = head.dataset.sid; playing = sid;
-  COACH.ctl?.dispose(); COACH.ctl = window.GBoxAutoplayCoach?.mount(head, { sid, api }) || null;   // notes for the autoplay
+  // notes for the autoplay; a game on this PC (a bot demo here) gets the keyboard back once a note is sent: the bot
+  // never presses keys while the coach box (or any text field) has them (gbox.adapters.polite_verdict)
+  COACH.ctl?.dispose(); COACH.ctl = window.GBoxAutoplayCoach?.mount(head, { sid, api, onSent: () => {
+    const s = SESSIONBUILD.session || {};
+    if (!bnEmbedded() || s.session_id !== sid || !sessionIsLocal(s)) return;
+    head.querySelector("[data-coach] input")?.blur();
+    console.log("GBOX:" + JSON.stringify({ ev: "gamefocus", sid }));
+  } }) || null;
   RAMI.ctl = window.GBoxRamInspector?.mount(head, { sid, api,                // the game's RAM by name, events, hex, search
     url: u => `${u}${u.includes("?") ? "&" : "?"}${tq()}` }) || null;
   BCAST.ctl = window.GBoxBroadcast?.mount(head, { sid, api }) || null;        // On air: this game on the broadcast program
@@ -2471,8 +2494,17 @@ async function restartGame(sid, btn) {                      // relaunch the same
   try { return await resetJob(sid, "restart", btn); }
   catch (e) { resetFailed(s, "Restart", e.message); throw e; }
 }
-function modWatch(gid, sid, mods) {                       // re-apply kept patch mods when a reload wipes them (checked every 20 s)
+function modWatch(gid, sid, mods, auto = true) {           // re-apply kept patch mods when a reload wipes them (checked every 20 s)
   clearInterval(MODWATCH.t);
+  if (!auto) {                                             // a bot demo / an agent's session: its playbook owns the mods
+    // 2026-10-20: opening an agent's RE4 session here switched the operator's kept mods on in it three times, once in
+    // the middle of a room load (equip runs game code on the next frame), and the game froze; only a click applies them
+    MODWATCH.mods = []; MODWATCH.tick = null;
+    mods.forEach((m, i) => { if (!modKeepGet(gid).includes(m.id)) return;
+      const card = document.querySelector(`.wbm[data-m="${i}"]`);
+      if (card) card.querySelector(".row i").textContent = "kept · not switched on here by itself (a bot demo or an agent's session plays with its own mods): Turn on applies it"; });
+    return;
+  }
   const tick = async () => {
     if (!document.querySelector(`#wb[data-sid="${sid}"]`)) return clearInterval(MODWATCH.t);
     const keep = mods.filter(m => modKeepGet(gid).includes(m.id)); if (!keep.length) return;
@@ -2633,7 +2665,8 @@ async function wbInit() {
   dockApply();
   sessionObserverWatch(sid);
   charsInit();
-  modWatch(gid, sid, mods);
+  const viewed = SESSIONBUILD.session?.session_id === sid ? SESSIONBUILD.session : null;   // GET /api/sessions row
+  modWatch(gid, sid, mods, !(viewed && (viewed.bot_demo || viewed.agent_owned)));     // kept mods: your own play only
   const curSession = (await api("/api/sessions").catch(() => [])).find(x => x.session_id === sid);
   const liveHost = host.querySelector('#game-live-controls');
   if (liveHost) GBoxLiveControls.mount(liveHost, {api, pso:GBoxPSO}, {game:gid, sid,
@@ -3044,7 +3077,9 @@ const gameMenuIO = () => ({ el: $("#gmenu"), api, img: u => `${u}${u.includes("?
   place: (el, x, y) => fitMenu(el, x, y), refit: el => { if (el._fitXY) refitMenu(el); },
   models: (gid, title) => show("GameModels", gid, title), cover: (gid, card, btn) => attachCover(gid, document.querySelector(`.card[data-gid="${CSS.escape(gid)}"]`) || card, btn),   // the card on screen now
   cast: (gid, title) => castSwapOpen(gid, title),
-  play: (gid, go) => play(gid, go === "linux" || go === "autoplay" ? "linux" : undefined, false, go === "plain" ? { disc: "", slot: "" } : undefined, go === "autoplay" ? { autoplay: true } : undefined),
+  play: (gid, go) => String(go).startsWith("bot:") ? botDemoLaunch(gid, String(go).slice(4))
+    : play(gid, go === "linux" || go === "autoplay" ? "linux" : undefined, false, go === "plain" ? { disc: "", slot: "" } : undefined, go === "autoplay" ? { autoplay: true } : undefined),
+  pcs: () => botDemoPCs(),                                   // "🤖 Bot demo on <PC>": every online PC, this one included
   // "Special builds ▸" (gbox/special_builds.py): launch a build (this PC / a PC / saved moment / debugger) through the
   // usual launch + loader, open it or its request in the Mods page, rebuilds followed in the process pop-up
   launch: (gid, x) => play(gid, x.node === "auto" ? undefined : x.node, !!x.debug, { disc: x.mod, slot: x.slot === "" || x.slot == null ? "" : String(x.slot), character: "",

@@ -1192,8 +1192,11 @@ def create_app(config: Config) -> FastAPI:
             except (KeyError, TypeError):
                 pass
         say(20, f"Starting a fresh {what} on {tw['name']}" + ("; your game keeps running until it is up" if beside else ""))
+        from .screensaver import bot_demo as _bot_demo
+        jump = {"jump": True} if _bot_demo(store, sid) else {}   # a bot demo boots into its jump state, as it launched
         try:
-            new = _run_job("launch_game", {"game": game, "mod": launch_mod, **({"keep_session": sid} if beside else {})},
+            new = _run_job("launch_game", {"game": game, "mod": launch_mod, **({"keep_session": sid} if beside else {}),
+                                           **jump},
                            actor, worker=tw["id"], wait=900, should_stop=should_stop,
                            progress=lambda pct, msg: say(20 + pct * .6, msg))
         except HTTPException as e:
@@ -1265,6 +1268,15 @@ def create_app(config: Config) -> FastAPI:
     def reset_job(sid: str, mode: str, actor: str, origin=None) -> Job:
         """session_reset in the background as a job record (polled like a swap; output.session_id = the game now)."""
         sid, sess = _live_session(sid)
+        from . import screensaver as _demos
+        if actor == "autoplay" and sess.get('state') == 'running':
+            from .background_testing import agent_owned
+            # autoplay relaunches a game it froze only when it is a bot demo (launched with autoplay on, the operator's
+            # own demos included) or an agent's test session; never the operator's own game they asked it to play
+            if not (_demos.bot_demo(store, sid) or agent_owned(store.get('slabel', sid),
+                                                               store.get('job', sid.split('-', 1)[-1]))):
+                raise HTTPException(409, "That game is the operator's own; autoplay relaunches only bot demos and "
+                                         "agent test sessions.")
         if _automated(actor, origin) and sess.get('state') == 'running':
             from .background_testing import agent_owned
             if not agent_owned(store.get('slabel', sid), store.get('job', sid.split('-', 1)[-1])):
@@ -1316,6 +1328,8 @@ def create_app(config: Config) -> FastAPI:
                 # an agent's test session relaunched is still the agent's: never the operator's "Reload your game" prompt,
                 # never a game the operator guard protects (2026-10-20: RE4 relaunches showed up on the NUC's screen)
                 store.put("slabel", nsid, old_label | {"owner": "agent"})
+            if nsid and nsid != sid:
+                _demos.carry_bot_demo(store, sid, nsid)       # a bot demo relaunched is still a bot demo
             with store.lock:
                 store.put("job", job.id, store.get("job", job.id) | {"state": state, "finished": time.time(), "output": out,
                                                                      "error": err})
@@ -3525,9 +3539,10 @@ def create_app(config: Config) -> FastAPI:
             if here:
                 req.require_worker, req.require_os = here["id"], None
         job = submit(req, actor, origin)
-        if autoplay and not debug:                          # Spark button: the game plays itself once it is up
+        if autoplay and not debug:                          # a bot demo (any PC; the Spark button): plays itself once up
             from . import screensaver
-            screensaver.autoplay_on_launch(store, getattr(job, "id", None) or "", gid)
+            screensaver.autoplay_on_launch(store, getattr(job, "id", None) or "", gid, actor=actor,
+                                           agent=bool(req.agent_use))
         return job
 
     @app.get("/api/profiles/{gid}")
@@ -3597,6 +3612,9 @@ def create_app(config: Config) -> FastAPI:
                 from .background_testing import agent_owned
                 row["agent_owned"] = agent_owned(store.get("slabel", s_["session_id"]),
                                                  store.get("job", s_["session_id"].split("-", 1)[-1]))
+                from .screensaver import bot_demo
+                if bot_demo(store, s_["session_id"]):
+                    row["bot_demo"] = True           # launched with autoplay on: the Sessions header says "Bot demo"
             out.append(row)
         return out
 
@@ -4846,6 +4864,24 @@ def create_app(config: Config) -> FastAPI:
         mods_on: list[str] = []            # mod cards showing as on / applied in the app ("title: status")
         kept_mods: list[str] = []          # mod ids the operator keeps on for this game
 
+    def _issue_lesson(report: dict, r: IssueIn, s_: dict) -> bool:
+        """A ⚑ report on a session of a Mercenaries title (its RAM map has a "mercs" block) is an improvement report for
+        the engine too: one "report" entry in the title's run-lessons log, read before its next round
+        (gbox.mercs_bot.note_lesson; docs/autoplay.md). Other titles: nothing. Never raises."""
+        gid = s_.get("game_id") or r.context.get("game_id")
+        if not gid:
+            return False
+        try:
+            from . import mercs_bot
+            from .screensaver import telemetry_get
+            text = "\n".join(x for x in (report.get("title"), r.note, r.detail) if x)
+            worker = (s_.get("detail") or {}).get("worker_name") or (r.session_id.split("-")[0] if r.session_id else None)
+            return mercs_bot.note_lesson({"game_id": gid}, mercs_bot.lesson(
+                "report", text, session_id=r.session_id or None, worker=worker,
+                telemetry=(telemetry_get(r.session_id) if r.session_id else None) or None, request_id=report.get("id")))
+        except Exception:                             # noqa: BLE001 - the report is filed either way
+            return False
+
     def _issue_log(sid: str, s_: dict) -> tuple[str, str]:
         """The session's emulator log tail (worker session_op log_tail); a Spark session's log file is also readable here.
 
@@ -5075,6 +5111,7 @@ def create_app(config: Config) -> FastAPI:
                                                            "game": game,
                                                            "save_state_requested": r.save_state,
                                                            "issue_capture_key": capture_key}), actor)
+        _issue_lesson(report, r, s_)
         if not r.save_state or not r.session_id or s_.get("state") != "running":
             return report
         rid = report["id"]
