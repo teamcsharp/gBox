@@ -102,6 +102,24 @@ def encode_texture(rgba: np.ndarray, limit: int = 512) -> tuple[int, bytes]:
     return word, data
 
 
+def encode_texture_as(rgba: np.ndarray, word: int) -> bytes:
+    """An RGBA image resampled and DXT-encoded to exactly a native slot's format word (same size, same bytes)."""
+    from PIL import Image
+    from .stranglehold_swap import dxt_encode
+    info = texture_info(word)
+    if info["kind"] not in ("DXT1", "DXT5") or info["mips"] != 1:
+        raise ValueError(f"slot format {word:#x} is not a single-level DXT1/DXT5 texture")
+    image = np.asarray(rgba)
+    if image.shape[2] == 3:
+        image = np.concatenate([image, np.full(image.shape[:2] + (1,), 255, np.uint8)], 2)
+    image = np.asarray(Image.fromarray(image.astype(np.uint8), "RGBA").resize((info["width"], info["height"]),
+                                                                                Image.LANCZOS))
+    data = dxt_encode(np.ascontiguousarray(image), 1 if info["kind"] == "DXT1" else 5)
+    if len(data) != info["size"]:
+        raise AssertionError("slot payload size does not match its format word")
+    return data
+
+
 def placeholder_texture(word: int) -> tuple[int, bytes]:
     """A 4x4 stand-in with the same colour format (keeps a texture index valid at 8-64 bytes)."""
     color = (word >> 8) & 0xFF
@@ -259,15 +277,18 @@ def _part_record(geometry: dict, obj_index: int, part: dict, vertex_floor: int):
 
 
 def encode_costume(template: bytes, parts: dict[int, dict] | None = None, textures: list[tuple[int, bytes]] = (),
-                   *, hide: set[int] = frozenset(), shrink_textures: set[int] = frozenset()) -> bytes:
+                   *, hide: set[int] = frozenset(), shrink_textures: set[int] = frozenset(),
+                   texture_slots: dict[int, tuple[int, bytes]] | None = None) -> bytes:
     """Rebuild a costume XPR0.
 
     ``parts``: {OBJ index: {"vertices": (N, 8) pos/normal/uv in the OBJ's own joint frame, "materials":
-    [{"texture": index, "triangles": (M, 3) counter-clockwise}]}} replaces that OBJ (its vertex count never drops
-    below the native one). ``textures``: appended (format word, payload) pairs; their indices start at the native
-    texture count. ``hide``: OBJs kept byte-identical except every vertex collapses onto its first (zero-area, the
-    CAT's vertex references stay valid). ``shrink_textures``: native texture indices replaced by 4x4 stand-ins."""
+    [{"texture": index, "triangles": (M, 3) counter-clockwise}]}} replaces that OBJ's drawing: its native vertices
+    stay first (undrawn), the donor's follow. ``textures``: appended (format word, payload) pairs; their indices
+    start at the native texture count. ``texture_slots``: {native index: (format word, payload)} puts a texture into
+    a native slot instead (the costume keeps its texture count). ``hide``: OBJs whose strips collapse onto vertex 0
+    (vertices and records kept). ``shrink_textures``: native texture indices replaced by 4x4 stand-ins."""
     parts = parts or {}
+    texture_slots = texture_slots or {}
     geometry = C.costume_geometry(template)
     table = C.mdl_descriptor_table(template)
     chunk = geometry["chunk"]
@@ -303,19 +324,21 @@ def encode_costume(template: bytes, parts: dict[int, dict] | None = None, textur
                             "indices": indices, "sphere": template[start + 0x50:start + 0x60]})
             vertex_blobs.append(obj["vertex_bytes"])
 
-    # ---- textures: native (raw or shrunk) + appended
+    # ---- textures: native (raw, shrunk or slot-replaced) + appended
     native = table["texture_descriptors"]
     tex_payloads = []
     for k, desc in enumerate(native):
         end = native[k + 1]["offset"] if k + 1 < len(native) else total0 - hsize0
         raw = template[hsize0 + desc["offset"]:hsize0 + end]
         info = texture_info(desc["format"])
-        if k in shrink_textures:
+        if k in texture_slots:
+            tex_payloads.append(texture_slots[k])
+        elif k in shrink_textures:
             tex_payloads.append(placeholder_texture(desc["format"]))
         else:
             tex_payloads.append((desc["format"], raw[:info["size"]] if info["size"] else raw))
     tex_payloads.extend(textures)
-    for word, data in textures:
+    for word, data in list(textures) + list(texture_slots.values()):
         info = texture_info(word)
         if info["size"] is not None and len(data) != info["size"]:
             raise ValueError(f"appended texture payload {len(data)} bytes does not match its format ({info['size']})")

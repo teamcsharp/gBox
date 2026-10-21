@@ -132,7 +132,8 @@ def _stance(rig: dict):
     return joints, prims, B
 
 
-def fit(rig: dict, geometry: dict, roles: dict, *, texture_limit: int = 256) -> dict:
+def fit(rig: dict, geometry: dict, roles: dict, *, texture_limit: int = 256, slots=None,
+        lod_copies: bool = True) -> dict:
     """-> {"parts": {OBJ: encode_costume part}, "textures": [(word, payload)], "report": {...}}."""
     from .re4gc_enemies import _rot_between
     joints, prims, _basis = _stance(rig)
@@ -210,9 +211,10 @@ def fit(rig: dict, geometry: dict, roles: dict, *, texture_limit: int = 256) -> 
             rules[hand] = (s_hand * turn, joints[ri[hand]], np.zeros(3))
             sizes[hand] = s_hand
 
-    # textures: one per donor primitive image (identity-deduplicated), DXT-encoded at most texture_limit
-    textures, tex_index, tex_of_prim = [], {}, []
-    native_count = geometry["chunk"]["tex_count"]
+    # textures: one per donor primitive image (identity-deduplicated). With free native slots (``slots``: native
+    # textures nothing visible uses any more) the donor images go into them at the slot's own size and format, so
+    # the costume keeps its texture count and layout; any left over are appended (DXT, at most texture_limit)
+    images, tex_index, tex_of_prim = [], {}, []
     for p in prims:
         image = p.get("tex")
         if image is None:
@@ -222,9 +224,22 @@ def fit(rig: dict, geometry: dict, roles: dict, *, texture_limit: int = 256) -> 
         else:
             key = id(image)
         if key not in tex_index:
-            tex_index[key] = native_count + len(textures)
-            textures.append(W.encode_texture(np.asarray(image), texture_limit))
+            tex_index[key] = len(images)
+            images.append(np.asarray(image))
         tex_of_prim.append(tex_index[key])
+    native_count = geometry["chunk"]["tex_count"]
+    free = sorted(slots or [], key=lambda s: -W.texture_info(s[1])["size"])
+    by_size = sorted(range(len(images)), key=lambda i: -images[i].shape[0] * images[i].shape[1])
+    final_index, texture_slots, textures = {}, {}, []
+    for rank, i in enumerate(by_size):
+        if rank < len(free):
+            slot, word = free[rank]
+            texture_slots[slot] = (word, W.encode_texture_as(images[i], word))
+            final_index[i] = slot
+        else:
+            final_index[i] = native_count + len(textures)
+            textures.append(W.encode_texture(images[i], texture_limit))
+    tex_of_prim = [final_index[i] for i in tex_of_prim]
 
     parts, counts = {}, {}
     for role in ROLES:
@@ -264,14 +279,15 @@ def fit(rig: dict, geometry: dict, roles: dict, *, texture_limit: int = 256) -> 
         materials = [{"texture": tex, "triangles": np.concatenate(t)} for tex, t in groups.items()]
         part = {"vertices": vertices, "materials": materials}
         parts[primary[role]] = part
-        if roles["lod"].get(role) is not None:
+        if lod_copies and roles["lod"].get(role) is not None:
             parts[roles["lod"][role]] = part
         counts[role] = {"obj": primary[role], "vertices": len(vertices),
                         "triangles": int(sum(len(m["triangles"]) for m in materials))}
     report = {"scale": scale, "torso_native": torso_native, "torso_donor": torso_donor, "part_scales": sizes,
-              "limb_stretch": stretch, "parts": counts, "textures": len(textures),
+              "limb_stretch": stretch, "parts": counts, "textures": len(textures) + len(texture_slots),
+              "textures_in_native_slots": sorted(texture_slots),
               "frames": "per-part local fit (native rest rotations not decoded; limb twist by LIMB_FRAMES)"}
-    return {"parts": parts, "textures": textures, "report": report}
+    return {"parts": parts, "textures": textures, "texture_slots": texture_slots, "report": report}
 
 
 def hidden_parts(roles: dict, replaced: set[int], obj_count: int) -> set[int]:
@@ -318,7 +334,27 @@ def costume_entries(entries: list[dict], code: str | None = None) -> list[tuple[
     return out
 
 
-def costume_replacements(afs_path, plan: dict[str, dict], progress=lambda *_: None) -> tuple[dict, list]:
+def free_texture_slots(geometry: dict, roles: dict, table: dict) -> list[tuple[int, int]]:
+    """[(native texture index, format word)] a donor build can repaint: single-level DXT textures no material of a
+    part that stays drawn (the shadows) references, directly or as a stage-mode-3 environment texture. ``table``:
+    the costume's doa3_cast.mdl_descriptor_table."""
+    kept = set(roles["shadow"])
+    used = set()
+    for k in kept:
+        for m in geometry["objects"][k]["materials"]:
+            used.add(m["texture"])
+            if m["mode"] == 3:
+                used.add(m["header"][29])
+    out = []
+    for index, word in enumerate(d["format"] for d in table["texture_descriptors"]):
+        info = W.texture_info(word)
+        if index not in used and info["kind"] in ("DXT1", "DXT5") and info["mips"] == 1:
+            out.append((index, word))
+    return out
+
+
+def costume_replacements(afs_path, plan: dict[str, dict], progress=lambda *_: None, *,
+                         native_slots: bool = True) -> tuple[dict, list]:
     """plan: {costume code prefix: loaded donor rig} -> (AFS replacements {index: bytes}, per-costume reports).
     A costume the writer cannot decode stays native and is reported with its reason."""
     from .doa3_inventory import read_afs
@@ -336,13 +372,15 @@ def costume_replacements(afs_path, plan: dict[str, dict], progress=lambda *_: No
             try:
                 xpr, cat = read(xe), read(ce)
                 geo = C.costume_geometry(xpr)
-                C.mdl_descriptor_table(xpr)
+                table = C.mdl_descriptor_table(xpr)
                 roles = costume_roles(cat, geo["object_count"])
-                res = fit(rig, geo, roles)
+                slots = free_texture_slots(geo, roles, table) if native_slots else None
+                res = fit(rig, geo, roles, slots=slots)
                 hide = hidden_parts(roles, set(res["parts"]), geo["object_count"])
-                # native textures, CAT and vertex numbering stay as they are: the costume only gains the donor's
-                # vertices (after the native ones), strips, materials and textures
-                blob = W.encode_costume(xpr, res["parts"], res["textures"], hide=hide)
+                # the CAT and the vertex numbering stay as they are; the costume gains the donor's vertices (after
+                # the native ones), strips and materials, its images in native texture slots nothing visible uses
+                blob = W.encode_costume(xpr, res["parts"], res["textures"], hide=hide,
+                                        texture_slots=res["texture_slots"])
             except Exception as error:  # noqa: BLE001 - the costume stays native; the reason is reported
                 reports.append({"costume": costume, "status": "native_kept", "reason": repr(error)[:300]})
                 continue

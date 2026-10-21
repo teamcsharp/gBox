@@ -140,6 +140,20 @@ def test_hidden_part_draws_nothing_and_keeps_its_records_and_vertices():
     assert set(b["index_bytes"]) == {0} and b["triangle_count"] == 0
 
 
+def test_texture_slot_keeps_the_native_count_format_and_size():
+    seed = _seed(1, ((W.DXT1, 64, 64), (W.DXT5, 32, 32)))
+    word = W.texture_word(W.DXT5, 32, 32)
+    payload = W.encode_texture_as(np.full((100, 70, 4), 128, np.uint8), word)
+    assert len(payload) == W.texture_info(word)["size"]
+    blob = W.encode_costume(seed, texture_slots={1: (word, payload)})
+    table = C.mdl_descriptor_table(blob)
+    assert table["texture_count"] == 2 and table["texture_descriptors"][1]["format"] == word
+    total, hsize = struct.unpack_from("<II", blob, 4)
+    start = hsize + table["texture_descriptors"][1]["offset"]
+    assert blob[start:start + len(payload)] == payload
+    assert len(blob) == len(seed)                                   # same layout: only the slot's pixels changed
+
+
 def test_shrunk_texture_becomes_a_4x4_stand_in():
     seed = _seed(1, ((W.DXT1, 64, 64), (W.DXT5, 32, 32)))
     blob = W.encode_costume(seed, shrink_textures={0})
