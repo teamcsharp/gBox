@@ -369,6 +369,8 @@ def with_prompt(mem, kind, owner, target, *, visible=True, mode=1, index=1, seco
     mem.put(ab + R.AB_ENABLED, b"\x01")
     mem.put(ab + R.AB_PLAYER_ENABLED, b"\x01")
     mem.u32(ab + R.AB_PLAYER_INDEX, 0)
+    mem.u32(ab + R.AB_INPUT_MODE, 0)
+    mem.u32(ab + R.AB_ALTERNATE_CONTROLLER, 0xFFFFFFFF)
     mem.put(R.QTE_INPUT_TABLE, R.QTE_INPUT_SIGNATURE)
     for address, expected in R.QTE_SIGNATURES.items():
         mem.put(address, expected)
@@ -376,7 +378,7 @@ def with_prompt(mem, kind, owner, target, *, visible=True, mode=1, index=1, seco
     mem.u32(unit + 0x0C, btn)
     mem.u32(unit + 0x10, mode)
     mem.u32(unit + 0x18, R.QTE_MASKS[index])
-    mem.u32(btn, 0x016332A8)
+    mem.u32(btn, R.QTE_BUTTON_VT)
     mem.put(btn + 0x0A, b"\x01")
     mem.u32(btn + R.BTN_OWNER, owner)
     mem.u32(btn + R.BTN_KIND, kind)
@@ -404,8 +406,9 @@ def test_a_melee_finisher_on_a_majini_is_pressed_with_square():
 def test_verified_qte_faces_chords_and_second_display_unit_ignore_array_count():
     for mode in (1, 3, 4, 5):
         for index, expected in ((1, "square"), (2, "triangle"), (3, "cross"), (4, "circle"),
+                                (5, "l2"), (6, "r2"), (7, "l1"), (8, "r1"),
                                 (13, "square+triangle"), (14, "cross+circle"), (15, "square+cross"),
-                                (16, "triangle+circle")):
+                                (16, "triangle+circle"), (17, "l1+r1"), (18, "l2+r2"), (19, "l1+r1")):
             memory = with_prompt(world(), 0, ENEMIES[0], 0, mode=mode, index=index, second=True)
             memory.u32(0x38838370 + 0x34, 1)             # count1 would fail the old fictitious HUD bit test
             assert R.prompt(memory) == "mash:" + expected
@@ -414,26 +417,53 @@ def test_verified_qte_faces_chords_and_second_display_unit_ignore_array_count():
 
 def test_qte_rejects_stale_inactive_mismatched_or_unknown_requests():
     for address, raw in ((R.QTE_INPUT_TABLE, b"bad!"), (next(iter(R.QTE_SIGNATURES)), b"bad!"),
+                         (0x328E1FE0, b"bad!"), (0x328E1FE0 + 0x70, struct.pack(">I", 1)),
                          (0x38838370 + R.QTE_UNITS[0] + 5, b"\0"),
                          (0x328E1FE0 + 0x0A, b"\0"), (0x328E1FE0 + 0x0C, b"\1"),
                          (0x38838370 + R.AB_PLAYER_INDEX, struct.pack(">I", 1)),
+                         (0x38838370 + R.AB_INPUT_MODE, struct.pack(">I", 1)),
+                         (0x38838370 + R.AB_ALTERNATE_CONTROLLER, struct.pack(">I", 0)),
                          (0x38838370 + R.QTE_UNITS[0] + 0x18, struct.pack(">I", 0x4000))):
         memory = with_prompt(world(), 2, PLAYER, 0, mode=5, index=25)
         memory.put(address, raw)
         assert R.prompt(memory) is None
-    for mode, index in ((0, 1), (2, 1), (6, 1), (7, 1), (8, 1), (9, 1), (99, 1), (1, 5), (1, 20), (1, 29)):
+    for mode, index in ((0, 1), (6, 1), (7, 1), (8, 1), (9, 1), (99, 1), (1, 20), (1, 29)):
         assert R.prompt(with_prompt(world(), 2, PLAYER, 0, mode=mode, index=index)) is None
     assert R.RE5PS3().prompt_keys("mash:circle+unknown") == []
     assert R.RE5PS3().prompt_keys("mash:circle+circle") == []
 
 
-def test_live_resuscitate_signature_is_hp_one_mode_five_selected_circle_and_skips_health(monkeypatch, tmp_path):
+def test_qte_release_mode_clears_existing_fire_and_never_presses_the_requested_chord(tmp_path):
+    memory = with_prompt(world(), 2, PLAYER, 0, mode=2, index=14)
+    assert R.prompt(memory) == "release:cross+circle"
+    driver = R.RE5PS3()
+    assert driver.prompt_source(memory, {})() is None
+    assert driver.prompt_keys("release:cross+circle") == []
+    bot = R.Bot(learn_dir=tmp_path)
+    original_tick = bot.tick
+    count, sent = [0], []
+
+    def stopped():
+        count[0] += 1
+        memory.put(0x38838370 + R.QTE_UNITS[0] + 5, bytes((int(count[0] > 1),)))
+        return count[0] > 2
+
+    bot.tick = lambda snapshot: {"hold": {"l1", "r1"}} if count[0] == 1 else original_tick(snapshot)
+    engine.play_round({"driver": "gbox.mercs.titles.re5_ps3"}, memory, sent.extend, stopped, {},
+                      brain=bot, sleep=lambda seconds: None, clock=lambda: float(count[0]))
+    assert sent == [{"key": key, "down": down} for down in (True, False) for key in ("l1", "r1")]
+
+
+def test_live_resuscitate_signature_is_hp_one_selected_circle_edge_mode_and_skips_health(monkeypatch, tmp_path):
     from gbox import re5_mods_tool
     from types import SimpleNamespace
     memory = with_prompt(world(hp=1, action=7), 2, PLAYER, 0, mode=5, index=25)
     memory.put(PLAYER + R.P_DYING_TIMER, struct.pack(">f", 6.74))
     memory.u32(PLAYER + R.P_RECOVER_BUTTON, 0x328E1FE0)
-    assert R.prompt(memory) == "mash"
+    for mode in (1, 3, 4, 5):
+        memory.u32(0x328E1FE0 + 0x18, mode)
+        memory.u32(0x38838370 + R.QTE_UNITS[0] + 0x10, mode)
+        assert R.prompt(memory) == "mash"                  # recovery callback consumes successful button edges
     snapshot = R.snapshot(memory)
     assert R.own_screen(snapshot) == "playing"
     bot = R.Bot(learn_dir=tmp_path)

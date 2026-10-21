@@ -457,6 +457,7 @@ WIGGLE = (("lleft",), ("lright",), ("lleft",), ("lright",))
 BTN_OWNER, BTN_KIND, BTN_TARGET = 0x04, 0x14, 0x40
 BTN_MELEE, BTN_STAGE = 3, 2
 AB_ENABLED, AB_PLAYER_ENABLED, AB_PLAYER_INDEX = 0x2C, 0x4C, 0x50
+AB_INPUT_MODE, AB_ALTERNATE_CONTROLLER = 0x60, 0x24C
 QTE_UNITS = (0x298, 0x2DC)
 QTE_INPUT_TABLE = 0x0139E2C0
 QTE_MASKS = (0, 0x8000, 0x1000, 0x4000, 0x2000, 0x0400, 0x0800, 0x0100,
@@ -466,10 +467,13 @@ QTE_MASKS = (0, 0x8000, 0x1000, 0x4000, 0x2000, 0x0400, 0x0800, 0x0100,
 QTE_INPUT_SIGNATURE = struct.pack(">32I", *QTE_MASKS)
 QTE_SIGNATURES = {0x000B7EC4: bytes.fromhex("816a000c812b001890ca0014912a0010800b002090ca001c"),
                   0x000B7100: bytes.fromhex("8159000c2f0a0000419a029c79490020800900242f80003b"),
-                  0x000AD9CC: bytes.fromhex("817f000c38000001981f0005812b00242f890100419e0128")}
-QTE_KEYS = ((0x8000, "square"), (0x1000, "triangle"), (0x4000, "cross"), (0x2000, "circle"))
+                  0x000AD9CC: bytes.fromhex("817f000c38000001981f0005812b00242f890100419e0128"),
+                  0x00C2F0B4: bytes.fromhex("a17d000a5560077a2f800000419e000861290100556007382f800000419e000861290200")}
+QTE_KEYS = ((0x8000, "square"), (0x1000, "triangle"), (0x4000, "cross"), (0x2000, "circle"),
+            (0x0400, "l2"), (0x0800, "r2"), (0x0100, "l1"), (0x0200, "r1"))
 QTE_ALLOWED_MASK = sum(bit for bit, _ in QTE_KEYS)
-QTE_MODES = {1: "mash", 3: "mash", 4: "mash", 5: "mash"}  # Verified press, chord, accumulated and rapid-repeat.
+QTE_MODES = {1: "mash", 2: "release", 3: "mash", 4: "mash", 5: "mash"}
+QTE_BUTTON_VT = 0x016332A8
 P_DYING_TIMER, P_RECOVER_BUTTON = 0x1CEC, 0x22DC
 
 
@@ -494,6 +498,8 @@ def selected_prompt(m):
         if not (ptr_ok(pl) and ptr_ok(ab)) or not m.rd(ab + AB_ENABLED, 1)[0] \
                 or not m.rd(ab + AB_PLAYER_ENABLED, 1)[0] or u32(m, ab + AB_PLAYER_INDEX) != 0:
             return None
+        if u32(m, ab + AB_INPUT_MODE) != 0 or u32(m, ab + AB_ALTERNATE_CONTROLLER) != 0xFFFFFFFF:
+            return None                                # fixed physical keys: exclude remapped / Move controller input
         if struct.unpack(">h", m.rd(pl + P_HP, 2))[0] <= 0:
             return None                                # terminal corpse; real solo DYING retains exactly 1 HP
         if m.rd(QTE_INPUT_TABLE, len(QTE_INPUT_SIGNATURE)) != QTE_INPUT_SIGNATURE:
@@ -507,10 +513,12 @@ def selected_prompt(m):
             btn, mode, _, mask = struct.unpack_from(">4I", raw, 0x0C)
             if not raw[4] or not raw[5] or not ptr_ok(btn):
                 continue
-            button = m.rd(btn, 0x44)
+            button = m.rd(btn, 0x74)
             kind, button_mode, priority, index, label = struct.unpack_from(">5I", button, 0x14)
             players = struct.unpack_from(">I", button, 0x30)[0]
-            if not button[0x0A] or button[0x0C] or not players & 1 or mode != button_mode \
+            if struct.unpack_from(">I", button)[0] != QTE_BUTTON_VT \
+                    or struct.unpack_from(">I", button, 0x70)[0] & 1 \
+                    or not button[0x0A] or button[0x0C] or not players & 1 or mode != button_mode \
                     or mode not in QTE_MODES or not 0 < index < len(QTE_MASKS) \
                     or mask != QTE_MASKS[index] or not mask or mask & ~QTE_ALLOWED_MASK or label > 0xFF or label == 0x3B:
                 continue
@@ -520,7 +528,8 @@ def selected_prompt(m):
             token = QTE_MODES[mode] + ":" + "+".join(chord)
             hp = struct.unpack(">h", m.rd(pl + P_HP, 2))[0]
             countdown = struct.unpack(">f", m.rd(pl + P_DYING_TIMER, 4))[0]
-            if mode == 5 and chord == ("circle",) and hp == 1 and math.isfinite(countdown) and countdown > 0 \
+            if QTE_MODES[mode] == "mash" and chord == ("circle",) and hp == 1 \
+                    and math.isfinite(countdown) and countdown > 0 \
                     and u32(m, pl + P_RECOVER_BUTTON) == btn:
                 token = "mash"                         # the game's explicit SOLO_DYING_RECOVER button
             # Do not answer a selection that changed during the reads above.
@@ -801,6 +810,9 @@ class Bot:
         self.stats["max_combo"] = max(self.stats["max_combo"], snap.get("combo") or 0)
         if not p:
             return {"hold": set()}
+        if prompt_chord(snap.get("prompt"), "release"):
+            self.aiming_since = None
+            return {"hold": set()}                     # mode2 succeeds when its requested held bits are absent
         held_prompt = prompt_chord(snap.get("prompt"), "hold")
         if held_prompt:
             self.aiming_since = None
@@ -1267,10 +1279,12 @@ class RE5PS3(Driver):
         self._stats = stats
         def source():
             button = prompt(m)
-            return None if prompt_chord(button, "hold") else button
+            return None if prompt_chord(button, "hold") or prompt_chord(button, "release") else button
         return source
 
     def prompt_keys(self, button) -> list:
+        if isinstance(button, str) and button.startswith(("hold:", "release:")):
+            return []                                  # continuous / neutral inputs belong to Bot.tick
         if isinstance(button, str) and button.startswith("mash:"):
             chord = prompt_chord(button, "mash")
             if chord is None:
