@@ -67,6 +67,15 @@ WEAPONS = {0x02: "M92F", 0x03: "VZ61", 0x04: "Ithaca M37", 0x05: "S75", 0x06: "h
            0x14: "knife (Excella)", 0x23: "knife (Wesker)"}
 INV_OFS, INV_SLOTS, SLOT = 0x22E0, 24, 0x30     # the player's inventory: slot +0x8 id word 0x01II, +0xC rounds,
 S_PLAYER = 0x017FEB34                           # +0x10 capacity, +0x20 = 1 in hand, byte +0x2D in use
+# The Mercenaries loadout templates (static .data): 30 blocks of 12 records x 0x2C, one block per character / costume
+# (Barry = 24, Chris Heavy Metal = 18); a record is [item id 0xTTII, count (-1 = the weapon's own), -1, -1, -1, grid
+# position, in hand, packed upgrade levels, flags, 0, 0]; the round start copies them into the inventory and builds
+# the weapons, so a changed id here is a weapon the game itself makes.
+TEMPLATE, TEMPLATE_BLOCK, TEMPLATE_BLOCKS, TEMPLATE_REC = 0x01730048, 0x210, 30, 0x2C   # the first record's id word
+TEMPLATE_SIGNATURE = (0x84, 0x124)                               # block 0's knife record: id 0x124
+POWERFUL = {0x11B: "S&W M500", 0x11A: "Lightning Hawk", 0x119: "Hydra", 0x115: "Gatling gun", 0x10D: "rocket launcher",
+            0x11C: "H&K PSG-1", 0x11D: "AK-74", 0x116: "Benelli M3", 0x10C: "grenade launcher", 0x120: "Dragunov SVD"}
+KNIFE_IDS = {0x101, 0x10E, 0x114, 0x123, 0x124, 0x100}
 ORIG: dict = {}                                 # id(adapter) -> the tables and values as the game had them
 
 ADDRESSES = {
@@ -261,6 +270,70 @@ def bullet_damage(g: RE5, mult) -> dict:
                     "becomes a one-shot kill from x6)"}
 
 
+def template_records(t: bytes):
+    """[(offset, id word, count, position, in_hand, levels)] of every item record in the template image."""
+    out = []
+    for b in range(TEMPLATE_BLOCKS):
+        for r in range(12):
+            off = b * TEMPLATE_BLOCK + r * TEMPLATE_REC
+            w = struct.unpack_from(">11I", t, off)
+            if w[0] and w[0] != 0xFFFFFFFF and w[2] == w[3] == w[4] == 0xFFFFFFFF:
+                out.append((off, w[0], w[1], w[5], w[6], w[7]))
+    return out
+
+
+def loadout(g: RE5, weapons=None, seed=None, on: bool = True) -> dict:
+    """Every character's Mercenaries loadout template: each gun (table 1, not the knives) becomes one of the powerful
+    campaign weapons, drawn at random per record without repeats inside a block (seed for a repeatable draw); the
+    packed upgrade levels are reset to 0 so no level indexes past the new weapon's table. on=false restores."""
+    import random
+    if g.u32(TEMPLATE + TEMPLATE_SIGNATURE[0]) != TEMPLATE_SIGNATURE[1] and "template" not in g.orig:
+        raise RuntimeError("the loadout templates are not where this build keeps them; not writing")
+    t0 = g.keep("template", lambda: g.rd(TEMPLATE, TEMPLATE_BLOCKS * TEMPLATE_BLOCK))
+    if not on:
+        return {"loadout": "the game's", "verified": g.wr(TEMPLATE, t0)}
+    pool = [int(str(w), 0) if isinstance(w, str) and str(w).startswith("0x") else w for w in (weapons or [])]
+    pool = [w for w in pool if w in POWERFUL] or list(POWERFUL)
+    rng = random.Random(seed)
+    t = bytearray(t0)
+    picks: dict = {}
+    for off, idw, _, _, in_hand, _ in template_records(t0):
+        if idw >> 8 != 1 or idw in KNIFE_IDS:
+            continue
+        block = off // TEMPLATE_BLOCK
+        used = picks.setdefault(block, [])
+        choice = rng.choice([w for w in pool if w not in used] or pool)
+        used.append(choice)
+        struct.pack_into(">I", t, off, choice)
+        struct.pack_into(">I", t, off + 7 * 4, 0)
+    ok = g.wr(TEMPLATE, bytes(t))
+    named = {b: [POWERFUL[w] for w in ws] for b, ws in picks.items()}
+    return {"loadout": "random powerful campaign weapons", "verified": ok, "blocks": len(picks),
+            "barry": named.get(24), "chris_heavy_metal": named.get(18), "picks": named,
+            "note": "takes effect at the next round start (the game copies the template into the inventory then)"}
+
+
+def random_cheats(g: RE5, seed=None) -> dict:
+    """The operator's per-round randomizer: fire_rate x80 always; turn x2 or x3; bullet damage x1 / x3 / x10;
+    infinite ammo on; the loadout re-drawn. Returns what was picked as "telemetry" (the playbook shows it)."""
+    import random
+    rng = random.Random(seed)
+    picked = {"fire_rate_x": 80.0, "turn_speed_x": rng.choice([2.0, 3.0]), "bullet_damage_x": rng.choice([1.0, 3.0, 10.0]),
+              "infinite_ammo": True, "loadout": rng.random() < 0.75}
+    out: dict = {}
+    out["fire_rate"] = fire_rate(g, picked["fire_rate_x"])["verified"]
+    out["turn_speed"] = turn_speed(g, picked["turn_speed_x"])["verified"]
+    out["bullet_damage"] = bullet_damage(g, picked["bullet_damage_x"])["verified"]
+    out["infinite_ammo"] = infinite_ammo(g, True)["verified"]
+    if picked["loadout"]:
+        lo = loadout(g, seed=rng.random())
+        out["loadout"] = lo["verified"]
+        picked["loadout_barry"] = lo.get("barry")
+    else:
+        out["loadout"] = loadout(g, on=False)["verified"]
+    return {"telemetry": picked, "verified": all(out.values()), "applied": out}
+
+
 def revert_all(g: RE5) -> dict:
     out = {}
     o = g.orig
@@ -274,6 +347,8 @@ def revert_all(g: RE5) -> dict:
     if "turn" in o:
         p = g.param()
         out["turn"] = all(g.wr(p + k, struct.pack(">f", v)) for k, v in o["turn"].items())
+    if "template" in o:
+        out["loadout"] = g.wr(TEMPLATE, o["template"])
     return {"reverted": out, "verified": all(out.values()), "note": "a relaunch of the game is the full revert too"}
 
 
@@ -284,7 +359,9 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5 | None 
           "fire": "fire_rate", "rapid_fire": "fire_rate", "machine_gun": "fire_rate", "ammo": "infinite_ammo",
           "unlimited_ammo": "infinite_ammo", "no_ammo": "infinite_ammo", "damage": "bullet_damage",
           "firepower": "bullet_damage", "powerful_bullets": "bullet_damage", "revert": "revert_all", "reset": "revert_all",
-          "off": "revert_all", "address_table": "addresses"}.get(op, op)
+          "off": "revert_all", "address_table": "addresses", "weapons": "loadout", "merc_loadout": "loadout",
+          "random_weapons": "loadout", "randomize": "random_cheats", "randomizer": "random_cheats",
+          "random": "random_cheats"}.get(op, op)
     res: dict = {"op": op}
     if op == "status":
         pass
@@ -300,10 +377,15 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5 | None 
         res.update(infinite_ammo(g, on))
     elif op == "bullet_damage":
         res.update(bullet_damage(g, (multiplier if multiplier is not None else 10.0) if on else 1.0))
+    elif op == "loadout":
+        res.update(loadout(g, extra.get("weapons"), extra.get("seed"), on))
+    elif op == "random_cheats":
+        res.update(random_cheats(g, extra.get("seed")))
     elif op == "revert_all":
         res.update(revert_all(g))
     else:
-        raise ValueError("op: status | turn_speed | fire_rate | infinite_ammo | bullet_damage | revert_all | addresses")
+        raise ValueError("op: status | turn_speed | fire_rate | infinite_ammo | bullet_damage | loadout | random_cheats | "
+                         "revert_all | addresses")
     res["status"] = g.status()
     return res
 

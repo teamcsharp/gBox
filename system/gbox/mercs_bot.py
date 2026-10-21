@@ -106,12 +106,12 @@ class Boot:
     tick() returns why the run must end (a story game, menus RAM can't name, nothing moving), else None."""
 
     def __init__(self, menus, m, send, sleep=time.sleep, clock=time.time, stats: dict | None = None, ad=None,
-                 game=None, hooks=None, jump_at: str = "select_player"):
+                 game=None, hooks=None, jump_at: str = "select_player", round_hooks=None):
         self.menus, self.m, self.ad, self.game, self.clock = menus, m, ad, game, clock
         self.stats = stats if stats is not None else {}
         self.nav = Navigator(send, menus.step, sleep=sleep, clock=clock, stats=self.stats)
-        self.hooks, self.jump_at = hooks, jump_at
-        self.hooked, self.moment_tried = False, False
+        self.hooks, self.jump_at, self.round_hooks = hooks, jump_at, round_hooks
+        self.hooked, self.moment_tried, self.at_jump = False, False, False
         self.lost_since, self.still_since, self.progress = None, None, None
 
     def tick(self, now: float | None = None, merc=None, scr: dict | None = None) -> str | None:
@@ -120,6 +120,13 @@ class Boot:
         why = self.menus.wandered(scr)
         if why:
             return why
+        if scr.get("where") == self.jump_at and not self.at_jump and self.round_hooks is not None:
+            # every visit (a new round's selects): the profile's round_ops (the per-round randomizer, the loadout)
+            failed = self.round_hooks() or []
+            self.stats["rounds_hooked"] = self.stats.get("rounds_hooked", 0) + 1
+            if failed:
+                self.stats["round_hooks_failed"] = "; ".join(failed)[:300]
+        self.at_jump = scr.get("where") == self.jump_at
         if scr.get("where") == self.jump_at and not self.hooked:
             if not self.moment_tried:                       # before any hook: the state restores cleanly
                 self.moment_tried = True
@@ -244,9 +251,10 @@ def note_lesson(g: dict | None, entry: dict) -> bool:
         return False
 
 
-def apply_ops(ad, ops, prof: dict | None = None) -> list[str]:
+def apply_ops(ad, ops, prof: dict | None = None, stats: dict | None = None) -> list[str]:
     """Run [[op, kwargs], ...] through the title's mods tool in this process (re_mods for RE4 on GameCube / Wii,
-    re5_mods for RE5 on PS3, by the profile's platform); returns the ones that failed."""
+    re5_mods for RE5 on PS3, by the profile's platform); returns the ones that failed. An op's result that carries
+    "telemetry" (what the randomizer picked) lands in stats["cheats"] for the operator."""
     if (prof or {}).get("platform") == "ps3":
         from . import re5_mods_tool as RM
         make = RM.RE5
@@ -260,7 +268,9 @@ def apply_ops(ad, ops, prof: dict | None = None) -> list[str]:
         return [f"{op}: {e}" for op, _ in ops]
     for op, kw in ops:
         try:
-            RM.run(ad, op, g=g, **dict(kw or {}))
+            res = RM.run(ad, op, g=g, **dict(kw or {}))
+            if stats is not None and isinstance(res, dict) and res.get("telemetry"):
+                stats["cheats"] = res["telemetry"]
         except Exception as e:                              # noqa: BLE001 - one failed mod never stops the run
             failed.append(f"{op}: {e}")
     return failed
@@ -322,9 +332,11 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
         failed = apply_ops(ad, [x for x in package if x[0] in early], prof)
         if failed:
             stats["early_failed"] = "; ".join(failed)[:300]
+    round_ops = [tuple(x) for x in prof.get("round_ops") or []]
     boot = Boot(menus, m, send, sleep=sleep, clock=clock, stats=stats, ad=ad, game=game,
                 hooks=(lambda: apply_ops(ad, [x for x in package if x[0] not in early], prof)) if ad is not None else None,
-                jump_at=prof.get("jump_at") or "select_player")
+                jump_at=prof.get("jump_at") or "select_player",
+                round_hooks=(lambda: apply_ops(ad, round_ops, prof, stats)) if ad is not None and round_ops else None)
     run = time.strftime("%Y%m%d-%H%M%S", time.localtime(clock()))
     lessons = lessons_writer(prof["map_id"], run)
     stats.setdefault("rounds", 0)
