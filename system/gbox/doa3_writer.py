@@ -170,7 +170,7 @@ def stripify(triangles) -> list[list[int]]:
 
 
 MAX_PACKETS = 128            # strips per material; natively up to 261 (lei00's face), kept well inside that
-MAX_VERTICES = 8192          # vertices per OBJ; natively up to 8877 (lei00's face)
+MAX_VERTICES = 16384         # vertices per OBJ (native vertices kept first + the donor's); natively up to 8877
 
 
 def strip_buffer(strips: list[list[int]]) -> tuple[list[int], list[tuple[int, int]]]:

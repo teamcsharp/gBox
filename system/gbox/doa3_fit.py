@@ -371,21 +371,50 @@ def costume_replacements(afs_path, plan: dict[str, dict], progress=lambda *_: No
             progress(100 * k / max(len(pairs), 1), f"fitting {costume}")
             try:
                 xpr, cat = read(xe), read(ce)
-                geo = C.costume_geometry(xpr)
-                table = C.mdl_descriptor_table(xpr)
-                roles = costume_roles(cat, geo["object_count"])
-                slots = free_texture_slots(geo, roles, table) if native_slots else None
-                res = fit(rig, geo, roles, slots=slots)
-                hide = hidden_parts(roles, set(res["parts"]), geo["object_count"])
-                # the CAT and the vertex numbering stay as they are; the costume gains the donor's vertices (after
-                # the native ones), strips and materials, its images in native texture slots nothing visible uses
-                blob = W.encode_costume(xpr, res["parts"], res["textures"], hide=hide,
-                                        texture_slots=res["texture_slots"])
+                blob, res, hide, budget_steps = fit_costume(xpr, cat, rig, native_slots=native_slots)
             except Exception as error:  # noqa: BLE001 - the costume stays native; the reason is reported
                 reports.append({"costume": costume, "status": "native_kept", "reason": repr(error)[:300]})
                 continue
             replacements[xe["index"]] = blob
             reports.append({"costume": costume, "status": "replaced", "donor": rig.get("slug") or rig.get("source"),
                             "xpr_bytes": len(blob), "room": xe.get("room"), "hidden_parts": len(hide),
+                            "budget_steps": budget_steps,
                             **{k: v for k, v in res["report"].items() if k != "parts"}})
     return replacements, reports
+
+
+# The game loads a fighter's costume XPR into a fixed 2 MiB slot: the XBE's per-fighter allocation at 0x81cb0
+# (MmAllocateContiguousMemoryEx 0x498000 per fighter, 4 fighters) is split 0x200000 costume | 0x18000 <nick>.bin |
+# 0x80000 CAT | the rest motions. Native costumes reach 1,978,368 bytes (zac02); a larger one overruns the .bin.
+COSTUME_BUFFER = 0x200000
+
+
+def fit_costume(xpr: bytes, cat: bytes, rig: dict, *, native_slots: bool = True, budget: int = COSTUME_BUFFER):
+    """One costume rewrite that fits the game's costume slot. In order until it fits: the donor part also on the
+    lower-detail copies, then those copies hidden, then free native texture slots the donor did not take shrunk to
+    4x4 stand-ins (largest first). -> (blob, fit result, hidden OBJs, the budget steps taken)."""
+    geo = C.costume_geometry(xpr)
+    table = C.mdl_descriptor_table(xpr)
+    roles = costume_roles(cat, geo["object_count"])
+    slots = free_texture_slots(geo, roles, table) if native_slots else None
+    steps = []
+    for lod_copies in (True, False):
+        res = fit(rig, geo, roles, slots=slots, lod_copies=lod_copies)
+        hide = hidden_parts(roles, set(res["parts"]), geo["object_count"])
+        # the CAT and the vertex numbering stay as they are; the costume gains the donor's vertices (after the native
+        # ones), strips and materials, its images in native texture slots nothing visible uses
+        blob = W.encode_costume(xpr, res["parts"], res["textures"], hide=hide, texture_slots=res["texture_slots"])
+        if len(blob) <= budget:
+            return blob, res, hide, steps
+        steps.append(f"{len(blob)} bytes with{'' if lod_copies else 'out'} lower-detail copies")
+    spare = sorted((s for s in (slots or []) if s[0] not in res["texture_slots"]),
+                   key=lambda s: -W.texture_info(s[1])["size"])
+    shrink = set()
+    for index, word in spare:
+        shrink.add(index)
+        blob = W.encode_costume(xpr, res["parts"], res["textures"], hide=hide, texture_slots=res["texture_slots"],
+                                shrink_textures=shrink)
+        if len(blob) <= budget:
+            steps.append(f"{len(shrink)} unused native textures shrunk")
+            return blob, res, hide, steps
+    raise ValueError(f"the rewritten costume is {len(blob)} bytes; the game's costume slot holds {budget}")
