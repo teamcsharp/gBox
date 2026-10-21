@@ -424,15 +424,16 @@ def _session_ended_on_server(ctx, sid) -> bool:
 def _save_previous_game(ad, game: dict, sid: str, ctx) -> dict:
     """Save a running game before the single-game switch closes it.
 
-    state_transfer's export moves a save state between machines, which only RetroArch cores and standalone
-    Dolphin (the same release on both) support. Every other emulator can still save its own game: fall back
-    to the adapter's save_state — the same primitive the Stop flow uses — so switching away from RPCS3 /
+    state_transfer moves a save state between machines, which only RetroArch cores and standalone Dolphin (the
+    same release on both) support; their moment is saved through gBox's own slot (op=snapshot: op=export would
+    save it through Dolphin's slot 1, the operator's own). Every other emulator can still save its own game: fall
+    back to the adapter's save_state — the same primitive the Stop flow uses — so switching away from RPCS3 /
     Xenia / PCSX2 / ... is not refused as a "save states can't move between machines" failure. An unnamed
     adapter keeps the historical state_transfer path.
     """
     kind = getattr(ad, "name", "")
     if getattr(ad, "checkpoint_state", None) in ("path", "dir") or not kind or kind in ("retroarch", "dolphin"):
-        return state_transfer(StateXIn(session_id=sid, op="export"), ctx)["result"]
+        return state_transfer(StateXIn(session_id=sid, op="snapshot"), ctx)["result"]
     save = getattr(ad, "save_state", None)
     if save is None:
         raise Unsupported(f"{kind} does not support save_state")
@@ -572,10 +573,11 @@ def _stop_session(sid: str, args: dict, ctx) -> dict:
     if args.get('moment'):
         # last played (gbox/last_played.py): the moment the operator stopped at, uploaded with this result so "Reload with
         # your last moment" can bring it back. Best effort within moment_cap_s; past it the game is closed regardless.
+        # Saved through gBox's own slot (op=snapshot): Stop is not a Save, so the operator's save slots stay as they are.
         cap = float(args.get('moment_cap_s') or STOP_MOMENT_CAP_S)
 
         def keep_moment():
-            out = {'artifact': state_transfer(StateXIn(session_id=sid, op='export'), ctx)['result']['artifact']}
+            out = {'artifact': state_transfer(StateXIn(session_id=sid, op='snapshot'), ctx)['result']['artifact']}
             try:
                 png = ad.get_frame()
                 ctx.artifact('moment.png', png, 'image/png', session=sid, note='last played moment')

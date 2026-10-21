@@ -16,7 +16,7 @@ import json
 
 DISMISS_KIND = "last_played_dismissed"          # session id -> {ts}
 MUTE_KIND = "last_played_mute"                  # game id -> {ts}: don't ask again for this game
-STATE_SUFFIXES = (".s01", ".s02", ".s03", ".s08", ".s09", ".state", ".sav", ".p2s")
+STATE_SUFFIXES = (".s01", ".s02", ".s03", ".s08", ".s09", ".s10", ".state", ".sav", ".p2s")   # .s10: a snapshot (gBox's Dolphin slot)
 AGENT_ACTORS = ("agent", "mcp", "gbox-agent", "hermes")
 
 

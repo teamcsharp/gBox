@@ -1968,6 +1968,26 @@ function evSelect(sha) {
   $("#ev-image").hidden = false; $("#ev-empty").hidden = true;
   $("#ev-thumbs").querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.evSha === sha)));
 }
+// The report's saved moment (context.state_job_id). Dolphin / RetroArch keep it through gBox's own save slot: ONE
+// state_transfer op=snapshot job saved and uploaded it (it is also the report's state_export_job_id), no emulator slot
+// holds it, so Restore imports its file. Other emulators saved into their own slot (session_op save_state): Restore
+// loads that slot.
+function evMoment(context, job) {
+  const res = job.output?.result || {}, snap = job.tool === "state_transfer" && job.input?.op === "snapshot";
+  const done = job.state === "succeeded", sessionId = context.session_id || job.input?.session_id || "";
+  const state = !done || !sessionId ? null : snap ? (res.artifact ? { sessionId, artifact: res.artifact } : null)
+    : { sessionId, slot: res.slot };
+  const text = !done ? (job.error || "Save state is being prepared.")
+    : snap ? `Saved through gBox's own save slot (your save slots were left as they are): ${res.file || "state file"}${res.bytes ? ` (${res.bytes} bytes)` : ""}. It loads on another compatible PC too. ${res.artifact || ""}`
+    : `Save state ready${res.slot == null ? "" : ` in slot ${res.slot}`}.`;
+  return { snap, state, text };
+}
+function evRestoreJob(state) {
+  const worker = state.sessionId.split("-")[0];
+  return state.artifact
+    ? { tool: "state_transfer", input: { session_id: state.sessionId, op: "import", artifact: state.artifact }, require_worker: worker }
+    : { tool: "session_op", input: { session_id: state.sessionId, op: "load_state", args: state.slot == null ? {} : { slot: state.slot } }, require_worker: worker };
+}
 async function evRequest(requestId, selectedSha = null, run = null) {
   const r = await gbox.api(`/api/requests/${encodeURIComponent(requestId)}`);
   if (!r.ok) { $("#ev-steps").textContent = r.error; return; }
@@ -1998,13 +2018,13 @@ async function evRequest(requestId, selectedSha = null, run = null) {
   if (x.context?.state_job_id) {
     const sr = await gbox.api(`/api/jobs/${encodeURIComponent(x.context.state_job_id)}`);
     if (sr.ok) {
-      const job = sr.data, slot = job.output?.result?.slot;
-      EV.state = job.state === "succeeded" ? { sessionId: x.context.session_id, slot } : null;
-      stateHtml = `<details open><summary>Saved game moment · ${esc(job.state)}</summary><p>${job.state === "succeeded" ? `Save state ready${slot == null ? "" : ` in slot ${slot}`}.` : esc(job.error || "Save state is being prepared.")}</p>
-        ${EV.state ? '<button class="act" id="ev-restore">Restore this moment</button>' : ""}</details>`;
+      const job = sr.data, moment = evMoment(x.context, job);
+      EV.state = moment.state;
+      stateHtml = `<details open><summary>Saved game moment · ${esc(job.state)}</summary><p>${esc(moment.text)}</p>
+        ${EV.state ? `<button class="act" id="ev-restore"${moment.snap ? ' title="Loads this moment into the running game through its emulator (Dolphin loads it through slot 1, RetroArch through slot 9)"' : ""}>Restore this moment</button>` : ""}</details>`;
     }
   }
-  if (x.context?.state_export_job_id) {
+  if (x.context?.state_export_job_id && x.context.state_export_job_id !== x.context.state_job_id) {   // a snapshot is its own export
     const er = await gbox.api(`/api/jobs/${encodeURIComponent(x.context.state_export_job_id)}`);
     if (er.ok) {
       const exported = er.data, artifact = exported.output?.result?.artifact;
@@ -2065,8 +2085,7 @@ $("#task-evidence").addEventListener("click", async e => {
   if (e.target.id === "ev-restore" && EV.state) {
     e.target.disabled = true; e.target.textContent = "Restoring…";
     try {
-      const r = await gbox.api("/api/jobs", { tool: "session_op", input: { session_id: EV.state.sessionId,
-        op: "load_state", args: EV.state.slot == null ? {} : { slot: EV.state.slot } }, require_worker: EV.state.sessionId.split("-")[0] });
+      const r = await gbox.api("/api/jobs", evRestoreJob(EV.state));
       if (!r.ok) throw new Error(r.error);
       e.target.textContent = `Restore job ${r.data.id.slice(0, 8)} ${r.data.state}`;
     } catch (err) { e.target.textContent = `Restore failed: ${err.message}`; }
