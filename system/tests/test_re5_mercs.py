@@ -241,7 +241,11 @@ def test_the_screens_between_rounds_come_from_the_interface_units():
 
 def test_it_presses_only_on_the_reunion_screens():
     assert R.step({"where": "results"}) == "start"
-    assert R.step({"where": "select_stage"}) == "cross" and R.step({"where": "select_player"}) == "cross"
+    assert R.step({"where": "select_stage"}) == "cross"
+    assert R.step({"where": "select_player", "cursor": 6, "target": 6}) == "cross"          # Barry picked, on him
+    assert R.step({"where": "select_player", "cursor": 2, "target": 6}) == "dright"
+    assert R.step({"where": "select_player", "cursor": 7, "target": 6}) == "dleft"
+    assert R.step({"where": "select_player"}) is None                                       # no cursor read: wait
     assert R.step({"where": "dead"}) == "cross"
     for where in ("menu", "loading", "unknown", "playing"):
         assert R.step({"where": where}) is None, where                       # never a press on the title's menus
@@ -346,14 +350,19 @@ def test_a_bonus_without_its_prompt_is_left_alone_for_a_while(monkeypatch):
     assert str(bot.target or "bonus").startswith("bonus")                         # tried again later
 
 
-def test_near_bonuses_on_his_level_are_walked_to_and_the_clock_jumps_are_counted(monkeypatch):
+def test_bonuses_anywhere_are_walked_to_nearest_first_and_the_clock_jumps_are_counted(monkeypatch):
     monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
     act, bot = tick(with_bonuses(world(), [(0.0, 13.0, 1200.0)]))                 # 12 m ahead, nobody near, no mesh
     assert {"lup", "cross"} <= act["hold"]                                        # straight at it
-    act, _ = tick(with_bonuses(world(), [(0.0, 13.0, 2500.0)]))                   # 25 m: past BONUS_RANGE
-    assert act == {"hold": set()}
-    act, _ = tick(with_bonuses(world(), [(0.0, 400.0, 900.0)]))                   # up on a roof: another level
-    assert act == {"hold": set()}
+    act, b2 = tick(with_bonuses(world(), [(0.0, 13.0, 2500.0), (0.0, 400.0, 900.0)]))   # 25 m off, 9 m up a roof
+    assert {"lup", "cross"} <= act["hold"] and b2.target == "bonus 0x30402000"   # the nearer, whatever its level
+    assert b2.stats["phase"] == "gather_time" and b2.stats["nearest_eta_s"] > 0
+    near = [((0.0, 0.0, 300.0), 800, 800)]                                       # a Majini 3 m ahead: fought first
+    act, b3 = tick(with_bonuses(world(action=2, enemies=near), [(0.0, 13.0, 1200.0)]))
+    assert b3.target == 0 and b3.stats["phase"] == "fight"
+    behind = [((0.0, 0.0, -300.0), 800, 800)]                                    # one 3 m behind: he walks on
+    act, b4 = tick(with_bonuses(world(enemies=behind), [(0.0, 13.0, 1200.0)]))
+    assert str(b4.target).startswith("bonus") and {"lup", "cross"} <= act["hold"]
     monkeypatch.setattr(R, "BONUS_WALK", False)
     act, _ = tick(with_bonuses(world(), [(0.0, 13.0, 1200.0)]))
     assert act == {"hold": set()}                                                 # without routes: out of reach

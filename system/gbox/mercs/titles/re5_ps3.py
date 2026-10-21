@@ -40,24 +40,39 @@ ACTIONS = {0: "stand", 1: "move", 2: "aim", 4: "grabbed", 5: "hit"}
 P_GRABBED = 4                          # held by a Majini: "Break free" (wiggle the left stick)
 
 HEAD_H, GUN_H = 160.0, 140.0           # above the feet: a Majini's head, the player's gun (cm)
+# The inventory: embedded in the player at +0x22E0 (live 2026-10-21, with the RE5 mods agent): INV_SLOTS slots of 0x30,
+# a slot: +0x08 u32 id word 0x0TII (T 1 = weapon, uWpII; 2 = ammo / items), +0x0C rounds loaded, +0x10 capacity,
+# +0x20 u32 1 = in hand, +0x2D u8 != 0 = in use. The 3 x 3 grid is slots 0..8, row by row; the D-pad quick-uses
+# the edge slots (up 1, left 3, right 5, down 7).
+P_INV, INV_SLOT, INV_SLOTS = 0x22E0, 0x30, 9
+INV_ID, INV_ROUNDS, INV_CAP, INV_HAND, INV_USED = 0x08, 0x0C, 0x10, 0x20, 0x2D
+QUICK = {1: "dup", 3: "dleft", 5: "dright", 7: "ddown"}
+HOLD_FIRE = {0x15, 0x03}               # weapons fired by holding R1 (the Gatling, the VZ61); the rest once a press
+TAP_ON, TAP_OFF = 1, 2                 # ticks of R1 down / up when tapping (a magnum's own recovery is longer)
+HEAL_IDS: set = set()                  # the item ids of herbs / first aid sprays (learned live: logged in stats)
+HEAL_AT = 0.4                          # use one below this share of health
+WEAPON_NAMES = {0x02: "M92F", 0x03: "VZ61", 0x0B: "M29", 0x12: "Barry's handgun", 0x15: "Gatling", 0x20: "Dragunov"}
 ENGAGE, SHOOT_RANGE, TOO_CLOSE = 3000.0, 2200.0, 110.0
 BODY_R = 35.0                          # half a body: a shot inside atan(BODY_R / dist) hits
 TURN_TOL = math.radians(12)            # turn with the stick (not aiming) until within this
 AIM_TOL, PITCH_TOL = math.radians(2.5), math.radians(2.5)   # fire inside these
 FINE = math.radians(6)                 # closer than this: pulse the stick (a tick on, a tick off)
 MAX_DY = 450.0                         # targets this far above / below are out of reach (rooftops): not chosen
-STUCK_S, STUCK_MOVE = 1.0, 60.0
+STUCK_S, STUCK_MOVE = 1.2, 80.0
+RUN_SPEED = 250.0                      # cm/s running (the route ETAs; measured live: walking 145)
 # The time bonuses: hourglasses (uOm0100, model "sunadokei_360" = hourglass in uOm0100.arc; 9 in Public Assembly),
 # units of sUnit's move line 12 ("OM"), told by their vtable.
 OM_LINE, OM_MAX = 12, 600
 HOURGLASS_VT = 0x015EF5E0              # uOm0100's vtable (BLUS30491 app 01.01; read live 2026-10-21)
 HG_CENTRE_DY = 13.0                    # its middle, above its position (+0x30)
 HG_CENTRE, HG_KIND = 0x250, 0x194      # +0x250 f32 x4 bounding sphere (centre, radius: 28 cm, 13 cm above the origin);
+HG_COMBO = 0x90                        # the kind byte of the 2 combo bonuses (their clock is the combo's; unconfirmed)
                                        # +0x194 u32 0x00KK..01: 0x90 on 2 of Public Assembly's 9, 0xA0 on the other 7
-BONUS_RANGE = 1500.0                   # go for a time bonus this near (straight line) on the player's own level:
-                                       # the navmesh's crossings between levels are partly Majini-only, so the
-                                       # far ones cost more time than they give (live 2026-10-21)
-CLEAR_R = 700.0                        # ...when no Majini is nearer than this
+BONUS_RANGE = 12000.0                  # go for a time bonus whose route is this long at most (cm)
+FIGHT_R, FIGHT_CONE = 350.0, math.radians(40)   # a Majini this near and this far off the heading blocks the way:
+ON_TOP_R = 160.0                       # fought from where the player stands, as is one this close from any side;
+                                       # the rest chase him and are ignored (grabs are wiggled off): the tour goes on
+ROUTE_LEN_S = 3.0                      # the bonuses' route lengths are worked out again this often
 BONUS_GIVE_UP_S, BONUS_SKIP_S = 4.0, 30.0   # fired at one this long and it is still there: leave it this long
 BONUS_WALK = True                      # walk to the far ones along the game's navmesh (re5_nav)
 BONUS_HUNT = True                      # go for them (taken with the "□ Time bonus" prompt at the hourglass:
@@ -68,8 +83,10 @@ BONUS_STEEP = math.radians(-18)        # ...no steeper than this (the aim stops 
 BONUS_LEVEL_DY = 150.0                 # ...and from its own level (not from a roof above it)
 WP_REACHED, WP_CLIMB = 70.0, 110.0     # a waypoint is passed this close; the next one this far above / below and
                                        # (almost) straight up / down = a ladder or a drop: the stage's square prompt
-REPLAN_S, ROUTE_STALE_S = 2.0, 40.0    # the route is drawn again this often; a bonus followed this long is left
+REPLAN_S, ROUTE_STALE_S = 2.0, 60.0    # the route is drawn again this often; a bonus followed this long is left
 CLIMB_WAIT_S = 3.0                     # at a crossing this long without its prompt: the player can't take it
+_AVOID: dict = {}                      # navmesh pointer -> the crossings the player could not take (kept across
+                                       # rounds: the mesh is the stage's, so the next round knows them at once)
 
 
 def ptr_ok(p) -> bool:
@@ -129,9 +146,32 @@ def bonuses(m) -> list:
         x, y, z = struct.unpack(">3f", m.rd(u + 0x30, 12))
         r = struct.unpack(">f", m.rd(u + HG_CENTRE + 12, 4))[0]
         r = r if 5.0 < r < 100.0 else 28.0
-        out.append({"ptr": u, "pos": (x, y + HG_CENTRE_DY, z), "r": r, "kind": "time",
-                    "kind_word": u32(m, u + HG_KIND)})
+        kw = u32(m, u + HG_KIND)
+        out.append({"ptr": u, "pos": (x, y + HG_CENTRE_DY, z), "r": r,
+                    "kind": "combo" if (kw >> 16) & 0xFF == HG_COMBO else "time", "kind_word": kw})
     return out
+
+
+def inventory(m, player: int) -> list:
+    """The player's 3 x 3 grid from RAM: [{"slot", "id", "type", "item", "rounds", "cap", "hand", "used"}] for the slots
+    in use (type 1 = a weapon uWp<item>, 2 = ammo / items)."""
+    raw = m.rd(player + P_INV, INV_SLOT * INV_SLOTS)
+    out = []
+    for k in range(INV_SLOTS):
+        rec = raw[INV_SLOT * k:INV_SLOT * (k + 1)]
+        if not rec[INV_USED]:
+            continue
+        word, rounds, cap, hand = struct.unpack(">IIII", rec[INV_ID:INV_ID + 16]) if INV_HAND == INV_ID + 24 else (
+            struct.unpack(">I", rec[INV_ID:INV_ID + 4])[0], struct.unpack(">I", rec[INV_ROUNDS:INV_ROUNDS + 4])[0],
+            struct.unpack(">I", rec[INV_CAP:INV_CAP + 4])[0], struct.unpack(">I", rec[INV_HAND:INV_HAND + 4])[0])
+        out.append({"slot": k, "id": word, "type": word >> 8, "item": word & 0xFF, "rounds": rounds, "cap": cap,
+                    "hand": hand == 1})
+    return out
+
+
+def equipped(snap: dict) -> dict | None:
+    """The slot in hand, or None."""
+    return next((s for s in snap.get("inventory") or () if s.get("hand")), None)
 
 
 def snapshot(m) -> dict:
@@ -148,6 +188,10 @@ def snapshot(m) -> dict:
         action = m.rd(p + P_ACTION, 1)[0]
         snap["player"] = {"ptr": p, "pos": pos, "rot": wrap(yaw_of(rot)), "pitch": pitch, "action": action,
                           "state": ACTIONS.get(action, action), "hp": hp, "hp_max": hp_max}
+        try:
+            snap["inventory"] = inventory(m, p)
+        except (ValueError, OSError, struct.error):
+            snap["inventory"] = []
     se = u32(m, S_ENEMY)
     if ptr_ok(se):
         n, arr = u32(m, se + 0x28), u32(m, se + 0x34)
@@ -250,6 +294,8 @@ def screen(m, merc=None) -> dict:
     snap = snapshot(m)
     out = {"where": own_screen(snap), "cursor": None, "target": None}
     if snap.get("player"):
+        if out["where"] == "playing" and (ROSTER.pick is not None or ROSTER.round is None):
+            out["character"] = ROSTER.started()
         return out
     ui = ui_units(m, range(N_LINES))
     alert = u32(m, ui["uIdAlert00"] + ALERT_ID) if "uIdAlert00" in ui else 0
@@ -257,7 +303,7 @@ def screen(m, merc=None) -> dict:
     if alert:
         where = ALERTS.get(alert, "alert")
     elif "uIdStartUp22" in ui:
-        where = "select_player"
+        where, cursor, target = "select_player", u32(m, ui["uIdStartUp22"] + SELECT_CURSOR), ROSTER.want()
     elif "uIdStartUp21" in ui:
         where = "select_stage"
     elif "uIdStartUp29" in ui:
@@ -282,9 +328,58 @@ def screen(m, merc=None) -> dict:
     return out
 
 
-STEPS = {"results": "start", "select_stage": "cross", "select_player": "cross", "dead": "cross", "title": "start",
+STEPS = {"results": "start", "select_stage": "cross", "dead": "cross", "title": "start",
          "alert_signin": "circle", "alert_ok": "cross", "reunion_title": "cross", "reunion_solo": "cross"}
-CURSORED = ("main_menu", "play_game", "extra_content")
+CURSORED = ("main_menu", "play_game", "extra_content", "select_player")
+CHARACTERS = ("Chris (Heavy Metal)", "Sheva (Fairy Tale)", "Josh", "Excella", "Chris (Warrior)", "Sheva (Business)",
+              "Barry", "Rebecca")                   # CHARACTER SELECT's row, cursor 0..7 (uIdStartUp22 +0x180)
+SELECT_CURSOR = 0x180
+
+
+class Roster:
+    """A random character each round (operator 2026-10-21: "I want to see every character whooping ass"): the next
+    pick is drawn among the characters played least so far, never the one just played; the per-character tallies
+    (rounds, kills, points, best combo) go to stats. Module state: the menus are read through module functions."""
+
+    def __init__(self, rng=None):
+        import random
+        self.rng = rng or random.Random()
+        self.pick = None                       # the cursor target for the coming round
+        self.last = None                       # the character of the last round started
+        self.played: dict = {c: 0 for c in CHARACTERS}
+        self.tally: dict = {}                  # name -> {"rounds", "kills", "points", "combo"}
+        self.round = None                      # (name, best combo seen) while a round runs
+
+    def want(self) -> int:
+        if self.pick is None:
+            least = min(self.played[c] for c in CHARACTERS if c != self.last)
+            pool = [i for i, c in enumerate(CHARACTERS) if self.played[c] == least and c != self.last]
+            self.pick = self.rng.choice(pool)
+        return self.pick
+
+    def started(self) -> str:
+        """A round is up: the pick played (or the last one again when nothing was picked: a Continue)."""
+        name = CHARACTERS[self.pick] if self.pick is not None else (self.last or CHARACTERS[0])
+        if self.round is None or self.round[0] != name or self.pick is not None:
+            self.played[name] += 1
+            self.round = [name, 0]
+        self.last, self.pick = name, None
+        return name
+
+    def observe(self, snap: dict) -> dict:
+        """The live round's counters into the character's tally; returns the stats fields."""
+        if self.round is None:
+            return {}
+        name = self.round[0]
+        self.round[1] = max(self.round[1], snap.get("combo") or 0)
+        t = self.tally.setdefault(name, {"rounds": 0, "kills": 0, "points": 0, "combo": 0})
+        t.update(rounds=self.played[name], kills=snap.get("kills") or t["kills"], points=snap.get("score") or t["points"],
+                 combo=max(t["combo"], self.round[1]))
+        return {"character": name, "char_tally": "; ".join(f"{c}: {v['rounds']}r {v['kills']}k {v['points']}p c{v['combo']}"
+                                                          for c, v in self.tally.items())}
+
+
+ROSTER = Roster()
 
 
 def step(scr: dict) -> str | None:
@@ -299,6 +394,8 @@ def step(scr: dict) -> str | None:
             return None
         if cur == tgt:
             return "cross"
+        if where == "select_player":                     # the characters' row: left / right
+            return "dright" if cur < tgt else "dleft"
         if where == "play_game" and cur == 0:
             return "dup"                                 # up from the top wraps to EXTRA CONTENT, the last entry
         return "ddown" if cur < tgt else "dup"
@@ -403,6 +500,11 @@ class Bot:
         self.avoid: list = []                  # crossings the player could not take this round (no prompt there)
         self.climb_at = None                   # (the crossing, since when) while waiting at one for its prompt
         self.take_at = None                    # (the bonus, since when) while standing at one for its prompt
+        self.route_len, self.route_len_at = None, 0.0   # hourglass -> its route's length (cm), when worked out
+        self.nearest_eta = None
+        self.tap = 0                           # the R1 tap cycle (TAP_ON down, TAP_OFF up)
+        self.reload_until = 0.0
+        self.heal_at = 0.0
 
     # --- the engine's brain interface ---
     def prompt_ok(self, button, snap, now) -> bool:
@@ -428,25 +530,45 @@ class Bot:
             self.aiming_since = None                        # stays down between its presses (L1 would cancel it)
             self.stats["prompt_holds"] = self.stats.get("prompt_holds", 0) + 1
             return {"hold": set()}
+        heal = self._heal(p, snap, now)                     # low: a herb / a spray from a quick slot
+        if heal:
+            return heal
         t = snap.get("timer")
-        if self.last_timer is not None and t is not None and self.last_timer > 0 and t > self.last_timer + 2:
+        if self.last_timer is not None and t is not None and self.last_timer > 0 and 2 < t - self.last_timer < 95:
+            # (+30 / +60 / +90 of a bonus, +5 of a finisher; a Continue's new clock is not one)
             self.stats["bonus_s"] = round(self.stats.get("bonus_s", 0.0) + t - self.last_timer, 1)
             self.stats["clock_jumps"] = self.stats.get("clock_jumps", 0) + 1
         self.last_timer = t
         # Majini and the like: alive, more than 1 health (crows are "enemies" with 1), not far above or below
         live = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and (e.get("hp_max") or 0) > 1
                 and abs(e["pos"][1] - p["pos"][1]) < MAX_DY]
-        tgt = self._bonus(p, live, snap.get("bonuses") or (), now)
+        eq = equipped(snap)
+        if eq is not None:
+            self.stats["weapon"] = f"{WEAPON_NAMES.get(eq['item'], 'uWp%02x' % eq['item'])} {eq['rounds']}/{eq['cap']}" \
+                if eq["type"] == 1 else f"item {eq['id']:#x}"
+            if eq["type"] == 1 and eq["rounds"] == 0 and eq["cap"] > 0 and p.get("action") != P_GRABBED:
+                if now > self.reload_until + 2.5:           # empty: L1 + cross reloads (once, then let it play)
+                    self.reload_until = now + 0.3
+                    self.stats["reloads"] = self.stats.get("reloads", 0) + 1
+                if now < self.reload_until:
+                    return {"hold": {"l1", "cross"}}
+        mesh = snap.get("nav")
+        if mesh is not None and self.avoid is not _AVOID.get(getattr(mesh, "ptr", 0)):
+            self.avoid = _AVOID.setdefault(getattr(mesh, "ptr", 0), [])
+        tgt = self._bonus(p, live, snap.get("bonuses") or (), now, mesh)
         if tgt is None and not live:
             self.aiming_since = None
+            self.stats["phase"] = "idle"
             return {"hold": set()}
+        if tgt is None:
+            self.stats["phase"] = "fight"
         px, py, pz = p["pos"]
         tgt = tgt or min(live, key=lambda e: self._cost(p, e))
         aim_h = tgt.get("aim_h", HEAD_H)
         tx, ty, tz = tgt["pos"]
         dist = math.hypot(tx - px, tz - pz)
         want = heading(tx - px, tz - pz)
-        if tgt.get("kind") == "time":                       # a time bonus: walked to, taken with its prompt
+        if tgt.get("kind") in ("time", "combo"):            # a time bonus: walked to, taken with its prompt
             self.aiming_since, self.target = None, tgt["slot"]
             if tgt.get("walk"):
                 return self._follow(p, tgt, snap.get("nav"), snap.get("stage_prompt"), now)
@@ -498,8 +620,10 @@ class Bot:
             if not close or self.pulse:
                 keys.add("rup" if pitch_err > 0 else "rdown")
         if abs(yaw_err) <= tol and abs(pitch_err) <= ptol and dist <= SHOOT_RANGE:
-            keys.add("r1")                                  # on him: fire
-            self.stats["shots_s"] = round(self.stats["shots_s"] + 0.05, 2)
+            tap, self.tap = self.tap, (self.tap + 1) % (TAP_ON + TAP_OFF)
+            if (eq is not None and eq.get("type") == 1 and eq.get("item") in HOLD_FIRE) or tap < TAP_ON:
+                keys.add("r1")                              # on him: fire (held for the Gatling, a press for the rest:
+            self.stats["shots_s"] = round(self.stats["shots_s"] + 0.05, 2)   # a held R1 fires a handgun once)
             if tgt.get("kind") == "time":
                 fired = self.bonus_fired[tgt["ptr"]] = self.bonus_fired.get(tgt["ptr"], 0.0) + 0.05
                 if fired > BONUS_GIVE_UP_S:                 # shots don't take it from here (a wall, its kind)
@@ -512,10 +636,11 @@ class Bot:
         return {"hold": keys}
 
     # --- helpers ---
-    def _bonus(self, p, live, standing, now):
-        """The time bonus to go for now, or None. Only when no Majini is within CLEAR_R: the nearest hourglass on the
-        player's own level within BONUS_RANGE, walked to along the navmesh and taken with its "□ Time bonus" prompt
-        (Bot._take); one left alone for BONUS_SKIP_S when its prompt did not come."""
+    def _bonus(self, p, live, standing, now, mesh=None):
+        """The time bonus to go for now, or None (nothing standing, or a Majini within FIGHT_R: he is fought first).
+        The nearest hourglass by the navmesh route (straight line without a mesh), on any level, walked to along the
+        route and taken with its "□ Time bonus" prompt (Bot._take); one left alone for BONUS_SKIP_S when its prompt
+        did not come or its route led nowhere."""
         px, py, pz = p["pos"]
         now_ptrs = {b["ptr"] for b in standing}
         taken = self.bonus_seen - now_ptrs
@@ -524,23 +649,69 @@ class Bot:
         self.bonus_seen = now_ptrs
         standing = [b for b in standing if self.bonus_skip.get(b["ptr"], 0.0) <= now]
         if not standing or not BONUS_HUNT:
+            self.stats["bonus_target"] = None
             return None
-        near = min((math.hypot(e["pos"][0] - px, e["pos"][2] - pz) for e in live), default=math.inf)
-        if near < CLEAR_R:
+        if any(self._threat(p, e) for e in live):
+            self.stats["phase"] = "fight"
             return None
-        cands = [b for b in standing if abs(b["pos"][1] - py) < BONUS_LEVEL_DY
-                 and math.hypot(b["pos"][0] - px, b["pos"][2] - pz) < BONUS_RANGE]
+        if mesh is not None and (self.route_len is None or now - self.route_len_at > ROUTE_LEN_S
+                                 or set(self.route_len) != now_ptrs):
+            self.route_len, self.route_len_at = {}, now
+            for b in standing:
+                self.route_len[b["ptr"]] = mesh.route_length(p["pos"], b["pos"], avoid=self.avoid)
+
+        def cost(b):
+            d = self.route_len.get(b["ptr"]) if self.route_len else None
+            if d is None:                                   # no route (yet): straight line, after the routed ones
+                d = 2.0 * math.hypot(b["pos"][0] - px, b["pos"][2] - pz) + 5000.0
+            return d
+        cands = [b for b in standing if cost(b) < BONUS_RANGE]
         if not cands:
+            self.stats["bonus_target"] = None
             return None
-        b = min(cands, key=lambda b: math.hypot(b["pos"][0] - px, b["pos"][2] - pz))
+        b = min(cands, key=cost)
         d = math.hypot(b["pos"][0] - px, b["pos"][2] - pz)
         level = abs(b["pos"][1] - py) < BONUS_LEVEL_DY          # on its level, right at it: take it
         walk = d > BONUS_TAKE or not level
         if walk and not BONUS_WALK:
             return None
-        self.stats["bonus_target"] = f"{b['ptr']:#x} d {d:.0f}" + (" walk" if walk else "")
+        self.stats["phase"] = "gather_time"
+        self.stats["bonus_target"] = f"{b['ptr']:#x} d {d:.0f} route {cost(b):.0f}" + (" walk" if walk else " take")
+        self.nearest_eta = cost(b) / RUN_SPEED
+        self.stats["nearest_eta_s"] = round(self.nearest_eta, 1)
         return {"slot": f"bonus {b['ptr']:#x}", "ptr": b["ptr"], "pos": b["pos"], "aim_h": 0.0, "r": b.get("r"),
-                "kind": "time", "walk": walk}
+                "kind": b.get("kind", "time"), "walk": walk}
+
+    @staticmethod
+    def _threat(p, e) -> bool:
+        """A Majini worth stopping for: within FIGHT_R and in front (he blocks the way), or right on top of him."""
+        px, _, pz = p["pos"]
+        d = math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+        if d < ON_TOP_R:
+            return True
+        off = abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"]))
+        return d < FIGHT_R and off < FIGHT_CONE
+
+    def _heal(self, p, snap, now):
+        """Below HEAL_AT of his health, with a healing item (HEAL_IDS) in a quick slot: the D-pad uses it (once a
+        4 s); one in a corner slot can't be quick-used (logged). Unknown item ids are logged for the table."""
+        inv = snap.get("inventory") or ()
+        items = [s for s in inv if s["type"] != 1]
+        if items:
+            self.stats["items"] = ", ".join(f"{s['id']:#x}x{s['rounds']}@{s['slot']}" for s in items)
+        hp, hp_max = p.get("hp") or 0, p.get("hp_max") or 0
+        if hp_max <= 0 or hp > HEAL_AT * hp_max or now - self.heal_at < 4.0 or p.get("action") == P_GRABBED:
+            return None
+        heals = [s for s in items if s["id"] in HEAL_IDS]
+        if not heals:
+            return None
+        quick = next((s for s in heals if s["slot"] in QUICK), None)
+        if quick is None:
+            self.stats["heal_out_of_reach"] = heals[0]["slot"]
+            return None
+        self.heal_at = now
+        self.stats["heals"] = self.stats.get("heals", 0) + 1
+        return {"tap": QUICK[quick["slot"]]}
 
     def _take(self, p, tgt, stage_prompt, now) -> dict:
         """At a time bonus: square when its prompt ("□ Time bonus") is up, else face it and edge up to it; a bonus
@@ -620,18 +791,23 @@ class Bot:
         return {"rleft"} if err > 0 else {"rright"}         # left = larger heading (measured)
 
     def _walk(self, p, want: float, now: float) -> set:
+        """Run toward a heading: turn first (the body turns in place), run (up + cross) once within 60 deg. Stuck
+        (pushing forward STUCK_S without STUCK_MOVE of ground): a step back and aside for 0.8 s. Turning in place
+        is never "stuck" (live 2026-10-21: it was, and the walk thrashed)."""
         px, py, pz = p["pos"]
         if now < self.unstick_until:
-            return {"lup", "cross", "lleft" if self.unstick_dir > 0 else "lright"}
+            return {"ldown", "lleft" if self.unstick_dir > 0 else "lright"}
+        err = wrap(want - p["rot"])
+        keys = self._turn(err, aiming=False)
+        if abs(err) >= math.radians(60):
+            self.hist = []
+            return keys
+        keys |= {"lup", "cross"}                            # run (up + cross)
         self.hist = [h for h in self.hist if now - h[0] < STUCK_S + 0.3] + [(now, px, pz)]
         if now - self.hist[0][0] >= STUCK_S and math.hypot(px - self.hist[0][1], pz - self.hist[0][2]) < STUCK_MOVE:
             self.hist, self.unstick_dir = [], -self.unstick_dir
             self.unstick_until = now + 0.8
             self.stats["stuck"] += 1
-        err = wrap(want - p["rot"])
-        keys = self._turn(err, aiming=False)
-        if abs(err) < math.radians(60):
-            keys |= {"lup", "cross"}                        # run (up + cross)
         return keys
 
     def _score_hits(self, snap):
@@ -685,8 +861,10 @@ class RE5PS3(Driver):
         return [tuple(str(button).split("+"))]
 
     def progress(self, snap: dict) -> dict:
+        if ROSTER.round is None and snap.get("player"):
+            ROSTER.started()
         return {"timer": snap.get("timer"), "combo": snap.get("combo"), "score": snap.get("score"),
-                "kills": snap.get("kills")}
+                "kills": snap.get("kills"), **ROSTER.observe(snap)}
 
 
 DRIVER = RE5PS3
