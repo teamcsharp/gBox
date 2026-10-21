@@ -318,6 +318,10 @@ def test_time_bonuses_are_read_from_the_om_line(monkeypatch):
 
 def test_it_shoots_a_time_bonus_when_no_majini_is_close(monkeypatch):
     monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
+    assert R.BONUS_HUNT is False                                                  # off until it is known what takes one
+    act, bot = tick(with_bonuses(world(action=2, enemies=[((3000.0, 0.0, 0.0), 800, 800)]), [(0.0, 20.0, 600.0)]))
+    assert not str(bot.target).startswith("bonus")
+    monkeypatch.setattr(R, "BONUS_HUNT", True)
     far_majini = [((3000.0, 0.0, 0.0), 800, 800)]                                # 30 m away at +x
     want = math.atan2(20.0 - R.GUN_H, 600.0)                                      # an hourglass 6 m ahead, 20 cm up
     act, bot = tick(with_bonuses(world(action=2, pitch_raw=-want, enemies=far_majini), [(0.0, 20.0, 600.0)]))
@@ -334,6 +338,7 @@ def test_it_shoots_a_time_bonus_when_no_majini_is_close(monkeypatch):
 
 def test_a_bonus_shots_cannot_take_is_left_alone_for_a_while(monkeypatch):
     monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
+    monkeypatch.setattr(R, "BONUS_HUNT", True)
     want = math.atan2(20.0 - R.GUN_H, 600.0)
     clock = [100.0]
     bot = R.Bot(clock=lambda: clock[0])
@@ -347,6 +352,7 @@ def test_a_bonus_shots_cannot_take_is_left_alone_for_a_while(monkeypatch):
 
 def test_far_bonuses_are_walked_to_and_the_clock_jumps_are_counted(monkeypatch):
     monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
+    monkeypatch.setattr(R, "BONUS_HUNT", True)
     act, bot = tick(with_bonuses(world(), [(0.0, 0.0, 2500.0)]))                  # 25 m ahead, nobody near, no mesh
     assert {"lup", "cross"} <= act["hold"]                                        # straight at it
     monkeypatch.setattr(R, "BONUS_WALK", False)
@@ -399,6 +405,21 @@ def test_the_navmesh_routes_over_a_ladder_and_the_bot_takes_it():
     assert bot._follow(p, tgt, mesh, False, 50.5) == {"hold": {"lup"}}           # on to the edge
     assert bot._follow(p, tgt, mesh, True, 50.6) == {"tap": "square"}            # the prompt: climb down
     assert bot.stats["climbs"] == 1
+    ladder = next(w for w in route if abs(w[1] + 150.0) < 1)
+    assert mesh.route((0.0, 0.0, 100.0), (0.0, -300.0, 1500.0), avoid=[ladder]) is None   # the only way down
+
+
+def test_a_crossing_without_its_prompt_is_avoided():
+    mesh = strip_mesh()
+    t = [10.0]
+    bot = R.Bot(clock=lambda: t[0])
+    tgt = {"ptr": 0x3040_0000, "pos": (0.0, -300.0, 1500.0), "kind": "time", "walk": True}
+    p = {"pos": (0.0, 0.0, 790.0), "rot": 0.0, "action": 0}
+    bot._follow(p, tgt, mesh, False, t[0])
+    bot.route = [w for w in bot.route if w[2] >= 780.0]
+    assert bot._follow(p, tgt, mesh, False, 10.1) == {"hold": {"lup"}}           # waits at the edge for the prompt
+    assert bot._follow(p, tgt, mesh, False, 10.1 + R.CLIMB_WAIT_S + 0.1) == {"hold": set()}   # none: avoided
+    assert bot.stats["crossings_avoided"] == 1 and len(bot.avoid) == 1
 
 
 def boot(names, line=26):

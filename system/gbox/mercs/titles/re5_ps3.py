@@ -51,6 +51,7 @@ STUCK_S, STUCK_MOVE = 1.0, 60.0
 # units of sUnit's move line 12 ("OM"), told by their vtable.
 OM_LINE, OM_MAX = 12, 600
 HOURGLASS_VT = 0x015EF5E0              # uOm0100's vtable (BLUS30491 app 01.01; read live 2026-10-21)
+HG_CENTRE_DY = 13.0                    # its middle, above its position (+0x30)
 HG_CENTRE, HG_KIND = 0x250, 0x194      # +0x250 f32 x4 bounding sphere (centre, radius: 28 cm, 13 cm above the origin);
                                        # +0x194 u32 0x00KK..01: 0x90 on 2 of Public Assembly's 9, 0xA0 on the other 7
 BONUS_SHOOT = 2200.0                   # shoot a time bonus from up to this (the Gatling's reach)...
@@ -58,11 +59,16 @@ BONUS_DY = 520.0                       # ...and this far above / below (one lowe
 CLEAR_R = 700.0                        # ...when no Majini is nearer than this
 BONUS_GIVE_UP_S, BONUS_SKIP_S = 4.0, 30.0   # fired at one this long and it is still there: leave it this long
 BONUS_WALK = True                      # walk to the far ones along the game's navmesh (re5_nav)
+BONUS_HUNT = False                     # go for them at all: off until it is known what takes one (2026-10-21:
+                                       # the Gatling's fire on it from its level at 4-6 m, low knife slashes at
+                                       # 1 m, standing on it and square on it did not; the routes there work)
 BONUS_NEAR = 650.0                     # walked to within this, then shot from where he stands...
 BONUS_STEEP = math.radians(-18)        # ...no steeper than this (the aim stops near -20 deg: step back)
+BONUS_LEVEL_DY = 150.0                 # ...and from its own level (not from a roof above it)
 WP_REACHED, WP_CLIMB = 70.0, 110.0     # a waypoint is passed this close; the next one this far above / below and
                                        # (almost) straight up / down = a ladder or a drop: the stage's square prompt
-REPLAN_S, ROUTE_STALE_S = 2.0, 25.0    # the route is drawn again this often; a bonus followed this long is left
+REPLAN_S, ROUTE_STALE_S = 2.0, 40.0    # the route is drawn again this often; a bonus followed this long is left
+CLIMB_WAIT_S = 3.0                     # at a crossing this long without its prompt: the player can't take it
 
 
 def ptr_ok(p) -> bool:
@@ -119,8 +125,11 @@ def bonuses(m) -> list:
     for u in hourglass_units(m):
         if u32(m, u) != HOURGLASS_VT:                       # gone since the last walk
             continue
-        cx, cy, cz, r = struct.unpack(">4f", m.rd(u + HG_CENTRE, 16))
-        out.append({"ptr": u, "pos": (cx, cy, cz), "r": r, "kind": "time", "kind_word": u32(m, u + HG_KIND)})
+        x, y, z = struct.unpack(">3f", m.rd(u + 0x30, 12))
+        r = struct.unpack(">f", m.rd(u + HG_CENTRE + 12, 4))[0]
+        r = r if 5.0 < r < 100.0 else 28.0
+        out.append({"ptr": u, "pos": (x, y + HG_CENTRE_DY, z), "r": r, "kind": "time",
+                    "kind_word": u32(m, u + HG_KIND)})
     return out
 
 
@@ -390,6 +399,8 @@ class Bot:
         self.bonus_seen: set = set()
         self.last_timer = None
         self.route, self.route_for, self.route_at, self.route_since = None, None, 0.0, 0.0
+        self.avoid: list = []                  # crossings the player could not take this round (no prompt there)
+        self.climb_at = None                   # (the crossing, since when) while waiting at one for its prompt
 
     # --- the engine's brain interface ---
     def prompt_ok(self, button, snap, now) -> bool:
@@ -471,17 +482,17 @@ class Bot:
         if tgt.get("kind") == "time" and tgt_pitch < BONUS_STEEP:   # right on top of it: out of the aim's reach
             self.aiming_since = None
             return {"hold": {"ldown"} | self._turn(wrap(want - p["rot"]), aiming=False)}
-        keys = {"l1"} | self._turn(yaw_err, aiming=True)
-        if abs(pitch_err) > PITCH_TOL:
-            close = abs(pitch_err) < FINE
-            self.pulse ^= 1
-            if not close or self.pulse:
-                keys.add("rup" if pitch_err > 0 else "rdown")
         tol = max(AIM_TOL, math.atan2(BODY_R, max(dist, 1.0)))   # close up the body is wide
         ptol = max(PITCH_TOL * 2, tol)                      # a body is tall
         if tgt.get("kind") == "time":                       # an hourglass (25 cm on the ground): the crosshair
             tol = ptol = max(math.radians(0.4),             # inside half its radius, seen from the camera
                              math.atan2(0.5 * (tgt.get("r") or 25.0), max(sight, 1.0)))
+        keys = {"l1"} | self._turn(yaw_err, aiming=True, tol=min(AIM_TOL, 0.7 * tol))
+        if abs(pitch_err) > min(PITCH_TOL, 0.7 * ptol):    # corrected inside the shot's own tolerance
+            close = abs(pitch_err) < FINE
+            self.pulse ^= 1
+            if not close or self.pulse:
+                keys.add("rup" if pitch_err > 0 else "rdown")
         if abs(yaw_err) <= tol and abs(pitch_err) <= ptol and dist <= SHOOT_RANGE:
             keys.add("r1")                                  # on him: fire
             self.stats["shots_s"] = round(self.stats["shots_s"] + 0.05, 2)
@@ -508,7 +519,7 @@ class Bot:
             self.stats["bonuses_taken"] = self.stats.get("bonuses_taken", 0) + len(taken)
         self.bonus_seen = now_ptrs
         standing = [b for b in standing if self.bonus_skip.get(b["ptr"], 0.0) <= now]
-        if not standing:
+        if not standing or not BONUS_HUNT:
             return None
         near = min((math.hypot(e["pos"][0] - px, e["pos"][2] - pz) for e in live), default=math.inf)
         if near < CLEAR_R:
@@ -518,7 +529,8 @@ class Bot:
             return None
         b = min(cands, key=lambda b: math.hypot(b["pos"][0] - px, b["pos"][2] - pz))
         d = math.hypot(b["pos"][0] - px, b["pos"][2] - pz)
-        walk = d > BONUS_NEAR if BONUS_WALK else False
+        level = abs(b["pos"][1] - py) < BONUS_LEVEL_DY          # on its level: shot from here (else too steep)
+        walk = (d > BONUS_NEAR or not level) if BONUS_WALK else False
         if not BONUS_WALK and d > BONUS_SHOOT:
             return None
         self.stats["bonus_target"] = f"{b['ptr']:#x} d {d:.0f}" + (" walk" if walk else "")
@@ -538,7 +550,7 @@ class Bot:
             self.route_for = None
             return {"hold": set()}
         if mesh is not None and (self.route is None or now - self.route_at > REPLAN_S):
-            self.route, self.route_at = mesh.route(pos, tgt["pos"]), now
+            self.route, self.route_at = mesh.route(pos, tgt["pos"], avoid=self.avoid), now
         if not self.route:                                  # no mesh, or no way there: straight at it
             return {"hold": self._walk(p, heading(tgt["pos"][0] - pos[0], tgt["pos"][2] - pos[2]), now)}
         while len(self.route) > 1 and math.hypot(self.route[0][0] - pos[0], self.route[0][2] - pos[2]) < WP_REACHED \
@@ -551,6 +563,18 @@ class Bot:
             if stage_prompt:
                 self.stats["climbs"] = self.stats.get("climbs", 0) + 1
                 return {"tap": "square"}
+            if self.climb_at is None or math.dist(self.climb_at[0], w) > 60.0:
+                self.climb_at = (w, now)
+            elif now - self.climb_at[1] > CLIMB_WAIT_S:        # no prompt here: a crossing only the Majini take
+                self.avoid.append(w)
+                self.stats["crossings_avoided"] = self.stats.get("crossings_avoided", 0) + 1
+                self.climb_at, self.route = None, None
+                return {"hold": set()}
+            beyond = next((v for v in self.route[1:] if math.hypot(v[0] - w[0], v[2] - w[2]) > 50.0), None)
+            way = heading(beyond[0] - pos[0], beyond[2] - pos[2]) if beyond else heading(w[0] - pos[0], w[2] - pos[2])
+            err = wrap(way - p["rot"])
+            if abs(err) > math.radians(25):                 # face the way down first: the prompt wants it
+                return {"hold": self._turn(err, aiming=False)}
             return {"hold": {"lup"}}                        # on to the edge until the prompt shows
         return {"hold": self._walk(p, heading(w[0] - pos[0], w[2] - pos[2]), now)}
 
@@ -561,8 +585,8 @@ class Bot:
         off = abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"]))
         return d * (1.0 + off / math.pi)                    # near and in front first
 
-    def _turn(self, err: float, aiming: bool) -> set:
-        tol = AIM_TOL if aiming else TURN_TOL
+    def _turn(self, err: float, aiming: bool, tol: float | None = None) -> set:
+        tol = tol if tol is not None else (AIM_TOL if aiming else TURN_TOL)
         if abs(err) <= tol:
             return set()
         if abs(err) < FINE:                                 # close: pulse, no overshoot

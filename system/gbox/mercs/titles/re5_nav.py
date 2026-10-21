@@ -25,6 +25,7 @@ LINK_SIZE = 0x10
 MAX_POINTS, MAX_NODES = 20000, 30000
 CELL = 400.0                                           # the grid that finds a position's triangle (cm)
 Y_SLACK = 160.0                                        # a triangle holds a position this far above / below it
+AVOID_R = 60.0                                         # a crossing to avoid: its portal within this
 
 
 def _ok(p) -> bool:
@@ -104,9 +105,11 @@ class NavMesh:
         p, q = self.points[t[edge % 3]], self.points[t[(edge + 1) % 3]]
         return tuple((p[k] + q[k]) / 2.0 for k in range(3))
 
-    def route(self, start, goal) -> list | None:
+    def route(self, start, goal, avoid=()) -> list | None:
         """Waypoints from start to goal (positions): the shared edges' midpoints along the cheapest triangle path, then
-        the goal itself; [] when both are on one triangle; None when the mesh has no way there."""
+        the goal itself; [goal] when both are on one triangle; None when the mesh has no way there. avoid: positions
+        of crossings the player could not take (an AI-only drop or climb): links through a portal within AVOID_R of
+        one are left out."""
         a, b = self.find(start), self.find(goal)
         if a is None or b is None:
             return None
@@ -125,6 +128,8 @@ class NavMesh:
             cu = self.centre[u]
             for v, edge, _cost in self.links[u]:
                 if not 0 <= v < len(self.tris):
+                    continue
+                if avoid and any(math.dist(self._portal(u, edge), q) < AVOID_R for q in avoid):
                     continue
                 cv = self.centre[v]
                 nd = dist[u] + math.dist(cu, cv)
