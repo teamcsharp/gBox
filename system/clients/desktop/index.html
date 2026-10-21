@@ -1225,6 +1225,7 @@ window.taskVizCreate = canvas => {
 <script src="../web/viz/live-controls.js"></script>
 <script src="../web/viz/build-actions.js"></script>
 <script src="../web/viz/game-menu.js"></script>
+<script src="../web/viz/bot-demo.js"></script>
 <script src="../web/viz/game-assets.js"></script>
 <script src="../web/viz/build-shot.js"></script>
 <script src="../web/viz/build-local.js"></script>
@@ -3817,6 +3818,8 @@ function pipMenu(x, y) {
                  ["pwrclick", `⌖ Right-click a character: character menu (${GBoxPickWhip.settings().rclick ? "on" : "off"})`],
                  ["pwpause", `⏸ Pause the game while picking (${GBoxPickWhip.settings().pause ? "on" : "off"})`],
                  ["ask", "❓ Ask a question…"], ["-"],
+                 // "🤖 Bot demo on <PC>" for this game, every online PC (this one included): it plays itself from boot
+                 ...(EMB.game ? botDemoItems().map(p => [`bot:${p.name}`, esc(p.label)]) : []), ...(EMB.game && botDemoItems().length ? [["-"]] : []),
                  ["save", "💾 Save state", noStates], ["load", "📂 Load state", noStates], ["slot+", `Save slot: ${GM.slot}  ▸ next`, noStates], ["slot-", "Save slot ◂ previous", noStates],
                  ["strip", "⏪ Rewind / save-state film strip", noStates], ...(/phantasy star/i.test(EMB.title || "") ? [["items", "🎒 Items & equipment…"]] : []),
                  ...(RI.cur ? [["reinv", "🎒 Inventory (change / give items)…"]] : []),
@@ -3893,6 +3896,7 @@ function gameSettings(anchor) {
 }
 async function gameAction(a) {
   try {
+    if (a.startsWith("bot:")) return botDemoInView(EMB.game, a.slice(4));   // "🤖 Bot demo on <PC>" for this game
     if (a === "autoplay" || a === "autoplay+" || a === "autoplay-replay") {
       // autoplay also starts from the pad chord and stops when you touch the pad: ask the worker, not a local flag
       const st = await gameJob("autoplay", { op: "status" }).catch(() => null);
@@ -4137,6 +4141,7 @@ setInterval(() => { const wv = document.querySelector("#wv"); if (wv && !wv._gbo
     else if (m.ev === 'emulationissue') reportEmulationIncident(m.sid, m.action);
     else if (m.ev === 'emulationreport') evRequest(m.requestId);
     else if (m.ev === "gameclick") closePops(null);
+    else if (m.ev === "gamefocus") gameFocus();          // a coach note sent: a bot demo here gets the keyboard back
     else if (m.ev === 'operationconsole') GAME_OUTPUT.ingest(m.event);
     else if (m.ev === "layout") { if (EMB.pid && EMB.surface !== "gpu") embedSoon(); }   // a menu over the docked game opened/closed
     else if (m.ev === "gamemodelpick") gbox.overlay("pick", { sid: m.sid, point: m.point });
@@ -5824,12 +5829,14 @@ function chipMenu(chip, e) {                                   // a conversation
     <button class="act" data-cast style="width:100%;text-align:left;margin-top:4px">Replace entire cast with…</button>
     <button class="act" data-assets style="width:100%;text-align:left;margin-top:4px">Extract game assets...</button>
     <button class="act" data-open style="width:100%;text-align:left;margin-top:4px">Open the conversation</button>
+    <div data-chip-bot style="display:flex;flex-direction:column;gap:4px;margin-top:6px">${window.GBoxBotDemo ? GBoxBotDemo.itemsHTML(botDemoItems()) : ""}</div>
     <div data-chip-special style="margin-top:6px"></div>`;
   fitMenu(m, e.clientX, e.clientY, 8, 40);
   // the library game menu's "Special builds ▸" section (../web/viz/game-menu.js mountSpecial), same actions and state
   GBoxGameMenu.mountSpecial(chipSpecialIO(m), m.querySelector("[data-chip-special]"), { gid: chip.dataset.g, title: chip.dataset.t });
   m.onclick = ev => { if (ev.target.closest("[data-chip-special]")) return; const b = ev.target.closest("button"); if (!b) return; m.style.display = "none";
     if (b.dataset.load !== undefined) playInView(chip.dataset.g);
+    else if (b.dataset.botDemo) botDemoInView(chip.dataset.g, b.dataset.botDemo);       // "🤖 Bot demo on <PC>"
     else if (b.dataset.cast !== undefined) castSwapOpen(chip.dataset.g, chip.dataset.t);
     else if (b.dataset.assets !== undefined) gameAssetsOpen(chip.dataset.g, chip.dataset.t).catch(error=>toast(error.message,8000));
     else chip.closest(".ci")?.click(); };
@@ -5893,6 +5900,27 @@ async function retargetOpen(o) {
     drag: dragAnywhere, confirm: s => confirm(s), onSaved: st => toast(`Retarget profile saved for ${st.name || st.slug}: the next build uses it`, 6000),
     onRebuild: (r, st) => { toast(`Rebuilding ${st.slot} with ${st.name || st.slug}: the Fitting pop-up follows it`, 6000);
       if (PROCESS_POPUP) PROCESS_POPUP.follow((r.job_ids || [])[0]); } }, o);
+}
+// ---- bot demos on any PC (../web/viz/bot-demo.js): "🤖 Bot demo on <PC>" in the docked game's right-click menu and a
+// conversation's game chip, every online PC (this one included). The launch goes through the embedded view's play()
+// (node=<PC>, autoplay on): your own launch, so no idle-PC admission; the Sessions header there says "🤖 Bot demo".
+const BOTPCS = { list: [], at: 0 };
+function botDemoItems() {
+  if (Date.now() - BOTPCS.at > 15000) {                         // refresh in the background; the menu shows the last list
+    BOTPCS.at = Date.now();
+    gbox.api("/api/workers").then(r => { if (r?.ok) BOTPCS.list = r.data || []; }).catch(() => {});
+  }
+  return window.GBoxBotDemo ? GBoxBotDemo.pcs(BOTPCS.list, S?.workerName) : [];
+}
+setTimeout(() => { try { botDemoItems(); } catch {} }, 5000);   // the list is there by the first right-click
+function botDemoInView(gid, pc) {
+  if (!gid || !pc) return;
+  document.querySelector('aside button[data-s="play"]')?.click();
+  const run = () => $("#wv")?.executeJavaScript(`typeof botDemoLaunch === "function" && botDemoLaunch(${JSON.stringify(gid)}, ${JSON.stringify(pc)})`).catch(() => {});
+  const wv = $("#wv");
+  if (wv?.dataset.ready === "true") run();
+  else setTimeout(() => { const w = $("#wv"); if (w) w.addEventListener("dom-ready", run, { once: true }); }, 300);
+  toast(`🤖 Bot demo of this game on ${pc}: it plays itself from boot`);
 }
 function playInView(gid) {                                     // ask the embedded gBox view to launch a game
   document.querySelector('aside button[data-s="play"]')?.click();

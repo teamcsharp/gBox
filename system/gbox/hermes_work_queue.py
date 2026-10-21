@@ -83,6 +83,13 @@ def _on_main():
     return {rid for rid, value in data.get('reported', {}).items() if value.startswith('on_main:')}
 
 
+def is_live_coaching(request) -> bool:
+    """An autoplay coaching ticket (gbox/coaching.py: source "coach", context.coaching): the operator's notes while a
+    bot plays, surfaced to the agents note by note (operator 2026-10-20: "improve things in realtime via live
+    reporting"). The Hermes queue never takes it, and list_requests leaves it out unless asked for."""
+    return request.get('source') == 'coach' or (request.get('context') or {}).get('coaching') is True
+
+
 def sync(data, favorites, requests, *, now):
     """Inventory every durable favorite, including missing catalog entries."""
     if (not isinstance(favorites, dict) or not isinstance(favorites.get('items'), list)
@@ -129,6 +136,13 @@ def sync(data, favorites, requests, *, now):
                           and request.get('source') not in {'characters', 'gap', 'system', 'automation', 'agent', 'review'})
         if ((request.get('automated') and not repair and not operator_child and not actionable)
                 or body.startswith(('gBox request review', '<agent-message', '<task-notification'))):
+            continue
+        if is_live_coaching(request):
+            # the operator's coaching notes while autoplay plays (gbox/coaching.py) are live reporting for the agents
+            # at the inbox hook (scripts/agent_ledger.py), note by note: never a bulk Hermes run that takes the ticket
+            old = data['items'].get('inbox:' + request['id'])
+            if old is not None and old.get('dispatch_state') not in ('queued', 'uncertain'):
+                data['items'].pop('inbox:' + request['id'], None)
             continue
         if request.get('status') not in ('open', 'in_progress'):
             continue
@@ -257,6 +271,8 @@ def candidates(data, requests, native, owned, on_main, *, now):
                 or item.get('request_uncertain') or item.get('dispatch_state') in ('queued', 'uncertain')):
             continue
         req = by_id.get(rid, {})
+        if item.get('lane') == 'inbox' and is_live_coaching(req):
+            continue                                       # live coaching: the agents' inbox hook, never Hermes
         from . import hermes_result_review
         item['review_hold'] = hermes_result_review.gate(item)
         if item['review_hold']:
