@@ -182,24 +182,26 @@ def test_actual_mouse_hook_does_not_dismiss_popups_through_game_region_holes(hit
 def test_triple_click_on_the_docked_game_asks_for_picture_in_picture_and_passes_every_click_through():
     """Operator 2026-10-21: triple-click the game display -> PiP. The hook reports it ("piptriple"), never swallows."""
     proc, emitted, MS, w = mouse_hook(GAME, APP, False)
+    def click(t):
+        event = MS(w.POINT(75, 75), 0, 0, t, 0)                   # a name keeps it alive while proc reads its address
+        return proc(0, 0x201, ctypes.addressof(event))
     for t in (1000, 1150, 1300):
-        assert proc(0, 0x201, ctypes.addressof(MS(w.POINT(75, 75), 0, 0, t, 0))) == 73, "the game gets the click"
+        assert click(t) == 73, "the game gets the click"
     assert emitted == [{"event": "gameclick"}] * 2 + [{"event": "piptriple"}, {"event": "gameclick"}]
     emitted.clear()                                               # a slow third click starts a new run
     for t in (5000, 5150, 6000):
-        proc(0, 0x201, ctypes.addressof(MS(w.POINT(75, 75), 0, 0, t, 0)))
+        click(t)
     assert {"event": "piptriple"} not in emitted
 
 
 def test_triple_click_is_not_counted_in_compact_mode_or_off_the_game():
-    proc, emitted, MS, w = mouse_hook(GAME, APP, False, compact_on=True)
-    for t in (1000, 1150, 1300):
-        proc(0, 0x201, ctypes.addressof(MS(w.POINT(75, 75), 0, 0, t, 0)))
-    assert {"event": "piptriple"} not in emitted, "in PiP the double click restores (compact_click), no triple"
-    proc, emitted, MS, w = mouse_hook(555, APP, False)            # a popup over the game's region
-    for t in (1000, 1150, 1300):
-        proc(0, 0x201, ctypes.addressof(MS(w.POINT(75, 75), 0, 0, t, 0)))
-    assert emitted == []
+    for args, kw in (((GAME, APP, False), {"compact_on": True}), ((555, APP, False), {})):   # PiP on / a popup over the game
+        proc, emitted, MS, w = mouse_hook(*args, **kw)
+        events = [MS(w.POINT(75, 75), 0, 0, t, 0) for t in (1000, 1150, 1300)]               # kept alive while proc reads them
+        for e in events:
+            proc(0, 0x201, ctypes.addressof(e))
+        assert {"event": "piptriple"} not in emitted, (args, kw, emitted)
+    assert emitted == [], "nothing at all for a click on a popup"
 
 
 def mouse_hook(hit, root, is_child, compact_on=False):
