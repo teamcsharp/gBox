@@ -97,7 +97,8 @@ up on the game by the very game hook and ram / hex signature ... from the intern
 - **`play()`**: the early ops, then the boot loop (`mercs_bot.Boot`: one press at a time from `menus.step`, the menu
   moment and the hooks once at `jump_at`). Each time the screen says `playing` it calls
   `engine.play_round(profile, m, send, stopped, stats, lessons)`: "round" goes back to the menus for the next one,
-  "lost" ends the run with `stats["hung"]` (a demo is relaunched into its menu moment), "stopped" ends it. `lessons` is
+  "lost" ends the run with `stats["hung"]` (a demo is relaunched into its menu moment), "stopped" ends it. Each round's
+  frames also go to the tactical map beside the stream (`tactical=`, docs/tactical_map.md). `lessons` is
   `entry -> gbox.mercs.lessons.append(map_id, entry, run=<this run>)`.
 - **Until the engine is installed and `engine.READY`**, `mercs_bot.matches()` is false and each title keeps its own
   playbook (RE4: re4_merc_bot, whose menus run on the same `Boot`).

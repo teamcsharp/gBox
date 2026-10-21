@@ -299,10 +299,19 @@ def setup(ad) -> list[str]:
     return []                                               # play() applies the profile's ops: it knows the game
 
 
+def tactical_publisher(sink, prof: dict):
+    """The tactical map's publisher for this title (gbox.mercs.tactical) over the worker's sink, or None (no sink)."""
+    if sink is None:
+        return None
+    from .mercs import tactical as T
+    return T.Publisher(sink, prof["map_id"], prof.get("units") or T.units_for(prof["map_id"]))
+
+
 def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sleep, clock=time.time, m=None,
-         **_kw) -> dict:
+         tactical=None, **_kw) -> dict:
     """Boot to a round from RAM, hand each round to the engine, back to the menus for the next; stats is filled
-    live (screen, cursor, menu_presses, rounds, ram_progress, hooks, menu_moment; hung + wandered when it ends early)."""
+    live (screen, cursor, menu_presses, rounds, ram_progress, hooks, menu_moment; hung + wandered when it ends early).
+    tactical: the tactical map's sink (gbox.mercs.tactical.HttpSink): each round's frames, the screen between rounds."""
     stats = stats if stats is not None else {}
     prof = profile_for(ad, game or {})
     if prof is None:
@@ -323,25 +332,32 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
     lessons = lessons_writer(prof["map_id"], run)
     stats.setdefault("rounds", 0)
     stats["profile"] = prof["map_id"]
+    pub = tactical_publisher(tactical, prof)
     fresh = True                                            # a round counts once, however often the engine hands back
-    while not stopped():
-        scr = menus.screen(m)
-        if scr.get("where") == "playing" and E is not None:
-            if fresh:
-                stats["rounds"] += 1
-                fresh = False
-            out = E.play_round(prof, m, send, stopped, stats, lessons)
-            if out == "lost":
-                stats.update(hung=True, wandered="the round was lost (no player, or black too long)")
+    try:
+        while not stopped():
+            scr = menus.screen(m)
+            if scr.get("where") == "playing" and E is not None:
+                if fresh:
+                    stats["rounds"] += 1
+                    fresh = False
+                out = E.play_round(prof, m, send, stopped, stats, lessons, **({"tactical": pub} if pub else {}))
+                if out == "lost":
+                    stats.update(hung=True, wandered="the round was lost (no player, or black too long)")
+                    break
+                if out == "stopped":
+                    break
+                sleep(POLL_S)                               # never a busy loop on an engine that hands straight back
+                continue
+            fresh = True
+            if pub is not None:
+                pub.idle(scr.get("where"))                  # the map says where the game is between rounds
+            why = boot.tick(clock(), scr=scr)
+            if why:
+                stats.update(hung=True, wandered=why)
                 break
-            if out == "stopped":
-                break
-            sleep(POLL_S)                                   # never a busy loop on an engine that hands straight back
-            continue
-        fresh = True
-        why = boot.tick(clock(), scr=scr)
-        if why:
-            stats.update(hung=True, wandered=why)
-            break
-        sleep(POLL_S)
+            sleep(POLL_S)
+    finally:
+        if pub is not None:
+            pub.close()
     return stats
