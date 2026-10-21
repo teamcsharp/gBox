@@ -1,11 +1,11 @@
 """DOA3 (USA, Xbox) costume writer: re-encode a native costume XPR0 with replaced parts and textures.
 
-Layout rules, measured on the 68 parseable owned costumes (lei04's descriptor table is not parsed yet) and pinned
-by ``doa3_cast``:
+Layout rules, measured on the 69 owned costumes and pinned by ``doa3_cast``:
 
 * Header: ``XPR0``, total, header_size, ``{0x80000000, mdl_size}``, ``MDL\\0``, {obj_count, tex_count, unknown,
   obj_count}, the absolute OBJ pointer table and its zero terminator, then the OBJ records back to back (each
-  4-aligned: a 2-byte pad follows an odd index count). ``mdl_size`` = end of the last OBJ record - 0x14 (68/68).
+  4-aligned: a 2-byte 0x7777 pad follows an odd index count, also behind the last record). ``mdl_size`` = the
+  4-aligned end of the last OBJ record - 0x14 (69/69; lei04's last record has an odd index count).
 * OBJ record: ``OBJ\\0``, 0, 0, vertex groups (lo16 + hi16 = vertex count; 0 high group here), vertex count,
   absolute vertex offset, index count, absolute index offset, 12 zero words, a bounding sphere, the material chain,
   ``{0, 0x12345678}`` and the u16 index buffer.
@@ -355,11 +355,10 @@ def encode_costume(template: bytes, parts: dict[int, dict] | None = None, textur
         end = iptr + 2 * len(rec["indices"])
         layout.append((cursor, iptr))
         cursor = _align(end, 4)
-    last_end = layout[-1][1] + 2 * len(records[-1]["indices"])
-    if last_end % 4:
-        raise ValueError("the last OBJ record must end 4-aligned (native costumes all do)")
+    # the MDL data and the descriptor table behind it end/start 4-aligned (lei04's last record is 2 bytes short)
+    mdl_end = _align(layout[-1][1] + 2 * len(records[-1]["indices"]), 4)
     tail = C.VERTEX_DESC_BYTES * obj_count + C.TEXTURE_DESC_BYTES * tex_count + 4
-    hsize = _align(_align(last_end, 4) + tail, HEADER_ALIGN)
+    hsize = _align(mdl_end + tail, HEADER_ALIGN)
 
     # ---- data layout
     vertex_offsets, data_cursor = [], 0
@@ -375,7 +374,7 @@ def encode_costume(template: bytes, parts: dict[int, dict] | None = None, textur
 
     out = bytearray(total)
     struct.pack_into("<4sII", out, 0, C.XPR_MAGIC, total, hsize)
-    struct.pack_into("<II", out, 0x0C, C.USER_TYPE, last_end - C.MDL_CHUNK)
+    struct.pack_into("<II", out, 0x0C, C.USER_TYPE, mdl_end - C.MDL_CHUNK)
     out[C.MDL_CHUNK:C.MDL_CHUNK + 4] = C.MDL_TAG
     struct.pack_into("<4I", out, C.MDL_CHUNK + 4, obj_count, tex_count, chunk["unknown"], obj_count)
     struct.pack_into(f"<{obj_count}I", out, table_off, *offsets)
@@ -390,7 +389,7 @@ def encode_costume(template: bytes, parts: dict[int, dict] | None = None, textur
         struct.pack_into(f"<{len(rec['indices'])}H", out, iptr, *rec["indices"])
         end = iptr + 2 * len(rec["indices"])
         out[end:_align(end, 4)] = RECORD_PAD * (_align(end, 4) - end)
-    p = last_end
+    p = mdl_end
     for off in vertex_offsets:
         struct.pack_into("<3I", out, p, C.VERTEX_DESC_FLAG, off, 0)
         p += C.VERTEX_DESC_BYTES

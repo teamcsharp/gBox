@@ -174,8 +174,9 @@ def xpr_resources(blob: bytes) -> dict:
     if tag != MDL_TAG:
         raise ValueError(f"XPR0 user resource tag is {tag!r}, not {MDL_TAG!r}")
     # The MDL user data is the header's own records: it starts at its tag (0x14) and ends where the descriptor
-    # table begins (0x14 + size = end of the last OBJ record on 68/68 owned costumes), inside the header. An
-    # earlier reading placed it at header_size, which only held because costume data regions are large.
+    # table begins (0x14 + size = the 4-aligned end of the last OBJ record on 69/69 owned costumes; lei04's last
+    # record ends 2 bytes short of it, behind a 0x7777 pad), inside the header. An earlier reading placed it at
+    # header_size, which only held because costume data regions are large.
     mdl_start, mdl_end = MDL_CHUNK, MDL_CHUNK + rsize
     if mdl_end > hsize:
         raise ValueError(f"XPR0 MDL user data [{mdl_start:#x}, {mdl_end:#x}) extends outside the header {hsize:#x}")
@@ -561,14 +562,20 @@ def mdl_descriptor_table(blob: bytes) -> dict:
       0x81}, byte 3 in {0x04..0x08}; its D3D surface semantics (width/height/
       pixel format) are still unresolved and must come from the XBE loader.
     * a ``0xFFFFFFFF`` terminator word, then ``0xAD`` debug fill to header_size.
+
+    The table starts 4-aligned: a last OBJ record with an odd index count (lei04) ends 2 bytes short, and a
+    ``0x7777`` pad fills the gap, as between records.
     """
     total, hsize = struct.unpack_from("<II", blob, 4)
     geometry = costume_geometry(blob)
     chunk = geometry["chunk"]
     vcounts = [g["vertex_count"] for g in geometry["objects"]]
     last_end = max(g["record_span"][1] for g in geometry["objects"])
+    p = (last_end + 3) // 4 * 4
+    if blob[last_end:p] != b"\x77" * (p - last_end):
+        raise ValueError(f"the pad behind the last OBJ record at {last_end:#x} is not 0x7777")
 
-    vertex, p = [], last_end
+    vertex = []
     while p + VERTEX_DESC_BYTES <= hsize and struct.unpack_from("<I", blob, p)[0] == VERTEX_DESC_FLAG:
         offset, zero = struct.unpack_from("<II", blob, p + 4)
         if zero != 0:

@@ -1,7 +1,7 @@
 """gbox.doa3_writer: costume XPR0 re-encode, strips, textures, CAT link disable and the AFS rebuild.
 
 Synthetic fixtures follow the measured costume layout (see gbox.doa3_cast / gbox.doa3_writer docstrings); the
-owned-disc identity check (68/68 costumes byte for byte) runs where the disc is present."""
+owned-disc identity check (69/69 costumes byte for byte) runs where the disc is present."""
 import os
 import struct
 from pathlib import Path
@@ -14,17 +14,20 @@ from gbox import doa3_writer as W
 from gbox.doa3_inventory import read_afs
 
 
-def _seed(obj_count: int, textures) -> bytes:
-    """Hand-laid costume: obj_count OBJs of 4 vertices / one 2-triangle strip, then the descriptor table."""
+def _seed(obj_count: int, textures, *, odd_last: bool = False) -> bytes:
+    """Hand-laid costume: obj_count OBJs of 4 vertices / one 2-triangle strip, then the descriptor table.
+    ``odd_last``: the last OBJ carries one extra index (an odd count, as on lei04), so a 0x7777 pad 4-aligns the
+    table."""
     hdr = C.MDL_CHUNK + 0x14 + 4 * obj_count + 4
     records, offsets = bytearray(), []
     mat_words = C.MAT_HEADER_WORDS + 4
     rec_len = C.MAT_HEADER_BASE + 4 * mat_words + 8 + 2 * 6
     for k in range(obj_count):
         offsets.append(hdr + k * rec_len)
-    last_end = hdr + obj_count * rec_len
+    last_end = hdr + obj_count * rec_len + (2 if odd_last else 0)
+    mdl_end = W._align(last_end, 4)
     tail = C.VERTEX_DESC_BYTES * obj_count + C.TEXTURE_DESC_BYTES * len(textures) + 4
-    hsize = W._align(last_end + tail, W.HEADER_ALIGN)
+    hsize = W._align(mdl_end + tail, W.HEADER_ALIGN)
     tex_sizes = [W.texture_info(W.texture_word(c, w, h))["size"] for c, w, h in textures]
     data = 32 * 4 * obj_count
     tex_offsets = []
@@ -35,14 +38,15 @@ def _seed(obj_count: int, textures) -> bytes:
     total = W._align(hsize + data, W.FILE_ALIGN)
     out = bytearray(total)
     struct.pack_into("<4sII", out, 0, b"XPR0", total, hsize)
-    struct.pack_into("<II", out, 0x0C, C.USER_TYPE, last_end - C.MDL_CHUNK)
+    struct.pack_into("<II", out, 0x0C, C.USER_TYPE, mdl_end - C.MDL_CHUNK)
     out[C.MDL_CHUNK:C.MDL_CHUNK + 4] = C.MDL_TAG
     struct.pack_into("<4I", out, C.MDL_CHUNK + 4, obj_count, len(textures), 1, obj_count)
     struct.pack_into(f"<{obj_count}I", out, C.MDL_CHUNK + 0x14, *offsets)
     for k, start in enumerate(offsets):
         iptr = start + C.MAT_HEADER_BASE + 4 * mat_words + 8
+        icount = 7 if odd_last and k == obj_count - 1 else 6
         out[start:start + 4] = C.OBJ_TAG
-        struct.pack_into("<7I", out, start + 4, 0, 0, 4, 4, hsize + 128 * k, 6, iptr)
+        struct.pack_into("<7I", out, start + 4, 0, 0, 4, 4, hsize + 128 * k, icount, iptr)
         struct.pack_into("<4f", out, start + 0x50, 0.5, 0.5, 0, 1)
         header = [W.MAT_PRESENT, mat_words] + [0] * 31
         header[C.MAT_WORD_MODE], header[C.MAT_WORD_PACKETS], header[30] = 1, 1, W.MAT_RENDER_DEFAULT
@@ -50,8 +54,9 @@ def _seed(obj_count: int, textures) -> bytes:
         struct.pack_into(f"<{C.MAT_HEADER_WORDS}I", out, m, *header)
         struct.pack_into("<4I", out, m + 4 * C.MAT_HEADER_WORDS, 32 * 4, 0, 2, 0)
         struct.pack_into("<II", out, iptr - 8, 0, C.MAT_TERMINATOR)
-        struct.pack_into("<6H", out, iptr, 0, 1, 2, 3, 3, 3)
-    p = last_end
+        struct.pack_into(f"<{icount}H", out, iptr, *(0, 1, 2, 3, 3, 3, 3)[:icount])
+    out[last_end:mdl_end] = b"\x77" * (mdl_end - last_end)
+    p = mdl_end
     for k in range(obj_count):
         struct.pack_into("<3I", out, p, C.VERTEX_DESC_FLAG, 128 * k, 0)
         p += C.VERTEX_DESC_BYTES
@@ -77,6 +82,21 @@ def test_seed_is_a_valid_costume_and_reencodes_byte_for_byte():
     assert geo["object_count"] == 2 and geo["triangle_total"] == 4
     assert C.mdl_descriptor_table(seed)["texture_count"] == 2
     assert W.encode_costume(seed) == seed
+
+
+def test_odd_index_count_on_the_last_record_pads_to_the_table():
+    # lei04: the last OBJ has an odd index count; a 0x7777 pad 4-aligns the descriptor table and mdl_size
+    seed = _seed(2, ((W.DXT1, 8, 8),), odd_last=True)
+    table = C.mdl_descriptor_table(seed)
+    assert table["texture_count"] == 1 and len(table["vertex_descriptors"]) == 2
+    assert W.encode_costume(seed) == seed
+    hidden = W.encode_costume(seed, hide={1})                       # the odd count survives a hide
+    assert C.mdl_descriptor_table(hidden)["texture_count"] == 1
+    broken = bytearray(seed)
+    mdl_end = C.MDL_CHUNK + struct.unpack_from("<I", seed, 0x10)[0]
+    broken[mdl_end - 2:mdl_end] = b"\0\0"
+    with pytest.raises(ValueError, match="0x7777"):
+        C.mdl_descriptor_table(bytes(broken))
 
 
 def test_texture_words_match_the_native_encoding():
@@ -289,7 +309,7 @@ def test_owned_costumes_reencode_byte_for_byte():
     with afs.open("rb") as stream:
         for e in read_afs(afs)["entries"]:
             name = e.get("name") or ""
-            if not name.endswith(".xpr") or len(name) != 9 or name == "lei04.xpr":
+            if not name.endswith(".xpr") or len(name) != 9:
                 continue
             stream.seek(e["offset"])
             blob = stream.read(e["size"])
@@ -299,4 +319,4 @@ def test_owned_costumes_reencode_byte_for_byte():
                 continue
             assert W.encode_costume(blob) == blob, name
             checked += 1
-    assert checked == 68
+    assert checked == 69
