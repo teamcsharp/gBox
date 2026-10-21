@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import struct
 import threading
+from pathlib import Path
 
 from pydantic import BaseModel
 
@@ -207,6 +208,8 @@ class RE5:
         st["unlimited_health"] = bool(self.orig.get("health", {}).get("on"))
         st["health_maintenance"] = self.orig.get("health", {}).get("last")
         st["hit_immunity"] = bool((st["health_maintenance"] or {}).get("hit_immunity"))
+        st["fire_animation_enabled"] = bool(self.orig.get("fire_animation_on"))
+        st["fire_animation_maintenance"] = self.orig.get("fire_animation_last")
         return st
 
 
@@ -391,6 +394,55 @@ def unlimited_health(g: RE5, on: bool) -> dict:
                                  "does not resurrect an already-dead player"}
 
 
+def _animation_scope(ad):
+    """A cached guest PID alone cannot distinguish exit/reuse or a save-state generation."""
+    pid, base = ad._guest()
+    if type(pid) is not int or pid <= 0 or type(base) is not int or base <= 0:
+        raise ValueError("invalid animation process identity")
+    stat = Path(f"/proc/{pid}/stat").read_text()
+    start = stat[stat.rfind(")") + 2:].split()[19]
+    return id(ad), pid, base, start, getattr(ad, "generation", 0)
+
+
+def maintain_fire_animation(ad, snap=None, *, enabled=True) -> dict:
+    """Maintain the explicit fire-rate package's bounded magnum playback component.
+
+    Unsupported adapters never acquire write access. The helper verifies exact live code, action, weapon and
+    motion identities; this wrapper also checks the current process generation immediately before every write.
+    """
+    with _HEALTH_LOCK:
+        state = ORIG.get(id(ad), {})
+        configured = bool(state.get("fire_animation_on"))
+        helper = state.get("fire_animation_helper")
+        result = {"enabled": configured and bool(enabled), "active": False, "verified": True,
+                  "writes": 0, "restored": 0, "reason": "firing animation is not enabled"}
+        if not configured and helper is None:
+            return result
+        try:
+            from .mercs.titles.re5_fire_animation import FireAnimation, MAX_MULTIPLIER
+            scope = _animation_scope(ad)
+            game = RE5(ad)
+
+            class ScopedMemory:
+                def rd(self, address, size):
+                    return game.rd(address, size)
+
+                def wr(self, address, data):
+                    if _animation_scope(ad) != scope:
+                        raise ValueError("animation process identity changed before write")
+                    return game.wr(address, data)
+
+            if helper is None:
+                helper = state["fire_animation_helper"] = FireAnimation()
+            multiplier = min(MAX_MULTIPLIER, max(1.0, state.get("fps_set", 1.0)))
+            result = helper.update(ScopedMemory(), snap, enabled=configured and bool(enabled),
+                                   multiplier=multiplier, scope=scope)
+        except Exception as error:  # A missed animation update must not block a QTE or the next control tick.
+            result.update(verified=False, reason=f"firing animation unavailable: {type(error).__name__}")
+        state["fire_animation_last"] = result
+        return result
+
+
 def _mult(v, default=2.0) -> float:
     if isinstance(v, str):
         s = v.strip().lower()
@@ -442,11 +494,16 @@ def fire_rate(g: RE5, mult) -> dict:
     ok = g.wr(DEF_TABLE, bytes(d)) and g.wr(UPG_TABLE, bytes(u))
     ok &= g.wr(FIRE_TIMER_FPS, struct.pack(">f", FIRE_TIMER_ORIG * k))
     g.orig["fps_set"] = k
+    g.orig["fire_animation_on"] = bool(ok and k > 1)
+    if not g.orig["fire_animation_on"]:
+        maintain_fire_animation(g.ad, enabled=False)
     _, m92 = _upg_group(u, 0x02, G_FIRE)
     return {"fire_rate_x": k, "verified": ok, "fire_timer_fps": round(g.f32(FIRE_TIMER_FPS), 2),
             "m92f_frames_between_shots": round(m92[0], 4),
+            "magnum_animation_rate_x": min(k, 8.0) if k > 1 and ok else 1.0,
             "note": "firing-speed table / N and fire-action timer x N; held fire still depends on weapon animation "
-                    "and update gates, so N is not measured shots per second; 1 restores the game's values"}
+                    "and update gates, so N is not measured shots per second. The bot's guarded magnum animation "
+                    "component is capped at 8x; other animation types are unchanged. 1 restores the game's values"}
 
 
 def infinite_ammo(g: RE5, on: bool) -> dict:
@@ -581,6 +638,9 @@ def random_cheats(g: RE5, seed=None) -> dict:
 def revert_all(g: RE5) -> dict:
     out = {}
     o = g.orig
+    o["fire_animation_on"] = False
+    if o.get("fire_animation_helper") is not None:
+        out["fire_animation"] = maintain_fire_animation(g.ad, enabled=False)["verified"]
     if "def" in o:
         out["definitions"] = g.wr(DEF_TABLE, o["def"])
     if "upg" in o:
@@ -656,8 +716,8 @@ class RE5ModsOut(BaseModel):
       timeout_s=120)
 def re5_mods(inp: RE5ModsIn, ctx):
     """Resident Evil 5 Gold (PS3, RPCS3) live mods, each write read back: turn_speed multiplier=N (the stick turns N
-    times faster, aimed and not; "max" = 10), fire_rate multiplier=N (every gun N times faster, a handgun held fires
-    like a machine gun; 80), infinite_ammo on= (no rounds spent, the HUD's infinity sign), unlimited_health on=
+    times faster, aimed and not; "max" = 10), fire_rate multiplier=N (firing tables and timer scaling; 80 is not
+    measured shots per second; guarded magnum animation capped at8x), infinite_ammo on= (no rounds spent, the HUD's infinity sign), unlimited_health on=
     (living HP refill and signature-verified Muteki incoming-hit immunity each snapshot), bullet_damage multiplier=N,
     revert_all, status, addresses. The Mercenaries playbook applies the profile's package at round start."""
     from .tools import SESSIONS

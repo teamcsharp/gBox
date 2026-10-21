@@ -171,6 +171,31 @@ def test_play_round_plays_until_the_round_is_over_and_says_why(tmp_path):
     assert logged and logged[-1]["kind"] == "round"
 
 
+def test_stop_cleanup_runs_even_if_releasing_input_fails(tmp_path):
+    m, clk = re4([]), Clock()
+    calls, saved = [], []
+
+    class Brain:
+        def tick(self, snap):
+            return {"hold": {"r"}}
+
+        def prompt_ok(self, button, snap, now):
+            return True
+
+        def save(self):
+            saved.append(True)
+
+    def send(rows):
+        calls.append(rows)
+        if any(not row["down"] for row in rows):
+            raise OSError("input release failed")
+
+    with pytest.raises(OSError, match="input release failed"):
+        engine.play_round({"driver": "gbox.mercs.titles.re4_gc"}, m, send, lambda: bool(calls), {},
+                          brain=Brain(), sleep=clk.sleep, clock=clk, learn_dir=tmp_path)
+    assert saved == [True]
+
+
 def test_play_round_reports_a_lost_game_and_a_stop(tmp_path):
     m = re4([])
     m.put(B.P_PLAYER, ">I", 0)                                         # no Leon: a black screen

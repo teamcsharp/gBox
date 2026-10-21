@@ -191,8 +191,10 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             next_frame()
         return "stopped"
     finally:
-        hold(set())
         try:
-            bot.save()
-        except Exception:                            # noqa: BLE001
-            pass
+            hold(set())
+        finally:
+            try:
+                bot.save()
+            except Exception:                        # noqa: BLE001
+                pass

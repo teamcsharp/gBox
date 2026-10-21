@@ -20,7 +20,7 @@ weapon limits. Shotguns may still fire a confirmed distant hit while no better w
 | S75, PSG-1, SVD | Distance preference; still require measured impact evidence. Scoped targeting needs live validation. |
 | M29, Lightning Hawk, M500 | Strong preference against high-health targets and a usable close-range fallback from explosives. |
 | Grenade launcher | Six round effects catalogued; autonomous use requires decoded round type, which the current RAM reader does not supply. |
-| Rocket launcher | Random loadouts and spawn templates replace it with a random M29, Lightning Hawk or M500. Existing equipped objects are not relabelled; verify the next spawn. The legacy explosive policy retains its conservative clearance until that transition. |
+| Rocket launcher | Random loadouts and spawn templates replace it with a random M29, Lightning Hawk or M500. Run5 confirmed an equipped M500 in the former rocket slot on the next spawn. Existing equipped objects are not relabelled; the legacy explosive policy retains its conservative clearance until that transition. |
 | Hand, incendiary, flash grenades; proximity mine | Trajectory/placement verification remains open. Prefer a direct-fire gun when reachable. |
 | Longbow, flamethrower, knives, stun rod | Explicit separate policies; contact/projectile controllers remain open instead of pretending a laser is universal. |
 
@@ -95,6 +95,13 @@ the clock expired. This remains D-rank territory, not the requested winning perf
 does not establish an 80-shots-per-second rate. Labelled real frames are in
 [the run evidence](evidence/re5-2026-10-21/README.md).
 
+The fifth bounded run completed two rounds with terminal RAM scores of 6,840 and 6,950, and 21 and 20 kills.
+Observed shot/hit counts were 29/19 and 30/19. Health remained 30,000 after setup in both rounds, and the second
+spawn confirmed an equipped M500 with unlimited ammo in the former rocket slot. These are still D-rank results.
+The subsequent fine-aim fix separates the horizontal and vertical pulse counters: their shared toggle could
+starve vertical corrections when both axes needed small adjustments. Four regressions reproduced that defect;
+all 102 focused combat/Mercenaries/engine tests passed after the fix. Live improvement is not yet established.
+
 ## QTE input decoding
 
 The previous decoder misread `sActionButton+0x34`, an active-array count, as prompt-visibility flags. The decoder
@@ -107,10 +114,30 @@ signature guards. The native parser explicitly remaps shoulder masks; PS3 bit or
 Live Circle Resuscitate evidence is HP 1, a positive dying timer and the selected recovery button at player
 `+0x22DC`. This request suppresses health refill until the game's recovery callback finishes. HP 0 and the
 terminal death action do not imply a recoverable prompt. A bounded 21-press probe increased the recovery timer
-but did not yet prove full revival. All verified input-handler modes are implemented; complete live acceptance
-of each type remains outstanding. The focused RE5/engine suite passed 155 tests after the analog implementation.
+but did not yet prove full revival. Recovery ownership and the running timer also suppress health writes while
+the prompt is briefly hidden; only a displayed, validated request authorizes button presses. All verified
+input-handler modes are implemented; complete live acceptance of each type remains outstanding. The focused
+RE5/engine suite passed 163 tests after the hidden-recovery guards.
 
 Ghidra firing analysis also confirmed that the x80 timer is not a throughput measurement. The fire action has
 animation/update gates, and type-0 weapons (including magnums) follow a different branch from automatic guns.
 The successful firing path accepts held input; only the dry-fire branch has the identified previous-input edge
 check. No unverified weapon-type rewrite or animation flag patch is enabled.
+
+Further Ghidra analysis identified the motion-layer playback rate at player `+0x324`, `+0x404` and `+0x4E4`.
+The setter stores the rate and the update loop multiplies frame advance by it; magnum firing setup selects
+motion IDs `0x51D`, `0x51E`, `0x51C` at rate1.0. This is a candidate for a narrowly guarded firing-only change,
+not a demonstrated shot-rate improvement. The normal60fps animation samples do not establish animation
+completion as the sole cadence limit: the outer controller can re-enter fire before completion.
+
+The separate review branch implements that candidate with an 8x ceiling. It verifies exact code signatures,
+current living player, FIRE action, inventory weapon, all three motion IDs and expected playback values before
+individual four-byte writes. Process PID/start time/save-state generation are rechecked at the writer. Owned
+values are restored only while the same observed animation context remains; observed resets discard ownership.
+No animation generation counter is known, so an entire unobserved reuse between reads cannot be excluded.
+The normal QTE path disables this maintenance and retains input priority.
+
+Two bounded read-only observations, lasting60 and180seconds, matched all six code signatures but did not catch
+magnum FIRE. Two rocket FIRE samples shared those motion IDs at rate1.0: the separate magnum inventory guard
+is essential. No animation-rate writes or live throughput trial have occurred. This change remains separate
+from the fine-aim fix in PR #795 and must not be presented as deployed or proven to increase kills.
