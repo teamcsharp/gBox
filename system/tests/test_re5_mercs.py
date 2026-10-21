@@ -153,6 +153,62 @@ def test_hits_and_kills_are_counted_from_health():
     assert bot.stats["hits"] == 2 and bot.stats["kills_seen"] == 1
 
 
+def test_death_presses_are_not_deaths_or_clock_bonuses(monkeypatch):
+    monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
+    now = [10.0]
+    bot = R.Bot(clock=lambda: now[0], stats={"rounds": 1})
+    bot.tick(R.snapshot(with_bonuses(world(timer=60.0), [(0.0, 13.0, 1200.0), (0.0, 13.0, 1800.0)])))
+    for t in (12.0, 14.0, 16.0):
+        now[0] = t
+        assert bot.tick(R.snapshot(world(hp=0, timer=59.0))) == {"tap": "cross"}
+    assert bot.stats["deaths"] == 1 and bot.stats["continue_presses"] == 3
+    assert bot.stats.get("deaths_continued", 0) == 0
+    now[0] = 20.0
+    bot.tick(R.snapshot(with_bonuses(world(timer=120.0), [(0.0, 13.0, 1200.0)])))
+    assert bot.stats["deaths_continued"] == 1 and bot.stats["rounds"] == 2
+    assert bot.stats.get("bonuses_taken", 0) == bot.stats.get("clock_jumps", 0) == 0
+
+
+def test_a_missing_snapshot_invalidates_bonus_and_health_comparisons(monkeypatch):
+    monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
+    bot = R.Bot(clock=lambda: 10.0)
+    before = R.snapshot(with_bonuses(world(timer=60.0), [(0.0, 13.0, 1200.0)]))
+    bot.observe_round(before, "playing", 10.0)
+    bot.observe_round({"player": None}, "loading", 11.0)
+    bot.observe_round(R.snapshot(world(timer=120.0)), "playing", 12.0)
+    assert bot.stats.get("bonuses_taken", 0) == bot.stats.get("clock_jumps", 0) == 0
+
+
+def test_health_events_do_not_overwrite_combat_shot_hits():
+    bot = R.Bot(stats={"hits": 3})
+    bot.combat = object()   # the combat layer owns landed-shot accounting
+    bot._score_hits({"enemies": [{"ptr": 1, "hp": 800}]})
+    bot._score_hits({"enemies": [{"ptr": 1, "hp": 0}]})
+    assert bot.stats["hits"] == 3 and bot.stats["damage_events"] == 1 and bot.stats["kills_seen"] == 1
+
+
+def test_engine_observes_restart_even_while_prompts_own_the_pad(monkeypatch):
+    class Prompts:
+        def step(self, now, ok):
+            return [["square"]]
+
+    monkeypatch.setattr(engine, "PromptPresser", lambda *a, **kw: Prompts())
+    mem, n, stats = world(timer=60.0), [0], {"rounds": 1}
+    bot = R.Bot(clock=lambda: float(n[0]), stats=stats)
+
+    def stopped():
+        n[0] += 1
+        mem.put(PLAYER + R.P_HP, struct.pack(">hh", 0 if n[0] == 2 else 1000, 1000))
+        if n[0] == 3:
+            mem.put(GAMESYS + 0x3E0, struct.pack(">f", 120.0))
+        return n[0] > 3
+
+    engine.play_round({"driver": "gbox.mercs.titles.re5_ps3"}, mem, lambda rows: None, stopped, stats,
+                      brain=bot, sleep=lambda s: None, clock=lambda: float(n[0]))
+    assert stats["deaths"] == stats["deaths_continued"] == 1 and stats["rounds"] == 2
+    assert stats.get("clock_jumps", 0) == 0
+
+
 def test_play_round_runs_the_driver_until_the_round_ends():
     mem = world(action=2, enemies=[((0.0, 0.0, 1000.0), 800, 800)])
     sent, n = [], [0]
@@ -502,8 +558,65 @@ def test_a_crossing_without_its_prompt_is_avoided():
     bot._follow(p, tgt, mesh, False, t[0])
     bot.route = [w for w in bot.route if w[2] >= 780.0]
     assert bot._follow(p, tgt, mesh, False, 10.1) == {"hold": {"lup"}}           # waits at the edge for the prompt
-    assert bot._follow(p, tgt, mesh, False, 10.1 + R.CLIMB_WAIT_S + 0.1) == {"hold": set()}   # none: avoided
+    for k in range(1, 8):
+        act = bot._follow(p, tgt, mesh, False, 10.1 + 0.5 * k)
+    assert act == {"hold": set()}                           # continuously aligned and stationary, no prompt
     assert bot.stats["crossings_avoided"] == 1 and len(bot.avoid) == 1
+
+
+def test_a_crossing_is_not_blacklisted_while_turning_or_after_combat_interrupts():
+    mesh, bot = strip_mesh(), R.Bot()
+    tgt = {"ptr": 1, "pos": (0.0, -300.0, 1500.0), "kind": "time", "walk": True}
+    p = {"pos": (0.0, 0.0, 790.0), "rot": math.pi, "action": 0}
+    for t in (10.0, 11.0, 12.0, 14.0):
+        assert "r1" not in bot._follow(p, tgt, mesh, False, t)["hold"]
+    assert not bot.avoid and bot.climb_at is None
+    p["rot"] = 0.0
+    assert bot._follow(p, tgt, mesh, False, 14.5) == {"hold": {"lup"}}
+    assert bot._follow(p, tgt, mesh, False, 24.5) == {"hold": {"lup"}}  # ten seconds spent fighting elsewhere
+    assert not bot.avoid
+    assert bot._follow(p, tgt, mesh, True, 25.0) == {"tap": "square"}
+    assert bot.climb_at is None
+
+
+def test_known_unreachable_mesh_route_never_falls_back_to_running_through_a_wall():
+    mesh, bot = strip_mesh(), R.Bot()
+    p = {"pos": (0.0, 0.0, 100.0), "rot": math.pi / 2, "action": 0}
+    tgt = {"ptr": 1, "pos": (5000.0, 0.0, 5000.0), "kind": "time", "walk": True}
+    assert bot._follow(p, tgt, mesh, False, 10.0) == {"hold": set()}
+    assert bot.stats["route"] == "unreachable on current mesh" and bot.bonus_skip[1] > 10.0
+
+
+def test_unreachable_bonuses_are_not_chosen_over_a_real_route():
+    mesh, bot = strip_mesh(), R.Bot()
+    p = {"pos": (0.0, 0.0, 100.0), "rot": 0.0, "action": 0}
+    bonuses = [{"ptr": 1, "pos": (5000.0, 0.0, 5000.0), "kind": "time"},
+               {"ptr": 2, "pos": (0.0, -300.0, 1500.0), "kind": "time"}]
+    assert bot._bonus(p, [], bonuses, 10.0, mesh, 100.0)["ptr"] == 2
+    assert bot.stats["unreachable_bonuses"] == 1
+
+
+def test_distant_unsighted_front_candidate_does_not_starve_time_bonus_navigation(monkeypatch):
+    monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
+    m = with_bonuses(world(action=2, enemies=[((0.0, 0.0, 1800.0), 800, 800)]), [(0.0, 13.0, 2400.0)])
+    bot = R.Bot(m, clock=lambda: 10.0, lessons=lambda e: None)
+    act = bot.tick(R.snapshot(m))
+    assert bot.stats["phase"] == "gather_time" and {"lup", "cross"} <= act["hold"]
+
+
+def test_a_stationary_close_attacker_cannot_keep_the_gun_down_forever():
+    now = [10.0]
+    m = world(action=5, enemies=[((0.0, 0.0, 60.0), 800, 800)])  # still in the hit pose, no usable laser yet
+    bot = R.Bot(m, clock=lambda: now[0], lessons=lambda e: None)
+    first = bot.tick(R.snapshot(m))
+    assert "ldown" in first["hold"] and "l1" not in first["hold"]
+    now[0] += R.CLOSE_ESCAPE_S + 0.01
+    acquiring = bot.tick(R.snapshot(m))
+    assert "l1" in acquiring["hold"] and "ldown" not in acquiring["hold"]
+    assert bot.stats["combat"].startswith("readying:") and bot.stats["backoffs"] == 1
+    now[0] += 0.5
+    assert "l1" in bot.tick(R.snapshot(m))["hold"]
+    assert bot.stats["backoffs"] == 1
 
 
 def boot(names, line=26):

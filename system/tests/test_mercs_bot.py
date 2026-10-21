@@ -112,6 +112,24 @@ def test_a_title_without_a_profile_is_refused():
         MB.play(None, lambda rows: None, lambda: True, game={"game_id": "nothing-here"}, m=FakeRE4())
 
 
+def test_midround_resume_arms_health_before_engine_and_keeps_owning_adapter(monkeypatch):
+    g = FakeRE4(routine=4)
+    g.round()
+    ad, operations = object(), []
+    profile = dict(PROFILE, early_ops=[], playing_ops=[["unlimited_health", {"on": True}]])
+    monkeypatch.setattr(MB, "profile_for", lambda *_: profile)
+    monkeypatch.setattr(MB, "apply_ops", lambda adapter, ops, *args: operations.extend(ops) or [])
+
+    def run(*args, **kwargs):
+        assert g.adapter is ad
+        assert operations == [("unlimited_health", {"on": True})]
+        return "stopped"
+
+    monkeypatch.setattr(MB, "engine", lambda: SimpleNamespace(play_round=run))
+    stats = MB.play(ad, g.send, lambda: False, m=g)
+    assert stats["playing_hooks"] == "applied"
+
+
 def test_screens_are_named_only_when_the_code_signatures_match():
     g = FakeRE4(routine=5, step=1)
     assert RM.screen(g)["where"] == "main_menu"
