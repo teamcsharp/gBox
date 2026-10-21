@@ -283,19 +283,24 @@ class GuestMemory:
         self.expected = anchors(source, xbe_sha256)
         self.layout = image_layout(source)
 
-    def _identity(self):
-        import psutil
-        from .doa3_native import _plain_path
+    def _owner_check(self):
         if not self.owner.ready or self.owner.render_pid != self.pid or self.born is None or self.owner._owned.get(self.pid) != self.born:
             raise Unsupported("Native memory is restricted to this adapter's owned running process")
+
+    def _identity(self, hashes: bool = True):
+        """The owned process (birth, path, alive) and, with hashes, the pinned runner and XBE files."""
+        import psutil
+        from .doa3_native import _plain_path
+        self._owner_check()
         try:
             process = psutil.Process(self.pid)
             if abs(process.create_time() - self.born) > 0.01 or not process.is_running() or process.status() == psutil.STATUS_ZOMBIE or Path(process.exe()).absolute() != self.exe:
                 raise Unsupported("Native DOA3 process identity changed")
-            _plain_path(self.exe)
-            _plain_path(self.xbe)
-            if _sha(self.exe) != self.runner_sha256 or _sha(self.xbe) != self.xbe_sha256:
-                raise Unsupported("Native DOA3 executable/source checksum differs from the reviewed build")
+            if hashes:
+                _plain_path(self.exe)
+                _plain_path(self.xbe)
+                if _sha(self.exe) != self.runner_sha256 or _sha(self.xbe) != self.xbe_sha256:
+                    raise Unsupported("Native DOA3 executable/source checksum differs from the reviewed build")
         except (psutil.Error, OSError, ToolUnavailable) as error:
             raise Unsupported("Cannot verify the owned native DOA3 process and source") from error
 
@@ -354,3 +359,107 @@ class GuestMemory:
         if back != data:
             raise RuntimeError(f"DOA3 memory write at {address:#x} did not read back")
         return {"written": len(data), "via": "native_guest_ram", "verified": True}
+
+    def channel(self, writable=()) -> "Channel":
+        """A Channel for per-frame reads (and writes to `writable` only): see Channel."""
+        return Channel(self, writable)
+
+
+def _guest_offset(address, length) -> int:
+    if type(address) is not int or type(length) is not int or not 0 < length <= RAM_SIZE:
+        raise ValueError("DOA3 memory access requires an integer address and a positive length")
+    window, offset = address & ~0x03FFFFFF, address & 0x03FFFFFF
+    if address < 0 or window not in ALIASES or offset + length > RAM_SIZE:
+        raise ValueError("DOA3 memory access leaves verified guest RAM")
+    return offset
+
+
+class Channel:
+    """A bot's per-frame link to the owned runner (Doa3NativeAdapter.channel). GuestMemory proves everything on every
+    call, which hashes the runner and the XBE each time (tens of ms: a 60 fps bot can't). A Channel makes the same
+    proof once (owned PID and birth, pinned runner / XBE hashes, the unique verified allocation) and keeps one
+    creation-time-checked process handle: that handle can't follow its PID to another process. Then
+      * every call: the adapter still owns that process (ready, same PID and birth);
+      * every REVALIDATE_S: the process (birth, path, alive) and the anchors (mapped header + immutable code);
+      * every IDENTITY_S: the full proof again, hashes included;
+    a failed check closes the channel for good (the caller makes a new one). Writes go only to the `writable` ranges
+    (the virtual pad's block: doa3_pad.BLOCK), never to the header or code, and each is read back."""
+    REVALIDATE_S = 2.0
+    IDENTITY_S = 30.0
+
+    def __init__(self, guest: "GuestMemory", writable=(), clock=None):
+        import threading
+        import time
+        self.guest, self.clock = guest, clock or time.monotonic
+        self.writable = tuple((_guest_offset(int(a), int(n)), int(n)) for a, n in writable)
+        if any(n > MAX_WRITE or _overlaps_anchor(guest.expected, a, n) for a, n in self.writable):
+            raise ValueError("A DOA3 channel can't write the XBE header, immutable code or more than 4 KiB at once")
+        self.lock = threading.Lock()
+        self.broken = None
+        guest._identity()
+        self.handle = _WindowsReader(guest.pid, guest.born, WRITE_ACCESS if self.writable else READ_ACCESS)
+        try:
+            guest._verified(self.handle)
+            guest._identity()
+        except Exception:
+            self.handle.close()
+            raise
+        self.base = guest.base
+        self.checked = self.identified = self.clock()
+        self.reads = self.writes = 0
+
+    def _check(self):
+        if self.broken:
+            raise Unsupported(self.broken)
+        try:
+            self.guest._owner_check()
+            now = self.clock()
+            if now - self.identified >= self.IDENTITY_S:
+                self.guest._identity()
+                validate(self.handle, self.base, self.guest.expected)
+                self.identified = self.checked = now
+            elif now - self.checked >= self.REVALIDATE_S:
+                self.guest._identity(hashes=False)
+                validate(self.handle, self.base, self.guest.expected)
+                self.checked = now
+        except Exception as error:
+            self.close(f"DOA3 channel closed: {error}")
+            raise
+
+    def read(self, address, length) -> bytes:
+        offset = _guest_offset(address, length)
+        with self.lock:
+            self._check()
+            self.reads += 1
+            return self.handle.read(self.base + offset, length)
+
+    def read_many(self, ranges) -> list:
+        """[(address, n)] -> bytes per range (or that range's exception); a failed identity check raises."""
+        out = []
+        for a, n in ranges:
+            try:
+                out.append(self.read(a, n))
+            except Unsupported:
+                raise
+            except Exception as error:                 # noqa: BLE001 - a bad range fails alone
+                out.append(error)
+        return out
+
+    def write(self, address, data) -> dict:
+        data = bytes(data)
+        offset = _guest_offset(address, len(data))
+        if not any(lo <= offset and offset + len(data) <= lo + n for lo, n in self.writable):
+            raise ValueError(f"DOA3 channel writes only its own block, not {address:#x}+{len(data)}")
+        with self.lock:
+            self._check()
+            self.handle.write(self.base + offset, data)
+            if self.handle.read(self.base + offset, len(data)) != data:
+                raise RuntimeError(f"DOA3 channel write at {address:#x} did not read back")
+            self.writes += 1
+        return {"written": len(data), "via": "native_guest_ram_channel", "verified": True}
+
+    def close(self, why: str = "DOA3 channel closed"):
+        self.broken = self.broken or why
+        handle, self.handle = getattr(self, "handle", None), None
+        if handle is not None:
+            handle.close()
