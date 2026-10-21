@@ -85,7 +85,14 @@ function create({ getWin, screen, nativeChrome = async () => ({ ok: true }), emi
     }
   }
 
-  return { state, update: request => enqueue(() => updateNow(request)), restore: () => enqueue(restoreNow) };
+  return { state, update: request => enqueue(() => updateNow(request)), restore: () => enqueue(restoreNow),
+    handoff: () => {
+      const w = window();
+      return { window: saved || { bounds: w.getNormalBounds(), maximized: w.isMaximized(), fullscreen: w.isFullScreen(), top: w.isAlwaysOnTop() },
+        compactBounds: saved ? w.getBounds() : compactBounds };
+    },
+    seedBounds: value => { compactBounds = value || null; }
+  };
 }
 
 module.exports = { create, fitBounds, validAspect };

@@ -20,10 +20,13 @@ the extra Mercenaries mods. Status as of 2026-10-07. "Verified" means checked in
 | "punch them hundreds of feet in the air" | `super_melee on=true force=<feet> direction=up\|away\|both` | explodes on landing with explosive_melee |
 | "machine-gun hand cannon" | `weapon_mod item=handcannon fire_rate=auto` (+ `infinite_ammo`) | |
 | "spin while firing" | `auto_spin on=true speed=<deg/s> target=fire\|aim\|always` | |
-| "turn faster while aiming" | `aim_turn_speed multiplier=N` | |
+| "turn faster while aiming" | `aim_turn_speed multiplier=N` (RE4); `re5_mods op=turn_speed multiplier=N` (RE5, aimed and not; "max" = 10) | |
+| "fire 80 times faster, a pistol like a machine gun" (RE5) | `re5_mods op=fire_rate multiplier=80` | every weapon; semi-auto guns repeat while R1 is held |
+| "unlimited ammo" (RE5) | `re5_mods op=infinite_ammo on=true` | the Gatling's no-ammo flag on every gun: the HUD's infinity sign |
+| "more powerful bullets" (RE5) | `re5_mods op=bullet_damage multiplier=N` | firepower x N at every upgrade level (not yet seen live) |
 | "play as Aya" | `characters op=use character=Aya game=<release>` | builds/launches the swap mod |
 
-Tools: `re_mods` (RE4 GameCube + Wii), `re5` (RE5 Gold PS3: `unlock_all` save edit, `status`, `revert`), `re6` (RE6 X360: `unlock_all` (= unlock, boot default), `give`/`set_loadout` (= loadout_set)/`auto`, live `give_now`/`remove_item`/`set_slot`), `re4r` (RE4 2023: `set`/`freeze`/hooks; blocked until the
+Tools: `re_mods` (RE4 GameCube + Wii), `re5` (RE5 Gold PS3: `unlock_all` save edit, `status`, `revert`), `re5_mods` (RE5 Gold PS3 live: `turn_speed`, `fire_rate`, `infinite_ammo`, `bullet_damage`, `revert_all`, `status`, `addresses`), `re6` (RE6 X360: `unlock_all` (= unlock, boot default), `give`/`set_loadout` (= loadout_set)/`auto`, live `give_now`/`remove_item`/`set_slot`), `re4r` (RE4 2023: `set`/`freeze`/hooks; blocked until the
 operator accepts Capcom's EULA in Steam - gBox never accepts it).
 
 ## Matrix
@@ -42,7 +45,7 @@ operator accepts Capcom's EULA in Steam - gBox never accepts it).
 | Mercenaries 3D (0ed22ae742e1b56b) | citra_libretro, Spark (boots to the Capcom logo) | **missing**: unlocks are save-based (the 3DS save cannot be erased in game: back it up first); the core exposes no memory map to gBox, so live flags are not possible here | **missing**: MT Framework Mobile writer | none |
 | RE6 X360 (0871eee3b68cdea3) | Xenia PC | **verified**: `re6 op=unlock_all` = boot default "Everything unlocked": all 3 stages on the disc, all 9 characters + EX costumes, Agent Hunt, every campaign/chapter/difficulty, skills (save template from the game's own unlock routine; live too). Boots to the title (logo movie skipped) | `re6_<slug>` (Aya, SM64 Mario verified) | **verified**: any weapon in any character's loadout (EK fired), give_now of guns the stage didn't load (resources preloaded; Lightning Hawk fired), remove_item / set_slot, infinite_health/ammo, auto_qte (default on). No Mercy / DLC stages not on the 360 disc. See docs/re6.md |
 | RE4 2023 Steam (steam-2050650) | native + REFramework | by the RE4R agent; blocked on Capcom's EULA (operator) | by the RE4R agent | live stats/hooks |
-| RE5 Gold Edition PS3 (e7ca89bbeb67360d, BLUS30491) | RPCS3 (Windows node; Spark arm64 in scratch) | `re5 op=unlock_all` = Bonus Features, Files, cutscenes, figurines, every chapter, BSAA emblems, Item Management (published Game Genie offsets; chapters, bonus features and emblems seen in the menus) **+ The Mercenaries Reunion, Desperate Escape, all 8 Reunion stages and all 8 characters (gBox's own offsets, **verified** live 2026-10-20)**. The original THE MERCENARIES (story-clear gate): not found yet | **missing** | RAM map `profiles/gamedata/BLUS30491-ram.json` (clock, score, kills, combo, combo window, player, enemies) and the Mercenaries engine driver `gbox/mercs/titles/re5_ps3.py` (aims and kills, live) |
+| RE5 Gold Edition PS3 (e7ca89bbeb67360d, BLUS30491) | RPCS3 (Windows node; Spark arm64 in scratch) | `re5 op=unlock_all` = Bonus Features, Files, cutscenes, figurines, every chapter, BSAA emblems, Item Management (published Game Genie offsets; chapters, bonus features and emblems seen in the menus) **+ The Mercenaries Reunion, Desperate Escape, all 8 Reunion stages and all 8 characters (gBox's own offsets, **verified** live 2026-10-20)**. The original THE MERCENARIES (story-clear gate): not found yet | **missing** | RAM map `profiles/gamedata/BLUS30491-ram.json` (clock, score, kills, combo, combo window, player, enemies) and the Mercenaries engine driver `gbox/mercs/titles/re5_ps3.py` (aims and kills, live); **`re5_mods`** live: turn_speed, fire_rate x80, infinite_ammo (**verified** live 2026-10-21, applied at every round start), bullet_damage (written, not yet seen on an enemy) |
 
 ## RE4 notes
 
@@ -169,15 +172,138 @@ the title screen (RPCS3 rereads the host DATA0.DAT at each load) and read off th
   * It targets the nearest Majini in front, skipping crows (health 1), rooftops and the dead.
   * It turns with the right stick, aims with L1, puts the crosshair on the head and fires with R1.
   * It steps back when a Majini is on top of it and runs to them when far.
-  * Between rounds it reads the screen from RAM (no player = menus or loading, clock 0 = results, health 0 =
-    "Continue?") and presses START and cross in turn. START leaves the results. Cross picks the last stage and
-    character and answers "Continue? Yes". Rounds loop without help.
-  * Live on Public Assembly with Chris (Heavy Metal), whose Gatling has infinite ammo, three rounds back to back
-    (2026-10-21, the Spark's scratch RPCS3): 14, 20 and 17 kills; 4,460, 7,460 and 6,260 points; best combo 7.
-    The first version (aim from the player's pitch) got 2-4 kills a round.
-  * A health freeze was on for those rounds. It is a scratch-only tool, never part of the driver. The bot only
-    presses buttons.
-  * Not yet: grabs ("Break free" is a left-stick wiggle), melee finishers on prompt, time bonuses and routes.
+  * From the title into Reunion, and between rounds, it reads the screen from the interface's own units. sUnit
+    keeps every unit in move lines (+0x24 + 0x20 per line: +0xC the line's first unit; a unit's +8 is the next).
+    Out of a round all lines are walked (the title's menus are not all in the interface lines), and units are told
+    apart by their vtables. Each row below was found live (2026-10-21) by pressing one key at a time on a gBox
+    session and reading what changed:
+
+    | RAM | Screen | Press |
+    |---|---|---|
+    | uIdTitle00 +0x1F8 = 0x48, no uIdTopMenu00 | PRESS START | START |
+    | uIdAlert00 +0x3C = 0x22 | "... without signing in. Sign in?" | circle (Continue) |
+    | uIdAlert00 +0x3C = 0x13 | "Loading content." | none |
+    | uIdAlert00 +0x3C = 0x08 | "Load successful." | cross (OK) |
+    | uIdStartUp00, cursor +0x44 | the main menu (PLAY GAME = 0) | D-pad to 0, cross |
+    | uIdStartUp01, cursor +0x44 | PLAY GAME (EXTRA CONTENT = 7) | up from 0 wraps to 7, cross |
+    | uIdStartUp01 +0x174 = 1, cursor +0x188 | EXTRA CONTENT (THE MERCENARIES REUNION = 3) | D-pad to 3, cross |
+    | uIdStartUp29 | Reunion's title (START first) | cross |
+    | uIdStartUp29 +0x174 = 1 | SOLO / DUO / SPLIT SCREEN (SOLO first) | cross |
+    | uIdStartUp21 | STAGE SELECT | cross (the last stage played) |
+    | uIdStartUp22 | CHARACTER SELECT | cross (the last character played) |
+    | uIdNowLoading00, uIdSaving00 | loading, saving the records | none |
+    | uIdTopMenu00 / uIdTitle00 / uIdTitle02 otherwise | the title's menus in between | none |
+    | none of these, the clock at 0 | the results | START |
+    | uIdMerce00 (with the player) | a round (the HUD) | the bot plays |
+
+    * Health 0 in a round is "You Are Dead - Continue?": cross (Yes).
+    * The driver presses nowhere else, so it never starts a story game.
+    * `mercs.menus` in the map is the driver module (`screen` / `step` / `wandered`).
+    * PLAY GAME's "?????" entry (index 6) is most likely the locked original THE MERCENARIES.
+  * The deployment: RE5's mercs block says `"ready": true`, so `mercs_bot` plays it through the engine
+    (`title_engine`) while the engine's global READY still waits on RE4's A/B. A plain Autoplay on an RE5 session
+    runs it in the worker: the boot / menus from `screen` / `step`, each round through `play_round`.
+    * The RAM comes through one open /proc/<pid>/mem (`mercs_bot.ProcMem`).
+    * Live: `mercs_bot.play` from the branch, run against a gBox RE5 session, walked the results and the selects
+      and played its rounds.
+  * Hangs: RPCS3 on the Spark (arm64) can freeze mid-round: the game's clock stops while RPCS3 keeps busy (twice on
+    2026-10-21, about an hour into a session each time).
+    * The driver gives a round up when its clock stands still for 60 s: its `screen` says "loading", so the engine
+      ends the round "lost", and the deployment ends the run hung (gBox's own recovery takes it from there).
+    * The scratch session runner did the same by itself: stop the agent session, launch it plainly, walk it from
+      the title back into Reunion. It recovered the second hang that way with no help.
+  * Grabs: player action 4 (+0x845) means a Majini is holding him, with the "Break free" prompt (left stick) on
+    screen. The driver's prompt source answers "wiggle", which the engine mashes (left / right) until he is free.
+  * Prompts come from sActionButton. +0x34 bit 1 is set while a prompt is up (bit 0: the weapon is raised).
+    +0x2A4 points to the cActionButton on screen: +0x04 its owner, +0x14 its kind, +0x40 the Majini it acts on.
+    These were decoded from prompts logged with a frame each:
+
+    | Button | Prompt | The bot |
+    |---|---|---|
+    | the player's, kind 3, +0x40 = a Majini | melee finisher: "Hook", "Uppercut" (square) | presses square, the gun lowered |
+    | the player's, kind 2 | the stage: "Jump over", ladders (square) | leaves it |
+    | a Majini's (player action 4) | his grab: "Break free" (left stick) | wiggles |
+
+    Live (2026-10-21, a gBox session): the bot pressed square on finisher prompts and Chris hit the Majini. Each
+    finisher kill gave the round **+5 seconds** ("+05 Sec." on the clock, counted as `bonus_s`). Frames:
+    `gbox-finisher-pressed-plus-5-sec.jpg`, `gbox-finisher-2-plus-5-sec.jpg`.
+  * Time bonuses: the hourglasses (uOm0100; uOm0100.arc's model is "sunadokei_360", hourglass). There are 9 in Public
+    Assembly, units of sUnit's move line 12 ("OM") with vtable 0x015EF5E0. Each is a small golden hourglass on the
+    ground under a light pillar (frames).
+    * +0x30 is its position, +0x250 a bounding sphere (centre 13 cm up, radius 28 cm).
+    * +0x194 is 0x0090..01 on 2 of them and 0x00A0..01 on the other 7.
+  * Routes: RE5's own navigation mesh, from RAM (`gbox/mercs/titles/re5_nav.py`). The chain is sAI [0x017BD4C8]
+    +0x24 cAIPathFinding, +0x14 rNavigationMesh: points at +0x70 / +0x74, triangles at +0x78 / +0x7C (32 bytes each:
+    3 vertex indices, links to the neighbours with the shared edge).
+    * Public Assembly: 1,638 points and 2,187 triangles, one connected mesh over every level.
+    * A* over the triangles, waypoints through the shared edges' midpoints.
+    * Live: routes from the start roof to all 9 hourglasses in about 1 ms each. The bot ran a 70 m route across the
+      stage in 16 s and took drops with the stage's square prompt.
+    * The mesh is the AI's, and some of its drops and climbs are Majini-only (no prompt for the player). The bot
+      waits 3 s at one, then avoids it and routes around (it found the ramp instead of a 2 m drop).
+  * Taking a time bonus: standing at the hourglass and facing it, the game shows **"□ Time bonus"** (a real frame:
+    `docs/evidence/re5-merc-bot/gbox-time-bonus-prompt.jpg`). It is the player's own stage prompt (sActionButton,
+    kind 2).
+    * What doesn't take one: the Gatling's fire on it from its level at 4-6 m (bullets at its base), low knife
+      slashes at 1 m, or walking over it.
+    * The bot walks up to it along the navmesh, faces it, and presses square when the prompt shows (`Bot._take`).
+      It leaves the bonus for 30 s if the prompt does not come.
+    * For now it only goes for a bonus within 15 m on its own level, with no Majini within 7 m. The navmesh's
+      crossings between levels are partly Majini-only, so the far ones cost more time than they give.
+    * A time bonus taken live is still to come (the clock's jump is counted as `bonus_s`).
+  * Live in scratch on Public Assembly with Chris (Heavy Metal), whose Gatling has infinite ammo: three rounds back
+    to back (2026-10-21, the Spark's scratch RPCS3) gave 14, 20 and 17 kills; 4,460, 7,460 and 6,260 points; best
+    combo 7. A health freeze was on for those rounds (a scratch-only tool, never part of the driver). The first
+    version (aim from the player's pitch) got 2-4 kills a round.
+  * Live in a gBox session (2026-10-21, the Spark): gBox's RPCS3, the save unlocked with `re5 op=unlock_all`, no
+    health freeze. The bot pressed through the Reunion screens itself and played 9 rounds back to back:
+    * kills 17, 14, 11, 14, 15, 18, 14, 15, 14;
+    * points 6,380, 5,140, 3,490, 4,740, 4,860, 8,640, 4,480, 5,110, 4,780;
+    * best combo 12, no deaths.
+
+    RAM came from the session's RPCS3 (/proc, read only) and the presses went through the session's input API.
+    In round 10 the emulator froze (the game's clock stopped at 1:48, RPCS3 still busy).
+  * Not yet: a time bonus taken live, and routes between levels the player can take (ladders and stairs, not the
+    Majini-only drops). Also the enemies' attack states, and item pick-ups ("□ Pick up", the same stage prompt).
+
+## RE5 Gold: live mods, applied at every Mercenaries round start (2026-10-21)
+
+`re5_mods` (gbox/re5_mods_tool.py) writes the running game's data, every write read back, the originals kept
+(`revert_all`; a relaunch is the full revert too). The RE5 profile's `mercs` package is `turn_speed x2`,
+`fire_rate x80`, `infinite_ammo`, applied in the worker by `mercs_bot` at `select_player` before each run (the
+operator's request: "80x fire rate ... even with a pistol he's able to fire it like a machine gun with unlimited
+ammo and unlimited rotation speed"). Found in the executable dump (BLUS30491 app 01.01, PPU-a9b0ce57...) and live on
+the Spark's RPCS3; the frames in `docs/evidence/re5-mods/` are real frames of the agent session bd055f... that day.
+
+* **Turn speed:** sParameter (the global tunables object, pointer at 0x017FEB08): +0x2C walk/run turn deg/s (110),
+  +0x68 / +0x6C the stick-to-turn range (0.2 / 1.2, also the stand-still turn animation's speed), +0x2D0 aim pitch
+  deg/s and +0x2D4 aim yaw deg/s (57.9; the aim controller 0x86E1EC scales it by the zoom). Live: the bot's aim yaw
+  rate p90 85 -> 140 -> 231 deg/s and the stand-still turn 150 -> 250 -> 398 deg/s at x1 / x2 / x3. Default x2
+  because the bot aims on 50 ms pulses (4.5 deg a pulse at x3); the operator can pick x3 or "max" (x10).
+* **Fire rate:** the weapon upgrade table (0x01823E1C, 0x1E8 per weapon id, group 1 = frames between shots per
+  upgrade level: M92F 26, VZ61 5, M29 45) / N, the definition table's interval offset (0x01817530 + id*0x140 + 0x90:
+  -10 handguns, +5 machine guns) set to 0, and the fire action's only frames-per-second constant (0x0169E098, 60.0,
+  the re-fire timer of semi-auto weapons) x N. Live x80: Barry's handgun 1.6 -> 8.1 casing ejections/s and 3 -> 6
+  kills per 40 s; Sheva's P226 0.65 -> 6.7/s and 0 -> 4 kills in the round's last 41 s, the bot still tapping R1.
+* **Infinite ammo:** the definition table's +0x14 = 1, the Gatling's own "needs no ammo" flag, on every gun and
+  grenade (knives untouched): the can-fire check (0x9D4DE4) passes and the consume check (0x9D3C70) skips the
+  round, the HUD shows the infinity sign. Live: rounds 28/30 and 4/4 untouched through whole phases of fire.
+* **Bullet damage:** upgrade group 0 (firepower per level, M92F 150...) x N. Written and read back, not yet seen
+  on an enemy's health (next window).
+* **Loadout:** the Mercenaries loadout templates are static data (0x01730024: 30 blocks of 12 records x 0x2C, one
+  per character / costume, Barry = 24, Chris Heavy Metal = 18; a record = item id 0xTTII, count, -1 x3, grid
+  position, in hand, packed upgrade levels, flags). The round start copies the picked character's block into the
+  inventory (player+0x22E0, 24 slots x 0x30: +0x8 id, +0xC rounds, +0x10 capacity, +0x20 in hand, byte +0x2D in
+  use) and builds the weapons, so `loadout` just changes the ids: every gun (not the knives) becomes a random
+  powerful campaign weapon (M500 0x11B, Lightning Hawk 0x11A, Hydra 0x119, Gatling 0x115, RPG 0x10D, PSG-1 0x11C,
+  AK-74 0x11D, M3 0x116, grenade launcher 0x10C, Dragunov 0x120), levels reset to 0. Live (the RE5 agent's
+  session, its bot reading the inventory at round start): Barry's M29 -> S&W M500 5/5 and Dragunov -> Hydra 4/4,
+  built by the game, no crash. Weapon switching needs no write: the d-pad quick-select equips the edge slots.
+* **Randomizer:** `random_cheats` = fire x80 always, turn x2 or x3, damage x1 / x3 / x10, infinite ammo, the
+  loadout re-drawn (3 in 4); what it picked is the op's "telemetry", which `mercs_bot` shows as stats["cheats"].
+  The RE5 profile's `round_ops` runs it at every CHARACTER SELECT visit (the one-time `package` stays).
+* **Not done yet**: grenade bullets (the bullet-type word in the definition record is the candidate; needs one live
+  shot), self-immunity (the explosive's damage path: not located offline).
 
 ## Live checks (to run once, then flip `live_checked`)
 

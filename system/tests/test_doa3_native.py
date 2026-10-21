@@ -1,4 +1,5 @@
 """Pinned native builds never execute arbitrary ROM code or overwrite save storage."""
+import errno
 import hashlib
 import io
 import json
@@ -168,6 +169,102 @@ def test_cast_variants_and_revisions_keep_separate_storage_and_source(disc, tmp_
     assert asset.read_bytes() == b"cast revision"
     with pytest.raises(ToolUnavailable, match="content differs"):
         native.prepare_play_disc(xbe, cfg, {**game(), "mod": "doa3_cast_sonic"})
+
+
+def asset_build(xbe):
+    movie = xbe.parent / "movies" / "intro.wmv"
+    movie.parent.mkdir()
+    movie.write_bytes(b"unchanged movie")
+    marker = xbe.parent.parent / ".gbox-mod.json"
+    meta = {"game_id": native.GAME_ID, "image": f"{xbe.parent.name}/default.xbe",
+            "files": ["data/game.afs"],
+            "file_changes": [{"path": f"{xbe.parent.name}/data/game.afs", "change": "patched"}]}
+    marker.write_text(json.dumps(meta))
+    return movie, marker, meta, {**game(), "mod": "doa3_cast_sonic"}
+
+
+def test_asset_build_links_unchanged_files_but_keeps_changed_assets_and_saves_private(disc, tmp_path):
+    xbe, original, patched = disc
+    movie, _, _, build = asset_build(xbe)
+    cfg = config(tmp_path)
+    private = native.prepare_play_disc(xbe, cfg, build)
+    play_movie = private.parent / "movies" / "intro.wmv"
+    play_asset = private.parent / "data" / "game.afs"
+    assert play_movie.samefile(movie)
+    assert not play_asset.samefile(xbe.parent / "data" / "game.afs")
+    assert not private.samefile(xbe)
+    assert private.read_bytes() == original and xbe.read_bytes() == patched
+    saved = private.parent / ".recomp-storage" / "profile"
+    saved.parent.mkdir()
+    saved.write_bytes(b"personal progress")
+    assert native.prepare_play_disc(xbe, cfg, build) == private
+    assert saved.read_bytes() == b"personal progress"
+
+    # Rebuilding the changed archive retains the old play view and its save.
+    (xbe.parent / "data" / "game.afs").write_bytes(b"cast revision")
+    revised = native.prepare_play_disc(xbe, cfg, build)
+    assert revised != private
+    assert play_asset.read_bytes() == b"game assets"
+    assert (revised.parent / "movies" / "intro.wmv").samefile(play_movie)
+    (revised.parent / "data" / "game.afs").write_bytes(b"local corruption")
+    assert (xbe.parent / "data" / "game.afs").read_bytes() == b"cast revision"
+    assert saved.read_bytes() == b"personal progress"
+
+    # Removing a disposable cache name never removes the linked play asset.
+    movie.unlink()
+    assert play_movie.read_bytes() == b"unchanged movie"
+
+
+def test_asset_build_link_failure_falls_back_to_verified_copy(disc, tmp_path, monkeypatch):
+    xbe, _, _ = disc
+    movie, _, _, build = asset_build(xbe)
+    attempted = []
+    def no_links(src, target):
+        attempted.append(Path(src))
+        raise OSError(errno.EXDEV, "simulated cross-volume cache")
+    monkeypatch.setattr(native.os, "link", no_links)
+    private = native.prepare_play_disc(xbe, config(tmp_path), build)
+    play_movie = private.parent / "movies" / "intro.wmv"
+    assert attempted == [movie]
+    assert play_movie.read_bytes() == movie.read_bytes()
+    assert not play_movie.samefile(movie)
+
+
+@pytest.mark.parametrize("changes", [
+    {"game_id": "another-game"}, {"image": "another/default.xbe"}, {"files": None},
+    {"files": ["../data/game.afs"]}, {"file_changes": [None]}, {"files": ["data\\game.afs"]},
+])
+def test_unknown_asset_build_metadata_keeps_independent_copies(disc, tmp_path, changes):
+    xbe, _, _ = disc
+    movie, marker, meta, build = asset_build(xbe)
+    marker.write_text(json.dumps({**meta, **changes}))
+    private = native.prepare_play_disc(xbe, config(tmp_path), build)
+    assert not (private.parent / "movies" / "intro.wmv").samefile(movie)
+
+
+def test_build_record_changes_are_private_even_when_legacy_list_omits_them(disc, tmp_path):
+    xbe, _, _ = disc
+    movie, marker, meta, build = asset_build(xbe)
+    meta["file_changes"].append({"path": f"{xbe.parent.name}/movies/intro.wmv", "change": "replaced"})
+    marker.write_text(json.dumps(meta))
+    private = native.prepare_play_disc(xbe, config(tmp_path), build)
+    assert not (private.parent / "movies" / "intro.wmv").samefile(movie)
+
+
+def test_linked_asset_changed_during_preparation_never_publishes_partial_disc(disc, tmp_path, monkeypatch):
+    xbe, _, _ = disc
+    movie, _, _, build = asset_build(xbe)
+    link = native.os.link
+    def changed_link(src, target):
+        link(src, target)
+        Path(target).write_bytes(b"changed mid-prepare")
+    monkeypatch.setattr(native.os, "link", changed_link)
+    cfg = config(tmp_path)
+    with pytest.raises(ToolUnavailable, match="disc changed"):
+        native.prepare_play_disc(xbe, cfg, build)
+    assert movie.stat().st_nlink == 1
+    assert not list(cfg.runtime.rglob("disc-receipt.json"))
+    assert not list(cfg.runtime.rglob("disc-stage-*"))
 
 
 def test_build_receipt_identity_and_executable_gate_preserve_existing_storage(disc, tmp_path):

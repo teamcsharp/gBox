@@ -14,10 +14,12 @@ image." The box sits in the Sessions header (clients/web/viz/autoplay-coach.js);
     save slots are never written; Dolphin and RetroArch only) and the main RAM (ram_dump: one gzip artifact with a JSON
     header: platform, base address, length, sha256). For Resident Evil 4 GameCube (G4BE08) a summary decoded from
     that RAM with gbox.re4_merc_bot.snapshot (room, Mercenaries clock, combo, Leon's position and facing, the live
-    Ganados with distance and bearing) is attached as JSON and added to the message, so a note reads without tools;
+    Ganados with distance and bearing) is attached as JSON and added to the message, so a note reads without tools.
+    Separately, server caches are copied before jobs start: report-frame.jpg, report-map.svg, and report-moment.json
+    retain the received picture/map/logic/RAM fields and each independent source timestamp (coaching_evidence.py);
   * an entry in a small store (kind "coaching", id = game id, the last NOTES_KEPT notes with their capture ids) that
-    autoplay can read: GET /api/coaching/{game_id}. The watch panel shows the newest. The bot does not act on the words
-    by itself; mapping notes to behaviour is a later change.
+    autoplay can read: GET /api/coaching/{game_id}. Each note also queues a deduplicated operator implementation
+    request through the normal Hermes inbox guards (bots.py); filing a report does not claim its issue is fixed.
 
 The note answers at once; a watcher thread attaches each capture when its job ends, and reading a note's status does
 the same (idempotent), so a capture that finishes after a server restart is still attached.
@@ -61,17 +63,22 @@ TICKET_BODY = (
     "regions with their file offsets) padded to header_size bytes, then the RAM. Ghidra: Raw Binary, base address = "
     "the region's base_hex, file offset = its offset;\n"
     "- Resident Evil 4 GameCube only: coach-N-re4-summary.json (room, Mercenaries clock, combo, Leon, live Ganados), "
-    "also written under the note.\n\n"
+    "also written under the note.\n"
+    "- coach-N-report-frame.jpg, report-map.svg and report-moment.json: cached evidence copied when the report "
+    "arrived, including source timestamps/ages. These independently sampled sources may be stale or unavailable. "
+    "The worker captures above happen later; unsupported save states are explicitly skipped.\n\n"
     "Use the notes to change how autoplay plays this game (RE4 Mercenaries: gbox/re4_merc_bot.py) and to point Ghidra "
     "at the moment they describe. The last {kept} notes are also at GET /api/coaching/{game_id}.")
 
 _ticket_lock = threading.Lock()                 # one ticket per game, even for notes sent at the same time
+_submission_lock = threading.Lock()             # retries must not submit the same capture jobs twice
 _busy: set[tuple[str, str]] = set()             # (message id, capture) being attached right now
 _busy_lock = threading.Lock()
 
 
 class NoteIn(BaseModel):
     text: str = Field(min_length=1, max_length=2000)
+    client_id: str | None = Field(default=None, min_length=8, max_length=96, pattern=r"^[A-Za-z0-9_-]+$")
 
 
 def _spawn(fn, *args):
@@ -168,20 +175,64 @@ def _lesson(game: dict, kind: str, text: str, **kw) -> bool:
 
 # --- a note -------------------------------------------------------------------------------------------------------------
 def add_note(store, create_request, submit, sid: str, text: str, actor: str = "operator",
-             now: float | None = None) -> dict:
+             now: float | None = None, client_id: str | None = None, moment_provider=None, frozen_moment=None) -> dict:
+    """Optional per-session retry ID: persist the reservation before any capture job is submitted.
+
+    A disconnected client can retrieve the original acknowledgement. An interrupted reservation stays uncertain
+    instead of taking a second set of captures at a different moment. Retain only the last NOTES_KEPT submissions.
+    """
+    if client_id is None:
+        return _add_note(store, create_request, submit, sid, text, actor, now, moment_provider, frozen_moment)
+    with _submission_lock:
+        session = store.get("session", sid)
+        if not session:
+            raise HTTPException(404, "Session not found")
+        if not session.get("game_id"):
+            raise HTTPException(409, "This session has no game to coach")
+        doc = store.get("coaching_submissions", sid) or {"entries": []}
+        entries = doc.get("entries") or []
+        previous = next((x for x in entries if x.get("client_id") == client_id and x.get("actor") == actor), None)
+        if previous:
+            if previous.get("text") != text:
+                raise HTTPException(409, "This coaching submission ID was already used for another note")
+            if previous.get("result"):
+                return previous["result"] | {"deduplicated": True}
+            raise HTTPException(409, "This note's earlier submission was interrupted; check the coaching ticket before sending another note")
+        entry = {"client_id": client_id, "actor": actor, "text": text, "created": time.time()}
+        entries = (entries + [entry])[-NOTES_KEPT:]
+        store.put("coaching_submissions", sid, {"entries": entries})
+        out = _add_note(store, create_request, submit, sid, text, actor, now, moment_provider, frozen_moment)
+        entry["result"] = out
+        store.put("coaching_submissions", sid, {"entries": entries})
+        return out
+
+
+def _add_note(store, create_request, submit, sid: str, text: str, actor: str = "operator",
+              now: float | None = None, moment_provider=None, frozen_moment=None) -> dict:
+    from . import bots, coaching_evidence
     session = store.get("session", sid)
     if not session:
         raise HTTPException(404, "Session not found")
     gid = session.get("game_id")
     if not gid:
         raise HTTPException(409, "This session has no game to coach")
+    now = time.time() if now is None else now
+    moment = frozen_moment
+    if moment is None and moment_provider is not None:
+        moment = coaching_evidence.capture(moment_provider, sid, now)
+    if moment is not None:
+        coaching_evidence.prepare_map(moment)
     game = store.catalog_get(gid) or {}
     title = game.get("title") or session.get("title") or gid
     wid = sid.split("-")[0]
     worker = (session.get("detail") or {}).get("worker_name") or _worker(store, wid).get("name") or wid
     from .screensaver import telemetry_get
-    tel = telemetry_get(sid)
-    now = time.time() if now is None else now
+    tel = telemetry_get(sid) if moment is None else {}
+    if moment:
+        source = moment["sources"]["telemetry"]
+        if source.get("data") and source.get("age_s", 601) <= 600:
+            tel = {k: v for k, v in source["data"].items() if k != "at"}
+            tel |= {"age_s": source["age_s"], "running": bool(tel.get("running", True)) and source["age_s"] < 30}
     with _ticket_lock:
         rid = ticket_for(store, gid)
         if rid is None:
@@ -209,22 +260,33 @@ def add_note(store, create_request, submit, sid: str, text: str, actor: str = "o
         if not req:
             raise HTTPException(409, "The coaching ticket disappeared while the note was filed: send it again")
         n = 1 + sum(1 for m in req.get("messages") or [] if m.get("coach"))
+        evidence, attachments = coaching_evidence.attach(store, moment, n, rid) if moment else ({}, [])
         req.setdefault("messages", []).append({
-            "id": mid, "author": "operator", "text": compose(text, n, now, worker, sid, tel), "ts": now, "attachments": [],
+            "id": mid, "author": "operator", "text": compose(text, n, now, worker, sid, tel), "ts": now, "attachments": attachments,
             "coach": {"note": n, "text": text, "session_id": sid, "worker": worker, "worker_id": wid, "game_id": gid,
-                      "telemetry": tel or None, "captures": captures}})
+                      "telemetry": tel or None, "captures": captures, "evidence": evidence}})
         if req.get("status") in ("done", "blocked"):  # the operator wrote again (req_message reopens the same way)
             req["status"], req["completed"] = "open", None
         store.put("request", rid, req)
+        change = bots.add_change(store, gid, note=n, text=text, request_id=rid, message_id=mid,
+                                 by=actor, session_id=sid)
+        req["messages"][-1]["coach"]["change_id"] = change["id"]
+        store.put("request", rid, req)
         _remember(store, gid, title, req, {"id": mid, "note": n, "text": text, "ts": now, "session_id": sid,
                                             "worker": worker, "request_id": rid, "number": req.get("number"),
+                                            "change_id": change["id"],
                                             "telemetry": {k: tel.get(k) for k in ("running", "mode", "mission")} if tel else None,
-                                            "captures": {k: _brief(v) for k, v in captures.items()}, "summary": None})
+                                            "captures": {k: _brief(v) for k, v in captures.items()}, "evidence": evidence, "summary": None})
+        change = bots.ensure_request(store, create_request, gid, change["id"], actor)
     store.audit(actor, "request.coach_note", rid, {"session": sid, "note": n, "jobs": jobs})
     _lesson(dict(game, game_id=gid), "coach", text, session_id=sid, worker=worker, telemetry=tel or None,
             captures={k: _brief(v) for k, v in captures.items()}, request_id=rid, note=n, ts=now)
     return {"request_id": rid, "number": req.get("number"), "message_id": mid, "note": n, "game_id": gid,
-            "jobs": {k: jobs.get(k) for k in CAPTURES}, "captures": captures}
+            "change_id": change["id"],
+            "implementation_request_id": change.get("implementation_request_id"),
+            "implementation_number": change.get("implementation_number"),
+            "dispatch_state": change.get("dispatch_state"),
+            "jobs": {k: jobs.get(k) for k in CAPTURES}, "captures": captures, "evidence": evidence}
 
 
 def _message(req: dict | None, mid: str) -> dict | None:
@@ -238,9 +300,49 @@ def status(store, rid: str, mid: str) -> dict | None:
         return None
     coach = msg["coach"]
     caps = coach.get("captures") or {}
+    from . import bots
+    change = bots.dispatch_status(store, coach.get("game_id"), coach["change_id"]) if coach.get("change_id") else {}
     return {"request_id": rid, "number": req.get("number"), "message_id": mid, "note": coach.get("note"),
-            "game_id": coach.get("game_id"), "captures": caps, "summary": coach.get("summary"),
+            "session_id": coach.get("session_id"),
+            "change_id": coach.get("change_id"),
+            "implementation_request_id": change.get("implementation_request_id"),
+            "implementation_number": change.get("implementation_number"),
+            "dispatch_state": change.get("dispatch_state"),
+            "game_id": coach.get("game_id"), "captures": caps, "evidence": coach.get("evidence") or {}, "summary": coach.get("summary"),
             "done": not any(c.get("state") == "pending" for c in caps.values())}
+
+
+def submission_status(store, sid: str, client_id: str, actor: str) -> dict:
+    """An acknowledgement lookup never files work or waits behind an in-flight submission."""
+    entries = (store.get("coaching_submissions", sid) or {}).get("entries") or []
+    entry = next((row for row in entries if row.get("client_id") == client_id and row.get("actor") == actor), None)
+    if entry is None:
+        return {"state": "missing", "session_id": sid, "client_id": client_id}
+    result = entry.get("result")
+    if not result:
+        return {"state": "pending", "session_id": sid, "client_id": client_id}
+    current = status(store, result["request_id"], result["message_id"])
+    return {"state": "saved", "session_id": sid, "client_id": client_id,
+            "result": result | (current or {}) | {"deduplicated": True}}
+
+
+def dispatch_note(store, create_request, sid: str, rid: str, mid: str, actor: str) -> dict:
+    """Explicit recovery for an already-saved note; reuse its evidence, never recapture or duplicate work."""
+    from . import bots
+    with store.lock:
+        req = store.get("request", rid)
+        msg = _message(req, mid)
+        session = store.get("session", sid) or {}
+        coach = (msg or {}).get("coach") or {}
+        if not msg or coach.get("session_id") != sid or coach.get("game_id") != session.get("game_id"):
+            raise HTTPException(404, "No such coaching note for this session")
+        change = bots.add_change(store, coach["game_id"], note=coach["note"], text=coach["text"],
+                                 request_id=rid, message_id=mid, by=actor, session_id=sid)
+        coach["change_id"] = change["id"]
+        store.put("request", rid, req)
+        _update_entry(store, coach["game_id"], mid, {"change_id": change["id"]})
+        bots.ensure_request(store, create_request, coach["game_id"], change["id"], actor)
+    return status(store, rid, mid)
 
 
 def _mib(n) -> str:
@@ -475,8 +577,10 @@ def _request_of(store, game_id: str, mid: str) -> str | None:
     return rid if rid and _message(store.get("request", rid), mid) else None
 
 
-def routes(app, store, auth, create_request, submit):
+def routes(app, store, auth, create_request, submit, moment_provider=None):
     """create_request(body, actor) -> request (server.req_create); submit(tool, input, request_id, actor) -> job dict."""
+    from . import bots
+    bots.routes(app, store, auth)
 
     def _game(sid: str) -> str:
         session = store.get("session", sid)
@@ -487,11 +591,18 @@ def routes(app, store, auth, create_request, submit):
     @app.post("/api/sessions/{sid}/coach")
     def coach_note(sid: str, body: NoteIn, actor=Depends(auth)):
         """A coaching note for autoplay: filed on the game's coaching ticket, the moment captured on the game's PC."""
+        received_at = time.time()
         text = body.text.strip()
         if not text:
             raise HTTPException(422, "Type a note first")
-        out = add_note(store, create_request, submit, sid, text, actor)
-        if any(c.get("state") == "pending" for c in out["captures"].values()):
+        _game(sid)
+        from . import coaching_evidence
+        # A preceding report may be rendering its map under the submission lock. Freeze this report's caches now.
+        # A repeated retry may copy caches again, but returns the first stored result without jobs or new artifacts.
+        moment = coaching_evidence.capture(moment_provider, sid, received_at) if moment_provider is not None else None
+        out = add_note(store, create_request, submit, sid, text, actor, now=received_at, client_id=body.client_id,
+                       frozen_moment=moment)
+        if not out.get("deduplicated") and any(c.get("state") == "pending" for c in out["captures"].values()):
             _spawn(watch, store, out["request_id"], out["message_id"])
         return out
 
@@ -499,9 +610,21 @@ def routes(app, store, auth, create_request, submit):
     def coach_note_status(sid: str, mid: str, actor=Depends(auth)):
         rid = _request_of(store, _game(sid), mid)
         st = reconcile(store, rid, mid) if rid else None
-        if st is None:
+        if st is None or st.get("session_id") != sid:
             raise HTTPException(404, "No such coaching note for this game")
         return st
+
+    @app.get("/api/sessions/{sid}/coach/submissions/{client_id}")
+    def coach_submission_status(sid: str, client_id: str, actor=Depends(auth)):
+        _game(sid)
+        return submission_status(store, sid, client_id, actor)
+
+    @app.post("/api/sessions/{sid}/coach/{mid}/dispatch")
+    def coach_dispatch_existing(sid: str, mid: str, actor=Depends(auth)):
+        rid = _request_of(store, _game(sid), mid)
+        if not rid:
+            raise HTTPException(404, "No such coaching note for this session")
+        return dispatch_note(store, create_request, sid, rid, mid, actor)
 
     @app.get("/api/sessions/{sid}/coach")
     def coach_latest(sid: str, actor=Depends(auth)):

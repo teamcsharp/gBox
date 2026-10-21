@@ -133,8 +133,8 @@ DESC_TERMINATOR = 0xFFFFFFFF
 DESC_PAD_BYTE = 0xAD
 
 # Display-name mapping now lives in ``doa3_inventory``: FIGHTER_DISPLAY resolves
-# 16 nicknames (XBE select table RE) and DISPLAY_MAPPING_PENDING is the four
-# still-unresolved families (hika/koryu/gokei/chin). This module imports both so
+# 17 nicknames (XBE select table RE, hika = Helena from a RAM dump) and DISPLAY_MAPPING_PENDING
+# is the three still-unresolved families (koryu/gokei/chin). This module imports both so
 # its slot inventory stays consistent with the inventory layer.
 
 # The writer routes to this catalog game (``char_coverage.writer_for``): a routed
@@ -173,9 +173,13 @@ def xpr_resources(blob: bytes) -> dict:
     tag = blob[20:24]
     if tag != MDL_TAG:
         raise ValueError(f"XPR0 user resource tag is {tag!r}, not {MDL_TAG!r}")
-    mdl_end = hsize + rsize
-    if mdl_end > total:
-        raise ValueError("XPR0 MDL payload extends outside the resource")
+    # The MDL user data is the header's own records: it starts at its tag (0x14) and ends where the descriptor
+    # table begins (0x14 + size = the 4-aligned end of the last OBJ record on 69/69 owned costumes; lei04's last
+    # record ends 2 bytes short of it, behind a 0x7777 pad), inside the header. An earlier reading placed it at
+    # header_size, which only held because costume data regions are large.
+    mdl_start, mdl_end = MDL_CHUNK, MDL_CHUNK + rsize
+    if mdl_end > hsize:
+        raise ValueError(f"XPR0 MDL user data [{mdl_start:#x}, {mdl_end:#x}) extends outside the header {hsize:#x}")
     second_type, second_size = struct.unpack_from("<II", blob, 0x18)
     descriptor_count = struct.unpack_from("<I", blob, 0x20)[0]
     # The descriptor region length (stride) is unresolved; expose a bounded
@@ -185,15 +189,15 @@ def xpr_resources(blob: bytes) -> dict:
     words = [struct.unpack_from("<I", blob, o)[0] for o in range(0x24, words_end, 4)]
     return {"magic": XPR_MAGIC.decode(), "total": total, "header_size": hsize,
             "mdl": {"type": rtype, "size": rsize, "tag": tag.decode("latin-1").rstrip("\x00"),
-                    "offset": hsize, "end": mdl_end},
+                    "offset": mdl_start, "end": mdl_end},
             "second_pair": {"type": second_type, "size": second_size},
             "descriptor_count": descriptor_count,
             "descriptor_words": words,
-            "trailing_size": total - mdl_end}
+            "data_size": total - hsize}
 
 
 def xpr_mdl(blob: bytes) -> bytes:
-    """The raw MDL payload of an XPR0 costume resource (undecoded)."""
+    """The raw MDL user data of an XPR0 costume (its tag, counts, OBJ table and OBJ records)."""
     res = xpr_resources(blob)
     return blob[res["mdl"]["offset"]:res["mdl"]["end"]]
 
@@ -378,6 +382,8 @@ def _decode_strip(indices, off: int, n: int, flags: int, vcount: int) -> tuple[l
     if max(raw) >= vcount:
         raise ValueError(f"strip index {max(raw)} outside the OBJ vertex range {vcount}")
     triangles = _strip_triangles(raw)[:n]
+    if not triangles and len(set(raw)) == 1:
+        return raw, []                    # a strip collapsed onto one vertex: a part the writer hid (never native)
     if len(triangles) != n:
         raise ValueError(f"strip at index {off} yields {len(triangles)} triangles, its packet declares {n}")
     return raw, triangles
@@ -556,14 +562,20 @@ def mdl_descriptor_table(blob: bytes) -> dict:
       0x81}, byte 3 in {0x04..0x08}; its D3D surface semantics (width/height/
       pixel format) are still unresolved and must come from the XBE loader.
     * a ``0xFFFFFFFF`` terminator word, then ``0xAD`` debug fill to header_size.
+
+    The table starts 4-aligned: a last OBJ record with an odd index count (lei04) ends 2 bytes short, and a
+    ``0x7777`` pad fills the gap, as between records.
     """
     total, hsize = struct.unpack_from("<II", blob, 4)
     geometry = costume_geometry(blob)
     chunk = geometry["chunk"]
     vcounts = [g["vertex_count"] for g in geometry["objects"]]
     last_end = max(g["record_span"][1] for g in geometry["objects"])
+    p = (last_end + 3) // 4 * 4
+    if blob[last_end:p] != b"\x77" * (p - last_end):
+        raise ValueError(f"the pad behind the last OBJ record at {last_end:#x} is not 0x7777")
 
-    vertex, p = [], last_end
+    vertex = []
     while p + VERTEX_DESC_BYTES <= hsize and struct.unpack_from("<I", blob, p)[0] == VERTEX_DESC_FLAG:
         offset, zero = struct.unpack_from("<II", blob, p + 4)
         if zero != 0:
@@ -1055,8 +1067,8 @@ def cast_writer_status() -> dict:
         "cat_parser": True,
         "mdl_geometry_decode": True,
         "mdl_geometry_encode": True,
-        "mdl_geometry_encode_note": "byte-preserving no-op roundtrip on parsed records; "
-                                    "donor replacement is not implemented",
+        "mdl_geometry_encode_note": "gbox.doa3_writer.encode_costume re-encodes every parseable owned costume "
+                                    "byte for byte and writes replaced, hidden and appended-texture costumes",
         "mdl_strip_packets": True,
         "mdl_strip_note": "every material packet is a strip {32*(n+2), index_off, n, flags} drawn from its "
                           "join with fresh parity (153,262/153,262 packets of the 69 costumes); stage-mode-3 "
@@ -1085,8 +1097,13 @@ def cast_writer_status() -> dict:
                                  "zero-terminated, plus an unresolved residual) + N "
                                  "equal-length flat u16 triangle sections (stride % 6 == 0, "
                                  "4402/4402); the per-section triangle/joint semantics remain",
-        "donor_retarget": False,
+        "donor_retarget": True,
+        "donor_retarget_note": "gbox.doa3_fit: the CAT render lists name each costume's 15 primary parts in a fixed "
+                               "joint order; a library character's role segments are fitted per part into those "
+                               "joint frames (native rest rotations not decoded: limb twist by convention)",
+        "texture_write": True,
         "playable": False,
+        "playable_note": "builds are built_unverified until each donor is seen running in game",
         "message": "measured MDL geometry decode (vertices/normals/UVs/every u16 strip packet "
                    "of every material) and the no-op encode gate hold on the owned costumes; "
                    "the CAT header is classified (offsets vs id_block layout, fixed "
@@ -1100,22 +1117,144 @@ def cast_writer_status() -> dict:
     }
 
 
-def use(ctx, meta, game, inp) -> dict:
-    """The honest ``characters op=use`` answer while the native writer is unfinished.
+def disc_dir(ctx, game) -> Path:
+    """The extracted DOA3 disc folder on this node (default.xbe + loadfile.afs): the inventory's cache extract, else
+    the catalog ROM unpacked once through the Xbox launcher's own archive path."""
+    root = Path(ctx.config.cache) / game["game_id"] / "extract"
+    for xbe in sorted(root.glob("*/default.xbe")) if root.is_dir() else ():
+        if (xbe.parent / "loadfile.afs").is_file():
+            return xbe.parent
+    from . import characters as CH
+    from .xbox import prepare_xbe
+    xbe = prepare_xbe(CH._rom(ctx, game), ctx.config, getattr(ctx, "progress", lambda *_: None))
+    if not (xbe.parent / "loadfile.afs").is_file():
+        raise FileNotFoundError(f"{game.get('title')}: the unpacked disc at {xbe.parent} has no loadfile.afs")
+    return xbe.parent
 
-    XPR0/CAT/MDL/LNK decode and the AFS patch path are implemented, but donor
-    retarget and texture write are not, so no native build can be produced yet.
-    Returning a truthful ``writer_in_progress`` result (never a fabricated mod)
-    keeps the writer discoverable through writer_for/coverage without claiming
-    playability.
-    """
-    status = cast_writer_status()
-    return {"status": "writer_in_progress", "writer": "gbox.doa3_cast",
-            "slot": getattr(inp, "slot", ""), "playable": status["playable"],
-            "donor_retarget": status["donor_retarget"],
-            "message": ("DOA3 native cast writer is not playable yet: donor retarget and texture write are "
-                        "unimplemented (XPR0/CAT/MDL/LNK decode and the AFS patch path are in place). "
-                        "No build was produced.")}
+
+def donor_problem(meta: dict) -> str | None:
+    """cast_swap's writer gate: why a library character can't be a DOA3 fighter, else None. The fit maps the
+    donor's legs onto the native thighs, shins and feet, so a donor without them (a Boo, a Dorrie) is refused before
+    the deal instead of failing every costume of its fighter."""
+    from .doa3_fit import DONOR_ROLES
+    roles = (meta.get("rig") or {}).get("roles") or {}
+    missing = [r for r in DONOR_ROLES if r not in roles]
+    if missing:
+        return "a DOA3 fighter needs two legs: the donor's body roles lack " + ", ".join(missing)
+    return None
+
+
+def _load_donor(ctx, meta):
+    from . import characters as CH
+    from .doa2_weighted_retarget import load_rig
+    root = CH.library_root(ctx.config) / meta["slug"]
+    roles = ((meta.get("rig") or {}).get("roles") or {})
+    if not roles:
+        raise ValueError(f"{meta['name']} has no rig roles in the character library (characters op=get {meta['slug']})")
+    rig = load_rig(root / meta["model"], roles)
+    rig["slug"] = meta["slug"]
+    return rig
+
+
+def use(ctx, meta, game, inp) -> dict:
+    """``characters op=use`` for DOA3: slot ``fighter:<nick | code | name>`` replaces every costume of that fighter
+    family with the library character (gbox.doa3_fit per-part fit, gbox.doa3_writer encode), writes a separate
+    launchable disc build into this node's mod collection and records it as built_unverified (gameplay needs its own
+    in-game check). Costumes the writer cannot decode stay native and are listed with their reason."""
+    from . import characters as CH, filemods
+    from . import doa3_fit as F, doa3_writer as W
+    slot = (getattr(inp, "slot", "") or "").strip()
+    if not slot.startswith("fighter:"):
+        raise ValueError("DOA3 slots: fighter:<nick | code | name> (e.g. fighter:zack); whole casts go through "
+                         "characters op=cast_swap")
+    family = F.family_code(slot.split(":")[1])
+    if not CH.library_root(ctx.config).is_dir():
+        raise RuntimeError("DOA3 builds run on the node holding the character library (the Linux control plane)")
+    rig = _load_donor(ctx, meta)
+    disc = disc_dir(ctx, game)
+    replacements, reports = F.costume_replacements(disc / "loadfile.afs", {family: rig}, ctx.progress)
+    replaced = [r["costume"] for r in reports if r["status"] == "replaced"]
+    if not replaced:
+        return {"status": "failed", "writer": "gbox.doa3_cast", "slot": slot, "costumes": reports,
+                "message": "no costume of this fighter could be rewritten; nothing was built"}
+    name = f"doa3_{family}_{meta['slug']}"
+    out = filemods.mod_dir(ctx.config, game["game_id"], name)
+    record = {"kind": "character", "character": meta["slug"], "fighter_family": family, "costumes": reports,
+              "writer": "gbox.doa3_cast", "gameplay_verified": False,
+              "slots": [{"slot": f"fighter:{family}", "donor": meta["slug"], "donor_name": meta["name"]}]}
+    W.build_disc(disc, out, replacements, name=name, game_id=game["game_id"], record=record, progress=ctx.progress)
+    CH._api(ctx, "POST", f"/api/characters/{meta['slug']}/targets",
+            json={"game_id": game["game_id"], "slot": f"fighter:{family}", "mod": name, "nodes": ["windows"],
+                  "notes": "DOA3 native costume rewrite (per-part fit); runs in the pinned DOA3 native runner on a "
+                           "Windows worker. Gameplay verification required per donor."})
+    return {"status": "built_unverified", "writer": "gbox.doa3_cast", "mod": name, "slot": slot,
+            "costumes_replaced": replaced, "costumes": reports, "gameplay_verified": False,
+            "replacement_kind": "native_disc", "launch": None,
+            "message": f"Built {name}: {len(replaced)} {family} costume(s) rewritten. Launch it on a Windows worker "
+                       "(native DOA3 runner) to verify gameplay."}
+
+
+def cast_slots() -> list[dict]:
+    """The cast menu / whole-cast swap: one slot per DOA3 fighter family (every costume of the family takes the
+    donor). Tengu's model is not a costume XPR/CAT pair: listed with status not_working and its reason."""
+    from . import doa3_fit as F
+    rows = []
+    for nick, code in F.FAMILY_CODES.items():
+        rows.append({"slot": f"fighter:{nick}", "name": fighter_display_name(nick) or nick, "kind": "fighter",
+                     "writer": "gbox.doa3_cast", "costume_code": code,
+                     **({"story_only": True} if nick in STORY_ONLY else {}),
+                     **({"hidden": True} if nick in HIDDEN_SLOTS else {})})
+    for nick in F.NO_COSTUME_FAMILIES:
+        rows.append({"slot": f"fighter:{nick}", "name": fighter_display_name(nick) or nick, "kind": "boss",
+                     "writer": "gbox.doa3_cast", "status": "not_working",
+                     "reason": "Tengu has no costume XPR/CAT pair in loadfile.afs; his model format is not decoded"})
+    return rows
+
+
+def build_cast(ctx, game, pairs, name) -> dict:
+    """cast_swap's pairs path: [(slot, donor meta)] -> one disc build with every named fighter family rewritten in
+    one loadfile.afs. -> {"mod", "slots": {slot: {status, reason?}}, "detail": {costumes}}."""
+    from . import filemods
+    from . import doa3_fit as F, doa3_writer as W
+    plan, slots, rigs = {}, {}, {}
+    for slot, meta in pairs:
+        try:
+            code = F.family_code(str(slot).split(":", 1)[-1])
+            if meta["slug"] not in rigs:
+                rigs[meta["slug"]] = _load_donor(ctx, meta)
+            plan[code] = rigs[meta["slug"]]
+            slots[slot] = {"status": "planned", "code": code, "donor": meta["slug"]}
+        except Exception as error:  # noqa: BLE001 - one slot never stops the cast
+            slots[slot] = {"status": "failed", "reason": str(error)[:500]}
+    if not plan:
+        return {"mod": None, "slots": slots}
+    disc = disc_dir(ctx, game)
+    replacements, reports = F.costume_replacements(disc / "loadfile.afs", plan, ctx.progress)
+    by_code = {}
+    for r in reports:
+        by_code.setdefault(r["costume"][:3], []).append(r)
+    for slot, row in slots.items():
+        if row.get("status") != "planned":
+            continue
+        done = [r for r in by_code.get(row["code"], []) if r["status"] == "replaced"]
+        kept = [r for r in by_code.get(row["code"], []) if r["status"] != "replaced"]
+        if done:
+            row["status"] = "built" if not kept else "partial"
+            row["costumes"] = [r["costume"] for r in done]
+            if kept:
+                row["reason"] = "; ".join(f"{r['costume']} native: {r.get('reason', '')}" for r in kept)[:500]
+        else:
+            row["status"] = "failed"
+            row["reason"] = "no costume of this family could be rewritten: " + \
+                            "; ".join(f"{r['costume']}: {r.get('reason', '')}" for r in kept)[:400]
+    if not replacements:
+        return {"mod": None, "slots": slots}
+    record = {"kind": "cast", "writer": "gbox.doa3_cast", "gameplay_verified": False, "costumes": reports,
+              "slots": [{"slot": s, "donor": r.get("donor")} for s, r in slots.items() if r.get("donor")]}
+    W.build_disc(disc, filemods.mod_dir(ctx.config, game["game_id"], name), replacements, name=name,
+                 game_id=game["game_id"], record=record, progress=ctx.progress)
+    return {"mod": name, "slots": slots, "detail": {"costumes": len(reports),
+                                                    "replaced": sum(r["status"] == "replaced" for r in reports)}}
 
 
 def _cli_slot_report(manifest_path: str | Path) -> str:

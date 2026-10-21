@@ -48,6 +48,17 @@ class PromptPresser:
         resting = now < self.rest_until
         button = self.ask(vision=not resting)              # resting: RAM only (one byte), for a grab
         self.mashing = button in MASH
+        if isinstance(button, str) and button.startswith("mash:"):
+            # Extended mash requests must resolve through the title's allowlisted chord decoder first.
+            chords = self.keys(button)
+            if not chords or any(not chord or any(not isinstance(k, str) or ":" in k for k in chord)
+                                 for chord in chords):
+                self.mashing = False
+                return None
+            self.mashing = True
+            self.stats["prompt_presses"] += 1
+            self.stats["mash_presses"] = self.stats.get("mash_presses", 0) + 1
+            return chords
         if self.mashing:
             self.stats["prompt_presses"] += 1
             self.stats["mash_presses"] = self.stats.get("mash_presses", 0) + 1

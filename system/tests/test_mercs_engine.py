@@ -104,6 +104,20 @@ def test_a_grab_is_shaken_off_every_step_even_while_prompts_rest():
     assert stats["mash_presses"] == 10
 
 
+def test_extended_mash_requires_a_title_resolved_chord_and_bypasses_burst_rest():
+    from gbox.mercs.titles.re5_ps3 import RE5PS3
+    shown, driver = {"button": "mash:cross+circle"}, RE5PS3()
+    pp = reactions.PromptPresser(source=lambda: shown["button"], keys=driver.prompt_keys)
+    pp.rest_until = 100.0
+    for i in range(8):
+        assert pp.step(i * 0.08, ok=lambda button: False) == [("cross", "circle")]
+    assert pp.mashing and pp.stats["mash_presses"] == 8
+    shown["button"] = "mash:unsupported"
+    assert pp.step(1.0) is None and not pp.mashing
+    generic = reactions.PromptPresser(source=lambda: "mash:circle")
+    assert generic.step(0.0) is None and not generic.mashing
+
+
 def test_lessons_go_where_the_deployment_expects(tmp_path):
     lessons.configure(tmp_path)
     p = lessons.append("G4BE08", {"kind": "coach", "text": "shoot the axe man first", "session_id": "s1"})
@@ -155,6 +169,31 @@ def test_play_round_plays_until_the_round_is_over_and_says_why(tmp_path):
     assert any(r[0]["key"] == "r" and r[0]["down"] for r in sent if r)  # it aimed at the Ganado
     assert not any(r["down"] for r in sent[-1])                          # everything let go
     assert logged and logged[-1]["kind"] == "round"
+
+
+def test_stop_cleanup_runs_even_if_releasing_input_fails(tmp_path):
+    m, clk = re4([]), Clock()
+    calls, saved = [], []
+
+    class Brain:
+        def tick(self, snap):
+            return {"hold": {"r"}}
+
+        def prompt_ok(self, button, snap, now):
+            return True
+
+        def save(self):
+            saved.append(True)
+
+    def send(rows):
+        calls.append(rows)
+        if any(not row["down"] for row in rows):
+            raise OSError("input release failed")
+
+    with pytest.raises(OSError, match="input release failed"):
+        engine.play_round({"driver": "gbox.mercs.titles.re4_gc"}, m, send, lambda: bool(calls), {},
+                          brain=Brain(), sleep=clk.sleep, clock=clk, learn_dir=tmp_path)
+    assert saved == [True]
 
 
 def test_play_round_reports_a_lost_game_and_a_stop(tmp_path):

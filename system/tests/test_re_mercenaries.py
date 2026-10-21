@@ -291,6 +291,18 @@ def test_re5_without_a_save_says_how_to_get_one(tmp_path):
         R5.run(tmp_path, "BLUS30491", "unlock_all")
 
 
+def test_re5_without_a_session_finds_the_linux_rpcs3_save(tmp_path, monkeypatch):
+    from gbox import provision
+    linux, windows = tmp_path / "rpcs3-linux" / "config" / "rpcs3", tmp_path / "runtime" / "rpcs3"
+    monkeypatch.setattr(provision, "rpcs3_linux_dir", lambda cfg: linux)
+    monkeypatch.setattr(provision, "rpcs3_home", lambda cfg: windows)
+    monkeypatch.setattr(R5.sys, "platform", "linux")
+    (linux / "dev_hdd0").mkdir(parents=True)                 # the Spark: dev_hdd0 lives in the Linux RPCS3's folder
+    assert R5.node_home(None) == linux
+    monkeypatch.setattr(R5.sys, "platform", "win32")         # a Windows node: the runtime's RPCS3
+    assert R5.node_home(None) == windows
+
+
 # ------------------------------------------------------------------------------------------- registration + agent
 
 def test_tools_are_registered():

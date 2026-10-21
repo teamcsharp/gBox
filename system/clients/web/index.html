@@ -282,6 +282,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/session-move.js"></script>
 <script src="/viz/remote-game.js"></script>
 <script src="/viz/session-live.js"></script>
+<script src="/viz/session-refresh.js"></script>
 <script src="/viz/session-follow.js"></script>
 <script src="/viz/broadcast.js"></script>
 <script src="/viz/session-build.js"></script>
@@ -303,7 +304,9 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/game-menu.js"></script>
 <script src="/viz/watch-analytics.js"></script>
 <script src="/viz/autoplay-coach.js"></script>
+<script src="/viz/tactical-map.js"></script>
 <script src="/viz/bot-demo.js"></script>
+<script src="/viz/re5-modifiers.js"></script>
 <script src="/viz/ram-inspector.js"></script>
 <script src="/viz/game-assets.js"></script>
 <script src="/viz/cover-picker.js"></script>
@@ -755,6 +758,7 @@ const GAME_MODELS = { viewer: null, module: null, models: [], selection: 0 };
 const SELFIE_MODELS = { ctl:null, state:{} };
 const COACH = { ctl: null };                    // the Sessions header's "Coach the autoplay" box (viz/autoplay-coach.js)
 const RAMI = { ctl: null };                     // the Sessions header's RAM inspector button + panel (viz/ram-inspector.js)
+const TMAP = { ctl: null };                     // the session's Tactical map section: a Mercenaries round from above (viz/tactical-map.js)
 const BCAST = { ctl: null, panel: null };       // the Sessions header's On air button + the list's Broadcast bar (viz/broadcast.js)
 $("#tabs").innerHTML = Object.keys(tabs).map(t => `<button data-t="${t}">${t}</button>`).join("");
 $("#tabs").onclick = e => e.target.dataset.t && (e.target.dataset.t === "Sessions" ? showList() : show(e.target.dataset.t));
@@ -786,6 +790,7 @@ async function show(t, ...args) {
   SELFIE_MODELS.ctl?.dispose(); SELFIE_MODELS.ctl=null;
   COACH.ctl?.dispose(); COACH.ctl = null;       // a note still capturing resumes its status when the header is back
   window.GBoxRamInspector?.detach(); RAMI.ctl = null;   // reopens with the session's header when it was open there
+  window.GBoxTacticalMap?.detach(); TMAP.ctl = null;    // its polling stops with the view
   BCAST.ctl?.stop(); BCAST.ctl = null; BCAST.panel?.stop(); BCAST.panel = null;
   if (cur === "Builds") BUILDSV.ctl?.stop(); // save its position before replacing the page
   if (EXAM.sid && !(t === "Sessions" && args[0] === EXAM.sid && args[1] === "examine")) examineLeave();
@@ -1174,7 +1179,7 @@ const SPARK_OK = async () => { try { return (await fetch("/api/health")).ok; } c
 // active = the game controllers/PiP are attached to; playing = the game currently shown full-size.
 let active = null, playing = null;
 function pip() {
-  const el = $("#pip"), show_ = active && !active.local && !(cur === "Sessions" && playing && EXAM.sid !== playing);   // never over the game itself
+  const el = $("#pip"), show_ = active && !active.local && !(cur === "Sessions" && playing === active.sid && EXAM.sid !== playing);   // a different connected game may remain in PiP
   if (show_ && $("#pipimg").dataset.sid !== active.sid) {
     $("#pipimg").src = `/api/sessions/${encodeURIComponent(active.sid)}/mjpeg?${tq()}`; $("#pipimg").dataset.sid = active.sid;
   }
@@ -1185,6 +1190,26 @@ function pip() {
 }
 $("#pip").ondblclick = () => active && show("Sessions", active.sid);
 $("#pipclose").onclick = e => { e.stopPropagation(); active = null; pip(); };
+window.gboxClientViewState = () => ({ tab: cur, playing, active: active?.sid || null, revision: viewRevision,
+  session: (cur === 'Sessions' && document.getElementById('session-head')?.dataset.sid) || active?.sid || null,
+  pip: $("#pipimg").getAttribute("src") ? $("#pipimg").dataset.sid || null : null });
+const CLIENT_VIEW_RESTORE = GBoxSessionRefresh.create({
+  sessions: () => api('/api/sessions?include_ended=false'), tabs: Object.keys(tabs),
+  revision: () => viewRevision,
+  show: async (tab, sid) => {
+    if (tab === 'Sessions') { FOLLOW.pinned = sid || null; FOLLOW.list = !sid; }
+    await show(tab, sid);
+    if (sid && (document.getElementById('session-head')?.dataset.sid !== sid ||
+        document.getElementById('session-head')?.dataset.state !== 'running')) throw Error('The saved stream is not available yet.');
+  },
+  active: session => {
+    if (session && active?.sid === session.session_id) return; // preserve platform metadata from sessionsView.after
+    if (active?.platform) PAD_PLATFORMS.set(active.sid, active.platform);
+    active = session ? { sid: session.session_id, title: session.title || '', platform: session.platform || '',
+      adapter: session.adapter || '', local: sessionIsLocal(session) && !!session.detail?.local_window } : null;
+  }, pip
+});
+window.gboxRestoreClientView = value => CLIENT_VIEW_RESTORE.restore(value);
 (() => {   // PiP: drag body to move, drag corner grip to resize freely, mouse wheel to scale; geometry remembered
   const el = $("#pip"), clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
   const place = g => { el.style.left = g.l + "px"; el.style.top = g.t + "px"; el.style.width = g.w + "px"; el.style.height = g.h + "px"; el.style.right = el.style.bottom = "auto"; };
@@ -1538,9 +1563,17 @@ function botDemoPCs() { return window.GBoxBotDemo ? GBoxBotDemo.pcs(TRAY.ws, win
 function botDemoLaunch(gid, pc) { return play(gid, pc, false, undefined, { autoplay: true }); }
 async function botDemoMenu(ev, gid, title) {
   ev?.preventDefault?.(); ev?.stopPropagation?.();
+  const anchor = ev?.currentTarget;
+  const viewed = anchor?.id === "session-bot-demo" ? SESSIONBUILD.session : null;
+  const current = viewed?.session_id === anchor?.closest?.("#session-head")?.dataset.sid ? { ...viewed } : null;
   const x = ev?.clientX ?? 0, y = ev?.clientY ?? 0;
   if (!(TRAY.ws || []).length) TRAY.ws = await api("/api/workers").catch(() => []);   // the tray has not polled yet
-  GBoxBotDemo.open(document, { x, y, gid, title, pcs: botDemoPCs(), launch: botDemoLaunch, place: (el, px, py) => fitMenu(el, px, py) });
+  if (anchor && !anchor.isConnected) return;
+  const modifiers = window.GBoxRE5Modifiers?.eligible(current) ? {
+    html: GBoxRE5Modifiers.sectionHTML(), mount: host => GBoxRE5Modifiers.mount(host, { session: current, api })
+  } : null;
+  GBoxBotDemo.open(document, { x, y, gid, title, pcs: botDemoPCs(), launch: botDemoLaunch,
+    place: (el, px, py) => fitMenu(el, px, py), modifiers });
 }
 async function scan() { await api("/api/jobs", { tool: "scan_library", input: {}, require_os: "linux" }); show("Jobs"); }
 // header search: always available; typing jumps to the Library and filters live
@@ -1819,6 +1852,7 @@ async function sessionsView(sid, mode) {
       ${s.game_id ? `<div id="wb" data-gid="${esc(s.game_id)}" data-sid="${esc(sid)}"><p class="mut">loading your controls…</p></div>` : ""}
       <div id="dock-main" class="dock" data-zone="main"></div></div>
       <div class="sidecol">${smartSearchHTML()}<div id="dock-top" class="dock" data-zone="top">
+        ${window.GBoxTacticalMap ? GBoxTacticalMap.html(sid) : ""}
         ${GBoxPSO.isPSO(s.title) ? '<details open data-dock="pso" class="sect"><summary draggable="true">PSO controls</summary><div id="pso-controls"></div></details>' : ''}
         <details open data-dock="pad" class="sect"><summary draggable="true">Controller <span class="mut">live · click to press · right-click to map</span></summary>
           <div id="padglyph" title="Your controller live · click a button to press it · right-click a button or stick to map it to a control on your pad"></div>
@@ -2295,6 +2329,7 @@ sessionsView.after = (sid, mode) => {
     head.querySelector("[data-coach] input")?.blur();
     console.log("GBOX:" + JSON.stringify({ ev: "gamefocus", sid }));
   } }) || null;
+  TMAP.ctl = window.GBoxTacticalMap?.mount(document, { sid, api }) || null;  // a Mercenaries round from above (shows with frames)
   RAMI.ctl = window.GBoxRamInspector?.mount(head, { sid, api,                // the game's RAM by name, events, hex, search
     url: u => `${u}${u.includes("?") ? "&" : "?"}${tq()}` }) || null;
   BCAST.ctl = window.GBoxBroadcast?.mount(head, { sid, api }) || null;        // On air: this game on the broadcast program
@@ -2347,13 +2382,14 @@ sessionsView.after = (sid, mode) => {
   const send = (key, down) => api(`/api/sessions/${encodeURIComponent(sid)}/input`, { events: [{ key, down }] });
   const scr = $("#scr"), held = new Set();
   scr.addEventListener("keydown", e => { if (e.code === "NumpadSubtract") { e.preventDefault(); e.stopImmediatePropagation(); sop(sid, "rewind"); } }, true);
-  scr.onkeydown = e => { if (e.code === "NumpadSubtract") return; const k = keysym(e); if (!k || e.key === "Escape") return; e.preventDefault(); if (!held.has(k)) { held.add(k); send(k, true); } };
+  scr.onkeydown = e => { if (e.code === "NumpadSubtract") return; const k = keysym(e); if (!k || e.key === "Escape") return; e.preventDefault(); if (streamInputAllowed(sid) && !held.has(k)) { held.add(k); send(k, true); } };
   scr.onkeyup = e => { const k = keysym(e); if (!k) return; e.preventDefault(); held.delete(k); send(k, false); };
   scr.onblur = () => { held.forEach(k => send(k, false)); held.clear(); };
+  scr.addEventListener("gbox-stream-state", e => { if (!e.detail.connected) scr.onblur(); });
   if (pg) {                                             // click / hold a button on the controller glyph = press it in the game
-    pg.onpointerdown = e => { if (e.button !== 0) return;  // the right button opens the map dialog, it presses nothing
+    pg.onpointerdown = e => { if (e.button !== 0 || !streamInputAllowed(sid)) return;  // ignore presses while the picture reconnects
       const g = e.target.closest("[data-k]"); if (!g || !g.dataset.k) return; e.preventDefault();
-      const k = g.dataset.k.split(" ")[0]; send(k, true); const up = () => { send(k, false); removeEventListener("pointerup", up); }; addEventListener("pointerup", up); };
+      const k = g.dataset.k.split(" ")[0]; held.add(k); send(k, true); const up = () => { held.delete(k); send(k, false); removeEventListener("pointerup", up); }; addEventListener("pointerup", up); };
   }
   scr.focus();
 };
@@ -3738,13 +3774,23 @@ function padSources(list) {  // [gamepad, config] per controller; the native Xbo
   return out;
 }
 let padTarget = null;        // desktop mini window: the streamed session it shows while this view is hidden
-const padSid = () => padTarget || (active && !active.local ? active.sid : null);   // native games read the pad themselves
+let padStreamBlocked = null; // desktop compact view reports its own connection, independently of this hidden image
+let padStreamConnected = null;
+let padTextCapture = false; // shell coach typing: release forwarded pads without changing their target session
+const padSid = () => padTarget || (playing && $("#scr")?.dataset?.sid === playing ? playing :
+  active && !active.local ? active.sid : null);   // the foreground stream owns input; native games read the pad themselves
+function streamInputAllowed(sid) {
+  if (sid && sid === padTarget && padStreamConnected !== null) return padStreamConnected;
+  if (sid && padStreamBlocked === sid) return false;
+  return !window.gboxStreamWatchdog || (window.gboxStreamWatchdog.inputAllowed($("#scr"), sid) &&
+    window.gboxStreamWatchdog.inputAllowed($("#pipimg"), sid));
+}
 function padTick() {
   const list = pads(), sources = padSources(list), seen = new Set(sources.map(([gp]) => padKey(gp)));
   for (const key of Object.keys(held)) if (!seen.has(key)) releasePad(key);
   const topology = JSON.stringify([sources.map(([gp]) => [padKey(gp), gp.mapping]), primaryPad]);
   if (topology !== padTopology) { padTopology = topology; padStatus(); }
-  const sid = padCapture ? null : padSid();      // binding a control in the map dialog: what was held is released
+  const target = padSid(), sid = padCapture || padTextCapture || !streamInputAllowed(target) ? null : target;
   for (const [gp, c] of sources) {
     const key = padKey(gp);
     if (held[key] && (held[key].player !== c.player || held[key].sid !== sid || remap?.key === key)) releasePad(key);
@@ -3767,10 +3813,22 @@ window.gboxNativePad = state => {
   try { padTick(); } catch (e) { console.warn("controller push:", e); }
 };
 window.gboxPadTarget = sid => {
+  padStreamBlocked = null;
+  padStreamConnected = null;
   padTarget = sid || null;
   if (sid && padMapLib() && !padPlatform(sid))                 // its console: the controller map its pad goes through
     api(`/api/sessions/${encodeURIComponent(sid)}/pad`).then(j => { if (j && j.platform) PAD_PLATFORMS.set(sid, j.platform); }).catch(() => {});
   try { padTick(); } catch (e) { console.warn("controller target:", e); }
+};
+window.gboxPadStreamState = (sid, connected) => {
+  if (sid !== padTarget) return;
+  padStreamConnected = !!connected;
+  padStreamBlocked = connected ? null : sid;
+  try { padTick(); } catch (e) { console.warn('controller stream:', e); }
+};
+window.gboxPadTextCapture = on => {
+  padTextCapture = !!on;
+  try { padTick(); } catch (e) { console.warn('controller typing:', e); }
 };
 addEventListener("gamepadconnected", () => { padStatus(); if (cur === "Controllers") show("Controllers"); });
 addEventListener("gamepaddisconnected", () => { padStatus(); if (cur === "Controllers") show("Controllers"); });

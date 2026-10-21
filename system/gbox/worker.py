@@ -306,8 +306,15 @@ def run(server: str, token: str, config: Config, name: str | None = None,
     active: set[str] = set()
     active_agent: set[str] = set()
     quiet_sessions: set[str] = set()
+    from . import worker_client_control
+    client_control = worker_client_control.from_environment()
     from . import worker_resources
     resource_sampler = worker_resources.Sampler(config.cache)
+    from .mercs import damage as damage_reports
+    damage_delivery = {}
+    threading.Thread(target=damage_reports.run_delivery,
+                     args=(config.data_dir, server, h | {"x-gbox-actor": f"worker:{name}"}, stop, damage_delivery),
+                     name='player-damage-delivery', daemon=True).start()
     from .inspection_builds import source_inventory
     build_sources = source_inventory()  # Never recompute while old modules remain loaded in this process.
     threading.Thread(target=worker_resources.run, args=(stop, resource_sampler),
@@ -319,7 +326,8 @@ def run(server: str, token: str, config: Config, name: str | None = None,
         except Exception:                           # noqa: BLE001 - liveness never depends on the cache disk
             local = []
         return info.model_copy(update={'pending_results': outbox.pending_count(), 'local_builds': local,
-                                       'resources': resource_sampler.snapshot(), 'build_sources': build_sources})
+                                       'resources': resource_sampler.snapshot() | {'player_damage_delivery': dict(damage_delivery)},
+                                       'build_sources': build_sources})
     threading.Thread(target=_quiet_volume_loop, args=(stop, active_agent, quiet_sessions), daemon=True).start()
     with httpx.Client(base_url=server, headers=h | {"x-gbox-actor": f"worker:{name}"}, timeout=30) as c:
         while not stop.is_set():                    # the control plane may be restarting: keep trying
@@ -328,12 +336,17 @@ def run(server: str, token: str, config: Config, name: str | None = None,
                 break
             except httpx.HTTPError:
                 stop.wait(poll_s * 3)
-        threading.Thread(target=_desktop_stream, args=(stop, info.id, server, h, config), daemon=True).start()
+        desktop_stream = threading.Thread(target=_desktop_stream, args=(stop, info.id, server, h, config), daemon=True)
+        desktop_stream.start()
         threading.Thread(target=_heartbeat_loop, args=(stop, current_info, active, server, h), daemon=True).start()
         threading.Thread(target=_result_delivery_loop, args=(stop, outbox, active, active_agent, server, h), daemon=True).start()
         described = time.time()
         cleanup_job = None
         while not stop.is_set():
+            if client_control and client_control.check(
+                    lambda: worker_client_control.idle_reason(active, outbox, _builtin.SESSIONS,
+                                                              _builtin._running_file(config)), stop):
+                break
             if time.time() - described > REDESCRIBE_S:
                 try:
                     info = describe(config, name, info.id)
@@ -377,3 +390,7 @@ def run(server: str, token: str, config: Config, name: str | None = None,
             if _quiet_agent_job(job):
                 active_agent.add(job["id"])
             threading.Thread(target=_run_job, args=(job, config, info.id, server, h, c, active, active_agent, quiet_sessions, outbox), daemon=True).start()
+        if client_control and stop.is_set():
+            # Let the desktop capture close its owned encoder before the parent
+            # observes process exit. No emulator or job is force-terminated.
+            desktop_stream.join()

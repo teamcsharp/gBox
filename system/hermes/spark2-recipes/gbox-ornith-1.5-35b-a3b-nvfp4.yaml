@@ -1,0 +1,107 @@
+# Recipe: gBox Ornith 1.5 35B-A3B NVFP4 on one DGX Spark
+#
+# Shipped in the gBox repo (system/hermes/spark2-recipes); the model trials
+# install it into ~/spark-vllm-docker/recipes on lilspark2. Edit it in the repo.
+#
+# The checkpoint is ornith-ai/Ornith-1.5-35B-A3B-NVFP4 (Qwen3.5-MoE: 40 layers,
+# 1 full-attention layer in 4, the rest gated-delta linear attention; 256
+# experts, 8 active, 3B active parameters; modelopt mixed precision: FP8 for
+# the attention projections and W4A16 NVFP4 for the experts and lm_head; a
+# hidden one-layer MTP head). It sits in ~/models/ornith-1.5-35b-nvfp4 on
+# lilspark2 (3 shards, sizes verified against the Hub); gBox mounts that
+# folder read-only at /models/ornith-1.5-35b-nvfp4 when it launches the
+# recipe, so no copy into the HF cache is needed. --served-model-name keeps
+# the Hub id as the model id Hermes and the gBox probe ask for.
+#
+# Starting point: the publisher's single-Spark recipe
+# (~/model-recipes/Ornith-1.5-35B-A3B-NVFP4-DGX-Spark, vLLM 0.27/0.28) and this
+# repo's qwen3.6-35b-a3b-nvfp4 recipe for the same architecture on this image.
+# The publisher measured on a GB10: model loading 22 GiB; at 0.75 memory the
+# KV pool held 5.1M FP8 tokens (19.6 full 262k requests); 92-97 tok/s single
+# stream and 330-390 tok/s aggregate at 8 streams with MTP K=1.
+#
+# gpu_memory_utilization 0.88: 107.1 GiB budget; weights plus non-torch about
+#   27 GiB and activation at 8192 batched tokens about 4 GiB leave roughly
+#   75 GiB of KV cache (about 6M tokens, 23 full-length requests). The OS keeps
+#   about 14.6 GiB; 0.90 once nothing else runs on the box.
+# max_model_len 262144: the model's max_position_embeddings; the same figure
+#   the publisher serves.
+# max_num_seqs 64: all Hermes jobs decode in one batch (node capacity 12-32);
+#   the publisher used 16 for interactive use, Hermes wants throughput.
+# max_num_batched_tokens 8192: prefill chunk per step; 3B active parameters
+#   prefill fast, and a bigger chunk shortens how long a long prompt holds the
+#   batch. The publisher used 4096.
+# kv-cache-dtype fp8: the checkpoint ships FP8 k/v scales (kv_cache_scheme in
+#   its quantization config), so this is lossless to its calibration.
+# moe-backend marlin: the NVFP4 MoE backend the publisher and this repo found
+#   stable on GB10 for Qwen3.5-MoE checkpoints; VLLM_MARLIN_USE_ATOMIC_ADD=1
+#   as in the sister recipe.
+# speculative-config mtp K=1: the checkpoint's hidden MTP head; the publisher
+#   measured 72-88 % draft acceptance at K=1 and lower throughput at K=3. The
+#   draft MoE is unquantized, so it needs its own backend (triton here, as in
+#   the sister recipe; flashinfer_cutlass is the publisher's choice).
+# prefix-match-unit 16: cache hits at 16-token boundaries inside the large
+#   hybrid-model KV block, which suits agent loops that resend shared prefixes.
+# enable-prefix-caching, enable-chunked-prefill, async-scheduling: throughput
+#   defaults for a busy node; CUDA graphs stay at vLLM's FULL_AND_PIECEWISE.
+# language-model-only: Hermes sends text only; this disables the vision
+#   inputs (and their memory profiling) of this multimodal checkpoint.
+# tool-call-parser qwen3_xml, reasoning-parser qwen3: Qwen3.5's XML tool
+#   format and <think> blocks. The gBox sparkDeux route sends
+#   enable_thinking=false on every call, so the model answers without a
+#   thinking block there; turn the node's enable_thinking on to use it.
+# load-format fastsafetensors: the sister recipe's loader; InstantTensor on
+#   this image needs a mod for checkpoints with an embedded MTP draft.
+#
+# Manual launch (what gBox runs):
+#   cd ~/spark-vllm-docker && python3 run-recipe.py gbox-ornith-1.5-35b-a3b-nvfp4 \
+#     --solo --tp 1 --port 8000 --max-model-len 262144 \
+#     --gpu-memory-utilization 0.88 --name gbox-trial-<id> -j 2 --daemon --earlyoom \
+#     -v /home/ehm_eckx/models/ornith-1.5-35b-nvfp4:/models/ornith-1.5-35b-nvfp4:ro
+
+recipe_version: "1"
+name: gBox-Ornith-1.5-35B-A3B-NVFP4-Solo
+description: vLLM serving ornith-ai/Ornith-1.5-35B-A3B-NVFP4 from ~/models on one DGX Spark with 256k context and MTP
+
+# No "model:" field: the weights are served from the mounted ~/models folder,
+# so run-recipe.py neither downloads nor looks for them in the HF cache.
+container: vllm-node
+solo_only: true
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.88
+  max_model_len: 262144
+  max_num_seqs: 64
+  max_num_batched_tokens: 8192
+  num_speculative_tokens: 1
+
+env:
+  VLLM_MARLIN_USE_ATOMIC_ADD: 1
+
+command: |
+  vllm serve /models/ornith-1.5-35b-nvfp4 \
+    --served-model-name ornith-ai/Ornith-1.5-35B-A3B-NVFP4 \
+    --host {host} \
+    --port {port} \
+    --tensor-parallel-size {tensor_parallel} \
+    --trust-remote-code \
+    --language-model-only \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --max-model-len {max_model_len} \
+    --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --kv-cache-dtype fp8 \
+    --attention-backend flashinfer \
+    --moe-backend marlin \
+    --load-format fastsafetensors \
+    --enable-chunked-prefill \
+    --enable-prefix-caching \
+    --prefix-match-unit 16 \
+    --async-scheduling \
+    --speculative-config '{{"method":"mtp","num_speculative_tokens":{num_speculative_tokens},"moe_backend":"triton"}}' \
+    --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_xml \
+    --enable-auto-tool-choice

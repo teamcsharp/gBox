@@ -17,7 +17,7 @@ function client() {
     localStorage: { getItem: k => storage.get(k), setItem: (k, v) => storage.set(k, v) },
     api: async (url, body, method, timeoutMs) => sent.push({ url, timeoutMs, ...body }),
     requestAnimationFrame() { frames++; }, addEventListener() {}, setInterval() {},
-    $: key => nodes.get(key), cur: 'Sessions', show() {},
+    $: key => nodes.get(key), cur: 'Sessions', playing: null, show() {},
     esc: v => String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])),
   });
   ctx.window = ctx;
@@ -135,7 +135,8 @@ async function test() {
     ctx.miniPadTarget('spark-mini'); handlers.mini();
     assert.deepEqual(calls.slice(1), ['window.gboxPadTarget?.("spark-mini")', 'window.gboxPadTarget?.(null)']);
     const mini = host.slice(host.indexOf('$("#tb-mini").onclick'), host.indexOf('// ---------------- Tools:'));
-    assert.match(mini, /miniPadTarget\(sid\);\s*gbox\.miniOpen\(sid, title\)/);
+    assert.match(mini, /compactEnter\(\)/);
+    assert.match(host, /pad: sid => miniPadTarget\(sid\)/);
     // an older view without gboxNativePad still gets the glyph state
     const old = vm.createContext({ window: {}, Date }); vm.runInContext(calls[0], old);
     assert.equal(old.window.GBOX_NATIVE_PAD_STATE.pads[0].buttons, START);
@@ -144,6 +145,58 @@ async function test() {
     const preload = fs.readFileSync(path.join(__dirname, '../clients/desktop/preload.js'), 'utf8');
     assert.match(preload, /onMiniClosed: fn => ipcRenderer\.on\("mini:closed"/);
   }
-  console.log('Remote pad forwarding checks passed (8 groups)');
+  // 9. A disconnected compact view releases the original session and blocks subsequent held presses.
+  {
+    const c = client(); c.run(`window.gboxPadTarget('spark-mini')`); c.push(xi(START)); await c.flush();
+    c.run(`window.gboxPadStreamState('spark-mini', false)`); await c.flush();
+    assert.deepEqual(c.events().at(-1), { url: '/api/sessions/spark-mini/input', key: 'start', down: false, player: 1 });
+    const count = c.events().length; c.push(xi(START)); await c.flush(); assert.equal(c.events().length, count);
+    c.run(`window.gboxPadStreamState('another-session', true)`); await c.flush(); assert.equal(c.events().length, count);
+    c.run(`window.gboxPadStreamState('spark-mini', true)`); await c.flush(); assert.equal(c.events().at(-1).down, true);
+  }
+  // 10. The main picture's connection state gates the same real controller loop.
+  {
+    const c = client(); c.ctx.gboxStreamWatchdog = require('../clients/web/viz/stream-watchdog.js');
+    const attrs = { src: '/api/sessions/' + SID + '/mjpeg', 'data-stream-state': 'connected' };
+    c.nodes.set('#scr', { tagName: 'IMG', getAttribute: k => attrs[k] }); c.push(xi(START)); await c.flush();
+    attrs['data-stream-state'] = 'reconnecting'; c.run('padLoop()'); await c.flush();
+    assert.deepEqual(c.events().at(-1), { url, key: 'start', down: false, player: 1 });
+    const count = c.events().length; c.push(xi(START)); await c.flush(); assert.equal(c.events().length, count);
+  }
+  // 11. Typing in the compact coach must gate input, not clear its target and fall back to active.
+  {
+    const c = client(); c.run(`window.gboxPadTarget('spark-mini')`); c.push(xi(START)); await c.flush();
+    c.run('window.gboxPadTextCapture(true)'); await c.flush();
+    assert.deepEqual(c.events().at(-1), { url: '/api/sessions/spark-mini/input', key: 'start', down: false, player: 1 });
+    const count = c.events().length; c.push(xi(START)); await c.flush(); assert.equal(c.events().length, count);
+    c.run('window.gboxPadTextCapture(false)'); await c.flush();
+    assert.deepEqual(c.events().at(-1), { url: '/api/sessions/spark-mini/input', key: 'start', down: true, player: 1 });
+  }
+  // 12. A restored second PiP stream cannot steal foreground controls; explicit compact targeting still wins.
+  {
+    const c = client(); c.ctx.playing = 'foreground-A';
+    c.nodes.set('#scr', { dataset: { sid: 'foreground-A' } });
+    c.push(xi(START)); await c.flush();
+    assert.deepEqual(c.events().at(-1), { url: '/api/sessions/foreground-A/input', key: 'start', down: true, player: 1 });
+    c.run(`window.gboxPadTarget('compact-B')`); await c.flush();
+    assert.deepEqual(c.events().slice(-2), [
+      { url: '/api/sessions/foreground-A/input', key: 'start', down: false, player: 1 },
+      { url: '/api/sessions/compact-B/input', key: 'start', down: true, player: 1 }
+    ]);
+  }
+  // 13. A PiP-only connection gates its own input, independently of another main picture.
+  {
+    const c = client(); c.ctx.gboxStreamWatchdog = require('../clients/web/viz/stream-watchdog.js');
+    const attrs = { src: '/api/sessions/' + SID + '/mjpeg', 'data-stream-state': 'connected' };
+    c.nodes.set('#pipimg', { tagName: 'IMG', getAttribute: k => attrs[k] });
+    c.nodes.set('#scr', { tagName: 'IMG', getAttribute: k => ({src:'/api/sessions/other-main/mjpeg','data-stream-state':'reconnecting'})[k] });
+    c.push(xi(START)); await c.flush(); assert.equal(c.events().at(-1).down, true);
+    attrs['data-stream-state'] = 'reconnecting'; c.run('padLoop()'); await c.flush();
+    assert.deepEqual(c.events().at(-1), { url, key: 'start', down: false, player: 1 });
+    const count = c.events().length; c.push(xi(START)); await c.flush(); assert.equal(c.events().length,count);
+    c.run(`window.gboxPadTarget('${SID}');window.gboxPadStreamState('${SID}',true)`);await c.flush();
+    assert.equal(c.events().at(-1).down,true,'confirmed native compact image is independent of its hidden guest PiP');
+  }
+  console.log('Remote pad forwarding checks passed (13 groups)');
 }
 test().catch(e => { console.error(e); process.exitCode = 1; });

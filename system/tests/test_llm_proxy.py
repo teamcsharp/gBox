@@ -266,3 +266,55 @@ def test_endpoint_fixes_messages_streams_and_gates(cfg, monkeypatch, tmp_path):
     assert hermes.get('/api/llm/local/status').json()['gated'].startswith('the operator is playing')
     store.put('slabel', 'spark1-s', {'session_id': 'spark1-s', 'label': 'Evidence capture', 'owner': 'agent'})
     assert hermes.post('/api/llm/local/v1/chat/completions', json=ehmbird).status_code == 200
+
+
+@pytest.mark.parametrize('stream', [False, True])
+@pytest.mark.parametrize('hint,expected', [
+    ('17', '17'), ('0', '0'), ('Wed, 21 Oct 2026 19:00:00 GMT', 'Wed, 21 Oct 2026 19:00:00 GMT'),
+    ('-1', None), ('1.5', None), ('tomorrow', None), (None, None),
+])
+def test_upstream_retry_after_reaches_client_without_replaying(cfg, monkeypatch, tmp_path, stream, hint, expected):
+    from gbox.server import create_app
+    monkeypatch.setenv('GBOX_HERMES_DISPATCH_STATE', str(tmp_path / 'state'))
+    app = create_app(cfg)
+    calls = []
+    def upstream(request):
+        calls.append(request)
+        return httpx.Response(429, json={'error': 'too many concurrent requests'},
+                              headers={'Retry-After': hint} if hint is not None else {})
+    app.state.local_llm.transport = httpx.MockTransport(upstream)
+    response = TestClient(app).post('/api/llm/local/v1/chat/completions',
+        json={'messages': [{'role': 'user', 'content': 'continue'}], 'stream': stream})
+    assert response.status_code == 429
+    assert response.headers.get('retry-after') == expected
+    assert len(calls) == 1 and app.state.local_llm.active == 0
+
+
+@pytest.mark.parametrize('stream', [False, True])
+@pytest.mark.parametrize('status,expected_status', [(400, 400), (503, 502)])
+def test_non_rate_limit_upstream_error_keeps_status_mapping(stream, status, expected_status):
+    proxy = P.LocalLLM(lambda: S, transport=httpx.MockTransport(
+        lambda request: httpx.Response(status, json={'error': 'unavailable'}, headers={'Retry-After': '23'})))
+    with pytest.raises(P.Busy) as error:
+        asyncio.run((proxy.stream if stream else proxy.complete)(
+            {'messages': [{'role': 'user', 'content': 'continue'}]}))
+    assert error.value.status == expected_status and error.value.retry_after == '23'
+    assert proxy.active == 0
+
+
+@pytest.mark.parametrize('stream', [False, True])
+def test_context_recap_forwards_the_final_error_retry_after(stream):
+    calls = []
+    def upstream(request):
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx.Response(400, json={'error':
+                'maximum context length is 32768 tokens; prompt contains at least 40000 input tokens'},
+                headers={'Retry-After': '7'})
+        return httpx.Response(429, json={'error': 'busy'}, headers={'Retry-After': '29'})
+    proxy = P.LocalLLM(lambda: S, transport=httpx.MockTransport(upstream))
+    with pytest.raises(P.Busy) as error:
+        asyncio.run((proxy.stream if stream else proxy.complete)(
+            {'messages': [{'role': 'user', 'content': 'continue'}]}))
+    assert error.value.status == 429 and error.value.retry_after == '29'
+    assert len(calls) == 2 and proxy.active == 0

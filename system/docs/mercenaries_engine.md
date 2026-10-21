@@ -38,6 +38,7 @@ player's state; vision only as the last fallback (a RAM field that can't tell sa
 | `gbox/mercs/lessons.py` | the lessons log (one JSONL per run) and the analyzer that proposes candidate signatures |
 | `gbox/mercs/engine.py` | `Engine.tick(world) -> Intent`: the engines in order; `play_round(profile, m, send, stopped, stats, lessons)` |
 | `gbox/mercs/driver.py` | the `Driver` base class every title implements |
+| `gbox/mercs/tactical.py` | the tactical map's frames and stages (`gbox.tactical/1`) and the publisher `play_round(tactical=)` feeds ([tactical_map.md](tactical_map.md)) |
 | `gbox/mercs/titles/re4_gc.py` | title #1: `G4BE08` |
 | `gbox/mercs/titles/re5_ps3.py` | title #2 (RE5 agent) |
 | `gbox/mercs_bot.py` | the deployment playbook (bot-demos-anywhere): `matches` = `ram_map.detect` finds a map with a `mercs` block; boots through the title's menus module; each round -> `engine.play_round` |

@@ -66,7 +66,7 @@ def test_play_boots_from_the_title_and_hands_each_round_to_the_engine(monkeypatc
     g = FakeRE4(routine=4, step=0, menu_cursor=3)
     now, ops, rounds = [0.0], [], []
     monkeypatch.setattr(MB, "profile_for", lambda ad, game: PROFILE)
-    monkeypatch.setattr(MB, "apply_ops", lambda ad, x: ops.append([op for op, _ in x]) or [])
+    monkeypatch.setattr(MB, "apply_ops", lambda ad, x, prof=None: ops.append([op for op, _ in x]) or [])
     monkeypatch.setattr(MB, "save_menu_moment", lambda ad, game: "G4BE08.sav")
 
     def play_round(prof, m, send, stopped, stats, lesson):
@@ -110,6 +110,24 @@ def test_play_ends_the_run_on_a_lost_round_or_a_story_game(monkeypatch):
 def test_a_title_without_a_profile_is_refused():
     with pytest.raises(ValueError, match="no Mercenaries profile"):
         MB.play(None, lambda rows: None, lambda: True, game={"game_id": "nothing-here"}, m=FakeRE4())
+
+
+def test_midround_resume_arms_health_before_engine_and_keeps_owning_adapter(monkeypatch):
+    g = FakeRE4(routine=4)
+    g.round()
+    ad, operations = object(), []
+    profile = dict(PROFILE, early_ops=[], playing_ops=[["unlimited_health", {"on": True}]])
+    monkeypatch.setattr(MB, "profile_for", lambda *_: profile)
+    monkeypatch.setattr(MB, "apply_ops", lambda adapter, ops, *args: operations.extend(ops) or [])
+
+    def run(*args, **kwargs):
+        assert g.adapter is ad
+        assert operations == [("unlimited_health", {"on": True})]
+        return "stopped"
+
+    monkeypatch.setattr(MB, "engine", lambda: SimpleNamespace(play_round=run))
+    stats = MB.play(ad, g.send, lambda: False, m=g)
+    assert stats["playing_hooks"] == "applied"
 
 
 def test_screens_are_named_only_when_the_code_signatures_match():

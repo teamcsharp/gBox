@@ -348,6 +348,34 @@ def test_notes_without_a_live_game_or_pc_are_filed_with_nothing_captured(coach_a
     assert coach_app.post("/api/sessions/w1-abc/coach", json={"text": "   "}).status_code == 422
 
 
+def test_report_receipt_attaches_cached_session_picture_and_tactical_map(coach_app, monkeypatch):
+    from gbox import coaching_evidence
+    image = io.BytesIO()
+    Image.new("RGB", (16, 16), (120, 80, 40)).save(image, "JPEG")
+    jpeg = image.getvalue()
+    coach_app.post("/api/sessions/w1-abc/frame", content=jpeg).raise_for_status()
+    frame = {"v": 1, "stage": "reported-room", "t": time.time(), "player": {"hp": 1, "pos": [0, 0, 0]},
+             "enemies": [{"hp": 20, "distance_cm": 90, "visibility": "blocked"}]}
+    coach_app.post("/api/autoplay/tactical/w1-abc", json=frame).raise_for_status()
+    calls = []
+    def render(saved, stage):
+        calls.append((saved, stage))
+        return b'<svg xmlns="http://www.w3.org/2000/svg"/>'
+    monkeypatch.setattr(coaching_evidence, "render_map", render)
+    sent = note(coach_app, "w1-abc", "recover from this attack")
+    evidence = sent["evidence"]
+    assert evidence["stream"]["state"] == evidence["map"]["state"] == evidence["moment"]["state"] == "done"
+    assert evidence["stream"]["age_s"] >= 0 and evidence["tactical"]["age_s"] >= 0
+    assert coach_app.get(f"/api/artifacts/{evidence['stream']['sha256']}").content == jpeg
+    manifest = coach_app.get(f"/api/artifacts/{evidence['moment']['sha256']}").json()
+    assert manifest["session_id"] == "w1-abc" and manifest["sources"]["tactical"]["frame"] == frame
+    assert calls == [(frame, None)]
+    assert evidence["ram_fields"]["state"] == "skipped"  # no inspector is created to fabricate a reading
+    assert coach_app.get(f"/api/sessions/w1-abc/coach/{sent['message_id']}").json()["evidence"] == evidence
+    assert coach_app.get(f"/api/sessions/w1-abc/coach/{sent['message_id']}").json()["session_id"] == "w1-abc"
+    assert coach_app.get(f"/api/sessions/w1-def/coach/{sent['message_id']}").status_code == 404  # same title, different session
+
+
 def finish(store, job_id, out, arts):
     """What the worker's result does: the job's artifacts stored, the job succeeded with its output."""
     for name, data, mt, prov in arts:
@@ -384,7 +412,7 @@ def test_finished_captures_attach_to_the_note_with_the_ram_header_and_the_re4_su
     assert "slot 10" in st["captures"]["state"]["detail"] and "24.0 MiB at 0x80000000" in st["captures"]["ram"]["detail"]
     msg = coach_app.get(f"/api/requests/{sent['request_id']}").json()["messages"][-1]
     names = [a["name"] for a in msg["attachments"]]
-    assert names == ["coach-1-frame.png", "coach-1-G4BE08.s10", "coach-1-G4BE08-ram.gz", "coach-1-re4-summary.json"]
+    assert names == ["coach-1-report-moment.json", "coach-1-frame.png", "coach-1-G4BE08.s10", "coach-1-G4BE08-ram.gz", "coach-1-re4-summary.json"]
     by = {a["name"]: a for a in msg["attachments"]}
     assert coach_app.get(f"/api/artifacts/{by['coach-1-G4BE08.s10']['sha256']}").content == b"dolphin-slot-10-state"
     blob = coach_app.get(f"/api/artifacts/{by['coach-1-G4BE08-ram.gz']['sha256']}").content
@@ -403,7 +431,7 @@ def test_finished_captures_attach_to_the_note_with_the_ram_header_and_the_re4_su
 
     # attaching twice (the watcher and a status read racing) changes nothing
     again = coach_app.get(f"/api/sessions/w1-abc/coach/{sent['message_id']}").json()
-    assert again == st and len(coach_app.get(f"/api/requests/{sent['request_id']}").json()["messages"][-1]["attachments"]) == 4
+    assert again == st and len(coach_app.get(f"/api/requests/{sent['request_id']}").json()["messages"][-1]["attachments"]) == 5
 
     # what autoplay reads, and what the watch panel shows
     doc = coach_app.get(f"/api/coaching/{GID}").json()
@@ -433,7 +461,7 @@ def test_failed_or_late_captures_are_reported_and_a_late_result_still_attaches(c
     latest = coach_app.get("/api/sessions/w1-abc/coach").json()["latest"]
     assert latest["captures"] == {"frame": "done", "state": "failed", "ram": "failed"}
     msg = coach_app.get(f"/api/requests/{sent['request_id']}").json()["messages"][-1]
-    assert [a["name"] for a in msg["attachments"]] == ["coach-1-frame.png"]
+    assert [a["name"] for a in msg["attachments"]] == ["coach-1-report-moment.json", "coach-1-frame.png"]
     st = coach_app.get(f"/api/sessions/w1-abc/coach/{sent['message_id']}").json()
     assert st["captures"]["frame"]["state"] == "done" and st["captures"]["ram"]["state"] == "failed"
 

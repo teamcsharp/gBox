@@ -2363,6 +2363,34 @@ def _ap_headers(ctx_or_headers) -> dict:
     return dict(h) | {"x-gbox-actor": AUTOPLAY_ACTOR}
 
 
+SESSION_ROW_TIMEOUT_S = 25.0               # asked at most twice inside the tool's own 60 s
+
+
+def _session_row(ctx, sid: str) -> dict:
+    """The control plane's record of a running session ({} when it can't say in time). Only the running sessions are
+    asked for: the full GET /api/sessions builds a row for every session the store ever held, each with a few store
+    reads. On a loaded Spark (2026-10-21, load average 47) that took 45 s and then over 2 minutes, so every autoplay op
+    (start, stop, status) failed on its 30 s timeout ("ReadTimeout: timed out")."""
+    try:
+        r = httpx.get(f"{ctx.server}/api/sessions", params={"include_ended": "false"}, headers=_ap_headers(ctx),
+                      timeout=SESSION_ROW_TIMEOUT_S)
+        rows = r.json()
+    except (httpx.HTTPError, ValueError):
+        return {}
+    return next((s for s in rows if isinstance(s, dict) and s.get("session_id") == sid), {}) \
+        if isinstance(rows, list) else {}
+
+
+def _session_game_id(ctx, sid: str):
+    """The game a session runs: from this worker's own SESSIONS (no request; the game it launched), else the control
+    plane's record."""
+    try:
+        gid = (SESSIONS[sid][1] or {}).get("game_id")
+    except KeyError:
+        gid = None
+    return gid or _session_row(ctx, sid).get("game_id")
+
+
 def _missions(game_id=None):
     out = [json.loads(f.read_text(encoding="utf-8")) for f in sorted(MISSIONS.glob("*.json"))]
     return [m for m in out if not game_id or m.get("game_id") == game_id]
@@ -2373,11 +2401,7 @@ def autoplay(inp: AutoplayIn, ctx: Ctx):
     """Let gBox play the live game (take control): runs a scripted mission (navigate / interact / fight) through the
     session's debugger. op=start | stop (hand control back) | status | list."""
     from .autoplay import Driver
-    game_id, started = None, None
-    if inp.session_id:
-        r = httpx.get(f"{ctx.server}/api/sessions", headers=_ap_headers(ctx), timeout=30)
-        game_id, started = next(((s.get("game_id"), s.get("started")) for s in r.json() if s["session_id"] == inp.session_id),
-                                (None, None))
+    game_id = _session_game_id(ctx, inp.session_id) if inp.session_id and inp.op in ("list", "start") else None
     if inp.op == "list":
         return {"result": {"missions": [{"name": m["name"], "objective": m.get("objective"), "game_id": m.get("game_id")}
                                         for m in _missions(game_id)]}}
@@ -2416,7 +2440,8 @@ def autoplay(inp: AutoplayIn, ctx: Ctx):
         if inp.mode == "playbook":
             raise ValueError(f"no playbook plays {g.get('title')} where it is now (have: {', '.join(PLAYBOOKS)})")
     from . import jumpstate
-    if inp.mode == "auto" and not inp.mission and game_id and since - float(started or 0) < AT_BOOT \
+    if inp.mode == "auto" and not inp.mission and game_id \
+            and since - float(_session_row(ctx, inp.session_id).get("started") or 0) < AT_BOOT \
             and not jumpstate.booted(ad, g):                   # booted into its jump state: past the boot already
         try:                                                   # the chord at the title screen: your recorded run from boot
             return {"result": _start_imitation(inp.model_copy(update={"mode": "replay"}), ctx, d, ad, g, game_id, since)}
@@ -2763,6 +2788,9 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
                     pass
             if "game" in inspect.signature(pb.play).parameters:
                 kw["game"] = dict(g or {})                     # its game and build (a playbook's own jump / menu state)
+            if "tactical" in inspect.signature(pb.play).parameters and ctx is not None:
+                from .mercs import tactical as T               # the tactical map beside the stream (docs/tactical_map.md)
+                kw["tactical"] = T.HttpSink(ctx.server, _ap_headers(ctx), sid)
             stats = pb.play(ad, _autoplay_send(ad, d), lambda: d.stopped, **kw)
             if stats.get("hung"):                              # the game froze: _ended gets it back (_bad_end)
                 run["bad_end"] = "hung"
@@ -5076,6 +5104,7 @@ def _load_tool_modules(names=("cxbx_diagnostics_tool", "native_face_editor", "au
                               "ue_steam",   # ue_steam: generic Unreal Engine Steam game static analysis (locomotion/animation)
                               "re6_tool",   # re6_tool: Resident Evil 6 (X360 in Xenia): Mercenaries loadouts, items, swaps
                               "re5_tool",   # re5_tool: Resident Evil 5 Gold (PS3 in RPCS3): unlock all (save edit)
+                              "re5_mods_tool",   # re5_mods: RE5 Gold (PS3) live mods: turn speed, fire rate, infinite ammo, damage
                               "oot_live",   # oot_live: OoT actors at a picture point, statues kept in rooms (gbox.oot_swap)
                               "twin_snakes_live",   # twin_snakes_live: Twin Snakes GC loaded cast + live body writes
                               "re_inventory",   # re_inventory: any Resident Evil's live inventory (give/remove/set/loadout)

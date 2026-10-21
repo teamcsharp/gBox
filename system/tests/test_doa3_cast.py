@@ -12,16 +12,17 @@ from gbox.doa3_inventory import afs_table, entry_rooms, read_afs
 
 # ----------------------------------------------------------------- fixtures
 
-def make_xpr(mdl_size: int = 64, words: list[int] | None = None,
+def make_xpr(mdl_size: int | None = None, words: list[int] | None = None,
              total: int | None = None) -> bytes:
-    """An XPR0 shaped like kas00: user-data MDL pair at 0x0C, second pair at
-    0x18, descriptor count at 0x20, raw descriptor words, then the MDL payload
-    and an unparsed trailing region."""
+    """An XPR0 shaped like kas00: user-data MDL pair at 0x0C, the MDL chunk
+    from its tag at 0x14 (counts at 0x18..0x24, then raw words) spanning
+    mdl_size bytes inside the header, then a 16-byte data region."""
     words = words if words is not None else [0x48, 0x14C, 0x16BC, 0x3F54, 0x4190]
     hsize = 0x24 + 4 * len(words)
-    mdl_end = hsize + mdl_size
+    if mdl_size is None:
+        mdl_size = hsize - 0x14                    # the user data ends where the header ends
     if total is None:
-        total = mdl_end + 16
+        total = hsize + 16
     out = bytearray(total)
     struct.pack_into("<4sII", out, 0, b"XPR0", total, hsize)
     struct.pack_into("<II", out, 12, 0x80000000, mdl_size)
@@ -30,7 +31,7 @@ def make_xpr(mdl_size: int = 64, words: list[int] | None = None,
     struct.pack_into("<I", out, 0x20, len(words))
     for i, w in enumerate(words):
         struct.pack_into("<I", out, 0x24 + 4 * i, w)
-    out[hsize:hsize + mdl_size] = bytes((i * 7) & 0xFF for i in range(mdl_size))
+    out[hsize:total] = bytes((i * 7) & 0xFF for i in range(total - hsize))
     return bytes(out)
 
 
@@ -209,7 +210,7 @@ def make_geo_xpr(vcount: int = 4, icount: int = 6, mat_face_off: int = 0,
     total = hsize + 32 * vcount + 8
     out = bytearray(total)
     struct.pack_into("<4sII", out, 0, b"XPR0", total, hsize)
-    struct.pack_into("<II", out, 12, 0x80000000, 32 * vcount)
+    struct.pack_into("<II", out, 12, 0x80000000, iptr + 2 * icount - 0x14)   # MDL user data: tag .. last record
     out[0x14:0x18] = b"MDL\x00"
     struct.pack_into("<4I", out, 0x18, 1, 0, 1, 1)   # obj, tex, unk, dup
     struct.pack_into("<I", out, 0x28, obj)           # object pointer table
@@ -240,13 +241,13 @@ def test_xpr_resources_mirrors_observed_layout():
     res = doa3_cast.xpr_resources(blob)
     assert res["magic"] == "XPR0"
     assert res["header_size"] == 0x38
-    assert res["mdl"] == {"type": 0x80000000, "size": 64, "tag": "MDL",
-                          "offset": 0x38, "end": 0x78}
+    assert res["mdl"] == {"type": 0x80000000, "size": 0x24, "tag": "MDL",
+                          "offset": 0x14, "end": 0x38}
     assert res["second_pair"] == {"type": 0x48, "size": 87}
     assert res["descriptor_count"] == 5
     assert res["descriptor_words"] == [0x48, 0x14C, 0x16BC, 0x3F54, 0x4190]
-    assert res["trailing_size"] == 16
-    assert doa3_cast.xpr_mdl(blob)[0] == 0 and len(doa3_cast.xpr_mdl(blob)) == 64
+    assert res["data_size"] == 16
+    assert doa3_cast.xpr_mdl(blob)[:4] == b"MDL\x00" and len(doa3_cast.xpr_mdl(blob)) == 0x24
 
 
 def test_xpr_resources_rejects_non_xpr():
@@ -254,9 +255,9 @@ def test_xpr_resources_rejects_non_xpr():
         doa3_cast.xpr_resources(b"\x00" * 0x30)
 
 
-def test_xpr_resources_rejects_mdl_outside_resource():
-    blob = make_xpr(mdl_size=64, total=0x60)   # mdl_end 0x78 > total 0x60
-    with pytest.raises(ValueError, match="outside the resource"):
+def test_xpr_resources_rejects_mdl_outside_the_header():
+    blob = make_xpr(mdl_size=64)               # 0x14 + 64 = 0x54 > header 0x38
+    with pytest.raises(ValueError, match="outside the header"):
         doa3_cast.xpr_resources(blob)
 
 
@@ -562,16 +563,16 @@ def test_slot_inventory_counts_and_gaps():
 def test_slot_inventory_keeps_unresolved_family_pending():
     manifest = make_manifest()
     manifest["fighter_families"].append(
-        {"nick": "hika", "code": "hik", "mot": ["hika.mot"],
-         "costumes": {"hik00": {"xpr": 9, "cat": 10}},
-         "complete_costumes": ["hik00"]})
+        {"nick": "koryu", "code": "kor", "mot": ["koryu.mot"],
+         "costumes": {"kor00": {"xpr": 9, "cat": 10}},
+         "complete_costumes": ["kor00"]})
     inv = doa3_cast.slot_inventory(manifest)
     by_nick = {s["nick"]: s for s in inv["slots"]}
-    assert by_nick["hika"]["display_name"] is None
+    assert by_nick["koryu"]["display_name"] is None
     assert inv["display_mapping"] == "partial"
-    assert inv["display_pending"] == ["hika"]
+    assert inv["display_pending"] == ["koryu"]
     gaps = {(g["slot"], g["kind"]) for g in inv["coverage_gaps"]}
-    assert ("hika", "display_name_pending") in gaps
+    assert ("koryu", "display_name_pending") in gaps
 
 
 def test_cast_writer_status_is_honest():
@@ -581,8 +582,8 @@ def test_cast_writer_status_is_honest():
     assert st["mdl_descriptor_table"]
     assert st["cat_lnk_groups"]
     assert st["cat_lnk_sections"]
-    assert "no-op" in st["mdl_geometry_encode_note"]
-    assert not st["donor_retarget"] and not st["playable"]
+    assert "doa3_writer" in st["mdl_geometry_encode_note"]
+    assert st["donor_retarget"] and st["texture_write"] and not st["playable"]
 
 
 # ----------------------------------------------------------------- AFS patch
@@ -639,7 +640,7 @@ def test_xpr_resources_rejects_short_fixed_header():
 
 
 def test_xpr_roundtrip_is_byte_preserving():
-    blob = make_xpr(mdl_size=256, words=[0x48, 0x14C, 0x16BC, 0x3F54, 0x4190, 0x97DC])
+    blob = make_xpr(words=[0x48, 0x14C, 0x16BC, 0x3F54, 0x4190, 0x97DC], total=0x200)
     assert doa3_cast.xpr_roundtrip(blob) == blob
 
 
@@ -863,7 +864,7 @@ def make_descriptor_xpr(vcount: int = 4, icount: int = 6,
     total = hsize + vertex_bytes + gap + sum(tex_sizes)
     out = bytearray(total)
     struct.pack_into("<4sII", out, 0, b"XPR0", total, hsize)
-    struct.pack_into("<II", out, 12, 0x80000000, vertex_bytes)
+    struct.pack_into("<II", out, 12, 0x80000000, iptr + 2 * icount - 0x14)   # MDL user data: tag .. last record
     out[0x14:0x18] = b"MDL\x00"
     struct.pack_into("<4I", out, 0x18, 1, ntex, 1, 1)  # obj=1, tex=ntex, unk=1, dup=1
     struct.pack_into("<I", out, 0x28, obj)

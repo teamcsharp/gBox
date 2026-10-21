@@ -270,6 +270,38 @@ def test_auto_mode_prefers_a_matching_playbook(monkeypatch, tmp_path):
         tools.autoplay(tools.AutoplayIn(session_id="s9", op="start", mode="playbook"), ctx)
 
 
+def test_autoplay_ops_never_wait_on_the_full_session_list(monkeypatch, tmp_path):
+    """The full GET /api/sessions took minutes on a loaded Spark (2026-10-21) and every autoplay op timed out: start takes
+    the game from the worker's own SESSIONS, stop and status ask nothing, and only the running sessions are ever listed
+    (a timeout there is no game rather than a failed op)."""
+    from gbox import tools, autoplay as apmod
+
+    class D:
+        def __init__(self, *a, **k):
+            self.stopped, self.trace = False, []
+    monkeypatch.setattr(apmod, "Driver", D)
+    asked = []
+
+    def get(url, **k):
+        asked.append(k.get("params"))
+        raise tools.httpx.ReadTimeout("timed out")
+    monkeypatch.setattr(tools.httpx, "get", get)
+    ad = SimpleNamespace(name="rpcs3", supported={"send_input"}, send_input=lambda rows: None)
+    monkeypatch.setitem(tools.SESSIONS, "s5", (ad, {"game_id": "re5", "platform": "ps3", "title": "RE5"}))
+    monkeypatch.setattr(tools, "AUTOPLAY", {})
+    pb = SimpleNamespace(__name__="gbox.mercs_bot", __doc__="Mercs.\n", setup=lambda ad: [], play=lambda *a: {})
+    monkeypatch.setattr(tools, "_playbook", lambda ad, g: pb)
+    games = []
+    monkeypatch.setattr(tools, "_start_playbook",
+                        lambda pb, inp, d, ad, since, ctx, g, game_id: games.append(game_id) or {"started": "playbook"})
+    ctx = SimpleNamespace(server="http://x", headers={"authorization": "Bearer t"}, config=SimpleNamespace(runtime=tmp_path))
+    assert tools.autoplay(tools.AutoplayIn(session_id="s5", op="start"), ctx)["result"]["started"] == "playbook"
+    assert tools.autoplay(tools.AutoplayIn(session_id="s5", op="status"), ctx)["result"]["running"] is False
+    assert tools.autoplay(tools.AutoplayIn(session_id="s5", op="stop"), ctx)["result"]["stopped"] is False
+    assert games == ["re5"] and asked == []
+    assert tools._session_game_id(ctx, "elsewhere") is None and asked == [{"include_ended": "false"}]
+
+
 def test_between_rounds_it_never_presses_blind_and_counts_the_next_round():
     # out of a round on a screen RAM does not name as a menu (no title task; the stage still loading, with the last
     # round's clock showing): no press at all. Blind up + A had walked to the main title and started a story game with
