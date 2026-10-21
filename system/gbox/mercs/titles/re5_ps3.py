@@ -21,6 +21,7 @@ L1 + cross = reload. Measured live: the stick turns ~150 deg/s, walking ~145 uni
 """
 from __future__ import annotations
 
+import json
 import math
 import struct
 import time
@@ -40,16 +41,23 @@ ACTIONS = {0: "stand", 1: "move", 2: "aim", 4: "grabbed", 5: "hit"}
 P_GRABBED = 4                          # held by a Majini: "Break free" (wiggle the left stick)
 
 HEAD_H, GUN_H = 160.0, 140.0           # above the feet: a Majini's head, the player's gun (cm)
+# uLaserSight (sUnit's FxCore line 18): +0x200 the laser's origin (the muzzle), +0x30 the laser dot (where the ray
+# lands: a Majini, a wall, the ground); the combat layer closes its aim on the dot (the camera's ray is ~5 deg off it,
+# the body's yaw +-7: the upper body aims inside a cone)
+FX_LINE, LASER_VT, LASER_FROM, LASER_AT = 18, 0x015BD958, 0x200, 0x30
+SWITCH_EVERY_S = 3.0                   # a weapon switch (a D-pad quick slot) at most this often
 # The inventory: embedded in the player at +0x22E0 (live 2026-10-21, with the RE5 mods agent): INV_SLOTS slots of 0x30,
 # a slot: +0x08 u32 id word 0x0TII (T 1 = weapon, uWpII; 2 = ammo / items), +0x0C rounds loaded, +0x10 capacity,
 # +0x20 u32 1 = in hand, +0x2D u8 != 0 = in use. The 3 x 3 grid is slots 0..8, row by row; the D-pad quick-uses
 # the edge slots (up 1, left 3, right 5, down 7).
-P_INV, INV_SLOT, INV_SLOTS = 0x22E0, 0x30, 9
+P_INV, INV_SLOT, INV_SLOTS, INV_ALL = 0x22E0, 0x30, 9, 24   # the grid; all the slots (the one in hand may sit past 9)
 INV_ID, INV_ROUNDS, INV_CAP, INV_HAND, INV_USED = 0x08, 0x0C, 0x10, 0x20, 0x2D
 QUICK = {1: "dup", 3: "dleft", 5: "dright", 7: "ddown"}
-HOLD_FIRE = {0x15, 0x03}               # weapons fired by holding R1 (the Gatling, the VZ61); the rest once a press
+HOLD_FIRE = {0x15, 0x03, 0x09}         # automatic weapons fired by holding R1 (the Gatling, the VZ61, Chris HM's
+HOLD_CAP = 50                          # uWp09); or any with a big magazine (autos): the rest fire once a press
 TAP_ON, TAP_OFF = 1, 2                 # ticks of R1 down / up when tapping (a magnum's own recovery is longer)
-HEAL_IDS: set = set()                  # the item ids of herbs / first aid sprays (learned live: logged in stats)
+HEAL_IDS = {0x301, 0x302, 0x303, 0x304, 0x307, 0x309}   # Green / Red / Yellow Herb, First Aid Spray, mixes GG / GR
+                                       # (the item tables, from the RE5 mods agent 2026-10-21)
 HEAL_AT = 0.4                          # use one below this share of health
 WEAPON_NAMES = {0x02: "M92F", 0x03: "VZ61", 0x0B: "M29", 0x12: "Barry's handgun", 0x15: "Gatling", 0x20: "Dragunov"}
 ENGAGE, SHOOT_RANGE, TOO_CLOSE = 3000.0, 2200.0, 110.0
@@ -85,8 +93,13 @@ WP_REACHED, WP_CLIMB = 70.0, 110.0     # a waypoint is passed this close; the ne
                                        # (almost) straight up / down = a ladder or a drop: the stage's square prompt
 REPLAN_S, ROUTE_STALE_S = 2.0, 60.0    # the route is drawn again this often; a bonus followed this long is left
 CLIMB_WAIT_S = 3.0                     # at a crossing this long without its prompt: the player can't take it
-_AVOID: dict = {}                      # navmesh pointer -> the crossings the player could not take (kept across
-                                       # rounds: the mesh is the stage's, so the next round knows them at once)
+_AVOID: dict = {}                      # navmesh signature -> the crossings the player could not take (kept across
+                                       # rounds and runs: gbox-data/mercs/lessons/BLUS30491-crossings.json)
+CROSSINGS_FILE = "BLUS30491-crossings.json"
+STAND_R = 250.0                        # the stand: the round's start position, held from this close
+BREAK_AT_S, BREAK_MARGIN_S = 60.0, 15.0   # leave the stand for time at this clock, or at the nearest one's ETA + this
+RANK_SCORES: tuple = ()                # (("S", points), ("A", points), ...) once the thresholds are known (the meta
+                                       # research is extracting them); until then no rank is logged
 
 
 def ptr_ok(p) -> bool:
@@ -155,18 +168,41 @@ def bonuses(m) -> list:
 def inventory(m, player: int) -> list:
     """The player's 3 x 3 grid from RAM: [{"slot", "id", "type", "item", "rounds", "cap", "hand", "used"}] for the slots
     in use (type 1 = a weapon uWp<item>, 2 = ammo / items)."""
-    raw = m.rd(player + P_INV, INV_SLOT * INV_SLOTS)
+    raw = m.rd(player + P_INV, INV_SLOT * INV_ALL)
     out = []
-    for k in range(INV_SLOTS):
+    for k in range(INV_ALL):
         rec = raw[INV_SLOT * k:INV_SLOT * (k + 1)]
         if not rec[INV_USED]:
             continue
-        word, rounds, cap, hand = struct.unpack(">IIII", rec[INV_ID:INV_ID + 16]) if INV_HAND == INV_ID + 24 else (
-            struct.unpack(">I", rec[INV_ID:INV_ID + 4])[0], struct.unpack(">I", rec[INV_ROUNDS:INV_ROUNDS + 4])[0],
-            struct.unpack(">I", rec[INV_CAP:INV_CAP + 4])[0], struct.unpack(">I", rec[INV_HAND:INV_HAND + 4])[0])
+        word = struct.unpack(">I", rec[INV_ID:INV_ID + 4])[0]
+        rounds = struct.unpack(">I", rec[INV_ROUNDS:INV_ROUNDS + 4])[0]
+        cap = struct.unpack(">I", rec[INV_CAP:INV_CAP + 4])[0]
+        hand = struct.unpack(">I", rec[INV_HAND:INV_HAND + 4])[0]   # +0x20, not next to the counts
+        if k >= INV_SLOTS and hand != 1:
+            continue                                        # past the grid: only the one in hand matters
         out.append({"slot": k, "id": word, "type": word >> 8, "item": word & 0xFF, "rounds": rounds, "cap": cap,
                     "hand": hand == 1})
     return out
+
+
+_LASER: dict = {}                      # id(memory) -> (the uLaserSight unit, memory): found once a round
+
+
+def laser(m) -> dict | None:
+    """The laser sight's ray from RAM: {"from": the muzzle, "at": the dot}, None without the unit."""
+    hit = _LASER.get(id(m))
+    u = hit[0] if hit and hit[1] is m else 0
+    if not (ptr_ok(u) and u32(m, u) == LASER_VT):
+        su = u32(m, S_UNIT)
+        u, n = (u32(m, su + UNIT_LINES + LINE_STRIDE * FX_LINE + LINE_FIRST) if ptr_ok(su) else 0), 0
+        while ptr_ok(u) and n < UI_MAX and u32(m, u) != LASER_VT:
+            u, n = u32(m, u + UNIT_NEXT), n + 1
+        if not ptr_ok(u):
+            return None
+        if len(_LASER) > 16:
+            _LASER.clear()
+        _LASER[id(m)] = (u, m)
+    return {"from": struct.unpack(">3f", m.rd(u + LASER_FROM, 12)), "at": struct.unpack(">3f", m.rd(u + LASER_AT, 12))}
 
 
 def equipped(snap: dict) -> dict | None:
@@ -192,6 +228,10 @@ def snapshot(m) -> dict:
             snap["inventory"] = inventory(m, p)
         except (ValueError, OSError, struct.error):
             snap["inventory"] = []
+        try:
+            snap["laser"] = laser(m)
+        except (ValueError, OSError, struct.error):
+            snap["laser"] = None
     se = u32(m, S_ENEMY)
     if ptr_ok(se):
         n, arr = u32(m, se + 0x28), u32(m, se + 0x34)
@@ -460,6 +500,52 @@ def stage_prompt(m) -> bool:
 _NAV_CACHE: dict = {}
 
 
+def mesh_key(mesh) -> str:
+    return getattr(mesh, "sig", None) or f"ptr-{getattr(mesh, 'ptr', 0):#x}"
+
+
+def _crossings_path():
+    try:
+        from .. import lessons
+        return lessons.ROOT / CROSSINGS_FILE
+    except Exception:                                       # noqa: BLE001
+        return None
+
+
+def crossings(mesh) -> list:
+    """The crossings the player could not take on this stage's mesh (learned live; kept per mesh signature across
+    rounds and, through the lessons dir, across runs). The list is shared: Bot appends to it."""
+    key = mesh_key(mesh)
+    if key not in _AVOID:
+        path = _crossings_path()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8")) if path and path.is_file() else {}
+        except (OSError, ValueError):
+            data = {}
+        _AVOID[key] = [tuple(q) for q in data.get(key) or []]
+    return _AVOID[key]
+
+
+def save_crossings() -> None:
+    path = _crossings_path()
+    if path is None or not _AVOID:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+        data.update({k: [list(q) for q in v] for k, v in _AVOID.items()})
+        path.write_text(json.dumps(data), encoding="utf-8")
+    except (OSError, ValueError):
+        pass
+
+
+def rank_of(score) -> str | None:
+    """The round's rank by RANK_SCORES, None until the thresholds are known."""
+    if score is None or not RANK_SCORES:
+        return None
+    return next((r for r, at in RANK_SCORES if score >= at), RANK_SCORES[-1][0] if RANK_SCORES else None)
+
+
 def own_screen(snap: dict) -> str:
     """playing / dead / results / loading from the round's fields: the player present with health and time left =
     playing; health 0 = dead ("You Are Dead - Continue?"); time 0 = results; no player = loading or menus."""
@@ -503,15 +589,36 @@ class Bot:
         self.route_len, self.route_len_at = None, 0.0   # hourglass -> its route's length (cm), when worked out
         self.nearest_eta = None
         self.tap = 0                           # the R1 tap cycle (TAP_ON down, TAP_OFF up)
+        self.spawn = None                      # where the round started: the stand
+        self.at_stand = False
+        self.stood = False                     # the stand has begun (every reachable bonus gathered once)
+        self.plan_target = None
+        self.flags: dict = {}
         self.reload_until = 0.0
         self.heal_at = 0.0
+        self.switch_at = 0.0
 
     # --- the engine's brain interface ---
     def prompt_ok(self, button, snap, now) -> bool:
         return True
 
     def save(self):
-        pass
+        save_crossings()
+
+    def plan(self) -> dict:
+        """What the bot is doing, for the tactical map (gbox/mercs/tactical.py): no RAM reads, only state held."""
+        walking = self.route if self.stats.get("phase") in ("gather_time", "break_for_time", "stand") else None
+        nb = None
+        if self.route_len:
+            ptr, d = min(((k, v) for k, v in self.route_len.items() if v is not None), key=lambda kv: kv[1],
+                         default=(None, None))
+            if ptr is not None:
+                nb = {"id": ptr, "kind": "time", "dist": round(d), "eta_s": round(d / RUN_SPEED, 1)}
+        return {"phase": self.stats.get("phase"), "target": self.plan_target,
+                "route": [tuple(w) for w in walking] if walking else None,
+                "stand": {"pos": self.spawn, "r": STAND_R} if self.spawn else None,
+                "nearest_bonus": nb, "enemy_flags": dict(self.flags),
+                "note": str(self.stats.get("bonus_target") or self.stats.get("aim") or "")[:80]}
 
     def tick(self, snap: dict) -> dict:
         now = self.clock()
@@ -546,6 +653,16 @@ class Bot:
         if eq is not None:
             self.stats["weapon"] = f"{WEAPON_NAMES.get(eq['item'], 'uWp%02x' % eq['item'])} {eq['rounds']}/{eq['cap']}" \
                 if eq["type"] == 1 else f"item {eq['id']:#x}"
+            if eq["type"] == 1 and eq["rounds"] == 0 and eq["cap"] == 0 and p.get("action") != P_GRABBED \
+                    and now - self.switch_at > SWITCH_EVERY_S:
+                # EMPTY 0 / 0 (Excella, live 2026-10-21: the trigger did nothing): another weapon with rounds from
+                # a quick slot (the D-pad equips the edge slots)
+                other = next((w for w in snap.get("inventory") or () if w["type"] == 1 and not w["hand"]
+                              and w["rounds"] > 0 and w["slot"] in QUICK), None)
+                if other is not None:
+                    self.switch_at = now
+                    self.stats["weapon_switches"] = self.stats.get("weapon_switches", 0) + 1
+                    return {"tap": QUICK[other["slot"]]}
             if eq["type"] == 1 and eq["rounds"] == 0 and eq["cap"] > 0 and p.get("action") != P_GRABBED:
                 if now > self.reload_until + 2.5:           # empty: L1 + cross reloads (once, then let it play)
                     self.reload_until = now + 0.3
@@ -553,17 +670,33 @@ class Bot:
                 if now < self.reload_until:
                     return {"hold": {"l1", "cross"}}
         mesh = snap.get("nav")
-        if mesh is not None and self.avoid is not _AVOID.get(getattr(mesh, "ptr", 0)):
-            self.avoid = _AVOID.setdefault(getattr(mesh, "ptr", 0), [])
-        tgt = self._bonus(p, live, snap.get("bonuses") or (), now, mesh)
+        if mesh is not None and self.avoid is not _AVOID.get(mesh_key(mesh)):
+            self.avoid = crossings(mesh)
+        if self.spawn is None and t is not None and t >= 110:
+            self.spawn = tuple(p["pos"])                    # the round's start: a defensible spot by design
+        px, py, pz = p["pos"]
+        self.at_stand = self.spawn is not None and math.hypot(self.spawn[0] - px, self.spawn[2] - pz) < STAND_R \
+            and abs(self.spawn[1] - py) < WP_CLIMB
+        tgt = self._bonus(p, live, snap.get("bonuses") or (), now, mesh, t)
+        threats = [e for e in live if self._threat(p, e)]
+        self.flags = {e["slot"]: ["blocking"] for e in threats}
+        if tgt is None and not threats and self.spawn is not None and not self.at_stand:
+            self.stats["phase"] = "stand"                   # the bonuses gathered: back to the stand
+            self.stood = True
+            self.plan_target = {"kind": "stand", "id": "spawn", "pos": self.spawn}
+            self.aiming_since = None
+            return self._follow(p, {"ptr": "stand", "pos": self.spawn}, mesh, snap.get("stage_prompt"), now)
         if tgt is None and not live:
             self.aiming_since = None
-            self.stats["phase"] = "idle"
+            self.stats["phase"] = "stand" if self.at_stand else "idle"
+            self.stood = self.stood or self.at_stand
+            self.plan_target = None
             return {"hold": set()}
         if tgt is None:
-            self.stats["phase"] = "fight"
-        px, py, pz = p["pos"]
-        tgt = tgt or min(live, key=lambda e: self._cost(p, e))
+            self.stats["phase"] = "fight" if threats or not self.at_stand else "stand"
+        tgt = tgt or min(threats or live, key=lambda e: self._cost(p, e))
+        self.plan_target = {"kind": tgt.get("kind", "enemy") if "ptr" in tgt else "enemy",
+                            "id": tgt.get("ptr", tgt.get("slot")), "pos": tgt["pos"]}
         aim_h = tgt.get("aim_h", HEAD_H)
         tx, ty, tz = tgt["pos"]
         dist = math.hypot(tx - px, tz - pz)
@@ -573,8 +706,10 @@ class Bot:
             if tgt.get("walk"):
                 return self._follow(p, tgt, snap.get("nav"), snap.get("stage_prompt"), now)
             return self._take(p, tgt, snap.get("stage_prompt"), now)
-        if dist > ENGAGE:                                   # nobody near: walk toward the nearest
+        if dist > ENGAGE:                                   # nobody near: walk toward the nearest...
             self.aiming_since = None
+            if self.at_stand:                               # ...unless this is the stand: they come to him
+                return {"hold": set()}
             return {"hold": self._walk(p, want, now)}
         aiming = p.get("action") == 2
         if dist < TOO_CLOSE and not aiming:                 # on top of him: a step back while facing him
@@ -621,7 +756,8 @@ class Bot:
                 keys.add("rup" if pitch_err > 0 else "rdown")
         if abs(yaw_err) <= tol and abs(pitch_err) <= ptol and dist <= SHOOT_RANGE:
             tap, self.tap = self.tap, (self.tap + 1) % (TAP_ON + TAP_OFF)
-            if (eq is not None and eq.get("type") == 1 and eq.get("item") in HOLD_FIRE) or tap < TAP_ON:
+            auto = eq is not None and eq.get("type") == 1 and (eq.get("item") in HOLD_FIRE or (eq.get("cap") or 0) >= HOLD_CAP)
+            if auto or tap < TAP_ON:
                 keys.add("r1")                              # on him: fire (held for the Gatling, a press for the rest:
             self.stats["shots_s"] = round(self.stats["shots_s"] + 0.05, 2)   # a held R1 fires a handgun once)
             if tgt.get("kind") == "time":
@@ -636,7 +772,7 @@ class Bot:
         return {"hold": keys}
 
     # --- helpers ---
-    def _bonus(self, p, live, standing, now, mesh=None):
+    def _bonus(self, p, live, standing, now, mesh=None, clock=None):
         """The time bonus to go for now, or None (nothing standing, or a Majini within FIGHT_R: he is fought first).
         The nearest hourglass by the navmesh route (straight line without a mesh), on any level, walked to along the
         route and taken with its "□ Time bonus" prompt (Bot._take); one left alone for BONUS_SKIP_S when its prompt
@@ -675,10 +811,12 @@ class Bot:
         walk = d > BONUS_TAKE or not level
         if walk and not BONUS_WALK:
             return None
-        self.stats["phase"] = "gather_time"
-        self.stats["bonus_target"] = f"{b['ptr']:#x} d {d:.0f} route {cost(b):.0f}" + (" walk" if walk else " take")
         self.nearest_eta = cost(b) / RUN_SPEED
         self.stats["nearest_eta_s"] = round(self.nearest_eta, 1)
+        # Gather first, always: every reachable bonus is taken before the stand (operator 2026-10-21: movement first,
+        # "navigate around the level completing time bonuses"). break_for_time = a bonus grabbed after the stand began.
+        self.stats["phase"] = "break_for_time" if self.stood else "gather_time"
+        self.stats["bonus_target"] = f"{b['ptr']:#x} d {d:.0f} route {cost(b):.0f}" + (" walk" if walk else " take")
         return {"slot": f"bonus {b['ptr']:#x}", "ptr": b["ptr"], "pos": b["pos"], "aim_h": 0.0, "r": b.get("r"),
                 "kind": b.get("kind", "time"), "walk": walk}
 
@@ -863,8 +1001,12 @@ class RE5PS3(Driver):
     def progress(self, snap: dict) -> dict:
         if ROSTER.round is None and snap.get("player"):
             ROSTER.started()
-        return {"timer": snap.get("timer"), "combo": snap.get("combo"), "score": snap.get("score"),
-                "kills": snap.get("kills"), **ROSTER.observe(snap)}
+        out = {"timer": snap.get("timer"), "combo": snap.get("combo"), "score": snap.get("score"),
+               "kills": snap.get("kills"), **ROSTER.observe(snap)}
+        rank = rank_of(snap.get("score"))
+        if rank:
+            out["rank"] = rank
+        return out
 
 
 DRIVER = RE5PS3

@@ -42,6 +42,7 @@ def _u32(m, a) -> int:
 class NavMesh:
     def __init__(self, points: list, tris: list, links: list, ptr: int = 0):
         self.points, self.tris, self.links, self.ptr = points, tris, links, ptr
+        self.sig = f"{len(points)}-{len(tris)}"            # the stage's mesh, whatever its address this boot
         self.centre = [tuple(sum(points[v][k] for v in t) / 3.0 for k in range(3)) for t in tris]
         self.steep = [self._steep(t) for t in tris]        # a ladder's or a drop's face: a crossing between levels
         self.grid: dict = {}
