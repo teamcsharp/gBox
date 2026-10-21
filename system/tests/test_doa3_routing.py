@@ -42,11 +42,17 @@ def test_use_refuses_a_slot_it_cannot_build_without_writing_anything():
         doa3_cast.use(None, {"name": "x", "slug": "x"}, GAME, _Inp("fighter:nobody"))
 
 
-def test_cast_swap_whole_cast_is_honestly_unsupported():
+def test_whole_cast_goes_through_the_pairs_builder():
     from gbox import cast_swap
-    p = cast_swap.plan(GAME, [], "sonic,mario", mapping="alternate")
-    # single-slot strategy: the whole-cast request is refused with a precise reason, not a blanket
-    # "no routed character writer" and never a build.
-    assert p["status"] == "unsupported_cast"
-    assert p["writer"] == "gbox.doa3_cast"
-    assert p.get("mod") is None
+    assert cast_swap.strategy("gbox.doa3_cast")[0] == "pairs"
+    assert cast_swap.BUILDERS["gbox.doa3_cast"] is cast_swap._doa3
+    rows = cast_swap.slot_rows(GAME)
+    slots = {r["slot"]: r for r in rows}
+    assert len([r for r in rows if r["kind"] == "fighter"]) == 19          # every family with costumes
+    assert slots["fighter:zack"]["costume_code"] == "zac"
+    assert slots["fighter:tengu"]["status"] == "not_working"             # reported, never faked
+
+
+def test_build_cast_reports_a_slot_it_cannot_resolve():
+    res = doa3_cast.build_cast(None, GAME, [("fighter:nobody", {"slug": "x", "name": "X"})], "doa3_cast_x")
+    assert res["mod"] is None and res["slots"]["fighter:nobody"]["status"] == "failed"

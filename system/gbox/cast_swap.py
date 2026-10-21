@@ -686,6 +686,8 @@ STRATEGIES = {
     "gbox.gta_stories_models": ("pairs", "LCS PS2: streamed pedestrians in one disc; special story/cutscene models remain separate"),
     "gbox.pso_player": ("pairs", "PSO Ver.2: every enemy pack rebuilt with its donors in one GD-ROM (gbox.pso_enemy.build_cast)"),
     "gbox.doa2_swap": ("pairs", "DOA2: the roster build (doa2_swap.use_roster: every selectable fighter in one disc)"),
+    "gbox.doa3_cast": ("pairs", "DOA3 Xbox: every fighter family's costumes rewritten in one loadfile.afs, one disc "
+                                "build for the native runner (doa3_cast.build_cast)"),
     "gbox.soulcalibur_swap": ("pairs", "SoulCalibur DC: every fighter's costumes rebuilt in one HUMAN.DAT, one GD-ROM "
                                        "(soulcalibur_swap.build_cast)"),
     "gbox.defjam_writer": ("pairs", "Def Jam Vendetta: op=match (every wrestler container in one data.bin)"),
@@ -1372,6 +1374,14 @@ def _stranglehold(ctx, game, pairs, name, inp):
     return stranglehold_swap.build_cast(ctx.config, game, pairs, name, ctx.progress)
 
 
+def _doa3(ctx, game, pairs, name, inp):
+    from . import doa3_cast
+    try:
+        return doa3_cast.build_cast(ctx, game, pairs, name)
+    except Exception as e:                                # noqa: BLE001 - the disc build failed as a whole
+        return {"mod": None, "slots": {s: {"status": "failed", "reason": str(e)[:500]} for s, _m in pairs}}
+
+
 def _auf(ctx, game, pairs, name, inp):
     from . import auf_swap
     return auf_swap.build_cast(ctx, game, pairs, name, ctx.progress)
@@ -1383,6 +1393,7 @@ BUILDERS = {
     "gbox.soulcalibur2_swap": _soulcalibur2,
     "gbox.pso_player": _pso,
     "gbox.doa2_swap": _doa2,
+    "gbox.doa3_cast": _doa3,
     "gbox.soulcalibur_swap": _soulcalibur,
     "gbox.defjam_writer": _match_builder("defjam_writer"),
     "gbox.yukes_sd": _match_builder("yukes_sd"),

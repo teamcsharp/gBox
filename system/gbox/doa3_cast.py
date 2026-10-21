@@ -1173,6 +1173,69 @@ def use(ctx, meta, game, inp) -> dict:
                        "(native DOA3 runner) to verify gameplay."}
 
 
+def cast_slots() -> list[dict]:
+    """The cast menu / whole-cast swap: one slot per DOA3 fighter family (every costume of the family takes the
+    donor). Tengu's model is not a costume XPR/CAT pair: listed with status not_working and its reason."""
+    from . import doa3_fit as F
+    rows = []
+    for nick, code in F.FAMILY_CODES.items():
+        rows.append({"slot": f"fighter:{nick}", "name": fighter_display_name(nick) or nick, "kind": "fighter",
+                     "writer": "gbox.doa3_cast", "costume_code": code,
+                     **({"story_only": True} if nick in STORY_ONLY else {}),
+                     **({"hidden": True} if nick in HIDDEN_SLOTS else {})})
+    for nick in F.NO_COSTUME_FAMILIES:
+        rows.append({"slot": f"fighter:{nick}", "name": fighter_display_name(nick) or nick, "kind": "boss",
+                     "writer": "gbox.doa3_cast", "status": "not_working",
+                     "reason": "Tengu has no costume XPR/CAT pair in loadfile.afs; his model format is not decoded"})
+    return rows
+
+
+def build_cast(ctx, game, pairs, name) -> dict:
+    """cast_swap's pairs path: [(slot, donor meta)] -> one disc build with every named fighter family rewritten in
+    one loadfile.afs. -> {"mod", "slots": {slot: {status, reason?}}, "detail": {costumes}}."""
+    from . import filemods
+    from . import doa3_fit as F, doa3_writer as W
+    plan, slots, rigs = {}, {}, {}
+    for slot, meta in pairs:
+        try:
+            code = F.family_code(str(slot).split(":", 1)[-1])
+            if meta["slug"] not in rigs:
+                rigs[meta["slug"]] = _load_donor(ctx, meta)
+            plan[code] = rigs[meta["slug"]]
+            slots[slot] = {"status": "planned", "code": code, "donor": meta["slug"]}
+        except Exception as error:  # noqa: BLE001 - one slot never stops the cast
+            slots[slot] = {"status": "failed", "reason": str(error)[:500]}
+    if not plan:
+        return {"mod": None, "slots": slots}
+    disc = disc_dir(ctx, game)
+    replacements, reports = F.costume_replacements(disc / "loadfile.afs", plan, ctx.progress)
+    by_code = {}
+    for r in reports:
+        by_code.setdefault(r["costume"][:3], []).append(r)
+    for slot, row in slots.items():
+        if row.get("status") != "planned":
+            continue
+        done = [r for r in by_code.get(row["code"], []) if r["status"] == "replaced"]
+        kept = [r for r in by_code.get(row["code"], []) if r["status"] != "replaced"]
+        if done:
+            row["status"] = "built" if not kept else "partial"
+            row["costumes"] = [r["costume"] for r in done]
+            if kept:
+                row["reason"] = "; ".join(f"{r['costume']} native: {r.get('reason', '')}" for r in kept)[:500]
+        else:
+            row["status"] = "failed"
+            row["reason"] = "no costume of this family could be rewritten: " + \
+                            "; ".join(f"{r['costume']}: {r.get('reason', '')}" for r in kept)[:400]
+    if not replacements:
+        return {"mod": None, "slots": slots}
+    record = {"kind": "cast", "writer": "gbox.doa3_cast", "gameplay_verified": False, "costumes": reports,
+              "slots": [{"slot": s, "donor": r.get("donor")} for s, r in slots.items() if r.get("donor")]}
+    W.build_disc(disc, filemods.mod_dir(ctx.config, game["game_id"], name), replacements, name=name,
+                 game_id=game["game_id"], record=record, progress=ctx.progress)
+    return {"mod": name, "slots": slots, "detail": {"costumes": len(reports),
+                                                    "replaced": sum(r["status"] == "replaced" for r in reports)}}
+
+
 def _cli_slot_report(manifest_path: str | Path) -> str:
     m = json.loads(Path(manifest_path).read_text())
     inv = slot_inventory(m)
