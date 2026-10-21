@@ -15,37 +15,62 @@ ALLOWED = ('system/gbox/', 'system/tests/', 'system/clients/', 'system/docs/', '
 PR_FIELDS = 'url,number,state,headRefName,headRefOid,baseRefName,isCrossRepository'
 
 
+SIDE_FOLDER_ROOTS = ('gbox-hermes-tasks', 'gbox-hermes-repo')
+SIDE_ROOT = 'gBox_alt'
+
+
+def _side_root_exists(path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
 def _workspace_path(path) -> Path:
     """Resolve a recorded workspace path to where that folder lives now.
 
     The side folders moved from ~/gbox-hermes-tasks and ~/gbox-hermes-repo into ~/gBox_alt, so a
-    record written before the move still points at the old location. Prefer the moved side root
-    when it exists, fall back to the legacy root, and never invent a path that is not there.
+    record written before the move still points at the old location. The moved side root wins
+    over the legacy one, and it wins for sub-paths too: a record naming the workdir
+    <side>/<id>/system must resolve to ~/gBox_alt/<side>/<id>/system even when that sub-folder
+    has not been created yet, because the whole side folder moved as a unit. The legacy root is
+    used only while the moved root is absent, and the moved root is the fallback when neither
+    side root exists, so a record never keeps pointing at a folder the move abandoned.
     """
     p = Path(path)
-    cands = []
     parts = p.parts
-    for base in ('gbox-hermes-tasks', 'gbox-hermes-repo'):
-        if base in parts:
-            tail = Path(*parts[parts.index(base) + 1:])
-            if base in str(p) or True:
-                try:
-                    from .side_dirs import moved
-                    m = moved(p)
-                    if m:
-                        cands.append(Path(m))
-                except Exception:
-                    pass
-            for root in (Path.home() / 'gBox_alt', Path.home()):
-                cands.append(root / base / tail)
-    cands.append(p)
-    for c in cands:
-        try:
-            if c.exists():
-                return c
-        except OSError:
+    for base in SIDE_FOLDER_ROOTS:
+        if base not in parts:
             continue
-    return cands[0]
+        index = parts.index(base)
+        root = Path(*parts[:index]) or Path('/')
+        tail = Path(*parts[index + 1:])
+        if index and parts[index - 1] == SIDE_ROOT:
+            # Already inside the moved side root: it is where the folder lives now.
+            if _side_root_exists(p):
+                return p
+            legacy = root.parent / base / tail
+            return legacy if _side_root_exists(legacy) else p
+        moved = root / SIDE_ROOT / base / tail
+        legacy = root / base / tail
+        if _side_root_exists(moved):
+            return moved
+        if _side_root_exists(legacy):
+            return legacy
+        if _side_root_exists(root / SIDE_ROOT / base):
+            # The side folder moved as a unit; the tail may simply not exist yet.
+            return moved
+        if _side_root_exists(root / base):
+            return legacy
+        return moved
+    try:
+        from .side_dirs import moved
+        m = moved(p)
+        if m:
+            return Path(m)
+    except Exception:
+        pass
+    return p
 
 
 def _normalise_workspace(record):
