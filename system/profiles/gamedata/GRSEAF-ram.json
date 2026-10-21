@@ -443,6 +443,40 @@
    "added": "2026-10-20",
    "by": "agent"
   },
+  "p1.move_queued": {
+   "type": "u16",
+   "format": "hex",
+   "watch": false,
+   "address": "0x8034f4ba",
+   "group": "p1",
+   "description": "Player 1: The move queued after the action move (0xFFFF none): a string's next part, before it starts",
+   "source": "ghidra",
+   "evidence": "FUN_80093e08 starts layer[0x29] (+0x52) when the move reaches +0x60, or +0x54 / +0x56 / +0x58 when it connected (state flags 0xD9 / 0xC2); live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): Ivy 0x168 queued 0x169, Raphael 0x17B queued 0x17C (alt 0x17D on a hit)",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1.move_queued_at": {
+   "type": "f32",
+   "watch": false,
+   "address": "0x8034f4c8",
+   "group": "p1",
+   "description": "Player 1: The frame of the action move at which the queued move takes over (from neutral: at once)",
+   "source": "ghidra",
+   "evidence": "FUN_80093e08 compares the layer's frame with +0x60; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): 0x17B queued 0x17C at 23.0, it started then",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1.moveset": {
+   "type": "ptr",
+   "watch": false,
+   "address": "0x8034fc24",
+   "group": "p1",
+   "description": "Player 1: The fighter's moveset: bank = moveset + (move >> 12) * 0xA4 + 0x28, move records *(bank+8) + (move & 0xFFF) * 0x60 (+0x58 s16 attack index), attack records *(bank+0x10) + index * 0x60",
+   "source": "ghidra",
+   "evidence": "FUN_800948a0 (iVar15 = *(player+0x2764) + (move >> 12 & 0xF) * 0xA4 + 0x28); live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): Talim 0xC7 / 0xC8 / 0xC9 resolve to the records the game uses (0x49 9-13, 0x4B 12-14, 0x49 10-12)",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
   "p1.pos": {
    "type": "f32",
    "count": 3,
@@ -877,6 +911,40 @@
    "description": "Player 2: The action move's next frame (minus move_frame: the move's speed, 1.0 for most)",
    "source": "manual",
    "evidence": "live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only)",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.move_queued": {
+   "type": "u16",
+   "format": "hex",
+   "watch": false,
+   "address": "0x8037055a",
+   "group": "p2",
+   "description": "Player 2: The move queued after the action move (0xFFFF none): a string's next part, before it starts",
+   "source": "ghidra",
+   "evidence": "FUN_80093e08 starts layer[0x29] (+0x52) when the move reaches +0x60, or +0x54 / +0x56 / +0x58 when it connected (state flags 0xD9 / 0xC2); live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): Ivy 0x168 queued 0x169, Raphael 0x17B queued 0x17C (alt 0x17D on a hit)",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.move_queued_at": {
+   "type": "f32",
+   "watch": false,
+   "address": "0x80370568",
+   "group": "p2",
+   "description": "Player 2: The frame of the action move at which the queued move takes over (from neutral: at once)",
+   "source": "ghidra",
+   "evidence": "FUN_80093e08 compares the layer's frame with +0x60; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): 0x17B queued 0x17C at 23.0, it started then",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.moveset": {
+   "type": "ptr",
+   "watch": false,
+   "address": "0x80370cc4",
+   "group": "p2",
+   "description": "Player 2: The fighter's moveset: bank = moveset + (move >> 12) * 0xA4 + 0x28, move records *(bank+8) + (move & 0xFFF) * 0x60 (+0x58 s16 attack index), attack records *(bank+0x10) + index * 0x60",
+   "source": "ghidra",
+   "evidence": "FUN_800948a0 (iVar15 = *(player+0x2764) + (move >> 12 & 0xF) * 0xA4 + 0x28); live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): Talim 0xC7 / 0xC8 / 0xC9 resolve to the records the game uses (0x49 9-13, 0x4B 12-14, 0x49 10-12)",
    "added": "2026-10-20",
    "by": "agent"
   },

@@ -325,42 +325,69 @@ Measured on the Spark's Dolphin with a Practice dummy (save-state and walk-in sw
 
 ### The playbook
 
-Per poll (2 ms; about 450 a second: both fighters, the attack record and the frame counter in 11 reads):
+Per poll (2 ms, about 450 a second; both fighters, the attack records and the frame counter in about a dozen reads):
 
-1. **What comes**: P2's record gives the kind (high / mid / low / special mid / throw / unblockable) and
-   t = (first active frame - frame) / speed frames to impact, known from the attack's first frame.
-2. **Guard Impact** when the command can reach the game `GI_AT` (5) frames before impact: P1 stands ready with
+1. **What comes**: P2's current attack record gives the kind (high / mid / low / special mid / throw / unblockable;
+   a record with no hit bits is not an attack) and t = (first active frame - frame) / speed frames to impact, known
+   from the attack's first frame. When P2 has no attack still to come, the **queued next move** of its action layer
+   (+0x52, taking over at frame +0x60; the alternatives on a hit at +0x54..+0x58) is looked up in its moveset, so a
+   string's next part is known before it starts (Ivy's 0x168 hits 2 frames into its own move, 0x169 is an
+   unblockable 3 frames in).
+2. **Guard Impact** timed so that the command reaches the game `GI_AT` (5) frames before impact: P1 stands ready with
    nothing held, so a GI is one send of dir + G (direction first). The lead adds the measured latency (frames from
-   the send until the GI move shows, 1.3-1.6 with xdotool, ~0 with XTEST) and, when G is held, its release. Highs and
-   mids get the Repel, lows the Parry; P1 must be free (no action of its own, standing, facing the opponent; or in its
-   GI's follow-through from frame 20; or in a GI'd stagger, where a GI is the only way out), P2 within 2.3 and the
-   move not in the book's "don't impact" list. A GI move that does not show within 0.07 s falls back to the guard.
-3. **Guard** otherwise: standing G against highs, mids and special mids, 2G against lows; G is kept through guard stun.
-4. **Throws** a standing fighter can be thrown by: crouch (2G) from 10 frames before the grab; from a GI'd stagger
+   the send until the GI move shows: 1.2-2.8 through xdotool on the busy Spark) and, when G is held (guard stun),
+   its release, in which case a GI is only started at the right moment, never late. Highs, mids and special mids get
+   the Repel, lows the Parry. P1 must be free (no action of its own, standing, facing the opponent; the end of its
+   own GI's follow-through; or a GI'd stagger, where a GI is the only way out), P2 within 2.3, its move winding up at
+   normal speed with a short active window (or a long one whose contact frame the book knows), and the book must
+   not have seen the move miss from about this distance. A GI move that does not show within 0.07 s falls back to
+   the guard.
+3. **Guard** otherwise: standing G against highs, mids and special mids, 2G against lows; G is kept through guard stun
+   and gets P1 up when knocked down.
+4. **Throws** a standing fighter can be thrown by: crouch (2G) 10 frames before the grab; from a GI'd stagger
    (no crouching there) Repel them.
-5. **Unblockables**: sidestep (up) 14 frames before.
+5. **Unblockables**: sidestep (up) 14 frames before, and right away when a string's current part can only be guarded
+   and its queued next part is unblockable (the guard stun would hold P1 for it).
 6. **Punish** after a landed GI: once P1 can act and P2 is still staggered within 2.2, B (no G until P1's attack
    record has passed its last frame: G cancels the startup). If the CPU GIs the punish, step 2 impacts its follow-up
    from the stagger.
-7. **Move book** (`<runtime>/sc2_learned/movebook.json`): per (fighter, move), GIs landed / missed and attacks that
-   touched P1 or met nothing, with the distance. Moves that met nothing at least twice and a quarter of the time
-   (Raphael's stance cancels, string starters that fall short) and moves from further than they ever reached are
-   guarded, not impacted: a GI that meets nothing leaves P1 ~30 frames in recovery, and the CPU's strings use it.
+7. **Move book** (`<runtime>/sc2_learned/movebook.json`, read over the repo seed
+   `profiles/gamedata/GRSEAF-movebook.json`): per (fighter, move) the GIs that landed / met nothing and the attacks
+   that touched P1 or met nothing, each with its distance, and the frame in its active window it reached P1 at. A
+   move is impacted only once it has reached P1 from about this distance (within 0.35) and has not met nothing there
+   more than a third as often; a long active window is timed on its median contact frame. Raphael's stance cancels,
+   Ivy's whips (they miss up close and hit further out), string starters that fall short: guarded, not impacted, after
+   one or two tries, because a GI that meets nothing leaves P1 ~30 frames in recovery and the CPU's strings use it.
 8. **Between fights**: after 4 s out of a fight (or in the attract demo, whose fighters are the CPU's), A every
    1.2 s (every fourth press Start: the title).
 
-Keys go out on a thread of their own (`Sender`): gBox's Linux `send_input` runs one xdotool process per call, 17-35 ms
-on the Spark, and a hit result lasts one frame, so the poll loop must not wait for it.
+Keys go out on a thread of their own (`Sender`): gBox's Linux `send_input` runs one xdotool process per call (17-35 ms
+on the Spark, a three-key call 65 ms), and a hit result lasts one frame, so the poll loop must not wait for it.
 
 ### Live results
 
-PLACEHOLDER_RESULTS
+All on the Spark's Dolphin, P1 Talim, keys through xdotool as gBox's Linux `send_input` sends them, counted from RAM
+(the table and the frames: `docs/evidence/sc2-perfect-defense/`):
+
+* Practice VS CPU Raphael, Ultra Hard, 10 minutes: 413 attacks, 253 GIs landed, 2 hits taken (25.7 damage).
+* Arcade (Normal), final code, 15 minutes: 7 opponents, **13 rounds won, 0 lost**; 465 attacks, 146 GIs, 190 guards,
+  135 punishes landed; **14 hits taken** (186 damage): 451 of 465 attacks did P1 no damage.
+* Ivy (Ultra Hard), whose whip strings start their next part 2-3 frames into it: 27 hits in 8 minutes before the
+  queued-move look-ahead and the distance book, 4 in 6 minutes after.
+
+So P1 is not yet "never hit". What still gets through: lows with long active windows, unblockables that the
+sidestep does not clear (Astaroth's 0x41 thrust: it does not hit a crouching fighter, so crouching is the next fix),
+a Raphael throw (0xC1) the crouch did not beat, and mids that land while P1 is in its own move (a GI that met
+nothing, or a punish the CPU impacted). First sightings of a move are guarded until the book knows its reach.
 
 ### Limits
 
-* Verified against Raphael (Practice VS CPU, Normal to Ultra Hard) and the Arcade cast it met; every move of every
-  fighter is read the same way, but other casts' feints and reach are learned by the book as they come (the first
-  two misses of a new feint can let a string's next hit in).
+* Verified against Raphael and Ivy (Practice VS CPU, Normal to Ultra Hard) and the Arcade cast it met (Taki, Kilik,
+  Maxi, Mitsurugi, Astaroth, Nightmare, Inferno, Cassandra, Yunsung); every move of every fighter is read the same
+  way, but other casts' feints and reach are learned by the book as they come (`GRSEAF-movebook.json` seeds 661
+  moves of these 11 fighters).
+* Not yet zero hits (Live results). The playbook could later sit on the shared fighting engine the DOA3 work is
+  building (`gbox/fightbot`, branch doa3-autobot) as a title: snapshot / threat / answers map onto its hooks.
 * The punish is one B: enough to win rounds (the CPU's re-GIs, about 40% at Ultra Hard, are met by GIs from the
   stagger), not a combo engine.
 * Unblockables, ring-outs and stage-specific moves (walls, Astaroth's grabs that hit crouching) were met rarely in the

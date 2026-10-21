@@ -113,6 +113,8 @@ DUCK_LEAD = 10         # throws: crouch this many frames before the grab
 GI_RANGE = 2.3         # GI only when P2 is this close at GI_LEAD (ULTRA HARD Raphael, 10 min: 282 GIs landed, 98%
                        # of them closer than this; the GIs that missed further out let the CPU's next attack in)
 BOOK_MISSES = 2        # a move whose GIs missed this often (and a quarter of the time) is guarded, not impacted
+NEAR = 0.35            # the book judges a move by what it did from within this distance of now (when it has seen it)
+HELD_SLACK = 1.5       # with G held, a GI is only started within this many frames of its ideal moment
 LONG_ACTIVE = 4.5      # an attack active longer than this (frames) can land anywhere in it (Mitsurugi's 24-34 sweep hit on
                        # frame ~31): guarded, as a GI covers only about 4 frames either side of the first active frame
 SLOW_MOVE = 0.5        # an attack winding up slower than this (its clock at a tenth of the speed: Kilik 0xF8) has no
@@ -217,9 +219,12 @@ def snapshot(rd, sides: bool = True) -> dict:
 
 
 def classify(flags: int) -> str:
-    """The way an attack has to be met: high / mid / low / special_mid / throw / unblockable."""
+    """The way an attack has to be met: high / mid / low / special_mid / throw / unblockable, or none (a record that
+    hits nothing: no hit bits, as some of Ivy's string continuations carry)."""
     if flags & THROW:
         return "throw"
+    if not flags & (HITS_STAND | HITS_CROUCH | HITS_AIR):
+        return "none"
     stand, crouch = bool(flags & GUARD_STAND), bool(flags & GUARD_CROUCH)
     if stand and crouch:
         return "special_mid"
@@ -236,6 +241,8 @@ def threat(p2: dict) -> dict | None:
     starts at frame queued_at of the current move (at once from neutral) and hits at its own first active frame."""
     a = p2["atk"]
     sp = p2["speed"] or 1.0
+    if a is not None and classify(a["flags"]) == "none":
+        a = None
     if a is not None and not p2["connected"]:
         t, te = (a["start"] - p2["f"]) / sp, (a["end"] - p2["f"]) / sp
         if te >= -0.5:
@@ -245,7 +252,7 @@ def threat(p2: dict) -> dict | None:
     wait = 0.0 if p2["m1"] == NEUTRAL else max(0.0, (p2.get("queued_at", 0.0) - p2["f"]) / sp)
     if n is None or classify(n["flags"]) != "unblockable":
         n = next(iter(p2.get("alt_unblockable") or []), n)   # an unblockable continuation outranks the rest
-    if n is None:
+    if n is None or classify(n["flags"]) == "none":
         return None
     t, te = wait + n["start"], wait + n["end"]
     return {"kind": classify(n["flags"]), "flags": n["flags"], "t": t, "te": te, "span": te - t, "ptr": n["ptr"],
@@ -326,6 +333,10 @@ class MoveBook:
         m = self.moves.get(self.key(fighter, move))
         if not m:
             return not self.cautious                 # never seen: guard it and learn its reach
+        near = [t for d, t in m.get("d") or [] if abs(d - dist) <= NEAR]
+        if near:                                     # what it did from about here decides (whips miss up close)
+            hits = sum(near)
+            return hits >= 1 and len(near) - hits <= hits // 3
         touched = m.get("land", 0) + m.get("contact", 0)
         empty = m.get("miss", 0) + m.get("none", 0)
         if empty >= BOOK_MISSES and empty * 3 >= touched:
@@ -338,9 +349,13 @@ class MoveBook:
         return self.moves.setdefault(self.key(fighter, move),
                                      {"land": 0, "miss": 0, "contact": 0, "none": 0, "reach": 0.0})
 
+    def _sample(self, m: dict, dist: float, touched: bool):
+        m["d"] = (m.get("d") or [])[-23:] + [[round(float(dist), 2), int(bool(touched))]]
+
     def record(self, fighter: int, move: int, landed: bool, dist: float):
         """A GI against the move landed / met nothing."""
         m = self._entry(fighter, move)
+        self._sample(m, dist, landed)
         k = "land" if landed else "miss"
         m[k] = m.get(k, 0) + 1
         if landed:
@@ -350,6 +365,7 @@ class MoveBook:
         """The move (not impacted) touched P1 (guarded / hit) or ended without touching it; at = its frame at the
         contact counted from its first active frame."""
         m = self._entry(fighter, move)
+        self._sample(m, dist, touched)
         k = "contact" if touched else "none"
         m[k] = m.get(k, 0) + 1
         if touched:
@@ -576,8 +592,9 @@ class Brain:
         if th is None:
             if self.phase == "duck":
                 self.phase = "guard"
-            # nothing coming: stand ready (no G, so a GI is a single press), or keep guarding in guard stun
-            return {G} if 0x2100 <= p1["m1"] < 0x2200 else set()
+            # nothing coming: stand ready (no G, so a GI is a single press), or keep guarding in guard stun; knocked
+            # down, G gets P1 up (without input a downed fighter stays down: live, Practice)
+            return {G} if 0x2100 <= p1["m1"] < 0x2200 or p1["down"] else set()
         if th["span"] > LONG_ACTIVE:                     # a long active window: time on where it reaches P1
             off = self.book.offset(p2["fighter"], th["move"])
             if off is not None:
@@ -629,6 +646,10 @@ class Brain:
         lead = self.gi_lead(False) if lead is None else lead
         staggered = p1 is not None and p1["m1"] in STAGGERS          # no guard there: a GI is the only way out
         late = -2 if staggered else GI_LATE + (lead - GI_AT)
+        if not staggered and G in self._held():
+            # from a held guard the release and the press are two slow sends (xdotool 20-35 ms each): only at the
+            # right moment, else keep guarding (live: a GI decided late from guard stun came out after the hit)
+            late = max(late, lead - HELD_SLACK)
         timed = p2["speed"] >= SLOW_MOVE and th.get("span", 0) <= LONG_ACTIVE        # an impact frame to time on
         return (not th["flags"] & NO_GI and free and late <= th["t"] <= lead and self.inst != self.gi_inst
                 and (staggered or (p2["dist"] <= GI_RANGE and timed

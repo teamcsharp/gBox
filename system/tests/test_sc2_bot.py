@@ -82,7 +82,8 @@ def snap(p1=None, p2=None, fight=True):
 # -- hit levels ------------------------------------------------------------------------------------------------------------
 @pytest.mark.parametrize("flags,kind", [(0x49, "high"), (0x09, "high"), (0x4B, "mid"), (0x6F, "mid"), (0x37, "low"),
                                         (0x13, "low"), (0x1B, "special_mid"), (0x5B, "special_mid"), (0x81, "throw"),
-                                        (0xC1, "throw"), (0x03, "unblockable"), (0x43, "unblockable")])
+                                        (0xC1, "throw"), (0x03, "unblockable"), (0x43, "unblockable"),
+                                        (0x00, "none"), (0x40, "none")])
 def test_classify(flags, kind):
     assert S.classify(flags) == kind
 
@@ -370,6 +371,15 @@ def test_cautious_book_guards_a_move_until_it_has_reached_p1(tmp_path):
     assert b.decide(snap(p2={"atk": (0x4B, 13, 15), "f": 13 - LEAD, "m1": 0x150}), 0.0) == {S.G}
 
 
+def test_move_book_judges_by_distance():
+    book = S.MoveBook(cautious=True)
+    for _ in range(3):
+        book.observe(11, 0x15E, True, 1.6)                 # Ivy's whip reaches P1 from 1.6 ...
+    book.record(11, 0x15E, False, 0.9)                     # ... but a GI up close met nothing, twice
+    book.record(11, 0x15E, False, 0.85)
+    assert book.ok(11, 0x15E, 1.55) and not book.ok(11, 0x15E, 0.9)
+
+
 def test_move_book_round_trip(tmp_path):
     p = tmp_path / "learned" / "movebook.json"
     book = S.MoveBook(p)
@@ -426,6 +436,10 @@ def test_ram_map_loads_and_agrees_with_the_bot():
         assert f[f"{who}.move_frame"].address == base + S.LAYER1 + S.L_NOW
         assert f[f"{who}.move_next_frame"].address == base + S.LAYER1 + S.L_NEXT
         assert f[f"{who}.guard_impact"].address == base + S.GI_TYPE
+        assert f[f"{who}.move_queued"].address == base + S.LAYER1 + S.L_QUEUED
+        assert f[f"{who}.move_queued_at"].address == base + S.LAYER1 + S.L_QUEUED_AT
+        assert f[f"{who}.moveset"].address == base + S.MOVESET
+        assert f[f"{who}.control"].address == base + S.CTL
         assert f[f"{who}.attack"].address == base + S.ATTACK
         for name, off in (("flags", S.R_FLAGS), ("kind", S.R_KIND), ("start", S.R_START), ("end", S.R_END),
                           ("damage", S.R_DAMAGE)):
