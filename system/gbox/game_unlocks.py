@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 RE6_ID = '0871eee3b68cdea3'
+ACV_ID = '0d09faf82c4c77d8'
 RE6_TEMPLATE_SHA256 = '194cb5b71858f65feeb2b1703642ddc4ffde09b9a087119189b29b0ad7b83f11'
 DOAPP_ID = '59c55e95af61abbe'  # Dead Or Alive ++ (Korea), platform=arcade
 NDS_WCW_GAME_ID = 'd9467f457f53f2c7'  # Call of Duty: World at War (USA), NDS
@@ -70,6 +71,21 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
 
 
 def profile_for(game: dict) -> dict:
+    if game.get('game_id') == ACV_ID and game.get('platform') == 'xbox360':
+        from . import acv_evidence
+        inv = acv_evidence.inventory()
+        pending = acv_evidence.unresolved(inv)
+        return {'status': 'research_pending', 'profile': 'acv-x360-lock-surface-v1', 'verified': False,
+                'game_id': ACV_ID, 'scope': list(acv_evidence.CATEGORIES),
+                'exclusions': list(acv_evidence.OFFLINE_GREYOUT),
+                'reason': ('Armored Core V lock surface and category inventory are recorded for the owned '
+                           'revision, but the on-load unlock routine is not implemented and the scope is not '
+                           'runtime-verified yet.'),
+                'evidence': {'executable_sha256': acv_evidence.ACV_XEX_SHA256,
+                             'ghidra_artifact_sha256': acv_evidence.ACV_GHIDRA_ARTIFACT_SHA256,
+                             'lock_surface': acv_evidence.LOCK_SURFACE,
+                             'inventory': inv},
+                'unresolved_categories': pending}
     from . import doax2_unlock
     if game.get('game_id') == doax2_unlock.GAME_ID and game.get('platform') == doax2_unlock.PLATFORM:
         # Honest gate for DOAX2: research pending, no verified write targets exist.
