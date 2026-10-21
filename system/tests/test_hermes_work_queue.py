@@ -169,6 +169,56 @@ def test_automatic_repairs_and_manual_children_are_not_forgotten(env):
     assert {i['request_id'] for _, i in q.candidates(env, reqs, [], set(), set(), now=2)} == {'2' * 16}
 
 
+@pytest.mark.parametrize('priority', [[R], ['2964']])
+def test_explicit_priority_admits_agent_handoff_without_bypassing_ownership(env, priority):
+    note = request(number=2964, source='api', author='agent', automated=True,
+                   context={'handoff': '2026-10-21', 'game_id': G})
+    env['priority'] = priority
+    q.sync(env, {'count': 0, 'items': []}, [note], now=1)
+    assert set(env['items']) == {'inbox:' + R}
+    assert len(q.candidates(env, [note], [], set(), set(), now=2)) == 1
+    assert not q.candidates(env, [note], [], {R}, set(), now=2)
+    assert not q.candidates(env, [note], [{'input': {'game_id': G}}], set(), set(), now=2)
+    assert not q.candidates(env, [dict(note, status='blocked')], [], set(), set(), now=2)
+    env['items']['inbox:' + R]['retry_at'] = 10
+    assert not q.candidates(env, [note], [], set(), set(), now=2)
+
+
+@pytest.mark.parametrize('priority,context,author', [
+    ([], {'handoff': '2026-10-21'}, 'agent'),
+    ([G], {'handoff': '2026-10-21', 'game_id': G}, 'agent'),
+    ([R], {}, 'agent'),
+    ([R], {'handoff': True}, 'agent'),
+    ([R], {'handoff': 'status update'}, 'agent'),
+    ([R], {'handoff': '2026-10-21'}, 'automation'),
+])
+def test_priority_does_not_admit_unselected_handoffs_or_generic_auto_noise(env, priority, context, author):
+    env['priority'] = priority
+    q.sync(env, {'count': 0, 'items': []}, [request(
+        source='api', automated=True, author=author, context=context)], now=1)
+    assert env['items'] == {}
+
+
+@pytest.mark.parametrize('body', ['gBox request review: reminder', '<agent-message from="x">status',
+                                  '<task-notification>done'])
+def test_prioritized_handoff_marker_never_admits_recurring_reviews_or_notifications(env, body):
+    env['priority'] = [R]
+    q.sync(env, {'count': 0, 'items': []}, [request(
+        source='api', automated=True, author='agent', body=body, context={'handoff': '2026-10-21'})], now=1)
+    assert env['items'] == {}
+
+
+def test_triage_priority_and_live_coaching_do_not_become_handoff_work(env):
+    note = request(source='api', automated=True, author='agent', context={'handoff': '2026-10-21'})
+    env['triage_priority'] = [R]
+    q.sync(env, {'count': 0, 'items': []}, [note], now=1)
+    assert env['items'] == {}
+    env['priority'] = [R]
+    note['context']['coaching'] = True
+    q.sync(env, {'count': 0, 'items': []}, [note], now=2)
+    assert env['items'] == {}
+
+
 def test_explicit_pickwhip_has_first_pass_priority_without_starving_old_work(env):
     reqs = [request(created=1, automated=True, context={'auto_report': True}),
             request('1' * 16, created=99, automated=True,
