@@ -290,11 +290,20 @@ the Spark's RPCS3; the frames in `docs/evidence/re5-mods/` are real frames of th
   round, the HUD shows the infinity sign. Live: rounds 28/30 and 4/4 untouched through whole phases of fire.
 * **Bullet damage:** upgrade group 0 (firepower per level, M92F 150...) x N. Written and read back, not yet seen
   on an enemy's health (next window).
-* **Not done yet** (the operator's list): grenade bullets, self-immunity, loadout replacement with campaign
-  weapons, weapon switching, the per-round randomizer. The inventory is player+0x22E0 (24 slots x 0x30: +0x8 id
-  word 0xTTII, +0xC rounds, +0x10 capacity, +0x20 in hand, byte +0x2D in use; weapons are table 1, ammo 2,
-  herbs/sprays 3); replacing a weapon needs the game's own item-create path (the slot's unit at +0x0 is the uWp
-  object), so loadout/switch wait for that.
+* **Loadout:** the Mercenaries loadout templates are static data (0x01730024: 30 blocks of 12 records x 0x2C, one
+  per character / costume, Barry = 24, Chris Heavy Metal = 18; a record = item id 0xTTII, count, -1 x3, grid
+  position, in hand, packed upgrade levels, flags). The round start copies the picked character's block into the
+  inventory (player+0x22E0, 24 slots x 0x30: +0x8 id, +0xC rounds, +0x10 capacity, +0x20 in hand, byte +0x2D in
+  use) and builds the weapons, so `loadout` just changes the ids: every gun (not the knives) becomes a random
+  powerful campaign weapon (M500 0x11B, Lightning Hawk 0x11A, Hydra 0x119, Gatling 0x115, RPG 0x10D, PSG-1 0x11C,
+  AK-74 0x11D, M3 0x116, grenade launcher 0x10C, Dragunov 0x120), levels reset to 0. Live (the RE5 agent's
+  session, its bot reading the inventory at round start): Barry's M29 -> S&W M500 5/5 and Dragunov -> Hydra 4/4,
+  built by the game, no crash. Weapon switching needs no write: the d-pad quick-select equips the edge slots.
+* **Randomizer:** `random_cheats` = fire x80 always, turn x2 or x3, damage x1 / x3 / x10, infinite ammo, the
+  loadout re-drawn (3 in 4); what it picked is the op's "telemetry", which `mercs_bot` shows as stats["cheats"].
+  The RE5 profile's `round_ops` runs it at every CHARACTER SELECT visit (the one-time `package` stays).
+* **Not done yet**: grenade bullets (the bullet-type word in the definition record is the candidate; needs one live
+  shot), self-immunity (the explosive's damage path: not located offline).
 
 ## Live checks (to run once, then flip `live_checked`)
 

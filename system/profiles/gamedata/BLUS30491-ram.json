@@ -21,6 +21,7 @@
     "ready": true,
     "jump_at": "select_player",
     "package": [["turn_speed", {"multiplier": 2}], ["fire_rate", {"multiplier": 80}], ["infinite_ammo", {"on": true}]],
+    "round_ops": [["random_cheats", {}]],
     "vocab": {
       "screen": "driver",
       "merc.stage": null,
