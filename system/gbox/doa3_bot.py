@@ -146,6 +146,7 @@ def play(ad, send, stopped, clock=time.time, sleep=time.sleep, stats: dict | Non
     evidence frames go to the control plane as artifacts (stats evidence_n / evidence_last)."""
     stats = stats if stats is not None else {}
     dep = Deployment(ad, stats=stats, upload=upload)
+    stats["map_rev"] = dep.title.block.get("rev")     # which deployed map this run read (tuning without a relaunch)
     try:
         return survival.play(dep, ad, send, stopped, clock=clock, sleep=sleep, stats=stats, holds=False)
     finally:

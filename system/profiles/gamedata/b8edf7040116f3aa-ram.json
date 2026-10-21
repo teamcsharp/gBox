@@ -11,6 +11,7 @@
   "notes": "Guest RAM of the pinned doa3-re v0.2 runner (gbox/doa3_native.py, gbox/doa3_memory.py): guest addresses are the XBE's own. Sources: capstone over the reviewed USA XBE (XBE_SHA256 e523dd15...), gbox/doa3_pad.py for the controller path; live checks on the i9-NUC through the verified channel.",
   "fight": {
     "title": "gbox.fightbot.titles.doa3_xbox",
+    "rev": 1,
     "fps": 60,
     "vocab": {
       "screen": "driver", "frame": "driver",
