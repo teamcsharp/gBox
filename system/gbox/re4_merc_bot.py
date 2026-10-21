@@ -12,10 +12,12 @@ reads Leon and never writes him - no facing, aim pitch or position writes:
   * steering is closed loop on his real facing: the stick turns him (left = +heading, ~140-230 deg/s measured on the
     Spark; a target behind him: the quick turn, back + B), R aims (the stick then fine-turns, pulsed when close: the
     package sets the game's aim sensitivity x AIM_SPEED_X, ~30 -> ~90 deg/s), A is pressed once per shot once the aim
-    is within FIRE_TOL (2 degrees) - the Hand Cannon fires on a press, so A held down fired once and then nothing; the
-    aim height the same way: while R is held the stick moves the game's own pitch (+0x258, read) towards the target,
-    pulsed when close, and A fires within PITCH_TOL; which stick direction raises it is learned from what a push does
-    (an inverted aim setting just flips it);
+    is within FIRE_TOL (2 degrees) - the Hand Cannon fires on a press, so A held down fired once and then nothing.
+    Where the gun points is the game's own aim (the aim routine 0x8014415C): his facing plus the aim's horizontal
+    offset (Leon +0x400: the stick moves it first, inside the weapon's small cone, then turns him; 0 as the aim comes
+    up), and the aim's vertical blend (the global 0x80218738, -1 down .. +1 up, kept between aims); the aim height the
+    same way: while R is held the stick moves that pitch towards the target, pulsed when close, and A fires within
+    PITCH_TOL; which stick direction raises it is learned from what a push does (an inverted aim setting flips it);
   * fights any Ganado within ENGAGE;
   * with the disc's level map (gbox.re4_navmap: collision, the stage's item hourglasses, line of sight) it takes the
     reachable Time Bonus hourglasses in the planner's order (exact tour from where the round starts): runs its path
@@ -88,8 +90,18 @@ G_ROOM, MERC_TIMER, MERC = 0x4FA8, 0x80279308, 0x8021392C
 G_HP = 0x4FB0                                    # pG+0x4FB0 s16: Leon's health (0 on "You Are Dead")
 ENGAGE = 3800.0                                  # Ganados this close are fought, else Leon goes for the time bonuses
 TURN_TOL, FIRE_TOL = 0.35, 0.035                 # radians: turn with the stick until within TURN_TOL, aim-turn to FIRE_TOL
-AIM_PITCH = 0x258                                # Leon (player em) +0x258: aim pitch, radians, + up (found 2026-10-20);
-                                                 # read only: the stick moves it while R is held
+AIM_PITCH = 0x80218738                           # the aim's vertical blend, f32 -1 (down) .. +1 (up) with the default
+                                                 # controls: the aim routine (0x8014415C) adds the stick's y to it every
+                                                 # frame, clamps it, and the aim pose blends level -> full up / down by it
+                                                 # (0x8013FA6C); a global (the aim struct 0x80218650 +0xE8), kept between
+                                                 # aims. Read only. (Leon +0x258, read before: a motion value, not the aim
+                                                 # - it never follows the stick; run1.rec 2026-10-20)
+PITCH_SCALE = 1.0                                # radians at a full blend (assumed: the aim-up pose's angle)
+AIM_YAW_OFF = 0x400                              # Leon +0x400 f32: the aim's horizontal offset from his facing while he
+                                                 # aims (radians, + left like the facing): the stick moves it first,
+                                                 # inside the weapon's cone (Hand Cannon +0.063 / -0.050), then turns him;
+                                                 # 0 as the aim comes up (0x8092AD98; run1.rec 2026-10-20)
+GAME_PAD = 0x80287E90                            # the game's pad as the aim routine reads it: stick x, y (s8) at +0, +1
 HEAD_H, GUN_H, HOURGLASS_H = 1550.0, 1400.0, 900.0   # above the feet: a Ganado's head, Leon's gun, an hourglass
 PITCH_MAX, PITCH_AFTER = 0.5, 0.25              # aim no further up / down (radians); read it once R is held this long
 PITCH_TOL, PITCH_FINE, PITCH_LIMIT_S = 0.05, 0.15, 0.5   # fire within PITCH_TOL of the head; closer than PITCH_FINE the
@@ -116,7 +128,8 @@ RECOVER_S = 1.2                                  # just up from a hit, a Ganado 
 ELEV_DY = 600.0                                  # a target this far above / below: raise or lower the aim; else level
 BODY_LO, CHEST_H, BODY_HI = 700.0, 1150.0, 1650.0   # a Ganado's body above his feet: a shot anywhere in it lands
 BODY_HALF_W = 180.0                              # ... and to either side of his middle
-PITCH_RATE = 0.17                                # radians a second the stick moves the aim pitch (learned as he plays)
+PITCH_RATE = 1.0                                 # radians a second the stick moves the aim pitch (learned as he plays;
+                                                 # the routine ramps the stick over 7 frames: ~2.4 a second held)
 AIM_R1, AIM_READY_R2 = 6, (1, 2)                 # Leon's routine 00 06 01 .. = aiming, 00 06 02 .. = firing: the pose
                                                  # is up (00 06 00 / 00 06 01 04 while it rises; live 2026-10-20)
 STEEP_DOWN = -0.5                                # a shot this far down (radians) hits the ledge in front: move instead
@@ -227,20 +240,35 @@ def u32(m, a):
     return struct.unpack(">I", m.rd(a, 4))[0]
 
 
+def aim_of(m, pl: int, rot: float, r: tuple) -> tuple:
+    """Where the gun points (the game's own aim): (aim facing, horizontal offset, pitch in radians or None). The
+    offset counts only while he aims (00 06 ..; it keeps its last value after); a value out of its range is unknown."""
+    off = 0.0
+    if len(r) > 1 and r[0] == 0 and r[1] == AIM_R1:
+        off = struct.unpack(">f", m.rd(pl + AIM_YAW_OFF, 4))[0]
+        if not math.isfinite(off) or abs(off) > 0.5:
+            off = 0.0
+    n = struct.unpack(">f", m.rd(AIM_PITCH, 4))[0]
+    pitch = n * PITCH_SCALE if math.isfinite(n) and abs(n) <= 1.0001 else None
+    return wrap(rot + off), off, pitch
+
+
 def snapshot(m) -> dict:
-    """room, Merc clock (s), combo, Leon's health, Leon {ptr, pos, rot, pitch, r (his routine bytes)}, live Ganados
-    [{slot, pos, hp, hp_max} + gbox.re4_threats.em_fields: r (routine bytes), motion events, frame, ...], the thrown
-    weapons in the air [{slot, pos}]."""
+    """room, Merc clock (s), combo, Leon's health, Leon {ptr, pos, rot (his facing), aim_rot (where the gun points:
+    facing + the aim's offset), aim_off, pitch (the aim's, radians), r (his routine bytes), stick (the game's pad x,
+    y)}, live Ganados [{slot, pos, hp, hp_max} + gbox.re4_threats.em_fields: r (routine bytes), motion events, frame,
+    ...], the thrown weapons in the air [{slot, pos}]."""
     pg = u32(m, P_GLOBAL)
     room = struct.unpack(">H", m.rd(pg + G_ROOM, 2))[0] if ptr_ok(pg) else None
     hp = struct.unpack(">h", m.rd(pg + G_HP, 2))[0] if ptr_ok(pg) else None
     pl = u32(m, P_PLAYER)
     player = None
     if ptr_ok(pl):
-        player = {"ptr": pl, "pos": struct.unpack(">3f", m.rd(pl + 0x94, 12)),
-                  "rot": struct.unpack(">f", m.rd(pl + 0xA4, 4))[0],
-                  "pitch": struct.unpack(">f", m.rd(pl + AIM_PITCH, 4))[0],
-                  "r": tuple(m.rd(pl + threats_ram.EM_ROUTINE, 4))}
+        rot = struct.unpack(">f", m.rd(pl + 0xA4, 4))[0]
+        r = tuple(m.rd(pl + threats_ram.EM_ROUTINE, 4))
+        aim_rot, aim_off, pitch = aim_of(m, pl, rot, r)
+        player = {"ptr": pl, "pos": struct.unpack(">3f", m.rd(pl + 0x94, 12)), "rot": rot, "aim_rot": aim_rot,
+                  "aim_off": aim_off, "pitch": pitch, "r": r, "stick": struct.unpack(">bb", m.rd(GAME_PAD, 2))}
     base, n, stride = u32(m, EMMGR), u32(m, EMMGR + 4), u32(m, EMMGR + 8)
     enemies, thrown = [], []
     if ptr_ok(base) and 0 < n <= 128 and 0x100 < stride < 0x2000:
@@ -486,7 +514,7 @@ class Bot:
     def _fight(self, p, tgt, now, s) -> dict:
         px, _, pz = p["pos"]
         tx, _, tz = tgt["pos"]
-        err = wrap(heading(tx - px, tz - pz) - p["rot"])
+        err = wrap(heading(tx - px, tz - pz) - p.get("aim_rot", p["rot"]))   # from where the gun points
         if tgt["slot"] != self.aim["slot"] or s["combo"] != self.aim["combo"]:
             self.aim = {"slot": tgt["slot"], "since": now, "combo": s["combo"]}
         elif now - self.aim["since"] > 6:                              # soaked 6 s of fire: out of reach
@@ -560,15 +588,15 @@ class Bot:
         pose, bringing the aim pitch into his body (at the pitch rate the stick has shown), the gun's own rate."""
         px, py, pz = p["pos"]
         dist = math.hypot(t.pos[0] - px, t.pos[2] - pz)
-        err = abs(wrap(heading(t.pos[0] - px, t.pos[2] - pz) - p["rot"]))
+        err = abs(wrap(heading(t.pos[0] - px, t.pos[2] - pz) - p.get("aim_rot", p["rot"])))
         tol = fire_tol(dist)
         turn = 0.0 if err <= tol else (0.55 if err > QUICK_TURN_ERR else err / TURN_RATE)
         pose = 0.0 if self._pose_up(p, now) else PITCH_AFTER
         if not pose and self.r_since is not None and err <= TURN_TOL:
             pose = max(0.0, PITCH_AFTER - (now - self.r_since))
         pitch = 0.0
-        cur = p.get("pitch")
-        if cur is not None and self._pose_up(p, now) and t.kind != "thrown":
+        cur = p.get("pitch")                                 # the game keeps it between aims: known before R
+        if cur is not None and t.kind != "thrown":
             lo = math.atan2(t.pos[1] + BODY_LO - (py + GUN_H), max(dist, 1.0))
             hi = math.atan2(t.pos[1] + BODY_HI - (py + GUN_H), max(dist, 1.0))
             off = max(lo - cur, cur - hi, 0.0)
@@ -742,9 +770,10 @@ class Bot:
         return self.r_since is not None and now - self.r_since >= PITCH_AFTER
 
     def _aim_body(self, p, target_y: float, dist: float, now: float) -> tuple[set, bool]:
-        """A Ganado's body from BODY_LO to BODY_HI above his feet: any aim pitch inside it lands (the game's resting
-        aim, -0.149 rad, does at every range he fights at: no stick needed, he fires as soon as the pose is up);
-        outside it, the stick brings the aim to his chest."""
+        """A Ganado's body from BODY_LO to BODY_HI above his feet: any aim pitch inside it lands (a level aim does at
+        every range on flat ground: no stick needed, he fires as soon as the pose is up); outside it (a Ganado up a
+        slope, the last aim left high or low - the game keeps it between aims), the stick brings the aim to his
+        chest."""
         cur = p.get("pitch")
         if cur is None or self.r_since is None or not self._pose_up(p, now):
             self.pitch_key, self.pitch_seen, self.pitch_push = None, None, None
@@ -761,7 +790,7 @@ class Bot:
 
     def _aim_height(self, p, target_y: float, dist: float, now: float, offset: bool = True) -> tuple[set, bool]:
         """The stick key that moves the aim towards target_y while R is held, and whether the aim is there. Reads the
-        game's own pitch (+0x258) and never writes it: the game keeps the pose and its limits. Which direction raises
+        game's own pitch (AIM_PITCH) and never writes it: the game keeps the pose and its limits. Which direction raises
         it is learned from what the last push did (two contradicting pushes in a row flip it). offset: add the aim
         height learned from misses (not for a level shot at the chest)."""
         cur = p.get("pitch")

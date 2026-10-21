@@ -58,7 +58,7 @@ def re4_ram(cls=FakeRam, room=0x400, timer_s=87.3, combo=12, leon=(1000.0, 0.0, 
     m.put(R.P_PLAYER, ">I", em)
     m.put(em + 0x94, ">3f", *leon)
     m.put(em + 0xA4, ">f", rot)
-    m.put(em + 0x258, ">f", -0.25)
+    m.put(R.AIM_PITCH, ">f", -0.25)                   # the aim's vertical blend (a global, kept between aims)
     slots = len(ganados) + 2
     m.put(R.EMMGR, ">III", em, slots, stride)
     m.put(em, ">I", 0x601)
@@ -112,7 +112,8 @@ def test_the_re4_map_reads_what_the_mercenaries_bot_reads():
     assert v["player.ptr"] == snap["player"]["ptr"]
     assert v["player.pos"] == pytest.approx(list(snap["player"]["pos"]))
     assert v["player.facing"] == pytest.approx(snap["player"]["rot"])
-    assert v["player.aim_pitch"] == pytest.approx(-0.25) and v["player.hp"] == 1860
+    assert v["player.aim_pitch"] == pytest.approx(-0.25) == snap["player"]["pitch"] / R.PITCH_SCALE
+    assert v["player.hp"] == 1860
     assert v["game.money"] == 4500 and v["game.disc_id"] == "G4BE08"
     assert v["pad.held"] == 0x120 and v.label("pad.held") == "R, A" and v.label("pad.held_prev") == "none"
     assert v.label("save.extras") == "Mercenaries: Ada, Mercenaries: HUNK, Mercenaries: Krauser, Mercenaries: Wesker"

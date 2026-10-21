@@ -60,6 +60,14 @@ def facing(m, rot):
     m.put(PL + 0xA4, ">f", rot)
 
 
+def set_pitch(m, rad):
+    m.put(B.AIM_PITCH, ">f", rad / B.PITCH_SCALE)                       # the game's aim blend (-1 .. 1)
+
+
+def get_pitch(m):
+    return struct.unpack(">f", m.rd(B.AIM_PITCH, 4))[0] * B.PITCH_SCALE
+
+
 def test_turns_with_the_stick_then_aims_then_fires_never_writing_leon():
     now = [0.0]
     m = world([((0, 800, 2000), True)])                # straight ahead along +z, up on a ledge (beyond ELEV_DY)
@@ -76,11 +84,11 @@ def test_turns_with_the_stick_then_aims_then_fires_never_writing_leon():
     m.put(B.MERC_TIMER, ">I", int((100 - 0.3) * 30))
     assert bot.tick(B.snapshot(m)) == {"hold": {"r", "up"}}          # pose up, the aim level: raise it with the stick
     now[0] = 0.35
-    m.put(PL + B.AIM_PITCH, ">f", head - 0.01)                         # the game raised it
+    set_pitch(m, head - 0.01)                         # the game raised it
     assert bot.tick(B.snapshot(m)) == {"hold": {"r", "a"}}            # at his head: fire
 
     def mine(b):                                                       # all but what this test itself moved
-        return b[:0xA4] + b[0xA8:B.AIM_PITCH] + b[B.AIM_PITCH + 4:]
+        return b[:0xA4] + b[0xA8:]
     assert mine(m.rd(PL, 0x300)) == mine(before)                        # Leon: never written by the bot
 
 
@@ -379,8 +387,8 @@ def test_his_health_scores_the_shots_and_misses_move_the_aim_height():
         m.put(B.MERC_TIMER, ">I", int((100 - t) * 30))
         act = bot.tick(B.snapshot(m))
         keys = act.get("hold", set())
-        pitch = struct.unpack(">f", m.rd(PL + B.AIM_PITCH, 4))[0]               # the game, under the stick
-        m.put(PL + B.AIM_PITCH, ">f", pitch + 0.06 * (("up" in keys) - ("down" in keys)))   # a quick stick
+        pitch = get_pitch(m)               # the game, under the stick
+        set_pitch(m, pitch + 0.06 * (("up" in keys) - ("down" in keys)))   # a quick stick
         return act
     t = 0.0
     while "a" not in tick(t).get("hold", set()):                           # raise the aim to his head, then fire
@@ -407,12 +415,12 @@ def test_an_inverted_aim_stick_is_learned():
         m.put(B.MERC_TIMER, ">I", int((100 - now[0]) * 30))
         keys = bot.tick(B.snapshot(m)).get("hold", set())
         fired = fired or "a" in keys
-        pitch = struct.unpack(">f", m.rd(PL + B.AIM_PITCH, 4))[0]
-        m.put(PL + B.AIM_PITCH, ">f", pitch + 0.02 * (("down" in keys) - ("up" in keys)))
+        pitch = get_pitch(m)
+        set_pitch(m, pitch + 0.02 * (("down" in keys) - ("up" in keys)))
     assert bot.pitch_up == "down" and fired
     lo = math.atan2(800 + B.BODY_LO - B.GUN_H, 2000.0)                    # the aim ends inside his body (any pitch
     hi = math.atan2(800 + B.BODY_HI - B.GUN_H, 2000.0)                    # there lands), on its way to the chest
-    assert lo <= struct.unpack(">f", m.rd(PL + B.AIM_PITCH, 4))[0] <= hi and head > lo
+    assert lo <= get_pitch(m) <= hi and head > lo
 
 
 def test_the_hand_cannon_keeps_its_own_fire_rate():
@@ -710,3 +718,39 @@ def test_a_thrown_axe_coming_at_him_is_aimed_at_where_it_will_be():
     assert bot.tracker.stats["thrown_seen"] == 1
     t = bot.tracker.update(B.snapshot(m), 0.2)
     assert t[0].kind == "thrown" and t[0].pos[2] < 3550.0
+
+
+def aiming_world(rot, off, z=2000.0):
+    """Leon aiming (00 06 01 01, the pose up) at a Ganado straight ahead along +z; his aim's own offset off."""
+    m = world([((0, 0, z), True)])
+    facing(m, rot)
+    m.put(PL + 0xFC, ">4B", 0, 6, 1, 1)
+    m.put(PL + B.AIM_YAW_OFF, ">f", off)
+    return m
+
+
+def test_the_gun_points_at_his_facing_plus_the_aims_own_offset():
+    """While he aims the stick first moves the aim's offset (Leon +0x400) inside the weapon's cone, then turns him:
+    the gun points at facing + offset (the aim routine 0x8014415C; run1.rec 2026-10-20)."""
+    m = aiming_world(0.10, -0.08)                     # his body 0.10 left of the Ganado, the aim pushed back right
+    s = B.snapshot(m)
+    assert s["player"]["aim_rot"] == pytest.approx(0.02) and s["player"]["aim_off"] == pytest.approx(-0.08)
+    bot = B.Bot(m, clock=lambda: 0.0, nav=False)
+    assert bot.tick(s) == {"hold": {"r", "a"}}       # the gun is on him: fire (his facing alone said turn)
+    m = aiming_world(-0.07, -0.05)                    # his body just inside, the aim further right: the gun is off
+    bot = B.Bot(m, clock=lambda: 0.0, nav=False)
+    act = bot.tick(B.snapshot(m))
+    assert "a" not in act["hold"] and "left" in act["hold"]
+
+
+def test_the_aim_offset_counts_only_while_he_aims_and_motion_values_are_not_the_pitch():
+    m = aiming_world(0.3, 0.05)
+    m.put(PL + 0xFC, ">4B", 0, 1, 0, 0)               # running: the offset left over from the last aim is stale
+    m.put(PL + 0x258, ">f", 142.857)                  # a motion value (the quick turn's): never read as the aim
+    m.put(B.AIM_PITCH, ">f", 0.25)                    # the aim's vertical blend, kept between aims
+    m.put(B.GAME_PAD, ">bb", -127, 0)                 # the stick, as the game read it
+    p = B.snapshot(m)["player"]
+    assert p["aim_rot"] == pytest.approx(0.3) and p["aim_off"] == 0.0
+    assert p["pitch"] == pytest.approx(0.25 * B.PITCH_SCALE) and p["stick"] == (-127, 0)
+    m.put(B.AIM_PITCH, ">f", float("nan"))
+    assert B.snapshot(m)["player"]["pitch"] is None   # out of its range: unknown, the stick is not pushed on it

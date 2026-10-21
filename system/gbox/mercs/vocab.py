@@ -15,7 +15,7 @@ NAMES = {
     "screen": True, "merc.stage": False, "merc.timer": True, "merc.combo": False, "merc.combo_timer": False,
     "merc.score": False, "merc.kills": False,
     "player.pos": True, "player.facing": True, "player.hp": False, "player.hp_max": False, "player.state": True,
-    "player.aim_pitch": False, "player.weapon": False, "player.ammo": False,
+    "player.aim_pitch": False, "player.aim_offset": False, "player.weapon": False, "player.ammo": False,
     "enemies": True, "enemies.pos": True, "enemies.facing": False, "enemies.hp": False, "enemies.hp_max": False,
     "enemies.type": False, "enemies.state": True, "enemies.act": False, "enemies.motion": False,
     "enemies.motion_frame": False, "enemies.motion_frames": False, "enemies.motion_speed": False,
