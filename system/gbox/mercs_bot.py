@@ -106,12 +106,12 @@ class Boot:
     tick() returns why the run must end (a story game, menus RAM can't name, nothing moving), else None."""
 
     def __init__(self, menus, m, send, sleep=time.sleep, clock=time.time, stats: dict | None = None, ad=None,
-                 game=None, hooks=None, jump_at: str = "select_player"):
+                 game=None, hooks=None, jump_at: str = "select_player", round_hooks=None):
         self.menus, self.m, self.ad, self.game, self.clock = menus, m, ad, game, clock
         self.stats = stats if stats is not None else {}
         self.nav = Navigator(send, menus.step, sleep=sleep, clock=clock, stats=self.stats)
-        self.hooks, self.jump_at = hooks, jump_at
-        self.hooked, self.moment_tried = False, False
+        self.hooks, self.jump_at, self.round_hooks = hooks, jump_at, round_hooks
+        self.hooked, self.moment_tried, self.at_jump = False, False, False
         self.lost_since, self.still_since, self.progress = None, None, None
 
     def tick(self, now: float | None = None, merc=None, scr: dict | None = None) -> str | None:
@@ -120,6 +120,13 @@ class Boot:
         why = self.menus.wandered(scr)
         if why:
             return why
+        if scr.get("where") == self.jump_at and not self.at_jump and self.round_hooks is not None:
+            # every visit (a new round's selects): the profile's round_ops (the per-round randomizer, the loadout)
+            failed = self.round_hooks() or []
+            self.stats["rounds_hooked"] = self.stats.get("rounds_hooked", 0) + 1
+            if failed:
+                self.stats["round_hooks_failed"] = "; ".join(failed)[:300]
+        self.at_jump = scr.get("where") == self.jump_at
         if scr.get("where") == self.jump_at and not self.hooked:
             if not self.moment_tried:                       # before any hook: the state restores cleanly
                 self.moment_tried = True
@@ -244,17 +251,26 @@ def note_lesson(g: dict | None, entry: dict) -> bool:
         return False
 
 
-def apply_ops(ad, ops) -> list[str]:
-    """Run [[op, kwargs], ...] through re_mods in this process; returns the ones that failed."""
-    from . import re_mods_tool as RM
+def apply_ops(ad, ops, prof: dict | None = None, stats: dict | None = None) -> list[str]:
+    """Run [[op, kwargs], ...] through the title's mods tool in this process (re_mods for RE4 on GameCube / Wii,
+    re5_mods for RE5 on PS3, by the profile's platform); returns the ones that failed. An op's result that carries
+    "telemetry" (what the randomizer picked) lands in stats["cheats"] for the operator."""
+    if (prof or {}).get("platform") == "ps3":
+        from . import re5_mods_tool as RM
+        make = RM.RE5
+    else:
+        from . import re_mods_tool as RM
+        make = RM.RE4
     failed = []
     try:
-        g = RM.RE4(ad)
-    except Exception as e:                                  # noqa: BLE001 - this title has no re_mods: say so
+        g = make(ad)
+    except Exception as e:                                  # noqa: BLE001 - this title has no mods tool: say so
         return [f"{op}: {e}" for op, _ in ops]
     for op, kw in ops:
         try:
-            RM.run(ad, op, g=g, **dict(kw or {}))
+            res = RM.run(ad, op, g=g, **dict(kw or {}))
+            if stats is not None and isinstance(res, dict) and res.get("telemetry"):
+                stats["cheats"] = res["telemetry"]
         except Exception as e:                              # noqa: BLE001 - one failed mod never stops the run
             failed.append(f"{op}: {e}")
     return failed
@@ -299,10 +315,19 @@ def setup(ad) -> list[str]:
     return []                                               # play() applies the profile's ops: it knows the game
 
 
+def tactical_publisher(sink, prof: dict):
+    """The tactical map's publisher for this title (gbox.mercs.tactical) over the worker's sink, or None (no sink)."""
+    if sink is None:
+        return None
+    from .mercs import tactical as T
+    return T.Publisher(sink, prof["map_id"], prof.get("units") or T.units_for(prof["map_id"]))
+
+
 def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sleep, clock=time.time, m=None,
-         **_kw) -> dict:
+         tactical=None, **_kw) -> dict:
     """Boot to a round from RAM, hand each round to the engine, back to the menus for the next; stats is filled
-    live (screen, cursor, menu_presses, rounds, ram_progress, hooks, menu_moment; hung + wandered when it ends early)."""
+    live (screen, cursor, menu_presses, rounds, ram_progress, hooks, menu_moment; hung + wandered when it ends early).
+    tactical: the tactical map's sink (gbox.mercs.tactical.HttpSink): each round's frames, the screen between rounds."""
     stats = stats if stats is not None else {}
     prof = profile_for(ad, game or {})
     if prof is None:
@@ -313,35 +338,44 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
     package = [tuple(x) for x in prof.get("package") or []]
     early = set(prof.get("early_ops") or [])
     if ad is not None and early:
-        failed = apply_ops(ad, [x for x in package if x[0] in early])
+        failed = apply_ops(ad, [x for x in package if x[0] in early], prof)
         if failed:
             stats["early_failed"] = "; ".join(failed)[:300]
+    round_ops = [tuple(x) for x in prof.get("round_ops") or []]
     boot = Boot(menus, m, send, sleep=sleep, clock=clock, stats=stats, ad=ad, game=game,
-                hooks=(lambda: apply_ops(ad, [x for x in package if x[0] not in early])) if ad is not None else None,
-                jump_at=prof.get("jump_at") or "select_player")
+                hooks=(lambda: apply_ops(ad, [x for x in package if x[0] not in early], prof)) if ad is not None else None,
+                jump_at=prof.get("jump_at") or "select_player",
+                round_hooks=(lambda: apply_ops(ad, round_ops, prof, stats)) if ad is not None and round_ops else None)
     run = time.strftime("%Y%m%d-%H%M%S", time.localtime(clock()))
     lessons = lessons_writer(prof["map_id"], run)
     stats.setdefault("rounds", 0)
     stats["profile"] = prof["map_id"]
+    pub = tactical_publisher(tactical, prof)
     fresh = True                                            # a round counts once, however often the engine hands back
-    while not stopped():
-        scr = menus.screen(m)
-        if scr.get("where") == "playing" and E is not None:
-            if fresh:
-                stats["rounds"] += 1
-                fresh = False
-            out = E.play_round(prof, m, send, stopped, stats, lessons)
-            if out == "lost":
-                stats.update(hung=True, wandered="the round was lost (no player, or black too long)")
+    try:
+        while not stopped():
+            scr = menus.screen(m)
+            if scr.get("where") == "playing" and E is not None:
+                if fresh:
+                    stats["rounds"] += 1
+                    fresh = False
+                out = E.play_round(prof, m, send, stopped, stats, lessons, **({"tactical": pub} if pub else {}))
+                if out == "lost":
+                    stats.update(hung=True, wandered="the round was lost (no player, or black too long)")
+                    break
+                if out == "stopped":
+                    break
+                sleep(POLL_S)                               # never a busy loop on an engine that hands straight back
+                continue
+            fresh = True
+            if pub is not None:
+                pub.idle(scr.get("where"))                  # the map says where the game is between rounds
+            why = boot.tick(clock(), scr=scr)
+            if why:
+                stats.update(hung=True, wandered=why)
                 break
-            if out == "stopped":
-                break
-            sleep(POLL_S)                                   # never a busy loop on an engine that hands straight back
-            continue
-        fresh = True
-        why = boot.tick(clock(), scr=scr)
-        if why:
-            stats.update(hung=True, wandered=why)
-            break
-        sleep(POLL_S)
+            sleep(POLL_S)
+    finally:
+        if pub is not None:
+            pub.close()
     return stats

@@ -269,3 +269,16 @@ def test_omitted_test_helper_blocks_before_commit_and_keeps_work(tracked_repo):
         delivery.publish(task['request_id'],'Incomplete handoff',['system/gbox/value.py'],['tests/test_value.py'])
     assert git('rev-parse','HEAD',cwd=task['path'])==task['baseline']
     assert helper.read_text()=='SOURCE = "owned"\n'
+
+
+def test_publish_refuses_game_data_and_prepare_installs_the_push_guard(tracked_repo):
+    from pathlib import Path
+    repo, _, _ = tracked_repo
+    task = delivery.prepare('abcdef0123456789', 12)
+    hook = repo / '.git' / 'hooks' / 'pre-push'
+    assert hook.exists() and 'hermes_payload_guard' in hook.read_text()
+    shots = Path(task['path']) / 'system/docs'
+    shots.mkdir(parents=True)
+    (shots / 'mvc2_ryu.sprites.png').write_bytes(b'\x89PNG\r\n')
+    with pytest.raises(ValueError, match='never published'):
+        delivery.publish(task['request_id'], 'Sprites', ['system/docs/mvc2_ryu.sprites.png'], [])

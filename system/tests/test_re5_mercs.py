@@ -241,7 +241,11 @@ def test_the_screens_between_rounds_come_from_the_interface_units():
 
 def test_it_presses_only_on_the_reunion_screens():
     assert R.step({"where": "results"}) == "start"
-    assert R.step({"where": "select_stage"}) == "cross" and R.step({"where": "select_player"}) == "cross"
+    assert R.step({"where": "select_stage"}) == "cross"
+    assert R.step({"where": "select_player", "cursor": 6, "target": 6}) == "cross"          # Barry picked, on him
+    assert R.step({"where": "select_player", "cursor": 2, "target": 6}) == "dright"
+    assert R.step({"where": "select_player", "cursor": 7, "target": 6}) == "dleft"
+    assert R.step({"where": "select_player"}) is None                                       # no cursor read: wait
     assert R.step({"where": "dead"}) == "cross"
     for where in ("menu", "loading", "unknown", "playing"):
         assert R.step({"where": where}) is None, where                       # never a press on the title's menus
@@ -321,39 +325,46 @@ def test_a_time_bonus_is_taken_with_its_prompt(monkeypatch):
     assert R.BONUS_HUNT is True
     far_majini = [((3000.0, 0.0, 0.0), 800, 800)]                                # 30 m away at +x
     act, bot = tick(with_bonuses(world(enemies=far_majini), [(0.0, 13.0, 100.0)]))   # 1 m ahead, facing it
-    assert act == {"hold": {"lup"}} and str(bot.target).startswith("bonus")      # a step closer, no shot
+    assert act == {"tap": "square"} and str(bot.target).startswith("bonus")      # punch it (the prompt is not a
+    assert bot.stats["bonus_presses"] == 1                                       # kind-2 cActionButton: press blind)
     mem = with_prompt(with_bonuses(world(enemies=far_majini), [(0.0, 13.0, 100.0)]), R.BTN_STAGE, PLAYER, 0)
     act, bot = tick(mem)
-    assert act == {"tap": "square"} and bot.stats["bonus_presses"] == 1           # "□ Time bonus"
-    act, _ = tick(with_bonuses(world(enemies=far_majini), [(-100.0, 13.0, 0.0)])) # 1 m to the right: turn to it
+    assert act == {"tap": "square"} and bot.stats["stage_presses"] == 1           # or on the "□ Time bonus" prompt
+    act, _ = tick(with_bonuses(world(enemies=far_majini), [(-300.0, 13.0, 0.0)])) # 3 m to the right: turn to it first
     assert act == {"hold": {"rright"}}
-    close = [((0.0, 0.0, 250.0), 800, 800)]                                       # a Majini 2.5 m away: him first
-    act, bot = tick(with_bonuses(world(action=2, enemies=close), [(0.0, 13.0, 100.0)]))
-    assert bot.target == 0
+    close = [((0.0, 0.0, 250.0), 800, 800)]                                       # a Majini 2.5 m away, bonus 6 m off:
+    act, bot = tick(with_bonuses(world(action=2, enemies=close), [(0.0, 13.0, 600.0)]))
+    assert bot.target == 0                                                        # him first
+    act, bot = tick(with_bonuses(world(enemies=close), [(0.0, 13.0, 100.0)]))     # but a bonus 1 m off (in reach):
+    assert str(bot.target).startswith("bonus")                                    # finish the quick press
 
 
-def test_a_bonus_without_its_prompt_is_left_alone_for_a_while(monkeypatch):
+def test_a_bonus_that_will_not_take_is_left_alone_for_a_while(monkeypatch):
     monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
     clock = [100.0]
     bot = R.Bot(clock=lambda: clock[0])
-    mem = with_bonuses(world(), [(0.0, 13.0, 40.0)])                             # right at it, no prompt
-    assert bot.tick(R.snapshot(mem)) == {"hold": set()}
-    clock[0] += R.BONUS_GIVE_UP_S + 0.5
+    mem = with_bonuses(world(), [(0.0, 13.0, 40.0)])                             # right at it: punch it blind
+    assert bot.tick(R.snapshot(mem)) == {"tap": "square"}
+    clock[0] += R.BONUS_GIVE_UP_S + 0.5                                          # punched a while, still here:
     bot.tick(R.snapshot(mem))
-    assert not str(bot.target or "").startswith("bonus") or bot.bonus_skip         # left alone now
+    assert bot.bonus_skip                                                        # left alone now
     clock[0] += R.BONUS_SKIP_S + 1
-    bot.tick(R.snapshot(mem))
-    assert str(bot.target or "bonus").startswith("bonus")                         # tried again later
+    assert bot.tick(R.snapshot(mem)) == {"tap": "square"}                        # tried again later
 
 
-def test_near_bonuses_on_his_level_are_walked_to_and_the_clock_jumps_are_counted(monkeypatch):
+def test_bonuses_anywhere_are_walked_to_nearest_first_and_the_clock_jumps_are_counted(monkeypatch):
     monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
     act, bot = tick(with_bonuses(world(), [(0.0, 13.0, 1200.0)]))                 # 12 m ahead, nobody near, no mesh
     assert {"lup", "cross"} <= act["hold"]                                        # straight at it
-    act, _ = tick(with_bonuses(world(), [(0.0, 13.0, 2500.0)]))                   # 25 m: past BONUS_RANGE
-    assert act == {"hold": set()}
-    act, _ = tick(with_bonuses(world(), [(0.0, 400.0, 900.0)]))                   # up on a roof: another level
-    assert act == {"hold": set()}
+    act, b2 = tick(with_bonuses(world(), [(0.0, 13.0, 2500.0), (0.0, 400.0, 900.0)]))   # 25 m off, 9 m up a roof
+    assert {"lup", "cross"} <= act["hold"] and b2.target == "bonus 0x30402000"   # the nearer, whatever its level
+    assert b2.stats["phase"] == "gather_time" and b2.stats["nearest_eta_s"] > 0
+    near = [((0.0, 0.0, 300.0), 800, 800)]                                       # a Majini 3 m ahead: fought first
+    act, b3 = tick(with_bonuses(world(action=2, enemies=near), [(0.0, 13.0, 1200.0)]))
+    assert b3.target == 0 and b3.stats["phase"] == "fight"
+    behind = [((0.0, 0.0, -300.0), 800, 800)]                                    # one 3 m behind: he walks on
+    act, b4 = tick(with_bonuses(world(enemies=behind), [(0.0, 13.0, 1200.0)]))
+    assert str(b4.target).startswith("bonus") and {"lup", "cross"} <= act["hold"]
     monkeypatch.setattr(R, "BONUS_WALK", False)
     act, _ = tick(with_bonuses(world(), [(0.0, 13.0, 1200.0)]))
     assert act == {"hold": set()}                                                 # without routes: out of reach
@@ -361,6 +372,80 @@ def test_near_bonuses_on_his_level_are_walked_to_and_the_clock_jumps_are_counted
     assert bot.stats["bonuses_taken"] == 1
     bot.tick(R.snapshot(with_bonuses(world(timer=89.5), [])))                     # the clock +29.5 s: a time bonus
     assert bot.stats["clock_jumps"] == 1 and bot.stats["bonus_s"] == 29.5
+
+
+def with_inventory(mem, slots):
+    """The player's inventory (+0x22E0, 0x30 a slot): slots = {k: (id word, rounds, cap, in hand)}."""
+    for k, (word, rounds, cap, hand) in slots.items():
+        base = PLAYER + R.P_INV + R.INV_SLOT * k
+        mem.u32(base + R.INV_ID, word)
+        mem.u32(base + R.INV_ROUNDS, rounds)
+        mem.u32(base + R.INV_CAP, cap)
+        mem.u32(base + R.INV_HAND, 1 if hand else 0)
+        mem.put(base + R.INV_USED, b"\x01")
+    return mem
+
+
+def test_the_inventory_names_the_weapon_in_hand_and_an_empty_one_is_switched_off():
+    mem = with_inventory(world(), {0: (0x112, 30, 30, True), 3: (0x10B, 6, 6, False), 4: (0x202, 150, 150, False),
+                                   12: (0x115, 400, 400, False)})
+    snap = R.snapshot(mem)
+    assert [x["slot"] for x in snap["inventory"]] == [0, 3, 4]                   # slot 12 is past the grid, not in hand
+    assert R.equipped(snap)["item"] == 0x12 and snap["inventory"][2]["type"] == 2
+    act, bot = tick(with_inventory(world(enemies=[((0.0, 0.0, 900.0), 800, 800)]),
+                                   {0: (0x112, 30, 30, True), 3: (0x10B, 6, 6, False)}))
+    assert bot.stats["weapon"] == "Barry's handgun 30/30" and "l1" in act["hold"]
+    act, bot = tick(with_inventory(world(enemies=[((0.0, 0.0, 900.0), 800, 800)]),
+                                   {0: (0x112, 0, 0, True), 3: (0x10B, 6, 6, False)}))
+    assert act == {"tap": "dleft"} and bot.stats["weapon_switches"] == 1          # EMPTY 0/0: the M29 in slot 3 (left)
+    act, bot = tick(with_inventory(world(enemies=[((0.0, 0.0, 900.0), 800, 800)]),
+                                   {0: (0x112, 0, 30, True), 3: (0x10B, 6, 6, False)}))
+    assert act == {"hold": {"l1", "cross"}} and bot.stats["reloads"] == 1          # 0/30: reload
+
+
+def test_handguns_are_tapped_and_the_gatling_held(monkeypatch):
+    on = world(action=2, enemies=[((0.0, 0.0, 900.0), 800, 800)])               # aimed: facing +z, the head level
+    monkeypatch.setattr(R, "PITCH_TOL", math.radians(90))
+    bot = R.Bot(clock=lambda: 100.0)
+    taps = [bot.tick(R.snapshot(with_inventory(on, {0: (0x112, 30, 30, True)}))) for _ in range(3)]
+    assert ["r1" in a["hold"] for a in taps] == [True, False, False]              # a press, then let go (TAP_ON/OFF)
+    bot = R.Bot(clock=lambda: 100.0)
+    holds = [bot.tick(R.snapshot(with_inventory(on, {0: (0x115, 400, 400, True)}))) for _ in range(3)]
+    assert all("r1" in a["hold"] for a in holds)                                  # the Gatling: held
+
+
+def test_gathers_every_bonus_first_then_stands_and_breaks_for_a_late_one(monkeypatch):
+    monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
+    bot = R.Bot(clock=lambda: 100.0)
+    act = bot.tick(R.snapshot(with_bonuses(world(timer=119.0), [(0.0, 13.0, 1200.0)])))   # start: a bonus 12 m off
+    assert bot.spawn == (0.0, 0.0, 0.0) and bot.stats["phase"] == "gather_time"            # movement first, not a stand
+    assert {"lup", "cross"} <= act["hold"] and not bot.stood                                # walks to it, high clock
+    away = world(player_pos=(0.0, 0.0, 900.0), yaw=math.pi, timer=80.0)                     # 9 m off, nothing to gather
+    act = bot.tick(R.snapshot(with_bonuses(away, [])))
+    assert bot.stats["phase"] == "stand" and bot.stood and {"lup", "cross"} <= act["hold"]  # back to the stand
+    far = [((0.0, 0.0, 3500.0), 800, 800)]                                                 # at the stand, a Majini 35 m off
+    act = bot.tick(R.snapshot(with_bonuses(world(timer=80.0, enemies=far), [])))
+    assert act == {"hold": set()} and bot.stats["phase"] == "stand"                        # he comes to the stand
+    act = bot.tick(R.snapshot(with_bonuses(world(timer=55.0), [(0.0, 13.0, 2000.0)])))     # a late bonus: break for it
+    assert bot.stats["phase"] == "break_for_time" and {"lup", "cross"} <= act["hold"]
+    plan = bot.plan()
+    assert plan["phase"] == "break_for_time" and plan["target"]["kind"] == "time" and plan["stand"]["r"] == R.STAND_R
+    assert set(plan) >= {"route", "note", "nearest_bonus", "enemy_flags"}
+
+
+def test_a_random_character_each_round_never_the_last_one():
+    import random
+    r = R.Roster(rng=random.Random(7))
+    picks = []
+    for _ in range(16):
+        i = r.want()
+        assert r.want() == i                                                      # stable until the round starts
+        picks.append(R.CHARACTERS[i])
+        assert r.started() == picks[-1]
+    assert all(a != b for a, b in zip(picks, picks[1:])) and set(picks) == set(R.CHARACTERS)
+    assert max(r.played.values()) - min(r.played.values()) <= 1                   # everyone in turn, in random order
+    fields = r.observe({"kills": 12, "score": 4000, "combo": 7})
+    assert fields["character"] == picks[-1] and "12k 4000p c7" in fields["char_tally"]
 
 
 def strip_mesh():
