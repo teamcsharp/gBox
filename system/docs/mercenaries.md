@@ -187,15 +187,36 @@ the title screen (RPCS3 rereads the host DATA0.DAT at each load) and read off th
     `wandered`).
   * Grabs: player action 4 (+0x845) means a Majini is holding him, with the "Break free" prompt (left stick) on
     screen. The driver's prompt source answers "wiggle", which the engine mashes (left / right) until he is free.
-  * Melee finishers ("Hook", "Uppercut", button square) show in sActionButton: +0x34 bit 1 is set while a prompt is
-    up (bit 0: the weapon is raised), and +0x2A4 points to the cActionButton on screen (+0x4 its owner, the player).
-    "Jump over" (square) and other prompts look the same there, so the bot does not press square yet.
-  * Live on Public Assembly with Chris (Heavy Metal), whose Gatling has infinite ammo, three rounds back to back
-    (2026-10-21, the Spark's scratch RPCS3): 14, 20 and 17 kills; 4,460, 7,460 and 6,260 points; best combo 7.
-    The first version (aim from the player's pitch) got 2-4 kills a round.
-  * A health freeze was on for those rounds. It is a scratch-only tool, never part of the driver. The bot only
-    presses buttons.
-  * Not yet: melee finishers on prompt (the field that tells a finisher from "Jump over"), time bonuses and routes.
+  * Prompts come from sActionButton. +0x34 bit 1 is set while a prompt is up (bit 0: the weapon is raised).
+    +0x2A4 points to the cActionButton on screen: +0x04 its owner, +0x14 its kind, +0x40 the Majini it acts on.
+    These were decoded from prompts logged with a frame each:
+
+    | Button | Prompt | The bot |
+    |---|---|---|
+    | the player's, kind 3, +0x40 = a Majini | melee finisher: "Hook", "Uppercut" (square) | presses square, the gun lowered |
+    | the player's, kind 2 | the stage: "Jump over", ladders (square) | leaves it |
+    | a Majini's (player action 4) | his grab: "Break free" (left stick) | wiggles |
+
+    The finisher press is in the driver and tested on RAM fixtures. The first live try ended when the session's game
+    froze, so its live check is still to come.
+  * Time bonuses: the hourglasses (uOm0100; uOm0100.arc's model is "sunadokei_360", hourglass). There are 9 in Public
+    Assembly, units of sUnit's move line 12 ("OM") with vtable 0x015EF5E0. +0x250 holds a bounding sphere (centre 13 cm
+    above the origin, radius 28 cm). +0x194 is 0x0090..01 on 2 of them and 0x00A0..01 on the other 7. The bot shoots
+    one inside 15 m when no Majini is within 7 m, and leaves it for 30 s if 4 s of fire did not take it. From where
+    it fights (the start roof), all 9 are 12-45 m away or on other levels, so taking them needs routes (not yet).
+  * Live in scratch on Public Assembly with Chris (Heavy Metal), whose Gatling has infinite ammo: three rounds back
+    to back (2026-10-21, the Spark's scratch RPCS3) gave 14, 20 and 17 kills; 4,460, 7,460 and 6,260 points; best
+    combo 7. A health freeze was on for those rounds (a scratch-only tool, never part of the driver). The first
+    version (aim from the player's pitch) got 2-4 kills a round.
+  * Live in a gBox session (2026-10-21, the Spark): gBox's RPCS3, the save unlocked with `re5 op=unlock_all`, no
+    health freeze. The bot pressed through the Reunion screens itself and played 9 rounds back to back:
+    * kills 17, 14, 11, 14, 15, 18, 14, 15, 14;
+    * points 6,380, 5,140, 3,490, 4,740, 4,860, 8,640, 4,480, 5,110, 4,780;
+    * best combo 12, no deaths.
+
+    RAM came from the session's RPCS3 (/proc, read only) and the presses went through the session's input API.
+    In round 10 the emulator froze (the game's clock stopped at 1:48, RPCS3 still busy).
+  * Not yet: routes (to the time bonuses), the finisher's live check, the enemies' attack states.
 
 ## Live checks (to run once, then flip `live_checked`)
 

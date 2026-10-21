@@ -49,11 +49,13 @@ STUCK_S, STUCK_MOVE = 1.0, 60.0
 # The time bonuses: hourglasses (uOm0100, model "sunadokei_360" = hourglass in uOm0100.arc; 9 in Public Assembly),
 # units of sUnit's move line 12 ("OM"), told by their vtable.
 OM_LINE, OM_MAX = 12, 600
-HOURGLASS_VT = 0                       # uOm0100's vtable (0 = not known for this build: no bonuses read)
-BONUS_AIM_H = 50.0                     # aim this far above an hourglass's origin
+HOURGLASS_VT = 0x015EF5E0              # uOm0100's vtable (BLUS30491 app 01.01; read live 2026-10-21)
+HG_CENTRE, HG_KIND = 0x250, 0x194      # +0x250 f32 x4 bounding sphere (centre, radius: 28 cm, 13 cm above the origin);
+                                       # +0x194 u32 0x00KK..01: 0x90 on 2 of Public Assembly's 9, 0xA0 on the other 7
 BONUS_SHOOT = 1500.0                   # shoot a time bonus from up to this...
 CLEAR_R = 700.0                        # ...when no Majini is nearer than this
-BONUS_GIVE_UP_S = 4.0                  # fired at one this long and it is still there: walk up to it instead
+BONUS_GIVE_UP_S, BONUS_SKIP_S = 4.0, 30.0   # fired at one this long and it is still there: leave it this long
+BONUS_WALK = False                     # walk to the far ones (not yet: rooftops and pits need routes)
 
 
 def ptr_ok(p) -> bool:
@@ -86,7 +88,9 @@ def bonuses(m) -> list:
     u, n = u32(m, su + UNIT_LINES + LINE_STRIDE * OM_LINE + LINE_FIRST), 0
     while ptr_ok(u) and n < OM_MAX:
         if u32(m, u) == HOURGLASS_VT:
-            out.append({"ptr": u, "pos": struct.unpack(">3f", m.rd(u + 0x30, 12)), "kind": "time"})
+            cx, cy, cz, r = struct.unpack(">4f", m.rd(u + HG_CENTRE, 16))
+            out.append({"ptr": u, "pos": (cx, cy, cz), "r": r, "kind": "time",
+                        "kind_word": u32(m, u + HG_KIND)})
         u, n = u32(m, u + UNIT_NEXT), n + 1
     return out
 
@@ -123,6 +127,7 @@ def snapshot(m) -> dict:
                           "at": struct.unpack(">3f", m.rd(cc + CAM_AT, 12))}
     if snap["player"]:
         snap["bonuses"] = bonuses(m)
+        snap["prompt"] = prompt(m)
     main = u32(m, S_MAIN)
     gs = u32(m, main + MAIN_GAMESYS) if ptr_ok(main) else 0
     if ptr_ok(gs):
@@ -218,16 +223,42 @@ def wandered(scr: dict) -> str | None:
 
 
 WIGGLE = (("lleft",), ("lright",), ("lleft",), ("lright",))
+# sActionButton (static 0x017B7174): +0x34 u32 the HUD's prompt bits (bit 1: a prompt is up; bit 0: the weapon is up),
+# +0x2A4 -> the cActionButton on screen: +0x04 its owner, +0x14 its kind, +0x40 the Majini it acts on (live 2026-10-21, frames
+# of each): kind 3 owned by the player and aimed at a Majini = a melee finisher ("Hook", "Uppercut", "Straight": square);
+# kind 2 owned by the player = the stage ("Jump over", a ladder: not taken); a button owned by a Majini = his grab.
+AB_HUD, AB_BUTTON, HUD_PROMPT = 0x34, 0x2A4, 0x02
+BTN_OWNER, BTN_KIND, BTN_TARGET = 0x04, 0x14, 0x40
+BTN_MELEE, BTN_STAGE = 3, 2
+
+
+def enemy_ptrs(m) -> set:
+    se = u32(m, S_ENEMY)
+    if not ptr_ok(se):
+        return set()
+    n, arr = u32(m, se + 0x28), u32(m, se + 0x34)
+    if not ptr_ok(arr) or not 0 < n <= MAX_ENEMIES:
+        return set()
+    return {e for e in struct.unpack(f">{n}I", m.rd(arr, 4 * n)) if ptr_ok(e)}
 
 
 def prompt(m) -> str | None:
     """The prompt the game asks the player to answer, from RAM: "wiggle" while a Majini holds him (action 4, the
-    "Break free" prompt: the left stick wiggled; live 2026-10-21), else None."""
+    "Break free" prompt: the left stick wiggled), "square" for a melee finisher on a Majini (the player's own
+    cActionButton of kind 3 aimed at one of sEnemy's), else None (no prompt, or one on the stage: never taken)."""
     sp = u32(m, S_PLAYER)
     pl = u32(m, sp + 0x28) if ptr_ok(sp) else 0
-    if ptr_ok(pl) and m.rd(pl + P_ACTION, 1)[0] == P_GRABBED:
+    if not ptr_ok(pl):
+        return None
+    if m.rd(pl + P_ACTION, 1)[0] == P_GRABBED:
         return "wiggle"
-    return None
+    ab = u32(m, S_ACTION)
+    if not ptr_ok(ab) or not u32(m, ab + AB_HUD) & HUD_PROMPT:
+        return None
+    btn = u32(m, ab + AB_BUTTON)
+    if not ptr_ok(btn) or u32(m, btn + BTN_OWNER) != pl or u32(m, btn + BTN_KIND) != BTN_MELEE:
+        return None
+    return "square" if u32(m, btn + BTN_TARGET) in enemy_ptrs(m) else None
 
 
 def own_screen(snap: dict) -> str:
@@ -263,7 +294,9 @@ class Bot:
         self.unstick_dir = 1
         self.dead_tap = 0.0
         self.bonus_fired: dict = {}            # hourglass -> seconds fired at it
+        self.bonus_skip: dict = {}             # hourglass -> left alone until
         self.bonus_seen: set = set()
+        self.last_timer = None
 
     # --- the engine's brain interface ---
     def prompt_ok(self, button, snap, now) -> bool:
@@ -285,6 +318,15 @@ class Bot:
                 return {"tap": "cross"}
             return {"hold": set()}
         self._score_hits(snap)
+        if snap.get("prompt"):                              # a finisher / a grab: the engine presses it; the gun
+            self.aiming_since = None                        # stays down between its presses (L1 would cancel it)
+            self.stats["prompt_holds"] = self.stats.get("prompt_holds", 0) + 1
+            return {"hold": set()}
+        t = snap.get("timer")
+        if self.last_timer is not None and t is not None and self.last_timer > 0 and t > self.last_timer + 2:
+            self.stats["bonus_s"] = round(self.stats.get("bonus_s", 0.0) + t - self.last_timer, 1)
+            self.stats["clock_jumps"] = self.stats.get("clock_jumps", 0) + 1
+        self.last_timer = t
         # Majini and the like: alive, more than 1 health (crows are "enemies" with 1), not far above or below
         live = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and (e.get("hp_max") or 0) > 1
                 and abs(e["pos"][1] - p["pos"][1]) < MAX_DY]
@@ -335,11 +377,17 @@ class Bot:
             if not close or self.pulse:
                 keys.add("rup" if pitch_err > 0 else "rdown")
         tol = max(AIM_TOL, math.atan2(BODY_R, max(dist, 1.0)))   # close up the body is wide
-        if abs(yaw_err) <= tol and abs(pitch_err) <= max(PITCH_TOL * 2, tol) and dist <= SHOOT_RANGE:
+        ptol = max(PITCH_TOL * 2, tol)                      # a body is tall
+        if tgt.get("kind") == "time":                       # an hourglass: its own 28 cm, a degree at least
+            tol = ptol = max(math.radians(1.0), math.atan2(tgt.get("r") or 25.0, max(dist, 1.0)))
+        if abs(yaw_err) <= tol and abs(pitch_err) <= ptol and dist <= SHOOT_RANGE:
             keys.add("r1")                                  # on him: fire
             self.stats["shots_s"] = round(self.stats["shots_s"] + 0.05, 2)
             if tgt.get("kind") == "time":
-                self.bonus_fired[tgt["ptr"]] = self.bonus_fired.get(tgt["ptr"], 0.0) + 0.05
+                fired = self.bonus_fired[tgt["ptr"]] = self.bonus_fired.get(tgt["ptr"], 0.0) + 0.05
+                if fired > BONUS_GIVE_UP_S:                 # shots don't take it from here (a wall, its kind)
+                    self.bonus_skip[tgt["ptr"]] = now + BONUS_SKIP_S
+                    self.bonus_fired[tgt["ptr"]] = 0.0
         self.target = tgt["slot"]
         self.stats["aim"] = (f"slot {tgt['slot']} d {dist:.0f} dy {ty - py:+.0f} yaw_err {math.degrees(yaw_err):+.1f} "
                              f"pitch {math.degrees(p.get('pitch') or 0):+.1f} want {math.degrees(tgt_pitch):+.1f} "
@@ -357,6 +405,7 @@ class Bot:
         if taken:
             self.stats["bonuses_taken"] = self.stats.get("bonuses_taken", 0) + len(taken)
         self.bonus_seen = now_ptrs
+        standing = [b for b in standing if self.bonus_skip.get(b["ptr"], 0.0) <= now]
         if not standing:
             return None
         near = min((math.hypot(e["pos"][0] - px, e["pos"][2] - pz) for e in live), default=math.inf)
@@ -367,11 +416,11 @@ class Bot:
             return None
         b = min(cands, key=lambda b: math.hypot(b["pos"][0] - px, b["pos"][2] - pz))
         d = math.hypot(b["pos"][0] - px, b["pos"][2] - pz)
-        walk = d > BONUS_SHOOT or self.bonus_fired.get(b["ptr"], 0.0) > BONUS_GIVE_UP_S
-        if walk and near < ENGAGE:
+        walk = d > BONUS_SHOOT
+        if walk and (near < ENGAGE or not BONUS_WALK):
             return None                                     # Majini to fight first; the bonus after
         self.stats["bonus_target"] = f"{b['ptr']:#x} d {d:.0f}" + (" walk" if walk else "")
-        return {"slot": f"bonus {b['ptr']:#x}", "ptr": b["ptr"], "pos": b["pos"], "aim_h": BONUS_AIM_H,
+        return {"slot": f"bonus {b['ptr']:#x}", "ptr": b["ptr"], "pos": b["pos"], "aim_h": 0.0, "r": b.get("r"),
                 "kind": "time", "walk": walk}
 
     @staticmethod

@@ -1,6 +1,8 @@
 """Title #2 of the Mercenaries engine: Resident Evil 5 Gold (PS3 BLUS30491) - the RAM map and the driver, on a small RAM
 fixture laid out the way the live game keeps it (found on the Spark's RPCS3, 2026-10-20)."""
 import math
+
+import pytest
 import struct
 
 from gbox import ram_map
@@ -254,27 +256,57 @@ def test_a_grab_is_answered_with_a_wiggle():
     assert R.snapshot(held)["player"]["state"] == "grabbed"
 
 
+def with_prompt(mem, kind, owner, target, hud=0x4B):
+    """sActionButton (static 0x017B7174) with a prompt up (+0x34 bit 1) and +0x2A4 -> a cActionButton: +0x04 owner,
+    +0x14 kind, +0x40 the Majini it acts on."""
+    ab, btn = 0x3883_8370, 0x328E_1FE0
+    mem.u32(R.S_ACTION, ab)
+    mem.u32(ab + R.AB_HUD, hud)
+    mem.u32(ab + R.AB_BUTTON, btn)
+    mem.u32(btn + R.BTN_OWNER, owner)
+    mem.u32(btn + R.BTN_KIND, kind)
+    mem.u32(btn + R.BTN_TARGET, target)
+    return mem
+
+
+def test_a_melee_finisher_on_a_majini_is_pressed_with_square():
+    e = [((0.0, 0.0, 150.0), 450, 800)]
+    assert R.prompt(with_prompt(world(enemies=e), R.BTN_MELEE, PLAYER, ENEMIES[0])) == "square"     # "Hook"
+    assert R.prompt(with_prompt(world(enemies=e), R.BTN_MELEE, PLAYER, ENEMIES[0], hud=0x49)) is None   # not up
+    assert R.prompt(with_prompt(world(enemies=e), R.BTN_STAGE, PLAYER, 0)) is None                  # "Jump over"
+    assert R.prompt(with_prompt(world(enemies=e), R.BTN_MELEE, PLAYER, 0x3099_0000)) is None        # not a Majini
+    assert R.prompt(with_prompt(world(enemies=e), 0, ENEMIES[0], 0)) is None                       # his grab button
+    held = with_prompt(world(action=R.P_GRABBED, enemies=e), 0, ENEMIES[0], 0, hud=0x4A)
+    assert R.prompt(held) == "wiggle"                                                             # the grab itself
+    act, _ = tick(with_prompt(world(action=2, enemies=e), R.BTN_MELEE, PLAYER, ENEMIES[0]))
+    assert act == {"hold": set()}                     # the gun down while the engine presses the finisher (no L1)
+
+
 HOURGLASS_VT = 0x0159_0000
 
 
-def with_bonuses(mem, positions):
-    """sUnit's OM line with a barrel and the hourglasses at `positions` (uOm0100 = HOURGLASS_VT)."""
+def with_bonuses(mem, centres, kind=0x00A00C01):
+    """sUnit's OM line with a barrel and hourglasses (uOm0100 = HOURGLASS_VT) whose bounding spheres (+0x250: centre,
+    28 cm radius) sit at `centres`; +0x194 their kind word."""
     sunit, first = 0x3882_5B20, 0x3040_0000
     mem.u32(R.S_UNIT, sunit)
     mem.u32(sunit + R.UNIT_LINES + R.LINE_STRIDE * R.OM_LINE + R.LINE_FIRST, first)
-    units = [(0x0158_8888, (500.0, 0.0, 500.0))] + [(HOURGLASS_VT, q) for q in positions]   # a barrel first
+    units = [(0x0158_8888, (500.0, 0.0, 500.0))] + [(HOURGLASS_VT, q) for q in centres]   # a barrel first
     for i, (vt, q) in enumerate(units):
         u = first + 0x1000 * i
         mem.u32(u, vt)
-        mem.put(u + 0x30, struct.pack(">3f", *q))
+        mem.put(u + 0x30, struct.pack(">3f", q[0], q[1] - 13.0, q[2]))           # the origin: 13 cm below the centre
+        mem.put(u + R.HG_CENTRE, struct.pack(">4f", *q, 28.4))
+        mem.u32(u + R.HG_KIND, kind)
         mem.u32(u + R.UNIT_NEXT, u + 0x1000 if i + 1 < len(units) else 0)
     return mem
 
 
 def test_time_bonuses_are_read_from_the_om_line(monkeypatch):
     monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
-    snap = R.snapshot(with_bonuses(world(), [(0.0, 0.0, 1000.0), (-800.0, 50.0, 0.0)]))
-    assert [b["pos"] for b in snap["bonuses"]] == [(0.0, 0.0, 1000.0), (-800.0, 50.0, 0.0)]
+    snap = R.snapshot(with_bonuses(world(), [(0.0, 140.0, 1000.0), (-800.0, 50.0, 0.0)]))
+    assert [b["pos"] for b in snap["bonuses"]] == [(0.0, 140.0, 1000.0), (-800.0, 50.0, 0.0)]
+    assert snap["bonuses"][0]["r"] == pytest.approx(28.4) and snap["bonuses"][0]["kind_word"] == 0x00A00C01
     monkeypatch.setattr(R, "HOURGLASS_VT", 0)                                     # not known: none read
     assert R.snapshot(with_bonuses(world(), [(0.0, 0.0, 1000.0)]))["bonuses"] == []
 
@@ -282,18 +314,38 @@ def test_time_bonuses_are_read_from_the_om_line(monkeypatch):
 def test_it_shoots_a_time_bonus_when_no_majini_is_close(monkeypatch):
     monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
     far_majini = [((3000.0, 0.0, 0.0), 800, 800)]                                # 30 m away at +x
-    want = math.atan2(R.BONUS_AIM_H - R.GUN_H, 1000.0)                            # an hourglass 10 m ahead, low
-    act, bot = tick(with_bonuses(world(action=2, pitch_raw=-want, enemies=far_majini), [(0.0, 0.0, 1000.0)]))
+    want = math.atan2(20.0 - R.GUN_H, 1000.0)                                     # an hourglass 10 m ahead, 20 cm up
+    act, bot = tick(with_bonuses(world(action=2, pitch_raw=-want, enemies=far_majini), [(0.0, 20.0, 1000.0)]))
     assert act["hold"] >= {"l1", "r1"} and str(bot.target).startswith("bonus")
     assert "bonus_target" in bot.stats
+    act, _ = tick(with_bonuses(world(action=2, pitch_raw=-(want + 0.05), enemies=far_majini), [(0.0, 20.0, 1000.0)]))
+    assert "r1" not in act["hold"]                                                # 3 deg off a 28 cm sphere: no shot
     close = [((0.0, 0.0, 500.0), 800, 800)]                                       # a Majini 5 m away: him first
-    act, bot = tick(with_bonuses(world(action=2, enemies=close), [(0.0, 0.0, 1000.0)]))
+    act, bot = tick(with_bonuses(world(action=2, enemies=close), [(0.0, 20.0, 1000.0)]))
     assert bot.target == 0
 
 
-def test_it_walks_to_a_far_bonus_and_counts_the_ones_taken(monkeypatch):
+def test_a_bonus_shots_cannot_take_is_left_alone_for_a_while(monkeypatch):
+    monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
+    want = math.atan2(20.0 - R.GUN_H, 1000.0)
+    clock = [100.0]
+    bot = R.Bot(clock=lambda: clock[0])
+    mem = with_bonuses(world(action=2, pitch_raw=-want), [(0.0, 20.0, 1000.0)])
+    for _ in range(int(R.BONUS_GIVE_UP_S / 0.05) + 2):                           # firing at it, it stays
+        act = bot.tick(R.snapshot(mem))
+    assert "r1" not in act["hold"]                                                # left alone now
+    clock[0] += R.BONUS_SKIP_S + 1
+    assert "r1" in bot.tick(R.snapshot(mem))["hold"]                              # tried again later
+
+
+def test_far_bonuses_wait_and_the_clock_jumps_are_counted(monkeypatch):
     monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
     act, bot = tick(with_bonuses(world(), [(0.0, 0.0, 2500.0)]))                  # 25 m ahead, nobody near
-    assert {"lup", "cross"} <= act["hold"]                                        # runs to it
-    bot.tick(R.snapshot(with_bonuses(world(), [])))                               # gone: taken
+    assert act == {"hold": set()}                                                 # no walking to bonuses yet
+    monkeypatch.setattr(R, "BONUS_WALK", True)
+    act, bot = tick(with_bonuses(world(), [(0.0, 0.0, 2500.0)]))
+    assert {"lup", "cross"} <= act["hold"]                                        # with routes: runs to it
+    bot.tick(R.snapshot(with_bonuses(world(timer=60.0), [])))                     # gone from the line: taken
     assert bot.stats["bonuses_taken"] == 1
+    bot.tick(R.snapshot(with_bonuses(world(timer=89.5), [])))                     # the clock +29.5 s: a time bonus
+    assert bot.stats["clock_jumps"] == 1 and bot.stats["bonus_s"] == 29.5
