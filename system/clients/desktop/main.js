@@ -34,6 +34,7 @@ function cleanupSessions(sync) {
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const clientHandoff = require('./client-handoff.cjs');
 const recordingExport = require('./recording-export.cjs');
 
 app.setPath("userData", STANDALONE ? path.join(STANDALONE, ".tools", "desktop-profile")       // standalone: own profile + single-instance lock
@@ -41,6 +42,9 @@ app.setPath("userData", STANDALONE ? path.join(STANDALONE, ".tools", "desktop-pr
 const GAME_FRAME_DIR = path.join(app.getPath("userData"), "game-frames");
 process.env.GBOX_GAME_FRAME_DIR = GAME_FRAME_DIR;                  // worker/tracker also use a standalone profile's capture cache
 const SETTINGS = path.join(app.getPath("userData"), "settings.json");
+const CLIENT_HANDOFF_FILE = path.join(app.getPath('userData'), 'client-refresh-handoff.json');
+let startupHandoff = null, handoffView = null, clientHandoffBusy = false, clientRefreshExit = false;
+let clientActivation = { state: 'active', pid: process.pid, reason: 'Current desktop process is active.' };
 const DEFAULTS = {
   sshHost: "spark",                                   // ~/.ssh/config alias (key auth, BatchMode); optional
   apiUrl: "http://10.89.1.246:8765",
@@ -83,7 +87,7 @@ app.on("gpu-info-update", () => { try { fs.writeFileSync(path.join(app.getPath("
 const venvPython = () => STANDALONE ? path.join(STANDALONE, ".venv", "Scripts", "python.exe")
                                    : path.join(process.env.LOCALAPPDATA, "gbox", "venv", "Scripts", "python.exe");
 
-let win, worker = null, workerStopRequested = false, backgroundPower = null;
+let win, worker = null, workerControl = null, workerStopRequested = false, backgroundPower = null;
 ipcMain.handle('background:power', () => backgroundPower?.snapshot() || {active:false,reason:'Display policy not started'});
 const procs = new Map();                              // id -> child process (streamed tasks)
 const taskLogs = new Map();                           // recent app commands and their streamed output
@@ -123,6 +127,7 @@ function taskDone(id, code) {
 }
 
 function stream(id, cmd, args, opts = {}) {
+  if (clientHandoffBusy) throw Error('Desktop refresh is checking local activity. Try again when it finishes.');
   // Run a command, streaming stdout/stderr lines to the renderer as `task:<id>` events.
   return new Promise(resolve => {
     const p = spawn(cmd, args, { windowsHide: true, ...opts });
@@ -337,6 +342,7 @@ function workerExitReason(text) {
   return lines.slice(-1)[0]?.slice(0, 600) || "";
 }
 async function startWorker(options = {}) {
+  if (clientHandoffBusy) return { running: !!worker, started: false, error: 'Desktop refresh is in progress.' };
   if (worker) return { running: true, started: false };
   if (workerStarting) return workerStarting;
   workerStarting = startWorkerInner(options);
@@ -344,6 +350,7 @@ async function startWorker(options = {}) {
 }
 async function startWorkerInner(options) {
   const s = settings();
+  const controlSecret = clientHandoff.nonce();
   if (worker) return { running: true };
   if (!fs.existsSync(venvPython())) return { running: false, error: "Windows node not installed yet — run 'Install / update Windows node'" };
   if (STANDALONE) {                                   // this PC is the whole gBox: control plane + worker in one process
@@ -356,14 +363,18 @@ async function startWorkerInner(options) {
     const args = ["-P", "-m", "gbox", "--config", path.join(s.repoLocal, "gbox.toml"), "worker", "--server", s.apiUrl, "--name", s.workerName];
     if (options.reconcileResults) args.push("--reconcile-results");
     worker = spawn(venvPython(), args,
-      { env: { ...process.env, PYTHONPATH: s.repoLocal, GBOX_TOKEN: t, PYTHONUNBUFFERED: "1" }, cwd: os.homedir(), windowsHide: true });
+      { env: { ...process.env, PYTHONPATH: s.repoLocal, GBOX_TOKEN: t, PYTHONUNBUFFERED: "1", GBOX_CLIENT_CONTROL: controlSecret }, cwd: os.homedir(), windowsHide: true });
   }
+  const thisWorker = worker;
+  const control = STANDALONE ? null : clientHandoff.workerChannel(thisWorker, controlSecret);
+  workerControl = control;
   workerTail = "";
   const out = d => { const t = d.toString(); workerTail = (workerTail + t).slice(-8000); send("task", "win-worker", t); };
-  worker.stdout.on("data", out); worker.stderr.on("data", out);
+  worker.stdout.on("data", d => { const text = control ? control.feed(d) : d; if (text.length) out(text); }); worker.stderr.on("data", out);
   worker.on("close", code => {
     workerLastExit = { code, at: Date.now(), reason: workerExitReason(workerTail) };
-    send("task", "win-worker", `\n[worker exited ${code}]\n`); worker = null; send("worker", false);
+    send("task", "win-worker", `\n[worker exited ${code}]\n`);
+    if (worker === thisWorker) { worker = null; workerControl = null; } send("worker", false);
     if (!workerStopRequested && settings().autoStartWorker) setTimeout(startWorker, 5000);   // watchdog
     workerStopRequested = false;
   });
@@ -489,6 +500,7 @@ function recordingCrop(rect, display) {
            sw: Math.round(d.bounds.width * k), sh: Math.round(d.bounds.height * k) };
 }
 ipcMain.handle("rec:start", (_e, ext, rect) => {
+  if (clientHandoffBusy) throw Error('Desktop refresh is in progress.');
   if (rec) throw new Error("A recording is already running");
   if (!["mp4", "webm"].includes(ext)) throw new Error("Unsupported recording format");
   const d = screen.getDisplayMatching(win.getBounds()), crop = recordingCrop(rect, d);
@@ -524,6 +536,7 @@ function findExe(name) {
   return c.find(p => { try { return fs.statSync(p).isFile(); } catch { return false; } }) || null;
 }
 const runExe = (exe, args) => new Promise((res, rej) => {
+  if (clientHandoffBusy) return rej(Error('Desktop refresh is in progress.'));
   const p = spawn(exe, args, { windowsHide: true }); let err = "";
   procs.set("rec-fit", p);
   taskLogs.set("rec-fit", { id: "rec-fit", pid: p.pid, started: Date.now() / 1000, state: "running", output: "" });
@@ -659,19 +672,83 @@ ipcMain.handle('compact:view', (event, state) => {
   if (!win || event.sender !== win.webContents || (event.senderFrame && event.senderFrame !== win.webContents.mainFrame)) throw Error('Only the gBox app can change picture-in-picture mode.');
   return compactWindow.update(state);
 });
-ipcMain.handle('client:reload', event => {
+async function inspectClientIdle() {
+  if (STANDALONE) return 'This desktop also hosts its control plane; a client-only restart is unavailable.';
+  if (startupHandoff?.error) return startupHandoff.error;
+  if (workerStarting) return 'The local worker is still starting.';
+  if (procs.size || rec || recFitBusy) return 'This desktop still has an active task or recording.';
+  if (embedded || embedSyncPending) return 'A native game or pending game-window operation still belongs to this desktop.';
+  const local = settings();
+  const disk = await new Promise((resolve, reject) => execFile(venvPython(),
+    ['-P', '-m', 'gbox.worker_client_control', '--inspect', path.join(local.repoLocal, 'gbox.toml')],
+    { windowsHide: true, timeout: 6000, env: { ...process.env, PYTHONPATH: local.repoLocal } }, (error, out) => {
+      if (error) return reject(Error('Local game ownership could not be verified.'));
+      try { const value = JSON.parse(out); if (typeof value.runtime !== 'string' || !path.isAbsolute(value.runtime)) throw Error(); resolve(value); }
+      catch { reject(Error('Local game ownership could not be verified.')); }
+    }));
+  if (disk.reason) return disk.reason;
+  const workerPid = worker?.pid || 0;
+  const script = `$ErrorActionPreference='Stop'; $items=@(Get-CimInstance Win32_Process | Where-Object {
+    $_.ProcessId -ne ${process.pid} -and $_.ProcessId -ne ${workerPid} -and (
+    ($_.ExecutablePath -and ($_.ExecutablePath -like '*\\gBox\\runtime\\*' -or $_.ExecutablePath.StartsWith(${psq(disk.runtime + path.sep)}, [StringComparison]::OrdinalIgnoreCase))) -or
+    ($_.CommandLine -and $_.CommandLine -match '-m gbox .*\\bworker\\b')) } | Select-Object ProcessId,Name);
+    ConvertTo-Json -InputObject $items -Compress`;
+  const found = await new Promise((resolve, reject) => execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
+    { windowsHide: true, timeout: 6000 }, (error, out) => {
+      if (error) return reject(Error('Local process activity could not be verified.'));
+      try { const value = JSON.parse(out); if (!Array.isArray(value)) throw Error(); resolve(value); }
+      catch { reject(Error('Local process activity could not be verified.')); }
+    }));
+  if (found.length) return 'Another local game or worker is still running.';
+  // Recheck after the asynchronous process inventory. New work is gated while this runs.
+  if (procs.size || rec || recFitBusy || embedded || embedSyncPending || workerStarting) return 'Local activity changed during the desktop refresh check.';
+  return null;
+}
+function assertClientSender(event) {
   if (!win || event.sender !== win.webContents || (event.senderFrame && event.senderFrame !== win.webContents.mainFrame)) throw Error('Only the gBox app can reload its client.');
+}
+ipcMain.handle('client:reload', async (event, state) => {
+  assertClientSender(event);
   if (clientReloading) return false;
   clientReloading = true;
+  try {
+    const version = await clientVersions?.read();
+    if (version?.restart) {
+      const hadWorker = !!worker;
+      if (!state || state.v !== 1) clientActivation = { state: 'pending', reason: 'The saved stream view is unavailable; refreshed views only.' };
+      else clientActivation = await clientHandoff.perform({
+        lock: value => { clientHandoffBusy = value; workerStopRequested = value; },
+        inspect: inspectClientIdle,
+        stopWorker: async () => {
+          if (!worker) return false;
+          if (!workerControl) throw Error('The running local worker does not support safe desktop refresh yet.');
+          await workerControl.stop(); return true;
+        },
+        save: value => clientHandoff.save(CLIENT_HANDOFF_FILE, { state: value, ...compactWindow.handoff(),
+          mini: mini && !mini.isDestroyed() ? { ...miniSession, bounds: mini.getBounds() } : pendingMini,
+          startWorker: hadWorker || settings().autoStartWorker }),
+        launch: id => {
+          app.relaunch({ args: [...process.argv.slice(1).filter(a => !a.startsWith(clientHandoff.ARG)), clientHandoff.ARG + id] });
+          clientRefreshExit = true;
+          setTimeout(() => { shutdownSessions(); app.exit(0); }, 100);
+        },
+        resumeWorker: async () => { if (!worker && hadWorker) await startWorker(); }
+      }, state);
+      clientActivation.pid = process.pid;
+      if (clientActivation.state === 'relaunching') return clientActivation;
+    }
+  } catch (error) { clientActivation = { state: 'pending', pid: process.pid, reason: String(error.message || error) }; }
   try { if (mini && !mini.isDestroyed()) mini.webContents.reloadIgnoringCache(); } catch {} // keep its session URL and bounds
   win.webContents.reloadIgnoringCache();
-  return true;
+  return clientActivation;
 });
 let clientVersions = null;
-ipcMain.handle('client:version', event => {
+ipcMain.handle('client:version', async event => {
   if (!win || event.sender !== win.webContents || (event.senderFrame && event.senderFrame !== win.webContents.mainFrame)) throw Error('Only the gBox app can inspect its client version.');
-  return clientVersions?.read();
+  return { ...await clientVersions?.read(), activation: clientActivation };
 });
+ipcMain.handle('client:handoff', event => { assertClientSender(event); return handoffView; });
+ipcMain.handle('client:handoff-saved', event => { assertClientSender(event); handoffView = null; return true; });
 let embedded = null, gpuSurface = false;                          // active presentation uses Chromium's compositor
 // Pick whip: Alt + drag over the game draws a line from one thing to another; on release the frame (with the line) goes
 // to the chat as "swap this with that". The line lives on a transparent click-through window above the docked game.
@@ -741,7 +818,7 @@ function f3(on) {
   hotkeys.setDocked(on);
   if (on && appHwnd() !== fgWatched) checkFront();
 }
-let embedSyncQueue = Promise.resolve();
+let embedSyncQueue = Promise.resolve(), embedSyncPending = 0;
 const syncGameSurface = require("./game-surface-main")({ getWin: () => win, embedCmd,
   nativeSync: st => { gpuSurface = false; return syncEmbeddedGame(st); }, f3,
   frameDir: GAME_FRAME_DIR, onCapture: pid => { embedded = pid; gpuSurface = true; },
@@ -752,7 +829,9 @@ const syncGameSurface = require("./game-surface-main")({ getWin: () => win, embe
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
   } });
 ipcMain.handle("embed:sync", (_e, st) => {
-  const next = embedSyncQueue.then(() => syncGameSurface(st));
+  if (clientHandoffBusy) return { ok: false, error: 'Desktop refresh is in progress.' };
+  embedSyncPending++;
+  const next = embedSyncQueue.then(() => syncGameSurface(st)).finally(() => { embedSyncPending--; });
   embedSyncQueue = next.catch(() => {});
   return next;
 });
@@ -837,18 +916,22 @@ ipcMain.handle("stt", async (_e, buf) => {
 });
 
 // Mini mode: the whole app collapses into a frameless, always-on-top game window that keeps the game's aspect ratio.
-let mini = null;
-ipcMain.handle("mini:open", async (_e, sid, title) => {
+let mini = null, miniSession = null, pendingMini = null;
+async function openMini(sid, title, savedBounds) {
   const s = settings(), t = await token();
+  if (clientHandoffBusy) throw Error('Desktop refresh is in progress.');
   if (mini) mini.close();
   mini = new BrowserWindow({ width: 480, height: 360, frame: false, alwaysOnTop: true, resizable: true, backgroundColor: "#000",
     title: "gBox · " + (title || "game"), icon: path.join(__dirname, "..", "..", "assets", "brand", "gbox.ico"),
     webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true } });
   mini.loadFile(path.join(__dirname, "mini.html"), { query: { src: `${s.apiUrl}/api/sessions/${encodeURIComponent(sid)}/mjpeg?token=${encodeURIComponent(t)}`, title: title || "" } });
-  mini.on("closed", () => { mini = null; if (win && !win.isDestroyed()) { win.webContents.send("mini:closed"); win.show(); } });
+  miniSession = { sid, title };
+  if (savedBounds) mini.setBounds(savedBounds);
+  mini.on("closed", () => { mini = null; miniSession = null; if (win && !win.isDestroyed()) { win.webContents.send("mini:closed"); win.show(); } });
   win.hide();
   return true;
-});
+}
+ipcMain.handle("mini:open", (_e, sid, title) => openMini(sid, title));
 ipcMain.handle("mini:aspect", (_e, w, h) => { if (mini && w && h) { mini.setAspectRatio(w / h); const [cw] = mini.getSize(); mini.setSize(cw, Math.round(cw * h / w)); } });
 ipcMain.handle("mini:restore", () => { if (mini) mini.close(); });
 
@@ -884,6 +967,7 @@ ipcMain.handle("capture:os", osShot);
 // Update & relaunch (logo click): pull latest code here and on the Spark, rebuild/reinitialize the Spark
 // (bootstrap: deps, setup, service restart), stop this PC's worker, then relaunch the app (worker restarts on launch).
 ipcMain.handle("app:relaunch", async () => {
+  if (clientHandoffBusy) throw Error('Desktop refresh is already in progress.');
   const s = settings();
   const log = t => send("task", "relaunch", t);
   if (fs.existsSync(path.join(s.repoLocal, ".git"))) {
@@ -920,6 +1004,7 @@ function decantArgs(extra) {
 function decantRun(extra) {
   return new Promise(async resolve => {
     const t = await token();
+    if (clientHandoffBusy) return resolve({ error: 'Desktop refresh is in progress.' });
     if (!t) return resolve({ error: "no API token (Settings)" });
     if (!fs.existsSync(venvPython())) return resolve({ error: "gBox's Python environment isn't installed on this PC" });
     const p = spawn(venvPython(), decantArgs(extra), { env: { ...process.env, PYTHONPATH: settings().repoLocal, GBOX_TOKEN: t, PYTHONUNBUFFERED: "1" },
@@ -968,6 +1053,13 @@ app.whenReady().then(() => {
   clientVersions = require('./client-version.cjs').create({ desktop: __dirname, web: path.join(__dirname, '../web'),
     runtimeFiles: [...new Set([path.join(__dirname, 'main.js'), ...Object.keys(require.cache).filter(p => p.startsWith(__dirname + path.sep))])], apiUrl: () => settings().apiUrl });
   if (!FIRST) return;
+  startupHandoff = clientHandoff.consume(CLIENT_HANDOFF_FILE, process.argv);
+  if (startupHandoff.value) {
+    handoffView = startupHandoff.value.state;
+    pendingMini = startupHandoff.value.mini;
+    compactWindow.seedBounds(startupHandoff.value.compactBounds);
+    clientActivation = { state: 'applied', pid: process.pid, at: Date.now(), reason: 'Updated desktop code is active; saved streams are reconnecting.' };
+  } else if (startupHandoff.requested) clientActivation = { state: 'pending', pid: process.pid, reason: startupHandoff.error };
   appMenu();
   session.defaultSession.setPermissionRequestHandler((_wc, perm, cb) => cb(["media", "audioCapture", "clipboard-read", "clipboard-sanitized-write"].includes(perm)));
   session.defaultSession.setPermissionCheckHandler((_wc, perm) => ["media", "audioCapture"].includes(perm));
@@ -1007,6 +1099,12 @@ app.whenReady().then(() => {
     titleBarOverlay: { color: "#111114", symbolColor: "#e8e8ee", height: 36 },
     webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false, webviewTag: true, backgroundThrottling: false },
   });
+  if (startupHandoff.value) {
+    const before = startupHandoff.value.window;
+    win.setBounds(before.bounds); win.setAlwaysOnTop(before.top);
+    if (before.maximized) win.maximize();
+    if (before.fullscreen) win.setFullScreen(true);
+  }
   if (process.platform === "win32")                          // pinning the window pins *this* command (exe + app folder), same taskbar slot
     win.setAppDetails({ appId: "com.gbox.desktop", relaunchDisplayName: "gBox", appIconPath: path.join(__dirname, "..", "..", "assets", "brand", "gbox.ico"),
                         relaunchCommand: `"${process.execPath}" "${app.getAppPath()}"` });
@@ -1018,7 +1116,18 @@ app.whenReady().then(() => {
     pickHoldReleaseAll("window reloaded");
     if (!clientReloading && compactWindow.state().on) compactWindow.restore().catch(error => logPush('compact', error.message));
   } });
-  win.webContents.on('did-finish-load', () => { clientReloading = false; });
+  win.webContents.on('did-finish-load', () => {
+    clientReloading = false;
+    if (pendingMini) {
+      const target = pendingMini;
+      api('/api/sessions?include_ended=false').then(sessions => {
+        if (!sessions.some(value => value.session_id === target.sid && value.state === 'running')) throw Error('The saved PiP session is unavailable.');
+        return openMini(target.sid, target.title, target.bounds);
+      }).then(() => { if (pendingMini === target) pendingMini = null; }).catch(error => {
+        clientActivation = { ...clientActivation, reason: error.message + ' Press F5 to retry the saved PiP.' };
+      });
+    }
+  });
   win.webContents.on('did-fail-load', (_e, _code, _description, _url, mainFrame) => { if (mainFrame) clientReloading = false; });
   win.webContents.on('render-process-gone', () => { clientReloading = false; });
   win.on("closed", () => pickHoldReleaseAll("window closed"));
@@ -1035,7 +1144,11 @@ app.whenReady().then(() => {
     e.preventDefault();
     keepMoments().finally(() => { if (win && !win.isDestroyed()) win.close(); });
   });
-  cleanupSessions(false).then(out => {                        // leftovers from a previous run, before this run's worker starts
+  if (startupHandoff.requested) {
+    // The old parent already waited for an idle worker to exit. Never sweep
+    // other processes or bootstrap Spark while restoring a desktop handoff.
+    if (startupHandoff.value?.startWorker) startWorker();
+  } else cleanupSessions(false).then(out => {                        // leftovers from a previous run, before this run's worker starts
     if (out.trim()) send("task", "win-worker", "closed leftover gBox processes:\n" + out);
     if (settings().autoStartWorker) startWorker();
   });
@@ -1052,6 +1165,11 @@ function shutdownSessions() {
   app.isQuitting = true;
   if (padWatcher) { padWatcher.kill(); padWatcher = null; }
   if (!FIRST) return;
+  if (clientRefreshExit) {
+    // Only idle, parent-owned helpers remain. No game/job cleanup or Spark action.
+    embedder?.kill();
+    return;
+  }
   try { embedder && embedder.stdin.write(JSON.stringify({ op: "detach" }) + "\n"); } catch {}
   for (const p of procs.values()) p.kill();
   workerStopRequested = true;

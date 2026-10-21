@@ -3764,15 +3764,21 @@ const compactRestore = () => compactController.restore();
 const clientRefresh = GBoxClientRefresh.create({ storage: sessionStorage, readState: gboxState,
   context: () => ({ sid: COMPACT.on ? COMPACT.sid : EMB.sid, compact: COMPACT.on, aspect: COMPACT.aspect,
     returnMode: COMPACT.on ? COMPACT.returnMode : VIEW.mode, section: document.querySelector('section.on')?.id }),
-  reload: async () => {
+  reload: async value => {
     if (!gbox.clientReload) return location.reload();
-    try { return await gbox.clientReload(); }
+    try { return await gbox.clientReload(value); }
     catch (error) { // a new preload can be running inside an older, safely preserved main process
       if (/No handler registered.*client:reload/.test(String(error))) return location.reload();
       throw error;
     }
   } });
 async function restoreClientView() {
+  if (gbox.clientHandoff) {
+    try {
+      const handoff = await gbox.clientHandoff();
+      if (handoff) { clientRefresh.adopt(handoff); await gbox.clientHandoffSaved?.(); }
+    } catch (error) { if (!/No handler registered/.test(String(error))) throw error; }
+  }
   const value = clientRefresh.pending(); if (!value) return;
   if (value.guest?.playing || value.sid) EMB.sid = value.guest?.playing || value.sid;
   document.querySelector(`aside button[data-s="${value.section}"]`)?.click();
@@ -4025,7 +4031,10 @@ function renderClientUpdate() {
   const r = GBoxCompactGame.fit(innerWidth, innerHeight, COMPACT.aspect);
   Object.assign(border.style, { position: 'fixed', pointerEvents: 'none', zIndex: '90', boxSizing: 'border-box',
     border: '2px solid red', left: r.x + 'px', top: r.y + 'px', width: r.w + 'px', height: r.h + 'px', display: COMPACT.on && value.pending ? 'block' : 'none' });
-  const message = value.restart ? 'Desktop restart required to finish this update. Refreshing the view cannot apply it. Keep current games and jobs running until it is safe to restart.' : 'Client update ready. Press F5 to refresh and keep this game and PiP view.';
+  const message = value.restart ? value.activation?.state === 'pending'
+    ? 'Views refreshed; desktop update pending: ' + value.activation.reason + ' Press F5 to retry when idle.'
+    : 'Desktop update ready. Press F5 to reload the app when this PC is idle, preserving remote games and PiP.'
+    : 'Client update ready. Press F5 to refresh and keep this game and PiP view.';
   border.setAttribute('aria-label', message);
   if ($('#compact-controls')) $('#compact-controls').title = value.pending ? message : '';
   const b = $('#brand'); b.classList.toggle('upd', value.pending);
@@ -4037,6 +4046,7 @@ async function updateCheck() {
     const baseline = await clientVersionAtLoad, latest = await gbox.clientVersion().catch(() => null);
     if (baseline && latest) {
       const next = GBoxClientRefresh.changed(baseline, latest);
+      next.activation = latest.activation;
       if (!latest.remote && clientUpdateState.remote) { next.remote = true; next.pending = true; }
       clientUpdateState = next;
     }

@@ -78,16 +78,17 @@ test('file fingerprints detect equal-size edits independent of timestamps and re
 });
 test('desktop reload IPC is main-frame only and reloads without restarting jobs or dropping compact state', async () => {
   const main = await fs.readFile(path.join(__dirname, '../clients/desktop/main.js'), 'utf8');
-  const src = main.slice(main.indexOf("ipcMain.handle('client:reload'"), main.indexOf('let clientVersions ='));
+  const src = main.slice(main.indexOf('function assertClientSender('), main.indexOf('let clientVersions ='));
   let handler, reloads = 0; const wc = { mainFrame: {}, reloadIgnoringCache: () => reloads++ };
   let miniReloads = 0;
   const ctx = vm.createContext({ ipcMain: { handle: (name, fn) => { handler = fn; } }, win: { webContents: wc }, clientReloading: false,
+    clientVersions: null, clientActivation: {state:'active'},
     mini: { isDestroyed: () => false, webContents: { reloadIgnoringCache: () => miniReloads++ } } });
   vm.runInContext(src, ctx);
-  assert.throws(() => handler({ sender: {}, senderFrame: {} }), /Only the gBox app/);
-  assert.throws(() => handler({ sender: wc, senderFrame: {} }), /Only the gBox app/);
-  assert.equal(handler({ sender: wc, senderFrame: wc.mainFrame }), true); assert.equal(reloads, 1);
-  assert.equal(handler({ sender: wc, senderFrame: wc.mainFrame }), false); assert.equal(reloads, 1);
+  await assert.rejects(handler({ sender: {}, senderFrame: {} }), /Only the gBox app/);
+  await assert.rejects(handler({ sender: wc, senderFrame: {} }), /Only the gBox app/);
+  assert.equal((await handler({ sender: wc, senderFrame: wc.mainFrame })).state, 'active'); assert.equal(reloads, 1);
+  assert.equal(await handler({ sender: wc, senderFrame: wc.mainFrame }), false); assert.equal(reloads, 1);
   assert.equal(miniReloads, 1); // a second connected stream keeps its own window and URL while refreshing
   assert.match(main, /F5: "client-refresh"/); assert.match(main, /if \(!clientReloading && compactWindow.state\(\).on\)/);
 });

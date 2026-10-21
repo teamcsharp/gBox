@@ -45,6 +45,19 @@ test('repeated activation updates aspect or size without overwriting the origina
   assert.equal(win.top,false);
 });
 
+test('a new main process restores both full-window origin and the moved compact bounds', async () => {
+  const first = fixture(), origin = first.win.getBounds();
+  first.win.maximized = true;
+  await first.ctl.update({on:true,aspect:16/9,width:640});
+  first.win.bounds.x = 212; first.win.bounds.y = 150;
+  const saved = first.ctl.handoff();
+  assert.deepEqual(saved.window.bounds,origin); assert.equal(saved.window.maximized,true);
+  const next = fixture(); next.win.setBounds(saved.window.bounds); next.win.maximized = saved.window.maximized;
+  next.ctl.seedBounds(saved.compactBounds); await next.ctl.update({on:true,aspect:16/9});
+  assert.deepEqual(next.win.getBounds(),saved.compactBounds);
+  await next.ctl.restore(); assert.deepEqual(next.win.getBounds(),origin); assert.equal(next.win.maximized,true);
+});
+
 test('a failed native caption change rolls back bounds, fullscreen and controls without entering compact mode', async () => {
   const {win,ctl,events,chrome} = fixture({chrome: on => on ? {ok:false,error:'style rejected'} : {ok:true}});
   win.maximized = true; win.fullscreen = true; const before = win.getBounds();

@@ -43,7 +43,8 @@
       })().finally(() => { busy = null; });
       return busy;
     }
-    return { refresh, pending, done, checkpoint, remember };
+    const adopt = value => { const saved = snapshot(value, now()); storage.setItem(KEY, JSON.stringify(saved)); return saved; };
+    return { refresh, pending, done, checkpoint, remember, adopt };
   }
   function changed(baseline, current) {
     if (!baseline || !current) return { pending: false, restart: false };

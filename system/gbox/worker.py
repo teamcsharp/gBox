@@ -306,6 +306,8 @@ def run(server: str, token: str, config: Config, name: str | None = None,
     active: set[str] = set()
     active_agent: set[str] = set()
     quiet_sessions: set[str] = set()
+    from . import worker_client_control
+    client_control = worker_client_control.from_environment()
     from . import worker_resources
     resource_sampler = worker_resources.Sampler(config.cache)
     from .inspection_builds import source_inventory
@@ -328,12 +330,17 @@ def run(server: str, token: str, config: Config, name: str | None = None,
                 break
             except httpx.HTTPError:
                 stop.wait(poll_s * 3)
-        threading.Thread(target=_desktop_stream, args=(stop, info.id, server, h, config), daemon=True).start()
+        desktop_stream = threading.Thread(target=_desktop_stream, args=(stop, info.id, server, h, config), daemon=True)
+        desktop_stream.start()
         threading.Thread(target=_heartbeat_loop, args=(stop, current_info, active, server, h), daemon=True).start()
         threading.Thread(target=_result_delivery_loop, args=(stop, outbox, active, active_agent, server, h), daemon=True).start()
         described = time.time()
         cleanup_job = None
         while not stop.is_set():
+            if client_control and client_control.check(
+                    lambda: worker_client_control.idle_reason(active, outbox, _builtin.SESSIONS,
+                                                              _builtin._running_file(config)), stop):
+                break
             if time.time() - described > REDESCRIBE_S:
                 try:
                     info = describe(config, name, info.id)
@@ -377,3 +384,7 @@ def run(server: str, token: str, config: Config, name: str | None = None,
             if _quiet_agent_job(job):
                 active_agent.add(job["id"])
             threading.Thread(target=_run_job, args=(job, config, info.id, server, h, c, active, active_agent, quiet_sessions, outbox), daemon=True).start()
+        if client_control and stop.is_set():
+            # Let the desktop capture close its owned encoder before the parent
+            # observes process exit. No emulator or job is force-terminated.
+            desktop_stream.join()
