@@ -102,6 +102,74 @@ def test_tracking_small_diagonal_errors_does_not_starve_either_axis(tmp_path, ya
     assert all({"l1", "r1"} <= keys for keys in actions)  # firing continues while both tracking axes correct
 
 
+def test_near_origin_direction_reversals_do_not_thrash_the_stick_and_valid_ray_recovers(tmp_path):
+    # Run9's successive 6 cm ray baselines changed elevation -67.5 -> +71.4 degrees while P_PITCH changed 0.15.
+    # Replay those endpoints against one fixed target, without treating P_PITCH as an authoritative shot ray.
+    rays = [((143.091, 53.571, 135.908), (140.765, 47.860, 135.446)),
+            ((153.911, 41.709, 125.940), (155.722, 47.685, 126.810))]
+    m = world()
+    bot = C.Combat(m, {}, learn_dir=tmp_path, lessons=lambda row: None)
+    for i, (origin, dot) in enumerate(rays * 2):
+        s = snap(m, enemy=(349.539, 0.0, 83.037))
+        s["player"].update(pos=(202.237, 3.692, 150.020), rot=-1.9193, pitch=-0.339)
+        s["laser"] = {"from": origin, "at": dot}
+        action = bot.tick(s, s["player"], s["enemies"][0], 1.0 + i * 0.1)
+        assert action["hold"] == {"l1", "r1"}
+        assert bot.stats["aim_feedback"] == "near-origin ray; correction paused"
+    s["laser"] = {"from": (143, 53, 136), "at": (400, 100, 200)}
+    action = bot.tick(s, s["player"], s["enemies"][0], 1.35)
+    assert {"l1", "r1", "rleft", "rdown"} <= action["hold"]
+    assert bot.near_ray_since is None
+    assert bot.stats["aim_feedback"] == "ray direction"
+
+
+def test_persistent_near_origin_feedback_has_bounded_reacquisition_and_valid_ray_resets_it(tmp_path):
+    m = world()
+    bot = C.Combat(m, {}, learn_dir=tmp_path, lessons=lambda row: None)
+    s = snap(m)
+    s["laser"] = {"from": (0, 149, 46), "at": (3, 153, 49)}
+    assert bot.tick(s, s["player"], s["enemies"][0], 1.0)["hold"] == {"l1", "r1"}
+    action = bot.tick(s, s["player"], s["enemies"][0], 1.5)
+    assert action["hold"] in ({"lleft"}, {"lright"})
+    assert "reacquire" in bot.stats["combat"]
+    assert not bot.blocked_until                 # uncertain direction does not invent cover evidence
+    s["laser"] = None
+    assert bot.tick(s, s["player"], s["enemies"][0], 1.6)["hold"] == action["hold"]
+    s["laser"] = {"from": (0, 149, 46), "at": (0, 110, 400)}
+    assert bot.tick(s, s["player"], s["enemies"][0], 1.65)["hold"] == {"l1", "r1"}
+    assert bot.near_ray_since is None and bot.near_ray_move_until == 0
+    s["laser"] = {"from": (0, 149, 46), "at": (3, 153, 49)}
+    assert bot.tick(s, s["player"], s["enemies"][0], 1.7)["hold"] == {"l1", "r1"}
+    s["prompt"] = "mash:circle"
+    assert bot.tick(s, s["player"], s["enemies"][0], 1.8)["hold"] == set()
+    assert bot.near_ray_since is None and bot.near_ray_move_until == 0
+
+
+def test_short_ray_at_a_nearby_enemy_still_fires_and_aligned_near_cover_still_repositions(tmp_path):
+    m = world()
+    bot = C.Combat(m, {}, learn_dir=tmp_path, lessons=lambda row: None)
+    s = snap(m)
+    s["player"]["pos"] = (0, 0, 350)
+    s["laser"] = {"from": (0, 100, 390), "at": (0, 110, 400)}
+    for now in (1.0, 1.5, 2.0):
+        assert bot.tick(s, s["player"], s["enemies"][0], now)["hold"] == {"l1", "r1"}
+        assert bot.last_dot[0] == "body"
+        assert bot.near_ray_since is None
+    s["laser"] = {"from": (0, 110, 46), "at": (0, 110, 56)}
+    assert bot.tick(s, s["player"], s["enemies"][0], 2.1)["hold"] in ({"lleft"}, {"lright"})
+    assert bot.stats["combat"] == "reposition: measured obstruction"
+
+
+@pytest.mark.parametrize("bad", [(float("nan"), 100, 400), (0, float("inf"), 400), (0, 100)])
+def test_malformed_ray_cannot_drive_stick_feedback(tmp_path, bad):
+    m = world()
+    bot = C.Combat(m, {}, learn_dir=tmp_path, lessons=lambda row: None)
+    s = snap(m)
+    s["laser"] = {"from": (0, 149, 46), "at": bad}
+    assert bot.tick(s, s["player"], s["enemies"][0], 1.0)["hold"] == {"l1", "r1"}
+    assert bot._ray(s, 1.0) is None
+
+
 def test_fires_immediately_on_an_exposed_body_and_keeps_the_dot_on_it():
     far = (0.0, 0.0, 1000.0)                                            # beyond FINISHER_SETUP_R: the head
     m = world(laser_dot=(0.0, 120.0, 1000.0), enemy=far)               # on his chest, 40 cm under the head
