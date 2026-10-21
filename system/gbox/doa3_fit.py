@@ -276,7 +276,11 @@ def fit(rig: dict, geometry: dict, roles: dict, *, texture_limit: int = 256, slo
         vertices = np.concatenate(verts)
         if np.linalg.det(rules[role][0]) < 0:
             raise AssertionError(f"{role} fit mirrors its geometry")
-        materials = [{"texture": tex, "triangles": np.concatenate(t)} for tex, t in groups.items()]
+        # weld identical vertices (position, normal and UV all equal): extracted donors often carry one vertex per
+        # triangle corner, and every byte counts inside the costume's original AFS entry
+        vertices, weld = np.unique(vertices, axis=0, return_inverse=True)
+        weld = weld.reshape(-1)
+        materials = [{"texture": tex, "triangles": weld[np.concatenate(t)]} for tex, t in groups.items()]
         part = {"vertices": vertices, "materials": materials}
         parts[primary[role]] = part
         if lod_copies and roles["lod"].get(role) is not None:
