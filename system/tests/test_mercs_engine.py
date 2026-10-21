@@ -104,6 +104,20 @@ def test_a_grab_is_shaken_off_every_step_even_while_prompts_rest():
     assert stats["mash_presses"] == 10
 
 
+def test_extended_mash_requires_a_title_resolved_chord_and_bypasses_burst_rest():
+    from gbox.mercs.titles.re5_ps3 import RE5PS3
+    shown, driver = {"button": "mash:cross+circle"}, RE5PS3()
+    pp = reactions.PromptPresser(source=lambda: shown["button"], keys=driver.prompt_keys)
+    pp.rest_until = 100.0
+    for i in range(8):
+        assert pp.step(i * 0.08, ok=lambda button: False) == [("cross", "circle")]
+    assert pp.mashing and pp.stats["mash_presses"] == 8
+    shown["button"] = "mash:unsupported"
+    assert pp.step(1.0) is None and not pp.mashing
+    generic = reactions.PromptPresser(source=lambda: "mash:circle")
+    assert generic.step(0.0) is None and not generic.mashing
+
+
 def test_lessons_go_where_the_deployment_expects(tmp_path):
     lessons.configure(tmp_path)
     p = lessons.append("G4BE08", {"kind": "coach", "text": "shoot the axe man first", "session_id": "s1"})
