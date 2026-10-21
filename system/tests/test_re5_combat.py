@@ -74,15 +74,17 @@ def test_the_ray_error_is_the_turn_that_puts_the_dot_on_the_head():
 
 
 def test_fires_only_with_the_dot_on_the_head_and_writes_the_pitch():
-    m = world(laser_dot=(0.0, 120.0, 400.0))                           # on his chest, 40 cm under the head
+    far = (0.0, 0.0, 1000.0)                                            # beyond FINISHER_SETUP_R: the head
+    m = world(laser_dot=(0.0, 120.0, 1000.0), enemy=far)               # on his chest, 40 cm under the head
     bot = C.Combat(m, {}, clock=lambda: 0.0, learn_dir=None)
-    s = snap(m)
+    s = snap(m, enemy=far)
     tgt = s["enemies"][0]
     act = bot.tick(s, s["player"], tgt, 0.0)
+    assert bot.zone == "head"
     assert "r1" not in act["hold"] and "l1" in act["hold"]            # body only, not yet BODY_AFTER_S: no shot
     pitch = struct.unpack(">f", m.rd(PL + C.P_PITCH, 4))[0]
     assert pitch < 0 and bot.stats["pitch_writes"] == 1                 # the aim raised (+0x1AA0: + = down)
-    m.put(LASER + C.LASER_DOT, ">3f", 0.0, 162.0, 398.0)               # the game's dot now on the head
+    m.put(LASER + C.LASER_DOT, ">3f", 0.0, 162.0, 998.0)               # the game's dot now on the head
     t = 0.05
     fired = False
     while t < 0.5:
@@ -169,3 +171,39 @@ def test_the_tunables_are_kept_and_tightened_after_a_poor_round(tmp_path):
     assert w["head_r"] < C.HEAD_R and w["settle_s"] > C.SETTLE_S and d["rounds"][-1]["hit_rate"] == 0.5
     bot2 = C.Combat(world(), {}, learn_dir=tmp_path)
     assert bot2.tun.weapon("barry", 0x12)["head_r"] == w["head_r"]   # the next round starts from it
+
+
+def test_a_near_majini_gets_the_leg_for_the_stun_and_a_far_one_the_head():
+    assert C.zone_for({"hp_max": 800}, 400.0, 8.0, 3) == "leg"
+    assert C.zone_for({"hp_max": 800}, 400.0, 2.0, 3) == "head"          # the combo window is short: a kill now
+    assert C.zone_for({"hp_max": 800}, 400.0, None, 0) == "leg"          # no combo running
+    assert C.zone_for({"hp_max": 800}, 900.0, 8.0, 3) == "head"          # too far for the finisher setup
+    assert C.zone_for({"hp_max": 9000}, 300.0, 8.0, 3) == "head"         # a boss: no melee setup
+    assert C.zone_for({"hp_max": 800, "zone": "head"}, 300.0, 8.0, 3) == "head"   # the strategy's say
+    m = world(laser_dot=(0.0, 72.0, 400.0))                             # the dot on his thighs
+    bot = C.Combat(m, {}, clock=lambda: 0.0)
+    s = snap(m)
+    fired = False
+    for k in range(20):
+        act = bot.tick(s, s["player"], s["enemies"][0], k * 0.02)
+        fired = fired or "r1" in act["hold"]
+    assert bot.zone == "leg" and fired
+    m.put(ACT, ">I", C.FIRE_VT)                                         # the shot leaves, his health falls
+    m.put(ACT + C.ACT_FRAMES, ">f", 1.0)
+    bot.tick(s, s["player"], s["enemies"][0], 0.5)
+    s2 = snap(m, hp=500)
+    bot.tick(s2, s2["player"], s2["enemies"][0], 0.55)
+    assert bot.stats["legshots"] == 1 and ENEMY in bot.stunned          # a leg hit: he kneels, in for the finisher
+    assert bot.stunned_target(s2["enemies"], s2["player"], 0.6) is s2["enemies"][0]
+    assert bot.run_to(s2["player"], s2["enemies"][0])["hold"] >= {"lup", "cross"}
+
+
+def test_a_boss_gets_one_finisher_only():
+    m = world()
+    bot = C.Combat(m, {}, clock=lambda: 0.0)
+    boss = {"slot": 0, "ptr": ENEMY, "pos": (0.0, 0.0, 150.0), "hp": 9000, "hp_max": 9000}
+    s = {"player": snap(m)["player"], "enemies": [boss], "prompt": "square", "prompt_target": ENEMY}
+    assert bot.prompt_ok("square", s, 1.0) is True                      # the first finisher
+    assert bot.prompt_ok("square", s, 3.0) is False                     # never the wild swing
+    assert bot.prompt_ok("wiggle", s, 3.0) is True
+    assert bot.stunned_target([boss], s["player"], 3.5) is None          # and no running in for another

@@ -408,7 +408,7 @@ class Bot:
 
     # --- the engine's brain interface ---
     def prompt_ok(self, button, snap, now) -> bool:
-        return True
+        return self.combat.prompt_ok(button, snap, now) if self.combat is not None else True
 
     def save(self):
         if self.combat is not None:

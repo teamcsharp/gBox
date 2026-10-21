@@ -65,6 +65,13 @@ AIMING = 2
 
 HEAD_H, HEAD_R = 160.0, 22.0           # a Majini's head: a sphere this far above his feet, this wide (cm)
 KNEE_H, SHOULDER_H, BODY_R = 45.0, 145.0, 36.0   # his body: a capsule between these heights, this wide
+THIGH_LO, THIGH_HI, THIGH_R, THIGH_H = 45.0, 95.0, 26.0, 72.0   # his thighs: the leg-stun zone, aimed at THIGH_H
+# The kill policy (docs/mercenaries_re5_meta.md section 1.3: "melee is the clock"): a leg shot until he kneels, then
+# the finisher (+5 s, i-frames) - the main kill method; a headshot (a head stun -> Headbutt / Uppercut, or the kill)
+# when he is far or the combo window is short; never a second melee on a boss (the wild swing).
+FINISHER_SETUP_R = 650.0               # a Majini this near is leg-stunned and finished (the prompt comes at ~1.5 m)
+COMBO_SHORT_S = 4.0                    # the combo window under this: a kill now (the head), not a stun setup
+BOSS_HP = 2500                         # health above this: a boss (Executioner, Chainsaw ...): one melee, then guns
 HEAD_LEAD_S = 0.06                     # the dot is a frame old and the trigger two more: lead his head by this
 TAP_DOWN_S, TAP_UP_S = 0.045, 0.06     # a tap: R1 down (two frames), then up (three) before the next
 HOLD_NO_SHOT_S = 0.45                  # held on target this long without a shot: this weapon wants taps
@@ -104,15 +111,29 @@ def heading(dx: float, dz: float) -> float:
 
 # --- what the laser says -----------------------------------------------------------------------------------------
 def dot_on(dot, foot, head_r: float = HEAD_R, body_r: float = BODY_R) -> str | None:
-    """Where the laser dot sits on a Majini standing at foot: "head" (inside the head sphere), "body" (inside the body
-    capsule), else None (the ray ends somewhere else: short of him, past him, beside him)."""
+    """Where the laser dot sits on a Majini standing at foot: "head" (inside the head sphere), "leg" (the thighs),
+    "body" (inside the body capsule), else None (the ray ends somewhere else: short of him, past him, beside him)."""
     dx, dy, dz = dot[0] - foot[0], dot[1] - foot[1], dot[2] - foot[2]
     if math.sqrt(dx * dx + (dy - HEAD_H) ** 2 + dz * dz) <= head_r:
         return "head"
     flat = math.hypot(dx, dz)
+    if flat <= THIGH_R and THIGH_LO <= dy <= THIGH_HI:
+        return "leg"
     if flat <= body_r and KNEE_H - 10 <= dy <= SHOULDER_H + 20:
         return "body"
     return None
+
+
+def zone_for(tgt: dict, dist: float, combo_timer, combo) -> str:
+    """Where to put the shot: "leg" (the stun -> finisher loop) for a Majini within FINISHER_SETUP_R while the combo
+    window allows it (over COMBO_SHORT_S, or no combo running), "head" when he is far, the window short, or he is a
+    boss. The driver's strategy may say with tgt["zone"]."""
+    if tgt.get("zone") in ("leg", "head"):
+        return tgt["zone"]
+    if (tgt.get("hp_max") or 0) > BOSS_HP:
+        return "head"
+    window_ok = not combo or combo_timer is None or combo_timer > COMBO_SHORT_S
+    return "leg" if dist <= FINISHER_SETUP_R and window_ok else "head"
 
 
 def ray_error(origin, dot, target) -> tuple[float, float]:
@@ -288,6 +309,8 @@ class Combat:
         self.dot_body_since = None
         self.last_dot = None                  # (where, tgt ptr, t) the dot at the last tick: what a shot left on
         self.stunned: dict = {}               # Majini ptr -> until
+        self.melees: dict = {}                # Majini ptr -> finishers pressed on him (a boss gets one)
+        self.zone = "head"
         self.reload_at = -1e9
         self.character = "?"
         self.wid = None
@@ -385,7 +408,10 @@ class Combat:
         lz = (tuple(sl["from"]), tuple(sl["at"])) if sl and sl.get("from") and sl.get("at") and any(sl["from"])             and math.dist(sl["from"], sl["at"]) >= 5.0 else (None if sl else self.laser.read(now))
         foot = tgt["pos"]
         lead = self._lead(tgt, now)
-        head = (foot[0] + lead[0], foot[1] + HEAD_H, foot[2] + lead[1])
+        dist = math.hypot(foot[0] - p["pos"][0], foot[2] - p["pos"][2])
+        zone = zone_for(tgt, dist, snap.get("combo_timer"), snap.get("combo"))
+        self.zone = zone
+        aim_at = (foot[0] + lead[0], foot[1] + (HEAD_H if zone == "head" else THIGH_H), foot[2] + lead[1])
         tune = self.tun.weapon(self.character, wid or 0)
         where = None
         if lz is not None:
@@ -395,17 +421,17 @@ class Combat:
             self.dot_head_since = self.dot_body_since = None
             self.stats["combat"] = "readying"
             return {"hold": {"l1"} | self._face(p, foot)}
-        # steer the dot onto his head
-        yaw_err, pitch_err = ray_error(lz[0], lz[1], head)
+        # steer the dot onto the zone (his head, or his thighs for the stun)
+        yaw_err, pitch_err = ray_error(lz[0], lz[1], aim_at)
         keys = {"l1"}
         keys |= self._yaw(yaw_err)
         keys |= self._pitch(pl, p, pitch_err, now)
         # the trigger: on the head (settled), or on the body after BODY_AFTER_S with the head out of reach
-        self.dot_head_since = (self.dot_head_since or now) if where == "head" else None
-        self.dot_body_since = (self.dot_body_since or now) if where in ("head", "body") else None
-        on_head = where == "head" and now - self.dot_head_since >= tune["settle_s"]
-        on_body = where == "body" and now - self.dot_body_since >= BODY_AFTER_S
-        on_target = (on_head or on_body) and (rounds is None or rounds > 0)
+        self.dot_head_since = (self.dot_head_since or now) if where == zone else None
+        self.dot_body_since = (self.dot_body_since or now) if where in ("head", "body", "leg") else None
+        on_zone = where == zone and now - self.dot_head_since >= tune["settle_s"]
+        on_body = where in ("body", "leg", "head") and where != zone and now - self.dot_body_since >= BODY_AFTER_S
+        on_target = (on_zone or on_body) and (rounds is None or rounds > 0)
         if rounds == 0:
             if now - self.reload_at > EMPTY_RELOAD_EVERY_S:   # empty: reload (the driver switches weapons)
                 self.reload_at = now
@@ -417,7 +443,7 @@ class Combat:
             trig = self.triggers[wid] = Trigger(tune["mode"])
         keys |= trig.keys(now, on_target, shot)
         tune["mode"] = trig.mode
-        self.stats["combat"] = (f"{self.character} w{wid:#x} dot {where} yaw {math.degrees(yaw_err):+.1f} "
+        self.stats["combat"] = (f"{self.character} w{wid:#x} {zone} dot {where} yaw {math.degrees(yaw_err):+.1f} "
                                 f"pitch {math.degrees(pitch_err):+.1f} {trig.mode} {'FIRE' if on_target else ''}")
         return {"hold": keys}
 
@@ -497,8 +523,10 @@ class Combat:
                 self.stats["headshots"] += 1
                 self.round_counts["headshots"] += 1
                 w["headshots"] += 1
-                if ptr:
-                    self.stunned[ptr] = now + STUN_S
+            if where == "leg":
+                self.stats["legshots"] = self.stats.get("legshots", 0) + 1
+            if where in ("head", "leg") and ptr:          # a stun (the kneel / the head reel): in for the finisher
+                self.stunned[ptr] = now + STUN_S
             self._log_shot(t, "headshot" if where == "head" else "hit", where, reach, dist, ptr)
         for _ in range(new_misses):
             t, where, ptr, reach, dist = pend.pop(0) if pend else (now, None, None, None, None)
@@ -569,11 +597,31 @@ class Combat:
             except Exception:                              # noqa: BLE001
                 pass
 
+    def prompt_ok(self, button, snap, now) -> bool:
+        """Press the prompt? A finisher (square) on a boss only once (a second melee is the wild swing); the finisher
+        prompt itself means he is stunned: he is marked so."""
+        if button != "square":
+            return True
+        tgt = snap.get("prompt_target")
+        if tgt:
+            self.stunned[tgt] = now + STUN_S
+        e = next((x for x in snap.get("enemies") or () if x.get("ptr") == tgt), None) if tgt else None
+        if e is not None and (e.get("hp_max") or 0) > BOSS_HP:
+            n = self.melees.get(tgt, 0)
+            if n >= 1:
+                self.stats["boss_melee_held"] = self.stats.get("boss_melee_held", 0) + 1
+                return False
+            self.melees[tgt] = n + 1
+        return True
+
     def stunned_target(self, enemies, p, now):
-        """A Majini stunned by a headshot, in finisher reach: close in on him (the prompt comes at ~1.5 m)."""
+        """A Majini stunned by a head or leg shot, in finisher reach: close in on him (the prompt comes at ~1.5 m);
+        never a boss already meleed once."""
         for e in enemies:
             until = self.stunned.get(e.get("ptr"))
             if not until or now > until or (e.get("hp") or 0) <= 0:
+                continue
+            if (e.get("hp_max") or 0) > BOSS_HP and self.melees.get(e.get("ptr"), 0) >= 1:
                 continue
             d = math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2])
             if STUN_NEAR < d < STUN_FAR:
