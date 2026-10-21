@@ -62,22 +62,27 @@
   }
 
   // a small menu of PCs at x, y (fixed); a pick calls launch(gid, pc). Closes on a pick, Escape or a click outside.
-  function open(doc, { x = 0, y = 0, gid, title = "", pcs: list = [], launch, place } = {}) {
+  let closeCurrent = null;
+  function open(doc, { x = 0, y = 0, gid, title = "", pcs: list = [], launch, place, modifiers } = {}) {
+    closeCurrent?.();
     let m = doc.getElementById("bot-demo-menu");
     if (!m) {
       m = doc.createElement("div"); m.id = "bot-demo-menu"; m.setAttribute("role", "menu");
       m.style.cssText = "position:fixed;z-index:120;background:var(--bg,#111);border:1px solid var(--line,#444);border-radius:8px;"
-        + "padding:6px;box-shadow:0 10px 30px #000a;min-width:220px;display:none;flex-direction:column;gap:4px;font-size:13px";
+        + "padding:6px;box-shadow:0 10px 30px #000a;min-width:220px;max-width:calc(100vw - 24px);max-height:85vh;overflow:auto;display:none;flex-direction:column;gap:4px;font-size:13px";
       doc.body.append(m);
     }
     m.innerHTML = `<div class="mut" style="font-size:11px;padding:0 2px 2px">${ESC(title ? title + ": " : "")}bot demo on…</div>` + itemsHTML(list);
+    if (modifiers) m.innerHTML += modifiers.html;
+    const modifierControl = modifiers?.mount?.(m.querySelector(".re5-modifiers"));
     m.style.display = "flex";
     if (place) { try { place(m, x, y); } catch { m.style.left = x + "px"; m.style.top = y + "px"; } }
     else { m.style.left = x + "px"; m.style.top = y + "px"; }
-    const close = () => { m.style.display = "none"; doc.removeEventListener("mousedown", outside, true); doc.removeEventListener("keydown", esc, true); };
+    const close = () => { modifierControl?.stop(); m.style.display = "none"; doc.removeEventListener("mousedown", outside, true); doc.removeEventListener("keydown", esc, true); if (closeCurrent === close) closeCurrent = null; };
+    closeCurrent = close;
     const outside = e => { if (!m.contains(e.target)) close(); };
     const esc = e => { if (e.key === "Escape") close(); };
-    setTimeout(() => { doc.addEventListener("mousedown", outside, true); doc.addEventListener("keydown", esc, true); }, 0);
+    setTimeout(() => { if (closeCurrent === close) { doc.addEventListener("mousedown", outside, true); doc.addEventListener("keydown", esc, true); } }, 0);
     m.onclick = e => {
       const b = e.target.closest && e.target.closest("[data-bot-demo]");
       if (!b) return;

@@ -54,6 +54,8 @@ contextBridge.exposeInMainWorld("gbox", {
   compactView: state => ipcRenderer.invoke('compact:view', state),
   onCompactView: fn => ipcRenderer.on('compact:view', (_e, state) => fn(state)),
   updatePending: () => ipcRenderer.invoke("update:pending"),
+  clientReload: () => ipcRenderer.invoke('client:reload'),
+  clientVersion: () => ipcRenderer.invoke('client:version'),
   browser: (op, url) => ipcRenderer.invoke("browser:send", op, url),
   embedFocus: () => ipcRenderer.invoke("embed:focus"),
   embedKill: () => ipcRenderer.invoke("embed:kill"),

@@ -76,6 +76,7 @@ test('double click and Escape restore the app; native hover reaches the same con
   const events={},changed=[], restores=[];
   vm.runInNewContext(html.slice(start,end),{
     gbox:{onCompactView:f=>changed.push(f)},compactController:{changed(){}},COMPACT:{on:true},
+    GBoxCompactCoach:require('../clients/desktop/compact-coach'),
     compactRestore:()=>{restores.push('restore'); return Promise.resolve();},compactHover(){},addEventListener:(name,fn)=>{events[name]=fn;}
   });
   let prevented=0;
