@@ -315,7 +315,7 @@ class Combat:
         self.step_side = "lleft"
         self.triggers: dict = {}
         self.act_seen = None                  # (vtable, frames) of the action object last tick
-        self.pulse = 0
+        self.yaw_pulse = self.pitch_pulse = 0
         self.dot_head_since = None
         self.dot_body_since = None
         self.last_dot = None                  # (where, tgt ptr, t) the dot at the last tick: what a shot left on
@@ -600,8 +600,8 @@ class Combat:
         if abs(err) <= math.radians(0.6):
             return set()
         if abs(err) < FINE:
-            self.pulse ^= 1
-            if not self.pulse:
+            self.yaw_pulse ^= 1
+            if not self.yaw_pulse:
                 return set()
         return {"rleft"} if err > 0 else {"rright"}
 
@@ -619,8 +619,8 @@ class Combat:
             except (ValueError, OSError, struct.error):
                 pass
         if abs(err) < FINE:
-            self.pulse ^= 1
-            if not self.pulse:
+            self.pitch_pulse ^= 1
+            if not self.pitch_pulse:
                 return set()
         return {"rup"} if err > 0 else {"rdown"}
 

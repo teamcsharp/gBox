@@ -83,6 +83,26 @@ def test_the_ray_error_is_the_turn_that_puts_the_dot_on_the_head():
     assert math.degrees(yaw) == pytest.approx(5.71, abs=0.05) and math.degrees(pitch) == pytest.approx(5.68, abs=0.05)
 
 
+@pytest.mark.parametrize("yaw_sign,pitch_sign", [(1, 1), (1, -1), (-1, 1), (-1, -1)])
+def test_tracking_small_diagonal_errors_does_not_starve_either_axis(tmp_path, yaw_sign, pitch_sign):
+    # A moving target can retain small yaw and pitch errors across many snapshots.
+    # Sharing one toggle made the yaw call consume every "on" pulse and pitch consume every "off" pulse.
+    distance = 1500.0 - 46.0
+    yaw = -yaw_sign * math.radians(2)
+    pitch = math.atan2(160.0 - 149.0, distance) - pitch_sign * math.radians(2)
+    dot = (distance * math.tan(yaw), 149.0 + distance / math.cos(yaw) * math.tan(pitch), 1500.0)
+    m = world(laser_dot=dot)
+    bot = C.Combat(m, {}, learn_dir=tmp_path, lessons=lambda row: None)
+    yaw_key, pitch_key = ("rleft" if yaw_sign > 0 else "rright"), ("rup" if pitch_sign > 0 else "rdown")
+    actions = []
+    for frame in range(6):
+        s = snap(m, enemy=(0.0, 0.0, 1500.0))
+        actions.append(bot.tick(s, s["player"], s["enemies"][0], frame * 0.05)["hold"])
+    assert sum(yaw_key in keys for keys in actions) >= 2
+    assert sum(pitch_key in keys for keys in actions) >= 2
+    assert all("r1" not in keys for keys in actions)  # diagonal correction never authorizes a speculative shot
+
+
 def test_fires_immediately_on_an_exposed_body_and_keeps_the_dot_on_it():
     far = (0.0, 0.0, 1000.0)                                            # beyond FINISHER_SETUP_R: the head
     m = world(laser_dot=(0.0, 120.0, 1000.0), enemy=far)               # on his chest, 40 cm under the head
