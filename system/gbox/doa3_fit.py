@@ -399,6 +399,41 @@ def costume_replacements(afs_path, plan: dict[str, dict], progress=lambda *_: No
 # 0x80000 CAT | the rest motions. Native costumes reach 1,978,368 bytes (zac02); a larger one overruns the .bin.
 COSTUME_BUFFER = 0x200000
 DECIMATE_STEPS = (0.6, 0.4, 0.25, 0.16, 0.1)    # fractions of the donor's triangles the last budget steps try
+SEAM_UV = 0.05                                  # corners of one collapsed point further apart in UV are a seam
+
+
+def _merge_corners(prim: dict, pos: np.ndarray, tris: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """After an edge collapse every corner keeps its own vertex, so a point that absorbed its neighbours carries
+    one vertex per absorbed corner (Bowser HD at 10%: 2.3 vertices per triangle). Corners of one point whose UVs
+    lie within SEAM_UV share the first one's vertex (their normals averaged); UV seams stay split.
+    -> (triangles, normals)."""
+    nrm = np.asarray(prim["nrm"], float).copy()
+    used = np.unique(tris)
+    if not len(used):
+        return tris, nrm
+    ext = float(np.ptp(pos[used], 0).max()) or 1.0
+    _keys, group = np.unique(np.round(pos[used] / (ext * 1e-5)).astype(np.int64), axis=0, return_inverse=True)
+    group = group.reshape(-1)
+    uv = np.asarray(prim["uv"], float)[used]
+    rep = np.arange(len(used))
+    order = np.argsort(group, kind="stable")
+    for members in np.split(order, np.flatnonzero(np.diff(group[order])) + 1):
+        leaders = []
+        for m in members:
+            for r in leaders:
+                if float(np.abs(uv[m] - uv[r]).max()) <= SEAM_UV:
+                    rep[m] = r
+                    break
+            else:
+                leaders.append(m)
+    total = np.zeros((len(used), 3))
+    np.add.at(total, rep, nrm[used])
+    length = np.linalg.norm(total, axis=1, keepdims=True)
+    lead = rep == np.arange(len(used))
+    nrm[used[lead]] = np.where(length[lead] > 1e-9, total[lead] / np.maximum(length[lead], 1e-9), nrm[used[lead]])
+    remap = np.arange(len(pos))
+    remap[used] = used[rep]
+    return remap[tris], nrm
 
 
 def decimated_rig(rig: dict, fraction: float) -> dict:
@@ -418,7 +453,8 @@ def decimated_rig(rig: dict, fraction: float) -> dict:
         target = max(1, int(round(len(np.asarray(original["tris"]).reshape(-1, 3)) * fraction)))
         if len(tris) > 8 and target < len(tris):
             pos, kept = decimate(np.asarray(p["pos"], float), tris, target)
-            p = {**p, "pos": pos, "tris": np.asarray(kept, int).reshape(-1, 3)}
+            kept, nrm = _merge_corners(p, pos, np.asarray(kept, int).reshape(-1, 3))
+            p = {**p, "pos": pos, "nrm": nrm, "tris": kept}
         prims.append(p)
     lean = {k: v for k, v in rig.items() if k != "_decimated"} | {"prims": prims}
     cache[fraction] = lean

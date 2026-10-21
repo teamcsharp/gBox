@@ -151,6 +151,17 @@ def test_fit_costume_decimates_a_dense_donor_into_a_tight_slot():
     assert F.decimated_rig(rig, res["report"]["decimated"]) is F.decimated_rig(rig, res["report"]["decimated"])
 
 
+def test_collapsed_corners_share_a_vertex_unless_a_seam_splits_them():
+    # three corners collapsed onto one point: two with nearby UVs merge, the third (across a UV seam) stays split
+    pos = np.array([[0, 0, 0], [0, 0, 0], [0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], float)
+    prim = {"nrm": np.array([[0, 0, 1], [0, 1, 0], [0, 0, 1], [0, 0, 1], [0, 0, 1], [0, 0, 1]], float),
+            "uv": np.array([[0.1, 0.1], [0.12, 0.1], [0.8, 0.1], [0.3, 0.1], [0.1, 0.3], [0.9, 0.3]], float)}
+    tris = np.array([[0, 3, 4], [1, 4, 3], [2, 5, 4]])
+    out, nrm = F._merge_corners(prim, pos, tris)
+    assert out[1][0] == 0 and out[2][0] == 2                   # corner 1 joins corner 0; corner 2 is a seam
+    assert np.allclose(nrm[0], np.array([0, 1, 1]) / np.sqrt(2))
+
+
 def test_fit_places_every_role_in_its_joint_frame_and_encodes():
     xpr, cat = fifteen_part_costume()
     geo = C.costume_geometry(xpr)
