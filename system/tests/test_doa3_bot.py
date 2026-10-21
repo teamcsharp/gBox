@@ -82,7 +82,7 @@ def test_a_caught_attack_is_judged_by_the_games_paired_move_flag():
     assert t.outcome(before, thrown, hold) == (-30.0, True, "thrown")
     assert t.outcome(before, before, hold) == (0.0, None, "unknown")             # nothing to tell: not a whiff
     ram = Ram()
-    ram.ram[0x484CE2] = 1                                                      # the map's p2.paired -> state held
+    ram.ram[0x484C7A] = 1                                                      # the map's p2.paired (fighter 0) -> state held
     assert t.read(ram).p2.has("held") and not t.read(ram).p1.has("held")
 
 
@@ -90,7 +90,7 @@ def test_back_follows_the_games_own_flip_flag():
     ram, t = Ram(), D.Doa3()
     w = t.read(ram)
     assert w.p1.side == 1 and t.back(w) == "left"                 # flag 0: forward is right, back is left
-    ram.ram[0x3C2594] = 1
+    ram.ram[0x3C2595] = 1                                         # fighter 1's flag: the bot's
     w = t.read(ram)
     assert w.p1.side == -1 and t.back(w) == "right" and t.forward(w) == "left"
     hold = next(a for a in t.answers(Attack(), w) if a.name == "hold_mid")
@@ -107,9 +107,10 @@ def test_punishes_are_options_the_first_a_string():
 
 
 class Game(Ram):
-    """DOA3 as the playbook sees it: the title waits for START on any port, the menu for A, a fight runs 40 frames
-    (P2 presses P every 15 frames) and ends in a KO, then the menus come back. The loop's frame clock advances one
-    frame per poll of the clock block."""
+    """DOA3 as the playbook sees it: the title waits for START on any port, Mode Select's carousel (0x8610CC) moves
+    with left / right and A at Survival (2) starts a fight, which runs 40 frames (the opponent, fighter 0, presses P
+    every 15 frames) and ends in a KO; the result screen shows, then the menus come back. The loop's frame clock
+    advances one frame per poll of the clock block."""
 
     def __init__(self):
         super().__init__()
@@ -121,14 +122,14 @@ class Game(Ram):
 
     def pad(self):
         buttons = struct.unpack_from("<H", self.ram, doa3_pad.STATE_AT + 4)[0]
-        return buttons, self.ram[doa3_pad.STATE_AT + 6]               # START bit, the A button's byte
+        return buttons, self.ram[doa3_pad.STATE_AT + 6]               # START / D-pad bits, the A button's byte
 
     def read(self, a, n):
         if a == D.CLOCK[0]:
             self.frames(1)
             self.t += 1
             if self.mode == 1 and self.phase == 3:
-                struct.pack_into("<H", self.ram, 0x48A496, 0x2 if self.t % 15 == 0 else 0)
+                struct.pack_into("<H", self.ram, 0x48A494, 0x2 if self.t % 15 == 0 else 0)   # fighter 0's pressed word
                 if self.t - self.fight_at >= 40:
                     self.phase = 4
             elif self.mode == 1 and self.phase == 4 and self.t - self.fight_at >= 50:
@@ -141,7 +142,11 @@ class Game(Ram):
         buttons, a_button = self.pad()
         if self.mode == 2 and buttons & 0x10 and struct.unpack_from("<I", self.ram, doa3_pad.HANDLE_AT)[0] == doa3_pad.SENTINEL:
             self.mode = 0
-        elif self.mode == 0 and a_button:
+        elif self.mode == 0 and buttons & 0x8:                      # D-pad right / left: the carousel
+            self.ram[0x8610CC] = min(4, self.ram[0x8610CC] + 1)
+        elif self.mode == 0 and buttons & 0x4:
+            self.ram[0x8610CC] = max(0, self.ram[0x8610CC] - 1)
+        elif self.mode == 0 and a_button and self.ram[0x8610CC] == 2:  # A on Survival
             self.mode, self.phase, self.fight_at = 1, 3, self.t
             self.fights += 1
         self.put()
@@ -163,7 +168,8 @@ def test_survival_runs_menus_and_fights_from_ram_with_the_virtual_pad(tmp_path):
     stats = doa3_bot.play(ad, ad.send_input, stopped, clock=lambda: now[0],
                           sleep=lambda s: now.__setitem__(0, now[0] + s))
     assert game.fights >= 3                                        # title -> menu -> fight, three times
-    assert stats["menu_presses"] >= 4 and stats["fight_end"] in ("menu", "round_end", "unknown")
+    assert stats["menu_presses"] >= 6 and stats["fight_end"] in ("menu", "round_end", "results", "unknown")
+    assert game.ram[0x8610CC] == 2                                 # the carousel was walked to Survival
     assert stats["attacks"] >= 3 and stats["frames"] >= 100       # P2's punches seen as attack-input edges
     assert stats["hung"] is False
     assert (tmp_path / "fightbot" / D.MAP_ID / "book.json").is_file()
