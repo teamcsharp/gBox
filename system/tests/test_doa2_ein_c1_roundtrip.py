@@ -24,7 +24,7 @@ from gbox import characters, doa2_chars
 GAME_ID = "1de2e7634f3161ff"
 DISC_CANDIDATES = [
     Path(os.environ.get("GBOX_DOA2_LE_GDI", "") or "."),
-    Path.home() / "gbox-cache" / "dc" / GAME_ID / "disc.gdi",
+    Path.home() / "gBox_alt/gbox-cache" / "dc" / GAME_ID / "disc.gdi",
 ]
 # Preserved native source hashes of the registered entry doa2_ein_c1.
 PRESERVED = {

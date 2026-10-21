@@ -32,7 +32,7 @@ EXE_HEADER = 0x800
 RAW_FORM2_SECTOR = 2336
 
 # SLUS_007.56 (sha256 1664e7c6...fbee) addresses, proven by Ghidra project
-# ~/gbox-cache/2d8ef2bdbd4a58fd/ghidra/re2c_slus00756 and by tests.
+# ~/gBox_alt/gbox-cache/2d8ef2bdbd4a58fd/ghidra/re2c_slus00756 and by tests.
 EXE_SHA256 = "1664e7c634f8cfd03e421f10a6d7e8e8e9fa9bc7982f7c649cc86d28a983fbee"
 FILE_TABLE_VA = 0x8009885C     # = $gp; 858 x {u32 size, u16 lba_lo, u8 lba_hi, u8 tag}
 CD_LOAD_FILE_VA = 0x80012FB8   # load_file(file_no, dest, mode, name): whole-file CdRead

@@ -1,7 +1,7 @@
 """Tests for `gbox.smb1_analysis`.
 
 These tests run against the owned No-Intro build cached at
-``~/gbox-cache/49b6a2f65aca26a2/rom/Super Mario Bros. (World).nes`` and verify
+``~/gBox_alt/gbox-cache/49b6a2f65aca26a2/rom/Super Mario Bros. (World).nes`` and verify
 that the analysis functions find the documented sprite tile-id table readers,
 shadow-OAM writers, and OAM DMA trigger.
 """
@@ -14,7 +14,7 @@ import pytest
 from gbox import smb1_analysis
 from gbox.smb1_inventory import OFFSETS, build_inventory, cpu_addr, parse_header
 
-ROM_PATH = pathlib.Path.home() / "gbox-cache" / "49b6a2f65aca26a2" / "rom" / "Super Mario Bros. (World).nes"
+ROM_PATH = pathlib.Path.home() / "gBox_alt/gbox-cache" / "49b6a2f65aca26a2" / "rom" / "Super Mario Bros. (World).nes"
 SOURCE_SHA256 = "fb16c56ad6e0f2db925b09468f477de911ac8c52db0ea62a8553a72df2851883"
 
 

@@ -17,7 +17,7 @@ import pytest
 
 from gbox import sk_sprites as sk
 
-OWNED = Path(os.environ.get("GBOX_SK_ZIP", Path.home() / "gbox-cache/668e74c15d61a9a7/source.zip"))
+OWNED = Path(os.environ.get("GBOX_SK_ZIP", Path.home() / "gBox_alt/gbox-cache/668e74c15d61a9a7/source.zip"))
 OWNED_SHA = "777881572e72f50c9868335bddafbdcc140c8772699b266cbcee7f4c3e68b26b"
 
 

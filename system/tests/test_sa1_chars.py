@@ -19,7 +19,7 @@ GID = "1a3f4cd416db9ffd"
 def _gdi() -> Path | None:
     cands = [os.environ.get("GBOX_SA1_GDI"), Path.home() / f"gbox-cache/dc/{GID}/disc.gdi",
              f"//10.89.1.246/ehm_eckx/samples/gbox-cache/dc/{GID}/disc.gdi",
-             f"//10.89.1.246/ehm_eckx/gbox-cache/dc/{GID}/disc.gdi"]
+             f"//10.89.1.246/ehm_eckx/gBox_alt/gbox-cache/dc/{GID}/disc.gdi"]
     for c in cands:
         try:
             if c and Path(c).is_file():

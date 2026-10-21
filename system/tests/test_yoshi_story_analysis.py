@@ -7,7 +7,7 @@ import pytest
 
 from gbox import yoshi_story_analysis as ya
 
-ROM = Path(os.environ.get("GBOX_YS_ROM", Path.home() / "gbox-cache/14da9d54679e0100/rom.z64"))
+ROM = Path(os.environ.get("GBOX_YS_ROM", Path.home() / "gBox_alt/gbox-cache/14da9d54679e0100/rom.z64"))
 
 
 def test_gbi1_vtx_decodes_frame_prologue_load():

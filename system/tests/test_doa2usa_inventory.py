@@ -1,7 +1,7 @@
 """Exact-build inventory checks for Dead or Alive 2 (USA) Dreamcast (5f08ad9a86ebcc9a).
 
 Needs the owned CHD unpacked to a .gdi; set GBOX_DOA2_USA_GDI to the disc.gdi path
-(the cached copy at ~/gbox-cache/dc/5f08ad9a86ebcc9a/disc.gdi on the Spark).
+(the cached copy at ~/gBox_alt/gbox-cache/dc/5f08ad9a86ebcc9a/disc.gdi on the Spark).
 Skipped when the disc is absent. Never modifies the disc or the CHD.
 """
 from pathlib import Path
@@ -13,7 +13,7 @@ from gbox.doa2usa_inventory import (FIRST_READ_SHA256, GAME_ID, build, families)
 import os
 
 GDI = os.environ.get("GBOX_DOA2_USA_GDI",
-                     "/home/ehm_eckx/gbox-cache/dc/5f08ad9a86ebcc9a/disc.gdi")
+                     "/home/ehm_eckx/gBox_alt/gbox-cache/dc/5f08ad9a86ebcc9a/disc.gdi")
 
 pytestmark = pytest.mark.skipif(
     not Path(GDI).exists(),

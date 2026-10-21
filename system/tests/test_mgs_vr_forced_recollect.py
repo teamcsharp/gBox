@@ -19,7 +19,7 @@ import pytest
 
 from gbox import characters as C
 
-LIB_GLB = Path(os.environ.get("GBOX_CHARACTERS", Path.home() / "gbox-cache" / "characters")) / "mgs_vr_snake" / "mgs_vr_snake.glb"
+LIB_GLB = Path(os.environ.get("GBOX_CHARACTERS", Path.home() / "gBox_alt/gbox-cache" / "characters")) / "mgs_vr_snake" / "mgs_vr_snake.glb"
 GLB_SHA = "d92d171ddeee7a1eddf82e27976caab62ba3a5183c1654007d706d232ac2fa89"
 GAME = {"game_id": "afd2fc507bb69843", "title": "Metal Gear Solid - VR Missions", "platform": "psx"}
 WORKERS = [

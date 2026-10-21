@@ -19,7 +19,7 @@ import pytest
 
 import gbox.crazy_taxi as ct
 
-ISO_PATH = Path("/home/ehm_eckx/gbox-cache/modbase/bc02bb68790ce2e7/Crazy Taxi (USA).iso")
+ISO_PATH = Path("/home/ehm_eckx/gBox_alt/gbox-cache/modbase/bc02bb68790ce2e7/Crazy Taxi (USA).iso")
 BANK_ENV = "GBOX_CT_BANK"
 
 EXPECTED_SHAPES = 1586

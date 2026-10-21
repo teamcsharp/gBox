@@ -8,8 +8,8 @@ import pytest
 from gbox import sd2_inventory as S
 from gbox import yukes_sd as Y
 
-BASE = Path.home() / "gbox-cache/modbase/276334ad218ffb46/WWF SmackDown! 2 - Know Your Role (USA).bin"
-CHD = Path.home() / "gbox-cache/276334ad218ffb46/source.chd"
+BASE = Path.home() / "gBox_alt/gbox-cache/modbase/276334ad218ffb46/WWF SmackDown! 2 - Know Your Role (USA).bin"
+CHD = Path.home() / "gBox_alt/gbox-cache/276334ad218ffb46/source.chd"
 
 
 def _dpac(tag: bytes, words: bytes, n: int, bodies: list[bytes], flat: bool) -> bytes:

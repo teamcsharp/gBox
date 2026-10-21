@@ -102,7 +102,7 @@ game's own layout (fighter table, nullchar stub, blobs with frame bitmaps, sampl
 * export → donor, and the WRITERS / DEDICATED / CharIn registration.
 
 The other 6 tests use the owned ROM and skip without it. They look in `GBOX_CLAYFIGHTER_ROM`,
-`~/gbox-cache/f87ec3e2f6b266a1/rom.z64` and `~/gbox-cache/n64-rom/*.z64`, matching the sha1. They cover the
+`~/gBox_alt/gbox-cache/f87ec3e2f6b266a1/rom.z64` and `~/gBox_alt/gbox-cache/n64-rom/*.z64`, matching the sha1. They cover the
 fighter table and the CRC pin, exact decoding for 3 fighters, byte-identical re-encoding, and a Frosty ← Taffy swap
 that is decoded back with its CRC checked.
 

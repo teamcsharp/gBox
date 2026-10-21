@@ -202,7 +202,7 @@ async function extractArea() {
   const area = prompt("PSO area to extract (e.g. FOREST01, FOREST02, CAVE01, MACHINE01, ANCIENT01, CITY00):", "FOREST02"); if (!area) return;
   msg(`⏳ extracting ${area} on the Spark…`);
   try {
-    let j = await api("/api/jobs", { tool: "extract_pso_area", input: { disc: "/home/ehm_eckx/gbox-cache/dc/psov2.gdi", area }, require_os: "linux" });
+    let j = await api("/api/jobs", { tool: "extract_pso_area", input: { disc: "/home/ehm_eckx/gBox_alt/gbox-cache/dc/psov2.gdi", area }, require_os: "linux" });
     while (["queued", "running"].includes(j.state)) { await new Promise(z => setTimeout(z, 1500)); j = await api(`/api/jobs/${j.id}`); }
     if (j.state !== "succeeded") throw new Error(j.error || j.state);
     await snapshot(); q("#xt-area").value = `pso_dc_${area.toLowerCase()}`; loadArea(q("#xt-area").value);

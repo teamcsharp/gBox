@@ -8,7 +8,7 @@ import pytest
 from gbox import sa1_analysis as A
 from gbox.sa1_inventory import KEY, Exe
 
-GDI = Path(os.environ.get("GBOX_SA1_GDI", Path.home() / "gbox-cache/dc/1a3f4cd416db9ffd/disc.gdi"))
+GDI = Path(os.environ.get("GBOX_SA1_GDI", Path.home() / "gBox_alt/gbox-cache/dc/1a3f4cd416db9ffd/disc.gdi"))
 EXE_SHA = "45bc5d3c25dcfe2cc2c5701311d46783f33e4daa44a951cd9896724d66f0367a"
 
 

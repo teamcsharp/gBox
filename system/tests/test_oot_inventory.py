@@ -6,7 +6,7 @@ import pytest
 
 from gbox import n64_rom, oot_inventory as OI, oot_swap
 
-OWNED = Path.home() / "gbox-cache/1aa2e4bb5797493f/source.zip"
+OWNED = Path.home() / "gBox_alt/gbox-cache/1aa2e4bb5797493f/source.zip"
 
 
 def _object_with_tail_skeleton() -> bytes:

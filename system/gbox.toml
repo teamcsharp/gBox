@@ -7,7 +7,7 @@ api_port = 8765
 public_url = "http://10.89.1.246:8765"
 cache_limit_gb = 200
 stage_min_mb = 32                 # disc images above this are copied to the node's local cache before launch
-cache_dirs = { linux = "/home/ehm_eckx/gbox-cache", windows = "D:/gBox/cache" }   # fast local disk per node (LRU, bounded; originals never modified); the Spark: the NVMe hot tier
+cache_dirs = { linux = "/home/ehm_eckx/gBox_alt/gbox-cache", windows = "D:/gBox/cache" }   # fast local disk per node (LRU, bounded; originals never modified); the Spark: the NVMe hot tier
 cache_limits_gb = { linux = 150, windows = 250 }   # ceiling for staged library copies on that disk (LRU eviction; never mods, bases, libraries or cold data)
 # Two-tier cache (docs/cache-tiers.md): the Spark keeps at most hot_cache_limit_gb on the NVMe (character library and
 # indexes pinned there); least recently used games move to the Elements HDD only while the Spark is idle, leaving a

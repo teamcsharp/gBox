@@ -4,7 +4,11 @@ A PC opted in here that has been idle (no operator input for `idle_minutes`, CPU
 background testing) launches one of the games the operator has played most (gameplay memory: enough recorded pad
 input), agent-owned, and starts autoplay on it in screensaver mode: the operator's recorded run from boot (gbox.imitate
 replay), then their learned style for as long as the session lasts. Every `session_minutes` the PC moves on to another
-game. Moving the mouse or touching the pad on that PC ends it at once (the worker posts /yield), like a screensaver.
+game. Moving the mouse or touching the pad on that PC hands the game to the operator (the worker posts /yield): it
+stays up and plays on until they press Stop (operator 2026-10-20: "if I take control of the application while the screen
+saver is in place and it's auto playing a game, let it continue playing until I click the stop button"). A mouse move
+leaves the autoplay going; a pad touch means they play. The PC's run ends there and the session becomes theirs (label
+owner "you"), so nothing automated closes, resets or rotates it.
 
 The control plane runs the schedule (tick every 30 s); each PC's progress is a small state machine stored per worker:
   launching -> starting (session up, autoplay asked) -> playing -> (stop_game) -> idle again.
@@ -271,6 +275,10 @@ class Screensaver:
         live = any(s.get("session_id") == sid for s in running)
         if not live:
             return self._finish(w, run, now, run.get("yield") or "the game ended")
+        if run.get("handover"):                         # the operator came back: theirs now, it plays on until Stop
+            self.store.put("slabel", sid, {"session_id": sid, "owner": "you", "ts": now,
+                                           "label": f"{run['title']}: autoplay, handed over by the screensaver"})
+            return self._finish(w, run, now, f"handed to the operator ({run['handover']}): plays on until Stop")
         if run.get("yield") or not cfg["enabled"] or not opted_in(self.store, w, cfg):
             return self._stop(w, run, now, run.get("yield") or "screensaver turned off")
         if phase == "starting" and now - run.get("up", now) >= START_GRACE:
@@ -318,11 +326,12 @@ class Screensaver:
         return next((r for r in self.store.all(STATE) if r.get("session_id") == sid), None)
 
     def yield_to_operator(self, sid: str, reason: str) -> bool:
+        """The operator is back at this PC (mouse / pad): the game is handed to them and keeps playing - never closed."""
         with self.lock:
             run = self._by_session(sid)
             if not run:
                 return False
-            self.store.put(STATE, run["worker"], run | {"yield": f"operator came back ({reason})"})
+            self.store.put(STATE, run["worker"], run | {"handover": reason})
         self.tick()
         return True
 

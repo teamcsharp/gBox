@@ -1,7 +1,7 @@
 """Focused tests for gbox.pj_analysis (Project Justice USA Dreamcast analysis).
 
 Real-disc tests are gated on the staged cache at
-~/gbox-cache/dc/6334be1925fbe016 and skip otherwise.
+~/gBox_alt/gbox-cache/dc/6334be1925fbe016 and skip otherwise.
 """
 
 import struct
@@ -24,7 +24,7 @@ from gbox.pj_analysis import (
 from gbox.pj_inventory import FIRST_READ_SHA256, read_disc_file
 from gbox.jgr import afs_entries
 
-CACHE = Path.home() / "gbox-cache/dc/6334be1925fbe016"
+CACHE = Path.home() / "gBox_alt/gbox-cache/dc/6334be1925fbe016"
 
 
 def _build_exe(records):

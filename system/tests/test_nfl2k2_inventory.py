@@ -8,7 +8,7 @@ import pytest
 
 from gbox import nfl2k2_inventory as nfl
 
-CACHE = Path.home() / "gbox-cache" / "dc" / nfl.GAME_ID
+CACHE = Path.home() / "gBox_alt/gbox-cache" / "dc" / nfl.GAME_ID
 HAVE_DISC = (CACHE / "disc.gdi").exists()
 CHD_SHA256 = "7d4b3c49bbcc4e2be49f5f4a1476a9ce7929806aba69e618d9b27839cd7fc7ee"
 
