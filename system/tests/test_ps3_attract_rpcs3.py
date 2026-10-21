@@ -71,8 +71,11 @@ def test_ps3_txt_stub_routes_to_rpcs3_not_rocketlauncher(tmp_path, monkeypatch):
     assert isinstance(ad, adapters.RPCS3Adapter) and {"save_state", "load_state"} <= ad.supported
     other = entry("collections/Sony PlayStation 3/roms/Some Game.7z")          # RocketLauncher's archive layout stays
     assert isinstance(adapters.for_game(other.model_dump(), cfg), adapters.RocketLauncherAdapter)
-    monkeypatch.setattr(adapters, "HOST_OS", "linux")
-    with pytest.raises(adapters.ToolUnavailable, match="RPCS3 on a Windows node"):
+    monkeypatch.setattr(adapters, "HOST_OS", "linux")                          # the Spark: RPCS3's AppImage on Xvfb
+    ad = adapters.for_game(entry().model_dump(), cfg)
+    assert isinstance(ad, adapters.RPCS3LinuxAdapter) and {"send_input", "stream_session", "read_memory"} <= ad.supported
+    monkeypatch.setattr(adapters, "HOST_OS", "darwin")
+    with pytest.raises(adapters.ToolUnavailable, match="RPCS3 on a Windows or Linux node"):
         adapters.for_game(entry().model_dump(), cfg)
 
 
