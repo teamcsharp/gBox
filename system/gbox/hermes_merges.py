@@ -217,6 +217,11 @@ class Branches:
                 out.setdefault(pull['headRefName'], []).append(pull)
         return out
 
+    def refused(self, sha):
+        """Why the branch's changes since main must never be published (gbox/hermes_payload_guard.py), or []."""
+        from .hermes_payload_guard import changed_files, commit_inspector, refusals
+        return refusals(changed_files(self.root, 'origin/main', sha), commit_inspector(self.root, sha))
+
     def open_pull(self, branch, record, pending):
         """Open a draft PR for stranded commits; return {number, url}."""
         title = f"Recover unmerged Hermes work for request #{record.get('number')}"
@@ -331,6 +336,19 @@ def reconcile_branches(api, *, branches=None, busy=_busy_requests, now=None, for
         elif state.startswith('stranded:'):
             if owned is None or rid in owned or now - detail['pushed'] < STRANDED_GRACE:
                 continue        # decide again next pass; nothing is recorded
+            refused = branches.refused(detail['sha'])
+            if refused:
+                if reported.get(rid) == f"blocked:{detail['sha']}":
+                    continue                               # reported once per branch head
+                text = (f"Branch {record['branch']} has commits that are not on main, but they carry game data or "
+                        "binaries, which are never published to the public repository, so no PR was opened. The "
+                        "operator decides what happens to the branch:\n" + '\n'.join(f'- {r}' for r in refused[:10]))
+                try:
+                    api(f'/api/requests/{rid}/messages', {'author': 'agent', 'text': text})
+                except Exception as error:
+                    errors.append(f'{rid}: {type(error).__name__}')
+                reported[rid] = f"blocked:{detail['sha']}"
+                continue
             try:
                 pull = branches.open_pull(record['branch'], record, detail['pending'])
             except Exception as error:
