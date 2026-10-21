@@ -23,6 +23,13 @@ ROOT = Path(__file__).resolve().parents[2] / "gbox-data" / "mercs" / "lessons"
 _LOCK = threading.Lock()
 
 
+def configure(data_dir) -> Path:
+    """Put the lessons under a deployment's data dir (the server's config.data_dir): <data_dir>/mercs/lessons."""
+    global ROOT
+    ROOT = Path(data_dir) / "mercs" / "lessons"
+    return ROOT
+
+
 def _safe(map_id: str) -> str:
     s = "".join(c for c in str(map_id) if c.isalnum() or c in "-_")
     if not s:

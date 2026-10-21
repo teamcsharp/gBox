@@ -192,7 +192,7 @@ def read(prof: V.Profile, reader, driver=None, now: float = 0.0, values=None) ->
         prompt = Prompt(kind=pk, button=button, tags=sig)
     screen = top("screen")
     if prof.field("screen") == "driver" and driver is not None:
-        screen = driver.screen(vals, reader)
+        screen = driver.screen(reader, None)
     elif screen is not None:
         sdef = fields.get(prof.field("screen"))
         screen = sdef.label(vals.raw.get(prof.field("screen"))) if sdef else str(screen)
