@@ -126,6 +126,23 @@ def test_failed_launch_is_logged_and_the_pc_frees_up():
     assert s.get(S.STATE, "i9-NUC") is None
 
 
+def test_status_says_why_each_pc_starts_no_game_yet():
+    # the Sessions view's "Nothing is playing; the screensaver starts on <PC> after N min idle" (session-follow.js)
+    s, w, saver, calls, tick = rig()
+    w["idle_seconds"] = 4 * 60                                # the operator touched this PC 4 minutes ago
+    [pc] = saver.status()["pcs"]
+    assert (pc["name"], pc["online"], pc["demo"]) == ("i9-NUC", True, False)
+    assert "10 minutes without operator input" in pc["reason"] and pc["starts_in_s"] == 6 * 60
+    w["idle_seconds"] = 3600
+    tick()                                                    # idle long enough: a demo starts there
+    s.put(S.STATE, "i9-NUC", s.get(S.STATE, "i9-NUC") | {"title": "SoulCalibur"})
+    [pc] = saver.status()["pcs"]
+    assert pc["demo"] and pc["reason"] == "playing SoulCalibur" and pc["starts_in_s"] == 0
+    s.put("setting", S.SETTING, S.settings(s) | {"enabled": False})
+    s.delete(S.STATE, "i9-NUC")
+    assert saver.status()["pcs"][0]["reason"] == "the autoplay screensaver is off"
+
+
 def test_turning_it_off_stops_running_games_and_starts_none():
     s, w, saver, calls, tick = rig()
     tick()
