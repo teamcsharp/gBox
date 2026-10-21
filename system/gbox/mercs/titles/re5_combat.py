@@ -81,6 +81,8 @@ FIRE_TIMER_FPS, FIRE_TIMER_ORIG = 0x0169E098, 60.0
 WEAPON_TABLE, WEAPON_STRIDE, WEAPON_INTERVAL = 0x01817530, 0x140, 0x90
 AIM_TURN_RAD_S = 0.52                  # the right stick while aiming: ~30 deg/s (the mods agent scales it)
 FINE = math.radians(4)                 # closer than this: the stick in pulses (a tick on, a tick off)
+STEER_RAY_CM = 50.0                   # near-muzzle endpoints amplify animation/read skew into large angular errors
+STEER_REACQUIRE_S, STEER_STEP_S = 0.4, 0.25  # conservative trial bounds, not decoded engine constants
 PITCH_WRITE = False                    # the pitch straight into +0x1AA0 (else the stick). Off: the game recomputes
                                        # +0x1AA0 (and +0x31D4, +0x2F3C, the yaw +0x14F4, the quaternion) every frame
                                        # from its own controller - a written value lasted one frame (probe 2026-10-21)
@@ -149,6 +151,27 @@ def ray_error(origin, dot, target) -> tuple[float, float]:
     return wrap(want_yaw - have_yaw), want_pitch - have_pitch
 
 
+def valid_ray(origin, dot):
+    """Keep endpoint evidence separate from whether its short baseline can guide the stick."""
+    try:
+        origin, dot = tuple(origin), tuple(dot)
+        if (len(origin) == len(dot) == 3 and any(origin)
+                and all(math.isfinite(v) for v in (*origin, *dot)) and math.dist(origin, dot) >= 5.0):
+            return origin, dot
+    except (TypeError, ValueError, OverflowError):
+        pass
+    return None
+
+
+def steering_ray(ray, target):
+    """A defensive direction baseline, reduced for genuinely close targets; not a visibility test.
+
+    Run9 contains 6 cm rays reversing elevation by 139 degrees while the player's reported pitch barely changes.
+    Endpoints can still prove an overlap/obstruction, but a tiny muzzle-to-dot vector must not drive full stick.
+    """
+    return math.dist(*ray) >= min(STEER_RAY_CM, math.dist(ray[0], target) * 0.5)
+
+
 class Laser:
     """uLaserSight in sUnit's FxCore line: found once, checked by its vtable every read, looked for again when gone."""
 
@@ -187,9 +210,7 @@ class Laser:
             return None
         o = struct.unpack(">3f", self.m.rd(u + LASER_ORIGIN, 12))
         d = struct.unpack(">3f", self.m.rd(u + LASER_DOT, 12))
-        if not any(o) or math.dist(o, d) < 5.0:
-            return None
-        return o, d
+        return valid_ray(o, d)
 
 
 class Writer:
@@ -313,6 +334,8 @@ class Combat:
         self.rapid_fire = False
         self.step_until = 0.0
         self.step_side = "lleft"
+        self.near_ray_since = self.near_ray_key = None
+        self.near_ray_move_until = 0.0
         self.triggers: dict = {}
         self.act_seen = None                  # (vtable, frames) of the action object last tick
         self.yaw_pulse = self.pitch_pulse = 0
@@ -442,8 +465,7 @@ class Combat:
         sl = snap.get("laser")
         if not sl or not sl.get("from") or not sl.get("at") or not any(sl["from"]):
             return None
-        origin, dot = tuple(sl["from"]), tuple(sl["at"])
-        return (origin, dot) if math.dist(origin, dot) >= 5.0 else None
+        return valid_ray(sl["from"], sl["at"])
 
     def _ready(self, p):
         action = self.act_seen
@@ -537,14 +559,17 @@ class Combat:
 
     def seek_target(self, snap, p, enemies, now):
         if any(self.blocked_until.get(e.get("ptr", e.get("slot")), 0) > now for e in enemies):
-            if now >= self.step_until:
-                self.step_until = now + 0.25
-                self.step_side = "lright" if self.step_side == "lleft" else "lleft"
-            self.stats["combat"] = "reposition: measured obstruction"
-            return {"hold": {self.step_side}}    # release aim so RE5 can move; never fire through cover
+            return self._reposition(now, "reposition: measured obstruction")
         target = min(enemies, key=lambda e: math.dist(p["pos"], e["pos"]))
         self.stats["combat"] = "turning toward a front candidate"
         return {"hold": self._face(p, target["pos"])}
+
+    def _reposition(self, now, reason):
+        if now >= self.step_until:
+            self.step_until = now + STEER_STEP_S
+            self.step_side = "lright" if self.step_side == "lleft" else "lleft"
+        self.stats["combat"] = reason
+        return {"hold": {self.step_side}}       # lower the gun so the game can move
 
     def _rapid_fire(self, wid, now):
         if now - self.rapid_checked < 1.0 and wid == getattr(self, "rapid_weapon", None):
@@ -564,6 +589,8 @@ class Combat:
         if (not p or (p.get("hp") or 0) <= 0 or not tgt or (tgt.get("hp") or 0) <= 0
                 or snap.get("recovery_active")
                 or (snap.get("prompt") and not self.optional_prompt_blocked(snap))):
+            self.near_ray_since = self.near_ray_key = None
+            self.near_ray_move_until = 0.0
             self.stats["combat"] = "waiting: no living target or priority prompt/recovery"
             return {"hold": set()}
         if not observed:
@@ -613,18 +640,37 @@ class Combat:
                 self.stats["reloads"] += 1
                 return {"hold": {"l1", "cross"}}
             return {"hold": {"l1"}}
+        steer = lz is not None and steering_ray(lz, aim_at)
+        feedback_key = (p.get("ptr"), key)
+        if feedback_key != self.near_ray_key or (self._ready(p) and (steer or where is not None)):
+            self.near_ray_since, self.near_ray_key = None, feedback_key
+            self.near_ray_move_until = 0.0
+        if now < self.near_ray_move_until:
+            return self._reposition(now, "reacquire: near-origin ray")
+        if self.near_ray_move_until:
+            self.near_ray_move_until = 0.0
+            self.near_ray_since = None
         if not self._ready(p) or lz is None:
             # Queue aim/fire through hit recovery too; waiting for the pose byte to clear can perpetuate stunlock.
             # The game decides when the gun can fire, and only its RAM shot events enter the counters.
             self.dot_head_since = self.dot_body_since = None
             self.stats["combat"] = (f"readying: action={p.get('action')} laser={'yes' if lz else 'no'} "
                                     f"{'tracking FIRE' if tracking_fire else policy}")
+            self.stats["aim_feedback"] = "waiting for ready ray"
             return {"hold": {"l1"} | ({"r1"} if tracking_fire else set()) | self._face(p, foot)}
+        if not steer and where is None:
+            if self.near_ray_since is None:
+                self.near_ray_since = now
+            elif now - self.near_ray_since >= STEER_REACQUIRE_S:
+                self.near_ray_move_until = now + STEER_STEP_S
+                return self._reposition(now, "reacquire: near-origin ray")
         # steer the dot onto the zone (his head, or his thighs for the stun)
         yaw_err, pitch_err = ray_error(lz[0], lz[1], aim_at)
         keys = {"l1"}
-        keys |= self._yaw(yaw_err)
-        keys |= self._pitch(pl, p, pitch_err, now)
+        self.stats["aim_feedback"] = "ray direction" if steer else "near-origin ray; correction paused"
+        if steer:
+            keys |= self._yaw(yaw_err)
+            keys |= self._pitch(pl, p, pitch_err, now)
         # Direct fire continues while the stick corrects aim. Splash/unknown policies remain separate.
         firing = tracking_fire or (where in ("head", "body", "leg") and loaded and permitted)
         trig = self.triggers.get(wid)
