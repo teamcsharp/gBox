@@ -26,7 +26,7 @@ import struct
 import time
 
 from ..driver import Driver
-from . import re5_nav
+from . import re5_combat, re5_nav
 
 S_PLAYER, S_ENEMY, S_MAIN = 0x017FEB34, 0x017FDB60, 0x0191CEE4
 S_ACTION, S_ITEM, S_UNIT = 0x017B7174, 0x017FE574, 0x0191D700
@@ -382,9 +382,11 @@ class Bot:
     inside AIM_TOL / PITCH_TOL; back off one that is too close; walk to the next one when nobody is in range.
     Reads only; presses only (gBox pad names)."""
 
-    def __init__(self, m=None, clock=time.time, stats: dict | None = None):
+    def __init__(self, m=None, clock=time.time, stats: dict | None = None, learn_dir=None, lessons=None):
         self.m, self.clock = m, clock
         self.stats = stats if stats is not None else {}
+        # the fight itself (the aim on the laser dot, the trigger, the shots scored, the finishers): the combat layer
+        self.combat = re5_combat.Combat(m, self.stats, clock=clock, learn_dir=learn_dir, lessons=lessons)             if m is not None and re5_combat.ENABLED else None
         for k in ("shots_s", "hits", "kills_seen", "max_combo", "turns", "backoffs", "stuck"):
             self.stats.setdefault(k, 0)
         self.target = None
@@ -409,7 +411,8 @@ class Bot:
         return True
 
     def save(self):
-        pass
+        if self.combat is not None:
+            self.combat.save()
 
     def tick(self, snap: dict) -> dict:
         now = self.clock()
@@ -441,6 +444,10 @@ class Bot:
             self.aiming_since = None
             return {"hold": set()}
         px, py, pz = p["pos"]
+        if tgt is None and self.combat is not None:          # a Majini stunned by a headshot: in for the finisher
+            st = self.combat.stunned_target(live, p, now)
+            if st is not None:
+                return self.combat.run_to(p, st)
         tgt = tgt or min(live, key=lambda e: self._cost(p, e))
         aim_h = tgt.get("aim_h", HEAD_H)
         tx, ty, tz = tgt["pos"]
@@ -459,6 +466,9 @@ class Bot:
             self.aiming_since = None
             self.stats["backoffs"] += 1
             return {"hold": {"ldown"} | self._turn(wrap(want - p["rot"]), aiming=False)}
+        if self.combat is not None and tgt.get("kind") not in ("time", "combo"):
+            self.target = tgt["slot"]
+            return self.combat.tick(snap, p, tgt, now)      # the laser-closed aim and the trigger (re5_combat)
         if not aiming:
             err = wrap(want - p["rot"])
             if abs(err) > TURN_TOL:                         # turn round first (fast, not aiming)
@@ -670,7 +680,7 @@ class RE5PS3(Driver):
         return where
 
     def brain(self, m, stats: dict, clock, learn_dir=None, nav=None):
-        return Bot(m, clock=clock, stats=stats)
+        return Bot(m, clock=clock, stats=stats, learn_dir=learn_dir)
 
     def prompt_source(self, m, stats: dict):
         self._stats = stats
