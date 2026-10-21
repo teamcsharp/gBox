@@ -22,6 +22,7 @@ from .world import Attack, World
 
 HISTORY = 90                   # frames of worlds kept: the attacker's state before a hit
 MIN_GAP = 2                    # frames between the end of one press and the next
+OFFENSE = "offense"            # the book's key for the title's attacks (learned by what they dealt)
 
 
 class Engine:
@@ -36,6 +37,7 @@ class Engine:
         self.pending: list[dict] = []  # plans waiting for their judgement
         self.move_start = {}          # "p1" / "p2" -> (move id, frame it began, its move frame then)
         self.free_at = None           # no new press before this frame
+        self.attack_at = None         # the frame of the last attack the engine started
         self.lat_input: deque[int] = deque(maxlen=200)
         self.lat_reaction: deque[int] = deque(maxlen=200)
         for k in ("attacks", "answers", "answered_ok", "parried", "hits_taken", "damage_taken", "damage_dealt",
@@ -121,6 +123,9 @@ class Engine:
                 self.stats["parried"] += label in ("parried", "held")
             elif p["answer"].kind == "punish":
                 self.stats["punish_dealt"] = self.stats.get("punish_dealt", 0) + max(0.0, reward)
+            elif p["answer"].kind == "attack":
+                self.book.record(OFFENSE, None, p["answer"].name, reward, met)
+                self.stats["attack_dealt"] = self.stats.get("attack_dealt", 0) + max(0.0, reward)
             self._log(p["answer"].kind, w.frame, answer=p["answer"].name, key=t and t["key"], reward=reward,
                       met=met, outcome=label, sent=p["press_at"], seen=p.get("seen"),
                       input_f=None if p.get("seen") is None else p["seen"] - p["press_at"],
@@ -147,13 +152,28 @@ class Engine:
     # -- deciding --
     def _start(self, answer: Answer, w: World, threat, press_at: int | None = None):
         press_at = w.frame if press_at is None else press_at
-        plan = {"answer": answer, "press_at": press_at, "until": press_at + answer.frames,
-                "judge_at": press_at + max(answer.judge, answer.frames), "before": w, "threat": threat, "seen": None}
+        plan = {"answer": answer, "press_at": press_at, "until": press_at + answer.length,
+                "judge_at": press_at + max(answer.judge, answer.length), "before": w, "threat": threat, "seen": None}
         self.active = plan
         self.pending.append(plan)
         if threat is not None:
             threat["answered"] = True
-        self.stats["answers" if answer.kind == "answer" else "punishes"] += 1
+        self.stats[{"answer": "answers", "punish": "punishes"}.get(answer.kind, "attacks_made")] = \
+            self.stats.get({"answer": "answers", "punish": "punishes"}.get(answer.kind, "attacks_made"), 0) + 1
+
+    def _offense(self, w: World):
+        """Nothing to answer and free: the title's attack (pressure, a throw), at most every title.attack_gap frames."""
+        if self.threat is not None or w.frame is None or not w.p1.can_act():
+            return
+        if self.free_at is not None and w.frame < self.free_at:
+            return
+        if self.attack_at is not None and w.frame - self.attack_at < getattr(self.title, "attack_gap", 60):
+            return
+        options = self.title.attacks(w) if hasattr(self.title, "attacks") else []
+        name = self.book.choose(OFFENSE, None, [a.name for a in options])
+        if name:
+            self.attack_at = w.frame
+            self._start(next(a for a in options if a.name == name), w, None)
 
     def _answer(self, w: World):
         t = self.threat
@@ -197,7 +217,9 @@ class Engine:
             p = None
         if p is None:
             self._answer(w)
+            if self.active is None:
+                self._offense(w)
             p = self.active
         if p and w.frame is not None and p["press_at"] <= w.frame < p["until"]:
-            return p["answer"].ordered()
+            return p["answer"].at(w.frame - p["press_at"])
         return ()

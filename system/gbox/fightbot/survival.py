@@ -26,10 +26,11 @@ def play(t, ad, send, stopped, style=None, clock=time.time, sleep=time.sleep, st
     """stats (optional, filled live for the watch panel): fights_s, jumps, routes, saves, safety, hung, plus the
     current p1/p2 health and whether a fight is on."""
     lock = threading.Lock()                       # the reflex thread shares the emulator's memory and input link
+    base_read = t.reader(ad) if callable(getattr(t, "reader", None)) else ad.read_memory   # DOA3: the fast channel
 
     def rd(a, n):
         with lock:
-            return bytes(ad.read_memory(a, n))
+            return bytes(base_read(a, n))
 
     raw_send = send                                # send_locked must reach the emulator, not itself (send is rebound below)
 

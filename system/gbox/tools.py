@@ -2642,7 +2642,7 @@ def _autoplay_hacks(sid: str, g: dict) -> list[str]:
     return held
 
 
-PLAYBOOKS = ("re4_merc_bot", "doa2_bot", "ge007_bots")   # game-specific autoplay bots: matches(ad, g), setup(ad), play(ad, send, stopped)
+PLAYBOOKS = ("re4_merc_bot", "doa2_bot", "doa3_bot", "ge007_bots")   # game-specific autoplay bots: matches(ad, g), setup(ad), play(ad, send, stopped)
 # playbook -> the module that reads its game's button prompts from RAM (for_adapter(ad, stats) -> a prompt source):
 # play(..., ram_prompt=) asks it before the screen watcher
 RAM_PROMPTS = {"re4_merc_bot": "re4_ram_prompts"}

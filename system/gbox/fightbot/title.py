@@ -11,19 +11,36 @@ DIRS = ("up", "down", "left", "right")
 
 @dataclass(frozen=True)
 class Answer:
-    """One way to answer an attack, or one punish: keys held together for `frames`, pressed `lead` frames before the
-    attack's first active frame (the answer's own startup), judged `judge` frames after the press."""
+    """One way to answer an attack, or one punish / attack: keys held together for `frames` (or `seq`, a string of
+    (keys, frames) steps), pressed `lead` frames before the attack's first active frame (the answer's own startup),
+    judged `judge` frames after the press at the latest."""
     name: str
     keys: tuple
     frames: int = 6
     lead: int = 0
     judge: int = 48
     kind: str = "answer"                          # answer / punish / attack
+    seq: tuple = ()                               # ((keys, frames), ...): a string (P, P, K) instead of one chord
+
+    @property
+    def length(self) -> int:
+        return sum(n for _, n in self.seq) if self.seq else self.frames
+
+    def at(self, k: int) -> tuple:
+        """The keys held k frames into the answer, directions first: a button that lands a few ms before its
+        direction reads as another move (SC2: G before 4 is a guard, not a Guard Impact)."""
+        keys = self.keys
+        if self.seq:
+            keys = ()
+            for step, n in self.seq:
+                if k < n:
+                    keys = step
+                    break
+                k -= n
+        return tuple(sorted(keys, key=lambda x: (x not in DIRS, x)))
 
     def ordered(self) -> tuple:
-        """Directions before buttons: a button that lands a few ms before its direction reads as another move (SC2:
-        G before 4 is a guard, not a Guard Impact)."""
-        return tuple(sorted(self.keys, key=lambda k: (k not in DIRS, k)))
+        return self.at(0)
 
 
 class Title:
