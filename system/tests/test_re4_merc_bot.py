@@ -267,11 +267,12 @@ def test_between_rounds_it_never_presses_blind_and_counts_the_next_round():
     # the hooks in (2026-10-20); the menus from RAM are tests/test_re4_menus.py
     m = world([((500.0, 0.0, 0.0), True)], room=0x400, timer_s=9.8)
     m.put(PG + 0x20, "B", 2)                                           # pG+0x20 2: the Village still loading
-    now, sent, live, step = [0.0], [], {}, [0]
+    now, sent, live, step, screens = [0.0], [], {}, [0], {}
     steps = iter(range(60))
 
     def stopped():
         i = step[0] = next(steps, None)
+        screens[i] = live.get("screen")
         if i == 40:
             m.put(PG + 0x20, "B", 3)                                   # the room runs: the next round started
             m.put(B.MERC_TIMER, ">I", 120 * 30)
@@ -279,7 +280,7 @@ def test_between_rounds_it_never_presses_blind_and_counts_the_next_round():
     B.play(None, lambda rows: sent.append((step[0], rows)), stopped, sleep=lambda s: now.__setitem__(0, now[0] + s),
            m=m, stats=live, clock=lambda: now[0])
     assert not [rows for i, rows in sent if i is not None and i < 40]     # nothing pressed out of the round
-    assert live["menu_presses"] == 0 and live["screen"] == "loading"
+    assert live["menu_presses"] == 0 and screens[39] == "loading" and live["screen"] == "playing"
     assert live["rounds"] == 1 and "timer" in live and "max_combo" in live    # live stats for the watch panel
 
 

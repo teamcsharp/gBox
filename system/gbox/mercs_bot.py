@@ -33,27 +33,29 @@ POLL_S = 0.25               # how often the menus are read out of a round
 
 class Navigator:
     """Closed loop over a menus module's step(): one press, then wait until RAM shows it took (the screen, its step or
-    the cursor changed) or RETRY_S passed. Menus need held presses (HOLD_S; the D-pad shorter: the repeat word would
-    step twice) and a moment between them. stats gets screen / cursor / menu_presses / menu_last / ram_progress (the
-    black watch trusts RAM: gbox.tools._black_watch)."""
-    HOLD_S, DIR_HOLD_S, RETRY_S, SETTLE_S = 0.3, 0.18, 1.2, 0.45
+    the cursor changed) or RETRY_S passed. A screen is pressed on only once RAM has shown it for STABLE_S: a moment
+    between two screens is never acted on (live 2026-10-20: a round's first frames read as its results, the clock not
+    set yet, and A went in). Menus need held presses (HOLD_S; the D-pad shorter: the repeat word would step twice) and
+    a moment between them. stats gets screen / cursor / menu_presses / menu_last / ram_progress (the black watch
+    trusts RAM: gbox.tools._black_watch)."""
+    HOLD_S, DIR_HOLD_S, RETRY_S, SETTLE_S, STABLE_S = 0.3, 0.18, 1.2, 0.45, 0.5
 
     def __init__(self, send, step, sleep=time.sleep, clock=time.time, stats: dict | None = None):
         self.send, self.step, self.sleep, self.clock = send, step, sleep, clock
         self.stats = stats if stats is not None else {}
         self.stats.setdefault("menu_presses", 0)
         self.stats.setdefault("ram_progress", 0)
-        self.last_key, self.last_at, self.last_sig = None, float("-inf"), None
+        self.last_key, self.last_at, self.last_sig, self.sig_at = None, float("-inf"), None, float("-inf")
 
     @staticmethod
     def sig(scr: dict):
         return (scr.get("where"), scr.get("title_step"), scr.get("title_sub"), scr.get("cursor"))
 
-    def observe(self, scr: dict) -> None:
+    def observe(self, scr: dict, now: float | None = None) -> None:
         sig = self.sig(scr)
         if sig != self.last_sig:
             self.stats["ram_progress"] = self.stats.get("ram_progress", 0) + 1
-            self.last_sig = sig
+            self.last_sig, self.sig_at = sig, self.clock() if now is None else now
             self.last_key = None                            # the last press took: the next one may go at once
         self.stats["screen"] = scr.get("where")
         if scr.get("cursor") is not None:
@@ -61,11 +63,13 @@ class Navigator:
 
     def tick(self, scr: dict) -> str | None:
         """Observe the screen, and press its step when the last press took (or RETRY_S passed). Returns the key."""
-        self.observe(scr)
-        key = self.step(scr)
         now = self.clock()
+        self.observe(scr, now)
+        key = self.step(scr)
         if key is None:
             return None
+        if now - self.sig_at < self.STABLE_S:
+            return None                                     # RAM has only just shown this screen: it may be passing
         if self.last_key is not None and now - self.last_at < self.RETRY_S:
             return None                                     # the last press has not shown in RAM yet
         if now - self.last_at < self.SETTLE_S:

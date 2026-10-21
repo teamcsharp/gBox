@@ -89,6 +89,8 @@ There is no `paused` yet: the pause menu is not read.
 **How presses are made** (`gbox.mercs_bot.Navigator`, shared by every title's menus):
 - One press at a time, held 0.3 s (0.18 s for the D-pad). The menus move on the repeat word, and a longer hold can
   step twice.
+- A screen is pressed on only once RAM has shown it for 0.5 s. A round's first frames run the room with the clock
+  not yet set, which reads as the results for a moment; one A went in there before this rule (live 2026-10-20).
 - The next press waits until RAM shows the last one took, or 1.2 s passed.
 - `stats["ram_progress"]` counts every screen or cursor change. The black watch trusts it.
 - Before a playbook starts, every pad key is released: a driver killed with a key down left the stick held, which
@@ -133,4 +135,8 @@ There is no `paused` yet: the pause menu is not read.
   - After the round it went back through the title task (the Mercenaries menu, Select Player, Select Stage) to the
     Village again.
   - Select Player's order comes from a real frame: RAM cursor 2 is Jack Krauser.
-  - Not yet seen live: two full rounds in a row, and the menu moment (a jump state needs the worker-side playbook).
+  - A re-run with this code (22:52 CST): the main menu to a Village round in 20 s, with no press during the stage
+    load. Leon died twice (the hooks, sent as re_mods jobs, waited in CPU admission and never went in). Each time the
+    stage reloaded and the round restarted at 120.0: three rounds entered in 2 min 06 s, no story, no wrong pick.
+  - Still to see live: a round that runs out its clock, the Results, and the menus to the next round; and the menu
+    moment. Both need the in-worker playbook after deployment, where the package goes in inside the autoplay job.

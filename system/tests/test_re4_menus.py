@@ -199,6 +199,8 @@ def test_the_navigator_waits_for_a_press_to_show_in_ram():
     sent, now = [], [0.0]
     nav = RM.Navigator(sent.append, sleep=lambda s: now.__setitem__(0, now[0] + s), clock=lambda: now[0])
     scr = {"where": "select_stage", "cursor": 2, "target": 0}
+    assert nav.tick(scr) is None                       # RAM has only just shown it: it may be a passing moment
+    now[0] += 0.5
     assert nav.tick(scr) == "dup"
     now[0] += 0.2
     assert nav.tick(scr) is None                       # the cursor has not moved yet: no second press
@@ -206,7 +208,20 @@ def test_the_navigator_waits_for_a_press_to_show_in_ram():
     assert nav.tick(scr) == "dup"                      # it never showed: pressed again after RETRY_S
     moved = dict(scr, cursor=0)
     now[0] += 0.5
+    assert nav.tick(moved) is None                     # it moved: the new cursor settles first
+    now[0] += 0.5
     assert nav.tick(moved) == "a" and nav.stats["ram_progress"] >= 2
+
+
+def test_a_moment_between_two_screens_is_never_pressed_on():
+    # live 2026-10-20: the Village's first frames ran the room (pG+0x20 3) with the clock still at 0, which reads as
+    # the results, and A went in at the start of the round
+    sent, now = [], [0.0]
+    nav = RM.Navigator(sent.append, sleep=lambda s: now.__setitem__(0, now[0] + s), clock=lambda: now[0])
+    for where in ("loading", "results", "playing"):
+        assert nav.tick({"where": where}) is None
+        now[0] += 0.25
+    assert sent == [] and nav.stats["ram_progress"] == 3
 
 
 def test_play_walks_from_the_title_to_a_round_picking_only_the_mercenaries():

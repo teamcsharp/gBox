@@ -853,6 +853,7 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
             continue
         if not was_in:
             bot.stats["rounds"] += 1
+            bot.stats["screen"] = "playing"            # the menus' last screen no longer shows on the watch panel
             bot.save()                                 # what the last round taught
             was_in = True
         out_since = None
