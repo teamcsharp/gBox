@@ -138,6 +138,21 @@ def test_frame_fallback_never_duplicates_pending_job_or_sends_controls(observer)
     assert len(o.store.all('job')) == 1
 
 
+def test_a_native_game_keeps_its_full_capture_although_its_stills_are_fresh(observer):
+    # #2858: a native game's session frames are small stills of its window for viewers elsewhere; what the observer
+    # studies stays the full get_frame capture, and an old still is not a stalled stream to wait for
+    o = observer
+    o.session |= {'detail': {'local_window': True, 'worker_name': 'JAYBUILTFINALE'}, 'last_frame_age': 1}
+    o.sample(o.session)
+    assert not any(path.endswith('/frame.jpg') for path, _ in o.calls)
+    job = o.store.all('job')[0]
+    assert job['tool'] == 'get_frame' and job['input'] == {'session_id': 'worker-launch'}
+    o.session['last_frame_age'] = 42
+    o.sample(o.session)
+    assert 'stalled' not in (o.store.get('session_observer', 'worker-launch') or {}).get('error', '')
+    assert len(o.store.all('job')) == 1, 'the pending capture is reused'
+
+
 def test_failed_capture_backs_off_and_becomes_one_actionable_request(observer):
     o = observer
     o.observe = lambda *_: (_ for _ in ()).throw(RuntimeError('vision unavailable'))

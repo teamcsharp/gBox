@@ -140,6 +140,13 @@ def scan_library(inp: ScanIn, ctx: Ctx):
         entries, problems, per["adhoc"] = entries + e, problems + p, {"entries": len(e)}
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(json.dumps(cache))
+    try:                                                # native PC ports of owned ROMs (gbox/native_ports.py)
+        from . import native_ports
+        ported = native_ports.catalog_entries(entries)
+    except Exception as e:                               # noqa: BLE001 - a port listing never fails the scan
+        ported = []
+        problems.append(f"native ports: {type(e).__name__}: {e}")
+    entries += ported
     if inp.include_steam is not False:                   # opt-in auto-detection: an unconfigured PC is not scanned by surprise
         steam_root = cfg.steam_root or (catalog.default_steam_root() if inp.include_steam else None)
         if steam_root:
@@ -1214,6 +1221,29 @@ def _stream_event_reporter(sid: str, server: str, headers: dict):
     return report
 
 
+NATIVE_STILL_S = 4.0     # a native game's still this often: a picture older than a few of these means "not on its screen"
+
+
+def _native_stills(sid: str, ad, server: str, headers: dict, every: float = NATIVE_STILL_S, grab=None):
+    """A native game's window, posted as the session's frame every few seconds while its PC's screen shows it (#2858):
+    the header icon's picture, the hover preview, and the proof for viewers on other PCs that the game is live. A game
+    the screen doesn't show posts nothing, so its picture goes stale and the Sessions view says so."""
+    if grab is None:
+        if HOST_OS != "windows":
+            return
+        from .remote_desktop import window_still as grab
+    with httpx.Client(base_url=server, headers=headers, timeout=10) as c:
+        while sid in SESSIONS:
+            pid = getattr(getattr(ad, "proc", None), "pid", None)       # RPCS3 relaunches in place: follow the pid
+            try:
+                still = grab(pid) if pid else None
+                if still:
+                    c.post(f"/api/sessions/{sid}/frame", content=still, headers={"content-type": "image/jpeg"})
+            except Exception:                                           # noqa: BLE001 - a missed still never touches the game
+                pass
+            time.sleep(every)
+
+
 def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
     """Live session plumbing, three independent loops so nothing slow can stall the video:
     frames  - pushed the moment the encoder produces one (up to the stream fps, 60),
@@ -1225,8 +1255,8 @@ def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
         stream.on_event = _stream_event_reporter(sid, server, headers)
 
     def frames():
-        if stream is None:                               # local native window: nothing to stream
-            return
+        if stream is None:                               # local native window: no video stream, a still now and then
+            return _native_stills(sid, ad, server, headers)
         # one long-lived upload per session: [4-byte big-endian length][JPEG] ... (a POST per frame capped at ~6 fps)
         def body():
             last, live = -1, _EmulatorLiveness(ad)
@@ -2425,11 +2455,19 @@ def _takeover(run, d, sid, since):
     either way and keeps the game up."""
     from . import padstate
     run["screensaver"] = bool(getattr(d, "screensaver", None))
-    cursor = _cursor() if run["screensaver"] else None
+    cursor = None                                    # where the mouse rested when autoplay took the game, once per run:
+    if run["screensaver"] and not run.get("handed_over"):   # each phase's watch compares with it (a move between counts)
+        if "rest_cursor" not in run:
+            run["rest_cursor"] = _cursor()
+        cursor = run["rest_cursor"]
+
+    def running():                                   # the run's thread is set and started just after this: a thread
+        th = run.get("thread")                       # not started yet (no ident) is not one that ended
+        return th is None or th.ident is None or th.is_alive()
 
     def watch():
         nonlocal cursor
-        while not d.stopped and (run.get("thread") is None or run["thread"].is_alive()):
+        while not d.stopped and running():
             if padstate.touched_after(sid, since):           # they play: autoplay lets go of the pad
                 d.stopped, run["took_over"] = True, True
                 _release_all(sid)
@@ -2598,7 +2636,10 @@ def _autoplay_hacks(sid: str, g: dict) -> list[str]:
     return held
 
 
-PLAYBOOKS = ("re4_merc_bot", "doa2_bot")              # game-specific autoplay bots: matches(ad, g), setup(ad), play(ad, send, stopped)
+PLAYBOOKS = ("re4_merc_bot", "doa2_bot", "ge007_bots")   # game-specific autoplay bots: matches(ad, g), setup(ad), play(ad, send, stopped)
+# playbook -> the module that reads its game's button prompts from RAM (for_adapter(ad, stats) -> a prompt source):
+# play(..., ram_prompt=) asks it before the screen watcher
+RAM_PROMPTS = {"re4_merc_bot": "re4_ram_prompts"}
 
 
 def _playbook(ad, g):
@@ -2621,15 +2662,22 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
 
     def go():
         try:
+            import importlib
             import inspect
             failed = pb.setup(ad)
             kw = {}
             if "stats" in inspect.signature(pb.play).parameters:
                 kw["stats"] = run["live"] = {}                 # the playbook fills it as it plays (watch panel)
+            if "ram_prompt" in inspect.signature(pb.play).parameters and RAM_PROMPTS.get(name):
+                try:                                           # the game's own prompt state in RAM: asked first
+                    rp = importlib.import_module(f".{RAM_PROMPTS[name]}", __package__)
+                    kw["ram_prompt"] = rp.for_adapter(ad, kw.get("stats"))
+                except Exception:                              # noqa: BLE001 - no RAM view: the screen alone
+                    pass
             if "prompt" in inspect.signature(pb.play).parameters and hasattr(ad, "get_frame"):
-                from . import screen_prompt                    # the game's on-screen button prompts (A TAKE / JUMP OVER)
+                from . import screen_prompt                    # the game's on-screen button prompts (A TAKE / JUMP OVER):
                 watcher = run["prompt_watcher"] = screen_prompt.Watcher(lambda: ad.get_frame(), hz=6.0).start()
-                kw["prompt"] = lambda: watcher.visible(0.5)
+                kw["prompt"] = lambda: watcher.visible(0.5)    # after RAM, when RAM can't tell
             if "style" in inspect.signature(pb.play).parameters and ctx is not None and game_id:
                 try:                                           # the operator's learned style does the fighting
                     from . import imitate
@@ -4913,6 +4961,7 @@ def _load_tool_modules(names=("cxbx_diagnostics_tool", "native_face_editor", "au
                               "audio_cpp",       # audio_cpp: local audio.cpp speech service (status/start/stop/speak/transcribe)
                               "evidence_capture",   # evidence_capture: PR evidence frames (runs in the control plane)
                               "ram_dump",      # ram_dump: a session's main RAM as one gzip artifact + JSON header (coaching)
+                              "native_ports",  # native_port: build/prepare decomp PC ports (GoldenEye 007 + gBox bots)
                               "pick_tool")):     # pick_identify / pick_replace (+ pick_prepare, pick_ghidra): the pick whip backend
     import importlib
     import subprocess

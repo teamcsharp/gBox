@@ -710,9 +710,11 @@ class SessionObservers:
     def _frame(self, session, record):
         sid = session['session_id']
         age = session.get('last_frame_age')
-        if age is not None and age <= 5:
+        # A native game's frames are small stills of its window (#2858): it keeps its full get_frame capture below
+        native = bool((session.get('detail') or {}).get('local_window'))
+        if age is not None and age <= 5 and not native:
             return self.api('/api/sessions/' + sid + '/frame.jpg', binary=True)
-        if age is not None:
+        if age is not None and not native:
             # A streamed session whose source is stale: the stream (and probably the machine) is struggling. A
             # get_frame job would start one more ffmpeg grab on that machine; wait for the stream instead.
             raise WaitingForFrame(f'The game stream is stalled ({age:.0f} s since its last frame); waiting for it')
