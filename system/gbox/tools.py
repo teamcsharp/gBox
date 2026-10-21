@@ -2446,11 +2446,19 @@ def _takeover(run, d, sid, since):
     either way and keeps the game up."""
     from . import padstate
     run["screensaver"] = bool(getattr(d, "screensaver", None))
-    cursor = _cursor() if run["screensaver"] else None
+    cursor = None                                    # where the mouse rested when autoplay took the game, once per run:
+    if run["screensaver"] and not run.get("handed_over"):   # each phase's watch compares with it (a move between counts)
+        if "rest_cursor" not in run:
+            run["rest_cursor"] = _cursor()
+        cursor = run["rest_cursor"]
+
+    def running():                                   # the run's thread is set and started just after this: a thread
+        th = run.get("thread")                       # not started yet (no ident) is not one that ended
+        return th is None or th.ident is None or th.is_alive()
 
     def watch():
         nonlocal cursor
-        while not d.stopped and (run.get("thread") is None or run["thread"].is_alive()):
+        while not d.stopped and running():
             if padstate.touched_after(sid, since):           # they play: autoplay lets go of the pad
                 d.stopped, run["took_over"] = True, True
                 _release_all(sid)
