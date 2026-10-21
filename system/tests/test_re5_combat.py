@@ -82,8 +82,11 @@ def test_fires_only_with_the_dot_on_the_head_and_writes_the_pitch():
     act = bot.tick(s, s["player"], tgt, 0.0)
     assert bot.zone == "head"
     assert "r1" not in act["hold"] and "l1" in act["hold"]            # body only, not yet BODY_AFTER_S: no shot
-    pitch = struct.unpack(">f", m.rd(PL + C.P_PITCH, 4))[0]
-    assert pitch < 0 and bot.stats["pitch_writes"] == 1                 # the aim raised (+0x1AA0: + = down)
+    if C.PITCH_WRITE:
+        pitch = struct.unpack(">f", m.rd(PL + C.P_PITCH, 4))[0]
+        assert pitch < 0 and bot.stats["pitch_writes"] == 1             # the aim raised (+0x1AA0: + = down)
+    else:
+        assert "rup" in act["hold"]                                     # the aim raised with the stick
     m.put(LASER + C.LASER_DOT, ">3f", 0.0, 162.0, 998.0)               # the game's dot now on the head
     t = 0.05
     fired = False

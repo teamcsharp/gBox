@@ -52,8 +52,9 @@ FX_LINE, FX_MAX = 18, 200
 LASER_VT = 0x015BD958                  # uLaserSight (app 01.01)
 LASER_ORIGIN, LASER_DOT = 0x200, 0x30  # the muzzle; the ray's hit point (duplicates at +0xD0, +0x150, +0x210)
 P_ACTION, P_PITCH, P_ROT, P_POS = 0x845, 0x1AA0, 0x40, 0x30
-P_ACTION_OBJ = 0x30B0                  # -> the current cPlAction (mods agent, live 2026-10-21 with Chris; with Barry
-                                       # the object there kept one vtable 0x0163C3B8 through 180 shots: not used then)
+P_ACTION_OBJ = 0x1238                  # -> the current cPlAction: the weapon-fire action while a shot runs (a read-only
+                                       # scan of the player object for pointers to the action vtables, live 2026-10-21,
+                                       # session 3d4f1ba4de924bc3; +0x30B0, named first, is the cNetPlayer)
 FIRE_VT, READY_VT, RELOAD_VT = 0x0163DFC0, 0x0163E038, 0x0163DF88   # weapon_fire / weapon_ready_loop / reload
 ACT_PHASE, ACT_SECONDS, ACT_FRAMES = 0x14, 0x1C, 0x20                 # on the action: per shot, from 0
 P_FIRE_CMD = 0x2F04                    # u32: 4 on the frame a shot leaves (the pad's fire command; live 2026-10-21:
@@ -81,7 +82,9 @@ BODY_AFTER_S = 0.5                     # the dot on his body (not the head) this
 SETTLE_S = 0.08                        # the dot on the head this long before the first shot (it moves with him)
 AIM_TURN_RAD_S = 0.52                  # the right stick while aiming: ~30 deg/s (the mods agent scales it)
 FINE = math.radians(4)                 # closer than this: the stick in pulses (a tick on, a tick off)
-PITCH_WRITE = True                     # the pitch straight into +0x1AA0 (else the stick)
+PITCH_WRITE = False                    # the pitch straight into +0x1AA0 (else the stick). Off: the game recomputes
+                                       # +0x1AA0 (and +0x31D4, +0x2F3C, the yaw +0x14F4, the quaternion) every frame
+                                       # from its own controller - a written value lasted one frame (probe 2026-10-21)
 PITCH_GAIN = 1.0                       # how much of the pitch error one write takes out
 HIT_S = 0.35                           # a shot's health drop comes within this
 STUN_S, STUN_NEAR, STUN_FAR = 2.2, 110.0, 700.0   # a headshot stuns this long: close in from this far for the finisher
