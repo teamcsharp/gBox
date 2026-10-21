@@ -42,27 +42,30 @@ CHD_SHA256 = "38fde0417b095f45ce4a84bb9cafb0863c7d0198684c7b7b58cae665968d9299"
 EXE_NAME = "SLUS_010.41"
 EXE_SHA256 = "9a5453bf09d7f5c71a6451d255471374fb2d7cc5f3dfb1ea51223a5c88cdda47"
 EXE_SIZE = 606208
-EXE_TADDR = 0x80010008   # PS-X EXE header taddr (verified from owned exe)
-EXE_TSIZE = 0            # header field is 0 on this build (verified)
-EXE_SADDR = 0x80010008   # header field mirrors taddr on this build (verified)
-EXE_GADDR = 0x00093800   # header gaddr (verified: 604160 decimal)
+# PS-X EXE header fields, verified from the owned SLUS_010.41 image:
+#   pc0 +0x10, gp0 +0x14, t_addr +0x18, t_size +0x1C,
+#   d_addr/d_size +0x20/+0x24, b_addr/b_size +0x28/+0x2C, s_addr/s_size +0x30/+0x34
+EXE_PC0 = 0x80010008     # header pc0 (entry point)
+EXE_GP0 = 0x00000000     # header gp0 (0; $gp comes from the crt0)
+EXE_TADDR = 0x80010000   # header t_addr: text load address
+EXE_TSIZE = 0x00093800   # header t_size: 604160 bytes of text
+EXE_SADDR = 0x801FFFF0   # header s_addr: stack top
+EXE_GADDR = 0x8006CE1C   # $gp from the crt0 (lui r28 0x80010088 + addiu 0xce1c)
+
 
 
 def parse_psx_exe(data: bytes) -> dict:
-    """PS-X EXE header fields used to pin the owned boot executable."""
-    if len(data) < 0x808 or data[:2] != b"PS":
+    """Parse the PS-X EXE header into its real fields (pc0/gp0/t_addr/t_size/...)."""
+    if len(data) < 0x800 or data[:8] != b"PS-X EXE":
         raise ValueError("not a PS-X EXE")
-    taddr, tsize, saddr, gaddr = struct.unpack("<4I", data[0x10:0x20])
-    return {
-        "magic": data[:2].decode("latin-1"),
-        "taddr": taddr,
-        "tsize": tsize,
-        "saddr": saddr,
-        "gaddr": gaddr,
-        "size": len(data),
-        "sha256": hashlib.sha256(data).hexdigest(),
-    }
-
+    (pc0, gp0, t_addr, t_size, d_addr, d_size,
+     b_addr, b_size, s_addr, s_size) = struct.unpack_from("<10I", data, 0x10)
+    if t_size > len(data) - 0x800:
+        raise ValueError("t_size exceeds file")
+    return {"magic": data[:2].decode("latin-1"), "pc0": pc0, "gp0": gp0,
+            "taddr": t_addr, "tsize": t_size, "daddr": d_addr, "dsize": d_size,
+            "baddr": b_addr, "bsize": b_size, "saddr": s_addr, "ssize": s_size,
+            "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
 
 def verify_exe(data: bytes) -> dict:
     """Pinned-hash check for the owned Disc 1 boot EXE (guards every probe)."""
@@ -71,7 +74,10 @@ def verify_exe(data: bytes) -> dict:
         "game_id": GAME_ID,
         "name": EXE_NAME,
         "sha256": parsed["sha256"],
-        "matches_owned": parsed["sha256"] == EXE_SHA256,
+        "matches_owned": (parsed["sha256"] == EXE_SHA256 and parsed["pc0"] == EXE_PC0
+                              and parsed["taddr"] == EXE_TADDR and parsed["tsize"] == EXE_TSIZE
+                              and parsed["saddr"] == EXE_SADDR),
+        "gp": EXE_GADDR,
         **parsed,
     }
 
