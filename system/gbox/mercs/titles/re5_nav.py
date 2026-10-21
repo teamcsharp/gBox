@@ -26,6 +26,9 @@ MAX_POINTS, MAX_NODES = 20000, 30000
 CELL = 400.0                                           # the grid that finds a position's triangle (cm)
 Y_SLACK = 160.0                                        # a triangle holds a position this far above / below it
 AVOID_R = 60.0                                         # a crossing to avoid: its portal within this
+STEP_DY = 110.0                                        # a crossing between levels: a waypoint of its own
+STEEP_NY = 0.5                                         # a face leaning more than 60 deg: a crossing (151 of Public
+                                                       # Assembly's 2,187 triangles)
 
 
 def _ok(p) -> bool:
@@ -39,7 +42,9 @@ def _u32(m, a) -> int:
 class NavMesh:
     def __init__(self, points: list, tris: list, links: list, ptr: int = 0):
         self.points, self.tris, self.links, self.ptr = points, tris, links, ptr
+        self.sig = f"{len(points)}-{len(tris)}"            # the stage's mesh, whatever its address this boot
         self.centre = [tuple(sum(points[v][k] for v in t) / 3.0 for k in range(3)) for t in tris]
+        self.steep = [self._steep(t) for t in tris]        # a ladder's or a drop's face: a crossing between levels
         self.grid: dict = {}
         for i, t in enumerate(tris):
             xs, zs = [points[v][0] for v in t], [points[v][2] for v in t]
@@ -47,6 +52,15 @@ class NavMesh:
                 for gz in range(int(math.floor(min(zs) / CELL)), int(math.floor(max(zs) / CELL)) + 1):
                     self.grid.setdefault((gx, gz), []).append(i)
         self._comp: list | None = None
+
+    def _steep(self, t) -> bool:
+        """A triangle whose face leans more than STEEP from flat (a ladder, a drop, a wall of the mesh)."""
+        (ax, ay, az), (bx, by, bz), (cx, cy, cz) = (self.points[v] for v in t)
+        ux, uy, uz = bx - ax, by - ay, bz - az
+        wx, wy, wz = cx - ax, cy - ay, cz - az
+        nx, ny, nz = uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx
+        n = math.sqrt(nx * nx + ny * ny + nz * nz)
+        return n > 0 and abs(ny) / n < STEEP_NY
 
     # --- where ---
     def _inside(self, i: int, x: float, z: float) -> bool:
@@ -105,11 +119,13 @@ class NavMesh:
         p, q = self.points[t[edge % 3]], self.points[t[(edge + 1) % 3]]
         return tuple((p[k] + q[k]) / 2.0 for k in range(3))
 
-    def route(self, start, goal, avoid=()) -> list | None:
-        """Waypoints from start to goal (positions): the shared edges' midpoints along the cheapest triangle path, then
-        the goal itself; [goal] when both are on one triangle; None when the mesh has no way there. avoid: positions
-        of crossings the player could not take (an AI-only drop or climb): links through a portal within AVOID_R of
-        one are left out."""
+    def route(self, start, goal, avoid=(), pull=True) -> list | None:
+        """Waypoints from start to goal (positions): the corners of the string-pulled path through the shared edges of
+        the cheapest triangle path (pull=False: every edge's midpoint), then the goal itself; [goal] when both are on
+        one triangle; None when the mesh has no way there. A crossing between levels (the next triangle STEP_DY above
+        or below: a ladder, a drop) is always a waypoint of its own, at the edge's middle. avoid: positions of
+        crossings the player could not take (an AI-only drop or climb): links through a portal within AVOID_R of one
+        are left out."""
         a, b = self.find(start), self.find(goal)
         if a is None or b is None:
             return None
@@ -138,12 +154,80 @@ class NavMesh:
                     heapq.heappush(heap, (nd + math.dist(cv, (gx, gy, gz)), v))
         if b not in came:
             return None
-        path, v = [], b
+        hops, v = [], b
         while v != a:
             u, edge = came[v]
-            path.append(self._portal(u, edge))
+            hops.append((u, edge, v))
             v = u
-        return list(reversed(path)) + [tuple(goal)]
+        hops.reverse()
+        if not pull:
+            return [self._portal(u, edge) for u, edge, _ in hops] + [tuple(goal)]
+        out, seg_start, seg = [], tuple(start), []
+        for u, edge, v in hops:
+            if abs(self.centre[v][1] - self.centre[u][1]) >= STEP_DY or self.steep[u] or self.steep[v]:
+                # a level change (a ladder's or a drop's face, or a step between flat triangles): its own waypoint
+                mid = self._portal(u, edge)
+                out += funnel(seg_start, seg, mid)
+                seg_start, seg = mid, []
+            else:
+                seg.append(self._edge(u, edge, v))
+        return out + funnel(seg_start, seg, tuple(goal))
+
+    def _edge(self, u: int, edge: int, v: int) -> tuple:
+        """The shared edge as (left, right) seen walking from u into v (a consistent handedness, for funnel())."""
+        t = self.tris[u]
+        p, q = self.points[t[edge % 3]], self.points[t[(edge + 1) % 3]]
+        cu, cv = self.centre[u], self.centre[v]
+        dx, dz = cv[0] - cu[0], cv[2] - cu[2]
+        return (p, q) if dx * (p[2] - cu[2]) - dz * (p[0] - cu[0]) > 0 else (q, p)
+
+    def route_length(self, start, goal, avoid=()) -> float | None:
+        """The length (cm, in x / z) of route(start, goal), or None without one."""
+        r = self.route(start, goal, avoid=avoid)
+        if r is None:
+            return None
+        pts = [tuple(start)] + r
+        return sum(math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][2] - pts[i][2]) for i in range(len(pts) - 1))
+
+
+def _area2(a, b, c) -> float:
+    return (c[0] - a[0]) * (b[2] - a[2]) - (b[0] - a[0]) * (c[2] - a[2])
+
+
+def funnel(start, portals: list, goal) -> list:
+    """String pulling (the simple stupid funnel algorithm, in x / z): the corners of the shortest path from start to
+    goal through the portals [(left, right), ...], then the goal. [goal] without portals."""
+    pts = list(portals) + [(tuple(goal), tuple(goal))]
+    apex = left = right = tuple(start)
+    ai = li = ri = -1
+    out: list = []
+    i = 0
+    while i < len(pts):
+        pl, pr = pts[i]
+        if _area2(apex, right, pr) <= 0.0:                 # the right side narrows
+            if apex == right or _area2(apex, left, pr) > 0.0:
+                right, ri = pr, i
+            else:                                           # crossed the left: the left point is a corner
+                out.append(left)
+                apex, ai = left, li
+                left = right = apex
+                li = ri = ai
+                i = ai + 1
+                continue
+        if _area2(apex, left, pl) >= 0.0:                  # the left side narrows
+            if apex == left or _area2(apex, right, pl) < 0.0:
+                left, li = pl, i
+            else:
+                out.append(right)
+                apex, ai = right, ri
+                left = right = apex
+                li = ri = ai
+                i = ai + 1
+                continue
+        i += 1
+    if not out or out[-1] != tuple(goal):
+        out.append(tuple(goal))
+    return out
 
 
 def read(m, cache: dict | None = None) -> NavMesh | None:
