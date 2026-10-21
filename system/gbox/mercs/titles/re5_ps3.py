@@ -25,6 +25,7 @@ import json
 import math
 import struct
 import time
+from pathlib import Path
 
 from ..driver import Driver
 from . import re5_combat, re5_nav, re5_weapons
@@ -99,6 +100,7 @@ CLIMB_WAIT_S = 3.0                     # at a crossing this long without its pro
 _AVOID: dict = {}                      # navmesh signature -> the crossings the player could not take (kept across
                                        # rounds and runs: gbox-data/mercs/lessons/BLUS30491-crossings.json)
 CROSSINGS_FILE = "BLUS30491-crossings.json"
+NAV_LEARNING_FILE = "BLUS30491-navigation.json"
 STAND_R = 250.0                        # the stand: the round's start position, held from this close
 BREAK_AT_S, BREAK_MARGIN_S = 60.0, 15.0   # leave the stand for time at this clock, or at the nearest one's ETA + this
 RANK_SCORES = (("SS", 90000), ("S", 60000), ("A", 40000), ("B", 20000), ("C", 10000), ("D", 0))   # Reunion solo
@@ -563,10 +565,12 @@ def rank_of(score) -> str | None:
 
 def own_screen(snap: dict) -> str:
     """playing / dead / results / loading from the round's fields: the player present with health and time left =
-    playing; health 0 = dead ("You Are Dead - Continue?"); time 0 = results; no player = loading or menus."""
+    playing; health 0 without RESUSCITATE = dead ("You Are Dead - Continue?"); time 0 = results; no player = loading."""
     p = snap.get("player")
     if not p:
         return "loading"
+    if snap.get("prompt") == "mash" and (snap.get("timer") or 0) > 0:
+        return "playing"                              # explicit RESUSCITATE prompt: HP0 is still recoverable
     if p.get("hp") is not None and p["hp"] <= 0:
         return "dead"
     if (snap.get("timer") or 0) <= 0:
@@ -600,6 +604,10 @@ class Bot:
         self.bonus_seen: set = set()
         self.last_timer = None
         self.route, self.route_for, self.route_at, self.route_since = None, None, 0.0, 0.0
+        from .. import lessons as lesson_store
+        nav_path = (Path(learn_dir) if learn_dir is not None else lesson_store.ROOT) / NAV_LEARNING_FILE
+        self.nav_learning = re5_nav.Learning(nav_path)
+        self.nav_geometry = None
         self.avoid: list = []                  # crossings the player could not take this round (no prompt there)
         self.climb_at = None                   # (the crossing, since when) while waiting at one for its prompt
         self.climb_pos = self.climb_tick = None
@@ -630,6 +638,7 @@ class Bot:
 
     def save(self):
         save_crossings()
+        self.nav_learning.save()
         if self.combat is not None:
             self.combat.save()
 
@@ -639,6 +648,7 @@ class Bot:
             return
         self._observed_snap = snap
         p = snap.get("player")
+        self.stats["resuscitating"] = snap.get("prompt") == "mash"
         if where == "playing" and p and getattr(self.m, "adapter", None) is not None:
             from ...re5_mods_tool import maintain_health
             health = maintain_health(self.m.adapter, snap)
@@ -650,6 +660,7 @@ class Bot:
             if health.get("refilled"):
                 self.stats["health_refills"] = self.stats.get("health_refills", 0) + 1
         if where != "playing" or not p:
+            self.nav_learning.suspend()
             self.last_timer = None
             self.bonus_seen.clear()
             self.hp_seen.clear()
@@ -688,6 +699,14 @@ class Bot:
                 self.combat.start_round(now)
         if self.combat is not None:
             self.combat.observe(snap, now)
+        mesh = snap.get("nav")
+        geometry = mesh.learning_sig if mesh is not None else None
+        if geometry != self.nav_geometry:
+            self.route, self.route_for, self.route_len = None, None, None
+            self.climb_at = self.climb_pos = self.climb_tick = None
+            self.nav_geometry = geometry
+        self.nav_learning.observe(mesh, p["pos"], now)
+        self.stats.update(self.nav_learning.summary())
         self._observe_weapon_switch(snap, now)
         self._score_hits(snap)
         t = snap.get("timer")
@@ -723,6 +742,9 @@ class Bot:
         self.stats["max_combo"] = max(self.stats["max_combo"], snap.get("combo") or 0)
         if not p:
             return {"hold": set()}
+        if snap.get("prompt") == "mash":
+            self.aiming_since = None
+            return {"hold": set()}                     # the prompt presser owns rapid circle, never cross/aim/fire
         if p.get("hp") is not None and p["hp"] <= 0:        # "You Are Dead - Continue? Yes / No": Yes (cross)
             if now - self.dead_tap > 1.5:
                 self.dead_tap = now
@@ -966,7 +988,8 @@ class Bot:
         if not cands:
             self.stats["bonus_target"] = None
             return None
-        b = min(cands, key=cost)
+        b = min(cands, key=lambda b: cost(b) +
+                (self.nav_learning.route_penalty(mesh, p["pos"], b["pos"]) if mesh is not None else 0.0))
         d = math.hypot(b["pos"][0] - px, b["pos"][2] - pz)
         level = abs(b["pos"][1] - py) < BONUS_LEVEL_DY          # on its level, right at it: take it
         walk = d > BONUS_TAKE or not level
@@ -1043,10 +1066,12 @@ class Bot:
         prompt is taken; a bonus followed ROUTE_STALE_S without being reached is left for BONUS_SKIP_S."""
         pos = p["pos"]
         if self.route_for != tgt["ptr"]:
+            self.nav_learning.begin_route(mesh, pos, tgt["pos"])
             self.route, self.route_for, self.route_since = None, tgt["ptr"], now
             self.route_at = -math.inf
             self.climb_at = self.climb_pos = self.climb_tick = None
         if now - self.route_since > ROUTE_STALE_S:
+            self.nav_learning.finish_route("timed_out")
             self.bonus_skip[tgt["ptr"]] = now + BONUS_SKIP_S
             self.stats["routes_given_up"] = self.stats.get("routes_given_up", 0) + 1
             self.route_for = None
@@ -1055,6 +1080,7 @@ class Bot:
             self.route, self.route_at = mesh.route(pos, tgt["pos"], avoid=self.avoid), now
         if not self.route:
             if mesh is not None:                           # an explicit no-route result must never mean run through it
+                self.nav_learning.finish_route("unreachable")
                 self.bonus_skip[tgt["ptr"]] = now + BONUS_SKIP_S
                 self.stats["route"] = "unreachable on current mesh"
                 return {"hold": set()}
@@ -1081,6 +1107,7 @@ class Bot:
                     or self.climb_pos is None or math.dist(pos, self.climb_pos) > 20.0:
                 self.climb_at, self.climb_pos = (w, now), tuple(pos)
             elif now - self.climb_at[1] > CLIMB_WAIT_S:        # continuous aligned approach, without motion or prompt
+                self.nav_learning.finish_route("blocked")
                 self.avoid.append(w)
                 self.stats["crossings_avoided"] = self.stats.get("crossings_avoided", 0) + 1
                 self.climb_at, self.route, self.route_len = None, None, None
@@ -1160,7 +1187,9 @@ class RE5PS3(Driver):
     def screen(self, m, snap: dict | None) -> str:
         snap = self.snapshot(m) if snap is None else snap
         where = own_screen(snap)
-        if where == "playing":
+        if where == "playing" and snap.get("prompt") == "mash":
+            self._timer = (snap.get("timer"), self.clock())
+        elif where == "playing":
             now, t = self.clock(), snap.get("timer")
             if t != self._timer[0]:
                 self._timer = (t, now)
@@ -1181,6 +1210,10 @@ class RE5PS3(Driver):
             stats[f"presses_{button}"] = stats.get(f"presses_{button}", 0) + 1
         if button == "wiggle":
             return list(WIGGLE)
+        if button == "mash":
+            if stats is not None:
+                stats["resuscitate_presses"] = stats.get("resuscitate_presses", 0) + 1
+            return [("circle",)]                       # RESUSCITATE: engine's 45ms down / 35ms up mash cadence
         return [tuple(str(button).split("+"))]
 
     def progress(self, snap: dict) -> dict:

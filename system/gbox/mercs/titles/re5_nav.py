@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import heapq
 import hashlib
+import json
 import math
 import struct
+from pathlib import Path
 
 S_AI, AI_PATHFINDING, PF_NAVMESH = 0x017BD4C8, 0x24, 0x14
 NM_POINTS, NM_NPOINTS, NM_NODES, NM_NNODES = 0x70, 0x74, 0x78, 0x7C
@@ -49,6 +51,11 @@ class NavMesh:
         for tri in tris:
             geometry.update(struct.pack(">3I", *tri))
         self.sig = f"{len(points)}-{len(tris)}-{geometry.hexdigest()[:16]}"  # learned crossings belong to this geometry
+        topology = hashlib.sha256()
+        for u, outgoing in enumerate(links):
+            for v, edge, _ in sorted(outgoing):
+                topology.update(struct.pack(">3I", u, v, edge))
+        self.learning_sig = self.sig + "-" + topology.hexdigest()[:12]
         self.centre = [tuple(sum(points[v][k] for v in t) / 3.0 for k in range(3)) for t in tris]
         self.steep = [self._steep(t) for t in tris]        # a ladder's or a drop's face: a crossing between levels
         self.grid: dict = {}
@@ -69,6 +76,27 @@ class NavMesh:
         return n > 0 and abs(ny) / n < STEEP_NY
 
     # --- where ---
+    def member(self, pos) -> int | None:
+        """An unambiguous containing floor, for observations only; never use find()'s nearby-centre fallback.
+
+        Vertical faces, shared boundaries and overlapping floors at the same height are not evidence of membership.
+        A tight floor-height tolerance also keeps a mid-air animation from proving a traversal.
+        """
+        if len(pos) != 3 or not all(math.isfinite(v) for v in pos):
+            return None
+        x, y, z = pos
+        cell = (int(math.floor(x / CELL)), int(math.floor(z / CELL)))
+        candidates = []
+        for i in self.grid.get(cell, ()):
+            if not self.steep[i] and self._inside(i, x, z):
+                height = self._height(i, x, z)
+                if height is not None and abs(height - y) < 40.0:
+                    candidates.append((abs(height - y), i))
+        candidates.sort()
+        if not candidates or (len(candidates) > 1 and candidates[1][0] - candidates[0][0] < 1.0):
+            return None
+        return candidates[0][1]
+
     def _inside(self, i: int, x: float, z: float) -> bool:
         (ax, _, az), (bx, _, bz), (cx, _, cz) = (self.points[v] for v in self.tris[i])
         d1 = (x - bx) * (az - bz) - (ax - bx) * (z - bz)
@@ -215,6 +243,162 @@ class NavMesh:
         return sum(math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][2] - pts[i][2]) for i in range(len(pts) - 1))
 
 
+class Learning:
+    """Bounded observations, not new navigation links or proof that a prompted animation completed.
+
+    Only consecutive positions on directly linked floors count as a successful directed crossing. Vertical-face
+    chains and skipped triangles remain unclassified; route arrival is recorded separately at the actual goal.
+    """
+    MAX_GEOMETRIES, MAX_VISITS, MAX_CROSSINGS, MAX_ROUTES = 8, 4096, 8192, 512
+    MAX_COUNT, MAX_FILE_BYTES = 1_000_000, 4_000_000
+    OUTCOMES = ("started", "arrived", "timed_out", "unreachable", "blocked", "interrupted")
+
+    def __init__(self, path=None):
+        self.path = Path(path) if path else None
+        self.stages = {}
+        self.previous = self.last_visit = self.active_route = None
+        self.key = None
+        if self.path is not None:
+            try:
+                if self.path.stat().st_size <= self.MAX_FILE_BYTES:
+                    self._load(json.loads(self.path.read_text(encoding="utf-8")))
+            except (OSError, ValueError, TypeError):
+                pass
+
+    @staticmethod
+    def _index_key(key, pair=False):
+        if not isinstance(key, str) or len(key) > 24:
+            return False
+        parts = key.split(":")
+        return len(parts) == (2 if pair else 1) and all(p.isascii() and p.isdigit() and int(p) < MAX_NODES
+                                                      for p in parts)
+
+    def _count(self, value):
+        return min(value, self.MAX_COUNT) if type(value) is int and value > 0 else 0
+
+    def _load(self, data):
+        if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("stages"), dict):
+            return
+        for key, stage in list(data["stages"].items())[-self.MAX_GEOMETRIES:]:
+            if not isinstance(key, str) or len(key) > 100 or not isinstance(stage, dict):
+                continue
+            clean = {"visits": {}, "crossings": {}, "routes": {}}
+            for name, cap in (("visits", self.MAX_VISITS), ("crossings", self.MAX_CROSSINGS)):
+                rows = stage.get(name)
+                if isinstance(rows, dict):
+                    clean[name] = {k: self._count(v) for k, v in list(rows.items())[-cap:]
+                                   if self._index_key(k, name == "crossings") and self._count(v)}
+            rows = stage.get("routes")
+            if isinstance(rows, dict):
+                for k, v in list(rows.items())[-self.MAX_ROUTES:]:
+                    if self._index_key(k, True) and isinstance(v, dict):
+                        clean["routes"][k] = {n: self._count(v.get(n)) for n in self.OUTCOMES}
+            self.stages[key] = clean
+
+    def _stage(self, mesh):
+        key = mesh.learning_sig
+        if self.key != key:
+            self.suspend()
+            self.key = key
+        if key not in self.stages:
+            if len(self.stages) >= self.MAX_GEOMETRIES:
+                del self.stages[next(iter(self.stages))]
+            self.stages[key] = {"visits": {}, "crossings": {}, "routes": {}}
+        # Keep the active geometry when evicting an old stage, including stages loaded from disk.
+        stage = self.stages.pop(key)
+        self.stages[key] = stage
+        return stage
+
+    def _increment(self, rows, key, cap):
+        if key not in rows and len(rows) >= cap:
+            del rows[next(iter(rows))]
+        rows[key] = min(self.MAX_COUNT, rows.get(key, 0) + 1)
+
+    def observe(self, mesh, pos, now):
+        if mesh is None:
+            self.suspend()
+            return None
+        stage = self._stage(mesh)
+        node = mesh.member(pos)
+        previous, self.previous = self.previous, None
+        if node is None or not math.isfinite(now):
+            return None
+        if self.last_visit != node:
+            self._increment(stage["visits"], str(node), self.MAX_VISITS)
+            self.last_visit = node
+        crossed = None
+        if previous is not None:
+            old, before, at = previous
+            dt = now - at
+            if old != node and 0 < dt <= 1.0 and math.dist(before, pos) <= 750.0 * dt + 20.0 \
+                    and any(v == node for v, _, _ in mesh.links[old]):
+                crossed = f"{old}:{node}"
+                self._increment(stage["crossings"], crossed, self.MAX_CROSSINGS)
+        self.previous = (node, tuple(pos), now)
+        if self.active_route is not None:
+            _, _, goal_node, goal = self.active_route
+            if node == goal_node and math.dist(pos, goal) <= 140.0:
+                self.finish_route("arrived")
+        return crossed
+
+    def begin_route(self, mesh, start, goal):
+        self.finish_route("interrupted")
+        if mesh is None:
+            return
+        stage = self._stage(mesh)
+        a, b = mesh.member(start), mesh.member(goal)
+        if a is None or b is None:
+            return
+        key = f"{a}:{b}"
+        if key not in stage["routes"]:
+            if len(stage["routes"]) >= self.MAX_ROUTES:
+                del stage["routes"][next(iter(stage["routes"]))]
+            stage["routes"][key] = {n: 0 for n in self.OUTCOMES}
+        row = stage["routes"][key]
+        row["started"] = min(self.MAX_COUNT, row["started"] + 1)
+        self.active_route = (self.key, key, b, tuple(goal))
+
+    def finish_route(self, outcome):
+        route, self.active_route = self.active_route, None
+        if route is None or outcome not in self.OUTCOMES or outcome == "started":
+            return
+        stage = self.stages.get(route[0])
+        row = stage["routes"].get(route[1]) if stage else None
+        if row is not None:
+            row[outcome] = min(self.MAX_COUNT, row[outcome] + 1)
+
+    def suspend(self):
+        self.finish_route("interrupted")
+        self.previous = self.last_visit = None
+
+    def route_penalty(self, mesh, start, goal):
+        """A small additive cost in cm; cannot make a blocked or absent directed route reachable."""
+        stage = self.stages.get(mesh.learning_sig)
+        if not stage:
+            return 0.0
+        a, b = mesh.member(start), mesh.member(goal)
+        row = stage["routes"].get(f"{a}:{b}", {})
+        failures = sum(row.get(k, 0) for k in ("timed_out", "unreachable", "blocked"))
+        return min(500.0, 100.0 * failures / (1 + row.get("arrived", 0)))
+
+    def summary(self):
+        stage = self.stages.get(self.key, {})
+        return {"nav_geometry": self.key, "nav_visited_triangles": len(stage.get("visits", {})),
+                "nav_observed_crossings": sum(stage.get("crossings", {}).values()),
+                "nav_route_arrivals": sum(row.get("arrived", 0) for row in stage.get("routes", {}).values())}
+
+    def save(self):
+        if self.path is None:
+            return
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+            tmp.write_text(json.dumps({"version": 1, "stages": self.stages}, separators=(",", ":")), encoding="utf-8")
+            tmp.replace(self.path)
+        except OSError:
+            pass
+
+
 def _area2(a, b, c) -> float:
     return (c[0] - a[0]) * (b[2] - a[2]) - (b[0] - a[0]) * (c[2] - a[2])
 
@@ -262,13 +446,18 @@ def read(m, cache: dict | None = None) -> NavMesh | None:
     pf = _u32(m, sai + AI_PATHFINDING) if _ok(sai) else 0
     nav = _u32(m, pf + PF_NAVMESH) if _ok(pf) else 0
     if not _ok(nav):
+        if cache is not None:
+            cache.clear()                              # a later stage can reuse this same rNavigationMesh address
         return None
-    if cache is not None and nav in cache:
-        return cache[nav]
     pts, npts = _u32(m, nav + NM_POINTS), _u32(m, nav + NM_NPOINTS)
     nodes, nnodes = _u32(m, nav + NM_NODES), _u32(m, nav + NM_NNODES)
     if not (_ok(pts) and _ok(nodes) and 0 < npts <= MAX_POINTS and 0 < nnodes <= MAX_NODES):
+        if cache is not None:
+            cache.clear()
         return None
+    source = (pts, npts, nodes, nnodes)
+    if cache is not None and nav in cache and getattr(cache[nav], "source", None) == source:
+        return cache[nav]
     raw = m.rd(pts, 16 * npts)
     points = [struct.unpack(">3f", raw[16 * i:16 * i + 12]) for i in range(npts)]
     raw = m.rd(nodes, NODE_SIZE * nnodes)
@@ -287,6 +476,7 @@ def read(m, cache: dict | None = None) -> NavMesh | None:
                 ls.append((nb, edge, cost))
         links.append(ls)
     mesh = NavMesh(points, tris, links, ptr=nav)
+    mesh.source = source
     if cache is not None:
         cache.clear()
         cache[nav] = mesh

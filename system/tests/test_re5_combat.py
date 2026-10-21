@@ -355,6 +355,31 @@ def test_measured_exposed_enemy_wins_over_a_nearer_front_candidate():
     assert bot.stats["target_evidence"] == "laser first hit on enemy"
 
 
+def test_actual_first_hit_overrides_camera_sector_for_a_close_low_enemy_until_dead():
+    foot, impact = (0.0, -180.0, 70.0), (0.0, -70.0, 70.0)
+    m = world(laser_dot=impact)
+    m.put(C.FIRE_TIMER_FPS, ">f", C.FIRE_TIMER_ORIG * 80)
+    m.put(C.WEAPON_TABLE + 0x12 * C.WEAPON_STRIDE + C.WEAPON_INTERVAL, ">f", 0.0)
+    bot = C.Combat(m, {}, lessons=lambda e: None)
+    s = snap(m, enemy=foot)
+    s["player"].update(hp=30000, hp_max=30000)
+    s["camera"] = {"eye": (0.0, 140.0, 0.0), "at": (0.0, 140.0, 1000.0)}
+    target = s["enemies"][0]
+    assert not bot.front_candidate(s, s["player"], target)
+    assert C.dot_on(impact, foot) == "body"
+    for now in (0.0, 0.05, 0.1):
+        assert bot.choose_target(s, s["player"], s["enemies"], now) is target
+        assert bot.target_exposed
+        assert {"l1", "r1"} <= bot.tick(s, s["player"], target, now)["hold"]
+    assert bot.stats["rapid_fire_verified"]
+    m.put(LASER + C.LASER_DOT, ">3f", 0.0, 50.0, 57.0)           # actual first hit now stops short
+    assert bot.choose_target(s, s["player"], s["enemies"], 0.15) is None
+    assert "r1" not in bot.tick(s, s["player"], target, 0.15)["hold"]
+    m.put(LASER + C.LASER_DOT, ">3f", *impact)
+    target["hp"] = 0
+    assert bot.choose_target(s, s["player"], s["enemies"], 0.2) is None
+
+
 def test_measured_cover_switches_target_but_an_off_target_ray_does_not_claim_cover():
     m = world(laser_dot=(0.0, 135.0, 400.0))
     bot = C.Combat(m, {}, lessons=lambda e: None)
