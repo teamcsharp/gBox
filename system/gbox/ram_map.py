@@ -38,6 +38,7 @@ TYPES = {"u8": ("B", 1), "u16": ("H", 2), "u32": ("I", 4), "u64": ("Q", 8), "s8"
 ALIASES = {"i8": "s8", "i16": "s16", "i32": "s32", "i64": "s64", "float": "f32", "double": "f64"}
 OTHER_TYPES = {"ptr", "bytes", "str", "struct"}
 SOURCES = ("ghidra", "scan", "manual")
+CONFIDENCE = ("candidate", "static", "live")       # a signature: proposed by the lessons analyzer / found in the code / checked live
 OPS = ("eq", "ne", "lt", "le", "gt", "ge", "in")
 NAME = re.compile(r"^[a-z0-9_]+(\.[a-z0-9_]+)*$")
 SUB_NAME = re.compile(r"^[a-z0-9_]+$")
@@ -47,7 +48,7 @@ COALESCE_GAP = 256                               # merge ranges this close (a re
 MAX_BLOCK = 1 << 20
 FIELD_KEYS = {"address", "pointer", "offset", "type", "length", "endian", "count", "stride", "first", "max", "fields",
               "live", "mask", "shift", "scale", "bias", "units", "enum", "flags", "format", "valid", "watch", "group",
-              "description", "source", "evidence", "added", "by", "notes"}
+              "description", "source", "evidence", "added", "by", "notes", "signatures"}
 # main RAM where a pointer may point, per platform (as gbox.tools.MAIN_RAM addresses it); big-endian platforms
 RAM_RANGE = {"gamecube": (0x80000000, 0x81800000), "wii": (0x80000000, 0x94000000), "n64": (0x80000000, 0x80800000),
              "psx": (0x80000000, 0x80200000), "dreamcast": (0x8C000000, 0x8D000000), "ps2": (0x00000000, 0x02000000),
@@ -220,6 +221,15 @@ class Field:
         self.units = spec.get("units") or ""
         self.enum = {num(k, f"{name}: enum key"): str(v) for k, v in (spec.get("enum") or {}).items()}
         self.flags = [(num(k, f"{name}: flag"), str(v)) for k, v in (spec.get("flags") or {}).items()]   # map order
+        self.signatures = {}                     # value -> tags (docs/mercenaries_engine.md: attack, phase, lead_s ...)
+        for k, tags in (spec.get("signatures") or {}).items():
+            if not isinstance(tags, dict):
+                raise MapError(f"{name}: signature {k} is an object of tags")
+            if tags.get("confidence", "static") not in CONFIDENCE:
+                raise MapError(f"{name}: signature {k}: confidence is one of {', '.join(CONFIDENCE)}")
+            if tags.get("source") and tags["source"] not in SOURCES:
+                raise MapError(f"{name}: signature {k}: source is one of {', '.join(SOURCES)}")
+            self.signatures[num(k, f"{name}: signature key")] = dict(tags)
         self.format = spec.get("format") or ""
         v = spec.get("valid")
         self.valid = (float(v[0]), float(v[1])) if isinstance(v, list) and len(v) == 2 else None
@@ -286,6 +296,8 @@ class Field:
             out["enum"] = {str(k): v for k, v in self.enum.items()}
         if self.flags:
             out["flags"] = {f"0x{k:X}": v for k, v in self.flags}
+        if self.signatures:
+            out["signatures"] = {f"0x{k:X}": v for k, v in self.signatures.items()}
         if self.array:
             out["count"] = f"@{self.count_ref}" if self.count_ref else self.count
             out["stride"] = f"@{self.stride_ref}" if self.stride_ref else self.stride

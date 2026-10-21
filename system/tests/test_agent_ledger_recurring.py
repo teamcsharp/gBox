@@ -47,7 +47,8 @@ def test_actual_scheduled_trigger_skips_creation_and_clears_stale_targets(hooked
                                 'since': 1000, 'claimed': []}
     assert {path for path, _ in calls} == {
         '/api/requests?status=open,in_progress&source=app',
-        '/api/requests?status=open,in_progress&source=gap'}
+        '/api/requests?status=open,in_progress&source=gap',
+        '/api/requests?status=open,in_progress,blocked&source=coach'}   # live coaching notes (read only)
 
 
 def test_stop_after_trigger_cannot_charge_previous_request(hooked, monkeypatch):

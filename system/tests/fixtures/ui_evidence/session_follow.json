@@ -1,0 +1,42 @@
+{
+  "title": "Sessions view follows the live game: an ended agent session moves to the broadcast program's game with a line saying so; the operator's own game that just ended waits a minute with Stay here / Watch it now",
+  "branch": "sessions-follow-live",
+  "include": ["_web_shell.json"],
+  "snippets_note": "Synthetic data only (no game, no control plane): spark-re4 is an agent's Resident Evil 4 session on lilspark that ended 20 s ago; nuc-doa3 is a Dead or Alive 3 bot demo streamed from i9-NUC (the broadcast program's game); spark-pso is the operator's own Phantasy Star Online that ended 5 s ago.",
+  "routes": {
+    "/api/sessions": [
+      {"session_id": "nuc-doa3", "game_id": "b8edf7040116f3aa", "title": "Dead or Alive 3 (USA)", "state": "running", "adapter": "xemu",
+       "started": "$now-600", "last_frame_age": 0.3, "agent_owned": true, "bot_demo": true, "detail": {"worker_name": "i9-NUC"}},
+      {"session_id": "spark-pso", "game_id": "65b7187589166b26", "title": "Phantasy Star Online Episode I & II", "state": "ended",
+       "adapter": "dolphin", "started": "$now-3000", "ended": "$now-5", "agent_owned": false, "detail": {"worker_name": "lilspark"}},
+      {"session_id": "spark-re4", "game_id": "78ab9efa2e310db4", "title": "Resident Evil 4 (USA) (Disc 1)", "state": "ended",
+       "adapter": "dolphin", "started": "$now-1500", "ended": "$now-20", "agent_owned": true, "detail": {"worker_name": "lilspark"}}
+    ],
+    "/api/sessions?include_ended=false": [
+      {"session_id": "nuc-doa3", "game_id": "b8edf7040116f3aa", "title": "Dead or Alive 3 (USA)", "state": "running", "adapter": "xemu",
+       "started": "$now-600", "last_frame_age": 0.3, "agent_owned": true, "bot_demo": true, "detail": {"worker_name": "i9-NUC"}}
+    ],
+    "/api/workers": [
+      {"id": "nuc", "name": "i9-NUC", "os": "windows", "online": true, "idle_seconds": 4000, "features": []},
+      {"id": "spark", "name": "lilspark", "os": "linux", "online": true, "features": []}
+    ],
+    "/api/broadcast": {"program": {"feed": "program", "session_id": "nuc-doa3", "title": "Dead or Alive 3 (USA)", "pc": "i9-NUC",
+                                    "state": "live", "why": "newest game with a picture", "mode": "auto"}, "feeds": [], "encoders": []},
+    "/api/sessions/nuc-doa3/mjpeg": {"$placeholder": "synthetic frame · Dead or Alive 3 · bot demo", "hue": 205, "style": "scene"},
+    "/api/sessions/nuc-doa3/stream/health": {"state": "running", "source_age_s": 0.3, "stalls": []},
+    "/api/catalog/b8edf7040116f3aa": {"game_id": "b8edf7040116f3aa", "title": "Dead or Alive 3 (USA)", "platform": "xbox", "favorite": false},
+    "/api/catalog/65b7187589166b26": {"game_id": "65b7187589166b26", "title": "Phantasy Star Online Episode I & II", "platform": "gamecube"},
+    "/api/catalog/78ab9efa2e310db4": {"game_id": "78ab9efa2e310db4", "title": "Resident Evil 4 (USA) (Disc 1)", "platform": "gamecube"},
+    "/api/games/*/workbench": {"mods": [], "controls": [], "bookmarks": []},
+    "/api/autoplay/telemetry/nuc-doa3": {"running": true, "demo": true, "mode": "playbook", "mission": "playbook: doa3 survival",
+                                          "title": "Dead or Alive 3 (USA)", "stats": {"rounds": 4}, "age_s": 1.2}
+  },
+  "shots": [
+    {"name": "follow-ended-agent-session", "url": "/#token=fixture&session=spark-re4", "viewport": [1400, 820],
+     "actions": [{"wait_for": "#follow-note"}, {"wait": 900}]},
+    {"name": "follow-line-closeup", "url": "/#token=fixture&session=spark-re4", "viewport": [1400, 820],
+     "actions": [{"wait_for": "#follow-note"}, {"wait": 600}], "clip": "#follow-note", "pad": 60},
+    {"name": "own-game-ended-waits", "url": "/#token=fixture&session=spark-pso", "viewport": [1400, 820],
+     "actions": [{"wait": 3500}]}
+  ]
+}

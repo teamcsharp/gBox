@@ -1,0 +1,35 @@
+{
+  "title": "Sessions view with nothing playing: the ended view says when the autoplay screensaver starts a game, and why each PC doesn't yet",
+  "branch": "sessions-follow-live",
+  "include": ["_web_shell.json"],
+  "snippets_note": "Synthetic data only (no game, no control plane): spark-re4 is an agent's Resident Evil 4 session that ended; no game runs anywhere. GET /api/autoplay-screensaver answers the screensaver's settings and each PC's reason (the pcs list this branch adds).",
+  "routes": {
+    "/api/sessions": [
+      {"session_id": "spark-re4", "game_id": "78ab9efa2e310db4", "title": "Resident Evil 4 (USA) (Disc 1)", "state": "ended",
+       "adapter": "dolphin", "started": "$now-1500", "ended": "$now-20", "agent_owned": true, "detail": {"worker_name": "lilspark"}}
+    ],
+    "/api/sessions?include_ended=false": [],
+    "/api/workers": [
+      {"id": "jay", "name": "JAYBUILTFINALE", "os": "windows", "online": true, "idle_seconds": 240, "features": []},
+      {"id": "nuc", "name": "i9-NUC", "os": "windows", "online": false, "features": []},
+      {"id": "spark", "name": "lilspark", "os": "linux", "online": true, "features": []}
+    ],
+    "/api/broadcast": {"program": {"feed": "program", "session_id": null, "state": "slate", "why": "no game is running", "mode": "auto"},
+                       "feeds": [], "encoders": []},
+    "/api/autoplay-screensaver": {
+      "settings": {"enabled": true, "workers": ["*"], "idle_minutes": 10, "session_minutes": 20},
+      "running": [], "log": [], "games": [],
+      "pcs": [
+        {"name": "JAYBUILTFINALE", "id": "jay", "os": "windows", "online": true, "demo": false,
+         "reason": "waiting for 10 minutes without operator input", "starts_in_s": 360},
+        {"name": "i9-NUC", "id": "nuc", "os": "windows", "online": false, "demo": false, "reason": "offline", "starts_in_s": null},
+        {"name": "lilspark", "id": "spark", "os": "linux", "online": true, "demo": false,
+         "reason": "CPU is at 84%; background admission budget is 70%.", "starts_in_s": null}
+      ]},
+    "/api/catalog/78ab9efa2e310db4": {"game_id": "78ab9efa2e310db4", "title": "Resident Evil 4 (USA) (Disc 1)", "platform": "gamecube"}
+  },
+  "shots": [
+    {"name": "nothing-playing-screensaver-reasons", "url": "/#token=fixture&session=spark-re4", "viewport": [1400, 820],
+     "actions": [{"wait_for": "#follow-idle .follow-idle"}, {"wait": 500}]}
+  ]
+}
