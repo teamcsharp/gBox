@@ -54,6 +54,7 @@ HEAD_GROWTH = 2.0                 # a donor head may stand up to 2x the native h
 HAND_GROWTH = 1.3                 # gloves reach up to 1.3x the native hand
 LIMB_THICKNESS = 1.3              # a donor limb is at most 1.3x as thick as the native limb
 TORSO_GROWTH = 1.5                # the donor's hip and chest at most 1.5x as wide as the native parts
+EXTREMITY = (0.25, 2.0)           # a shoe or glove scale stays within these multiples of the body scale (tiny paws)
 # how far a part sits from the body: a triangle that spans parts goes to the one nearest the body (torso first), so a
 # limb's straightening never swings a torso corner out into a spike
 DEPTH = {"hip": 0, "chest": 0, "head": 0, "l_upper": 1, "r_upper": 1, "l_thigh": 1, "r_thigh": 1,
@@ -266,7 +267,7 @@ def fit(rig: dict, geometry: dict, roles: dict, *, texture_limit: int = 256, slo
             lo, hi = native_box(foot)
             s_len = float(hi[2] - lo[2]) / max(float(np.ptp(P[:, 2])), 1e-9)
             s_depth = float(-lo[1]) / max(float(-P[:, 1].min()), 1e-9)
-            s_foot = float(np.sqrt(s_len * s_depth))
+            s_foot = float(np.clip(np.sqrt(s_len * s_depth), *(np.array(EXTREMITY) * scale)))
             lift = np.array([0.0, float(lo[1]) - s_foot * float(P[:, 1].min()), 0.0])
             rules[foot] = (s_foot * turn, joints[ri[foot]], lift)
             sizes[foot] = s_foot
@@ -278,7 +279,7 @@ def fit(rig: dict, geometry: dict, roles: dict, *, texture_limit: int = 256, slo
             lo, hi = native_box(hand)
             reach_native = float(hi[0] if side == "l" else -lo[0])
             reach_donor = float((P[:, 0] * axis).max())
-            s_hand = HAND_GROWTH * reach_native / max(reach_donor, 1e-9)
+            s_hand = float(np.clip(HAND_GROWTH * reach_native / max(reach_donor, 1e-9), *(np.array(EXTREMITY) * scale)))
             rules[hand] = (s_hand * turn, joints[ri[hand]], np.zeros(3))
             sizes[hand] = s_hand
 
