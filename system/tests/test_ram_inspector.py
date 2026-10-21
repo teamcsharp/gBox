@@ -159,6 +159,22 @@ def test_cheat_engine_filters_through_the_api(app):
     assert bad.status_code == 422
 
 
+def test_status_reads_do_not_wait_on_a_slow_sample_read(app):
+    app.post(f"/api/sessions/{SID}/ram/search", json={"type": "u8", "base": "0x80400000", "size": 0x1000}).raise_for_status()
+    insp = ram_inspector._INSPECTORS[SID]
+    gate, real = threading.Event(), insp._read_sample
+    insp._read_sample = lambda s: (gate.wait(5), real(s))[1]      # a whole region through a slow channel
+    t = threading.Thread(target=lambda: insp.search_sample(label="on"))
+    t.start()
+    time.sleep(0.2)
+    t0 = time.time()
+    st = app.get(f"/api/sessions/{SID}/ram/search").json()
+    assert time.time() - t0 < 2.0 and st["samples"]["on"] == 0         # answered while the read is still out
+    gate.set()
+    t.join(5)
+    assert app.get(f"/api/sessions/{SID}/ram/search").json()["samples"]["on"] == 1
+
+
 def test_a_ram_map_field_labels_the_search(app):
     app.post(f"/api/sessions/{SID}/ram/search", json={"type": "u8", "base": "0x80400000", "size": 0x10000}).raise_for_status()
     insp = ram_inspector._INSPECTORS[SID]

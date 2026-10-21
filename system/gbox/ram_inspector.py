@@ -266,7 +266,10 @@ class Inspector:
             self.search = None
 
     def _read_sample(self, s: Search):
-        ranges = s.candidate_ranges()
+        """The RAM a sample of s needs, read outside the search's lock (a whole region through a session channel
+        takes seconds; status reads and other samples must not wait on it)."""
+        with self.search_lock:
+            ranges = s.candidate_ranges()            # candidates only shrink: what is read now covers them later
         if ranges is None:
             data, err = self.reader.snapshot(s.base, s.size, wait=30.0, stop=lambda: self.closed)
             if err:
@@ -283,14 +286,14 @@ class Inspector:
     def _sample(self, label, op, value, lo, hi, note="", data=None, search=None):
         """Read the search's region (or its candidates) and apply one sample; data / search: a sample read earlier
         for that search (the labeler confirms its label first)."""
+        s = self.search
+        if s is None:
+            raise SearchError("start a search first")
+        if search is not None and s is not search:
+            raise SearchError("the search was restarted")
+        if data is None:
+            data = self._read_sample(s)
         with self.search_lock:
-            s = self.search
-            if s is None:
-                raise SearchError("start a search first")
-            if search is not None and s is not search:
-                raise SearchError("the search was restarted")
-            if data is None:
-                data = self._read_sample(s)
             if self.search is not s:
                 raise SearchError("the search was restarted")
             return s.sample(data, label=label, op=op, value=value, lo=lo, hi=hi, note=note)
@@ -303,8 +306,9 @@ class Inspector:
         s = self.search
         if s is None:
             return {"active": False}
-        out = {"active": True, **s.status(), "base_hex": ram_map.hexa(s.base),
-               "candidates_list": [dict(c, address_hex=ram_map.hexa(c["address"])) for c in s.candidates(limit)]}
+        with self.search_lock:                       # not while a sample changes its arrays
+            out = {"active": True, **s.status(), "base_hex": ram_map.hexa(s.base),
+                   "candidates_list": [dict(c, address_hex=ram_map.hexa(c["address"])) for c in s.candidates(limit)]}
         if self.labeler is not None:
             out["auto"] = self.labeler.status()
         return out
@@ -760,7 +764,8 @@ def _evidence(insp: Inspector) -> str:
     s = insp.search
     if s is None:
         return f"added from the RAM inspector {date.today().isoformat()}"
-    st = s.status()
+    with insp.search_lock:
+        st = s.status()
     lab = insp.labeler.status() if insp.labeler else None
     return (f"RAM inspector search {date.today().isoformat()}: {st['type']} over {ram_map.hexa(st['base'])}+{st['size']:#x}, "
             f"{st['samples']['on']} on / {st['samples']['off']} off / {st['samples']['plain']} plain samples, "
