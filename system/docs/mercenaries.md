@@ -197,10 +197,18 @@ the title screen (RPCS3 rereads the host DATA0.DAT at each load) and read off th
     * The driver presses nowhere else, so it never starts a story game.
     * `mercs.menus` in the map is the driver module (`screen` / `step` / `wandered`).
     * PLAY GAME's "?????" entry (index 6) is most likely the locked original THE MERCENARIES.
-  * Hangs: RPCS3 on the Spark (arm64) can freeze mid-round: the game's clock stops while RPCS3 keeps busy (seen once
-    in the first gBox session, after 9 rounds). The session runner (scratch) watches the RAM clock. If it stands
-    still for 60 s mid-round, the runner stops the agent session (session_op stop_game), launches the game again
-    plainly on the same PC, and walks it from the title into Reunion as above. Every hang is logged.
+  * The deployment: RE5's mercs block says `"ready": true`, so `mercs_bot` plays it through the engine
+    (`title_engine`) while the engine's global READY still waits on RE4's A/B. A plain Autoplay on an RE5 session
+    runs it in the worker: the boot / menus from `screen` / `step`, each round through `play_round`.
+    * The RAM comes through one open /proc/<pid>/mem (`mercs_bot.ProcMem`).
+    * Live: `mercs_bot.play` from the branch, run against a gBox RE5 session, walked the results and the selects
+      and played its rounds.
+  * Hangs: RPCS3 on the Spark (arm64) can freeze mid-round: the game's clock stops while RPCS3 keeps busy (twice on
+    2026-10-21, about an hour into a session each time).
+    * The driver gives a round up when its clock stands still for 60 s: its `screen` says "loading", so the engine
+      ends the round "lost", and the deployment ends the run hung (gBox's own recovery takes it from there).
+    * The scratch session runner did the same by itself: stop the agent session, launch it plainly, walk it from
+      the title back into Reunion. It recovered the second hang that way with no help.
   * Grabs: player action 4 (+0x845) means a Majini is holding him, with the "Break free" prompt (left stick) on
     screen. The driver's prompt source answers "wiggle", which the engine mashes (left / right) until he is free.
   * Prompts come from sActionButton. +0x34 bit 1 is set while a prompt is up (bit 0: the weapon is raised).
@@ -216,10 +224,29 @@ the title screen (RPCS3 rereads the host DATA0.DAT at each load) and read off th
     The finisher press is in the driver and tested on RAM fixtures. The first live try ended when the session's game
     froze, so its live check is still to come.
   * Time bonuses: the hourglasses (uOm0100; uOm0100.arc's model is "sunadokei_360", hourglass). There are 9 in Public
-    Assembly, units of sUnit's move line 12 ("OM") with vtable 0x015EF5E0. +0x250 holds a bounding sphere (centre 13 cm
-    above the origin, radius 28 cm). +0x194 is 0x0090..01 on 2 of them and 0x00A0..01 on the other 7. The bot shoots
-    one inside 15 m when no Majini is within 7 m, and leaves it for 30 s if 4 s of fire did not take it. From where
-    it fights (the start roof), all 9 are 12-45 m away or on other levels, so taking them needs routes (not yet).
+    Assembly, units of sUnit's move line 12 ("OM") with vtable 0x015EF5E0. Each is a small golden hourglass on the
+    ground under a light pillar (frames).
+    * +0x30 is its position, +0x250 a bounding sphere (centre 13 cm up, radius 28 cm).
+    * +0x194 is 0x0090..01 on 2 of them and 0x00A0..01 on the other 7.
+  * Routes: RE5's own navigation mesh, from RAM (`gbox/mercs/titles/re5_nav.py`). The chain is sAI [0x017BD4C8]
+    +0x24 cAIPathFinding, +0x14 rNavigationMesh: points at +0x70 / +0x74, triangles at +0x78 / +0x7C (32 bytes each:
+    3 vertex indices, links to the neighbours with the shared edge).
+    * Public Assembly: 1,638 points and 2,187 triangles, one connected mesh over every level.
+    * A* over the triangles, waypoints through the shared edges' midpoints.
+    * Live: routes from the start roof to all 9 hourglasses in about 1 ms each. The bot ran a 70 m route across the
+      stage in 16 s and took drops with the stage's square prompt.
+    * The mesh is the AI's, and some of its drops and climbs are Majini-only (no prompt for the player). The bot
+      waits 3 s at one, then avoids it and routes around (it found the ramp instead of a 2 m drop).
+  * Taking a time bonus: standing at the hourglass and facing it, the game shows **"□ Time bonus"** (a real frame:
+    `docs/evidence/re5-merc-bot/gbox-time-bonus-prompt.jpg`). It is the player's own stage prompt (sActionButton,
+    kind 2).
+    * What doesn't take one: the Gatling's fire on it from its level at 4-6 m (bullets at its base), low knife
+      slashes at 1 m, or walking over it.
+    * The bot walks up to it along the navmesh, faces it, and presses square when the prompt shows (`Bot._take`).
+      It leaves the bonus for 30 s if the prompt does not come.
+    * For now it only goes for a bonus within 15 m on its own level, with no Majini within 7 m. The navmesh's
+      crossings between levels are partly Majini-only, so the far ones cost more time than they give.
+    * A time bonus taken live is still to come (the clock's jump is counted as `bonus_s`).
   * Live in scratch on Public Assembly with Chris (Heavy Metal), whose Gatling has infinite ammo: three rounds back
     to back (2026-10-21, the Spark's scratch RPCS3) gave 14, 20 and 17 kills; 4,460, 7,460 and 6,260 points; best
     combo 7. A health freeze was on for those rounds (a scratch-only tool, never part of the driver). The first
@@ -232,7 +259,8 @@ the title screen (RPCS3 rereads the host DATA0.DAT at each load) and read off th
 
     RAM came from the session's RPCS3 (/proc, read only) and the presses went through the session's input API.
     In round 10 the emulator froze (the game's clock stopped at 1:48, RPCS3 still busy).
-  * Not yet: routes (to the time bonuses), the finisher's live check, the enemies' attack states.
+  * Not yet: a time bonus taken live, routes between levels the player can take (ladders and stairs, not the
+    Majini-only drops), the finisher's press seen live (the prompts were), the enemies' attack states.
 
 ## Live checks (to run once, then flip `live_checked`)
 

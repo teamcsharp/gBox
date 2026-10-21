@@ -316,47 +316,46 @@ def test_time_bonuses_are_read_from_the_om_line(monkeypatch):
     assert R.snapshot(with_bonuses(world(), [(0.0, 0.0, 1000.0)]))["bonuses"] == []
 
 
-def test_it_shoots_a_time_bonus_when_no_majini_is_close(monkeypatch):
+def test_a_time_bonus_is_taken_with_its_prompt(monkeypatch):
     monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
-    assert R.BONUS_HUNT is False                                                  # off until it is known what takes one
-    act, bot = tick(with_bonuses(world(action=2, enemies=[((3000.0, 0.0, 0.0), 800, 800)]), [(0.0, 20.0, 600.0)]))
-    assert not str(bot.target).startswith("bonus")
-    monkeypatch.setattr(R, "BONUS_HUNT", True)
+    assert R.BONUS_HUNT is True
     far_majini = [((3000.0, 0.0, 0.0), 800, 800)]                                # 30 m away at +x
-    want = math.atan2(20.0 - R.GUN_H, 600.0)                                      # an hourglass 6 m ahead, 20 cm up
-    act, bot = tick(with_bonuses(world(action=2, pitch_raw=-want, enemies=far_majini), [(0.0, 20.0, 600.0)]))
-    assert act["hold"] >= {"l1", "r1"} and str(bot.target).startswith("bonus")
-    assert "bonus_target" in bot.stats
-    act, _ = tick(with_bonuses(world(action=2, pitch_raw=-(want + 0.03), enemies=far_majini), [(0.0, 20.0, 600.0)]))
-    assert "r1" not in act["hold"]                                                # 1.7 deg off: past half its radius
+    act, bot = tick(with_bonuses(world(enemies=far_majini), [(0.0, 13.0, 100.0)]))   # 1 m ahead, facing it
+    assert act == {"hold": {"lup"}} and str(bot.target).startswith("bonus")      # a step closer, no shot
+    mem = with_prompt(with_bonuses(world(enemies=far_majini), [(0.0, 13.0, 100.0)]), R.BTN_STAGE, PLAYER, 0)
+    act, bot = tick(mem)
+    assert act == {"tap": "square"} and bot.stats["bonus_presses"] == 1           # "□ Time bonus"
+    act, _ = tick(with_bonuses(world(enemies=far_majini), [(-100.0, 13.0, 0.0)])) # 1 m to the right: turn to it
+    assert act == {"hold": {"rright"}}
     close = [((0.0, 0.0, 250.0), 800, 800)]                                       # a Majini 2.5 m away: him first
-    act, bot = tick(with_bonuses(world(action=2, enemies=close), [(0.0, 20.0, 600.0)]))
+    act, bot = tick(with_bonuses(world(action=2, enemies=close), [(0.0, 13.0, 100.0)]))
     assert bot.target == 0
-    act, _ = tick(with_bonuses(world(action=2, enemies=far_majini), [(0.0, 0.0, 200.0)]))
-    assert "ldown" in act["hold"] and "l1" not in act["hold"]                     # on top of it: a step back first
 
 
-def test_a_bonus_shots_cannot_take_is_left_alone_for_a_while(monkeypatch):
+def test_a_bonus_without_its_prompt_is_left_alone_for_a_while(monkeypatch):
     monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
-    monkeypatch.setattr(R, "BONUS_HUNT", True)
-    want = math.atan2(20.0 - R.GUN_H, 600.0)
     clock = [100.0]
     bot = R.Bot(clock=lambda: clock[0])
-    mem = with_bonuses(world(action=2, pitch_raw=-want), [(0.0, 20.0, 600.0)])
-    for _ in range(int(R.BONUS_GIVE_UP_S / 0.05) + 2):                           # firing at it, it stays
-        act = bot.tick(R.snapshot(mem))
-    assert "r1" not in act["hold"]                                                # left alone now
+    mem = with_bonuses(world(), [(0.0, 13.0, 40.0)])                             # right at it, no prompt
+    assert bot.tick(R.snapshot(mem)) == {"hold": set()}
+    clock[0] += R.BONUS_GIVE_UP_S + 0.5
+    bot.tick(R.snapshot(mem))
+    assert not str(bot.target or "").startswith("bonus") or bot.bonus_skip         # left alone now
     clock[0] += R.BONUS_SKIP_S + 1
-    assert "r1" in bot.tick(R.snapshot(mem))["hold"]                              # tried again later
+    bot.tick(R.snapshot(mem))
+    assert str(bot.target or "bonus").startswith("bonus")                         # tried again later
 
 
-def test_far_bonuses_are_walked_to_and_the_clock_jumps_are_counted(monkeypatch):
+def test_near_bonuses_on_his_level_are_walked_to_and_the_clock_jumps_are_counted(monkeypatch):
     monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
-    monkeypatch.setattr(R, "BONUS_HUNT", True)
-    act, bot = tick(with_bonuses(world(), [(0.0, 0.0, 2500.0)]))                  # 25 m ahead, nobody near, no mesh
+    act, bot = tick(with_bonuses(world(), [(0.0, 13.0, 1200.0)]))                 # 12 m ahead, nobody near, no mesh
     assert {"lup", "cross"} <= act["hold"]                                        # straight at it
+    act, _ = tick(with_bonuses(world(), [(0.0, 13.0, 2500.0)]))                   # 25 m: past BONUS_RANGE
+    assert act == {"hold": set()}
+    act, _ = tick(with_bonuses(world(), [(0.0, 400.0, 900.0)]))                   # up on a roof: another level
+    assert act == {"hold": set()}
     monkeypatch.setattr(R, "BONUS_WALK", False)
-    act, _ = tick(with_bonuses(world(), [(0.0, 0.0, 2500.0)]))
+    act, _ = tick(with_bonuses(world(), [(0.0, 13.0, 1200.0)]))
     assert act == {"hold": set()}                                                 # without routes: out of reach
     bot.tick(R.snapshot(with_bonuses(world(timer=60.0), [])))                     # gone from the line: taken
     assert bot.stats["bonuses_taken"] == 1

@@ -54,14 +54,15 @@ HOURGLASS_VT = 0x015EF5E0              # uOm0100's vtable (BLUS30491 app 01.01; 
 HG_CENTRE_DY = 13.0                    # its middle, above its position (+0x30)
 HG_CENTRE, HG_KIND = 0x250, 0x194      # +0x250 f32 x4 bounding sphere (centre, radius: 28 cm, 13 cm above the origin);
                                        # +0x194 u32 0x00KK..01: 0x90 on 2 of Public Assembly's 9, 0xA0 on the other 7
-BONUS_SHOOT = 2200.0                   # shoot a time bonus from up to this (the Gatling's reach)...
-BONUS_DY = 520.0                       # ...and this far above / below (one lower down is often in sight)
+BONUS_RANGE = 1500.0                   # go for a time bonus this near (straight line) on the player's own level:
+                                       # the navmesh's crossings between levels are partly Majini-only, so the
+                                       # far ones cost more time than they give (live 2026-10-21)
 CLEAR_R = 700.0                        # ...when no Majini is nearer than this
 BONUS_GIVE_UP_S, BONUS_SKIP_S = 4.0, 30.0   # fired at one this long and it is still there: leave it this long
 BONUS_WALK = True                      # walk to the far ones along the game's navmesh (re5_nav)
-BONUS_HUNT = False                     # go for them at all: off until it is known what takes one (2026-10-21:
-                                       # the Gatling's fire on it from its level at 4-6 m, low knife slashes at
-                                       # 1 m, standing on it and square on it did not; the routes there work)
+BONUS_HUNT = True                      # go for them (taken with the "□ Time bonus" prompt at the hourglass:
+                                       # the Gatling's fire, knife slashes and walking over it do not take one)
+BONUS_TAKE = 140.0                     # this close (and on its level): face it, square on its prompt
 BONUS_NEAR = 650.0                     # walked to within this, then shot from where he stands...
 BONUS_STEEP = math.radians(-18)        # ...no steeper than this (the aim stops near -20 deg: step back)
 BONUS_LEVEL_DY = 150.0                 # ...and from its own level (not from a roof above it)
@@ -401,6 +402,7 @@ class Bot:
         self.route, self.route_for, self.route_at, self.route_since = None, None, 0.0, 0.0
         self.avoid: list = []                  # crossings the player could not take this round (no prompt there)
         self.climb_at = None                   # (the crossing, since when) while waiting at one for its prompt
+        self.take_at = None                    # (the bonus, since when) while standing at one for its prompt
 
     # --- the engine's brain interface ---
     def prompt_ok(self, button, snap, now) -> bool:
@@ -444,9 +446,11 @@ class Bot:
         tx, ty, tz = tgt["pos"]
         dist = math.hypot(tx - px, tz - pz)
         want = heading(tx - px, tz - pz)
-        if tgt.get("kind") == "time" and tgt.get("walk"):  # a time bonus out of reach: along the navmesh
-            self.aiming_since = None
-            return self._follow(p, tgt, snap.get("nav"), snap.get("stage_prompt"), now)
+        if tgt.get("kind") == "time":                       # a time bonus: walked to, taken with its prompt
+            self.aiming_since, self.target = None, tgt["slot"]
+            if tgt.get("walk"):
+                return self._follow(p, tgt, snap.get("nav"), snap.get("stage_prompt"), now)
+            return self._take(p, tgt, snap.get("stage_prompt"), now)
         if dist > ENGAGE:                                   # nobody near: walk toward the nearest
             self.aiming_since = None
             return {"hold": self._walk(p, want, now)}
@@ -509,9 +513,9 @@ class Bot:
 
     # --- helpers ---
     def _bonus(self, p, live, standing, now):
-        """The time bonus to go for now, or None. Only when no Majini is within CLEAR_R: the nearest hourglass not far
-        above / below, shot from up to BONUS_SHOOT (walked to when farther, or once BONUS_GIVE_UP_S of shots did not
-        take it); a farther one waits while Majini are within ENGAGE (the combo first)."""
+        """The time bonus to go for now, or None. Only when no Majini is within CLEAR_R: the nearest hourglass on the
+        player's own level within BONUS_RANGE, walked to along the navmesh and taken with its "□ Time bonus" prompt
+        (Bot._take); one left alone for BONUS_SKIP_S when its prompt did not come."""
         px, py, pz = p["pos"]
         now_ptrs = {b["ptr"] for b in standing}
         taken = self.bonus_seen - now_ptrs
@@ -524,18 +528,38 @@ class Bot:
         near = min((math.hypot(e["pos"][0] - px, e["pos"][2] - pz) for e in live), default=math.inf)
         if near < CLEAR_R:
             return None
-        cands = [b for b in standing if abs(b["pos"][1] - py) < BONUS_DY]
+        cands = [b for b in standing if abs(b["pos"][1] - py) < BONUS_LEVEL_DY
+                 and math.hypot(b["pos"][0] - px, b["pos"][2] - pz) < BONUS_RANGE]
         if not cands:
             return None
         b = min(cands, key=lambda b: math.hypot(b["pos"][0] - px, b["pos"][2] - pz))
         d = math.hypot(b["pos"][0] - px, b["pos"][2] - pz)
-        level = abs(b["pos"][1] - py) < BONUS_LEVEL_DY          # on its level: shot from here (else too steep)
-        walk = (d > BONUS_NEAR or not level) if BONUS_WALK else False
-        if not BONUS_WALK and d > BONUS_SHOOT:
+        level = abs(b["pos"][1] - py) < BONUS_LEVEL_DY          # on its level, right at it: take it
+        walk = d > BONUS_TAKE or not level
+        if walk and not BONUS_WALK:
             return None
         self.stats["bonus_target"] = f"{b['ptr']:#x} d {d:.0f}" + (" walk" if walk else "")
         return {"slot": f"bonus {b['ptr']:#x}", "ptr": b["ptr"], "pos": b["pos"], "aim_h": 0.0, "r": b.get("r"),
                 "kind": "time", "walk": walk}
+
+    def _take(self, p, tgt, stage_prompt, now) -> dict:
+        """At a time bonus: square when its prompt ("□ Time bonus") is up, else face it and edge up to it; a bonus
+        stood at BONUS_GIVE_UP_S without its prompt is left for BONUS_SKIP_S."""
+        pos = p["pos"]
+        if stage_prompt:
+            self.stats["bonus_presses"] = self.stats.get("bonus_presses", 0) + 1
+            return {"tap": "square"}
+        if self.take_at is None or self.take_at[0] != tgt["ptr"]:
+            self.take_at = (tgt["ptr"], now)
+        elif now - self.take_at[1] > BONUS_GIVE_UP_S:
+            self.bonus_skip[tgt["ptr"]] = now + BONUS_SKIP_S
+            self.take_at = None
+            return {"hold": set()}
+        err = wrap(heading(tgt["pos"][0] - pos[0], tgt["pos"][2] - pos[2]) - p["rot"])
+        keys = self._turn(err, aiming=False)
+        if math.hypot(tgt["pos"][0] - pos[0], tgt["pos"][2] - pos[2]) > 60.0 and abs(err) < math.radians(30):
+            keys = keys | {"lup"}                           # a step closer (walking, not running)
+        return {"hold": keys}
 
     def _follow(self, p, tgt, mesh, stage_prompt, now) -> dict:
         """One step along the navmesh to a time bonus: the route drawn again every REPLAN_S; the next waypoint walked
