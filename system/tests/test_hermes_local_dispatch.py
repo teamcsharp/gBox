@@ -222,3 +222,19 @@ def test_an_inbox_lane_run_gets_the_larger_inbox_budget():
     out = hermes_local.local_prompt(base, s, lane='inbox')
     assert 'Use a 60-tool-call work budget with the final 6 calls' in out and 'at most 60 tool calls' in out
     assert 'at most 20 tool calls' in hermes_local.local_prompt(base, s, lane='favorite')
+
+
+def test_large_local_run_reserves_delivery_and_resumes_the_missing_acceptance_step():
+    s = S.model_copy(update={'provider': 'gbox-minimax', 'model': 'minimax-m3.1-flash:cloud',
+                            'allow_large_tasks': True, 'tool_budget_inbox': 90})
+    before = s.model_dump()
+    text = hermes_local.local_prompt('Assigned queue task: request #7 (abcdef0123456789) [lane inbox].',
+                                    s, lane='inbox')
+    assert 'at most 90 tool calls, reserving the last 6 for focused verification, publish_task_changes' in text
+    assert 'reuse prepare_task_workspace' in text and 'pending job IDs' in text
+    assert 'Resume the first missing acceptance step' in text and 'do not duplicate an active job' in text
+    assert 'bounded deliverable' in text and 'exact check' in text
+    assert 'explicit file paths and test-path strings before optional investigation' in text
+    assert 'returned commit and PR receipt' in text and 'actual evidence artifact' in text
+    assert 'done only after the full request is verified' in text and 'keep partial work in_progress' in text
+    assert s.model_dump() == before  # Prompt packaging does not alter any route or capacity setting.
