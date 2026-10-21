@@ -1,0 +1,1053 @@
+{
+ "format": "gbox-ram-map/1",
+ "id": "GRSEAF",
+ "title": "Soul Calibur II (GameCube, NTSC-U)",
+ "platform": "gamecube",
+ "endian": "big",
+ "pointer_size": 4,
+ "pointer_range": [
+  "0x80000000",
+  "0x81800000"
+ ],
+ "match": {
+  "disc_id": "GRSEAF",
+  "game_ids": [
+   "201629ad498aba7b",
+   "e08e8a0c1b3c9060"
+  ],
+  "memory": {
+   "address": "0x80000000",
+   "equals": "GRSEAF"
+  }
+ },
+ "regions": [
+  {
+   "name": "MEM1",
+   "base": "0x80000000",
+   "size": "0x1800000"
+  }
+ ],
+ "notes": "Sources: Ghidra over main.dol (docs/soulcalibur2_gc.md; the decompile of the move loader FUN_800948a0, the hit resolver FUN_8009be38 / FUN_8009cd18, the GI check FUN_8009c8b4, the pad FUN_8002a694 / FUN_8009a618 and the CPU AI FUN_800cfa40 / FUN_800d1fac), the US / UK Action Replay codes (gbox.ar_decrypt) and live reads while gbox/sc2_bot.py played (docs/soulcalibur2_gc.md, Perfect defence).",
+ "groups": {
+  "game": "The match",
+  "p1": "Player 1's fighter (0x8034D4C0)",
+  "p1_attack": "Player 1's current attack",
+  "p2": "Player 2's fighter (0x8036E560)",
+  "p2_attack": "Player 2's current attack"
+ },
+ "fields": {
+  "game.disc_id": {
+   "address": "0x80000000",
+   "type": "str",
+   "length": 6,
+   "group": "game",
+   "watch": false,
+   "description": "Disc id at the start of MEM1",
+   "source": "manual",
+   "evidence": "every GameCube game: the boot header is copied to 0x80000000",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "game.frame": {
+   "address": "0x802B608C",
+   "type": "u32",
+   "group": "game",
+   "watch": false,
+   "description": "Game frame counter (+1 a frame, 60 a second)",
+   "source": "manual",
+   "evidence": "FUN_800d1f4c stamps the AI's pad words with it; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): +18 per 0.3 s, jumps back on a state load",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "game.frame_time": {
+   "address": "0x802B6080",
+   "type": "f32",
+   "units": "s",
+   "group": "game",
+   "watch": false,
+   "description": "Seconds per frame (1/60)",
+   "source": "manual",
+   "evidence": "live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): 0x3C888889",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "game.fight": {
+   "address": "0x8038F650",
+   "type": "u16",
+   "group": "game",
+   "enum": {
+    "0": "no fight",
+    "1": "fight on"
+   },
+   "description": "Nonzero while the hit resolver runs (a fight is on)",
+   "source": "ghidra",
+   "evidence": "FUN_8009be38 / FUN_8009cd18 return early while it is 0; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): 1 in Practice",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "game.p1": {
+   "address": "0x8038F678",
+   "type": "ptr",
+   "group": "game",
+   "watch": false,
+   "description": "Pointer to player 1's fighter struct",
+   "source": "manual",
+   "evidence": "live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): 0x8034D4C0",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "game.p2": {
+   "address": "0x8038F67C",
+   "type": "ptr",
+   "group": "game",
+   "watch": false,
+   "description": "Pointer to player 2's fighter struct",
+   "source": "manual",
+   "evidence": "live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): 0x8036E560",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1.side": {
+   "type": "u8",
+   "enum": {
+    "0": "right of the screen (forward = left)",
+    "1": "left of the screen (forward = right)"
+   },
+   "address": "0x8034d4c7",
+   "group": "p1",
+   "description": "Player 1: Which side of the screen the fighter is on: the pad's left / right are turned into back / forward with it",
+   "source": "ghidra",
+   "evidence": "FUN_8009a618: +0x07 = (player index == FUN_800bbe68()), then the stick is rotated 2 (side 1) or 6 (side 0) steps; FUN_800dac3c compares both fighters' +0x2950 / +0x2958 with the camera; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): flips when the fighters swap sides",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1.opponent": {
+   "type": "ptr",
+   "watch": false,
+   "address": "0x8034d4c8",
+   "group": "p1",
+   "description": "Player 1: The other fighter's struct",
+   "source": "ghidra",
+   "evidence": "FUN_8009be38 reads the attacker through *(defender + 8); live: P1 +8 = 0x8036E560, P2 +8 = 0x8034D4C0",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1.pad": {
+   "type": "u32",
+   "flags": {
+    "0x40": "A",
+    "0x200": "B",
+    "0x20": "X",
+    "0x100": "Y",
+    "0x10": "Z",
+    "0x1": "L",
+    "0x4": "L analog",
+    "0x8": "R",
+    "0x80": "R analog",
+    "0x8000": "Start",
+    "0x400": "right",
+    "0x800": "left",
+    "0x1000": "down",
+    "0x2000": "up"
+   },
+   "watch": false,
+   "address": "0x8034d4d4",
+   "group": "p1",
+   "description": "Player 1: The controller word the fighter acts on (GameCube buttons remapped by the table at 0x802588E0; stick and d-pad as left / right / down / up bits 0x400-0x2000)",
+   "source": "ghidra",
+   "evidence": "FUN_8002a694 builds it from PADStatus with the 0x802588E0 table; FUN_8009a618 copies it from 0x802B5950 + port * 0x88; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): gBox a -> 0x40, b -> 0x200, x -> 0x20, y -> 0x100, z -> 0x10, l -> 0x10005, r -> 0x20088, right -> 0x40400",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1.control": {
+   "type": "u32",
+   "enum": {
+    "1": "the pad (human)"
+   },
+   "watch": false,
+   "address": "0x8034d510",
+   "group": "p1",
+   "description": "Player 1: Who drives the fighter: 0 / 1 the pad, other values the CPU (3 VS CPU, 5 / 34 / 38 Practice dummy modes)",
+   "source": "ghidra",
+   "evidence": "FUN_8009a618: modes 0 / 1 read the pad, others FUN_800dac3c / the AI; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only)",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1.fighter": {
+   "type": "s16",
+   "enum": {
+    "1": "Mitsurugi",
+    "2": "Seung Mina",
+    "3": "Taki",
+    "4": "Maxi",
+    "5": "Voldo",
+    "6": "Sophitia",
+    "11": "Ivy",
+    "12": "Kilik",
+    "13": "Xianghua",
+    "15": "Yoshimitsu",
+    "17": "Nightmare",
+    "18": "Astaroth",
+    "19": "Inferno",
+    "20": "Cervantes",
+    "21": "Raphael",
+    "22": "Talim",
+    "23": "Cassandra",
+    "24": "Charade",
+    "25": "Necrid",
+    "26": "Yunsung",
+    "27": "Link",
+    "30": "Lizardman",
+    "31": "Assassin",
+    "32": "Berserker"
+   },
+   "address": "0x8034d522",
+   "group": "p1",
+   "description": "Player 1: Fighter id (soulcalibur2.FIGHTERS)",
+   "source": "ghidra",
+   "evidence": "FUN_800a1e4c case 7: lha r26, 0x62(r31); live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): Talim 22, Raphael 21",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1.costume": {
+   "type": "s16",
+   "address": "0x8034d524",
+   "group": "p1",
+   "description": "Player 1: Costume picked at the select screen",
+   "source": "ghidra",
+   "evidence": "FUN_800a1e4c case 7: lha r27, 0x64(r31); AR code 'All characters wear their secret costume' writes 0x8034D524 = 4",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1.crouching": {
+   "type": "bool",
+   "address": "0x8034d562",
+   "group": "p1",
+   "description": "Player 1: State flag 2: crouching (FUN_80093368 sets flag i at +0xA0 + i)",
+   "source": "ghidra",
+   "evidence": "FUN_8009be38: flag +0xA2 picks the crouching hit / guard bits of an attack; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only)",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1.airborne": {
+   "type": "bool",
+   "address": "0x8034d563",
+   "group": "p1",
+   "description": "Player 1: State flag 3: in the air",
+   "source": "ghidra",
+   "evidence": "FUN_8009be38 / FUN_800d1fac case 7",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1.down": {
+   "type": "bool",
+   "address": "0x8034d564",
+   "group": "p1",
+   "description": "Player 1: State flag 4: knocked down",
+   "source": "ghidra",
+   "evidence": "FUN_8009be38 (ground hits), FUN_8009cd18",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1.back_turned": {
+   "type": "bool",
+   "address": "0x8034d56a",
+   "group": "p1",
+   "description": "Player 1: State flag 10: facing away (the stick's forward / back flip)",
+   "source": "ghidra",
+   "evidence": "FUN_8009a618 flips the stick rotation while +0xAA is set; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): set from frame ~15 of the parried stagger 0x23AB",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1.attacking": {
+   "type": "bool",
+   "address": "0x8034d57b",
+   "group": "p1",
+   "description": "Player 1: State flag 0x1B: an attack move is running",
+   "source": "ghidra",
+   "evidence": "FUN_800948a0 sets flag 0x1B when a move with an attack starts; FUN_80096ce8 clears it",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1.attack_active": {
+   "type": "bool",
+   "address": "0x8034d581",
+   "group": "p1",
+   "description": "Player 1: State flag 0x21: the attack's hit spheres are live this frame",
+   "source": "ghidra",
+   "evidence": "FUN_8009be38 tests the attacker's +0xC1 before the sphere check; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): set on the active frames only",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1.attack_connected": {
+   "type": "bool",
+   "address": "0x8034d582",
+   "group": "p1",
+   "description": "Player 1: State flag 0x22: the current attack already hit / was guarded",
+   "source": "ghidra",
+   "evidence": "FUN_8009cd18 sets flag 0x22 on a hit; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only)",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1.guard_impact": {
+   "type": "u16",
+   "enum": {
+    "0": "none",
+    "2": "Repel (6G: high, mid, throws)",
+    "40": "Parry (4G: mid, low)"
+   },
+   "address": "0x8034d722",
+   "group": "p1",
+   "description": "Player 1: State var 12: the Guard Impact the fighter is in, while it can catch an attack",
+   "source": "ghidra",
+   "evidence": "FUN_8009c8b4 reads +0x262 to decide a GI (type 2 needs attack bit 0x08, type 0x28 bits 0x02 and 0x08 / 0x10); live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): 2 on frames 0-8 of 6G (move 0x8A), 40 during 4G (move 0x92)",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1.rounds": {
+   "type": "u8",
+   "address": "0x8034ea0d",
+   "group": "p1",
+   "description": "Player 1: Rounds won in this match",
+   "source": "manual",
+   "evidence": "AR code 'Player 1 - Only one round to win' (0834EA0D / 0034EA0D 05) writes P1's byte",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1.hp": {
+   "type": "f32",
+   "valid": [
+    0,
+    400
+   ],
+   "units": "hp",
+   "address": "0x8034ea1c",
+   "group": "p1",
+   "description": "Player 1: Health (240 at the start of a round)",
+   "source": "manual",
+   "evidence": "AR code 'Player 1 has Unlimited Health' writes 0x8034EA1C = 240.0 (decrypted with gbox.ar_decrypt); live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only)",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1.combo_hits": {
+   "type": "s32",
+   "watch": false,
+   "address": "0x8034ea64",
+   "group": "p1",
+   "description": "Player 1: Hits taken in the current combo",
+   "source": "ghidra",
+   "evidence": "FUN_8009cd18 increments +0x15A4 for every hit result; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): 1, 2, back to 0 after the combo",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1.hit_result": {
+   "type": "s32",
+   "enum": {
+    "0": "none",
+    "1": "guarded",
+    "2": "ring-edge push",
+    "4": "hit",
+    "5": "hit (counter)",
+    "6": "hit while down",
+    "7": "hit in the air / juggle",
+    "8": "attack Guard Impacted",
+    "9": "hit (soul charge break)",
+    "10": "weapon clash",
+    "11": "Guard Impacted it (repel)",
+    "12": "Guard Impacted it (parry)",
+    "15": "throw"
+   },
+   "address": "0x8034eab8",
+   "group": "p1",
+   "description": "Player 1: What the hit resolver decided for this fighter this frame (one frame long)",
+   "source": "ghidra",
+   "evidence": "FUN_8009be38 stores it, FUN_8009cd18 applies it (1 guard, 4-7 hit, 11 / 12 the fighter Guard Impacted); live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): 4 / 7 on hits, 1 on guards, 11 on 6G and 4G that landed",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1.distance": {
+   "type": "f32",
+   "units": "m",
+   "watch": false,
+   "address": "0x8034eb20",
+   "group": "p1",
+   "description": "Player 1: Distance between the two fighters",
+   "source": "manual",
+   "evidence": "live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): the same value in both structs, 3.3 -> 5.2 as P1 walked back",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1.attack": {
+   "type": "ptr",
+   "watch": false,
+   "address": "0x8034eb50",
+   "group": "p1",
+   "description": "Player 1: The current attack record (0x60 bytes) or 0",
+   "source": "ghidra",
+   "evidence": "FUN_800948a0: moveset bank +0x10 + move+0x58 * 0x60 when a move with an attack starts; FUN_80096ce8 clears it",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1.move_stance": {
+   "type": "u16",
+   "format": "hex",
+   "watch": false,
+   "address": "0x8034f0ea",
+   "group": "p1",
+   "description": "Player 1: Motion layer 0 move id (stance and movement: 0 standing, 5 guard, 0x30 / 0x31 walking)",
+   "source": "ghidra",
+   "evidence": "FUN_800948a0(player, 0, move): layer at +0x1C28, move id at +2; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only)",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1.move": {
+   "type": "u16",
+   "format": "hex",
+   "enum": {
+    "0xffff": "none",
+    "0x8a": "Repel (6G)",
+    "0x8c": "after a Repel",
+    "0x92": "Parry (4G)",
+    "0x2000": "Guard Impacted",
+    "0x23a4": "repelled stagger",
+    "0x23ab": "parried stagger",
+    "0x23ad": "parried stagger (low)"
+   },
+   "address": "0x8034f46a",
+   "group": "p1",
+   "description": "Player 1: Motion layer 1 move id: the fighter's action (attacks, Guard Impacts, reactions 0x2000-0x2FFF); 0xFFFF none",
+   "source": "ghidra",
+   "evidence": "FUN_800948a0(player, 1, move): layer at +0x1FA8; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): Talim A 0xC7, B 0xC8, K 0xC9",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1.move_frame": {
+   "type": "f32",
+   "watch": false,
+   "address": "0x8034f488",
+   "group": "p1",
+   "description": "Player 1: Current frame of the action move: the attack record's first / last active frames count on this clock",
+   "source": "ghidra",
+   "evidence": "FUN_800cfa40 (the CPU AI): frames to impact = rec+0x36 - (int)*(float *)(player + 0x1FC8); live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): hits land when it reaches rec+0x36",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1.move_next_frame": {
+   "type": "f32",
+   "watch": false,
+   "address": "0x8034f470",
+   "group": "p1",
+   "description": "Player 1: The action move's next frame (minus move_frame: the move's speed, 1.0 for most)",
+   "source": "manual",
+   "evidence": "live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only)",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1.move_queued": {
+   "type": "u16",
+   "format": "hex",
+   "watch": false,
+   "address": "0x8034f4ba",
+   "group": "p1",
+   "description": "Player 1: The move queued after the action move (0xFFFF none): a string's next part, before it starts",
+   "source": "ghidra",
+   "evidence": "FUN_80093e08 starts layer[0x29] (+0x52) when the move reaches +0x60, or +0x54 / +0x56 / +0x58 when it connected (state flags 0xD9 / 0xC2); live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): Ivy 0x168 queued 0x169, Raphael 0x17B queued 0x17C (alt 0x17D on a hit)",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1.move_queued_at": {
+   "type": "f32",
+   "watch": false,
+   "address": "0x8034f4c8",
+   "group": "p1",
+   "description": "Player 1: The frame of the action move at which the queued move takes over (from neutral: at once)",
+   "source": "ghidra",
+   "evidence": "FUN_80093e08 compares the layer's frame with +0x60; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): 0x17B queued 0x17C at 23.0, it started then",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1.moveset": {
+   "type": "ptr",
+   "watch": false,
+   "address": "0x8034fc24",
+   "group": "p1",
+   "description": "Player 1: The fighter's moveset: bank = moveset + (move >> 12) * 0xA4 + 0x28, move records *(bank+8) + (move & 0xFFF) * 0x60 (+0x58 s16 attack index), attack records *(bank+0x10) + index * 0x60",
+   "source": "ghidra",
+   "evidence": "FUN_800948a0 (iVar15 = *(player+0x2764) + (move >> 12 & 0xF) * 0xA4 + 0x28); live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): Talim 0xC7 / 0xC8 / 0xC9 resolve to the records the game uses (0x49 9-13, 0x4B 12-14, 0x49 10-12)",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1.pos": {
+   "type": "f32",
+   "count": 3,
+   "units": "m",
+   "watch": false,
+   "address": "0x8034fe10",
+   "group": "p1",
+   "description": "Player 1: Position x, y (up), z",
+   "source": "ghidra",
+   "evidence": "FUN_800dac3c (which side of the camera line a fighter is on) reads +0x2950 / +0x2958; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only)",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1_attack.flags": {
+   "type": "u16",
+   "format": "hex",
+   "flags": {
+    "0x1": "hits standing",
+    "0x2": "hits crouching",
+    "0x4": "hits airborne",
+    "0x8": "standing guard blocks",
+    "0x10": "crouching guard blocks",
+    "0x20": "0x20",
+    "0x40": "hits downed",
+    "0x80": "throw",
+    "0x100": "no Guard Impact"
+   },
+   "pointer": {
+    "base": "0x8034eb50",
+    "offsets": [
+     "0x32"
+    ]
+   },
+   "group": "p1_attack",
+   "description": "Player 1's current attack: Hit level as bits: a high 0x49, a mid 0x4B / 0x6F, a low 0x37, a special mid 0x1B, a throw 0x81, an unblockable has neither guard bit",
+   "source": "ghidra",
+   "evidence": "FUN_8009be38 (guard: standing needs 0x08, crouching 0x10; hit: standing 0x01, crouching 0x02) and FUN_8009c8b4 (no GI with 0x100); live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): with P1 holding G 0x49 / 0x4B / 0x6F were guarded and 0x37 / 0x81 hit, holding 2G 0x37 / 0x1B were guarded and 0x4B hit",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1_attack.kind": {
+   "type": "u16",
+   "pointer": {
+    "base": "0x8034eb50",
+    "offsets": [
+     "0x34"
+    ]
+   },
+   "group": "p1_attack",
+   "description": "Player 1's current attack: Attack kind (1, 2, 4, 8, 16): equal kinds clash",
+   "source": "ghidra",
+   "evidence": "FUN_8009be38 clash check compares the two attacks' +0x34",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1_attack.start": {
+   "type": "s16",
+   "pointer": {
+    "base": "0x8034eb50",
+    "offsets": [
+     "0x36"
+    ]
+   },
+   "group": "p1_attack",
+   "description": "Player 1's current attack: First active frame (on the attacker's move_frame clock)",
+   "source": "ghidra",
+   "evidence": "FUN_800cfa40, FUN_800d1fac case 0xD; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): 40 hits on P1 landed on move_frame == start .. start + 2",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1_attack.end": {
+   "type": "s16",
+   "pointer": {
+    "base": "0x8034eb50",
+    "offsets": [
+     "0x38"
+    ]
+   },
+   "group": "p1_attack",
+   "description": "Player 1's current attack: Last active frame",
+   "source": "ghidra",
+   "evidence": "FUN_800d1fac case 0xD (active while frame <= +0x38)",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p1_attack.damage": {
+   "type": "s16",
+   "units": "hp",
+   "pointer": {
+    "base": "0x8034eb50",
+    "offsets": [
+     "0x3a"
+    ]
+   },
+   "group": "p1_attack",
+   "description": "Player 1's current attack: Damage (before scaling)",
+   "source": "ghidra",
+   "evidence": "FUN_8009cd18: damage = rec+0x3A * player+0x1560; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): Raphael's A 12 = the 240 -> 228 hit",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.side": {
+   "type": "u8",
+   "enum": {
+    "0": "right of the screen (forward = left)",
+    "1": "left of the screen (forward = right)"
+   },
+   "address": "0x8036e567",
+   "group": "p2",
+   "description": "Player 2: Which side of the screen the fighter is on: the pad's left / right are turned into back / forward with it",
+   "source": "ghidra",
+   "evidence": "FUN_8009a618: +0x07 = (player index == FUN_800bbe68()), then the stick is rotated 2 (side 1) or 6 (side 0) steps; FUN_800dac3c compares both fighters' +0x2950 / +0x2958 with the camera; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): flips when the fighters swap sides",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.opponent": {
+   "type": "ptr",
+   "watch": false,
+   "address": "0x8036e568",
+   "group": "p2",
+   "description": "Player 2: The other fighter's struct",
+   "source": "ghidra",
+   "evidence": "FUN_8009be38 reads the attacker through *(defender + 8); live: P1 +8 = 0x8036E560, P2 +8 = 0x8034D4C0",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.pad": {
+   "type": "u32",
+   "flags": {
+    "0x40": "A",
+    "0x200": "B",
+    "0x20": "X",
+    "0x100": "Y",
+    "0x10": "Z",
+    "0x1": "L",
+    "0x4": "L analog",
+    "0x8": "R",
+    "0x80": "R analog",
+    "0x8000": "Start",
+    "0x400": "right",
+    "0x800": "left",
+    "0x1000": "down",
+    "0x2000": "up"
+   },
+   "watch": false,
+   "address": "0x8036e574",
+   "group": "p2",
+   "description": "Player 2: The controller word the fighter acts on (GameCube buttons remapped by the table at 0x802588E0; stick and d-pad as left / right / down / up bits 0x400-0x2000)",
+   "source": "ghidra",
+   "evidence": "FUN_8002a694 builds it from PADStatus with the 0x802588E0 table; FUN_8009a618 copies it from 0x802B5950 + port * 0x88; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): gBox a -> 0x40, b -> 0x200, x -> 0x20, y -> 0x100, z -> 0x10, l -> 0x10005, r -> 0x20088, right -> 0x40400",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.control": {
+   "type": "u32",
+   "enum": {
+    "1": "the pad (human)"
+   },
+   "watch": false,
+   "address": "0x8036e5b0",
+   "group": "p2",
+   "description": "Player 2: Who drives the fighter: 0 / 1 the pad, other values the CPU (3 VS CPU, 5 / 34 / 38 Practice dummy modes)",
+   "source": "ghidra",
+   "evidence": "FUN_8009a618: modes 0 / 1 read the pad, others FUN_800dac3c / the AI; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only)",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.fighter": {
+   "type": "s16",
+   "enum": {
+    "1": "Mitsurugi",
+    "2": "Seung Mina",
+    "3": "Taki",
+    "4": "Maxi",
+    "5": "Voldo",
+    "6": "Sophitia",
+    "11": "Ivy",
+    "12": "Kilik",
+    "13": "Xianghua",
+    "15": "Yoshimitsu",
+    "17": "Nightmare",
+    "18": "Astaroth",
+    "19": "Inferno",
+    "20": "Cervantes",
+    "21": "Raphael",
+    "22": "Talim",
+    "23": "Cassandra",
+    "24": "Charade",
+    "25": "Necrid",
+    "26": "Yunsung",
+    "27": "Link",
+    "30": "Lizardman",
+    "31": "Assassin",
+    "32": "Berserker"
+   },
+   "address": "0x8036e5c2",
+   "group": "p2",
+   "description": "Player 2: Fighter id (soulcalibur2.FIGHTERS)",
+   "source": "ghidra",
+   "evidence": "FUN_800a1e4c case 7: lha r26, 0x62(r31); live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): Talim 22, Raphael 21",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.costume": {
+   "type": "s16",
+   "address": "0x8036e5c4",
+   "group": "p2",
+   "description": "Player 2: Costume picked at the select screen",
+   "source": "ghidra",
+   "evidence": "FUN_800a1e4c case 7: lha r27, 0x64(r31); AR code 'All characters wear their secret costume' writes 0x8034D524 = 4",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.crouching": {
+   "type": "bool",
+   "address": "0x8036e602",
+   "group": "p2",
+   "description": "Player 2: State flag 2: crouching (FUN_80093368 sets flag i at +0xA0 + i)",
+   "source": "ghidra",
+   "evidence": "FUN_8009be38: flag +0xA2 picks the crouching hit / guard bits of an attack; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only)",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.airborne": {
+   "type": "bool",
+   "address": "0x8036e603",
+   "group": "p2",
+   "description": "Player 2: State flag 3: in the air",
+   "source": "ghidra",
+   "evidence": "FUN_8009be38 / FUN_800d1fac case 7",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.down": {
+   "type": "bool",
+   "address": "0x8036e604",
+   "group": "p2",
+   "description": "Player 2: State flag 4: knocked down",
+   "source": "ghidra",
+   "evidence": "FUN_8009be38 (ground hits), FUN_8009cd18",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.back_turned": {
+   "type": "bool",
+   "address": "0x8036e60a",
+   "group": "p2",
+   "description": "Player 2: State flag 10: facing away (the stick's forward / back flip)",
+   "source": "ghidra",
+   "evidence": "FUN_8009a618 flips the stick rotation while +0xAA is set; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): set from frame ~15 of the parried stagger 0x23AB",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.attacking": {
+   "type": "bool",
+   "address": "0x8036e61b",
+   "group": "p2",
+   "description": "Player 2: State flag 0x1B: an attack move is running",
+   "source": "ghidra",
+   "evidence": "FUN_800948a0 sets flag 0x1B when a move with an attack starts; FUN_80096ce8 clears it",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.attack_active": {
+   "type": "bool",
+   "address": "0x8036e621",
+   "group": "p2",
+   "description": "Player 2: State flag 0x21: the attack's hit spheres are live this frame",
+   "source": "ghidra",
+   "evidence": "FUN_8009be38 tests the attacker's +0xC1 before the sphere check; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): set on the active frames only",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.attack_connected": {
+   "type": "bool",
+   "address": "0x8036e622",
+   "group": "p2",
+   "description": "Player 2: State flag 0x22: the current attack already hit / was guarded",
+   "source": "ghidra",
+   "evidence": "FUN_8009cd18 sets flag 0x22 on a hit; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only)",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.guard_impact": {
+   "type": "u16",
+   "enum": {
+    "0": "none",
+    "2": "Repel (6G: high, mid, throws)",
+    "40": "Parry (4G: mid, low)"
+   },
+   "address": "0x8036e7c2",
+   "group": "p2",
+   "description": "Player 2: State var 12: the Guard Impact the fighter is in, while it can catch an attack",
+   "source": "ghidra",
+   "evidence": "FUN_8009c8b4 reads +0x262 to decide a GI (type 2 needs attack bit 0x08, type 0x28 bits 0x02 and 0x08 / 0x10); live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): 2 on frames 0-8 of 6G (move 0x8A), 40 during 4G (move 0x92)",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.rounds": {
+   "type": "u8",
+   "address": "0x8036faad",
+   "group": "p2",
+   "description": "Player 2: Rounds won in this match",
+   "source": "manual",
+   "evidence": "AR code 'Player 1 - Only one round to win' (0834EA0D / 0034EA0D 05) writes P1's byte",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.hp": {
+   "type": "f32",
+   "valid": [
+    0,
+    400
+   ],
+   "units": "hp",
+   "address": "0x8036fabc",
+   "group": "p2",
+   "description": "Player 2: Health (240 at the start of a round)",
+   "source": "manual",
+   "evidence": "AR code 'Player 1 has Unlimited Health' writes 0x8034EA1C = 240.0 (decrypted with gbox.ar_decrypt); live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only)",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.combo_hits": {
+   "type": "s32",
+   "watch": false,
+   "address": "0x8036fb04",
+   "group": "p2",
+   "description": "Player 2: Hits taken in the current combo",
+   "source": "ghidra",
+   "evidence": "FUN_8009cd18 increments +0x15A4 for every hit result; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): 1, 2, back to 0 after the combo",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.hit_result": {
+   "type": "s32",
+   "enum": {
+    "0": "none",
+    "1": "guarded",
+    "2": "ring-edge push",
+    "4": "hit",
+    "5": "hit (counter)",
+    "6": "hit while down",
+    "7": "hit in the air / juggle",
+    "8": "attack Guard Impacted",
+    "9": "hit (soul charge break)",
+    "10": "weapon clash",
+    "11": "Guard Impacted it (repel)",
+    "12": "Guard Impacted it (parry)",
+    "15": "throw"
+   },
+   "address": "0x8036fb58",
+   "group": "p2",
+   "description": "Player 2: What the hit resolver decided for this fighter this frame (one frame long)",
+   "source": "ghidra",
+   "evidence": "FUN_8009be38 stores it, FUN_8009cd18 applies it (1 guard, 4-7 hit, 11 / 12 the fighter Guard Impacted); live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): 4 / 7 on hits, 1 on guards, 11 on 6G and 4G that landed",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.distance": {
+   "type": "f32",
+   "units": "m",
+   "watch": false,
+   "address": "0x8036fbc0",
+   "group": "p2",
+   "description": "Player 2: Distance between the two fighters",
+   "source": "manual",
+   "evidence": "live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): the same value in both structs, 3.3 -> 5.2 as P1 walked back",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.attack": {
+   "type": "ptr",
+   "watch": false,
+   "address": "0x8036fbf0",
+   "group": "p2",
+   "description": "Player 2: The current attack record (0x60 bytes) or 0",
+   "source": "ghidra",
+   "evidence": "FUN_800948a0: moveset bank +0x10 + move+0x58 * 0x60 when a move with an attack starts; FUN_80096ce8 clears it",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.move_stance": {
+   "type": "u16",
+   "format": "hex",
+   "watch": false,
+   "address": "0x8037018a",
+   "group": "p2",
+   "description": "Player 2: Motion layer 0 move id (stance and movement: 0 standing, 5 guard, 0x30 / 0x31 walking)",
+   "source": "ghidra",
+   "evidence": "FUN_800948a0(player, 0, move): layer at +0x1C28, move id at +2; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only)",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.move": {
+   "type": "u16",
+   "format": "hex",
+   "enum": {
+    "0xffff": "none",
+    "0x8a": "Repel (6G)",
+    "0x8c": "after a Repel",
+    "0x92": "Parry (4G)",
+    "0x2000": "Guard Impacted",
+    "0x23a4": "repelled stagger",
+    "0x23ab": "parried stagger",
+    "0x23ad": "parried stagger (low)"
+   },
+   "address": "0x8037050a",
+   "group": "p2",
+   "description": "Player 2: Motion layer 1 move id: the fighter's action (attacks, Guard Impacts, reactions 0x2000-0x2FFF); 0xFFFF none",
+   "source": "ghidra",
+   "evidence": "FUN_800948a0(player, 1, move): layer at +0x1FA8; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): Talim A 0xC7, B 0xC8, K 0xC9",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.move_frame": {
+   "type": "f32",
+   "watch": false,
+   "address": "0x80370528",
+   "group": "p2",
+   "description": "Player 2: Current frame of the action move: the attack record's first / last active frames count on this clock",
+   "source": "ghidra",
+   "evidence": "FUN_800cfa40 (the CPU AI): frames to impact = rec+0x36 - (int)*(float *)(player + 0x1FC8); live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): hits land when it reaches rec+0x36",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.move_next_frame": {
+   "type": "f32",
+   "watch": false,
+   "address": "0x80370510",
+   "group": "p2",
+   "description": "Player 2: The action move's next frame (minus move_frame: the move's speed, 1.0 for most)",
+   "source": "manual",
+   "evidence": "live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only)",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.move_queued": {
+   "type": "u16",
+   "format": "hex",
+   "watch": false,
+   "address": "0x8037055a",
+   "group": "p2",
+   "description": "Player 2: The move queued after the action move (0xFFFF none): a string's next part, before it starts",
+   "source": "ghidra",
+   "evidence": "FUN_80093e08 starts layer[0x29] (+0x52) when the move reaches +0x60, or +0x54 / +0x56 / +0x58 when it connected (state flags 0xD9 / 0xC2); live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): Ivy 0x168 queued 0x169, Raphael 0x17B queued 0x17C (alt 0x17D on a hit)",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.move_queued_at": {
+   "type": "f32",
+   "watch": false,
+   "address": "0x80370568",
+   "group": "p2",
+   "description": "Player 2: The frame of the action move at which the queued move takes over (from neutral: at once)",
+   "source": "ghidra",
+   "evidence": "FUN_80093e08 compares the layer's frame with +0x60; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): 0x17B queued 0x17C at 23.0, it started then",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.moveset": {
+   "type": "ptr",
+   "watch": false,
+   "address": "0x80370cc4",
+   "group": "p2",
+   "description": "Player 2: The fighter's moveset: bank = moveset + (move >> 12) * 0xA4 + 0x28, move records *(bank+8) + (move & 0xFFF) * 0x60 (+0x58 s16 attack index), attack records *(bank+0x10) + index * 0x60",
+   "source": "ghidra",
+   "evidence": "FUN_800948a0 (iVar15 = *(player+0x2764) + (move >> 12 & 0xF) * 0xA4 + 0x28); live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): Talim 0xC7 / 0xC8 / 0xC9 resolve to the records the game uses (0x49 9-13, 0x4B 12-14, 0x49 10-12)",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2.pos": {
+   "type": "f32",
+   "count": 3,
+   "units": "m",
+   "watch": false,
+   "address": "0x80370eb0",
+   "group": "p2",
+   "description": "Player 2: Position x, y (up), z",
+   "source": "ghidra",
+   "evidence": "FUN_800dac3c (which side of the camera line a fighter is on) reads +0x2950 / +0x2958; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only)",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2_attack.flags": {
+   "type": "u16",
+   "format": "hex",
+   "flags": {
+    "0x1": "hits standing",
+    "0x2": "hits crouching",
+    "0x4": "hits airborne",
+    "0x8": "standing guard blocks",
+    "0x10": "crouching guard blocks",
+    "0x20": "0x20",
+    "0x40": "hits downed",
+    "0x80": "throw",
+    "0x100": "no Guard Impact"
+   },
+   "pointer": {
+    "base": "0x8036fbf0",
+    "offsets": [
+     "0x32"
+    ]
+   },
+   "group": "p2_attack",
+   "description": "Player 2's current attack: Hit level as bits: a high 0x49, a mid 0x4B / 0x6F, a low 0x37, a special mid 0x1B, a throw 0x81, an unblockable has neither guard bit",
+   "source": "ghidra",
+   "evidence": "FUN_8009be38 (guard: standing needs 0x08, crouching 0x10; hit: standing 0x01, crouching 0x02) and FUN_8009c8b4 (no GI with 0x100); live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): with P1 holding G 0x49 / 0x4B / 0x6F were guarded and 0x37 / 0x81 hit, holding 2G 0x37 / 0x1B were guarded and 0x4B hit",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2_attack.kind": {
+   "type": "u16",
+   "pointer": {
+    "base": "0x8036fbf0",
+    "offsets": [
+     "0x34"
+    ]
+   },
+   "group": "p2_attack",
+   "description": "Player 2's current attack: Attack kind (1, 2, 4, 8, 16): equal kinds clash",
+   "source": "ghidra",
+   "evidence": "FUN_8009be38 clash check compares the two attacks' +0x34",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2_attack.start": {
+   "type": "s16",
+   "pointer": {
+    "base": "0x8036fbf0",
+    "offsets": [
+     "0x36"
+    ]
+   },
+   "group": "p2_attack",
+   "description": "Player 2's current attack: First active frame (on the attacker's move_frame clock)",
+   "source": "ghidra",
+   "evidence": "FUN_800cfa40, FUN_800d1fac case 0xD; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): 40 hits on P1 landed on move_frame == start .. start + 2",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2_attack.end": {
+   "type": "s16",
+   "pointer": {
+    "base": "0x8036fbf0",
+    "offsets": [
+     "0x38"
+    ]
+   },
+   "group": "p2_attack",
+   "description": "Player 2's current attack: Last active frame",
+   "source": "ghidra",
+   "evidence": "FUN_800d1fac case 0xD (active while frame <= +0x38)",
+   "added": "2026-10-20",
+   "by": "agent"
+  },
+  "p2_attack.damage": {
+   "type": "s16",
+   "units": "hp",
+   "pointer": {
+    "base": "0x8036fbf0",
+    "offsets": [
+     "0x3a"
+    ]
+   },
+   "group": "p2_attack",
+   "description": "Player 2's current attack: Damage (before scaling)",
+   "source": "ghidra",
+   "evidence": "FUN_8009cd18: damage = rec+0x3A * player+0x1560; live 2026-10-20 (private Dolphin on the Spark, Practice VS CPU Talim vs Raphael, /proc/<pid>/mem read-only): Raphael's A 12 = the 240 -> 228 hit",
+   "added": "2026-10-20",
+   "by": "agent"
+  }
+ }
+}
