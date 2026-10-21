@@ -26,6 +26,7 @@ import struct
 import time
 
 from ..driver import Driver
+from . import re5_nav
 
 S_PLAYER, S_ENEMY, S_MAIN = 0x017FEB34, 0x017FDB60, 0x0191CEE4
 S_ACTION, S_ITEM, S_UNIT = 0x017B7174, 0x017FE574, 0x0191D700
@@ -52,10 +53,16 @@ OM_LINE, OM_MAX = 12, 600
 HOURGLASS_VT = 0x015EF5E0              # uOm0100's vtable (BLUS30491 app 01.01; read live 2026-10-21)
 HG_CENTRE, HG_KIND = 0x250, 0x194      # +0x250 f32 x4 bounding sphere (centre, radius: 28 cm, 13 cm above the origin);
                                        # +0x194 u32 0x00KK..01: 0x90 on 2 of Public Assembly's 9, 0xA0 on the other 7
-BONUS_SHOOT = 1500.0                   # shoot a time bonus from up to this...
+BONUS_SHOOT = 2200.0                   # shoot a time bonus from up to this (the Gatling's reach)...
+BONUS_DY = 520.0                       # ...and this far above / below (one lower down is often in sight)
 CLEAR_R = 700.0                        # ...when no Majini is nearer than this
 BONUS_GIVE_UP_S, BONUS_SKIP_S = 4.0, 30.0   # fired at one this long and it is still there: leave it this long
-BONUS_WALK = False                     # walk to the far ones (not yet: rooftops and pits need routes)
+BONUS_WALK = True                      # walk to the far ones along the game's navmesh (re5_nav)
+BONUS_NEAR = 650.0                     # walked to within this, then shot from where he stands...
+BONUS_STEEP = math.radians(-18)        # ...no steeper than this (the aim stops near -20 deg: step back)
+WP_REACHED, WP_CLIMB = 70.0, 110.0     # a waypoint is passed this close; the next one this far above / below and
+                                       # (almost) straight up / down = a ladder or a drop: the stage's square prompt
+REPLAN_S, ROUTE_STALE_S = 2.0, 25.0    # the route is drawn again this often; a bonus followed this long is left
 
 
 def ptr_ok(p) -> bool:
@@ -79,19 +86,41 @@ def yaw_of(q) -> float:
     return wrap(2.0 * math.atan2(q[1], q[3]))
 
 
-def bonuses(m) -> list:
-    """The time bonuses still standing: [{"ptr", "pos", "kind": "time"}] from the OM line (HOURGLASS_VT)."""
+_HOURGLASSES: dict = {}                 # id(memory) -> (monotonic time, [units], memory): the OM line walked once a second
+HOURGLASS_WALK_S = 1.0
+
+
+def hourglass_units(m) -> list:
+    """The hourglass units in sUnit's OM line (walked at most once a HOURGLASS_WALK_S per memory view)."""
+    if not HOURGLASS_VT:
+        return []
+    now = time.monotonic()
+    hit = _HOURGLASSES.get(id(m))
+    if hit and hit[2] is m and now - hit[0] < HOURGLASS_WALK_S:
+        return hit[1]
     su = u32(m, S_UNIT)
+    units: list = []
+    if ptr_ok(su):
+        u, n = u32(m, su + UNIT_LINES + LINE_STRIDE * OM_LINE + LINE_FIRST), 0
+        while ptr_ok(u) and n < OM_MAX:
+            if u32(m, u) == HOURGLASS_VT:
+                units.append(u)
+            u, n = u32(m, u + UNIT_NEXT), n + 1
+    if len(_HOURGLASSES) > 16:
+        _HOURGLASSES.clear()
+    _HOURGLASSES[id(m)] = (now, units, m)
+    return units
+
+
+def bonuses(m) -> list:
+    """The time bonuses still standing: [{"ptr", "pos", "r", "kind": "time", "kind_word"}] from the OM line
+    (HOURGLASS_VT): each one's bounding sphere read every call, the line itself once a second."""
     out: list = []
-    if not HOURGLASS_VT or not ptr_ok(su):
-        return out
-    u, n = u32(m, su + UNIT_LINES + LINE_STRIDE * OM_LINE + LINE_FIRST), 0
-    while ptr_ok(u) and n < OM_MAX:
-        if u32(m, u) == HOURGLASS_VT:
-            cx, cy, cz, r = struct.unpack(">4f", m.rd(u + HG_CENTRE, 16))
-            out.append({"ptr": u, "pos": (cx, cy, cz), "r": r, "kind": "time",
-                        "kind_word": u32(m, u + HG_KIND)})
-        u, n = u32(m, u + UNIT_NEXT), n + 1
+    for u in hourglass_units(m):
+        if u32(m, u) != HOURGLASS_VT:                       # gone since the last walk
+            continue
+        cx, cy, cz, r = struct.unpack(">4f", m.rd(u + HG_CENTRE, 16))
+        out.append({"ptr": u, "pos": (cx, cy, cz), "r": r, "kind": "time", "kind_word": u32(m, u + HG_KIND)})
     return out
 
 
@@ -128,6 +157,11 @@ def snapshot(m) -> dict:
     if snap["player"]:
         snap["bonuses"] = bonuses(m)
         snap["prompt"] = prompt(m)
+        snap["stage_prompt"] = stage_prompt(m)
+        try:
+            snap["nav"] = re5_nav.read(m, _NAV_CACHE)
+        except (ValueError, OSError, struct.error):
+            snap["nav"] = None
     main = u32(m, S_MAIN)
     gs = u32(m, main + MAIN_GAMESYS) if ptr_ok(main) else 0
     if ptr_ok(gs):
@@ -162,6 +196,7 @@ UI_VTABLES = {0x015ABAC8: "uIdMerce00",         # the round's Mercenaries HUD (c
               0x015ABB80: "uIdNowLoading00",    # NOW LOADING
               0x015ABEE0: "uIdSaving00",        # saving the records on the results screen
               0x015AB350: "uIdAlert00",         # the title's dialogs: +0x3C names the one up (ALERTS)
+              0x015AB690: "uIdCursor",          # the menus' cursors (the results screen, the title; not the boot)
               0x015AC608: "uIdStartUp00",       # the main menu (PLAY GAME, RECORDS ...): cursor +0x44
               0x015AC5A8: "uIdStartUp01",       # PLAY GAME (cursor +0x44, EXTRA CONTENT = 7); with +0x174 = 1 its
                                                 # EXTRA CONTENT list (cursor +0x188, THE MERCENARIES REUNION = 3)
@@ -231,8 +266,8 @@ def screen(m, merc=None) -> dict:
         where = "title"
     elif ui.keys() & {"uIdTopMenu00", "uIdTitle00", "uIdTitle02"}:
         where = "menu"
-    elif snap.get("timer") is not None and snap["timer"] <= 0:
-        where = "results"
+    elif "uIdCursor" in ui and snap.get("timer") is not None and snap["timer"] <= 0:
+        where = "results"                               # (the boot's logos have no cursor units: never pressed on)
     out.update(where=where, cursor=cursor, target=target, ui=sorted(ui))
     return out
 
@@ -304,6 +339,20 @@ def prompt(m) -> str | None:
     return "square" if u32(m, btn + BTN_TARGET) in enemy_ptrs(m) else None
 
 
+def stage_prompt(m) -> bool:
+    """A prompt on the stage is up (the player's own cActionButton of kind 2: a ladder, a drop, Jump over)."""
+    sp = u32(m, S_PLAYER)
+    pl = u32(m, sp + 0x28) if ptr_ok(sp) else 0
+    ab = u32(m, S_ACTION)
+    if not (ptr_ok(pl) and ptr_ok(ab)) or not u32(m, ab + AB_HUD) & HUD_PROMPT:
+        return False
+    btn = u32(m, ab + AB_BUTTON)
+    return ptr_ok(btn) and u32(m, btn + BTN_OWNER) == pl and u32(m, btn + BTN_KIND) == BTN_STAGE
+
+
+_NAV_CACHE: dict = {}
+
+
 def own_screen(snap: dict) -> str:
     """playing / dead / results / loading from the round's fields: the player present with health and time left =
     playing; health 0 = dead ("You Are Dead - Continue?"); time 0 = results; no player = loading or menus."""
@@ -340,6 +389,7 @@ class Bot:
         self.bonus_skip: dict = {}             # hourglass -> left alone until
         self.bonus_seen: set = set()
         self.last_timer = None
+        self.route, self.route_for, self.route_at, self.route_since = None, None, 0.0, 0.0
 
     # --- the engine's brain interface ---
     def prompt_ok(self, button, snap, now) -> bool:
@@ -383,7 +433,10 @@ class Bot:
         tx, ty, tz = tgt["pos"]
         dist = math.hypot(tx - px, tz - pz)
         want = heading(tx - px, tz - pz)
-        if dist > ENGAGE or (tgt.get("walk") and dist > TOO_CLOSE * 2):   # walk toward it
+        if tgt.get("kind") == "time" and tgt.get("walk"):  # a time bonus out of reach: along the navmesh
+            self.aiming_since = None
+            return self._follow(p, tgt, snap.get("nav"), snap.get("stage_prompt"), now)
+        if dist > ENGAGE:                                   # nobody near: walk toward the nearest
             self.aiming_since = None
             return {"hold": self._walk(p, want, now)}
         aiming = p.get("action") == 2
@@ -409,10 +462,15 @@ class Bot:
             tgt_pitch = math.atan2(ty + aim_h - ey, max(math.hypot(tx - ex, tz - ez), 1.0))
             yaw_err = wrap(heading(tx - ex, tz - ez) - look_yaw)
             pitch_err = tgt_pitch - look_pitch
+            sight = math.dist((ex, ey, ez), (tx, ty + aim_h, tz))       # the crosshair's distance to it
         else:
             tgt_pitch = math.atan2(ty + aim_h - (py + GUN_H), max(dist, 1.0))
             yaw_err = wrap(want - p["rot"])
             pitch_err = tgt_pitch - (p.get("pitch") or 0.0)
+            sight = dist
+        if tgt.get("kind") == "time" and tgt_pitch < BONUS_STEEP:   # right on top of it: out of the aim's reach
+            self.aiming_since = None
+            return {"hold": {"ldown"} | self._turn(wrap(want - p["rot"]), aiming=False)}
         keys = {"l1"} | self._turn(yaw_err, aiming=True)
         if abs(pitch_err) > PITCH_TOL:
             close = abs(pitch_err) < FINE
@@ -421,8 +479,9 @@ class Bot:
                 keys.add("rup" if pitch_err > 0 else "rdown")
         tol = max(AIM_TOL, math.atan2(BODY_R, max(dist, 1.0)))   # close up the body is wide
         ptol = max(PITCH_TOL * 2, tol)                      # a body is tall
-        if tgt.get("kind") == "time":                       # an hourglass: its own 28 cm, a degree at least
-            tol = ptol = max(math.radians(1.0), math.atan2(tgt.get("r") or 25.0, max(dist, 1.0)))
+        if tgt.get("kind") == "time":                       # an hourglass (25 cm on the ground): the crosshair
+            tol = ptol = max(math.radians(0.4),             # inside half its radius, seen from the camera
+                             math.atan2(0.5 * (tgt.get("r") or 25.0), max(sight, 1.0)))
         if abs(yaw_err) <= tol and abs(pitch_err) <= ptol and dist <= SHOOT_RANGE:
             keys.add("r1")                                  # on him: fire
             self.stats["shots_s"] = round(self.stats["shots_s"] + 0.05, 2)
@@ -454,17 +513,46 @@ class Bot:
         near = min((math.hypot(e["pos"][0] - px, e["pos"][2] - pz) for e in live), default=math.inf)
         if near < CLEAR_R:
             return None
-        cands = [b for b in standing if abs(b["pos"][1] - py) < MAX_DY]
+        cands = [b for b in standing if abs(b["pos"][1] - py) < BONUS_DY]
         if not cands:
             return None
         b = min(cands, key=lambda b: math.hypot(b["pos"][0] - px, b["pos"][2] - pz))
         d = math.hypot(b["pos"][0] - px, b["pos"][2] - pz)
-        walk = d > BONUS_SHOOT
-        if walk and (near < ENGAGE or not BONUS_WALK):
-            return None                                     # Majini to fight first; the bonus after
+        walk = d > BONUS_NEAR if BONUS_WALK else False
+        if not BONUS_WALK and d > BONUS_SHOOT:
+            return None
         self.stats["bonus_target"] = f"{b['ptr']:#x} d {d:.0f}" + (" walk" if walk else "")
         return {"slot": f"bonus {b['ptr']:#x}", "ptr": b["ptr"], "pos": b["pos"], "aim_h": 0.0, "r": b.get("r"),
                 "kind": "time", "walk": walk}
+
+    def _follow(self, p, tgt, mesh, stage_prompt, now) -> dict:
+        """One step along the navmesh to a time bonus: the route drawn again every REPLAN_S; the next waypoint walked
+        to (turn, then run); at a ladder or a drop (the next waypoint straight above / below) the stage's square
+        prompt is taken; a bonus followed ROUTE_STALE_S without being reached is left for BONUS_SKIP_S."""
+        pos = p["pos"]
+        if self.route_for != tgt["ptr"]:
+            self.route, self.route_for, self.route_since = None, tgt["ptr"], now
+        if now - self.route_since > ROUTE_STALE_S:
+            self.bonus_skip[tgt["ptr"]] = now + BONUS_SKIP_S
+            self.stats["routes_given_up"] = self.stats.get("routes_given_up", 0) + 1
+            self.route_for = None
+            return {"hold": set()}
+        if mesh is not None and (self.route is None or now - self.route_at > REPLAN_S):
+            self.route, self.route_at = mesh.route(pos, tgt["pos"]), now
+        if not self.route:                                  # no mesh, or no way there: straight at it
+            return {"hold": self._walk(p, heading(tgt["pos"][0] - pos[0], tgt["pos"][2] - pos[2]), now)}
+        while len(self.route) > 1 and math.hypot(self.route[0][0] - pos[0], self.route[0][2] - pos[2]) < WP_REACHED \
+                and abs(self.route[0][1] - pos[1]) < WP_CLIMB:
+            self.route.pop(0)
+        w = self.route[0]
+        flat = math.hypot(w[0] - pos[0], w[2] - pos[2])
+        self.stats["route"] = f"{len(self.route)} wp, next d {flat:.0f} dy {w[1] - pos[1]:+.0f}"
+        if flat < WP_CLIMB and abs(w[1] - pos[1]) >= WP_CLIMB:  # a ladder / a drop: the game's own action
+            if stage_prompt:
+                self.stats["climbs"] = self.stats.get("climbs", 0) + 1
+                return {"tap": "square"}
+            return {"hold": {"lup"}}                        # on to the edge until the prompt shows
+        return {"hold": self._walk(p, heading(w[0] - pos[0], w[2] - pos[2]), now)}
 
     @staticmethod
     def _cost(p, e) -> float:
@@ -508,14 +596,30 @@ class Bot:
             self.hp_seen[e["ptr"]] = e["hp"]
 
 
+HANG_S = 60.0                          # a round's clock standing still this long: the emulator hung (RPCS3 on
+                                       # arm64 froze mid-round, live 2026-10-21) - the round is given up as lost
+
+
 class RE5PS3(Driver):
     map_id = "BLUS30491"
+
+    def __init__(self, clock=time.monotonic):
+        self.clock = clock
+        self._timer = (None, 0.0)              # the round's clock and when it last moved
 
     def snapshot(self, m) -> dict:
         return snapshot(m)
 
     def screen(self, m, snap: dict | None) -> str:
-        return own_screen(self.snapshot(m) if snap is None else snap)
+        snap = self.snapshot(m) if snap is None else snap
+        where = own_screen(snap)
+        if where == "playing":
+            now, t = self.clock(), snap.get("timer")
+            if t != self._timer[0]:
+                self._timer = (t, now)
+            elif now - self._timer[1] > HANG_S:
+                return "loading"                            # frozen: the engine calls it lost (its LOST_S later)
+        return where
 
     def brain(self, m, stats: dict, clock, learn_dir=None, nav=None):
         return Bot(m, clock=clock, stats=stats)

@@ -18,6 +18,7 @@
   "mercs": {
     "driver": "gbox.mercs.titles.re5_ps3",
     "menus": "gbox.mercs.titles.re5_ps3",
+    "ready": true,
     "jump_at": "select_player",
     "package": [],
     "vocab": {

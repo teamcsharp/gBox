@@ -180,6 +180,19 @@ def engine():
     return E if callable(getattr(E, "play_round", None)) and getattr(E, "READY", True) else None
 
 
+def title_engine(prof: dict | None):
+    """The engine for this title: engine() once READY; before that, for a title whose mercs block says "ready": true
+    (built on the engine, no playbook of its own to beat: RE5), the installed engine anyway."""
+    E = engine()
+    if E is not None or (prof or {}).get("ready") is not True:
+        return E
+    try:
+        from .mercs import engine as E2
+    except ImportError:
+        return None
+    return E2 if callable(getattr(E2, "play_round", None)) else None
+
+
 def lessons_writer(map_id: str, run: str | None = None):
     """entry -> the title's run-lessons log (gbox.mercs.lessons.append), or None before the engine is installed."""
     try:
@@ -247,15 +260,39 @@ def apply_ops(ad, ops) -> list[str]:
     return failed
 
 
+class ProcMem:
+    """A PS3 guest's RAM through one open /proc/<pid>/mem (RPCS3 on Linux): rd(addr, n) without opening the file per
+    read (a Mercenaries tick reads a few hundred small fields)."""
+
+    def __init__(self, pid: int, base: int):
+        self.f, self.base = open(f"/proc/{pid}/mem", "rb", 0), base
+
+    def rd(self, addr: int, n: int) -> bytes:
+        self.f.seek(self.base + addr)
+        data = self.f.read(n)
+        if len(data) != n:
+            raise ValueError(f"guest address {addr:#x} is not mapped")
+        return data
+
+
 def _memory(ad):
-    """The session's RAM, read-only, with rd(addr, n): its own Dolphin's shared view, else the adapter's reads."""
+    """The session's RAM, read-only, with rd(addr, n): its own Dolphin's shared view, an RPCS3's /proc/<pid>/mem held
+    open, else the adapter's reads."""
+    guest = getattr(ad, "_guest", None)
+    if callable(guest) and getattr(ad, "MEM", "").startswith("/proc/"):
+        try:
+            pid, base = guest()
+            return ProcMem(pid, base)
+        except Exception:                                   # noqa: BLE001 - still booting: the adapter's reads
+            pass
     from .re4_merc_bot import memory
     return memory(ad)
 
 
 def matches(ad, g: dict) -> bool:
-    """Any title whose RAM map has a "mercs" block, once the engine is installed."""
-    return engine() is not None and profile_for(ad, g) is not None
+    """Any title whose RAM map has a "mercs" block, once the engine is installed (READY, or the title "ready")."""
+    prof = profile_for(ad, g)
+    return prof is not None and title_engine(prof) is not None
 
 
 def setup(ad) -> list[str]:
@@ -272,7 +309,7 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
         raise ValueError("this title has no Mercenaries profile (a RAM map with a mercs block)")
     menus = importlib.import_module(prof["menus"])
     m = m or _memory(ad)
-    E = engine()
+    E = title_engine(prof)
     package = [tuple(x) for x in prof.get("package") or []]
     early = set(prof.get("early_ops") or [])
     if ad is not None and early:
