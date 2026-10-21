@@ -44,6 +44,27 @@ The [speedrunning guide index](https://www.speedrun.com/re5steam/guides) and
 The documented boost depends on online co-op latency, so it does not apply to this solo RPCS3 round. Campaign
 boss skips and PC-version tricks require separate applicability checks. None are represented as verified PS3 hooks.
 
+## Navigation and regression coverage
+
+Routes use the game's RAM navigation mesh, including its directed crossings. Floor lookup now follows sloped
+triangles at the player's position, and one-way drops remain reachable only in their recorded direction. A known
+unreachable route is skipped; it does not become a straight run through a wall. Ladder, ledge, and vault actions
+still require the game's actual traversal prompt. A crossing is learned as blocked only after a continuous,
+aligned, stationary attempt; turning, movement, a prompt, or an interruption longer than 1 s clears that timeout. Saved
+crossing exclusions are keyed by mesh geometry. This is a mesh plus failed-crossing memory, not a verified record
+of successful traversal everywhere.
+
+Nearby threats and confirmed laser overlaps can interrupt travel, while distant unsighted candidates leave the
+bonus route intact. A too-close attacker allows a 0.25 s retreat, then reserves 1 s for acquisition before another
+automatic retreat. Bonus collection preserves close-range square presses and real traversal prompts.
+
+`test_re5_nav.py` covers slopes, directed drops, and geometry-specific learning. `test_re5_mercs.py` covers traversal
+prompts, crossing timeout resets, unreachable-route handling, bonus-route priority, bounded close-enemy retreat,
+and death/restart accounting. `test_re5_combat.py` covers first-hit firing evidence, observation during prompts and
+travel, and pending hits on the final death frame. `test_re5_health.py` covers opt-in refill, respawns, dead/invalid
+players, pointer changes, wrong builds, failed readback, and restoring health limits. These tests establish the
+controller's decisions and accounting; live traversal and combat outcomes still require observation.
+
 ## Health and evidence
 
 The per-snapshot guard resolves the current player, validates the build and signed health values, raises living
