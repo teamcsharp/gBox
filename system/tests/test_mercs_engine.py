@@ -90,6 +90,20 @@ def test_prompts_burst_then_rest_and_wait_while_an_attack_lands():
     assert pp.step(10.1) == [("a",)]
 
 
+def test_a_grab_is_shaken_off_every_step_even_while_prompts_rest():
+    """SHAKE OFF drains 10 hp a frame until enough new presses come (live 2026-10-21): no gap, no rest, no hold."""
+    stats, shown = {}, {"b": "a"}
+    pp = reactions.PromptPresser(source=lambda: shown["b"], stats=stats,
+                                 keys=lambda b: [("left", "a"), ("right", "b")] if b == "wiggle" else [(b,)])
+    for t in (0.0, 0.6, 1.2, 1.8):                                      # a stuck A prompt: three presses, then rest
+        pp.step(t)
+    assert pp.step(2.0) is None and pp.rest_until > 2.0
+    shown["b"] = "wiggle"                                               # grabbed while resting
+    steps = [pp.step(2.0 + k * 0.05, ok=lambda b: False) for k in range(10)]
+    assert all(s == [("left", "a"), ("right", "b")] for s in steps) and pp.mashing
+    assert stats["mash_presses"] == 10
+
+
 def test_lessons_go_where_the_deployment_expects(tmp_path):
     lessons.configure(tmp_path)
     p = lessons.append("G4BE08", {"kind": "coach", "text": "shoot the axe man first", "session_id": "s1"})

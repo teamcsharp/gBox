@@ -303,8 +303,11 @@ Filled from `profiles/gamedata/G4BE08-ram.json` (the evidence is in each field):
   Select Player, Select Stage; in a round pG+0x20 game routine 3, the room 0x04RR, the clock, the player pointer,
   hp 0 = dead; pG+0x20 = 2 with the clock at 0 is the black screen seen 2026-10-20: `lost`);
   `merc.timer` 0x80279308, `merc.combo` 0x80213954, `merc.combo_timer` 0x80213958; `merc.score`, `merc.kills`: unknown.
-* `player.*`: the player em (*0x802B3044): pos +0x94, facing +0xA4, aim pitch +0x258, state = routine +0xFC
-  (0 control, 1 hit / held, 2 dead, 4 action), hp pG+0x4FB0.
+* `player.*`: the player em (*0x802B3044): pos +0x94, facing +0xA4, state = routine +0xFC (0 control, 1 hit / held,
+  2 dead, 4 action; 00 06 .. aiming), hp pG+0x4FB0. Where the gun points is the aim routine's (0x8014415C): facing
+  plus the aim's own horizontal offset +0x400 (the stick moves it first, inside the weapon's cone, then turns him),
+  and the aim's vertical blend, the global 0x80218738 (-1 .. +1, kept between aims). +0x258, read as the pitch
+  before, is a motion value that never follows the stick.
 * `enemies` = the EmMgr slots: `state` +0xFC (0 setting up, 1 acting, 2 hurt, 3 dying, 0xFF gone), `act` +0xFD (the
   attack signatures: 0x21 / 0x22 throw, 0x23 dynamite, 0x24-0x2C swings, 0x2D grab, 0x2E-0x38 hold), the motion at
   +0x1D8 (`motion_seq` +0x280: per-frame event words, bit 0x01 the hit window; frame +0x290, frames +0x294, speed

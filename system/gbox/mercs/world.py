@@ -28,6 +28,14 @@ class Player:
     aim_pitch: float | None = None
     weapon: int | None = None
     ammo: int | None = None
+    aim_offset: float | None = None        # the aim's own horizontal offset from the facing (counts while aiming)
+
+    @property
+    def aim_facing(self) -> float:
+        """Where the gun points: the facing plus the aim's offset while aiming (a stale offset after, ignored)."""
+        if "aiming" in self.tags and self.aim_offset is not None and abs(self.aim_offset) < 0.5:
+            return self.facing + self.aim_offset
+        return self.facing
 
 
 @dataclass
@@ -150,7 +158,8 @@ def read(prof: V.Profile, reader, driver=None, now: float = 0.0, values=None) ->
         ptags = _tags(_sig_of(sdef, state))
         player = Player(pos=tuple(vals[pf]), facing=hfn(top("player.facing")) or 0.0, hp=top("player.hp"),
                         hp_max=top("player.hp_max"), state=state, tags=frozenset(ptags),
-                        aim_pitch=top("player.aim_pitch"), weapon=top("player.weapon"), ammo=top("player.ammo"))
+                        aim_pitch=top("player.aim_pitch"), weapon=top("player.weapon"), ammo=top("player.ammo"),
+                        aim_offset=top("player.aim_offset"))
     enemies = []
     arr = prof.field("enemies")
     edef = fields.get(arr) if arr not in (None, "driver") else None

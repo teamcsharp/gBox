@@ -28,6 +28,8 @@ READY = False
 ROUND_GONE_S, LOST_S = 1.0, 20.0
 TAP_DOWN_S, TAP_REST_S = 0.25, 0.4
 FRAME_WAIT_S, FRAME_POLL_S = 0.05, 0.002      # frame sync: wait for the game's next frame this long, polling this often
+MASH_DOWN_S, MASH_UP_S = 0.045, 0.035         # a mash (a grab's SHAKE OFF): each press down / up this long - two game
+                                              # frames down, one up, so every press is a new one to the game
 
 
 class Latency:
@@ -147,13 +149,15 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             chords = pp.step(now, ok=lambda b: bot.prompt_ok(b, snap, now))
             if chords:                                # the game asks for a button: let go, press it
                 hold(set())
+                mash = getattr(pp, "mashing", False)  # a grab: as fast as the game takes new presses (30 a second)
                 for chord in chords:
                     send([{"key": k, "down": True} for k in chord])
-                    sleep(0.12 if len(chords) == 1 else 0.06)
+                    sleep(MASH_DOWN_S if mash else (0.12 if len(chords) == 1 else 0.06))
                     send([{"key": k, "down": False} for k in chord])
-                    if len(chords) > 1:
-                        sleep(0.04)
-                sleep(0.15)
+                    if mash or len(chords) > 1:
+                        sleep(MASH_UP_S if mash else 0.04)
+                if not mash:
+                    sleep(0.15)
                 continue
             act = bot.tick(snap)
             vi = frame_fn.vi(m) if frame_fn is not None and hasattr(frame_fn, "vi") else None

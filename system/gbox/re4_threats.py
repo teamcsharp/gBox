@@ -61,8 +61,10 @@ ATTACKS = {
     0x26: ("swing", 1200.0, 0.7), 0x27: ("swing", 1200.0, 0.7), 0x28: ("swing", 1200.0, 0.7),
     0x29: ("swing", 1200.0, 0.7), 0x2A: ("swing", 1200.0, 0.7), 0x2B: ("swing", 1200.0, 0.7),
     0x2C: ("swing", 1200.0, 0.7), 0x2D: ("grab", 1200.0, 0.7),
-}
-HOLDS = frozenset(range(0x2E, 0x39))    # holding Leon (grab_align 0x800CF968): shoot the holder
+    0x33: ("grab", 1200.0, 1.3),        # the picker's last grab: a lunge from ~900 that holds him 1.4 s later (0x34:
+}                                       # 10 hp a frame for 1.6 s, Leon 04 00 01 00 with the Ganado as his object;
+                                        # live 2026-10-21, run3.rec 23.23 -> 24.60 s)
+HOLDS = frozenset(range(0x2E, 0x39)) - {0x33}   # holding Leon (grab_align 0x800CF968): shoot the holder
 MELEE = frozenset({"swing", "grab", "rush"})        # attacks that need him in reach: they can be stepped out of
 REACH = {kind: max(r for k, r, _ in ATTACKS.values() if k == kind) for kind, _, _ in ATTACKS.values()}
 APPROACH, CLOSE_SPEED = 2000.0, 2500.0  # a melee attack this far beyond its reach is still coming (its picks start
