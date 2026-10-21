@@ -116,3 +116,13 @@ class Doa3(Title):
         for k in answer.at(0):
             bits |= BITS.get(k, 0)
         return bits
+
+    # -- between fights --
+    def menu(self, w):
+        """The press for a screen outside the fight: START on the title (the port that presses it plays P1),
+        A (gBox "b") through the menus, results and continue prompts."""
+        if w.screen in ("title", "demo"):
+            return "start"
+        if w.screen in ("menu", "char_select", "results", "continue", "game_over"):
+            return THROW                                   # the Xbox A button: confirm
+        return None

@@ -69,6 +69,69 @@ def test_punish_is_a_string():
     assert [p.at(k) for k in (0, 3, 9, 18)] == [(D.PUNCH,), (), (D.PUNCH,), (D.KICK,)]
 
 
+class Game(Ram):
+    """DOA3 as the playbook sees it: the title waits for START on any port, the menu for A, a fight runs 40 frames
+    (P2 presses P every 15 frames) and ends in a KO, then the menus come back. The loop's frame clock advances one
+    frame per poll of the clock block."""
+
+    def __init__(self):
+        super().__init__()
+        self.mode, self.phase, self.fights, self.t = 2, 0, 0, 0
+        self.put()
+
+    def put(self):
+        self.ram[0x480B70], self.ram[0x47E727] = self.mode, self.phase
+
+    def pad(self):
+        buttons = struct.unpack_from("<H", self.ram, doa3_pad.STATE_AT + 4)[0]
+        return buttons, self.ram[doa3_pad.STATE_AT + 6]               # START bit, the A button's byte
+
+    def read(self, a, n):
+        if a == D.CLOCK[0]:
+            self.frames(1)
+            self.t += 1
+            if self.mode == 1 and self.phase == 3:
+                struct.pack_into("<H", self.ram, 0x48A496, 0x2 if self.t % 15 == 0 else 0)
+                if self.t - self.fight_at >= 40:
+                    self.phase = 4
+            elif self.mode == 1 and self.phase == 4 and self.t - self.fight_at >= 50:
+                self.mode, self.phase = 0, 0
+            self.put()
+        return super().read(a, n)
+
+    def write(self, a, data):                                       # the game polls the pad every frame: a press
+        super().write(a, data)                                      # is seen even if released before our next read
+        buttons, a_button = self.pad()
+        if self.mode == 2 and buttons & 0x10 and struct.unpack_from("<I", self.ram, doa3_pad.HANDLE_AT)[0] == doa3_pad.SENTINEL:
+            self.mode = 0
+        elif self.mode == 0 and a_button:
+            self.mode, self.phase, self.fight_at = 1, 3, self.t
+            self.fights += 1
+        self.put()
+
+
+def test_survival_runs_menus_and_fights_from_ram_with_the_virtual_pad(tmp_path):
+    game = Game()
+    pad = doa3_pad.VirtualPad(game)
+    ad = SimpleNamespace(name="doa3_native", channel=lambda: SimpleNamespace(read=game.read),
+                         pad=lambda: pad, send_input=lambda rows: pad.apply(rows, sleep=lambda s: None),
+                         config=SimpleNamespace(runtime=tmp_path), read_memory=game.read)
+    assert doa3_bot.setup(ad) == []
+    polls = {"n": 0}
+
+    def stopped():
+        polls["n"] += 1
+        return game.fights >= 3 and game.mode == 0
+    now = [0.0]
+    stats = doa3_bot.play(ad, ad.send_input, stopped, clock=lambda: now[0],
+                          sleep=lambda s: now.__setitem__(0, now[0] + s))
+    assert game.fights >= 3                                        # title -> menu -> fight, three times
+    assert stats["menu_presses"] >= 4 and stats["fight_end"] in ("menu", "round_end", "unknown")
+    assert stats["attacks"] >= 3 and stats["frames"] >= 100       # P2's punches seen as attack-input edges
+    assert stats["hung"] is False
+    assert (tmp_path / "fightbot" / D.MAP_ID / "book.json").is_file()
+
+
 def test_the_playbook_matches_only_the_native_runner_and_claims_the_pad():
     assert doa3_bot.matches(SimpleNamespace(name="doa3_native"), {"game_id": "b8edf7040116f3aa"})
     assert not doa3_bot.matches(SimpleNamespace(name="cxbx"), {"game_id": "b8edf7040116f3aa"})
