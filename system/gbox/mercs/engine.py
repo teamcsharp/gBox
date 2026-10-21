@@ -27,6 +27,53 @@ from .reactions import PromptPresser
 READY = False
 ROUND_GONE_S, LOST_S = 1.0, 20.0
 TAP_DOWN_S, TAP_REST_S = 0.25, 0.4
+FRAME_WAIT_S, FRAME_POLL_S = 0.05, 0.002      # frame sync: wait for the game's next frame this long, polling this often
+
+
+class Latency:
+    """Reaction times in the game's own clock (the title's VI / retrace count, 60 a second): from an attack's onset
+    (its value first seen) to the bot's answer (a trigger press on it or an evade from it), and from a trigger press to
+    the game firing (the player's routine entering its shot). Medians in stats: react_vi_med, respond_vi_med."""
+
+    def __init__(self, stats: dict):
+        self.stats = stats
+        self.onset: dict = {}                    # slot -> vi when its attack was first seen
+        self.react: list = []
+        self.respond: list = []
+        self.press_vi = None
+
+    @staticmethod
+    def _med(xs):
+        xs = sorted(xs)
+        return xs[len(xs) // 2] if xs else None
+
+    def observe(self, bot, snap, act, held_before, vi):
+        if vi is None:
+            return
+        for t in getattr(bot, "_threats", []):
+            if t.kind not in ("near", "down") and t.slot not in self.onset:
+                self.onset[t.slot] = vi
+        keys = set(act.get("hold", ())) if isinstance(act, dict) else set()
+        target = getattr(bot, "target_slot", None)
+        ev = getattr(bot, "evade", None)
+        answered = None
+        if "a" in keys and "a" not in held_before:
+            self.press_vi = vi                       # a trigger press: when does the game fire?
+            if target in self.onset:
+                answered = target
+        if answered is None and ev and ev.get("slot") in self.onset and ev.get("since") is not None:
+            answered = ev["slot"]
+        if answered is not None:
+            self.react.append(vi - self.onset.pop(answered))
+            self.stats["react_vi_med"] = self._med(self.react[-50:])
+        r = (snap.get("player") or {}).get("r")
+        if self.press_vi is not None and r and len(r) > 2 and r[1] == 6 and r[2] == 2:
+            self.respond.append(vi - self.press_vi)
+            self.press_vi = None
+            self.stats["respond_vi_med"] = self._med(self.respond[-50:])
+        live = {t.slot for t in getattr(bot, "_threats", [])}
+        for k in [k for k in self.onset if k not in live]:
+            self.onset.pop(k, None)
 
 
 def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sleep, clock=time.time,
@@ -39,6 +86,9 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
     gone_since = lost_since = None
     hits_seen = stats.get("hits_taken", 0)
     progress = 0
+    frame_fn = getattr(drv, "frame", None)
+    clock_frame = [None]                              # the game's frame (driver.frame) at the last decision
+    lat = Latency(stats)
 
     def hold(keys):
         nonlocal held
@@ -47,6 +97,23 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
         if rows:
             send(rows)
         held = set(keys)
+
+    def next_frame():
+        """Frame-synced: wait (polling the title's frame counter, a 4-byte read) until the game has stepped since the
+        last decision, at most FRAME_WAIT_S; without a counter, tick_s."""
+        if frame_fn is None:
+            sleep(tick_s)
+            return None
+        t_end = clock() + FRAME_WAIT_S
+        while True:
+            try:
+                f = frame_fn(m)
+            except Exception:                        # noqa: BLE001
+                f = None
+            if f is None or f != clock_frame[0] or clock() >= t_end:
+                clock_frame[0] = f
+                return f
+            sleep(FRAME_POLL_S)
 
     def log(kind, **fields):
         if lessons is not None:
@@ -89,6 +156,8 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                 sleep(0.15)
                 continue
             act = bot.tick(snap)
+            vi = frame_fn.vi(m) if frame_fn is not None and hasattr(frame_fn, "vi") else None
+            lat.observe(bot, snap, act, held, vi)
             if stats.get("hits_taken", 0) > hits_seen:   # what hit him, for the lessons
                 hits_seen = stats["hits_taken"]
                 log("hit_taken", player_r=list((snap.get("player") or {}).get("r") or ()),
@@ -105,7 +174,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                 sleep(TAP_REST_S)
                 continue
             hold(set(act.get("hold", ())))
-            sleep(tick_s)
+            next_frame()
         return "stopped"
     finally:
         hold(set())

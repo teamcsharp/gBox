@@ -60,6 +60,23 @@ class RE4GC(Driver):
     def progress(self, snap: dict) -> dict:
         return {"timer": snap.get("timer"), "combo": snap.get("combo")}
 
+    @property
+    def frame(self):
+        """The game's frame for the frame-synced tick: the Mercenaries clock (frames, counts down once a game frame
+        while the round runs); .vi(m): the VI retrace count (0x802B2D2C, 60 a second: __VIRetraceHandler 0x80078FEC
+        increments it, VIWaitForRetrace 0x80079A00 waits on it) for the latency stats."""
+        return _Frame()
+
+
+class _Frame:
+    MERC_TIMER, VI_COUNT = 0x80279308, 0x802B2D2C
+
+    def __call__(self, m):
+        return int.from_bytes(m.rd(self.MERC_TIMER, 4), "big")
+
+    def vi(self, m):
+        return int.from_bytes(m.rd(self.VI_COUNT, 4), "big")
+
 
 def own_screen(snap: dict) -> str:
     """The screen from the round's fields: no room / no Leon = loading; a room outside stage 4 = story; the clock at

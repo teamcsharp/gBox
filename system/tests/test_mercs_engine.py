@@ -156,5 +156,28 @@ def test_play_round_reports_a_lost_game_and_a_stop(tmp_path):
     assert why2 == "stopped"
 
 
+def test_play_round_is_frame_synced_and_measures_its_reactions(tmp_path):
+    clk = Clock()
+
+    class Live(FakeMem):                                                # the VI count and the clock run with time
+        def rd(self, a, n):
+            if a == 0x802B2D2C:
+                return int(clk.t * 60).to_bytes(4, "big")
+            if a == B.MERC_TIMER:
+                return int((100 - clk.t) * 30).to_bytes(4, "big")
+            return super().rd(a, n)
+    m = re4([((0.0, 0.0, 1500.0), (1, 0x26, 1, 0))])                    # straight ahead, swinging
+    m.__class__ = Live
+    stats, n = {}, [0]
+
+    def stopped():
+        n[0] += 1
+        return n[0] > 60
+    engine.play_round({"driver": "gbox.mercs.titles.re4_gc"}, m, lambda rows: None, stopped, stats,
+                      sleep=clk.sleep, clock=clk, learn_dir=tmp_path)
+    assert stats.get("react_vi_med") is not None and 0 <= stats["react_vi_med"] <= 30   # answered within 0.5 s
+    assert clk.t < 60 * 0.05                                            # ticks follow the game's frames, not a timer
+
+
 def test_the_engine_is_not_ready_until_a_live_run_says_so():
     assert engine.READY is False                                         # the deployment waits for the live check
