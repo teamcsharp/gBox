@@ -480,16 +480,20 @@ class Combat:
 
     def choose_target(self, snap, p, enemies, now):
         self.target_exposed = False
-        candidates = [e for e in enemies if self.front_candidate(snap, p, e)]
+        enemies = [e for e in enemies if (e.get("hp") or 0) > 0]
         ray = self._ray(snap, now) if self._ready(p) else None
         if ray is not None:
-            exposed = [e for e in candidates if dot_on(ray[1], e["pos"]) is not None]
+            # A current first hit is stronger evidence than the conservative camera-sector estimate, especially
+            # when aiming down at a nearby enemy whose centre lies outside that estimate.
+            exposed = [e for e in enemies if dot_on(ray[1], e["pos"]) is not None]
             if exposed:
                 target = min(exposed, key=lambda e: math.dist(p["pos"], e["pos"]))
                 self.blocked_until.pop(target.get("ptr", target.get("slot")), None)
                 self.stats["target_evidence"] = "laser first hit on enemy"
                 self.target_exposed = True
                 return target
+        candidates = [e for e in enemies if self.front_candidate(snap, p, e)]
+        if ray is not None:
             for e in candidates:
                 if self.ray_blocked(ray, e["pos"]):
                     self.blocked_until[e.get("ptr", e.get("slot"))] = now + BLOCKED_S

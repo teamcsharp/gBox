@@ -321,6 +321,46 @@ def test_a_grab_is_answered_with_a_wiggle():
     assert R.snapshot(held)["player"]["state"] == "grabbed"
 
 
+def test_explicit_resuscitate_prompt_keeps_zero_hp_recoverable_without_counting_a_death(tmp_path):
+    # The detected prompt is supplied here; this fixture makes no claim about an unverified action/flag offset.
+    now, stats = [10.0], {"rounds": 1}
+    bot = R.Bot(clock=lambda: now[0], stats=stats, learn_dir=tmp_path)
+    before = R.snapshot(world(timer=50.0))
+    bot.observe_round(before, "playing", now[0])
+    dying = R.snapshot(world(hp=0, timer=49.0)) | {"prompt": "mash"}
+    assert R.own_screen(dying) == "playing"
+    assert bot.tick(dying) == {"hold": set()}
+    assert stats["resuscitating"] and stats.get("deaths", 0) == 0
+    driver = R.RE5PS3(clock=lambda: now[0])
+    assert driver.screen(None, dying) == "playing"
+    now[0] += R.HANG_S + 1
+    assert driver.screen(None, dying) == "playing"          # explicit live QTE can pause the Mercenaries clock
+    recovered = R.snapshot(world(hp=1000, timer=49.0))
+    bot.observe_round(recovered, "playing", now[0])
+    assert driver.screen(None, recovered) == "playing"
+    assert stats["rounds"] == 1 and stats.get("deaths_continued", 0) == 0
+    assert not stats["resuscitating"] and stats.get("continue_presses", 0) == 0
+    assert R.own_screen(dying | {"prompt": None}) == "dead"
+    assert R.own_screen(dying | {"timer": 0.0}) != "playing"
+
+
+def test_resuscitate_uses_repeated_circle_at_engine_mash_cadence_without_combat(monkeypatch, tmp_path):
+    monkeypatch.setattr(R, "prompt", lambda memory: "mash")  # explicit detector result, not a guessed RAM value
+    memory, stats, n, sent, sleeps = world(hp=0, timer=50.0), {}, [0], [], []
+    bot = R.Bot(stats=stats, clock=lambda: n[0] * 0.08, learn_dir=tmp_path)
+
+    def stopped():
+        n[0] += 1
+        return n[0] > 5
+
+    engine.play_round({"driver": "gbox.mercs.titles.re5_ps3"}, memory, sent.extend, stopped, stats,
+                      brain=bot, sleep=sleeps.append, clock=lambda: n[0] * 0.08)
+    assert sent == [{"key": "circle", "down": down} for _ in range(5) for down in (True, False)]
+    assert sleeps == [0.045, 0.035] * 5
+    assert stats["mash_presses"] == stats["presses_mash"] == stats["resuscitate_presses"] == 5
+    assert stats.get("deaths", 0) == stats.get("continue_presses", 0) == 0
+
+
 def with_prompt(mem, kind, owner, target, hud=0x4B):
     """sActionButton (static 0x017B7174) with a prompt up (+0x34 bit 1) and +0x2A4 -> a cActionButton: +0x04 owner,
     +0x14 kind, +0x40 the Majini it acts on."""
@@ -589,10 +629,10 @@ def test_the_navmesh_routes_over_a_ladder_and_the_bot_takes_it():
     assert mesh.route((0.0, 0.0, 100.0), (0.0, -300.0, 1500.0), avoid=[ladder]) is None   # the only way down
 
 
-def test_a_crossing_without_its_prompt_is_avoided():
+def test_a_crossing_without_its_prompt_is_avoided(tmp_path):
     mesh = strip_mesh()
     t = [10.0]
-    bot = R.Bot(clock=lambda: t[0])
+    bot = R.Bot(clock=lambda: t[0], learn_dir=tmp_path)
     tgt = {"ptr": 0x3040_0000, "pos": (0.0, -300.0, 1500.0), "kind": "time", "walk": True}
     p = {"pos": (0.0, 0.0, 790.0), "rot": 0.0, "action": 0}
     bot._follow(p, tgt, mesh, False, t[0])
@@ -602,6 +642,9 @@ def test_a_crossing_without_its_prompt_is_avoided():
         act = bot._follow(p, tgt, mesh, False, 10.1 + 0.5 * k)
     assert act == {"hold": set()}                           # continuously aligned and stationary, no prompt
     assert bot.stats["crossings_avoided"] == 1 and len(bot.avoid) == 1
+    routes = bot.nav_learning.stages[mesh.learning_sig]["routes"]
+    assert sum(row["blocked"] for row in routes.values()) == 1
+    assert sum(row["arrived"] for row in routes.values()) == 0
 
 
 def test_a_crossing_is_not_blacklisted_while_turning_or_after_combat_interrupts():
@@ -617,6 +660,60 @@ def test_a_crossing_is_not_blacklisted_while_turning_or_after_combat_interrupts(
     assert not bot.avoid
     assert bot._follow(p, tgt, mesh, True, 25.0) == {"tap": "square"}
     assert bot.climb_at is None
+
+
+def test_navigation_observes_actual_prompt_frames_once_and_clears_loading_continuity(tmp_path):
+    mesh = strip_mesh()
+    bot = R.Bot(clock=lambda: 10.5, learn_dir=tmp_path)
+
+    def snap(pos):
+        return {"player": {"pos": pos, "hp": 1000, "rot": 0.0, "action": 0},
+                "timer": 100.0, "nav": mesh, "stage_prompt": True}
+
+    first = snap((50.0, 0.0, 100.0))
+    bot.observe_round(first, "playing", 10.0)
+    assert bot.tick(first) == {"tap": "square"}
+    assert bot.stats["nav_observed_crossings"] == 0             # the press alone proves nothing
+    after = snap((-50.0, 0.0, 300.0))
+    bot.observe_round(after, "playing", 10.5)
+    assert bot.tick(after) == {"tap": "square"}
+    assert bot.stats["nav_observed_crossings"] == 1             # engine observer + tick are idempotent
+    bot.observe_round({}, "loading", 10.6)
+    bot.observe_round(snap((50.0, 0.0, 100.0)), "playing", 11.0)
+    assert bot.stats["nav_observed_crossings"] == 1
+    assert bot.stats["nav_visited_triangles"] == 2
+    bot.save()
+    assert (tmp_path / R.NAV_LEARNING_FILE).is_file()
+
+
+def test_navigation_route_timeout_and_unreachable_are_terminal_observed_outcomes(tmp_path):
+    from gbox.mercs.titles.re5_nav import NavMesh
+    mesh = NavMesh([(0.0, 0.0, 0.0), (200.0, 0.0, 0.0), (200.0, 0.0, 200.0), (0.0, 0.0, 200.0)],
+                   [(0, 1, 2), (0, 2, 3)], [[(1, 2, 1.0)], []])
+    bot = R.Bot(learn_dir=tmp_path)
+    p = {"pos": (150.0, 0.0, 50.0), "rot": 0.0, "action": 0}
+    target = {"ptr": 1, "pos": (50.0, 0.0, 150.0)}
+    bot._follow(p, target, mesh, False, 10.0)
+    bot._follow(p, target, mesh, False, 11.0 + R.ROUTE_STALE_S)
+    row = bot.nav_learning.stages[mesh.learning_sig]["routes"]["0:1"]
+    assert row["started"] == 1 and row["timed_out"] == 1 and row["arrived"] == 0
+    p["pos"], target = target["pos"], {"ptr": 2, "pos": p["pos"]}
+    bot._follow(p, target, mesh, False, 100.0)
+    row = bot.nav_learning.stages[mesh.learning_sig]["routes"]["1:0"]
+    assert row["unreachable"] == 1 and row["arrived"] == 0
+    assert mesh.route(p["pos"], target["pos"]) is None            # observations cannot open a reverse traversal
+
+
+def test_navigation_geometry_change_discards_cached_route_and_does_not_report_a_crossing(tmp_path):
+    from gbox.mercs.titles.re5_nav import NavMesh
+    old = strip_mesh()
+    new = NavMesh([(x, y + 600.0, z) for x, y, z in old.points], old.tris, old.links, ptr=old.ptr)
+    bot = R.Bot(learn_dir=tmp_path)
+    bot.observe_round({"player": {"pos": (50.0, 0.0, 100.0)}, "nav": old}, "playing", 1.0)
+    bot.route, bot.route_for, bot.route_len = [(1, 2, 3)], 17, {17: 123}
+    bot.observe_round({"player": {"pos": (-50.0, 600.0, 300.0)}, "nav": new}, "playing", 1.5)
+    assert bot.route is bot.route_for is bot.route_len is None
+    assert bot.stats["nav_geometry"] == new.learning_sig and bot.stats["nav_observed_crossings"] == 0
 
 
 def test_known_unreachable_mesh_route_never_falls_back_to_running_through_a_wall():
