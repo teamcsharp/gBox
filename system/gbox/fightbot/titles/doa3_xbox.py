@@ -60,8 +60,17 @@ class Doa3(Title):
         self.swapped: list[int] = []                       # a cast build's swapped fighters (menus targets_from)
 
     def extra_fields(self):
-        return ["game.mode", "game.phase", "game.round_winner", "game.playing_mode", "game.chosen_mode",
-                "players.port", "p1.active", "p2.active"]
+        return [n for n in ("game.mode", "game.phase", "game.round_winner", "game.playing_mode", "game.chosen_mode",
+                            "players.port", "p1.active", "p2.active", "p1.flip", "p2.flip") if n in self.map.fields]
+
+    def finish(self, w):
+        """Which way is back: the game's own per-frame flag (pN.flip, 0x3C2594: 1 = forward is the D-pad's left),
+        else from the positions."""
+        for f, name in ((w.p1, "p1.flip"), (w.p2, "p2.flip")):
+            flip = w.values.raw.get(name) if w.values is not None else None
+            if flip in (0, 1):
+                f.side = -1 if flip else 1
+        super().finish(w)
 
     def _sig(self, values, name) -> str | None:
         f = self.map.fields.get(name)
