@@ -86,11 +86,14 @@ FIGHTER_DISPLAY = {
     "janlee": "Jann Lee", "tengu": "Tengu", "ryu": "Ryu Hayabusa",
     "karate": "Ein", "ninja": "Hayate", "suiken": "Brad Wong", "bosnin": "Genra",
     "sambo": "Leon",
+    # a stock Survival fight with Helena costume 1 selected loaded hik01.xpr into her fighter buffer (RAM dump
+    # 2026-10-21, selected character 7, fighter block 1 costume 1)
+    "hika": "Helena",
 }
-# Families whose display name is not yet resolved: hika/koryu/gokei are Hitomi, Helena and
-# Christie in some order (their XBE tokens all exist but the code->name link is still RE),
-# and chin is a story-only person absent from the select table.
-DISPLAY_MAPPING_PENDING = frozenset({"hika", "koryu", "gokei", "chin"})
+# Families whose display name is not yet resolved: koryu/gokei are Hitomi and Christie in some
+# order (their XBE tokens exist but the code->name link is still RE), and chin is a story-only
+# person absent from the select table.
+DISPLAY_MAPPING_PENDING = frozenset({"koryu", "gokei", "chin"})
 
 # Slots that are not on the base select screen: tengu (hidden boss, owns no costume) and
 # bosnin (Genra, the boss family). chin is a story-only person absent from the select table.

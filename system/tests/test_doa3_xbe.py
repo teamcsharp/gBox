@@ -17,9 +17,9 @@ EXPECTED_DISPLAY = {
     "zack": "Zack", "bass": "Bass", "genfu": "Gen Fu", "bayman": "Bayman",
     "janlee": "Jann Lee", "tengu": "Tengu", "ryu": "Ryu Hayabusa",
     "karate": "Ein", "ninja": "Hayate", "suiken": "Brad Wong", "bosnin": "Genra",
-    "sambo": "Leon",
+    "sambo": "Leon", "hika": "Helena",
 }
-EXPECTED_PENDING = {"hika", "koryu", "gokei", "chin"}
+EXPECTED_PENDING = {"koryu", "gokei", "chin"}
 
 
 def _code_sig() -> bytes:
@@ -46,7 +46,8 @@ def test_fighter_display_name():
     assert d3.fighter_display_name("kasumi") == "Kasumi"
     assert d3.fighter_display_name("ryu") == "Ryu Hayabusa"
     assert d3.fighter_display_name("karate") == "Ein"
-    assert d3.fighter_display_name("hika") is None
+    assert d3.fighter_display_name("hika") == "Helena"
+    assert d3.fighter_display_name("koryu") is None
     assert d3.fighter_display_name("chin") is None
     assert d3.fighter_display_name("not-a-family") is None
 
