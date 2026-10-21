@@ -68,8 +68,9 @@ class Book:
                 return self.rng.choice(answers)
             return max(answers, key=lambda a: self._mean(tried[a]))
 
-    def record(self, key: str, cls: str | None, answer: str, reward: float, met: bool = True):
-        """met: the answer met something (a hit either way, a parry, a guard); False = it whiffed into nothing."""
+    def record(self, key: str, cls: str | None, answer: str, reward: float, met: bool | None = True):
+        """met: the answer met something (a hit either way, a parry, a guard); False = it whiffed into nothing;
+        None = the title can't tell (counted as a try, never as a whiff)."""
         with self.lock:
             for table, k in ((self.moves, key), (self.classes, cls)):
                 if k is None:
@@ -77,7 +78,7 @@ class Book:
                 row = self._row(table, k)["answers"].setdefault(answer, [0, 0.0, 0])
                 row[0] += 1
                 row[1] += float(reward)
-                row[2] += 0 if met else 1
+                row[2] += 1 if met is False else 0
             self.dirty += 1
 
     def hit(self, key: str, cls: str | None = None, frames: int | None = None):

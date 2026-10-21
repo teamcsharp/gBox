@@ -143,10 +143,13 @@ class Title:
         """The bits the game's own input word (pN.input) shows when it read this answer's keys (0 = can't tell)."""
         return 0
 
-    def outcome(self, before: world.World, after: world.World, answer: Answer) -> tuple[float, bool, str]:
-        """(reward, met, label) of the window after an answer: health dealt minus taken by default."""
-        dealt = max(0, (before.p2.hp or 0) - (after.p2.hp or 0)) if before.p2.hp is not None and after.p2.hp is not None else 0
-        taken = max(0, (before.p1.hp or 0) - (after.p1.hp or 0)) if before.p1.hp is not None and after.p1.hp is not None else 0
+    def outcome(self, before: world.World, after: world.World, answer: Answer) -> tuple[float, bool | None, str]:
+        """(reward, met, label) of the window after an answer: health dealt minus taken by default. met None: the
+        title can't tell (no health mapped): never counted as a whiff, so nothing is taken for a feint."""
+        if None in (before.p1.hp, after.p1.hp, before.p2.hp, after.p2.hp):
+            return 0.0, None, "unknown"
+        dealt = max(0, before.p2.hp - after.p2.hp)
+        taken = max(0, before.p1.hp - after.p1.hp)
         label = "dealt" if dealt and not taken else "taken" if taken and not dealt else "traded" if dealt else "nothing"
         return float(dealt - taken), bool(dealt or taken), label
 
