@@ -53,6 +53,7 @@ class Title:
     fps = 60
     frame_ms: float | None = None                # the frame field is a millisecond tick, not a frame counter
     warn_lead = 8                                # frames from a `warn` onset to the hit when nothing better is known
+    warn_settle = 0                              # frames to wait after a warn edge for the move it starts (per-move book)
     long_window = 4                              # an attack active longer than this lands where the book saw it land
     lag_f = 1                                    # the engine's measured input lag (frames), for answers that need it
     reach: float | None = None                   # world units: farther apart, an attack can't land (no answer)

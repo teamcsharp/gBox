@@ -3,9 +3,9 @@
     threat  an opponent attack seen in RAM (an attack-tagged move or class, an attack record, a warn edge): its
             onset frame and, when the title can tell, the frames until its first active frame
     answer  the title's answers to it (holds, parries, guards); the book picks one (per move, else per attack class);
-            it is pressed `lead` frames before the first active frame (now, when that is unknown), held `frames`
-    judge   `judge` frames after the press the title scores the window (damage dealt minus taken, a parry landed):
-            the book learns it, the lessons log it
+            it is pressed `lead` frames (+ the measured input lag) before the first active frame, held `frames`
+    judge   the title scores the window after the press as soon as it shows an outcome (health moved, a parry), else
+            `judge` frames on (it met nothing): the book learns it, the lessons log it
     punish  after an answer that paid, the title's punish
     latency the frame the game's own input word shows the keys: input latency (frames from sending) and reaction
             (frames from the attack's onset), logged per answer and kept as medians for the watch panel
@@ -85,21 +85,24 @@ class Engine:
 
     def _watch_threat(self, prev: World | None, w: World):
         att = w.p2.attack
+        t = self.threat
         if att is not None:
-            cur = self.threat
-            if cur is not None and cur["attack"].move == att.move and self.in_move("p2", w) != 0:
-                cur["now"] = att                       # the same attack, one frame on
+            if t is not None and t["attack"].move == att.move and self.in_move("p2", w) != 0:
+                t["now"] = att                         # the same attack, one frame on
                 return
         elif w.p2.warn and not (prev and prev.p2.warn):
             att = Attack(kind="strike", lead=self.title.warn_lead, tags={"warn": True})
         else:
-            t = self.threat                            # the attack is over (a warn: its hit is long past)
+            if t and t["attack"].tags.get("warn") and w.p2.move != t.get("move0") and t["attack"].move is None:
+                t["attack"].move = w.p2.move           # the move the warned input started: learn per move
+                t["key"] = f"{w.p2.chara}:{w.p2.move}"
             if t and (not t["attack"].tags.get("warn") or w.frame is None or t["onset"] is None
                       or w.frame - t["onset"] > (t["attack"].lead or 0) + 20):
-                self.threat = None
+                self.threat = None                     # the attack is over (a warn: its hit is long past)
             return
         key = f"{w.p2.chara}:{att.move}" if att.move is not None else f"{w.p2.chara}:{att.cls()}"
-        self.threat = {"key": key, "cls": att.cls(), "attack": att, "now": att, "onset": w.frame, "answered": False}
+        self.threat = {"key": key, "cls": att.cls(), "attack": att, "now": att, "onset": w.frame, "answered": False,
+                       "move0": w.p2.move}
         self.stats["attacks"] += 1
         self._log("attack", w.frame, key=key, cls=att.cls(), move=att.move, to_active=att.to_active(),
                   distance=w.distance, tags=att.tags)
@@ -159,8 +162,8 @@ class Engine:
         self.pending.append(plan)
         if threat is not None:
             threat["answered"] = True
-        self.stats[{"answer": "answers", "punish": "punishes"}.get(answer.kind, "attacks_made")] = \
-            self.stats.get({"answer": "answers", "punish": "punishes"}.get(answer.kind, "attacks_made"), 0) + 1
+        counter = {"answer": "answers", "punish": "punishes"}.get(answer.kind, "attacks_made")
+        self.stats[counter] = self.stats.get(counter, 0) + 1
 
     def _offense(self, w: World):
         """Nothing to answer and free: the title's attack (pressure, a throw), at most every title.attack_gap frames."""
@@ -189,12 +192,14 @@ class Engine:
         if self.title.reach is not None and w.distance is not None and w.distance > self.title.reach:
             self.stats["out_of_reach"] += 1
             return                                    # it may come into reach later in the move
+        since = 0 if t["onset"] is None else w.frame - t["onset"]
+        if t["attack"].tags.get("warn") and since < self.title.warn_settle:
+            return                                    # an input edge: wait a frame or two for the move it starts
         answers = self.title.answers(t["now"], w)
         name = self.book.choose(t["key"], t["cls"], [a.name for a in answers])
         if not name:
             return
         answer = next(a for a in answers if a.name == name)
-        since = 0 if t["onset"] is None else w.frame - t["onset"]
         now = t["now"]
         to_active = now.to_active(since)
         seen = self.book.hit_frame(t["key"], t["cls"])                   # frames from the move's start to its hit

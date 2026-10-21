@@ -31,7 +31,8 @@ QPC, QPC_HZ, RING = 0x85B988, 0x85B9E0, 0x85B9C4
 class Doa3(Title):
     map_id = MAP_ID
     name = "Dead or Alive 3 (Xbox, USA)"
-    warn_lead = 9
+    warn_lead = 9                                          # P2's P / K edge (p2.attack_input) to the hit, until learned
+    warn_settle = 2                                        # then wait for the move it starts: the book learns per move
     attack_gap = 75
     hold_lead = 2                                          # a hold pressed this many frames before the hit's first frame
 
@@ -40,6 +41,22 @@ class Doa3(Title):
         self._qpc = self._ring = None
         self._hz = None
         self.count = 0                                     # frames since the first poll
+
+    def extra_fields(self):
+        return ["game.mode", "game.phase", "game.round_winner", "game.playing_mode", "game.chosen_mode",
+                "players.port", "p1.active", "p2.active"]
+
+    def _sig(self, values, name) -> str | None:
+        f = self.map.fields.get(name)
+        raw = values.raw.get(name) if f else None
+        return (f.signatures.get(raw) or {}).get("screen") if f and raw is not None else None
+
+    def screen(self, values) -> str:
+        """game.mode says title / menus / in a game; in a game the fight's phase says which part (map signatures)."""
+        mode = self._sig(values, "game.mode")
+        if mode == "fight":
+            return self._sig(values, "game.phase") or "loading"
+        return mode or "unknown"
 
     # -- frames --
     def frame(self, mem) -> int | None:
