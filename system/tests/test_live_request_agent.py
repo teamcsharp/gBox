@@ -26,7 +26,8 @@ def make_agent(monkeypatch, sessions=None):
         elif req.url.path == '/api/workers':
             data = [{'id': 'analysis-worker', 'os': 'linux', 'online': True, 'tools': ['re_executable', 'ghidra_bridge']}]
         elif req.url.path.endswith('/rpc'):
-            data = {'game_id': GID, 'platform': 'dreamcast', 'core': 'flycast', 'runtime': {'running': True}}
+            data = {'game_id': GID, 'platform': 'dreamcast', 'core': 'flycast',
+                    'runtime': {'running': True}, 'capabilities': {'read_memory': 'supported'}}
         elif req.url.path == '/api/recipes':
             data = []
         elif req.url.path.endswith('/live-controls'):
@@ -150,6 +151,69 @@ def test_sh4_research_uses_guest_ram_and_ghidra_not_the_emulator_executable(monk
     assert jobs[1][2]['worker'] == 'analysis-worker'
     assert rea == [('rea_binary_session', {}, {'worker_id': 'analysis-worker'})]
     assert result['rea']['guest_attached'] is False and result['verified'] is False
+    assert not any(path.endswith('/study') for _, path in requests)
+    again = investigate(agent, SID, 'unlock costumes too')
+    assert again['reused_analysis'] is True and len(jobs) == 3 and len(rea) == 1
+    assert jobs[-1][1] == {'op': 'info', 'expected_binary_path': ex['elf_path'], 'expected_sha256': ex['sha256']}
+    # A shared bridge can change programs between requests. Reopen the captured
+    # ELF instead of recapturing RAM or falling back to a disc extraction.
+    def changed_program(name, inp, **kwargs):
+        if inp.get('op') == 'info':
+            jobs.append((name, inp, kwargs))
+            return {'state': 'failed', 'error': 'The loaded executable changed'}
+        return job(name, inp, **kwargs)
+    agent._job = changed_program
+    reopened = investigate(agent, SID, 'unlock stages too')
+    assert reopened['ghidra']['state'] == 'succeeded' and 'reused_analysis' not in reopened
+    assert sum(name == 're_executable' for name, _, _ in jobs) == 1
+    assert jobs[-1][1]['binary_path'] == '/private/guest.elf'
+
+
+def test_a_reused_agent_clears_previous_live_program_pins(monkeypatch):
+    agent, requests = make_agent(monkeypatch)
+    agent.live_analysis_executable = {'elf_path': '/previous/guest.elf', 'sha256': 'a'*64}
+    agent.live_analysis_worker = agent.rea_worker = 'retired-worker'
+    monkeypatch.setattr(httpx, 'post', lambda *a, **k: httpx.Response(200, json={
+        'choices': [{'message': {'content': 'Hello'}}]}))
+    agent.run([{'role': 'user', 'content': 'hello'}], lambda _: None, {}, max_steps=1)
+    assert agent.live_analysis_executable is agent.live_analysis_worker is agent.rea_worker is None
+
+
+@pytest.mark.parametrize('method,args', [
+    ('re_executable', {'game_id': GID, 'source': 'disc'}),
+    ('re_executable', {'game_id': GID, 'source': 'auto', 'session_id': SID}),
+    ('re_executable', {'game_id': GID, 'source': 'path', 'path': '/host/runner.exe'}),
+    ('re_study', {'source': 'auto', 'session_id': SID}),
+])
+def test_live_request_rejects_disc_fallback_before_a_worker_job(monkeypatch, method, args):
+    agent, requests = make_agent(monkeypatch)
+    agent.live_target = context()
+    with pytest.raises(ValueError, match='does not copy or unpack'):
+        agent._guard_live_call(method, args)
+    assert requests == []
+    with pytest.raises(ValueError, match='does not copy or unpack'):
+        agent._guard_live_call('run_tool', {'name': method, 'input': args})
+    assert requests == []
+
+
+def test_direct_live_study_cannot_bypass_the_no_rom_copy_guard(monkeypatch):
+    agent, requests = make_agent(monkeypatch)
+    agent.live_target = context()
+    agent._re_gid = lambda _: pytest.fail('Must refuse before resolving or staging a ROM')
+    with pytest.raises(ValueError, match='does not copy or unpack'):
+        agent.re_study(GID)
+    assert requests == []
+
+
+def test_unsupported_native_capture_is_reported_before_any_analysis_job(monkeypatch):
+    agent, requests = make_agent(monkeypatch)
+    agent.live_target = context()
+    agent._live_phase = lambda *a, **kw: None
+    agent._rpc = lambda *a: {'game_id': GID, 'platform': 'xbox',
+        'runtime': {'running': True}, 'capabilities': {'read_memory': 'unsupported'}}
+    agent._job = lambda *a, **kw: pytest.fail('Unsupported RAM must not queue extraction')
+    result = investigate(agent, SID, 'unlock everything')
+    assert result['state'] == 'blocked' and result['rom_copy'] is False and result['verified'] is False
     assert not any(path.endswith('/study') for _, path in requests)
 
 

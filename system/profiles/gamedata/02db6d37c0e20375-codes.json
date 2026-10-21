@@ -1,0 +1,40 @@
+{
+ "game_id": "02db6d37c0e20375",
+ "title": "Marvel vs. Capcom 2",
+ "platform": "dreamcast",
+ "profile": "cheatdb-unlocks-v1",
+ "verified": true,
+ "codes": [
+  {
+   "desc": "Unlock All Characters",
+   "lines": [
+    "0228C420 FFFFFFFF"
+   ]
+  },
+  {
+   "desc": "Unlock All Characters (Continued)",
+   "lines": [
+    "0228C424 FFFFFFFF"
+   ]
+  },
+  {
+   "desc": "Unlock All Characters (Continued)",
+   "lines": [
+    "0228C430 FFFFFFFF"
+   ]
+  },
+  {
+   "desc": "Unlock All Characters (Continued)",
+   "lines": [
+    "0228C434 FFFFFFFF"
+   ]
+  }
+ ],
+ "scope": [
+  "Unlock All Characters"
+ ],
+ "evidence": {
+  "source": "libretro-database cht/Sega - Dreamcast/Marvel Vs. Capcom 2.cht",
+  "read_back": "2026-10-19 21:28 CST, i9-NUC agent session: every code held with cheats op=add; all 4 written values read back unchanged. Gameplay screens not captured (the NUC's frame capture was black until its relaunch)."
+ }
+}

@@ -270,12 +270,28 @@ class MergeReviewTests(ReviewFixture, unittest.TestCase):
 
     def test_base_commit_uses_supported_rest_api_with_head_consistency(self):
         with patch.object(G, 'gh', side_effect=[json.dumps(self.pull),
-                json.dumps({'head': 'b' * 40, 'base': 'c' * 40})]) as gh:
+                json.dumps({'head': 'b' * 40, 'base': 'c' * 40, 'base_name': 'main'}), 'c' * 40]) as gh:
             self.assertEqual(G.pull(7)['baseRefOid'], 'c' * 40)
         self.assertNotIn('baseRefOid', gh.call_args_list[0].args[-1])
         with patch.object(G, 'gh', side_effect=[json.dumps(self.pull),
-                json.dumps({'head': 'd' * 40, 'base': 'c' * 40})]), self.assertRaises(RuntimeError):
+                json.dumps({'head': 'd' * 40, 'base': 'c' * 40, 'base_name': 'main'})]), self.assertRaises(RuntimeError):
             G.pull(7)
+
+    def test_stale_pr_base_uses_current_main_and_still_invalidates_old_review(self):
+        with patch.object(G, 'gh', side_effect=[json.dumps(self.pull),
+                json.dumps({'head': 'b' * 40, 'base': 'a' * 40, 'base_name': 'main'}), 'c' * 40]):
+            current = G.pull(7)
+        G.identity(current, self.expected)
+        self.assertEqual(current['reportedBaseRefOid'], 'a' * 40)
+        with self.assertRaises(RuntimeError):
+            G.identity(current, self.expected | {'baseRefOid': 'a' * 40})
+
+    def test_target_branch_race_and_incomplete_main_identity_fail_closed(self):
+        for refs, extra in (({'head': 'b' * 40, 'base': 'c' * 40, 'base_name': 'other'}, []),
+                            ({'head': 'b' * 40, 'base': 'c' * 40, 'base_name': 'main'}, [''])):
+            with self.subTest(refs=refs, extra=extra), patch.object(G, 'gh',
+                    side_effect=[json.dumps(self.pull), json.dumps(refs), *extra]), self.assertRaises(RuntimeError):
+                G.pull(7)
 
     def test_head_or_base_move_invalidates_review(self):
         for field in ('headRefOid', 'baseRefOid'):
@@ -337,3 +353,212 @@ class MergeReviewTests(ReviewFixture, unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class LocalReviewTests(ReviewFixture, unittest.TestCase):
+    """When the operator set Hermes to local only, reviews run on the local route instead of waiting for credit."""
+
+    def local(self):
+        return {'provider': 'gbox-sparkDeux', 'model': 'Qwen/Qwen3-Coder-Next-FP8', 'local': True,
+                'label': 'Local (sparkDeux)', 'proxy_url': 'http://127.0.0.1:8765/api/llm/local/nodes/sparkDeux/v1'}
+
+    def test_local_only_reviews_on_the_local_route_without_deepseek(self):
+        from gbox import hermes_provider_scope as scope
+        R.record_result(self.item, self.run)
+        self.assertEqual(R.gate(self.item), 'Waiting for durable cloud result review')
+        calls = []
+
+        def post(url, body, timeout):
+            calls.append((url, body))
+            return {'model': 'Qwen/Qwen3-Coder-Next-FP8', 'usage': {'total_tokens': 900},
+                    'choices': [{'finish_reason': 'stop', 'message': {'content':
+                        '```json\n' + json.dumps(self.verdict()) + '\n```'}}]}
+        with patch.object(R, 'reviewer', return_value=self.local()), patch.object(R, 'packet', return_value={}), \
+                patch.object(R.M, '_job', return_value={'enabled': True}), \
+                patch.object(R, '_post_json', side_effect=post), \
+                patch.object(scope, 'admission', return_value={'reason': 'restricted'}), \
+                patch.object(R.subprocess, 'run') as transport:
+            self.assertEqual(R.gate(self.item), 'Waiting for the local result review')
+            self.assertEqual(R.process_one(), self.key)
+        transport.assert_not_called()
+        self.assertEqual(calls[0][0], 'http://127.0.0.1:8765/api/llm/local/nodes/sparkDeux/v1/chat/completions')
+        self.assertEqual(calls[0][1]['model'], 'Qwen/Qwen3-Coder-Next-FP8')
+        self.assertEqual(calls[0][1]['messages'][0]['role'], 'system')
+        row = R.result(self.key)
+        self.assertEqual(row['state'], 'reviewed')
+        self.assertEqual(json.loads(row['verdict'])['verdict'], 'retry')
+        self.assertIsNone(R.gate(self.item))            # guidance recorded: the next dispatch may go ahead
+        self.assertEqual(self.item['review_guidance']['diagnosis'], 'Missing parser bounds check')
+
+    def test_local_only_tick_ignores_the_paid_provider_scope(self):
+        from gbox import hermes_provider_scope as scope
+        with patch.object(R, 'reviewer', return_value=self.local()), \
+                patch.object(R.M, '_job', return_value={'enabled': True}), \
+                patch.object(R, 'discover'), patch.object(R, 'deliver'), patch.object(R, 'refresh_holds'), \
+                patch.object(scope, 'admission', return_value={'reason': 'restricted'}), \
+                patch.object(R, 'process_one', return_value=None) as process:
+            state = R.tick()
+        self.assertNotEqual(state.get('state'), 'waiting_provider_scope')
+        self.assertTrue(state['local'])
+        process.assert_called()
+
+    def test_local_answer_without_a_json_object_is_retried_not_accepted(self):
+        R.record_result(self.item, self.run)
+        bad = {'choices': [{'finish_reason': 'stop', 'message': {'content': 'I could not review this run.'}}]}
+        with patch.object(R, 'reviewer', return_value=self.local()), patch.object(R, 'packet', return_value={}), \
+                patch.object(R.M, '_job', return_value={'enabled': True}), \
+                patch.object(R, '_post_json', return_value=bad):
+            self.assertIsNone(R.process_one())
+        row = R.result(self.key)
+        self.assertEqual(row['state'], 'retry')
+        self.assertIn('invalid_provider_response', row['error'])
+
+    def test_cloud_reviewer_unless_operator_chose_local_only(self):
+        from gbox import hermes_local, hermes_pool
+        with patch.object(hermes_local, 'local_only', return_value=False):
+            self.assertFalse(R.reviewer()['local'])
+        node = SimpleNamespace(enabled=True, allow_large_tasks=True, max_parallel_jobs=32, provider='gbox-sparkDeux',
+                               model='Qwen/Qwen3-Coder-Next-FP8', host_name='sparkDeux',
+                               proxy_url='http://127.0.0.1:8765/api/llm/local/nodes/sparkDeux/v1')
+        small = SimpleNamespace(enabled=True, allow_large_tasks=False, max_parallel_jobs=1, provider='gbox-lilspark',
+                                model='gpt-oss:20b', host_name='lilspark',
+                                proxy_url='http://127.0.0.1:8765/api/llm/local/nodes/lilspark/v1')
+        with patch.object(hermes_local, 'local_only', return_value=True), \
+                patch.object(hermes_pool, 'node_settings', return_value={'lilspark': small, 'sparkDeux': node}):
+            who = R.reviewer()
+        self.assertTrue(who['local'])
+        self.assertEqual((who['provider'], who['model']), ('gbox-sparkDeux', 'Qwen/Qwen3-Coder-Next-FP8'))
+        self.assertEqual(who['proxy_url'], node.proxy_url)
+
+
+class UnreviewableRunTests(ReviewFixture, unittest.TestCase):
+    """A run the ledger cannot review must not hold its task forever."""
+
+    def test_unrecorded_last_run_releases_after_grace_period(self):
+        item = self.item | {'last_run_id': '9' * 32, 'last_finished': time.time() - 3 * 3600}
+        self.assertIsNone(R.gate(item))
+        recent = self.item | {'last_run_id': '9' * 32, 'last_finished': time.time() - 600}
+        self.assertIn('Waiting', R.gate(recent))
+        self.assertIn('Waiting', R.gate(self.item | {'last_run_id': '9' * 32}))   # never finished: still fresh
+
+    def test_missing_transcript_reviews_from_the_thread_after_three_attempts(self):
+        R.record_result(self.item, self.run)
+        from gbox import hermes_tasks as T
+        with closing(R.connect()) as db:
+            row = dict(db.execute('SELECT * FROM reviews WHERE key=?', (self.key,)).fetchone())
+        checkpoint = {'request_id': self.item['request_id'], 'final_report': 'Reader parsed 3 of 7 entries'}
+        with patch.object(T, 'get_run', return_value=None), patch.object(R, '_api', return_value={'number': 12}), \
+                patch.object(Q, '_read', return_value={'items': {'x': checkpoint}}):
+            with self.assertRaises(RuntimeError):
+                R.packet(row | {'attempts': 2})
+            packet = R.packet(row | {'attempts': 3})
+        self.assertTrue(packet['evidence']['transcript_unavailable'])
+        self.assertEqual(packet['evidence']['final_report'], 'Reader parsed 3 of 7 entries')
+        self.assertEqual(packet['current_checkpoint'], checkpoint)
+
+
+class ReviewerWithoutPydanticTests(ReviewFixture, unittest.TestCase):
+    """Hermes's own interpreter runs the review tick without pydantic or fastapi; local only must still apply."""
+
+    def test_local_reviewer_from_toml_when_typed_config_is_unavailable(self):
+        from gbox import hermes_local, hermes_pool
+        toml = self.root / 'gbox.toml'
+        toml.write_text(
+            '[hermes.local]\nprovider = "gbox-sparkDeux"\nmodel = "nvidia/Qwen3.8-27B-NVFP4"\n'
+            'proxy_url = "http://127.0.0.1:8765/api/llm/local/v1"\nmax_parallel_jobs = 2\n'
+            '[hermes.local.nodes.lilspark]\nprovider = "gbox-lilspark"\nmodel = "gpt-oss:20b"\n'
+            'max_parallel_jobs = 1\nallow_large_tasks = false\n'
+            '[hermes.local.nodes.sparkDeux]\nprovider = "gbox-sparkDeux"\nmodel = "nvidia/Qwen3.8-27B-NVFP4"\n'
+            'max_parallel_jobs = 4\nallow_large_tasks = true\n', encoding='utf-8')
+        R.D.state_dir().mkdir(parents=True, exist_ok=True)
+        (R.D.state_dir() / 'local-nodes.json').write_text(json.dumps({'nodes': {
+            'sparkDeux': {'enabled': True, 'model': 'Qwen/Qwen3-Coder-Next-FP8', 'max_parallel_jobs': 32}}}))
+        boom = ImportError("No module named 'pydantic'")
+        with patch.object(hermes_local, '_config_path', return_value=toml), \
+                patch.object(hermes_local, 'local_only', side_effect=boom), \
+                patch.object(hermes_pool, 'node_settings', side_effect=boom):
+            self.assertFalse(R.reviewer()['local'])                       # switch off: cloud
+            (R.D.state_dir() / 'local-only.json').write_text(json.dumps({'local_only': True}))
+            with patch.object(hermes_local, '_flag_path', return_value=R.D.state_dir() / 'local-only.json'):
+                who = R.reviewer()
+        self.assertTrue(who['local'])
+        self.assertEqual((who['provider'], who['model']), ('gbox-sparkDeux', 'Qwen/Qwen3-Coder-Next-FP8'))
+        self.assertEqual(who['proxy_url'], 'http://127.0.0.1:8765/api/llm/local/nodes/sparkDeux/v1')
+        self.assertEqual(who['label'], 'Local (sparkDeux)')
+
+
+class LateReviewTests(ReviewFixture, unittest.TestCase):
+    def test_a_review_late_by_six_hours_stops_holding_the_task(self):
+        R.record_result(self.item, self.run)
+        self.assertIn('Waiting', R.gate(self.item))
+        with closing(R.connect()) as db, db:
+            db.execute('UPDATE reviews SET created=? WHERE key=?', (time.time() - 7 * 3600, self.key))
+        self.assertIsNone(R.gate(self.item), 'a late review no longer blocks the next dispatch')
+        self.assertEqual(R.result(self.key)['state'], 'pending', 'the review itself still runs later')
+        with closing(R.connect()) as db, db:
+            db.execute('UPDATE reviews SET created=? WHERE key=?', (time.time() - 3600, self.key))
+        self.assertIn('Waiting', R.gate(self.item), 'a recent result still waits for its review')
+
+
+class StaleRunReviews(ReviewFixture, unittest.TestCase):
+    def test_a_run_review_past_the_hold_limit_is_retired_once_a_newer_run_exists(self):
+        """232 pending run reviews at 14 hours (2026-10-19): one past the hold limit whose request already ran again
+        is superseded; the newer one and the only run of another request stay pending."""
+        rid = self.item['request_id']
+        old, newer, lone = dict(self.run, id='2' * 32), dict(self.run, id='3' * 32), dict(self.run, id='4' * 32)
+        R.enqueue('run:' + old['id'], 'run', rid, {'run': old, 'item': self.item})
+        R.enqueue('run:' + newer['id'], 'run', rid, {'run': newer, 'item': self.item})
+        R.enqueue('run:' + lone['id'], 'run', 'b' * 16, {'run': lone, 'item': dict(self.item, request_id='b' * 16)})
+        now = time.time()
+        with closing(R.connect()) as db, db:
+            for key in ('run:' + old['id'], 'run:' + lone['id']):
+                db.execute("UPDATE reviews SET created=? WHERE key=?", (now - R.REVIEW_WAIT_MAX_S - 60, key))
+            self.assertEqual(R.retire_stale_run_reviews(db, now), 1)
+            self.assertEqual(R.retire_stale_run_reviews(db, now), 0, 'idempotent')
+            states = {k: s for k, s in db.execute("SELECT key, state FROM reviews").fetchall()}
+            error = db.execute("SELECT error FROM reviews WHERE key=?", ('run:' + old['id'],)).fetchone()[0]
+        self.assertEqual(states['run:' + old['id']], 'superseded')
+        self.assertIn('newer run of this request', error)
+        self.assertEqual(states['run:' + newer['id']], 'pending', 'the newer run review stays')
+        self.assertEqual(states['run:' + lone['id']], 'pending', 'old but the only run of its request: still reviewed')
+
+
+class InboxFirstReviews(ReviewFixture, unittest.TestCase):
+    def test_runs_of_inbox_lane_requests_are_reviewed_before_favorites(self):
+        """2026-10-19: three operator tickets waited 2 to 4 hours behind 200 favorite runs; the pick now prefers
+        runs of the queue's inbox-lane requests, then the previous newest / oldest order."""
+        fav, op = 'f' * 16, 'a' * 16
+        for n, (rid, started) in enumerate(((fav, '2026-10-19T12:00:00+00:00'), (op, '2026-10-19T10:00:00+00:00'),
+                                             (fav, '2026-10-19T11:00:00+00:00'))):
+            run = dict(self.run, id=str(n + 5) * 32, started_at=started)
+            R.enqueue('run:' + run['id'], 'run', rid, {'run': run, 'item': self.item | {'request_id': rid}})
+        (self.root / 'work-queue.json').write_text(json.dumps({'items': {'inbox:' + op: {'request_id': op, 'lane': 'inbox'},
+                                                                          'favorite:' + fav: {'request_id': fav, 'lane': 'favorite'}}}))
+        self.assertEqual(R.inbox_requests(), {op})
+        now = time.time()
+        with closing(R.connect()) as db:
+            self.assertEqual(R.next_review(db, 'run', now, newest=True, first=R.inbox_requests())['request_id'], op,
+                             'the operator run goes first although it is the oldest')
+            self.assertEqual(R.next_review(db, 'run', now, newest=True)['request_id'], fav, 'without the lane: newest first')
+            self.assertEqual(R.next_review(db, 'run', now, newest=True)['key'], 'run:' + '5' * 32)
+            self.assertEqual(R.next_review(db, 'run', now, first={'../x'})['key'], 'run:' + '5' * 32, 'odd ids are ignored')
+        (self.root / 'work-queue.json').write_text('{not json')
+        self.assertEqual(R.inbox_requests(), set(), 'an unreadable queue keeps the previous order')
+        self.assertEqual(R.priority_requests(), [])
+
+    def test_the_queue_priority_order_decides_among_inbox_runs(self):
+        """The inbox lane holds every standing request; the operator's priority list order comes first within it."""
+        a, b, c = 'a' * 16, 'b' * 16, 'c' * 16
+        for n, (rid, started) in enumerate(((a, '2026-10-19T12:00:00+00:00'), (b, '2026-10-19T11:00:00+00:00'),
+                                             (c, '2026-10-19T10:00:00+00:00'))):
+            run = dict(self.run, id=str(n + 5) * 32, started_at=started)
+            R.enqueue('run:' + run['id'], 'run', rid, {'run': run, 'item': self.item | {'request_id': rid}})
+        (self.root / 'work-queue.json').write_text(json.dumps({
+            'priority': [c, b, '../bad'], 'items': {('inbox:' + r): {'request_id': r, 'lane': 'inbox'} for r in (a, b, c)}}))
+        self.assertEqual(R.priority_requests(), [c, b])
+        now = time.time()
+        with closing(R.connect()) as db:
+            pick = R.next_review(db, 'run', now, newest=True, first=R.inbox_requests(), ordered=R.priority_requests())
+            self.assertEqual(pick['request_id'], c, 'first in the priority list, although the oldest run')
+            self.assertEqual(R.next_review(db, 'run', now, newest=True, first=R.inbox_requests())['request_id'], a,
+                             'without the list the newest inbox run comes first')

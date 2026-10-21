@@ -155,7 +155,7 @@ def test_check_build_names_each_difference():
 def _owned_image():
     name = "modbase/mgs_vr_us/Metal Gear Solid - VR Missions (USA).bin"     # where mgs_vr_swap.base_bin unpacks
     cands = [os.environ.get("GBOX_MGS_VR_BIN", ""), str(Path.home() / "samples/gbox-cache" / name),
-             str(Path.home() / "gbox-cache" / name)]
+             str(Path.home() / "gBox_alt/gbox-cache" / name)]
     return next((Path(c) for c in cands if c and Path(c).is_file()), None)
 
 

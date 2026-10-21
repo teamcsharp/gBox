@@ -7,7 +7,7 @@ import pytest
 
 from gbox import sonic1_inventory as s1
 
-REAL = Path.home() / 'gbox-cache/1fff93531f10c256/source.zip'
+REAL = Path.home() / 'gBox_alt/gbox-cache/1fff93531f10c256/source.zip'
 
 
 def _synthetic_rom() -> bytes:

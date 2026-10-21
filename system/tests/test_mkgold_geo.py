@@ -104,7 +104,7 @@ def test_node_table_walk_matches_liu_kang():
     assert rest[7] == (0.0, -0.5, 0.0) and rest[17] == (0.0, 0.0, 0.0)
 
 
-GDI = Path(os.environ.get("GBOX_MKGOLD_GDI", Path.home() / "gbox-cache/dc/25cfe1a8f7ab69cd/disc.gdi"))
+GDI = Path(os.environ.get("GBOX_MKGOLD_GDI", Path.home() / "gBox_alt/gbox-cache/dc/25cfe1a8f7ab69cd/disc.gdi"))
 
 
 @pytest.mark.skipif(not GDI.exists(), reason="owned MK Gold disc unpack not present")

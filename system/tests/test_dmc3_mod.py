@@ -7,7 +7,7 @@ import pytest
 
 from gbox.dmc3_mod import NO_KICK, parse_mod, mod_stats, strip_triangles, to_obj
 
-CACHE = Path.home() / "gbox-cache/ps2/251d9887eb0ccfb3"
+CACHE = Path.home() / "gBox_alt/gbox-cache/ps2/251d9887eb0ccfb3"
 ISO = CACHE / "disc.iso"
 SLUS = CACHE / "inventory/SLUS_213.61"
 

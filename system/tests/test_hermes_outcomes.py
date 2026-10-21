@@ -30,9 +30,13 @@ class Inbox:
 
 
 class FakeBranches:
-    def __init__(self, heads, pending, pulls=None):
+    def __init__(self, heads, pending, pulls=None, refused=None):
         self._heads, self._pending, self._pulls = heads, pending, pulls or {}
+        self._refused = refused or {}
         self.opened, self.refreshed = [], 0
+
+    def refused(self, sha):
+        return self._refused.get(sha, [])
 
     def refresh(self):
         self.refreshed += 1
@@ -173,3 +177,19 @@ def test_operator_reply_reopens_a_blocked_request(cfg, _dispatch_state):
     client.post(f'/api/requests/{rid}/status', json={'status': 'blocked', 'note': 'What next?'})
     assert client.post(f'/api/requests/{rid}/messages', json={'author': 'agent', 'text': 'still waiting'}).json()['status'] == 'blocked'
     assert client.post(f'/api/requests/{rid}/messages', json={'author': 'operator', 'text': 'keep going'}).json()['status'] == 'open'
+
+
+def test_stranded_commits_carrying_game_data_are_never_reopened_as_a_pr(tmp_path, monkeypatch):
+    """2026-10-21: recovery PRs had carried a ROM, a game executable and extracted assets onto the public repository."""
+    now = 1_000_000.0
+    _records(tmp_path, monkeypatch, {'request_id': A, 'number': 1345, 'branch': 'hermes/request-1345-1', 'baseline': 'base'})
+    branches = FakeBranches(heads={'hermes/request-1345-1': ('rom', now - 7200)},
+                            pending={'rom': [('rom', 'add originals')]},
+                            refused={'rom': ['system/originals/Sonic 1 and 2.zip: a zip archive']})
+    inbox = Inbox()
+    out = hermes_merges.reconcile_branches(inbox, branches=branches, busy=set, now=now)
+    assert branches.opened == [] and out['recovered'] == []
+    (rid, body), = inbox.posts
+    assert rid == A and 'never published' in body['text'] and 'Sonic 1 and 2.zip' in body['text']
+    again = hermes_merges.reconcile_branches(inbox, branches=branches, busy=set, now=now + 60, force=True)
+    assert again['recovered'] == [] and len(inbox.posts) == 1                 # reported once

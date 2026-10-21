@@ -13,6 +13,12 @@ PUT   /api/builds/{game_id}/{name}/favorite     {favorite: true|false}: ★ a bu
 GET   /api/builds/{game_id}/{name}/details      modifications, characters inserted (slot <- donor, with the models for the
                                                 360 viewers and the fitting's preview picture), codes / cheats / hacks, compile changes, build recipe, jobs
                                                 and receipts, verification + launch history
+GET   /api/builds/{game_id}/{name}/cast         just the slot <- donor rows (slot, slot_name, donor slug, donor_name,
+                                                status; failed slots left out): who stands in each slot of that build
+GET   /api/sessions/{session_id}/cast           the same for the build a running session shows (built_mods.session_build:
+                                                a live hot-swap, else the build it booted; rows=[] for the original game):
+                                                the pick whip's "Fix this character's mapping" opens the Retarget editor
+                                                on the donor in the picked slot without asking
 GET   /api/builds/scheduled                     queued / claimed / running build jobs (+ the last finished ones)
 GET   /api/builds/scheduled/{job_id}            investigate: log tail, receipt + artifacts, fitting events, result
 POST  /api/builds/scheduled/{job_id}/edit       {input}: a queued build job with edited input (cancel + resubmit, same
@@ -406,6 +412,80 @@ def characters(meta: dict, item: dict, gid: str, lib: dict, root: Path | None, f
                      **({} if orig else {"original_note": ("the collection is still loading" if lib.get("all") is None else
                                                            f"no character of this game named like {slot_name!r} in the "
                                                            "collection (extract the game's cast to see it)")})})
+    return rows
+
+
+_NOT_IN = {"failed", "skipped", "error", "rejected"}
+_FIGHTER_COSTUME = re.compile(r"(fighter):([^:]+):(?:\d+|all)", re.I)
+
+
+def profile_slot(slot: str) -> str:
+    """The slot a Retarget editor profile is kept under for a build's slot: one costume of a fighter
+    ('fighter:KAS:1', 'fighter:taki:all') is the fighter ('fighter:KAS'), which DOA2 (doa2_swap: fighter:<family>) and
+    Soul Calibur II (soulcalibur2_swap.profiled_donors: fighter:<key>) resolve their profiles with."""
+    m = _FIGHTER_COSTUME.fullmatch(str(slot or ""))
+    return f"{m[1]}:{m[2]}" if m else str(slot or "")
+
+
+def _fighter_names(module: str) -> dict:
+    try:
+        if module == "doa2":
+            from . import doa2_chars
+            return {k: n for k, n, *_rest in doa2_chars.FIGHTERS}
+    except Exception:                                            # noqa: BLE001 - names only sharpen the pick match
+        pass
+    return {}
+
+
+def _writer_rows(meta: dict) -> list[dict]:
+    """slot <- donor rows of writers whose marker built_mods.changes_of does not read as slots: Soul Calibur II's
+    cast pairs [["taki:1", slug], ...] (cast_names: key -> fighter name), DOA2's roster [{fighter, character}] and its
+    single-fighter builds (character + report.fighter / report.costumes[].fighter)."""
+    cast = meta.get("cast")
+    if isinstance(cast, list) and cast and all(isinstance(r, (list, tuple)) and len(r) == 2 for r in cast):
+        names = meta.get("cast_names") if isinstance(meta.get("cast_names"), dict) else {}
+        out = []
+        for k, d in cast:
+            key = str(k).split(":")[0]
+            out.append({"slot": f"fighter:{key}", "donor": str(d), "slot_name": str(names.get(key) or "")})
+        return out
+    if isinstance(meta.get("roster"), list):
+        names = _fighter_names("doa2")
+        return [{"slot": f"fighter:{r['fighter']}", "donor": str(r.get("character") or ""),
+                 "slot_name": names.get(r["fighter"], "")} for r in meta["roster"] if isinstance(r, dict) and r.get("fighter")]
+    rep = meta.get("report") if isinstance(meta.get("report"), dict) else {}
+    fighters = [rep.get("fighter")] if rep.get("fighter") else [c.get("fighter") for c in rep.get("costumes") or []
+                                                                if isinstance(c, dict)]
+    if meta.get("character") and isinstance(meta["character"], str) and any(fighters) \
+            and not meta.get("slot") and not meta.get("replaces"):
+        names = _fighter_names("doa2")
+        return [{"slot": f"fighter:{f}", "donor": meta["character"], "slot_name": names.get(f, "")}
+                for f in dict.fromkeys(str(f) for f in fighters if f)]
+    return []
+
+
+def cast_rows(meta: dict, item: dict | None, lib: dict) -> list[dict]:
+    """Who stands in each slot of a build: [{slot, slot_name, donor (slug), donor_name, status, build_slot}] from the
+    writer's record (built_mods.changes_of: cast plans, single swaps; _writer_rows: Soul Calibur II, DOA2). `slot` is
+    the slot the Retarget editor keeps that donor's profile under (profile_slot), `build_slot` the build's own name
+    for it; slots whose donor failed keep the original character, so they are left out."""
+    names = {}
+    for r in (meta.get("slots") or []) + [r for r in (meta.get("cast") or []) if isinstance(r, dict)]:
+        if isinstance(r, dict) and r.get("slot"):
+            names.setdefault(str(r["slot"]), {k: r.get(k) for k in ("slot_name", "donor_name") if r.get(k)})
+    rows, seen = [], set()
+    for c in _writer_rows(meta) or BM.changes_of(meta) or (item or {}).get("changes") or []:
+        raw = str(c.get("slot") or "")
+        slot = profile_slot(raw)
+        slugs = [s.strip() for s in str(c.get("donor") or "").split(",") if s.strip()]
+        status = str(c.get("status") or "")
+        if not slot or not slugs or status in _NOT_IN or (slot, slugs[0]) in seen:
+            continue
+        seen.add((slot, slugs[0]))
+        n, donor = names.get(raw, {}), lib["get"](slugs[0]) if lib.get("get") else None
+        rows.append({"slot": slot, "slot_name": str(c.get("slot_name") or n.get("slot_name") or slot), "donor": slugs[0],
+                     "donor_name": str((donor or {}).get("name") or n.get("donor_name") or slugs[0]), "status": status,
+                     "build_slot": raw})
     return rows
 
 
@@ -1160,6 +1240,30 @@ def routes(app, store, config, auth, *, submit, workers, file_report=None):
         out = details(store, config, item, meta, card, library(config), ws)
         out["where"] = build_row(item, meta, card, [], here)["where"]
         return out
+
+    def cast_of(game_id: str, name: str) -> dict:
+        key, item, meta = find(game_id, name)
+        if item is None and not meta:
+            return {"game_id": game_id, "mod": name, "rows": [], "note": f"no build {key} in the collection index"}
+        return {"game_id": game_id, "mod": name, "rows": cast_rows(meta, item, library(config))}
+
+    @app.get("/api/builds/{game_id}/{name}/cast")
+    def builds_cast(game_id: str, name: str, actor=Depends(auth)):
+        """slot <- donor rows of one build (cast_rows), without the rest of the details."""
+        if not (BM._safe_component(game_id) and BM._safe_component(name)):
+            raise HTTPException(422, "bad build")
+        return cast_of(game_id, name)
+
+    @app.get("/api/sessions/{sid}/cast")
+    def session_cast(sid: str, actor=Depends(auth)):
+        """Who stands in each slot of the build this session shows (a live hot-swap, else the build it booted)."""
+        s = store.get("session", sid)
+        if not isinstance(s, dict):
+            raise HTTPException(404, f"no session {sid}")
+        gid, mod = str(s.get("game_id") or ""), BM.session_build(s)
+        if not mod or not (BM._safe_component(gid) and BM._safe_component(mod)):
+            return {"session_id": sid, "game_id": gid, "mod": "", "rows": [], "note": "the original game: no build"}
+        return {"session_id": sid, **cast_of(gid, mod)}
 
     # ---------------------------------------------------------------------------------------------- delete (#1656)
     def delete_build(game_id: str, name: str, scope: str, node: str, actor: str, nodes=None) -> dict:

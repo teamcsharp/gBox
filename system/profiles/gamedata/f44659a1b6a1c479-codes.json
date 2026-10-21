@@ -1,0 +1,277 @@
+{
+ "game_id": "f44659a1b6a1c479",
+ "title": "Tony Hawk's Pro Skater 3 (USA)",
+ "platform": "gamecube",
+ "disc_id": "GT3E52",
+ "profile": "gecko-unlocks-v1",
+ "verified": true,
+ "codes": [
+  {
+   "desc": "Open all Chars,movies & inbuilt cheats",
+   "lines": [
+    "04A430D0 FFFFFFFF",
+    "04A430D4 FFFFFFFF"
+   ],
+   "kind": "gecko"
+  },
+  {
+   "desc": "Tony Hawks: All levels open",
+   "lines": [
+    "04A42FBC FFFFFFFF",
+    "04A42FC0 FFFFFFFF",
+    "04A42FCC 00000006",
+    "04A42FE4 00000004",
+    "04A42FF4 00000004"
+   ],
+   "kind": "gecko"
+  },
+  {
+   "desc": "Steve Caballero: All levels open",
+   "lines": [
+    "04A436DC FFFFFFFF",
+    "04A436E0 FFFFFFFF",
+    "04A436EC 00000006",
+    "04A43704 00000004",
+    "04A43714 00000004"
+   ],
+   "kind": "gecko"
+  },
+  {
+   "desc": "Kareem Campbell: All levels open",
+   "lines": [
+    "04A43DFC FFFFFFFF",
+    "04A43E00 FFFFFFFF",
+    "04A43E0C 00000006",
+    "04A43E24 00000004",
+    "04A43E34 00000004"
+   ],
+   "kind": "gecko"
+  },
+  {
+   "desc": "Rune Glifberg: All levels open",
+   "lines": [
+    "04A4451C FFFFFFFF",
+    "04A44520 FFFFFFFF",
+    "04A4452C 00000006",
+    "04A44544 00000004",
+    "04A44554 00000004"
+   ],
+   "kind": "gecko"
+  },
+  {
+   "desc": "Eric Koston: All levels open",
+   "lines": [
+    "04A44C3C FFFFFFFF",
+    "04A44C40 FFFFFFFF",
+    "04A44C4C 00000006",
+    "04A44C64 00000004",
+    "04A44C74 00000004"
+   ],
+   "kind": "gecko"
+  },
+  {
+   "desc": "Bucky Lasek: All levels open",
+   "lines": [
+    "04A4535C FFFFFFFF",
+    "04A45360 FFFFFFFF",
+    "04A4536C 00000006",
+    "04A45384 00000004",
+    "04A45394 00000004"
+   ],
+   "kind": "gecko"
+  },
+  {
+   "desc": "Bam Margera: All levels open",
+   "lines": [
+    "04A45A7C FFFFFFFF",
+    "04A45A80 FFFFFFFF",
+    "04A45A8C 00000006",
+    "04A45AA4 00000004",
+    "04A45AB4 00000004"
+   ],
+   "kind": "gecko"
+  },
+  {
+   "desc": "Rodney Mullen: All levels open",
+   "lines": [
+    "04A4619C FFFFFFFF",
+    "04A461A0 FFFFFFFF",
+    "04A461AC 00000006",
+    "04A461C4 00000004",
+    "04A461D4 00000004"
+   ],
+   "kind": "gecko"
+  },
+  {
+   "desc": "Chad Muska: All levels open",
+   "lines": [
+    "04A468BC FFFFFFFF",
+    "04A468C0 FFFFFFFF",
+    "04A468CC 00000006",
+    "04A468E4 00000004",
+    "04A468F4 00000004"
+   ],
+   "kind": "gecko"
+  },
+  {
+   "desc": "Andrew Reynolds: All levels open",
+   "lines": [
+    "04A46FDC FFFFFFFF",
+    "04A46FE0 FFFFFFFF",
+    "04A46FEC 00000006",
+    "04A47004 00000004",
+    "04A47014 00000004"
+   ],
+   "kind": "gecko"
+  },
+  {
+   "desc": "Geoff Rowley: All levels open",
+   "lines": [
+    "04A476FC FFFFFFFF",
+    "04A47700 FFFFFFFF",
+    "04A4770C 00000006",
+    "04A47724 00000004",
+    "04A47734 00000004"
+   ],
+   "kind": "gecko"
+  },
+  {
+   "desc": "Elissa Steamer: All levels open",
+   "lines": [
+    "04A47E1C FFFFFFFF",
+    "04A47E20 FFFFFFFF",
+    "04A47E2C 00000006",
+    "04A47E44 00000004",
+    "04A47E54 00000004"
+   ],
+   "kind": "gecko"
+  },
+  {
+   "desc": "Jamie Thomas: All levels open",
+   "lines": [
+    "04A4853C FFFFFFFF",
+    "04A48540 FFFFFFFF",
+    "04A4854C 00000006",
+    "04A48564 00000004",
+    "04A48574 00000004"
+   ],
+   "kind": "gecko"
+  },
+  {
+   "desc": "Darth Maul: All levels open",
+   "lines": [
+    "04A48C5C FFFFFFFF",
+    "04A48C60 FFFFFFFF",
+    "04A48C6C 00000006",
+    "04A48C84 00000004",
+    "04A48C94 00000004"
+   ],
+   "kind": "gecko"
+  },
+  {
+   "desc": "Wolverine: All levels open",
+   "lines": [
+    "04A4937C FFFFFFFF",
+    "04A49380 FFFFFFFF",
+    "04A4938C 00000006",
+    "04A493A4 00000004",
+    "04A493B4 00000004"
+   ],
+   "kind": "gecko"
+  },
+  {
+   "desc": "Officer Dick: All levels open",
+   "lines": [
+    "04A49A9C FFFFFFFF",
+    "04A49AA0 FFFFFFFF",
+    "04A49AAC 00000006",
+    "04A49AC4 00000004",
+    "04A49AD4 00000004"
+   ],
+   "kind": "gecko"
+  },
+  {
+   "desc": "Private Carrera: All levels open",
+   "lines": [
+    "04A4A1BC FFFFFFFF",
+    "04A4A1C0 FFFFFFFF",
+    "04A4A1CC 00000006",
+    "04A4A1E4 00000004",
+    "04A4A1F4 00000004"
+   ],
+   "kind": "gecko"
+  },
+  {
+   "desc": "Ollie the Magic Bum: All levels open",
+   "lines": [
+    "04A4A8DC FFFFFFFF",
+    "04A4A8E0 FFFFFFFF",
+    "04A4A8EC 00000006",
+    "04A4A904 00000004",
+    "04A4A914 00000004"
+   ],
+   "kind": "gecko"
+  },
+  {
+   "desc": "Kelly Slater: All levels open",
+   "lines": [
+    "04A4AFFC FFFFFFFF",
+    "04A4B000 FFFFFFFF",
+    "04A4B00C 00000006",
+    "04A4B024 00000004",
+    "04A4B034 00000004"
+   ],
+   "kind": "gecko"
+  },
+  {
+   "desc": "Demoness: All levels open",
+   "lines": [
+    "04A4B71C FFFFFFFF",
+    "04A4B720 FFFFFFFF",
+    "04A4B72C 00000006",
+    "04A4B744 00000004",
+    "04A4B754 00000004"
+   ],
+   "kind": "gecko"
+  },
+  {
+   "desc": "Neversoft Eyeball: All levels open",
+   "lines": [
+    "04A4BE3C FFFFFFFF",
+    "04A4BE40 FFFFFFFF",
+    "04A4BE4C 00000006",
+    "04A4BE64 00000004",
+    "04A4BE74 00000004"
+   ],
+   "kind": "gecko"
+  }
+ ],
+ "scope": [
+  "Andrew Reynolds: All levels open",
+  "Bam Margera: All levels open",
+  "Bucky Lasek: All levels open",
+  "Chad Muska: All levels open",
+  "Darth Maul: All levels open",
+  "Demoness: All levels open",
+  "Elissa Steamer: All levels open",
+  "Eric Koston: All levels open",
+  "Geoff Rowley: All levels open",
+  "Jamie Thomas: All levels open",
+  "Kareem Campbell: All levels open",
+  "Kelly Slater: All levels open",
+  "Neversoft Eyeball: All levels open",
+  "Officer Dick: All levels open",
+  "Ollie the Magic Bum: All levels open",
+  "Open all Chars,movies & inbuilt cheats",
+  "Private Carrera: All levels open",
+  "Rodney Mullen: All levels open",
+  "Rune Glifberg: All levels open",
+  "Steve Caballero: All levels open",
+  "Tony Hawks: All levels open",
+  "Wolverine: All levels open"
+ ],
+ "evidence": {
+  "source": "codes.rc24 Gecko list GT3E52.txt (Dolphin 'Download Codes')",
+  "read_back": "2026-10-20 07:30 CST, lilspark (the Spark's Dolphin) agent session: every code held with cheats op=add; all 107 written values read back unchanged from Dolphin's RAM. Gameplay screens of the unlocked content not captured."
+ }
+}

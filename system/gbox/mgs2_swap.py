@@ -341,7 +341,7 @@ def encode_kms(template: bytes, tri: dict, tex_hash: int, tgt: dict) -> bytes:
             pp[:, 3] = Wv[v]
             nn = np.zeros((n, 4), np.int16)
             nrm = Nv[v] / np.maximum(np.linalg.norm(Nv[v], axis=1, keepdims=True), 1e-9)
-            nn[:, :3] = np.clip(np.round(nrm * 4095), -4095, 4095)
+            nn[:, :3] = np.clip(np.round(-nrm * 4095), -4095, 4095)   # the game stores normals into the body (#2367)
             fl = np.where(np.array(part["restart"]), NRM_FLAG | 0x8000, NRM_FLAG).astype(np.uint16)
             nn[:, 3] = fl.view(np.int16)
             uu = np.clip(np.round(Uv[v] * 4096), -32768, 32767).astype(np.int16)

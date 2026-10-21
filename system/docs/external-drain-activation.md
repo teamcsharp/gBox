@@ -20,7 +20,7 @@ Choose one unique owner and one new receipt path and reuse them unchanged:
 # launcher's --print-runtime-command if its managed runtime has been upgraded.
 HERMES_PY="$HOME/.hermes/tools/python-3.14.7+20260901-linux-arm64/bin/python3"
 OWNER="gbox-deploy:<reviewed-commit>:<unique-nonce>"
-RECEIPT="$HOME/gbox-pr-audit-20261017/external-drain-receipt.json"
+RECEIPT="$HOME/gBox_alt/gbox-pr-audit-20261017/external-drain-receipt.json"
 
 # Read-only; ensure no marker already exists before beginning.
 "$HERMES_PY" -I scripts/hermes_drain_control.py --owner "$OWNER"

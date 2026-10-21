@@ -82,9 +82,22 @@ def test_shared_weapon_textures_refuse_repainting():
         BattleAtlas(bm, [_primitive()])
 
 
-def test_atlas_refuses_overflow_instead_of_discarding_or_resizing_detail():
+def test_atlas_scales_an_overflowing_texture_down_to_fit():
+    """#1902: five party members have smaller TIMs than Cloud; a donor texture that does not fit is scaled down
+    evenly (recorded in atlas.scale) instead of failing the member."""
     bm, _ = _fixture()
     p = _primitive()
     p['tex'] = np.full((65, 4, 4), 255, np.uint8)
-    with pytest.raises(ValueError, match='exceeds'):
-        BattleAtlas(bm, [p])
+    atlas = BattleAtlas(bm, [p])
+    height, width = bm['tim']['idx'].shape
+    assert atlas.scale < 1.0
+    (x, y, w, h), = atlas.rects.values()
+    assert x + w <= width and y + h <= height
+
+
+def test_atlas_keeps_full_detail_when_it_fits():
+    bm, _ = _fixture()
+    p = _primitive()
+    p['tex'] = np.full((4, 4, 4), 255, np.uint8)
+    atlas = BattleAtlas(bm, [p])
+    assert atlas.scale == 1.0 and next(iter(atlas.rects.values()))[2:] == (4, 4)

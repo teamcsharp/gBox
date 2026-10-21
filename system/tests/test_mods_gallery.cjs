@@ -572,9 +572,34 @@ test('both clients have a Mods view wired to the shared gallery', () => {
   assert.match(desktop, /GBoxModsGallery\.mount\(\$\("#modsgallery"\), \{ api, poll: GBoxLivePoll/);
   assert.match(desktop, /openImages: \(list, i, at\) => texPopOpen\(list, i, at\)/);
   assert.match(desktop, /return modPlay\(m\.mod_title \? \{ \.\.\.card, title: m\.mod_title \} : card, moment && card\.state_slot != null \? "moment" : "play"\)/);
-  assert.match(web, /const tabs = \{ Library: library, Mods: modsView,/);
-  assert.match(web, /<script src="\/live-poll\.js"><\/script>\r?\n(?:<script src="\/viz\/character-popup\.js"><\/script>\r?\n)?<script src="\/viz\/mods-gallery\.js"><\/script>/);
+  assert.match(web, /const tabs = \{[^\n]*\bLibrary: library, Mods: modsView,/);
+  assert.match(web, /<script src="\/viz\/mods-gallery\.js"><\/script>/);
+  assert.ok(web.indexOf('src="/live-poll.js"') >= 0);
+  assert.ok(web.indexOf('src="/live-poll.js"') < web.indexOf('src="/viz/mods-gallery.js"'));
   assert.match(web, /openImages: \(list, i\) => lbOpen\(null, list, i\)/);
   assert.match(web, /poll: window\.GBoxLivePoll/);
   for (const f of [desktop, web]) assert.ok(!/[^\r]\n/.test(f), 'CRLF line endings kept');
+});
+
+
+test('#2393: a build report opens with its id and flagged, a launch failure with its id (neither is in m.tickets)', async () => {
+  const REP = { ...CF, key: 'cf3/cf_reported', name: 'cf_reported', tickets: [], reported: { number: 9, id: 'r9' },
+                launch_report: { number: 11, request_id: 'r11', label: 'core crashed', count: 1, verified: false } };
+  const h = fakeHost(), opened = [];
+  const env = fakeEnv([REP], { openRequest: t => opened.push(t) });
+  const ctl = MG.mount(h.host, env); await ctl.ready;
+  try {
+    await h.fire('click', target({ key: REP.key, mg: 'request', n: '9' }));
+    await h.fire('click', target({ key: REP.key, mg: 'request', n: '11' }));
+    await h.fire('click', target({ key: REP.key, mg: 'request', n: '12' }));
+  } finally { ctl.stop(); }
+  assert.deepEqual(opened, [{ number: 9, id: 'r9', build_report: true }, { number: 11, id: 'r11' }, { number: 12 }]);
+});
+
+test('#2393: the desktop opens a build report as its three.js presentation', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../clients/desktop/index.html'), 'utf8');
+  const a = html.indexOf('async function modsGalleryRequest(t)');
+  const fn = html.slice(a, html.indexOf('// A click on the docked native game window', a));
+  assert.match(fn, /if \(t\.build_report\) return reportStoryOpen\(t\.id\);/);
+  assert.match(fn, /if \(!t\.id\) \{ toast\(/);
 });

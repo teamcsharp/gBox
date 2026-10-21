@@ -7,7 +7,7 @@ import pytest
 
 from gbox import dmc3_inventory as d3
 
-ISO = Path(os.environ.get("GBOX_DMC3SE_ISO", Path.home() / "gbox-cache/ps2/251d9887eb0ccfb3/disc.iso"))
+ISO = Path(os.environ.get("GBOX_DMC3SE_ISO", Path.home() / "gBox_alt/gbox-cache/ps2/251d9887eb0ccfb3/disc.iso"))
 
 
 def pac(children, magic=b"PAC\0"):

@@ -1,0 +1,24 @@
+{
+ "game_id": "d926b1e51c2631f5",
+ "title": "NBA Street Vol. 2 (USA)",
+ "platform": "gamecube",
+ "disc_id": "GNZE69",
+ "profile": "gecko-unlocks-v1",
+ "verified": true,
+ "codes": [
+  {
+   "desc": "Unlock All Rewards",
+   "lines": [
+    "02377AA0 000DFFFF"
+   ],
+   "kind": "gecko"
+  }
+ ],
+ "scope": [
+  "Unlock All Rewards"
+ ],
+ "evidence": {
+  "source": "codes.rc24 Gecko list GNZE69.txt (Dolphin 'Download Codes')",
+  "read_back": "2026-10-20 07:24 CST, lilspark (the Spark's Dolphin) agent session: every code held with cheats op=add; all 14 written values read back unchanged from Dolphin's RAM. Gameplay screens of the unlocked content not captured."
+ }
+}

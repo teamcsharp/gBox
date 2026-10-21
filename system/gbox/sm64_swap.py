@@ -220,15 +220,16 @@ def retarget(rig: dict, tgt: dict, scale: dict | None = None, jmap: dict | None 
     top of the automatic head fit, about the head's base (the neck stays where it is). jmap: {role: target joint} for
     another skeleton (default Mario's; gbox.oot_swap passes Link's or an NPC's limbs)."""
     from .re4gc_enemies import _role_of_joint
-    from .retarget_profile import move_joints, profile_of
+    from .retarget_profile import move_joints, profile_of, turn_frame
     rig, moved = move_joints(rig, profile_of(scale))       # the Retarget editor's joint moves: pivots + segments
     MARIO = jmap or globals()["MARIO"]
     hipj, chestj = MARIO["hip"], MARIO.get("chest", MARIO["hip"])
     B = facing(rig)
-    S = rig["joints"] @ B.T
+    Bf = turn_frame(B, profile_of(scale))                  # the editor's Turn around: the fit frame turned 180 degrees
+    S = rig["joints"] @ Bf.T
     ri, T = rig["roles"], tgt["T"]
     jrole = np.array(_role_of_joint({"roles": ri, "parent": rig["parent"]}))
-    prims = [{**p, "pos": p["pos"] @ B.T, "nrm": p["nrm"] @ B.T, "role": jrole[p["owner"]]} for p in rig["prims"]]
+    prims = [{**p, "pos": p["pos"] @ Bf.T, "nrm": p["nrm"] @ Bf.T, "role": jrole[p["owner"]]} for p in rig["prims"]]
     allp = np.concatenate([p["pos"] for p in prims])
     allr = np.concatenate([p["role"] for p in prims])
     isprop = np.concatenate([np.full(len(p["pos"]), bool(p.get("prop"))) for p in prims])
@@ -326,6 +327,8 @@ def retarget(rig: dict, tgt: dict, scale: dict | None = None, jmap: dict | None 
            "roles_used": sorted(ri), "facing": B.astype(int).tolist()}
     if moved["moved"]:
         rep["joints_moved"] = moved
+    if Bf is not B:
+        rep["turned"] = True
     return _profiled(rig, tgt, out, rep, scale, T, MARIO)
 
 

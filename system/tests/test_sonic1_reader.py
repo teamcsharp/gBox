@@ -4,7 +4,7 @@ owned-ROM export (130 frames, animation map, import-ready pieces/DPLC, Nemesis
 art), plus the characters.DEDICATED registration.
 
 The owned-ROM test pins what the reader finds in the operator's build (cached at
-~/gbox-cache/1fff93531f10c256/source.zip, identified by the ROM's SHA-256) and
+~/gBox_alt/gbox-cache/1fff93531f10c256/source.zip, identified by the ROM's SHA-256) and
 skips when the dump is not on this machine.
 """
 from __future__ import annotations
@@ -23,7 +23,7 @@ from gbox import sonic1_inventory as I
 from gbox import sonic1_reader as R
 from gbox.formats import sega_md as M
 
-CACHE = Path(os.environ.get("GBOX_ROM_CACHE", Path.home() / "gbox-cache"))
+CACHE = Path(os.environ.get("GBOX_ROM_CACHE", Path.home() / "gBox_alt/gbox-cache"))
 OWNED_ROM_SHA256 = "a22564d49d28bfab70e2046b1c08d7a6a19f6bf4183491e0280ef916fb4863ce"
 
 

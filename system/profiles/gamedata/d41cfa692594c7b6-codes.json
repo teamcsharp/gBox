@@ -1,0 +1,23 @@
+{
+ "game_id": "d41cfa692594c7b6",
+ "title": "Turok 3: Shadow of Oblivion (USA)",
+ "platform": "n64",
+ "profile": "cheatdb-unlocks-v1",
+ "verified": true,
+ "codes": [
+  {
+   "desc": "Have All Secrets",
+   "lines": [
+    "811659C4 FFFF",
+    "811659C6 FFFF"
+   ]
+  }
+ ],
+ "scope": [
+  "Have All Secrets"
+ ],
+ "evidence": {
+  "source": "libretro-database cht/Nintendo - Nintendo 64/Turok 3 - Shadow of Oblivion (USA).cht",
+  "read_back": "2026-10-20 04:31 CST, i9-NUC agent session: every code held with cheats op=add; all 2 written values read back unchanged. Gameplay screens not captured (the NUC's frame capture was black until its relaunch)."
+ }
+}

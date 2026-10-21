@@ -140,6 +140,13 @@ def scan_library(inp: ScanIn, ctx: Ctx):
         entries, problems, per["adhoc"] = entries + e, problems + p, {"entries": len(e)}
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(json.dumps(cache))
+    try:                                                # native PC ports of owned ROMs (gbox/native_ports.py)
+        from . import native_ports
+        ported = native_ports.catalog_entries(entries)
+    except Exception as e:                               # noqa: BLE001 - a port listing never fails the scan
+        ported = []
+        problems.append(f"native ports: {type(e).__name__}: {e}")
+    entries += ported
     if inp.include_steam is not False:                   # opt-in auto-detection: an unconfigured PC is not scanned by surprise
         steam_root = cfg.steam_root or (catalog.default_steam_root() if inp.include_steam else None)
         if steam_root:
@@ -352,6 +359,15 @@ class LaunchIn(BaseModel):
     boot_timeout_s: float | None = Field(default=None, ge=10, le=600)   # how long the emulator may take to report the
                                            # game running (None = the adapter's default, 30 s for RetroArch); the
                                            # launch failure remedy relaunches a slow boot with a longer one
+    jump: bool = False                     # a demo (the screensaver, autoplay on launch): boot straight into this game and
+                                           # build's jump state where the emulator can (Dolphin) and this PC has one
+                                           # (gbox.jumpstate). Never set for the operator's own Play.
+    memory_cards: str = ""                 # "operator": an agent-owned demo (the screensaver) inserts the cards the operator
+                                           # selected for this game, so their saved characters load (#2817)
+    pad: str = ""                          # "keyboard": a bot drives this session with send_input where the emulator reads
+                                           # one input device per player (PS3 in RPCS3 on Windows: player 1 = gBox's
+                                           # keyboard pad, not the operator's controller). jump (a demo) implies it there.
+                                           # "" = the operator's controller (normal Play)
 
 class LaunchOut(BaseModel):
     session_id: str
@@ -411,6 +427,40 @@ def _session_ended_on_server(ctx, sid) -> bool:
         return False
 
 
+def _save_previous_game(ad, game: dict, sid: str, ctx) -> dict:
+    """Save a running game before the single-game switch closes it.
+
+    state_transfer moves a save state between machines, which only RetroArch cores and standalone Dolphin (the
+    same release on both) support; their moment is saved through gBox's own slot (op=snapshot: op=export would
+    save it through Dolphin's slot 1, the operator's own). Every other emulator can still save its own game: fall
+    back to the adapter's save_state — the same primitive the Stop flow uses — so switching away from RPCS3 /
+    Xenia / PCSX2 / ... is not refused as a "save states can't move between machines" failure. An unnamed
+    adapter keeps the historical state_transfer path.
+    """
+    kind = getattr(ad, "name", "")
+    if getattr(ad, "checkpoint_state", None) in ("path", "dir") or not kind or kind in ("retroarch", "dolphin"):
+        return state_transfer(StateXIn(session_id=sid, op="snapshot"), ctx)["result"]
+    save = getattr(ad, "save_state", None)
+    if save is None:
+        raise Unsupported(f"{kind} does not support save_state")
+    with rewind.guard(sid, "save_state"):
+        saved = save()                                # raises Unsupported("<name> does not support save_state")
+    if not isinstance(saved, dict):
+        saved = {"value": str(saved)[:200]}
+    artifact = None
+    path = saved.get("path")
+    if path:
+        try:
+            data = Path(path).read_bytes()
+        except OSError:
+            data = b""
+        if data:
+            ctx.artifact(Path(path).name, data, "application/octet-stream",
+                         note="state transfer", game=game.get("game_id"), session=sid)
+            artifact = sha256(data)
+    return {"artifact": artifact, **saved}
+
+
 def _close_previous_games(ctx, keep: str = ""):
     """One emulator per worker, except the session named by `keep` stays up (game_link host + guest on one worker).
     Preserve every current game before stopping any of them."""
@@ -438,7 +488,19 @@ def _close_previous_games(ctx, keep: str = ""):
             continue
         ctx.progress(71, 'Saving the previous game before switching')
         try:
-            saved = state_transfer(StateXIn(session_id=sid, op='export'), ctx)['result']
+            saved = _save_previous_game(ad, game, sid, ctx)
+        except Unsupported as exc:
+            if getattr(ad, 'checkpoint_state', None) in ('path', 'dir'):
+                title = game.get('title') or game.get('game_id') or sid
+                raise Unsupported(f"The previous game ({title}) could not be saved: {exc}. It was kept running. Stop it in "
+                                  "Sessions (or close its emulator window) before starting another game.") from exc
+            # No save state at all (cxbx, rpcs3 without an in-place state, ...). The game's own saves persist through
+            # the clean stop below, so nothing blocks switching games (operator report #2014); only the exact moment is
+            # not captured, the same result as the operator closing the emulator window.
+            reason = getattr(ad, 'checkpoint_reason', None) or str(exc)
+            checkpoints.append({'session_id': sid, 'game_id': game.get('game_id'), 'artifact': None,
+                                'save_state': 'unsupported', 'reason': reason})
+            continue
         except Exception as exc:
             title = game.get('title') or game.get('game_id') or sid
             raise Unsupported(f"The previous game ({title}) could not be saved: {exc}. It was kept running. Stop it in Sessions "
@@ -517,10 +579,11 @@ def _stop_session(sid: str, args: dict, ctx) -> dict:
     if args.get('moment'):
         # last played (gbox/last_played.py): the moment the operator stopped at, uploaded with this result so "Reload with
         # your last moment" can bring it back. Best effort within moment_cap_s; past it the game is closed regardless.
+        # Saved through gBox's own slot (op=snapshot): Stop is not a Save, so the operator's save slots stay as they are.
         cap = float(args.get('moment_cap_s') or STOP_MOMENT_CAP_S)
 
         def keep_moment():
-            out = {'artifact': state_transfer(StateXIn(session_id=sid, op='export'), ctx)['result']['artifact']}
+            out = {'artifact': state_transfer(StateXIn(session_id=sid, op='snapshot'), ctx)['result']['artifact']}
             try:
                 png = ad.get_frame()
                 ctx.artifact('moment.png', png, 'image/png', session=sid, note='last played moment')
@@ -662,7 +725,7 @@ def _examine_for_launch(inp_examine, examine_ready, host_os):
 def _launch_game(inp: LaunchIn, ctx: Ctx):
     g = inp.game
     launch_mod = inp.mod
-    timings, staging = {}, None
+    timings, staging, jump = {}, None, None
     unlock_result = {'state': 'research_pending', 'applied': False}
     diag = getattr(_LAUNCH_DIAG, "d", None)
     diag = {} if diag is None else diag
@@ -679,6 +742,7 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     diag["stage"] = "pick emulator"
     ad = adapters.for_game(g.model_dump(), ctx.config, debug=inp.debug, mod=inp.mod)
     ad.capture_gameplay = not getattr(ctx,'agent_use',False) and not inp.capture_backend
+    ad.input_pad = inp.pad                                # "keyboard": a bot plays (RPCS3 on Windows: gBox's keyboard pad)
     ad.api_server, ad.api_headers = ctx.server or '', ctx.headers
     ad.tas_server, ad.tas_headers = ctx.server or '', ctx.headers
     ad.progress = ctx.progress
@@ -687,6 +751,9 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     if inp.boot_timeout_s:
         ad.boot_timeout_s = float(inp.boot_timeout_s)
     ad.game_id, ad.serial = g.game_id, g.serial            # per-game settings (graphics) applied at launch
+    if HOST_OS == "windows" and isinstance(ad, adapters.RetroArchAdapter):
+        from . import padmap                               # native window: the operator's controller map for this
+        ad.pad_map = padmap.fetch(ctx.server, ctx.headers, g.platform)   # console, written as RetroArch's remap file
     ad.examine = _examine_for_launch(inp.examine, ctx.config.examine_ready, HOST_OS)
     if inp.capture_backend:
         ad.capture_backend = _capture_plan(ad, g, inp.capture_backend, ctx)
@@ -716,13 +783,21 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
             from . import filemods
             folder = filemods.mod_dir(ctx.config, g.game_id, inp.mod)
             if (folder / ".gbox-mod.json").is_file():
-                candidate = filemods.launch_path(ctx.config, g.game_id, src, inp.mod)
-                if candidate.is_file():
-                    local_mod = candidate
+                # a build rebuilt under the same name must not keep launching the old local copy: only the copy
+                # whose marker matches the collection's current one counts (or the local one when it can't tell)
+                current = filemods.current_local_copy(ctx.config, ctx.server, ctx.headers, g.game_id, inp.mod) \
+                    if ctx.server else inp.mod
+                if current is None:
+                    ctx.progress(19, f"The collection has a newer build of {inp.mod}; fetching it")
+                else:
+                    candidate = filemods.launch_path(ctx.config, g.game_id, src, current)
+                    if candidate.is_file():
+                        local_mod, launch_mod = candidate, current
         if local_mod is None and not src.exists():
             raise FileNotFoundError(f"ROM not reachable from this node: {src}")
         lap("rom_s")
-        if local_mod is None and isinstance(ad, adapters.RPCS3Adapter) and g.launch.get("kind") == "attract":
+        if local_mod is None and isinstance(ad, (adapters.RPCS3Adapter, adapters.RPCS3LinuxAdapter)) \
+                and g.launch.get("kind") == "attract":
             eboot = catalog.ps3_stub_eboot(src)            # HyperSpin .txt stub -> its disc folder's EBOOT.BIN (#1093)
             if not eboot:
                 raise FileNotFoundError(f"no PS3_GAME/USRDIR/EBOOT.BIN in the folder for {src.name} under {src.parent}")
@@ -735,7 +810,7 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
             ctx.progress(18, 'Applying verified on-load unlock profile (original save backed up)')
         if inp.mod:
             from . import filemods
-            if not (filemods.mod_dir(ctx.config, g.game_id, inp.mod) / ".gbox-mod.json").exists() and ctx.server:
+            if local_mod is None and ctx.server:            # not here yet, or the local copies are an older build
                 ctx.progress(20, f"Fetching mod {inp.mod} from the central collection (Spark)")
                 launch_mod = filemods.stage(ctx.config, ctx.server, ctx.headers, g.game_id, inp.mod, ctx.progress)
             src = local_mod or filemods.launch_path(ctx.config, g.game_id, src, launch_mod)
@@ -793,10 +868,22 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         from . import memory_card_sessions
         memory_card_sessions.recover_pending(ctx)
         ad.memory_card_rom=str(src)
-        memory_card_sessions.checkout(f'{ctx.worker}-{ctx.job_id}',ad,g.model_dump(),ctx)
-        ctx.progress(72, f"Starting {ad.name} with {src.name}")
+        memory_card_sessions.checkout(f'{ctx.worker}-{ctx.job_id}',ad,g.model_dump(),ctx,
+                                      operator_cards=inp.memory_cards == "operator")
+        if inp.jump and not inp.capture_backend:            # a demo: straight into gameplay (gbox.jumpstate)
+            from . import jumpstate
+            ad.demo = True                                  # unattended: no modal dialogs, no on-screen messages
+            jump = diag["jump"] = jumpstate.arm_boot(ad, {"game_id": g.game_id, "mod": launch_mod or ""})
+        ctx.progress(72, f"Starting {ad.name} with {src.name}"
+                         + (f", straight into gameplay ({jump['file']})" if jump and jump.get("booted") else ""))
         diag["stage"] = "start the emulator"
-        detail = ad.launch_game(str(src))
+        try:
+            detail = ad.launch_game(str(src))
+        except Exception:
+            if jump and jump.get("booted"):                 # never let a jump state keep a game from starting:
+                from . import jumpstate                     # the next launch boots the usual way
+                jumpstate.drop_boot(ad)
+            raise
         if callable(getattr(type(ad), '_boot_frame', None)):
             frame = ad._boot_frame()
             if frame:
@@ -807,6 +894,8 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     timings["total_s"] = round(time.monotonic() - t_start, 3)
     detail["timings"] = timings                               # #1506: where a launch's time went, per stage
     detail['unlocks'] = unlock_result
+    if jump is not None:
+        detail["jump"] = jump                                 # session.detail.jump: the screensaver starts at once
     if staging is not None:
         detail["staging"] = staging
     ctx.progress(100, "Running natively in its own window" if detail.get("local_window") else "Running — connecting the stream")
@@ -816,6 +905,17 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     if g.launch.get("kind") != "steam" and not isinstance(ad, adapters.RocketLauncherAdapter):
         gd["_rom_path"] = str(src)                     # for the inspector's ROM viewer
     SESSIONS[sid] = (ad, gd)
+    try:                                               # unlock-on-load by held codes (#1986: Soul Calibur II)
+        from . import game_unlocks
+        held = game_unlocks.post_launch(sid, gd, _gcheat_hold)
+        if held:
+            detail['unlocks'] = {**(detail.get('unlocks') or {}), **held}
+            ctx.progress(100, f"Unlock-on-load: {', '.join(held['held'])}" if held['held'] else "Unlock-on-load codes failed")
+    except Exception as error:                         # noqa: BLE001 - never turns a running game into a failed launch
+        detail['unlocks'] = {**(detail.get('unlocks') or {}), 'state': 'failed', 'reason': str(error)[:240]}
+    if not inp.capture_backend:
+        from . import custom_build_unlocks
+        detail['unlocks'] = custom_build_unlocks.on_launch(sid, ctx, requested_mod=inp.mod)
     if not inp.capture_backend:
         try:
             from . import gameplay_actions
@@ -871,7 +971,10 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         except Exception as e:                                 # never block a game launch
             detail["pso_controls"] = {"state": "unsupported", "reason": str(e)}
         try:
-            detail["rewind"] = rewind.start(sid, ad, ctx.config, gd, inp.rewind, lambda: sid in SESSIONS)
+            # a demo / autoplay launch keeps no checkpoint ring: at most its jump state and the menu state (operator
+            # 2026-10-20: "one game session needs a maximum of two save states"); the ring saved every ~2 s
+            ring = False if (inp.jump and inp.rewind is None) else inp.rewind
+            detail["rewind"] = rewind.start(sid, ad, ctx.config, gd, ring, lambda: sid in SESSIONS)
         except Exception as e:                                 # noqa: BLE001 - never block the launch
             detail["rewind"] = {"rewind": "unsupported", "reason": f"rewind setup failed: {e}"}
         # background gameplay ring (#1084): records while the operator's pad is in use, clipped later with the recording tool
@@ -1134,6 +1237,29 @@ def _stream_event_reporter(sid: str, server: str, headers: dict):
     return report
 
 
+NATIVE_STILL_S = 4.0     # a native game's still this often: a picture older than a few of these means "not on its screen"
+
+
+def _native_stills(sid: str, ad, server: str, headers: dict, every: float = NATIVE_STILL_S, grab=None):
+    """A native game's window, posted as the session's frame every few seconds while its PC's screen shows it (#2858):
+    the header icon's picture, the hover preview, and the proof for viewers on other PCs that the game is live. A game
+    the screen doesn't show posts nothing, so its picture goes stale and the Sessions view says so."""
+    if grab is None:
+        if HOST_OS != "windows":
+            return
+        from .remote_desktop import window_still as grab
+    with httpx.Client(base_url=server, headers=headers, timeout=10) as c:
+        while sid in SESSIONS:
+            pid = getattr(getattr(ad, "proc", None), "pid", None)       # RPCS3 relaunches in place: follow the pid
+            try:
+                still = grab(pid) if pid else None
+                if still:
+                    c.post(f"/api/sessions/{sid}/frame", content=still, headers={"content-type": "image/jpeg"})
+            except Exception:                                           # noqa: BLE001 - a missed still never touches the game
+                pass
+            time.sleep(every)
+
+
 def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
     """Live session plumbing, three independent loops so nothing slow can stall the video:
     frames  - pushed the moment the encoder produces one (up to the stream fps, 60),
@@ -1145,8 +1271,8 @@ def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
         stream.on_event = _stream_event_reporter(sid, server, headers)
 
     def frames():
-        if stream is None:                               # local native window: nothing to stream
-            return
+        if stream is None:                               # local native window: no video stream, a still now and then
+            return _native_stills(sid, ad, server, headers)
         # one long-lived upload per session: [4-byte big-endian length][JPEG] ... (a POST per frame capped at ~6 fps)
         def body():
             last, live = -1, _EmulatorLiveness(ad)
@@ -1183,8 +1309,18 @@ def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
                     if pad:
                         game_pad = rewind.feed(sid, pad)      # Consume time chords before injecting game input.
                         ring_record.touch(sid, pad)           # the operator's pad in use: the gameplay ring records
+                        run = AUTOPLAY.get(sid)               # replay/learned autoplay presses directly: the operator's
+                        if (run and run.get("mode") in ("replay", "learned", "playbook")   # own input (stream) takes over
+                                and run.get("thread") is not None and run["thread"].is_alive()
+                                and any(e.get("src", "player") in ("player", "ui") for e in pad)):
+                            from . import padstate
+                            padstate.PLAYER_TOUCH[sid] = time.time()          # -> autoplay hands control back
                     if pad and "send_input" in ad.supported:
-                        ad.send_input(game_pad)
+                        demo = getattr((AUTOPLAY.get(sid) or {}).get("driver"), "demo", False)
+                        if demo and game_pad and all(e.get("src") == "autoplay" for e in pad):
+                            _polite_send(ad, game_pad)            # a bot demo's own presses (vision / missions)
+                        else:
+                            ad.send_input(game_pad)
                 except Exception:
                     time.sleep(0.5)
 
@@ -1192,6 +1328,8 @@ def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
     threading.Thread(target=inputs, daemon=True).start()
     if sys.platform == "win32":                                  # mirror the operator's own pad to the controller glyph
         from . import padstate
+        padstate.CHORD[sid] = lambda: autoplay_chord(sid, ctx)    # hold Select/View + press A: autoplay on/off
+        padstate.ANCHOR[sid] = lambda at: _save_anchor(sid, ad, ctx, at)  # replay waits for these screens
         threading.Thread(target=padstate.watch_xinput, args=(server, headers, sid, lambda: sid in SESSIONS), daemon=True).start()
     with httpx.Client(base_url=server, headers=headers, timeout=10) as c:
         pid = getattr(getattr(ad, "proc", None), "pid", None)
@@ -1286,6 +1424,9 @@ def session_rpc(sid: str, op: str, args: dict, ctx=None):
     if op == "read_memory":
         n = max(1, min(int(args.get("length", 256)), 1 << 20))       # up to 1 MiB per call (one CPU halt on debug stubs)
         return ad.read_memory(int(args["address"]), n).hex()
+    if op == "read_ranges":                            # the RAM inspector's batched reads (gbox/ram_reader.py serve)
+        from . import ram_reader
+        return ram_reader.serve(sid, ad, args)
     if op == "read_rom":
         data = _rom_bytes(g["_rom_path"])
         off, n = int(args.get("offset", 0)), max(1, min(int(args.get("length", 4096)), 65536))
@@ -1314,7 +1455,7 @@ def session_rpc(sid: str, op: str, args: dict, ctx=None):
         if not callable(getattr(type(ad), "reset", None)):
             raise Unsupported(f"{getattr(ad, 'name', 'this emulator')} has no reset")
         return ad.reset() or {"reset": True}
-    raise ValueError(f"rpc op {op} not allowed (read_memory, read_rom, info, state, reset, pause, resume, debug_*)")
+    raise ValueError(f"rpc op {op} not allowed (read_memory, read_ranges, read_rom, info, state, reset, pause, resume, debug_*)")
 
 
 def _semantic_state(ad, g: dict, player_only: bool = False):
@@ -1699,6 +1840,23 @@ def _gcheat_apply(ad, ops):
             skip = ad.read_memory(a, len(d)) != d          # condition false -> skip the next op
         else:
             ad.write_memory(a, d)
+
+
+def _gcheat_hold(sid: str, codes: list[str], desc: str) -> dict:
+    """Hold decoded constant writes in a running session (what cheats op=add does), for unlock-on-load code profiles
+    (gbox/game_unlocks.py post_launch). The entry shows in cheats op=list and can be disabled there."""
+    import threading as _t
+    from . import cheats as C
+    ad, g = SESSIONS[sid]
+    ops, bad = C.decode(g.get("platform", ""), "\n".join(codes))
+    if not ops:
+        raise ValueError(f"no code lines gBox can apply itself for {g.get('platform')}: {bad}")
+    c = {"desc": desc, "lines": list(codes), "ops": ops, "unsupported": bad, "on": _t.Event()}
+    mine = GCHEATS.setdefault(sid, [])
+    mine.append(c)
+    c["on"].set()
+    _t.Thread(target=_gcheat_loop, args=(sid, c), daemon=True).start()
+    return {"index": len(mine) - 1, "ops": len(ops), "unsupported": bad}
 
 
 def _gcheat_loop(sid: str, c: dict, on=None):
@@ -2173,12 +2331,64 @@ class AutoplayIn(BaseModel):
     goal: str = ""                         # games without missions: what to do ("make progress", "win this race"...)
     record: bool = False
     assist: bool = False                   # hold the player's HP while gBox plays (opt-in, released when it stops)
+    # auto: a mission that fits (PSO) > the operator's learned style (enough recorded play) > vision.
+    # replay: play one of the operator's recorded runs back from boot (reset=True restarts the game first).
+    mode: str = "auto"                     # auto | playbook | mission | replay | learned | vision
+    run_id: str = ""                       # replay: which recorded run (default: the newest real run on this emulator)
+    reset: bool = False                    # replay: restart the game first, so the run starts from boot as recorded
+    style: dict = {}                       # learned style knobs (imitate.KNOBS: follow, pace, favor); the screensaver
+                                           # picks them per game from earlier runs' novelty scores
+    screensaver: bool = False              # the idle-PC screensaver runs this (gbox.screensaver): a replay goes on in the
+                                           # learned style, a mouse move hands the game over (it plays on), the end
+                                           # is reported
+    demo: bool = False                     # a bot demo (launched with autoplay on, any PC, the operator's own included):
+                                           # plays on like the screensaver (a replay goes on in the learned style), never
+                                           # brings a window to the front or takes the keyboard from someone using the
+                                           # PC (polite input), and a frozen game is relaunched as a bot demo again
 
 class AutoplayOut(BaseModel):
     result: dict
 
-AUTOPLAY: dict[str, dict] = {}             # session_id -> {driver, thread, mission, result}
+AUTOPLAY: dict[str, dict] = {}             # session_id -> {driver, thread, mission, mode, result}
+AT_BOOT = 60.0                             # s: autoplay (auto) asked for this soon after launch replays the operator's run
 MISSIONS = Path(__file__).resolve().parent.parent / "profiles" / "missions"
+AUTOPLAY_ACTOR = "autoplay"                # who the worker's autoplay calls to the control plane are: never the operator
+
+
+def _ap_headers(ctx_or_headers) -> dict:
+    """The control-plane headers for autoplay's own requests on the worker: the session's auth plus x-gbox-actor
+    autoplay. Without it a request carries the worker's token alone and the server records it as the operator's (a
+    relaunch by _bad_end showed up as "launched by operator", 2026-10-20)."""
+    h = ctx_or_headers if isinstance(ctx_or_headers, dict) else (getattr(ctx_or_headers, "headers", None) or {})
+    return dict(h) | {"x-gbox-actor": AUTOPLAY_ACTOR}
+
+
+SESSION_ROW_TIMEOUT_S = 25.0               # asked at most twice inside the tool's own 60 s
+
+
+def _session_row(ctx, sid: str) -> dict:
+    """The control plane's record of a running session ({} when it can't say in time). Only the running sessions are
+    asked for: the full GET /api/sessions builds a row for every session the store ever held, each with a few store
+    reads. On a loaded Spark (2026-10-21, load average 47) that took 45 s and then over 2 minutes, so every autoplay op
+    (start, stop, status) failed on its 30 s timeout ("ReadTimeout: timed out")."""
+    try:
+        r = httpx.get(f"{ctx.server}/api/sessions", params={"include_ended": "false"}, headers=_ap_headers(ctx),
+                      timeout=SESSION_ROW_TIMEOUT_S)
+        rows = r.json()
+    except (httpx.HTTPError, ValueError):
+        return {}
+    return next((s for s in rows if isinstance(s, dict) and s.get("session_id") == sid), {}) \
+        if isinstance(rows, list) else {}
+
+
+def _session_game_id(ctx, sid: str):
+    """The game a session runs: from this worker's own SESSIONS (no request; the game it launched), else the control
+    plane's record."""
+    try:
+        gid = (SESSIONS[sid][1] or {}).get("game_id")
+    except KeyError:
+        gid = None
+    return gid or _session_row(ctx, sid).get("game_id")
 
 
 def _missions(game_id=None):
@@ -2191,10 +2401,7 @@ def autoplay(inp: AutoplayIn, ctx: Ctx):
     """Let gBox play the live game (take control): runs a scripted mission (navigate / interact / fight) through the
     session's debugger. op=start | stop (hand control back) | status | list."""
     from .autoplay import Driver
-    game_id = None
-    if inp.session_id:
-        r = httpx.get(f"{ctx.server}/api/sessions", headers=ctx.headers, timeout=30)
-        game_id = next((s.get("game_id") for s in r.json() if s["session_id"] == inp.session_id), None)
+    game_id = _session_game_id(ctx, inp.session_id) if inp.session_id and inp.op in ("list", "start") else None
     if inp.op == "list":
         return {"result": {"missions": [{"name": m["name"], "objective": m.get("objective"), "game_id": m.get("game_id")}
                                         for m in _missions(game_id)]}}
@@ -2206,25 +2413,64 @@ def autoplay(inp: AutoplayIn, ctx: Ctx):
         return {"result": {"stopped": bool(run), "mission": run and run["mission"]}}
     if inp.op == "status":
         return {"result": {"running": bool(run and run["thread"].is_alive()), "mission": run and run["mission"],
+                           "mode": run and run.get("mode"), "took_over": bool(run and run.get("took_over")),
                            "last": run and run.get("result"), "steps": run and len(run["driver"].trace)}}
     if inp.op != "start":
         raise ValueError(f"unknown op {inp.op}")
+    if inp.mode not in ("auto", "playbook", "mission", "replay", "learned", "vision"):
+        raise ValueError("mode: auto | playbook | mission | replay | learned | vision")
     if run and run["thread"].is_alive():
         return {"result": {"already_running": run["mission"]}}
     d = Driver(ctx.server, ctx.headers["authorization"].split()[-1], inp.session_id, log=lambda *a: None)
     d.assist_hold_hp = inp.assist
+    d.screensaver = (ctx.server, _ap_headers(ctx)) if inp.screensaver else None
+    d.demo = bool(inp.demo) and not inp.screensaver
+    d.agent_use = bool(getattr(ctx, "agent_use", True))       # the next autoplay job after a relaunch keeps it
     ad, g = SESSIONS[inp.session_id]
+    if inp.screensaver:
+        _front(ad)                                             # idle PC: the game in front (Dolphin input needs it)
+    elif d.demo:
+        _demo_front(ad)                                        # only when nobody uses that PC right now
+    hacks = _autoplay_hacks(inp.session_id, g)                 # the game's autoplay hack profile: gBox plays to win
+    since = time.time()
+    if inp.mode in ("auto", "playbook") and not inp.mission:  # a game-specific bot for where the game is right now
+        pb = _playbook(ad, g)
+        if pb is not None:
+            return {"result": _start_playbook(pb, inp, d, ad, since, ctx, g, game_id) | ({"hacks": hacks} if hacks else {})}
+        if inp.mode == "playbook":
+            raise ValueError(f"no playbook plays {g.get('title')} where it is now (have: {', '.join(PLAYBOOKS)})")
+    from . import jumpstate
+    if inp.mode == "auto" and not inp.mission and game_id \
+            and since - float(_session_row(ctx, inp.session_id).get("started") or 0) < AT_BOOT \
+            and not jumpstate.booted(ad, g):                   # booted into its jump state: past the boot already
+        try:                                                   # the chord at the title screen: your recorded run from boot
+            return {"result": _start_imitation(inp.model_copy(update={"mode": "replay"}), ctx, d, ad, g, game_id, since)}
+        except ValueError:
+            pass
+    if inp.mode in ("replay", "learned"):
+        return {"result": _start_imitation(inp, ctx, d, ad, g, game_id, since) | ({"hacks": hacks} if hacks else {})}
     m = None
-    if inp.mission:
-        m = next((x for x in _missions() if x["name"] == inp.mission), None)
-    elif _missions(game_id):
-        m = _takeover_mission(d, g, game_id)                   # continue from where the player is right now
+    if inp.mode in ("auto", "mission"):
+        if inp.mission:
+            m = next((x for x in _missions() if x["name"] == inp.mission), None)
+        elif _missions(game_id):
+            m = _takeover_mission(d, g, game_id)               # continue from where the player is right now
+    if m is None and inp.mode == "mission":
+        raise ValueError(f"no mission fits here (missions: {[x['name'] for x in _missions(game_id)] or 'none for this game'})")
+    if m is None and inp.mode == "auto" and game_id:            # the operator's own play, when there is enough of it
+        try:
+            return {"result": _start_imitation(inp.model_copy(update={"mode": "learned"}), ctx, d, ad, g, game_id, since)
+                    | ({"hacks": hacks} if hacks else {})}
+        except ValueError:
+            pass                                               # not enough recorded play: vision
     if m is None:                                              # any other game: watch the screen, decide, press
-        run = AUTOPLAY[inp.session_id] = {"driver": d, "mission": "vision: " + (inp.goal or "make progress")}
+        run = AUTOPLAY[inp.session_id] = {"driver": d, "mission": "vision: " + (inp.goal or "make progress"), "mode": "vision",
+                                          "sid": inp.session_id, "since": since}
         run["thread"] = threading.Thread(target=_vision_play, args=(run, ad, g, inp.goal, ctx.server), daemon=True)
         run["thread"].start()
-        return {"result": {"started": run["mission"], "objective": "vision autoplay (any game): screen -> model -> buttons"}}
-    run = AUTOPLAY[inp.session_id] = {"driver": d, "mission": m["name"]}
+        return {"result": {"started": run["mission"], "mode": "vision",
+                           "objective": "vision autoplay (any game): screen -> model -> buttons"}}
+    run = AUTOPLAY[inp.session_id] = {"driver": d, "mission": m["name"], "mode": "mission", "sid": inp.session_id, "since": since}
     cache = ctx.config.runtime / "autoplay"
     cache.mkdir(parents=True, exist_ok=True)
 
@@ -2238,12 +2484,608 @@ def autoplay(inp: AutoplayIn, ctx: Ctx):
                 run["result"] = {"ok": False, "error": str(e)}
             if not run["result"].get("ok") or d.stopped:
                 break
+            cur = next((x for x in _missions() if x["name"] == cur.get("then")), None)
         if getattr(d, "_assist_release", None):                  # stopped / failed mid-run: never leave HP held
             d._assist_release()
-            cur = next((x for x in _missions() if x["name"] == cur.get("then")), None)
+        _ended(run)
+    _takeover(run, d, inp.session_id, since)
     run["thread"] = threading.Thread(target=go, daemon=True)
     run["thread"].start()
-    return {"result": {"started": m["name"], "objective": m.get("objective")}}
+    return {"result": {"started": m["name"], "mode": "mission", "objective": m.get("objective")}}
+
+
+def _cursor():
+    """The mouse position on Windows (None elsewhere): the screensaver ends when it moves."""
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    from ctypes import wintypes
+    p = wintypes.POINT()
+    return (p.x, p.y) if ctypes.windll.user32.GetCursorPos(ctypes.byref(p)) else None
+
+
+def _saver_post(d, path, body):
+    if getattr(d, "screensaver", None):
+        server, headers = d.screensaver
+        try:
+            httpx.post(f"{server}/api/autoplay-screensaver/{path}", headers=headers, json=body, timeout=15)
+        except httpx.HTTPError:
+            pass
+
+
+def _takeover(run, d, sid, since):
+    """The operator touches their own pad after autoplay started: hand control back at once (every mode). In
+    screensaver mode a mouse move hands the game over without stopping: autoplay plays on until the operator presses
+    Stop (operator 2026-10-20: "let it continue playing until I click the stop button"). The control plane is told
+    either way and keeps the game up."""
+    from . import padstate
+    run["screensaver"] = bool(getattr(d, "screensaver", None))
+    cursor = None                                    # where the mouse rested when autoplay took the game, once per run:
+    if run["screensaver"] and not run.get("handed_over"):   # each phase's watch compares with it (a move between counts)
+        if "rest_cursor" not in run:
+            run["rest_cursor"] = _cursor()
+        cursor = run["rest_cursor"]
+
+    def running():                                   # the run's thread is set and started just after this: a thread
+        th = run.get("thread")                       # not started yet (no ident) is not one that ended
+        return th is None or th.ident is None or th.is_alive()
+
+    def watch():
+        nonlocal cursor
+        while not d.stopped and running():
+            if padstate.touched_after(sid, since):           # they play: autoplay lets go of the pad
+                d.stopped, run["took_over"] = True, True
+                _release_all(sid)
+                _saver_post(d, "yield", {"session_id": sid, "reason": "pad"})
+                return
+            if cursor is not None:
+                c = _cursor()
+                if c and abs(c[0] - cursor[0]) + abs(c[1] - cursor[1]) > 8:
+                    cursor, run["handed_over"] = None, True    # theirs now; only the pad (or Stop) ends the autoplay
+                    _saver_post(d, "yield", {"session_id": sid, "reason": "mouse"})
+            time.sleep(0.1)
+    threading.Thread(target=watch, daemon=True).start()
+
+
+def _telemetry(run, ctx, title: str = "") -> None:
+    """While the run plays, post what it is doing every 5 s (mode, mission, live stats) for the watch panel."""
+    if ctx is None:
+        return
+
+    def body(running):
+        live = run.get("live") or {}
+        stats = {k: v for k, v in live.items() if isinstance(v, (int, float, str, bool))}
+        return {"running": running, "mode": run.get("mode") or "", "mission": run.get("mission") or "",
+                "title": title, "stats": stats, "demo": bool(getattr(run.get("driver"), "demo", False))}
+
+    def post(running):
+        try:
+            httpx.post(f"{ctx.server}/api/autoplay/telemetry/{run['sid']}", headers=_ap_headers(ctx), json=body(running),
+                       timeout=10)
+        except httpx.HTTPError:
+            pass
+
+    def loop():
+        time.sleep(1)
+        while run.get("thread") is not None and run["thread"].is_alive():
+            post(True)
+            time.sleep(5)
+        post(False)
+    threading.Thread(target=loop, daemon=True, name=f"autoplay-telemetry-{run['sid']}").start()
+
+
+def _ended(run):
+    """An autoplay run finished (stopped, failed or done): note when, and tell the screensaver what happened. A run that
+    ended because the game froze or showed only black (run["bad_end"]) then gets the game back (_bad_end)."""
+    run["ended"] = time.time()
+    d = run.get("driver")
+    res = run.get("result") or {}
+    _saver_post(d, "result", {"session_id": run.get("sid", ""), "result": {
+        "mode": run.get("mode"), "mission": run.get("mission"), "took_over": bool(run.get("took_over")),
+        **({"bad_end": run["bad_end"]} if run.get("bad_end") else {}),
+        **({"knobs": res["knobs"]} if isinstance(res.get("knobs"), dict) else {}),
+        **{k: v for k, v in res.items() if isinstance(v, (int, float, str, bool)) and k != "error"},
+        **({"error": str(res["error"])[:300]} if res.get("error") else {})}})
+    if run.get("bad_end") and not run.get("took_over"):
+        threading.Thread(target=_bad_end, args=(run,), daemon=True, name=f"autoplay-recover-{run.get('sid', '')}").start()
+
+
+BLACK_LUMA, BLACK_FOR = 6.0, 45.0      # mean grey (0..255) of a black frame; how long only black means the game is gone
+RELAUNCH_WAIT = 300
+
+
+def _black(ad) -> bool | None:
+    """True when the game's picture is (nearly) black, False when it shows something, None when there is no frame."""
+    import base64
+    from . import imitate
+    try:
+        px = base64.b64decode(imitate.thumb(ad.get_frame()))
+    except Exception:                                          # noqa: BLE001 - no frame now: no verdict
+        return None
+    return bool(px) and sum(px) / len(px) < BLACK_LUMA
+
+
+def _black_watch(run, d, ad, clock=time.time, sleep=time.sleep):
+    """The operator tunes in and sees only black (operator 2026-10-20: "any time I look at gameplay it actually shows
+    gameplay"): BLACK_FOR seconds of black frames while autoplay plays end the run with bad_end "black" (_bad_end).
+    RAM is trusted over the picture: a playbook that reads the game's state reports it in run["live"] (ram_progress
+    counts up as the menus change, timer is RE4's round clock), and black frames while either moves are a fade, a load
+    or a stream hiccup, not a hang (2026-10-20: a demo was relaunched after 45 s of black while its round clock ran)."""
+    if not hasattr(ad, "get_frame"):
+        return
+
+    def progress():                                    # the playbook's own RAM signals: menus moving, the round clock
+        live = run.get("live") or {}
+        return live.get("ram_progress"), live.get("timer")
+
+    def watch():
+        since, seen = None, progress()
+        while not d.stopped and (run.get("thread") is None or run["thread"].is_alive()):
+            b = _black(ad)
+            now = clock()
+            prog = progress()
+            if prog != seen:                                   # the game's own state moved on: not a hang
+                seen, since = prog, None
+                if b:
+                    run["black_but_running"] = run.get("black_but_running", 0) + 1
+                sleep(5)
+                continue
+            if b:
+                since = since or now
+                if now - since >= BLACK_FOR:
+                    run["bad_end"] = "black"
+                    d.stopped = True
+                    return
+            elif b is False:
+                since = None
+            sleep(5)
+    threading.Thread(target=watch, daemon=True, name=f"autoplay-black-{run.get('sid', '')}").start()
+
+
+def _bad_end(run, sleep=time.sleep):
+    """The game froze or showed only black: a screensaver demo moves on to its next game (the screensaver takes the
+    report); any other autoplay game (a bot demo: launched with autoplay on, any PC) is relaunched - same game and
+    build, same PC - and autoplay starts again on it with the same settings. Every request here says it is autoplay's
+    (x-gbox-actor), so the relaunch is recorded as autoplay's, never as the operator's, and the server refuses it for
+    the operator's own games (only bot demos and agent test sessions are relaunched)."""
+    ctx, sid, inp = run.get("ctx"), run.get("sid", ""), run.get("inp")
+    if ctx is None or not sid:
+        return
+    headers = _ap_headers(ctx)
+    try:
+        r = httpx.post(f"{ctx.server}/api/autoplay-screensaver/result", headers=headers, timeout=15,
+                       json={"session_id": sid, "result": {"bad_end": run["bad_end"]}})
+        if r.status_code < 400 and r.json().get("saved"):
+            return                                              # a screensaver run: it moves on by itself
+    except (httpx.HTTPError, ValueError):
+        pass
+    try:
+        r = httpx.post(f"{ctx.server}/api/sessions/{sid}/reset", headers=headers, json={"mode": "restart"}, timeout=30)
+        if r.status_code >= 400:
+            run["recovery"] = f"relaunch refused: {r.text[:200]}"
+            return
+        jid, new, waited = r.json().get("id"), None, 0
+        while waited < RELAUNCH_WAIT and jid:
+            sleep(3)
+            waited += 3
+            job = httpx.get(f"{ctx.server}/api/jobs/{jid}", headers=headers, timeout=15).json()
+            if job.get("state") == "succeeded":
+                out = job.get("output") or {}
+                new = out.get("session_id") or (out.get("result") or {}).get("session_id")
+                break
+            if job.get("state") in ("failed", "rejected", "cancelled", "invalid"):
+                run["recovery"] = f"relaunch {job.get('state')}: {str(job.get('error') or '')[:200]}"
+                return
+        if not new:
+            run["recovery"] = "relaunch did not finish"
+            return
+        d = run.get("driver")
+        httpx.post(f"{ctx.server}/api/jobs", headers=headers, timeout=30, json={
+            "tool": "autoplay", "require_worker": new.split("-")[0], "agent_use": bool(getattr(d, "agent_use", True)),
+            "input": {"session_id": new, "op": "start", "mode": getattr(inp, "mode", "auto") or "auto",
+                      "screensaver": bool(getattr(inp, "screensaver", False)), "style": getattr(inp, "style", None) or {},
+                      **({"demo": True} if getattr(inp, "demo", False) else {})}})
+        run["recovery"] = f"relaunched as {new}, autoplay started again"
+    except (httpx.HTTPError, ValueError) as e:
+        run["recovery"] = f"relaunch failed: {type(e).__name__}"
+
+
+AUTOPLAY_HACKS = MISSIONS.parent / "autoplay"            # profiles/autoplay/<game_id>.json: codes held while gBox plays
+
+
+def _autoplay_hacks(sid: str, g: dict) -> list[str]:
+    """Hold the game's autoplay hacks (infinite health for the side autoplay plays, one-hit KOs...) in this session,
+    once per session; returns what is held. Never applied to the operator's own play: only autoplay calls it."""
+    path = AUTOPLAY_HACKS / f"{g.get('game_id')}.json"
+    if not path.is_file():
+        return []
+    try:
+        prof = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if prof.get("platform") != g.get("platform"):
+        return []
+    already = {c.get("desc") for c in GCHEATS.get(sid, [])}
+    held = []
+    for h in prof.get("hacks") or []:
+        desc = f"autoplay: {h.get('desc')}"
+        if desc in already:
+            held.append(h.get("desc"))
+            continue
+        try:
+            _gcheat_hold(sid, list(h.get("lines") or []), desc)
+            held.append(h.get("desc"))
+        except Exception:                                      # noqa: BLE001 - a hack that won't hold never stops play
+            pass
+    return held
+
+
+# game-specific autoplay bots: matches(ad, g), setup(ad), play(ad, send, stopped). mercs_bot (the Mercenaries on any
+# title whose RAM map has a "mercs" block) comes first and matches once the engine is installed (gbox.mercs.engine);
+# until then RE4 plays through re4_merc_bot. doa2_bot / doa3_bot: the fighting engine (gbox/fightbot). sc2_bot: Soul
+# Calibur II (GameCube), P1's perfect defence
+PLAYBOOKS = ("mercs_bot", "re4_merc_bot", "doa2_bot", "doa3_bot", "ge007_bots", "sc2_bot")
+# playbook -> the module that reads its game's button prompts from RAM (for_adapter(ad, stats) -> a prompt source):
+# play(..., ram_prompt=) asks it before the screen watcher
+RAM_PROMPTS = {"re4_merc_bot": "re4_ram_prompts"}
+
+
+def _playbook(ad, g):
+    import importlib
+    for name in PLAYBOOKS:
+        try:
+            mod = importlib.import_module(f".{name}", __package__)
+            if mod.matches(ad, g):
+                return mod
+        except Exception:                                      # noqa: BLE001 - a broken playbook never blocks autoplay
+            continue
+    return None
+
+
+def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> dict:
+    sid = inp.session_id
+    name = pb.__name__.rsplit(".", 1)[-1]
+    run = AUTOPLAY[sid] = {"driver": d, "sid": sid, "since": since, "mode": "playbook", "mission": f"playbook: {name}",
+                           "ctx": ctx, "inp": inp, "live": {}}
+
+    def go():
+        try:
+            import importlib
+            import inspect
+            # no key left down from before (an earlier run cut short, a crash): a stuck stick-left read as left on
+            # every RE4 menu and Select Stage never moved (live 2026-10-20)
+            _release_all(sid)
+            failed = pb.setup(ad)
+            kw = {}
+            if "stats" in inspect.signature(pb.play).parameters:
+                kw["stats"] = run["live"] = {}                 # the playbook fills it as it plays (watch panel)
+            if "upload" in inspect.signature(pb.play).parameters and ctx is not None:
+                def upload(fname, data, media_type="application/octet-stream", **provenance):
+                    """Evidence the playbook keeps (frames of a hold that paid): a content-addressed artifact."""
+                    r = httpx.post(f"{ctx.server}/api/artifacts", headers=_ap_headers(ctx), content=data, timeout=30,
+                                   params={"name": fname, "media_type": media_type,
+                                           "provenance": json.dumps({"session": sid, "playbook": name, **provenance})})
+                    r.raise_for_status()
+                    return r.json().get("sha256")
+                kw["upload"] = upload
+            if "ram_prompt" in inspect.signature(pb.play).parameters and RAM_PROMPTS.get(name):
+                try:                                           # the game's own prompt state in RAM: asked first
+                    rp = importlib.import_module(f".{RAM_PROMPTS[name]}", __package__)
+                    kw["ram_prompt"] = rp.for_adapter(ad, kw.get("stats"))
+                except Exception:                              # noqa: BLE001 - no RAM view: the screen alone
+                    pass
+            if "prompt" in inspect.signature(pb.play).parameters and hasattr(ad, "get_frame"):
+                from . import screen_prompt                    # the game's on-screen button prompts (A TAKE / JUMP OVER):
+                watcher = run["prompt_watcher"] = screen_prompt.Watcher(lambda: ad.get_frame(), hz=6.0).start()
+                kw["prompt"] = lambda: watcher.visible(0.5)    # after RAM, when RAM can't tell
+            if "style" in inspect.signature(pb.play).parameters and ctx is not None and game_id:
+                try:                                           # the operator's learned style does the fighting
+                    from . import imitate
+                    _, model = _style_model(ctx, _recorded_play(ctx, game_id), ad, game_id, (g or {}).get("platform"))
+                    if model["total"] >= imitate.MIN_LEARN_BURSTS:
+                        kw["style"] = imitate.Style(model, knobs=inp.style)
+                except Exception:                              # noqa: BLE001 - no recorded play: the playbook's own way
+                    pass
+            if "game" in inspect.signature(pb.play).parameters:
+                kw["game"] = dict(g or {})                     # its game and build (a playbook's own jump / menu state)
+            if "tactical" in inspect.signature(pb.play).parameters and ctx is not None:
+                from .mercs import tactical as T               # the tactical map beside the stream (docs/tactical_map.md)
+                kw["tactical"] = T.HttpSink(ctx.server, _ap_headers(ctx), sid)
+            stats = pb.play(ad, _autoplay_send(ad, d), lambda: d.stopped, **kw)
+            if stats.get("hung"):                              # the game froze: _ended gets it back (_bad_end)
+                run["bad_end"] = "hung"
+            if run.get("prompt_watcher") is not None:
+                run["prompt_watcher"].stop.set()
+            run["result"] = {"ok": True, "playbook": name, **stats, **({"setup_failed": len(failed)} if failed else {})}
+        except Exception as e:
+            run["result"] = {"ok": False, "error": str(e)}
+        _release_all(sid)
+        _ended(run)
+    _takeover(run, d, sid, since)
+    _black_watch(run, d, ad)                                   # only black on screen: get the game back
+    run["thread"] = threading.Thread(target=go, daemon=True)
+    run["thread"].start()
+    _telemetry(run, ctx, (g or {}).get("title") or "")
+    return {"started": run["mission"], "mode": "playbook", "objective": (pb.__doc__ or name).strip().splitlines()[0]}
+
+
+def _recorded_play(ctx, game_id) -> list[dict]:
+    r = httpx.get(f"{ctx.server}/api/gameplay-memory", params={"game_id": game_id}, headers=_ap_headers(ctx), timeout=60)
+    r.raise_for_status()
+    return r.json().get("runs") or []
+
+
+def _run_events(ctx, run_id) -> list[dict]:
+    out, after = [], 0
+    with httpx.Client(base_url=ctx.server, headers=_ap_headers(ctx), timeout=60) as c:
+        while True:
+            page = c.get(f"/api/gameplay-memory/runs/{run_id}", params={"after": after, "limit": 500}).json().get("events") or []
+            out += page
+            if len(page) < 100:
+                return out
+            after = page[-1]["id"]
+
+
+LEARNED: dict[tuple, dict] = {}            # (game_id, adapter, run ids) -> learned style model (worker process cache)
+
+
+def _start_imitation(inp, ctx, d, ad, g, game_id, since) -> dict:
+    """replay / learned autoplay from the operator's recorded play of this game (gbox.imitate)."""
+    from . import imitate
+    if not game_id:
+        raise ValueError("replay / learned autoplay needs the session's game")
+    runs = _recorded_play(ctx, game_id)
+    platform = g.get("platform")
+    sid = inp.session_id
+    run = {"driver": d, "sid": sid, "since": since, "mode": inp.mode, "ctx": ctx, "inp": inp}
+    send = _autoplay_send(ad, d)
+    if inp.mode == "replay":
+        rec = imitate.pick_run(runs, ad.name, inp.run_id)
+        if rec is None:
+            raise ValueError(f"no recorded run of this game to replay ({len(runs)} runs, none with "
+                             f"{imitate.MIN_REPLAY_PADS}+ pad reports)" if not inp.run_id else f"run {inp.run_id} not found")
+        events = _run_events(ctx, rec["id"])
+        marks = imitate.anchors(events)
+        plan = imitate.replay_plan(imitate.held_timeline(events, ad.name, platform), float(rec.get("started") or 0),
+                                   marks=marks)
+        if not plan:
+            raise ValueError(f"run {rec['id']} has no controller input to replay")
+        run["mission"] = f"replay: your run {rec['id'][-13:]}"
+        if inp.reset:
+            ad.reset()
+            offset = 0.0
+        else:                                                   # already past boot: start at the first recorded input
+            offset = max(0.0, min(plan[0][0], time.time() - float(_session_started(ctx, sid) or since)))
+
+        def go():
+            try:
+                sync = (lambda mark: imitate.wait_for_screen(mark, lambda: imitate.thumb(ad.get_frame()),
+                                                             lambda: d.stopped)) if marks else None
+                run["result"] = imitate.play_plan(plan, send=send, stopped=lambda: d.stopped, clock=time.time,
+                                                  sleep=time.sleep, offset=offset, sync=sync) | {
+                    "run_id": rec["id"], "steps": len(plan), "anchors": len(marks)}
+                if run["result"].get("completed") and not d.stopped and (getattr(d, "screensaver", None)
+                                                                         or getattr(d, "demo", False)):
+                    _release_all(sid)                       # the screensaver / a bot demo plays on: your style from here
+                    _, model = _style_model(ctx, runs, ad, game_id, platform)
+                    if model["total"] >= imitate.MIN_LEARN_BURSTS:
+                        run["mission"] = f"learned: your style ({len(model['bursts'])} moves), after your run"
+                        stuck = _stuck(ad)
+                        st = imitate.Style(model, knobs=inp.style)
+                        stats = run["live"] = {}
+                        _jump_watch(run, d, ad, g, stuck, stats, after_replay=True)
+                        run["result"]["bursts"] = imitate.play_style(st, send=send, stopped=lambda: d.stopped,
+                                                                     sleep=time.sleep, stuck=stuck, ff=_ff(ad),
+                                                                     stats=stats)
+                        run["result"] |= _novelty(stuck, st) | stats
+            except Exception as e:
+                run["result"] = {"ok": False, "error": str(e)}
+            _release_all(sid)
+            _ended(run)
+        objective = (f"replaying your recorded run ({len(plan)} input changes, {plan[-1][0]:.0f} s) from boot"
+                     + (f", in step with {len(marks)} saved screens" if marks else ", on its recorded timing"))
+    else:
+        own, model = _style_model(ctx, runs, ad, game_id, platform)
+        if model["total"] < imitate.MIN_LEARN_BURSTS:
+            raise ValueError(f"only {model['total']} input bursts recorded for this game; play it a little longer first")
+        style = imitate.Style(model, knobs=inp.style)
+        run["mission"] = f"learned: your style ({len(model['bursts'])} moves from {model['total']} bursts)"
+
+        def go():
+            try:
+                stuck, stats = _stuck(ad), {}
+                run["live"] = stats
+                _jump_watch(run, d, ad, g, stuck, stats)
+                run["result"] = {"ok": True, "bursts": imitate.play_style(style, send=send, stopped=lambda: d.stopped,
+                                                                          sleep=time.sleep, stuck=stuck, ff=_ff(ad),
+                                                                          stats=stats)}
+                run["result"] |= _novelty(stuck, style) | stats
+            except Exception as e:
+                run["result"] = {"ok": False, "error": str(e)}
+            _release_all(sid)
+            _ended(run)
+        objective = f"playing in your style: {len(model['bursts'])} moves learned from {len(own)} recorded sessions"
+    AUTOPLAY[sid] = run
+    _takeover(run, d, sid, since)
+    _black_watch(run, d, ad)                                   # only black on screen: get the game back
+    run["thread"] = threading.Thread(target=go, daemon=True)
+    run["thread"].start()
+    _telemetry(run, ctx, g.get("title") or "")
+    return {"started": run["mission"], "mode": inp.mode, "objective": objective}
+
+
+def _novelty(stuck, style) -> dict:
+    """The run's novelty score and the knobs it played with (the screensaver learns which knobs suit each game)."""
+    if stuck is None:
+        return {"knobs": style.knobs}
+    n = stuck.novelty()
+    return {"knobs": style.knobs, "score": n["score"], "moving": n["moving"], "screens": n["screens"]}
+
+
+def _front(ad) -> bool:
+    """Screensaver on Windows: bring gBox / the emulator to the front so its keyboard-driven pad input is accepted."""
+    pid = getattr(getattr(ad, "proc", None), "pid", None)
+    if sys.platform != "win32" or not pid:
+        return False
+    try:
+        return adapters.win_bring_to_front(pid)
+    except Exception:                                           # noqa: BLE001 - best effort
+        return False
+
+
+def _screensaver_send(ad):
+    """send() for screensaver play: the game window comes to the front first; a refused input (gBox not in front)
+    raises it once more and retries instead of ending the run."""
+    _front(ad)
+
+    def send(rows):
+        try:
+            return ad.send_input(rows)
+        except RuntimeError as e:
+            if "must be active" not in str(e) or not _front(ad):
+                raise
+            return ad.send_input(rows)
+    return send
+
+
+DEMO_FRONT_IDLE_S = 60.0                   # a bot demo brings its game to the front only on a PC nobody used this long
+
+
+def _demo_front(ad) -> bool:
+    """A bot demo starting on Windows: the game comes to the front only when nobody is using that PC (the demo was
+    launched there from another PC); on the PC the operator is using, it never takes the foreground from them."""
+    if sys.platform != "win32":
+        return False
+    try:
+        from .worker import user_idle_seconds
+        idle = user_idle_seconds()
+    except Exception:                                           # noqa: BLE001 - unknown: leave the foreground alone
+        idle = None
+    return bool(idle is not None and idle >= DEMO_FRONT_IDLE_S and _front(ad))
+
+
+def _demo_send(ad):
+    """send() for a bot demo: the emulator's polite input where it has one (Windows Dolphin: never takes the keyboard
+    from the operator, gbox.adapters.polite_verdict). Presses it holds back while they type are pressed again with the
+    bot's next input, so the game's held keys follow what the bot wants; releases always go out."""
+    import inspect
+    try:
+        polite = "polite" in inspect.signature(ad.send_input).parameters
+    except (TypeError, ValueError):
+        polite = False
+    if not polite:
+        return ad.send_input
+    want, have = set(), set()
+    lock = threading.Lock()
+
+    def send(rows):
+        with lock:
+            both = {r["key"] for r in rows if r.get("down", True)} & {r["key"] for r in rows if not r.get("down", True)}
+            for r in rows:
+                (want.add if r.get("down", True) else want.discard)(r["key"])
+            ups = [{"key": k, "down": False} for k in sorted(have - want - both)]
+            downs = [{"key": k, "down": True} for k in sorted(want - have - both)]
+            taps = [r for r in rows if r["key"] in both]       # a tap inside one batch (down, then up): in its order
+            out = ad.send_input(ups + downs + taps, polite=True)
+            if isinstance(out, dict) and out.get("held"):
+                have.difference_update(r["key"] for r in ups)       # the releases went out, the presses wait
+            else:
+                have.clear()
+                have.update(want)
+            return out
+    return send
+
+
+def _polite_send(ad, rows):
+    """One batch of a bot demo's presses through the emulator's polite input when it has one (else as usual)."""
+    import inspect
+    try:
+        polite = "polite" in inspect.signature(ad.send_input).parameters
+    except (TypeError, ValueError):
+        polite = False
+    return ad.send_input(rows, polite=True) if polite else ad.send_input(rows)
+
+
+def _autoplay_send(ad, d):
+    """The send() autoplay plays with: the screensaver's (an idle PC: the game in front), a bot demo's (polite: never
+    takes the operator's keyboard) or the emulator's own."""
+    if getattr(d, "screensaver", None):
+        return _screensaver_send(ad)
+    if getattr(d, "demo", False):
+        return _demo_send(ad)
+    return ad.send_input
+
+
+def _ff(ad):
+    """fast_forward(on) for this emulator, or None when it has none."""
+    if "fast_forward" in getattr(ad, "supported", ()) and hasattr(ad, "fast_forward"):
+        return lambda on: ad.fast_forward(on)
+    return None
+
+
+def _jump_watch(run, d, ad, g, stuck, stats, after_replay=False):
+    """Boot jump state beside the learned style (gbox.jumpstate): start in gameplay next time, not on a title.
+    after_replay: the screensaver goes on in your style after replaying your run from boot. Only an emulator that
+    boots into its jump state (Dolphin) saves one there, or the games you recorded runs of would never get one;
+    RetroArch's stays as it was (learned autoplay only: it loads its jump state when that starts)."""
+    from . import jumpstate
+    if jumpstate.supported(ad) and (not after_replay or jumpstate.strategy(ad) == "boot"):
+        threading.Thread(target=jumpstate.watch, args=(ad, g, stuck, stats,
+                                                        lambda: d.stopped or not run["thread"].is_alive()),
+                         daemon=True, name=f"jumpstate-{run['sid']}").start()
+
+
+def _stuck(ad):
+    """A stuck-screen watch for this session (title screens, dialogue): None when the emulator gives no frames."""
+    from . import imitate
+    return imitate.Stuck(lambda: imitate.thumb(ad.get_frame())) if hasattr(ad, "get_frame") else None
+
+
+def _style_model(ctx, runs, ad, game_id, platform):
+    """(the runs with the operator's pad input, the style learned from them); cached per set of runs."""
+    from . import imitate
+    own = [r for r in runs if (r.get("events") or {}).get("pad", 0)]
+    key = (game_id, ad.name, tuple(sorted(r["id"] for r in own)))
+    model = LEARNED.get(key)
+    if model is None:
+        timeline = []
+        for r in own:
+            timeline += imitate.held_timeline(_run_events(ctx, r["id"]), ad.name, platform)
+        model = LEARNED[key] = imitate.learn(timeline)
+    return own, model
+
+
+def _save_anchor(sid, ad, ctx, at):
+    """The operator pressed after a pause: keep a thumbnail of the screen they reacted to (gameplay memory 'frame').
+    Not while autoplay plays (that's not the operator's play)."""
+    from . import imitate
+    run = AUTOPLAY.get(sid)
+    if run and run["thread"].is_alive():
+        return
+    try:
+        t = imitate.thumb(ad.get_frame())
+        httpx.post(f"{ctx.server}/api/gameplay-memory/runs/{sid}/observe", headers=ctx.headers, timeout=10,
+                   json={"kind": "frame", "payload": {"thumb": t, "size": list(imitate.THUMB), "why": "press after a pause"},
+                         "token": f"{sid}-anchor-{at:.2f}", "at": at})
+    except Exception:
+        pass
+
+
+def _session_started(ctx, sid):
+    try:
+        r = httpx.get(f"{ctx.server}/api/sessions", headers=_ap_headers(ctx), timeout=30)
+        return next((s.get("started") for s in r.json() if s["session_id"] == sid), None)
+    except Exception:
+        return None
+
+
+def autoplay_chord(sid: str, ctx) -> dict:
+    """The operator's pad chord (hold Select/View, press A): stop autoplay if it runs (or just handed control back on
+    the chord's own Select), else start it in auto mode."""
+    run = AUTOPLAY.get(sid)
+    if run and (run["thread"].is_alive() or time.time() - run.get("ended", 0) < 1.5):
+        return autoplay(AutoplayIn(session_id=sid, op="stop"), ctx)["result"]
+    return autoplay(AutoplayIn(session_id=sid, op="start", mode="auto"), ctx)["result"]
 
 
 class InvIn(BaseModel):
@@ -2581,17 +3423,8 @@ def _vision_play(run, ad, g, goal, server):
     d, host = run["driver"], urlparse(server).hostname
     llm = "http://127.0.0.1:11434/v1" if host in ("127.0.0.1", "localhost") else f"http://{host}:11434/v1"
     run["log"] = []
-    from . import padstate
     sid = _sid_of(run, ad)
-
-    def takeover():                                            # the operator grabs the controller: hand control back at once
-        while not d.stopped:
-            if padstate.player_active(sid):
-                d.stopped, run["took_over"] = True, True
-                _release_all(sid)
-                return
-            time.sleep(0.1)
-    threading.Thread(target=takeover, daemon=True).start()
+    _takeover(run, d, sid, run.get("since") or time.time())    # the operator grabs the controller: hand control back
     while not d.stopped:
         try:
             png = ad.get_frame()
@@ -2610,6 +3443,7 @@ def _vision_play(run, ad, g, goal, server):
             run["result"] = {"ok": False, "error": str(e)}
             time.sleep(2)
     run["result"] = {"ok": True, "stopped": True, "thoughts": run.get("log", [])[-5:]}
+    _ended(run)
 
 
 class MemSearchIn(BaseModel):
@@ -3008,7 +3842,8 @@ def _bevy_resolve(ctx, items: list[dict]) -> list[tuple[Path, dict]]:
     # collection entries ({character: slug} / {environment: slug}) are read where the collection lives (the Spark's
     # cache, the same folder through the share on Windows)
     from . import characters as K
-    croot = K.library_root(ctx.config).parent if HOST_OS != "windows" else Path("//10.89.1.246/ehm_eckx/gbox-cache")
+    from .side_dirs import spark_share
+    croot = K.library_root(ctx.config).parent if HOST_OS != "windows" else spark_share("gbox-cache")
     files = []                                             # (absolute model file, item options)
     for it in items:
         opts = {k: v for k, v in it.items() if k not in ("package", "character", "environment")}
@@ -3640,7 +4475,8 @@ def extract_pso_area(inp: PsoAreaIn, ctx: Ctx):
     world space + the area's PVM textures + the collision mesh (c.rel), ready for glTF/Blender/engines."""
     from . import ninja, psomap
     from .gdrom import GDRom
-    disc = GDRom(inp.disc)
+    from .side_dirs import moved
+    disc = GDRom(str(moved(inp.disc)))
     base = f"PSO/SCENE/MAP_{inp.area.upper()}"
     # areas with variants (Pioneer 2: MAP_CITY00_00D.REL + MAP_CITY00.PVM) keep the textures under the plain name
     rel_base = base if base + "D.REL" in disc.files else next((base + v for v in ("_00", "_01") if base + v + "D.REL" in disc.files), base)
@@ -3696,7 +4532,8 @@ def extract_pso_model(inp: PsoModelIn, ctx: Ctx):
         disc = GCDisc(inp.disc)
     else:
         from .gdrom import GDRom
-        disc = GDRom(inp.disc)
+        from .side_dirs import moved
+        disc = GDRom(str(moved(inp.disc)))
     ctx.progress(10, f"reading {inp.archive}")
     raw = disc.read(inp.archive)
     arc = ninja.bml(raw, be)
@@ -4267,6 +5104,7 @@ def _load_tool_modules(names=("cxbx_diagnostics_tool", "native_face_editor", "au
                               "ue_steam",   # ue_steam: generic Unreal Engine Steam game static analysis (locomotion/animation)
                               "re6_tool",   # re6_tool: Resident Evil 6 (X360 in Xenia): Mercenaries loadouts, items, swaps
                               "re5_tool",   # re5_tool: Resident Evil 5 Gold (PS3 in RPCS3): unlock all (save edit)
+                              "re5_mods_tool",   # re5_mods: RE5 Gold (PS3) live mods: turn speed, fire rate, infinite ammo, damage
                               "oot_live",   # oot_live: OoT actors at a picture point, statues kept in rooms (gbox.oot_swap)
                               "twin_snakes_live",   # twin_snakes_live: Twin Snakes GC loaded cast + live body writes
                               "re_inventory",   # re_inventory: any Resident Evil's live inventory (give/remove/set/loadout)
@@ -4297,6 +5135,8 @@ def _load_tool_modules(names=("cxbx_diagnostics_tool", "native_face_editor", "au
                               "gta_live",        # gta_live: GTA pools/player/vehicles/weather/time/wanted/spawn (Ariane ops)
                               "audio_cpp",       # audio_cpp: local audio.cpp speech service (status/start/stop/speak/transcribe)
                               "evidence_capture",   # evidence_capture: PR evidence frames (runs in the control plane)
+                              "ram_dump",      # ram_dump: a session's main RAM as one gzip artifact + JSON header (coaching)
+                              "native_ports",  # native_port: build/prepare decomp PC ports (GoldenEye 007 + gBox bots)
                               "pick_tool")):     # pick_identify / pick_replace (+ pick_prepare, pick_ghidra): the pick whip backend
     import importlib
     import subprocess
@@ -4328,6 +5168,7 @@ _load_tool_modules()
 class StateXIn(BaseModel):
     session_id: str
     op: str = "export"                      # export: save + upload | export_saved: upload an existing checkpoint | import: load
+                                            # | snapshot: save through gBox's own slot + upload (gbox/state_snapshot.py)
     artifact: str = ""                      # import: digest of the exported state
     slot: int | None = None                 # export/import: default 9; export_saved: exact slot, or latest when omitted
     not_before: float = 0                    # export_saved: reject a stale checkpoint
@@ -4362,7 +5203,7 @@ def _validate_state_container(data: bytes, adapter_name: str) -> None:
         raise RuntimeError(f'Saved checkpoint container could not be validated: {error}') from error
 
 
-@tool("state_transfer", "1.3", StateXIn, StateXOut, capabilities=["runtime"], permissions=[P.EXECUTE], timeout_s=180)
+@tool("state_transfer", "1.4", StateXIn, StateXOut, capabilities=["runtime"], permissions=[P.EXECUTE], timeout_s=180)
 def state_transfer(inp: StateXIn, ctx: Ctx):
     with _STATE_TRANSFER_LOCK, rewind.guard(inp.session_id, "transfer"):   # no checkpoint while the state moves
         return _state_transfer(inp, ctx)
@@ -4386,6 +5227,15 @@ def _state_transfer(inp: StateXIn, ctx: Ctx):
         pattern = "*.s01"                                       # the adapter's save/load hotkeys use slot 1
     else:
         raise Unsupported(f"{kind or '?'} save states can't move between machines (different emulator builds)")
+    if inp.op == "snapshot":
+        # the moment as it is now, saved through gBox's own slot: the operator's slots are never written or left
+        # switched (export saves through Dolphin's slot 1, the operator's own, and leaves RetroArch on the transfer slot)
+        from . import state_snapshot
+        data, details = state_snapshot.take(ad, g, states)
+        name = details.pop("file")
+        ctx.artifact(name, data, "application/octet-stream", note="state snapshot (gBox's own slot)",
+                     game=g.get("game_id"), session=inp.session_id, snapshot=True, **details)
+        return {"result": {"artifact": sha256(data), "bytes": len(data), "file": name, **details}}
     requested_slot = 9 if inp.slot is None else inp.slot
 
     def matches_game(f):
@@ -4503,7 +5353,7 @@ def _state_transfer(inp: StateXIn, ctx: Ctx):
         if verified:
             result['loaded'] = True
         return {'result': result}
-    raise ValueError("op: export | export_saved | import")
+    raise ValueError("op: export | export_saved | import | snapshot")
 
 
 # ---- no hidden games left behind: emulators this worker started are recorded; a restarted worker closes the old ones ----

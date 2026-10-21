@@ -5,7 +5,7 @@ from pathlib import Path
 
 from gbox.gs2_inventory import afs_pairs, boot_name, classify, collect, sniff
 
-DISC = Path(os.environ.get("GBOX_GS2_DISC", "/home/ehm_eckx/gbox-cache/ps2/5ec1d297cb44b3ea/disc.iso"))
+DISC = Path(os.environ.get("GBOX_GS2_DISC", "/home/ehm_eckx/gBox_alt/gbox-cache/ps2/5ec1d297cb44b3ea/disc.iso"))
 
 
 def test_boot_name_variants():

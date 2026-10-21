@@ -10,8 +10,10 @@ from gbox import custom_build_unlocks as U
 from tests.test_build_quarantine import Memory
 
 
-def rig(tmp_path):
+def rig(tmp_path, *, admission=lambda:'', workers=lambda:[]):
     store = Memory()
+    store.put(U.POLICY, 'idle-state', {'last_busy': 0})
+    store.put(U.POLICY, 'default', {'enabled': False, 'dispatch_per_hour': 4})
     store.catalog_get = lambda gid: {'game_id':gid, 'title':'Example '+gid, 'platform':'dreamcast'}
     sha = hashlib.sha256(b'Ghidra and runtime fixture evidence').hexdigest()
     store.read_artifact = lambda value: b'evidence' if value == sha else None
@@ -29,7 +31,7 @@ def rig(tmp_path):
         r = body | {'id':str(len(created)+1),'number':len(created)+1,'status':'open','messages':[]}
         created.append(r); store.put('request',r['id'],r); return r
     def investigate(*args, **kwargs): dispatched.append(args); return {'mode':'queue'}
-    reconcile = U.routes(app,store,SimpleNamespace(cache=tmp_path),lambda:'operator',create,investigate)
+    reconcile = U.routes(app,store,SimpleNamespace(cache=tmp_path),lambda:'operator',create,investigate,workers=workers,admission=admission)
     return store, rows, TestClient(app), reconcile, created, dispatched, sha
 
 
@@ -120,3 +122,65 @@ def test_request_cannot_close_with_unverified_custom_builds(tmp_path):
         assert 'g1_patch' in r.json()['detail']['pending_builds']
         rows=c.get('/api/builds',headers=headers).json()['items']
         assert next(b for b in rows if b['name']=='g1_local_only')['unlocks']['status']=='pending'
+
+
+def test_get_profile_returns_existing_unlock_support_for_unsupported_game(tmp_path):
+    store, rows, c, reconcile, created, dispatched, sha = rig(tmp_path)
+    c.post('/api/custom-build-unlocks/g/profile',json=profile(sha))
+    body=c.get('/api/custom-build-unlocks/g/profile').json()
+    assert 'profile' in body and body['profile']['inventory_complete']
+    assert 'existing_unlock_support' in body
+    assert body['existing_unlock_support']['status']=='unsupported'
+    assert body['existing_unlock_support']['verified'] is False
+
+
+def test_get_profile_returns_existing_unlock_support_for_re6_game(tmp_path):
+    store, rows, c, reconcile, created, dispatched, sha = rig(tmp_path)
+    store.catalog_get = lambda gid: (
+        {'game_id':'0871eee3b68cdea3','title':'RE6','platform':'xbox360'}
+        if gid=='0871eee3b68cdea3' else {'game_id':gid,'title':'Example '+gid,'platform':'dreamcast'}
+    )
+    body=c.get('/api/custom-build-unlocks/0871eee3b68cdea3/profile').json()
+    assert body['existing_unlock_support']['status']=='verified_profile'
+    assert body['existing_unlock_support']['verified'] is True
+    assert body['existing_unlock_support']['profile']=='re6-x360-native-save-template-v1'
+
+
+def test_reconcile_propagates_existing_unlock_support_into_dispatch_instructions(tmp_path):
+    from gbox.game_unlocks import RE6_ID, profile_for as re6_profile_for
+    store, rows, c, reconcile, created, dispatched, sha = rig(tmp_path)
+    store.catalog_get = lambda gid: (
+        {'game_id':RE6_ID,'title':'RE6','platform':'xbox360'}
+        if gid==RE6_ID else {'game_id':gid,'title':'Example '+gid,'platform':'dreamcast'}
+    )
+    c.post('/api/custom-build-unlocks/policy',json={'enabled':True})
+    rows[0]['game_id']=RE6_ID; rows[0]['meta']['game_id']=RE6_ID
+    reconcile()
+    assert created, 'reconcile should create a request for the RE6 game'
+    text=created[0]['body']
+    assert 'existing_unlock_support' not in text or 're6-x360-native-save-template-v1' in text
+    support=re6_profile_for({'game_id':RE6_ID,'platform':'xbox360'})
+    assert support['status']=='verified_profile'
+
+
+def test_a_verified_unlock_on_load_code_profile_verifies_every_build(tmp_path, monkeypatch):
+    """2026-10-19: a game whose unlocks are held from launch by a code profile is no longer 'Unlock-all pending'."""
+    store, rows, c, reconcile, created, dispatched, sha = rig(tmp_path)
+    c.post('/api/custom-build-unlocks/policy',json={'enabled':True})
+    assert U.badge(store,rows[0])['status']=='pending'
+    from gbox import game_unlocks
+    monkeypatch.setattr(game_unlocks,'code_profile',lambda game: {'profile':'p1','scope':['characters','stages']}
+                        if game['game_id']=='g' else None)
+    b=U.badge(store,rows[0])
+    assert b['status']=='verified' and b['code_profile']=='p1' and 'characters, stages' in b['label']
+
+
+def test_pending_accepts_code_profile_games_without_a_receipt(tmp_path, monkeypatch):
+    """2026-10-19 22:20: closing a code-profile game's request crashed pending() (no per-build receipt -> None.get)."""
+    store, rows, c, reconcile, created, dispatched, sha = rig(tmp_path)
+    c.post('/api/custom-build-unlocks/policy',json={'enabled':True})
+    from gbox import game_unlocks
+    monkeypatch.setattr(game_unlocks,'code_profile',lambda game: {'profile':'p1','scope':['characters']} if game['game_id']=='g' else None)
+    assert c.app.state.custom_build_unlocks_pending('g') == []
+    monkeypatch.setattr(game_unlocks,'code_profile',lambda game: None)
+    assert c.app.state.custom_build_unlocks_pending('g'), 'without the profile the builds are pending again'

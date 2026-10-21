@@ -153,7 +153,7 @@ def inventory(iso, source_sha256: str | None = None, only_headers: bool = True) 
             "launch": {
                 "emulator": "Xenia (canary)", "boot": "extracted folder with default.xex at root",
                 "base_extraction": "gbox.re6.ensure_base (XDVD extract, resumable)",
-                "mod_mechanism": "hard-link copies of the extracted base in ~/gbox-cache/mods/<game_id>/<mod> with only changed .arc files real; launch_game(mod=...)",
+                "mod_mechanism": "hard-link copies of the extracted base in ~/gBox_alt/gbox-cache/mods/<game_id>/<mod> with only changed .arc files real; launch_game(mod=...)",
                 "revert": "launch without mod, or re6_tool op=revert_all",
                 "reader_writer": "gbox.re6 (XDVD/Arc/TEX/LZX), gbox.re6_models (Mod/Mrl, export_character, build_swap)",
             },

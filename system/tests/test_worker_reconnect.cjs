@@ -89,7 +89,8 @@ function workerHarness({ running = false, standalone = false, deferredToken = nu
       const child = { pid: 123, stdout: { on() {} }, stderr: { on() {} }, on() {} };
       children.push(child); return child;
     },
-    worker: running ? { pid: 123 } : null, workerStopRequested: false,
+    worker: running ? { pid: 123 } : null, workerStopRequested: false, workerControl: null, clientHandoffBusy: false,
+    clientHandoff: require('../clients/desktop/client-handoff.cjs'),
     send() {}, setTimeout: (...args) => { scheduled.push(args); },
     execFile: () => assert.fail('reconnect must never terminate a worker or its children'),
   });
@@ -120,6 +121,12 @@ test('watchdog start does not reconcile refused results', async () => {
   await h.context.startWorker();
   assert.equal(h.calls.length, 1);
   assert.ok(!h.calls[0].args.includes('--reconcile-results'));
+});
+
+test('desktop idle handoff blocks every new worker start until its outcome is known', async () => {
+  const h=workerHarness();h.context.clientHandoffBusy=true;
+  const result=await h.context.startWorker();assert.equal(result.started,false);assert.match(result.error,/refresh/);
+  assert.equal(h.calls.length,0);
 });
 
 test('concurrent starts are serialized and cannot spawn duplicate workers', async () => {

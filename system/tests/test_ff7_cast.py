@@ -49,16 +49,22 @@ def test_party_spec_none_without_meshed_pelvis():
     assert S._party_spec(mesh, kids, W) is None
 
 
-def test_cast_slots_cover_the_party_and_flag_broken_field_skeletons():
+def test_cast_slots_cover_the_whole_party_with_dedicated_maps_where_needed():
+    """#1902: every member builds; the six the topology finder misreads use dedicated role maps."""
     rows = S.cast_slots()
     assert [r["slot"] for r in rows] == ["player", "tifa", "aerith", "barret", "red13", "cid", "yuffie", "caitsith",
                                           "vincent"]
     assert rows[0]["kind"] == "player" and all(r["kind"] == "character" for r in rows[1:])
     by = {r["slot"]: r for r in rows}
-    for slot in ("yuffie", "caitsith"):
-        assert by[slot]["status"] == "not_working"
-        assert "field skeleton" in by[slot]["reason"]
-    assert "status" not in by["tifa"] and "status" not in by["player"]
+    assert not any(r.get("status") == "not_working" for r in rows)
+    for slot in ("aerith", "red13", "yuffie", "caitsith", "vincent"):
+        assert by[slot]["roles"].startswith("dedicated map")
+    assert by["tifa"]["roles"].startswith("dedicated map")
+    assert "roles" not in by["player"] and "roles" not in by["barret"] and "roles" not in by["cid"]
+    for spec in (*S.FIELD_SPECS.values(), *S.BATTLE_SPECS.values()):
+        assert set(spec) == {"hip", "chest", "head", "armA", "armB", "legA", "legB"}
+        assert all(len(spec[k]) == 3 for k in ("armA", "armB", "legA", "legB"))
+        assert len({spec["hip"], spec["chest"], spec["head"]}) == 3
     # every member's files are real native models (field FILE_BCX / battle roster names)
     field_names = {"CLOUD", "TIFA", "EARITH", "BALLET", "RED", "CID", "YUFI", "KETCY", "VINCENT"}
     battle_names = {"CLOUD", "TIFA", "EARITH", "BARRETT", "RED13", "CID", "YUFI", "KETCY", "VINSENT"}
@@ -142,3 +148,24 @@ def test_cast_swap_registers_ff7_as_a_pairs_builder():
 def test_lzs_round_trip():
     for data in (bytes(range(256)) * 4, b"\x00" * 7000, bytes(range(97)) * 7000):
         assert F.lzs(S.lzs_encode(data)) == data
+
+
+def test_owned_disc_every_member_gets_a_target():
+    """On the Spark (raw FF7 disc 1 at /tmp/ff7/base.bin): field and battle targets for all nine members, every
+    role bone meshed, and the dedicated maps put the head on the bone with the most head-height geometry."""
+    from pathlib import Path
+    raw = Path('/tmp/ff7/base.bin')
+    if not raw.is_file():
+        import pytest
+        pytest.skip('raw FF7 disc 1 is not unpacked here')
+    from gbox import ff7_models as F, psxdisc
+    src = psxdisc.RawBin(raw, writable=False)
+    for slot, field, battle, _name in S.CAST:
+        fm = F.read_field_model(src.read(f'FIELD/{field}.BCX'))
+        ft = S.field_target(fm, field)
+        meshed = {p['bone'] for p in fm['parts']}
+        assert set(ft['jmap'].values()) <= meshed, (slot, 'field', sorted(set(ft['jmap'].values()) - meshed))
+        bm = F.read_battle_model(src.read(f'ENEMY6/{battle}.LZS'))
+        bt = S.battle_target(bm, legacy_roles=S.BATTLE_ROLES if battle == 'CLOUD' else None, name=battle)
+        bmeshed = {i for i, b in enumerate(bm['bones']) if b['mesh']}
+        assert set(bt['jmap'].values()) <= bmeshed, (slot, 'battle', sorted(set(bt['jmap'].values()) - bmeshed))

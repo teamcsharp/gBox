@@ -1,5 +1,6 @@
 // The library's right-click game menu (#gmenu): boot setup (play-as character, boot mod, switches kept on, start slot),
-// Play, Models, cover art, "Replace entire cast with…", model collection.
+// Play, "🤖 Bot demo on <PC>" for every online PC (io.pcs(), viz/bot-demo.js; data-go="bot:<PC>"), Models, cover art,
+// "Replace entire cast with…", model collection.
 // #1562: it opens in the frame of the right-click from what the client already has. It used to wait for this game's
 // mods AND the whole character library (928 KB, 1 s warm and 12 s cold on the Spark's disk; a Spark restart made the
 // reads retry for 30 s; a hung read kept it waiting forever) before it drew anything but its title. Now the character
@@ -343,8 +344,16 @@
       ${[...Array(10).keys()].map(i => `<option value="${i}" ${String(st.boot.slot) === String(i) ? "selected" : ""}>slot ${i}</option>`).join("")}</select></label>
       <div class="mut" style="font-size:11px">F2 saves to the current slot in game; Shift/Ctrl+F2 change the slot.</div></div>`,
     play: st => `<div class="gmb"><button class="act pri" data-go="">▶ Play</button>${st.worker ? '<button class="act" data-go="linux">Play on Spark</button>' : ""}
-      <button class="act" data-go="plain" title="Ignore the boot setup this once">Play original</button></div>`,
+      <button class="act" data-go="plain" title="Ignore the boot setup this once">Play original</button>
+      ${botDemoButtons(st)}</div>`,
   };
+  // "🤖 Bot demo on <PC>" for every online PC, the one you are on included (viz/bot-demo.js; io.pcs() gives the PCs).
+  // Without the list (a host that passes none): the Spark, as before ("autoplay" = node linux with autoplay on).
+  function botDemoButtons(st) {
+    const list = Array.isArray(st.pcs) ? st.pcs : null;
+    if (!list || !list.length) return `<button class="act" data-go="autoplay" title="The Spark plays this game by itself (your style, its hacks, straight into gameplay) and streams it here">🤖 Bot demo on the Spark</button>`;
+    return list.map(p => `<button class="act" data-go="bot:${ESC(p.name)}" title="${ESC(p.name)} plays this game by itself from boot (its playbook, your style, straight into gameplay)${p.here ? "; on this PC the bot waits while you type" : ""}">${ESC(p.label || "🤖 Bot demo on " + p.name)}</button>`).join("");
+  }
   const ORDER = ["head", "actions", "chars", "mods", "special", "collect", "slot", "play"];
   const LABEL = { head: "The title", actions: "Models / cover / cast", chars: "Play as", mods: "Boot with a mod", special: "Special builds",
                   collect: "Model collection", slot: "Start from", play: "Play" };
@@ -372,7 +381,8 @@
     const current = () => el._gmGen === gen;
     const read = (f, fb) => { try { return f(); } catch { return fb; } };
     const cachedMods = cache.mods.get(gid);
-    const st = { gid, title, worker: io.worker || "", img: io.img, boot: read(() => io.boot.get(gid), { disc: "", slot: "", character: "" }),
+    const st = { gid, title, worker: io.worker || "", img: io.img, pcs: read(() => io.pcs ? io.pcs() : null, null),
+                 boot: read(() => io.boot.get(gid), { disc: "", slot: "", character: "" }),
                  kept: read(() => io.keep.get(gid), []), chars: cache.chars, charsErr: null, mods: cachedMods?.list || null, modsErr: null,
                  special: cache.special.get(gid)?.list || null, specialErr: null, specialOpen: specialOpenGet(io), sbOpts: null, sbBusy: false, sbStatus: "",
                  note: null, building: null, errors: [], painted: {} };

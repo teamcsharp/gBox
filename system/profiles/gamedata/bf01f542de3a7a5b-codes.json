@@ -1,0 +1,38 @@
+{
+ "game_id": "bf01f542de3a7a5b",
+ "title": "WCW vs. nWo - World Tour (Europe)",
+ "platform": "n64",
+ "profile": "cheatdb-unlocks-v1",
+ "verified": true,
+ "codes": [
+  {
+   "desc": "Have 6 Hidden Characters",
+   "lines": [
+    "800606D5 00FF"
+   ]
+  },
+  {
+   "desc": "Have All Characters/Everything Finished Except WWW",
+   "lines": [
+    "800606D5 00FF",
+    "810606DA FFFE",
+    "810606DB FFFF"
+   ]
+  },
+  {
+   "desc": "Have All Extra Characters",
+   "lines": [
+    "800606D5 00FF"
+   ]
+  }
+ ],
+ "scope": [
+  "Have 6 Hidden Characters",
+  "Have All Characters/Everything Finished Except WWW",
+  "Have All Extra Characters"
+ ],
+ "evidence": {
+  "source": "libretro-database cht/Nintendo - Nintendo 64/WCW vs. nWo - World Tour (USA) (Rev 1).cht",
+  "read_back": "2026-10-20 01:48 CST, i9-NUC agent session: every code held with cheats op=add; all 5 written values read back unchanged. Gameplay screens not captured (the NUC's frame capture was black until its relaunch)."
+ }
+}

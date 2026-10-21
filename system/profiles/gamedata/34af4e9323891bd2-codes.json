@@ -1,0 +1,29 @@
+{
+ "game_id": "34af4e9323891bd2",
+ "title": "Super Smash Bros. (Europe) (En,Fr,De)",
+ "platform": "n64",
+ "profile": "cheatdb-unlocks-v1",
+ "verified": true,
+ "codes": [
+  {
+   "desc": "Enable All Hidden Characters",
+   "lines": [
+    "810A4938 0FF0"
+   ]
+  },
+  {
+   "desc": "Enable All Prizes",
+   "lines": [
+    "800A4937 00FF"
+   ]
+  }
+ ],
+ "scope": [
+  "Enable All Hidden Characters",
+  "Enable All Prizes"
+ ],
+ "evidence": {
+  "source": "libretro-database cht/Nintendo - Nintendo 64/Super Smash Bros. (USA).cht",
+  "read_back": "2026-10-19 21:43 CST, i9-NUC agent session: every code held with cheats op=add; all 2 written values read back unchanged. Gameplay screens not captured (the NUC's frame capture was black until its relaunch)."
+ }
+}

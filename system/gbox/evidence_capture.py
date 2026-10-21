@@ -92,6 +92,7 @@ class EvidenceIn(BaseModel):
     compare_stock: bool = False            # also the unmodded game, and a before/after picture per shot label
     recipe: str = ""                       # a named variant of the game's recipe ("" = its default)
     boot_s: float | None = None            # None = the recipe's (seconds after launch before the moment / steps)
+    debug: bool = False                    # launch_game debug=True: a debugger emulator (Linux) or Cxbx's full kernel log
 
 
 class EvidenceOut(BaseModel):
@@ -451,7 +452,7 @@ def _capture_once(variant, mod, game, title, w, moment, steps_boot, steps_after,
     say(2, f"Starting {title} ({mod or 'stock'}) on {wname} as an agent test session")
     try:
         guard()
-        launched = run_job("launch_game", {"game": game, "mod": mod}, wid, LAUNCH_WAIT_S)
+        launched = run_job("launch_game", {"game": game, "mod": mod, "debug": bool(inp.debug)}, wid, LAUNCH_WAIT_S)
         nsid = launched["session_id"]
         rec["session_id"], rec["adapter"] = nsid, launched.get("adapter")
         t_launch = clock()

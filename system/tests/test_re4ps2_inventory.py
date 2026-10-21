@@ -135,7 +135,9 @@ def test_inventory_on_iso_and_cso_agree(tmp_path):
     pl00, pl10 = a["characters"][0], a["characters"][1]
     assert pl00["sections"] == {"BIN": 1, "TPL": 1, "SEQ": 1, "FCV": 2} and pl00["slots"] == 6
     assert pl00["snd_index"] == 0 and pl00["rel_index"] is None and pl00["label"].startswith("Leon")
+    assert pl00["unknown"] is False
     assert pl10["rel_index"] == 6 and pl10["rel_name"] == "pl10.rel" and pl10["label"] is None
+    assert pl10["unknown"] is True
     assert a["player_ids"] == ["pl00", "pl10"] and a["enemy_ids"] == ["em13"]
     for k in ("characters", "afs", "boot_elf", "system_cnf"):
         assert a[k] == b[k]

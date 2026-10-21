@@ -2,7 +2,7 @@
 
 The ROM-backed tests need the owned, normalised PAL z64 (sha256 40ff3643...).
 Point GBOX_GOLDENEYE_PAL_Z64 at it, or keep the cached copy at
-~/gbox-cache/eecd1708cb2b8d14/rom.z64; otherwise they skip.
+~/gBox_alt/gbox-cache/eecd1708cb2b8d14/rom.z64; otherwise they skip.
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from gbox import goldeneye_files as g
 def _rom_path() -> Path | None:
     for cand in (
         os.environ.get("GBOX_GOLDENEYE_PAL_Z64", ""),
-        str(Path.home() / "gbox-cache/eecd1708cb2b8d14/rom.z64"),
+        str(Path.home() / "gBox_alt/gbox-cache/eecd1708cb2b8d14/rom.z64"),
         str(Path(__file__).resolve().parents[1] / "artifacts/source/007_GoldenEye_Europe_norm.z64"),
     ):
         if cand and Path(cand).is_file():
@@ -119,7 +119,7 @@ def test_suit_bond_probe_pins_header_and_tree(ge):
     assert p["inflated_sha256"] == "521bc97bbdd7787fa74f2fda73bc2addb7732810de6301d74c55a1be7c8a7afa"
     assert p["header_vram"] == 0x800375AC
     assert p["skeleton_vram"] == 0x80037190 and p["skeleton_joints"] == 16
-    assert (p["num_switches"], p["num_records"], p["num_textures"]) == (7, 21, 14)
+    assert (p["num_switches"], p["num_matrices"], p["num_records"], p["num_textures"]) == (7, 21, 0, 14)
     assert p["root_offset"] == 0xC4
     assert p["node_count"] == 79 and p["position_nodes"] == 15 and p["vertex_dl_nodes"] == 25
     assert p["textures"][0] == {"id": 1642, "w": 32, "h": 48, "fmt": 4}

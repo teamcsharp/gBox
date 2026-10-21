@@ -12,7 +12,7 @@ import pytest
 
 from gbox import oot_writer as OW
 
-OWNED = Path.home() / "gbox-cache/ff72441b33ff806b/source.zip"
+OWNED = Path.home() / "gBox_alt/gbox-cache/ff72441b33ff806b/source.zip"
 MD5 = "1618403427e4344a57833043db5ce3c3"
 
 

@@ -53,6 +53,44 @@ def request(**kwargs):
     return lab.ExeIn(game_id=GID, source="ram", session_id=SID, ram_base=BASE + 0x20, ram_size=32, **kwargs)
 
 
+def native_memory(state):
+    state['game']['platform'] = state['info']['platform'] = 'xbox'
+    state['rows'][0]['adapter'] = state['info']['emulator'] = 'doa3_native'
+    memory = {'verified': True, 'platform': 'xbox', 'processor': 'x86:LE:32:default',
+              'bits': 32, 'endianness': 'little', 'pid': 4321,
+              'regions': [{'address': 0, 'size': 0x04000000, 'readable': True}],
+              'analysis_range': {'address': 0x10000, 'size': 96}, 'entry_point': 0x10020}
+    state['info']['runtime']['guest_memory'] = memory
+    return memory
+
+
+def test_native_xbox_uses_verified_bounded_image_and_x86_entry_without_reading_the_rom(live):
+    import struct
+    state, ctx = live
+    native_memory(state)
+    result = lab.re_executable(lab.ExeIn(game_id=GID, source='ram', session_id=SID), ctx)
+    assert state['reads'] == [{'address': 0x10000, 'length': 96}]
+    assert result['cpu'] == 'x86' and result['processor'] == 'x86:LE:32:default'
+    assert result['entry'] == '0x00010020' and result['revision']['guest_memory']['verified'] is True
+    elf = Path(result['elf_path']).read_bytes()
+    assert struct.unpack_from('<H', elf, 0x12)[0] == 3
+    assert struct.unpack_from('<I', elf, 0x18)[0] == 0x10020
+
+
+@pytest.mark.parametrize('change', ['unverified', 'pid', 'bits', 'processor', 'range', 'entry', 'missing_range'])
+def test_native_xbox_rejects_unverified_or_invalid_image_before_any_read(live, change):
+    state, ctx = live
+    memory = native_memory(state)
+    if change == 'range': memory['analysis_range'] = {'address': 0x03FFFFFF, 'size': 2}
+    elif change == 'missing_range': memory.pop('analysis_range')
+    elif change == 'entry': memory['entry_point'] = 0x4000000
+    else: memory.update({'unverified': {'verified': False}, 'pid': {'pid': 9999},
+                         'bits': {'bits': 64}, 'processor': {'processor': 'ARM:LE:32:default'}}[change])
+    with pytest.raises(ValueError):
+        lab.re_executable(lab.ExeIn(game_id=GID, source='ram', session_id=SID), ctx)
+    assert state['reads'] == [] and ctx.artifacts == []
+
+
 def test_ram_snapshot_keeps_actual_session_build_worker_and_raw_revision(live):
     state, ctx = live
     result = lab.re_executable(request(), ctx)

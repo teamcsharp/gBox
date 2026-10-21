@@ -605,6 +605,24 @@ def ped_to_gltf(m: PedModel, texs: list[Tex], out: Path, name: str = "lcs_ped") 
     return Path(out)
 
 
+def export_editable_blend(glb: Path, out: Path, blender: str | None = None, name: str = "") -> Path:
+    """A fitted .glb -> an editable .blend with reduction left to the operator (gbox/editable_blend.py): a disabled
+    COLLAPSE modifier plus gbox_protect_detail / gbox_reduce_allowed vertex groups, so the face, hands and feet keep
+    their detail instead of being collapsed. No reduction is applied here. Raises without Blender or on failure."""
+    import subprocess
+
+    from .re4gc_enemies import blender_exe
+    exe = blender or blender_exe()
+    if not exe:
+        raise RuntimeError("no Blender on this node to export the editable .blend")
+    script = Path(__file__).resolve().parent / "editable_blend.py"
+    r = subprocess.run([exe, "--background", "--factory-startup", "--python", str(script), "--",
+                        str(glb), str(out), name], capture_output=True, text=True, timeout=600)
+    if not Path(out).exists():
+        raise RuntimeError("editable .blend export failed: " + (r.stdout + r.stderr)[-2000:])
+    return Path(out)
+
+
 # ------------------------------------------------------------------------------------------------------- the writer
 def bone_parents(m: PedModel) -> list[int]:
     """Skin bone parents from the hierarchy's PUSH (2) / POP (1) flags."""
@@ -1003,13 +1021,23 @@ def texture_slots(m: PedModel, texs: list[Tex]) -> list[dict]:
     return out
 
 
+def _preserve_geometry(scale: dict | None) -> bool:
+    """The operator's preserve_geometry profile flag: a .blend-edited donor keeps its volume/geometry; the writer
+    must not silently collapse it again to fit the native allocation."""
+    return bool(((scale or {}).get("profile") or {}).get("preserve_geometry"))
+
+
 def swap_files(disc: LcsDisc, src_model: Path, src_roles: dict, entry: str = "player", work: Path | None = None,
-               blender: str | None = None, progress=None, scale: dict | None = None) -> dict:
+               blender: str | None = None, progress=None, scale: dict | None = None,
+               preserve_geometry: bool | None = None) -> dict:
     """Build the replacement .mdl + .chk for one special model (default 'player' = Toni): the library character
     retargeted onto the model's own 24-bone skeleton (bone count/order/hierarchy, collision and skin matrices kept,
     so every animation still drives it), textures packed into the model's own texture slots (same sizes, depths,
-    mips). Decimates (Blender) until the .mdl fits the model's sectors in the IMG."""
+    mips). Decimates (Blender) until the .mdl fits the model's sectors in the IMG, unless the operator's retarget
+    profile sets preserve_geometry (then the fitted geometry is kept verbatim and an oversized result is reported,
+    never silently reduced)."""
     progress = progress or (lambda p, m: None)
+    preserve = preserve_geometry if preserve_geometry is not None else _preserve_geometry(scale)
     from .gta_lcs_cast import entry as ped_entry
     e = ped_entry(disc, entry) if entry.startswith("ped:") else disc.special(entry)
     orig = disc.file_at(e["sector"])
@@ -1044,6 +1072,10 @@ def swap_files(disc: LcsDisc, src_model: Path, src_roles: dict, entry: str = "pl
         tried.append({"triangles": stats["triangles"], "bytes": len(mdl)})
         if len(mdl) <= budget:
             break
+        if preserve:
+            raise ValueError(f"automatic geometry reduction disabled: {len(mdl)} bytes ({stats['triangles']} triangles) "
+                             f"exceed {entry}.mdl's {budget}-byte ({e['sectors']}-sector) allocation; edit the fitted "
+                             f".blend or the donor's reduction to fit, then rebuild")
         if not blender:
             raise ValueError(f"{len(mdl)} bytes > the {budget} the IMG slot holds and no Blender here to decimate")
         target = int(stats["triangles"] * (budget / len(mdl)) * 0.93)
@@ -1055,7 +1087,10 @@ def swap_files(disc: LcsDisc, src_model: Path, src_roles: dict, entry: str = "pl
         previous_target = target
         progress(25 + attempt * 12, f"Too big ({len(mdl)} > {budget} bytes): decimating to ~{target} triangles")
         from .re4gc_enemies import decimate
-        src = decimate(Path(src_model), work / f"_lcs_dec_{entry.replace(':', '_')}_{attempt}.glb", target, blender)
+        # Spare the head/face from the collapse: the pedestrian slots force a ~90%+ triangle cut on
+        # high-poly donors, which otherwise erases the face. The body absorbs the reduction instead.
+        src = decimate(Path(src_model), work / f"_lcs_dec_{entry.replace(':', '_')}_{attempt}.glb", target,
+                       blender, protect=("head", "eye"))
     else:
         raise ValueError(f"doesn't fit {entry}.mdl's {e['sectors']} sectors: {tried}")
     new_chk = replace_chk(chk, {s["texture"]: a for s, a in zip(slots, atlases)})
@@ -1130,7 +1165,7 @@ def lcs_iso_from_rom(rom: Path, dst: Path, progress=None) -> Path:
 #     hdr[0x18] = 0x4A1C14 -> CAnimManager (DAT_003d9d24): 444 anims (0x24 stride, data_ptr+name+bones+frame_time)
 #     at 0x395098 + 55 anim-block names at 0x394738; anim key data ~0x3FC400+. Player anim load (slot 0):
 #     0x2FBAF0 -> RequestSpecialModel(0, "player", 5) -> FindItem on the special-model dir -> .mdl/TXD by name.
-#   Identity: the decompile ~/gbox-cache/lcs_re/lcs_decomp_gp.c (gp=0x3D6EF0) is of THIS exe (sha256 65bc2ec3...):
+#   Identity: the decompile ~/gBox_alt/gbox-cache/lcs_re/lcs_decomp_gp.c (gp=0x3D6EF0) is of THIS exe (sha256 65bc2ec3...):
 #     ELF LOAD vaddr 0x100000 = file 0x1000, so 0x18FF80 -> file 0x90F80 = addiu sp,-0x60 / lui a0,0x3E /
 #     lw a0,-0x6460(a0) = DAT_003d9ba0, and "player"@0x3D84A8, "generic"@0x3D0D60 match the decompile's data refs.
 LIVE = {"players": 0x408E40, "focus": 0x3D9BC8, "mi_ptrs": 0x3D8720, "mi_count": 0x3D9BA0, "streaming": 0x3D0CC8,

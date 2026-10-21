@@ -15,7 +15,9 @@ Layouts recovered from the owned disc (``gbox.mgs2_inventory`` reads the archive
          u32 x3 0
     positions: s16 x, y, z, w   (model space of the mesh's bone, mm; w = the bone's weight in 1/4096, the rest goes
                to the parent bone: parts with flags & 1 blend two bones)
-    normals:   s16 x, y, z (1/4096), u16 flags (0x8000 = strip restart: no triangle ends on this vertex)
+    normals:   s16 x, y, z (1/4096), u16 flags (0x8000 = strip restart: no triangle ends on this vertex).
+               Stored pointing INTO the body (measured on every character: 21% of them point outward as stored,
+               against 72-85% for other readers' models); negated on read so glTF faces wind outward (#2367).
     uvs:       s16 u, v (1/4096 of the texture's sub-rectangle)
     every part is one triangle strip.
 
@@ -49,6 +51,7 @@ from .ps2_gs import GSMemory, alpha_to_8bit, csm1
 HDR, MESH, PART, TEXREC = 0x40, 0x40, 0x30, 0xA0
 FIXED = 4096.0
 GLTF_SCALE = 0.001                     # millimetres -> metres
+READER_VERSION = 3                     # 3: 4-bit textures use their CSA palette (#2798); 2: normals outward (#2367)
 RESTART = 0x8000
 F_BLEND, F_UV2 = 0x1, 0x200
 
@@ -101,7 +104,8 @@ def parse_kms(b: bytes) -> dict:
                     raise FormatError(f"mesh {i} part {k}: uv2 outside the file")
                 UV2 = np.frombuffer(b, "<i2", nv * 2, o2).reshape(nv, 2)
             parts.append({"flags": pf, "tex": (t1, t2, t3), "pos": P[:, :3].astype(np.float64),
-                          "w": P[:, 3].astype(np.float64) / FIXED, "nrm": N[:, :3].astype(np.float64) / FIXED,
+                          "w": P[:, 3].astype(np.float64) / FIXED,
+                          "nrm": -N[:, :3].astype(np.float64) / FIXED,   # stored into the body; outward from here on
                           "restart": (N[:, 3].astype(np.int32) & RESTART) != 0, "uv": UV.astype(np.float64) / FIXED,
                           "uv2": None if UV2 is None else UV2.astype(np.float64) / FIXED,
                           "offsets": (op, on, ou, o2)})
@@ -239,6 +243,14 @@ def bone_name(i: int, roles: dict[str, int]) -> str:
 
 
 # ---------------------------------------------------------------- texture packs
+def csa_palette(clut16x16, csa: int) -> np.ndarray:
+    """The 16 colours a PSMT4 texture uses: CSA picks one 8x2 block inside the 16x16 CSM1 CLUT at CBP (blocks run
+    left, right, then down two rows). MGS2 packs several 16-colour palettes into one CLUT this way (#2798)."""
+    block = np.asarray(clut16x16).reshape(16, 16, 4)
+    n, i = int(csa) & 0xF, np.arange(16)
+    return block[(n >> 1) * 2 + (i >> 3), (n & 1) * 8 + (i & 7)]
+
+
 class TexturePack:
     def __init__(self, b: bytes):
         if len(b) < 0x20:
@@ -288,7 +300,7 @@ class TexturePack:
             pal = csm1(clut.read32(e["cbp"], 1, 16, 16).reshape(256, 4))
         elif e["psm"] == 0x14:
             idx = pix.read4(e["tbp"], e["tbw"], W, H)
-            pal = clut.read32(e["cbp"], 1, 8, 2).reshape(16, 4)
+            pal = csa_palette(clut.read32(e["cbp"], 1, 16, 16), e["csa"])
         else:
             return None
         img = alpha_to_8bit(pal)[idx]
@@ -554,7 +566,7 @@ def extract_run(ctx, game: dict, e: dict, work: Path) -> dict:
             "notes": (f"Native {inv.SERIAL} kms model: {r['meshes']} bones, {r['triangles']} triangles from triangle "
                       f"strips, two-bone skin weights (bone + parent), {r['textures']} PS2 CLUT textures from its "
                       f"texture pack, {r['height_m']} m tall. Writer slot: {e.get('slot')} (gbox.mgs2_swap)."),
-            "extra": {"mgs2_model": f"{h:06x}", "mgs2_slot": e.get("slot")}}
+            "extra": {"mgs2_model": f"{h:06x}", "mgs2_slot": e.get("slot"), "mgs2_reader": READER_VERSION}}
 
 
 def extract_all(path, out_dir: Path, slugs=None) -> dict:

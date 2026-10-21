@@ -1,5 +1,5 @@
 """Tests for gbox.nfl2k2_analysis - stage-2 format probes against the owned
-NFL 2K2 (USA) GD-ROM (CHD 7d4b3c49..., unpacked to ~/gbox-cache/dc/373a463aa1f96e35).
+NFL 2K2 (USA) GD-ROM (CHD 7d4b3c49..., unpacked to ~/gBox_alt/gbox-cache/dc/373a463aa1f96e35).
 
 Every assertion encodes a fact OBSERVED on this build (see the module
 docstring); these tests would fail if the disc cache is missing or if a

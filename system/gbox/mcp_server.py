@@ -28,6 +28,36 @@ def obj(props, req=()):
     return {"type": "object", "properties": props, "required": list(req)}
 
 
+def _job_input_defaults(value, schema):
+    """Compare omitted fields with the declared defaults the HTTP validator stores."""
+    if not isinstance(value, dict):
+        return value
+    properties = schema.get('properties', {}) if isinstance(schema, dict) else {}
+    defaults = {key: field['default'] for key, field in properties.items()
+                if isinstance(field, dict) and 'default' in field}
+    return defaults | value
+
+
+def _generic_job_body(arguments, schema):
+    """Recover misplaced routing metadata only when the tool schema proves it is not tool input."""
+    body = {k: arguments[k] for k in ('tool', 'input', 'require_os', 'require_worker', 'parent_request_id')
+            if k in arguments}
+    body['input'] = dict(body.get('input') or {})
+    properties = schema.get('properties') if isinstance(schema, dict) else None
+    if isinstance(properties, dict) and schema.get('type') == 'object':
+        for key in ('require_os', 'require_worker', 'parent_request_id'):
+            if key not in body['input'] or key in properties:
+                continue
+            value = body['input'].pop(key)
+            if key in body and body[key] != value:
+                raise ValueError(f'Conflicting {key}; put one routing value beside tool and input.')
+            body[key] = value
+    body['agent_use'] = True
+    if sid := body['input'].get('session_id'):
+        body['require_worker'] = sid.split('-')[0]
+    return body
+
+
 METRIC_FIELDS = {
     "model": S, "provider": S, "system": S, "tokens_in": I, "tokens_out": I,
     # SDK token metadata also contains strings, nested objects and null costs.
@@ -37,6 +67,47 @@ METRIC_FIELDS = {
     "files_changed": {"type": "array", "items": S}, "turns": I,
     "duration_s": {"type": "number"},
 }
+
+
+SOLVER_FIELDS = {
+    "service": {"type": "string", "minLength": 1, "maxLength": 80},
+    "model": {"type": "string", "maxLength": 160},
+    "system": {"type": "string", "maxLength": 80},
+    "verified_by": {"type": "string", "maxLength": 80,
+                    "description": "Short reviewer identity, at most 80 characters. Put test details in verification or note."},
+    "verification": {"type": "string", "minLength": 1, "maxLength": 2000,
+                     "description": "Actual acceptance evidence, at most 2000 characters. Put longer evidence in note or reply_request."},
+    "run_id": {"type": ["string", "null"], "maxLength": 80},
+}
+
+
+def _request_status(arguments):
+    """Check solver credit against the HTTP contract without truncating evidence."""
+    payload = {"status": arguments["status"], "note": arguments.get("note", "")}
+    solver = arguments.get("solved_by")
+    if solver is None:
+        return payload
+    if not isinstance(solver, dict):
+        raise ValueError("solved_by must be an object")
+    if payload["status"] != "done":
+        raise ValueError("solved_by is only valid for done after the full request is verified; "
+                         "keep partial results in note or reply_request")
+    for name, schema in SOLVER_FIELDS.items():
+        if name not in solver and name not in ("service", "verification"):
+            continue
+        value = solver.get(name)
+        if name == "run_id" and value is None:
+            continue
+        if not isinstance(value, str):
+            raise ValueError(f"solved_by.{name} must be a string")
+        if len(value) < schema.get("minLength", 0):
+            raise ValueError(f"solved_by.{name} must not be empty")
+        if len(value) > schema["maxLength"]:
+            destination = "verification (up to 2000 characters) or note" if name == "verified_by" else "note or reply_request"
+            raise ValueError(f"solved_by.{name} exceeds {schema['maxLength']} characters; "
+                             f"use a concise value and preserve the full evidence in {destination}")
+    payload["solved_by"] = solver
+    return payload
 
 
 def _request_metrics(arguments):
@@ -80,8 +151,8 @@ CONVENIENCE = {
                              ["game_id", "request_id", "stage", "status", "note"])),
     "list_tasks": ("List active gBox jobs and actual Hermes runs, including names, run IDs, progress and token usage. Check this before starting inbox work so you do not duplicate another active investigation. include_finished also returns recent terminal runs; a completed run does not prove its inbox request was solved.",
                    obj({"include_finished": B})),
-    "list_requests": ("List actionable inbox requests in a compact page, newest first. Recurring review check-ins are hidden unless include_recurring=true. A request marked hermes_capped has had 3 inbox runs in a row with no new operator message: choose another actionable request unless none exists. A request marked hermes_on_main (also listed in ready_to_verify across the whole inbox) already has its published fix on main: verify its acceptance live and close it, or post the exact remaining gap, before starting new work.",
-                      obj({"status": S, "source": S, "limit": I, "offset": I, "include_recurring": B})),
+    "list_requests": ("List actionable inbox requests in a compact page, newest first. Recurring review check-ins are hidden unless include_recurring=true; autoplay coaching tickets (live notes for the agents watching a bot demo) are hidden unless include_coaching=true or source=coach. A request marked hermes_capped has had 3 inbox runs in a row with no new operator message: choose another actionable request unless none exists. A request marked hermes_on_main (also listed in ready_to_verify across the whole inbox) already has its published fix on main: verify its acceptance live and close it, or post the exact remaining gap, before starting new work.",
+                      obj({"status": S, "source": S, "limit": I, "offset": I, "include_recurring": B, "include_coaching": B})),
     "get_build_feedback": ("Read durable operator reports and image references for a game, including repair findings and exact revisions that later characters builds must acknowledge. Use read_request_artifact with request_id/sha256 to inspect images.",
                            obj({"game_id":S}, ["game_id"])),
     "get_request": ("Read an inbox request, including the operator's full instructions, replies, image and attachment references, and metrics.",
@@ -93,10 +164,9 @@ CONVENIENCE = {
     "capture_request_screenshot": ("Capture a real frame from a live game session and attach it to an inbox report, with action, attempt, result, and status. Do this after meaningful visual milestones and verification.",
                                    obj({"request_id": S, "session_id": S, "text": S, "task_step": {"type": "object"}},
                                        ["request_id", "session_id", "text"])),
-    "set_request_status": ("Set an inbox request status. Use done only after its full operator request is verified; otherwise keep in_progress.",
+    "set_request_status": ("Set an inbox request status. Use done only after its full operator request is verified; otherwise keep in_progress. Solver credit is for done only: verified_by is a short reviewer identity (80 characters), verification holds acceptance evidence (2000 characters), and note or reply_request holds longer details.",
                           obj({"request_id": S, "status": {"type": "string", "enum": ["open", "in_progress", "done", "blocked"]},
-                               "note": S, "solved_by": obj({"service": S, "model": S, "system": S,
-                                   "verified_by": S, "verification": S, "run_id": S}, ["service", "verification"])}, ["request_id", "status"])),
+                               "note": S, "solved_by": obj(SOLVER_FIELDS, ["service", "verification"])}, ["request_id", "status"])),
     "record_request_metrics": ("Record actual, non-duplicated agent token and tool usage on an inbox request. Use one tool call at a time. Fields may be flat or under metrics. tools values must be exact nonnegative integer call counts; omit unavailable counts. Use zero token counts with tokens_detail.token_count_unavailable when exact tokens are unavailable. Returns a compact receipt with stored metrics; use get_request for full history.",
                                obj({"request_id": S, **METRIC_FIELDS,
                                     "metrics": obj(METRIC_FIELDS)}, ["request_id"])),
@@ -111,6 +181,11 @@ CONVENIENCE = {
     "list_favorites": ("List favorited games, including ROMs queued for background model collection.", obj({"limit": I})),
     "game_roster": ("Show a game's native model reader, character roster, and background collection job state.",
                     obj({"game_id": S}, ["game_id"])),
+    "favorite_unlocks": ("Read or publish evidence-backed unlock metadata for this exact active favorite request. "
+                         "Never starts a game or applies a control. Existing server validation rejects incomplete profiles/receipts.",
+                         obj({"game_id": S, "request_id": S, "op": {"type":"string", "enum":[
+                             "status", "native_profile", "unlock_profile", "manifest", "verify"]},
+                              "build": S, "body": {"type":"object"}}, ["game_id", "request_id"])),
     "start_job": ("Dispatch any gBox registry tool as a background job and return its ID immediately. Use require_worker=idle to choose the other Windows PC, then pin later work to its worker_id.",
                   obj({"tool": S, "input": {"type": "object"}, "require_os": S, "require_worker": S,
                        "parent_request_id": S}, ["tool", "input"])),
@@ -209,6 +284,9 @@ def build(base_url: str, token: str) -> Server:
         return chosen | {'operator_worker_id': protected, 'selection': 'configured test PC' if assigned else 'protected operator PC excluded'}
 
     async def start_background(body):
+        if body['tool'] not in registry:
+            registry.update({t['name']: t for t in (await get('/api/registry'))['tools']})
+        schema = registry.get(body['tool'], {}).get('input_schema') or {}
         if body.get('require_worker') in ('idle', 'other'):
             body = body | {'require_worker': (await select_background_worker(body['tool']))['id']}
         target = body.get('require_worker')
@@ -222,7 +300,9 @@ def build(base_url: str, token: str) -> Server:
         # Retrying an MCP call must not multiply model swaps on the same session.
         active = await get('/api/jobs', state='queued,running', limit=100)
         for job in active:
-            if (job.get('tool') == body['tool'] and job.get('input') == body.get('input', {})
+            if (job.get('tool') == body['tool']
+                    and _job_input_defaults(job.get('input', {}), schema)
+                    == _job_input_defaults(body.get('input', {}), schema)
                     and job.get('require_worker') == body.get('require_worker')
                     and job.get('require_os') == body.get('require_os')
                     and job.get('parent_request_id') == body.get('parent_request_id')):
@@ -255,6 +335,9 @@ def build(base_url: str, token: str) -> Server:
                 "choices": [{"question": e["question"], "options": e["options"]} for e in ev if e["type"] == "choices"]}
 
     async def convenience(name, a):
+        if name == 'favorite_unlocks':
+            from .unlock_metadata import run
+            return await run(a, get, post)
         if name == 'get_dispatch_feedback':
             from . import hermes_feedback
             data = await asyncio.to_thread(hermes_feedback.scan)
@@ -287,6 +370,11 @@ def build(base_url: str, token: str) -> Server:
             rows = await get("/api/requests", status=a.get("status", "open,in_progress"), source=a.get("source", ""))
             if not a.get("include_recurring"):
                 rows = [r for r in rows if not (r.get("title") or "").startswith("gBox request review (recurring")]
+            if not a.get("include_coaching") and a.get("source") != "coach":
+                # autoplay coaching tickets are live reporting for the agents at the inbox hook, note by note: the
+                # bulk Hermes queue never takes them (gbox.hermes_work_queue.is_live_coaching)
+                from .hermes_work_queue import is_live_coaching
+                rows = [r for r in rows if not is_live_coaching(r)]
             offset, limit = max(0, int(a.get("offset", 0))), max(1, min(int(a.get("limit", 30)), 100))
             capped = await _capped_requests(rows)
             merged = _on_main_requests(rows)
@@ -325,9 +413,7 @@ def build(base_url: str, token: str) -> Server:
             return await post(f"/api/requests/{a['request_id']}/capture",
                               {"session_id": a["session_id"], "text": a["text"], "task_step": a.get("task_step", {})})
         if name == "set_request_status":
-            return await post(f"/api/requests/{a['request_id']}/status",
-                              {"status": a["status"], "note": a.get("note", "")} |
-                              ({"solved_by": a["solved_by"]} if a.get("solved_by") else {}))
+            return await post(f"/api/requests/{a['request_id']}/status", _request_status(a))
         if name == "record_request_metrics":
             metrics = _request_metrics(a)
             report = await post(f"/api/requests/{a['request_id']}/metrics", metrics)
@@ -364,10 +450,9 @@ def build(base_url: str, token: str) -> Server:
         if name == "game_roster":
             return await get(f"/api/games/{a['game_id']}/roster")
         if name == "start_job":
-            body = {k: a[k] for k in ("tool", "input", "require_os", "require_worker", "parent_request_id") if k in a}
-            body["agent_use"] = True
-            if sid := body.get('input', {}).get('session_id'):
-                body['require_worker'] = sid.split('-')[0]
+            if a['tool'] not in registry:
+                registry.update({t['name']: t for t in (await get('/api/registry'))['tools']})
+            body = _generic_job_body(a, registry.get(a['tool'], {}).get('input_schema') or {})
             return await start_background(body)
         if name == "get_job":
             return await get(f"/api/jobs/{a['job_id']}")

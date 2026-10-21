@@ -7,8 +7,8 @@ import pytest
 
 from gbox import pm_inventory as pm
 
-ROM = Path(os.environ.get("GBOX_PM_US_ROM", Path.home() / "gbox-cache/b74d223b195befba/rom.z64"))
-SRC = Path(os.environ.get("GBOX_PM_US_SRC", Path.home() / "gbox-cache/b74d223b195befba/source.zip"))
+ROM = Path(os.environ.get("GBOX_PM_US_ROM", Path.home() / "gBox_alt/gbox-cache/b74d223b195befba/rom.z64"))
+SRC = Path(os.environ.get("GBOX_PM_US_SRC", Path.home() / "gBox_alt/gbox-cache/b74d223b195befba/source.zip"))
 
 
 def _yay0(size, masks, links, chunk):

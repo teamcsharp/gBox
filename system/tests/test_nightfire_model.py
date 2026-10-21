@@ -8,7 +8,7 @@ import pytest
 from gbox import nightfire_model as nm
 
 LEVEL = Path(os.environ.get("GBOX_NIGHTFIRE_LEVEL",
-                            Path.home() / "gbox-cache/744ba3bc797403bf/unpacked/07000001.unpacked"))
+                            Path.home() / "gBox_alt/gbox-cache/744ba3bc797403bf/unpacked/07000001.unpacked"))
 
 
 def _skin(n=3, att=1):

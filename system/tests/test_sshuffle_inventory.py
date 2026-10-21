@@ -12,7 +12,7 @@ import pytest
 from gbox import sshuffle_inventory as inv
 
 GDI = Path(os.environ.get("GBOX_SSHUFFLE_GDI",
-                          Path.home() / "gbox-cache/dc/79ade87c3c2fad3e/disc.gdi"))
+                          Path.home() / "gBox_alt/gbox-cache/dc/79ade87c3c2fad3e/disc.gdi"))
 
 
 def _pvm(names):

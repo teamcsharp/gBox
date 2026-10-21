@@ -17,7 +17,7 @@ def test_static_prompt_is_woken_with_one_start_press_without_relaunch(cfg):
     incident, calls = make_incident(cfg, ['black'] + ['white'] * 4 + ['white', 'blue'])
     incident.run()
     assert starts(calls) == [[{'key': 'start', 'down': True}], [{'key': 'start', 'down': False}]]
-    export = next(i for i, (tool, data) in enumerate(calls) if tool == 'state_transfer' and data['op'] == 'export')
+    export = next(i for i, (tool, data) in enumerate(calls) if tool == 'state_transfer' and data['op'] == 'snapshot')
     press = next(i for i, (tool, data) in enumerate(calls) if tool == 'session_op' and data['op'] == 'send_input')
     assert export < press
     assert not any(tool == 'launch_game' for tool, _ in calls)

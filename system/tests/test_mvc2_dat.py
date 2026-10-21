@@ -12,7 +12,7 @@ import pytest
 from gbox import mvc2_dat as M
 from gbox.gdrom import GDRom
 
-GDI = Path.home() / "gbox-cache/dc/02db6d37c0e20375/disc.gdi"
+GDI = Path.home() / "gBox_alt/gbox-cache/dc/02db6d37c0e20375/disc.gdi"
 _EXE = None
 _DAT = None
 

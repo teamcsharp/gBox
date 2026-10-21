@@ -87,7 +87,8 @@ class Driver:
 
     def platform_little(self) -> bool:
         try:
-            s = next(x for x in self.api.get("/api/sessions").json() if x["session_id"] == self.sid)
+            s = next(x for x in self.api.get("/api/sessions", params={"include_ended": "false"}).json()   # the running
+                     if x["session_id"] == self.sid)                 # ones: the full list took minutes under load
             return (s.get("platform") or s.get("detail", {}).get("platform") or "dreamcast") not in ("gamecube", "wii", "ps3", "n64")
         except Exception:
             return True

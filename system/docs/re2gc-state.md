@@ -20,8 +20,8 @@ The owned GCZ is directly readable through `GCDisc`; another port's addresses,
 an extracted PSX/N64 executable, or RE2 Remake cannot substitute for this build.
 
 On Spark, source evidence is in
-`~/gbox-pr-audit-20261017/re-export-evidence/`. The reusable Ghidra project is
-`~/gbox-pr-audit-20261017/re2gc-unlock-analysis/re2gc.gpr`. The `*-v2.elf`
+`~/gBox_alt/gbox-pr-audit-20261017/re-export-evidence/`. The reusable Ghidra project is
+`~/gBox_alt/gbox-pr-audit-20261017/re2gc-unlock-analysis/re2gc.gpr`. The `*-v2.elf`
 programs import with PowerPC:BE:32:default and completed analysis successfully.
 `state-functions.c`, `progress-functions.c`, `claire-state-functions.c`,
 `flag-encoding.c`, and the `*-refs*.json` files contain the local owned-code

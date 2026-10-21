@@ -57,7 +57,8 @@ def admission_reason(worker, excluded_names, budget_percent=DEFAULT_BUDGET, *, n
 def requires_admission(job):
     # Live controls and diagnostics must remain available even after a PC is
     # unticked or loaded: they are how an owned test saves and yields its place.
-    controls = {'session_op', 'get_frame', 'state_transfer', 'read_memory', 'tasks'}
+    # autoplay drives a session that was already admitted (the screensaver's own games): it must not wait behind a busy GPU.
+    controls = {'session_op', 'get_frame', 'state_transfer', 'read_memory', 'tasks', 'autoplay'}
     if (job.get('tool') in {'ollama_assist', 'decomp_pipeline', 'xenonrecomp', 'rexglue'}
             and (job.get('input') or {}).get('op') == 'status'):
         # These explicit status operations only discover configured programs.

@@ -258,13 +258,29 @@ def _strips_for(faces: list[tuple], bone_of) -> list[list]:
     return out
 
 
+def face_meshes(t: Kms, B, F) -> np.ndarray:
+    """The mesh that draws each face: its first vertex's bone mesh, or (53-bone cut-scene models draw the hands in
+    finger meshes; close-up models only have a head) the nearest ancestor mesh that has a part; len(meshes) = no
+    mesh draws it (the face is dropped)."""
+    nb, nm = len(t.bones), len(t.meshes)
+    drawn = {}
+    for b0 in range(nb):
+        j = b0
+        while j >= 0 and not (j < nm and t.meshes[j].parts):
+            j = t.bones[j]["parent"] if j < len(t.bones) else -1
+        drawn[b0] = j if j >= 0 else nm
+    B, F = np.asarray(B, np.int64).reshape(-1), np.asarray(F, np.int64).reshape(-1, 3)
+    return np.array([drawn.get(int(b), nm) for b in B[F[:, 0]]], np.int64) if len(F) else np.zeros(0, np.int64)
+
+
 def encode(template: Kms, P, N, UV, B, F, mesh_of_face=None, keep_extra: bool = False) -> bytes:
     """A new model on the template's skeleton: P (n,3) model-space bind-pose positions (mm), N (n,3) unit normals,
     UV (n,2), B (n,) bone (= mesh matrix) per vertex (rigid), F (m,3) counter-clockwise faces (outward normals).
 
     Kept from the template: header (counts and offsets rewritten), bones, the mesh-group header, every mesh record
     (part count, vertex count, bounds and part pointer rewritten) and, for each mesh that gets triangles, its first
-    part record (flags, texture strcodes, layer count). Faces go to the mesh of their first vertex's bone; meshes
+    part record (flags, texture strcodes, layer count). Faces go to the mesh of their first vertex's bone, else its
+    nearest ancestor mesh with a part (dropped when none: a close-up head model keeps only the donor's head); meshes
     without faces (and, unless keep_extra, the meshes past the bones: gear) draw nothing. Envelopes are single-bone."""
     t = template
     d = t.data
@@ -274,17 +290,20 @@ def encode(template: Kms, P, N, UV, B, F, mesh_of_face=None, keep_extra: bool = 
     B = np.asarray(B, np.int64).reshape(-1)
     F = np.asarray(F, np.int64).reshape(-1, 3)
     nb, nm = len(t.bones), len(t.meshes)
-    used = np.unique(F) if len(F) else np.zeros(0, np.int64)       # only the vertices the faces use
-    remap = np.full(len(P), -1, np.int64)
-    remap[used] = np.arange(len(used))
-    P, N, UV, B, F = P[used], N[used], UV[used], B[used], remap[F]
-    if mesh_of_face is not None:
-        mesh_of_face = np.asarray(mesh_of_face, np.int64)
     if len(B) and ((B < 0).any() or (B >= nb).any()):
         raise ValueError("vertex bone out of the skeleton")
     if len(P) and np.abs(P).max() > 32000:
         raise ValueError("positions exceed the s16 range")
-    mof = np.asarray(mesh_of_face if mesh_of_face is not None else B[F[:, 0]], np.int64)
+    if mesh_of_face is None:
+        mof = face_meshes(t, B, F)
+    else:
+        mof = np.asarray(mesh_of_face, np.int64)
+    keep = mof < nm
+    F, mof = F[keep], mof[keep]
+    used = np.unique(F) if len(F) else np.zeros(0, np.int64)       # only the vertices the drawn faces use
+    remap = np.full(len(P), -1, np.int64)
+    remap[used] = np.arange(len(used))
+    P, N, UV, B, F = P[used], N[used], UV[used], B[used], remap[F]
     pkey = np.round(P).astype(np.int32)
     _u, pfirst, pidx = np.unique(pkey, axis=0, return_index=True, return_inverse=True)
     pidx = pidx.reshape(-1)

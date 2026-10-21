@@ -2,6 +2,7 @@
 import concurrent.futures
 from contextvars import ContextVar
 import platform
+import threading
 import time
 import traceback
 from dataclasses import dataclass, field
@@ -187,6 +188,29 @@ def tool(name: str, version: str, In: type[BaseModel], Out: type[BaseModel], **k
 
 
 _pool = concurrent.futures.ThreadPoolExecutor(max_workers=8)
+_execution_lock = threading.Lock()
+_execution_futures: set[concurrent.futures.Future] = set()
+
+
+def inflight_executions() -> int:
+    """Queued/running callables, including work whose caller already timed out."""
+    with _execution_lock:
+        return len(_execution_futures)
+
+
+def _execution_finished(future):
+    with _execution_lock:
+        _execution_futures.discard(future)
+
+
+def _submit_execution(fn, inp, ctx, deadline):
+    future = _pool.submit(_run_with_fitting, fn, inp, ctx, deadline)
+    with _execution_lock:
+        _execution_futures.add(future)
+    # A completed future invokes this callback immediately, so register it
+    # outside the lock. Only completion/cancellation releases the live work.
+    future.add_done_callback(_execution_finished)
+    return future
 
 
 def _run_with_fitting(fn, inp, ctx: "Ctx", execution_deadline=None):
@@ -224,7 +248,7 @@ def _execute(t, inp, ctx: Ctx) -> dict:
         try:
             # ponytail: a timed-out thread keeps running in the background; move tools to subprocesses if that bites.
             deadline = time.monotonic() + t.timeout_s
-            out = _pool.submit(_run_with_fitting, t.fn, inp, ctx, deadline).result(timeout=t.timeout_s)
+            out = _submit_execution(t.fn, inp, ctx, deadline).result(timeout=t.timeout_s)
             return t.Out.model_validate(out).model_dump(mode="json")
         except (ToolUnavailable, Unsupported, Cancelled):
             raise

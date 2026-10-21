@@ -15,6 +15,7 @@ import subprocess
 from pathlib import Path
 
 from gbox.gdrom import GDRom
+from gbox.side_dirs import side_dir
 
 SECTOR_SIZE = 2352
 
@@ -154,7 +155,7 @@ if __name__ == "__main__":
 
     p = argparse.ArgumentParser(description="Inventory Tetris 4D (Japan) Dreamcast disc")
     p.add_argument("chd", type=Path, help="path to owned CHD")
-    p.add_argument("--cache-dir", type=Path, default=Path.home() / "gbox-cache" / "dc" / "864538c6473a986e")
+    p.add_argument("--cache-dir", type=Path, default=side_dir("gbox-cache") / "dc" / "864538c6473a986e")
     p.add_argument("--out", type=Path, default=None)
     args = p.parse_args()
     manifest = ensure_inventory(args.chd, args.cache_dir, args.out)
