@@ -139,10 +139,35 @@ def validate(reader, base: int, expected: list[dict]):
             raise Unsupported("DOA3 guest RAM header/text validation changed")
 
 
+def _differing(reader, base: int, expected: list[dict]) -> list[str]:
+    """The anchors that don't match at base, with the first differing offset and how many bytes differ (diagnostics
+    for a failed discovery: a runner that changes more than the documented counters and thunk slots says where)."""
+    out = []
+    for item in expected:
+        data = reader.read(base + item["guest"], len(item["data"]))
+        if _anchor_digest(item, data) == item["sha256"]:
+            continue
+        mutable = set()
+        for o in item.get("mutable_dwords") or []:
+            mutable.update(range(o, o + 4))
+        count, first, src = 0, None, item["data"]
+        for off in range(0, len(src), 4096):                  # compare pages in C, bytes only where they differ
+            a, b = data[off:off + 4096], src[off:off + 4096]
+            if a == b:
+                continue
+            for i, (x, y) in enumerate(zip(a, b)):
+                if x != y and off + i not in mutable:
+                    count += 1
+                    first = off + i if first is None else first
+        where = f"0x{item['guest'] + first:X}" if first is not None else "?"
+        out.append(f"{item['kind']} 0x{item['guest']:X}: {count} bytes from {where}")
+    return out
+
+
 def discover(reader, expected: list[dict]) -> int:
     """A unique allocation must match all source anchors, never just XBEH."""
     header = expected[0]
-    matches, candidates = set(), 0
+    matches, candidates, near = set(), 0, []
     for region in reader.regions():
         if not _readable(region) or not RAM_SIZE <= region["size"] <= RAM_SIZE + 1024**2:
             continue
@@ -157,12 +182,17 @@ def discover(reader, expected: list[dict]) -> int:
             try:
                 validate(reader, base, expected)
             except Unsupported:
-                pass
+                if len(near) < 2:
+                    try:
+                        near.append(_differing(reader, base, expected))
+                    except Unsupported:
+                        pass
             else:
                 matches.add(base)
             position = probe.find(b"XBEH", position + 1)
     if len(matches) != 1:
-        raise Unsupported(f"DOA3 guest RAM has no unique verified allocation (found {len(matches)})")
+        why = f"; differing at the nearest allocation: {'; '.join(near[0][:4])}" if not matches and near and near[0] else ""
+        raise Unsupported(f"DOA3 guest RAM has no unique verified allocation (found {len(matches)}){why}")
     return matches.pop()
 
 
