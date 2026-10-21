@@ -169,7 +169,7 @@ def publish(request_id: str, title: str, files: list[str], tests: list[str]) -> 
                 raise ValueError('Python changes require 1 to 10 focused test files')
             for name in tests:
                 path = root / 'system' / name
-                if (not re.fullmatch(r'tests/test_[\w]+\.py', name) or path.is_symlink()
+                if (not re.fullmatch(r'tests/test_[\w-]+\.py', name) or path.is_symlink()
                         or not path.resolve().is_relative_to(root / 'system') or not path.is_file()):
                     raise ValueError('Tests must be named files inside system/tests')
                 if 'system/' + name not in files:
@@ -195,7 +195,7 @@ def publish(request_id: str, title: str, files: list[str], tests: list[str]) -> 
                 raise ValueError('Python changes require 1 to 10 focused test files')
             for name in tests:
                 path = system / name
-                if (not re.fullmatch(r'tests/test_[\w]+\.py', name) or path.is_symlink()
+                if (not re.fullmatch(r'tests/test_[\w-]+\.py', name) or path.is_symlink()
                         or not path.resolve().is_relative_to(system) or not path.is_file()):
                     raise ValueError('Tests must be named files inside system/tests')
             python = Path(__file__).resolve().parents[1] / '.venv-linux-aarch64/bin/python'

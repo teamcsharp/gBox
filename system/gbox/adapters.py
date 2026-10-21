@@ -2406,8 +2406,9 @@ D-Pad/Right = `H`
         # nor on the game's own crash ("Invalid read from 0x00000004", 2026-10-20: the headless Spark display showed it
         # to nobody, Dolphin waited on it and Stop timed out). A demo / autoplay launch (self.demo) also hides the
         # on-screen messages ("Saved State to G4BE08.s08"). The command-line layer is never saved, so the operator's
-        # own launches keep their dialogs and messages.
-        if not (self.jump_from or getattr(self, "demo", False)):
+        # own launches keep their dialogs and messages. Unattended sessions (running on a private Xvfb display) also
+        # avoid modal dialogs since there's no user to dismiss them.
+        if not (self.jump_from or getattr(self, "demo", False) or getattr(self, "display", None)):
             return {}
         return {"Dolphin.Interface.UsePanicHandlers": "False", "Dolphin.Interface.OnScreenDisplayMessages": "False"}
 
