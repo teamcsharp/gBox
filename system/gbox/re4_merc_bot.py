@@ -108,6 +108,7 @@ AIM_SPEED_X = 3.0                                # the aim's stick speed x3 (re_
                                                  # 0x801ED930 the aim routine scales the stick by): ~30 deg/s -> ~90
 AIM_FINE = 0.12                                  # aiming, this close to the target (radians): the stick in pulses
 EVADE_LOOK = 1500.0                              # a way out is clear this far ahead (the level map, other Ganados)
+TURN_COST = 350.0                                # choosing among near ones: a radian to turn costs this many units
 RECOVER_S = 1.2                                  # just up from a hit, a Ganado within CROWD_R: out of reach first
                                                  # (operator: "getting slapped on by these people over and over")
 ELEV_DY = 600.0                                  # a target this far above / below: raise or lower the aim; else level
@@ -545,9 +546,12 @@ class Bot:
         return max(turn + pose, gun) + 0.1
 
     @staticmethod
-    def _as_target(t) -> dict:
+    def _as_target(t, lead_s: float = 0.0) -> dict:
+        """A threat as _fight's target: a Ganado's slot and health, or a thrown weapon (negative slot), at the position
+        it will have lead_s from now (on top of the tracker's own lead)."""
         e = dict(t.enemy) if t.kind != "thrown" else {"thrown": True}
-        e.update(slot=t.slot if t.kind != "thrown" else -t.slot, pos=t.pos)
+        pos = tuple(t.pos[i] + t.vel[i] * lead_s for i in range(3))
+        e.update(slot=t.slot if t.kind != "thrown" else -t.slot, pos=pos)
         return e
 
     def _watch(self, p, s, threats, now):
@@ -588,7 +592,7 @@ class Bot:
     def _evade(self, p, t, now, side: bool = False) -> dict:
         """Out of the way of an attack he can't stop in time: away from the attacker at a run (the quick turn first
         when the way out is behind him), for EVADE_S; side: across a thrown weapon's line (the side it passes on)."""
-        px, py, pz = p["pos"]
+        px, _, pz = p["pos"]
         self.r_since = None
         self.trigger["down"] = False
         if self.evade is None or self.evade["slot"] != t.slot or now > self.evade["until"]:
@@ -598,10 +602,14 @@ class Bot:
                 away = heading(vz, -vx) if cross < 0 else heading(-vz, vx)
             else:
                 away = self._way_out(p, t)
-            self.evade = {"slot": t.slot, "since": now, "until": now + EVADE_S, "turned": False, "away": away}
+            self.evade = {"slot": t.slot, "since": now, "until": now + EVADE_S, "turned": False, "away": away,
+                          "side": side}
             self.stats["evades"] += 1
-        away = self.evade["away"]
-        err = wrap(away - p["rot"])
+        return self._run_out(p, now)
+
+    def _run_out(self, p, now) -> dict:
+        """The evade under way: the quick turn when the way out is behind him (once), then a run along it."""
+        err = wrap(self.evade["away"] - p["rot"])
         if abs(err) > QUICK_TURN_ERR and not self.evade["turned"] and now - self.qturn_at > QUICK_TURN_S:
             self.evade["turned"] = True
             self.qturn_at = now
@@ -627,24 +635,31 @@ class Bot:
         if (p.get("r") or (0,))[0] == 1:                             # hit or held: the game has him (play() presses
             self.r_since, self.trigger["down"] = None, False       # SHAKE OFF / the QTE from RAM)
             return {"hold": set()}
-        if self.evade and now < self.evade["until"]:
-            t = next((x for x in threats if x.slot == self.evade["slot"] and x.kind != "thrown"), None)
-            if t is not None and t.dist < threats_ram.REACH.get(t.kind, 900.0) + 500.0:
-                return self._evade(p, t, now)
+        if self.evade and now < self.evade["until"]:                # an evade under way: through, unless the attacker
+            t = next((x for x in threats if x.slot == self.evade["slot"] and x.kind != "thrown"), None)   # is gone
+            if self.evade["side"] or (t is not None and t.dist < threats_ram.REACH.get(t.kind, 900.0) + 500.0):
+                self.r_since, self.trigger["down"] = None, False
+                return self._run_out(p, now)
         live = [t for t in threats if self.skip.get(t.slot, float("-inf")) < now or t.kind not in ("near", "down")]
         urgent = [t for t in live if t.kind not in ("near", "down") and t.eta < URGENT_S]
         for t in urgent:
-            late = t.eta + EVADE_MARGIN < self._ready_in(p, t, now)
+            ready = self._ready_in(p, t, now)
+            late = t.eta + EVADE_MARGIN < ready
             if t.kind == "thrown" and late:                       # can't shoot it in time: out of its line
                 return self._evade(p, t, now, side=True)
             if t.kind in threats_ram.MELEE and t.dist < threats_ram.REACH.get(t.kind, 900.0) + 300.0 and late:
                 return self._evade(p, t, now)                      # it lands first: out of its way
-            return self._fight(p, self._as_target(t), now, s)
+            lead = min(ready, t.eta) if t.kind == "thrown" else 0.0   # a weapon in the air: where it will be
+            return self._fight(p, self._as_target(t, lead), now, s)
         close = [t for t in live if t.kind == "near" and t.dist < CROWD_R]
         if len(close) >= CROWD_N or (close and now - self.recovered_at < RECOVER_S):
             return self._evade(p, close[0], now)                    # on top of him / just hit: out, then one by one
-        near = [t for t in live if t.kind == "near" and t.dist < THREAT_R]
-        near += [t for t in live if t.kind == "down" and t.dist < THREAT_R]   # knocked down: after the standing ones
+        px, _, pz = p["pos"]
+
+        def cost(t):                                           # near, and little to turn: a radian ~ TURN_COST units
+            return t.dist + TURN_COST * abs(wrap(heading(t.pos[0] - px, t.pos[2] - pz) - p["rot"]))
+        near = sorted((t for t in live if t.kind == "near" and t.dist < THREAT_R), key=cost)
+        near += sorted((t for t in live if t.kind == "down" and t.dist < THREAT_R), key=cost)   # knocked down: last
         if near:
             return self._fight(p, self._as_target(near[0]), now, s)
         return None

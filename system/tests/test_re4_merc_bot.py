@@ -629,6 +629,47 @@ def test_held_by_a_ganado_the_bot_lets_the_game_and_the_prompts_have_him():
     assert run(bot, m, now, 0.0)[0] == {"hold": set()} and bot.stats["hits_taken"] == 1
 
 
+def test_a_ganado_behind_him_gets_the_quick_turn():
+    now = [0.0]
+    m = world([((0, 0, -1200), True)])                                       # right behind him, walking
+    act_state(m, 1, (1, 0x03, 0, 0))
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    assert run(bot, m, now, 0.0)[0] == {"hold": {"down", "b"}} and bot.stats["quick_turns"] == 1
+    assert "down" not in run(bot, m, now, 0.2)[0]["hold"]                    # once: then the stick finishes the turn
+
+
+def test_of_two_close_ones_the_one_in_front_is_shot_first():
+    now = [0.0]
+    m = world([((0, 0, -1000), True), ((0, 0, 1150), True)])               # one behind, one a little further in front
+    act_state(m, 1, (1, 0x03, 0, 0))
+    act_state(m, 2, (1, 0x03, 0, 0))
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    run(bot, m, now, 0.0)
+    acts = run(bot, m, now, B.PITCH_AFTER + 0.05, 3)
+    assert any("a" in a.get("hold", set()) for a in acts) and bot.target_slot == 2
+
+
+def test_a_thrown_axe_too_close_to_shoot_is_stepped_out_of_its_line():
+    now = [0.0]
+    m = world([((0, 0, 6000), True)])
+    axe = EM + 2 * STRIDE
+    m.put(B.EMMGR, ">3I", EM, 3, STRIDE)
+    m.put(axe, ">I", 1)
+    m.put(axe + 0x100, ">B", B.threats_ram.THROWN_ID)
+    m.put(axe + 0xFC, ">4B", 1, 0, 0, 0)
+    facing(m, math.pi / 2)                                                   # looking away to his left: no shot in time
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    acts = []
+    for k in range(4):
+        m.put(axe + 0x94, ">3f", 30.0, 1400.0, 1200.0 - 150.0 * k)           # 3000 units / s, 0.3 s out
+        acts += run(bot, m, now, 0.05 * k)
+    assert bot.stats["evades"] == 1 and acts[-1]["hold"] >= {"up", "b"}
+    away = bot.evade["away"]
+    assert abs(abs(B.wrap(away)) - math.pi / 2) < 0.2                       # across its line (+-x), not along it
+
+
 def test_a_thrown_axe_coming_at_him_is_aimed_at_where_it_will_be():
     now = [0.0]
     m = world([((0, 0, 6000), True)])                                       # the thrower, far out

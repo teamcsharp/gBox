@@ -19,12 +19,16 @@ main.dol):
                   +0xB0 u32 this frame's events (low byte em+0x28B: 0x01 the attack's hit frames - the grab routine
                   0x81718908 checks for Leon only while it is set -, 0x08 turning onto Leon, 0x20 the swing's sound),
                   +0xB8 f32 the frame (em+0x290), +0xBC u16 the frames in it (em+0x294), +0xC0 f32 its speed (em+0x298).
-  em +0x370       f32: the squared ground distance to Leon the Ganado's AI uses (its attack picks compare it with
-                  1300^2 .. 4500^2).
+  em +0x370       f32: the squared ground distance to Leon the Ganado's AI uses (written every frame by 0x800C89C4;
+                  its attack picks compare it with 1300^2 .. 4500^2).
   the attack picker (module 0x8172B330, called while the Ganado acts) tries, in order: r_no_1 0x20, 0x27, 0x26 / 0x28,
-                  0x29, 0x2A, 0x2B, 0x2C / 0x2D (the grabs: they call Leon's grab hit 0x800CEF18 and hold 0x800CF000),
-                  0x21 / 0x22 (throws: they make em 0x42 with 0x80011944), 0x23 (lit dynamite), 0x24, 0x25, 0x2F / 0x31
-                  (Ashley), 0x33 / 0x39. 0x2E-0x38 hold Leon (0x34 / 0x36 hurt him while held).
+                  0x29, 0x2A, 0x2B, 0x2C / 0x2D, 0x21 / 0x22 (throws: they make em 0x42 with 0x80011944), 0x23 (lit
+                  dynamite), 0x24, 0x25, 0x2F / 0x31 (Ashley), 0x33 / 0x39. The swings check Leon with the module's
+                  melee hit 0x817387DC (a weapon point against him, the attack table at module +0x45B48: a 250-750 hit
+                  radius, 380-1400 damage, 9999 for the chainsaw) only while the motion's hit bit is on; a hit puts him
+                  in his hit reaction (0x800CEF18). 0x2D is the grab, 0x2E-0x38 hold Leon (0x34 / 0x36 hurt him while
+                  held). Hit frames from the motions' SEQ events: 0x26 frames 15-21 (0.5 s), 0x24 / 0x25 frame 41,
+                  0x28 frames 50-72, 0x29 frames 29-42.
   em id 0x42      a thrown weapon (hand axe, sickle, dynamite): an EmMgr slot of its own, position +0x94; dynamite
                   hurts within 800 (0x800CE1BC: radius 500 + 300, 1200 damage and a knock-down).
 """
@@ -47,8 +51,8 @@ THROWN_ID = 0x42
 FPS = 30.0                              # RE4 runs its game logic at 30 frames a second
 
 # r_no_1 (while r_no_0 = R_ACT) -> (kind, reach: how close the Ganado must be for it to land, lands: seconds from the
-# start of the action to its hit frames when nothing better is known). The grabs lunge from up to ~1700 (their picks
-# test 1700^2); a swing lands within ~600 of Leon; a throw from anywhere in sight.
+# start of the action to its hit frames when the motion can't be read ahead). A swing reaches its weapon point's hit
+# radius (250-750) past the Ganado as he lunges; a throw lands from anywhere in sight.
 ATTACKS = {
     0x20: ("rush", 2000.0, 1.0),
     0x21: ("throw", 9000.0, 0.9), 0x22: ("throw", 9000.0, 0.9), 0x23: ("dynamite", 9000.0, 1.5),
