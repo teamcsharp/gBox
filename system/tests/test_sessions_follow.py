@@ -25,3 +25,26 @@ def test_ended_sessions_say_whether_an_agent_launched_them(cfg):
     store.put("slabel", "w1-agentjob", {"owner": "you"})          # claimed by the operator: theirs from now on
     rows = {r["session_id"]: r for r in client.get("/api/sessions").json()}
     assert rows["w1-agentjob"]["agent_owned"] is False
+
+
+def test_sessions_list_is_running_plus_the_newest_ended_rows(cfg):
+    """The archive holds every session ever played; listing all of them cost 45-120 s on the loaded Spark."""
+    app = create_app(cfg)
+    store = app.state.store
+    now = time.time()
+    for i in range(80):
+        store.put("session", f"w1-old{i:03d}", {"session_id": f"w1-old{i:03d}", "game_id": "g", "title": "G",
+                                                "state": "ended", "started": now - 9000 + i, "ended": now - 8000 + i})
+    store.put("session", "w1-live", {"session_id": "w1-live", "game_id": "g", "title": "G", "state": "running",
+                                     "started": now - 8900, "worker_id": "w1"})           # older than every ended row
+    for i in range(5):
+        store.put("session", f"w1-new{i}", {"session_id": f"w1-new{i}", "game_id": "g", "title": "G",
+                                            "state": "ended", "started": now - 100 + i, "ended": now - 50 + i})
+    client = TestClient(app, headers={"Authorization": f"Bearer {cfg.token()}"})
+    rows = client.get("/api/sessions").json()
+    ids = [r["session_id"] for r in rows]
+    assert ids[0] == "w1-new4" and "w1-live" in ids                  # newest first; the running session always listed
+    assert sum(r["state"] == "ended" for r in rows) == 60
+    assert [r["session_id"] for r in client.get("/api/sessions?limit=3").json()] == ["w1-new4", "w1-new3", "w1-new2", "w1-live"]
+    assert len(client.get("/api/sessions?limit=0").json()) == 86    # the whole archive on request
+    assert [r["session_id"] for r in client.get("/api/sessions?include_ended=false").json()] == ["w1-live"]

@@ -346,6 +346,13 @@ class Store:
                                    + ("DESC" if reverse else "ASC"), (kind,)).fetchall()
         return [json.loads(r[0]) for r in rows]
 
+    def recent(self, kind: str, limit: int) -> list[dict]:
+        """The newest `limit` documents of a kind (rowid order), without decoding the whole archive."""
+        with self.lock:
+            rows = self.db.execute("SELECT body FROM docs WHERE kind=? ORDER BY rowid DESC LIMIT ?",
+                                   (kind, int(limit))).fetchall()
+        return [json.loads(r[0]) for r in rows]
+
     def running_sessions(self) -> list[dict]:
         """Live sessions only; admission polls must not decode the session archive."""
         with self.lock:
