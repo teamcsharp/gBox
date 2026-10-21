@@ -42,10 +42,20 @@ def test_frames_follow_the_ring_and_the_counter_when_it_wraps():
     assert t.frame(ram) == 1
     ram.frames(3)
     assert t.frame(ram) == 4                                     # three frames between two polls
-    ram.frames(8)                                                # the ring is back where it was: no change seen
-    assert t.frame(ram) == 4
+    ram.frames(8)                                                # the ring is back where it was: the counter says 8
+    assert t.frame(ram) == 12
     ram.frames(2)
-    assert t.frame(ram) == 14                                    # the counter says 10 frames passed
+    assert t.frame(ram) == 14 and not t.ring_dead                # and the ring moves again: it counts again
+
+
+def test_frames_fall_back_to_the_counter_when_the_ring_never_moves():
+    ram, t = Ram(), D.Doa3()
+    t.frame(ram)
+    for n in (1, 2, 3, 4, 5):
+        qpc = struct.unpack_from("<Q", ram.ram, D.QPC)[0]
+        struct.pack_into("<Q", ram.ram, D.QPC, qpc + int(1000 / 60 * 10_000))   # one frame, the ring still
+        t.frame(ram)
+    assert t.ring_dead and t.count >= 2                          # after 3 still-ring frames it counts by the clock
 
 
 def test_holds_go_back_from_the_side_p1_is_on_and_lead_with_the_signature_height():
@@ -146,6 +156,22 @@ def test_survival_runs_menus_and_fights_from_ram_with_the_virtual_pad(tmp_path):
     assert stats["attacks"] >= 3 and stats["frames"] >= 100       # P2's punches seen as attack-input edges
     assert stats["hung"] is False
     assert (tmp_path / "fightbot" / D.MAP_ID / "book.json").is_file()
+
+
+def test_a_cast_build_names_the_fighters_it_swapped(tmp_path):
+    import json
+    marker = {"slots": [{"slot": "fighter:zack", "donor": "sa1_sonic"}, {"slot": "fighter:kasumi", "donor": "x"},
+                        {"slot": "stage:x"}, {"slot": "fighter:hika", "donor": "y"}]}
+    assert D.swapped_fighters(marker) == [0, 5]                  # hika isn't pinned yet: left out
+    cache = tmp_path / "cache"
+    (cache / "mods" / D.MAP_ID / "doa3_zac_sa1_sonic").mkdir(parents=True)
+    (cache / "mods" / D.MAP_ID / "doa3_zac_sa1_sonic" / ".gbox-mod.json").write_text(json.dumps(marker))
+    ad = SimpleNamespace(game={"mod": "doa3_zac_sa1_sonic"}, config=SimpleNamespace(cache=cache, runtime=tmp_path))
+    stats = {}
+    dep = doa3_bot.Deployment(ad, stats=stats)
+    assert dep.title.swapped == [0, 5] and stats["cast_fighters"] == "0,5"
+    ad.game = {"mod": "../escape"}
+    assert doa3_bot.Deployment.cast_fighters(ad) == [] and doa3_bot.Deployment.cast_fighters(SimpleNamespace()) == []
 
 
 def test_start_is_refused_in_a_game_unless_p1_is_the_virtual_pad(tmp_path):

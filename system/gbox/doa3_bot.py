@@ -57,6 +57,9 @@ class Deployment:
         self.lessons = lessons if lessons is not None else Run(root, doa3_xbox.MAP_ID)
         self.engine = Engine(self.title, self.book, self.lessons, stats)
         self.engine.on_judged = self.evidence
+        self.title.swapped = self.cast_fighters(ad)        # a cast build: pick the fighters it swapped (the show)
+        if stats is not None and self.title.swapped:
+            stats["cast_fighters"] = ",".join(map(str, self.title.swapped))
         self.frames_dir = root / doa3_xbox.MAP_ID / "frames" if root else None
         self.captured = 0
         self.WATCH = doa3_xbox.CLOCK               # the frame clock: still = the game loop stopped
@@ -92,6 +95,20 @@ class Deployment:
                 self.lessons.log("evidence_failed", w.frame, error=str(error)[:200])
         import threading
         threading.Thread(target=grab, daemon=True, name="doa3-evidence").start()
+
+    @staticmethod
+    def cast_fighters(ad) -> list[int]:
+        """The fighters this session's cast build swapped: its .gbox-mod.json marker in the worker's mod cache
+        (cache/mods/<game id>/<mod>/), written by the cast writer. [] for the stock game or an unreadable marker."""
+        import json
+        try:
+            mod = (getattr(ad, "game", None) or {}).get("mod") or ""
+            if not mod or "/" in mod or "\\" in mod or mod.startswith("."):
+                return []
+            path = ad.config.cache / "mods" / doa3_xbox.MAP_ID / mod / ".gbox-mod.json"
+            return doa3_xbox.swapped_fighters(json.loads(path.read_text(encoding="utf-8")))
+        except Exception:                          # noqa: BLE001 - no marker: any fighter
+            return []
 
     def reader(self, ad):
         """Every read goes to the adapter's current channel: a closed one is replaced at the next read."""

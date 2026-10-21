@@ -166,7 +166,8 @@ class Title:
         A screen's rules are tried in order; `when` is a ram_map condition over the map's fields (field / mask / eq
         ne lt le gt ge in, all / any / not); `cursor` walks the field to `target` (next when below, prev when above),
         then presses `confirm`; `targets: [...]` instead picks the next target each time the screen comes back (a
-        new fighter every Survival run); `find: {"field": f, "eq": v}` targets the index of v in the list field f
+        new fighter every Survival run), `targets_from: "<title attribute>"` takes that list from the title (the
+        fighters a cast build swapped); `find: {"field": f, "eq": v}` targets the index of v in the list field f
         (the menu item whose mode is Survival); `press` presses its key; `wait` presses nothing."""
         entered = w.screen != getattr(self, "_menu_screen", None)
         self._menu_screen = w.screen
@@ -187,8 +188,9 @@ class Title:
                 cur = values.get(rule["cursor"]) if values is not None else None
                 if not isinstance(cur, (int, float)):
                     return None
-                if rule.get("targets"):                # rotate: the next one each time the screen comes back
-                    targets = rule["targets"]
+                targets = (getattr(self, rule["targets_from"], None) if rule.get("targets_from") else None) \
+                    or rule.get("targets")              # targets_from: a title attribute (a cast build's fighters)
+                if targets:                            # rotate: the next one each time the screen comes back
                     target = ram_map.num(targets[self._visits.get(w.screen, 0) % len(targets)])
                 elif rule.get("find"):                 # the index of an item: {"field": list field, "eq": value}
                     items = values.get(rule["find"]["field"])
