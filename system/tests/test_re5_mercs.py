@@ -221,8 +221,51 @@ def test_play_round_runs_the_driver_until_the_round_ends():
     stats: dict = {}
     why = engine.play_round({"driver": "gbox.mercs.titles.re5_ps3"}, mem, sent.extend, stopped, stats,
                             sleep=lambda s: None, clock=lambda: n[0] * 0.5, tick_s=0.0)
-    assert why == "round" and stats["timer"] == 100.0 and stats["score"] == 900
+    assert why == "round" and stats["timer"] == 0.0 and stats["score"] == 900
     assert {"key": "l1", "down": True} in sent        # pad names, pressed as a diff
+
+
+def test_result_tally_refreshes_after_time_expires_and_preserves_totals_during_teardown(monkeypatch, tmp_path):
+    for initial, final in ((8050, 8420), (9980, 10020)):
+        monkeypatch.setattr(R, "ROSTER", R.Roster())
+        memory = world(score=initial, kills=24, combo=6)
+        n, stats, logged = [0], {}, []
+        def stopped():
+            n[0] += 1
+            if n[0] == 3:
+                memory.put(GAMESYS + R.GS_TIMER, struct.pack(">f", 0.0))
+            if n[0] == 4:
+                memory.put(GAMESYS + R.GS_SCORE, struct.pack(">i", final))
+            if n[0] == 5:
+                memory.put(GAMESYS + R.GS_SCORE, struct.pack(">i", 0))
+                memory.put(GAMESYS + R.GS_KILLS, struct.pack(">i", 0))
+            return n[0] > 20
+        bot = R.Bot(stats=stats, learn_dir=tmp_path, clock=lambda: n[0] * 0.5)
+        why = engine.play_round({"driver": "gbox.mercs.titles.re5_ps3"}, memory, lambda rows: None,
+                                stopped, stats, logged.append, brain=bot, sleep=lambda seconds: None,
+                                clock=lambda: n[0] * 0.5)
+        assert why == "round" and stats["score"] == final and stats["kills"] == 24 and stats["timer"] == 0.0
+        assert stats["rank"] == R.rank_of(final) and f"24k {final}p c6" in stats["char_tally"]
+        assert logged[-1]["stats"]["score"] == final
+
+
+def test_result_refresh_requires_the_observed_round_player_and_valid_terminal_fields(tmp_path):
+    stats = {"score": 8050, "kills": 24, "rank": "D", "timer": 1.0}
+    bot = R.Bot(stats=stats, learn_dir=tmp_path)
+    terminal = R.snapshot(world(score=8420, kills=25, timer=0.0))
+    bot.observe_round(terminal, "results", 0.0)
+    assert stats["score"] == 8050                  # attaching at a menu is not a known round
+    bot.observe_round(R.snapshot(world(score=8050, kills=24, timer=1.0)), "playing", 1.0)
+    for invalid in (terminal | {"timer": None}, terminal | {"timer": float("nan")},
+                    terminal | {"player": terminal["player"] | {"ptr": PLAYER + 0x1000}}):
+        bot.observe_round(invalid, "results", 2.0)
+        assert stats["score"] == 8050
+    bot.observe_round(terminal | {"score": -1, "kills": None}, "results", 3.0)
+    assert stats["score"] == 8050 and stats["kills"] == 24
+    bot.observe_round(terminal, "results", 4.0)
+    assert stats["score"] == 8420 and stats["kills"] == 25
+    bot.observe_round(terminal | {"score": 90000}, "loading", 5.0)
+    assert stats["score"] == 8420
 
 
 def with_camera(mem, eye, at):
@@ -401,6 +444,36 @@ def test_a_melee_finisher_on_a_majini_is_pressed_with_square():
     assert R.prompt(held) == "wiggle"                                                             # the grab itself
     act, _ = tick(with_prompt(world(action=2, enemies=e), R.BTN_MELEE, PLAYER, ENEMIES[0]))
     assert act == {"hold": set()}                     # the gun down while the engine presses the finisher (no L1)
+
+
+def test_verified_melee_square_uses_boss_policy_but_escape_square_keeps_fast_mash(tmp_path):
+    from gbox.mercs import reactions
+    memory = with_prompt(world(enemies=[((0.0, 0.0, 150.0), 9000, 9000)]),
+                         R.BTN_MELEE, PLAYER, ENEMIES[0])
+    stats, driver = {}, R.RE5PS3()
+    bot = R.Bot(memory, stats=stats, learn_dir=tmp_path)
+    source = driver.prompt_source(memory, stats)
+    pp = reactions.PromptPresser(source=source, keys=driver.prompt_keys, stats=stats)
+    snapshot = R.snapshot(memory)
+    assert snapshot["prompt"] == "mash:square" and source() == "square"
+    assert pp.step(1.0, ok=lambda key: bot.prompt_ok(key, snapshot, 1.0)) == [("square",)]
+    assert not pp.mashing and bot.combat.melees[ENEMIES[0]] == 1
+    assert pp.step(2.0, ok=lambda key: bot.prompt_ok(key, snapshot, 2.0)) is None
+    assert stats["boss_melee_held"] == 1 and stats["prompt_presses"] == 1
+    for kind in (0, R.BTN_STAGE):
+        with_prompt(memory, kind, ENEMIES[0], ENEMIES[0])
+        assert source() == "mash:square"
+        pp.rest_until = 100.0
+        for now in (3.0, 3.08):
+            assert pp.step(now, ok=lambda key: False) == [("square",)]
+            assert pp.mashing                     # escape / traversal requests bypass ordinary melee policy and rest
+    with_prompt(memory, R.BTN_MELEE, PLAYER, ENEMIES[0], mode=3, index=14)
+    assert source() == "mash:cross+circle"          # a kind alone cannot turn a mandatory chord into melee
+    assert pp.step(3.16, ok=lambda key: False) == [("cross", "circle")]
+    for mode in (3, 4, 5):
+        with_prompt(memory, R.BTN_MELEE, PLAYER, ENEMIES[0], mode=mode, index=1)
+        assert source() == "mash:square"          # accumulated / repeated-edge requests must retain fast cadence
+        assert pp.step(3.24, ok=lambda key: False) == [("square",)] and pp.mashing
 
 
 def test_verified_qte_faces_chords_and_second_display_unit_ignore_array_count():

@@ -20,7 +20,7 @@ weapon limits. Shotguns may still fire a confirmed distant hit while no better w
 | S75, PSG-1, SVD | Distance preference; still require measured impact evidence. Scoped targeting needs live validation. |
 | M29, Lightning Hawk, M500 | Strong preference against high-health targets and a usable close-range fallback from explosives. |
 | Grenade launcher | Six round effects catalogued; autonomous use requires decoded round type, which the current RAM reader does not supply. |
-| Rocket launcher | Confirmed enemy impact plus conservative 7 m self/partner clearance. This is a starting margin, not a measured blast radius. |
+| Rocket launcher | Random loadouts and spawn templates replace it with a random M29, Lightning Hawk or M500. Existing equipped objects are not relabelled; verify the next spawn. The legacy explosive policy retains its conservative clearance until that transition. |
 | Hand, incendiary, flash grenades; proximity mine | Trajectory/placement verification remains open. Prefer a direct-fire gun when reachable. |
 | Longbow, flamethrower, knives, stun rod | Explicit separate policies; contact/projectile controllers remain open instead of pretending a laser is universal. |
 
@@ -57,8 +57,9 @@ triangles at the player's position, and one-way drops remain reachable only in t
 unreachable route is skipped; it does not become a straight run through a wall. Ladder, ledge, and vault actions
 still require the game's actual traversal prompt. A crossing is learned as blocked only after a continuous,
 aligned, stationary attempt; turning, movement, a prompt, or an interruption longer than 1 s clears that timeout. Saved
-crossing exclusions are keyed by mesh geometry. This is a mesh plus failed-crossing memory, not a verified record
-of successful traversal everywhere.
+crossing exclusions are keyed by mesh geometry. Positive learning also records visited triangles, consecutive
+plausible directed crossings and route arrivals/failures, with bounded storage and geometry invalidation. It
+does not invent connections from skipped frames or treat unclassified ladder transitions as verified crossings.
 
 Nearby threats and confirmed laser overlaps can interrupt travel, while distant unsighted candidates leave the
 bonus route intact. A too-close attacker allows a 0.25 s retreat, then reserves 1 s for acquisition before another
@@ -85,3 +86,31 @@ living player and list ownership; originals are restored conservatively. Signatu
 fall back to health maintenance. This implementation still requires live evidence of protection from stagger;
 it does not establish protection from every scripted death or grab. Live acceptance requires actual kill progress, health readback, no repeated cover fire,
 successful traversal and bonuses, and completed-round results; unit tests alone do not establish dominance.
+
+The third bounded run (16:30:40-16:33:14 UTC) confirmed Muteki readback with 13 current incoming-hit nodes.
+All sampled HP values stayed at 30,000. It switched the actual in-hand rocket to Hydra, recorded 26 shot events
+and 23 associated hits, reached 24 kills and collected two time bonuses. Navigation recorded 92 visited triangles
+and 136 observed crossings. The last active telemetry score was 8,050; the later RAM tally reached 8,420 after
+the clock expired. This remains D-rank territory, not the requested winning performance. Shot-event sampling
+does not establish an 80-shots-per-second rate. Labelled real frames are in
+[the run evidence](evidence/re5-2026-10-21/README.md).
+
+## QTE input decoding
+
+The previous decoder misread `sActionButton+0x34`, an active-array count, as prompt-visibility flags. The decoder
+now validates the two selected first-player display units, their active button objects, immutable input-mask
+table, code signatures and raw-controller routing. Modes 1/3/4/5 emit fast rising-edge face/shoulder chords;
+mode 2 releases held inputs. Mode 6 alternates stick edges, mode 7 maintains an adjacent eight-way rotation
+without neutral gaps, and modes 8/9 hold the verified Y/X axis. Every path retains the selected-request and
+signature guards. The native parser explicitly remaps shoulder masks; PS3 bit order is not assumed.
+
+Live Circle Resuscitate evidence is HP 1, a positive dying timer and the selected recovery button at player
+`+0x22DC`. This request suppresses health refill until the game's recovery callback finishes. HP 0 and the
+terminal death action do not imply a recoverable prompt. A bounded 21-press probe increased the recovery timer
+but did not yet prove full revival. All verified input-handler modes are implemented; complete live acceptance
+of each type remains outstanding. The focused RE5/engine suite passed 155 tests after the analog implementation.
+
+Ghidra firing analysis also confirmed that the x80 timer is not a throughput measurement. The fire action has
+animation/update gates, and type-0 weapons (including magnums) follow a different branch from automatic guns.
+The successful firing path accepts held input; only the dry-fire branch has the identified previous-input edge
+check. No unverified weapon-type rewrite or animation flag patch is enabled.
