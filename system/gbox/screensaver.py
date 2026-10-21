@@ -163,12 +163,15 @@ def worker_reason(store, worker: dict, cfg: dict, running: list[dict], now: floa
 
 
 def playbook_games() -> set[str]:
-    """Catalog games a playbook plays without recorded play (gbox.doa2_bot)."""
-    try:
-        from . import doa2_bot
-        return set(doa2_bot.GAME_IDS)
-    except Exception:                                # noqa: BLE001
-        return set()
+    """Catalog games a playbook plays without recorded play (gbox.doa2_bot, gbox.doa3_bot)."""
+    out: set[str] = set()
+    for name in ("doa2_bot", "doa3_bot"):
+        try:
+            import importlib
+            out |= set(importlib.import_module(f".{name}", __package__).GAME_IDS)
+        except Exception:                            # noqa: BLE001
+            pass
+    return out
 
 
 class Screensaver:

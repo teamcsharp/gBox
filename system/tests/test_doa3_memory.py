@@ -324,10 +324,9 @@ def test_changed_text_during_sample_is_rejected_before_return(tmp_path, monkeypa
         result.read(0, 8)
 
 
-def test_adapter_exposes_verified_reads_and_writes_without_input(monkeypatch, tmp_path):
+def test_adapter_exposes_verified_reads_writes_and_the_virtual_pad(monkeypatch, tmp_path):
     ad = native.Doa3NativeAdapter(Config(data_dir=tmp_path / "data", cache_dir=tmp_path / "cache"), {})
-    assert {"read_memory", "write_memory", "query_memory_map"} <= ad.supported
-    assert "send_input" not in ad.supported
+    assert {"read_memory", "write_memory", "query_memory_map", "send_input"} <= ad.supported   # send_input: doa3_pad
     with pytest.raises(Unsupported, match="verified running"):
         ad.query_memory_map()
     monkeypatch.setattr(ad, "_running", lambda: True)
@@ -389,3 +388,97 @@ def test_partial_windows_read_is_never_returned(monkeypatch):
     with memory._WindowsReader(123, 100.25) as reader:
         with pytest.raises(Unsupported, match="completely"):
             reader.read(0x100000000, 3)
+
+
+PAD = ((0x5E5EC8, 4), (0x5E5E69, 22))
+
+
+def channel(tmp_path, monkeypatch, writable=PAD):
+    result, reader, process = provider(tmp_path, monkeypatch)
+    hashes = []
+    real_sha = memory._sha
+    monkeypatch.setattr(memory, "_sha", lambda path: hashes.append(Path(path).name) or real_sha(path))
+    now = [0.0]
+    reader.close = lambda: setattr(reader, "closed", True)
+    ch = memory.Channel(result, writable, clock=lambda: now[0])
+    return ch, reader, process, hashes, now
+
+
+def test_channel_proves_once_then_reads_without_rehashing(tmp_path, monkeypatch):
+    ch, reader, _, hashes, now = channel(tmp_path, monkeypatch)
+    assert hashes == ["runner.exe", "default.xbe"] * 2 and ch.base == 0x100000000
+    reader.reads.clear()
+    for _ in range(100):
+        assert ch.read(0x80011000, 9) == b"immutable"                  # cached alias too
+    assert hashes == ["runner.exe", "default.xbe"] * 2                 # no hashing per read (60 fps)
+    assert reader.reads == [(0x100011000, 9)] * 100                    # one ReadProcessMemory per read
+    now[0] = ch.REVALIDATE_S                                           # anchors + process, off this thread
+    ch.read(0, 1)
+    settle(ch)
+    assert len(reader.reads) > 101 and len(hashes) == 4 and not ch.broken
+    now[0] = ch.IDENTITY_S                                             # the full proof again, hashes included
+    ch.read(0, 1)
+    settle(ch)
+    assert len(hashes) == 6 and not ch.broken
+    ch.guest.exe.write_bytes(b"swapped runner")                       # a failed background proof closes it
+    now[0] = 2 * ch.IDENTITY_S
+    ch.read(0, 1)
+    settle(ch)
+    with pytest.raises(Unsupported, match="closed"):
+        ch.read(0, 1)
+
+
+def settle(ch):
+    """Wait for the channel's background proof (the checks run off the reading thread)."""
+    import time
+    for _ in range(300):
+        if not ch.checking:
+            return
+        time.sleep(0.01)
+
+
+def test_channel_writes_only_its_block_and_reads_each_back(tmp_path, monkeypatch):
+    ch, reader, _, _, _ = channel(tmp_path, monkeypatch)
+    assert reader.access == memory.WRITE_ACCESS
+    assert ch.write(0x5E5EC8, b"GB\x00\x04") == {"written": 4, "via": "native_guest_ram_channel", "verified": True}
+    assert ch.write(0x5E5E69 + 4, b"\x10\x00") == {"written": 2, "via": "native_guest_ram_channel", "verified": True}
+    assert ch.read(0x5E5EC8, 4) == b"GB\x00\x04"
+    for address, data in ((0x5E5EC7, b"xx"), (0x5E5E69 + 21, b"xx"), (0x2FD550, b"\x03"), (0x479CD4, b"x"),
+                          (0x11000, b"x"), (0x5E5E69, b"")):
+        with pytest.raises(ValueError):
+            ch.write(address, data)
+    original = reader.write
+    reader.write = lambda address, data: original(address, b"\x00" * len(data))
+    with pytest.raises(RuntimeError, match="did not read back"):
+        ch.write(0x5E5E69, b"\x01")
+    with pytest.raises(ValueError, match="header, immutable code"):
+        memory.Channel(ch.guest, [(0x11000, 4)])
+    ro, reader2, _, _, _ = channel(tmp_path, monkeypatch, writable=())
+    assert reader2.access == memory.READ_ACCESS
+    with pytest.raises(ValueError):
+        ro.write(0x5E5EC8, b"x")
+
+
+@pytest.mark.parametrize("change", ["owner", "process", "code"])
+def test_a_failed_check_closes_the_channel_for_good(tmp_path, monkeypatch, change):
+    ch, reader, process, _, now = channel(tmp_path, monkeypatch)
+    if change == "owner":
+        ch.guest.owner.ready = False                                  # checked on every call
+    elif change == "process":
+        process.create_time = lambda: 200
+        now[0] = ch.REVALIDATE_S
+    else:
+        reader.data[ch.base + 0x13000] = b"patched code"
+        now[0] = ch.REVALIDATE_S
+    if change != "owner":                                              # found by the background proof: the read
+        ch.read(0, 1)                                                  # that starts it still answers
+        settle(ch)
+    with pytest.raises(Unsupported):
+        ch.read(0, 1)
+    assert getattr(reader, "closed", False) and ch.broken
+    ch.guest.owner.ready, process.create_time = True, lambda: 100.25
+    reader.data[ch.base + 0x13000] = ch.guest.expected[-1]["data"]
+    with pytest.raises(Unsupported, match="closed"):
+        ch.read(0, 1)
+    with pytest.raises(Unsupported, match="closed"):
+        ch.write(0x5E5EC8, b"GB\x00\x04")

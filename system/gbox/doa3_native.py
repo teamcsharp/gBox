@@ -275,10 +275,23 @@ def prepare_play_disc(source: Path, config, game: dict, progress=lambda *_: None
     return disc / "default.xbe"
 
 
+class _ChannelMemory:
+    """The virtual pad's memory: always this adapter's current channel (a closed one is replaced on the next call)."""
+    def __init__(self, adapter):
+        self.adapter = adapter
+
+    def read(self, address, length):
+        return self.adapter.channel().read(address, length)
+
+    def write(self, address, data):
+        return self.adapter.channel().write(address, data)
+
+
 class Doa3NativeAdapter(XboxAdapter):
     name = "doa3_native"
     render_class = "DOAXBVRecompPresenterWindow"
-    supported = XboxAdapter.supported | {"read_memory", "write_memory", "query_memory_map"}
+    # send_input: gBox's virtual pad on the game's 4th port, in guest RAM (gbox/doa3_pad.py)
+    supported = XboxAdapter.supported | {"read_memory", "write_memory", "query_memory_map", "send_input"}
     checkpoint_reason = "The DOA3 native runtime has no verified in-place save-state interface"
 
     def __init__(self, config, game):
@@ -287,6 +300,48 @@ class Doa3NativeAdapter(XboxAdapter):
         self.boot_frame_paths = []
         self._guest_memory = None
         self._memory_source = None
+        self._channel = None
+        self._pad = None
+        self._pad_lock = threading.Lock()
+
+    def channel(self):
+        """The fast verified guest-RAM channel (doa3_memory.Channel) of this session's runner: per-frame reads for a
+        bot, writes only to the virtual pad's block (doa3_pad.BLOCK)."""
+        from .doa3_pad import BLOCK
+        if self._channel is None or self._channel.broken:
+            if self._channel is not None:
+                self._channel.close()                   # its process handle closed before a new one is opened
+            self._channel = None
+            self._channel = self._memory().channel(BLOCK)
+        return self._channel
+
+    def pad(self):
+        """gBox's virtual controller on the game's 4th port (doa3_pad.VirtualPad)."""
+        from .doa3_pad import VirtualPad
+        if self._pad is None:
+            self._pad = VirtualPad(_ChannelMemory(self))
+        return self._pad
+
+    def send_input(self, events: list[dict]) -> dict:
+        """gBox pad names (RetroPad positions: b = Xbox A, a = B, y = X, x = Y; l / r = White / Black; l2 / r2 = the
+        triggers) on gBox's virtual pad, port 4. The player's own controller and the keyboard (port 1) are untouched."""
+        with self._pad_lock:
+            return self.pad().apply(events)
+
+    def _drop_pad(self):
+        """Neutral pad, then the channel closed (stop / relaunch). The claim stays: no disconnect pause mid-fight."""
+        try:
+            if self._pad is not None and self._channel is not None and not self._channel.broken:
+                self._pad.release()
+        except Exception:                           # noqa: BLE001 - the runner may already be gone
+            pass
+        channel, self._pad, self._channel = self._channel, None, None
+        if channel is not None:
+            channel.close()
+
+    def stop_game(self):
+        self._drop_pad()
+        return super().stop_game()
 
     def _memory(self):
         from .doa3_memory import GuestMemory
@@ -360,6 +415,7 @@ class Doa3NativeAdapter(XboxAdapter):
         exe = ensure_runtime(self.config, getattr(self, "api_server", ""), getattr(self, "api_headers", {}), progress)
         source = prepare_xbe(rom, self.config, progress)
         xbe = prepare_play_disc(source, self.config, self.game, progress)
+        self._drop_pad()
         self._memory_source, self._guest_memory = xbe, None
         progress(65, "Launching the verified DOA3 native disc")
         logs = xbe.parent.parent / "logs"

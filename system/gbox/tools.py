@@ -2685,8 +2685,9 @@ def _autoplay_hacks(sid: str, g: dict) -> list[str]:
 
 # game-specific autoplay bots: matches(ad, g), setup(ad), play(ad, send, stopped). mercs_bot (the Mercenaries on any
 # title whose RAM map has a "mercs" block) comes first and matches once the engine is installed (gbox.mercs.engine);
-# until then RE4 plays through re4_merc_bot. sc2_bot: Soul Calibur II (GameCube), P1's perfect defence
-PLAYBOOKS = ("mercs_bot", "re4_merc_bot", "doa2_bot", "ge007_bots", "sc2_bot")
+# until then RE4 plays through re4_merc_bot. doa2_bot / doa3_bot: the fighting engine (gbox/fightbot). sc2_bot: Soul
+# Calibur II (GameCube), P1's perfect defence
+PLAYBOOKS = ("mercs_bot", "re4_merc_bot", "doa2_bot", "doa3_bot", "ge007_bots", "sc2_bot")
 # playbook -> the module that reads its game's button prompts from RAM (for_adapter(ad, stats) -> a prompt source):
 # play(..., ram_prompt=) asks it before the screen watcher
 RAM_PROMPTS = {"re4_merc_bot": "re4_ram_prompts"}
@@ -2721,6 +2722,15 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
             kw = {}
             if "stats" in inspect.signature(pb.play).parameters:
                 kw["stats"] = run["live"] = {}                 # the playbook fills it as it plays (watch panel)
+            if "upload" in inspect.signature(pb.play).parameters and ctx is not None:
+                def upload(fname, data, media_type="application/octet-stream", **provenance):
+                    """Evidence the playbook keeps (frames of a hold that paid): a content-addressed artifact."""
+                    r = httpx.post(f"{ctx.server}/api/artifacts", headers=_ap_headers(ctx), content=data, timeout=30,
+                                   params={"name": fname, "media_type": media_type,
+                                           "provenance": json.dumps({"session": sid, "playbook": name, **provenance})})
+                    r.raise_for_status()
+                    return r.json().get("sha256")
+                kw["upload"] = upload
             if "ram_prompt" in inspect.signature(pb.play).parameters and RAM_PROMPTS.get(name):
                 try:                                           # the game's own prompt state in RAM: asked first
                     rp = importlib.import_module(f".{RAM_PROMPTS[name]}", __package__)
