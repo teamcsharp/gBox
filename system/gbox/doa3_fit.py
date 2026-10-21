@@ -371,7 +371,10 @@ def costume_replacements(afs_path, plan: dict[str, dict], progress=lambda *_: No
             progress(100 * k / max(len(pairs), 1), f"fitting {costume}")
             try:
                 xpr, cat = read(xe), read(ce)
-                blob, res, hide, budget_steps = fit_costume(xpr, cat, rig, native_slots=native_slots)
+                # the AFS entry keeps its exact size (the game's loader needs the archive's packing), and the
+                # costume slot holds 2 MiB: the rewrite must fit the smaller of the two
+                blob, res, hide, budget_steps = fit_costume(xpr, cat, rig, native_slots=native_slots,
+                                                            budget=min(xe["size"], COSTUME_BUFFER))
             except Exception as error:  # noqa: BLE001 - the costume stays native; the reason is reported
                 reports.append({"costume": costume, "status": "native_kept", "reason": repr(error)[:300]})
                 continue
@@ -390,9 +393,10 @@ COSTUME_BUFFER = 0x200000
 
 
 def fit_costume(xpr: bytes, cat: bytes, rig: dict, *, native_slots: bool = True, budget: int = COSTUME_BUFFER):
-    """One costume rewrite that fits the game's costume slot. In order until it fits: the donor part also on the
-    lower-detail copies, then those copies hidden, then free native texture slots the donor did not take shrunk to
-    4x4 stand-ins (largest first). -> (blob, fit result, hidden OBJs, the budget steps taken)."""
+    """One costume rewrite within ``budget`` bytes (callers pass the original AFS entry size: the archive keeps its
+    layout). In order until it fits: the donor part also on the lower-detail copies, then those copies hidden, then
+    free native texture slots the donor did not take shrunk to 4x4 stand-ins (largest first).
+    -> (blob, fit result, hidden OBJs, the budget steps taken)."""
     geo = C.costume_geometry(xpr)
     table = C.mdl_descriptor_table(xpr)
     roles = costume_roles(cat, geo["object_count"])

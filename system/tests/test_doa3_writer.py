@@ -223,12 +223,30 @@ def make_cri_afs(payloads: list[bytes], names: list[str]) -> bytes:
     return bytes(out)
 
 
+def test_afs_rebuild_keeps_the_layout_by_default(tmp_path):
+    """DOA3's loader needs the archive packed as shipped: same TOC, same name directory, same entry sizes."""
+    src = tmp_path / "loadfile.afs"
+    src.write_bytes(make_cri_afs([b"A" * 100, b"B" * 3000, b"C" * 10], ["a.xpr", "b.xpr", "c.cat"]))
+    before = src.read_bytes()
+    out = tmp_path / "out.afs"
+    result = W.afs_rebuild(src, out, {1: b"y" * 2500})
+    after = out.read_bytes()
+    assert result["in_place"] == [1] and len(after) == len(before)
+    entries = {e["name"]: e for e in read_afs(out)["entries"]}
+    b = entries["b.xpr"]
+    assert b["size"] == 3000 and after[b["offset"]:b["offset"] + 3000] == b"y" * 2500 + bytes(500)
+    changed = [i for i in range(len(before)) if before[i] != after[i]]
+    assert changed and min(changed) >= b["offset"] and max(changed) < b["offset"] + 3000   # nothing else moved
+    with pytest.raises(ValueError, match="original"):
+        W.afs_rebuild(src, tmp_path / "big.afs", {0: b"x" * 101})
+
+
 def test_afs_rebuild_in_place_and_moved_entries(tmp_path):
     src = tmp_path / "loadfile.afs"
     src.write_bytes(make_cri_afs([b"A" * 100, b"B" * 3000, b"C" * 10], ["a.xpr", "b.xpr", "c.cat"]))
     before = src.read_bytes()
     out = tmp_path / "out.afs"
-    result = W.afs_rebuild(src, out, {0: b"x" * 2048, 2: b"y" * 5000})
+    result = W.afs_rebuild(src, out, {0: b"x" * 2048, 2: b"y" * 5000}, keep_layout=False)
     assert result["in_place"] == [0] and result["moved_to_end"] == [2]
     assert src.read_bytes() == before                               # the source is only read
     entries = {e["name"]: e for e in read_afs(out)["entries"]}
@@ -251,8 +269,11 @@ def test_build_disc_links_the_disc_and_points_at_its_xbe(tmp_path):
     assert meta["image"] == "disc/default.xbe" and meta["kind"] == "test"
     assert (tmp_path / "mod" / "disc" / "bgm.afs").read_bytes() == b"music"
     assert (tmp_path / "mod" / ".gbox-mod.json").is_file()
-    entries = read_afs(tmp_path / "mod" / "disc" / "loadfile.afs")["entries"]
-    assert entries[0]["size"] == 50
+    out = tmp_path / "mod" / "disc" / "loadfile.afs"
+    entries = read_afs(out)["entries"]
+    assert entries[0]["size"] == 100                                 # the entry keeps its size (zero padded)
+    data = out.read_bytes()
+    assert data[entries[0]["offset"]:entries[0]["offset"] + 100] == b"z" * 50 + bytes(50)
 
 
 def _owned_loadfile():

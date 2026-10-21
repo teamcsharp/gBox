@@ -454,10 +454,18 @@ def afs_layout(head: bytes, archive_size: int) -> dict:
     return table
 
 
-def afs_rebuild(source, out, replacements: dict[int, bytes], progress=lambda *_: None) -> dict:
-    """Write ``out`` = ``source`` with entries replaced. An entry that fits its room is rewritten in place (zero
-    fill to the room's end); a larger one moves to the archive's end (2048-aligned) and its TOC offset follows.
-    TOC sizes and the CRI name records' sizes are updated. ``source`` is only read."""
+def afs_rebuild(source, out, replacements: dict[int, bytes], progress=lambda *_: None, *,
+                keep_layout: bool = True) -> dict:
+    """Write ``out`` = ``source`` with entries replaced. ``source`` is only read.
+
+    keep_layout (the default, what DOA3 needs): every replaced entry keeps its exact TOC size and position - the
+    payload must not be larger than the original entry and is zero-padded to it; the TOC and the CRI name directory
+    stay byte-identical. The owned loadfile.afs is packed back to back by 2048-byte sectors (1101/1101 entries) and
+    DOA3's CRI ADXF loader breaks on anything else: builds that shrank an entry in place or moved one to the end
+    crashed the game's file loading (the voice loader read another file's bytes), while same-size rewrites run.
+
+    keep_layout=False: an entry that fits its room is rewritten in place, a larger one moves to the archive's end and
+    its TOC offset follows; TOC and name-record sizes are updated (for AFS readers that honour the TOC)."""
     import os
     import shutil
     from pathlib import Path
@@ -482,6 +490,15 @@ def afs_rebuild(source, out, replacements: dict[int, bytes], progress=lambda *_:
         for index, data in sorted(replacements.items()):
             if not 0 <= index < table["count"] or not table["sizes"][index]:
                 raise ValueError(f"AFS entry {index} is not a live entry")
+            if keep_layout:
+                original = table["sizes"][index]
+                if len(data) > original:
+                    raise ValueError(f"AFS entry {index}: {len(data)} bytes do not fit its original {original}; "
+                                     "the game's loader needs every entry at its original size")
+                stream.seek(table["offsets"][index])
+                stream.write(data + bytes(rooms[index] - len(data)))
+                inplace.append(index)
+                continue
             if len(data) <= rooms[index]:
                 offset = table["offsets"][index]
                 stream.seek(offset)
@@ -500,14 +517,27 @@ def afs_rebuild(source, out, replacements: dict[int, bytes], progress=lambda *_:
                 stream.write(struct.pack("<I", len(data)))
         stream.flush()
         os.fsync(stream.fileno())
-    # verify every replaced entry reads back through the rewritten TOC
+    # verify every replaced entry reads back through the (rewritten or kept) TOC
     with tmp.open("rb") as stream:
         for index, data in replacements.items():
             stream.seek(8 + 8 * index)
             offset, length = struct.unpack("<II", stream.read(8))
             stream.seek(offset)
-            if length != len(data) or stream.read(length) != data:
+            want = data + bytes(table["sizes"][index] - len(data)) if keep_layout else data
+            if length != len(want) or stream.read(length) != want:
                 raise AssertionError(f"AFS entry {index} does not read back")
+        if keep_layout:
+            toc = 8 + 8 * table["count"] + 8
+            stream.seek(0)
+            if stream.read(toc) != head[:toc]:
+                raise AssertionError("the AFS TOC changed although the layout was to be kept")
+            if name_dir:
+                with source.open("rb") as original:
+                    original.seek(name_dir[0])
+                    names = original.read(name_dir[1])
+                stream.seek(name_dir[0])
+                if stream.read(name_dir[1]) != names:
+                    raise AssertionError("the AFS name directory changed although the layout was to be kept")
     os.replace(tmp, out)
     return {"in_place": inplace, "moved_to_end": moved, "size": out.stat().st_size}
 
