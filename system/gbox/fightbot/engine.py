@@ -144,6 +144,7 @@ class Engine:
             p["seen"] = w.frame
             self.lat_input.append(w.frame - p["press_at"])
             self.stats["lat_input_f"] = statistics.median(self.lat_input)
+            self.title.lag_f = int(round(self.stats["lat_input_f"]))
             t = p.get("threat")
             if t and t.get("onset") is not None:
                 self.lat_reaction.append(w.frame - t["onset"])
@@ -194,13 +195,40 @@ class Engine:
             return
         answer = next(a for a in answers if a.name == name)
         since = 0 if t["onset"] is None else w.frame - t["onset"]
-        to_active = t["now"].to_active(since)
-        if to_active is None:                         # no active frames known: when this move (class) hit before,
-            seen = self.book.hit_frame(t["key"], t["cls"])                # else the title's default lead
-            to_active = (seen if seen is not None else self.title.warn_lead) - since
-        lag = int(round(statistics.median(self.lat_input))) if self.lat_input else 1
+        now = t["now"]
+        to_active = now.to_active(since)
+        seen = self.book.hit_frame(t["key"], t["cls"])                   # frames from the move's start to its hit
+        long = now.start is not None and now.end is not None and now.end - now.start > self.title.long_window
+        if seen is not None and (to_active is None or long):              # no frames known, or a long window: where
+            to_active = seen - (self.in_move("p2", w) or since)          # it landed before (its contact median)
+        elif to_active is None:
+            to_active = self.title.warn_lead - since                      # nothing known: the title's default
+        lag = self.title.lag_f
         press_at = w.frame if to_active is None else w.frame + max(0, to_active - answer.lead - lag)
         self._start(answer, w, t, press_at)
+
+    def _confirm(self, w: World):
+        """An answer with confirm_f that hasn't come out by then (P1 wasn't free): its fallback, pressed now."""
+        p = self.active
+        a = p and p["answer"]
+        if not a or not a.confirm_f or p.get("confirmed") or w.frame is None or w.frame <= p["press_at"]:
+            return
+        if self.title.confirm(a, w):
+            p["confirmed"] = True
+        elif w.frame >= p["press_at"] + a.confirm_f:
+            self.stats["fallbacks"] = self.stats.get("fallbacks", 0) + 1
+            if p in self.pending:
+                self.pending.remove(p)
+            self.active = None
+            if a.fallback is not None:
+                self._start(a.fallback, w, p.get("threat"))
+
+    def _keys(self, p, w: World) -> tuple:
+        keys = p["answer"].at(w.frame - p["press_at"])
+        att = w.p1.attack                              # P1's own attack still out: keep hold_off keys up
+        if p["answer"].hold_off and att is not None and (att.frame is None or att.end is None or att.frame <= att.end):
+            keys = tuple(k for k in keys if k not in p["answer"].hold_off)
+        return keys
 
     def tick(self, w: World) -> tuple:
         prev = self.history[-1] if self.history else None
@@ -211,8 +239,11 @@ class Engine:
         self._watch_threat(prev, w)
         self._judge(w)
         self._latency(w)
+        self._confirm(w)
         p = self.active
-        if p and w.frame is not None and w.frame >= p["until"]:
+        a = p and p["answer"]
+        if p and w.frame is not None and w.frame >= p["until"] and (
+                not a.confirm_f or p.get("confirmed") or w.frame > p["press_at"] + a.confirm_f):
             self.active, self.free_at = None, p["until"] + MIN_GAP
             p = None
         if p is None:
@@ -221,5 +252,5 @@ class Engine:
                 self._offense(w)
             p = self.active
         if p and w.frame is not None and p["press_at"] <= w.frame < p["until"]:
-            return p["answer"].at(w.frame - p["press_at"])
+            return self._keys(p, w)
         return ()

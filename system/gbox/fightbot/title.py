@@ -21,6 +21,9 @@ class Answer:
     judge: int = 48
     kind: str = "answer"                          # answer / punish / attack
     seq: tuple = ()                               # ((keys, frames), ...): a string (P, P, K) instead of one chord
+    confirm_f: int = 0                            # > 0: Title.confirm must say it came out within this many frames
+    fallback: "Answer | None" = None              # pressed instead when it didn't (SC2: no GI move -> guard)
+    hold_off: tuple = ()                          # keys kept up while P1's own attack is out (SC2: G cancels startup)
 
     @property
     def length(self) -> int:
@@ -50,6 +53,8 @@ class Title:
     fps = 60
     frame_ms: float | None = None                # the frame field is a millisecond tick, not a frame counter
     warn_lead = 8                                # frames from a `warn` onset to the hit when nothing better is known
+    long_window = 4                              # an attack active longer than this lands where the book saw it land
+    lag_f = 1                                    # the engine's measured input lag (frames), for answers that need it
     reach: float | None = None                   # world units: farther apart, an attack can't land (no answer)
     fight_screens = vocab.FIGHT_SCREENS          # the fight runner keeps ticking on these screens
 
@@ -112,6 +117,10 @@ class Title:
 
     def punish(self, w: world.World, outcome: str) -> Answer | None:
         return None
+
+    def confirm(self, answer: Answer, w: world.World) -> bool:
+        """For answers with confirm_f: did it come out (P1's move shows it)? Default: yes."""
+        return True
 
     def input_bits(self, answer: Answer, w: world.World) -> int:
         """The bits the game's own input word (pN.input) shows when it read this answer's keys (0 = can't tell)."""

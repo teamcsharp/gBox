@@ -49,6 +49,7 @@ class Fighter:
     warn: int | None = None
     tags: dict = field(default_factory=dict)  # merged state / move / class / hit tags
     attack: Attack | None = None
+    next_attack: Attack | None = None         # a queued follow-up the title resolved (SC2 strings: +0x52 / +0x60)
 
     def has(self, *names) -> bool:
         st = self.tags.get("state")

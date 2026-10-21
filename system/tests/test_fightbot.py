@@ -286,3 +286,51 @@ def test_sender_sends_only_changes_and_threaded_sends_the_newest():
         time.sleep(0.01)
     keys = [[(r["key"], r["down"]) for r in rows] for rows in got]
     assert keys[0] == [("a", True)] and ("b", True) not in [k for rows in keys for k in rows]
+
+
+def bare_world(frame, p2_attack=None, p1_attack=None):
+    from gbox.fightbot.world import Fighter, World
+    return World(frame=frame, t=0, screen="fight", p1=Fighter(side=1, attack=p1_attack, chara=1),
+                 p2=Fighter(side=-1, attack=p2_attack, chara=2))
+
+
+def test_an_answer_that_does_not_come_out_falls_back(tmp_path):
+    """SC2: a GI only comes out when P1 is free; no GI move within confirm_f frames -> guard instead."""
+    from gbox.fightbot.world import Attack
+    title = Holds(ram_map.RamMap(spec()))
+    guard = Answer("guard", ("b",), frames=10)
+    title.answers = lambda attack, w: [Answer("gi", ("left", "b"), frames=2, lead=5, confirm_f=3, fallback=guard)]
+    came_out = {"v": False}
+    title.confirm = lambda answer, w: came_out["v"]
+    eng = E.Engine(title, B.Book(rng=random.Random(0)))
+    att = Attack(kind="strike", height="mid", start=20, frame=0, move=7)
+    keys = [eng.tick(bare_world(f, Attack(**{**att.__dict__, "frame": f}))) for f in range(20)]
+    assert keys[14] == ("left", "b")                              # pressed 20 - lead 5 - lag 1 frames in
+    assert keys[17] == ("b",) and eng.stats["fallbacks"] == 1     # not out 3 frames later: the guard
+    came_out["v"] = True
+    eng2 = E.Engine(title, B.Book(rng=random.Random(0)))
+    keys = [eng2.tick(bare_world(f, Attack(**{**att.__dict__, "frame": f}))) for f in range(20)]
+    assert eng2.stats.get("fallbacks", 0) == 0 and keys[14] == ("left", "b")
+
+
+def test_hold_off_keys_stay_up_while_p1s_own_attack_is_out():
+    from gbox.fightbot.world import Attack
+    title = Holds(ram_map.RamMap(spec()))
+    eng = E.Engine(title, B.Book(rng=random.Random(0)))
+    eng._start(Answer("punish", ("a", "b"), frames=5, kind="punish", hold_off=("b",)), bare_world(0), None)
+    own = Attack(kind="strike", start=3, end=6, frame=2)
+    assert eng.tick(bare_world(1, p1_attack=own)) == ("a",)        # G would cancel the startup
+    assert eng.tick(bare_world(2, p1_attack=Attack(kind="strike", start=3, end=6, frame=7))) == ("a", "b")
+
+
+def test_long_active_windows_are_timed_on_where_they_landed_before():
+    from gbox.fightbot.world import Attack
+    title = Holds(ram_map.RamMap(spec()))
+    bk = B.Book(rng=random.Random(0))
+    for _ in range(3):
+        bk.hit("2:9", "strike:mid", frames=31)                    # active 24-34, but it connects at 31
+    eng = E.Engine(title, bk)
+    att = Attack(kind="strike", height="mid", start=24, end=34, frame=0, move=9)
+    keys = [eng.tick(bare_world(f, Attack(**{**att.__dict__, "frame": f}))) for f in range(32)]
+    first = next(i for i, k in enumerate(keys) if k)
+    assert first == 31 - 1 - 1                                    # contact 31 - lead 1 - lag 1, not 24 - 2
