@@ -631,6 +631,28 @@ def test_held_by_a_ganado_the_bot_lets_the_game_and_the_prompts_have_him():
     assert run(bot, m, now, 0.0)[0] == {"hold": set()} and bot.stats["hits_taken"] == 1
 
 
+def test_an_attacker_in_front_is_shot_even_when_it_is_close_to_landing():
+    now = [0.0]
+    m = world([((0, 0, 1000), True)])                                        # right in front, mid-swing
+    act_state(m, 1, (1, 0x26, 1, 0))
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    bot.tracker.update(B.snapshot(m), -0.5)                                  # 0.5 s into it: lands in ~0.2 s
+    act = run(bot, m, now, 0.0)[0]
+    assert "r" in act["hold"] and bot.stats["evades"] == 0                   # aim and fire, not a quick turn away
+
+
+def test_a_kick_prompt_waits_while_another_attack_lands():
+    now = [0.0]
+    m = world([((0, 0, -800), True)])                                        # one behind him, mid-swing
+    act_state(m, 1, (1, 0x26, 1, 0))
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    bot.tracker.update(B.snapshot(m), -0.4)
+    run(bot, m, now, 0.0)
+    assert not bot.prompt_ok("a", B.snapshot(m)) and bot.prompt_ok("wiggle", B.snapshot(m))
+
+
 def test_a_ganado_behind_him_gets_the_quick_turn():
     now = [0.0]
     m = world([((0, 0, -1200), True)])                                       # right behind him, walking
@@ -660,7 +682,7 @@ def test_a_thrown_axe_too_close_to_shoot_is_stepped_out_of_its_line():
     m.put(B.EMMGR, ">3I", EM, 3, STRIDE)
     m.put(axe, ">I", 1)
     m.put(axe + 0x100, ">B", B.threats_ram.THROWN_ID)
-    m.put(axe + 0xFC, ">4B", 1, 0, 0, 0)
+    m.put(axe + 0xFC, ">4B", 1, 6, 0, 0)                                    # in flight (01 06)
     facing(m, math.pi / 2)                                                   # looking away to his left: no shot in time
     bot = B.Bot(m, clock=lambda: now[0], nav=False)
     acts = []
@@ -679,7 +701,7 @@ def test_a_thrown_axe_coming_at_him_is_aimed_at_where_it_will_be():
     m.put(B.EMMGR, ">3I", EM, 3, STRIDE)
     m.put(axe, ">I", 1)
     m.put(axe + 0x100, ">B", B.threats_ram.THROWN_ID)
-    m.put(axe + 0xFC, ">4B", 1, 0, 0, 0)
+    m.put(axe + 0xFC, ">4B", 1, 6, 0, 0)                                    # in flight (01 06)
     facing(m, 0.0)
     bot = B.Bot(m, clock=lambda: now[0], nav=False)
     for k in range(4):

@@ -109,10 +109,14 @@ AIM_SPEED_X = 3.0                                # the aim's stick speed x3 (re_
 AIM_FINE = 0.12                                  # aiming, this close to the target (radians): the stick in pulses
 EVADE_LOOK = 1500.0                              # a way out is clear this far ahead (the level map, other Ganados)
 TURN_COST = 350.0                                # choosing among near ones: a radian to turn costs this many units
+FACING_ERR = 0.6                                 # an attacker this close to his facing (radians) is shot, not run from
+PROMPT_GUARD_S = 0.8                             # an action prompt (A) waits while an attack lands within this
 RECOVER_S = 1.2                                  # just up from a hit, a Ganado within CROWD_R: out of reach first
                                                  # (operator: "getting slapped on by these people over and over")
 ELEV_DY = 600.0                                  # a target this far above / below: raise or lower the aim; else level
 BODY_LO, CHEST_H, BODY_HI = 700.0, 1150.0, 1650.0   # a Ganado's body above his feet: a shot anywhere in it lands
+BODY_HALF_W = 180.0                              # ... and to either side of his middle
+PITCH_RATE = 0.17                                # radians a second the stick moves the aim pitch (learned as he plays)
 AIM_R1, AIM_READY_R2 = 6, (1, 2)                 # Leon's routine 00 06 01 .. = aiming, 00 06 02 .. = firing: the pose
                                                  # is up (00 06 00 / 00 06 01 04 while it rises; live 2026-10-20)
 STEEP_DOWN = -0.5                                # a shot this far down (radians) hits the ledge in front: move instead
@@ -266,6 +270,12 @@ def wrap(a: float) -> float:
     return (a + math.pi) % (2 * math.pi) - math.pi
 
 
+def fire_tol(dist: float) -> float:
+    """How far off his facing a Ganado at dist can be and still take the shot: his body's half width (live
+    2026-10-20: the 2-degree tolerance kept Leon aiming, not firing, at a Ganado 4 degrees off at 2000)."""
+    return max(FIRE_TOL, math.atan2(BODY_HALF_W, max(dist, 1.0)))
+
+
 def _navmap():
     """gbox.re4_navmap (the level from the disc: walls, vault edges, hourglasses, paths) when it is installed."""
     try:
@@ -394,7 +404,9 @@ class Bot:
         self.qturn_at = float("-inf")
         self.recovered_at = float("-inf")              # when he last got up from a hit / a hold
         self.shot_ram, self._was_firing, self.target_thrown = False, False, False
+        self.pitch_rate = PITCH_RATE
         self._last_enemies: list = []
+        self._threats: list = []
         self.stats = {"prompts": 0, "max_combo": 0, "vaults": 0, "detours": 0, "backoffs": 0, "time_bonus": 0,
                       "shots_s": 0.0, "learned_walls": 0, "replans": 0, "hits": 0, "misses": 0, "accuracy": 0.0,
                       "pitch_offset": 0.0, "shots": 0, "kills": 0, "hits_taken": 0, "evades": 0,
@@ -458,9 +470,9 @@ class Bot:
             self.learned.save()
 
     # -- steering --
-    def _turn(self, err: float, aiming: bool) -> set:
+    def _turn(self, err: float, aiming: bool, tol: float | None = None) -> set:
         keys = {"r"} if aiming else set()
-        tol = FIRE_TOL if aiming else TURN_TOL
+        tol = tol if tol is not None else (FIRE_TOL if aiming else TURN_TOL)
         if abs(err) <= tol:
             self.fine_pulse = False
             return keys
@@ -502,9 +514,9 @@ class Bot:
             height, level = self._aim_height(p, tgt["pos"][1], dist, now)
         else:                                                           # a body: any pitch that lands on it
             height, level = self._aim_body(p, tgt["pos"][1], dist, now)
-        if abs(err) > FIRE_TOL or not level:
+        if abs(err) > fire_tol(dist) or not level:
             self.trigger["down"] = False
-            return {"hold": self._turn(err, aiming=True) | height}       # aim (pose up), turn and raise onto him
+            return {"hold": self._turn(err, aiming=True, tol=fire_tol(dist)) | height}   # aim, turn, raise onto him
         self.stats["shots_s"] = round(self.stats["shots_s"] + 0.05, 2)
         return {"hold": {"r"} | self._pull(now, tgt)}                    # on target: fire
 
@@ -545,15 +557,42 @@ class Bot:
     # -- combat: the threats first --
     def _ready_in(self, p, t, now) -> float:
         """Seconds until a shot at threat t can leave the gun: the turn (the quick turn for anything behind), the aim
-        pose, the gun's own rate."""
-        px, _, pz = p["pos"]
+        pose, bringing the aim pitch into his body (at the pitch rate the stick has shown), the gun's own rate."""
+        px, py, pz = p["pos"]
+        dist = math.hypot(t.pos[0] - px, t.pos[2] - pz)
         err = abs(wrap(heading(t.pos[0] - px, t.pos[2] - pz) - p["rot"]))
-        turn = 0.0 if err <= FIRE_TOL else (0.55 if err > QUICK_TURN_ERR else err / TURN_RATE)
-        pose = PITCH_AFTER
-        if self.r_since is not None and err <= TURN_TOL:
+        tol = fire_tol(dist)
+        turn = 0.0 if err <= tol else (0.55 if err > QUICK_TURN_ERR else err / TURN_RATE)
+        pose = 0.0 if self._pose_up(p, now) else PITCH_AFTER
+        if not pose and self.r_since is not None and err <= TURN_TOL:
             pose = max(0.0, PITCH_AFTER - (now - self.r_since))
+        pitch = 0.0
+        cur = p.get("pitch")
+        if cur is not None and self._pose_up(p, now) and t.kind != "thrown":
+            lo = math.atan2(t.pos[1] + BODY_LO - (py + GUN_H), max(dist, 1.0))
+            hi = math.atan2(t.pos[1] + BODY_HI - (py + GUN_H), max(dist, 1.0))
+            off = max(lo - cur, cur - hi, 0.0)
+            pitch = off / max(self.pitch_rate, 0.05)
         gun = max(0.0, self.shots.last_shot + self.shots.GUN_GAP - now)
-        return max(turn + pose, gun) + 0.1
+        return max(turn + pose + pitch, gun) + 0.1
+
+    @staticmethod
+    def _facing(p, t, within: float = FACING_ERR) -> bool:
+        """He is in front of Leon: the way out of his reach is behind (a quick turn), the shot is the faster answer."""
+        px, _, pz = p["pos"]
+        return abs(wrap(heading(t.pos[0] - px, t.pos[2] - pz) - p["rot"])) <= within
+
+    def prompt_ok(self, button, s, now=None) -> bool:
+        """Press the prompt the game shows now? Not an action button (a KICK, a TAKE: a second of Leon busy) while
+        another Ganado's attack lands within PROMPT_GUARD_S (live 2026-10-20: a KICK mid-swing got Leon hit); a
+        QTE (two buttons), a SHAKE OFF are always pressed."""
+        if button not in ("a",):
+            return True
+        for t in self._threats:                                    # as of the last tick
+            if t.kind not in ("near", "down") and t.eta < PROMPT_GUARD_S and t.dist < 2500:
+                self.stats["prompts_held"] = self.stats.get("prompts_held", 0) + 1
+                return False
+        return True
 
     @staticmethod
     def _as_target(t, lead_s: float = 0.0) -> dict:
@@ -639,6 +678,7 @@ class Bot:
         when it lands before a shot can leave the gun, dodged; a thrown weapon coming at him is shot; two or more on
         top of him: get out first. None: no fight here (the route goes on)."""
         threats = self.tracker.update(s, now)
+        self._threats = threats
         self._last_enemies = s["enemies"]
         self._shot_seen(p, now)
         self._watch(p, s, threats, now)
@@ -658,10 +698,11 @@ class Bot:
             late = t.eta + EVADE_MARGIN < ready
             if t.kind == "thrown" and late:                       # can't shoot it in time: out of its line
                 return self._evade(p, t, now, side=True)
-            if t.kind in threats_ram.MELEE and t.dist < threats_ram.REACH.get(t.kind, 900.0) + 300.0 and late:
-                return self._evade(p, t, now)                      # it lands first: out of its way
-            lead = min(ready, t.eta) if t.kind == "thrown" else 0.0   # a weapon in the air: where it will be
-            return self._fight(p, self._as_target(t, lead), now, s)
+            if t.kind in threats_ram.MELEE and t.dist < threats_ram.REACH.get(t.kind, 900.0) + 300.0 and late \
+                    and not self._facing(p, t):                    # it lands first: out of its way - but one in
+                return self._evade(p, t, now)                      # front is still shot (running from him takes the
+            lead = min(ready, t.eta) if t.kind == "thrown" else 0.0   # quick turn: slower than the shot; a hit
+            return self._fight(p, self._as_target(t, lead), now, s)   # staggers him)
         close = [t for t in live if t.kind == "near" and t.dist < CROWD_R]
         if len(close) >= CROWD_N or (close and now - self.recovered_at < RECOVER_S):
             return self._evade(p, close[0], now)                    # on top of him / just hit: out, then one by one
@@ -731,6 +772,9 @@ class Bot:
         want = max(-PITCH_MAX, min(PITCH_MAX, want))
         seen = self.pitch_seen
         if seen is not None and seen[2] is not None and abs(cur - seen[1]) > 0.004:   # what the last push did
+            dt = now - seen[0]
+            if 0.02 < dt < 0.3 and abs(cur - seen[1]) < 1.0:   # how fast the stick moves the aim (the hack's x3 or not)
+                self.pitch_rate = 0.8 * self.pitch_rate + 0.2 * abs(cur - seen[1]) / dt
             if (cur > seen[1]) == (seen[2] == self.pitch_up):
                 self.pitch_wrong = 0
             else:
@@ -1034,6 +1078,8 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
         out_since = None
         bot.stats.update(combo=s["combo"], timer=s["timer"])
         button = ask() if now >= prompt_rest else None
+        if button and not bot.prompt_ok(button, s, now):   # an attack lands first: fight / dodge, prompt later
+            button = None
         if button:                                     # the game asks for a button: press it (not aiming: A acts)
             prompt_taps = [t for t in prompt_taps if now - t < 3.0]
             if len(prompt_taps) >= PROMPT_BURST:

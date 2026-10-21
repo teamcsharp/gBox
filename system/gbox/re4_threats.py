@@ -48,6 +48,7 @@ EM_DIST2 = 0x370
 EV_HIT, EV_HOMING, EV_SWING = 0x01, 0x08, 0x20
 R_INIT, R_ACT, R_HURT, R_DIE, R_GONE = 0, 1, 2, 3, 0xFF
 THROWN_ID = 0x42
+THROWN_FLYING = (6, 8)                  # em 0x42's r_no_1 while it flies (0x800169F0 / 0x80016E38)
 FPS = 30.0                              # RE4 runs its game logic at 30 frames a second
 
 # r_no_1 (while r_no_0 = R_ACT) -> (kind, reach: how close the Ganado must be for it to land, lands: seconds from the
@@ -104,14 +105,16 @@ def hit_ahead(m, e: dict) -> float | None:
 
 
 def thrown(d: bytes, n: int, stride: int) -> list[dict]:
-    """The thrown weapons in the air: EmMgr slots of em id 0x42 that are in use (flags & 1) and still flying (r_no_0 1)."""
+    """The thrown weapons in the air: EmMgr slots of em id 0x42 (a Ganado's weapon object) in use (flags & 1) whose
+    routine is a flight (01 06: thrown by action 0x21, 0x800169F0; 01 08: by 0x22, 0x80016E38). The same em is the
+    weapon in his hand (01 00) or on the ground (01 03, 0x800163D8) - live 2026-10-20: those are not threats."""
     out = []
     for k in range(1, n):
         o = k * stride
         if d[o + EM_ID] != THROWN_ID or not struct.unpack_from(">I", d, o)[0] & 1:
             continue
         r = tuple(d[o + EM_ROUTINE:o + EM_ROUTINE + 4])
-        if r[0] != R_ACT:
+        if r[0] != R_ACT or r[1] not in THROWN_FLYING:
             continue
         out.append({"slot": k, "pos": struct.unpack_from(">3f", d, o + 0x94), "type": d[o + EM_TYPE], "r": r})
     return out

@@ -75,11 +75,11 @@ def test_em_fields_reads_the_routine_and_the_motion_events():
 
 
 def test_thrown_weapons_are_their_own_em_slots():
-    d = bytes(slot()) + bytes(slot(em_id=T.THROWN_ID, pos=(10.0, 1200.0, 30.0))) + bytes(slot(em_id=0x16))
+    d = bytes(slot()) + bytes(slot(em_id=T.THROWN_ID, r=(1, 6, 0, 0), pos=(10.0, 1200.0, 30.0))) + bytes(slot(em_id=0x16))
     out = T.thrown(d, 3, STRIDE)
     assert [t["slot"] for t in out] == [1] and out[0]["pos"] == (10.0, 1200.0, 30.0)
-    done = bytes(slot()) + bytes(slot(em_id=T.THROWN_ID, r=(2, 0, 0, 0)))      # landed / broken: not in the air
-    assert T.thrown(done, 2, STRIDE) == []
+    for r in ((1, 0, 1, 0), (1, 3, 0, 0), (2, 0, 0, 0)):                    # in his hand, on the ground, broken
+        assert T.thrown(bytes(slot()) + bytes(slot(em_id=T.THROWN_ID, r=r)), 2, STRIDE) == []
 
 
 def ganado(k, pos, r=(1, 0, 0, 0), hp=1000, ev=0):
