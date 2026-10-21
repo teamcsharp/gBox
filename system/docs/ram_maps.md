@@ -140,8 +140,9 @@ m.read(reader, names=["merc.timer"])        # only these fields (and the fields 
 
 Any reader works: a function `read(addr, n) -> bytes`, or an object with `read`, `rd` (the RE4 bot's `ShmMem` /
 `AdMem`) or `read_memory` (an adapter). With `read_many([(addr, n)])` (every `gbox.ram_reader.Reader`) one call per
-pointer level reads the whole map: RE4's 21 fields with the 80-slot enemy table are three batched reads, about 1.5 ms
-through Dolphin's shared RAM on the Spark (live 2026-10-20: median 1.52 ms, p95 6.9 ms; at the title 0.39 ms).
+pointer level reads the whole map: RE4's first 21 fields with the 80-slot enemy table were three batched reads, about
+1.5 ms through Dolphin's shared RAM on the Spark (live 2026-10-20: median 1.52 ms, p95 6.9 ms; at the title 0.39 ms);
+with #724's prompt and area-event fields (45, two-level AEV chains) it is five.
 `ram_map.changes(previous, current)` lists the watched fields that changed. `ram_map.detect(read, platform)` finds a
 map from the game's own memory (the disc id at 0x80000000 on GameCube / Wii).
 
