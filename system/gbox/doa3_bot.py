@@ -173,6 +173,8 @@ class Deployment:
 
     def state(self, rd) -> dict:
         w = self.title.read(rd)
+        if self.stats is not None:                 # the game's own clock moving: black frames are a fade, not a hang
+            self.stats["ram_progress"] = self.title.frame(rd)
         return {"screen": w.screen, "fighting": w.screen in self.title.fight_screens, "demo": int(w.screen in ("title", "demo")),
                 "p1": w.p1.hp or 0, "p2": w.p2.hp or 0, "world": w}
 

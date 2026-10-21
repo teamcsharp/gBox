@@ -113,6 +113,7 @@ def fight(title, mem, sender: Sender, engine, stopped, clock=time.monotonic, sle
                 return w.screen
             sender.hold(engine.tick(w))
             stats["frames"] += 1
+            stats["ram_progress"] = f                  # autoplay's black-frame watch trusts RAM that moves
             ms = (clock() - t0) * 1000
             stats["tick_ms"] = round(ms if "tick_ms" not in stats else stats["tick_ms"] * 0.95 + ms * 0.05, 3)
         return "stopped"
