@@ -391,5 +391,162 @@ def main(argv=None) -> int:
     return 0
 
 
+def encode_part_indices(indices: bytes, w: int, h: int) -> bytes:
+    """Linear bottom-up 4bpp indices -> LZSS-encoded GFX1 blob."""
+    sto = vflip(indices, w, h)
+    tw = twiddle_pal4(sto, w, h)
+    out = bytearray()
+    for i in range(0, len(tw), 8):
+        out.append(0)
+        out.extend(tw[i:i + 8])
+    return bytes(out)
+
+
+def encode_part_blob(indices: bytes, w: int, h: int) -> bytes:
+    """4bpp part blob: header [lw][lh][sw][sh] + LZSS stream."""
+    lw = (w + 7) // 8
+    lh = (h + 7) // 8
+    sw = (w + 7) // 8
+    sh = (h + 7) // 8
+    lzss = encode_part_indices(indices, w, h)
+    return bytes([lw, lh, sw, sh]) + lzss
+
+
+def encode_sprite_records(records: list[dict]) -> bytes:
+    """List of {dx, dy, part, flip, flipy} -> GFX2 sprite record block."""
+    out = struct.pack("<H", len(records))
+    for r in records:
+        flip_bits = (0x4000 if r.get("flip", False) else 0) | (0x8000 if r.get("flipy", False) else 0)
+        out += struct.pack("<hhHH", r["dx"], r["dy"], flip_bits, r["part"])
+    return out
+
+
+def encode_palette_bank(bank: list[tuple[int, int, int, int]]) -> bytes:
+    """ARGB4444 colors -> 32 bytes (idx 0 transparent by convention)."""
+    out = bytearray(32)
+    for i, (r, g, b, a) in enumerate(bank[:16]):
+        if i == 0:
+            continue
+        a4 = (a + 8) // 17 if a else 0
+        r4 = (r + 8) // 17
+        g4 = (g + 8) // 17
+        b4 = (b + 8) // 17
+        v = (a4 << 12) | (r4 << 8) | (g4 << 4) | b4
+        out[i * 2] = v & 0xFF
+        out[i * 2 + 1] = (v >> 8) & 0xFF
+    return bytes(out)
+
+
+def encode_animation_cell(cell: dict) -> bytes:
+    """Animation cell dict -> 20-byte block."""
+    out = bytearray(20)
+    out[2] = cell.get("duration", 0)
+    out[3] = cell.get("ender", 0)
+    struct.pack_into("<H", out, 4, cell.get("sprite_id", 0))
+    out[0x11] = cell.get("render_extra", 0)
+    out[0x12] = cell.get("hitbox_group", 0)
+    return bytes(out)
+
+
+def encode_dat(manifest: dict, source_dat: bytes | None = None) -> bytes:
+    """Rebuild DAT from manifest, preserving unknown bytes from source if provided."""
+    cid = manifest.get("cid", 0)
+    pre_size = 0x200 if cid == 0x34 else 0x100
+    parts = manifest["parts"]
+    sprites = manifest["sprites"]
+    palette = manifest.get("palette", [])
+    anim_groups = manifest.get("animations", {})
+
+    tab = [0] * 16
+    off = 0x40
+
+    tab[0] = off
+    off += 4
+    for p in parts:
+        w, h = p["w"], p["h"]
+        indices = bytes(p["indices"])
+        off += 4 + len(encode_part_indices(indices, w, h))
+
+    tab[1] = off
+    off += 4
+    for s in sprites:
+        recs = s.get("parts", [])
+        off += 2
+        for r in recs:
+            off += 8
+
+    tab[2] = off
+    off += 32
+
+    tab[3] = off
+    off += 65536
+
+    tab[5] = off
+    off += pre_size
+
+    for g in range(256):
+        if str(g) in anim_groups:
+            off += 4
+
+    cell_offs = {}
+    cell_data = bytearray()
+    for g_str, sub_list in anim_groups.items():
+        g = int(g_str)
+        cell_offs[g] = len(cell_data)
+        for sub in sub_list:
+            for cell in sub:
+                cell_data.extend(encode_animation_cell(cell))
+
+    off += len(cell_data)
+
+    if source_dat:
+        tab[6] = len(source_dat)
+    else:
+        tab[6] = off
+        off += 0x100
+
+    out = bytearray(0x40)
+    struct.pack_into("<16I", out, 0, *tab)
+
+    out += struct.pack("<I", len(parts) * 4)
+    for p in parts:
+        w, h = p["w"], p["h"]
+        indices = bytes(p["indices"])
+        out += encode_part_blob(indices, w, h)
+
+    out += struct.pack("<I", len(sprites) * 4)
+    for s in sprites:
+        recs = s.get("parts", [])
+        out += struct.pack("<H", len(recs))
+        for r in recs:
+            flip_bits = (0x4000 if r.get("flip", False) else 0) | (0x8000 if r.get("flipy", False) else 0)
+            out += struct.pack("<hhHH", r["dx"], r["dy"], flip_bits, r["part"])
+
+    if palette and len(palette) > 0:
+        out += encode_palette_bank(palette[0])
+    else:
+        out += b"\x00" * 32
+
+    out += b"\x00" * 65536
+
+    out += b"\x00" * pre_size
+
+    for g in range(256):
+        if str(g) in anim_groups:
+            out += struct.pack("<I", 0)
+
+    for g_str, sub_list in anim_groups.items():
+        g = int(g_str)
+        for _ in sub_list:
+            out += struct.pack("<I", 0)
+
+    out += cell_data
+
+    if source_dat and len(out) < len(source_dat):
+        out += b"\x00" * (len(source_dat) - len(out))
+
+    return bytes(out)
+
+
 if __name__ == "__main__":
     raise SystemExit(main())
