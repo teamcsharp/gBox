@@ -100,6 +100,13 @@ class Rd:
         self.rd = fake.read
 
 
+def round_errors(v) -> dict:
+    """The fields that failed to read in a round. The "menu" group reads the title task's work area through task 0's
+    stack (docs/re4-menus.md): it exists only while the title runs, so in a round its fields fail by design
+    (tests/test_re4_menus.py reads them at the title)."""
+    return {k: e for k, e in v.errors.items() if not k.startswith("menu.")}
+
+
 def test_the_re4_map_reads_what_the_mercenaries_bot_reads():
     fake = re4_ram()
     m = ram_map.load("G4BE08")
@@ -123,7 +130,7 @@ def test_the_re4_map_reads_what_the_mercenaries_bot_reads():
         if "hp" in e:                                    # the bot reads health too (re4_merc_bot v2)
             assert (r["hp"], r["hp_max"]) == (e["hp"], e["hp_max"])
     assert (rows[1]["hp"], rows[1]["hp_max"]) == (300, 1800) and v.counts["enemies"] == 4
-    assert not v.errors
+    assert not round_errors(v)
     # the prompt and area-event fields (#724): read through two-level chains and counts from other fields
     assert v["prompt.kind"] == 0 and v.label("prompt.kind") == "none"
     assert [(e["type"], e["label"]) for e in v["aev.entries"]] == [(1, 0x10), (4, 0x5)]
@@ -146,7 +153,7 @@ def test_reads_are_batched_per_pointer_level():
     m = ram_map.load("G4BE08")
     v = m.read(fake)
     # static fields + pointer bases, then each pointer level, then the counted tables: a batch per level, not per field
-    assert len(fake.batches) <= 5 < len(m.fields) and not v.errors
+    assert len(fake.batches) <= 5 < len(m.fields) and not round_errors(v)
     assert v.reads == sum(len(b) for b in fake.batches) and v.bytes == sum(n for b in fake.batches for _, n in b)
     big = max(n for b in fake.batches for _, n in b)
     assert big < 4 * 0xDE0                                 # live-slot spans, never the whole 80-slot table at once
@@ -333,6 +340,19 @@ def test_promoted_fields_go_to_the_overlay_and_load_over_the_repo_map(tmp_path, 
                           base={"title": "Some game", "platform": "n64", "match": {"game_ids": ["aaaa000011112222"]}})
     assert new.title == "Some game" and new.platform == "n64" and list(new.fields) == ["hud.lives"]
     assert ram_map.find({"game_id": "aaaa000011112222"}).id == "aaaa000011112222"
+
+
+def test_signatures_tag_enum_values_with_their_evidence():
+    m = ram_map.RamMap(spec({"enemy.act": {"address": "0x80001000", "type": "u8", "enum": {"0x26": "swing"},
+                                           "signatures": {"0x26": {"attack": "melee", "lead_s": 0.5,
+                                                                   "source": "ghidra", "confidence": "static"}}}}))
+    f = m.fields["enemy.act"]
+    assert f.signatures[0x26]["attack"] == "melee" and f.describe()["signatures"]["0x26"]["lead_s"] == 0.5
+    with pytest.raises(ram_map.MapError, match="confidence"):
+        ram_map.RamMap(spec({"a.b": {"address": 1, "type": "u8", "signatures": {"1": {"confidence": "sure"}}}}))
+    g = ram_map.load("G4BE08")                                      # the RE4 map: its Mercenaries block and attacks
+    assert g.spec["mercs"]["vocab"]["projectiles"] == "thrown"
+    assert g.fields["enemies"].fields["act"].signatures[0x26]["attack"] == "melee"
 
 
 def test_check_cli(tmp_path, capsys):

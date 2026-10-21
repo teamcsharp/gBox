@@ -500,9 +500,62 @@ def win_bring_to_front(pid: int) -> bool:
     return u.GetForegroundWindow() == root
 
 
-def win_send_keys(pid: int, events: list[dict], hidden_ok: bool = False) -> dict:
+POLITE_IDLE_S = 8.0          # polite input gives the game the keyboard back after this long without mouse / keyboard use
+_POLITE_TRUST: dict[int, bool] = {}   # game pid -> this PC reports the focused window's process (checked on a take)
+
+
+def polite_verdict(front: bool, focus_pid: int | None, game_pid: int, idle_s: float | None, trusted: bool = True) -> str:
+    """Autoplay's input on a PC someone may be using right now (bot demos, operator 2026-10-20: "launch bot demos on
+    computers that even I am on and be able to chat about the gameplay"): 'send' when the game window has the keyboard;
+    'take' (give the game the keyboard, then send) when gBox is in front and nobody has touched the mouse or keyboard
+    for POLITE_IDLE_S; else 'wait': the bot never types into the coach box, a search field or another application.
+    trusted=False: this PC's focus report did not name the game even right after gBox gave it the keyboard, so the
+    focus check can't be relied on and the game gets the keyboard each time (the input path before polite mode)."""
+    if not front:
+        return "wait"
+    if focus_pid is not None and focus_pid == game_pid:
+        return "send"
+    if not trusted or (idle_s is not None and idle_s >= POLITE_IDLE_S):
+        return "take"
+    return "wait"
+
+
+def _focus_pid(u) -> int | None:
+    """The process owning the window with the keyboard focus in the foreground (GetGUIThreadInfo), None when unknown."""
+    import ctypes
+    from ctypes import wintypes
+
+    class GUITHREADINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("flags", wintypes.DWORD), ("hwndActive", wintypes.HWND),
+                    ("hwndFocus", wintypes.HWND), ("hwndCapture", wintypes.HWND), ("hwndMenuOwner", wintypes.HWND),
+                    ("hwndMoveSize", wintypes.HWND), ("hwndCaret", wintypes.HWND), ("rcCaret", wintypes.RECT)]
+    info = GUITHREADINFO()
+    info.cbSize = ctypes.sizeof(GUITHREADINFO)
+    try:
+        if not u.GetGUIThreadInfo(0, ctypes.byref(info)) or not info.hwndFocus:
+            return None
+        p = wintypes.DWORD()
+        u.GetWindowThreadProcessId(info.hwndFocus, ctypes.byref(p))
+        return int(p.value) or None
+    except (AttributeError, OSError):
+        return None
+
+
+def _idle_s() -> float | None:
+    try:
+        from .worker import user_idle_seconds
+        return user_idle_seconds()
+    except Exception:                                        # noqa: BLE001 - unknown: the bot waits for the operator
+        return None
+
+
+def win_send_keys(pid: int, events: list[dict], hidden_ok: bool = False, polite: bool = False) -> dict:
     """hidden_ok: the keys are emulator hotkeys that need no focus (Dolphin's gBox F13-F15 chords): sent even while the
-    game window is hidden (the app hides it the moment Stop is pressed, before the last-played moment is saved)."""
+    game window is hidden (the app hides it the moment Stop is pressed, before the last-played moment is saved).
+    polite: autoplay's own input (bot demos) on a PC the operator may be using: never takes the keyboard from them
+    (polite_verdict). While they type in gBox or use another application the key presses are held back and only key
+    releases go out (a release types nothing, and Dolphin reads it in the background: no key is left down); the answer
+    says {"held": why} so the caller can press them again later."""
     import ctypes
     from ctypes import wintypes
     u, k = ctypes.windll.user32, ctypes.windll.kernel32
@@ -512,17 +565,32 @@ def win_send_keys(pid: int, events: list[dict], hidden_ok: bool = False) -> dict
     if not h and not hidden_ok:
         raise RuntimeError("the game window isn't open")
     root = u.GetAncestor(h, 2) if h else None
-    for _ in range(100):                                         # wait (up to 10 s) for the operator to bring gBox back
-        if _win_input_in_front(u, root, hidden_ok):
-            break
-        time.sleep(0.1)
-    else:
-        raise RuntimeError("gBox or the emulator must be active to send emulator input safely")
-    if h and not hidden_ok:                                     # global Dolphin hotkeys need no native-window focus
+
+    def give_focus():
         me, them = k.GetCurrentThreadId(), u.GetWindowThreadProcessId(h, None)
         u.AttachThreadInput(me, them, True)
         u.SetFocus(h)
         u.AttachThreadInput(me, them, False)
+    held_back = None
+    if polite and h and not hidden_ok:
+        front = _win_input_in_front(u, root, False)
+        verdict = polite_verdict(front, _focus_pid(u) if front else None, pid, _idle_s(), _POLITE_TRUST.get(pid, True))
+        if verdict == "wait":
+            held_back = "the operator is using gBox or another application: the bot's key presses wait"
+            events = [e for e in events if not e.get("down", True)]
+        elif verdict == "take":
+            give_focus()
+            if pid not in _POLITE_TRUST:                         # does this PC report the game's focus? (checked once)
+                _POLITE_TRUST[pid] = _focus_pid(u) == pid
+    else:
+        for _ in range(100):                                     # wait (up to 10 s) for the operator to bring gBox back
+            if _win_input_in_front(u, root, hidden_ok):
+                break
+            time.sleep(0.1)
+        else:
+            raise RuntimeError("gBox or the emulator must be active to send emulator input safely")
+        if h and not hidden_ok:                                 # global Dolphin hotkeys need no native-window focus
+            give_focus()
 
     class KI(ctypes.Structure):
         _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD), ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
@@ -547,8 +615,11 @@ def win_send_keys(pid: int, events: list[dict], hidden_ok: bool = False) -> dict
             time.sleep(0.06)                                     # down+up in one batch: the game polls per frame
         pressed.add(name)
         flags = 0x0008 | (0x0001 if ext else 0) | (0 if down else 0x0002)   # SCANCODE | EXTENDED | KEYUP
-        if not _win_input_in_front(u, root, hidden_ok):          # the operator switched apps mid-batch: never type there
+        if down and not _win_input_in_front(u, root, hidden_ok):  # the operator switched apps mid-batch: never type there
             release_injected()                                # don't leave Ctrl/Shift held in the next application
+            return {"sent": len(seq), "stopped": "another application came to the front"}
+        if not down and held_back is None and not _win_input_in_front(u, root, hidden_ok):
+            release_injected()
             return {"sent": len(seq), "stopped": "another application came to the front"}
         inp = INP(type=1, ki=KI(0, sc, flags, 0, 0))
         if u.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INP)) != 1:
@@ -559,7 +630,7 @@ def win_send_keys(pid: int, events: list[dict], hidden_ok: bool = False) -> dict
             held[name] = (sc, ext)
         else:
             held.pop(name, None)
-    return {"sent": len(seq)}
+    return {"sent": len(seq), **({"held": held_back} if held_back else {})}
 
 
 _last_grab = {}
@@ -2702,11 +2773,13 @@ D-Pad/Right = `Pad E`
         return {"running": bool(self.proc and self.proc.poll() is None), "emulator": self.name,
                 "state": "PAUSED" if self.paused_tids else "PLAYING"}
 
-    def send_input(self, events: list[dict]) -> dict:
+    def send_input(self, events: list[dict], polite: bool = False) -> dict:
         # win_send_keys already maps standard pad names to keyboard keys. Translating
         # them here as well makes A -> x -> s (Dolphin X), so menus ignore A.
+        # polite: autoplay's own input on a PC the operator may be using (bot demos): never takes their keyboard
         keymap = {"z": "e", "cup": "k", "cdown": "i", "cleft": "j", "cright": "l"}
-        return win_send_keys(self.proc.pid, [{**e, "key": keymap.get(e["key"], e["key"])} for e in events])
+        rows = [{**e, "key": keymap.get(e["key"], e["key"])} for e in events]
+        return win_send_keys(self.proc.pid, rows, polite=True) if polite else win_send_keys(self.proc.pid, rows)
 
     def save_state(self, slot: int | None = None) -> dict:
         """Dolphin's slot 1 (gBox's Save state / state_transfer). Confirmed by the file Dolphin writes, or it raises."""
@@ -3345,6 +3418,320 @@ class RPCS3Adapter(Adapter):
         return {"paused": False}
 
 
+# gBox's RPCS3 keyboard pad (Linux sessions): player 1 is RPCS3's keyboard handler and these keys are bound to the PS3
+# pad in input_configs/global/Default.yml (Qt key names; xdotool takes the same letters in lower case)
+RPCS3_KEYPAD = {"cross": "X", "circle": "C", "square": "Z", "triangle": "V", "l1": "Q", "r1": "E", "l2": "R", "r2": "T",
+                "l3": "F", "r3": "G", "start": "Return", "select": "Space",
+                "dup": "Up", "ddown": "Down", "dleft": "Left", "dright": "Right",
+                "lup": "W", "ldown": "S", "lleft": "A", "lright": "D", "rup": "I", "rdown": "K", "rleft": "J", "rright": "L"}
+# gBox's own pad names (the app's controller: RetroPad positions b = bottom, a = right, y = left, x = top; up / down /
+# left / right = the D-pad; lup... / rup... = the sticks) -> PS3 buttons
+RPCS3_PAD_ALIASES = {"b": "cross", "a": "circle", "y": "square", "x": "triangle", "l": "l1", "r": "r1",
+                     "up": "dup", "down": "ddown", "left": "dleft", "right": "dright",
+                     "cup": "rup", "cdown": "rdown", "cleft": "rleft", "cright": "rright"}
+_RPCS3_CFG_NAMES = [("Left Stick Left", "lleft"), ("Left Stick Down", "ldown"), ("Left Stick Right", "lright"),
+                    ("Left Stick Up", "lup"), ("Right Stick Left", "rleft"), ("Right Stick Down", "rdown"),
+                    ("Right Stick Right", "rright"), ("Right Stick Up", "rup"), ("Start", "start"), ("Select", "select"),
+                    ("Square", "square"), ("Cross", "cross"), ("Circle", "circle"), ("Triangle", "triangle"),
+                    ("Left", "dleft"), ("Down", "ddown"), ("Right", "dright"), ("Up", "dup"), ("R1", "r1"), ("R2", "r2"),
+                    ("R3", "r3"), ("L1", "l1"), ("L2", "l2"), ("L3", "l3")]
+RPCS3_KEYBOARD_INPUT = ("Player 1 Input:\n  Handler: Keyboard\n  Device: Keyboard\n  Config:\n"
+                        + "".join(f"    {name}: {RPCS3_KEYPAD[b]}\n" for name, b in _RPCS3_CFG_NAMES)
+                        + '    PS Button: ""\n')
+# config.yml values gBox sets for Linux sessions (section -> key -> YAML value); RPCS3 fills in every other key
+RPCS3_LINUX_SETTINGS = {
+    # RE5 Gold on the Spark's aarch64 RPCS3 (2026-10-20) hung on a black screen at its first RSX context without it.
+    # With it, one first boot (RPCS3 still building its shader / SPU caches, load 50 on 20 cores) hung there once too:
+    # RSX thread + 2 SPU threads spinning after sys_rsx_context_iomap. The next boot went through (2026-10-21).
+    "Core": {"Accurate RSX reservation access": "true"},
+    "Video": {"Renderer": "Vulkan", "Resolution": "1280x720"},
+    "Audio": {"Renderer": '"Null"'},                       # Linux sessions stream video only
+    "Input/Output": {"Keyboard": '"Null"', "Background input enabled": "true"},
+    "Miscellaneous": {
+        # RPCS3's GDB stub listens on 127.0.0.1:2345 by default: a port probe there ("G..." instead of "$") stopped the
+        # emulator ("Expected start of packet character '$'") on the Spark
+        "GDB Server": '""',
+        "Automatically start games after boot": "true", "Exit RPCS3 when process finishes": "true",
+        "Start games in fullscreen mode": "false", "Prevent display sleep while running games": "false",
+        "Show trophy popups": "false", "Show RPCN popups": "false", "Show shader compilation hint": "false",
+        "Show PPU compilation hint": "false", "Show autosave/autoload hint": "false",
+        "Show pressure intensity toggle hint": "false", "Show analog limiter toggle hint": "false",
+        "Show mouse and keyboard toggle hint": "false", "Show capture hints": "false",
+        "Play music during boot sequence": "false"}}
+# GuiConfigs/CurrentSettings.ini values (Qt INI: section -> key -> value). RPCS3 opens its welcome dialog at every start
+# until it is turned off, --no-gui included: on the Spark (2026-10-21) it covered RE5's boot screen in the session and sat
+# under the parked pointer, where a WM-less display sends the pad's keys. The info / confirmation boxes go too: nobody is
+# at the session's display to close them.
+RPCS3_LINUX_GUI = {
+    "main_window": {"infoBoxEnabledWelcome": "false", "infoBoxEnabledInstallPUP": "false",
+                    "infoBoxEnabledInstallPKG": "false", "confirmationBoxExitGame": "false",
+                    "confirmationBoxBootGame": "false", "confirmationObsoleteCfg": "false",
+                    "sameButtonsWarning": "false", "restartHint": "false"},
+    # F2 = RPCS3's own "save state and continue"; its restart-from-state shortcut moves off F2 / F4 (as on Windows)
+    "Shortcuts": {"game_window_savestate": "F2", "game_window_restart": "Ctrl+Alt+Shift+F11"}}
+
+
+def yaml_set(text: str, section: str, key: str, value: str) -> str:
+    """Set `key: value` in a top-level section of RPCS3's config.yml (two-space keys), keeping every other line."""
+    lines = text.splitlines()
+    try:
+        s = lines.index(f"{section}:")
+    except ValueError:
+        return "\n".join(lines + [f"{section}:", f"  {key}: {value}"]) + "\n"
+    i = s + 1
+    while i < len(lines) and (lines[i].startswith(" ") or not lines[i].strip()):
+        if lines[i].startswith(f"  {key}:"):
+            lines[i] = f"  {key}: {value}"
+            return "\n".join(lines) + "\n"
+        i += 1
+    lines.insert(s + 1, f"  {key}: {value}")
+    return "\n".join(lines) + "\n"
+
+
+def ini_set(text: str, section: str, key: str, value: str) -> str:
+    """Set `key=value` in one [section] of a Qt INI file (RPCS3's GuiConfigs/CurrentSettings.ini), keeping every other
+    line; a missing section is appended."""
+    lines = text.splitlines()
+    try:
+        s = lines.index(f"[{section}]")
+    except ValueError:
+        while lines and not lines[-1].strip():
+            lines.pop()
+        return "\n".join(lines + ([""] if lines else []) + [f"[{section}]", f"{key}={value}"]) + "\n"
+    i = s + 1
+    while i < len(lines) and not lines[i].startswith("["):
+        if lines[i].split("=", 1)[0].strip() == key:
+            lines[i] = f"{key}={value}"
+            return "\n".join(lines) + "\n"
+        i += 1
+    while i > s + 1 and not lines[i - 1].strip():      # after the section's last line, before the blank separator
+        i -= 1
+    lines.insert(i, f"{key}={value}")
+    return "\n".join(lines) + "\n"
+
+
+def rpcs3_guest_base(pid: int, read=None, maps: list[str] | None = None) -> int:
+    """RPCS3 maps the PS3's 4 GiB address space at one 4 GiB-aligned host address (vm::g_base_addr): the first
+    candidate whose guest 0x10000 (the game's first ELF segment) holds code. RPCS3's usual reservations first, then
+    every 4 GiB boundary that has a mapping (read / maps: the process's memory and /proc/<pid>/maps lines, for tests)."""
+    def rd(a, n):
+        with open(f"/proc/{pid}/mem", "rb", 0) as f:
+            f.seek(a)
+            return f.read(n)
+    read = read or rd
+    try:
+        lines = maps if maps is not None else open(f"/proc/{pid}/maps").read().splitlines()
+        starts = sorted({int(ln.split("-", 1)[0], 16) & ~0xFFFFFFFF for ln in lines if ln.strip()})
+    except OSError:
+        starts = []
+    for b in [0x300000000, 0x200000000, 0x100000000, 0x10000000000] + [s for s in starts if s]:
+        try:
+            d = read(b + 0x10000, 16)
+        except (OSError, ValueError):
+            continue
+        if d and any(d):
+            return b
+    raise RuntimeError("PS3 guest memory not found in the RPCS3 process (game still booting?)")
+
+
+def _proc_tree(pid: int) -> list[int]:
+    """pid and its descendants (Linux /proc)."""
+    out, todo = [], [pid]
+    while todo:
+        p = todo.pop(0)
+        out.append(p)
+        try:
+            for t in os.listdir(f"/proc/{p}/task"):
+                todo += [int(c) for c in open(f"/proc/{p}/task/{t}/children").read().split()]
+        except OSError:
+            continue
+    return out
+
+
+class RPCS3LinuxAdapter(StandaloneAdapter):
+    """Linux node (the Spark, aarch64): PS3 games in RPCS3's AppImage (provision.ensure_rpcs3_linux) on the session's
+    own Xvfb display, streamed like every other Linux session. Player 1 is RPCS3's keyboard pad (input_configs/global/
+    Default.yml = RPCS3_KEYBOARD_INPUT), so send_input is xdotool keys on that display, no window focus needed (no
+    window manager: keys go to the window under the pointer, which is parked on the game). Guest memory is read and
+    written through /proc/<pid>/mem at RPCS3's 4 GiB guest base. Save state = RPCS3's "save state and continue" (F2);
+    load state relaunches RPCS3 on the same display from the newest state (no in-place rewind).
+    Verified with Resident Evil 5 Gold (BLUS30491) on the Spark, 2026-10-20 (see RPCS3_LINUX_SETTINGS for the two
+    settings it needed)."""
+    name = "rpcs3"
+    supported = {"launch_game", "stop_game", "pause", "resume", "read_memory", "write_memory", "query_runtime",
+                 "get_frame", "send_input", "stream_session", "save_state", "load_state"}
+    checkpoint_state, checkpoint_reason = False, "RPCS3 reloads the game on every save state (no in-place rewind)"
+    screen = (1280, 720)
+    keys = {**{b: (k.lower() if len(k) == 1 else ("space" if k == "Space" else k)) for b, k in RPCS3_KEYPAD.items()},
+            **{a: (RPCS3_KEYPAD[b].lower() if len(RPCS3_KEYPAD[b]) == 1 else RPCS3_KEYPAD[b])
+               for a, b in RPCS3_PAD_ALIASES.items()}}
+    hotkeys = {"save_state": "F2"}
+    MEM = "/proc/{pid}/mem"                              # the guest's memory, by the RPCS3 process id
+
+    def __init__(self, config: Config, platform: str = "ps3"):
+        super().__init__(config, platform)
+        self.env = provision.rpcs3_linux_env(config)
+        self.home = provision.rpcs3_linux_dir(config)     # dev_hdd0 lives here (gbox/re5_tool.py finds saves through it)
+        self._mem, self.paused, self.generation, self.rom = None, False, 0, None
+
+    def _ensure(self):
+        self.write_settings()                             # first: the firmware install then runs without dialogs too
+        provision.ensure_rpcs3_linux(self.config, getattr(self, "progress", None))
+
+    def write_settings(self) -> None:
+        """config.yml (RPCS3_LINUX_SETTINGS), the keyboard pad as player 1, CurrentSettings.ini (RPCS3_LINUX_GUI: no
+        welcome dialog or info boxes, the save-state hotkey)."""
+        d = self.home
+        (d / "input_configs" / "global").mkdir(parents=True, exist_ok=True)
+        (d / "input_configs" / "global" / "Default.yml").write_text(RPCS3_KEYBOARD_INPUT, encoding="utf-8")
+        cfg = d / "config.yml"
+        text = cfg.read_text(encoding="utf-8") if cfg.exists() else ""
+        for section, kv in RPCS3_LINUX_SETTINGS.items():
+            for k, v in kv.items():
+                text = yaml_set(text, section, k, v)
+        cfg.write_text(text, encoding="utf-8")
+        gui = d / "GuiConfigs" / "CurrentSettings.ini"
+        gui.parent.mkdir(parents=True, exist_ok=True)
+        ini = gui.read_text(encoding="utf-8") if gui.exists() else ""
+        for section, kv in RPCS3_LINUX_GUI.items():
+            for k, v in kv.items():
+                ini = ini_set(ini, section, k, v)
+        gui.write_text(ini, encoding="utf-8")
+
+    def _argv(self, rom: str) -> list[str]:
+        self.rom = rom
+        return [str(provision.rpcs3_linux_exe(self.config)), "--no-gui", rom]
+
+    def _debugger(self):
+        return None                                       # RPCS3's GDB stub stays off (see RPCS3_LINUX_SETTINGS)
+
+    def launch_game(self, rom: str) -> dict:
+        d = super().launch_game(rom)
+        self._park_pointer()
+        return d | {"emulator": "rpcs3 (linux)", "rpcs3_log": str(Path(self.env["XDG_CACHE_HOME"]) / "rpcs3" / "RPCS3.log")}
+
+    def _park_pointer(self):
+        try:                                              # keys go to the window under the pointer (no window manager)
+            self._xdo("mousemove", str(self.display.w // 2), str(self.display.h // 2))
+        except Exception:                                 # noqa: BLE001 - the display may still be starting
+            pass
+
+    def log_tail(self, n: int = 60000) -> str:
+        try:
+            return (Path(self.env["XDG_CACHE_HOME"]) / "rpcs3" / "RPCS3.log").read_text(errors="replace")[-n:]
+        except OSError:
+            return super().log_tail(n)
+
+    def query_runtime(self) -> dict:
+        d = {"running": bool(self.proc and self.proc.poll() is None), "emulator": "rpcs3", "paused": self.paused}
+        try:
+            d["guest_base"] = hex(self._guest()[1])
+        except Exception:                                 # noqa: BLE001 - still booting
+            pass
+        return d
+
+    # --- guest memory ---
+    def _guest(self):
+        if self._mem is None:
+            if not self.proc or self.proc.poll() is not None:
+                raise RuntimeError("RPCS3 is not running")
+            err = None
+            for pid in _proc_tree(self.proc.pid):
+                try:
+                    self._mem = (pid, rpcs3_guest_base(pid))
+                    break
+                except (RuntimeError, OSError) as e:
+                    err = e
+            if self._mem is None:
+                raise RuntimeError(str(err or "PS3 guest memory not found"))
+        return self._mem
+
+    def read_memory(self, address: int, length: int) -> bytes:
+        pid, base = self._guest()
+        with open(self.MEM.format(pid=pid), "rb", 0) as f:
+            f.seek(base + address)
+            try:
+                data = f.read(length)
+            except OSError:
+                data = b""
+        if len(data) != length:
+            raise ValueError(f"PS3 address {address:#x} is not mapped")
+        return data
+
+    def write_memory(self, address: int, data: bytes) -> dict:
+        pid, base = self._guest()
+        with open(self.MEM.format(pid=pid), "r+b", 0) as f:
+            f.seek(base + address)
+            try:
+                f.write(data)
+            except OSError as e:
+                raise ValueError(f"PS3 address {address:#x} is not writable: {e}") from None
+        if self.read_memory(address, len(data)) != bytes(data):
+            raise RuntimeError("memory write not confirmed by read-back")
+        return {"address": address, "written": len(data), "verified": True}
+
+    def regions(self) -> list[tuple[int, int]]:
+        """Committed guest ranges [(address, size)] from /proc/<pid>/maps (the RAM inspector's search, ram_dump)."""
+        pid, base = self._guest()
+        out = []
+        for ln in open(f"/proc/{pid}/maps"):
+            a, b = (int(x, 16) for x in ln.split()[0].split("-"))
+            if a >= base and b <= base + (1 << 32) and "r" in ln.split()[1]:
+                if out and out[-1][0] + out[-1][1] == a - base:
+                    out[-1] = (out[-1][0], out[-1][1] + b - a)
+                else:
+                    out.append((a - base, b - a))
+        return out
+
+    # --- run control ---
+    def _signal(self, sig) -> None:
+        import signal
+        for pid in _proc_tree(self.proc.pid):
+            try:
+                os.kill(pid, getattr(signal, sig))
+            except OSError:
+                pass
+
+    def pause(self) -> dict:
+        self._signal("SIGSTOP")
+        self.paused = True
+        return {"paused": True}
+
+    def resume(self) -> dict:
+        self._signal("SIGCONT")
+        self.paused = False
+        return {"paused": False}
+
+    def save_state(self, slot: int | None = None) -> dict:
+        if self.paused:
+            self.resume()
+        self._xdo("key", self.hotkeys["save_state"])
+        self.generation += 1
+        return {"saved": True, "note": "RPCS3 saves, then continues from the save state after a short reload"}
+
+    def load_state(self, slot: int | None = None) -> dict:
+        """Relaunch RPCS3 on this session's display from the newest save state (the stream keeps going)."""
+        states = sorted((self.home / "savestates").glob("*/*.SAVESTAT*"), key=lambda f: f.stat().st_mtime)
+        if not states:
+            raise RuntimeError("no save state for this game yet: save one first")
+        _kill_tree(self.proc)
+        env = {**os.environ, "DISPLAY": self.display.name, "QT_QPA_PLATFORM": "xcb", **self.env}
+        self.proc = subprocess.Popen([str(provision.rpcs3_linux_exe(self.config)), "--no-gui", str(states[-1])], env=env,
+                                     stdout=open(self.log_path, "ab"), stderr=subprocess.STDOUT)
+        self._mem, self.paused = None, False
+        self.generation += 1
+        self._park_pointer()
+        return {"loaded": states[-1].name, "pid": self.proc.pid}
+
+    def send_input(self, events: list[dict]) -> dict:
+        """Pad names only (self.keys: PS3 names and gBox's RetroPad names); anything else is not a PS3 button here and
+        is left out (RPCS3's keyboard pad would ignore it anyway)."""
+        known = [ev for ev in events if ev.get("key") in self.keys]
+        out = super().send_input(known)
+        skipped = sorted({str(ev.get("key")) for ev in events if ev.get("key") not in self.keys})
+        return out | ({"skipped": skipped} if skipped else {})
+
+
 class SteamAdapter(Adapter):
     """Launch installed Steam apps through the Steam client (Steam's own launch path: DRM, overlay and EULA untouched).
     With the install folder known, the game's process is found by its exe living there: the session then knows when
@@ -3489,8 +3876,10 @@ def for_game(game: dict, config: Config, debug: bool = False, *, mod: str | None
     # gBox's own RPCS3 instead (tools._launch_game resolves it), which keeps save/load state for recovery.
     if plat == "ps3" and (launch.get("kind") != "attract"
                           or str(launch.get("rel_path") or game.get("rel_path") or "").lower().endswith(".txt")):
+        if HOST_OS == "linux":
+            return RPCS3LinuxAdapter(config, plat)        # RPCS3's AppImage on the session's Xvfb display (streamed)
         if HOST_OS != "windows":
-            raise ToolUnavailable("PS3 games run in RPCS3 on a Windows node")
+            raise ToolUnavailable("PS3 games run in RPCS3 on a Windows or Linux node")
         return RPCS3Adapter(config)
     if HOST_OS == "windows" and plat in ("gamecube", "wii") and not (override and override.core) \
             and (config.runtime / "dolphin" / "Dolphin-x64" / "Dolphin.exe").is_file():

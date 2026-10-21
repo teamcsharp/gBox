@@ -30,8 +30,12 @@ PG, PL, EM, STRIDE = 0x80300000, 0x80310000, 0x80320000, 0xDE0
 
 
 def world(enemies, room=0x400, timer_s=100.0, combo=0, leon=(0.0, 0.0, 0.0)):
+    from gbox import re4_menus
     m = FakeMem()
+    for a, sig in re4_menus.SIGNATURES.items():       # main.dol's code, as RAM holds it (the menus reader checks it)
+        m.wr(a, sig)
     m.put(B.P_GLOBAL, ">I", PG)
+    m.put(PG + 0x20, "B", 3)                          # pG+0x20: the room runs (not a stage still loading)
     m.put(PG + B.G_ROOM, ">H", room)
     m.put(PG + B.G_HP, ">h", 1000)                    # Leon alive
     m.put(B.P_PLAYER, ">I", PL)
@@ -62,7 +66,7 @@ def facing(m, rot):
 
 def test_turns_with_the_stick_then_aims_then_fires_never_writing_leon():
     now = [0.0]
-    m = world([((0, 0, 2000), True)])                  # straight ahead along +z: heading 0
+    m = world([((0, 800, 2000), True)])                # straight ahead along +z, up on a ledge (beyond ELEV_DY)
     before = m.rd(PL, 0x300)
     bot = B.Bot(m, clock=lambda: now[0], nav=False)
     facing(m, 1.5)                                     # facing far to the left of him
@@ -71,7 +75,7 @@ def test_turns_with_the_stick_then_aims_then_fires_never_writing_leon():
     assert bot.tick(B.snapshot(m)) == {"hold": {"r", "right"}}        # close: aim and fine-turn
     facing(m, 0.02)
     assert bot.tick(B.snapshot(m)) == {"hold": {"r"}}                 # on him, the aim pose coming up: not yet
-    head = math.atan2(B.HEAD_H - B.GUN_H, 2000.0)                    # his head: 0.075 rad above the gun
+    head = math.atan2(800 + B.HEAD_H - B.GUN_H, 2000.0)              # his head up there: 0.44 rad above the gun
     now[0] = 0.3
     m.put(B.MERC_TIMER, ">I", int((100 - 0.3) * 30))
     assert bot.tick(B.snapshot(m)) == {"hold": {"r", "up"}}          # pose up, the aim level: raise it with the stick
@@ -257,23 +261,27 @@ def test_auto_mode_prefers_a_matching_playbook(monkeypatch, tmp_path):
         tools.autoplay(tools.AutoplayIn(session_id="s9", op="start", mode="playbook"), ctx)
 
 
-def test_between_rounds_it_presses_a_until_the_next_round_and_counts_it():
-    m = world([((500.0, 0.0, 0.0), True)], room=0x100)              # not a Mercenaries room: results / menus
-    now, sent, live = [0.0], [], {}
+def test_between_rounds_it_never_presses_blind_and_counts_the_next_round():
+    # out of a round on a screen RAM does not name as a menu (no title task; the stage still loading, with the last
+    # round's clock showing): no press at all. Blind up + A had walked to the main title and started a story game with
+    # the hooks in (2026-10-20); the menus from RAM are tests/test_re4_menus.py
+    m = world([((500.0, 0.0, 0.0), True)], room=0x400, timer_s=9.8)
+    m.put(PG + 0x20, "B", 2)                                           # pG+0x20 2: the Village still loading
+    now, sent, live, step, screens = [0.0], [], {}, [0], {}
     steps = iter(range(60))
 
     def stopped():
-        i = next(steps, None)
+        i = step[0] = next(steps, None)
+        screens[i] = live.get("screen")
         if i == 40:
-            m.put(PG + B.G_ROOM, ">H", 0x400)                         # the presses started the next round
+            m.put(PG + 0x20, "B", 3)                                   # the room runs: the next round started
+            m.put(B.MERC_TIMER, ">I", 120 * 30)
         return i is None
-    B.play(None, sent.append, stopped, sleep=lambda s: now.__setitem__(0, now[0] + s), m=m, stats=live,
-           clock=lambda: now[0])
-    presses = [r for r in sent if r == [{"key": "a", "down": True}]]
-    assert len(presses) >= 3 and live["menu_presses"] == len(presses)
-    downs = [r[0]["key"] for r in sent if r[0]["down"]]
-    assert downs[:6] == ["up", "a"] * 3                                     # menus: up, A - never left (Leon -> Wesker)
-    assert live["rounds"] == 2 and "timer" in live and "max_combo" in live    # live stats for the watch panel
+    B.play(None, lambda rows: sent.append((step[0], rows)), stopped, sleep=lambda s: now.__setitem__(0, now[0] + s),
+           m=m, stats=live, clock=lambda: now[0])
+    assert not [rows for i, rows in sent if i is not None and i < 40]     # nothing pressed out of the round
+    assert live["menu_presses"] == 0 and screens[39] == "loading" and live["screen"] == "playing"
+    assert live["rounds"] == 1 and "timer" in live and "max_combo" in live    # live stats for the watch panel
 
 
 def test_the_result_screen_is_not_a_round():
@@ -303,7 +311,7 @@ def test_shoots_only_what_he_can_hit():
     assert B.Bot(far, clock=lambda: now[0], nav=False).tick(B.snapshot(far)) == {"hold": {"up", "b"}}   # close in
     close = world([((0, 0, 400), True)])                                   # point blank
     facing(close, 0.0)
-    assert B.Bot(close, clock=lambda: now[0], nav=False).tick(B.snapshot(close)) == {"hold": {"down"}}  # step back
+    assert B.Bot(close, clock=lambda: now[0], nav=False).tick(B.snapshot(close)) == {"hold": {"r"}}     # aims: no back-off
     roof = world([((0, 0, 1500), True)], leon=(0.0, 2600.0, 0.0))          # Leon up on the start roof
     facing(roof, 0.0)
     assert B.Bot(roof, clock=lambda: now[0], nav=False).tick(B.snapshot(roof)) == {"hold": {"up", "b"}}  # down to them
@@ -370,7 +378,7 @@ def hp(m, slot, value):
 
 def test_his_health_scores_the_shots_and_misses_move_the_aim_height():
     now = [0.0]
-    m = world([((0, 0, 2000), True)])
+    m = world([((0, 800, 2000), True)])
     facing(m, 0.0)
     bot = B.Bot(m, clock=lambda: now[0], nav=False)
 
@@ -380,7 +388,7 @@ def test_his_health_scores_the_shots_and_misses_move_the_aim_height():
         act = bot.tick(B.snapshot(m))
         keys = act.get("hold", set())
         pitch = struct.unpack(">f", m.rd(PL + B.AIM_PITCH, 4))[0]               # the game, under the stick
-        m.put(PL + B.AIM_PITCH, ">f", pitch + 0.02 * (("up" in keys) - ("down" in keys)))
+        m.put(PL + B.AIM_PITCH, ">f", pitch + 0.06 * (("up" in keys) - ("down" in keys)))   # a quick stick
         return act
     t = 0.0
     while "a" not in tick(t).get("hold", set()):                           # raise the aim to his head, then fire
@@ -393,17 +401,14 @@ def test_his_health_scores_the_shots_and_misses_move_the_aim_height():
         tick(t + 0.2 + k * 0.1)
     assert bot.stats["misses"] >= 3 and bot.stats["pitch_offset"] != 0.0  # the aim height moves on
     assert 0 < bot.stats["accuracy"] < 1
-    pitch = struct.unpack(">f", m.rd(PL + B.AIM_PITCH, 4))[0]
-    want = math.atan2(B.HEAD_H - B.GUN_H, 2000.0) + bot.stats["pitch_offset"]
-    assert abs(pitch - want) <= B.PITCH_TOL + 0.02                         # the stick took it to the new height
 
 
 def test_an_inverted_aim_stick_is_learned():
     now = [0.0]
-    m = world([((0, 0, 2000), True)])
+    m = world([((0, 800, 2000), True)])
     facing(m, 0.0)
     bot = B.Bot(m, clock=lambda: now[0], nav=False)
-    head = math.atan2(B.HEAD_H - B.GUN_H, 2000.0)
+    head = math.atan2(800 + B.HEAD_H - B.GUN_H, 2000.0)
     fired = False
     for k in range(80):                                                    # this game: up LOWERS the aim
         now[0] = k * 0.05
@@ -413,7 +418,9 @@ def test_an_inverted_aim_stick_is_learned():
         pitch = struct.unpack(">f", m.rd(PL + B.AIM_PITCH, 4))[0]
         m.put(PL + B.AIM_PITCH, ">f", pitch + 0.02 * (("down" in keys) - ("up" in keys)))
     assert bot.pitch_up == "down" and fired
-    assert abs(struct.unpack(">f", m.rd(PL + B.AIM_PITCH, 4))[0] - head) <= B.PITCH_TOL + 0.02
+    lo = math.atan2(800 + B.BODY_LO - B.GUN_H, 2000.0)                    # the aim ends inside his body (any pitch
+    hi = math.atan2(800 + B.BODY_HI - B.GUN_H, 2000.0)                    # there lands), on its way to the chest
+    assert lo <= struct.unpack(">f", m.rd(PL + B.AIM_PITCH, 4))[0] <= hi and head > lo
 
 
 def test_the_hand_cannon_keeps_its_own_fire_rate():
@@ -538,3 +545,176 @@ def test_a_session_reads_its_own_dolphin_only(monkeypatch):
     assert isinstance(mine, B.OwnShm) and seen["at"] == B.EMMGR      # its own process, the GameCube address
     other = B.memory(SimpleNamespace(name="dolphin", proc=SimpleNamespace(pid=7), read_memory=lambda a, n: bytes(n)))
     assert isinstance(other, B.AdMem)                 # no shared view of its own: the adapter's reads, never a scan
+
+
+def test_a_level_target_is_shot_as_soon_as_the_aim_is_up():
+    now = [0.0]
+    m = world([((0, 0, 2000), True)])
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    assert bot.tick(B.snapshot(m)) == {"hold": {"r"}}               # the aim pose coming up
+    now[0] = B.PITCH_AFTER + 0.01
+    assert bot.tick(B.snapshot(m)) == {"hold": {"r", "a"}}       # same level: fire, no aim-height push
+
+
+def test_a_ganado_about_to_strike_comes_before_a_combo_bonus():
+    now = [0.0]
+    crowd = [((800.0 * k, 0, 3000), True) for k in range(-2, 3)] + [((0, 0, 900), True)]   # five out there, one close
+    m = world(crowd, room=0x400)
+    bot = B.Bot(m, clock=lambda: now[0], nav=FakeNav([item("combo_bonus", 0.0, -3000.0)]))
+    facing(m, 0.0)
+    act = bot.tick(B.snapshot(m))
+    assert "r" in act.get("hold", set()) and not (bot.goal or {}).get("item")   # aiming at him, not running off
+
+
+# -- combat: threats from RAM (gbox.re4_threats) ------------------------------------------------------------------------
+def act_state(m, slot, r, ev=0):
+    m.put(EM + slot * STRIDE + 0xFC, ">4B", *r)
+    m.put(EM + slot * STRIDE + 0x288, ">I", ev)
+
+
+def run(bot, m, now, t, n=1):
+    acts = []
+    for _ in range(n):
+        now[0] = t
+        m.put(B.MERC_TIMER, ">I", int((100 - t) * 30))
+        acts.append(bot.tick(B.snapshot(m)))
+        t += 0.05
+    return acts
+
+
+def test_an_attacking_ganado_is_shot_before_a_nearer_one_that_only_walks():
+    now = [0.0]
+    m = world([((0, 0, 900), True), ((-1300, 0, 1300), True)])             # the near one walks; the other swings
+    act_state(m, 1, (1, 0x03, 0, 0))
+    act_state(m, 2, (1, 0x27, 1, 0))
+    facing(m, B.heading(-1300, 1300))                                        # already facing the attacker
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    run(bot, m, now, 0.0)
+    acts = run(bot, m, now, B.PITCH_AFTER + 0.05, 2)
+    assert any("a" in a.get("hold", set()) for a in acts) and bot.target_slot == 2
+
+
+def test_a_swing_that_lands_before_he_can_shoot_is_run_out_of():
+    now = [0.0]
+    m = world([((0, 0, -700), True)])                                        # right behind him
+    act_state(m, 1, (1, 0x26, 1, 0), ev=B.threats_ram.EV_SWING)
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    bot.tracker.update(B.snapshot(m), -0.6)                                  # the swing started 0.6 s ago
+    act = run(bot, m, now, 0.0)[0]
+    assert act["hold"] >= {"up", "b"} and bot.stats["evades"] == 1          # away from it at a run, not turning to aim
+
+
+def test_the_trigger_is_pressed_once_per_shot_not_held():
+    now = [0.0]
+    m = world([((0, 0, 1500), True)])
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    acts = run(bot, m, now, 0.0, 60)                                         # 3 s on target
+    downs = [i for i, (a, b) in enumerate(zip(acts, acts[1:]))
+             if "a" not in a.get("hold", set()) and "a" in b.get("hold", set())]
+    assert len(downs) >= 5                                                   # pressed again and again, never just held
+    assert bot.stats["shots"] == 3                                           # the gun fires at its own rate (35 frames)
+
+
+def test_dying_ganados_are_not_shot_at():
+    now = [0.0]
+    m = world([((0, 0, 900), True), ((0, 0, -1400), True)])
+    act_state(m, 1, (3, 1, 0, 0))                                            # dying in front of him
+    hp(m, 1, 0)
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    act = run(bot, m, now, 0.0)[0]
+    assert act["hold"] & {"left", "right"} or act["hold"] == {"down", "b"}   # turning to the live one behind him
+
+
+def test_held_by_a_ganado_the_bot_lets_the_game_and_the_prompts_have_him():
+    now = [0.0]
+    m = world([((0, 0, 300), True)])
+    act_state(m, 1, (1, 0x2E, 1, 0))
+    m.put(PL + 0xFC, ">4B", 1, 0, 1, 0)                                      # Leon held (SHAKE OFF)
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    assert run(bot, m, now, 0.0)[0] == {"hold": set()} and bot.stats["hits_taken"] == 1
+
+
+def test_an_attacker_in_front_is_shot_even_when_it_is_close_to_landing():
+    now = [0.0]
+    m = world([((0, 0, 1000), True)])                                        # right in front, mid-swing
+    act_state(m, 1, (1, 0x26, 1, 0))
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    bot.tracker.update(B.snapshot(m), -0.5)                                  # 0.5 s into it: lands in ~0.2 s
+    act = run(bot, m, now, 0.0)[0]
+    assert "r" in act["hold"] and bot.stats["evades"] == 0                   # aim and fire, not a quick turn away
+
+
+def test_a_kick_prompt_waits_while_another_attack_lands():
+    now = [0.0]
+    m = world([((0, 0, -800), True)])                                        # one behind him, mid-swing
+    act_state(m, 1, (1, 0x26, 1, 0))
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    bot.tracker.update(B.snapshot(m), -0.4)
+    run(bot, m, now, 0.0)
+    assert not bot.prompt_ok("a", B.snapshot(m)) and bot.prompt_ok("wiggle", B.snapshot(m))
+
+
+def test_a_ganado_behind_him_gets_the_quick_turn():
+    now = [0.0]
+    m = world([((0, 0, -1200), True)])                                       # right behind him, walking
+    act_state(m, 1, (1, 0x03, 0, 0))
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    assert run(bot, m, now, 0.0)[0] == {"hold": {"down", "b"}} and bot.stats["quick_turns"] == 1
+    assert "down" not in run(bot, m, now, 0.2)[0]["hold"]                    # once: then the stick finishes the turn
+
+
+def test_of_two_close_ones_the_one_in_front_is_shot_first():
+    now = [0.0]
+    m = world([((0, 0, -1000), True), ((0, 0, 1150), True)])               # one behind, one a little further in front
+    act_state(m, 1, (1, 0x03, 0, 0))
+    act_state(m, 2, (1, 0x03, 0, 0))
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    run(bot, m, now, 0.0)
+    acts = run(bot, m, now, B.PITCH_AFTER + 0.05, 3)
+    assert any("a" in a.get("hold", set()) for a in acts) and bot.target_slot == 2
+
+
+def test_a_thrown_axe_too_close_to_shoot_is_stepped_out_of_its_line():
+    now = [0.0]
+    m = world([((0, 0, 6000), True)])
+    axe = EM + 2 * STRIDE
+    m.put(B.EMMGR, ">3I", EM, 3, STRIDE)
+    m.put(axe, ">I", 1)
+    m.put(axe + 0x100, ">B", B.threats_ram.THROWN_ID)
+    m.put(axe + 0xFC, ">4B", 1, 6, 0, 0)                                    # in flight (01 06)
+    facing(m, math.pi / 2)                                                   # looking away to his left: no shot in time
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    acts = []
+    for k in range(4):
+        m.put(axe + 0x94, ">3f", 30.0, 1400.0, 1200.0 - 150.0 * k)           # 3000 units / s, 0.3 s out
+        acts += run(bot, m, now, 0.05 * k)
+    assert bot.stats["evades"] == 1 and acts[-1]["hold"] >= {"up", "b"}
+    away = bot.evade["away"]
+    assert abs(abs(B.wrap(away)) - math.pi / 2) < 0.2                       # across its line (+-x), not along it
+
+
+def test_a_thrown_axe_coming_at_him_is_aimed_at_where_it_will_be():
+    now = [0.0]
+    m = world([((0, 0, 6000), True)])                                       # the thrower, far out
+    axe = EM + 2 * STRIDE
+    m.put(B.EMMGR, ">3I", EM, 3, STRIDE)
+    m.put(axe, ">I", 1)
+    m.put(axe + 0x100, ">B", B.threats_ram.THROWN_ID)
+    m.put(axe + 0xFC, ">4B", 1, 6, 0, 0)                                    # in flight (01 06)
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    for k in range(4):
+        m.put(axe + 0x94, ">3f", 0.0, 1400.0, 4000.0 - 150.0 * k)            # 3000 units / s straight at him
+        run(bot, m, now, 0.05 * k)
+    assert bot.tracker.stats["thrown_seen"] == 1
+    t = bot.tracker.update(B.snapshot(m), 0.2)
+    assert t[0].kind == "thrown" and t[0].pos[2] < 3550.0

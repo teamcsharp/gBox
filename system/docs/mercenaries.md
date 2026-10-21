@@ -42,7 +42,7 @@ operator accepts Capcom's EULA in Steam - gBox never accepts it).
 | Mercenaries 3D (0ed22ae742e1b56b) | citra_libretro, Spark (boots to the Capcom logo) | **missing**: unlocks are save-based (the 3DS save cannot be erased in game: back it up first); the core exposes no memory map to gBox, so live flags are not possible here | **missing**: MT Framework Mobile writer | none |
 | RE6 X360 (0871eee3b68cdea3) | Xenia PC | **verified**: `re6 op=unlock_all` = boot default "Everything unlocked": all 3 stages on the disc, all 9 characters + EX costumes, Agent Hunt, every campaign/chapter/difficulty, skills (save template from the game's own unlock routine; live too). Boots to the title (logo movie skipped) | `re6_<slug>` (Aya, SM64 Mario verified) | **verified**: any weapon in any character's loadout (EK fired), give_now of guns the stage didn't load (resources preloaded; Lightning Hawk fired), remove_item / set_slot, infinite_health/ammo, auto_qte (default on). No Mercy / DLC stages not on the 360 disc. See docs/re6.md |
 | RE4 2023 Steam (steam-2050650) | native + REFramework | by the RE4R agent; blocked on Capcom's EULA (operator) | by the RE4R agent | live stats/hooks |
-| RE5 Gold Edition PS3 (e7ca89bbeb67360d, BLUS30491) | RPCS3 (Windows node) | **built, not live-checked**: `re5 op=unlock_all` = Bonus Features, Files, cutscenes, figurines, every chapter + Professional, BSAA emblems, Item Management (save edit with the published Game Genie offsets + checksum). Mercenaries characters/stages: not confirmed by the source | **missing** | none: no published address for the Mercenaries clock/combo on PS3 (the tool says so) |
+| RE5 Gold Edition PS3 (e7ca89bbeb67360d, BLUS30491) | RPCS3 (Windows node; Spark arm64 in scratch) | `re5 op=unlock_all` = Bonus Features, Files, cutscenes, figurines, every chapter, BSAA emblems, Item Management (published Game Genie offsets; chapters, bonus features and emblems seen in the menus) **+ The Mercenaries Reunion, Desperate Escape, all 8 Reunion stages and all 8 characters (gBox's own offsets, **verified** live 2026-10-20)**. The original THE MERCENARIES (story-clear gate): not found yet | **missing** | RAM map `profiles/gamedata/BLUS30491-ram.json` (clock, score, kills, combo, combo window, player, enemies) and the Mercenaries engine driver `gbox/mercs/titles/re5_ps3.py` (aims and kills, live) |
 
 ## RE4 notes
 
@@ -141,6 +141,43 @@ Unknown serials (original RE5 BLUS30270, Japanese BLJM60199) are refused. Mercen
 named by the source. No published address exists for the Mercenaries clock, time bonus or combo timer on PS3 (RPCS3's
 patch database has only an FPS unlock for BLUS30491 01.01), so `merc_time` / `combo_time` are refused with that reason;
 RE6 (X360) has the same gap, and re6 keeps its verified unlock_all and loadouts.
+
+## RE5 Gold: The Mercenaries Reunion unlock, RAM map and bot (2026-10-20)
+
+Found live on the Spark with a scratch RPCS3 (arm64 0.0.43; RE5 Gold app 01.01). Every save change below was loaded from
+the title screen (RPCS3 rereads the host DATA0.DAT at each load) and read off the menus; frames in
+`docs/evidence/re5-merc-bot/` (real frames of that RPCS3 display).
+
+* **Where the save is:** Gold writes `savedata/BLUS3027010AE/DATA0.DAT` (the original RE5's name). `re5` looks there too.
+* **The Gold block** (DATA0.DAT 0x4BC0-0x566F) comes after the checksummed part, so no checksum covers it:
+  * s32 **0x4BC0 > 0** opens DESPERATE ESCAPE and THE MERCENARIES REUNION (1, 2, 0x3E9 and 0x7FFFFFFF open them; -1
+    does not). Found by bisecting the block's 682 zero words.
+  * u32 **0x5640** = Reunion stage bits (fresh save 1 = Public Assembly; 0xFF = all 8 stages).
+  * u32 **0x565C** = Reunion character bits (fresh save 4; 0xFF = all 8 characters).
+  * The Reunion records (stage x character score and rank) are in the same block: a 0x01 fill showed 16,843,009 SS,
+    0xFF showed -1 D.
+* `re5 op=unlock_all` sets them in the `mercenaries_reunion` group (0x4BC0 to at least 1, the masks OR 0xFF).
+* **Not found yet:** the original THE MERCENARIES on PLAY GAME. It is not in the published codes, not in any zero word
+  of 0x30-0x5670 set to 1 / 0x7F7F7F7F / FFFFFFFF, and not in 0x80-0xDF set to FF.
+* **RAM:** RE5 is MT Framework. The managers are singletons with static instance pointers beside their class
+  descriptors. An object's class name is what its vtable's getDTI (slot 5) returns. The map has sPlayer (player
+  position, rotation, action, health), sEnemy (the enemy array), cGameSys through sBioMain +0x182D4 (clock, kills,
+  combo, combo window, score), and sBioCamera +0x104 (the camera's eye and look-at).
+  The aim pitch (player +0x1AA0) does not scale linearly with the camera. The bot closes its aim on the camera's look
+  ray instead (the crosshair over the shoulder).
+* **Bot:** `gbox/mercs/titles/re5_ps3.py` is the Mercenaries engine's title #2.
+  * It targets the nearest Majini in front, skipping crows (health 1), rooftops and the dead.
+  * It turns with the right stick, aims with L1, puts the crosshair on the head and fires with R1.
+  * It steps back when a Majini is on top of it and runs to them when far.
+  * Between rounds it reads the screen from RAM (no player = menus or loading, clock 0 = results, health 0 =
+    "Continue?") and presses START and cross in turn. START leaves the results. Cross picks the last stage and
+    character and answers "Continue? Yes". Rounds loop without help.
+  * Live on Public Assembly with Chris (Heavy Metal), whose Gatling has infinite ammo, three rounds back to back
+    (2026-10-21, the Spark's scratch RPCS3): 14, 20 and 17 kills; 4,460, 7,460 and 6,260 points; best combo 7.
+    The first version (aim from the player's pitch) got 2-4 kills a round.
+  * A health freeze was on for those rounds. It is a scratch-only tool, never part of the driver. The bot only
+    presses buttons.
+  * Not yet: grabs ("Break free" is a left-stick wiggle), melee finishers on prompt, time bonuses and routes.
 
 ## Live checks (to run once, then flip `live_checked`)
 

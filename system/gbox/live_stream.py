@@ -74,6 +74,20 @@ def note_frame(lv: dict, now: float | None = None, log: Callable[[str], None] = 
     return stall
 
 
+def meter(lv: dict, now: float, source: str) -> None:
+    """Call with lv["cond"] held, before a new source frame is stored: which path frames arrive by ("stream": the
+    worker's encoder, "still": a native game's window stills) and a smoothed frame rate, for the broadcast feed list
+    (gbox/broadcast.py). A long gap counts as at most 10 s so one stall does not hide the rate for minutes."""
+    if source == "stream" or lv.get("source") != "stream":
+        lv["source"] = source
+    prev = lv.get("ts") or 0
+    if prev and now > prev:
+        dt = min(now - prev, 10.0)
+        avg = lv.get("dt")
+        lv["dt"] = dt if avg is None else avg + 0.1 * (dt - avg)
+        lv["fps"] = 1.0 / lv["dt"] if lv["dt"] > 0 else None
+
+
 def note_event(lv: dict, event: dict, log: Callable[[str], None] = print) -> dict:
     """An encoder event the worker reported (stall, exit, restart, slow frames); unknown keys are dropped."""
     kept = {k: str(event[k])[:80] if isinstance(event[k], str) else event[k] for k in EVENT_KEYS if k in event}

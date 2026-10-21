@@ -160,7 +160,11 @@ def routes(app,store,config,auth):
             if old and (old.get('owner')!=value.owner or old.get('worker_id')!=value.worker_id):
                 s=read('session',old['owner']);job=read('job',old['owner'].split('-',1)[-1])
                 active=(s or {}).get('state')=='running' or (job or {}).get('state') in ('queued','running')
-                if active or time.time()-old['updated']<90:raise HTTPException(409,'This card is already inserted in another session. Sync and close that session before sharing it')
+                # The operator's own launch takes a card back from an agent-owned demo (the screensaver, #2817): the
+                # demo's later syncs are refused (409), its local save is kept, no cloud version is overwritten.
+                mine=read('job',value.owner.split('-',1)[-1]) or {}
+                demo=bool((job or {}).get('agent_use')) and bool(mine) and not mine.get('agent_use')
+                if (active or time.time()-old['updated']<90) and not demo:raise HTTPException(409,'This card is already inserted in another session. Sync and close that session before sharing it')
             row['lease']={'owner':value.owner,'session_id':value.owner,'worker_id':value.worker_id,'updated':time.time()}
             write(KIND,cid,row)
         return public(row)

@@ -41,6 +41,23 @@ def gc_game(game_id=b"G4BE08"):
     return ad, g
 
 
+def test_game_calls_wait_for_a_running_room():
+    # the dispatcher runs every frame, room loads included: a call queued during a load runs on a player and an attache
+    # case being rebuilt (RE4 froze in a load right after `equip`, 2026-10-20), so calls need a running room
+    ad, g = gc_game()
+    pg = 0x80300000
+    ad.put(R.P_GLOBAL, struct.pack(">I", pg))
+    ad.put(pg + 0x20, bytes([2]))                                        # pG+0x20 2: a room loading
+    with pytest.raises(RuntimeError, match="loading a room"):
+        g.call(R.F_TAKE_ITEM, 0x35, 0, 0)
+    assert not ad.writes                                                 # nothing queued, no hook installed
+    ad.put(pg + 0x20, bytes([3]))
+    ad.put(R.P_PLAYER, struct.pack(">I", 0x80400000))
+    assert g.in_room() is True
+    ad.put(R.P_PLAYER, struct.pack(">I", 0))                              # no Leon (a cutscene, a menu over the room)
+    assert g.in_room() is False
+
+
 # ------------------------------------------------------------------------------------------- address table
 
 def test_every_new_address_has_a_source_and_is_not_live_checked_yet():
@@ -165,12 +182,16 @@ def test_item_ids_and_addresses_ops():
 
 # ------------------------------------------------------------------------------------------- RE5 Gold (#1104)
 
-def make_save(tmp_path, serial="BLUS30491", size=0x5000, seed=1):
+def make_save(tmp_path, serial="BLUS30491", size=0x5670, seed=1, folder=None):
     rnd = random.Random(seed)
     d = bytearray(rnd.randbytes(size))
     d[0x80:0x120] = bytes(0xA0)                                          # nothing unlocked yet
+    if size >= 0x5670:                                                    # the Gold block as a fresh save has it
+        d[0x4BC0:0x5670] = bytes(0x5670 - 0x4BC0)
+        struct.pack_into(">I", d, 0x5640, 1)
+        struct.pack_into(">I", d, 0x565C, 4)
     struct.pack_into(">I", d, 8, R5.checksum(bytes(d)))
-    p = tmp_path / "dev_hdd0" / "home" / "00000001" / "savedata" / f"{serial}-SAVE00" / "DATA0.DAT"
+    p = tmp_path / "dev_hdd0" / "home" / "00000001" / "savedata" / (folder or f"{serial}-SAVE00") / "DATA0.DAT"
     p.parent.mkdir(parents=True)
     p.write_bytes(bytes(d))
     return p
@@ -201,6 +222,39 @@ def test_re5_unlock_all_patches_every_group_and_keeps_the_checksum(tmp_path):
     assert st["checksum_ok"] and st["unlocked"]["bonus_features"] and not st["unlocked"]["points"]
     r = R5.run(tmp_path, "BLUS30491", "unlock_all", on=False)
     assert r["op"] == "revert" and r["verified"] and p.read_bytes() == orig
+
+
+def test_re5_reunion_group_opens_the_gold_blocks_mercenaries(tmp_path):
+    """Live 2026-10-20 (BLUS30491 in RPCS3): s32 0x4BC0 > 0 opens THE MERCENARIES REUNION and DESPERATE ESCAPE, 0x5640
+    and 0x565C = 0xFF every Reunion stage and character. The Gold block is outside the checksum."""
+    p = make_save(tmp_path, folder="BLUS3027010AE")                       # Gold saves under the original's name
+    orig = p.read_bytes()
+    assert R5.save_files(tmp_path, "BLUS30491") == [p]
+    st = R5.run(tmp_path, "BLUS30491", "status")["saves"][0]
+    assert st["checksum_ok"] and st["unlocked"]["mercenaries_reunion"] is False
+    r = R5.run(tmp_path, "BLUS30491", "unlock_all", groups=["mercenaries_reunion"])
+    d = p.read_bytes()
+    assert r["verified"] and r["saves"][0]["groups"] == {"mercenaries_reunion": True}
+    assert struct.unpack_from(">iII", d, 0x4BC0)[0] == 1
+    assert struct.unpack_from(">I", d, 0x5640)[0] == 0xFF and struct.unpack_from(">I", d, 0x565C)[0] == 0xFF
+    assert R5.checksum(d) == R5.checksum(orig) and R5.checksum_ok(d)       # the checksummed part is unchanged
+    assert R5.run(tmp_path, "BLUS30491", "status")["saves"][0]["unlocked"]["mercenaries_reunion"]
+    d = bytearray(d)
+    struct.pack_into(">i", d, 0x4BC0, 7)                                  # a save that already has more: kept
+    p.write_bytes(bytes(d))
+    R5.run(tmp_path, "BLUS30491", "unlock_all", groups=["mercenaries_reunion"])
+    assert struct.unpack_from(">i", p.read_bytes(), 0x4BC0)[0] == 7
+    g = R5.run(tmp_path, "BLUS30491", "groups")["groups"]["mercenaries_reunion"]
+    assert g["live_checked"] and "atleast 0x4BC0 0x1 (32-bit)" in g["writes"] and "bisecting" in g["source"]
+    assert "mercenaries_reunion" in R5.DEFAULT_GROUPS
+
+
+def test_re5_a_save_without_the_gold_block_is_refused_for_reunion_only(tmp_path):
+    p = make_save(tmp_path, size=0x4C00)
+    with pytest.raises(ValueError, match="no Gold Edition block"):
+        R5.run(tmp_path, "BLUS30491", "unlock_all")
+    assert R5.run(tmp_path, "BLUS30491", "unlock_all", groups=["files"])["verified"]
+    assert R5.checksum_ok(p.read_bytes())
 
 
 def test_re5_refuses_a_save_whose_checksum_does_not_follow_the_rule(tmp_path):
