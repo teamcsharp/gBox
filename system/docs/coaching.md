@@ -13,6 +13,19 @@ ticket. Concurrent retries reuse the same message/change/task. A lost creation r
 change ID; unresolved uncertainty is held for inspection instead of creating another task. Store errors are surfaced,
 and queue capacity never silently discards unfinished work.
 
+The desktop gives the report POST a bounded 60-second acknowledgement deadline. A transport timeout means delivery
+is unconfirmed, not that the note was rejected. The client checks
+`GET /api/sessions/{sid}/coach/submissions/{client_id}` for the same actor's durable receipt; this lookup creates no
+report, capture or task. Older servers without receipt support cannot receive an automatic retry. A saved legacy
+acknowledgement explicitly warns that automatic task dispatch needs the updated server.
+Unconfirmed submission identities survive renderer F5 in session storage (at most 50 entries for 24 hours, without
+credentials). A missing receipt after a server upgrade never authorizes replay of an ambiguous legacy submission.
+
+For a note already saved by an older server, an authenticated explicit
+`POST /api/sessions/{sid}/coach/{message_id}/dispatch` links one implementation request to that original message.
+It checks the exact session/game, keeps the original timestamp and attachments, and never recaptures the game.
+Repeated calls and lost child-creation responses use the same change/task identity and normal Hermes admission.
+
 The useful queue design was adapted from completed Hermes #2969 commit `3aaca405e358658b5af9d1ddd8b5d624c82ccf30`.
 Its tuple playbook mismatch, swallowed persistence failures, and unlocked updates were corrected. The unproven
 favorite/active-owner registry was not installed. No owner labels bypass Hermes admission.

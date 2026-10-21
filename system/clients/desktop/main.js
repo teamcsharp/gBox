@@ -5,6 +5,7 @@ const { app, BrowserWindow, ipcMain, shell, desktopCapturer, session, screen, di
 const { spawn, execFile, execFileSync } = require("child_process");
 const embedGeometry = require("./embed-geometry");
 const operationConsole = require('../web/viz/operation-console.js');
+const coachTransport = require('./coach-transport');
 const operationOutput = require('./operation-output-window.cjs')({BrowserWindow,getWin:()=>win});
 ipcMain.handle('operation-console:frame',(_e,state)=>{operationOutput.update(state);});
 // The shell and its guest are one dark app, including native controls and first paint.
@@ -172,8 +173,8 @@ async function apiRaw(p, body, method) {               // method: PATCH / PUT / 
     method, body: body && method !== "GET" ? JSON.stringify(body) : undefined,
     headers: { authorization: `Bearer ${t}`, "content-type": "application/json", ...(known ? { "if-none-match": known.etag } : {}) },
     // long polls get 35 s; asset listings 20 s (the control plane may still be indexing a slow HDD); the rest 8 s
-    signal: AbortSignal.timeout(p === "/api/tasks" || p.startsWith("/api/tasks?") ? 35000
-      : p.startsWith("/api/asset-groups") || p.startsWith("/api/assets?") ? 20000 : 8000),
+    signal: AbortSignal.timeout(coachTransport.timeoutMs(p, method) || (p === "/api/tasks" || p.startsWith("/api/tasks?") ? 35000
+      : p.startsWith("/api/asset-groups") || p.startsWith("/api/assets?") ? 20000 : 8000)),
   });
   if (r.status === 304 && known) return known.data;
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
@@ -662,6 +663,7 @@ ipcMain.handle('client:reload', event => {
   if (!win || event.sender !== win.webContents || (event.senderFrame && event.senderFrame !== win.webContents.mainFrame)) throw Error('Only the gBox app can reload its client.');
   if (clientReloading) return false;
   clientReloading = true;
+  try { if (mini && !mini.isDestroyed()) mini.webContents.reloadIgnoringCache(); } catch {} // keep its session URL and bounds
   win.webContents.reloadIgnoringCache();
   return true;
 });

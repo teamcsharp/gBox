@@ -312,6 +312,39 @@ def status(store, rid: str, mid: str) -> dict | None:
             "done": not any(c.get("state") == "pending" for c in caps.values())}
 
 
+def submission_status(store, sid: str, client_id: str, actor: str) -> dict:
+    """An acknowledgement lookup never files work or waits behind an in-flight submission."""
+    entries = (store.get("coaching_submissions", sid) or {}).get("entries") or []
+    entry = next((row for row in entries if row.get("client_id") == client_id and row.get("actor") == actor), None)
+    if entry is None:
+        return {"state": "missing", "session_id": sid, "client_id": client_id}
+    result = entry.get("result")
+    if not result:
+        return {"state": "pending", "session_id": sid, "client_id": client_id}
+    current = status(store, result["request_id"], result["message_id"])
+    return {"state": "saved", "session_id": sid, "client_id": client_id,
+            "result": result | (current or {}) | {"deduplicated": True}}
+
+
+def dispatch_note(store, create_request, sid: str, rid: str, mid: str, actor: str) -> dict:
+    """Explicit recovery for an already-saved note; reuse its evidence, never recapture or duplicate work."""
+    from . import bots
+    with store.lock:
+        req = store.get("request", rid)
+        msg = _message(req, mid)
+        session = store.get("session", sid) or {}
+        coach = (msg or {}).get("coach") or {}
+        if not msg or coach.get("session_id") != sid or coach.get("game_id") != session.get("game_id"):
+            raise HTTPException(404, "No such coaching note for this session")
+        change = bots.add_change(store, coach["game_id"], note=coach["note"], text=coach["text"],
+                                 request_id=rid, message_id=mid, by=actor, session_id=sid)
+        coach["change_id"] = change["id"]
+        store.put("request", rid, req)
+        _update_entry(store, coach["game_id"], mid, {"change_id": change["id"]})
+        bots.ensure_request(store, create_request, coach["game_id"], change["id"], actor)
+    return status(store, rid, mid)
+
+
 def _mib(n) -> str:
     return f"{(n or 0) / 2**20:.1f} MiB"
 
@@ -580,6 +613,18 @@ def routes(app, store, auth, create_request, submit, moment_provider=None):
         if st is None or st.get("session_id") != sid:
             raise HTTPException(404, "No such coaching note for this game")
         return st
+
+    @app.get("/api/sessions/{sid}/coach/submissions/{client_id}")
+    def coach_submission_status(sid: str, client_id: str, actor=Depends(auth)):
+        _game(sid)
+        return submission_status(store, sid, client_id, actor)
+
+    @app.post("/api/sessions/{sid}/coach/{mid}/dispatch")
+    def coach_dispatch_existing(sid: str, mid: str, actor=Depends(auth)):
+        rid = _request_of(store, _game(sid), mid)
+        if not rid:
+            raise HTTPException(404, "No such coaching note for this session")
+        return dispatch_note(store, create_request, sid, rid, mid, actor)
 
     @app.get("/api/sessions/{sid}/coach")
     def coach_latest(sid: str, actor=Depends(auth)):

@@ -26,6 +26,13 @@
   const drafts = new Map();                     // sid -> unsent text
   const recent = new Map();                     // sid -> {out, at}: the latest note, to resume its status after a re-render
   const retries = new Map();                    // sid -> one failed/uncertain submission, retried with the same ID
+  const RETRY_KEY = "gbox.coach.uncertain.v1", RETRY_AGE = 86400000;
+  function storedRetries(storage, now) {
+    try { return JSON.parse(storage?.getItem(RETRY_KEY) || "[]").filter(x =>
+      typeof x.sid === "string" && /^[A-Za-z0-9_-]{1,160}$/.test(x.sid) && typeof x.text === "string" && x.text.length <= 2000 &&
+      typeof x.clientId === "string" && /^[A-Za-z0-9_-]{8,96}$/.test(x.clientId) && Number.isFinite(x.at) && now >= x.at && now - x.at <= RETRY_AGE).slice(-50); }
+    catch { return []; }
+  }
   const HOLD_MS = 4000;                         // the settled full status stays this long before it folds
   // the status gives way before the box: it shrinks first (ellipsis, full text in its tooltip)
   const CSS = `#session-head .coach{display:inline-flex;align-items:center;gap:6px;flex:1 1 240px;min-width:min(100%,200px);max-width:640px}
@@ -49,6 +56,7 @@
   // the tooltip: the ticket, each capture's detail and (RE4) the decoded moment
   function detailText(st) {
     const rows = [`Coaching ticket #${st.number ?? "?"}, note ${st.note ?? "?"}`];
+    if (st.task_dispatch_unavailable) rows.push("Note saved; automatic task dispatch requires the updated server. Do not resend it.");
     if (st.implementation_number) rows.push(`Implementation task #${st.implementation_number} queued; starts when admitted.`);
     else if (st.change_id) rows.push(`Change ${st.change_id}: ${st.dispatch_state || "open"}${st.dispatch_state === "uncertain" ? "; task creation needs review" : ""}`);
     for (const k of KINDS) {
@@ -70,9 +78,10 @@
     let base = compact ? compactText(st.note, st.captures) : statusText(st.note, st.captures);
     if (st.evidence && Object.keys(st.evidence).length)
       base += ["stream", "map", "moment"].map(k => ` · ${k === "stream" ? "report image" : k} ${MARK[(st.evidence[k] || {}).state] || "?"}`).join("");
-    return { text: uncertain ? `Note #${st.note ?? "?"} saved; task creation unconfirmed`
+    return { text: st.task_dispatch_unavailable ? `Note #${st.note ?? "?"} saved; task dispatch needs server update`
+      : uncertain ? `Note #${st.note ?? "?"} saved; task creation unconfirmed`
       : base + (st.implementation_number ? ` · task #${st.implementation_number} queued` : ""),
-      title: detailText(st), state: uncertain || Object.values(st.evidence || {}).some(x => x.state === "failed")
+      title: detailText(st), state: st.task_dispatch_unavailable || uncertain || Object.values(st.evidence || {}).some(x => x.state === "failed")
         ? "error" : settled(st.captures) ? "done" : "pending", compact };
   }
 
@@ -80,6 +89,17 @@
                     sleep = ms => new Promise(r => setTimeout(r, ms)), idempotent = false,
                     makeId = () => root.crypto?.randomUUID?.() || `coach-${Date.now()}-${Math.random().toString(36).slice(2)}` }) {
     let generation = 0, disposed = false;
+    let storage;
+    try { storage = root.sessionStorage; } catch {} // sandboxed documents can deny storage
+    function keepAttempt(value) {
+      if (value) retries.set(sid, value); else retries.delete(sid);
+      try {
+        const rows = storedRetries(storage, now()).filter(x => x.sid !== sid);
+        if (value) rows.push({sid, text: value.text, clientId: value.clientId, at: value.at,
+          uncertain: !!value.uncertain, lookupSupported: !!value.lookupSupported, replayBlocked: !!value.replayBlocked});
+        storage?.setItem(RETRY_KEY, JSON.stringify(rows.slice(-50)));
+      } catch {} // the in-memory identity still protects retries in this view
+    }
     const sending = new Map();
     const paint = (gen, view) => { if (!disposed && gen === generation) render(view); };
     const folded = st => noteView(st, true);
@@ -90,7 +110,7 @@
       while (!settled(st.captures) && !disposed && gen === generation && now() - since < timeout) {
         await sleep(interval);
         if (disposed || gen !== generation) return st;
-        try { st = await api(`/api/sessions/${encodeURIComponent(sid)}/coach/${encodeURIComponent(out.message_id)}`); }
+        try { st = { ...out, ...await api(`/api/sessions/${encodeURIComponent(sid)}/coach/${encodeURIComponent(out.message_id)}`) }; }
         catch (e) {                             // a Wi-Fi blip / Spark restart: the next poll catches up
           if (/^404\b/.test(String(e && e.message))) {
             paint(gen, { text: "Coaching note no longer available", title: String(e.message), state: "error", compact: true });
@@ -109,19 +129,59 @@
       return st;
     }
 
+    async function recover(clientId) {
+      let receipt = null;
+      for (let i = 0; i < 3 && !disposed; i++) {
+        if (i) await sleep(500);
+        try { receipt = await api(`/api/sessions/${encodeURIComponent(sid)}/coach/submissions/${encodeURIComponent(clientId)}`); }
+        catch (e) { if (/^404\b/.test(String(e?.message))) return null; continue; }
+        if (receipt?.session_id !== sid || receipt?.client_id !== clientId) return null;
+        if (receipt.state === "saved" && receipt.result?.message_id) return receipt;
+        if (!["missing", "pending"].includes(receipt.state)) return null;
+      }
+      return receipt;
+    }
+
     async function submit(text) {
       const gen = ++generation;
       paint(gen, { text: "Sending note…", title: "", state: "sending" });
       let out;
-      const previous = retries.get(sid);
+      const previous = retries.get(sid) || storedRetries(storage, now()).find(x => x.sid === sid);
       const clientId = idempotent ? previous?.text === text ? previous.clientId : makeId() : null;
-      if (clientId) retries.set(sid, { text, clientId });
-      try { out = await api(`/api/sessions/${encodeURIComponent(sid)}/coach`, { text, ...(clientId ? { client_id: clientId } : {}) }); }
-      catch (e) {
-        paint(gen, { text: "✗ Note not sent: " + String(e && e.message || e).slice(0, 160), title: String(e && e.message || e), state: "error" });
-        throw e;
+      const attempt = { ...(previous?.text === text ? previous : {}), text, clientId, at: previous?.text === text ? previous.at : now() };
+      if (clientId) keepAttempt(attempt);
+      try {
+        // An old server ignored retry IDs. After an ambiguous response, never replay a POST to it.
+        if (previous?.text === text && previous.uncertain && (previous.replayBlocked || !previous.lookupSupported)) {
+          const receipt = await recover(clientId);
+          attempt.lookupSupported = !!receipt;
+          if (receipt?.state === "saved") out = receipt.result;
+          else if (previous.replayBlocked || receipt?.state !== "missing") throw Object.assign(Error("Delivery unconfirmed; check the coaching ticket before resending."), { receiptChecked: true });
+        }
+        if (!out) {
+          // F5 during this POST is also an ambiguous delivery, even before its timeout handler executes.
+          if (clientId) keepAttempt({ ...attempt, uncertain: true, replayBlocked: true });
+          out = await api(`/api/sessions/${encodeURIComponent(sid)}/coach`, { text, ...(clientId ? { client_id: clientId } : {}) });
+        }
       }
-      if (retries.get(sid)?.clientId === clientId) retries.delete(sid);
+      catch (e) {
+        const uncertain = !!clientId && !/^(400|401|403|404|422)\b/.test(String(e?.message));
+        if (uncertain) {
+          const receipt = e.receiptChecked ? null : await recover(clientId);
+          attempt.uncertain = true; attempt.lookupSupported ||= !!receipt;
+          attempt.replayBlocked = !!previous?.replayBlocked || !receipt;
+          keepAttempt(attempt);
+          if (receipt?.state === "saved") out = receipt.result;
+          else paint(gen, { text: "Delivery unconfirmed; checking the saved note is safe. Do not resend as a new note.",
+            title: String(e?.message || e), state: "error" });
+        } else {
+          if (clientId) keepAttempt(null);
+          paint(gen, { text: "✗ Note not sent: " + String(e && e.message || e).slice(0, 160), title: String(e && e.message || e), state: "error" });
+        }
+        if (!out) throw e;
+      }
+      if (idempotent && !out.change_id) out = { ...out, task_dispatch_unavailable: true };
+      if (retries.get(sid)?.clientId === clientId) keepAttempt(null);
       paint(gen, noteView(out));
       track(out, gen, now());                   // not awaited: the box is free for the next note at once
       return out;

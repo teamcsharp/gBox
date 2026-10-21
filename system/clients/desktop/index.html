@@ -2523,9 +2523,13 @@ function loadPlay() {
     const url = new URL(S.apiUrl);
     url.searchParams.set("embedded", "1");
     url.hash = new URLSearchParams({ token: tok, worker: S.workerName }).toString();
-    if (typeof EMB !== "undefined" && EMB.sid) url.hash += "&session=" + encodeURIComponent(EMB.sid);
+    // A refresh restores its exact foreground/PiP pair after the guest is ready. Do not auto-follow an ended SID first.
+    if (typeof EMB !== "undefined" && EMB.sid && (typeof clientRefresh === 'undefined' || !clientRefresh.pending())) url.hash += "&session=" + encodeURIComponent(EMB.sid);
     const wv = document.createElement("webview");
     wv.id = "wv"; wv.dataset.ready = "false"; wv.setAttribute("allowpopups", "");
+    let readyResolve, readyReject;
+    wv.gboxReady = new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
+    wv.gboxReady.catch(() => {}); // ordinary navigation need not await it; restoration does
     let generation = 0, timeout = null;
     const loading = () => {
       generation++; wv.dataset.ready = "false"; status("Loading gBox…"); clearTimeout(timeout);
@@ -2534,6 +2538,7 @@ function loadPlay() {
     const failed = text => {
       if (!wv.isConnected) return;
       generation++; clearTimeout(timeout); wv.dataset.ready = "false"; status(text, true);
+      readyReject(Error(text));
     };
     // Subframe loads (model/voice overlays) must not hide a healthy game view.
     wv.addEventListener("did-start-navigation", e => { if (e.isMainFrame && !e.isInPlace) loading(); });
@@ -2543,6 +2548,7 @@ function loadPlay() {
         await wv.executeJavaScript(`(async () => { document.documentElement.dataset.embedded = "true"; document.documentElement.style.colorScheme = "dark"; window.GBOX_LOCAL = ${JSON.stringify({ worker: S.workerName, incidentCapture: true })}; await window.gboxViewReady; await new Promise(resolve => requestAnimationFrame(resolve)); })()`);
         if (!wv.isConnected || revision !== generation) return;
         clearTimeout(timeout); wv.dataset.ready = "true"; panel.hidden = true;
+        readyResolve();
       } catch {
         if (wv.isConnected && revision === generation) failed("The gBox view could not initialize. Retry the connection.");
       }
@@ -2556,7 +2562,7 @@ function loadPlay() {
       console.error("gBox view renderer stopped", e.reason);
       failed("The gBox view stopped displaying. Retry the view; your game keeps running.");
     });
-    wv.addEventListener("destroyed", () => { generation++; clearTimeout(timeout); });
+    wv.addEventListener("destroyed", () => { generation++; clearTimeout(timeout); readyReject(Error('The game view was replaced.')); });
     $("#wv")?.remove();
     loading(); wv.src = url.href; $("#play").prepend(wv); playLoaded = true;
   }).catch(() => {
@@ -2763,12 +2769,13 @@ const PICKER_SRC = `(() => new Promise(resolve => {
 async function gboxState() {                             // what the embedded gBox UI is showing
   const wv = document.querySelector("#wv");
   if (!wv) return {};
-  try { return await wv.executeJavaScript(`(() => {
+  try { const value = await wv.executeJavaScript(`(() => {
+    if (globalThis.gboxClientViewState) return { ...globalThis.gboxClientViewState(), hash: location.hash };
     const tab = typeof cur !== "undefined" ? cur : null;
     const selected = tab === "Sessions" ? document.getElementById("session-head")?.dataset.sid : null;
     return { tab, session: selected || (typeof active !== "undefined" && active ? active.sid : null),
       playing: typeof playing !== "undefined" ? playing : null, hash: location.hash };
-  })()`); }
+  })()`); if (typeof clientRefresh !== 'undefined') clientRefresh.remember(value); return value; }
   catch { return {}; }
 }
 function appContext(extra = {}) {
@@ -3719,7 +3726,10 @@ const compactController = GBoxCompactGame.create({
     closePops(null); if (EYE.on) eyeStop();
     document.querySelector('aside button[data-s="play"]')?.click();
     const wv = document.querySelector('#wv');
-    if (wv) await wv.executeJavaScript(`show("Sessions", ${JSON.stringify(session.session_id)})`).catch(() => {});
+    if (wv && !requested?.preserveGuest) {
+      await wv.gboxReady;
+      await wv.executeJavaScript(`show("Sessions", ${JSON.stringify(session.session_id)})`);
+    }
     const frame = local && EMB.sid === session.session_id ? window.GBoxGPUVideo?.stats() : null;
     return { sid: session.session_id, local, ...(frame?.ready ? { aspect: frame.width / frame.height } : {}) };
   },
@@ -3764,26 +3774,39 @@ const clientRefresh = GBoxClientRefresh.create({ storage: sessionStorage, readSt
   } });
 async function restoreClientView() {
   const value = clientRefresh.pending(); if (!value) return;
-  if (value.sid) EMB.sid = value.sid; // loadPlay builds the new authenticated URL for this exact session
+  if (value.guest?.playing || value.sid) EMB.sid = value.guest?.playing || value.sid;
   document.querySelector(`aside button[data-s="${value.section}"]`)?.click();
   await loadPlay();
+  const wv = document.querySelector('#wv');
+  if (!wv) throw Error('The game view is not ready. Press F5 to reconnect your saved streams.');
+  await wv.gboxReady;
+  const restored = await wv.executeJavaScript(`window.gboxRestoreClientView ? window.gboxRestoreClientView(${JSON.stringify(value.guest)}) : Promise.reject(Error('The game view update is not available yet.'))`);
+  if (restored?.cancelled) { clientRefresh.done(); return; } // an operator selected another view while reconnecting
   if (value.compact) {
-    try { await compactController.enter(value); }
+    try { await compactController.enter({ ...value, preserveGuest: true }); }
     catch (error) {
       // The requested game may have ended while the client loaded. Restore its app bounds, never pick another game.
       await gbox.compactView({ on: false }).catch(() => {});
       toast(error.message + ' Press F5 to retry the view.', 10000); return;
     }
   }
+  if (restored?.missing?.length) {
+    toast('Waiting for saved stream' + (restored.missing.length > 1 ? 's' : '') + ': ' + restored.missing.join(', ') + '. Press F5 to retry.', 10000);
+    return; // keep the original pair for retry; never replace it with whichever session happens to be newest
+  }
   clientRefresh.done();
 }
 // Native desktop PiP has no browser gesture restriction. The same BrowserWindow keeps its original bounds.
 // Also retain the view for Ctrl+R/navigation reloads that bypass the F5 command.
 addEventListener('beforeunload', () => {
-  if (!clientRefresh.pending()) sessionStorage.setItem('gbox.client.refresh.v1', JSON.stringify(GBoxClientRefresh.snapshot({
-    sid: COMPACT.on ? COMPACT.sid : EMB.sid, compact: COMPACT.on, aspect: COMPACT.aspect,
-    returnMode: COMPACT.on ? COMPACT.returnMode : VIEW.mode, section: document.querySelector('section.on')?.id })));
+  if (!clientRefresh.pending()) clientRefresh.checkpoint();
 });
+// Ctrl+R cannot await a guest IPC call during unload. Keep its last confirmed pair, including the hidden main view.
+let clientViewReading = false;
+setInterval(() => {
+  if (clientViewReading || document.querySelector('#wv')?.dataset.ready !== 'true') return;
+  clientViewReading = true; gboxState().finally(() => { clientViewReading = false; });
+}, 2000);
 document.addEventListener('gbox-stream-state', event => {
   if (event.target.id !== 'compact-stream' || !COMPACT.on) return;
   document.querySelector('#wv')?.executeJavaScript(`window.gboxPadStreamState?.(${JSON.stringify(COMPACT.sid)}, ${!!event.detail.connected})`).catch(() => {});

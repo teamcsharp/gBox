@@ -108,6 +108,49 @@ class BotQueueTests(unittest.TestCase):
         self.assertEqual(queue.candidates(data, requests, [{"input": {"game_id": GAME}}], set(), set(), now=100), [])
         self.assertEqual(queue.candidates(data, requests, [], {child["id"]}, set(), now=100), [])
 
+    def test_existing_legacy_note_dispatch_reuses_evidence_and_cannot_target_another_session(self):
+        original = {"id": "saved-note", "author": "operator", "text": "shoot", "ts": 100,
+                    "attachments": [{"sha256": "original-frame"}],
+                    "coach": {"session_id": SID, "game_id": GAME, "text": "shoot", "note": 1,
+                              "captures": {"frame": {"state": "done", "sha256": "original-frame"}}}}
+        self.parent["messages"] = [original]
+        self.store.put("request", self.parent["id"], self.parent)
+        self.store.put("session", "other-sid", {"session_id": "other-sid", "game_id": GAME})
+        app = FastAPI()
+        def no_capture(*args):
+            self.fail("dispatching an existing note must not capture a new moment")
+        coaching.routes(app, self.store, lambda: "operator", self.create, no_capture, moment_provider=no_capture)
+        with TestClient(app) as client:
+            url = f"/api/sessions/{SID}/coach/saved-note/dispatch"
+            self.assertEqual(client.post("/api/sessions/other-sid/coach/saved-note/dispatch").status_code, 404)
+            first = client.post(url).raise_for_status().json()
+            second = client.post(url).raise_for_status().json()
+        self.assertEqual(first["implementation_request_id"], second["implementation_request_id"])
+        self.assertEqual(first["dispatch_state"], "queued")
+        self.assertEqual(len(self.store.all("request")), 2)
+        saved = self.store.get("request", self.parent["id"])["messages"]
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0]["attachments"], original["attachments"])
+        self.assertEqual(saved[0]["ts"], 100)
+        self.assertEqual(first["captures"], original["coach"]["captures"])
+        child = self.store.get("request", first["implementation_request_id"])
+        self.assertEqual(child["context"]["session_id"], SID)
+        self.assertEqual(child["context"]["coaching_message_id"], "saved-note")
+        self.assertEqual(child["parent_request_id"], self.parent["id"])
+
+    def test_existing_note_dispatch_with_lost_child_response_still_creates_only_one_request(self):
+        self.parent["messages"] = [{"id": "saved-note", "coach": {"session_id": SID, "game_id": GAME,
+                                    "text": "shoot", "note": 1, "captures": {}}}]
+        self.store.put("request", self.parent["id"], self.parent)
+        def lost(body, actor):
+            self.create(body, actor)
+            raise OSError("lost response")
+        first = coaching.dispatch_note(self.store, lost, SID, self.parent["id"], "saved-note", "operator")
+        again = coaching.dispatch_note(self.store, lost, SID, self.parent["id"], "saved-note", "operator")
+        self.assertEqual(first["dispatch_state"], "queued")
+        self.assertEqual(first["implementation_request_id"], again["implementation_request_id"])
+        self.assertEqual(len(self.store.all("request")), 2)
+
     def test_lost_create_response_is_reconciled_without_duplicate_and_unknown_creation_is_held(self):
         item = self.add()
         def lost(body, actor):

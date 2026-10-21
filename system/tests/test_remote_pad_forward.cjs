@@ -17,7 +17,7 @@ function client() {
     localStorage: { getItem: k => storage.get(k), setItem: (k, v) => storage.set(k, v) },
     api: async (url, body, method, timeoutMs) => sent.push({ url, timeoutMs, ...body }),
     requestAnimationFrame() { frames++; }, addEventListener() {}, setInterval() {},
-    $: key => nodes.get(key), cur: 'Sessions', show() {},
+    $: key => nodes.get(key), cur: 'Sessions', playing: null, show() {},
     esc: v => String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])),
   });
   ctx.window = ctx;
@@ -172,6 +172,31 @@ async function test() {
     c.run('window.gboxPadTextCapture(false)'); await c.flush();
     assert.deepEqual(c.events().at(-1), { url: '/api/sessions/spark-mini/input', key: 'start', down: true, player: 1 });
   }
-  console.log('Remote pad forwarding checks passed (11 groups)');
+  // 12. A restored second PiP stream cannot steal foreground controls; explicit compact targeting still wins.
+  {
+    const c = client(); c.ctx.playing = 'foreground-A';
+    c.nodes.set('#scr', { dataset: { sid: 'foreground-A' } });
+    c.push(xi(START)); await c.flush();
+    assert.deepEqual(c.events().at(-1), { url: '/api/sessions/foreground-A/input', key: 'start', down: true, player: 1 });
+    c.run(`window.gboxPadTarget('compact-B')`); await c.flush();
+    assert.deepEqual(c.events().slice(-2), [
+      { url: '/api/sessions/foreground-A/input', key: 'start', down: false, player: 1 },
+      { url: '/api/sessions/compact-B/input', key: 'start', down: true, player: 1 }
+    ]);
+  }
+  // 13. A PiP-only connection gates its own input, independently of another main picture.
+  {
+    const c = client(); c.ctx.gboxStreamWatchdog = require('../clients/web/viz/stream-watchdog.js');
+    const attrs = { src: '/api/sessions/' + SID + '/mjpeg', 'data-stream-state': 'connected' };
+    c.nodes.set('#pipimg', { tagName: 'IMG', getAttribute: k => attrs[k] });
+    c.nodes.set('#scr', { tagName: 'IMG', getAttribute: k => ({src:'/api/sessions/other-main/mjpeg','data-stream-state':'reconnecting'})[k] });
+    c.push(xi(START)); await c.flush(); assert.equal(c.events().at(-1).down, true);
+    attrs['data-stream-state'] = 'reconnecting'; c.run('padLoop()'); await c.flush();
+    assert.deepEqual(c.events().at(-1), { url, key: 'start', down: false, player: 1 });
+    const count = c.events().length; c.push(xi(START)); await c.flush(); assert.equal(c.events().length,count);
+    c.run(`window.gboxPadTarget('${SID}');window.gboxPadStreamState('${SID}',true)`);await c.flush();
+    assert.equal(c.events().at(-1).down,true,'confirmed native compact image is independent of its hidden guest PiP');
+  }
+  console.log('Remote pad forwarding checks passed (13 groups)');
 }
 test().catch(e => { console.error(e); process.exitCode = 1; });
