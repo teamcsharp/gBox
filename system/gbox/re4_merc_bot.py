@@ -737,7 +737,7 @@ class _Menus:
         self.nav = re4_menus.Navigator(send, sleep=sleep, clock=clock, stats=stats) if re4_menus else None
         self.hooks = hooks if hooks is not None else (
             (lambda: apply_package(ad, skip=EARLY_OPS)) if ad is not None else None)
-        self.hooked, self.moment_tried = False, False
+        self.hooked, self.moment_tried, self.where = False, False, None
         self.lost_since, self.still_since, self.progress = None, None, None
 
     def tick(self, s: dict, now: float) -> str | None:
@@ -748,19 +748,21 @@ class _Menus:
         why = re4_menus.wandered(scr)
         if why:
             return why
-        if scr["where"] == "select_player" and not self.hooked:
-            if not self.moment_tried:                # before any hook: the state restores cleanly
+        if scr["where"] == "select_player" and self.where != "select_player":
+            if not self.moment_tried and not self.hooked:    # before any hook: the state restores cleanly
                 self.moment_tried = True
                 try:
                     self.stats["menu_moment"] = save_menu_moment(self.ad, self.game) or "none (no jump states here)"
                 except Exception as e:               # noqa: BLE001 - no moment: the menus still work
                     self.stats["menu_moment"] = f"failed: {type(e).__name__}: {e}"[:160]
-            if self.hooks is not None:
-                failed = self.hooks() or []
+            if self.hooks is not None:               # every visit: a hook that did not hold across the last round
+                failed = self.hooks() or []          # is back in before the next one (the ops are idempotent)
                 self.stats["hooks"] = "applied" + (f" ({len(failed)} failed)" if failed else "")
+                self.stats["hooks_applied"] = self.stats.get("hooks_applied", 0) + 1
                 if failed:
                     self.stats["hooks_failed"] = "; ".join(failed)[:300]
-            self.hooked = True                       # in RAM until the game resets
+            self.hooked = True
+        self.where = scr["where"]
         if scr["where"] == "unknown":
             self.lost_since = self.lost_since or now
             if now - self.lost_since > MENU_LOST_S:
