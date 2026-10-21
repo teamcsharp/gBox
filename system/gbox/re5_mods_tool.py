@@ -89,7 +89,9 @@ _HEALTH_LOCK = threading.RLock()
 TEMPLATE, TEMPLATE_BLOCK, TEMPLATE_BLOCKS, TEMPLATE_REC = 0x01730048, 0x210, 30, 0x2C   # the first record's id word
 TEMPLATE_SIGNATURE = (0x84, 0x124)                               # block 0's knife record: id 0x124
 POWERFUL = {0x11B: "S&W M500", 0x11A: "Lightning Hawk", 0x119: "Hydra", 0x115: "Gatling gun", 0x10D: "rocket launcher",
-            0x11C: "H&K PSG-1", 0x11D: "AK-74", 0x116: "Benelli M3", 0x10C: "grenade launcher", 0x120: "Dragunov SVD"}
+            0x11C: "H&K PSG-1", 0x11D: "AK-74", 0x116: "Benelli M3", 0x10C: "grenade launcher", 0x120: "Dragunov SVD",
+            0x10B: "S&W M29"}
+MAGNUMS = (0x10B, 0x11A, 0x11B)
 KNIFE_IDS = {0x101, 0x10E, 0x114, 0x123, 0x124, 0x100}
 ORIG: dict = {}                                 # id(adapter) -> the tables and values as the game had them
 
@@ -503,6 +505,8 @@ def loadout(g: RE5, weapons=None, seed=None, on: bool = True) -> dict:
         block = off // TEMPLATE_BLOCK
         used = picks.setdefault(block, [])
         choice = rng.choice([w for w in pool if w not in used] or pool)
+        if choice == 0x10D:
+            choice = rng.choice([w for w in MAGNUMS if w not in used] or MAGNUMS)
         used.append(choice)
         struct.pack_into(">I", t, off, choice)
         struct.pack_into(">I", t, off + 7 * 4, 0)
@@ -511,6 +515,35 @@ def loadout(g: RE5, weapons=None, seed=None, on: bool = True) -> dict:
     return {"loadout": "random powerful campaign weapons", "verified": ok, "blocks": len(picks),
             "barry": named.get(24), "chris_heavy_metal": named.get(18), "picks": named,
             "note": "takes effect at the next round start (the game copies the template into the inventory then)"}
+
+
+def replace_rockets(g: RE5, seed=None) -> dict:
+    """Replace only rocket entries in live spawn templates; the game constructs the magnum next round.
+
+    This deliberately does not relabel an already-created rocket weapon object as a magnum.
+    It preserves grid, in-hand flags, unrelated records and other active loadout changes.
+    """
+    import random
+    if g.u32(TEMPLATE + TEMPLATE_SIGNATURE[0]) != TEMPLATE_SIGNATURE[1]:
+        raise RuntimeError("rocket replacement: loadout template signature differs")
+    current = g.rd(TEMPLATE, TEMPLATE_BLOCKS * TEMPLATE_BLOCK)
+    g.keep("template", lambda: current)
+    rng, replaced, ok = random.Random(seed), [], True
+    for off, idw, _, pos, hand, _ in template_records(current):
+        if idw != 0x10D:
+            continue
+        before = current[off:off + TEMPLATE_REC]
+        if g.rd(TEMPLATE + off, TEMPLATE_REC) != before:
+            raise RuntimeError("rocket replacement: template changed during validation")
+        item = rng.choice(MAGNUMS)
+        record = bytearray(before)
+        struct.pack_into(">II", record, 0, item, 0xFFFFFFFF)  # its own full magazine
+        struct.pack_into(">I", record, 0x1C, 0)              # valid level-zero upgrades
+        ok &= g.wr(TEMPLATE + off, bytes(record))
+        replaced.append({"address": f"0x{TEMPLATE + off:X}", "item": item,
+                         "weapon": WEAPONS[item & 0xFF], "grid": pos, "in_hand": bool(hand)})
+    return {"verified": ok, "rocket_replacements": replaced, "effective_next_round": True,
+            "note": "spawn templates only; equipped weapon readback is required after the next round starts"}
 
 
 def random_cheats(g: RE5, seed=None) -> dict:
@@ -531,6 +564,7 @@ def random_cheats(g: RE5, seed=None) -> dict:
         picked["loadout_barry"] = lo.get("barry")
     else:
         out["loadout"] = loadout(g, on=False)["verified"]
+    out["rocket_replacement"] = replace_rockets(g, rng.random())["verified"]
     return {"telemetry": picked, "verified": all(out.values()), "applied": out}
 
 
@@ -584,12 +618,14 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5 | None 
         res.update(bullet_damage(g, (multiplier if multiplier is not None else 10.0) if on else 1.0))
     elif op == "loadout":
         res.update(loadout(g, extra.get("weapons"), extra.get("seed"), on))
+    elif op == "replace_rockets":
+        res.update(replace_rockets(g, extra.get("seed")))
     elif op == "random_cheats":
         res.update(random_cheats(g, extra.get("seed")))
     elif op == "revert_all":
         res.update(revert_all(g))
     else:
-        raise ValueError("op: status | turn_speed | fire_rate | infinite_ammo | unlimited_health | bullet_damage | loadout | random_cheats | "
+        raise ValueError("op: status | turn_speed | fire_rate | infinite_ammo | unlimited_health | bullet_damage | loadout | replace_rockets | random_cheats | "
                          "revert_all | addresses")
     res["status"] = g.status()
     return res

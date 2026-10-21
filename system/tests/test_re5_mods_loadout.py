@@ -3,6 +3,7 @@ inventory: proven live 2026-10-21, Barry's M29 -> S&W M500 5/5 and Dragunov -> H
 per-round randomizer and the playbook's round_ops."""
 import struct
 from types import SimpleNamespace
+import pytest
 
 from gbox import mercs_bot as MB, re5_mods_tool as T
 from test_re5_mods import FakeRE5, fresh_originals  # noqa: F401 (the autouse fixture)
@@ -54,6 +55,41 @@ def test_random_cheats_picks_a_set_and_reports_it():
     assert st["fire_rate_x"] == 80.0 and st["infinite_ammo"] is True and st["turn_speed_x"] == r["telemetry"]["turn_speed_x"]
     rr = T.run(m, "revert_all")
     assert rr["verified"] and "loadout" in rr["reverted"] and rr["status"]["fire_rate_x"] == 1.0
+
+
+def test_requested_rockets_become_random_magnums_in_generated_loadouts():
+    m = with_template(FakeRE5())
+    names = set()
+    for seed in range(12):
+        result = T.run(m, "loadout", weapons=[0x10D], seed=seed)
+        names.update(result["barry"])
+        assert set(result["barry"]) <= {T.WEAPONS[w & 0xFF] for w in T.MAGNUMS}
+        assert all(idw != 0x10D for _, idw, *_ in T.template_records(
+            m.read_memory(T.TEMPLATE, T.TEMPLATE_BLOCKS * T.TEMPLATE_BLOCK)))
+    assert len(names) == 3
+
+
+def test_existing_rocket_templates_are_replaced_without_touching_equipped_objects_or_other_records():
+    m = with_template(FakeRE5())
+    off = 24 * T.TEMPLATE_BLOCK + 6 * T.TEMPLATE_REC
+    m.u32(T.TEMPLATE + off, 0x10D)
+    before = m.read_memory(T.TEMPLATE, T.TEMPLATE_BLOCKS * T.TEMPLATE_BLOCK)
+    equipped = m.read_memory(0x303F89E0 + T.INV_OFS, T.INV_SLOTS * T.SLOT)
+    result = T.run(m, "replace_rockets", seed=7)
+    assert result["verified"] and result["effective_next_round"] is True
+    assert len(result["rocket_replacements"]) == 1
+    after = m.read_memory(T.TEMPLATE, len(before))
+    assert struct.unpack_from(">I", after, off)[0] in T.MAGNUMS
+    assert after[:off] == before[:off] and after[off + T.TEMPLATE_REC:] == before[off + T.TEMPLATE_REC:]
+    assert after[off + 8:off + 28] == before[off + 8:off + 28]  # grid/hand and record identity preserved
+    assert struct.unpack_from(">I", after, off + 4)[0] == 0xFFFFFFFF
+    assert struct.unpack_from(">I", after, off + 28)[0] == 0
+    assert m.read_memory(0x303F89E0 + T.INV_OFS, len(equipped)) == equipped
+    writes = len(m.writes)
+    assert T.run(m, "replace_rockets")["rocket_replacements"] == [] and len(m.writes) == writes
+    m.u32(T.TEMPLATE + T.TEMPLATE_SIGNATURE[0], 0)
+    with pytest.raises(RuntimeError, match="signature"):
+        T.run(m, "replace_rockets")
 
 
 def test_the_playbook_runs_round_ops_at_every_select_and_shows_the_picks():
