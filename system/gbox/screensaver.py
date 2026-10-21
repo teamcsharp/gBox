@@ -380,12 +380,37 @@ class Screensaver:
             self.store.put(STATE, run["worker"], run | upd)
             return True
 
+    def pcs(self, cfg: dict, now: float | None = None) -> list[dict]:
+        """Each PC, and why the screensaver would not start a game there now (reason None: it may at its next tick).
+        starts_in_s: a Windows PC's idle time still to go before it may (the Sessions view's "nothing is playing")."""
+        now = time.time() if now is None else now
+        running = self.store.running_sessions()
+        out = []
+        for w in self.workers():
+            run = self.store.get(STATE, w.get("name"))
+            if run:
+                reason = f"playing {run.get('title') or run.get('game_id') or 'a demo'}"
+            elif not cfg["enabled"]:
+                reason = "the autoplay screensaver is off"
+            else:
+                try:
+                    reason = worker_reason(self.store, w, cfg, running, now)
+                except Exception as e:                       # noqa: BLE001 - one PC's check never hides the others
+                    reason = f"unknown ({type(e).__name__})"
+            idle = w.get("idle_seconds")
+            left = (max(0.0, cfg["idle_minutes"] * 60 - idle) if w.get("os") == "windows" and idle is not None
+                    and w.get("online") else None)
+            out.append({"name": w.get("name"), "id": w.get("id"), "os": w.get("os"), "online": bool(w.get("online")),
+                        "demo": bool(run), "reason": reason, "starts_in_s": round(left) if left is not None else None})
+        return out
+
     def status(self) -> dict:
         cfg = settings(self.store)
         log = sorted(self.store.all(LOG), key=lambda r: -(r.get("started") or 0))[:30]
         games = self.games(cfg)
         out = {"settings": cfg, "running": self.store.all(STATE), "log": log,
-               "games": [{k: g[k] for k in ("game_id", "title", "pads")} for g in games[:40]]}
+               "games": [{k: g[k] for k in ("game_id", "title", "pads")} for g in games[:40]],
+               "pcs": self.pcs(cfg)}
         if self.builder is not None:
             out["roulette"] = self.builder.status()
         return out

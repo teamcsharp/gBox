@@ -282,6 +282,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/session-move.js"></script>
 <script src="/viz/remote-game.js"></script>
 <script src="/viz/session-live.js"></script>
+<script src="/viz/session-follow.js"></script>
 <script src="/viz/broadcast.js"></script>
 <script src="/viz/session-build.js"></script>
 <script src="/viz/image-pan-zoom.js"></script>
@@ -756,7 +757,7 @@ const COACH = { ctl: null };                    // the Sessions header's "Coach 
 const RAMI = { ctl: null };                     // the Sessions header's RAM inspector button + panel (viz/ram-inspector.js)
 const BCAST = { ctl: null, panel: null };       // the Sessions header's On air button + the list's Broadcast bar (viz/broadcast.js)
 $("#tabs").innerHTML = Object.keys(tabs).map(t => `<button data-t="${t}">${t}</button>`).join("");
-$("#tabs").onclick = e => e.target.dataset.t && show(e.target.dataset.t);
+$("#tabs").onclick = e => e.target.dataset.t && (e.target.dataset.t === "Sessions" ? showList() : show(e.target.dataset.t));
 $("#home-brand").onclick = () => show("Home");
 function fitSessionLayout() {
   const layout = document.querySelector("#view > .play.fit, #view > .exam");
@@ -794,6 +795,8 @@ async function show(t, ...args) {
   $("#gsearch").value = t === "Home" ? HOME.search : L.q || "";
   const sc = document.getElementById("scrub"); if (sc && t !== "Library") sc.style.display = "none"; clearInterval(timer); document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.t === t));
   playing = t === "Sessions" && args[0] ? args[0] : null;          // the session shown full-size, if any
+  clearTimeout(FOLLOW.timer);                                    // an ended view's look for a running game stops here
+  if (!(t === "Sessions" && !args[0])) FOLLOW.list = false;       // the list stays only while the operator chose it
   sessionMode = t === "Sessions" ? args[1] || null : null;
   pip();                                                         // leaving a game -> picture-in-picture
   watchPanel();                                                  // watching a streamed game -> bot + Ghidra + jobs beside it
@@ -1757,7 +1760,7 @@ async function sessionsView(sid, mode) {
     const ws = await api("/api/workers").catch(() => null), nowS = Date.now() / 1000;
     const pic = s => s.state === "running" && !sessionIsLocal(s) ? GBoxSessionLive.judge(s, ws, nowS) : { live: true };
     setTimeout(mountBroadcastPanel, 0);                        // no await from here: runs once show() put the list in
-    return (window.GBoxBroadcast ? GBoxBroadcast.panelHTML() : "") +
+    return (window.GBoxBroadcast ? GBoxBroadcast.panelHTML() : "") + '<div id="follow-idle"></div>' +
     `<p class="mut">Watch a running game, or reopen any game from your history (relaunches its ROM). A game with no recent picture says why when you open it.</p>` +
     table(["Game", "State", "Adapter", "Frame age", "", "Session"], ss.slice(0, 200).map(s => { const v = pic(s); return `<tr>
       <td><a href="#" onclick='${s.state === "running" ? `show("Sessions",${JSON.stringify(s.session_id)})` : `play(${JSON.stringify(s.game_id)})`};return false'><b>${esc(s.title)}</b></a></td>
@@ -1777,7 +1780,7 @@ async function sessionsView(sid, mode) {
   const cardPlatform=s.platform||cardGame?.platform;
   SESSIONBUILD.session = s;                                   // sessionsView.after mounts the header's build rename on it
   SESSIONBUILD.session.platform=cardPlatform;
-  const head = `<div class="bar" id="session-head" data-sid="${esc(sid)}" data-state="${esc(s.state || 'missing')}"><button class="act" onclick="show('Sessions')">All sessions</button><button class="act" id="emulation-issue" aria-label="Report emulation issue and recover game" title="Game frozen or black? Capture diagnostics and save state, file an inbox report, and recover gameplay" style="padding:5px 7px;line-height:0;color:var(--bad)" onclick='reportEmulationIssue(${JSON.stringify(sid)})'><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 17h.01"/></svg></button><button class="act" id="emulation-troubleshooting" aria-label="Emulation troubleshooting options" aria-expanded="false" aria-controls="emulation-troubleshooting-menu" title="Troubleshooting options" style="padding:5px 4px;line-height:0;margin-left:-6px" onclick='toggleEmulationTroubleshooting(${JSON.stringify(sid)})'><svg viewBox="0 0 16 16" width="13" height="17" fill="currentColor"><path d="M4 5l4 6 4-6z"/></svg></button>${window.GBoxSessionBuild ? GBoxSessionBuild.titleHTML(s) : `<b>${esc(s.title || 'Game session')}</b>`}
+  const head = `<div class="bar" id="session-head" data-sid="${esc(sid)}" data-state="${esc(s.state || 'missing')}"><button class="act" onclick="showList()">All sessions</button><button class="act" id="emulation-issue" aria-label="Report emulation issue and recover game" title="Game frozen or black? Capture diagnostics and save state, file an inbox report, and recover gameplay" style="padding:5px 7px;line-height:0;color:var(--bad)" onclick='reportEmulationIssue(${JSON.stringify(sid)})'><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 17h.01"/></svg></button><button class="act" id="emulation-troubleshooting" aria-label="Emulation troubleshooting options" aria-expanded="false" aria-controls="emulation-troubleshooting-menu" title="Troubleshooting options" style="padding:5px 4px;line-height:0;margin-left:-6px" onclick='toggleEmulationTroubleshooting(${JSON.stringify(sid)})'><svg viewBox="0 0 16 16" width="13" height="17" fill="currentColor"><path d="M4 5l4 6 4-6z"/></svg></button>${window.GBoxSessionBuild ? GBoxSessionBuild.titleHTML(s) : `<b>${esc(s.title || 'Game session')}</b>`}
     <span class="tabs2"><button class="act ${!mode ? "pri" : ""}" onclick='show("Sessions",${JSON.stringify(sid)})'>Play</button><button class="act ${mode === "inspect" ? "pri" : ""}" onclick='show("Sessions",${JSON.stringify(sid)},"inspect")'>Inspect</button><button class="act ${mode === "examine" ? "pri" : ""}" title="Pause and explore this frame as a real 3D scene (the game waits in picture-in-picture)" onclick='show("Sessions",${JSON.stringify(sid)},"examine")'>Examine 3D</button></span>
     <span class="mut">${esc(s.adapter)} · <code>${esc(sid)}</code></span>
     ${s.game_id === RE6_GAME && s.state === "running" ? `<button class="act" title="Pick weapons and items (every item, with pictures) for Mercenaries" onclick='re6Loadout(${JSON.stringify(sid)})'>Loadout</button>` : ""}
@@ -1795,7 +1798,7 @@ async function sessionsView(sid, mode) {
       aria-label="Reset" title="Reset (keeps your mods and character swaps) · Ctrl+click twice: hard reset to the original game, clears this game's mod settings" onclick='resetGame(${JSON.stringify(sid)}, this, event.ctrlKey)'><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg></button>
     <button class="act" style="color:var(--bad);border-color:var(--bad);padding:5px 7px;line-height:0" title="Stop: kill the emulator now and end the session"
       aria-label="Stop" onclick='hardStop(${JSON.stringify(sid)}, this)'><svg viewBox="0 0 24 24" width="16" height="16"><rect x="5" y="5" width="14" height="14" rx="2" fill="currentColor"/></svg></button>` : ""}</div>`;
-  if (s.state !== "running") return head + `<p class="mut">This session has ended. Open a running game to examine it${s.game_id ? ', or reopen this game' : ''}.</p>${s.game_id ? `<button class="act pri" onclick='play(${JSON.stringify(s.game_id)})'>Reopen game</button>` : ''}`;
+  if (s.state !== "running") return head + `<p class="mut">This session has ended. Open a running game to examine it${s.game_id ? ', or reopen this game' : ''}.</p>${s.game_id ? `<button class="act pri" onclick='play(${JSON.stringify(s.game_id)})'>Reopen game</button>` : ''}<div id="follow-idle"><p class="mut">Looking for a game that is playing…</p></div>`;
   if (mode === "inspect") return head + await inspectView(sid);
   if (mode === "examine") return head + examineView(sid, s);
   // a game another PC plays natively (#2858): its live screen where the game goes, Pull it to this PC in a bar under it.
@@ -2220,13 +2223,70 @@ function sessionBuildChanged(ev, info) {
   trayTick();                                                 // notifications: the server names build entries at read time
   if (bnEmbedded()) console.log("GBOX:" + JSON.stringify({ ev, ...info }));   // the desktop app: its launch bar and Mods page
 }
+// ---- the Sessions view always shows a game that plays (viz/session-follow.js) ----
+// An ended session (or none, unless the operator chose the list) moves to a running game: the broadcast program's, else
+// the newest with a picture; a line under the header says so. Nothing running: when the screensaver starts one, and why
+// not yet on each PC. Never away from a running game, a pinned one, or the operator's own game in its first minute.
+const FOLLOW = { timer: null, note: null, pinned: null, list: false };
+function showList() { FOLLOW.list = true; show("Sessions"); }          // the operator asked for the list: it stays
+async function followLive(fromSid) {
+  const F = window.GBoxSessionFollow;
+  if (!F || cur !== "Sessions") return {};
+  const [ss, bc, ws] = await Promise.all([api("/api/sessions").catch(() => null), api("/api/broadcast").catch(() => null),
+                                          api("/api/workers").catch(() => null)]);
+  const head = $("#session-head");
+  if (!Array.isArray(ss) || cur !== "Sessions" || (head?.dataset.sid || null) !== (fromSid || null)) return {};   // moved on
+  const shown = fromSid ? ss.find(s => s.session_id === fromSid) || { session_id: fromSid, state: "ended", agent_owned: true } : null;
+  const relaunch = shown?.replaced_by && ss.find(s => s.session_id === shown.replaced_by && s.state === "running");
+  const program = bc?.program || null;
+  const next = relaunch ? { session: relaunch, via: "relaunch" }
+    : F.pick(ss, program, { except: fromSid, workers: ws, judge: window.GBoxSessionLive?.judge });
+  const d = relaunch ? { follow: true } : F.decide(shown, { program, pinned: FOLLOW.pinned });
+  if (next && d.follow) {
+    if (!relaunch) FOLLOW.note = { sid: next.session.session_id, text: F.note(shown, next.session) };
+    show("Sessions", next.session.session_id);
+    return { moved: true };
+  }
+  if (next) return { html: F.waitHTML(next.session, d), wait_s: d.wait_s };
+  return { html: F.idleHTML(await api("/api/autoplay-screensaver").catch(() => null)) };
+}
+function followWatch(sid) {                                   // the ended / empty view: look for a game until one plays
+  clearTimeout(FOLLOW.timer);
+  const tick = async () => {
+    const head = $("#session-head");
+    if (cur !== "Sessions" || (head?.dataset.sid || null) !== (sid || null) || head?.dataset.state === "running") return;
+    const r = await followLive(sid).catch(() => ({}));
+    if (r.moved) return;
+    const box = $("#follow-idle");
+    if (box && r.html !== undefined) box.innerHTML = r.html;
+    FOLLOW.timer = setTimeout(tick, 1000 * Math.min(r.wait_s || GBoxSessionFollow.POLL_S, GBoxSessionFollow.POLL_S));
+  };
+  const box = $("#follow-idle");
+  if (box) box.onclick = e => {
+    const b = e.target.closest("button"); if (!b) return;
+    if (b.dataset.followStay) { FOLLOW.pinned = sid; box.innerHTML = '<p class="mut">Staying on this game.</p>'; clearTimeout(FOLLOW.timer); }
+    if (b.dataset.followGo) show("Sessions", b.dataset.followGo);
+  };
+  tick();
+}
+function followNote(sid, head) {                              // "Now showing DOA3 on i9-NUC: the RE4 session ended"
+  if (FOLLOW.note?.sid !== sid || !head) return;
+  const line = document.createElement("p");
+  line.className = "mut"; line.id = "follow-note"; line.setAttribute("role", "status");
+  line.style.cssText = "margin:4px 12px;font-size:12px";
+  line.textContent = FOLLOW.note.text;
+  head.insertAdjacentElement("afterend", line);
+  FOLLOW.note = null;
+  setTimeout(() => line.remove(), 60000);
+}
 sessionsView.after = (sid, mode) => {
-  if (!sid) return;
+  if (!sid) { if (!FOLLOW.list) followWatch(null); return; }  // no game chosen: show one that plays (the list stays when asked for)
   syncSessionFav();
   const head = $("#session-head");
   sessionBuildMount(head);
-  if (!head || head.dataset.state !== "running") { playing = null; if (active?.sid === sid) { active = null; pip(); } return; }
+  if (!head || head.dataset.state !== "running") { playing = null; if (active?.sid === sid) { active = null; pip(); } followWatch(sid); return; }
   sid = head.dataset.sid; playing = sid;
+  followNote(sid, head);
   // notes for the autoplay; a game on this PC (a bot demo here) gets the keyboard back once a note is sent: the bot
   // never presses keys while the coach box (or any text field) has them (gbox.adapters.polite_verdict)
   COACH.ctl?.dispose(); COACH.ctl = window.GBoxAutoplayCoach?.mount(head, { sid, api, onSent: () => {

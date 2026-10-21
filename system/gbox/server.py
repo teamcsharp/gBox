@@ -3608,13 +3608,14 @@ def create_app(config: Config) -> FastAPI:
                     row["mod_favorite"] = True
             if s_.get("state") == "running" and _stopping(s_["session_id"]):
                 row["stopping"] = True              # Stop was pressed; the worker is killing the emulator (#1504)
-            if s_.get("state") == "running":         # Hermes / observers keep heavy work off the operator's game
-                from .background_testing import agent_owned
-                row["agent_owned"] = agent_owned(store.get("slabel", s_["session_id"]),
-                                                 store.get("job", s_["session_id"].split("-", 1)[-1]))
-                from .screensaver import bot_demo
-                if bot_demo(store, s_["session_id"]):
-                    row["bot_demo"] = True           # launched with autoplay on: the Sessions header says "Bot demo"
+            # Hermes / observers keep heavy work off the operator's game; the Sessions view leaves an ended demo or agent
+            # session for a game that plays at once, the operator's own ended game only after a grace (session-follow.js)
+            from .background_testing import agent_owned
+            row["agent_owned"] = agent_owned(store.get("slabel", s_["session_id"]),
+                                             store.get("job", s_["session_id"].split("-", 1)[-1]))
+            from .screensaver import bot_demo
+            if bot_demo(store, s_["session_id"]):
+                row["bot_demo"] = True               # launched with autoplay on: the Sessions header says "Bot demo"
             out.append(row)
         return out
 
