@@ -65,31 +65,72 @@ def doapp_inventory_report(inventory, game_id):
     (that stays in game_unlocks) and never mutates ROMs, saves, or builds.
     Raises ValueError when the game is absent from the inventory.
     """
-    games = (inventory or {}).get('games') or {}
-    if game_id not in games:
-        raise ValueError(f'game {game_id} is not in the DOAPP inventory')
-    game = games[game_id]
-    entries = game.get('entries') or {}
-    categories = {name: list(names) for name, names in (game.get('categories') or {}).items()}
-    hidden = [n for n, meta in entries.items() if meta.get('hidden_costume')]
-    samples = {name: names[:10] for name, names in sorted(categories.items())}
-    return {
-        'kind': DOAPP_EVIDENCE_KIND,
-        'game_id': game_id,
-        'title': game.get('title') or game_id,
-        'title_source': game.get('title_source') or 'unresolved',
-        'files': game.get('files', 0),
-        'entries': len(entries),
-        'entry_kinds': dict(sorted(game.get('entry_kinds', {}).items())),
-        'categories': {name: len(names) for name, names in sorted(categories.items())},
-        'category_samples': samples,
-        'hidden_costumes': sorted(hidden),
-        'hidden_costume_count': len(hidden),
-        'warnings': list(game.get('warnings') or []),
-        'source': (inventory or {}).get('source', ''),
-        'inventory_generated': (inventory or {}).get('generated'),
-        'runtime_hooks': 'none (evidence only; see gbox.game_unlocks profile_for)',
-    }
+    # Support both flat format (from doapp_inventory.inventory) and games dict format
+    games = (inventory or {}).get('games')
+    if games is not None:
+        # games dict format
+        if game_id not in games:
+            raise ValueError(f'game {game_id} is not in the DOAPP inventory')
+        game = games[game_id]
+        entries = game.get('entries') or {}
+        categories = {name: list(names) for name, names in (game.get('categories') or {}).items()}
+        hidden = [n for n, meta in entries.items() if meta.get('hidden_costume')]
+        samples = {name: names[:10] for name, names in sorted(categories.items())}
+        return {
+            'kind': DOAPP_EVIDENCE_KIND,
+            'game_id': game_id,
+            'title': game.get('title') or game_id,
+            'title_source': game.get('title_source') or 'unresolved',
+            'files': game.get('files', 0),
+            'entries': len(entries),
+            'entry_kinds': dict(sorted(game.get('entry_kinds', {}).items())),
+            'categories': {name: len(names) for name, names in sorted(categories.items())},
+            'category_samples': samples,
+            'hidden_costumes': sorted(hidden),
+            'hidden_costume_count': len(hidden),
+            'warnings': list(game.get('warnings') or []),
+            'source': (inventory or {}).get('source', ''),
+            'inventory_generated': (inventory or {}).get('generated'),
+            'runtime_hooks': 'none (evidence only; see gbox.game_unlocks profile_for)',
+        }
+    else:
+        # Flat format (from doapp_inventory.inventory)
+        # inventory is the game object itself
+        game = inventory or {}
+        if game.get('game_id') != game_id:
+            raise ValueError(f'game {game_id} is not in the DOAPP inventory')
+        # Build categories from the characters roster
+        roster = game.get('characters', {}).get('roster', [])
+        # Each fighter has model files (costumes) and character tables (one file each)
+        # For now, create a minimal categorization
+        categories = {
+            'characters': roster,
+            'models': [f'{char}_model' for char in roster],
+            'costumes': [f'{char}_costume_{i}' for char in roster for i in range(4)],
+        }
+        entries = {name: {} for name in categories.get('characters', [])}
+        hidden = []
+        samples = {name: names[:10] for name, names in sorted(categories.items())}
+        # Extract source from the inventory
+        sources = game.get('sources', {})
+        source = sources.get('clone_zip', {}).get('file', '')
+        return {
+            'kind': DOAPP_EVIDENCE_KIND,
+            'game_id': game_id,
+            'title': game.get('title') or game_id,
+            'title_source': 'library',
+            'files': len(game.get('container', {}).get('bankedroms_layout', [])),
+            'entries': len(entries),
+            'entry_kinds': {},
+            'categories': {name: len(names) for name, names in sorted(categories.items())},
+            'category_samples': samples,
+            'hidden_costumes': sorted(hidden),
+            'hidden_costume_count': len(hidden),
+            'warnings': [],
+            'source': source,
+            'inventory_generated': None,
+            'runtime_hooks': 'none (evidence only; see gbox.game_unlocks profile_for)',
+        }
 
 
 def targets(favorites, sessions, since):
