@@ -135,10 +135,10 @@
                 "evidence": "0x0009E9C6 reads [0x484C4B] (player 0) / [0x484CB3] (player 1)"},
     "p2.slot": {"address": "0x484CB3", "type": "u8", "group": "p2", "watch": false,
                 "description": "P2's fighter slot", "source": "ghidra", "evidence": "as p1.slot"},
-    "p1.chara": {"address": "0x484CAE", "type": "u8", "group": "p1", "watch": false,
+    "p1.chara": {"address": "0x484CAE", "type": "u8", "enum": {"0": "Zack", "1": "Tina", "2": "Jann Lee", "3": "Ein", "4": "Ryu Hayabusa", "5": "Kasumi", "6": "Gen Fu", "7": "Helena", "8": "Leon", "9": "Bass", "10": "(Hakkyoku-ken)", "11": "Hayate", "12": "Leifang", "13": "Ayane", "14": "Hitomi", "15": "(K-1)", "16": "(Pro Wrestler)", "17": "Tengu", "18": "Genra", "19": "Brad Wong", "20": "Christie", "21": "(Tekondo)", "22": "(Demi Human)", "23": "(Chin)", "24": "Bayman"}, "group": "p1", "watch": false,
                  "description": "Character index of player block 0 (+0x66): selects the character tables at 0x488A28 + n * 4 (0x0009E9B1); to be confirmed live",
-                 "source": "ghidra", "evidence": "0x0009E9B1: movzx ecx, [player * 0x68 + 0x484CAE]"},
-    "p2.chara": {"address": "0x484D16", "type": "u8", "group": "p2", "watch": false,
+                 "source": "ghidra", "evidence": "0x0009E9B1: movzx ecx, [player * 0x68 + 0x484CAE]; names (candidate order): the select screen's name table 0x368258 (sel_data.cpp)"},
+    "p2.chara": {"address": "0x484D16", "type": "u8", "enum": {"0": "Zack", "1": "Tina", "2": "Jann Lee", "3": "Ein", "4": "Ryu Hayabusa", "5": "Kasumi", "6": "Gen Fu", "7": "Helena", "8": "Leon", "9": "Bass", "10": "(Hakkyoku-ken)", "11": "Hayate", "12": "Leifang", "13": "Ayane", "14": "Hitomi", "15": "(K-1)", "16": "(Pro Wrestler)", "17": "Tengu", "18": "Genra", "19": "Brad Wong", "20": "Christie", "21": "(Tekondo)", "22": "(Demi Human)", "23": "(Chin)", "24": "Bayman"}, "group": "p2", "watch": false,
                  "description": "Character index of player block 1 (+0x66); to be confirmed live", "source": "ghidra",
                  "evidence": "as p1.chara, player 2"}
   }
