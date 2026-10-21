@@ -92,6 +92,30 @@ Latency figures (watch panel, lessons): `lat_input_f` (median frames from sendin
 `lat_reaction_f` (median frames from an attack's onset to the game showing the answer). `frames_skipped` counts game
 frames the loop never saw.
 
+### What a title can ask of an answer (the SC2 fit check)
+
+| `Answer` field / hook | what it does |
+|---|---|
+| `seq=((keys, frames), ...)` | a string instead of one chord (P, P, K); `title.lag_f` (the measured input lag) lets a title size a release step (SC2's fresh G press) |
+| `confirm_f`, `fallback`, `Title.confirm(answer, w)` | the answer must show (P1's move) within confirm_f frames, else the fallback is pressed at once (SC2: no Guard Impact move -> guard) |
+| `hold_off=("b",)` | those keys stay up while P1's own attack is out (SC2: G cancels attack startup) |
+| `Fighter.next_attack` | a queued follow-up the title resolved (SC2 strings: +0x52 / +0x60), for answers() to see |
+| `Title.long_window` | an attack active longer than this is timed on the book's contact median for that move, not its first active frame |
+| `Title.warn_settle` | after a warn edge, wait this many frames for the move it starts, so the book learns per move |
+| `Title.outcome` -> met None | the title can't measure (no health mapped): the try counts, never as a whiff, so no false feints |
+
+### Menus as map data
+
+`fight.menus` maps a screen to rules tried in order: `{"press": key}`, `{"wait": true}`, or a cursor walk
+`{"cursor": field, "target": n, "next": key, "prev": key, "confirm": key}`, each optionally guarded by `"when"` (a
+ram_map condition over the map's fields). A deployed map change retunes the menus without touching code.
+
+### Evidence
+
+The DOA3 deployment saves the game's own frame shortly after a hold that paid (on its own thread, off the fight
+loop) to `runtime/fightbot/<map id>/frames/<run>-f<frame>-<answer>-<outcome>.png`, logged as an `evidence` lesson:
+real frames for review, never input to a decision.
+
 ## Lessons
 
 `gbox.fightbot.lessons.Run(root, map_id)` writes `<root>/<map id>/runs/<run>.jsonl` (`root` = the worker's
