@@ -344,6 +344,8 @@ class Tracker:
                                            ("aim", True if state == "aim" or p.get("action") == 2 else None))
                          if v is not None}
         enemies: dict = {}
+        awareness = {row.get("id"): row for row in (plan or {}).get("enemy_awareness", ())[:512]
+                     if isinstance(row, dict) and row.get("visibility") in ("clear", "blocked", "unknown")}
         for e in snap.get("enemies") or ():
             pos = _xyz(e.get("pos") or ())
             hp, hp_max = _n(e.get("hp")), _n(e.get("hp_max"))
@@ -351,6 +353,10 @@ class Tracker:
                 continue                                    # the dead, and the crows (1 health)
             eid = _id(e.get("slot", e.get("id")))
             row = {"id": eid, "pos": pos}
+            if self.title == "BLUS30491":
+                row["visibility"] = awareness.get(e.get("ptr", eid), {}).get("visibility", "unknown")
+                if ppos is not None:
+                    row["distance_cm"] = _n(math.dist(ppos, pos), 1)
             for k, v in (("hp", hp), ("hp_max", hp_max), ("facing", _n(e.get("rot", e.get("facing")), 3))):
                 if v is not None:
                     row[k] = v

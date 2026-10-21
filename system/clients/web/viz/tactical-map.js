@@ -163,6 +163,7 @@
     for (const e of f.enemies || []) {
       const [x, y] = project(v, e.pos[0], e.pos[2]), fl = e.flags || [];
       const words = fl.map(k => ({ no_los: "out of sight", attacking: "attacking", blocking: "in the way", target: "the bot's target" }[k] || k));
+      if (e.visibility) words.push(({ clear: "clear shot measured", blocked: "cover measured", unknown: "shot path untested" })[e.visibility] || "shot path untested");
       out.push({ kind: "enemy", id: e.id, x, y, flags: fl, level: lv(e.pos), r: Math.max(4.5, 35 * v.scale * perM(units) / 100),
                  tip: [`Majini ${e.id ?? ""}`.trim(), e.hp != null ? `${e.hp}${e.hp_max ? "/" + e.hp_max : ""} health` : "", away(e.pos),
                        lv(e.pos) !== "same" ? lv(e.pos) : "", ...words].filter(Boolean).join(" · ") });

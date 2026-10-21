@@ -747,12 +747,20 @@ class Bot:
         self._round_player = None
         self._observed_snap = None
         self._stick_token, self._stick_at, self._stick_step = None, 0.0, 0
+        self._control_state = None
+        self._round_started = None
+        self._round_ended_at = None
+        self._round_baseline = {}
+        self._round_combo = 0
 
     # --- the engine's brain interface ---
     def prompt_ok(self, button, snap, now) -> bool:
         return self.combat.prompt_ok(button, snap, now) if self.combat is not None else True
 
     def save(self):
+        if self._control_state is not None:
+            from . import re5_controls
+            re5_controls.publish(self._control_state, id(self), {}, False)
         if getattr(self.m, "adapter", None) is not None:
             from ...re5_mods_tool import maintain_fire_animation
             maintain_fire_animation(self.m.adapter, enabled=False)
@@ -767,6 +775,11 @@ class Bot:
             return
         self._observed_snap = snap
         p = snap.get("player")
+        if getattr(self.m, "adapter", None) is not None:
+            from ...re5_mods_tool import ORIG
+            from . import re5_controls
+            self._control_state = ORIG.setdefault(id(self.m.adapter), {})
+            re5_controls.publish(self._control_state, id(self), snap, where == "playing" and bool(p))
         if where != "playing" or snap.get("prompt") not in ("stick:rotate", "stick:x", "stick:y"):
             self._stick_token = None
         self.stats["resuscitating"] = bool(snap.get("recovery_active") or snap.get("prompt") == "mash")
@@ -788,6 +801,8 @@ class Bot:
             if health.get("refilled"):
                 self.stats["health_refills"] = self.stats.get("health_refills", 0) + 1
         if where != "playing" or not p:
+            if self.combat is not None:
+                self.combat.awareness = []
             if where == "results":
                 self._observe_result(snap)
             self.nav_learning.suspend()
@@ -802,10 +817,16 @@ class Bot:
                     self.combat.end_round(now)
                 self.round_active = False
                 self.round_end = self.round_end or where
+                self._evaluate_round(snap, now, self.round_end)
             elif self.combat is not None:
                 self.combat.suspend_observation(now)
             return
         if not self.round_active:
+            self._round_started = now
+            self._round_ended_at = None
+            self._round_baseline = {key: self.stats.get(key, 0) for key in (
+                "deaths", "heals", "headshots", "finishers", "bonus_s", "bonuses_taken", "clock_jumps", "qte_presses")}
+            self._round_combo = 0
             if self.round_end is not None:
                 self.stats["rounds"] = self.stats.get("rounds", 0) + 1
                 if self.round_end == "dead":
@@ -828,8 +849,10 @@ class Bot:
             if self.combat is not None:
                 self.combat.start_round(now)
         self._round_player = p.get("ptr")
+        self._round_combo = max(self._round_combo, snap.get("combo") or 0)
         if self.combat is not None:
             self.combat.observe(snap, now)
+            self.combat.observe_awareness(snap, p, now)
         mesh = snap.get("nav")
         geometry = mesh.learning_sig if mesh is not None else None
         if geometry != self.nav_geometry:
@@ -850,6 +873,26 @@ class Bot:
         if taken:
             self.stats["bonuses_taken"] = self.stats.get("bonuses_taken", 0) + len(taken)
         self.bonus_seen = standing
+        self._evaluate_round(snap, now)
+
+    def _evaluate_round(self, snap, now, end_reason=None):
+        from . import re5_strategy
+        if self._round_started is None:
+            return
+        observed = {key: snap.get(key) for key in ("score", "kills", "timer")}
+        if end_reason:
+            if self._round_ended_at is None:
+                self._round_ended_at = now
+            now = self._round_ended_at
+            for key in ("score", "kills"):
+                observed[key] = self.stats.get(key, observed[key])
+        observed.update(max_combo=self._round_combo, end_reason=end_reason,
+                        elapsed_s=max(0, now - self._round_started) if self._round_started is not None else None)
+        for key, initial in self._round_baseline.items():
+            observed[key] = max(0, self.stats.get(key, 0) - initial)
+        if self.combat is not None:
+            observed.update(round_shots=self.combat.round_counts["shots"], round_hits=self.combat.round_counts["hits"])
+        self.stats["round_evaluation"] = re5_strategy.evaluate_round(observed)
 
     def _observe_result(self, snap):
         """The score can finish counting after timer0; retain only valid totals from this round's player."""
@@ -884,6 +927,7 @@ class Bot:
             if ptr is not None:
                 nb = {"id": ptr, "kind": "time", "dist": round(d), "eta_s": round(d / RUN_SPEED, 1)}
         return {"phase": self.stats.get("phase"), "target": self.plan_target,
+                "enemy_awareness": getattr(self.combat, "awareness", []),
                 "route": [tuple(w) for w in walking] if walking else None,
                 "stand": {"pos": self.spawn, "r": STAND_R} if self.spawn else None,
                 "nearest_bonus": nb, "enemy_flags": dict(self.flags),
@@ -896,6 +940,9 @@ class Bot:
         self.stats["max_combo"] = max(self.stats["max_combo"], snap.get("combo") or 0)
         if not p:
             return {"hold": set()}
+        close_foes = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0
+                     and (e.get("hp_max") or 0) > 1 and math.dist(p["pos"], e["pos"]) <= FIGHT_R
+                     and (self.combat is None or self.combat.blocked_until.get(e.get("ptr", e.get("slot")), 0) <= now)]
         if snap.get("recovery_active") and not snap.get("prompt"):
             self.aiming_since = None
             return {"hold": set()}                     # wait through hidden recovery frames; no unseen circle presses
@@ -928,11 +975,11 @@ class Bot:
                 self.stats["continue_presses"] = self.stats.get("continue_presses", 0) + 1
                 return {"tap": "cross"}
             return {"hold": set()}
-        if snap.get("prompt"):                              # a finisher / a grab: the engine presses it; the gun
+        if snap.get("prompt") and not (self.combat is not None and self.combat.optional_prompt_blocked(snap)):  # a finisher / a grab: the engine presses it; the gun
             self.aiming_since = None                        # stays down between its presses (L1 would cancel it)
             self.stats["prompt_holds"] = self.stats.get("prompt_holds", 0) + 1
             return {"hold": set()}
-        if snap.get("stage_prompt"):                        # a ladder / jump-down / vault / door / "□ Time bonus" /
+        if snap.get("stage_prompt") and not close_foes:     # a ladder / jump-down / vault / door / "□ Time bonus" /
             self.aiming_since = None                        # pick up: take it at once, before anything else (operator
             self.stats["stage_presses"] = self.stats.get("stage_presses", 0) + 1   # 2026-10-21: he ignored a ledge
             self.climb_at = self.climb_pos = self.climb_tick = None
@@ -942,6 +989,12 @@ class Bot:
         heal = self._heal(p, snap, now)                     # low: a herb / a spray from a quick slot
         if heal:
             return heal
+        if self._control_state is not None:
+            from . import re5_controls
+            requested = re5_controls.consume(self._control_state, id(self), snap, self._switch_weapon, now,
+                                             input_allowed=not close_foes)
+            if requested:
+                return requested
         t = snap.get("timer")
         # Majini and the like: alive, more than 1 health (crows are "enemies" with 1), not far above or below
         live = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and (e.get("hp_max") or 0) > 1
@@ -974,8 +1027,21 @@ class Bot:
         px, py, pz = p["pos"]
         self.at_stand = self.spawn is not None and math.hypot(self.spawn[0] - px, self.spawn[2] - pz) < STAND_R \
             and abs(self.spawn[1] - py) < WP_CLIMB
-        candidate = self.combat.choose_target(snap, p, live, now) if self.combat is not None and live else None
+        candidate = self.combat.choose_target(snap, p, live, now) if self.combat is not None else None
         tgt = self._bonus(p, live, snap.get("bonuses") or (), now, mesh, t)
+        if tgt is not None:
+            from . import re5_strategy
+            distance = math.dist(p["pos"], tgt["pos"])
+            routed = (self.route_len or {}).get(tgt["ptr"])
+            eta = (routed if routed is not None else distance * 1.25) / RUN_SPEED
+            decision = re5_strategy.detour_decision(snap, eta, distance < BONUS_REACH,
+                kind=tgt.get("kind", "time"), immediate_threat=bool(close_foes))
+            self.stats["strategy_decision"] = decision.reason
+            if not decision.allowed:
+                tgt = None
+        if close_foes:
+            tgt = None
+            self.stats["phase"] = "clear_nearby"
         if tgt is not None and candidate is not None:
             at_bonus = math.hypot(tgt["pos"][0] - px, tgt["pos"][2] - pz) < BONUS_REACH \
                 and abs(tgt["pos"][1] - py) < BONUS_LEVEL_DY
@@ -997,14 +1063,15 @@ class Bot:
             self.plan_target = None
             return {"hold": set()}
         if tgt is None:
-            self.stats["phase"] = "fight" if threats or not self.at_stand else "stand"
+            self.stats["phase"] = "clear_nearby" if close_foes else "fight" if threats or not self.at_stand else "stand"
         if tgt is None and self.combat is not None:
             if candidate is None:
                 return self.combat.seek_target(snap, p, live, now)
             tgt = candidate                               # existing finisher prompts still win before this decision
         tgt = tgt or min(threats or live, key=lambda e: self._cost(p, e))
         self.plan_target = {"kind": tgt.get("kind", "enemy") if "ptr" in tgt else "enemy",
-                            "id": tgt.get("ptr", tgt.get("slot")), "pos": tgt["pos"]}
+                            "id": tgt.get("ptr") if tgt.get("kind") in ("time", "combo") else tgt.get("slot"),
+                            "pos": tgt["pos"]}
         aim_h = tgt.get("aim_h", HEAD_H)
         tx, ty, tz = tgt["pos"]
         dist = math.hypot(tx - px, tz - pz)
@@ -1020,7 +1087,7 @@ class Bot:
                 return {"hold": set()}
             return {"hold": self._walk(p, want, now)}
         aiming = p.get("action") == 2
-        if dist < TOO_CLOSE and not aiming and (self.combat is None or not self.combat._ready(p)):
+        if dist < TOO_CLOSE and not aiming and self.combat is None:
             if now >= self.close_acquire_until:
                 self.close_escape_until = now + CLOSE_ESCAPE_S
                 self.close_acquire_until = self.close_escape_until + CLOSE_ACQUIRE_S
@@ -1032,7 +1099,10 @@ class Bot:
         else:
             self.close_escape_until = self.close_acquire_until = 0.0
         if self.combat is not None and tgt.get("kind") not in ("time", "combo"):   # the combat layer owns the fight
-            if self.switch_pending is None and now - self.switch_at > SWITCH_EVERY_S:
+            from . import re5_controls
+            if self.switch_pending is None and now - self.switch_at > SWITCH_EVERY_S \
+                    and (not close_foes or eq is None or not re5_controls.eligible(eq)) \
+                    and not re5_controls.pinned(self._control_state or {}, snap, now):
                 blocked = {key for key, until in self.switch_blocked.items() if until > now}
                 other = re5_weapons.best_quick_slot(snap, tgt, blocked)
                 if other is not None:

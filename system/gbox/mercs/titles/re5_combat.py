@@ -478,10 +478,44 @@ class Combat:
         projected = tuple(origin[k] + along * direction[k] for k in range(3))
         return along > length + BODY_R + 25.0 and dot_on(projected, foot) is not None
 
+    def observe_awareness(self, snap, p, now):
+        if getattr(self, "_awareness_tick", None) == (id(snap), now):
+            return self._awareness_ray
+        self._awareness_tick = (id(snap), now)
+        ray = self._ray(snap, now) if self._ready(p) else None
+        self._awareness_ray = ray
+        awareness = []
+        for enemy in snap.get("enemies") or ():
+            key = enemy.get("ptr", enemy.get("slot"))
+            hit = ray is not None and dot_on(ray[1], enemy["pos"]) is not None
+            if hit:
+                self.blocked_until.pop(key, None)
+            elif ray is not None and self.ray_blocked(ray, enemy["pos"]):
+                self.blocked_until[key] = now + BLOCKED_S
+            blocked = self.blocked_until.get(key, 0) > now
+            awareness.append({"id": key, "hp": enemy.get("hp"), "hp_max": enemy.get("hp_max"),
+                              "distance_cm": round(math.dist(p["pos"], enemy["pos"]), 1),
+                              "visibility": "clear" if hit else "blocked" if blocked else "unknown"})
+        self.awareness = sorted(awareness, key=lambda row: row["distance_cm"])
+        self.stats["nearby_enemies"] = sum(row["distance_cm"] <= 350 for row in awareness)
+        self.stats["enemy_awareness_count"] = len(awareness)
+        return ray
+
     def choose_target(self, snap, p, enemies, now):
         self.target_exposed = False
         enemies = [e for e in enemies if (e.get("hp") or 0) > 0]
-        ray = self._ray(snap, now) if self._ready(p) else None
+        ray = self.observe_awareness(snap, p, now)
+        # Immediate threats outrank distant crosshair targets, bonus routes and score optimizations.
+        # Unknown sight lines authorize acquisition only; tick still requires a current first-hit overlap to fire.
+        close = [e for e in enemies if math.dist(p["pos"], e["pos"]) <= 350
+                 and self.blocked_until.get(e.get("ptr", e.get("slot")), 0) <= now]
+        if close:
+            exposed_close = [e for e in close if ray is not None and dot_on(ray[1], e["pos"]) is not None]
+            target = min(exposed_close or close, key=lambda e: math.dist(p["pos"], e["pos"]))
+            self.target_exposed = ray is not None and dot_on(ray[1], target["pos"]) is not None
+            self.stats["target_evidence"] = "nearest immediate threat; " + (
+                "laser first hit on enemy" if self.target_exposed else "acquiring clear shot")
+            return target
         if ray is not None:
             # A current first hit is stronger evidence than the conservative camera-sector estimate, especially
             # when aiming down at a nearby enemy whose centre lies outside that estimate.
@@ -760,6 +794,9 @@ class Combat:
         prompt itself means he is stunned: he is marked so."""
         if button != "square":
             return True
+        if self.optional_prompt_blocked(snap):
+            self.stats["melee_deferred_for_threat"] = self.stats.get("melee_deferred_for_threat", 0) + 1
+            return False
         tgt = snap.get("prompt_target")
         if tgt:
             self.stunned[tgt] = now + STUN_S
@@ -771,6 +808,21 @@ class Combat:
                 return False
             self.melees[tgt] = n + 1
         return True
+
+    def optional_prompt_blocked(self, snap):
+        """Escape/recovery chords stay mandatory; ordinary square melee may yield to another close attacker."""
+        if snap.get("prompt") != "square":
+            return False
+        player, target = snap.get("player") or {}, snap.get("prompt_target")
+        if not player.get("pos"):
+            return False
+        for enemy in snap.get("enemies") or ():
+            if enemy.get("ptr") == target or (enemy.get("hp") or 0) <= 0:
+                continue
+            if math.dist(player["pos"], enemy["pos"]) <= 350 \
+                    and self.blocked_until.get(enemy.get("ptr", enemy.get("slot")), 0) <= self.clock():
+                return True
+        return False
 
     def stunned_target(self, enemies, p, now):
         """A Majini stunned by a head or leg shot, in finisher reach: close in on him (the prompt comes at ~1.5 m);
