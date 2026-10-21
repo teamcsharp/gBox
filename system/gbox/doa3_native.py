@@ -309,6 +309,9 @@ class Doa3NativeAdapter(XboxAdapter):
         bot, writes only to the virtual pad's block (doa3_pad.BLOCK)."""
         from .doa3_pad import BLOCK
         if self._channel is None or self._channel.broken:
+            if self._channel is not None:
+                self._channel.close()                   # its process handle closed before a new one is opened
+            self._channel = None
             self._channel = self._memory().channel(BLOCK)
         return self._channel
 

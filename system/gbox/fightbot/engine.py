@@ -45,6 +45,25 @@ class Engine:
                   "punishes", "feints_skipped", "out_of_reach"):
             self.stats.setdefault(k, 0)
 
+    def finish(self):
+        """The fight ended: judge what is still pending on the last frame seen (the book learns it either way)."""
+        if not self.history:
+            return
+        last = self.history[-1]
+        for p in self.pending:
+            p["judge_at"] = min(p["judge_at"], last.frame if last.frame is not None else p["judge_at"])
+        self.active = None
+        self._judge(last)
+        self.pending = []
+
+    def reset(self):
+        """A new fight: forget the last one's threat, plans and frames (the book and the latency figures stay)."""
+        self.history.clear()
+        self.threat = self.active = None
+        self.pending = []
+        self.move_start = {}
+        self.free_at = self.attack_at = None
+
     # -- bookkeeping --
     def _log(self, kind, frame, **fields):
         if self.lessons is not None:

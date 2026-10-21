@@ -410,8 +410,9 @@ class Channel:
     proof once (owned PID and birth, pinned runner / XBE hashes, the unique verified allocation) and keeps one
     creation-time-checked process handle: that handle can't follow its PID to another process. Then
       * every call: the adapter still owns that process (ready, same PID and birth);
-      * every REVALIDATE_S: the process (birth, path, alive) and the anchors (mapped header + immutable code);
-      * every IDENTITY_S: the full proof again, hashes included, on a thread of its own (it takes tens of ms);
+      * every REVALIDATE_S: the process (birth, path, alive) and the anchors (mapped header + immutable code), and
+        every IDENTITY_S the full proof with the file hashes, both on a thread of their own (they take milliseconds
+        to tens of ms: a bot's frame never waits for them);
     a failed check closes the channel for good (the caller makes a new one). Writes go only to the `writable` ranges
     (the virtual pad's block: doa3_pad.BLOCK), never to the header or code, and each is read back."""
     REVALIDATE_S = 2.0
@@ -424,8 +425,9 @@ class Channel:
         self.writable = tuple((_guest_offset(int(a), int(n)), int(n)) for a, n in writable)
         if any(n > MAX_WRITE or _overlaps_anchor(guest.expected, a, n) for a, n in self.writable):
             raise ValueError("A DOA3 channel can't write the XBE header, immutable code or more than 4 KiB at once")
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.broken = None
+        self.checking = False
         guest._identity()
         self.handle = _WindowsReader(guest.pid, guest.born, WRITE_ACCESS if self.writable else READ_ACCESS)
         try:
@@ -438,33 +440,35 @@ class Channel:
         self.checked = self.identified = self.clock()
         self.reads = self.writes = 0
 
-    def _rehash(self):
-        """The full proof's file hashes (tens of ms) off the caller's thread: a bot's frame never waits for them."""
+    def _proofs(self, full: bool):
         try:
-            self.guest._identity()
+            self.guest._identity(hashes=full)
+            handle = self.handle
+            if handle is None:
+                return
+            validate(handle, self.base, self.guest.expected)
         except Exception as error:                      # noqa: BLE001 - any failure closes the channel
-            self.broken = f"DOA3 channel closed: {error}"
+            self.broken = self.broken or f"DOA3 channel closed: {error}"
         finally:
-            self.hashing = False
+            self.checking = False
 
     def _check(self):
-        if self.broken:
-            self.close(self.broken)
+        if self.broken or self.handle is None:
+            self.close(self.broken or "DOA3 channel closed")
             raise Unsupported(self.broken)
         try:
             self.guest._owner_check()
-            now = self.clock()
-            if now - self.identified >= self.IDENTITY_S and not getattr(self, "hashing", False):
-                import threading
-                self.identified, self.hashing = now, True
-                threading.Thread(target=self._rehash, daemon=True, name="doa3-channel-proof").start()
-            if now - self.checked >= self.REVALIDATE_S:
-                self.guest._identity(hashes=False)
-                validate(self.handle, self.base, self.guest.expected)
-                self.checked = now
         except Exception as error:
             self.close(f"DOA3 channel closed: {error}")
             raise
+        now = self.clock()
+        if not self.checking and now - self.checked >= self.REVALIDATE_S:
+            import threading
+            full = now - self.identified >= self.IDENTITY_S
+            self.checked, self.checking = now, True
+            if full:
+                self.identified = now
+            threading.Thread(target=self._proofs, args=(full,), daemon=True, name="doa3-channel-proof").start()
 
     def read(self, address, length) -> bytes:
         offset = _guest_offset(address, length)
@@ -500,6 +504,7 @@ class Channel:
 
     def close(self, why: str = "DOA3 channel closed"):
         self.broken = self.broken or why
-        handle, self.handle = getattr(self, "handle", None), None
+        with self.lock:                                 # never under a read or write in progress on another thread
+            handle, self.handle = getattr(self, "handle", None), None
         if handle is not None:
             handle.close()

@@ -2724,7 +2724,7 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
             if "upload" in inspect.signature(pb.play).parameters and ctx is not None:
                 def upload(fname, data, media_type="application/octet-stream", **provenance):
                     """Evidence the playbook keeps (frames of a hold that paid): a content-addressed artifact."""
-                    r = httpx.post(f"{ctx.server}/api/artifacts", headers=ctx.headers, content=data, timeout=30,
+                    r = httpx.post(f"{ctx.server}/api/artifacts", headers=_ap_headers(ctx), content=data, timeout=30,
                                    params={"name": fname, "media_type": media_type,
                                            "provenance": json.dumps({"session": sid, "playbook": name, **provenance})})
                     r.raise_for_status()

@@ -165,6 +165,14 @@ def test_menu_rules_in_the_map_walk_a_cursor_then_confirm():
     game.screen = 2
     game.write()
     assert key(0, 1) == "down" and key(0, 3) == "b"                       # ... and came back: target 3
+    s["fields"]["game.items"] = {"address": hex(BASE + 0x78), "type": "u8", "count": 4, "source": "manual"}
+    s["fight"]["menus"]["menu"] = [{"cursor": "game.cursor", "find": {"field": "game.items", "eq": 5},
+                                    "next": "down", "prev": "up", "confirm": "b"}]   # the item whose mode is 5
+    title = Holds(ram_map.RamMap(s))
+    game.ram[0x78:0x7C] = bytes([2, 9, 5, 10])
+    assert key(0, 0) == "down" and key(0, 2) == "b" and key(0, 3) == "up"
+    game.ram[0x78:0x7C] = bytes([2, 9, 7, 10])
+    assert key(0, 0) is None                                              # no such item: wait
 
 
 def test_vocab_check_reports_what_a_map_fills():

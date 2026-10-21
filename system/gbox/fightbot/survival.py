@@ -65,22 +65,31 @@ def play(t, ad, send, stopped, style=None, clock=time.time, sleep=time.sleep, st
     menu_key = getattr(t, "menu_key", None)
     menu_gap = getattr(t, "MENU_GAP", 0.6)
     safety_hp = getattr(t, "SAFETY_HP", None)
+
+    def nudges(st):
+        pick = getattr(t, "nudge_keys", None)
+        return pick(st) if callable(pick) else getattr(t, "NUDGE_KEYS", ("start", "b"))
     jump_ok, fight_since, out_since, last_ram, still_since, nudged_at = False, None, None, None, None, None
-    saved_at, jumped_at, failed_jumps, menu_at = None, None, 0, None
+    saved_at, jumped_at, failed_jumps, menu_at, failing_since = None, None, 0, None, None
     stats.update(jumps_dropped=0, nudges=0)
     while not stopped():
         now = clock()
         try:
             st = t.state(rd)
             ram = rd(*t.WATCH)
+            failing_since = None
         except Exception:                          # noqa: BLE001 - a read during a load: try again
+            failing_since = failing_since or now
+            if now - failing_since > getattr(t, "READ_FAIL_S", float("inf")):
+                stats["hung"] = True               # RAM unreadable for good: the caller relaunches
+                break
             sleep(0.5)
             continue
         if ram == last_ram:
             still_since = still_since or now
             if now - still_since > t.STILL_FOR:
                 if nudged_at is None:              # a prompt or a still menu: press through it once
-                    for key in getattr(t, "NUDGE_KEYS", ("start", "b")):
+                    for key in nudges(st):
                         tap(key)
                     nudged_at = clock()
                     stats["nudges"] += 1
@@ -100,7 +109,7 @@ def play(t, ad, send, stopped, style=None, clock=time.time, sleep=time.sleep, st
                      **({"screen": st["screen"]} if "screen" in st else {}))
         (fighting.set if st["fighting"] else fighting.clear)()
         if st["fighting"]:
-            out_since, jumped_at, failed_jumps = None, None, 0
+            out_since, jumped_at, failed_jumps, menu_at = None, None, 0, None
             fight_since = fight_since or now
             if safety_hp is not None and st["p1"] < safety_hp:
                 ad.write_memory(t.P1_HP, struct.pack("<H", t.HP_MAX))
@@ -144,7 +153,7 @@ def play(t, ad, send, stopped, style=None, clock=time.time, sleep=time.sleep, st
                 stats["menu_presses"] = stats.get("menu_presses", 0) + 1
                 continue
             if key is None and now - (menu_at or out_since) > getattr(t, "MENU_IDLE", 30.0):
-                for k in getattr(t, "NUDGE_KEYS", ("start", "b")):   # a screen nothing maps: push it along
+                for k in nudges(st):               # a screen nothing maps: push it along
                     tap(k)
                 menu_at = clock()
                 stats["menu_nudges"] = stats.get("menu_nudges", 0) + 1

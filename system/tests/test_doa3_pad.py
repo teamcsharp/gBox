@@ -83,6 +83,20 @@ def test_apply_holds_and_releases_and_shows_a_tap_for_two_frames():
     assert gamepad(mem) == (0x4, [0] * 8)
 
 
+def test_a_double_tap_reaches_the_game_as_two_presses_and_releases_alone_never_claim():
+    mem = Mem()
+    pad = P.VirtualPad(mem)
+    assert pad.apply([{"key": "a", "down": False}, {"key": "start", "down": False}])["sent"] == 0
+    assert mem.writes == []                                            # autoplay's release-all: port 4 stays free
+    states = []
+    real = mem.write
+    mem.write = lambda a, d: (states.append(d[4:]) if a == P.STATE_AT else None, real(a, d))
+    pad.apply([{"key": "right", "down": True}, {"key": "right", "down": False},
+               {"key": "right", "down": True}, {"key": "right", "down": False}], sleep=lambda s: None)
+    seq = [struct.unpack("<H", s[:2])[0] for s in states][1:]          # after the neutral claim write
+    assert seq == [0x8, 0x0, 0x8, 0x0]                                 # press, release, press, release: a dash
+
+
 def test_packets_count_like_a_real_pad_and_unclaim_gives_the_port_back():
     mem = Mem()
     pad = P.VirtualPad(mem)

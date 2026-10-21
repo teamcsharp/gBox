@@ -412,26 +412,29 @@ def test_channel_proves_once_then_reads_without_rehashing(tmp_path, monkeypatch)
         assert ch.read(0x80011000, 9) == b"immutable"                  # cached alias too
     assert hashes == ["runner.exe", "default.xbe"] * 2                 # no hashing per read (60 fps)
     assert reader.reads == [(0x100011000, 9)] * 100                    # one ReadProcessMemory per read
-    now[0] = ch.REVALIDATE_S                                           # anchors + process, still no hashing
+    now[0] = ch.REVALIDATE_S                                           # anchors + process, off this thread
     ch.read(0, 1)
-    assert len(reader.reads) > 101 and len(hashes) == 4
-    now[0] = ch.IDENTITY_S                                             # the full proof again, off this thread
+    settle(ch)
+    assert len(reader.reads) > 101 and len(hashes) == 4 and not ch.broken
+    now[0] = ch.IDENTITY_S                                             # the full proof again, hashes included
     ch.read(0, 1)
-    import time
-    for _ in range(200):
-        if not ch.hashing:
-            break
-        time.sleep(0.01)
+    settle(ch)
     assert len(hashes) == 6 and not ch.broken
     ch.guest.exe.write_bytes(b"swapped runner")                       # a failed background proof closes it
     now[0] = 2 * ch.IDENTITY_S
     ch.read(0, 1)
-    for _ in range(200):
-        if not ch.hashing:
-            break
-        time.sleep(0.01)
+    settle(ch)
     with pytest.raises(Unsupported, match="closed"):
         ch.read(0, 1)
+
+
+def settle(ch):
+    """Wait for the channel's background proof (the checks run off the reading thread)."""
+    import time
+    for _ in range(300):
+        if not ch.checking:
+            return
+        time.sleep(0.01)
 
 
 def test_channel_writes_only_its_block_and_reads_each_back(tmp_path, monkeypatch):
@@ -467,6 +470,9 @@ def test_a_failed_check_closes_the_channel_for_good(tmp_path, monkeypatch, chang
     else:
         reader.data[ch.base + 0x13000] = b"patched code"
         now[0] = ch.REVALIDATE_S
+    if change != "owner":                                              # found by the background proof: the read
+        ch.read(0, 1)                                                  # that starts it still answers
+        settle(ch)
     with pytest.raises(Unsupported):
         ch.read(0, 1)
     assert getattr(reader, "closed", False) and ch.broken

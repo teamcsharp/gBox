@@ -77,7 +77,7 @@ class Title:
                     if k in ("field", "cursor") and isinstance(v, str) and v in self.map.fields:
                         out.append(v)
                     else:
-                        walk(v)
+                        walk(v)                        # find / when / all / any nest their fields
             elif isinstance(x, list):
                 for v in x:
                     walk(v)
@@ -166,7 +166,8 @@ class Title:
         A screen's rules are tried in order; `when` is a ram_map condition over the map's fields (field / mask / eq
         ne lt le gt ge in, all / any / not); `cursor` walks the field to `target` (next when below, prev when above),
         then presses `confirm`; `targets: [...]` instead picks the next target each time the screen comes back (a
-        new fighter every Survival run); `press` presses its key; `wait` presses nothing."""
+        new fighter every Survival run); `find: {"field": f, "eq": v}` targets the index of v in the list field f
+        (the menu item whose mode is Survival); `press` presses its key; `wait` presses nothing."""
         entered = w.screen != getattr(self, "_menu_screen", None)
         self._menu_screen = w.screen
         if entered:                                    # each visit of a screen may pick the next of its targets
@@ -189,6 +190,12 @@ class Title:
                 if rule.get("targets"):                # rotate: the next one each time the screen comes back
                     targets = rule["targets"]
                     target = ram_map.num(targets[self._visits.get(w.screen, 0) % len(targets)])
+                elif rule.get("find"):                 # the index of an item: {"field": list field, "eq": value}
+                    items = values.get(rule["find"]["field"])
+                    want = ram_map.num(rule["find"]["eq"])
+                    if not isinstance(items, list) or want not in items:
+                        return None
+                    target = items.index(want)
                 else:
                     target = ram_map.num(rule["target"])
                 if cur == target:

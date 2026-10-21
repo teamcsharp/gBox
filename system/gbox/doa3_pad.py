@@ -114,13 +114,12 @@ class VirtualPad:
         first (the game samples once a frame)."""
         import time
         sleep = sleep or time.sleep
+        rows = [ev for ev in events if int(ev.get("player", 1)) == 1 and str(ev["key"]).lower() in KEYS]
+        if not self.claimed and not any(ev.get("down", True) for ev in rows):
+            return {"sent": 0, "via": "doa3 virtual pad (port 4, guest RAM)", "held": []}   # nothing to release
         held, pressed, sent = set(self.held), set(), 0
-        for ev in events:
-            if int(ev.get("player", 1)) != 1:
-                continue
+        for i, ev in enumerate(rows):
             key = str(ev["key"]).lower()
-            if key not in KEYS:
-                continue
             if ev.get("down", True):
                 held.add(key)
                 pressed.add(key)
@@ -129,6 +128,10 @@ class VirtualPad:
                     self.set(held)
                     sleep(self.TAP_S)
                     pressed.clear()
+                    held.discard(key)
+                    if i + 1 < len(rows):            # and its release, before anything that follows
+                        self.set(held)
+                        sleep(self.TAP_S)
                 held.discard(key)
             sent += 1
         if sent:

@@ -43,6 +43,7 @@ class Deployment:
     NUDGE_KEYS = ("start", "b")                    # out of a fight only (START in a fight joins as a challenger)
     MENU_GAP = 0.5
     MENU_IDLE = 20.0                               # a screen no rule maps (name entry ...): START, A
+    READ_FAIL_S = 60.0                             # RAM unreadable this long (the runner gone): hung, relaunch
 
     def __init__(self, ad, title=None, book=None, lessons=None, stats=None, upload=None):
         self.ad, self.upload, self.stats = ad, upload, stats
@@ -93,7 +94,18 @@ class Deployment:
         threading.Thread(target=grab, daemon=True, name="doa3-evidence").start()
 
     def reader(self, ad):
-        return ad.channel().read
+        """Every read goes to the adapter's current channel: a closed one is replaced at the next read."""
+        return lambda a, n: ad.channel().read(a, n)
+
+    def nudge_keys(self, st) -> tuple:
+        """START only where it can't join a fight as a challenger: out of a game, or when P1 already is port 4."""
+        w = st.get("world")
+        values = getattr(w, "values", None)
+        ports = values.get("players.port") if values is not None else None
+        p1_on_pad = isinstance(ports, list) and ports and ports[0] == 3
+        if st.get("screen") in ("title", "demo", "menu") or p1_on_pad:
+            return ("start", "b")
+        return ("b",)
 
     def state(self, rd) -> dict:
         w = self.title.read(rd)
@@ -105,11 +117,13 @@ class Deployment:
 
     def fight(self, ad, rd, send, stopped, stats) -> str:
         self.engine.stats = stats
+        self.engine.reset()                        # nothing pending from the last fight is judged against this one
         sender = Sender(send)
         try:
             return fight(self.title, rd, sender, self.engine, stopped, stats=stats)
         finally:
             sender.close()
+            self.engine.finish()
             self.book.save()
             stats["book"] = self.book.summary()
 

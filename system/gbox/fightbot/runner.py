@@ -52,7 +52,12 @@ class Sender:
                 if self.done and self.want == self.held:
                     return
                 want = self.want
+            errors = self.errors
             self._apply(want)
+            if self.errors != errors:                  # a failing send: retry, but not in a tight loop
+                time.sleep(0.02)
+                if self.done and self.errors - errors:
+                    return
 
     def hold(self, keys) -> None:
         keys = frozenset(keys)
@@ -85,6 +90,8 @@ def fight(title, mem, sender: Sender, engine, stopped, clock=time.monotonic, sle
                 f = title.frame(mem)
             except Exception:                          # noqa: BLE001 - a read during a load: try again
                 stats["read_errors"] += 1
+                if clock() - moved > stall_s:          # ... but not forever: a dead channel is a stall
+                    return "stalled"
                 sleep(0.01)
                 continue
             now = clock()
