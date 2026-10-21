@@ -2329,6 +2329,20 @@ def create_app(config: Config) -> FastAPI:
         store.audit(actor, "worker.register", w.id, {"name": w.name, "os": w.os, "tools": w.tools, "unavailable": w.unavailable})
         return {"id": w.id}
 
+    def _demo_preempted(j, wid) -> bool:
+        """A screensaver demo launch that is claimed after another game started on its PC would close that game (one
+        emulator per worker). Drop it instead. 2026-10-20: a queued Super Mario 64 demo replaced an agent's DOA3 session
+        a minute after that one booted. The screensaver logs the skipped launch and tries again once the PC is free."""
+        from .screensaver import ACTOR as SCREENSAVER
+        if j.get("tool") != "launch_game" or j.get("actor") != SCREENSAVER:
+            return False
+        if not any(s.get("session_id", "").startswith(wid + "-") for s in store.running_sessions()):
+            return False
+        store.put("job", j["id"], j | {"state": JobState.FAILED, "finished": time.time(),
+                                        "error": "skipped: another game started on this PC before the demo"})
+        store.audit(SCREENSAVER, "job.skip", j["id"], {"worker": wid, "why": "PC busy with another game"})
+        return True
+
     @app.post("/api/workers/{wid}/claim")
     def claim(wid: str, request: Request, activity: WorkerActivity | None = None, actor=Depends(auth)):
         w = store.get("worker", wid)
@@ -2356,6 +2370,8 @@ def create_app(config: Config) -> FastAPI:
             for j in sorted(store.queued_jobs(), key=lambda j: (not _is_stop_job(j), bool(j.get("low_priority")))):
                 if (j["state"] == JobState.QUEUED and j["tool"] in w["tools"]
                         and j["require_os"] in (None, w["os"]) and j["require_worker"] in (None, wid, w["name"])):   # by name: launched while that worker was restarting
+                    if _demo_preempted(j, wid):
+                        continue
                     from .savemgo import claim_reason as savemgo_claim_reason
                     savemgo_wait = savemgo_claim_reason(w, j)
                     if savemgo_wait:
