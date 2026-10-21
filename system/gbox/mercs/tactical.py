@@ -48,6 +48,9 @@ VIEW = {"x": -1, "z": 1}          # how to draw the world from above: +z up, +x 
 UNITS = {"BLUS30491": "cm", "G4BE08": "mm"}
 RUN_SPEED = {"cm": 450.0, "mm": 3300.0}   # world units a second running: the fallback ETA (RE4: Up+B ~3,300 measured)
 LEVEL_DY = {"cm": 150.0, "mm": 1500.0}    # within this above / below: the player's own level
+CLIMB_RISE = {"cm": 120.0, "mm": 1200.0}  # a navmesh triangle rising this much, CLIMB_SLOPE times steeper than it is
+CLIMB_SLOPE, CLIMB_JOIN = 2.5, 0.8        # wide, is a ladder or a drop (RE5's navmesh walks them as near-vertical
+                                          # triangles); those within CLIMB_JOIN x CLIMB_RISE of each other are one
 ROUTE_EVERY_S = 1.0               # the fallback's route lengths on the navmesh at most this often (A* is ~ms)
 ROUTE_TRIES = 3                   # ...for this many of the nearest bonuses in a straight line
 MAX_ROUTE, MAX_FLAGS, MAX_NOTE = 64, 8, 80
@@ -108,12 +111,38 @@ def stage_key(title: str, mesh) -> str:
     return f"{title}.nav{len(mesh.tris)}.{crc:08x}"
 
 
+def climbs_of(points, tris, units: str = "cm") -> list:
+    """The ladders and drops of a navmesh: its near-vertical triangles (CLIMB_RISE, CLIMB_SLOPE), joined where they
+    touch, as [x, z, y low, y high] (whole units)."""
+    rise_min, out = CLIMB_RISE.get(units, 120.0), []
+    for t in tris:
+        try:
+            a, b, c = (points[v] for v in t[:3])
+        except (IndexError, TypeError):
+            continue
+        ys = (a[1], b[1], c[1])
+        rise = max(ys) - min(ys)
+        wide = max(math.hypot(p[0] - q[0], p[2] - q[2]) for p, q in ((a, b), (b, c), (c, a)))
+        if rise < rise_min or rise < CLIMB_SLOPE * wide:
+            continue
+        cx, cz = (a[0] + b[0] + c[0]) / 3.0, (a[2] + b[2] + c[2]) / 3.0
+        for cl in out:
+            if math.hypot(cl[0] - cx, cl[1] - cz) < CLIMB_JOIN * rise_min:
+                n = cl[4]
+                cl[0], cl[1] = (cl[0] * n + cx) / (n + 1), (cl[1] * n + cz) / (n + 1)   # the climb's middle
+                cl[2], cl[3], cl[4] = min(cl[2], min(ys)), max(cl[3], max(ys)), n + 1
+                break
+        else:
+            out.append([cx, cz, min(ys), max(ys), 1])
+    return [[int(round(v)) for v in cl[:4]] for cl in out]
+
+
 def stage_from_navmesh(mesh, title: str, units: str = "cm", name: str | None = None) -> dict:
     """The stage payload of a navmesh (gbox.mercs.titles.re5_nav.NavMesh: points, tris, links (neighbour, edge, cost)):
-    its points (flat ints), triangles (flat indices), its walls - each triangle edge nothing walks across - and its
-    crossings: links between triangles that do not share the edge's two ends (a ladder, a drop, a jump: the bot takes
-    them with the stage's prompt; some only the Majini can). An edge whose link reaches a triangle sharing both of its
-    ends (by position, to the unit) is open floor."""
+    its points (flat ints), triangles (flat indices), its walls - each triangle edge nothing walks across - its
+    crossings - links between triangles that do not share the edge's two ends (a jump: the bot takes them with the
+    stage's prompt; some only the Majini can) - and its climbs (climbs_of: the ladders and drops). An edge whose link
+    reaches a triangle sharing both of its ends (by position, to the unit) is open floor."""
     pts = [tuple(p[:3]) for p in mesh.points]
     key_of = [(int(round(p[0])), int(round(p[1])), int(round(p[2]))) for p in pts]
     tris = [tuple(t[:3]) for t in mesh.tris]
@@ -145,7 +174,7 @@ def stage_from_navmesh(mesh, title: str, units: str = "cm", name: str | None = N
            "bounds": [min(xs), min(zs), max(xs), max(zs)], "y": [min(ys), max(ys)],
            "points": [c for v in used for c in key_of[v]],
            "tris": [remap[v] for t in tris if all(0 <= v < len(pts) for v in t) for v in t],
-           "walls": walls, "cross": cross}
+           "walls": walls, "cross": cross, "climbs": climbs_of(pts, tris, units)}
     if name:
         out["name"] = str(name)[:60]
     return out

@@ -58,7 +58,16 @@ def test_a_navmesh_becomes_a_stage_with_its_walls_and_crossings():
     assert (0, 1) in walls and (4, 5) in walls and (2, 3) not in walls   # the street's ends walled, its middle open
     assert len(walls) == 6 + 3                                  # the street's outline + the roof's other three sides
     assert st["key"] == T.stage_key("BLUS30491", two_levels()) == st["key"]
+    assert st["climbs"] == []                                  # no ladders: nothing near-vertical
     json.dumps(st)
+
+
+def test_ladders_and_drops_are_the_near_vertical_triangles_joined_where_they_touch():
+    pts = [(0.0, 0.0, 0.0), (40.0, 0.0, 0.0), (0.0, 300.0, 0.0), (40.0, 300.0, 0.0),      # a ladder: 3 m up, 40 cm wide
+           (500.0, 0.0, 0.0), (900.0, 0.0, 0.0), (500.0, 60.0, 400.0)]                        # a ramp: 60 cm over 4 m
+    tris = [(0, 1, 2), (1, 3, 2), (4, 5, 6)]
+    assert T.climbs_of(pts, tris, "cm") == [[20, 0, 0, 300]]  # the ladder's two triangles are one climb; no ramp
+    assert T.climbs_of(pts, tris, "mm") == []                  # in mm a 300 unit rise is 30 cm: a step
 
 
 def test_the_stage_key_is_the_same_stage_every_round_and_another_for_another_stage():

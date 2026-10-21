@@ -6,13 +6,13 @@
 // game like the other sections), hidden until the round's frames come; then, while it is open and on screen, it reads
 //   GET /api/autoplay/tactical/{sid}?after=N    the newest frame (~8 a second; "same" when nothing moved)
 //   GET /api/autoplay/tactical/stage/{key}      the stage's layout, once per stage (cached for the page's life)
-// and draws: the stage's floor (Chris's own level brightest, the others dimmer), its walls and its crossings (dashed: a
-// ladder, a drop); Chris (▲ his facing; a line ahead while he aims); the Majini (● alive, ◯ out of his line of sight,
+// and draws: the stage's floor (the player's own level brightest, the others dimmer), its walls and its crossings (dashed: a
+// ladder, a drop); the player (Chris, Barry...: ▲ his facing; a line ahead while he aims); the Majini (● alive, ◯ out of his line of sight,
 // ring = attacking, dashed ring = in the way, + = the bot's target; faded with ▲/▼ on another level); the hourglasses
 // (⧗ time bonus, ringed = combo bonus, hollow = taken); the bot's route (dashes) and its stand spot (ringed flag); a
 // dotted line to the nearest bonus with its distance and ETA. Above it the round's clock, combo, the bot's phase
 // (gather time / combo bonus / stand / break for time) and the nearest bonus; hover a mark for its details.
-// Follow (centred on Chris, zoomed to what matters) or Stage (all of it); Heading up turns the map with him.
+// Follow (centred on the player, zoomed to what matters) or Stage (all of it); Heading up turns the map with him.
 //   GBoxTacticalMap.html(sid)                 the section's markup (hidden until frames come)
 //   GBoxTacticalMap.mount(doc, {sid, api})    wires it; returns {stop}; detach() stops it (the view went away)
 //   GBoxTacticalMap.create({sid, api, ...})   the polling without a DOM (tests)
@@ -26,7 +26,7 @@
   const STATES = { aim: "aiming", move: "moving", stand: "standing", grabbed: "grabbed", hit: "hit" };
   const ROUND = new Set(["playing", "dead", "paused"]);
   const PER_M = { cm: 100, mm: 1000 };
-  const LEVEL_M = 1.5;                          // within this above / below Chris: his own level
+  const LEVEL_M = 1.5;                          // within this above / below the player: his own level
   const FOLLOW_M = [7, 45];                     // follow: the view's radius in metres, fitted between these
   const NEAR_FIT_M = 25;                        // follow fits the nearest bonus in when it is this near; further, an arrow
   const VIEW = { x: -1, z: 1 };                 // +z up, +x left: the right-handed world seen from above
@@ -107,7 +107,9 @@
     if (plan.stand?.pos) pts.push(plan.stand.pos);
     const reach = pts.reduce((r, q) => Math.max(r, flat(p.pos, q)), 0) * 1.15;
     const radius = Math.min(FOLLOW_M[1] * m, Math.max(FOLLOW_M[0] * m, reach)) * zoom;
-    return { cx: p.pos[0], cz: p.pos[2], radius, rot };
+    // near the stage's edge the view stays over the stage (the player off centre, never off the map): more of what is there
+    const keep = (c, lo, hi) => (hi - lo > 1.6 * radius ? Math.min(Math.max(c, lo + 0.8 * radius), hi - 0.8 * radius) : c);
+    return { cx: b ? keep(p.pos[0], b[0], b[2]) : p.pos[0], cz: b ? keep(p.pos[2], b[1], b[3]) : p.pos[2], radius, rot };
   }
   // a canvas w x h showing the wanted view
   function viewOf(w, size) {
@@ -172,7 +174,7 @@
     if (p) {
       const [x, y] = project(v, p.pos[0], p.pos[2]);
       out.push({ kind: "player", x, y, dir: screenDir(v, p.facing || 0), aim: !!p.aim,
-                 tip: ["Chris", p.hp != null ? `${p.hp}${p.hp_max ? "/" + p.hp_max : ""} health` : "", STATES[p.state] || p.state || ""].filter(Boolean).join(" · ") });
+                 tip: ["Player", p.hp != null ? `${p.hp}${p.hp_max ? "/" + p.hp_max : ""} health` : "", STATES[p.state] || p.state || ""].filter(Boolean).join(" · ") });
     }
     return out;
   }
@@ -181,7 +183,7 @@
   const THEME_VARS = { void: "--tm-void", floor: "--tm-floor", floorOther: "--tm-floor-other", wall: "--tm-wall",
     wallOther: "--tm-wall-other", cross: "--tm-cross", player: "--tm-player", enemy: "--tm-enemy", bonus: "--tm-bonus",
     plan: "--tm-plan", ink: "--tm-ink", halo: "--tm-halo", muted: "--tm-muted" };
-  const THEME_LIGHT = { void: "#e4e4ea", floor: "#ffffff", floorOther: "#f1f1f4", wall: "#5d5d68", wallOther: "#c2c2ca",
+  const THEME_LIGHT = { void: "#dcdce3", floor: "#ffffff", floorOther: "#ececf0", wall: "#5d5d68", wallOther: "#c2c2ca",
     cross: "#8a8a96", player: "#2a78d6", enemy: "#e34948", bonus: "#eda100", plan: "#1baf7a", ink: "#1b1b1f", halo: "#ffffff", muted: "#8a8a96" };
   function themeOf(el) {
     const cs = el && root.getComputedStyle ? root.getComputedStyle(el) : null, t = {};
@@ -189,7 +191,7 @@
     return t;
   }
 
-  // the stage: the floor in three fills (below / Chris's level / above), walls, crossings
+  // the stage: the floor in three fills (below / the player's level / above), walls, crossings
   function drawStage(ctx, st, v, py, t) {
     if (!st || st.kind !== "mesh" || !Array.isArray(st.points) || !Array.isArray(st.tris)) return;
     const P = st.points, T = st.tris, n = P.length / 3, units = st.units || "cm", lim = LEVEL_M * perM(units);
@@ -225,6 +227,16 @@
     edges(st.cross, false, t.wallOther, 1, [3, 3]);
     edges(st.walls, true, t.wall, 1.5, []);
     edges(st.cross, true, t.cross, 1.5, [4, 3]);
+    for (const c of st.climbs || []) {                // ladders and drops: where a level is left or reached
+      const [x, y] = project(v, c[0], c[1]), mine = py == null || Math.abs(c[2] - py) <= lim || Math.abs(c[3] - py) <= lim;
+      ladder(ctx, x, y, mine ? t.wall : t.wallOther, t);       // bright where it leaves or reaches his level
+    }
+  }
+  function ladder(ctx, x, y, ink, t) {
+    ctx.beginPath();
+    ctx.moveTo(x - 2.5, y - 4); ctx.lineTo(x - 2.5, y + 4); ctx.moveTo(x + 2.5, y - 4); ctx.lineTo(x + 2.5, y + 4);
+    for (const r of [-1.5, 1.5]) { ctx.moveTo(x - 2.5, y + r); ctx.lineTo(x + 2.5, y + r); }
+    ctx.lineWidth = 2.6; ctx.strokeStyle = t.halo; ctx.stroke(); ctx.lineWidth = 1; ctx.strokeStyle = ink; ctx.stroke();
   }
 
   function hourglass(ctx, x, y, s) {
@@ -245,7 +257,7 @@
     ctx.moveTo(x - 3.5, up ? y + 2 : y - 2); ctx.lineTo(x + 3.5, up ? y + 2 : y - 2); ctx.lineTo(x, up ? y - 3 : y + 3); ctx.closePath(); ctx.fill();
   }
 
-  // the whole map: stage, plan, bonuses, Majini, Chris, the scale; returns the marks (for hovering)
+  // the whole map: stage, plan, bonuses, Majini, the player, the scale; returns the marks (for hovering)
   function draw(ctx, s) {
     const { frame: f, stage: st, view: v, theme: t } = s;
     ctx.save();
@@ -253,6 +265,10 @@
     const p = f && f.player, units = (f && f.units) || (st && st.units) || "cm";
     if (st && st.units === units) drawStage(ctx, st, v, p ? p.pos[1] : null, t);
     const ms = marks(f, v);
+    for (const c of (st && st.units === units && st.climbs) || []) {
+      const [x, y] = project(v, c[0], c[1]);
+      ms.push({ kind: "climb", x, y, tip: `Ladder or drop · ${metres(c[3] - c[2], units)} from ${metres(c[2], units)} to ${metres(c[3], units)} up` });
+    }
     for (const m of ms) {
       if (m.kind === "stand") {
         ctx.lineWidth = 2; ctx.strokeStyle = t.plan; ctx.setLineDash([]);
@@ -286,7 +302,10 @@
       if (m.type === "combo") { ctx.lineWidth = 2; ctx.strokeStyle = m.taken ? t.muted : t.bonus; ctx.beginPath(); ctx.arc(m.x, m.y, 10.5, 0, 2 * Math.PI); ctx.stroke(); }
       ctx.globalAlpha = 1;
       if (!m.taken) caret(ctx, m, t);
-      if (m.label) label(ctx, m.label, m.x + 12, m.y + 1, t);
+      if (m.label) {                                  // right of it, or left when the edge is near
+        const tw = (ctx.measureText ? ctx.measureText(m.label).width : 60) || 60;
+        label(ctx, m.label, m.x + 12 + tw > v.w - 4 ? m.x - 12 - tw : m.x + 12, m.y + 1, t);
+      }
     }
     for (const m of ms) {
       if (m.kind !== "enemy") continue;
@@ -315,7 +334,8 @@
         const [dx, dy] = m.dir, nx = -dy, ny = dx, s = 9;
         if (m.aim) {
           ctx.lineWidth = 1.5; ctx.strokeStyle = t.player; ctx.globalAlpha = 0.7; ctx.beginPath();
-          ctx.moveTo(m.x + dx * s, m.y + dy * s); ctx.lineTo(m.x + dx * Math.min(v.w, v.h) * 0.45, m.y + dy * Math.min(v.w, v.h) * 0.45); ctx.stroke(); ctx.globalAlpha = 1;
+          const reach = Math.min(Math.min(v.w, v.h) * 0.45, 12 * perM(units) * v.scale);   // 12 m of his aim
+          ctx.moveTo(m.x + dx * s, m.y + dy * s); ctx.lineTo(m.x + dx * Math.max(reach, s * 2), m.y + dy * Math.max(reach, s * 2)); ctx.stroke(); ctx.globalAlpha = 1;
         }
         ctx.beginPath();
         ctx.moveTo(m.x + dx * s * 1.3, m.y + dy * s * 1.3);
@@ -386,13 +406,13 @@
   }
 
   // ---- the section ----
-  const CSS = `.tmap{--tm-void:#e4e4ea;--tm-floor:#fff;--tm-floor-other:#f1f1f4;--tm-wall:#5d5d68;--tm-wall-other:#c2c2ca;
+  const CSS = `.tmap{--tm-void:#dcdce3;--tm-floor:#fff;--tm-floor-other:#ececf0;--tm-wall:#5d5d68;--tm-wall-other:#c2c2ca;
       --tm-cross:#8a8a96;--tm-player:#2a78d6;--tm-enemy:#e34948;--tm-bonus:#eda100;--tm-plan:#1baf7a;--tm-ink:#1b1b1f;
       --tm-halo:#fff;--tm-muted:#8a8a96;display:flex;flex-direction:column;gap:6px;font-size:12px;min-width:0}
-    @media (prefers-color-scheme: dark){.tmap{--tm-void:#101014;--tm-floor:#30303a;--tm-floor-other:#22222a;--tm-wall:#a4a4b0;
+    @media (prefers-color-scheme: dark){.tmap{--tm-void:#0e0e12;--tm-floor:#3b3b47;--tm-floor-other:#25252d;--tm-wall:#a4a4b0;
       --tm-wall-other:#4a4a55;--tm-cross:#7d7d8a;--tm-player:#3987e5;--tm-enemy:#e34948;--tm-bonus:#c98500;--tm-plan:#199e70;
       --tm-ink:#e8e8ee;--tm-halo:#101014;--tm-muted:#7d7d8a}}
-    :root[data-embedded="true"] .tmap{--tm-void:#101014;--tm-floor:#30303a;--tm-floor-other:#22222a;--tm-wall:#a4a4b0;
+    :root[data-embedded="true"] .tmap{--tm-void:#0e0e12;--tm-floor:#3b3b47;--tm-floor-other:#25252d;--tm-wall:#a4a4b0;
       --tm-wall-other:#4a4a55;--tm-cross:#7d7d8a;--tm-player:#3987e5;--tm-enemy:#e34948;--tm-bonus:#c98500;--tm-plan:#199e70;
       --tm-ink:#e8e8ee;--tm-halo:#101014;--tm-muted:#7d7d8a}
     .tmap .tm-hud{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;min-height:22px}
@@ -422,7 +442,8 @@
     time: `<svg width="12" height="12" viewBox="0 0 12 12"><path d="M2.5 1h7L6 6l3.5 5h-7L6 6z" fill="var(--tm-bonus)" stroke="var(--tm-ink)" stroke-width=".6"/></svg>`,
     combo: `<svg width="14" height="14" viewBox="0 0 14 14"><path d="M4.5 3.5h5L7 7l2.5 3.5h-5L7 7z" fill="var(--tm-bonus)"/><circle cx="7" cy="7" r="6" fill="none" stroke="var(--tm-bonus)" stroke-width="1.4"/></svg>`,
     route: `<svg width="16" height="12" viewBox="0 0 16 12"><path d="M1 6h14" stroke="var(--tm-plan)" stroke-width="2" stroke-dasharray="4 3"/></svg>`,
-    stand: `<svg width="12" height="12" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.6" fill="none" stroke="var(--tm-plan)" stroke-width="1.6"/></svg>`
+    stand: `<svg width="12" height="12" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.6" fill="none" stroke="var(--tm-plan)" stroke-width="1.6"/></svg>`,
+    climb: `<svg width="10" height="12" viewBox="0 0 10 12"><path d="M2 1v10M8 1v10M2 3.5h6M2 6.5h6M2 9.5h6" stroke="var(--tm-wall)" stroke-width="1.3" fill="none"/></svg>`
   };
 
   function html(sid) {
@@ -434,16 +455,17 @@
       `<span class="mut" data-tm="score"></span><span class="tm-line" data-tm="nearest" title="The nearest time bonus: distance along the route and time to reach it"></span>` +
       `<span class="tm-line mut" data-tm="target"></span></div>` +
       `<div class="tm-bar" role="toolbar" aria-label="Tactical map view">` +
-      `<button class="act" type="button" data-tm-mode="follow" aria-pressed="true" title="Centred on Chris, zoomed to what he is going for">Follow</button>` +
+      `<button class="act" type="button" data-tm-mode="follow" aria-pressed="true" title="Centred on the player, zoomed to what he is going for">Follow</button>` +
       `<button class="act" type="button" data-tm-mode="stage" aria-pressed="false" title="The whole stage">Stage</button>` +
-      `<button class="act" type="button" data-tm-heading aria-pressed="false" title="Turn the map with Chris: his facing is up">Heading up</button>` +
+      `<button class="act" type="button" data-tm-heading aria-pressed="false" title="Turn the map with the player: his facing is up">Heading up</button>` +
       `<button class="act" type="button" data-tm-zoom="out" aria-label="Zoom out" title="Zoom out">−</button>` +
       `<button class="act" type="button" data-tm-zoom="in" aria-label="Zoom in" title="Zoom in">+</button></div>` +
       `<div class="tm-stage"><canvas role="img" aria-label="Top-down map of the round"></canvas><div class="tm-status" data-tm="status"></div>` +
       `<div class="tm-tip" data-tm="tip" hidden></div></div>` +
-      `<div class="tm-legend" aria-label="Legend"><span>${ICON.player}Chris</span><span>${ICON.enemy}Majini</span>` +
+      `<div class="tm-legend" aria-label="Legend"><span>${ICON.player}Player</span><span>${ICON.enemy}Majini</span>` +
       `<span>${ICON.hidden}out of sight</span><span>${ICON.attack}attacking</span><span>${ICON.time}time bonus</span>` +
-      `<span>${ICON.combo}combo bonus</span><span>${ICON.route}route</span><span>${ICON.stand}stand spot</span></div>` +
+      `<span>${ICON.combo}combo bonus</span><span>${ICON.route}route</span><span>${ICON.stand}stand spot</span>` +
+      `<span>${ICON.climb}ladder / drop</span></div>` +
       `</div></details>`;
   }
 
