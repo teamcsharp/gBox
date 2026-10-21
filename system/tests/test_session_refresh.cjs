@@ -43,3 +43,30 @@ test('operator navigation during a delayed session lookup cancels restoration be
   finish([{session_id:'main-A',state:'running'},{session_id:'pip-B',state:'running'}]);
   assert.equal((await pending).cancelled,true);assert.deepEqual(calls,[]);
 });
+
+test('operator navigation during stream content loading cannot restore the old PiP or leave retry intent',async()=>{
+  for (const rejects of [false,true]) {
+    let finish, revision=1; const calls=[];
+    const ctl=R.create({sessions:async()=>[{session_id:'main-A',state:'running'},{session_id:'pip-B',state:'running'}],
+      revision:()=>revision,tabs:['Home'],show:()=>{
+        revision++; // the restore's own synchronous selection is allowed
+        return new Promise((resolve,reject)=>{finish=()=>rejects?reject(Error('The saved stream is not available yet.')):resolve();});
+      },active:()=>calls.push('active'),pip:()=>calls.push('pip')});
+    const pending=ctl.restore({playing:'main-A',pip:'pip-B'});
+    await new Promise(resolve=>setImmediate(resolve));
+    revision++; // a later operator selection wins, even if the old load fails
+    finish(); assert.deepEqual(await pending,{cancelled:true,restored:[],missing:[]}); assert.deepEqual(calls,[]);
+  }
+});
+
+test('the restore own revision is allowed and genuine load failures remain retryable',async()=>{
+  for (const fails of [false,true]) {
+    let revision=1;const calls=[];
+    const ctl=R.create({sessions:async()=>[{session_id:'main-A',state:'running'},{session_id:'pip-B',state:'running'}],
+      revision:()=>revision,tabs:['Home'],show:async()=>{revision++;if(fails)throw Error('offline');},
+      active:s=>calls.push(s.session_id),pip:()=>calls.push('pip')});
+    const pending=ctl.restore({playing:'main-A',pip:'pip-B'});
+    if(fails){await assert.rejects(pending,/offline/);assert.deepEqual(calls,[]);}
+    else{assert.deepEqual(await pending,{restored:['main-A','pip-B'],missing:[]});assert.deepEqual(calls,['pip-B','pip']);}
+  }
+});

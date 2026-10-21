@@ -1190,7 +1190,7 @@ function pip() {
 }
 $("#pip").ondblclick = () => active && show("Sessions", active.sid);
 $("#pipclose").onclick = e => { e.stopPropagation(); active = null; pip(); };
-window.gboxClientViewState = () => ({ tab: cur, playing, active: active?.sid || null,
+window.gboxClientViewState = () => ({ tab: cur, playing, active: active?.sid || null, revision: viewRevision,
   session: (cur === 'Sessions' && document.getElementById('session-head')?.dataset.sid) || active?.sid || null,
   pip: $("#pipimg").getAttribute("src") ? $("#pipimg").dataset.sid || null : null });
 const CLIENT_VIEW_RESTORE = GBoxSessionRefresh.create({

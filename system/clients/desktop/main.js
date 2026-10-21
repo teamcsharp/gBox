@@ -35,6 +35,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const clientHandoff = require('./client-handoff.cjs');
+const clientViews = require('./client-view-store.cjs');
 const recordingExport = require('./recording-export.cjs');
 
 app.setPath("userData", STANDALONE ? path.join(STANDALONE, ".tools", "desktop-profile")       // standalone: own profile + single-instance lock
@@ -43,6 +44,8 @@ const GAME_FRAME_DIR = path.join(app.getPath("userData"), "game-frames");
 process.env.GBOX_GAME_FRAME_DIR = GAME_FRAME_DIR;                  // worker/tracker also use a standalone profile's capture cache
 const SETTINGS = path.join(app.getPath("userData"), "settings.json");
 const CLIENT_HANDOFF_FILE = path.join(app.getPath('userData'), 'client-refresh-handoff.json');
+const clientViewStore = clientViews.create(app.getPath('userData'));
+let savedClientState = null, savedClientOrigin = null, savedClientKey = null, clientViewTimer = null;
 let startupHandoff = null, handoffView = null, clientHandoffBusy = false, clientRefreshExit = false;
 let clientActivation = { state: 'active', pid: process.pid, reason: 'Current desktop process is active.' };
 const DEFAULTS = {
@@ -725,7 +728,7 @@ ipcMain.handle('client:reload', async (event, state) => {
           await workerControl.stop(); return true;
         },
         save: value => clientHandoff.save(CLIENT_HANDOFF_FILE, { state: value, ...compactWindow.handoff(),
-          mini: mini && !mini.isDestroyed() ? { ...miniSession, bounds: mini.getBounds() } : pendingMini,
+          mini: clientViews.mini(mini && !mini.isDestroyed() ? { ...miniSession, bounds: mini.getBounds() } : pendingMini, settings().apiUrl),
           startWorker: hadWorker || settings().autoStartWorker }),
         launch: id => {
           app.relaunch({ args: [...process.argv.slice(1).filter(a => !a.startsWith(clientHandoff.ARG)), clientHandoff.ARG + id] });
@@ -749,6 +752,23 @@ ipcMain.handle('client:version', async event => {
 });
 ipcMain.handle('client:handoff', event => { assertClientSender(event); return handoffView; });
 ipcMain.handle('client:handoff-saved', event => { assertClientSender(event); handoffView = null; return true; });
+function saveClientView(state = savedClientState, server = savedClientOrigin) {
+  if (!state || state.v !== 1 || !win || win.isDestroyed()) return false;
+  const origin = clientViews.origin(server);
+  if (!origin || origin !== clientViews.origin(settings().apiUrl) || !clientViews.matches({ state }, origin)) return false;
+  const value = clientViews.view({ state, ...compactWindow.handoff(),
+    mini: clientViews.mini(mini && !mini.isDestroyed() ? { ...miniSession, bounds: mini.getBounds() } : pendingMini, origin) }, 0);
+  const key = JSON.stringify({ origin, ...value });
+  if (key !== savedClientKey) clientViewStore.save(origin, value);
+  savedClientState = value.state; savedClientOrigin = origin; savedClientKey = key;
+  return true;
+}
+function queueClientView() {
+  clearTimeout(clientViewTimer);
+  clientViewTimer = setTimeout(() => { try { saveClientView(); } catch (error) { logPush('saved-view', error.message); } }, 300);
+}
+ipcMain.handle('client:view', event => { assertClientSender(event); return clientViewStore.load(settings().apiUrl)?.state || null; });
+ipcMain.handle('client:view-save', (event, state, origin) => { assertClientSender(event); return saveClientView(state, origin); });
 let embedded = null, gpuSurface = false;                          // active presentation uses Chromium's compositor
 // Pick whip: Alt + drag over the game draws a line from one thing to another; on release the frame (with the line) goes
 // to the chat as "swap this with that". The line lives on a transparent click-through window above the docked game.
@@ -917,17 +937,20 @@ ipcMain.handle("stt", async (_e, buf) => {
 
 // Mini mode: the whole app collapses into a frameless, always-on-top game window that keeps the game's aspect ratio.
 let mini = null, miniSession = null, pendingMini = null;
-async function openMini(sid, title, savedBounds) {
+async function openMini(sid, title, savedBounds, expectedOrigin = clientViews.origin(settings().apiUrl)) {
   const s = settings(), t = await token();
   if (clientHandoffBusy) throw Error('Desktop refresh is in progress.');
+  if (!expectedOrigin || clientViews.origin(s.apiUrl) !== expectedOrigin || clientViews.origin(settings().apiUrl) !== expectedOrigin)
+    throw Error('The saved PiP belongs to a different server.');
   if (mini) mini.close();
   mini = new BrowserWindow({ width: 480, height: 360, frame: false, alwaysOnTop: true, resizable: true, backgroundColor: "#000",
     title: "gBox · " + (title || "game"), icon: path.join(__dirname, "..", "..", "assets", "brand", "gbox.ico"),
     webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true } });
   mini.loadFile(path.join(__dirname, "mini.html"), { query: { src: `${s.apiUrl}/api/sessions/${encodeURIComponent(sid)}/mjpeg?token=${encodeURIComponent(t)}`, title: title || "" } });
-  miniSession = { sid, title };
+  miniSession = { sid, title, origin: expectedOrigin };
   if (savedBounds) mini.setBounds(savedBounds);
-  mini.on("closed", () => { mini = null; miniSession = null; if (win && !win.isDestroyed()) { win.webContents.send("mini:closed"); win.show(); } });
+  mini.on("closed", () => { mini = null; miniSession = null; queueClientView(); if (win && !win.isDestroyed()) { win.webContents.send("mini:closed"); win.show(); } });
+  mini.on('move', queueClientView); mini.on('resize', queueClientView); queueClientView();
   win.hide();
   return true;
 }
@@ -1054,11 +1077,20 @@ app.whenReady().then(() => {
     runtimeFiles: [...new Set([path.join(__dirname, 'main.js'), ...Object.keys(require.cache).filter(p => p.startsWith(__dirname + path.sep))])], apiUrl: () => settings().apiUrl });
   if (!FIRST) return;
   startupHandoff = clientHandoff.consume(CLIENT_HANDOFF_FILE, process.argv);
+  // A cold reopen restores presentation only. It cannot enter the handoff's
+  // cleanup exception or authorize a worker start.
+  const handoffMatches = clientViews.matches(startupHandoff.value, settings().apiUrl);
+  const startupView = handoffMatches ? startupHandoff.value : (!startupHandoff.requested && clientViewStore.load(settings().apiUrl));
+  if (startupView) {
+    savedClientState = startupView.state; savedClientOrigin = clientViews.origin(settings().apiUrl);
+    pendingMini = startupView.mini ? { ...startupView.mini, origin: savedClientOrigin } : null;
+    compactWindow.seedBounds(startupView.compactBounds);
+  }
   if (startupHandoff.value) {
-    handoffView = startupHandoff.value.state;
-    pendingMini = startupHandoff.value.mini;
-    compactWindow.seedBounds(startupHandoff.value.compactBounds);
-    clientActivation = { state: 'applied', pid: process.pid, at: Date.now(), reason: 'Updated desktop code is active; saved streams are reconnecting.' };
+    handoffView = handoffMatches ? startupHandoff.value.state : null;
+    clientActivation = { state: 'applied', pid: process.pid, at: Date.now(), reason: handoffMatches
+      ? 'Updated desktop code is active; saved streams are reconnecting.'
+      : 'Updated desktop code is active; the unbound or different-server saved view was not restored.' };
   } else if (startupHandoff.requested) clientActivation = { state: 'pending', pid: process.pid, reason: startupHandoff.error };
   appMenu();
   session.defaultSession.setPermissionRequestHandler((_wc, perm, cb) => cb(["media", "audioCapture", "clipboard-read", "clipboard-sanitized-write"].includes(perm)));
@@ -1099,8 +1131,8 @@ app.whenReady().then(() => {
     titleBarOverlay: { color: "#111114", symbolColor: "#e8e8ee", height: 36 },
     webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false, webviewTag: true, backgroundThrottling: false },
   });
-  if (startupHandoff.value) {
-    const before = startupHandoff.value.window;
+  if (startupView) {
+    const before = startupView.window;
     win.setBounds(before.bounds); win.setAlwaysOnTop(before.top);
     if (before.maximized) win.maximize();
     if (before.fullscreen) win.setFullScreen(true);
@@ -1118,11 +1150,12 @@ app.whenReady().then(() => {
   } });
   win.webContents.on('did-finish-load', () => {
     clientReloading = false;
+    if (pendingMini && !clientViews.mini(pendingMini, settings().apiUrl)) pendingMini = null;
     if (pendingMini) {
       const target = pendingMini;
       api('/api/sessions?include_ended=false').then(sessions => {
         if (!sessions.some(value => value.session_id === target.sid && value.state === 'running')) throw Error('The saved PiP session is unavailable.');
-        return openMini(target.sid, target.title, target.bounds);
+        return openMini(target.sid, target.title, target.bounds, target.origin);
       }).then(() => { if (pendingMini === target) pendingMini = null; }).catch(error => {
         clientActivation = { ...clientActivation, reason: error.message + ' Press F5 to retry the saved PiP.' };
       });
@@ -1131,6 +1164,7 @@ app.whenReady().then(() => {
   win.webContents.on('did-fail-load', (_e, _code, _description, _url, mainFrame) => { if (mainFrame) clientReloading = false; });
   win.webContents.on('render-process-gone', () => { clientReloading = false; });
   win.on("closed", () => pickHoldReleaseAll("window closed"));
+  for (const event of ['move', 'resize', 'maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen']) win.on(event, queueClientView);
   startPadWatcher();
   win.on("focus", () => { win.webContents.send("app-focus"); if (hotkeys.docked) checkFront(); });   // coming back to gBox: the renderer decides whether the game gets focus
   // Another app took the foreground / gBox minimized: release the game hotkeys at once, then confirm with the helper (a
@@ -1140,6 +1174,7 @@ app.whenReady().then(() => {
   win.on("hide", () => hotkeys.setFront(false));
   win.on("restore", () => { if (hotkeys.docked) checkFront(); });
   win.on("close", e => {                                      // the docked game dies with this window: keep its moment first
+    try { saveClientView(); } catch (error) { logPush('saved-view', error.message); }
     if (momentsKept || !FIRST) return;
     e.preventDefault();
     keepMoments().finally(() => { if (win && !win.isDestroyed()) win.close(); });

@@ -2770,11 +2770,11 @@ async function gboxState() {                             // what the embedded gB
   const wv = document.querySelector("#wv");
   if (!wv) return {};
   try { const value = await wv.executeJavaScript(`(() => {
-    if (globalThis.gboxClientViewState) return { ...globalThis.gboxClientViewState(), hash: location.hash };
+    if (globalThis.gboxClientViewState) return { ...globalThis.gboxClientViewState(), hash: location.hash, origin: location.origin };
     const tab = typeof cur !== "undefined" ? cur : null;
     const selected = tab === "Sessions" ? document.getElementById("session-head")?.dataset.sid : null;
     return { tab, session: selected || (typeof active !== "undefined" && active ? active.sid : null),
-      playing: typeof playing !== "undefined" ? playing : null, hash: location.hash };
+      playing: typeof playing !== "undefined" ? playing : null, hash: location.hash, origin: location.origin };
   })()`); if (typeof clientRefresh !== 'undefined') clientRefresh.remember(value); return value; }
   catch { return {}; }
 }
@@ -3762,7 +3762,7 @@ const COMPACT = compactController.state;
 const compactEnter = () => compactController.enter();
 const compactRestore = () => compactController.restore();
 const clientRefresh = GBoxClientRefresh.create({ storage: sessionStorage, readState: gboxState,
-  context: () => ({ sid: COMPACT.on ? COMPACT.sid : EMB.sid, compact: COMPACT.on, aspect: COMPACT.aspect,
+  context: () => ({ origin: S.apiUrl, sid: COMPACT.on ? COMPACT.sid : EMB.sid, compact: COMPACT.on, aspect: COMPACT.aspect,
     returnMode: COMPACT.on ? COMPACT.returnMode : VIEW.mode, section: document.querySelector('section.on')?.id }),
   reload: async value => {
     if (!gbox.clientReload) return location.reload();
@@ -3772,22 +3772,37 @@ const clientRefresh = GBoxClientRefresh.create({ storage: sessionStorage, readSt
       throw error;
     }
   } });
+let clientViewRestoring = true, clientViewNavigation = 0;
+document.addEventListener('click', event => {
+  if (event.isTrusted && event.target.closest?.('aside button[data-s]')) clientViewNavigation++;
+}, true);
 async function restoreClientView() {
+  let value, observed;
+  const navigation = clientViewNavigation;
+  try {
   if (gbox.clientHandoff) {
     try {
       const handoff = await gbox.clientHandoff();
       if (handoff) { clientRefresh.adopt(handoff); await gbox.clientHandoffSaved?.(); }
     } catch (error) { if (!/No handler registered/.test(String(error))) throw error; }
   }
-  const value = clientRefresh.pending(); if (!value) return;
+  if (!clientRefresh.pending() && gbox.clientView) {
+    try { const saved = await gbox.clientView(); if (saved) clientRefresh.adopt(saved); }
+    catch (error) { if (!/No handler registered/.test(String(error))) throw error; }
+  }
+  value = clientRefresh.pending(); if (!value) return;
+  if (navigation !== clientViewNavigation) { clientRefresh.done(); return; }
   if (value.guest?.playing || value.sid) EMB.sid = value.guest?.playing || value.sid;
   document.querySelector(`aside button[data-s="${value.section}"]`)?.click();
   await loadPlay();
   const wv = document.querySelector('#wv');
   if (!wv) throw Error('The game view is not ready. Press F5 to reconnect your saved streams.');
   await wv.gboxReady;
-  const restored = await wv.executeJavaScript(`window.gboxRestoreClientView ? window.gboxRestoreClientView(${JSON.stringify(value.guest)}) : Promise.reject(Error('The game view update is not available yet.'))`);
-  if (restored?.cancelled) { clientRefresh.done(); return; } // an operator selected another view while reconnecting
+  if (navigation !== clientViewNavigation || !clientRefresh.pending()) { clientRefresh.done(); return; }
+  const restored = await wv.executeJavaScript(`(async () => { if (${JSON.stringify(value.origin || null)} && location.origin !== ${JSON.stringify(value.origin || null)}) return { cancelled: true }; if (!window.gboxRestoreClientView) throw Error('The game view update is not available yet.'); const result = await window.gboxRestoreClientView(${JSON.stringify(value.guest)}); return { ...result, view: { ...window.gboxClientViewState?.(), origin: location.origin } }; })()`);
+  observed = restored?.view;
+  clientRefresh.remember(observed); // Ctrl+R may arrive before the first periodic guest checkpoint
+  if (restored?.cancelled || navigation !== clientViewNavigation) { clientRefresh.done(); return; } // operator navigation supersedes saved intent
   if (value.compact) {
     try { await compactController.enter({ ...value, preserveGuest: true }); }
     catch (error) {
@@ -3801,6 +3816,10 @@ async function restoreClientView() {
     return; // keep the original pair for retry; never replace it with whichever session happens to be newest
   }
   clientRefresh.done();
+  } finally {
+    if (value && clientRefresh.pending()) clientRefresh.retain(value, observed);
+    clientViewRestoring = false;
+  }
 }
 // Native desktop PiP has no browser gesture restriction. The same BrowserWindow keeps its original bounds.
 // Also retain the view for Ctrl+R/navigation reloads that bypass the F5 command.
@@ -3810,8 +3829,13 @@ addEventListener('beforeunload', () => {
 // Ctrl+R cannot await a guest IPC call during unload. Keep its last confirmed pair, including the hidden main view.
 let clientViewReading = false;
 setInterval(() => {
-  if (clientViewReading || document.querySelector('#wv')?.dataset.ready !== 'true') return;
-  clientViewReading = true; gboxState().finally(() => { clientViewReading = false; });
+  if (clientViewRestoring || clientViewReading || document.querySelector('#wv')?.dataset.ready !== 'true') return;
+  clientViewReading = true;
+  gboxState().then(async guest => {
+    const value = clientRefresh.observe(guest);
+    if (value && guest.origin && gbox.clientViewSave) await gbox.clientViewSave(value, guest.origin);
+  }).catch(error => { if (!/No handler registered/.test(String(error))) console.warn('Saved view:', error.message); })
+    .finally(() => { clientViewReading = false; });
 }, 2000);
 document.addEventListener('gbox-stream-state', event => {
   if (event.target.id !== 'compact-stream' || !COMPACT.on) return;
