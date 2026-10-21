@@ -1,7 +1,7 @@
 """Resident Evil 4 (GameCube G4BE08) Mercenaries autoplay playbook: an "any means necessary" run, played like a game.
 
 setup() applies the hack package through re_mods (Mercenaries unlocked, Leon's loadout = the Hand Cannon at its own
-fire rate with x99.9 damage and explosive rounds, infinite ammo, unlimited health, time pickups x3, combo window x3 and
+fire rate with x99.9 damage (no explosive rounds: they kept him from firing close), infinite ammo, unlimited health, time pickups x3, combo window x3 and
 frozen, every Ganado cloned twice more; not full auto: that restarted the magnum's recoil every 3 frames and bent
 Leon's arm back over his head). play() then drives Leon from RAM at ~20 Hz with the pad only, the way a player would
 (operator 2026-10-20: "I want the game to be played like a normal game"; "it is unnatural and nightmare fuel"): it
@@ -33,9 +33,13 @@ reads Leon and never writes him - no facing, aim pitch or position writes:
     misses / accuracy); MISSES_TO_ADJUST misses in a row move the aim height to the next PITCH_STEPS offset, a hit
     keeps it (operator 2026-10-20: "every shot ... setting up the zombies to be stunned or eliminating them");
   * shoots only what he can hit (operator 2026-10-20: "shooting into walls near him and blowing himself up"): fires
-    inside SHOOT_RANGE, not steeper down than STEEP_DOWN (that is the roof edge in front of him), and backs off a
-    Ganado closer than POINT_BLANK (an explosive round there blows up on Leon); further out he closes in; up on the
-    start roof (HIGH_GROUND above the Ganados) he first runs to the edge towards them and jumps down;
+    inside SHOOT_RANGE, not steeper down than STEEP_DOWN (that is the roof edge in front of him), at any range (no
+    explosive rounds, so a point-blank shot is safe); further out he closes in; up on the start roof (HIGH_GROUND
+    above the Ganados) he first runs to the edge towards them and jumps down;
+  * threats first (operator 2026-10-20: "too often I see Leon just sitting there just accepting an attack ... he
+    should be proactive and shoot any attacking enemy"): a Ganado within THREAT_R is shot before any bonus or route,
+    and a level shot (target within ELEV_DY of Leon's height) fires as soon as the aim pose is up, with no aim-height
+    adjustment (the Hand Cannon x99.9 kills with a body shot; the stick moves the pitch at only ~10 deg/s);
   * blocked while running (moved < STUCK_MOVE in STUCK_S, up and down included: a ladder moves him up, not along):
     taps A ("JUMP OVER" / "CLIMB" prompts), then detours; still blocked after that, backs off for BACK_S and tries the
     other side (no teleports: a position write mid-climb crashed the game with "Invalid read" in its area-event code,
@@ -82,7 +86,10 @@ HEAD_H, GUN_H, HOURGLASS_H = 1550.0, 1400.0, 900.0   # above the feet: a Ganado'
 PITCH_MAX, PITCH_AFTER = 0.5, 0.25              # aim no further up / down (radians); read it once R is held this long
 PITCH_TOL, PITCH_FINE, PITCH_LIMIT_S = 0.05, 0.15, 0.5   # fire within PITCH_TOL of the head; closer than PITCH_FINE the
                                                          # stick is pulsed; a push that moves nothing this long: the limit
-SHOOT_RANGE, POINT_BLANK = 2400.0, 700.0         # fire inside this; closer than POINT_BLANK the blast is on Leon
+SHOOT_RANGE = 2400.0                             # fire inside this
+THREAT_R = 1600.0                                # a Ganado this close is about to strike: him first, before bonuses
+ELEV_DY = 600.0                                  # a target this far above / below: raise or lower the aim; else level
+REAIM_PITCH = 0.15                               # a level target with the aim still this far up / down: aim again
 STEEP_DOWN = -0.5                                # a shot this far down (radians) hits the ledge in front: move instead
 HIGH_GROUND = 1500.0                             # Leon this far above the Ganados (the start roof): get down first
 TAKE_R, VAULT_R = 450.0, 900.0                   # take an item hourglass this close to its stand point; vault from here
@@ -110,7 +117,6 @@ PACKAGE = [("mercenaries_unlock", {"on": True}),
            ("merc_loadout", {"character": "leon", "items": ["handcannon", "handcannon ammo:200"], "on": True}),
            ("weapon_mod", {"item": "handcannon", "reset": True, "damage": "99.9"}),   # its own fire rate (see above)
            ("infinite_ammo", {"on": True}), ("unlimited_health", {"on": True}),
-           ("explosive_rounds", {"items": ["handcannon"], "on": True}),
            ("merc_time_bonus", {"multiplier": 3}), ("combo_time", {"multiplier": 3}),
            ("combo_freeze", {"on": True}), ("spawn_multiplier", {"count": 3, "on": True})]
 
@@ -337,6 +343,7 @@ class Bot:
         self.miss_run, self.pitch_i = 0, 0
         self.pitch_up, self.pitch_key = "up", None    # the stick direction that raises the aim (learned); held last tick
         self.pitch_seen, self.pitch_wrong, self.pitch_push = None, 0, None
+        self.reaim_at = float("-inf")                 # when the aim was last lowered to come up level again
         self.st, self.items, self.combos, self.ordered = None, [], [], False
         self.hist: list = []
         self.last_timer, self.timer_since = None, clock()
@@ -439,11 +446,16 @@ class Bot:
         if abs(err) > TURN_TOL:
             self.r_since = None
             return {"hold": self._turn(err, aiming=False)}               # turn round first (fast)
-        if dist < POINT_BLANK:                                         # the blast would be on Leon: step back
-            self.r_since = None
-            return {"hold": {"down"} | self._turn(err, aiming=False)}
         self.r_since = now if self.r_since is None else self.r_since
-        height, level = self._aim_height(p, tgt["pos"][1] + HEAD_H, dist, now)   # the gun onto his head, by stick
+        if abs(tgt["pos"][1] - p["pos"][1]) < ELEV_DY:                 # on his level: the gun level, at his chest
+            cur = p.get("pitch")
+            if (cur is not None and abs(cur) > REAIM_PITCH and now - self.r_since >= PITCH_AFTER
+                    and now - self.reaim_at > 1.5):                     # still up from a higher one (the laser over his
+                self.reaim_at, self.r_since = now, None                 # head, live 2026-10-20): lower and aim again
+                return {"hold": set()}
+            height, level = self._aim_height(p, p["pos"][1] + GUN_H, dist, now)
+        else:
+            height, level = self._aim_height(p, tgt["pos"][1] + HEAD_H, dist, now)   # up / down: the aim by stick
         if abs(err) > FIRE_TOL or not level:
             return {"hold": self._turn(err, aiming=True) | height}       # aim (pose up), turn and raise onto him
         self.stats["shots_s"] = round(self.stats["shots_s"] + 0.05, 2)
@@ -633,6 +645,8 @@ class Bot:
         pool = [e for e in s["enemies"] if self.skip.get(e["slot"], float("-inf")) < now]
         near = min(pool, key=lambda e: (e["pos"][0] - px) ** 2 + (e["pos"][2] - pz) ** 2) if pool else None
         dist = math.hypot(near["pos"][0] - px, near["pos"][2] - pz) if near else None
+        if near and dist < THREAT_R:                                      # about to strike: him first, before anything
+            return self._fight(p, near, now, s)
         crowd = sum(1 for e in pool if math.hypot(e["pos"][0] - px, e["pos"][2] - pz) < COMBO_NEAR)
         if self.st is not None and self.combos and crowd >= COMBO_CROWD:     # a combo window while they crowd in
             c = min(self.combos, key=lambda h: math.hypot(h["stand"][0] - px, h["stand"][2] - pz))
