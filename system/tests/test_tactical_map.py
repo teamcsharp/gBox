@@ -134,8 +134,8 @@ def test_the_bots_plan_goes_on_the_frame():
 
 
 def test_without_a_plan_the_target_and_route_come_from_the_bot_it_has():
-    bot = R.Bot(clock=lambda: 50.0)
-    bot.target, bot.route, bot.route_for = f"bonus {HG1:#x}", [(0.0, 0.0, 400.0), (100.0, 13.0, 700.0)], HG1
+    # an older brain (RE4's re4_merc_bot.Bot has no plan()): the fallback reads its target / route attributes
+    bot = SimpleNamespace(target=f"bonus {HG1:#x}", route=[(0.0, 0.0, 400.0), (100.0, 13.0, 700.0)], route_for=HG1)
     plan = T.take_plan(bot)
     assert plan["fallback"] and plan["target"] == {"kind": "bonus", "id": HG1} and len(plan["route"]) == 2
     f = T.Tracker("BLUS30491").frame(snap(bonuses=[(HG1, (100.0, 13.0, 700.0), "time")]), plan, now=1.0)

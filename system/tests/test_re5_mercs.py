@@ -325,29 +325,31 @@ def test_a_time_bonus_is_taken_with_its_prompt(monkeypatch):
     assert R.BONUS_HUNT is True
     far_majini = [((3000.0, 0.0, 0.0), 800, 800)]                                # 30 m away at +x
     act, bot = tick(with_bonuses(world(enemies=far_majini), [(0.0, 13.0, 100.0)]))   # 1 m ahead, facing it
-    assert act == {"hold": {"lup"}} and str(bot.target).startswith("bonus")      # a step closer, no shot
+    assert act == {"tap": "square"} and str(bot.target).startswith("bonus")      # punch it (the prompt is not a
+    assert bot.stats["bonus_presses"] == 1                                       # kind-2 cActionButton: press blind)
     mem = with_prompt(with_bonuses(world(enemies=far_majini), [(0.0, 13.0, 100.0)]), R.BTN_STAGE, PLAYER, 0)
     act, bot = tick(mem)
-    assert act == {"tap": "square"} and bot.stats["bonus_presses"] == 1           # "□ Time bonus"
-    act, _ = tick(with_bonuses(world(enemies=far_majini), [(-100.0, 13.0, 0.0)])) # 1 m to the right: turn to it
+    assert act == {"tap": "square"} and bot.stats["stage_presses"] == 1           # or on the "□ Time bonus" prompt
+    act, _ = tick(with_bonuses(world(enemies=far_majini), [(-300.0, 13.0, 0.0)])) # 3 m to the right: turn to it first
     assert act == {"hold": {"rright"}}
-    close = [((0.0, 0.0, 250.0), 800, 800)]                                       # a Majini 2.5 m away: him first
-    act, bot = tick(with_bonuses(world(action=2, enemies=close), [(0.0, 13.0, 100.0)]))
-    assert bot.target == 0
+    close = [((0.0, 0.0, 250.0), 800, 800)]                                       # a Majini 2.5 m away, bonus 6 m off:
+    act, bot = tick(with_bonuses(world(action=2, enemies=close), [(0.0, 13.0, 600.0)]))
+    assert bot.target == 0                                                        # him first
+    act, bot = tick(with_bonuses(world(enemies=close), [(0.0, 13.0, 100.0)]))     # but a bonus 1 m off (in reach):
+    assert str(bot.target).startswith("bonus")                                    # finish the quick press
 
 
-def test_a_bonus_without_its_prompt_is_left_alone_for_a_while(monkeypatch):
+def test_a_bonus_that_will_not_take_is_left_alone_for_a_while(monkeypatch):
     monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
     clock = [100.0]
     bot = R.Bot(clock=lambda: clock[0])
-    mem = with_bonuses(world(), [(0.0, 13.0, 40.0)])                             # right at it, no prompt
-    assert bot.tick(R.snapshot(mem)) == {"hold": set()}
-    clock[0] += R.BONUS_GIVE_UP_S + 0.5
+    mem = with_bonuses(world(), [(0.0, 13.0, 40.0)])                             # right at it: punch it blind
+    assert bot.tick(R.snapshot(mem)) == {"tap": "square"}
+    clock[0] += R.BONUS_GIVE_UP_S + 0.5                                          # punched a while, still here:
     bot.tick(R.snapshot(mem))
-    assert not str(bot.target or "").startswith("bonus") or bot.bonus_skip         # left alone now
+    assert bot.bonus_skip                                                        # left alone now
     clock[0] += R.BONUS_SKIP_S + 1
-    bot.tick(R.snapshot(mem))
-    assert str(bot.target or "bonus").startswith("bonus")                         # tried again later
+    assert bot.tick(R.snapshot(mem)) == {"tap": "square"}                        # tried again later
 
 
 def test_bonuses_anywhere_are_walked_to_nearest_first_and_the_clock_jumps_are_counted(monkeypatch):

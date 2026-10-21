@@ -27,7 +27,7 @@ import struct
 import time
 
 from ..driver import Driver
-from . import re5_nav
+from . import re5_combat, re5_nav
 
 S_PLAYER, S_ENEMY, S_MAIN = 0x017FEB34, 0x017FDB60, 0x0191CEE4
 S_ACTION, S_ITEM, S_UNIT = 0x017B7174, 0x017FE574, 0x0191D700
@@ -86,6 +86,8 @@ BONUS_WALK = True                      # walk to the far ones along the game's n
 BONUS_HUNT = True                      # go for them (taken with the "□ Time bonus" prompt at the hourglass:
                                        # the Gatling's fire, knife slashes and walking over it do not take one)
 BONUS_TAKE = 140.0                     # this close (and on its level): face it, square on its prompt
+BONUS_REACH = 400.0                    # this close: finish taking it even with a Majini near (the press is quick)
+BONUS_PUNCH_R, BONUS_PUNCH_S = 170.0, 0.45   # within this, facing it: tap square blindly to punch it, this often
 BONUS_NEAR = 650.0                     # walked to within this, then shot from where he stands...
 BONUS_STEEP = math.radians(-18)        # ...no steeper than this (the aim stops near -20 deg: step back)
 BONUS_LEVEL_DY = 150.0                 # ...and from its own level (not from a roof above it)
@@ -98,8 +100,8 @@ _AVOID: dict = {}                      # navmesh signature -> the crossings the 
 CROSSINGS_FILE = "BLUS30491-crossings.json"
 STAND_R = 250.0                        # the stand: the round's start position, held from this close
 BREAK_AT_S, BREAK_MARGIN_S = 60.0, 15.0   # leave the stand for time at this clock, or at the nearest one's ETA + this
-RANK_SCORES: tuple = ()                # (("S", points), ("A", points), ...) once the thresholds are known (the meta
-                                       # research is extracting them); until then no rank is logged
+RANK_SCORES = (("SS", 90000), ("S", 60000), ("A", 40000), ("B", 20000), ("C", 10000), ("D", 0))   # Reunion solo
+                                       # (docs/mercenaries_re5_meta.md 1.1); the rank is score alone, same every stage
 
 
 def ptr_ok(p) -> bool:
@@ -252,6 +254,7 @@ def snapshot(m) -> dict:
         snap["bonuses"] = bonuses(m)
         snap["prompt"] = prompt(m)
         snap["stage_prompt"] = stage_prompt(m)
+        snap["prompt_target"] = prompt_target(m)            # the Majini a finisher prompt is for (the combat layer)
         try:
             snap["nav"] = re5_nav.read(m, _NAV_CACHE)
         except (ValueError, OSError, struct.error):
@@ -497,6 +500,19 @@ def stage_prompt(m) -> bool:
     return ptr_ok(btn) and u32(m, btn + BTN_OWNER) == pl and u32(m, btn + BTN_KIND) == BTN_STAGE
 
 
+def prompt_target(m):
+    """The Majini the on-screen cActionButton acts on (+0x40), or None: who a finisher prompt is for (the combat
+    layer refuses a second melee on a boss)."""
+    ab = u32(m, S_ACTION)
+    if not ptr_ok(ab) or not u32(m, ab + AB_HUD) & HUD_PROMPT:
+        return None
+    btn = u32(m, ab + AB_BUTTON)
+    if not ptr_ok(btn):
+        return None
+    tgt = u32(m, btn + BTN_TARGET)
+    return tgt if ptr_ok(tgt) else None
+
+
 _NAV_CACHE: dict = {}
 
 
@@ -565,9 +581,11 @@ class Bot:
     inside AIM_TOL / PITCH_TOL; back off one that is too close; walk to the next one when nobody is in range.
     Reads only; presses only (gBox pad names)."""
 
-    def __init__(self, m=None, clock=time.time, stats: dict | None = None):
+    def __init__(self, m=None, clock=time.time, stats: dict | None = None, learn_dir=None, lessons=None):
         self.m, self.clock = m, clock
         self.stats = stats if stats is not None else {}
+        self.combat = re5_combat.Combat(m, self.stats, clock=clock, learn_dir=learn_dir, lessons=lessons) \
+            if m is not None and re5_combat.ENABLED else None
         for k in ("shots_s", "hits", "kills_seen", "max_combo", "turns", "backoffs", "stuck"):
             self.stats.setdefault(k, 0)
         self.target = None
@@ -586,6 +604,7 @@ class Bot:
         self.avoid: list = []                  # crossings the player could not take this round (no prompt there)
         self.climb_at = None                   # (the crossing, since when) while waiting at one for its prompt
         self.take_at = None                    # (the bonus, since when) while standing at one for its prompt
+        self.last_punch = 0.0                  # when square was last tapped at a hourglass
         self.route_len, self.route_len_at = None, 0.0   # hourglass -> its route's length (cm), when worked out
         self.nearest_eta = None
         self.tap = 0                           # the R1 tap cycle (TAP_ON down, TAP_OFF up)
@@ -597,13 +616,16 @@ class Bot:
         self.reload_until = 0.0
         self.heal_at = 0.0
         self.switch_at = 0.0
+        self.stuck_since = None                 # set while the walk is pushing forward without ground (a wall, a door)
 
     # --- the engine's brain interface ---
     def prompt_ok(self, button, snap, now) -> bool:
-        return True
+        return self.combat.prompt_ok(button, snap, now) if self.combat is not None else True
 
     def save(self):
         save_crossings()
+        if self.combat is not None:
+            self.combat.save()
 
     def plan(self) -> dict:
         """What the bot is doing, for the tactical map (gbox/mercs/tactical.py): no RAM reads, only state held."""
@@ -637,6 +659,12 @@ class Bot:
             self.aiming_since = None                        # stays down between its presses (L1 would cancel it)
             self.stats["prompt_holds"] = self.stats.get("prompt_holds", 0) + 1
             return {"hold": set()}
+        if snap.get("stage_prompt"):                        # a ladder / jump-down / vault / door / "□ Time bonus" /
+            self.aiming_since = None                        # pick up: take it at once, before anything else (operator
+            self.stats["stage_presses"] = self.stats.get("stage_presses", 0) + 1   # 2026-10-21: he ignored a ledge
+            if self.stuck_since is not None:                # and a door). A prompt while stuck = it was blocking him.
+                self.stats["stuck_prompts_cleared"] = self.stats.get("stuck_prompts_cleared", 0) + 1
+            return {"tap": "square"}
         heal = self._heal(p, snap, now)                     # low: a herb / a spray from a quick slot
         if heal:
             return heal
@@ -694,6 +722,10 @@ class Bot:
             return {"hold": set()}
         if tgt is None:
             self.stats["phase"] = "fight" if threats or not self.at_stand else "stand"
+        if tgt is None and self.combat is not None:         # a stunned Majini: close in for the finisher
+            st = self.combat.stunned_target(live, p, now)
+            if st is not None:
+                return self.combat.run_to(p, st)
         tgt = tgt or min(threats or live, key=lambda e: self._cost(p, e))
         self.plan_target = {"kind": tgt.get("kind", "enemy") if "ptr" in tgt else "enemy",
                             "id": tgt.get("ptr", tgt.get("slot")), "pos": tgt["pos"]}
@@ -716,6 +748,9 @@ class Bot:
             self.aiming_since = None
             self.stats["backoffs"] += 1
             return {"hold": {"ldown"} | self._turn(wrap(want - p["rot"]), aiming=False)}
+        if self.combat is not None and tgt.get("kind") not in ("time", "combo"):   # the combat layer owns the fight
+            self.target = tgt["slot"]
+            return self.combat.tick(snap, p, tgt, now)
         if not aiming:
             err = wrap(want - p["rot"])
             if abs(err) > TURN_TOL:                         # turn round first (fast, not aiming)
@@ -787,7 +822,11 @@ class Bot:
         if not standing or not BONUS_HUNT:
             self.stats["bonus_target"] = None
             return None
-        if any(self._threat(p, e) for e in live):
+        # about to take one (right on it, on its level): finish the square press even with a Majini near - it is quick
+        near = min(standing, key=lambda b: math.hypot(b["pos"][0] - px, b["pos"][2] - pz))
+        at_bonus = math.hypot(near["pos"][0] - px, near["pos"][2] - pz) < BONUS_REACH \
+            and abs(near["pos"][1] - py) < BONUS_LEVEL_DY
+        if not at_bonus and any(self._threat(p, e) for e in live):
             self.stats["phase"] = "fight"
             return None
         if mesh is not None and (self.route_len is None or now - self.route_len_at > ROUTE_LEN_S
@@ -852,22 +891,28 @@ class Bot:
         return {"tap": QUICK[quick["slot"]]}
 
     def _take(self, p, tgt, stage_prompt, now) -> dict:
-        """At a time bonus: square when its prompt ("□ Time bonus") is up, else face it and edge up to it; a bonus
-        stood at BONUS_GIVE_UP_S without its prompt is left for BONUS_SKIP_S."""
+        """At a time bonus: walk onto it, then tap square to punch it. The "□ Time bonus" prompt is not the kind-2
+        cActionButton the ladders use (the bot stood on a hourglass with stage_prompt False, live 2026-10-21), so the
+        press is blind: within BONUS_PUNCH_R, facing it, release every direction and tap square on a cadence; the
+        taken flag (the unit leaving the OM line) confirms it in _bonus. Given up after BONUS_GIVE_UP_S of tapping."""
         pos = p["pos"]
-        if stage_prompt:
-            self.stats["bonus_presses"] = self.stats.get("bonus_presses", 0) + 1
-            return {"tap": "square"}
-        if self.take_at is None or self.take_at[0] != tgt["ptr"]:
-            self.take_at = (tgt["ptr"], now)
-        elif now - self.take_at[1] > BONUS_GIVE_UP_S:
-            self.bonus_skip[tgt["ptr"]] = now + BONUS_SKIP_S
-            self.take_at = None
-            return {"hold": set()}
+        flat = math.hypot(tgt["pos"][0] - pos[0], tgt["pos"][2] - pos[2])
         err = wrap(heading(tgt["pos"][0] - pos[0], tgt["pos"][2] - pos[2]) - p["rot"])
+        if stage_prompt or (flat < BONUS_PUNCH_R and abs(err) < math.radians(45)):
+            if self.take_at is None or self.take_at[0] != tgt["ptr"]:
+                self.take_at = (tgt["ptr"], now)
+            elif now - self.take_at[1] > BONUS_GIVE_UP_S:   # tapped a while, still here: leave it, try later
+                self.bonus_skip[tgt["ptr"]] = now + BONUS_SKIP_S
+                self.take_at = None
+                return {"hold": set()}
+            if now - self.last_punch < BONUS_PUNCH_S:       # let the last tap land (the engine spaces a tap itself)
+                return {"hold": set()}
+            self.last_punch = now
+            self.stats["bonus_presses"] = self.stats.get("bonus_presses", 0) + 1
+            return {"tap": "square"}                        # release all, punch
         keys = self._turn(err, aiming=False)
-        if math.hypot(tgt["pos"][0] - pos[0], tgt["pos"][2] - pos[2]) > 60.0 and abs(err) < math.radians(30):
-            keys = keys | {"lup"}                           # a step closer (walking, not running)
+        if flat > 50.0 and abs(err) < math.radians(40):
+            keys = keys | {"lup"}                           # walk onto it (not running: it would overshoot)
         return {"hold": keys}
 
     def _follow(self, p, tgt, mesh, stage_prompt, now) -> dict:
@@ -943,9 +988,12 @@ class Bot:
         keys |= {"lup", "cross"}                            # run (up + cross)
         self.hist = [h for h in self.hist if now - h[0] < STUCK_S + 0.3] + [(now, px, pz)]
         if now - self.hist[0][0] >= STUCK_S and math.hypot(px - self.hist[0][1], pz - self.hist[0][2]) < STUCK_MOVE:
+            self.stuck_since = self.stuck_since or now       # pushing forward against something (a wall, a door)
             self.hist, self.unstick_dir = [], -self.unstick_dir
             self.unstick_until = now + 0.8
             self.stats["stuck"] += 1
+        else:
+            self.stuck_since = None
         return keys
 
     def _score_hits(self, snap):
@@ -984,7 +1032,7 @@ class RE5PS3(Driver):
         return where
 
     def brain(self, m, stats: dict, clock, learn_dir=None, nav=None):
-        return Bot(m, clock=clock, stats=stats)
+        return Bot(m, clock=clock, stats=stats, learn_dir=learn_dir)
 
     def prompt_source(self, m, stats: dict):
         self._stats = stats
