@@ -131,6 +131,9 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             now = clock()
             snap = drv.snapshot(m)
             where = drv.screen(m, snap)
+            observe_round = getattr(bot, "observe_round", None)
+            if observe_round is not None:
+                observe_round(snap, where, now)
             if tactical is not None:                  # the tactical map: who is where, what the bot means to do
                 try:
                     tactical(snap, bot, where)

@@ -27,7 +27,7 @@ import struct
 import time
 
 from ..driver import Driver
-from . import re5_combat, re5_nav
+from . import re5_combat, re5_nav, re5_weapons
 
 S_PLAYER, S_ENEMY, S_MAIN = 0x017FEB34, 0x017FDB60, 0x0191CEE4
 S_ACTION, S_ITEM, S_UNIT = 0x017B7174, 0x017FE574, 0x0191D700
@@ -61,6 +61,7 @@ HEAL_IDS = {0x301, 0x302, 0x303, 0x304, 0x307, 0x309}   # Green / Red / Yellow H
 HEAL_AT = 0.4                          # use one below this share of health
 WEAPON_NAMES = {0x02: "M92F", 0x03: "VZ61", 0x0B: "M29", 0x12: "Barry's handgun", 0x15: "Gatling", 0x20: "Dragunov"}
 ENGAGE, SHOOT_RANGE, TOO_CLOSE = 3000.0, 2200.0, 110.0
+CLOSE_ESCAPE_S, CLOSE_ACQUIRE_S = 0.25, 1.0  # escape briefly, then give the gun time to become ready
 BODY_R = 35.0                          # half a body: a shot inside atan(BODY_R / dist) hits
 TURN_TOL = math.radians(12)            # turn with the stick (not aiming) until within this
 AIM_TOL, PITCH_TOL = math.radians(2.5), math.radians(2.5)   # fire inside these
@@ -603,6 +604,7 @@ class Bot:
         self.route, self.route_for, self.route_at, self.route_since = None, None, 0.0, 0.0
         self.avoid: list = []                  # crossings the player could not take this round (no prompt there)
         self.climb_at = None                   # (the crossing, since when) while waiting at one for its prompt
+        self.climb_pos = self.climb_tick = None
         self.take_at = None                    # (the bonus, since when) while standing at one for its prompt
         self.last_punch = 0.0                  # when square was last tapped at a hourglass
         self.route_len, self.route_len_at = None, 0.0   # hourglass -> its route's length (cm), when worked out
@@ -617,6 +619,10 @@ class Bot:
         self.heal_at = 0.0
         self.switch_at = 0.0
         self.stuck_since = None                 # set while the walk is pushing forward without ground (a wall, a door)
+        self.close_escape_until = self.close_acquire_until = 0.0
+        self.round_active = False
+        self.round_end = None
+        self._observed_snap = None
 
     # --- the engine's brain interface ---
     def prompt_ok(self, button, snap, now) -> bool:
@@ -626,6 +632,66 @@ class Bot:
         save_crossings()
         if self.combat is not None:
             self.combat.save()
+
+    def observe_round(self, snap, where, now):
+        """Observe real round boundaries even when the engine handles a prompt instead of calling tick."""
+        if self._observed_snap is snap:
+            return
+        self._observed_snap = snap
+        p = snap.get("player")
+        if where == "playing" and p and getattr(self.m, "adapter", None) is not None:
+            from ...re5_mods_tool import maintain_health
+            health = maintain_health(self.m.adapter, snap)
+            self.stats["unlimited_health_enabled"] = health.get("unlimited_health", False)
+            self.stats["health_maintained"] = bool(health.get("active") and health.get("verified"))
+            if health.get("refilled"):
+                self.stats["health_refills"] = self.stats.get("health_refills", 0) + 1
+        if where != "playing" or not p:
+            self.last_timer = None
+            self.bonus_seen.clear()
+            self.hp_seen.clear()
+            if where in ("dead", "results"):
+                if where == "dead" and self.round_end is None:
+                    self.stats["deaths"] = self.stats.get("deaths", 0) + 1
+                if self.round_active and self.combat is not None:
+                    self.combat.observe(snap, now, active=False)
+                    self.combat.end_round(now)
+                self.round_active = False
+                self.round_end = self.round_end or where
+            elif self.combat is not None:
+                self.combat.suspend_observation(now)
+            return
+        if not self.round_active:
+            if self.round_end is not None:
+                self.stats["rounds"] = self.stats.get("rounds", 0) + 1
+                if self.round_end == "dead":
+                    self.stats["deaths_continued"] = self.stats.get("deaths_continued", 0) + 1
+                self.bonus_fired.clear()
+                self.bonus_skip.clear()
+                self.route, self.route_for, self.route_len = None, None, None
+                self.climb_at = self.take_at = None
+                self.climb_pos = self.climb_tick = None
+                self.spawn, self.at_stand, self.stood = None, False, False
+                self.hist.clear()
+                self.target = self.plan_target = self.aiming_since = None
+                self.reload_until = self.unstick_until = 0.0
+                self.close_escape_until = self.close_acquire_until = 0.0
+            self.round_active, self.round_end = True, None
+            if self.combat is not None:
+                self.combat.start_round(now)
+        if self.combat is not None:
+            self.combat.observe(snap, now)
+        self._score_hits(snap)
+        t = snap.get("timer")
+        if self.last_timer is not None and t is not None and self.last_timer > 0 and 2 < t - self.last_timer:
+            self.stats["bonus_s"] = round(self.stats.get("bonus_s", 0.0) + t - self.last_timer, 1)
+            self.stats["clock_jumps"] = self.stats.get("clock_jumps", 0) + 1
+        self.last_timer = t
+        standing = {b["ptr"] for b in snap.get("bonuses") or ()}
+        taken = self.bonus_seen - standing
+        if taken:
+            self.stats["bonuses_taken"] = self.stats.get("bonuses_taken", 0) + len(taken)
+        self.bonus_seen = standing
 
     def plan(self) -> dict:
         """What the bot is doing, for the tactical map (gbox/mercs/tactical.py): no RAM reads, only state held."""
@@ -644,6 +710,7 @@ class Bot:
 
     def tick(self, snap: dict) -> dict:
         now = self.clock()
+        self.observe_round(snap, own_screen(snap), now)
         p = snap.get("player")
         self.stats["max_combo"] = max(self.stats["max_combo"], snap.get("combo") or 0)
         if not p:
@@ -651,10 +718,9 @@ class Bot:
         if p.get("hp") is not None and p["hp"] <= 0:        # "You Are Dead - Continue? Yes / No": Yes (cross)
             if now - self.dead_tap > 1.5:
                 self.dead_tap = now
-                self.stats["deaths_continued"] = self.stats.get("deaths_continued", 0) + 1
+                self.stats["continue_presses"] = self.stats.get("continue_presses", 0) + 1
                 return {"tap": "cross"}
             return {"hold": set()}
-        self._score_hits(snap)
         if snap.get("prompt"):                              # a finisher / a grab: the engine presses it; the gun
             self.aiming_since = None                        # stays down between its presses (L1 would cancel it)
             self.stats["prompt_holds"] = self.stats.get("prompt_holds", 0) + 1
@@ -662,6 +728,7 @@ class Bot:
         if snap.get("stage_prompt"):                        # a ladder / jump-down / vault / door / "□ Time bonus" /
             self.aiming_since = None                        # pick up: take it at once, before anything else (operator
             self.stats["stage_presses"] = self.stats.get("stage_presses", 0) + 1   # 2026-10-21: he ignored a ledge
+            self.climb_at = self.climb_pos = self.climb_tick = None
             if self.stuck_since is not None:                # and a door). A prompt while stuck = it was blocking him.
                 self.stats["stuck_prompts_cleared"] = self.stats.get("stuck_prompts_cleared", 0) + 1
             return {"tap": "square"}
@@ -669,11 +736,6 @@ class Bot:
         if heal:
             return heal
         t = snap.get("timer")
-        if self.last_timer is not None and t is not None and self.last_timer > 0 and 2 < t - self.last_timer < 95:
-            # (+30 / +60 / +90 of a bonus, +5 of a finisher; a Continue's new clock is not one)
-            self.stats["bonus_s"] = round(self.stats.get("bonus_s", 0.0) + t - self.last_timer, 1)
-            self.stats["clock_jumps"] = self.stats.get("clock_jumps", 0) + 1
-        self.last_timer = t
         # Majini and the like: alive, more than 1 health (crows are "enemies" with 1), not far above or below
         live = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and (e.get("hp_max") or 0) > 1
                 and abs(e["pos"][1] - p["pos"][1]) < MAX_DY]
@@ -705,10 +767,17 @@ class Bot:
         px, py, pz = p["pos"]
         self.at_stand = self.spawn is not None and math.hypot(self.spawn[0] - px, self.spawn[2] - pz) < STAND_R \
             and abs(self.spawn[1] - py) < WP_CLIMB
+        candidate = self.combat.choose_target(snap, p, live, now) if self.combat is not None and live else None
         tgt = self._bonus(p, live, snap.get("bonuses") or (), now, mesh, t)
+        if tgt is not None and candidate is not None:
+            at_bonus = math.hypot(tgt["pos"][0] - px, tgt["pos"][2] - pz) < BONUS_REACH \
+                and abs(tgt["pos"][1] - py) < BONUS_LEVEL_DY
+            if not at_bonus and math.dist(p["pos"], candidate["pos"]) <= SHOOT_RANGE \
+                    and (self._threat(p, candidate) or self.combat.target_exposed):
+                tgt = None                                # exposed shots / path blockers may interrupt; distant guesses may not
         threats = [e for e in live if self._threat(p, e)]
         self.flags = {e["slot"]: ["blocking"] for e in threats}
-        if tgt is None and not threats and self.spawn is not None and not self.at_stand:
+        if tgt is None and not threats and candidate is None and self.spawn is not None and not self.at_stand:
             self.stats["phase"] = "stand"                   # the bonuses gathered: back to the stand
             self.stood = True
             self.plan_target = {"kind": "stand", "id": "spawn", "pos": self.spawn}
@@ -722,10 +791,10 @@ class Bot:
             return {"hold": set()}
         if tgt is None:
             self.stats["phase"] = "fight" if threats or not self.at_stand else "stand"
-        if tgt is None and self.combat is not None:         # a stunned Majini: close in for the finisher
-            st = self.combat.stunned_target(live, p, now)
-            if st is not None:
-                return self.combat.run_to(p, st)
+        if tgt is None and self.combat is not None:
+            if candidate is None:
+                return self.combat.seek_target(snap, p, live, now)
+            tgt = candidate                               # existing finisher prompts still win before this decision
         tgt = tgt or min(threats or live, key=lambda e: self._cost(p, e))
         self.plan_target = {"kind": tgt.get("kind", "enemy") if "ptr" in tgt else "enemy",
                             "id": tgt.get("ptr", tgt.get("slot")), "pos": tgt["pos"]}
@@ -744,13 +813,27 @@ class Bot:
                 return {"hold": set()}
             return {"hold": self._walk(p, want, now)}
         aiming = p.get("action") == 2
-        if dist < TOO_CLOSE and not aiming:                 # on top of him: a step back while facing him
-            self.aiming_since = None
-            self.stats["backoffs"] += 1
-            return {"hold": {"ldown"} | self._turn(wrap(want - p["rot"]), aiming=False)}
+        if dist < TOO_CLOSE and not aiming and (self.combat is None or not self.combat._ready(p)):
+            if now >= self.close_acquire_until:
+                self.close_escape_until = now + CLOSE_ESCAPE_S
+                self.close_acquire_until = self.close_escape_until + CLOSE_ACQUIRE_S
+                self.stats["backoffs"] += 1
+            if now < self.close_escape_until:
+                self.aiming_since = None
+                return {"hold": {"ldown"} | self._turn(wrap(want - p["rot"]), aiming=False)}
+            # A stationary nearby attacker must not keep the gun down indefinitely.
+        else:
+            self.close_escape_until = self.close_acquire_until = 0.0
         if self.combat is not None and tgt.get("kind") not in ("time", "combo"):   # the combat layer owns the fight
+            if now - self.switch_at > 1.0:
+                other = re5_weapons.best_quick_slot(snap, tgt)
+                if other is not None:
+                    self.switch_at = now
+                    self.stats["weapon_switches"] = self.stats.get("weapon_switches", 0) + 1
+                    self.stats["weapon_policy"] = f"switch to {re5_weapons.WEAPONS[other['item']].name}: range/crowd/boss fit"
+                    return {"tap": re5_weapons.QUICK[other["slot"]]}
             self.target = tgt["slot"]
-            return self.combat.tick(snap, p, tgt, now)
+            return self.combat.tick(snap, p, tgt, now, observed=True)
         if not aiming:
             err = wrap(want - p["rot"])
             if abs(err) > TURN_TOL:                         # turn round first (fast, not aiming)
@@ -814,10 +897,6 @@ class Bot:
         did not come or its route led nowhere."""
         px, py, pz = p["pos"]
         now_ptrs = {b["ptr"] for b in standing}
-        taken = self.bonus_seen - now_ptrs
-        if taken:
-            self.stats["bonuses_taken"] = self.stats.get("bonuses_taken", 0) + len(taken)
-        self.bonus_seen = now_ptrs
         standing = [b for b in standing if self.bonus_skip.get(b["ptr"], 0.0) <= now]
         if not standing or not BONUS_HUNT:
             self.stats["bonus_target"] = None
@@ -840,7 +919,10 @@ class Bot:
             if d is None:                                   # no route (yet): straight line, after the routed ones
                 d = 2.0 * math.hypot(b["pos"][0] - px, b["pos"][2] - pz) + 5000.0
             return d
-        cands = [b for b in standing if cost(b) < BONUS_RANGE]
+        self.stats["unreachable_bonuses"] = sum(1 for b in standing if mesh is not None
+                                               and self.route_len.get(b["ptr"]) is None)
+        cands = [b for b in standing if cost(b) < BONUS_RANGE
+                 and (mesh is None or self.route_len.get(b["ptr"]) is not None)]
         if not cands:
             self.stats["bonus_target"] = None
             return None
@@ -894,7 +976,7 @@ class Bot:
         """At a time bonus: walk onto it, then tap square to punch it. The "□ Time bonus" prompt is not the kind-2
         cActionButton the ladders use (the bot stood on a hourglass with stage_prompt False, live 2026-10-21), so the
         press is blind: within BONUS_PUNCH_R, facing it, release every direction and tap square on a cadence; the
-        taken flag (the unit leaving the OM line) confirms it in _bonus. Given up after BONUS_GIVE_UP_S of tapping."""
+        unit leaving the OM line is observed by observe_round. Given up after BONUS_GIVE_UP_S of tapping."""
         pos = p["pos"]
         flat = math.hypot(tgt["pos"][0] - pos[0], tgt["pos"][2] - pos[2])
         err = wrap(heading(tgt["pos"][0] - pos[0], tgt["pos"][2] - pos[2]) - p["rot"])
@@ -922,14 +1004,20 @@ class Bot:
         pos = p["pos"]
         if self.route_for != tgt["ptr"]:
             self.route, self.route_for, self.route_since = None, tgt["ptr"], now
+            self.route_at = -math.inf
+            self.climb_at = self.climb_pos = self.climb_tick = None
         if now - self.route_since > ROUTE_STALE_S:
             self.bonus_skip[tgt["ptr"]] = now + BONUS_SKIP_S
             self.stats["routes_given_up"] = self.stats.get("routes_given_up", 0) + 1
             self.route_for = None
             return {"hold": set()}
-        if mesh is not None and (self.route is None or now - self.route_at > REPLAN_S):
+        if mesh is not None and now - self.route_at > REPLAN_S:
             self.route, self.route_at = mesh.route(pos, tgt["pos"], avoid=self.avoid), now
-        if not self.route:                                  # no mesh, or no way there: straight at it
+        if not self.route:
+            if mesh is not None:                           # an explicit no-route result must never mean run through it
+                self.bonus_skip[tgt["ptr"]] = now + BONUS_SKIP_S
+                self.stats["route"] = "unreachable on current mesh"
+                return {"hold": set()}
             return {"hold": self._walk(p, heading(tgt["pos"][0] - pos[0], tgt["pos"][2] - pos[2]), now)}
         while len(self.route) > 1 and math.hypot(self.route[0][0] - pos[0], self.route[0][2] - pos[2]) < WP_REACHED \
                 and abs(self.route[0][1] - pos[1]) < WP_CLIMB:
@@ -940,20 +1028,27 @@ class Bot:
         if flat < WP_CLIMB and abs(w[1] - pos[1]) >= WP_CLIMB:  # a ladder / a drop: the game's own action
             if stage_prompt:
                 self.stats["climbs"] = self.stats.get("climbs", 0) + 1
+                self.climb_at = self.climb_pos = self.climb_tick = None
                 return {"tap": "square"}
-            if self.climb_at is None or math.dist(self.climb_at[0], w) > 60.0:
-                self.climb_at = (w, now)
-            elif now - self.climb_at[1] > CLIMB_WAIT_S:        # no prompt here: a crossing only the Majini take
-                self.avoid.append(w)
-                self.stats["crossings_avoided"] = self.stats.get("crossings_avoided", 0) + 1
-                self.climb_at, self.route = None, None
-                return {"hold": set()}
             beyond = next((v for v in self.route[1:] if math.hypot(v[0] - w[0], v[2] - w[2]) > 50.0), None)
             way = heading(beyond[0] - pos[0], beyond[2] - pos[2]) if beyond else heading(w[0] - pos[0], w[2] - pos[2])
             err = wrap(way - p["rot"])
             if abs(err) > math.radians(25):                 # face the way down first: the prompt wants it
+                self.climb_at = self.climb_pos = self.climb_tick = None
                 return {"hold": self._turn(err, aiming=False)}
+            if self.climb_at is None or math.dist(self.climb_at[0], w) > 60.0 \
+                    or self.climb_tick is None or now - self.climb_tick > 1.0 \
+                    or self.climb_pos is None or math.dist(pos, self.climb_pos) > 20.0:
+                self.climb_at, self.climb_pos = (w, now), tuple(pos)
+            elif now - self.climb_at[1] > CLIMB_WAIT_S:        # continuous aligned approach, without motion or prompt
+                self.avoid.append(w)
+                self.stats["crossings_avoided"] = self.stats.get("crossings_avoided", 0) + 1
+                self.climb_at, self.route, self.route_len = None, None, None
+                self.climb_pos = self.climb_tick = None
+                return {"hold": set()}
+            self.climb_tick = now
             return {"hold": {"lup"}}                        # on to the edge until the prompt shows
+        self.climb_at = self.climb_pos = self.climb_tick = None
         return {"hold": self._walk(p, heading(w[0] - pos[0], w[2] - pos[2]), now)}
 
     @staticmethod
@@ -1000,7 +1095,9 @@ class Bot:
         for e in snap.get("enemies") or ():
             prev = self.hp_seen.get(e["ptr"])
             if prev is not None and e["hp"] < prev:
-                self.stats["hits"] += 1
+                self.stats["damage_events"] = self.stats.get("damage_events", 0) + 1
+                if self.combat is None:
+                    self.stats["hits"] += 1
                 if e["hp"] <= 0 < prev:
                     self.stats["kills_seen"] += 1
             self.hp_seen[e["ptr"]] = e["hp"]

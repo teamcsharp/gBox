@@ -8,13 +8,11 @@ anything but the dot misses. So every tick:
   * the dot is read and tested against the target Majini's head (a sphere HEAD_R at HEAD_H above his feet) and his
     body (a capsule BODY_R wide from KNEE_H to SHOULDER_H): on the head = a headshot, on the body = a hit, elsewhere
     = the ray hits something else first (the floor, a wall, a prop) or passes him;
-  * the aim is steered until the dot sits on the head: the pitch is written straight into the player (+0x1AA0, + =
-    down: the game keeps it, the upper body follows next frame), the yaw with the right stick in pulses (the game's
-    own aim loop: ~30 deg/s), both from the dot's error as seen from the laser's origin;
-  * the trigger is pulled only while the dot is on him (headshot first; a body shot after BODY_AFTER_S on the body
-    with the head out of reach): a tap (R1 down TAP_DOWN_S, up TAP_UP_S) for the handguns and magnums (a held R1
-    fires them once), a hold for the Gatling; which one a weapon wants is learned (no shot from a hold = taps) and
-    kept per weapon id;
+  * the aim approaches a preferred anatomical zone until any body region is exposed, then keeps that exposed
+    region under the dot. Stick correction follows the measured shot ray rather than the camera ray;
+  * the trigger is pulled immediately while the first-hit dot overlaps his head, body or leg. A verified rapid-fire
+    patch holds R1 continuously on exposed targets; otherwise weapon-specific taps/holds are learned. Front-camera
+    geometry only chooses candidates: it never establishes visibility or authorizes a shot;
   * every shot the game fires is seen in RAM (the player's current action object, player +0x30B0, entering the
     weapon-fire action 0x0163DFC0 / its frame counter +0x20 starting over) and scored: a hit when any Majini's health
     fell within HIT_S, a headshot when the dot was on the head as it left; a miss is classified by what the dot was on
@@ -25,12 +23,11 @@ anything but the dot misses. So every tick:
     finisher prompt ("Hook" / "Uppercut": the action button of kind 3 the driver reports as "square", which the
     engine presses at once; each finisher kill is +5 s);
   * what it learns (per character, per weapon id: shots, hits, headshots, finishers, seconds gained, the trigger
-    mode, the head tolerance) is kept under gbox-data (TUNABLES_FILE) and adjusted after every round: a round under
-    HIT_RATE_WANT tightens the head tolerance and the settle time, one at 100 % loosens them a notch.
+    mode, the head tolerance) is kept under gbox-data (TUNABLES_FILE) and adjusted after every round. Historical
+    settle-time metadata remains compatible, but it no longer delays a confirmed exposed shot.
 
-RAM writes (the operator wants RAM cheating for RE5): only the player's aim pitch (+0x1AA0) and only while aiming; the
-mods agent writes the globals and the weapon definitions, never the player (agreed 2026-10-21). Read-only when the
-memory can't be written (no pid: a test, another platform's view).
+This layer's optional RAM write is the player's aim pitch (+0x1AA0) while aiming. The independently enabled mods
+health guard owns health maintenance; rapid-fire verification here only reads its global and weapon values.
 """
 from __future__ import annotations
 
@@ -74,12 +71,15 @@ FINISHER_SETUP_R = 650.0               # a Majini this near is leg-stunned and f
 COMBO_SHORT_S = 4.0                    # the combo window under this: a kill now (the head), not a stun setup
 BOSS_HP = 2500                         # health above this: a boss (Executioner, Chainsaw ...): one melee, then guns
 HEAD_LEAD_S = 0.06                     # the dot is a frame old and the trigger two more: lead his head by this
-TAP_DOWN_S, TAP_UP_S = 0.045, 0.06     # a tap: R1 down (two frames), then up (three) before the next
+TAP_DOWN_S, TAP_UP_S = 0.03, 0.03     # fast press/release when the rapid-fire patch is absent
 HOLD_NO_SHOT_S = 0.45                  # held on target this long without a shot: this weapon wants taps
 TAPS_NO_SHOT = 8                       # ... taps without a shot: it wants a hold (the Gatling)
-HOLD_FIRE_IDS = frozenset({0x25})      # weapon ids that fire on a hold (the Gatling); the rest learned
-BODY_AFTER_S = 0.5                     # the dot on his body (not the head) this long: a body shot is still a hit
-SETTLE_S = 0.08                        # the dot on the head this long before the first shot (it moves with him)
+HOLD_FIRE_IDS = frozenset({0x03, 0x09, 0x13, 0x15, 0x1D})  # verified table IDs; 0x25 was not the Gatling
+SETTLE_S = 0.08                        # legacy persisted tuning metadata; a first-hit overlap now fires immediately
+FRONT_YAW, FRONT_PITCH = math.radians(60), math.radians(45)  # candidate cone, not a visibility claim
+BLOCKED_S = 0.8                        # try another candidate after a measured first hit ends before this one
+FIRE_TIMER_FPS, FIRE_TIMER_ORIG = 0x0169E098, 60.0
+WEAPON_TABLE, WEAPON_STRIDE, WEAPON_INTERVAL = 0x01817530, 0x140, 0x90
 AIM_TURN_RAD_S = 0.52                  # the right stick while aiming: ~30 deg/s (the mods agent scales it)
 FINE = math.radians(4)                 # closer than this: the stick in pulses (a tick on, a tick off)
 PITCH_WRITE = False                    # the pitch straight into +0x1AA0 (else the stick). Off: the game recomputes
@@ -305,6 +305,14 @@ class Combat:
         self.tun = Tunables(learn_dir)
         self.shots = Shots(gun_gap_s=0.0)
         self.shots.HIT_S = HIT_S
+        self._scored_hits = self._scored_misses = 0
+        self._observed_snap = None
+        self._observation = None
+        self.blocked_until = {}
+        self.rapid_checked = -1e9
+        self.rapid_fire = False
+        self.step_until = 0.0
+        self.step_side = "lleft"
         self.triggers: dict = {}
         self.act_seen = None                  # (vtable, frames) of the action object last tick
         self.pulse = 0
@@ -327,6 +335,10 @@ class Combat:
         for k in ("shots", "hits", "misses", "headshots", "accuracy", "miss_short", "miss_past", "miss_beside",
                   "miss_moved", "finishers", "reloads", "pitch_writes", "stun_runs"):
             self.stats.setdefault(k, 0)
+        for k in ("shots", "hits", "misses", "headshots", "legshots", "miss_short", "miss_past", "miss_beside",
+                  "miss_moved"):
+            self.stats[k] = 0
+        self.stats["accuracy"] = 0.0
 
     # --- RAM ---
     def _action(self):
@@ -393,22 +405,130 @@ class Combat:
             return False
         return True
 
-    # --- the tick ---
-    def tick(self, snap: dict, p: dict, tgt: dict, now: float) -> dict:
+    def observe(self, snap, now, *, active=True):
+        """Account for a snapshot even while a prompt or the walker owns the pad. Same snapshot: once only."""
+        if self._observed_snap is snap:
+            return self._observation
+        self._observed_snap = snap
+        if active:
+            self.start_round(now)
+        p = snap.get("player") or {}
         pl = p.get("ptr") or self._player_ptr()
-        self.character = CHARACTERS.get(u32(self.m, pl), f"vt{u32(self.m, pl):#x}") if pl else "?"
         wid, rounds = self._in_hand(snap, pl)
-        self.wid = wid
-        enemies = snap.get("enemies") or []
-        shot = self._shot(pl, rounds, p.get("action") == AIMING, now)
+        if active:
+            self.character = CHARACTERS.get(u32(self.m, pl), f"vt{u32(self.m, pl):#x}") if pl else "?"
+            self.wid = wid
+        shot = active and self._shot(pl, rounds, p.get("action") == AIMING, now)
         if shot:
             self._on_shot(now)
-        self.shots.update(enemies, now)
+        self.shots.update(snap.get("enemies") or [], now)
         self._score(now)
-        self._clock(snap, now)
-        # the laser dot against him (the driver's snapshot carries it as {"from", "at"} when it read it)
+        if active:
+            self._clock(snap, now)
+        self._observation = (pl, wid, rounds, shot)
+        return self._observation
+
+    def suspend_observation(self, now):
+        """A missing/loading snapshot cannot establish damage or time gained across its gap."""
+        self.last_timer = None
+        self.act_seen = self.rounds_seen = self.last_dot = None
+        self._observed_snap = self._observation = None
+        self.shots.update([], now)
+        self._score(now)
+
+    def _ray(self, snap, now):
+        if "laser" not in snap:
+            return self.laser.read(now)
         sl = snap.get("laser")
-        lz = (tuple(sl["from"]), tuple(sl["at"])) if sl and sl.get("from") and sl.get("at") and any(sl["from"])             and math.dist(sl["from"], sl["at"]) >= 5.0 else (None if sl else self.laser.read(now))
+        if not sl or not sl.get("from") or not sl.get("at") or not any(sl["from"]):
+            return None
+        origin, dot = tuple(sl["from"]), tuple(sl["at"])
+        return (origin, dot) if math.dist(origin, dot) >= 5.0 else None
+
+    def _ready(self, p):
+        action = self.act_seen
+        return p.get("action") == AIMING or (p.get("action") not in (4, 5) and action is not None
+                                             and action[0] in (READY_VT, FIRE_VT))
+
+    @staticmethod
+    def front_candidate(snap, p, e):
+        """A conservative front-camera sector. Cover and actual screen projection remain unknown."""
+        cam = snap.get("camera")
+        if cam and cam.get("eye") and cam.get("at") and math.dist(cam["eye"], cam["at"]) > 1.0:
+            origin, at = cam["eye"], cam["at"]
+            yaw = heading(at[0] - origin[0], at[2] - origin[2])
+            pitch = math.atan2(at[1] - origin[1], max(math.hypot(at[0] - origin[0], at[2] - origin[2]), 1.0))
+        else:
+            origin = (p["pos"][0], p["pos"][1] + 140.0, p["pos"][2])
+            yaw, pitch = p["rot"], 0.0
+        dx, dy, dz = e["pos"][0] - origin[0], e["pos"][1] + 110.0 - origin[1], e["pos"][2] - origin[2]
+        return abs(wrap(heading(dx, dz) - yaw)) <= FRONT_YAW and \
+            abs(math.atan2(dy, max(math.hypot(dx, dz), 1.0)) - pitch) <= FRONT_PITCH
+
+    @staticmethod
+    def ray_blocked(ray, foot):
+        """Only an aligned first-hit ray ending well before the target establishes an obstruction."""
+        origin, dot = ray
+        length = math.dist(origin, dot)
+        if length < 5.0:
+            return False
+        direction = tuple((dot[k] - origin[k]) / length for k in range(3))
+        centre = (foot[0], foot[1] + 110.0, foot[2])
+        along = sum((centre[k] - origin[k]) * direction[k] for k in range(3))
+        projected = tuple(origin[k] + along * direction[k] for k in range(3))
+        return along > length + BODY_R + 25.0 and dot_on(projected, foot) is not None
+
+    def choose_target(self, snap, p, enemies, now):
+        self.target_exposed = False
+        candidates = [e for e in enemies if self.front_candidate(snap, p, e)]
+        ray = self._ray(snap, now) if self._ready(p) else None
+        if ray is not None:
+            exposed = [e for e in candidates if dot_on(ray[1], e["pos"]) is not None]
+            if exposed:
+                target = min(exposed, key=lambda e: math.dist(p["pos"], e["pos"]))
+                self.blocked_until.pop(target.get("ptr", target.get("slot")), None)
+                self.stats["target_evidence"] = "laser first hit on enemy"
+                self.target_exposed = True
+                return target
+            for e in candidates:
+                if self.ray_blocked(ray, e["pos"]):
+                    self.blocked_until[e.get("ptr", e.get("slot"))] = now + BLOCKED_S
+        candidates = [e for e in candidates if self.blocked_until.get(e.get("ptr", e.get("slot")), 0) <= now]
+        self.stats["target_evidence"] = "front candidate; visibility unconfirmed" if candidates else "no exposed candidate"
+        return min(candidates, key=lambda e: math.dist(p["pos"], e["pos"]), default=None)
+
+    def seek_target(self, snap, p, enemies, now):
+        if any(self.blocked_until.get(e.get("ptr", e.get("slot")), 0) > now for e in enemies):
+            if now >= self.step_until:
+                self.step_until = now + 0.25
+                self.step_side = "lright" if self.step_side == "lleft" else "lleft"
+            self.stats["combat"] = "reposition: measured obstruction"
+            return {"hold": {self.step_side}}    # release aim so RE5 can move; never fire through cover
+        target = min(enemies, key=lambda e: math.dist(p["pos"], e["pos"]))
+        self.stats["combat"] = "turning toward a front candidate"
+        return {"hold": self._face(p, target["pos"])}
+
+    def _rapid_fire(self, wid, now):
+        if now - self.rapid_checked < 1.0 and wid == getattr(self, "rapid_weapon", None):
+            return self.rapid_fire
+        self.rapid_checked, self.rapid_weapon = now, wid
+        try:
+            fps = struct.unpack(">f", self.m.rd(FIRE_TIMER_FPS, 4))[0]
+            interval = struct.unpack(">f", self.m.rd(WEAPON_TABLE + wid * WEAPON_STRIDE + WEAPON_INTERVAL, 4))[0]
+            self.rapid_fire = 120.0 <= fps <= 60000.0 and interval == 0.0
+        except (TypeError, ValueError, OSError, struct.error):
+            self.rapid_fire = False
+        self.stats["rapid_fire_verified"] = self.rapid_fire
+        return self.rapid_fire
+
+    # --- the tick ---
+    def tick(self, snap: dict, p: dict, tgt: dict, now: float, *, observed=False) -> dict:
+        if not observed:
+            # Standalone callers own a new decision, and may reuse a mutable snapshot fixture between ticks.
+            self._observed_snap = None
+        pl, wid, rounds, shot = self.observe(snap, now)
+        # the laser dot against him (the driver's snapshot carries it as {"from", "at"} when it read it)
+        lz = self._ray(snap, now)
         foot = tgt["pos"]
         lead = self._lead(tgt, now)
         dist = math.hypot(foot[0] - p["pos"][0], foot[2] - p["pos"][2])
@@ -418,23 +538,25 @@ class Combat:
         tune = self.tun.weapon(self.character, wid or 0)
         where = None
         if lz is not None:
-            where = dot_on(lz[1], (foot[0] + lead[0], foot[1], foot[2] + lead[1]), head_r=tune["head_r"])
+            where = dot_on(lz[1], foot, head_r=tune["head_r"])
+            if where is not None:
+                aim_at = (foot[0] + lead[0], lz[1][1], foot[2] + lead[1])  # keep the exposed region under the dot
         self.last_dot = (where, tgt.get("ptr"), lz, foot, now)
-        if p.get("action") != AIMING or lz is None:
+        if not self._ready(p) or lz is None:
             self.dot_head_since = self.dot_body_since = None
-            self.stats["combat"] = "readying"
+            self.stats["combat"] = f"readying: action={p.get('action')} laser={'yes' if lz else 'no'}"
             return {"hold": {"l1"} | self._face(p, foot)}
         # steer the dot onto the zone (his head, or his thighs for the stun)
         yaw_err, pitch_err = ray_error(lz[0], lz[1], aim_at)
         keys = {"l1"}
         keys |= self._yaw(yaw_err)
         keys |= self._pitch(pl, p, pitch_err, now)
-        # the trigger: on the head (settled), or on the body after BODY_AFTER_S with the head out of reach
-        self.dot_head_since = (self.dot_head_since or now) if where == zone else None
-        self.dot_body_since = (self.dot_body_since or now) if where in ("head", "body", "leg") else None
-        on_zone = where == zone and now - self.dot_head_since >= tune["settle_s"]
-        on_body = where in ("body", "leg", "head") and where != zone and now - self.dot_body_since >= BODY_AFTER_S
-        on_target = (on_zone or on_body) and (rounds is None or rounds > 0)
+        # A current first-hit overlap authorizes the shot immediately; a preferred anatomical zone does not delay it.
+        on_target = where in ("head", "body", "leg") and (rounds is None or rounds > 0)
+        from .re5_weapons import fire_policy
+        permitted, policy = fire_policy(wid, snap, tgt, lz[1])
+        on_target = on_target and permitted
+        self.stats["weapon_policy"] = policy
         if rounds == 0:
             if now - self.reload_at > EMPTY_RELOAD_EVERY_S:   # empty: reload (the driver switches weapons)
                 self.reload_at = now
@@ -444,10 +566,11 @@ class Combat:
         trig = self.triggers.get(wid)
         if trig is None:
             trig = self.triggers[wid] = Trigger(tune["mode"])
-        keys |= trig.keys(now, on_target, shot)
+        rapid = self._rapid_fire(wid, now)
+        keys |= ({"r1"} if on_target else set()) if rapid else trig.keys(now, on_target, shot)
         tune["mode"] = trig.mode
         self.stats["combat"] = (f"{self.character} w{wid:#x} {zone} dot {where} yaw {math.degrees(yaw_err):+.1f} "
-                                f"pitch {math.degrees(pitch_err):+.1f} {trig.mode} {'FIRE' if on_target else ''}")
+                                f"pitch {math.degrees(pitch_err):+.1f} {'rapid hold' if rapid else trig.mode} {'FIRE' if on_target else ''}")
         return {"hold": keys}
 
     def _lead(self, tgt, now) -> tuple:
@@ -515,7 +638,8 @@ class Combat:
     def _score(self, now):
         st = self.shots.stats
         hits, misses = st["hits"], st["misses"]
-        new_hits, new_misses = hits - self.stats["hits"], misses - self.stats["misses"]
+        new_hits, new_misses = hits - self._scored_hits, misses - self._scored_misses
+        self._scored_hits, self._scored_misses = hits, misses
         pend = getattr(self, "_pending_where", [])
         for _ in range(new_hits):
             t, where, ptr, reach, dist = pend.pop(0) if pend else (now, None, None, None, None)
@@ -545,6 +669,9 @@ class Combat:
             self._log_shot(t, cls, where, reach, dist, ptr)
         self.stats["shots"], self.stats["hits"], self.stats["misses"] = st["shots"], hits, misses
         self.stats["accuracy"] = st["accuracy"]
+        self.stats.update(round_shots=self.round_counts["shots"], round_hits=self.round_counts["hits"],
+                          round_accuracy=(round(self.round_counts["hits"] / self.round_counts["shots"], 3)
+                                          if self.round_counts["shots"] else None))
 
     def _log_shot(self, t, cls, where, reach, dist, ptr):
         """Every shot into the title's run-lessons log (operator: "why did he miss" -> its class)."""
@@ -556,17 +683,40 @@ class Combat:
         except Exception:                              # noqa: BLE001 - a lesson lost never stops the fight
             pass
 
+    def start_round(self, now):
+        """Called on an observed playing transition, never inferred from a clock bonus."""
+        if self.round_t0 is not None:
+            return
+        self.round_t0 = now
+        self.round_counts = {"shots": 0, "hits": 0, "headshots": 0, "finishers": 0, "time_gained_s": 0.0}
+        self.last_timer = None
+        self.act_seen = self.rounds_seen = self.last_dot = None
+        self.dot_head_since = self.dot_body_since = None
+        self.shots.hp.clear()
+        self.stunned.clear()
+        self.melees.clear()
+        self.blocked_until.clear()
+        self.finishers_seen = self.stats.get("presses_square", 0)
+        self.stats.update(round_shots=0, round_hits=0, round_accuracy=None)
+
+    def end_round(self, now):
+        if self.round_t0 is None:
+            return
+        # A pending shot must be resolved before the next spawn can change enemy health or reuse its slots.
+        self.shots.update([], now + HIT_S + 1)
+        self._score(now)
+        self._round_over()
+        self.round_t0 = None
+        self.last_timer = None
+
     def _clock(self, snap, now):
-        """The round's start / end and the clock's jumps (finisher kills give +5 s)."""
+        """Record time gained inside the current round, including ordinary hourglasses."""
         t = snap.get("timer")
         if t is None:
             return
-        if self.round_t0 is None or (self.last_timer is not None and t > self.last_timer + 20):
-            if self.round_t0 is not None:
-                self._round_over()
-            self.round_t0 = now
-            self.round_counts = {"shots": 0, "hits": 0, "headshots": 0, "finishers": 0, "time_gained_s": 0.0}
-        elif self.last_timer is not None and 3 < t - self.last_timer <= 20:
+        if self.round_t0 is None:
+            self.start_round(now)
+        if self.last_timer is not None and 3 < t - self.last_timer:
             self.round_counts["time_gained_s"] += t - self.last_timer
         self.last_timer = t
         sq = self.stats.get("presses_square", 0)
@@ -643,7 +793,6 @@ class Combat:
 
     def save(self):
         if self.round_t0 is not None and self.round_counts["shots"]:
-            self._round_over()
-            self.round_t0 = None
+            self.end_round(self.clock())
         else:
             self.tun.save()

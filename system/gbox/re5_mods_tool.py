@@ -8,6 +8,7 @@ package through run() at round start, gbox/mercs_bot.py):
   turn_speed multiplier=N         the stick turns the player N times faster, aimed and not (2 = default, "max" = 10)
   fire_rate multiplier=N          every weapon fires N times faster, semi-auto ones repeat while R1 is held (80)
   infinite_ammo on=true|false     no weapon spends rounds (the HUD shows the infinity sign; the Gatling's own flag)
+  unlimited_health on=true|false keep living Mercenaries players at full health on each bot snapshot
   bullet_damage multiplier=N      every weapon's firepower x N at every upgrade level
   addresses                       this release's address table, with the evidence
 Everything is RAM only: a relaunch of the game is the full revert.
@@ -36,6 +37,7 @@ ejections 1.6/s -> 8.1/s and kills 3 -> 6 per 40 s with the bot's own holds.
 from __future__ import annotations
 
 import struct
+import threading
 
 from pydantic import BaseModel
 
@@ -67,6 +69,8 @@ WEAPONS = {0x02: "M92F", 0x03: "VZ61", 0x04: "Ithaca M37", 0x05: "S75", 0x06: "h
            0x14: "knife (Excella)", 0x23: "knife (Wesker)"}
 INV_OFS, INV_SLOTS, SLOT = 0x22E0, 24, 0x30     # the player's inventory: slot +0x8 id word 0x01II, +0xC rounds,
 S_PLAYER = 0x017FEB34                           # +0x10 capacity, +0x20 = 1 in hand, byte +0x2D in use
+P_HP, HEALTH_MAX = 0x14A4, 30000                # verified signed 16-bit current / maximum health pair
+_HEALTH_LOCK = threading.RLock()
 # The Mercenaries loadout templates (static .data): 30 blocks of 12 records x 0x2C, one block per character / costume
 # (Barry = 24, Chris Heavy Metal = 18); a record is [item id 0xTTII, count (-1 = the weapon's own), -1, -1, -1, grid
 # position, in hand, packed upgrade levels, flags, 0, 0]; the round start copies them into the inventory and builds
@@ -88,6 +92,8 @@ ADDRESSES = {
     "fire_timer_fps": {"address": FIRE_TIMER_FPS, "source": "pool constant read only by the fire action (0xA37F8C)",
                        "live_checked": True},
     "inventory": {"address": INV_OFS, "source": "player + 0x22E0, the item finder 0x9D309C", "live_checked": True},
+    "player_health": {"address": P_HP, "source": "sPlayer + 0x28 -> player; player + 0x14A4: signed 16-bit hp/max, "
+                                                "the verified Mercenaries RAM map", "live_checked": True},
 }
 
 
@@ -176,7 +182,76 @@ class RE5:
         inv = self.inventory()
         st["in_hand"] = next((x for x in inv if x["in_hand"]), None)
         st["inventory"] = inv
+        st["unlimited_health"] = bool(self.orig.get("health", {}).get("on"))
+        st["health_maintenance"] = self.orig.get("health", {}).get("last")
         return st
+
+
+def _health_player(g: RE5) -> int:
+    sp = g.u32(S_PLAYER)
+    pl = g.u32(sp + 0x28) if 0x30000000 <= sp <= 0x40000000 - 0x2C and sp % 4 == 0 else 0
+    return pl if 0x30000000 <= pl <= 0x40000000 - P_HP - 4 and pl % 4 == 0 else 0
+
+
+def _maintain_health(g: RE5, snap=None) -> dict:
+    state = g.orig.setdefault("health", {})
+    result = {"unlimited_health": True, "active": False, "verified": False}
+    pl = _health_player(g)
+    if not pl or (snap is not None and (snap.get("player") or {}).get("ptr") != pl):
+        return {**result, "reason": "waiting for the current player"}
+    hp, maximum = struct.unpack(">hh", g.rd(pl + P_HP, 4))
+    if not 0 < hp <= maximum <= 32767:
+        return {**result, "reason": "waiting for a living player with valid health", "hp": hp, "hp_max": maximum}
+    if state.get("player") != pl or maximum != state.get("boosted_max"):
+        state.update(player=pl, original_max=maximum, boosted_max=max(maximum, HEALTH_MAX))
+    target = state["boosted_max"]
+    if _health_player(g) != pl:              # A respawn must never send a write to the previous allocation.
+        return {**result, "reason": "player changed during health check"}
+    wanted = struct.pack(">hh", target, target)
+    verified = (hp == maximum == target) or g.wr(pl + P_HP, wanted)
+    if verified and snap is not None:
+        snap["player"].update(hp=target, hp_max=target)
+    return {**result, "active": verified, "verified": verified, "hp": target if verified else hp,
+            "hp_max": target if verified else maximum, "refilled": verified and hp != target}
+
+
+def maintain_health(ad, snap=None) -> dict:
+    """The Mercenaries observer calls this each snapshot; only an explicitly enabled session is written.
+
+    Resolve the player anew after every respawn and verify the build and each write. A health refill cannot undo
+    an already-triggered death or a scripted instant kill; no unverified invulnerability flag is touched.
+    """
+    with _HEALTH_LOCK:
+        state = ORIG.get(id(ad), {}).get("health", {})
+        if not state.get("on"):
+            return {"unlimited_health": False, "active": False, "verified": True}
+        try:
+            result = _maintain_health(RE5(ad), snap)
+        except Exception as error:         # A lost adapter must not stop the bot's next snapshot.
+            result = {"unlimited_health": True, "active": False, "verified": False,
+                      "reason": f"health maintenance unavailable: {type(error).__name__}"}
+        state["last"] = result
+        return result
+
+
+def unlimited_health(g: RE5, on: bool) -> dict:
+    with _HEALTH_LOCK:
+        state = g.orig.setdefault("health", {})
+        state["on"] = bool(on)
+        if on:
+            result = _maintain_health(g)
+        else:
+            result = {"unlimited_health": False, "active": False, "verified": True, "restored": False}
+            pl = _health_player(g)
+            if pl and pl == state.get("player"):
+                hp, maximum = struct.unpack(">hh", g.rd(pl + P_HP, 4))
+                if maximum == state.get("boosted_max") and 0 < hp <= maximum and _health_player(g) == pl:
+                    original = state["original_max"]
+                    result["verified"] = g.wr(pl + P_HP, struct.pack(">hh", min(hp, original), original))
+                    result["restored"] = result["verified"]
+        state["last"] = result
+        return {**result, "note": "maintained on every Mercenaries bot snapshot, including prompts and walking; "
+                                 "living HP/max refill only, not a scripted-death bypass"}
 
 
 def _mult(v, default=2.0) -> float:
@@ -349,6 +424,8 @@ def revert_all(g: RE5) -> dict:
         out["turn"] = all(g.wr(p + k, struct.pack(">f", v)) for k, v in o["turn"].items())
     if "template" in o:
         out["loadout"] = g.wr(TEMPLATE, o["template"])
+    if "health" in o:
+        out["health"] = unlimited_health(g, False)["verified"]
     return {"reverted": out, "verified": all(out.values()), "note": "a relaunch of the game is the full revert too"}
 
 
@@ -361,7 +438,8 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5 | None 
           "firepower": "bullet_damage", "powerful_bullets": "bullet_damage", "revert": "revert_all", "reset": "revert_all",
           "off": "revert_all", "address_table": "addresses", "weapons": "loadout", "merc_loadout": "loadout",
           "random_weapons": "loadout", "randomize": "random_cheats", "randomizer": "random_cheats",
-          "random": "random_cheats"}.get(op, op)
+          "random": "random_cheats", "unlimited_life": "unlimited_health", "infinite_health": "unlimited_health",
+          "infinite_life": "unlimited_health"}.get(op, op)
     res: dict = {"op": op}
     if op == "status":
         pass
@@ -375,6 +453,8 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5 | None 
         res.update(fire_rate(g, (multiplier if multiplier is not None else 80.0) if on else 1.0))
     elif op == "infinite_ammo":
         res.update(infinite_ammo(g, on))
+    elif op == "unlimited_health":
+        res.update(unlimited_health(g, on))
     elif op == "bullet_damage":
         res.update(bullet_damage(g, (multiplier if multiplier is not None else 10.0) if on else 1.0))
     elif op == "loadout":
@@ -384,7 +464,7 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5 | None 
     elif op == "revert_all":
         res.update(revert_all(g))
     else:
-        raise ValueError("op: status | turn_speed | fire_rate | infinite_ammo | bullet_damage | loadout | random_cheats | "
+        raise ValueError("op: status | turn_speed | fire_rate | infinite_ammo | unlimited_health | bullet_damage | loadout | random_cheats | "
                          "revert_all | addresses")
     res["status"] = g.status()
     return res
@@ -392,9 +472,9 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5 | None 
 
 class RE5ModsIn(BaseModel):
     session_id: str
-    op: str = "status"            # status | turn_speed | fire_rate | infinite_ammo | bullet_damage | revert_all | addresses
+    op: str = "status"            # status | turn_speed | fire_rate | infinite_ammo | unlimited_health | bullet_damage | revert_all | addresses
     multiplier: str | float | None = None   # turn_speed (2; "max" = 10) / fire_rate (80) / bullet_damage (10); 1 = the game's
-    on: bool = True               # infinite_ammo on/off; on=false on a multiplier op restores the game's values
+    on: bool = True               # infinite_ammo / unlimited_health on/off; multiplier off restores the game's values
 
 
 class RE5ModsOut(BaseModel):
@@ -406,7 +486,8 @@ class RE5ModsOut(BaseModel):
 def re5_mods(inp: RE5ModsIn, ctx):
     """Resident Evil 5 Gold (PS3, RPCS3) live mods, each write read back: turn_speed multiplier=N (the stick turns N
     times faster, aimed and not; "max" = 10), fire_rate multiplier=N (every gun N times faster, a handgun held fires
-    like a machine gun; 80), infinite_ammo on= (no rounds spent, the HUD's infinity sign), bullet_damage multiplier=N,
+    like a machine gun; 80), infinite_ammo on= (no rounds spent, the HUD's infinity sign), unlimited_health on=
+    (living HP refilled each Mercenaries snapshot), bullet_damage multiplier=N,
     revert_all, status, addresses. The Mercenaries playbook applies the profile's package at round start."""
     from .tools import SESSIONS
     ad, g = SESSIONS[inp.session_id]

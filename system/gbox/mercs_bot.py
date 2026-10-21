@@ -298,11 +298,15 @@ def _memory(ad):
     if callable(guest) and getattr(ad, "MEM", "").startswith("/proc/"):
         try:
             pid, base = guest()
-            return ProcMem(pid, base)
+            m = ProcMem(pid, base)
+            m.adapter = ad
+            return m
         except Exception:                                   # noqa: BLE001 - still booting: the adapter's reads
             pass
     from .re4_merc_bot import memory
-    return memory(ad)
+    m = memory(ad)
+    m.adapter = ad
+    return m
 
 
 def matches(ad, g: dict) -> bool:
@@ -334,6 +338,9 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
         raise ValueError("this title has no Mercenaries profile (a RAM map with a mercs block)")
     menus = importlib.import_module(prof["menus"])
     m = m or _memory(ad)
+    # Keep reads fast while title-specific, verified maintenance writes use the owning adapter.
+    if ad is not None:
+        m.adapter = ad
     E = title_engine(prof)
     package = [tuple(x) for x in prof.get("package") or []]
     early = set(prof.get("early_ops") or [])
@@ -352,10 +359,16 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
     stats["profile"] = prof["map_id"]
     pub = tactical_publisher(tactical, prof)
     fresh = True                                            # a round counts once, however often the engine hands back
+    playing_ops = [tuple(x) for x in prof.get("playing_ops") or []]
+    playing_initialized = False
     try:
         while not stopped():
             scr = menus.screen(m)
             if scr.get("where") == "playing" and E is not None:
+                if not playing_initialized and ad is not None and playing_ops:
+                    failed = apply_ops(ad, playing_ops, prof, stats)
+                    stats["playing_hooks"] = "applied" if not failed else "; ".join(failed)[:300]
+                    playing_initialized = not failed
                 if fresh:
                     stats["rounds"] += 1
                     fresh = False

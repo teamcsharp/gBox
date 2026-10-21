@@ -15,6 +15,7 @@ waypoints through the shared edges' midpoints, so a bot can walk to a time bonus
 from __future__ import annotations
 
 import heapq
+import hashlib
 import math
 import struct
 
@@ -42,7 +43,12 @@ def _u32(m, a) -> int:
 class NavMesh:
     def __init__(self, points: list, tris: list, links: list, ptr: int = 0):
         self.points, self.tris, self.links, self.ptr = points, tris, links, ptr
-        self.sig = f"{len(points)}-{len(tris)}"            # the stage's mesh, whatever its address this boot
+        geometry = hashlib.sha256()
+        for p in points:
+            geometry.update(struct.pack(">3f", *p))
+        for tri in tris:
+            geometry.update(struct.pack(">3I", *tri))
+        self.sig = f"{len(points)}-{len(tris)}-{geometry.hexdigest()[:16]}"  # learned crossings belong to this geometry
         self.centre = [tuple(sum(points[v][k] for v in t) / 3.0 for k in range(3)) for t in tris]
         self.steep = [self._steep(t) for t in tris]        # a ladder's or a drop's face: a crossing between levels
         self.grid: dict = {}
@@ -79,7 +85,10 @@ class NavMesh:
         best, best_dy = None, Y_SLACK
         for i in self.grid.get(cell, ()):
             if self._inside(i, x, z):
-                dy = abs(self.centre[i][1] - y)
+                height = self._height(i, x, z)
+                if height is None:                        # a vertical face has no floor height at this x/z
+                    continue
+                dy = abs(height - y)
                 if dy < best_dy:
                     best, best_dy = i, dy
         if best is not None:
@@ -96,18 +105,34 @@ class NavMesh:
                         near, near_d = i, d
         return near
 
+    def _height(self, i, x, z):
+        """Height on a sloping triangle; its centroid can be metres above a player at the ramp's foot."""
+        a, b, c = (self.points[v] for v in self.tris[i])
+        det = (b[2] - c[2]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[2] - c[2])
+        if abs(det) < 1e-6:
+            return None
+        u = ((b[2] - c[2]) * (x - c[0]) + (c[0] - b[0]) * (z - c[2])) / det
+        v = ((c[2] - a[2]) * (x - c[0]) + (a[0] - c[0]) * (z - c[2])) / det
+        return u * a[1] + v * b[1] + (1.0 - u - v) * c[1]
+
     def component(self, i: int) -> int:
-        """The connected part of the mesh a triangle belongs to (the start roof, the street, ...)."""
+        """Weakly connected islands for a cheap rejection test; route() still respects one-way drop links."""
         if self._comp is None:
             comp = [-1] * len(self.tris)
+            adjacent = [set() for _ in self.tris]
+            for a, links in enumerate(self.links):
+                for b, _, _ in links:
+                    if 0 <= b < len(comp):
+                        adjacent[a].add(b)
+                        adjacent[b].add(a)
             for s in range(len(self.tris)):
                 if comp[s] >= 0:
                     continue
                 stack, comp[s] = [s], s
                 while stack:
                     a = stack.pop()
-                    for b, _, _ in self.links[a]:
-                        if 0 <= b < len(comp) and comp[b] < 0:
+                    for b in adjacent[a]:
+                        if comp[b] < 0:
                             comp[b] = s
                             stack.append(b)
             self._comp = comp
