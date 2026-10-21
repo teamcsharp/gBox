@@ -97,6 +97,17 @@ class Deployment:
         """Every read goes to the adapter's current channel: a closed one is replaced at the next read."""
         return lambda a, n: ad.channel().read(a, n)
 
+    def allow(self, key, st) -> bool:
+        """START in a game (game.mode 1) on a port that isn't P1's joins as a challenger (0x00082307: the join path
+        runs only in mode 1): refused there whatever screen the map's signatures say, unless P1 already is port 4."""
+        if key != "start":
+            return True
+        values = getattr(st.get("world"), "values", None)
+        if values is None:
+            return False
+        ports = values.get("players.port")
+        return values.raw.get("game.mode") != 1 or (isinstance(ports, list) and bool(ports) and ports[0] == 3)
+
     def nudge_keys(self, st) -> tuple:
         """START only where it can't join a fight as a challenger: out of a game, or when P1 already is port 4."""
         w = st.get("world")

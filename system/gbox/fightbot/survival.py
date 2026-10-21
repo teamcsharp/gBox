@@ -57,7 +57,13 @@ def play(t, ad, send, stopped, style=None, clock=time.time, sleep=time.sleep, st
         threading.Thread(target=reflex_loop, daemon=True, name="fightbot-reflex").start()
         send = send_locked
 
+    allow = getattr(t, "allow", None)              # a title may refuse a key where the game is (DOA3: START mid-game)
+    current = {"st": {}}
+
     def tap(key):
+        if callable(allow) and not allow(key, current["st"]):
+            stats["refused"] = stats.get("refused", 0) + 1
+            return
         send([{"key": key, "down": True}])
         sleep(0.3)
         send([{"key": key, "down": False}])
@@ -78,6 +84,7 @@ def play(t, ad, send, stopped, style=None, clock=time.time, sleep=time.sleep, st
             st = t.state(rd)
             ram = rd(*t.WATCH)
             failing_since = None
+            current["st"] = st
         except Exception:                          # noqa: BLE001 - a read during a load: try again
             failing_since = failing_since or now
             if now - failing_since > getattr(t, "READ_FAIL_S", float("inf")):

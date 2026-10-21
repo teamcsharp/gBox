@@ -146,6 +146,18 @@ def test_survival_runs_menus_and_fights_from_ram_with_the_virtual_pad(tmp_path):
     assert (tmp_path / "fightbot" / D.MAP_ID / "book.json").is_file()
 
 
+def test_start_is_refused_in_a_game_unless_p1_is_the_virtual_pad(tmp_path):
+    ram = Ram()
+    dep = doa3_bot.Deployment(SimpleNamespace(config=SimpleNamespace(runtime=tmp_path)))
+
+    def allowed(mode, p1_port):
+        ram.ram[0x480B70], ram.ram[0x2FD550] = mode, p1_port
+        return dep.allow("start", dep.state(ram.read))
+    assert not allowed(1, 0)                                      # a game P1 plays on port 1: START would join
+    assert allowed(1, 3) and allowed(2, 0) and allowed(0, 0)      # P1 is port 4; the title; the menus
+    assert dep.allow("b", {}) and not dep.allow("start", {})      # nothing read yet: no START
+
+
 def test_a_paid_hold_leaves_a_real_frame_as_evidence(tmp_path):
     import time
     uploads = []
