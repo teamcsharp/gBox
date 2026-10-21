@@ -2763,6 +2763,9 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
                     pass
             if "game" in inspect.signature(pb.play).parameters:
                 kw["game"] = dict(g or {})                     # its game and build (a playbook's own jump / menu state)
+            if "tactical" in inspect.signature(pb.play).parameters and ctx is not None:
+                from .mercs import tactical as T               # the tactical map beside the stream (docs/tactical_map.md)
+                kw["tactical"] = T.HttpSink(ctx.server, _ap_headers(ctx), sid)
             stats = pb.play(ad, _autoplay_send(ad, d), lambda: d.stopped, **kw)
             if stats.get("hung"):                              # the game froze: _ended gets it back (_bad_end)
                 run["bad_end"] = "hung"

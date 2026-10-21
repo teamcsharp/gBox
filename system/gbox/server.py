@@ -4259,6 +4259,8 @@ def create_app(config: Config) -> FastAPI:
     gameplay_demo.install(app,store,config,auth,submit,workers,app.state.gameplay_memory)
     from . import screensaver                    # idle PCs play the operator's games in the operator's style
     screensaver.install(app, store, config, auth, submit, workers, app.state.gameplay_memory)
+    from . import tactical_map                   # the Mercenaries tactical map: each round's frames and stages, live
+    tactical_map.install(app, auth)
     from . import tas_api
     tas_api.install(app, store, config, auth, submit, workers)
 
