@@ -2480,8 +2480,17 @@ async function restartGame(sid, btn) {                      // relaunch the same
   try { return await resetJob(sid, "restart", btn); }
   catch (e) { resetFailed(s, "Restart", e.message); throw e; }
 }
-function modWatch(gid, sid, mods) {                       // re-apply kept patch mods when a reload wipes them (checked every 20 s)
+function modWatch(gid, sid, mods, auto = true) {           // re-apply kept patch mods when a reload wipes them (checked every 20 s)
   clearInterval(MODWATCH.t);
+  if (!auto) {                                             // a bot demo / an agent's session: its playbook owns the mods
+    // 2026-10-20: opening an agent's RE4 session here switched the operator's kept mods on in it three times, once in
+    // the middle of a room load (equip runs game code on the next frame), and the game froze; only a click applies them
+    MODWATCH.mods = []; MODWATCH.tick = null;
+    mods.forEach((m, i) => { if (!modKeepGet(gid).includes(m.id)) return;
+      const card = document.querySelector(`.wbm[data-m="${i}"]`);
+      if (card) card.querySelector(".row i").textContent = "kept · not switched on here by itself (a bot demo or an agent's session plays with its own mods): Turn on applies it"; });
+    return;
+  }
   const tick = async () => {
     if (!document.querySelector(`#wb[data-sid="${sid}"]`)) return clearInterval(MODWATCH.t);
     const keep = mods.filter(m => modKeepGet(gid).includes(m.id)); if (!keep.length) return;
@@ -2642,7 +2651,8 @@ async function wbInit() {
   dockApply();
   sessionObserverWatch(sid);
   charsInit();
-  modWatch(gid, sid, mods);
+  const viewed = SESSIONBUILD.session?.session_id === sid ? SESSIONBUILD.session : null;   // GET /api/sessions row
+  modWatch(gid, sid, mods, !(viewed && (viewed.bot_demo || viewed.agent_owned)));     // kept mods: your own play only
   const curSession = (await api("/api/sessions").catch(() => [])).find(x => x.session_id === sid);
   const liveHost = host.querySelector('#game-live-controls');
   if (liveHost) GBoxLiveControls.mount(liveHost, {api, pso:GBoxPSO}, {game:gid, sid,

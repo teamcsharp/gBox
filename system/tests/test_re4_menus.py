@@ -22,6 +22,8 @@ class FakeRE4:
         self.b = bytearray(0x400000)
         self.picks, self.events = [], []
         self.put(0x80000000, "6s", b"G4BE08")
+        for a, sig in RM.SIGNATURES.items():                       # main.dol's code, as RAM holds it
+            self.put(a, f"{len(sig)}s", sig)
         self.put(B.P_GLOBAL, ">I", PG)
         self.put(RM.PSYS, ">I", PSYS_AT)
         self.put(PSYS_AT + 4, ">I", 0xFF000000 if unlocked else 0)
@@ -131,7 +133,7 @@ def test_the_title_tasks_work_area_is_found_on_its_stack():
     s = RM.screen(g)
     assert s["where"] == "select_player" and s["cursor"] == 3 and s["target"] == RM.LEON
     g.title_task(False)                                             # the game's own loop runs: no title work
-    assert RM.tw(g) is None and RM.screen(g)["where"] == "game"
+    assert RM.tw(g) is None and RM.screen(g)["where"] in RM.ROOM_WHERE
 
 
 @pytest.mark.parametrize("cur,key", [(0, "ddown"), (1, "ddown"), (2, "a"), (3, "dup"), (4, "dup")])
@@ -168,16 +170,16 @@ def test_assignment_ada_is_never_played():
 
 
 def test_results_dead_and_story_rooms():
-    base = {"where": "game", "game_routine": 3}
-    assert RM._game({"room": 0x400, "timer": 0.0, "hp": 900, "player": {}}, base) == {"phase": "results"}
-    assert RM._game({"room": 0x400, "timer": 50.0, "hp": 0, "player": {"ptr": 1}}, base) == {"phase": "dead"}
-    assert RM._game({"room": 0x400, "timer": 50.0, "hp": 900, "player": {"ptr": 1}}, base) == {"phase": "round"}
-    assert RM._game({"room": 0x100, "timer": 0.0, "hp": 900, "player": {"ptr": 1}}, base) == {"phase": "story"}
-    loading = {"where": "game", "game_routine": 0}          # the Village loading: clock 0 but not the results
-    assert RM._game({"room": 0x400, "timer": 0.0, "hp": 900, "player": {"ptr": 1}}, loading) == {"phase": "loading"}
-    assert RM.step({"where": "game", "phase": "loading"}) is None
-    assert RM.step({"where": "game", "phase": "results"}) == "a" and RM.step({"where": "game", "phase": "dead"}) == "a"
-    assert RM.wandered({"where": "game", "phase": "story", "room": 0x100}).startswith("in the story")
+    base = {"game_routine": 3}
+    assert RM._game({"room": 0x400, "timer": 0.0, "hp": 900, "player": {}}, base) == {"where": "results"}
+    assert RM._game({"room": 0x400, "timer": 50.0, "hp": 0, "player": {"ptr": 1}}, base) == {"where": "dead"}
+    assert RM._game({"room": 0x400, "timer": 50.0, "hp": 900, "player": {"ptr": 1}}, base) == {"where": "playing"}
+    assert RM._game({"room": 0x100, "timer": 0.0, "hp": 900, "player": {"ptr": 1}}, base) == {"where": "story"}
+    loading = {"game_routine": 0}          # the Village loading: clock 0 but not the results
+    assert RM._game({"room": 0x400, "timer": 0.0, "hp": 900, "player": {"ptr": 1}}, loading) == {"where": "loading"}
+    assert RM.step({"where": "loading"}) is None
+    assert RM.step({"where": "results"}) == "a" and RM.step({"where": "dead"}) == "a"
+    assert RM.wandered({"where": "story", "room": 0x100}).startswith("in the story")
     assert RM.wandered({"where": "story_starting"}) and RM.wandered({"where": "select_player"}) is None
 
 

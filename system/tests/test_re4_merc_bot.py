@@ -30,7 +30,10 @@ PG, PL, EM, STRIDE = 0x80300000, 0x80310000, 0x80320000, 0xDE0
 
 
 def world(enemies, room=0x400, timer_s=100.0, combo=0, leon=(0.0, 0.0, 0.0)):
+    from gbox import re4_menus
     m = FakeMem()
+    for a, sig in re4_menus.SIGNATURES.items():       # main.dol's code, as RAM holds it (the menus reader checks it)
+        m.wr(a, sig)
     m.put(B.P_GLOBAL, ">I", PG)
     m.put(PG + 0x20, "B", 3)                          # pG+0x20: the room runs (not a stage still loading)
     m.put(PG + B.G_ROOM, ">H", room)
@@ -276,7 +279,7 @@ def test_between_rounds_it_never_presses_blind_and_counts_the_next_round():
     B.play(None, lambda rows: sent.append((step[0], rows)), stopped, sleep=lambda s: now.__setitem__(0, now[0] + s),
            m=m, stats=live, clock=lambda: now[0])
     assert not [rows for i, rows in sent if i is not None and i < 40]     # nothing pressed out of the round
-    assert live["menu_presses"] == 0 and live["screen"].startswith("game")
+    assert live["menu_presses"] == 0 and live["screen"] == "loading"
     assert live["rounds"] == 1 and "timer" in live and "max_combo" in live    # live stats for the watch panel
 
 

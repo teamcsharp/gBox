@@ -85,9 +85,35 @@ def _u32(m, a: int) -> int:
     return struct.unpack(">I", m.rd(a, 4))[0]
 
 
+# Code signatures (main.dol words, read live from RAM): the title task's entry, the menu handlers and its routine table.
+# The screen is named only when RAM holds this exact code, so another build or a patched title never gets misread.
+SIGNATURES = {
+    TITLE_ENTRY: bytes.fromhex("9421fff07c0802a6bfc1000890010014"),          # the title task: stwu / mflr / stmw / stw
+    0x801621F0: bytes.fromhex("9421fff07c0802a693e1000c90010014"),           # the main menu handler
+    0x801633BC: bytes.fromhex("9421ffc07c0802a6bf61002c90010044"),           # the extra games' routine
+    0x801644C0: bytes.fromhex("9421ff487c0802a6be810088900100bc"),           # Select Stage's cursor
+    TITLE_ROUTINES: bytes.fromhex("801617b48016192c80161b4c80161c8480161da0801627c4801633bc80164934"),
+}
+def signed(m) -> bool:
+    """RAM holds the main.dol code this module was built from (SIGNATURES). A match is remembered on the memory view;
+    a miss is asked again next time (the code is not in RAM yet while the disc boots)."""
+    if getattr(m, "_re4_signed", False):
+        return True
+    try:
+        ok = all(m.rd(a, len(sig)) == sig for a, sig in SIGNATURES.items())
+    except Exception:                                        # noqa: BLE001 - unreadable now: ask again next time
+        return False
+    if ok:
+        try:
+            m._re4_signed = True
+        except AttributeError:                               # a view that takes no attributes: checked every time
+            pass
+    return ok
+
+
 def in_room(m) -> bool:
     """The game runs a room (pG+0x20 = 3, or 4 changing rooms): a round can be on. While a stage loads (0-2) the
-    Mercenaries clock still reads the last round's value, so the clock alone can't tell (live 2026-10-21: 9.8 s left
+    Mercenaries clock still reads the last round's value, so the clock alone can't tell (live 2026-10-20: 9.8 s left
     from the round before showed through the Village's load)."""
     pg = _u32(m, PG)
     return _ok(pg) and m.rd(pg + G_ROUTINE, 1)[0] in (3, 4)
@@ -118,14 +144,24 @@ def tw(m) -> int | None:
     return None
 
 
+ROOM_WHERE = ("playing", "results", "dead", "loading", "story")   # where, in one of the game's rooms
+
+
 def screen(m, merc=None) -> dict:
-    """Where RE4 is now: {"where", "cursor", "target", "title_routine", "title_step", "tw", "items", ...}.
-    where: title (boot, logos, PRESS START) | main_menu | main_menu_setup | new_game | story_starting | options | load |
-    extra_* (loading, menu setup, leaving) | extra_menu (The Mercenaries: GAME START / EXIT) | ada_menu | players_setup |
-    select_player | players_leaving | stages_setup | select_stage | starting | game (a room; merc() tells which) |
-    unknown. merc: re4_merc_bot.snapshot over the same memory, for "game" (round / results / dead / story)."""
+    """Where RE4 is now: {"where", "cursor", "target", "title_routine", "title_step", "tw", "items", ...}. Cheap enough
+    to ask every tick in a round (a few words; the title task's stack only while the title runs).
+    where, out of a room: title (boot, logos, PRESS START) | attract | main_menu | main_menu_setup | new_game |
+    story_starting | options | load | press_start | extra_* (loading, menu setup, leaving) | extra_menu (The
+    Mercenaries: GAME START / EXIT) | ada_* | players_setup | select_player | players_leaving | stages_setup |
+    select_stage | starting | unknown;
+    in a room (ROOM_WHERE): playing (a Mercenaries round) | results (the clock at 0) | dead ("You Are Dead") |
+    loading (a stage still loading) | story (any other room: wandered off).
+    merc: re4_merc_bot.snapshot over the same memory (read here when not given)."""
     m = Mem(m) if not hasattr(m, "rd") else m
     out = {"where": "unknown", "cursor": None, "target": None}
+    if not signed(m):                                        # not the code these addresses come from: name nothing
+        out["error"] = "RAM does not hold the G4BE08 main.dol code this reader was built from (re4_menus.SIGNATURES)"
+        return out
     try:
         pg = _u32(m, PG)
         if _ok(pg):
@@ -140,9 +176,14 @@ def screen(m, merc=None) -> dict:
     if w is None:
         if title or out.get("game_routine") is None:         # the title runs but its work area isn't on its stack
             return out
-        out["where"] = "game"
-        if merc is not None:
-            out.update(_game(merc, out))
+        if merc is None:
+            try:
+                from .re4_merc_bot import snapshot
+                merc = snapshot(m)
+            except Exception as e:                           # noqa: BLE001 - a read during a load: next tick
+                out["error"] = f"{type(e).__name__}: {e}"[:120]
+                return out
+        out.update(_game(merc, out))
         return out
     t = m.rd(w, TW_SIZE)
     routine, step = t[TW_ROUTINE], t[TW_SUB]
@@ -180,28 +221,29 @@ def screen(m, merc=None) -> dict:
 
 
 def _game(merc, base) -> dict:
-    """In a room: a Mercenaries round, its results (the clock at 0), "You Are Dead", or the story (wandered off)."""
+    """In a room: a Mercenaries round (playing), its results (the clock at 0), "You Are Dead", a stage still loading,
+    or the story (wandered off)."""
     s = merc
     room = s.get("room")
     if room is None:
-        return {"phase": "loading"}
+        return {"where": "loading"}
     if (room >> 8) != 4:
-        return {"phase": "story" if base.get("game_routine") in (3, 4) and room != 0x120 else "loading"}
+        return {"where": "story" if base.get("game_routine") in (3, 4) and room != 0x120 else "loading"}
     if base.get("game_routine") not in (None, 3, 4):        # the stage is still loading (routines 0-2): the clock
-        return {"phase": "loading"}                         # reads 0 there too, but it is not the results (live
-                                                            # 2026-10-21: A was pressed while the Village loaded)
+        return {"where": "loading"}                         # reads the last round's there, not this round's (live
+                                                            # 2026-10-20: A was pressed while the Village loaded)
     if s.get("hp") is not None and s["hp"] <= 0 and s.get("player"):
-        return {"phase": "dead"}
+        return {"where": "dead"}
     if s.get("timer", 0) <= 0:
-        return {"phase": "results"}
-    return {"phase": "round" if s.get("player") else "loading"}
+        return {"where": "results"}
+    return {"where": "playing" if s.get("player") else "loading"}
 
 
 def wandered(scr: dict) -> str | None:
     """Why this screen is off the Mercenaries path for good (the bot ends the run: a bot demo is relaunched), or None."""
     if scr.get("where") == "story_starting":
         return "a story game was being started from the main menu"
-    if scr.get("where") == "game" and scr.get("phase") == "story":
+    if scr.get("where") == "story":
         return f"in the story (room {scr.get('room', 0):#05x}), not The Mercenaries"
     return None
 
@@ -238,58 +280,15 @@ def step(scr: dict) -> str | None:
         if cur == VILLAGE:
             return "a"
         return DPAD["up"] if cur in (2, 3) else DPAD["left"]
-    if where == "game":
-        phase = scr.get("phase")
-        if phase in ("results", "dead"):
-            return "a"                                      # Results: next; "You Are Dead": Continue Yes
+    if where in ("results", "dead"):
+        return "a"                                          # Results: next; "You Are Dead": Continue Yes
     return None
 
 
-class Navigator:
-    """Closed loop over screen(): one press, then wait until RAM shows it took (the screen, step or cursor changed) or
-    RETRY_S passed; menus need held presses (HOLD_S) and a moment between them. stats gets screen / cursor / presses /
-    ram_progress (the black watch trusts RAM: gbox.tools._black_watch)."""
-    HOLD_S, DIR_HOLD_S, RETRY_S, SETTLE_S = 0.3, 0.18, 1.2, 0.45
-
-    def __init__(self, send, sleep=time.sleep, clock=time.time, stats: dict | None = None):
-        self.send, self.sleep, self.clock = send, sleep, clock
-        self.stats = stats if stats is not None else {}
-        self.stats.setdefault("menu_presses", 0)
-        self.stats.setdefault("ram_progress", 0)
-        self.last_key, self.last_at, self.last_sig = None, float("-inf"), None
-
-    def sig(self, scr: dict):
-        return (scr.get("where"), scr.get("title_step"), scr.get("title_sub"), scr.get("cursor"), scr.get("phase"))
-
-    def observe(self, scr: dict) -> None:
-        sig = self.sig(scr)
-        if sig != self.last_sig:
-            self.stats["ram_progress"] = self.stats.get("ram_progress", 0) + 1
-            self.last_sig = sig
-            self.last_key = None                            # the last press took: the next one may go at once
-        self.stats["screen"] = scr.get("where") + (f":{scr['phase']}" if scr.get("phase") else "")
-        if scr.get("cursor") is not None:
-            self.stats["cursor"] = scr["cursor"]
-
-    def tick(self, scr: dict) -> str | None:
-        """Observe the screen, and press its step when the last press took (or RETRY_S passed). Returns the key."""
-        self.observe(scr)
-        key = step(scr)
-        now = self.clock()
-        if key is None:
-            return None
-        if self.last_key is not None and now - self.last_at < self.RETRY_S:
-            return None                                     # the last press has not shown in RAM yet
-        if now - self.last_at < self.SETTLE_S:
-            return None
-        hold = self.DIR_HOLD_S if key.startswith("d") else self.HOLD_S
-        self.send([{"key": key, "down": True}])
-        self.sleep(hold)
-        self.send([{"key": key, "down": False}])
-        self.last_key, self.last_at = key, self.clock()
-        self.stats["menu_presses"] = self.stats.get("menu_presses", 0) + 1
-        self.stats["menu_last"] = f"{scr.get('where')}: {key}"
-        return key
+def Navigator(send, sleep=time.sleep, clock=time.time, stats: dict | None = None):
+    """The closed-loop menu presser (gbox.mercs_bot.Navigator) over RE4's step()."""
+    from .mercs_bot import Navigator as N
+    return N(send, step, sleep=sleep, clock=clock, stats=stats)
 
 
 def main(argv=None) -> int:
