@@ -3770,8 +3770,9 @@ const compactController = GBoxCompactGame.create({
 const COMPACT = compactController.state;
 const compactEnter = () => compactController.enter();
 const compactRestore = () => compactController.restore();
+// create() reads context() at once, before loadSettings() has set S: a throw here would stop the whole page script
 const clientRefresh = GBoxClientRefresh.create({ storage: sessionStorage, readState: gboxState,
-  context: () => ({ origin: S.apiUrl, sid: COMPACT.on ? COMPACT.sid : EMB.sid, compact: COMPACT.on, aspect: COMPACT.aspect,
+  context: () => ({ origin: S?.apiUrl, sid: COMPACT.on ? COMPACT.sid : EMB.sid, compact: COMPACT.on, aspect: COMPACT.aspect,
     returnMode: COMPACT.on ? COMPACT.returnMode : VIEW.mode, section: document.querySelector('section.on')?.id }),
   reload: async value => {
     if (!gbox.clientReload) return location.reload();

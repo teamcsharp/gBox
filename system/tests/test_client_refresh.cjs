@@ -46,6 +46,16 @@ test('hung guest and Ctrl+R use the last confirmed pair; partial reconnect retri
   x.ctl.done();x.ctl.remember({tab:'Library',active:'pip-B',pip:'pip-B'});
   assert.equal(x.ctl.checkpoint().guest.pip,'pip-B');assert.equal(x.ctl.pending().guest.tab,'Library');
 });
+test('the desktop shell creates its refresh controller before settings load, then binds to the loaded origin', async () => {
+  const html = await fs.readFile(path.join(__dirname, '../clients/desktop/index.html'), 'utf8');
+  const call = html.slice(html.indexOf('GBoxClientRefresh.create('), html.indexOf('reload: async', html.indexOf('GBoxClientRefresh.create(')));
+  assert.match(call, /origin: S\?\.apiUrl/); // `S` is undefined until loadSettings() resolves
+  let settings;
+  const x = fixture({ context: () => ({ origin: settings?.apiUrl, sid: 'old', compact: false, section: 'play' }) });
+  settings = { apiUrl: 'http://10.0.0.5:8765' };
+  x.ctl.remember({ tab: 'Sessions', playing: 'live', origin: 'http://10.0.0.5:8765' });
+  assert.equal(x.ctl.checkpoint().guest.playing, 'live');
+});
 test('invalid or expired reload state cannot select a session or inject a selector', () => {
   const x = fixture(); x.storage.setItem('gbox.client.refresh.v1', JSON.stringify({ v: 1, at: -500000, sid: 'old', compact: true }));
   assert.equal(x.ctl.pending(), null);
