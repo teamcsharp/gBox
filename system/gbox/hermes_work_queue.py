@@ -83,6 +83,13 @@ def _on_main():
     return {rid for rid, value in data.get('reported', {}).items() if value.startswith('on_main:')}
 
 
+def is_live_coaching(request) -> bool:
+    """An autoplay coaching ticket (gbox/coaching.py: source "coach", context.coaching): the operator's notes while a
+    bot plays, surfaced to the agents note by note (operator 2026-10-20: "improve things in realtime via live
+    reporting"). The Hermes queue never takes it, and list_requests leaves it out unless asked for."""
+    return request.get('source') == 'coach' or (request.get('context') or {}).get('coaching') is True
+
+
 def sync(data, favorites, requests, *, now):
     """Inventory every durable favorite, including missing catalog entries."""
     if (not isinstance(favorites, dict) or not isinstance(favorites.get('items'), list)
@@ -130,6 +137,13 @@ def sync(data, favorites, requests, *, now):
         if ((request.get('automated') and not repair and not operator_child and not actionable)
                 or body.startswith(('gBox request review', '<agent-message', '<task-notification'))):
             continue
+        if is_live_coaching(request):
+            # the operator's coaching notes while autoplay plays (gbox/coaching.py) are live reporting for the agents
+            # at the inbox hook (scripts/agent_ledger.py), note by note: never a bulk Hermes run that takes the ticket
+            old = data['items'].get('inbox:' + request['id'])
+            if old is not None and old.get('dispatch_state') not in ('queued', 'uncertain'):
+                data['items'].pop('inbox:' + request['id'], None)
+            continue
         if request.get('status') not in ('open', 'in_progress'):
             continue
         item = data['items'].setdefault('inbox:' + request['id'], {
@@ -145,6 +159,18 @@ def sync(data, favorites, requests, *, now):
                     game_id=context.get('game_id'), target=context.get('target'),
                     character=context.get('character'))
     data.update(favorites_count=len(favorite_ids), synced_at=now)
+
+
+def _run_workdir(item) -> str:
+    """A dispatched run starts in its request's own Git worktree (hermes_delivery.prepare), so relative edits, rg and
+    git land in the tracked workspace - never in the deployed runtime (~/gBox/system), where queue runs used to start
+    and edited the live code (2026-10-20: the Dolphin -C keys stripped from the share's adapters.py broke every Linux
+    Dolphin pad; a "cron" Git repository appeared in the share). A neutral folder when no worktree can be prepared."""
+    try:
+        return mode._workdir(item['request_id'], int(item['number']))
+    except Exception as error:  # noqa: BLE001 - the run still starts, away from the live code
+        item['workspace_error'] = f'{type(error).__name__}: {error}'[:300]
+        return mode._neutral_workdir()
 
 
 def next_stage(item):
@@ -245,6 +271,8 @@ def candidates(data, requests, native, owned, on_main, *, now):
                 or item.get('request_uncertain') or item.get('dispatch_state') in ('queued', 'uncertain')):
             continue
         req = by_id.get(rid, {})
+        if item.get('lane') == 'inbox' and is_live_coaching(req):
+            continue                                       # live coaching: the agents' inbox hook, never Hermes
         from . import hermes_result_review
         item['review_hold'] = hermes_result_review.gate(item)
         if item['review_hold']:
@@ -708,16 +736,17 @@ def tick(*, now=None):
                 item['unlock_dispatch_times'] = [stamp for stamp in item.get('unlock_dispatch_times', [])
                                                  if now - 3600 < stamp <= now] + [now]
             _save(data)
+            workdir = _run_workdir(item)
             if existing:
                 job = existing[0]
                 mode._run('edit', job['id'], '--prompt', prompt, '--no-continuity',
                           '--reasoning-effort', run_settings.reasoning_effort if local else 'high',
-                          *(pin or ['--unpin']))
+                          '--workdir', workdir, *(pin or ['--unpin']))
                 mode._run('resume', job['id'], '--run-now')
             else:
                 mode._run('create', mode._once(), prompt, '--name', name, '--repeat', '1',
                           '--reasoning-effort', run_settings.reasoning_effort if local else 'high', *pin,
-                          '--workdir', str(mode._PROMPT.parents[2]),
+                          '--workdir', workdir,
                           '--deliver', 'local', '--failure-deliver', 'local')
                 found = [j for j in mode._jobs() if j.get('name') == name]
                 if len(found) != 1:

@@ -30,12 +30,51 @@ def _anchor_digest(item, data):
     return hashlib.sha256(data).hexdigest()
 
 
+KERNEL_THUNK_KEYS = (0x5B6D40B6, 0xEFB1F152)  # retail, debug: the runner's XBE parser takes the one inside the image
+# The kernel *data* exports the pinned runner (runner.cpp v0.2, kernelDataAddress / materializeKernelDataExports)
+# writes into their thunk-table slots at boot, pointing them at its kernel data area (0x00F80000 + n): ExEventObjectType
+# 16, HalDiskCachePartitionCount 40, KeTickCount 156, LaunchDataPage 164, PsThreadObjectType 259, XboxHardwareInfo 322,
+# XboxHDKey 323, XboxKrnlVersion 324, XboxSignatureKey 325, XboxAlternateSignatureKeys 354, HalBootSMCVideoMode 356.
+# Imported kernel functions keep their ordinals there (the runner dispatches them by ordinal), so they stay verified.
+RUNNER_KERNEL_DATA_EXPORTS = frozenset({16, 40, 156, 164, 259, 322, 323, 324, 325, 354, 356})
+
+
+def runner_thunk_slots(xbe: bytes) -> list[int]:
+    """Guest addresses of the kernel thunk slots the runner overwrites: the data-export entries of the XBE's kernel
+    thunk table (zero-terminated ordinals, the low 9 bits as the runner reads them)."""
+    u32 = lambda offset: struct.unpack_from("<I", xbe, offset)[0]
+    base, image, count, table = u32(0x104), u32(0x10C), u32(0x11C), u32(0x120) - u32(0x104)
+    thunk = next((u32(0x158) ^ key for key in KERNEL_THUNK_KEYS if base <= u32(0x158) ^ key < base + image), None)
+    if thunk is None:
+        raise Unsupported("DOA3 XBE kernel thunk table lies outside its image")
+    for index in range(count):
+        _, guest, _, raw, size = struct.unpack_from("<IIIII", xbe, table + index * 56)
+        if guest <= thunk < guest + size:
+            offset = raw + thunk - guest
+            break
+    else:
+        raise Unsupported("DOA3 XBE kernel thunk table is not in a loaded section")
+    slots = []
+    for index in range(4096):
+        if offset + index * 4 + 4 > len(xbe):
+            raise Unsupported("DOA3 XBE kernel thunk table has no terminator")
+        value = u32(offset + index * 4)
+        if not value:
+            return slots
+        if value & 0x1FF in RUNNER_KERNEL_DATA_EXPORTS:
+            slots.append(thunk + index * 4)
+    raise Unsupported("DOA3 XBE kernel thunk table has no terminator")
+
+
 def anchors(xbe: bytes, expected_sha256: str) -> list[dict]:
     """Check the mapped header and every immutable executable section.
 
     Upstream kernel_memory.c's load/unload-section routines change only each
     section header's reference-count DWORD (+0x18). Normalize those explicit
     counters; every other mapped header byte must still match the reviewed XBE.
+    The runner also fills the kernel data-export slots of the thunk table (in
+    DOA3's .rdata, an immutable section) at boot: those DWORDs are normalized
+    too (runner_thunk_slots), every other section byte stays verified.
     """
     if len(xbe) < 0x178 or hashlib.sha256(xbe).hexdigest() != expected_sha256 or xbe[:4] != b"XBEH":
         raise Unsupported("DOA3 live memory needs the exact reviewed USA XBE")
@@ -46,13 +85,18 @@ def anchors(xbe: bytes, expected_sha256: str) -> list[dict]:
         raise Unsupported("DOA3 XBE has an unsupported mapped header layout")
     result = [{"guest": base, "data": xbe[:header_size], "kind": "xbe_header",
                "mutable_dwords": [table + index * 56 + 0x18 for index in range(count)]}]
+    slots = runner_thunk_slots(xbe)
     for index in range(count):
         offset = table + index * 56
         flags, guest, virtual_size, raw, size = struct.unpack_from("<IIIII", xbe, offset)
         if flags & 4 and not flags & 1 and size:
             if guest < base + header_size or guest + max(virtual_size, size) > RAM_SIZE or raw + size > len(xbe):
                 raise Unsupported("DOA3 immutable text section leaves its expected bounds")
-            result.append({"guest": guest, "data": xbe[raw:raw + size], "kind": "immutable_text"})
+            item = {"guest": guest, "data": xbe[raw:raw + size], "kind": "immutable_text"}
+            mutable = [slot - guest for slot in slots if guest <= slot and slot + 4 <= guest + size]
+            if mutable:
+                item["mutable_dwords"] = mutable
+            result.append(item)
     if len(result) < 2:
         raise Unsupported("DOA3 XBE has no immutable executable section anchors")
     for item in result:

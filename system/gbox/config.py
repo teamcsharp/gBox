@@ -146,6 +146,31 @@ class RecordingConfig(BaseModel):
     keep_ended: int = 1               # rings of ended sessions kept for a late export (newest first); older ones are deleted
 
 
+class BroadcastConfig(BaseModel):
+    """[broadcast] One gameplay feed for Pine Box and any media-source software (gbox/broadcast.py, docs/broadcast.md):
+    the program (what is on air), one feed per PC and one per session, as MJPEG and H.264 (MPEG-TS, HLS)."""
+    enabled: bool = True
+    fps: int = 30                     # MJPEG frames a second, constant (?fps=1..60 per viewer); a quiet source is repeated
+    ts_fps: int = 30                  # H.264 frame rate (MPEG-TS and HLS)
+    size: str = "1280x720"            # H.264 canvas: every source is fitted inside it (letterbox/pillarbox)
+    video_kbps: int = 2500            # H.264 bitrate (constant)
+    encoder: str = "libx264"          # libx264 (ultrafast) | h264_nvenc; measured on the Spark: about the same CPU
+    audio: str = "auto"               # auto: a Spark session's own PipeWire stream goes into the H.264 feeds | off
+    audio_kbps: int = 128
+    hls_segment_s: int = 1            # HLS segment length (latency is about three of them)
+    hold_s: float = 8.0               # a silent source keeps its last frame this long, then the slate (that frame dimmed)
+    end_hold_s: float = 2.0           # an ended session's last frame stays this long before the program moves on
+    watch_ttl_s: float = 900.0        # the operator's "watching" report counts this long after their app last said so
+    linger_s: float = 20.0            # an H.264 encoder nobody reads stops after this (MJPEG costs nothing when unwatched)
+    max_encoders: int = 3             # H.264 encoders at once (each ~25% of one Spark core at 720p30)
+    auto_agents: bool = True          # auto may put an agent's or a bot's session on air when no operator game runs
+    nice: int = 10                    # ffmpeg niceness (Linux)
+    lan_url: str = ""                 # the URLs /api/broadcast/feeds hands out; default: public_url
+    tailnet_url: str = ""             # e.g. "http://lilspark.tail1fec29.ts.net:8765" (the Spark's tailnet name)
+    # Pine Box's names for the PCs (its gboxstream DEVICES) also name the per-PC feeds: /api/broadcast/pc/spark1.mjpg
+    pc_aliases: dict[str, str] = {"spark1": "lilspark", "jaybuilt": "JAYBUILTFINALE", "i9nuc": "i9-NUC"}
+
+
 class HermesLocalConfig(BaseModel):
     """[hermes.local] the Spark's GPU model as Hermes's last-resort route (docs/hermes-local-fallback.md).
 
@@ -257,7 +282,8 @@ class Config(BaseModel):
     audio_cpp: AudioCppConfig = AudioCppConfig()   # [audio_cpp] local audio.cpp speech service (docs/audio_cpp.md)
     voice: VoiceConfig = VoiceConfig()             # [voice] default speech assistant and busy fallback
     recording: RecordingConfig = RecordingConfig()   # [recording] background gameplay ring (#1084, docs/ring_recording.md)
-    hermes: HermesConfig = HermesConfig()            # [hermes.local] GPU fallback route, [hermes.grunt] Spark helper
+    broadcast: BroadcastConfig = BroadcastConfig()   # [broadcast] the Pine Box / media-source feeds (docs/broadcast.md)
+    hermes: HermesConfig = HermesConfig()           # [hermes.local] GPU fallback route, [hermes.grunt] Spark helper
     showcase: ShowcaseConfig = ShowcaseConfig()      # [showcase] Sonic showcase builds (docs/sonic_showcase.md)
     game_audio: GameAudioConfig = GameAudioConfig()  # [game_audio] emulator sound device + slow-device fallback (gbox/game_audio.py)
     granted_permissions: list[str] = ["read", "execute", "stage", "network"]
@@ -374,6 +400,10 @@ granted_permissions = ["read", "execute", "stage", "network"]   # add memory_wri
 # seconds = 120                   # how far back a clip can reach
 # encoder = "auto"                # auto = h264_nvenc when it works on this node, else libx264 (reported in the status)
 # max_mb = 512                    # disk cap per session ring
+
+# [broadcast]                     # gameplay feeds for Pine Box / OBS / VLC (docs/broadcast.md)
+# fps = 30                        # MJPEG frames a second (constant); H.264: ts_fps, size, video_kbps, encoder
+# tailnet_url = "http://lilspark.tail1fec29.ts.net:8765"   # shown beside the LAN URLs in /api/broadcast/feeds
 
 # [[libraries]]
 # id = "roms"

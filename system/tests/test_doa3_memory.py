@@ -14,18 +14,26 @@ from gbox.config import Config
 from gbox.registry import Unsupported
 
 
-def xbe_bytes(*, writable=False):
+THUNKS = 0x13100                  # the kernel thunk table, inside the last immutable section (DOA3: .rdata 0x1ED0E0)
+# KeTickCount (data), ordinal 1 (a function), XboxHardwareInfo (data), terminator
+THUNK_ENTRIES = (0x80000000 | 156, 0x80000000 | 1, 0x80000000 | 322, 0)
+
+
+def xbe_bytes(*, writable=False, thunk_key=0x5B6D40B6, thunks=THUNK_ENTRIES):
     image = bytearray(0x2000)
     image[:4] = b"XBEH"
     struct.pack_into("<II", image, 0x104, 0x10000, 0x400)
     struct.pack_into("<I", image, 0x10C, 0x4000)
     struct.pack_into("<II", image, 0x11C, 3, 0x10180)
     struct.pack_into("<I", image, 0x128, 0x11000 ^ 0xA8FC57AB)
+    struct.pack_into("<I", image, 0x158, THUNKS ^ thunk_key)
+    rdata = bytearray(b"another code section" * 20)
+    struct.pack_into(f"<{len(thunks)}I", rdata, THUNKS - 0x13000, *thunks)
     # Two immutable executable sections and one mutable executable section.
     for index, (flags, guest, raw, data) in enumerate([
         (5 if writable else 4, 0x11000, 0x400, b"immutable code" * 20),
         (5, 0x12000, 0x800, b"mutable imports" * 20),
-        (5 if writable else 4, 0x13000, 0xC00, b"another code section" * 20),
+        (5 if writable else 4, 0x13000, 0xC00, bytes(rdata)),
     ]):
         struct.pack_into("<IIIII", image, 0x180 + index * 56, flags, guest, len(data), raw, len(data))
         image[raw:raw + len(data)] = data
@@ -76,7 +84,8 @@ def test_exact_xbe_full_header_and_every_immutable_text_are_anchors():
     assert expected[0]["data"] == xbe_bytes()[:0x400]
     assert all(memory._anchor_digest(row, row["data"]) == row["sha256"] for row in expected)
     assert expected[0]["mutable_dwords"] == [0x198, 0x1D0, 0x208]
-    assert all(not row.get("mutable_dwords") for row in expected[1:])
+    assert not expected[1].get("mutable_dwords")
+    assert expected[2]["mutable_dwords"] == [0x100, 0x108]      # only the runner's kernel data-export thunk slots
     with pytest.raises(Unsupported, match="exact reviewed"):
         memory.anchors(xbe_bytes() + b"modified", hashlib.sha256(xbe_bytes()).hexdigest())
     with pytest.raises(Unsupported, match="exact reviewed"):
@@ -143,6 +152,51 @@ def test_only_upstream_section_reference_counters_are_normalized():
         memory.validate(reader, 0x100000000, expected)
 
 
+def runner_mapped(expected, base=0x100000000):
+    """Guest RAM as the pinned runner leaves it after boot (runner.cpp v0.2 materializeKernelDataExports): the
+    kernel data-export thunk slots point at its kernel data area."""
+    reader = Reader(expected, bases=(base,))
+    reader.data[base + THUNKS] = struct.pack("<I", 0x00F80040)            # KeTickCount
+    reader.data[base + THUNKS + 8] = struct.pack("<I", 0x00F80000)        # XboxHardwareInfo
+    return reader
+
+
+def test_runner_written_kernel_data_slots_are_the_only_normalized_section_bytes():
+    """Live 2026-10-20 on the i9-NUC every DOA3 read failed 'no unique verified allocation (found 0)': the runner fills
+    the data-export slots of the kernel thunk table (DOA3: .rdata 0x1ED0E0, an immutable section) at boot."""
+    expected = source_anchors()
+    unnormalized = [dict(item) for item in expected]
+    for item in unnormalized[1:]:
+        item.pop("mutable_dwords", None)
+        item["sha256"] = memory._anchor_digest(item, item["data"])
+    with pytest.raises(Unsupported, match="validation changed"):
+        memory.validate(runner_mapped(expected), 0x100000000, unnormalized)   # today's mapping, without the fix
+    with pytest.raises(Unsupported, match="found 0"):
+        memory.discover(runner_mapped(expected), unnormalized)
+    memory.validate(runner_mapped(expected), 0x100000000, expected)           # with it
+    assert memory.discover(runner_mapped(expected), expected) == 0x100000000
+    for address, data in ((THUNKS + 4, b"\x00\x00\xF8\x00"),                 # an imported function's slot
+                          (THUNKS - 4, b"!"), (THUNKS + 12, b"!"),            # bytes around the table, the terminator
+                          (0x13000, b"x"), (0x11000, b"x")):                  # other code
+        reader = runner_mapped(expected)
+        reader.data[0x100000000 + address] = data
+        with pytest.raises(Unsupported, match="validation changed"):
+            memory.validate(reader, 0x100000000, expected)
+
+
+def test_kernel_thunk_slots_follow_the_runner_parser():
+    assert memory.runner_thunk_slots(xbe_bytes()) == [THUNKS, THUNKS + 8]
+    assert memory.runner_thunk_slots(xbe_bytes(thunk_key=0xEFB1F152)) == [THUNKS, THUNKS + 8]   # a debug-keyed XBE
+    assert memory.runner_thunk_slots(xbe_bytes(thunks=(0x80000000 | 1, 0))) == []
+    with pytest.raises(Unsupported, match="outside its image"):
+        source_anchors(xbe_bytes(thunk_key=0x12345678))
+    endless = bytearray(xbe_bytes())
+    start = 0xC00 + THUNKS - 0x13000                                       # the table's file offset to the end of file
+    struct.pack_into(f"<{(len(endless) - start) // 4}I", endless, start, *[0x80000000 | 156] * ((len(endless) - start) // 4))
+    with pytest.raises(Unsupported, match="terminator"):
+        memory.runner_thunk_slots(bytes(endless))
+
+
 def test_two_fully_matching_allocations_are_ambiguous():
     expected = source_anchors()
     with pytest.raises(Unsupported, match="found 2"):
@@ -193,6 +247,7 @@ def test_mapping_contract_and_alias_reads(tmp_path, monkeypatch):
     assert mapping["analysis_range"] == {"address": 0x10000, "size": 0x4000}
     assert mapping["entry_point"] == 0x11000
     assert mapping["anchors"][0]["mutable_dwords"] == [0x10198, 0x101D0, 0x10208]
+    assert mapping["anchors"][2]["mutable_dwords"] == [THUNKS, THUNKS + 8]
     assert [result.read(alias + 0x11000, 12) for alias in memory.ALIASES] == [b"immutable co"] * 3
     assert memory.READ_ACCESS == 0x410  # Reads never open VM_WRITE/VM_OPERATION.
     assert memory.WRITE_ACCESS == 0x438

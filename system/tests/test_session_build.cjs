@@ -199,7 +199,8 @@ test('the web shell wires it: the module, the header title, the mount after rend
   assert.match(web, /<script src="\/viz\/session-build\.js"><\/script>/);
   assert.match(web, /GBoxSessionBuild\.titleHTML\(s\)/);
   assert.match(web, /SESSIONBUILD\.session = s;/);
-  assert.match(web, /sessionsView\.after = \(sid, mode\) => \{\r?\n  if \(!sid\) return;\r?\n  syncSessionFav\(\);\r?\n  const head = \$\("#session-head"\);\r?\n  sessionBuildMount\(head\);/);
+  // (no session: the view follows a game that plays unless the operator chose the list, viz/session-follow.js)
+  assert.match(web, /sessionsView\.after = \(sid, mode\) => \{\r?\n  if \(!sid\) \{ if \(!FOLLOW\.list\) followWatch\(null\); return; \}[^\n]*\r?\n  syncSessionFav\(\);\r?\n  const head = \$\("#session-head"\);\r?\n  sessionBuildMount\(head\);/);
   assert.match(web, /SESSIONBUILD\.ctl\.sync\(ss\.find\(x => x\.session_id === SESSIONBUILD\.ctl\.sid\)\)/);
   assert.match(web, /onRenamed: info => sessionBuildChanged\("buildrenamed", info\)/);
   assert.match(web, /function sessionBuildChanged\(ev, info\) \{\r?\n  trayTick\(\);/);
