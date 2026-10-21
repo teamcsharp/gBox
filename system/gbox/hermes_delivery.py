@@ -123,6 +123,10 @@ def prepare(request_id: str, number: int) -> dict:
     repo = repository()
     if not (repo / '.git').exists():
         raise RuntimeError('The tracked Hermes repository has not been provisioned')
+    if (repo / '.git').is_dir():
+        import sys
+        from .hermes_payload_guard import install_pre_push
+        install_pre_push(repo, sys.executable, Path(__file__).resolve().parents[1])   # every task worktree pushes through it
     with locked(request_id):
         if record.exists():
             workspace = json.loads(record.read_text())
@@ -161,6 +165,11 @@ def publish(request_id: str, title: str, files: list[str], tests: list[str]) -> 
                     or not path.resolve().is_relative_to(root) or not path.is_file()
                     or any(part.startswith('.') for part in Path(name).parts)):
                 raise ValueError('Only explicit source, test and documentation files can be published')
+        from .hermes_payload_guard import refusals, worktree_inspector
+        refused = refusals(files, worktree_inspector(root))
+        if refused:
+            raise ValueError('Game data and binaries are never published to the public repository: '
+                             + '; '.join(refused[:5]))
         # The executed regression files are part of the handoff, even when the
         # caller supplied them only in tests rather than repeating them in files.
         files = list(dict.fromkeys(files))
