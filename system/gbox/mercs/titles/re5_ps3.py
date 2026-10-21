@@ -452,13 +452,87 @@ def wandered(scr: dict) -> str | None:
 
 
 WIGGLE = (("lleft",), ("lright",), ("lleft",), ("lright",))
-# sActionButton (static 0x017B7174): +0x34 u32 the HUD's prompt bits (bit 1: a prompt is up; bit 0: the weapon is up),
-# +0x2A4 -> the cActionButton on screen: +0x04 its owner, +0x14 its kind, +0x40 the Majini it acts on (live 2026-10-21, frames
-# of each): kind 3 owned by the player and aimed at a Majini = a melee finisher ("Hook", "Uppercut", "Straight": square);
-# kind 2 owned by the player = the stage ("Jump over", a ladder: not taken); a button owned by a Majini = his grab.
-AB_HUD, AB_BUTTON, HUD_PROMPT = 0x34, 0x2A4, 0x02
+# sActionButton+0x34 is its active-array COUNT, not HUD bits. The selected first-player display units below carry
+# visibility and actual requested keys. cActionButton+4 owner/+14 kind/+40 target describe the action, not the input.
 BTN_OWNER, BTN_KIND, BTN_TARGET = 0x04, 0x14, 0x40
 BTN_MELEE, BTN_STAGE = 3, 2
+AB_ENABLED, AB_PLAYER_ENABLED, AB_PLAYER_INDEX = 0x2C, 0x4C, 0x50
+QTE_UNITS = (0x298, 0x2DC)
+QTE_INPUT_TABLE = 0x0139E2C0
+QTE_MASKS = (0, 0x8000, 0x1000, 0x4000, 0x2000, 0x0400, 0x0800, 0x0100,
+             0x0200, 0x8000, 0x1000, 0x4000, 0x2000, 0x9000, 0x6000, 0xC000,
+             0x3000, 0x0300, 0x0C00, 0x0300, 0, 0, 0x8000, 0x1000,
+             0x4000, 0x2000, 0, 0, 0, 0x8001, 0, 0)
+QTE_INPUT_SIGNATURE = struct.pack(">32I", *QTE_MASKS)
+QTE_SIGNATURES = {0x000B7EC4: bytes.fromhex("816a000c812b001890ca0014912a0010800b002090ca001c"),
+                  0x000B7100: bytes.fromhex("8159000c2f0a0000419a029c79490020800900242f80003b"),
+                  0x000AD9CC: bytes.fromhex("817f000c38000001981f0005812b00242f890100419e0128")}
+QTE_KEYS = ((0x8000, "square"), (0x1000, "triangle"), (0x4000, "cross"), (0x2000, "circle"))
+QTE_ALLOWED_MASK = sum(bit for bit, _ in QTE_KEYS)
+QTE_MODES = {1: "mash", 3: "mash", 4: "mash", 5: "mash"}  # Verified press, chord, accumulated and rapid-repeat.
+P_DYING_TIMER, P_RECOVER_BUTTON = 0x1CEC, 0x22DC
+
+
+def prompt_chord(token, prefix):
+    """Resolve only known pad chords; a malformed token never becomes an input event."""
+    if not isinstance(token, str) or not token.startswith(prefix + ":"):
+        return None
+    keys = token[len(prefix) + 1:].split("+")
+    known = {key for _, key in QTE_KEYS}
+    return tuple(keys) if keys and len(keys) == len(set(keys)) and all(k in known for k in keys) else None
+
+
+def selected_prompt(m):
+    """The first player's active displayed input request, verified against BLUS30491's immutable mask table.
+
+    sActionButton+0x34 is an array count, not HUD flags. Its two selected display units carry the actual input.
+    The manager's player mask routes enemy-owned grab buttons too; button ownership is not a visibility test.
+    """
+    try:
+        sp, ab = u32(m, S_PLAYER), u32(m, S_ACTION)
+        pl = u32(m, sp + 0x28) if ptr_ok(sp) else 0
+        if not (ptr_ok(pl) and ptr_ok(ab)) or not m.rd(ab + AB_ENABLED, 1)[0] \
+                or not m.rd(ab + AB_PLAYER_ENABLED, 1)[0] or u32(m, ab + AB_PLAYER_INDEX) != 0:
+            return None
+        if struct.unpack(">h", m.rd(pl + P_HP, 2))[0] <= 0:
+            return None                                # terminal corpse; real solo DYING retains exactly 1 HP
+        if m.rd(QTE_INPUT_TABLE, len(QTE_INPUT_SIGNATURE)) != QTE_INPUT_SIGNATURE:
+            return None
+        if any(m.rd(address, len(expected)) != expected for address, expected in QTE_SIGNATURES.items()):
+            return None
+        requests = []
+        for offset in QTE_UNITS:
+            unit = ab + offset
+            raw = m.rd(unit, 0x1C)
+            btn, mode, _, mask = struct.unpack_from(">4I", raw, 0x0C)
+            if not raw[4] or not raw[5] or not ptr_ok(btn):
+                continue
+            button = m.rd(btn, 0x44)
+            kind, button_mode, priority, index, label = struct.unpack_from(">5I", button, 0x14)
+            players = struct.unpack_from(">I", button, 0x30)[0]
+            if not button[0x0A] or button[0x0C] or not players & 1 or mode != button_mode \
+                    or mode not in QTE_MODES or not 0 < index < len(QTE_MASKS) \
+                    or mask != QTE_MASKS[index] or not mask or mask & ~QTE_ALLOWED_MASK or label > 0xFF or label == 0x3B:
+                continue
+            chord = tuple(key for bit, key in QTE_KEYS if mask & bit)
+            if not chord:
+                continue
+            token = QTE_MODES[mode] + ":" + "+".join(chord)
+            hp = struct.unpack(">h", m.rd(pl + P_HP, 2))[0]
+            countdown = struct.unpack(">f", m.rd(pl + P_DYING_TIMER, 4))[0]
+            if mode == 5 and chord == ("circle",) and hp == 1 and math.isfinite(countdown) and countdown > 0 \
+                    and u32(m, pl + P_RECOVER_BUTTON) == btn:
+                token = "mash"                         # the game's explicit SOLO_DYING_RECOVER button
+            # Do not answer a selection that changed during the reads above.
+            if m.rd(unit, 0x1C) != raw or m.rd(btn + 0x0A, 3) != button[0x0A:0x0D]:
+                continue
+            requests.append((priority, offset, {"token": token, "button": btn, "kind": kind, "mode": mode,
+                                                "target": struct.unpack_from(">I", button, BTN_TARGET)[0]}))
+        if u32(m, S_ACTION) != ab or u32(m, sp + 0x28) != pl:
+            return None
+        return min(requests, key=lambda row: row[:2])[2] if requests else None
+    except (ValueError, OSError, struct.error, IndexError):
+        return None
 
 
 def enemy_ptrs(m) -> set:
@@ -472,45 +546,30 @@ def enemy_ptrs(m) -> set:
 
 
 def prompt(m) -> str | None:
-    """The prompt the game asks the player to answer, from RAM: "wiggle" while a Majini holds him (action 4, the
-    "Break free" prompt: the left stick wiggled), "square" for a melee finisher on a Majini (the player's own
-    cActionButton of kind 3 aimed at one of sEnemy's), else None (no prompt, or one on the stage: never taken)."""
+    """An explicit displayed input request, otherwise the verified grabbed-action stick escape."""
+    request = selected_prompt(m)
+    if request is not None:
+        return request["token"]
     sp = u32(m, S_PLAYER)
     pl = u32(m, sp + 0x28) if ptr_ok(sp) else 0
     if not ptr_ok(pl):
         return None
     if m.rd(pl + P_ACTION, 1)[0] == P_GRABBED:
         return "wiggle"
-    ab = u32(m, S_ACTION)
-    if not ptr_ok(ab) or not u32(m, ab + AB_HUD) & HUD_PROMPT:
-        return None
-    btn = u32(m, ab + AB_BUTTON)
-    if not ptr_ok(btn) or u32(m, btn + BTN_OWNER) != pl or u32(m, btn + BTN_KIND) != BTN_MELEE:
-        return None
-    return "square" if u32(m, btn + BTN_TARGET) in enemy_ptrs(m) else None
+    return None
 
 
 def stage_prompt(m) -> bool:
     """A prompt on the stage is up (the player's own cActionButton of kind 2: a ladder, a drop, Jump over)."""
-    sp = u32(m, S_PLAYER)
-    pl = u32(m, sp + 0x28) if ptr_ok(sp) else 0
-    ab = u32(m, S_ACTION)
-    if not (ptr_ok(pl) and ptr_ok(ab)) or not u32(m, ab + AB_HUD) & HUD_PROMPT:
-        return False
-    btn = u32(m, ab + AB_BUTTON)
-    return ptr_ok(btn) and u32(m, btn + BTN_OWNER) == pl and u32(m, btn + BTN_KIND) == BTN_STAGE
+    request = selected_prompt(m)
+    return bool(request and request["kind"] == BTN_STAGE and request["token"] == "mash:square")
 
 
 def prompt_target(m):
     """The Majini the on-screen cActionButton acts on (+0x40), or None: who a finisher prompt is for (the combat
     layer refuses a second melee on a boss)."""
-    ab = u32(m, S_ACTION)
-    if not ptr_ok(ab) or not u32(m, ab + AB_HUD) & HUD_PROMPT:
-        return None
-    btn = u32(m, ab + AB_BUTTON)
-    if not ptr_ok(btn):
-        return None
-    tgt = u32(m, btn + BTN_TARGET)
+    request = selected_prompt(m)
+    tgt = request["target"] if request else 0
     return tgt if ptr_ok(tgt) else None
 
 
@@ -649,7 +708,7 @@ class Bot:
         self._observed_snap = snap
         p = snap.get("player")
         self.stats["resuscitating"] = snap.get("prompt") == "mash"
-        if where == "playing" and p and getattr(self.m, "adapter", None) is not None:
+        if where == "playing" and p and snap.get("prompt") != "mash" and getattr(self.m, "adapter", None) is not None:
             from ...re5_mods_tool import maintain_health
             health = maintain_health(self.m.adapter, snap)
             self.stats["unlimited_health_enabled"] = health.get("unlimited_health", False)
@@ -742,6 +801,10 @@ class Bot:
         self.stats["max_combo"] = max(self.stats["max_combo"], snap.get("combo") or 0)
         if not p:
             return {"hold": set()}
+        held_prompt = prompt_chord(snap.get("prompt"), "hold")
+        if held_prompt:
+            self.aiming_since = None
+            return {"hold": set(held_prompt)}
         if snap.get("prompt") == "mash":
             self.aiming_since = None
             return {"hold": set()}                     # the prompt presser owns rapid circle, never cross/aim/fire
@@ -1202,9 +1265,21 @@ class RE5PS3(Driver):
 
     def prompt_source(self, m, stats: dict):
         self._stats = stats
-        return lambda: prompt(m)
+        def source():
+            button = prompt(m)
+            return None if prompt_chord(button, "hold") else button
+        return source
 
     def prompt_keys(self, button) -> list:
+        if isinstance(button, str) and button.startswith("mash:"):
+            chord = prompt_chord(button, "mash")
+            if chord is None:
+                return []
+            stats = getattr(self, "_stats", None)
+            if stats is not None:
+                stats["qte_presses"] = stats.get("qte_presses", 0) + 1
+                stats["qte_keys"] = "+".join(chord)
+            return [chord]
         stats = getattr(self, "_stats", None)
         if stats is not None:                               # what was answered: presses_square / presses_wiggle
             stats[f"presses_{button}"] = stats.get(f"presses_{button}", 0) + 1

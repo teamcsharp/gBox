@@ -361,30 +361,106 @@ def test_resuscitate_uses_repeated_circle_at_engine_mash_cadence_without_combat(
     assert stats.get("deaths", 0) == stats.get("continue_presses", 0) == 0
 
 
-def with_prompt(mem, kind, owner, target, hud=0x4B):
-    """sActionButton (static 0x017B7174) with a prompt up (+0x34 bit 1) and +0x2A4 -> a cActionButton: +0x04 owner,
-    +0x14 kind, +0x40 the Majini it acts on."""
+def with_prompt(mem, kind, owner, target, *, visible=True, mode=1, index=1, second=False):
+    """Verified displayed ButtonMgr unit, independent of manager+0x34's active-array count."""
     ab, btn = 0x3883_8370, 0x328E_1FE0
+    unit = ab + R.QTE_UNITS[bool(second)]
     mem.u32(R.S_ACTION, ab)
-    mem.u32(ab + R.AB_HUD, hud)
-    mem.u32(ab + R.AB_BUTTON, btn)
+    mem.put(ab + R.AB_ENABLED, b"\x01")
+    mem.put(ab + R.AB_PLAYER_ENABLED, b"\x01")
+    mem.u32(ab + R.AB_PLAYER_INDEX, 0)
+    mem.put(R.QTE_INPUT_TABLE, R.QTE_INPUT_SIGNATURE)
+    for address, expected in R.QTE_SIGNATURES.items():
+        mem.put(address, expected)
+    mem.put(unit + 4, bytes((1, int(visible))))
+    mem.u32(unit + 0x0C, btn)
+    mem.u32(unit + 0x10, mode)
+    mem.u32(unit + 0x18, R.QTE_MASKS[index])
+    mem.u32(btn, 0x016332A8)
+    mem.put(btn + 0x0A, b"\x01")
     mem.u32(btn + R.BTN_OWNER, owner)
     mem.u32(btn + R.BTN_KIND, kind)
+    mem.u32(btn + 0x18, mode)
+    mem.u32(btn + 0x20, index)
+    mem.u32(btn + 0x24, 0x37)
+    mem.u32(btn + 0x30, 1)
     mem.u32(btn + R.BTN_TARGET, target)
     return mem
 
 
 def test_a_melee_finisher_on_a_majini_is_pressed_with_square():
     e = [((0.0, 0.0, 150.0), 450, 800)]
-    assert R.prompt(with_prompt(world(enemies=e), R.BTN_MELEE, PLAYER, ENEMIES[0])) == "square"     # "Hook"
-    assert R.prompt(with_prompt(world(enemies=e), R.BTN_MELEE, PLAYER, ENEMIES[0], hud=0x49)) is None   # not up
-    assert R.prompt(with_prompt(world(enemies=e), R.BTN_STAGE, PLAYER, 0)) is None                  # "Jump over"
-    assert R.prompt(with_prompt(world(enemies=e), R.BTN_MELEE, PLAYER, 0x3099_0000)) is None        # not a Majini
-    assert R.prompt(with_prompt(world(enemies=e), 0, ENEMIES[0], 0)) is None                       # his grab button
-    held = with_prompt(world(action=R.P_GRABBED, enemies=e), 0, ENEMIES[0], 0, hud=0x4A)
+    assert R.prompt(with_prompt(world(enemies=e), R.BTN_MELEE, PLAYER, ENEMIES[0])) == "mash:square"
+    assert R.prompt(with_prompt(world(enemies=e), R.BTN_MELEE, PLAYER, ENEMIES[0], visible=False)) is None
+    assert R.prompt(with_prompt(world(enemies=e), R.BTN_STAGE, PLAYER, 0)) == "mash:square"
+    assert R.prompt(with_prompt(world(enemies=e), R.BTN_MELEE, PLAYER, 0x3099_0000)) == "mash:square"
+    assert R.prompt(with_prompt(world(enemies=e), 0, ENEMIES[0], 0)) == "mash:square"  # selected enemy-owned QTE
+    held = with_prompt(world(action=R.P_GRABBED, enemies=e), 0, ENEMIES[0], 0, visible=False)
     assert R.prompt(held) == "wiggle"                                                             # the grab itself
     act, _ = tick(with_prompt(world(action=2, enemies=e), R.BTN_MELEE, PLAYER, ENEMIES[0]))
     assert act == {"hold": set()}                     # the gun down while the engine presses the finisher (no L1)
+
+
+def test_verified_qte_faces_chords_and_second_display_unit_ignore_array_count():
+    for mode in (1, 3, 4, 5):
+        for index, expected in ((1, "square"), (2, "triangle"), (3, "cross"), (4, "circle"),
+                                (13, "square+triangle"), (14, "cross+circle"), (15, "square+cross"),
+                                (16, "triangle+circle")):
+            memory = with_prompt(world(), 0, ENEMIES[0], 0, mode=mode, index=index, second=True)
+            memory.u32(0x38838370 + 0x34, 1)             # count1 would fail the old fictitious HUD bit test
+            assert R.prompt(memory) == "mash:" + expected
+            assert R.RE5PS3().prompt_keys(R.prompt(memory)) == [tuple(expected.split("+"))]
+
+
+def test_qte_rejects_stale_inactive_mismatched_or_unknown_requests():
+    for address, raw in ((R.QTE_INPUT_TABLE, b"bad!"), (next(iter(R.QTE_SIGNATURES)), b"bad!"),
+                         (0x38838370 + R.QTE_UNITS[0] + 5, b"\0"),
+                         (0x328E1FE0 + 0x0A, b"\0"), (0x328E1FE0 + 0x0C, b"\1"),
+                         (0x38838370 + R.AB_PLAYER_INDEX, struct.pack(">I", 1)),
+                         (0x38838370 + R.QTE_UNITS[0] + 0x18, struct.pack(">I", 0x4000))):
+        memory = with_prompt(world(), 2, PLAYER, 0, mode=5, index=25)
+        memory.put(address, raw)
+        assert R.prompt(memory) is None
+    for mode, index in ((0, 1), (2, 1), (6, 1), (7, 1), (8, 1), (9, 1), (99, 1), (1, 5), (1, 20), (1, 29)):
+        assert R.prompt(with_prompt(world(), 2, PLAYER, 0, mode=mode, index=index)) is None
+    assert R.RE5PS3().prompt_keys("mash:circle+unknown") == []
+    assert R.RE5PS3().prompt_keys("mash:circle+circle") == []
+
+
+def test_live_resuscitate_signature_is_hp_one_mode_five_selected_circle_and_skips_health(monkeypatch, tmp_path):
+    from gbox import re5_mods_tool
+    from types import SimpleNamespace
+    memory = with_prompt(world(hp=1, action=7), 2, PLAYER, 0, mode=5, index=25)
+    memory.put(PLAYER + R.P_DYING_TIMER, struct.pack(">f", 6.74))
+    memory.u32(PLAYER + R.P_RECOVER_BUTTON, 0x328E1FE0)
+    assert R.prompt(memory) == "mash"
+    snapshot = R.snapshot(memory)
+    assert R.own_screen(snapshot) == "playing"
+    bot = R.Bot(learn_dir=tmp_path)
+    bot.m = SimpleNamespace(adapter=object())
+    def unexpected_health(*args, **kwargs):
+        raise AssertionError("resuscitation must finish through its input handler before HP is refilled")
+    monkeypatch.setattr(re5_mods_tool, "maintain_health", unexpected_health)
+    assert bot.tick(snapshot) == {"hold": set()}
+    assert snapshot["player"]["hp"] == 1 and bot.stats["resuscitating"]
+    memory.u32(PLAYER + R.P_RECOVER_BUTTON, 0)
+    assert R.prompt(memory) == "mash:circle"                  # ordinary circle request, not self-resuscitation
+    memory.put(PLAYER + R.P_HP, struct.pack(">h", 0))
+    assert R.prompt(memory) is None                         # same glyph data cannot authorize input on a corpse
+
+
+def test_generic_qte_chord_uses_engine_fast_cadence(monkeypatch, tmp_path):
+    memory = with_prompt(world(), 0, ENEMIES[0], 0, mode=3, index=14)
+    stats, sent, sleeps, count = {}, [], [], [0]
+    def stopped():
+        count[0] += 1
+        return count[0] > 4
+    bot = R.Bot(stats=stats, learn_dir=tmp_path)
+    engine.play_round({"driver": "gbox.mercs.titles.re5_ps3"}, memory, sent.extend, stopped, stats,
+                      brain=bot, sleep=sleeps.append, clock=lambda: count[0] * 0.08)
+    assert sent == [{"key": key, "down": down} for _ in range(4) for down in (True, False)
+                    for key in ("cross", "circle")]
+    assert sleeps == [0.045, 0.035] * 4 and stats["qte_presses"] == 4
 
 
 HOURGLASS_VT = 0x0159_0000
@@ -425,7 +501,7 @@ def test_a_time_bonus_is_taken_with_its_prompt(monkeypatch):
     assert bot.stats["bonus_presses"] == 1                                       # kind-2 cActionButton: press blind)
     mem = with_prompt(with_bonuses(world(enemies=far_majini), [(0.0, 13.0, 100.0)]), R.BTN_STAGE, PLAYER, 0)
     act, bot = tick(mem)
-    assert act == {"tap": "square"} and bot.stats["stage_presses"] == 1           # or on the "□ Time bonus" prompt
+    assert act == {"hold": set()} and R.prompt(mem) == "mash:square"  # engine rapidly answers its displayed prompt
     act, _ = tick(with_bonuses(world(enemies=far_majini), [(-300.0, 13.0, 0.0)])) # 3 m to the right: turn to it first
     assert act == {"hold": {"rright"}}
     close = [((0.0, 0.0, 250.0), 800, 800)]                                       # a Majini 2.5 m away, bonus 6 m off:
