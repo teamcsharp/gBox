@@ -49,8 +49,14 @@ LIMB_FRAMES = {
     "r_shin": ((1, 0, 0), (0, 0, -1), (0, 1, 0)),
 }
 STRETCH = (0.6, 1.7)
-HEAD_GROWTH = 2.0                 # a donor head may stand up to 2x the native head's height above the neck joint
+HEAD_GROWTH = 2.0                 # a donor head may stand up to 2x the native head's height (and width)
 HAND_GROWTH = 1.3                 # gloves reach up to 1.3x the native hand
+LIMB_THICKNESS = 1.3              # a donor limb is at most 1.3x as thick as the native limb
+TORSO_GROWTH = 1.5                # the donor's hip and chest at most 1.5x as wide as the native parts
+# how far a part sits from the body: a triangle that spans parts goes to the one nearest the body (torso first), so a
+# limb's straightening never swings a torso corner out into a spike
+DEPTH = {"hip": 0, "chest": 0, "head": 0, "l_upper": 1, "r_upper": 1, "l_thigh": 1, "r_thigh": 1,
+         "l_fore": 2, "r_fore": 2, "l_shin": 2, "r_shin": 2, "l_hand": 3, "r_hand": 3, "l_foot": 3, "r_foot": 3}
 
 
 # ------------------------------------------------------------------------------------------------ costume roles
@@ -101,6 +107,25 @@ def part_extent(geometry: dict, obj: int, role: str) -> float:
     if role.endswith(("fore", "shin")):
         return float(-P[:, 2].min())
     raise ValueError(role)
+
+
+def native_height(geometry: dict, primary: dict) -> float:
+    """The native fighter's standing height from its part extents: sole to ankle, shin, thigh, the hip part's top,
+    the chest part's top and the head's top (each part reaches from its own joint)."""
+    def top(role):
+        return float(np.array([v[1] for v in geometry["objects"][primary[role]]["vertices"]]).max())
+    sole = -float(np.array([v[1] for v in geometry["objects"][primary["l_foot"]]["vertices"]]).min())
+    return (sole + part_extent(geometry, primary["l_shin"], "l_shin")
+            + part_extent(geometry, primary["l_thigh"], "l_thigh") + top("hip") + top("chest") + top("head"))
+
+
+def _owners(tris: np.ndarray, vertex_roles: np.ndarray) -> np.ndarray:
+    """The part each triangle goes to: the corner role nearest the body (DEPTH), then the most frequent."""
+    roles = vertex_roles[tris]
+    depth = np.vectorize(lambda r: DEPTH.get(r, 0))(roles)
+    same = (roles[:, :, None] == roles[:, None, :]).sum(2)
+    pick = (depth * 10 - same).argmin(1)
+    return roles[np.arange(len(tris)), pick]
 
 
 # ------------------------------------------------------------------------------------------------ donor
@@ -169,10 +194,11 @@ def fit(rig: dict, geometry: dict, roles: dict, *, texture_limit: int = 256, slo
         P = np.array([v[:3] for v in geometry["objects"][primary[role]]["vertices"]])
         return P.min(0), P.max(0)
 
-    # body scale: the native torso reach (hip joint to the chest part's top) over the donor's hip -> head joint
-    torso_native = float(native_box("chest")[1][1])
-    torso_donor = float(np.linalg.norm(joints[ri["head"]] - joints[ri["hip"]]))
-    scale = float(np.clip(torso_native / max(torso_donor, 1e-9), 1e-6, 1e6))
+    # body scale: the native standing height over the donor's (the old hip -> head ratio made SA1 Sonic, whose hip
+    # joint sits high in his body, 2.6x too big: thick limbs and a blob torso in game)
+    height_native = native_height(geometry, primary)
+    height_donor = float(np.ptp(allp[:, 1]))
+    scale = float(np.clip(height_native / max(height_donor, 1e-9), 1e-6, 1e6))
 
     rules, stretch, straightened, sizes = {}, {}, {}, {}
     for role in ROLES:
@@ -186,19 +212,47 @@ def fit(rig: dict, geometry: dict, roles: dict, *, texture_limit: int = 256, slo
         native = part_extent(geometry, primary[role], role)
         k = float(np.clip(native / max(scale * length, 1e-9), *STRETCH)) if length > 1e-9 else 1.0
         d = np.array(CANON[role], float)
-        stretch_m = np.eye(3) + (k - 1) * np.outer(d, d)
+        # thickness: across the bone the donor limb keeps its own shape, at most LIMB_THICKNESS x the native limb
+        thick = 1.0
+        Q = (segment(role) - origin) @ (scale * straighten).T
+        if len(Q):
+            across = np.linalg.norm(Q - np.outer(Q @ d, d), axis=1)
+            Pn = np.array([v[:3] for v in geometry["objects"][primary[role]]["vertices"]])
+            t_donor = float(np.percentile(across, 95))
+            t_native = float(np.percentile(np.linalg.norm(Pn[:, :2], axis=1), 95))
+            if t_donor > LIMB_THICKNESS * t_native > 0:
+                thick = LIMB_THICKNESS * t_native / t_donor
+        stretch_m = thick * np.eye(3) + (k - thick) * np.outer(d, d)
         frame = np.array(LIMB_FRAMES[role], float)
         rules[role] = (frame @ stretch_m @ (scale * straighten), origin, np.zeros(3))
         stretch[role] = k
+        if thick < 1.0:
+            sizes[role] = round(thick, 3)
         straightened[role] = straighten
     for role in ("chest", "hip"):
         if role in ri:
-            rules[role] = (scale * np.eye(3), joints[ri[role]], np.zeros(3))
-    # the head: at most HEAD_GROWTH times the native head's height above its joint (cartoon heads stay big, not giant)
+            # a round cartoon body stays at most TORSO_GROWTH x the native part's width
+            s_body, seg = scale, segment(role)
+            if len(seg):
+                lo, hi = native_box(role)
+                width = float(np.ptp(seg[:, 0])) * scale
+                if width > TORSO_GROWTH * float(hi[0] - lo[0]) > 0:
+                    s_body = scale * TORSO_GROWTH * float(hi[0] - lo[0]) / width
+                    sizes[role] = s_body
+            origin = joints[ri[role]]
+            if role == "hip" and "l_thigh" in ri and "r_thigh" in ri:
+                # the body sits on the donor's own legs: a hip joint placed high in the body (SA1 Sonic) would
+                # otherwise hang the torso below the DOA3 hip
+                origin = (joints[ri["l_thigh"]] + joints[ri["r_thigh"]]) / 2
+            rules[role] = (s_body * np.eye(3), origin, np.zeros(3))
+    # the head: at most HEAD_GROWTH times the native head's height above its joint and its width (cartoon heads stay
+    # big, not giant)
     head = segment("head")
     if len(head):
+        lo, hi = native_box("head")
         above = float(head[:, 1].max() - joints[ri["head"]][1])
-        s_head = min(scale, HEAD_GROWTH * float(native_box("head")[1][1]) / max(above, 1e-9))
+        s_head = min(scale, HEAD_GROWTH * float(hi[1]) / max(above, 1e-9),
+                     HEAD_GROWTH * float(hi[0] - lo[0]) / max(float(np.ptp(head[:, 0])), 1e-9))
         rules["head"] = (s_head * np.eye(3), joints[ri["head"]], np.zeros(3))
         sizes["head"] = s_head
     for side in "lr":
@@ -257,6 +311,8 @@ def fit(rig: dict, geometry: dict, roles: dict, *, texture_limit: int = 256, slo
             textures.append(W.encode_texture(images[i], texture_limit))
     tex_of_prim = [final_index[i] for i in tex_of_prim]
 
+    owners = [_owners(np.asarray(p["tris"], int).reshape(-1, 3), vr) if len(np.asarray(p["tris"]).reshape(-1))
+              else np.array([], str) for p, vr in zip(prims, vertex_roles)]
     parts, counts = {}, {}
     for role in ROLES:
         if role not in rules:
@@ -264,14 +320,10 @@ def fit(rig: dict, geometry: dict, roles: dict, *, texture_limit: int = 256, slo
         matrix, origin, lift = rules[role]
         normal_m = np.linalg.inv(matrix).T
         verts, groups, remap_base = [], {}, 0
-        for p, vr, tex in zip(prims, vertex_roles, tex_of_prim):
+        for p, own, tex in zip(prims, owners, tex_of_prim):
             tris = np.asarray(p["tris"], int).reshape(-1, 3)
             if not len(tris):
                 continue
-            tri_roles = vr[tris]
-            # a triangle belongs to the role most of its corners carry (ties: the first corner's)
-            own = np.where((tri_roles[:, 1] == tri_roles[:, 2]) & (tri_roles[:, 1] != tri_roles[:, 0]),
-                           tri_roles[:, 1], tri_roles[:, 0])
             mine = tris[own == role]
             if not len(mine):
                 continue
@@ -303,7 +355,7 @@ def fit(rig: dict, geometry: dict, roles: dict, *, texture_limit: int = 256, slo
             parts[roles["lod"][role]] = part
         counts[role] = {"obj": primary[role], "vertices": len(vertices),
                         "triangles": int(sum(len(m["triangles"]) for m in materials))}
-    report = {"scale": scale, "torso_native": torso_native, "torso_donor": torso_donor, "part_scales": sizes,
+    report = {"scale": scale, "height_native": height_native, "height_donor": height_donor, "part_scales": sizes,
               "limb_stretch": stretch, "parts": counts, "textures": len(textures) + len(texture_slots),
               "textures_in_native_slots": sorted(texture_slots),
               "frames": "per-part local fit (native rest rotations not decoded; limb twist by LIMB_FRAMES)"}
