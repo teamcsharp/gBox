@@ -15,6 +15,48 @@ ALLOWED = ('system/gbox/', 'system/tests/', 'system/clients/', 'system/docs/', '
 PR_FIELDS = 'url,number,state,headRefName,headRefOid,baseRefName,isCrossRepository'
 
 
+def _workspace_path(path) -> Path:
+    """Resolve a recorded workspace path to where that folder lives now.
+
+    The side folders moved from ~/gbox-hermes-tasks and ~/gbox-hermes-repo into ~/gBox_alt, so a
+    record written before the move still points at the old location. Prefer the moved side root
+    when it exists, fall back to the legacy root, and never invent a path that is not there.
+    """
+    p = Path(path)
+    cands = []
+    parts = p.parts
+    for base in ('gbox-hermes-tasks', 'gbox-hermes-repo'):
+        if base in parts:
+            tail = Path(*parts[parts.index(base) + 1:])
+            if base in str(p) or True:
+                try:
+                    from .side_dirs import moved
+                    m = moved(p)
+                    if m:
+                        cands.append(Path(m))
+                except Exception:
+                    pass
+            for root in (Path.home() / 'gBox_alt', Path.home()):
+                cands.append(root / base / tail)
+    cands.append(p)
+    for c in cands:
+        try:
+            if c.exists():
+                return c
+        except OSError:
+            continue
+    return cands[0]
+
+
+def _normalise_workspace(record):
+    """Rewrite the recorded workspace paths onto the current side-folder locations."""
+    for key in ('path', 'workdir', 'repo', 'root', 'workspace'):
+        value = record.get(key)
+        if isinstance(value, str) and value:
+            record[key] = str(_workspace_path(value))
+    return record
+
+
 def state_dir() -> Path:
     return Path(os.environ.get('GBOX_HERMES_DISPATCH_STATE') or
                 Path(__file__).resolve().parents[1] / 'gbox-data/hermes-dispatch')
@@ -125,8 +167,8 @@ def prepare(request_id: str, number: int) -> dict:
         raise RuntimeError('The tracked Hermes repository has not been provisioned')
     with locked(request_id):
         if record.exists():
-            workspace = json.loads(record.read_text())
-            if (Path(workspace['path']) / '.git').exists():
+            workspace = _normalise_workspace(json.loads(record.read_text()))
+            if (_workspace_path(workspace['path']) / '.git').exists():
                 return workspace | {'reused': True, 'shared_sources': _shared_sources(workspace)}
             raise RuntimeError('The recorded task workspace is missing; preserve its history before retrying')
         _run(['git', 'fetch', 'origin', 'main'], repo)
@@ -151,8 +193,8 @@ def _shared_sources(workspace):
 def publish(request_id: str, title: str, files: list[str], tests: list[str]) -> dict:
     record = _record_path(request_id)
     with locked(request_id):
-        workspace = json.loads(record.read_text())
-        root = Path(workspace['path']).resolve()
+        workspace = _normalise_workspace(json.loads(record.read_text()))
+        root = _workspace_path(workspace['path']).resolve()
         if not files or len(files) > 40:
             raise ValueError('Specify 1 to 40 changed source files')
         for name in files:
