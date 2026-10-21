@@ -2,8 +2,10 @@
 
 Every constant and function here was produced by running Ghidra 12.1.4 headless
 (MIPS:LE:32:default) against the owned boot executable and by parsing the owned
-Disc 1 image. The evidence is committed under artifacts/ and pinned by
-tests/test_chrono_cross_psx_analysis.py.
+Disc 1 image. The Ghidra export itself is derived from the game binary and is
+NOT committed (public repo); the GHIDRA_* figures below are recorded from that run.
+The header, hash and character-profile facts are re-read from the owned disc by
+tests/test_chrono_cross_psx_analysis.py whenever this host holds it.
 
 SCOPE: this module records analysis evidence only. It implements NO unlock writer.
 The lock checks, save/progress flags and menu-eligibility paths are not yet proven,
