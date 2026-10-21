@@ -784,7 +784,8 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         if local_mod is None and not src.exists():
             raise FileNotFoundError(f"ROM not reachable from this node: {src}")
         lap("rom_s")
-        if local_mod is None and isinstance(ad, adapters.RPCS3Adapter) and g.launch.get("kind") == "attract":
+        if local_mod is None and isinstance(ad, (adapters.RPCS3Adapter, adapters.RPCS3LinuxAdapter)) \
+                and g.launch.get("kind") == "attract":
             eboot = catalog.ps3_stub_eboot(src)            # HyperSpin .txt stub -> its disc folder's EBOOT.BIN (#1093)
             if not eboot:
                 raise FileNotFoundError(f"no PS3_GAME/USRDIR/EBOOT.BIN in the folder for {src.name} under {src.parent}")

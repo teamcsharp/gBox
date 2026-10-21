@@ -82,11 +82,11 @@ try:
     from . import re4_ram_prompts                 # the game's own action-button state: prompts from RAM, vision after
 except ImportError:                              # a tree without it: vision only
     re4_ram_prompts = None
+from . import re4_threats as threats_ram         # who is attacking right now, what is thrown at him (RAM)
 try:
     from . import re4_menus                       # the title and the menus from RAM: boot -> a Mercenaries round
 except ImportError:                              # a tree without it: no presses out of a round
     re4_menus = None
-from . import re4_threats as threats_ram         # who is attacking right now, what is thrown at him (RAM)
 
 GAME_IDS = {"G4BE08"}
 EMMGR, P_PLAYER, P_GLOBAL = 0x8027DF20, 0x802B9780 - 0x673C, 0x802B2280
