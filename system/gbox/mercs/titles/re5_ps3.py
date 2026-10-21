@@ -45,13 +45,13 @@ HEAD_H, GUN_H = 160.0, 140.0           # above the feet: a Majini's head, the pl
 # lands: a Majini, a wall, the ground); the combat layer closes its aim on the dot (the camera's ray is ~5 deg off it,
 # the body's yaw +-7: the upper body aims inside a cone)
 FX_LINE, LASER_VT, LASER_FROM, LASER_AT = 18, 0x015BD958, 0x200, 0x30
-SWITCH_EVERY_S = 3.0                   # a weapon switch (a D-pad quick slot) at most this often
+SWITCH_EVERY_S, SWITCH_ACK_S, SWITCH_FAIL_S = 1.0, 1.5, 8.0
 # The inventory: embedded in the player at +0x22E0 (live 2026-10-21, with the RE5 mods agent): INV_SLOTS slots of 0x30,
 # a slot: +0x08 u32 id word 0x0TII (T 1 = weapon, uWpII; 2 = ammo / items), +0x0C rounds loaded, +0x10 capacity,
-# +0x20 u32 1 = in hand, +0x2D u8 != 0 = in use. The 3 x 3 grid is slots 0..8, row by row; the D-pad quick-uses
-# the edge slots (up 1, left 3, right 5, down 7).
-P_INV, INV_SLOT, INV_SLOTS, INV_ALL = 0x22E0, 0x30, 9, 24   # the grid; all the slots (the one in hand may sit past 9)
-INV_ID, INV_ROUNDS, INV_CAP, INV_HAND, INV_USED = 0x08, 0x0C, 0x10, 0x20, 0x2D
+# +0x1C u32 UI grid position, +0x20 u32 1 = in hand, +0x2D u8 != 0 = in use. Storage order differs from
+# UI grid order: live rocket record0 -> grid3, Hydra record1 -> grid5. Only grid1/3/5/7 are D-pad positions.
+P_INV, INV_SLOT, INV_SLOTS, INV_ALL = 0x22E0, 0x30, 9, 24
+INV_ID, INV_ROUNDS, INV_CAP, INV_GRID, INV_HAND, INV_USED = 0x08, 0x0C, 0x10, 0x1C, 0x20, 0x2D
 QUICK = {1: "dup", 3: "dleft", 5: "dright", 7: "ddown"}
 HOLD_FIRE = {0x15, 0x03, 0x09}         # automatic weapons fired by holding R1 (the Gatling, the VZ61, Chris HM's
 HOLD_CAP = 50                          # uWp09); or any with a big magazine (autos): the rest fire once a press
@@ -169,8 +169,7 @@ def bonuses(m) -> list:
 
 
 def inventory(m, player: int) -> list:
-    """The player's 3 x 3 grid from RAM: [{"slot", "id", "type", "item", "rounds", "cap", "hand", "used"}] for the slots
-    in use (type 1 = a weapon uWp<item>, 2 = ammo / items)."""
+    """Every used storage record; slot is its index, grid is its independent valid UI position (or None)."""
     raw = m.rd(player + P_INV, INV_SLOT * INV_ALL)
     out = []
     for k in range(INV_ALL):
@@ -180,11 +179,10 @@ def inventory(m, player: int) -> list:
         word = struct.unpack(">I", rec[INV_ID:INV_ID + 4])[0]
         rounds = struct.unpack(">I", rec[INV_ROUNDS:INV_ROUNDS + 4])[0]
         cap = struct.unpack(">I", rec[INV_CAP:INV_CAP + 4])[0]
+        grid = struct.unpack_from(">I", rec, INV_GRID)[0]
         hand = struct.unpack(">I", rec[INV_HAND:INV_HAND + 4])[0]   # +0x20, not next to the counts
-        if k >= INV_SLOTS and hand != 1:
-            continue                                        # past the grid: only the one in hand matters
         out.append({"slot": k, "id": word, "type": word >> 8, "item": word & 0xFF, "rounds": rounds, "cap": cap,
-                    "hand": hand == 1})
+                    "grid": grid if grid < INV_SLOTS else None, "grid_raw": grid, "hand": hand == 1})
     return out
 
 
@@ -617,7 +615,9 @@ class Bot:
         self.flags: dict = {}
         self.reload_until = 0.0
         self.heal_at = 0.0
-        self.switch_at = 0.0
+        self.switch_at = -math.inf
+        self.switch_pending = None
+        self.switch_blocked, self.switch_failures = {}, {}
         self.stuck_since = None                 # set while the walk is pushing forward without ground (a wall, a door)
         self.close_escape_until = self.close_acquire_until = 0.0
         self.round_active = False
@@ -644,6 +644,9 @@ class Bot:
             health = maintain_health(self.m.adapter, snap)
             self.stats["unlimited_health_enabled"] = health.get("unlimited_health", False)
             self.stats["health_maintained"] = bool(health.get("active") and health.get("verified"))
+            self.stats["hit_immunity"] = bool(health.get("hit_immunity"))
+            self.stats["immunity_verified"] = bool(health.get("immunity_verified"))
+            self.stats["immunity_reason"] = health.get("immunity_reason") or ""
             if health.get("refilled"):
                 self.stats["health_refills"] = self.stats.get("health_refills", 0) + 1
         if where != "playing" or not p:
@@ -676,11 +679,16 @@ class Bot:
                 self.target = self.plan_target = self.aiming_since = None
                 self.reload_until = self.unstick_until = 0.0
                 self.close_escape_until = self.close_acquire_until = 0.0
+                self.switch_pending = None
+                self.switch_blocked.clear()
+                self.switch_failures.clear()
+                self.switch_at = -math.inf
             self.round_active, self.round_end = True, None
             if self.combat is not None:
                 self.combat.start_round(now)
         if self.combat is not None:
             self.combat.observe(snap, now)
+        self._observe_weapon_switch(snap, now)
         self._score_hits(snap)
         t = snap.get("timer")
         if self.last_timer is not None and t is not None and self.last_timer > 0 and 2 < t - self.last_timer:
@@ -743,16 +751,16 @@ class Bot:
         if eq is not None:
             self.stats["weapon"] = f"{WEAPON_NAMES.get(eq['item'], 'uWp%02x' % eq['item'])} {eq['rounds']}/{eq['cap']}" \
                 if eq["type"] == 1 else f"item {eq['id']:#x}"
-            if eq["type"] == 1 and eq["rounds"] == 0 and eq["cap"] == 0 and p.get("action") != P_GRABBED \
-                    and now - self.switch_at > SWITCH_EVERY_S:
+            if eq["type"] == 1 and eq["rounds"] == 0 and eq["cap"] == 0 and p.get("action") != P_GRABBED:
                 # EMPTY 0 / 0 (Excella, live 2026-10-21: the trigger did nothing): another weapon with rounds from
                 # a quick slot (the D-pad equips the edge slots)
                 other = next((w for w in snap.get("inventory") or () if w["type"] == 1 and not w["hand"]
-                              and w["rounds"] > 0 and w["slot"] in QUICK), None)
+                              and w["rounds"] > 0 and re5_weapons.quick_key(w)
+                              and self.switch_blocked.get(re5_weapons.inventory_key(w), 0) <= now), None)
                 if other is not None:
-                    self.switch_at = now
-                    self.stats["weapon_switches"] = self.stats.get("weapon_switches", 0) + 1
-                    return {"tap": QUICK[other["slot"]]}
+                    change = self._switch_weapon(other, now, "empty weapon")
+                    if change:
+                        return change
             if eq["type"] == 1 and eq["rounds"] == 0 and eq["cap"] > 0 and p.get("action") != P_GRABBED:
                 if now > self.reload_until + 2.5:           # empty: L1 + cross reloads (once, then let it play)
                     self.reload_until = now + 0.3
@@ -825,13 +833,13 @@ class Bot:
         else:
             self.close_escape_until = self.close_acquire_until = 0.0
         if self.combat is not None and tgt.get("kind") not in ("time", "combo"):   # the combat layer owns the fight
-            if now - self.switch_at > 1.0:
-                other = re5_weapons.best_quick_slot(snap, tgt)
+            if self.switch_pending is None and now - self.switch_at > SWITCH_EVERY_S:
+                blocked = {key for key, until in self.switch_blocked.items() if until > now}
+                other = re5_weapons.best_quick_slot(snap, tgt, blocked)
                 if other is not None:
-                    self.switch_at = now
-                    self.stats["weapon_switches"] = self.stats.get("weapon_switches", 0) + 1
-                    self.stats["weapon_policy"] = f"switch to {re5_weapons.WEAPONS[other['item']].name}: range/crowd/boss fit"
-                    return {"tap": re5_weapons.QUICK[other["slot"]]}
+                    change = self._switch_weapon(other, now, "range/crowd/boss fit")
+                    if change:
+                        return change
             self.target = tgt["slot"]
             return self.combat.tick(snap, p, tgt, now, observed=True)
         if not aiming:
@@ -890,6 +898,38 @@ class Bot:
         return {"hold": keys}
 
     # --- helpers ---
+    def _observe_weapon_switch(self, snap, now):
+        pending = self.switch_pending
+        if pending is None or not snap.get("inventory"):
+            return
+        wanted, started = pending
+        current = equipped(snap)
+        if current is not None and re5_weapons.inventory_key(current) == wanted:
+            self.stats["weapon_switches"] = self.stats.get("weapon_switches", 0) + 1
+            self.stats["weapon_switch_status"] = "confirmed in hand"
+            self.switch_pending = None
+            self.switch_failures.pop(wanted, None)
+            self.switch_blocked.pop(wanted, None)
+        elif now - started >= SWITCH_ACK_S:
+            count = self.switch_failures[wanted] = self.switch_failures.get(wanted, 0) + 1
+            cooldown = min(60.0, SWITCH_FAIL_S * 2 ** min(count - 1, 3))
+            self.switch_blocked[wanted] = now + cooldown
+            self.stats["weapon_switch_failures"] = self.stats.get("weapon_switch_failures", 0) + 1
+            self.stats["weapon_switch_status"] = f"unconfirmed; grid {wanted[1]} waits {cooldown:g}s"
+            self.switch_pending = None
+
+    def _switch_weapon(self, item, now, why):
+        key, identity = re5_weapons.quick_key(item), re5_weapons.inventory_key(item)
+        if not key or self.switch_pending is not None or now - self.switch_at <= SWITCH_EVERY_S \
+                or self.switch_blocked.get(identity, 0) > now:
+            return None
+        self.switch_at, self.switch_pending = now, (identity, now)
+        self.stats["weapon_switch_attempts"] = self.stats.get("weapon_switch_attempts", 0) + 1
+        self.stats["weapon_switch_status"] = f"waiting for grid {item['grid']} in hand"
+        weapon = re5_weapons.WEAPONS.get(item.get("item"))
+        self.stats["weapon_policy"] = f"switch to {weapon.name if weapon else 'loaded weapon'}: {why}"
+        return {"tap": key}
+
     def _bonus(self, p, live, standing, now, mesh=None, clock=None):
         """The time bonus to go for now, or None (nothing standing, or a Majini within FIGHT_R: he is fought first).
         The nearest hourglass by the navmesh route (straight line without a mesh), on any level, walked to along the
@@ -964,13 +1004,13 @@ class Bot:
         heals = [s for s in items if s["id"] in HEAL_IDS]
         if not heals:
             return None
-        quick = next((s for s in heals if s["slot"] in QUICK), None)
+        quick = next((s for s in heals if re5_weapons.quick_key(s)), None)
         if quick is None:
             self.stats["heal_out_of_reach"] = heals[0]["slot"]
             return None
         self.heal_at = now
         self.stats["heals"] = self.stats.get("heals", 0) + 1
-        return {"tap": QUICK[quick["slot"]]}
+        return {"tap": re5_weapons.quick_key(quick)}
 
     def _take(self, p, tgt, stage_prompt, now) -> dict:
         """At a time bonus: walk onto it, then tap square to punch it. The "□ Time bonus" prompt is not the kind-2

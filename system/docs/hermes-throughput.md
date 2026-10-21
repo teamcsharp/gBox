@@ -248,6 +248,12 @@ do not wait until every untouched request or title has been visited. Explicit pi
 native repairs and published work awaiting acceptance receive priority within each group.
 Automatic replacement failures, extraction requests, tool gaps and operator child requests
 remain actionable; recurring review reminders and agent notifications are excluded.
+Dated agent handoffs (`context.handoff = "YYYY-MM-DD"`, `author = "agent"`) also
+remain actionable when their request ID or number is explicitly in the operator's
+priority list. This admits resumed work filed with `automated = true`, including
+the October 21 handoff tickets, without treating a game's priority or an ordinary
+automated reminder as an instruction to run it. Ownership, retry, review and
+worker admission checks still apply.
 Two pending heavyweight native analysis jobs defer new inventory
 and analysis admissions while allowing independent writer or acceptance work.
 This is admission backpressure, not a new worker execution limit.
@@ -284,3 +290,39 @@ only restores an eligible route after quota recovery; it does not launch its
 old competing favorites job. The one-minute pump and new MCP processes load
 fresh source; an already running backend needs ordinary safe activation for
 its updated toggle and task-view code.
+
+## Spark2 compression time budget
+
+On October 21, proxy interruptions near 600 seconds correlated with Hermes
+`Context compression reached its total ceiling` warnings while tokens were
+still arriving. The compression route was explicitly Qwen3-Coder-Next-FP8 on
+Spark2, with a 300-second auxiliary timeout. Hermes's separate host ceiling
+defaulted to 600 seconds; the auxiliary stream already allowed up to 1200.
+
+The bounded live trial at 15:26:07 UTC raised this ceiling to 1200. Hermes
+adopted it without restarting, and the first summary continued producing tokens
+past 600 and 900 seconds. At 15:46:32 it still hit the new ceiling:
+`agent.log` recorded attempt `d186a621e4b04a889747987b92b8f175` as aborted with
+`commit_fence_cancelled` after 1,200,016 ms; the proxy recorded a 1200.22-second
+interruption. The following committed result was Hermes's deterministic
+fallback, not a completed model summary. This trial did not establish a
+throughput improvement, so the explicit override was removed at 15:47:44 UTC,
+restoring the original 600-second default while preserving all other settings.
+Keep that default until further evidence supports another bounded trial.
+
+`python scripts/configure_hermes_compression.py ~/.hermes/config.yaml ~/.hermes/hermes-agent`
+previews the supported 1200-second trial for future diagnosis. Add `--apply`
+only for a deliberately observed trial; it writes a private, byte-exact backup
+and uses atomic replacement. The tool
+requires the measured route and supported runtime setting, preserves custom
+timeout overrides, and prints no config credentials. Only
+`compression.context_total_ceiling_seconds` changes. Effective idle protection
+stays at 300 seconds; capacity, provider, auxiliary timeout and spend limits
+remain as configured. Hermes reads this setting for subsequent compression
+attempts; no model or worker restart is needed.
+
+Verify subsequent compression commits and proxy interruption rates before
+further tuning. A longer ceiling permits useful summaries to finish but does
+not itself prove improved throughput. To roll back, restore the prior value
+(600, or remove this key if previously absent) while preserving newer settings;
+the backup records the original configuration.

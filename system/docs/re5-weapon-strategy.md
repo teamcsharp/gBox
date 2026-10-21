@@ -6,7 +6,10 @@ cover, causing retargeting or movement. Weapon choice never substitutes for this
 
 `re5_weapons.py` covers every ID in the verified weapon table. It favors a loaded shotgun for close crowds,
 a rifle at distance, a magnum for high-health enemies, and automatic guns for sustained fire. It uses actual
-D-pad slots, not writes to invented equip fields. Its distances are conservative **bot tuning**, not exact
+D-pad grid positions, decoded from each inventory record's `+0x1C`, not storage indices or writes to invented equip fields.
+The live layout had a rocket in record 0/grid 3 and Hydra in record 1/grid 5; the old record-index assumption
+selected the wrong item. A switch now waits for matching in-hand RAM evidence, and failed attempts back off
+while combat continues. Its distances are conservative **bot tuning**, not exact
 weapon limits. Shotguns may still fire a confirmed distant hit while no better weapon is available.
 
 | Weapons | Operational policy |
@@ -25,6 +28,9 @@ All gun/grenade definition entries retain the existing unlimited-ammo and x80 fi
 not demonstrate every animation, projectile, or scoped weapon firing at that speed. The new controller holds
 the trigger only after it reads back the global rapid-fire timer and the current weapon's zero interval.
 Ordinary automatic weapons also start with their correct hold behavior. Hardware/game frame rate limits remain.
+Each mod now starts from the current live weapon tables and changes only its own fields. Previously, ammunition
+restored original firing intervals and damage could restore original firing speeds. Saved originals still govern
+scaling and restoration; combined-mod regression tests cover repeated application and independent removal.
 
 ## Research checked 2026-10-21
 
@@ -68,7 +74,14 @@ controller's decisions and accounting; live traversal and combat outcomes still 
 ## Health and evidence
 
 The per-snapshot guard resolves the current player, validates the build and signed health values, raises living
-health to 30,000, and verifies the write. It follows respawns and can restore its change. It does **not** prove
-immunity to scripted death, grabs, or stagger. Ghidra reflection names containing `Muteki` are research anchors,
-not usable offsets. Live acceptance requires actual kill progress, health readback, no repeated cover fire,
+health to 30,000, and verifies the write. It follows respawns and can restore its change. The first bounded live
+run held 30,000 health with eight refills, but fired zero shots while the bad inventory mapping repeatedly tried
+to change weapons. That run failed combat acceptance.
+
+Ghidra analysis subsequently identified the persistent Muteki setter and incoming-hit collision helper; three
+exact code signatures were matched against the running game. The opt-in health guard now sets only the verified
+player flag bits and disables validated type-1 incoming-hit collision nodes. Every write rechecks the current
+living player and list ownership; originals are restored conservatively. Signature/layout failures explicitly
+fall back to health maintenance. This implementation still requires live evidence of protection from stagger;
+it does not establish protection from every scripted death or grab. Live acceptance requires actual kill progress, health readback, no repeated cover fire,
 successful traversal and bonuses, and completed-round results; unit tests alone do not establish dominance.

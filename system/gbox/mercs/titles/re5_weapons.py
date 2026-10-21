@@ -47,6 +47,16 @@ ROUND_EFFECTS = {
 }
 
 
+def quick_key(item):
+    """The verified +0x1C UI position, never the inventory storage-record index."""
+    grid = item.get("grid")
+    return QUICK.get(grid) if type(grid) is int else None
+
+
+def inventory_key(item):
+    return item.get("slot"), item.get("grid"), item.get("type"), item.get("item")
+
+
 def clearance(snap, impact, radius):
     """Conservative self/partner spacing at the observed impact. Health refill does not prevent knockdown."""
     positions = [(snap.get("player") or {}).get("pos")]
@@ -100,11 +110,12 @@ def suitability(slot, snap, target):
     return score
 
 
-def best_quick_slot(snap, target):
+def best_quick_slot(snap, target, blocked=()):
     """Return a materially better, loaded quick-slot weapon, else None. No imaginary inventory RAM equips."""
     inventory = snap.get("inventory") or ()
     current = next((w for w in inventory if w.get("hand")), None)
     score = suitability(current, snap, target) if current else -1000
-    options = [w for w in inventory if not w.get("hand") and w.get("slot") in QUICK]
+    options = [w for w in inventory if not w.get("hand") and quick_key(w)
+               and inventory_key(w) not in blocked]
     other = max(options, key=lambda w: suitability(w, snap, target), default=None)
     return other if other and suitability(other, snap, target) > score + 8 else None

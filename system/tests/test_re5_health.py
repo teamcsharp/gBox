@@ -100,3 +100,159 @@ def test_wrong_build_and_failed_readback_do_not_claim_health_was_maintained(monk
     snap = {"player": {"ptr": PLAYER, "hp": 500, "hp_max": T.HEALTH_MAX}}
     assert not T.maintain_health(m, snap)["verified"]
     assert snap["player"]["hp"] == 500 and read_health(m)[0] == 500
+
+
+def hit_layout(m, player=PLAYER, table=0x304F1F00, node_base=0x30500000):
+    for address, signature in T.IMMUNITY_SIGNATURES.items():
+        m.put(address, signature)
+    m.put(player + T.P_HIT_LIST, struct.pack(">7I", 0x0163B530, table, 0, 0, player, 4, 3))
+    nodes = [node_base + i * 0x100 for i in range(3)]
+    m.put(table, struct.pack(">3I", *nodes))
+    for node, kind, enabled in zip(nodes, (1, 0, 1), (1, 1, 0)):
+        m.u32(node + T.HIT_NODE_TYPE, kind)
+        m.put(node + T.HIT_NODE_ENABLE, bytes([enabled]))
+    m.u32(player + T.P_MUTEKI, 0xA0000024)
+    m.u32(player + T.P_HIT_STATE, 0x10041000)
+    return table, nodes
+
+
+def ru32(m, address):
+    return struct.unpack(">I", m.read_memory(address, 4))[0]
+
+
+def test_verified_muteki_mirrors_game_setter_and_restores_only_owned_bits_and_nodes():
+    m = FakeRE5()
+    health(m)
+    _, nodes = hit_layout(m)
+    assert not T.maintain_health(m)["unlimited_health"] and not m.writes
+    result = T.run(m, "unlimited_health")
+    assert result["hit_immunity"] and result["immunity_verified"] and result["immunity_colliders"] == 2
+    assert result["status"]["hit_immunity"]
+    assert ru32(m, PLAYER + T.P_MUTEKI) == 0xA0000014
+    assert ru32(m, PLAYER + T.P_HIT_STATE) == 0x10001000
+    assert [m.read_memory(n + T.HIT_NODE_ENABLE, 1)[0] for n in nodes] == [0, 1, 0]
+    allowed = {PLAYER + T.P_HP, PLAYER + T.P_MUTEKI, PLAYER + T.P_HIT_STATE,
+               nodes[0] + T.HIT_NODE_ENABLE}
+    assert {address for address, _ in m.writes} == allowed  # No code writes or outgoing-hit edits.
+    writes = list(m.writes)
+    assert T.maintain_health(m)["hit_immunity"] and m.writes == writes
+    m.u32(PLAYER + T.P_MUTEKI, ru32(m, PLAYER + T.P_MUTEKI) | 0x100)
+    m.u32(PLAYER + T.P_HIT_STATE, ru32(m, PLAYER + T.P_HIT_STATE) | 0x80)
+    result = T.run(m, "unlimited_health", on=False)
+    assert result["immunity_restored"] and result["verified"]
+    assert ru32(m, PLAYER + T.P_MUTEKI) == 0xA0000124
+    assert ru32(m, PLAYER + T.P_HIT_STATE) == 0x10041080
+    assert [m.read_memory(n + T.HIT_NODE_ENABLE, 1)[0] for n in nodes] == [1, 1, 0]
+
+
+@pytest.mark.parametrize("signature_address", list(T.IMMUNITY_SIGNATURES))
+def test_immunity_requires_each_exact_signature_but_health_refill_remains_available(signature_address):
+    m = FakeRE5()
+    health(m)
+    hit_layout(m)
+    m.put(signature_address, b"\xff")
+    result = T.run(m, "unlimited_health")
+    assert result["verified"] and not result["hit_immunity"]
+    assert "signatures did not match" in result["immunity_reason"]
+    assert m.writes == [(PLAYER + T.P_HP, 4)]
+
+
+@pytest.mark.parametrize("invalid", ["owner", "count", "capacity", "table", "node", "enable"])
+def test_invalid_hit_layout_keeps_health_only_without_partial_immunity_writes(invalid):
+    m = FakeRE5()
+    health(m)
+    table, nodes = hit_layout(m)
+    if invalid == "owner":
+        m.u32(PLAYER + T.P_HIT_LIST + 0x10, PLAYER + 4)
+    elif invalid == "count":
+        m.u32(PLAYER + T.P_HIT_LIST + 0x18, 5)
+    elif invalid == "capacity":
+        m.u32(PLAYER + T.P_HIT_LIST + 0x14, 129)
+    elif invalid == "table":
+        m.u32(PLAYER + T.P_HIT_LIST + 4, 0x3FFFFFFC)
+    elif invalid == "node":
+        m.u32(table, 0x3FFFFF80)
+    else:
+        m.put(nodes[2] + T.HIT_NODE_ENABLE, b"\x02")
+    result = T.run(m, "unlimited_health")
+    assert result["verified"] and not result["hit_immunity"]
+    assert m.writes == [(PLAYER + T.P_HP, 4)]
+
+
+def test_immunity_follows_respawn_and_never_restores_previous_player_nodes():
+    m = FakeRE5()
+    health(m)
+    _, old_nodes = hit_layout(m)
+    assert T.run(m, "unlimited_health")["hit_immunity"]
+    new = PLAYER + 0x10000
+    m.u32(SPLAYER + 0x28, new)
+    health(m, player=new)
+    _, new_nodes = hit_layout(m, new, 0x30600000, 0x30601000)
+    m.writes.clear()
+    assert T.maintain_health(m)["hit_immunity"]
+    assert T.run(m, "unlimited_health", on=False)["immunity_restored"]
+    assert all(address != PLAYER + T.P_MUTEKI and address not in
+               {n + T.HIT_NODE_ENABLE for n in old_nodes} for address, _ in m.writes)
+    assert m.read_memory(new_nodes[0] + T.HIT_NODE_ENABLE, 1) == b"\x01"
+
+
+def test_changed_collision_entry_is_not_written_or_restored(monkeypatch):
+    m = FakeRE5()
+    health(m)
+    table, nodes = hit_layout(m)
+    original_check = T._hit_list_current
+    def change_entry(g, pl, header, index=None, node=None):
+        if index == 0:
+            m.u32(table, nodes[1])  # The current entry is now an outgoing attack record.
+        return original_check(g, pl, header, index, node)
+    monkeypatch.setattr(T, "_hit_list_current", change_entry)
+    result = T.run(m, "unlimited_health")
+    assert not result["hit_immunity"] and "entry changed" in result["immunity_reason"]
+    assert not any(address == nodes[0] + T.HIT_NODE_ENABLE for address, _ in m.writes)
+    monkeypatch.setattr(T, "_hit_list_current", original_check)
+    m.writes.clear()
+    T.run(m, "unlimited_health", on=False)
+    assert not any(address == nodes[0] + T.HIT_NODE_ENABLE for address, _ in m.writes)
+
+
+def test_failed_immunity_readback_does_not_claim_protection_and_preserves_health(monkeypatch):
+    m = FakeRE5()
+    health(m)
+    hit_layout(m)
+    write = m.write_memory
+    monkeypatch.setattr(m, "write_memory", lambda address, data:
+                        None if address == PLAYER + T.P_MUTEKI else write(address, data))
+    result = T.run(m, "unlimited_health")
+    assert result["verified"] and not result["hit_immunity"]
+    assert "readback failed" in result["immunity_reason"]
+    assert read_health(m) == (T.HEALTH_MAX, T.HEALTH_MAX)
+
+
+def test_death_during_hit_list_read_prevents_all_immunity_writes(monkeypatch):
+    m = FakeRE5()
+    health(m)
+    hit_layout(m)
+    read_list = T._hit_list
+    def death_after_list(g, pl):
+        result = read_list(g, pl)
+        health(m, 0, T.HEALTH_MAX)
+        return result
+    monkeypatch.setattr(T, "_hit_list", death_after_list)
+    result = T.run(m, "unlimited_health")
+    assert not result["hit_immunity"]
+    assert m.writes == [(PLAYER + T.P_HP, 4)]
+    assert read_health(m)[0] == 0
+
+
+def test_replacement_hit_list_never_restores_predecessors_node_bytes():
+    m = FakeRE5()
+    health(m)
+    table, nodes = hit_layout(m)
+    assert T.run(m, "unlimited_health")["hit_immunity"]
+    replacement = table + 0x1000
+    m.u32(PLAYER + T.P_HIT_LIST + 4, replacement)
+    m.put(replacement, struct.pack(">3I", *nodes))  # Allocator reused node addresses, with new semantics.
+    m.writes.clear()
+    result = T.run(m, "unlimited_health", on=False)
+    assert result["verified"] and result["immunity_restore_skipped"]
+    assert not any(address == nodes[0] + T.HIT_NODE_ENABLE for address, _ in m.writes)
