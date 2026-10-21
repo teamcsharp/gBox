@@ -88,7 +88,7 @@ def test_a_frame_carries_the_round_in_the_contracts_shape():
     assert f["stage"] == T.stage_key("BLUS30491", two_levels()) and f["stage"] in tr.stages
     assert f["clock"] == {"left": 88.5, "start": 120.0, "combo": 7, "combo_left": 3.14, "score": 12345, "kills": 20}
     assert f["player"] == {"pos": [0, 0, 100], "facing": 0.0, "hp": 900, "hp_max": 1000, "state": "aim", "aim": True}
-    assert f["enemies"] == [{"id": 0, "pos": [0, 0, 900], "hp": 800, "hp_max": 800}]   # the dead and the crow left out
+    assert f["enemies"] == [{"id": 0, "pos": [0, 0, 900], "hp": 800, "hp_max": 800, "visibility": "unknown", "distance_cm": 800.0}]   # the dead and the crow left out
     assert f["bonuses"] == [{"id": HG1, "pos": [100, 13, 700], "kind": "time", "taken": False}]
     nb = f["plan"]["nearest_bonus"]                             # no plan(): the navmesh's route at RUN_SPEED, an estimate
     assert nb["id"] == HG1 and nb["est"] is True and nb["pos"] == [100, 13, 700]

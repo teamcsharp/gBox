@@ -762,7 +762,7 @@ def test_a_time_bonus_is_taken_with_its_prompt(monkeypatch):
     act, bot = tick(with_bonuses(world(action=2, enemies=close), [(0.0, 13.0, 600.0)]))
     assert bot.target == 0                                                        # him first
     act, bot = tick(with_bonuses(world(enemies=close), [(0.0, 13.0, 100.0)]))     # but a bonus 1 m off (in reach):
-    assert str(bot.target).startswith("bonus")                                    # finish the quick press
+    assert not str(bot.target).startswith("bonus") and "l1" in act["hold"]  # nearest foe first
 
 
 def test_a_bonus_that_will_not_take_is_left_alone_for_a_while(monkeypatch):
@@ -787,10 +787,10 @@ def test_bonuses_anywhere_are_walked_to_nearest_first_and_the_clock_jumps_are_co
     assert b2.stats["phase"] == "gather_time" and b2.stats["nearest_eta_s"] > 0
     near = [((0.0, 0.0, 300.0), 800, 800)]                                       # a Majini 3 m ahead: fought first
     act, b3 = tick(with_bonuses(world(action=2, enemies=near), [(0.0, 13.0, 1200.0)]))
-    assert b3.target == 0 and b3.stats["phase"] == "fight"
+    assert b3.target == 0 and b3.stats["phase"] == "clear_nearby"
     behind = [((0.0, 0.0, -300.0), 800, 800)]                                    # one 3 m behind: he walks on
     act, b4 = tick(with_bonuses(world(enemies=behind), [(0.0, 13.0, 1200.0)]))
-    assert str(b4.target).startswith("bonus") and {"lup", "cross"} <= act["hold"]
+    assert not str(b4.target).startswith("bonus") and "cross" not in act["hold"]
     monkeypatch.setattr(R, "BONUS_WALK", False)
     act, _ = tick(with_bonuses(world(), [(0.0, 13.0, 1200.0)]))
     assert act == {"hold": set()}                                                 # without routes: out of reach
@@ -892,7 +892,7 @@ def test_gathers_every_bonus_first_then_stands_and_breaks_for_a_late_one(monkeyp
     far = [((0.0, 0.0, 3500.0), 800, 800)]                                                 # at the stand, a Majini 35 m off
     act = bot.tick(R.snapshot(with_bonuses(world(timer=80.0, enemies=far), [])))
     assert act == {"hold": set()} and bot.stats["phase"] == "stand"                        # he comes to the stand
-    act = bot.tick(R.snapshot(with_bonuses(world(timer=55.0), [(0.0, 13.0, 2000.0)])))     # a late bonus: break for it
+    act = bot.tick(R.snapshot(with_bonuses(world(timer=55.0, combo=0), [(0.0, 13.0, 2000.0)])))     # a late bonus: break for it
     assert bot.stats["phase"] == "break_for_time" and {"lup", "cross"} <= act["hold"]
     plan = bot.plan()
     assert plan["phase"] == "break_for_time" and plan["target"]["kind"] == "time" and plan["stand"]["r"] == R.STAND_R
@@ -1065,7 +1065,7 @@ def test_unreachable_bonuses_are_not_chosen_over_a_real_route():
 
 def test_distant_unsighted_front_candidate_does_not_starve_time_bonus_navigation(monkeypatch):
     monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
-    m = with_bonuses(world(action=2, enemies=[((0.0, 0.0, 1800.0), 800, 800)]), [(0.0, 13.0, 2400.0)])
+    m = with_bonuses(world(action=2, combo=0, enemies=[((0.0, 0.0, 1800.0), 800, 800)]), [(0.0, 13.0, 2400.0)])
     bot = R.Bot(m, clock=lambda: 10.0, lessons=lambda e: None)
     act = bot.tick(R.snapshot(m))
     assert bot.stats["phase"] == "gather_time" and {"lup", "cross"} <= act["hold"]
@@ -1076,14 +1076,14 @@ def test_a_stationary_close_attacker_cannot_keep_the_gun_down_forever():
     m = world(action=5, enemies=[((0.0, 0.0, 60.0), 800, 800)])  # still in the hit pose, no usable laser yet
     bot = R.Bot(m, clock=lambda: now[0], lessons=lambda e: None)
     first = bot.tick(R.snapshot(m))
-    assert "ldown" in first["hold"] and "l1" not in first["hold"]
+    assert "l1" in first["hold"] and "ldown" not in first["hold"]
     now[0] += R.CLOSE_ESCAPE_S + 0.01
     acquiring = bot.tick(R.snapshot(m))
     assert "l1" in acquiring["hold"] and "ldown" not in acquiring["hold"]
-    assert bot.stats["combat"].startswith("readying:") and bot.stats["backoffs"] == 1
+    assert bot.stats["combat"].startswith("readying:") and bot.stats["backoffs"] == 0
     now[0] += 0.5
     assert "l1" in bot.tick(R.snapshot(m))["hold"]
-    assert bot.stats["backoffs"] == 1
+    assert bot.stats["backoffs"] == 0
 
 
 def boot(names, line=26):

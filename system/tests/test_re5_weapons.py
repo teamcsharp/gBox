@@ -23,9 +23,15 @@ def test_close_splash_switches_to_loaded_magnum_without_guessing_launcher_ammo()
     assert not W.fire_policy(0x0D, s, e, e["pos"])[0]
 
 
-def test_distant_target_prefers_rifle_to_shotgun_but_only_reachable_quick_slot():
+def test_distant_target_does_not_switch_to_a_sniper_rifle():
     s, e = scene(2200, [slot(0x19, 1, True), slot(0x05, 3)])
-    assert W.best_quick_slot(s, e)["item"] == 0x05
+    assert W.best_quick_slot(s, e) is None
+
+
+def test_existing_rocket_or_sniper_switches_to_loaded_quick_slot_magnum():
+    for weapon in (0x0D, 0x05, 0x1C, 0x20):
+        s, e = scene(2200, [slot(weapon, 1, True), slot(0x0B, 3)])
+        assert W.best_quick_slot(s, e)["item"] == 0x0B
     s["inventory"][1]["grid"] = 2
     assert W.best_quick_slot(s, e) is None
 

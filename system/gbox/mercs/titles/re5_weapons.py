@@ -117,5 +117,13 @@ def best_quick_slot(snap, target, blocked=()):
     score = suitability(current, snap, target) if current else -1000
     options = [w for w in inventory if not w.get("hand") and quick_key(w)
                and inventory_key(w) not in blocked]
+    current_spec = WEAPONS.get((current or {}).get("item"))
+    if current_spec and current_spec.family in {"rocket", "rifle"}:
+        magnums = [w for w in options if w.get("type") == 1 and w.get("rounds", 0) > 0
+                   and w.get("item") in (0x0B, 0x1A, 0x1B)]
+        if magnums:
+            return max(magnums, key=lambda w: suitability(w, snap, target))
+    # Spawn templates replace these guns; until the next spawn, avoid choosing another one.
+    options = [w for w in options if w.get("item") not in (0x0D, 0x05, 0x1C, 0x20)]
     other = max(options, key=lambda w: suitability(w, snap, target), default=None)
     return other if other and suitability(other, snap, target) > score + 8 else None

@@ -56,8 +56,8 @@ def world(laser_dot=(0.0, 160.0, 400.0), aiming=True, rounds=10, act_vt=C.READY_
 
 def snap(m, enemy=(0.0, 0.0, 400.0), hp=800):
     aiming = m.rd(PL + C.P_ACTION, 1)[0] == C.AIMING
-    return {"player": {"ptr": PL, "pos": (0.0, 0.0, 0.0), "rot": 0.0, "action": C.AIMING if aiming else 0},
-            "enemies": [{"slot": 0, "ptr": ENEMY, "pos": enemy, "hp": hp, "hp_max": 800}], "timer": 100.0}
+    return {"player": {"ptr": PL, "pos": (0.0, 0.0, 0.0), "rot": 0.0, "hp": 1000, "hp_max": 1000, "action": C.AIMING if aiming else 0},
+            "enemies": [{"slot": 0, "ptr": ENEMY, "pos": enemy, "hp": hp, "hp_max": 800}], "timer": 100.0, "combo": 0, "combo_timer": 0}
 
 
 def test_the_dot_names_where_it_sits_on_a_majini():
@@ -416,16 +416,35 @@ def test_measured_cover_switches_target_but_an_off_target_ray_does_not_claim_cov
     assert not bot.blocked_until and bot.stats["target_evidence"] == "front candidate; visibility unconfirmed"
 
 
-def test_camera_front_sector_is_only_candidate_eligibility():
+def test_close_rear_enemy_outranks_distant_front_enemy_but_does_not_authorize_blind_fire():
     m = world(laser_dot=(90.0, 110.0, 400.0))
     bot = C.Combat(m, {}, lessons=lambda e: None)
     s = snap(m, enemy=(0.0, 0.0, 1000.0))
     s["camera"] = {"eye": (0.0, 140.0, 0.0), "at": (0.0, 140.0, 1000.0)}
     front = s["enemies"][0]
     behind = {"slot": 1, "ptr": ENEMY + 1, "pos": (0.0, 0.0, -200.0), "hp": 800, "hp_max": 800}
-    assert bot.choose_target(s, s["player"], [behind, front], 0.0) is front
-    assert "r1" not in bot.tick(s, s["player"], front, 0.0)["hold"]
-    assert bot.choose_target(s, s["player"], [behind], 0.1) is None
+    assert bot.choose_target(s, s["player"], [behind, front], 0.0) is behind
+    assert "r1" not in bot.tick(s, s["player"], behind, 0.0)["hold"]
+    behind["pos"] = (0, 0, -1000)
+    assert bot.choose_target(s, s["player"], [behind, front], 0.1) is front
+
+
+def test_nearest_living_enemy_wins_until_dead_and_awareness_reports_cover(tmp_path):
+    m = world(laser_dot=(0, 110, 1000))
+    bot = C.Combat(m, {}, learn_dir=tmp_path, lessons=lambda e: None)
+    s = snap(m, enemy=(0, 0, 1000))
+    close = {"slot": 1, "ptr": ENEMY + 1, "pos": (100, 0, 150), "hp": 20, "hp_max": 800}
+    closer = {"slot": 2, "ptr": ENEMY + 2, "pos": (-50, 0, 100), "hp": 800, "hp_max": 800}
+    enemies = s["enemies"] = [s["enemies"][0], close, closer]
+    assert bot.choose_target(s, s["player"], enemies, 1) is closer
+    assert bot.awareness[0]["hp"] == 800 and bot.awareness[0]["visibility"] == "unknown"
+    closer["hp"] = 0
+    assert bot.choose_target(s, s["player"], enemies, 1.1) is close
+    m.put(LASER + C.LASER_DOT, ">3f", 0, 149, 120)
+    close["pos"] = (0, 0, 300)
+    s["enemies"] = [close]
+    assert bot.choose_target(s, s["player"], [close], 1.2) is None
+    assert bot.awareness[0]["visibility"] == "blocked"
 
 
 def test_weapon_ready_action_and_first_hit_allow_fire_when_pose_byte_lags():

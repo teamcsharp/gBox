@@ -93,6 +93,8 @@ POWERFUL = {0x11B: "S&W M500", 0x11A: "Lightning Hawk", 0x119: "Hydra", 0x115: "
             0x11C: "H&K PSG-1", 0x11D: "AK-74", 0x116: "Benelli M3", 0x10C: "grenade launcher", 0x120: "Dragunov SVD",
             0x10B: "S&W M29"}
 MAGNUMS = (0x10B, 0x11A, 0x11B)
+REPLACE_WITH_MAGNUM = frozenset({0x10D, 0x105, 0x11C, 0x120})
+OPERATOR_SETTINGS = frozenset({"fire_rate", "turn_speed", "bullet_damage", "infinite_ammo", "unlimited_health"})
 KNIFE_IDS = {0x101, 0x10E, 0x114, 0x123, 0x124, 0x100}
 ORIG: dict = {}                                 # id(adapter) -> the tables and values as the game had them
 
@@ -210,6 +212,15 @@ class RE5:
         st["hit_immunity"] = bool((st["health_maintenance"] or {}).get("hit_immunity"))
         st["fire_animation_enabled"] = bool(self.orig.get("fire_animation_on"))
         st["fire_animation_maintenance"] = self.orig.get("fire_animation_last")
+        from .mercs.titles import re5_controls
+        with re5_controls.LOCK:
+            st["capabilities"] = {op: {"available": True, "reason": "Verified build; readback required."}
+                                  for op in OPERATOR_SETTINGS}
+            st["capabilities"]["random_weapon"] = re5_controls.capability(self.orig)
+            for op in ("aimbot", "instant_qte", "auto_parry", "knife_knockback"):
+                st["capabilities"][op] = {"available": False, "reason": "No verified live control for this hook."}
+            st["operator_overrides"] = {k: dict(v) for k, v in self.orig.get("operator_overrides", {}).items()}
+            st["random_weapon_request"] = re5_controls.request_status(self.orig)
         return st
 
 
@@ -562,7 +573,7 @@ def loadout(g: RE5, weapons=None, seed=None, on: bool = True) -> dict:
     if not on:
         return {"loadout": "the game's", "verified": g.wr(TEMPLATE, t0)}
     pool = [int(str(w), 0) if isinstance(w, str) and str(w).startswith("0x") else w for w in (weapons or [])]
-    pool = [w for w in pool if w in POWERFUL] or list(POWERFUL)
+    pool = [w for w in pool if w in POWERFUL or w in REPLACE_WITH_MAGNUM] or list(POWERFUL)
     rng = random.Random(seed)
     t = bytearray(t0)
     picks: dict = {}
@@ -572,7 +583,7 @@ def loadout(g: RE5, weapons=None, seed=None, on: bool = True) -> dict:
         block = off // TEMPLATE_BLOCK
         used = picks.setdefault(block, [])
         choice = rng.choice([w for w in pool if w not in used] or pool)
-        if choice == 0x10D:
+        if choice in REPLACE_WITH_MAGNUM:
             choice = rng.choice([w for w in MAGNUMS if w not in used] or MAGNUMS)
         used.append(choice)
         struct.pack_into(">I", t, off, choice)
@@ -590,6 +601,15 @@ def replace_rockets(g: RE5, seed=None) -> dict:
     This deliberately does not relabel an already-created rocket weapon object as a magnum.
     It preserves grid, in-hand flags, unrelated records and other active loadout changes.
     """
+    return _replace_spawn_guns(g, {0x10D}, seed, "rocket_replacements")
+
+
+def replace_long_guns(g: RE5, seed=None) -> dict:
+    """Replace rockets and all three sniper rifles at the next game-created loadout."""
+    return _replace_spawn_guns(g, REPLACE_WITH_MAGNUM, seed, "weapon_replacements")
+
+
+def _replace_spawn_guns(g: RE5, unwanted, seed, result_key):
     import random
     if g.u32(TEMPLATE + TEMPLATE_SIGNATURE[0]) != TEMPLATE_SIGNATURE[1]:
         raise RuntimeError("rocket replacement: loadout template signature differs")
@@ -597,7 +617,7 @@ def replace_rockets(g: RE5, seed=None) -> dict:
     g.keep("template", lambda: current)
     rng, replaced, ok = random.Random(seed), [], True
     for off, idw, _, pos, hand, _ in template_records(current):
-        if idw != 0x10D:
+        if idw not in unwanted:
             continue
         before = current[off:off + TEMPLATE_REC]
         if g.rd(TEMPLATE + off, TEMPLATE_REC) != before:
@@ -609,7 +629,7 @@ def replace_rockets(g: RE5, seed=None) -> dict:
         ok &= g.wr(TEMPLATE + off, bytes(record))
         replaced.append({"address": f"0x{TEMPLATE + off:X}", "item": item,
                          "weapon": WEAPONS[item & 0xFF], "grid": pos, "in_hand": bool(hand)})
-    return {"verified": ok, "rocket_replacements": replaced, "effective_next_round": True,
+    return {"verified": ok, result_key: replaced, "effective_next_round": True,
             "note": "spawn templates only; equipped weapon readback is required after the next round starts"}
 
 
@@ -621,23 +641,30 @@ def random_cheats(g: RE5, seed=None) -> dict:
     picked = {"fire_rate_x": 80.0, "turn_speed_x": rng.choice([2.0, 3.0]), "bullet_damage_x": rng.choice([1.0, 3.0, 10.0]),
               "infinite_ammo": True, "loadout": rng.random() < 0.75}
     out: dict = {}
-    out["fire_rate"] = fire_rate(g, picked["fire_rate_x"])["verified"]
-    out["turn_speed"] = turn_speed(g, picked["turn_speed_x"])["verified"]
-    out["bullet_damage"] = bullet_damage(g, picked["bullet_damage_x"])["verified"]
-    out["infinite_ammo"] = infinite_ammo(g, True)["verified"]
+    for op, field in (("fire_rate", "fire_rate_x"), ("turn_speed", "turn_speed_x"),
+                      ("bullet_damage", "bullet_damage_x"), ("infinite_ammo", "infinite_ammo")):
+        result = run(g.ad, op, picked[field] if op != "infinite_ammo" else None, g=g)
+        out[op] = result["verified"]
+        picked[field] = result["status"][field]
     if picked["loadout"]:
         lo = loadout(g, seed=rng.random())
         out["loadout"] = lo["verified"]
         picked["loadout_barry"] = lo.get("barry")
     else:
         out["loadout"] = loadout(g, on=False)["verified"]
-    out["rocket_replacement"] = replace_rockets(g, rng.random())["verified"]
+    out["weapon_replacement"] = replace_long_guns(g, rng.random())["verified"]
     return {"telemetry": picked, "verified": all(out.values()), "applied": out}
 
 
 def revert_all(g: RE5) -> dict:
     out = {}
     o = g.orig
+    o.pop("operator_overrides", None)
+    from .mercs.titles import re5_controls
+    with re5_controls.LOCK:
+        o.pop("weapon_pin", None)
+        if (o.get("random_weapon_request") or {}).get("state") == "pending":
+            o["random_weapon_request"].update(state="rejected", reason="Cancelled by revert all.")
     o["fire_animation_on"] = False
     if o.get("fire_animation_helper") is not None:
         out["fire_animation"] = maintain_fire_animation(g.ad, enabled=False)["verified"]
@@ -659,6 +686,12 @@ def revert_all(g: RE5) -> dict:
 
 
 def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5 | None = None, **extra) -> dict:
+    # Round hooks and UI jobs share table snapshots and retained operator settings.
+    with _HEALTH_LOCK:
+        return _run(ad, op, multiplier, on, g, **extra)
+
+
+def _run(ad, op="status", multiplier=None, on=True, g=None, **extra):
     g = g or RE5(ad)
     op = (op or "status").strip().lower().replace(" ", "_").replace("-", "_")
     op = {"turn": "turn_speed", "aim_turn_speed": "turn_speed", "rotation": "turn_speed", "turnaround": "turn_speed",
@@ -669,6 +702,11 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5 | None 
           "random_weapons": "loadout", "randomize": "random_cheats", "randomizer": "random_cheats",
           "random": "random_cheats", "unlimited_life": "unlimited_health", "infinite_health": "unlimited_health",
           "infinite_life": "unlimited_health"}.get(op, op)
+    operator = bool(extra.get("operator"))
+    if not operator and op in OPERATOR_SETTINGS:
+        override = g.orig.get("operator_overrides", {}).get(op)
+        if override:
+            multiplier, on = override["multiplier"], override["on"]
     res: dict = {"op": op}
     if op == "status":
         pass
@@ -690,6 +728,11 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5 | None 
         res.update(loadout(g, extra.get("weapons"), extra.get("seed"), on))
     elif op == "replace_rockets":
         res.update(replace_rockets(g, extra.get("seed")))
+    elif op == "replace_long_guns":
+        res.update(replace_long_guns(g, extra.get("seed")))
+    elif op == "random_weapon":
+        from .mercs.titles import re5_controls
+        res.update(re5_controls.request(g.orig))
     elif op == "random_cheats":
         res.update(random_cheats(g, extra.get("seed")))
     elif op == "revert_all":
@@ -697,6 +740,8 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5 | None 
     else:
         raise ValueError("op: status | turn_speed | fire_rate | infinite_ammo | unlimited_health | bullet_damage | loadout | replace_rockets | random_cheats | "
                          "revert_all | addresses")
+    if operator and op in OPERATOR_SETTINGS and res.get("verified"):
+        g.orig.setdefault("operator_overrides", {})[op] = {"multiplier": multiplier, "on": bool(on)}
     res["status"] = g.status()
     return res
 
@@ -724,4 +769,4 @@ def re5_mods(inp: RE5ModsIn, ctx):
     ad, g = SESSIONS[inp.session_id]
     if g.get("platform") != "ps3":
         raise Unsupported(f"re5_mods: Resident Evil 5 on PS3 (RPCS3); this session is {g.get('title')} ({g.get('platform')})")
-    return {"result": run(ad, inp.op, inp.multiplier, inp.on)}
+    return {"result": run(ad, inp.op, inp.multiplier, inp.on, operator=True)}
