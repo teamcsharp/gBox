@@ -1,0 +1,848 @@
+{
+ "game_id": "4187aeab4d67638c",
+ "title": "Jet Grind Radio (USA)",
+ "platform": "dreamcast",
+ "profile": "cheatdb-unlocks-v1",
+ "verified": true,
+ "codes": [
+  {
+   "desc": "Unlock All Small Graffiti's",
+   "lines": [
+    "0110F42E 00000101"
+   ]
+  },
+  {
+   "desc": "Unlock All Medium Graffiti's (Continued)",
+   "lines": [
+    "0110F470 00000101"
+   ]
+  },
+  {
+   "desc": "Unlock All Xtra Large Graditi's",
+   "lines": [
+    "0110F472 00000101"
+   ]
+  },
+  {
+   "desc": "Unlock All Graffiti",
+   "lines": [
+    "0110F42E 00000101"
+   ]
+  },
+  {
+   "desc": "Unlock Character Codes-Gum",
+   "lines": [
+    "0010F3E1 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Character Codes-Tab",
+   "lines": [
+    "0010F3E2 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Character Codes-Combo",
+   "lines": [
+    "0010F3E3 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Character Codes-Slate",
+   "lines": [
+    "0010F3E4 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Character Codes-Piranha",
+   "lines": [
+    "0010F3E5 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Character Codes-Cube",
+   "lines": [
+    "0010F3E6 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Character Codes-Mew",
+   "lines": [
+    "0010F3E7 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Character Codes-Yo-Yo",
+   "lines": [
+    "0010F3E8 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Character Codes-Garam",
+   "lines": [
+    "0010F3E9 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Character Codes-Poison Jam",
+   "lines": [
+    "0010F3EA 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Character Codes-Love Shockers",
+   "lines": [
+    "0010F3EB 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Character Codes-Noise Tank",
+   "lines": [
+    "0010F3EC 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Character Codes-Goji",
+   "lines": [
+    "0010F3ED 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Character Codes-Pots",
+   "lines": [
+    "0010F3EE 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-Beat The Clock",
+   "lines": [
+    "0010F42E 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-Pool",
+   "lines": [
+    "0010F42F 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-Tab Me",
+   "lines": [
+    "0010F430 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-Don't Push It. Kid!",
+   "lines": [
+    "0010F431 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-Beware My Bite!",
+   "lines": [
+    "0010F432 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-Freaky Deaky",
+   "lines": [
+    "0010F433 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-Purr Like A Kitten Fight Like A Tiger!",
+   "lines": [
+    "0010F434 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-Fear Me",
+   "lines": [
+    "0010F435 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-Yo Yo. Baby!",
+   "lines": [
+    "0010F436 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-Ya Gotta Cheat To Solve Puzzles",
+   "lines": [
+    "0010F437 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-Ryu 2",
+   "lines": [
+    "0010F438 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-Dragon Crew Who Are You?",
+   "lines": [
+    "0010F439 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-Watch Out!",
+   "lines": [
+    "0010F43A 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-Edge You Out",
+   "lines": [
+    "0010F43B 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-How Much Is That Mutt In The Window?",
+   "lines": [
+    "0010F43C 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-Hazey Daze",
+   "lines": [
+    "0010F43D 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-Ryo Baby!",
+   "lines": [
+    "0010F43E 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-Break It!",
+   "lines": [
+    "0010F43F 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-Plug Your Hole!",
+   "lines": [
+    "0010F440 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-Watch Yer Back",
+   "lines": [
+    "0010F441 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-Buck-Nutty!",
+   "lines": [
+    "0010F442 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-It's Epedimic",
+   "lines": [
+    "0010F443 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-Record Fanatic",
+   "lines": [
+    "0010F444 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-Every Other Caption",
+   "lines": [
+    "0010F445 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-Be Boo",
+   "lines": [
+    "0010F446 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-Skate Puppet",
+   "lines": [
+    "0010F447 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-All Across The Globe",
+   "lines": [
+    "0010F448 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-The Wold Famous Beat Junkies",
+   "lines": [
+    "0010F449 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-Mixmastermike",
+   "lines": [
+    "0010F44A 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-House Of 1000 Corpses",
+   "lines": [
+    "0010F44B 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-Land Of Monsters",
+   "lines": [
+    "0010F44C 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-It's A Wonder Chemical World",
+   "lines": [
+    "0010F44D 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-What A Shock!",
+   "lines": [
+    "0010F44E 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Small Graffiti Codes-Golden Rhinos",
+   "lines": [
+    "0010F44F 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Beat This",
+   "lines": [
+    "0010F450 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Minty Cool Flavor",
+   "lines": [
+    "0010F451 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Pull The Tab",
+   "lines": [
+    "0010F452 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Sharpest Teeth!",
+   "lines": [
+    "0010F454 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Man With A Plan!",
+   "lines": [
+    "0010F455 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Sweeter Than Sugar",
+   "lines": [
+    "0010F456 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Tougher Than You",
+   "lines": [
+    "0010F457 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Yo! 30",
+   "lines": [
+    "0010F458 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Blue Slate",
+   "lines": [
+    "0010F459 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Thisa Way Thatta Way",
+   "lines": [
+    "0010F45A 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Spray Me",
+   "lines": [
+    "0010F45B 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Home Of The Brave",
+   "lines": [
+    "0010F45C 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Break It Up!",
+   "lines": [
+    "0010F45D 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Clumsy Punk",
+   "lines": [
+    "0010F45E 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Haze Amaze!",
+   "lines": [
+    "0010F45F 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Cubizmo",
+   "lines": [
+    "0010F460 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Ride The Wave!",
+   "lines": [
+    "0010F461 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Cheap And Street",
+   "lines": [
+    "0010F462 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Muddy Waters Drown No Soul",
+   "lines": [
+    "0010F463 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Haze Craze",
+   "lines": [
+    "0010F464 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Meow!",
+   "lines": [
+    "0010F465 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Hunt And Gather",
+   "lines": [
+    "0010F466 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Chill Out",
+   "lines": [
+    "0010F467 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Make Your Mark",
+   "lines": [
+    "0010F468 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Smooth As Silk...",
+   "lines": [
+    "0010F469 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Gaze At Haze",
+   "lines": [
+    "0010F46A 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Rockin The Decks With Original Beats",
+   "lines": [
+    "0010F46B 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Funky Hip-Hop Scratching",
+   "lines": [
+    "0010F46C 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Call Of The Zombie",
+   "lines": [
+    "0010F46D 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Rip You To Shreds",
+   "lines": [
+    "0010F46E 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Noise Destroys!",
+   "lines": [
+    "0010F46F 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Shock The System!",
+   "lines": [
+    "0010F470 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Large Graffiti Codes-Golden Rhinos",
+   "lines": [
+    "0010F471 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Theater Of Sound",
+   "lines": [
+    "0010F472 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Off The Edge!",
+   "lines": [
+    "0010F473 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Don't Monkey Around!",
+   "lines": [
+    "0010F474 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Breaker Breaker!",
+   "lines": [
+    "0010F475 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Goof-off!",
+   "lines": [
+    "0010F476 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Let's Play Ball!",
+   "lines": [
+    "0010F477 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Music Lover",
+   "lines": [
+    "0010F478 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Sick Town",
+   "lines": [
+    "0010F479 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Spirit Of The Art",
+   "lines": [
+    "0010F47A 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Wild Style Wars!",
+   "lines": [
+    "0010F47B 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Psycho Colors!",
+   "lines": [
+    "0010F47C 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-You Da Bomb!",
+   "lines": [
+    "0010F47D 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Mix It Up",
+   "lines": [
+    "0010F47E 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-A Head Of The Crowd",
+   "lines": [
+    "0010F47F 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Pray For Rain",
+   "lines": [
+    "0010F480 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Funky Monkey",
+   "lines": [
+    "0010F481 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Hi-yaaa!",
+   "lines": [
+    "0010F482 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Fatal Regrets",
+   "lines": [
+    "0010F483 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Return Of The Super Ape!",
+   "lines": [
+    "0010F484 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Slapstick Duo",
+   "lines": [
+    "0010F485 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Devil May Care",
+   "lines": [
+    "0010F486 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Reaching Out",
+   "lines": [
+    "0010F487 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Year Of The Dragon",
+   "lines": [
+    "0010F488 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Go To Sleep",
+   "lines": [
+    "0010F489 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Hip Hop Festival",
+   "lines": [
+    "0010F48A 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Pull My Finger",
+   "lines": [
+    "0010F48B 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Purple Haze",
+   "lines": [
+    "0010F48C 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Jurassic-5 Quality Control",
+   "lines": [
+    "0010F48D 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Eye Of The Cyklops",
+   "lines": [
+    "0010F48E 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-American Made Music To Strip By",
+   "lines": [
+    "0010F48F 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Jam To The Venom",
+   "lines": [
+    "0010F490 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Trancified",
+   "lines": [
+    "0010F491 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Heartbreaker",
+   "lines": [
+    "0010F492 00000001"
+   ]
+  },
+  {
+   "desc": "Unlock Xtra Large Graffiti Codes-Golden Rhinos",
+   "lines": [
+    "0010F493 00000001"
+   ]
+  }
+ ],
+ "scope": [
+  "Unlock All Graffiti",
+  "Unlock All Medium Graffiti's",
+  "Unlock All Small Graffiti's",
+  "Unlock All Xtra Large Graditi's",
+  "Unlock Character Codes-Combo",
+  "Unlock Character Codes-Cube",
+  "Unlock Character Codes-Garam",
+  "Unlock Character Codes-Goji",
+  "Unlock Character Codes-Gum",
+  "Unlock Character Codes-Love Shockers",
+  "Unlock Character Codes-Mew",
+  "Unlock Character Codes-Noise Tank",
+  "Unlock Character Codes-Piranha",
+  "Unlock Character Codes-Poison Jam",
+  "Unlock Character Codes-Pots",
+  "Unlock Character Codes-Slate",
+  "Unlock Character Codes-Tab",
+  "Unlock Character Codes-Yo-Yo",
+  "Unlock Large Graffiti Codes-Beat This",
+  "Unlock Large Graffiti Codes-Blue Slate",
+  "Unlock Large Graffiti Codes-Break It Up!",
+  "Unlock Large Graffiti Codes-Call Of The Zombie",
+  "Unlock Large Graffiti Codes-Cheap And Street",
+  "Unlock Large Graffiti Codes-Chill Out",
+  "Unlock Large Graffiti Codes-Clumsy Punk",
+  "Unlock Large Graffiti Codes-Cubizmo",
+  "Unlock Large Graffiti Codes-Funky Hip-Hop Scratching",
+  "Unlock Large Graffiti Codes-Gaze At Haze",
+  "Unlock Large Graffiti Codes-Golden Rhinos",
+  "Unlock Large Graffiti Codes-Haze Amaze!",
+  "Unlock Large Graffiti Codes-Haze Craze",
+  "Unlock Large Graffiti Codes-Home Of The Brave",
+  "Unlock Large Graffiti Codes-Hunt And Gather",
+  "Unlock Large Graffiti Codes-Make Your Mark",
+  "Unlock Large Graffiti Codes-Man With A Plan!",
+  "Unlock Large Graffiti Codes-Meow!",
+  "Unlock Large Graffiti Codes-Minty Cool Flavor",
+  "Unlock Large Graffiti Codes-Muddy Waters Drown No Soul",
+  "Unlock Large Graffiti Codes-Noise Destroys!",
+  "Unlock Large Graffiti Codes-Pull The Tab",
+  "Unlock Large Graffiti Codes-Ride The Wave!",
+  "Unlock Large Graffiti Codes-Rip You To Shreds",
+  "Unlock Large Graffiti Codes-Rockin The Decks With Original Beats",
+  "Unlock Large Graffiti Codes-Sharpest Teeth!",
+  "Unlock Large Graffiti Codes-Shock The System!",
+  "Unlock Large Graffiti Codes-Smooth As Silk...",
+  "Unlock Large Graffiti Codes-Spray Me",
+  "Unlock Large Graffiti Codes-Sweeter Than Sugar",
+  "Unlock Large Graffiti Codes-Thisa Way Thatta Way",
+  "Unlock Large Graffiti Codes-Tougher Than You",
+  "Unlock Large Graffiti Codes-Yo! 30",
+  "Unlock Small Graffiti Codes-All Across The Globe",
+  "Unlock Small Graffiti Codes-Be Boo",
+  "Unlock Small Graffiti Codes-Beat The Clock",
+  "Unlock Small Graffiti Codes-Beware My Bite!",
+  "Unlock Small Graffiti Codes-Break It!",
+  "Unlock Small Graffiti Codes-Buck-Nutty!",
+  "Unlock Small Graffiti Codes-Don't Push It. Kid!",
+  "Unlock Small Graffiti Codes-Dragon Crew Who Are You?",
+  "Unlock Small Graffiti Codes-Edge You Out",
+  "Unlock Small Graffiti Codes-Every Other Caption",
+  "Unlock Small Graffiti Codes-Fear Me",
+  "Unlock Small Graffiti Codes-Freaky Deaky",
+  "Unlock Small Graffiti Codes-Golden Rhinos",
+  "Unlock Small Graffiti Codes-Hazey Daze",
+  "Unlock Small Graffiti Codes-House Of 1000 Corpses",
+  "Unlock Small Graffiti Codes-How Much Is That Mutt In The Window?",
+  "Unlock Small Graffiti Codes-It's A Wonder Chemical World",
+  "Unlock Small Graffiti Codes-It's Epedimic",
+  "Unlock Small Graffiti Codes-Land Of Monsters",
+  "Unlock Small Graffiti Codes-Mixmastermike",
+  "Unlock Small Graffiti Codes-Plug Your Hole!",
+  "Unlock Small Graffiti Codes-Pool",
+  "Unlock Small Graffiti Codes-Purr Like A Kitten Fight Like A Tiger!",
+  "Unlock Small Graffiti Codes-Record Fanatic",
+  "Unlock Small Graffiti Codes-Ryo Baby!",
+  "Unlock Small Graffiti Codes-Ryu 2",
+  "Unlock Small Graffiti Codes-Skate Puppet",
+  "Unlock Small Graffiti Codes-Tab Me",
+  "Unlock Small Graffiti Codes-The Wold Famous Beat Junkies",
+  "Unlock Small Graffiti Codes-Watch Out!",
+  "Unlock Small Graffiti Codes-Watch Yer Back",
+  "Unlock Small Graffiti Codes-What A Shock!",
+  "Unlock Small Graffiti Codes-Ya Gotta Cheat To Solve Puzzles",
+  "Unlock Small Graffiti Codes-Yo Yo. Baby!",
+  "Unlock Xtra Large Graffiti Codes-A Head Of The Crowd",
+  "Unlock Xtra Large Graffiti Codes-American Made Music To Strip By",
+  "Unlock Xtra Large Graffiti Codes-Breaker Breaker!",
+  "Unlock Xtra Large Graffiti Codes-Devil May Care",
+  "Unlock Xtra Large Graffiti Codes-Don't Monkey Around!",
+  "Unlock Xtra Large Graffiti Codes-Eye Of The Cyklops",
+  "Unlock Xtra Large Graffiti Codes-Fatal Regrets",
+  "Unlock Xtra Large Graffiti Codes-Funky Monkey",
+  "Unlock Xtra Large Graffiti Codes-Go To Sleep",
+  "Unlock Xtra Large Graffiti Codes-Golden Rhinos",
+  "Unlock Xtra Large Graffiti Codes-Goof-off!",
+  "Unlock Xtra Large Graffiti Codes-Heartbreaker",
+  "Unlock Xtra Large Graffiti Codes-Hi-yaaa!",
+  "Unlock Xtra Large Graffiti Codes-Hip Hop Festival",
+  "Unlock Xtra Large Graffiti Codes-Jam To The Venom",
+  "Unlock Xtra Large Graffiti Codes-Jurassic-5 Quality Control",
+  "Unlock Xtra Large Graffiti Codes-Let's Play Ball!",
+  "Unlock Xtra Large Graffiti Codes-Mix It Up",
+  "Unlock Xtra Large Graffiti Codes-Music Lover",
+  "Unlock Xtra Large Graffiti Codes-Off The Edge!",
+  "Unlock Xtra Large Graffiti Codes-Pray For Rain",
+  "Unlock Xtra Large Graffiti Codes-Psycho Colors!",
+  "Unlock Xtra Large Graffiti Codes-Pull My Finger",
+  "Unlock Xtra Large Graffiti Codes-Purple Haze",
+  "Unlock Xtra Large Graffiti Codes-Reaching Out",
+  "Unlock Xtra Large Graffiti Codes-Return Of The Super Ape!",
+  "Unlock Xtra Large Graffiti Codes-Sick Town",
+  "Unlock Xtra Large Graffiti Codes-Slapstick Duo",
+  "Unlock Xtra Large Graffiti Codes-Spirit Of The Art",
+  "Unlock Xtra Large Graffiti Codes-Theater Of Sound",
+  "Unlock Xtra Large Graffiti Codes-Trancified",
+  "Unlock Xtra Large Graffiti Codes-Wild Style Wars!",
+  "Unlock Xtra Large Graffiti Codes-Year Of The Dragon",
+  "Unlock Xtra Large Graffiti Codes-You Da Bomb!"
+ ],
+ "evidence": {
+  "source": "libretro-database cht/Sega - Dreamcast/Jet Grind Radio.cht",
+  "read_back": "2026-10-19 21:54 CST, i9-NUC agent session: every code held with cheats op=add; all 119 written values read back unchanged. Gameplay screens not captured (the NUC's frame capture was black until its relaunch)."
+ }
+}

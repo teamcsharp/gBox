@@ -34,6 +34,7 @@ import struct
 import sys
 from collections import Counter
 from pathlib import Path
+from .side_dirs import side_dir
 
 GAME_IDS = {"bbc9d43db663e1aa": "Metroid Prime (USA)"}
 DISC_ID = "GM8E01"
@@ -180,7 +181,7 @@ def main(argv=None) -> int:
     ap.add_argument(
         "--out",
         type=Path,
-        default=Path.home() / "gbox-cache/gc/bbc9d43db663e1aa/manifest.json",
+        default=side_dir("gbox-cache") / "gc/bbc9d43db663e1aa/manifest.json",
     )
     a = ap.parse_args(argv)
     m = build_manifest(a.src, a.out)

@@ -98,6 +98,28 @@ serialized server operation. Changed targets and old bridges that lack the
 guarded protocol fail before scripts or queries execute. The older `re_agent`
 path is not used for live requests until it forwards those target guards.
 
+Live capture checks the running adapter's RAM capability and CPU mapping before
+submitting extraction. RAM capture and explicit code-analysis jobs hold the cache
+busy guard without promoting the game's ROM/mod unit to the fast drive. A live
+request cannot fall back to disc unpacking after an unsupported RAM read. Within
+one authenticated turn, repeated research reuses its captured image after checking
+the analysis worker and the exact loaded Ghidra program. If another conversation
+replaced that program, the same captured ELF is reopened. A new turn clears these
+pins and authenticates its own target.
+
+The verified DOA3 native memory provider supplies its Xbox x86 layout dynamically.
+Its default analysis capture is the bounded loaded executable image, with the
+verified guest entry point, rather than the whole 64 MiB heap. Other Xbox adapters
+remain unsupported until they expose an equally verified guest-memory mapping.
+
+Favorite unlock research carries persisted `idle_only`, `no_rom_copy` and
+`no_automatic_launch` request limits. Attributed jobs are checked at submission
+and again before a worker claims them; activity defers queued work. The agent
+also checks wrapped and learned calls before execution. This scope permits
+existing ELF analysis and bounded read-only queries, not arbitrary scripts,
+ROM/build writers or automatic gameplay sessions. Existing ordinary build and
+operator actions retain their original permissions.
+
 RAM captures are non-atomic observations, not immutable executable revision
 fingerprints. Their content-addressed images and findings remain separate from
 the base title's executable metadata. The session is checked before and after

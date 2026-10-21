@@ -243,7 +243,7 @@ def test_collection_status_read_refreshes_a_partial_result(monkeypatch, tmp_path
 
 # ---------------------------------------------------------------- the owned disc (skipped when it isn't reachable)
 
-GDI = os.environ.get("PSO_GDI") or "//10.89.1.246/ehm_eckx/gbox-cache/dc/daba7a3b195dcf6b/disc.gdi"
+GDI = os.environ.get("PSO_GDI") or "//10.89.1.246/ehm_eckx/gBox_alt/gbox-cache/dc/daba7a3b195dcf6b/disc.gdi"
 
 
 @pytest.mark.skipif(not Path(GDI).is_file(), reason="the owned PSO Ver.2 GDI isn't reachable")

@@ -121,6 +121,11 @@ save directory, keyed by the build identity and the complete source inventory.
 Switching between cast variants cannot overwrite the original disc or its saves.
 An unchanged build reuses its verified view; rebuilding changed assets retains
 the prior revision and its saves. Personal saves are not imported into mod builds.
+For completed asset builds, unchanged disc files are hard-linked from the staged
+build when the filesystem permits. The restored XBE and files listed as changed
+in the build marker remain private copies; saves stay in the play view's own
+`.recomp-storage`. Missing or invalid change metadata and unsupported hard links
+fall back to copies. Existing play views are verified and reused without migration.
 Replacing runtime binaries does not delete saves. Mismatched files or unsafe
 linked paths fail with an explanation and leave existing saves intact.
 
@@ -129,6 +134,28 @@ nonblack image read directly from its GPU back buffer. Startup captures a bounde
 set of twelve back buffers, and the launch receipt retains a PNG of the proven
 output. A blank window alone cannot satisfy this check. This establishes rendered
 output; title screens, controls and gameplay still require actual session evidence.
+
+The native adapter can inspect guest RAM through a read-only bridge. It opens
+only its already owned renderer PID with query/read rights, checks its creation
+time and exact executable/source checksums, and requires one unique 64 MiB RAM
+allocation matching the reviewed XBE's mapped header and all immutable executable
+sections. The only normalized header fields are the documented section reference
+counts changed by upstream's load/unload-section routines. The only normalized
+section bytes are the kernel thunk-table slots of the eleven kernel data exports
+the runner fills at boot (runner.cpp v0.2 `materializeKernelDataExports`; DOA3's
+table is in .rdata at 0x1ED0E0, seven of its slots). Their exact addresses are
+included in the verification metadata. Other changed header or code bytes,
+ambiguous allocations and changed process identities fail closed. Before this
+normalization every live read failed: "no unique verified allocation (found 0)"
+(i9-NUC, 2026-10-20).
+
+`query_memory_map` reports the verified x86 little-endian guest address space,
+the source-derived image analysis range and retail entry point. Reads support
+RAM at zero and its native cached/physical aliases. Every read rechecks the
+process, source and immutable RAM anchors before returning data. The image span
+includes the game's persistent profile data without initially capturing the
+entire heap. This interface does not expose writes, unlock switches or synthetic
+input; locating and validating game-specific flags remains separate research.
 
 Sources: [official Cxbx release](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded/releases/tag/CI-585c49a),
 [official Cxbx source](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded),

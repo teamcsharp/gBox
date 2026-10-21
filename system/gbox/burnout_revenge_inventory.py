@@ -157,7 +157,7 @@ def inventory(iso, source_sha256: str | None = None) -> dict:
             "launch": {
                 "emulator": "Xenia (canary)", "boot": "extracted folder with default.xex at root",
                 "base_extraction": "gbox.re6.extract (XDVD extract, resumable)",
-                "mod_mechanism": "hard-link copies of the extracted base in ~/gbox-cache/mods/<game_id>/<mod> with only changed pveh files real; launch_game(mod=...)",
+                "mod_mechanism": "hard-link copies of the extracted base in ~/gBox_alt/gbox-cache/mods/<game_id>/<mod> with only changed pveh files real; launch_game(mod=...)",
                 "note": "core is currently unset in the catalog (xbox360); launch acceptance needs a Xenia worker",
             },
         }

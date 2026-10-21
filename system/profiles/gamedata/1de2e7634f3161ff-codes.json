@@ -1,0 +1,37 @@
+{
+ "game_id": "1de2e7634f3161ff",
+ "title": "Dead or Alive 2 - Limited Edition (Japan)",
+ "platform": "dreamcast",
+ "profile": "doa2le-dc-jp-cheatdb-v1",
+ "verified": true,
+ "codes": [
+  {
+   "desc": "Unlock All Characters (Tengu, Bayman)",
+   "lines": [
+    "01239D6A 00000101"
+   ]
+  },
+  {
+   "desc": "Enable CG Gallery",
+   "lines": [
+    "01239D6C 00000563"
+   ]
+  },
+  {
+   "desc": "Unlock All Outfits",
+   "lines": [
+    "01239D6E 0000FFFF",
+    "02239D70 FFFFFFFF"
+   ]
+  }
+ ],
+ "scope": [
+  "characters (Tengu, Bayman)",
+  "outfits",
+  "CG gallery"
+ ],
+ "evidence": {
+  "source": "libretro-database cht/Sega - Dreamcast/Dead Or Alive 2-Limited Edition (Japanese).cht (native records: 0x239D6A u16 257, 0x239D6C u16 1379, 0x239D6E u16 65535, 0x239D70 u32 0xFFFFFFFF)",
+  "read_back": "2026-10-19 ~21:00 CST, i9-NUC, RetroArch Flycast agent session: the codes were held with cheats op=add and read_memory read every written value back after 1-8 s (writes go through RetroArch's RAM view, core_ram, read-back confirmed). Character-select frames are pending: the NUC's frame capture returned one black frame until gBox is relaunched there (PR #662 adds RetroArch's own screenshot). Read back at 0x8C239D68: 0000 0101 6305 ffff ffffffff."
+ }
+}

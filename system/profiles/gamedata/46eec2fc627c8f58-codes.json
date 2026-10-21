@@ -1,0 +1,22 @@
+{
+ "game_id": "46eec2fc627c8f58",
+ "title": "Resident Evil 2 (USA)",
+ "platform": "n64",
+ "profile": "cheatdb-unlocks-v1",
+ "verified": true,
+ "codes": [
+  {
+   "desc": "Special Costume Locker Always Unlocked",
+   "lines": [
+    "800E8CF5 0001"
+   ]
+  }
+ ],
+ "scope": [
+  "Special Costume Locker Always Unlocked"
+ ],
+ "evidence": {
+  "source": "libretro-database cht/Nintendo - Nintendo 64/Resident Evil 2 (USA).cht",
+  "read_back": "2026-10-19 22:09 CST, i9-NUC agent session: every code held with cheats op=add; all 1 written values read back unchanged. Gameplay screens not captured (the NUC's frame capture was black until its relaunch)."
+ }
+}

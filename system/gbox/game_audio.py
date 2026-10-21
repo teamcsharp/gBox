@@ -13,8 +13,8 @@ Here:
   default one when it is active, else the first active one, so an emulator never opens a stale or unplugged default.
 - warm: a silent shared-mode stream on that device while the launch prepares, so a sleeping device is awake by the
   time the emulator opens it.
-- BootWatch: reads the RetroArch log while gBox waits. Content loaded + audio still opening extends the wait instead of
-  failing; audio init past init_grace_s (or opened late with the loop still silent past stall_s) asks for the next
+- BootWatch: reads the RetroArch log while gBox waits. Content loaded (the game still booting) extends the wait instead
+  of failing; audio init past init_grace_s (or opened late with the loop still silent past stall_s) asks for the next
   driver in [game_audio] retroarch_drivers (xaudio -> wasapi -> null). Never a failure because audio is slow.
 - remember / first_driver: a driver that took over from a stalled one starts first on that device for a while, so the
   next launch does not pay for the stall again. null is never remembered (sound comes back on the next launch).
@@ -37,7 +37,8 @@ STATE_FILE = "game-audio.json"                     # <runtime>/: device id -> dr
 
 # --- RetroArch boot log ---------------------------------------------------------------------------------------------
 
-CONTENT = re.compile(r"\[BOOT\] Game ID|\[Core\] Geometry:|\[Core\] Version of libretro API|\[Content\] Loaded content")
+CONTENT = re.compile(r"\[BOOT\] Game ID|\[Core\] Geometry:|\[Core\] Version of libretro API|\[Content\] Loaded content|"
+                     r"\[Environ\] SET_(?:GEOMETRY|PIXEL_FORMAT|SYSTEM_AV_INFO|VIDEO_MODE)")
 AUDIO_START = re.compile(r"\[Audio\] (?:Starting threaded audio driver|Set audio input rate)")
 AUDIO_SLOW = re.compile(r'\[Audio\] Driver "([^"]+)" has not returned from init')
 # anything RetroArch logs once the audio driver's init has returned (the driver's own report, or the next subsystems)
@@ -48,6 +49,10 @@ AUDIO_FLOWING = re.compile(r"\[Audio\] sinc resampler active path")
 # RetroArch could not bind its network command interface (gBox polls it with GET_STATUS): the session can never be
 # queried or controlled, so gBox must restart on a fresh port instead of false-failing "content not running".
 NETCMD_DOWN = re.compile(r"\[NetCMD\] Failed to bind socket|Failed to initialize the network command interface")
+# parallel_n64 / mupen64plus: the core has loaded the ROM and started the emulated CPU (the EmuThread running the
+# R4300 dynarec). The first rendered frame (and so GET_STATUS "PLAYING") can lag behind this, most of all on Windows
+# with the LLE angrylion+cxd4 plugins and a modded ROM whose file table was relocated to Expansion Pak RAM (#1707).
+CORE_EXEC = re.compile(r"M64CMD_EXECUTE|Starting R4300 emulator|Init new dynarec")
 
 
 def boot_phase(log: str) -> dict:
@@ -59,13 +64,15 @@ def boot_phase(log: str) -> dict:
             "audio_driver": slow.group(1) if slow else None,
             "audio_done": bool(start and AUDIO_DONE.search(tail)), "audio_failed": bool(AUDIO_FAILED.search(tail)),
             "audio_flowing": bool(AUDIO_FLOWING.search(log)), "netcmd": "[NetCMD]" in log,
-            "netcmd_down": bool(NETCMD_DOWN.search(log))}
+            "netcmd_down": bool(NETCMD_DOWN.search(log)),
+            "core_exec": bool(CORE_EXEC.search(log))}
 
 
 class BootWatch:
     """The launch's patience while a RetroArch session boots. observe() each poll with the log so far; decide() says
-    'ready' | 'wait' | 'netcmd' (retry the command port) | 'fallback' (next audio driver) | 'fail' (gave up: not an audio problem, or
-    audio still not open after extended_wait_s)."""
+    'ready' | 'wait' | 'netcmd' (retry the command port) | 'fallback' (relaunch with the next audio driver) | 'fail'
+    (gave up: not an audio problem and content never loaded, or a content-loaded game still not running after
+    extended_wait_s)."""
 
     def __init__(self, t0: float, boot_wait_s: float = 30.0, extended_wait_s: float = 120.0, init_grace_s: float = 3.0,
                  stall_s: float = 6.0, can_fallback: bool = True):
@@ -93,10 +100,11 @@ class BootWatch:
         return round(self.seen.get("audio_done", now) - self.seen["audio_started"], 2)
 
     def deadline(self) -> float:
-        """Content loaded and audio the thing still in progress: the long wait. Otherwise the normal one."""
+        """Content loaded means the game is still booting: a disc that has set its video geometry (or otherwise loaded
+        its content), a core executing its first frames, or audio still opening gets the long wait, whether or not the
+        PLAYING state has been reached yet. Otherwise the normal one."""
         p = self.phase
-        audio_busy = p["audio_started"] and not p["audio_done"] or p["audio_slow"]
-        return self.t0 + (self.extended_wait_s if p["content"] and audio_busy else self.boot_wait_s)
+        return self.t0 + (self.extended_wait_s if p["content"] else self.boot_wait_s)
 
     def decide(self, now: float, running: bool) -> str:
         p, seen = self.phase, self.seen
@@ -118,9 +126,15 @@ class BootWatch:
             return "fallback"
         if now >= self.deadline():
             # "content not running after Ns" is what launch_failures classifies as content_timeout (#318)
-            self.reason = (f"content not running after {now - self.t0:.0f}s (content loaded, audio still opening)"
-                           if self.warning
-                           else f"content not running after {self.boot_wait_s:.0f}s")
+            elapsed = now - self.t0
+            if self.warning:
+                self.reason = f"content not running after {elapsed:.0f}s (content loaded, audio still opening)"
+            elif p["core_exec"]:
+                self.reason = f"content not running after {elapsed:.0f}s (content loaded, core executing)"
+            elif p["content"]:
+                self.reason = f"content not running after {elapsed:.0f}s (content loaded, still booting)"
+            else:
+                self.reason = f"content not running after {self.boot_wait_s:.0f}s"
             return "fail"
         return "wait"
 

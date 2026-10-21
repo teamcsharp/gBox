@@ -7,8 +7,8 @@ import pytest
 
 from gbox import sm64_inventory as I
 
-EU = Path(os.environ.get("GBOX_SM64_EU_ROM", Path.home() / "gbox-cache/66062703301f4969/source.zip"))
-US_LABEL = Path(os.environ.get("GBOX_SM64_US_LABEL_ROM", Path.home() / "gbox-cache/b7aecee966090bfa/source.zip"))
+EU = Path(os.environ.get("GBOX_SM64_EU_ROM", Path.home() / "gBox_alt/gbox-cache/66062703301f4969/source.zip"))
+US_LABEL = Path(os.environ.get("GBOX_SM64_US_LABEL_ROM", Path.home() / "gBox_alt/gbox-cache/b7aecee966090bfa/source.zip"))
 
 
 def _mio0_literal(payload: bytes) -> bytes:

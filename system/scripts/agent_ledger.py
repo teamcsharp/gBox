@@ -89,6 +89,56 @@ def fetch_image(r: dict) -> str | None:
     return str(p)
 
 
+COACH_SOURCE = "coach"
+COACH_FIRST_RUN_S = 3600              # the first hook run shows notes this new (older ones count as seen)
+COACH_SHOW = 12                       # at most this many notes per hook run (the rest: `show ID`)
+
+
+def is_coaching(r: dict) -> bool:
+    """An autoplay coaching ticket (gbox/coaching.py): one per game, each operator message on it a note the operator
+    typed while a bot played, with the moment captured (frame, save state, RAM)."""
+    return r.get("source") == COACH_SOURCE or (r.get("context") or {}).get("coaching") is True
+
+
+def operator_messages(r: dict) -> list:
+    return [m for m in r.get("messages") or [] if m.get("author") == "operator"]
+
+
+def note_key(r: dict, m: dict) -> str:
+    return m.get("id") or f"{r['id']}:{m.get('ts')}"
+
+
+def activity(r: dict) -> float:
+    """When the operator last wrote on it (a new coaching note counts), else when it was filed: `list` puts a ticket
+    with a fresh operator message first, not where its first message left it."""
+    return max([r.get("created") or 0] + [m.get("ts") or 0 for m in operator_messages(r)])
+
+
+def coaching_fresh(rows: list, seen: set) -> list:
+    """[(ticket, message)] coaching notes not seen yet, oldest first."""
+    out = [(r, m) for r in rows if is_coaching(r) for m in operator_messages(r) if note_key(r, m) not in seen]
+    return sorted(out, key=lambda rm: rm[1].get("ts") or 0)
+
+
+def describe_note(r: dict, m: dict, now: float | None = None) -> str:
+    """One coaching note for the agent: the ticket, the note number, how long ago, the operator's words (with the
+    session / PC / autoplay line coaching.compose added) and what of the moment was captured."""
+    now = time.time() if now is None else now
+    c = m.get("coach") or {}
+    age = max(0, int(now - (m.get("ts") or now)))
+    when = f"{age // 60} min ago" if age >= 60 else f"{age} s ago"
+    caps = " ".join(f"{k} {(v or {}).get('state', '?')}" for k, v in (c.get("captures") or {}).items())
+    lines = [f"#{r.get('number')} {r.get('title')} (id {r['id']}) · note #{c.get('note', '?')} · {when}"
+             + (f" · {c.get('worker')} session {c.get('session_id')}" if c.get("session_id") else ""),
+             f"  operator: {(m.get('text') or '').strip()[:700]}"]
+    if caps:
+        lines.append(f"  captured: {caps}  (scripts/agent_ledger.py show {r['id']} downloads them)")
+    if c.get("change_id") and c.get("game_id"):
+        lines.append(f"  queued change: {c['change_id']} — POST /api/autoplay/bots/{c['game_id']}/changes/{c['change_id']} "
+                     'with {"state":"acknowledged"}; applied needs a PR, verified needs a verification summary')
+    return "\n".join(lines)
+
+
 def describe(r: dict, full=False) -> str:
     m = r["metrics"]
     lines = [f"#{r['number']} [{r['status']}] {r['title']}  (id {r['id']}, {r['kind']}, from {r['source']})"]
@@ -109,7 +159,8 @@ def describe(r: dict, full=False) -> str:
         lines.append(f"  context: {json.dumps(r.get('context', {}))[:400]}")
         lines.append(f"  metrics: {json.dumps(m)}")
     elif r["messages"]:
-        last = r["messages"][-1]
+        ops = operator_messages(r) if is_coaching(r) else []
+        last = ops[-1] if ops else r["messages"][-1]          # a coaching ticket: its newest note, not a reply
         n = sum(len(m.get("attachments") or []) for m in r["messages"])
         lines.append(f"  {last['author']}: {last['text'][:300]}" + (f"  [{n} attached image(s): use show]" if n else ""))
     return "\n".join(lines)
@@ -151,7 +202,37 @@ def hook_prompt(ev: dict):
             print(describe(r))
             seen.add(r["id"])
     st["seen"] = sorted(seen)
+    try:
+        hook_coaching(st, api(f"/api/requests?status=open,in_progress,blocked&source={COACH_SOURCE}"))
+    except Exception as e:                             # a coaching read never stops the other reports
+        print(f"(coaching notes unavailable: {e})", file=sys.stderr)
     save_state(st)
+
+
+def hook_coaching(st: dict, rows: list, now: float | None = None, out=print) -> list:
+    """Live coaching (operator 2026-10-20: "chat about the gameplay placing reports for improvements ... in realtime via
+    live reporting"): every note the operator typed in the Sessions header's coach box while a bot played is a new
+    operator message on that game's coaching ticket. Each one this agent has not seen is printed once, oldest first.
+    The first run marks notes older than COACH_FIRST_RUN_S as seen. Returns the notes printed."""
+    now = time.time() if now is None else now
+    first = "seen_notes" not in st
+    seen = set(st.get("seen_notes") or [])
+    new = coaching_fresh(rows, seen)
+    if first:
+        seen.update(note_key(r, m) for r, m in new if now - (m.get("ts") or 0) > COACH_FIRST_RUN_S)
+        new = [(r, m) for r, m in new if note_key(r, m) not in seen]
+    shown = new[-COACH_SHOW:]
+    if shown:
+        out("gBox inbox: new coaching notes from the operator, typed while autoplay played (answer with "
+            "scripts/agent_ledger.py reply ID \"...\"; the moment's frame / save state / RAM: show ID):")
+        if len(new) > len(shown):
+            out(f"  ({len(new) - len(shown)} older new notes not shown: scripts/agent_ledger.py show ID)")
+        for r, m in shown:
+            out(describe_note(r, m, now))
+    seen.update(note_key(r, m) for r, m in new)
+    keep = {note_key(r, m) for r in rows if is_coaching(r) for m in operator_messages(r)}
+    st["seen_notes"] = sorted(seen & keep) if keep else sorted(seen)[-500:]
+    return shown
 
 
 def _ts(s: str) -> float:
@@ -269,6 +350,7 @@ def main():
             args = [a for a in sys.argv[2:] if a != "--group"]
             status = args[0] if args else "open,in_progress,blocked"
             rows = api(f"/api/requests?status={status}")
+            rows.sort(key=activity, reverse=True)      # a fresh operator message (a coaching note) comes first
             if "--group" in sys.argv[2:]:
                 print(list_grouped(rows))
             else:

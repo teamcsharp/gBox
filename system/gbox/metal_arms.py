@@ -23,18 +23,20 @@ against the USA disc; see docs/model_swaps.md "Metal Arms"):
       Packet (0x18): u8 flags (0x80 = display list in streaming storage), u8 bone, ..., u8 +0xB VB, u32 dlSize,
       dl*, RGBA. Each packet is drawn with its bone's matrix (rigid): positions are in that bone's space.
       Display list: GX_DRAW_TRIANGLES 0x94 / TRIANGLE_STRIP 0x9C, u16 count, vertices {u16 pos, u16 normal (index
-      into the engine's global S8 normal table, frac 6, gbox/metal_arms_normals.bin), u8 color, u16 st x nTexSets}.
+      into the engine's global S8 normal table, frac 6, generated at boot: normal_table() below), u8 color,
+      u16 st x nTexSets}.
   * .tga (FTexData, 0x20 header): name[16], +0x14 u8 format (7 = CMPR colour + CMPR alpha in a second mip chain,
     6 = CMPR), +0x17 u8 mip count, +0x1C u16 width, +0x1E u16 height; then the GX image data.
   Coordinates: Y up, the model faces +Z, its left is -X (left-handed). glTF export mirrors X.
 """
 from __future__ import annotations
 
+import functools
 import json
+import math
 import struct
 import time
 import types
-import zlib
 from pathlib import Path
 
 import numpy as np
@@ -42,7 +44,7 @@ import numpy as np
 GAME_IDS = {"7e103ec3aab47fa2": "Metal Arms - Glitch in the System (USA)"}
 MST = "mettlearms_gc.mst"
 SCALE = 0.25                                   # Fang units -> metres in the collection (Glitch ~1.5 m)
-NORMALS = Path(__file__).with_name("metal_arms_normals.bin")     # zlib, 32800 x S8 xyz (frac 6), dumped from RAM
+NORMAL_ENTRIES = 0x18060 // 3                  # 32800: the engine allocates 0x18060 bytes for the table
 LIVE = {"normal_table": 0x804B90F4}
 # Body roles on Glitch's skeleton (bone names); he's a robot: short thighs, long shins with a knee dummy, the right
 # forearm is his gun arm (no right hand bone: AttachPoint_Primary / Off_R_Hand_Dummy sit where a hand would be).
@@ -114,8 +116,52 @@ class Master:
 
 
 # ------------------------------------------------------------------------------------------------------------ mesh
+def normal_table_s8() -> np.ndarray:
+    """The engine's global normal table as it sits in RAM (the pointer at LIVE["normal_table"]): 32800 S8 xyz with
+    6 fraction bits, rebuilt the way main.dol builds it at boot (0x8028E608, called from the mesh system's init).
+    Nothing is read from the disc: the table is pure arithmetic, so it is regenerated here instead of shipping a RAM dump.
+
+    Eight 4096-entry octant blocks, then the six axis normals, then 26 zero entries (the allocation is rounded up).
+    Block 0 (+x, +y, +z): entry 0 is (0, 0, 0); then for theta = 1..90 degrees (y = 64 cos theta) a ring of
+    theta entries with phi = 90 * j / theta for j = theta..1: x = 64 sin theta sin phi, z = 64 sin theta cos phi.
+    1 + 1 + 2 + ... + 90 = 4096. The other blocks are the same ring set with the signs flipped per octant, in the
+    order +++, -++, -+-, ++-, +-+, --+, ---, +--. Every product is rounded to float32 like the Gekko's fmuls, the
+    angle scale is the float32 pi / 180 the binary holds (0x3C8EFA35) and each component is truncated toward zero
+    (fctiwz), which is what makes the table match the RAM dump byte for byte (sin 30 degrees comes out as exactly
+    32 only because the float32 rounding lands on 0.5)."""
+    f32 = np.float32
+    deg, sixty_four, ninety = f32(0.01745329238474369), f32(64.0), f32(90.0)
+    block = np.zeros((4096, 3), np.int8)
+    n = 1
+    for k in range(1, 91):                                     # theta counts up by 1.0f from 0; theta 0 has no ring
+        theta = f32(k)
+        rad = f32(deg * theta)
+        s, c = f32(math.sin(float(rad))), f32(math.cos(float(rad)))
+        y = int(f32(sixty_four * c))
+        phi = deg * (f32(ninety / theta) * np.arange(k, 0, -1, dtype=f32))        # each product rounded to float32
+        sp = np.array([math.sin(v) for v in phi.tolist()], f32)
+        cp = np.array([math.cos(v) for v in phi.tolist()], f32)
+        block[n:n + k, 0] = np.trunc(sixty_four * (s * sp)).astype(np.int8)
+        block[n:n + k, 1] = y
+        block[n:n + k, 2] = np.trunc(sixty_four * (s * cp)).astype(np.int8)
+        n += k
+    assert n == 4096
+    signs = np.array([(1, 1, 1), (-1, 1, 1), (-1, 1, -1), (1, 1, -1), (1, -1, 1), (-1, -1, 1), (-1, -1, -1), (1, -1, -1)],
+                     np.int8)
+    axes = np.array([(0, 64, 0), (0, -64, 0), (64, 0, 0), (-64, 0, 0), (0, 0, 64), (0, 0, -64)], np.int8)
+    table = np.zeros((NORMAL_ENTRIES, 3), np.int8)
+    for i, sg in enumerate(signs):
+        table[4096 * i:4096 * (i + 1)] = block * sg
+    table[8 * 4096:8 * 4096 + 6] = axes
+    return table
+
+
+@functools.lru_cache(maxsize=1)
 def normal_table() -> np.ndarray:
-    return np.frombuffer(zlib.decompress(NORMALS.read_bytes()), np.int8).reshape(-1, 3).astype(np.float32) / 64.0
+    """normal_table_s8() as unit-ish float32 vectors (divided by 64, the 6 fraction bits); cached for the process."""
+    t = normal_table_s8().astype(np.float32) / 64.0
+    t.setflags(write=False)
+    return t
 
 
 def _cstr(b: bytes, o: int) -> str:

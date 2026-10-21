@@ -965,6 +965,10 @@ SPECS: dict[str, dict] = {
     "gbox.doapp_swap": {"skeleton": "DOA++ fighter, 15 bones", "joints": 15, "roles": "all",
                         "verts": "SLOT_VERTEX_CAP", "influences": 1, "tex": 256, "decimate": True,
                         "budget": "the player work buffer; per-slot vertex caps"},
+    "gbox.doa3_cast": {"skeleton": "DOA3 fighter (XPR0/CAT/MDL costume: OBJ records + LNK link groups)",
+                       "roles": "all", "tex": 256, "decimate": True,
+                       "budget": "the costume's AFS entry (XPR0 blob rewritten in place); donor reimport/retarget "
+                                 "not implemented yet"},
     "gbox.characters.build_re4 (+ re4wii)": {"skeleton": "Leon (RE4 GC / Wii)", "roles": "LEON_ROLES@characters",
                                              "influences": 4, "tex": 256, "decimate": True,
                                              "budget": "the costume pack (every costume)"},

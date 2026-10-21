@@ -1,0 +1,24 @@
+{
+ "game_id": "f4717b3306799ba2",
+ "title": "Viewtiful Joe (USA)",
+ "platform": "gamecube",
+ "disc_id": "GVJE08",
+ "profile": "gecko-unlocks-v1",
+ "verified": true,
+ "codes": [
+  {
+   "desc": "All Characters/Modes Unlocked",
+   "lines": [
+    "0226EDF6 0000FFFF"
+   ],
+   "kind": "gecko"
+  }
+ ],
+ "scope": [
+  "All Characters/Modes Unlocked"
+ ],
+ "evidence": {
+  "source": "codes.rc24 Gecko list GVJE08.txt (Dolphin 'Download Codes')",
+  "read_back": "2026-10-20 07:33 CST, lilspark (the Spark's Dolphin) agent session: every code held with cheats op=add; all 1 written values read back unchanged from Dolphin's RAM. Gameplay screens of the unlocked content not captured."
+ }
+}

@@ -1,0 +1,3987 @@
+{
+ "game": "GoldenEye 007 (N64)",
+ "source": "n64decomp/007 c4356466796c697dfd298010b9bed261f9ed8c6a src/aicommands.def",
+ "aicommands_def_sha256": "6fb4a95272b6c864d33685ecd872373f86abe88307654fc4b97cddf6b75d8006",
+ "opcode_bytes": 1,
+ "count": 253,
+ "note": "opcode = position among the _AI_CMD / _AI_DEBUG definitions (the AI_CMD enum in src/bondconstants.h includes aicommands.def); a command is its opcode byte followed by its parameters, big-endian.",
+ "commands": [
+  {
+   "opcode": 0,
+   "name": "GotoNext",
+   "params": [
+    {
+     "name": "LABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Skips all commands between this command and LABEL then continues\nexecuting after found LABEL\n@param     LABEL: 8bit Integer/enum ID of label to Go To\n@return    Continue execution from LABEL or End\n@exception Does Not search from beginning",
+   "aliases": [
+    "BREAK"
+   ]
+  },
+  {
+   "opcode": 1,
+   "name": "GotoFirst",
+   "params": [
+    {
+     "name": "LABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Starting from the beginning, Skips all commands until LABEL - continues\nexecuting after found LABEL\n@param     LABEL: 8bit Integer/enum ID of label to Go To\n@return    Continue execution from LABEL or End\n@exception None",
+   "aliases": [
+    "LOOP",
+    "CONTINUE"
+   ]
+  },
+  {
+   "opcode": 2,
+   "name": "Label",
+   "params": [
+    {
+     "name": "ID",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Used as a target for Loops and Conditionals\n@param     ID: 8bit Integer/enum ID\n@return    Nothing\n@exception None",
+   "aliases": [
+    "DO",
+    "YIELD_FOREVER"
+   ]
+  },
+  {
+   "opcode": 3,
+   "name": "Yield",
+   "params": [],
+   "length": 1,
+   "description": "Halt the AI List - frees engine to start executing next AI List until all\nLists have been executed for game tick.\n@return    Current AI List Position\n@exception Off-screen/idle guard's will take 14 game ticks instead of 1 tick",
+   "aliases": []
+  },
+  {
+   "opcode": 4,
+   "name": "EndList",
+   "params": [],
+   "length": 1,
+   "description": "Used for AI List parser to check when List ends\n@exception: Not recommended to execute this command - to finish a List create\nan infinite loop (YIELD_FOREVER) or jump to GAILIST_DEAD_AI\nwhen List has finished tasks",
+   "aliases": []
+  },
+  {
+   "opcode": 5,
+   "name": "SetChrAiList",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "AI_LIST_ID",
+     "bytes": 2
+    }
+   ],
+   "length": 4,
+   "description": "Set Chr's current AI List to beginning of AI_LIST_ID and execute at\nnext opportunity.\n@param      CHR_NUM: ID of Chr (0-255)\n@param      AI_LIST_ID: 16bit pointer to AI List within Chr/Global\n@exception: Not recommended to Go to a BG List (10XX)",
+   "aliases": [
+    "JUMPTO_THEN_GUARD",
+    "JUMPTO_THEN_LOOP",
+    "JumpTo",
+    "SetBondsAiList",
+    "SetMyClonesAiList"
+   ]
+  },
+  {
+   "opcode": 6,
+   "name": "SetReturnAiList",
+   "params": [
+    {
+     "name": "AI_LIST_ID",
+     "bytes": 2
+    }
+   ],
+   "length": 3,
+   "description": "Set the Return AI List - used by aiReturn\n@param      AI_LIST_ID to be able to return to\n@exception: Not recommended to set stored List to a BG List (10XX)",
+   "aliases": []
+  },
+  {
+   "opcode": 7,
+   "name": "Return",
+   "params": [],
+   "length": 1,
+   "description": "Jump the return AI List set in chr struct - pointer set by SetReturnAiList\nUsed for subroutine Lists.\n@return     Continue execution from beginning of stored return list ID\n@exception: If stored return List pointer is not set, game will crash",
+   "aliases": []
+  },
+  {
+   "opcode": 8,
+   "name": "Stop",
+   "params": [],
+   "length": 1,
+   "description": "Immediately Reset me back to idle pose",
+   "aliases": []
+  },
+  {
+   "opcode": 9,
+   "name": "Kneel",
+   "params": [],
+   "length": 1,
+   "description": "Make me kneel on one knee",
+   "aliases": []
+  },
+  {
+   "opcode": 10,
+   "name": "PlayAnimation",
+   "params": [
+    {
+     "name": "ANIMATION_ID",
+     "bytes": 2
+    },
+    {
+     "name": "START_TIME30",
+     "bytes": 2
+    },
+    {
+     "name": "END_TIME30",
+     "bytes": 2
+    },
+    {
+     "name": "BITFIELD",
+     "bytes": 1
+    },
+    {
+     "name": "INTERPOL_TIME60",
+     "bytes": 1
+    }
+   ],
+   "length": 9,
+   "description": "Play an animation\n@param      START/END: set to -1/-1 will playback the entire animation length.\n@param      INTERPOL_TIME: will set how long it will take to transition\nfrom the previous state.\n@param      ANIMATION_ID: Use ANIM_# enum\n@param      BITFIELD: Use ANIM_# Bit flags\n@exception: If interpolation time is too low it may crash! - use 16 if unsure.\nStart/End Keyframe 30 tick units.\nInterpolation use 60 tick units.",
+   "aliases": [
+    "PlayAnimationSimple"
+   ]
+  },
+  {
+   "opcode": 11,
+   "name": "IFPlayingAnimation",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Am I in animation playback state? (ACT_ANIM)\n@return     Continue execution from LABEL if TRUE",
+   "aliases": []
+  },
+  {
+   "opcode": 12,
+   "name": "PointAtBond",
+   "params": [],
+   "length": 1,
+   "description": "Point only if Bond is directly in front of me, else command is\nignored\n@exception: Global AI List GAILIST_ATTACK_BOND skips this command\nif bit field flag FLAGS2_DONT_POINT_AT_BOND is on",
+   "aliases": []
+  },
+  {
+   "opcode": 13,
+   "name": "LookSurprised",
+   "params": [],
+   "length": 1,
+   "description": "Make me look around when shots land near me",
+   "aliases": []
+  },
+  {
+   "opcode": 14,
+   "name": "TRYSidestepping",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Try getting me to sidestep\n@return     Continue execution from LABEL if successful\n@exception: Direction is random",
+   "aliases": []
+  },
+  {
+   "opcode": 15,
+   "name": "TRYSideHopping",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Try getting me to hop sideways\n@return     Continue execution from LABEL if successful\n@exception: Direction is random",
+   "aliases": []
+  },
+  {
+   "opcode": 16,
+   "name": "TRYSideRunning",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Try getting me to Run sideways of Bond\n@return     Continue execution from LABEL if successful\n@exception: Direction is random",
+   "aliases": []
+  },
+  {
+   "opcode": 17,
+   "name": "TRYFiringWalk",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Try getting me to walk and fire at Bond\n@return     Continue execution from LABEL if successful\n@exception: Bond needs to be at long distance away from guard to work",
+   "aliases": []
+  },
+  {
+   "opcode": 18,
+   "name": "TRYFiringRun",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Try getting me to Run and fire at Bond,\n@return     Continue execution from LABEL if successful\n@exception: Bond needs to be at long distance away from guard to work",
+   "aliases": []
+  },
+  {
+   "opcode": 19,
+   "name": "TRYFiringRoll",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Try getting me to roll on ground then fire at Bond\n@return     Continue execution from LABEL if successful\n@exception: Bond cannot be too close to guard or it will not work",
+   "aliases": []
+  },
+  {
+   "opcode": 20,
+   "name": "TRYFireOrAimAtTarget",
+   "params": [
+    {
+     "name": "BITFIELD",
+     "bytes": 2
+    },
+    {
+     "name": "TARGET",
+     "bytes": 2
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 6,
+   "description": "Try making me aim/fire their weapon at TARGET\n@return     Continue execution from LABEL if successful\n@param      TARGET: 16bit ID\n@param      BITFIELD: 16bit Target Type\n@exception: Use TARGET_# flags to set the target type (pad/Bond/chr) or use\nSeparated commands e.g. GUARD_TRYFIRE_AT_PAD",
+   "aliases": [
+    "TRYFireAtPad",
+    "TRYAimAtPad",
+    "TRYFireAtBond",
+    "TRYAimAtBond"
+   ]
+  },
+  {
+   "opcode": 21,
+   "name": "TRYFireOrAimAtTargetKneel",
+   "params": [
+    {
+     "name": "BITFIELD",
+     "bytes": 2
+    },
+    {
+     "name": "TARGET",
+     "bytes": 2
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 6,
+   "description": "Try making me kneel and aim/fire at TARGET\n@return     Continue execution from LABEL if successful\n@param      TARGET: 16bit ID\n@param      BITFIELD: 16bit Target Type\n@exception: Use TARGET_# flags to set the target type (pad/Bond/chr)",
+   "aliases": [
+    "TRYFireAtPadKneeling",
+    "TRYAimAtPadKneeling",
+    "TRYFireAtBondKneeling",
+    "TRYAimAtBondKneeling"
+   ]
+  },
+  {
+   "opcode": 22,
+   "name": "TRYFireOrAimAtTargetUpdate",
+   "params": [
+    {
+     "name": "BITFIELD",
+     "bytes": 2
+    },
+    {
+     "name": "TARGET",
+     "bytes": 2
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 6,
+   "description": "Try updating my TARGET\n@return     Continue execution from LABEL if successful\n@param      BITFIELD: 16bit Target Type Use TARGET_# flags to set the\ntarget type (pad/Bond/chr)\n@exception: Only works if guard is currently aiming at a target.\nUse TARGET_# flags to set the target type (pad/Bond/chr)",
+   "aliases": [
+    "TRYFireAtPadUpdate",
+    "TRYAimAtPadUpdate",
+    "TRYFireAtBondUpdate",
+    "TRYAimAtBondUpdate"
+   ]
+  },
+  {
+   "opcode": 23,
+   "name": "TRYFacingTarget",
+   "params": [
+    {
+     "name": "BITFIELD",
+     "bytes": 2
+    },
+    {
+     "name": "TARGET",
+     "bytes": 2
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 6,
+   "description": "Try making me continuously face TARGET\n@return     Continue execution from LABEL if successful\n@param      TARGET: 16bit ID\n@param      BITFIELD: 16bit Target Type\n@exception: If guard was shot while facing target, guard will snap out of facing\nstate.\nUse TARGET_# flags to set the target type (pad/Bond/chr)\nCan NOT use TARGET_AIM_ONLY flag",
+   "aliases": [
+    "TRYFacingPad",
+    "TRYFacingBond"
+   ]
+  },
+  {
+   "opcode": 24,
+   "name": "HitChrWithItem",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "PART_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "ITEM_NUM",
+     "bytes": 1
+    }
+   ],
+   "length": 4,
+   "description": "Hit Chr body part with item damage, play reaction to hit location\n@exception: Does NOT trigger items firing sfx.\n@param ITEM_NUM: Item damage uses body part damage modifier.\n@param PART_NUM: Use HIT_# define for hit part number\n@param  CHR_NUM: ID of Chr (0-255)",
+   "aliases": [
+    "HitMeWithItem"
+   ]
+  },
+  {
+   "opcode": 25,
+   "name": "ChrHitChr",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "CHR_NUM_TARGET",
+     "bytes": 1
+    },
+    {
+     "name": "PART_NUM",
+     "bytes": 1
+    }
+   ],
+   "length": 4,
+   "description": "Chr hits Target chrs body part with held item, play reaction to hit location\n@exception: Does NOT trigger items firing sfx or Chr's firing animation\n@param ITEM_NUM: Item damage uses body part damage modifier.\n@param PART_NUM: Use HIT_# define for hit part number\n@param  CHR_NUM: ID of Chr (0-255)",
+   "aliases": [
+    "ChrHitMe",
+    "IHitChr"
+   ]
+  },
+  {
+   "opcode": 26,
+   "name": "TRYThrowingGrenade",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Try getting me to throw a grenade at Bond\n@return     Continue execution from LABEL if successful\n@exception: A random number is generated and compared against chr->grenadeprob,\nif number is less than grenadeprob throw grenade and Go to LABEL,\nelse do nothing.\nChr->grenadeprob default is 0 - to change use setup\nobject 12 or GUARD_SET_GRENADE_PROBABILITY",
+   "aliases": []
+  },
+  {
+   "opcode": 27,
+   "name": "TRYDroppingItem",
+   "params": [
+    {
+     "name": "PROP_NUM",
+     "bytes": 2
+    },
+    {
+     "name": "ITEM_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 5,
+   "description": "Try spawning and drop item with Prop model\n@return     Continue execution from LABEL if successful\n@exception: Dropped item uses item type (08) with model number -\nThey can be picked up.\nGrenade/Mines will be dropped live - this is used for cradle\n(ailist #0411)",
+   "aliases": []
+  },
+  {
+   "opcode": 28,
+   "name": "RunToPad",
+   "params": [
+    {
+     "name": "PAD",
+     "bytes": 2
+    }
+   ],
+   "length": 3,
+   "description": "Makes me Run to pad\n@param 16bit PAD ID",
+   "aliases": []
+  },
+  {
+   "opcode": 29,
+   "name": "RunToPadPreset",
+   "params": [],
+   "length": 1,
+   "description": "Makes me Run to my Preset Pad",
+   "aliases": []
+  },
+  {
+   "opcode": 30,
+   "name": "WalkToPad",
+   "params": [
+    {
+     "name": "PAD",
+     "bytes": 2
+    }
+   ],
+   "length": 3,
+   "description": "Makes me walk to pad\n@param 16bit PAD ID",
+   "aliases": []
+  },
+  {
+   "opcode": 31,
+   "name": "SprintToPad",
+   "params": [
+    {
+     "name": "PAD",
+     "bytes": 2
+    }
+   ],
+   "length": 3,
+   "description": "Makes me Sprint to pad - don't ask me to do this too long\n@param 16bit PAD ID",
+   "aliases": []
+  },
+  {
+   "opcode": 32,
+   "name": "StartPatrol",
+   "params": [
+    {
+     "name": "PATH_NUM",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Makes me walk a predefined path within setup\n@exception: Usually paired with GAILIST_SIMPLE_GUARD_DEAF\nor GAILIST_SIMPLE_GUARD",
+   "aliases": []
+  },
+  {
+   "opcode": 33,
+   "name": "Surrender",
+   "params": [],
+   "length": 1,
+   "description": "Makes me surrender and drop all attached and held items\n@exception: Will NOT drop items embedded within guard",
+   "aliases": []
+  },
+  {
+   "opcode": 34,
+   "name": "RemoveMe",
+   "params": [],
+   "length": 1,
+   "description": "Makes me fade away - fade time is 90 ticks (1.5 seconds). When\nthe fade finishes, automatically remove guard\n@exception: Guard collision is ignored during fade\nWill NOT drop items",
+   "aliases": []
+  },
+  {
+   "opcode": 35,
+   "name": "ChrRemoveInstant",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Instantly remove CHR_NUM unlike RemoveMe\n@param      CHR_NUM: ID of Chr (0-255)\n@exception: Will NOT drop items",
+   "aliases": [
+    "RemoveMeInstantly"
+   ]
+  },
+  {
+   "opcode": 36,
+   "name": "TRYTriggeringAlarmAtPad",
+   "params": [
+    {
+     "name": "PAD",
+     "bytes": 2
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 4,
+   "description": "Try to activate alarm assigned to pad\n@return     Continue execution from LABEL if successful\n@exception: Does NOT care what object type is at pad, as long as the object\nis NOT destroyed.\nChecks if guard is alive before activating alarm.\nWhen triggering alarm, guard will be set to state ACT_STARTALARM\nand play animation",
+   "aliases": []
+  },
+  {
+   "opcode": 37,
+   "name": "AlarmOn",
+   "params": [],
+   "length": 1,
+   "description": "Activates alarm",
+   "aliases": []
+  },
+  {
+   "opcode": 38,
+   "name": "AlarmOff",
+   "params": [],
+   "length": 1,
+   "description": "Deactivates alarm",
+   "aliases": []
+  },
+  {
+   "opcode": 39,
+   "name": "TRYRunFromBond",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Try running from Bond\n@return     Continue execution from LABEL if successful",
+   "aliases": []
+  },
+  {
+   "opcode": 40,
+   "name": "TRYRunToBond",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Try getting me to Run to Bond\n@return     Continue execution from LABEL if successful\n@exception: Guard has died or Bond is at an unreachable area (no navigation\npads in area)",
+   "aliases": []
+  },
+  {
+   "opcode": 41,
+   "name": "TRYWalkToBond",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Try getting me to walk to Bond\n@return     Continue execution from LABEL if successful\n@exception: Guard has died or Bond is at an unreachable area (no navigation\npads in area)",
+   "aliases": []
+  },
+  {
+   "opcode": 42,
+   "name": "TRYSprintToBond",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Try getting me to Sprint to Bond\n@return     Continue execution from LABEL if successful\n@exception: Guard has died or Bond is at an unreachable area (no navigation\npads in area)",
+   "aliases": []
+  },
+  {
+   "opcode": 43,
+   "name": "TRYFindCover",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Try finding cover\n@return     Continue execution from LABEL if successful",
+   "aliases": []
+  },
+  {
+   "opcode": 44,
+   "name": "TRYRunToChr",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "Try getting me to Run to CHR_NUM\n@return     Continue execution from LABEL if successful\n@param      CHR_NUM: ID of Chr (0-255)\n@exception: Guard has died or CHR_NUM is at an unreachable area (no navigation\npads in area) or CHR_NUM is dead",
+   "aliases": [
+    "TRYRunToPresetChr"
+   ]
+  },
+  {
+   "opcode": 45,
+   "name": "TRYWalkToChr",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "Try getting me to walk to CHR_NUM\n@return     Continue execution from LABEL if successful\n@param      CHR_NUM: ID of Chr (0-255)\n@exception: Guard has died or CHR_NUM is at an unreachable area (no navigation\npads in area) or CHR_NUM is dead",
+   "aliases": [
+    "TRYWalkToPresetChr"
+   ]
+  },
+  {
+   "opcode": 46,
+   "name": "TRYSprintToChr",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "Try getting me to Sprint to CHR_NUM\n@return     Continue execution from LABEL if successful\n@param      CHR_NUM: ID of Chr (0-255)\n@exception: Guard has died or CHR_NUM is at an unreachable area (no navigation\npads in area) or CHR_NUM is dead",
+   "aliases": [
+    "TRYSprintToPresetChr"
+   ]
+  },
+  {
+   "opcode": 47,
+   "name": "IFImOnPatrolOrStopped",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Have I stopped moving?\n@return     Continue execution from LABEL if TRUE\n@exception: Check if guard is NOT looking for Bond or if guard has finished\nmoving to destination",
+   "aliases": []
+  },
+  {
+   "opcode": 48,
+   "name": "IFChrDyingOrDead",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "Is CHR_NUM dying or dead?\n@param      CHR_NUM: ID of Chr (0-255)\n@return     Continue execution from LABEL if TRUE",
+   "aliases": [
+    "IFImDyingOrDead"
+   ]
+  },
+  {
+   "opcode": 49,
+   "name": "IFChrDoesNotExist",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "Does CHR_NUM NOT exist? (died and faded/not spawned)\n@param      CHR_NUM: ID of Chr (0-255)\n@return     Continue execution from LABEL if TRUE\n@exception: This command is used to check if chr has finished dying animation\nand faded away, or chr num is free",
+   "aliases": [
+    "IFIDoNotExist",
+    "IFMyCloneDoesNotExist"
+   ]
+  },
+  {
+   "opcode": 50,
+   "name": "IFISeeBond",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Can I see Bond?\n@return     Continue execution from LABEL if TRUE\n@exception: Uses chr->visionrange while checking for Bond. Once Bond has been\nspotted, check if Bond and guard are within line of sight\n(ignores facing direction).\ninjured guards will also set spotted Bond state (won't work with\ninvincible/armoured guards).\nIf Bond breaks line of sight, do not Go to LABEL. If Bond has broken\nline of sight for more than 10 seconds, reset spotted bond state.\nWhen using with IF_GUARD_WAS_SHOT_OR_SEEN_WITHIN_LAST_10_SECS, make\nsure IF_GUARD_SEES_BOND takes priority over\nIF_GUARD_WAS_SHOT_OR_SEEN_WITHIN_LAST_10_SECS",
+   "aliases": []
+  },
+  {
+   "opcode": 51,
+   "name": "SetNewRandom",
+   "params": [],
+   "length": 1,
+   "description": "Generate a random byte and store to My/BG Random\n@exception: Random byte range is 00-FF (unsigned)",
+   "aliases": []
+  },
+  {
+   "opcode": 52,
+   "name": "IFRandomLessThan",
+   "params": [
+    {
+     "name": "BYTE",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "Is My/BG Random Less Than BYTE?\n@return     Continue execution from LABEL if TRUE\n@exception: Compare is unsigned",
+   "aliases": [
+    "IFNewRandomLessThan"
+   ]
+  },
+  {
+   "opcode": 53,
+   "name": "IFRandomGreaterThan",
+   "params": [
+    {
+     "name": "BYTE",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "Is My/BG Random Greater Than BYTE?\n@return     Continue execution from LABEL if TRUE\n@exception: Compare is unsigned",
+   "aliases": [
+    "IFNewRandomGreaterThan"
+   ]
+  },
+  {
+   "opcode": 54,
+   "name": "IFICanHearAlarm",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Is alarm is activated and in range?\n@return     Continue execution from LABEL if TRUE\n@exception: This command works but is unused in retail game, use IF_ALARM_IS_ON\ninstead.",
+   "aliases": []
+  },
+  {
+   "opcode": 55,
+   "name": "IFAlarmIsOn",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Is alarm is activated?\n@return     Continue execution from LABEL if TRUE",
+   "aliases": []
+  },
+  {
+   "opcode": 56,
+   "name": "IFGasIsLeaking",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Is gas leaking?\n@return     Continue execution from LABEL if TRUE\n@exception: Once gas leak event has started, always Go to LABEL",
+   "aliases": []
+  },
+  {
+   "opcode": 57,
+   "name": "IFIHeardBond",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Did I hear Bond fire a weapon?\n@return     Continue execution from LABEL if TRUE\n@exception: Uses chr->hearingscale while listening for Bond. To check if Bond has\nshot within the last 10 seconds, use\nIFIHeardBondRecently",
+   "aliases": []
+  },
+  {
+   "opcode": 58,
+   "name": "IFISeeSomeoneShot",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Did I see another chr shot? (by anyone)\n@return     Continue execution from LABEL if TRUE\n@exception: Guard friendly fire (if flagged) will also trigger Go to LABEL.\nChecks if chr->chrseeshot is set to valid chrnum (not -1).\nDoes NOT work with shot invincible/armoured guards",
+   "aliases": []
+  },
+  {
+   "opcode": 59,
+   "name": "IFISeeSomeoneDie",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Did I see another chr die? (for any reason)\n@return     Continue execution from LABEL if TRUE\n@exception: When a chr in sight switches to ACT_DIE/ACT_DEAD, Go to LABEL.\nChecks if chr->chrseedie is set to valid chrnum (not -1)",
+   "aliases": []
+  },
+  {
+   "opcode": 60,
+   "name": "IFICouldSeeBond",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "If I looked at Bond, could I walk in a straight line to him?\n@return     Continue execution from LABEL if TRUE\n@exception: Uses Stand Tiles & ignores facing direction of Bond/guard.\nIf Prop/guard is in the way do not Go to LABEL.\nDoes NOT use chr->visionrangefor line of sight check.\nUse IFISeeBond to check using chr->visionrange and\nIFImOnScreen to account for Bond's view",
+   "aliases": []
+  },
+  {
+   "opcode": 61,
+   "name": "IFICouldSeeBondsStan",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "If I looked at Bond, could I walk in a straight line to his Stan Tile?\n@return     Continue execution from LABEL if TRUE\n@exception: Unused command, functions like above but only Go to LABEL if Bond is\nhalf occluded by Stand Tiles (Neither blocked or within full view)",
+   "aliases": []
+  },
+  {
+   "opcode": 62,
+   "name": "IFIWasShotRecently",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Was I shot (by anyone) or seen Bond within the last 10 seconds?\n@return     Continue execution from LABEL if TRUE\n@exception: This will NOT count guard as shot if they are invincible/have armour.\nWhen using with IFISeeBond, make sure IFISeeBond takes\npriority over IFIWasShotRecently.\nTo check if guard was hit/damaged use\nIFChrWasDamagedSinceLastCheck/IFIWasShotRecently\ninstead, or check if flags CHRFLAG_WAS_DAMAGED/CHRFLAG_WAS_HIT are set\nusing IFMyFlagsAreSet OR IFChrFlagsAreSet",
+   "aliases": []
+  },
+  {
+   "opcode": 63,
+   "name": "IFIHeardBondRecently",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Did I hear Bond fire weapon within the last 10 seconds?\n@return     Continue execution from LABEL if TRUE\n@exception: Uses chr->hearingscale while listening for Bond. To check if Bond has\nnow fired weapon instead of within the last 10 seconds, use\nIF_GUARD_HEARD_BOND",
+   "aliases": []
+  },
+  {
+   "opcode": 64,
+   "name": "IFImInRoomWithChr",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "Am I in same room as chr?\n@return     Continue execution from LABEL if TRUE\n@param      CHR_NUM: ID of Chr (0-255)",
+   "aliases": []
+  },
+  {
+   "opcode": 65,
+   "name": "IFIveNotBeenSeen",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Have I been on-screen yet?\n@return     Continue execution from LABEL if TRUE\n@exception: When Bond has seen guard, it will add flag CHRFLAG_HAS_BEEN_ON_SCREEN\nto chr->chrflags. The seen flag will be set for duration of level",
+   "aliases": []
+  },
+  {
+   "opcode": 66,
+   "name": "IFImOnScreen",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Am I currently being rendered on screen?\n@return     Continue execution from LABEL if TRUE\n@exception: Portals will affect this commands output.",
+   "aliases": []
+  },
+  {
+   "opcode": 67,
+   "name": "IFMyRoomIsOnScreen",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Is my room being rendered on screen?\n@return     Continue execution from LABEL if TRUE\n@exception: Only checks if room is being rendered, not if Bond can see guard.\nTo check if guard is being rendered use IF_GUARD_IS_ON_SCREEN\ninstead.",
+   "aliases": []
+  },
+  {
+   "opcode": 68,
+   "name": "IFRoomWithPadIsOnScreen",
+   "params": [
+    {
+     "name": "PAD",
+     "bytes": 2
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 4,
+   "description": "Is the room containing PAD being rendered on screen?\n@return     Continue execution from LABEL if TRUE\n@exception: Only checks if room is being rendered, not if Bond can see inside\nroom",
+   "aliases": []
+  },
+  {
+   "opcode": 69,
+   "name": "IFImTargetedByBond",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Is Bond looking/aiming at me?\n@return     Continue execution from LABEL if TRUE\n@exception: Also checks if player's cross-hair is aiming at guard",
+   "aliases": []
+  },
+  {
+   "opcode": 70,
+   "name": "IFBondMissedMe",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Did Bond's shot miss/land near me?\n@return     Continue execution from LABEL if TRUE\n@exception: Command will sometimes Go to LABEL if guard was shot - use\nIF_GUARD_WAS_SHOT_OR_SEEN_WITHIN_LAST_10_SECS instead to check if\nguard was shot recently (more consistent)",
+   "aliases": []
+  },
+  {
+   "opcode": 71,
+   "name": "IFMyAngleToBondLessThan",
+   "params": [
+    {
+     "name": "ANGLE",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "Is my counter-clockwise angle to Bond Less Than ANGLE?\n@return     Continue execution from LABEL if TRUE\n@param      ANGLE: 0 - 255 Unsigned Integer\n@exception: This is RAW byte command, use either Deg or Rad Variant",
+   "aliases": [
+    "IFMyAngleToBondLessThanDeg",
+    "IFMyAngleToBondLessThanRad"
+   ]
+  },
+  {
+   "opcode": 72,
+   "name": "IFMyAngleToBondGreaterThan",
+   "params": [
+    {
+     "name": "ANGLE",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "Is my counter-clockwise angle to Bond Greater Than ANGLE?\n@return     Continue execution from LABEL if TRUE\n@param      ANGLE: 0 - 255 Unsigned Integer\n@exception: This is RAW byte command, use either Deg or Rad Variant",
+   "aliases": [
+    "IFMyAngleToBondGreaterThanDeg",
+    "IFMyAngleToBondGreaterThanRad"
+   ]
+  },
+  {
+   "opcode": 73,
+   "name": "IFMyAngleFromBondLessThan",
+   "params": [
+    {
+     "name": "ANGLE",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "Is my counter-clockwise angle from Bond Less Than ANGLE?\n@return     Continue execution from LABEL if TRUE\n@param      ANGLE: 0 - 255 Unsigned Integer\n@exception: This is RAW byte command, use either Deg or Rad Variant",
+   "aliases": [
+    "IFMyAngleFromBondLessThanDeg",
+    "IFMyAngleFromBondLessThanRad"
+   ]
+  },
+  {
+   "opcode": 74,
+   "name": "IFMyAngleFromBondGreaterThan",
+   "params": [
+    {
+     "name": "ANGLE",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "Is my counter-clockwise angle from Bond Greater Than ANGLE?\n@return     Continue execution from LABEL if TRUE\n@param      ANGLE: 0 - 255 Unsigned Integer\n@exception: This is RAW byte command, use either Deg or Rad Variant",
+   "aliases": [
+    "IFMyAngleFromBondGreaterThanDeg",
+    "IFMyAngleFromBondGreaterThanRad"
+   ]
+  },
+  {
+   "opcode": 75,
+   "name": "IFMyDistanceToBondLessThanDecimeter",
+   "params": [
+    {
+     "name": "DISTANCE",
+     "bytes": 2
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 4,
+   "description": "Is my distance to Bond Less Than DISTANCE?\n@return     Continue execution from LABEL if TRUE\n@param      DISTANCE: Integer, scale is 10 units per meter (decimetre)",
+   "aliases": [
+    "IFMyDistanceToBondLessThanMeter"
+   ]
+  },
+  {
+   "opcode": 76,
+   "name": "IFMyDistanceToBondGreaterThanDecimeter",
+   "params": [
+    {
+     "name": "DISTANCE",
+     "bytes": 2
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 4,
+   "description": "Is my distance to Bond Greater Than DISTANCE?\n@return     Continue execution from LABEL if TRUE\n@param      DISTANCE: Integer, scale is 10 units per meter (decimetre)",
+   "aliases": [
+    "IFMyDistanceToBondGreaterThanMeter"
+   ]
+  },
+  {
+   "opcode": 77,
+   "name": "IFChrDistanceToPadLessThanDecimeter",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "DISTANCE",
+     "bytes": 2
+    },
+    {
+     "name": "PAD",
+     "bytes": 2
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 7,
+   "description": "Is My/Chr distance to PAD Less Than DISTANCE?\n@return     Continue execution from LABEL if TRUE\n@param      DISTANCE: Integer, scale is 10 units per meter (decimetre)\n@param      CHR_NUM: ID of Chr (0-255)",
+   "aliases": [
+    "IFMyDistanceToPadLessThanDecimeter",
+    "IFChrDistanceToPadLessThanMeter",
+    "IFMyDistanceToPadLessThanMeter"
+   ]
+  },
+  {
+   "opcode": 78,
+   "name": "IFChrDistanceToPadGreaterThanDecimeter",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "DISTANCE",
+     "bytes": 2
+    },
+    {
+     "name": "PAD",
+     "bytes": 2
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 7,
+   "description": "Is My/Chr distance to PAD Greater Than DISTANCE?\n@return     Continue execution from LABEL if TRUE\n@param      DISTANCE: Integer, scale is 10 units per meter (decimetre)\n@param      CHR_NUM: ID of Chr (0-255)",
+   "aliases": [
+    "IFMyDistanceToPadGreaterThanDecimeter",
+    "IFChrDistanceToPadGreaterThanMeter",
+    "IFMyDistanceToPadGreaterThanMeter"
+   ]
+  },
+  {
+   "opcode": 79,
+   "name": "IFMyDistanceToChrLessThanDecimeter",
+   "params": [
+    {
+     "name": "DISTANCE",
+     "bytes": 2
+    },
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 5,
+   "description": "Is my distance to CHR_NUM Less Than DISTANCE?\n@return     Continue execution from LABEL if TRUE\n@param      DISTANCE: Integer, scale is 10 units per meter (decimetre)\n@param      CHR_NUM: ID of Chr (0-255)",
+   "aliases": [
+    "IFMyDistanceToChrLessThanMeter"
+   ]
+  },
+  {
+   "opcode": 80,
+   "name": "IFMyDistanceToChrGreaterThanDecimeter",
+   "params": [
+    {
+     "name": "DISTANCE",
+     "bytes": 2
+    },
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 5,
+   "description": "Is my distance to CHR_NUM Greater Than DISTANCE?\n@return     Continue execution from LABEL if TRUE\n@param      DISTANCE: Integer, scale is 10 units per meter (decimetre)\n@param      CHR_NUM: ID of Chr (0-255)",
+   "aliases": [
+    "IFMyDistanceToChrGreaterThanMeters"
+   ]
+  },
+  {
+   "opcode": 81,
+   "name": "TRYSettingMyPresetToChrWithinDistanceDecimeter",
+   "params": [
+    {
+     "name": "DISTANCE",
+     "bytes": 2
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 4,
+   "description": "Try setting my padpreset to the pad of the first Chr found within DISTANCE\n@return     Continue execution from LABEL if a Chr is found\n@param      DISTANCE: Integer, scale is 10 units per meter (decimeter)\n@exception: Does NOT pick the closest found chr, but whoever was found first\nwithin the DISTANCE argument.",
+   "aliases": [
+    "TRYSettingMyPresetToChrWithinDistanceMeters"
+   ]
+  },
+  {
+   "opcode": 82,
+   "name": "IFBondDistanceToPadLessThanDecimeter",
+   "params": [
+    {
+     "name": "DISTANCE",
+     "bytes": 2
+    },
+    {
+     "name": "PAD",
+     "bytes": 2
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 6,
+   "description": "Is Bond within DISTANCE to PAD?\n@return     Continue execution from LABEL if TRUE\n@param      DISTANCE: Integer, scale is 10 units per meter (decimeter)",
+   "aliases": [
+    "IFBondDistanceToPadLessThanMeter"
+   ]
+  },
+  {
+   "opcode": 83,
+   "name": "IFBondDistanceToPadGreaterThanDecimeter",
+   "params": [
+    {
+     "name": "DISTANCE",
+     "bytes": 2
+    },
+    {
+     "name": "PAD",
+     "bytes": 2
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 6,
+   "description": "Is Bond further than DISTANCE to PAD?\n@return     Continue execution from LABEL if TRUE\n@param      DISTANCE: Integer, scale is 10 units per meter (decimeter)",
+   "aliases": [
+    "IFBondDistanceToPadGreaterThanMeter"
+   ]
+  },
+  {
+   "opcode": 84,
+   "name": "IFChrInRoomWithPad",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "PAD",
+     "bytes": 2
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 5,
+   "description": "Is CHR_NUM in room with PAD?\n@return     Continue execution from LABEL if TRUE\n@param      CHR_NUM: ID of Chr (0-255)",
+   "aliases": [
+    "IFImInRoomWithPad"
+   ]
+  },
+  {
+   "opcode": 85,
+   "name": "IFBondInRoomWithPad",
+   "params": [
+    {
+     "name": "PAD",
+     "bytes": 2
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 4,
+   "description": "Is Bond in room with PAD?\n@return     Continue execution from LABEL if TRUE",
+   "aliases": []
+  },
+  {
+   "opcode": 86,
+   "name": "IFBondCollectedObject",
+   "params": [
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "Did Bond collect Tagged Object OBJECT_TAG?\n@return     Continue execution from LABEL if TRUE",
+   "aliases": []
+  },
+  {
+   "opcode": 87,
+   "name": "IFKeyDropped",
+   "params": [
+    {
+     "name": "KEY_ID",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "Is Key, if it exists, \"Dropped\"? (not moving/in mid-air)\n@return     Continue execution from LABEL if TRUE\n@exception: Used to check if a Key with ID has been \"Dropped\" (RUNTIMEBITFLAG_HASPROJECTILE)\nMake sure IFItemIsAttachedToObject takes priority over\nIFKeyDropped when using both commands",
+   "aliases": []
+  },
+  {
+   "opcode": 88,
+   "name": "IFItemIsAttachedToObject",
+   "params": [
+    {
+     "name": "ITEM_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 4,
+   "description": "Was ITEM_NUM thrown onto Tagged Object\n@return     Continue execution from LABEL if TRUE\n@exception: Used to check if Bond threw an item onto a tagged object.\nIf used with IFKeyDropped, make sure\nIFItemIsAttachedToObject take priority over\nIFKeyDropped",
+   "aliases": []
+  },
+  {
+   "opcode": 89,
+   "name": "IFBondHasItemEquipped",
+   "params": [
+    {
+     "name": "ITEM_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "If Bond has an item equipped (currently held)\n@return     Continue execution from LABEL if TRUE",
+   "aliases": []
+  },
+  {
+   "opcode": 90,
+   "name": "IFObjectExists",
+   "params": [
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "If tagged object exists in level\n@return     Continue execution from LABEL if TRUE",
+   "aliases": []
+  },
+  {
+   "opcode": 91,
+   "name": "IFObjectNotDestroyed",
+   "params": [
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "If tagged object is not destroyed\n@return     Continue execution from LABEL if TRUE",
+   "aliases": []
+  },
+  {
+   "opcode": 92,
+   "name": "IFObjectWasActivated",
+   "params": [
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "If tagged object was activated since last check\n@return     Continue execution from LABEL if TRUE\n@exception: When executed, it will clear tagged objects activated flag.\nOnly Bond and OBJECT_ACTIVATE can activate tagged objects.\nBond can NOT activate destroyed objects",
+   "aliases": []
+  },
+  {
+   "opcode": 93,
+   "name": "IFBondUsedGadgetOnObject",
+   "params": [
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "If Bond used a gadget item on a tagged object since last check\n@return     Continue execution from LABEL if TRUE\n@exception: Gadgets are a pre-defined list of items set to gadget flag:\nITEM_BOMBDEFUSER\nITEM_DATATHIEF\nITEM_DOORDECODER\nITEM_EXPLOSIVEFLOPPY\nITEM_DATTAPE",
+   "aliases": []
+  },
+  {
+   "opcode": 94,
+   "name": "ActivateObject",
+   "params": [
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Activate a tagged object\n@exception: Does NOT check if object has been destroyed",
+   "aliases": []
+  },
+  {
+   "opcode": 95,
+   "name": "DestroyObject",
+   "params": [
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Destroy/explode a tagged object\n@exception: Only works if object is not destroyed.\nCan NOT destroy invincible objects",
+   "aliases": []
+  },
+  {
+   "opcode": 96,
+   "name": "DropObject",
+   "params": [
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Drop tagged object held by/attached to chr\n@exception: Item must be held by or attached to a chr.\nEmbedded objects will not drop, only works with attached objects.\nProps can be damaged on drop",
+   "aliases": []
+  },
+  {
+   "opcode": 97,
+   "name": "ChrDropAllConcealedItems",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Make chr/me drop all concealed attachments\n@param      CHR_NUM: ID of Chr (0-255)\n@exception: Item must be attached to chr, to drop held items use\nChrDropAllHeldItems.\nEmbedded objects will not drop, only works with attached objects.\nProps can be damaged on drop",
+   "aliases": [
+    "DropAllConcealedItems"
+   ]
+  },
+  {
+   "opcode": 98,
+   "name": "ChrDropAllHeldItems",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Make chr drop all held items\n@param      CHR_NUM: ID of Chr (0-255)\n@exception: Items must be held by chr, to drop concealed attachments use\nChrDropAllConcealedItems.\nEmbedded objects will not drop, only works with attached objects",
+   "aliases": [
+    "DropAllHeldItems"
+   ]
+  },
+  {
+   "opcode": 99,
+   "name": "BondCollectObject",
+   "params": [
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Force Bond to instantly collect a tagged object\n@exception: Does not trigger bottom text telling player they collected an item",
+   "aliases": []
+  },
+  {
+   "opcode": 100,
+   "name": "ChrEquipObject",
+   "params": [
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    },
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "Makes chr hold tagged object\n@param      CHR_NUM: ID of Chr (0-255)\n@exception: If chrs hands are occupied, object will be equipped as a concealed\nattachment, but if tagged object's GUNHAND flag is free on guard\nthen guard will equip weapon.\nTagged objects Prop MUST have a holding position command within\nthe model file",
+   "aliases": []
+  },
+  {
+   "opcode": 101,
+   "name": "MoveObject",
+   "params": [
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    },
+    {
+     "name": "PAD",
+     "bytes": 2
+    }
+   ],
+   "length": 4,
+   "description": "Move object to PAD\n@exception: If object is assigned to padextra type, then object scale will be\nlost after moving to target pad.\nObject will inherit rotation from target pad",
+   "aliases": []
+  },
+  {
+   "opcode": 102,
+   "name": "DoorOpen",
+   "params": [
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Open tagged door even if locked",
+   "aliases": []
+  },
+  {
+   "opcode": 103,
+   "name": "DoorClose",
+   "params": [
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Close tagged door",
+   "aliases": []
+  },
+  {
+   "opcode": 104,
+   "name": "IFDoorStateEqual",
+   "params": [
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    },
+    {
+     "name": "DOOR_STATE",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 4,
+   "description": "If tagged door state matches any of bit field\n@return     Continue execution from LABEL if TRUE\n@exception: Use DOOR_STATE_# flags for door state argument.\nFlags can be combined",
+   "aliases": [
+    "IFDoorClosed",
+    "IFDoorOpen",
+    "IFDoorClosing",
+    "IFDoorOpening",
+    "IFDoorOpenOrClosed",
+    "IFDoorOpeningOrClosing",
+    "IFDoorOpenOrClosing",
+    "IFDoorNotOpening",
+    "IFDoorClosedOrOpening",
+    "IFDoorOpenOrOpening",
+    "IFDoorNotClosing",
+    "IFDoorOpeningOrClosed",
+    "IFDoorNotOpen",
+    "IFDoorNotClosed"
+   ]
+  },
+  {
+   "opcode": 105,
+   "name": "IFDoorHasBeenOpenedBefore",
+   "params": [
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "If tagged door has been opened before\n@return     Continue execution from LABEL if TRUE\n@exception: If tagged door is open by default in setup, then it must be closed\nbefore it will check if opened again",
+   "aliases": []
+  },
+  {
+   "opcode": 106,
+   "name": "DoorSetLock",
+   "params": [
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    },
+    {
+     "name": "LOCK_FLAG",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "Set tagged doors lock with flags\n@exception: Use DOOR_LOCK_# flags for LOCK argument.\nLock flags are same as used within setup for doors and keys",
+   "aliases": []
+  },
+  {
+   "opcode": 107,
+   "name": "DoorUnsetLock",
+   "params": [
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    },
+    {
+     "name": "LOCK_FLAG",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "Unset tagged doors lock with flags\n@exception: Use DOOR_LOCK_# flags for LOCK argument.\nLock flags are same as used within setup for doors and keys",
+   "aliases": []
+  },
+  {
+   "opcode": 108,
+   "name": "IFDoorLockEqual",
+   "params": [
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    },
+    {
+     "name": "LOCK_FLAG",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 4,
+   "description": "If tagged doors lock flags matches any lock flag argument\n@return     Continue execution from LABEL if TRUE\n@exception: Use DOOR_LOCK_# flags for LOCK argument.\nLock flags are same as used within setup for doors and keys",
+   "aliases": []
+  },
+  {
+   "opcode": 109,
+   "name": "IFObjectiveNumComplete",
+   "params": [
+    {
+     "name": "OBJ_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "If objective ID completed\n@return     Continue execution from LABEL if TRUE\n@exception: Ignores difficulty settings.\nFor example - if game on agent and player\ncompletes an unlisted 00 agent objective, checking that\nobjective num will Go to LABEL",
+   "aliases": []
+  },
+  {
+   "opcode": 110,
+   "name": "TRYUnknown6e",
+   "params": [
+    {
+     "name": "UNKNOWN_FLAG",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "Unknown command, Go to LABEL\n@return     Continue execution from LABEL if Successful\n@exception: Sets chr->padpreset1\nBITFIELD (hex):\n0001: Sets to nearest pad to path to Bond\n0004: ???\n0008: ???\n0010: ???\n0020: ???",
+   "aliases": []
+  },
+  {
+   "opcode": 111,
+   "name": "TRYUnknown6f",
+   "params": [
+    {
+     "name": "UNKNOWN_FLAG",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "Unknown command\n@return     Continue execution from LABEL if Successful\n@exception: Sets chr->padpreset1\nBITFIELD (hex):\n0001: Sets to nearest pad to path to Bond\n0004: ???\n0008: ???\n0010: ???\n0020: ???",
+   "aliases": []
+  },
+  {
+   "opcode": 112,
+   "name": "IFGameDifficultyLessThan",
+   "params": [
+    {
+     "name": "DIFICULTY_ID",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "If current difficulty is less than DIFFICULTY_ID\n@return     Continue execution from LABEL if TRUE\n@param DIFICULTY_ID\n01: agent only\n02: agent/secret agent\n03: agent/secret agent/00 agent",
+   "aliases": []
+  },
+  {
+   "opcode": 113,
+   "name": "IFGameDifficultyGreaterThan",
+   "params": [
+    {
+     "name": "DIFICULTY_ID",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "If current difficulty is greater than DIFFICULTY_ID\n@return     Continue execution from LABEL if TRUE\n@param DIFICULTY_ID\n00: secret agent/00 agent/007\n01: 00 agent/007\n02: 007 only",
+   "aliases": []
+  },
+  {
+   "opcode": 114,
+   "name": "IFMissionTimeLessThan",
+   "params": [
+    {
+     "name": "SECONDS",
+     "bytes": 2
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 4,
+   "description": "If current mission time (in seconds) < SECONDS\n@return         Continue execution from LABEL if TRUE\n@param SECONDS: Unsigned Integer seconds, compares against mission timer",
+   "aliases": []
+  },
+  {
+   "opcode": 115,
+   "name": "IFMissionTimeGreaterThan",
+   "params": [
+    {
+     "name": "SECONDS",
+     "bytes": 2
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 4,
+   "description": "If current mission time (in seconds) > SECONDS\n@return         Continue execution from LABEL if TRUE\n@param SECONDS: Unsigned Integer seconds, compares against mission timer",
+   "aliases": []
+  },
+  {
+   "opcode": 116,
+   "name": "IFSystemPowerTimeLessThan",
+   "params": [
+    {
+     "name": "MINUTES",
+     "bytes": 2
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 4,
+   "description": "If system powered on time (in minutes) < MINUTES\n@return         Continue execution from LABEL if TRUE\n@param MINUTES: Unsigned Integer minutes, compares against mission time\nr",
+   "aliases": []
+  },
+  {
+   "opcode": 117,
+   "name": "IFSystemPowerTimeGreaterThan",
+   "params": [
+    {
+     "name": "MINUTES",
+     "bytes": 2
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 4,
+   "description": "If system powered on time (in minutes) > MINUTES\n@return         Continue execution from LABEL if TRUE\n@param MINUTES: Unsigned Integer minutes, compares against mission time",
+   "aliases": []
+  },
+  {
+   "opcode": 118,
+   "name": "IFLevelIdLessThan",
+   "params": [
+    {
+     "name": "LEVEL_ID",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "If current level id < LEVEL_ID\n@return          Continue execution from LABEL if TRUE\n@param LEVEL_ID: Uses LEVELID enum values, not briefing menu stage number",
+   "aliases": []
+  },
+  {
+   "opcode": 119,
+   "name": "IFLevelIdGreaterThan",
+   "params": [
+    {
+     "name": "LEVEL_ID",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "If current level id > LEVEL_ID\n@return          Continue execution from LABEL if TRUE\n@param LEVEL_ID: Uses LEVELID enum values, not briefing menu stage number",
+   "aliases": []
+  },
+  {
+   "opcode": 120,
+   "name": "IFMyNumArghsLessThan",
+   "params": [
+    {
+     "name": "HIT_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "If I have been hit less than HIT_NUM\n@return     Continue execution from LABEL if TRUE\n@param      HIT_NUM: Unsigned Integer to test against numarghs\n@exception: Hits count even if guard is invincible",
+   "aliases": []
+  },
+  {
+   "opcode": 121,
+   "name": "IFMyNumArghsGreaterThan",
+   "params": [
+    {
+     "name": "HIT_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "If I have been Hit Greater Than HIT_NUM\n@return     Continue execution from LABEL if TRUE\n@param      HIT_NUM: Unsigned Integer to test against numarghs\n@exception: Hits count even if guard is invincible",
+   "aliases": []
+  },
+  {
+   "opcode": 122,
+   "name": "IFMyNumCloseArghsLessThan",
+   "params": [
+    {
+     "name": "MISSED_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "If Bond's shots missed/landed near me less than MISSED_NUM\n@return     Continue execution from LABEL if TRUE\n@param      MISSED_NUM: Unsigned Integer to test against numclosearghs",
+   "aliases": []
+  },
+  {
+   "opcode": 123,
+   "name": "IFMyNumCloseArghsGreaterThan",
+   "params": [
+    {
+     "name": "MISSED_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "If Bond's shots missed/landed near me Greater Than MISSED_NUM\n@return     Continue execution from LABEL if TRUE\n@param      MISSED_NUM: Unsigned Integer to test against numclosearghs",
+   "aliases": []
+  },
+  {
+   "opcode": 124,
+   "name": "IFChrHealthLessThan",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "HEALTH",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 4,
+   "description": "If My/chrs health < HEALTH\n@return     Continue execution from LABEL if TRUE\n@param      CHR_NUM: ID of Chr (0-255)\n@param      HEALTH (Default = 40 (4.0f))\n@exception: HEALTH is unsigned, converted to float and compares difference\nbetween chr->maxdamage - chr->damage.\nArmour is tested",
+   "aliases": [
+    "IFChrHealthLessThanF",
+    "IFMyHealthLessThan",
+    "IFMyHealthLessThanF"
+   ]
+  },
+  {
+   "opcode": 125,
+   "name": "IFChrHealthGreaterThan",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "HEALTH",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 4,
+   "description": "If My/chrs health > HEALTH\n@return     Continue execution from LABEL if TRUE\n@param      CHR_NUM: ID of Chr (0-255)\n@param      HEALTH (Default = 40 (4.0f))\n@exception: HEALTH is unsigned, converted to float and compares difference\nbetween chr->maxdamage - chr->damage.\nArmour is tested",
+   "aliases": [
+    "IFChrHealthGreaterThanF",
+    "IFMyHealthGreaterThan",
+    "IFMyHealthGreaterThanF"
+   ]
+  },
+  {
+   "opcode": 126,
+   "name": "IFChrWasDamagedSinceLastCheck",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "If chr has taken damage since last check\n@return     Continue execution from LABEL if TRUE\n@param      CHR_NUM: ID of Chr (0-255)\n@exception: Checks chr->chrflags if CHRFLAG_WAS_DAMAGED is set.\nIf true, unset flag and Go to LABEL.\nCHRFLAG_WAS_DAMAGED is set if guard took damage (not invincible)",
+   "aliases": [
+    "IFIWasDamagedSinceLastCheck"
+   ]
+  },
+  {
+   "opcode": 127,
+   "name": "IFBondHealthLessThan",
+   "params": [
+    {
+     "name": "HEALTH",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "If Bond's health < HEALTH\n@return     Continue execution from LABEL if TRUE\n@param      HEALTH u8 where 255 equal to 100% health\n@exception: Does NOT check armour.",
+   "aliases": []
+  },
+  {
+   "opcode": 128,
+   "name": "IFBondHealthGreaterThan",
+   "params": [
+    {
+     "name": "HEALTH",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "If Bond's health > HEALTH\n@return     Continue execution from LABEL if TRUE\n@param      HEALTH u8 where 255 equal to 100% health\n@exception: Does NOT check armour.",
+   "aliases": []
+  },
+  {
+   "opcode": 129,
+   "name": "SetMyMorale",
+   "params": [
+    {
+     "name": "CHRBYTE",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Set My Morale\n@param      CHRBYTE is a value 0 - 255",
+   "aliases": []
+  },
+  {
+   "opcode": 130,
+   "name": "AddToMyMorale",
+   "params": [
+    {
+     "name": "CHRBYTE",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Add To My Morale - Make me Happier\n@param      CHRBYTE is a value 0 - 255\n@exception Anything above 255 is clamped to 255",
+   "aliases": []
+  },
+  {
+   "opcode": 131,
+   "name": "SubtractFromMyMorale",
+   "params": [
+    {
+     "name": "CHRBYTE",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Subtract from My Morale - Make me Sad\n@param      CHRBYTE is a value 0 - 255\n@exception Anything below 0 is clamped to 0",
+   "aliases": []
+  },
+  {
+   "opcode": 132,
+   "name": "IFMyMoraleLessThan",
+   "params": [
+    {
+     "name": "CHRBYTE",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "If My Morale Less Than\n@return     Continue execution from LABEL if TRUE",
+   "aliases": []
+  },
+  {
+   "opcode": 133,
+   "name": "IFMyMoraleLessThanRandom",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "If My Morale is Less Than My Random (Use SetRandom)\n@return     Continue execution from LABEL if TRUE",
+   "aliases": []
+  },
+  {
+   "opcode": 134,
+   "name": "SetMyAlertness",
+   "params": [
+    {
+     "name": "CHRBYTE",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Set My Morale\n@param      CHRBYTE is a value 0 - 255",
+   "aliases": []
+  },
+  {
+   "opcode": 135,
+   "name": "AddToMyAlertness",
+   "params": [
+    {
+     "name": "CHRBYTE",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Add To My Alertness - Make me See Things\n@param      CHRBYTE is a value 0 - 255\n@exception Anything above 255 is clamped to 255",
+   "aliases": []
+  },
+  {
+   "opcode": 136,
+   "name": "SubtractFromMyAlertness",
+   "params": [
+    {
+     "name": "CHRBYTE",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Subtract from My Morale - Make me Blind\n@param      CHRBYTE is a value 0 - 255\n@exception Anything below 0 is clamped to 0",
+   "aliases": []
+  },
+  {
+   "opcode": 137,
+   "name": "IFMyAlertnessLessThan",
+   "params": [
+    {
+     "name": "CHRBYTE",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "If My Alertness is Less Than\n@return     Continue execution from LABEL if TRUE",
+   "aliases": []
+  },
+  {
+   "opcode": 138,
+   "name": "IFMyAlertnessLessThanRandom",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "If My Morale is Less Than My Random (Use SetRandom)\n@return     Continue execution from LABEL if TRUE",
+   "aliases": []
+  },
+  {
+   "opcode": 139,
+   "name": "SetMyHearingScale",
+   "params": [
+    {
+     "name": "HEARING_SCALE",
+     "bytes": 2
+    }
+   ],
+   "length": 3,
+   "description": "Set My hearing scale - the higher the value, the further away I\ncan hear Bond's gunfire\n@param      HEARING_SCALE 0.0 - 32.0 (Default = 1.0f)\n@exception: HEARING_SCALE is converted to float and divided by 1000 before setting\nto hearingscale",
+   "aliases": [
+    "SetMyHearingScaleF"
+   ]
+  },
+  {
+   "opcode": 140,
+   "name": "SetMyVisionRange",
+   "params": [
+    {
+     "name": "VISION_RANGE",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Set My vision range - the smaller the value, the longer I\ntake to detect Bond with IFISeeBond.\n@param      VISION_RANGE 0-255 (Default = 100)\n@exception: Sets to chr->visionrange.\nDoes NOT affect firing distance",
+   "aliases": []
+  },
+  {
+   "opcode": 141,
+   "name": "SetMyGrenadeProbability",
+   "params": [
+    {
+     "name": "GRENADE_PROB",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Set My probability of lobbing a grenade  -  the higher the value, the\nmore likely I will throw one when asked (TRYThrowingGrenade).\n@exception: Sets to chr->grenadeprob - (Default = 0)\nThe only way to make guards throw grenades is by using this\ncommand or assigning setup object 0x12 to chr",
+   "aliases": []
+  },
+  {
+   "opcode": 142,
+   "name": "SetMyChrNum",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Set My Chr Number, or ID, for calling me later. e.g. respawn or clone.\n@param CHR_NUM: Should be a unique Integer 0-240",
+   "aliases": []
+  },
+  {
+   "opcode": 143,
+   "name": "SetMyHealthTotal",
+   "params": [
+    {
+     "name": "HEALTH",
+     "bytes": 2
+    }
+   ],
+   "length": 3,
+   "description": "Set My total HEALTH - the higher the value, the more shots needed\nto kill Me.\n@param      HEALTH: unsigned float (Default = 4.0) -1 will be set to 6553.5f\n@exception: Sets to chr->maxdamage.\nHEALTH is converted to float and divided by 10 before setting to\nmaxdamage.\nWill use 007 health modifier If difficulty mode 007 is active",
+   "aliases": [
+    "SetMyHealthTotalF"
+   ]
+  },
+  {
+   "opcode": 144,
+   "name": "SetMyArmour",
+   "params": [
+    {
+     "name": "AMOUNT",
+     "bytes": 2
+    }
+   ],
+   "length": 3,
+   "description": "Set My armour value - the higher the value, the higher the armour.\nArmoured guards will not show hit reactions. They also do NOT instantly die\nfrom explosions, instead taking damaged based on how close they are to\nexplosions like Bond. To any setup designers reading this, please use armour\nsparingly!\n@param      ARMOUR: Unsigned (Default = 0)\n@exception: Subtracts from chr->damage - negative damage means guard has armour.\nInstead of storing armour as a separate chr variable, we reuse the\ncurrent damage and read negative damage as armour.\nWill use 007 health modifier if difficulty mode 007 is active.\n-1 will be set to 6553.5f armour, or -6553.5f damage (Invincible)",
+   "aliases": [
+    "SetMyArmourF",
+    "DONELABEL"
+   ]
+  },
+  {
+   "opcode": 145,
+   "name": "SetMySpeedRating",
+   "params": [
+    {
+     "name": "SPEED_RATING",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Set My speed rating - controls how quickly I animate.\n@param      SPEED_RATING: Signed* 0 - 100 (Default = 0)\n@exception: Sets to chr->speedrating.\nNegative values will make guard animate slower - this affects\nfiring animations.\nDoes NOT use 007 reaction speed modifier.\nDo NOT use values above 100 or below 0 or it may crash",
+   "aliases": []
+  },
+  {
+   "opcode": 146,
+   "name": "SetMyArghRating",
+   "params": [
+    {
+     "name": "ARGH_RATING",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Set My argh rating - controls how quickly I recover from being shot.\n@param      ARGH_RATING Signed* 0-100 (Default = 0) (100 is almost no hit\nreaction)\n@exception: Sets to chr->arghrating.\nNegative values will make guard animate slower - this affects\nfiring animations.\nDoes NOT use 007 reaction speed modifier\nDo NOT use values above 100 or below 0 or it may crash",
+   "aliases": []
+  },
+  {
+   "opcode": 147,
+   "name": "SetMyAccuracyRating",
+   "params": [
+    {
+     "name": "ACCURACY_RATING",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Set My Accuracy Rating - controls how accurately I fire my weapon\n@param      ACCURACY_RATING: Signed* 0 - 100 (Default = 0)\n@exception: Sets to chr->accuracyrating.\nDoes NOT use 007 accuracy modifier",
+   "aliases": []
+  },
+  {
+   "opcode": 148,
+   "name": "SetMyFlags2",
+   "params": [
+    {
+     "name": "BITS",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Set My/BG flags2\n@param BITS: Can be used to store a custom flag per chr, useful for missions.\nGlobal Lists use flag 01, which is defined as\nFLAGS2_DONT_POINT_AT_BOND.\nOther bits are free to use for setups AI Lists.\nBG Lists are free to utilize the entire spectrum of flags",
+   "aliases": [
+    "SetBGFlags2"
+   ]
+  },
+  {
+   "opcode": 149,
+   "name": "UnsetMyFlags2",
+   "params": [
+    {
+     "name": "BITS",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Unset flags2\n@param BITS: Can be used to store a custom flag per chr, useful for missions.\nGlobal Lists use flag 01, which is defined as\nFLAGS2_DONT_POINT_AT_BOND.\nOther bits are free to use for setups AI Lists.\nBG Lists are free to utilize the entire spectrum of flags",
+   "aliases": [
+    "UnsetBGFlags2"
+   ]
+  },
+  {
+   "opcode": 150,
+   "name": "IFMyFlags2Has",
+   "params": [
+    {
+     "name": "BITS",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "If flags2 has BITS enabled\n@return     Continue execution from LABEL if TRUE\n@param BITS: Can be used to store a custom flag per chr, useful for missions.\nGlobal Lists use flag 01, which is defined as\nFLAGS2_DONT_POINT_AT_BOND.\nOther bits are free to use for setups AI Lists.\nBG Lists are free to utilize the entire spectrum of flags",
+   "aliases": [
+    "IFBGFlags2Has"
+   ]
+  },
+  {
+   "opcode": 151,
+   "name": "SetChrBitfield",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "BITS",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "Set flags2 for CHR_NUM\n@param CHR_NUM: ID of Chr (0-240)\n@param BITS: Can be used to store a custom flag per chr, useful for missions.\nGlobal Lists use flag 01, which is defined as\nFLAGS2_DONT_POINT_AT_BOND.\nOther bits are free to use for setups AI Lists.\nBG Lists are free to utilize the entire spectrum of flags",
+   "aliases": []
+  },
+  {
+   "opcode": 152,
+   "name": "UnsetChrBitfield",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "BITS",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "Unset flags2 for CHR_NUM\n@param CHR_NUM: ID of Chr (0-240)\n@param BITS: Can be used to store a custom flag per chr, useful for missions.\nGlobal Lists use flag 01, which is defined as\nFLAGS2_DONT_POINT_AT_BOND.\nOther bits are free to use for setups AI Lists.\nBG Lists are free to utilize the entire spectrum of flags",
+   "aliases": []
+  },
+  {
+   "opcode": 153,
+   "name": "IFChrBitfieldHas",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "BITS",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 4,
+   "description": "If flags2 has BITS enabled\n@return         Continue execution from LABEL if TRUE\n@param CHR_NUM: ID of Chr (0-240)\n@param BITS: Can be used to store a custom flag per chr, useful for missions.\nGlobal Lists use flag 01, which is defined as\nFLAGS2_DONT_POINT_AT_BOND.\nOther bits are free to use for setups AI Lists.\nBG Lists are free to utilize the entire spectrum of flags",
+   "aliases": []
+  },
+  {
+   "opcode": 154,
+   "name": "SetObjectiveBitfield",
+   "params": [
+    {
+     "name": "BITFIELD",
+     "bytes": 4
+    }
+   ],
+   "length": 5,
+   "description": "Set bits in objective bit field\n@param      BITFIELD: 32 bits\n@exception: Can be used to store a mission unique objective flag, which can be\nlinked to mission objectives.\nIt can also be used to store miscellaneous flags used by other\nAI Lists\nIf a mission objective is changed while in third person, it will\nnot be updated on the briefing page - all mission objectives\nstatus are locked while in third person",
+   "aliases": []
+  },
+  {
+   "opcode": 155,
+   "name": "UnsetObjectiveBitfield",
+   "params": [
+    {
+     "name": "BITFIELD",
+     "bytes": 4
+    }
+   ],
+   "length": 5,
+   "description": "Unset bits in objective bit field\n@param      BITFIELD: 32 bits\n@exception: Can be used to store a mission unique objective flag, which can be\nlinked to mission objectives.\nIt can also be used to store miscellaneous flags used by other\nAI Lists\nIf a mission objective is changed while in third person, it will\nnot be updated on the briefing page - all mission objectives\nstatus are locked while in third person",
+   "aliases": []
+  },
+  {
+   "opcode": 156,
+   "name": "IFObjectiveBitfieldHas",
+   "params": [
+    {
+     "name": "BITS",
+     "bytes": 4
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 6,
+   "description": "If ObjectiveBitfield has BITS enabled\n@return     Continue execution from LABEL if TRUE",
+   "aliases": []
+  },
+  {
+   "opcode": 157,
+   "name": "SetMychrflags",
+   "params": [
+    {
+     "name": "CHRFLAGS",
+     "bytes": 4
+    }
+   ],
+   "length": 5,
+   "description": "Set My/BG chrflags\n@param CHRFLAGS: uses CHRFLAG_# defines.\n@exception: Chr->chrflags are not AI List or setup exclusive, they are\ncontrolled by many parts of the engine.\nCan be used by BG AI Lists, BG AI Lists are free to utilize the\nentire spectrum of flags",
+   "aliases": [
+    "SetBGchrflags"
+   ]
+  },
+  {
+   "opcode": 158,
+   "name": "UnsetMychrflags",
+   "params": [
+    {
+     "name": "CHRFLAGS",
+     "bytes": 4
+    }
+   ],
+   "length": 5,
+   "description": "Set My/BG chrflags\n@param CHRFLAGS: uses CHRFLAG_# defines.\n@exception: Chr->chrflags are not AI List or setup exclusive, they are\ncontrolled by many parts of the engine.\nCan be used by BG AI Lists, BG AI Lists are free to utilize the\nentire spectrum of flags",
+   "aliases": [
+    "UnsetBGchrflags"
+   ]
+  },
+  {
+   "opcode": 159,
+   "name": "IFMychrflagsHas",
+   "params": [
+    {
+     "name": "CHRFLAGS",
+     "bytes": 4
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 6,
+   "description": "If My/BG chrflags has CHRFLAGS set\n@param CHRFLAGS: uses CHRFLAG_# defines.\n@return     Continue execution from LABEL if TRUE\n@exception: Chr->chrflags are not AI List or setup exclusive, they are\ncontrolled by many parts of the engine.\nCan be used by BG AI Lists, BG AI Lists are free to utilize the\nentire spectrum of flags",
+   "aliases": [
+    "IFBGchrflagsHas"
+   ]
+  },
+  {
+   "opcode": 160,
+   "name": "SetChrchrflags",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "CHRFLAGS",
+     "bytes": 4
+    }
+   ],
+   "length": 6,
+   "description": "Set chr chrflags\n@param CHRFLAGS: uses CHRFLAG_# defines.\n@exception: Chr->chrflags are not AI List or setup exclusive, they are\ncontrolled by many parts of the engine.",
+   "aliases": []
+  },
+  {
+   "opcode": 161,
+   "name": "UnsetChrchrflags",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "CHRFLAGS",
+     "bytes": 4
+    }
+   ],
+   "length": 6,
+   "description": "Unset chr chrflags\n@param CHRFLAGS: uses CHRFLAG_# defines.\n@exception: Chr->chrflags are not AI List or setup exclusive, they are\ncontrolled by many parts of the engine.",
+   "aliases": []
+  },
+  {
+   "opcode": 162,
+   "name": "IFChrchrflagsHas",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "CHRFLAGS",
+     "bytes": 4
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 7,
+   "description": "If Chr chrflags has CHRFLAGS set\n@param CHRFLAGS: uses CHRFLAG_# defines.\n@return     Continue execution from LABEL if TRUE\n@exception: Chr->chrflags are not AI List or setup exclusive, they are\ncontrolled by many parts of the engine.",
+   "aliases": []
+  },
+  {
+   "opcode": 163,
+   "name": "SetObjectFlags",
+   "params": [
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    },
+    {
+     "name": "BITFIELD",
+     "bytes": 4
+    }
+   ],
+   "length": 6,
+   "description": "Set object flags\n@param BITFIELD uses PROPFLAG_# defines",
+   "aliases": []
+  },
+  {
+   "opcode": 164,
+   "name": "UnsetObjectFlags",
+   "params": [
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    },
+    {
+     "name": "BITFIELD",
+     "bytes": 4
+    }
+   ],
+   "length": 6,
+   "description": "Unset object flags\n@param BITFIELD uses PROPFLAG_# defines",
+   "aliases": []
+  },
+  {
+   "opcode": 165,
+   "name": "IFObjectFlagsHas",
+   "params": [
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    },
+    {
+     "name": "BITS",
+     "bytes": 4
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 7,
+   "description": "If object flags has BITS\n@param BITS: uses PROPFLAG_# defines\n@return     Continue execution from LABEL if TRUE",
+   "aliases": []
+  },
+  {
+   "opcode": 166,
+   "name": "SetObjectFlags2",
+   "params": [
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    },
+    {
+     "name": "BITS",
+     "bytes": 4
+    }
+   ],
+   "length": 6,
+   "description": "Set object flags2\n@param BITS: uses PROPFLAG2_# defines",
+   "aliases": []
+  },
+  {
+   "opcode": 167,
+   "name": "UnsetObjectFlags2",
+   "params": [
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    },
+    {
+     "name": "BITS",
+     "bytes": 4
+    }
+   ],
+   "length": 6,
+   "description": "Unset object flags2\n@param BITS: uses PROPFLAG2_# defines",
+   "aliases": []
+  },
+  {
+   "opcode": 168,
+   "name": "IFObjectFlags2Has",
+   "params": [
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    },
+    {
+     "name": "BITFIELD",
+     "bytes": 4
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 7,
+   "description": "If object flags2 has BITS\n@param BITS: uses PROPFLAG2_# defines\n@return     Continue execution from LABEL if TRUE",
+   "aliases": []
+  },
+  {
+   "opcode": 169,
+   "name": "SetMyChrPreset",
+   "params": [
+    {
+     "name": "CHR_PRESET",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Set My/BG Preset Chr to CHR_PRESET",
+   "aliases": [
+    "SetBGChrPreset"
+   ]
+  },
+  {
+   "opcode": 170,
+   "name": "SetChrChrPreset",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "CHR_PRESET",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "Set Chr Preset Chr to CHR_PRESET",
+   "aliases": []
+  },
+  {
+   "opcode": 171,
+   "name": "SetMyPadPreset",
+   "params": [
+    {
+     "name": "PAD_PRESET",
+     "bytes": 2
+    }
+   ],
+   "length": 3,
+   "description": "Set My/BG Preset Pad to PAD_PRESET",
+   "aliases": [
+    "SetBGPadPreset"
+   ]
+  },
+  {
+   "opcode": 172,
+   "name": "SetChrPadPreset",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "PAD_PRESET",
+     "bytes": 2
+    }
+   ],
+   "length": 4,
+   "description": "Set Chr Preset Pad to PAD_PRESET",
+   "aliases": []
+  },
+  {
+   "opcode": 173,
+   "name": "PRINT",
+   "params": [],
+   "length": 1,
+   "description": "Debug Comment\n@return: May have originally printed to stderr on host sgi devkit.",
+   "aliases": [],
+   "debug": true,
+   "variable": "nul_terminated_text"
+  },
+  {
+   "opcode": 174,
+   "name": "MyTimerStart",
+   "params": [],
+   "length": 1,
+   "description": "Start My/BG timer from 0. Counts up 60 times a second.\n@exception: Local timer is unique for each chr, while hud countdown is global\nfor the entire mission.",
+   "aliases": [
+    "BGTimerResetStart"
+   ]
+  },
+  {
+   "opcode": 175,
+   "name": "MyTimerReset",
+   "params": [],
+   "length": 1,
+   "description": "Reset My/BG timer to 0. Does Not start or stop timer.\n@exception: Local timer is unique for each chr, while hud countdown is global\nfor the entire mission.",
+   "aliases": [
+    "BGTimerReset"
+   ]
+  },
+  {
+   "opcode": 176,
+   "name": "MyTimerPause",
+   "params": [],
+   "length": 1,
+   "description": "Pause My/BG timer.\n@exception: Local timer is unique for each chr, while hud countdown is global\nfor the entire mission.",
+   "aliases": [
+    "BGTimerPause"
+   ]
+  },
+  {
+   "opcode": 177,
+   "name": "MyTimerResume",
+   "params": [],
+   "length": 1,
+   "description": "Resume My/BG timer. If you want to Start from 0, use MyTimerStart()\n@exception: Local timer is unique for each chr, while hud countdown is global\nfor the entire mission.",
+   "aliases": [
+    "BGTimerResume"
+   ]
+  },
+  {
+   "opcode": 178,
+   "name": "IFMyTimerIsNotRunning",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "If My/BG timer is NOT running (paused)\n@return     Continue execution from LABEL if TRUE\n@exception: By default, timer is inactive",
+   "aliases": [
+    "IFBGTimerIsNotRunning"
+   ]
+  },
+  {
+   "opcode": 179,
+   "name": "IFMyTimerLessThanTicks",
+   "params": [
+    {
+     "name": "TICKS",
+     "bytes": 3
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 5,
+   "description": "If My/BG Timer is Less Than TICKS\n@return     Continue execution from LABEL if TRUE\n@param      TICKS: Unsigned integer 1/60 or 1/50 Second\n@exception: TICKS is converted to float and compared.",
+   "aliases": [
+    "IFBGTimerLessThanTicks",
+    "IFMyTimerLessThanSeconds",
+    "IFBGTimerLessThanSeconds"
+   ]
+  },
+  {
+   "opcode": 180,
+   "name": "IFMyTimerGreaterThanTicks",
+   "params": [
+    {
+     "name": "TICKS",
+     "bytes": 3
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 5,
+   "description": "If My/BG Timer is Greater Than TICKS\n@return     Continue execution from LABEL if TRUE\n@param      TICKS: Unsigned integer 1/60 or 1/50 Second\n@exception: TICKS is converted to float and compared.",
+   "aliases": [
+    "IFBGTimerGreaterThanTicks",
+    "IFMyTimerGreaterThanSeconds",
+    "IFBGTimerGreaterThanSeconds"
+   ]
+  },
+  {
+   "opcode": 181,
+   "name": "HudCountdownShow",
+   "params": [],
+   "length": 1,
+   "description": "Shows the hud countdown",
+   "aliases": []
+  },
+  {
+   "opcode": 182,
+   "name": "HudCountdownHide",
+   "params": [],
+   "length": 1,
+   "description": "Hides the hud countdown\n@exception: Can be used as a hidden global timer for objective logic",
+   "aliases": []
+  },
+  {
+   "opcode": 183,
+   "name": "HudCountdownSet",
+   "params": [
+    {
+     "name": "SECONDS",
+     "bytes": 2
+    }
+   ],
+   "length": 3,
+   "description": "Set the hud countdown\n@exception: To make the timer count up, set to 0 and start timer",
+   "aliases": []
+  },
+  {
+   "opcode": 184,
+   "name": "HudCountdownStop",
+   "params": [],
+   "length": 1,
+   "description": "Stops the hud countdown",
+   "aliases": []
+  },
+  {
+   "opcode": 185,
+   "name": "HudCountdownStart",
+   "params": [],
+   "length": 1,
+   "description": "Start the hud countdown",
+   "aliases": []
+  },
+  {
+   "opcode": 186,
+   "name": "IFHudCountdownIsNotRunning",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "If Hud Countdown is NOT running (paused)\n@return     Continue execution from LABEL if TRUE\n@exception: By default, timer is inactive",
+   "aliases": []
+  },
+  {
+   "opcode": 187,
+   "name": "IFHudCountdownLessThan",
+   "params": [
+    {
+     "name": "SECONDS",
+     "bytes": 2
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 4,
+   "description": "if hud countdown is Less Than SECONDS\n@return     Continue execution from LABEL if TRUE\n@param      SECONDS: Unsigned Integer, 0 means TRUE on count-up only.\n@exception: SECONDS can NOT test negative values (counting up)",
+   "aliases": []
+  },
+  {
+   "opcode": 188,
+   "name": "IFHudCountdownGreaterThan",
+   "params": [
+    {
+     "name": "SECONDS",
+     "bytes": 2
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 4,
+   "description": "if hud countdown is Greater Than SECONDS\n@return     Continue execution from LABEL if TRUE\n@param      SECONDS: Unsigned Integer, 0 means TRUE on count-down only.\n@exception: SECONDS can NOT test negative values (counting up)",
+   "aliases": []
+  },
+  {
+   "opcode": 189,
+   "name": "TRYSpawningChrAtPad",
+   "params": [
+    {
+     "name": "BODY_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "HEAD_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "PAD",
+     "bytes": 2
+    },
+    {
+     "name": "AI_LIST_ID",
+     "bytes": 2
+    },
+    {
+     "name": "BITFIELD",
+     "bytes": 4
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 12,
+   "description": "Spawn new chr at pad\n@return     Continue execution from LABEL if Successful\n@param      BITFIELD: uses SPAWN_# defines\n@param      AI_LIST_ID: Assign this 16bit AI_LIST ID to Chr\n@exception: If out of memory chr can NOT spawn.\nIf pad is blocked, attempt to spawn chr around pad.\nBy default, guard will NOT spawn if target pad can be seen by Bond.\nHowever this is ignored if passed SPAWN_IGNORE_PAD_SIGHT_CHECK flag.",
+   "aliases": []
+  },
+  {
+   "opcode": 190,
+   "name": "TRYSpawningChrNextToChr",
+   "params": [
+    {
+     "name": "BODY_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "HEAD_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "CHR_NUM_TARGET",
+     "bytes": 1
+    },
+    {
+     "name": "AI_LIST_ID",
+     "bytes": 2
+    },
+    {
+     "name": "BITFIELD",
+     "bytes": 4
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 11,
+   "description": "Spawn a chr next to another chr\n@return     Continue execution from LABEL if Successful\n@param      BITFIELD: uses SPAWN_# defines\n@param      AI_LIST_ID: Assign this 16bit AI_LIST ID to Chr\n@exception: If out of memory or chr/pad is in view of Bond - chr can NOT spawn.\nTarget chr must still exist in level or else command will crash.\nWill not spawn chr if target chr has been seen before\n(CHRFLAG_HAS_BEEN_ON_SCREEN)",
+   "aliases": []
+  },
+  {
+   "opcode": 191,
+   "name": "TRYGiveMeItem",
+   "params": [
+    {
+     "name": "PROP_NUM",
+     "bytes": 2
+    },
+    {
+     "name": "ITEM_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "PROPFLAG",
+     "bytes": 4
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 9,
+   "description": "Spawn Item/Weapon for Me\n@return     Continue execution from LABEL if Successful\n@param      PROPFLAG uses PROPFLAG defines - NOT PROPFLAG2!\n@param      PROP_NUM: use PROP_xxx e.g. PROP_CHRWPPK for visible model\n@param      ITEM_NUM: use ITEM_xxx e.g. ITEM_WPPK for item type\n@exception: If out of memory or hands occupied - Item can NOT spawn.\nSpawned Prop must have a holding position command within the\nmodel file, else use conceal flag so guard does not attempt to\nhold Prop",
+   "aliases": []
+  },
+  {
+   "opcode": 192,
+   "name": "TRYGiveMeHat",
+   "params": [
+    {
+     "name": "PROP_NUM",
+     "bytes": 2
+    },
+    {
+     "name": "PROP_BITFIELD",
+     "bytes": 4
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 8,
+   "description": "Spawn hat on Me\n@return     Continue execution from LABEL if Successful\n@param      PROPFLAG uses PROPFLAG defines - NOT PROPFLAG2!\n@param      PROP_NUM: use PROP_xxx e.g. PROP_CHRWPPK for visible model\n@exception: If out of memory or already have hat - Item can NOT spawn.\nSpawned Prop must have a holding position command within the\nmodel file.",
+   "aliases": []
+  },
+  {
+   "opcode": 193,
+   "name": "TRYCloningChr",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "AI_LIST_ID",
+     "bytes": 2
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 5,
+   "description": "If CHR_NUM has clone flag on, spawn a clone\n@return     Continue execution from LABEL if Successful\n@param      AI_LIST_ID Assign this 16bit AI_LIST ID to Clone\n@exception: Clone flag is stored in chr->chrflags which is assigned at setup\nNewly spawned clone is placed in front of original chr",
+   "aliases": [
+    "TRYCloningMe"
+   ]
+  },
+  {
+   "opcode": 194,
+   "name": "TextPrintBottom",
+   "params": [
+    {
+     "name": "TEXT_SLOT",
+     "bytes": 2
+    }
+   ],
+   "length": 3,
+   "description": "Print text slot to bottom left part of screen (where pick-up text is located)\n@exception: If text slot is not currently allocated in memory, game will soft-lock.\nExpects string to end with '\\n' (LF) character",
+   "aliases": []
+  },
+  {
+   "opcode": 195,
+   "name": "TextPrintTop",
+   "params": [
+    {
+     "name": "TEXT_SLOT",
+     "bytes": 2
+    }
+   ],
+   "length": 3,
+   "description": "Print text slot to top part of screen\n@exception: If text slot is not currently allocated in memory, game will soft-lock.\nExpects string to end with '\\n' (LF) character",
+   "aliases": []
+  },
+  {
+   "opcode": 196,
+   "name": "SfxPlay",
+   "params": [
+    {
+     "name": "SOUND_NUM",
+     "bytes": 2
+    },
+    {
+     "name": "CHANNEL_NUM",
+     "bytes": 1
+    }
+   ],
+   "length": 4,
+   "description": "Play a sound effect\n@exception: Channel argument range is 0-7.\nUse a channel if you plan on modifying sfx volume with SFX Commands;\nSFX_EMIT_FROM_OBJECT\nSFX_EMIT_FROM_PAD\nSFX_SET_CHANNEL_VOLUME\nSFX_FADE_CHANNEL_VOLUME\nSFX_STOP_CHANNEL\nIF_SFX_CHANNEL_VOLUME_LESS_THAN\nIf you do NOT plan on doing this, use an invalid channel such as -1.\nThis will play the sfx but not bother initializing channel\ndata for SFX Commands.\nIf a sfx is already occupying channel, retriggering sfx will overwrite\nold sfx slot data and no longer can be used by SFX Commands",
+   "aliases": [
+    "SFX_PLAY_SIMPLE"
+   ]
+  },
+  {
+   "opcode": 197,
+   "name": "SfxEmitFromObject",
+   "params": [
+    {
+     "name": "CHANNEL_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    },
+    {
+     "name": "VOL_DECAY_TIME60",
+     "bytes": 2
+    }
+   ],
+   "length": 5,
+   "description": "Sets an occupied sfx channel to emit from a tagged object\n@param      VOL_DECAY_TIME60: is number of ticks to fully transition from\nmax volume to target volume\n@exception: Panning is not calculated (mono), only affects volume.",
+   "aliases": []
+  },
+  {
+   "opcode": 198,
+   "name": "SfxEmitFromPad",
+   "params": [
+    {
+     "name": "CHANNEL_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "PAD",
+     "bytes": 2
+    },
+    {
+     "name": "VOL_DECAY_TIME60",
+     "bytes": 2
+    }
+   ],
+   "length": 6,
+   "description": "Sets an occupied sfx channel to emit from a pad\n@param VOL_DECAY_TIME60 is number of ticks to fully transition from\nmax volume to target volume\n@exception: Panning is not calculated (mono), only affects volume.",
+   "aliases": []
+  },
+  {
+   "opcode": 199,
+   "name": "SfxSetChannelVolume",
+   "params": [
+    {
+     "name": "CHANNEL_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "TARGET_VOLUME",
+     "bytes": 2
+    },
+    {
+     "name": "TRANSITION_TIME60",
+     "bytes": 2
+    }
+   ],
+   "length": 6,
+   "description": "Sets an occupied sfx channel's volume\n@param      TRANSITION_TIME60: is number of ticks to fade between current\nvolume to TARGET_VOLUME\n@param       TARGET_VOLUME: signed range 0 - 100% (0x0000-0x7FFF)\n@exception: TARGET_VOLUME can NOT be negative",
+   "aliases": []
+  },
+  {
+   "opcode": 200,
+   "name": "SfxFadeChannelVolume",
+   "params": [
+    {
+     "name": "CHANNEL_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "TARGET_VOLUME",
+     "bytes": 2
+    },
+    {
+     "name": "TRANSITION_TIME60",
+     "bytes": 2
+    }
+   ],
+   "length": 6,
+   "description": "Fade out an occupied sfx channel's volume by volume percent\n@param TRANSITION_TIME60: is number of ticks to fade between current\nvolume to TARGET_VOLUME\n@param TARGET_VOLUME: signed range 0 - 100% (0x0000-0x7FFF)\n@exception: TARGET_VOLUME can NOT be negative",
+   "aliases": []
+  },
+  {
+   "opcode": 201,
+   "name": "SfxStopChannel",
+   "params": [
+    {
+     "name": "CHANNEL_NUM",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Stop playing sfx in occupied sfx channel",
+   "aliases": []
+  },
+  {
+   "opcode": 202,
+   "name": "IFSfxChannelVolumeLessThan",
+   "params": [
+    {
+     "name": "CHANNEL_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "VOLUME",
+     "bytes": 2
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 5,
+   "description": "If a sfx channel's volume is < volume argument\n@return     Continue execution from LABEL if TRUE\n@param VOLUME signed range 0 - 100% (0x0000-0x7FFF)\n@exception: If sfx channel is free (no audio playing), Go to LABEL.\nVOLUME can NOT be negative",
+   "aliases": []
+  },
+  {
+   "opcode": 203,
+   "name": "VehicleStartPath",
+   "params": [
+    {
+     "name": "PATH_NUM",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Makes vehicle follow a predefined path within setup",
+   "aliases": []
+  },
+  {
+   "opcode": 204,
+   "name": "VehicleSpeed",
+   "params": [
+    {
+     "name": "TOP_SPEED",
+     "bytes": 2
+    },
+    {
+     "name": "ACCELERATION_TIME60",
+     "bytes": 2
+    }
+   ],
+   "length": 5,
+   "description": "Sets vehicle speed, usually paired with VEHICLE_START_PATH\n@param TOP_SPEED Unsigned (1000 = 1 meter per second)\nACCELERATION_TIME60 is number of game ticks to reach top speed\n(lower = faster)",
+   "aliases": [
+    "VEHICLE_SPEED_MPH",
+    "VEHICLE_SPEED_KPH",
+    "VEHICLE_SPEED_MS"
+   ]
+  },
+  {
+   "opcode": 205,
+   "name": "AircraftRotorSpeed",
+   "params": [
+    {
+     "name": "ROTOR_SPEED",
+     "bytes": 2
+    },
+    {
+     "name": "ACCELERATION_TIME60",
+     "bytes": 2
+    }
+   ],
+   "length": 5,
+   "description": "Sets aircraft's rotor speed\n@param ROTOR_SPEED Unsigned Revolutions Per Minute (RPM)\nACCELERATION_TIME60 is number of game ticks to reach top speed\n(lower = faster)",
+   "aliases": [
+    "AIRCRAFT_ROTOR_SPEED_RPMS"
+   ]
+  },
+  {
+   "opcode": 206,
+   "name": "IFCameraIsInIntro",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "If camera mode equal to INTRO_CAM/FADESWIRL_CAM (viewing mission intro)\n@return     Continue execution from LABEL if TRUE\n@exception: If setup lacks intro camera structs, intro will be skipped",
+   "aliases": []
+  },
+  {
+   "opcode": 207,
+   "name": "IFCameraIsInBondSwirl",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "If camera mode equal to SWIRL_CAM (moving to back of Bond's head)\n@return     Continue execution from LABEL if TRUE\n@exception: If setup lacks swirl points, intro swirl will be skipped",
+   "aliases": []
+  },
+  {
+   "opcode": 208,
+   "name": "TvChangeScreenBank",
+   "params": [
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    },
+    {
+     "name": "SCREEN_INDEX",
+     "bytes": 1
+    },
+    {
+     "name": "SCREEN_BANK",
+     "bytes": 1
+    }
+   ],
+   "length": 4,
+   "description": "Change the screen bank of a tagged TV monitor\n@exception: If tagged object has multiple screens, use SCREEN_INDEX to set.\nIf tagged object has one screen, SCREEN_INDEX is ignored",
+   "aliases": []
+  },
+  {
+   "opcode": 209,
+   "name": "IFBondInTank",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "If Bond is controlling tank\n@return     Continue execution from LABEL if TRUE",
+   "aliases": []
+  },
+  {
+   "opcode": 210,
+   "name": "EndLevel",
+   "params": [],
+   "length": 1,
+   "description": "Exits the level\n@exception: Recommend not to use this command, instead use GAILIST_END_LEVEL for\nexit cutscene ailist.\nRetail game has a glitch with hires mode that needs to execute this\ncommand in a loop, check Cuba's 1000 List",
+   "aliases": []
+  },
+  {
+   "opcode": 211,
+   "name": "CameraReturnToBond",
+   "params": [],
+   "length": 1,
+   "description": "Switch back to first person view\n@exception: Unused command, never used in retail game.\nTagged items within inventory will become invalid after command - only\nweapons are safe.\nMust have 3 Yield commands before executing this command or else\nengine will crash on console (use CameraTransitionToBond).\nMission time is resumed on return to first person view",
+   "aliases": []
+  },
+  {
+   "opcode": 212,
+   "name": "CameraLookAtBondFromPad",
+   "params": [
+    {
+     "name": "PAD",
+     "bytes": 2
+    }
+   ],
+   "length": 3,
+   "description": "Change view to PAD and look at Bond\n@exception: Must have a BondHideWeapons and 3 Yield commands before executing\nor else engine will crash on console (use CameraTransitionFromBond).\nIf camera mode is already in third person then you do NOT need to\ndo the above.\nMission time is paused while in third person",
+   "aliases": []
+  },
+  {
+   "opcode": 213,
+   "name": "CameraSwitch",
+   "params": [
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    },
+    {
+     "name": "LOOK_AT_BOND_FLAG",
+     "bytes": 2
+    },
+    {
+     "name": "UNUSED_FLAG",
+     "bytes": 2
+    }
+   ],
+   "length": 6,
+   "description": "Change view to tagged cameras position and rotation\n@exception: Must have a BondHideWeapons and 3 Yield commands before executing\nor else engine will crash on console (use CameraTransitionFromBond).\nIf camera mode is already in third person then you do NOT need to\ndo the above\nOnly look at Bond if flag is set.\nUnused flag may have separated look at Bond as x/y flags instead of\na single flag - for retail unused flag does nothing\nMission time is paused while in third person",
+   "aliases": []
+  },
+  {
+   "opcode": 214,
+   "name": "IFBondYPosLessThan",
+   "params": [
+    {
+     "name": "Y_POS",
+     "bytes": 2
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 4,
+   "description": "If Bond's y axis position < Y_POS\n@return     Continue execution from LABEL if TRYE\n@param Y_POS signed Integer\n@exception: Checks if Bond's y axis is below Y_POS.\nUses world units. (scale is 1:1 to in-game position.)\nBond's point of view is accounted for by command (like debug's manpos)",
+   "aliases": []
+  },
+  {
+   "opcode": 215,
+   "name": "BondDisableControl",
+   "params": [
+    {
+     "name": "BITFIELD",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "hide hud elements, lock player controls and pause mission time\n@param BITFIELD use HUD_# flags to hide individual Hud Elements\n@exception: Will not hide element on command execution.\nThis is needed for dialogue/HUD countdown while in cinema mode.\nFlags can be combined together to show multiple elements.\nSequential executions of HUD_HIDE can be used to hide more elements,\nbut once an element has been hidden it cannot be shown again until\nHUD_SHOW_ALL is executed.\nBond can take damage while in locked state.\nMission time is paused while in locked state",
+   "aliases": []
+  },
+  {
+   "opcode": 216,
+   "name": "BondEnableControl",
+   "params": [],
+   "length": 1,
+   "description": "Show all hud elements, unlock player control and resume mission time\n@exception: Should only be executed after HUD_HIDE_AND_LOCK_CONTROLS\nMission time is resumed",
+   "aliases": []
+  },
+  {
+   "opcode": 217,
+   "name": "TRYTeleportingChrToPad",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "PAD",
+     "bytes": 2
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 5,
+   "description": "Teleport chr to PAD\n@return     Continue execution from LABEL if Successful",
+   "aliases": [
+    "TRYTeleportingMeToPad"
+   ]
+  },
+  {
+   "opcode": 218,
+   "name": "ScreenFadeToBlack",
+   "params": [],
+   "length": 1,
+   "description": "Fades the screen out to black\n@exception: Fade duration is 1 second",
+   "aliases": []
+  },
+  {
+   "opcode": 219,
+   "name": "ScreenFadeFromBlack",
+   "params": [],
+   "length": 1,
+   "description": "Fades the screen from black\n@exception: Fade duration is 1 second",
+   "aliases": []
+  },
+  {
+   "opcode": 220,
+   "name": "IFScreenFadeCompleted",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "When screen fade has completed (from/to black)\n@return     Continue execution from LABEL if TRUE\n@exception: Fade duration is 1 second",
+   "aliases": []
+  },
+  {
+   "opcode": 221,
+   "name": "HideAllChrs",
+   "params": [],
+   "length": 1,
+   "description": "Hide all characters in level - including Bond's third person model.\n@exception: Hidden characters will halt their AI List execution until unhidden\nExecute this before switching to exit camera or Bond will disappear",
+   "aliases": []
+  },
+  {
+   "opcode": 222,
+   "name": "ShowAllChrs",
+   "params": [],
+   "length": 1,
+   "description": "Show all characters previously hidden by HideAllChrs",
+   "aliases": []
+  },
+  {
+   "opcode": 223,
+   "name": "DoorOpenInstant",
+   "params": [
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Instantly open tagged door\n@exception: Mostly used for cutscenes, does NOT trigger door opening sfx.\nOpen tagged door even if locked",
+   "aliases": []
+  },
+  {
+   "opcode": 224,
+   "name": "ChrRemoveItemInHand",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "HAND_INDEX",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "Remove the item held by HAND_INDEX\n@exception: Does NOT drop item, instead clears holding item flag for HAND_INDEX",
+   "aliases": []
+  },
+  {
+   "opcode": 225,
+   "name": "IfNumberOfActivePlayersLessThan",
+   "params": [
+    {
+     "name": "NUMBER",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "If the number of active players < NUMBER\n@return     Continue execution from LABEL if TRUE\n@exception: Single player always has a total of active players set to 1",
+   "aliases": [
+    "IFSinglePlayer"
+   ]
+  },
+  {
+   "opcode": 226,
+   "name": "IFBondItemTotalAmmoLessThan",
+   "params": [
+    {
+     "name": "ITEM_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "AMMO_TOTAL",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 4,
+   "description": "If Bond's total ammo for item < AMMO_TOTAL\n@return     Continue execution from LABEL if TRUE\n@param AMMO_TOTAL singed char includes loaded gun + reserve",
+   "aliases": []
+  },
+  {
+   "opcode": 227,
+   "name": "BondEquipItem",
+   "params": [
+    {
+     "name": "ITEM_NUM",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Forces Bond to equip an item - only works in first person\n@exception: Can be used for any item, even if Bond does NOT have it in inventory",
+   "aliases": []
+  },
+  {
+   "opcode": 228,
+   "name": "BondEquipItemCinema",
+   "params": [
+    {
+     "name": "ITEM_NUM",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Forces Bond to equip an item - only works in third person (cinema)\n@exception: Can be used for any item, even if Bond does NOT have it in inventory",
+   "aliases": []
+  },
+  {
+   "opcode": 229,
+   "name": "BondSetLockedVelocity",
+   "params": [
+    {
+     "name": "X_SPEED60",
+     "bytes": 1
+    },
+    {
+     "name": "Z_SPEED60",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "Forces Bond to move in X/Z direction\n@param X/Z_SPEED60 is number of world units per tick (1 = 0.6m/s)\n@exception: Only works when Bond has been locked by HUD_HIDE_AND_LOCK_CONTROLS.\nUsed for dam jump.\nUses world units. (scale is 1:1 to in-game position.)",
+   "aliases": []
+  },
+  {
+   "opcode": 230,
+   "name": "IFObjectInRoomWithPad",
+   "params": [
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    },
+    {
+     "name": "PAD",
+     "bytes": 2
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 5,
+   "description": "If tagged object in the same room with PAD\n@return     Continue execution from LABEL if TRUE",
+   "aliases": []
+  },
+  {
+   "opcode": 231,
+   "name": "IFImFiringAndLockedForward",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "If guard is in firing state (ACT_ATTACK) and TARGET_180_RANGE is set\n@return     Continue execution from LABEL if TRUE",
+   "aliases": []
+  },
+  {
+   "opcode": 232,
+   "name": "IFImFiring",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "If guard is in firing state (ACT_ATTACK)\n@return     Continue execution from LABEL if TRUE",
+   "aliases": []
+  },
+  {
+   "opcode": 233,
+   "name": "SwitchSky",
+   "params": [],
+   "length": 1,
+   "description": "Instantly switch Sky to the Alternative Sky\n@exception: Can NOT be stopped after executing.\nLevel must have a Sky assigned or will crash!",
+   "aliases": []
+  },
+  {
+   "opcode": 234,
+   "name": "TriggerFadeAndExitLevelOnButtonPress",
+   "params": [],
+   "length": 1,
+   "description": "If player pressed any button, fade to black and exit level\n@exception: This command activates a state where game will fade to black when\nbutton input is detected from controller 1.\nDoes NOT pause mission time",
+   "aliases": []
+  },
+  {
+   "opcode": 235,
+   "name": "IFBondIsDead",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "If Bond has died/been killed\n@return     Continue execution from LABEL if TRUE",
+   "aliases": []
+  },
+  {
+   "opcode": 236,
+   "name": "BondDisableDamageAndPickups",
+   "params": [],
+   "length": 1,
+   "description": "Disables Bond damage and ability to pick up items\n@exception: Commonly used for level exit AI Lists - prevents Bond dying after\ntriggering exit cutscene.\nUse IF_BOND_DAMAGE_AND_PICKUPS_DISABLED to check if flag is set on",
+   "aliases": []
+  },
+  {
+   "opcode": 237,
+   "name": "BondHideWeapons",
+   "params": [],
+   "length": 1,
+   "description": "Set Bond's left/right weapons to be invisible",
+   "aliases": []
+  },
+  {
+   "opcode": 238,
+   "name": "CameraOrbitPad",
+   "params": [
+    {
+     "name": "LAT_DISTANCE",
+     "bytes": 2
+    },
+    {
+     "name": "VERT_DISTANCE",
+     "bytes": 2
+    },
+    {
+     "name": "ORBIT_SPEED60",
+     "bytes": 2
+    },
+    {
+     "name": "PAD",
+     "bytes": 2
+    },
+    {
+     "name": "Y_POS_OFFSET",
+     "bytes": 2
+    },
+    {
+     "name": "INITIAL_ROTATION",
+     "bytes": 2
+    }
+   ],
+   "length": 13,
+   "description": "Change view to orbit a pad with set speed\n@param LAT_DISTANCE: Unsigned camera distance from pad in centimeters\n@param VERT_DISTANCE: Signed camera distance from pad in centimeters\n@param ORBIT_SPEED: Normalised angle -0.5 - 0 - 0.5 (8000 - 7FFF) to rotate\nper frame. Generally stick to a low range as it is used\nfor delta timing (FF00-0100) (-0.02 - 0 - 0.02)\n@param PAD: pad for camera to target and orbit around\n@param Y_POS_OFFSET: Signed offset the relative y position for pad\n(boom/jib)\n@param INITIAL_ROTATION: Counter-clockwise normalised angle 0 - 1.0 (65535)\n@exception: Must have a BondHideWeapons and 3 Yield commands before executing\nor else engine will crash on console (use CameraTransitionFromBond).\nIf camera mode is already in third person then you do NOT need to do\nthe above.\nMission time is paused while in third person",
+   "aliases": []
+  },
+  {
+   "opcode": 239,
+   "name": "CreditsRoll",
+   "params": [],
+   "length": 1,
+   "description": "Trigger credits crawl\n@exception: Credits text and positions are stored in setup intro struct",
+   "aliases": []
+  },
+  {
+   "opcode": 240,
+   "name": "IFCreditsHasCompleted",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "If credits crawl has finished\n@return     Continue execution from LABEL if TRUE",
+   "aliases": []
+  },
+  {
+   "opcode": 241,
+   "name": "IFObjectiveAllCompleted",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "If all objectives for current difficulty has been completed\n@return     Continue execution from LABEL if TRUE\n@exception: Uses objective difficulty settings within setup, briefing file\nsettings are not referenced.\nEnsure both setup and briefing files are consistent",
+   "aliases": []
+  },
+  {
+   "opcode": 242,
+   "name": "IFFolderActorIsEqual",
+   "params": [
+    {
+     "name": "BOND_ACTOR_INDEX",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "If current Bond equal to folder actor index\n@return     Continue execution from LABEL if TRUE\n@exception: In retail release only index 0 works.\nOriginally this would have checked which Bond\n(Brosnan/Connery/Moore/Dalton) is currently used, with each briefing\nfolder using a different Bond likeness in-game. However Rare didn't\nhave the license to use the other actor's faces so this feature was\nremoved. Command is only used for Cuba (credits)",
+   "aliases": []
+  },
+  {
+   "opcode": 243,
+   "name": "IFBondDamageAndPickupsDisabled",
+   "params": [
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "If Bond damage and ability to pick up items disabled\n@return     Continue execution from LABEL if TRUE\n@exception: Used to check when Bond has exited level, usually to stop guards from\nspawning during mission cinema.\nUse BOND_DISABLE_DAMAGE_AND_PICKUPS to set state on",
+   "aliases": []
+  },
+  {
+   "opcode": 244,
+   "name": "MusicPlaySlot",
+   "params": [
+    {
+     "name": "MUSIC_SLOT",
+     "bytes": 1
+    },
+    {
+     "name": "SECONDS_STOPPED_DURATION",
+     "bytes": 1
+    },
+    {
+     "name": "SECONDS_TOTAL_DURATION",
+     "bytes": 1
+    }
+   ],
+   "length": 4,
+   "description": "Play levels x track for duration\n@param SECONDS unsigned\n@param MUSIC_SLOT available music slots range is 0-3\n@exception: SECONDS_STOPPED_DURATION is used by MUSIC_XTRACK_STOP\nWhen a slot is stopped, the xtrack will continue to play until\nthis or SECONDS_TOTAL_DURATION reaches 0.\nIf you do not want this to happen, set SECONDS_STOPPED_DURATION to 0",
+   "aliases": []
+  },
+  {
+   "opcode": 245,
+   "name": "MusicStopSlot",
+   "params": [
+    {
+     "name": "MUSIC_SLOT",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Stop currently playing x track in slot\n@param MUSIC_SLOT available music slots range is 0-3\n@exception: Use slot -1 to stop all xtrack slots instantly.\nWhen stopping a music slot, it will let the track continue to play\nuntil the seconds stopped duration time or total time\n(set by MUSIC_XTRACK_PLAY) reaches zero.\nThis is ignored when using music slot -1",
+   "aliases": []
+  },
+  {
+   "opcode": 246,
+   "name": "TriggerExplosionsAroundBond",
+   "params": [],
+   "length": 1,
+   "description": "Triggers explosions around Bond, will continue forever\n@exception: Does NOT trigger level exit or killed in action state",
+   "aliases": []
+  },
+  {
+   "opcode": 247,
+   "name": "IFKilledCiviliansGreaterThan",
+   "params": [
+    {
+     "name": "CIVILIANS_KILLED",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "If total civilians killed > CIVILIANS_KILLED\n@return     Continue execution from LABEL if TRUE\n@exception: Guards flagged with CHRFLAG_COUNT_DEATH_AS_CIVILIAN will count towards\ntotal when killed.\nUsually set for scientists/civilians/innocent NPCs",
+   "aliases": []
+  },
+  {
+   "opcode": 248,
+   "name": "IFChrWasShotSinceLastCheck",
+   "params": [
+    {
+     "name": "CHR_NUM",
+     "bytes": 1
+    },
+    {
+     "name": "GOTOLABEL",
+     "bytes": 1
+    }
+   ],
+   "length": 3,
+   "description": "If chr was shot since last check\n@return     Continue execution from LABEL if TRUE\n@exception: Checks chr->chrflags if CHRFLAG_WAS_HIT is set.\nIf true, unset flag and Go to LABEL.\nCHRFLAG_WAS_HIT is set even if guard is invincible",
+   "aliases": []
+  },
+  {
+   "opcode": 249,
+   "name": "BondKilledInAction",
+   "params": [],
+   "length": 1,
+   "description": "Sets briefing status to killed in action, automatic mission failure\n@exception: Does NOT kill Bond, only changes the mission status",
+   "aliases": []
+  },
+  {
+   "opcode": 250,
+   "name": "RaiseArms",
+   "params": [],
+   "length": 1,
+   "description": "Makes me raise my arms for half a second",
+   "aliases": []
+  },
+  {
+   "opcode": 251,
+   "name": "GasLeakAndFadeFog",
+   "params": [],
+   "length": 1,
+   "description": "Trigger gas leak event and slowly transition fog to the next fogs slot\n@exception: This command triggers a gas leak.\nFor the level egypt, this command will not trigger a gas leak, but\ninstead will only transition the fog.\nCan NOT be stopped after executing.\nLevel must have a fog assigned or will crash!",
+   "aliases": [
+    "FADE_FOG"
+   ]
+  },
+  {
+   "opcode": 252,
+   "name": "ObjectRocketLaunch",
+   "params": [
+    {
+     "name": "OBJECT_TAG",
+     "bytes": 1
+    }
+   ],
+   "length": 2,
+   "description": "Launch a tagged object like a rocket\n@exception: If tagged object can NOT be turned upright, object will be destroyed\ninstead.\nCan be used to drop attached props",
+   "aliases": [
+    "PROP_DROP_FROM_ATTACHMENT"
+   ]
+  }
+ ]
+}

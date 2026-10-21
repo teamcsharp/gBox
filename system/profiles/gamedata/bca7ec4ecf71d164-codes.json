@@ -1,0 +1,22 @@
+{
+ "game_id": "bca7ec4ecf71d164",
+ "title": "WCW-nWo Revenge (USA)",
+ "platform": "n64",
+ "profile": "cheatdb-unlocks-v1",
+ "verified": true,
+ "codes": [
+  {
+   "desc": "Extra Characters & Modes",
+   "lines": [
+    "8107F07C FFFF"
+   ]
+  }
+ ],
+ "scope": [
+  "Extra Characters & Modes"
+ ],
+ "evidence": {
+  "source": "libretro-database cht/Nintendo - Nintendo 64/WCW  nWo  REVENGE.cht",
+  "read_back": "2026-10-20 01:07 CST, i9-NUC agent session: every code held with cheats op=add; all 1 written values read back unchanged. Gameplay screens not captured (the NUC's frame capture was black until its relaunch)."
+ }
+}

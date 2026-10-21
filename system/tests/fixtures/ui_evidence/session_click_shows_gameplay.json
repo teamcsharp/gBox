@@ -1,0 +1,54 @@
+{
+  "title": "#2858: clicking a session that runs on another PC shows its gameplay live, with Pull it to this PC in a bar under the picture",
+  "branch": "session-click-shows-gameplay",
+  "about": "Synthetic answers for ticket #2858 (2026-10-20): the desktop app on the i9-NUC (#worker=i9-NUC, 1500x950) opens the agent's Metal Gear Solid: The Twin Snakes session that runs natively in Dolphin on JAYBUILTFINALE (a still of it 2 s old: live), and SoulCalibur on the same PC whose newest still is 95 s old (no picture: the follow-up at 16:45). The pictures are generated placeholders, not game frames; no control plane, no game files.",
+  "include": ["_web_shell.json"],
+  "lists": ["/api/sessions"],
+  "routes": {
+    "/api/sessions": [
+      {"session_id": "a68af3144f704f75-4a979744f8bc46d4", "game_id": "79965f951e479d2b", "title": "Metal Gear Solid - The Twin Snakes (USA) (Disc 1)",
+       "state": "running", "adapter": "dolphin", "started": "$now-280", "last_frame_age": 2.1,
+       "detail": {"local_window": true, "worker_name": "JAYBUILTFINALE", "pid": 190264, "emulator": "dolphin (Windows)"}},
+      {"session_id": "a68af3144f704f75-1268260454a84065", "game_id": "c747331797369f74", "title": "SoulCalibur (USA)",
+       "state": "running", "adapter": "retroarch", "started": "$now-1000", "last_frame_age": 95.4,
+       "detail": {"local_window": true, "worker_name": "JAYBUILTFINALE", "pid": 151816}}
+    ],
+    "/api/session_labels": {"a68af3144f704f75-4a979744f8bc46d4": {"owner": "agent", "label": ""}},
+    "/api/workers": [
+      {"id": "a68af3144f704f75", "name": "JAYBUILTFINALE", "os": "windows", "online": true, "tools": ["get_frame", "launch_game"],
+       "features": ["desktop_stream", "two_percent_audio", "desktop_game_crop", "session_stills"]},
+      {"id": "7c2bb26d44354167", "name": "i9-NUC", "os": "windows", "online": true, "tools": ["get_frame", "launch_game"],
+       "features": ["desktop_stream", "two_percent_audio", "desktop_game_crop"]},
+      {"id": "e2771e1c892e46e9", "name": "lilspark", "os": "linux", "online": true, "tools": ["get_frame", "launch_game"], "features": []}
+    ],
+    "/api/catalog/79965f951e479d2b": {"game_id": "79965f951e479d2b", "title": "Metal Gear Solid - The Twin Snakes (USA) (Disc 1)", "platform": "gamecube", "favorite": false},
+    "/api/catalog/c747331797369f74": {"game_id": "c747331797369f74", "title": "SoulCalibur (USA)", "platform": "dreamcast", "favorite": false},
+    "/api/sessions/a68af3144f704f75-1268260454a84065/frame.jpg": {"$placeholder": "synthetic still · SoulCalibur, 95 s old", "hue": 20, "style": "scene"},
+    "/api/sessions/a68af3144f704f75-1268260454a84065/stream/health": {"state": "running", "seq": 40, "age_s": 95.4, "uploads": 0, "stalls": [], "events": [],
+      "session_id": "a68af3144f704f75-1268260454a84065", "worker_online": true, "local_window": true, "gameplay_state": null, "presentation": null, "exit": null},
+    "/api/sessions/a68af3144f704f75-4a979744f8bc46d4/stream/health": {"state": "running", "seq": 0, "age_s": null, "uploads": 0, "stalls": [], "events": [],
+      "session_id": "a68af3144f704f75-4a979744f8bc46d4", "worker_online": true, "local_window": true, "gameplay_state": null, "presentation": null, "exit": null},
+    "/api/autoplay/telemetry/a68af3144f704f75-4a979744f8bc46d4": {"running": true, "mission": "learned: your style (22 moves from 29 bursts)", "stats": {"ff_s": 3.2}, "age_s": 5},
+    "/api/background/workers/a68af3144f704f75/status": {"active": [], "coordinator": {"runs": []}, "recent_results": [{"tool": "graphics", "state": "succeeded"}, {"tool": "autoplay", "state": "succeeded"}]},
+    "/api/games/*/workbench": {"mods": [], "controls": [], "bookmarks": []},
+    "/api/workers/a68af3144f704f75/desktop/status": {"watching": true, "last_frame_age": 0.2, "frames": 240, "app_available": true,
+      "games": ["a68af3144f704f75-4a979744f8bc46d4"]},
+    "/api/workers/a68af3144f704f75/desktop/stream?view=game&session=a68af3144f704f75-4a979744f8bc46d4": {"$placeholder": "synthetic frame · Twin Snakes on JAYBUILTFINALE", "hue": 200, "style": "scene"},
+    "/api/workers/a68af3144f704f75/desktop/stream?view=app": {"$svg": "<svg xmlns='http://www.w3.org/2000/svg' width='960' height='600' viewBox='0 0 960 600'><rect width='960' height='600' fill='#16161a'/><rect width='960' height='34' fill='#1f1f25'/><text x='16' y='23' font-family='system-ui,sans-serif' font-size='15' font-weight='700' fill='#e8e8ee'>gBox</text><text x='70' y='23' font-family='system-ui,sans-serif' font-size='12' fill='#9a9aa6'>Home   Library   Mods   Builds   Sessions</text><rect x='12' y='44' width='936' height='28' rx='4' fill='#1f1f25'/><text x='22' y='63' font-family='system-ui,sans-serif' font-size='12' fill='#e8e8ee'>Metal Gear Solid - The Twin Snakes (USA) (Disc 1)</text><rect x='12' y='82' width='660' height='500' fill='#000'/><rect x='20' y='90' width='644' height='300' fill='hsl(200,55%,60%)'/><rect x='20' y='390' width='644' height='184' fill='#3d6b35'/><rect x='60' y='240' width='90' height='150' fill='#8a8f99'/><rect x='520' y='200' width='100' height='190' fill='#7a7f8c'/><circle cx='300' cy='262' r='22' fill='#d23b3b'/><rect x='282' y='287' width='36' height='80' rx='8' fill='#d23b3b'/><circle cx='410' cy='282' r='18' fill='#2f5fd0'/><rect x='395' y='302' width='30' height='66' rx='7' fill='#2f5fd0'/><rect x='684' y='82' width='264' height='120' rx='6' fill='#1f1f25'/><rect x='684' y='212' width='264' height='160' rx='6' fill='#1f1f25'/><rect x='684' y='382' width='264' height='200' rx='6' fill='#1f1f25'/><text x='30' y='566' font-family='ui-monospace,monospace' font-size='13' fill='#ffffffcc'>synthetic · JAYBUILTFINALE's gBox window, the game docked in it</text></svg>"},
+    "/api/workers/a68af3144f704f75/desktop/stream?view=desktop": {"$placeholder": "synthetic · JAYBUILTFINALE's whole desktop", "hue": 140, "w": 960, "h": 540}
+  },
+  "shots": [
+    {"name": "session-click-shows-gameplay", "url": "/?embedded=1#token=fixture&worker=i9-NUC&session=a68af3144f704f75-4a979744f8bc46d4",
+     "viewport": [1500, 950], "actions": [{"wait_for": "#session-head"}, {"wait": 2500}]},
+    {"name": "session-click-shows-gameplay-bar", "url": "/?embedded=1#token=fixture&worker=i9-NUC&session=a68af3144f704f75-4a979744f8bc46d4",
+     "viewport": [1500, 950], "actions": [{"wait_for": "#remote-game-bar"}, {"wait": 2500}], "clip": "#remote-game-bar", "pad": 10},
+    {"name": "session-click-shows-gameplay-gbox-window", "url": "/?embedded=1#token=fixture&worker=i9-NUC&session=a68af3144f704f75-4a979744f8bc46d4",
+     "viewport": [1500, 950], "actions": [{"wait_for": "#remote-game-bar"}, {"wait": 1500}, {"click": "#remote-game-bar [data-remote-view=app]"}, {"wait": 1200}]},
+    {"name": "session-no-picture", "url": "/?embedded=1#token=fixture&worker=i9-NUC",
+     "viewport": [1500, 950], "actions": [{"wait_for": "#tray .tchip.nopic"}, {"click": "#tray .tchip.nopic"}, {"wait_for": "#no-picture-bar"}, {"wait": 1800}]},
+    {"name": "session-tray-no-picture", "url": "/?embedded=1#token=fixture&worker=i9-NUC",
+     "viewport": [1500, 950], "actions": [{"wait_for": "#tray .tchip.nopic"}, {"wait": 800}], "clip": "#tray", "pad": 8},
+    {"name": "sessions-list-liveness", "url": "/?embedded=1#token=fixture&worker=i9-NUC",
+     "viewport": [1500, 950], "actions": [{"wait": 800}, {"click": "#tabs button[data-t=Sessions]"}, {"wait_for": "#view table"}, {"wait": 600}], "clip": "#view table", "pad": 10}
+  ]
+}

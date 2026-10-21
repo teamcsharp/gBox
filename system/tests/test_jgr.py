@@ -13,7 +13,7 @@ import pytest
 from gbox import jgr
 from gbox.gdrom import GDRom
 
-_DEFAULT_GDI = "/home/ehm_eckx/gbox-cache/dc/4187aeab4d67638c/disc.gdi"
+_DEFAULT_GDI = "/home/ehm_eckx/gBox_alt/gbox-cache/dc/4187aeab4d67638c/disc.gdi"
 
 
 def _gdi():

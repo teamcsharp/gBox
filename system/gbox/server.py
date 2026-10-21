@@ -25,10 +25,12 @@ from . import operator_guard
 from .config import HOST_OS, Config
 from .models import Job, JobState, new_id, KnowledgeEdge, Receipt, RunRecord, WorkerInfo
 from .registry import REGISTRY
+from .state_snapshot import ADAPTERS as SNAPSHOT_ADAPTERS
 from .store import Store, canon, sha256
 from .worker_results import result_digest
 
 WORKER_TTL = 30.0
+MOMENT_WAIT_S = 240.0            # a report's moment snapshot: state_transfer's own limit is 180 s, a queued job gets the rest
 WEB = Path(__file__).resolve().parent.parent / "clients" / "web" / "index.html"
 BRAND = Path(__file__).resolve().parent.parent / "assets" / "brand"
 # adapters whose second copy can't run beside the first on one PC (mGBA's GDB stub port is fixed): a relaunch closes
@@ -83,31 +85,13 @@ class Evaluation(BaseModel):
     notes: str = ""
 
 
-def _checkpoint_slot(result: dict, adapter: str) -> int:
-    """Use native checkpoint evidence, never the slot requested before a dropped command."""
-    if result.get("verified") is False:
-        raise RuntimeError("the emulator did not verify the captured checkpoint")
-    slot = result.get("slot")
-    path = str(result.get("path") or result.get("file") or "")
-    match = re.search(r"\.state(-?\d+)?$", path)
-    native = (int(match[1] or 0) if match and adapter == "retroarch" else
-              (1 if adapter == "dolphin" and path.endswith(".s01") else None))
-    if adapter == "dolphin" and slot is not None and slot != 1:
-        raise RuntimeError("Dolphin's captured checkpoint does not identify native slot 1")
-    if slot is not None and (type(slot) is not int or (native is not None and native != slot)):
-        raise RuntimeError("the captured checkpoint slot disagrees with its native filename")
-    actual = slot if slot is not None else native
-    if actual is None:
-        raise RuntimeError("the captured checkpoint did not identify its actual native slot")
-    return actual
-
-
 def _is_stop_job(job: dict) -> bool:
     return job.get("tool") == "session_op" and (job.get("input") or {}).get("op") == "stop_game"
 
 
 def create_app(config: Config) -> FastAPI:
     store = Store(config.data_dir)
+    store.config = config                    # acceptance hooks that place files (characters._collect_accept) find the cache
     token = config.token()
     from . import cache_tiers                     # two-tier cache: recover + migrate before anything reads the cache
     cache_tiers.install(config)
@@ -516,6 +500,7 @@ def create_app(config: Config) -> FastAPI:
                 "profile": saved.get(key), "game_wide": saved.get("*"), "saved_slots": sorted(saved),
                 "resolved": RP.resolve(m, game_id, slot) if game_id else None,
                 "defaults": RP.DEFAULT, "roles": RP.ROLES, "rig_roles": (m.get("rig") or {}).get("roles") or {},
+                "flagged": RP.flags_of(m, game_id, slot) if game_id else [],
                 "model_url": f"/api/characters/{slug}/file/{m['model']}" if m.get("model") else None,
                 "source": m.get("source") or {}}
 
@@ -560,6 +545,7 @@ def create_app(config: Config) -> FastAPI:
                 games.pop(inp.game_id, None)
             if not games:
                 m.pop("retarget_profiles", None)
+            RP.clear_flags(m, inp.game_id, inp.slot)         # the save answers "mapped wrong" from gameplay
             for t in (m.get("targets") or {}).get(inp.game_id, []):
                 if key == "*" or RP.slot_key(t.get("slot")) in (key, "*"):
                     t["needs_rebuild"] = True
@@ -567,6 +553,33 @@ def create_app(config: Config) -> FastAPI:
         store.audit(actor, "character.retarget_profile", slug, {"game_id": inp.game_id, "slot": key,
                                                                  "reset": clean is None})
         return _profile_view(K, root, slug, inp.game_id, inp.slot)
+
+    class FlagIn(BaseModel):
+        game_id: str
+        slot: str = ""
+        session_id: str = ""
+        note: str = ""
+
+    @app.post("/api/characters/{slug}/retarget_profile/flag")
+    def chars_profile_flag(slug: str, inp: FlagIn, actor=Depends(auth)):
+        """The pick whip's "Fix this character's mapping": this donor looked mapped wrong in this game's slot during
+        gameplay. Kept beside the profiles (retarget_profile.add_flag, newest 20); the Retarget editor shows it until
+        that slot's profile is saved or reset. Changes nothing a build uses."""
+        from . import retarget_profile as RP
+        K, root = _chars()
+        if not re.fullmatch(r"[0-9a-f]{16}", inp.game_id or ""):
+            raise HTTPException(422, "game_id is a catalog game id")
+        with store.lock:
+            try:
+                m = K.get(root, slug)
+            except KeyError:
+                _404()
+            rows = RP.add_flag(m, inp.game_id, inp.slot, {"at": time.time(), "session_id": inp.session_id,
+                                                          "note": inp.note, "by": str(actor)})
+            K.put_meta(root, m)
+        store.audit(actor, "character.retarget_flag", slug, {"game_id": inp.game_id, "slot": RP.slot_key(inp.slot),
+                                                             "session_id": inp.session_id[:120]})
+        return {"slug": slug, "game_id": inp.game_id, "slot": inp.slot or "*", "flagged": rows}
 
     @app.get("/api/retarget/reference")
     def retarget_reference(game_id: str, slot: str = "", actor=Depends(auth)):
@@ -867,10 +880,39 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(409, f"no online gBox worker '{to}'")
         return hit
 
+    def _exclusive_rpcs3_restart(sess: dict, old_w: str, target: dict) -> bool:
+        # Linux RPCS3 holds flock(RPCS3.buf) for the profile's lifetime. A second
+        # copy cannot use that profile, even when launch_game keeps the old SID.
+        return (sess.get("adapter") == "rpcs3" and target.get("os") == "linux"
+                and target.get("id") == _wid(old_w))
+
+    def _reject_replaced_rpcs3(sid: str, sess: dict):
+        worker = store.get("worker", _wid(sid.split("-", 1)[0])) or {}
+        if (sess.get("state") != "running" and sess.get("replaced_by")
+                and _exclusive_rpcs3_restart(sess, sid.split("-", 1)[0], worker)):
+            raise HTTPException(409, "This RPCS3 session was replaced. Open the current session before requesting a restart.")
+
+    def _stop_rpcs3_for_restart(sid: str, worker: str, actor: str, should_stop=None):
+        """Only a confirmed stop of this exact session permits a profile replacement."""
+        if should_stop and should_stop():
+            raise HTTPException(409, "cancelled by the operator before the replacement started; your current game was kept running")
+        try:
+            result = _run_job("session_op", {"session_id": sid, "op": "stop_game", "args": {}},
+                              actor, worker=worker, wait=60, should_stop=should_stop)
+        except HTTPException as error:
+            raise HTTPException(409, f"RPCS3 replacement was not started: the stop of session {sid} was not confirmed "
+                                     f"({error.detail}). Check Sessions before retrying.") from error
+        if not isinstance(result, dict) or result.get("ended") is not True or result.get("session_id") != sid:
+            raise HTTPException(409, f"RPCS3 replacement was not started: the stop of session {sid} was not confirmed. "
+                                     "Check Sessions before retrying.")
+        with store.lock:
+            current = store.get("session", sid) or {}
+            store.put("session", sid, current | {"state": "ended", "ended": current.get("ended") or time.time()})
+
     def session_swap(sid: str, mod: str, to: str, actor: str, keep_state: bool = True, progress=None,
                      should_stop=None, keep_old: bool = False, parent_job: str = "") -> dict:
         """keep_old: on the same worker, the replacement starts beside the running copy (launch_game keep_session), which
-        closes only once the replacement runs (a reset's relaunch: never stop a game before its replacement is up)."""
+        closes only once the replacement runs. Linux RPCS3 must release its profile lock first."""
         say = progress or (lambda pct, msg: None)
         origin = {"via": "session_swap", "parent_job": parent_job} if parent_job else {"via": "session_swap"}
         stop = should_stop or (lambda: False)
@@ -882,12 +924,15 @@ def create_app(config: Config) -> FastAPI:
                 cancel_deferred = True
                 say(66, "The replacement launch has started. Cancellation is deferred while its safe handoff finishes.")
         sess = store.get("session", sid) or _404()
+        _reject_replaced_rpcs3(sid, sess)
         seen = set()
         while sess.get('state') != 'running' and sess.get('replaced_by') and sid not in seen:
             seen.add(sid); sid = sess['replaced_by']; sess = store.get('session', sid) or _404()
         game = store.catalog_get(sess.get("game_id") or "") or _404()
         old_w, tw = sid.split("-")[0], _swap_target(sid.split("-")[0], to)
         running, art, notes, old_luma = sess.get("state") == "running", None, [], None
+        exclusive = _exclusive_rpcs3_restart(sess, old_w, tw)
+        stopped_first = False
         launch_mod = mod
         if mod:
             say(2, "Preparing replacement files; your current game keeps running")
@@ -938,14 +983,34 @@ def create_app(config: Config) -> FastAPI:
                 raise HTTPException(409, f"Replacement was not applied: the current state could not be saved ({getattr(e, 'detail', e)}). Your game was kept running.")
         if stop():
             raise HTTPException(409, "cancelled by the operator before the replacement started; your current game was kept running")
+        if exclusive and running:
+            if not keep_state:
+                try:                            # Last played only; a fresh swap does not promise a restored state.
+                    moment = _run_job("state_transfer", {"session_id": sid, "op": "snapshot"}, actor,
+                                      worker=old_w, wait=25, should_stop=stop)["result"]["artifact"]
+                    store.put("session", sid, (store.get("session", sid) or {}) | {
+                        "checkpoint": moment, "moment_ts": time.time()})
+                except HTTPException as error:
+                    if str(error.detail).startswith("cancelled by the operator"):
+                        raise
+                except (KeyError, TypeError):
+                    pass
+            say(64, "Closing this RPCS3 session before starting its replacement")
+            _stop_rpcs3_for_restart(sid, old_w, actor, stop)
+            stopped_first = True
         say(66, f"Starting {game['title']} " + (f"with {mod}" if mod else "(original)") + f" on {tw['name']}")
-        beside = keep_old and running and tw["id"] == _wid(old_w) and sess.get("adapter") not in RELAUNCH_BESIDE_UNSAFE
+        beside = keep_old and running and not exclusive and tw["id"] == _wid(old_w) and sess.get("adapter") not in RELAUNCH_BESIDE_UNSAFE
         try:
             new = _run_job("launch_game", {"game": game, "mod": launch_mod, **({"keep_session": sid} if beside else {})},
                            actor, worker=tw["id"], wait=swap_launch_wait_s(SWAP_LAUNCH_QUEUE_S),
                            should_stop=stop, on_cancel_deferred=defer_cancel,
                            queue_wait=SWAP_LAUNCH_QUEUE_S, origin=origin)
         except HTTPException as e:
+            if stopped_first:
+                # A failed/timed-out launch may still own the profile. Never
+                # race it with an automatic recovery launch or a broad stop.
+                raise HTTPException(409, f"RPCS3 replacement did not complete ({e.detail}). "
+                                         "The previous session was stopped. Check Sessions before using Play again.") from e
             if str(e.detail).startswith('cancelled by the operator before the replacement started'):
                 raise                            # the child never claimed a native launch; no recovery is needed
             if ' did not start launch_game within ' in str(e.detail):
@@ -996,11 +1061,20 @@ def create_app(config: Config) -> FastAPI:
                 if not loaded:
                     notes.append(f"The state-import job completed, but the saved moment was not confirmed loaded. Your checkpoint is retained: {art}.")
             except HTTPException as e:
+                replacement_stopped = False
                 try:
-                    _run_job('session_op', {'session_id': nsid, 'op': 'stop_game', 'args': {}}, actor, worker=tw['id'], wait=60)
+                    if exclusive:
+                        _stop_rpcs3_for_restart(nsid, tw['id'], actor)
+                    else:
+                        _run_job('session_op', {'session_id': nsid, 'op': 'stop_game', 'args': {}}, actor, worker=tw['id'], wait=60)
+                    replacement_stopped = True
                 except HTTPException:
                     pass
-                if old_w == tw['id']:
+                if exclusive and not replacement_stopped:
+                    raise HTTPException(409, f"Replacement state restore failed ({e.detail}). Recovery was not started "
+                                             f"because session {nsid} did not confirm it stopped. "
+                                             f"The original checkpoint is retained: {art}. Check Sessions before retrying.") from e
+                if old_w == tw['id'] and (not exclusive or replacement_stopped):
                     say(75, 'State restore failed; recovering the original game and checkpoint')
                     try:
                         back = _run_job('launch_game', {'game': game,
@@ -1012,11 +1086,12 @@ def create_app(config: Config) -> FastAPI:
                         pass
                 raise HTTPException(409, f"Replacement state restore failed ({e.detail}). The original checkpoint is retained: {art}. Check Sessions for the recovered game.")
         if running and nsid != sid:
-            say(85, "Closing the previous copy")
-            try:
-                _run_job("session_op", {"session_id": sid, "op": "stop_game", "args": {}}, actor, worker=old_w, wait=60)
-            except HTTPException:
-                pass                                           # already closed by the modded launch
+            if not stopped_first:
+                say(85, "Closing the previous copy")
+                try:
+                    _run_job("session_op", {"session_id": sid, "op": "stop_game", "args": {}}, actor, worker=old_w, wait=60)
+                except HTTPException:
+                    pass                                       # already closed by the modded launch
             s_ = store.get("session", sid) or {}
             store.put("session", sid, s_ | {"state": "ended", "ended": s_.get("ended") or time.time(), "replaced_by": nsid,
                                             "exit": s_.get("exit") or {"by": actor, "via": "swap", "to": nsid},
@@ -1048,6 +1123,7 @@ def create_app(config: Config) -> FastAPI:
     def swap_job(sid: str, mod: str, to: str, actor: str, keep_state: bool = True, origin=None) -> Job:
         """session_swap in the background as a job record (polled like a launch; output.session_id = the new session)."""
         sess = store.get("session", sid) or _404()
+        _reject_replaced_rpcs3(sid, sess)
         seen = set()
         while sess.get('state') != 'running' and sess.get('replaced_by') and sid not in seen:
             seen.add(sid); sid = sess['replaced_by']; sess = store.get('session', sid) or _404()
@@ -1127,18 +1203,22 @@ def create_app(config: Config) -> FastAPI:
     # ---- Reset / Restart (2026-10-13: Reset on a Dolphin game stopped it and nothing came back) ----------------------
     # One server operation per click: the emulator's own reset where it has one, else the same game and build relaunched
     # on the same PC beside the running copy, which closes only once the new one runs. A failed relaunch leaves the game
-    # exactly as it was and says so; nothing here stops a game before its replacement is up.
+    # exactly as it was and says so. Linux RPCS3 instead confirms the old profile is closed before launching.
 
     def _live_session(sid: str) -> tuple[str, dict]:
         sess = store.get("session", sid) or _404()
+        _reject_replaced_rpcs3(sid, sess)
         seen = set()
         while sess.get('state') != 'running' and sess.get('replaced_by') and sid not in seen:
             seen.add(sid); sid = sess['replaced_by']; sess = store.get('session', sid) or _404()
         return sid, sess
 
-    def session_relaunch(sid: str, actor: str, original: bool = False, progress=None, should_stop=None) -> dict:
+    def session_relaunch(sid: str, actor: str, original: bool = False, progress=None, should_stop=None,
+                         save_moment: bool = True) -> dict:
         """The running game from boot again: the exact build folder it booted (a staged <mod>~<build> copy included: no
-        rebuild, no staging), or the original game (original=True, the hard reset), same worker, launched beside it."""
+        rebuild, no staging), or the original game (original=True, the hard reset), same worker, launched beside it.
+        save_moment=False (#2369, the game is not responding): no moment save, the frozen copy is closed first and the
+        fresh one started in its place. Linux RPCS3 always confirms a stop before reusing its profile."""
         say = progress or (lambda pct, msg: None)
         sid, sess = _live_session(sid)
         if sess.get("state") != "running":
@@ -1148,21 +1228,44 @@ def create_app(config: Config) -> FastAPI:
         tw = _swap_target(old_w, "")
         launch_mod = "" if original else (sess.get("launch_mod") or sess.get("staged_mod") or sess.get("mod") or "")
         build = "" if original else BM.session_build(sess)
-        beside = sess.get("adapter") not in RELAUNCH_BESIDE_UNSAFE
+        exclusive = _exclusive_rpcs3_restart(sess, old_w, tw)
+        beside = sess.get("adapter") not in RELAUNCH_BESIDE_UNSAFE and save_moment and not exclusive
         what = f"{game['title']}" + (f" ({build})" if build else " (original game)" if original else "")
-        try:                                              # last played: the moment before the restart (best effort)
-            say(10, "Saving your current moment first (Reload with your last moment can bring it back)")
-            moment = _run_job("state_transfer", {"session_id": sid, "op": "export"}, actor, worker=old_w, wait=25,
-                              should_stop=should_stop)["result"]["artifact"]
-            store.put("session", sid, (store.get("session", sid) or {}) | {"checkpoint": moment, "moment_ts": time.time()})
-        except HTTPException as e:
-            if str(e.detail).startswith("cancelled by the operator"):
-                raise
-        except (KeyError, TypeError):
-            pass
+        notes, stopped_first = [], False
+        if not save_moment and not exclusive:
+            # #2369: the game is not responding. Saving a moment would hang the same way, and a copy started beside a
+            # frozen emulator fights it for the GPU and the window: close it now, then start fresh.
+            say(10, "The game is not responding: closing it now, then starting it fresh")
+            try:
+                _run_job("session_op", {"session_id": sid, "op": "stop_game", "args": {}}, actor, worker=old_w, wait=60,
+                         should_stop=should_stop)
+                stopped_first = True
+            except HTTPException as e:
+                if str(e.detail).startswith("cancelled by the operator"):
+                    raise
+                notes.append(f"The frozen copy did not confirm it closed ({e.detail}); it is replaced anyway.")
+        elif save_moment:
+            try:                                          # last played: the moment before the restart (best effort)
+                say(10, "Saving your current moment first (Reload with your last moment can bring it back)")
+                # through gBox's own slot (op=snapshot): op=export would save it through Dolphin's slot 1, the operator's
+                moment = _run_job("state_transfer", {"session_id": sid, "op": "snapshot"}, actor, worker=old_w, wait=25,
+                                  should_stop=should_stop)["result"]["artifact"]
+                store.put("session", sid, (store.get("session", sid) or {}) | {"checkpoint": moment, "moment_ts": time.time()})
+            except HTTPException as e:
+                if str(e.detail).startswith("cancelled by the operator"):
+                    raise
+            except (KeyError, TypeError):
+                pass
+        if exclusive:
+            say(15, "Closing this RPCS3 session before starting it fresh")
+            _stop_rpcs3_for_restart(sid, old_w, actor, should_stop)
+            stopped_first = True
         say(20, f"Starting a fresh {what} on {tw['name']}" + ("; your game keeps running until it is up" if beside else ""))
+        from .screensaver import bot_demo as _bot_demo
+        jump = {"jump": True} if _bot_demo(store, sid) else {}   # a bot demo boots into its jump state, as it launched
         try:
-            new = _run_job("launch_game", {"game": game, "mod": launch_mod, **({"keep_session": sid} if beside else {})},
+            new = _run_job("launch_game", {"game": game, "mod": launch_mod, **({"keep_session": sid} if beside else {}),
+                                           **jump},
                            actor, worker=tw["id"], wait=900, should_stop=should_stop,
                            progress=lambda pct, msg: say(20 + pct * .6, msg))
         except HTTPException as e:
@@ -1179,13 +1282,13 @@ def create_app(config: Config) -> FastAPI:
             keep = {k: sess[k] for k in ("mod", "collection_mod", "staged_mod", "launch_mod") if sess.get(k)}
             with store.lock:
                 store.put("session", nsid, store.get("session", nsid) | keep)
-        notes = []
         if nsid != sid:
-            say(85, "Closing the previous copy")
-            try:
-                _run_job("session_op", {"session_id": sid, "op": "stop_game", "args": {}}, actor, worker=old_w, wait=60)
-            except HTTPException as e:
-                notes.append(f"The previous copy did not confirm it closed ({e.detail}); close it from Sessions.")
+            if not stopped_first:
+                say(85, "Closing the previous copy")
+                try:
+                    _run_job("session_op", {"session_id": sid, "op": "stop_game", "args": {}}, actor, worker=old_w, wait=60)
+                except HTTPException as e:
+                    notes.append(f"The previous copy did not confirm it closed ({e.detail}); close it from Sessions.")
             s_ = store.get("session", sid) or {}
             store.put("session", sid, s_ | {"state": "ended", "ended": s_.get("ended") or time.time(), "replaced_by": nsid,
                                             "exit": s_.get("exit") or {"by": actor, "via": "relaunch", "to": nsid}})
@@ -1194,6 +1297,7 @@ def create_app(config: Config) -> FastAPI:
                 "notes": notes}
 
     RESET_MODES = {"reset": "reset", "restart": "restart", "hard": "hard_reset"}   # mode -> the intent it needs
+    RESET_ANSWER_S = 20.0    # a console reset answers in seconds; no answer by then means the emulator is frozen (#2369)
 
     def session_reset(sid: str, actor: str, mode: str = "reset", progress=None, should_stop=None, parent_job: str = "") -> dict:
         """reset: the console's reset switch (the emulator's own reset), else a relaunch of the same game + build.
@@ -1203,19 +1307,22 @@ def create_app(config: Config) -> FastAPI:
         sid, sess = _live_session(sid)
         if sess.get("state") != "running":
             raise HTTPException(409, "This game has already ended, so there is nothing to reset: use Play again.")
-        notes = []
+        notes, frozen = [], False
         boot_build = (sess.get("collection_mod") or sess.get("mod") or "").split(BM.STAGED_SEP)[0]
         live = bool(sess.get("live_mod")) and sess["live_mod"] != boot_build    # a hot-swapped model in memory (#Blender)
         if mode == "reset" and not live:
             say(5, "Pressing the console's reset")
             try:
-                r = _run_job("session_op", {"session_id": sid, "op": "reset"}, actor, worker=sid.split("-")[0], wait=40,
-                             should_stop=stop)
+                r = _run_job("session_op", {"session_id": sid, "op": "reset"}, actor, worker=sid.split("-")[0],
+                             wait=RESET_ANSWER_S, should_stop=stop)
                 return {"session_id": sid, "from": sid, "mode": "native", "result": r.get("result"), "notes": notes}
             except HTTPException as e:
                 if str(e.detail).startswith("cancelled by the operator"):
                     raise
-                notes.append(f"No console reset reached the game ({e.detail}); it was relaunched instead.")
+                # still "running" when the wait ran out: the emulator is not answering at all (#2369, SC2 frozen)
+                frozen = str(e.detail).endswith(": running")
+                notes.append(f"The game did not answer its reset within {RESET_ANSWER_S:.0f} s; it was closed and started fresh."
+                             if frozen else f"No console reset reached the game ({e.detail}); it was relaunched instead.")
         if stop():
             raise HTTPException(409, "cancelled by the operator before the relaunch started; your current game was kept running")
         if live and mode != "hard":                    # the model in memory is the build to restart (a reset would boot
@@ -1223,12 +1330,22 @@ def create_app(config: Config) -> FastAPI:
             out = session_swap(sid, sess["live_mod"], "", actor, keep_state=False, progress=say, should_stop=stop,
                                keep_old=True, parent_job=parent_job)
         else:
-            out = session_relaunch(sid, actor, original=mode == "hard", progress=say, should_stop=stop)
+            out = session_relaunch(sid, actor, original=mode == "hard", progress=say, should_stop=stop,
+                                   save_moment=not frozen)
         return out | {"mode": "hard" if mode == "hard" else "relaunch", "notes": notes + (out.get("notes") or [])}
 
     def reset_job(sid: str, mode: str, actor: str, origin=None) -> Job:
         """session_reset in the background as a job record (polled like a swap; output.session_id = the game now)."""
         sid, sess = _live_session(sid)
+        from . import screensaver as _demos
+        if actor == "autoplay" and sess.get('state') == 'running':
+            from .background_testing import agent_owned
+            # autoplay relaunches a game it froze only when it is a bot demo (launched with autoplay on, the operator's
+            # own demos included) or an agent's test session; never the operator's own game they asked it to play
+            if not (_demos.bot_demo(store, sid) or agent_owned(store.get('slabel', sid),
+                                                               store.get('job', sid.split('-', 1)[-1]))):
+                raise HTTPException(409, "That game is the operator's own; autoplay relaunches only bot demos and "
+                                         "agent test sessions.")
         if _automated(actor, origin) and sess.get('state') == 'running':
             from .background_testing import agent_owned
             if not agent_owned(store.get('slabel', sid), store.get('job', sid.split('-', 1)[-1])):
@@ -1262,6 +1379,10 @@ def create_app(config: Config) -> FastAPI:
                 j["progress_log"] = (j.get("progress_log") or [])[-49:] + [msg]
                 store.put("job", job.id, j)
 
+        from .background_testing import agent_owned as _agent_owned
+        was_agent = _agent_owned(store.get('slabel', sid), store.get('job', sid.split('-', 1)[-1]))
+        old_label = store.get('slabel', sid) or {}
+
         def go():
             try:
                 out, state, err = session_reset(sid, actor, mode, prog,
@@ -1271,6 +1392,13 @@ def create_app(config: Config) -> FastAPI:
                 out, state, err = None, JobState.FAILED, str(e.detail)
             except Exception as e:                             # noqa: BLE001
                 out, state, err = None, JobState.FAILED, f"{type(e).__name__}: {e}"
+            nsid = (out or {}).get("session_id")
+            if was_agent and nsid and nsid != sid:
+                # an agent's test session relaunched is still the agent's: never the operator's "Reload your game" prompt,
+                # never a game the operator guard protects (2026-10-20: RE4 relaunches showed up on the NUC's screen)
+                store.put("slabel", nsid, old_label | {"owner": "agent"})
+            if nsid and nsid != sid:
+                _demos.carry_bot_demo(store, sid, nsid)       # a bot demo relaunched is still a bot demo
             with store.lock:
                 store.put("job", job.id, store.get("job", job.id) | {"state": state, "finished": time.time(), "output": out,
                                                                      "error": err})
@@ -1474,8 +1602,9 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/api/evidence/moments")
     def evidence_moment_put(m: EvidenceMomentIn, actor=Depends(auth)):
-        """Record the game's gameplay moment for evidence captures: a state export of a running session (the game is
-        not paused or stopped). Only on an explicit request that names the session."""
+        """Record the game's gameplay moment for evidence captures: a save state of a running session taken through
+        gBox's own slot (state_transfer op=snapshot: the game is not paused or stopped, its save slots are left alone).
+        Only on an explicit request that names the session."""
         from . import evidence_capture as EC
         sess = store.get("session", m.session_id) or _404()
         if sess.get("state") != "running":
@@ -1489,11 +1618,11 @@ def create_app(config: Config) -> FastAPI:
                     raise HTTPException(422, f"after_moment[{k}]: {e}")
                 if s_.tool and (s_.tool not in EC.STEP_TOOLS or s_.input.get("op") not in EC.STEP_TOOLS[s_.tool]):
                     raise HTTPException(422, f"after_moment[{k}]: tool {s_.tool} is not allowed")
-        out = _run_job("state_transfer", {"session_id": m.session_id, "op": "export"}, actor,
+        out = _run_job("state_transfer", {"session_id": m.session_id, "op": "snapshot"}, actor,
                        worker=m.session_id.split("-")[0], wait=120)
         art = (out.get("result") or {}).get("artifact")
         if not art:
-            raise HTTPException(409, "the state export returned no artifact")
+            raise HTTPException(409, "the state snapshot returned no artifact")
         with store.lock:
             allm = store.get("setting", EVIDENCE_MOMENTS) or {}
             rec = {"artifact": art, "label": m.label or "recorded gameplay moment", "session_id": m.session_id,
@@ -1762,12 +1891,25 @@ def create_app(config: Config) -> FastAPI:
         mode: Literal["reset", "restart", "hard"] = "reset"
         intent: str = ""                    # hard: "hard_reset" (an explicit operator action: the moment and mods go)
 
+    @app.get("/api/sessions/{sid}/restart-capability")
+    def session_restart_capability(sid: str, actor=Depends(auth)):
+        """Loaded server ordering support, not a guest-readiness or worker-version assertion."""
+        sess = store.get("session", sid) or _404()
+        wid = _wid(sid.split("-", 1)[0])
+        worker = next((w for w in workers() if w["id"] == wid), {})
+        supported = _exclusive_rpcs3_restart(sess, sid.split("-", 1)[0], worker)
+        available = supported and sess.get("state") == "running" and worker.get("online") is True
+        return {"session_id": sid, "game_id": sess.get("game_id"), "worker_id": wid,
+                "adapter": sess.get("adapter"), "available": available,
+                "capability": "rpcs3_exclusive_restart_v1", "ordering": "stop_before_launch" if supported else None,
+                "reason": None if available else "Requires a running RPCS3 session on an online Linux worker."}
+
     @app.post("/api/sessions/{sid}/reset")
     def session_reset_api(sid: str, r: ResetIn, actor=Depends(auth), origin=Depends(request_origin)):
         """Reset / restart a running game as one server operation (job; output.session_id = the game afterwards).
         reset: the emulator's own reset where it has one, else the same game + build relaunched on the same PC;
         restart: always that relaunch; hard: the original game from boot. A relaunch starts beside the running copy,
-        which closes only once the new one runs: a failed relaunch leaves the game as it was (the job says so)."""
+        which closes only once the new one runs, except Linux RPCS3 must first confirm its profile is closed."""
         if r.mode == "hard" and r.intent != RESET_MODES["hard"]:
             raise HTTPException(422, "a hard reset restarts the ORIGINAL game from boot (mods off, moment lost): it needs "
                                      "intent 'hard_reset' from an explicit operator action")
@@ -1874,12 +2016,13 @@ def create_app(config: Config) -> FastAPI:
     @app.post("/api/sessions/{sid}/moment")
     def session_moment(sid: str, wait: float = 6.0, actor=Depends(auth)):
         """Save the running game's moment now and keep it as the session's last-played checkpoint (the desktop app calls
-        this for its games just before it quits; best effort within `wait` seconds)."""
+        this for its games just before it quits; best effort within `wait` seconds). Saved through gBox's own slot
+        (state_transfer op=snapshot), never into the operator's save slot."""
         s_ = store.get("session", sid) or _404()
         if s_.get("state") != "running":
             return {"saved": False, "reason": "not running"}
         try:
-            art = _run_job("state_transfer", {"session_id": sid, "op": "export"}, actor, worker=sid.split("-")[0],
+            art = _run_job("state_transfer", {"session_id": sid, "op": "snapshot"}, actor, worker=sid.split("-")[0],
                            wait=max(1.0, min(float(wait), 30.0)))["result"]["artifact"]
         except (HTTPException, KeyError, TypeError) as e:
             return {"saved": False, "reason": str(getattr(e, "detail", e))[:300]}
@@ -2195,7 +2338,8 @@ def create_app(config: Config) -> FastAPI:
         frame = desktop_frames.get(wid) or {}
         return {"watching": time.time() < desktop_watch.get(wid, 0),
                 "last_frame_age": round(time.time() - frame["ts"], 1) if frame else None,
-                "frames": frame.get("seq", 0), "app_available": frame.get("app_rect") is not None}
+                "frames": frame.get("seq", 0), "app_available": frame.get("app_rect") is not None,
+                "games": sorted(frame.get("game_rects") or {})}      # sessions whose game window that screen shows (#2858)
 
     @app.post("/api/workers/{wid}/desktop/frame")
     async def desktop_frame_upload(wid: str, request: Request, actor=Depends(auth)):
@@ -2211,35 +2355,33 @@ def create_app(config: Config) -> FastAPI:
                 app_rect = None
         except ValueError:
             app_rect = None
+        from .remote_desktop import parse_game_rects
+        game_rects = parse_game_rects(request.headers.get("x-gbox-game-rects", ""))
         with desktop_condition:
             prior = desktop_frames.get(wid) or {}
-            desktop_frames[wid] = {"image": image, "app_rect": app_rect,
+            desktop_frames[wid] = {"image": image, "app_rect": app_rect, "game_rects": game_rects,
                                    "seq": prior.get("seq", 0) + 1, "ts": time.time()}
             desktop_condition.notify_all()
         return {"ok": True}
 
     @app.get("/api/workers/{wid}/desktop/stream")
-    def desktop_stream(wid: str, view: str = "app", actor=Depends(auth)):
+    def desktop_stream(wid: str, view: str = "app", session: str = "", actor=Depends(auth)):
+        """view=app: the gBox window; game (with session): that game's own window (#2858); desktop: everything."""
+        from .remote_desktop import stream_parts
         wid = _wid(wid)
         if not store.get("worker", wid):
             raise HTTPException(404, "worker not found")
-        if view not in ("app", "desktop"):
-            raise HTTPException(422, "view must be app or desktop")
-        def frames():
-            from .remote_desktop import frame_for_view
-            seen = 0
-            while True:
-                desktop_watch[wid] = time.time() + 8
-                with desktop_condition:
-                    desktop_condition.wait_for(lambda: (desktop_frames.get(wid) or {}).get("seq", 0) != seen, timeout=2)
-                    frame = desktop_frames.get(wid) or {}
-                if frame.get("seq") == seen or time.time() - frame.get("ts", 0) > 5:
-                    continue
-                seen = frame["seq"]
-                image = frame_for_view(frame["image"], view, frame.get("app_rect"))
-                if image:
-                    yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + image + b"\r\n"
-        return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=frame",
+        if view not in ("app", "desktop", "game") or (view == "game" and not session):
+            raise HTTPException(422, "view must be app, desktop or game (with a session)")
+
+        def next_frame(seen):
+            with desktop_condition:
+                desktop_condition.wait_for(lambda: (desktop_frames.get(wid) or {}).get("seq", 0) != seen, timeout=2)
+                return desktop_frames.get(wid) or {}
+
+        def renew():                                  # the worker captures its screen while this is in the future
+            desktop_watch[wid] = time.time() + 8
+        return StreamingResponse(stream_parts(next_frame, view, session, renew), media_type="multipart/x-mixed-replace; boundary=frame",
                                  headers={"Cache-Control": "no-store"})
 
     def _wid(wid: str) -> str:
@@ -2252,7 +2394,8 @@ def create_app(config: Config) -> FastAPI:
         return wid
 
     @app.post("/api/workers/register")
-    def register(w: WorkerInfo, actor=Depends(auth)):
+    def register(w: WorkerInfo, request: Request, actor=Depends(auth)):
+        w.address = request.client.host if request.client else ""      # a Play from this PC stays on this PC (#2386)
         with store.lock:
             return _register(w, actor)
 
@@ -2282,22 +2425,49 @@ def create_app(config: Config) -> FastAPI:
         store.audit(actor, "worker.register", w.id, {"name": w.name, "os": w.os, "tools": w.tools, "unavailable": w.unavailable})
         return {"id": w.id}
 
+    def _demo_preempted(j, wid) -> bool:
+        """A screensaver demo launch that is claimed after another game started on its PC would close that game (one
+        emulator per worker). Drop it instead. 2026-10-20: a queued Super Mario 64 demo replaced an agent's DOA3 session
+        a minute after that one booted. The screensaver logs the skipped launch and tries again once the PC is free."""
+        from .screensaver import ACTOR as SCREENSAVER
+        if j.get("tool") != "launch_game" or j.get("actor") != SCREENSAVER:
+            return False
+        if not any(s.get("session_id", "").startswith(wid + "-") for s in store.running_sessions()):
+            return False
+        store.put("job", j["id"], j | {"state": JobState.FAILED, "finished": time.time(),
+                                        "error": "skipped: another game started on this PC before the demo"})
+        store.audit(SCREENSAVER, "job.skip", j["id"], {"worker": wid, "why": "PC busy with another game"})
+        return True
+
     @app.post("/api/workers/{wid}/claim")
-    def claim(wid: str, activity: WorkerActivity | None = None, actor=Depends(auth)):
+    def claim(wid: str, request: Request, activity: WorkerActivity | None = None, actor=Depends(auth)):
         w = store.get("worker", wid)
         if not w:
             raise HTTPException(404, "unknown worker; register first")
         with store.lock:
             w["last_seen"] = time.time()
+            if request.client and request.client.host:
+                w["address"] = request.client.host
             if activity:
                 w["idle_seconds"] = activity.idle_seconds
                 w["active_jobs"] = activity.active_jobs
             store.put("worker", wid, w)
+        # The unlock reconciler takes its own guard and then the Store lock.
+        # Sample admission outside the Store lock to preserve that lock order.
+        from .unlock_job_policy import admit
+        unlock_wait = {j['id']: admit(store, app, j.get('parent_request_id'), j['tool'], j.get('input') or {},
+                                    expected=j.get('unlock_context'))
+                       for j in store.queued_jobs() if j['tool'] in w['tools']
+                       and j['require_os'] in (None, w['os'])
+                       and j['require_worker'] in (None, wid, w['name'])}
+        with store.lock:
             # Stop goes first (#1504): a stop never waits behind queued polls or captures of the game it ends.
             # Low-priority background work (the Sonic showcase) goes last.
             for j in sorted(store.queued_jobs(), key=lambda j: (not _is_stop_job(j), bool(j.get("low_priority")))):
                 if (j["state"] == JobState.QUEUED and j["tool"] in w["tools"]
                         and j["require_os"] in (None, w["os"]) and j["require_worker"] in (None, wid, w["name"])):   # by name: launched while that worker was restarting
+                    if _demo_preempted(j, wid):
+                        continue
                     from .savemgo import claim_reason as savemgo_claim_reason
                     savemgo_wait = savemgo_claim_reason(w, j)
                     if savemgo_wait:
@@ -2305,6 +2475,9 @@ def create_app(config: Config) -> FastAPI:
                                    'code': 'savemgo_worker_refresh_required'}
                         if j.get('admission_wait') != waiting:
                             store.put('job', j['id'], j | {'admission_wait': waiting})
+                        continue
+                    if why := unlock_wait.get(j['id'], 'Waiting for fresh job admission'):
+                        store.put('job', j['id'], j | {'admission_wait': {'worker': w['name'], 'reason': why}})
                         continue
                     try:
                         build_feedback.check(store, j)
@@ -2647,6 +2820,11 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/api/jobs")
     def submit(req: JobRequest, actor=Depends(auth), origin=Depends(request_origin)):
+        from .unlock_job_policy import admit, snapshot
+        parent = store.get('request', req.parent_request_id) if req.parent_request_id else None
+        unlock_context = snapshot((parent or {}).get('context') or {})
+        if why := admit(store, app, req.parent_request_id, req.tool, req.input, expected=unlock_context):
+            raise HTTPException(409, why)
         build_feedback.check(store, req)
         origin = origin if isinstance(origin, dict) else {"via": "internal"}   # in-server callers pass no request
         if req.tool in ('@launch', 'launch_game'):
@@ -2718,6 +2896,14 @@ def create_app(config: Config) -> FastAPI:
             if not scoped:
                 job.require_worker = None
             job.require_os = "linux"
+            if inp.get("op") == "collect" and not scoped and actor == "operator":
+                from .job_routing import collect_here
+                if here := collect_here(workers(), origin if isinstance(origin, dict) else {}):
+                    # #2407: the Spark cannot take this collect now (offline, or admission denied while it is busy):
+                    # the PC it was asked from collects and ships the entries back (characters.collect deliver=True;
+                    # characters._collect_accept lands them in the library here)
+                    job = job.model_copy(update={"require_worker": here["id"], "require_os": here.get("os"),
+                                                 "input": {**inp, "deliver": True}})
         elif t.name in ("re_executable", "assimilate"):
             # Analysis output belongs on Spark; RAM is read remotely through the
             # session RPC. Pinning this to a Windows session makes Linux work unrunnable.
@@ -2762,7 +2948,7 @@ def create_app(config: Config) -> FastAPI:
             job.state, job.error = JobState.REJECTED, f"{w.get('name')} can't run {t.name}: {why}"
         if missing:
             job.state, job.error = JobState.REJECTED, f"permission not granted: {missing}"
-        store.put("job", job.id, job.model_dump())
+        store.put("job", job.id, job.model_dump() | ({'unlock_context': unlock_context} if unlock_context else {}))
         if job.state == JobState.REJECTED:
             build_notes.job_ended(job.model_dump(mode="json"))
         if t.name == "session_op" and inp.get("op") == "stop_game" and job.state == JobState.QUEUED:
@@ -2895,6 +3081,25 @@ def create_app(config: Config) -> FastAPI:
         store.audit(actor, "job.cancel", jid, {"state": j["state"]})
         return {"id": jid, "state": j["state"], "cancel_requested": j.get("cancel", False)}
 
+    @app.post("/api/jobs/{jid}/retry")
+    def job_retry(jid: str, actor=Depends(auth), origin=Depends(request_origin)):
+        """#2398: a failed, rejected or invalid task dispatched again as a new job with the same tool, input and pins,
+        through the normal submit path (placement rules and guards apply); the two jobs are linked. A task still
+        queued or running is not duplicated."""
+        j = store.get("job", jid) or _404()
+        if j["state"] in (JobState.QUEUED, JobState.RUNNING):
+            raise HTTPException(409, f"This task is still {j['state']}; cancel it first or wait for it to end.")
+        req = JobRequest(tool=j["tool"], input=j.get("input") or {}, require_os=j.get("require_os"),
+                         require_worker=j.get("require_worker"), parent_request_id=j.get("parent_request_id"),
+                         agent_use=bool(j.get("agent_use")), low_priority=bool(j.get("low_priority")))
+        origin = {**(origin if isinstance(origin, dict) else {}), "via": "retry", "retry_of": jid}
+        new = submit(req, actor, origin)
+        new_id = new["id"] if isinstance(new, dict) else getattr(new, "id", None)
+        with store.lock:
+            store.put("job", jid, (store.get("job", jid) or j) | {"retried_by": new_id})
+        store.audit(actor, "job.retry", jid, {"new": new_id, "tool": j["tool"]})
+        return new
+
     def retire_unrunnable_jobs(worker_snapshot=None):
         """Keep dead sessions and long-gone workers out of the visible active queue."""
         from .job_maintenance import retire_orphaned_server_jobs, retire_stalled_snapshots
@@ -3002,15 +3207,36 @@ def create_app(config: Config) -> FastAPI:
     def facets(actor=Depends(auth)):
         return store.facets()
 
+    # spoken or typed platform / region words that are not in titles (#2375: "Resident Evil 2 Dual Shock PS1 USA")
+    PLATFORM_WORDS = {"ps1": "psx", "psx": "psx", "psone": "psx", "playstation": "psx", "ps2": "ps2", "ps3": "ps3",
+                      "psp": "psp", "n64": "n64", "nintendo64": "n64", "gamecube": "gamecube", "gc": "gamecube",
+                      "ngc": "gamecube", "wii": "wii", "wiiu": "wiiu", "snes": "snes", "sfc": "snes", "nes": "nes",
+                      "xbox": "xbox", "xbox360": "xbox360", "x360": "xbox360", "dreamcast": "dreamcast", "dc": "dreamcast",
+                      "saturn": "saturn", "genesis": "genesis", "megadrive": "genesis", "gba": "gba", "gbc": "gbc",
+                      "gb": "gb", "gameboy": "gb", "nds": "nds", "ds": "nds", "3ds": "3ds", "switch": "switch",
+                      "arcade": "arcade", "mame": "arcade", "naomi": "naomi", "dos": "dos"}
+    REGION_WORDS = {"usa", "us", "ntsc", "ntscu", "pal", "japan", "jp", "jpn", "europe", "eu", "world"}
+
     def rank_games(query: str, limit: int = 10) -> list[dict]:
         """Best matches for a spoken/typed title: exact/prefix title > all words in title > elsewhere;
-        originals over hacks/prototypes/bootlegs; USA/World over other regions; playable cores first."""
+        originals over hacks/prototypes/bootlegs; USA/World over other regions; playable cores first.
+        Platform and region words that no title carries are dropped when the full query has no hit; the platform
+        stays as a filter, then as a bonus (#2375)."""
         import re as _re
         q = _re.sub(r"[^a-z0-9 ]+", " ", query.lower()).strip()
         if not q:
             return []
         _, items = store.search(query, limit=400)
         words = q.split()
+        hint = ""
+        if not items:
+            kept = [w for w in words if w not in PLATFORM_WORDS and w not in REGION_WORDS]
+            if kept and len(kept) < len(words):
+                hint = next((PLATFORM_WORDS[w] for w in words if w in PLATFORM_WORDS), "")
+                q, words = " ".join(kept), kept
+                _, items = store.search(q, platform=hint, limit=400)
+                if not items and hint:
+                    _, items = store.search(q, limit=400)
 
         def norm(t):
             return _re.sub(r"\s*[\(\[].*?[\)\]]", "", t.lower())
@@ -3025,6 +3251,7 @@ def create_app(config: Config) -> FastAPI:
             if "(usa" in full or "(world" in full: s += 12
             elif "(europe" in full: s += 6
             if g.get("core"): s += 5
+            if hint and g.get("platform") == hint: s += 15
             if g.get("clone_of"): s -= 8
             if (g.get("playable") or "").startswith(("verified", "launches")): s += 4
             return s - len(tt) * 0.05
@@ -3329,7 +3556,7 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/api/games/{gid}/launch")
     def launch(gid: str, node: str = "auto", debug: bool = False, mod: str = "", swap: bool = False,
-               actor=Depends(auth), origin=Depends(request_origin)):
+               autoplay: bool = False, actor=Depends(auth), origin=Depends(request_origin)):
         """Launch on the requested node; automatic PS2/PS3 play uses Windows, other cores prefer Linux.
         debug=true: on the Spark with a full-debugger emulator (Dolphin / mGBA / DuckStation / MAME) where one exists.
         With a mod and the game already running, the mod is swapped into that session (same PC, moment kept) only
@@ -3364,8 +3591,11 @@ def create_app(config: Config) -> FastAPI:
                 return swap_job(current['session_id'], mod, '', actor, origin=origin)   # keep_state=True
         from . import built_mods                          # the operator's name for the build: the launch bar shows it
         named = built_mods.label_of(store, gid, mod, "") if mod else ""
+        # autoplay on launch (Spark button): the game plays itself, so it starts in gameplay where it has a jump state
+        # (gbox.jumpstate); a plain Play always boots the usual way
         req = JobRequest(tool="launch_game", input={"game": e, "debug": debug, **({"mod": mod} if mod else {}),
-                                                    **({"mod_title": named} if named and named != mod else {})},
+                                                    **({"mod_title": named} if named and named != mod else {}),
+                                                    **({"jump": True} if autoplay and not debug else {})},
                          agent_use=actor in ("agent", "mcp", "gbox-agent", "hermes") or _automated(actor, origin))
         if debug:
             node = "linux"
@@ -3374,6 +3604,8 @@ def create_app(config: Config) -> FastAPI:
         elif node != "auto":
             byname = [w for w in workers() if w["online"] and w["name"] == node]
             req.require_worker = byname[0]["id"] if byname else node
+        elif (e.get("launch") or {}).get("kind") == "native_port":
+            req.require_os = "linux"                      # native ports build and stream from the Linux worker
         elif e.get("platform") in ("ps2", "ps3"):
             # PS2 on the Spark uses an experimental ARM CPU backend. Keep ordinary
             # play on the Windows PC's mature recompiler and direct game display.
@@ -3382,7 +3614,18 @@ def create_app(config: Config) -> FastAPI:
             from . import systems                          # the platform rule wins over a core stored at scan time
             has_core = e.get("core") and (e.get("platform") == "arcade" or systems.core_for(e.get("platform", ""))[0])
             req.require_os = "linux" if has_core else "windows"
-        return submit(req, actor, origin)
+        if not req.require_worker and actor == "operator":
+            # #2386: the operator's own Play that names no PC boots on the PC it was asked from, never on another one.
+            from .job_routing import requester_worker
+            here = requester_worker(workers(), origin.get("remote"), req.require_os)
+            if here:
+                req.require_worker, req.require_os = here["id"], None
+        job = submit(req, actor, origin)
+        if autoplay and not debug:                          # a bot demo (any PC; the Spark button): plays itself once up
+            from . import screensaver
+            screensaver.autoplay_on_launch(store, getattr(job, "id", None) or "", gid, actor=actor,
+                                           agent=bool(req.agent_use))
+        return job
 
     @app.get("/api/profiles/{gid}")
     def profile(gid: str, actor=Depends(auth)):
@@ -3425,15 +3668,34 @@ def create_app(config: Config) -> FastAPI:
                                          "cond": threading.Condition()})
 
     @app.get("/api/sessions")
-    def sessions(actor=Depends(auth), include_ended: bool = True):
+    def sessions(actor=Depends(auth), include_ended: bool = True, limit: int = 60):
+        """Every running session, plus the newest `limit` ended ones (0 = the whole archive). The archive holds every
+        session ever played, and a row costs three store reads: building all of them took 45-120 s on the loaded
+        Spark (2026-10-21), which stalled the Sessions view, autoplay ops and every agent that lists sessions."""
         out = []
         now = time.time()
         from . import built_mods
         names = built_mods.display_names(store)       # a session of a renamed build: mod_title (Mini window title)
         favs = built_mods.favorites(store)            # the session header's "★ Favorite this build" offer
-        for s_ in store.all("session", reverse=True):
-            if not include_ended and s_.get('state') != 'running':
-                continue
+        running = store.running_sessions()
+        if not include_ended:
+            rows = sorted(running, key=lambda s: s.get("started") or 0, reverse=True)
+        elif limit > 0:
+            rows = store.recent("session", limit + len(running))          # newest first, as the archive order
+            seen = {s["session_id"] for s in rows}
+            rows += [s for s in running if s["session_id"] not in seen]   # an old session still running
+            ended = 0
+            kept = []
+            for s_ in rows:
+                if s_.get("state") != "running":
+                    ended += 1
+                    if ended > limit:
+                        continue
+                kept.append(s_)
+            rows = kept
+        else:
+            rows = store.all("session", reverse=True)
+        for s_ in rows:
             lv = live.get(s_["session_id"], {})
             row = s_ | {"last_frame_age": round(now - lv["ts"], 1) if lv.get("ts") else None}
             # the build folder it runs (a staged "<mod>~<build>" copy is still that build): the header renames it
@@ -3447,10 +3709,14 @@ def create_app(config: Config) -> FastAPI:
                     row["mod_favorite"] = True
             if s_.get("state") == "running" and _stopping(s_["session_id"]):
                 row["stopping"] = True              # Stop was pressed; the worker is killing the emulator (#1504)
-            if s_.get("state") == "running":         # Hermes / observers keep heavy work off the operator's game
-                from .background_testing import agent_owned
-                row["agent_owned"] = agent_owned(store.get("slabel", s_["session_id"]),
-                                                 store.get("job", s_["session_id"].split("-", 1)[-1]))
+            # Hermes / observers keep heavy work off the operator's game; the Sessions view leaves an ended demo or agent
+            # session for a game that plays at once, the operator's own ended game only after a grace (session-follow.js)
+            from .background_testing import agent_owned
+            row["agent_owned"] = agent_owned(store.get("slabel", s_["session_id"]),
+                                             store.get("job", s_["session_id"].split("-", 1)[-1]))
+            from .screensaver import bot_demo
+            if bot_demo(store, s_["session_id"]):
+                row["bot_demo"] = True               # launched with autoplay on: the Sessions header says "Bot demo"
             out.append(row)
         return out
 
@@ -3562,16 +3828,19 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/api/sessions/{sid}/frame")
     async def put_frame(sid: str, request: Request, actor=Depends(auth)):
+        from .live_stream import meter
         lv, body = _live(sid), await request.body()
         with lv["cond"]:
-            lv["frame"], lv["seq"], lv["ts"] = body, lv["seq"] + 1, time.time()
+            now = time.time()
+            meter(lv, now, "still")                       # a native game's window still (broadcast: kind "stills")
+            lv["frame"], lv["seq"], lv["ts"] = body, lv["seq"] + 1, now
             lv["cond"].notify_all()
         return {"seq": lv["seq"]}
 
     @app.post("/api/sessions/{sid}/stream")
     async def ingest_stream(sid: str, request: Request, actor=Depends(auth)):
         """Worker uploads a session's frames as one stream: [4-byte length][JPEG]...; parsed on the event loop."""
-        from .live_stream import note_frame
+        from .live_stream import meter, note_frame
         lv, buf, n = _live(sid), bytearray(), 0
         lv["sid"], lv["uploads"] = sid, lv.get("uploads", 0) + 1
         async for chunk in request.stream():
@@ -3585,6 +3854,7 @@ def create_app(config: Config) -> FastAPI:
                     with lv["cond"]:
                         now = time.time()
                         note_frame(lv, now)               # a gap of 2 s+ is logged with timestamps (stream-stability)
+                        meter(lv, now, "stream")          # the frame rate the broadcast feed list reports
                         lv["frame"], lv["seq"], lv["ts"] = frame, lv["seq"] + 1, now
                         lv["cond"].notify_all()
                     n += 1
@@ -3641,19 +3911,33 @@ def create_app(config: Config) -> FastAPI:
         return StreamingResponse(mjpeg_parts(lv, alive=alive), media_type="multipart/x-mixed-replace; boundary=f",
                                  headers={"cache-control": "no-store", "x-accel-buffering": "no"})
 
+    # --- broadcast: the program and per-PC / per-session feeds for Pine Box and media sources (docs/broadcast.md) ---
+    from . import broadcast as _broadcast
+    from .background_testing import agent_owned as _agent_owned
+    _broadcast.register(app, store, config, live=live, desktop_frames=desktop_frames, desktop_watch=desktop_watch,
+                        agent_owned=lambda sid: _agent_owned(store.get("slabel", sid),
+                                                             store.get("job", sid.split("-", 1)[-1])))
+
     class InputEvents(BaseModel):
         events: list[dict]
 
     padstate.register(app, auth)
+    from . import padmap
+    padmap.register(app, auth)                                 # per-console controller maps (the glyph's right-click)
 
     @app.post("/api/sessions/{sid}/input")
     def put_input(sid: str, ev: InputEvents, actor=Depends(auth)):
         lv = _live(sid)
+        # each pad event says who sent it (player / ui / autoplay / agent): the worker hands autoplay back only to the
+        # operator, never to an agent or a bridge pressing buttons in the same session
+        events = [e | {"src": padstate._source(actor, e)} if isinstance(e, dict) and "rpc" not in e and "src" not in e else e
+                  for e in ev.events]
         with lv["cond"]:
-            lv["input"].extend(ev.events)
+            lv["input"].extend(events)
             padstate.record(sid, ev.events, actor)                 # controller glyph: who pressed what
             lv["cond"].notify_all()
-        if actor not in ('agent','mcp','hermes','gbox-agent') and hasattr(app.state,'capture_gameplay'):
+        # only the operator's own input is gameplay to learn from: not agents, autoplay, bridges or workers
+        if padstate._source(actor, {}) in ('player','ui') and hasattr(app.state,'capture_gameplay'):
             app.state.capture_gameplay(sid,'pad',{'events':ev.events[:100],'timing':'received input events; not a core-frame TAS'})
         return {"queued": len(ev.events)}
 
@@ -4074,6 +4358,10 @@ def create_app(config: Config) -> FastAPI:
     gameplay_memory.install(app, store, config, auth)
     from . import gameplay_demo
     gameplay_demo.install(app,store,config,auth,submit,workers,app.state.gameplay_memory)
+    from . import screensaver                    # idle PCs play the operator's games in the operator's style
+    screensaver.install(app, store, config, auth, submit, workers, app.state.gameplay_memory)
+    from . import tactical_map                   # the Mercenaries tactical map: each round's frames and stages, live
+    tactical_map.install(app, auth)
     from . import tas_api
     tas_api.install(app, store, config, auth, submit, workers)
 
@@ -4441,7 +4729,7 @@ def create_app(config: Config) -> FastAPI:
     def session_rpc(sid: str, req: Rpc, actor=Depends(auth)):
         """Inspector peeks (read_memory / read_rom / info) and CPU debugger ops (debug_*), answered by the worker over the
         session channel. Debugger control (halt/step/breakpoints) changes execution, not memory, and is audited."""
-        if req.op not in ("read_memory", "read_rom", "info", "state", "reset", "menu", "pause", "resume", "normal_speed", "pso_controls", "memory_cards", "pso_face") \
+        if req.op not in ("read_memory", "read_ranges", "read_rom", "info", "state", "reset", "menu", "pause", "resume", "normal_speed", "pso_controls", "memory_cards", "pso_face") \
                 and not req.op.startswith("debug_"):
             raise HTTPException(422, "read-only, reset, pause/resume and debug_* ops only; edits go through the write_memory job")
         if req.op in ("reset", "pause", "resume", "normal_speed", "debug_halt", "debug_resume", "debug_step", "debug_break", "debug_unbreak"):
@@ -4498,11 +4786,12 @@ def create_app(config: Config) -> FastAPI:
             lv["cond"].notify_all()
         return {"ok": True}
 
-    def _rpc_quick(sid: str, op: str, wait: float = 3.0):
-        """session_rpc with a short wait, for the pick whip's pause hold: a session without the live channel answers
-        through the job queue instead, and an unanswered request is withdrawn so a late worker never applies it."""
+    def _rpc_quick(sid: str, op: str, wait: float = 3.0, args: dict | None = None):
+        """session_rpc with a short wait, for the pick whip's pause hold and the RAM inspector's reads: a session
+        without the live channel answers through the job queue instead, and an unanswered request is withdrawn so a
+        late worker never applies it."""
         rid, lv = new_id(), _live(sid)
-        item = {"rpc": rid, "op": op, "args": {}}
+        item = {"rpc": rid, "op": op, "args": args or {}}
         with lv["cond"]:
             lv["input"].append(item)
             lv["cond"].notify_all()
@@ -4679,6 +4968,24 @@ def create_app(config: Config) -> FastAPI:
         mods_on: list[str] = []            # mod cards showing as on / applied in the app ("title: status")
         kept_mods: list[str] = []          # mod ids the operator keeps on for this game
 
+    def _issue_lesson(report: dict, r: IssueIn, s_: dict) -> bool:
+        """A ⚑ report on a session of a Mercenaries title (its RAM map has a "mercs" block) is an improvement report for
+        the engine too: one "report" entry in the title's run-lessons log, read before its next round
+        (gbox.mercs_bot.note_lesson; docs/autoplay.md). Other titles: nothing. Never raises."""
+        gid = s_.get("game_id") or r.context.get("game_id")
+        if not gid:
+            return False
+        try:
+            from . import mercs_bot
+            from .screensaver import telemetry_get
+            text = "\n".join(x for x in (report.get("title"), r.note, r.detail) if x)
+            worker = (s_.get("detail") or {}).get("worker_name") or (r.session_id.split("-")[0] if r.session_id else None)
+            return mercs_bot.note_lesson({"game_id": gid}, mercs_bot.lesson(
+                "report", text, session_id=r.session_id or None, worker=worker,
+                telemetry=(telemetry_get(r.session_id) if r.session_id else None) or None, request_id=report.get("id")))
+        except Exception:                             # noqa: BLE001 - the report is filed either way
+            return False
+
     def _issue_log(sid: str, s_: dict) -> tuple[str, str]:
         """The session's emulator log tail (worker session_op log_tail); a Spark session's log file is also readable here.
 
@@ -4744,6 +5051,82 @@ def create_app(config: Config) -> FastAPI:
                 out.append((e.get("ts") or 0, f"- [{c['id'][:8]}] {e.get('name')} {json.dumps(e.get('args'))[:300]}"
                                               + (f"\n  -> {(res.get('text') or '')[:500]}" if res else "")))
         return [t for _, t in sorted(out, key=lambda x: x[0])[-15:]]
+
+    # --- a report's game moment through gBox's own save slot (gbox/state_snapshot.py) ---------------------------------
+    # Issue reports, failed-action auto reports and disputed completions keep the moment they were filed at. On Dolphin
+    # and RetroArch that is ONE state_transfer op=snapshot job: the state is saved through gBox's own slot (Dolphin's
+    # demo slot 10; RetroArch's slot 9, switched back to the operator's slot after) and uploaded as an artifact. The
+    # session_op save_state used before pressed Dolphin's slot 1 hotkey whatever slot it was given (the operator's own
+    # Save state / Load state slot: 2026-10-20 an RE4 report wrote G4BE08.s01 and the game froze) and left RetroArch on
+    # the report's slot, so the operator's next quick save went there. The job is recorded where that save and its
+    # export were: state_job_id and state_export_job_id both name it, state_snapshot says no emulator slot holds the
+    # moment (so no state_slot), and state_artifact / state_file follow once it has run (_moment_attach). A snapshot
+    # that fails (e.g. a PC still on a gBox from before op=snapshot) is reported as a moment that could not be captured:
+    # nothing ever falls back to a save into the operator's slot.
+    def _moment_failed(action: str, why: str) -> dict:
+        return {"author": "agent", "text": f"The game moment could not be captured: {why}. Nothing was saved into your "
+                "save slots instead.", "ts": time.time(), "attachments": [],
+                "task_step": {"action": action, "attempt": "1", "result": why[:400], "status": "failed"}}
+
+    def _snapshot_error(job: dict) -> str:
+        if job.get("state") == "succeeded":
+            return "the snapshot job uploaded no state file"
+        why = str(job.get("error") or job.get("state") or "no result")
+        if "export_saved | import" in why and "snapshot" not in why:      # state_transfer from before op=snapshot
+            why += " (that PC runs a gBox from before gBox-slot snapshots: it needs an update)"
+        return why[:600]
+
+    def _moment_snapshot(report: dict, sid: str, actor: str, action: str, doing: str):
+        """Queue the snapshot of the report's moment (it runs on the session's PC) and record it on the report, which
+        is stored. The Job, or None when it could not be queued (said on the report). The caller watches it:
+        _moment_attach(rid, _moment_wait(job.id), action)."""
+        rid = report["id"]
+        try:
+            job = submit(JobRequest(tool="state_transfer", input={"session_id": sid, "op": "snapshot"},
+                                    parent_request_id=rid), actor)
+        except Exception as exc:                                  # noqa: BLE001 - the report is filed either way
+            report["messages"].append(_moment_failed(action, str(getattr(exc, "detail", None) or exc)))
+            store.put("request", rid, report)
+            return None
+        report.setdefault("context", {}).update(state_job_id=job.id, state_export_job_id=job.id, state_snapshot=True)
+        report["messages"].append({"author": "agent", "text": f"{doing} through gBox's own save slot (job {job.id}); "
+                                   "your own save slots are left as they are.", "ts": time.time(), "attachments": [],
+                                   "task_step": {"action": action, "attempt": "1", "result": job.state, "status": job.state}})
+        store.put("request", rid, report)
+        return job
+
+    def _moment_wait(jid: str, seconds: float = MOMENT_WAIT_S) -> dict:
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            job = store.get("job", jid) or {}
+            if job.get("state") not in ("queued", "running"):
+                return job
+            time.sleep(.5)
+        return {"state": "timeout", "error": f"the snapshot job {jid} did not finish within {seconds:g} s"}
+
+    def _moment_attach(rid: str, job: dict, action: str) -> bool:
+        """A finished snapshot job onto report rid: its state file attached (context state_artifact, state_file), or a
+        message that the moment could not be captured. True when attached."""
+        info = ((job.get("output") or {}).get("result") or {}) if job.get("state") == "succeeded" else {}
+        meta = store.get("artifact", info.get("artifact")) if info.get("artifact") else None
+        if meta:
+            name, via = info.get("file") or meta["name"], info.get("via") or "gBox's own save slot"
+            text = (f"Game moment attached: {name} ({meta['size']} bytes), saved through {via}."
+                    + (f" {info['warning']}." if info.get("warning") else ""))
+            entry = {"author": "agent", "text": text, "ts": time.time(),
+                     "attachments": [{"sha256": meta["sha256"], "name": name, "type": meta["media_type"], "size": meta["size"]}],
+                     "task_step": {"action": action, "attempt": "1", "result": "state attached", "status": "finished"}}
+            context = {"state_artifact": meta["sha256"], "state_file": name}
+        else:
+            entry, context = _moment_failed(action, _snapshot_error(job)), {}
+        with store.lock:
+            latest = store.get("request", rid)
+            if not latest:
+                return False
+            latest.setdefault("context", {}).update(context)
+            latest.setdefault("messages", []).append(entry)
+            store.put("request", rid, latest)
+        return bool(meta)
 
     @app.post("/api/requests/issue")
     def req_issue(r: IssueIn, actor=Depends(auth)):
@@ -4832,61 +5215,33 @@ def create_app(config: Config) -> FastAPI:
                                                            "game": game,
                                                            "save_state_requested": r.save_state,
                                                            "issue_capture_key": capture_key}), actor)
+        _issue_lesson(report, r, s_)
         if not r.save_state or not r.session_id or s_.get("state") != "running":
             return report
         rid = report["id"]
+        if (s_.get("adapter") or "").lower() in SNAPSHOT_ADAPTERS:
+            # Dolphin / RetroArch: one job saves the moment through gBox's own slot and uploads it (_moment_snapshot);
+            # the operator's save slots stay theirs. Hermes waits for that job before reproducing the failure.
+            snap = _moment_snapshot(report, r.session_id, actor, "save reported game moment",
+                                    "Capturing the reported game moment")
+            if snap is not None:
+                threading.Thread(target=lambda: _moment_attach(rid, _moment_wait(snap.id), "save reported game moment"),
+                                 daemon=True, name=f"issue-state-{rid[:8]}").start()
+            return report
         try:
-            # A dedicated slot leaves the operator's ordinary quick save alone. The job is linked to the
-            # report so Hermes can wait for its actual result before trying to reproduce the failure.
+            # Any other emulator has no save slot of gBox's own: the emulator's own save state (session_op save_state;
+            # its slot argument only counts where the emulator takes one). The job is linked to the report so Hermes
+            # can wait for its actual result before trying to reproduce the failure.
             slot = 60 + sum(1 for old in store.all("request") if old["id"] != rid and
                             (old.get("context") or {}).get("session_id") == r.session_id and
                             (old.get("context") or {}).get("state_job_id"))
             saved = submit(JobRequest(tool="session_op", input={"session_id": r.session_id, "op": "save_state", "args": {"slot": slot}},
                                       parent_request_id=rid), actor)
             report["context"].update(state_job_id=saved.id, state_slot=slot)
-            report["messages"].append({"author": "agent", "text": f"Capturing the reported game moment in slot {slot} (job {saved.id}).",
+            report["messages"].append({"author": "agent", "text": f"Saving the reported game moment with the emulator's own save state (job {saved.id}).",
                                        "ts": time.time(), "attachments": [], "task_step": {"action": "save reported game moment",
                                        "attempt": "1", "result": saved.state, "status": saved.state}})
             store.put("request", rid, report)
-
-            # Supported cores can also export a portable artifact for Hermes or a client on another PC.
-            # Upload the existing checkpoint; saving again would capture a later game moment.
-            if (s_.get("adapter") or "").lower() in ("retroarch", "dolphin"):
-                def export_issue_state():
-                    deadline = time.time() + 120
-                    while time.time() < deadline:
-                        current = store.get("job", saved.id) or {}
-                        if current.get("state") not in ("queued", "running"):
-                            break
-                        time.sleep(0.5)
-                    if current.get("state") != "succeeded":
-                        return
-                    try:
-                        # the checkpoint job reports the slot the emulator ACTUALLY wrote; export that one
-                        saved_slot = _checkpoint_slot((current.get("output") or {}).get("result") or {},
-                                                      (s_.get("adapter") or "").lower())
-                        exported = submit(JobRequest(tool="state_transfer", input={"session_id": r.session_id,
-                                                     "op": "export_saved", "slot": saved_slot,
-                                                     "not_before": current.get("started") or current.get("created") or 0},
-                                                     parent_request_id=rid), actor)
-                        with store.lock:
-                            latest = store.get("request", rid) or {}
-                            if not latest:
-                                return
-                            latest.setdefault("context", {}).update(state_export_job_id=exported.id,
-                                state_slot=saved_slot, state_requested_slot=slot)
-                            latest.setdefault("messages", []).append({"author": "agent", "text": f"Portable save-state export queued (job {exported.id}).",
-                                "ts": time.time(), "attachments": [], "task_step": {"action": "export reported game moment",
-                                "attempt": "1", "result": exported.state, "status": exported.state}})
-                            store.put("request", rid, latest)
-                    except Exception as exc:
-                        with store.lock:
-                            latest = store.get("request", rid) or {}
-                            if latest:
-                                latest.setdefault("messages", []).append({"author": "agent", "text": f"Portable export unavailable: {exc}",
-                                    "ts": time.time(), "attachments": []})
-                                store.put("request", rid, latest)
-                threading.Thread(target=export_issue_state, daemon=True, name=f"issue-state-{rid[:8]}").start()
         except Exception as exc:
             report["messages"].append({"author": "agent", "text": f"Save state unavailable: {exc}", "ts": time.time(), "attachments": []})
             store.put("request", rid, report)
@@ -4995,7 +5350,12 @@ def create_app(config: Config) -> FastAPI:
                                                             "replacement_requested": f.replacement_requested,
                                                             "job_id": f.job_id, "auto_report": True}), actor)
         rid = report["id"]
-        if f.session_id and s_.get("state") == "running":
+        own_slot = (s_.get("adapter") or "").lower() in SNAPSHOT_ADAPTERS
+        if f.session_id and s_.get("state") == "running" and own_slot:
+            # Dolphin / RetroArch: through gBox's own slot, saved and uploaded in one job (_moment_snapshot);
+            # _preserve_failure below attaches it
+            _moment_snapshot(report, f.session_id, actor, "save game moment", "Saving this moment")
+        elif f.session_id and s_.get("state") == "running":
             try:
                 slot = 40 + sum(1 for old in store.all("request") if old["id"] != rid and
                                 (old.get("context") or {}).get("session_id") == f.session_id and
@@ -5004,7 +5364,7 @@ def create_app(config: Config) -> FastAPI:
                                           parent_request_id=rid), actor)
                 report["context"]["state_job_id"] = saved.id
                 report["context"]["state_slot"] = slot
-                report["messages"].append({"author": "agent", "text": f"Save state requested for this moment (job {saved.id}, slot {slot}). Its result is shown in the detailed report.",
+                report["messages"].append({"author": "agent", "text": f"Save state of this moment requested from the emulator itself (job {saved.id}). Its result is shown in the detailed report.",
                                            "ts": time.time(), "attachments": [], "task_step": {"action": "save game moment", "attempt": "1", "result": saved.state, "status": saved.state}})
             except Exception as exc:
                 report["messages"].append({"author": "agent", "text": f"Save state unavailable: {exc}", "ts": time.time(), "attachments": []})
@@ -5063,7 +5423,7 @@ def create_app(config: Config) -> FastAPI:
 
                 try:
                     saved_id = (store.get("request", rid) or {}).get("context", {}).get("state_job_id")
-                    saved_job = completed(saved_id) if saved_id else {"state": "unavailable"}
+                    saved_job = completed(saved_id, MOMENT_WAIT_S if own_slot else 120) if saved_id else {"state": "unavailable"}
                     frame = next((a for a in store.all("artifact") if (a.get("provenance") or {}).get("job") == saved_id
                                   and a.get("media_type") == "image/png"), None) if saved_id else None
                     if frame:
@@ -5078,39 +5438,16 @@ def create_app(config: Config) -> FastAPI:
                                            "result": "game frame attached", "status": "finished"}), "gbox-auto"))
                         except Exception as exc:
                             add(f"Game screenshot unavailable: {exc}", "capture failed moment", str(exc)[:400], "failed")
+                    if own_slot:                 # Dolphin / RetroArch: the snapshot job saved AND uploaded it
+                        if saved_id:             # (a snapshot that could not even be queued is on the report already)
+                            _moment_attach(rid, saved_job, "save game moment")
+                        return
                     if saved_job.get("state") != "succeeded":
                         add(f"Save state failed: {saved_job.get('error') or saved_job.get('state')}",
                             "save game moment", str(saved_job.get("error") or saved_job.get("state"))[:400], "failed")
                         return
-                    if (s_.get("adapter") or "").lower() not in ("retroarch", "dolphin"):
-                        add("This emulator cannot export a portable state; the local checkpoint remains available.",
-                            "export game moment", "unsupported emulator", "unavailable")
-                        return
-                    # the checkpoint job reports the slot the emulator ACTUALLY wrote; export exactly that file
-                    saved_slot = _checkpoint_slot((saved_job.get("output") or {}).get("result") or {},
-                                                  (s_.get("adapter") or "").lower())
-                    exported = submit(JobRequest(tool="state_transfer", input={"session_id": f.session_id,
-                        "op": "export_saved", "slot": saved_slot, "not_before": saved_job.get("started") or 0},
-                        parent_request_id=rid), "gbox-auto")
-                    add(f"Exporting the exact saved checkpoint (job {exported.id}).", "export game moment",
-                        exported.id, exported.state, state_export_job_id=exported.id,
-                        state_slot=saved_slot, state_requested_slot=slot)
-                    result = completed(exported.id)
-                    if result.get("state") != "succeeded":
-                        add(f"Portable checkpoint unavailable: {result.get('error') or result.get('state')}",
-                            "export game moment", str(result.get("error") or result.get("state"))[:400], "failed")
-                        return
-                    info = (result.get("output") or {}).get("result") or {}
-                    meta = store.get("artifact", info.get("artifact")) if info.get("artifact") else None
-                    if not meta:
-                        raise RuntimeError("checkpoint export did not upload its artifact")
-                    att = {"sha256": meta["sha256"], "name": meta["name"], "type": meta["media_type"], "size": meta["size"]}
-                    actual_slot = _checkpoint_slot(info, (s_.get("adapter") or "").lower())
-                    if actual_slot != saved_slot:
-                        raise RuntimeError("the portable export belongs to a different saved moment")
-                    add(f"Portable save state attached: {info['file']} ({info['bytes']} bytes).",
-                        "export game moment", "checkpoint attached", "finished", att,
-                        state_artifact=meta["sha256"], state_file=info["file"], state_slot=actual_slot)
+                    add("This emulator cannot export a portable state; the local checkpoint remains available.",
+                        "export game moment", "unsupported emulator", "unavailable")
                 except Exception as exc:
                     add(f"Automatic evidence preservation failed: {exc}", "preserve failed moment", str(exc)[:400], "failed")
             threading.Thread(target=_preserve_failure, daemon=True, name=f"auto-failure-{rid[:8]}").start()
@@ -5138,6 +5475,33 @@ def create_app(config: Config) -> FastAPI:
 
     emulation_issue.routes(app, store, auth, lambda body, actor: req_create(RequestIn(**body), actor),
                            _incident_job, _incident_dispatch)
+
+    # --- RAM inspector (gbox/ram_inspector.py, docs/ram_maps.md): a session's memory by name (the game's RAM map),
+    # its state changes as events, hex, and a search with labels; read-only, within a read budget per session ---
+    from . import ram_inspector
+
+    def _stream_frame(sid: str):
+        lv = live.get(sid)
+        return (lv["frame"], lv["seq"], lv["ts"]) if lv and lv.get("frame") else None
+    ram_inspector.routes(app, store, auth, rpc=lambda sid, op, args, wait: _rpc_quick(sid, op, wait, args),
+                         frame=_stream_frame, data_dir=config.data_dir)
+
+    # --- autoplay coaching (gbox/coaching.py): the Sessions header's note box -> one ticket per game, each note's
+    # moment (frame, save state through gBox's own slot, main RAM) captured on the session's worker ---
+    from . import coaching, coaching_evidence
+    coaching.routes(app, store, auth, create_request=lambda body, actor: req_create(RequestIn(**body), actor),
+                    submit=lambda tool, inp, rid, actor: submit(
+                        JobRequest(tool=tool, input=inp, parent_request_id=rid), actor,
+                        {"via": "autoplay coach", "request_id": rid}).model_dump(mode="json"),
+                    moment_provider=lambda sid: coaching_evidence.cached(
+                        sid, live, getattr(app.state, "tactical_map", None), screensaver.TELEMETRY, ram_inspector))
+    from . import player_damage
+    player_damage.routes(app, store, auth,
+        create_request=lambda body, actor: req_create(RequestIn(**body), actor),
+        submit=lambda tool, inp, rid, actor: submit(JobRequest(tool=tool, input=inp, parent_request_id=rid, agent_use=True), actor,
+            {"via": "player damage evidence", "request_id": rid}).model_dump(mode="json"),
+        moment_provider=lambda sid: coaching_evidence.cached(
+            sid, live, getattr(app.state, "tactical_map", None), screensaver.TELEMETRY, ram_inspector))
 
     # --- launch failure reports (gbox/launch_failures.py, docs/launch-failure-reports.md) ---
     from . import launch_failures as LF
@@ -5223,7 +5587,8 @@ def create_app(config: Config) -> FastAPI:
         if head.startswith(sha):
             return True
         from . import hermes_delivery
-        for repo in (Path.home() / "gBox-src", hermes_delivery.repository()):
+        from .side_dirs import side_dir
+        for repo in (side_dir("gBox-src"), hermes_delivery.repository()):
             if (repo / ".git").exists():
                 r = subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", sha, head],
                                    capture_output=True, timeout=30)
@@ -5534,13 +5899,21 @@ def create_app(config: Config) -> FastAPI:
                                    "result": explanation[:4000], "status": "running"}})
         session_id = complaint.session_id
         session = store.get("session", session_id) or {} if session_id else {}
-        if session.get("state") == "running" and not session.get("ended"):
+        snap = None
+        if session.get("state") == "running" and not session.get("ended") \
+                and (session.get("adapter") or "").lower() in SNAPSHOT_ADAPTERS:
+            # Dolphin / RetroArch: through gBox's own slot, saved and uploaded in one job (_moment_snapshot); its
+            # file is attached once the report below is stored (the thread at the end)
+            snap = _moment_snapshot(report, session_id, actor, "save failed moment", "Saving the failed moment")
+            if snap is not None:
+                report["context"]["session_id"] = session_id
+        elif session.get("state") == "running" and not session.get("ended"):
             try:
                 slot = 40 + sum(1 for old in store.all("request") if (old.get("context") or {}).get("session_id") == session_id)
                 saved = submit(JobRequest(tool="session_op", input={"session_id": session_id, "op": "save_state",
                                           "args": {"slot": slot}}, parent_request_id=rid), actor)
                 report["context"].update(session_id=session_id, state_job_id=saved.id)
-                report["messages"].append({"author": "agent", "text": f"Requested save state for the failed moment (job {saved.id}, slot {slot}).",
+                report["messages"].append({"author": "agent", "text": f"Requested the emulator's own save state for the failed moment (job {saved.id}).",
                                            "ts": time.time(), "attachments": [], "task_step": {"action": "save failed moment",
                                            "attempt": "1", "result": saved.state, "status": saved.state}})
             except Exception as exc:
@@ -5576,6 +5949,9 @@ def create_app(config: Config) -> FastAPI:
                 except Exception as exc:
                     store.audit("gbox-auto", "request.capture.error", rid, {"error": str(exc)[:500]})
             threading.Thread(target=_capture_disputed, daemon=True).start()
+        if snap is not None:
+            threading.Thread(target=lambda: _moment_attach(rid, _moment_wait(snap.id), "save failed moment"),
+                             daemon=True, name=f"incomplete-state-{rid[:8]}").start()
         return _clean(report)
 
     class RequestCaptureIn(BaseModel):

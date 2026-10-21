@@ -21,7 +21,9 @@ def state_dir() -> Path:
 
 
 def repository() -> Path:
-    return Path(os.environ.get('GBOX_HERMES_REPO') or Path.home() / 'gbox-hermes-repo')
+    from .side_dirs import moved, side_dir           # ~/gBox_alt/gbox-hermes-repo (the old home-root path still resolves)
+    env = os.environ.get('GBOX_HERMES_REPO')
+    return moved(Path(env)) if env else side_dir('gbox-hermes-repo')
 
 
 @contextmanager
@@ -121,6 +123,10 @@ def prepare(request_id: str, number: int) -> dict:
     repo = repository()
     if not (repo / '.git').exists():
         raise RuntimeError('The tracked Hermes repository has not been provisioned')
+    if (repo / '.git').is_dir():
+        import sys
+        from .hermes_payload_guard import install_pre_push
+        install_pre_push(repo, sys.executable, Path(__file__).resolve().parents[1])   # every task worktree pushes through it
     with locked(request_id):
         if record.exists():
             workspace = json.loads(record.read_text())
@@ -159,6 +165,11 @@ def publish(request_id: str, title: str, files: list[str], tests: list[str]) -> 
                     or not path.resolve().is_relative_to(root) or not path.is_file()
                     or any(part.startswith('.') for part in Path(name).parts)):
                 raise ValueError('Only explicit source, test and documentation files can be published')
+        from .hermes_payload_guard import refusals, worktree_inspector
+        refused = refusals(files, worktree_inspector(root))
+        if refused:
+            raise ValueError('Game data and binaries are never published to the public repository: '
+                             + '; '.join(refused[:5]))
         # The executed regression files are part of the handoff, even when the
         # caller supplied them only in tests rather than repeating them in files.
         files = list(dict.fromkeys(files))
@@ -167,7 +178,7 @@ def publish(request_id: str, title: str, files: list[str], tests: list[str]) -> 
                 raise ValueError('Python changes require 1 to 10 focused test files')
             for name in tests:
                 path = root / 'system' / name
-                if (not re.fullmatch(r'tests/test_[\w]+\.py', name) or path.is_symlink()
+                if (not re.fullmatch(r'tests/test_[\w-]+\.py', name) or path.is_symlink()
                         or not path.resolve().is_relative_to(root / 'system') or not path.is_file()):
                     raise ValueError('Tests must be named files inside system/tests')
                 if 'system/' + name not in files:
@@ -193,7 +204,7 @@ def publish(request_id: str, title: str, files: list[str], tests: list[str]) -> 
                 raise ValueError('Python changes require 1 to 10 focused test files')
             for name in tests:
                 path = system / name
-                if (not re.fullmatch(r'tests/test_[\w]+\.py', name) or path.is_symlink()
+                if (not re.fullmatch(r'tests/test_[\w-]+\.py', name) or path.is_symlink()
                         or not path.resolve().is_relative_to(system) or not path.is_file()):
                     raise ValueError('Tests must be named files inside system/tests')
             python = Path(__file__).resolve().parents[1] / '.venv-linux-aarch64/bin/python'

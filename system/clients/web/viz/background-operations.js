@@ -19,8 +19,25 @@ function jobs(rows, empty) {
     ${j.stage_log?.length?`<pre>${esc(j.stage_log.join('\n'))}</pre>`:''}
     <small>Job ${esc(j.id)}${j.parent_request_id?' / Request '+esc(j.parent_request_id):''}${j.receipt_id?' / Receipt '+esc(j.receipt_id):''}</small></div>`).join(''):`<p class="mut">${esc(empty)}</p>`;
 }
+// Picture-in-picture (operator 2026-10-20): while this PC idles, the Spark's gameplay (autoplay / screensaver / a
+// Spark launch) streams live in the bottom-right corner. The newest running game on the Spark wins.
+let pipSid = '';
+async function sparkPip() {
+  const sessions = await api('/api/sessions');
+  const rows = (Array.isArray(sessions) ? sessions : sessions.sessions || []).filter(s => s.state === 'running'
+    && ((s.detail || {}).worker_name === 'lilspark' || (s.detail || {}).staged_on === 'lilspark'));
+  const s = rows.sort((a, b) => (b.started || 0) - (a.started || 0))[0];
+  $('#pip').hidden = !s;
+  if (!s) { if (pipSid) { $('#pip-img').removeAttribute('src'); pipSid = ''; } return; }
+  $('#pip-label').textContent = 'Live on the Spark: ' + (s.title || s.game_id) + (s.mod ? ' / ' + s.mod : '');
+  if (s.session_id !== pipSid) {
+    pipSid = s.session_id;
+    $('#pip-img').src = `/api/sessions/${encodeURIComponent(s.session_id)}/mjpeg?token=${encodeURIComponent(token)}`;
+  }
+}
 async function tick() {
   if (stopped) return;
+  sparkPip().catch(() => {});
   try {
     const data=await api('/api/background/workers/'+encodeURIComponent(worker)+'/status');
     if(stopped)return;
@@ -60,7 +77,7 @@ for(const name of ['pointerdown','keydown'])addEventListener(name,event=>{
   if(!event.target.closest?.('button,a,input,details'))parent.postMessage({gboxBackgroundInput:true},'*');
 },{capture:true,passive:true});
 document.addEventListener('visibilitychange',()=>{if(document.hidden)visual?.stop();else visual?.start();});
-addEventListener('pagehide',()=>{stopped=true;clearTimeout(timer);taskPopup?.dispose();visual?.dispose();});
+addEventListener('pagehide',()=>{stopped=true;clearTimeout(timer);$('#pip-img')?.removeAttribute('src');taskPopup?.dispose();visual?.dispose();});
 // Existing Three.js wave renderer, driven by measured load rather than demo activity.
 import('./viz.js').then(async({createViz})=>{visual=await createViz($('#wave'),{mode:'smooth-wave',palette:'PlayStation Blue',quality:'low',provider:'external',maxFps:20});if(stopped)visual.dispose();else if(document.hidden)visual.stop();}).catch(()=>{ $('#wave').hidden=true;$('#visual-status').textContent='3D display unavailable. Live operation data remains visible.'; });
 tick();

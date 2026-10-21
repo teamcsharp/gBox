@@ -1,0 +1,40 @@
+{
+ "game_id": "8c47aa45fca5aed7",
+ "title": "Dragon Ball Z - Budokai 2 (USA)",
+ "platform": "gamecube",
+ "disc_id": "GZ3E70",
+ "profile": "gecko-unlocks-v1",
+ "verified": true,
+ "codes": [
+  {
+   "desc": "Have All Capsules codejunkies [Codejunkies]",
+   "lines": [
+    "00544748 00005009",
+    "005447A7 00000609",
+    "0054480C 00008309",
+    "00544891 00003109",
+    "005448C4 00001409",
+    "005448DB 00000809",
+    "005448E5 00000209",
+    "005446D3 00002409",
+    "005446F9 00000109",
+    "005446FC 00004F09",
+    "005447AE 00000009",
+    "005447BF 00000009",
+    "005447CF 00000009",
+    "005447DC 00000009",
+    "005447E9 00000009",
+    "005447F4 00000009",
+    "005447FF 00000009"
+   ],
+   "kind": "gecko"
+  }
+ ],
+ "scope": [
+  "Have All Capsules codejunkies"
+ ],
+ "evidence": {
+  "source": "codes.rc24 Gecko list GZ3E70.txt (Dolphin 'Download Codes')",
+  "read_back": "2026-10-20 07:03 CST, lilspark (the Spark's Dolphin) agent session: every code held with cheats op=add; all 17 written values read back unchanged from Dolphin's RAM. Gameplay screens of the unlocked content not captured."
+ }
+}

@@ -13,11 +13,17 @@ import json
 import re
 import time
 
+from .state_snapshot import ADAPTERS as SNAPSHOT_ADAPTERS
+
 # Writers `characters op=use` routes to: (module, slots, what gets replaced). Games: the module's GAME_IDS; "routed" is
 # read from characters_tool's loaded code. WRITER_GAME_IDS narrows modules whose
 # GAME_IDS also includes games that only support extraction.
 WRITERS = [
     ("doa2_swap", ["fighter:<name>:<costume>"], "DOA2 LE Japan: native body replacement; fighter motions preserved, per-donor gameplay verification"),
+    ("doa3_cast", ["fighter:<nick>"],
+     "Dead or Alive 3 (Xbox): every costume of a fighter family rewritten natively (CAT render-list parts, per-part "
+     "fit into the joint frames, DXT textures, morph links off) in one loadfile.afs for the native runner; whole "
+     "casts through cast_swap (pairs); Tengu not covered; per-donor gameplay verification"),
     ("soulcalibur_swap", ["fighter:<name>[:<costume>]", "roster"],
      "SoulCalibur DC (USA): any of the 19 fighters, every costume rebuilt natively on the fighter's own skeleton "
      "(motions, weapons, cloth and face bones kept; donor textures in the YUV422 pages); slot=roster builds the Sonic "
@@ -366,7 +372,8 @@ def _run_job(ctx, api, tool: str, inp: dict, rid: str, limit: float = 180) -> di
 
 
 def _moment_slot(ctx, api, rid: str) -> int:
-    """A dedicated slot per preserved moment on this request (issue reports use 60+; pickwhips start at 70)."""
+    """A slot number per preserved moment on this request for an emulator without a slot of gBox's own (issue reports
+    use 60+; pickwhips start at 70)."""
     n = 0
     try:
         r = api(ctx, "GET", f"/api/requests/{rid}") or {}
@@ -377,37 +384,62 @@ def _moment_slot(ctx, api, rid: str) -> int:
     return 70 + n
 
 
-def preserve_moment(ctx, api, rid: str, sid: str, game: dict, meta: dict, inp) -> dict:
-    """#1146: keep the exact game moment a pickwhip landed on. Saves a checkpoint (session_op save_state, which
-    reports the slot the emulator ACTUALLY wrote and its frame thumbnail), exports it as a portable artifact
-    (state_transfer export keyed to that slot, so a stale newest-file can't be picked), attaches the live frame
-    to the request (/api/requests/{rid}/capture) and posts the evidence. Every failure degrades to a note on the
-    request; the gap report itself is never blocked."""
+def _snapshot_moment(ctx, api, rid: str, sid: str) -> tuple[dict, str | None]:
+    """Dolphin / RetroArch: the moment saved through gBox's own slot and uploaded in ONE job (state_transfer
+    op=snapshot): the operator's save slots are never written or left switched. (out fields, evidence line); the line
+    is None after a failure note: a failed snapshot never falls back to a save into the operator's slot."""
+    j = _run_job(ctx, api, "state_transfer", {"session_id": sid, "op": "snapshot"}, rid)
+    r = (j.get("output") or {}).get("result") or {}
+    if j.get("state") != "succeeded" or not r.get("artifact"):
+        why = j.get("error") or (j.get("state") if j.get("state") != "succeeded" else "") or "no state file uploaded"
+        _post_message(ctx, api, rid, f"This moment could not be saved: {why}. Nothing was saved into your save slots "
+                      "instead.", {"action": "preserve pickwhip moment", "attempt": "1", "result": f"snapshot: {why}",
+                                   "status": "failed"})
+        return {"saved": False, "error": why}, None
+    via = r.get("via") or "gBox's own save slot"
+    return ({"saved": True, "artifact": r.get("artifact"), "bytes": r.get("bytes"), "file": r.get("file")},
+            f"Checkpoint of this moment saved through {via}. Portable export {r.get('bytes')} bytes ({r.get('file')}), "
+            f"artifact {r.get('artifact')}: restore it with state_transfer op=import once the writer exists.")
+
+
+def preserve_moment(ctx, api, rid: str, sid: str, game: dict, meta: dict, inp, adapter: str = "") -> dict:
+    """#1146: keep the exact game moment a pickwhip landed on. Dolphin and RetroArch sessions (adapter): one job saves
+    it through gBox's own slot and uploads it (_snapshot_moment). Any other emulator: a checkpoint (session_op
+    save_state, which reports the slot the emulator ACTUALLY wrote and its frame thumbnail), exported as a portable
+    artifact (state_transfer export keyed to that slot, so a stale newest-file can't be picked). Then the live frame
+    is attached to the request (/api/requests/{rid}/capture) and the evidence posted. Every failure degrades to a note
+    on the request; the gap report itself is never blocked."""
     out: dict = {"session_id": sid}
-    slot = _moment_slot(ctx, api, rid)
-    t0 = time.time()                                               # export_saved rejects a checkpoint older than this
-    j = _run_job(ctx, api, "session_op", {"session_id": sid, "op": "save_state", "args": {"slot": slot}}, rid)
-    if j.get("state") != "succeeded":
-        why = j.get("error") or j.get("state") or "unknown"
-        _post_message(ctx, api, rid, f"Save state unavailable for this moment (slot {slot}): {why}.",
-                      {"action": "preserve pickwhip moment", "attempt": "1", "result": f"save_state: {why}",
-                       "status": "failed"})
-        return out | {"saved": False, "error": why}
-    res = (j.get("output") or {}).get("result") or {}
-    out |= {"saved": True, "slot": res.get("slot", slot), "frame": res.get("frame")}
-    line = (f"Checkpoint of this moment saved in slot {res.get('slot', slot)}"
-            + (f"; frame thumbnail artifact {res['frame']}" if res.get("frame") else "") + ".")
-    # export_saved uploads THAT checkpoint file (exact slot, not older than t0); op=export would save again first,
-    # overwriting the pickwhip moment with a later one and breaking the match with the captured frame
-    x = _run_job(ctx, api, "state_transfer",
-                 {"session_id": sid, "op": "export_saved", "slot": res.get("slot", slot), "not_before": t0}, rid)
-    if x.get("state") == "succeeded":
-        r = (x.get("output") or {}).get("result") or {}
-        out |= {"artifact": r.get("artifact"), "bytes": r.get("bytes")}
-        line += (f" Portable export {r.get('bytes')} bytes ({r.get('file')}), artifact {r.get('artifact')}:"
-                 " restore it with state_transfer op=import once the writer exists.")
+    if str(adapter or "").lower() in SNAPSHOT_ADAPTERS:
+        got, line = _snapshot_moment(ctx, api, rid, sid)
+        out |= got
+        if line is None:
+            return out
     else:
-        line += f" Portable export unavailable: {x.get('error') or x.get('state')}."
+        slot = _moment_slot(ctx, api, rid)
+        t0 = time.time()                                           # export_saved rejects a checkpoint older than this
+        j = _run_job(ctx, api, "session_op", {"session_id": sid, "op": "save_state", "args": {"slot": slot}}, rid)
+        if j.get("state") != "succeeded":
+            why = j.get("error") or j.get("state") or "unknown"
+            _post_message(ctx, api, rid, f"Save state unavailable for this moment (slot {slot}): {why}.",
+                          {"action": "preserve pickwhip moment", "attempt": "1", "result": f"save_state: {why}",
+                           "status": "failed"})
+            return out | {"saved": False, "error": why}
+        res = (j.get("output") or {}).get("result") or {}
+        out |= {"saved": True, "slot": res.get("slot", slot), "frame": res.get("frame")}
+        line = (f"Checkpoint of this moment saved in slot {res.get('slot', slot)}"
+                + (f"; frame thumbnail artifact {res['frame']}" if res.get("frame") else "") + ".")
+        # export_saved uploads THAT checkpoint file (exact slot, not older than t0); op=export would save again first,
+        # overwriting the pickwhip moment with a later one and breaking the match with the captured frame
+        x = _run_job(ctx, api, "state_transfer",
+                     {"session_id": sid, "op": "export_saved", "slot": res.get("slot", slot), "not_before": t0}, rid)
+        if x.get("state") == "succeeded":
+            r = (x.get("output") or {}).get("result") or {}
+            out |= {"artifact": r.get("artifact"), "bytes": r.get("bytes")}
+            line += (f" Portable export {r.get('bytes')} bytes ({r.get('file')}), artifact {r.get('artifact')}:"
+                     " restore it with state_transfer op=import once the writer exists.")
+        else:
+            line += f" Portable export unavailable: {x.get('error') or x.get('state')}."
     where = f" at ({inp.x:.0%} across, {inp.y:.0%} down)" if getattr(inp, "x", None) is not None else ""
     try:
         api(ctx, "POST", f"/api/requests/{rid}/capture", timeout=90,
@@ -436,15 +468,14 @@ def no_writer(ctx, api, meta: dict, game: dict, need: dict, inp) -> dict:
     res = {"status": "missing", "missing": need, "request": req, "native_replacement": False}
     sid = inp.session_id
     if sid:
-        running = False
+        row = {}
         try:                                                       # preserve only a live session; a dead one just reports
-            running = next((s.get("state") == "running" for s in api(ctx, "GET", "/api/sessions")
-                            if s.get("session_id") == sid), False)
+            row = next((s for s in api(ctx, "GET", "/api/sessions") if s.get("session_id") == sid), None) or {}
         except Exception:                                          # noqa: BLE001
             pass
-        if running:
+        if row.get("state") == "running":
             try:
-                res["preserved"] = preserve_moment(ctx, api, req["id"], sid, game, meta, inp)
+                res["preserved"] = preserve_moment(ctx, api, req["id"], sid, game, meta, inp, row.get("adapter") or "")
             except Exception as e:                                 # noqa: BLE001 - the gap report is the deliverable
                 _post_message(ctx, api, req["id"], f"Moment preservation failed: {e}.",
                               {"action": "preserve pickwhip moment", "attempt": "1", "result": str(e)[:400],

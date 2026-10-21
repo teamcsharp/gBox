@@ -1,5 +1,5 @@
 """#1325 analysis probe: OoT USA Rev B (ntsc-1.2) Link draw path, DL tables and object loaders, re-derived from the
-owned ROM and pinned against the Ghidra project ~/gbox-cache/1aa2e4bb5797493f/ghidra/oot12.gpr (out/xrefs.txt)."""
+owned ROM and pinned against the Ghidra project ~/gBox_alt/gbox-cache/1aa2e4bb5797493f/ghidra/oot12.gpr (out/xrefs.txt)."""
 import struct
 from pathlib import Path
 
@@ -7,7 +7,7 @@ import pytest
 
 from gbox import oot_analysis as A
 
-OWNED = Path.home() / "gbox-cache/1aa2e4bb5797493f/source.zip"
+OWNED = Path.home() / "gBox_alt/gbox-cache/1aa2e4bb5797493f/source.zip"
 
 
 def _mips(*ws) -> bytes:

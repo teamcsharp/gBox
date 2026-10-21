@@ -1,7 +1,7 @@
 """gbox.crazy_taxi2_usa_inventory: Crazy Taxi 2 (USA) DC inventory (request #1666, game b5dfa0c44de0ba90).
 
 Unit tests use synthetic file lists / fake discs. The owned-disc test reads the unpacked hyperspin CHD
-(GBOX_CT2_USA_GDI, else <home>/gbox-cache/dc/b5dfa0c44de0ba90/disc.gdi) and skips without it."""
+(GBOX_CT2_USA_GDI, else <home>/gBox_alt/gbox-cache/dc/b5dfa0c44de0ba90/disc.gdi) and skips without it."""
 import hashlib
 import os
 from pathlib import Path
@@ -11,7 +11,7 @@ import pytest
 from gbox import crazy_taxi2 as c2
 from gbox import crazy_taxi2_usa_inventory as inv
 
-GDI = os.environ.get("GBOX_CT2_USA_GDI", str(Path.home() / "gbox-cache/dc/b5dfa0c44de0ba90/disc.gdi"))
+GDI = os.environ.get("GBOX_CT2_USA_GDI", str(Path.home() / "gBox_alt/gbox-cache/dc/b5dfa0c44de0ba90/disc.gdi"))
 FIRST_READ_SHA = "8057a8e37636ad78b1fc70ee590bd314686546b13ffe100623d86b572aec53c1"
 
 

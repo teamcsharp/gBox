@@ -209,3 +209,32 @@ def test_emulation_investigations_wait_for_a_paid_route(monkeypatch, tmp_path):
     monkeypatch.setattr(hermes_task_mode, '_run', no_job)
     with pytest.raises(RuntimeError, match='queued for a paid route'):
         hermes_task_mode.dispatch_request('a' * 16, 7)
+
+
+def test_an_inbox_lane_run_gets_the_larger_inbox_budget():
+    """#2399: a 45-call local run on an operator ticket read for 23 turns and published nothing. tool_budget_inbox
+    raises the inbox lane's budget (prompt and proxy alike); favorites keep tool_budget."""
+    s = S.model_copy(update={'tool_budget': 20, 'tool_budget_inbox': 60})
+    assert hermes_local.lane_budget(s, 'inbox') == 60 and hermes_local.lane_budget(s, 'favorite') == 20
+    assert hermes_local.lane_budget(S.model_copy(update={'tool_budget': 20}), 'inbox') == 20, 'unset: the plain budget'
+    assert hermes_local.lane_budget(S.model_copy(update={'tool_budget': 70, 'tool_budget_inbox': 60}), 'inbox') == 70
+    base = 'Assigned queue task. Use a 45-tool-call work budget with the final 10 calls reserved for tests.'
+    out = hermes_local.local_prompt(base, s, lane='inbox')
+    assert 'Use a 60-tool-call work budget with the final 6 calls' in out and 'at most 60 tool calls' in out
+    assert 'at most 20 tool calls' in hermes_local.local_prompt(base, s, lane='favorite')
+
+
+def test_large_local_run_reserves_delivery_and_resumes_the_missing_acceptance_step():
+    s = S.model_copy(update={'provider': 'gbox-minimax', 'model': 'minimax-m3.1-flash:cloud',
+                            'allow_large_tasks': True, 'tool_budget_inbox': 90})
+    before = s.model_dump()
+    text = hermes_local.local_prompt('Assigned queue task: request #7 (abcdef0123456789) [lane inbox].',
+                                    s, lane='inbox')
+    assert 'at most 90 tool calls, reserving the last 6 for focused verification, publish_task_changes' in text
+    assert 'reuse prepare_task_workspace' in text and 'pending job IDs' in text
+    assert 'Resume the first missing acceptance step' in text and 'do not duplicate an active job' in text
+    assert 'bounded deliverable' in text and 'exact check' in text
+    assert 'explicit file paths and test-path strings before optional investigation' in text
+    assert 'returned commit and PR receipt' in text and 'actual evidence artifact' in text
+    assert 'done only after the full request is verified' in text and 'keep partial work in_progress' in text
+    assert s.model_dump() == before  # Prompt packaging does not alter any route or capacity setting.

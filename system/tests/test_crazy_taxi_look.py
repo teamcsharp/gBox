@@ -13,8 +13,8 @@ import pytest
 from gbox import crazy_taxi as ct
 from gbox import crazy_taxi_look as L
 
-ISO = Path(os.environ.get("GBOX_CT_ISO", "/home/ehm_eckx/gbox-cache/modbase/bc02bb68790ce2e7/Crazy Taxi (USA).iso"))
-DONOR = Path(os.environ.get("GBOX_CT_DONOR", "/home/ehm_eckx/gbox-cache/characters/sa1_sonic"))
+ISO = Path(os.environ.get("GBOX_CT_ISO", "/home/ehm_eckx/gBox_alt/gbox-cache/modbase/bc02bb68790ce2e7/Crazy Taxi (USA).iso"))
+DONOR = Path(os.environ.get("GBOX_CT_DONOR", "/home/ehm_eckx/gBox_alt/gbox-cache/characters/sa1_sonic"))
 
 BOX = [(x, y, z) for x in (0.0, 4.0) for y in (-1.0, 1.0) for z in (-1.0, 1.0)]
 QUADS = [(0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3)]

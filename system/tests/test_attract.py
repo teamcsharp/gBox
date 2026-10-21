@@ -104,8 +104,12 @@ def test_search_media_launch_routing(plane, cfg, tmp_path):
     assert plane.get(f"/api/media/{gid}/boxart").status_code == 404
     assert plane.get(f"/api/media/{gid}/best").content.startswith(b"\x89PNG")          # falls back to snap
     pc = plane.get("/api/catalog", params={"q": "half-life"}).json()["items"][0]
-    assert plane.post(f"/api/games/{pc['game_id']}/launch").json()["require_os"] == "windows"
-    assert plane.post(f"/api/games/{gid}/launch").json()["require_os"] == "linux"
+    def lands_on(job):           # #2386: an operator Play from this PC is pinned to its own worker when the OS rule allows
+        if job["require_worker"]:
+            return next(w["os"] for w in plane.get("/api/workers").json() if w["id"] == job["require_worker"])
+        return job["require_os"]
+    assert lands_on(plane.post(f"/api/games/{pc['game_id']}/launch").json()) == "windows"
+    assert lands_on(plane.post(f"/api/games/{gid}/launch").json()) == "linux"
 
 
 def test_session_frames_and_input(plane):

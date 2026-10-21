@@ -90,6 +90,11 @@ def build_cast(cfg, game, rom, pairs, name, progress=None, root=None):
                 raise ValueError('Two pedestrians require conflicting changes to a shared allocation; build not published')
             files[sector]=(sectors,data)
         M.ped_to_gltf(fit['model'],M.read_chk(fit['chk']),own/'fitted.glb',slot)
+        if blender:
+            try:
+                M.export_editable_blend(own/'fitted.glb',own/'fitted.blend',blender,slot)
+            except Exception:
+                pass   # the editable .blend is a convenience; a failed export must not fail the build
         rows.append({'slot':slot,'native_model':native_slot,'character':meta['slug'],'name':meta['name'],'status':'built',
                      'triangles':fit['stats']['triangles'],'mdl_bytes':len(fit['mdl']),
                      'budget_bytes':fit['mdl_sectors']*M.SECTOR,'decimated':len(fit['tried'])>1,

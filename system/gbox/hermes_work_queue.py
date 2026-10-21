@@ -83,6 +83,41 @@ def _on_main():
     return {rid for rid, value in data.get('reported', {}).items() if value.startswith('on_main:')}
 
 
+def is_live_coaching(request) -> bool:
+    """An autoplay coaching ticket (gbox/coaching.py: source "coach", context.coaching): the operator's notes while a
+    bot plays, surfaced to the agents note by note (operator 2026-10-20: "improve things in realtime via live
+    reporting"). The Hermes queue never takes it, and list_requests leaves it out unless asked for."""
+    return request.get('source') == 'coach' or (request.get('context') or {}).get('coaching') is True
+
+
+def requested_player_damage(request) -> bool:
+    """Only this standing operator request's server-persisted run batch admits generated damage reports."""
+    context = request.get('context') or {}
+    sid, run = context.get('session_id'), context.get('damage_run_id')
+    if (request.get('source') != 'player_damage' or request.get('author') != 'agent'
+            or request.get('kind') != 'report' or context.get('operator_requested') is not True
+            or context.get('player_damage') is not True or request.get('status') not in ('open', 'in_progress')
+            or not isinstance(sid, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,120}', sid)
+            or not isinstance(run, str) or not re.fullmatch(r'[A-Za-z0-9_-]{8,96}', run)):
+        return False
+    try:
+        ledger = _api(f'/api/sessions/{sid}/damage/runs/{run}?limit=1')
+        return (ledger.get('session_id') == sid and ledger.get('run_id') == run and ledger.get('total', 0) > 0
+                and ledger.get('request_id') == request['id'] and ledger.get('game_id') == context.get('game_id'))
+    except Exception:
+        return False                               # missing/unreachable durable owner is not authorization
+
+
+def _prioritized_handoff(data, request) -> bool:
+    """A dated agent handoff explicitly selected by request, not just by its game."""
+    handoff = (request.get('context') or {}).get('handoff')
+    if (request.get('author') != 'agent' or not isinstance(handoff, str)
+            or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', handoff)):
+        return False
+    selected = data.get('priority') or []
+    return request['id'] in selected or str(request.get('number')) in selected
+
+
 def sync(data, favorites, requests, *, now):
     """Inventory every durable favorite, including missing catalog entries."""
     if (not isinstance(favorites, dict) or not isinstance(favorites.get('items'), list)
@@ -121,13 +156,31 @@ def sync(data, favorites, requests, *, now):
         context = request.get('context') or {}
         body = str(request.get('body') or request.get('title') or '').lstrip()
         actionable = request.get('source') in ('gap', 'characters')
-        repair = bool(context.get('auto_report') or context.get('native_replacement')
+        damage_report = requested_player_damage(request)
+        if request.get('source') == 'player_damage' and not damage_report:
+            old = data['items'].get('inbox:' + request['id'])
+            if old is not None:
+                old['damage_batch_verified'] = False
+                old['damage_batch_hold'] = 'damage ledger or request identity is unavailable/invalid'
+            continue                                # auto_report alone cannot forge a persisted damage batch
+        unlock_work = bool(context.get('custom_build_unlocks'))
+        repair = bool(damage_report or unlock_work or context.get('auto_report') or context.get('native_replacement')
                       or actionable and (context.get('character') or context.get('what')
                                          or body.startswith('Extract ') or 'pick whip' in body.lower()))
         operator_child = (request.get('parent_request_id') and request.get('author') == 'operator'
                           and request.get('source') not in {'characters', 'gap', 'system', 'automation', 'agent', 'review'})
-        if ((request.get('automated') and not repair and not operator_child and not actionable)
+        # Agent-filed resume tickets carry automated=True too. Explicit request
+        # priority admits a dated handoff without admitting unrelated auto noise.
+        handoff = _prioritized_handoff(data, request)
+        if ((request.get('automated') and not repair and not operator_child and not actionable and not handoff)
                 or body.startswith(('gBox request review', '<agent-message', '<task-notification'))):
+            continue
+        if is_live_coaching(request):
+            # the operator's coaching notes while autoplay plays (gbox/coaching.py) are live reporting for the agents
+            # at the inbox hook (scripts/agent_ledger.py), note by note: never a bulk Hermes run that takes the ticket
+            old = data['items'].get('inbox:' + request['id'])
+            if old is not None and old.get('dispatch_state') not in ('queued', 'uncertain'):
+                data['items'].pop('inbox:' + request['id'], None)
             continue
         if request.get('status') not in ('open', 'in_progress'):
             continue
@@ -136,12 +189,28 @@ def sync(data, favorites, requests, *, now):
             'created': request.get('created', now)})
         item.update(number=request.get('number'), title=request.get('title'), repair=repair,
                     extraction_engineering=context.get('extraction_engineering') is True,
+                    unlock_work=unlock_work,
+                    favorite_unlock_work=bool(context.get('favorite_default')),
                     session_observer=bool(context.get('session_observer')),
                     launch_failure=bool(context.get('launch_failure')),
-                    operator_requested=bool(context.get('replacement_requested')),
+                    operator_requested=bool(context.get('replacement_requested') or damage_report),
                     game_id=context.get('game_id'), target=context.get('target'),
                     character=context.get('character'))
+        if damage_report:
+            item.update(damage_batch_verified=True, damage_batch_hold='')
     data.update(favorites_count=len(favorite_ids), synced_at=now)
+
+
+def _run_workdir(item) -> str:
+    """A dispatched run starts in its request's own Git worktree (hermes_delivery.prepare), so relative edits, rg and
+    git land in the tracked workspace - never in the deployed runtime (~/gBox/system), where queue runs used to start
+    and edited the live code (2026-10-20: the Dolphin -C keys stripped from the share's adapters.py broke every Linux
+    Dolphin pad; a "cron" Git repository appeared in the share). A neutral folder when no worktree can be prepared."""
+    try:
+        return mode._workdir(item['request_id'], int(item['number']))
+    except Exception as error:  # noqa: BLE001 - the run still starts, away from the live code
+        item['workspace_error'] = f'{type(error).__name__}: {error}'[:300]
+        return mode._neutral_workdir()
 
 
 def next_stage(item):
@@ -229,6 +298,12 @@ def candidates(data, requests, native, owned, on_main, *, now):
                       if i.get('dispatch_state') in ('queued', 'uncertain') or i.get('request_id') in owned)
     heavy = sum(j.get('tool') in ('analyze_binary', 'ghidra_script', 'characters', 'doa2_assets') for j in native)
     result = []
+    unlock_admission = data.get('unlock_admission') or {}
+    cap = unlock_admission.get('dispatch_per_hour', 0)
+    cap = cap if type(cap) is int and 1 <= cap <= 4 else 0
+    unlock_recent = sum(sum(1 for stamp in i.get('unlock_dispatch_times', [i.get('last_dispatched', 0)])
+                            if type(stamp) in (int, float) and stamp > 0 and now - 3600 < stamp <= now)
+                        for i in data['items'].values() if i.get('unlock_work'))
     for key, item in data['items'].items():
         rid = item.get('request_id')
         if (rid and rid in busy_requests or item.get('retry_at', 0) > now
@@ -236,13 +311,21 @@ def candidates(data, requests, native, owned, on_main, *, now):
                 or item.get('request_uncertain') or item.get('dispatch_state') in ('queued', 'uncertain')):
             continue
         req = by_id.get(rid, {})
+        if (req.get('source') == 'player_damage' or 'damage_batch_verified' in item) \
+                and (item.get('damage_batch_verified') is not True or not requested_player_damage(req)):
+            continue                            # a later failed sync cannot leave an old eligibility proof usable
+        if item.get('lane') == 'inbox' and is_live_coaching(req):
+            continue                                       # live coaching: the agents' inbox hook, never Hermes
         from . import hermes_result_review
         item['review_hold'] = hermes_result_review.gate(item)
         if item['review_hold']:
             continue
+        if item.get('unlock_work') and (unlock_admission.get('allowed') is not True
+                or rid not in unlock_admission.get('request_ids', []) or unlock_recent >= cap):
+            continue
         if item['lane'] == 'favorite':
             # a recently played title the Sonic showcase found without a writer (ensure_item) is worked like a favorite
-            if (not (item.get('favorite') or item.get('showcase')) or not item.get('in_catalog')
+            if (not (item.get('favorite') or item.get('showcase') or item.get('collect')) or not item.get('in_catalog')
                     or item['game_id'] in busy_games or not next_stage(item)):
                 continue
             if heavy >= 2 and next_stage(item) in ('inventory', 'analysis'):
@@ -255,7 +338,11 @@ def candidates(data, requests, native, owned, on_main, *, now):
         item['on_main'] = rid in on_main
         result.append((key, item))
     repair_games = {i.get('game_id') for _, i in result if i.get('repair') and i.get('game_id')}
-    return [(k, i) for k, i in result if i['lane'] != 'favorite' or i['game_id'] not in repair_games]
+    result = [(k, i) for k, i in result if i['lane'] != 'favorite' or i['game_id'] not in repair_games]
+    # One unlock investigation per managed tick, even with spare global slots.
+    unlocks = [v for v in result if v[1].get('unlock_work')]
+    first = min(unlocks, key=lambda v: (v[1].get('last_dispatched', 0), v[1].get('created', 0)), default=None)
+    return [v for v in result if not v[1].get('unlock_work') or v is first]
 
 
 def priority_rank(item, data) -> int:
@@ -363,7 +450,7 @@ def operator_gate(options, playing, throttled=None):
 
 def _prompt(item, playing=None):
     rid = item['request_id']
-    header = (f"Assigned queue task: request #{item['number']} ({rid}). Work ONLY this request; "
+    header = (f"Assigned queue task: request #{item['number']} ({rid}) [lane {item['lane']}]. Work ONLY this request; "
               "the dispatcher has reserved it. Read get_request and get_dispatch_feedback first. "
               "Do not select a different ticket from list_requests. ")
     if item.get('review_guidance'):
@@ -371,6 +458,25 @@ def _prompt(item, playing=None):
                    + json.dumps(item['review_guidance'])
                    + '\nResolve the diagnosed cause and run its focused verification before retrying. '
                    'Preserve the previous work and pending job IDs; do not repeat the same failed action. ')
+    if item.get('unlock_work'):
+        scope = ('This is exact-game unlock research for the original favorite and its current builds. '
+                 if item.get('favorite_unlock_work') else 'This is the standing exact-build custom unlock requirement. ')
+        application = (
+            'Publish a reusable exact-revision boot_apply recipe only with complete stored runtime coverage, '
+            'native revision/mode guards and exact-build receipts. Never launch an emulator automatically, '
+            'copy/rebuild a ROM for discovery, or alter a current game. '
+            if item.get('favorite_unlock_work') else
+            'Implement the reusable unlock step in the existing custom-build writer and pin each resulting '
+            'exact-build receipt. Follow the request acceptance scope; preserve its existing character/stage edits. ')
+        return header + scope + (
+            'Reuse saved '
+            'REA/Ghidra analysis, executable hashes, published native controls and custom_build_unlocks profiles. '
+            'Inventory all characters, hidden_characters, levels, stages, costumes, modes, items and extras. '
+            'Every absent category needs evidence; a subset, generic verified flag or successful tool exit is not '
+            'unlock-all. Preserve personal saves and base ROMs. ') + application + (
+            'Do static analysis and implement bounded reusable support; if fresh runtime proof is unavailable, '
+            'leave the request pending with the precise missing evidence. Yield when any operator activity begins. '
+            'Do not turn this into character replacement work. ') + mode._handoff()
     header += ('For game-build changes, keep supplying reviewed native inspection plans through the '
                'inspection_builds tool: op=plan for request revisions and reports, then implement the change and '
                'op=publish a launch:false cast_swap recipe with change_id, relevant writer dependencies, '
@@ -583,6 +689,10 @@ def tick(*, now=None):
             owned.update(chat_ids[c['id']] for c in _api('/api/chat')
                          if c.get('busy') and c.get('id') in chat_ids)
         native = _native_jobs()
+        try:
+            data['unlock_admission'] = _api('/api/custom-build-unlocks/dispatch-admission')
+        except Exception:
+            data['unlock_admission'] = {'allowed': False}  # unrelated queue work remains eligible
         options = candidates(data, requests, native, owned, _on_main(), now=now)
         _save(data)  # Preserve review holds/guidance even when there are no free slots.
         # Both gates apply and the stricter wins: the operator's game on the Spark defers emulator-launching items
@@ -637,7 +747,7 @@ def tick(*, now=None):
             run_route = hermes_local.route(run_settings) if node else dict(primary)
             pin = ['--model', run_settings.model, '--provider', run_settings.provider] if node else []
             if local:
-                prompt = hermes_local.local_prompt(prompt, run_settings)
+                prompt = hermes_local.local_prompt(prompt, run_settings, lane=item['lane'])
                 if node:
                     prompt += (' The prime Spark retains the request, workspace and artifacts. Read the latest '
                                'request checkpoints before work, including work from the other inference host. '
@@ -654,21 +764,32 @@ def tick(*, now=None):
             # Recheck the operator switch immediately before admission.
             if not (mode._job() or {}).get('enabled'):
                 break
+            if item.get('unlock_work'):
+                admission = _api('/api/custom-build-unlocks/dispatch-admission')
+                if admission.get('allowed') is not True or item['request_id'] not in admission.get('request_ids', []):
+                    continue  # a new conversation/game wins before actual dispatch
             attempt_kind = 'followup' if item.get('last_dispatched') else 'new'
             item.update(job_name=name, dispatch_state='uncertain', last_dispatched=now,
                         attempts=item.get('attempts', 0) + 1, local=local, route=run_route,
                         inference_node=node['name'] if node else None)
+            if item.get('unlock_work'):
+                from .hermes_unlock_guard import dispatch_scope
+                request = next(r for r in requests if r['id'] == item['request_id'])
+                item['unlock_scope'] = dispatch_scope(request, now)
+                item['unlock_dispatch_times'] = [stamp for stamp in item.get('unlock_dispatch_times', [])
+                                                 if now - 3600 < stamp <= now] + [now]
             _save(data)
+            workdir = _run_workdir(item)
             if existing:
                 job = existing[0]
                 mode._run('edit', job['id'], '--prompt', prompt, '--no-continuity',
                           '--reasoning-effort', run_settings.reasoning_effort if local else 'high',
-                          *(pin or ['--unpin']))
+                          '--workdir', workdir, *(pin or ['--unpin']))
                 mode._run('resume', job['id'], '--run-now')
             else:
                 mode._run('create', mode._once(), prompt, '--name', name, '--repeat', '1',
                           '--reasoning-effort', run_settings.reasoning_effort if local else 'high', *pin,
-                          '--workdir', str(mode._PROMPT.parents[2]),
+                          '--workdir', workdir,
                           '--deliver', 'local', '--failure-deliver', 'local')
                 found = [j for j in mode._jobs() if j.get('name') == name]
                 if len(found) != 1:
@@ -721,7 +842,8 @@ def ensure_item(game, *, fingerprint=None, source='showcase', now=None):
     """Put a catalog title in the readiness queue (the favorite lane: inventory -> analysis -> reader -> writer ->
     runtime, worked by Hermes with Ghidra / REA) with the assimilate fingerprint attached. Used by the Sonic showcase
     for a title without a writer: a favorite is already there (sync); a recently played one is added with
-    `showcase: true`, which candidates() admits after the starred favorites. Never resets stages or a ticket.
+    `showcase: true`, which candidates() admits after the starred favorites; an operator's extraction of a title
+    without a reader adds it with `collect: true` (#2388), admitted the same way. Never resets stages or a ticket.
     Raises BlockingIOError while the queue's tick holds the lock (the caller retries on its next pass)."""
     now = time.time() if now is None else now
     gid = str(game.get('game_id') or '')
@@ -755,7 +877,7 @@ def snapshot(game_id=''):
     games = [{k: item.get(k) for k in ('game_id', 'title', 'platform', 'in_catalog', 'request_id',
              'number', 'dispatch_state', 'job_id', 'attempts', 'retry_at', 'stages', 'favorite', 'showcase')}
              | {'next_stage': next_stage(item)} for item in data['items'].values()
-             if item['lane'] == 'favorite' and (item.get('favorite') or item.get('showcase')
+             if item['lane'] == 'favorite' and (item.get('favorite') or item.get('showcase') or item.get('collect')
                                                or game_id and item['game_id'] == game_id)]
     count = sum(bool(g.get('favorite')) for g in games)
     ready = sum(bool(g.get('favorite')) and g['next_stage'] is None for g in games)

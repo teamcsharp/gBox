@@ -79,7 +79,7 @@ def test_character_candidates_threshold():
     assert [x["sha256"] for x in c] == ["a"] and c[0]["copies"] == 25 and c[0]["parts"] == 57
 
 
-ISO = Path(os.environ.get("GBOX_DMC2_ISO", Path.home() / "gbox-cache/ps2/01bb1fe7c84e8e79/disc.iso"))
+ISO = Path(os.environ.get("GBOX_DMC2_ISO", Path.home() / "gBox_alt/gbox-cache/ps2/01bb1fe7c84e8e79/disc.iso"))
 
 
 @pytest.mark.skipif(not ISO.exists(), reason="owned DMC2 Disc 1 image not extracted on this host")

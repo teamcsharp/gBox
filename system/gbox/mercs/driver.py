@@ -1,0 +1,51 @@
+"""The per-title driver (docs/mercenaries_engine.md, section 4): what is specific to one Mercenaries - how to read its
+round, which screen is up, its prompts' buttons, the brain that plays it - behind one small interface.
+
+A title's map names its driver in its mercs block ("driver": "gbox.mercs.titles.re4_gc"); load(prof) imports it.
+"""
+from __future__ import annotations
+
+import importlib
+
+PLAYING, DEAD = "playing", "dead"
+IN_ROUND = (PLAYING, DEAD, "paused")
+
+
+class Driver:
+    map_id = ""
+
+    def snapshot(self, m) -> dict:
+        """The round as the brain reads it (the title's own snapshot)."""
+        raise NotImplementedError
+
+    def screen(self, m, snap: dict | None) -> str:
+        """Where the game is: one of vocab.SCREENS (playing / dead / results / loading / menu / story ...); snap None:
+        the driver reads what it needs itself."""
+        raise NotImplementedError
+
+    def brain(self, m, stats: dict, clock, learn_dir=None, nav=None):
+        """The object that plays a round: tick(snap) -> {"hold": keys} | {"tap": key}, prompt_ok(button, snap, now),
+        save(), and stats / _threats for the engine's logs."""
+        raise NotImplementedError
+
+    def prompt_source(self, m, stats: dict):
+        """() -> the button the game asks for (RAM), raising reactions.Unknown when RAM can't tell; None: none."""
+        return None
+
+    def prompt_keys(self, button) -> list:
+        """A prompt's button -> the chords to press ("a+b" -> [("a", "b")])."""
+        return [tuple(str(button).split("+"))]
+
+    def progress(self, snap: dict) -> dict:
+        """Live stats that show the round moving (the deployment's black-screen watch reads timer / ram_progress)."""
+        return {}
+
+
+def load(prof) -> Driver:
+    """The driver a profile names: its mercs block's "driver" module, whose DRIVER is the class (or the instance)."""
+    name = (prof.get("driver") if isinstance(prof, dict) else (getattr(prof, "mercs", {}) or {}).get("driver"))
+    if not name:
+        raise LookupError("the profile's mercs block names no driver")
+    mod = importlib.import_module(name)
+    d = getattr(mod, "DRIVER")
+    return d() if isinstance(d, type) else d

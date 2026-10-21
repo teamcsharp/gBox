@@ -213,16 +213,17 @@ def load_rig(path: Path, roles: dict, props=()):
 
 def retarget(rig: dict, target: dict, scale=None, jmap=None):
     """Fit bind geometry continuously and preserve each mapped native influence."""
-    from gbox.retarget_profile import move_joints, profile_of
+    from gbox.retarget_profile import move_joints, profile_of, turn_frame
     rig, moved = move_joints(rig, profile_of(scale))      # the Retarget editor's joint moves: pivots + segments
     jmap = jmap or target['jmap']
     hip_joint, chest_joint = jmap['hip'], jmap.get('chest', jmap['hip'])
     basis = S.facing(rig)
-    source, ri, destination = np.asarray(rig['joints']) @ basis.T, rig['roles'], target['T']
+    fit_basis = turn_frame(basis, profile_of(scale))      # the editor's Turn around: the fit frame turned 180 degrees
+    source, ri, destination = np.asarray(rig['joints']) @ fit_basis.T, rig['roles'], target['T']
     # Roles absent on the 15-joint target resolve through actual source ancestry.
     mappable = {role: joint for role, joint in ri.items() if role in jmap}
     joint_role = np.array(_role_of_joint({'roles': mappable, 'parent': rig['parent']}))
-    prims = [{**p, 'pos': p['pos'] @ basis.T, 'nrm': p['nrm'] @ basis.T,
+    prims = [{**p, 'pos': p['pos'] @ fit_basis.T, 'nrm': p['nrm'] @ fit_basis.T,
               'role': joint_role[p['owner']]} for p in rig['prims']]
     all_p, all_role = np.concatenate([p['pos'] for p in prims]), np.concatenate([p['role'] for p in prims])
     props = np.concatenate([np.full(len(p['pos']), p.get('prop', False)) for p in prims])
@@ -335,6 +336,8 @@ def retarget(rig: dict, target: dict, scale=None, jmap=None):
                  'roles_used': sorted(ri), 'facing': basis.tolist(), 'runtime_verified': False}
     if moved['moved']:
         report['joints_moved'] = moved
+    if fit_basis is not basis:
+        report['turned'] = True
     # Fitting pop-up stages and the operator's retarget profile (weights blend the role adjustments per vertex).
     return S._profiled(rig, target, out, report, scale, destination, jmap)
 

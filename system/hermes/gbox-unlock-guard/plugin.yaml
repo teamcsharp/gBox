@@ -1,0 +1,5 @@
+name: gbox-unlock-guard
+version: 1.0.0
+description: Bind managed favorite unlock analysis to its exact canonical execution and request.
+provides_hooks:
+  - pre_tool_call

@@ -12,6 +12,10 @@ from pathlib import Path
 RE6_ID = '0871eee3b68cdea3'
 ACV_ID = '0d09faf82c4c77d8'
 RE6_TEMPLATE_SHA256 = '194cb5b71858f65feeb2b1703642ddc4ffde09b9a087119189b29b0ad7b83f11'
+DOAPP_ID = '59c55e95af61abbe'  # Dead Or Alive ++ (Korea), platform=arcade
+NDS_WCW_GAME_ID = 'd9467f457f53f2c7'  # Call of Duty: World at War (USA), NDS
+SGC_GEMS_ID = 'fc5914e3ddb540c4'  # Sonic Gems Collection (USA), platform=gamecube
+SGC_GEMS_PLATFORM = 'gamecube'
 
 
 def pre_launch(game: dict, ctx, mod: str = '') -> dict:
@@ -22,6 +26,26 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
     """
     profile = profile_for(game)
     if not profile['verified']:
+        if game.get('game_id') == DOAPP_ID and game.get('platform') == 'arcade':
+            # Registration point for the DOA++ (Korea) arcade unlock work. The
+            # fast Play path must never guess a write: report the live static
+            # evidence state and hand off to the background research task.
+            from . import doapp_unlock
+            record = doapp_unlock.profile()
+            return {'state': 'research_pending', 'applied': False,
+                    'reason': record['reason'],
+                    'proven_revisions': record['proven_revisions'],
+                    'unknown_counts': record['unknown_counts']}
+        if game.get('game_id') == SGC_GEMS_ID and game.get('platform') == SGC_GEMS_PLATFORM:
+            # Sonic Gems Collection: the state-save layout is mapped and the
+            # save digests are pinned, but no writer and no runtime-verified
+            # inventory exist yet. Report that state; never write a save here.
+            from . import sgc_gems_probe
+            gate = sgc_gems_probe.profile_gate()
+            return {'state': 'research_pending', 'applied': False,
+                    'reason': gate['reason'], 'scope': list(sgc_gems_probe.CATEGORIES),
+                    'evidence': gate['evidence'], 'blockers': gate['blockers'],
+                    'next': gate['next']}
         return {'state': 'research_pending', 'applied': False, 'reason': profile['reason']}
     if game.get('game_id') == RE6_ID and game.get('platform') == 'xbox360':
         from . import re6_tool
@@ -34,6 +58,15 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
                  'pending_save' if unlock.get('error') else 'applied')
         return {'state': state, 'applied': state == 'applied', 'profile': profile['profile'],
                 'scope': profile['scope'], 'exclusions': profile['exclusions'], 'detail': result}
+    if game.get('game_id') == NDS_WCW_GAME_ID and game.get('platform') == 'nds':
+        from . import nds_wcw_unlock
+        # Candidate (not gameplay-verified) profile: report the pinned database ops and
+        # the live-acceptance plan; never claim verified unlocks here.
+        return {'state': 'candidate_pending_verification', 'applied': False,
+                'profile': 'nds-wcw-database-candidate-v1',
+                'scope': nds_wcw_unlock.profile()['scope'],
+                'ops': nds_wcw_unlock.unlock_ops(),
+                'next': 'Run live_acceptance_plan on an authorized agent session (i9-NUC/Spark, 2% audio).'}
     return {'state': 'implementation_pending', 'applied': False}
 
 
@@ -53,6 +86,18 @@ def profile_for(game: dict) -> dict:
                              'lock_surface': acv_evidence.LOCK_SURFACE,
                              'inventory': inv},
                 'unresolved_categories': pending}
+    from . import doax2_unlock
+    if game.get('game_id') == doax2_unlock.GAME_ID and game.get('platform') == doax2_unlock.PLATFORM:
+        # Honest gate for DOAX2: research pending, no verified write targets exist.
+        # pre_launch below short-circuits on verified=False, so no writer is reachable.
+        return {'status': 'pending_research', 'profile': None, 'verified': False,
+                'scope': list(doax2_unlock.CATEGORIES), **doax2_unlock.profile_gate()}
+    if game.get('game_id') == SGC_GEMS_ID and game.get('platform') == SGC_GEMS_PLATFORM:
+        # Read-only probe only: pre_launch short-circuits on verified=False,
+        # so no writer is reachable from the Play path for this game.
+        from . import sgc_gems_probe
+        return {'status': 'pending_research', 'profile': None, 'verified': False,
+                'scope': list(sgc_gems_probe.CATEGORIES), **sgc_gems_probe.profile_gate()}
     if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,
                 'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}
@@ -109,3 +154,42 @@ def launch_plan(game: dict, worker: dict, *, mod: str = '', enable_unlock: bool 
             'next': 'Call launch_plan with the returned session_id to produce the opted-in unlock job.' if enable_unlock else None,
             'audio_policy': 'agent_use on the designated worker enforces 2% volume',
             'existing_re6_boot_policy': 'Existing RE6 boot settings are unchanged by this planner.'}
+
+
+# ---- unlock-on-load from held cheat codes (#1986: Soul Calibur II keeps its unlock flags in RAM, loaded from the save)
+
+def code_profile(game: dict) -> dict | None:
+    """profiles/gamedata/<game_id>-codes.json: published cheat codes verified in gBox for this exact catalog game
+    (platform must match; `verified` must be true). None when the game has no such profile."""
+    gid = str(game.get('game_id') or '')
+    if not gid or not gid.isalnum():
+        return None
+    path = Path(__file__).resolve().parent.parent / 'profiles/gamedata' / f'{gid}-codes.json'
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    if data.get('platform') != game.get('platform') or data.get('verified') is not True or not data.get('codes'):
+        return None
+    return data
+
+
+def post_launch(sid: str, game: dict, hold) -> dict | None:
+    """Unlock-on-load for a game with a code profile: once the session runs, each code is held in it (hold(sid,
+    lines, desc), what cheats op=add does), so the flags stay set however the game reloads them. The save is never
+    edited; the game autosaves what it unlocks. None when the game has no profile."""
+    prof = code_profile(game)
+    if not prof:
+        return None
+    held, failed = [], []
+    for entry in prof['codes']:
+        try:
+            hold(sid, list(entry['lines']), str(entry.get('desc') or 'unlock code'))
+            held.append(entry.get('desc') or 'unlock code')
+        except Exception as exc:                       # noqa: BLE001 - one bad code never fails the launch
+            failed.append(f"{entry.get('desc') or 'unlock code'}: {str(exc)[:160]}")
+    return {'state': 'applied' if held and not failed else ('partial' if held else 'failed'), 'applied': bool(held),
+            'profile': prof.get('profile'), 'held': held, 'failed': failed, 'scope': prof.get('scope') or [],
+            'evidence': prof.get('evidence') or {}}

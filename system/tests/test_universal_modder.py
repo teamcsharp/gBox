@@ -441,3 +441,14 @@ def test_agent_offers_every_um_tool_and_routes_jobs_to_the_right_worker():
                     ("um_kb", {"op": "search", "query": "terraria"}, "windows", None)]
     a._job = lambda *_a, **_k: {"state": "failed", "error": "no worker", "output": None}
     assert a.um_backup(op="list")["error"] == "no worker"
+
+
+def test_near_miss_note_and_playbook_names_resolve():
+    """2026-10-19: Hermes asked um_kb for 'engines/native.md', bare basenames and 'Unity.md' and every call failed."""
+    from gbox import universal_modder as U
+    paths = ["games/a/one-note.md", "games/b/two.md", "games/c/two.md"]
+    assert U.resolve_note("games/a/one-note", paths) == "games/a/one-note.md"
+    assert U.resolve_note("one-note.md", paths) == "games/a/one-note.md"
+    assert U.resolve_note("two.md", paths) == "two.md", "an ambiguous basename stays unresolved"
+    assert U.resolve_note("games/a/one-notee.md", paths) == "games/a/one-note.md"
+    assert U._playbook_text("engines/unity") == U._playbook_text("Unity.md") == U._playbook_text("unity")

@@ -109,8 +109,9 @@ def retarget(rig: dict, tmpl: R.Bin, roles: dict = GANADO_ROLES, max_stretch: fl
     hip->feet below it (skirts reach the feet). Head/neck ride the target neck. Limbs: source segment rotated onto
     the target segment and stretched along it (clamped), hands/feet keep the forearm/shin rotation, sit on the wrist
     / ankle. Every vertex follows the rule of its owner joint's nearest ancestor with a role."""
-    from .retarget_profile import move_joints, profile_of
+    from .retarget_profile import move_joints, profile_of, turn_rig
     rig, _moved = move_joints(rig, profile_of(scale))      # the Retarget editor's joint moves: pivots + segments
+    rig = turn_rig(rig, profile_of(scale))                 # the editor's Turn around: 180 degrees about up, at the hip
     S = np.asarray(rig["joints"], float)
     rr = rig["roles"]
     bw = tmpl.bone_world()
@@ -258,13 +259,17 @@ def blender_exe() -> str | None:
     return cands[-1] if cands else None
 
 
-def decimate(src: Path, dst: Path, amount: float, blender: str | None = None) -> Path:
+def decimate(src: Path, dst: Path, amount: float, blender: str | None = None,
+             protect: tuple[str, ...] | list[str] | None = None) -> Path:
     script = Path(__file__).resolve().parent / "decimate_gltf.py"
     if not script.exists():        # pre-PR #r1292 layout
         script = Path(__file__).resolve().parents[1] / "scripts" / "decimate_gltf.py"
     exe = blender or blender_exe()
-    r = subprocess.run([exe, "--background", "--factory-startup", "--python", str(script), "--", str(src), str(dst),
-                        str(amount)], capture_output=True, text=True, timeout=600)
+    cmd = [exe, "--background", "--factory-startup", "--python", str(script), "--", str(src), str(dst),
+           str(amount)]
+    if protect:                    # vertex-group name substrings to spare from the collapse (head/face)
+        cmd.append(",".join(protect))
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if not Path(dst).exists():
         raise RuntimeError("decimate failed: " + (r.stdout + r.stderr)[-2000:])
     return Path(dst)

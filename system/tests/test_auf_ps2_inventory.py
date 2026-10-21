@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from gbox import auf_ps2_inventory as a  # noqa: E402
 from gbox.auf_ngc import boa_store  # noqa: E402
 
-DISC = os.path.expanduser("~/gbox-cache/ps2/a911b8d231ef883a/disc.bin")
+DISC = os.path.expanduser("~/gBox_alt/gbox-cache/ps2/a911b8d231ef883a/disc.bin")
 
 
 def _chunk(cid: str, payload: bytes, compress: bool) -> bytes:

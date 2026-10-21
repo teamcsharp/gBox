@@ -57,3 +57,10 @@ test('the Other PC window opens on the gBox window, expands to the desktop, zoom
   assert.match(desktop, /desktop\/stream\?view=\$\{REMOTE\.view\}/, 'the server crops the stream to the reported gBox window');
   assert.match(desktop, /status\.data\?\.app_available === false/, 'and says when that window is not visible there');
 });
+
+test('the toolbar button watches the other computer, never this one (2026-10-20)', () => {
+  const body = desktop.slice(desktop.indexOf('async function remoteWatch('), desktop.indexOf('async function remoteStatus('));
+  assert.match(body, /const others = windows\.filter\(w => w\.name !== S\.workerName/);
+  assert.match(body, /others\.some\(w => w\.id === idle\.data\.id\)/);       // an idle answer naming this PC is ignored
+  assert.doesNotMatch(body, /if \(idle\.ok\) workerId = idle\.data\.id;/);
+});

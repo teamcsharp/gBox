@@ -16,6 +16,7 @@ from PIL import Image, ImageChops, ImageStat
 from pydantic import BaseModel, Field
 
 from .models import Job, JobState
+from .state_snapshot import ADAPTERS as SNAPSHOT_ADAPTERS
 
 WINDOW_SURFACE = 'window-surface'   # adapters.WINDOW_SURFACE: the emulator window rendered itself
 
@@ -200,33 +201,34 @@ class Incident:
                 self.step('capture reported moment', f'Session screenshot unavailable: {exc}', 'failed')
         checkpoint = None
         if running:
-            slot = 80 + sum(1 for r in self.store.all('request') if (r.get('context') or {}).get('emulation_issue')
-                            and (r.get('context') or {}).get('session_id') == self.sid)
+            own_slot = str(self.session.get('adapter') or '').lower() in SNAPSHOT_ADAPTERS
             try:
-                if self.session.get('adapter') in ('retroarch', 'dolphin'):
-                    saved = self.call('state_transfer', {'session_id': self.sid, 'op': 'export', 'slot': slot}, wait=55)['result']
+                if own_slot:
+                    # Dolphin / RetroArch: saved through gBox's own slot and uploaded in one job (state_transfer
+                    # op=snapshot), the portable checkpoint a restart loads. op=export saved it through Dolphin's slot 1,
+                    # the operator's own, and left RetroArch switched to the export slot.
+                    saved = self.call('state_transfer', {'session_id': self.sid, 'op': 'snapshot'}, wait=55)['result']
                     checkpoint = saved['artifact']
                     ref = self.store.get('artifact', checkpoint)
                     if not ref:
                         raise RuntimeError('Checkpoint bytes were not uploaded')
                     self.data['Saved program state'] = saved
-                    filename = saved.get('file', '')
-                    if self.session.get('adapter') == 'retroarch' and '.state' in filename:
-                        suffix = filename.rsplit('.state', 1)[-1]
-                        slot = int(suffix) if suffix.isdigit() else 0
-                    elif self.session.get('adapter') == 'dolphin':
-                        slot = 1
-                    self.step('preserve program state', f"Portable checkpoint retained: {saved['file']} ({saved['bytes']} bytes).",
+                    via = saved.get('via') or "gBox's own save slot"
+                    self.step('preserve program state', f"Portable checkpoint retained: {saved['file']} ({saved['bytes']} bytes), "
+                              f"saved through {via}.",
                               attachment={'sha256': checkpoint, 'name': saved['file'], 'type': ref['media_type'], 'size': ref['size']},
-                              state_artifact=checkpoint, state_slot=slot)
+                              state_artifact=checkpoint, state_file=saved['file'], state_snapshot=True)
                 else:
+                    slot = 80 + sum(1 for r in self.store.all('request') if (r.get('context') or {}).get('emulation_issue')
+                                    and (r.get('context') or {}).get('session_id') == self.sid)
                     saved = self.op('save_state', slot=slot)
                     self.data['Saved program state'] = saved
                     self.step('preserve program state', 'Local save state created; portable export is unavailable for this emulator.',
                               state_slot=slot, local_checkpoint=True)
             except Exception as exc:
                 self.data['Saved program state'] = {'unavailable': str(exc)}
-                self.step('preserve program state', f'Save-state capture failed: {exc}', 'failed')
+                self.step('preserve program state', f'Save-state capture failed: {exc}'
+                          + ('. Nothing was saved into your save slots instead.' if own_slot else ''), 'failed')
         # Each read may fail when the emulator is hung; retain those failures as diagnostic evidence.
         checks = [('Runtime status', lambda: self.op('query_runtime')),
                   ('Emulator log', lambda: self.op('log_tail', n=100000)),

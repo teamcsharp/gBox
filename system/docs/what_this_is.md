@@ -261,7 +261,13 @@ are not used by gBox at runtime.
 * Repo (code + docs + brand assets): a few MB; `gBox.exe` ≈ 8 MB.
 * Spark `gbox-data/` ≈ 3.1 GB (SQLite catalog/state, artifacts incl. MP4 recordings and UAP packages, thumbnails,
   runtime: RetroArch build, ~45 libretro cores, BIOS copies, save states, Dolphin user dir).
-* Spark `~/gbox-cache`: the NVMe hot tier (≤ 100 GB); cold games are symlinks into `~/samples/gbox-cache` (HDD).
+* Spark `~/gBox_alt/gbox-cache`: the NVMe hot tier (≤ 100 GB); cold games are symlinks into `~/samples/gbox-cache` (HDD).
+* Spark `~/gBox_alt/`: every gBox side folder, out of the home root since 2026-10-20 (operator: "we don't want to
+  just be dumping all of it in root"). The names inside are the old ones: `gbox-cache` (above), `gBox-src` (the
+  deploy clone, `scripts/deploy_main.sh`), `gbox-hermes-repo` with its `gbox-hermes-tasks` and
+  `gbox-result-review-worktrees` worktrees and `gbox-grunt-scratch` (found as siblings of the repo), the dated audit and
+  research folders, `logs/` and `scratch/<topic>/` for agents. `gbox/side_dirs.py` finds a folder in either place, so
+  `gbox.toml`, `GBOX_HERMES_REPO` and older records that name `~/<folder>` keep working.
 * Windows `D:\gBox` (cache up to 250 GB, runtime: RetroArch-win + cores, Ghidra ≈ 1 GB, JDK 21, recordings),
   `%LOCALAPPDATA%\gbox` (Electron runtime + branded exe, worker venv).
 

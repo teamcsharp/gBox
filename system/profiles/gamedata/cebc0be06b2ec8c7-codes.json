@@ -1,0 +1,24 @@
+{
+ "game_id": "cebc0be06b2ec8c7",
+ "title": "Mortal Kombat - Deadly Alliance (USA)",
+ "platform": "gamecube",
+ "disc_id": "GMKE5D",
+ "profile": "gecko-unlocks-v1",
+ "verified": true,
+ "codes": [
+  {
+   "desc": "All Characters [Codejunkies]",
+   "lines": [
+    "043D68A8 FFFFFFFF"
+   ],
+   "kind": "gecko"
+  }
+ ],
+ "scope": [
+  "All Characters"
+ ],
+ "evidence": {
+  "source": "codes.rc24 Gecko list GMKE5D.txt (Dolphin 'Download Codes')",
+  "read_back": "2026-10-20 07:20 CST, lilspark (the Spark's Dolphin) agent session: every code held with cheats op=add; all 1 written values read back unchanged from Dolphin's RAM. Gameplay screens of the unlocked content not captured."
+ }
+}

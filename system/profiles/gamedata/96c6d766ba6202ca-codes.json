@@ -1,0 +1,23 @@
+{
+ "game_id": "96c6d766ba6202ca",
+ "title": "Turok 2 - Seeds of Evil (Europe)",
+ "platform": "n64",
+ "profile": "cheatdb-unlocks-v1",
+ "verified": true,
+ "codes": [
+  {
+   "desc": "Have All Cheats",
+   "lines": [
+    "8112167C 07FF",
+    "8112167E FFFF"
+   ]
+  }
+ ],
+ "scope": [
+  "Have All Cheats"
+ ],
+ "evidence": {
+  "source": "libretro-database cht/Nintendo - Nintendo 64/Turok 2 - Seeds of Evil (Europe).cht",
+  "read_back": "2026-10-20 00:54 CST, i9-NUC agent session: every code held with cheats op=add; all 2 written values read back unchanged. Gameplay screens not captured (the NUC's frame capture was black until its relaunch)."
+ }
+}

@@ -72,28 +72,42 @@ def import_file(sid,ad,game,ctx,slot,path):
     return card
 
 
-def checkout(sid,ad,game,ctx):
+def checkout(sid,ad,game,ctx,operator_cards=False):
     """Before launch, lease selected cloud revisions and stage exact local copies.
 
     Cloud cards are an enhancement, not a precondition: when the control plane is
     unreachable or slow (an httpx transport error) the launch falls back to local
     cards instead of failing, and no cloud sync starts for this session.
+
+    Agent-owned launches leave the operator's cards alone, except a demo that asks for them
+    (operator_cards: the screensaver, so the operator's saved characters load; #2817, operator
+    2026-10-20: "get my memory card ... use it with screensaver for playing the game"). Such a
+    demo only inserts cards already selected for the game, plays without them when another
+    session holds one, and the operator's own launch takes a card back from it (memory_cards.lease).
     """
     if game.get('platform') not in ('dreamcast','gamecube') or not ctx.server:return None
     if not supported(ad,game):return None
-    if getattr(ad,'tas_playback',None) or getattr(ad,'capture_backend',None) or getattr(ctx,'agent_use',False):return None
+    if getattr(ad,'tas_playback',None) or getattr(ad,'capture_backend',None):return None
+    demo=bool(getattr(ctx,'agent_use',False))
+    if demo and not operator_cards:return None
     try:
-        return _checkout(sid,ad,game,ctx)
+        return _checkout(sid,ad,game,ctx,selected_only=demo)
     except httpx.HTTPError as error:
         ad.memory_card_unavailable=f'{type(error).__name__}: {error}'
         print(f'gBox: cloud memory cards unavailable at launch ({ad.memory_card_unavailable}); playing from local cards', flush=True)
         return None
+    except RuntimeError as error:
+        if not demo:raise
+        ad.memory_card_unavailable=str(error)[:300]       # e.g. the operator's game holds the card right now
+        print(f"gBox: this demo plays without the operator's memory card ({ad.memory_card_unavailable})", flush=True)
+        return None
 
 
-def _checkout(sid,ad,game,ctx):
+def _checkout(sid,ad,game,ctx,selected_only=False):
     platform=game['platform'];listing=api(ctx,f'/api/memory-cards?platform={platform}&game_id={game["game_id"]}')
     selected=dict(listing['selection']);cards={r['id']:r for r in listing['cards']}
     warnings=[]
+    if not selected and selected_only:return None     # a demo never imports, creates or selects cards for the operator
     if not selected:
         for r in native.discover(ad,game):
             try:

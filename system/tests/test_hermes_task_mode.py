@@ -288,3 +288,30 @@ def test_pinned_endpoint_override_is_checked_before_legacy_resume(monkeypatch):
     monkeypatch.setattr(mode, '_job', lambda: job)
     monkeypatch.setattr(mode, '_run', lambda *a: pytest.fail('restricted endpoint resumed'))
     with pytest.raises(RuntimeError, match='public-source'): mode.set_enabled(True)
+
+
+def test_local_only_dispatches_the_investigation_on_the_local_route(monkeypatch, tmp_path):
+    from gbox import hermes_local
+    home = tmp_path / '.hermes'
+    (home / 'cron').mkdir(parents=True)
+    (home / 'config.yaml').write_text('model:\n  provider: nous\n  default: anthropic/claude-opus-5.5\n'
+                                    'agent:\n  reasoning_effort: max\n  max_turns: 150\n')
+    (home / 'cron/jobs.json').write_text(json.dumps({'jobs': []}))
+    monkeypatch.setattr(mode, '_home', lambda: home)
+    monkeypatch.setattr(hermes_local, 'active', lambda *a, **k: True)
+    calls = []
+
+    def fake_run(*args):
+        calls.append(args)
+        (home / 'cron/jobs.json').write_text(json.dumps({'jobs': [
+            {'id': 'incident-job', 'name': 'gBox emulation investigation #2412'}]}))
+    monkeypatch.setattr(mode, '_run', fake_run)
+    # Local fallback while paid routes are merely cooling: the investigation waits for a paid route, as before.
+    monkeypatch.setattr(hermes_local, 'local_only', lambda *a, **k: False)
+    with pytest.raises(RuntimeError, match='queued for a paid route'):
+        mode.dispatch_request('request-id', 2412)
+    assert not calls
+    # The operator chose local only: the operator's report is investigated on the local route instead of parked.
+    monkeypatch.setattr(hermes_local, 'local_only', lambda *a, **k: True)
+    assert mode.dispatch_request('request-id', 2412) == 'incident-job'
+    assert calls and 'request-id' in calls[0][2]

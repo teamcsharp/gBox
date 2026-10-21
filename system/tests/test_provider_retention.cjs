@@ -35,6 +35,34 @@ test('actual provider refresh preserves both card strips, pane, and expanded or 
   assert.equal(result.first.open,true);assert.equal(result.closed,true);assert.equal(result.updated,true);
  });
 });
+
+test('model trial controls submit the selected profile and hold unavailable starts',async()=>{
+ const handler=between('async function tkProvidersWindow(e)', 'function tkCapacityPreview(e)');
+ await withPage(async evaluate=>{
+  const result=await evaluate(`(async()=>{${fixture}
+   const calls=[],gbox={api:async(path,body)=>{calls.push({path,body});return{ok:true};}};
+   function toast(){} function tkProvidersLoad(){}
+   ${handler}
+   TK.providers.pool.model_management={access:{ready:true},profiles:[
+    {id:'qwen-coder',title:'Coder',model:'coder',prepared:false},
+    {id:'nemotron-bolt',title:'Bolt',model:'bolt',prepared:true},
+    {id:'glm-flash',title:'GLM',model:'glm',cluster_only:true,held:'Requires about 166 GiB',prepared:true},
+    {id:'ornith-122b',title:'GGUF',model:'gguf',held:'GGUF checkpoint: serve it with llama-server',context:262144,max_num_seqs:8},
+    {id:'ornith-35b',title:'Ornith',model:'ornith',context:262144,max_num_seqs:64,gpu_memory:0.88,prepared:true}]};
+   tkProvidersRender();
+   const start=box.querySelector('[data-tkp-model="trial_start"][data-model="nemotron-bolt"]');
+   const held=box.querySelector('[data-tkp-model="trial_start"][data-model="qwen-coder"]').disabled;
+   const glm=[...box.querySelectorAll('[data-model="glm-flash"]')].every(b=>b.disabled);
+   const gguf=['trial_prepare','trial_start'].every(a=>box.querySelector('[data-tkp-model="'+a+'"][data-model="ornith-122b"]').disabled)
+    &&!box.querySelector('[data-tkp-model="trial_adopt"][data-model="ornith-122b"]').disabled
+    &&box.textContent.includes('serve it with llama-server');
+   const sizing=box.textContent.includes('256k context · 64 sequences · 88% memory');
+   const enabled=!start.disabled;await tkProvidersWindow({target:start});
+   return{calls,held,glm,gguf,sizing,enabled,restored:!start.disabled};
+  })()`);
+  assert.deepEqual(result,{calls:[{path:'/api/hermes/local/models/action',body:{action:'trial_start',model:'nemotron-bolt'}}],held:true,glm:true,gguf:true,sizing:true,enabled:true,restored:true});
+ });
+});
 test('actual provider refresh defers while a pointer or text selection is active',async()=>{
  await withPage(async evaluate=>{
   const result=await evaluate(`(()=>{${fixture}

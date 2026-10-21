@@ -303,20 +303,43 @@ def dispatch_size(item: dict, request: dict | None = None) -> dict:
     return {'size': 'large', 'reason': 'scope not clearly narrow'}
 
 
-def local_prompt(prompt: str, s=None) -> str:
+def lane_budget(s=None, lane: str | None = None) -> int:
+    """A run's tool budget. An inbox-lane run (an operator's ticket, a launch failure, a session observer) gets
+    [hermes.local] tool_budget_inbox when that is set and larger (#2399: a 45-call run read for 23 turns and published
+    nothing); favorites keep tool_budget. The proxy enforces the same number (llm_proxy reads the lane from the queue
+    header), so the prompt never promises calls the proxy will refuse."""
+    s = s or settings()
+    base = max(6, int(s.tool_budget))
+    inbox = int(getattr(s, 'tool_budget_inbox', 0) or 0)
+    return max(base, inbox) if lane == 'inbox' and inbox > 0 else base
+
+
+def local_prompt(prompt: str, s=None, lane: str | None = None) -> str:
     """Tighten a queue prompt for the local model: smaller tool budget, one file, bounded reads, and an explicit way
     out (record findings and stop) so a task that turns out large waits for a paid route instead of failing."""
     s = s or settings()
-    budget, reserve = max(6, int(s.tool_budget)), max(3, min(6, int(s.tool_budget) // 3))
+    budget = lane_budget(s, lane)
+    reserve = max(3, min(6, budget // 3))
     prompt = re.sub(r'Use a \d+-tool-call work budget with the final \d+ calls',
                     f'Use a {budget}-tool-call work budget with the final {reserve} calls', prompt)
     if s.allow_large_tasks:
         return (f'LOCAL MODEL RUN ({s.provider} on {s.host_name}; {s.model}). '
-                f'Use at most {budget} tool calls, reserving the last {reserve} for tests and a durable checkpoint. '
-                'Work the assigned inbox request through one concrete, reviewable milestone. Use bounded searches '
-                'and reuse existing analysis artifacts. For larger work, preserve exact job IDs, findings and the '
-                'next step so the next local run can continue. Publish tested changes through the task workspace. '
-                'Close a request only after its acceptance criteria are verified; otherwise record progress. '
+                f'Use at most {budget} tool calls, reserving the last {reserve} for focused verification, '
+                'publish_task_changes and a durable checkpoint. '
+                'Work the assigned request through one concrete, reviewable milestone. After reading its latest '
+                'replies and feedback, reuse prepare_task_workspace and inspect the existing patch, published '
+                'commit and pending job IDs. Resume the first missing acceptance step; do not duplicate an active '
+                'job or reimplement completed work. Before new exploration, identify the bounded deliverable and '
+                'the exact check that will demonstrate it works. Use bounded searches and existing artifacts. '
+                'Once the focused checks pass, publish changed source with explicit file paths and test-path '
+                'strings before optional investigation. Keep the returned commit and PR receipt. For a research '
+                'deliverable, preserve the actual evidence artifact and its verification. '
+                'Use the reserved calls to save a checkpoint with what changed, actual check results, publication '
+                'or artifact receipt, exact pending job IDs and the next acceptance step. If blocked, preserve '
+                'the useful partial result and name the concrete dependency. '
+                'A small request should finish in this run when its full acceptance checks pass. Call '
+                'set_request_status done only after the full request is verified, with concise solver credit and '
+                'actual verification evidence; keep partial work in_progress. A PR alone is not runtime acceptance. '
                 'Protect operator gameplay and preserve original games and saves. ' + prompt)
     handoff = 'another enabled local host' if settings().nodes else 'a paid model'
     return (f'LOCAL MODEL RUN ({s.provider} · {s.model} on {s.host_name}; local task processing). '

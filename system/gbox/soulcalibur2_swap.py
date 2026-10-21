@@ -146,11 +146,41 @@ def load_donor(slug: str, glb, roles: dict, name: str = "", scale: dict | None =
     return d
 
 
-def donor_from_library(root: Path, slug: str) -> Donor:
-    meta = json.loads((Path(root) / slug / "meta.json").read_text(encoding="utf-8"))
-    rig = meta.get("rig") or {}
+def donor_from_meta(root: Path, meta: dict) -> Donor:
+    """A donor from a library meta as given: a profiled one (retarget_profile.apply_to_meta) brings the Retarget
+    editor's role overrides in rig.roles and its profile in rig.scale to the fit."""
+    slug, rig = meta["slug"], meta.get("rig") or {}
     return load_donor(slug, Path(root) / slug / meta["model"], rig.get("roles"), meta.get("name", slug),
                       rig.get("scale"), (meta.get("source") or {}).get("game_title", ""))
+
+
+def donor_from_library(root: Path, slug: str) -> Donor:
+    """The donor exactly as its meta.json stands (no Retarget editor profile: profiled_donors / build_cast add it)."""
+    return donor_from_meta(root, json.loads((Path(root) / slug / "meta.json").read_text(encoding="utf-8")))
+
+
+def _donor_key(meta: dict) -> tuple:
+    """Donors fitted the same way share one loaded rig: same slug, same resolved roles and profile."""
+    rig = meta.get("rig") or {}
+    return (meta["slug"], json.dumps(rig.get("roles") or {}, sort_keys=True),
+            json.dumps((rig.get("scale") or {}).get("profile") or {}, sort_keys=True, default=str))
+
+
+def profiled_donors(root: Path, game_id: str, plan: dict) -> dict:
+    """{(fighter key, costume): Donor} for a plan of donor slugs, each fitted with the Retarget editor profile saved
+    for that fighter's slot (fighter:<key>, else the game-wide one): its role overrides ("Swap left <-> right") and
+    rig.scale profile (Turn around, joint moves, proportions). Donors fitted the same way are loaded once."""
+    from . import retarget_profile as RP
+    raw, cache, out = {}, {}, {}
+    for (key, costume), slug in plan.items():
+        if slug not in raw:
+            raw[slug] = json.loads((Path(root) / slug / "meta.json").read_text(encoding="utf-8"))
+        meta = RP.apply_to_meta(raw[slug], game_id, slot_name(key))
+        k = _donor_key(meta)
+        if k not in cache:
+            cache[k] = donor_from_meta(root, meta)
+        out[(key, costume)] = cache[k]
+    return out
 
 
 def jmap_of(v: V.Vmg) -> dict[str, int]:
@@ -573,12 +603,12 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
     built = None
     if inp.rebuild or not have:
         root = C.library_root(ctx.config)
-        donors = {slug: donor_from_library(root, slug) for slug in sorted(set(plan.values()))}
+        donors = profiled_donors(root, game["game_id"], plan)   # each fighter slot's Retarget editor profile
         iso = _image(ctx, game)
         out = filemods.mod_dir(ctx.config, game["game_id"], name)
         tmp = out.with_name(out.name + ".building")
         shutil.rmtree(tmp, ignore_errors=True)
-        rep = build_image(iso, tmp, {k: donors[d] for k, d in plan.items()}, random_select=(s == "random"),
+        rep = build_image(iso, tmp, {k: donors[k] for k in plan}, random_select=(s == "random"),
                           progress=ctx.progress)
         if not rep["verify"]["ok"]:
             raise ValueError(f"the rebuilt image did not read back: {rep['verify']}")
@@ -587,7 +617,7 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
         shutil.rmtree(out, ignore_errors=True)
         tmp.replace(out)
         built = {"slots": rep["slots"], "entries": len(rep["entries"]), "random_select": rep["random_select"]}
-        for slug in donors:
+        for slug in sorted(set(plan.values())):
             try:
                 C._api(ctx, "POST", f"/api/characters/{slug}/targets",
                        json={"game_id": game["game_id"], "slot": s, "mod": name, "nodes": [C.HOST_OS],
@@ -607,16 +637,18 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
 
 
 def build_cast(cfg, game: dict, pairs, name: str, progress=None) -> dict:
-    """cast_swap's pairs path: [(slot, meta)] -> one disc image. -> {mod, slots: {slot: {status, reason?}}}."""
+    """cast_swap's pairs path: [(slot, meta)] -> one disc image. -> {mod, slots: {slot: {status, reason?}}}. Each meta
+    comes profiled for its slot (retarget_profile.apply_to_meta in cast_swap): its roles and rig.scale are fitted."""
     from . import characters as C, filemods
     root = C.library_root(cfg)
     plan, donors, per = {}, {}, {}
     for slot, meta in pairs:
         try:
-            if meta["slug"] not in donors:
-                donors[meta["slug"]] = donor_from_library(root, meta["slug"])
+            k = _donor_key(meta)
+            if k not in donors:
+                donors[k] = donor_from_meta(root, meta)
             for kc in keys_for(slot):
-                plan[kc] = donors[meta["slug"]]
+                plan[kc] = donors[k]
         except Exception as e:                            # noqa: BLE001
             per[slot] = {"status": "failed", "reason": str(e)[:400]}
     if not plan:

@@ -11,7 +11,7 @@ import pytest
 from gbox import aki_wrestling as A
 from gbox import nomercy_analysis as N
 
-SRC = Path.home() / "gbox-cache/23a346e48b6368a6/source.zip"     # owned WWF No Mercy (USA) (Rev A) zip copy
+SRC = Path.home() / "gBox_alt/gbox-cache/23a346e48b6368a6/source.zip"     # owned WWF No Mercy (USA) (Rev A) zip copy
 Z64_SHA = "fc561fce443010b114cc8ea41226772b7b2a2d33055be163fad91ac9c3b096cb"
 owned = pytest.mark.skipif(not SRC.exists(), reason="owned No Mercy ROM is not on this machine")
 

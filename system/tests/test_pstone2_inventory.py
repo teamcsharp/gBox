@@ -12,7 +12,7 @@ import pytest
 from gbox import pstone2_inventory as inv
 
 GDI = Path(os.environ.get("GBOX_PSTONE2_GDI",
-                          Path.home() / "gbox-cache/dc/690a402443c15668/disc.gdi"))
+                          Path.home() / "gBox_alt/gbox-cache/dc/690a402443c15668/disc.gdi"))
 
 
 def _connect(blobs, stale=()):

@@ -25,7 +25,7 @@ def test_indexed_png_preserves_indices_and_selected_transparency():
 
 
 def test_owned_collection_paths_and_native_tile_identity(tmp_path, monkeypatch):
-    source = Path.home()/'gbox-cache/213e4208929ec3e9/source.zip'
+    source = Path.home()/'gBox_alt/gbox-cache/213e4208929ec3e9/source.zip'
     if not source.is_file(): pytest.skip('Owned SMB3 ROM is not cached')
     monkeypatch.setattr(tools, 'rom_path', lambda *_: source)
     game = {'game_id':'213e4208929ec3e9','title':'Super Mario Bros. 3 (USA)','platform':'nes',
@@ -45,3 +45,27 @@ def test_owned_collection_paths_and_native_tile_identity(tmp_path, monkeypatch):
         assert image.mode == 'P' and image.size == (216,288)
     assert C.reader_version('smb3') == S.READER_VERSION
     assert not C.reader_status(meta, 'smb3')['stale']
+
+
+def test_every_chr_page_sheet_is_tile_exact():
+    """#2799: the every-sprite-and-tile entry lays out all CHR pages; each 8x8 cell is the page's tile verbatim."""
+    ex = object.__new__(S.SMB3Sprites)
+    chr_ = bytearray(I.CHR_PAGE * 18)                 # 18 pages: two sheet rows
+    for page in range(18):
+        for t in range(64):
+            rows = [[(page + t + x + y) % 4 for x in range(8)] for y in range(8)]
+            chr_[(page * 64 + t) * 16:(page * 64 + t) * 16 + 16] = S.encode_tile(rows)
+    ex.chr = bytes(chr_)
+    assert ex.page_count() == 18
+    image = Image.open(io.BytesIO(ex.all_pages_png()))
+    assert image.size == (S.ALL_COLS * 64, 2 * 64) and image.mode == 'P'
+    px = image.load()
+    for page, t in ((0, 0), (5, 63), (17, 9)):
+        ox, oy = (page % S.ALL_COLS) * 64 + (t % 8) * 8, (page // S.ALL_COLS) * 64 + (t // 8) * 8
+        assert [[px[ox + x, oy + y] for x in range(8)] for y in range(8)] == I.tile(ex.chr, page * 64 + t)
+
+
+def test_roster_offers_every_sprite_and_tile():
+    keys = {e['key']: e for e in S.roster()}
+    assert keys['MARIO']['slug'] == 'smb3_mario'
+    assert keys['ALL']['slug'] == 'smb3_all_tiles' and keys['ALL']['kind'] == 'sprites'

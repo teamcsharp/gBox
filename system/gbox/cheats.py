@@ -19,6 +19,7 @@ import difflib
 import json
 import re
 import struct
+from . import ar_decrypt
 from pathlib import Path
 
 import httpx
@@ -147,8 +148,10 @@ def decode_writes(lines: list[str], kind: str = "gecko") -> tuple[list[tuple[int
     for ln in lines:
         a, v = (int(x, 16) for x in ln.split())
         t, base = (a >> 24) & 0xFE, 0x80000000 | (a & 0x01FFFFFF)
-        if t == 0x00:                                       # 8-bit write, repeated (v >> 16) + 1 times
-            n = ((v >> 16) & 0xFFFF) + 1
+        if t == 0x00:                                       # 8-bit write, repeated: Gecko (v >> 16) + 1 times,
+            # Action Replay (v >> 8) + 1 times (Dolphin's ActionReplay.cpp: repeat = data >> 8). Soul Calibur II's
+            # "Everything Unlocked" 00402160 00011303 is 276 bytes of 0x03, not 2.
+            n = (((v >> 8) & 0xFFFFFF) if kind == "ar" else ((v >> 16) & 0xFFFF)) + 1
             writes += [(base + i, bytes([v & 0xFF])) for i in range(n)]
         elif t == 0x02:                                     # 16-bit write, repeated
             n = ((v >> 16) & 0xFFFF) + 1
@@ -165,6 +168,16 @@ def decode(platform: str, code: str) -> tuple[list[tuple], list[str]]:
     memory at addr equals bytes). Returns (ops, unsupported parts). Multi-line codes use ';' or '+' or newlines."""
     parts = [p.strip() for p in re.split(r"[;+\n]", code) if p.strip()]
     ops, bad = [], []
+    if platform in ("gamecube", "wii") and parts and all(ar_decrypt.is_encrypted(p) for p in parts):
+        # a published Action Replay code (encrypted, its first line the verification line): one batch -> raw pairs
+        try:
+            batch = ar_decrypt.decrypt(parts)
+        except ValueError as exc:
+            return [], [f"{parts[0]}: {exc}"]
+        if not batch["verified"]:
+            return [], [f"{parts[0]}: the batch did not verify (a line is wrong or missing)"]
+        w, b = decode_writes(batch["raw"], "ar")
+        return [("w", aa, dd) for aa, dd in w], b
     for p in parts:
         m = re.fullmatch(r"([0-9A-Fa-f]{8})[ :]?([0-9A-Fa-f]{4,8})", p.replace("-", ""))
         if not m:

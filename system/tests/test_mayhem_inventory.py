@@ -14,7 +14,7 @@ Z64_SHA256 = "d8c97d05f5050636a5756ddac73d1983ab636544f996a6a5d3dd5d15a14339b2"
 
 
 def _src():
-    p = os.environ.get("GBOX_MAYHEM_EU_SOURCE") or str(Path.home() / "gbox-cache" / M.GAME_ID / "source.zip")
+    p = os.environ.get("GBOX_MAYHEM_EU_SOURCE") or str(Path.home() / "gBox_alt/gbox-cache" / M.GAME_ID / "source.zip")
     return Path(p) if Path(p).is_file() else None
 
 

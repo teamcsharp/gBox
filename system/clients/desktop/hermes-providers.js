@@ -106,7 +106,17 @@
       ${n.kv_cache_fraction != null ? `<div class="tkp-model">vLLM: ${n.running_requests || 0} running · ${Math.round(n.kv_cache_fraction * 100)}% KV cache</div>` : ""}
       <button type="button" data-tkp-open-work>View outcomes</button></article>`).join("");
     const m = pool.model_management, rec = m?.recommendation, job = m?.job;
-    const busy = ["queued", "downloading", "draining", "starting"].includes(job?.state);
+    const busy = ["queued", "downloading", "preparing", "draining", "starting", "validating", "rolling_back"].includes(job?.state);
+    const trials = m?.profiles ? `<details open data-tk-key="tkp-model-trials"><summary>lilspark2 model trials</summary>
+      <p>Prepare installs gBox's recipe, prepares the serving image and checks the weights. Start waits for inference to drain, launches the recipe with its full context and KV cache, tests tool calls and connects Hermes. Use outcomes to compare quality and speed.</p>
+      <div class="tkp-cards">${m.profiles.map(p => `<article class="tkp-card"><b>${esc(p.title)}</b>
+        <div class="tkp-model">${esc(p.model)}</div>
+        ${p.context || p.max_num_seqs ? `<div class="tkp-model">${p.context ? `${Math.round(p.context / 1024)}k context` : 'context fitted to memory'}${p.max_num_seqs ? ` · ${p.max_num_seqs} sequences` : ''}${p.gpu_memory ? ` · ${Math.round(p.gpu_memory * 100)}% memory` : ''}</div>` : ''}
+        <p>${p.current ? 'Configured for Hermes' : p.prepared ? 'Prepared for a trial' : 'Preparation required'}${p.held ? ' · ' + esc(p.held) : ''}</p>
+        <button data-tkp-model="trial_prepare" data-model="${esc(p.id)}" ${busy || !m.access?.ready || p.cluster_only || p.held ? 'disabled' : ''}>Prepare</button>
+        <button data-tkp-model="trial_start" data-model="${esc(p.id)}" ${busy || !m.access?.ready || p.cluster_only || p.held || !p.prepared ? 'disabled' : ''}>Start trial</button>
+        <button data-tkp-model="trial_adopt" data-model="${esc(p.id)}" ${busy || p.cluster_only ? 'disabled' : ''}>Use if already running</button>
+      </article>`).join('')}</div><p role="status">${esc(job?.state ? `${job.state}${job.error ? ': ' + job.error : ''}` : 'Select a model to prepare or connect')}</p></details>` : '';
     const suggestion = rec ? `<details data-tk-key="tkp-model-recommendation" ${rec.current ? "" : "open"}>
       <summary>${esc(rec.title)}: ${esc(rec.model)}</summary><p>${esc(rec.reason)} <a href="${esc(rec.source)}" target="_blank" rel="noopener">NVIDIA recipe</a></p>
       <p>Start uses a 90% GPU memory budget, 64k context and supports up to 32 concurrent sequences. The task slider controls admission. The current model drains first and is restored if validation fails.</p>
@@ -114,7 +124,7 @@
       <button type="button" data-tkp-model="start" data-model="${esc(rec.model)}" ${busy || !m.access?.ready || !rec.downloaded || rec.current ? "disabled" : ""}>Start vLLM · 90% memory</button>
       <span role="status">${esc(job?.state ? `${job.state}${job.error ? ": " + job.error : ""}` : m.access?.reason || "")}</span></details>` : "";
     return `<div data-tkp-pool><div class="tkp-head"><b>Local task machines</b><span>Up to ${pool.capacity || 0} runs · shared checkpoints on lilspark</span></div>
-      <div class="tkp-cards" data-tk-scroll="providers:machines">${cards}</div>${suggestion}</div>`;
+      <div class="tkp-cards" data-tk-scroll="providers:machines">${cards}</div>${trials}${suggestion}</div>`;
   }
   // Visual tab: the recommendation and one card per route.
   function cards(data, opts = {}) {

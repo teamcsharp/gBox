@@ -214,11 +214,67 @@ Offline evidence (2026-10-13, owned disc 1, donors made with gBox's own SA2 read
    correctness, missing parts at joints (rigid skin), the first-person view (Snake's FP arms are a separate model
    and stay Snake's), cut scenes (unchanged by design).
 
-## 6. Limits / not done
+## 6. The whole cast: gameplay, cut scenes, codec (`gbox.twin_snakes_cast`, `characters op=use slot=full_cast`)
+
+**Who a model is.** Every humanoid model of both discs was listed (first 21 bones = the MGS2 skeleton: 148 on disc 1,
+26 more on disc 2, 21-bone gameplay models and 53-bone cut-scene models with fingers and face bones) and rendered;
+models are identified by their texture set (`twin_snakes.IDENTITIES`): Snake (sna_def, sna_dmo, sna_nkd_dmo, the
+shirtless / diving / tuxedo sets, first-person arms), Meryl (mrl_*, 10 sets), Otacon, Liquid, Ocelot, Wolf, Mantis,
+Raven, Ninja, Decoy Octopus, Anderson (darpa / dpa), Baker, Naomi, Campbell, Johnny, and four soldier kinds. Sets of
+items drawn on the skeleton (guns 0x49e8c3, armour / gas mask 0xcba219, snow decals 0xcc73a9) are not characters.
+
+**Models.** In every stage (gameplay areas, resident sets, cut-scene stages `demo*` / `r_demo*` / `r_dmo*` /
+`*_dmo` / `r_open` / `r_brif`), every model of a planned character is refitted with that character's donor: 53-bone
+models too (the donor rides the first 21 bones; hands drawn by the forearm meshes when the hand mesh has no part),
+partial models keep only what they draw (a close-up head gets the donor's head, the first-person arms its arms);
+each stage is rebuilt in its own span (budgets x0.85 and down until it fits). A model whose colour image is not in its
+own stage (it draws with another stage's textures) cannot be repainted: it is hidden when its set was repainted
+(it would show the old character), otherwise left original. Both are listed in the build report.
+
+**demo.dat** holds the cut scenes' packet stream (camera, actor and motion records: `0x8000000N` packets of floats,
+zlib only on the first block), no models: the cut scenes draw the models of the cut-scene stages above, so the
+opening and story scenes show the replacements without touching demo.dat.
+
+**Codec** (`shared/face.dat`, raw pages: `{0, size}` rows; `ts_stage` reads and writes them): one stage per call
+setup `f00a .. f12a, f20a`, one `.tri` set per speaker, named by strcode (`campbell`, `naomi`, `mei_ling`,
+`nastasha`, `master_miller`, `otacon`, `meryl`, `wolf`; Snake's own set `0xb7f564` is in every call; `0x01d464` is an
+old man in a suit in the ending call, named Houseman here). A set holds 104 x 178 CMPR portraits (expressions) and
+eye / mouth patches drawn over them. Each portrait becomes a front bust render of the donor (`twin_snakes_cast.bust`:
+top of the head to below the chest, rasterised with textures), tinted with the set's own codec look (luminance
+histogram and colour ramp of the stock portrait, its scan lines); each patch becomes the crop of the new portrait at
+the place the patch matches the stock portraits (template matching), so talking / blinking frames show the donor
+without seams. Deepthroat has no portrait (static). Name tags and voices are untouched.
+
+**The Sonic build (2026-10-13)** - `python -m gbox.twin_snakes_cast <disc.iso> <library> sonic <cache>`, mapping
+`twin_snakes_cast.SONIC_CAST` (SA2 / SA1 entries made with gBox's own readers from the operator's discs):
+
+| Character | Donor | Character | Donor |
+|---|---|---|---|
+| Solid Snake | Sonic (SA2) | Meryl | Amy Rose (SA2) |
+| Otacon | Tails (SA2) | Liquid Snake | Shadow (SA2) |
+| Revolver Ocelot | Dr. Eggman (SA2) | Sniper Wolf | Rouge (SA2) |
+| Psycho Mantis | Chaos 0 (SA2) | Vulcan Raven | Big the Cat (SA1) |
+| Cyborg Ninja | Metal Sonic (SA2) | Decoy Octopus | Tikal (SA1) |
+| Donald Anderson | Tails (SA1) | Kenneth Baker | Super Sonic (SA2) |
+| Naomi | Tikal (SA2) | Campbell | Amy (SA1) |
+| Johnny Sasaki | Sonic (SA1) | Genome soldiers, arctic | Knuckles (SA2) |
+| Genome soldiers, indoor | Knuckles (SA1) | Genome soldiers, gas mask | Super Shadow (SA2) |
+| Genome heavy guards | E-102 Gamma (SA1) | codec: Mei Ling | Super Sonic (SA1) |
+| codec: Nastasha | Tikal (SA1) | codec: Master Miller | Shadow (SA2, Miller is Liquid) |
+| codec: Houseman | Dr. Eggman (SA2) | codec: Snake, Meryl, Otacon, Campbell, Naomi, Wolf | as above |
+
+Disc 1: 83 stages rebuilt (41 of them cut-scene stages), 245 model placements (145 distinct fits), 2 stages at budget
+x0.85, none failed; codec 556 portraits + 972 patches in 14 call setups; 14 min. Disc 2: 84 stages (41 cut-scene),
+228 placements, 143 fits; same codec; 14 min. Not repainted (another stage's textures): disc 1 hid 36 partial models
+and left 7 original (`543505` Snake's first-person arms in r_tux, Ninja `a62318` and five Meryl close-up pieces in
+demo12a / demo15a), disc 2 hid 29 and left 3 (r_tux arms, two Raven pieces in demo23a). Every replaced model was read
+back from the built image; before / after renders: `D:\gBox\research\twin_snakes\evidence\`.
+
+## 7. Limits / not done
 
 * Rigid single-bone skinning (as every gBox rigid retarget): joints can show seams in extreme poses.
-* Cut-scene stages and `demo.dat` are not rewritten (cut scenes show the original cast); first-person arms stay.
+* Models that draw with another stage's textures can't be repainted (hidden or left original, listed per build).
 * The live write is unverified on a running game: the loaded-copy layout comes from the decompiled loader / draw
   loop, not from a RAM dump; Dolphin may keep a texture in its cache until the texels' hash is re-checked.
-* The 53-bone cut-scene models, `.cv2` models and `face.dat` codec faces are not read.
-* Disc 2 builds use the same code; checked offline only through the reader (Liquid, disc-2 soldiers).
+* `.cv2` models, the radar / item icons and the codec name tags are not touched; voices stay.
+* Nothing here has been seen running in Dolphin yet.

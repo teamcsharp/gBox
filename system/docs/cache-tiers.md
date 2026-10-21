@@ -21,7 +21,7 @@ Code: `gbox/cache_tiers.py`. Tests: `tests/test_cache_tiers.py`, `tests/test_cac
 `gbox.toml` on the Spark:
 
 ```toml
-cache_dirs = { linux = "/home/ehm_eckx/gbox-cache", windows = "D:/gBox/cache" }   # hot tier (NVMe) on the Spark
+cache_dirs = { linux = "/home/ehm_eckx/gBox_alt/gbox-cache", windows = "D:/gBox/cache" }   # hot tier (NVMe) on the Spark
 cache_limits_gb = { linux = 150, windows = 250 }                                    # staged-copy eviction ceiling
 cold_cache_dirs = { linux = "/home/ehm_eckx/samples/gbox-cache" }                   # cold tier (Elements HDD)
 hot_cache_limit_gb = { linux = 100 }                                                # demotion keeps the NVMe under this
@@ -149,15 +149,15 @@ Start-up (`cache_tiers.install`, called first in `create_app` and in `worker.run
    hashes survive.
 4. **It points the built mods index at the hot dir.** `built_mods_index.json` has a `root` field. If it names the HDD's
    `mods/`, it is changed to the hot dir's `mods/`, so the index is not rebuilt with a walk of the HDD.
-5. **It handles leftovers in the hot dir.** `/home/ehm_eckx/gbox-cache` still holds about 1.5 GB written by the old
+5. **It handles leftovers in the hot dir.** `/home/ehm_eckx/gBox_alt/gbox-cache` still holds about 1.5 GB written by the old
    service just before the HDD cutover: modbase, n64-rom, and one game folder.
    - On the first migration, a leftover that also exists on the HDD is moved to
-     `/home/ehm_eckx/gbox-cache/.gbox-tiers/conflicts/<stamp>/`. The HDD copy is what the service has used since the
+     `/home/ehm_eckx/gBox_alt/gbox-cache/.gbox-tiers/conflicts/<stamp>/`. The HDD copy is what the service has used since the
      cutover. Nothing is deleted.
    - A leftover that exists only in the hot dir stays there as a hot game.
    - On later starts, the hot copy wins. A duplicate on the HDD is only reported in the status.
 
-   Using `/home/ehm_eckx/gbox-cache` as the hot dir also brings back the hard-coded `~/gbox-cache/...` paths
+   Using `/home/ehm_eckx/gBox_alt/gbox-cache` as the hot dir also brings back the hard-coded `~/gBox_alt/gbox-cache/...` paths
    (`n64_rom`, `nfl2k2_inventory`, the PSO disc paths in `server.py`). They resolve through the hot view again.
 6. **It copies the pinned libraries in the background, right away.** This starts with the character library and is
    not idle-gated, because those libraries are what made the HDD slow to use. Until the copy finishes, the library
@@ -198,13 +198,13 @@ game.
 4. What the operator may want to delete later, when it suits them:
    - `~/gbox-cache.migrated-to-hdd-20261012` (the old NVMe cache, 360 GB)
    - `/home/ehm_eckx/samples/gbox-cache/characters.migrated-to-hot`
-   - `~/gbox-cache/.gbox-tiers/conflicts/`
+   - `~/gBox_alt/gbox-cache/.gbox-tiers/conflicts/`
 
 **Going back to one tier.** Stop `gbox.service`. Then copy the real data from the hot dir to the HDD, without the
 links (which point there already):
 
 ```sh
-rsync -aH --no-links --exclude .gbox-tiers /home/ehm_eckx/gbox-cache/ /home/ehm_eckx/samples/gbox-cache/
+rsync -aH --no-links --exclude .gbox-tiers /home/ehm_eckx/gBox_alt/gbox-cache/ /home/ehm_eckx/samples/gbox-cache/
 ```
 
 Then set `cache_dirs.linux` back to the HDD and remove `cold_cache_dirs`. The stage db keys will name the hot dir,

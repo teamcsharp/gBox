@@ -5,7 +5,8 @@ RenderDoc can't get inside some sessions where they run: RetroArch's compatibili
 matrix (gbox/scene_support.py) sets `relay`. This module, run inside the control plane as the in-server job
 "scene_relay", does:
 
-  1. save state     state_transfer export on the operator's session (the game keeps running; nothing is paused)
+  1. save state     state_transfer snapshot on the operator's session: saved through gBox's own slot and uploaded
+                    (the game keeps running, nothing is paused, the operator's save slots are not written)
   2. capture session launch_game with capture_backend on the test PC (config `examine_capture_worker`,
                     background-testing rules: ticked in the Tasks menu, no live game there, not the operator's PC);
                     when it can't be used, RetroArch runs a hidden capture session on the operator's own worker next to
@@ -102,7 +103,7 @@ def relay(sid: str, sess: dict, game: dict, *, run_job, workers, live_sessions, 
 
     say(3, "Saving this moment for a capture session (your game keeps running)")
     try:
-        saved = run_job("state_transfer", {"session_id": sid, "op": "export"}, op_wid, 90)
+        saved = run_job("state_transfer", {"session_id": sid, "op": "snapshot"}, op_wid, 90)
         art = (saved.get("result") or {})["artifact"]
     except Exception as e:                                # noqa: BLE001
         raise RelayError(f"Your moment could not be saved ({_short(e)}), so nothing was captured. "

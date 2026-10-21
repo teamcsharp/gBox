@@ -1,0 +1,22 @@
+{
+ "game_id": "d07946e849dd26e8",
+ "title": "WWF Attitude (USA)",
+ "platform": "n64",
+ "profile": "cheatdb-unlocks-v1",
+ "verified": true,
+ "codes": [
+  {
+   "desc": "Enable Everything",
+   "lines": [
+    "8112E21C F000;8112E21E 09FF;8112E220 FFFF;8112E222 FFFF"
+   ]
+  }
+ ],
+ "scope": [
+  "Enable Everything"
+ ],
+ "evidence": {
+  "source": "libretro-database cht/Nintendo - Nintendo 64/WWF Attitude (U).cht",
+  "read_back": "2026-10-20 01:51 CST, i9-NUC agent session: every code held with cheats op=add; all 4 written values read back unchanged. Gameplay screens not captured (the NUC's frame capture was black until its relaunch)."
+ }
+}

@@ -12,6 +12,26 @@
     automation: 'Other automated reports',
   };
   const OPERATOR_SOURCES = new Set(['chat', 'app', 'gbox-chat']);
+  // #2801: standing per-game work the Hermes queue keeps open (it skips a favorite whose request is done and drops an
+  // inbox item that is not open) is not an inbox message. It lives under Background work, grouped by kind; the inbox,
+  // Pending and the badge hold what needs the operator. gbox/inbox.py standing_key() keeps the same rules.
+  const STANDING_LABELS = {
+    readiness: 'Character replacement readiness',
+    unlock_on_load: 'Unlock on load',
+    unlock_everything: 'Unlock everything',
+    extraction: 'Extraction engineering',
+    policy: 'Standing policies and supervision',
+  };
+  function standingKey(r) {
+    const ctx = (r && r.context) || {};
+    if (ctx.hermes_favorite_game) return 'readiness';
+    if (ctx.unlock_on_load || ctx.unlock_inventory) return 'unlock_on_load';
+    if (ctx.custom_build_unlocks) return 'unlock_everything';
+    if (ctx.extraction_engineering) return 'extraction';
+    if (ctx.unlock_research_parent || ctx.standing_policy || ctx.nous_build_supervision) return 'policy';
+    return null;
+  }
+  const standing = r => standingKey(r) !== null;
   function groupKey(r) {
     if (!r) return null;
     const title = String(r.title || ''), body = String(r.body || r.title || '').trimStart(), ctx = r.context || {};
@@ -28,15 +48,15 @@
   // list: requests newest first. Returns entries in the same order: {type: 'request', request} or {type: 'group', key,
   // label, items (newest first), count, pending, newest (epoch s), latest (the newest request)}. A group takes the place
   // of its newest member; a kind with fewer than `min` members stays as plain requests.
-  function group(list, { min = 2, pending = r => r.status !== 'done' } = {}) {
-    const items = list || [], keys = items.map(groupKey), counts = new Map();
+  function group(list, { min = 2, pending = r => r.status !== 'done', key = groupKey, labels = LABELS } = {}) {
+    const items = list || [], keys = items.map(key), counts = new Map();
     keys.forEach(k => { if (k) counts.set(k, (counts.get(k) || 0) + 1); });
     const out = [], groups = new Map();
     items.forEach((r, i) => {
       const k = keys[i];
       if (!k || counts.get(k) < min) { out.push({ type: 'request', request: r }); return; }
       let g = groups.get(k);
-      if (!g) { g = { type: 'group', key: k, label: LABELS[k], items: [] }; groups.set(k, g); out.push(g); }
+      if (!g) { g = { type: 'group', key: k, label: labels[k], items: [] }; groups.set(k, g); out.push(g); }
       g.items.push(r);
     });
     for (const g of groups.values()) {
@@ -47,7 +67,7 @@
     }
     return out;
   }
-  const api = { LABELS, groupKey, group };
+  const api = { LABELS, groupKey, group, STANDING_LABELS, standingKey, standing };
   root.GBoxInboxGroups = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(globalThis);

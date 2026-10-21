@@ -207,3 +207,32 @@ test('wiring: both clients load the module; the card handler opens it without aw
   assert.match(web, /m\.id = "issuemenu"; m\.setAttribute\("role", "menu"\)/, '"Request about…" is cut out of a docked game like the other guest menus');
   assert.match(desk, /EMB_GUEST_MENUS = "#gmenu, [^"]*\[role=menu\]/);
 });
+
+test('the Play section offers a bot demo (the Spark when the host passes no PCs) and index.html launches it with autoplay', () => {
+  const html = GM.SECTIONS.play({ worker: 'w', boot: {} });
+  assert.match(html, /data-go="autoplay"/);
+  assert.match(html, /Bot demo on the Spark/);
+  const page = fs.readFileSync(path.join(__dirname, '..', 'clients', 'web', 'index.html'), 'utf8');
+  assert.match(page, /go === "autoplay" \? \{ autoplay: true \}/);
+  assert.match(page, /if \(opts\.autoplay\) auto = true;/);
+});
+
+test('"Bot demo on <PC>" for every online PC in the Play section, this one first; a pick launches there with autoplay', async () => {
+  const BD = require('../clients/web/viz/bot-demo.js');
+  const pcs = BD.pcs([{ name: 'lilspark', os: 'linux', online: true }, { name: 'i9-NUC', os: 'windows', online: true },
+                      { name: 'JAYBUILTFINALE', os: 'windows', online: true }, { name: 'old', os: 'windows', online: false }], 'JAYBUILTFINALE');
+  const html = GM.SECTIONS.play({ worker: 'JAYBUILTFINALE', boot: {}, pcs });
+  assert.deepEqual([...html.matchAll(/data-go="bot:([^"]+)"/g)].map(m => m[1]), ['JAYBUILTFINALE', 'lilspark', 'i9-NUC']);
+  assert.match(html, /Bot demo on JAYBUILTFINALE \(this PC\)/);
+  assert.ok(!/data-go="autoplay"/.test(html) && !/old/.test(html));
+  const { io, calls } = fakeIo(async () => [], { pcs: () => pcs });
+  const ctl = GM.open(io, { gid: GID, title: 'Zelda' });
+  assert.match(io.el.innerHTML, /data-go="bot:i9-NUC"/);
+  io.el.onclick({ target: { closest: s => s === '[data-go]' ? { dataset: { go: 'bot:i9-NUC' } } : null } });
+  assert.deepEqual(calls.play, [[GID, 'bot:i9-NUC']]);
+  await ctl.settled;
+  const page = fs.readFileSync(path.join(__dirname, '..', 'clients', 'web', 'index.html'), 'utf8');
+  assert.match(page, /String\(go\)\.startsWith\("bot:"\) \? botDemoLaunch\(gid, String\(go\)\.slice\(4\)\)/);
+  assert.match(page, /pcs: \(\) => botDemoPCs\(\)/);
+  assert.match(page, /function botDemoLaunch\(gid, pc\) \{ return play\(gid, pc, false, undefined, \{ autoplay: true \}\); \}/);
+});

@@ -18,9 +18,40 @@ def request(rid=R, **kw):
     return {'id': rid, 'number': 5, 'title': 'Fix it', 'status': 'in_progress', **kw}
 
 
+def test_custom_unlock_work_requires_current_idle_admission_and_has_its_own_actual_dispatch_budget():
+    data = {'version': 1, 'items': {}}
+    reqs = [request(str(i) * 16, automated=True, context={'custom_build_unlocks': str(i) * 16,
+                    'game_id': str(i) * 16}) for i in range(1, 4)]
+    q.sync(data, {'count': 0, 'items': []}, reqs, now=1000)
+    assert len(data['items']) == 3, 'Durable custom unlock tickets belong to the existing queue'
+    assert q.candidates(data, reqs, [], set(), set(), now=1000) == []
+    data['unlock_admission'] = {'allowed': True, 'request_ids': [r['id'] for r in reqs], 'dispatch_per_hour': 2}
+    options = q.candidates(data, reqs, [], set(), set(), now=1000)
+    assert len(options) == 1, 'Spare queue capacity must not start several unlock investigations at once'
+    first = options[0][1]
+    first.update(last_dispatched=900, unlock_dispatch_times=[800, 900])
+    assert q.candidates(data, reqs, [], set(), set(), now=1000) == [], 'Retries count as actual starts too'
+    first.update(last_dispatched=0, unlock_dispatch_times=[])
+    data['unlock_admission']['request_ids'] = [reqs[1]['id']]
+    assert q.candidates(data, reqs, [], set(), set(), now=1000)[0][1]['request_id'] == reqs[1]['id']
+    data['unlock_admission']['allowed'] = False
+    assert q.candidates(data, reqs, [], set(), set(), now=1000) == []
+
+
+def test_unlock_prompt_has_complete_boot_scope_without_replacement_replay(monkeypatch):
+    monkeypatch.setattr(q.mode, '_handoff', lambda: '')
+    text = q._prompt({'request_id': R, 'number': 5, 'lane': 'inbox', 'unlock_work': True, 'favorite_unlock_work': True, 'repair': True})
+    assert 'hidden_characters' in text and 'boot_apply' in text and 'exact-build receipts' in text
+    assert 'Never launch an emulator automatically' in text and 'copy/rebuild a ROM for discovery' in text
+    assert 'cast_swap' not in text and 'donor/target' not in text and 'unfinished native character work' not in text
+    legacy = q._prompt({'request_id': R, 'number': 5, 'lane': 'inbox', 'unlock_work': True, 'repair': True})
+    assert 'existing custom-build writer' in legacy and 'original favorite' not in legacy
+
+
 @pytest.fixture
 def env(monkeypatch, tmp_path):
     monkeypatch.setenv('GBOX_HERMES_DISPATCH_STATE', str(tmp_path))
+    monkeypatch.setenv('GBOX_HERMES_REPO', str(tmp_path / 'no-repo'))   # dispatch never prepares real worktrees here
     data = {'version': 1, 'items': {}, 'parent_request_id': P, 'last_lane': 'inbox'}
     q._save(data)
     return data
@@ -136,6 +167,56 @@ def test_automatic_repairs_and_manual_children_are_not_forgotten(env):
     assert all(i['lane'] == 'inbox' for _, i in options)  # repair owns this favorite
     env['items']['inbox:' + R]['dispatch_state'] = 'queued'
     assert {i['request_id'] for _, i in q.candidates(env, reqs, [], set(), set(), now=2)} == {'2' * 16}
+
+
+@pytest.mark.parametrize('priority', [[R], ['2964']])
+def test_explicit_priority_admits_agent_handoff_without_bypassing_ownership(env, priority):
+    note = request(number=2964, source='api', author='agent', automated=True,
+                   context={'handoff': '2026-10-21', 'game_id': G})
+    env['priority'] = priority
+    q.sync(env, {'count': 0, 'items': []}, [note], now=1)
+    assert set(env['items']) == {'inbox:' + R}
+    assert len(q.candidates(env, [note], [], set(), set(), now=2)) == 1
+    assert not q.candidates(env, [note], [], {R}, set(), now=2)
+    assert not q.candidates(env, [note], [{'input': {'game_id': G}}], set(), set(), now=2)
+    assert not q.candidates(env, [dict(note, status='blocked')], [], set(), set(), now=2)
+    env['items']['inbox:' + R]['retry_at'] = 10
+    assert not q.candidates(env, [note], [], set(), set(), now=2)
+
+
+@pytest.mark.parametrize('priority,context,author', [
+    ([], {'handoff': '2026-10-21'}, 'agent'),
+    ([G], {'handoff': '2026-10-21', 'game_id': G}, 'agent'),
+    ([R], {}, 'agent'),
+    ([R], {'handoff': True}, 'agent'),
+    ([R], {'handoff': 'status update'}, 'agent'),
+    ([R], {'handoff': '2026-10-21'}, 'automation'),
+])
+def test_priority_does_not_admit_unselected_handoffs_or_generic_auto_noise(env, priority, context, author):
+    env['priority'] = priority
+    q.sync(env, {'count': 0, 'items': []}, [request(
+        source='api', automated=True, author=author, context=context)], now=1)
+    assert env['items'] == {}
+
+
+@pytest.mark.parametrize('body', ['gBox request review: reminder', '<agent-message from="x">status',
+                                  '<task-notification>done'])
+def test_prioritized_handoff_marker_never_admits_recurring_reviews_or_notifications(env, body):
+    env['priority'] = [R]
+    q.sync(env, {'count': 0, 'items': []}, [request(
+        source='api', automated=True, author='agent', body=body, context={'handoff': '2026-10-21'})], now=1)
+    assert env['items'] == {}
+
+
+def test_triage_priority_and_live_coaching_do_not_become_handoff_work(env):
+    note = request(source='api', automated=True, author='agent', context={'handoff': '2026-10-21'})
+    env['triage_priority'] = [R]
+    q.sync(env, {'count': 0, 'items': []}, [note], now=1)
+    assert env['items'] == {}
+    env['priority'] = [R]
+    note['context']['coaching'] = True
+    q.sync(env, {'count': 0, 'items': []}, [note], now=2)
+    assert env['items'] == {}
 
 
 def test_explicit_pickwhip_has_first_pass_priority_without_starving_old_work(env):
@@ -448,3 +529,68 @@ def test_private_queue_scope_blocks_new_and_reused_jobs_without_claims(env, monk
     assert 'public-source' in result['reason']
     item = q._read()['items']['inbox:' + R]
     assert item.get('attempts', 0) == 0 and item.get('dispatch_state') != 'uncertain'
+
+
+def test_an_extraction_without_a_reader_queues_the_title_for_reader_work(env):
+    """#2388: characters.collect on a title with no reader puts it in the readiness lane; candidates admit it."""
+    row = q.ensure_item({'game_id': 'ab' * 8, 'title': 'Readerless', 'platform': 'xbox'}, source='collect', now=5)
+    assert row['new']
+    data = q._read()
+    item = data['items']['favorite:' + 'ab' * 8]
+    assert item['collect'] is True and item['in_catalog'] is True and 'collect' in item['requested_by']
+    assert [item['game_id'] for _key, item in q.candidates(data, [], [], set(), set(), now=6)] == ['ab' * 8]
+    assert [g['game_id'] for g in q.snapshot()['games']] == ['ab' * 8]
+
+
+def test_the_queue_header_names_the_lane_for_the_budget(monkeypatch):
+    """#2399: the proxy reads the lane from the header to pick the run's tool budget (hermes_local.lane_budget)."""
+    monkeypatch.setattr(q.mode, '_handoff', lambda: ' handoff')
+    text = q._prompt({'lane': 'inbox', 'request_id': 'ab' * 8, 'number': 5})
+    assert text.startswith('Assigned queue task: request #5 (' + 'ab' * 8 + ') [lane inbox]. Work ONLY this request; ')
+
+
+def test_dispatched_runs_start_in_their_worktree_never_in_the_deployed_runtime(env, monkeypatch):
+    """2026-10-20: queue runs started in ~/gBox/system and edited the live code (adapters.py) and made it a Git repo."""
+    runtime = str(q.mode._PROMPT.parents[2])
+    item = {'request_id': R, 'number': 5}
+    monkeypatch.setattr(q.mode, '_workdir', lambda rid, number: f'/tasks/{rid}/system')
+    assert q._run_workdir(item) == f'/tasks/{R}/system'
+    def missing(rid, number):
+        raise RuntimeError('The recorded task workspace is missing; preserve its history before retrying')
+    monkeypatch.setattr(q.mode, '_workdir', missing)
+    neutral = q._run_workdir(item)
+    assert neutral != runtime and neutral.endswith('run-cwd') and 'missing' in item['workspace_error']
+    monkeypatch.undo()
+    monkeypatch.setenv('GBOX_HERMES_DISPATCH_STATE', str(q.delivery.state_dir()))
+    monkeypatch.setenv('GBOX_HERMES_REPO', '/nowhere/gbox-hermes-repo')
+    assert q.mode._workdir(R, 5) != runtime                      # no provisioned repository: still not the runtime
+
+
+def test_tick_creates_and_re_edits_runs_with_their_worktree(env, monkeypatch):
+    jobs = [{'id': 'controller', 'name': q.mode.NAME, 'enabled': True, 'no_agent': True}]
+    reqs = [request(R)]
+    monkeypatch.setattr(q.mode, '_job', lambda: jobs[0])
+    monkeypatch.setattr(q.mode, '_jobs', lambda: jobs)
+    monkeypatch.setattr(q.mode, '_config', lambda: {'cron': {'model_provider': 'nous', 'model': 'opus', 'max_parallel_jobs': 4}})
+    monkeypatch.setattr(q, '_executions', lambda: ({}, set()))
+    monkeypatch.setattr(q, '_native_jobs', lambda: [])
+    from gbox import hermes_recovery
+    monkeypatch.setattr(hermes_recovery, '_active_requests', lambda: set())
+    monkeypatch.setattr(q.mode, '_handoff', lambda: '')
+    monkeypatch.setattr(q.mode, '_workdir', lambda rid, number: f'/tasks/{rid}/system')
+    def api(path, body=None):
+        if path == '/api/favorites': return {'count': 0, 'items': []}
+        if path == '/api/requests' and body is None: return reqs
+        if path == '/api/chat': return []
+        raise AssertionError(path)
+    monkeypatch.setattr(q, '_api', api)
+    calls = []
+    def run(*args):
+        calls.append(args)
+        if args[0] == 'create':
+            jobs.append({'id': 'j1', 'name': args[args.index('--name') + 1], 'enabled': True, 'schedule': {'kind': 'once'}})
+    monkeypatch.setattr(q.mode, '_run', run)
+    assert len(q.tick(now=1000)['dispatched']) == 1
+    create = calls[0]
+    assert create[0] == 'create' and create[create.index('--workdir') + 1] == f'/tasks/{R}/system'
+    assert str(q.mode._PROMPT.parents[2]) not in create

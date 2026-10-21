@@ -486,3 +486,72 @@ def test_boot_process_identity_prevents_recovery_touching_a_live_card(tmp_path, 
     S.recover_pending(SimpleNamespace(server='http://spark', worker='newworker',
                                      config=SimpleNamespace(data_dir=tmp_path)))
     assert journal_path.read_bytes() == before and path.read_bytes() == raw
+
+
+def test_operator_launch_takes_a_card_back_from_an_agent_demo(tmp_path):
+    """#2817: the screensaver plays with the operator's card; their own Play elsewhere always gets it back."""
+    client, store, cfg = setup(tmp_path)
+    card = create(client); url = '/api/memory-cards/' + card['id']
+    before = client.get(url + '/data').content
+    store.put('job', 'demojob', {'state': 'running', 'agent_use': True})          # the screensaver's launch
+    store.put('session', 'w1-demojob', {'state': 'running', 'worker_id': 'w1'})
+    assert client.post(url + '/lease', json=owner(suffix='demojob')).status_code == 200
+    store.put('job', 'agentjob', {'state': 'queued', 'agent_use': True})
+    assert client.post(url + '/lease', json=owner('w2', 'agentjob')).status_code == 409    # another agent: no
+    assert client.post(url + '/lease', json=owner('w2', 'nojob')).status_code == 409       # unknown launch: no
+    store.put('job', 'opjob', {'state': 'queued'})                                          # the operator's Play
+    assert client.post(url + '/lease', json=owner('w2', 'opjob')).status_code == 200
+    late = owner(suffix='demojob') | {'base_revision': 1, 'data_b64': base64.b64encode(changed_vmu(before)).decode()}
+    assert client.post(url + '/sync', json=late).status_code == 409                         # the demo's save stays local
+    assert client.get(url + '/data').content == before
+    assert client.post(url + '/lease', json=owner(suffix='demojob')).status_code == 409     # and never takes it back
+
+
+def demo_api(monkeypatch, selection=True, held=False):
+    from gbox import memory_card_sessions as S
+    blank = N.blank('dreamcast'); cid = 'e' * 32
+    card = {'id': cid, 'name': 'PSO card', 'revision': 6, 'sha256': hashlib.sha256(blank).hexdigest(),
+            'capacity': N.describe(blank, 'dreamcast')}
+    calls = []
+    def respond(ctx, path, body=None, raw=False):
+        calls.append(path)
+        if path.startswith('/api/memory-cards?'):
+            return {'selection': {'A1': cid} if selection else {}, 'cards': [card]}
+        if path.endswith('/lease'):
+            if held:
+                raise RuntimeError('This card is already inserted in another session. Sync and close that session before sharing it')
+            return card
+        if '/data?' in path:
+            return blank
+        if path.endswith('/release'):
+            return card | {'lease': None}
+        raise AssertionError(path)                       # a demo never creates, imports or selects a card
+    monkeypatch.setattr(S, 'api', respond)
+    return S, calls, cid
+
+
+def test_agent_launches_leave_the_operators_cards_alone_unless_a_demo_asks(tmp_path, monkeypatch):
+    S, calls, cid = demo_api(monkeypatch)
+    game = {'platform': 'dreamcast', 'game_id': 'pso-dc'}
+    agent = SimpleNamespace(server='http://spark', worker='w1', config=SimpleNamespace(data_dir=tmp_path), agent_use=True)
+    assert S.checkout('w1-job1', SimpleNamespace(name='retroarch'), game, agent) is None and calls == []
+    ad = SimpleNamespace(name='retroarch')
+    context = S.checkout('w1-job2', ad, game, agent, operator_cards=True)                 # the screensaver (#2817)
+    assert context['slots']['A1']['card_id'] == cid and context['slots']['A1']['revision'] == 6
+    assert ad.memory_card_context is context and '/api/memory-cards/' + cid + '/lease' in calls
+
+
+def test_a_demo_plays_without_the_operators_card_when_it_is_held_or_none_is_selected(tmp_path, monkeypatch):
+    game = {'platform': 'dreamcast', 'game_id': 'pso-dc'}
+    agent = SimpleNamespace(server='http://spark', worker='w1', config=SimpleNamespace(data_dir=tmp_path), agent_use=True)
+    S, calls, cid = demo_api(monkeypatch, held=True)
+    ad = SimpleNamespace(name='retroarch')
+    assert S.checkout('w1-job3', ad, game, agent, operator_cards=True) is None
+    assert 'another session' in ad.memory_card_unavailable and not getattr(ad, 'memory_card_context', None)
+    S, calls, cid = demo_api(monkeypatch, selection=False)
+    assert S.checkout('w1-job4', SimpleNamespace(name='retroarch'), game, agent, operator_cards=True) is None
+    assert calls == ['/api/memory-cards?platform=dreamcast&game_id=pso-dc']
+    S, calls, cid = demo_api(monkeypatch, held=True)                                       # the operator's own launch:
+    operator = SimpleNamespace(server='http://spark', worker='w1', config=SimpleNamespace(data_dir=tmp_path))
+    with pytest.raises(RuntimeError, match='another session'):                              # unchanged, still refused
+        S.checkout('w1-job5', SimpleNamespace(name='retroarch'), game, operator)

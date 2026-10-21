@@ -271,3 +271,127 @@ not verify it, and no live game was restarted for this change.
 * Weapons stay the fighters' own (by design); Inferno / Charade still borrow theirs.
 * The random draw happens at the body load, not on the select screen, so the select screen does not preview it.
 * Not verified in Dolphin: no game was started from this work.
+
+## 7. Perfect defence: the autoplay playbook (`gbox/sc2_bot.py`)
+
+Operator request (2026-10-20): "for soul caliber. The autoplayer for player 1 should know how to parry / soul block
+every attack and never be able to get hit as a result", with RAM, not vision, as the primary source. `sc2_bot` is an
+autoplay playbook (`tools.PLAYBOOKS`; `autoplay op=start mode=playbook`, or `auto` when a GRSEAF session is running):
+player 1 reads player 2's attack from RAM the moment it starts, Guard Impacts it on the right frame, guards what it
+does not impact, and punishes after a landed GI. The RAM fields are in `profiles/gamedata/GRSEAF-ram.json` (66 fields,
+`python -m gbox.ram_map check`), so the RAM inspector shows them live.
+
+### RAM (main.dol + live)
+
+| what | where | how it was found / checked |
+|---|---|---|
+| fighter structs | P1 `0x8034D4C0`, P2 `0x8036E560` (pointers at `0x8038F678` / `0x8038F67C`) | the move loader `FUN_800948a0` and the hit resolver `FUN_8009be38` are called with these; the AR code "P1 has Unlimited Health" (decrypted with `gbox.ar_decrypt`: `0434EA1C 43700000`) lands at P1 + 0x155C |
+| health | +0x155C f32 (240) | AR code; live |
+| fighter id / costume | +0x62 / +0x64 s16 | `FUN_800a1e4c` case 7 (section 1); live: Talim 22, Raphael 21, Taki 3 |
+| side | +0x07 u8 (1: forward is screen-right) | `FUN_8009a618` rotates the stick 2 or 6 numpad steps by it (and flips while +0xAA is set); `FUN_800dac3c` derives it from both fighters' +0x2950 / +0x2958 and the camera (`*(*0x80460B68 + 0x10) + 0x10 / 0x18`) |
+| state flags | +0xA0 + i (u8, `FUN_80093368`): +0xA2 crouching, +0xA3 airborne, +0xA4 down, +0xAA facing away, +0xBB attacking, +0xC1 hit spheres live, +0xC2 the attack connected | decompile; live |
+| state vars | +0x24A + 2i (u16, `FUN_8009394c`): var 12 (+0x262) = the GI in effect: 2 Repel (frames 0-8 of 6G), 40 Parry | `FUN_8009c8b4`; live |
+| current attack | +0x1690 -> 0x60-byte record (0 = none) | set by `FUN_800948a0` (`bank+0x10 + move+0x58 * 0x60`), cleared by `FUN_80096ce8` |
+| attack record | +0x32 hit-level bits, +0x34 kind, +0x36 / +0x38 first / last active frame, +0x3A damage | `FUN_8009be38`, `FUN_8009c8b4`, the CPU AI `FUN_800cfa40` / `FUN_800d1fac`; live outcomes (below) |
+| action move | layer 1: move id +0x1FAA (0xFFFF none), frame +0x1FC8 f32, next frame +0x1FB0 (minus frame = speed) | the AI's frames-to-impact is `rec+0x36 - (int)frame`; live: hits land on frame start .. start+2 |
+| stance move | layer 0: move id +0x1C2A (0 stand, 5 / 7 guard, 0x30 / 0x31 walk) | live |
+| hit result | +0x15F8 s32, one frame: 1 guarded, 4-7 hit, 11 / 12 this fighter Guard Impacted the attack | `FUN_8009be38` / `FUN_8009cd18`; live |
+| distance | +0x1660 f32 (both structs) | live (3.3 -> 5.2 walking back) |
+| rounds won | +0x154D u8 | AR code "only one round to win"; live: 0 -> 1 when P1 won a round |
+| control | +0x50 u32 (0 / 1 the pad, 3 the CPU: the attract demo) | `FUN_8009a618`; live |
+| game | frame counter `0x802B608C` (+1 a frame), fight on `0x8038F650` u16 | `FUN_8009cd18` returns while it is 0; live |
+| pad | +0x14 u32: A 0x40, B 0x200, X 0x20, Y 0x100, Z 0x10, L 0x05, R 0x88, Start 0x8000, right / left / down / up 0x400 / 0x800 / 0x1000 / 0x2000 | `FUN_8002a694` (table `0x802588E0`); live through gBox's keys |
+
+Hit-level bits (`FUN_8009be38`): 0x01 hits a standing fighter, 0x02 a crouching one, 0x04 an airborne one, 0x08
+standing guard blocks it, 0x10 crouching guard blocks it, 0x40 hits a downed fighter, 0x80 throw, 0x100 no Guard
+Impact. Checked against the CPU (Practice, P1 holding G, then 2G): 0x49 (high) and 0x4B / 0x6F (mid) guarded standing,
+0x37 (low) and 0x81 (throw) hit through it; crouching, 0x37 and 0x1B (special mid) guarded, 0x4B hit, 0x49 whiffed.
+
+### Guard Impacts in SC2
+
+`FUN_8009c8b4` and live tests agree: Repel (6G, GI type 2) takes highs, mids and the plain throws 0x81 / 0xC1;
+Parry (4G, GI type 40) takes mids and lows. (3G / 1G are Soul Calibur 1's; in SC2 they read as crouch guard.)
+Measured on the Spark's Dolphin with a Practice dummy (save-state and walk-in sweeps, 2026-10-20):
+
+* the GI move (Repel 0x8A, Parry 0x92) starts on the game frame after its input and catches an impact on its
+  frames 0-8; pressed 0-9 frames before the impact frame it landed every time, 10 frames before it was too early;
+* it needs a fresh G: 6 pressed while G is held only guards, so a held guard is let go for two frames first;
+* the direction must not come after G: dir + G together or dir first landed 32 / 32, G 12-17 ms first 3 / 12 (G alone
+  reads as a guard; xdotool, gBox's Linux input, puts 12 ms between two keys of one call);
+* after a Repel the repeller can act from frame 24 of its follow-through (0x8C; a button from frame ~15 is buffered
+  to it), the repelled fighter staggers 40 frames (0x23A4) and can GI from frame ~27; parried fighters stagger in
+  0x23AB / 0x23AD and are turned away (+0xAA), yet a GI pressed there reads the stick by the side alone;
+* 4G from a crouch does not come out; facing away, G turns the fighter round instead of impacting.
+
+### The playbook
+
+Per poll (2 ms, about 450 a second; both fighters, the attack records and the frame counter in about a dozen reads):
+
+1. **What comes**: P2's current attack record gives the kind (high / mid / low / special mid / throw / unblockable;
+   a record with no hit bits is not an attack) and t = (first active frame - frame) / speed frames to impact, known
+   from the attack's first frame. When P2 has no attack still to come, the **queued next move** of its action layer
+   (+0x52, taking over at frame +0x60; the alternatives on a hit at +0x54..+0x58) is looked up in its moveset, so a
+   string's next part is known before it starts (Ivy's 0x168 hits 2 frames into its own move, 0x169 is an
+   unblockable 3 frames in).
+2. **Guard Impact** timed so that the command reaches the game `GI_AT` (5) frames before impact: P1 stands ready with
+   nothing held, so a GI is one send of dir + G (direction first). The lead adds the measured latency (frames from
+   the send until the GI move shows: 1.2-2.8 through xdotool on the busy Spark) and, when G is held (guard stun),
+   its release, in which case a GI is only started at the right moment, never late. Highs, mids and special mids get
+   the Repel, lows the Parry. P1 must be free (no action of its own, standing, facing the opponent; the end of its
+   own GI's follow-through; or a GI'd stagger, where a GI is the only way out), P2 within 2.3, its move winding up at
+   normal speed with a short active window (or a long one whose contact frame the book knows), and the book must
+   not have seen the move miss from about this distance. A GI move that does not show within 0.07 s falls back to
+   the guard.
+3. **Guard** otherwise: standing G against highs, mids and special mids, 2G against lows; G is kept through guard stun
+   and gets P1 up when knocked down.
+4. **Throws** a standing fighter can be thrown by: crouch (2G) 10 frames before the grab; from a GI'd stagger
+   (no crouching there) Repel them.
+5. **Unblockables**: sidestep (up) 14 frames before, and right away when a string's current part can only be guarded
+   and its queued next part is unblockable (the guard stun would hold P1 for it).
+6. **Punish** after a landed GI: once P1 can act and P2 is still staggered within 2.2, B (no G until P1's attack
+   record has passed its last frame: G cancels the startup). If the CPU GIs the punish, step 2 impacts its follow-up
+   from the stagger.
+7. **Move book** (`<runtime>/sc2_learned/movebook.json`, read over the repo seed
+   `profiles/gamedata/GRSEAF-movebook.json`): per (fighter, move) the GIs that landed / met nothing and the attacks
+   that touched P1 or met nothing, each with its distance, and the frame in its active window it reached P1 at. A
+   move is impacted only once it has reached P1 from about this distance (within 0.35) and has not met nothing there
+   more than a third as often; a long active window is timed on its median contact frame. Raphael's stance cancels,
+   Ivy's whips (they miss up close and hit further out), string starters that fall short: guarded, not impacted, after
+   one or two tries, because a GI that meets nothing leaves P1 ~30 frames in recovery and the CPU's strings use it.
+8. **Between fights**: after 4 s out of a fight (or in the attract demo, whose fighters are the CPU's), A every
+   1.2 s (every fourth press Start: the title).
+
+Keys go out on a thread of their own (`Sender`): gBox's Linux `send_input` runs one xdotool process per call (17-35 ms
+on the Spark, a three-key call 65 ms), and a hit result lasts one frame, so the poll loop must not wait for it.
+
+### Live results
+
+All on the Spark's Dolphin, P1 Talim, keys through xdotool as gBox's Linux `send_input` sends them, counted from RAM
+(the table and the frames: `docs/evidence/sc2-perfect-defense/`):
+
+* Practice VS CPU Raphael, Ultra Hard, 10 minutes: 413 attacks, 253 GIs landed, 2 hits taken (25.7 damage).
+* Arcade (Normal), final code, 15 minutes: 7 opponents, **13 rounds won, 0 lost**; 465 attacks, 146 GIs, 190 guards,
+  135 punishes landed; **14 hits taken** (186 damage): 451 of 465 attacks did P1 no damage.
+* Ivy (Ultra Hard), whose whip strings start their next part 2-3 frames into it: 27 hits in 8 minutes before the
+  queued-move look-ahead and the distance book, 4 in 6 minutes after.
+
+So P1 is not yet "never hit". What still gets through: lows with long active windows, unblockables that the
+sidestep does not clear (Astaroth's 0x41 thrust: it does not hit a crouching fighter, so crouching is the next fix),
+a Raphael throw (0xC1) the crouch did not beat, and mids that land while P1 is in its own move (a GI that met
+nothing, or a punish the CPU impacted). First sightings of a move are guarded until the book knows its reach.
+
+### Limits
+
+* Verified against Raphael and Ivy (Practice VS CPU, Normal to Ultra Hard) and the Arcade cast it met (Taki, Kilik,
+  Maxi, Mitsurugi, Astaroth, Nightmare, Inferno, Cassandra, Yunsung); every move of every fighter is read the same
+  way, but other casts' feints and reach are learned by the book as they come (`GRSEAF-movebook.json` seeds 661
+  moves of these 11 fighters).
+* Not yet zero hits (Live results). The playbook could later sit on the shared fighting engine the DOA3 work is
+  building (`gbox/fightbot`, branch doa3-autobot) as a title: snapshot / threat / answers map onto its hooks.
+* The punish is one B: enough to win rounds (the CPU's re-GIs, about 40% at Ultra Hard, are met by GIs from the
+  stagger), not a combo engine.
+* Unblockables, ring-outs and stage-specific moves (walls, Astaroth's grabs that hit crouching) were met rarely in the
+  runs; a crouch-hitting throw (0x82) can only be broken, which the bot does not do.
+* Live runs used a Dolphin started by hand on the Spark (same flatpak, same disc, `nice`), because gBox's lilspark
+  worker was running another agent's RE4 sessions (a worker runs one emulator) and the i9-NUC was given to the DOA3
+  work; the code runs in the worker the same way (`ram_dump.ShmRam`, `send_input`).

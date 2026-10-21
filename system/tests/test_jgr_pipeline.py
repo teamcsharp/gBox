@@ -18,7 +18,7 @@ import pytest
 
 from gbox import jgr, jgr_swap, ninja
 
-GDI = Path(os.environ.get("JGR_GDI", "/home/ehm_eckx/gbox-cache/dc/4187aeab4d67638c/disc.gdi"))
+GDI = Path(os.environ.get("JGR_GDI", "/home/ehm_eckx/gBox_alt/gbox-cache/dc/4187aeab4d67638c/disc.gdi"))
 
 PARENTS_HEAD = [-1, 0, 1, 2]
 HULL = 0.1

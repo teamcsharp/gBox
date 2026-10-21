@@ -69,3 +69,14 @@ test('operations UI renders real components, progress, deferral, offline and pau
     },{softwareGL:true});
   }finally{await new Promise(r=>server.close(r));}
 });
+
+test('idle screen streams the Spark game live in a bottom-right picture-in-picture', () => {
+  const fsx = require('node:fs'), px = require('node:path');
+  const html = fsx.readFileSync(px.join(__dirname, '..', 'clients', 'web', 'viz', 'background-operations.html'), 'utf8');
+  const js = fsx.readFileSync(px.join(__dirname, '..', 'clients', 'web', 'viz', 'background-operations.js'), 'utf8');
+  assert.match(html, /<aside id="pip" hidden/);
+  assert.match(html, /#pip\{position:fixed;right:18px;bottom:18px/);
+  assert.match(js, /worker_name === 'lilspark'/);
+  assert.match(js, /\/mjpeg\?token=/);
+  assert.match(js, /sparkPip\(\)\.catch/);
+});

@@ -6,7 +6,7 @@ import pytest
 
 from gbox import sa2_inventory as inv
 
-GDI = Path(os.environ.get("GBOX_SA2_GDI", Path.home() / "gbox-cache/dc/d95ed7ed1e40552a/disc.gdi"))
+GDI = Path(os.environ.get("GBOX_SA2_GDI", Path.home() / "gBox_alt/gbox-cache/dc/d95ed7ed1e40552a/disc.gdi"))
 EXE_SHA = "6919ed8bc96782d041be41ba86f90bf86d99632b8b7787391969721bc0991736"
 
 

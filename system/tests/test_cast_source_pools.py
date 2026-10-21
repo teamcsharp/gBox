@@ -109,9 +109,15 @@ def test_pool_losing_all_donors_to_quality_gate_is_not_silently_omitted():
         C.plan(DOA2, chars, "sonic,mario", mapping="Alternate", seed="gate")
 
 
-def test_unsupported_doa3_target_stays_unbuildable():
+def test_doa3_target_alternates_pools_over_its_fighter_families():
+    # DOA3 has a routed cast writer (gbox.doa3_cast, one disc build for every fighter family): the pools alternate
+    # over the fighter slots, and Tengu (no costume files) is reported, never dealt
     game = {"game_id": "b8edf7040116f3aa", "title": "Dead or Alive 3 (USA)", "platform": "xbox"}
     result = C.plan(game, _chars(), "sonic,mario", mapping="alternate", seed="unfinished")
-    assert result["status"] != "planned" and not result.get("mod")
-    assert not result.get("assignments")
+    assert result["status"] == "planned" and result["writer"] == "gbox.doa3_cast" and result["strategy"] == "pairs"
+    assert len(result["assignments"]) == 19
+    assert all(r["slot"].startswith("fighter:") for r in result["assignments"])
+    assert "fighter:tengu" in {s["slot"] for s in result["skipped"]}
+    seq = sequences(result)
+    assert seq[:2] == ["sonic", "mario"] and abs(seq.count("sonic") - seq.count("mario")) <= 1
 

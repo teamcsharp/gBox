@@ -345,3 +345,46 @@ test('the browser binding: the Goals view T-poses the donor, numbers both sides 
   assert.ok(!x.statuses.some(s => /✗|unavailable/.test(s)), x.statuses.join(' | '));      // no error on the way
   r.dispose();
 });
+
+// ---- "Turn around" in the preview: the fit frame is the slot's own facing in the build times the turn ----------------
+test('a slot skeleton facing the other way shows the donor backwards until Turn around, like the build', async () => {
+  const frames = [];
+  Object.assign(globalThis, { requestAnimationFrame: f => { frames.push(f); return frames.length; }, devicePixelRatio: 1,
+    fetch: async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(0) }) });
+  const tick = async () => { for (let i = 0; i < 20; i++) await new Promise(r => setImmediate(r)); while (frames.length) frames.shift()(); };
+  const target = JSON.parse(JSON.stringify(GOALS));
+  // the slot as the last build loaded it faces -Z (its left on -X): the build would fit a front-facing donor backwards
+  target.goals.target = Object.fromEntries(Object.entries(H.standardSkeleton(1.7)).map(([r, p]) => [r, [-p[0], p[1], -p[2]]]));
+  const x = fakeIo({ '/api/retarget/goals': target, '/api/retarget/reference': { reference: null } });
+  const io = Object.assign({}, x.io, { loadModules: async () => fakeThree([H.standardSkeleton(1.7)]) });
+  let closed = 0;
+  const r = E.open(fakeDom(), io, { slug: 'amy', gid: 'g', title: 'T', slot: 'fighter:KAS', view: 'goals', onClose: () => closed++ });
+  await tick(); await tick();
+  const c = r.controller;
+  for (const role of ['l_upper', 'l_fore', 'l_hand']) c.setRoleBone(role, role);
+  r.el.on.change({ target: { closest: s => (s === '[data-rt-bone]' ? { dataset: { rtBone: 'head' }, value: 'head' } : null), matches: () => false } });
+  await tick();
+  const shoulder = () => {                                 // the donor's upper-arm vertex by the shoulder (x 0.25), fitted
+    const mesh = r.views.target.group.children.find(m => m.isMesh);
+    return Array.from(mesh.geometry.attributes.position.array.slice(0, 3));
+  };
+  const before = shoulder();
+  assert.ok(before[0] < 0, `backwards: the left arm starts from the slot's right shoulder (${before})`);
+  r.el.on.click({ target: { closest: s => (s === '[data-rt-go]' ? { dataset: { rtGo: 'turn' } } : null) } });
+  await tick();
+  assert.equal(c.state.profile.turn, true); assert.ok(c.state.dirty);
+  const after = shoulder();
+  near(after, [0.25, 1.45, 0], 0.02);                                     // on the slot's own left shoulder
+  assert.equal(c.payload('slot').profile.turn, true);
+  // Swap left <-> right: the roles trade bones, the donor's facing flips and its model turns with its bone dots
+  c.setRoleBone('r_upper', 'r_upper'); r.el.on.change({ target: { closest: s => (s === '[data-rt-bone]' ? { dataset: { rtBone: 'r_upper' }, value: 'r_upper' } : null), matches: () => false } });
+  await tick();
+  assert.equal(r.views.donor.group.m[0], 1);
+  r.el.on.click({ target: { closest: s => (s === '[data-rt-go]' ? { dataset: { rtGo: 'swap-lr' } } : null) } });
+  await tick();
+  assert.equal(c.state.roles.l_upper, 'r_upper'); assert.equal(c.state.roles.r_upper, 'l_upper');
+  assert.equal(r.views.donor.group.m[0], -1);                              // the Fit view's donor mesh follows
+  assert.deepEqual(c.payload('slot').profile.roles, { head: 'head', l_upper: 'r_upper', r_upper: 'l_upper', r_fore: 'l_fore', r_hand: 'l_hand' });
+  assert.equal(closed, 0); r.dispose(); assert.equal(closed, 1);          // the opener's hold goes with the editor
+  r.dispose(); assert.equal(closed, 1);
+});
