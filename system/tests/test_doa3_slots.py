@@ -47,12 +47,13 @@ def test_slot_inventory_resolves_every_family_and_reports_exact_gaps():
 
     by_nick = {s["nick"]: s for s in inv["slots"]}
     assert set(inv["resolved_display"]) == set(d3.FIGHTER_DISPLAY.values())
-    assert inv["display_pending"] == ["chin", "gokei", "hika", "koryu"]
+    assert inv["display_pending"] == ["chin", "gokei", "koryu"]
     assert by_nick["kasumi"]["display_name"] == "Kasumi"
     assert by_nick["karate"]["display_name"] == "Ein"
     assert by_nick["bosnin"]["display_name"] == "Genra"
     assert by_nick["sambo"]["display_name"] == "Leon"
-    assert by_nick["hika"]["display_name"] is None and by_nick["hika"]["display_pending"]
+    assert by_nick["hika"]["display_name"] == "Helena" and not by_nick["hika"]["display_pending"]
+    assert by_nick["koryu"]["display_name"] is None and by_nick["koryu"]["display_pending"]
     assert by_nick["chin"]["display_name"] is None and by_nick["chin"]["display_pending"]
 
     # classification
@@ -60,13 +61,13 @@ def test_slot_inventory_resolves_every_family_and_reports_exact_gaps():
     assert {s["nick"] for s in inv["slots"] if s["story_only"]} == {"chin"}
     assert by_nick["tengu"]["costume_count"] == 0
 
-    # exact gaps: 4 pending names, tengu has no costumes, and 4 roster names are uncovered
+    # exact gaps: 3 pending names, tengu has no costumes, and 3 roster names are uncovered
     kinds = {}
     for g in inv["coverage_gaps"]:
         kinds.setdefault(g["kind"], []).append(g["slot"])
-    assert set(kinds["display_name_pending"]) == {"hika", "koryu", "gokei", "chin"}
+    assert set(kinds["display_name_pending"]) == {"koryu", "gokei", "chin"}
     assert kinds["no_complete_costumes"] == ["tengu"]
-    assert set(kinds["roster_not_covered"]) == {"Hitomi", "Helena", "Christie", "Omega"}
+    assert set(kinds["roster_not_covered"]) == {"Hitomi", "Christie", "Omega"}
 
 
 def test_slot_inventory_matches_real_owned_manifest():
@@ -76,8 +77,8 @@ def test_slot_inventory_matches_real_owned_manifest():
     inv = d3.slot_inventory(manifest)
     assert inv["slot_count"] == 20
     assert inv["costume_total"] == manifest["counts"]["costumes"] == 69
-    assert inv["display_pending"] == ["chin", "gokei", "hika", "koryu"]
-    assert len(inv["resolved_display"]) == 16
+    assert inv["display_pending"] == ["chin", "gokei", "koryu"]
+    assert len(inv["resolved_display"]) == 17
     assert {g["kind"] for g in inv["coverage_gaps"]} == {
         "display_name_pending", "no_complete_costumes", "roster_not_covered"}
 

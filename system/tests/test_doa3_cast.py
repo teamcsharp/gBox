@@ -563,16 +563,16 @@ def test_slot_inventory_counts_and_gaps():
 def test_slot_inventory_keeps_unresolved_family_pending():
     manifest = make_manifest()
     manifest["fighter_families"].append(
-        {"nick": "hika", "code": "hik", "mot": ["hika.mot"],
-         "costumes": {"hik00": {"xpr": 9, "cat": 10}},
-         "complete_costumes": ["hik00"]})
+        {"nick": "koryu", "code": "kor", "mot": ["koryu.mot"],
+         "costumes": {"kor00": {"xpr": 9, "cat": 10}},
+         "complete_costumes": ["kor00"]})
     inv = doa3_cast.slot_inventory(manifest)
     by_nick = {s["nick"]: s for s in inv["slots"]}
-    assert by_nick["hika"]["display_name"] is None
+    assert by_nick["koryu"]["display_name"] is None
     assert inv["display_mapping"] == "partial"
-    assert inv["display_pending"] == ["hika"]
+    assert inv["display_pending"] == ["koryu"]
     gaps = {(g["slot"], g["kind"]) for g in inv["coverage_gaps"]}
-    assert ("hika", "display_name_pending") in gaps
+    assert ("koryu", "display_name_pending") in gaps
 
 
 def test_cast_writer_status_is_honest():

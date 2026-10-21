@@ -46,6 +46,17 @@ def test_roles_need_fifteen_primary_parts():
         F.costume_roles(render_list_cat([(0xFE, [0, 1, 2])]), 3)
 
 
+def test_limb_frames_are_right_handed_with_lateral_leg_hinges():
+    for role, rows in F.LIMB_FRAMES.items():
+        m = np.array(rows, float)
+        assert np.allclose(m @ m.T, np.eye(3)) and np.linalg.det(m) == pytest.approx(1.0), role
+        if role.endswith(("thigh", "shin")):
+            assert abs(m[1, 0]) == 1                                  # the knee hinge (local y) is lateral
+            assert m[1, 0] == (-1 if role.startswith("l") else 1)      # and points inward
+        else:
+            assert tuple(m[1]) == (0, 1, 0)                            # the elbow hinge is up in the T-pose
+
+
 def test_family_codes():
     assert F.family_code("zack") == "zac" and F.family_code("zac") == "zac"
     assert F.family_code("Hayate") == "nin"                         # display name through FIGHTER_DISPLAY

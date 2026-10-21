@@ -133,8 +133,8 @@ DESC_TERMINATOR = 0xFFFFFFFF
 DESC_PAD_BYTE = 0xAD
 
 # Display-name mapping now lives in ``doa3_inventory``: FIGHTER_DISPLAY resolves
-# 16 nicknames (XBE select table RE) and DISPLAY_MAPPING_PENDING is the four
-# still-unresolved families (hika/koryu/gokei/chin). This module imports both so
+# 17 nicknames (XBE select table RE, hika = Helena from a RAM dump) and DISPLAY_MAPPING_PENDING
+# is the three still-unresolved families (koryu/gokei/chin). This module imports both so
 # its slot inventory stays consistent with the inventory layer.
 
 # The writer routes to this catalog game (``char_coverage.writer_for``): a routed

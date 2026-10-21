@@ -35,18 +35,22 @@ CANON = {"l_upper": (1, 0, 0), "l_fore": (1, 0, 0), "r_upper": (-1, 0, 0), "r_fo
          "l_thigh": (0, -1, 0), "l_shin": (0, -1, 0), "r_thigh": (0, -1, 0), "r_shin": (0, -1, 0)}
 CHILD = {"l_upper": "l_fore", "l_fore": "l_hand", "r_upper": "r_fore", "r_fore": "r_hand",
          "l_thigh": "l_shin", "l_shin": "l_foot", "r_thigh": "r_shin", "r_shin": "r_foot"}
-# rows = the part frame's x, y, z axes written in the canonical stance frame (local = rows @ stance)
+# rows = the part frame's x, y, z axes written in the canonical stance frame (local = rows @ stance).
+# Read off the game's own per-part world matrices in a stock-fight RAM dump (Survival result screen, Jann Lee and
+# Helena; 15 D3D 4x4 matrices per fighter in the CAT's primary order, scratch ram_frames.py): every limb's y axis
+# is the hinge it shares with the part below it, the knee flexes toward -x on the left thigh and +x on the right,
+# the elbow toward -x on the left upper arm and +x on the right. Legs: y points inward (toward the other leg),
+# z down the thigh / up the shin, x = y cross z. Arms (T-pose): y up, z out along the upper arm / in along the
+# forearm, x = y cross z.
 LIMB_FRAMES = {
-    # arms out along x, y kept up: the bone is +z (upper) / -z (fore) in the part frame
     "l_upper": ((0, 0, -1), (0, 1, 0), (1, 0, 0)),
     "l_fore": ((0, 0, 1), (0, 1, 0), (-1, 0, 0)),
     "r_upper": ((0, 0, 1), (0, 1, 0), (-1, 0, 0)),
     "r_fore": ((0, 0, -1), (0, 1, 0), (1, 0, 0)),
-    # legs down: thigh +z = down with y = front, shin -z = down with y = back
-    "l_thigh": ((1, 0, 0), (0, 0, 1), (0, -1, 0)),
-    "r_thigh": ((1, 0, 0), (0, 0, 1), (0, -1, 0)),
-    "l_shin": ((1, 0, 0), (0, 0, -1), (0, 1, 0)),
-    "r_shin": ((1, 0, 0), (0, 0, -1), (0, 1, 0)),
+    "l_thigh": ((0, 0, 1), (-1, 0, 0), (0, -1, 0)),
+    "r_thigh": ((0, 0, -1), (1, 0, 0), (0, -1, 0)),
+    "l_shin": ((0, 0, -1), (-1, 0, 0), (0, 1, 0)),
+    "r_shin": ((0, 0, 1), (1, 0, 0), (0, 1, 0)),
 }
 STRETCH = (0.6, 3.0)              # a limb reaches the native joint below it (SA1 Sonic's shins need 3x)
 THICKEN_FROM = 1.7                # past this stretch a limb also thickens by sqrt(stretch / 1.7)
@@ -361,7 +365,7 @@ def fit(rig: dict, geometry: dict, roles: dict, *, texture_limit: int = 256, slo
     report = {"scale": scale, "height_native": height_native, "height_donor": height_donor, "part_scales": sizes,
               "limb_stretch": stretch, "parts": counts, "textures": len(textures) + len(texture_slots),
               "textures_in_native_slots": sorted(texture_slots),
-              "frames": "per-part local fit (native rest rotations not decoded; limb twist by LIMB_FRAMES)"}
+              "frames": "per-part local fit; limb frames from the game's part matrices (LIMB_FRAMES)"}
     return {"parts": parts, "textures": textures, "texture_slots": texture_slots, "report": report}
 
 
