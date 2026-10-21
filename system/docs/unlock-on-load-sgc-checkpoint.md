@@ -99,3 +99,68 @@ museum menu. Then map each record to the eight categories above, implement a
 revision-guarded writer against the pinned digests with backup/rollback, and only then run
 the live acceptance (fresh boot, select/play every discovered character and mode, second
 launch, rollback) on an idle authorised worker at 2% audio.
+
+## Run 2 (local minimax) - 2026-10-21 - state layout mapped, still no writer
+
+### New verified facts
+
+| Fact | Value | How verified |
+|---|---|---|
+| DOL address map | **linear**: `VA = file_offset + 0x80003000` | entry point VA 0x80005600 -> file 0x2600; six independent string literals round-trip exactly |
+| State filename table | `0x801E4C00` = 30 ptrs `STATE_{JP,US,EU}\MUSEUM01..10.STM` | exhaustive pointer scan of the DOL |
+| STG filename table | `0x801CDF88` = `STATE_{JP,US,EU}\MUSEUM01..06.STG` | same |
+| STG region block | `0x801E4C88` | same |
+| State loader | `fn@0x80010810` indexes those tables by region+slot to build the opened path | disassembly + table cross-reference |
+| Record table | offset `0x80`, 2 bytes/record: `byte0`=object id, `byte1`=`(class<<5)\|sub` | decoded from all 16 shipped saves |
+| Class field | bits 5-7, exactly 8 values across all saves: `0x1f 0x3f 0x5f 0x7f 0x9f 0xbf 0xdf 0xff` | decoded from all 16 shipped saves |
+| "Unset" marker | object id `0x81`, class 3, sub `0x1f` (byte1 `0x7f`) | first 34 records identical in every save |
+| Content inventory (partial) | 12 museum media entries (museum01..12); 12 GGROM games; 4 Mode Select entries; 16 `LYR_MODE_GS_OBJECT_TITLE`; 16 `LYR_MODE_GS_SCR_SELECT_GAME` | `main.dol` string table + disc file listing |
+
+**Hypothesis, not proof:** the 8 class values map one-for-one onto the 8 requested
+categories, and the 34 leading unset records are the not-yet-seen museum objects.
+The `cmp 0xdf`/`cmp 0xbf` cluster at `0x80180D40..0x8018300C` is the only
+plausible class test, but the enclosing function `0x80180A88` disassembles as a
+UI builder, not a state reader - so that cluster is **not** yet attributed.
+
+### Changed this run
+
+- `system/gbox/sgc_gems_layout.py` (new, read-only): verified constants, the
+  linear VA map, the state/STG filename tables, the 2-byte record decoder,
+  header summariser, and the content inventory with an honest
+  `CATEGORY_STATUS` (`unknown` = not yet mapped, never "absent").
+- `system/gbox/game_unlocks.py`: SGC `profile_for` and `pre_launch` now carry
+  `inventory`, `inventory_evidence`, `state_layout`; `pre_launch` adds
+  `additional_blockers` + `next_step` (the gate's own `blockers`/`next` are
+  left intact).
+- `system/tests/test_sgc_gems_layout.py` (new): 8 tests over a fixture built
+  from the **real** first `0xC4` bytes of `state_us__museum01.stm`.
+
+### Tests
+
+`PYTHONPATH=. <venv>/bin/python3 -m pytest -q tests/test_sgc_gems_probe.py tests/test_sgc_gems_layout.py`
+-> **15 passed** in a clean interpreter (7 probe + 8 layout).
+`py_compile` clean on all 5 changed files.
+
+The museum07 digest failure from run 1 is **resolved**: the pinned table is
+correct and matches the disc for all 16 slots. The old failure was a stale
+`gbox.sgc_gems_probe` module cached in the long-lived kernel interpreter; in a
+fresh process the suite is green.
+
+### Still blocking (unchanged)
+
+1. The class->category mapping is a hypothesis; no writer exists.
+2. No runtime acceptance whatsoever: no boot, no character/mode selection, no
+   second launch, no rollback. A boot screenshot is not unlock evidence.
+3. characters / hidden_characters / costumes / items / extras still have no
+   named entries recovered.
+4. `fn@0x80010810` has not yet been xrefed to the writer of the `0x80` record
+   table.
+
+### Exact next step
+
+In the worker Ghidra project `pop_sot_main`: xref `fn@0x80010810` to the
+routine that writes the `0x80` record table and to the museum-menu eligibility
+test; confirm the class->category mapping; then implement a revision-guarded
+writer against the pinned save digests with backup/rollback, and only then run
+live acceptance on an idle authorised worker at 2% audio.
+
