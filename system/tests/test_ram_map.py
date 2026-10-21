@@ -335,6 +335,19 @@ def test_promoted_fields_go_to_the_overlay_and_load_over_the_repo_map(tmp_path, 
     assert ram_map.find({"game_id": "aaaa000011112222"}).id == "aaaa000011112222"
 
 
+def test_signatures_tag_enum_values_with_their_evidence():
+    m = ram_map.RamMap(spec({"enemy.act": {"address": "0x80001000", "type": "u8", "enum": {"0x26": "swing"},
+                                           "signatures": {"0x26": {"attack": "melee", "lead_s": 0.5,
+                                                                   "source": "ghidra", "confidence": "static"}}}}))
+    f = m.fields["enemy.act"]
+    assert f.signatures[0x26]["attack"] == "melee" and f.describe()["signatures"]["0x26"]["lead_s"] == 0.5
+    with pytest.raises(ram_map.MapError, match="confidence"):
+        ram_map.RamMap(spec({"a.b": {"address": 1, "type": "u8", "signatures": {"1": {"confidence": "sure"}}}}))
+    g = ram_map.load("G4BE08")                                      # the RE4 map: its Mercenaries block and attacks
+    assert g.spec["mercs"]["vocab"]["projectiles"] == "thrown"
+    assert g.fields["enemies"].fields["act"].signatures[0x26]["attack"] == "melee"
+
+
 def test_check_cli(tmp_path, capsys):
     assert ram_map.main(["check", str(ram_map.GAMEDATA / "G4BE08-ram.json")]) == 0
     bad = tmp_path / "X-ram.json"
