@@ -328,7 +328,7 @@ def test_a_time_bonus_is_taken_with_its_prompt(monkeypatch):
     assert act == {"hold": {"lup"}} and str(bot.target).startswith("bonus")      # a step closer, no shot
     mem = with_prompt(with_bonuses(world(enemies=far_majini), [(0.0, 13.0, 100.0)]), R.BTN_STAGE, PLAYER, 0)
     act, bot = tick(mem)
-    assert act == {"tap": "square"} and bot.stats["bonus_presses"] == 1           # "□ Time bonus"
+    assert act == {"tap": "square"} and bot.stats["stage_presses"] == 1           # "□ Time bonus" (a stage prompt)
     act, _ = tick(with_bonuses(world(enemies=far_majini), [(-100.0, 13.0, 0.0)])) # 1 m to the right: turn to it
     assert act == {"hold": {"rright"}}
     close = [((0.0, 0.0, 250.0), 800, 800)]                                       # a Majini 2.5 m away, bonus 6 m off:

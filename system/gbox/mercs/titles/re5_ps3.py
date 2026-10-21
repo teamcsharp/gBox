@@ -253,6 +253,7 @@ def snapshot(m) -> dict:
         snap["bonuses"] = bonuses(m)
         snap["prompt"] = prompt(m)
         snap["stage_prompt"] = stage_prompt(m)
+        snap["prompt_target"] = prompt_target(m)            # the Majini a finisher prompt is for (the combat layer)
         try:
             snap["nav"] = re5_nav.read(m, _NAV_CACHE)
         except (ValueError, OSError, struct.error):
@@ -498,6 +499,19 @@ def stage_prompt(m) -> bool:
     return ptr_ok(btn) and u32(m, btn + BTN_OWNER) == pl and u32(m, btn + BTN_KIND) == BTN_STAGE
 
 
+def prompt_target(m):
+    """The Majini the on-screen cActionButton acts on (+0x40), or None: who a finisher prompt is for (the combat
+    layer refuses a second melee on a boss)."""
+    ab = u32(m, S_ACTION)
+    if not ptr_ok(ab) or not u32(m, ab + AB_HUD) & HUD_PROMPT:
+        return None
+    btn = u32(m, ab + AB_BUTTON)
+    if not ptr_ok(btn):
+        return None
+    tgt = u32(m, btn + BTN_TARGET)
+    return tgt if ptr_ok(tgt) else None
+
+
 _NAV_CACHE: dict = {}
 
 
@@ -598,6 +612,7 @@ class Bot:
         self.reload_until = 0.0
         self.heal_at = 0.0
         self.switch_at = 0.0
+        self.stuck_since = None                 # set while the walk is pushing forward without ground (a wall, a door)
 
     # --- the engine's brain interface ---
     def prompt_ok(self, button, snap, now) -> bool:
@@ -638,6 +653,12 @@ class Bot:
             self.aiming_since = None                        # stays down between its presses (L1 would cancel it)
             self.stats["prompt_holds"] = self.stats.get("prompt_holds", 0) + 1
             return {"hold": set()}
+        if snap.get("stage_prompt"):                        # a ladder / jump-down / vault / door / "□ Time bonus" /
+            self.aiming_since = None                        # pick up: take it at once, before anything else (operator
+            self.stats["stage_presses"] = self.stats.get("stage_presses", 0) + 1   # 2026-10-21: he ignored a ledge
+            if self.stuck_since is not None:                # and a door). A prompt while stuck = it was blocking him.
+                self.stats["stuck_prompts_cleared"] = self.stats.get("stuck_prompts_cleared", 0) + 1
+            return {"tap": "square"}
         heal = self._heal(p, snap, now)                     # low: a herb / a spray from a quick slot
         if heal:
             return heal
@@ -948,9 +969,12 @@ class Bot:
         keys |= {"lup", "cross"}                            # run (up + cross)
         self.hist = [h for h in self.hist if now - h[0] < STUCK_S + 0.3] + [(now, px, pz)]
         if now - self.hist[0][0] >= STUCK_S and math.hypot(px - self.hist[0][1], pz - self.hist[0][2]) < STUCK_MOVE:
+            self.stuck_since = self.stuck_since or now       # pushing forward against something (a wall, a door)
             self.hist, self.unstick_dir = [], -self.unstick_dir
             self.unstick_until = now + 0.8
             self.stats["stuck"] += 1
+        else:
+            self.stuck_since = None
         return keys
 
     def _score_hits(self, snap):
