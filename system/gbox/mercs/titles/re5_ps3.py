@@ -46,6 +46,14 @@ AIM_TOL, PITCH_TOL = math.radians(2.5), math.radians(2.5)   # fire inside these
 FINE = math.radians(6)                 # closer than this: pulse the stick (a tick on, a tick off)
 MAX_DY = 450.0                         # targets this far above / below are out of reach (rooftops): not chosen
 STUCK_S, STUCK_MOVE = 1.0, 60.0
+# The time bonuses: hourglasses (uOm0100, model "sunadokei_360" = hourglass in uOm0100.arc; 9 in Public Assembly),
+# units of sUnit's move line 12 ("OM"), told by their vtable.
+OM_LINE, OM_MAX = 12, 600
+HOURGLASS_VT = 0                       # uOm0100's vtable (0 = not known for this build: no bonuses read)
+BONUS_AIM_H = 50.0                     # aim this far above an hourglass's origin
+BONUS_SHOOT = 1500.0                   # shoot a time bonus from up to this...
+CLEAR_R = 700.0                        # ...when no Majini is nearer than this
+BONUS_GIVE_UP_S = 4.0                  # fired at one this long and it is still there: walk up to it instead
 
 
 def ptr_ok(p) -> bool:
@@ -67,6 +75,20 @@ def heading(dx: float, dz: float) -> float:
 def yaw_of(q) -> float:
     """The quaternion (x, y, z, w) about +y -> heading (atan2(dx, dz) convention)."""
     return wrap(2.0 * math.atan2(q[1], q[3]))
+
+
+def bonuses(m) -> list:
+    """The time bonuses still standing: [{"ptr", "pos", "kind": "time"}] from the OM line (HOURGLASS_VT)."""
+    su = u32(m, S_UNIT)
+    out: list = []
+    if not HOURGLASS_VT or not ptr_ok(su):
+        return out
+    u, n = u32(m, su + UNIT_LINES + LINE_STRIDE * OM_LINE + LINE_FIRST), 0
+    while ptr_ok(u) and n < OM_MAX:
+        if u32(m, u) == HOURGLASS_VT:
+            out.append({"ptr": u, "pos": struct.unpack(">3f", m.rd(u + 0x30, 12)), "kind": "time"})
+        u, n = u32(m, u + UNIT_NEXT), n + 1
+    return out
 
 
 def snapshot(m) -> dict:
@@ -99,6 +121,8 @@ def snapshot(m) -> dict:
     if ptr_ok(cc):
         snap["camera"] = {"eye": struct.unpack(">3f", m.rd(cc + CAM_EYE, 12)),
                           "at": struct.unpack(">3f", m.rd(cc + CAM_AT, 12))}
+    if snap["player"]:
+        snap["bonuses"] = bonuses(m)
     main = u32(m, S_MAIN)
     gs = u32(m, main + MAIN_GAMESYS) if ptr_ok(main) else 0
     if ptr_ok(gs):
@@ -238,6 +262,8 @@ class Bot:
         self.unstick_until = 0.0
         self.unstick_dir = 1
         self.dead_tap = 0.0
+        self.bonus_fired: dict = {}            # hourglass -> seconds fired at it
+        self.bonus_seen: set = set()
 
     # --- the engine's brain interface ---
     def prompt_ok(self, button, snap, now) -> bool:
@@ -262,15 +288,17 @@ class Bot:
         # Majini and the like: alive, more than 1 health (crows are "enemies" with 1), not far above or below
         live = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and (e.get("hp_max") or 0) > 1
                 and abs(e["pos"][1] - p["pos"][1]) < MAX_DY]
-        if not live:
+        tgt = self._bonus(p, live, snap.get("bonuses") or (), now)
+        if tgt is None and not live:
             self.aiming_since = None
             return {"hold": set()}
         px, py, pz = p["pos"]
-        tgt = min(live, key=lambda e: self._cost(p, e))
+        tgt = tgt or min(live, key=lambda e: self._cost(p, e))
+        aim_h = tgt.get("aim_h", HEAD_H)
         tx, ty, tz = tgt["pos"]
         dist = math.hypot(tx - px, tz - pz)
         want = heading(tx - px, tz - pz)
-        if dist > ENGAGE:                                   # nobody near: walk toward the nearest
+        if dist > ENGAGE or (tgt.get("walk") and dist > TOO_CLOSE * 2):   # walk toward it
             self.aiming_since = None
             return {"hold": self._walk(p, want, now)}
         aiming = p.get("action") == 2
@@ -293,11 +321,11 @@ class Bot:
             (ex, ey, ez), (cx, cy, cz) = cam["eye"], cam["at"]
             look_yaw = heading(cx - ex, cz - ez)
             look_pitch = math.atan2(cy - ey, max(math.hypot(cx - ex, cz - ez), 1e-3))
-            tgt_pitch = math.atan2(ty + HEAD_H - ey, max(math.hypot(tx - ex, tz - ez), 1.0))
+            tgt_pitch = math.atan2(ty + aim_h - ey, max(math.hypot(tx - ex, tz - ez), 1.0))
             yaw_err = wrap(heading(tx - ex, tz - ez) - look_yaw)
             pitch_err = tgt_pitch - look_pitch
         else:
-            tgt_pitch = math.atan2(ty + HEAD_H - (py + GUN_H), max(dist, 1.0))
+            tgt_pitch = math.atan2(ty + aim_h - (py + GUN_H), max(dist, 1.0))
             yaw_err = wrap(want - p["rot"])
             pitch_err = tgt_pitch - (p.get("pitch") or 0.0)
         keys = {"l1"} | self._turn(yaw_err, aiming=True)
@@ -310,6 +338,8 @@ class Bot:
         if abs(yaw_err) <= tol and abs(pitch_err) <= max(PITCH_TOL * 2, tol) and dist <= SHOOT_RANGE:
             keys.add("r1")                                  # on him: fire
             self.stats["shots_s"] = round(self.stats["shots_s"] + 0.05, 2)
+            if tgt.get("kind") == "time":
+                self.bonus_fired[tgt["ptr"]] = self.bonus_fired.get(tgt["ptr"], 0.0) + 0.05
         self.target = tgt["slot"]
         self.stats["aim"] = (f"slot {tgt['slot']} d {dist:.0f} dy {ty - py:+.0f} yaw_err {math.degrees(yaw_err):+.1f} "
                              f"pitch {math.degrees(p.get('pitch') or 0):+.1f} want {math.degrees(tgt_pitch):+.1f} "
@@ -317,6 +347,33 @@ class Bot:
         return {"hold": keys}
 
     # --- helpers ---
+    def _bonus(self, p, live, standing, now):
+        """The time bonus to go for now, or None. Only when no Majini is within CLEAR_R: the nearest hourglass not far
+        above / below, shot from up to BONUS_SHOOT (walked to when farther, or once BONUS_GIVE_UP_S of shots did not
+        take it); a farther one waits while Majini are within ENGAGE (the combo first)."""
+        px, py, pz = p["pos"]
+        now_ptrs = {b["ptr"] for b in standing}
+        taken = self.bonus_seen - now_ptrs
+        if taken:
+            self.stats["bonuses_taken"] = self.stats.get("bonuses_taken", 0) + len(taken)
+        self.bonus_seen = now_ptrs
+        if not standing:
+            return None
+        near = min((math.hypot(e["pos"][0] - px, e["pos"][2] - pz) for e in live), default=math.inf)
+        if near < CLEAR_R:
+            return None
+        cands = [b for b in standing if abs(b["pos"][1] - py) < MAX_DY]
+        if not cands:
+            return None
+        b = min(cands, key=lambda b: math.hypot(b["pos"][0] - px, b["pos"][2] - pz))
+        d = math.hypot(b["pos"][0] - px, b["pos"][2] - pz)
+        walk = d > BONUS_SHOOT or self.bonus_fired.get(b["ptr"], 0.0) > BONUS_GIVE_UP_S
+        if walk and near < ENGAGE:
+            return None                                     # Majini to fight first; the bonus after
+        self.stats["bonus_target"] = f"{b['ptr']:#x} d {d:.0f}" + (" walk" if walk else "")
+        return {"slot": f"bonus {b['ptr']:#x}", "ptr": b["ptr"], "pos": b["pos"], "aim_h": BONUS_AIM_H,
+                "kind": "time", "walk": walk}
+
     @staticmethod
     def _cost(p, e) -> float:
         px, _, pz = p["pos"]

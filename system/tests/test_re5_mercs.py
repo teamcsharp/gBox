@@ -252,3 +252,48 @@ def test_a_grab_is_answered_with_a_wiggle():
     from gbox.mercs import reactions
     assert "wiggle" in reactions.MASH                                             # the engine mashes it, never rests
     assert R.snapshot(held)["player"]["state"] == "grabbed"
+
+
+HOURGLASS_VT = 0x0159_0000
+
+
+def with_bonuses(mem, positions):
+    """sUnit's OM line with a barrel and the hourglasses at `positions` (uOm0100 = HOURGLASS_VT)."""
+    sunit, first = 0x3882_5B20, 0x3040_0000
+    mem.u32(R.S_UNIT, sunit)
+    mem.u32(sunit + R.UNIT_LINES + R.LINE_STRIDE * R.OM_LINE + R.LINE_FIRST, first)
+    units = [(0x0158_8888, (500.0, 0.0, 500.0))] + [(HOURGLASS_VT, q) for q in positions]   # a barrel first
+    for i, (vt, q) in enumerate(units):
+        u = first + 0x1000 * i
+        mem.u32(u, vt)
+        mem.put(u + 0x30, struct.pack(">3f", *q))
+        mem.u32(u + R.UNIT_NEXT, u + 0x1000 if i + 1 < len(units) else 0)
+    return mem
+
+
+def test_time_bonuses_are_read_from_the_om_line(monkeypatch):
+    monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
+    snap = R.snapshot(with_bonuses(world(), [(0.0, 0.0, 1000.0), (-800.0, 50.0, 0.0)]))
+    assert [b["pos"] for b in snap["bonuses"]] == [(0.0, 0.0, 1000.0), (-800.0, 50.0, 0.0)]
+    monkeypatch.setattr(R, "HOURGLASS_VT", 0)                                     # not known: none read
+    assert R.snapshot(with_bonuses(world(), [(0.0, 0.0, 1000.0)]))["bonuses"] == []
+
+
+def test_it_shoots_a_time_bonus_when_no_majini_is_close(monkeypatch):
+    monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
+    far_majini = [((3000.0, 0.0, 0.0), 800, 800)]                                # 30 m away at +x
+    want = math.atan2(R.BONUS_AIM_H - R.GUN_H, 1000.0)                            # an hourglass 10 m ahead, low
+    act, bot = tick(with_bonuses(world(action=2, pitch_raw=-want, enemies=far_majini), [(0.0, 0.0, 1000.0)]))
+    assert act["hold"] >= {"l1", "r1"} and str(bot.target).startswith("bonus")
+    assert "bonus_target" in bot.stats
+    close = [((0.0, 0.0, 500.0), 800, 800)]                                       # a Majini 5 m away: him first
+    act, bot = tick(with_bonuses(world(action=2, enemies=close), [(0.0, 0.0, 1000.0)]))
+    assert bot.target == 0
+
+
+def test_it_walks_to_a_far_bonus_and_counts_the_ones_taken(monkeypatch):
+    monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
+    act, bot = tick(with_bonuses(world(), [(0.0, 0.0, 2500.0)]))                  # 25 m ahead, nobody near
+    assert {"lup", "cross"} <= act["hold"]                                        # runs to it
+    bot.tick(R.snapshot(with_bonuses(world(), [])))                               # gone: taken
+    assert bot.stats["bonuses_taken"] == 1
