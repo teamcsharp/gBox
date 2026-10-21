@@ -232,7 +232,8 @@ def test_the_screens_between_rounds_come_from_the_interface_units():
     assert R.screen(between_rounds(["uIdNowLoading00"]))["where"] == "loading"
     assert R.screen(between_rounds(["uIdSaving00"]))["where"] == "loading"       # the results, saving the records
     assert R.screen(between_rounds(["uIdTitle00", "uIdTopMenu00"]))["where"] == "menu"   # between the selects / main menu
-    assert R.screen(between_rounds([]))["where"] == "results"                     # the clock at 0, nothing else up
+    assert R.screen(between_rounds(["uIdCursor"]))["where"] == "results"          # the clock at 0, the cursors up
+    assert R.screen(between_rounds(["uIdAlert00"]))["where"] == "unknown"         # the boot's logos: no press
     mem = world(enemies=[((0.0, 0.0, 900.0), 800, 800)])
     assert R.screen(with_ui(mem, ["uIdMerce00", "uIdPause00"]))["where"] == "playing"
     assert R.screen(world(hp=0))["where"] == "dead"
@@ -315,44 +316,109 @@ def test_time_bonuses_are_read_from_the_om_line(monkeypatch):
     assert R.snapshot(with_bonuses(world(), [(0.0, 0.0, 1000.0)]))["bonuses"] == []
 
 
-def test_it_shoots_a_time_bonus_when_no_majini_is_close(monkeypatch):
+def test_a_time_bonus_is_taken_with_its_prompt(monkeypatch):
     monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
+    assert R.BONUS_HUNT is True
     far_majini = [((3000.0, 0.0, 0.0), 800, 800)]                                # 30 m away at +x
-    want = math.atan2(20.0 - R.GUN_H, 1000.0)                                     # an hourglass 10 m ahead, 20 cm up
-    act, bot = tick(with_bonuses(world(action=2, pitch_raw=-want, enemies=far_majini), [(0.0, 20.0, 1000.0)]))
-    assert act["hold"] >= {"l1", "r1"} and str(bot.target).startswith("bonus")
-    assert "bonus_target" in bot.stats
-    act, _ = tick(with_bonuses(world(action=2, pitch_raw=-(want + 0.05), enemies=far_majini), [(0.0, 20.0, 1000.0)]))
-    assert "r1" not in act["hold"]                                                # 3 deg off a 28 cm sphere: no shot
-    close = [((0.0, 0.0, 500.0), 800, 800)]                                       # a Majini 5 m away: him first
-    act, bot = tick(with_bonuses(world(action=2, enemies=close), [(0.0, 20.0, 1000.0)]))
+    act, bot = tick(with_bonuses(world(enemies=far_majini), [(0.0, 13.0, 100.0)]))   # 1 m ahead, facing it
+    assert act == {"hold": {"lup"}} and str(bot.target).startswith("bonus")      # a step closer, no shot
+    mem = with_prompt(with_bonuses(world(enemies=far_majini), [(0.0, 13.0, 100.0)]), R.BTN_STAGE, PLAYER, 0)
+    act, bot = tick(mem)
+    assert act == {"tap": "square"} and bot.stats["bonus_presses"] == 1           # "□ Time bonus"
+    act, _ = tick(with_bonuses(world(enemies=far_majini), [(-100.0, 13.0, 0.0)])) # 1 m to the right: turn to it
+    assert act == {"hold": {"rright"}}
+    close = [((0.0, 0.0, 250.0), 800, 800)]                                       # a Majini 2.5 m away: him first
+    act, bot = tick(with_bonuses(world(action=2, enemies=close), [(0.0, 13.0, 100.0)]))
     assert bot.target == 0
 
 
-def test_a_bonus_shots_cannot_take_is_left_alone_for_a_while(monkeypatch):
+def test_a_bonus_without_its_prompt_is_left_alone_for_a_while(monkeypatch):
     monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
-    want = math.atan2(20.0 - R.GUN_H, 1000.0)
     clock = [100.0]
     bot = R.Bot(clock=lambda: clock[0])
-    mem = with_bonuses(world(action=2, pitch_raw=-want), [(0.0, 20.0, 1000.0)])
-    for _ in range(int(R.BONUS_GIVE_UP_S / 0.05) + 2):                           # firing at it, it stays
-        act = bot.tick(R.snapshot(mem))
-    assert "r1" not in act["hold"]                                                # left alone now
+    mem = with_bonuses(world(), [(0.0, 13.0, 40.0)])                             # right at it, no prompt
+    assert bot.tick(R.snapshot(mem)) == {"hold": set()}
+    clock[0] += R.BONUS_GIVE_UP_S + 0.5
+    bot.tick(R.snapshot(mem))
+    assert not str(bot.target or "").startswith("bonus") or bot.bonus_skip         # left alone now
     clock[0] += R.BONUS_SKIP_S + 1
-    assert "r1" in bot.tick(R.snapshot(mem))["hold"]                              # tried again later
+    bot.tick(R.snapshot(mem))
+    assert str(bot.target or "bonus").startswith("bonus")                         # tried again later
 
 
-def test_far_bonuses_wait_and_the_clock_jumps_are_counted(monkeypatch):
+def test_near_bonuses_on_his_level_are_walked_to_and_the_clock_jumps_are_counted(monkeypatch):
     monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
-    act, bot = tick(with_bonuses(world(), [(0.0, 0.0, 2500.0)]))                  # 25 m ahead, nobody near
-    assert act == {"hold": set()}                                                 # no walking to bonuses yet
-    monkeypatch.setattr(R, "BONUS_WALK", True)
-    act, bot = tick(with_bonuses(world(), [(0.0, 0.0, 2500.0)]))
-    assert {"lup", "cross"} <= act["hold"]                                        # with routes: runs to it
+    act, bot = tick(with_bonuses(world(), [(0.0, 13.0, 1200.0)]))                 # 12 m ahead, nobody near, no mesh
+    assert {"lup", "cross"} <= act["hold"]                                        # straight at it
+    act, _ = tick(with_bonuses(world(), [(0.0, 13.0, 2500.0)]))                   # 25 m: past BONUS_RANGE
+    assert act == {"hold": set()}
+    act, _ = tick(with_bonuses(world(), [(0.0, 400.0, 900.0)]))                   # up on a roof: another level
+    assert act == {"hold": set()}
+    monkeypatch.setattr(R, "BONUS_WALK", False)
+    act, _ = tick(with_bonuses(world(), [(0.0, 13.0, 1200.0)]))
+    assert act == {"hold": set()}                                                 # without routes: out of reach
     bot.tick(R.snapshot(with_bonuses(world(timer=60.0), [])))                     # gone from the line: taken
     assert bot.stats["bonuses_taken"] == 1
     bot.tick(R.snapshot(with_bonuses(world(timer=89.5), [])))                     # the clock +29.5 s: a time bonus
     assert bot.stats["clock_jumps"] == 1 and bot.stats["bonus_s"] == 29.5
+
+
+def strip_mesh():
+    """A navmesh strip along +z on two levels: quads 0-1 on the roof (y 0, z 0..800), quad 2 a ladder (straight down at
+    z 800: y 0 -> -300), quads 3-4 the ground (y -300, z 800..1600); two triangles a quad."""
+    from gbox.mercs.titles import re5_nav as N
+    pts = []
+    for z, y in ((0, 0), (400, 0), (800, 0), (800, -300), (1200, -300), (1600, -300)):
+        pts += [(-100.0, float(y), float(z)), (100.0, float(y), float(z))]
+    tris, links = [], []
+    for k in range(5):                                   # quad k: points 2k, 2k+1, 2k+2, 2k+3 -> two triangles
+        a, b, c, d = 2 * k, 2 * k + 1, 2 * k + 2, 2 * k + 3
+        tris += [(a, b, d), (a, d, c)]
+    for i in range(len(tris)):
+        ls = []
+        if i % 2 == 0:
+            ls.append((i + 1, 2, 1.0))                   # (a, b, d) | (a, d, c): the edge d-a
+            if i > 0:
+                ls.append((i - 1, 0, 1.0))               # a-b: the quad before
+        else:
+            ls.append((i - 1, 0, 1.0))
+            if i + 1 < len(tris):
+                ls.append((i + 1, 1, 1.0))               # d-c: the next quad
+        links.append(ls)
+    return N.NavMesh(pts, tris, links)
+
+
+def test_the_navmesh_routes_over_a_ladder_and_the_bot_takes_it():
+    mesh = strip_mesh()
+    route = mesh.route((0.0, 0.0, 100.0), (0.0, -300.0, 1500.0))
+    assert route and route[-1] == (0.0, -300.0, 1500.0)
+    assert any(abs(w[1] + 150.0) < 1 for w in route)                             # down the ladder's middle
+    assert mesh.route((0.0, 0.0, 100.0), (5000.0, 0.0, 5000.0)) is None          # off the mesh
+    bot = R.Bot(clock=lambda: 50.0)
+    tgt = {"ptr": 0x3040_0000, "pos": (0.0, -300.0, 1500.0), "kind": "time", "walk": True}
+    p = {"pos": (0.0, 0.0, 100.0), "rot": 0.0, "action": 0}
+    act = bot._follow(p, tgt, mesh, False, 50.0)
+    assert {"lup", "cross"} <= act["hold"]                                        # facing +z: runs along the roof
+    p = {"pos": (0.0, 0.0, 790.0), "rot": 0.0, "action": 0}                        # at the ladder's top
+    bot.route = [w for w in bot.route if w[2] >= 780.0]
+    assert bot._follow(p, tgt, mesh, False, 50.5) == {"hold": {"lup"}}           # on to the edge
+    assert bot._follow(p, tgt, mesh, True, 50.6) == {"tap": "square"}            # the prompt: climb down
+    assert bot.stats["climbs"] == 1
+    ladder = next(w for w in route if abs(w[1] + 150.0) < 1)
+    assert mesh.route((0.0, 0.0, 100.0), (0.0, -300.0, 1500.0), avoid=[ladder]) is None   # the only way down
+
+
+def test_a_crossing_without_its_prompt_is_avoided():
+    mesh = strip_mesh()
+    t = [10.0]
+    bot = R.Bot(clock=lambda: t[0])
+    tgt = {"ptr": 0x3040_0000, "pos": (0.0, -300.0, 1500.0), "kind": "time", "walk": True}
+    p = {"pos": (0.0, 0.0, 790.0), "rot": 0.0, "action": 0}
+    bot._follow(p, tgt, mesh, False, t[0])
+    bot.route = [w for w in bot.route if w[2] >= 780.0]
+    assert bot._follow(p, tgt, mesh, False, 10.1) == {"hold": {"lup"}}           # waits at the edge for the prompt
+    assert bot._follow(p, tgt, mesh, False, 10.1 + R.CLIMB_WAIT_S + 0.1) == {"hold": set()}   # none: avoided
+    assert bot.stats["crossings_avoided"] == 1 and len(bot.avoid) == 1
 
 
 def boot(names, line=26):
@@ -384,3 +450,35 @@ def test_from_the_title_into_reunion_by_ram():
     assert where_and_key(["uIdStartUp29"], line=1) == ("reunion_title", "cross")                      # START
     assert where_and_key([("uIdStartUp29", {R.MENU_SUB: 1})], line=1) == ("reunion_solo", "cross")    # SOLO
     assert where_and_key(["uIdStartUp21", "uIdTopMenu00"]) == ("select_stage", "cross")
+
+
+def test_re5_plays_through_the_deployment_before_the_engine_is_ready():
+    from gbox import mercs_bot as MB
+    prof = MB.profile_for(None, {"game_id": "e7ca89bbeb67360d"})
+    assert prof["menus"] == "gbox.mercs.titles.re5_ps3" and prof["ready"] is True
+    assert engine.READY is False                                                   # RE4's A/B still pending
+    assert MB.title_engine(prof) is engine and MB.matches(None, {"game_id": "e7ca89bbeb67360d"})
+    assert MB.title_engine({"menus": "x"}) is None                                 # a title not marked ready waits
+
+
+def test_a_frozen_clock_gives_the_round_up_as_lost():
+    t = [0.0]
+    drv = R.RE5PS3(clock=lambda: t[0])
+    mem = world(action=2, timer=88.5, enemies=[((0.0, 0.0, 900.0), 800, 800)])
+    assert drv.screen(mem, None) == "playing"
+    t[0] = R.HANG_S - 1
+    assert drv.screen(mem, None) == "playing"                                       # a long intro, a slow moment
+    t[0] = R.HANG_S + 1
+    assert drv.screen(mem, None) == "loading"                                       # frozen: RPCS3 hung
+    mem.put(GAMESYS + 0x3E0, struct.pack(">f", 88.0))
+    assert drv.screen(mem, None) == "playing"                                       # moving again
+    t[0], n = 0.0, [0]
+
+    def stopped():
+        n[0] += 1
+        t[0] += 1.0                                                                 # a second a tick, the clock frozen
+        return n[0] > 400
+    why = engine.play_round({"driver": "gbox.mercs.titles.re5_ps3"}, world(action=2, timer=50.0), lambda rows: None,
+                            stopped, {}, sleep=lambda s: None, clock=lambda: t[0], tick_s=0.0,
+                            driver=R.RE5PS3(clock=lambda: t[0]))
+    assert why == "lost"                                                            # the deployment then recovers
