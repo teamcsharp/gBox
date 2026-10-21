@@ -1,7 +1,7 @@
 """Universal character library: every character model gBox extracted from the operator's games, reusable in any other
 game ("play as Leon in ...", "replace this character with Aya").
 
-Library (on the control-plane node, <cache>/characters, e.g. /home/ehm_eckx/gbox-cache/characters):
+Library (on the control-plane node, <cache>/characters, e.g. /home/ehm_eckx/gBox_alt/gbox-cache/characters):
   <slug>/meta.json      name, source game (title + game_id), extraction tool, rig (joints, body roles), stats,
                         licence note, targets {game_id: [{slot, mod, nodes, rig}]} = built swap mods per target game
   <slug>/<model>        the cleanest source model (.glb / .gltf, textures embedded or next to it)
@@ -43,7 +43,8 @@ LEON_ROLES = {"pelvis": "b017", "hip": "b001", "chest": "b002", "neck": "b003", 
 def library_root(cfg=None) -> Path:
     if os.environ.get("GBOX_CHARACTERS"):
         return Path(os.environ["GBOX_CHARACTERS"])
-    return Path(cfg.cache if cfg is not None else "/home/ehm_eckx/gbox-cache") / "characters"
+    from .side_dirs import side_dir
+    return Path(cfg.cache if cfg is not None else side_dir("gbox-cache")) / "characters"
 
 
 def slugify(s: str) -> str:
@@ -690,6 +691,7 @@ class CharIn(BaseModel):
     strict_cutscenes: bool = Field(default=True, description="Ocarina of Time cast builds: include cutscene layers in object-memory budgets. Character replacements include cutscenes by default; false is an explicit gameplay-only diagnostic.")
     launch: bool = True                   # use: launch after building
     kind: str = "character"                # extract / add: character | vehicle | object | environment
+    deliver: bool = False                  # collect on a PC (#2407): ship each entry to the control plane's library as an artifact
     target: str = ""                       # use / live_use: what the pick whip identified there ("soldier", "Snake")
     x: float | None = None                 # extract: the thing's screen point, fractions of the game picture (0..1)
     y: float | None = None
@@ -1282,7 +1284,7 @@ def _ff7_run(ctx, game, e, work):
         out = work / f"ff7_{nm.lower()}_field.gltf"
         F.field_to_gltf(fm, out)
         try:
-            roles = {r: f"j{b:02d}" for r, b in field_target(fm)["jmap"].items()}
+            roles = {r: f"j{b:02d}" for r, b in field_target(fm, nm)["jmap"].items()}
         except ValueError:
             roles = None
         return {"files": [out], "tool": "gbox.ff7_models (field model, read_field_model)", "source_files": [f"FIELD/{nm}.BCX"],
@@ -1688,9 +1690,18 @@ DEDICATED = [
     ("gta_vc_pc", lambda t, p: "vice city" in t and "stories" not in t and p == "windows_native",
      lambda: __import__("gbox.gta_vc_models", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.gta_vc_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # GTA III (PS2): Claude, model 0 (special skins 'player' / prison 'playerp'), from GTA3.IMG streamed out of the
+    # owned 7z without unpacking it (gbox/gta3_chars.py, #1309)
+    ("gta3", lambda t, p: re.search(r"grand theft auto iii\b", t) is not None and p == "ps2",
+     lambda: __import__("gbox.gta3_chars", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.gta3_chars", fromlist=["x"]).extract_run(ctx, game, e, work)),
     # RE4 (2023, Steam): the Windows PC unpacks the paks + converts in Blender (gbox/re4r.py), the result lands here
     ("re4r", lambda t, p: "resident evil 4" in t and p == "pc_steam", lambda: __import__("gbox.re4r", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.re4r", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # RE4 (2005, PS2, SLUS-21134): PS2-native BIN mesh (VU1 V4-16 stream) + TPL C4/C8 textures -> GLB (gbox/re4ps2_reader)
+    ("re4_ps2", lambda t, p: "resident evil 4" in t and p == "ps2",
+     lambda: __import__("gbox.re4ps2_reader", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.re4ps2_reader", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("nomercy", lambda t, p: "no mercy" in t and p == "n64", lambda: __import__("gbox.aki_wrestling", fromlist=["x"]).roster_entries(),
      lambda ctx, game, e, work: __import__("gbox.aki_wrestling", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("smackdown2", lambda t, p: "smackdown! 2" in t and p == "psx", lambda: __import__("gbox.yukes_sd", fromlist=["x"]).roster_entries(),
@@ -1713,6 +1724,11 @@ DEDICATED = [
     ("nightfire", lambda t, p: "007" in t and "nightfire" in t and p == "gamecube",
      lambda: __import__("gbox.nightfire_chars", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.nightfire_chars", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # 007 GoldenEye (N64, NGEP): the 80 body-table bodies (Bond's outfits, guards, soldiers, scientists, the cast
+    # heads) as rigged GLBs from the Z-file model format (gbox.goldeneye_reader); texture pixels are the next step
+    ("goldeneye", lambda t, p: ("goldeneye" in t or "golden eye" in t) and p == "n64",
+     lambda: __import__("gbox.goldeneye_reader", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.goldeneye_reader", fromlist=["x"]).extract_run(ctx, game, e, work)),
     # Def Jam: Vendetta PS2 (SLUS_206.39 v1.00): the 58 data.bin WRS wrestlers, BODY + FACE + hands on one rigged
     # skeleton with body roles and the fighter's texture page (#1305; formats in docs/defjam_pipeline.md)
     ("defjam_vendetta_ps2", lambda t, p: "def jam" in t and "vendetta" in t and p == "ps2",
@@ -1752,6 +1768,14 @@ DEDICATED = [
      lambda: __import__("gbox.sonic1_reader", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.sonic1_reader", fromlist=["x"]).extract_run(ctx, game, e, work)),
 ]
+
+# extractor -> resolve a pick whose words name nobody ("the character in the middle of the screen", x/y, slot,
+# session) to a roster entry: (ctx, game, roster, what, pick) -> (entry, why) | None. Readers without one keep name
+# matching only, so a pick never silently becomes some other actor.
+DEDICATED_PICK = {
+    "gta3": lambda ctx, game, ros, what, pick: __import__("gbox.gta3_chars", fromlist=["x"]).pick_entry(
+        ctx, game, ros, what, pick),
+}
 
 
 def reader_matches(name, test, game):
@@ -1814,7 +1838,8 @@ READER_VERSIONS = {"re5ps3": ("gbox.re5ps3_collection", "re5ps3_reader"), "re2gc
                    "stranglehold": ("gbox.stranglehold_models", "stranglehold_reader"),
                    "pso_gc": ("gbox.pso_gc", "pso_gc_reader"),
                    "crazy_taxi2": ("gbox.crazy_taxi2", "ct2_reader"),
-                   "defjam_vendetta": ("gbox.defjam_vendetta", "djv_gc_reader")}
+                   "defjam_vendetta": ("gbox.defjam_vendetta", "djv_gc_reader"),
+                   "mgs2": ("gbox.mgs2_models", "mgs2_reader")}
 
 
 def reader_version(extractor: str | None) -> int | None:
@@ -1864,13 +1889,28 @@ def backfill_roles(root: Path, extractor: str, meta: dict) -> dict:
     return put_meta(root, {**meta, "rig": {**rig, "roles": roles}})
 
 
+def _queue_reader_work(game: dict) -> dict | None:
+    """#2388/#2392: an extraction that finds no reader does not end in an error. The title goes into the readiness
+    queue (inventory -> analysis -> reader -> writer, worked by Hermes with Ghidra / REA on the Spark), the same lane
+    the favorites use. Never raises: the queue's own tick may hold its lock, and a title outside the catalog has no
+    id to queue; the caller then reports the plain unsupported state."""
+    try:
+        from . import hermes_work_queue as Q
+        return Q.ensure_item({**game, "in_catalog": True}, source="collect")
+    except Exception:  # noqa: BLE001 - queue lock held by its tick, or no catalog id
+        return None
+
+
 def collect(ctx, inp):
     """Collect a supported disc roster without vision/LLM calls or gameplay interruption."""
     game, root = _game(ctx, inp), library_root(ctx.config)
     reader = next((r for r in DEDICATED if reader_matches(r[0], r[1], game)), None)
     if reader is None:
-        return {"status": "unsupported", "game_id": game['game_id'],
-                "message": "No native model reader for this game; no unrigged capture was substituted."}
+        work = _queue_reader_work(game)
+        return {"status": "unsupported", "game_id": game['game_id'], "reader_work": work,
+                "message": ("No native model reader for this game yet. The Spark is queued to build one "
+                            "(inventory, analysis, reader), and the models land here when it does."
+                            if work else "No native model reader for this game; no unrigged capture was substituted.")}
     name, _, roster, _ = reader
     # Characters always; other kinds only when the reader opts a fully assembled entry in (`collect`: True), e.g. the
     # posed cab the operator drives in Crazy Taxi (#1369). Those need a verified model, not a mapped rig.
@@ -1920,9 +1960,10 @@ def collect(ctx, inp):
     ctx.progress(100, f"Collected {len(entries)} {noun} from {game['title']}")
     from . import char_coverage
     scope = reader_scope(name)
+    delivered = deliver_entries(ctx, root, [r['slug'] for r in results if r.get('status') != 'failed']) if inp.deliver else []
     return collection_status(results, scope=scope) | {
         'game_id': game['game_id'], 'extractor': name, 'reader_version': reader_version(name),
-        'scope': scope,
+        'scope': scope, 'delivered': delivered,
         # the slots this game's writer can put a collection character into (the cast menu: player, enemy:<name>...)
         'slots': char_coverage.cast_slots(game)}
 
@@ -2009,16 +2050,21 @@ def _preview_stage(d: Path, meta: dict):
              preview=p if p.is_file() else None)
 
 
-def extract_dedicated(ctx, game: dict, what: str, root: Path, prepared=None) -> dict | None:
-    """The game's own extractor, when it has one: None = no extractor for this game."""
-    plat = game.get("platform") or ""
+def extract_dedicated(ctx, game: dict, what: str, root: Path, prepared=None, pick: dict | None = None) -> dict | None:
+    """The game's own extractor, when it has one: None = no extractor for this game. pick = {slot, x, y, kind,
+    session} of an on-screen request, resolved by the reader's DEDICATED_PICK hook when the words name nobody."""
+    t, plat = (game.get("title") or "").lower(), game.get("platform") or ""
     for name, test, roster, run in DEDICATED:
         if not reader_matches(name, test, game):
             continue
         ros = prepared[1] if prepared and prepared[0] == name else dedicated_entries(ctx.config, game, name, roster)
-        e = best_match(ros, what)
+        e, picked = best_match(ros, what), None
+        if e is None and pick and name in DEDICATED_PICK:
+            picked = DEDICATED_PICK[name](ctx, game, ros, what, pick)
+            e = picked[0] if picked else None
         if e is None:
             return {"status": "not_in_roster", "extractor": name, "roster": [r["name"] for r in ros]}
+        why = {"picked": picked[1]} if picked else {}
         refresh = False
         from . import fit_events as FE                    # the pop-up: this character as it comes out of the game
         FE.model(e["slug"], e["name"])
@@ -2050,7 +2096,7 @@ def extract_dedicated(ctx, game: dict, what: str, root: Path, prepared=None) -> 
                     target['needs_rebuild'] = True
             meta = put_meta(root, meta)
         shutil.rmtree(work, ignore_errors=True)
-        return {"status": "extracted", "extractor": name, "entry": meta}
+        return {"status": "extracted", "extractor": name, "entry": meta, **why}
     return None
 
 
@@ -2383,9 +2429,11 @@ def extract(ctx, inp: CharIn) -> dict:
         except (LookupError, ValueError, RuntimeError) as e:
             tried.append(f"gBox's No Mercy session extractor: {e}")
     if kind != "environment":                                                                 # (b)
-        r = extract_dedicated(ctx, game, what, root)
+        r = extract_dedicated(ctx, game, what, root,
+                              pick={"slot": inp.slot, "x": inp.x, "y": inp.y, "kind": kind, "session": sess})
         if r and r["status"] in ("extracted", "in_collection"):
-            return out | {"status": r["status"], "route": f"dedicated:{r['extractor']}", "entry": r["entry"]}
+            return out | {"status": r["status"], "route": f"dedicated:{r['extractor']}", "entry": r["entry"],
+                          **({"picked": r["picked"]} if r.get("picked") else {})}
         if r:
             tried.append(f"gBox's {r['extractor']} extractor reads only: {', '.join(r['roster'])}")
         else:
@@ -2713,6 +2761,11 @@ def characters_tool(inp: CharIn, ctx):
     from . import doa2_swap
     if gid in doa2_swap.GAME_IDS:
         return {"result": out | doa2_swap.use(ctx, meta, game, inp)}
+    from . import doa3_cast
+    if gid in doa3_cast.GAME_IDS and doa3_cast.is_slot(inp.slot):
+        # DOA3 (Xbox): the native cast writer is in progress — use() answers writer_in_progress (never a build) until
+        # donor retarget and texture write land
+        return {"result": out | doa3_cast.use(ctx, meta, game, inp)}
     from . import soulcalibur_swap
     if gid in soulcalibur_swap.GAME_IDS:
         return {"result": out | soulcalibur_swap.use(ctx, meta, game, inp)}
@@ -2854,8 +2907,100 @@ def characters_tool(inp: CharIn, ctx):
     return {"result": out | char_coverage.no_writer(ctx, _api, meta, game, need, inp)}
 
 
+# ---------------------------------------------------------------------------------------------------------------
+# #2407: a collect that ran on a PC (the Spark could not take it) ships its entries back to the library here
+
+def pack_entry(root: Path, slug: str) -> bytes:
+    """One collection entry folder as a tar, paths relative to the entry."""
+    import io
+    import tarfile
+    base = root / slug
+    if not (base / "meta.json").is_file():
+        raise ValueError(f"no collection entry {slug} under {root}")
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for p in sorted(x for x in base.rglob("*") if x.is_file()):
+            tar.add(p, arcname=p.relative_to(base).as_posix())
+    return buf.getvalue()
+
+
+def deliver_entries(ctx, root: Path, slugs: list[str]) -> list[dict]:
+    """Each collected entry as a job artifact (collection-<slug>.tar) with its sha256, for _collect_accept."""
+    import hashlib
+    out = []
+    for slug in slugs:
+        try:
+            data = pack_entry(root, slug)
+        except (OSError, ValueError) as exc:
+            out.append({"slug": slug, "error": str(exc)[:200]})
+            continue
+        ctx.artifact(f"collection-{slug}.tar", data, "application/x-tar", slug=slug, kind="collection-entry")
+        out.append({"slug": slug, "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)})
+    return out
+
+
+def import_entry(root: Path, slug: str, data: bytes) -> list[str]:
+    """Unpack a delivered entry into root/<slug>, replacing what is there. Only plain files at relative paths inside
+    the entry are written; any other member fails the import with nothing touched."""
+    import io
+    import tarfile
+    import tempfile
+    from pathlib import PurePosixPath
+    slug = slugify(slug)
+    if not slug:
+        raise ValueError("entry slug missing")
+    names = []
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r") as tar:
+        members = tar.getmembers()
+        for m in members:
+            rel = PurePosixPath(m.name)
+            if not m.isfile() or rel.is_absolute() or not rel.parts or ".." in rel.parts or m.name.startswith("/"):
+                raise ValueError(f"refusing entry member {m.name!r}")
+            names.append(rel.as_posix())
+        if "meta.json" not in names:
+            raise ValueError("a collection entry needs meta.json")
+        root.mkdir(parents=True, exist_ok=True)
+        work = Path(tempfile.mkdtemp(prefix=f".{slug}.part-", dir=root))
+        try:
+            for m in members:
+                dst = work / m.name
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                with tar.extractfile(m) as src, dst.open("wb") as fh:
+                    shutil.copyfileobj(src, fh)
+            final = root / slug
+            if final.exists():
+                shutil.rmtree(final)
+            os.replace(work, final)
+        except BaseException:
+            shutil.rmtree(work, ignore_errors=True)
+            raise
+    with _LIST_LOCK:
+        _LIST_CACHE.pop(str(root), None)
+    return names
+
+
+def _collect_accept(store, out, actor):
+    """A delivered collect (#2407) lands in this control plane's library. The collection worker's own collects
+    deliver nothing and change nothing here; one bad entry never blocks the result's acceptance."""
+    import tarfile
+    result = out.result if hasattr(out, "result") else dict(out or {})
+    landed = []
+    for d in result.get("delivered") or []:
+        if not d.get("sha256"):
+            continue
+        data = store.read_artifact(d["sha256"])
+        if data is None:
+            continue
+        try:
+            import_entry(library_root(getattr(store, "config", None)), d["slug"], data)
+            landed.append(d["slug"])
+        except (OSError, ValueError, tarfile.TarError):
+            continue
+    return landed
+
+
 @tool("characters", "1.3", CharIn, CharOut, capabilities=["mod", "asset", "extract"], permissions=[P.EXECUTE], timeout_s=14400,
-      artifacts=["preview.png"],
+      artifacts=["preview.png", "collection-<slug>.tar"], on_accept=_collect_accept,
       side_effects=["use: may build a disc-image mod under cache/mods and launch it", "use/extract: may file a request",
                     "extract/add: writes a collection entry (characters/ or environments/ in the cache)",
                     "extract: may capture the frame (pauses the session briefly)", "blender: replaces the gBox clipboard",

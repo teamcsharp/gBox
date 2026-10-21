@@ -1,0 +1,22 @@
+{
+ "game_id": "938c3f601265d3e4",
+ "title": "Ready 2 Rumble Boxing: Round 2 (USA)",
+ "platform": "n64",
+ "profile": "cheatdb-unlocks-v1",
+ "verified": true,
+ "codes": [
+  {
+   "desc": "Enable Extra Characters",
+   "lines": [
+    "80101E6F 0003;80101E73 0003;80101E77 0003;80101E7B 0003;80101E7F 0003;80101E83 0003;80101E87 0003"
+   ]
+  }
+ ],
+ "scope": [
+  "Enable Extra Characters"
+ ],
+ "evidence": {
+  "source": "libretro-database cht/Nintendo - Nintendo 64/Ready 2 Rumble Boxing Round 2 (U).cht",
+  "read_back": "2026-10-19 23:52 CST, i9-NUC agent session: every code held with cheats op=add; all 7 written values read back unchanged. Gameplay screens not captured (the NUC's frame capture was black until its relaunch)."
+ }
+}

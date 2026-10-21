@@ -76,3 +76,13 @@ def test_ledger_list_group_prints_one_line_per_automated_kind(monkeypatch, capsy
     monkeypatch.setattr(sys, "argv", ["agent_ledger.py", "list"])
     agent_ledger.main()
     assert capsys.readouterr().out.count("Launch failed") == 15, "without --group the list is unchanged"
+
+
+STANDING = json.loads((TESTS / "fixtures" / "inbox_standing_cases.json").read_text(encoding="utf-8"))["cases"]
+
+
+def test_standing_background_work_matches_the_desktop_rules():
+    """#2801: per-game tasks the Hermes queue keeps open are Background work, not inbox messages."""
+    for case in STANDING:
+        assert inbox.standing_key(case["request"]) == case["key"], case["request"]["title"]
+        assert case["key"] is None or case["key"] in inbox.STANDING_LABELS

@@ -6,7 +6,7 @@ import pytest
 
 from gbox import doa2_inventory as inv
 
-GDI = Path.home() / "gbox-cache/dc/1de2e7634f3161ff/disc.gdi"
+GDI = Path.home() / "gBox_alt/gbox-cache/dc/1de2e7634f3161ff/disc.gdi"
 
 
 def _ip(product=b"T3601M    ", version=b"V1.002", area=b"J       "):

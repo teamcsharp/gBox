@@ -947,6 +947,11 @@ class Agent:
         return investigate(self, session_id, goal or getattr(self, 'live_goal_text', ''))
 
     def _guard_live_call(self, name, args):
+        from .unlock_job_policy import reason
+        # Learned recipes are checked step by step after argument substitution.
+        if name not in getattr(self, 'recipes', {}):
+            if why := reason(getattr(self, 'research_constraints', {}), name, args, agent=True):
+                raise ValueError(why)
         target = getattr(self, 'live_target', None)
         if not target:
             return
@@ -962,6 +967,13 @@ class Agent:
             raise ValueError('This live change request cannot restart or replace the selected game')
         if action == 're_agent':
             raise ValueError('Live research requires pinned ghidra_bridge queries; re_agent does not forward the target guards yet')
+        if action in {'re_executable', 're_study'}:
+            if values.get('source', 'auto') != 'ram':
+                raise ValueError('Live research does not copy or unpack the ROM. Use live_research or source=ram for the attached session; unsupported RAM access stays pending.')
+            if sid != target['session_id']:
+                raise ValueError('Live research requires the exact attached session_id')
+            if values.get('game_id') and values['game_id'] != target['game_id']:
+                raise ValueError('Live research cannot capture another game')
 
     def _job(self, tool, inp, node=None, limit=900, worker=None):
         self._guard_live_call(tool, inp)
@@ -1002,6 +1014,9 @@ class Agent:
         return j
 
     def _rpc(self, sid, op, args=None):
+        if (limits := getattr(self, 'research_constraints', {})).get('no_automatic_launch') or limits.get('no_rom_copy'):
+            if op not in {'info', 'read_memory', 'query_memory_map', 'get_frame'}:
+                raise ValueError('Favorite unlock research cannot mutate or control a game through RPC')
         target = getattr(self, 'live_target', None)
         if target:
             if sid != target['session_id']:
@@ -1194,7 +1209,10 @@ class Agent:
                 "next": "re_playbook op=get id=assimilate-title; verify the fingerprint against the files before trusting it"}
 
     def re_study(self, game="", source="auto", session_id="", analyze=True):
+        self._guard_live_call('re_study', {'source': source, 'session_id': session_id})
         gid = self._re_gid(game)
+        if getattr(self, 'live_target', None) and gid != self.live_target['game_id']:
+            raise ValueError('Live research cannot study another game')
         if source == "ram" and session_id:
             session_id = resolve_read_session(session_id, gid, self.api.get("/api/sessions").json(),
                                               getattr(self, "context_session_id", ""))
@@ -1888,10 +1906,14 @@ class Agent:
         """messages: OpenAI-style history (mutated). emit(event) streams steps to the UI. Returns usage totals."""
         self.local_worker = context.get("local_worker")
         self.parent_request_id = context.get("request_id")
+        self.research_constraints = {k: context.get(k) for k in
+                                     ('idle_only', 'no_rom_copy', 'no_automatic_launch', 'custom_build_unlocks')}
         self.context_game = context.get("game_id") or context.get("game_title") or ""
         latest = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
         plain = latest.split("\n[context:", 1)[0].strip() if isinstance(latest, str) else ""
         self.live_target, self.live_researched = None, False
+        self.live_research_cache = None  # A new user turn must authenticate and capture its own target.
+        self.live_analysis_executable = self.live_analysis_worker = self.rea_worker = None
         self.live_goal_text = plain
         self._live_emit = emit
         live_events, outer_emit = [], emit

@@ -139,3 +139,16 @@ def test_windows_session_uses_sdl_and_correct_select_hotkey(tmp_path, monkeypatc
     assert 'input_autodetect_enable = "true"' in cfg
     assert 'input_enable_hotkey_btn = "4"' in cfg
     assert 'input_rewind_axis = "nul"' in cfg          # worker owns the chord, avoiding duplicate native rewind
+
+
+def test_a_slow_probe_does_not_fail_the_launch_and_is_asked_again(monkeypatch):
+    gamepads._driver.cache_clear()
+    calls = []
+
+    def slow(*a, **kw):
+        calls.append(1)
+        raise gamepads.subprocess.TimeoutExpired("retroarch --features", 30)
+    monkeypatch.setattr(gamepads.subprocess, "run", slow)
+    assert gamepads.retroarch_driver("retroarch-test.exe") == "sdl2"
+    assert gamepads.retroarch_driver("retroarch-test.exe") == "sdl2"
+    assert len(calls) == 2                                     # the timeout is not cached

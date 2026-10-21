@@ -110,7 +110,7 @@ def test_paint_splits_a_lone_atlas_over_more_slots():
 
 # ---------------------------------------------------------------------------------------------- owned disc
 BIN = Path(os.environ.get("GBOX_MGS_VR_BIN", r"D:\gBox\cache\modbase\mgs_vr_us\Metal Gear Solid - VR Missions (USA).bin"))
-LIB = Path(os.environ.get("GBOX_CHARACTERS", Path.home() / "gbox-cache/characters"))
+LIB = Path(os.environ.get("GBOX_CHARACTERS", Path.home() / "gBox_alt/gbox-cache/characters"))
 
 
 @pytest.fixture(scope="module")

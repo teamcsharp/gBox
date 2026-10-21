@@ -1136,7 +1136,7 @@ window.taskVizCreate = canvas => {
       <pre id="con"></pre>
     </div></section>
     <section id="requests"><div class="pane" style="max-width:1100px">
-      <div class="rt-heading"><div><h2>Requests</h2><div class="rt-heading-actions"><div id="reqfilters" role="group" aria-label="Filter requests" style="display:flex;gap:6px"><button class="act" data-request-filter="all" aria-pressed="true">All</button><button class="act" data-request-filter="pending" aria-pressed="false">Pending</button><button class="act" data-request-filter="completed" aria-pressed="false">Completed</button></div><button class="act" id="reqnew" title="New request: describe something to fix or build (paste or drop images)" aria-label="New request" style="padding:4px 9px;font-size:16px;line-height:1">✉</button></div></div><div id="reqtokens"></div></div>
+      <div class="rt-heading"><div><h2>Requests</h2><div class="rt-heading-actions"><div id="reqfilters" role="group" aria-label="Filter requests" style="display:flex;gap:6px"><button class="act" data-request-filter="all" aria-pressed="true">All</button><button class="act" data-request-filter="pending" aria-pressed="false">Pending</button><button class="act" data-request-filter="completed" aria-pressed="false">Completed</button><button class="act" data-request-filter="background" aria-pressed="false" title="Per-game work Hermes keeps doing in the background (character readiness, unlock on load, unlock everything, extraction engineering). These are not inbox messages and are not counted in the badge.">Background work</button></div><button class="act" id="reqnew" title="New request: describe something to fix or build (paste or drop images)" aria-label="New request" style="padding:4px 9px;font-size:16px;line-height:1">✉</button></div></div><div id="reqtokens"></div></div>
       <div class="bar"><span class="mut" id="reqsum"></span>
         <button class="act" id="reqbenchmarks" title="Compare verified results by service and model">Solver results</button><button class="act" id="reqexport" title="Every request, oldest first, as one Markdown transcript">Export history</button></div>
       <details id="reqtoken-analysis" class="rt-analysis"><summary>Token usage analysis</summary></details>
@@ -1199,6 +1199,7 @@ window.taskVizCreate = canvas => {
 <script src="floating.js"></script>
 <script src="gameplay-memory.js"></script>
 <script src="inbox-view.js"></script>
+<script src="player-damage-view.js"></script>
 <script src="request-tokens.js"></script>
 <script src="inbox-groups.js"></script>
 <script src="live-poll.js"></script>
@@ -1225,6 +1226,7 @@ window.taskVizCreate = canvas => {
 <script src="../web/viz/live-controls.js"></script>
 <script src="../web/viz/build-actions.js"></script>
 <script src="../web/viz/game-menu.js"></script>
+<script src="../web/viz/bot-demo.js"></script>
 <script src="../web/viz/game-assets.js"></script>
 <script src="../web/viz/build-shot.js"></script>
 <script src="../web/viz/build-local.js"></script>
@@ -1243,7 +1245,19 @@ window.taskVizCreate = canvas => {
 <script src="embed-geometry.js"></script>
 <script src="game-surface.js"></script>
 <script src="compact-game.js"></script>
-<script>window.GBOX_STREAM_HEALTH = false;</script>
+<script src="../web/viz/autoplay-coach.js"></script>
+<script src="compact-coach.js"></script>
+<script src="client-refresh.js"></script>
+<script>
+// file:// cannot fetch the server directly; the authenticated desktop IPC is already bounded by the watchdog.
+window.GBOX_STREAM_FETCH_HEALTH = async src => {
+  const sid = /\/api\/sessions\/([^/?#]+)\/mjpeg/.exec(src)?.[1];
+  if (!sid) throw Error('Unknown stream session');
+  const r = await gbox.api('/api/sessions/' + encodeURIComponent(decodeURIComponent(sid)) + '/stream/health');
+  if (!r.ok) throw Error(r.error || 'Stream health unavailable');
+  return r.data;
+};
+</script>
 <script src="../web/viz/stream-watchdog.js"></script>
 <style id="compact-game-style">
   body.gbox-compact { background:#000; }
@@ -1255,7 +1269,15 @@ window.taskVizCreate = canvas => {
     -webkit-app-region:drag; opacity:0; pointer-events:none; }
   body.gbox-compact #compact-controls { display:flex; }
   body.gbox-compact #compact-controls.shown { opacity:1; pointer-events:auto; }
-  #compact-controls span { flex:1; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+  #compact-controls>.compact-title { flex:0 1 22%; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+  #compact-controls [data-compact-coach] { flex:1 1 180px; min-width:0; -webkit-app-region:no-drag; }
+  #compact-controls .coach { display:flex; align-items:center; gap:5px; min-width:0; }
+  #compact-controls .coach-in { width:100%; min-width:0; height:23px; box-sizing:border-box; border:1px solid #666;
+    border-radius:4px; background:#18181d; color:#fff; padding:2px 6px; font:11px system-ui; -webkit-app-region:no-drag; }
+  #compact-controls .coach-st { max-width:100px; flex:0 1 auto; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; font-size:10px; }
+  #compact-controls .coach-st:empty { display:none; }
+  #compact-controls .coach-st[data-state=error] { color:#ffadad; }
+  @media(max-width:420px) { #compact-controls>.compact-title { display:none; } #compact-controls .coach-st { max-width:75px; } }
   #compact-controls button { -webkit-app-region:no-drag; border:1px solid #666; border-radius:3px; background:#18181d; color:#fff; cursor:pointer; }
 </style>
 <script>
@@ -1326,6 +1348,7 @@ volumeSlider.oninput = () => {
 };
 volumeSlider.onchange = () => { clearTimeout(volumeTimer); gbox.audioVolume(+volumeSlider.value); };
 let S, current = null, playLoaded = false;
+const clientVersionAtLoad = gbox.clientVersion?.().catch(() => null);
 var SBX = { api: "", tok: "" };                              // API base + token for <img> links (filled after settings load)
 // Shared control-plane reads (#712). /api/sessions lists every session ever played (~950 KB, 0.25-1.3 s); the running
 // ones are a few KB. Timers share one request and a short-lived answer instead of each downloading the whole history.
@@ -1584,13 +1607,16 @@ async function remoteWatch(workerId = null) {
   const wr = await gbox.api("/api/workers");
   if (!wr.ok) return toast(wr.error || "Could not list computers");
   const windows = wr.data.filter(w => w.online && w.os === "windows");
+  // The other computer, never this one: the idle lookup returned this PC whenever the operator sat watching it
+  // (2026-10-20: "it's not bringing up a window to the other computer"). Idle first, else any other PC that can show
+  // its screen (desktop_stream), else any other PC with frames.
   if (!workerId) {
     REMOTE.view = "app";
+    const others = windows.filter(w => w.name !== S.workerName && w.tools?.includes("get_frame"));
     const idle = await gbox.api("/api/workers/idle?tool=get_frame");
-    if (idle.ok) workerId = idle.data.id;
-    else if (String(idle.error || "").includes("404") && S.workerName)
-      workerId = windows.find(w => w.name !== S.workerName && w.tools?.includes("get_frame"))?.id;
-    if (!workerId) return toast(idle.error || "No other computer is idle");
+    workerId = (idle.ok && others.some(w => w.id === idle.data.id) ? idle.data.id : null)
+      || (others.find(w => w.features?.includes("desktop_stream")) || others[0])?.id;
+    if (!workerId) return toast(others.length ? "The other computer can't show its screen" : "No other computer is online");
   }
   const selected = windows.find(w => w.id === workerId);
   if (!selected) return toast("That computer is offline");
@@ -1965,6 +1991,26 @@ function evSelect(sha) {
   $("#ev-image").hidden = false; $("#ev-empty").hidden = true;
   $("#ev-thumbs").querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.evSha === sha)));
 }
+// The report's saved moment (context.state_job_id). Dolphin / RetroArch keep it through gBox's own save slot: ONE
+// state_transfer op=snapshot job saved and uploaded it (it is also the report's state_export_job_id), no emulator slot
+// holds it, so Restore imports its file. Other emulators saved into their own slot (session_op save_state): Restore
+// loads that slot.
+function evMoment(context, job) {
+  const res = job.output?.result || {}, snap = job.tool === "state_transfer" && job.input?.op === "snapshot";
+  const done = job.state === "succeeded", sessionId = context.session_id || job.input?.session_id || "";
+  const state = !done || !sessionId ? null : snap ? (res.artifact ? { sessionId, artifact: res.artifact } : null)
+    : { sessionId, slot: res.slot };
+  const text = !done ? (job.error || "Save state is being prepared.")
+    : snap ? `Saved through gBox's own save slot (your save slots were left as they are): ${res.file || "state file"}${res.bytes ? ` (${res.bytes} bytes)` : ""}. It loads on another compatible PC too. ${res.artifact || ""}`
+    : `Save state ready${res.slot == null ? "" : ` in slot ${res.slot}`}.`;
+  return { snap, state, text };
+}
+function evRestoreJob(state) {
+  const worker = state.sessionId.split("-")[0];
+  return state.artifact
+    ? { tool: "state_transfer", input: { session_id: state.sessionId, op: "import", artifact: state.artifact }, require_worker: worker }
+    : { tool: "session_op", input: { session_id: state.sessionId, op: "load_state", args: state.slot == null ? {} : { slot: state.slot } }, require_worker: worker };
+}
 async function evRequest(requestId, selectedSha = null, run = null) {
   const r = await gbox.api(`/api/requests/${encodeURIComponent(requestId)}`);
   if (!r.ok) { $("#ev-steps").textContent = r.error; return; }
@@ -1995,13 +2041,13 @@ async function evRequest(requestId, selectedSha = null, run = null) {
   if (x.context?.state_job_id) {
     const sr = await gbox.api(`/api/jobs/${encodeURIComponent(x.context.state_job_id)}`);
     if (sr.ok) {
-      const job = sr.data, slot = job.output?.result?.slot;
-      EV.state = job.state === "succeeded" ? { sessionId: x.context.session_id, slot } : null;
-      stateHtml = `<details open><summary>Saved game moment · ${esc(job.state)}</summary><p>${job.state === "succeeded" ? `Save state ready${slot == null ? "" : ` in slot ${slot}`}.` : esc(job.error || "Save state is being prepared.")}</p>
-        ${EV.state ? '<button class="act" id="ev-restore">Restore this moment</button>' : ""}</details>`;
+      const job = sr.data, moment = evMoment(x.context, job);
+      EV.state = moment.state;
+      stateHtml = `<details open><summary>Saved game moment · ${esc(job.state)}</summary><p>${esc(moment.text)}</p>
+        ${EV.state ? `<button class="act" id="ev-restore"${moment.snap ? ' title="Loads this moment into the running game through its emulator (Dolphin loads it through slot 1, RetroArch through slot 9)"' : ""}>Restore this moment</button>` : ""}</details>`;
     }
   }
-  if (x.context?.state_export_job_id) {
+  if (x.context?.state_export_job_id && x.context.state_export_job_id !== x.context.state_job_id) {   // a snapshot is its own export
     const er = await gbox.api(`/api/jobs/${encodeURIComponent(x.context.state_export_job_id)}`);
     if (er.ok) {
       const exported = er.data, artifact = exported.output?.result?.artifact;
@@ -2062,8 +2108,7 @@ $("#task-evidence").addEventListener("click", async e => {
   if (e.target.id === "ev-restore" && EV.state) {
     e.target.disabled = true; e.target.textContent = "Restoring…";
     try {
-      const r = await gbox.api("/api/jobs", { tool: "session_op", input: { session_id: EV.state.sessionId,
-        op: "load_state", args: EV.state.slot == null ? {} : { slot: EV.state.slot } }, require_worker: EV.state.sessionId.split("-")[0] });
+      const r = await gbox.api("/api/jobs", evRestoreJob(EV.state));
       if (!r.ok) throw new Error(r.error);
       e.target.textContent = `Restore job ${r.data.id.slice(0, 8)} ${r.data.state}`;
     } catch (err) { e.target.textContent = `Restore failed: ${err.message}`; }
@@ -2203,8 +2248,8 @@ async function tasksLoad() {
         ${tkProgress(j.pct, true)}<div class="task-detail">${TK.expanded.has(j.id) ? TK.jobDetail.get(j.id) || "Loading task details…" : ""}</div></details>
         <button class="x" data-job="${j.id}" title="Cancel this job">✕ Cancel</button></div>`).join("") || '<span class="mut">none</span>'}</div>` +
     `<div class="mc"><div class="mh"><b>Recent jobs</b><span class="mut">${(d.recent || []).length}</span></div>
-      ${(d.recent || []).map(j => `<div class="job-card"><details data-detail-job="${j.id}" ${TK.expanded.has(j.id) ? "open" : ""}>
-        <summary>${kind(j.state)} <span class="nm">${esc(j.tool)}</span> <span class="mut">${esc(j.worker)} · ${tkAge(j.created)} · ${esc(j.progress || "")}</span></summary>
+      ${(d.recent || []).map(j => `<div class="job-card"><details data-detail-job="${j.id}" data-job-state="${esc(j.state)}" ${TK.expanded.has(j.id) ? "open" : ""}>
+        <summary>${kind(j.state)} <span class="nm">${esc(j.tool)}</span> <span class="mut">${esc(j.worker)} · ${tkAge(j.created)} · ${esc(j.progress || "")}</span>${["failed", "rejected", "invalid"].includes(j.state) ? ' <span class="mut" title="Right-click: retry this task">↻ right-click to retry</span>' : ""}</summary>
         ${tkProgress(j.pct, false)}<div class="task-detail">${TK.expanded.has(j.id) ? TK.jobDetail.get(j.id) || "Loading task details…" : ""}</div></details></div>`).join("") || '<span class="mut">none</span>'}</div>`, $("#tk-technical"));
   $("#tk-body").querySelectorAll("details[data-detail-hermes][open]").forEach(detail => {
     const pre = detail.querySelector("pre"), position = TK.hermesScroll.get(detail.dataset.detailHermes);
@@ -2399,6 +2444,22 @@ $("#tk-body").onclick = async e => {
   if (!r.ok) { b.textContent = "failed"; b.title = r.error; }
   tasksLoad();
 };
+// #2398: a failed task is dispatched again from its card (same tool, input and PC), as a new job linked to the old one
+function taskRetryMenu(x, y, id, label) {
+  let m = $("#whipmenu"); if (!m) { m = document.createElement("div"); m.id = "whipmenu"; document.body.append(m); }
+  m.style.left = (x - 20) + "px"; m.style.top = (y + 14) + "px";
+  m.innerHTML = `<b>Failed task</b><div class="mut">${esc(label.trim().slice(0, 140))}</div><button data-c="retry"><span>↻</span>Retry this task</button>`;
+  m.classList.add("on"); fitMenu(m, x - 20, y + 14, 8, 40);
+  m.onclick = async e => { const b = e.target.closest("button[data-c]"); if (!b) return; m.classList.remove("on");
+    const r = await gbox.api(`/api/jobs/${id}/retry`, {});
+    toast(r.ok ? `Dispatched again as task ${String(r.data?.id || "").slice(0, 8)}` : (r.error || "Could not retry this task"));
+    tasksLoad(); };
+}
+$("#tk-technical").addEventListener("contextmenu", e => {
+  const d = e.target.closest("details[data-detail-job]"); if (!d || !["failed", "rejected", "invalid"].includes(d.dataset.jobState)) return;
+  e.preventDefault(); e.stopPropagation();
+  taskRetryMenu(e.clientX, e.clientY, d.dataset.detailJob, d.querySelector("summary")?.textContent || "");
+});
 $("#tk-body").addEventListener("toggle", async e => {
   const resolution = e.target.closest?.("[data-resolution-id]");
   if (resolution) {
@@ -2463,9 +2524,13 @@ function loadPlay() {
     const url = new URL(S.apiUrl);
     url.searchParams.set("embedded", "1");
     url.hash = new URLSearchParams({ token: tok, worker: S.workerName }).toString();
-    if (typeof EMB !== "undefined" && EMB.sid) url.hash += "&session=" + encodeURIComponent(EMB.sid);
+    // A refresh restores its exact foreground/PiP pair after the guest is ready. Do not auto-follow an ended SID first.
+    if (typeof EMB !== "undefined" && EMB.sid && (typeof clientRefresh === 'undefined' || !clientRefresh.pending())) url.hash += "&session=" + encodeURIComponent(EMB.sid);
     const wv = document.createElement("webview");
     wv.id = "wv"; wv.dataset.ready = "false"; wv.setAttribute("allowpopups", "");
+    let readyResolve, readyReject;
+    wv.gboxReady = new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
+    wv.gboxReady.catch(() => {}); // ordinary navigation need not await it; restoration does
     let generation = 0, timeout = null;
     const loading = () => {
       generation++; wv.dataset.ready = "false"; status("Loading gBox…"); clearTimeout(timeout);
@@ -2474,6 +2539,7 @@ function loadPlay() {
     const failed = text => {
       if (!wv.isConnected) return;
       generation++; clearTimeout(timeout); wv.dataset.ready = "false"; status(text, true);
+      readyReject(Error(text));
     };
     // Subframe loads (model/voice overlays) must not hide a healthy game view.
     wv.addEventListener("did-start-navigation", e => { if (e.isMainFrame && !e.isInPlace) loading(); });
@@ -2483,6 +2549,7 @@ function loadPlay() {
         await wv.executeJavaScript(`(async () => { document.documentElement.dataset.embedded = "true"; document.documentElement.style.colorScheme = "dark"; window.GBOX_LOCAL = ${JSON.stringify({ worker: S.workerName, incidentCapture: true })}; await window.gboxViewReady; await new Promise(resolve => requestAnimationFrame(resolve)); })()`);
         if (!wv.isConnected || revision !== generation) return;
         clearTimeout(timeout); wv.dataset.ready = "true"; panel.hidden = true;
+        readyResolve();
       } catch {
         if (wv.isConnected && revision === generation) failed("The gBox view could not initialize. Retry the connection.");
       }
@@ -2496,7 +2563,7 @@ function loadPlay() {
       console.error("gBox view renderer stopped", e.reason);
       failed("The gBox view stopped displaying. Retry the view; your game keeps running.");
     });
-    wv.addEventListener("destroyed", () => { generation++; clearTimeout(timeout); });
+    wv.addEventListener("destroyed", () => { generation++; clearTimeout(timeout); readyReject(Error('The game view was replaced.')); });
     $("#wv")?.remove();
     loading(); wv.src = url.href; $("#play").prepend(wv); playLoaded = true;
   }).catch(() => {
@@ -2517,7 +2584,7 @@ async function loadSettings() {
   $("#sform").innerHTML = FIELDS.map(([k, l, t]) => `<label>${l}<input type="${t || "text"}" name="${k}" value="${esc(S[k])}"></label>`).join("") +
     `<label><span><input type="checkbox" name="autoStartWorker" ${S.autoStartWorker ? "checked" : ""}> Start the Windows worker with the app</span></label>` +
     `<label><span><input type="checkbox" name="voiceOverlay" ${vovEnabledPref() ? "checked" : ""}> Voice overlay on the game: the randomized transition visual over the game while you talk with gBox or it talks back</span></label>` +
-    `<p class="mut" id="hotkey-scope-note"><b>Hotkeys only when gBox is in front.</b> F2 save · F3 autoplay · F4 load · F5 reset · Shift/Ctrl+F2 save slot · Ctrl+I eyedropper · F11 / Alt+Enter full screen · hold ~ to talk · right-click / Ctrl+click / Alt+drag on the game: these work only while gBox (or the game playing in it) is the window in front. Blender and every other application keep all their keys and clicks.</p>`;
+    `<p class="mut" id="hotkey-scope-note"><b>Hotkeys only when gBox is in front.</b> F2 save · F3 autoplay · F4 load · F5 refresh client · Shift/Ctrl+F2 save slot · Ctrl+I eyedropper · F11 / Alt+Enter full screen · hold ~ to talk · right-click / Ctrl+click / Alt+drag on the game: these work only while gBox (or the game playing in it) is the window in front. Blender and every other application keep all their keys and clicks.</p>`;
 }
 $("#ssave").onclick = async () => {
   const f = new FormData($("#sform")), s = Object.fromEntries(FIELDS.map(([k]) => [k, f.get(k)]));
@@ -2703,12 +2770,13 @@ const PICKER_SRC = `(() => new Promise(resolve => {
 async function gboxState() {                             // what the embedded gBox UI is showing
   const wv = document.querySelector("#wv");
   if (!wv) return {};
-  try { return await wv.executeJavaScript(`(() => {
+  try { const value = await wv.executeJavaScript(`(() => {
+    if (globalThis.gboxClientViewState) return { ...globalThis.gboxClientViewState(), hash: location.hash, origin: location.origin };
     const tab = typeof cur !== "undefined" ? cur : null;
     const selected = tab === "Sessions" ? document.getElementById("session-head")?.dataset.sid : null;
     return { tab, session: selected || (typeof active !== "undefined" && active ? active.sid : null),
-      playing: typeof playing !== "undefined" ? playing : null, hash: location.hash };
-  })()`); }
+      playing: typeof playing !== "undefined" ? playing : null, hash: location.hash, origin: location.origin };
+  })()`); if (typeof clientRefresh !== 'undefined') clientRefresh.remember(value); return value; }
   catch { return {}; }
 }
 function appContext(extra = {}) {
@@ -3108,7 +3176,7 @@ document.addEventListener('click', e => {
   const button = e.target.closest('[data-solver-benchmark]'); if (!button) return;
   e.stopImmediatePropagation(); GBoxRequestSolvers.show(inboxSolverRequests, button.dataset.solverBenchmark);
 });
-if (!["all", "pending", "completed"].includes(requestFilter)) requestFilter = "all";
+if (!["all", "pending", "completed", "background"].includes(requestFilter)) requestFilter = "all";
 $("#reqfilters").addEventListener("click", e => {
   const button = e.target.closest("[data-request-filter]"); if (!button) return;
   requestFilter = button.dataset.requestFilter;
@@ -3133,18 +3201,20 @@ const REQUESTS = GBoxLivePoll.cachedRead(async () => {
 const inboxPoll = singleFlightPoll(async () => {
   inboxAt = Date.now();
   const r = await REQUESTS.get(INBOX_PAGE.reuse ? 120000 : 0); INBOX_PAGE.reuse = false; if (!r.ok) return;
-  const all = r.data, roots = all.filter(x => (!x.automated || x.context?.auto_report) && !x.parent_request_id), children = new Map();
-  inboxSolverRequests = all;
+  // #2801: standing per-game background work (kept open for the Hermes queue) is listed under Background work only
+  const background = r.data.filter(GBoxInboxGroups.standing), all = r.data.filter(x => !GBoxInboxGroups.standing(x));
+  const roots = all.filter(x => (!x.automated || x.context?.auto_report) && !x.parent_request_id), children = new Map();
+  inboxSolverRequests = r.data;
   const ids = new Set(all.map(x => x.id));
   all.forEach(x => { if (x.parent_request_id && ids.has(x.parent_request_id)) { const list = children.get(x.parent_request_id) || []; list.push(x); children.set(x.parent_request_id, list); } });
   const unresolved = all.filter(x => x.automated && !x.context?.auto_report && (!x.parent_request_id || !ids.has(x.parent_request_id)));
   const hasPending = x => x.status !== "done" || (children.get(x.id) || []).some(hasPending);
   const pending = roots.filter(hasPending).length;
   $("#tb-count").textContent = pending;
-  const counts = { all: roots.length, pending, completed: roots.length - pending };
+  const counts = { all: roots.length, pending, completed: roots.length - pending, background: background.filter(x => x.status !== "done").length };
   for (const button of document.querySelectorAll("[data-request-filter]")) {
     const mode = button.dataset.requestFilter;
-    button.textContent = `${mode === "all" ? "All" : mode === "pending" ? "Pending" : "Completed"} (${counts[mode]})`;
+    button.textContent = mode === "background" ? `Background work (${counts.background} active)` : `${mode === "all" ? "All" : mode === "pending" ? "Pending" : "Completed"} (${counts[mode]})`;
     button.setAttribute("aria-pressed", String(mode === requestFilter));
     button.style.background = mode === requestFilter ? "var(--accent, #8190ff)" : "";
     button.style.color = mode === requestFilter ? "#fff" : "";
@@ -3183,7 +3253,7 @@ const inboxPoll = singleFlightPoll(async () => {
       <div class="thread">
         ${x.element ? `<div class="eltag">${esc(x.element.view || "")}\n${esc(x.element.selector)}\n${esc(x.element.path || "")}</div>` : ""}
         ${x.image ? `<img class="shot" loading="lazy" decoding="async" src="${S.apiUrl}/api/artifacts/${x.image}?token=${encodeURIComponent(tok)}" alt="report screenshot">` : ""}
-        ${x.messages.map(mm => `<div class="msg ${mm.author}"><b>${mm.author === "agent" ? "Agent" : x.automated ? "System" : "You"}</b> · <span class="mut">${new Date(mm.ts * 1000).toLocaleTimeString()}</span>\n${esc(mm.text)}${(mm.attachments || []).map(a => (a.type || "image/").startsWith("image/") ? `<br><img class="att-img" loading="lazy" decoding="async" alt="${esc(a.name)}" src="${S.apiUrl}/api/artifacts/${a.sha256}?token=${encodeURIComponent(tok)}">`
+        ${x.messages.map(mm => `<div class="msg ${mm.author}"><b>${mm.author === "agent" ? "Agent" : x.automated ? "System" : "You"}</b> · <span class="mut">${new Date(mm.ts * 1000).toLocaleTimeString()}</span>\n${esc(mm.text)}${GBoxPlayerDamage.button(mm.damage_run)}${(mm.attachments || []).map(a => (a.type || "image/").startsWith("image/") ? `<br><img class="att-img" loading="lazy" decoding="async" alt="${esc(a.name)}" src="${S.apiUrl}/api/artifacts/${a.sha256}?token=${encodeURIComponent(tok)}">`
           : `<br><a class="att-file" href="#" data-url="${S.apiUrl}/api/artifacts/${a.sha256}?token=${encodeURIComponent(tok)}">📎 ${esc(a.name)}${a.size ? ` (${Math.ceil(a.size / 1024)} KB)` : ""}</a>`).join("")}</div>`).join("")}
         ${ms.map(mm => `<details class="howto" open><summary>How gBox does it: ${esc(mm.title)} <span class="mut">(${esc(mm.game_title || "")}, ${mm.verified ? "verified" : "not verified yet"})</span></summary>
           ${mm.calls.map(c => `<div class="howcall"><b>${esc(c.tool)}</b> <span class="mut">${esc((REG.tools?.[c.tool] || "").split("\n")[0].slice(0, 260))}</span><pre>${esc(JSON.stringify(c.input))}</pre></div>`).join("")}
@@ -3200,10 +3270,13 @@ const inboxPoll = singleFlightPoll(async () => {
   const renderGroup = g => `<details class="req-group" data-group-key="${esc(g.key)}"><summary><b>${esc(g.label)}</b><span class="chip">${g.count}</span>${g.pending ? `<span class="chip open">${g.pending} pending</span>` : `<span class="chip done">all done</span>`}<span class="chip">automated</span><span class="gl">newest ${new Date(g.newest * 1000).toLocaleString()} · #${g.latest.number} ${esc(g.latest.title || "")}</span></summary><div class="req-group-items">${g.items.slice(0, GROUP_SHOW).map(renderRequest).join("")}${g.count > GROUP_SHOW ? `<p class="mut">Showing the newest ${GROUP_SHOW} of ${g.count}. Export history lists them all.</p>` : ""}</div></details>`;
   const renderEntries = entries => entries.map(e => e.type === "group" ? renderGroup(e) : renderRequest(e.request)).join("");
   const matches = x => requestFilter === "all" || (requestFilter === "pending" ? hasPending(x) : !hasPending(x));
-  const visibleRoots = roots.filter(matches), visibleUnresolved = unresolved.filter(matches);
-  const rootEntries = GBoxInboxGroups.group(visibleRoots, { pending: hasPending });
+  const backgroundView = requestFilter === "background";
+  const visibleRoots = backgroundView ? [] : roots.filter(matches), visibleUnresolved = backgroundView ? [] : unresolved.filter(matches);
+  const rootEntries = backgroundView
+    ? GBoxInboxGroups.group(background, { min: 1, key: GBoxInboxGroups.standingKey, labels: GBoxInboxGroups.STANDING_LABELS })
+    : GBoxInboxGroups.group(visibleRoots, { pending: hasPending });
   const shownRoots = rootEntries.slice(0, INBOX_PAGE.limit), olderRoots = rootEntries.length - shownRoots.length;
-  updateInboxView(host, JSON.stringify([requestFilter, INBOX_PAGE.limit, r.etag || all, MODS.list]), () => (renderEntries(shownRoots) || `<p class="mut">${requestFilter === "all" ? "No requests yet. Use Capture or Eyedropper in the title bar, or just ask in chat." : requestFilter === "pending" ? "No pending requests. Choose All to view your request history." : "No completed requests yet. Choose All to view your request history."}</p>`)
+  updateInboxView(host, JSON.stringify([requestFilter, INBOX_PAGE.limit, r.etag || all, MODS.list]), () => (renderEntries(shownRoots) || `<p class="mut">${requestFilter === "all" ? "No requests yet. Use Capture or Eyedropper in the title bar, or just ask in chat." : requestFilter === "pending" ? "No pending requests. Choose All to view your request history." : backgroundView ? "No background work queued." : "No completed requests yet. Choose All to view your request history."}</p>`)
     + (olderRoots ? `<button class="act" id="reqmore" style="width:100%;margin:2px 0 12px">Show ${Math.min(olderRoots, INBOX_PAGE.step)} older entries (${olderRoots} not shown)</button>` : "")
     + (visibleUnresolved.length ? `<details class="unlinked-system"><summary>${visibleUnresolved.length} automated entries awaiting an original request</summary><p class="mut">These entries are preserved separately because their originating prompt could not be identified.</p><div style="display:flex;gap:8px"><select id="req-link-child"><option value="">Automated entry to link…</option>${visibleUnresolved.map(x => `<option value="${x.id}">#${x.number} ${esc(x.title)}</option>`).join("")}</select><select data-link-request=""><option value="">Choose your original request…</option>${roots.map(p => `<option value="${p.id}">#${p.number} ${esc(p.title)}</option>`).join("")}</select></div>${renderEntries(GBoxInboxGroups.group(visibleUnresolved, { pending: hasPending }).slice(0, INBOX_PAGE.limit))}</details>` : ""), replyAtt);
   GBoxReportStory.reattach(host);                             // the open Detailed report keeps running in its re-rendered row
@@ -3372,6 +3445,7 @@ async function modsGalleryPlay(m, { node, moment }) {
 }
 async function modsGalleryRequest(t) {
   if (!t.id) { toast(`Request #${t.number} is not in the inbox`); return; }
+  if (t.build_report) return reportStoryOpen(t.id);        // #2393: a build report opens its three.js presentation at once
   openThreads.add(t.id);
   document.querySelector('aside button[data-s="requests"]').click();
   await Promise.resolve(refreshInbox()).catch(() => {});
@@ -3426,6 +3500,14 @@ function reportGraphOpen(id) {
 document.addEventListener("click", async e => {
   const card = e.target.closest(".req"); if (!card) return;
   const id = card.dataset.id;
+  const damage = e.target.closest('[data-damage-ledger]');
+  if (damage) {
+    e.stopPropagation();
+    const token = await gbox.token();
+    GBoxPlayerDamage.open(damage.dataset.damageLedger, { api: path => gbox.api(path),
+      artifact: sha => `${S.apiUrl}/api/artifacts/${sha}?token=${encodeURIComponent(token)}` });
+    return;
+  }
   if (e.target.closest(".reportincomplete")) { e.stopPropagation(); await evRequest(id); $("#ev-incomplete").click(); return; }
   if (e.target.closest("[data-report-detail]")) { e.stopPropagation(); reportStoryOpen(id); return; }
   if (e.target.closest("img.shot, img.att-img")) {
@@ -3467,6 +3549,13 @@ function popups() {                                          // floating things 
   });
 }
 const EMB = { closed: new Set(),  sid: null, pid: null, last: "" };
+// The operator is watching a game: an embedded game window here, or a session shown full-size in the web shell (a Spark
+// stream). background-display.js keeps the idle screensaver away while this is true.
+window.GBoxWatching = async () => {
+  if (EMB.sid) return true;
+  try { return !!(await document.querySelector("#wv")?.executeJavaScript("typeof playing !== 'undefined' && !!playing")); }
+  catch { return false; }
+};
 let operationFrame={sid:'',rows:[]},operationFrameKey='';
 const GAME_OUTPUT=GBoxOperationConsole.create({session:()=>EMB.sid,
   fetchJob:async id=>{const r=await gbox.api('/api/jobs/'+encodeURIComponent(id));if(!r.ok)throw Error(r.error);return r.data;},
@@ -3516,6 +3605,7 @@ async function embedTick() {
       if (pref === "full") setTimeout(() => viewAction("full", true), 600); else if (VIEW.mode === "full") viewAction("main", true);
     }
     EMB.sid = mine.session_id; EMB.pid = mine.detail.pid;
+    EMB.adapter = mine.adapter || ""; EMB.caps = mine.capabilities || {};       // #2518: what this emulator can do drives the menu
     const overlay = $("#report").classList.contains("on") || $("#task-evidence").classList.contains("on") || !!$("#issue-modal") || !!document.querySelector('dialog[open]') || FLOW.on || !!$("#reportgraph.on") || GBoxReportStory.isFullOpen()
       || (document.querySelector("section.on")?.id === "play" && !$("#playhost").hidden);      // full-window overlays: the game steps aside
     const onPlay = document.querySelector("section.on")?.id === "play";
@@ -3620,12 +3710,19 @@ addEventListener("resize", () => { EMB.last = ""; });
 const VIEW = { mode: "auto", pip: null };                    // mode: auto (game in its slot) | pip (forced) | full
 // Compact PiP uses this same window, game and input path. It never launches another emulator.
 let compactStreamUrl = '', compactTitle = '', compactHoverTimer = null;
+let clientUpdateState = { pending: false, restart: false };
+const compactCoach = GBoxCompactCoach.create({ coach:GBoxAutoplayCoach,
+  api:async(path,body) => { const r=await gbox.api(path,body); if(!r.ok) throw new Error(r.error || 'Coaching request failed'); return r.data; },
+  show:visible => compactHover(visible), focusApp:() => gbox.appFocus?.(),
+  gateInput:focused => { document.querySelector('#wv')?.executeJavaScript(`window.gboxPadTextCapture?.(${!!focused})`).catch(() => {}); }
+});
 const compactController = GBoxCompactGame.create({
   mode: () => VIEW.mode,
-  resolve: async () => {
-    const st = await gboxState();
-    const sid = st.playing || st.session || EMB.sid;
+  resolve: async requested => {
+    const st = requested?.sid ? {} : await gboxState();
+    const sid = requested?.sid || st.playing || st.session || EMB.sid;
     let session = sid ? await sessionById(sid) : null;
+    if ((!session || session.state !== 'running') && requested?.sid) throw Error('The selected session is unavailable. Your game was not changed.');
     if (!session || session.state !== 'running') {
       const r = await liveSessions(0);
       session = r.ok && r.data.filter(s => s.state === 'running').sort((a,b) => (b.started || 0) - (a.started || 0))[0];
@@ -3638,7 +3735,10 @@ const compactController = GBoxCompactGame.create({
     closePops(null); if (EYE.on) eyeStop();
     document.querySelector('aside button[data-s="play"]')?.click();
     const wv = document.querySelector('#wv');
-    if (wv) await wv.executeJavaScript(`show("Sessions", ${JSON.stringify(session.session_id)})`).catch(() => {});
+    if (wv && !requested?.preserveGuest) {
+      await wv.gboxReady;
+      await wv.executeJavaScript(`show("Sessions", ${JSON.stringify(session.session_id)})`);
+    }
     const frame = local && EMB.sid === session.session_id ? window.GBoxGPUVideo?.stats() : null;
     return { sid: session.session_id, local, ...(frame?.ready ? { aspect: frame.width / frame.height } : {}) };
   },
@@ -3649,18 +3749,20 @@ const compactController = GBoxCompactGame.create({
     let stream = $('#compact-stream'), controls = $('#compact-controls');
     if (state.on && !controls) {
       controls = document.createElement('div'); controls.id = 'compact-controls';
-      controls.innerHTML = '<span></span><button type="button" title="Restore GBox (or double-click the game)">Full app</button>';
+      controls.innerHTML = '<span class="compact-title"></span><span data-compact-coach></span><button type="button" title="Restore GBox (or double-click the game)">Full app</button>';
       controls.querySelector('button').onclick = () => compactRestore().catch(error => toast(error.message)); document.body.append(controls);
       controls.addEventListener('pointerenter', () => compactHover(true));
       controls.addEventListener('pointerleave', () => compactHover(false));
     }
-    if (controls) controls.querySelector('span').textContent = compactTitle;
+    if (controls) controls.querySelector('.compact-title').textContent = compactTitle;
+    compactCoach.update(state, controls?.querySelector('[data-compact-coach]'));
     if (state.on && !state.local) {
       if (!stream) { stream = document.createElement('img'); stream.id = 'compact-stream'; stream.alt = 'Live emulation session'; document.body.append(stream); }
       stream.classList.add('on');
-      if (stream.getAttribute('src') !== compactStreamUrl) stream.src = compactStreamUrl;
+      if (gboxStreamWatchdog.healthUrl(stream.getAttribute('src') || '') !== gboxStreamWatchdog.healthUrl(compactStreamUrl)) stream.src = compactStreamUrl;
     } else if (stream) { stream.classList.remove('on'); stream.removeAttribute('src'); stream.style.backgroundImage = ''; }
     if (!state.on) compactHover(false);
+    renderClientUpdate();
   },
   pad: sid => miniPadTarget(sid),
   present: () => { EMB.last = ''; embedTick(); }
@@ -3668,16 +3770,97 @@ const compactController = GBoxCompactGame.create({
 const COMPACT = compactController.state;
 const compactEnter = () => compactController.enter();
 const compactRestore = () => compactController.restore();
+const clientRefresh = GBoxClientRefresh.create({ storage: sessionStorage, readState: gboxState,
+  context: () => ({ origin: S.apiUrl, sid: COMPACT.on ? COMPACT.sid : EMB.sid, compact: COMPACT.on, aspect: COMPACT.aspect,
+    returnMode: COMPACT.on ? COMPACT.returnMode : VIEW.mode, section: document.querySelector('section.on')?.id }),
+  reload: async value => {
+    if (!gbox.clientReload) return location.reload();
+    try { return await gbox.clientReload(value); }
+    catch (error) { // a new preload can be running inside an older, safely preserved main process
+      if (/No handler registered.*client:reload/.test(String(error))) return location.reload();
+      throw error;
+    }
+  } });
+let clientViewRestoring = true, clientViewNavigation = 0;
+document.addEventListener('click', event => {
+  if (event.isTrusted && event.target.closest?.('aside button[data-s]')) clientViewNavigation++;
+}, true);
+async function restoreClientView() {
+  let value, observed;
+  const navigation = clientViewNavigation;
+  try {
+  if (gbox.clientHandoff) {
+    try {
+      const handoff = await gbox.clientHandoff();
+      if (handoff) { clientRefresh.adopt(handoff); await gbox.clientHandoffSaved?.(); }
+    } catch (error) { if (!/No handler registered/.test(String(error))) throw error; }
+  }
+  if (!clientRefresh.pending() && gbox.clientView) {
+    try { const saved = await gbox.clientView(); if (saved) clientRefresh.adopt(saved); }
+    catch (error) { if (!/No handler registered/.test(String(error))) throw error; }
+  }
+  value = clientRefresh.pending(); if (!value) return;
+  if (navigation !== clientViewNavigation) { clientRefresh.done(); return; }
+  if (value.guest?.playing || value.sid) EMB.sid = value.guest?.playing || value.sid;
+  document.querySelector(`aside button[data-s="${value.section}"]`)?.click();
+  await loadPlay();
+  const wv = document.querySelector('#wv');
+  if (!wv) throw Error('The game view is not ready. Press F5 to reconnect your saved streams.');
+  await wv.gboxReady;
+  if (navigation !== clientViewNavigation || !clientRefresh.pending()) { clientRefresh.done(); return; }
+  const restored = await wv.executeJavaScript(`(async () => { if (${JSON.stringify(value.origin || null)} && location.origin !== ${JSON.stringify(value.origin || null)}) return { cancelled: true }; if (!window.gboxRestoreClientView) throw Error('The game view update is not available yet.'); const result = await window.gboxRestoreClientView(${JSON.stringify(value.guest)}); return { ...result, view: { ...window.gboxClientViewState?.(), origin: location.origin } }; })()`);
+  observed = restored?.view;
+  clientRefresh.remember(observed); // Ctrl+R may arrive before the first periodic guest checkpoint
+  if (restored?.cancelled || navigation !== clientViewNavigation) { clientRefresh.done(); return; } // operator navigation supersedes saved intent
+  if (value.compact) {
+    try { await compactController.enter({ ...value, preserveGuest: true }); }
+    catch (error) {
+      // The requested game may have ended while the client loaded. Restore its app bounds, never pick another game.
+      await gbox.compactView({ on: false }).catch(() => {});
+      toast(error.message + ' Press F5 to retry the view.', 10000); return;
+    }
+  }
+  if (restored?.missing?.length) {
+    toast('Waiting for saved stream' + (restored.missing.length > 1 ? 's' : '') + ': ' + restored.missing.join(', ') + '. Press F5 to retry.', 10000);
+    return; // keep the original pair for retry; never replace it with whichever session happens to be newest
+  }
+  clientRefresh.done();
+  } finally {
+    if (value && clientRefresh.pending()) clientRefresh.retain(value, observed);
+    clientViewRestoring = false;
+  }
+}
+// Native desktop PiP has no browser gesture restriction. The same BrowserWindow keeps its original bounds.
+// Also retain the view for Ctrl+R/navigation reloads that bypass the F5 command.
+addEventListener('beforeunload', () => {
+  if (!clientRefresh.pending()) clientRefresh.checkpoint();
+});
+// Ctrl+R cannot await a guest IPC call during unload. Keep its last confirmed pair, including the hidden main view.
+let clientViewReading = false;
+setInterval(() => {
+  if (clientViewRestoring || clientViewReading || document.querySelector('#wv')?.dataset.ready !== 'true') return;
+  clientViewReading = true;
+  gboxState().then(async guest => {
+    const value = clientRefresh.observe(guest);
+    if (value && guest.origin && gbox.clientViewSave) await gbox.clientViewSave(value, guest.origin);
+  }).catch(error => { if (!/No handler registered/.test(String(error))) console.warn('Saved view:', error.message); })
+    .finally(() => { clientViewReading = false; });
+}, 2000);
+document.addEventListener('gbox-stream-state', event => {
+  if (event.target.id !== 'compact-stream' || !COMPACT.on) return;
+  document.querySelector('#wv')?.executeJavaScript(`window.gboxPadStreamState?.(${JSON.stringify(COMPACT.sid)}, ${!!event.detail.connected})`).catch(() => {});
+}, true);
 function compactHover(show) {
+  show = show || compactCoach.pinned();
   clearTimeout(compactHoverTimer);
   const apply = () => { $('#compact-controls')?.classList.toggle('shown', COMPACT.on && show); EMB.last = ''; embedTick(); };
   if (show || !COMPACT.on) apply(); else compactHoverTimer = setTimeout(apply, 450);
 }
 gbox.onCompactView?.(value => compactController.changed(value));
-addEventListener('dblclick', event => { if (COMPACT.on) { event.preventDefault(); event.stopPropagation(); compactRestore().catch(error => toast(error.message)); } }, true);
+addEventListener('dblclick', event => { if (COMPACT.on && !GBoxCompactCoach.isCoachTarget(event.target)) { event.preventDefault(); event.stopPropagation(); compactRestore().catch(error => toast(error.message)); } }, true);
 addEventListener('pointermove', event => { if (COMPACT.on) compactHover(event.clientY < 32); }, { passive:true });
 addEventListener('resize', () => { if (COMPACT.on) requestAnimationFrame(() => embedTick()); });
-addEventListener('keydown', event => { if (COMPACT.on && event.key === 'Escape') { event.preventDefault(); compactRestore().catch(error => toast(error.message)); } });
+addEventListener('keydown', event => { if (COMPACT.on && event.key === 'Escape' && !GBoxCompactCoach.isCoachTarget(event.target)) { event.preventDefault(); compactRestore().catch(error => toast(error.message)); } });
 setInterval(() => {
   if (!COMPACT.on || COMPACT.local) return;
   const image = $('#compact-stream');
@@ -3744,27 +3927,40 @@ function pipHandle(rect, title) {
   Object.assign(h.style, { display: "flex", left: rect.x + "px", top: (rect.y - 26) + "px", width: rect.w + "px" });
 }
 const isFull = () => VIEW.mode === "full" || !!document.fullscreenElement || window.outerHeight >= screen.height && window.outerWidth >= screen.width;
+// #2518: an emulator without save states (Cxbx-Reloaded) gets no Save / Load job that can only fail and notify:
+// the menu says what is missing, the actions and the typed one-liners answer in words
+const CAP_WORDS = { save_state: "has no save states", load_state: "has no save states", pause: "cannot pause", resume: "cannot resume" };
+function capMissing(op) {
+  const caps = EMB.caps || {};
+  if (caps[op] !== "unsupported") return "";
+  return `${EMB.adapter ? "The " + EMB.adapter + " emulator" : "This emulator"} ${CAP_WORDS[op] || "does not support " + op.replace(/_/g, " ")} in gBox`;
+}
 function pipMenu(x, y) {
   let m = $("#pipmenu");
   if (!m) { m = document.createElement("div"); m.id = "pipmenu"; document.body.append(m); dragAnywhere(m);
     addEventListener("mousedown", e => { if (!e.target.closest("#pipmenu") && m.style.display === "block") { m.style.display = "none"; GM.menu = false; EMB.last = ""; } }, true); }
+  const noStates = capMissing("save_state");                   // #2518: Save / Load need an emulator with save states
   GM.at = [x, y];                                              // Report… files a problem at this spot
-  const items = [["report", "⚑ Report…"], ["-"], ...(isFull() ? [["main", "⤡ Exit full screen   Alt+Enter"], ["-"]] : []), ["autoplay", GM.auto ? "🤖 Hand control back (stop autoplay)" : "🤖 Take control (autoplay)  F3"],
-                 ...(GM.auto ? [] : [["autoplay+", "🛡 Take control, invincible (holds HP)"]]),
+  const items = [["report", "⚑ Report…"], ["-"], ...(isFull() ? [["main", "⤡ Exit full screen   Alt+Enter"], ["-"]] : []), ["autoplay", GM.auto ? "🤖 Hand control back (stop autoplay)" : "🤖 Take control (autoplay)  F3 · pad: View+A"],
+                 ...(GM.auto ? [] : [["autoplay+", "🛡 Take control, invincible (holds HP)"], ["autoplay-replay", "▶ Replay my recorded run from boot (restarts the game)"]]),
                  ["talk", TALK.on ? "🎙 Stop talking" : "🎙 Talk to gBox"], ["orb", ORB.on ? "💬 End conversation" : "💬 Start conversation"],
                  ["vov", VOV.enabled ? "✨ Voice overlay on the game: on" : "✨ Voice overlay on the game: off"],
                  ["pwrclick", `⌖ Right-click a character: character menu (${GBoxPickWhip.settings().rclick ? "on" : "off"})`],
                  ["pwpause", `⏸ Pause the game while picking (${GBoxPickWhip.settings().pause ? "on" : "off"})`],
                  ["ask", "❓ Ask a question…"], ["-"],
-                 ["save", "💾 Save state"], ["load", "📂 Load state"], ["slot+", `Save slot: ${GM.slot}  ▸ next`], ["slot-", "Save slot ◂ previous"],
-                 ["strip", "⏪ Rewind / save-state film strip"], ...(/phantasy star/i.test(EMB.title || "") ? [["items", "🎒 Items & equipment…"]] : []),
+                 // "🤖 Bot demo on <PC>" for this game, every online PC (this one included): it plays itself from boot
+                 ...(EMB.game ? botDemoItems().map(p => [`bot:${p.name}`, esc(p.label)]) : []), ...(EMB.game && botDemoItems().length ? [["-"]] : []),
+                 ["save", "💾 Save state", noStates], ["load", "📂 Load state", noStates], ["slot+", `Save slot: ${GM.slot}  ▸ next`, noStates], ["slot-", "Save slot ◂ previous", noStates],
+                 ["strip", "⏪ Rewind / save-state film strip", noStates], ...(/phantasy star/i.test(EMB.title || "") ? [["items", "🎒 Items & equipment…"]] : []),
                  ...(RI.cur ? [["reinv", "🎒 Inventory (change / give items)…"]] : []),
                  ...(/zelda/i.test(EMB.title || "") ? [["equip", "🗡 Equip screen (items, gear, upgrades)…"]] : []), ["-"],
                  ["prefs", "⚙ Preferences"], ["perf", "⏱ Performance options"], ["display", "🖥 Display settings"], ["aa", "✨ Anti-aliasing"],
                  ["pad", "🎮 Controller settings (emulator menu)"], ["mapping", "🕹 Controller mapping"], ["trouble", "🛠 Troubleshoot gameplay…"], ["-"],
                  ["main", "↩ Main view"], ["pip", "▣ Picture-in-picture"], isFull() ? ["main", "⤡ Exit full screen   Alt+Enter"] : ["full", "⛶ Full screen   Alt+Enter"],
                  ["S", "Size: small"], ["M", "Size: medium"], ["L", "Size: large"]];
-  m.innerHTML = items.map(([a, t]) => a === "-" ? "<hr>" : `<button data-a="${a}">${t}</button>`).join("");
+  m.innerHTML = items.map(([a, t, off]) => a === "-" ? "<hr>" : off
+    ? `<button data-a="${a}" disabled title="${esc(off)}" style="opacity:.55">${t} <span class="mut">· ${esc(off)}</span></button>`
+    : `<button data-a="${a}">${t}</button>`).join("");
   m.onclick = e => { const a = e.target.closest("button")?.dataset.a; if (a) { m.style.display = "none"; GM.menu = false; EMB.last = ""; gameAction(a); } };
   GM.menu = true; EMB.last = ""; embedTick();
   Object.assign(m.style, { display: "block", left: x + "px", top: y + "px" }); fitMenu(m, x, y, 8, 40);
@@ -3830,8 +4026,13 @@ function gameSettings(anchor) {
 }
 async function gameAction(a) {
   try {
-    if (a === "autoplay" || a === "autoplay+") {
-      const r = await gameJob("autoplay", { op: GM.auto ? "stop" : "start", assist: a === "autoplay+" });
+    if (a.startsWith("bot:")) return botDemoInView(EMB.game, a.slice(4));   // "🤖 Bot demo on <PC>" for this game
+    if (a === "autoplay" || a === "autoplay+" || a === "autoplay-replay") {
+      // autoplay also starts from the pad chord and stops when you touch the pad: ask the worker, not a local flag
+      const st = await gameJob("autoplay", { op: "status" }).catch(() => null);
+      if (st) GM.auto = !!st.running;
+      const r = await gameJob("autoplay", GM.auto ? { op: "stop" } : { op: "start", assist: a === "autoplay+",
+        ...(a === "autoplay-replay" ? { mode: "replay", reset: true } : {}) });
       GM.auto = !GM.auto && !!r.started; toast(GM.auto ? `🤖 gBox has control: ${r.objective || r.started}` : r.error || "You have control again");
     } else if (a === "talk") TALK.on ? talkStop() : talkStart();
     else if (a === "orb") ORB.on ? orbClose() : orbOpen();
@@ -3839,6 +4040,7 @@ async function gameAction(a) {
     else if (a === "report") await pwReport(GM.at);
     else if (a === "pwrclick") { const s = GBoxPickWhip.saveSettings({ rclick: !GBoxPickWhip.settings().rclick }); toast(s.rclick ? "⌖ Right-click a character in the game for its menu (Replace, Copy, Blender…)" : "⌖ Right-click on the game opens the game menu"); }
     else if (a === "pwpause") { const s = GBoxPickWhip.saveSettings({ pause: !GBoxPickWhip.settings().pause }); toast(s.pause ? "⏸ The game pauses while the pick whip is open" : "⏸ The game keeps running while you pick"); }
+    else if ((a === "save" || a === "load" || a === "strip") && capMissing("save_state")) toast(capMissing("save_state"));   // #2518: no job, no failure
     else if (a === "save") { toast("💾 Saving…"); const r = await gameJob("session_op", { op: "save_state", args: { slot: GM.slot } }); stripAdd(r); toast(`💾 Saved (slot ${r.slot ?? GM.slot})`); }
     else if (a === "load") { toast("📂 Loading…"); await gameJob("session_op", { op: "load_state", args: { slot: GM.slot } }); toast(`📂 Loaded slot ${GM.slot}`); }
     else if (a === "slot+" || a === "slot-") { GM.slot = Math.max(0, Math.min(9, GM.slot + (a === "slot+" ? 1 : -1))); toast(`Save slot ${GM.slot}`); }
@@ -3854,8 +4056,38 @@ async function gameAction(a) {
   } catch (e) { toast("⚠ " + e.message, 6000); }
 }
 // update pending: the logo pulses with a holographic shimmer until it's clicked (update & relaunch)
+function renderClientUpdate() {
+  const value = clientUpdateState;
+  document.body.classList.toggle('client-update-pending', value.pending);
+  let border = $('#client-update-border');
+  if (!border) { border = document.createElement('div'); border.id = 'client-update-border'; document.body.append(border); }
+  const r = GBoxCompactGame.fit(innerWidth, innerHeight, COMPACT.aspect);
+  Object.assign(border.style, { position: 'fixed', pointerEvents: 'none', zIndex: '90', boxSizing: 'border-box',
+    border: '2px solid red', left: r.x + 'px', top: r.y + 'px', width: r.w + 'px', height: r.h + 'px', display: COMPACT.on && value.pending ? 'block' : 'none' });
+  const message = value.restart ? value.activation?.state === 'pending'
+    ? 'Views refreshed; desktop update pending: ' + value.activation.reason + ' Press F5 to retry when idle.'
+    : 'Desktop update ready. Press F5 to reload the app when this PC is idle, preserving remote games and PiP.'
+    : 'Client update ready. Press F5 to refresh and keep this game and PiP view.';
+  border.setAttribute('aria-label', message);
+  if ($('#compact-controls')) $('#compact-controls').title = value.pending ? message : '';
+  const b = $('#brand'); b.classList.toggle('upd', value.pending);
+  if (value.pending) b.dataset.tip = message; else delete b.dataset.tip;
+}
+addEventListener('resize', () => renderClientUpdate());
 async function updateCheck() {
+  if (gbox.clientVersion) {
+    const baseline = await clientVersionAtLoad, latest = await gbox.clientVersion().catch(() => null);
+    if (baseline && latest) {
+      const next = GBoxClientRefresh.changed(baseline, latest);
+      next.activation = latest.activation;
+      if (!latest.remote && clientUpdateState.remote) { next.remote = true; next.pending = true; }
+      clientUpdateState = next;
+    }
+    renderClientUpdate();
+    if (baseline && latest) return;
+  }
   const r = await gbox.updatePending?.().catch(() => null); if (!r) return;
+  clientUpdateState = { pending: !!r.pending, restart: !!r.pending }; renderClientUpdate();
   const b = $("#brand"); b.classList.toggle("upd", r.pending);
   b.querySelector("small").textContent = r.pending ? "update ready · click to relaunch" : "click to update & relaunch";
   if (r.pending) b.dataset.tip = `New code since this app started (${r.file}, ${r.changed})`;
@@ -4069,6 +4301,7 @@ setInterval(() => { const wv = document.querySelector("#wv"); if (wv && !wv._gbo
     else if (m.ev === 'emulationissue') reportEmulationIncident(m.sid, m.action);
     else if (m.ev === 'emulationreport') evRequest(m.requestId);
     else if (m.ev === "gameclick") closePops(null);
+    else if (m.ev === "gamefocus") gameFocus();          // a coach note sent: a bot demo here gets the keyboard back
     else if (m.ev === 'operationconsole') GAME_OUTPUT.ingest(m.event);
     else if (m.ev === "layout") { if (EMB.pid && EMB.surface !== "gpu") embedSoon(); }   // a menu over the docked game opened/closed
     else if (m.ev === "gamemodelpick") gbox.overlay("pick", { sid: m.sid, point: m.point });
@@ -4106,8 +4339,8 @@ gbox.onEmbedEvent?.(async ev => {
   if (ev.event === "gameclick") return closePops(null);
   if (ev.event === "whip") return whipSend(ev); if (ev.event === "ptt") return ev.down ? pttDown() : pttUp(); if (ev.event === "rclick") pwRightClick(ev.x, ev.y); if (ev.event === "ctrlclick") eyePoint(ev.x, ev.y); });
 gbox.onHotkey?.(k => { if (k === "eyedropper") return eyeStart();
-  if (k === "reset") return document.querySelector("#wv")?.executeJavaScript(          // F5: reset the game being played
-    `(s => s && resetGame(s, document.getElementById("resetbtn")))(${JSON.stringify(EMB.sid || "")} || playing || (active && active.sid))`).catch(() => {}); if (k === "fullscreen") return viewAction(isFull() ? "main" : "full"); if (["autoplay", "save", "load", "slot+", "slot-"].includes(k)) gameAction(k); });
+  if (k === "client-refresh" || k === "reset") return clientRefresh.refresh().catch(error => toast(error.message)); // old main processes still name F5 "reset"
+  if (k === "fullscreen") return viewAction(isFull() ? "main" : "full"); if (["autoplay", "save", "load", "slot+", "slot-"].includes(k)) gameAction(k); });
 addEventListener("keydown", e => {                            // A / F3 = autoplay, when the app (not a text box) has the keyboard
   if (!EMB.sid || e.ctrlKey || e.altKey || e.metaKey || e.target.closest?.("input, textarea, select, video, [contenteditable]")) return;
   if (e.key === "a" || e.key === "A") { e.preventDefault(); gameAction("autoplay"); }   // F2/F3/F4 come from the main process
@@ -5756,12 +5989,14 @@ function chipMenu(chip, e) {                                   // a conversation
     <button class="act" data-cast style="width:100%;text-align:left;margin-top:4px">Replace entire cast with…</button>
     <button class="act" data-assets style="width:100%;text-align:left;margin-top:4px">Extract game assets...</button>
     <button class="act" data-open style="width:100%;text-align:left;margin-top:4px">Open the conversation</button>
+    <div data-chip-bot style="display:flex;flex-direction:column;gap:4px;margin-top:6px">${window.GBoxBotDemo ? GBoxBotDemo.itemsHTML(botDemoItems()) : ""}</div>
     <div data-chip-special style="margin-top:6px"></div>`;
   fitMenu(m, e.clientX, e.clientY, 8, 40);
   // the library game menu's "Special builds ▸" section (../web/viz/game-menu.js mountSpecial), same actions and state
   GBoxGameMenu.mountSpecial(chipSpecialIO(m), m.querySelector("[data-chip-special]"), { gid: chip.dataset.g, title: chip.dataset.t });
   m.onclick = ev => { if (ev.target.closest("[data-chip-special]")) return; const b = ev.target.closest("button"); if (!b) return; m.style.display = "none";
     if (b.dataset.load !== undefined) playInView(chip.dataset.g);
+    else if (b.dataset.botDemo) botDemoInView(chip.dataset.g, b.dataset.botDemo);       // "🤖 Bot demo on <PC>"
     else if (b.dataset.cast !== undefined) castSwapOpen(chip.dataset.g, chip.dataset.t);
     else if (b.dataset.assets !== undefined) gameAssetsOpen(chip.dataset.g, chip.dataset.t).catch(error=>toast(error.message,8000));
     else chip.closest(".ci")?.click(); };
@@ -5826,6 +6061,27 @@ async function retargetOpen(o) {
     onRebuild: (r, st) => { toast(`Rebuilding ${st.slot} with ${st.name || st.slug}: the Fitting pop-up follows it`, 6000);
       if (PROCESS_POPUP) PROCESS_POPUP.follow((r.job_ids || [])[0]); } }, o);
 }
+// ---- bot demos on any PC (../web/viz/bot-demo.js): "🤖 Bot demo on <PC>" in the docked game's right-click menu and a
+// conversation's game chip, every online PC (this one included). The launch goes through the embedded view's play()
+// (node=<PC>, autoplay on): your own launch, so no idle-PC admission; the Sessions header there says "🤖 Bot demo".
+const BOTPCS = { list: [], at: 0 };
+function botDemoItems() {
+  if (Date.now() - BOTPCS.at > 15000) {                         // refresh in the background; the menu shows the last list
+    BOTPCS.at = Date.now();
+    gbox.api("/api/workers").then(r => { if (r?.ok) BOTPCS.list = r.data || []; }).catch(() => {});
+  }
+  return window.GBoxBotDemo ? GBoxBotDemo.pcs(BOTPCS.list, S?.workerName) : [];
+}
+setTimeout(() => { try { botDemoItems(); } catch {} }, 5000);   // the list is there by the first right-click
+function botDemoInView(gid, pc) {
+  if (!gid || !pc) return;
+  document.querySelector('aside button[data-s="play"]')?.click();
+  const run = () => $("#wv")?.executeJavaScript(`typeof botDemoLaunch === "function" && botDemoLaunch(${JSON.stringify(gid)}, ${JSON.stringify(pc)})`).catch(() => {});
+  const wv = $("#wv");
+  if (wv?.dataset.ready === "true") run();
+  else setTimeout(() => { const w = $("#wv"); if (w) w.addEventListener("dom-ready", run, { once: true }); }, 300);
+  toast(`🤖 Bot demo of this game on ${pc}: it plays itself from boot`);
+}
 function playInView(gid) {                                     // ask the embedded gBox view to launch a game
   document.querySelector('aside button[data-s="play"]')?.click();
   const run = () => $("#wv")?.executeJavaScript(`typeof play === "function" && play(${JSON.stringify(gid)})`).catch(() => {});
@@ -5851,6 +6107,7 @@ async function sessionCommand(text, context = null) {
   const hit = SESSION_CMDS.find(([rx]) => rx.test(text.trim())); if (!hit) return null;
   const ctx = context || await chatContext();
   if (!ctx.session_id) return { say: "No game is running right now." };
+  if (ctx.session_id === EMB.sid && capMissing(hit[1])) return { say: capMissing(hit[1]) + "." };   // #2518: no job that can only fail
   let j = (await gbox.api("/api/jobs", { tool: "session_op", input: { session_id: ctx.session_id, op: hit[1], args: {} },
                                            require_worker: ctx.session_id.split("-")[0] })).data;
   for (let i = 0; i < 60 && j && ["queued", "running"].includes(j.state); i++) {
@@ -6840,7 +7097,7 @@ async function ringAttach() {
 }
 // ---------------- end replay ring pop-up ----------------
 
-loadSettings().then(() => { refresh(); refreshInbox(); });
+loadSettings().then(() => { restoreClientView().catch(error => toast(error.message)); refresh(); refreshInbox(); });
 // Spark status runs ssh + 3 requests: every 15 s while Control is open or the play view still has to connect, else every minute
 let refreshAt = Date.now();
 setInterval(() => {

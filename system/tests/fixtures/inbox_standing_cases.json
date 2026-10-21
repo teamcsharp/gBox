@@ -1,0 +1,16 @@
+{
+  "cases": [
+    {"key": "readiness", "request": {"title": "Character replacement readiness: Dead or Alive 3 (USA)", "source": "automation", "author": "agent", "automated": true, "parent_request_id": "6d70500464914684", "context": {"hermes_favorite_game": "b8edf7040116f3aa", "game_id": "b8edf7040116f3aa"}}},
+    {"key": "unlock_on_load", "request": {"title": "Unlock on load: Dead or Alive 3 (USA)", "source": "api", "author": "operator", "automated": true, "parent_request_id": "600ead0e94d14d28", "context": {"unlock_on_load": "b8edf7040116f3aa", "game_id": "b8edf7040116f3aa"}}},
+    {"key": "unlock_on_load", "request": {"title": "Unlock inventory: Dead or Alive 3 (USA)", "source": "api", "author": "operator", "automated": true, "context": {"unlock_inventory": "b8edf7040116f3aa"}}},
+    {"key": "unlock_everything", "request": {"title": "Unlock everything for favorite: Black (USA)", "source": "api", "author": "operator", "automated": true, "context": {"custom_build_unlocks": "858ac1ab12044c9c", "favorite_default": true}}},
+    {"key": "unlock_everything", "request": {"title": "Unlock everything in custom builds: Crazy Taxi (USA)", "source": "api", "author": "operator", "automated": true, "context": {"custom_build_unlocks": "15674e4cebc94c49"}}},
+    {"key": "extraction", "request": {"title": "Extraction engineering: Dead or Alive 3 (USA)", "source": "characters", "author": "system", "automated": true, "context": {"extraction_engineering": true, "game_id": "b8edf7040116f3aa"}}},
+    {"key": "policy", "request": {"title": "Unlock on load for every favorite and played game", "source": "automation", "author": "operator", "automated": true, "context": {"unlock_research_parent": true, "standing_policy": true}}},
+    {"key": "policy", "request": {"title": "Nous build supervision: delivery, failures and Spark repair handoffs", "source": "automation", "author": "agent", "automated": true, "context": {"nous_build_supervision": true}}},
+    {"key": null, "request": {"title": "JSRF not playing", "source": "app", "author": "operator", "context": {"game_id": "bb6edc3dfcf32822"}}},
+    {"key": null, "request": {"title": "Launch failed: Dead or Alive 2 on i9-NUC", "source": "automation", "author": "system", "automated": true, "context": {"launch_failure": true, "auto_report": true}}},
+    {"key": null, "request": {"title": "GAP: unlock all characters", "source": "gap", "author": "operator", "context": {"game_id": "b8edf7040116f3aa"}}},
+    {"key": null, "request": {"title": "Session models: Black (USA)", "source": "characters", "author": "agent", "automated": true, "context": {"game_id": "858ac1ab12044c9c"}}}
+  ]
+}

@@ -8,7 +8,7 @@ import pytest
 
 from gbox import re4ps2_model as m
 
-RE = Path(os.environ.get("GBOX_RE4PS2_RE", str(Path.home() / "gbox-cache/109d8ee7747a7dd8/re")))
+RE = Path(os.environ.get("GBOX_RE4PS2_RE", str(Path.home() / "gBox_alt/gbox-cache/109d8ee7747a7dd8/re")))
 
 
 def _bin(nb=3, nobj=1, ids=None):
@@ -64,6 +64,24 @@ def test_tpl_header_formats():
         [(256, 128, "C4", 0x80), (128, 64, "C8", 0x100)]
     with pytest.raises(ValueError):
         m.tpl_header(b"\0" * 64)
+
+
+def test_probe_accepts_bin_bin_pair_for_non_leon_packs():
+    """Ashley-style layouts bind two BIN slots; the second slot records tpl=None with a reason."""
+    b, t = _bin(), bytearray(0x200)
+    struct.pack_into("<4I", t, 0, 0x1000, 1, 0x10, 0)
+    struct.pack_into("<6H3I", t, 0x10, 256, 128, 8, 2, 0x40, 0, 0x400, 0, 0)
+    struct.pack_into("<II", t, 0x30, 0x80, 0x180)
+    pack = bytearray(b"\0" * 0x20) + b + bytes(t)
+    struct.pack_into("<2I", pack, 16, 0x20, 0x20 + len(b))
+    pack[16 + 8:16 + 8 + 8] = b"BIN\0TPL\0"
+    struct.pack_into("<I", pack, 0, 2)
+    res = m.probe(bytes(pack), [{"call": 0, "callee": "modelInit", "bin_slot": 0, "tpl_slot": 1}])
+    assert res[0]["tpl"]["count"] == 1 and res[0]["tpl_offset"] == 0x20 + len(b)
+    res = m.probe(bytes(pack), [{"call": 0, "callee": "modelInit", "bin_slot": 0, "tpl_slot": 0}])
+    assert res[0]["tpl"] is None and "not TPL" in res[0]["tpl_reason"]
+    assert res[0]["bin"]["bone_count"] == 3 and len(res[0]["objects"]) == 1
+    json.dumps(res)
 
 
 def _elf_with(code: list[int], syms: dict[str, int]):

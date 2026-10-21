@@ -13,7 +13,7 @@ import pytest
 from gbox import nightfire_edl as E
 from gbox import nightfire_writer as W
 
-ISO = Path.home() / "gbox-cache/modbase/744ba3bc797403bf/007 - Nightfire (USA).iso"
+ISO = Path.home() / "gBox_alt/gbox-cache/modbase/744ba3bc797403bf/007 - Nightfire (USA).iso"
 LEVEL_EDL_SHA = "33f667850b6acfd5c5dc2639f93455cb9d1d2b9aa231a17441e4dde0d8f3c3c7"
 LEVEL_SHA = "b4e554ac925e1f0b00db873367b24e32225021b878fe82aa8d2561c721392664"
 

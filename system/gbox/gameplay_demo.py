@@ -525,7 +525,7 @@ def install(app,store,config,auth,submit,workers,archive):
             if not verified and sidpref.get('verification_attempt')==revision:continue
             try:
                 job=launch(sid,Request(loop=verified),'gameplay-screensaver',idle=True)
-                update={'last':time.time(),'last_job':job.get('id') or job.get('job_id'),
+                update={'last':time.time(),'last_job':getattr(job,'id',None) or (job.get('id') or job.get('job_id') if isinstance(job,dict) else None),
                         'phase':'looping' if verified else 'verification_queued','attempt_revision':revision}
                 if not verified:update['verification_attempt']=revision
                 store.put('gameplay_demo_idle',sid,sidpref|update)

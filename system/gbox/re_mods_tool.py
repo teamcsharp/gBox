@@ -116,8 +116,23 @@ class RE4:
             self.m.wr(self.V.CAVE, DISPATCHER)
         self.m.wr(self.V.HOOK_SITE, _bl(self.V.HOOK_SITE, self.V.CAVE))
 
+    def in_room(self) -> bool | None:
+        """GameCube: the game runs a room (pG+0x20 = 3) with Leon in it. None where it can't be told (Wii)."""
+        if self.V is not R.GC:
+            return None
+        pg = self.pg()
+        if not 0x80000000 <= pg < 0x81800000:
+            return False
+        return self.m.rd(pg + 0x20, 1)[0] == 3 and 0x80000000 <= self.m.u32(R.P_PLAYER) < 0x81800000
+
     def call(self, fn: int, *args: int, timeout: float = 6.0) -> int:
-        """Run fn(r3..) on the game thread at the end of the next frame; returns r3."""
+        """Run fn(r3..) on the game thread at the end of the next frame; returns r3. GameCube: only while a room runs.
+        The dispatcher sits in the main loop, which runs every frame, room loads included, so a call queued then
+        would run on a player and an attache case still being rebuilt (2026-10-20: RE4 froze in a room load,
+        pG+0x20 = 2 with MEM1 static, right after `equip` was applied to the session)."""
+        if self.in_room() is False:
+            raise RuntimeError("the game is loading a room or showing a menu; this needs Leon in a running room "
+                               "(try again in play)")
         self.hook()
         q = None
         for k in range(self.V.QN):

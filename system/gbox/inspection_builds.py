@@ -325,7 +325,7 @@ class WatchOut(BaseModel):
     result:dict
 
 
-@tool('inspection_builds','1.0',WatchIn,WatchOut,permissions=[P.FILE_MUTATION],timeout_s=30)
+@tool('inspection_builds','1.0',WatchIn,WatchOut,permissions=[P.EXECUTE],timeout_s=30)
 def watch(inp,ctx):
     """Continuous local builds: status, plan (game_id), configure (value policy), publish (game_id,value reviewed
     cast_swap recipe/change_id/dependencies/requests_ack/feedback_ack). Publish after implementing operator feedback;
@@ -333,9 +333,16 @@ def watch(inp,ctx):
     import httpx
     from urllib.parse import quote
     if not ctx.server:raise ValueError('Control plane required')
+    if inp.op not in ('status','plan','configure','publish'):raise ValueError('Use status, plan, configure or publish')
+    # plan/publish without a game_id hit '/api/inspection-builds/' and failed on its 307 redirect (2026-10-19)
+    if inp.op in ('plan','publish') and not inp.game_id.strip():
+        raise ValueError(f'op={inp.op} needs game_id (the catalog game the build is for)')
     url=ctx.server+'/api/inspection-builds'
-    if inp.op in ('plan','publish'):url+='/'+quote(inp.game_id,safe='')
-    if inp.op in ('status','plan'):r=httpx.get(url,headers=ctx.headers,timeout=20)
-    elif inp.op in ('configure','publish'):r=httpx.post(url,headers=ctx.headers,json=inp.value,timeout=20)
-    else:raise ValueError('Use status, plan, configure or publish')
-    r.raise_for_status();return {'result':r.json()}
+    if inp.op in ('plan','publish'):url+='/'+quote(inp.game_id.strip(),safe='')
+    if inp.op in ('status','plan'):r=httpx.get(url,headers=ctx.headers,timeout=20,follow_redirects=True)
+    else:r=httpx.post(url,headers=ctx.headers,json=inp.value,timeout=20,follow_redirects=True)
+    if r.status_code>=400:                      # the server's reason (422 detail), not only the status line
+        try:detail=r.json().get('detail')
+        except ValueError:detail=r.text[:500]
+        raise ValueError(f'inspection_builds {inp.op}: HTTP {r.status_code}: {detail}')
+    return {'result':r.json()}

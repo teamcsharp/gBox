@@ -16,7 +16,7 @@ async function setup(evaluate,send){
  await evaluate(`var calls=[],available=false,pending=null;var action=${JSON.stringify(action)};var profile={revision:'rev',revision_label:'USA fixture',actions:[action]};
  var api=async(path,body)=>{calls.push({path,body});
   if(path==='/api/sessions')return [{session_id:'w-one',game_id:'g',state:'running',title:'Fixture game'},{session_id:'x-two',game_id:'g',state:'running',title:'Second PC'}];
-  if(path.endsWith('/live-controls')) {if(pending && path.includes('/games/g/')) return pending;return {title:'Fixture game',profile,categories:{bosses:'Set boss HP to zero',inventory:'Add to inventory',checkpoints:'Warp to next checkpoint',unlocks:'Hidden content'},unlock_policy:{enabled:true}};}
+  if(path.endsWith('/live-controls')) {if(pending && path.includes('/games/g/')) return pending;return {title:'Fixture game',profile,categories:{bosses:'Set boss HP to zero',inventory:'Add to inventory',checkpoints:'Warp to next checkpoint',unlocks:'Hidden content'},unlock_policy:{enabled:true,favorites_enabled:true,default_boot:true,idle_resolution:true},favorite_unlocks:{label:'Unlock-all pending',number:88}};}
   if(path.endsWith('/run'))return {id:'job',state:'succeeded',output:{result:body.op==='inspect'?{actions:[{id:'boss_hp',available}]}:{verified:true}}};
   if(path.endsWith('/discover'))return {number:42};
   if(path.endsWith('/policy'))return body;
@@ -28,6 +28,8 @@ test('browser: session selection, fingerprint availability, validated click, unl
   await setup(evaluate,send);
   assert.equal(await evaluate(`calls.some(c=>c.path.endsWith('/run'))`),false,'reading the panel never writes or submits probes');
   assert.equal(await evaluate(`host.querySelector('[data-lc-unlocks]').checked`),true);
+  assert.equal(await evaluate(`host.querySelector('[data-lc-favorite-unlocks]').checked`),true);
+  assert.match(await evaluate(`host.querySelector('[data-lc-policy]').textContent`),/Unlock-all pending #88/);
   await evaluate(`host.querySelector('[data-lc-session]').value='x-two';host.querySelector('[data-lc-session]').dispatchEvent(new Event('change',{bubbles:true}));ctl.checkMode();`);
   assert.equal(await evaluate(`host.querySelector('[data-lc-session]').value`),'x-two');
   assert.equal(await evaluate(`calls.filter(c=>c.path.endsWith('/run')).at(-1).body.session_id`),'x-two');
@@ -44,6 +46,10 @@ test('browser: session selection, fingerprint availability, validated click, unl
   assert.match(await evaluate(`host.querySelector('[role=status]').textContent`),/#42/);
   await evaluate(`host.querySelector('[data-lc-unlocks]').click();new Promise(r=>setTimeout(r,20));`);
   assert.deepEqual(await evaluate(`calls.find(c=>c.path.endsWith('/policy')).body`),{enabled:false});
+  await evaluate(`host.querySelector('[data-lc-favorite-unlocks]').click();new Promise(r=>setTimeout(r,20));`);
+  assert.deepEqual(await evaluate(`calls.filter(c=>c.path.endsWith('/policy')).at(-1).body`),{favorites_enabled:false,default_boot:false});
+  await evaluate(`host.querySelector('[data-lc-unlock-research]').click();new Promise(r=>setTimeout(r,20));`);
+  assert.deepEqual(await evaluate(`calls.filter(c=>c.path.endsWith('/policy')).at(-1).body`),{idle_resolution:false});
   // A completed request for the previous game cannot replace the new game's panel.
   await evaluate(`var finish;pending=new Promise(r=>finish=r);var old=ctl.refresh();ctl.setGame('other');pending=null;finish({title:'Old game',profile,categories:{},unlock_policy:{enabled:true}});old;`);
   assert.notEqual(await evaluate(`host.querySelector('[data-lc-game]').textContent`),'Old game · USA fixture');

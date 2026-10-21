@@ -106,6 +106,7 @@ class WorkerInfo(BaseModel):
     idle_seconds: float | None = None  # time since local user input; unknown on headless workers
     active_jobs: int = 0
     pending_results: int = 0       # executed once; delivery is unresolved, so maintenance must wait
+    address: str = ""              # where it registers/heartbeats from (set by the server): a Play from that PC stays there
     features: list[str] = []
     resources: dict[str, Any] = {}  # measured CPU/GPU/RAM; empty means unknown, never zero load
     ollama: dict[str, Any] = {}  # loopback-only model inventory; probing never loads weights

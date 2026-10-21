@@ -50,7 +50,7 @@ def describe(config: Config, name: str, wid: str | None = None) -> WorkerInfo:
             reason = f'availability check failed: {type(exc).__name__}: {exc}'
         (bad.__setitem__(t.name, reason) if reason else ok.append(t.name))
     bad.update({f"module {n}": why for n, why in _builtin.LOAD_ERRORS.items()})
-    features = ['independent_heartbeat', 'durable_result_delivery', 'resource_telemetry'] + (["idle_telemetry", "desktop_stream", "two_percent_audio"] if HOST_OS == "windows" else [])
+    features = ['independent_heartbeat', 'durable_result_delivery', 'resource_telemetry'] + (["idle_telemetry", "desktop_stream", "desktop_game_crop", "session_stills", "two_percent_audio"] if HOST_OS == "windows" else [])
     info = WorkerInfo(name=name, os=HOST_OS, tools=ok, unavailable=bad, idle_seconds=user_idle_seconds(), features=features)
     from .ollama_assist import inventory
     info.ollama = inventory()
@@ -180,28 +180,52 @@ def _quiet_volume_loop(stop: threading.Event, active_agent: set, quiet_sessions:
 
 
 def _heartbeat_loop(stop, current_info, active, server, headers):
-    """Keep saturated workers visible without claiming another job."""
+    """Keep saturated workers visible without claiming another job. On Windows this same thread keeps the display
+    awake while gBox uses the PC (gbox/display_keep.py, #1881: a worker without the desktop app went blank)."""
+    from . import display_keep
+    keeper, asked = display_keep.Keeper(), 0.0
     with httpx.Client(base_url=server, headers=headers, timeout=10) as client:
         while not stop.wait(HEARTBEAT_S):
             try:
                 info = current_info().model_copy(update={'idle_seconds': user_idle_seconds(),
                                                         'active_jobs': len(active)})
                 client.post('/api/workers/register', json=info.model_dump()).raise_for_status()
-            except (httpx.HTTPError, OSError):
+                if display_keep.HOST_OS == "windows" and time.time() - asked >= display_keep.STATUS_EVERY_S:
+                    asked = time.time()
+                    try:
+                        status = client.get(f'/api/background/workers/{info.name}/status').json()
+                        keeper.apply(*display_keep.wanted(status, len(active)))
+                    except Exception:                 # noqa: BLE001 - the display policy never breaks the heartbeat
+                        pass
+            except (httpx.HTTPError, OSError, ValueError):
                 # Re-registration is safe to retry. A job itself is never rerun.
                 continue
+    keeper.release()
+
+
+def _game_rects() -> dict:
+    """The windows of this PC's live games that its screen shows, so a viewer elsewhere can watch the game alone (#2858).
+    Never raises: the gBox window and desktop pictures keep flowing without it."""
+    try:
+        from .remote_desktop import game_window_rects
+        pids = {sid: pid for sid, entry in list(_builtin.SESSIONS.items())
+                if (pid := getattr(getattr(entry[0], "proc", None), "pid", None))}
+        return game_window_rects(pids)
+    except Exception:                                 # noqa: BLE001 - a missing crop must not end the desktop stream
+        return {}
 
 
 def _desktop_stream(stop: threading.Event, wid: str, server: str, h: dict, config: Config):
-    """Send the Windows desktop only while a gBox remote-PC picture-in-picture viewer is open."""
+    """Send the Windows desktop only while a gBox remote-PC viewer is open (picture-in-picture, or a game this PC plays
+    opened in another PC's Sessions view)."""
     if HOST_OS != "windows":
         return
     from .adapters import MjpegStream
-    from .remote_desktop import gbox_window_rect
+    from .remote_desktop import game_rects_header, gbox_window_rect
 
     stream = None
     seen = 0
-    rect, rect_at = None, 0.0
+    rect, rect_at, games = None, 0.0, {}
     with httpx.Client(base_url=server, headers=h, timeout=15) as client:
         while not stop.is_set():
             try:
@@ -220,9 +244,12 @@ def _desktop_stream(stop: threading.Event, wid: str, server: str, h: dict, confi
                         seen = stream.seq
                         if time.monotonic() - rect_at >= 1:
                             rect, rect_at = gbox_window_rect(), time.monotonic()
+                            games = _game_rects()
                         frame_headers = {"content-type": "image/jpeg"}
                         if rect:
                             frame_headers["x-gbox-app-rect"] = ",".join(f"{v:.6f}" for v in rect)
+                        if games:
+                            frame_headers["x-gbox-game-rects"] = game_rects_header(games)
                         client.post(f"/api/workers/{wid}/desktop/frame", content=stream.latest,
                                     headers=frame_headers, timeout=10).raise_for_status()
                 else:
@@ -279,8 +306,15 @@ def run(server: str, token: str, config: Config, name: str | None = None,
     active: set[str] = set()
     active_agent: set[str] = set()
     quiet_sessions: set[str] = set()
+    from . import worker_client_control
+    client_control = worker_client_control.from_environment()
     from . import worker_resources
     resource_sampler = worker_resources.Sampler(config.cache)
+    from .mercs import damage as damage_reports
+    damage_delivery = {}
+    threading.Thread(target=damage_reports.run_delivery,
+                     args=(config.data_dir, server, h | {"x-gbox-actor": f"worker:{name}"}, stop, damage_delivery),
+                     name='player-damage-delivery', daemon=True).start()
     from .inspection_builds import source_inventory
     build_sources = source_inventory()  # Never recompute while old modules remain loaded in this process.
     threading.Thread(target=worker_resources.run, args=(stop, resource_sampler),
@@ -292,7 +326,8 @@ def run(server: str, token: str, config: Config, name: str | None = None,
         except Exception:                           # noqa: BLE001 - liveness never depends on the cache disk
             local = []
         return info.model_copy(update={'pending_results': outbox.pending_count(), 'local_builds': local,
-                                       'resources': resource_sampler.snapshot(), 'build_sources': build_sources})
+                                       'resources': resource_sampler.snapshot() | {'player_damage_delivery': dict(damage_delivery)},
+                                       'build_sources': build_sources})
     threading.Thread(target=_quiet_volume_loop, args=(stop, active_agent, quiet_sessions), daemon=True).start()
     with httpx.Client(base_url=server, headers=h | {"x-gbox-actor": f"worker:{name}"}, timeout=30) as c:
         while not stop.is_set():                    # the control plane may be restarting: keep trying
@@ -301,12 +336,17 @@ def run(server: str, token: str, config: Config, name: str | None = None,
                 break
             except httpx.HTTPError:
                 stop.wait(poll_s * 3)
-        threading.Thread(target=_desktop_stream, args=(stop, info.id, server, h, config), daemon=True).start()
+        desktop_stream = threading.Thread(target=_desktop_stream, args=(stop, info.id, server, h, config), daemon=True)
+        desktop_stream.start()
         threading.Thread(target=_heartbeat_loop, args=(stop, current_info, active, server, h), daemon=True).start()
         threading.Thread(target=_result_delivery_loop, args=(stop, outbox, active, active_agent, server, h), daemon=True).start()
         described = time.time()
         cleanup_job = None
         while not stop.is_set():
+            if client_control and client_control.check(
+                    lambda: worker_client_control.idle_reason(active, outbox, _builtin.SESSIONS,
+                                                              _builtin._running_file(config)), stop):
+                break
             if time.time() - described > REDESCRIBE_S:
                 try:
                     info = describe(config, name, info.id)
@@ -350,3 +390,7 @@ def run(server: str, token: str, config: Config, name: str | None = None,
             if _quiet_agent_job(job):
                 active_agent.add(job["id"])
             threading.Thread(target=_run_job, args=(job, config, info.id, server, h, c, active, active_agent, quiet_sessions, outbox), daemon=True).start()
+        if client_control and stop.is_set():
+            # Let the desktop capture close its owned encoder before the parent
+            # observes process exit. No emulator or job is force-terminated.
+            desktop_stream.join()

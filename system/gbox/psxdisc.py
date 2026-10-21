@@ -35,6 +35,11 @@ class CHD:
     def close(self):
         self.f.close()
 
+    def close(self):
+        """Idempotent close of the underlying file (uniform disc-reader cleanup)."""
+        if not self.f.closed:
+            self.f.close()
+
     def _read_hunk(self, i: int) -> bytes:
         off, crc, lo, hi, flags = self.map[i]
         ln = lo | (hi << 16)
@@ -75,6 +80,10 @@ class PSXDisc:
             raise
 
     def close(self):
+        self.chd.close()
+
+    def close(self):
+        """Close the underlying CHD (safe to call twice; mirrors RawBin.close)."""
         self.chd.close()
 
     def data(self, lba: int) -> bytes:

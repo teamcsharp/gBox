@@ -17,11 +17,12 @@ import shutil
 import struct
 import subprocess
 from pathlib import Path
+from .side_dirs import side_dir
 
 GAME_ID = "373a463aa1f96e35"
 TITLE = "NFL 2K2 (USA)"
 CHD_REL = "collections/Sega Dreamcast/roms/NFL 2K2 (USA).chd"
-CACHE_DIR = Path.home() / "gbox-cache" / "dc" / GAME_ID
+CACHE_DIR = side_dir("gbox-cache") / "dc" / GAME_ID
 
 # IFF type tags observed on this disc (4 ASCII chars at offset 0).
 IFF_TYPES = {

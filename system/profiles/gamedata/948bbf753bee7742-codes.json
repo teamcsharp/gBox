@@ -1,0 +1,92 @@
+{
+ "game_id": "948bbf753bee7742",
+ "title": "Ready 2 Rumble Boxing (USA)",
+ "platform": "dreamcast",
+ "profile": "cheatdb-unlocks-v1",
+ "verified": true,
+ "codes": [
+  {
+   "desc": "Unlock Character Codes-Freak E. Deke",
+   "lines": [
+    "0115996C 0000001F"
+   ]
+  },
+  {
+   "desc": "Unlock Character Codes-Michael Jackson",
+   "lines": [
+    "01159970 0000001F"
+   ]
+  },
+  {
+   "desc": "Unlock Character Codes-G. C. Thunder",
+   "lines": [
+    "01159974 0000001F"
+   ]
+  },
+  {
+   "desc": "Unlock Character Codes-Wild Stubby Corley",
+   "lines": [
+    "01159978 0000001F"
+   ]
+  },
+  {
+   "desc": "Unlock Character Codes-Shaquille O'Neal",
+   "lines": [
+    "0115997C 0000001F"
+   ]
+  },
+  {
+   "desc": "Unlock Character Codes-Freedom Brock",
+   "lines": [
+    "01159980 0000001F"
+   ]
+  },
+  {
+   "desc": "Unlock Character Codes-Rocket Samchav",
+   "lines": [
+    "01159984 0000001F"
+   ]
+  },
+  {
+   "desc": "Unlock Character Codes-Robox Rese4",
+   "lines": [
+    "01159988 0000001F"
+   ]
+  },
+  {
+   "desc": "Unlock Character Codes-MR President",
+   "lines": [
+    "0115998C 0000001F"
+   ]
+  },
+  {
+   "desc": "Unlock Character Codes-First Lady",
+   "lines": [
+    "01159990 0000001F"
+   ]
+  },
+  {
+   "desc": "Unlock Character Codes-Rumbleman",
+   "lines": [
+    "01159994 0000001F"
+   ]
+  }
+ ],
+ "scope": [
+  "Unlock Character Codes-First Lady",
+  "Unlock Character Codes-Freak E. Deke",
+  "Unlock Character Codes-Freedom Brock",
+  "Unlock Character Codes-G. C. Thunder",
+  "Unlock Character Codes-MR President",
+  "Unlock Character Codes-Michael Jackson",
+  "Unlock Character Codes-Robox Rese4",
+  "Unlock Character Codes-Rocket Samchav",
+  "Unlock Character Codes-Rumbleman",
+  "Unlock Character Codes-Shaquille O'Neal",
+  "Unlock Character Codes-Wild Stubby Corley"
+ ],
+ "evidence": {
+  "source": "libretro-database cht/Sega - Dreamcast/Ready 2 Rumble Boxing-Round 2.cht",
+  "read_back": "2026-10-19 23:55 CST, i9-NUC agent session: every code held with cheats op=add; all 11 written values read back unchanged. Gameplay screens not captured (the NUC's frame capture was black until its relaunch)."
+ }
+}

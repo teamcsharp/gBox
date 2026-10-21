@@ -63,12 +63,14 @@ def routes(app, store, auth, submit, JobRequest, create_request, investigate):
 
     @app.get('/api/games/{gid}/live-controls')
     def get(gid: str, actor=Depends(auth)):
+        from . import custom_build_unlocks as U
         g = game(gid)
         p = store.get(L.PROFILE, gid)
         return {'game_id': gid, 'title': g.get('title'), 'profile': p,
                 'categories': L.CATEGORIES, 'task': store.get(L.TASK, gid),
                 'requested_controls': list(L.REQUESTED_CONTROLS),
-                'unlock_policy': store.get('custom_build_unlock_policy', 'default') or {'enabled': False}}
+                'unlock_policy': U.policy_value(store),
+                'favorite_unlocks': U.badge(store, U.base_record(g))}
 
     @app.post('/api/games/{gid}/live-controls/profile')
     def publish(gid: str, body: dict, actor=Depends(auth)):

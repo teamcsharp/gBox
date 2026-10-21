@@ -108,12 +108,13 @@
     const m = pool.model_management, rec = m?.recommendation, job = m?.job;
     const busy = ["queued", "downloading", "preparing", "draining", "starting", "validating", "rolling_back"].includes(job?.state);
     const trials = m?.profiles ? `<details open data-tk-key="tkp-model-trials"><summary>lilspark2 model trials</summary>
-      <p>Prepare downloads the model and prepares its serving image. Start waits for inference to drain, tests tool calls and connects Hermes. Task limits start at four; use outcomes to compare quality and speed.</p>
+      <p>Prepare installs gBox's recipe, prepares the serving image and checks the weights. Start waits for inference to drain, launches the recipe with its full context and KV cache, tests tool calls and connects Hermes. Use outcomes to compare quality and speed.</p>
       <div class="tkp-cards">${m.profiles.map(p => `<article class="tkp-card"><b>${esc(p.title)}</b>
         <div class="tkp-model">${esc(p.model)}</div>
-        <p>${p.current ? 'Configured for Hermes' : p.prepared ? 'Prepared for a trial' : 'Preparation required'}${p.cluster_only ? ' · Requires about 166 GiB; exceeds this Spark. Installed recipe requires two Sparks' : ''}</p>
-        <button data-tkp-model="trial_prepare" data-model="${esc(p.id)}" ${busy || !m.access?.ready || p.cluster_only ? 'disabled' : ''}>Prepare</button>
-        <button data-tkp-model="trial_start" data-model="${esc(p.id)}" ${busy || !m.access?.ready || p.cluster_only || !p.prepared ? 'disabled' : ''}>Start trial</button>
+        ${p.context || p.max_num_seqs ? `<div class="tkp-model">${p.context ? `${Math.round(p.context / 1024)}k context` : 'context fitted to memory'}${p.max_num_seqs ? ` · ${p.max_num_seqs} sequences` : ''}${p.gpu_memory ? ` · ${Math.round(p.gpu_memory * 100)}% memory` : ''}</div>` : ''}
+        <p>${p.current ? 'Configured for Hermes' : p.prepared ? 'Prepared for a trial' : 'Preparation required'}${p.held ? ' · ' + esc(p.held) : ''}</p>
+        <button data-tkp-model="trial_prepare" data-model="${esc(p.id)}" ${busy || !m.access?.ready || p.cluster_only || p.held ? 'disabled' : ''}>Prepare</button>
+        <button data-tkp-model="trial_start" data-model="${esc(p.id)}" ${busy || !m.access?.ready || p.cluster_only || p.held || !p.prepared ? 'disabled' : ''}>Start trial</button>
         <button data-tkp-model="trial_adopt" data-model="${esc(p.id)}" ${busy || p.cluster_only ? 'disabled' : ''}>Use if already running</button>
       </article>`).join('')}</div><p role="status">${esc(job?.state ? `${job.state}${job.error ? ': ' + job.error : ''}` : 'Select a model to prepare or connect')}</p></details>` : '';
     const suggestion = rec ? `<details data-tk-key="tkp-model-recommendation" ${rec.current ? "" : "open"}>

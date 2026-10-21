@@ -62,7 +62,8 @@ the environment changes, never their config), so they are `supported` live when 
 For a `relay` row, `POST /api/jobs {"tool": "scene_capture", "input": {"session_id", "relay": true}}` (or the row
 alone) becomes the in-server job `scene_relay`, polled like `scene_capture`:
 
-1. `state_transfer export` on the operator's session: their game keeps running, nothing is paused.
+1. `state_transfer snapshot` on the operator's session: saved through gBox's own slot and uploaded; their game keeps
+   running, nothing is paused and their save slots are not written.
 2. `launch_game` with `capture_backend` + `capture_for` on the test PC (`examine_capture_worker`, default
    JAYBUILTFINALE) when it is online, ticked for background testing (Tasks menu), has no live game and isn't the
    operator's PC. Otherwise RetroArch runs the capture session hidden on the operator's own worker beside their game

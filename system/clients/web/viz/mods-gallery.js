@@ -359,7 +359,13 @@
       return r.session_id;
     }
     async function openRequest(n, m, card) {
-      const t = (m.tickets || []).find(x => String(x.number) === String(n)) || { number: +n };
+      // #2393: the build report filed on this build (m.reported) and its launch failure ticket are not in m.tickets;
+      // their ids come from those fields, and a build report is flagged so the host can open its presentation.
+      const same = x => x && String(x.number) === String(n);
+      const t = (m.tickets || []).find(same)
+        || (same(m.reported) ? { number: +n, id: m.reported.id, build_report: true } : null)
+        || (same(m.launch_report) ? { number: +n, id: m.launch_report.id || m.launch_report.request_id } : null)
+        || { number: +n };
       if (env.openRequest) return env.openRequest(t, m);
       if (!t.id) { msg(card, `Request #${t.number} is not in the inbox`); return; }
       const x = await env.api(`/api/requests/${encodeURIComponent(t.id)}`);       // the thread, inline under the card

@@ -1,0 +1,47 @@
+{
+ "game_id": "201629ad498aba7b",
+ "title": "Soul Calibur II (USA)",
+ "platform": "gamecube",
+ "profile": "sc2-gc-usa-action-replay-v1",
+ "verified": true,
+ "codes": [
+  {
+   "desc": "All Characters Unlocked (Action Replay USA)",
+   "lines": [
+    "DH6Z-D4P8-0A4BF",
+    "R3DX-AMGV-49BQR"
+   ]
+  },
+  {
+   "desc": "Everything is Unlocked (Action Replay USA; not Weapon Master mode)",
+   "lines": [
+    "BDWH-6JW4-YRFYG",
+    "AT34-4G4T-3DYGQ"
+   ]
+  },
+  {
+   "desc": "All Levels Unlocked (Action Replay USA)",
+   "lines": [
+    "46QK-1AW0-FJ1AZ",
+    "1JBT-4T4H-GUWPA",
+    "EXZF-8Y18-8UP2T"
+   ]
+  }
+ ],
+ "scope": [
+  "characters",
+  "stages (levels)",
+  "everything the 0x80402160 unlock block holds; Weapon Master progress excluded"
+ ],
+ "evidence": {
+  "source": "almarsguides.com Soul Calibur II GameCube Action Replay (US) list",
+  "decryption": "gbox.ar_decrypt (port of Dolphin ARDecrypt): every batch verifies, game id 485, region 0",
+  "raw": [
+   "02402160 00030303",
+   "00402160 00011303",
+   "004021B3 00000003",
+   "044021B4 03030303"
+  ],
+  "read_back": "2026-10-19, i9-NUC session c52942c8df2e4ab1-ed96f7e2554f4f42: 0x80402160 read back as 03 x 8 after the characters write, while the game ran"
+ }
+}

@@ -9,7 +9,7 @@ from gbox import metroidprime_inventory as mi
 
 SRC = Path(
     os.environ.get(
-        "GBOX_METROIDPRIME_GCZ", Path.home() / "gbox-cache/gc/bbc9d43db663e1aa/source.gcz"
+        "GBOX_METROIDPRIME_GCZ", Path.home() / "gBox_alt/gbox-cache/gc/bbc9d43db663e1aa/source.gcz"
     )
 )
 

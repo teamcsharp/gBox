@@ -240,3 +240,19 @@ def test_mcp_retry_identity_keeps_explicit_os_constraint(monkeypatch):
             assert json.loads(result.content[0].text)['id'] == 'linux-job'
     asyncio.run(check())
     assert len(posts) == 1 and posts[0]['require_os'] == 'linux'
+
+
+def test_requester_worker_pins_the_pc_a_play_came_from():
+    from gbox.job_routing import requester_worker
+    nuc = {'id': 'nuc', 'name': 'i9-NUC', 'os': 'windows', 'online': True, 'tools': ['launch_game'], 'address': '10.89.1.43'}
+    jay = {'id': 'jay', 'name': 'JAYBUILTFINALE', 'os': 'windows', 'online': True, 'tools': ['launch_game'], 'address': '10.89.1.13'}
+    spark = {'id': 'spark', 'name': 'lilspark', 'os': 'linux', 'online': True, 'tools': ['launch_game'], 'address': '127.0.0.1'}
+    workers = [jay, nuc, spark]
+    assert requester_worker(workers, '10.89.1.43') is nuc
+    assert requester_worker(workers, '10.89.1.43', 'windows') is nuc
+    assert requester_worker(workers, '10.89.1.43', 'linux') is None          # the PS2 rule wants Windows: no pin elsewhere
+    assert requester_worker(workers, '127.0.0.1') is spark
+    assert requester_worker(workers, '10.89.1.99') is None                   # a phone browser: the old placement applies
+    assert requester_worker(workers, None) is None
+    assert requester_worker([dict(nuc, online=False)], '10.89.1.43') is None
+    assert requester_worker([dict(nuc, tools=['get_frame'])], '10.89.1.43') is None

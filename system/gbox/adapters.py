@@ -43,6 +43,22 @@ FLYCAST_CHECKPOINT_MIN_S = 20.0
 # angrylion is an LLE RDP: it needs the LLE cxd4 RSP. With rspplugin "auto"/"hle" the core runs HLE graphics tasks that
 # angrylion never draws, so every 3D/textured layer stays black while CPU-drawn text still updates (#1322, MK4).
 N64_WINDOWS_OPTS = {"parallel-n64-gfxplugin": "angrylion", "parallel-n64-rspplugin": "cxd4"}
+# parallel_n64's Ari64 dynarec only recompiles for x86/x86_64 (and 32-bit ARM). On aarch64 the core logs
+# "Init new dynarec" but never produces code, so the ROM never boots and RetroArch times out with
+# "retroarch started but content not running after Ns" (#1695). The cached interpreter runs R4300 code on ARM64.
+N64_AARCH64_OPTS = {"parallel-n64-cpucore": "cached_interpreter"}
+# Every console gets its memory card: the N64 cores default to no Controller Pak, so games that save to one (Turok:
+# Rage Wars, 2026-10-20) had nowhere to save. A memory pak in every port; the pak lives in the core's save file.
+N64_PAK_OPTS = {**{f"parallel-n64-pak{i}": "memory" for i in range(1, 5)},
+                **{f"mupen64plus-pak{i}": "memory" for i in range(1, 5)}}
+# N64 controls, written out (2026-10-20, the operator couldn't get the C buttons onto the right stick): the cores'
+# standard layout - N64 stick = RetroPad left analog, C buttons = right analog (both cores read RETRO_DEVICE_INDEX_
+# ANALOG_RIGHT as C past half travel), A = RetroPad B, B = Y, Z = L2, holding R2 = "C buttons mode" (face buttons become
+# C-right/C-left/C-down/C-up = mupen64plus' C1..C4 defaults). "Independent C-button Controls" (alt-map) would move L/R and
+# Select onto C buttons and break gBox's controller maps (gbox/padmap.py), which assume this layout.
+N64_INPUT_OPTS = {"parallel-n64-alt-map": "disabled", "mupen64plus-alt-map": "False",
+                  "mupen64plus-r-cbutton": "C1", "mupen64plus-l-cbutton": "C2",
+                  "mupen64plus-d-cbutton": "C3", "mupen64plus-u-cbutton": "C4"}
 
 
 def _set_core_opts(path: Path, values: dict[str, str]) -> None:
@@ -378,10 +394,14 @@ _ANALOG = {"lup": "l_y_minus", "ldown": "l_y_plus", "lleft": "l_x_minus", "lrigh
 
 # Windows: keyboard input into a local emulator window (autoplay on this PC). Scan codes, because RetroArch reads the
 # keyboard through DirectInput. Only while gBox (or the emulator) is the active window: never types into another app.
-# RETRO_DEVICE_ID_JOYPAD_* (libretro.h) and the left stick as RETRO_DEVICE_ANALOG (index 0: id 0 = x, 1 = y)
+# RETRO_DEVICE_ID_JOYPAD_* (libretro.h) and both sticks as RETRO_DEVICE_ANALOG directions: key -> (index, id, value),
+# index 0 = left stick, 1 = right stick; id 0 = x, 1 = y. The right stick is N64's C buttons (parallel-n64 /
+# mupen64plus-next) and GameCube's C-stick (Dolphin core): "cup"/"cdown"/"cleft"/"cright" name it too.
 RETROPAD_ID = {"b": 0, "y": 1, "select": 2, "start": 3, "up": 4, "down": 5, "left": 6, "right": 7, "a": 8, "x": 9,
                "l": 10, "r": 11, "l2": 12, "r2": 13, "l3": 14, "r3": 15}
-STICK = {"lleft": (0, -0x7FFF), "lright": (0, 0x7FFF), "lup": (1, -0x7FFF), "ldown": (1, 0x7FFF)}
+STICK = {"lleft": (0, 0, -0x7FFF), "lright": (0, 0, 0x7FFF), "lup": (0, 1, -0x7FFF), "ldown": (0, 1, 0x7FFF),
+         "rleft": (1, 0, -0x7FFF), "rright": (1, 0, 0x7FFF), "rup": (1, 1, -0x7FFF), "rdown": (1, 1, 0x7FFF)}
+STICK.update({"cleft": STICK["rleft"], "cright": STICK["rright"], "cup": STICK["rup"], "cdown": STICK["rdown"]})
 _SCAN = {"Up": (0x48, 1), "Down": (0x50, 1), "Left": (0x4B, 1), "Right": (0x4D, 1), "Return": (0x1C, 0), "Shift_R": (0x36, 0),
          "8": (0x48, 0), "2": (0x50, 0), "4": (0x4B, 0), "6": (0x4D, 0),
          **{c: (sc, 0) for c, sc in zip("qwertyuiopasdfghjklzxcvbnm", [0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
@@ -454,9 +474,88 @@ def _win_input_in_front(user32, root, hidden_ok: bool) -> bool:
     return True
 
 
-def win_send_keys(pid: int, events: list[dict], hidden_ok: bool = False) -> dict:
+def win_bring_to_front(pid: int) -> bool:
+    """Raise the game's top-level window (gBox with the emulator docked in it) to the foreground. Only for the idle-PC
+    screensaver: the PC has had no input for minutes, and the operator's next touch hands control back. Windows lets a
+    background process take the foreground when it attaches to the current foreground thread first."""
+    import ctypes
+    u, k = ctypes.windll.user32, ctypes.windll.kernel32
+    h = _pid_window(pid)
+    if not h:
+        return False
+    root = u.GetAncestor(h, 2) or h
+    if u.GetForegroundWindow() == root:
+        return True
+    fg = u.GetForegroundWindow()
+    me, them = k.GetCurrentThreadId(), u.GetWindowThreadProcessId(fg, None) if fg else 0
+    if them:
+        u.AttachThreadInput(me, them, True)
+    try:
+        u.ShowWindow(root, 9)                                   # SW_RESTORE: a minimized gBox comes back
+        u.BringWindowToTop(root)
+        u.SetForegroundWindow(root)
+    finally:
+        if them:
+            u.AttachThreadInput(me, them, False)
+    return u.GetForegroundWindow() == root
+
+
+POLITE_IDLE_S = 8.0          # polite input gives the game the keyboard back after this long without mouse / keyboard use
+_POLITE_TRUST: dict[int, bool] = {}   # game pid -> this PC reports the focused window's process (checked on a take)
+
+
+def polite_verdict(front: bool, focus_pid: int | None, game_pid: int, idle_s: float | None, trusted: bool = True) -> str:
+    """Autoplay's input on a PC someone may be using right now (bot demos, operator 2026-10-20: "launch bot demos on
+    computers that even I am on and be able to chat about the gameplay"): 'send' when the game window has the keyboard;
+    'take' (give the game the keyboard, then send) when gBox is in front and nobody has touched the mouse or keyboard
+    for POLITE_IDLE_S; else 'wait': the bot never types into the coach box, a search field or another application.
+    trusted=False: this PC's focus report did not name the game even right after gBox gave it the keyboard, so the
+    focus check can't be relied on and the game gets the keyboard each time (the input path before polite mode)."""
+    if not front:
+        return "wait"
+    if focus_pid is not None and focus_pid == game_pid:
+        return "send"
+    if not trusted or (idle_s is not None and idle_s >= POLITE_IDLE_S):
+        return "take"
+    return "wait"
+
+
+def _focus_pid(u) -> int | None:
+    """The process owning the window with the keyboard focus in the foreground (GetGUIThreadInfo), None when unknown."""
+    import ctypes
+    from ctypes import wintypes
+
+    class GUITHREADINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("flags", wintypes.DWORD), ("hwndActive", wintypes.HWND),
+                    ("hwndFocus", wintypes.HWND), ("hwndCapture", wintypes.HWND), ("hwndMenuOwner", wintypes.HWND),
+                    ("hwndMoveSize", wintypes.HWND), ("hwndCaret", wintypes.HWND), ("rcCaret", wintypes.RECT)]
+    info = GUITHREADINFO()
+    info.cbSize = ctypes.sizeof(GUITHREADINFO)
+    try:
+        if not u.GetGUIThreadInfo(0, ctypes.byref(info)) or not info.hwndFocus:
+            return None
+        p = wintypes.DWORD()
+        u.GetWindowThreadProcessId(info.hwndFocus, ctypes.byref(p))
+        return int(p.value) or None
+    except (AttributeError, OSError):
+        return None
+
+
+def _idle_s() -> float | None:
+    try:
+        from .worker import user_idle_seconds
+        return user_idle_seconds()
+    except Exception:                                        # noqa: BLE001 - unknown: the bot waits for the operator
+        return None
+
+
+def win_send_keys(pid: int, events: list[dict], hidden_ok: bool = False, polite: bool = False) -> dict:
     """hidden_ok: the keys are emulator hotkeys that need no focus (Dolphin's gBox F13-F15 chords): sent even while the
-    game window is hidden (the app hides it the moment Stop is pressed, before the last-played moment is saved)."""
+    game window is hidden (the app hides it the moment Stop is pressed, before the last-played moment is saved).
+    polite: autoplay's own input (bot demos) on a PC the operator may be using: never takes the keyboard from them
+    (polite_verdict). While they type in gBox or use another application the key presses are held back and only key
+    releases go out (a release types nothing, and Dolphin reads it in the background: no key is left down); the answer
+    says {"held": why} so the caller can press them again later."""
     import ctypes
     from ctypes import wintypes
     u, k = ctypes.windll.user32, ctypes.windll.kernel32
@@ -466,17 +565,32 @@ def win_send_keys(pid: int, events: list[dict], hidden_ok: bool = False) -> dict
     if not h and not hidden_ok:
         raise RuntimeError("the game window isn't open")
     root = u.GetAncestor(h, 2) if h else None
-    for _ in range(100):                                         # wait (up to 10 s) for the operator to bring gBox back
-        if _win_input_in_front(u, root, hidden_ok):
-            break
-        time.sleep(0.1)
-    else:
-        raise RuntimeError("gBox or the emulator must be active to send emulator input safely")
-    if h and not hidden_ok:                                     # global Dolphin hotkeys need no native-window focus
+
+    def give_focus():
         me, them = k.GetCurrentThreadId(), u.GetWindowThreadProcessId(h, None)
         u.AttachThreadInput(me, them, True)
         u.SetFocus(h)
         u.AttachThreadInput(me, them, False)
+    held_back = None
+    if polite and h and not hidden_ok:
+        front = _win_input_in_front(u, root, False)
+        verdict = polite_verdict(front, _focus_pid(u) if front else None, pid, _idle_s(), _POLITE_TRUST.get(pid, True))
+        if verdict == "wait":
+            held_back = "the operator is using gBox or another application: the bot's key presses wait"
+            events = [e for e in events if not e.get("down", True)]
+        elif verdict == "take":
+            give_focus()
+            if pid not in _POLITE_TRUST:                         # does this PC report the game's focus? (checked once)
+                _POLITE_TRUST[pid] = _focus_pid(u) == pid
+    else:
+        for _ in range(100):                                     # wait (up to 10 s) for the operator to bring gBox back
+            if _win_input_in_front(u, root, hidden_ok):
+                break
+            time.sleep(0.1)
+        else:
+            raise RuntimeError("gBox or the emulator must be active to send emulator input safely")
+        if h and not hidden_ok:                                 # global Dolphin hotkeys need no native-window focus
+            give_focus()
 
     class KI(ctypes.Structure):
         _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD), ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
@@ -501,8 +615,11 @@ def win_send_keys(pid: int, events: list[dict], hidden_ok: bool = False) -> dict
             time.sleep(0.06)                                     # down+up in one batch: the game polls per frame
         pressed.add(name)
         flags = 0x0008 | (0x0001 if ext else 0) | (0 if down else 0x0002)   # SCANCODE | EXTENDED | KEYUP
-        if not _win_input_in_front(u, root, hidden_ok):          # the operator switched apps mid-batch: never type there
+        if down and not _win_input_in_front(u, root, hidden_ok):  # the operator switched apps mid-batch: never type there
             release_injected()                                # don't leave Ctrl/Shift held in the next application
+            return {"sent": len(seq), "stopped": "another application came to the front"}
+        if not down and held_back is None and not _win_input_in_front(u, root, hidden_ok):
+            release_injected()
             return {"sent": len(seq), "stopped": "another application came to the front"}
         inp = INP(type=1, ki=KI(0, sc, flags, 0, 0))
         if u.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INP)) != 1:
@@ -513,7 +630,7 @@ def win_send_keys(pid: int, events: list[dict], hidden_ok: bool = False) -> dict
             held[name] = (sc, ext)
         else:
             held.pop(name, None)
-    return {"sent": len(seq)}
+    return {"sent": len(seq), **({"held": held_back} if held_back else {})}
 
 
 _last_grab = {}
@@ -589,6 +706,16 @@ def _print_window_png(hwnd, width: int, height: int) -> bytes | None:
         return print_window_bitmap_png(buf.raw, width, height)
     except Exception:
         return None
+
+
+def frame_is_black(png: bytes, limit: float = 4.0) -> bool:
+    """True for a frame whose mean luma is under `limit` (of 255): a sleeping display or a hidden window."""
+    import io
+    from PIL import Image, ImageStat
+    try:
+        return ImageStat.Stat(Image.open(io.BytesIO(png)).convert("L")).mean[0] < limit
+    except Exception:
+        return False
 
 
 def print_window_bitmap_png(bgra: bytes, width: int, height: int) -> bytes | None:
@@ -1050,8 +1177,13 @@ class RetroArchAdapter(CommandAdapter):
             for sub in ("states", "saves", "shots"):
                 (work / sub).mkdir(parents=True, exist_ok=True)
             co = capture_backend.core_options_file(co, {}, work)
+        if (self.platform or "") in ("n64", "n64dd"):
+            _set_core_opts(co, N64_PAK_OPTS)                              # a Controller Pak (memory card) in every port
+            _set_core_opts(co, N64_INPUT_OPTS)                            # stick = left stick, C buttons = right stick
         if (self.platform or "") == "n64" and HOST_OS == "windows":       # docked + resized windows: the GL plugins (Glide64)
             _set_core_opts(co, N64_WINDOWS_OPTS)                          # draw at launch size -> squeezed/cropped picture
+        if (self.platform or "") == "n64" and HOST_OS == "linux" and provision.ARCH == "aarch64":
+            _set_core_opts(co, N64_AARCH64_OPTS)                          # Ari64 dynarec is x86-only (#1695)
         if (self.platform or "") in FLYCAST_PLATFORMS:
             _set_core_opts(co, FLYCAST_STATE_OPTS)
         if not self.rewind_on:
@@ -1089,6 +1221,12 @@ class RetroArchAdapter(CommandAdapter):
                          # the window is embedded inside the gBox app: no menu bar, no decorations, no companion UI
                          "ui_menubar_enable": "false", "video_window_show_decorations": "false",
                          "ui_companion_enable": "false", "ui_companion_start_on_boot": "false", "video_window_auto_width_max": "0"})
+            # the operator's controller maps (gbox/padmap.py): the core's remap file in gBox's own folder, written at
+            # launch from the map saved on the control plane (_write_pad_remap). RetroArch applies it to the physical pad
+            # only; menu edits are not saved back over it, and no per-controller subfolder hides it.
+            opts.update({"input_remapping_directory": d["retroarch"] / "remaps", "auto_remaps_enable": "true",
+                         "input_remap_binds_enable": "true", "input_remap_sort_by_controller_enable": "false",
+                         "remap_save_on_exit": "false", "notification_show_remap_load": "false"})
             if (self.platform or "") == "ps2":       # pcsx2_libretro's GL path presents black frames on this PC; D3D11 works
                 opts["video_driver"] = "d3d11"
         opts |= _pad_binds()                 # keyboard binds; native gamepads use SDL autoconfig
@@ -1101,6 +1239,7 @@ class RetroArchAdapter(CommandAdapter):
         if cap:                                              # the capture backend: vulkan (layer) or glcore (injected)
             _set_core_opts(co, cap.get("core_options") or {})
             opts = capture_backend.retroarch_cfg(opts, cap, work)
+            opts["auto_remaps_enable"] = "false"            # an agent's session: its input is never the operator's map
             self.states_override = work / "states"
             cfg = work / "retroarch.cfg"
         playback = getattr(self, 'tas_playback', None)
@@ -1116,7 +1255,7 @@ class RetroArchAdapter(CommandAdapter):
                         preemptive_frames_enable='false', savestate_auto_load='false',
                         savestate_auto_save='false', apply_cheats_after_load='false',
                         input_autodetect_enable='false', input_joypad_driver='null',
-                        audio_volume='-34', pause_nonactive='false')
+                        audio_volume='-34', pause_nonactive='false', auto_remaps_enable='false')
             cfg = work/'retroarch.cfg'
             self.states_override = work/'states'
         from . import memory_card_emulators
@@ -1126,6 +1265,19 @@ class RetroArchAdapter(CommandAdapter):
             memory_card_sessions.journal(self.memory_card_context)
         cfg.write_text("".join(f'{k} = "{v}"\n' for k, v in opts.items()))
         return cfg
+
+    def _write_pad_remap(self, core: str, exe: str) -> None:
+        """Native window (Windows): the operator's controller map for this console as the core's RetroArch remap file
+        (gbox/padmap.py; self.pad_map is fetched at launch, None = the server couldn't say). Never fails a launch."""
+        if (HOST_OS != "windows" or self.config is None or getattr(self, "capture_backend", None)
+                or getattr(self, "tas_playback", None)):
+            return
+        from . import padmap
+        try:
+            self.pad_remap = padmap.apply_retroarch(self.config.runtime / "retroarch" / "remaps", core, self.platform,
+                                                    getattr(self, "pad_map", None), info_dirs=(Path(exe).parent / "info",))
+        except Exception as e:                                # noqa: BLE001 - the default layout still plays
+            print(f"gBox: controller map not written ({type(e).__name__}: {e})", flush=True)
 
     def _argv(self, rom: str) -> list[str]:
         core = self.cfg.core
@@ -1138,6 +1290,8 @@ class RetroArchAdapter(CommandAdapter):
         elif not core:
             raise ToolUnavailable("retroarch adapter needs 'core' configured")
         cfg = self._write_cfg() if self.config is not None else None
+        if cfg is not None:
+            self._write_pad_remap(core, exe)
         playback = getattr(self, 'tas_playback', None)
         if playback:
             from . import tas
@@ -1778,7 +1932,28 @@ class RetroArchAdapter(CommandAdapter):
         if getattr(self, "capture_backend", None) and getattr(self, "states_override", None):
             return self._screenshot(Path(self.states_override).parent / "shots")
         if HOST_OS == "windows":
-            return win_grab(self.proc.pid if self.proc else 0)
+            # The window grab (or the desktop app's GPU-surface frame) is black while the PC's display sleeps or the
+            # window is hidden (2026-10-19, i9-NUC: one identical black frame for every game). RetroArch's own
+            # SCREENSHOT reads its framebuffer whatever the window shows, so a black or failed grab falls back to it.
+            global _last_grab
+            grab, why = None, ""
+            try:
+                grab = win_grab(self.proc.pid if self.proc else 0)
+                if not frame_is_black(grab):
+                    return grab
+                why = "black window grab"
+            except RuntimeError as e:
+                why = str(e)
+            try:
+                shot = self._screenshot(Path(self.config.runtime) / "screenshots")
+            except (RuntimeError, OSError):
+                if grab is not None:
+                    return grab
+                raise RuntimeError(why or "no frame") from None
+            from hashlib import sha256 as _sha
+            _last_grab = dict(pid=self.proc.pid if self.proc else 0, covered=0, source="retroarch-screenshot",
+                              sha256=_sha(shot).hexdigest(), frame_age_s=0, fallback_reason=why)
+            return shot
         return grab_png(self.display.name if self.display else None)
 
     def _screenshot(self, shots: Path, timeout: float = 6.0) -> bytes:
@@ -1814,8 +1989,9 @@ class RetroArchAdapter(CommandAdapter):
         return self.remote_port
 
     def remote_input(self, events: list[dict]) -> tuple[int, list[dict]]:
-        """Player-1 RetroPad buttons / left stick through RetroArch's network gamepad (focus-independent).
-        Returns (sent, events it couldn't express)."""
+        """Player-1 RetroPad buttons / both sticks through RetroArch's network gamepad (focus-independent).
+        Returns (sent, events it couldn't express). RetroArch keeps one value per stick axis (input_remote_parse_packet):
+        a direction's release centres its axis."""
         import socket
         if not getattr(self, "remote_port", None):
             return 0, events
@@ -1828,9 +2004,9 @@ class RetroArchAdapter(CommandAdapter):
                     continue
                 if k in RETROPAD_ID:                                  # struct remote_message {int port, device, index, id; uint16 state}
                     msg = struct.pack("<iiiiH2x", 0, 1, 0, RETROPAD_ID[k], 1 if down else 0)
-                else:
-                    axis, val = STICK[k]
-                    msg = struct.pack("<iiiiH2x", 0, 5, 0, axis, (val if down else 0) & 0xFFFF)
+                else:                                                 # RETRO_DEVICE_ANALOG, index 0 = left, 1 = right
+                    index, axis, val = STICK[k]
+                    msg = struct.pack("<iiiiH2x", 0, 5, index, axis, (val if down else 0) & 0xFFFF)
                 if not down and sent:
                     time.sleep(0.05)                                  # down+up in one batch: let the game poll a frame
                 sk.sendto(msg, ("127.0.0.1", self.remote_port))
@@ -2099,6 +2275,12 @@ class DolphinAdapter(StandaloneAdapter):
     flatpak = "org.DolphinEmu.dolphin-emu"
     screen = (640, 480)                          # GameCube output size; Dolphin's window opens at exactly this
     checkpoint_state, state_glob = "dir", "*.s08"   # gBox's checkpoint ring lives in Dolphin's slot 8 (Shift+F8 / F8)
+    # Demo jump states (gbox/jumpstate.py) are saved through Dolphin's slot 10, which only gBox's demos use: the operator
+    # keeps slot 1 and the checkpoint ring slot 8. Only the save is bound: a jump state is loaded at boot (jump_boot),
+    # never into a running game, so no key can load slot 10.
+    JUMP_SLOT = 10
+    jump_from: Path | None = None                # the jump state this launch boots straight into (Dolphin's --save_state)
+    STATE_WAIT_S = 20.0                          # Dolphin compresses and writes a state on its own thread
     # gBox pad -> keys; GCPadNew.ini binds the same keys to the GameCube pad (Dolphin names letter keys in upper case)
     keys = {"up": "Up", "down": "Down", "left": "Left", "right": "Right", "a": "x", "b": "z", "x": "s", "y": "a",
             "l": "q", "r": "w", "l2": "q", "r2": "w", "select": "e", "z": "e", "start": "Return",
@@ -2203,7 +2385,8 @@ D-Pad/Right = `H`
             'Save State/Save State Slot 8 = `Shift_L` & `F8`\n'
             'Load State/Load State Slot 8 = !`Shift_L` & `F8`\n'
             'Save State/Save State Slot 1 = `Shift_L` & `F1`\n'
-            'Load State/Load State Slot 1 = !`Shift_L` & `F1`\n')
+            'Load State/Load State Slot 1 = !`Shift_L` & `F1`\n'
+            'Save State/Save State Slot 10 = `Shift_L` & `F10`\n')     # demo jump states only (jump_save)
         self._gecko_setup(user, rom)
         opts = {"Dolphin.General.GDBPort": self.port, "Dolphin.Core.GFXBackend": "Vulkan", "Dolphin.Core.EnableCheats": "True",
                 "Dolphin.General.HotkeysRequireFocus": "False",  # private Xvfb has no window manager to give Qt focus
@@ -2221,9 +2404,12 @@ D-Pad/Right = `H`
             from . import memory_card_sessions
             memory_card_sessions.journal(self.memory_card_context)
         extra=[f'--filesystem={getattr(self,"memory_card_context",{}).get("work_dir")}'] if getattr(self,'memory_card_context',None) else []
+        if self.jump_from:                       # the flatpak reads host files read-only already; say so for this one
+            extra.append(f"--filesystem={Path(self.jump_from).parent}:ro")
         opts.update(self._title_options())
+        opts.update(self._jump_opts())
         return ["flatpak", "run", "--die-with-parent", f"--filesystem={user}", *extra, self.flatpak, "-b", "-u", str(user),
-                *[a for k, v in opts.items() for a in ("-C", f"{k}={v}")], "-e", rom]
+                *[a for k, v in opts.items() for a in ("-C", f"{k}={v}")], *self._jump_args(), "-e", rom]
 
     def _debugger(self):
         from .debug import GdbDebugger
@@ -2254,6 +2440,71 @@ D-Pad/Right = `H`
     def checkpoint_load(self) -> dict:
         self._xdo('keydown', 'F8', 'sleep', '0.1', 'keyup', 'F8')
         return {"slot": 8}
+
+    def _wait_state(self, slot: int, t0: float, timeout: float | None = None) -> Path:
+        """The state file Dolphin wrote for this hotkey: <game id>.sNN in StateSaves, newer than t0, size settled."""
+        folder, pattern = self.state_dir(), f"*.s{slot:02d}"
+        deadline = time.time() + (self.STATE_WAIT_S if timeout is None else timeout)
+        last = None
+        while time.time() < deadline:
+            try:
+                fresh = [f for f in folder.glob(pattern) if f.is_file() and f.stat().st_mtime >= t0 - 1]
+            except OSError:
+                fresh = []
+            f = max(fresh, key=lambda p: p.stat().st_mtime) if fresh else None
+            size = f.stat().st_size if f else 0
+            if f and size > 0 and last == (f, size):
+                return f
+            last = (f, size) if f else None
+            time.sleep(0.3)
+        raise RuntimeError(f"Dolphin did not write a save state (slot {slot}) within "
+                           f"{self.STATE_WAIT_S if timeout is None else timeout:g} s in {folder}")
+
+    # ---- demo jump states (gbox/jumpstate.py): demos and autoplay start in gameplay, not on a title screen ----
+    def jump_boot(self, src) -> None:
+        """Boot this launch straight into a jump state. Only gbox/jumpstate.arm_boot calls it, for a launch that asks
+        for a jump (the screensaver, autoplay on launch) when this PC has one for the same game and build."""
+        self.jump_from = Path(src)
+
+    def _jump_args(self) -> list[str]:
+        """Dolphin's -s / --save_state (UICommon/CommandLineParse.cpp): the state loads on the CPU thread before the
+        game's first instruction and before the GDB stub's boot hold, so not even a logo shows. A state this Dolphin
+        can't use (another game id, another Dolphin version) only shows a message and the game boots the usual way."""
+        return ["-s", str(self.jump_from)] if self.jump_from else []
+
+    def _jump_opts(self) -> dict:
+        # a damaged state file is a panic alert (a modal dialog) in Dolphin: an unattended demo must never stop on one -
+        # nor on the game's own crash ("Invalid read from 0x00000004", 2026-10-20: the headless Spark display showed it
+        # to nobody, Dolphin waited on it and Stop timed out). A demo / autoplay launch (self.demo) also hides the
+        # on-screen messages ("Saved State to G4BE08.s08"). The command-line layer is never saved, so the operator's
+        # own launches keep their dialogs and messages. Unattended sessions (running on a private Xvfb display) also
+        # avoid modal dialogs since there's no user to dismiss them.
+        if not (self.jump_from or getattr(self, "demo", False) or getattr(self, "display", None)):
+            return {}
+        return {"Dolphin.Interface.UsePanicHandlers": "False", "Dolphin.Interface.OnScreenDisplayMessages": "False"}
+
+    def _jump_save_key(self) -> None:
+        self._xdo('keydown', 'Shift_L', 'keydown', 'F10', 'sleep', '0.1', 'keyup', 'F10', 'keyup', 'Shift_L')
+
+    def jump_save(self, dest: Path) -> int:
+        """Save a jump state through the demo slot (JUMP_SLOT) and copy it to dest. The operator's slot 1 file is never
+        written; the demo slot's file is removed once copied, so the next save has nothing to move into Dolphin's undo
+        backup (lastState.sav). Confirmed by the file Dolphin writes, or it raises."""
+        if self.ff_on:                           # Windows: the held speed-limit key is the lane key of every gBox
+            raise RuntimeError("fast-forward is on: no jump state now")   # chord, so other chords would match first
+        t0 = time.time()
+        self._jump_save_key()
+        written = self._wait_state(self.JUMP_SLOT, t0)
+        dest = Path(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_suffix(".tmp")
+        shutil.copyfile(written, tmp)
+        tmp.replace(dest)
+        try:
+            written.unlink()
+        except OSError:
+            pass
+        return dest.stat().st_size
 
 
 class DolphinWinAdapter(DolphinAdapter):
@@ -2301,12 +2552,14 @@ D-Pad/Right = `Pad E`
         "Save State/Save State Slot 1": ("RCONTROL", "RSHIFT"),
         "Load State/Load State Slot 8": ("LCONTROL",),                 # gBox's checkpoint ring (gbox/rewind.py)
         "Save State/Save State Slot 8": ("LCONTROL", "RSHIFT"),
+        # demo jump states (gbox/jumpstate.py): saved only, loaded at boot. Its chord holds every modifier, so with
+        # fast-forward off (the lane key up) no other chord is ever true while it is pressed.
+        "Save State/Save State Slot 10": ("RCONTROL", "LCONTROL", "RSHIFT"),
     }
     _MOD_KEY = {"RCONTROL": "Control_R", "RSHIFT": "Shift_R", "LCONTROL": "Control_L"}   # win_send_keys names
     _lanes: dict[str, object] = {}              # lane key -> the adapter holding it (this worker process)
     _lanes_lock = threading.Lock()
     lane = "F13"
-    STATE_WAIT_S = 20.0                         # Dolphin compresses and writes a state on its own thread
 
     @classmethod
     def hotkeys_ini(cls, lane: str) -> str:
@@ -2346,24 +2599,8 @@ D-Pad/Right = `Pad E`
             raise RuntimeError('Dolphin hotkey was interrupted before completion; the game was kept running')
         return result
 
-    def _wait_state(self, slot: int, t0: float, timeout: float | None = None) -> Path:
-        """The state file Dolphin wrote for this hotkey: <game id>.sNN in StateSaves, newer than t0, size settled."""
-        folder, pattern = self.state_dir(), f"*.s{slot:02d}"
-        deadline = time.time() + (self.STATE_WAIT_S if timeout is None else timeout)
-        last = None
-        while time.time() < deadline:
-            try:
-                fresh = [f for f in folder.glob(pattern) if f.is_file() and f.stat().st_mtime >= t0 - 1]
-            except OSError:
-                fresh = []
-            f = max(fresh, key=lambda p: p.stat().st_mtime) if fresh else None
-            size = f.stat().st_size if f else 0
-            if f and size > 0 and last == (f, size):
-                return f
-            last = (f, size) if f else None
-            time.sleep(0.3)
-        raise RuntimeError(f"Dolphin did not write a save state (slot {slot}) within "
-                           f"{self.STATE_WAIT_S if timeout is None else timeout:g} s in {folder}")
+    def _jump_save_key(self) -> None:
+        self._hotkey("Save State/Save State Slot 10")
 
     def _exe(self) -> Path:
         for c in (self.config.runtime / "dolphin" / "Dolphin-x64" / "Dolphin.exe", Path("D:/gBox/runtime/dolphin/Dolphin-x64/Dolphin.exe")):
@@ -2425,7 +2662,9 @@ D-Pad/Right = `Pad E`
             from . import memory_card_sessions
             memory_card_sessions.journal(self.memory_card_context)
         opts.update(self._title_options())
-        return [str(exe), "-b", "-u", str(user), *[a for k, v in opts.items() for a in ("-C", f"{k}={v}")], "-e", rom]
+        opts.update(self._jump_opts())
+        return [str(exe), "-b", "-u", str(user), *[a for k, v in opts.items() for a in ("-C", f"{k}={v}")],
+                *self._jump_args(), "-e", rom]
 
     def cheat_set(self, index: int, on: bool) -> dict:
         if not 0 <= index < len(self.cheats):
@@ -2534,11 +2773,13 @@ D-Pad/Right = `Pad E`
         return {"running": bool(self.proc and self.proc.poll() is None), "emulator": self.name,
                 "state": "PAUSED" if self.paused_tids else "PLAYING"}
 
-    def send_input(self, events: list[dict]) -> dict:
+    def send_input(self, events: list[dict], polite: bool = False) -> dict:
         # win_send_keys already maps standard pad names to keyboard keys. Translating
         # them here as well makes A -> x -> s (Dolphin X), so menus ignore A.
+        # polite: autoplay's own input on a PC the operator may be using (bot demos): never takes their keyboard
         keymap = {"z": "e", "cup": "k", "cdown": "i", "cleft": "j", "cright": "l"}
-        return win_send_keys(self.proc.pid, [{**e, "key": keymap.get(e["key"], e["key"])} for e in events])
+        rows = [{**e, "key": keymap.get(e["key"], e["key"])} for e in events]
+        return win_send_keys(self.proc.pid, rows, polite=True) if polite else win_send_keys(self.proc.pid, rows)
 
     def save_state(self, slot: int | None = None) -> dict:
         """Dolphin's slot 1 (gBox's Save state / state_transfer). Confirmed by the file Dolphin writes, or it raises."""
@@ -2938,18 +3179,34 @@ class SaveMGOAdapter(Adapter):
 class RPCS3Adapter(Adapter):
     """Windows node: PS3 games (extracted disc folders) in RPCS3. Guest memory is read/written straight from the
     emulator process (PS3 addresses map 1:1 onto a 4 GiB-aligned host reservation); pause/resume freeze the whole
-    emulator, which is how a mechanic can be held mid-flight while something else decides its outcome."""
+    emulator, which is how a mechanic can be held mid-flight while something else decides its outcome.
+
+    Player 1 is the operator's controller (input_configs/global/Default.yml, XInput). A launch a bot drives
+    (LaunchIn.pad = "keyboard", or a demo / autoplay launch: LaunchIn.jump) starts RPCS3 with --input-config
+    gbox-keyboard instead: player 1 is RPCS3's keyboard pad (RPCS3_KEYBOARD_INPUT, the Linux sessions' layout) and
+    send_input posts its keys to the game window (no focus needed, see send_input). RPCS3 gives a player one input
+    handler, so that session does not read the operator's controller; Play launches it again with their pad."""
     name = "rpcs3"
     # no stream_session: the game plays in its own native window, and a 60 fps gdigrab desktop capture next to a
     # GPU-rendered game made it stutter (same reason RetroArch native windows aren't streamed)
     supported = {"launch_game", "stop_game", "query_runtime", "get_frame", "read_memory", "write_memory", "pause", "resume",
-                 "save_state", "load_state"}
+                 "save_state", "load_state"}                # + send_input on a keyboard-pad (bot) launch, per session
     # save state = F2 "save and continue" (RPCS3 reloads the game from it), load = a relaunch: no in-place checkpoint
     # every two seconds; Select+L2 reports itself unsupported here (gbox/rewind.py)
     checkpoint_state, checkpoint_reason = False, "RPCS3 reloads the game on every save state (no in-place rewind)"
+    PAD_CONFIG = "gbox-keyboard"                              # input_configs/global/<name>.yml, for --input-config
+    keyboard_pad = False                                      # this session's player 1 is the keyboard pad (bot input)
 
     def __init__(self, config: Config):
         self.config, self.proc, self.stream, self.base, self.paused = config, None, None, None, False
+
+    def bot_pad(self) -> bool:
+        """A launch a bot drives: LaunchIn.pad = "keyboard" (ad.input_pad), or a demo / autoplay launch (LaunchIn.jump ->
+        ad.demo). Not agent_use: the in-app chat agent launches the operator's own games with it."""
+        return getattr(self, "input_pad", "") == "keyboard" or bool(getattr(self, "demo", False))
+
+    def _pad_args(self) -> list[str]:
+        return ["--input-config", self.PAD_CONFIG] if self.keyboard_pad else []
 
     def prepare_audio(self):
         if not getattr(self, "capture_backend", None):
@@ -2963,6 +3220,12 @@ class RPCS3Adapter(Adapter):
         if not pad.exists():                               # fresh install has no pad: Xbox controller as player 1
             pad.parent.mkdir(parents=True, exist_ok=True)
             pad.write_text(RPCS3_XINPUT, encoding="utf-8")
+        # the keyboard pad for bot input lives next to it under its own name; only --input-config picks it, so the
+        # operator's Default.yml (and every launch of theirs) is untouched
+        (pad.parent / f"{self.PAD_CONFIG}.yml").write_text(RPCS3_KEYBOARD_INPUT, encoding="utf-8")
+        self.keyboard_pad = self.bot_pad()
+        if self.keyboard_pad:
+            self.supported = type(self).supported | {"send_input"}
         if getattr(self, "serial", None):                  # per-game graphics settings (Sessions -> Graphics)
             from . import graphics
             cc = home / "config" / "custom_configs" / f"config_{self.serial}.yml"
@@ -2983,7 +3246,7 @@ class RPCS3Adapter(Adapter):
         gui.write_text(ini, encoding="utf-8")
         self.home = home
         __import__("gbox.graphics", fromlist=["x"]).prefer_gpu(home / "rpcs3.exe")   # the discrete GPU
-        argv = [str(home / "rpcs3.exe"), "--no-gui"]
+        argv = [str(home / "rpcs3.exe"), "--no-gui", *self._pad_args()]
         cap = getattr(self, "capture_backend", None)
         if cap:                                            # agent-owned capture session (#971): Vulkan in a config file of
             from .capture_backend import rpcs3_renderer_yaml      # its own, passed with --config (never the shared one)
@@ -3006,7 +3269,8 @@ class RPCS3Adapter(Adapter):
         backend = game_audio.rpcs3_audio_yaml(sel).split("Renderer: ")[1].strip() if sel else "RPCS3 global setting"
         return {"pid": self.proc.pid, "eboot": rom, "local_window": True, "worker_name": __import__("platform").node(),
                 "examine": _examine_ok(self.proc, 15.0) if getattr(self, "examine", False) else False,
-                "audio": game_audio.session_detail(sel or {}, backend)}
+                "audio": game_audio.session_detail(sel or {}, backend),
+                "pad": "keyboard pad (bot input: send_input)" if self.keyboard_pad else "the operator's controller"}
 
     def stop_game(self) -> dict:
         if self.stream:
@@ -3090,7 +3354,8 @@ class RPCS3Adapter(Adapter):
     # reloads for tools that cache addresses (script_patch). ---
     generation = 0
 
-    def _hotkey(self, vk: int):
+    def _game_window(self) -> int:
+        """RPCS3's game window (gs_frame): top-level, or docked inside the gBox app as a child window."""
         import ctypes
         import ctypes.wintypes as w
         u = ctypes.windll.user32
@@ -3109,11 +3374,53 @@ class RPCS3Adapter(Adapter):
         u.EnumChildWindows(u.GetDesktopWindow(), cb, 0)    # top-level or docked inside the gBox app (child window)
         if not found:
             raise RuntimeError("RPCS3 game window not found")
+        return found[0]
+
+    @staticmethod
+    def _post_key(hwnd: int, vk: int, down: bool, extended: bool = False) -> None:
+        """WM_KEYDOWN / WM_KEYUP posted to one window: Qt turns it into that window's key event, whatever window is in
+        front or has the focus."""
+        import ctypes
+        u = ctypes.windll.user32
+        lp = wm_key_lparam(u.MapVirtualKeyW(vk, 0), down, extended)
+        if not u.PostMessageW(hwnd, 0x0100 if down else 0x0101, vk, lp):
+            raise RuntimeError("RPCS3's game window refused the key (it closed?)")
+
+    def _hotkey(self, vk: int):
         # posted straight to the game window: no focus needed, works while embedded (plain F-keys need no modifiers)
-        sc = u.MapVirtualKeyW(vk, 0)
-        u.PostMessageW(found[0], 0x0100, vk, 1 | sc << 16)                # WM_KEYDOWN
+        h = self._game_window()
+        self._post_key(h, vk, True)
         time.sleep(0.08)
-        u.PostMessageW(found[0], 0x0101, vk, 1 | sc << 16 | 0xC0 << 24)   # WM_KEYUP
+        self._post_key(h, vk, False)
+
+    def send_input(self, events: list[dict]) -> dict:
+        """Bot input, on a keyboard-pad launch (bot_pad). Each pad event is posted to RPCS3's game window as the key
+        RPCS3_KEYPAD binds (WM_KEYDOWN / WM_KEYUP, as _hotkey posts F2), so it needs no focus and nothing moves to the
+        front: RPCS3's keyboard pad reads the game window's key events with no focus check (keyboard_pad_handler::
+        eventFilter, 0.0.43), and pads keep running unfocused while "Background input enabled" is on (RPCS3's default;
+        is_input_allowed). Nothing is typed anywhere else: the keys go to that one window, never through SendInput.
+        Names: PS3 (cross, l1, lup...) and gBox's RetroPad names (RPCS3_PAD_ALIASES); others are skipped. Player 1
+        only. The game window losing focus releases held keys (RPCS3's FocusOut): the next press works again."""
+        if not self.keyboard_pad:
+            raise Unsupported("this RPCS3 session reads the operator's controller (player 1 = Default.yml): bot input "
+                              "needs a demo / autoplay or agent launch, which starts RPCS3 with the gBox keyboard pad")
+        hwnd, sent, pressed, skipped = self._game_window(), 0, set(), set()
+        for ev in events:
+            if int(ev.get("player", 1)) != 1:
+                continue
+            name = RPCS3_PAD_ALIASES.get(ev.get("key"), ev.get("key"))
+            qt = RPCS3_KEYPAD.get(name)
+            if not qt:
+                skipped.add(str(ev.get("key")))
+                continue
+            vk = _RPCS3_VK.get(qt) or ord(qt.upper())
+            down = ev.get("down", True)
+            if not down and name in pressed:
+                time.sleep(0.06)                            # down + up in one batch: the game reads the pad per frame
+            pressed.add(name) if down else None
+            self._post_key(hwnd, vk, down, extended=qt in _RPCS3_VK_EXTENDED)
+            sent += 1
+        return {"sent": sent} | ({"skipped": sorted(skipped)} if skipped else {})
 
     def save_state(self, slot: int | None = None) -> dict:
         self.resume()
@@ -3135,7 +3442,8 @@ class RPCS3Adapter(Adapter):
                 break
             time.sleep(0.25)
         __import__("gbox.graphics", fromlist=["x"]).prefer_gpu(home / "rpcs3.exe")   # the discrete GPU
-        self.proc = subprocess.Popen([str(home / "rpcs3.exe"), "--no-gui", str(states[-1])], cwd=home, startupinfo=hidden_start())
+        self.proc = subprocess.Popen([str(home / "rpcs3.exe"), "--no-gui", *self._pad_args(), str(states[-1])], cwd=home,
+                                     startupinfo=hidden_start())     # the same pad as the launch (bot or operator)
         keep_offscreen(self.proc.pid)
         self._handle, self.base, self.paused = None, None, False
         self.generation += 1
@@ -3175,6 +3483,385 @@ class RPCS3Adapter(Adapter):
             ctypes.windll.ntdll.NtResumeProcess(self._h())
             self.paused = False
         return {"paused": False}
+
+
+# gBox's RPCS3 keyboard pad (Linux sessions): player 1 is RPCS3's keyboard handler and these keys are bound to the PS3
+# pad in input_configs/global/Default.yml (Qt key names; xdotool takes the same letters in lower case)
+RPCS3_KEYPAD = {"cross": "X", "circle": "C", "square": "Z", "triangle": "V", "l1": "Q", "r1": "E", "l2": "R", "r2": "T",
+                "l3": "F", "r3": "G", "start": "Return", "select": "Space",
+                "dup": "Up", "ddown": "Down", "dleft": "Left", "dright": "Right",
+                "lup": "W", "ldown": "S", "lleft": "A", "lright": "D", "rup": "I", "rdown": "K", "rleft": "J", "rright": "L"}
+# gBox's own pad names (the app's controller: RetroPad positions b = bottom, a = right, y = left, x = top; up / down /
+# left / right = the D-pad; lup... / rup... = the sticks) -> PS3 buttons
+RPCS3_PAD_ALIASES = {"b": "cross", "a": "circle", "y": "square", "x": "triangle", "l": "l1", "r": "r1",
+                     "up": "dup", "down": "ddown", "left": "dleft", "right": "dright",
+                     "cup": "rup", "cdown": "rdown", "cleft": "rleft", "cright": "rright"}
+# Windows (RPCS3Adapter.send_input): the keyboard pad's non-letter keys as virtual-key codes (a letter is its own code).
+# The arrows are extended keys: without that bit Qt reads them as the numeric keypad's, which the pad's "Up" doesn't match
+_RPCS3_VK = {"Return": 0x0D, "Space": 0x20, "Left": 0x25, "Up": 0x26, "Right": 0x27, "Down": 0x28}
+_RPCS3_VK_EXTENDED = {"Left", "Up", "Right", "Down"}
+
+
+def wm_key_lparam(scan: int, down: bool, extended: bool = False) -> int:
+    """lParam of a posted WM_KEYDOWN / WM_KEYUP: repeat count 1, the scan code, the extended-key bit; a key-up also sets
+    the previous-state and transition bits (as the keyboard itself would)."""
+    return 1 | (scan & 0xFF) << 16 | (1 << 24 if extended else 0) | (0 if down else 0xC0 << 24)
+_RPCS3_CFG_NAMES = [("Left Stick Left", "lleft"), ("Left Stick Down", "ldown"), ("Left Stick Right", "lright"),
+                    ("Left Stick Up", "lup"), ("Right Stick Left", "rleft"), ("Right Stick Down", "rdown"),
+                    ("Right Stick Right", "rright"), ("Right Stick Up", "rup"), ("Start", "start"), ("Select", "select"),
+                    ("Square", "square"), ("Cross", "cross"), ("Circle", "circle"), ("Triangle", "triangle"),
+                    ("Left", "dleft"), ("Down", "ddown"), ("Right", "dright"), ("Up", "dup"), ("R1", "r1"), ("R2", "r2"),
+                    ("R3", "r3"), ("L1", "l1"), ("L2", "l2"), ("L3", "l3")]
+RPCS3_KEYBOARD_INPUT = ("Player 1 Input:\n  Handler: Keyboard\n  Device: Keyboard\n  Config:\n"
+                        + "".join(f"    {name}: {RPCS3_KEYPAD[b]}\n" for name, b in _RPCS3_CFG_NAMES)
+                        + '    PS Button: ""\n')
+# config.yml values gBox sets for Linux sessions (section -> key -> YAML value); RPCS3 fills in every other key
+RPCS3_LINUX_SETTINGS = {
+    # RE5 Gold on the Spark's aarch64 RPCS3 (2026-10-20) hung on a black screen at its first RSX context without it.
+    # With it, one first boot (RPCS3 still building its shader / SPU caches, load 50 on 20 cores) hung there once too:
+    # RSX thread + 2 SPU threads spinning after sys_rsx_context_iomap. The next boot went through (2026-10-21).
+    "Core": {"Accurate RSX reservation access": "true"},
+    "Video": {"Renderer": "Vulkan", "Resolution": "1280x720"},
+    "Audio": {"Renderer": '"Null"'},                       # Linux sessions stream video only
+    "Input/Output": {"Keyboard": '"Null"', "Background input enabled": "true"},
+    "Miscellaneous": {
+        # RPCS3's GDB stub listens on 127.0.0.1:2345 by default: a port probe there ("G..." instead of "$") stopped the
+        # emulator ("Expected start of packet character '$'") on the Spark
+        "GDB Server": '""',
+        "Automatically start games after boot": "true", "Exit RPCS3 when process finishes": "true",
+        "Start games in fullscreen mode": "false", "Prevent display sleep while running games": "false",
+        "Show trophy popups": "false", "Show RPCN popups": "false", "Show shader compilation hint": "false",
+        "Show PPU compilation hint": "false", "Show autosave/autoload hint": "false",
+        "Show pressure intensity toggle hint": "false", "Show analog limiter toggle hint": "false",
+        "Show mouse and keyboard toggle hint": "false", "Show capture hints": "false",
+        "Play music during boot sequence": "false"}}
+# GuiConfigs/CurrentSettings.ini values (Qt INI: section -> key -> value). RPCS3 opens its welcome dialog at every start
+# until it is turned off, --no-gui included: on the Spark (2026-10-21) it covered RE5's boot screen in the session and sat
+# under the parked pointer, where a WM-less display sends the pad's keys. The info / confirmation boxes go too: nobody is
+# at the session's display to close them.
+RPCS3_LINUX_GUI = {
+    "main_window": {"infoBoxEnabledWelcome": "false", "infoBoxEnabledInstallPUP": "false",
+                    "infoBoxEnabledInstallPKG": "false", "confirmationBoxExitGame": "false",
+                    "confirmationBoxBootGame": "false", "confirmationObsoleteCfg": "false",
+                    "sameButtonsWarning": "false", "restartHint": "false"},
+    # F2 = RPCS3's own "save state and continue"; its restart-from-state shortcut moves off F2 / F4 (as on Windows)
+    "Shortcuts": {"game_window_savestate": "F2", "game_window_restart": "Ctrl+Alt+Shift+F11"}}
+
+
+def yaml_set(text: str, section: str, key: str, value: str) -> str:
+    """Set `key: value` in a top-level section of RPCS3's config.yml (two-space keys), keeping every other line."""
+    lines = text.splitlines()
+    try:
+        s = lines.index(f"{section}:")
+    except ValueError:
+        return "\n".join(lines + [f"{section}:", f"  {key}: {value}"]) + "\n"
+    i = s + 1
+    while i < len(lines) and (lines[i].startswith(" ") or not lines[i].strip()):
+        if lines[i].startswith(f"  {key}:"):
+            lines[i] = f"  {key}: {value}"
+            return "\n".join(lines) + "\n"
+        i += 1
+    lines.insert(s + 1, f"  {key}: {value}")
+    return "\n".join(lines) + "\n"
+
+
+def ini_set(text: str, section: str, key: str, value: str) -> str:
+    """Set `key=value` in one [section] of a Qt INI file (RPCS3's GuiConfigs/CurrentSettings.ini), keeping every other
+    line; a missing section is appended."""
+    lines = text.splitlines()
+    try:
+        s = lines.index(f"[{section}]")
+    except ValueError:
+        while lines and not lines[-1].strip():
+            lines.pop()
+        return "\n".join(lines + ([""] if lines else []) + [f"[{section}]", f"{key}={value}"]) + "\n"
+    i = s + 1
+    while i < len(lines) and not lines[i].startswith("["):
+        if lines[i].split("=", 1)[0].strip() == key:
+            lines[i] = f"{key}={value}"
+            return "\n".join(lines) + "\n"
+        i += 1
+    while i > s + 1 and not lines[i - 1].strip():      # after the section's last line, before the blank separator
+        i -= 1
+    lines.insert(i, f"{key}={value}")
+    return "\n".join(lines) + "\n"
+
+
+def rpcs3_guest_base(pid: int, read=None, maps: list[str] | None = None) -> int:
+    """RPCS3 maps the PS3's 4 GiB address space at one 4 GiB-aligned host address (vm::g_base_addr): the first
+    candidate whose guest 0x10000 (the game's first ELF segment) holds code. RPCS3's usual reservations first, then
+    every 4 GiB boundary that has a mapping (read / maps: the process's memory and /proc/<pid>/maps lines, for tests)."""
+    def rd(a, n):
+        with open(f"/proc/{pid}/mem", "rb", 0) as f:
+            f.seek(a)
+            return f.read(n)
+    read = read or rd
+    try:
+        lines = maps if maps is not None else open(f"/proc/{pid}/maps").read().splitlines()
+        starts = sorted({int(ln.split("-", 1)[0], 16) & ~0xFFFFFFFF for ln in lines if ln.strip()})
+    except OSError:
+        starts = []
+    for b in [0x300000000, 0x200000000, 0x100000000, 0x10000000000] + [s for s in starts if s]:
+        try:
+            d = read(b + 0x10000, 16)
+        except (OSError, ValueError):
+            continue
+        if d and any(d):
+            return b
+    raise RuntimeError("PS3 guest memory not found in the RPCS3 process (game still booting?)")
+
+
+def _proc_tree(pid: int) -> list[int]:
+    """pid and its descendants (Linux /proc)."""
+    out, todo = [], [pid]
+    while todo:
+        p = todo.pop(0)
+        out.append(p)
+        try:
+            for t in os.listdir(f"/proc/{p}/task"):
+                todo += [int(c) for c in open(f"/proc/{p}/task/{t}/children").read().split()]
+        except OSError:
+            continue
+    return out
+
+
+class RPCS3LinuxAdapter(StandaloneAdapter):
+    """Linux node (the Spark, aarch64): PS3 games in RPCS3's AppImage (provision.ensure_rpcs3_linux) on the session's
+    own Xvfb display, streamed like every other Linux session. Player 1 is RPCS3's keyboard pad (input_configs/global/
+    Default.yml = RPCS3_KEYBOARD_INPUT), so send_input is xdotool keys on that display, no window focus needed (no
+    window manager: keys go to the window under the pointer, which is parked on the game). Guest memory is read and
+    written through /proc/<pid>/mem at RPCS3's 4 GiB guest base. Save state = RPCS3's "save state and continue" (F2);
+    load state relaunches RPCS3 on the same display from the newest state (no in-place rewind).
+    Verified with Resident Evil 5 Gold (BLUS30491) on the Spark, 2026-10-20 (see RPCS3_LINUX_SETTINGS for the two
+    settings it needed)."""
+    name = "rpcs3"
+    supported = {"launch_game", "stop_game", "pause", "resume", "read_memory", "write_memory", "query_runtime",
+                 "get_frame", "send_input", "stream_session", "save_state", "load_state"}
+    checkpoint_state, checkpoint_reason = False, "RPCS3 reloads the game on every save state (no in-place rewind)"
+    screen = (1280, 720)
+    keys = {**{b: (k.lower() if len(k) == 1 else ("space" if k == "Space" else k)) for b, k in RPCS3_KEYPAD.items()},
+            **{a: (RPCS3_KEYPAD[b].lower() if len(RPCS3_KEYPAD[b]) == 1 else RPCS3_KEYPAD[b])
+               for a, b in RPCS3_PAD_ALIASES.items()}}
+    hotkeys = {"save_state": "F2"}
+    MEM = "/proc/{pid}/mem"                              # the guest's memory, by the RPCS3 process id
+
+    def __init__(self, config: Config, platform: str = "ps3"):
+        super().__init__(config, platform)
+        self.env = provision.rpcs3_linux_env(config)
+        self.home = provision.rpcs3_linux_dir(config)     # dev_hdd0 lives here (gbox/re5_tool.py finds saves through it)
+        self._mem, self.paused, self.generation, self.rom = None, False, 0, None
+        self._profile_lease = None
+
+    def _ensure(self):
+        self.write_settings()                             # first: the firmware install then runs without dialogs too
+        provision.ensure_rpcs3_linux(self.config, getattr(self, "progress", None))
+
+    def write_settings(self) -> None:
+        """config.yml (RPCS3_LINUX_SETTINGS), the keyboard pad as player 1, CurrentSettings.ini (RPCS3_LINUX_GUI: no
+        welcome dialog or info boxes, the save-state hotkey)."""
+        d = self.home
+        (d / "input_configs" / "global").mkdir(parents=True, exist_ok=True)
+        (d / "input_configs" / "global" / "Default.yml").write_text(RPCS3_KEYBOARD_INPUT, encoding="utf-8")
+        cfg = d / "config.yml"
+        text = cfg.read_text(encoding="utf-8") if cfg.exists() else ""
+        for section, kv in RPCS3_LINUX_SETTINGS.items():
+            for k, v in kv.items():
+                text = yaml_set(text, section, k, v)
+        cfg.write_text(text, encoding="utf-8")
+        gui = d / "GuiConfigs" / "CurrentSettings.ini"
+        gui.parent.mkdir(parents=True, exist_ok=True)
+        ini = gui.read_text(encoding="utf-8") if gui.exists() else ""
+        for section, kv in RPCS3_LINUX_GUI.items():
+            for k, v in kv.items():
+                ini = ini_set(ini, section, k, v)
+        gui.write_text(ini, encoding="utf-8")
+
+    def _argv(self, rom: str) -> list[str]:
+        self.rom = rom
+        from . import rpcs3_profile
+        rpcs3_profile.native_available(self.env['XDG_CACHE_HOME'])
+        return [str(provision.rpcs3_linux_exe(self.config)), "--no-gui", rom]
+
+    def _debugger(self):
+        return None                                       # RPCS3's GDB stub stays off (see RPCS3_LINUX_SETTINGS)
+
+    def launch_game(self, rom: str) -> dict:
+        from . import rpcs3_profile
+        if HOST_OS != 'linux':
+            raise ToolUnavailable('rpcs3 (linux) sessions run on the linux node')
+        if self._profile_lease is not None:
+            raise rpcs3_profile.ProfileBusy('This RPCS3 session already owns its profile')
+        lease = rpcs3_profile.Lease(provision.rpcs3_linux_home(self.config), self.env['XDG_CACHE_HOME']).acquire()
+        self._profile_lease = lease
+        self._mem = None
+        try:
+            d = super().launch_game(rom)
+            self._wait_guest_ready()
+            self._park_pointer()
+            return d | {"emulator": "rpcs3 (linux)", "ready": "guest_memory",
+                        "rpcs3_log": str(Path(self.env["XDG_CACHE_HOME"]) / "rpcs3" / "RPCS3.log")}
+        except BaseException:
+            self.stop_game()                 # Only our process/display; never stop an existing profile owner.
+            raise
+
+    def _wait_guest_ready(self):
+        """A living error dialog is not a booted game; require this process's guest memory."""
+        deadline = time.monotonic() + float(getattr(self, 'boot_timeout_s', None) or 120)
+        self._p(85, 'Waiting for RPCS3 to initialize the PS3 guest')
+        error = None
+        while time.monotonic() < deadline:
+            if not self.proc or self.proc.poll() is not None:
+                raise RuntimeError(f'RPCS3 exited before initializing the PS3 guest: {self.log_tail(2000)}')
+            try:
+                self._guest()
+                if self.proc.poll() is not None:
+                    raise RuntimeError('RPCS3 exited while initializing the PS3 guest')
+                return
+            except (RuntimeError, OSError) as exc:
+                error = exc
+            time.sleep(.25)
+        raise RuntimeError(f'RPCS3 did not initialize PS3 guest memory before the boot deadline ({error}); '
+                           'its process/dialog alone does not confirm a successful launch')
+
+    def stop_game(self) -> dict:
+        result = super().stop_game()
+        if self.proc and self.proc.poll() is None:
+            raise RuntimeError('RPCS3 is still running; its profile lease was retained')
+        if self._profile_lease is not None:
+            lease, self._profile_lease = self._profile_lease, None
+            lease.close()
+        self._mem = None
+        return result
+
+    def _park_pointer(self):
+        try:                                              # keys go to the window under the pointer (no window manager)
+            self._xdo("mousemove", str(self.display.w // 2), str(self.display.h // 2))
+        except Exception:                                 # noqa: BLE001 - the display may still be starting
+            pass
+
+    def log_tail(self, n: int = 60000) -> str:
+        try:
+            return (Path(self.env["XDG_CACHE_HOME"]) / "rpcs3" / "RPCS3.log").read_text(errors="replace")[-n:]
+        except OSError:
+            return super().log_tail(n)
+
+    def query_runtime(self) -> dict:
+        d = {"running": bool(self.proc and self.proc.poll() is None), "emulator": "rpcs3", "paused": self.paused}
+        try:
+            d["guest_base"] = hex(self._guest()[1])
+        except Exception:                                 # noqa: BLE001 - still booting
+            pass
+        return d
+
+    # --- guest memory ---
+    def _guest(self):
+        if self._mem is None:
+            if not self.proc or self.proc.poll() is not None:
+                raise RuntimeError("RPCS3 is not running")
+            err = None
+            for pid in _proc_tree(self.proc.pid):
+                try:
+                    self._mem = (pid, rpcs3_guest_base(pid))
+                    break
+                except (RuntimeError, OSError) as e:
+                    err = e
+            if self._mem is None:
+                raise RuntimeError(str(err or "PS3 guest memory not found"))
+        return self._mem
+
+    def read_memory(self, address: int, length: int) -> bytes:
+        pid, base = self._guest()
+        with open(self.MEM.format(pid=pid), "rb", 0) as f:
+            f.seek(base + address)
+            try:
+                data = f.read(length)
+            except OSError:
+                data = b""
+        if len(data) != length:
+            raise ValueError(f"PS3 address {address:#x} is not mapped")
+        return data
+
+    def write_memory(self, address: int, data: bytes) -> dict:
+        pid, base = self._guest()
+        with open(self.MEM.format(pid=pid), "r+b", 0) as f:
+            f.seek(base + address)
+            try:
+                f.write(data)
+            except OSError as e:
+                raise ValueError(f"PS3 address {address:#x} is not writable: {e}") from None
+        if self.read_memory(address, len(data)) != bytes(data):
+            raise RuntimeError("memory write not confirmed by read-back")
+        return {"address": address, "written": len(data), "verified": True}
+
+    def regions(self) -> list[tuple[int, int]]:
+        """Committed guest ranges [(address, size)] from /proc/<pid>/maps (the RAM inspector's search, ram_dump)."""
+        pid, base = self._guest()
+        out = []
+        for ln in open(f"/proc/{pid}/maps"):
+            a, b = (int(x, 16) for x in ln.split()[0].split("-"))
+            if a >= base and b <= base + (1 << 32) and "r" in ln.split()[1]:
+                if out and out[-1][0] + out[-1][1] == a - base:
+                    out[-1] = (out[-1][0], out[-1][1] + b - a)
+                else:
+                    out.append((a - base, b - a))
+        return out
+
+    # --- run control ---
+    def _signal(self, sig) -> None:
+        import signal
+        for pid in _proc_tree(self.proc.pid):
+            try:
+                os.kill(pid, getattr(signal, sig))
+            except OSError:
+                pass
+
+    def pause(self) -> dict:
+        self._signal("SIGSTOP")
+        self.paused = True
+        return {"paused": True}
+
+    def resume(self) -> dict:
+        self._signal("SIGCONT")
+        self.paused = False
+        return {"paused": False}
+
+    def save_state(self, slot: int | None = None) -> dict:
+        if self.paused:
+            self.resume()
+        self._xdo("key", self.hotkeys["save_state"])
+        self.generation += 1
+        return {"saved": True, "note": "RPCS3 saves, then continues from the save state after a short reload"}
+
+    def load_state(self, slot: int | None = None) -> dict:
+        """Relaunch RPCS3 on this session's display from the newest save state (the stream keeps going)."""
+        if self._profile_lease is None:
+            raise RuntimeError('RPCS3 profile ownership is unavailable; restart the session before loading a state')
+        states = sorted((self.home / "savestates").glob("*/*.SAVESTAT*"), key=lambda f: f.stat().st_mtime)
+        if not states:
+            raise RuntimeError("no save state for this game yet: save one first")
+        _kill_tree(self.proc)
+        from . import rpcs3_profile
+        try:
+            rpcs3_profile.native_available(self.env['XDG_CACHE_HOME'])
+            env = {**os.environ, "DISPLAY": self.display.name, "QT_QPA_PLATFORM": "xcb", **self.env}
+            self.proc = subprocess.Popen([str(provision.rpcs3_linux_exe(self.config)), "--no-gui", str(states[-1])], env=env,
+                                         stdout=open(self.log_path, "ab"), stderr=subprocess.STDOUT)
+            self._mem, self.paused = None, False
+            self.generation += 1
+            self._wait_guest_ready()
+            self._park_pointer()
+        except BaseException:
+            self.stop_game()
+            raise
+        return {"loaded": states[-1].name, "pid": self.proc.pid}
+
+    def send_input(self, events: list[dict]) -> dict:
+        """Pad names only (self.keys: PS3 names and gBox's RetroPad names); anything else is not a PS3 button here and
+        is left out (RPCS3's keyboard pad would ignore it anyway)."""
+        known = [ev for ev in events if ev.get("key") in self.keys]
+        out = super().send_input(known)
+        skipped = sorted({str(ev.get("key")) for ev in events if ev.get("key") not in self.keys})
+        return out | ({"skipped": skipped} if skipped else {})
 
 
 class SteamAdapter(Adapter):
@@ -3272,6 +3959,9 @@ class SteamAdapter(Adapter):
 def for_game(game: dict, config: Config, debug: bool = False, *, mod: str | None = None) -> Adapter:
     """Pick the adapter for a catalog entry on THIS node. debug=True prefers an emulator with a full CPU debugger."""
     plat = game["platform"]
+    if (game.get("launch") or {}).get("kind") == "native_port":     # a PC port built from the game's decomp
+        from . import native_ports
+        return native_ports.adapter(game, config)
     if debug and HOST_OS == "linux" and plat in DEBUG_ADAPTERS:
         return DEBUG_ADAPTERS[plat](config, plat)
     if plat == "pc_steam":
@@ -3298,7 +3988,13 @@ def for_game(game: dict, config: Config, debug: bool = False, *, mod: str | None
             # Asset-only variants keep the exact pinned guest executable. The
             # native adapter verifies that hash before it creates a play disc.
             return Doa3NativeAdapter(config, game | {"mod": mod or game.get("mod") or ""})
-        return XboxAdapter(config)
+        from .xemu import XemuAdapter, wants_xemu
+        if wants_xemu(game, xbox_override):
+            # Titles Cxbx cannot draw (xemu.XEMU_TITLES), or [emulators.xbox] adapter = "xemu" for every title.
+            return XemuAdapter(config)
+        ad = XboxAdapter(config)
+        ad.debug = bool(debug)      # a debug launch writes Cxbx's full kernel log (xbox.log_settings)
+        return ad
     from . import systems
     if game.get("core") and plat != "arcade" and systems.core_for(plat)[0] is None:
         game = game | {"core": None}                       # catalog still has a core the platform rule has since dropped
@@ -3312,8 +4008,10 @@ def for_game(game: dict, config: Config, debug: bool = False, *, mod: str | None
     # gBox's own RPCS3 instead (tools._launch_game resolves it), which keeps save/load state for recovery.
     if plat == "ps3" and (launch.get("kind") != "attract"
                           or str(launch.get("rel_path") or game.get("rel_path") or "").lower().endswith(".txt")):
+        if HOST_OS == "linux":
+            return RPCS3LinuxAdapter(config, plat)        # RPCS3's AppImage on the session's Xvfb display (streamed)
         if HOST_OS != "windows":
-            raise ToolUnavailable("PS3 games run in RPCS3 on a Windows node")
+            raise ToolUnavailable("PS3 games run in RPCS3 on a Windows or Linux node")
         return RPCS3Adapter(config)
     if HOST_OS == "windows" and plat in ("gamecube", "wii") and not (override and override.core) \
             and (config.runtime / "dolphin" / "Dolphin-x64" / "Dolphin.exe").is_file():

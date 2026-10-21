@@ -14,9 +14,9 @@ import pytest
 
 from gbox import jgr
 
-STOCK_GDI = Path(os.environ.get("JGR_GDI", "/home/ehm_eckx/gbox-cache/dc/4187aeab4d67638c/disc.gdi"))
+STOCK_GDI = Path(os.environ.get("JGR_GDI", "/home/ehm_eckx/gBox_alt/gbox-cache/dc/4187aeab4d67638c/disc.gdi"))
 MOD_NAME = "jgr_sa2_amy_rose_04_a80947d49d022a3a"
-MOD_DIR = Path(os.environ.get("JGR_1153_MOD", f"/home/ehm_eckx/gbox-cache/mods/4187aeab4d67638c/{MOD_NAME}"))
+MOD_DIR = Path(os.environ.get("JGR_1153_MOD", f"/home/ehm_eckx/gBox_alt/gbox-cache/mods/4187aeab4d67638c/{MOD_NAME}"))
 # Preserved source hash: PLAYER.AFS on the owned USA disc.
 STOCK_AFS_SHA256 = "406d4ec877eb6c69d4a217534992ea3e280fdeb5cf6b0130bcc29821a6f07113"
 BEAT_BODIES = (0x8da4, 0x13cf4, 0x19ba8, 0x2039c)   # every textured 20-node body of Beat's PLAY

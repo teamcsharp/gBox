@@ -4,7 +4,7 @@ Builds on the stage-1 inventory (:mod:`gbox.nfl2k2_inventory`) and turns
 observed header bytes into *validated* format hypotheses. Every constant in
 this module was derived from the owned build (CHD sha256
 7d4b3c49bbcc4e2be49f5f4a1476a9ce7929806aba69e618d9b27839cd7fc7ee, unpacked at
-~/gbox-cache/dc/373a463aa1f96e35) and is checked by tests/test_nfl2k2_analysis.py.
+~/gBox_alt/gbox-cache/dc/373a463aa1f96e35) and is checked by tests/test_nfl2k2_analysis.py.
 
 Findings encoded here:
 

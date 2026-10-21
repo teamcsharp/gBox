@@ -21,16 +21,17 @@
       if (validAspect(value.aspect)) state.aspect = value.aspect;
       if (state.on) { io.render(state); io.present(); }
     }
-    function enter() {
+    function enter(requested) {
       return serial(async () => {
         if (state.on) return state;
-        const session = await io.resolve();
+        const session = await io.resolve(requested);
         if (!session || !session.sid) throw Error('Start or select an emulation session first.');
         Object.assign(state, { on: true, sid: session.sid, local: !!session.local,
-          aspect: validAspect(session.aspect) ? session.aspect : 4 / 3, returnMode: io.mode() });
+          aspect: validAspect(session.aspect) ? session.aspect : validAspect(requested?.aspect) ? requested.aspect : 4 / 3,
+          returnMode: ['auto', 'full', 'pip'].includes(requested?.returnMode) ? requested.returnMode : io.mode() });
         try {
           io.render(state); io.pad(state.local ? null : state.sid);
-          const result = await io.windowMode({ on: true, ...(validAspect(session.aspect) ? { aspect: session.aspect } : {}) });
+          const result = await io.windowMode({ on: true, ...(validAspect(session.aspect) || validAspect(requested?.aspect) ? { aspect: state.aspect } : {}) });
           if (!result?.on) throw Error('Picture-in-picture could not open.');
           changed(result); return state;
         } catch (error) {

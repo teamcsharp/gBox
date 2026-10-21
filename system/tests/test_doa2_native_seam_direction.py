@@ -67,12 +67,12 @@ class NativeSeamDirectionTests(unittest.TestCase):
         self.assertEqual(a, b)
 
     @unittest.skipUnless(os.path.exists(os.environ.get(
-        'GBOX_DOA2_LE_GDI', os.path.expanduser('~/gbox-cache/dc/1de2e7634f3161ff/disc.gdi'))), 'owned DOA2 LE disc')
+        'GBOX_DOA2_LE_GDI', os.path.expanduser('~/gBox_alt/gbox-cache/dc/1de2e7634f3161ff/disc.gdi'))), 'owned DOA2 LE disc')
     def test_every_owned_body_seam_blends_toward_the_parent(self):
         from gbox.gdrom import GDRom
         from gbox import doa2_seams as S
         disc = GDRom(os.environ.get('GBOX_DOA2_LE_GDI',
-                                    os.path.expanduser('~/gbox-cache/dc/1de2e7634f3161ff/disc.gdi')))
+                                    os.path.expanduser('~/gBox_alt/gbox-cache/dc/1de2e7634f3161ff/disc.gdi')))
         files = disc.files() if callable(disc.files) else disc.files
         names = [n for n in files if str(n).upper().endswith('.SUP')]
         self.assertEqual(len(names), 80)

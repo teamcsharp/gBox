@@ -1,0 +1,147 @@
+"""#2410 gBrain milestone 1: GoldenEye 007's AI command set read from the n64decomp/007 aicommands.def."""
+from gbox.bond_ai import commands as A
+
+SNIPPET = """
+#if 0
+_AI_CMD(GONEXT,
+    (BYTE(LABEL)),
+    {})
+#endif
+/* #define CMDNAME GOTO_NEXT */
+#define CMDNAME GotoNext
+#define DESCRIPTION \\
+/*******************************************************************************
+* Skips all commands between this command and LABEL
+* @param     LABEL: 8bit Integer/enum ID of label to Go To
+*******************************************************************************/
+#define PARAMS BYTE(LABEL)
+_AI_CMD({ break; })
+_AI_CMD_POLYMORPH(,
+                  BREAK,
+                  (LABEL),
+                  (LABEL))
+#undef CMDNAME
+#define CMDNAME SetChrAiList
+#define DESCRIPTION \\
+/* Set Chr's AI list */
+#define PARAMS BYTE(CHR_NUM), \\
+               DBYTE(AI_LIST_ID) /*list*/
+_AI_CMD({ break; })
+#define CMDNAME PRINT
+#define DESCRIPTION \\
+/* debug text */
+#define PARAMS /*NONE*/
+_AI_DEBUG({ break; })
+#define CMDNAME Wide
+#define DESCRIPTION \\
+/* every width */
+#define PARAMS BYTE(A), DBYTE(B), TBYTE(C), QBYTE(D)
+_AI_CMD({ break; })
+"""
+
+
+def test_parse_skips_disabled_blocks_and_counts_debug_commands():
+    cmds = A.parse(SNIPPET)
+    assert [(c["opcode"], c["name"]) for c in cmds] == [(0, "GotoNext"), (1, "SetChrAiList"), (2, "PRINT"), (3, "Wide")]
+    assert cmds[0]["aliases"] == ["BREAK"] and cmds[0]["params"] == [{"name": "LABEL", "bytes": 1}]
+    assert cmds[0]["description"].startswith("Skips all commands") and "@param" in cmds[0]["description"]
+    assert [p["bytes"] for p in cmds[1]["params"]] == [1, 2] and cmds[1]["length"] == 4
+    assert cmds[2].get("debug") is True and cmds[2]["length"] == 1
+    assert cmds[3]["length"] == 1 + 1 + 2 + 3 + 4
+
+
+def test_committed_table_matches_goldeneye_opcode_range():
+    t = A.load()
+    cs = t["commands"]
+    assert t["count"] == len(cs) == 253                    # GoldenEye's AI opcodes run 0x00..0xFC
+    assert [c["opcode"] for c in cs] == list(range(253))
+    names = A.by_opcode()
+    assert names[0x00]["name"] == "GotoNext" and names[0x02]["name"] == "Label" and names[0x04]["name"] == "EndList"
+    assert names[0xAD]["name"] == "PRINT" and names[0xAD].get("debug")
+    assert names[0xFC]["name"] == "ObjectRocketLaunch"
+    for c in cs:
+        assert c["length"] == 1 + sum(p["bytes"] for p in c["params"])           # PRINT's text comes on top
+        assert all(1 <= p["bytes"] <= 4 for p in c["params"]) and c["description"]
+    assert len({c["name"] for c in cs}) == 253
+
+
+def test_print_is_variable_length_text():
+    assert A.by_opcode()[0xAD].get("variable") == "nul_terminated_text"
+
+
+def test_ai_list_decoder_walks_commands_and_print_text():
+    import struct
+    from gbox.bond_ai import ailists as L
+    t = A.by_opcode()
+    lst = bytes([0x00, 0x05]) + bytes([0xAD]) + b"run" + bytes(1) + bytes([0x05, 0x01, 0x00, 0x07]) + bytes([0x04])
+    setup = bytearray(40)
+    struct.pack_into(">10I", setup, 0, 0, 0, 0, 0, 0, 40, 0, 0, 0, 0)
+    setup += struct.pack(">II", 56, 0x401) + struct.pack(">II", 0, 0) + lst
+    out = L.ai_lists(bytes(setup), t)
+    assert [(x["id"], x["kind"]) for x in out] == [(0x401, "character")]
+    cmds = out[0]["commands"]
+    assert [c["name"] for c in cmds] == ["GotoNext", "PRINT", "SetChrAiList", "EndList"]
+    assert cmds[1]["args"] == {"TEXT": "run"} and cmds[2]["args"] == {"CHR_NUM": 1, "AI_LIST_ID": 7}
+    assert "SetChrAiList(CHR_NUM=1, AI_LIST_ID=7)" in L.text(out[0])
+    try:
+        L.decode_list(bytes([0x00, 0x05, 0xFD]), 0, t)
+        raise AssertionError("an unknown opcode must stop the decoder")
+    except L.DecodeError as e:
+        assert "0xfd" in str(e)
+
+
+def test_owned_goldeneye_rom_decodes_every_ai_list():
+    """On the Spark: every AI list of the owned PAL ROM's 34 setup files decodes to its EndList (662 lists)."""
+    from pathlib import Path
+    from gbox.bond_ai import ailists as L
+    rom = Path.home() / "gBox_alt/gbox-cache/eecd1708cb2b8d14/rom.z64"
+    if not rom.is_file():
+        import pytest
+        pytest.skip("owned GoldenEye ROM is not cached here")
+    levels = L.rom_levels(rom)
+    assert len(levels) == 34 and sum(len(v) for v in levels.values()) == 662
+    assert all(lst["commands"][-1]["name"] == "EndList" for v in levels.values() for lst in v)
+
+
+def test_behaviour_graph_states_edges_and_handoffs():
+    from gbox.bond_ai import behaviour as B
+    cmd = lambda at, name, **args: {"at": at, "name": name, "args": args}
+    lst = {"id": 0x408, "kind": "character", "offset": 0, "commands": [
+        cmd(0, "SetMyAlertness", CHRBYTE=0), cmd(2, "GotoNext", LABEL=0), cmd(4, "Label", ID=3),
+        cmd(6, "MyTimerStart"), cmd(7, "Label", ID=0), cmd(9, "Yield"), cmd(10, "IFICouldSeeBond", GOTOLABEL=9),
+        cmd(12, "IFMyTimerLessThanTicks", TICKS=300, GOTOLABEL=3), cmd(16, "GotoFirst", LABEL=0),
+        cmd(18, "Label", ID=9), cmd(20, "SetChrAiList", CHR_NUM=0xFD, AI_LIST_ID=2), cmd(24, "EndList")]}
+    g = B.graph(lst)
+    assert set(g["states"]) == {"entry", "3", "0", "9"} and g["unresolved"] == []
+    assert g["states"]["0"]["yields"] == 1 and g["states"]["entry"]["actions"][0]["do"] == "SetMyAlertness"
+    edges = {(e["from"], e["to"], e["when"]) for e in g["edges"]}
+    assert ("entry", "0", "always") in edges and ("3", "0", "fallthrough") in edges
+    assert ("0", "9", "IFICouldSeeBond") in edges and ("0", "3", "IFMyTimerLessThanTicks") in edges
+    assert next(e for e in g["edges"] if e["when"] == "IFMyTimerLessThanTicks")["args"] == {"TICKS": 300}
+    assert g["handoffs"] == [{"from": "9", "list": 2, "chr": 0xFD}]
+    lv = B.level_graphs([lst, dict(lst)])
+    assert set(lv["lists"]) == {"0x0408", "0x0408#2"} and lv["calls"] == [["0x0408", "0x0002"]]
+
+
+def test_owned_goldeneye_rom_global_lists():
+    """On the Spark: the 18 shared lists (g_GlobalAILists in the data segment) decode in the decomp's order."""
+    from pathlib import Path
+    from gbox.bond_ai import ailists as L
+    rom = Path.home() / "gBox_alt/gbox-cache/eecd1708cb2b8d14/rom.z64"
+    if not rom.is_file():
+        import pytest
+        pytest.skip("owned GoldenEye ROM is not cached here")
+    from gbox.goldeneye_files import GoldenEyeROM
+    gl = L.global_lists(GoldenEyeROM.load(rom))
+    assert [g["id"] for g in gl] == list(range(18)) and gl[0]["name"] == "AIM_AT_BOND"
+    assert [c["name"] for c in gl[0]["commands"]][:1] == ["TRYFireOrAimAtTarget"]
+    assert [c["name"] for c in gl[1]["commands"]] == ["Label", "Yield", "GotoFirst", "EndList"]
+    assert gl[15]["commands"][0]["name"] == "EndLevel"
+
+
+def test_global_table_finder():
+    import struct
+    from gbox.bond_ai import ailists as L
+    base = 0x80000000
+    data = bytearray(64) + b"".join(struct.pack(">II", base + 8, i) for i in (2, 0, 1, *range(3, 18))) + bytes(8)
+    assert L.find_global_table(bytes(data), base) == 64

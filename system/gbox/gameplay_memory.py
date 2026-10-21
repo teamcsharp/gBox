@@ -247,8 +247,8 @@ def install(app, store, config, auth):
         return FileResponse(path,media_type='application/octet-stream',filename=digest+'.bsv')
 
     @app.get('/api/gameplay-memory/runs/{sid}')
-    def events(sid:str,after:int=0,actor=Depends(auth)):
-        return {'session_id':sid,'events':archive.events(sid,after)}
+    def events(sid:str,after:int=0,limit:int=100,actor=Depends(auth)):
+        return {'session_id':sid,'events':archive.events(sid,after,limit)}
 
     @app.get('/api/gameplay-memory/runs/{sid}/demo')
     def demo(sid:str,actor=Depends(auth)):

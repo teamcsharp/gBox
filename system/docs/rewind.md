@@ -42,7 +42,9 @@ session ends; rings of a previous worker run are swept at the next launch).
   file is given back, the new one (`RetroArchAdapter.checkpoint_target()`) is protected before the ring's next save,
   and a save that lands in an unprotected slot never receives another slot's backup.
 - Dolphin (`checkpoint_state = "dir"`) saves the ring in its slot 8 (`Shift+F8` / `F8`), found as the fresh file
-  under `User/StateSaves`; the operator keeps slot 1.
+  under `User/StateSaves`; the operator keeps slot 1. Slot 10 belongs to demo jump states (`gbox/jumpstate.py`):
+  saved only (`Shift+F10` on the Spark, the all-modifier lane chord on Windows), copied to `runtime/jumpstates` and
+  removed; a demo launch boots straight into one with Dolphin's `--save_state`, so no key ever loads slot 10.
 - Holding the chord freezes the ring; stepping walks from the newest entry to the oldest. Letting go drops the
   entries newer than the one loaded (that future was undone, like RetroArch's own rewind) and the ring resumes.
 - `session_op op=rewind args={"seconds": N}` does the same from the API and the agent (N / interval steps).

@@ -75,3 +75,49 @@ def test_known_hook_reports_actual_save_result(monkeypatch,native,state):
     monkeypatch.setattr(re6_tool,'pre_launch',lambda ctx,mod:native)
     result=G.pre_launch({'game_id':G.RE6_ID,'platform':'xbox360'},SimpleNamespace())
     assert result['state']==state and result['applied']==(state=='applied')
+
+
+DOAPP_INVENTORY={'schema':1,'source':'/srv/gbox/doapp.zip','generated':100,
+  'games':{'1'*16:{'title':'Dead or Alive 3','title_source':'library','platform':'xbox',
+    'files':3,'entries':4,'entry_kinds':{'CHAR':2,'TEXT':1,'MODEL':1},
+    'entries_detail':{},
+    'categories':{'costumes':['a','b','c'],'stages':['s1']},
+    'warnings':[],'files_detail':[]}}}
+
+
+def _doapp_inventory():
+    inv=copy.deepcopy(DOAPP_INVENTORY)
+    game=inv['games']['1'*16]
+    game['entries']={'a':{'kind':'CHAR','hidden_costume':False},
+                     'b':{'kind':'CHAR','hidden_costume':True},
+                     'c':{'kind':'TEXT','hidden_costume':False},
+                     's1':{'kind':'MODEL','hidden_costume':True}}
+    return inv
+
+
+def test_doapp_inventory_report_summarizes_evidence_without_mutation():
+    inv=_doapp_inventory()
+    before=copy.deepcopy(inv)
+    report=U.doapp_inventory_report(inv,'1'*16)
+    assert inv==before  # evidence only, never mutates the inventory
+    assert report['kind']=='doapp_inventory_report'
+    assert report['title']=='Dead or Alive 3' and report['title_source']=='library'
+    assert report['files']==3 and report['entries']==4
+    assert report['entry_kinds']=={'CHAR':2,'MODEL':1,'TEXT':1}
+    assert report['categories']=={'costumes':3,'stages':1}
+    assert report['category_samples']['costumes']==['a','b','c']
+    assert report['hidden_costumes']==['b','s1'] and report['hidden_costume_count']==2
+    assert report['source']=='/srv/gbox/doapp.zip' and report['inventory_generated']==100
+    assert 'game_unlocks' in report['runtime_hooks']
+
+
+def test_doapp_inventory_report_requires_game_presence():
+    for inv in ({}, {'games':{}}, _doapp_inventory()):
+        with pytest.raises(ValueError):U.doapp_inventory_report(inv,'9'*16)
+
+
+def test_doapp_inventory_report_tolerates_missing_fields():
+    report=U.doapp_inventory_report({'games':{'5'*16:{}}},'5'*16)
+    assert report['title']=='5'*16 and report['title_source']=='unresolved'
+    assert report['entries']==0 and report['hidden_costumes']==[]
+    assert report['categories']=={} and report['warnings']==[]

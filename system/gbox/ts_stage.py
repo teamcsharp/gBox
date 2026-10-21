@@ -11,7 +11,7 @@ measured on both owned USA discs):
     {0x7f000000 | page, uncompressed size}  {0x7e000000 | compressed size, data offset}  file rows ...
     {0x7f000000, uncompressed size}
   The page data is one zlib stream (level 6, `78 9c`) at `0x800-aligned header end + data offset`; pages follow
-  each other, each padded to 0x800. A file row is {type << 24 | strcode(name), offset in the uncompressed page};
+  each other, each padded to 0x800 (shared/face.dat stores its pages raw: a row {0, size} opens the page). A file row is {type << 24 | strcode(name), offset in the uncompressed page};
   a file ends where the next one starts (or at the page end).
 * strcode: Konami's 24-bit name hash (`strcode`): `snake_def` = 0xf7a622 (Snake's model), `sna_def` = 0x413aa8
   (his texture set). The type byte is the file kind: 0x0a model (.kms/.kmx), 0x13 texture set (.tri), 0x0c motion
@@ -73,6 +73,7 @@ class Page:
     data: bytes
     rows: list[tuple[int, int]]            # (type << 24 | hash, offset)
     packed: bytes = b""                    # the stock zlib stream (reused when the page is unchanged)
+    raw: bool = False                      # stored uncompressed (face.dat): row {0, size} instead of 0x7f / 0x7e
 
 
 @dataclass
@@ -115,10 +116,20 @@ def parse_stage(blob: bytes, name: str = "", sector: int = 0, span: int | None =
     rows = [struct.unpack_from(">II", blob, 4 + 8 * k) for k in range(n)]
     hdr = (4 + 8 * n + SECTOR - 1) & ~(SECTOR - 1)
     st = Stage(name, sector, span if span is not None else len(blob))
-    k = 0
+    k, raw_off = 0, 0
     while k < n:
         key, val = rows[k]
-        if key >> 24 == PAGE and key & 0xFFFFFF:
+        if key == 0 and val:                               # an uncompressed page (shared/face.dat)
+            data = bytes(blob[hdr + raw_off: hdr + raw_off + val])
+            raw_off += (val + SECTOR - 1) & ~(SECTOR - 1)
+            k += 1
+            frows = []
+            while k < n and not (rows[k][0] >> 24 == PAGE and rows[k][0] & 0xFFFFFF == 0):
+                frows.append(rows[k])
+                k += 1
+            k += 1
+            st.pages.append(Page(len(st.pages), data, frows, b"", True))
+        elif key >> 24 == PAGE and key & 0xFFFFFF:
             pk, off = rows[k + 1]
             if pk >> 24 != PACKED:
                 raise ValueError(f"stage {name}: page {key & 0xffffff} has no packed-data row")
@@ -144,6 +155,12 @@ def build_stage(st: Stage, changed: set[int] | None = None, level: int = 9) -> b
     changed = set(changed or ())
     rows, blobs, off = [], [], 0
     for p in st.pages:
+        if p.raw:
+            rows += [(0, len(p.data))] + list(p.rows) + [(PAGE << 24, len(p.data))]
+            pad = (-len(p.data)) % SECTOR
+            blobs.append(p.data + bytes(pad))
+            off += len(p.data) + pad
+            continue
         packed = p.packed if (p.number not in changed and p.packed) else zlib.compress(p.data, level)
         rows += [((PAGE << 24) | p.number, len(p.data)), ((PACKED << 24) | len(packed), off)]
         rows += list(p.rows)

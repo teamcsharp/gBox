@@ -63,6 +63,7 @@
     if(Object.keys(cage).length)out.lattice={offsets:cage};
     if(p.plant_feet === true)out.plant_feet=true;
     if(p.preserve_geometry === true)out.preserve_geometry=true;
+    if(p.turn === true)out.turn=true;                        // retarget_profile.normalize: turn (180 degrees about up)
     if(p.shoe_tops && typeof p.shoe_tops==='object'){
       const tops={};for(const side of ['l','r'])if(side in p.shoe_tops)tops[side]=num(p.shoe_tops[side],.15,0,.5);
       if(Object.keys(tops).length)out.shoe_tops=tops;
@@ -80,7 +81,7 @@
   }
   function isIdentity(p) {
     const n = normalize(p);
-    return !n.lattice && !n.plant_feet && !n.shoe_tops && !n.preserve_geometry && !Object.keys(n.adjust).length && !Object.keys(n.joints).length
+    return !n.lattice && !n.plant_feet && !n.shoe_tops && !n.preserve_geometry && !n.turn && !Object.keys(n.adjust).length && !Object.keys(n.joints).length
       && ["height", "ground", "head", "torso_width", "arm_length", "leg_length"].every(k => n[k] === DEFAULT[k]);
   }
   function shoeRoles(flat,roles,profile,floor,height){
@@ -476,6 +477,37 @@
     return [l, u, [l[1] * u[2] - l[2] * u[1], l[2] * u[0] - l[0] * u[2], l[0] * u[1] - l[1] * u[0]]];
   }
   const rotate = (R, v) => mv(R, v);
+  // "Turn around" (profile.turn, retarget_profile.turn_frame): the fit frame turned 180 degrees about up - the donor's
+  // left goes to -X and its front to -Z, for a slot whose skeleton faces the other way. The donor's own views and its
+  // joint moves stay in the un-turned frame (retarget_profile.donor_frame); only the fit uses the turned one.
+  const TURN = [[-1, 0, 0], [0, 1, 0], [0, 0, -1]];
+  function turnFrame(R, profile) { return normalize(profile).turn ? mul(TURN, R) : R; }
+  // "Swap left <-> right": every l_* role takes its r_* twin's bone and back (a rig whose left/right are named from
+  // the viewer's side faces backwards and bends its elbows the wrong way). Saved as ordinary role overrides.
+  const twin = r => (/^l_/.test(r) ? "r_" + r.slice(2) : /^r_/.test(r) ? "l_" + r.slice(2) : r);
+  function swapSides(roles) {
+    const out = {};
+    for (const [r, b] of Object.entries(roles || {})) if (b) out[twin(r)] = b;
+    return out;
+  }
+  // the profile parts that follow a donor bone across the swap: the swapped facing turns the donor frame 180 degrees
+  // about up (left and front flip), so a joint move keeps its bone with x and z negated, the shape cage turns the same
+  // way and a shoe top keeps its side of the body. Target-space adjustments (per role) stay with their role.
+  function swapProfileSides(profile) {
+    const p = normalize(profile), out = JSON.parse(JSON.stringify(p)), flip = d => [-d[0], d[1], -d[2]].map(x => x || 0);
+    out.joints = {};
+    for (const [r, d] of Object.entries(p.joints)) out.joints[twin(r)] = flip(d);
+    if (p.lattice) {
+      const offsets = {};
+      for (const [k, d] of Object.entries(p.lattice.offsets)) {
+        const i = +k, x = i % 3, y = Math.floor(i / 3) % 3, z = Math.floor(i / 9);
+        offsets[String((2 - x) + 3 * y + 9 * (2 - z))] = flip(d);
+      }
+      out.lattice = { offsets };
+    }
+    if (p.shoe_tops) { out.shoe_tops = {}; for (const [side, v] of Object.entries(p.shoe_tops)) out.shoe_tops[side === "l" ? "r" : "l"] = v; }
+    return normalize(out);
+  }
 
   // a humanoid at the target game's proportions when no stock model of that slot is in the collection
   function standardSkeleton(height = 1.7) {
@@ -490,7 +522,7 @@
     applyVertex, applyPositions, guessRoles, assign, issues, roleOverrides, applyOverrides, boneRoles, handles, drag, hit,
     view, frame, baseFit, standardSkeleton, euler, facing, rotate, JOINT_RANGE, LIMB_CHAINS, GOALS, JOINT_LABELS, jointOf,
     setJoint, moveJoint, resetJoint, movedPositions, rotBetween, boundaryNormal, resegment, tPose, posedJoint, goalCircles,
-    dragJoint, limbFit, compose, latticePoint, deformCage, shoeRoles };
+    dragJoint, limbFit, compose, latticePoint, deformCage, shoeRoles, TURN, turnFrame, swapSides, swapProfileSides, mul };
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.GBoxRetargetHandles = api;
 })(typeof window !== "undefined" ? window : globalThis);

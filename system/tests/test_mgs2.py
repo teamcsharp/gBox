@@ -450,3 +450,63 @@ def test_owned_disc_archives_and_snake(tmp_path):
     r = M.extract_bytes(kms, [pack], tmp_path / "snake.glb", "snake")
     assert r["verified"] and len(r["roles"]) == 18 and 1.7 < r["height_m"] < 2.1 and not r["missing_textures"]
     d.close()
+
+
+def test_stored_normals_point_into_the_body_and_export_outward():
+    """#2367: the kms stores normals pointing into the body; the reader exports them outward and the writer stores
+    donor normals back the way the game expects, so a written part reads back with the same outward normals."""
+    import struct
+    b = humanoid_kms(SNA_MT, 0xAAAA01)
+    k = M.parse_kms(b)
+    p = k["meshes"][0]["parts"][0]
+    raw = np.frombuffer(b, "<i2", len(p["pos"]) * 4, p["offsets"][1]).reshape(-1, 4)[:, :3].astype(float) / 4095
+    assert ((raw * p["pos"]).sum(1) < 0).all(), "the file stores normals pointing into the box"
+    assert ((p["nrm"] * p["pos"]).sum(1) > 0).all(), "the reader hands out normals pointing out of the box"
+    g = M.assemble(k)[0xAAAA01]
+    P, T, N = g["pos"], g["tris"], g["nrm"]
+    fn = np.cross(P[T[:, 1]] - P[T[:, 0]], P[T[:, 2]] - P[T[:, 0]])
+    assert ((fn * N[T[:, 0]]).sum(1) > 0).all(), "every exported face winds the way its (outward) normal points"
+    # the writer's convention mirrors the reader's: an outward donor normal lands in the file pointing inward
+    nrm = np.array([[0.0, 1.0, 0.0]])
+    stored = np.clip(np.round(-nrm * 4095), -4095, 4095)
+    assert stored.tolist() == [[0.0, -4095.0, 0.0]]
+
+
+def test_reader_version_two_re_extracts_inside_out_entries():
+    """#2367: entries made before the normal fix (no mgs2_reader field) are stale and collected again."""
+    from gbox import characters as C
+    assert M.READER_VERSION == 3                       # 3: 4-bit textures use their CSA palette (#2798)
+    assert C.READER_VERSIONS["mgs2"] == ("gbox.mgs2_models", "mgs2_reader")
+    old = {"source": {"game_title": "Metal Gear Solid 2 - Substance", "platform": "ps2"}}
+    assert C.reader_status(old) == {"extractor": "mgs2", "entry": 1, "current": 3, "stale": True}
+    assert C.reader_status({**old, "mgs2_reader": 2})["stale"], "entries with garbled 4-bit textures are collected again"
+    assert not C.reader_status({**old, "mgs2_reader": 3})["stale"]
+
+
+def test_psmt4_textures_take_the_palette_their_csa_names():
+    """#2798: the Cyborg Ninja's hand textures (PSMT4, CSA 3..13) decoded transparent with CSA ignored."""
+    import numpy as np
+    clut = np.zeros((16, 16, 4), np.uint8)
+    for y in range(16):
+        for x in range(16):
+            clut[y, x] = (x * 16, y * 16, 7, 0x80)
+
+    class Mem:
+        def read4(self, tbp, tbw, w, h):
+            return np.tile(np.arange(16, dtype=np.uint8), (h, w // 16))
+
+        def read32(self, cbp, bw, w, h):
+            return clut[:h, :w].copy().reshape(-1)
+    for csa in (0, 1, 3, 13):
+        pal = M.csa_palette(clut.reshape(-1), csa)
+        assert [tuple(pal[i][:2]) for i in (0, 7, 8, 15)] == [
+            ((csa & 1) * 8 * 16, (csa >> 1) * 2 * 16), (((csa & 1) * 8 + 7) * 16, (csa >> 1) * 2 * 16),
+            ((csa & 1) * 8 * 16, ((csa >> 1) * 2 + 1) * 16), (((csa & 1) * 8 + 7) * 16, ((csa >> 1) * 2 + 1) * 16)]
+        tp = object.__new__(M.TexturePack)
+        tp._pix = tp._clut = Mem()
+        tp.entries = {1: {"rect": (0.0, 0.0, 1.0, 1.0), "tbp": 0, "tbw": 1, "psm": 0x14, "tw": 64, "th": 2,
+                          "cbp": 0, "csa": csa}}
+        img = tp.image(1)
+        assert img.shape == (2, 64, 4) and (img[..., 3] == 255).all(), "every colour of the chosen palette is opaque"
+        assert tuple(img[0, 9, :2]) == tuple(pal[9][:2])
+    assert M.READER_VERSION >= 3

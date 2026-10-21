@@ -1,3 +1,110 @@
+# Hermes throughput audit — 2026-10-21
+
+This audit used read-only authenticated API requests, canonical local state, retained execution records, and archived run evidence on the prime Spark. It did not dispatch duplicate work, change models or capacity, restart a provider, or interrupt gameplay. Times below are UTC.
+
+## Dispatch outcomes and denominator
+
+The fixed reporting window is **2026-10-20 17:53:39 through 2026-10-21 17:53:39**. The denominator is **121 distinct inbox reports whose latest confirmed dispatch falls within that window**. It is not every execution occurrence, every retry, or all favorite-game work.
+
+| Latest dispatched occurrence | Reports |
+| --- | ---: |
+| Completed execution | 62 |
+| Failed execution | 40 |
+| Running at the cutoff | 19 |
+| Cancelled or timed-out execution status | 0 |
+| Total | 121 |
+
+The queue labels 102 of these reports `finished` and 19 `queued`. `finished` includes both the 62 completed and 40 failed occurrences. It does not mean that the request is solved. The reports themselves were 93 `open`, 26 `in_progress`, and 2 `done` when checked. The two done reports were #2857 and #2910; this audit did not independently repeat their acceptance checks.
+
+Method:
+
+1. Read `~/gBox/system/gbox-data/hermes-dispatch/work-queue.json`; select inbox items with a nonempty job ID and `last_dispatched` within the fixed window.
+2. Match the latest occurrence in `~/.hermes/cron/executions.db` by job ID and start time no earlier than dispatch minus two seconds. Do not use a previous execution of the same recurring job. Exclude claims after the cutoff and treat completion after the cutoff as still running.
+3. For a pruned occurrence, use the exact queue `last_run_id` to find `run:<id>` in `~/gBox/system/gbox-data/hermes-dispatch/result-review.sqlite3`. Validate the archived canonical run's job ID and start time before accepting its status.
+4. This recovered 67 occurrences from the execution DB and 54 from archived canonical run payloads, leaving no unknown outcomes in the 121-report cohort. Read failure text from the matching cron output's `## Error` section, not from a model's diagnosis or an older error quoted in its prompt.
+
+Hermes caps the execution DB at 1,000 terminal records (`~/.hermes/hermes-agent/cron/executions.py`, `MAX_TERMINAL_EXECUTIONS` and its delete query). Frequent control jobs share this retention budget. Counting only retained execution rows initially missed 54 outcomes; treating those missing rows as successes would be incorrect.
+
+## Failure evidence
+
+| Terminal error in the cohort | Count | Latest failed execution |
+| --- | ---: | --- |
+| HTTP 429: `Local inference: too many concurrent requests` | 30 | Oct 21 14:31:37 |
+| Response remained truncated after four continuation attempts | 9 | Oct 21 15:32:24 |
+| Context compression timed out without reducing the conversation | 1 | Oct 21 11:47:29 |
+
+The 30 concurrency failures span Oct 21 03:29:10–14:31:37. The 40 failed occurrences were assigned to MiniMax in 39 cases and Spark2 in one. The compression timeout is recorded as `failed`, not as a separate `timed_out` status.
+
+A later proxy-log check at **18:05:28** found MiniMax's last concurrency-error call timestamp at **14:31:31**. Its last-hour retained calls were **467 successful, zero errors**. Other overload errors occurred at 15:00 and 15:50. Thus the cohort's concurrency failures are historical evidence, not proof that MiniMax is currently failing at the same rate.
+
+Spark2's last-hour retained proxy calls at 18:05:28 were **253 successful, 36 errors, and one busy response**; recent errors said `Local inference stream interrupted before completion`. That log message does not distinguish caller cancellation, upstream disconnect, or timeout. It needs correlation with request/execution timing before attributing a cause. A partially emitted tool stream must never be replayed automatically.
+
+Proxy log timestamps identify call start, whereas execution timestamps identify run completion. Rotating `local-llm-calls.jsonl` logs are an observation window, not an unlimited historical ledger.
+
+## Active capacity and admission
+
+At **17:53:39–17:53:44**, 38 Hermes executions were active: Spark2 22 and MiniMax 16. The inference pool caps were **24 and 16**, respectively. Spark2 had 24 active proxy calls and five waiting; its upstream metrics showed 15 running and nine waiting. MiniMax had six active proxy calls and none waiting. Agent counts and simultaneous inference calls measure different things.
+
+At **18:05:28**, the same caps remained in place: Spark2 24 active calls/three waiting; MiniMax eight active calls/zero waiting. Both nodes reported Ready. The active models were `Qwen/Qwen3-Coder-Next-FP8` and `minimax-m3.1-flash:cloud`. A separate shared/default route advertised a Qwen3.8 trial with capacity two; that did not replace the active 24-slot Spark2 pool in these observations. The `ollama-cloud/kimi-k2.7-code` route had no recorded calls or runs in the server's current-day window inspected at 17:52.
+
+Worker CPU readings at **17:58:32** were Spark 66.9%, i9-NUC 53.4%, and JAYBUILTFINALE 45.6%. All were online with background testing enabled. Earlier Spark admission was denied because its NVIDIA GB10 was at **87% GPU utilization against a 70% admission budget**; 87% was not a CPU reading. The protected operator PC was waiting for five minutes without operator input. No worker was launched or restarted for this audit.
+
+Read-only API surfaces used: `/api/hermes/local/nodes`, `/api/hermes/local`, `/api/hermes/task-mode`, `/api/hermes/providers?window=today`, and `/api/workers`. The provider `today` window began Oct 21 06:00 UTC and must not be confused with the rolling 24-hour dispatch cohort. The pure activation snapshot and local job DB were used instead of `GET /api/tasks`, which can enqueue inventory work.
+
+## Why completed runs are not closed reports
+
+The queue's `reconcile()` records a model report, requests result review, marks the occurrence finished, and applies retry backoff. It does not close the request. A completed execution can be a useful partial milestone, a blocked investigation, or an unsuccessful publication attempt.
+
+Of the 62 completed occurrences, 55 had no publication receipt, six had an older receipt, and one had a publication within the fixed window (#2057, PR #765, already merged). A subsequent review-ledger read found 42 of the completed occurrences without a verdict, 15 with a blocked verdict, and five with a retry verdict. Those review counts can change after the fixed execution cutoff. Review output is guidance, not independent proof that its diagnosis is correct.
+
+Concrete bottlenecks and bounded next actions:
+
+- **Tool argument mismatches:** #1371's status closure failed because `solved_by.verified_by` exceeded its 80-character limit. #2970's publisher call used an object where a list of file strings was required. Other reviews show numeric report numbers used in place of full request IDs, incorrect checkpoint stage/status values, and test lists containing objects rather than path strings. Use the actual tool schema and validate the small final payload before retrying the failed handoff.
+- **Missing publication and wiring:** #2969 produced a local commit but exhausted its budget before publishing or completing HTTP/coaching wiring. Preserve and review that patch rather than dispatching duplicate implementation. Reserve the final calls for tests, a durable checkpoint, and publication.
+- **Unverified research scope:** Several completed runs contain inventory or static analysis but no verified writer, fresh-boot test, or rollback proof. Keep the parent request open while publishing a truthful, useful bounded source milestone. Do not label missing game assets or save semantics as solved.
+- **Review backlog and errors:** The observed review ledger had hundreds of pending records, plus invalid JSON answers and transient network errors. Deliver durable review guidance without rerunning already completed implementation; refresh stale worker-admission diagnoses against current workers before treating them as current blockers.
+- **Stale workspaces:** #1371's isolated copy lacked later fixes already deployed. Compare against current main before publishing, so a retry cannot regress the current implementation.
+
+These actions do not require raising concurrency caps or changing the operator's model trials.
+
+## Reviewable output and assimilation
+
+- **#2969:** commit `3aaca405e358658b5af9d1ddd8b5d624c82ccf30`, branch `hermes/request-2969-1792597115713632580`, workspace `/home/ehm_eckx/gBox_alt/gbox-hermes-tasks/5d8e0482ffa54a08`. It completed at 17:18:23. No publish receipt or PR existed at audit time. Source review found the registry expected `tools.PLAYBOOKS` to be a dict even though the actual contract is a tuple, persistence failures were swallowed, and read-modify-write updates lacked concurrency protection. Its tests were model-reported, not independently rerun by this audit. These findings were handed to the separate assimilation agent for repair and verification.
+- **#2970:** completed at 17:26:23 with only an untracked `system/docs/spark2-live-state-2026-10-21.md`; no new commit or PR. It documented incomplete downloads/build prerequisites, not successful model activation.
+- **#2964:** still running in the initial snapshot; no duplicate was launched. #2965–#2968 had no dispatch job in that snapshot.
+- Fresh GitHub metadata showed publication receipts #783 and #765 already merged, #753 closed unmerged as a draft, and #726 still an open draft. Receipt `pr_state` alone was stale and was not used as merge evidence.
+- One favorite-game checkpoint in the rolling window was verified at the **analysis** stage for Illbleed (request `9f15106993224139`); that does not establish runtime or writer acceptance.
+
+## Retry-After repair
+
+The deployed local admission path already queues within the configured permit count; its full-queue/wait-timeout responses are 503. The quoted `Local inference: ...` 429 comes from an upstream error response. Before this repair, both `LocalLLM.complete()` and `LocalLLM.stream()` discarded upstream `Retry-After`, and the pool's sub-500 `Busy` response discarded any retry hint. Hermes's retry implementation supports `Retry-After`, so losing it prevents the caller from honoring the provider's requested delay.
+
+The repair preserves valid integer delay-seconds (including zero) or HTTP dates through completion, pre-stream errors, and the pool response. Malformed, negative, fractional, oversized, or multiline hints are omitted. When all existing 5xx failover candidates fail, the last valid hint is retained; without one, the existing 30-second fallback remains. Context-size retry reports the final response's hint. Existing HTTP status mapping, concurrency limits, model selection, failover order, and partial-stream behavior are unchanged. The repair adds no new inference retry or stream replay.
+
+Focused offline validation: **58 passed** in `tests/test_llm_proxy.py` and `tests/test_hermes_pool.py`. These cover numeric/date/invalid hints, streaming and nonstreaming errors, context re-cap errors, exhausted failover, capacity limits, and the existing prohibition on replaying a partial tool stream. Runtime deployment and improved throughput require a later observation; this document does not claim either from unit tests alone.
+
+## Status handoff repair
+
+The MCP `set_request_status` tool previously advertised solver-credit fields as unconstrained strings, while the HTTP server enforces service/system/verified_by/run_id limits of 80 characters, model of 160, and verification of 1–2000. This mismatch directly explains the observed #1371 closure 422.
+
+The tool now advertises those exact limits and checks solver credit before sending the HTTP mutation. An oversized reviewer label produces an actionable correction: use a concise identity and put the complete test evidence in `verification` or `note`. Longer verification belongs in `note` or `reply_request`. The tool does not silently truncate supplied evidence, infer acceptance, or automatically close a request. Solver credit remains valid only with an explicit `done` request; existing server acceptance guards still apply.
+
+Focused offline validation: **29 passed** in `tests/test_mcp_requests.py`. The regression submits the actual oversized reviewer-label case and confirms no HTTP mutation occurs, then submits a corrected label with the full 2000-character verification and a longer note through the real HTTP server and checks persistence. This demonstrates a usable completion handoff after the caller supplies verified evidence, not independent verification of an arbitrary task.
+
+Source entry points: `gbox/llm_proxy.py`, `gbox/hermes_pool.py`, `gbox/hermes_work_queue.py`, `gbox/hermes_result_review.py`, `gbox/hermes_delivery.py`, and the request status route in `gbox/server.py`. Deployed proxy source SHA256 observed during the audit: `199f8c16099cf4d5d6f156059c01565083206b3cf0c9b51a82befc55b2a3f0c6` (file mtime Oct 20 00:15:04 UTC). Deployed queue source mtime was Oct 21 15:29:53 UTC; a file timestamp alone does not prove when a running process loaded the file.
+
+## Productive task packaging
+
+The dedicated-host task prompt already specified a bounded milestone and a handoff reserve, but the large-task reserve named only tests and a checkpoint. The proxy's near-budget reminder also omitted publication. This could leave passing source in the workspace while the final response reported an unfinished handoff, as observed for #2969.
+
+The large-task prompt now asks the agent to reuse the existing workspace, patch, published commit and pending job IDs; resume the first missing acceptance step; and identify one bounded deliverable plus its exact verification before new investigation. Passing source is published with explicit file paths and test-path strings before optional exploration. Research work retains a verified evidence artifact. Reserved calls cover verification, publication and a checkpoint containing actual results, returned receipts, exact pending jobs and the next acceptance step. The proxy's existing near-budget reminder now repeats that delivery sequence while tools are still available. A final response without a publication receipt leaves publication pending; partial work stays in progress.
+
+This changes prompt packaging only: models, concurrency/admission settings, total tool budgets, handoff reserve sizes and the final-checkpoint cutoff are unchanged. Focused prompt/dispatch/budget verification: **54 passed** across `test_hermes_local_dispatch.py`, `test_second_spark.py`, and `test_hermes_run_budget.py`. These checks establish the dispatched and near-cutoff instructions and their tool availability; improved completion rates still require later observed runs.
+
+## Preserved operational guidance and historical records
+
+The dated audit above supersedes earlier throughput snapshots, active route/capacity observations, and its own initial incomplete outcome count. The operational guidance and historical experiments below are retained. Older dates describe their recorded state, not the current provider configuration or a new instruction to change it. In particular, the earlier Spark2 compression trial and rollback remain relevant evidence; the newer interrupted streams have not yet been individually correlated to a cause.
+
 # Hermes delivery and dispatch feedback
 
 Tracking report: #1132 (`6d7a1986e8034411`), 2026-10-10.
@@ -13,8 +120,8 @@ estimates of the subscription's remaining allowance.
 ## Delivery
 
 `prepare_task_workspace` creates a reusable per-ticket worktree from origin/main
-in `/home/ehm_eckx/gbox-hermes-tasks`. Its repository is the tracked clone at
-`/home/ehm_eckx/gbox-hermes-repo`. Dirty patches survive subsequent attempts.
+in `/home/ehm_eckx/gBox_alt/gbox-hermes-tasks`. Its repository is the tracked clone at
+`/home/ehm_eckx/gBox_alt/gbox-hermes-repo`. Dirty patches survive subsequent attempts.
 Agents edit this worktree, never the shared live runtime concurrently.
 
 `publish_task_changes` validates explicit source files and focused Python tests,
@@ -248,6 +355,12 @@ do not wait until every untouched request or title has been visited. Explicit pi
 native repairs and published work awaiting acceptance receive priority within each group.
 Automatic replacement failures, extraction requests, tool gaps and operator child requests
 remain actionable; recurring review reminders and agent notifications are excluded.
+Dated agent handoffs (`context.handoff = "YYYY-MM-DD"`, `author = "agent"`) also
+remain actionable when their request ID or number is explicitly in the operator's
+priority list. This admits resumed work filed with `automated = true`, including
+the October 21 handoff tickets, without treating a game's priority or an ordinary
+automated reminder as an instruction to run it. Ownership, retry, review and
+worker admission checks still apply.
 Two pending heavyweight native analysis jobs defer new inventory
 and analysis admissions while allowing independent writer or acceptance work.
 This is admission backpressure, not a new worker execution limit.
@@ -284,3 +397,39 @@ only restores an eligible route after quota recovery; it does not launch its
 old competing favorites job. The one-minute pump and new MCP processes load
 fresh source; an already running backend needs ordinary safe activation for
 its updated toggle and task-view code.
+
+## Spark2 compression time budget
+
+On October 21, proxy interruptions near 600 seconds correlated with Hermes
+`Context compression reached its total ceiling` warnings while tokens were
+still arriving. The compression route was explicitly Qwen3-Coder-Next-FP8 on
+Spark2, with a 300-second auxiliary timeout. Hermes's separate host ceiling
+defaulted to 600 seconds; the auxiliary stream already allowed up to 1200.
+
+The bounded live trial at 15:26:07 UTC raised this ceiling to 1200. Hermes
+adopted it without restarting, and the first summary continued producing tokens
+past 600 and 900 seconds. At 15:46:32 it still hit the new ceiling:
+`agent.log` recorded attempt `d186a621e4b04a889747987b92b8f175` as aborted with
+`commit_fence_cancelled` after 1,200,016 ms; the proxy recorded a 1200.22-second
+interruption. The following committed result was Hermes's deterministic
+fallback, not a completed model summary. This trial did not establish a
+throughput improvement, so the explicit override was removed at 15:47:44 UTC,
+restoring the original 600-second default while preserving all other settings.
+Keep that default until further evidence supports another bounded trial.
+
+`python scripts/configure_hermes_compression.py ~/.hermes/config.yaml ~/.hermes/hermes-agent`
+previews the supported 1200-second trial for future diagnosis. Add `--apply`
+only for a deliberately observed trial; it writes a private, byte-exact backup
+and uses atomic replacement. The tool
+requires the measured route and supported runtime setting, preserves custom
+timeout overrides, and prints no config credentials. Only
+`compression.context_total_ceiling_seconds` changes. Effective idle protection
+stays at 300 seconds; capacity, provider, auxiliary timeout and spend limits
+remain as configured. Hermes reads this setting for subsequent compression
+attempts; no model or worker restart is needed.
+
+Verify subsequent compression commits and proxy interruption rates before
+further tuning. A longer ceiling permits useful summaries to finish but does
+not itself prove improved throughput. To roll back, restore the prior value
+(600, or remove this key if previously absent) while preserving newer settings;
+the backup records the original configuration.

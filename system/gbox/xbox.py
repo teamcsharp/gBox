@@ -187,6 +187,16 @@ def ensure_cxbx(config: Config, progress=lambda *_: None) -> Path:
     return exe
 
 
+def log_settings(debug: bool, log_path: Path) -> dict[str, str]:
+    """Cxbx [core] logging keys for a launch. A debug launch (launch_game debug=True) logs every HLE module at
+    DEBUG so the kernel log shows what the game does after the Direct3D caps dump (JSRF black screen, #2412); a
+    normal launch writes INFO back so a previous debug run never slows the operator's game."""
+    core = {"KrnlDebugMode": "0x2", "KrnlDebugLogFile": str(log_path), "LogLevel": "0" if debug else "1"}
+    if debug:
+        core["LoggedModules"] = "0xFFFFFFFF"     # the first 32 modules: D3D8, DSOUND, XAPI, kernel, file system...
+    return core
+
+
 def _set_ini(path: Path, sections: dict[str, dict[str, str]]):
     """Edit only requested keys; Cxbx's repeated profile/history keys are meaningful."""
     source = path.read_text(encoding="utf8", errors="replace") if path.exists() else ""
@@ -216,8 +226,22 @@ def _set_ini(path: Path, sections: dict[str, dict[str, str]]):
     path.write_text("\n".join(out) + "\n", encoding="utf8")
 
 
-def prepare_xbe(source: str | Path, config: Config, progress=lambda *_: None) -> Path:
+def unpack_archive(source: Path, config: Config, progress=lambda *_: None) -> Path:
+    """The archive's one default.xbe or one DVD image, unpacked into the local ROM cache (xemu.py shares this)."""
     from . import rom_archives
+    entries = rom_archives.members(source)
+    choices = [e["name"] for e in entries if PurePosixPath(e["name"].replace("\\", "/")).name.lower() == "default.xbe"]
+    images = [e["name"] for e in entries if PurePosixPath(e["name"].replace("\\", "/")).suffix.lower() in (".iso", ".xiso")]
+    if len(choices) == 1:
+        return rom_archives.prepare(source, config, choices[0], progress)
+    if not choices and len(images) == 1:
+        from .xbox_disc import validate_archive
+        validate_archive(entries)
+        return rom_archives.prepare(source, config, images[0], progress)
+    raise ValueError(f"Xbox archive must contain exactly one default.xbe or one DVD image: {source.name}")
+
+
+def prepare_xbe(source: str | Path, config: Config, progress=lambda *_: None) -> Path:
     source = Path(source)
     if source.is_dir():
         candidates = [p for p in source.iterdir() if p.is_file() and p.name.lower() == "default.xbe"]
@@ -225,17 +249,7 @@ def prepare_xbe(source: str | Path, config: Config, progress=lambda *_: None) ->
             raise ValueError(f"Xbox DVD folder must contain one default.xbe: {source}")
         source = candidates[0]
     elif source.suffix.lower() in (".7z", ".zip"):
-        entries = rom_archives.members(source)
-        choices = [e["name"] for e in entries if PurePosixPath(e["name"].replace("\\", "/")).name.lower() == "default.xbe"]
-        images = [e["name"] for e in entries if PurePosixPath(e["name"].replace("\\", "/")).suffix.lower() in (".iso", ".xiso")]
-        if len(choices) == 1:
-            source = rom_archives.prepare(source, config, choices[0], progress)
-        elif not choices and len(images) == 1:
-            from .xbox_disc import validate_archive
-            validate_archive(entries)
-            source = rom_archives.prepare(source, config, images[0], progress)
-        else:
-            raise ValueError(f"Xbox archive must contain exactly one default.xbe or one DVD image: {source.name}")
+        source = unpack_archive(source, config, progress)
     if source.suffix.lower() in (".iso", ".xiso"):
         from .xbox_disc import prepare
         source = prepare(source, config, progress)
@@ -359,6 +373,8 @@ class _OwnedProcess:
 
 class XboxAdapter:
     name = "cxbx"
+    label = "Cxbx"                             # how launch errors name this emulator (xemu.XemuAdapter: "xemu")
+    display_name = "Cxbx-Reloaded"
     render_class = "CxbxRender"
     supported = {"launch_game", "stop_game", "query_runtime", "get_frame"}
     checkpoint_state = False
@@ -369,6 +385,7 @@ class XboxAdapter:
         self.render_pid, self.render_window, self._owned = None, None, {}
         self.ready = False
         self.log_path = None
+        self.debug = False                     # launch_game debug=True: full kernel log (log_settings)
         self._render_missing_since = None
         import threading
         self._capture_local = threading.local()
@@ -419,15 +436,13 @@ class XboxAdapter:
         return bool(live) and time.monotonic() - self._render_missing_since < 5
 
     def launch_game(self, rom: str) -> dict:
-        import psutil
-        from .adapters import capture_start, keep_offscreen
         progress = getattr(self, "progress", lambda *_: None)
         exe = ensure_cxbx(self.config, progress)
         xbe = prepare_xbe(rom, self.config, progress)
         self.log_path = exe.parent / "gbox-kernel.log"
         # One active launch per worker; do not rewrite settings of a running Cxbx instance.
         _set_ini(exe.parent / "settings.ini", {
-            "core": {"KrnlDebugMode": "0x2", "KrnlDebugLogFile": str(self.log_path)},
+            "core": log_settings(bool(getattr(self, "debug", False)), self.log_path),
             "video": {"FullScreen": "false", "MaintainAspect": "true"},
         })
         self.output_path = exe.parent / "gbox-launch.log"
@@ -438,32 +453,39 @@ class XboxAdapter:
             args = [str(exe), "/load", str(xbe.resolve()), "/dm", "2", "/df", str(self.log_path.resolve())]
         else:
             args = [str(exe), str(xbe.resolve())]
+        return self._boot(args, exe.parent, xbe, progress)
+
+    def _boot(self, args: list[str], cwd: Path, rom: Path, progress) -> dict:
+        """Start the emulator, then wait until its owned self.render_class window stays responsive for 3 seconds."""
+        import psutil
+        from .adapters import capture_start, keep_offscreen
+        label = self.label
         try:
-            self.launcher = subprocess.Popen(args, cwd=exe.parent, stdout=self._output, stderr=subprocess.STDOUT,
+            self.launcher = subprocess.Popen(args, cwd=cwd, stdout=self._output, stderr=subprocess.STDOUT,
                                              startupinfo=capture_start())
             try:
                 self._owned = {self.launcher.pid: psutil.Process(self.launcher.pid).create_time()}
             except psutil.NoSuchProcess:
-                raise RuntimeError(f"Cxbx exited immediately (exit {self.launcher.poll()}). {self.log_tail(3000)}") from None
+                raise RuntimeError(f"{label} exited immediately (exit {self.launcher.poll()}). {self.log_tail(3000)}") from None
             self.proc = _OwnedProcess(self)
             # Cxbx honors SW_SHOWDEFAULT for its render window. A minimized
             # startup yields a 0x0 client and can prevent the GPU from starting;
             # show without focus, parking it until the desktop docks it.
             keep_offscreen(self.launcher.pid)
-            progress(76, "Waiting for the Xbox game's Cxbx render window")
+            progress(76, f"Waiting for the Xbox game's {label} render window")
             stable_since, stable_hwnd = None, None
             deadline = time.monotonic() + float(getattr(self, "boot_timeout_s", 90))
             while time.monotonic() < deadline:
                 live = self._live()
                 if not live:
-                    raise RuntimeError(f"Cxbx exited before an Xbox render window opened (exit {self.launcher.poll()}). {self.log_tail(3000)}")
+                    raise RuntimeError(f"{label} exited before an Xbox render window opened (exit {self.launcher.poll()}). {self.log_tail(3000)}")
                 windows = owned_windows(live)
                 dialog = next((row for row in windows if row["class"] == "#32770"), None)
                 if dialog:
                     explanation = dialog.get("text") or "\n".join(control.get("text", "") for control in dialog.get("controls", []))
-                    raise RuntimeError(f"Cxbx displayed a startup dialog: {dialog['title']}. "
+                    raise RuntimeError(f"{label} displayed a startup dialog: {dialog['title']}. "
                                        f"{explanation}\n{self.log_tail(3000)}")
-                render = next((row for row in windows if row["class"] == "CxbxRender" and not row["hung"]
+                render = next((row for row in windows if row["class"] == self.render_class and not row["hung"]
                                and row["width"] >= 160 and row["height"] >= 120), None)
                 if render:
                     if stable_hwnd != render["hwnd"]:
@@ -472,14 +494,14 @@ class XboxAdapter:
                         self.render_pid, self.render_window, self.ready = render["pid"], render, True
                         keep_offscreen(self.render_pid)
                         return {"pid": self.render_pid, "launch_pid": self.launcher.pid, "owned_pids": sorted(live),
-                                "rom": str(xbe), "local_window": True, "worker_name": __import__("platform").node(),
-                                "boot_validation": "CxbxRender window stable for 3 seconds; rendering and gameplay not verified",
+                                "rom": str(rom), "local_window": True, "worker_name": __import__("platform").node(),
+                                "boot_validation": f"{self.render_class} window stable for 3 seconds; rendering and gameplay not verified",
                                 "window_ready": True, "rendering_verified": False, "gameplay_verified": False,
                                 "log": str(self.log_path)}
                 else:
                     stable_since, stable_hwnd = None, None
                 time.sleep(0.25)
-            raise RuntimeError("Cxbx did not open a responsive Xbox game render window before the boot timeout. " + self.log_tail(3000))
+            raise RuntimeError(f"{label} did not open a responsive Xbox game render window before the boot timeout. " + self.log_tail(3000))
         except Exception:
             self.stop_game()
             raise
@@ -547,6 +569,6 @@ class XboxAdapter:
         from .adapters import OPS
         if operation in OPS:
             def unsupported(*args, **kwargs):
-                raise Unsupported(f"Cxbx-Reloaded does not support {operation} in gBox")
+                raise Unsupported(f"{self.display_name} does not support {operation} in gBox")
             return unsupported
         raise AttributeError(operation)

@@ -69,3 +69,10 @@ test('inspection still yields to operator games, opt-out and local clicks',async
  a.state.background_testing=false;await a.poll();assert.equal(a.removed,2);
  a.state.background_testing=true;await a.poll();a.events.wheel({});a.events.pointerdown({});assert.equal(a.removed,3);
 });
+test('watching a game (a Spark stream or a game window) keeps the idle screensaver away',async()=>{
+  const a=app();a.advance();let watching=true;
+  a.context.GBoxWatching=async()=>watching;
+  await a.poll();assert.equal(a.frames.length,0);
+  watching=false;await a.poll();assert.equal(a.frames.length,1);
+  watching=true;await a.poll();assert.equal(a.removed,1);
+});

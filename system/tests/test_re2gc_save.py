@@ -115,7 +115,7 @@ def test_exact_native_filename_families_and_slots(family, slot):
 @pytest.fixture(scope='module')
 def owned():
     root = Path(os.environ.get('GBOX_RE2GC_EVIDENCE',
-        '/home/ehm_eckx/gbox-pr-audit-20261017/re-export-evidence'))
+        '/home/ehm_eckx/gBox_alt/gbox-pr-audit-20261017/re-export-evidence'))
     if not (root / 'leon.rel').is_file():
         pytest.skip('exact owned GHAE08 DOL/REL evidence unavailable')
     return root

@@ -165,3 +165,74 @@ def test_fighter_families_from_layout(tmp_path):
 def test_roster_has_no_duplicate_fighters():
     assert len(d3.ROSTER) == len(set(d3.ROSTER)) == 16
     assert "Ein" in d3.ROSTER and "Lei Fang" not in d3.ROSTER
+
+
+# --------------------------------------------------------------------------- cxbx_unlock_plan
+
+
+def _game():
+    return {"game_id": d3.GAME_ID, "platform": "xbox", "title": "Dead or Alive 3 (USA)"}
+
+
+def _worker(name="i9-NUC", wid="w-nuc"):
+    return {"id": wid, "name": name, "status": "idle"}
+
+
+def test_cxbx_plan_rejects_wrong_game():
+    r = d3.cxbx_unlock_plan({"game_id": "abcdef0123456789", "platform": "xbox"}, _worker())
+    assert r["status"] == "unsupported_game" and r["jobs"] == []
+
+
+def test_cxbx_plan_rejects_wrong_platform():
+    r = d3.cxbx_unlock_plan({"game_id": d3.GAME_ID, "platform": "ps2"}, _worker())
+    assert r["status"] == "unsupported_game" and r["jobs"] == []
+
+
+def test_cxbx_plan_rejects_operator_play_pc():
+    r = d3.cxbx_unlock_plan(_game(), _worker(name="JAYBUILTFINALE", wid="w-jay"),
+                            session_id="s1", save_root="/saves", allow_save_upgrade=True)
+    assert r["status"] == "wrong_worker" and r["jobs"] == []
+    assert "Never target the operator play PC" in r["reason"]
+
+
+def test_cxbx_plan_requires_save_upgrade_opt_in():
+    r = d3.cxbx_unlock_plan(_game(), _worker(), session_id="s1", save_root="/saves")
+    assert r["status"] == "save_upgrade_opt_in_required" and r["jobs"] == []
+
+
+def test_cxbx_plan_requires_save_root():
+    r = d3.cxbx_unlock_plan(_game(), _worker(), session_id="s1", allow_save_upgrade=True)
+    assert r["status"] == "save_root_required" and r["jobs"] == []
+
+
+def test_cxbx_plan_requires_session():
+    r = d3.cxbx_unlock_plan(_game(), _worker(), save_root="/saves", allow_save_upgrade=True)
+    assert r["status"] == "session_required" and r["jobs"] == []
+
+
+def test_cxbx_plan_emits_three_jobs_when_all_gates_pass():
+    r = d3.cxbx_unlock_plan(_game(), _worker(), session_id="sess-1",
+                            save_root="/saves/UDATA", allow_save_upgrade=True)
+    assert r["status"] == "planned" and r["profile"] == d3.DOA3_UNLOCK_PROFILE
+    assert r["executed"] is False
+    ops = [j["input"]["op"] for j in r["jobs"]]
+    assert ops == ["backup_save", "unlock_all", "verify_unlock"]
+    assert all(j["require_worker"] == "w-nuc" and j["agent_use"] is True for j in r["jobs"])
+    assert all(j["input"]["title_id"] == d3.DOA3_TITLE_ID for j in r["jobs"])
+    assert all(j["input"]["save_root"] == "/saves/UDATA" for j in r["jobs"])
+    assert r["jobs"][1]["input"]["chars"] == list(d3.ROSTER)
+    assert r["roster"] == list(d3.ROSTER)
+
+
+def test_cxbx_plan_accepts_spark_deux_worker():
+    r = d3.cxbx_unlock_plan(_game(), _worker(name="sparkDeux", wid="w-spark"),
+                            session_id="s", save_root="/saves", allow_save_upgrade=True)
+    assert r["status"] == "planned"
+
+
+def test_cxbx_plan_is_read_only():
+    r = d3.cxbx_unlock_plan(_game(), _worker(), session_id="s",
+                            save_root="/saves", allow_save_upgrade=True)
+    assert r["executed"] is False
+    for job in r["jobs"]:
+        assert "dispatch" not in job and "run" not in job

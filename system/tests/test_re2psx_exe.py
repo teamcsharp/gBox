@@ -1,7 +1,7 @@
 """RE2 Dual Shock (PSX, Claire disc) executable probe: loader tables and constraints.
 
 Synthetic tests always run; the owned-disc tests need the chdman-extracted image
-(``GBOX_RE2PSX_BIN``, default ``~/gbox-cache/2d8ef2bdbd4a58fd/disc.bin``).
+(``GBOX_RE2PSX_BIN``, default ``~/gBox_alt/gbox-cache/2d8ef2bdbd4a58fd/disc.bin``).
 """
 
 import hashlib
@@ -13,7 +13,7 @@ import pytest
 from gbox import re2psx_exe as R
 
 BIN = os.environ.get("GBOX_RE2PSX_BIN",
-                     os.path.expanduser("~/gbox-cache/2d8ef2bdbd4a58fd/disc.bin"))
+                     os.path.expanduser("~/gBox_alt/gbox-cache/2d8ef2bdbd4a58fd/disc.bin"))
 
 
 def _exe(text: bytes, t_addr: int = 0x80010000, pc0: int = 0x80010000) -> bytes:

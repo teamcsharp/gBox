@@ -25,16 +25,22 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from datetime import timezone
+from email.utils import format_datetime, parsedate_to_datetime
 import ipaddress
 import json
 import os
 from pathlib import Path
+import re
 import threading
 import time
 import uuid
 
 import httpx
 from fastapi import Depends, Request
+
+# the queue header names the run's lane; an inbox-lane run may have a larger tool budget (#2399, hermes_local.lane_budget)
+LANE = re.compile(r'Assigned queue task: request #\d+ \([0-9a-f]{16}\) \[lane (inbox|favorite)\]')
 from fastapi.responses import JSONResponse, StreamingResponse
 
 LOG_NAME = 'local-llm-calls.jsonl'
@@ -44,6 +50,18 @@ ROLE_MAP = {'developer': 'system', 'function': 'tool'}
 ROLES = ('system', 'user', 'assistant', 'tool')
 CONTINUE = 'Continue.'
 MARGIN_TOKENS = 512
+CONTEXT_OVERRUN = re.compile(r"maximum context length is (\d+) tokens.*?prompt contains at least (\d+) input tokens", re.I | re.S)
+
+
+def tighter_cpt(error_text: str, estimated: int, cpt: float) -> float | None:
+    """The chars-per-token to re-cap with when the model reports the prompt overran its context, from the count the
+    model measured against the proxy's estimate (a tenth tighter for safety); None when the error is something else."""
+    m = CONTEXT_OVERRUN.search(error_text or '')
+    if not m or estimated <= 0:
+        return None
+    actual = int(m.group(2))
+    ratio = min(1.0, estimated / max(actual, 1))
+    return round(min(cpt * ratio * 0.9, cpt * 0.95), 3)
 
 
 # ------------------------------------------------------------------------------------------------ message fixes
@@ -383,8 +401,26 @@ def stream_chunks(lines, model: str, cid: str, created: int, *, include_usage: b
 
 # ------------------------------------------------------------------------------------------------ the proxy
 
+def retry_after_headers(value) -> dict[str, str]:
+    """Forward valid delay-seconds or HTTP dates; malformed hints are omitted."""
+    text = str(value).strip() if value is not None else ''
+    if not text or len(text) > 128 or '\r' in text or '\n' in text:
+        return {}
+    if re.fullmatch(r'[0-9]+', text):
+        text = str(int(text))
+    else:
+        try:
+            date = parsedate_to_datetime(text)
+            if date.tzinfo is None:
+                return {}
+            text = format_datetime(date.astimezone(timezone.utc), usegmt=True)
+        except (ValueError, TypeError, OverflowError):
+            return {}
+    return {'Retry-After': text}
+
+
 class Busy(Exception):
-    def __init__(self, status: int, message: str, retry_after: int | None = None):
+    def __init__(self, status: int, message: str, retry_after: int | str | None = None):
         super().__init__(message)
         self.status, self.message, self.retry_after = status, message, retry_after
 
@@ -509,7 +545,7 @@ class LocalLLM:
                 'totals_since_start': totals}
 
     # -- one call
-    async def prepare(self, body: dict):
+    async def prepare(self, body: dict, cpt: float | None = None):
         s = self.settings()
         if not s.enabled:
             raise Busy(503, 'The local route is switched off ([hermes.local] enabled = false)', s.retry_after_s)
@@ -524,26 +560,34 @@ class LocalLLM:
         # Queue runs must yield a result instead of consuming a slot indefinitely.
         # Count before context trimming so the proxy cannot erase its own budget.
         queued = any('Assigned queue task: request #' in str(m.get('content', '')) for m in messages if isinstance(m, dict))
-        from . import hermes_run_budget
+        from . import hermes_local, hermes_run_budget
         usage = await asyncio.to_thread(hermes_run_budget.measure, messages, s.proxy_url) if queued else None
         used = usage['attempts'] if usage else 0
-        budget = max(6, int(s.tool_budget))
+        lane = next((m.group(1) for m in (LANE.search(str(msg.get('content', ''))) for msg in messages
+                                          if isinstance(msg, dict)) if m), None) if queued else None
+        budget = hermes_local.lane_budget(s, lane)
         final = queued and used >= budget
         instruction = None
         if queued and used >= budget - 6:
             instruction = ('This run has reached its tool budget. Return a factual final checkpoint now: verified '
-                           'results, artifact/job IDs, tests, blockers and the exact next step. Do not claim incomplete '
+                           'results, artifact/job IDs, tests, blockers and the exact next step. Include actual test '
+                           'results and returned commit/PR receipts. Publication without a returned receipt remains pending. Do not claim incomplete '
                            'acceptance criteria are resolved. The scheduler retains this report for the next run.'
                            if final else f'Only {budget-used} tool calls remain. Stop exploration and use them to save '
-                           'a checkpoint on the assigned request, record tests and blockers, then return your result.')
+                           'a checkpoint on the assigned request: run the focused verification, use publish_task_changes '
+                           'for passing source changes and keep its commit/PR receipt, then record actual results, '
+                           'pending job IDs and the next acceptance step. Reuse existing work and do not start duplicate '
+                           'jobs. Close only a fully verified request; keep partial work in_progress. Then return your result.')
         # Reserve the reminder's space, then append it AFTER trimming. Otherwise
         # it becomes the sole retained tail group and erases the last tool result
         # precisely when a factual final checkpoint is required.
         reminder = [{'role': 'user', 'content': instruction}] if instruction else []
-        reserve = estimate(reminder, None, s.chars_per_token) if reminder else 0
-        capped, info = cap_context(fixed, body.get('tools'), ctx - max_out - MARGIN_TOKENS - reserve, s.chars_per_token)
+        cpt = cpt or s.chars_per_token
+        reserve = estimate(reminder, None, cpt) if reminder else 0
+        capped, info = cap_context(fixed, body.get('tools'), ctx - max_out - MARGIN_TOKENS - reserve, cpt)
         capped += reminder
-        info['tokens'] = estimate(capped, body.get('tools'), s.chars_per_token)
+        info['tokens'] = estimate(capped, body.get('tools'), cpt)
+        info['cpt'] = cpt
         if s.api_format == 'openai':
             payload = {k: body[k] for k in ('tools', 'tool_choice', 'parallel_tool_calls', 'temperature',
                        'top_p', 'stop', 'response_format', 'presence_penalty', 'frequency_penalty') if k in body}
@@ -614,8 +658,15 @@ class LocalLLM:
             async with self._client(s) as client:
                 r = await client.post('chat/completions' if s.api_format == 'openai' else '/api/chat',
                                       json=payload | {'stream': False})
+                if r.status_code >= 400 and (cpt := tighter_cpt(_error_text(r), meta['est_prompt_tokens'], meta.get('cpt') or s.chars_per_token)):
+                    # the model counted more tokens than the proxy estimated: re-cap from its count and send once more
+                    s, payload, meta = await self.prepare(body, cpt=cpt)
+                    meta['recapped'] = cpt
+                    r = await client.post('chat/completions' if s.api_format == 'openai' else '/api/chat',
+                                          json=payload | {'stream': False})
             if r.status_code >= 400:
-                raise Busy(502 if r.status_code >= 500 else r.status_code, 'Local inference: ' + _error_text(r))
+                raise Busy(502 if r.status_code >= 500 else r.status_code, 'Local inference: ' + _error_text(r),
+                           retry_after_headers(r.headers.get('Retry-After')).get('Retry-After'))
             data = r.json()
             out = data if s.api_format == 'openai' else from_ollama(
                 data, meta['model'], 'chatcmpl-' + uuid.uuid4().hex[:24], int(t0))
@@ -660,10 +711,31 @@ class LocalLLM:
             await response.aread()
             text = _error_text(response)
             await response.aclose()
-            await client.aclose()
-            self.release(lock)
-            self.log(meta | {'ts': t0, 'status': 'error', 'error': text[:300]})
-            raise Busy(502 if response.status_code >= 500 else response.status_code, 'Local inference: ' + text)
+            cpt = tighter_cpt(text, meta['est_prompt_tokens'], meta.get('cpt') or s.chars_per_token)
+            if cpt:                                          # re-cap from the model's own count and send once more
+                try:
+                    s, payload, meta = await self.prepare(body, cpt=cpt)
+                    meta['recapped'] = cpt
+                    if s.api_format == 'openai':
+                        payload['stream_options'] = {'include_usage': True}
+                    request = client.build_request('POST', 'chat/completions' if s.api_format == 'openai' else '/api/chat',
+                                                    json=payload | {'stream': True})
+                    response = await client.send(request, stream=True)
+                except httpx.HTTPError as e:
+                    await client.aclose()
+                    self.release(lock)
+                    self.log(meta | {'ts': t0, 'status': 'error', 'error': type(e).__name__})
+                    raise Busy(502, f'Local inference unreachable ({type(e).__name__})') from None
+                if response.status_code >= 400:
+                    await response.aread()
+                    text = _error_text(response)
+                    await response.aclose()
+            if response.status_code >= 400:
+                await client.aclose()
+                self.release(lock)
+                self.log(meta | {'ts': t0, 'status': 'error', 'error': text[:300]})
+                raise Busy(502 if response.status_code >= 500 else response.status_code, 'Local inference: ' + text,
+                           retry_after_headers(response.headers.get('Retry-After')).get('Retry-After'))
         if s.api_format == 'openai':
             async def openai_events():
                 usage, calls, done, error = {}, set(), False, None
@@ -801,7 +873,7 @@ def routes(app, config, auth, gate=None, transport=None) -> LocalLLM:
         return auth(request)
 
     def error(status, message, retry_after=None):
-        headers = {'Retry-After': str(int(retry_after))} if retry_after else {}
+        headers = retry_after_headers(retry_after)
         # Not "rate_limit": Hermes's failure classifier would cool the local route for a wait that is the operator's game.
         kind = 'service_unavailable' if status == 503 else 'api_error'
         return JSONResponse({'error': {'message': message, 'type': kind, 'code': status}}, status_code=status,

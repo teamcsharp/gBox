@@ -105,11 +105,21 @@ def _handoff() -> str:
             'Never infer subscription allowance from token counters or repeatedly retry an exhausted route.' + brief())
 
 
+def _neutral_workdir() -> str:
+    """Where an agent run starts when it has no task worktree: a scratch folder in the dispatch state, never the
+    deployed runtime. Runs that started in ~/gBox/system edited the live code there and made it a Git repository
+    (2026-10-20: a share-only adapters.py change broke every Linux Dolphin pad; a "cron" repository in the share)."""
+    from . import hermes_delivery
+    folder = hermes_delivery.state_dir() / 'run-cwd'
+    folder.mkdir(parents=True, exist_ok=True)
+    return str(folder)
+
+
 def _workdir(request_id: str, number: int) -> str:
     from . import hermes_delivery
     if (hermes_delivery.repository() / '.git').exists():
         return hermes_delivery.prepare(request_id, number)['workdir']
-    return str(_PROMPT.parents[2])
+    return _neutral_workdir()
 
 
 def status() -> dict:
@@ -249,9 +259,11 @@ def dispatch_request(request_id: str, number: int, *, task: str | None = None, n
     """Queue a cloud investigation after the incident's immediate recovery finishes. `task` replaces the emulation
     incident instructions (a launch failure report, gbox/launch_failures.py) and `name` the job name."""
     from . import hermes_local
-    if hermes_local.active():
-        # A root-cause investigation (emulation incident or launch failure) is too big for the Spark's local model:
-        # the open report stays in the work queue and is dispatched on a paid route once one recovers.
+    if hermes_local.active() and not hermes_local.local_only():
+        # A root-cause investigation (emulation incident or launch failure) is too big for the Spark's fallback model:
+        # the open report stays in the work queue and is dispatched on a paid route once one recovers. When the
+        # operator set Hermes to local only, the local route (the dedicated node's coder model) takes it instead of
+        # parking every operator report until credit the operator does not want to spend appears.
         raise RuntimeError('Hermes is on the local model while the paid routes are out of credit; '
                            'the investigation stays queued for a paid route')
     with _LOCK:

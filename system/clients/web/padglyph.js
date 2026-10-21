@@ -5,6 +5,9 @@
  *   const g = PadGlyph.mount(el, "n64", { sid })   // platform may be null: taken from the session via /pad
  *   PadGlyph.update({ held: ["b", "up"], stick: { x: .7, y: 0 }, source: "agent" })   // manual layer (all glyphs)
  *   PadGlyph.local = () => ({ held: Set|[], stick: {x, y}, rstick: {x, y} }) | null      // optional: own pad reader
+ *                                                     (index.html sets it: Player 1 through the console's controller map)
+ * Right-click on a part = index.html's "Map <button> to…" dialog (clients/web/viz/pad-map.js); data-k's first key is the
+ * RetroPad input that part is, e.g. N64 C-up = "rup" (the right stick).
  *
  * Keys are RetroPad names (a b x y l r l2 r2 l3 r3 start select up down left right lup ldown lleft lright ...).
  * RetroPad -> console button follows each libretro core's defaults (positional SNES layout); standalone emulators that
@@ -109,8 +112,8 @@ const LAYOUTS = {
       stick("l", 130, 116, 15),
       pill("l2", 130, 151, 20, 8, "Z"),
       btn("b", 186, 86, 10, "A", C.n64A), btn("y", 167, 68, 10, "B", C.n64B),
-      sym("x c_up rup", 216, 50, 6.5, "u", C.n64C), sym("a c_right rright", 229, 63, 6.5, "r", C.n64C),
-      sym("c_down rdown", 216, 76, 6.5, "d", C.n64C), sym("c_left rleft", 203, 63, 6.5, "l", C.n64C),
+      sym("rup cup c_up", 216, 50, 6.5, "u", C.n64C), sym("rright cright c_right", 229, 63, 6.5, "r", C.n64C),
+      sym("rdown cdown c_down", 216, 76, 6.5, "d", C.n64C), sym("rleft cleft c_left", 203, 63, 6.5, "l", C.n64C),
     ],
     remap: n64CMode,
   }),
@@ -327,7 +330,9 @@ const PS_MAP = { m: { triangle: "x", circle: "a", cross: "b", square: "y", l1: "
                  alt: { duckstation: { triangle: "y", circle: "b", cross: "a", square: "x" } } };
 const XB_MAP = { a: "b", b: "a", x: "y", y: "x", lb: "l", rb: "r", lt: "l2", rt: "r2", back: "select", view: "select", menu: "start", guide: "home" };
 const GLYPH_DEFS = {
-  n64: { m: { a: "b", b: "y", z: "l2", cup: "x cup c_up rup", cright: "a cright c_right rright", cdown: "cdown c_down rdown", cleft: "cleft c_left rleft" },
+  // N64 C buttons are the right analog stick (both cores; RetroPad X / A only reach C-up / C-right with R2 held, which
+  // n64CMode shows as c_up / c_right): a click on one deflects the right stick that way
+  n64: { m: { a: "b", b: "y", z: "l2", cup: "rup cup c_up", cright: "rright cright c_right", cdown: "rdown cdown c_down", cleft: "rleft cleft c_left" },
          remap: n64CMode },
   gc: { m: { z: "r", l: "l2", r: "r2", rstick: "r3 rup rdown rleft rright cup cdown cleft cright" },     // dolphin libretro
         alt: { dolphin: { l: "l l2", r: "r r2", z: "z select" } } },                                     // standalone Dolphin
@@ -447,12 +452,21 @@ function nativePressed() {
   const axis = v => Math.abs(v / 32767) > DZ ? Math.max(-1, Math.min(1, v / 32767)) : 0;
   const stick = { x: axis(pad.lx), y: -axis(pad.ly) };
   const rstick = { x: axis(pad.rx), y: -axis(pad.ry) };
+  stickDirs(held, stick, rstick);                       // N64: the right stick lights the C buttons
   return { held, stick, rstick };
 }
+function stickDirs(held, st, rs) {
+  for (const [p, v] of [["l", st], ["r", rs]]) {
+    if (v.y < -.5) held.add(p + "up"); if (v.y > .5) held.add(p + "down");
+    if (v.x < -.5) held.add(p + "left"); if (v.x > .5) held.add(p + "right");
+  }
+}
 function readLocal() {
+  // index.html's reading first: Player 1's pad (the desktop's XInput state while it is fresh) through the console's
+  // controller map, i.e. what the game receives (clients/web/viz/pad-map.js)
+  if (typeof API.local === "function") { try { const r = API.local(); return r ? { ...r, held: new Set(r.held || []) } : null; } catch { return null; } }
   const native = nativePressed();
   if (native) return native;
-  if (typeof API.local === "function") { try { const r = API.local(); return r ? { ...r, held: new Set(r.held || []) } : null; } catch { return null; } }
   let list;
   try { list = typeof pads === "function" ? pads() : [...(navigator.getGamepads ? navigator.getGamepads() : [])].filter(Boolean); } catch { return null; }
   for (const gp of list) {
@@ -465,10 +479,7 @@ function readLocal() {
     held = new Set(held);
     const ax = i => Math.abs(gp.axes[i] || 0) > DZ ? gp.axes[i] : 0;
     const st = { x: ax(0), y: ax(1) }, rs = { x: ax(2), y: ax(3) };
-    for (const [p, v] of [["l", st], ["r", rs]]) {
-      if (v.y < -.5) held.add(p + "up"); if (v.y > .5) held.add(p + "down");
-      if (v.x < -.5) held.add(p + "left"); if (v.x > .5) held.add(p + "right");
-    }
+    stickDirs(held, st, rs);
     return { held, stick: st, rstick: rs };
   }
   return null;

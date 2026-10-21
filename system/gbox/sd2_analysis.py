@@ -1,7 +1,7 @@
 """WWF SmackDown! 2 - Know Your Role (USA, SLUS-01234): loader pins and writer-format probe (#1332, analysis stage).
 
 Exact build: boot SLUS_012.34 sha256 e23acb31...2a7f, text 0x80010000 + 0x7c800. The reused Ghidra input is a RAM image
-taken during a match (``~/gbox-cache/sdk_re/ghidra_ram.bin``, sha256 f0a9524c...c220, decompile ``sd2_ram.c``). Its
+taken during a match (``~/gBox_alt/gbox-cache/sdk_re/ghidra_ram.bin``, sha256 f0a9524c...c220, decompile ``sd2_ram.c``). Its
 code is byte-identical to the EXE text over 0x80010000-0x8007ffff (``ram_matches``), so its function addresses hold
 for this build. ``verify_exe`` re-derives every pin below from the owned EXE alone: jal call sites inside each
 function's extent and the magic constants built by lui/ori pairs.

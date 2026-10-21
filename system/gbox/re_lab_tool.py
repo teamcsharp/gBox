@@ -42,7 +42,7 @@ PLATFORM_CPU = {
     "n64": ("mips_be", "MIPS:BE:32:default", 8, True),
     "gba": ("arm", "ARM:LE:32:v4t", 40, False),
     "xbox360": ("ppc64", None, 20, True),      # Xenon: ELF loader's PowerPC:BE:32 default; VMX128 opcodes won't decode
-    "xbox": ("x86", None, 3, False),         # Original Xbox: 32-bit little-endian x86
+    "xbox": ("x86", "x86:LE:32:default", 3, False),   # Original Xbox: 32-bit little-endian x86, processor pinned for Ghidra
 }
 DC_BASE = 0x8C010000
 GBA_BASE = 0x08000000
@@ -117,7 +117,7 @@ def ram_layout(platform: str) -> tuple[int, int]:
     return r[0][0], r[0][1]
 
 
-def ram_to_image(platform: str, ram: bytes, base: int) -> tuple[bytes, dict]:
+def ram_to_image(platform: str, ram: bytes, base: int, *, entry: int | None = None) -> tuple[bytes, dict]:
     cpu, proc, machine, be = PLATFORM_CPU.get(platform, (None, None, None, None))
     if machine is None:
         raise ValueError(f"no CPU mapping for platform {platform!r}")
@@ -126,7 +126,9 @@ def ram_to_image(platform: str, ram: bytes, base: int) -> tuple[bytes, dict]:
         ram, swapped = fix_n64_ram(ram)
         if swapped:
             notes.append("RDRAM was word-swapped (ParaLLEl N64); fixed")
-    entry = base + (0x400 if platform == "n64" else 0)
+    if entry is not None and not base <= entry < base + len(ram):
+        raise ValueError("RAM image entry point is outside its captured range")
+    entry = base + (0x400 if platform == "n64" else 0) if entry is None else entry
     return ram_to_elf(ram, base, entry, machine, be), {"base": base, "entry": entry, "size": len(ram),
                                                        "format": f"{platform} RAM image", "notes": notes}
 
@@ -349,6 +351,15 @@ def _live_ram_target(ctx, game: dict, sid: str) -> dict:
     capabilities = info.get("capabilities")
     if not isinstance(capabilities, dict) or capabilities.get("read_memory") != "supported":
         raise ValueError("The selected live session does not support RAM reads")
+    guest_memory = None
+    if platform == 'xbox':
+        guest_memory = runtime.get('guest_memory')
+        if (info.get('emulator') != 'doa3_native' or not isinstance(guest_memory, dict)
+                or guest_memory.get('verified') is not True or guest_memory.get('platform') != 'xbox'
+                or guest_memory.get('bits') != 32 or guest_memory.get('endianness') != 'little'
+                or guest_memory.get('processor') != PLATFORM_CPU['xbox'][1]
+                or type(runtime.get('pid')) is not int or runtime['pid'] <= 0 or guest_memory.get('pid') != runtime['pid']):
+            raise ValueError('The native Xbox guest RAM mapping has not been verified for this owned process')
     if row.get("adapter") and info.get("emulator") != row["adapter"]:
         raise ValueError("The live session emulator changed; no RAM was accepted")
     detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
@@ -361,19 +372,40 @@ def _live_ram_target(ctx, game: dict, sid: str) -> dict:
     return target | {"platform": platform, "core": info.get("core"), "emulator": info.get("emulator"),
                      "rom": info.get("rom"), "actual_mod": actual_mod, "collection_mod": collection_mod,
                      "started": row.get("started"), "pid": runtime.get("pid") or detail.get("pid"),
-                     "runtime_content": runtime.get("content")}
+                     "runtime_content": runtime.get("content"), **({'guest_memory': guest_memory} if guest_memory else {})}
 
 
-def _live_ram_range(inp: ExeIn, platform: str) -> tuple[int, int]:
+def _live_ram_range(inp: ExeIn, platform: str, live: dict | None = None) -> tuple[int, int]:
     from .tools import MAIN_RAM
     ranges = MAIN_RAM.get(platform)
+    default = None
+    if platform == 'xbox':
+        memory = (live or {}).get('guest_memory') or {}
+        regions = memory.get('regions')
+        if (memory.get('verified') is not True or not isinstance(regions, list) or len(regions) != 1
+                or not isinstance(regions[0], dict)
+                or type(regions[0].get('address')) is not int or type(regions[0].get('size')) is not int
+                or regions[0].get('address') != 0 or regions[0].get('size') != 0x04000000
+                or regions[0].get('readable') is not True):
+            raise ValueError('No verified native Xbox guest RAM range')
+        ranges = [(0, 0x04000000)]
+        image = memory.get('analysis_range') or {}
+        if not isinstance(image, dict):
+            raise ValueError('Native Xbox research requires a verified bounded image range')
+        default = (image.get('address'), image.get('size'))
+        if any(type(v) is not int for v in default) or default[1] <= 0:
+            raise ValueError('Native Xbox research requires a verified bounded image range')
     if not ranges:
         raise ValueError(f"No verified main-RAM layout for live platform {platform!r}")
     if (inp.ram_base is None) != (inp.ram_size is None):
         raise ValueError("ram_base and ram_size must be supplied together")
-    base, size = (inp.ram_base, inp.ram_size) if inp.ram_base is not None else ranges[0]
+    base, size = (inp.ram_base, inp.ram_size) if inp.ram_base is not None else default or ranges[0]
     if size <= 0 or not any(lo <= base and base + size <= lo + length for lo, length in ranges):
         raise ValueError("Requested RAM range is outside the verified live platform layout")
+    if platform == 'xbox' and inp.ram_base is None:
+        entry = memory.get('entry_point')
+        if type(entry) is not int or not base <= entry < base + size:
+            raise ValueError('Native Xbox entry point is outside its verified image range')
     return base, size
 
 
@@ -440,16 +472,21 @@ def re_executable(inp: ExeIn, ctx):
         live = _live_ram_target(ctx, game, inp.session_id)
         plat = live["platform"]
         cpu, proc, _m, _be = PLATFORM_CPU[plat]
-        base, size = _live_ram_range(inp, plat)
+        base, size = _live_ram_range(inp, plat, live)
         snapshot_started_at = time.time()
         raw = _ram_snapshot(ctx, inp.session_id, base, size)
         snapshot_finished_at = time.time()
         if _live_ram_target(ctx, game, inp.session_id) != live:
             raise ValueError("The selected session/build changed while reading RAM; the snapshot was discarded")
-        elf, info = ram_to_image(plat, raw, base)
+        entry = None
+        if plat == 'xbox' and inp.ram_base is None:
+            entry = live['guest_memory'].get('entry_point')
+            if type(entry) is not int or not base <= entry < base + size:
+                raise ValueError('Native Xbox entry point is outside its verified image range')
+        elf, info = ram_to_image(plat, raw, base, entry=entry)
         info["source_file"] = f"RAM {base:#x}+{size:#x} of session {inp.session_id}"
         notes += info.pop("notes", [])
-        notes.append("RAM image includes heap and stack. Reads are non-atomic: in-game state can change between chunks. "
+        notes.append("RAM observations may contain mutable game state. Reads are non-atomic: in-game state can change between chunks. "
                      "The RAM hash identifies this snapshot, not an immutable executable or the catalog's base disc.")
         revision = live | {"kind": "ram_snapshot", "sha256": sha(raw), "base": base, "size": size,
                            "atomic": False, "snapshot_started_at": snapshot_started_at,

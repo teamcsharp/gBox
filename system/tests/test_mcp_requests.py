@@ -315,3 +315,73 @@ def test_mcp_compact_receipts_match_actual_http_persistence(tmp_path, monkeypatc
                 assert stored["body"] == "Original instructions" and len(stored["messages"]) == 2
 
         asyncio.run(check())
+
+
+def test_status_tool_schema_matches_solver_http_limits():
+    pytest.importorskip("mcp")
+    from jsonschema import Draft202012Validator
+    from gbox.mcp_server import CONVENIENCE, _request_status
+
+    schema = CONVENIENCE["set_request_status"][1]
+    validate = Draft202012Validator(schema)
+    base = {"request_id": "req1", "status": "done",
+            "solved_by": {"service": "Hermes", "verification": "Acceptance verified from recorded evidence."}}
+    for name, limit in {"service": 80, "model": 160, "system": 80, "verified_by": 80,
+                        "verification": 2000, "run_id": 80}.items():
+        exact = base | {"solved_by": base["solved_by"] | {name: "x" * limit}}
+        assert not list(validate.iter_errors(exact))
+        assert _request_status(exact)["solved_by"][name] == "x" * limit
+        too_long = base | {"solved_by": base["solved_by"] | {name: "x" * (limit + 1)}}
+        assert list(validate.iter_errors(too_long))
+        with pytest.raises(ValueError, match=rf"solved_by\.{name} exceeds {limit}.*preserve"):
+            _request_status(too_long)
+    for name in ("service", "verification"):
+        empty = base | {"solved_by": base["solved_by"] | {name: ""}}
+        assert list(validate.iter_errors(empty))
+        with pytest.raises(ValueError, match="must not be empty"):
+            _request_status(empty)
+    nullable = base | {"solved_by": base["solved_by"] | {"run_id": None}}
+    assert not list(validate.iter_errors(nullable)) and _request_status(nullable)["solved_by"]["run_id"] is None
+    with pytest.raises(ValueError, match="only valid for done"):
+        _request_status(base | {"status": "in_progress"})
+
+
+def test_status_tool_prevents_oversized_credit_http_call_and_preserves_corrected_evidence(tmp_path, monkeypatch):
+    pytest.importorskip("mcp")
+    from fastapi.testclient import TestClient
+    from mcp.client import Client
+    from gbox.config import Config
+    from gbox.mcp_server import build
+    from gbox.server import create_app
+
+    cfg = Config(data_dir=tmp_path)
+    backend = TestClient(create_app(cfg), headers={"Authorization": "Bearer " + cfg.token()})
+    report = backend.post("/api/requests", json={"title": "Verified observer", "body": "Verify the observer",
+                                                "source": "api"}).json()
+    rid, posts = report["id"], []
+    def handler(req):
+        if req.method == "POST": posts.append(json.loads(req.content))
+        response = backend.request(req.method, req.url.path, content=req.content,
+                                   headers={"content-type": "application/json"})
+        return httpx.Response(response.status_code, content=response.content,
+                              headers={"content-type": "application/json"})
+    original = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: original(*a, **kw, transport=httpx.MockTransport(handler)))
+    evidence = "e" * 2000
+    detail = "Longer recorded test and runtime evidence. " * 100
+    solver = {"service": "Hermes", "verified_by": "r" * 80, "verification": evidence, "run_id": None}
+
+    async def check():
+        async with Client(build("http://fixture", "fixture")) as client:
+            bad = await client.call_tool("set_request_status", {"request_id": rid, "status": "done",
+                "solved_by": solver | {"verified_by": "r" * 81}})
+            assert bad.is_error and "verified_by" in bad.content[0].text
+            assert posts == [] and backend.get(f"/api/requests/{rid}").json()["status"] == "open"
+            good = await client.call_tool("set_request_status", {"request_id": rid, "status": "done",
+                "solved_by": solver, "note": detail})
+            assert not good.is_error, good.content[0].text
+    asyncio.run(check())
+    assert len(posts) == 1 and posts[0]["solved_by"] == solver and posts[0]["note"] == detail
+    stored = backend.get(f"/api/requests/{rid}").json()
+    assert stored["status"] == "done" and stored["solved_by"]["verification"] == evidence
+    assert stored["solved_by"]["verified_by"] == "r" * 80 and stored["messages"][-1]["text"] == detail

@@ -204,8 +204,43 @@ def _disc_files(root: Path):
     return sorted(files)
 
 
+def _changed_disc_files(source: Path, game_id: str, mod: str) -> set[str] | None:
+    """Use a completed asset build's change list; unknown layouts keep private copies."""
+    if not mod:
+        return None
+    marker = source.parent.parent / ".gbox-mod.json"
+    _plain_path(marker)
+    try:
+        if marker.stat().st_size > 4 * 1024 * 1024:
+            return None
+        meta = json.loads(marker.read_text(encoding="utf8"))
+    except (OSError, ValueError):
+        return None
+    if (not isinstance(meta, dict) or meta.get("game_id") != game_id
+            or meta.get("image") != source.relative_to(marker.parent).as_posix()
+            or not isinstance(meta.get("files"), list)):
+        return None
+    names = list(meta["files"])
+    changes = meta.get("file_changes", [])
+    if not isinstance(changes, list) or any(not isinstance(row, dict) for row in changes):
+        return None
+    names.extend(row.get("path") for row in changes)
+    changed = set()
+    for name in names:
+        if not isinstance(name, str) or not name or any(c in name for c in "\\:\x00\r\n"):
+            return None
+        parts = name.split("/")
+        if any(part in ("", ".", "..") for part in parts):
+            return None
+        # The DOA3 writer's files are disc-relative; file_changes are build-relative.
+        changed.add(name.lower())
+        if parts[0].lower() == source.parent.name.lower():
+            changed.add("/".join(parts[1:]).lower())
+    return changed
+
+
 def prepare_play_disc(source: Path, config, game: dict, progress=lambda *_: None) -> Path:
-    """Copy once, preserve existing saves, and fail closed on mismatched disc views."""
+    """Share unchanged build assets, preserve saves, and reject mismatched disc views."""
     if not supports_game(game):
         raise ToolUnavailable("This native adapter is restricted to the owned DOA3 USA catalog title")
     source = source.absolute()
@@ -253,6 +288,7 @@ def prepare_play_disc(source: Path, config, game: dict, progress=lambda *_: None
                 _disc_files(disc / ".recomp-storage")
             return disc / "default.xbe"
         parent.mkdir(parents=True, exist_ok=True)
+        changed = _changed_disc_files(source, game_id, mod)
         with tempfile.TemporaryDirectory(prefix="disc-stage-", dir=parent) as temporary:
             stage = Path(temporary) / "disc"
             stage.mkdir()
@@ -264,7 +300,16 @@ def prepare_play_disc(source: Path, config, game: dict, progress=lambda *_: None
                 else:
                     src = source.parent / item["name"]
                     _plain_path(src)
-                    shutil.copy2(src, target)
+                    if changed is not None and item["name"].lower() not in changed:
+                        # Disc assets are read-only to the runner; only .recomp-storage
+                        # is writable. Keep rebuilt assets private so a later rebuild
+                        # cannot change an older play view or its saved revision.
+                        try:
+                            os.link(src, target)
+                        except OSError:  # Cross-volume caches and filesystems without links.
+                            shutil.copy2(src, target)
+                    else:
+                        shutil.copy2(src, target)
                 if _sha(target) != item["sha256"]:
                     raise ToolUnavailable("DOA3 disc changed while its private copy was being prepared")
             receipt = {"format": 1, "game_id": game_id, "mod": mod, "fingerprint": fingerprint, "files": inventory}
@@ -275,15 +320,106 @@ def prepare_play_disc(source: Path, config, game: dict, progress=lambda *_: None
     return disc / "default.xbe"
 
 
+class _ChannelMemory:
+    """The virtual pad's memory: always this adapter's current channel (a closed one is replaced on the next call)."""
+    def __init__(self, adapter):
+        self.adapter = adapter
+
+    def read(self, address, length):
+        return self.adapter.channel().read(address, length)
+
+    def write(self, address, data):
+        return self.adapter.channel().write(address, data)
+
+
 class Doa3NativeAdapter(XboxAdapter):
     name = "doa3_native"
     render_class = "DOAXBVRecompPresenterWindow"
+    # send_input: gBox's virtual pad on the game's 4th port, in guest RAM (gbox/doa3_pad.py)
+    supported = XboxAdapter.supported | {"read_memory", "write_memory", "query_memory_map", "send_input"}
     checkpoint_reason = "The DOA3 native runtime has no verified in-place save-state interface"
 
     def __init__(self, config, game):
         super().__init__(config)
         self.game = game
         self.boot_frame_paths = []
+        self._guest_memory = None
+        self._memory_source = None
+        self._channel = None
+        self._pad = None
+        self._pad_lock = threading.Lock()
+
+    def channel(self):
+        """The fast verified guest-RAM channel (doa3_memory.Channel) of this session's runner: per-frame reads for a
+        bot, writes only to the virtual pad's block (doa3_pad.BLOCK)."""
+        from .doa3_pad import BLOCK
+        if self._channel is None or self._channel.broken:
+            if self._channel is not None:
+                self._channel.close()                   # its process handle closed before a new one is opened
+            self._channel = None
+            self._channel = self._memory().channel(BLOCK)
+        return self._channel
+
+    def pad(self):
+        """gBox's virtual controller on the game's 4th port (doa3_pad.VirtualPad)."""
+        from .doa3_pad import VirtualPad
+        if self._pad is None:
+            self._pad = VirtualPad(_ChannelMemory(self))
+        return self._pad
+
+    def send_input(self, events: list[dict]) -> dict:
+        """gBox pad names (RetroPad positions: b = Xbox A, a = B, y = X, x = Y; l / r = White / Black; l2 / r2 = the
+        triggers) on gBox's virtual pad, port 4. The player's own controller and the keyboard (port 1) are untouched."""
+        with self._pad_lock:
+            return self.pad().apply(events)
+
+    def _drop_pad(self):
+        """Neutral pad, then the channel closed (stop / relaunch). The claim stays: no disconnect pause mid-fight."""
+        try:
+            if self._pad is not None and self._channel is not None and not self._channel.broken:
+                self._pad.release()
+        except Exception:                           # noqa: BLE001 - the runner may already be gone
+            pass
+        channel, self._pad, self._channel = self._channel, None, None
+        if channel is not None:
+            channel.close()
+
+    def stop_game(self):
+        self._drop_pad()
+        return super().stop_game()
+
+    def _memory(self):
+        from .doa3_memory import GuestMemory
+        from .registry import Unsupported
+        if not self._running() or not self.ready or not self._memory_source:
+            raise Unsupported("Native DOA3 guest memory needs this adapter's verified running session")
+        if self._guest_memory is None:
+            self._guest_memory = GuestMemory(self, install_dir(self.config) / "runner.exe", self._memory_source,
+                                             RUNNER_SHA256, XBE_SHA256)
+        return self._guest_memory
+
+    def query_memory_map(self):
+        return self._memory().memory_map()
+
+    def read_memory(self, address, length):
+        return self._memory().read(address, length)
+
+    def write_memory(self, address, data):
+        return self._memory().write(address, data)
+
+    def regions(self):
+        memory = self.query_memory_map()
+        return [(row["address"], row["size"]) for row in memory["regions"]]
+
+    def query_runtime(self):
+        from .registry import Unsupported
+        result = super().query_runtime()
+        if result["running"]:
+            try:
+                result["guest_memory"] = self.query_memory_map()
+            except (Unsupported, OSError, ValueError) as error:
+                result["guest_memory"] = {"verified": False, "reason": str(error)}
+        return result
 
     def _boot_frame(self, *, fresh=False):
         """Only this runner's bounded back-buffer dumps can prove native output."""
@@ -324,6 +460,8 @@ class Doa3NativeAdapter(XboxAdapter):
         exe = ensure_runtime(self.config, getattr(self, "api_server", ""), getattr(self, "api_headers", {}), progress)
         source = prepare_xbe(rom, self.config, progress)
         xbe = prepare_play_disc(source, self.config, self.game, progress)
+        self._drop_pad()
+        self._memory_source, self._guest_memory = xbe, None
         progress(65, "Launching the verified DOA3 native disc")
         logs = xbe.parent.parent / "logs"
         _plain_path(logs)

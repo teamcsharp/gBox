@@ -61,7 +61,8 @@ POST /api/evidence/moments {"session_id": "<running session>", "game_id": "", "v
                             "after_moment": [{"press": ["a"], "wait_s": 15, "shot": "dock (continue)"}]}
 ```
 
-It exports the session's state (`state_transfer op=export`) and stores it as the game's recorded moment (setting
+It saves the session's state through gBox's own slot (`state_transfer op=snapshot`: the session's save slots are left
+alone) and stores it as the game's recorded moment (setting
 `evidence_moments`); captures use it in place of the seed moment. `GET /api/evidence/recipes` lists the recipes with
 what was recorded.
 

@@ -9,7 +9,7 @@ import pytest
 from gbox import ctr_romfs, merc3d_inventory as mi
 
 REAL = Path(os.path.expanduser(
-    "~/gbox-cache/3ds/0ed22ae742e1b56b/Resident Evil - The Mercenaries.3ds"))
+    "~/gBox_alt/gbox-cache/3ds/0ed22ae742e1b56b/Resident Evil - The Mercenaries.3ds"))
 
 # 'P' + backward-LZ stream for 'xyz'*6: three literals then a (disp 3, len 15) back-reference.
 BLZ = b"P" + bytes([0x00, 0xC0]) + b"xyz" + bytes([0x10]) + struct.pack("<II", (8 << 24) | 14, 4)

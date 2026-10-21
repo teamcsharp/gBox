@@ -189,6 +189,69 @@
    ],
    "shots": [{"label": "fight", "at_s": 4}, {"label": "fight +7", "at_s": 7}, {"label": "fight +15", "at_s": 15}],
    "todo": "Verified 2026-10-13 on i9-NUC (jobs d49302d4b6f74f09, c17cc69454534f1a). VS BATTLE would need a step that sends player-2 Start."
+  },
+  "65b7187589166b26": {
+   "title": "007 - Agent Under Fire (USA) (GameCube)",
+   "platform": "gamecube",
+   "adapter": "dolphin",
+   "status": "unverified",
+   "prefer_os": ["windows"],
+   "boot_s": 25,
+   "shows": "Campaign (default): Select Mission > Trouble in Paradise (maps/orc_1.ngc). Its opening cut scene shows the helicopter passenger with the briefcase (campaign:g8russia_body), the Orchid guard (campaign:thug_orchid, the first mission's henchman) and Bond on the ledge (campaign:bond_combat) full size, then first-person gameplay. Variant bots: Multiplayer > Combat Training with 3 bots on the default map; the bots wear the multiplayer bodies (mp:<body>). Cast builds: auf_cast_wrestlers, auf_cast_sonic_random, auf_cast_jgr_defjam_v2 (docs/auf_writer.md).",
+   "steps": [
+    {"press": ["start"], "wait_s": 4.0, "label": "skip logo"},
+    {"press": ["start"], "wait_s": 4.0, "label": "skip logo"},
+    {"press": ["start"], "wait_s": 5.0, "label": "skip intro movie", "shot": "title"},
+    {"press": ["start"], "wait_s": 4.0, "label": "main menu", "shot": "main menu"},
+    {"press": ["a"], "wait_s": 4.0, "label": "select mission", "shot": "select mission"},
+    {"press": ["a"], "wait_s": 4.0, "label": "briefing"},
+    {"press": ["a"], "wait_s": 4.0, "label": "controller setup", "shot": "controller setup"},
+    {"press": ["a"], "wait_s": 8.0, "label": "start mission (Trouble in Paradise)"}
+   ],
+   "shots": [
+    {"label": "cut scene: helicopter", "at_s": 2},
+    {"label": "cut scene: passenger", "at_s": 6},
+    {"label": "cut scene: passenger and guard", "at_s": 10},
+    {"label": "cut scene: guard", "at_s": 14},
+    {"label": "cut scene: guard (2)", "at_s": 18},
+    {"label": "cut scene: helicopter leaves", "at_s": 22},
+    {"label": "cut scene: Bond on the ledge", "at_s": 26},
+    {"label": "cut scene: Bond on the ledge (2)", "at_s": 29},
+    {"label": "gameplay", "at_s": 45}
+   ],
+   "todo": "Written from the 2026-10-13 Dolphin runs of the cast builds (docs/auf_writer.md section 5), not yet replayed by evidence_capture. Check the 'title' and 'main menu' frames: the number of logo skips before the title depends on how fast Dolphin boots, and a press during the cut scene skips it. For a stable recipe record a moment on the Select Mission screen (Trouble in Paradise): POST /api/evidence/moments {game_id: 65b7187589166b26, session_id: <it>, label: 'select mission', after_moment: [{press:[a], wait_s:4}, {press:[a], wait_s:4}, {press:[a], wait_s:8}]}. Dolphin's state slot is shared with the operator's slot 1: record only from an agent test session or when the operator agrees.",
+   "variants": {
+    "bots": {
+     "status": "unverified",
+     "steps": [
+      {"press": ["start"], "wait_s": 4.0, "label": "skip logo"},
+      {"press": ["start"], "wait_s": 4.0, "label": "skip logo"},
+      {"press": ["start"], "wait_s": 5.0, "label": "skip intro movie", "shot": "title"},
+      {"press": ["start"], "wait_s": 4.0, "label": "main menu", "shot": "main menu"},
+      {"press": ["down"], "wait_s": 0.6, "repeat": 3, "label": "to Multiplayer"},
+      {"press": ["a"], "wait_s": 4.0, "label": "multiplayer game select", "shot": "multiplayer game select"},
+      {"press": ["a"], "wait_s": 4.0, "label": "combat training setup", "shot": "combat training setup"},
+      {"press": ["a"], "wait_s": 3.0, "label": "combat training menu"},
+      {"press": ["down"], "wait_s": 0.6, "repeat": 7, "label": "to Bots"},
+      {"press": ["a"], "wait_s": 2.0, "label": "bots"},
+      {"press": ["right"], "wait_s": 0.6, "repeat": 2, "label": "3 bots", "shot": "bots"},
+      {"press": ["b"], "wait_s": 2.0, "label": "back (START GAME)"},
+      {"press": ["a"], "wait_s": 20.0, "label": "start game", "shot": "match"},
+      {"press": ["up"], "hold_s": 2.0, "wait_s": 1.0, "label": "walk", "shot": "match: walk"},
+      {"press": ["right"], "hold_s": 0.8, "wait_s": 1.0, "label": "turn", "shot": "match: turn"},
+      {"press": ["up"], "hold_s": 2.0, "wait_s": 1.0, "label": "walk", "shot": "match: walk (2)"},
+      {"press": ["left"], "hold_s": 1.2, "wait_s": 1.0, "label": "turn", "shot": "match: turn (2)"}
+     ],
+     "shots": [
+      {"label": "match: bots", "at_s": 10},
+      {"label": "match: bots (2)", "at_s": 20},
+      {"label": "match: bots (3)", "at_s": 30},
+      {"label": "match: bots (4)", "at_s": 45},
+      {"label": "match: bots (5)", "at_s": 60}
+     ],
+     "todo": "Not yet replayed. Bots hunt the player, so they come into view; the frames show them only when one is near. The Multiplayer carousel remembers the last mode (gbox/auf_mp_harness.py): check the 'multiplayer game select' frame says COMBAT TRAINING."
+    }
+   }
   }
  }
 }

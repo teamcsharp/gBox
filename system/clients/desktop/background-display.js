@@ -21,6 +21,9 @@
       if(!result.ok)throw Error(result.error||'Worker status unavailable');
       const state=result.data;
       const operator=state.sessions.some(s=>!s.agent_owned);
+      // Watching a game (a Spark stream or a game window in the app) is not idle: the screensaver stays away and the
+      // game keeps the screen (operator 2026-10-20).
+      if(root.GBoxWatching && await root.GBoxWatching()){hide();return;}
       const idle=state.worker.os!=='windows'||state.worker.idle_seconds>=300;
       // Scrolling resets Windows' idle timer too. Keep the inspected panel until a click/key dismisses it.
       if(disposed||document.hidden||Date.now()-lastInput<300000||!idle&&!inspecting||!state.online||!state.background_testing||operator){hide();return;}

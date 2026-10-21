@@ -523,7 +523,7 @@ def test_use_builds_once_registers_and_launches(tmp_path, monkeypatch):
 
 # ---------------------------------------------------------------- the owned disc (skipped when it isn't reachable)
 
-_DEFAULT_GDI = "/home/ehm_eckx/gbox-cache/dc/daba7a3b195dcf6b/disc.gdi"
+_DEFAULT_GDI = "/home/ehm_eckx/gBox_alt/gbox-cache/dc/daba7a3b195dcf6b/disc.gdi"
 
 
 def _gdi():
