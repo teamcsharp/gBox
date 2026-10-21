@@ -51,6 +51,7 @@ def test_unlock_prompt_has_complete_boot_scope_without_replacement_replay(monkey
 @pytest.fixture
 def env(monkeypatch, tmp_path):
     monkeypatch.setenv('GBOX_HERMES_DISPATCH_STATE', str(tmp_path))
+    monkeypatch.setenv('GBOX_HERMES_REPO', str(tmp_path / 'no-repo'))   # dispatch never prepares real worktrees here
     data = {'version': 1, 'items': {}, 'parent_request_id': P, 'last_lane': 'inbox'}
     q._save(data)
     return data
@@ -496,3 +497,50 @@ def test_the_queue_header_names_the_lane_for_the_budget(monkeypatch):
     monkeypatch.setattr(q.mode, '_handoff', lambda: ' handoff')
     text = q._prompt({'lane': 'inbox', 'request_id': 'ab' * 8, 'number': 5})
     assert text.startswith('Assigned queue task: request #5 (' + 'ab' * 8 + ') [lane inbox]. Work ONLY this request; ')
+
+
+def test_dispatched_runs_start_in_their_worktree_never_in_the_deployed_runtime(env, monkeypatch):
+    """2026-10-20: queue runs started in ~/gBox/system and edited the live code (adapters.py) and made it a Git repo."""
+    runtime = str(q.mode._PROMPT.parents[2])
+    item = {'request_id': R, 'number': 5}
+    monkeypatch.setattr(q.mode, '_workdir', lambda rid, number: f'/tasks/{rid}/system')
+    assert q._run_workdir(item) == f'/tasks/{R}/system'
+    def missing(rid, number):
+        raise RuntimeError('The recorded task workspace is missing; preserve its history before retrying')
+    monkeypatch.setattr(q.mode, '_workdir', missing)
+    neutral = q._run_workdir(item)
+    assert neutral != runtime and neutral.endswith('run-cwd') and 'missing' in item['workspace_error']
+    monkeypatch.undo()
+    monkeypatch.setenv('GBOX_HERMES_DISPATCH_STATE', str(q.delivery.state_dir()))
+    monkeypatch.setenv('GBOX_HERMES_REPO', '/nowhere/gbox-hermes-repo')
+    assert q.mode._workdir(R, 5) != runtime                      # no provisioned repository: still not the runtime
+
+
+def test_tick_creates_and_re_edits_runs_with_their_worktree(env, monkeypatch):
+    jobs = [{'id': 'controller', 'name': q.mode.NAME, 'enabled': True, 'no_agent': True}]
+    reqs = [request(R)]
+    monkeypatch.setattr(q.mode, '_job', lambda: jobs[0])
+    monkeypatch.setattr(q.mode, '_jobs', lambda: jobs)
+    monkeypatch.setattr(q.mode, '_config', lambda: {'cron': {'model_provider': 'nous', 'model': 'opus', 'max_parallel_jobs': 4}})
+    monkeypatch.setattr(q, '_executions', lambda: ({}, set()))
+    monkeypatch.setattr(q, '_native_jobs', lambda: [])
+    from gbox import hermes_recovery
+    monkeypatch.setattr(hermes_recovery, '_active_requests', lambda: set())
+    monkeypatch.setattr(q.mode, '_handoff', lambda: '')
+    monkeypatch.setattr(q.mode, '_workdir', lambda rid, number: f'/tasks/{rid}/system')
+    def api(path, body=None):
+        if path == '/api/favorites': return {'count': 0, 'items': []}
+        if path == '/api/requests' and body is None: return reqs
+        if path == '/api/chat': return []
+        raise AssertionError(path)
+    monkeypatch.setattr(q, '_api', api)
+    calls = []
+    def run(*args):
+        calls.append(args)
+        if args[0] == 'create':
+            jobs.append({'id': 'j1', 'name': args[args.index('--name') + 1], 'enabled': True, 'schedule': {'kind': 'once'}})
+    monkeypatch.setattr(q.mode, '_run', run)
+    assert len(q.tick(now=1000)['dispatched']) == 1
+    create = calls[0]
+    assert create[0] == 'create' and create[create.index('--workdir') + 1] == f'/tasks/{R}/system'
+    assert str(q.mode._PROMPT.parents[2]) not in create

@@ -179,6 +179,7 @@ def test_every_demo_launch_asks_to_start_in_gameplay():
     s, w, saver, calls, tick = rig()
     tick()
     assert calls[0]["tool"] == "launch_game" and calls[0]["input"]["jump"] is True       # gbox.jumpstate
+    assert calls[0]["input"]["memory_cards"] == "operator"     # #2817: the operator's own cards, so their saves load
 
 
 JUMPED = {"jump": {"booted": True, "file": "sc-stock.state"}}         # launch detail: booted straight into gameplay
