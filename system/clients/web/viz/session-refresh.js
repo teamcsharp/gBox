@@ -13,10 +13,18 @@
       const live = id => sessions.find(s => s.session_id === id && s.state === 'running');
       const wanted = [...new Set([state.playing, state.active, state.pip].filter(Boolean))];
       const missing = wanted.filter(id => !live(id));
-      if (state.playing && live(state.playing)) await io.show('Sessions', state.playing);
-      else if (state.playing) await io.show('Sessions'); // show the list, never substitute another live game
-      else await io.show(io.tabs.includes(state.tab) ? state.tab : 'Home');
-      if (mine !== generation) return { cancelled: true, restored: [], missing: [] };
+      // show() selects its view synchronously, then waits for the content. Keep
+      // that revision so later operator navigation cannot restore an old PiP.
+      const showing = state.playing && live(state.playing) ? io.show('Sessions', state.playing)
+        : state.playing ? io.show('Sessions') // show the list, never substitute another live game
+        : io.show(io.tabs.includes(state.tab) ? state.tab : 'Home');
+      const shownRevision = io.revision?.();
+      const superseded = () => mine !== generation || (io.revision && io.revision() !== shownRevision);
+      try { await showing; }
+      catch (error) {
+        if (!superseded()) throw error;
+      }
+      if (superseded()) return { cancelled: true, restored: [], missing: [] };
       const active = live(state.pip || state.active) || live(state.playing);
       io.active(active || null);
       io.pip();

@@ -3762,7 +3762,7 @@ const COMPACT = compactController.state;
 const compactEnter = () => compactController.enter();
 const compactRestore = () => compactController.restore();
 const clientRefresh = GBoxClientRefresh.create({ storage: sessionStorage, readState: gboxState,
-  context: () => ({ sid: COMPACT.on ? COMPACT.sid : EMB.sid, compact: COMPACT.on, aspect: COMPACT.aspect,
+  context: () => ({ origin: S.apiUrl, sid: COMPACT.on ? COMPACT.sid : EMB.sid, compact: COMPACT.on, aspect: COMPACT.aspect,
     returnMode: COMPACT.on ? COMPACT.returnMode : VIEW.mode, section: document.querySelector('section.on')?.id }),
   reload: async value => {
     if (!gbox.clientReload) return location.reload();
@@ -3798,8 +3798,8 @@ async function restoreClientView() {
   const wv = document.querySelector('#wv');
   if (!wv) throw Error('The game view is not ready. Press F5 to reconnect your saved streams.');
   await wv.gboxReady;
-  if (navigation !== clientViewNavigation) { clientRefresh.done(); return; }
-  const restored = await wv.executeJavaScript(`(async () => { if (!window.gboxRestoreClientView) throw Error('The game view update is not available yet.'); const result = await window.gboxRestoreClientView(${JSON.stringify(value.guest)}); return { ...result, view: window.gboxClientViewState?.() }; })()`);
+  if (navigation !== clientViewNavigation || !clientRefresh.pending()) { clientRefresh.done(); return; }
+  const restored = await wv.executeJavaScript(`(async () => { if (${JSON.stringify(value.origin || null)} && location.origin !== ${JSON.stringify(value.origin || null)}) return { cancelled: true }; if (!window.gboxRestoreClientView) throw Error('The game view update is not available yet.'); const result = await window.gboxRestoreClientView(${JSON.stringify(value.guest)}); return { ...result, view: { ...window.gboxClientViewState?.(), origin: location.origin } }; })()`);
   observed = restored?.view;
   clientRefresh.remember(observed); // Ctrl+R may arrive before the first periodic guest checkpoint
   if (restored?.cancelled || navigation !== clientViewNavigation) { clientRefresh.done(); return; } // operator navigation supersedes saved intent

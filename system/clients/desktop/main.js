@@ -728,7 +728,7 @@ ipcMain.handle('client:reload', async (event, state) => {
           await workerControl.stop(); return true;
         },
         save: value => clientHandoff.save(CLIENT_HANDOFF_FILE, { state: value, ...compactWindow.handoff(),
-          mini: mini && !mini.isDestroyed() ? { ...miniSession, bounds: mini.getBounds() } : pendingMini,
+          mini: clientViews.mini(mini && !mini.isDestroyed() ? { ...miniSession, bounds: mini.getBounds() } : pendingMini, settings().apiUrl),
           startWorker: hadWorker || settings().autoStartWorker }),
         launch: id => {
           app.relaunch({ args: [...process.argv.slice(1).filter(a => !a.startsWith(clientHandoff.ARG)), clientHandoff.ARG + id] });
@@ -755,9 +755,9 @@ ipcMain.handle('client:handoff-saved', event => { assertClientSender(event); han
 function saveClientView(state = savedClientState, server = savedClientOrigin) {
   if (!state || state.v !== 1 || !win || win.isDestroyed()) return false;
   const origin = clientViews.origin(server);
-  if (!origin || origin !== clientViews.origin(settings().apiUrl)) return false;
+  if (!origin || origin !== clientViews.origin(settings().apiUrl) || !clientViews.matches({ state }, origin)) return false;
   const value = clientViews.view({ state, ...compactWindow.handoff(),
-    mini: mini && !mini.isDestroyed() ? { ...miniSession, bounds: mini.getBounds() } : pendingMini }, 0);
+    mini: clientViews.mini(mini && !mini.isDestroyed() ? { ...miniSession, bounds: mini.getBounds() } : pendingMini, origin) }, 0);
   const key = JSON.stringify({ origin, ...value });
   if (key !== savedClientKey) clientViewStore.save(origin, value);
   savedClientState = value.state; savedClientOrigin = origin; savedClientKey = key;
@@ -937,15 +937,17 @@ ipcMain.handle("stt", async (_e, buf) => {
 
 // Mini mode: the whole app collapses into a frameless, always-on-top game window that keeps the game's aspect ratio.
 let mini = null, miniSession = null, pendingMini = null;
-async function openMini(sid, title, savedBounds) {
+async function openMini(sid, title, savedBounds, expectedOrigin = clientViews.origin(settings().apiUrl)) {
   const s = settings(), t = await token();
   if (clientHandoffBusy) throw Error('Desktop refresh is in progress.');
+  if (!expectedOrigin || clientViews.origin(s.apiUrl) !== expectedOrigin || clientViews.origin(settings().apiUrl) !== expectedOrigin)
+    throw Error('The saved PiP belongs to a different server.');
   if (mini) mini.close();
   mini = new BrowserWindow({ width: 480, height: 360, frame: false, alwaysOnTop: true, resizable: true, backgroundColor: "#000",
     title: "gBox · " + (title || "game"), icon: path.join(__dirname, "..", "..", "assets", "brand", "gbox.ico"),
     webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true } });
   mini.loadFile(path.join(__dirname, "mini.html"), { query: { src: `${s.apiUrl}/api/sessions/${encodeURIComponent(sid)}/mjpeg?token=${encodeURIComponent(t)}`, title: title || "" } });
-  miniSession = { sid, title };
+  miniSession = { sid, title, origin: expectedOrigin };
   if (savedBounds) mini.setBounds(savedBounds);
   mini.on("closed", () => { mini = null; miniSession = null; queueClientView(); if (win && !win.isDestroyed()) { win.webContents.send("mini:closed"); win.show(); } });
   mini.on('move', queueClientView); mini.on('resize', queueClientView); queueClientView();
@@ -1077,17 +1079,18 @@ app.whenReady().then(() => {
   startupHandoff = clientHandoff.consume(CLIENT_HANDOFF_FILE, process.argv);
   // A cold reopen restores presentation only. It cannot enter the handoff's
   // cleanup exception or authorize a worker start.
-  const startupView = startupHandoff.value || (!startupHandoff.requested && clientViewStore.load(settings().apiUrl));
+  const handoffMatches = clientViews.matches(startupHandoff.value, settings().apiUrl);
+  const startupView = handoffMatches ? startupHandoff.value : (!startupHandoff.requested && clientViewStore.load(settings().apiUrl));
   if (startupView) {
     savedClientState = startupView.state; savedClientOrigin = clientViews.origin(settings().apiUrl);
-    pendingMini = startupView.mini;
+    pendingMini = startupView.mini ? { ...startupView.mini, origin: savedClientOrigin } : null;
     compactWindow.seedBounds(startupView.compactBounds);
   }
   if (startupHandoff.value) {
-    handoffView = startupHandoff.value.state;
-    pendingMini = startupHandoff.value.mini;
-    compactWindow.seedBounds(startupHandoff.value.compactBounds);
-    clientActivation = { state: 'applied', pid: process.pid, at: Date.now(), reason: 'Updated desktop code is active; saved streams are reconnecting.' };
+    handoffView = handoffMatches ? startupHandoff.value.state : null;
+    clientActivation = { state: 'applied', pid: process.pid, at: Date.now(), reason: handoffMatches
+      ? 'Updated desktop code is active; saved streams are reconnecting.'
+      : 'Updated desktop code is active; the unbound or different-server saved view was not restored.' };
   } else if (startupHandoff.requested) clientActivation = { state: 'pending', pid: process.pid, reason: startupHandoff.error };
   appMenu();
   session.defaultSession.setPermissionRequestHandler((_wc, perm, cb) => cb(["media", "audioCapture", "clipboard-read", "clipboard-sanitized-write"].includes(perm)));
@@ -1147,11 +1150,12 @@ app.whenReady().then(() => {
   } });
   win.webContents.on('did-finish-load', () => {
     clientReloading = false;
+    if (pendingMini && !clientViews.mini(pendingMini, settings().apiUrl)) pendingMini = null;
     if (pendingMini) {
       const target = pendingMini;
       api('/api/sessions?include_ended=false').then(sessions => {
         if (!sessions.some(value => value.session_id === target.sid && value.state === 'running')) throw Error('The saved PiP session is unavailable.');
-        return openMini(target.sid, target.title, target.bounds);
+        return openMini(target.sid, target.title, target.bounds, target.origin);
       }).then(() => { if (pendingMini === target) pendingMini = null; }).catch(error => {
         clientActivation = { ...clientActivation, reason: error.message + ' Press F5 to retry the saved PiP.' };
       });

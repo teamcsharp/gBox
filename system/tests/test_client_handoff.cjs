@@ -109,6 +109,7 @@ test('actual F5 IPC relaunches exactly once only after idle exit, otherwise refr
     const ctx=vm.createContext({ipcMain:{handle:(_n,fn)=>{handler=fn;}},win:{webContents:wc},clientReloading:false,
       clientVersions:{read:async()=>({restart:true})},clientActivation:{},worker:{pid:42},workerControl:{stop:async()=>{calls.push('idle-exit');ctx.worker=null;}},
       clientHandoff:{...H,save:(_file,v)=>{assert.equal(v.state.sid,'pip-B');assert.equal(v.state.guest.playing,'main-A');calls.push('save');return 'opaque';}},
+      clientViews:require('../clients/desktop/client-view-store.cjs'),
       inspectClientIdle:async()=>busy?'active local game':null,compactWindow:{handoff:()=>({window:value().window})},
       settings:()=>({autoStartWorker:true}),mini:null,pendingMini:null,miniSession:null,CLIENT_HANDOFF_FILE:'owned-fixture',
       process:{pid:12,argv:['electron','app',H.ARG+'old']},app:{relaunch:args=>{calls.push('launch');assert.deepEqual([...args.args],['app',H.ARG+'opaque']);},exit:()=>calls.push('exit')},
