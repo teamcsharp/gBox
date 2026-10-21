@@ -124,34 +124,35 @@ def stripify(triangles) -> list[list[int]]:
     used = [False] * len(tris)
     strips = []
 
-    def take(edge):
-        for k in by_edge.get(edge, ()):
-            if not used[k]:
-                return k
-        return None
+    def walk(start: int, rotation: int, commit: bool) -> list[int]:
+        a, b, c = tris[start][rotation:] + tris[start][:rotation]
+        strip, taken = [a, c, b], {start}            # decodes (a, b, c) at an even step
+        while True:
+            # the next triangle sits at step len(strip) - 2: (p, q, r) decoded as (p, q, r) on odd steps and as
+            # (p, r, q) on even ones, so its counter-clockwise winding holds the directed edge (p, q) / (q, p)
+            p, q = strip[-2], strip[-1]
+            odd = (len(strip) - 2) % 2 == 1
+            edge = (p, q) if odd else (q, p)
+            k = next((k for k in by_edge.get(edge, ()) if not used[k] and k not in taken), None)
+            if k is None:
+                break
+            taken.add(k)
+            strip.append(next(v for v in tris[k] if v not in (p, q)))
+        if commit:
+            for k in taken:
+                used[k] = True
+        return strip
 
     for start in range(len(tris)):
         if used[start]:
             continue
-        used[start] = True
-        a, b, c = tris[start]
-        strip = [a, c, b]                      # decodes (a, b, c) at an even step
-        while True:
-            # the next triangle (at an odd step) decodes (s1, s2, s3) and must wind counter-clockwise: it contains
-            # the directed edge (s_last-1, s_last) ... derive from the last two strip entries and the parity
-            p, q = strip[-2], strip[-1]
-            odd = (len(strip) - 2) % 2 == 1     # step of the next triangle = len(strip) - 2
-            # next triangle = (p, q, r) decoded as (p, q, r) on odd steps, (p, r, q) on even steps
-            edge = (p, q) if odd else (q, p)
-            k = take(edge)
-            if k is None:
-                break
-            used[k] = True
-            t = tris[k]
-            r = next(v for v in t if v not in (p, q))
-            strip.append(r)
-        strips.append(strip)
+        best = max(range(3), key=lambda rotation: len(walk(start, rotation, False)))
+        strips.append(walk(start, best, True))
     return strips
+
+
+MAX_PACKETS = 128            # strips per material; natively up to 261 (lei00's face), kept well inside that
+MAX_VERTICES = 8192          # vertices per OBJ; natively up to 8877 (lei00's face)
 
 
 def strip_buffer(strips: list[list[int]]) -> tuple[list[int], list[tuple[int, int]]]:
@@ -211,8 +212,9 @@ def _part_record(geometry: dict, obj_index: int, part: dict, vertex_floor: int):
     native = np.frombuffer(geometry["objects"][obj_index]["vertex_bytes"], "<f4").reshape(-1, 8)
     base_vertex = len(native)
     vertices = np.concatenate([native, donor])
-    if len(vertices) > 0xFFFF:
-        raise ValueError(f"OBJ {obj_index} replacement needs {len(vertices)} vertices; u16 strips address 65535")
+    if len(vertices) > MAX_VERTICES:
+        raise ValueError(f"OBJ {obj_index} replacement needs {len(vertices)} vertices (native {base_vertex} + donor "
+                         f"{len(donor)}); the writer keeps an OBJ within {MAX_VERTICES} (natively up to 8877)")
     template = _material_template(geometry, obj_index)
     indices, materials = [], []
     for group in part["materials"]:
@@ -222,28 +224,31 @@ def _part_record(geometry: dict, obj_index: int, part: dict, vertex_floor: int):
         if tris.min() < 0 or tris.max() >= len(donor):
             raise ValueError(f"OBJ {obj_index} triangle references a missing vertex")
         tris = tris + base_vertex
-        strips = stripify(tris)
-        local, packets = strip_buffer(strips)
-        base = len(indices)
-        if base:
-            # stitch this material behind the previous one: its first strip gets a join as well, whose position its
-            # packet points at; later strips keep their own joins, shifted by the base and the new join
-            if len(strips) == 1:
-                local = local[:-2]                      # the trailing pair is only needed by an OBJ's first strip
-            packets = [(base, packets[0][1])] + [(base + off + 2, n) for off, n in packets[1:]]
-            local = [indices[-1], local[0]] + local
-        indices.extend(local)
-        header = list(template)
-        positions = vertices[np.unique(tris), :3]
-        header[1] = C.MAT_HEADER_WORDS + 4 * len(packets)
-        header[4:8] = list(struct.unpack("<4I", struct.pack("<4f", *_sphere(positions))))
-        header[C.MAT_WORD_MODE] = 1
-        header[C.MAT_WORD_TEXTURE] = int(group["texture"])
-        header[28] = header[29] = 0
-        header[C.MAT_WORD_PACKETS] = len(packets)
-        header[32] = 0
-        header[0] = MAT_PRESENT
-        materials.append((header, packets))
+        all_strips = stripify(tris)
+        # one material per MAX_PACKETS strips (same texture): no record outgrows what the native costumes carry
+        for first in range(0, len(all_strips), MAX_PACKETS):
+            strips = all_strips[first:first + MAX_PACKETS]
+            local, packets = strip_buffer(strips)
+            base = len(indices)
+            if base:
+                # stitch this material behind the previous one: its first strip gets a join as well, whose position
+                # its packet points at; later strips keep their own joins, shifted by the base and the new join
+                if len(strips) == 1:
+                    local = local[:-2]                  # the trailing pair is only needed by an OBJ's first strip
+                packets = [(base, packets[0][1])] + [(base + off + 2, n) for off, n in packets[1:]]
+                local = [indices[-1], local[0]] + local
+            indices.extend(local)
+            header = list(template)
+            positions = vertices[np.unique(np.concatenate([np.asarray(s) for s in strips])), :3]
+            header[1] = C.MAT_HEADER_WORDS + 4 * len(packets)
+            header[4:8] = list(struct.unpack("<4I", struct.pack("<4f", *_sphere(positions))))
+            header[C.MAT_WORD_MODE] = 1
+            header[C.MAT_WORD_TEXTURE] = int(group["texture"])
+            header[28] = header[29] = 0
+            header[C.MAT_WORD_PACKETS] = len(packets)
+            header[32] = 0
+            header[0] = MAT_PRESENT
+            materials.append((header, packets))
     if not materials:
         raise ValueError(f"OBJ {obj_index} replacement has no triangles")
     # the last packet's draw must end inside the buffer, and an even count keeps the next record 4-aligned
