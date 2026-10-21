@@ -66,7 +66,23 @@ class Title:
         self.fps = float(self.block.get("fps", self.fps))
         self.frame_ms = self.block.get("frame_ms", self.frame_ms)
         names = [v for v in self.vocab.values() if isinstance(v, str) and v in self.map.fields]
-        self.fields = list(dict.fromkeys(names + list(self.extra_fields())))
+        self.fields = list(dict.fromkeys(names + list(self.extra_fields()) + self._menu_fields()))
+
+    def _menu_fields(self) -> list[str]:
+        out = []
+
+        def walk(x):
+            if isinstance(x, dict):
+                for k, v in x.items():
+                    if k in ("field", "cursor") and isinstance(v, str) and v in self.map.fields:
+                        out.append(v)
+                    else:
+                        walk(v)
+            elif isinstance(x, list):
+                for v in x:
+                    walk(v)
+        walk(self.block.get("menus") or {})
+        return out
 
     # -- reading --
     def extra_fields(self) -> list[str]:
@@ -136,5 +152,49 @@ class Title:
 
     # -- between fights --
     def menu(self, w: world.World) -> str | None:
-        """The pad key to press on a non-fight screen (None: wait)."""
+        """The pad key to press on a non-fight screen (None: wait), from the map's fight.menus rules (data, so a
+        deployed map change takes effect without a code reload):
+
+            "menus": {"title": {"press": "start"},
+                      "menu": [{"when": {"field": "game.menu", "eq": 3}, "cursor": "game.cursor", "target": 2,
+                                "next": "down", "prev": "up", "confirm": "b"},
+                               {"press": "b"}]}
+
+        A screen's rules are tried in order; `when` is a ram_map condition over the map's fields (field / mask / eq
+        ne lt le gt ge in, all / any / not); `cursor` walks the field to `target` (next when below, prev when above),
+        then presses `confirm`; `press` presses its key; `wait` presses nothing."""
+        rules = (self.block.get("menus") or {}).get(w.screen)
+        if rules is None:
+            return None
+        values = w.values
+        for rule in rules if isinstance(rules, list) else [rules]:
+            cond = rule.get("when")
+            if cond is not None and (values is None or not _holds(cond, values)):
+                continue
+            if rule.get("wait"):
+                return None
+            if "cursor" in rule:
+                cur = values.get(rule["cursor"]) if values is not None else None
+                if not isinstance(cur, (int, float)):
+                    return None
+                target = ram_map.num(rule["target"])
+                if cur == target:
+                    return rule.get("confirm")
+                return rule.get("next") if cur < target else rule.get("prev")
+            return rule.get("press")
         return None
+
+
+def _holds(cond: dict, values) -> bool:
+    """A ram_map condition (docs/ram_maps.md "Conditions") over top-level fields of a read."""
+    if "all" in cond:
+        return all(_holds(c, values) for c in cond["all"])
+    if "any" in cond:
+        return any(_holds(c, values) for c in cond["any"])
+    if "not" in cond:
+        return not _holds(cond["not"], values)
+    raw = values.raw.get(cond.get("field"))
+    v = raw if raw is not None else values.get(cond.get("field"))
+    if isinstance(v, list):
+        v = v[0] if v else None
+    return v is not None and ram_map._cond({**cond, "field": "v"}, {"v": v})

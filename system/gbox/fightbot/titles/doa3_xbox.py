@@ -119,8 +119,10 @@ class Doa3(Title):
 
     # -- between fights --
     def menu(self, w):
-        """The press for a screen outside the fight: START on the title (the port that presses it plays P1),
-        A (gBox "b") through the menus, results and continue prompts."""
+        """The map's fight.menus rules for the screen (Title.menu); without rules: START on the title (the port that
+        presses it plays P1), A (gBox "b") through the menus, results and continue prompts."""
+        if w.screen in (self.block.get("menus") or {}):
+            return super().menu(w)
         if w.screen in ("title", "demo"):
             return "start"
         if w.screen in ("menu", "char_select", "results", "continue", "game_over"):

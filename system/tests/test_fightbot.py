@@ -127,6 +127,34 @@ def run(title, game, eng, frames):
         game.pad = eng.tick(w)
 
 
+def test_menu_rules_in_the_map_walk_a_cursor_then_confirm():
+    s = spec()
+    s["fields"]["game.cursor"] = {"address": hex(BASE + 0x70), "type": "u8", "source": "manual"}
+    s["fields"]["game.menu"] = {"address": hex(BASE + 0x71), "type": "u8", "source": "manual"}
+    s["fields"]["game.screen"]["signatures"]["2"] = {"screen": "menu"}
+    s["fight"]["menus"] = {"title": {"press": "start"},
+                           "menu": [{"when": {"field": "game.menu", "eq": 3}, "cursor": "game.cursor", "target": 2,
+                                     "next": "down", "prev": "up", "confirm": "b"},
+                                    {"when": {"field": "game.menu", "eq": 4}, "wait": True},
+                                    {"press": "a"}]}
+    title = Holds(ram_map.RamMap(s))
+    assert "game.cursor" in title.fields and "game.menu" in title.fields
+    game = Game({})
+    game.screen = 2
+    game.write()
+
+    def key(menu, cursor):
+        game.ram[0x71], game.ram[0x70] = menu, cursor
+        return title.menu(title.read(game.read))
+    assert [key(3, 0), key(3, 2), key(3, 5), key(4, 0), key(1, 0)] == ["down", "b", "up", None, "a"]
+    game.screen = 0
+    game.write()
+    assert title.read(game.read).screen == "title" and title.menu(title.read(game.read)) == "start"
+    game.screen = 1
+    game.write()
+    assert title.menu(title.read(game.read)) is None                       # the fight: no menu rules
+
+
 def test_vocab_check_reports_what_a_map_fills():
     rep = vocab.check(ram_map.RamMap(spec()))
     assert rep["errors"] == [] and rep["filled"]["p2.move"] == "p2.move"
