@@ -40,8 +40,9 @@ def setup(ad) -> list[str]:
 class Deployment:
     """What fightbot.survival needs from DOA3: where the game is, the menu presses, and the fight itself."""
     STILL_FOR, NUDGE_WAIT = 12.0, 12.0
-    NUDGE_KEYS = ("b",)                            # A: confirm (START would join a fight as a challenger)
+    NUDGE_KEYS = ("start", "b")                    # out of a fight only (START in a fight joins as a challenger)
     MENU_GAP = 0.5
+    MENU_IDLE = 20.0                               # a screen no rule maps (name entry ...): START, A
 
     def __init__(self, ad, title=None, book=None, lessons=None, stats=None):
         self.ad = ad
