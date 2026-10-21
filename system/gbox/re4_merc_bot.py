@@ -1106,26 +1106,29 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
             was_in = True
         out_since = None
         bot.stats.update(combo=s["combo"], timer=s["timer"])
-        button = ask() if now >= prompt_rest else None
-        if button and not bot.prompt_ok(button, s, now):   # an attack lands first: fight / dodge, prompt later
-            button = None
+        resting = now < prompt_rest
+        button = ask() if not resting or ram_prompt else None
+        mash = button == "wiggle"                      # SHAKE OFF (a grab): every pass, resting or not
+        if button and not mash and (resting or not bot.prompt_ok(button, s, now)):
+            button = None                              # resting, or an attack lands first: fight / dodge, prompt later
         if button:                                     # the game asks for a button: press it (not aiming: A acts)
             prompt_taps = [t for t in prompt_taps if now - t < 3.0]
-            if len(prompt_taps) >= PROMPT_BURST:
+            if len(prompt_taps) >= PROMPT_BURST and not mash:
                 prompt_rest, prompt_taps = now + PROMPT_REST, []
-            elif not prompt_taps or now - prompt_taps[-1] >= PROMPT_EVERY:
+            elif mash or not prompt_taps or now - prompt_taps[-1] >= PROMPT_EVERY:
                 hold(set())
                 # one button, a QTE's pair pressed together (A+B, L+R), or SHAKE OFF's run of stick flicks and A / B
                 chords = re4_ram_prompts.KEYS.get(button, [(button,)]) if re4_ram_prompts is not None else [(button,)]
                 for chord in chords:
                     send([{"key": k, "down": True} for k in chord])
-                    sleep(0.12 if len(chords) == 1 else 0.06)
+                    sleep(0.045 if mash else (0.12 if len(chords) == 1 else 0.06))
                     send([{"key": k, "down": False} for k in chord])
-                    if len(chords) > 1:
-                        sleep(0.04)
+                    if mash or len(chords) > 1:
+                        sleep(0.035 if mash else 0.04)
                 prompt_taps.append(clock())
                 bot.stats["prompt_presses"] += 1
-                sleep(0.15)
+                if not mash:
+                    sleep(0.15)
                 continue
         else:
             prompt_taps = []

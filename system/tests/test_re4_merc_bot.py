@@ -450,6 +450,26 @@ def test_an_on_screen_prompt_is_pressed_and_a_stuck_one_is_left_alone():
     assert len(early) == B.PROMPT_BURST                                    # then left alone for PROMPT_REST
 
 
+def test_a_grab_is_shaken_off_without_pause_or_rest():
+    """SHAKE OFF (RAM "wiggle"): Leon loses 10 hp a frame until enough new stick flicks and A / B presses come (live
+    2026-10-21), so the flicks go out back to back for as long as it shows - no PROMPT_EVERY gap, no PROMPT_REST."""
+    m = world([((0, 0, 500), True)], room=0x400)
+    facing(m, 0.0)
+    now, sent = [0.0], []
+    steps = iter(range(40))
+
+    def tick_stop():
+        n = next(steps, None)
+        m.put(B.MERC_TIMER, ">I", int((100 - now[0]) * 30))
+        return n is None
+    B.play(None, lambda rows: sent.append((now[0], rows)), tick_stop, sleep=lambda s: now.__setitem__(0, now[0] + s),
+           m=m, clock=lambda: now[0], ram_prompt=lambda: "wiggle")
+    flicks = [t for t, rows in sent if {"key": "left", "down": True} in rows]
+    assert len(flicks) >= 40 * 3 - 5                                       # every pass: three left flicks (and rights)
+    assert max(b - a for a, b in zip(flicks, flicks[1:])) < 0.25            # never a rest
+    assert all({"key": "a", "down": True} in rows for t, rows in sent if {"key": "left", "down": True} in rows)
+
+
 def test_the_prompt_detector_finds_the_a_icon():
     import numpy as np
     from gbox import screen_prompt as P
