@@ -13,6 +13,8 @@ RE6_ID = '0871eee3b68cdea3'
 RE6_TEMPLATE_SHA256 = '194cb5b71858f65feeb2b1703642ddc4ffde09b9a087119189b29b0ad7b83f11'
 DOAPP_ID = '59c55e95af61abbe'  # Dead Or Alive ++ (Korea), platform=arcade
 NDS_WCW_GAME_ID = 'd9467f457f53f2c7'  # Call of Duty: World at War (USA), NDS
+SGC_GEMS_ID = 'fc5914e3ddb540c4'  # Sonic Gems Collection (USA), platform=gamecube
+SGC_GEMS_PLATFORM = 'gamecube'
 
 
 def pre_launch(game: dict, ctx, mod: str = '') -> dict:
@@ -33,6 +35,16 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
                     'reason': record['reason'],
                     'proven_revisions': record['proven_revisions'],
                     'unknown_counts': record['unknown_counts']}
+        if game.get('game_id') == SGC_GEMS_ID and game.get('platform') == SGC_GEMS_PLATFORM:
+            # Sonic Gems Collection: the state-save layout is mapped and the
+            # save digests are pinned, but no writer and no runtime-verified
+            # inventory exist yet. Report that state; never write a save here.
+            from . import sgc_gems_probe
+            gate = sgc_gems_probe.profile_gate()
+            return {'state': 'research_pending', 'applied': False,
+                    'reason': gate['reason'], 'scope': list(sgc_gems_probe.CATEGORIES),
+                    'evidence': gate['evidence'], 'blockers': gate['blockers'],
+                    'next': gate['next']}
         return {'state': 'research_pending', 'applied': False, 'reason': profile['reason']}
     if game.get('game_id') == RE6_ID and game.get('platform') == 'xbox360':
         from . import re6_tool
@@ -64,6 +76,12 @@ def profile_for(game: dict) -> dict:
         # pre_launch below short-circuits on verified=False, so no writer is reachable.
         return {'status': 'pending_research', 'profile': None, 'verified': False,
                 'scope': list(doax2_unlock.CATEGORIES), **doax2_unlock.profile_gate()}
+    if game.get('game_id') == SGC_GEMS_ID and game.get('platform') == SGC_GEMS_PLATFORM:
+        # Read-only probe only: pre_launch short-circuits on verified=False,
+        # so no writer is reachable from the Play path for this game.
+        from . import sgc_gems_probe
+        return {'status': 'pending_research', 'profile': None, 'verified': False,
+                'scope': list(sgc_gems_probe.CATEGORIES), **sgc_gems_probe.profile_gate()}
     if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,
                 'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}
