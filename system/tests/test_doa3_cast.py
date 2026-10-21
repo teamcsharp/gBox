@@ -191,13 +191,17 @@ def make_manifest() -> dict:
 
 def make_geo_xpr(vcount: int = 4, icount: int = 6, mat_face_off: int = 0,
                  mat_face_count: int | None = None, flags: int = 0x80000000,
-                 ref: int = 0x25, tail: int = 0, packets_extra: int = 1) -> bytes:
-    """An XPR0 with one OBJ shaped like the measured kas00 record: pinned
+                 strip_flags: int = 0, packets: list | None = None) -> bytes:
+    """An XPR0 with one OBJ shaped like the measured costume records: pinned
     fields at OBJ+0x10..+0x1F, a material chain from OBJ+0x60 ending in
     [0x00000000, 0x12345678] exactly 8 bytes before the u16 strip buffer, and
-    a 32-byte f32x8 vertex buffer starting at header_size."""
+    a 32-byte f32x8 vertex buffer starting at header_size. Its packets are
+    measured strip packets {32*(n+2), index_off, n, flags}; by default one
+    strip spans the whole index buffer (mat_face_off, mat_face_count)."""
     mat_face_count = icount - 2 if mat_face_count is None else mat_face_count
-    length_words = doa3_cast.MAT_HEADER_WORDS + 4 * (packets_extra + 1)
+    if packets is None:
+        packets = [(32 * (mat_face_count + 2), mat_face_off, mat_face_count, strip_flags)]
+    length_words = doa3_cast.MAT_HEADER_WORDS + 4 * len(packets)
     obj = 0x30                                            # table_end (0x2C) + 4
     mat_off = obj + doa3_cast.MAT_HEADER_BASE
     iptr = mat_off + 4 * length_words + 8
@@ -216,10 +220,8 @@ def make_geo_xpr(vcount: int = 4, icount: int = 6, mat_face_off: int = 0,
     header_words = [flags, length_words] + [0x3F800000 + i for i in range(31)]
     struct.pack_into(f"<{doa3_cast.MAT_HEADER_WORDS}I", out, m, *header_words)
     pkt = m + 4 * doa3_cast.MAT_HEADER_WORDS
-    for i in range(packets_extra):
-        struct.pack_into("<4I", out, pkt + 16 * i, 0x80, 0, 0, 0)  # zero-face packets
-    struct.pack_into("<4I", out, pkt + 16 * packets_extra, ref, mat_face_off,
-                     mat_face_count, tail)
+    for i, packet in enumerate(packets):
+        struct.pack_into("<4I", out, pkt + 16 * i, *packet)
     mend = m + 4 * length_words
     out[mend:mend + 4] = b"\x00\x00\x00\x00"
     struct.pack_into("<I", out, mend + 4, doa3_cast.MAT_TERMINATOR)
@@ -712,13 +714,15 @@ def test_mdl_geometry_decodes_measured_obj_layout():
     assert geo["triangle_total"] == 4                     # 6 strip indices -> 4 tris
     obj = geo["objects"][0]
     assert obj["header"][4:8] == [4, obj["vertex_offset"], 6, obj["index_offset"]]
-    assert obj["vertex_offset"] == 0x30 + 0x60 + 4 * 41 + 8 + 12
-    assert obj["index_offset"] == 0x30 + 0x60 + 4 * 41 + 8
+    assert obj["vertex_offset"] == 0x30 + 0x60 + 4 * 37 + 8 + 12
+    assert obj["index_offset"] == 0x30 + 0x60 + 4 * 37 + 8
     assert obj["vertex_count"] == 4 and obj["index_count"] == 6
     mat = obj["materials"][0]
-    assert mat["length_words"] == 41 and mat["packet_count"] == 2
-    assert mat["header"][0] == 0x80000000 and mat["header"][1] == 41
-    assert mat["ref"] == 0x25 and mat["face_off"] == 0 and mat["face_count"] == 4 and mat["tail"] == 0
+    assert mat["length_words"] == 37 and mat["packet_count"] == 1
+    assert mat["header"][0] == 0x80000000 and mat["header"][1] == 37
+    assert mat["strips"] == [{"index_offset": 0, "triangles": 4, "flags": 0}]
+    assert mat["setup_packets"] == [] and mat["texture"] == mat["header"][27]
+    assert obj["triangles"] == [(0, 2, 1), (1, 2, 3), (2, 0, 3), (3, 0, 1)]
     assert obj["vertices"][1][:3] == (1.0, 1.0, 0.0)
     assert obj["vertices"][1][3:6] == (0.0, 0.0, 1.0)    # unit normal
     sanity = doa3_cast.vertex_sanity(geo)
@@ -732,8 +736,46 @@ def test_xpr_geometry_roundtrip_is_byte_preserving():
 
 
 def test_geometry_roundtrip_holds_with_multi_packet_material():
-    blob = make_geo_xpr(packets_extra=7, tail=1)
+    blob = make_geo_xpr(strip_flags=0x901)
     assert doa3_cast.xpr_geometry_roundtrip(blob) == blob
+
+
+def stitched_xpr() -> bytes:
+    """Three strips stitched the way the costumes store them: the first at 0, each later one behind a two-index
+    join (the previous last index repeated, then its own first index) that its packet's index_off points at."""
+    indices = [0, 1, 2, 3, 3, 4, 4, 5, 6, 7, 7, 8, 8, 9, 10, 10]   # (one trailing pad index keeps 4-byte alignment)
+    packets = [(32 * 4, 0, 2, 0), (32 * 4, 4, 2, 0), (32 * 3, 10, 1, 0)]
+    blob = bytearray(make_geo_xpr(vcount=11, icount=len(indices), packets=packets))
+    iptr = doa3_cast.mdl_chunk(bytes(blob))["objects"][0]
+    iptr = struct.unpack_from("<I", blob, iptr + 0x1C)[0]
+    struct.pack_into(f"<{len(indices)}H", blob, iptr, *indices)
+    return bytes(blob)
+
+
+def test_every_packet_is_a_strip_behind_its_join():
+    geo = doa3_cast.costume_geometry(stitched_xpr())
+    obj = geo["objects"][0]
+    assert [s["index_offset"] for s in obj["strips"]] == [0, 4, 10]
+    assert [len(s["triangles"]) for s in obj["strips"]] == [2, 2, 1]
+    # fresh parity per packet: the join's degenerate pair keeps each strip's first triangle on an even step
+    assert obj["triangles"] == [(0, 2, 1), (1, 2, 3), (4, 6, 5), (5, 6, 7), (8, 10, 9)]
+    assert geo["triangle_total"] == 5
+
+
+def test_setup_packets_must_announce_the_strip_count():
+    setup = [(4, 0x01000400, 2184, 0), (5, 0x400, 1, 0)]
+    good = make_geo_xpr(packets=setup + [(32 * 6, 0, 4, 0)])
+    mat = doa3_cast.costume_geometry(good)["objects"][0]["materials"][0]
+    assert mat["setup_packets"] == setup and len(mat["strips"]) == 1
+    bad = make_geo_xpr(packets=[(4, 0x01000400, 2184, 0), (5, 0x400, 3, 0), (32 * 6, 0, 4, 0)])
+    with pytest.raises(ValueError, match="do not announce"):
+        doa3_cast.costume_geometry(bad)
+
+
+def test_geometry_rejects_a_packet_that_is_not_a_strip():
+    blob = make_geo_xpr(packets=[(0x25, 0, 4, 0)])          # the old 'face range' reading: w0 != 32*(n+2)
+    with pytest.raises(ValueError, match="is not a strip"):
+        doa3_cast.costume_geometry(blob)
 
 
 def test_geometry_rejects_index_out_of_vertex_range():
@@ -810,7 +852,7 @@ def make_descriptor_xpr(vcount: int = 4, icount: int = 6,
     0xAD fill, then a vertex buffer and the texture data region."""
     ntex = len(tex_sizes)
     mat_face_count = icount - 2
-    length_words = doa3_cast.MAT_HEADER_WORDS + 4 * 2   # extra packet + face packet
+    length_words = doa3_cast.MAT_HEADER_WORDS + 4 * 2   # two strip packets
     obj = 0x30
     mat_off = obj + doa3_cast.MAT_HEADER_BASE
     iptr = mat_off + 4 * length_words + 8
@@ -832,8 +874,8 @@ def make_descriptor_xpr(vcount: int = 4, icount: int = 6,
     header_words = [0x80000000, length_words] + [0x3F800000 + i for i in range(31)]
     struct.pack_into(f"<{doa3_cast.MAT_HEADER_WORDS}I", out, m, *header_words)
     pkt = m + 4 * doa3_cast.MAT_HEADER_WORDS
-    struct.pack_into("<4I", out, pkt, 0x80, 0, 0, 0)              # zero-face packet
-    struct.pack_into("<4I", out, pkt + 16, 0x25, 0, mat_face_count, 0)  # face packet
+    struct.pack_into("<4I", out, pkt, 32 * 3, 0, 1, 0)            # strip packets {32*(n+2), off, n, flags}
+    struct.pack_into("<4I", out, pkt + 16, 32 * (mat_face_count + 2), 0, mat_face_count, 0)
     mend = m + 4 * length_words
     out[mend:mend + 4] = b"\x00\x00\x00\x00"
     struct.pack_into("<I", out, mend + 4, doa3_cast.MAT_TERMINATOR)
@@ -915,3 +957,30 @@ def test_mdl_descriptor_table_rejects_non_increasing_offsets():
     struct.pack_into("<I", blob, p, first)
     with pytest.raises(ValueError, match="strictly increasing"):
         doa3_cast.mdl_descriptor_table(bytes(blob))
+
+
+# ----------------------------------------------------------------- owned disc (skipped without it)
+
+def _owned_loadfile():
+    import os
+    from pathlib import Path
+    path = Path(os.environ.get("GBOX_DOA3_LOADFILE") or Path.home() / "gBox_alt" / "gbox-cache" / doa3_cast.GAME_ID
+                / "extract" / "Dead or Alive 3" / "loadfile.afs")
+    return path if path.is_file() else None
+
+
+@pytest.mark.skipif(_owned_loadfile() is None, reason="the owned DOA3 loadfile.afs is not on this machine")
+def test_owned_costumes_decode_every_strip_packet():
+    """zac00/kas00 of the owned USA disc: every packet decodes as a strip (the old last-packet reading found 1,544
+    and 1,960 triangles)."""
+    afs = _owned_loadfile()
+    entries = {e.get("name"): e for e in read_afs(afs)["entries"]}
+    with afs.open("rb") as stream:
+        for name, objects, triangles, vertices, strips in (("zac00.xpr", 63, 13690, 17828, 2069),
+                                                           ("kas00.xpr", 72, 15877, 20215, 2169)):
+            stream.seek(entries[name]["offset"])
+            blob = stream.read(entries[name]["size"])
+            geo = doa3_cast.costume_geometry(blob)
+            assert (geo["object_count"], geo["triangle_total"], geo["vertex_total"]) == (objects, triangles, vertices)
+            assert sum(len(obj["strips"]) for obj in geo["objects"]) == strips
+            assert doa3_cast.xpr_geometry_roundtrip(blob) == blob

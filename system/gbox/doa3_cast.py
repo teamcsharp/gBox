@@ -28,24 +28,31 @@ header 0x1E000):
   at +0x10..+0x1F and counts at +0x20..+0x2C - on DOA3 those reads produce
   denormals (measured), i.e. the DOA2U layout does NOT apply to DOA3.
 * Materials begin at OBJ+0x60. Each record: a 33-word fixed header from M
-  (word0 = flags, word1 = length in WORDS, words 2..32 unparsed), then 16-byte
-  packets. The LAST packet is the face range descriptor (matching the DOA2U
-  importer's tail read) {word0 u32 (unresolved type/effect; kas00 values
-  0x60/0x80/0xA0/0x540), face_off u32, face_count u32, tail u32}: face_off is
-  a u16 INDEX offset into the OBJ's own index buffer and face_count counts
-  TRIANGLES, so the strip spans [face_off, face_off + face_count + 2) indices
-  (the DOA2U buildmsh reads exactly face_count shorts after the first two;
-  OBJ2/OBJ4 fc=2 descriptors tile their whole 12/4-index buffers exactly).
-  face_count 0 carries no geometry. The other packets are kept raw (their
-  semantics are unresolved; some contain float data, measured on kas00 OBJ1).
-  Next record = M + 4*length_words. The record chain ends with a zero dword
-  then 0x12345678 exactly 8 bytes before the OBJ index buffer (72/72 objects
-  measured). On kas00 the first material header word is 0x80000000 (the 0x80
-  presence bit) and per-record length is 33 + 4*packets.
-* Indices: u16 triangle strips per material descriptor; triangles are rebuilt
-  with the DOA2U parity flip rule (winding alternates per index; degenerate
-  triples are skipped). Every descriptor face range decodes with all indices
-  below vertex_count, and every whole buffer passes the same bound check.
+  (word0 = flags with the 0x80 presence bit, word1 = length in WORDS, words
+  4..7 a bounding sphere, words 9..19 colour terms, word 25 a specular power,
+  word 26 the stage mode, word 27 the TEXTURE INDEX, word 31 a packet count),
+  then 16-byte packets. Next record = M + 4*length_words. The record chain
+  ends with a zero dword then 0x12345678 exactly 8 bytes before the OBJ index
+  buffer (4646/4646 objects in the 69 costumes).
+* Packets (measured on all 153,262 packets of the 69 costumes): every packet
+  is one triangle strip {32*(n+2), index_off, n, flags}, NOT only the last one
+  (an earlier reading treated the last packet as the whole face range and
+  decoded a fraction of each mesh). The OBJ index buffer is one stitched strip
+  list: each strip after the first starts with a two-index join (the previous
+  strip's last index repeated, then its own first index; flags bit 1 adds a
+  third, parity-fixing index), and ``index_off`` points at that join. The draw
+  is ``[index_off, index_off + n + 4 (+1 when flags & 2))`` with the strip
+  parity fresh at ``index_off``; degenerate triangles drop out and the first
+  ``n`` real triangles are the strip (153,262/153,262 packets). Fresh per-packet
+  parity is what makes the winding consistent: flags 0x900/0x901 strips agree
+  with their vertex normals 99% one way/the other way under it, against ~50% for
+  a single strip over the whole material. Materials in stage mode 3 (an extra
+  environment stage, word 29 = 3) lead with two setup packets {4, 0x01000400 or
+  0x400, 2184, 0} and {5, 0x400, strip_count, 0}.
+* Triangles use the DOA2U parity flip rule inside each packet (winding
+  alternates per index; degenerate triples are skipped). Every strip decodes
+  with all indices below vertex_count, and every whole buffer passes the same
+  bound check.
 * Vertices: 32 bytes = position f32x3, normal f32x3, UV f32x2 (the DOA2U
   buildmsh order). Measured on kas00 OBJ0: |normal| = 1.0000 +/- 0.0000 for
   all 1204 vertices; u in [0.003, 1.000], v in [-0.995, 0.993]; position bounds
@@ -272,15 +279,29 @@ def _obj_header(blob: bytes, obj: int) -> tuple[int, int, int, int, list[int]]:
     return vcount, vptr, icount, iptr, words
 
 
+SETUP_PACKET_KINDS = (4, 5)      # stage-mode-3 materials lead with {4, ...} and {5, 0x400, strips, 0}
+STRIP_FLAG_EXTRA_JOIN = 0x2      # flags bit 1: a third, parity-fixing join index before the strip
+MAT_WORD_MODE = 26               # stage mode (1 = one texture stage, 3 = + environment stage)
+MAT_WORD_TEXTURE = 27            # texture index into the costume's texture descriptors
+MAT_WORD_PACKETS = 31
+
+
+def _strip_packet(w0: int, off: int, n: int, flags: int) -> bool:
+    """A triangle-strip packet {32*(n+2), index_off, n, flags} (153,262/153,262 measured)."""
+    return n >= 1 and w0 == 32 * (n + 2)
+
+
 def _obj_materials(blob: bytes, obj: int, icount: int, iptr: int) -> list[dict]:
     """The validated material record chain of one OBJ.
 
     Records start at OBJ+0x60 and run until a zero dword followed by
-    0x12345678 exactly 8 bytes before the index buffer (measured on all 72
-    kas00 objects). Each record: a 33-word header from M (word0 flags, word1
-    length in words), then 16-byte packets whose LAST packet carries the face
-    range {face_off, face_count, tail, pad}; face_off/face_count address u16
-    strip indices inside the OBJ's own index buffer."""
+    0x12345678 exactly 8 bytes before the index buffer (measured on all 4646
+    objects of the 69 costumes). Each record: a 33-word header from M (word0
+    flags, word1 length in words, word 26 stage mode, word 27 texture index),
+    then 16-byte packets. Every packet is a strip {32*(n+2), index_off, n,
+    flags}; stage-mode-3 records lead with two setup packets ({4, ...} and
+    {5, 0x400, strip_count, 0}). Strip ranges are bounded by the OBJ's own
+    index buffer."""
     materials = []
     m = obj + MAT_HEADER_BASE
     while True:
@@ -306,16 +327,27 @@ def _obj_materials(blob: bytes, obj: int, icount: int, iptr: int) -> list[dict]:
             raise ValueError(f"material at {m:#x} extends past the chain terminator")
         header = list(struct.unpack_from(f"<{MAT_HEADER_WORDS}I", blob, m))
         packet_count = (length_words - MAT_HEADER_WORDS) // 4
-        word0, face_off, face_count, tail = struct.unpack_from("<4I", blob, record_end - PACKET_BYTES)
-        if face_count and face_off + face_count + 2 > icount:
-            raise ValueError(f"material {m:#x} face range "
-                             f"[{face_off}, {face_off + face_count + 2}) "
-                             f"exceeds the OBJ index count {icount}")
+        rows = [struct.unpack_from("<4I", blob, p)
+                for p in range(m + 4 * MAT_HEADER_WORDS, record_end, PACKET_BYTES)]
+        setup, strips = [], []
+        for w0, off, n, strip_flags in rows:
+            if not strips and w0 in SETUP_PACKET_KINDS and not _strip_packet(w0, off, n, strip_flags):
+                setup.append((w0, off, n, strip_flags))
+                continue
+            if not _strip_packet(w0, off, n, strip_flags):
+                raise ValueError(f"material {m:#x} packet {(w0, off, n, strip_flags)} is not a strip "
+                                 f"{{32*(n+2), index_off, n, flags}}")
+            if off + n + 2 > icount:
+                raise ValueError(f"material {m:#x} strip [{off}, {off + n + 2}) exceeds the OBJ index count {icount}")
+            strips.append({"index_offset": off, "triangles": n, "flags": strip_flags})
+        if setup and (len(setup) != 2 or setup[-1][0] != 5 or setup[-1][2] != len(strips)):
+            raise ValueError(f"material {m:#x} setup packets {setup} do not announce its {len(strips)} strips")
         materials.append({
             "offset": m, "flags": flags.hex(), "length_words": length_words,
             "header": header, "packet_count": packet_count,
             "packet_bytes": blob[m + 4 * MAT_HEADER_WORDS:record_end],
-            "ref": word0, "face_off": face_off, "face_count": face_count, "tail": tail,
+            "mode": header[MAT_WORD_MODE], "texture": header[MAT_WORD_TEXTURE],
+            "setup_packets": setup, "strips": strips,
         })
         m = record_end
 
@@ -324,8 +356,9 @@ def _strip_triangles(indices: list[int]) -> list[tuple[int, int, int]]:
     """u16 strip -> triangles with the DOA2U parity flip rule.
 
     The winding alternates per index; degenerate triples (any repeated index)
-    are skipped. The winding handedness itself is not verified against the
-    runtime - only the parity rule and the index bounds are measured facts."""
+    are skipped. Under this rule (applied per packet, parity fresh at the
+    packet's index_off) native strips agree with their own vertex normals
+    counter-clockwise for flags 0x900 and clockwise for flags 0x901 (99%)."""
     triangles = []
     f1, f2 = indices[0], indices[1]
     flip = True
@@ -337,18 +370,17 @@ def _strip_triangles(indices: list[int]) -> list[tuple[int, int, int]]:
     return triangles
 
 
-def _decode_strip_range(blob: bytes, iptr: int, face_off: int, face_count: int,
-                        vcount: int) -> tuple[list[int], list[tuple[int, int, int]]]:
-    """One packet's strip: face_count counts TRIANGLES and the strip spans
-    [face_off, face_off + face_count + 2) u16 indices (measured: OBJ2/OBJ4
-    fc=2 packets tile their whole 12/4-index buffer exactly)."""
-    count = face_count + 2
-    if count < 3:
-        raise ValueError(f"strip range {face_off}+{face_count} is too short for a triangle")
-    raw = list(struct.unpack_from(f"<{count}H", blob, iptr + INDEX_STRIDE * face_off))
+def _decode_strip(indices, off: int, n: int, flags: int, vcount: int) -> tuple[list[int], list[tuple[int, int, int]]]:
+    """One strip packet: the draw [off, off + n + 4 (+1 with flags bit 1)) with fresh parity; its first n real
+    triangles are the strip (the join's degenerate triangles drop out)."""
+    end = min(off + n + 4 + (1 if flags & STRIP_FLAG_EXTRA_JOIN else 0), len(indices))
+    raw = list(indices[off:end])
     if max(raw) >= vcount:
         raise ValueError(f"strip index {max(raw)} outside the OBJ vertex range {vcount}")
-    return raw, _strip_triangles(raw)
+    triangles = _strip_triangles(raw)[:n]
+    if len(triangles) != n:
+        raise ValueError(f"strip at index {off} yields {len(triangles)} triangles, its packet declares {n}")
+    return raw, triangles
 
 
 def obj_geometry(blob: bytes, obj: int) -> dict:
@@ -358,16 +390,17 @@ def obj_geometry(blob: bytes, obj: int) -> dict:
     record bounds before any data is returned."""
     vcount, vptr, icount, iptr, words = _obj_header(blob, obj)
     materials = _obj_materials(blob, obj, icount, iptr)
+    all_indices = struct.unpack_from(f"<{icount}H", blob, iptr)
     strips, triangles, tris = [], [], 0
     for mat in materials:
-        if mat["face_count"] == 0:
-            continue
-        raw, m_tris = _decode_strip_range(blob, iptr, mat["face_off"], mat["face_count"], vcount)
-        strips.append({"material": mat["offset"], "face_off": mat["face_off"],
-                       "face_count": mat["face_count"], "indices": raw, "triangles": m_tris})
-        triangles.extend(m_tris)
-        tris += len(m_tris)
-    all_indices = struct.unpack_from(f"<{icount}H", blob, iptr)
+        for strip in mat["strips"]:
+            raw, m_tris = _decode_strip(all_indices, strip["index_offset"], strip["triangles"],
+                                        strip["flags"], vcount)
+            strips.append({"material": mat["offset"], "texture": mat["texture"],
+                           "index_offset": strip["index_offset"], "flags": strip["flags"],
+                           "indices": raw, "triangles": m_tris})
+            triangles.extend(m_tris)
+            tris += len(m_tris)
     if max(all_indices) >= vcount:
         raise ValueError(f"OBJ {obj:#x} index buffer contains {max(all_indices)} outside {vcount} vertices")
     vertex_bytes = blob[vptr:vptr + VERTEX_STRIDE * vcount]
@@ -584,9 +617,10 @@ def mdl_descriptor_table(blob: bytes) -> dict:
 def export_obj(geometry: dict, path: str | Path) -> int:
     """Write decoded geometry to a Wavefront OBJ (private readable evidence).
 
-    One group per material strip; vertices carry position/normal/uv. Returns
-    the number of faces written. The DOA3 runtime uses v as stored (no flip);
-    the winding parity rule is applied exactly as decoded."""
+    One group per material (its strips together); vertices carry
+    position/normal/uv. Returns the number of faces written. The DOA3 runtime
+    uses v as stored (no flip); the winding parity rule is applied exactly as
+    decoded."""
     p = Path(path)
     faces = 0
     with open(p, "w") as out:
@@ -600,9 +634,12 @@ def export_obj(geometry: dict, path: str | Path) -> int:
                 out.write(f"vn {v[3]:.6f} {v[4]:.6f} {v[5]:.6f}\n")
             for v in geo["vertices"]:
                 out.write(f"vt {v[6]:.6f} {v[7]:.6f}\n")
-            for si, strip in enumerate(geo["strips"]):
+            group = None
+            for strip in geo["strips"]:
                 mat = strip["material"]
-                out.write(f"g OBJ_{gi}_mat_{mat:#x}\n")
+                if mat != group:
+                    out.write(f"g OBJ_{gi}_mat_{mat:#x}_tex_{strip['texture']}\n")
+                    group = mat
                 for a, b, c in strip["triangles"]:
                     out.write(f"f {a + base + 1}/{a + base + 1}/{a + base + 1} "
                               f"{b + base + 1}/{b + base + 1}/{b + base + 1} "
@@ -1020,10 +1057,15 @@ def cast_writer_status() -> dict:
         "mdl_geometry_encode": True,
         "mdl_geometry_encode_note": "byte-preserving no-op roundtrip on parsed records; "
                                     "donor replacement is not implemented",
+        "mdl_strip_packets": True,
+        "mdl_strip_note": "every material packet is a strip {32*(n+2), index_off, n, flags} drawn from its "
+                          "join with fresh parity (153,262/153,262 packets of the 69 costumes); stage-mode-3 "
+                          "materials lead with two setup packets",
         "mdl_descriptor_table": True,
         "mdl_descriptor_note": "header-tail vertex (obj_count) + texture (tex_count) "
-                               "descriptors pinned across kas00/kas01/kas02; texture "
-                               "pixel format / draw-packet semantics unresolved",
+                               "descriptors pinned across kas00/kas01/kas02; the texture "
+                               "descriptors are Xbox D3DTexture headers (DXT1 0x0C, DXT5 0x0F, "
+                               "A8R8G8B8 0x06 seen)",
         "cat_lnk_header": True,
         "cat_lnk_note": "LNK section = 'LNK\\0' + '0100' + {2,16,32,size,0,0} pinned on "
                         "68/69 costumes (kor00 has none); the joint-link body remains",
@@ -1045,8 +1087,8 @@ def cast_writer_status() -> dict:
                                  "4402/4402); the per-section triangle/joint semantics remain",
         "donor_retarget": False,
         "playable": False,
-        "message": "measured MDL geometry decode (vertices/normals/UVs/u16 strips/material "
-                   "face ranges) and the no-op encode gate hold on the owned kas00; "
+        "message": "measured MDL geometry decode (vertices/normals/UVs/every u16 strip packet "
+                   "of every material) and the no-op encode gate hold on the owned costumes; "
                    "the CAT header is classified (offsets vs id_block layout, fixed "
                    "0x100/1 signature across all 69 costumes); the header-tail data "
                    "descriptor table (vertex + texture records) is located and pinned; "

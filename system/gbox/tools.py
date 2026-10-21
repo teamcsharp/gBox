@@ -362,6 +362,8 @@ class LaunchIn(BaseModel):
     jump: bool = False                     # a demo (the screensaver, autoplay on launch): boot straight into this game and
                                            # build's jump state where the emulator can (Dolphin) and this PC has one
                                            # (gbox.jumpstate). Never set for the operator's own Play.
+    memory_cards: str = ""                 # "operator": an agent-owned demo (the screensaver) inserts the cards the operator
+                                           # selected for this game, so their saved characters load (#2817)
 
 class LaunchOut(BaseModel):
     session_id: str
@@ -854,7 +856,8 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         from . import memory_card_sessions
         memory_card_sessions.recover_pending(ctx)
         ad.memory_card_rom=str(src)
-        memory_card_sessions.checkout(f'{ctx.worker}-{ctx.job_id}',ad,g.model_dump(),ctx)
+        memory_card_sessions.checkout(f'{ctx.worker}-{ctx.job_id}',ad,g.model_dump(),ctx,
+                                      operator_cards=inp.memory_cards == "operator")
         if inp.jump and not inp.capture_backend:            # a demo: straight into gameplay (gbox.jumpstate)
             from . import jumpstate
             ad.demo = True                                  # unattended: no modal dialogs, no on-screen messages

@@ -3692,16 +3692,19 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/api/sessions/{sid}/frame")
     async def put_frame(sid: str, request: Request, actor=Depends(auth)):
+        from .live_stream import meter
         lv, body = _live(sid), await request.body()
         with lv["cond"]:
-            lv["frame"], lv["seq"], lv["ts"] = body, lv["seq"] + 1, time.time()
+            now = time.time()
+            meter(lv, now, "still")                       # a native game's window still (broadcast: kind "stills")
+            lv["frame"], lv["seq"], lv["ts"] = body, lv["seq"] + 1, now
             lv["cond"].notify_all()
         return {"seq": lv["seq"]}
 
     @app.post("/api/sessions/{sid}/stream")
     async def ingest_stream(sid: str, request: Request, actor=Depends(auth)):
         """Worker uploads a session's frames as one stream: [4-byte length][JPEG]...; parsed on the event loop."""
-        from .live_stream import note_frame
+        from .live_stream import meter, note_frame
         lv, buf, n = _live(sid), bytearray(), 0
         lv["sid"], lv["uploads"] = sid, lv.get("uploads", 0) + 1
         async for chunk in request.stream():
@@ -3715,6 +3718,7 @@ def create_app(config: Config) -> FastAPI:
                     with lv["cond"]:
                         now = time.time()
                         note_frame(lv, now)               # a gap of 2 s+ is logged with timestamps (stream-stability)
+                        meter(lv, now, "stream")          # the frame rate the broadcast feed list reports
                         lv["frame"], lv["seq"], lv["ts"] = frame, lv["seq"] + 1, now
                         lv["cond"].notify_all()
                     n += 1
@@ -3770,6 +3774,13 @@ def create_app(config: Config) -> FastAPI:
         # so a state save or upload reconnect can no longer end the response and leave the operator's view black.
         return StreamingResponse(mjpeg_parts(lv, alive=alive), media_type="multipart/x-mixed-replace; boundary=f",
                                  headers={"cache-control": "no-store", "x-accel-buffering": "no"})
+
+    # --- broadcast: the program and per-PC / per-session feeds for Pine Box and media sources (docs/broadcast.md) ---
+    from . import broadcast as _broadcast
+    from .background_testing import agent_owned as _agent_owned
+    _broadcast.register(app, store, config, live=live, desktop_frames=desktop_frames, desktop_watch=desktop_watch,
+                        agent_owned=lambda sid: _agent_owned(store.get("slabel", sid),
+                                                             store.get("job", sid.split("-", 1)[-1])))
 
     class InputEvents(BaseModel):
         events: list[dict]
