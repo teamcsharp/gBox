@@ -76,10 +76,12 @@ def test_a_caught_attack_is_judged_by_the_games_paired_move_flag():
     assert t.read(ram).p2.has("held") and not t.read(ram).p1.has("held")
 
 
-def test_punish_is_a_string():
+def test_punishes_are_options_the_first_a_string():
     t = D.Doa3()
-    p = t.punish(None, "held")
-    assert p.kind == "punish" and p.length == 21
+    options = t.punish(None, "held")
+    assert [a.name for a in options] == ["ppk", "low_kick", "kick"] and all(a.kind == "punish" for a in options)
+    p = options[0]
+    assert p.length == 21
     assert [p.at(k) for k in (0, 3, 9, 18)] == [(D.PUNCH,), (), (D.PUNCH,), (D.KICK,)]
 
 

@@ -102,8 +102,12 @@ class Doa3(Title):
         return holds
 
     def punish(self, w, outcome):
-        return Answer("ppk", (), seq=(((PUNCH,), 3), ((), 6), ((PUNCH,), 3), ((), 6), ((KICK,), 3)),
-                      judge=60, kind="punish")
+        """After a hold or a parry that paid: the book learns which of these deals the most (a held opponent ends
+        on the floor, where a low kick still reaches)."""
+        return [Answer("ppk", (), seq=(((PUNCH,), 3), ((), 6), ((PUNCH,), 3), ((), 6), ((KICK,), 3)),
+                       judge=60, kind="punish"),
+                Answer("low_kick", ("down", KICK), frames=3, judge=45, kind="punish"),
+                Answer("kick", (KICK,), frames=3, judge=45, kind="punish")]
 
     def attacks(self, w):
         fwd = self.forward(w)
