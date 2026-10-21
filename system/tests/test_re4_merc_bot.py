@@ -257,23 +257,24 @@ def test_auto_mode_prefers_a_matching_playbook(monkeypatch, tmp_path):
         tools.autoplay(tools.AutoplayIn(session_id="s9", op="start", mode="playbook"), ctx)
 
 
-def test_between_rounds_it_presses_a_until_the_next_round_and_counts_it():
-    m = world([((500.0, 0.0, 0.0), True)], room=0x100)              # not a Mercenaries room: results / menus
-    now, sent, live = [0.0], [], {}
+def test_between_rounds_it_never_presses_blind_and_counts_the_next_round():
+    # out of a round on a screen RAM does not name as a menu (no title task, not a Mercenaries room): no press at all.
+    # Blind up + A had walked to the main title and started a story game with the hooks in (2026-10-20); the menus
+    # from RAM are tests/test_re4_menus.py
+    m = world([((500.0, 0.0, 0.0), True)], room=0x100)
+    now, sent, live, step = [0.0], [], {}, [0]
     steps = iter(range(60))
 
     def stopped():
-        i = next(steps, None)
+        i = step[0] = next(steps, None)
         if i == 40:
-            m.put(PG + B.G_ROOM, ">H", 0x400)                         # the presses started the next round
+            m.put(PG + B.G_ROOM, ">H", 0x400)                         # the next round started
         return i is None
-    B.play(None, sent.append, stopped, sleep=lambda s: now.__setitem__(0, now[0] + s), m=m, stats=live,
-           clock=lambda: now[0])
-    presses = [r for r in sent if r == [{"key": "a", "down": True}]]
-    assert len(presses) >= 3 and live["menu_presses"] == len(presses)
-    downs = [r[0]["key"] for r in sent if r[0]["down"]]
-    assert downs[:6] == ["up", "a"] * 3                                     # menus: up, A - never left (Leon -> Wesker)
-    assert live["rounds"] == 2 and "timer" in live and "max_combo" in live    # live stats for the watch panel
+    B.play(None, lambda rows: sent.append((step[0], rows)), stopped, sleep=lambda s: now.__setitem__(0, now[0] + s),
+           m=m, stats=live, clock=lambda: now[0])
+    assert not [rows for i, rows in sent if i is not None and i < 40]     # nothing pressed out of the round
+    assert live["menu_presses"] == 0 and live["screen"].startswith("game")
+    assert live["rounds"] == 1 and "timer" in live and "max_combo" in live    # live stats for the watch panel
 
 
 def test_the_result_screen_is_not_a_round():

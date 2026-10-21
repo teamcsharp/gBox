@@ -65,6 +65,10 @@ try:
     from . import re4_ram_prompts                 # the game's own action-button state: prompts from RAM, vision after
 except ImportError:                              # a tree without it: vision only
     re4_ram_prompts = None
+try:
+    from . import re4_menus                       # the title and the menus from RAM: boot -> a Mercenaries round
+except ImportError:                              # a tree without it: no presses out of a round
+    re4_menus = None
 
 GAME_IDS = {"G4BE08"}
 EMMGR, P_PLAYER, P_GLOBAL = 0x8027DF20, 0x802B9780 - 0x673C, 0x802B2280
@@ -675,17 +679,100 @@ class Bot:
         return {"hold": set()}
 
 
+EARLY_OPS = ("mercenaries_unlock",)              # RAM only (pSys+4 unlock bits): in at once, menus included; the rest
+                                                 # are code hooks, applied at Select Player (play(): after the menu moment)
+MENU_LOST_S = 30.0                               # out of a round and RAM can't name the screen this long: end the run
+MENU_STUCK_S = 120.0                             # out of a round and nothing in RAM moved this long: end the run
+                                                 # (a bot demo is relaunched, into its menu moment when it has one)
+
+
 def setup(ad) -> list[str]:
-    """Apply the hack package (re_mods); returns the ops that failed."""
+    """Apply the hack package (re_mods); returns the ops that failed. In a round: all of it. Anywhere else (the title,
+    the menus) only the unlock bits go in now, so the main menu lists THE MERCENARIES; the code hooks wait for Select
+    Player, where play() applies them after it saved the menu moment (a save state taken after the hooks restores into
+    a hang, 2026-10-20)."""
+    try:
+        in_round = in_mercenaries(snapshot(memory(ad)))
+    except Exception:                                # noqa: BLE001 - can't tell: the unlock bits only
+        in_round = False
+    return apply_package(ad, None if in_round else EARLY_OPS)
+
+
+def apply_package(ad, only=None, skip=()) -> list[str]:
+    """Run the package's re_mods ops (only those named in `only` when given, none in `skip`); the ones that failed."""
     from . import re_mods_tool as RM
     g = RM.RE4(ad)
     failed = []
     for op, kw in PACKAGE:
+        if (only is not None and op not in only) or op in skip:
+            continue
         try:
             RM.run(ad, op, g=g, **kw)
         except Exception as e:                       # noqa: BLE001 - one failed mod never stops the run
             failed.append(f"{op}: {e}")
     return failed
+
+
+def save_menu_moment(ad, game) -> str | None:
+    """gBox's own "menu moment" (operator: "one game session needs a maximum of two save states... one to get you back
+    to the menu screen"): this game and build's jump state (gbox.jumpstate, Dolphin's demo slot 10: the operator's
+    slots are never written), taken at Select Player before any hook. A bot-demo launch, and the relaunch of a frozen
+    one, boots straight into it; it is also the way back when RAM can't name the menus. Returns the file, or None."""
+    from . import jumpstate
+    if ad is None or not game or jumpstate.strategy(ad) != "boot":
+        return None
+    p = jumpstate.path_for(ad, game)
+    if jumpstate.booted(ad, game) and p.is_file():
+        return p.name                                # booted from it: it is the menu moment already
+    jumpstate.save(ad, p)
+    return p.name
+
+
+class _Menus:
+    """Out of a round: the RAM-driven way to the next one (gbox.re4_menus): the hooks and the menu moment at Select
+    Player, one press at a time, and the run's end when the game wandered off (a story game) or the menus can't be read."""
+
+    def __init__(self, ad, m, send, sleep, clock, stats, game=None, hooks=None):
+        self.ad, self.m, self.game, self.stats, self.clock = ad, m, game, stats, clock
+        self.nav = re4_menus.Navigator(send, sleep=sleep, clock=clock, stats=stats) if re4_menus else None
+        self.hooks = hooks if hooks is not None else (
+            (lambda: apply_package(ad, skip=EARLY_OPS)) if ad is not None else None)
+        self.hooked, self.moment_tried = False, False
+        self.lost_since, self.still_since, self.progress = None, None, None
+
+    def tick(self, s: dict, now: float) -> str | None:
+        """One look at the screen; returns why the run must end (stats["hung"] is set), else None."""
+        if self.nav is None:
+            return None
+        scr = re4_menus.screen(self.m, merc=s)
+        why = re4_menus.wandered(scr)
+        if why:
+            return why
+        if scr["where"] == "select_player" and not self.hooked:
+            if not self.moment_tried:                # before any hook: the state restores cleanly
+                self.moment_tried = True
+                try:
+                    self.stats["menu_moment"] = save_menu_moment(self.ad, self.game) or "none (no jump states here)"
+                except Exception as e:               # noqa: BLE001 - no moment: the menus still work
+                    self.stats["menu_moment"] = f"failed: {type(e).__name__}: {e}"[:160]
+            if self.hooks is not None:
+                failed = self.hooks() or []
+                self.stats["hooks"] = "applied" + (f" ({len(failed)} failed)" if failed else "")
+                if failed:
+                    self.stats["hooks_failed"] = "; ".join(failed)[:300]
+            self.hooked = True                       # in RAM until the game resets
+        if scr["where"] == "unknown":
+            self.lost_since = self.lost_since or now
+            if now - self.lost_since > MENU_LOST_S:
+                return "RAM did not name the screen for %.0f s" % (now - self.lost_since)
+        else:
+            self.lost_since = None
+        self.nav.tick(scr)
+        if self.stats.get("ram_progress") != self.progress:
+            self.progress, self.still_since = self.stats.get("ram_progress"), now
+        elif now - (self.still_since or now) > MENU_STUCK_S:
+            return "nothing moved in RAM for %.0f s on %s" % (now - self.still_since, scr["where"])
+        return None
 
 
 def learn_dir_for(ad) -> Path:
@@ -695,9 +782,18 @@ def learn_dir_for(ad) -> Path:
 
 
 def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stats: dict | None = None,
-         clock=time.time, learn_dir: Path | None = None, rerun=None, prompt=None, ram_prompt=None) -> dict:
+         clock=time.time, learn_dir: Path | None = None, rerun=None, prompt=None, ram_prompt=None, game=None,
+         hooks=None) -> dict:
     """Drive Leon until stopped(); send(rows) presses keys. Returns the run's stats (stats, when given, is filled live:
-    the watch panel shows it): backoffs, prompts, max_combo, combo, timer, rounds, menu_presses.
+    the watch panel shows it): backoffs, prompts, max_combo, combo, timer, rounds, menu_presses, screen.
+
+    From boot, and between rounds, it gets to the next round from RAM (gbox.re4_menus: the title, the main menu's THE
+    MERCENARIES, GAME START, Leon, the Village, the results, "You Are Dead": Continue Yes), one press at a time and only
+    on a screen RAM names: never New Game, Load, Options, Assignment Ada or EXIT (blind up + A presses had walked to the
+    main title and started a story game with the hooks in, which crashed Dolphin, 2026-10-20). At Select Player it
+    saves the menu moment (save_menu_moment: game = the session's game and build) and then applies the hack package's
+    code hooks (hooks(), default apply_package). A story game, or menus RAM can't name for MENU_LOST_S, end the run
+    with stats["hung"] (the caller relaunches a bot demo, into its menu moment).
 
     The button prompts come from RAM first (ram_prompt: () -> button | None, raising re4_ram_prompts.Unknown when
     RAM can't tell; default: gbox.re4_ram_prompts on m, False = none) and from prompt (vision, gbox.screen_prompt)
@@ -708,8 +804,13 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
     if stats is not None:
         stats.update(bot.stats)
         bot.stats = stats
-    bot.stats.update(rounds=1, menu_presses=0)
-    out_since, last_press, was_in = None, 0.0, True
+    try:
+        started_in = in_mercenaries(snapshot(m))
+    except Exception:                              # noqa: BLE001 - a read during a load: from the menus
+        started_in = False
+    bot.stats.update(rounds=1 if started_in else 0, menu_presses=0)
+    menus = _Menus(ad, m, send, sleep, clock, bot.stats, game=game, hooks=hooks)
+    out_since, last_press, was_in, left_at = None, 0.0, started_in, None
     bot.stats["prompt_presses"] = 0
     prompt_taps: list = []                         # times the current prompt was pressed
     prompt_rest = 0.0
@@ -761,18 +862,16 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
                 out_since, last_press = None, clock()
                 sleep(1.0)
                 continue
-            if now - out_since > MENU_AFTER and now - last_press > MENU_EVERY:
-                # up before every A: GAME START on the Mercenaries title (a stray "down" from the back-step had put the
-                # cursor on EXIT, the presses went on to the main title's START: a story game with the Mercenaries
-                # hooks in, which crashed Dolphin, 2026-10-20); Select Player and Select Stage keep the last round's
-                # choice (Leon, the Village); harmless on the Result screen and the briefing
-                for key in MENU_KEYS:
-                    send([{"key": key, "down": True}])
-                    sleep(0.12)
-                    send([{"key": key, "down": False}])
-                    sleep(0.12)
-                last_press = clock()
-                bot.stats["menu_presses"] += 1
+            if was_in:
+                left_at = now                          # a round just ended: its results come up first
+            if rerun is None and (left_at is None or now - left_at > MENU_AFTER):
+                # the screen from RAM and the one press towards the next round (gbox.re4_menus), never a blind one:
+                # up + A had walked from the Result screen to the main title's START, a story game with the hooks in
+                # that crashed Dolphin (2026-10-20)
+                why = menus.tick(s, now)
+                if why:
+                    bot.stats.update(hung=True, wandered=why)
+                    break
             was_in = False
             sleep(0.25)
             continue
@@ -820,11 +919,11 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
 
 
 def matches(ad, g: dict) -> bool:
-    """This playbook plays this session: RE4 GameCube NTSC-U in a Mercenaries stage."""
+    """This playbook plays this session: RE4 GameCube NTSC-U in any state. From boot (the title, the menus) play()
+    gets itself to a Mercenaries round from RAM (gbox.re4_menus); in a round it plays."""
     if g.get("platform") != "gamecube":
         return False
     try:
-        m = memory(ad)
-        return m.rd(0x80000000, 6).decode("ascii", "replace") in GAME_IDS and in_mercenaries(snapshot(m))
+        return memory(ad).rd(0x80000000, 6).decode("ascii", "replace") in GAME_IDS
     except Exception:                                # noqa: BLE001
         return False
