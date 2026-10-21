@@ -33,8 +33,12 @@ def test_pinned_exe_hash_matches_owned_disc():
     assert result["matches_owned"] is True
     assert result["sha256"] == CC.EXE_SHA256
     assert result["size"] == CC.EXE_SIZE
-    assert result["taddr"] == 0x80010008   # header field (verified)
-    assert result["gaddr"] == CC.EXE_GADDR  # verified header load/entry anchor
+    # Real PS-X EXE header fields.
+    assert result["pc0"] == 0x80010008      # entry point
+    assert result["taddr"] == 0x80010000   # text load address
+    assert result["tsize"] == 0x00093800   # text length (604160 bytes)
+    assert result["saddr"] == 0x801FFFF0   # stack top
+    assert result["gp"] == 0x8006CE1C      # $gp recovered from the crt0
 
 
 def test_inventory_manifest_shape():
@@ -48,10 +52,8 @@ def test_inventory_manifest_shape():
 
 
 def test_rejects_truncated_exe():
-    # a PS exe shorter than the 0x808 header must never verify
     with pytest.raises(ValueError):
         CC.verify_exe(b"PS" + bytes(0x100))
-    # a right-length image with a bad magic must never claim a match
     from gbox.psxdisc import RawBin
     rb = RawBin(str(BIN), writable=False)
     try:
@@ -64,7 +66,6 @@ def test_rejects_truncated_exe():
 
 
 def test_profile_stays_research_pending_and_hook_never_writes(monkeypatch):
-    # game_unlocks must keep this exact game unverified: no writer may run.
     def fail(*a, **k):
         raise AssertionError("unlock writer must not run for research_pending game")
     from gbox import re6_tool
