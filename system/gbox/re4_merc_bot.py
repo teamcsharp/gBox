@@ -116,7 +116,9 @@ def ptr_ok(p: int) -> bool:
 
 
 class ShmMem:
-    """Dolphin's 32 MiB MEM1 view in /dev/shm, read through /proc/<pid>/mem (Linux, same user): whole tables per read."""
+    """Dolphin's 32 MiB MEM1 view in /dev/shm, read through /proc/<pid>/mem (Linux, same user): whole tables per read.
+    Read-only. It takes the first Dolphin on this host running the game, so it is for standalone runs with no session;
+    a session's playbook reads its own Dolphin (memory(ad))."""
 
     def __init__(self, game_id: bytes = b"G4BE08"):
         for pid in (p for p in os.listdir("/proc") if p.isdigit()):
@@ -131,7 +133,7 @@ class ShmMem:
                 if b - a != 0x2000000:
                     continue
                 try:
-                    f = open(f"/proc/{pid}/mem", "r+b", 0)
+                    f = open(f"/proc/{pid}/mem", "rb", 0)
                     f.seek(a)
                     if f.read(6) == game_id:
                         self.f, self.base = f, a
@@ -144,9 +146,16 @@ class ShmMem:
         self.f.seek(self.base + (addr & 0x1FFFFFF))
         return self.f.read(n)
 
-    def wr(self, addr: int, data: bytes) -> None:
-        self.f.seek(self.base + (addr & 0x1FFFFFF))
-        self.f.write(data)
+
+class OwnShm:
+    """The session's own Dolphin MEM1 (gbox.ram_dump.ShmRam: found only under the session's process, read-only), so two
+    RE4 sessions on one host never read each other's game."""
+
+    def __init__(self, ram):
+        self.ram = ram
+
+    def rd(self, addr: int, n: int) -> bytes:
+        return self.ram.read(0x80000000 | (addr & 0x1FFFFFF), n)
 
 
 class AdMem:
@@ -161,10 +170,18 @@ class AdMem:
 
 
 def memory(ad):
-    try:
+    """The session's RAM, read-only: its own Dolphin's shared view when it runs on this host, else the adapter's
+    read_memory. Without a session (a standalone run), the one Dolphin on this host running the game."""
+    if ad is None:
         return ShmMem()
-    except OSError:
-        return AdMem(ad)
+    try:
+        from .ram_dump import ShmRam
+        ram = ShmRam.find(ad)
+        if ram is not None:
+            return OwnShm(ram)
+    except Exception:                                  # noqa: BLE001 - the adapter's reads still work
+        pass
+    return AdMem(ad)
 
 
 def u32(m, a):

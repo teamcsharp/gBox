@@ -521,3 +521,20 @@ def test_you_are_dead_is_answered_yes_and_counted_once():
         now[0] = k * 0.5
         taps.append(bot.tick(B.snapshot(m)).get("tap"))
     assert set(t for t in taps if t) == {"a"} and bot.stats["deaths"] == 1   # Yes, never B
+
+
+def test_a_session_reads_its_own_dolphin_only(monkeypatch):
+    from gbox import ram_dump
+    seen = {}
+
+    class Ram:                                        # ShmRam of the session's own Dolphin
+        def read(self, address, n):
+            seen["at"] = address
+            return bytes(n)
+    monkeypatch.setattr(ram_dump.ShmRam, "find", classmethod(lambda cls, ad: Ram() if ad.proc.pid == 41 else None))
+    monkeypatch.setattr(B, "ShmMem", lambda *a, **k: pytest.fail("scanned every Dolphin on the host"))
+    mine = B.memory(SimpleNamespace(name="dolphin", proc=SimpleNamespace(pid=41)))
+    mine.rd(B.EMMGR, 4)
+    assert isinstance(mine, B.OwnShm) and seen["at"] == B.EMMGR      # its own process, the GameCube address
+    other = B.memory(SimpleNamespace(name="dolphin", proc=SimpleNamespace(pid=7), read_memory=lambda a, n: bytes(n)))
+    assert isinstance(other, B.AdMem)                 # no shared view of its own: the adapter's reads, never a scan
