@@ -753,6 +753,9 @@ class Bot:
         return self.combat.prompt_ok(button, snap, now) if self.combat is not None else True
 
     def save(self):
+        if getattr(self.m, "adapter", None) is not None:
+            from ...re5_mods_tool import maintain_fire_animation
+            maintain_fire_animation(self.m.adapter, enabled=False)
         save_crossings()
         self.nav_learning.save()
         if self.combat is not None:
@@ -767,6 +770,13 @@ class Bot:
         if where != "playing" or snap.get("prompt") not in ("stick:rotate", "stick:x", "stick:y"):
             self._stick_token = None
         self.stats["resuscitating"] = bool(snap.get("recovery_active") or snap.get("prompt") == "mash")
+        if getattr(self.m, "adapter", None) is not None:
+            from ...re5_mods_tool import maintain_fire_animation
+            firing = maintain_fire_animation(self.m.adapter, snap, enabled=(where == "playing"
+                and not self.stats["resuscitating"] and not snap.get("prompt") and not snap.get("stage_prompt")))
+            self.stats["fire_animation_active"] = bool(firing.get("active") and firing.get("verified"))
+            self.stats["fire_animation_reason"] = firing.get("reason") or ""
+            self.stats["fire_animation_writes"] = self.stats.get("fire_animation_writes", 0) + firing.get("writes", 0)
         if where == "playing" and p and not self.stats["resuscitating"] and getattr(self.m, "adapter", None) is not None:
             from ...re5_mods_tool import maintain_health
             health = maintain_health(self.m.adapter, snap)
