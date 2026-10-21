@@ -81,9 +81,9 @@ def stick_rig():
             "names": names, "source": "stick"}
 
 
-def fifteen_part_costume():
+def fifteen_part_costume(textures=((W.DXT1, 8, 8),)):
     """15 primary OBJs with native-shaped extents (limbs along +-z, a foot below its ankle) + render lists."""
-    seed = _seed(15, ((W.DXT1, 8, 8),))
+    seed = _seed(15, textures)
     shapes = {"l_thigh": (0, 0, 0.4), "r_thigh": (0, 0, 0.4), "l_upper": (0, 0, 0.25), "r_upper": (0, 0, 0.25),
               "l_shin": (0, 0, -0.4), "r_shin": (0, 0, -0.4), "l_fore": (0, 0, -0.25), "r_fore": (0, 0, -0.25),
               "l_hand": (0.18, 0, 0), "r_hand": (-0.18, 0, 0), "l_foot": (0, -0.1, 0.25), "r_foot": (0, -0.1, 0.25),
@@ -105,7 +105,7 @@ def test_fit_costume_appends_smaller_donor_images_when_the_slot_is_tight():
     full, _res, _hide, steps = F.fit_costume(xpr, cat, rig, native_slots=False)
     assert steps == []
     small, res, _hide, steps = F.fit_costume(xpr, cat, rig, native_slots=False, budget=len(full) - 1)
-    assert len(small) < len(full) and steps[-1].startswith("donor images appended at most 128 px")
+    assert len(small) < len(full) and steps[-1].startswith("donor images at most 128 px")
     assert C.costume_geometry(small)["object_count"] == 15
     with pytest.raises(ValueError, match="costume slot holds 4096"):
         F.fit_costume(xpr, cat, rig, native_slots=False, budget=4096)
@@ -160,6 +160,22 @@ def test_collapsed_corners_share_a_vertex_unless_a_seam_splits_them():
     out, nrm = F._merge_corners(prim, pos, tris)
     assert out[1][0] == 0 and out[2][0] == 2                   # corner 1 joins corner 0; corner 2 is a seam
     assert np.allclose(nrm[0], np.array([0, 1, 1]) / np.sqrt(2))
+
+
+def test_lossy_budget_steps_keep_the_texture_count():
+    # the smaller donor images go into free native slots with their own format word: no texture is appended
+    xpr, cat = fifteen_part_costume(((W.DXT1, 256, 256),))           # one big free native slot
+    rig = stick_rig()
+    rig["prims"][0]["tex"] = np.full((256, 256, 4), 255, np.uint8)
+    full, res, _hide, _steps = F.fit_costume(xpr, cat, rig)
+    assert set(res["texture_slots"]) == {0}                              # the donor image took the slot at 256 px
+    small, res, _hide, steps = F.fit_costume(xpr, cat, rig, budget=len(full) - 1)
+    assert steps[-1].startswith("donor images at most 128 px")
+    table = C.mdl_descriptor_table(small)
+    assert table["texture_count"] == 1 + len(res["textures"])          # nothing appended beyond the leftovers
+    assert W.texture_info(table["texture_descriptors"][0]["format"])["width"] == 128
+    assert F.capped_word(W.texture_word(W.DXT5, 512, 64), 128) == W.texture_word(W.DXT5, 128, 16)
+    assert F.capped_word(W.texture_word(W.DXT1, 64, 64), 128) == W.texture_word(W.DXT1, 64, 64)
 
 
 def test_fit_places_every_role_in_its_joint_frame_and_encodes():
