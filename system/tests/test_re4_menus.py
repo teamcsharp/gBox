@@ -138,14 +138,14 @@ def test_the_title_tasks_work_area_is_found_on_its_stack():
 def test_the_main_menu_goes_to_the_mercenaries_only(cur, key):
     g = FakeRE4(routine=5, step=1, menu_cursor=cur)
     s = RM.screen(g)
-    assert s["items"] == ["NEW GAME", "ASSIGNMENT ADA", "THE MERCENARIES", "LOAD", "OPTIONS"] and s["target"] == 2
+    assert s["items"] == ["START", "ASSIGNMENT ADA", "THE MERCENARIES", "LOAD", "OPTIONS"] and s["target"] == 2
     assert RM.step(s) == key
 
 
 def test_a_main_menu_without_the_mercenaries_is_never_picked_on():
     g = FakeRE4(routine=5, step=1, menu_cursor=0, unlocked=False)
     s = RM.screen(g)
-    assert s["items"] == ["NEW GAME", "LOAD", "OPTIONS"] and s["target"] is None
+    assert s["items"] == ["START", "LOAD", "OPTIONS"] and s["target"] is None
     assert RM.step(s) is None                     # waits for it to idle back to the title and be built with the unlock
 
 
@@ -173,6 +173,9 @@ def test_results_dead_and_story_rooms():
     assert RM._game({"room": 0x400, "timer": 50.0, "hp": 0, "player": {"ptr": 1}}, base) == {"phase": "dead"}
     assert RM._game({"room": 0x400, "timer": 50.0, "hp": 900, "player": {"ptr": 1}}, base) == {"phase": "round"}
     assert RM._game({"room": 0x100, "timer": 0.0, "hp": 900, "player": {"ptr": 1}}, base) == {"phase": "story"}
+    loading = {"where": "game", "game_routine": 0}          # the Village loading: clock 0 but not the results
+    assert RM._game({"room": 0x400, "timer": 0.0, "hp": 900, "player": {"ptr": 1}}, loading) == {"phase": "loading"}
+    assert RM.step({"where": "game", "phase": "loading"}) is None
     assert RM.step({"where": "game", "phase": "results"}) == "a" and RM.step({"where": "game", "phase": "dead"}) == "a"
     assert RM.wandered({"where": "game", "phase": "story", "room": 0x100}).startswith("in the story")
     assert RM.wandered({"where": "story_starting"}) and RM.wandered({"where": "select_player"}) is None

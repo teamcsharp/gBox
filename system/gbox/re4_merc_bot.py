@@ -728,6 +728,16 @@ def save_menu_moment(ad, game) -> str | None:
     return p.name
 
 
+def _room_on(m) -> bool:
+    """The game runs a room (gbox.re4_menus.in_room); True when that can't be read (the clock decides, as before)."""
+    if re4_menus is None:
+        return True
+    try:
+        return re4_menus.in_room(m)
+    except Exception:                                # noqa: BLE001
+        return True
+
+
 class _Menus:
     """Out of a round: the RAM-driven way to the next one (gbox.re4_menus): the hooks and the menu moment at Select
     Player, one press at a time, and the run's end when the game wandered off (a story game) or the menus can't be read."""
@@ -748,19 +758,18 @@ class _Menus:
         why = re4_menus.wandered(scr)
         if why:
             return why
-        if scr["where"] == "select_player" and self.where != "select_player":
-            if not self.moment_tried and not self.hooked:    # before any hook: the state restores cleanly
+        if scr["where"] == "select_player" and not self.hooked:
+            if not self.moment_tried:                # before any hook: the state restores cleanly
                 self.moment_tried = True
                 try:
                     self.stats["menu_moment"] = save_menu_moment(self.ad, self.game) or "none (no jump states here)"
                 except Exception as e:               # noqa: BLE001 - no moment: the menus still work
                     self.stats["menu_moment"] = f"failed: {type(e).__name__}: {e}"[:160]
-            if self.hooks is not None:               # every visit: a hook that did not hold across the last round
-                failed = self.hooks() or []          # is back in before the next one (the ops are idempotent)
-                self.stats["hooks"] = "applied" + (f" ({len(failed)} failed)" if failed else "")
-                self.stats["hooks_applied"] = self.stats.get("hooks_applied", 0) + 1
-                if failed:
-                    self.stats["hooks_failed"] = "; ".join(failed)[:300]
+            if self.hooks is not None:               # once per boot: hooks stacked on hooks are untested (a live
+                failed = self.hooks() or []          # check froze in a stage load after a second set, 2026-10-21);
+                self.stats["hooks"] = "applied" + (f" ({len(failed)} failed)" if failed else "")   # a relaunch
+                if failed:                           # boots into the menu moment, before any hook, and applies
+                    self.stats["hooks_failed"] = "; ".join(failed)[:300]   # them once again
             self.hooked = True
         self.where = scr["where"]
         if scr["where"] == "unknown":
@@ -770,7 +779,7 @@ class _Menus:
         else:
             self.lost_since = None
         self.nav.tick(scr)
-        if self.stats.get("ram_progress") != self.progress:
+        if self.stats.get("ram_progress") != self.progress or scr["where"] == "attract":   # a movie runs its length
             self.progress, self.still_since = self.stats.get("ram_progress"), now
         elif now - (self.still_since or now) > MENU_STUCK_S:
             return "nothing moved in RAM for %.0f s on %s" % (now - self.still_since, scr["where"])
@@ -807,7 +816,7 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
         stats.update(bot.stats)
         bot.stats = stats
     try:
-        started_in = in_mercenaries(snapshot(m))
+        started_in = in_mercenaries(snapshot(m)) and _room_on(m)
     except Exception:                              # noqa: BLE001 - a read during a load: from the menus
         started_in = False
     bot.stats.update(rounds=1 if started_in else 0, menu_presses=0)
@@ -843,12 +852,13 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
     while not stopped():
         s = snapshot(m)
         now = clock()
-        if not in_mercenaries(s) or s["timer"] <= 0:   # the Result screen (same room, clock at 0), the title, select
+        room_on = _room_on(m)                         # a stage still loading shows the last round's clock
+        if not in_mercenaries(s) or s["timer"] <= 0 or not room_on:   # results (clock at 0), the title, menus, a load
             hold(set())
             out_since = out_since or now
             # Leon grabbed / a pickup animation: still the Mercenaries room with time on the clock - not the round's
             # end (a 2 s gap there reran a 49,370 round with 21 s left, 2026-10-20); wait it out
-            transient = s["room"] is not None and (s["room"] >> 8) == 4 and s["timer"] > 0.5
+            transient = room_on and s["room"] is not None and (s["room"] >> 8) == 4 and s["timer"] > 0.5
             if transient and now - out_since < TRANSIENT_MAX:
                 sleep(0.25)
                 continue

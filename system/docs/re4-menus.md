@@ -29,9 +29,9 @@ on the heap.
 | TW+0x00 u8 | title routine | 0 init, 1-4 boot (memory card, logos, the warning, PRESS START: START skips them), 5 main menu, 6 extra games, 7 a game starting |
 | TW+0x01 u8 | the routine's step | main menu (5): 0 setup, 1 the menu, 2 New Game, 3 a story game starting, 4 Options, 7 Load. Extras (6): 0-3 loading and setup, 4 GAME START / EXIT, 6-7 setup, 8 Select Player, 9 leaving, 10-11 setup, 12 Select Stage, 13 starting |
 | TW+0x24 u32 | main menu: how many items | 5 with the extra games unlocked, 3 without |
-| TW+0x28 u32 | main menu cursor | with the extras: NEW GAME, ASSIGNMENT ADA, THE MERCENARIES, LOAD, OPTIONS (codes 6, 2, 3, 4, 5); without: NEW GAME, LOAD, OPTIONS (1, 4, 5) |
+| TW+0x28 u32 | main menu cursor | with the extras: START (a new game), ASSIGNMENT ADA, THE MERCENARIES, LOAD, OPTIONS (codes 6, 2, 3, 4, 5); without: START, LOAD, OPTIONS (1, 4, 5) |
 | TW+0x54 u8 | The Mercenaries' menu | 0 GAME START, 1 EXIT |
-| TW+0x55 u8 | Select Player | 0 Leon, 1 Ada, 2 HUNK, 3 Krauser, 4 Wesker (left / right, wraps) |
+| TW+0x55 u8 | Select Player | 0 Leon, 1 Ada, 2 Krauser, 3 HUNK, 4 Wesker: the portraits left to right (left / right, wraps) |
 | TW+0x56 u8 | Select Stage | 2 x 2 grid, 0 the Village (reset to 0 when Select Player is confirmed) |
 | pG+0x54 u32 | the extra game picked | 0x40000000 The Mercenaries, 0x80000000 Assignment Ada |
 

@@ -2707,6 +2707,9 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
         try:
             import importlib
             import inspect
+            # no key left down from before (an earlier run cut short, a crash): a stuck stick-left read as left on
+            # every RE4 menu and Select Stage never moved (live 2026-10-21)
+            _release_all(sid)
             failed = pb.setup(ad)
             kw = {}
             if "stats" in inspect.signature(pb.play).parameters:

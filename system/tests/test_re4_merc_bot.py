@@ -32,6 +32,7 @@ PG, PL, EM, STRIDE = 0x80300000, 0x80310000, 0x80320000, 0xDE0
 def world(enemies, room=0x400, timer_s=100.0, combo=0, leon=(0.0, 0.0, 0.0)):
     m = FakeMem()
     m.put(B.P_GLOBAL, ">I", PG)
+    m.put(PG + 0x20, "B", 3)                          # pG+0x20: the room runs (not a stage still loading)
     m.put(PG + B.G_ROOM, ">H", room)
     m.put(PG + B.G_HP, ">h", 1000)                    # Leon alive
     m.put(B.P_PLAYER, ">I", PL)
@@ -258,17 +259,19 @@ def test_auto_mode_prefers_a_matching_playbook(monkeypatch, tmp_path):
 
 
 def test_between_rounds_it_never_presses_blind_and_counts_the_next_round():
-    # out of a round on a screen RAM does not name as a menu (no title task, not a Mercenaries room): no press at all.
-    # Blind up + A had walked to the main title and started a story game with the hooks in (2026-10-20); the menus
-    # from RAM are tests/test_re4_menus.py
-    m = world([((500.0, 0.0, 0.0), True)], room=0x100)
+    # out of a round on a screen RAM does not name as a menu (no title task; the stage still loading, with the last
+    # round's clock showing): no press at all. Blind up + A had walked to the main title and started a story game with
+    # the hooks in (2026-10-20); the menus from RAM are tests/test_re4_menus.py
+    m = world([((500.0, 0.0, 0.0), True)], room=0x400, timer_s=9.8)
+    m.put(PG + 0x20, "B", 2)                                           # pG+0x20 2: the Village still loading
     now, sent, live, step = [0.0], [], {}, [0]
     steps = iter(range(60))
 
     def stopped():
         i = step[0] = next(steps, None)
         if i == 40:
-            m.put(PG + B.G_ROOM, ">H", 0x400)                         # the next round started
+            m.put(PG + 0x20, "B", 3)                                   # the room runs: the next round started
+            m.put(B.MERC_TIMER, ">I", 120 * 30)
         return i is None
     B.play(None, lambda rows: sent.append((step[0], rows)), stopped, sleep=lambda s: now.__setitem__(0, now[0] + s),
            m=m, stats=live, clock=lambda: now[0])

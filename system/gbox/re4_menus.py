@@ -17,10 +17,10 @@ checked against a MEM1 taken from a Dolphin save state at Select Player:
                5 the main menu, 6 the extra games (Assignment Ada / The Mercenaries menus), 7 a game starting
   TW+0x01 u8   the routine's step
   TW+0x24 u32  main menu: items;  TW+0x28 u32 main menu: cursor (routine 5 step 1: up / down, A or START picks)
-               with the extras unlocked (pSys+4 & 0x40000000) the items are NEW GAME, ASSIGNMENT ADA, THE MERCENARIES,
-               LOAD, OPTIONS (codes 6, 2, 3, 4, 5 in 0x801621f0), without them NEW GAME, LOAD, OPTIONS (1, 4, 5)
+               with the extras unlocked (pSys+4 & 0x40000000) the items are START (a new game), ASSIGNMENT ADA, THE MERCENARIES,
+               LOAD, OPTIONS (codes 6, 2, 3, 4, 5 in 0x801621f0), without them START, LOAD, OPTIONS (1, 4, 5)
   TW+0x54 u8   The Mercenaries' menu (routine 6 step 4): 0 GAME START, 1 EXIT (up / down)
-  TW+0x55 u8   Select Player (routine 6 step 8): 0 Leon, 1 Ada, 2 HUNK, 3 Krauser, 4 Wesker (left / right, wraps)
+  TW+0x55 u8   Select Player (routine 6 step 8): 0 Leon, 1 Ada, 2 Krauser, 3 HUNK, 4 Wesker (the portraits left to right; left / right, wraps)
   TW+0x56 u8   Select Stage (routine 6 step 0xC): a 2 x 2 grid, 0 the Village (up / down 2, left / right 1)
   pG+0x54      bit 0x40000000: the extra game chosen is The Mercenaries (bit 0x80000000: Assignment Ada)
 
@@ -49,14 +49,16 @@ EXTRA_ADA, EXTRA_MERC = 0x80000000, 0x40000000
 UNLOCKED = 0x40000000              # pSys+4: the extra games are on the main menu
 MENU_EXTRAS = (6, 2, 3, 4, 5)      # main menu codes by cursor, extras unlocked
 MENU_PLAIN = (1, 4, 5)
-MENU_NAMES = {1: "NEW GAME", 2: "ASSIGNMENT ADA", 3: "THE MERCENARIES", 4: "LOAD", 5: "OPTIONS", 6: "NEW GAME"}
+MENU_NAMES = {1: "START", 2: "ASSIGNMENT ADA", 3: "THE MERCENARIES", 4: "LOAD", 5: "OPTIONS", 6: "START"}   # START = a new game
 MERC_CODE = 3
-PLAYERS = ("Leon", "Ada", "HUNK", "Krauser", "Wesker")
+PLAYERS = ("Leon", "Ada", "Krauser", "HUNK", "Wesker")       # the portraits, left to right (live frame)
 STAGES = ("Village", "Castle", "Base", "Waterworld")
 LEON, VILLAGE = 0, 0
 
 # title routine 5 (main menu) steps, from the routine's switch (0x801627C4) and what a pick leads to
-MENU_STEPS = {0: "main_menu_setup", 1: "main_menu", 2: "new_game", 3: "story_starting", 4: "options", 7: "load"}
+MENU_STEPS = {0: "main_menu_setup", 1: "main_menu", 2: "new_game", 3: "story_starting", 4: "options",
+              5: "attract", 6: "attract", 7: "load", 8: "press_start"}
+MOVIE_PLAYING = 2                  # routine 5 steps 5 / 6 (the menu idled into an attract movie): TW+2 while it plays
 # title routine 6 (the extra games) steps (0x801633BC)
 EXTRA_STEPS = {0: "extra_loading", 1: "extra_loading", 2: "extra_loading", 3: "extra_menu_setup", 4: "extra_menu",
                5: "extra_leaving", 6: "players_setup", 7: "players_setup", 8: "select_player", 9: "players_leaving",
@@ -81,6 +83,14 @@ def _ok(p: int) -> bool:
 
 def _u32(m, a: int) -> int:
     return struct.unpack(">I", m.rd(a, 4))[0]
+
+
+def in_room(m) -> bool:
+    """The game runs a room (pG+0x20 = 3, or 4 changing rooms): a round can be on. While a stage loads (0-2) the
+    Mercenaries clock still reads the last round's value, so the clock alone can't tell (live 2026-10-21: 9.8 s left
+    from the round before showed through the Village's load)."""
+    pg = _u32(m, PG)
+    return _ok(pg) and m.rd(pg + G_ROUTINE, 1)[0] in (3, 4)
 
 
 def title_running(m) -> bool:
@@ -136,7 +146,7 @@ def screen(m, merc=None) -> dict:
         return out
     t = m.rd(w, TW_SIZE)
     routine, step = t[TW_ROUTINE], t[TW_SUB]
-    out.update(tw=w, title_routine=routine, title_step=step)
+    out.update(tw=w, title_routine=routine, title_step=step, title_sub=t[2])
     if routine <= 4:
         out["where"] = "title"
     elif routine == 5:
@@ -177,6 +187,9 @@ def _game(merc, base) -> dict:
         return {"phase": "loading"}
     if (room >> 8) != 4:
         return {"phase": "story" if base.get("game_routine") in (3, 4) and room != 0x120 else "loading"}
+    if base.get("game_routine") not in (None, 3, 4):        # the stage is still loading (routines 0-2): the clock
+        return {"phase": "loading"}                         # reads 0 there too, but it is not the results (live
+                                                            # 2026-10-21: A was pressed while the Village loaded)
     if s.get("hp") is not None and s["hp"] <= 0 and s.get("player"):
         return {"phase": "dead"}
     if s.get("timer", 0) <= 0:
@@ -202,6 +215,10 @@ def step(scr: dict) -> str | None:
     where, cur, target = scr.get("where"), scr.get("cursor"), scr.get("target")
     if where == "title":
         return "start"                                      # logos, the warning, PRESS START: all skip with START
+    if where == "attract":                                  # the menu idled into a movie: START skips it while it plays
+        return "start" if scr.get("title_sub") == MOVIE_PLAYING else None   # (never as it ends: the menu would pick)
+    if where == "press_start":                              # back from a game: START returns to the extras' menu,
+        return "start" if (scr.get("extra") or 0) & EXTRA_MERC else None    # anything else would start a game
     if where == "main_menu":
         if target is None:                                  # no THE MERCENARIES on this menu (built before the unlock
             return None                                     # bits went in): wait for it to idle back to the title
@@ -216,7 +233,7 @@ def step(scr: dict) -> str | None:
     if where == "select_player":
         if cur == LEON:
             return "a"
-        return DPAD["left"] if cur in (1, 2) else DPAD["right"]    # wraps: Krauser / Wesker -> right to Leon
+        return DPAD["left"] if cur in (1, 2) else DPAD["right"]    # wraps: HUNK / Wesker -> right to Leon
     if where == "select_stage":
         if cur == VILLAGE:
             return "a"
@@ -242,7 +259,7 @@ class Navigator:
         self.last_key, self.last_at, self.last_sig = None, float("-inf"), None
 
     def sig(self, scr: dict):
-        return (scr.get("where"), scr.get("title_step"), scr.get("cursor"), scr.get("phase"))
+        return (scr.get("where"), scr.get("title_step"), scr.get("title_sub"), scr.get("cursor"), scr.get("phase"))
 
     def observe(self, scr: dict) -> None:
         sig = self.sig(scr)
