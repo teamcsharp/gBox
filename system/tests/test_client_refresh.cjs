@@ -28,6 +28,24 @@ test('hung guest is bounded, overlapping F5 is deduplicated, and known session i
   for (const fn of x.timers.values()) fn(); const value = await a;
   assert.equal(value.sid, 'old'); assert.equal(x.calls.length, 1);
 });
+test('F5 retains distinct main stream, guest PiP and native compact origin without credentials', async () => {
+  const x=fixture({context:()=>({sid:'native-pip',compact:true,aspect:16/9,returnMode:'full',section:'play'}),
+    readState:async()=>({tab:'Sessions',playing:'main-A',active:'guest-B',pip:'guest-B',hash:'#token=SECRET'})});
+  const value=await x.ctl.refresh();
+  assert.equal(value.sid,'native-pip');
+  assert.deepEqual(value.guest,{tab:'Sessions',playing:'main-A',active:'guest-B',pip:'guest-B'});
+  assert.doesNotMatch(JSON.stringify(value),/SECRET|token/);
+});
+test('hung guest and Ctrl+R use the last confirmed pair; partial reconnect retries retain the absent stream', async () => {
+  const x=fixture({readState:()=>new Promise(()=>{})});
+  x.ctl.remember({tab:'Sessions',playing:'main-A',active:'pip-B',pip:'pip-B'});
+  const task=x.ctl.refresh();for(const f of x.timers.values())f();
+  const value=await task;assert.equal(value.guest.pip,'pip-B');assert.equal(value.guest.playing,'main-A');
+  x.ctl.remember({tab:'Sessions',playing:'main-A',active:'main-A'});
+  const retry=await x.ctl.refresh();assert.deepEqual(retry,value);
+  x.ctl.done();x.ctl.remember({tab:'Library',active:'pip-B',pip:'pip-B'});
+  assert.equal(x.ctl.checkpoint().guest.pip,'pip-B');assert.equal(x.ctl.pending().guest.tab,'Library');
+});
 test('invalid or expired reload state cannot select a session or inject a selector', () => {
   const x = fixture(); x.storage.setItem('gbox.client.refresh.v1', JSON.stringify({ v: 1, at: -500000, sid: 'old', compact: true }));
   assert.equal(x.ctl.pending(), null);
@@ -62,12 +80,15 @@ test('desktop reload IPC is main-frame only and reloads without restarting jobs 
   const main = await fs.readFile(path.join(__dirname, '../clients/desktop/main.js'), 'utf8');
   const src = main.slice(main.indexOf("ipcMain.handle('client:reload'"), main.indexOf('let clientVersions ='));
   let handler, reloads = 0; const wc = { mainFrame: {}, reloadIgnoringCache: () => reloads++ };
-  const ctx = vm.createContext({ ipcMain: { handle: (name, fn) => { handler = fn; } }, win: { webContents: wc }, clientReloading: false });
+  let miniReloads = 0;
+  const ctx = vm.createContext({ ipcMain: { handle: (name, fn) => { handler = fn; } }, win: { webContents: wc }, clientReloading: false,
+    mini: { isDestroyed: () => false, webContents: { reloadIgnoringCache: () => miniReloads++ } } });
   vm.runInContext(src, ctx);
   assert.throws(() => handler({ sender: {}, senderFrame: {} }), /Only the gBox app/);
   assert.throws(() => handler({ sender: wc, senderFrame: {} }), /Only the gBox app/);
   assert.equal(handler({ sender: wc, senderFrame: wc.mainFrame }), true); assert.equal(reloads, 1);
   assert.equal(handler({ sender: wc, senderFrame: wc.mainFrame }), false); assert.equal(reloads, 1);
+  assert.equal(miniReloads, 1); // a second connected stream keeps its own window and URL while refreshing
   assert.match(main, /F5: "client-refresh"/); assert.match(main, /if \(!clientReloading && compactWindow.state\(\).on\)/);
 });
 test('update border is exactly 2px around the fitted gameplay and never intercepts input', async () => {
@@ -90,11 +111,25 @@ test('missing saved session restores the original app window and retains retry i
   const src = html.slice(html.indexOf('async function restoreClientView()'), html.indexOf('// Native desktop PiP has no browser gesture restriction.'));
   const calls = [], value = { sid: 'exact-old', compact: true, section: 'play' }, EMB = {};
   const ctx = vm.createContext({ EMB, clientRefresh: { pending: () => value, done: () => calls.push('consumed') },
-    document: { querySelector: () => ({ click() {} }) }, loadPlay: async () => calls.push('load'),
+    document: { querySelector: selector => selector === '#wv' ? { gboxReady: Promise.resolve(), executeJavaScript: async () => ({ missing: [] }) } : { click() {} } }, loadPlay: async () => calls.push('load'),
     compactController: { enter: async v => { assert.equal(v.sid, 'exact-old'); throw Error('session unavailable'); } },
     gbox: { compactView: async v => calls.push(v.on) }, toast: text => calls.push(text) });
   vm.runInContext(src, ctx); await ctx.restoreClientView();
   assert.equal(EMB.sid, 'exact-old'); assert.deepEqual(calls.slice(0, 2), ['load', false]); assert.ok(!calls.includes('consumed'));
+});
+
+test('restoration waits for the guest and restores two streams before entering native PiP without changing guest selection', async () => {
+  const html=await fs.readFile(path.join(__dirname,'../clients/desktop/index.html'),'utf8');
+  const src=html.slice(html.indexOf('async function restoreClientView()'),html.indexOf('// Native desktop PiP has no browser gesture restriction.'));
+  const calls=[], value={sid:'pip-B',compact:true,section:'play',guest:{tab:'Sessions',playing:'main-A',active:'main-A',pip:null}};
+  let ready;const wv={gboxReady:new Promise(r=>ready=r),executeJavaScript:async script=>{assert.match(script,/main-A/);calls.push('guest');return {restored:['main-A'],missing:[]};}};
+  const ctx=vm.createContext({EMB:{},clientRefresh:{pending:()=>value,done:()=>calls.push('done')},
+    document:{querySelector:s=>s==='#wv'?wv:{click(){}}},loadPlay:async()=>calls.push('load'),
+    compactController:{enter:async v=>{assert.equal(v.sid,'pip-B');assert.equal(v.preserveGuest,true);calls.push('compact');}},
+    gbox:{compactView:async()=>{}},toast:()=>{}});
+  vm.runInContext(src,ctx);const restoring=ctx.restoreClientView();await Promise.resolve();
+  assert.deepEqual(calls,['load']);ready();await restoring;
+  assert.deepEqual(calls,['load','guest','compact','done']);assert.equal(ctx.EMB.sid,'main-A');
 });
 
 test('all edited desktop and web inline classic scripts parse', async () => {

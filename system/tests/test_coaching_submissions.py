@@ -15,6 +15,7 @@ from gbox import coaching as C
 
 class Store:
     def __init__(self):
+        self.lock = threading.RLock()
         self.data = {("session", "s1"): {"game_id": "game"}, ("session", "s2"): {"game_id": "game"}}
 
     def get(self, kind, key):
@@ -109,6 +110,34 @@ class SubmissionTests(unittest.TestCase):
             self.assertEqual(submit.call_count, 1)
             self.assertEqual(submit.call_args.args[3:6], ("s1", "aim at him", "operator"))
             self.assertEqual(spawn.call_count, 1)
+
+    def test_receipt_lookup_is_read_only_and_exact_session_actor_bound(self):
+        app = FastAPI()
+        C.routes(app, self.store, lambda: "operator", None, None)
+        with patch.object(C, "_add_note", return_value=self.result) as submit, TestClient(app) as client:
+            self.add()
+            saved = client.get("/api/sessions/s1/coach/submissions/unique-id").json()
+            self.assertEqual(saved["state"], "saved")
+            self.assertEqual(saved["result"]["message_id"], "note")
+            self.assertTrue(saved["result"]["deduplicated"])
+            self.assertEqual(client.get("/api/sessions/s2/coach/submissions/unique-id").json()["state"], "missing")
+            self.assertEqual(C.submission_status(self.store, "s1", "unique-id", "agent")["state"], "missing")
+            self.assertEqual(client.get("/api/sessions/missing/coach/submissions/unique-id").status_code, 404)
+            self.assertEqual(submit.call_count, 1)
+
+    def test_receipt_can_observe_pending_without_waiting_for_submission_lock(self):
+        started, finish = threading.Event(), threading.Event()
+        def submit(*args):
+            started.set()
+            self.assertTrue(finish.wait(2))
+            return self.result
+        with patch.object(C, "_add_note", side_effect=submit), ThreadPoolExecutor(max_workers=2) as pool:
+            future = pool.submit(self.add)
+            self.assertTrue(started.wait(2))
+            lookup = pool.submit(C.submission_status, self.store, "s1", "unique-id", "operator")
+            self.assertEqual(lookup.result(timeout=.5)["state"], "pending")
+            finish.set()
+            future.result()
 
 
 if __name__ == "__main__":

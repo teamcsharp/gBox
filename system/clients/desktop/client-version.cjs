@@ -29,7 +29,7 @@ function create({ desktop, web, runtimeFiles, apiUrl, fetch = globalThis.fetch }
       const [renderer, runtime] = await Promise.all([fingerprint([...desktopFiles, ...webFiles].filter(p => !runtimeFiles.includes(p))), fingerprint(runtimeFiles)]);
       let remote = null;
       try {
-        const identities = await Promise.all(['/', '/viz/stream-watchdog.js', '/viz/autoplay-coach.js', '/viz/re5-modifiers.js'].map(async part => {
+        const identities = await Promise.all(['/', '/viz/stream-watchdog.js', '/viz/session-refresh.js', '/viz/autoplay-coach.js', '/viz/re5-modifiers.js'].map(async part => {
           // FastAPI's explicit GET routes do not implement HEAD. Read headers, then cancel the static body.
           const r = await fetch(new URL(part, apiUrl()), { method: 'GET', cache: 'no-store', signal: AbortSignal.timeout(3000) });
           await r.body?.cancel();
