@@ -222,3 +222,13 @@ Offline evidence (2026-10-13, owned disc 1, donors made with gBox's own SA2 read
   loop, not from a RAM dump; Dolphin may keep a texture in its cache until the texels' hash is re-checked.
 * The 53-bone cut-scene models, `.cv2` models and `face.dat` codec faces are not read.
 * Disc 2 builds use the same code; checked offline only through the reader (Liquid, disc-2 soldiers).
+
+## Loader address verification (probe `gbox.ts_loader_probe`)
+
+Verified on the owned disc 1 (ISO sha256 7e19b0dd...975f; shared/mgso.rel sha256 1c121560...d22a): the REL's text is
+section 1 at 0x803000ec (4,540,760 bytes), so 0x806b66b4 / 0x806ae21c / 0x806ae880 / 0x806c0470 / 0x806c0524 are all
+in the linked REL text, not main.dol. kms loader and tri loader start with `stwu r1` prologues; 0x806c0470 is
+`addi r0,r4,-0x61; rlwinm r0,r0,24,0,7; or r3,r3,r0; blr` (key = hash | (ext-'a')<<24, confirmed).
+Correction: 0x806c0524 is a loader-table *lookup* (letter-'a' -> word at table 0x808d68a4, a REL bss region filled at
+runtime), not a static registration table. Registration writes into 0x808d68a4 are still a hypothesis.
+Run: `python3 -m gbox.ts_loader_probe <disc.iso>`.

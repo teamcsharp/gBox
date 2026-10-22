@@ -718,3 +718,27 @@ def test_rel_link_and_depair_for_ghidra():
     assert (text_a + 8 + off) & 0xFFFFFFFF == 0x80003100
     dp = gcdisc.depair(img[0x80:0x80 + len(text)])
     assert struct.unpack_from(">I", dp, 12)[0] >> 26 == 48 and struct.unpack_from(">I", dp, 16)[0] == 0x60000000
+
+
+# ----------------------------------------------------------------------------------------------- loader probe
+
+def test_loader_probe_locate_sections():
+    from gbox import ts_loader_probe as P
+    secs = [None, (0x803000EC, 0x100, True), (0x80300300, 4, False)]
+    assert P.locate(secs, 0x803000EC) == (1, 0, True)
+    assert P.locate(secs, 0x803001EC) is None and P.locate(secs, 0x80300300)[0] == 2
+
+
+@pytest.mark.skipif(not (ISO and Path(ISO).is_file()), reason="set TTS_ISO to an owned Twin Snakes disc 1 image")
+def test_owned_disc_loader_addresses_are_in_linked_rel_text():
+    """Claimed loader addresses live in shared/mgso.rel's linked text section (0x803000ec, 4.5 MB), not main.dol;
+    each is a PPC function: stwu r1 prologue for the loaders, `addi r0,r4,-0x61; rlwinm 24,0,7` for the key."""
+    from gbox import ts_loader_probe as P
+    r = P.probe(ISO)
+    assert r["rel_sha256"] == "1c121560acf0f212dc14e70faedbebbb81642da8f90f5935eab58eb3e642d22a"
+    for name, c in r["claimed"].items():
+        assert c["section"] == 1 and c["exec"] and c["in_rel_image"], name
+    assert r["claimed"]["kms_loader"]["words"][0] == "9421fff0"
+    assert r["claimed"]["tri_loader"]["words"][0] == "9421ffe0"
+    assert r["claimed"]["resource_key"]["words"][:2] == ["3804ff9f", "5400c00e"]
+    assert r["claimed"]["loader_registration"]["words"][0] == "546005ef"
