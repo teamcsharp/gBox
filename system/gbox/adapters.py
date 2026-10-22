@@ -3313,12 +3313,13 @@ class RPCS3Adapter(Adapter):
         # ponytail: probe the usual RPCS3 reservations and take the first where the game's code at 0x10000 is mapped;
         # a full VirtualQueryEx walk if a future build moves it
         if self.base is None:
-            for b in (0x300000000, 0x200000000, 0x100000000, 0x10000000000):
-                d = self._rpm(b + 0x10000, 16)
-                if d and any(d):
-                    self.base = b
-                    break
-            else:
+            # then every other 4 GiB-aligned reservation holding the game's ELF image at 0x10000: one RE5 boot on
+            # JAYBUILTFINALE (2026-10-22) had it at 0x500000000, beside other non-zero regions that are not guest memory
+            usual = (0x300000000, 0x200000000, 0x100000000, 0x10000000000)
+            elf = next((b for b in (*usual, *(n << 32 for n in range(1, 0x800)))
+                        if (self._rpm(b + 0x10000, 4) or b"") == b"\x7fELF"), None)
+            self.base = elf or next((b for b in usual if any(self._rpm(b + 0x10000, 16) or b"")), None)
+            if self.base is None:
                 raise RuntimeError("PS3 guest memory not found in the RPCS3 process (game still booting?)")
         return self.base
 
@@ -3361,6 +3362,23 @@ class RPCS3Adapter(Adapter):
     # the newest save state. Both reload the game, so live memory patches must be re-applied: `generation` counts
     # reloads for tools that cache addresses (script_patch). ---
     generation = 0
+
+    def wait_ready(self, timeout: float = 300.0, stopped=lambda: False) -> None:
+        """Until the game is up: the guest memory mapped and, on a bot launch, the game window there. Autoplay starting
+        sooner failed at once with "RPCS3 game window not found" / "PS3 guest memory not found", and the session sat
+        on its boot screen (RE5 on JAYBUILTFINALE, 2026-10-22: a relaunch boots a while before RPCS3 opens it)."""
+        end, last = time.time() + timeout, None
+        while not stopped():
+            try:
+                self.read_memory(0x10000, 4)
+                if self.keyboard_pad:
+                    self._game_window()
+                return
+            except Exception as e:                            # noqa: BLE001 - still booting: ask again
+                last = e
+            if time.time() > end:
+                raise RuntimeError(f"RPCS3 did not finish booting in {timeout:.0f} s: {last}")
+            time.sleep(2.0)
 
     def _game_window(self) -> int:
         """RPCS3's game window (gs_frame): top-level, or docked inside the gBox app as a child window."""
