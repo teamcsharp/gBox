@@ -294,8 +294,13 @@ def candidates(data, requests, native, owned, on_main, *, now):
     busy_requests = set(owned) | {j.get('parent_request_id') for j in native}
     busy_games = {(j.get('input') or {}).get('game_id') or
                   ((j.get('input') or {}).get('game') or {}).get('game_id') for j in native}
-    busy_games.update(i.get('game_id') for i in data['items'].values()
-                      if i.get('dispatch_state') in ('queued', 'uncertain') or i.get('request_id') in owned)
+    running = [i.get('game_id') for i in data['items'].values()
+               if i.get('dispatch_state') in ('queued', 'uncertain') or i.get('request_id') in owned]
+    # an operator-prioritized request that starts no emulator shares its game with up to PRIORITY_PER_GAME runs in all
+    # (operator 2026-10-22: "pumping hard" on the RE5 bot's coaching tickets); other work keeps one run per game
+    native_games = set(busy_games)
+    priority = {str(x) for x in (data.get('priority') or [])}
+    busy_games.update(running)
     heavy = sum(j.get('tool') in ('analyze_binary', 'ghidra_script', 'characters', 'doa2_assets') for j in native)
     result = []
     unlock_admission = data.get('unlock_admission') or {}
@@ -306,8 +311,11 @@ def candidates(data, requests, native, owned, on_main, *, now):
                         for i in data['items'].values() if i.get('unlock_work'))
     for key, item in data['items'].items():
         rid = item.get('request_id')
+        shared = (item.get('lane') == 'inbox' and rid in priority and not launches_emulator(item)
+                  and item.get('game_id') not in native_games
+                  and running.count(item.get('game_id')) < PRIORITY_PER_GAME)
         if (rid and rid in busy_requests or item.get('retry_at', 0) > now
-                or item.get('game_id') and item['game_id'] in busy_games
+                or item.get('game_id') and item['game_id'] in busy_games and not shared
                 or item.get('request_uncertain') or item.get('dispatch_state') in ('queued', 'uncertain')):
             continue
         req = by_id.get(rid, {})
@@ -404,6 +412,7 @@ def choose(options, data):
 
 
 EMULATOR_STAGES = ('runtime',)   # favorite stages whose agents start emulators (replacement testing in a game)
+PRIORITY_PER_GAME = 3            # runs sharing one game when the operator prioritized the requests (candidates)
 
 
 def _operator_playing():
