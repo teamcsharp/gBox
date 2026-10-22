@@ -308,7 +308,7 @@ def snapshot(m) -> dict:
     return snap
 
 
-MENU_KEYS = ("start", "cross")         # results: START (OK); stage / character select: cross; "Continue?": cross = Yes
+MENU_KEYS = ("start", "cross")         # results: START (OK); stage / character select: cross
 
 
 def menu_key(n: int) -> str:
@@ -409,7 +409,7 @@ def screen(m, merc=None) -> dict:
     return out
 
 
-STEPS = {"results": "start", "select_stage": "cross", "dead": "cross", "title": "start",
+STEPS = {"results": "start", "select_stage": "cross", "dead": "circle", "title": "start",
          "alert_signin": "circle", "alert_ok": "cross", "reunion_title": "cross", "reunion_solo": "cross"}
 BOOT_KEY = "cross"      # out of a round, a screen RAM can't name (the cold boot's HDD notice, logos): mercs_bot.Boot
 CURSORED = ("main_menu", "play_game", "extra_content", "select_player")
@@ -504,7 +504,8 @@ def step(scr: dict) -> str | None:
     """The one press towards the next round. From the title: START, circle on the sign-in question, cross on "Load
     successful", then the cursor (read from RAM) moved to PLAY GAME, EXTRA CONTENT, THE MERCENARIES REUNION and taken,
     START and SOLO on Reunion's title. Between rounds: START leaves the results, cross takes the stage and the
-    character the cursors are on (the last ones played), cross answers "Continue? Yes". Nothing anywhere else."""
+    character the cursors are on (the last ones played), circle answers "Continue? No" (back to the selects for a new
+    random stage and character). Nothing anywhere else."""
     where = scr.get("where")
     if where in CURSORED:
         cur, tgt = scr.get("cursor"), scr.get("target")
@@ -1133,11 +1134,14 @@ class Bot:
         if snap.get("prompt") == "mash":
             self.aiming_since = None
             return {"hold": set()}                     # the prompt presser owns rapid circle, never cross/aim/fire
-        if p.get("hp") is not None and p["hp"] <= 0:        # "You Are Dead - Continue? Yes / No": Yes (cross)
+        if p.get("hp") is not None and p["hp"] <= 0:        # "You Are Dead - Continue? Yes / No": No (circle)
+            # No, not Yes: Yes replays the same stage with the same character, and with infinite life off the bot
+            # retried one stage round after round (operator 2026-10-22: "its Not picking different levels and different
+            # characters. that should be random each time"); No goes back through the selects (StagePick, Roster)
             if now - self.dead_tap > 1.5:
                 self.dead_tap = now
-                self.stats["continue_presses"] = self.stats.get("continue_presses", 0) + 1
-                return {"tap": "cross"}
+                self.stats["continue_declined"] = self.stats.get("continue_declined", 0) + 1
+                return {"tap": "circle"}
             return {"hold": set()}
         if snap.get("prompt") and not (self.combat is not None and self.combat.optional_prompt_blocked(snap)):  # a finisher / a grab: the engine presses it; the gun
             self.aiming_since = None                        # stays down between its presses (L1 would cancel it)
