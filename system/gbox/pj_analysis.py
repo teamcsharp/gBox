@@ -142,6 +142,50 @@ def uplmdl_pointers(blob: bytes) -> tuple[list[int], list[int]]:
         offsets.append(off)
     return flags, offsets
 
+# --- AFS descriptor table + character pointer table (loader-side evidence) ---
+# The boot code (init loop at 0x8c126584, 14 iterations, r14 += 12) walks a
+# 12-byte-record array at vaddr 0x8c2b9e44: {u32 name_ptr, u32 toc_buf_ptr,
+# u32 entry_count}. toc_buf_ptr lies in BSS (past the file image), i.e. the AFS
+# TOC is read into RAM at boot; entry_count equals the AFS entry count on disc.
+AFS_DESC_VA = 0x8C2B9E44
+AFS_DESC_COUNT = 14
+AFS_DESC_SIZE = 12
+# 29 u32 pointers (P0 form 0x0c19c620 + 0x50*n) at 0x8c19d340: slot 0 and 1
+# both reference record 0x01 (BATSU), then records 0x02..0x1c.
+CHAR_PTR_TABLE_VA = 0x8C19D340
+CHAR_PTR_TABLE_LEN = 29
+
+
+def _va_to_off(va: int) -> int:
+    return (va & 0x1FFFFFFF) - (FIRST_READ_BASE & 0x1FFFFFFF)
+
+
+def afs_descriptors(exe: bytes) -> list[dict]:
+    """Boot-time AFS descriptor table: name, TOC RAM buffer, entry count.
+
+    The slot number (list index) is the archive id used by the loaders:
+    ... 5=yplpack 6=xpltex 7=uplmdl 8=wplmot ... 13=ugmedmdl.
+    """
+    out = []
+    base = _va_to_off(AFS_DESC_VA)
+    for i in range(AFS_DESC_COUNT):
+        name_p, buf_p, count = struct.unpack_from(
+            "<III", exe, base + i * AFS_DESC_SIZE)
+        out.append({
+            "slot": i,
+            "name": _cstr(exe, _va_to_off(name_p), 32),
+            "toc_va": 0x80000000 | (buf_p & 0x1FFFFFFF),
+            "count": count,
+        })
+    return out
+
+
+def character_pointer_table(exe: bytes) -> list[int]:
+    """Pointers (as 0x8c-form VAs) from the table at 0x8c19d340 to records."""
+    base = _va_to_off(CHAR_PTR_TABLE_VA)
+    ptrs = struct.unpack_from("<%dI" % CHAR_PTR_TABLE_LEN, exe, base)
+    return [0x80000000 | (p & 0x1FFFFFFF) for p in ptrs]
+
 
 def classify_entry(blob: bytes) -> str:
     """Coarse classification of a positional AFS entry payload."""
