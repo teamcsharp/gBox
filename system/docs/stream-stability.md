@@ -169,7 +169,7 @@ it. A swap's child launch has no parent link before this change; look for a `ses
     dispatcher is off. Raising niceness needs no privileges. It is not undone, so the sandbox finishes at low priority.
   - Emulator-launching queue items are deferred: the favorite `runtime` stage and inbox repairs that need gameplay
     acceptance.
-  - Dispatch is capped at one task per tick.
+  - Dispatch is capped at one task per tick, unless the route is the inference pool (spark2, cloud nodes): those runs keep their node capacity, since their model does not run on the Spark (operator 2026-10-22).
   - Dispatched prompts tell the agent that the operator is playing on this machine. The agent must not start an
     emulator here and must run runtime tests through `launch_game node=idle`.
   - `tick()` reports this under `operator_playing`.
