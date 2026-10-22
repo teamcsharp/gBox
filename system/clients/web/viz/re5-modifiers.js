@@ -18,9 +18,12 @@
     return session?.game_id === GAME && session.state === "running" && !session.stopping
       && session.adapter === "rpcs3" && typeof session.session_id === "string" && session.session_id.includes("-");
   }
+  const KILL_MAX = 60;
+  const killSeconds = status => (typeof status?.kill_time_s === "number" && Number.isFinite(status.kill_time_s)
+    && typeof status.kill_time_on === "boolean") ? (status.kill_time_on ? status.kill_time_s : 0) : null;
   function capability(status, op) {
     const cap = status?.capabilities?.[op];
-    const known = op === "random_weapon" || DEFINITIONS.some(row => row.op === op);
+    const known = op === "random_weapon" || op === "kill_time" || DEFINITIONS.some(row => row.op === op);
     return { available: cap?.available === true,
       reason: cap?.reason || (!cap && known ? "Worker update pending; this control is unavailable." : "") };
   }
@@ -48,10 +51,15 @@
     const unavailable = UNAVAILABLE.map(row => `<div class="re5-mod-row re5-mod-unavailable"><span>${row.label}`
       + `<small>${ESC(capability(state.status, row.op).reason || "Unavailable: no verified live control")}</small></span>`
       + `<span>Unavailable</span></div>`).join("");
+    const kill = capability(state.status, "kill_time"), secs = killSeconds(state.status);
+    const killOff = state.busy || state.pending || state.weaponPending || state.stale || !kill.available || secs === null;
+    const killRow = `<div class="re5-mod-row"><span>Seconds added per kill<small>${ESC(kill.reason || (secs === null ? "State unavailable" : secs ? `Current setting: +${secs} s per kill` : "Off"))}</small></span>`
+      + `<span class="re5-mod-kill"><input type="number" min="0" max="${KILL_MAX}" step="0.5" data-re5-kill-seconds aria-label="Seconds added per kill" `
+      + `value="${secs === null ? "" : secs}" ${killOff ? "disabled" : ""}><button type="button" class="act" data-re5-kill-apply ${killOff ? "disabled" : ""}>Set</button></span></div>`;
     const random = capability(state.status, "random_weapon"), weapon = state.status?.in_hand?.weapon;
     return `<div class="re5-mod-heading"><b>RE5 modifiers</b><button type="button" class="act" data-re5-refresh `
       + `${state.busy ? "disabled" : ""}>Refresh</button></div><p class="re5-mod-sub">This running session${weapon ? ` · ${ESC(weapon)}` : ""}</p>`
-      + controls + `<button class="act re5-mod-random" type="button" data-re5-random `
+      + controls + killRow + `<button class="act re5-mod-random" type="button" data-re5-random `
       + `${state.busy || state.pending || state.weaponPending || state.stale || !random.available ? "disabled" : ""}>Random available weapon</button>`
       + `<p class="re5-mod-sub">${ESC(random.reason || "Equips an eligible gun already in the inventory. Rockets and sniper rifles are excluded.")}</p>`
       + `<details class="re5-mod-extra"><summary>Other requested modifiers</summary>${unavailable}</details>`
@@ -162,7 +170,28 @@
         if (!state.pending && !state.weaponPending) state.stale = true;
       } finally { state.busy = false; paint(); }
     }
-    return { refresh, change, state: () => ({ ...state }), stop: () => { disposed = true; } };
+    async function setKillTime(raw) {
+      if (state.busy || state.pending || state.weaponPending || state.stale || disposed) return;
+      const seconds = typeof raw === "string" && raw.trim() === "" ? NaN : Number(raw);
+      const cap = capability(state.status, "kill_time");
+      if (!cap.available || killSeconds(state.status) === null) return;
+      if (!Number.isFinite(seconds) || seconds < 0 || seconds > KILL_MAX) {
+        state.error = true; state.message = `Enter 0 to ${KILL_MAX} seconds per kill.`; paint(); return;
+      }
+      state.busy = true; state.error = false; state.message = "Applying change…"; paint();
+      try {
+        await preflight();
+        const result = await job("kill_time", { on: seconds > 0, seconds });
+        await read();
+        if (result.verified !== true) throw new Error(result.reason || result.note || "The game did not verify this change.");
+        if (killSeconds(state.status) !== seconds) throw new Error("The game did not confirm the requested setting.");
+        state.message = seconds ? `Each kill now adds ${seconds} s.` : "Time per kill disabled.";
+      } catch (error) {
+        state.error = true; state.message = error.message;
+        if (!state.pending && !state.weaponPending) state.stale = true;
+      } finally { state.busy = false; paint(); }
+    }
+    return { refresh, change, setKillTime, state: () => ({ ...state }), stop: () => { disposed = true; } };
   }
 
   const CSS = `.re5-modifiers{border-top:1px solid var(--line,#444);margin-top:5px;padding:9px 4px 2px;min-width:min(300px,calc(100vw - 48px));max-width:400px}
@@ -170,7 +199,7 @@
     .re5-mod-row{padding:7px 0;font-size:13px}.re5-mod-row small{display:block;max-width:280px;font-size:11px;color:var(--mut,#aaa);margin-top:3px}
     .re5-mod-row input{accent-color:var(--pri,#8da7ff);width:17px;height:17px;flex:none;cursor:pointer}.re5-mod-row input:disabled{cursor:default;opacity:.55}
     .re5-mod-sub,.re5-mod-status{font-size:11px;line-height:1.45;margin:5px 0;color:var(--mut,#aaa)}.re5-mod-status{max-width:350px;overflow-wrap:anywhere;min-height:16px}
-    .re5-mod-error{color:var(--bad,#f99)}.re5-mod-random{width:100%;margin-top:6px}.re5-mod-extra{margin-top:8px;font-size:11px}
+    .re5-mod-error{color:var(--bad,#f99)}.re5-mod-kill{display:flex;gap:6px;flex:none}.re5-mod-kill input{width:62px}.re5-mod-random{width:100%;margin-top:6px}.re5-mod-extra{margin-top:8px;font-size:11px}
     .re5-mod-extra summary{cursor:pointer}.re5-mod-unavailable{font-size:11px}.re5-mod-unavailable>span:last-child{color:var(--mut,#aaa)}
     .re5-modifiers button:disabled{opacity:.55;cursor:default}`;
   function mount(host, options) {
@@ -186,6 +215,8 @@
     };
     host.onclick = event => {
       if (event.target.closest?.("[data-re5-refresh]") && !event.target.disabled) ctl.refresh();
+      if (event.target.closest?.("[data-re5-kill-apply]") && !event.target.disabled)
+        ctl.setKillTime(host.querySelector("[data-re5-kill-seconds]")?.value ?? "");
       if (event.target.closest?.("[data-re5-random]") && !event.target.disabled) ctl.change("random_weapon");
     };
     ctl.refresh();

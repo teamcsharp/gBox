@@ -207,6 +207,9 @@ class RE5:
         inv = self.inventory()
         st["in_hand"] = next((x for x in inv if x["in_hand"]), None)
         st["inventory"] = inv
+        kt = self.orig.get("kill_time", {})
+        st["kill_time_on"] = bool(kt.get("on"))
+        st["kill_time_s"] = float(kt.get("seconds", KILL_TIME_S))
         st["unlimited_health"] = bool(self.orig.get("health", {}).get("on"))
         st["health_maintenance"] = self.orig.get("health", {}).get("last")
         st["hit_immunity"] = bool((st["health_maintenance"] or {}).get("hit_immunity"))
@@ -216,6 +219,7 @@ class RE5:
         with re5_controls.LOCK:
             st["capabilities"] = {op: {"available": True, "reason": "Verified build; readback required."}
                                   for op in OPERATOR_SETTINGS}
+            st["capabilities"]["kill_time"] = {"available": True, "reason": "Applied by the Mercenaries round observer."}
             st["capabilities"]["random_weapon"] = re5_controls.capability(self.orig)
             for op in ("aimbot", "instant_qte", "auto_parry", "knife_knockback"):
                 st["capabilities"][op] = {"available": False, "reason": "No verified live control for this hook."}
@@ -369,10 +373,25 @@ KILL_TIME_S = 2.0
 _KILL_LOCK = threading.RLock()
 
 
-def kill_time(g: RE5, on: bool, seconds=None) -> dict:
-    """Switch the per-kill time bonus; the Mercenaries observer applies it each snapshot (maintain_kill_time)."""
+KILL_TIME_MAX_S = 60.0
+
+
+def kill_time(g: RE5, on: bool, seconds=None, operator: bool = False) -> dict:
+    """Switch the per-kill time bonus; the Mercenaries observer applies it each snapshot (maintain_kill_time).
+    An operator's choice (the modifier panel) is kept: the round-start playing_ops no longer overwrite it."""
+    if seconds is not None:
+        try:
+            seconds = float(seconds)
+        except (TypeError, ValueError):
+            raise ValueError("kill_time seconds: a number") from None
+        if not 0 <= seconds <= KILL_TIME_MAX_S:      # NaN fails this too
+            raise ValueError(f"kill_time seconds: 0 .. {KILL_TIME_MAX_S:g}")
     with _KILL_LOCK:
         state = g.orig.setdefault("kill_time", {})
+        if state.get("operator") and not operator:
+            return {"kill_time": state["on"], "seconds": state["seconds"], "verified": True, "kept_operator_choice": True}
+        if operator:
+            state["operator"] = True
         state.update(on=bool(on), seconds=float(seconds if seconds is not None else state.get("seconds", KILL_TIME_S)),
                      gs=None, kills=None)
         return {"kill_time": state["on"], "seconds": state["seconds"], "verified": True}
@@ -790,7 +809,7 @@ def _run(ad, op="status", multiplier=None, on=True, g=None, **extra):
     elif op == "random_cheats":
         res.update(random_cheats(g, extra.get("seed")))
     elif op == "kill_time":
-        res.update(kill_time(g, on, extra.get("seconds")))
+        res.update(kill_time(g, on, extra.get("seconds"), operator=operator))
     elif op == "revert_all":
         res.update(revert_all(g))
     else:
@@ -806,6 +825,7 @@ class RE5ModsIn(BaseModel):
     session_id: str
     op: str = "status"            # status | turn_speed | fire_rate | infinite_ammo | unlimited_health | bullet_damage | revert_all | addresses
     multiplier: str | float | None = None   # turn_speed (2; "max" = 10) / fire_rate (80) / bullet_damage (10); 1 = the game's
+    seconds: float | None = None  # kill_time: seconds added to the round clock per kill (0 .. 60)
     on: bool = True               # infinite_ammo / unlimited_health on/off; multiplier off restores the game's values
 
 
@@ -825,4 +845,4 @@ def re5_mods(inp: RE5ModsIn, ctx):
     ad, g = SESSIONS[inp.session_id]
     if g.get("platform") != "ps3":
         raise Unsupported(f"re5_mods: Resident Evil 5 on PS3 (RPCS3); this session is {g.get('title')} ({g.get('platform')})")
-    return {"result": run(ad, inp.op, inp.multiplier, inp.on, operator=True)}
+    return {"result": run(ad, inp.op, inp.multiplier, inp.on, operator=True, seconds=inp.seconds)}

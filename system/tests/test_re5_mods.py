@@ -242,3 +242,19 @@ def test_the_re5_profile_turns_kill_time_on():
     from pathlib import Path
     prof = json.loads(Path(__file__).resolve().parents[1].joinpath("profiles/gamedata/BLUS30491-ram.json").read_text())["mercs"]
     assert dict(prof["playing_ops"])["kill_time"] == {"on": True, "seconds": 2}
+
+
+def test_operator_kill_time_seconds_are_validated_and_kept():
+    class G:
+        orig = {}
+    g = G()
+    for bad in (-1, 61, "x", float("nan")):
+        try:
+            T.kill_time(g, True, bad, operator=True)
+            raise AssertionError(bad)
+        except ValueError:
+            pass
+    assert T.kill_time(g, True, 5, operator=True) == {"kill_time": True, "seconds": 5.0, "verified": True}
+    kept = T.kill_time(g, True, 2)                       # the round-start playing_ops must not undo the operator
+    assert kept["seconds"] == 5.0 and kept["kept_operator_choice"]
+    assert T.kill_time(g, False, 0, operator=True)["kill_time"] is False

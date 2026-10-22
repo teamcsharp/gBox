@@ -249,3 +249,31 @@ test('shell binds controls to the exact currently opened session and authenticat
   assert.match(shell, /GBoxRE5Modifiers\.mount\(host, \{ session: current, api \}\)/);
   assert.doesNotMatch(fs.readFileSync(require.resolve('../clients/web/viz/re5-modifiers.js'), 'utf8'), /write_memory|read_memory|Bearer|x-gbox-actor/);
 });
+
+test('seconds per kill: verified operator job with explicit seconds, bounds checked, fresh status confirms', async () => {
+  const r = rig(); r.status.kill_time_on = true; r.status.kill_time_s = 2;
+  r.status.capabilities.kill_time = { available: true };
+  r.command = async input => { r.status.kill_time_on = input.on; r.status.kill_time_s = input.seconds; return { verified: true }; };
+  await r.control.refresh();
+  assert.match(M.html(r.control.state()), /data-re5-kill-seconds[^>]*value="2"/);
+  await r.control.setKillTime('5');
+  assert.deepEqual(r.commands()[0].body.input, { session_id: 'worker-launch', op: 'kill_time', on: true, seconds: 5 });
+  assert.equal(r.control.state().error, false);
+  assert.match(r.control.state().message, /5 s/);
+  await r.control.setKillTime('0');
+  assert.deepEqual(r.commands()[1].body.input, { session_id: 'worker-launch', op: 'kill_time', on: false, seconds: 0 });
+  for (const bad of ['', 'abc', '-1', '61']) await r.control.setKillTime(bad);
+  assert.equal(r.commands().length, 2);
+  assert.equal(r.control.state().error, true);
+});
+
+test('seconds per kill is blocked by an old worker status and never claims unconfirmed success', async () => {
+  const old = rig(); await old.control.refresh();             // no kill_time_* fields: state unavailable
+  await old.control.setKillTime('3');
+  assert.equal(old.commands().length, 0);
+  const r = rig(); r.status.kill_time_on = false; r.status.kill_time_s = 2; r.status.capabilities.kill_time = { available: true };
+  r.command = async () => ({ verified: true });               // status never changes
+  await r.control.refresh(); await r.control.setKillTime('4');
+  assert.equal(r.control.state().error, true);
+  assert.match(r.control.state().message, /did not confirm/);
+});
