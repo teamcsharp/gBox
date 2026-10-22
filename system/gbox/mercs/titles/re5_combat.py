@@ -65,6 +65,9 @@ KNEE_H, SHOULDER_H, BODY_R = 45.0, 145.0, 36.0   # his body: a capsule between t
 THIGH_LO, THIGH_HI, THIGH_R, THIGH_H = 45.0, 95.0, 26.0, 72.0   # his thighs: the leg-stun zone, aimed at THIGH_H
 CHEST_H = 110.0                         # the default aim point: centre mass, past helmets and around shields
 DEFAULT_ZONE = "body"                   # zone_for's answer without the strategy's say ("head": the #3046 steady head aim)
+THREAT_BLAST = True                     # False: only the sight / dot gates decide (the far-target gate's own tests)
+THREAT_BLAST_R = 500.0                  # a Majini this near on the player's level, roughly faced: the trigger stays down
+THREAT_BLAST_FACING = math.radians(30)
 # The kill policy (docs/mercenaries_re5_meta.md section 1.3: "melee is the clock"): a leg shot until he kneels, then
 # the finisher (+5 s, i-frames) - the main kill method; a headshot (a head stun -> Headbutt / Uppercut, or the kill)
 # when he is far or the combo window is short; never a second melee on a boss (the wild swing).
@@ -730,6 +733,17 @@ class Combat:
         self.stats["fire_gate"] = ("settling on the head: hold fire" if sighted and on_line and not steady
                                    else "no line: hold fire" if not sighted else "dot off him: hold fire" if not on_line
                                    else "on him" if where is not None else "line to him")
+        # A threat on top of him: blast. Operator 2026-10-22: "I need them blasting like a lunatic on a threat. They are
+        # just eating blows ... The gun is being raised. It needs to be blasting. Rapid fire. There is no preparing the
+        # aim. There's only blasting and aiming while blasting." Within THREAT_BLAST_R on his level and roughly faced, the
+        # trigger stays down from the moment the gun comes up and the stick keeps correcting; the sight / dot gates above
+        # are for Majini further off (no shooting walls from across the map).
+        to_him = wrap(heading(foot[0] - p["pos"][0], foot[2] - p["pos"][2]) - p["rot"])
+        if (THREAT_BLAST and direct and permitted and loaded and dist < THREAT_BLAST_R
+                and abs(foot[1] - p["pos"][1]) < 150.0 and abs(to_him) < THREAT_BLAST_FACING):
+            tracking_fire = True
+            self.stats["fire_gate"] = "threat: blasting"
+            self.stats["threat_blasts"] = self.stats.get("threat_blasts", 0) + 1
         rapid = self._rapid_fire(wid, now)              # observed package status, independent of fire intent
         if p.get("action") == 4:                      # prompts own escape from a grab
             self.stats["combat"] = "waiting: grab animation"

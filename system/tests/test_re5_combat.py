@@ -9,9 +9,12 @@ from gbox.mercs.titles import re5_combat as C
 
 @pytest.fixture(autouse=True)
 def _legacy_fire_gate(monkeypatch, request):
-    """Older tests cover the first-overlap gate; the steady-head tests (#3046) opt back in."""
+    """Older tests cover the first-overlap gate; the steady-head tests (#3046) opt back in. The sight / dot gate tests
+    run without the close-threat blast; the blast tests opt in."""
     if "steady" not in request.node.name:
         monkeypatch.setattr(C, "STEADY_HEAD", False)
+    if "blast" not in request.node.name:
+        monkeypatch.setattr(C, "THREAT_BLAST", False)
 
 
 PL, ACT, LASER, SUNIT, ENEMY = 0x30400000, 0x30500000, 0x30600000, 0x30700000, 0x30800000
@@ -763,3 +766,30 @@ def test_by_default_he_fires_as_soon_as_the_dot_is_anywhere_on_him():
         s = snap(m)
         act = bot.tick(s, s["player"], s["enemies"][0], 0.0)
         assert bot.zone == "body" and {"l1", "r1"} <= act["hold"], dot          # no settle, no patience: the trigger
+
+
+def test_a_close_threat_gets_blasted_from_the_moment_the_gun_comes_up():
+    # operator 2026-10-22: "I need them blasting like a lunatic on a threat. They are just eating blows ... There is no
+    # preparing the aim. There's only blasting and aiming while blasting."
+    for dot in ((90.0, 120.0, 400.0), (0.0, 30.0, 300.0), None):   # beside him, at his feet, no ray yet
+        m = world(laser_dot=dot) if dot else world()
+        bot = C.Combat(m, {}, clock=lambda: 0.0)
+        s = snap(m, enemy=(0.0, 0.0, 300.0))                        # 3 m ahead on his level
+        if dot is None:
+            s["laser"] = None
+        for k in range(5):
+            act = bot.tick(s, s["player"], s["enemies"][0], k * 0.02)["hold"]
+            assert {"l1", "r1"} <= act, (dot, k)                     # gun up, trigger down, every frame
+        assert bot.stats["fire_gate"] == "threat: blasting"
+
+
+def test_blast_stays_off_for_far_majini_and_ones_off_to_the_side():
+    m = world(laser_dot=(0.0, 0.0, 600.0))                           # 15 m off, the dot on the ground short of him
+    bot = C.Combat(m, {}, clock=lambda: 0.0)
+    s = snap(m, enemy=(0.0, 0.0, 1500.0))
+    assert "r1" not in bot.tick(s, s["player"], s["enemies"][0], 0.0)["hold"]   # far: the sight gates decide
+    assert bot.stats["fire_gate"] != "threat: blasting"
+    m = world(laser_dot=(90.0, 120.0, 400.0))
+    bot = C.Combat(m, {}, clock=lambda: 0.0)
+    s = snap(m, enemy=(300.0, 0.0, 100.0))                           # close but 70 deg off the facing: turn first
+    assert "r1" not in bot.tick(s, s["player"], s["enemies"][0], 0.0)["hold"]
