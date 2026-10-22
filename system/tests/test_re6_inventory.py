@@ -94,7 +94,10 @@ def test_sample_arc_headers_reads_header_only():
                 self.f = open(iso, "rb")
 
         fx = FakeXDVD()
-        out = sample_arc_headers(fx, ["/nativeXenon/arc/X360/fake.arc"])
+        try:
+            out = sample_arc_headers(fx, ["/nativeXenon/arc/X360/fake.arc"])
+        finally:
+            fx.f.close()                                    # Windows can't remove the temp dir with the file open
         assert out[0]["magic"] == "\x00CRA"
         assert out[0]["version"] == 0x11
         assert out[0]["entries"] == 5
