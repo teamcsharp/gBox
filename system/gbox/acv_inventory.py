@@ -31,7 +31,11 @@ slack.  Sampled payload
 magics are FromSoftware DCX (0x44435800), nested BND3 (0x424E4433), TPF textures and
 "[PAT]" params -- the same stack as Dark Souls (FLVER models / DDS textures / Havok
 animation behind DCX compression).  The 0x10..0x58a0 region of the BHD (low entropy)
-is an undetermined directory/name structure, left for the analysis stage.
+is the BHD5 bucket table (see parse_bhd5_buckets): header = "BHD5", u32 0, u32 version(1),
+u32 BHD size, u32 bucketCount (2833), u32 bucketsOffset (0x18); then bucketCount x
+(u32 fileCount, u32 recordsOffset).  Buckets span 0x18..0x58a0 and the file records they
+reference tile 0x58a0..0x52ad0 (19,747 records); record hash % bucketCount == bucket index
+for every record.  Names are not stored (hash only).
 
 This module is read-only: it never writes to the disc or the binder.
 """
@@ -132,4 +136,32 @@ def parse_bhd5_files(bhd: bytes, bdt_size: int, table_off: int | None = None) ->
         size = struct.unpack_from(">I", bhd, off + 4)[0]
         foff = struct.unpack_from(">Q", bhd, off + 8)[0]
         out.append({"hash": h.hex(), "size": size, "offset": foff})
+    return out
+
+
+def parse_bhd5_buckets(bhd: bytes, bdt_size: int | None = None) -> list[dict]:
+    """Parse the BHD5 header + bucket table and return all file records.
+
+    Layout (big endian): "BHD5", u32 0, u32 version, u32 bhd_size, u32 bucketCount,
+    u32 bucketsOffset; buckets = (u32 fileCount, u32 recordsOffset); record =
+    (u32 hash, u32 size, u64 offset).  Every bound is checked; ValueError on violation.
+    Returns [{"hash","size","offset","bucket"}].
+    """
+    if len(bhd) < 0x18 or bhd[:4] != BHD5_MAGIC:
+        raise ValueError("not a BHD5 binder")
+    _, _, bhd_size, bucket_count, buckets_off = struct.unpack_from(">IIIII", bhd, 4)
+    if bhd_size != len(bhd):
+        raise ValueError("BHD5 size field %d != actual %d" % (bhd_size, len(bhd)))
+    if buckets_off < 0x18 or buckets_off + 8 * bucket_count > len(bhd) or bucket_count == 0:
+        raise ValueError("bucket table out of range")
+    out = []
+    for i in range(bucket_count):
+        count, roff = struct.unpack_from(">II", bhd, buckets_off + 8 * i)
+        if roff + 16 * count > len(bhd):
+            raise ValueError("bucket %d records out of range" % i)
+        for j in range(count):
+            h, size, off = struct.unpack_from(">IIQ", bhd, roff + 16 * j)
+            if bdt_size is not None and off + size > bdt_size:
+                raise ValueError("record outside BDT")
+            out.append({"hash": h, "size": size, "offset": off, "bucket": i})
     return out
