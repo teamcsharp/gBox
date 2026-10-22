@@ -206,7 +206,8 @@ def snapshot():
         proxy = _PROXIES.get(name)
         row = {'name': name, 'provider': s.provider, 'model': s.model, 'upstream': s.upstream,
                'api_format': s.api_format, 'enabled': s.enabled, 'capacity': s.max_parallel_jobs,
-               'primary': s.shared_with_games, 'allow_large_tasks': s.allow_large_tasks, **checks[name]}
+               'primary': s.shared_with_games, 'allow_large_tasks': s.allow_large_tasks,
+               'priority_only': s.priority_only, **checks[name]}
         if not s.shared_with_games:
             row['concurrency_choices'] = CONCURRENCY_CHOICES
         row.update(llm_proxy.summarize([r for r in records if r.get('host_name') == name]))
