@@ -377,7 +377,8 @@ def screen(m, merc=None) -> dict:
     if alert:
         where = ALERTS.get(alert, "alert")
     elif "uIdStartUp22" in ui:
-        where, cursor, target = "select_player", u32(m, ui["uIdStartUp22"] + SELECT_CURSOR), ROSTER.want()
+        where, cursor, target = "select_player", u32(m, ui["uIdStartUp22"] + SELECT_CURSOR), ROSTER.slot()
+        out["page"] = ROSTER.page()
     elif "uIdStartUp21" in ui:
         where = "select_stage"
     elif "uIdStartUp29" in ui:
@@ -409,6 +410,11 @@ CURSORED = ("main_menu", "play_game", "extra_content", "select_player")
 CHARACTERS = ("Chris (Heavy Metal)", "Sheva (Fairy Tale)", "Josh", "Excella", "Chris (Warrior)", "Sheva (Business)",
               "Barry", "Rebecca")                   # CHARACTER SELECT's row, cursor 0..7 (uIdStartUp22 +0x180)
 SELECT_CURSOR = 0x180
+PAGES, PER_PAGE = 3, 8                   # operator 2026-10-22: CHARACTER SELECT has three pages of characters; each page is
+PAGE_NEXT, PAGE_PREV = "r1", "l1"        # assumed to be a row like the first (cursor 0..7 per page) and flipped with R1/L1.
+# UNVERIFIED live: the flip keys and pages 2-3's rows/names are not read from RAM yet - the names below are placeholders
+# so every page's slots are tallied; confirm on the Spark's RPCS3 and replace them (see docs/mercenaries.md).
+ALL_CHARACTERS = CHARACTERS + tuple(f"Page {pg + 1} slot {i + 1}" for pg in range(1, PAGES) for i in range(PER_PAGE))
 
 
 class Roster:
@@ -416,25 +422,33 @@ class Roster:
     pick is drawn among the characters played least so far, never the one just played; the per-character tallies
     (rounds, kills, points, best combo) go to stats. Module state: the menus are read through module functions."""
 
-    def __init__(self, rng=None):
+    def __init__(self, rng=None, pages: int = 1):
         import random
         self.rng = rng or random.Random()
-        self.pick = None                       # the cursor target for the coming round
+        self.names = ALL_CHARACTERS[:pages * PER_PAGE] if pages > 1 else CHARACTERS
+        self.pick = None                       # the cursor target for the coming round: a flat index over all pages
         self.last = None                       # the character of the last round started
-        self.played: dict = {c: 0 for c in CHARACTERS}
+        self.played: dict = {c: 0 for c in self.names}
         self.tally: dict = {}                  # name -> {"rounds", "kills", "points", "combo"}
         self.round = None                      # (name, best combo seen) while a round runs
 
     def want(self) -> int:
         if self.pick is None:
-            least = min(self.played[c] for c in CHARACTERS if c != self.last)
-            pool = [i for i, c in enumerate(CHARACTERS) if self.played[c] == least and c != self.last]
+            least = min(self.played[c] for c in self.names if c != self.last)
+            pool = [i for i, c in enumerate(self.names) if self.played[c] == least and c != self.last]
             self.pick = self.rng.choice(pool)
         return self.pick
 
+    def page(self) -> int:
+        return self.want() // PER_PAGE
+
+    def slot(self) -> int:
+        """The cursor target within the page (0..PER_PAGE-1)."""
+        return self.want() % PER_PAGE
+
     def started(self) -> str:
         """A round is up: the pick played (or the last one again when nothing was picked: a Continue)."""
-        name = CHARACTERS[self.pick] if self.pick is not None else (self.last or CHARACTERS[0])
+        name = self.names[self.pick] if self.pick is not None else (self.last or self.names[0])
         if self.round is None or self.round[0] != name or self.pick is not None:
             self.played[name] += 1
             self.round = [name, 0]
@@ -454,7 +468,7 @@ class Roster:
                                                           for c, v in self.tally.items())}
 
 
-ROSTER = Roster()
+ROSTER = Roster(pages=PAGES)
 
 
 class StagePick:
@@ -488,9 +502,35 @@ class StagePick:
 STAGE_PICK = StagePick()
 
 
+class PagePick:
+    """CHARACTER SELECT's pages: RAM doesn't name the page, so (like StagePick) every visit first walks back to page 1
+    with PAGE_PREV (PAGES - 1 presses, which parks it from anywhere), then PAGE_NEXT up to the picked page; then the
+    cursor walk (step) takes the slot. mercs_bot's Navigator reports each press it sends (pressed())."""
+
+    def __init__(self):
+        self.plan = None                       # the page presses still to make on this visit
+
+    def key(self, scr: dict) -> str | None:
+        if self.plan is None:
+            self.plan = [PAGE_PREV] * (PAGES - 1) + [PAGE_NEXT] * (scr.get("page") or 0)
+        return self.plan[0] if self.plan else None
+
+    def pressed(self, scr: dict, key: str) -> None:
+        if scr.get("where") != "select_player" or self.plan is None:
+            return
+        if self.plan and key == self.plan[0]:
+            self.plan.pop(0)
+        elif key == "cross":
+            self.plan = None                   # the character is taken: the next visit plans again
+
+
+PAGE_PICK = PagePick()
+
+
 def pressed(scr: dict, key: str) -> None:
     """mercs_bot's Navigator: a key it sent on this screen."""
     STAGE_PICK.pressed(scr, key)
+    PAGE_PICK.pressed(scr, key)
 
 
 def step(scr: dict) -> str | None:
@@ -499,6 +539,10 @@ def step(scr: dict) -> str | None:
     START and SOLO on Reunion's title. Between rounds: START leaves the results, cross takes the stage and the
     character the cursors are on (the last ones played), cross answers "Continue? Yes". Nothing anywhere else."""
     where = scr.get("where")
+    if where == "select_player" and scr.get("page") is not None:
+        flip = PAGE_PICK.key(scr)                        # the picked character's page first, then its slot
+        if flip:
+            return flip
     if where in CURSORED:
         cur, tgt = scr.get("cursor"), scr.get("target")
         if cur is None or tgt is None:

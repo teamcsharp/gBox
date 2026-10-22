@@ -1596,3 +1596,46 @@ def test_stage_select_takes_a_random_stage_each_visit():
     stages = {visit(R.StagePick(rng=random.Random(s))).count("dright") for s in range(60)}
     assert stages == set(range(R.StagePick.MAX_MOVES + 1))  # every stage, first to last
     assert R.step({"where": "select_stage"}) in ("dleft", "dright", "cross")
+
+
+def test_character_select_cycles_all_three_pages_randomly():
+    import random
+    r = R.Roster(rng=random.Random(3), pages=R.PAGES)
+    assert len(r.names) == R.PAGES * R.PER_PAGE and r.names[:8] == R.CHARACTERS
+    pages = set()
+    for _ in range(R.PAGES * R.PER_PAGE):
+        i = r.want()
+        assert (r.page(), r.slot()) == divmod(i, R.PER_PAGE)
+        pages.add(r.page())
+        r.started()
+    assert pages == set(range(R.PAGES)) and max(r.played.values()) == 1        # every character on every page, once
+
+
+def test_page_pick_walks_back_to_page_one_then_forward_then_the_slot():
+    for page in range(R.PAGES):
+        pick = R.PagePick()
+        scr = {"where": "select_player", "page": page, "cursor": 2, "target": 2}
+        sent = []
+        for _ in range(20):
+            k = pick.key(scr)
+            if k is None:
+                break
+            sent.append(k)
+            pick.pressed(scr, k)
+        assert sent == [R.PAGE_PREV] * (R.PAGES - 1) + [R.PAGE_NEXT] * page
+    pick.pressed({"where": "select_player"}, "cross")
+    assert pick.plan is None                                                  # next visit plans again
+
+
+def test_select_player_step_flips_pages_before_the_cursor(monkeypatch):
+    monkeypatch.setattr(R, "PAGE_PICK", R.PagePick())
+    scr = {"where": "select_player", "page": 1, "cursor": 3, "target": 3}
+    keys = []
+    for _ in range(5):
+        k = R.step(scr)
+        keys.append(k)
+        R.pressed(scr, k)
+        if k == "cross":
+            break
+    assert keys == [R.PAGE_PREV, R.PAGE_PREV, R.PAGE_NEXT, "cross"]
+    assert R.step({"where": "select_player", "cursor": 6, "target": 6}) == "cross"   # no page info: unchanged

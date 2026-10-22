@@ -198,6 +198,9 @@ the title screen (RPCS3 rereads the host DATA0.DAT at each load) and read off th
 
     * Health 0 in a round is "You Are Dead - Continue?": cross (Yes).
     * The driver presses nowhere else, so it never starts a story game.
+    * CHARACTER SELECT has three pages (operator #3048): each visit the bot walks L1 x2 to page 1, R1 to the drawn page,
+      then the cursor to the slot (`PagePick`, `Roster(pages=3)`). UNVERIFIED live: the flip keys (L1/R1), 8 slots per page and
+      pages 2-3's names (placeholders "Page N slot M") still need confirming on the Spark's RPCS3.
     * `mercs.menus` in the map is the driver module (`screen` / `step` / `wandered`).
     * PLAY GAME's "?????" entry (index 6) is most likely the locked original THE MERCENARIES.
   * The deployment: RE5's mercs block says `"ready": true`, so `mercs_bot` plays it through the engine
