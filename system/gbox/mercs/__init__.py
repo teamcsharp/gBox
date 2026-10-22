@@ -6,6 +6,7 @@
     aim        aim rates (learned) and shots scored by the enemies' health
     reactions  prompts from RAM (QTE participate / block)
     driver     the per-title interface; titles/ holds the drivers (re4_gc: G4BE08)
+    navcommon  stuck detection, portals per stage, height-aware targets, the sight gate, time-bonus priority
     engine     play_round(): the round loop the deployment playbook (gbox/mercs_bot.py) calls
     lessons    what each run teaches, and the analyzer that proposes signatures
 """
