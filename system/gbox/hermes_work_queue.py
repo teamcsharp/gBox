@@ -738,7 +738,9 @@ def tick(*, now=None):
             if node and node.get('primary'):
                 narrow = [v for v in options if hermes_local.dispatch_size(v[1], by_id.get(v[1].get('request_id')))['size'] == 'small']
                 choices = narrow or (choices if node.get('allow_large_tasks') else [])
-            if node and node.get('priority_only'):
+            # read from this tick's own node settings (the toml), so the switch needs no gBox restart
+            if node and (node.get('priority_only') or getattr(hermes_pool.node_settings().get(node['name']),
+                                                              'priority_only', False)):
                 # the paid node works the operator's list only (operator 2026-10-22: "make sure that my claude credit is
                 # going towards solving these issues I am mentioning"); nothing listed: its slot stays free this tick
                 listed = len(data.get('priority') or [])
