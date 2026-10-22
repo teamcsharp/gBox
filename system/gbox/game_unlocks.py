@@ -12,6 +12,21 @@ from pathlib import Path
 RE6_ID = '0871eee3b68cdea3'
 RE6_TEMPLATE_SHA256 = '194cb5b71858f65feeb2b1703642ddc4ffde09b9a087119189b29b0ad7b83f11'
 
+GAMES88_ID = '52ea807991d38795'
+GAMES88_ZIP_SHA256 = 'e3e1ef1cce6c7df6e23734159a9352bb996973bc65fdbf6bd0356ddd555e8065'
+
+
+def games88_research_profile() -> dict:
+    """'88 Games: revision-guarded research record. Never verified/applied until a lock is proven."""
+    from .games88_research import RESEARCH as doc
+    if doc.get('zip_sha256') != GAMES88_ZIP_SHA256:
+        return {'status': 'unverified', 'profile': None, 'verified': False, 'scope': [],
+                'reason': "'88 Games research record does not match the pinned romset."}
+    return {'status': 'research_pending', 'profile': None, 'verified': False, 'scope': [],
+            'game_id': GAMES88_ID, 'zip_sha256': doc['zip_sha256'], 'categories': doc['categories'],
+            'next_step': doc['next_step'],
+            'reason': "No lock/save flag proven in this romset yet; nothing is applied."}
+
 
 def pre_launch(game: dict, ctx, mod: str = '') -> dict:
     """Fast reviewed launch hooks; background research supplies additional games.
@@ -37,6 +52,8 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
 
 
 def profile_for(game: dict) -> dict:
+    if game.get('game_id') == GAMES88_ID and game.get('platform') == 'arcade':
+        return games88_research_profile()
     if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,
                 'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}
