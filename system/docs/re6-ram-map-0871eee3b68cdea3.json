@@ -1,0 +1,224 @@
+{
+ "format": "gbox-ram-map/1",
+ "id": "0871eee3b68cdea3",
+ "title": "Resident Evil 6 (Xbox 360, BH6MasterRelease, Xenia)",
+ "platform": "xbox360",
+ "endian": "big",
+ "pointer_size": 4,
+ "pointer_range": [
+  "0x40000000",
+  "0xA0000000"
+ ],
+ "match": {
+  "game_ids": [
+   "0871eee3b68cdea3"
+  ]
+ },
+ "regions": [
+  {
+   "name": "guest",
+   "base": "0x82000000",
+   "size": "0x1E00000"
+  }
+ ],
+ "notes": [
+  "PARTIAL (request 3023, 2026-10-22): only fields with an existing code signature / measured live change from docs/re6.md and gbox/re6.py are listed. NOT yet mapped: round clock, score, kills, combo, hourglass objects, foes array, screen state machine. Live evidence was blocked: Xenia opened no window on i9-NUC (jobs 495c71b2439d48ee, f5a8831bef23496e) and the Ghidra bridge on 127.0.0.1:8080 refused connections.",
+  "Addresses are Xenia guest virtual addresses of the 360 disc's default.xex; this file is validated by tests/test_re6_ram_map.py against a fixture, not against a running game this run."
+ ],
+ "mercs": {
+  "ready": false,
+  "driver": null,
+  "menus": null,
+  "jump_at": "select_player",
+  "units_per_m": 100,
+  "vocab": {
+   "screen": null,
+   "merc.stage": null,
+   "merc.timer": null,
+   "merc.combo": null,
+   "merc.combo_timer": null,
+   "merc.score": null,
+   "merc.kills": null,
+   "player.pos": "player.pos",
+   "player.facing": null,
+   "player.hp": "player.hp",
+   "player.hp_max": "player.hp_max",
+   "player.state": null,
+   "player.aim_pitch": null,
+   "player.weapon": "player.weapon",
+   "player.ammo": null,
+   "enemies": null,
+   "projectiles": null,
+   "prompt.kind": null,
+   "prompt.button": null,
+   "bonuses": null,
+   "partner.pos": null
+  }
+ },
+ "groups": {
+  "sys": "Singletons (sPlayer, save manager, sActionButton)",
+  "player": "Player 1's uPlayer",
+  "merc": "Mercenaries save data (unlocks)"
+ },
+ "fields": {
+  "sys.player_mgr": {
+   "address": "0x83CA52FC",
+   "type": "ptr",
+   "group": "sys",
+   "description": "sPlayer singleton; +0x28 = player 1's uPlayer pointer",
+   "source": "manual",
+   "evidence": "docs/re6.md memory map; gbox/re6.py reads it for every live op"
+  },
+  "sys.save_mgr": {
+   "address": "0x83CA4F98",
+   "type": "ptr",
+   "group": "sys",
+   "description": "Save manager (per player idx*0x8A04 + 0x30)",
+   "source": "manual",
+   "evidence": "docs/re6.md; unlock_all verified live"
+  },
+  "sys.action_button": {
+   "address": "0x83CA4380",
+   "type": "ptr",
+   "group": "sys",
+   "description": "sActionButton: 8 ButtonMgr, QTE / prompt units",
+   "source": "manual",
+   "evidence": "docs/re6.md; auto_qte patch at 0x8244646C verified on the Mercenaries grab counter"
+  },
+  "player.ptr": {
+   "pointer": {
+    "base": "0x83CA52FC",
+    "offsets": [
+     "0x28"
+    ]
+   },
+   "type": "ptr",
+   "group": "player",
+   "description": "Player 1's uPlayer (sPlayer+0x28)",
+   "source": "manual",
+   "evidence": "verified live in Xenia in Mercenaries (docs/re6.md: give_now/set_slot/infinite_health on this field); no 2026-10-22 re-measure (job f5a8831bef23496e: xenia opened no window)"
+  },
+  "player.pos": {
+   "pointer": {
+    "base": "0x83CA52FC",
+    "offsets": [
+     "0x28",
+     "0x50"
+    ]
+   },
+   "type": "f32",
+   "group": "player",
+   "description": "Position x, y, z",
+   "source": "manual",
+   "evidence": "uPlayer+0x50 (docs/re6.md); verified live in Xenia in Mercenaries (docs/re6.md: give_now/set_slot/infinite_health on this field); no 2026-10-22 re-measure (job f5a8831bef23496e: xenia opened no window)",
+   "count": 3,
+   "units": "world units"
+  },
+  "player.hp": {
+   "pointer": {
+    "base": "0x83CA52FC",
+    "offsets": [
+     "0x28",
+     "0xF20"
+    ]
+   },
+   "type": "s16",
+   "group": "player",
+   "description": "Life",
+   "source": "manual",
+   "evidence": "uPlayer+0xF20 s16 Life; verified live in Xenia in Mercenaries (docs/re6.md: give_now/set_slot/infinite_health on this field); no 2026-10-22 re-measure (job f5a8831bef23496e: xenia opened no window)",
+   "valid": [
+    0,
+    32767
+   ]
+  },
+  "player.hp_max": {
+   "pointer": {
+    "base": "0x83CA52FC",
+    "offsets": [
+     "0x28",
+     "0xF22"
+    ]
+   },
+   "type": "s16",
+   "group": "player",
+   "description": "LifeMax",
+   "source": "manual",
+   "evidence": "uPlayer+0xF22 s16 LifeMax; verified live in Xenia in Mercenaries (docs/re6.md: give_now/set_slot/infinite_health on this field); no 2026-10-22 re-measure (job f5a8831bef23496e: xenia opened no window)",
+   "valid": [
+    0,
+    32767
+   ]
+  },
+  "player.slot": {
+   "pointer": {
+    "base": "0x83CA52FC",
+    "offsets": [
+     "0x28",
+     "0x3EE8"
+    ]
+   },
+   "type": "u32",
+   "group": "player",
+   "description": "Current weapon slot (0-6)",
+   "source": "manual",
+   "evidence": "uPlayer+0x3EE8 (docs/re6.md); weapon switch via d-pad verified with give_now"
+  },
+  "player.weapon": {
+   "pointer": {
+    "base": "0x83CA52FC",
+    "offsets": [
+     "0x28",
+     "0x3ED8"
+    ]
+   },
+   "type": "ptr",
+   "group": "player",
+   "description": "Current weapon object",
+   "source": "manual",
+   "evidence": "uPlayer+0x3ED8 (docs/re6.md)"
+  },
+  "player.delta_time": {
+   "pointer": {
+    "base": "0x83CA52FC",
+    "offsets": [
+     "0x28",
+     "0x18"
+    ]
+   },
+   "type": "f32",
+   "group": "player",
+   "description": "cUnit mDeltaTime, reset by the game every frame",
+   "source": "manual",
+   "evidence": "docs/re6.md: Mario-speed experiment read it; reset each frame"
+  },
+  "merc.stage_mask": {
+   "pointer": {
+    "base": "0x83CA4F98",
+    "offsets": [
+     "0x9a4"
+    ]
+   },
+   "type": "u32",
+   "format": "hex",
+   "group": "merc",
+   "description": "Mercenaries stage mask (10 bits), player 1 save data (idx 0)",
+   "source": "manual",
+   "evidence": "docs/re6.md save layout; unlock_all verified live; stage page 0x82AD4160 reads it (save data block = [0x83CA4F98] + 0x30, field offset added)"
+  },
+  "merc.character_mask": {
+   "pointer": {
+    "base": "0x83CA4F98",
+    "offsets": [
+     "0x9a8"
+    ]
+   },
+   "type": "u32",
+   "format": "hex",
+   "group": "merc",
+   "description": "Mercenaries character + costume mask (30 bits; | 0x10101 by 0x824CCB38)",
+   "source": "manual",
+   "evidence": "docs/re6.md save layout; character list builder 0x82ACFBF8 (save data block = [0x83CA4F98] + 0x30, field offset added)"
+  }
+ }
+}

@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 
 from ..driver import Driver
-from . import re5_combat, re5_nav, re5_weapons
+from . import re5_combat, re5_motion, re5_nav, re5_weapons
 
 S_PLAYER, S_ENEMY, S_MAIN = 0x017FEB34, 0x017FDB60, 0x0191CEE4
 S_ACTION, S_ITEM, S_UNIT = 0x017B7174, 0x017FE574, 0x0191D700
@@ -124,6 +124,7 @@ PURSUE_NEAR = 200.0                    # this close he is fought whatever the fl
 BLOCKED_VIEW_S, UNSIGHTED_S, PURSUE_S = 0.5, 2.5, 2.0
 VIEW_SHORT = 150.0                     # the dot this much short of him, roughly toward him: something in between
 WALL_R = 120.0                         # the dot this close to the muzzle: facing a wall
+COMBO_LAPSE_S = 0.6                    # a combo that fell with this much window left or less ran out (was not kept)
 PURSUE_PICK_S = 1.0                    # the Majini to walk to is chosen again this often (route lengths)
 # Confirmed sight (operator 2026-10-22: "he is shooting at nonsense"; live the same day the bot spent a whole minute in
 # Public Assembly's pit at y -200 aiming at Majini on the floor 4 m above, within PURSUE_NEAR on the map): the gun comes
@@ -777,6 +778,8 @@ class Bot:
         for k in ("shots_s", "hits", "kills_seen", "max_combo", "turns", "backoffs", "stuck"):
             self.stats.setdefault(k, 0)
         self.target = None
+        self.hold_heading = re5_motion.HeadingHold()
+        self.meter = re5_motion.MotionMeter()
         self.aiming_since = None
         self.pulse = 0
         self.hist: list = []
@@ -828,6 +831,9 @@ class Bot:
         self._round_ended_at = None
         self._round_baseline = {}
         self._round_combo = 0
+        self._combo_prev = 0                    # last combo count seen (a fall to 0 is a lost combo)
+        self._combo_prev_window = None
+        self.combo_log: list = []               # per round: {"lengths": [...], "lost": n, "lapsed": n}
         self._sight: dict = {}                  # Majini ptr -> (when, open floor between him and the player)
         self.unsighted: dict = {}               # Majini ptr -> left out of sight until (walked to instead)
         self.engaged = None                     # [ptr, laser-up s off him, blocked since, last tick] while fought
@@ -924,6 +930,8 @@ class Bot:
             self._round_baseline = {key: self.stats.get(key, 0) for key in (
                 "deaths", "heals", "headshots", "finishers", "bonus_s", "bonuses_taken", "clock_jumps", "qte_presses")}
             self._round_combo = 0
+            self._combo_prev, self._combo_prev_window = 0, None
+            self.combo_log.append({"lengths": [], "lost": 0, "lapsed": 0})
             if self.round_end is not None:
                 self.stats["rounds"] = self.stats.get("rounds", 0) + 1
                 if self.round_end == "dead":
@@ -953,6 +961,7 @@ class Bot:
                 self.combat.start_round(now)
         self._round_player = p.get("ptr")
         self._round_combo = max(self._round_combo, snap.get("combo") or 0)
+        self._track_combo(snap)
         if self.combat is not None:
             self.combat.observe(snap, now)
             self.combat.observe_awareness(snap, p, now)
@@ -1068,6 +1077,10 @@ class Bot:
 
     def tick(self, snap: dict) -> dict:
         self._following_route = False
+        p = snap.get("player")
+        if p:
+            self.meter.observe(self.clock(), p["pos"], p["rot"])
+            self.stats.update({"motion_" + k: v for k, v in self.meter.summary().items()})
         try:
             return self._idle_breakout(snap, self._tick(snap))
         finally:
@@ -1151,6 +1164,9 @@ class Bot:
             return {"tap": "square"}
         if self._control_state is not None:
             from . import re5_controls
+            requested = re5_controls.leave_long_gun(snap, self._switch_weapon, now)
+            if requested:
+                return requested
             requested = re5_controls.consume(self._control_state, id(self), snap, self._switch_weapon, now,
                                              input_allowed=not close_foes)
             if requested:
@@ -1215,7 +1231,7 @@ class Bot:
         threats = [e for e in sightable if self._threat(p, e)]
         self.flags = {e["slot"]: ["blocking"] for e in threats}
         if tgt is None and candidate is None and live and self.combat is not None:
-            chase = self._pursuit_target(p, live, mesh, now)     # nobody in sight: go to them, never wait at a wall
+            chase = self._pursuit_target(p, live, mesh, now, snap)     # nobody in sight: go to them, never wait at a wall
             if chase is not None:
                 return self._pursue(p, chase, mesh, snap.get("stage_prompt"), now)
         keep_combo = self.combat is not None and self._combo_running(snap) and bool(live)
@@ -1282,7 +1298,7 @@ class Bot:
             self.close_escape_until = self.close_acquire_until = 0.0
         if self.combat is not None and tgt.get("kind") not in ("time", "combo"):   # the combat layer owns the fight
             if self._lost_sight(snap, p, tgt, now):        # the dot stops short of him / never reaches him: go there
-                chase = self._pursuit_target(p, live, mesh, now)
+                chase = self._pursuit_target(p, live, mesh, now, snap)
                 if chase is not None:
                     return self._pursue(p, chase, mesh, snap.get("stage_prompt"), now)
             from . import re5_controls
@@ -1458,6 +1474,29 @@ class Bot:
             f"dot never on him in {UNSIGHTED_S:g}s"
         return True
 
+    def _track_combo(self, snap) -> None:
+        """Measure combo lengths per round: a combo that falls to 0 is closed with its length; one whose window had
+        run out (<= COMBO_LAPSE_S left at the last read) counts as lapsed, i.e. the next Majini was not dispatched in time."""
+        combo, window = snap.get("combo"), snap.get("combo_timer")
+        if type(combo) is not int or combo < 0 or combo > 0x7FFFFFFF:
+            return
+        if not self.combo_log:
+            self.combo_log.append({"lengths": [], "lost": 0, "lapsed": 0})
+        cur = self.combo_log[-1]
+        if self._combo_prev > 0 and combo == 0:
+            cur["lengths"].append(self._combo_prev)
+            cur["lost"] += 1
+            if isinstance(self._combo_prev_window, (int, float)) and self._combo_prev_window <= COMBO_LAPSE_S:
+                cur["lapsed"] += 1
+            self.stats["combos_lost"] = self.stats.get("combos_lost", 0) + 1
+        elif combo > 0 and combo < self._combo_prev:        # a new combo started straight after a loss
+            cur["lengths"].append(self._combo_prev)
+            cur["lost"] += 1
+        self._combo_prev = combo
+        self._combo_prev_window = window if combo > 0 else None
+        self.stats["combo_rounds"] = [{"lengths": list(c["lengths"]), "lost": c["lost"], "lapsed": c["lapsed"]}
+                                      for c in self.combo_log[-5:]]
+
     @staticmethod
     def _combo_running(snap) -> bool:
         """A combo with an open window: waiting for enemies to arrive would let it lapse."""
@@ -1465,15 +1504,22 @@ class Bot:
         return (type(combo) is int and combo > 0 and isinstance(window, (int, float))
                 and not isinstance(window, bool) and 0.0 < window < 60.0)
 
-    def _pursuit_target(self, p, live, mesh, now):
+    def _pursuit_target(self, p, live, mesh, now, snap=None):
         """The Majini to walk to: the shortest navmesh route among the six nearest (chosen again every
         PURSUE_PICK_S); one whose route failed lately is skipped. None: nobody reachable."""
+        combo = snap is not None and self._combo_running(snap)
+        window = snap.get("combo_timer") if combo else None
         if self.pursuit is not None and now - self.pursuit[0] < PURSUE_PICK_S:
             e = next((e for e in live if e.get("ptr", e.get("slot")) == self.pursuit[1]), None)
             if e is not None and self.bonus_skip.get(("enemy", self.pursuit[1]), 0.0) <= now:
-                return e
+                # a running combo re-picks at once when the held one can no longer be reached inside the window
+                left = getattr(self, "_pursuit_route", None)
+                left = None if left is None else left - RUN_SPEED * (now - self.pursuit[0])
+                if not (combo and left is not None and left / RUN_SPEED > window):
+                    return e
         best, best_d = None, math.inf
-        for e in sorted(live, key=lambda e: math.dist(p["pos"], e["pos"]))[:6]:
+        # with a combo running every Majini is a candidate (the nearest in a straight line can be the long way round)
+        for e in sorted(live, key=lambda e: math.dist(p["pos"], e["pos"]))[:12 if combo else 6]:
             key = e.get("ptr", e.get("slot"))
             if self.bonus_skip.get(("enemy", key), 0.0) > now:
                 continue
@@ -1486,6 +1532,11 @@ class Bot:
                     d = None
             if d is not None and d < best_d:
                 best, best_d = e, d
+        if combo and best is not None:
+            self.stats["combo_pursuits"] = self.stats.get("combo_pursuits", 0) + 1
+            self.stats["combo_pursuit_fits"] = self.stats.get("combo_pursuit_fits", 0) + \
+                (1 if best_d / RUN_SPEED <= window else 0)
+        self._pursuit_route = best_d if best is not None else None
         self.pursuit = (now, best.get("ptr", best.get("slot"))) if best is not None else None
         return best
 
@@ -1875,7 +1926,10 @@ class Bot:
         if spot is not None and math.hypot(px - spot[0], pz - spot[1]) > DETOUR_FREE:
             self.detour_spot, self.detour_n = None, 0
         if not precise:                                   # a route walk has its own blocked-route handling
-            want = wrap(want + self.detour_angle())
+            want = wrap(self.hold_heading.pick(want, now) + self.detour_angle())   # hysteresis, then wall detour
+            self.stats["heading_flips_held"] = self.hold_heading.flips_suppressed
+        else:
+            self.hold_heading.reset()
         err = wrap(want - p["rot"])
         keys = self._turn(err, aiming=False)
         if abs(err) > (TURN_TOL if precise else math.radians(60)):

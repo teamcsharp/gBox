@@ -4,6 +4,7 @@ import struct
 from types import SimpleNamespace
 
 import pytest
+import time
 
 from gbox import re4_merc_bot as B
 
@@ -932,3 +933,54 @@ def test_package_keeps_the_games_own_aim_turn_speed():
     # operator 2026-10-22: x3 aim speed made the camera spin spastically and the bot overshoot - regular speed
     assert B.AIM_SPEED_X == 1.0
     assert dict(B.PACKAGE)["aim_turn_speed"] == {"multiplier": 1.0}
+
+
+def test_every_select_player_draws_a_random_loadout_and_the_package_skips_the_fixed_one(monkeypatch):
+    calls = []
+    from gbox import re_mods_tool as RM
+    monkeypatch.setattr(RM, "RE4", lambda ad: object())
+    monkeypatch.setattr(RM, "run", lambda ad, op, g=None, **kw: calls.append(op) or {"verified": True})
+    menus = B._Menus(object(), object(), lambda *_: None, lambda *_: None, time.time, {})
+    if menus.boot is None:
+        pytest.skip("no menus module")
+    assert menus.boot.round_hooks() == []
+    assert calls == ["random_loadout"]
+    calls.clear()
+    assert menus.boot.hooks() == []
+    assert "merc_loadout" not in calls and "weapon_mod" not in calls and "random_loadout" not in calls and calls
+
+
+def _fake_spawn_g():
+    import types
+    V = types.SimpleNamespace(
+        SPAWN_HOOK_CODE=b"\x01\x02\x03\x04", SPAWN_HOOK=0x80002800, SPAWN_DONE=0x800029C0,
+        SPAWN_DUP_SITE=0x80100000, SPAWN_DUP_ORIG=b"\xAA\xAA\xAA\xAA", SPAWN_DUP_PATCH=b"\xBB\xBB\xBB\xBB",
+        SPAWN_VARS=0x800029A0, HOOKS=0x80002000)
+    mem = {}
+    class M:
+        def rd(self, a, n):
+            return bytes(mem.get(a + i, 0) for i in range(n))
+        def wr(self, a, b):
+            for i, x in enumerate(b):
+                mem[a + i] = x
+        def u32(self, a):
+            return 0
+    g = types.SimpleNamespace(V=V, m=M(), hook=lambda: None)
+    g.m.wr(V.SPAWN_DUP_SITE, V.SPAWN_DUP_ORIG)
+    return g, mem
+
+
+def test_spawn_multiplier_behaviour_writes_factor_and_restores(monkeypatch):
+    import gbox.re_mods_tool as RM
+    monkeypatch.setattr(RM.time, "sleep", lambda s: None)
+    g, mem = _fake_spawn_g()
+    for count in (2, 3, 4):                      # slider 2x-4x -> count=N, on=true
+        r = RM.spawn_multiplier(g, count, True)
+        assert r["factor"] == count and r["verified"] is True
+        assert g.m.rd(g.V.SPAWN_VARS, 1)[0] == count
+        assert g.m.rd(g.V.SPAWN_DUP_SITE, 4) == g.V.SPAWN_DUP_PATCH
+    r = RM.spawn_multiplier(g, 4, False)         # slider 1x -> on=false: factor 1, original instruction back
+    assert r["factor"] == 1 and r["verified"] is True
+    assert g.m.rd(g.V.SPAWN_VARS, 1)[0] == 0
+    assert g.m.rd(g.V.SPAWN_DUP_SITE, 4) == g.V.SPAWN_DUP_ORIG
+    assert RM.spawn_multiplier(g, 99, True)["factor"] == 8      # backend bound unchanged (UI clamps to 4)

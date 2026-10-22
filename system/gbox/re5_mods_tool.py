@@ -94,7 +94,7 @@ POWERFUL = {0x11B: "S&W M500", 0x11A: "Lightning Hawk", 0x119: "Hydra", 0x115: "
             0x10B: "S&W M29"}
 MAGNUMS = (0x10B, 0x11A, 0x11B)
 REPLACE_WITH_MAGNUM = frozenset({0x10D, 0x105, 0x11C, 0x120})
-OPERATOR_SETTINGS = frozenset({"fire_rate", "turn_speed", "bullet_damage", "infinite_ammo", "unlimited_health"})
+OPERATOR_SETTINGS = frozenset({"fire_rate", "turn_speed", "bullet_damage", "infinite_ammo", "unlimited_health", "kill_time"})
 KNIFE_IDS = {0x101, 0x10E, 0x114, 0x123, 0x124, 0x100}
 # The round's clock: sBioMain [0x0191CEE4] +0x182D4 -> cGameSys: +0x3E0 f32 seconds left, +0x3E8 s32 the last bonus
 # (the HUD's "+NN Sec."), +0x3EC u8 show it. The game's own add-time routine 0x18C64(gs, seconds) does exactly those
@@ -221,6 +221,8 @@ class RE5:
         st["unlimited_health"] = bool(self.orig.get("health", {}).get("on"))
         st["health_maintenance"] = self.orig.get("health", {}).get("last")
         st["hit_immunity"] = bool((st["health_maintenance"] or {}).get("hit_immunity"))
+        kt = self.orig.get("kill_time", {})
+        st["kill_time_s"] = kt.get("seconds", KILL_TIME_S) if kt.get("on") else 0.0
         st["fire_animation_enabled"] = bool(self.orig.get("fire_animation_on"))
         st["fire_animation_maintenance"] = self.orig.get("fire_animation_last")
         from .mercs.titles import re5_controls
@@ -377,6 +379,7 @@ def _maintain_health(g: RE5, snap=None) -> dict:
 # gbox/mercs/titles/re5_ps3.py's snapshot reads them.
 S_MAIN, MAIN_GAMESYS, GS_TIMER, GS_KILLS = 0x0191CEE4, 0x182D4, 0x3E0, 0x3F4
 KILL_TIME_S = 2.0
+KILL_TIME_MAX_S = 30.0
 _KILL_LOCK = threading.RLock()
 
 
@@ -384,8 +387,10 @@ def kill_time(g: RE5, on: bool, seconds=None) -> dict:
     """Switch the per-kill time bonus; the Mercenaries observer applies it each snapshot (maintain_kill_time)."""
     with _KILL_LOCK:
         state = g.orig.setdefault("kill_time", {})
-        state.update(on=bool(on), seconds=float(seconds if seconds is not None else state.get("seconds", KILL_TIME_S)),
-                     gs=None, kills=None)
+        seconds = float(seconds if seconds is not None else state.get("seconds", KILL_TIME_S))
+        if not 0 < seconds <= KILL_TIME_MAX_S:
+            raise ValueError(f"kill_time seconds: more than 0, at most {KILL_TIME_MAX_S:g}")
+        state.update(on=bool(on), seconds=seconds, gs=None, kills=None)
         return {"kill_time": state["on"], "seconds": state["seconds"], "verified": True}
 
 
@@ -794,6 +799,9 @@ def revert_all(g: RE5) -> dict:
     out = {}
     o = g.orig
     o.pop("operator_overrides", None)
+    if "kill_time" in o:
+        o["kill_time"]["on"] = False
+        out["kill_time"] = True
     from .mercs.titles import re5_controls
     with re5_controls.LOCK:
         o.pop("weapon_pin", None)
@@ -872,7 +880,11 @@ def _run(ad, op="status", multiplier=None, on=True, g=None, **extra):
     elif op == "random_cheats":
         res.update(random_cheats(g, extra.get("seed")))
     elif op == "kill_time":
-        res.update(kill_time(g, on, extra.get("seconds")))
+        seconds = extra.get("seconds")
+        if seconds is None and multiplier is not None:
+            seconds = multiplier                      # the panel and the retained override carry the seconds as the value
+        res.update(kill_time(g, on, seconds))
+        multiplier = res["seconds"]
     elif op == "add_time":
         res.update(add_time(g, extra.get("seconds") or multiplier or 60))
     elif op == "time_bonus_multiplier":

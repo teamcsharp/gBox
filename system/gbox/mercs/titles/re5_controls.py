@@ -97,6 +97,21 @@ def consume(state, owner, snap, switch, now, monotonic=None, *, input_allowed=Tr
         return switch(item, now, "operator random weapon request")
 
 
+LONG_GUNS = {"rifle", "rocket"}
+
+
+def leave_long_gun(snap, switch, now):
+    """If a sniper rifle or rocket launcher is in hand, tap D-pad to a loaded quick-slot gun (magnum first)."""
+    inventory = snap.get("inventory") or ()
+    held = next((w for w in inventory if w.get("hand")), None)
+    spec = weapons.WEAPONS.get((held or {}).get("item"))
+    if held is None or held.get("type") != 1 or spec is None or spec.family not in LONG_GUNS:
+        return None
+    options = [w for w in inventory if not w.get("hand") and eligible(w)]
+    options.sort(key=lambda w: weapons.WEAPONS[w["item"]].family != "magnum")
+    return switch(options[0], now, "sniper/rocket equipped: swap to another gun") if options else None
+
+
 def pinned(state, snap, now):
     pin = state.get("weapon_pin") or {}
     return now < pin.get("until", 0) and any(w.get("hand") and eligible(w)

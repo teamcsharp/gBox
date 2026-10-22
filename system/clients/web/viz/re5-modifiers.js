@@ -9,6 +9,7 @@
     { op: "fire_rate", label: "Rapid fire", field: "fire_rate_x", multiplier: 80 },
     { op: "bullet_damage", label: "High damage", field: "bullet_damage_x", multiplier: 10 },
     { op: "turn_speed", label: "Faster turning and aiming", field: "turn_speed_x", multiplier: 3 },
+    { op: "kill_time", label: "Time added per kill", field: "kill_time_s", multiplier: 2, unit: " s per kill" },
   ];
   const UNAVAILABLE = [
     { op: "aimbot", label: "Aimbot" }, { op: "instant_qte", label: "Instant QTE completion" },
@@ -39,7 +40,7 @@
   function html(state = {}) {
     const controls = rows(state).map(row => {
       const raw = state.status?.[row.field];
-      const detail = row.reason || (row.on === null ? "State unavailable" : row.multiplier && row.on ? `Current setting: ×${raw}` : "");
+      const detail = row.reason || (row.on === null ? "State unavailable" : row.multiplier && row.on ? `Current setting: ${row.unit ? raw + row.unit : "×" + raw}` : "");
       return `<label class="re5-mod-row"><span>${ESC(row.label)}${detail ? `<small>${ESC(detail)}</small>` : ""}</span>`
         + `<input type="checkbox" data-re5-mod="${row.op}" aria-label="${ESC(row.label)}" `
         + `aria-checked="${row.on === null ? "mixed" : row.on}" ${row.on ? "checked " : ""}${row.disabled ? "disabled" : ""}></label>`;

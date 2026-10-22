@@ -115,3 +115,16 @@ def test_rocket_and_every_sniper_template_is_replaced_with_a_magnum(wid):
     assert next(item for off, item, *_ in records if off == offset) in M.MAGNUMS
     generated = M.run(memory, "loadout", weapons=[wid], seed=1)
     assert set(generated["barry"]) <= {M.WEAPONS[item & 0xFF] for item in M.MAGNUMS}
+
+
+def test_equipped_sniper_or_rocket_is_swapped_to_a_loaded_magnum_first():
+    snap = world()
+    snap["inventory"][0]["hand"] = False
+    snap["inventory"][3]["hand"] = True            # Dragunov SVD in hand
+    snap["inventory"][1]["grid"] = 3                # S&W M500, quick slot
+    snap["inventory"][0]["grid"] = 5
+    calls = []
+    out = C.leave_long_gun(snap, lambda item, now, why: calls.append(item["item"]) or {"tap": "dleft"}, 1.0)
+    assert out == {"tap": "dleft"} and calls == [0x1B]
+    snap["inventory"][3]["hand"], snap["inventory"][0]["hand"] = False, True
+    assert C.leave_long_gun(snap, lambda *a: pytest.fail("not a long gun"), 2.0) is None
