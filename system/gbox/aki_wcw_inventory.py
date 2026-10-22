@@ -146,7 +146,7 @@ def derive_profile(base: bytes, target: bytes, base_key: tuple[str, int] | None 
                 return at - 0x1000 + CODE_RAM - step * t
         raise ValueError(f"profile strings near {ram:#x} aren't uniquely in the target")
     lo, hi = p["profile_area"]
-    out["profile_area"] = (where(lo, 0x40) & ~0xFFF, (where(hi - 0x40, -0x40) + 0x40 + 0xFFF) & ~0xFFF)
+    out['profile_area'] = name_area(base, target, p, first, where)
     return out
 
 
@@ -266,3 +266,41 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def _find_block(base, target, ram, step, N=256):
+    """Find a unique non-blank 48-byte window of `base` (at RAM address `ram`) inside `target`.
+
+    Returns the target RAM address of the same window, or None.  The search
+    range is wide because the reference build's region above the name strings
+    is often blank, which hides the match from a narrow scan.
+    """
+    for t in range(N):
+        o = W.Rom.r2r(ram + step * t)
+        if o < 0 or o + 48 > len(base):
+            continue
+        s = bytes(base[o:o + 48])
+        if len(set(s)) <= 4:
+            continue
+        at = target.find(s, 0x1000)
+        if at >= 0 and target.find(s, at + 1) < 0:
+            return at - 0x1000 + CODE_RAM - step * t
+    return None
+
+
+def name_area(base, target, p, first, where=None):
+    """Bounds of the target build's name region, derived from the owned bytes."""
+    lo, hi = p["profile_area"]
+    if where is not None:
+        try:
+            lo_b, hi_b = where(lo, 0x40), where(hi - 0x40, -0x40)
+            return (lo_b & ~0xFFF, (hi_b + 0x40 + 0xFFF) & ~0xFFF)
+        except Exception:
+            pass
+    lo2 = _find_block(base, target, lo, 0x40)
+    if lo2 is None:
+        raise ValueError("name area: the lower block isn't uniquely in the target")
+    hi2 = _find_block(base, target, hi - 0x40, -0x40)
+    if hi2 is not None and hi2 > lo2:
+        return (lo2 & ~0xFFF, (hi2 + 0x40 + 0xFFF) & ~0xFFF)
+    return (lo2 & ~0xFFF, (lo2 + (hi - lo) + 0xFFF) & ~0xFFF)
