@@ -86,6 +86,10 @@ def profile_for(game: dict) -> dict:
                              'lock_surface': acv_evidence.LOCK_SURFACE,
                              'inventory': inv},
                 'unresolved_categories': pending}
+    from . import raidou1_unlock
+    if raidou1_unlock.matches(game):
+        return {'status': 'pending_research', 'profile': None, 'verified': False,
+                'scope': list(raidou1_unlock.CATEGORIES), **raidou1_unlock.profile_gate()}
     from . import doax2_unlock
     if game.get('game_id') == doax2_unlock.GAME_ID and game.get('platform') == doax2_unlock.PLATFORM:
         # Honest gate for DOAX2: research pending, no verified write targets exist.
