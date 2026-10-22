@@ -1046,6 +1046,9 @@ class Bot:
             return {"tap": "square"}
         if self._control_state is not None:
             from . import re5_controls
+            requested = re5_controls.leave_long_gun(snap, self._switch_weapon, now)
+            if requested:
+                return requested
             requested = re5_controls.consume(self._control_state, id(self), snap, self._switch_weapon, now,
                                              input_allowed=not close_foes)
             if requested:
