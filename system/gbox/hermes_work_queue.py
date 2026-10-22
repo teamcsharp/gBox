@@ -12,6 +12,10 @@ import sqlite3
 import time
 
 from . import hermes_delivery as delivery, hermes_task_mode as mode, hermes_quota
+try:                                    # the queue may be loaded as a top-level module in tests
+    from . import auto_report
+except ImportError:                         # noqa: BLE001 - standalone import
+    import auto_report
 
 PREFIX = 'gBox queue '
 STAGES = ('inventory', 'analysis', 'reader', 'writer', 'runtime')
@@ -129,6 +133,13 @@ def sync(data, favorites, requests, *, now):
         body = str(request.get('body') or request.get('title') or '').lstrip()
         actionable = request.get('source') in ('gap', 'characters')
         unlock_work = bool(context.get('custom_build_unlocks'))
+        # A context-free auto report names no actor, game or asset, so an agent run can only rediscover
+        # that there is nothing to do: request #2933 was queued like this and ran for 107 minutes until
+        # the local inference node answered HTTP 429. Such a report stays filed for the record; it is
+        # not engineering work and is never dispatched.
+        unresolved = bool(context.get('auto_report') and not auto_report.identified(context))
+        if unresolved:
+            continue
         repair = bool(unlock_work or context.get('auto_report') or context.get('native_replacement')
                       or actionable and (context.get('character') or context.get('what')
                                          or body.startswith('Extract ') or 'pick whip' in body.lower()))

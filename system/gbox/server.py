@@ -5176,6 +5176,9 @@ def create_app(config: Config) -> FastAPI:
         store.put("request", rid, report)
         return report
 
+    # An auto report that names nothing is filed but never queued; this is its status.
+    BLOCKED_REPORT_STATUS = "blocked"
+
     class AutoFailureIn(BaseModel):
         session_id: str = ""
         game: str = ""
@@ -5266,6 +5269,20 @@ def create_app(config: Config) -> FastAPI:
             except Exception as exc:
                 report["messages"].append({"author": "agent", "text": f"Save state unavailable: {exc}", "ts": time.time(), "attachments": []})
         store.put("request", rid, report)
+        # A report that names no session, job, game or model cannot be resolved by an agent: the run
+        # would only rediscover that there is nothing to do (request #2933 burned a 107-minute run and
+        # the local inference node with HTTP 429 on exactly such a report). Keep it for the record.
+        from . import auto_report
+        payload = {key: getattr(f, key, None) for key in auto_report.IDENTIFYING_FIELDS}
+        if not auto_report.identified(payload, s_):
+            report.setdefault("context", {})["resolution_dispatch"] = "unresolved_context"
+            report.setdefault("context", {})["unresolved_reason"] = "no session, job, game or model in the report"
+            report.setdefault("messages", []).append({"author": "agent", "text": auto_report.unresolved_context_message(),
+                                                       "ts": time.time(), "attachments": []})
+            report["status"] = BLOCKED_REPORT_STATUS
+            store.put("request", rid, report)
+            store.audit(actor, "request.auto_mod_failure.unresolved", rid, {})
+            return _clean(report)
         from . import hermes_task_mode
         controller = hermes_task_mode._job() or {}
         managed = bool(controller.get("no_agent"))
