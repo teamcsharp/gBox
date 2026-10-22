@@ -1,0 +1,321 @@
+{
+ "afs_entry_counts": {
+  "Multspq2.afs": 112,
+  "adv.afs": 52,
+  "bgm2.afs": 126,
+  "item.afs": 346,
+  "mry.afs": 512,
+  "rdx_lnk2.afs": 93,
+  "system.afs": 140,
+  "voice2.afs": 515
+ },
+ "afs_total_entries": 1896,
+ "disc_game_code": "GCDE08",
+ "disc_header_title": "RESIDENT EVIL CVX",
+ "game_id": "dc385be64d1a900b",
+ "member_count": 48,
+ "members": [
+  {
+   "name": "Multspq2.afs",
+   "offset": 1429157340,
+   "role": "afs_container",
+   "size": 25296896
+  },
+  {
+   "name": "Multspq2.idx",
+   "offset": 1454454236,
+   "role": "index_table",
+   "size": 226
+  },
+  {
+   "name": "adv.afs",
+   "offset": 1354687964,
+   "role": "afs_container",
+   "size": 27990016
+  },
+  {
+   "name": "bgm2.afs",
+   "offset": 1165786588,
+   "role": "afs_container",
+   "size": 121360384
+  },
+  {
+   "name": "card/banner.gbn",
+   "offset": 1459973056,
+   "role": "card_banner",
+   "size": 3616
+  },
+  {
+   "name": "card/icon.gic",
+   "offset": 1459976672,
+   "role": "card_icon",
+   "size": 1568
+  },
+  {
+   "name": "common.vsd",
+   "offset": 127174140,
+   "role": "vsd_video_bank",
+   "size": 10629088
+  },
+  {
+   "name": "item.afs",
+   "offset": 1287146972,
+   "role": "afs_container",
+   "size": 67540992
+  },
+  {
+   "name": "mry.afs",
+   "offset": 1154837980,
+   "role": "afs_container",
+   "size": 10948608
+  },
+  {
+   "name": "mv_006.sfd",
+   "offset": 486864348,
+   "role": "sfd_movie_stream",
+   "size": 99094528
+  },
+  {
+   "name": "mv_007.sfd",
+   "offset": 370441692,
+   "role": "sfd_movie_stream",
+   "size": 116422656
+  },
+  {
+   "name": "mv_008.sfd",
+   "offset": 361217500,
+   "role": "sfd_movie_stream",
+   "size": 9224192
+  },
+  {
+   "name": "mv_009.sfd",
+   "offset": 249316828,
+   "role": "sfd_movie_stream",
+   "size": 111900672
+  },
+  {
+   "name": "mv_010.sfd",
+   "offset": 230673884,
+   "role": "sfd_movie_stream",
+   "size": 18642944
+  },
+  {
+   "name": "mv_011.sfd",
+   "offset": 184438236,
+   "role": "sfd_movie_stream",
+   "size": 46235648
+  },
+  {
+   "name": "mv_012.sfd",
+   "offset": 168582620,
+   "role": "sfd_movie_stream",
+   "size": 15855616
+  },
+  {
+   "name": "mv_013.sfd",
+   "offset": 137803228,
+   "role": "sfd_movie_stream",
+   "size": 30779392
+  },
+  {
+   "name": "mv_014.sfd",
+   "offset": 871546332,
+   "role": "sfd_movie_stream",
+   "size": 26011648
+  },
+  {
+   "name": "mv_015.sfd",
+   "offset": 585958876,
+   "role": "sfd_movie_stream",
+   "size": 140587008
+  },
+  {
+   "name": "mv_016.sfd",
+   "offset": 897557980,
+   "role": "sfd_movie_stream",
+   "size": 21495808
+  },
+  {
+   "name": "mv_021.sfd",
+   "offset": 726545884,
+   "role": "sfd_movie_stream",
+   "size": 145000448
+  },
+  {
+   "name": "nintendo.gvr",
+   "offset": 126125532,
+   "role": "gvr_texture_bank",
+   "size": 1048608
+  },
+  {
+   "name": "opening.bnr",
+   "offset": 124021628,
+   "role": "banner",
+   "size": 6496
+  },
+  {
+   "name": "rdx_lnk2.afs",
+   "offset": 919053788,
+   "role": "afs_container",
+   "size": 235784192
+  },
+  {
+   "name": "sfd_adx2.gvr",
+   "offset": 125863356,
+   "role": "gvr_texture_bank",
+   "size": 262176
+  },
+  {
+   "name": "syseff.ald",
+   "offset": 1454454464,
+   "role": "ald_audio_bank",
+   "size": 1042056
+  },
+  {
+   "name": "syseff1.ald",
+   "offset": 1455496520,
+   "role": "ald_audio_bank",
+   "size": 649224
+  },
+  {
+   "name": "syseff2.ald",
+   "offset": 1456145744,
+   "role": "ald_audio_bank",
+   "size": 649224
+  },
+  {
+   "name": "syseff3.ald",
+   "offset": 1456794968,
+   "role": "ald_audio_bank",
+   "size": 649224
+  },
+  {
+   "name": "syseff4.ald",
+   "offset": 1457444192,
+   "role": "ald_audio_bank",
+   "size": 649224
+  },
+  {
+   "name": "syseff5.ald",
+   "offset": 1458093416,
+   "role": "ald_audio_bank",
+   "size": 649224
+  },
+  {
+   "name": "syseff6.ald",
+   "offset": 1458742640,
+   "role": "ald_audio_bank",
+   "size": 649224
+  },
+  {
+   "name": "sysmes.ald",
+   "offset": 1459391864,
+   "role": "ald_audio_bank",
+   "size": 21218
+  },
+  {
+   "name": "sysmes1.ald",
+   "offset": 1459413084,
+   "role": "ald_audio_bank",
+   "size": 94874
+  },
+  {
+   "name": "sysmes2.ald",
+   "offset": 1459507960,
+   "role": "ald_audio_bank",
+   "size": 94776
+  },
+  {
+   "name": "sysmes3.ald",
+   "offset": 1459602736,
+   "role": "ald_audio_bank",
+   "size": 90940
+  },
+  {
+   "name": "sysmes4.ald",
+   "offset": 1459693676,
+   "role": "ald_audio_bank",
+   "size": 92676
+  },
+  {
+   "name": "sysmes5.ald",
+   "offset": 1459786352,
+   "role": "ald_audio_bank",
+   "size": 95764
+  },
+  {
+   "name": "sysmes6.ald",
+   "offset": 1459882116,
+   "role": "ald_audio_bank",
+   "size": 90940
+  },
+  {
+   "name": "system.afs",
+   "offset": 1415183836,
+   "role": "afs_container",
+   "size": 13973504
+  },
+  {
+   "name": "voice2.afs",
+   "offset": 1382677980,
+   "role": "afs_container",
+   "size": 32505856
+  },
+  {
+   "name": "warning.gvr",
+   "offset": 124028124,
+   "role": "gvr_texture_bank",
+   "size": 262176
+  },
+  {
+   "name": "warning1.gvr",
+   "offset": 124290300,
+   "role": "gvr_texture_bank",
+   "size": 262176
+  },
+  {
+   "name": "warning2.gvr",
+   "offset": 124552476,
+   "role": "gvr_texture_bank",
+   "size": 262176
+  },
+  {
+   "name": "warning3.gvr",
+   "offset": 124814652,
+   "role": "gvr_texture_bank",
+   "size": 262176
+  },
+  {
+   "name": "warning4.gvr",
+   "offset": 125076828,
+   "role": "gvr_texture_bank",
+   "size": 262176
+  },
+  {
+   "name": "warning5.gvr",
+   "offset": 125339004,
+   "role": "gvr_texture_bank",
+   "size": 262176
+  },
+  {
+   "name": "warning6.gvr",
+   "offset": 125601180,
+   "role": "gvr_texture_bank",
+   "size": 262176
+  }
+ ],
+ "role_counts": {
+  "afs_container": 8,
+  "ald_audio_bank": 14,
+  "banner": 1,
+  "card_banner": 1,
+  "card_icon": 1,
+  "gvr_texture_bank": 9,
+  "index_table": 1,
+  "sfd_movie_stream": 12,
+  "vsd_video_bank": 1
+ },
+ "source_path": "/mnt/gbox/hyperspin/Arcade/collections/Nintendo GameCube/roms/Resident Evil - Code - Veronica X (USA) (Disc 2).gcz",
+ "source_sha256": "8efcf2a8f9430072da310e87d1e3b3199f5da0559eeffd7834fdb8d19cc01818",
+ "title": "Resident Evil - Code - Veronica X (USA) (Disc 2) (GameCube)"
+}
