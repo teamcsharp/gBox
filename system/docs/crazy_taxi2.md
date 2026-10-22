@@ -162,3 +162,7 @@ builds in about a minute and reads back.
   driver's leg length).
 * Vertex references: the rule for the extra counts in the reference word is unknown; the writer does not need it.
 * Pedestrians (polPPL0), fares (polPSG0) and cabs (polPC*) are walked by `walk` but not assembled.
+
+## Owned-build manifest (request #2454, `gbox.crazy_taxi2_cdi_inventory`)
+
+`python3 -m gbox.crazy_taxi2_cdi_inventory "/mnt/gbox/quickswap2/Emulation/_emulation/_dc iso/Crazy Taxi 2.cdi" --out docs/crazy_taxi2_cdi_manifest.json` streams the owned image (sha256 of the 787688567-byte .cdi), walks the member table, hashes every driver bank and every member pinned in `crazy_taxi2.FILES_SHA256`, walks all 35 `POL*.BIN` with `crazy_taxi2.walk`, and resolves the native target slot (Axel, `PP1A` high-detail: `POLPP1AH.BIN` + `TEXPP1AH.BIN`) with its 1ST_READ.BIN slot and texture tables. The image is opened read-only; nothing on the disc or the share is written.
