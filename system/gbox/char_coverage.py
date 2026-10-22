@@ -31,6 +31,8 @@ WRITERS = [
     ("jgr", ["id:N", "<00-15>", "player (requires known active_id)"],
      "JGR USA: one selected PLAYER.AFS body tree and PTEX texture 0; draw-group selection and native replacement remain unverified"),
     ("mgs_vr_swap", ["player"], "VR Missions Snake: currently only the HUcast donor KMD is routed; arbitrary donor replacement is unsupported"),
+    ("mvc2_writer", ["player", "fighter:<id|name>"],
+     "MVC2 Dreamcast USA: one PLxx_DAT.BIN target's sprites/palette/animation replaced by another MVC2 fighter's (donor must be an extracted MVC2 fighter; hitboxes/code stay; runtime verification pending)"),
     ("mgs1_swap", ["player"], "MGS disc Snake: HUcast donor KMD only; visible replacement remains experimental/unverified"),
 ]
 SPECIAL = [                                               # writers routed by code in characters.py, not a module's use()
