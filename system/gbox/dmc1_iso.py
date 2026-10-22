@@ -10,23 +10,35 @@ Extracted raw image (4,698,767,360 B, 2,294,320 MODE1/2048 sectors):
     dmc1_usa.bin sha256 = 9e4d87fa0bae06e7282c085bb58693f83cf857bede9803f4bd235e3dfcfe0726
 
 Disc layout (verified against the raw bytes):
-    SYSTEM.CNF        -> BOOT2 = cdrom0:\SLUS_202.16;1 / VER = 1.10 / VMODE = NTSC
+    SYSTEM.CNF        -> BOOT2 = cdrom0:\\SLUS_202.16;1 / VER = 1.10 / VMODE = NTSC
     SLUS_202.16       ELF32 little-endian MIPS (32-bit PS2 EE), sha256
                        ac1a1e72845f04e6683d8ecd9e223f5297200bf2133709d5391925ad98e7be68
     DATA/EMD          178 files (enemy/player models .EMD, TIM2 textures .TM2/.T32)
     DATA/PLD          80 files (player containers .PLD/.PWS/.PWD)
     DATA/ETC|FSD|MODULES|ADS|STATUS|STATUS_U  (609 further files)
 
-Player container format (DIFFERENT from gbox.dmc3_mod's PAC/AFS layout -- the
-fingerprint suggestion gbox.dmc3_mod does NOT apply to this build):
-    u32 child_count, then child_count u32 offsets (relative to container start,
-    first child at 48 = 4 + 4*count); a child runs to the next larger offset
-    (or EOF).  PL00.PLD (Dante) and PL05.PLD have 11 children; PL01..PL04/PL06
-    have child_count == 0 (packed/different header form -- unresolved).
-    Children carry no PAC/MOD/TIM2/zlib magic; entropy 4.6-7.2 (child0 228 KB
-    likely mesh, child6 1 MB likely texture bulk).  No standard magic => a
-    native DMC1 reader is required; the .PLD layout above is the probe starting
-    point.
+Player container format (.PLD):
+    Standard header: u32 child_count at offset 0, followed by child_count u32
+    offsets (relative to container start, first child at offset 48 = 4 + 4*count).
+    Each child runs to the next larger offset (or EOF).
+    
+    Variant header (PL01-PL04/PL06): child_count=0 at offset 0, embedded children
+    at offset 32 as (offset, size) u32 pairs.
+    
+    Child6 (1,042,640 B, identical size in PL00/PL05): u32 count (0xd7 = 215)
+    then 215 u32 section offsets relative to child6 start (table ends at 864).
+    Verified on the real image: all offsets < child6 size; the even-indexed
+    entries are strictly increasing, the odd-indexed ones are not (two
+    interleaved offset streams -- NOT yet decoded).  parse_child_table()
+    exposes this; its meaning (textures vs. other data) is UNVERIFIED.
+
+    Child0 (228,144 B) begins 13 20 03 01 e0 78 03 00 01 00 be 00 40 01 00 00;
+    the leading 16-byte records are UNDECODED (earlier 'mesh -> child6 pointer'
+    claim was not supported by the bytes and is withdrawn).
+
+fingerprint suggestion gbox.dmc3_mod does NOT apply to this build:
+    gbox.dmc3_mod uses PAC/AFS layout which is incompatible with DMC1 .PLD format.
+    Native DMC1 .PLD reader required.
 
 Target slot for the eventual native replacement:
     DATA/PLD/PL00.PLD  (Dante default) LBA 1043291 size 1,547,616
@@ -89,8 +101,17 @@ def parse_pld_children(f, lba: int, size: int) -> tuple[int, list[tuple[int, int
     """(child_count, [(offset, length)]) for a .PLD container header.
     
     Standard format: child_count at offset 0, followed by child_count u32 offsets.
+    The first child starts at offset 48 (after the header), and each child runs to
+    the next larger offset (or EOF).
+    
     Variant format (PL01-PL04/PL06): child_count=0 at offset 0, embedded children
-    at offset 32 as (offset, size) u32 pairs.
+    at offset 32 as (offset, size) u32 pairs. The offset is relative to the child
+    start within the container, and size is the child length.
+    
+    Child0 (mesh) structure: 16-byte entries with offset/size pairs pointing to
+    child6 (texture bulk). Child6 starts with d7 00 00 00 magic, followed by
+    offset/size pairs pointing to texture sections. Each texture section starts
+    with GS packet header (0x80).
     """
     f.seek(lba * SECTOR)
     head = f.read(160)  # Enough for 32 child entries (standard or variant)
@@ -116,6 +137,17 @@ def parse_pld_children(f, lba: int, size: int) -> tuple[int, list[tuple[int, int
         nxts = [x for x in offs if x > o]
         out.append((o, (min(nxts) if nxts else size) - o))
     return n, out
+
+
+def parse_child_table(blob: bytes) -> list[int]:
+    """Decode the child6 section-offset table: u32 count + count u32 offsets."""
+    n = struct.unpack_from("<I", blob, 0)[0]
+    if n == 0 or 4 + 4 * n > len(blob):
+        raise ValueError("bad child table count %d" % n)
+    offs = list(struct.unpack_from("<%dI" % n, blob, 4))
+    if max(offs) > len(blob):
+        raise ValueError("child table offset beyond blob")
+    return offs
 
 
 def stream_sha256(f, lba: int, size: int) -> str:
