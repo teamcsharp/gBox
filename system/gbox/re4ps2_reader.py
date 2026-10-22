@@ -108,7 +108,7 @@ def _decode_texture(t: bytes, rec: dict) -> dict:
             r, g, b, a = clut[idx[p]]
             rgba[p * 4:p * 4 + 4] = bytes((r, g, b, a))
     elif fmt == 4:                                 # RGB565
-        raw = _unswizzle(t[img:], w, h, 8) if w % 8 == 0 and h % 8 == 0 else t[img:img + w * h * 2]
+        raw = t[img:img + w * h * 2]               # linear 16bpp (PSMCT16 swizzle unproven)
         for p in range(w * h):
             v = struct.unpack_from("<H", raw, p * 2)[0]
             rgba[p * 4:p * 4 + 4] = bytes(((v >> 11 & 0x1F) << 3, (v >> 5 & 0x3F) << 2, (v & 0x1F) << 3, 255))
@@ -164,7 +164,7 @@ def bin_mesh(b: bytes) -> dict:
             if up is None:                                      # control tag (MSCNT/NOP): skip
                 continue
             if up["fmt"] == "V4-32":
-                if part is None or "vertices" in part:
+                if part is None:
                     part = {"skin": [], "param": None, "vertices": []}
                 if up["num"] == 1 and len(payload) >= 16:            # param qword
                     part["param"] = {"triangle_count": payload[0],
@@ -245,7 +245,7 @@ def to_glb(bin_bytes: bytes, tpl_bytes: bytes | None = None) -> bytes:
     for i, ch in enumerate(children):
         if ch:
             nodes[i]["children"] = ch
-    scene_nodes = roots
+    scene_nodes = list(roots)
 
     pos = []; nrm = []; skin = []; scale = 1.0 / 16.0
     for obj in m["objects"]:
@@ -271,6 +271,9 @@ def to_glb(bin_bytes: bytes, tpl_bytes: bytes | None = None) -> bytes:
         prims = [{"attributes": {"POSITION": 0, "NORMAL": 1, "_SKINID": 2}}]
 
     meshes = [{"primitives": prims}] if prims else []
+    if meshes:                                   # a mesh must be instanced by a scene node
+        nodes.append({"name": "leon_mesh", "mesh": 0})
+        scene_nodes.append(len(nodes) - 1)
     gltf = {"asset": {"version": "2.0"}, "scenes": [{"nodes": scene_nodes}],
             "nodes": nodes, "meshes": meshes, "accessors": accessors, "bufferViews": views,
             "buffers": [{"byteLength": sum(len(x) for x in buffers)}]}
