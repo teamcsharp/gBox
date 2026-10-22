@@ -177,6 +177,12 @@ PACKAGE = [("mercenaries_unlock", {"on": True}),
            ("combo_freeze", {"on": True}), ("spawn_multiplier", {"count": 3, "on": True}),
            ("aim_turn_speed", {"multiplier": AIM_SPEED_X})]   # the game's aim sensitivity (a constant, not Leon)
 
+# every round's own loadout (operator 2026-10-22: "autoplaying mercenary levels with random weapons"): a fresh random gun
+# from the game's weapon table at each Select Player, with its firepower scaled so a weak pick still kills; the
+# PACKAGE's fixed handcannon + weapon_mod are the fallback and are skipped when this runs
+ROUND_OP = ("random_loadout", {"character": "leon", "damage": "99.9", "on": True})
+LOADOUT_OPS = ("merc_loadout", "weapon_mod")
+
 
 def ptr_ok(p: int) -> bool:
     return 0x80000000 <= p < 0x81800000
@@ -1087,6 +1093,16 @@ def setup(ad) -> list[str]:
     return apply_package(ad, None if in_round else EARLY_OPS)
 
 
+def apply_round(ad) -> list[str]:
+    """The per-round random loadout (re_mods random_loadout); the failure as a list, empty when it went in."""
+    from . import re_mods_tool as RM
+    try:
+        r = RM.run(ad, ROUND_OP[0], **ROUND_OP[1])
+        return [] if r.get("verified") else [f"{ROUND_OP[0]}: not verified ({r.get('picked')})"]
+    except Exception as e:                           # noqa: BLE001 - a failed draw keeps the last loadout
+        return [f"{ROUND_OP[0]}: {e}"]
+
+
 def apply_package(ad, only=None, skip=()) -> list[str]:
     """Run the package's re_mods ops (only those named in `only` when given, none in `skip`); the ones that failed."""
     from . import re_mods_tool as RM
@@ -1119,9 +1135,12 @@ class _Menus:
 
     def __init__(self, ad, m, send, sleep, clock, stats, game=None, hooks=None):
         from .mercs_bot import Boot
-        hooks = hooks if hooks is not None else ((lambda: apply_package(ad, skip=EARLY_OPS)) if ad is not None else None)
+        rounds = None
+        if hooks is None and ad is not None:         # the default: the package, and a random loadout at every Select Player
+            hooks = lambda: apply_package(ad, skip=EARLY_OPS + LOADOUT_OPS)          # noqa: E731
+            rounds = lambda: apply_round(ad)                                         # noqa: E731
         self.boot = Boot(re4_menus, m, send, sleep=sleep, clock=clock, stats=stats, ad=ad, game=game, hooks=hooks,
-                         jump_at="select_player") if re4_menus is not None else None
+                         jump_at="select_player", round_hooks=rounds) if re4_menus is not None else None
 
     def tick(self, s: dict, now: float) -> str | None:
         """One look at the screen; returns why the run must end (stats["hung"] is set), else None."""

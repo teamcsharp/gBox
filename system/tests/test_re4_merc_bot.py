@@ -4,6 +4,7 @@ import struct
 from types import SimpleNamespace
 
 import pytest
+import time
 
 from gbox import re4_merc_bot as B
 
@@ -932,3 +933,18 @@ def test_package_keeps_the_games_own_aim_turn_speed():
     # operator 2026-10-22: x3 aim speed made the camera spin spastically and the bot overshoot - regular speed
     assert B.AIM_SPEED_X == 1.0
     assert dict(B.PACKAGE)["aim_turn_speed"] == {"multiplier": 1.0}
+
+
+def test_every_select_player_draws_a_random_loadout_and_the_package_skips_the_fixed_one(monkeypatch):
+    calls = []
+    from gbox import re_mods_tool as RM
+    monkeypatch.setattr(RM, "RE4", lambda ad: object())
+    monkeypatch.setattr(RM, "run", lambda ad, op, g=None, **kw: calls.append(op) or {"verified": True})
+    menus = B._Menus(object(), object(), lambda *_: None, lambda *_: None, time.time, {})
+    if menus.boot is None:
+        pytest.skip("no menus module")
+    assert menus.boot.round_hooks() == []
+    assert calls == ["random_loadout"]
+    calls.clear()
+    assert menus.boot.hooks() == []
+    assert "merc_loadout" not in calls and "weapon_mod" not in calls and "random_loadout" not in calls and calls
