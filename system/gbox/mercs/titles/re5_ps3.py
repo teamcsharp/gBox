@@ -104,6 +104,8 @@ _AVOID: dict = {}                      # navmesh signature -> the crossings the 
                                        # rounds and runs: gbox-data/mercs/lessons/BLUS30491-crossings.json)
 CROSSINGS_FILE = "BLUS30491-crossings.json"
 NAV_LEARNING_FILE = "BLUS30491-navigation.json"
+IDLE_S = 6.0                           # standing on one spot this long, off the stand, no hits landing: a wall stare
+IDLE_WALK_S = 2.0                      # the break-out walk (a turn off the wall, then running)
 STAND_R = 250.0                        # the stand: the round's start position, held from this close
 BREAK_AT_S, BREAK_MARGIN_S = 60.0, 15.0   # leave the stand for time at this clock, or at the nearest one's ETA + this
 # Sight and pursuit (operator 2026-10-21: "If the person stands still ... what is there to see?"; live the same day the
@@ -808,6 +810,7 @@ class Bot:
         self.switch_at = -math.inf
         self.switch_pending = None
         self.switch_blocked, self.switch_failures = {}, {}
+        self._idle, self._idle_walk, self._idle_n = None, None, 0
         self.stage_wait_since = None            # first tick a stage prompt was shown while close foes held it back
         self.stuck_since = None                 # set while the walk is pushing forward without ground (a wall, a door)
         self.close_escape_until = self.close_acquire_until = 0.0
@@ -1029,10 +1032,40 @@ class Bot:
                 "nearest_bonus": nb, "enemy_flags": dict(self.flags),
                 "note": str(self.stats.get("bonus_target") or self.stats.get("aim") or "")[:80]}
 
+    def _idle_breakout(self, snap, act):
+        """Watchdog: standing still IDLE_S away from the stand (nothing hit, no prompt) is the bot staring at a
+        wall / waiting on nothing. Turn 90 deg off (then the other way, then round) and run IDLE_WALK_S; the
+        normal decision resumes afterwards and its own route / pursuit logic takes over from the new spot."""
+        p, now = snap.get("player"), self.clock()
+        if not p or snap.get("prompt") or snap.get("stage_prompt") or (p.get("hp") or 1) <= 0:
+            self._idle = self._idle_walk = None
+            return act
+        pos = tuple(p["pos"])
+        activity = (self.stats.get("damage_events", 0), self.stats.get("kills_seen", 0), self.at_stand)
+        walk = self._idle_walk
+        if walk is not None:                                 # the break-out walk in progress
+            if now < walk[0]:
+                self.hist = []
+                err = wrap(walk[1] - p["rot"])
+                keys = self._turn(err, aiming=False)
+                return {"hold": keys | ({"lup", "cross"} if abs(err) < math.radians(60) else set())}
+            self._idle_walk = self._idle = None
+            return act
+        if self._idle is None or self._idle[2] != activity or math.dist(pos, self._idle[0]) >= STUCK_MOVE:
+            self._idle = (pos, now, activity)
+            return act
+        if now - self._idle[1] >= IDLE_S and not self.at_stand:
+            turn = (math.pi / 2, -math.pi / 2, math.pi)[self._idle_n % 3]
+            self._idle_n += 1
+            self._idle_walk = (now + IDLE_WALK_S, wrap(p["rot"] + turn))
+            self.stats["idle_breakouts"] = self.stats.get("idle_breakouts", 0) + 1
+            self.stats["route"] = "idle: breaking out of a stationary spot"
+        return act
+
     def tick(self, snap: dict) -> dict:
         self._following_route = False
         try:
-            return self._tick(snap)
+            return self._idle_breakout(snap, self._tick(snap))
         finally:
             if not self._following_route:
                 self._interrupt_route_walk()
