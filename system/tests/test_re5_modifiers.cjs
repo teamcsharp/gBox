@@ -249,3 +249,15 @@ test('shell binds controls to the exact currently opened session and authenticat
   assert.match(shell, /GBoxRE5Modifiers\.mount\(host, \{ session: current, api \}\)/);
   assert.doesNotMatch(fs.readFileSync(require.resolve('../clients/web/viz/re5-modifiers.js'), 'utf8'), /write_memory|read_memory|Bearer|x-gbox-actor/);
 });
+
+test('time per kill is an on/off switch that keeps the random 2-5 s range', () => {
+  // operator 2026-10-22: on by default, a random 2-5 s per kill, and a switch to enable and disable it
+  const row = M.DEFINITIONS.find(d => d.op === 'kill_time');
+  assert.equal(row.multiplier, undefined);                     // a toggle never sends seconds, so the range is kept
+  const status = { ...structuredClone(BASE), kill_time_on: true, kill_time_range: '2-5' };
+  const on = M.html({ status });
+  assert.match(on, /Random 2-5 s per kill/);
+  assert.match(on, /data-re5-mod="kill_time"[^>]*aria-checked="true" checked/);
+  const off = M.html({ status: { ...status, kill_time_on: false } });
+  assert.match(off, /data-re5-mod="kill_time"[^>]*aria-checked="false" >/);
+});
