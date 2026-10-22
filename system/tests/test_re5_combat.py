@@ -631,7 +631,7 @@ def test_loaded_direct_guns_raise_with_trigger_and_hold_while_acquiring(tmp_path
     bot = C.Combat(m, {}, learn_dir=tmp_path, lessons=lambda row: None)
     s = snap(m, enemy=(100, 0, 250))                 # 22 deg off the heading: raise and turn
     s["laser"] = None
-    for now in (0.0, 0.05, 0.5, 1.0):
+    for now in (0.0, 0.05, 0.5, 1.0):               # target 50 deg off the facing, no ray yet: raise and turn, no blind shot
         keys = bot.tick(s, s["player"], s["enemies"][0], now)["hold"]
         assert {"l1", "rleft"} <= keys and "r1" not in keys    # raise and turn; the trigger waits for a line
     assert bot.stats["shots"] == 0 and bot.round_counts["shots"] == 0
