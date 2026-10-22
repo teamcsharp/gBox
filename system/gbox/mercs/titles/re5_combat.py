@@ -76,6 +76,7 @@ TAPS_NO_SHOT = 8                       # ... taps without a shot: it wants a hol
 HOLD_FIRE_IDS = frozenset({0x03, 0x09, 0x13, 0x15, 0x1D})  # verified table IDs; 0x25 was not the Gatling
 SETTLE_S = 0.08                        # legacy persisted tuning metadata; a first-hit overlap now fires immediately
 FRONT_YAW, FRONT_PITCH = math.radians(60), math.radians(45)  # candidate cone, not a visibility claim
+WALL_CONE = math.radians(10)           # a first hit this short, within this cone of him: a wall in front (coaching #3002)
 BLOCKED_S = 0.8                        # try another candidate after a measured first hit ends before this one
 FIRE_TIMER_FPS, FIRE_TIMER_ORIG = 0x0169E098, 60.0
 WEAPON_TABLE, WEAPON_STRIDE, WEAPON_INTERVAL = 0x01817530, 0x140, 0x90
@@ -498,7 +499,19 @@ class Combat:
         centre = (foot[0], foot[1] + 110.0, foot[2])
         along = sum((centre[k] - origin[k]) * direction[k] for k in range(3))
         projected = tuple(origin[k] + along * direction[k] for k in range(3))
-        return along > length + BODY_R + 25.0 and dot_on(projected, foot) is not None
+        if along <= length + BODY_R + 25.0:
+            return False
+        if dot_on(projected, foot) is not None:
+            return True
+        # A wall straight ahead: the first hit is a solid surface well short of him and the aim is only a few degrees
+        # off him, so the shot would hit the wall (the ray may miss his capsule by a hand's width at range).
+        # Rays shorter than STEER_RAY_CM carry too little direction to claim this; a wide miss stays "unknown".
+        if length < STEER_RAY_CM:
+            return False
+        to_c = tuple(centre[k] - origin[k] for k in range(3))
+        norm = math.sqrt(sum(v * v for v in to_c))
+        cos = sum(to_c[k] * direction[k] for k in range(3)) / max(norm, 1.0)
+        return math.acos(max(-1.0, min(1.0, cos))) <= WALL_CONE
 
     def observe_awareness(self, snap, p, now):
         if getattr(self, "_awareness_tick", None) == (id(snap), now):

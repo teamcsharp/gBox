@@ -635,3 +635,22 @@ def test_hit_recovery_never_waits_to_reacquire_and_mandatory_escape_still_wins(t
     s = snap(m, enemy=(0, 0, 60))
     s["player"]["action"] = 4
     assert bot.tick(s) == {"hold": set()}
+
+
+def test_wall_in_front_off_axis_ray_is_cover_and_holds_fire(tmp_path):
+    """Coaching #3002: the dot lands on a wall short of him a few degrees off his capsule: do not shoot the wall."""
+    for dot in ((30.0, 120.0, 300.0), (-35.0, 110.0, 320.0)):
+        m = world(laser_dot=dot, enemy=(0.0, 0.0, 1000.0))
+        bot = C.Combat(m, {}, learn_dir=tmp_path, lessons=lambda row: None)
+        s = snap(m, enemy=(0.0, 0.0, 1000.0))
+        s["laser"] = {"from": (0.0, 149.0, 46.0), "at": dot}
+        act = bot.tick(s, s["player"], s["enemies"][0], 1.0)
+        assert bot.blocked_until[ENEMY] > 1.0, dot
+        assert "r1" not in act["hold"], dot
+    # a wide miss (beside him, well off the cone) stays unknown and keeps firing
+    m = world(laser_dot=(300.0, 120.0, 400.0), enemy=(0.0, 0.0, 1000.0))
+    bot = C.Combat(m, {}, learn_dir=tmp_path, lessons=lambda row: None)
+    s = snap(m, enemy=(0.0, 0.0, 1000.0))
+    s["laser"] = {"from": (0.0, 149.0, 46.0), "at": (300.0, 120.0, 400.0)}
+    assert "r1" in bot.tick(s, s["player"], s["enemies"][0], 1.0)["hold"]
+    assert not bot.blocked_until
