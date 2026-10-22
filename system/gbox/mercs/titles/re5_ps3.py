@@ -71,6 +71,10 @@ AIM_TOL, PITCH_TOL = math.radians(2.5), math.radians(2.5)   # fire inside these
 FINE = math.radians(6)                 # closer than this: pulse the stick (a tick on, a tick off)
 MAX_DY = 450.0                         # targets this far above / below are out of reach (rooftops): not chosen
 STUCK_S, STUCK_MOVE = 1.2, 80.0
+# Pushed into the same wall again and again (operator 2026-10-22: "there is a wall there, find the window and door"):
+# each repeat at that spot walks a wider angle off the heading, alternating sides, to slide along the wall to an
+# opening (its door / window / vault prompt is then taken by the stage-prompt rule). Cleared after DETOUR_FREE of ground.
+DETOUR_STEP, DETOUR_MAX, DETOUR_FREE = math.radians(40), math.radians(160), 250.0
 RUN_SPEED = 250.0                      # cm/s running (the route ETAs; measured live: walking 145)
 # The time bonuses: hourglasses (uOm0100, model "sunadokei_360" = hourglass in uOm0100.arc; 9 in Public Assembly),
 # units of sUnit's move line 12 ("OM"), told by their vtable.
@@ -1725,6 +1729,14 @@ class Bot:
                 return set()
         return {"rleft"} if err > 0 else {"rright"}         # left = larger heading (measured)
 
+    def detour_angle(self) -> float:
+        """Heading offset for the walk after repeated stalls at one spot: 0, then +40, -40, +80, -80 ... up to 160 deg."""
+        n = getattr(self, "detour_n", 0)
+        if n <= 0:
+            return 0.0
+        k = (n + 1) // 2
+        return min(k * DETOUR_STEP, DETOUR_MAX) * (1 if n % 2 else -1)
+
     def _walk(self, p, want: float, now: float, *, precise=False, run=True) -> set:
         """Run toward a heading: turn first (the body turns in place), run (up + cross) once within 60 deg. Stuck
         (pushing forward STUCK_S without STUCK_MOVE of ground): a step back and aside for 0.8 s. Turning in place
@@ -1734,6 +1746,11 @@ class Bot:
         px, py, pz = p["pos"]
         if now < self.unstick_until:
             return {"ldown", "lleft" if self.unstick_dir > 0 else "lright"}
+        spot = getattr(self, "detour_spot", None)
+        if spot is not None and math.hypot(px - spot[0], pz - spot[1]) > DETOUR_FREE:
+            self.detour_spot, self.detour_n = None, 0
+        if not precise:                                   # a route walk has its own blocked-route handling
+            want = wrap(want + self.detour_angle())
         err = wrap(want - p["rot"])
         keys = self._turn(err, aiming=False)
         if abs(err) > (TURN_TOL if precise else math.radians(60)):
@@ -1746,6 +1763,11 @@ class Bot:
             self.hist, self.unstick_dir = [], -self.unstick_dir
             self.unstick_until = now + 0.8
             self.stats["stuck"] += 1
+            if not precise:
+                if getattr(self, "detour_spot", None) is None:
+                    self.detour_spot, self.detour_n = (px, pz), 0
+                self.detour_n = getattr(self, "detour_n", 0) + 1
+                self.stats["wall_detours"] = self.stats.get("wall_detours", 0) + 1
             return {"ldown", "lleft" if self.unstick_dir > 0 else "lright"}
         else:
             self.stuck_since = None
