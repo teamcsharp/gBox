@@ -140,6 +140,7 @@ AIM_R1, AIM_READY_R2 = 6, (1, 2)                 # Leon's routine 00 06 01 .. = 
                                                  # is up (00 06 00 / 00 06 01 04 while it rises; live 2026-10-20)
 STEEP_DOWN = -0.5                                # a shot this far down (radians) hits the ledge in front: move instead
 HIGH_GROUND = 1500.0                             # Leon this far above the Ganados (the start roof): get down first
+ITEM_R, TAKE_TRIES = 250.0, 2                      # an hourglass without an action zone is taken this close to it; tries per round
 TAKE_R, VAULT_R = 450.0, 900.0                   # take an item hourglass this close to its stand point; vault from here
 COMBO_CROWD, COMBO_NEAR = 5, 3500.0              # this many Ganados this close: take a combo bonus first (TAS route)
 EM_HP = 0x320                                    # Ganado (EmMgr slot) +0x320 s16 health, +0x322 s16 max (found
@@ -855,10 +856,23 @@ class Bot:
         if not self.goal or self.goal.get("item") is not h:
             self.goal = {"item": h, "pos": (sx, sz), "since": now, "path": self._path((px, py, pz), (sx, sy, sz))}
         if math.hypot(sx - px, sz - pz) < TAKE_R:
-            if now - self.goal.setdefault("take_since", now) > COLLECT_TRY_S:  # not taking it: leave it this round
+            if now - self.goal.setdefault("take_since", now) > COLLECT_TRY_S:  # not taking it: retry once at the back, then leave it
                 pool.remove(h)
+                h["tries"] = h.get("tries", 0) + 1
+                if h["tries"] < TAKE_TRIES:
+                    pool.append(h)
                 self.goal = None
                 return {"hold": set()}
+            ix, iz = h["pos"][0], h["pos"][2]
+            d = math.hypot(ix - px, iz - pz)
+            if d > 1.0:                                                   # A takes what he faces and stands against:
+                err = wrap(heading(ix - px, iz - pz) - p["rot"])          # turn to the hourglass, close in on it, then A
+                if abs(err) > TURN_TOL:
+                    self.r_since = None
+                    return {"hold": self._turn(err, aiming=False)}
+                if d > ITEM_R and not h.get("zone"):
+                    self.r_since = None
+                    return {"hold": {"up"}}
             self.r_since = None
             return {"tap": "a"}                                           # TAKE
         return self._follow(p, now)
