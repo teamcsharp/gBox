@@ -688,11 +688,11 @@ def _replace_spawn_guns(g: RE5, unwanted, seed, result_key):
 
 
 def random_cheats(g: RE5, seed=None) -> dict:
-    """The operator's per-round randomizer: fire_rate x80; turn x2 or x3; bullet damage x10;
+    """The operator's per-round randomizer: fire_rate x80; turn speed the game's own (operator 2026-10-22: "lower their turn speed back to regular"); bullet damage x10;
     infinite ammo on; the loadout re-drawn. Returns what was picked as "telemetry" (the playbook shows it)."""
     import random
     rng = random.Random(seed)
-    picked = {"fire_rate_x": 80.0, "turn_speed_x": rng.choice([2.0, 3.0]), "bullet_damage_x": 10.0,
+    picked = {"fire_rate_x": 80.0, "turn_speed_x": 1.0, "bullet_damage_x": 10.0,
               "infinite_ammo": True, "loadout": rng.random() < 0.75}
     out: dict = {}
     for op, field in (("fire_rate", "fire_rate_x"), ("turn_speed", "turn_speed_x"),
