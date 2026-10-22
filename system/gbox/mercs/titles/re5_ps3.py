@@ -393,6 +393,7 @@ def screen(m, merc=None) -> dict:
 
 STEPS = {"results": "start", "select_stage": "cross", "dead": "cross", "title": "start",
          "alert_signin": "circle", "alert_ok": "cross", "reunion_title": "cross", "reunion_solo": "cross"}
+BOOT_KEY = "cross"      # out of a round, a screen RAM can't name (the cold boot's HDD notice, logos): mercs_bot.Boot
 CURSORED = ("main_menu", "play_game", "extra_content", "select_player")
 CHARACTERS = ("Chris (Heavy Metal)", "Sheva (Fairy Tale)", "Josh", "Excella", "Chris (Warrior)", "Sheva (Business)",
               "Barry", "Rebecca")                   # CHARACTER SELECT's row, cursor 0..7 (uIdStartUp22 +0x180)

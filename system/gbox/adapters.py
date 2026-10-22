@@ -3244,6 +3244,14 @@ class RPCS3Adapter(Adapter):
         ini = ini.replace("game_window_restart=F4", "game_window_restart=Ctrl+Alt+Shift+F11")
         gui.parent.mkdir(parents=True, exist_ok=True)
         gui.write_text(ini, encoding="utf-8")
+        # windowed: the desktop app places the game's window (picture-in-picture on the operator's second screen); a
+        # fullscreen start covered the screen instead (JAYBUILTFINALE, RE5 autoplay, 2026-10-22)
+        cfg = home / "config" / "config.yml"
+        if cfg.exists():
+            text = cfg.read_text(encoding="utf-8")
+            windowed = yaml_set(text, "Miscellaneous", "Start games in fullscreen mode", "false")
+            if windowed != text:
+                cfg.write_text(windowed, encoding="utf-8")
         self.home = home
         __import__("gbox.graphics", fromlist=["x"]).prefer_gpu(home / "rpcs3.exe")   # the discrete GPU
         argv = [str(home / "rpcs3.exe"), "--no-gui", *self._pad_args()]
