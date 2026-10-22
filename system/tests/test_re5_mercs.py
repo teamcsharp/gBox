@@ -1498,3 +1498,16 @@ def test_a_nearly_straight_route_counts_as_open_floor(tmp_path):
     p, e = R.snapshot(mem)["player"], {"ptr": 1, "pos": (250.0, 0.0, 250.0)}
     assert bot._open(p, e, mesh, 10.0)
     assert not bot._open(p, {"ptr": 2, "pos": (350.0, 0.0, 50.0)}, u_mesh(), 10.0)
+
+
+def test_a_stage_prompt_held_back_by_close_foes_is_taken_after_the_yield_window(tmp_path):
+    t = [10.0]
+    bot = R.Bot(clock=lambda: t[0], learn_dir=tmp_path)
+    foe = {"ptr": 1, "slot": 1, "pos": (0.0, 0.0, 200.0), "hp": 800, "hp_max": 800}
+    snap = {"player": {"pos": (0.0, 0.0, 0.0), "hp": 1000, "rot": 0.0, "action": 0},
+            "timer": 100.0, "enemies": [foe], "stage_prompt": True}
+    bot.observe_round(snap, "playing", t[0])
+    assert bot.tick(snap) != {"tap": "square"}                  # a foe in reach: fight first
+    t[0] += R.STAGE_YIELD_S + 0.1
+    assert bot.tick(snap) == {"tap": "square"}                  # a fence between: the prompt wins
+    assert bot.stats["stage_yielded_to_foes"] == 1

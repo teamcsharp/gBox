@@ -71,6 +71,7 @@ AIM_TOL, PITCH_TOL = math.radians(2.5), math.radians(2.5)   # fire inside these
 FINE = math.radians(6)                 # closer than this: pulse the stick (a tick on, a tick off)
 MAX_DY = 450.0                         # targets this far above / below are out of reach (rooftops): not chosen
 STUCK_S, STUCK_MOVE = 1.2, 80.0
+STAGE_YIELD_S = 2.5                      # a stage prompt shown this long beside close foes is taken anyway (a fence / ledge between)
 RUN_SPEED = 250.0                      # cm/s running (the route ETAs; measured live: walking 145)
 # The time bonuses: hourglasses (uOm0100, model "sunadokei_360" = hourglass in uOm0100.arc; 9 in Public Assembly),
 # units of sUnit's move line 12 ("OM"), told by their vtable.
@@ -758,6 +759,7 @@ class Bot:
         self.switch_at = -math.inf
         self.switch_pending = None
         self.switch_blocked, self.switch_failures = {}, {}
+        self.stage_wait_since = None            # first tick a stage prompt was shown while close foes held it back
         self.stuck_since = None                 # set while the walk is pushing forward without ground (a wall, a door)
         self.close_escape_until = self.close_acquire_until = 0.0
         self.round_active = False
@@ -1036,10 +1038,19 @@ class Bot:
         heal = self._heal(p, snap, now)                     # equip, confirm in hand, then Square to actually use it
         if heal:
             return heal
-        if snap.get("stage_prompt") and not close_foes:     # a ladder / jump-down / vault / door / "□ Time bonus" /
+        if snap.get("stage_prompt") and close_foes:
+            self.stage_wait_since = self.stage_wait_since or now
+        else:
+            self.stage_wait_since = None
+        stage_yield = bool(snap.get("stage_prompt") and close_foes and self.stage_wait_since is not None
+                           and now - self.stage_wait_since >= STAGE_YIELD_S)
+        if snap.get("stage_prompt") and (not close_foes or stage_yield):     # a ladder / jump-down / vault / door / "□ Time bonus" /
             self.aiming_since = None                        # pick up: take it at once, before anything else (operator
             self.stats["stage_presses"] = self.stats.get("stage_presses", 0) + 1   # 2026-10-21: he ignored a ledge
             self.climb_at = self.climb_pos = self.climb_tick = None
+            if stage_yield:
+                self.stage_wait_since = None
+                self.stats["stage_yielded_to_foes"] = self.stats.get("stage_yielded_to_foes", 0) + 1
             if self.stuck_since is not None:                # and a door). A prompt while stuck = it was blocking him.
                 self.stats["stuck_prompts_cleared"] = self.stats.get("stuck_prompts_cleared", 0) + 1
             return {"tap": "square"}
