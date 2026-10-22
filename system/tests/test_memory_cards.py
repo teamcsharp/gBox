@@ -567,6 +567,66 @@ def test_restart_relaunch_takes_the_card_over_from_the_session_it_replaces(tmp_p
     assert client.post(url + '/lease', json=owner(suffix='newjob')).status_code == 409                       # plain: refused
     assert client.post(url + '/lease', json=owner(suffix='newjob') | {'takeover_from': 'w1-other'}).status_code == 409
     assert client.post(url + '/lease', json=owner('w2', 'newjob') | {'takeover_from': 'w1-oldjob'}).status_code == 409
-    assert client.post(url + '/lease', json=owner(suffix='newjob') | {'takeover_from': 'w1-oldjob'}).status_code == 200
+    moved = client.post(url + '/lease', json=owner(suffix='newjob') | {'takeover_from': 'w1-oldjob'})
+    assert moved.status_code == 200
+    assert moved.json()['lease']['owner'] == 'w1-newjob'                                                    # the card really moved
     late = owner(suffix='oldjob') | {'base_revision': 1, 'data_b64': base64.b64encode(client.get(url + '/data').content).decode()}
     assert client.post(url + '/sync', json=late).status_code == 409                                         # old copy no longer owns it
+
+
+def _restart_fixture(tmp_path, monkeypatch, sync_errors):
+    from gbox import memory_card_sessions as S
+    raw = N.blank('dreamcast'); cid = 'e' * 32
+    card = {'id': cid, 'name': 'c', 'revision': 2, 'sha256': hashlib.sha256(raw).hexdigest(), 'capacity': N.describe(raw, 'dreamcast')}
+    calls = []
+    def respond(ctx, path, body=None, raw_=False, raw=False):
+        calls.append((path, body))
+        if path.startswith('/api/memory-cards?'):
+            return {'selection': {'A1': cid}, 'cards': [card]}
+        if path.endswith('/lease'):
+            return card
+        if '/data?' in path:
+            return N.blank('dreamcast')
+        raise AssertionError(path)
+    monkeypatch.setattr(S, 'api', respond)
+    synced = []
+    monkeypatch.setattr(S, 'sync', lambda context, ctx, slot=None, final=False: calls.append(('sync', context['session_id'])) or synced.append(1) or sync_errors)
+    monkeypatch.setitem(S._contexts, 'w1-old', {'game_id': 'pso-dc', 'session_id': 'w1-old', 'slots': {}})
+    ctx = SimpleNamespace(server='http://spark', worker='w1', config=SimpleNamespace(data_dir=tmp_path))
+    return S, ctx, calls, synced
+
+
+def _leases(calls):
+    return [b for p, b in calls if isinstance(p, str) and p.endswith('/lease')]
+
+
+def test_checkout_syncs_the_old_copy_first_then_sends_takeover_only_for_the_same_game(tmp_path, monkeypatch):
+    S, ctx, calls, synced = _restart_fixture(tmp_path, monkeypatch, [])
+    ad = SimpleNamespace(name='retroarch')
+    S.checkout('w1-new', ad, {'platform': 'dreamcast', 'game_id': 'pso-dc'}, ctx, keep='w1-old')
+    order = [c[0] if c[0] == 'sync' else 'lease' for c in calls if c[0] == 'sync' or c[0].endswith('/lease')]
+    assert order == ['sync', 'lease']
+    assert _leases(calls)[0]['takeover_from'] == 'w1-old'
+    # a different game, an unknown session, or no keep: plain lease, no sync
+    for keep, game_id in (('w1-old', 'other'), ('w1-gone', 'pso-dc'), ('', 'pso-dc')):
+        calls.clear(); synced.clear()
+        try:
+            S.checkout('w1-new2', ad, {'platform': 'dreamcast', 'game_id': game_id}, ctx, keep=keep)
+        except Exception:
+            pass
+        assert not synced
+        assert all('takeover_from' not in b for b in _leases(calls))
+
+
+def test_checkout_refuses_takeover_when_the_old_copys_save_cannot_be_synced(tmp_path, monkeypatch):
+    S, ctx, calls, synced = _restart_fixture(tmp_path, monkeypatch, ['Network interrupted'])
+    with pytest.raises(RuntimeError, match='local save is kept'):
+        S.checkout('w1-new', SimpleNamespace(name='retroarch'), {'platform': 'dreamcast', 'game_id': 'pso-dc'}, ctx, keep='w1-old')
+    assert not _leases(calls)                      # the card was never leased away from the old copy
+
+
+def test_launch_game_passes_keep_session_to_checkout():
+    import inspect
+    from gbox import tools
+    src = inspect.getsource(tools._launch_game)
+    assert 'keep=inp.keep_session' in src and 'memory_card_sessions.checkout' in src

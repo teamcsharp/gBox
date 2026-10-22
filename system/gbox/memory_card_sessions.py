@@ -123,7 +123,8 @@ def _checkout(sid,ad,game,ctx,selected_only=False,keep=''):
     acquired=[]
     old=_contexts.get(keep) if keep and keep!=sid else None
     if old and old.get('game_id')==game['game_id']:      # restart relaunch: bank the live copy's save, then take its card over
-        sync(old,ctx)
+        errors=sync(old,ctx)
+        if errors:raise RuntimeError('The running copy\'s memory card could not be saved to the cloud, so its card was not taken over (its local save is kept): '+errors[0][:200])
     else:keep=''
     try:
         for slot,cid in selected.items():
