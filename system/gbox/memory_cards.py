@@ -23,6 +23,7 @@ class CardIn(BaseModel):
 class Owner(BaseModel):
     owner:str=Field(min_length=3,max_length=128)
     worker_id:str=Field(min_length=1,max_length=64)
+    takeover_from:str=Field(default='',max_length=128)    # a restart relaunch: the same worker's session it replaces
 
 
 class SyncIn(Owner):
@@ -164,7 +165,10 @@ def routes(app,store,config,auth):
                 # demo's later syncs are refused (409), its local save is kept, no cloud version is overwritten.
                 mine=read('job',value.owner.split('-',1)[-1]) or {}
                 demo=bool((job or {}).get('agent_use')) and bool(mine) and not mine.get('agent_use')
-                if (active or time.time()-old['updated']<90) and not demo:raise HTTPException(409,'This card is already inserted in another session. Sync and close that session before sharing it')
+                # A restart relaunch (session_reset) on the same worker replaces its own live session: the card moves to
+                # the new copy, the old copy's later syncs are refused (409) and its local save is kept.
+                restart=bool(value.takeover_from) and old.get('owner')==value.takeover_from and old.get('worker_id')==value.worker_id
+                if (active or time.time()-old['updated']<90) and not demo and not restart:raise HTTPException(409,'This card is already inserted in another session. Sync and close that session before sharing it')
             row['lease']={'owner':value.owner,'session_id':value.owner,'worker_id':value.worker_id,'updated':time.time()}
             write(KIND,cid,row)
         return public(row)

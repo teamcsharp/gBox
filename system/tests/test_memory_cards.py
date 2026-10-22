@@ -555,3 +555,18 @@ def test_a_demo_plays_without_the_operators_card_when_it_is_held_or_none_is_sele
     operator = SimpleNamespace(server='http://spark', worker='w1', config=SimpleNamespace(data_dir=tmp_path))
     with pytest.raises(RuntimeError, match='another session'):                              # unchanged, still refused
         S.checkout('w1-job5', SimpleNamespace(name='retroarch'), game, operator)
+
+
+def test_restart_relaunch_takes_the_card_over_from_the_session_it_replaces(tmp_path):
+    """#2824: session_reset relaunches with keep_session while the old copy still runs; the card must move, not 409."""
+    client, store, cfg = setup(tmp_path)
+    card = create(client); url = '/api/memory-cards/' + card['id']
+    store.put('job', 'oldjob', {'state': 'running'})
+    store.put('session', 'w1-oldjob', {'state': 'running', 'worker_id': 'w1'})
+    assert client.post(url + '/lease', json=owner(suffix='oldjob')).status_code == 200
+    assert client.post(url + '/lease', json=owner(suffix='newjob')).status_code == 409                       # plain: refused
+    assert client.post(url + '/lease', json=owner(suffix='newjob') | {'takeover_from': 'w1-other'}).status_code == 409
+    assert client.post(url + '/lease', json=owner('w2', 'newjob') | {'takeover_from': 'w1-oldjob'}).status_code == 409
+    assert client.post(url + '/lease', json=owner(suffix='newjob') | {'takeover_from': 'w1-oldjob'}).status_code == 200
+    late = owner(suffix='oldjob') | {'base_revision': 1, 'data_b64': base64.b64encode(client.get(url + '/data').content).decode()}
+    assert client.post(url + '/sync', json=late).status_code == 409                                         # old copy no longer owns it
