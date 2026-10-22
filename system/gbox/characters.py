@@ -2773,6 +2773,10 @@ def characters_tool(inp: CharIn, ctx):
     if gid in clayfighter_swap.GAME_IDS and (inp.slot == "player" or inp.slot.startswith("fighter:")):
         # Clay Fighter SC (N64): one fighter's sprite frames re-drawn from a sprites entry -> cfsc_<slug>_as_<fighter>
         return {"result": out | clayfighter_swap.use(ctx, meta, game, inp)}
+    from . import sonic1_swap
+    if gid in sonic1_swap.GAME_IDS and sonic1_swap.is_slot(inp.slot):
+        # Shadow In Sonic 1 (Mega Drive): sonic | player -> all 130 player frames re-drawn -> sonic1_<slug>_as_player
+        return {"result": out | sonic1_swap.use(ctx, meta, game, inp)}
     from . import pe_swap
     if gid in pe_swap.GAME_IDS and inp.slot == "player":         # Parasite Eve (PS1): Aya, all 5 outfits -> pe_<slug>
         return {"result": out | pe_swap.use(ctx, meta, game, inp)}
