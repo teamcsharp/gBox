@@ -63,6 +63,8 @@ AIMING = 2
 HEAD_H, HEAD_R = 160.0, 22.0           # a Majini's head: a sphere this far above his feet, this wide (cm)
 KNEE_H, SHOULDER_H, BODY_R = 45.0, 145.0, 36.0   # his body: a capsule between these heights, this wide
 THIGH_LO, THIGH_HI, THIGH_R, THIGH_H = 45.0, 95.0, 26.0, 72.0   # his thighs: the leg-stun zone, aimed at THIGH_H
+CHEST_H = 110.0                         # the default aim point: centre mass, past helmets and around shields
+DEFAULT_ZONE = "body"                   # zone_for's answer without the strategy's say ("head": the #3046 steady head aim)
 # The kill policy (docs/mercenaries_re5_meta.md section 1.3: "melee is the clock"): a leg shot until he kneels, then
 # the finisher (+5 s, i-frames) - the main kill method; a headshot (a head stun -> Headbutt / Uppercut, or the kill)
 # when he is far or the combo window is short; never a second melee on a boss (the wild swing).
@@ -170,10 +172,13 @@ def zone_for(tgt: dict, dist: float, combo_timer, combo) -> str:
     """Where to put the shot: "leg" (the stun -> finisher loop) for a Majini within FINISHER_SETUP_R while the combo
     window allows it (over COMBO_SHORT_S, or no combo running), "head" when he is far, the window short, or he is a
     boss. The driver's strategy may say with tgt["zone"]."""
-    if tgt.get("zone") in ("leg", "head"):
+    if tgt.get("zone") in ("leg", "head", "body"):
         return tgt["zone"]
-    # Operator 2026-10-22 (#3046): the head, always - a cowboy's steady aim; the leg stun is only on the strategy's say.
-    return "head"
+    # Operator 2026-10-22: the head-only aim (#3046) left him "just standing there letting these people devastate him" -
+    # "These enemies are wearing helmets, some of them are using shields ... He needs to just hit them wherever he can
+    # hit them." The body (chest height, the biggest target) by default, fired on as soon as the dot is anywhere on him;
+    # the head and the leg stun only on the strategy's say.
+    return DEFAULT_ZONE
 
 
 def ray_error(origin, dot, target) -> tuple[float, float]:
@@ -675,7 +680,7 @@ class Combat:
             return {"hold": set()}
         zone = zone_for(tgt, dist, snap.get("combo_timer"), snap.get("combo"))
         self.zone = zone
-        aim_at = (foot[0] + lead[0], foot[1] + (HEAD_H if zone == "head" else THIGH_H), foot[2] + lead[1])
+        aim_at = (foot[0] + lead[0], foot[1] + {"head": HEAD_H, "leg": THIGH_H}.get(zone, CHEST_H), foot[2] + lead[1])
         tune = self.tun.weapon(self.character, wid or 0)
         where = None
         if lz is not None:

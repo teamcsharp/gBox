@@ -90,7 +90,8 @@ def test_the_ray_error_is_the_turn_that_puts_the_dot_on_the_head():
 
 
 @pytest.mark.parametrize("yaw_sign,pitch_sign", [(1, 1), (1, -1), (-1, 1), (-1, -1)])
-def test_tracking_small_diagonal_errors_does_not_starve_either_axis(tmp_path, yaw_sign, pitch_sign):
+def test_tracking_small_diagonal_errors_does_not_starve_either_axis(tmp_path, yaw_sign, pitch_sign, monkeypatch):
+    monkeypatch.setattr(C, "DEFAULT_ZONE", "head")             # the head aim (the strategy's say)
     # A moving target can retain small yaw and pitch errors across many snapshots.
     # Sharing one toggle made the yaw call consume every "on" pulse and pitch consume every "off" pulse.
     distance = 1500.0 - 46.0
@@ -180,7 +181,8 @@ def test_malformed_ray_cannot_drive_stick_feedback(tmp_path, bad):
     assert bot._ray(s, 1.0) is None
 
 
-def test_fires_immediately_on_an_exposed_body_and_keeps_the_dot_on_it():
+def test_fires_immediately_on_an_exposed_body_and_keeps_the_dot_on_it(monkeypatch):
+    monkeypatch.setattr(C, "DEFAULT_ZONE", "head")             # the head aim (the strategy's say)
     far = (0.0, 0.0, 1000.0)                                            # beyond FINISHER_SETUP_R: the head
     m = world(laser_dot=(0.0, 120.0, 1000.0), enemy=far)               # on his chest, 40 cm under the head
     bot = C.Combat(m, {}, clock=lambda: 0.0, learn_dir=None)
@@ -200,7 +202,8 @@ def test_fires_immediately_on_an_exposed_body_and_keeps_the_dot_on_it():
     assert fired                                                        # settled on the head: the trigger
 
 
-def test_steady_direct_fire_holds_with_the_dot_beside_or_below_him_and_continues_down_a_line_past_him():
+def test_steady_direct_fire_holds_with_the_dot_beside_or_below_him_and_continues_down_a_line_past_him(monkeypatch):
+    monkeypatch.setattr(C, "DEFAULT_ZONE", "head")             # the head aim (the strategy's say)
     """Operator 2026-10-22: "he is shooting at nonsense": the ground before him, the air beside him and a dot on past
     him (the game's dot stops on the first body it meets: beyond him is a miss) are no shot; on his head is."""
     for dot, fire in (((90.0, 120.0, 400.0), False), ((0.0, 0.0, 300.0), False), ((0.0, 160.0, 900.0), False),
@@ -217,7 +220,8 @@ def test_steady_direct_fire_holds_with_the_dot_beside_or_below_him_and_continues
         assert bot.stats["shots"] == 0                 # held fire is intent, not a fabricated shot event
 
 
-def test_steady_direct_fire_holds_while_the_dot_is_beside_below_or_past_the_target_then_resumes_on_him():
+def test_steady_direct_fire_holds_while_the_dot_is_beside_below_or_past_the_target_then_resumes_on_him(monkeypatch):
+    monkeypatch.setattr(C, "DEFAULT_ZONE", "head")             # the head aim (the strategy's say)
     # coaching note 3: shooting at the ground. The trigger waits while the stick brings the dot onto him.
     for dot in ((90.0, 120.0, 400.0), (0.0, 30.0, 400.0), (0.0, 20.0, 150.0), (0.0, 160.0, 900.0)):
         m = world(laser_dot=dot)
@@ -322,10 +326,12 @@ def test_the_tunables_are_kept_and_tightened_after_a_poor_round(tmp_path):
     assert bot2.tun.weapon("barry", 0x12)["head_r"] == w["head_r"]   # the next round starts from it
 
 
-def test_every_majini_gets_the_head_and_the_leg_only_on_the_strategys_say():
+def test_every_majini_gets_the_body_and_the_head_or_leg_only_on_the_strategys_say():
+    # operator 2026-10-22: "He needs to just hit them wherever he can hit them" - the body by default (helmets, shields)
     for dist, timer, combo in ((400.0, 8.0, 3), (400.0, 2.0, 3), (400.0, None, 0), (900.0, 8.0, 3)):
-        assert C.zone_for({"hp_max": 800}, dist, timer, combo) == "head"
-    assert C.zone_for({"hp_max": 9000}, 300.0, 8.0, 3) == "head"
+        assert C.zone_for({"hp_max": 800}, dist, timer, combo) == "body"
+    assert C.zone_for({"hp_max": 9000}, 300.0, 8.0, 3) == "body"
+    assert C.zone_for({"hp_max": 800, "zone": "head"}, 300.0, 8.0, 3) == "head"  # the strategy's say
     assert C.zone_for({"hp_max": 800, "zone": "leg"}, 300.0, 8.0, 3) == "leg"   # the strategy's say
     m = world(laser_dot=(0.0, 72.0, 400.0))                             # the dot on his thighs
     bot = C.Combat(m, {}, clock=lambda: 0.0)
@@ -345,7 +351,8 @@ def test_every_majini_gets_the_head_and_the_leg_only_on_the_strategys_say():
     assert bot.stunned_target(s2["enemies"], s2["player"], 0.6) is s2["enemies"][0]
 
 
-def test_steady_head_aim_waits_for_the_settle_resets_when_the_dot_leaves_and_falls_back_to_the_body():
+def test_steady_head_aim_waits_for_the_settle_resets_when_the_dot_leaves_and_falls_back_to_the_body(monkeypatch):
+    monkeypatch.setattr(C, "DEFAULT_ZONE", "head")             # the head aim (the strategy's say)
     m = world(laser_dot=(0.0, 160.0, 400.0))
     bot = C.Combat(m, {}, clock=lambda: 0.0)
     s = snap(m)
@@ -745,3 +752,14 @@ def test_wall_in_front_off_axis_ray_is_cover_and_holds_fire(tmp_path):
     act = bot.tick(s, s["player"], s["enemies"][0], 1.0)
     assert "l1" in act["hold"] and "r1" not in act["hold"] and bot.stats["los_held_fire"] > 0
     assert not bot.blocked_until
+
+
+def test_by_default_he_fires_as_soon_as_the_dot_is_anywhere_on_him():
+    # operator 2026-10-22: "He is just standing there letting these people devastate him ... These enemies are wearing
+    # helmets, some of them are using shields. He needs to just hit them wherever he can hit them."
+    for dot in ((0.0, 110.0, 400.0), (0.0, 160.0, 400.0), (0.0, 72.0, 400.0)):   # chest, head, thighs
+        m = world(laser_dot=dot)
+        bot = C.Combat(m, {}, clock=lambda: 0.0)
+        s = snap(m)
+        act = bot.tick(s, s["player"], s["enemies"][0], 0.0)
+        assert bot.zone == "body" and {"l1", "r1"} <= act["hold"], dot          # no settle, no patience: the trigger
