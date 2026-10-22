@@ -160,8 +160,8 @@ def test_death_presses_are_not_deaths_or_clock_bonuses(monkeypatch):
     bot.tick(R.snapshot(with_bonuses(world(timer=60.0), [(0.0, 13.0, 1200.0), (0.0, 13.0, 1800.0)])))
     for t in (12.0, 14.0, 16.0):
         now[0] = t
-        assert bot.tick(R.snapshot(world(hp=0, timer=59.0))) == {"tap": "cross"}
-    assert bot.stats["deaths"] == 1 and bot.stats["continue_presses"] == 3
+        assert bot.tick(R.snapshot(world(hp=0, timer=59.0))) == {"tap": "circle"}
+    assert bot.stats["deaths"] == 1 and bot.stats["continue_declined"] == 3
     assert bot.stats.get("deaths_continued", 0) == 0
     now[0] = 20.0
     bot.tick(R.snapshot(with_bonuses(world(timer=120.0), [(0.0, 13.0, 1200.0)])))
@@ -294,9 +294,9 @@ def test_aims_on_the_cameras_look_ray_when_there_is_one():
     assert "rright" in act["hold"] and "r1" not in act["hold"]
 
 
-def test_continues_after_you_are_dead_and_walks_the_menus():
+def test_declines_continue_after_you_are_dead_and_walks_the_menus():
     bot = R.Bot(clock=lambda: 10.0)
-    assert bot.tick(R.snapshot(world(hp=0))) == {"tap": "cross"}
+    assert bot.tick(R.snapshot(world(hp=0))) == {"tap": "circle"}
     assert bot.tick(R.snapshot(world(hp=0))) == {"hold": set()}      # not again within 1.5 s
     assert [R.menu_key(n) for n in range(4)] == ["start", "cross", "start", "cross"]
 
@@ -345,7 +345,7 @@ def test_it_presses_only_on_the_reunion_screens():
     assert R.step({"where": "select_player", "cursor": 2, "target": 6}) == "dright"
     assert R.step({"where": "select_player", "cursor": 7, "target": 6}) == "dleft"
     assert R.step({"where": "select_player"}) is None                                       # no cursor read: wait
-    assert R.step({"where": "dead"}) == "cross"
+    assert R.step({"where": "dead"}) == "circle"            # Continue? No: back to the selects (random stage, character)
     for where in ("menu", "loading", "unknown", "playing"):
         assert R.step({"where": where}) is None, where                       # never a press on the title's menus
     assert R.wandered({"where": "menu"}) is None
@@ -382,7 +382,7 @@ def test_explicit_resuscitate_prompt_keeps_zero_hp_recoverable_without_counting_
     bot.observe_round(recovered, "playing", now[0])
     assert driver.screen(None, recovered) == "playing"
     assert stats["rounds"] == 1 and stats.get("deaths_continued", 0) == 0
-    assert not stats["resuscitating"] and stats.get("continue_presses", 0) == 0
+    assert not stats["resuscitating"] and stats.get("continue_declined", 0) == 0
     assert R.own_screen(dying | {"prompt": None}) == "dead"
     assert R.own_screen(dying | {"timer": 0.0}) != "playing"
 
@@ -401,7 +401,7 @@ def test_resuscitate_uses_repeated_circle_at_engine_mash_cadence_without_combat(
     assert sent == [{"key": "circle", "down": down} for _ in range(5) for down in (True, False)]
     assert sleeps == [0.045, 0.035] * 5
     assert stats["mash_presses"] == stats["presses_mash"] == stats["resuscitate_presses"] == 5
-    assert stats.get("deaths", 0) == stats.get("continue_presses", 0) == 0
+    assert stats.get("deaths", 0) == stats.get("continue_declined", 0) == 0
 
 
 def with_prompt(mem, kind, owner, target, *, visible=True, mode=1, index=1, second=False, btn=0x328E1FE0):
