@@ -127,6 +127,29 @@ def test_inventory_synthetic():
         assert m["loose"]["content"] == {"rnk": 1}
 
 
+def test_inventory_arcade_layout(tmp_path):
+    (tmp_path / "muscle_apm3.exe").write_bytes(b"MZ" + b"\0" * 30)
+    (tmp_path / "game.bat").write_text("@echo off\r\nW:\\muscle_apm3.exe\r\n")
+    (tmp_path / "teknoparrot.ini").write_text("[General]\r\nInput API=XInput\r\n")
+    (tmp_path / "CharacterEditor.rdb").write_bytes(build_rdb([("c@1", 5, b"aa")]))
+    m = d6.inventory(tmp_path)
+    assert m["layout"] == "arcade"
+    assert m["executable"]["name"] == "muscle_apm3.exe"
+    assert m["executable"]["size"] == 32
+    assert m["rdbs"]["CharacterEditor"]["parses_clean"]
+    assert "Input API=XInput" in m["launch"]["teknoparrot_ini"]
+    assert "muscle_apm3.exe" in m["launch"]["sidecars"]
+    assert "wrong" in m["platform_label"]
+
+
+def test_inventory_steam_layout_preferred_and_missing_exe_raises(tmp_path):
+    with pytest.raises(FileNotFoundError, match="muscle_apm3.exe"):
+        d6.inventory(tmp_path)
+    (tmp_path / "DOA6.exe").write_bytes(b"MZ")
+    (tmp_path / "muscle_apm3.exe").write_bytes(b"MZ")
+    assert d6.inventory(tmp_path)["layout"] == "steam"
+
+
 def test_read_bin_entry_and_classify():
     import tempfile
     from pathlib import Path

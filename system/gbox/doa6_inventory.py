@@ -329,16 +329,38 @@ def classify_bin_entries(rdb: Rdb, sample: int | None = 200,
     return summary
 
 
+def resolve_executable(root: Path) -> tuple[Path, str]:
+    """Find the owned entry-point executable and name the layout.
+
+    Steam/CODEX PC builds ship ``DOA6.exe``; Teknoparrot arcade builds ship
+    ``muscle_apm3.exe`` launched by ``game.bat`` (``pushd W:\\``).  Both layouts
+    share the same ``_DRK0000``/``IDRK0000`` container family and loose
+    ``data/0x%08x.file`` override surface.
+    """
+    steam = root / "DOA6.exe"
+    if steam.exists():
+        return steam, "steam"
+    arcade = root / "muscle_apm3.exe"
+    if arcade.exists():
+        return arcade, "arcade"
+    raise FileNotFoundError(
+        f"no DOA6.exe or muscle_apm3.exe under {root} "
+        "(expected a Steam/CODEX build or a Teknoparrot arcade build)"
+    )
+
+
 def inventory(game_dir: str | Path, bins_manifest: str | Path | None = None,
              classify_bins: bool = False, bin_sample: int | None = 200) -> dict:
-    """Enumerate the owned DOA6 PC build and return a JSON-able manifest."""
+    """Enumerate the owned DOA6 build (Steam or arcade layout) and return a JSON-able manifest."""
     root = Path(game_dir)
-    exe = root / "DOA6.exe"
-    if not exe.exists():
-        raise FileNotFoundError(f"no DOA6.exe under {root}")
+    exe, layout = resolve_executable(root)
     manifest = {
         "game_dir": str(root),
-        "platform_label": "ps_modern (catalog label; actual content is Windows/Steam PC, AppID 838380)",
+        "layout": layout,
+        "platform_label": ("windows_native TeknoParrot arcade build (muscle_apm3.exe; "
+                           "catalog label ps_modern is wrong for this artifact)"
+                           if layout == "arcade"
+                           else "windows_native Steam/CODEX PC build (Steam AppID 838380)"),
         "executable": {
             "name": exe.name,
             "size": exe.stat().st_size,
@@ -380,6 +402,20 @@ def inventory(game_dir: str | Path, bins_manifest: str | Path | None = None,
             for magic in pool.map(sniff_one, loose):
                 kinds[magic] = kinds.get(magic, 0) + 1
         manifest["loose"] = {"files": len(loose), "total_bytes": total, "content": kinds}
+    if layout == "arcade":
+        bat = root / "game.bat"
+        ini = root / "teknoparrot.ini"
+        manifest["launch"] = {
+            "prerequisites": "TeknoParrot (APM3 arcade, XInput); game.bat sets PATH to X:\\lib, "
+                             "mounts the build as W:\\ and runs muscle_apm3.exe",
+            "game_bat": bat.read_text(errors="replace").strip().splitlines() if bat.exists() else [],
+            "teknoparrot_ini": ini.read_text(errors="replace").strip().splitlines() if ini.exists() else [],
+            "sidecars": sorted(f.name for f in root.iterdir()
+                               if f.is_file() and f.suffix.lower() in (".dll", ".exe", ".bin", ".bat")),
+        }
+        if bins_manifest and Path(bins_manifest).exists():
+            manifest["bins_manifest"] = json.loads(Path(bins_manifest).read_text())
+        return manifest
     steam = {f.name for f in root.glob("steam_api64*")} | {f.name for f in root.glob("steamclient64*")}
     manifest["launch"] = {
         "prerequisites": "Windows x64, Steam (AppID 838380) or CODEX emu; saves at "
