@@ -137,6 +137,17 @@ def listing(path: str | Path, *, head: int = 64, max_files: int = 4000, exe_limi
         L = Listing(str(p), "gdrom", files)
     elif suf == ".chd":
         return _chd_listing(p, head, max_files, exe_limit, deep, deep_bytes)
+    elif suf == ".wbfs":
+        from .wbfs import WBFS
+        w = WBFS(p)
+        try:
+            h, parts = w.disc_header(), w.partitions()
+        finally:
+            w.close()
+        notes = [f"{h['game_id']} {h['title']} rev {h['revision']} (WBFS, 2^{w.wbfs_sector_size.bit_length() - 1}-byte sectors)",
+                 "partitions (encrypted, offsets in the logical disc): " + ", ".join(f"type{q['type']}@0x{q['offset']:X}" for q in parts),
+                 "files not listed: Wii partition data is AES-encrypted; extract with dolphin-tool (re4wii.ensure_base) then list the folder"]
+        return Listing(str(p), "wii_wbfs", [], notes=notes)
     elif suf == ".gcz":
         from ..gcz import GCZ
         z = GCZ(str(p))
