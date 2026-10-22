@@ -12,6 +12,7 @@ from pathlib import Path
 RE6_ID = '0871eee3b68cdea3'
 RE6_TEMPLATE_SHA256 = '194cb5b71858f65feeb2b1703642ddc4ffde09b9a087119189b29b0ad7b83f11'
 DOAPP_ID = '59c55e95af61abbe'  # Dead Or Alive ++ (Korea), platform=arcade
+SC3_ID = 'afe447a632bd5e6b'  # SoulCalibur III (USA), platform=ps2, SLUS_212.16
 NDS_WCW_GAME_ID = 'd9467f457f53f2c7'  # Call of Duty: World at War (USA), NDS
 
 
@@ -23,6 +24,13 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
     """
     profile = profile_for(game)
     if not profile['verified']:
+        if game.get('game_id') == SC3_ID and game.get('platform') == 'ps2':
+            # #2242: SoulCalibur III candidate. Static ELF evidence only; post_launch holds nothing until a
+            # fresh-boot acceptance sets verified true in profiles/gamedata/<id>-codes.json.
+            return {'state': 'candidate_pending_verification', 'applied': False,
+                    'profile': profile.get('profile'), 'scope': profile.get('scope'),
+                    'executable': profile.get('executable'), 'table': profile.get('table'),
+                    'next': profile.get('next')}
         if game.get('game_id') == DOAPP_ID and game.get('platform') == 'arcade':
             # Registration point for the DOA++ (Korea) arcade unlock work. The
             # fast Play path must never guess a write: report the live static
@@ -64,6 +72,9 @@ def profile_for(game: dict) -> dict:
         # pre_launch below short-circuits on verified=False, so no writer is reachable.
         return {'status': 'pending_research', 'profile': None, 'verified': False,
                 'scope': list(doax2_unlock.CATEGORIES), **doax2_unlock.profile_gate()}
+    if game.get('game_id') == SC3_ID and game.get('platform') == 'ps2':
+        from . import sc3_unlock
+        return sc3_unlock.profile()
     if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,
                 'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}
