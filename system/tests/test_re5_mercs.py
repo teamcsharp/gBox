@@ -1498,3 +1498,57 @@ def test_a_nearly_straight_route_counts_as_open_floor(tmp_path):
     p, e = R.snapshot(mem)["player"], {"ptr": 1, "pos": (250.0, 0.0, 250.0)}
     assert bot._open(p, e, mesh, 10.0)
     assert not bot._open(p, {"ptr": 2, "pos": (350.0, 0.0, 50.0)}, u_mesh(), 10.0)
+
+
+def test_a_majini_on_the_floor_above_is_not_aimed_at(tmp_path):
+    """Live 2026-10-22: a whole minute in Public Assembly's pit at y -200 aiming at Majini on the floor 4 m above
+    (within PURSUE_NEAR on the map). Another level is in sight only with the laser dot on him."""
+    mem, bot, now = _pursuit_bot(tmp_path, (90.0, 400.0, 60.0))
+    snap = R.snapshot(mem)
+    p, e = snap["player"], snap["enemies"][0]
+    assert not bot._open(p, e, None, now[0]) and not bot._threat(p, e)
+    act = bot.tick(snap)
+    assert not act.get("hold", set()) & {"l1", "r1"}
+    snap = R.snapshot(mem)
+    snap["laser"] = {"from": (50.0, 140.0, 50.0), "at": (90.0, 560.0, 60.0)}   # the dot on his head: seen after all
+    bot._see_dot(snap, now[0])
+    assert bot._open(p, e, None, now[0])
+    assert not bot._open(p, e, None, now[0] + R.DOT_MEMORY_S + 0.1)
+
+
+def test_a_same_level_majini_left_out_of_sight_is_not_kept_by_proximity(tmp_path):
+    mem, bot, now = _pursuit_bot(tmp_path, (200.0, 0.0, 50.0))
+    p, e = R.snapshot(mem)["player"], R.snapshot(mem)["enemies"][0]
+    assert bot._open(p, e, None, now[0])                       # 1.5 m, same level: in sight
+    bot.unsighted[e["ptr"]] = now[0] + 2.0                      # the dot stopped short of him (a fence)
+    assert not bot._open(p, e, None, now[0])
+    e = dict(e, pos=(130.0, 0.0, 50.0))                        # right on him: nothing fits between
+    assert bot._open(p, e, None, now[0])
+
+
+def test_open_floor_confirms_sight_only_within_range(tmp_path):
+    mem, bot, now = _pursuit_bot(tmp_path, (50.0, 0.0, 1800.0))
+    p, e = R.snapshot(mem)["player"], R.snapshot(mem)["enemies"][0]
+    assert not bot._open(p, e, None, now[0])                   # 17.5 m off, no dot: walked to, not shot at
+
+
+def test_a_time_bonus_beats_a_visible_majini_further_off(monkeypatch):
+    """Operator 2026-10-22: "urgently seeking and acquiring time bonuses"; only a close Majini in sight stops it."""
+    monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
+    m = with_bonuses(world(action=2, combo=0, enemies=[((0.0, 0.0, 900.0), 800, 800)]), [(0.0, 13.0, 2400.0)])
+    bot = R.Bot(m, clock=lambda: 10.0, lessons=lambda e: None)
+    act = bot.tick(R.snapshot(m))
+    assert bot.stats["phase"] == "gather_time" and {"lup", "cross"} <= act["hold"] and "l1" not in act["hold"]
+    m = with_bonuses(world(action=2, combo=0, enemies=[((0.0, 0.0, 250.0), 800, 800)]), [(0.0, 13.0, 2400.0)])
+    bot = R.Bot(m, clock=lambda: 10.0, lessons=lambda e: None)
+    act = bot.tick(R.snapshot(m))
+    assert bot.stats["phase"] == "clear_nearby" and "l1" in act["hold"]
+
+
+def test_a_time_bonus_is_taken_even_when_the_strategy_would_keep_the_combo(monkeypatch):
+    monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
+    m = with_bonuses(world(combo=12, combo_t=1.0), [(0.0, 13.0, 2400.0)])     # the combo window nearly gone
+    bot = R.Bot(m, clock=lambda: 10.0, lessons=lambda e: None)
+    act = bot.tick(R.snapshot(m))
+    assert bot.stats["phase"] == "gather_time" and {"lup", "cross"} <= act["hold"]
+    assert bot.stats["strategy_decision"].startswith("time bonus first")
