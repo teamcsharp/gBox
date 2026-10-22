@@ -58,6 +58,21 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
 
 
 def profile_for(game: dict) -> dict:
+    from . import pn03_unlock
+    if game.get('game_id') == pn03_unlock.GAME_ID and game.get('platform') == pn03_unlock.PLATFORM:
+        # P.N. 03 (USA) = Resident Evil 4 (GameCube, disc GPNE08).  Revision-guarded
+        # research profile: the save/progress tables are mapped and pinned to the owned
+        # main.dol digest, but no unlock flag offset is proven yet, so pre_launch must
+        # not write anything.
+        prof = pn03_unlock.profile()
+        return {'status': prof['status'], 'profile': prof['profile'],
+                'verified': prof['verified'], 'scope': prof['scope'],
+                'exclusions': prof['exclusions'], 'evidence': prof['evidence'],
+                'items': prof['items'], 'inventory': prof['inventory'],
+                'reason': prof['reason'], 'save_effect': prof['save_effect'],
+                'game_id': prof['game_id'],
+                'requires_save_upgrade_opt_in': prof['requires_save_upgrade_opt_in']}
+
     from . import doax2_unlock
     if game.get('game_id') == doax2_unlock.GAME_ID and game.get('platform') == doax2_unlock.PLATFORM:
         # Honest gate for DOAX2: research pending, no verified write targets exist.
