@@ -12,6 +12,7 @@ from pathlib import Path
 RE6_ID = '0871eee3b68cdea3'
 RE6_TEMPLATE_SHA256 = '194cb5b71858f65feeb2b1703642ddc4ffde09b9a087119189b29b0ad7b83f11'
 DOAPP_ID = '59c55e95af61abbe'  # Dead Or Alive ++ (Korea), platform=arcade
+SONIC1_SHADOW_ID = '1fff93531f10c256'  # Shadow In Sonic 1, genesis
 NDS_WCW_GAME_ID = 'd9467f457f53f2c7'  # Call of Duty: World at War (USA), NDS
 
 
@@ -22,6 +23,10 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
     opt-out settings remain authoritative and its writer retains the save backup.
     """
     profile = profile_for(game)
+    if game.get('game_id') == SONIC1_SHADOW_ID and game.get('platform') == 'genesis':
+        from . import sonic1_unlock
+        # Candidate RAM-flag profile (static evidence only); never claims verified unlocks.
+        return sonic1_unlock.pre_launch()
     if not profile['verified']:
         if game.get('game_id') == DOAPP_ID and game.get('platform') == 'arcade':
             # Registration point for the DOA++ (Korea) arcade unlock work. The
@@ -64,6 +69,12 @@ def profile_for(game: dict) -> dict:
         # pre_launch below short-circuits on verified=False, so no writer is reachable.
         return {'status': 'pending_research', 'profile': None, 'verified': False,
                 'scope': list(doax2_unlock.CATEGORIES), **doax2_unlock.profile_gate()}
+    if game.get('game_id') == SONIC1_SHADOW_ID and game.get('platform') == 'genesis':
+        from . import sonic1_unlock
+        prof = sonic1_unlock.profile()
+        return {'status': 'candidate_pending_verification', 'profile': prof['profile'], 'verified': False,
+                'scope': prof['scope'], 'reason': 'Static RAM-flag evidence only; no runtime read-back or play-through yet.',
+                'inventory': prof['inventory']}
     if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,
                 'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}
