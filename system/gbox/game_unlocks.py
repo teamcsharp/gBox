@@ -12,6 +12,7 @@ from pathlib import Path
 RE6_ID = '0871eee3b68cdea3'
 RE6_TEMPLATE_SHA256 = '194cb5b71858f65feeb2b1703642ddc4ffde09b9a087119189b29b0ad7b83f11'
 DOAPP_ID = '59c55e95af61abbe'  # Dead Or Alive ++ (Korea), platform=arcade
+PUYOTETRIS_ID = 'd306523a3f20c360'  # Puyo Puyo Tetris (USA), Switch
 NDS_WCW_GAME_ID = 'd9467f457f53f2c7'  # Call of Duty: World at War (USA), NDS
 
 
@@ -31,6 +32,12 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
             record = doapp_unlock.profile()
             return {'state': 'research_pending', 'applied': False,
                     'reason': record['reason'],
+                    'proven_revisions': record['proven_revisions'],
+                    'unknown_counts': record['unknown_counts']}
+        if game.get('game_id') == PUYOTETRIS_ID and game.get('platform') == 'switch':
+            from . import puyotetris_unlock
+            record = puyotetris_unlock.profile()
+            return {'state': 'research_pending', 'applied': False, 'reason': record['reason'],
                     'proven_revisions': record['proven_revisions'],
                     'unknown_counts': record['unknown_counts']}
         return {'state': 'research_pending', 'applied': False, 'reason': profile['reason']}
