@@ -15,6 +15,7 @@ DOAPP_ID = '59c55e95af61abbe'  # Dead Or Alive ++ (Korea), platform=arcade
 NDS_WCW_GAME_ID = 'd9467f457f53f2c7'  # Call of Duty: World at War (USA), NDS
 SGC_GEMS_ID = 'fc5914e3ddb540c4'  # Sonic Gems Collection (USA), platform=gamecube
 SGC_GEMS_PLATFORM = 'gamecube'
+TETRIS4D_ID = '864538c6473a986e'  # Tetris 4D (Japan), Dreamcast
 
 
 def pre_launch(game: dict, ctx, mod: str = '') -> dict:
@@ -45,6 +46,12 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
                     'reason': gate['reason'], 'scope': list(sgc_gems_probe.CATEGORIES),
                     'evidence': gate['evidence'], 'blockers': gate['blockers'],
                     'next': gate['next']}
+        if game.get('game_id') == TETRIS4D_ID and game.get('platform') == 'dc':
+            from . import tetris4d_unlock
+            gate = tetris4d_unlock.profile_gate()
+            return {'state': 'research_pending', 'applied': False, 'reason': gate['reason'],
+                    'scope': gate['categories'], 'evidence': gate['evidence'],
+                    'blockers': gate['blockers'], 'next': gate['next']}
         return {'state': 'research_pending', 'applied': False, 'reason': profile['reason']}
     if game.get('game_id') == RE6_ID and game.get('platform') == 'xbox360':
         from . import re6_tool
@@ -82,6 +89,10 @@ def profile_for(game: dict) -> dict:
         from . import sgc_gems_probe
         return {'status': 'pending_research', 'profile': None, 'verified': False,
                 'scope': list(sgc_gems_probe.CATEGORIES), **sgc_gems_probe.profile_gate()}
+    if game.get('game_id') == TETRIS4D_ID and game.get('platform') == 'dc':
+        from . import tetris4d_unlock
+        return {'status': 'pending_research', 'profile': None, 'verified': False,
+                'scope': list(tetris4d_unlock.CATEGORIES), **tetris4d_unlock.profile_gate()}
     if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,
                 'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}
