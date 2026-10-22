@@ -562,10 +562,14 @@ def test_loaded_direct_guns_raise_with_trigger_and_hold_while_acquiring(tmp_path
     bot = C.Combat(m, {}, learn_dir=tmp_path, lessons=lambda row: None)
     s = snap(m, enemy=(180, 0, 150))
     s["laser"] = None
-    for now in (0.0, 0.05, 0.5, 1.0):
+    for now in (0.0, 0.05, 0.5, 1.0):               # target 50 deg off the facing, no ray yet: raise and turn, no blind shot
         keys = bot.tick(s, s["player"], s["enemies"][0], now)["hold"]
-        assert {"l1", "r1", "rleft"} <= keys
-    assert bot.stats["shots"] == 0 and bot.round_counts["shots"] == 0
+        assert {"l1", "rleft"} <= keys and "r1" not in keys
+    assert bot.stats["shots"] == 0 and bot.round_counts["shots"] == 0 and bot.stats["blind_fire_held"] == 4
+    s = snap(m, enemy=(20, 0, 400))                 # facing him within 25 deg: the trigger is queued while the gun rises
+    s["laser"] = None
+    keys = bot.tick(s, s["player"], s["enemies"][0], 1.5)["hold"]
+    assert {"l1", "r1"} <= keys
 
 
 @pytest.mark.parametrize("condition", ["dead_player", "dead_target", "missing_target", "far", "recovery", "qte"])

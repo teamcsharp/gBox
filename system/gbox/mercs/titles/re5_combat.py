@@ -152,6 +152,7 @@ def ray_error(origin, dot, target) -> tuple[float, float]:
     return wrap(want_yaw - have_yaw), want_pitch - have_pitch
 
 
+BLIND_FIRE_FACING = math.radians(25)    # without a usable ray, fire only when the body faces the target this closely
 AIM_FIRE_YAW, AIM_FIRE_PITCH = math.radians(7), math.radians(5)   # fire only with the dot this close to the aim point
 
 
@@ -663,6 +664,13 @@ class Combat:
         self.stats["weapon_policy"] = policy
         loaded = rounds is not None and rounds > 0
         tracking_fire = direct and permitted and loaded and (lz is None or not steering_ray(lz, aim_at) or line_of_sight_aim(lz, aim_at, where, foot))
+        if tracking_fire and lz is None:
+            # no ray at all to judge by: the body must at least face him, else the shot goes into whatever wall is ahead
+            # (coach moment 2026-10-22: gun up at a wall, target 50 deg off the facing)
+            body_err = wrap(heading(foot[0] - p["pos"][0], foot[2] - p["pos"][2]) - p["rot"])
+            if abs(body_err) > BLIND_FIRE_FACING:
+                tracking_fire = False
+                self.stats["blind_fire_held"] = self.stats.get("blind_fire_held", 0) + 1
         # no ray yet, or a near-origin ray too short to judge: the trigger stays as before; a reliable ray off the aim
         # point (the ground, beside or past him) holds fire while the stick turns the dot onto him
         rapid = self._rapid_fire(wid, now)              # observed package status, independent of fire intent
