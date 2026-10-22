@@ -902,3 +902,10 @@ def test_never_fires_at_a_ganado_behind_a_wall_and_goes_for_the_bonus_instead():
     facing(m, 0.0)
     act = bot.tick(B.snapshot(m))
     assert {"r", "a"}.isdisjoint(act["hold"]) and bot.goal is not None
+
+
+def test_spawn_multiplier_op_bounds_unchanged():
+    import re
+    src = open(__import__("os").path.join(__import__("os").path.dirname(__file__), "..", "gbox", "re_mods_tool.py")).read()
+    assert "factor = max(1, min(8, int(factor or 1)))" in src      # backend keeps 2..8; the UI slider clamps to 1..4
+    assert "if not on:\n        factor = 1" in src                  # on=false reverts (slider value 1)
