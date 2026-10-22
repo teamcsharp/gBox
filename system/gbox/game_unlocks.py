@@ -12,6 +12,7 @@ from pathlib import Path
 RE6_ID = '0871eee3b68cdea3'
 RE6_TEMPLATE_SHA256 = '194cb5b71858f65feeb2b1703642ddc4ffde09b9a087119189b29b0ad7b83f11'
 DOAPP_ID = '59c55e95af61abbe'  # Dead Or Alive ++ (Korea), platform=arcade
+SEGA_TETRIS_ID = '0a2f3e9ce734229c'  # Sega Tetris, platform=arcade (MAME)
 NDS_WCW_GAME_ID = 'd9467f457f53f2c7'  # Call of Duty: World at War (USA), NDS
 
 
@@ -29,6 +30,13 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
             # evidence state and hand off to the background research task.
             from . import doapp_unlock
             record = doapp_unlock.profile()
+            return {'state': 'research_pending', 'applied': False,
+                    'reason': record['reason'],
+                    'proven_revisions': record['proven_revisions'],
+                    'unknown_counts': record['unknown_counts']}
+        if game.get('game_id') == SEGA_TETRIS_ID and game.get('platform') == 'arcade':
+            from . import sega_tetris_unlock
+            record = sega_tetris_unlock.profile()
             return {'state': 'research_pending', 'applied': False,
                     'reason': record['reason'],
                     'proven_revisions': record['proven_revisions'],
