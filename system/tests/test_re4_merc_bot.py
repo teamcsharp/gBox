@@ -479,8 +479,8 @@ def test_an_inverted_aim_stick_is_learned():
         pitch = get_pitch(m)
         set_pitch(m, pitch + 0.02 * (("down" in keys) - ("up" in keys)))
     assert bot.pitch_up == "down" and fired
-    lo = math.atan2(800 + B.BODY_LO - B.GUN_H, 2000.0)                    # the aim ends inside his body (any pitch
-    hi = math.atan2(800 + B.BODY_HI - B.GUN_H, 2000.0)                    # there lands), on its way to the chest
+    lo = math.atan2(800 + B.HEAD_LO - B.GUN_H, 2000.0)                    # the aim ends inside his head band (any pitch
+    hi = math.atan2(800 + B.BODY_HI - B.GUN_H, 2000.0)                    # there lands), on its way to the head
     assert lo <= get_pitch(m) <= hi and head > lo
 
 
@@ -902,3 +902,27 @@ def test_never_fires_at_a_ganado_behind_a_wall_and_goes_for_the_bonus_instead():
     facing(m, 0.0)
     act = bot.tick(B.snapshot(m))
     assert {"r", "a"}.isdisjoint(act["hold"]) and bot.goal is not None
+
+
+def test_he_never_fires_with_the_aim_below_the_head_band():
+    m = world([((0, 0, 1500), True)])
+    facing(m, 0.0)
+    now = [0.0]
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    gun = B.GUN_H
+    lo = math.atan2(B.HEAD_LO - gun, 1500.0)
+    set_pitch(m, lo - 0.3)                                                 # the last aim left at the ground
+    below_fired, fired_at = False, None
+    for k in range(120):
+        now[0] = k * 0.05
+        m.put(B.MERC_TIMER, ">I", int((100 - now[0]) * 30))
+        keys = bot.tick(B.snapshot(m)).get("hold", set())
+        pitch = get_pitch(m)
+        if "a" in keys:
+            fired_at = pitch
+            if pitch < lo - 1e-6:
+                below_fired = True
+            break
+        set_pitch(m, pitch + 0.02 * (("up" in keys) - ("down" in keys)))
+    assert fired_at is not None and not below_fired                        # it raised the aim, then fired
+    assert lo <= fired_at <= math.atan2(B.BODY_HI - gun, 1500.0)
