@@ -58,6 +58,8 @@ WRITERS = [
      "Metal Gear Solid VR Missions: any collection character as Snake, every Genome soldier (38582 + 55267 in all 88 "
      "mission stages), the ninja or the other 16-object figures, one native disc (fitted KMDs with their own textures; "
      "cast_swap pairs); pick whip / live_use swaps a running session in place (session_swap); unverified in game"),
+    ("mvc2_writer", ["player", "fighter:<id|name>"],
+     "MVC2 Dreamcast USA: one PLxx_DAT.BIN target's sprites/palette/animation replaced by another MVC2 fighter's (donor must be an extracted MVC2 fighter; hitboxes/code stay; runtime verification pending)"),
     ("mgs1_swap", ["player"], "MGS disc Snake: HUcast donor KMD only; visible replacement remains experimental/unverified"),
     ("clayfighter_swap", ["fighter:<name>", "player"],
      "Clay Fighter: Sculptor's Cut (N64): every sprite frame of one fighter re-drawn from a collection sprites entry "

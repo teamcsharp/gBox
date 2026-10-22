@@ -2895,6 +2895,9 @@ def characters_tool(inp: CharIn, ctx):
     from . import pe2_swap
     if gid in pe2_swap.GAME_IDS and inp.slot == "player":        # Parasite Eve II (PS1): Aya, every outfit -> pe2_<slug>
         return {"result": out | pe2_swap.use(ctx, meta, game, inp)}
+    from . import mvc2_writer
+    if gid in mvc2_writer.GAME_IDS:                           # MVC2 (DC): slot = player | fighter:<id|name> target
+        return {"result": out | mvc2_writer.use(ctx, meta, game, inp)}
     from . import ff7_swap
     if gid in ff7_swap.GAME_IDS and ff7_swap.is_slot(inp.slot):
         # Final Fantasy VII (PS1): a party member (player = Cloud), field + battle -> ff7_<slug>[_<slot>]
