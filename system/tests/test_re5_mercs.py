@@ -1651,3 +1651,34 @@ def test_a_far_majini_behind_a_wall_is_never_run_at_in_a_straight_line(tmp_path,
     assert bot.stats["phase"] == "pursue" and bot.route and bot.route_for == ("enemy", ENEMIES[0])
     assert not act["hold"] & {"lup", "cross"}                 # turning toward the way round, not driving into the wall
     assert not bot.nav_learning.stages.get(mesh.learning_sig, {}).get("routes")
+
+
+def test_repeated_wall_stalls_walk_wider_angles_until_free_ground():
+    bot = R.Bot()
+    p = {"pos": (0.0, 0.0, 0.0), "rot": 0.0, "action": 0}
+    want, t, offsets = 0.0, 0.0, []
+    for _ in range(4):                                     # push into a wall, get stuck, repeat
+        t += 0.1
+        bot._walk(p, want, t)
+        t += R.STUCK_S + 0.05
+        act = bot._walk(p, want, t)
+        assert "ldown" in act and bot.stats["stuck"] > 0
+        t += 1.0                                           # the unstick step ends
+        offsets.append(bot.detour_angle())
+        p["rot"] = R.wrap(want + bot.detour_angle())        # the body has turned to the detour heading
+    assert offsets == [math.radians(40), -math.radians(40), math.radians(80), -math.radians(80)]
+    assert bot.stats["wall_detours"] == 4
+    # the walk now turns away from the wall instead of pushing straight into it
+    p["rot"] = 0.0
+    assert bot._walk(p, want, t + 2.0) & {"rleft", "rright"}
+    p["pos"] = (0.0, 0.0, R.DETOUR_FREE + 50.0)            # found open ground: the detour is dropped
+    bot._walk(p, want, t + 3.0)
+    assert bot.detour_angle() == 0.0
+
+
+def test_route_walks_are_not_detoured_by_wall_stalls():
+    bot = R.Bot()
+    p = {"pos": (0.0, 0.0, 0.0), "rot": 0.0, "action": 0}
+    bot._walk(p, 0.0, 1.0, precise=True)
+    bot._walk(p, 0.0, 2.3, precise=True)
+    assert bot.stats["stuck"] == 1 and bot.detour_angle() == 0.0
