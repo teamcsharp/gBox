@@ -626,6 +626,15 @@ class Brain:
             self.phase, self.until = "step", now + STEP_S
             self.log("step_string", th, ub)
             return {"up"}
+        if kind == "unblockable" and not th["flags"] & HITS_CROUCH:
+            # an unblockable that does not reach a crouching fighter (Astaroth's 0x41 thrust: stand + downed bits
+            # only): crouching beats it, and unlike the sidestep it cannot be walked into
+            if t <= DUCK_LEAD + lead - GI_AT:
+                if self.phase != "duck":
+                    self.stats["ducks"] += 1
+                    self.phase = "duck"
+                return {"down", G}
+            return set()
         if kind == "unblockable":
             if t <= STEP_LEAD + lead - GI_AT:
                 self.stats["steps"] += 1
