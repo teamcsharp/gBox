@@ -1553,6 +1553,7 @@ def test_a_time_bonus_is_taken_even_when_the_strategy_would_keep_the_combo(monke
     assert bot.stats["phase"] == "gather_time" and {"lup", "cross"} <= act["hold"]
     assert bot.stats["strategy_decision"].startswith("time bonus first")
 
+
 def test_stage_select_takes_a_random_stage_each_visit():
     # operator 2026-10-22: "have the bot go between the stages randomly during the select"
     import random
