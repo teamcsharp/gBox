@@ -208,6 +208,28 @@ def object_sections(obj: bytes) -> dict:
     raise ValueError("no Zelda64 object index in object file")
 
 
+def tail_skeleton(obj: bytes) -> int | None:
+    """MM (ZAPD) player objects keep the Flex skeleton header in the file's last 0x20 bytes, not behind an
+    id list: u32 segment-6 pointer to the limb table, u8 limbCount, u8[3] pad, u8 dListCount. Fierce Deity is
+    padded to 0x10, so the header is at len-0x18 there, len-0xC for the others. Returns the header offset."""
+    from .oot_writer import skeleton
+    for off in range(len(obj) - 0x20, len(obj) - 11, 4):
+        w, cnt = u32(obj, off), obj[off + 4]
+        if w >> 24 != 6 or not 2 <= cnt <= 80 or obj[off + 5:off + 8] != b"\0\0\0":
+            continue
+        t = w & 0xFFFFFF
+        if t % 4 or t + 4 * cnt > off:
+            continue
+        ptrs = [u32(obj, t + 4 * i) for i in range(cnt)]
+        if not all(p >> 24 == 6 and (p & 0xFFFFFF) + 16 <= len(obj) for p in ptrs):
+            continue
+        sk = skeleton(obj, off)
+        if all(lb["child"] == 0xFF or lb["child"] < cnt for lb in sk["limbs"]) and \
+                all(lb["sibling"] == 0xFF or lb["sibling"] < cnt for lb in sk["limbs"]):
+            return off
+    return None
+
+
 def probe_triangles(rom: Rom, obj: bytes, skel_offs: list[int]) -> dict:
     """Bounded mesh probe: run the first skeleton's limb display lists with segment 6 = the object and segment
     4 = gameplay_keep, counting triangles whose vertices are all loaded and the unique texture sources."""
@@ -251,7 +273,7 @@ def character_summary(rom: Rom, key: str) -> dict:
         sec = object_sections(obj)
         out["object_header"] = {"ids": sec["ids"], "sections": sec["count"], "index_at": sec["index_at"]}
         skels = []
-        for off in find_skeletons(obj):
+        for off in ([tail_skeleton(obj)] if tail_skeleton(obj) is not None else find_skeletons(obj)):
             s = skeleton(obj, off)
             skels.append({"off": off, "limbs": s["count"], "lod": s["lod"], "dlcount": s["dlcount"]})
         out["skeletons"] = skels
