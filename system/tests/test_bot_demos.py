@@ -216,3 +216,21 @@ def test_a_demo_brings_its_game_forward_only_on_an_idle_pc(monkeypatch):
     assert T._demo_front("ad") is False and not fronted                # someone is using this PC
     monkeypatch.setattr(worker, "user_idle_seconds", lambda: T.DEMO_FRONT_IDLE_S + 1)
     assert T._demo_front("ad") is True and fronted == ["ad"]
+
+
+def test_a_bot_demo_on_a_dedicated_bot_pc_owns_the_keyboard():
+    # operator 2026-10-22: "i need the i9 nuc autoplaying RE4 when i walk by": on a PC in bot_pcs the demo's input goes
+    # straight to the game; anywhere else it stays polite (never takes someone's keyboard)
+    s, w, saver, calls, tick = rig()
+    s.put("setting", S.SETTING, S.settings(s) | {"enabled": False, "bot_pcs": [w["name"]]})
+    S.autoplay_on_launch(s, "L7", "sc", actor="operator")
+    s.put("job", "L7", {"id": "L7", "state": "running"})
+    s.put("session", f"{w['id']}-L7", {"session_id": f"{w['id']}-L7", "game_id": "sc", "state": "running"})
+    tick(5)
+    tick(S.START_GRACE)
+    assert calls[-1]["input"]["owns_keyboard"] is True
+    d = SimpleNamespace(demo=True, owns_keyboard=True)
+    ad = SimpleNamespace(send_input=lambda rows, polite=False: {"polite": polite})
+    assert T._autoplay_send(ad, d)([{"key": "a"}]) == {"polite": False}
+    d.owns_keyboard = False
+    assert T._autoplay_send(ad, d) is not ad.send_input              # elsewhere: the polite sender

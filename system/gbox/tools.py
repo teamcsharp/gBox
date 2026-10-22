@@ -2345,6 +2345,9 @@ class AutoplayIn(BaseModel):
                                            # plays on like the screensaver (a replay goes on in the learned style), never
                                            # brings a window to the front or takes the keyboard from someone using the
                                            # PC (polite input), and a frozen game is relaunched as a bot demo again
+    owns_keyboard: bool = False            # a bot demo on a PC the operator dedicated to bots (screensaver setting bot_pcs,
+                                           # operator 2026-10-22: "the i9 nuc autoplaying RE4 when i walk by"): its input
+                                           # goes straight to the game, never held back for someone else's keyboard use
 
 class AutoplayOut(BaseModel):
     result: dict
@@ -2425,6 +2428,7 @@ def autoplay(inp: AutoplayIn, ctx: Ctx):
     d.assist_hold_hp = inp.assist
     d.screensaver = (ctx.server, _ap_headers(ctx)) if inp.screensaver else None
     d.demo = bool(inp.demo) and not inp.screensaver
+    d.owns_keyboard = bool(inp.owns_keyboard)
     d.agent_use = bool(getattr(ctx, "agent_use", True))       # the next autoplay job after a relaunch keeps it
     ad, g = SESSIONS[inp.session_id]
     if inp.screensaver:
@@ -3013,7 +3017,7 @@ def _autoplay_send(ad, d):
     takes the operator's keyboard) or the emulator's own."""
     if getattr(d, "screensaver", None):
         return _screensaver_send(ad)
-    if getattr(d, "demo", False):
+    if getattr(d, "demo", False) and not getattr(d, "owns_keyboard", False):
         return _demo_send(ad)
     return ad.send_input
 
