@@ -340,7 +340,7 @@ def test_the_screens_between_rounds_come_from_the_interface_units():
 
 def test_it_presses_only_on_the_reunion_screens():
     assert R.step({"where": "results"}) == "start"
-    assert R.step({"where": "select_stage"}) in ("dright", "cross")   # a random stage (StagePick)
+    assert R.step({"where": "select_stage"}) in ("dleft", "dright", "cross")   # a random stage (StagePick)
     assert R.step({"where": "select_player", "cursor": 6, "target": 6}) == "cross"          # Barry picked, on him
     assert R.step({"where": "select_player", "cursor": 2, "target": 6}) == "dright"
     assert R.step({"where": "select_player", "cursor": 7, "target": 6}) == "dleft"
@@ -782,8 +782,9 @@ def test_bonuses_anywhere_are_walked_to_nearest_first_and_the_clock_jumps_are_co
     monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
     act, bot = tick(with_bonuses(world(), [(0.0, 13.0, 1200.0)]))                 # 12 m ahead, nobody near, no mesh
     assert {"lup", "cross"} <= act["hold"]                                        # straight at it
-    act, b2 = tick(with_bonuses(world(), [(0.0, 13.0, 2500.0), (0.0, 400.0, 900.0)]))   # 25 m off, 9 m up a roof
-    assert {"lup", "cross"} <= act["hold"] and b2.target == "bonus 0x30402000"   # the nearer, whatever its level
+    act, b2 = tick(with_bonuses(world(), [(0.0, 13.0, 1200.0), (0.0, 400.0, 900.0)]))   # 12 m off, 9 m up a roof nearer
+    assert {"lup", "cross"} <= act["hold"] and b2.target == "bonus 0x30401000"   # no mesh: the one on this level
+    assert b2.stats["unreachable_bonuses"] == 1 and b2.stats["bonus_vertical"] == "level +13"   # the roof waits for a mesh
     assert b2.stats["phase"] == "gather_time" and b2.stats["nearest_eta_s"] > 0
     near = [((0.0, 0.0, 300.0), 800, 800)]                                       # a Majini 3 m ahead: fought first
     act, b3 = tick(with_bonuses(world(action=2, enemies=near), [(0.0, 13.0, 1200.0)]))
@@ -1348,7 +1349,7 @@ def test_from_the_title_into_reunion_by_ram():
     assert where_and_key([("uIdStartUp01", extra | {R.EXTRA_CURSOR: 3})]) == ("extra_content", "cross")  # REUNION
     assert where_and_key(["uIdStartUp29"], line=1) == ("reunion_title", "cross")                      # START
     assert where_and_key([("uIdStartUp29", {R.MENU_SUB: 1})], line=1) == ("reunion_solo", "cross")    # SOLO
-    assert where_and_key(["uIdStartUp21", "uIdTopMenu00"]) in (("select_stage", "cross"), ("select_stage", "dright"))
+    assert where_and_key(["uIdStartUp21", "uIdTopMenu00"]) in (("select_stage", "cross"), ("select_stage", "dright"), ("select_stage", "dleft"))
 
 
 def test_re5_plays_through_the_deployment_before_the_engine_is_ready():
@@ -1500,28 +1501,156 @@ def test_a_nearly_straight_route_counts_as_open_floor(tmp_path):
     assert not bot._open(p, {"ptr": 2, "pos": (350.0, 0.0, 50.0)}, u_mesh(), 10.0)
 
 
+def test_no_mesh_never_runs_at_a_bonus_on_another_level(monkeypatch):
+    monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
+    act, bot = tick(with_bonuses(world(), [(0.0, 400.0, 900.0)]))               # only a roof, 9 m up: no line to run
+    assert act == {"hold": set()} and bot.stats["bonus_target"] is None and bot.stats["unreachable_bonuses"] == 1
+
+
+def test_bonus_vertical_relation_is_reported_with_a_mesh():
+    mesh, bot = strip_mesh(), R.Bot()
+    p = {"pos": (0.0, 0.0, 100.0), "rot": 0.0, "action": 0}
+    assert bot._bonus(p, [], [{"ptr": 2, "pos": (0.0, -300.0, 1500.0), "kind": "time"}], 10.0, mesh, 100.0)
+    assert bot.stats["bonus_vertical"] == "below -300"
+
+
+def test_no_mesh_wall_push_gives_up_on_that_bonus():
+    bot = R.Bot()
+    p = {"pos": (0.0, 0.0, 0.0), "rot": 0.0, "action": 0}
+    tgt = {"ptr": 7, "pos": (0.0, 0.0, 1500.0), "kind": "time", "walk": True}
+    t = 10.0
+    while bot.stats["stuck"] < 2 and t < 40.0:                                  # never moves: a wall
+        bot._follow(p, tgt, None, False, t)
+        t += 0.1
+    assert bot.stats["routes_blocked"] == 1 and bot.bonus_skip[7] > t
+
+
+def test_a_majini_on_the_floor_above_is_not_aimed_at(tmp_path):
+    """Live 2026-10-22: a whole minute in Public Assembly's pit at y -200 aiming at Majini on the floor 4 m above
+    (within PURSUE_NEAR on the map). Another level is in sight only with the laser dot on him."""
+    mem, bot, now = _pursuit_bot(tmp_path, (90.0, 400.0, 60.0))
+    snap = R.snapshot(mem)
+    p, e = snap["player"], snap["enemies"][0]
+    assert not bot._open(p, e, None, now[0]) and not bot._threat(p, e)
+    act = bot.tick(snap)
+    assert not act.get("hold", set()) & {"l1", "r1"}
+    snap = R.snapshot(mem)
+    snap["laser"] = {"from": (50.0, 140.0, 50.0), "at": (90.0, 560.0, 60.0)}   # the dot on his head: seen after all
+    bot._see_dot(snap, now[0])
+    assert bot._open(p, e, None, now[0])
+    assert not bot._open(p, e, None, now[0] + R.DOT_MEMORY_S + 0.1)
+
+
+def test_a_same_level_majini_left_out_of_sight_is_not_kept_by_proximity(tmp_path):
+    mem, bot, now = _pursuit_bot(tmp_path, (200.0, 0.0, 50.0))
+    p, e = R.snapshot(mem)["player"], R.snapshot(mem)["enemies"][0]
+    assert bot._open(p, e, None, now[0])                       # 1.5 m, same level: in sight
+    bot.unsighted[e["ptr"]] = now[0] + 2.0                      # the dot stopped short of him (a fence)
+    assert not bot._open(p, e, None, now[0])
+    e = dict(e, pos=(130.0, 0.0, 50.0))                        # right on him: nothing fits between
+    assert bot._open(p, e, None, now[0])
+
+
+def test_open_floor_confirms_sight_only_within_range(tmp_path):
+    mem, bot, now = _pursuit_bot(tmp_path, (50.0, 0.0, 1800.0))
+    p, e = R.snapshot(mem)["player"], R.snapshot(mem)["enemies"][0]
+    assert not bot._open(p, e, None, now[0])                   # 17.5 m off, no dot: walked to, not shot at
+
+
+def test_a_time_bonus_beats_a_visible_majini_further_off(monkeypatch):
+    """Operator 2026-10-22: "urgently seeking and acquiring time bonuses"; only a close Majini in sight stops it."""
+    monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
+    m = with_bonuses(world(action=2, combo=0, enemies=[((0.0, 0.0, 900.0), 800, 800)]), [(0.0, 13.0, 2400.0)])
+    bot = R.Bot(m, clock=lambda: 10.0, lessons=lambda e: None)
+    act = bot.tick(R.snapshot(m))
+    assert bot.stats["phase"] == "gather_time" and {"lup", "cross"} <= act["hold"] and "l1" not in act["hold"]
+    m = with_bonuses(world(action=2, combo=0, enemies=[((0.0, 0.0, 250.0), 800, 800)]), [(0.0, 13.0, 2400.0)])
+    bot = R.Bot(m, clock=lambda: 10.0, lessons=lambda e: None)
+    act = bot.tick(R.snapshot(m))
+    assert bot.stats["phase"] == "clear_nearby" and "l1" in act["hold"]
+
+
+def test_a_time_bonus_is_taken_even_when_the_strategy_would_keep_the_combo(monkeypatch):
+    monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
+    m = with_bonuses(world(combo=12, combo_t=1.0), [(0.0, 13.0, 2400.0)])     # the combo window nearly gone
+    bot = R.Bot(m, clock=lambda: 10.0, lessons=lambda e: None)
+    act = bot.tick(R.snapshot(m))
+    assert bot.stats["phase"] == "gather_time" and {"lup", "cross"} <= act["hold"]
+    assert bot.stats["strategy_decision"].startswith("time bonus first")
+
+
+def test_a_stage_prompt_held_back_by_close_foes_is_taken_after_the_yield_window(tmp_path):
+    t = [10.0]
+    bot = R.Bot(clock=lambda: t[0], learn_dir=tmp_path)
+    foe = {"ptr": 1, "slot": 1, "pos": (0.0, 0.0, 200.0), "hp": 800, "hp_max": 800}
+    snap = {"player": {"pos": (0.0, 0.0, 0.0), "hp": 1000, "rot": 0.0, "action": 0},
+            "timer": 100.0, "enemies": [foe], "stage_prompt": True}
+    bot.observe_round(snap, "playing", t[0])
+    assert bot.tick(snap) != {"tap": "square"}                  # a foe in reach: fight first
+    t[0] += R.STAGE_YIELD_S + 0.1
+    assert bot.tick(snap) == {"tap": "square"}                  # a fence between: the prompt wins
+    assert bot.stats["stage_yielded_to_foes"] == 1
+
+
 def test_stage_select_takes_a_random_stage_each_visit():
-    # operator 2026-10-22: "have the bot go between the stages randomly during the select"
+    # operator 2026-10-22: "have the bot go between the stages randomly during the select"; the row doesn't wrap, so a
+    # visit parks the cursor on the first stage (MAX_MOVES lefts) before a random number of rights
     import random
-    pick = R.StagePick(rng=random.Random(4))
     scr = {"where": "select_stage"}
-    sent = []
-    for _ in range(40):                                    # the Navigator: step, then pressed() for each key it sends
-        key = pick.key(scr)
-        sent.append(key)
-        pick.pressed(scr, key)
-        if key == "cross":
-            break
-    assert sent[-1] == "cross" and set(sent[:-1]) <= {"dright"} and len(sent) - 1 <= R.StagePick.MAX_MOVES
-    assert pick.left is None                               # the next visit draws again
+
+    def visit(pick):
+        sent = []
+        for _ in range(40):                                # the Navigator: step, then pressed() for each key it sends
+            key = pick.key(scr)
+            sent.append(key)
+            pick.pressed(scr, key)
+            if key == "cross":
+                return sent
+        raise AssertionError(sent)
+
+    pick = R.StagePick(rng=random.Random(4))
+    sent = visit(pick)
+    lefts, rights = sent.count("dleft"), sent.count("dright")
+    assert sent[:lefts] == ["dleft"] * R.StagePick.MAX_MOVES and lefts == R.StagePick.MAX_MOVES
+    assert sent[lefts:-1] == ["dright"] * rights and rights <= R.StagePick.MAX_MOVES and pick.plan is None
     held = pick.key(scr)                                   # a key the Navigator held back (settle) is not counted
-    left = pick.left
-    assert pick.key(scr) == held and pick.left == left
-    pick.pressed({"where": "select_player"}, "cross")      # presses elsewhere never touch the stage pick
-    assert pick.left == left
-    draws = {R.StagePick(rng=random.Random(s)).key(scr) for s in range(30)}
-    assert draws == {"dright", "cross"}                    # some visits move, some take the stage under the cursor
-    assert R.step({"where": "select_stage"}) in ("dright", "cross")
+    assert pick.key(scr) == held and len(pick.plan) == R.StagePick.MAX_MOVES + len(pick.plan) - R.StagePick.MAX_MOVES
+    before = list(pick.plan)
+    pick.pressed({"where": "select_player"}, "dleft")      # presses elsewhere never touch the stage pick
+    assert pick.plan == before
+    stages = {visit(R.StagePick(rng=random.Random(s))).count("dright") for s in range(60)}
+    assert stages == set(range(R.StagePick.MAX_MOVES + 1))  # every stage, first to last
+    assert R.step({"where": "select_stage"}) in ("dleft", "dright", "cross")
+
+
+def test_a_bot_standing_still_off_the_stand_breaks_out_of_the_spot(tmp_path):
+    mem, bot, now = _pursuit_bot(tmp_path, (260.0, 0.0, 50.0))
+    bot.spawn, bot.at_stand = (5000.0, 0.0, 5000.0), False
+    mesh = corner_mesh()
+    snap = _snap(mem, mesh)
+    bot.enemies_seen = None
+    acts = []
+    for t in (10.0, 12.0, 14.0, 16.5, 17.0, 17.5):
+        now[0] = t
+        acts.append(bot._idle_breakout(snap, {"hold": set()}))
+    assert bot.stats["idle_breakouts"] == 1
+    assert {"lup"} <= acts[-1]["hold"] or acts[-1]["hold"] & {"rleft", "rright"}
+    now[0] = 25.0                                   # the walk is over: the normal decision resumes
+    assert bot._idle_breakout(snap, {"hold": {"x"}}) == {"hold": {"x"}} and bot._idle_walk is None
+
+
+def test_a_far_majini_behind_a_wall_is_never_run_at_in_a_straight_line(tmp_path, monkeypatch):
+    """Coaching note 14 (\"you are trying to walk through a wall\"): beyond ENGAGE the fallback ran straight at the
+    nearest Majini (up + cross) whatever stood between. With a mesh it takes the route round the wall instead."""
+    mesh = u_mesh()
+    monkeypatch.setattr(R, "ENGAGE", 100.0)
+    mem, bot, _ = _pursuit_bot(tmp_path, (350.0, 0.0, 50.0))
+    bot.combat = None
+    assert not mesh.floor_segment((50.0, 0.0, 50.0), (350.0, 0.0, 50.0))
+    act = bot.tick(_snap(mem, mesh))
+    assert bot.stats["phase"] == "pursue" and bot.route and bot.route_for == ("enemy", ENEMIES[0])
+    assert not act["hold"] & {"lup", "cross"}                 # turning toward the way round, not driving into the wall
+    assert not bot.nav_learning.stages.get(mesh.learning_sig, {}).get("routes")
 
 
 def test_repeated_wall_stalls_walk_wider_angles_until_free_ground():

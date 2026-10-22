@@ -349,6 +349,17 @@ def test_a_reported_snapshot_is_still_a_last_played_moment(reports):
     assert last_played.moment_of(reports.store, crashed)["artifact"] == DIGEST
 
 
+def test_a_report_on_a_bot_demo_says_it_is_a_live_demo_report(reports):
+    """A report filed while the operator watches a bot demo names the run kind so Hermes analyses state live."""
+    from gbox import screensaver
+    reports.start("dolphin")
+    plain = reports.store.get("request", file_issue(reports))["body"]
+    assert "## Run kind" not in plain
+    reports.store.put(screensaver.BOT_DEMO, SID.split("-", 1)[-1], {"job": "moment", "game_id": GID, "by": "operator", "agent": False, "at": time.time()})
+    body = reports.store.get("request", file_issue(reports))["body"]
+    assert "## Run kind\nBot demo (autoplay)" in body and "Ghidra" in body
+
+
 def test_other_emulators_keep_their_own_save_state(reports):
     """No slot of gBox's own (DuckStation, mGBA, RPCS3...): today's session_op save_state, saying no false slot."""
     reports.start("dolphin")

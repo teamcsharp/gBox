@@ -32,6 +32,10 @@ BOOT_LOST_S = 600.0         # before the boot's first named screen: an emulator'
                             # a PS3 game installs its data (RPCS3 on JAYBUILTFINALE, 2026-10-22: "Precompiling shader
                             # interpreter variants" > 30 s, then "Installing RESIDENT EVIL 5 GOLD EDITION" for minutes)
 WAITS = ("attract",)        # screens that run their own length (movies): never "stuck"
+LOADING_S = 420.0           # a named "loading" screen (NOW LOADING / saving: a PS3 stage load that compiles shaders on RPCS3)
+                            # may take this long before it counts as frozen: RAM shows the same screen all the while, so
+                            # MENU_STUCK_S (120 s) ended the run and relaunched a game that was only loading (operator
+                            # coaching note 13, RE5: "did the game freeze" on a NOW LOADING screen)
 POLL_S = 0.25               # how often the menus are read out of a round
 
 
@@ -122,6 +126,7 @@ class Boot:
         self.hooked, self.moment_tried, self.at_jump = False, False, False
         self.lost_since, self.still_since, self.progress = None, None, None
         self.boot_pressed, self.named = float("-inf"), False
+        self.loading_since = None
 
     def tick(self, now: float | None = None, merc=None, scr: dict | None = None) -> str | None:
         now = self.clock() if now is None else now
@@ -166,8 +171,23 @@ class Boot:
         else:
             self.lost_since, self.named = None, True
         self.nav.tick(scr)
+        loading = scr.get("where") == "loading"
+        if loading:
+            if self.loading_since is None:
+                self.loading_since = now
+            waited = now - self.loading_since
+            self.stats["loading_s"] = round(waited, 1)
+            self.stats["screen_note"] = "loading %.0f s: waiting, not frozen (hung at %.0f s)" % (waited, LOADING_S)
+        elif self.loading_since is not None:
+            self.stats["last_loading_s"] = round(now - self.loading_since, 1)
+            self.loading_since = None
+            self.stats.pop("screen_note", None)
         if self.stats.get("ram_progress") != self.progress or scr.get("where") in WAITS:
             self.progress, self.still_since = self.stats.get("ram_progress"), now
+        elif loading:
+            if now - self.loading_since > LOADING_S:
+                return "stuck loading for %.0f s (the screen never changed)" % (now - self.loading_since)
+            self.still_since = now                          # a load is not "nothing moved": it has its own budget
         elif now - (self.still_since or now) > (MENU_STUCK_S if self.named else BOOT_LOST_S):
             return "nothing moved in RAM for %.0f s on %s" % (now - self.still_since, scr.get("where"))
         return None
