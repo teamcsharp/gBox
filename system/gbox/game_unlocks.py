@@ -59,6 +59,13 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
 
 def profile_for(game: dict) -> dict:
     from . import doax2_unlock
+    from . import popww_unlock
+    if game.get('game_id') == popww_unlock.GAME_ID and game.get('platform') == popww_unlock.PLATFORM:
+        # Prince of Persia - Warrior Within (GameCube, disc G2OE41): the exact owned
+        # revision is bound and its category inventory is attached, but no native
+        # unlock flag or save write path is proven, so no writer is reachable.
+        return {'status': 'pending_research', 'profile': None, 'verified': False,
+                'scope': list(popww_unlock.CATEGORIES), **popww_unlock.profile_gate()}
     if game.get('game_id') == doax2_unlock.GAME_ID and game.get('platform') == doax2_unlock.PLATFORM:
         # Honest gate for DOAX2: research pending, no verified write targets exist.
         # pre_launch below short-circuits on verified=False, so no writer is reachable.
