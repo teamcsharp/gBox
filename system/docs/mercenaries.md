@@ -302,8 +302,19 @@ the Spark's RPCS3; the frames in `docs/evidence/re5-mods/` are real frames of th
 * **Randomizer:** `random_cheats` = fire x80 always, turn x2 or x3, damage x1 / x3 / x10, infinite ammo, the
   loadout re-drawn (3 in 4); what it picked is the op's "telemetry", which `mercs_bot` shows as stats["cheats"].
   The RE5 profile's `round_ops` runs it at every CHARACTER SELECT visit (the one-time `package` stays).
-* **Not done yet**: grenade bullets (the bullet-type word in the definition record is the candidate; needs one live
-  shot), self-immunity (the explosive's damage path: not located offline).
+* **Time (coded 2026-10-21, not yet seen live):** `add_time seconds=60` writes what the game's own add-time routine
+  0x18C64(gs, seconds) writes: cGameSys (sBioMain [0x0191CEE4] +0x182D4) +0x3E0 clock + N, +0x3E8 = N (the HUD's
+  "+NN Sec."), +0x3EC = 1, +0x4DC total + N. `time_bonus_multiplier multiplier=1..20`: the hourglasses' own seconds
+  (uOm0100 unit +0x14A4 s16, 30 / 60; the pickup passes it to 0x18C64 at 0x7240E4) x N where they stand, once per
+  round. The melee finisher's +5 is the code immediate `li r4, 5` at 0x000231A4 (the only +5 site, called from the
+  kill routine 0x22E94): to be scaled per session by an RPCS3 boot patch (`patches/BLUS30491_patch.yml` + the
+  `patch_config.yml` enabling it, key PPU-a9b0ce57ebd318bd02879751067ceca83b508dd1, one `[be32, 0x000231A4,
+  0x388000NN]` line with NN = 5 x N; the adapters write it at launch with a random N in 1..20 and log the pick), which
+  `time_bonus_multiplier` reads back as `melee_bonus_x`. The per-enemy variant has no input in that path (one
+  immediate), so the per-session multiplier applies to every finisher.
+* **Not done yet**: the boot patch writer (above), grenade bullets (the definition record's +0x134 bullet-type word
+  is the candidate: handguns 1, the grenade launcher 6; one live shot decides, a wrong guess can crash the round),
+  self-immunity (the explosive's damage path: not located offline).
 
 ## Live checks (to run once, then flip `live_checked`)
 

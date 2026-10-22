@@ -133,3 +133,22 @@ pursuit takes over. Time without a laser (the gun coming up) is not counted. The
 
 Tests: `tests/test_re5_mercs.py` (`u_mesh` wall, corner straight route, dot short / at a wall / never on him,
 laser-view classes). Live validation requires the deployed worker (see the PR).
+
+## Time bonuses first; the gun only for confirmed sight (2026-10-22)
+
+Operator, watching live: "a lot of time shooting at the wall instead of navigating the level and getting the time
+bonuses", "he is shooting at nonsense". A read-only RAM trace on JAYBUILTFINALE found the bot a whole minute in Public
+Assembly's pit (y -200) aiming at Majini on the floor 4 m above it: their map distance was under `PURSUE_NEAR`, so
+`_open` called them in sight and `_lost_sight` never released them. All 9 hourglasses stood.
+
+* **Sight is level-aware** (`Bot._open`). Another level (`LEVEL_DY` 150 cm) is in sight only when the laser dot was on
+  him within `DOT_MEMORY_S`. On the player's level: right next to him (`TOO_CLOSE`), within `PURSUE_NEAR` unless the
+  laser left him out of sight, or open floor (`floor_segment` within `CONFIRM_R` 15 m, a barely bending route within
+  `BEND_R` 8 m). Everyone else is walked to.
+* **Time bonuses first**. Only a close Majini in sight (`close_foes`, or one in the way: `_threat`) stops the gather.
+  For time bonuses the strategy's combo and health refusals are overridden (`HARD_REFUSALS` keep the safety ones).
+* **No fire without a line** (`re5_combat.line_to`): the dot on him, a ray running through his head / chest / thighs,
+  a ray reaching his distance within `FIRE_CONE`, or point blank (`POINT_BLANK`, his level). A dot at the muzzle,
+  short of him, beside him or on the ground holds the trigger. `fire_gate` in the telemetry says which.
+* **Swing round with the gun down**: a Majini more than `SWING_TURN` (45 deg) off the body's heading is turned to with
+  the gun lowered (~150 deg/s) instead of aiming round (~30 deg/s).
