@@ -48,3 +48,16 @@ def test_sessions_list_is_running_plus_the_newest_ended_rows(cfg):
     assert [r["session_id"] for r in client.get("/api/sessions?limit=3").json()] == ["w1-new4", "w1-new3", "w1-new2", "w1-live"]
     assert len(client.get("/api/sessions?limit=0").json()) == 86    # the whole archive on request
     assert [r["session_id"] for r in client.get("/api/sessions?include_ended=false").json()] == ["w1-live"]
+
+
+def test_running_session_on_an_offline_pc_is_flagged(cfg):
+    """#2870: connecting to a 'running' session whose PC is gone showed nothing; the row says so, the view skips it."""
+    app = create_app(cfg)
+    store = app.state.store
+    now = time.time()
+    store.put("session", "ghostpc-s1", {"session_id": "ghostpc-s1", "game_id": "g", "title": "G", "state": "running",
+                                        "started": now - 50, "worker_id": "ghostpc"})
+    store.put("worker", "ghostpc", {"id": "ghostpc", "name": "Ghost", "os": "windows", "last_seen": now - 100000})
+    client = TestClient(app, headers={"Authorization": f"Bearer {cfg.token()}"})
+    rows = {r["session_id"]: r for r in client.get("/api/sessions").json()}
+    assert rows["ghostpc-s1"].get("worker_online") is False

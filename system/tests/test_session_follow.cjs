@@ -80,3 +80,9 @@ test('web shell: an ended or empty Sessions view follows the live game; the list
   assert.match(web, /F\.idleHTML\(await api\("\/api\/autoplay-screensaver"\)/);
   assert.match(web, /followNote\(sid, head\);/);
 });
+
+test('a running session on an offline PC is never followed (#2870)', () => {
+  const ghost = { ...DOA3, session_id: 'jay-x', worker_online: false };
+  assert.equal(F.pick([ghost], { session_id: 'jay-x' }), null);
+  assert.equal(F.pick([ghost, NEW_DARK], null).session, NEW_DARK);
+});
