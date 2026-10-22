@@ -136,6 +136,9 @@ RECOVER_S = 1.2                                  # just up from a hit, a Ganado 
                                                  # (operator: "getting slapped on by these people over and over")
 ELEV_DY = 600.0                                  # a target this far above / below: raise or lower the aim; else level
 BODY_LO, CHEST_H, BODY_HI = 700.0, 1150.0, 1650.0   # a Ganado's body above his feet: a shot anywhere in it lands
+HEAD_LO, HEAD_AIM_H = 1300.0, 1520.0             # operator 2026-10-22: "never shooting at the ground ... aiming at heads": a shot
+                                                 # leaves only with the aim inside the head band (HEAD_LO .. BODY_HI above
+                                                 # his feet, never below the gun), and the stick settles on HEAD_AIM_H
 BODY_HALF_W = 180.0                              # ... and to either side of his middle
 PITCH_RATE = 1.0                                 # radians a second the stick moves the aim pitch (learned as he plays;
                                                  # the routine ramps the stick over 7 frames: ~2.4 a second held)
@@ -613,7 +616,7 @@ class Bot:
         pitch = 0.0
         cur = p.get("pitch")                                 # the game keeps it between aims: known before R
         if cur is not None and t.kind != "thrown":
-            lo = math.atan2(t.pos[1] + BODY_LO - (py + GUN_H), max(dist, 1.0))
+            lo = math.atan2(t.pos[1] + HEAD_LO - (py + GUN_H), max(dist, 1.0))
             hi = math.atan2(t.pos[1] + BODY_HI - (py + GUN_H), max(dist, 1.0))
             off = max(lo - cur, cur - hi, 0.0)
             pitch = off / max(self.pitch_rate, 0.05)
@@ -800,23 +803,22 @@ class Bot:
         return self.r_since is not None and now - self.r_since >= PITCH_AFTER
 
     def _aim_body(self, p, target_y: float, dist: float, now: float) -> tuple[set, bool]:
-        """A Ganado's body from BODY_LO to BODY_HI above his feet: any aim pitch inside it lands (a level aim does at
-        every range on flat ground: no stick needed, he fires as soon as the pose is up); outside it (a Ganado up a
-        slope, the last aim left high or low - the game keeps it between aims), the stick brings the aim to his
-        chest."""
+        """A Ganado's head: the aim must sit between HEAD_LO and BODY_HI above his feet to fire (never at the ground or
+        his legs: a level aim at the gun's own height already is that band on flat ground); outside it the stick
+        brings the aim to HEAD_AIM_H and holds it there, steady."""
         cur = p.get("pitch")
         if cur is None or self.r_since is None or not self._pose_up(p, now):
             self.pitch_key, self.pitch_seen, self.pitch_push = None, None, None
             return set(), False
         gun = p["pos"][1] + GUN_H
         off = PITCH_STEPS[self.pitch_i]                      # learned from misses at raised / lowered targets
-        lo = math.atan2(target_y + BODY_LO - gun, max(dist, 1.0)) + off
+        lo = math.atan2(target_y + HEAD_LO - gun, max(dist, 1.0)) + off
         hi = math.atan2(target_y + BODY_HI - gun, max(dist, 1.0)) + off
-        margin = min(0.04, (hi - lo) * 0.2)
+        margin = min(0.02, (hi - lo) * 0.2)
         if lo + margin <= cur <= hi - margin:
             self.pitch_key, self.pitch_seen, self.pitch_push = None, (now, cur, None), None
             return set(), True
-        return self._aim_height(p, target_y + CHEST_H, dist, now)
+        return self._aim_height(p, target_y + HEAD_AIM_H, dist, now)
 
     def _aim_height(self, p, target_y: float, dist: float, now: float, offset: bool = True) -> tuple[set, bool]:
         """The stick key that moves the aim towards target_y while R is held, and whether the aim is there. Reads the
