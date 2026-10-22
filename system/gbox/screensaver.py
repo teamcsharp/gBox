@@ -38,7 +38,8 @@ SETTING = "autoplay_screensaver"
 STATE = "autoplay_screensaver_run"          # worker name -> current run
 LOG = "autoplay_screensaver_log"            # run id -> finished run
 DEFAULTS = {"enabled": True, "workers": ["*"], "idle_minutes": 10, "session_minutes": 20,
-            "min_pads": 300, "games": [], "roulette": True}
+            "min_pads": 300, "games": [], "roulette": True,
+            "bot_pcs": []}                  # PCs dedicated to bots: a bot demo there owns the keyboard (no polite input)
 FAVORITE_MIN_PADS = 50                       # a favorite joins with this much recorded play (or a playbook)
 LAUNCH_TIMEOUT = 15 * 60
 START_GRACE = 20                            # s after the session is up before autoplay starts (boot settles)
@@ -244,7 +245,10 @@ class Screensaver:
             if now - p["up"] < START_GRACE:
                 continue
             sid = sess["session_id"]
-            self.submit(JobRequest(tool="autoplay", input={"session_id": sid, "op": "start", "mode": "auto", "demo": True},
+            names = {w.get("id"): w.get("name") for w in self.workers()}
+            owns = names.get(sid.split("-")[0]) in settings(self.store)["bot_pcs"]
+            self.submit(JobRequest(tool="autoplay", input={"session_id": sid, "op": "start", "mode": "auto", "demo": True,
+                                                           **({"owns_keyboard": True} if owns else {})},
                                    agent_use=bool(p.get("agent", False)), require_worker=sid.split("-")[0]),
                         actor=DEMO_ACTOR, origin={"via": "bot demo (autoplay on launch)", "session_id": sid,
                                                   "launched_by": p.get("actor") or "operator"})
@@ -428,6 +432,7 @@ class Settings(BaseModel):
     min_pads: int | None = None
     games: list[str] | None = None
     roulette: bool | None = None
+    bot_pcs: list[str] | None = None       # PC names dedicated to bots (a bot demo there owns the keyboard)
 
 
 class Yield(BaseModel):

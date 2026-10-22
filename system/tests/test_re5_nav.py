@@ -275,3 +275,35 @@ def test_ram_mesh_cache_does_not_keep_old_geometry_after_unload_or_buffer_replac
     memory.word(nav + N.NM_POINTS, points + 0x6000)
     third = N.read(memory, cache)
     assert third.learning_sig != second.learning_sig and len(cache) == 1
+
+
+def test_a_goal_on_top_of_an_object_is_not_routed_to_its_foot():
+    """RE5 bus: the time bonus on the roof sits above the street's floor; the route must not end at the bus wall."""
+    mesh = floor_grid([(0, 0), (1, 0), (2, 0)])
+    start = (20., 0., 50.)
+    assert mesh.route(start, (250., 0., 50.))[-1] == (250., 0., 50.)
+    assert mesh.route(start, (250., 120., 50.)) is None          # roof height above the street: unreachable here
+    assert mesh.route_length(start, (250., 120., 50.)) is None
+    assert mesh.route(start, (250., 60., 50.))[-1] == (250., 60., 50.)   # a kerb / step is still walked
+
+
+def bus_mesh(link_up=True):
+    """Street floor (tris 0,1) and a bus roof 150 cm higher (tris 2,3); an optional off-mesh climb link street -> roof."""
+    street = [(0.0, 0.0, 0.0), (200.0, 0.0, 0.0), (200.0, 0.0, 200.0), (0.0, 0.0, 200.0)]
+    roof = [(300.0, 150.0, 0.0), (500.0, 150.0, 0.0), (500.0, 150.0, 200.0), (300.0, 150.0, 200.0)]
+    links = [[(1, 2, 1.0)], [(0, 0, 1.0)], [(3, 2, 1.0)], [(2, 0, 1.0)]]
+    if link_up:
+        links[1].append((2, 1, 1.0))                  # climb onto the roof; one-way, as a recorded action link
+    return NavMesh(street + roof, [(0, 1, 2), (0, 2, 3), (4, 5, 6), (4, 6, 7)], links)
+
+
+def test_a_roof_bonus_is_routed_through_the_climb_link_and_only_then():
+    start, bonus = (20.0, 0.0, 50.0), (450.0, 150.0, 100.0)
+    linked, unlinked = bus_mesh(True), bus_mesh(False)
+    assert not linked.elevated(bonus) and not unlinked.elevated(bonus)   # the roof is real floor under the bonus
+    route = linked.route(start, bonus)
+    assert route is not None and route[-1] == bonus
+    assert any(abs(p[1] - 150.0) < 1.0 for p in route)                   # the route actually goes up
+    assert linked.route_length(start, bonus) is not None
+    assert unlinked.route(start, bonus) is None                          # no way up: give the bonus up, not the wall
+    assert unlinked.route_length(start, bonus) is None

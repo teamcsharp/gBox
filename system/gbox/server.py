@@ -5183,6 +5183,16 @@ def create_app(config: Config) -> FastAPI:
                  f"emulator {s_.get('adapter') or s_.get('emulator') or '?'}, session {r.session_id or '-'}, worker {(r.session_id or '-').split('-')[0]})"]
         if r.detail:
             lines.append(f"## What gBox showed\n{r.detail}")
+        if r.session_id:
+            try:
+                from .screensaver import bot_demo as _bd
+                demo = _bd(store, r.session_id)
+            except Exception:                         # noqa: BLE001  (the report goes in without the run kind)
+                demo = None
+            if demo:
+                lines.append("## Run kind\nBot demo (autoplay): the operator is watching it live, possibly from a PC they are active on. "
+                             "Treat this as a live improvement report: analyse the session's state (gameplay memory, RAM/byte changes, "
+                             "Ghidra on the running build) and keep the operator's input and session untouched; the PC is theirs.")
         if r.session_id and s_.get("mod"):
             lines.append(f"## Disc / model mod this session was launched with\n{s_['mod']}")
         kept = [(store.get("mod", m) or {"title": m}) for m in r.kept_mods[:30]]

@@ -232,3 +232,54 @@ def test_boot_confirms_screens_ram_cannot_name_with_the_titles_boot_key():
     now[0] = 100.0
     plain.tick(); now[0] = 110.0; plain.tick()
     assert sent == []                                       # a title without BOOT_KEY presses nothing it can't name
+
+
+class _LoadingMenus:
+    """A menus module that always reads a NOW LOADING screen (RE5 PS3 stage load) and never presses."""
+    @staticmethod
+    def screen(m, merc=None):
+        return {"where": "loading", "cursor": None}
+
+    @staticmethod
+    def step(scr):
+        return None
+
+    @staticmethod
+    def wandered(scr):
+        return None
+
+
+def _boot_clock():
+    now = [0.0]
+    return now, MB.Boot(_LoadingMenus, None, lambda rows: None, sleep=lambda s: None, clock=lambda: now[0], stats={})
+
+
+def test_a_long_load_is_waited_out_and_reported_not_called_frozen():
+    now, boot = _boot_clock()
+    boot.named = True
+    for t in range(0, int(MB.MENU_STUCK_S) + 200, 5):        # well past the 120 s "nothing moved" limit
+        now[0] = float(t)
+        assert boot.tick(now[0]) is None
+    assert boot.stats["loading_s"] >= MB.MENU_STUCK_S
+    assert "not frozen" in boot.stats["screen_note"]
+
+
+def test_a_load_that_never_ends_still_ends_the_run_at_its_own_limit():
+    now, boot = _boot_clock()
+    boot.named = True
+    why = None
+    for t in range(0, int(MB.LOADING_S) + 30, 5):
+        now[0] = float(t)
+        why = boot.tick(now[0])
+        if why:
+            break
+    assert why and "stuck loading" in why and now[0] > MB.LOADING_S
+
+
+def test_leaving_the_load_clears_the_note_and_keeps_its_length():
+    now, boot = _boot_clock()
+    boot.named = True
+    boot.tick(0.0)
+    boot.tick(200.0)
+    boot.tick(210.0, scr={"where": "results", "cursor": None})
+    assert boot.stats["last_loading_s"] == 210.0 and "screen_note" not in boot.stats
