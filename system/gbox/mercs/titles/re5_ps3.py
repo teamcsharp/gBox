@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 
 from ..driver import Driver
-from . import re5_combat, re5_nav, re5_weapons
+from . import re5_combat, re5_motion, re5_nav, re5_weapons
 
 S_PLAYER, S_ENEMY, S_MAIN = 0x017FEB34, 0x017FDB60, 0x0191CEE4
 S_ACTION, S_ITEM, S_UNIT = 0x017B7174, 0x017FE574, 0x0191D700
@@ -777,6 +777,8 @@ class Bot:
         for k in ("shots_s", "hits", "kills_seen", "max_combo", "turns", "backoffs", "stuck"):
             self.stats.setdefault(k, 0)
         self.target = None
+        self.hold_heading = re5_motion.HeadingHold()
+        self.meter = re5_motion.MotionMeter()
         self.aiming_since = None
         self.pulse = 0
         self.hist: list = []
@@ -1068,6 +1070,10 @@ class Bot:
 
     def tick(self, snap: dict) -> dict:
         self._following_route = False
+        p = snap.get("player")
+        if p:
+            self.meter.observe(self.clock(), p["pos"], p["rot"])
+            self.stats.update({"motion_" + k: v for k, v in self.meter.summary().items()})
         try:
             return self._idle_breakout(snap, self._tick(snap))
         finally:
@@ -1875,7 +1881,10 @@ class Bot:
         if spot is not None and math.hypot(px - spot[0], pz - spot[1]) > DETOUR_FREE:
             self.detour_spot, self.detour_n = None, 0
         if not precise:                                   # a route walk has its own blocked-route handling
-            want = wrap(want + self.detour_angle())
+            want = wrap(self.hold_heading.pick(want, now) + self.detour_angle())   # hysteresis, then wall detour
+            self.stats["heading_flips_held"] = self.hold_heading.flips_suppressed
+        else:
+            self.hold_heading.reset()
         err = wrap(want - p["rot"])
         keys = self._turn(err, aiming=False)
         if abs(err) > (TURN_TOL if precise else math.radians(60)):
