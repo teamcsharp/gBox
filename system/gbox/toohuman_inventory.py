@@ -211,3 +211,43 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
+
+
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# .zzz container probe (Too Human, analysis stage)
+# Verified against the owned disc: a .zzz.gz is a gzip wrapper around a
+# "f00dcafe" container whose payload embeds Unreal Engine 3 cooked packages.
+# Those packages start with the ASCII magic "FACB".
+# ---------------------------------------------------------------------------
+ZZZ_MAGIC = b"\xf0\x0d\xca\xfe"
+UE3_PACKAGE_MAGIC = b"FACB"
+
+
+def find_ue3_packages(payload):
+    """Locate the UE3 cooked packages embedded in a decompressed .zzz payload.
+
+    Returns one dict per package: offset, and the 16 header words that follow
+    the magic (big-endian), which the format reader still has to map onto the
+    loader routines.
+    """
+    out = []
+    for m in re.finditer(re.escape(UE3_PACKAGE_MAGIC), payload):
+        off = m.start()
+        if off % 4:
+            continue
+        hdr = payload[off + 4:off + 20]
+        out.append({
+            "offset": off,
+            "header_u32": [int.from_bytes(hdr[i:i + 4], "big") for i in range(0, 16, 4)],
+        })
+    return out
+
+
+def zzz_probe(payload):
+    """Summarise a decompressed .zzz container: size plus the UE3 packages in it."""
+    if payload[:4] != ZZZ_MAGIC:
+        raise ValueError("not a .zzz container: bad magic %r" % (payload[:4],))
+    packages = find_ue3_packages(payload)
+    return {"size": len(payload), "ue3_count": len(packages), "ue3_packages": packages}
