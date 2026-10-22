@@ -112,7 +112,7 @@ test('server capability blocks a supported control; unimplemented hooks never se
 
 test('unknown state and escaped server reasons cannot become checked working controls', () => {
   const html = M.html({ status: { capabilities: { random_weapon: { available: false, reason: '<script>bad</script>' } } }, stale: false });
-  assert.equal((html.match(/aria-checked="mixed"/g) || []).length, 5);
+  assert.equal((html.match(/aria-checked="mixed"/g) || []).length, 6);
   assert.match(html, /&#60;script&#62;bad&#60;\/script&#62;/);
   assert.doesNotMatch(html, /<script>bad/);
 });
