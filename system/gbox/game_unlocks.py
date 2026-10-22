@@ -13,6 +13,7 @@ RE6_ID = '0871eee3b68cdea3'
 RE6_TEMPLATE_SHA256 = '194cb5b71858f65feeb2b1703642ddc4ffde09b9a087119189b29b0ad7b83f11'
 DOAPP_ID = '59c55e95af61abbe'  # Dead Or Alive ++ (Korea), platform=arcade
 NDS_WCW_GAME_ID = 'd9467f457f53f2c7'  # Call of Duty: World at War (USA), NDS
+PSO3_EP3_ID = '5b5ecb4c36a13584'  # Phantasy Star Online Episode III - C.A.R.D. Revolution (USA)
 
 
 def pre_launch(game: dict, ctx, mod: str = '') -> dict:
@@ -33,6 +34,17 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
                     'reason': record['reason'],
                     'proven_revisions': record['proven_revisions'],
                     'unknown_counts': record['unknown_counts']}
+        if game.get('game_id') == PSO3_EP3_ID and game.get('platform') == 'gamecube':
+            # Phantasy Star Online Episode III - C.A.R.D. Revolution (USA): research only.
+            # The owned disc is a different executable from the Episode I & II Plus tools and
+            # no catalogued entry has been observed being selected and played, so the fast
+            # path reports the research state and writes nothing.
+            from . import pso3_unlocks
+            record = pso3_unlocks.profile()
+            return {'state': 'research_pending', 'applied': False,
+                    'reason': record['reason'], 'profile': record['profile'],
+                    'scope': record['scope'], 'exclusions': record['exclusions'],
+                    'items': record['items'], 'next': record.get('next')}
         return {'state': 'research_pending', 'applied': False, 'reason': profile['reason']}
     if game.get('game_id') == RE6_ID and game.get('platform') == 'xbox360':
         from . import re6_tool
@@ -64,6 +76,15 @@ def profile_for(game: dict) -> dict:
         # pre_launch below short-circuits on verified=False, so no writer is reachable.
         return {'status': 'pending_research', 'profile': None, 'verified': False,
                 'scope': list(doax2_unlock.CATEGORIES), **doax2_unlock.profile_gate()}
+    if game.get('game_id') == PSO3_EP3_ID and game.get('platform') == 'gamecube':
+        from . import pso3_unlocks
+        prof = pso3_unlocks.profile()
+        return {'status': prof['status'], 'profile': prof.get('profile'),
+                'verified': prof.get('verified', False), 'scope': prof.get('scope', []),
+                'exclusions': prof.get('exclusions', []), 'evidence': prof.get('evidence', {}),
+                'items': prof.get('items', []), 'save_effect': prof.get('save_effect', 'None'),
+                'game_id': prof.get('game_id'), 'reason': prof.get('reason', ''),
+                'requires_save_upgrade_opt_in': False}
     if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,
                 'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}
