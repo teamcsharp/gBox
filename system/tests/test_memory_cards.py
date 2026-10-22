@@ -625,8 +625,35 @@ def test_checkout_refuses_takeover_when_the_old_copys_save_cannot_be_synced(tmp_
     assert not _leases(calls)                      # the card was never leased away from the old copy
 
 
-def test_launch_game_passes_keep_session_to_checkout():
-    import inspect
-    from gbox import tools
-    src = inspect.getsource(tools._launch_game)
-    assert 'keep=inp.keep_session' in src and 'memory_card_sessions.checkout' in src
+def test_launch_game_passes_keep_session_to_checkout(tmp_path, monkeypatch):
+    """Drive the real tools._launch_game with a fake adapter; the keep value must reach checkout()."""
+    from gbox import tools, adapters, memory_card_sessions as S
+    from gbox.config import Config, Library
+    from gbox.models import CatalogEntry
+    from gbox.registry import Ctx
+
+    class FakeAd(adapters.Adapter):
+        name = 'fake'; supported = {'launch_game', 'stop_game'}
+        def __init__(self, config): self.config = config
+        def launch_game(self, rom): return {'pid': None}
+        def stop_game(self): return {}
+
+    cfg = Config(data_dir=tmp_path / 'd', cache_dir=tmp_path / 'c')
+    share = tmp_path / 'share'; share.mkdir()
+    (share / 'g.iso').write_bytes(b'GRSE69' + bytes(64))
+    cfg.libraries.append(Library(id='lib', kind='files', paths={'windows': str(share), 'linux': str(share)}))
+    monkeypatch.setattr(adapters, 'for_game', lambda *a, **k: FakeAd(cfg))
+    monkeypatch.setattr(tools, 'SESSIONS', {})
+    monkeypatch.setattr(tools, 'track_emulator', lambda *a, **k: None)
+    seen = []
+    monkeypatch.setattr(tools, '_close_previous_games', lambda ctx, keep='': [])
+    monkeypatch.setattr(S, 'recover_pending', lambda ctx: None)
+    monkeypatch.setattr(S, 'checkout', lambda sid, ad, game, ctx, operator_cards=False, keep='': seen.append((sid, keep)))
+    game = CatalogEntry(game_id='g', title='G', platform='gamecube', source_paths=['g.iso'], library='lib',
+                        rel_path='g.iso', hashes={}, size=70, format='iso', runtimes={}, profile_id='g')
+    try:
+        for keep in ('w1-old', ''):
+            tools._launch_game(tools.LaunchIn(game=game, keep_session=keep), Ctx(cfg, job_id='j' + (keep or 'x'), worker='w1'))
+    finally:
+        tools.SESSIONS.clear()
+    assert seen == [('w1-jw1-old', 'w1-old'), ('w1-jx', '')]
