@@ -1381,3 +1381,120 @@ def test_a_frozen_clock_gives_the_round_up_as_lost():
                             stopped, {}, sleep=lambda s: None, clock=lambda: t[0], tick_s=0.0,
                             driver=R.RE5PS3(clock=lambda: t[0]))
     assert why == "lost"                                                            # the deployment then recovers
+
+
+def u_mesh():
+    """A U of 100 cm cells: up x 0..100 (z 0..500), across z 400..500, down x 300..400: (50, 50) and (350, 50) are 3 m
+    apart with a wall between them; the way round is 11 m."""
+    from gbox.mercs.titles.re5_nav import NavMesh
+    cells = [(0, k) for k in range(5)] + [(1, 4), (2, 4)] + [(3, k) for k in range(5)]
+    index, points, tris = {}, [], []
+
+    def pt(x, z):
+        if (x, z) not in index:
+            index[(x, z)] = len(points)
+            points.append((100.0 * x, 0.0, 100.0 * z))
+        return index[(x, z)]
+    for x, z in cells:
+        a, b, c, d = pt(x, z), pt(x + 1, z), pt(x + 1, z + 1), pt(x, z + 1)
+        tris += [(a, b, c), (a, c, d)]
+    links = [[] for _ in tris]
+    for i, tri in enumerate(tris):
+        for edge in range(3):
+            shared = {tri[edge], tri[(edge + 1) % 3]}
+            for j, other in enumerate(tris):
+                if j != i and shared <= set(other):
+                    links[i].append((j, edge, 1.))
+    return NavMesh(points, tris, links)
+
+
+def _pursuit_bot(tmp_path, enemy, action=0, yaw=math.pi / 2, now=None):
+    now = now if now is not None else [10.0]
+    mem = with_inventory(world(player_pos=(50.0, 0.0, 50.0), yaw=yaw, action=action, enemies=[(enemy, 800, 800)]),
+                         {0: (0x10B, 6, 6, True)})
+    bot = R.Bot(m=mem, clock=lambda: now[0], learn_dir=tmp_path, lessons=lambda row: None)
+    return mem, bot, now
+
+
+def _snap(mem, mesh, laser=None):
+    snap = R.snapshot(mem)
+    snap["nav"] = mesh
+    if laser is not None:
+        snap["laser"] = laser
+    return snap
+
+
+def test_a_majini_behind_a_wall_is_walked_to_not_aimed_at(tmp_path):
+    """Live 2026-10-21: 57 of 130 s aiming into walls at Majini behind them. Behind a wall of the mesh he is walked to
+    around the corner, the gun down; a pursuit is not a stage route record."""
+    mesh = u_mesh()
+    mem, bot, _ = _pursuit_bot(tmp_path, (350.0, 0.0, 50.0))
+    assert not mesh.floor_segment((50.0, 0.0, 50.0), (350.0, 0.0, 50.0))
+    assert mesh.route_length((50.0, 0.0, 50.0), (350.0, 0.0, 50.0)) > 2 * 300.0
+    act = bot.tick(_snap(mem, mesh))
+    assert bot.stats["phase"] == "pursue" and bot.stats["pursuits"] == 1
+    assert act["hold"] and not act["hold"] & {"l1", "r1"}
+    assert bot.route and bot.route_for == ("enemy", ENEMIES[0])
+    assert not bot.nav_learning.stages.get(mesh.learning_sig, {}).get("routes")
+    assert bot.plan()["route"]                                  # the tactical map shows the way to him
+
+
+def test_an_open_floor_majini_is_fought_from_where_he_stands(tmp_path):
+    mesh = corner_mesh()
+    mem, bot, _ = _pursuit_bot(tmp_path, (260.0, 0.0, 50.0))
+    assert mesh.floor_segment((50.0, 0.0, 50.0), (260.0, 0.0, 50.0))
+    act = bot.tick(_snap(mem, mesh))
+    assert bot.stats["phase"] != "pursue" and "l1" in act["hold"]
+
+
+def test_a_dot_stopping_short_of_him_leaves_him_for_a_pursuit(tmp_path):
+    mesh = corner_mesh()
+    mem, bot, now = _pursuit_bot(tmp_path, (260.0, 0.0, 50.0), action=2)
+    wall = {"from": (50.0, 140.0, 50.0), "at": (110.0, 140.0, 50.0)}   # the dot 60 cm off the muzzle: a wall
+    for t in (10.0, 10.3):
+        now[0] = t
+        bot.tick(_snap(mem, mesh, wall))
+        assert bot.stats["phase"] != "pursue"          # the combat layer works the dot for BLOCKED_VIEW_S first
+    now[0] = 10.6
+    act = bot.tick(_snap(mem, mesh, wall))
+    assert bot.stats["phase"] == "pursue" and bot.stats["unsighted"] == 1 and "dot wall" in bot.stats["sight"]
+    assert bot.unsighted[ENEMIES[0]] > 10.6 and not act["hold"] & {"l1", "r1"}
+    on = {"from": (50.0, 140.0, 50.0), "at": (260.0, 150.0, 50.0)}       # out of sight a while, then the dot on him
+    now[0] = 12.7
+    assert "l1" in bot.tick(_snap(mem, mesh, on))["hold"] and bot.stats["phase"] != "pursue"
+
+
+def test_a_dot_that_never_reaches_him_is_given_up_after_a_while(tmp_path):
+    mesh = corner_mesh()
+    mem, bot, now = _pursuit_bot(tmp_path, (260.0, 0.0, 50.0), action=2)
+    for t in (10.0, 11.0, 12.0):                              # no laser yet (the gun coming up): no evidence
+        now[0] = t
+        bot.tick(_snap(mem, mesh))
+    elsewhere = {"from": (50.0, 140.0, 50.0), "at": (50.0, 140.0, 800.0)}   # the laser up, the dot off him
+    for t in (12.5, 13.0, 13.5, 14.0):                         # 2.0 s of laser-up time off him
+        now[0] = t
+        bot.tick(_snap(mem, mesh, elsewhere))
+        assert bot.stats["phase"] != "pursue"
+    now[0] = 14.5
+    bot.tick(_snap(mem, mesh, elsewhere))
+    assert bot.stats["phase"] == "pursue" and "never" in bot.stats["sight"]
+
+
+def test_laser_view_names_on_wall_short_and_unknown():
+    tgt = {"pos": (1000.0, 0.0, 0.0)}
+    o = (0.0, 140.0, 0.0)
+    assert R.Bot._laser_view({"laser": {"from": o, "at": (1000.0, 150.0, 0.0)}}, tgt) == "on"
+    assert R.Bot._laser_view({"laser": {"from": o, "at": (60.0, 140.0, 0.0)}}, tgt) == "wall"
+    assert R.Bot._laser_view({"laser": {"from": o, "at": (400.0, 140.0, 10.0)}}, tgt) == "short"
+    assert R.Bot._laser_view({"laser": {"from": o, "at": (0.0, 140.0, 400.0)}}, tgt) is None   # aimed elsewhere
+    assert R.Bot._laser_view({"laser": {"from": (0.0, 0.0, 0.0), "at": (0.0, 0.0, 0.0)}}, tgt) == "none"
+
+
+def test_a_nearly_straight_route_counts_as_open_floor(tmp_path):
+    """floor_segment alone called 4 of 5 nearly straight live routes closed; a route that barely bends is open."""
+    mesh = corner_mesh()
+    mem, bot, _ = _pursuit_bot(tmp_path, (250.0, 0.0, 250.0))
+    assert not mesh.floor_segment((50.0, 0.0, 50.0), (250.0, 0.0, 250.0))
+    p, e = R.snapshot(mem)["player"], {"ptr": 1, "pos": (250.0, 0.0, 250.0)}
+    assert bot._open(p, e, mesh, 10.0)
+    assert not bot._open(p, {"ptr": 2, "pos": (350.0, 0.0, 50.0)}, u_mesh(), 10.0)
