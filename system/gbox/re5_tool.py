@@ -12,7 +12,7 @@ The Gold Edition's own block (DATA0.DAT 0x4BC0-0x566F, after the checksummed par
 Mercenaries Reunion: gBox found its unlocks live (2026-10-20, RPCS3 on the Spark, every change loaded from the title
 and read off the menus): s32 0x4BC0 > 0 opens DESPERATE ESCAPE and THE MERCENARIES REUNION (a fresh save has 0, -1
 does not open them), u32 0x5640 = Reunion stage bits (fresh 1 = Public Assembly; 0xFF = all 8 stages), u32 0x565C =
-Reunion character bits (fresh 4; 0xFF = all 8). Group "mercenaries_reunion" sets them (0x4BC0 to at least 1, the
+Reunion character bits (fresh 4; 0xFF = page 1's 8, 0xFFFF adds the second page's). Group "mercenaries_reunion" sets them (0x4BC0 to at least 1, the
 masks OR 0xFF), in unlock_all by default. Gold saves under the original game's directory name (BLUS3027010AE for
 BLUS30491, live; BLES00485... for BLES00816), which save_files() looks in too.
 
@@ -54,7 +54,7 @@ GG_CODES = {
 # "or" = u32 old | value; offsets past the checksummed part (the Gold Edition's block)
 GBOX_GROUPS = {
     "mercenaries_reunion": ("Open The Mercenaries Reunion + Desperate Escape, every Reunion stage and character",
-                            [("atleast", 0x4BC0, 1), ("or", 0x5640, 0xFF), ("or", 0x565C, 0xFF)]),
+                            [("atleast", 0x4BC0, 1), ("or", 0x5640, 0xFF), ("or", 0x565C, 0xFFFF)]),
 }
 GBOX_SOURCE = ("gBox, live 2026-10-20 (RE5 Gold BLUS30491 app 01.01 in RPCS3 on the Spark): 0x4BC0 found by bisecting "
                "the Gold block's 682 zero words with probe saves loaded from the title; 0x5640 / 0x565C were the block's "

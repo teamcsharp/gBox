@@ -397,7 +397,10 @@ STEPS = {"results": "start", "select_stage": "cross", "dead": "cross", "title": 
 BOOT_KEY = "cross"      # out of a round, a screen RAM can't name (the cold boot's HDD notice, logos): mercs_bot.Boot
 CURSORED = ("main_menu", "play_game", "extra_content", "select_player")
 CHARACTERS = ("Chris (Heavy Metal)", "Sheva (Fairy Tale)", "Josh", "Excella", "Chris (Warrior)", "Sheva (Business)",
-              "Barry", "Rebecca")                   # CHARACTER SELECT's row, cursor 0..7 (uIdStartUp22 +0x180)
+              "Barry", "Rebecca",                   # CHARACTER SELECT page 1, cursor 0..7 (uIdStartUp22 +0x180)
+              "Jill (BSAA)", "Wesker (Midnight)", "Jill (Battle Suit)", "Wesker (Dark)")
+# page 2, cursor 8..11 (operator 2026-10-22: "an entire second page of characters that's missing"): names and the
+# cursor numbering are NOT yet live-checked; re5_tool's mercenaries_reunion group opens the character bits for them
 SELECT_CURSOR = 0x180
 
 
@@ -448,29 +451,36 @@ ROSTER = Roster()
 
 
 class StagePick:
-    """A random stage each visit to STAGE SELECT (operator 2026-10-22: "have the bot go between the stages randomly
-    during the select and have him play on different levels"). RAM doesn't name the stage cursor yet, so the pick is
-    a random number of D-pad rights (the row of stages, 0..MAX_MOVES) before cross; mercs_bot's Navigator reports each
-    press it sends (pressed()), so a press held back for a settle never counts."""
-    MAX_MOVES = 7                              # Reunion's eight stages: any of them from wherever the cursor is
+    """A random stage each visit to STAGE SELECT (operator 2026-10-22: "have the bot go between the stages randomly"; and
+    "stuck on the very final level ... unable to go back ... they need to randomly select a level each time"). RAM
+    doesn't name the stage cursor yet and the row doesn't wrap, so a visit first presses D-pad left MAX_MOVES times
+    (the cursor is then on the first stage wherever it was, the last one included), then D-pad right a random
+    0..MAX_MOVES times, then cross. mercs_bot's Navigator reports each press it sends (pressed()), so a press held
+    back for a settle never counts."""
+    MAX_MOVES = 7                              # Reunion's eight stages: any of them from the first one
 
     def __init__(self, rng=None):
         import random
         self.rng = rng or random.Random()
-        self.left = None                       # moves still to make on this visit; None: not on STAGE SELECT
+        self.home = None                       # lefts still to make (back to the first stage); None: not on STAGE SELECT
+        self.left = None                       # rights still to make after that
 
     def key(self, scr: dict) -> str:
         if self.left is None:
-            self.left = self.rng.randint(0, self.MAX_MOVES)
+            self.home, self.left = self.MAX_MOVES, self.rng.randint(0, self.MAX_MOVES)
+        if self.home > 0:
+            return "dleft"
         return "dright" if self.left > 0 else "cross"
 
     def pressed(self, scr: dict, key: str) -> None:
         if scr.get("where") != "select_stage":
             return
-        if key == "dright" and self.left:
+        if key == "dleft" and self.home:
+            self.home -= 1
+        elif key == "dright" and self.home == 0 and self.left:
             self.left -= 1
         elif key == "cross":
-            self.left = None                   # the stage is taken: the next visit draws again
+            self.home = self.left = None       # the stage is taken: the next visit draws again
 
 
 STAGE_PICK = StagePick()
