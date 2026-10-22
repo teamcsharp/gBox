@@ -2752,6 +2752,8 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
         try:
             import importlib
             import inspect
+            if callable(getattr(ad, "wait_ready", None)):
+                ad.wait_ready(stopped=lambda: d.stopped)       # a relaunch still booting (RPCS3: memory, game window)
             # no key left down from before (an earlier run cut short, a crash): a stuck stick-left read as left on
             # every RE4 menu and Select Stage never moved (live 2026-10-20)
             _release_all(sid)
