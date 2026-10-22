@@ -15,6 +15,8 @@ DOAPP_ID = '59c55e95af61abbe'  # Dead Or Alive ++ (Korea), platform=arcade
 NDS_WCW_GAME_ID = 'd9467f457f53f2c7'  # Call of Duty: World at War (USA), NDS
 SGC_GEMS_ID = 'fc5914e3ddb540c4'  # Sonic Gems Collection (USA), platform=gamecube
 SGC_GEMS_PLATFORM = 'gamecube'
+TC_SOLA_ID = 'b5f07832ba61272a'  # True Crime: Streets of LA (USA), platform=gamecube
+TC_SOLA_PLATFORM = 'gamecube'
 
 
 def pre_launch(game: dict, ctx, mod: str = '') -> dict:
@@ -43,6 +45,17 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
             gate = sgc_gems_probe.profile_gate()
             return {'state': 'research_pending', 'applied': False,
                     'reason': gate['reason'], 'scope': list(sgc_gems_probe.CATEGORIES),
+                    'evidence': gate['evidence'], 'blockers': gate['blockers'],
+                    'next': gate['next']}
+        if game.get('game_id') == TC_SOLA_ID and game.get('platform') == TC_SOLA_PLATFORM:
+            # True Crime: Streets of LA (USA): the owned main.dol and the Shell/mc.dat
+            # save template are hashed and the progress table is located, but no byte
+            # is proven to gate a specific piece of content and no runtime boot exists.
+            # Report that state; never write a save here.
+            from . import tc_sola_unlock
+            gate = tc_sola_unlock.profile_gate()
+            return {'state': 'research_pending', 'applied': False,
+                    'reason': gate['reason'], 'scope': list(tc_sola_unlock.CATEGORIES),
                     'evidence': gate['evidence'], 'blockers': gate['blockers'],
                     'next': gate['next']}
         return {'state': 'research_pending', 'applied': False, 'reason': profile['reason']}
@@ -82,6 +95,12 @@ def profile_for(game: dict) -> dict:
         from . import sgc_gems_probe
         return {'status': 'pending_research', 'profile': None, 'verified': False,
                 'scope': list(sgc_gems_probe.CATEGORIES), **sgc_gems_probe.profile_gate()}
+    if game.get('game_id') == TC_SOLA_ID and game.get('platform') == TC_SOLA_PLATFORM:
+        # Read-only research only: pre_launch short-circuits on verified=False, so no
+        # writer is reachable from the Play path for this game.
+        from . import tc_sola_unlock
+        return {'status': 'pending_research', 'profile': None, 'verified': False,
+                'scope': list(tc_sola_unlock.CATEGORIES), **tc_sola_unlock.profile_gate()}
     if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,
                 'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}
