@@ -64,6 +64,10 @@ def profile_for(game: dict) -> dict:
         # pre_launch below short-circuits on verified=False, so no writer is reachable.
         return {'status': 'pending_research', 'profile': None, 'verified': False,
                 'scope': list(doax2_unlock.CATEGORIES), **doax2_unlock.profile_gate()}
+    from . import papermario_origami_unlock as _pmo
+    if game.get('game_id') == _pmo.GAME_ID and game.get('platform') == _pmo.PLATFORM:
+        return {'status': 'pending_research', 'profile': None, 'verified': False,
+                'scope': list(_pmo.CATEGORIES), **_pmo.profile_gate()}
     if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,
                 'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}
