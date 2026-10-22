@@ -1340,8 +1340,10 @@ class Bot:
         if not lz or not lz.get("from") or not lz.get("at") or not any(lz["from"]):
             return "none"
         origin, dot = lz["from"], lz["at"]
-        if re5_combat.dot_on(dot, tgt["pos"]) is not None:
-            return "on"
+        foot = tgt["pos"]
+        if re5_combat.dot_on(dot, foot) is not None \
+                or re5_combat.line_to((origin, dot), (foot[0], foot[1] + 110.0, foot[2]), foot):
+            return "on"                                     # on him, or the ray runs through him to a dot beyond
         length = math.dist(origin, dot)
         if length < WALL_R:
             return "wall"

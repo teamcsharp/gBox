@@ -111,7 +111,7 @@ def test_near_origin_direction_reversals_do_not_thrash_the_stick_and_valid_ray_r
     bot = C.Combat(m, {}, learn_dir=tmp_path, lessons=lambda row: None)
     for i, (origin, dot) in enumerate(rays * 2):
         s = snap(m, enemy=(349.539, 0.0, 83.037))
-        s["player"].update(pos=(202.237, 3.692, 150.020), rot=-1.9193, pitch=-0.339)
+        s["player"].update(pos=(202.237, 3.692, 150.020), rot=1.95, pitch=-0.339)   # facing him
         s["laser"] = {"from": origin, "at": dot}
         action = bot.tick(s, s["player"], s["enemies"][0], 1.0 + i * 0.1)
         assert action["hold"] == {"l1"}                       # a dot at the muzzle is no line to him: hold fire
@@ -509,8 +509,9 @@ def test_close_rear_enemy_outranks_distant_front_enemy_and_fire_tracks_the_turn(
     behind = {"slot": 1, "ptr": ENEMY + 1, "pos": (0.0, 0.0, -200.0), "hp": 800, "hp_max": 800}
     assert bot.choose_target(s, s["player"], [behind, front], 0.0) is behind
     action = bot.tick(s, s["player"], behind, 0.0)["hold"]
-    assert "l1" in action and {"rleft", "rright"} & action
-    assert "r1" not in action                             # the dot is in front, he is behind: turn first, then fire
+    assert {"rleft", "rright"} & action                   # he is behind: swing round with the gun down (~150 deg/s,
+    assert not action & {"l1", "r1"}                      # not ~30 deg/s aiming), then raise and fire
+    assert "swinging" in bot.stats["combat"]
     behind["pos"] = (0, 0, -1000)
     assert bot.choose_target(s, s["player"], [behind, front], 0.1) is front
 
@@ -559,7 +560,7 @@ def test_loaded_direct_guns_raise_with_trigger_and_hold_while_acquiring(tmp_path
     m = world(aiming=False, act_vt=0)
     m.put(PL + C.P_INV + 3 * C.INV_SLOT + C.INV_ID, ">I", 0x100 | wid)
     bot = C.Combat(m, {}, learn_dir=tmp_path, lessons=lambda row: None)
-    s = snap(m, enemy=(180, 0, 150))
+    s = snap(m, enemy=(100, 0, 250))                 # 22 deg off the heading: raise and turn
     s["laser"] = None
     for now in (0.0, 0.05, 0.5, 1.0):
         keys = bot.tick(s, s["player"], s["enemies"][0], now)["hold"]

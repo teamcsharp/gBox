@@ -98,7 +98,8 @@ ENGAGE_R = 3000.0                     # shared with the driver's existing engage
 # at least his distance within FIRE_CONE of him (tracking a moving Majini). A dot short of him or at the muzzle (a
 # wall, the ground, a fence) holds the trigger.
 FIRE_CONE, FIRE_SLACK = math.radians(4), 60.0   # the ray this close in angle, ending no more than this short of him
-POINT_BLANK = 110.0                    # a Majini this near on the player's level needs no ray (hit recovery, the gun
+SWING_TURN = math.radians(45)          # a Majini further off the body's heading than this: turn with the gun down
+POINT_BLANK = 110.0                   # a Majini this near on the player's level needs no ray (hit recovery, the gun
                                        # coming up): nothing fits between them
 
 
@@ -675,6 +676,13 @@ class Combat:
                 self.stats["reloads"] += 1
                 return {"hold": {"l1", "cross"}}
             return {"hold": {"l1"}}
+        facing = wrap(heading(foot[0] - p["pos"][0], foot[2] - p["pos"][2]) - p["rot"])
+        if abs(facing) > SWING_TURN and p.get("action") != 4:
+            # He is well off to the side or behind: the gun down, the body turned at ~150 deg/s (aiming turns ~30 deg/s:
+            # live 2026-10-22 the gun stayed up through yaw errors of 90-160 deg, seconds of aiming at walls)
+            self.near_ray_since = None
+            self.stats["combat"] = f"swinging round to him (gun down): {math.degrees(facing):+.0f} deg"
+            return {"hold": self._face(p, foot)}
         steer = lz is not None and steering_ray(lz, aim_at)
         feedback_key = (p.get("ptr"), key)
         if feedback_key != self.near_ray_key or (self._ready(p) and (steer or where is not None)):
