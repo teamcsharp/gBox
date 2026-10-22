@@ -16,6 +16,7 @@ DOAPP_ID = '59c55e95af61abbe'  # Dead Or Alive ++ (Korea), platform=arcade
 NDS_WCW_GAME_ID = 'd9467f457f53f2c7'  # Call of Duty: World at War (USA), NDS
 SGC_GEMS_ID = 'fc5914e3ddb540c4'  # Sonic Gems Collection (USA), platform=gamecube
 SGC_GEMS_PLATFORM = 'gamecube'
+GE007_PORT_ID = '6e4d417eef84e49b'  # GoldenEye 007 (PC port + bots)
 
 
 def pre_launch(game: dict, ctx, mod: str = '') -> dict:
@@ -25,6 +26,9 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
     opt-out settings remain authoritative and its writer retains the save backup.
     """
     profile = profile_for(game)
+    if game.get('game_id') == GE007_PORT_ID:
+        from . import ge007_unlock
+        return ge007_unlock.pre_launch(ctx)
     if not profile['verified']:
         if game.get('game_id') == DOAPP_ID and game.get('platform') == 'arcade':
             # Registration point for the DOA++ (Korea) arcade unlock work. The
@@ -86,6 +90,9 @@ def profile_for(game: dict) -> dict:
                              'lock_surface': acv_evidence.LOCK_SURFACE,
                              'inventory': inv},
                 'unresolved_categories': pending}
+    if game.get('game_id') == GE007_PORT_ID:
+        from . import ge007_unlock
+        return ge007_unlock.profile()
     from . import doax2_unlock
     if game.get('game_id') == doax2_unlock.GAME_ID and game.get('platform') == doax2_unlock.PLATFORM:
         # Honest gate for DOAX2: research pending, no verified write targets exist.
