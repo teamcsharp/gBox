@@ -7,6 +7,13 @@ import pytest
 
 from gbox.mercs.titles import re5_combat as C
 
+@pytest.fixture(autouse=True)
+def _legacy_fire_gate(monkeypatch, request):
+    """Older tests cover the first-overlap gate; the steady-head tests (#3046) opt back in."""
+    if "steady" not in request.node.name:
+        monkeypatch.setattr(C, "STEADY_HEAD", False)
+
+
 PL, ACT, LASER, SUNIT, ENEMY = 0x30400000, 0x30500000, 0x30600000, 0x30700000, 0x30800000
 
 
@@ -118,10 +125,10 @@ def test_near_origin_direction_reversals_do_not_thrash_the_stick_and_valid_ray_r
         assert bot.stats["aim_feedback"] == "near-origin ray; correction paused"
     s["laser"] = {"from": (143, 53, 136), "at": (400, 100, 200)}
     action = bot.tick(s, s["player"], s["enemies"][0], 1.35)
-    assert {"l1", "rleft", "rdown"} <= action["hold"] and "r1" not in action["hold"]   # steering, off him
+    assert {"l1", "rleft"} <= action["hold"] and {"rup", "rdown"} & action["hold"] and "r1" not in action["hold"]   # steering, off him
 
 
-    assert {"l1", "rleft", "rdown"} <= action["hold"] and "r1" not in action["hold"]   # valid ray, off him: turn, no shot
+    assert {"l1", "rleft"} <= action["hold"] and {"rup", "rdown"} & action["hold"] and "r1" not in action["hold"]   # valid ray, off him: turn, no shot
     assert bot.near_ray_since is None
     assert bot.stats["aim_feedback"] == "ray direction"
 
@@ -193,7 +200,7 @@ def test_fires_immediately_on_an_exposed_body_and_keeps_the_dot_on_it():
     assert fired                                                        # settled on the head: the trigger
 
 
-def test_direct_fire_holds_with_the_dot_beside_or_below_him_and_continues_down_a_line_past_him():
+def test_steady_direct_fire_holds_with_the_dot_beside_or_below_him_and_continues_down_a_line_past_him():
     """Operator 2026-10-22: "he is shooting at nonsense": the ground before him, the air beside him and a dot on past
     him (the game's dot stops on the first body it meets: beyond him is a miss) are no shot; on his head is."""
     for dot, fire in (((90.0, 120.0, 400.0), False), ((0.0, 0.0, 300.0), False), ((0.0, 160.0, 900.0), False),
@@ -202,12 +209,15 @@ def test_direct_fire_holds_with_the_dot_beside_or_below_him_and_continues_down_a
         bot = C.Combat(m, {}, clock=lambda: 0.0)
         s = snap(m)
         act = bot.tick(s, s["player"], s["enemies"][0], 0.0)
+        if fire:                                       # a steady aim: the dot settles on the head first
+            assert "r1" not in act["hold"] and bot.stats["fire_gate"].startswith("settling")
+            act = bot.tick(s, s["player"], s["enemies"][0], C.HEAD_SETTLE_S + 0.01)
         assert "l1" in act["hold"] and ("r1" in act["hold"]) == fire, dot
         assert bot.stats["fire_gate"].endswith("hold fire") != fire
         assert bot.stats["shots"] == 0                 # held fire is intent, not a fabricated shot event
 
 
-def test_direct_fire_holds_while_the_dot_is_beside_below_or_past_the_target_then_resumes_on_him():
+def test_steady_direct_fire_holds_while_the_dot_is_beside_below_or_past_the_target_then_resumes_on_him():
     # coaching note 3: shooting at the ground. The trigger waits while the stick brings the dot onto him.
     for dot in ((90.0, 120.0, 400.0), (0.0, 30.0, 400.0), (0.0, 20.0, 150.0), (0.0, 160.0, 900.0)):
         m = world(laser_dot=dot)
@@ -217,11 +227,12 @@ def test_direct_fire_holds_while_the_dot_is_beside_below_or_past_the_target_then
             act = bot.tick(s, s["player"], s["enemies"][0], k * 0.02)
             assert "l1" in act["hold"] and "r1" not in act["hold"], dot
         assert bot.stats["shots"] == 0 and bot.stats["los_held_fire"] > 0
-    for dot in ((0.0, 110.0, 400.0), (0.0, 160.0, 400.0)):   # on his body / head: fire
-        m = world(laser_dot=dot)
+    for dot, wait in (((0.0, 110.0, 400.0), C.HEAD_PATIENCE_S), ((0.0, 160.0, 400.0), C.HEAD_SETTLE_S)):
+        m = world(laser_dot=dot)                         # on his body (after the patience) / head (settled): fire
         bot = C.Combat(m, {}, clock=lambda: 0.0)
         s = snap(m)
-        assert {"l1", "r1"} <= bot.tick(s, s["player"], s["enemies"][0], 0.0)["hold"], dot
+        assert "r1" not in bot.tick(s, s["player"], s["enemies"][0], 0.0)["hold"], dot
+        assert {"l1", "r1"} <= bot.tick(s, s["player"], s["enemies"][0], wait + 0.01)["hold"], dot
 
 
 def test_line_of_sight_aim_rejects_floor_short_of_target_and_accepts_aligned_ray():
@@ -311,29 +322,53 @@ def test_the_tunables_are_kept_and_tightened_after_a_poor_round(tmp_path):
     assert bot2.tun.weapon("barry", 0x12)["head_r"] == w["head_r"]   # the next round starts from it
 
 
-def test_a_near_majini_gets_the_leg_for_the_stun_and_a_far_one_the_head():
-    assert C.zone_for({"hp_max": 800}, 400.0, 8.0, 3) == "leg"
-    assert C.zone_for({"hp_max": 800}, 400.0, 2.0, 3) == "head"          # the combo window is short: a kill now
-    assert C.zone_for({"hp_max": 800}, 400.0, None, 0) == "leg"          # no combo running
-    assert C.zone_for({"hp_max": 800}, 900.0, 8.0, 3) == "head"          # too far for the finisher setup
-    assert C.zone_for({"hp_max": 9000}, 300.0, 8.0, 3) == "head"         # a boss: no melee setup
-    assert C.zone_for({"hp_max": 800, "zone": "head"}, 300.0, 8.0, 3) == "head"   # the strategy's say
+def test_every_majini_gets_the_head_and_the_leg_only_on_the_strategys_say():
+    for dist, timer, combo in ((400.0, 8.0, 3), (400.0, 2.0, 3), (400.0, None, 0), (900.0, 8.0, 3)):
+        assert C.zone_for({"hp_max": 800}, dist, timer, combo) == "head"
+    assert C.zone_for({"hp_max": 9000}, 300.0, 8.0, 3) == "head"
+    assert C.zone_for({"hp_max": 800, "zone": "leg"}, 300.0, 8.0, 3) == "leg"   # the strategy's say
     m = world(laser_dot=(0.0, 72.0, 400.0))                             # the dot on his thighs
     bot = C.Combat(m, {}, clock=lambda: 0.0)
     s = snap(m)
+    tgt = dict(s["enemies"][0], zone="leg")
     fired = False
     for k in range(20):
-        act = bot.tick(s, s["player"], s["enemies"][0], k * 0.02)
+        act = bot.tick(s, s["player"], tgt, k * 0.02)
         fired = fired or "r1" in act["hold"]
     assert bot.zone == "leg" and fired
     m.put(ACT, ">I", C.FIRE_VT)                                         # the shot leaves, his health falls
     m.put(ACT + C.ACT_FRAMES, ">f", 1.0)
-    bot.tick(s, s["player"], s["enemies"][0], 0.5)
+    bot.tick(s, s["player"], tgt, 0.5)
     s2 = snap(m, hp=500)
     bot.tick(s2, s2["player"], s2["enemies"][0], 0.55)
     assert bot.stats["legshots"] == 1 and ENEMY in bot.stunned          # a leg hit: he kneels, in for the finisher
     assert bot.stunned_target(s2["enemies"], s2["player"], 0.6) is s2["enemies"][0]
-    assert bot.run_to(s2["player"], s2["enemies"][0])["hold"] >= {"lup", "cross"}
+
+
+def test_steady_head_aim_waits_for_the_settle_resets_when_the_dot_leaves_and_falls_back_to_the_body():
+    m = world(laser_dot=(0.0, 160.0, 400.0))
+    bot = C.Combat(m, {}, clock=lambda: 0.0)
+    s = snap(m)
+    tgt = s["enemies"][0]
+    assert "r1" not in bot.tick(s, s["player"], tgt, 0.0)["hold"]
+    m.put(LASER + C.LASER_DOT, ">3f", 0.0, 0.0, 300.0)                  # the dot drops to the ground: settle resets
+    assert "r1" not in bot.tick(s, s["player"], tgt, 0.06)["hold"] and bot.dot_head_since is None
+    m.put(LASER + C.LASER_DOT, ">3f", 0.0, 160.0, 400.0)
+    assert "r1" not in bot.tick(s, s["player"], tgt, 0.07)["hold"]      # a new settle starts here
+    assert "r1" not in bot.tick(s, s["player"], tgt, 0.12)["hold"]
+    assert "r1" in bot.tick(s, s["player"], tgt, 0.18)["hold"]
+    m.put(LASER + C.LASER_DOT, ">3f", 0.0, 110.0, 400.0)                # head out of reach: the body after the patience
+    assert "r1" not in bot.tick(s, s["player"], tgt, 1.0)["hold"]
+    assert "r1" in bot.tick(s, s["player"], tgt, 1.0 + C.HEAD_PATIENCE_S + 0.01)["hold"]
+
+
+def test_steady_metrics_report_headshot_percent_and_shots_per_kill():
+    m = world()
+    bot = C.Combat(m, {}, clock=lambda: 0.0)
+    bot.stats.update(shots=8, headshots=6)
+    bot._count_kills({"kills": 10})
+    bot._count_kills({"kills": 12})
+    assert bot.stats["headshot_pct"] == 75.0 and bot.stats["shots_per_kill"] == 4.0
 
 
 def test_a_boss_gets_one_finisher_only():

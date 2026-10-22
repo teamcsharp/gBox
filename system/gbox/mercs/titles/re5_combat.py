@@ -74,6 +74,9 @@ TAP_DOWN_S, TAP_UP_S = 0.03, 0.03     # fast press/release when the rapid-fire p
 HOLD_NO_SHOT_S = 0.45                  # held on target this long without a shot: this weapon wants taps
 TAPS_NO_SHOT = 8                       # ... taps without a shot: it wants a hold (the Gatling)
 HOLD_FIRE_IDS = frozenset({0x03, 0x09, 0x13, 0x15, 0x1D})  # verified table IDs; 0x25 was not the Gatling
+STEADY_HEAD = True                     # False: the older fire-on-first-overlap policy (tests of that gate)
+HEAD_SETTLE_S = 0.10                   # the dot held on his head this long before the trigger (a steady aim, #3046)
+HEAD_PATIENCE_S = 0.60                 # the dot on his body (head not reachable) this long: take the body shot
 SETTLE_S = 0.08                        # legacy persisted tuning metadata; a first-hit overlap now fires immediately
 FRONT_YAW, FRONT_PITCH = math.radians(60), math.radians(45)  # candidate cone, not a visibility claim
 WALL_CONE = math.radians(10)           # a first hit this short, within this cone of him: a wall in front (coaching #3002)
@@ -169,10 +172,8 @@ def zone_for(tgt: dict, dist: float, combo_timer, combo) -> str:
     boss. The driver's strategy may say with tgt["zone"]."""
     if tgt.get("zone") in ("leg", "head"):
         return tgt["zone"]
-    if (tgt.get("hp_max") or 0) > BOSS_HP:
-        return "head"
-    window_ok = not combo or combo_timer is None or combo_timer > COMBO_SHORT_S
-    return "leg" if dist <= FINISHER_SETUP_R and window_ok else "head"
+    # Operator 2026-10-22 (#3046): the head, always - a cowboy's steady aim; the leg stun is only on the strategy's say.
+    return "head"
 
 
 def ray_error(origin, dot, target) -> tuple[float, float]:
@@ -501,6 +502,7 @@ class Combat:
         self.shots.update(snap.get("enemies") or [], now)
         self._score(now)
         if active:
+            self._count_kills(snap)
             self._clock(snap, now)
         self._observation = (pl, wid, rounds, shot)
         return self._observation
@@ -681,6 +683,18 @@ class Combat:
             if where is not None:
                 aim_at = (foot[0] + lead[0], lz[1][1], foot[2] + lead[1])  # keep the exposed region under the dot
         self.last_dot = (where, tgt.get("ptr"), lz, foot, now)
+        head_key = (tgt.get("ptr"), tgt.get("slot"))
+        if getattr(self, "_head_key", None) != head_key:
+            self._head_key = head_key
+            self.dot_head_since = self.dot_body_since = None
+        if where == "head":
+            self.dot_head_since = self.dot_head_since if self.dot_head_since is not None else now
+            self.dot_body_since = None
+        elif where in ("body", "leg"):
+            self.dot_body_since = self.dot_body_since if self.dot_body_since is not None else now
+            self.dot_head_since = None
+        else:
+            self.dot_head_since = self.dot_body_since = None
         key = tgt.get("ptr", tgt.get("slot"))
         if self._ready(p) and lz is not None:
             if where is not None:
@@ -702,7 +716,14 @@ class Combat:
         # brings the dot onto him; no ray yet, or one too short to judge, leaves it to the sight check
         on_line = lz is None or not steering_ray(lz, aim_at) or line_of_sight_aim(lz, aim_at, where, foot)
         tracking_fire = direct and permitted and loaded and sighted and on_line
-        self.stats["fire_gate"] = ("no line: hold fire" if not sighted else "dot off him: hold fire" if not on_line
+        steady = True
+        if STEADY_HEAD and zone == "head" and direct and not point_blank:   # a steady aim: settled on the head, else patience
+            head_ok = self.dot_head_since is not None and now - self.dot_head_since >= HEAD_SETTLE_S
+            body_ok = self.dot_body_since is not None and now - self.dot_body_since >= HEAD_PATIENCE_S
+            steady = head_ok or body_ok
+            tracking_fire = tracking_fire and steady
+        self.stats["fire_gate"] = ("settling on the head: hold fire" if sighted and on_line and not steady
+                                   else "no line: hold fire" if not sighted else "dot off him: hold fire" if not on_line
                                    else "on him" if where is not None else "line to him")
         rapid = self._rapid_fire(wid, now)              # observed package status, independent of fire intent
         if p.get("action") == 4:                      # prompts own escape from a grab
@@ -753,7 +774,7 @@ class Combat:
             keys |= self._yaw(yaw_err)
             keys |= self._pitch(pl, p, pitch_err, now)
         # Direct fire continues while the stick corrects aim. Splash/unknown policies remain separate.
-        firing = tracking_fire or (where in ("head", "body", "leg") and loaded and permitted)
+        firing = tracking_fire or (where in ("head", "body", "leg") and loaded and permitted and steady)
         self.stats["los_held_fire"] = self.stats.get("los_held_fire", 0) + (0 if firing or not (direct and permitted and loaded) else 1)
         trig = self.triggers.get(wid)
         if trig is None:
@@ -876,6 +897,21 @@ class Combat:
                           "trigger": (self.triggers.get(self.wid).mode if self.wid in self.triggers else None)})
         except Exception:                              # noqa: BLE001 - a lesson lost never stops the fight
             pass
+
+    def _count_kills(self, snap):
+        """Kills from the game's own counter; headshot % and shots per kill follow (the #3046 measures)."""
+        k = snap.get("kills")
+        if type(k) is int:
+            last = getattr(self, "_kills_last", None)
+            if last is not None and 0 < k - last < 20:
+                self.stats["kills_seen_by_combat"] = self.stats.get("kills_seen_by_combat", 0) + k - last
+            self._kills_last = k
+        self._headshot_metrics()
+
+    def _headshot_metrics(self):
+        shots, kills = self.stats.get("shots") or 0, self.stats.get("kills_seen_by_combat") or 0
+        self.stats["headshot_pct"] = (round(100.0 * (self.stats.get("headshots") or 0) / shots, 1) if shots else None)
+        self.stats["shots_per_kill"] = round(shots / kills, 2) if kills else None
 
     def start_round(self, now):
         """Called on an observed playing transition, never inferred from a clock bonus."""
