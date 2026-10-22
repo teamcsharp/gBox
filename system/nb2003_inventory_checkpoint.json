@@ -1,0 +1,65 @@
+{
+  "game_id": "f4ed7192de8786bd",
+  "request_id": "775d8571cf844988",
+  "request_number": 2360,
+  "stage": "inventory",
+  "status": "partial",
+  "timestamp": 1792321200,
+  "findings": {
+    "ziH_format": {
+      "header": "8 bytes: u32 LE count + u32 LE field1 (total table size?)",
+      "entries": "24 bytes each, 6 x u32 BE",
+      "players_ziH": {
+        "count": 296,
+        "size": 7119,
+        "entry_stride": 24,
+        "header_offset": 8
+      }
+    },
+    "ziH_entry_fields": {
+      "f0": "small int (0xde0, 0xdf6, 0xe10...) - likely entry index or type",
+      "f1": "repeating values (0x2c4c8, 0x676) - likely asset type ID",
+      "f2": "large offset (0x17cef08...) - likely offset into main.dol or memory",
+      "f3": "same as f0 or close - likely secondary index",
+      "f4": "same as f1 - likely asset type ID (redundant?)",
+      "f5": "large offset (0x17fb3f8...) - likely second memory offset"
+    },
+    "cross_reference": {
+      "zip_files": 296,
+      "ziH_entries": 296,
+      "offset_matches": 0,
+      "conclusion": "ziH fields are NOT zip local-file-header offsets. They are likely memory offsets or asset IDs used by the game engine to locate/load assets."
+    },
+    "key_assets": {
+      "players.zip": {
+        "count": 296,
+        "formats": [
+          ".dff (DirectX File Format)",
+          ".gtd (Midway texture)",
+          ".wip (Midway animation?)"
+        ],
+        "total_uncompressed": 41530512,
+        "sample": [
+          "ape.dff",
+          "bear.dff",
+          "cheese1.dff",
+          "zombie.dff",
+          "zombie.gtd"
+        ]
+      }
+    }
+  },
+  "artifacts": {
+    "players_ziH_sha256": "18bfe8beca696d0f",
+    "players_zip_sha256": "2aaa257db5113aeae22781f0188cb688",
+    "source_gcz_sha256": "040ae15fe656155e6c92f439998cc987715f6b6161bc7884c7ee126ba76bb439",
+    "main_dol_sha256": "ee3ae63083eee6a7a0141b0aeeb16ce8b1e13b31302e18a8a058928163364d8c"
+  },
+  "next_steps": [
+    "1. Parse .ziH as 8-byte header + 296x24-byte entries (u32 BE) + trailing filename table",
+    "2. Cross-reference f2/f5 offsets with main.dol to find asset loaders",
+    "3. Build Ghidra project for main.dol (PowerPC BE) and xref the .ziH table parser",
+    "4. Implement a minimal .dff model reader for the player body assets",
+    "5. Test: extract ape.dff, verify geometry/texture/skeleton structure"
+  ]
+}
