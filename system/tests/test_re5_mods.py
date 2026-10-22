@@ -194,10 +194,11 @@ def test_the_playbook_applies_the_re5_package_through_re5_mods(monkeypatch):
     assert st["turn_speed_x"] == 2.0 and st["fire_rate_x"] == 80.0 and st["infinite_ammo"] is True
 
 
-def test_the_re5_profile_package_keeps_the_operators_health_and_fire_cheats():
+def test_the_re5_profile_package_keeps_the_fire_cheats_and_turns_infinite_life_off():
     import json
     from pathlib import Path
     prof = json.loads(Path(__file__).resolve().parents[1].joinpath("profiles/gamedata/BLUS30491-ram.json").read_text())["mercs"]
     assert [op for op, _ in prof["package"]] == ["turn_speed", "fire_rate", "infinite_ammo", "unlimited_health"] and prof["round_ops"] == [["random_cheats", {}]]
     assert dict(prof["package"])["fire_rate"] == {"multiplier": 80} and dict(prof["package"])["turn_speed"] == {"multiplier": 2}
-    assert dict(prof["package"])["unlimited_health"] == {"on": True}
+    assert dict(prof["package"])["unlimited_health"] == {"on": False}   # operator 2026-10-22: "turn off infinite life"
+    assert dict(prof["playing_ops"])["unlimited_health"] == {"on": False}

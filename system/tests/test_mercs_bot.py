@@ -202,3 +202,33 @@ def test_a_report_on_a_mercenaries_session_is_a_lesson_for_the_engine(plane, les
     plane.post("/api/requests/issue", json={"session_id": "w1-zzz", "what": "x", "save_state": False,
                                             "image_b64": img}).raise_for_status()
     assert len(lessons) == 1                                                       # another title: no lesson
+
+
+def test_boot_confirms_screens_ram_cannot_name_with_the_titles_boot_key():
+    # JAYBUILTFINALE 2026-10-22: RE5's cold boot sat on its HDD notice (no unit names it), hung at 30 s and relaunched
+    # into the same notice; the title's BOOT_KEY now confirms such screens every BOOT_PRESS_S
+    now, sent = [0.0], []
+    menus = SimpleNamespace(BOOT_KEY="cross", screen=lambda m, merc=None: {"where": "unknown"},
+                            step=lambda scr: None, wandered=lambda scr: None)
+    boot = MB.Boot(menus, None, sent.extend, sleep=lambda s: None, clock=lambda: now[0])
+    for t in range(1, 11):                                  # (a clock at 0 reads as "not lost yet")
+        now[0] = float(t)
+        assert boot.tick() is None
+    downs = [e for e in sent if e["down"]]
+    assert [e["key"] for e in downs] == ["cross"] * 3 and boot.stats["boot_presses"] == 3   # at 4, 7, 10 s
+    now[0] = MB.MENU_LOST_S + 2
+    assert boot.tick() is None                              # no screen named yet this boot: shader caches may be building
+    now[0] = MB.BOOT_LOST_S + 2
+    assert "did not name" in boot.tick()                    # still unnamed after the presses: the run ends
+    named = MB.Boot(SimpleNamespace(screen=lambda m, merc=None: {"where": "title"}, step=menus.step,
+                                    wandered=menus.wandered), None, sent.extend, sleep=lambda s: None, clock=lambda: now[0])
+    named.tick()
+    named.menus = menus                                     # once a screen was named, the old 30 s rule applies
+    now[0] += 1; named.tick(); now[0] += MB.MENU_LOST_S + 1
+    assert "did not name" in named.tick()
+    sent.clear()
+    plain = MB.Boot(SimpleNamespace(screen=menus.screen, step=menus.step, wandered=menus.wandered), None, sent.extend,
+                    sleep=lambda s: None, clock=lambda: now[0])
+    now[0] = 100.0
+    plain.tick(); now[0] = 110.0; plain.tick()
+    assert sent == []                                       # a title without BOOT_KEY presses nothing it can't name

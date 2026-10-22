@@ -27,6 +27,10 @@ import time
 
 MENU_LOST_S = 30.0          # out of a round and RAM can't name the screen this long: end the run
 MENU_STUCK_S = 120.0        # out of a round and nothing in RAM moved this long: end the run
+BOOT_PRESS_S = 3.0          # a title's BOOT_KEY goes in this often while RAM can't name the screen (a cold boot's dialogs)
+BOOT_LOST_S = 600.0         # before the boot's first named screen: an emulator's first run builds its shader caches and
+                            # a PS3 game installs its data (RPCS3 on JAYBUILTFINALE, 2026-10-22: "Precompiling shader
+                            # interpreter variants" > 30 s, then "Installing RESIDENT EVIL 5 GOLD EDITION" for minutes)
 WAITS = ("attract",)        # screens that run their own length (movies): never "stuck"
 POLL_S = 0.25               # how often the menus are read out of a round
 
@@ -40,8 +44,9 @@ class Navigator:
     trusts RAM: gbox.tools._black_watch)."""
     HOLD_S, DIR_HOLD_S, RETRY_S, SETTLE_S, STABLE_S = 0.3, 0.18, 1.2, 0.45, 0.5
 
-    def __init__(self, send, step, sleep=time.sleep, clock=time.time, stats: dict | None = None):
+    def __init__(self, send, step, sleep=time.sleep, clock=time.time, stats: dict | None = None, pressed=None):
         self.send, self.step, self.sleep, self.clock = send, step, sleep, clock
+        self.pressed = pressed                              # the menus module's pressed(scr, key): a key that went in
         self.stats = stats if stats is not None else {}
         self.stats.setdefault("menu_presses", 0)
         self.stats.setdefault("ram_progress", 0)
@@ -79,6 +84,8 @@ class Navigator:
         self.sleep(hold)
         self.send([{"key": key, "down": False}])
         self.last_key, self.last_at = key, self.clock()
+        if self.pressed is not None:
+            self.pressed(scr, key)
         self.stats["menu_presses"] = self.stats.get("menu_presses", 0) + 1
         self.stats["menu_last"] = f"{scr.get('where')}: {key}"
         return key
@@ -109,10 +116,12 @@ class Boot:
                  game=None, hooks=None, jump_at: str = "select_player", round_hooks=None):
         self.menus, self.m, self.ad, self.game, self.clock = menus, m, ad, game, clock
         self.stats = stats if stats is not None else {}
-        self.nav = Navigator(send, menus.step, sleep=sleep, clock=clock, stats=self.stats)
+        self.nav = Navigator(send, menus.step, sleep=sleep, clock=clock, stats=self.stats,
+                             pressed=getattr(menus, "pressed", None))
         self.hooks, self.jump_at, self.round_hooks = hooks, jump_at, round_hooks
         self.hooked, self.moment_tried, self.at_jump = False, False, False
         self.lost_since, self.still_since, self.progress = None, None, None
+        self.boot_pressed, self.named = float("-inf"), False
 
     def tick(self, now: float | None = None, merc=None, scr: dict | None = None) -> str | None:
         now = self.clock() if now is None else now
@@ -142,14 +151,24 @@ class Boot:
             self.hooked = True
         if scr.get("where") == "unknown":
             self.lost_since = self.lost_since or now
-            if now - self.lost_since > MENU_LOST_S:
+            if now - self.lost_since > (MENU_LOST_S if self.named else BOOT_LOST_S):
                 return "RAM did not name the screen for %.0f s" % (now - self.lost_since)
+            # a cold boot (no menu moment on this PC yet: RPCS3 states don't move between machines) opens on dialogs
+            # the title's units don't name, e.g. RE5's "HDD access indicator" notice (live JAYBUILTFINALE 2026-10-22:
+            # no press, hung at 30 s, relaunched into the same notice, a loop): the title's BOOT_KEY confirms them
+            key = getattr(self.menus, "BOOT_KEY", None)
+            if key and now - self.lost_since >= BOOT_PRESS_S and now - self.boot_pressed >= BOOT_PRESS_S:
+                self.nav.send([{"key": key, "down": True}])
+                self.nav.sleep(Navigator.HOLD_S)
+                self.nav.send([{"key": key, "down": False}])
+                self.boot_pressed = self.clock()
+                self.stats["boot_presses"] = self.stats.get("boot_presses", 0) + 1
         else:
-            self.lost_since = None
+            self.lost_since, self.named = None, True
         self.nav.tick(scr)
         if self.stats.get("ram_progress") != self.progress or scr.get("where") in WAITS:
             self.progress, self.still_since = self.stats.get("ram_progress"), now
-        elif now - (self.still_since or now) > MENU_STUCK_S:
+        elif now - (self.still_since or now) > (MENU_STUCK_S if self.named else BOOT_LOST_S):
             return "nothing moved in RAM for %.0f s on %s" % (now - self.still_since, scr.get("where"))
         return None
 
