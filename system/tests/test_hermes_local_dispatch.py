@@ -238,3 +238,29 @@ def test_large_local_run_reserves_delivery_and_resumes_the_missing_acceptance_st
     assert 'returned commit and PR receipt' in text and 'actual evidence artifact' in text
     assert 'done only after the full request is verified' in text and 'keep partial work in_progress' in text
     assert s.model_dump() == before  # Prompt packaging does not alter any route or capacity setting.
+
+
+def test_a_priority_only_node_takes_only_the_operators_listed_requests(monkeypatch, tmp_path):
+    # operator 2026-10-22: "make sure that my claude credit is going towards solving these issues I am mentioning"
+    from gbox import hermes_pool as pool
+    reqs = [{'id': P, 'number': 1, 'title': 'parent', 'status': 'open'}] + [
+        {'id': str(n)*16, 'number': n, 'title': 'Implement verified game reader', 'status': 'open'} for n in range(1, 5)]
+    calls = _env(monkeypatch, tmp_path, reqs, [])
+    data = q._read()
+    data['priority'] = ['2'*16]
+    q._save(data)
+    s = S.model_copy(update={'nodes': {
+        'claude': {'provider': 'paid', 'model': 'sonnet', 'max_parallel_jobs': 2, 'shared_with_games': False,
+                   'allow_large_tasks': True, 'priority_only': True},
+        'sparkDeux': {'provider': 'second', 'model': 'large', 'max_parallel_jobs': 2, 'shared_with_games': False,
+                      'allow_large_tasks': True}}})
+    monkeypatch.setattr(hermes_local, 'settings', lambda: s)
+    original = q._api
+    monkeypatch.setattr(q, '_api', lambda path, body=None: {'capacity': 4, 'nodes': [
+        {'name': name, 'primary': False, 'enabled': True, 'capable': True, 'capacity': v.max_parallel_jobs,
+         'priority_only': v.priority_only} for name, v in pool.node_settings().items()]}
+        if path == '/api/hermes/local/nodes' else original(path, body))
+    q.tick(now=1000)
+    paid = [i for i in q._read()['items'].values() if i.get('inference_node') == 'claude']
+    assert [i['request_id'] for i in paid] == ['2'*16]                     # the listed request, nothing else
+    assert sum(i.get('inference_node') == 'sparkDeux' for i in q._read()['items'].values()) == 2

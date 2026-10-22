@@ -596,6 +596,10 @@ def routes(app, store, auth, create_request, submit, moment_provider=None):
         if not text:
             raise HTTPException(422, "Type a note first")
         _game(sid)
+        from . import coaching_quality
+        why = coaching_quality.check(text)
+        if why:
+            raise HTTPException(422, why)
         from . import coaching_evidence
         # A preceding report may be rendering its map under the submission lock. Freeze this report's caches now.
         # A repeated retry may copy caches again, but returns the first stored result without jobs or new artifacts.

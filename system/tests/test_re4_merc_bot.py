@@ -182,7 +182,26 @@ def test_with_the_map_takes_the_time_bonuses_in_the_planned_order_with_a():
     assert bot.tick(B.snapshot(m)) == {"hold": {"up", "b"}}               # run (tour reversed the list: -z first)
     assert bot.items[0] is second
     m.put(PL + 0x94, ">3f", 0.0, 0.0, -5200.0)                            # at its stand point (-5300)
-    assert bot.tick(B.snapshot(m)) == {"tap": "a"}                        # TAKE
+    assert bot.tick(B.snapshot(m)) != {"tap": "a"}                        # facing away from it (-z): turn first
+    facing(m, 0.0)                                                        # the item is 200 ahead (+z)
+    assert bot.tick(B.snapshot(m)) == {"tap": "a"}                        # facing it, against it: TAKE
+
+
+def test_a_missed_take_is_tried_again_once():
+    now = [0.0]
+    m = world([], room=0x400, leon=(0.0, 0.0, 5000.0))
+    h = item("time_bonus", 0.0, 5000.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=FakeNav([h]))
+    facing(m, math.pi)
+    bot.items = [h]
+    for _ in range(2):
+        bot.goal = None
+        bot._take(B.snapshot(m)["player"], h, now[0], bot.items)
+        now[0] += B.COLLECT_TRY_S + 1
+        bot._take(B.snapshot(m)["player"], h, now[0], bot.items)
+        if _ == 0:
+            assert bot.items == [h]                                       # back in the pool for one more try
+    assert h not in bot.items and h["tries"] == B.TAKE_TRIES
 
 
 def test_a_vault_waypoint_is_jumped_with_a():
