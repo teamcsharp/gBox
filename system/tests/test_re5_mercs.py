@@ -1522,3 +1522,17 @@ def test_stage_select_takes_a_random_stage_each_visit():
     draws = {R.StagePick(rng=random.Random(s)).key(scr) for s in range(30)}
     assert draws == {"dright", "cross"}                    # some visits move, some take the stage under the cursor
     assert R.step({"where": "select_stage"}) in ("dright", "cross")
+
+
+def test_a_far_majini_behind_a_wall_is_never_run_at_in_a_straight_line(tmp_path, monkeypatch):
+    """Coaching note 14 (\"you are trying to walk through a wall\"): beyond ENGAGE the fallback ran straight at the
+    nearest Majini (up + cross) whatever stood between. With a mesh it takes the route round the wall instead."""
+    mesh = u_mesh()
+    monkeypatch.setattr(R, "ENGAGE", 100.0)
+    mem, bot, _ = _pursuit_bot(tmp_path, (350.0, 0.0, 50.0))
+    bot.combat = None
+    assert not mesh.floor_segment((50.0, 0.0, 50.0), (350.0, 0.0, 50.0))
+    act = bot.tick(_snap(mem, mesh))
+    assert bot.stats["phase"] == "pursue" and bot.route and bot.route_for == ("enemy", ENEMIES[0])
+    assert not act["hold"] & {"lup", "cross"}                 # turning toward the way round, not driving into the wall
+    assert not bot.nav_learning.stages.get(mesh.learning_sig, {}).get("routes")
