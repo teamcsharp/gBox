@@ -172,6 +172,31 @@ PACKAGE = [("mercenaries_unlock", {"on": True}),
            ("aim_turn_speed", {"multiplier": AIM_SPEED_X})]   # the game's aim sensitivity (a constant, not Leon)
 
 
+# Random weapon per round (operator 2026-10-22): one of these is Leon's loadout each time the package is applied (every
+# round, at Select Player); (weapon, its ammo item). Damage is raised on whichever was drawn; infinite_ammo is on.
+RANDOM_WEAPONS = (("handgun", "handgun ammo"), ("red 9", "handgun ammo"), ("w-870", "shotgun ammo"),
+                  ("tmp", "tmp ammo"), ("handcannon", "handcannon ammo"), ("magnum", "magnum ammo"),
+                  ("sniper rifle", "rifle ammo"))
+
+
+def pick_weapon(rng=None) -> tuple[str, str]:
+    import random
+    return (rng or random).choice(RANDOM_WEAPONS)
+
+
+def package(weapon: tuple[str, str] | None = None) -> list:
+    """PACKAGE with the loadout and the damage mod on `weapon` (a random one when None)."""
+    w, ammo = weapon or pick_weapon()
+    out = []
+    for op, kw in PACKAGE:
+        if op == "merc_loadout":
+            kw = dict(kw, items=[w, f"{ammo}:200"])
+        elif op == "weapon_mod":
+            kw = dict(kw, item=w)
+        out.append((op, kw))
+    return out
+
+
 def ptr_ok(p: int) -> bool:
     return 0x80000000 <= p < 0x81800000
 
@@ -1074,7 +1099,7 @@ def apply_package(ad, only=None, skip=()) -> list[str]:
     from . import re_mods_tool as RM
     g = RM.RE4(ad)
     failed = []
-    for op, kw in PACKAGE:
+    for op, kw in package():
         if (only is not None and op not in only) or op in skip:
             continue
         try:

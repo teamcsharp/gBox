@@ -883,3 +883,14 @@ def test_never_fires_at_a_ganado_behind_a_wall_and_goes_for_the_bonus_instead():
     facing(m, 0.0)
     act = bot.tick(B.snapshot(m))
     assert {"r", "a"}.isdisjoint(act["hold"]) and bot.goal is not None
+
+
+def test_each_round_draws_a_random_weapon_into_loadout_and_damage_mod():
+    seen = set()
+    for w in B.RANDOM_WEAPONS:
+        pk = dict(B.package(w))
+        assert pk["merc_loadout"]["items"] == [w[0], f"{w[1]}:200"]
+        assert pk["weapon_mod"]["item"] == w[0] and pk["weapon_mod"]["reset"] is True
+        seen.add(w[0])
+    assert len(seen) == len(B.RANDOM_WEAPONS) > 1
+    assert B.pick_weapon() in B.RANDOM_WEAPONS
