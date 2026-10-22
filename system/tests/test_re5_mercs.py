@@ -782,8 +782,9 @@ def test_bonuses_anywhere_are_walked_to_nearest_first_and_the_clock_jumps_are_co
     monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
     act, bot = tick(with_bonuses(world(), [(0.0, 13.0, 1200.0)]))                 # 12 m ahead, nobody near, no mesh
     assert {"lup", "cross"} <= act["hold"]                                        # straight at it
-    act, b2 = tick(with_bonuses(world(), [(0.0, 13.0, 2500.0), (0.0, 400.0, 900.0)]))   # 25 m off, 9 m up a roof
-    assert {"lup", "cross"} <= act["hold"] and b2.target == "bonus 0x30402000"   # the nearer, whatever its level
+    act, b2 = tick(with_bonuses(world(), [(0.0, 13.0, 1200.0), (0.0, 400.0, 900.0)]))   # 12 m off, 9 m up a roof nearer
+    assert {"lup", "cross"} <= act["hold"] and b2.target == "bonus 0x30401000"   # no mesh: the one on this level
+    assert b2.stats["unreachable_bonuses"] == 1 and b2.stats["bonus_vertical"] == "level +13"   # the roof waits for a mesh
     assert b2.stats["phase"] == "gather_time" and b2.stats["nearest_eta_s"] > 0
     near = [((0.0, 0.0, 300.0), 800, 800)]                                       # a Majini 3 m ahead: fought first
     act, b3 = tick(with_bonuses(world(action=2, enemies=near), [(0.0, 13.0, 1200.0)]))
@@ -1498,3 +1499,27 @@ def test_a_nearly_straight_route_counts_as_open_floor(tmp_path):
     p, e = R.snapshot(mem)["player"], {"ptr": 1, "pos": (250.0, 0.0, 250.0)}
     assert bot._open(p, e, mesh, 10.0)
     assert not bot._open(p, {"ptr": 2, "pos": (350.0, 0.0, 50.0)}, u_mesh(), 10.0)
+
+
+def test_no_mesh_never_runs_at_a_bonus_on_another_level(monkeypatch):
+    monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
+    act, bot = tick(with_bonuses(world(), [(0.0, 400.0, 900.0)]))               # only a roof, 9 m up: no line to run
+    assert act == {"hold": set()} and bot.stats["bonus_target"] is None and bot.stats["unreachable_bonuses"] == 1
+
+
+def test_bonus_vertical_relation_is_reported_with_a_mesh():
+    mesh, bot = strip_mesh(), R.Bot()
+    p = {"pos": (0.0, 0.0, 100.0), "rot": 0.0, "action": 0}
+    assert bot._bonus(p, [], [{"ptr": 2, "pos": (0.0, -300.0, 1500.0), "kind": "time"}], 10.0, mesh, 100.0)
+    assert bot.stats["bonus_vertical"] == "below -300"
+
+
+def test_no_mesh_wall_push_gives_up_on_that_bonus():
+    bot = R.Bot()
+    p = {"pos": (0.0, 0.0, 0.0), "rot": 0.0, "action": 0}
+    tgt = {"ptr": 7, "pos": (0.0, 0.0, 1500.0), "kind": "time", "walk": True}
+    t = 10.0
+    while bot.stats["stuck"] < 2 and t < 40.0:                                  # never moves: a wall
+        bot._follow(p, tgt, None, False, t)
+        t += 0.1
+    assert bot.stats["routes_blocked"] == 1 and bot.bonus_skip[7] > t

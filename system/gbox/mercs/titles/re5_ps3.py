@@ -1418,8 +1418,14 @@ class Bot:
             return d
         self.stats["unreachable_bonuses"] = sum(1 for b in standing if mesh is not None
                                                and self.route_len.get(b["ptr"]) is None)
-        cands = [b for b in standing if cost(b) < BONUS_RANGE
-                 and (mesh is None or self.route_len.get(b["ptr"]) is not None)]
+        if mesh is None:
+            # No navmesh: a straight line is the only plan, and it cannot climb. A bonus on another level (a roof, a
+            # ledge, a floor below) is not run at (operator 2026-10-22: "running face first at a wall"); the ones on
+            # this level go first and the rest wait for a mesh.
+            self.stats["unreachable_bonuses"] = sum(1 for b in standing if abs(b["pos"][1] - py) >= BONUS_LEVEL_DY)
+            cands = [b for b in standing if abs(b["pos"][1] - py) < BONUS_LEVEL_DY and cost(b) < BONUS_RANGE]
+        else:
+            cands = [b for b in standing if cost(b) < BONUS_RANGE and self.route_len.get(b["ptr"]) is not None]
         if not cands:
             self.stats["bonus_target"] = None
             return None
@@ -1428,6 +1434,8 @@ class Bot:
         d = math.hypot(b["pos"][0] - px, b["pos"][2] - pz)
         level = abs(b["pos"][1] - py) < BONUS_LEVEL_DY          # on its level, right at it: take it
         walk = d > BONUS_TAKE or not level
+        dy = b["pos"][1] - py                                  # the vertical the walk must solve: up = a ledge / ladder
+        self.stats["bonus_vertical"] = ("level" if level else "above" if dy > 0 else "below") + f" {dy:+.0f}"
         if walk and not BONUS_WALK:
             return None
         self.nearest_eta = cost(b) / RUN_SPEED
@@ -1600,7 +1608,13 @@ class Bot:
                 self.bonus_skip[tgt["ptr"]] = now + BONUS_SKIP_S
                 self.stats["route"] = "unreachable on current mesh"
                 return {"hold": set()}
-            return {"hold": self._walk(p, heading(tgt["pos"][0] - pos[0], tgt["pos"][2] - pos[2]), now)}
+            stuck = self.stats["stuck"]
+            keys = self._walk(p, heading(tgt["pos"][0] - pos[0], tgt["pos"][2] - pos[2]), now, precise=True)
+            if self.stats["stuck"] > stuck:                # pushing at a wall with no mesh to route round it
+                if self.route_stall is not None:
+                    return self._block_route(tgt, now, "no mesh and walled in: trying another bonus")
+                self.route_stall = tuple(pos)
+            return {"hold": keys}
         while len(self.route) > 1 and math.hypot(self.route[0][0] - pos[0], self.route[0][2] - pos[2]) < WP_REACHED \
                 and abs(self.route[0][1] - pos[1]) < WP_CLIMB:
             following = self.route[1]
