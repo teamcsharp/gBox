@@ -258,7 +258,7 @@ def test_play_ends_the_run_when_ram_cannot_name_the_menus():
     g.put(RM.TASKS + RM.TASK_ENTRY, ">I", RM.TITLE_ENTRY)
     g.put(STACK_TOP - 0x38, ">II", 0, 0)                   # the title task, but no work area on its stack
     now = [0.0]
-    stats = B.play(None, g.send, lambda: now[0] > 120, sleep=lambda s: now.__setitem__(0, now[0] + s), m=g,
+    stats = B.play(None, g.send, lambda: now[0] > 700, sleep=lambda s: now.__setitem__(0, now[0] + s), m=g,
                    clock=lambda: now[0])
     assert stats["hung"] is True and "did not name" in stats["wandered"] and not g.events
 

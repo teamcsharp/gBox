@@ -119,6 +119,9 @@ def test_near_origin_direction_reversals_do_not_thrash_the_stick_and_valid_ray_r
     s["laser"] = {"from": (143, 53, 136), "at": (400, 100, 200)}
     action = bot.tick(s, s["player"], s["enemies"][0], 1.35)
     assert {"l1", "rleft", "rdown"} <= action["hold"] and "r1" not in action["hold"]   # steering, off him
+
+
+    assert {"l1", "rleft", "rdown"} <= action["hold"] and "r1" not in action["hold"]   # valid ray, off him: turn, no shot
     assert bot.near_ray_since is None
     assert bot.stats["aim_feedback"] == "ray direction"
 
@@ -191,16 +194,45 @@ def test_fires_immediately_on_an_exposed_body_and_keeps_the_dot_on_it():
 
 
 def test_direct_fire_holds_with_the_dot_beside_or_below_him_and_continues_down_a_line_past_him():
-    """Operator 2026-10-22: "he is shooting at nonsense": the ground before him or the air beside him is no shot; a
-    ray running on past him (tracking a moving Majini) is."""
-    for dot, fire in (((90.0, 120.0, 400.0), False), ((0.0, 0.0, 300.0), False), ((0.0, 160.0, 900.0), True)):
+    """Operator 2026-10-22: "he is shooting at nonsense": the ground before him, the air beside him and a dot on past
+    him (the game's dot stops on the first body it meets: beyond him is a miss) are no shot; on his head is."""
+    for dot, fire in (((90.0, 120.0, 400.0), False), ((0.0, 0.0, 300.0), False), ((0.0, 160.0, 900.0), False),
+                      ((0.0, 160.0, 400.0), True)):
         m = world(laser_dot=dot)
         bot = C.Combat(m, {}, clock=lambda: 0.0)
         s = snap(m)
         act = bot.tick(s, s["player"], s["enemies"][0], 0.0)
         assert "l1" in act["hold"] and ("r1" in act["hold"]) == fire, dot
-        assert bot.stats["fire_gate"] == ("line to him" if fire else "no line: hold fire")
+        assert bot.stats["fire_gate"].endswith("hold fire") != fire
         assert bot.stats["shots"] == 0                 # held fire is intent, not a fabricated shot event
+
+
+def test_direct_fire_holds_while_the_dot_is_beside_below_or_past_the_target_then_resumes_on_him():
+    # coaching note 3: shooting at the ground. The trigger waits while the stick brings the dot onto him.
+    for dot in ((90.0, 120.0, 400.0), (0.0, 30.0, 400.0), (0.0, 20.0, 150.0), (0.0, 160.0, 900.0)):
+        m = world(laser_dot=dot)
+        bot = C.Combat(m, {}, clock=lambda: 0.0)
+        s = snap(m)
+        for k in range(30):
+            act = bot.tick(s, s["player"], s["enemies"][0], k * 0.02)
+            assert "l1" in act["hold"] and "r1" not in act["hold"], dot
+        assert bot.stats["shots"] == 0 and bot.stats["los_held_fire"] > 0
+    for dot in ((0.0, 110.0, 400.0), (0.0, 160.0, 400.0)):   # on his body / head: fire
+        m = world(laser_dot=dot)
+        bot = C.Combat(m, {}, clock=lambda: 0.0)
+        s = snap(m)
+        assert {"l1", "r1"} <= bot.tick(s, s["player"], s["enemies"][0], 0.0)["hold"], dot
+
+
+def test_line_of_sight_aim_rejects_floor_short_of_target_and_accepts_aligned_ray():
+    foot = (0.0, 0.0, 400.0)
+    origin = (0.0, 140.0, 0.0)
+    aim = (0.0, 72.0, 400.0)
+    assert not C.line_of_sight_aim((origin, (0.0, 0.0, 200.0)), aim, None, foot)      # floor, halfway
+    assert not C.line_of_sight_aim((origin, (150.0, 100.0, 400.0)), aim, None, foot)  # well to the side
+    assert C.line_of_sight_aim((origin, (0.0, 75.0, 400.0)), aim, None, foot)
+    assert C.line_of_sight_aim((origin, (0.0, 0.0, 0.0)), aim, "body", foot)
+    assert not C.line_of_sight_aim(None, aim, None, foot)
 
 
 def test_line_to_needs_the_ray_to_reach_him_in_line():
@@ -512,6 +544,8 @@ def test_close_rear_enemy_outranks_distant_front_enemy_and_fire_tracks_the_turn(
     assert {"rleft", "rright"} & action                   # he is behind: swing round with the gun down (~150 deg/s,
     assert not action & {"l1", "r1"}                      # not ~30 deg/s aiming), then raise and fire
     assert "swinging" in bot.stats["combat"]
+
+
     behind["pos"] = (0, 0, -1000)
     assert bot.choose_target(s, s["player"], [behind, front], 0.1) is front
 
@@ -655,3 +689,24 @@ def test_hit_recovery_never_waits_to_reacquire_and_mandatory_escape_still_wins(t
     s = snap(m, enemy=(0, 0, 60))
     s["player"]["action"] = 4
     assert bot.tick(s) == {"hold": set()}
+
+
+def test_wall_in_front_off_axis_ray_is_cover_and_holds_fire(tmp_path):
+    """Coaching #3002: the dot lands on a wall short of him a few degrees off his capsule: do not shoot the wall."""
+    for dot in ((30.0, 120.0, 300.0), (-35.0, 110.0, 320.0)):
+        m = world(laser_dot=dot, enemy=(0.0, 0.0, 1000.0))
+        bot = C.Combat(m, {}, learn_dir=tmp_path, lessons=lambda row: None)
+        s = snap(m, enemy=(0.0, 0.0, 1000.0))
+        s["laser"] = {"from": (0.0, 149.0, 46.0), "at": dot}
+        act = bot.tick(s, s["player"], s["enemies"][0], 1.0)
+        assert bot.blocked_until[ENEMY] > 1.0, dot
+        assert "r1" not in act["hold"], dot
+    # a wide miss (beside him, well off the cone) stays unknown, not cover: no candidate switch. The trigger still
+    # waits for the dot to come onto him (#869: no shots off the aim point) while the stick turns.
+    m = world(laser_dot=(300.0, 120.0, 400.0), enemy=(0.0, 0.0, 1000.0))
+    bot = C.Combat(m, {}, learn_dir=tmp_path, lessons=lambda row: None)
+    s = snap(m, enemy=(0.0, 0.0, 1000.0))
+    s["laser"] = {"from": (0.0, 149.0, 46.0), "at": (300.0, 120.0, 400.0)}
+    act = bot.tick(s, s["player"], s["enemies"][0], 1.0)
+    assert "l1" in act["hold"] and "r1" not in act["hold"] and bot.stats["los_held_fire"] > 0
+    assert not bot.blocked_until
