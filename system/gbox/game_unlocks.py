@@ -46,6 +46,14 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
                     'reason': gate['reason'], 'scope': list(sgc_gems_probe.CATEGORIES),
                     'evidence': gate['evidence'], 'blockers': gate['blockers'],
                     'next': gate['next']}
+        from . import vf4evo_unlock
+        if game.get('game_id') == vf4evo_unlock.GAME_ID and game.get('platform') == vf4evo_unlock.PLATFORM:
+            # VF4 Evo (PS2): research pending; never touch the executable from Play.
+            gate = vf4evo_unlock.profile_gate()
+            return {'state': 'research_pending', 'applied': False, 'verified': False,
+                    'reason': gate['reason'], 'scope': list(vf4evo_unlock.CATEGORIES),
+                    'evidence': gate['evidence'], 'blockers': gate['blockers'],
+                    'next': gate['next']}
         return {'state': 'research_pending', 'applied': False, 'reason': profile['reason']}
     if game.get('game_id') == RE6_ID and game.get('platform') == 'xbox360':
         from . import re6_tool
@@ -98,6 +106,12 @@ def profile_for(game: dict) -> dict:
         from . import sgc_gems_probe
         return {'status': 'pending_research', 'profile': None, 'verified': False,
                 'scope': list(sgc_gems_probe.CATEGORIES), **sgc_gems_probe.profile_gate()}
+    from . import vf4evo_unlock
+    if game.get('game_id') == vf4evo_unlock.GAME_ID and game.get('platform') == vf4evo_unlock.PLATFORM:
+        # Lock surface recorded, no proven write target; verified=False keeps writers unreachable.
+        gate = vf4evo_unlock.profile_gate()
+        return {'status': 'pending_research', 'profile': None, 'verified': False,
+                'scope': list(vf4evo_unlock.CATEGORIES), **gate}
     if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,
                 'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}
