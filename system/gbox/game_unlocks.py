@@ -14,6 +14,7 @@ RE6_TEMPLATE_SHA256 = '194cb5b71858f65feeb2b1703642ddc4ffde09b9a087119189b29b0ad
 DOAPP_ID = '59c55e95af61abbe'  # Dead Or Alive ++ (Korea), platform=arcade
 NDS_WCW_GAME_ID = 'd9467f457f53f2c7'  # Call of Duty: World at War (USA), NDS
 SGC_GEMS_ID = 'fc5914e3ddb540c4'  # Sonic Gems Collection (USA), platform=gamecube
+TETRIS_AXIS_ID = 'd6d1a0582e4c3b0b'  # Tetris Axis (USA), platform=3ds
 SGC_GEMS_PLATFORM = 'gamecube'
 
 
@@ -43,6 +44,16 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
             gate = sgc_gems_probe.profile_gate()
             return {'state': 'research_pending', 'applied': False,
                     'reason': gate['reason'], 'scope': list(sgc_gems_probe.CATEGORIES),
+                    'evidence': gate['evidence'], 'blockers': gate['blockers'],
+                    'next': gate['next']}
+        if game.get('game_id') == TETRIS_AXIS_ID and game.get('platform') == '3ds':
+            # Tetris Axis (USA): static evidence only (owned build hashed, save
+            # key schema mined, per-category content inventory built). No lock
+            # check and no save field are proven yet, so no writer is reachable.
+            from . import tetris_axis_unlock
+            gate = tetris_axis_unlock.profile_gate()
+            return {'state': 'research_pending', 'applied': False,
+                    'reason': gate['reason'], 'scope': list(tetris_axis_unlock.CATEGORIES),
                     'evidence': gate['evidence'], 'blockers': gate['blockers'],
                     'next': gate['next']}
         return {'state': 'research_pending', 'applied': False, 'reason': profile['reason']}
@@ -82,6 +93,13 @@ def profile_for(game: dict) -> dict:
         from . import sgc_gems_probe
         return {'status': 'pending_research', 'profile': None, 'verified': False,
                 'scope': list(sgc_gems_probe.CATEGORIES), **sgc_gems_probe.profile_gate()}
+    if game.get('game_id') == TETRIS_AXIS_ID and game.get('platform') == '3ds':
+        # Read-only static-evidence profile: pre_launch short-circuits on
+        # verified=False, so no writer is reachable from the Play path.
+        from . import tetris_axis_unlock
+        gate = tetris_axis_unlock.profile_gate()
+        return {'status': 'pending_research', 'profile': None, 'verified': False,
+                'scope': list(tetris_axis_unlock.CATEGORIES), **gate}
     if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,
                 'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}
