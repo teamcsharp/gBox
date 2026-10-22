@@ -821,6 +821,7 @@ def extract_run(ctx, game: dict, e: dict, work) -> dict:
 
 
 # ---- native swap writer: a library character -> one PLAYER.AFS body (gbox.ninja_swap pipeline, as gbox.sa2_chars) ----
+GROW_LIMIT = 4 << 20                                       # cap on a relocated PLAY entry (bytes)
 BUDGETS = (1400, 1150, 950, 800, 650, 500, 400, 300, 270, 240, 200)   # char 00's 5 big lists need 4 holes:
 # at 300 triangles two of them overshoot the biggest hole by 28 bytes, so smaller steps follow (#1155)
 ATLAS_TEXTURE = 0       # legacy (PTEX texture 0 / id 0): the writer now finds both per group (group_texture_ids)
@@ -969,6 +970,23 @@ def validate_cached_mod(directory, identity: dict, meta: dict) -> dict:
             or not (directory / image).is_file()):
         raise ValueError(f"Existing JGR mod {directory.name} has no local GDI image; its files were preserved")
     return manifest
+
+
+def donor_files(disc, need_bytes: int, exclude=(PLAYER_AFS,)) -> list[str]:
+    """One sacrificial disc file (cutscene movie) whose sectors can hold a grown archive: the smallest .SFD that fits."""
+    need = (need_bytes + 2047) // 2048
+    order = sorted(l for l, _s in disc.files.values())
+    fits = []
+    for key, (lba, size) in disc.files.items():
+        if key in exclude or not key.lower().endswith(".sfd"):
+            continue
+        nxt = next((l for l in order if l > lba), None)
+        sectors = (nxt - lba) if nxt else (size + 2047) // 2048
+        if sectors >= need:
+            fits.append((sectors, key))
+    if not fits:
+        raise ValueError(f"no .SFD donor file on the disc has {need} free sectors for the grown PLAYER.AFS")
+    return [min(fits)[1]]
 
 
 def entry_room(data: bytes, off: int) -> int:
@@ -1181,7 +1199,7 @@ def _material(buf: bytes, nodes: list[dict]) -> tuple[bytes, int, int, int]:
 
 
 def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender: str | None = None,
-               progress=lambda p, m: None, scale: dict | None = None, data: bytes | None = None) -> dict:
+               progress=lambda p, m: None, scale: dict | None = None, data: bytes | None = None, grow: bool = False) -> dict:
     """-> {files {PLAYER_AFS: bytes}, report, rigged, atlas}: character `index`'s high-detail body drawn as `model`
     (rig `roles`). Its 20 node structs stay (so its motions drive the new mesh). Each rewritten node carries only its
     own new vertices (JGR vertex chunks are plain 0x29, not SA2's weighted ones, so no original chunk has to run
@@ -1199,6 +1217,9 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
         data = GDRom(str(gdi)).read(PLAYER_AFS)
     play, ptex = character_pair(data, index)
     room = entry_room(data, play)
+    stock_room = room
+    if grow:                                   # #1889: PLAY may outgrow its slot; it is moved to the archive's end
+        room = GROW_LIMIT
     buf = play_bytes(data, play)
     root = body_root(data, play)
     nj = play_model(buf, root)
@@ -1405,11 +1426,18 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
     size = entry_size(data, ptex)
     pt = bytearray(data[ptex:ptex + size])
     pt[t0["offset"]:t0["offset"] + len(new_t)] = new_t
-    afs = replace_entries(data, {play: r["data"], ptex: bytes(pt)})
+    if grow and len(r["data"]) > stock_room:
+        afs = relocate_entries(replace_entries(data, {ptex: bytes(pt)}), {play: r["data"]})
+    else:
+        if len(r["data"]) > stock_room:
+            raise ValueError(f"PLAY {index:02d}: {len(r['data'])} bytes > {stock_room} bytes of AFS room")
+        afs = replace_entries(data, {play: r["data"], ptex: bytes(pt)})
+    grown = len(afs) > len(data)
     from . import fit_events as FE                         # the PLAY entry, rebuilt in its own AFS room
     FE.stage("encode", data={"bytes": len(r["data"]), "budget": room, "atlas_bytes": len(new_t),
                              "triangles": r["report"].get("triangles"), "nodes": len(r["report"].get("nodes") or []),
-                             "relocated": False, "where": f"PLAY {index:02d} in place (PLAYER.AFS keeps its size)"})
+                             "relocated": grown, "where": (f"PLAY {index:02d} moved to the end of PLAYER.AFS" if grown
+                                          else f"PLAY {index:02d} in place (PLAYER.AFS keeps its size)")})
     rep = r["report"] | {"character": f"{index:02d}", "archive_index": index,
                          "native_id": native_id_for_archive(data, index),
                          "source_afs_sha256": hashlib.sha256(data).hexdigest(),
@@ -1421,7 +1449,7 @@ def build_swap(gdi, model, roles: dict, work, name: str, index: int = 0, blender
                                                          for j, m in sorted(o.items()) if not _translation(m)}
                                              for g, o in xforms.items() if any(not _translation(m) for m in o.values())},
                          "body_selection": "max_triangles_unverified",
-                         "runtime_verified": False, "play_bytes": len(r["data"]), "play_room": room,
+                         "runtime_verified": False, "play_bytes": len(r["data"]), "play_room": stock_room, "relocated": grown,
                          "atlas": list(r["atlas"].size), "atlas_texture": atlas,
                          "texture_ids": {f"{g:#x}": t for g, t in tex_ids.items()}, "vertex_slots": vlimit,
                          "group_vertex_spans": {f"{k:#x}": v for k, v in spans.items()}}
@@ -1458,8 +1486,10 @@ def build_mod(cfg, meta: dict, game: dict, gdi, index: int = 0, progress=lambda 
     work_parent = Path(cfg.cache) / "characters_build"
     work_parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="jgr_", dir=work_parent) as scratch:
+        scale = (meta.get("rig") or {}).get("scale")
+        grow = bool(((scale or {}).get("profile") or {}).get("allow_relocate"))
         b = build_swap(gdi, model, roles, Path(scratch), meta["name"], index, C._blender(cfg),
-                       progress, (meta.get("rig") or {}).get("scale"))
+                       progress, scale, **({"grow": True} if grow else {}))
         for key in ("archive_index", "native_id", "source_afs_sha256", "body_root"):
             if b["report"].get(key) != identity[key]:
                 raise ValueError(f"JGR build changed {key}; refusing publication")
@@ -1470,7 +1500,12 @@ def build_mod(cfg, meta: dict, game: dict, gdi, index: int = 0, progress=lambda 
         b["atlas"].save(tdir / "jgr_atlas.png")
         C.render_preview(tdir / "rigged.gltf", tdir / "jgr_preview.png")
         progress(85, "Writing the modded GD-ROM image (native draw-group verification still required)")
-        img = patch_gdi(gdi, d, name, b["files"], progress)
+        donors = []
+        disc = GDRom(str(gdi))
+        if len(b["files"][PLAYER_AFS]) > len(disc.read(PLAYER_AFS)):      # relocated PLAY: needs donor sectors
+            donors = donor_files(disc, len(b["files"][PLAYER_AFS]))
+        img = patch_gdi(gdi, d, name, b["files"], progress, donors) if donors else \
+            patch_gdi(gdi, d, name, b["files"], progress)
         manifest = {"name": name, "game_id": gid, "image": img.name, "built": time.time(),
                     "files": sorted(b["files"]), "character": meta["slug"], "cache_identity": identity,
                     "report": json.loads(json.dumps(b["report"], default=str))}

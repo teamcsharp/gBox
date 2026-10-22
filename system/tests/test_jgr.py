@@ -859,3 +859,13 @@ def test_relocate_entries_grows_an_entry_past_its_room_and_keeps_the_rest():
     import struct
     d = struct.unpack_from("<I", out, 8 + 8 * 3)[0]
     assert struct.unpack_from("<I", out, d + 48 + 44)[0] == len(blob)
+
+
+def test_donor_files_picks_the_smallest_movie_with_room_for_a_grown_archive():
+    from types import SimpleNamespace
+    disc = SimpleNamespace(files={"A/PLAYER.AFS": (100, 4096), "A/BIG.SFD": (200, 2048 * 50),
+                                  "A/SMALL.SFD": (400, 2048 * 10), "A/TINY.SFD": (500, 2048 * 2),
+                                  "A/DATA.BIN": (600, 2048 * 90)})
+    assert jgr.donor_files(disc, 2048 * 8) == ["A/SMALL.SFD"]
+    with pytest.raises(ValueError, match="donor"):
+        jgr.donor_files(disc, 2048 * 5000)
