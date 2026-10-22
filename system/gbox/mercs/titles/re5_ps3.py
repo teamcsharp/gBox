@@ -28,6 +28,7 @@ import time
 from pathlib import Path
 
 from ..driver import Driver
+from ..navcommon import StuckDetector
 from . import re5_combat, re5_motion, re5_nav, re5_weapons
 
 S_PLAYER, S_ENEMY, S_MAIN = 0x017FEB34, 0x017FDB60, 0x0191CEE4
@@ -783,7 +784,7 @@ class Bot:
         self.meter = re5_motion.MotionMeter()
         self.aiming_since = None
         self.pulse = 0
-        self.hist: list = []
+        self.stuck_det = StuckDetector(STUCK_S, STUCK_MOVE)   # shared engine stuck detection (mercs/navcommon.py)
         self.hp_seen: dict = {}
         self.unstick_until = 0.0
         self.unstick_dir = 1
@@ -1917,6 +1918,14 @@ class Bot:
         k = (n + 1) // 2
         return min(k * DETOUR_STEP, DETOUR_MAX) * (1 if n % 2 else -1)
 
+    @property
+    def hist(self) -> list:
+        return self.stuck_det.hist
+
+    @hist.setter
+    def hist(self, v) -> None:
+        self.stuck_det.hist = v
+
     def _walk(self, p, want: float, now: float, *, precise=False, run=True) -> set:
         """Run toward a heading: turn first (the body turns in place), run (up + cross) once within 60 deg. Stuck
         (pushing forward STUCK_S without STUCK_MOVE of ground): a step back and aside for 0.8 s. Turning in place
@@ -1940,10 +1949,9 @@ class Bot:
             self.hist = []
             return keys
         keys |= {"lup", "cross"} if run else {"lup"}         # walk into a nearby corner instead of overshooting it
-        self.hist = [h for h in self.hist if now - h[0] < STUCK_S + 0.3] + [(now, px, pz)]
-        if now - self.hist[0][0] >= STUCK_S and math.hypot(px - self.hist[0][1], pz - self.hist[0][2]) < STUCK_MOVE:
+        if self.stuck_det.update(now, px, pz):
             self.stuck_since = self.stuck_since or now       # pushing forward against something (a wall, a door)
-            self.hist, self.unstick_dir = [], -self.unstick_dir
+            self.unstick_dir = -self.unstick_dir
             self.unstick_until = now + 0.8
             self.stats["stuck"] += 1
             if not precise:
