@@ -992,6 +992,36 @@ def replace_entries(data: bytes, new: dict[int, bytes]) -> bytes:
     return bytes(out)
 
 
+def relocate_entries(data: bytes, new: dict[int, bytes], align: int = 0x800) -> bytes:
+    """PLAYER.AFS with the entries at the given absolute offsets moved to new ``align``-aligned slots appended
+    after the current end of the archive (table offset+size and the CRI directory's size field updated).
+    Unlike replace_entries this lets an entry outgrow its AFS room (#1889: a 1,384-triangle Amy does not fit the
+    stock PLAY slot). The old slot is left untouched but unreferenced, every other entry stays where it is, and
+    the grown archive must be written to disc with gbox.gdrom.patch_gdi donors (it no longer fits its sectors)."""
+    count, offsets, sizes = afs_entries(data)
+    out = bytearray(data)
+    dirs = [at for at in dict.fromkeys((min(offsets) - 8, 8 + 8 * count)) if 8 + 8 * count <= at <= len(data) - 8]
+    directory = None
+    for at in dirs:
+        o, sz = struct.unpack_from("<II", data, at)
+        if o >= 8 + 8 * count and sz >= 48 * count and o + sz <= len(data) and all(
+                struct.unpack_from("<I", data, o + 48 * i + 44)[0] == sizes[i] for i in range(count)):
+            directory = o
+            break
+    for off, blob in new.items():
+        if off not in offsets:
+            raise ValueError(f"AFS entry +{off:#x} does not exist")
+        i = offsets.index(off)
+        out += bytes(-len(out) % align)
+        at = len(out)
+        out += blob
+        out += bytes(-len(out) % align)
+        struct.pack_into("<II", out, 8 + 8 * i, at, len(blob))
+        if directory is not None:
+            struct.pack_into("<I", out, directory + 48 * i + 44, len(blob))
+    return bytes(out)
+
+
 def pack_blobs(holes: list[tuple[int, int]], sizes: dict, home: dict | None = None, tries: int = 0) -> dict:
     """Best-fit-decreasing placement of 4-byte-aligned blobs into free [start, end) holes -> {key: offset}.
     home {key: offset}: first try each blob (largest first) in the hole holding that offset (a node's lists go

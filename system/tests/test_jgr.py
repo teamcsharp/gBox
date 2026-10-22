@@ -822,3 +822,40 @@ def test_single_root_writer_cache_builds_a_new_identity_and_keeps_old_files(cach
     assert case.calls["build"][0]["identity"]["schema"] == jgr.CACHE_VERSION
     assert before == {p.name: p.read_bytes() for p in folder.iterdir()}
     assert result["runtime_verified"] is False
+
+
+def _mini_afs(sizes, align=0x800):
+    import struct
+    n = len(sizes)
+    table_end = 8 + 8 * n
+    pos = (table_end + 8 + align - 1) // align * align
+    offs, body = [], bytearray()
+    for sz in sizes:
+        offs.append(pos + len(body))
+        body += bytes([len(offs)]) * sz + bytes(-sz % align)
+    dpos = pos + len(body)
+    d = b"".join(b"f%02d" % i + bytes(41) + struct.pack("<I", sizes[i]) for i in range(n))
+    head = bytearray(b"AFS\0" + struct.pack("<I", n))
+    for o, sz in zip(offs, sizes):
+        head += struct.pack("<II", o, sz)
+    head += struct.pack("<II", dpos, len(d))
+    return bytes(head.ljust(pos, b"\0") + body + d), offs
+
+
+def test_relocate_entries_grows_an_entry_past_its_room_and_keeps_the_rest():
+    from gbox import jgr
+    afs, offs = _mini_afs([100, 3000, 50])
+    room = jgr.entry_room(afs, offs[1])
+    blob = b"\xAB" * (room + 5000)
+    with pytest.raises(ValueError):
+        jgr.replace_entries(afs, {offs[1]: blob})
+    out = jgr.relocate_entries(afs, {offs[1]: blob})
+    _, o2, s2 = jgr.afs_entries(out)
+    assert s2[1] == len(blob) and o2[1] % 0x800 == 0 and o2[1] >= len(afs)
+    assert out[o2[1]:o2[1] + s2[1]] == blob
+    assert (o2[0], o2[2]) == (offs[0], offs[2]) and out[:len(afs)][o2[0]:o2[0] + 100] == afs[o2[0]:o2[0] + 100]
+    assert out[offs[2]:offs[2] + 50] == afs[offs[2]:offs[2] + 50]
+    assert jgr.afs_names(out)[1] == "f01"
+    import struct
+    d = struct.unpack_from("<I", out, 8 + 8 * 3)[0]
+    assert struct.unpack_from("<I", out, d + 48 + 44)[0] == len(blob)
