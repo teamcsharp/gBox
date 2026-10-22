@@ -217,7 +217,15 @@ def test_boot_confirms_screens_ram_cannot_name_with_the_titles_boot_key():
     downs = [e for e in sent if e["down"]]
     assert [e["key"] for e in downs] == ["cross"] * 3 and boot.stats["boot_presses"] == 3   # at 4, 7, 10 s
     now[0] = MB.MENU_LOST_S + 2
-    assert "did not name" in boot.tick()                    # still unnamed after the presses: the run ends as before
+    assert boot.tick() is None                              # no screen named yet this boot: shader caches may be building
+    now[0] = MB.BOOT_LOST_S + 2
+    assert "did not name" in boot.tick()                    # still unnamed after the presses: the run ends
+    named = MB.Boot(SimpleNamespace(screen=lambda m, merc=None: {"where": "title"}, step=menus.step,
+                                    wandered=menus.wandered), None, sent.extend, sleep=lambda s: None, clock=lambda: now[0])
+    named.tick()
+    named.menus = menus                                     # once a screen was named, the old 30 s rule applies
+    now[0] += 1; named.tick(); now[0] += MB.MENU_LOST_S + 1
+    assert "did not name" in named.tick()
     sent.clear()
     plain = MB.Boot(SimpleNamespace(screen=menus.screen, step=menus.step, wandered=menus.wandered), None, sent.extend,
                     sleep=lambda s: None, clock=lambda: now[0])

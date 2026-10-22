@@ -1262,10 +1262,15 @@ def create_app(config: Config) -> FastAPI:
             stopped_first = True
         say(20, f"Starting a fresh {what} on {tw['name']}" + ("; your game keeps running until it is up" if beside else ""))
         from .screensaver import bot_demo as _bot_demo
-        jump = {"jump": True} if _bot_demo(store, sid) else {}   # a bot demo boots into its jump state, as it launched
+        # relaunched as it launched: a bot demo or autoplay launch boots into its jump state, and a bot's keyboard pad
+        # stays (Windows RPCS3: without it the copy reads the operator's controller and autoplay can't press; RE5 on
+        # JAYBUILTFINALE 2026-10-22)
+        launched = (store.get("job", sid.split("-", 1)[-1]) or {}).get("input") or {}
+        jump = {"jump": True} if _bot_demo(store, sid) or launched.get("jump") else {}
+        pad = {"pad": launched["pad"]} if launched.get("pad") else {}
         try:
             new = _run_job("launch_game", {"game": game, "mod": launch_mod, **({"keep_session": sid} if beside else {}),
-                                           **jump},
+                                           **jump, **pad},
                            actor, worker=tw["id"], wait=900, should_stop=should_stop,
                            progress=lambda pct, msg: say(20 + pct * .6, msg))
         except HTTPException as e:
