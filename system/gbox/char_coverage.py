@@ -116,7 +116,7 @@ SPECIAL = [                                               # writers routed by co
      "Link (both ages) or any NPC / enemy; the whole cast in one ROM (characters op=cast_swap)"),
 ]
 # games docs/model_swaps.md discusses that have no writer yet (catalog search terms -> platform)
-DISCUSSED = [("Resident Evil 3 Nemesis", "psx"), ("Resident Evil 2", "psx"), ("Resident Evil Director's Cut", "psx"),
+DISCUSSED = [("Marvel vs. Capcom 2", "dreamcast"), ("Resident Evil 3 Nemesis", "psx"), ("Resident Evil 2", "psx"), ("Resident Evil Director's Cut", "psx"),
              ("Mario Kart 64", "n64"), ("Resident Evil The Mercenaries 3D", "3ds"), ("Super Smash Bros. Melee", "gamecube"),
              ("Phantasy Star Online Ver. 2", "dreamcast"), ("Grand Theft Auto Vice City", "ps2"),
              ("Grand Theft Auto Vice City Stories", "ps2"), ("Resident Evil 4", "ps2"), ("Shenmue", "dreamcast"),
@@ -260,7 +260,10 @@ def coverage(ctx, api) -> dict:
     rows = []
     for gid, g in ids.items():
         ex, roster = extractor_for(g)
-        have = [m for m in chars if m["source"].get("game_id") == gid and m.get("kind", "character") == "character"
+        # Sprite-only readers register kind "sprites" entries: they are collected, usable art even though
+        # they carry no rig roles, so they count as in-collection (usable stays rig-based).
+        have = [m for m in chars if m["source"].get("game_id") == gid
+                and m.get("kind", "character") in ("character", "sprites")
                 and not m.get("variant_of")]
         slugs = {m["slug"] for m in have}
         missing = [r["name"] for r in roster if r["slug"] not in slugs]

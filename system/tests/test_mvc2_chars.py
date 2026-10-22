@@ -4,16 +4,36 @@ Tests use the owned disc cache; they are skipped when it is absent.
 """
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 
 from gbox import mvc2_chars as C
 
-GDI = Path.home() / "gbox-cache/dc/02db6d37c0e20375/disc.gdi"
+
+def _owned_gdi() -> Path | None:
+    """The owned MVC2 DC disc cache: a GDI plus its track image, in one of the operator cache roots."""
+    cands = []
+    env = os.environ.get("GBOX_MVC2_GDI")
+    if env:
+        cands.append(Path(env))
+    home = Path.home()
+    for base in (home / "gbox-cache/dc/02db6d37c0e20375",
+                 home / "GBox_alt/gbox-cache/dc/02db6d37c0e20375",
+                 home / "gBox_alt/gbox-cache/dc/02db6d37c0e20375",
+                 Path(__file__).resolve().parents[1]):
+        cands.append(base / "disc.gdi")
+    for c in cands:
+        if c.is_file() and any(c.parent.glob("track*")):
+            return c
+    return None
 
 
-@pytest.mark.skipif(not GDI.exists(), reason="unpacked MVC2 disc cache not present")
+GDI = _owned_gdi()
+
+
+@pytest.mark.skipif(not GDI, reason="unpacked MVC2 disc cache not present")
 class TestCoverage:
     def test_all_59_parse(self):
         cov = C.coverage(GDI)
@@ -28,7 +48,7 @@ class TestCoverage:
         assert ryu["n_anim_groups"] == 26
 
 
-@pytest.mark.skipif(not GDI.exists(), reason="unpacked MVC2 disc cache not present")
+@pytest.mark.skipif(not GDI, reason="unpacked MVC2 disc cache not present")
 class TestExport:
     def test_ryu_export_files(self, tmp_path):
         res = C.export_character(GDI, 0, tmp_path)
@@ -87,3 +107,33 @@ def test_pack_shelves():
     assert len(pos) == 3
     w2, h2, pos2 = C._pack_shelves([(10, 10, 0), (30, 10, 1)], max_width=100)
     assert pos2 == [(30, 0), (0, 0)]          # caller's tile order, not the packing order (atlas was clipping wide tiles)
+
+
+@pytest.mark.skipif(not GDI, reason="unpacked MVC2 disc cache not present")
+def test_collection_registration_reaches_done(tmp_path):
+    """The acceptance gate that failed: an MVC2 export must register in the collection as a sprite entry
+    that verifies (model bytes + real preview) and therefore reaches the collection 'done' state.
+    Mirrors gbox.characters.collect(): done = ready or (kind != 'character' and checked['ok'])."""
+    from gbox import characters as CH
+
+    res = C.export_character(GDI, 0, tmp_path)
+    assert str(res["files"][0]).lower().endswith(".png"), "model must be the sprite atlas (PNG first)"
+    root = tmp_path / "library"
+    root.mkdir()
+    meta = CH.add(root, "mvc2_ryu", "Ryu", res["files"],
+                  {"game_title": "Marvel vs. Capcom 2", "game_id": "a392a0822bc4e95b",
+                   "platform": "dreamcast", "files": ["PL00_DAT.BIN"]},
+                  "gbox.mvc2_chars", rig={}, kind="sprites",
+                  extra={"picture": "2d", "mvc2_reader": C.READER_VERSION})
+    assert meta["kind"] == "sprites", meta["kind"]
+    assert meta["model"].endswith(".png")
+    checked = CH.verify_entry(root, meta)
+    assert checked["ok"], checked
+    assert checked["model_bytes"] > 0
+    assert checked["preview"]["ok"], checked["preview"]
+    done = (meta["kind"] != "character") and checked["ok"]
+    assert done, "collection entry must reach done"
+    # the GLB preview and the manifest stay beside the sprite model
+    assert (root / "mvc2_ryu" / "mvc2_ryu.glb").is_file()
+    assert (root / "mvc2_ryu" / "mvc2_ryu.json").is_file()
+    assert (root / "mvc2_ryu" / "preview.png").is_file()

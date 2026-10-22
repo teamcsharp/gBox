@@ -25,6 +25,8 @@ from .mvc2_inventory import ROSTER
 
 GAME_ID = "02db6d37c0e20375"
 DAT_PATH = "PL{id:02X}_DAT.BIN"
+READER_VERSION = 1
+mvc2_reader = READER_VERSION
 
 
 def _dat_bytes(gdi: str | Path, cid: int) -> bytes:
@@ -205,8 +207,13 @@ def export_character(gdi: str | Path, cid: int, out_dir: str | Path,
     build_preview_glb(preview, glb_path)
 
     progress(90, "Wrote atlases + manifest + preview glb")
+    # The sprite atlas is the collection "model" (2D art); the GLB stays beside it as the 3D preview.
+    # files[0] must be the PNG: add() classifies PNG models as kind "sprites" and renders a real preview
+    # from the sheet, while a GLB-first entry is mis-classified as a rigless "character" and never reaches done.
+    model_png = sprite_png or part_png
+    rest = [glb_path, json_path] + [p for p in (part_png, sprite_png) if p and p != model_png]
     return {
-        "files": [glb_path, json_path] + ([part_png] if parts else []) + ([sprite_png] if sprites else []),
+        "files": [model_png] + rest,
         "manifest": manifest,
         "work": out,
     }
@@ -310,10 +317,15 @@ def extract_run(ctx, game: dict, e: dict, work) -> dict:
     res = export_character(gdi, cid, work, progress=ctx.progress)
     return {
         "files": res["files"],
+        "roles": {},
+        "kind": "sprites",
         "tool": "gbox.mvc2_chars",
         "source_files": [f"PL{cid:02X}_DAT.BIN"],
         "notes": "2D sprite fighter: parts atlas + sprite atlas + JSON manifest. "
                  "No rig/retarget map yet; native replacement is a follow-up DAT writer stage.",
+        "extra": {"picture": "2d", "mvc2_reader": READER_VERSION,
+                  "mvc2": {"version": READER_VERSION, "game": "mvc2", "cid": cid,
+                           "source_file": f"PL{cid:02X}_DAT.BIN"}},
     }
 
 
