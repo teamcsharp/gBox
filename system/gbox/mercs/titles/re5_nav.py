@@ -122,6 +122,16 @@ class NavMesh:
                     best, best_dy = i, dy
         return best
 
+    def elevated(self, pos, tri=None) -> bool:
+        """Whether pos floats STEP_DY or more above (or below) the floor the mesh has under it: a goal on top of a
+        vehicle or a prop. find() accepts up to Y_SLACK, so without this check a route ends on the ground at the
+        object's foot and the last waypoint (the goal itself) is a run into its wall."""
+        tri = self.find(pos) if tri is None else tri
+        if tri is None:
+            return True
+        height = self._height(tri, pos[0], pos[2])
+        return height is None or abs(height - pos[1]) >= STEP_DY
+
     def floor_segment(self, start, goal) -> bool:
         """Whether a centre-line segment stays on linked, non-steep floors in the recorded direction.
 
@@ -260,6 +270,8 @@ class NavMesh:
         a, b = self.find(start), self.find(goal)
         if a is None or b is None:
             return None
+        if self.elevated(goal, b):
+            return None                                   # on a bus roof / crate: no floor of the mesh under it
         if a == b:
             return [tuple(goal)]
         if self.component(a) != self.component(b):

@@ -340,7 +340,7 @@ def test_the_screens_between_rounds_come_from_the_interface_units():
 
 def test_it_presses_only_on_the_reunion_screens():
     assert R.step({"where": "results"}) == "start"
-    assert R.step({"where": "select_stage"}) == "cross"
+    assert R.step({"where": "select_stage"}) in ("dright", "cross")   # a random stage (StagePick)
     assert R.step({"where": "select_player", "cursor": 6, "target": 6}) == "cross"          # Barry picked, on him
     assert R.step({"where": "select_player", "cursor": 2, "target": 6}) == "dright"
     assert R.step({"where": "select_player", "cursor": 7, "target": 6}) == "dleft"
@@ -1348,7 +1348,7 @@ def test_from_the_title_into_reunion_by_ram():
     assert where_and_key([("uIdStartUp01", extra | {R.EXTRA_CURSOR: 3})]) == ("extra_content", "cross")  # REUNION
     assert where_and_key(["uIdStartUp29"], line=1) == ("reunion_title", "cross")                      # START
     assert where_and_key([("uIdStartUp29", {R.MENU_SUB: 1})], line=1) == ("reunion_solo", "cross")    # SOLO
-    assert where_and_key(["uIdStartUp21", "uIdTopMenu00"]) == ("select_stage", "cross")
+    assert where_and_key(["uIdStartUp21", "uIdTopMenu00"]) in (("select_stage", "cross"), ("select_stage", "dright"))
 
 
 def test_re5_plays_through_the_deployment_before_the_engine_is_ready():
@@ -1498,3 +1498,40 @@ def test_a_nearly_straight_route_counts_as_open_floor(tmp_path):
     p, e = R.snapshot(mem)["player"], {"ptr": 1, "pos": (250.0, 0.0, 250.0)}
     assert bot._open(p, e, mesh, 10.0)
     assert not bot._open(p, {"ptr": 2, "pos": (350.0, 0.0, 50.0)}, u_mesh(), 10.0)
+
+
+def test_a_stage_prompt_held_back_by_close_foes_is_taken_after_the_yield_window(tmp_path):
+    t = [10.0]
+    bot = R.Bot(clock=lambda: t[0], learn_dir=tmp_path)
+    foe = {"ptr": 1, "slot": 1, "pos": (0.0, 0.0, 200.0), "hp": 800, "hp_max": 800}
+    snap = {"player": {"pos": (0.0, 0.0, 0.0), "hp": 1000, "rot": 0.0, "action": 0},
+            "timer": 100.0, "enemies": [foe], "stage_prompt": True}
+    bot.observe_round(snap, "playing", t[0])
+    assert bot.tick(snap) != {"tap": "square"}                  # a foe in reach: fight first
+    t[0] += R.STAGE_YIELD_S + 0.1
+    assert bot.tick(snap) == {"tap": "square"}                  # a fence between: the prompt wins
+    assert bot.stats["stage_yielded_to_foes"] == 1
+
+
+def test_stage_select_takes_a_random_stage_each_visit():
+    # operator 2026-10-22: "have the bot go between the stages randomly during the select"
+    import random
+    pick = R.StagePick(rng=random.Random(4))
+    scr = {"where": "select_stage"}
+    sent = []
+    for _ in range(40):                                    # the Navigator: step, then pressed() for each key it sends
+        key = pick.key(scr)
+        sent.append(key)
+        pick.pressed(scr, key)
+        if key == "cross":
+            break
+    assert sent[-1] == "cross" and set(sent[:-1]) <= {"dright"} and len(sent) - 1 <= R.StagePick.MAX_MOVES
+    assert pick.left is None                               # the next visit draws again
+    held = pick.key(scr)                                   # a key the Navigator held back (settle) is not counted
+    left = pick.left
+    assert pick.key(scr) == held and pick.left == left
+    pick.pressed({"where": "select_player"}, "cross")      # presses elsewhere never touch the stage pick
+    assert pick.left == left
+    draws = {R.StagePick(rng=random.Random(s)).key(scr) for s in range(30)}
+    assert draws == {"dright", "cross"}                    # some visits move, some take the stage under the cursor
+    assert R.step({"where": "select_stage"}) in ("dright", "cross")

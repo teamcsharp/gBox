@@ -275,3 +275,13 @@ def test_ram_mesh_cache_does_not_keep_old_geometry_after_unload_or_buffer_replac
     memory.word(nav + N.NM_POINTS, points + 0x6000)
     third = N.read(memory, cache)
     assert third.learning_sig != second.learning_sig and len(cache) == 1
+
+
+def test_a_goal_on_top_of_an_object_is_not_routed_to_its_foot():
+    """RE5 bus: the time bonus on the roof sits above the street's floor; the route must not end at the bus wall."""
+    mesh = floor_grid([(0, 0), (1, 0), (2, 0)])
+    start = (20., 0., 50.)
+    assert mesh.route(start, (250., 0., 50.))[-1] == (250., 0., 50.)
+    assert mesh.route(start, (250., 120., 50.)) is None          # roof height above the street: unreachable here
+    assert mesh.route_length(start, (250., 120., 50.)) is None
+    assert mesh.route(start, (250., 60., 50.))[-1] == (250., 60., 50.)   # a kerb / step is still walked

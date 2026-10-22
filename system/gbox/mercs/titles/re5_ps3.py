@@ -71,6 +71,7 @@ AIM_TOL, PITCH_TOL = math.radians(2.5), math.radians(2.5)   # fire inside these
 FINE = math.radians(6)                 # closer than this: pulse the stick (a tick on, a tick off)
 MAX_DY = 450.0                         # targets this far above / below are out of reach (rooftops): not chosen
 STUCK_S, STUCK_MOVE = 1.2, 80.0
+STAGE_YIELD_S = 2.5                      # a stage prompt shown this long beside close foes is taken anyway (a fence / ledge between)
 RUN_SPEED = 250.0                      # cm/s running (the route ETAs; measured live: walking 145)
 # The time bonuses: hourglasses (uOm0100, model "sunadokei_360" = hourglass in uOm0100.arc; 9 in Public Assembly),
 # units of sUnit's move line 12 ("OM"), told by their vtable.
@@ -446,6 +447,40 @@ class Roster:
 ROSTER = Roster()
 
 
+class StagePick:
+    """A random stage each visit to STAGE SELECT (operator 2026-10-22: "have the bot go between the stages randomly
+    during the select and have him play on different levels"). RAM doesn't name the stage cursor yet, so the pick is
+    a random number of D-pad rights (the row of stages, 0..MAX_MOVES) before cross; mercs_bot's Navigator reports each
+    press it sends (pressed()), so a press held back for a settle never counts."""
+    MAX_MOVES = 7                              # Reunion's eight stages: any of them from wherever the cursor is
+
+    def __init__(self, rng=None):
+        import random
+        self.rng = rng or random.Random()
+        self.left = None                       # moves still to make on this visit; None: not on STAGE SELECT
+
+    def key(self, scr: dict) -> str:
+        if self.left is None:
+            self.left = self.rng.randint(0, self.MAX_MOVES)
+        return "dright" if self.left > 0 else "cross"
+
+    def pressed(self, scr: dict, key: str) -> None:
+        if scr.get("where") != "select_stage":
+            return
+        if key == "dright" and self.left:
+            self.left -= 1
+        elif key == "cross":
+            self.left = None                   # the stage is taken: the next visit draws again
+
+
+STAGE_PICK = StagePick()
+
+
+def pressed(scr: dict, key: str) -> None:
+    """mercs_bot's Navigator: a key it sent on this screen."""
+    STAGE_PICK.pressed(scr, key)
+
+
 def step(scr: dict) -> str | None:
     """The one press towards the next round. From the title: START, circle on the sign-in question, cross on "Load
     successful", then the cursor (read from RAM) moved to PLAY GAME, EXTRA CONTENT, THE MERCENARIES REUNION and taken,
@@ -463,6 +498,8 @@ def step(scr: dict) -> str | None:
         if where == "play_game" and cur == 0:
             return "dup"                                 # up from the top wraps to EXTRA CONTENT, the last entry
         return "ddown" if cur < tgt else "dup"
+    if where == "select_stage":
+        return STAGE_PICK.key(scr)
     return STEPS.get(where)
 
 
@@ -759,6 +796,7 @@ class Bot:
         self.switch_at = -math.inf
         self.switch_pending = None
         self.switch_blocked, self.switch_failures = {}, {}
+        self.stage_wait_since = None            # first tick a stage prompt was shown while close foes held it back
         self.stuck_since = None                 # set while the walk is pushing forward without ground (a wall, a door)
         self.close_escape_until = self.close_acquire_until = 0.0
         self.round_active = False
@@ -832,6 +870,12 @@ class Bot:
             self.stats["immunity_reason"] = health.get("immunity_reason") or ""
             if health.get("refilled"):
                 self.stats["health_refills"] = self.stats.get("health_refills", 0) + 1
+            from ...re5_mods_tool import maintain_kill_time
+            bonus = maintain_kill_time(self.m.adapter, snap)    # +2 s on the clock per kill (the profile's playing_ops)
+            if bonus.get("added"):
+                self.stats["kill_time_added_s"] = round(self.stats.get("kill_time_added_s", 0.0) + bonus["added"], 1)
+            elif bonus.get("kill_time") and not bonus.get("verified"):
+                self.stats["kill_time_reason"] = bonus.get("reason") or "write not confirmed"
         if where != "playing" or not p:
             self.healing = None
             if self.combat is not None:
@@ -1037,10 +1081,19 @@ class Bot:
         heal = self._heal(p, snap, now)                     # equip, confirm in hand, then Square to actually use it
         if heal:
             return heal
-        if snap.get("stage_prompt") and not close_foes:     # a ladder / jump-down / vault / door / "□ Time bonus" /
+        if snap.get("stage_prompt") and close_foes:
+            self.stage_wait_since = self.stage_wait_since or now
+        else:
+            self.stage_wait_since = None
+        stage_yield = bool(snap.get("stage_prompt") and close_foes and self.stage_wait_since is not None
+                           and now - self.stage_wait_since >= STAGE_YIELD_S)
+        if snap.get("stage_prompt") and (not close_foes or stage_yield):     # a ladder / jump-down / vault / door / "□ Time bonus" /
             self.aiming_since = None                        # pick up: take it at once, before anything else (operator
             self.stats["stage_presses"] = self.stats.get("stage_presses", 0) + 1   # 2026-10-21: he ignored a ledge
             self.climb_at = self.climb_pos = self.climb_tick = None
+            if stage_yield:
+                self.stage_wait_since = None
+                self.stats["stage_yielded_to_foes"] = self.stats.get("stage_yielded_to_foes", 0) + 1
             if self.stuck_since is not None:                # and a door). A prompt while stuck = it was blocking him.
                 self.stats["stuck_prompts_cleared"] = self.stats.get("stuck_prompts_cleared", 0) + 1
             return {"tap": "square"}
