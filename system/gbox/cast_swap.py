@@ -427,10 +427,17 @@ STRATEGIES = {
     "gbox.gta_vc_swap": ("pairs", "Vice City PC: every ped in one gta3.img rebuild (gta_vc_swap.build_cast)"),
     "gbox.etm_swap": ("pairs", "Enter the Matrix PS2: every cast slot's .dcn models rewritten in one WAD1.DFU "
                                "(etm_swap.build_cast)"),
+    "gbox.mgs2_swap": ("pairs", "Metal Gear Solid 2 PS2: every slot's kms models (every stage that carries them) "
+                                "rebuilt in one STAGE.DAT / STAGE2.DAT image (mgs2_swap.build_cast)"),
     "gbox.oot_swap": ("pairs", "Ocarina of Time: every NPC / enemy object and Link rebuilt in one ROM "
                                "(oot_swap.build_cast: DMA + object table + CRC, object space shared per room)"),
     "gbox.jgr_swap": ("chain", "JGR: each cast member's writer step on the previous step's PLAYER.AFS, one GD-ROM"),
     "gbox.crazy_taxi_swap": ("chain", "Crazy Taxi: each slot's writer step on the previous step's polDC0.all, one disc"),
+    "gbox.mgs_vr_swap": ("pairs", "Metal Gear Solid VR Missions: Snake, every soldier and the other 16-object figures "
+                                  "fitted into one disc (mgs_vr_swap.build_cast: each mission stage's copy of a model "
+                                  "and its texture archive, native STAGE.DIR rewrite)"),
+    "gbox.twin_snakes_swap": ("pairs", "Twin Snakes GC: every slot's model in one stage.dat rebuild "
+                                       "(twin_snakes_swap.build_cast: each gameplay stage rebuilt in place)"),
 }
 
 
@@ -704,6 +711,12 @@ def build(ctx, game: dict, p: dict, chars: list[dict], root: Path, inp, launch: 
                          for r in p["assignments"]], "cast_source": p["source"], "cast_mapping": p["mapping"],
                 "cast_seed": p["seed"], "title": f"{game.get('title')}: cast as {p['source']}", "verified_in_game": False,
                 "retarget_profiles": profiles}
+        from . import build_record                       # who went where, by name (the Builds view's 360 pairs)
+        rec = build_record.stamp(
+            rec, kind="cast", slots=[{"slot": r["slot"], "slot_name": r.get("slot_name") or r["slot"],
+                                      "donor": r["character"], "donor_name": r.get("donor") or r["character"],
+                                      "source": r.get("source") or ""} for r in p["assignments"]],
+            **build_record.from_ctx(ctx))
         if rec_path.parent.is_dir():
             rec_path.write_text(json.dumps(rec, default=str))
         for r in p["assignments"]:
@@ -820,6 +833,11 @@ def _gta_vc(ctx, game, pairs, name, inp):
 def _etm(ctx, game, pairs, name, inp):
     from . import etm_swap
     return etm_swap.build_cast(ctx.config, game, pairs, name, ctx.progress)
+def _mgs2(ctx, game, pairs, name, inp):
+    from . import mgs2_swap
+    return mgs2_swap.build_cast(ctx.config, game, pairs, name, ctx.progress)
+
+
 def _oot(ctx, game, pairs, name, inp):
     from . import oot_swap
     return oot_swap.build_cast(ctx.config, game, pairs, name, ctx.progress,
@@ -859,6 +877,14 @@ def _jgr(ctx, game, pairs, name, inp):
     return {"mod": name, "slots": per}
 
 
+def _mgs_vr(ctx, game, pairs, name, inp):
+    from . import mgs_vr_swap
+    try:
+        return mgs_vr_swap.build_cast(ctx, game, pairs, name, inp)
+    except Exception as e:                                # noqa: BLE001 - the report names why
+        return {"mod": None, "slots": {s: {"status": "failed", "reason": str(e)[:500]} for s, _m in pairs}}
+
+
 def _crazy_taxi(ctx, game, pairs, name, inp):
     from . import characters as C, crazy_taxi as ct, crazy_taxi_swap as CTS
     from .gcdisc import GCDisc
@@ -885,7 +911,13 @@ def _crazy_taxi(ctx, game, pairs, name, inp):
     return {"mod": name, "slots": per}
 
 
+def _twin_snakes(ctx, game, pairs, name, inp):
+    from . import twin_snakes_swap
+    return twin_snakes_swap.build_cast(ctx.config, game, pairs, name, ctx.progress)
+
+
 BUILDERS = {
+    "gbox.twin_snakes_swap": _twin_snakes,
     "gbox.pso_player": _pso,
     "gbox.doa2_swap": _doa2,
     "gbox.defjam_writer": _match_builder("defjam_writer"),
@@ -893,7 +925,9 @@ BUILDERS = {
     "gbox.aki_wrestling": _match_builder("aki_wrestling"),
     "gbox.gta_vc_swap": _gta_vc,
     "gbox.etm_swap": _etm,
+    "gbox.mgs2_swap": _mgs2,
     "gbox.oot_swap": _oot,
     "gbox.jgr_swap": _jgr,
     "gbox.crazy_taxi_swap": _crazy_taxi,
+    "gbox.mgs_vr_swap": _mgs_vr,
 }

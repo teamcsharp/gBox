@@ -51,6 +51,15 @@ test('pictures: in-game shots, then the build previews, then the donors (URLs ma
   assert.match(imgs[2].name, /Donor hucast/);
 });
 
+test('pictures: frames captured from sessions of the build follow the card shots (#1553)', () => {
+  const m = { ...PSO, frames: [{ sha256: 'b'.repeat(64), url: '/api/artifacts/' + 'b'.repeat(64), session_id: 'w-12345678abc', source: 'save state 2' }] };
+  const imgs = MG.imagesOf(m, u => u + '?token=t');
+  assert.deepEqual(imgs.map(i => i.kind), ['shot', 'shot', 'build', 'donor']);
+  assert.equal(imgs[1].src, '/api/artifacts/' + 'b'.repeat(64) + '?token=t');
+  assert.match(imgs[1].name, /save state 2 \(session w-123456\)/);
+  assert.deepEqual(MG.imagesOf({ ...PSO, frames: undefined }).map(i => i.kind), ['shot', 'build', 'donor']);
+});
+
 test('card: carousel, escaped title, badges, donor -> slot rows with the per-slot status, sizes and buttons', () => {
   const html = MG.cardHTML(PSO, { url: u => u + '?token=t', now: 2060 });
   assert.match(html, /data-key="pso\/cast_pso_ult"/);

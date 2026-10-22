@@ -34,7 +34,7 @@ test('the source picker groups first, games after, labels escaped', () => {
 
 test('plan rows: slot -> thumbnail + donor picker (selected donor, stale flagged), skipped / refused / re-extracted listed', () => {
   const html = CS.planHTML(PLAN, u => u + '?token=t');
-  assert.match(html, /<tr data-row="enemy:booma"><td title="enemy:booma">Booma<\/td>/);
+  assert.match(html, /<tr data-row="enemy:booma"><td><input type="checkbox" data-cs-mark="enemy:booma" checked[^>]*><\/td><td title="enemy:booma">Booma<\/td>/);
   assert.match(html, /src="\/api\/characters\/djv_ps2_dmx\/preview\?token=t"/);
   assert.match(html, /<select data-cs-slot="enemy:gigobooma"[^>]*>[\s\S]*<option value="sd2_kane" selected>Kane<\/option>/);
   assert.match(html, /Gum \(re-extract\)/);
@@ -135,4 +135,55 @@ test('the browser binding builds a role=dialog under body and wires plan / build
   assert.equal(typeof el.onclick, 'function'); assert.equal(typeof el.onchange, 'function'); assert.ok(r.controller);
   await el.onclick({ target: { closest: () => ({ dataset: { csGo: 'close' } }) } });
   assert.equal(el.removed, true);
+});
+
+// #1385: mark characters for replacement in a build, and deal several chosen donors over them in one go
+test('plan rows carry a replace tick, donor chips and the tick all / none / deal controls', () => {
+  const html = CS.planHTML(PLAN);
+  assert.equal((html.match(/data-cs-mark="/g) || []).length, 2);
+  for (const d of PLAN.donors) assert.match(html, new RegExp(`<input type="checkbox" data-cs-donor="${d.slug}" checked>`));
+  for (const go of ['markall', 'marknone', 'deal']) assert.match(html, new RegExp(`data-cs-go="${go}"`));
+  assert.match(html, /2 of 2 marked/);
+  assert.ok(!CS.planHTML({ assignments: [], donors: PLAN.donors }).includes('data-cs-go="deal"'));
+});
+
+test('an unticked row is left as it is: sent as character "" and counted as an edit', () => {
+  const marks = { 'enemy:booma': false, 'enemy:gigobooma': true };
+  assert.deepEqual(CS.reviewed(PLAN, { 'enemy:booma': 'sd2_kane' }, marks),
+                   [{ slot: 'enemy:booma', character: '' }, { slot: 'enemy:gigobooma', character: 'sd2_kane' }]);
+  assert.deepEqual(CS.edits(PLAN, {}, marks), [{ slot: 'enemy:booma', character: '' }]);
+  assert.deepEqual(CS.edits(PLAN, {}, { 'enemy:booma': true, 'enemy:gigobooma': true }), []);
+});
+
+test('deal: seeded, every ticked donor used before any repeats, only the ticked slots', () => {
+  const slots = Array.from({ length: 14 }, (_, i) => `fighter:${i}`);
+  const sa2 = ['sa2_sonic', 'sa2_shadow', 'sa2_tails', 'sa2_knuckles', 'sa2_amy'];
+  const a = CS.deal(slots, sa2, 'seed-1'), b = CS.deal(slots, sa2, 'seed-1');
+  assert.deepEqual(a, b);
+  assert.deepEqual(Object.keys(a), slots);
+  const first = slots.slice(0, 5).map(s => a[s]), second = slots.slice(5, 10).map(s => a[s]);
+  assert.deepEqual([...first].sort(), [...sa2].sort());
+  assert.deepEqual([...second].sort(), [...sa2].sort());
+  assert.ok(Object.values(a).every(v => sa2.includes(v)));
+  const seeds = new Set(['s1', 's2', 's3', 's4', 's5', 's6'].map(s => JSON.stringify(CS.deal(slots, sa2, s))));
+  assert.ok(seeds.size > 1, 'different seeds deal different casts');
+  assert.deepEqual(CS.deal(slots, [], 'x'), {});
+  assert.deepEqual(CS.deal(['a', 'b'], ['sa2_amy', 'sa2_amy'], 'x'), { a: 'sa2_amy', b: 'sa2_amy' });
+});
+
+test('controller: build sends unticked rows as left alone, refuses a build with nothing ticked', async () => {
+  const calls = [];
+  const io = { api: async (p, body) => { calls.push([p, body]);
+                 if (p.startsWith('/api/cast_swap/plan')) return PLAN;
+                 if (p === '/api/jobs') return { id: 'j1', state: 'succeeded', output: { result: { status: 'built', mod: 'm', message: '1/2 slots built', report: [] } } };
+                 return { sources: SOURCES, slots: [] }; },
+               render: () => {}, status: t => { io.last = t; }, enable: () => {}, delay: async () => {} };
+  const c = CS.controller(io, { gid: 'g', title: 'DOA2' });
+  await c.plan({ source: 'sonic', mapping: 'random', seed: '', slots: 'all' });
+  assert.equal(await c.build({}, { 'enemy:booma': false, 'enemy:gigobooma': false }), null);
+  assert.match(io.last, /Tick at least one/);
+  assert.ok(!calls.some(([p]) => p === '/api/jobs'));
+  await c.build({}, { 'enemy:booma': false, 'enemy:gigobooma': true });
+  const job = calls.find(([p]) => p === '/api/jobs')[1];
+  assert.deepEqual(job.input.assignments, [{ slot: 'enemy:booma', character: '' }, { slot: 'enemy:gigobooma', character: 'sd2_kane' }]);
 });

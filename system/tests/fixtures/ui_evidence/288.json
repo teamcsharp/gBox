@@ -1,0 +1,59 @@
+{
+  "pr": 288,
+  "title": "Pick whip UX: outline + label, pause hold, character menu, mini console, local naming; Report… in the emulator right-click menus",
+  "branch": "pickwhip-ux",
+  "include": ["_web_shell.json"],
+  "local_storage": {"gbox_pickwhip": {"pause": true, "rclick": true, "cloud": false, "name": true}},
+  "routes": {
+    "/api/sessions/w1-s1/frame.jpg": {"$placeholder": "synthetic frame · Arena Fighters 2 · w1-s1", "hue": 205, "style": "scene"},
+    "POST /api/pickwhip/w1-s1/hold": {"ok": true, "owned": true, "via": "hold", "paused": true},
+    "POST /api/jobs": {"$by": "tool", "cases": {
+      "pick_preview": {"id": "jp1", "tool": "pick_preview", "state": "succeeded", "progress_log": ["entity probe: 6 entities near the click"],
+        "output": {"result": {"picked": {"name": "Fighter B", "class": "fighter", "kind": "character", "slot": "fighter:B", "ptr": "0x80A1C340", "entity_id": 7},
+          "model": "fighter_b.chr", "space": "window",
+          "outline": [[0.42, 0.292], [0.442, 0.302], [0.448, 0.336], [0.442, 0.37], [0.458, 0.385], [0.535, 0.512], [0.522, 0.53], [0.456, 0.44],
+                      [0.456, 0.555], [0.448, 0.785], [0.432, 0.785], [0.422, 0.57], [0.418, 0.57], [0.408, 0.785], [0.392, 0.785], [0.384, 0.555],
+                      [0.384, 0.44], [0.318, 0.53], [0.305, 0.512], [0.382, 0.385], [0.398, 0.37], [0.392, 0.336], [0.398, 0.302]],
+          "evidence": {"probe": "entity table", "distance_px": 4}}}},
+      "pick_name": {"id": "jn1", "tool": "pick_name", "state": "succeeded", "progress_log": ["asking the local model (tool calls: pick_preview)"],
+        "output": {"result": {"name": "Fighter B", "kind": "character", "model": "fighter_b.chr", "slot": "fighter:B", "route": "local", "llm_model": "local-vl-7b"}}},
+      "pick_identify": {"id": "ji1", "tool": "pick_identify", "state": "succeeded", "progress_log": ["entity 7 at 0x80A1C340", "model table: fighter_b.chr", "slot from the cast table: fighter:B"],
+        "output": {"result": {"name": "Fighter B", "kind": "character", "model": "fighter_b.chr", "slot": "fighter:B", "ram": [{"address": "0x80A1C340"}],
+          "evidence": {"entity_table": "0x80A1C000 + 7 * 0x40", "model_ptr": "0x80B20010"}, "collection": {"slug": "arena_b"}}}}
+    }, "$default": {"id": "jx", "state": "succeeded", "output": {"result": {"status": "ok"}}}},
+    "/api/characters": [
+      {"slug": "hero_blue", "name": "Blue Hero", "kind": "character", "ready": ["a1b2c3d4e5f60718"], "model": "hero_blue.glb", "preview_url": "/api/characters/hero_blue/preview", "source": {"game_title": "Lab collection"}},
+      {"slug": "hero_red", "name": "Red Hero", "kind": "character", "ready": [], "targets": {"a1b2c3d4e5f60718": ["fighter:B"]}, "model": "hero_red.glb", "preview_url": "/api/characters/hero_red/preview", "source": {"game_title": "Lab collection"}},
+      {"slug": "hero_green", "name": "Green Hero", "kind": "character", "ready": [], "model": "hero_green.glb", "preview_url": "/api/characters/hero_green/preview", "source": {"game_title": "Lab collection"}},
+      {"slug": "robot_x", "name": "Robot X", "kind": "character", "ready": [], "model": "robot_x.glb", "preview_url": "/api/characters/robot_x/preview", "source": {"game_title": "Lab collection"}},
+      {"slug": "knight", "name": "Knight", "kind": "npc", "ready": [], "model": "knight.glb", "preview_url": "/api/characters/knight/preview", "source": {"game_title": "Lab collection"}},
+      {"slug": "sketch", "name": "Sketch (no model)", "kind": "character", "ready": [], "model": "", "preview_url": "/api/characters/sketch/preview"},
+      {"slug": "kart_red", "name": "Red Kart", "kind": "vehicle", "ready": [], "model": "kart.glb"}
+    ],
+    "/api/characters/hero_blue/preview": {"$placeholder": "Blue Hero", "hue": 220, "w": 256, "h": 256},
+    "/api/characters/hero_red/preview": {"$placeholder": "Red Hero", "hue": 0, "w": 256, "h": 256},
+    "/api/characters/hero_green/preview": {"$placeholder": "Green Hero", "hue": 120, "w": 256, "h": 256},
+    "/api/characters/robot_x/preview": {"$placeholder": "Robot X", "hue": 280, "w": 256, "h": 256},
+    "/api/characters/knight/preview": {"$placeholder": "Knight", "hue": 40, "w": 256, "h": 256},
+    "/api/characters/sketch/preview": {"$placeholder": "Sketch", "hue": 300, "w": 256, "h": 256}
+  },
+  "setup_js": "(() => { active = { sid: 'w1-s1', title: 'Arena Fighters 2' }; const wrap = document.createElement('div'); wrap.dataset.gid = 'a1b2c3d4e5f60718'; wrap.style.cssText = 'position:fixed;inset:0;background:#0b0d12;z-index:50'; wrap.innerHTML = '<div style=\"position:absolute;left:40px;top:14px;color:#aab3cc;font:13px system-ui\">Sessions · Arena Fighters 2 · w1-s1 (synthetic frame, fixture data)</div><img id=\"scr\" class=\"screen\" data-sid=\"w1-s1\" src=\"/api/sessions/w1-s1/frame.jpg\" style=\"position:absolute;left:40px;top:40px;width:960px;height:720px\">'; document.body.append(wrap); })()",
+  "shots": [
+    {"name": "hover-outline-label", "url": "/#token=fixture", "viewport": [1280, 800],
+     "actions": [{"wait": 800}, {"eval": "$setup_js"}, {"wait": 600}, {"eval": "PWW.start()"}, {"wait": 500},
+                 {"mouse": [430, 400]}, {"mouse": [443, 380]}, {"wait": 1500}]},
+    {"name": "character-menu-console", "url": "/#token=fixture", "viewport": [1280, 800],
+     "actions": [{"wait": 800}, {"eval": "$setup_js"}, {"wait": 600}, {"eval": "PWW.start()"}, {"wait": 500},
+                 {"mouse": [430, 400]}, {"mouse": [443, 380]}, {"wait": 900}, {"click_at": [443, 380, "right"]}, {"wait": 600},
+                 {"click": "#pwmenu button[data-pw=identify]"}, {"wait": 500}, {"click_at": [443, 380, "right"]}, {"wait": 1500},
+                 {"eval": "(() => { const c = document.getElementById('pwcon'); c.style.left = '972px'; c.style.top = '60px'; })()"}, {"wait": 200}]},
+    {"name": "replace-with-browser", "url": "/#token=fixture", "viewport": [1280, 800],
+     "actions": [{"wait": 800}, {"eval": "$setup_js"}, {"wait": 600}, {"eval": "PWW.start()"}, {"wait": 500},
+                 {"mouse": [430, 400]}, {"mouse": [443, 380]}, {"wait": 900}, {"click_at": [443, 380, "right"]}, {"wait": 900},
+                 {"click": "#pwmenu button[data-pw=replace]"}, {"wait": 1200}]},
+    {"name": "report-popup", "url": "/#token=fixture", "viewport": [1280, 800],
+     "actions": [{"wait": 800}, {"eval": "$setup_js"}, {"wait": 600}, {"eval": "PWW.start()"}, {"wait": 500},
+                 {"mouse": [430, 400]}, {"mouse": [443, 380]}, {"wait": 900}, {"click_at": [443, 380, "right"]}, {"wait": 900},
+                 {"click": "#pwmenu button[data-pw=report]"}, {"wait": 1000}]}
+  ]
+}
