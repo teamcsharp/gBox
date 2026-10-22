@@ -38,7 +38,7 @@ from . import aki_wrestling as A
 
 WORLD_TOUR = {"59bf059d2eadd372": "WCW vs. nWo: World Tour (USA)"}
 REVENGE = {"bca7ec4ecf71d164": "WCW-nWo Revenge (USA)", "061264c636cc284d": "WCW-nWo Revenge (Europe)"}
-GAME_IDS = {**WORLD_TOUR, "bca7ec4ecf71d164": REVENGE["bca7ec4ecf71d164"]}   # games with a writer (Revenge: USA)
+GAME_IDS = {**WORLD_TOUR, **REVENGE}   # games with a writer (Revenge: USA + Europe; EU no-op/donor round-trip in tests/test_aki_wcw_revenge_writer.py)
 
 RAM_EXP = 0x80700000
 
