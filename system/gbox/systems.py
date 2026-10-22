@@ -94,6 +94,9 @@ RULES: list[tuple[str, str, str | None, list[str]]] = [
     # computers / rare consoles without a dedicated arm64 libretro core: Windows node (RocketLauncher + MAME/MESS)
     (r"acorn electron|vector-06c|mikrosha|mz-2500|sam coupe|astrocade|hector|creativision|pv-1000|sord m5|"
      r"exidy sorcerer|super acan|game pocket|adventure vision|touhou|namco system es3", "computer_misc", None, []),
+    # Zeebo / Qualcomm BREW (RE4 Mobile Edition: bio4_brew.mod + .h2z stage packs): only Infuse (Tuxality) is close,
+    # so no libretro core; catalogued so the build is a first-class gBox game until an Infuse adapter boots it
+    (r"zeebo|\bbrew\b", "zeebo", None, []),
     # --- Windows-only (PC launchers, modern consoles, special hardware) ---
     (r"xbox 360|xbox360", "xbox360", None, []),          # Xenia on Windows nodes (gbox/xenia.py)
     (r"\bxbox\b", "xbox", None, []),                 # Cxbx-Reloaded on Windows nodes (gbox/xbox.py)
