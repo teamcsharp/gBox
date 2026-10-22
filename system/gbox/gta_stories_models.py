@@ -887,9 +887,9 @@ def replace_geometry(orig: bytes, block: bytes) -> bytes:
     a = r.u32(r.u32(0x24) + 8) - 0x1C
     G = r.u32(a + 0x14) + 0x20
     old_end = G + (r.u32(G + 16) & 0xFFFFF)
-    blk = block + bytes(-len(block) % 64)
-    while (G + len(blk) - old_end) % 64:
-        blk += bytes(16)
+    blk = block + bytes(-len(block) % 16)
+    while (G + len(blk) - old_end) % 64:               # everything after the block keeps its 64-byte phase;
+        blk += bytes(16)                               # an unchanged block therefore round-trips byte-for-byte
     delta = G + len(blk) - old_end
     out = bytearray(orig[:G] + blk + orig[old_end:])
 
