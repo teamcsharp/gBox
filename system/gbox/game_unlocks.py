@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 RE6_ID = '0871eee3b68cdea3'
+CVSE_ID = '7ac0336847e66599'
 RE6_TEMPLATE_SHA256 = '194cb5b71858f65feeb2b1703642ddc4ffde09b9a087119189b29b0ad7b83f11'
 
 
@@ -33,10 +34,24 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
                  'pending_save' if unlock.get('error') else 'applied')
         return {'state': state, 'applied': state == 'applied', 'profile': profile['profile'],
                 'scope': profile['scope'], 'exclusions': profile['exclusions'], 'detail': result}
+    if game.get('game_id') == CVSE_ID:
+        # CVSE cast swaps are launch:false plans pending operator acceptance;
+        # pre_launch never writes assets, memory or saves for this title.
+        from . import cvs2eo_unlock
+        cvse = cvs2eo_unlock.profile_for(game)
+        if not cvse['verified']:
+            return {'state': 'research_pending', 'applied': False, 'reason': cvse['reason']}
+        return {'state': 'planned_pending_operator_acceptance', 'applied': False,
+                'profile': cvse['profile'], 'scope': cvse['scope'],
+                'exclusions': cvse['exclusions'],
+                'next': 'cast_swap_plan on an i9-NUC/Spark worker, launch:false, whole_cast'}
     return {'state': 'implementation_pending', 'applied': False}
 
 
 def profile_for(game: dict) -> dict:
+    if game.get('game_id') == CVSE_ID and game.get('platform') == 'gamecube':
+        from . import cvs2eo_unlock
+        return cvs2eo_unlock.profile_for(game)
     if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,
                 'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}
