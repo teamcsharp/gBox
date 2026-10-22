@@ -323,6 +323,32 @@ changing this policy. An unavailable pool leaves work queued. Per-host health,
 model availability, primary-host game activity and memory headroom are checked
 before inference; vLLM's KV cache at 90% pauses new admission to that host.
 
+## Claude node (`api_format = "anthropic"`)
+
+A pool node can be Claude through Anthropic's Messages API (operator decision
+2026-10-22: Claude Sonnet 5.5, `claude-sonnet-5-5`, capacity 4). Hermes still
+calls the node's proxy URL in the OpenAI shape; the proxy sends
+`POST <upstream>/messages` with `x-api-key` from `upstream_key_env` (set in the
+gBox service's environment, never in `gbox.toml`) and translates the answer and
+the stream back, tool calls, finish reason and usage included. Prompt caching is
+on: one breakpoint after the tools and system prompt, one on the last message
+Hermes sent, so each step of a run reads the previous step's prefix from the
+cache. The call log adds `cache_read_input_tokens` and
+`cache_creation_input_tokens`.
+
+Sonnet 5.5 refuses some requests other models accept, so the proxy never sends
+them: no sampling parameters, no forced tool choice (`required` becomes auto, the
+tool budget's final call sends `none`), no assistant prefill (a conversation
+always ends with a user turn) and never `thinking: disabled`. Thinking is
+adaptive unless the node sets `enable_thinking = false`, which sends
+`between_tools`; `reasoning_effort` becomes `output_config.effort`. The model's
+thinking blocks carry signatures OpenAI messages cannot hold, so the proxy keeps
+each tool-calling turn in memory and sends it back verbatim on the next step. If
+Anthropic refuses a replayed block (a history Hermes compacted, a restart), the
+call is sent once more without thinking blocks. Readiness reads
+`<upstream>/models` with the key and needs the model listed. The pool fills nodes
+in `gbox.toml` order after the prime Spark, so put the paid node last.
+
 ## Model offers and management
 
 The Tasks window offers NVIDIA's
