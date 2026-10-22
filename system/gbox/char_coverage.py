@@ -54,6 +54,9 @@ WRITERS = [
     ("clayfighter_swap", ["fighter:<name>", "player"],
      "Clay Fighter: Sculptor's Cut (N64): every sprite frame of one fighter re-drawn from a collection sprites entry "
      "(frame sizes, hotspots, moves, hit boxes and sounds kept; patched ROM with the header CRC fixed)"),
+    ("smb3_writer", ["player", "player:<small|big|fire|leaf|frog|tanooki|hammer>"],
+     "Super Mario Bros. 3 (NES): Mario's player sprite CHR tiles (every power-up, 81 frames) re-drawn from a collection "
+     "sprites entry in a CHR-only iNES mod (PRG, header and unreferenced tiles untouched); unverified in an emulator"),
     ("auf_swap", ["player", "model:<body>", "enemies", "bosses", "npcs", "bots", "all", "cast"],
      "007 Agent Under Fire GC: Bond (every outfit), any of the 45 body models in every level, the mission enemies, "
      "bosses, other people, the multiplayer bots, or a cast plan (pairs [{target, donor}], the rest dealt at random): "
