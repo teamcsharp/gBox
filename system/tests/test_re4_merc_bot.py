@@ -902,3 +902,9 @@ def test_never_fires_at_a_ganado_behind_a_wall_and_goes_for_the_bonus_instead():
     facing(m, 0.0)
     act = bot.tick(B.snapshot(m))
     assert {"r", "a"}.isdisjoint(act["hold"]) and bot.goal is not None
+
+
+def test_package_keeps_the_games_own_aim_turn_speed():
+    # operator 2026-10-22: x3 aim speed made the camera spin spastically and the bot overshoot - regular speed
+    assert B.AIM_SPEED_X == 1.0
+    assert dict(B.PACKAGE)["aim_turn_speed"] == {"multiplier": 1.0}
