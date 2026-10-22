@@ -76,6 +76,7 @@ TAPS_NO_SHOT = 8                       # ... taps without a shot: it wants a hol
 HOLD_FIRE_IDS = frozenset({0x03, 0x09, 0x13, 0x15, 0x1D})  # verified table IDs; 0x25 was not the Gatling
 SETTLE_S = 0.08                        # legacy persisted tuning metadata; a first-hit overlap now fires immediately
 FRONT_YAW, FRONT_PITCH = math.radians(60), math.radians(45)  # candidate cone, not a visibility claim
+WALL_CONE = math.radians(10)           # a first hit this short, within this cone of him: a wall in front (coaching #3002)
 BLOCKED_S = 0.8                        # try another candidate after a measured first hit ends before this one
 FIRE_TIMER_FPS, FIRE_TIMER_ORIG = 0x0169E098, 60.0
 WEAPON_TABLE, WEAPON_STRIDE, WEAPON_INTERVAL = 0x01817530, 0x140, 0x90
@@ -93,6 +94,39 @@ HIT_RATE_WANT = 0.95                   # a round under this tightens the aim
 TUNABLES_FILE = "re5_combat.json"      # under the learn dir (gbox-data/mercs/learned/BLUS30491)
 EMPTY_RELOAD_EVERY_S = 1.5             # L1 + cross this often while the weapon is empty
 ENGAGE_R = 3000.0                     # shared with the driver's existing engagement range; cm, not visibility
+# Fire only down a measured line to him (operator 2026-10-22: "Right now he is shooting at nonsense"; live the same day
+# 11.6 of 36 s aiming with the dot on no Majini, much of it 1-2 m off the muzzle): the dot on him, or a ray that reaches
+# at least his distance within FIRE_CONE of him (tracking a moving Majini). A dot short of him or at the muzzle (a
+# wall, the ground, a fence) holds the trigger.
+FIRE_CONE, FIRE_SLACK = math.radians(4), 60.0   # the ray this close in angle, ending no more than this short of him
+SWING_TURN = math.radians(45)          # a Majini further off the body's heading than this: turn with the gun down
+POINT_BLANK = 110.0                   # a Majini this near on the player's level needs no ray (hit recovery, the gun
+                                       # coming up): nothing fits between them
+
+
+def line_to(ray, aim_at, foot=None) -> bool:
+    """Whether the laser ray (origin, dot) runs to him: it ends no more than FIRE_SLACK short of the aim point, within
+    FIRE_CONE (or his body's half width, close up) of it - or, given his feet, it passes through his head or body on
+    the way to a dot beyond him."""
+    if ray is None:
+        return False
+    origin, dot = ray
+    want = math.dist(origin, aim_at)
+    have = math.dist(origin, dot)
+    if want < 1.0 or have < want - FIRE_SLACK:
+        return False
+    cos = sum((dot[k] - origin[k]) * (aim_at[k] - origin[k]) for k in range(3)) / (have * want)
+    if math.acos(max(-1.0, min(1.0, cos))) <= max(FIRE_CONE, math.atan2(BODY_R, want)):
+        return True
+    if foot is None:
+        return False
+    direction = tuple((dot[k] - origin[k]) / have for k in range(3))
+    for h in (HEAD_H, 110.0, THIGH_H):                         # his head, chest and thighs
+        along = sum((foot[k] + (h if k == 1 else 0.0) - origin[k]) * direction[k] for k in range(3))
+        if 0.0 < along <= have and dot_on(tuple(origin[k] + along * direction[k] for k in range(3)),
+                                                      foot) is not None:
+            return True
+    return False
 
 CHARACTERS = {0x016172B8: "barry"}     # the player's vtable -> the character (the rest named by their vtable)
 ENABLED = True                         # the title driver's Bot hands the fight here (False: its own aim loop)
@@ -149,6 +183,26 @@ def ray_error(origin, dot, target) -> tuple[float, float]:
     want_pitch = math.atan2(target[1] - oy, max(math.hypot(target[0] - ox, target[2] - oz), 1.0))
     have_pitch = math.atan2(dot[1] - oy, max(math.hypot(dot[0] - ox, dot[2] - oz), 1.0))
     return wrap(want_yaw - have_yaw), want_pitch - have_pitch
+
+
+AIM_FIRE_YAW, AIM_FIRE_PITCH = math.radians(7), math.radians(5)   # fire only with the dot this close to the aim point
+
+
+def line_of_sight_aim(ray, aim_at, where, foot) -> bool:
+    """Whether the shot may leave the gun: the dot sits on him, or the ray points at the aim point within a few
+    degrees and does not end on the floor short of him. Coaching note 3: R1 held while the dot was on the ground
+    (turning toward him, or aimed below him) fired the magazine into the floor and lost time."""
+    if where is not None:
+        return True
+    if ray is None:
+        return False
+    origin, dot = ray
+    yaw, pitch = ray_error(origin, dot, aim_at)
+    if abs(yaw) > AIM_FIRE_YAW or abs(pitch) > AIM_FIRE_PITCH:
+        return False
+    flat_dot, flat_tgt = math.hypot(dot[0] - origin[0], dot[2] - origin[2]), math.hypot(foot[0] - origin[0], foot[2] - origin[2])
+    short_on_floor = flat_dot < flat_tgt - BODY_R * 2 and dot[1] < foot[1] + KNEE_H
+    return not short_on_floor
 
 
 def valid_ray(origin, dot):
@@ -498,7 +552,19 @@ class Combat:
         centre = (foot[0], foot[1] + 110.0, foot[2])
         along = sum((centre[k] - origin[k]) * direction[k] for k in range(3))
         projected = tuple(origin[k] + along * direction[k] for k in range(3))
-        return along > length + BODY_R + 25.0 and dot_on(projected, foot) is not None
+        if along <= length + BODY_R + 25.0:
+            return False
+        if dot_on(projected, foot) is not None:
+            return True
+        # A wall straight ahead: the first hit is a solid surface well short of him and the aim is only a few degrees
+        # off him, so the shot would hit the wall (the ray may miss his capsule by a hand's width at range).
+        # Rays shorter than STEER_RAY_CM carry too little direction to claim this; a wide miss stays "unknown".
+        if length < STEER_RAY_CM:
+            return False
+        to_c = tuple(centre[k] - origin[k] for k in range(3))
+        norm = math.sqrt(sum(v * v for v in to_c))
+        cos = sum(to_c[k] * direction[k] for k in range(3)) / max(norm, 1.0)
+        return math.acos(max(-1.0, min(1.0, cos))) <= WALL_CONE
 
     def observe_awareness(self, snap, p, now):
         if getattr(self, "_awareness_tick", None) == (id(snap), now):
@@ -629,7 +695,15 @@ class Combat:
         permitted, policy = fire_policy(wid, snap, tgt, lz[1] if lz else None)
         self.stats["weapon_policy"] = policy
         loaded = rounds is not None and rounds > 0
-        tracking_fire = direct and permitted and loaded
+        point_blank = dist < POINT_BLANK and abs(foot[1] - p["pos"][1]) < 150.0   # nothing fits between: fire
+        sighted = where is not None or point_blank or line_to(lz, aim_at, foot)     # through hit recovery too
+        # and the laser has to stop on him (#881): a ray off the aim point - the ground, beside him, or on past him (the
+        # game's dot stops on the first body it meets, so a dot beyond him is a miss) - holds fire while the stick
+        # brings the dot onto him; no ray yet, or one too short to judge, leaves it to the sight check
+        on_line = lz is None or not steering_ray(lz, aim_at) or line_of_sight_aim(lz, aim_at, where, foot)
+        tracking_fire = direct and permitted and loaded and sighted and on_line
+        self.stats["fire_gate"] = ("no line: hold fire" if not sighted else "dot off him: hold fire" if not on_line
+                                   else "on him" if where is not None else "line to him")
         rapid = self._rapid_fire(wid, now)              # observed package status, independent of fire intent
         if p.get("action") == 4:                      # prompts own escape from a grab
             self.stats["combat"] = "waiting: grab animation"
@@ -640,6 +714,13 @@ class Combat:
                 self.stats["reloads"] += 1
                 return {"hold": {"l1", "cross"}}
             return {"hold": {"l1"}}
+        facing = wrap(heading(foot[0] - p["pos"][0], foot[2] - p["pos"][2]) - p["rot"])
+        if abs(facing) > SWING_TURN and p.get("action") != 4:
+            # He is well off to the side or behind: the gun down, the body turned at ~150 deg/s (aiming turns ~30 deg/s:
+            # live 2026-10-22 the gun stayed up through yaw errors of 90-160 deg, seconds of aiming at walls)
+            self.near_ray_since = None
+            self.stats["combat"] = f"swinging round to him (gun down): {math.degrees(facing):+.0f} deg"
+            return {"hold": self._face(p, foot)}
         steer = lz is not None and steering_ray(lz, aim_at)
         feedback_key = (p.get("ptr"), key)
         if feedback_key != self.near_ray_key or (self._ready(p) and (steer or where is not None)):
@@ -673,6 +754,7 @@ class Combat:
             keys |= self._pitch(pl, p, pitch_err, now)
         # Direct fire continues while the stick corrects aim. Splash/unknown policies remain separate.
         firing = tracking_fire or (where in ("head", "body", "leg") and loaded and permitted)
+        self.stats["los_held_fire"] = self.stats.get("los_held_fire", 0) + (0 if firing or not (direct and permitted and loaded) else 1)
         trig = self.triggers.get(wid)
         if trig is None:
             trig = self.triggers[wid] = Trigger(tune["mode"])

@@ -42,6 +42,11 @@ if (new URLSearchParams(location.search).has("embedded")) {
          border:1px solid var(--line); border-radius:8px; box-shadow:0 8px 30px #0008; overflow:hidden; display:none; cursor:grab;
          user-select:none; touch-action:none; }
   #pip img { width:100%; height:100%; object-fit:contain; display:block; pointer-events:none; }
+  #pip .pipcoach { position:absolute; left:0; right:0; bottom:0; padding:6px 8px 6px 8px; background:linear-gradient(#0000,#000d); cursor:default; }
+  #pip .pipcoach .coach { display:flex; align-items:center; gap:6px; width:100%; }
+  #pip .pipcoach .coach>input { flex:1 1 auto; min-width:0; width:auto; background:#000b; color:#fff; border:1px solid #fff4; border-radius:4px; padding:4px 6px; font-size:12px; }
+  #pip .pipcoach .coach-st { flex:0 1 auto; font-size:11px; color:#fffc; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:45%; }
+  #pip .pipcoach .coach-st:empty { display:none; } #pip .pipcoach .coach-st[data-state=error] { color:#f88; }
   #pip .grip { position:absolute; right:0; bottom:0; width:18px; height:18px; cursor:nwse-resize;
                background:linear-gradient(135deg,#0000 50%,#fff8 50%,#fff8 60%,#0000 60%,#0000 70%,#fff8 70%,#fff8 80%,#0000 80%); }
   #pip .bar { position:absolute; top:0; left:0; right:0; display:flex; gap:6px; align-items:center; padding:4px 8px; margin:0;
@@ -407,6 +412,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <div id="pip" title="Double-click to return to the game · drag to move">
   <img id="pipimg" alt="Game picture-in-picture">
   <div class="bar"><span id="piptitle"></span><button id="pipclose" title="Hide (the game keeps running)">✕</button></div>
+  <div class="pipcoach" id="pipcoach"></div>
   <div class="grip" id="pipgrip" title="Drag to resize"></div>
 </div>
 <script>
@@ -756,7 +762,7 @@ const HOME = { ctl: null, search: "" };
 const EXAM = { sid: null, cache: {}, viewer: null, mod: null, busy: new Map() };   // Examine 3D state (see examineView)
 const GAME_MODELS = { viewer: null, module: null, models: [], selection: 0 };
 const SELFIE_MODELS = { ctl:null, state:{} };
-const COACH = { ctl: null };                    // the Sessions header's "Coach the autoplay" box (viz/autoplay-coach.js)
+const COACH = { ctl: null, pip: null, pipSid: null };                    // the Sessions header's "Coach the autoplay" box (viz/autoplay-coach.js)
 const RAMI = { ctl: null };                     // the Sessions header's RAM inspector button + panel (viz/ram-inspector.js)
 const TMAP = { ctl: null };                     // the session's Tactical map section: a Mercenaries round from above (viz/tactical-map.js)
 const BCAST = { ctl: null, panel: null };       // the Sessions header's On air button + the list's Broadcast bar (viz/broadcast.js)
@@ -1178,6 +1184,14 @@ const SPARK_OK = async () => { try { return (await fetch("/api/health")).ok; } c
 // ---------------- picture-in-picture ----------------
 // active = the game controllers/PiP are attached to; playing = the game currently shown full-size.
 let active = null, playing = null;
+// the chat box in the PiP: critique the autoplay while watching it (same endpoint and captures as the Sessions header)
+function pipCoach(sid) {
+  if (COACH.pipSid === sid) return;
+  COACH.pip?.dispose(); COACH.pip = null; COACH.pipSid = sid;
+  const host = $("#pipcoach");
+  host.innerHTML = sid && window.GBoxAutoplayCoach ? GBoxAutoplayCoach.html(sid) : "";
+  if (sid && window.GBoxAutoplayCoach) COACH.pip = GBoxAutoplayCoach.mount(host, { sid, api });
+}
 function pip() {
   const el = $("#pip"), show_ = active && !active.local && !(cur === "Sessions" && playing === active.sid && EXAM.sid !== playing);   // a different connected game may remain in PiP
   if (show_ && $("#pipimg").dataset.sid !== active.sid) {
@@ -1185,6 +1199,7 @@ function pip() {
   }
   if (!show_) { $("#pipimg").removeAttribute("src"); delete $("#pipimg").dataset.sid; }   // close the stream when hidden
   $("#piptitle").textContent = active ? active.title : "";
+  pipCoach(show_ ? active.sid : null);
   el.style.display = show_ ? "block" : "none";
   window.GBoxBroadcast?.watching(active ? active.sid : null, { api });   // the broadcast program follows what you watch
 }
@@ -1217,7 +1232,7 @@ window.gboxRestoreClientView = value => CLIENT_VIEW_RESTORE.restore(value);
   try { const g = JSON.parse(localStorage.getItem("gbox_pip")); if (g) place({ ...g, l: clamp(g.l, 0, innerWidth - 80), t: clamp(g.t, 0, innerHeight - 60) }); } catch {}
   let d = null;
   el.onpointerdown = e => {
-    if (e.target.tagName === "BUTTON") return;
+    if (e.target.tagName === "BUTTON" || e.target.closest(".pipcoach")) return;
     d = { mode: e.target.id === "pipgrip" ? "size" : "move", x: e.clientX, y: e.clientY, r: el.getBoundingClientRect() };
     el.setPointerCapture(e.pointerId);
   };

@@ -182,7 +182,26 @@ def test_with_the_map_takes_the_time_bonuses_in_the_planned_order_with_a():
     assert bot.tick(B.snapshot(m)) == {"hold": {"up", "b"}}               # run (tour reversed the list: -z first)
     assert bot.items[0] is second
     m.put(PL + 0x94, ">3f", 0.0, 0.0, -5200.0)                            # at its stand point (-5300)
-    assert bot.tick(B.snapshot(m)) == {"tap": "a"}                        # TAKE
+    assert bot.tick(B.snapshot(m)) != {"tap": "a"}                        # facing away from it (-z): turn first
+    facing(m, 0.0)                                                        # the item is 200 ahead (+z)
+    assert bot.tick(B.snapshot(m)) == {"tap": "a"}                        # facing it, against it: TAKE
+
+
+def test_a_missed_take_is_tried_again_once():
+    now = [0.0]
+    m = world([], room=0x400, leon=(0.0, 0.0, 5000.0))
+    h = item("time_bonus", 0.0, 5000.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=FakeNav([h]))
+    facing(m, math.pi)
+    bot.items = [h]
+    for _ in range(2):
+        bot.goal = None
+        bot._take(B.snapshot(m)["player"], h, now[0], bot.items)
+        now[0] += B.COLLECT_TRY_S + 1
+        bot._take(B.snapshot(m)["player"], h, now[0], bot.items)
+        if _ == 0:
+            assert bot.items == [h]                                       # back in the pool for one more try
+    assert h not in bot.items and h["tries"] == B.TAKE_TRIES
 
 
 def test_a_vault_waypoint_is_jumped_with_a():
@@ -349,7 +368,8 @@ def test_shoots_only_what_he_can_hit():
     now = [0.0]
     far = world([((0, 0, 3000), True)])                                    # inside ENGAGE, beyond SHOOT_RANGE
     facing(far, 0.0)
-    assert B.Bot(far, clock=lambda: now[0], nav=False).tick(B.snapshot(far)) == {"hold": {"up", "b"}}   # close in
+    act = B.Bot(far, clock=lambda: now[0], nav=False).tick(B.snapshot(far))
+    assert {"r", "a"}.isdisjoint(act["hold"]) and {"up", "b"} <= act["hold"]   # out of range, bonuses left: runs, no shot
     close = world([((0, 0, 400), True)])                                   # point blank
     facing(close, 0.0)
     assert B.Bot(close, clock=lambda: now[0], nav=False).tick(B.snapshot(close)) == {"hold": {"r"}}     # aims: no back-off
@@ -867,3 +887,18 @@ def test_the_aim_offset_counts_only_while_he_aims_and_motion_values_are_not_the_
     assert p["pitch"] == pytest.approx(0.25 * B.PITCH_SCALE) and p["stick"] == (-127, 0)
     m.put(B.AIM_PITCH, ">f", float("nan"))
     assert B.snapshot(m)["player"]["pitch"] is None   # out of its range: unknown, the stick is not pushed on it
+
+
+def test_leon_is_mortal_in_the_package():
+    assert ("unlimited_health", {"on": True}) not in B.PACKAGE
+    assert ("unlimited_health", {"on": False}) in B.PACKAGE
+
+
+def test_never_fires_at_a_ganado_behind_a_wall_and_goes_for_the_bonus_instead():
+    now = [0.0]
+    m = world([((0, 0, 2200), True)], room=0x400, leon=(0.0, 0.0, 0.0))
+    bonus = item("time_bonus", 9000.0, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=FakeNav([bonus], sight=False))
+    facing(m, 0.0)
+    act = bot.tick(B.snapshot(m))
+    assert {"r", "a"}.isdisjoint(act["hold"]) and bot.goal is not None
