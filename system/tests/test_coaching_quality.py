@@ -6,7 +6,7 @@ from gbox import coaching_quality as Q
 
 @pytest.mark.parametrize("text", [
     "Stop walking into walls", "that's not an enemy", "aim at the enemy", "dies at the door in room 3, go around",
-    "too slow", "Stuck at the ladder", "go after the enemy",
+    "too slow", "Stuck at the ladder", "go after the enemy", "壁に向かって歩かないで",
 ])
 def test_actionable_notes_pass(text):
     assert Q.check(text) is None

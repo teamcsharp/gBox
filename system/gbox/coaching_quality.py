@@ -26,7 +26,7 @@ def _mash(word: str) -> bool:
         return True
     if re.search(r"(.)\1{3,}", w):
         return True
-    return len(w) >= 6 and not (set(w) & VOWELS)
+    return len(w) >= 6 and w.isascii() and not (set(w) & VOWELS)   # Latin script only: CJK has no vowels to test
 
 
 def check(text: str) -> str | None:
