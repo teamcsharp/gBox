@@ -1150,6 +1150,15 @@ class Bot:
             chase = self._pursuit_target(p, live, mesh, now)     # nobody in sight: go to them, never wait at a wall
             if chase is not None:
                 return self._pursue(p, chase, mesh, snap.get("stage_prompt"), now)
+        keep_combo = self.combat is not None and self._combo_running(snap) and bool(live)
+        if tgt is None and not threats and candidate is None and keep_combo:
+            # A combo is running and nobody was reachable by route: walk at the nearest one rather than
+            # back to the stand, which would let the window lapse (a lost combo is a large score loss).
+            near = min(live, key=lambda e: math.dist(p["pos"], e["pos"]))
+            self.stats["phase"] = "keep_combo"
+            self.stats["combo_chases"] = self.stats.get("combo_chases", 0) + 1
+            self.aiming_since = None
+            return {"hold": self._walk(p, heading(near["pos"][0] - px, near["pos"][2] - pz), now)}
         if tgt is None and not threats and candidate is None and self.spawn is not None and not self.at_stand:
             self.stats["phase"] = "stand"                   # the bonuses gathered: back to the stand
             self.stood = True
@@ -1183,8 +1192,9 @@ class Bot:
             return self._take(p, tgt, snap.get("stage_prompt"), now)
         if dist > ENGAGE:                                   # nobody near: walk toward the nearest...
             self.aiming_since = None
-            if self.at_stand:                               # ...unless this is the stand: they come to him
-                return {"hold": set()}
+            if self.at_stand and not self._combo_running(snap):   # ...unless this is the stand: they come to him
+                return {"hold": set()}                      # (not while a combo window is open: go and keep it)
+            self.stats["phase"] = "keep_combo" if self.at_stand else self.stats.get("phase")
             return {"hold": self._walk(p, want, now)}
         aiming = p.get("action") == 2
         if dist < TOO_CLOSE and not aiming and self.combat is None:
@@ -1351,6 +1361,13 @@ class Bot:
         self.stats["sight"] = f"dot {view} of him {BLOCKED_VIEW_S:g}s" if blocked else \
             f"dot never on him in {UNSIGHTED_S:g}s"
         return True
+
+    @staticmethod
+    def _combo_running(snap) -> bool:
+        """A combo with an open window: waiting for enemies to arrive would let it lapse."""
+        combo, window = snap.get("combo"), snap.get("combo_timer")
+        return (type(combo) is int and combo > 0 and isinstance(window, (int, float))
+                and not isinstance(window, bool) and 0.0 < window < 60.0)
 
     def _pursuit_target(self, p, live, mesh, now):
         """The Majini to walk to: the shortest navmesh route among the six nearest (chosen again every

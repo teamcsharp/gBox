@@ -1022,7 +1022,7 @@ def test_gathers_every_bonus_first_then_stands_and_breaks_for_a_late_one(monkeyp
     act = bot.tick(R.snapshot(with_bonuses(away, [])))
     assert bot.stats["phase"] == "stand" and bot.stood and {"lup", "cross"} <= act["hold"]  # back to the stand
     far = [((0.0, 0.0, 3500.0), 800, 800)]                                                 # at the stand, a Majini 35 m off
-    act = bot.tick(R.snapshot(with_bonuses(world(timer=80.0, enemies=far), [])))
+    act = bot.tick(R.snapshot(with_bonuses(world(timer=80.0, enemies=far, combo=0), [])))
     assert act == {"hold": set()} and bot.stats["phase"] == "stand"                        # he comes to the stand
     act = bot.tick(R.snapshot(with_bonuses(world(timer=55.0, combo=0), [(0.0, 13.0, 2000.0)])))     # a late bonus: break for it
     assert bot.stats["phase"] == "break_for_time" and {"lup", "cross"} <= act["hold"]
@@ -1522,3 +1522,26 @@ def test_stage_select_takes_a_random_stage_each_visit():
     draws = {R.StagePick(rng=random.Random(s)).key(scr) for s in range(30)}
     assert draws == {"dright", "cross"}                    # some visits move, some take the stage under the cursor
     assert R.step({"where": "select_stage"}) in ("dright", "cross")
+
+
+def test_a_running_combo_is_chased_not_waited_for_at_the_stand(monkeypatch):
+    monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
+    bot = R.Bot(clock=lambda: 100.0)
+    bot.tick(R.snapshot(with_bonuses(world(timer=119.0), [(0.0, 13.0, 1200.0)])))
+    bot.tick(R.snapshot(with_bonuses(world(player_pos=(0.0, 0.0, 900.0), yaw=math.pi, timer=80.0), [])))
+    far = [((0.0, 0.0, 3500.0), 800, 800)]
+    assert bot.tick(R.snapshot(with_bonuses(world(timer=80.0, enemies=far, combo=0), []))) == {"hold": set()}
+    act = bot.tick(R.snapshot(with_bonuses(world(timer=80.0, enemies=far, combo=3, combo_t=5.0), [])))
+    assert bot.stats["phase"] == "keep_combo" and act["hold"] and "lup" in act["hold"]
+    assert R.Bot._combo_running({"combo": 0, "combo_timer": 5.0}) is False
+    assert R.Bot._combo_running({"combo": 3, "combo_timer": 0.0}) is False
+    assert R.Bot._combo_running({"combo": 3, "combo_timer": None}) is False
+
+
+def test_an_unreachable_enemy_is_walked_at_while_a_combo_runs_not_left_for_the_stand(tmp_path):
+    mesh = u_mesh()
+    mem, bot, now = _pursuit_bot(tmp_path, (350.0, 0.0, 50.0))
+    bot.spawn = (5000.0, 0.0, 5000.0)                           # a stand far away
+    bot.bonus_skip[("enemy", ENEMIES[0])] = now[0] + 60.0        # route failed lately: pursuit has nobody
+    act = bot.tick(_snap(mem, mesh))
+    assert bot.stats["phase"] == "keep_combo" and bot.stats["combo_chases"] == 1 and act["hold"]
