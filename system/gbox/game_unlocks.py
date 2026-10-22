@@ -22,6 +22,11 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
     opt-out settings remain authoritative and its writer retains the save backup.
     """
     profile = profile_for(game)
+    if game.get('game_id') == 'b74d223b195befba' and game.get('platform') == 'n64':
+        from . import pm_unlock
+        return {'state': 'candidate_pending_verification', 'applied': False,
+                'profile': pm_unlock.profile()['profile'], 'scope': pm_unlock.profile()['scope'],
+                'next': pm_unlock.live_acceptance_plan()}
     if not profile['verified']:
         if game.get('game_id') == DOAPP_ID and game.get('platform') == 'arcade':
             # Registration point for the DOA++ (Korea) arcade unlock work. The
