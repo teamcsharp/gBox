@@ -242,3 +242,49 @@ def test_compressed_probe_rejects_truncated_headers(magic, length):
 def test_compressed_probe_stops_before_a_truncated_momo_record():
     blob = b"\x00\x00MOMO" + struct.pack("<I", 1) + b"\x01" * 7
     assert dmc2.compressed_entry_probe(blob)["literal_prefix"] == 8
+
+
+def _lz_encode_literal(data: bytes) -> bytes:
+    """Reference encoder: literal-only groups (control 0).  Pads to 2-byte units."""
+    data += b"\0" * (len(data) % 2)
+    out = b""
+    for i in range(0, len(data), 32):
+        out += b"\0\0" + data[i:i + 32]
+    return out
+
+
+def test_lz_decompress_synthetic_refs():
+    # unit index 2 is a back-reference: dist=2*2=4 bytes, len=(2)*2=4 bytes, then literal "GH"
+    stream = (b"\x00\x00" + b"ABCD" + b"EF")  # group 1 control word 0 + units
+    assert dmc2.lz_decompress(stream) == b"ABCDEF"
+    ctrl = 0b0010000000000000  # unit index 2 is a back-reference
+    s2 = ctrl.to_bytes(2, "little") + b"AB" + b"CD" + bytes([2, 2 << 3]) + b"GH"
+    assert dmc2.lz_decompress(s2) == b"ABCD" + b"ABCD" + b"GH"
+    # long form: len bits 0 -> next u16 = units; overlap copy of last unit (dist 2) x 5 units
+    s3 = (0b0010000000000000).to_bytes(2, "little") + b"AB" + b"XY" + bytes([1, 0]) + (5).to_bytes(2, "little")
+    assert dmc2.lz_decompress(s3) == b"ABXY" + b"XY" * 5
+
+
+def test_decompress_entry_literal_momo_and_bad():
+    raw = b"MOMO" + struct.pack("<I", 1) + struct.pack("<II", 16, 4) + b"TIM2"
+    assert dmc2.decompress_entry(_lz_encode_literal(raw)) == raw
+    with pytest.raises(ValueError):
+        dmc2.decompress_entry(raw)  # no leading control word
+    bad = b"MOMO" + struct.pack("<I", 1) + struct.pack("<II", 16, 99999) + b"TIM2"
+    with pytest.raises(ValueError):
+        dmc2.decompress_entry(_lz_encode_literal(bad))
+
+
+@pytest.mark.skipif(not ISO.exists(), reason="owned DMC2 Disc 1 image not extracted on this host")
+def test_owned_disc_decompress():
+    # X:2631 compressed TIM2 -> exactly 16 + totalsize bytes (header says 132144).
+    t = dmc2.decompress_entry(_x_data_entry(ISO, 2631))
+    assert t[:4] == b"TIM2" and len(t) == 16 + struct.unpack_from("<I", t, 16)[0] == 132160
+    # X:106 compressed MOMO: 3 TIM2 children at 0x800/0x41000/0x49800, ends 0x69980.
+    m = dmc2.decompress_entry(_x_data_entry(ISO, 106))
+    assert [m[o:o + 4] for o in (0x800, 0x41000, 0x49800)] == [b"TIM2"] * 3
+    assert struct.unpack_from("<II", m, 8 + 16) == (0x49800, 0x20180)
+    # X:105: 11 TIM2 children
+    m = dmc2.decompress_entry(_x_data_entry(ISO, 105))
+    n = struct.unpack_from("<I", m, 4)[0]
+    assert n == 11 and all(m[struct.unpack_from("<I", m, 8 + 8 * j)[0]:][:4] == b"TIM2" for j in range(n))
