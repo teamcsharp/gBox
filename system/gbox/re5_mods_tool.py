@@ -222,7 +222,10 @@ class RE5:
         st["health_maintenance"] = self.orig.get("health", {}).get("last")
         st["hit_immunity"] = bool((st["health_maintenance"] or {}).get("hit_immunity"))
         kt = self.orig.get("kill_time", {})
-        st["kill_time_s"] = kt.get("seconds", KILL_TIME_S) if kt.get("on") else 0.0
+        st["kill_time_s"] = kt.get("seconds_max", kt.get("seconds", KILL_TIME_S)) if kt.get("on") else 0.0
+        st["kill_time_on"] = bool(kt.get("on"))
+        low, high = kt.get("seconds", KILL_TIME_RANGE[0]), kt.get("seconds_max", KILL_TIME_RANGE[1])
+        st["kill_time_range"] = f"{low:g}-{high:g}" if high > low else f"{low:g}"
         st["fire_animation_enabled"] = bool(self.orig.get("fire_animation_on"))
         st["fire_animation_maintenance"] = self.orig.get("fire_animation_last")
         from .mercs.titles import re5_controls
@@ -379,19 +382,39 @@ def _maintain_health(g: RE5, snap=None) -> dict:
 # gbox/mercs/titles/re5_ps3.py's snapshot reads them.
 S_MAIN, MAIN_GAMESYS, GS_TIMER, GS_KILLS = 0x0191CEE4, 0x182D4, 0x3E0, 0x3F4
 KILL_TIME_S = 2.0
+KILL_TIME_RANGE = (2.0, 5.0)    # the default: a random whole 2-5 s per kill (operator 2026-10-22: "enabled by default and
+                                # randomly be adding a amount of time per kill between two and five seconds")
 KILL_TIME_MAX_S = 30.0
 _KILL_LOCK = threading.RLock()
 
 
-def kill_time(g: RE5, on: bool, seconds=None) -> dict:
-    """Switch the per-kill time bonus; the Mercenaries observer applies it each snapshot (maintain_kill_time)."""
+def kill_time(g: RE5, on: bool, seconds=None, seconds_max=None) -> dict:
+    """Switch the per-kill time bonus; the Mercenaries observer applies it each snapshot (maintain_kill_time). seconds
+    alone: that many per kill; seconds and seconds_max: a random whole number of seconds in that range per kill; neither:
+    the last setting (KILL_TIME_RANGE the first time), so the panel's on / off keeps the range."""
     with _KILL_LOCK:
         state = g.orig.setdefault("kill_time", {})
-        seconds = float(seconds if seconds is not None else state.get("seconds", KILL_TIME_S))
-        if not 0 < seconds <= KILL_TIME_MAX_S:
-            raise ValueError(f"kill_time seconds: more than 0, at most {KILL_TIME_MAX_S:g}")
-        state.update(on=bool(on), seconds=seconds, gs=None, kills=None)
-        return {"kill_time": state["on"], "seconds": state["seconds"], "verified": True}
+        if seconds is None:
+            low, high = state.get("seconds", KILL_TIME_RANGE[0]), state.get("seconds_max", KILL_TIME_RANGE[1])
+        else:
+            low = float(seconds)
+            high = float(seconds_max) if seconds_max is not None else low
+        low, high = float(low), float(high)
+        if not 0 < low <= high <= KILL_TIME_MAX_S:
+            raise ValueError(f"kill_time seconds: more than 0, at most {KILL_TIME_MAX_S:g}, and the minimum first")
+        state.update(on=bool(on), seconds=low, seconds_max=high, gs=None, kills=None)
+        return {"kill_time": state["on"], "seconds": low, "seconds_max": high, "verified": True}
+
+
+def _kill_seconds(state) -> float:
+    """One kill's seconds: the fixed value, or a random whole number in the range (2, 3, 4 or 5 by default)."""
+    import random
+    low, high = state.get("seconds", KILL_TIME_S), state.get("seconds_max", state.get("seconds", KILL_TIME_S))
+    if high <= low:
+        return low
+    if float(low).is_integer() and float(high).is_integer():
+        return float(random.randint(int(low), int(high)))
+    return round(random.uniform(low, high), 1)
 
 
 def maintain_kill_time(ad, snap=None) -> dict:
@@ -419,7 +442,7 @@ def maintain_kill_time(ad, snap=None) -> dict:
             clock = struct.unpack(">f", rd(gs + GS_TIMER, 4))[0]
             if clock <= 0:
                 return {"kill_time": True, "added": 0.0, "verified": True, "kills": kills, "reason": "round over"}
-            added = (kills - last) * state["seconds"]
+            added = sum(_kill_seconds(state) for _ in range(kills - last))
             wanted = struct.pack(">f", clock + added)
             ad.write_memory(gs + GS_TIMER, wanted)
             after = struct.unpack(">f", rd(gs + GS_TIMER, 4))[0]
@@ -883,8 +906,10 @@ def _run(ad, op="status", multiplier=None, on=True, g=None, **extra):
         seconds = extra.get("seconds")
         if seconds is None and multiplier is not None:
             seconds = multiplier                      # the panel and the retained override carry the seconds as the value
-        res.update(kill_time(g, on, seconds))
-        multiplier = res["seconds"]
+        res.update(kill_time(g, on, seconds, extra.get("seconds_max")))
+        # the retained operator override: a fixed value carries its seconds; a range (the default) only the on / off,
+        # so a later playing_ops call keeps its 2-5 s range and the operator's switch
+        multiplier = res["seconds"] if res["seconds_max"] == res["seconds"] else None
     elif op == "add_time":
         res.update(add_time(g, extra.get("seconds") or multiplier or 60))
     elif op == "time_bonus_multiplier":

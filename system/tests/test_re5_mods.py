@@ -241,7 +241,7 @@ def test_the_re5_profile_turns_kill_time_on():
     import json
     from pathlib import Path
     prof = json.loads(Path(__file__).resolve().parents[1].joinpath("profiles/gamedata/BLUS30491-ram.json").read_text())["mercs"]
-    assert dict(prof["playing_ops"])["kill_time"] == {"on": True, "seconds": 2}
+    assert dict(prof["playing_ops"])["kill_time"] == {"on": True, "seconds": 2, "seconds_max": 5}   # random 2-5 s, on by default
 
 
 def test_kill_time_seconds_is_an_operator_setting_that_is_validated_and_retained():
@@ -258,3 +258,49 @@ def test_kill_time_seconds_is_an_operator_setting_that_is_validated_and_retained
     assert g.orig["kill_time"]["seconds"] == 3.5
     T.kill_time(g, False)                                   # off keeps the last seconds for the next switch-on
     assert not g.orig["kill_time"]["on"] and g.orig["kill_time"]["seconds"] == 3.5
+
+
+def test_kill_time_draws_a_random_two_to_five_seconds_per_kill_and_the_switch_keeps_the_range(monkeypatch):
+    # operator 2026-10-22: "enabled by default and to randomly be adding a amount of time per kill between two and five
+    # seconds per kill. But I want to be able to enable and disable this."
+    g = type("G", (), {"orig": {}})()
+    r = T.kill_time(g, True)                                    # the default
+    assert (r["seconds"], r["seconds_max"]) == T.KILL_TIME_RANGE == (2.0, 5.0)
+    draws = {T._kill_seconds(g.orig["kill_time"]) for _ in range(400)}
+    assert draws == {2.0, 3.0, 4.0, 5.0}                          # whole seconds, every value in the range
+    T.kill_time(g, False)                                       # the panel's switch: off, then on again
+    r = T.kill_time(g, True)
+    assert r["kill_time"] and (r["seconds"], r["seconds_max"]) == (2.0, 5.0)
+    assert T._kill_seconds({"seconds": 3.0}) == 3.0             # a fixed value still works
+    for bad in ((5, 2), (0, 3), (2, 31)):
+        try:
+            T.kill_time(g, True, *bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"{bad} accepted")
+
+
+def test_maintain_kill_time_adds_one_draw_per_kill(monkeypatch):
+    import struct
+    from gbox import re5_mods_tool as RM
+
+    class Ad:
+        def __init__(self):
+            self.mem = {}
+        def put(self, a, fmt, v):
+            self.mem[a] = struct.pack(fmt, v)
+        def read_memory(self, a, n):
+            return self.mem.get(a, b"\0" * n)[:n]
+        def write_memory(self, a, data):
+            self.mem[a] = bytes(data)
+
+    ad, main, gs = Ad(), 0x31000000, 0x32000000
+    ad.put(RM.S_MAIN, ">I", main); ad.put(main + RM.MAIN_GAMESYS, ">I", gs)
+    ad.put(gs + RM.GS_TIMER, ">f", 60.0); ad.put(gs + RM.GS_KILLS, ">i", 0)
+    RM.ORIG.setdefault(id(ad), {})["kill_time"] = {"on": True, "seconds": 2.0, "seconds_max": 5.0}
+    draws = iter([2.0, 5.0, 3.0])
+    monkeypatch.setattr(RM, "_kill_seconds", lambda state: next(draws))
+    RM.maintain_kill_time(ad)
+    ad.put(gs + RM.GS_KILLS, ">i", 3)
+    assert RM.maintain_kill_time(ad)["added"] == 10.0           # three kills: 2 + 5 + 3
+    RM.ORIG.pop(id(ad), None)

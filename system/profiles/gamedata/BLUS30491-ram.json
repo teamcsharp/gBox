@@ -21,7 +21,7 @@
     "ready": true,
     "jump_at": "select_player",
     "package": [["turn_speed", {"multiplier": 1}], ["fire_rate", {"multiplier": 80}], ["infinite_ammo", {"on": true}], ["unlimited_health", {"on": false}]],
-    "playing_ops": [["unlimited_health", {"on": false}], ["kill_time", {"on": true, "seconds": 2}], ["replace_rockets", {}]],
+    "playing_ops": [["unlimited_health", {"on": false}], ["kill_time", {"on": true, "seconds": 2, "seconds_max": 5}], ["replace_rockets", {}]],
     "round_ops": [["random_cheats", {}]],
     "vocab": {
       "screen": "driver",
