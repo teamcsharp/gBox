@@ -189,7 +189,7 @@ def test_the_playbook_applies_the_re5_package_through_re5_mods(monkeypatch):
     prof = {"platform": "ps3", "map_id": "BLUS30491"}
     failed = MB.apply_ops(m, [["turn_speed", {"multiplier": 2}], ["fire_rate", {"multiplier": 80}],
                              ["infinite_ammo", {"on": True}], ["no_such_op", {}]], prof)
-    assert failed == ["no_such_op: op: status | turn_speed | fire_rate | infinite_ammo | unlimited_health | bullet_damage | loadout | replace_rockets | random_cheats | revert_all | addresses"]
+    assert failed == ["no_such_op: op: status | turn_speed | fire_rate | infinite_ammo | unlimited_health | bullet_damage | loadout | replace_rockets | random_cheats | kill_time | revert_all | addresses"]
     st = T.run(m, "status")["status"]
     assert st["turn_speed_x"] == 2.0 and st["fire_rate_x"] == 80.0 and st["infinite_ammo"] is True
 
@@ -202,3 +202,43 @@ def test_the_re5_profile_package_keeps_the_fire_cheats_and_turns_infinite_life_o
     assert dict(prof["package"])["fire_rate"] == {"multiplier": 80} and dict(prof["package"])["turn_speed"] == {"multiplier": 2}
     assert dict(prof["package"])["unlimited_health"] == {"on": False}   # operator 2026-10-22: "turn off infinite life"
     assert dict(prof["playing_ops"])["unlimited_health"] == {"on": False}
+
+
+def test_each_kill_adds_two_seconds_to_the_round_clock():
+    # operator 2026-10-22: "Every time they kill someone, just add two seconds to the time."
+    import struct
+    from gbox import re5_mods_tool as RM
+
+    class Ad:
+        def __init__(self):
+            self.mem = {}
+        def put(self, a, fmt, v):
+            self.mem[a] = struct.pack(fmt, v)
+        def read_memory(self, a, n):
+            return self.mem.get(a, b"\0" * n)[:n]
+        def write_memory(self, a, data):
+            self.mem[a] = bytes(data)
+
+    ad, main, gs = Ad(), 0x31000000, 0x32000000
+    ad.put(RM.S_MAIN, ">I", main); ad.put(main + RM.MAIN_GAMESYS, ">I", gs)
+    ad.put(gs + RM.GS_TIMER, ">f", 60.0); ad.put(gs + RM.GS_KILLS, ">i", 3)
+    clock = lambda: struct.unpack(">f", ad.read_memory(gs + RM.GS_TIMER, 4))[0]
+    assert RM.maintain_kill_time(ad)["added"] == 0.0 and clock() == 60.0            # off unless the op turned it on
+    RM.ORIG.setdefault(id(ad), {})["kill_time"] = {"on": True, "seconds": 2.0}
+    assert RM.maintain_kill_time(ad)["added"] == 0.0                                  # the first look is the baseline
+    ad.put(gs + RM.GS_KILLS, ">i", 5)
+    r = RM.maintain_kill_time(ad)
+    assert r["added"] == 4.0 and r["verified"] and clock() == 64.0                    # two kills: +4 s
+    assert RM.maintain_kill_time(ad)["added"] == 0.0 and clock() == 64.0              # counted once
+    ad.put(gs + RM.GS_KILLS, ">i", 0)                                                 # a new round: count afresh
+    assert RM.maintain_kill_time(ad)["added"] == 0.0
+    ad.put(gs + RM.GS_KILLS, ">i", 1); ad.put(gs + RM.GS_TIMER, ">f", 0.0)            # the round is over: never written
+    assert RM.maintain_kill_time(ad)["added"] == 0.0 and clock() == 0.0
+    RM.ORIG.pop(id(ad), None)
+
+
+def test_the_re5_profile_turns_kill_time_on():
+    import json
+    from pathlib import Path
+    prof = json.loads(Path(__file__).resolve().parents[1].joinpath("profiles/gamedata/BLUS30491-ram.json").read_text())["mercs"]
+    assert dict(prof["playing_ops"])["kill_time"] == {"on": True, "seconds": 2}

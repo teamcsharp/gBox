@@ -868,6 +868,12 @@ class Bot:
             self.stats["immunity_reason"] = health.get("immunity_reason") or ""
             if health.get("refilled"):
                 self.stats["health_refills"] = self.stats.get("health_refills", 0) + 1
+            from ...re5_mods_tool import maintain_kill_time
+            bonus = maintain_kill_time(self.m.adapter, snap)    # +2 s on the clock per kill (the profile's playing_ops)
+            if bonus.get("added"):
+                self.stats["kill_time_added_s"] = round(self.stats.get("kill_time_added_s", 0.0) + bonus["added"], 1)
+            elif bonus.get("kill_time") and not bonus.get("verified"):
+                self.stats["kill_time_reason"] = bonus.get("reason") or "write not confirmed"
         if where != "playing" or not p:
             self.healing = None
             if self.combat is not None:
