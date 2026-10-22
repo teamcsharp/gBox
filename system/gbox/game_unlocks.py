@@ -82,6 +82,14 @@ def profile_for(game: dict) -> dict:
         from . import sgc_gems_probe
         return {'status': 'pending_research', 'profile': None, 'verified': False,
                 'scope': list(sgc_gems_probe.CATEGORIES), **sgc_gems_probe.profile_gate()}
+    from . import tetris_plus_unlock
+    if game.get('game_id') == tetris_plus_unlock.GAME_ID and game.get('platform') == tetris_plus_unlock.PLATFORM:
+        # Tetris Plus (USA) SLUS_003.38: the owned revision and its PSX memory-card
+        # block table are pinned, but the progress-flag layout, the category
+        # inventory and every runtime check are still open.  verified=False keeps
+        # the Play path away from any save write for this game.
+        return {'status': 'pending_research', 'profile': None, 'verified': False,
+                'scope': list(tetris_plus_unlock.CATEGORIES), **tetris_plus_unlock.profile_gate()}
     if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,
                 'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}
