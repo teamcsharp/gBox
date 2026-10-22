@@ -28,9 +28,12 @@ def _auf_profile(game: dict) -> dict:
                 'reason': 'The AUF unlock profile covers the GameCube build only.'}
     path = Path(__file__).resolve().parent.parent / 'profiles/gamedata' / f'{AUF_ID}-unlock.json'
     try:
-        template = json.loads(path.read_text(encoding='utf-8'))
+        try:
+            template = json.loads(path.read_text(encoding='utf-8'))
+        except OSError:
+            from .auf_unlock_template import TEMPLATE as template  # embedded mirror
         digest = hashlib.sha256(json.dumps(template, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, ImportError) as error:
         return {'status': 'unavailable', 'profile': None, 'verified': False, 'scope': [],
                 'reason': f'AUF unlock template unavailable: {error}'}
     if digest != AUF_TEMPLATE_SHA256:
