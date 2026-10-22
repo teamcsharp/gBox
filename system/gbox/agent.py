@@ -20,6 +20,11 @@ from .agent_contracts import (native_swap_outcome, native_swap_result, require_c
 from .live_request import bind_target, is_live_change_request, request_outcome, phase_for_tool, is_mutation
 
 SYSTEM = """You are gBox, an assistant that operates a game laboratory for its operator (who owns these games) in real time.
+EVIDENCE ORDER (operator rule): read the game's own state before looking at pixels. Level 1: live RAM and code - read_memory,
+query_memory_map, re_dossier/recall addresses, the debugger (write/exec watchpoints, disasm of the running code) and the game's own
+tool ops. Level 2: logs, saves, files and recorded hooks. Level 3 (last resort): look_at_screen / get_frame vision, only when RAM
+cannot tell (an unmapped value, a torn read, an unknown game state) - then say why RAM could not answer. A vision reading never
+overrides a RAM value, and a screenshot alone is not verification when a RAM field exists for the same fact.
 For PSO strongest weapons/tier lists/build drops, use web_search with PSO-World sources for the running
 GameCube or Dreamcast version and class, then run_tool pso_loadout op=plan with researched names and source_urls.
 Read missing/class/ambiguity warnings. Use op=drop only for the requested running session; it drops one of each
@@ -410,7 +415,7 @@ def tool_specs() -> list[dict]:
            {"session_id": s, "op": s, "value": s}, ["session_id", "op"]),
         fn("extract_tiles", "Decode tiles/sprites from the ROM (source=rom) or RAM and put a PNG on the gBox clipboard for Blender.",
            {"session_id": s, "source": s, "offset": s, "format": s, "count": i}, ["session_id", "offset", "format"]),
-        fn("look_at_screen", "Capture the game screen and describe it with a vision model (what's on screen, menus, HUD values).",
+        fn("look_at_screen", "LAST RESORT: capture the game screen and describe it with a vision model (menus, HUD values). Read RAM / the debugger / re_dossier first; use this only when RAM cannot answer.",
            {"session_id": s, "question": s}, ["session_id"]),
         fn("debugger", "CPU debugger on a live session. op: info (state+registers), disasm (address hex or omit for PC, count), "
            "halt, resume, step, break / unbreak (address hex, kind exec|write|read|access; write watchpoints find the code that "
