@@ -223,3 +223,15 @@ def test_doa_available_source_exports_are_verified_separately_from_collection_an
     tasks = {t['operation'] for t in GC.backlog(row)}
     assert 'costumes' not in tasks and {'source_inventory', 'characters', 'stages', 'mod_launch'} <= tasks
     assert 'native_reimport' in tasks
+
+
+def test_mgsvr_profile_is_exact_manual_trigger_and_plans_mgs_vr_job():
+    mg = game(GU.MGSVR_ID, platform='psx')
+    profile = GU.profile_for(mg)
+    assert profile['verified'] and profile['auto_on_load'] is False and len(profile['exe_sha256']) == 64
+    assert profile['exclusions'] and 'running' in profile['trigger']
+    worker = {'id': 'jay', 'name': 'JAYBUILTFINALE'}
+    assert GU.launch_plan(mg, worker, enable_unlock=True)['status'] == 'save_upgrade_opt_in_required'
+    live = GU.launch_plan(mg, worker, enable_unlock=True, allow_save_upgrade=True, session_id='jay-live')
+    assert live['jobs'][0]['tool'] == 'mgs_vr' and live['jobs'][0]['input'] == {'op': 'unlock_all', 'session_id': 'jay-live'}
+    assert GU.pre_launch(mg, None)['state'] == 'needs_running_mission'
