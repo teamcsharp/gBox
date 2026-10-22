@@ -54,6 +54,12 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
                 'scope': nds_wcw_unlock.profile()['scope'],
                 'ops': nds_wcw_unlock.unlock_ops(),
                 'next': 'Run live_acceptance_plan on an authorized agent session (i9-NUC/Spark, 2% audio).'}
+    if game.get('game_id') == '84c4cf28c565aa5e' and game.get('platform') == 'nds':
+        from . import nds_dogs_unlock
+        return {'state': 'research_pending', 'applied': False,
+                'profile': 'nds-dogs-database-candidate-v1',
+                'scope': nds_dogs_unlock.profile()['scope'],
+                'reason': 'ROM/ARM9 hash pin and lock-check trace pending; no write is applied.'}
     return {'state': 'implementation_pending', 'applied': False}
 
 
