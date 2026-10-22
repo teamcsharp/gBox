@@ -450,6 +450,9 @@ def test_operator_gate_defers_emulator_work_and_caps_dispatch():
     assert [k for k, _ in kept] == ['favorite:1', 'inbox:p'] and cap == 1
     assert report == {'games': ['Dead or Alive 2'], 'deferred': ['favorite:a', 'inbox:r'],
                       'sandboxes': {'throttled': [12]}}
+    # pooled inference runs off the Spark: emulator work still waits, the node capacity is not capped
+    kept, cap, _ = q.operator_gate(options, [{'session_id': 'spark-1', 'title': 'Dead or Alive 2'}], pooled=True)
+    assert [k for k, _ in kept] == ['favorite:1', 'inbox:p'] and cap is None
 
 
 def test_tick_throttles_sandboxes_and_warns_agents_while_the_operator_plays(env, monkeypatch):

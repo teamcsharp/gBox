@@ -437,15 +437,17 @@ def throttle_sandboxes(playing, throttle=None):
         return {'error': f'{type(e).__name__}: {e}'[:200]}
 
 
-def operator_gate(options, playing, throttled=None):
+def operator_gate(options, playing, throttled=None, *, pooled=False):
     """While the operator plays on the Spark (docs/stream-stability.md): defer emulator-launching items and allow
-    one dispatch per tick. Returns (options, capacity cap or None, report)."""
+    one dispatch per tick. A pooled route infers on other machines (spark2, cloud), so its runs keep their node
+    capacity (operator 2026-10-22: "spark2 is the one i want maxed ... the spark put on tasks"); their sandboxes are
+    still throttled. Returns (options, capacity cap or None, report)."""
     if not playing:
         return options, None, None
     kept = [v for v in options if not launches_emulator(v[1])]
     report = {'games': sorted({s.get('title') or s.get('game_id') or s.get('session_id') for s in playing}),
               'deferred': [v[0] for v in options if v not in kept], 'sandboxes': throttled}
-    return kept, 1, report
+    return kept, None if pooled else 1, report
 
 
 def _prompt(item, playing=None):
@@ -696,9 +698,9 @@ def tick(*, now=None):
         options = candidates(data, requests, native, owned, _on_main(), now=now)
         _save(data)  # Preserve review holds/guidance even when there are no free slots.
         # Both gates apply and the stricter wins: the operator's game on the Spark defers emulator-launching items
-        # and caps dispatch at 1 (docs/stream-stability.md); the local route allows only small tasks, one at a time
-        # (and returned above while the operator plays, through the proxy's gate).
-        options, cap, gate = operator_gate(options, playing, throttled)
+        # and caps unpooled dispatch at 1 (docs/stream-stability.md); the local route allows only small tasks, one
+        # at a time (and returned above while the operator plays, through the proxy's gate).
+        options, cap, gate = operator_gate(options, playing, throttled, pooled=pooled)
         if cap is not None:
             limit = min(limit, cap)
             global_limit = min(global_limit, cap)
