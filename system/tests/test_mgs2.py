@@ -422,9 +422,7 @@ def test_attract_scan_files_the_ps2_disc_under_ps2(tmp_path):
 
 
 # ---------------------------------------------------------------- owned disc (skipped without it)
-OWNED = [Path(p) for p in (os.environ.get("GBOX_MGS2_PS2_DISC") or "",
-                           "D:/gBox/cache/modbase/cb7aae71edb10cd3/Metal Gear Solid 2 - Substance (USA).iso",
-                           "//10.89.1.125/HyperSpin Attraction/Arcade/" + inv.CATALOG_REL) if p]
+OWNED = inv.owned_disc_paths()
 
 
 def _owned():
@@ -447,6 +445,7 @@ def test_owned_disc_archives_and_snake(tmp_path):
     st = a1.stage("r_sna_b")
     kms = a1.file(st, inv.T_KMS, SNA)
     pack = a1.file(st, inv.T_TEX, M.parse_kms(kms)["tex"])
+    (tmp_path / "identity.json").write_text(json.dumps(ident, indent=1, default=str))
     r = M.extract_bytes(kms, [pack], tmp_path / "snake.glb", "snake")
     assert r["verified"] and len(r["roles"]) == 18 and 1.7 < r["height_m"] < 2.1 and not r["missing_textures"]
     d.close()
