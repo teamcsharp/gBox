@@ -86,6 +86,11 @@ def profile_for(game: dict) -> dict:
                              'lock_surface': acv_evidence.LOCK_SURFACE,
                              'inventory': inv},
                 'unresolved_categories': pending}
+    from . import mk64_unlock
+    if game.get('game_id') == mk64_unlock.GAME_ID and game.get('platform') == mk64_unlock.PLATFORM:
+        # Research gate only: pre_launch short-circuits on verified=False, so no writer is reachable.
+        return {'status': 'pending_research', 'profile': None, 'verified': False,
+                'scope': list(mk64_unlock.CATEGORIES), **mk64_unlock.profile_gate()}
     from . import doax2_unlock
     if game.get('game_id') == doax2_unlock.GAME_ID and game.get('platform') == doax2_unlock.PLATFORM:
         # Honest gate for DOAX2: research pending, no verified write targets exist.
