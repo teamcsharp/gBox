@@ -1522,3 +1522,17 @@ def test_stage_select_takes_a_random_stage_each_visit():
     draws = {R.StagePick(rng=random.Random(s)).key(scr) for s in range(30)}
     assert draws == {"dright", "cross"}                    # some visits move, some take the stage under the cursor
     assert R.step({"where": "select_stage"}) in ("dright", "cross")
+
+
+def test_a_distant_majini_beyond_a_wall_is_walked_to_along_the_navmesh_not_straight_into_it():
+    """Coaching note 8: the bot ran straight at far Majini and pushed against building walls. With a navmesh the far
+    walk must be a route (waypoints, no raw heading line); an unreachable target must not fall back to a straight run."""
+    mesh, bot = strip_mesh(), R.Bot()
+    p = {"pos": (0.0, 0.0, 100.0), "rot": math.pi / 2, "action": 0}
+    far = {"ptr": 7, "slot": 7, "pos": (0.0, -300.0, 1600.0), "hp": 100}
+    bot.at_stand = False
+    act = bot._pursue(p, far, mesh, False, 10.0)
+    assert bot.route and bot.stats["phase"] == "pursue" and "wp" in bot.stats["route"]
+    off = {"ptr": 8, "slot": 8, "pos": (5000.0, 0.0, 5000.0), "hp": 100}
+    assert bot._pursue(p, off, mesh, False, 20.0) == {"hold": set()}
+    assert bot.stats["route"] == "unreachable on current mesh"

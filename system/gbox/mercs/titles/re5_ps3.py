@@ -1185,6 +1185,8 @@ class Bot:
             self.aiming_since = None
             if self.at_stand:                               # ...unless this is the stand: they come to him
                 return {"hold": set()}
+            if mesh is not None:                            # around the walls and through the doors, not into them
+                return self._pursue(p, tgt, mesh, snap.get("stage_prompt"), now)
             return {"hold": self._walk(p, want, now)}
         aiming = p.get("action") == 2
         if dist < TOO_CLOSE and not aiming and self.combat is None:
