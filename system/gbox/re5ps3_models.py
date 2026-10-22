@@ -38,6 +38,27 @@ def finite(values, label):
         raise ValueError(f'{label} has a non-finite component')
 
 
+def decode_texcoord(block):
+    """Decode a 4-byte MOD texcoord slot into float UVs.
+
+    A slot filled with the 32-bit null-attribute sentinel (0xFFFFFFFF, i.e.
+    both f16 halves 0xFFFF) declares that the mesh carries no UV channel.
+    Read as f16 that sentinel is NaN, which used to abort the whole model
+    parse. A fully null slot is reported as a null UV and returned as a
+    finite (0, 0) channel; a partially null slot stays an error, and a
+    genuine NaN (not the sentinel) is still rejected by the finiteness check.
+    """
+    raw = np.ascontiguousarray(block)
+    words = np.frombuffer(raw.tobytes(), dtype='>u2').reshape(-1, 2)
+    null = (words[:, 0] == 0xFFFF) & (words[:, 1] == 0xFFFF)
+    uv = np.frombuffer(raw.tobytes(), dtype='>f2').reshape(-1, 2).astype(float)
+    if null.all():
+        return np.zeros((raw.shape[0], 2), dtype=float), True
+    if null.any():
+        raise ValueError('MOD UV slot is partially null')
+    return uv, False
+
+
 class Texture:
     """Single-face PS3 TEX 102; DXT blocks are linear and little endian."""
     def __init__(self, data):
@@ -284,11 +305,11 @@ class Model:
             normal = raw[:, normal_at:normal_at + 3].astype(float) / 127.5 - 1
             normal /= np.linalg.norm(normal, axis=1)[:, None]
             uv_at = 28 if influences == 8 else 24
-            uv = np.frombuffer(raw[:, uv_at:uv_at + 4].copy().tobytes(), dtype='>f2').reshape(count, 2).astype(float)
+            uv, uv_null = decode_texcoord(raw[:, uv_at:uv_at + 4])
             finite(pos, 'MOD positions'); finite(normal, 'MOD normals'); finite(uv, 'MOD UVs')
             self.meshes.append(dict(index=i, group=group, material=material, visible=bool(visible),
                                     lod=lod, alpha_priority=alpha, palette=palette, positions=pos,
-                                    normals=normal, uv=uv, joints=joints, weights=weights,
+                                    normals=normal, uv=uv, uv_null=uv_null, joints=joints, weights=weights,
                                     triangles=triangles(idx), index_start=first, index_count=ni))
             if ni:
                 all_index_spans.append((first, first + ni))

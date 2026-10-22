@@ -262,3 +262,17 @@ def test_gd_list_repairs_a_missing_sibling_name(tmp_path):
     assert adapters._link_lst_names(lst) == ["expected.bin"]
     assert (tmp_path / "expected.bin").read_bytes() == b"original"
     assert adapters._link_lst_names(lst) == []
+
+
+def test_windows_dolphin_dpad_reaches_the_game(monkeypatch):
+    # RE4's menus read the D-pad: on Windows it had no key, every menu press was dropped and the i9-NUC bot sat on the
+    # main menu (2026-10-22)
+    ad = adapters.DolphinWinAdapter(Config(), "gamecube")
+    ad.proc = type("Proc", (), {"pid": 123})()
+    sent = []
+    monkeypatch.setattr(adapters, "win_send_keys", lambda pid, events: sent.extend(events) or {"sent": len(events)})
+    for key in ("T", "G", "F", "H"):
+        assert f"Keyboard Mouse:{key}`" in ad.PAD_INI_WIN
+    ad.send_input([{"key": k, "down": True} for k in ("dup", "ddown", "dleft", "dright")])
+    assert [e["key"] for e in sent] == ["t", "g", "f", "h"]
+    assert all(adapters._SCAN.get(e["key"]) for e in sent)        # each one has a scan code: nothing is skipped

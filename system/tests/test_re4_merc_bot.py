@@ -926,3 +926,9 @@ def test_he_never_fires_with_the_aim_below_the_head_band():
         set_pitch(m, pitch + 0.02 * (("up" in keys) - ("down" in keys)))
     assert fired_at is not None and not below_fired                        # it raised the aim, then fired
     assert lo <= fired_at <= math.atan2(B.BODY_HI - gun, 1500.0)
+
+
+def test_package_keeps_the_games_own_aim_turn_speed():
+    # operator 2026-10-22: x3 aim speed made the camera spin spastically and the bot overshoot - regular speed
+    assert B.AIM_SPEED_X == 1.0
+    assert dict(B.PACKAGE)["aim_turn_speed"] == {"multiplier": 1.0}

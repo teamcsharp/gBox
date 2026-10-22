@@ -2534,10 +2534,10 @@ Triggers/L = `Trigger L` | `DInput/0/Keyboard Mouse:Q`
 Triggers/R = `Trigger R` | `DInput/0/Keyboard Mouse:W`
 Triggers/L-Analog = `Trigger L`
 Triggers/R-Analog = `Trigger R`
-D-Pad/Up = `Pad N`
-D-Pad/Down = `Pad S`
-D-Pad/Left = `Pad W`
-D-Pad/Right = `Pad E`
+D-Pad/Up = `Pad N` | `DInput/0/Keyboard Mouse:T`
+D-Pad/Down = `Pad S` | `DInput/0/Keyboard Mouse:G`
+D-Pad/Left = `Pad W` | `DInput/0/Keyboard Mouse:F`
+D-Pad/Right = `Pad E` | `DInput/0/Keyboard Mouse:H`
 """
     # gBox's Dolphin hotkeys (Hotkeys.ini, written at every launch): one base key per running Dolphin ("lane": F13, F14 or
     # F15; Dolphin reads Hotkeys.ini only when it starts, so two Dolphins on this PC - a reset's replacement, an Examine 3D
@@ -2777,7 +2777,10 @@ D-Pad/Right = `Pad E`
         # win_send_keys already maps standard pad names to keyboard keys. Translating
         # them here as well makes A -> x -> s (Dolphin X), so menus ignore A.
         # polite: autoplay's own input on a PC the operator may be using (bot demos): never takes their keyboard
-        keymap = {"z": "e", "cup": "k", "cdown": "i", "cleft": "j", "cright": "l"}
+        # the D-pad on T / G / F / H as on Linux (PAD_INI_WIN): RE4 reads its menus from the D-pad, and with no key for
+        # it every menu press was dropped ("sent": 0) - the i9-NUC bot sat on the main menu (2026-10-22)
+        keymap = {"z": "e", "cup": "k", "cdown": "i", "cleft": "j", "cright": "l",
+                  "dup": "t", "ddown": "g", "dleft": "f", "dright": "h"}
         rows = [{**e, "key": keymap.get(e["key"], e["key"])} for e in events]
         return win_send_keys(self.proc.pid, rows, polite=True) if polite else win_send_keys(self.proc.pid, rows)
 

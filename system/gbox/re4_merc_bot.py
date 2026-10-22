@@ -122,8 +122,10 @@ URGENT_S = 2.5                                   # an attack landing within this
 EVADE_S, EVADE_MARGIN = 0.8, 0.15                # run out of a swing this long; dodge when it lands this much sooner
                                                  # than he can shoot
 CROWD_R, CROWD_N = 750.0, 2                      # this many Ganados this close: get out, then fight them one by one
-AIM_SPEED_X = 3.0                                # the aim's stick speed x3 (re_mods aim_turn_speed: the constant pi at
-                                                 # 0x801ED930 the aim routine scales the stick by): ~30 deg/s -> ~90
+AIM_SPEED_X = 1.0                                # the game's own aim speed (re_mods aim_turn_speed: the constant pi at
+                                                 # 0x801ED930 the aim routine scales the stick by): ~30 deg/s. Was x3
+                                                 # (~90 deg/s) until operator 2026-10-22: the camera spun "so spastically",
+                                                 # the bot overshot and circled - back to regular
 AIM_FINE = 0.12                                  # aiming, this close to the target (radians): the stick in pulses
 AIM_KEEP_ERR = 0.8                               # aiming already: the gun stays up and aim-turns within this (radians)
 EVADE_LOOK = 1500.0                              # a way out is clear this far ahead (the level map, other Ganados)
