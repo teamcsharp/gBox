@@ -44,7 +44,12 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
             return {'state': 'research_pending', 'applied': False,
                     'reason': gate['reason'], 'scope': list(sgc_gems_probe.CATEGORIES),
                     'evidence': gate['evidence'], 'blockers': gate['blockers'],
-                    'next': gate['next']}
+                    'next': gate['next'],
+                    'additional_blockers': [
+                        'class->category mapping of the 0x80 records is a hypothesis (no xref to the record writer yet)',
+                        '.stm and .stg stores differ per slot; both need mapping',
+                        'no runtime acceptance (boot, select, second launch, rollback)'],
+                    'next_step': 'xref fn@0x80010810 in Ghidra project pop_sot_main to the 0x80 record writer and museum-menu eligibility test'}
         return {'state': 'research_pending', 'applied': False, 'reason': profile['reason']}
     if game.get('game_id') == RE6_ID and game.get('platform') == 'xbox360':
         from . import re6_tool
@@ -79,9 +84,16 @@ def profile_for(game: dict) -> dict:
     if game.get('game_id') == SGC_GEMS_ID and game.get('platform') == SGC_GEMS_PLATFORM:
         # Read-only probe only: pre_launch short-circuits on verified=False,
         # so no writer is reachable from the Play path for this game.
-        from . import sgc_gems_probe
+        from . import sgc_gems_probe, sgc_gems_layout
         return {'status': 'pending_research', 'profile': None, 'verified': False,
-                'scope': list(sgc_gems_probe.CATEGORIES), **sgc_gems_probe.profile_gate()}
+                'scope': list(sgc_gems_probe.CATEGORIES), **sgc_gems_probe.profile_gate(),
+                'inventory': dict(sgc_gems_layout.CATEGORY_STATUS),
+                'inventory_evidence': dict(sgc_gems_layout.CATEGORY_EVIDENCE),
+                'state_layout': {'record_table_offset': sgc_gems_layout.RECORD_TABLE_OFFSET,
+                                 'record_size': sgc_gems_layout.RECORD_SIZE,
+                                 'class_values': list(sgc_gems_layout.CLASS_BYTE_VALUES),
+                                 'loader_fn': hex(sgc_gems_layout.STATE_LOADER_FN_VA),
+                                 'mapping_proven': False}}
     if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,
                 'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}
