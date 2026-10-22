@@ -1100,12 +1100,13 @@ class Agent:
         threading.Thread(target=lambda: self.api.post("/api/kb", json={"text": text, "source": source, "title": title,
                                                                            "game": self.game or "", "kind": kind}), daemon=True).start()
 
-    def _bookmark_state(self, sid):
-        """Save state into the bookmark ring (slots 20-39) and return {slot, frame}; never fails the request."""
+    BOOKMARK_SLOTS = {"before": 20, "after": 21}    # operator #2846: a session keeps at most two save states
+
+    def _bookmark_state(self, sid, role="before"):
+        """Save state into one of the session's two bookmark slots (20 before, 21 after: each request overwrites the
+        last, so a session never holds more than two) and return {slot, frame}; never fails the request."""
         try:
-            n = getattr(Agent, "_bm_n", 0)
-            Agent._bm_n = n + 1
-            slot = 20 + n % 20
+            slot = self.BOOKMARK_SLOTS.get(role, 20)
             j = self._job("session_op", {"session_id": sid, "op": "save_state", "args": {"slot": slot}}, worker=sid.rsplit("-", 1)[0], limit=60)
             r = (j.get("output") or {}).get("result") or {}
             return {"slot": r.get("slot", slot), "frame": r.get("frame"), "ts": time.time()}
@@ -2087,7 +2088,7 @@ class Agent:
                 emit({"type": "assistant", "text": answer})
                 if bm["tools"]:                                     # major change: before/after save states + bookmark
                     q0 = next((x["content"] for x in reversed(messages) if x.get("role") == "user" and isinstance(x.get("content"), str)), "")
-                    after = self._bookmark_state(bm["sid"])
+                    after = self._bookmark_state(bm["sid"], "after")
                     request = q0.split("\n\n[Attached")[0].split("\n[context:")[0].strip()
                     emit({"type": "bookmark", "request": request[:300], "answer": answer[:300],
                           "tools": sorted(set(bm["tools"])), "session_id": bm["sid"], "before": bm["before"], "after": after})
@@ -2139,7 +2140,7 @@ class Agent:
                 if changes_game and bm["sid"]:
                     bm["tools"].append(name)
                     if bm["before"] is None:
-                        bm["before"] = self._bookmark_state(bm["sid"])
+                        bm["before"] = self._bookmark_state(bm["sid"], "before")
                 key = name + json.dumps(args, sort_keys=True, default=str)
                 if key in seen and not name.startswith("rea_") and name not in ("look_at_screen", "read_memory", "memory_search", "memory_filter", "session_info",
                                                 "debugger", "autoplay", "cheats"):          # live-state tools may legitimately repeat
