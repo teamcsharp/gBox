@@ -12,6 +12,7 @@ from pathlib import Path
 RE6_ID = '0871eee3b68cdea3'
 RE6_TEMPLATE_SHA256 = '194cb5b71858f65feeb2b1703642ddc4ffde09b9a087119189b29b0ad7b83f11'
 DOAPP_ID = '59c55e95af61abbe'  # Dead Or Alive ++ (Korea), platform=arcade
+SM64DS_GAME_ID = '917483267d246594'  # Super Mario 64 DS (USA), NDS
 NDS_WCW_GAME_ID = 'd9467f457f53f2c7'  # Call of Duty: World at War (USA), NDS
 
 
@@ -23,6 +24,13 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
     """
     profile = profile_for(game)
     if not profile['verified']:
+        if game.get('game_id') == SM64DS_GAME_ID and game.get('platform') == 'nds':
+            from . import sm64ds_unlock
+            return {'state': 'candidate_pending_verification', 'applied': False,
+                    'profile': 'nds-sm64ds-database-candidate-v1',
+                    'scope': sm64ds_unlock.profile()['scope'],
+                    'ops': sm64ds_unlock.unlock_ops(),
+                    'next': 'Run live_acceptance_plan on an authorized agent session (i9-NUC/Spark, 2% audio).'}
         if game.get('game_id') == DOAPP_ID and game.get('platform') == 'arcade':
             # Registration point for the DOA++ (Korea) arcade unlock work. The
             # fast Play path must never guess a write: report the live static
