@@ -225,3 +225,36 @@ def test_windows_guest_base_is_the_reservation_with_the_games_elf():
     ad.base, mem = None, {}
     with pytest.raises(RuntimeError, match="guest memory not found"):
         ad._base()
+
+
+def _gold_save(home, serial="BLUS30270"):
+    import struct
+    d = home / "dev_hdd0" / "home" / "00000001" / "savedata" / (serial + "10AE")
+    d.mkdir(parents=True)
+    data = bytearray(0x5700)
+    struct.pack_into(">I", data, 0x5640, 1)
+    struct.pack_into(">I", data, 0x565C, 4)
+    struct.pack_into(">I", data, 8, sum(struct.unpack(">%dI" % ((0x4BBF - 0x10 + 1) // 4), bytes(data[0x10:0x4BC0]))))
+    (d / "DATA0.DAT").write_bytes(bytes(data))
+    return d / "DATA0.DAT"
+
+
+def test_reunion_roster_unlocked_before_launch(tmp_path):
+    import struct
+    ad = adapters.RPCS3LinuxAdapter(cfg(tmp_path))
+    ad.serial = "BLUS30491"
+    f = _gold_save(ad.home)
+    res = ad._unlock_reunion_roster()
+    d = f.read_bytes()
+    assert res["verified"] is True
+    assert struct.unpack_from(">I", d, 0x565C)[0] == 0xFF and struct.unpack_from(">I", d, 0x5640)[0] == 0xFF
+    assert struct.unpack_from(">i", d, 0x4BC0)[0] >= 1
+    assert f.with_name("DATA0.DAT.gbox-backup").exists()
+
+
+def test_reunion_unlock_skips_other_games_and_never_raises(tmp_path):
+    ad = adapters.RPCS3LinuxAdapter(cfg(tmp_path))
+    ad.serial = "BLUS99999"
+    assert ad._unlock_reunion_roster() is None
+    ad.serial = "BLUS30491"                               # no save yet
+    assert ad._unlock_reunion_roster()["error"].startswith("RuntimeError")
