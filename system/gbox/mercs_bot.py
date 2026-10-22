@@ -28,6 +28,8 @@ import time
 MENU_LOST_S = 30.0          # out of a round and RAM can't name the screen this long: end the run
 MENU_STUCK_S = 120.0        # out of a round and nothing in RAM moved this long: end the run
 BOOT_PRESS_S = 3.0          # a title's BOOT_KEY goes in this often while RAM can't name the screen (a cold boot's dialogs)
+BOOT_LOST_S = 240.0         # before the boot's first named screen: an emulator's first run builds its shader caches
+                            # (RPCS3 on JAYBUILTFINALE, 2026-10-22: "Precompiling shader interpreter variants" > 30 s)
 WAITS = ("attract",)        # screens that run their own length (movies): never "stuck"
 POLL_S = 0.25               # how often the menus are read out of a round
 
@@ -114,7 +116,7 @@ class Boot:
         self.hooks, self.jump_at, self.round_hooks = hooks, jump_at, round_hooks
         self.hooked, self.moment_tried, self.at_jump = False, False, False
         self.lost_since, self.still_since, self.progress = None, None, None
-        self.boot_pressed = float("-inf")
+        self.boot_pressed, self.named = float("-inf"), False
 
     def tick(self, now: float | None = None, merc=None, scr: dict | None = None) -> str | None:
         now = self.clock() if now is None else now
@@ -144,7 +146,7 @@ class Boot:
             self.hooked = True
         if scr.get("where") == "unknown":
             self.lost_since = self.lost_since or now
-            if now - self.lost_since > MENU_LOST_S:
+            if now - self.lost_since > (MENU_LOST_S if self.named else BOOT_LOST_S):
                 return "RAM did not name the screen for %.0f s" % (now - self.lost_since)
             # a cold boot (no menu moment on this PC yet: RPCS3 states don't move between machines) opens on dialogs
             # the title's units don't name, e.g. RE5's "HDD access indicator" notice (live JAYBUILTFINALE 2026-10-22:
@@ -157,7 +159,7 @@ class Boot:
                 self.boot_pressed = self.clock()
                 self.stats["boot_presses"] = self.stats.get("boot_presses", 0) + 1
         else:
-            self.lost_since = None
+            self.lost_since, self.named = None, True
         self.nav.tick(scr)
         if self.stats.get("ram_progress") != self.progress or scr.get("where") in WAITS:
             self.progress, self.still_since = self.stats.get("ram_progress"), now
