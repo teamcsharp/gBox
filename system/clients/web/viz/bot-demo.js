@@ -74,7 +74,7 @@
     }
     m.innerHTML = `<div class="mut" style="font-size:11px;padding:0 2px 2px">${ESC(title ? title + ": " : "")}bot demo on…</div>` + itemsHTML(list);
     if (modifiers) m.innerHTML += modifiers.html;
-    const modifierControl = modifiers?.mount?.(m.querySelector(".re5-modifiers"));
+    const modifierControl = modifiers?.mount?.(m.querySelector(".re5-modifiers, .re4-spawn"));
     m.style.display = "flex";
     if (place) { try { place(m, x, y); } catch { m.style.left = x + "px"; m.style.top = y + "px"; } }
     else { m.style.left = x + "px"; m.style.top = y + "px"; }

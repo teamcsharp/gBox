@@ -312,6 +312,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/tactical-map.js"></script>
 <script src="/viz/bot-demo.js"></script>
 <script src="/viz/re5-modifiers.js"></script>
+<script src="/viz/re4-spawn.js"></script>
 <script src="/viz/ram-inspector.js"></script>
 <script src="/viz/game-assets.js"></script>
 <script src="/viz/cover-picker.js"></script>
@@ -1586,6 +1587,8 @@ async function botDemoMenu(ev, gid, title) {
   if (anchor && !anchor.isConnected) return;
   const modifiers = window.GBoxRE5Modifiers?.eligible(current) ? {
     html: GBoxRE5Modifiers.sectionHTML(), mount: host => GBoxRE5Modifiers.mount(host, { session: current, api })
+  } : window.GBoxRE4Spawn?.eligible(current) ? {
+    html: GBoxRE4Spawn.sectionHTML(), mount: host => GBoxRE4Spawn.mount(host, { session: current, api })
   } : null;
   GBoxBotDemo.open(document, { x, y, gid, title, pcs: botDemoPCs(), launch: botDemoLaunch,
     place: (el, px, py) => fitMenu(el, px, py), modifiers });
