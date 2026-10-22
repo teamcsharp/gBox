@@ -58,7 +58,10 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
 
 
 def profile_for(game: dict) -> dict:
-    from . import doax2_unlock
+    from . import doax2_unlock, twin_snakes_unlock
+    if game.get('game_id') == twin_snakes_unlock.GAME_ID and game.get('platform') == twin_snakes_unlock.PLATFORM:
+        return {'status': 'pending_research', 'profile': None, 'verified': False,
+                'scope': list(twin_snakes_unlock.CATEGORIES), **twin_snakes_unlock.profile_gate()}
     if game.get('game_id') == doax2_unlock.GAME_ID and game.get('platform') == doax2_unlock.PLATFORM:
         # Honest gate for DOAX2: research pending, no verified write targets exist.
         # pre_launch below short-circuits on verified=False, so no writer is reachable.
