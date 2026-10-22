@@ -137,6 +137,22 @@ def listing(path: str | Path, *, head: int = 64, max_files: int = 4000, exe_limi
         L = Listing(str(p), "gdrom", files)
     elif suf == ".chd":
         return _chd_listing(p, head, max_files, exe_limit, deep, deep_bytes)
+    elif suf == ".cso":
+        from .cso import Cso
+        c = Cso(p)
+        reader = iso9660.sector_reader(lambda lba: c.read(lba * 2048, 2048))
+        pvd = reader(16, 2048)
+        if pvd[1:6] != b"CD001":
+            raise ValueError(f"{p.name}: decompressed CISO has no ISO9660 PVD at LBA 16")
+        lba, size = iso9660.pvd_root(pvd)
+        table = iso9660.files(reader, lba, size, max_depth=16, max_dir_size=1 << 22)
+        files = [{"path": k, "size": v[1]} for k, v in table.items()]
+
+        def read(name, n):
+            off, s = table[name]
+            return c.read(off * 2048, min(s, exe_limit if n is None else n))
+        L = Listing(str(p), "iso9660", files,
+                    notes=[f"CISO v{c.version} (block {c.block_size}, {c.total_blocks} blocks)"])
     elif suf == ".gcz":
         from ..gcz import GCZ
         z = GCZ(str(p))
