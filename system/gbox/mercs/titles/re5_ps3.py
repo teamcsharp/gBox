@@ -1644,6 +1644,16 @@ class Bot:
             return None
         self.nearest_eta = cost(b) / RUN_SPEED
         self.stats["nearest_eta_s"] = round(self.nearest_eta, 1)
+        # The clock rule: once the stand has begun (every reachable bonus gathered), a bonus that shows up later is
+        # left alone while the clock is comfortable and broken for at BREAK_AT_S, or when the clock is no more than
+        # the nearest one's ETA + BREAK_MARGIN_S (waiting longer would not reach it in time). One underfoot is taken.
+        if self.stood and walk and clock is not None and clock > BREAK_AT_S \
+                and clock > self.nearest_eta + BREAK_MARGIN_S:
+            self.stats["phase"] = "stand"
+            self.stats["bonus_target"] = None
+            self.stats["bonus_held"] = f"clock {clock:.0f} s > {BREAK_AT_S:.0f}; eta {self.nearest_eta:.0f} s"
+            return None
+        self.stats["bonus_held"] = None
         # Gather first, always: every reachable bonus is taken before the stand (operator 2026-10-21: movement first,
         # "navigate around the level completing time bonuses"). break_for_time = a bonus grabbed after the stand began.
         self.stats["phase"] = "break_for_time" if self.stood else "gather_time"
