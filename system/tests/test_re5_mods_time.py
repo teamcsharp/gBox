@@ -39,3 +39,11 @@ def test_time_bonus_multiplier_scales_the_standing_hourglasses_once_and_reads_th
     assert r["scaled"] == 0 and struct.unpack(">h", m.read_memory(HG + T.HG_SECONDS, 2))[0] == 600
     m.u32(T.MELEE_BONUS_SITE, 0x38800032)                                       # li r4, 50: the boot patch at x10
     assert T.run(m, "time_bonus_multiplier", multiplier=10)["melee_bonus_x"] == 10.0
+
+
+def test_a_doubled_hourglass_is_not_doubled_again():
+    m = with_round(FakeRE5(), hourglass_seconds=30)
+    r = T.run(m, "time_bonus_multiplier", multiplier=2)
+    assert r["verified"] and r["scaled"] == 1 and r["hourglass_seconds"] == [60]
+    r = T.run(m, "time_bonus_multiplier", multiplier=2)                         # 60 now, but this op wrote it
+    assert r["verified"] and r["scaled"] == 0 and struct.unpack(">h", m.read_memory(HG + T.HG_SECONDS, 2))[0] == 60

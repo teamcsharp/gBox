@@ -18,12 +18,15 @@ into Hermes's config; anyone else needs the token). Each call:
    the system prompt and the task's first user message stay), then the longest contents are cut in the middle;
 5. is sent to Ollama's native /api/chat (the OpenAI-compatible endpoint cannot set num_ctx, so Ollama would silently
    cut a long Hermes prompt to its default context) and translated back to the OpenAI shape, streaming included;
+   a pool node with api_format 'anthropic' goes to Claude's Messages API instead (prompt caching on, thinking blocks
+   replayed on the next tool step) and is translated back the same way;
 6. is logged (tokens in/out, wait, duration, fixes) to <hermes dispatch state>/local-llm-calls.jsonl for the
    Providers view.
 """
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 import contextlib
 from datetime import timezone
 from email.utils import format_datetime, parsedate_to_datetime
@@ -390,13 +393,298 @@ class StreamTranslator:
                 'tool_calls': self.calls_sent}
 
 
-def stream_chunks(lines, model: str, cid: str, created: int, *, include_usage: bool = True) -> list[str]:
-    """Every SSE event for a complete list of Ollama lines (tests and simple callers)."""
-    t = StreamTranslator(model, cid, created, include_usage)
+def stream_chunks(lines, model: str, cid: str, created: int, *, include_usage: bool = True,
+                  translator=None) -> list[str]:
+    """Every SSE event for a complete list of Ollama (or, with AnthropicStream, Anthropic) lines."""
+    t = (translator or StreamTranslator)(model, cid, created, include_usage)
     out = []
     for line in lines:
         out += t.feed(line)
     return out + t.finish()
+
+
+# ------------------------------------------------------------------------------------------------ OpenAI <-> Anthropic
+# A pool node with api_format = 'anthropic' (Claude through the Messages API, docs/hermes-local-fallback.md). Hermes
+# still speaks OpenAI chat completions to the proxy; Ollama/vLLM extras (num_ctx, chat_template_kwargs) never go out.
+
+ANTHROPIC_VERSION = '2023-06-01'
+CACHE = {'type': 'ephemeral'}
+EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
+THINKING = ('thinking', 'redacted_thinking')
+STOP_REASONS = {'tool_use': 'tool_calls', 'max_tokens': 'length', 'model_context_window_exceeded': 'length',
+                'refusal': 'content_filter'}
+REPLAY_LIMIT = 4096
+
+
+def _tool_id(value) -> str:
+    """Anthropic tool ids allow [A-Za-z0-9_-] only; ids another model wrote ('functions.x:0') are mapped the same way
+    for the call and its result."""
+    return re.sub(r'[^A-Za-z0-9_-]', '_', str(value or ''))[:64]
+
+
+def _anthropic_tool(tool) -> dict | None:
+    fn = (tool or {}).get('function') if (tool or {}).get('type', 'function') == 'function' else None
+    if not isinstance(fn, dict) or not fn.get('name'):
+        return None
+    schema = fn.get('parameters') if isinstance(fn.get('parameters'), dict) else {}
+    out = {'name': fn['name'], 'input_schema': {'type': 'object', **schema} if schema else
+           {'type': 'object', 'properties': {}}}
+    if fn.get('description'):
+        out['description'] = fn['description']
+    return out
+
+
+def _effort(body: dict, s) -> str | None:
+    reasoning = body.get('reasoning')
+    value = str(body.get('reasoning_effort') or (reasoning.get('effort') if isinstance(reasoning, dict) else None)
+                or s.reasoning_effort or '').lower()
+    value = 'low' if value in ('minimal', 'none', 'off') else value
+    if value not in EFFORTS:
+        return None
+    # between_tools (thinking off) is accepted at effort high or below only
+    return 'high' if s.enable_thinking is False and value in ('xhigh', 'max') else value
+
+
+def to_anthropic(body: dict, messages: list[dict], s, *, model: str, max_out: int, replay=None, final=False,
+                 tail: int = 0) -> dict:
+    """The Messages API request for fixed OpenAI messages. `replay` maps a tool-call id to the assistant turn the
+    model wrote (its thinking blocks carry signatures OpenAI messages cannot hold); `tail` messages at the end are the
+    proxy's own reminder, kept after the cache breakpoint so the cached prefix matches the next call's."""
+    system = '\n\n'.join(m['content'] for m in messages if m['role'] == 'system' and m.get('content'))
+    turns: list[list] = []           # [role, blocks]; consecutive turns of one role are merged
+    pending: list[str] = []          # tool_use ids of the last assistant turn still waiting for a result
+    anchor = None                    # the last block of the last caller message: the conversation's cache breakpoint
+
+    def add(role, blocks):
+        if turns and turns[-1][0] == role:
+            turns[-1][1].extend(blocks)
+        else:
+            turns.append([role, list(blocks)])
+
+    def close():                     # every tool_use needs its result in the next user turn
+        if pending:
+            add('user', [{'type': 'tool_result', 'tool_use_id': i, 'is_error': True,
+                          'content': 'No result was recorded for this call.'} for i in pending])
+            pending.clear()
+
+    rest = [m for m in messages if m['role'] != 'system']
+    for n, m in enumerate(rest):
+        role, text = m['role'], m.get('content') or ''
+        if role == 'assistant':
+            close()
+            calls = [c for c in m.get('tool_calls') or [] if isinstance(c, dict)]
+            ids = [_tool_id(c.get('id')) or f'call_{n}_{j}' for j, c in enumerate(calls)]
+            cached = (replay or {}).get(ids[0]) if ids else None
+            if cached and [b.get('id') for b in cached if b.get('type') == 'tool_use'] == ids:
+                blocks = [dict(b) for b in cached]
+            else:
+                blocks = [{'type': 'text', 'text': text}] if text.strip() else []
+                for i, c in zip(ids, calls):
+                    fn = c.get('function') or {}
+                    blocks.append({'type': 'tool_use', 'id': i, 'name': fn.get('name') or 'unknown',
+                                   'input': _arguments(fn.get('arguments'))})
+            if not blocks:
+                continue
+            add('assistant', blocks)
+            pending = ids
+        elif role == 'tool':
+            tid = _tool_id(m.get('tool_call_id')) or (pending[0] if pending else '')
+            if tid in pending:
+                pending.remove(tid)
+                blocks = [{'type': 'tool_result', 'tool_use_id': tid, 'content': text or '(no output)'}]
+            else:                    # its call was compacted away: keep the result as plain text
+                blocks = [{'type': 'text', 'text': f'[tool result {tid or "?"}] {text or "(no output)"}'}]
+            add('user', blocks)
+        else:
+            close()
+            blocks = [{'type': 'text', 'text': text if text.strip() else CONTINUE}]
+            add('user', blocks)
+        if n == len(rest) - 1 - tail:
+            anchor = blocks[-1]
+    close()
+    if not turns or turns[0][0] != 'user':
+        turns.insert(0, ['user', [{'type': 'text', 'text': CONTINUE}]])
+    if turns[-1][0] != 'user':       # no assistant prefill on current Claude models
+        turns.append(['user', [{'type': 'text', 'text': CONTINUE}]])
+    for role, blocks in turns:       # tool results first in a user turn, any text after them
+        if role == 'user':
+            blocks.sort(key=lambda b: b['type'] != 'tool_result')
+    # Prompt caching: one breakpoint after tools + system (they render first), one on the conversation so far.
+    # Hermes resends the whole growing transcript every step; the next call reads this one's prefix from the cache.
+    if anchor is not None and anchor.get('type') not in THINKING:
+        anchor['cache_control'] = CACHE
+    payload = {'model': model, 'max_tokens': max_out, 'messages': [{'role': r, 'content': b} for r, b in turns]}
+    tools = [t for t in map(_anthropic_tool, body.get('tools') or []) if t]
+    if system:
+        payload['system'] = [{'type': 'text', 'text': system, 'cache_control': CACHE}]
+    elif tools:
+        tools[-1]['cache_control'] = CACHE
+    if tools:
+        payload['tools'] = tools
+        # Forced tool choice (any/tool) is a 400 on current models: "required" or a named function becomes auto.
+        if final or body.get('tool_choice') == 'none':
+            payload['tool_choice'] = {'type': 'none'}
+        elif body.get('parallel_tool_calls') is False:
+            payload['tool_choice'] = {'type': 'auto', 'disable_parallel_tool_use': True}
+    stop = body.get('stop')
+    stop = [x for x in (stop if isinstance(stop, list) else [stop]) if isinstance(x, str) and x.strip()]
+    if stop:
+        payload['stop_sequences'] = stop
+    # No temperature/top_p (non-default values are a 400) and no "disabled" thinking (a 400 on Sonnet 5.5): thinking
+    # stays adaptive unless the node turns it off, which is between_tools.
+    if s.enable_thinking is False:
+        payload['thinking'] = {'type': 'between_tools'}
+    if effort := _effort(body, s):
+        payload['output_config'] = {'effort': effort}
+    return payload
+
+
+def strip_thinking(payload: dict) -> dict:
+    """The request without replayed thinking blocks (Anthropic refused them: an edited history, another account)."""
+    messages = [m | {'content': [b for b in m['content'] if b.get('type') not in THINKING]}
+                for m in payload['messages']]
+    return payload | {'messages': messages}
+
+
+def anthropic_usage(u: dict) -> dict:
+    """OpenAI usage from Anthropic's; prompt_tokens counts cached and cache-written input too."""
+    read, write = int(u.get('cache_read_input_tokens') or 0), int(u.get('cache_creation_input_tokens') or 0)
+    p, c = int(u.get('input_tokens') or 0) + read + write, int(u.get('output_tokens') or 0)
+    return {'prompt_tokens': p, 'completion_tokens': c, 'total_tokens': p + c,
+            'prompt_tokens_details': {'cached_tokens': read},
+            'cache_read_input_tokens': read, 'cache_creation_input_tokens': write}
+
+
+def _anthropic_finish(stop_reason, has_calls: bool) -> str:
+    finish = STOP_REASONS.get(stop_reason, 'stop')
+    return 'tool_calls' if has_calls and finish == 'stop' else finish
+
+
+def from_anthropic(resp: dict, model: str, cid: str, created: int) -> dict:
+    text, reasoning, calls = [], [], []
+    for b in resp.get('content') or []:
+        kind = (b or {}).get('type')
+        if kind == 'text':
+            text.append(b.get('text') or '')
+        elif kind == 'thinking' and b.get('thinking'):
+            reasoning.append(b['thinking'])
+        elif kind == 'tool_use':
+            calls.append({'id': b.get('id'), 'type': 'function',
+                          'function': {'name': b.get('name'), 'arguments': json.dumps(b.get('input') or {})}})
+    message = {'role': 'assistant', 'content': ''.join(text) or (None if calls else '')}
+    if calls:
+        message['tool_calls'] = calls
+    if reasoning:
+        message['reasoning_content'] = '\n\n'.join(reasoning)
+    return {'id': cid, 'object': 'chat.completion', 'created': created, 'model': model,
+            'choices': [{'index': 0, 'message': message,
+                         'finish_reason': _anthropic_finish(resp.get('stop_reason'), bool(calls))}],
+            'usage': anthropic_usage(resp.get('usage') or {})}
+
+
+class AnthropicStream:
+    """Anthropic Messages SSE lines -> OpenAI SSE events, fed one line at a time (each `data:` line names its event).
+    Keeps the finished content blocks, so a tool-calling turn can be replayed with its thinking blocks."""
+
+    def __init__(self, model: str, cid: str, created: int, include_usage: bool = True):
+        self.model, self.cid, self.created, self.include_usage = model, cid, created, include_usage
+        self.started = self.done = False
+        self.blocks: dict = {}       # index -> block being streamed
+        self.calls: dict = {}        # block index -> OpenAI tool-call index
+        self.content: list = []      # finished blocks, in order
+        self.usage: dict = {}
+        self.stop = self.error = None
+
+    def _event(self, delta, finish=None):
+        return _chunk(self.cid, self.created, self.model, delta, finish)
+
+    def _start(self) -> list[str]:
+        if self.started:
+            return []
+        self.started = True
+        return [self._event({'role': 'assistant', 'content': ''})]
+
+    def feed(self, line) -> list[str]:
+        out = self._start()
+        line = str(line or '')
+        if self.done or not line.startswith('data:'):
+            return out
+        try:
+            ev = json.loads(line[5:].strip())
+        except ValueError:
+            return out
+        if not isinstance(ev, dict):
+            return out
+        kind = ev.get('type')
+        if kind == 'message_start':
+            self.usage.update({k: v for k, v in ((ev.get('message') or {}).get('usage') or {}).items() if v is not None})
+        elif kind == 'content_block_start':
+            b = {k: v for k, v in (ev.get('content_block') or {}).items() if v is not None}
+            self.blocks[ev.get('index')] = b
+            if b.get('type') == 'tool_use':
+                k = self.calls[ev.get('index')] = len(self.calls)
+                b['input'] = ''
+                out.append(self._event({'tool_calls': [{'index': k, 'id': b.get('id'), 'type': 'function',
+                                                        'function': {'name': b.get('name'), 'arguments': ''}}]}))
+            elif b.get('type') == 'text' and b.get('text'):
+                out.append(self._event({'content': b['text']}))
+            elif b.get('type') == 'thinking' and b.get('thinking'):
+                out.append(self._event({'reasoning_content': b['thinking']}))
+        elif kind == 'content_block_delta':
+            b, d = self.blocks.get(ev.get('index')), ev.get('delta') or {}
+            if b is None:
+                return out
+            dt = d.get('type')
+            if dt == 'text_delta' and d.get('text'):
+                b['text'] = b.get('text', '') + d['text']
+                out.append(self._event({'content': d['text']}))
+            elif dt == 'input_json_delta' and d.get('partial_json'):
+                b['input'] += d['partial_json']
+                out.append(self._event({'tool_calls': [{'index': self.calls[ev.get('index')],
+                                                        'function': {'arguments': d['partial_json']}}]}))
+            elif dt == 'thinking_delta' and d.get('thinking'):
+                b['thinking'] = b.get('thinking', '') + d['thinking']
+                out.append(self._event({'reasoning_content': d['thinking']}))
+            elif dt == 'signature_delta':
+                b['signature'] = b.get('signature', '') + (d.get('signature') or '')
+        elif kind == 'content_block_stop':
+            b = self.blocks.pop(ev.get('index'), None)
+            if b is not None and b.get('type') == 'tool_use':
+                if not b['input'].strip():   # a call without arguments still sends valid JSON
+                    out.append(self._event({'tool_calls': [{'index': self.calls[ev.get('index')],
+                                                            'function': {'arguments': '{}'}}]}))
+                b['input'] = _arguments(b['input'])
+            if b is not None:
+                self.content.append(b)
+        elif kind == 'message_delta':
+            self.stop = (ev.get('delta') or {}).get('stop_reason') or self.stop
+            self.usage.update({k: v for k, v in (ev.get('usage') or {}).items() if v is not None})
+        elif kind == 'message_stop':
+            self.done = True
+            out.append(self._event({}, _anthropic_finish(self.stop, bool(self.calls))))
+        elif kind == 'error':
+            self.error = str((ev.get('error') or {}).get('message') or 'Anthropic stream error')[:300]
+            self.done = True
+            out.append(self._event({}, 'stop'))
+        return out
+
+    def finish(self) -> list[str]:
+        out = self._start()
+        if not self.done:
+            self.done = True
+            self.error = self.error or 'the model stream ended before it finished'
+            out.append(self._event({}, 'stop'))
+        if self.include_usage and not self.error:
+            out.append('data: ' + json.dumps({'id': self.cid, 'object': 'chat.completion.chunk', 'created': self.created,
+                                              'model': self.model, 'choices': [],
+                                              'usage': anthropic_usage(self.usage)}) + '\n\n')
+        out.append('data: [DONE]\n\n')
+        return out
+
+    @property
+    def result(self) -> dict:
+        return {'usage': None if self.error else anthropic_usage(self.usage), 'error': self.error,
+                'tool_calls': len(self.calls), 'content': self.content}
 
 
 # ------------------------------------------------------------------------------------------------ the proxy
@@ -475,6 +763,18 @@ class LocalLLM:
         self.unloaded_at = 0.0
         self.totals = {'calls': 0, 'ok': 0, 'failed': 0, 'gated': 0, 'busy': 0, 'prompt_tokens': 0,
                        'completion_tokens': 0, 'fixed': 0, 'trimmed': 0}
+        self.replay = OrderedDict()   # anthropic: first tool-call id -> the turn's blocks, thinking signatures included
+
+    def remember(self, content) -> None:
+        """Keep a tool-calling Claude turn that has thinking blocks, to send it back verbatim on the next step."""
+        blocks = [b for b in content or [] if isinstance(b, dict) and (b.get('type') != 'text' or b.get('text'))]
+        first = next((b.get('id') for b in blocks if b.get('type') == 'tool_use'), None)
+        if not first or not any(b.get('type') in THINKING for b in blocks):
+            return
+        with self._mu:
+            self.replay[first] = blocks
+            while len(self.replay) > REPLAY_LIMIT:
+                self.replay.popitem(last=False)
 
     def _lock(self) -> ResizableSlots:
         """Inference capacity, bound to the serving event loop (uvicorn runs one)."""
@@ -488,7 +788,10 @@ class LocalLLM:
     def _client(self, s) -> httpx.AsyncClient:
         timeout = httpx.Timeout(s.request_timeout_s, connect=10.0)
         key = os.environ.get(s.upstream_key_env, '') if s.upstream_key_env else ''
-        headers = {'Authorization': 'Bearer ' + key} if key else {}
+        if s.api_format == 'anthropic':
+            headers = {'anthropic-version': ANTHROPIC_VERSION, **({'x-api-key': key} if key else {})}
+        else:
+            headers = {'Authorization': 'Bearer ' + key} if key else {}
         return httpx.AsyncClient(base_url=s.upstream.rstrip('/') + '/', timeout=timeout,
                                  transport=self.transport, headers=headers)
 
@@ -596,6 +899,10 @@ class LocalLLM:
                 payload['chat_template_kwargs'] = {'enable_thinking': s.enable_thinking}
             if final:
                 payload['tool_choice'] = 'none'
+        elif s.api_format == 'anthropic':
+            # A trimmed history no longer matches what the thinking blocks were signed against: send none then.
+            payload = to_anthropic(body, capped, s, model=model, max_out=max_out, final=final, tail=len(reminder),
+                                   replay=None if info['dropped'] or info['cut'] else self.replay)
         else:
             payload = to_ollama(body, capped, s, model=model, max_out=max_out, ctx=ctx)
             if final:
@@ -606,7 +913,19 @@ class LocalLLM:
                 'est_prompt_tokens': info['tokens'], 'stream': bool(body.get('stream')),
                 'tools': len(body.get('tools') or []), 'queue_tool_calls': used if queued else None,
                 'budget_final': final, 'queue_budget': usage}
+        if s.api_format == 'anthropic':
+            meta['replayed_thinking'] = sum(b.get('type') in THINKING for m in payload['messages'] for b in m['content'])
         return s, payload, meta
+
+    async def retry(self, body: dict, s, payload: dict, meta: dict, text: str):
+        """(s, payload, meta) for one more try after an error the proxy can fix, else None: the model counted more
+        tokens than the proxy estimated (re-cap from its count), or Anthropic refused replayed thinking blocks."""
+        if cpt := tighter_cpt(text, meta['est_prompt_tokens'], meta.get('cpt') or s.chars_per_token):
+            s, payload, meta = await self.prepare(body, cpt=cpt)
+            return s, payload, meta | {'recapped': cpt}
+        if s.api_format == 'anthropic' and meta.get('replayed_thinking') and re.search(r'thinking|signature', text, re.I):
+            return s, strip_thinking(payload), meta | {'replayed_thinking': 0, 'thinking_stripped': True}
+        return None
 
     async def acquire(self, s, gone=None):
         reason = await asyncio.to_thread(self.gate_reason)
@@ -656,20 +975,20 @@ class LocalLLM:
             raise
         try:
             async with self._client(s) as client:
-                r = await client.post('chat/completions' if s.api_format == 'openai' else '/api/chat',
-                                      json=payload | {'stream': False})
-                if r.status_code >= 400 and (cpt := tighter_cpt(_error_text(r), meta['est_prompt_tokens'], meta.get('cpt') or s.chars_per_token)):
-                    # the model counted more tokens than the proxy estimated: re-cap from its count and send once more
-                    s, payload, meta = await self.prepare(body, cpt=cpt)
-                    meta['recapped'] = cpt
-                    r = await client.post('chat/completions' if s.api_format == 'openai' else '/api/chat',
-                                          json=payload | {'stream': False})
+                r = await client.post(_path(s), json=payload | {'stream': False})
+                if r.status_code >= 400 and (again := await self.retry(body, s, payload, meta, _error_text(r))):
+                    s, payload, meta = again
+                    r = await client.post(_path(s), json=payload | {'stream': False})
             if r.status_code >= 400:
                 raise Busy(502 if r.status_code >= 500 else r.status_code, 'Local inference: ' + _error_text(r),
                            retry_after_headers(r.headers.get('Retry-After')).get('Retry-After'))
             data = r.json()
-            out = data if s.api_format == 'openai' else from_ollama(
-                data, meta['model'], 'chatcmpl-' + uuid.uuid4().hex[:24], int(t0))
+            cid = 'chatcmpl-' + uuid.uuid4().hex[:24]
+            if s.api_format == 'anthropic':
+                out = from_anthropic(data, meta['model'], cid, int(t0))
+                self.remember(data.get('content'))
+            else:
+                out = data if s.api_format == 'openai' else from_ollama(data, meta['model'], cid, int(t0))
             if not isinstance(out, dict) or not out.get('choices') or 'message' not in out['choices'][0]:
                 raise Busy(502, 'Local inference returned an invalid completion')
             self.log(meta | {'ts': t0, 'status': 'ok', 'queued_s': round(waited, 2),
@@ -697,10 +1016,7 @@ class LocalLLM:
         include_usage = True
         client = self._client(s)
         try:
-            if s.api_format == 'openai':
-                payload['stream_options'] = {'include_usage': True}
-            request = client.build_request('POST', 'chat/completions' if s.api_format == 'openai' else '/api/chat',
-                                            json=payload | {'stream': True})
+            request = client.build_request('POST', _path(s), json=_streaming(s, payload))
             response = await client.send(request, stream=True)
         except httpx.HTTPError as e:
             await client.aclose()
@@ -711,15 +1027,11 @@ class LocalLLM:
             await response.aread()
             text = _error_text(response)
             await response.aclose()
-            cpt = tighter_cpt(text, meta['est_prompt_tokens'], meta.get('cpt') or s.chars_per_token)
-            if cpt:                                          # re-cap from the model's own count and send once more
+            again = await self.retry(body, s, payload, meta, text)
+            if again:                                        # a fixable refusal: send once more
+                s, payload, meta = again
                 try:
-                    s, payload, meta = await self.prepare(body, cpt=cpt)
-                    meta['recapped'] = cpt
-                    if s.api_format == 'openai':
-                        payload['stream_options'] = {'include_usage': True}
-                    request = client.build_request('POST', 'chat/completions' if s.api_format == 'openai' else '/api/chat',
-                                                    json=payload | {'stream': True})
+                    request = client.build_request('POST', _path(s), json=_streaming(s, payload))
                     response = await client.send(request, stream=True)
                 except httpx.HTTPError as e:
                     await client.aclose()
@@ -764,7 +1076,8 @@ class LocalLLM:
                                      'tool_calls': len(calls), **usage, **({'error': error} if error else {})})
             return openai_events()
         cid, created = 'chatcmpl-' + uuid.uuid4().hex[:24], int(t0)
-        translator = StreamTranslator(meta['model'], cid, created, include_usage)
+        translator = (AnthropicStream if s.api_format == 'anthropic' else StreamTranslator)(
+            meta['model'], cid, created, include_usage)
 
         async def events():
             try:
@@ -780,12 +1093,24 @@ class LocalLLM:
                 await client.aclose()
                 self.release(lock)
                 result = translator.result
+                if result.get('content') and not result['error']:
+                    self.remember(result['content'])
                 self.log(meta | {'ts': t0, 'status': 'error' if result['error'] else 'ok',
                                  'queued_s': round(waited, 2), 'duration_s': round(self.clock() - t0, 2),
                                  'tool_calls': result['tool_calls'], **(result['usage'] or {}),
                                  **({'error': result['error']} if result['error'] else {})})
 
         return events()
+
+
+def _streaming(s, payload: dict) -> dict:
+    extra = {'stream_options': {'include_usage': True}} if s.api_format == 'openai' else {}
+    return payload | {'stream': True} | extra
+
+
+def _path(s) -> str:
+    """The upstream endpoint, relative to `upstream`."""
+    return {'openai': 'chat/completions', 'anthropic': 'messages'}.get(s.api_format, '/api/chat')
 
 
 def _ctx(s, model: str | None = None) -> int:

@@ -76,6 +76,7 @@ TAPS_NO_SHOT = 8                       # ... taps without a shot: it wants a hol
 HOLD_FIRE_IDS = frozenset({0x03, 0x09, 0x13, 0x15, 0x1D})  # verified table IDs; 0x25 was not the Gatling
 SETTLE_S = 0.08                        # legacy persisted tuning metadata; a first-hit overlap now fires immediately
 FRONT_YAW, FRONT_PITCH = math.radians(60), math.radians(45)  # candidate cone, not a visibility claim
+WALL_CONE = math.radians(10)           # a first hit this short, within this cone of him: a wall in front (coaching #3002)
 BLOCKED_S = 0.8                        # try another candidate after a measured first hit ends before this one
 FIRE_TIMER_FPS, FIRE_TIMER_ORIG = 0x0169E098, 60.0
 WEAPON_TABLE, WEAPON_STRIDE, WEAPON_INTERVAL = 0x01817530, 0x140, 0x90
@@ -149,6 +150,26 @@ def ray_error(origin, dot, target) -> tuple[float, float]:
     want_pitch = math.atan2(target[1] - oy, max(math.hypot(target[0] - ox, target[2] - oz), 1.0))
     have_pitch = math.atan2(dot[1] - oy, max(math.hypot(dot[0] - ox, dot[2] - oz), 1.0))
     return wrap(want_yaw - have_yaw), want_pitch - have_pitch
+
+
+AIM_FIRE_YAW, AIM_FIRE_PITCH = math.radians(7), math.radians(5)   # fire only with the dot this close to the aim point
+
+
+def line_of_sight_aim(ray, aim_at, where, foot) -> bool:
+    """Whether the shot may leave the gun: the dot sits on him, or the ray points at the aim point within a few
+    degrees and does not end on the floor short of him. Coaching note 3: R1 held while the dot was on the ground
+    (turning toward him, or aimed below him) fired the magazine into the floor and lost time."""
+    if where is not None:
+        return True
+    if ray is None:
+        return False
+    origin, dot = ray
+    yaw, pitch = ray_error(origin, dot, aim_at)
+    if abs(yaw) > AIM_FIRE_YAW or abs(pitch) > AIM_FIRE_PITCH:
+        return False
+    flat_dot, flat_tgt = math.hypot(dot[0] - origin[0], dot[2] - origin[2]), math.hypot(foot[0] - origin[0], foot[2] - origin[2])
+    short_on_floor = flat_dot < flat_tgt - BODY_R * 2 and dot[1] < foot[1] + KNEE_H
+    return not short_on_floor
 
 
 def valid_ray(origin, dot):
@@ -498,7 +519,19 @@ class Combat:
         centre = (foot[0], foot[1] + 110.0, foot[2])
         along = sum((centre[k] - origin[k]) * direction[k] for k in range(3))
         projected = tuple(origin[k] + along * direction[k] for k in range(3))
-        return along > length + BODY_R + 25.0 and dot_on(projected, foot) is not None
+        if along <= length + BODY_R + 25.0:
+            return False
+        if dot_on(projected, foot) is not None:
+            return True
+        # A wall straight ahead: the first hit is a solid surface well short of him and the aim is only a few degrees
+        # off him, so the shot would hit the wall (the ray may miss his capsule by a hand's width at range).
+        # Rays shorter than STEER_RAY_CM carry too little direction to claim this; a wide miss stays "unknown".
+        if length < STEER_RAY_CM:
+            return False
+        to_c = tuple(centre[k] - origin[k] for k in range(3))
+        norm = math.sqrt(sum(v * v for v in to_c))
+        cos = sum(to_c[k] * direction[k] for k in range(3)) / max(norm, 1.0)
+        return math.acos(max(-1.0, min(1.0, cos))) <= WALL_CONE
 
     def observe_awareness(self, snap, p, now):
         if getattr(self, "_awareness_tick", None) == (id(snap), now):
@@ -629,7 +662,9 @@ class Combat:
         permitted, policy = fire_policy(wid, snap, tgt, lz[1] if lz else None)
         self.stats["weapon_policy"] = policy
         loaded = rounds is not None and rounds > 0
-        tracking_fire = direct and permitted and loaded
+        tracking_fire = direct and permitted and loaded and (lz is None or not steering_ray(lz, aim_at) or line_of_sight_aim(lz, aim_at, where, foot))
+        # no ray yet, or a near-origin ray too short to judge: the trigger stays as before; a reliable ray off the aim
+        # point (the ground, beside or past him) holds fire while the stick turns the dot onto him
         rapid = self._rapid_fire(wid, now)              # observed package status, independent of fire intent
         if p.get("action") == 4:                      # prompts own escape from a grab
             self.stats["combat"] = "waiting: grab animation"
@@ -673,6 +708,7 @@ class Combat:
             keys |= self._pitch(pl, p, pitch_err, now)
         # Direct fire continues while the stick corrects aim. Splash/unknown policies remain separate.
         firing = tracking_fire or (where in ("head", "body", "leg") and loaded and permitted)
+        self.stats["los_held_fire"] = self.stats.get("los_held_fire", 0) + (0 if firing or not (direct and permitted and loaded) else 1)
         trig = self.triggers.get(wid)
         if trig is None:
             trig = self.triggers[wid] = Trigger(tune["mode"])

@@ -71,6 +71,7 @@ AIM_TOL, PITCH_TOL = math.radians(2.5), math.radians(2.5)   # fire inside these
 FINE = math.radians(6)                 # closer than this: pulse the stick (a tick on, a tick off)
 MAX_DY = 450.0                         # targets this far above / below are out of reach (rooftops): not chosen
 STUCK_S, STUCK_MOVE = 1.2, 80.0
+STAGE_YIELD_S = 2.5                      # a stage prompt shown this long beside close foes is taken anyway (a fence / ledge between)
 RUN_SPEED = 250.0                      # cm/s running (the route ETAs; measured live: walking 145)
 # The time bonuses: hourglasses (uOm0100, model "sunadokei_360" = hourglass in uOm0100.arc; 9 in Public Assembly),
 # units of sUnit's move line 12 ("OM"), told by their vtable.
@@ -105,6 +106,19 @@ CROSSINGS_FILE = "BLUS30491-crossings.json"
 NAV_LEARNING_FILE = "BLUS30491-navigation.json"
 STAND_R = 250.0                        # the stand: the round's start position, held from this close
 BREAK_AT_S, BREAK_MARGIN_S = 60.0, 15.0   # leave the stand for time at this clock, or at the nearest one's ETA + this
+# Sight and pursuit (operator 2026-10-21: "If the person stands still ... what is there to see?"; live the same day the
+# bot spent 57 of 130 s aiming into walls at Majini behind them). A Majini is fought from where the player stands only
+# with open floor between them (the navmesh: floor_segment, or a route that barely bends) or within PURSUE_NEAR;
+# the rest are walked to along the navmesh. One fought while the laser dot stops short of him (a wall, a fence) for
+# BLOCKED_VIEW_S, or without the dot ever reaching him for UNSIGHTED_S, is left out of sight for PURSUE_S and walked to.
+SIGHT_R = 2200.0                       # open-floor Majini within this are fought (= SHOOT_RANGE)
+SIGHT_CACHE_S = 0.3                    # a floor_segment answer is kept this long per Majini
+SIGHT_BEND, SIGHT_SLACK = 1.1, 50.0    # ...or a navmesh route at most this much longer than the straight line: open
+PURSUE_NEAR = 200.0                    # this close he is fought whatever the floor says (a doorway, a corner)
+BLOCKED_VIEW_S, UNSIGHTED_S, PURSUE_S = 0.5, 2.5, 2.0
+VIEW_SHORT = 150.0                     # the dot this much short of him, roughly toward him: something in between
+WALL_R = 120.0                         # the dot this close to the muzzle: facing a wall
+PURSUE_PICK_S = 1.0                    # the Majini to walk to is chosen again this often (route lengths)
 RANK_SCORES = (("SS", 90000), ("S", 60000), ("A", 40000), ("B", 20000), ("C", 10000), ("D", 0))   # Reunion solo
                                        # (docs/mercenaries_re5_meta.md 1.1); the rank is score alone, same every stage
 
@@ -380,6 +394,7 @@ def screen(m, merc=None) -> dict:
 
 STEPS = {"results": "start", "select_stage": "cross", "dead": "cross", "title": "start",
          "alert_signin": "circle", "alert_ok": "cross", "reunion_title": "cross", "reunion_solo": "cross"}
+BOOT_KEY = "cross"      # out of a round, a screen RAM can't name (the cold boot's HDD notice, logos): mercs_bot.Boot
 CURSORED = ("main_menu", "play_game", "extra_content", "select_player")
 CHARACTERS = ("Chris (Heavy Metal)", "Sheva (Fairy Tale)", "Josh", "Excella", "Chris (Warrior)", "Sheva (Business)",
               "Barry", "Rebecca")                   # CHARACTER SELECT's row, cursor 0..7 (uIdStartUp22 +0x180)
@@ -432,6 +447,40 @@ class Roster:
 ROSTER = Roster()
 
 
+class StagePick:
+    """A random stage each visit to STAGE SELECT (operator 2026-10-22: "have the bot go between the stages randomly
+    during the select and have him play on different levels"). RAM doesn't name the stage cursor yet, so the pick is
+    a random number of D-pad rights (the row of stages, 0..MAX_MOVES) before cross; mercs_bot's Navigator reports each
+    press it sends (pressed()), so a press held back for a settle never counts."""
+    MAX_MOVES = 7                              # Reunion's eight stages: any of them from wherever the cursor is
+
+    def __init__(self, rng=None):
+        import random
+        self.rng = rng or random.Random()
+        self.left = None                       # moves still to make on this visit; None: not on STAGE SELECT
+
+    def key(self, scr: dict) -> str:
+        if self.left is None:
+            self.left = self.rng.randint(0, self.MAX_MOVES)
+        return "dright" if self.left > 0 else "cross"
+
+    def pressed(self, scr: dict, key: str) -> None:
+        if scr.get("where") != "select_stage":
+            return
+        if key == "dright" and self.left:
+            self.left -= 1
+        elif key == "cross":
+            self.left = None                   # the stage is taken: the next visit draws again
+
+
+STAGE_PICK = StagePick()
+
+
+def pressed(scr: dict, key: str) -> None:
+    """mercs_bot's Navigator: a key it sent on this screen."""
+    STAGE_PICK.pressed(scr, key)
+
+
 def step(scr: dict) -> str | None:
     """The one press towards the next round. From the title: START, circle on the sign-in question, cross on "Load
     successful", then the cursor (read from RAM) moved to PLAY GAME, EXTRA CONTENT, THE MERCENARIES REUNION and taken,
@@ -449,6 +498,8 @@ def step(scr: dict) -> str | None:
         if where == "play_game" and cur == 0:
             return "dup"                                 # up from the top wraps to EXTRA CONTENT, the last entry
         return "ddown" if cur < tgt else "dup"
+    if where == "select_stage":
+        return STAGE_PICK.key(scr)
     return STEPS.get(where)
 
 
@@ -745,6 +796,7 @@ class Bot:
         self.switch_at = -math.inf
         self.switch_pending = None
         self.switch_blocked, self.switch_failures = {}, {}
+        self.stage_wait_since = None            # first tick a stage prompt was shown while close foes held it back
         self.stuck_since = None                 # set while the walk is pushing forward without ground (a wall, a door)
         self.close_escape_until = self.close_acquire_until = 0.0
         self.round_active = False
@@ -757,6 +809,12 @@ class Bot:
         self._round_ended_at = None
         self._round_baseline = {}
         self._round_combo = 0
+        self._sight: dict = {}                  # Majini ptr -> (when, open floor between him and the player)
+        self.unsighted: dict = {}               # Majini ptr -> left out of sight until (walked to instead)
+        self.engaged = None                     # [ptr, laser-up s off him, blocked since, last tick] while fought
+        self.pursuit = None                     # (when chosen, ptr) of the Majini being walked to
+        self.stats.setdefault("pursuits", 0)
+        self.stats.setdefault("unsighted", 0)
 
     # --- the engine's brain interface ---
     def prompt_ok(self, button, snap, now) -> bool:
@@ -812,6 +870,12 @@ class Bot:
             self.stats["immunity_reason"] = health.get("immunity_reason") or ""
             if health.get("refilled"):
                 self.stats["health_refills"] = self.stats.get("health_refills", 0) + 1
+            from ...re5_mods_tool import maintain_kill_time
+            bonus = maintain_kill_time(self.m.adapter, snap)    # +2 s on the clock per kill (the profile's playing_ops)
+            if bonus.get("added"):
+                self.stats["kill_time_added_s"] = round(self.stats.get("kill_time_added_s", 0.0) + bonus["added"], 1)
+            elif bonus.get("kill_time") and not bonus.get("verified"):
+                self.stats["kill_time_reason"] = bonus.get("reason") or "write not confirmed"
         if where != "playing" or not p:
             self.healing = None
             if self.combat is not None:
@@ -860,6 +924,9 @@ class Bot:
                 self.switch_at = -math.inf
                 self.healing = None
                 self.heal_at = -math.inf
+                self._sight.clear()
+                self.unsighted.clear()
+                self.engaged = self.pursuit = None
             self.round_active, self.round_end = True, None
             if self.combat is not None:
                 self.combat.start_round(now)
@@ -934,7 +1001,7 @@ class Bot:
 
     def plan(self) -> dict:
         """What the bot is doing, for the tactical map (gbox/mercs/tactical.py): no RAM reads, only state held."""
-        walking = self.route if self.stats.get("phase") in ("gather_time", "break_for_time", "stand") else None
+        walking = self.route if self.stats.get("phase") in ("gather_time", "break_for_time", "stand", "pursue") else None
         nb = None
         if self.route_len:
             ptr, d = min(((k, v) for k, v in self.route_len.items() if v is not None), key=lambda kv: kv[1],
@@ -973,6 +1040,8 @@ class Bot:
         close_foes = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0
                      and (e.get("hp_max") or 0) > 1 and math.dist(p["pos"], e["pos"]) <= FIGHT_R
                      and (self.combat is None or self.combat.blocked_until.get(e.get("ptr", e.get("slot")), 0) <= now)]
+        if self.combat is not None:                    # a Majini behind a wall of the mesh is no immediate threat
+            close_foes = [e for e in close_foes if self._open(p, e, snap.get("nav"), now)]
         if snap.get("recovery_active") and not snap.get("prompt"):
             self.aiming_since = None
             return {"hold": set()}                     # wait through hidden recovery frames; no unseen circle presses
@@ -1012,10 +1081,19 @@ class Bot:
         heal = self._heal(p, snap, now)                     # equip, confirm in hand, then Square to actually use it
         if heal:
             return heal
-        if snap.get("stage_prompt") and not close_foes:     # a ladder / jump-down / vault / door / "□ Time bonus" /
+        if snap.get("stage_prompt") and close_foes:
+            self.stage_wait_since = self.stage_wait_since or now
+        else:
+            self.stage_wait_since = None
+        stage_yield = bool(snap.get("stage_prompt") and close_foes and self.stage_wait_since is not None
+                           and now - self.stage_wait_since >= STAGE_YIELD_S)
+        if snap.get("stage_prompt") and (not close_foes or stage_yield):     # a ladder / jump-down / vault / door / "□ Time bonus" /
             self.aiming_since = None                        # pick up: take it at once, before anything else (operator
             self.stats["stage_presses"] = self.stats.get("stage_presses", 0) + 1   # 2026-10-21: he ignored a ledge
             self.climb_at = self.climb_pos = self.climb_tick = None
+            if stage_yield:
+                self.stage_wait_since = None
+                self.stats["stage_yielded_to_foes"] = self.stats.get("stage_yielded_to_foes", 0) + 1
             if self.stuck_since is not None:                # and a door). A prompt while stuck = it was blocking him.
                 self.stats["stuck_prompts_cleared"] = self.stats.get("stuck_prompts_cleared", 0) + 1
             return {"tap": "square"}
@@ -1057,8 +1135,13 @@ class Bot:
         px, py, pz = p["pos"]
         self.at_stand = self.spawn is not None and math.hypot(self.spawn[0] - px, self.spawn[2] - pz) < STAND_R \
             and abs(self.spawn[1] - py) < WP_CLIMB
-        candidate = self.combat.choose_target(snap, p, live, now) if self.combat is not None else None
-        tgt = self._bonus(p, live, snap.get("bonuses") or (), now, mesh, t)
+        # only Majini in sight are fought from here (open floor between, or right on him); the rest are walked to
+        sightable = [e for e in live if math.dist(p["pos"], e["pos"]) <= SIGHT_R and self._open(p, e, mesh, now)] \
+            if self.combat is not None else live
+        candidate = self.combat.choose_target(snap, p, sightable, now) if self.combat is not None else None
+        if candidate is None and self.combat is not None and sightable:
+            candidate = min(sightable, key=lambda e: math.dist(p["pos"], e["pos"]))   # in sight, off the camera: turn
+        tgt = self._bonus(p, sightable, snap.get("bonuses") or (), now, mesh, t)
         if tgt is not None:
             from . import re5_strategy
             distance = math.dist(p["pos"], tgt["pos"])
@@ -1078,8 +1161,12 @@ class Bot:
             if not at_bonus and math.dist(p["pos"], candidate["pos"]) <= SHOOT_RANGE \
                     and (self._threat(p, candidate) or self.combat.target_exposed):
                 tgt = None                                # exposed shots / path blockers may interrupt; distant guesses may not
-        threats = [e for e in live if self._threat(p, e)]
+        threats = [e for e in sightable if self._threat(p, e)]
         self.flags = {e["slot"]: ["blocking"] for e in threats}
+        if tgt is None and candidate is None and live and self.combat is not None:
+            chase = self._pursuit_target(p, live, mesh, now)     # nobody in sight: go to them, never wait at a wall
+            if chase is not None:
+                return self._pursue(p, chase, mesh, snap.get("stage_prompt"), now)
         if tgt is None and not threats and candidate is None and self.spawn is not None and not self.at_stand:
             self.stats["phase"] = "stand"                   # the bonuses gathered: back to the stand
             self.stood = True
@@ -1129,6 +1216,10 @@ class Bot:
         else:
             self.close_escape_until = self.close_acquire_until = 0.0
         if self.combat is not None and tgt.get("kind") not in ("time", "combo"):   # the combat layer owns the fight
+            if self._lost_sight(snap, p, tgt, now):        # the dot stops short of him / never reaches him: go there
+                chase = self._pursuit_target(p, live, mesh, now)
+                if chase is not None:
+                    return self._pursue(p, chase, mesh, snap.get("stage_prompt"), now)
             from . import re5_controls
             if self.switch_pending is None and now - self.switch_at > SWITCH_EVERY_S \
                     and (not close_foes or eq is None or not re5_controls.eligible(eq)) \
@@ -1195,6 +1286,126 @@ class Bot:
                              f"pitch {math.degrees(p.get('pitch') or 0):+.1f} want {math.degrees(tgt_pitch):+.1f} "
                              f"keys {','.join(sorted(keys))}")
         return {"hold": keys}
+
+    # --- sight and pursuit ---
+    def _open(self, p, e, mesh, now) -> bool:
+        """Whether a Majini may be fought from where the player stands: right on him (PURSUE_NEAR), or open floor
+        between them on the navmesh (no wall of the mesh in between; no mesh: assumed open), and not left out of sight
+        by _lost_sight a moment ago."""
+        key = e.get("ptr", e.get("slot"))
+        if math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2]) < PURSUE_NEAR:
+            return True
+        if self.unsighted.get(key, 0.0) > now:
+            return False
+        if mesh is None:
+            return True
+        hit = self._sight.get(key)
+        if hit is not None and now - hit[0] < SIGHT_CACHE_S:
+            return hit[1]
+        try:
+            ok = bool(mesh.floor_segment(p["pos"], e["pos"]))
+            if not ok:                                      # floor_segment is strict (unlinked faces, slopes: live, 4 of
+                flat = math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2])   # 5 nearly straight routes
+                length = mesh.route_length(p["pos"], e["pos"], avoid=self.avoid)        # were "closed"): a route
+                ok = length is not None and length <= SIGHT_BEND * flat + SIGHT_SLACK   # that barely bends is open
+        except Exception:                                   # noqa: BLE001 - an odd triangle never blinds the fight
+            ok = True
+        if len(self._sight) > 256:
+            self._sight.clear()
+        self._sight[key] = (now, ok)
+        return ok
+
+    @staticmethod
+    def _laser_view(snap, tgt) -> str | None:
+        """What the laser says about him: "on" (the dot on him), "wall" (the dot at the muzzle), "short" (the dot well
+        short of him, roughly toward him: something in between), "none" (no laser: the gun is not up), None (no
+        evidence either way)."""
+        lz = snap.get("laser")
+        if not lz or not lz.get("from") or not lz.get("at") or not any(lz["from"]):
+            return "none"
+        origin, dot = lz["from"], lz["at"]
+        if re5_combat.dot_on(dot, tgt["pos"]) is not None:
+            return "on"
+        length = math.dist(origin, dot)
+        if length < WALL_R:
+            return "wall"
+        centre = (tgt["pos"][0], tgt["pos"][1] + 110.0, tgt["pos"][2])
+        err = abs(wrap(heading(dot[0] - origin[0], dot[2] - origin[2])
+                       - heading(centre[0] - origin[0], centre[2] - origin[2])))
+        if err < math.radians(20) and length < math.dist(origin, centre) - VIEW_SHORT:
+            return "short"
+        return None
+
+    def _lost_sight(self, snap, p, tgt, now) -> bool:
+        """The Majini being fought is not in sight after all: the dot stopped short of him (or at a wall) for
+        BLOCKED_VIEW_S, or the laser was up UNSIGHTED_S without the dot reaching him (time without a laser does not
+        count: the gun coming up). He is then left out of sight for PURSUE_S (walked to)."""
+        key = tgt.get("ptr", tgt.get("slot"))
+        if key is None or math.hypot(tgt["pos"][0] - p["pos"][0], tgt["pos"][2] - p["pos"][2]) < PURSUE_NEAR:
+            self.engaged = None
+            return False
+        if self.engaged is None or self.engaged[0] != key:
+            self.engaged = [key, 0.0, None, now]           # him, laser-up seconds off him, blocked since, last tick
+        dt = max(0.0, min(0.5, now - self.engaged[3]))
+        self.engaged[3] = now
+        view = self._laser_view(snap, tgt)
+        if view == "on":
+            self.engaged[1], self.engaged[2] = 0.0, None
+            return False
+        if view != "none":
+            self.engaged[1] += dt
+        if view in ("wall", "short"):
+            self.engaged[2] = self.engaged[2] if self.engaged[2] is not None else now
+        else:
+            self.engaged[2] = None
+        blocked = self.engaged[2] is not None and now - self.engaged[2] >= BLOCKED_VIEW_S
+        if not blocked and self.engaged[1] < UNSIGHTED_S:
+            return False
+        self.unsighted[key] = now + PURSUE_S
+        self._sight.pop(key, None)
+        self.engaged = None
+        self.stats["unsighted"] += 1
+        self.stats["sight"] = f"dot {view} of him {BLOCKED_VIEW_S:g}s" if blocked else \
+            f"dot never on him in {UNSIGHTED_S:g}s"
+        return True
+
+    def _pursuit_target(self, p, live, mesh, now):
+        """The Majini to walk to: the shortest navmesh route among the six nearest (chosen again every
+        PURSUE_PICK_S); one whose route failed lately is skipped. None: nobody reachable."""
+        if self.pursuit is not None and now - self.pursuit[0] < PURSUE_PICK_S:
+            e = next((e for e in live if e.get("ptr", e.get("slot")) == self.pursuit[1]), None)
+            if e is not None and self.bonus_skip.get(("enemy", self.pursuit[1]), 0.0) <= now:
+                return e
+        best, best_d = None, math.inf
+        for e in sorted(live, key=lambda e: math.dist(p["pos"], e["pos"]))[:6]:
+            key = e.get("ptr", e.get("slot"))
+            if self.bonus_skip.get(("enemy", key), 0.0) > now:
+                continue
+            if mesh is None:
+                d = math.dist(p["pos"], e["pos"])
+            else:
+                try:
+                    d = mesh.route_length(p["pos"], e["pos"], avoid=self.avoid)
+                except Exception:                           # noqa: BLE001
+                    d = None
+            if d is not None and d < best_d:
+                best, best_d = e, d
+        self.pursuit = (now, best.get("ptr", best.get("slot"))) if best is not None else None
+        return best
+
+    def _pursue(self, p, e, mesh, stage_prompt, now) -> dict:
+        """Walk to a Majini out of sight along the navmesh (the gun down, running), the way time bonuses are walked
+        to: around walls, up ladders and down drops; he is fought once in sight."""
+        self.stats["phase"] = "pursue"
+        self.aiming_since = None
+        self.target = e.get("slot")
+        self.plan_target = {"kind": "enemy", "id": e.get("slot"), "pos": e["pos"]}
+        key = ("enemy", e.get("ptr", e.get("slot")))
+        if self.route_for != key:
+            self.stats["pursuits"] += 1
+        if mesh is None:
+            return {"hold": self._walk(p, heading(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2]), now)}
+        return self._follow(p, {"ptr": key, "pos": e["pos"]}, mesh, stage_prompt, now, learn=False)
 
     # --- helpers ---
     def _observe_weapon_switch(self, snap, now):
@@ -1405,14 +1616,17 @@ class Bot:
             keys = keys | {"lup"}                           # walk onto it (not running: it would overshoot)
         return {"hold": keys}
 
-    def _follow(self, p, tgt, mesh, stage_prompt, now) -> dict:
+    def _follow(self, p, tgt, mesh, stage_prompt, now, learn=True) -> dict:
         """One step along the navmesh to a time bonus: the route drawn again every REPLAN_S; the next waypoint walked
         to (turn, then run); at a ladder or a drop (the next waypoint straight above / below) the stage's square
         prompt is taken; a bonus followed ROUTE_STALE_S without being reached is left for BONUS_SKIP_S."""
-        self._following_route = True
+        self._following_route, self._route_learn = True, learn
         pos = p["pos"]
         if self.route_for != tgt["ptr"]:
-            self.nav_learning.begin_route(mesh, pos, tgt["pos"])
+            if learn:                                      # enemy pursuits are not route learning
+                self.nav_learning.begin_route(mesh, pos, tgt["pos"])
+            else:
+                self.nav_learning.finish_route("interrupted")
             self.route, self.route_for, self.route_since = None, tgt["ptr"], now
             self.route_at = -math.inf
             self.climb_at = self.climb_pos = self.climb_tick = None
@@ -1425,7 +1639,7 @@ class Bot:
         if self.route_stall is not None and math.dist(pos, self.route_stall) >= STUCK_MOVE:
             self.route_stall = None
         if now - self.route_since > ROUTE_STALE_S:
-            self.nav_learning.finish_route("timed_out")
+            self._nav_finish("timed_out")
             self.bonus_skip[tgt["ptr"]] = now + BONUS_SKIP_S
             self.stats["routes_given_up"] = self.stats.get("routes_given_up", 0) + 1
             self.route_for = None
@@ -1435,7 +1649,7 @@ class Bot:
                                                    pull=not self.route_midpoints), now
         if not self.route:
             if mesh is not None:                           # an explicit no-route result must never mean run through it
-                self.nav_learning.finish_route("unreachable")
+                self._nav_finish("unreachable")
                 self.bonus_skip[tgt["ptr"]] = now + BONUS_SKIP_S
                 self.stats["route"] = "unreachable on current mesh"
                 return {"hold": set()}
@@ -1468,7 +1682,7 @@ class Bot:
                     or self.climb_pos is None or math.dist(pos, self.climb_pos) > 20.0:
                 self.climb_at, self.climb_pos = (w, now), tuple(pos)
             elif now - self.climb_at[1] > CLIMB_WAIT_S:        # continuous aligned approach, without motion or prompt
-                self.nav_learning.finish_route("blocked")
+                self._nav_finish("blocked")
                 self.avoid.append(w)
                 self.stats["crossings_avoided"] = self.stats.get("crossings_avoided", 0) + 1
                 self.climb_at, self.route, self.route_len = None, None, None
@@ -1498,8 +1712,12 @@ class Bot:
             self.route_midpoints, self.route_at = True, -math.inf
         return {"hold": keys}
 
+    def _nav_finish(self, outcome):
+        if getattr(self, "_route_learn", True):          # a pursuit's route outcome is not the stage's route record
+            self.nav_learning.finish_route(outcome)
+
     def _block_route(self, tgt, now, reason):
-        self.nav_learning.finish_route("blocked")
+        self._nav_finish("blocked")
         self.bonus_skip[tgt["ptr"]] = now + BONUS_SKIP_S
         self.stats["routes_blocked"] = self.stats.get("routes_blocked", 0) + 1
         self.stats["route"] = reason

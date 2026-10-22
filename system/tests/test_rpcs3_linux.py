@@ -211,3 +211,17 @@ def test_ensure_checks_the_digest_and_installs_firmware(tmp_path, monkeypatch):
     assert not list(provision.rpcs3_linux_home(c).glob("*.AppImage"))      # the download is removed once extracted
     body = b"tampered"                                                      # a second run downloads nothing
     assert provision.ensure_rpcs3_linux(c)["status"] == "ok"
+
+
+def test_windows_guest_base_is_the_reservation_with_the_games_elf():
+    # JAYBUILTFINALE 2026-10-22: RE5's guest memory sat at 0x500000000, beside non-zero regions that are not guest memory
+    ad = object.__new__(adapters.RPCS3Adapter)
+    ad.base = None
+    mem = {0x900000000 + 0x10000: b"\x08\x00\x08\x00", 0x500000000 + 0x10000: b"\x7fELF"}
+    ad._rpm = lambda a, n: mem.get(a, b"\x00" * n)[:n].ljust(n, b"\x00") if a in mem else None
+    assert ad._base() == 0x500000000
+    ad.base, mem = None, {0x300000000 + 0x10000: b"\x01\x02\x03\x04"}   # no ELF anywhere: the usual non-zero one
+    assert ad._base() == 0x300000000
+    ad.base, mem = None, {}
+    with pytest.raises(RuntimeError, match="guest memory not found"):
+        ad._base()

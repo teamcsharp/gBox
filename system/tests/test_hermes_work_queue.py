@@ -450,6 +450,9 @@ def test_operator_gate_defers_emulator_work_and_caps_dispatch():
     assert [k for k, _ in kept] == ['favorite:1', 'inbox:p'] and cap == 1
     assert report == {'games': ['Dead or Alive 2'], 'deferred': ['favorite:a', 'inbox:r'],
                       'sandboxes': {'throttled': [12]}}
+    # pooled inference runs off the Spark: emulator work still waits, the node capacity is not capped
+    kept, cap, _ = q.operator_gate(options, [{'session_id': 'spark-1', 'title': 'Dead or Alive 2'}], pooled=True)
+    assert [k for k, _ in kept] == ['favorite:1', 'inbox:p'] and cap is None
 
 
 def test_tick_throttles_sandboxes_and_warns_agents_while_the_operator_plays(env, monkeypatch):
@@ -594,3 +597,25 @@ def test_tick_creates_and_re_edits_runs_with_their_worktree(env, monkeypatch):
     create = calls[0]
     assert create[0] == 'create' and create[create.index('--workdir') + 1] == f'/tasks/{R}/system'
     assert str(q.mode._PROMPT.parents[2]) not in create
+
+
+def test_prioritized_requests_share_their_game_up_to_the_cap():
+    # operator 2026-10-22: the RE5 coaching tickets ran one at a time behind a single RE5 run
+    ids = [str(i) * 16 for i in range(1, 6)]
+    data = {'version': 1, 'priority': ids[:4], 'items': {
+        'inbox:' + rid: {'lane': 'inbox', 'request_id': rid, 'game_id': G, 'attempts': 0} for rid in ids}}
+    reqs = [request(rid) for rid in ids]
+    data['items']['inbox:' + ids[0]]['dispatch_state'] = 'queued'           # one RE5 run going
+    keys = [k for k, _ in q.candidates(data, reqs, [], set(), set(), now=1000)]
+    assert keys == ['inbox:' + r for r in ids[1:4]]                        # the unlisted 5th keeps waiting
+    for rid in ids[1:3]:
+        data['items']['inbox:' + rid]['dispatch_state'] = 'queued'          # three running: the cap
+    assert q.candidates(data, reqs, [], set(), set(), now=1000) == []
+    data['items']['inbox:' + ids[1]]['dispatch_state'] = 'finished'
+    reqs[1]['status'] = 'done'                                              # its run ended the request
+    data['items']['inbox:' + ids[3]]['repair'] = True                      # emulator work never shares
+    assert q.candidates(data, reqs, [], set(), set(), now=1000) == []
+    native = [{'input': {'game_id': G}}]                                    # a gBox job on the game: nothing shares
+    data['items']['inbox:' + ids[3]]['repair'] = False
+    assert q.candidates(data, reqs, native, set(), set(), now=1000) == []
+    assert [k for k, _ in q.candidates(data, reqs, [], set(), set(), now=1000)] == ['inbox:' + ids[3]]

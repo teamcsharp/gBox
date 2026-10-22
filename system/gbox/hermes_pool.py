@@ -162,10 +162,18 @@ def health(name, s, *, refresh=False):
                     if free < 12 * 1024**3:
                         raise RuntimeError('Less than 12 GiB memory headroom on the prime Spark')
                 token = os.environ.get(s.upstream_key_env, '') if s.upstream_key_env else ''
-                with httpx.Client(timeout=3, headers={'Authorization': 'Bearer '+token} if token else {}) as client:
-                    url = s.upstream.rstrip('/') + ('/models' if s.api_format == 'openai' else '/api/tags')
+                headers = {'Authorization': 'Bearer '+token} if token else {}
+                if s.api_format == 'anthropic':
+                    # Claude's Models API lists the served ids; there is no /metrics to read.
+                    if not token:
+                        raise RuntimeError(f'{s.upstream_key_env or "upstream_key_env"} is not set for gBox')
+                    from .llm_proxy import ANTHROPIC_VERSION
+                    headers = {'x-api-key': token, 'anthropic-version': ANTHROPIC_VERSION}
+                with httpx.Client(timeout=3, headers=headers) as client:
+                    url = s.upstream.rstrip('/') + {'openai': '/models', 'anthropic': '/models?limit=1000'}.get(
+                        s.api_format, '/api/tags')
                     response = client.get(url);response.raise_for_status();data = response.json()
-                    models = [m.get('id') for m in data.get('data', [])] if s.api_format == 'openai' else [
+                    models = [m.get('id') for m in data.get('data', [])] if s.api_format != 'ollama' else [
                         m.get('name') for m in data.get('models', [])]
                     value.update(online=True, capable=s.model in models,
                                  reason='Ready' if s.model in models else 'Configured model is not served')
@@ -198,7 +206,8 @@ def snapshot():
         proxy = _PROXIES.get(name)
         row = {'name': name, 'provider': s.provider, 'model': s.model, 'upstream': s.upstream,
                'api_format': s.api_format, 'enabled': s.enabled, 'capacity': s.max_parallel_jobs,
-               'primary': s.shared_with_games, 'allow_large_tasks': s.allow_large_tasks, **checks[name]}
+               'primary': s.shared_with_games, 'allow_large_tasks': s.allow_large_tasks,
+               'priority_only': s.priority_only, **checks[name]}
         if not s.shared_with_games:
             row['concurrency_choices'] = CONCURRENCY_CHOICES
         row.update(llm_proxy.summarize([r for r in records if r.get('host_name') == name]))

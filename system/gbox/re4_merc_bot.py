@@ -1,7 +1,7 @@
 """Resident Evil 4 (GameCube G4BE08) Mercenaries autoplay playbook: an "any means necessary" run, played like a game.
 
 setup() applies the hack package through re_mods (Mercenaries unlocked, Leon's loadout = the Hand Cannon at its own
-fire rate with x99.9 damage (no explosive rounds: they kept him from firing close), infinite ammo, unlimited health, time pickups x3, combo window x3 and
+fire rate with x99.9 damage (no explosive rounds: they kept him from firing close), infinite ammo (Leon mortal), time pickups x3, combo window x3 and
 frozen, every Ganado cloned twice more, the aim's stick speed x3 (a game constant: the aim routine's scale); not full
 auto: that restarted the magnum's recoil every 3 frames and bent Leon's arm back over his head). play() then drives
 Leon from RAM at ~20 Hz with the pad only, the way a player would
@@ -111,6 +111,7 @@ PITCH_MAX, PITCH_AFTER = 0.5, 0.25              # aim no further up / down (radi
 PITCH_TOL, PITCH_FINE, PITCH_LIMIT_S = 0.05, 0.15, 0.5   # fire within PITCH_TOL of the head; closer than PITCH_FINE the
                                                          # stick is pulsed; a push that moves nothing this long: the limit
 SHOOT_RANGE = 2400.0                             # fire inside this
+BONUS_FIGHT_R = 2400.0                           # bonuses left: only a Ganado in view this close is fought first
 THREAT_R = 1600.0                                # a Ganado this close is about to strike: him first, before bonuses
 PRESS_HOLD, PRESS_GAP = 0.09, 0.22               # the trigger: down this long, then up; a press at most this often
 QUICK_TURN_ERR, QUICK_TURN_S = 2.3, 0.9          # a target this far round (radians): the quick turn (back + B), at
@@ -140,6 +141,7 @@ AIM_R1, AIM_READY_R2 = 6, (1, 2)                 # Leon's routine 00 06 01 .. = 
                                                  # is up (00 06 00 / 00 06 01 04 while it rises; live 2026-10-20)
 STEEP_DOWN = -0.5                                # a shot this far down (radians) hits the ledge in front: move instead
 HIGH_GROUND = 1500.0                             # Leon this far above the Ganados (the start roof): get down first
+ITEM_R, TAKE_TRIES = 250.0, 2                      # an hourglass without an action zone is taken this close to it; tries per round
 TAKE_R, VAULT_R = 450.0, 900.0                   # take an item hourglass this close to its stand point; vault from here
 COMBO_CROWD, COMBO_NEAR = 5, 3500.0              # this many Ganados this close: take a combo bonus first (TAS route)
 EM_HP = 0x320                                    # Ganado (EmMgr slot) +0x320 s16 health, +0x322 s16 max (found
@@ -165,7 +167,7 @@ MENU_KEYS = ("up", "a")                          # each menu step: up (GAME STAR
 PACKAGE = [("mercenaries_unlock", {"on": True}),
            ("merc_loadout", {"character": "leon", "items": ["handcannon", "handcannon ammo:200"], "on": True}),
            ("weapon_mod", {"item": "handcannon", "reset": True, "damage": "99.9"}),   # its own fire rate (see above)
-           ("infinite_ammo", {"on": True}), ("unlimited_health", {"on": True}),
+           ("infinite_ammo", {"on": True}), ("unlimited_health", {"on": False}),   # Leon can die now (operator 2026-10-22)
            ("merc_time_bonus", {"multiplier": 3}), ("combo_time", {"multiplier": 3}),
            ("combo_freeze", {"on": True}), ("spawn_multiplier", {"count": 3, "on": True}),
            ("aim_turn_speed", {"multiplier": AIM_SPEED_X})]   # the game's aim sensitivity (a constant, not Leon)
@@ -535,7 +537,10 @@ class Bot:
             if p["pos"][1] - tgt["pos"][1] > HIGH_GROUND or down < STEEP_DOWN:   # up on a roof: get down to them
                 self.r_since = None
                 return self._go(p, (tx, tz), now)
-            if dist > SHOOT_RANGE or not self._sight(p, (tx, tgt["pos"][1] + HEAD_H, tz)):   # can't hit him here
+            if not self._sight(p, (tx, tgt["pos"][1] + HEAD_H, tz)):     # a wall between: navigate, never fire
+                self.r_since = None
+                return self._go(p, (tx, tz), now)
+            if dist > SHOOT_RANGE:                                     # in view but too far: close in
                 self.r_since = None
                 return self._run_to(p, (tx, tgt["pos"][1], tz), now)
         aiming = self.r_since is not None                               # the gun is up (or coming up) already
@@ -855,10 +860,23 @@ class Bot:
         if not self.goal or self.goal.get("item") is not h:
             self.goal = {"item": h, "pos": (sx, sz), "since": now, "path": self._path((px, py, pz), (sx, sy, sz))}
         if math.hypot(sx - px, sz - pz) < TAKE_R:
-            if now - self.goal.setdefault("take_since", now) > COLLECT_TRY_S:  # not taking it: leave it this round
+            if now - self.goal.setdefault("take_since", now) > COLLECT_TRY_S:  # not taking it: retry once at the back, then leave it
                 pool.remove(h)
+                h["tries"] = h.get("tries", 0) + 1
+                if h["tries"] < TAKE_TRIES:
+                    pool.append(h)
                 self.goal = None
                 return {"hold": set()}
+            ix, iz = h["pos"][0], h["pos"][2]
+            d = math.hypot(ix - px, iz - pz)
+            if d > 1.0:                                                   # A takes what he faces and stands against:
+                err = wrap(heading(ix - px, iz - pz) - p["rot"])          # turn to the hourglass, close in on it, then A
+                if abs(err) > TURN_TOL:
+                    self.r_since = None
+                    return {"hold": self._turn(err, aiming=False)}
+                if d > ITEM_R and not h.get("zone"):
+                    self.r_since = None
+                    return {"hold": {"up"}}
             self.r_since = None
             return {"tap": "a"}                                           # TAKE
         return self._follow(p, now)
@@ -1006,8 +1024,10 @@ class Bot:
             c = min(self.combos, key=lambda h: math.hypot(h["stand"][0] - px, h["stand"][2] - pz))
             if math.hypot(c["stand"][0] - px, c["stand"][2] - pz) < 2 * COMBO_NEAR:
                 return self._take(p, c, now, self.combos)
-        if near and dist < ENGAGE:
-            return self._fight(p, near, now, s)
+        pending = bool(self.items or self.bonus)                          # time bonuses still on the field
+        seen = bool(near) and self._sight(p, (near["pos"][0], near["pos"][1] + HEAD_H, near["pos"][2]))
+        if near and dist < ENGAGE and (seen if not pending else seen and dist < BONUS_FIGHT_R):
+            return self._fight(p, near, now, s)                           # in view (and, with bonuses left, close)
         if self.st is not None:
             if self.items and not self.ordered:                            # the round's route: best order from here
                 try:
@@ -1041,7 +1061,7 @@ class Bot:
                 way.pop(0)
             self.r_since = None
             return self._go(p, way[0], now)
-        if near:                                                          # the stand: go and meet them
+        if near:                                                          # nothing in view: navigate to them, no shots
             self.r_since = None
             return self._go(p, (near["pos"][0], near["pos"][2]), now)
         return {"hold": set()}

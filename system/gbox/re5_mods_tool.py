@@ -372,6 +372,60 @@ def _maintain_health(g: RE5, snap=None) -> dict:
             **(_hit_immunity(g, pl, True) if verified else {})}
 
 
+# Time per kill (operator 2026-10-22: "I want every person that they dispatch to add two seconds to the timer just
+# automatically"): sBioMain -> cGameSys, the round clock (f32 seconds left) and the kill count (s32), as
+# gbox/mercs/titles/re5_ps3.py's snapshot reads them.
+S_MAIN, MAIN_GAMESYS, GS_TIMER, GS_KILLS = 0x0191CEE4, 0x182D4, 0x3E0, 0x3F4
+KILL_TIME_S = 2.0
+_KILL_LOCK = threading.RLock()
+
+
+def kill_time(g: RE5, on: bool, seconds=None) -> dict:
+    """Switch the per-kill time bonus; the Mercenaries observer applies it each snapshot (maintain_kill_time)."""
+    with _KILL_LOCK:
+        state = g.orig.setdefault("kill_time", {})
+        state.update(on=bool(on), seconds=float(seconds if seconds is not None else state.get("seconds", KILL_TIME_S)),
+                     gs=None, kills=None)
+        return {"kill_time": state["on"], "seconds": state["seconds"], "verified": True}
+
+
+def maintain_kill_time(ad, snap=None) -> dict:
+    """+seconds on the round clock for each kill since the last snapshot. A new round (another cGameSys, or the count
+    going down) starts counting afresh; a clock at 0 (the round is over) is never written."""
+    with _KILL_LOCK:
+        state = ORIG.get(id(ad), {}).get("kill_time", {})
+        if not state.get("on"):
+            return {"kill_time": False, "added": 0.0, "verified": True}
+        try:
+            rd = lambda a, n: bytes(ad.read_memory(a, n))
+            ptr = lambda v: 0x30000000 <= v < 0x40000000
+            main = struct.unpack(">I", rd(S_MAIN, 4))[0]
+            gs = struct.unpack(">I", rd(main + MAIN_GAMESYS, 4))[0] if ptr(main) else 0
+            if not ptr(gs):
+                return {"kill_time": True, "added": 0.0, "verified": True, "reason": "no round"}
+            kills = struct.unpack(">i", rd(gs + GS_KILLS, 4))[0]
+            last = state.get("kills")
+            if state.get("gs") != gs or last is None or kills < last:
+                state.update(gs=gs, kills=kills)
+                return {"kill_time": True, "added": 0.0, "verified": True, "kills": kills}
+            if kills == last:
+                return {"kill_time": True, "added": 0.0, "verified": True, "kills": kills}
+            state["kills"] = kills
+            clock = struct.unpack(">f", rd(gs + GS_TIMER, 4))[0]
+            if clock <= 0:
+                return {"kill_time": True, "added": 0.0, "verified": True, "kills": kills, "reason": "round over"}
+            added = (kills - last) * state["seconds"]
+            wanted = struct.pack(">f", clock + added)
+            ad.write_memory(gs + GS_TIMER, wanted)
+            after = struct.unpack(">f", rd(gs + GS_TIMER, 4))[0]
+            verified = after > clock                    # the game counts down between the write and this read
+            return {"kill_time": True, "added": added if verified else 0.0, "verified": verified, "kills": kills,
+                    "clock": round(after, 2)}
+        except Exception as error:         # A lost adapter must not stop the bot's next snapshot.
+            return {"kill_time": True, "added": 0.0, "verified": False,
+                    "reason": f"kill time unavailable: {type(error).__name__}"}
+
+
 def maintain_health(ad, snap=None) -> dict:
     """The Mercenaries observer calls this each snapshot; only an explicitly enabled session is written.
 
@@ -714,18 +768,24 @@ def time_bonus_multiplier(g: RE5, mult) -> dict:
     k = _mult(mult, 1.0)
     if not 1 <= k <= 20:
         raise ValueError("time_bonus_multiplier: 1 .. 20")
-    done, seen = [], 0
+    written = g.orig.setdefault("hourglass_scaled", {})     # unit -> the seconds this op wrote there
+    done, seen, wanted = [], 0, 0
     for u in hourglasses(g):
         v = struct.unpack(">h", g.rd(u + HG_SECONDS, 2))[0]
         seen += 1
+        if written.get(u) == v:                             # scaled by an earlier call (30 x2 = 60 is not raw 60)
+            continue
         if v in HOURGLASS_VALUES:
+            wanted += 1
             want = min(32000, int(v * k))
-            if g.wr(u + HG_SECONDS, struct.pack(">h", want)):
+            if g.wr(u + HG_SECONDS, struct.pack(">h", want)) \
+                    and struct.unpack(">h", g.rd(u + HG_SECONDS, 2))[0] == want:
+                written[u] = want
                 done.append((v, want))
     melee = g.u32(MELEE_BONUS_SITE)
     melee_x = (melee & 0xFFFF) / 5.0 if melee >> 16 == MELEE_BONUS_ORIG >> 16 else None
     return {"time_bonus_x": k, "hourglasses": seen, "scaled": len(done), "hourglass_seconds": sorted({w for _, w in done}),
-            "melee_bonus_x": melee_x, "verified": seen == 0 or len(done) + sum(1 for _ in ()) <= seen,
+            "melee_bonus_x": melee_x, "verified": len(done) == wanted,   # every raw 30 / 60 read back scaled
             "note": "hourglasses are scaled where they stand (a round's own; rerun each round); the melee +5 s "
                     "comes from the boot patch: melee_bonus_x is what this session's executable says"}
 
@@ -775,7 +835,9 @@ def _run(ad, op="status", multiplier=None, on=True, g=None, **extra):
           "off": "revert_all", "address_table": "addresses", "weapons": "loadout", "merc_loadout": "loadout",
           "random_weapons": "loadout", "randomize": "random_cheats", "randomizer": "random_cheats",
           "random": "random_cheats", "unlimited_life": "unlimited_health", "infinite_health": "unlimited_health",
-          "infinite_life": "unlimited_health", "add_minute": "add_time", "merc_time": "add_time", "more_time": "add_time", "time_bonus": "time_bonus_multiplier", "merc_time_bonus": "time_bonus_multiplier", "enemy_time_multiplier": "time_bonus_multiplier"}.get(op, op)
+          "infinite_life": "unlimited_health", "time_per_kill": "kill_time", "kill_bonus": "kill_time",
+          "add_minute": "add_time", "merc_time": "add_time", "more_time": "add_time", "time_bonus": "time_bonus_multiplier",
+          "merc_time_bonus": "time_bonus_multiplier"}.get(op, op)
     operator = bool(extra.get("operator"))
     if not operator and op in OPERATOR_SETTINGS:
         override = g.orig.get("operator_overrides", {}).get(op)
@@ -809,6 +871,8 @@ def _run(ad, op="status", multiplier=None, on=True, g=None, **extra):
         res.update(re5_controls.request(g.orig))
     elif op == "random_cheats":
         res.update(random_cheats(g, extra.get("seed")))
+    elif op == "kill_time":
+        res.update(kill_time(g, on, extra.get("seconds")))
     elif op == "add_time":
         res.update(add_time(g, extra.get("seconds") or multiplier or 60))
     elif op == "time_bonus_multiplier":
@@ -817,7 +881,7 @@ def _run(ad, op="status", multiplier=None, on=True, g=None, **extra):
         res.update(revert_all(g))
     else:
         raise ValueError("op: status | turn_speed | fire_rate | infinite_ammo | unlimited_health | bullet_damage | loadout | replace_rockets | random_cheats | "
-                         "revert_all | addresses")
+                         "kill_time | add_time | time_bonus_multiplier | revert_all | addresses")
     if operator and op in OPERATOR_SETTINGS and res.get("verified"):
         g.orig.setdefault("operator_overrides", {})[op] = {"multiplier": multiplier, "on": bool(on)}
     res["status"] = g.status()

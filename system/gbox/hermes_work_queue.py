@@ -294,8 +294,13 @@ def candidates(data, requests, native, owned, on_main, *, now):
     busy_requests = set(owned) | {j.get('parent_request_id') for j in native}
     busy_games = {(j.get('input') or {}).get('game_id') or
                   ((j.get('input') or {}).get('game') or {}).get('game_id') for j in native}
-    busy_games.update(i.get('game_id') for i in data['items'].values()
-                      if i.get('dispatch_state') in ('queued', 'uncertain') or i.get('request_id') in owned)
+    running = [i.get('game_id') for i in data['items'].values()
+               if i.get('dispatch_state') in ('queued', 'uncertain') or i.get('request_id') in owned]
+    # an operator-prioritized request that starts no emulator shares its game with up to PRIORITY_PER_GAME runs in all
+    # (operator 2026-10-22: "pumping hard" on the RE5 bot's coaching tickets); other work keeps one run per game
+    native_games = set(busy_games)
+    priority = {str(x) for x in (data.get('priority') or [])}
+    busy_games.update(running)
     heavy = sum(j.get('tool') in ('analyze_binary', 'ghidra_script', 'characters', 'doa2_assets') for j in native)
     result = []
     unlock_admission = data.get('unlock_admission') or {}
@@ -306,8 +311,11 @@ def candidates(data, requests, native, owned, on_main, *, now):
                         for i in data['items'].values() if i.get('unlock_work'))
     for key, item in data['items'].items():
         rid = item.get('request_id')
+        shared = (item.get('lane') == 'inbox' and rid in priority and not launches_emulator(item)
+                  and item.get('game_id') not in native_games
+                  and running.count(item.get('game_id')) < PRIORITY_PER_GAME)
         if (rid and rid in busy_requests or item.get('retry_at', 0) > now
-                or item.get('game_id') and item['game_id'] in busy_games
+                or item.get('game_id') and item['game_id'] in busy_games and not shared
                 or item.get('request_uncertain') or item.get('dispatch_state') in ('queued', 'uncertain')):
             continue
         req = by_id.get(rid, {})
@@ -404,6 +412,7 @@ def choose(options, data):
 
 
 EMULATOR_STAGES = ('runtime',)   # favorite stages whose agents start emulators (replacement testing in a game)
+PRIORITY_PER_GAME = 3            # runs sharing one game when the operator prioritized the requests (candidates)
 
 
 def _operator_playing():
@@ -437,15 +446,17 @@ def throttle_sandboxes(playing, throttle=None):
         return {'error': f'{type(e).__name__}: {e}'[:200]}
 
 
-def operator_gate(options, playing, throttled=None):
+def operator_gate(options, playing, throttled=None, *, pooled=False):
     """While the operator plays on the Spark (docs/stream-stability.md): defer emulator-launching items and allow
-    one dispatch per tick. Returns (options, capacity cap or None, report)."""
+    one dispatch per tick. A pooled route infers on other machines (spark2, cloud), so its runs keep their node
+    capacity (operator 2026-10-22: "spark2 is the one i want maxed ... the spark put on tasks"); their sandboxes are
+    still throttled. Returns (options, capacity cap or None, report)."""
     if not playing:
         return options, None, None
     kept = [v for v in options if not launches_emulator(v[1])]
     report = {'games': sorted({s.get('title') or s.get('game_id') or s.get('session_id') for s in playing}),
               'deferred': [v[0] for v in options if v not in kept], 'sandboxes': throttled}
-    return kept, 1, report
+    return kept, None if pooled else 1, report
 
 
 def _prompt(item, playing=None):
@@ -696,9 +707,9 @@ def tick(*, now=None):
         options = candidates(data, requests, native, owned, _on_main(), now=now)
         _save(data)  # Preserve review holds/guidance even when there are no free slots.
         # Both gates apply and the stricter wins: the operator's game on the Spark defers emulator-launching items
-        # and caps dispatch at 1 (docs/stream-stability.md); the local route allows only small tasks, one at a time
-        # (and returned above while the operator plays, through the proxy's gate).
-        options, cap, gate = operator_gate(options, playing, throttled)
+        # and caps unpooled dispatch at 1 (docs/stream-stability.md); the local route allows only small tasks, one
+        # at a time (and returned above while the operator plays, through the proxy's gate).
+        options, cap, gate = operator_gate(options, playing, throttled, pooled=pooled)
         if cap is not None:
             limit = min(limit, cap)
             global_limit = min(global_limit, cap)
@@ -727,6 +738,11 @@ def tick(*, now=None):
             if node and node.get('primary'):
                 narrow = [v for v in options if hermes_local.dispatch_size(v[1], by_id.get(v[1].get('request_id')))['size'] == 'small']
                 choices = narrow or (choices if node.get('allow_large_tasks') else [])
+            if node and node.get('priority_only'):
+                # the paid node works the operator's list only (operator 2026-10-22: "make sure that my claude credit is
+                # going towards solving these issues I am mentioning"); nothing listed: its slot stays free this tick
+                listed = len(data.get('priority') or [])
+                choices = [v for v in choices if priority_rank(v[1], data) < listed]
             chosen = choose(choices, data)
             if not chosen:
                 continue

@@ -1262,10 +1262,15 @@ def create_app(config: Config) -> FastAPI:
             stopped_first = True
         say(20, f"Starting a fresh {what} on {tw['name']}" + ("; your game keeps running until it is up" if beside else ""))
         from .screensaver import bot_demo as _bot_demo
-        jump = {"jump": True} if _bot_demo(store, sid) else {}   # a bot demo boots into its jump state, as it launched
+        # relaunched as it launched: a bot demo or autoplay launch boots into its jump state, and a bot's keyboard pad
+        # stays (Windows RPCS3: without it the copy reads the operator's controller and autoplay can't press; RE5 on
+        # JAYBUILTFINALE 2026-10-22)
+        launched = (store.get("job", sid.split("-", 1)[-1]) or {}).get("input") or {}
+        jump = {"jump": True} if _bot_demo(store, sid) or launched.get("jump") else {}
+        pad = {"pad": launched["pad"]} if launched.get("pad") else {}
         try:
             new = _run_job("launch_game", {"game": game, "mod": launch_mod, **({"keep_session": sid} if beside else {}),
-                                           **jump},
+                                           **jump, **pad},
                            actor, worker=tw["id"], wait=900, should_stop=should_stop,
                            progress=lambda pct, msg: say(20 + pct * .6, msg))
         except HTTPException as e:
@@ -5178,6 +5183,16 @@ def create_app(config: Config) -> FastAPI:
                  f"emulator {s_.get('adapter') or s_.get('emulator') or '?'}, session {r.session_id or '-'}, worker {(r.session_id or '-').split('-')[0]})"]
         if r.detail:
             lines.append(f"## What gBox showed\n{r.detail}")
+        if r.session_id:
+            try:
+                from .screensaver import bot_demo as _bd
+                demo = _bd(store, r.session_id)
+            except Exception:                         # noqa: BLE001  (the report goes in without the run kind)
+                demo = None
+            if demo:
+                lines.append("## Run kind\nBot demo (autoplay): the operator is watching it live, possibly from a PC they are active on. "
+                             "Treat this as a live improvement report: analyse the session's state (gameplay memory, RAM/byte changes, "
+                             "Ghidra on the running build) and keep the operator's input and session untouched; the PC is theirs.")
         if r.session_id and s_.get("mod"):
             lines.append(f"## Disc / model mod this session was launched with\n{s_['mod']}")
         kept = [(store.get("mod", m) or {"title": m}) for m in r.kept_mods[:30]]

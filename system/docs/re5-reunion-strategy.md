@@ -110,3 +110,26 @@ actual in-hand item, and briefly preserves that choice. It selects an available
 loaded quick-slot gun, not an arbitrary newly constructed campaign weapon. Rockets
 and all sniper rifles become random magnums in the next spawn template; an existing
 rocket/rifle switches to a loaded quick-slot magnum when one is available.
+
+## Sight gate and navmesh pursuit (no standing at walls)
+
+Operator, 2026-10-21: "If the person stands still ... what is there to see?" The baseline scoreboard
+([re5-scoreboard.md](re5-scoreboard.md)) measured 48-102 idle seconds per round, 40-80 of them with the laser dot
+on a wall: the combat layer was handed Majini it could not see ("front candidate; visibility unconfirmed").
+
+`re5_ps3.Bot` now fights from where the player stands only Majini **in sight**: within `SIGHT_R`, and either within
+`PURSUE_NEAR` (2 m) or with open floor between them on the stage's own navmesh (`NavMesh.floor_segment`, or a navmesh
+route at most `SIGHT_BEND` x the straight line; floor_segment alone called 4 of 5 nearly straight live routes closed).
+Close foes, bonus-route threats and the combat target are all drawn from that set, so a Majini behind a wall neither
+cancels a time-bonus route nor draws the gun.
+
+With nobody in sight the bot **pursues**: it walks the navmesh route to the reachable Majini with the shortest route
+among the six nearest (`_pursuit_target`, re-chosen each second), gun down, through `_follow` (ladders, drops,
+stall handling) without writing pursuit outcomes into the stage's route-learning record. While fighting, the laser
+decides: the dot stopping short of him or at the muzzle (`_laser_view` "short" / "wall") for `BLOCKED_VIEW_S`, or
+`UNSIGHTED_S` of laser-up time without the dot on him, leaves him out of sight for `PURSUE_S` (`_lost_sight`) and the
+pursuit takes over. Time without a laser (the gun coming up) is not counted. The tactical map shows the pursuit route
+(phase `pursue`); telemetry carries `pursuits`, `unsighted` and `sight`.
+
+Tests: `tests/test_re5_mercs.py` (`u_mesh` wall, corner straight route, dot short / at a wall / never on him,
+laser-view classes). Live validation requires the deployed worker (see the PR).
