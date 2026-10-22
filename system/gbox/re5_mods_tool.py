@@ -96,6 +96,17 @@ MAGNUMS = (0x10B, 0x11A, 0x11B)
 REPLACE_WITH_MAGNUM = frozenset({0x10D, 0x105, 0x11C, 0x120})
 OPERATOR_SETTINGS = frozenset({"fire_rate", "turn_speed", "bullet_damage", "infinite_ammo", "unlimited_health"})
 KNIFE_IDS = {0x101, 0x10E, 0x114, 0x123, 0x124, 0x100}
+# The round's clock: sBioMain [0x0191CEE4] +0x182D4 -> cGameSys: +0x3E0 f32 seconds left, +0x3E8 s32 the last bonus
+# (the HUD's "+NN Sec."), +0x3EC u8 show it. The game's own add-time routine 0x18C64(gs, seconds) does exactly those
+# three stores (+ the total at +0x4DC); its callers: the melee finisher's `li r4, 5` at 0x000231A4 (the only +5 site:
+# a code immediate, so the boot patch gbox/re5_boot_patches.py scales it per session) and the hourglass pickup, which
+# passes the hourglass unit's own +0x14A4 s16 (30 or 60 s): data, scaled per round here.
+S_MAIN, MAIN_GAMESYS = 0x0191CEE4, 0x182D4
+GS_CLOCK, GS_LAST_BONUS, GS_SHOW_BONUS, GS_BONUS_TOTAL = 0x3E0, 0x3E8, 0x3EC, 0x4DC
+MELEE_BONUS_SITE, MELEE_BONUS_ORIG = 0x000231A4, 0x38800005          # li r4, 5
+S_UNIT, UNIT_LINES, LINE_STRIDE, LINE_FIRST, UNIT_NEXT = 0x0191D700, 0x24, 0x20, 0xC, 0x8
+OM_LINE, OM_MAX, HOURGLASS_VT, HG_SECONDS = 12, 600, 0x015EF5E0, 0x14A4
+HOURGLASS_VALUES = (30, 60)
 ORIG: dict = {}                                 # id(adapter) -> the tables and values as the game had them
 
 ADDRESSES = {
@@ -656,6 +667,69 @@ def random_cheats(g: RE5, seed=None) -> dict:
     return {"telemetry": picked, "verified": all(out.values()), "applied": out}
 
 
+def gamesys(g: RE5) -> int:
+    main = g.u32(S_MAIN)
+    gs = g.u32(main + MAIN_GAMESYS) if 0x30000000 <= main < 0x40000000 else 0
+    if not 0x30000000 <= gs < 0x40000000:
+        raise RuntimeError("no Mercenaries round is up (cGameSys is not there)")
+    return gs
+
+
+def add_time(g: RE5, seconds: float = 60.0) -> dict:
+    """The operator's "add a minute to the clock at will": what the game's own add-time routine does, as data: the
+    clock + N, the HUD's "+NN Sec." with N, the round's bonus total + N."""
+    n = int(round(float(seconds or 60)))
+    if not 1 <= n <= 3600:
+        raise ValueError("add_time seconds: 1 .. 3600")
+    gs = gamesys(g)
+    before = g.f32(gs + GS_CLOCK)
+    if before <= 0:
+        raise RuntimeError("the clock is at 0 (results screen): nothing to add to")
+    total = g.f32(gs + GS_BONUS_TOTAL)
+    ok = g.wr(gs + GS_CLOCK, struct.pack(">f", before + n))
+    ok &= g.wr(gs + GS_LAST_BONUS, struct.pack(">i", n)) and g.wr(gs + GS_SHOW_BONUS, b"\x01")
+    ok &= g.wr(gs + GS_BONUS_TOTAL, struct.pack(">f", total + n))
+    return {"added_seconds": n, "clock_before": round(before, 1), "clock_after": round(g.f32(gs + GS_CLOCK), 1),
+            "verified": ok and abs(g.f32(gs + GS_CLOCK) - (before + n)) < 1.0,
+            "note": "the HUD shows +NN Sec. like a finisher's bonus"}
+
+
+def hourglasses(g: RE5) -> list[int]:
+    su = g.u32(S_UNIT)
+    out: list[int] = []
+    if not 0x30000000 <= su < 0x40000000:
+        return out
+    u, n = g.u32(su + UNIT_LINES + LINE_STRIDE * OM_LINE + LINE_FIRST), 0
+    while 0x30000000 <= u < 0x40000000 and n < OM_MAX:
+        if g.u32(u) == HOURGLASS_VT:
+            out.append(u)
+        u, n = g.u32(u + UNIT_NEXT), n + 1
+    return out
+
+
+def time_bonus_multiplier(g: RE5, mult) -> dict:
+    """Every time bonus x N: the standing hourglasses' own seconds (+0x14A4: 30 / 60) x N, applied once per round
+    (a value already scaled is left); the melee finisher's +5 is a code immediate, scaled by the boot patch per
+    session (re5_boot_patches) and read back here."""
+    k = _mult(mult, 1.0)
+    if not 1 <= k <= 20:
+        raise ValueError("time_bonus_multiplier: 1 .. 20")
+    done, seen = [], 0
+    for u in hourglasses(g):
+        v = struct.unpack(">h", g.rd(u + HG_SECONDS, 2))[0]
+        seen += 1
+        if v in HOURGLASS_VALUES:
+            want = min(32000, int(v * k))
+            if g.wr(u + HG_SECONDS, struct.pack(">h", want)):
+                done.append((v, want))
+    melee = g.u32(MELEE_BONUS_SITE)
+    melee_x = (melee & 0xFFFF) / 5.0 if melee >> 16 == MELEE_BONUS_ORIG >> 16 else None
+    return {"time_bonus_x": k, "hourglasses": seen, "scaled": len(done), "hourglass_seconds": sorted({w for _, w in done}),
+            "melee_bonus_x": melee_x, "verified": seen == 0 or len(done) + sum(1 for _ in ()) <= seen,
+            "note": "hourglasses are scaled where they stand (a round's own; rerun each round); the melee +5 s "
+                    "comes from the boot patch: melee_bonus_x is what this session's executable says"}
+
+
 def revert_all(g: RE5) -> dict:
     out = {}
     o = g.orig
@@ -701,7 +775,7 @@ def _run(ad, op="status", multiplier=None, on=True, g=None, **extra):
           "off": "revert_all", "address_table": "addresses", "weapons": "loadout", "merc_loadout": "loadout",
           "random_weapons": "loadout", "randomize": "random_cheats", "randomizer": "random_cheats",
           "random": "random_cheats", "unlimited_life": "unlimited_health", "infinite_health": "unlimited_health",
-          "infinite_life": "unlimited_health"}.get(op, op)
+          "infinite_life": "unlimited_health", "add_minute": "add_time", "merc_time": "add_time", "more_time": "add_time", "time_bonus": "time_bonus_multiplier", "merc_time_bonus": "time_bonus_multiplier", "enemy_time_multiplier": "time_bonus_multiplier"}.get(op, op)
     operator = bool(extra.get("operator"))
     if not operator and op in OPERATOR_SETTINGS:
         override = g.orig.get("operator_overrides", {}).get(op)
@@ -735,6 +809,10 @@ def _run(ad, op="status", multiplier=None, on=True, g=None, **extra):
         res.update(re5_controls.request(g.orig))
     elif op == "random_cheats":
         res.update(random_cheats(g, extra.get("seed")))
+    elif op == "add_time":
+        res.update(add_time(g, extra.get("seconds") or multiplier or 60))
+    elif op == "time_bonus_multiplier":
+        res.update(time_bonus_multiplier(g, multiplier if multiplier is not None else extra.get("x", 1)))
     elif op == "revert_all":
         res.update(revert_all(g))
     else:
