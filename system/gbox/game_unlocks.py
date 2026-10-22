@@ -15,6 +15,8 @@ DOAPP_ID = '59c55e95af61abbe'  # Dead Or Alive ++ (Korea), platform=arcade
 NDS_WCW_GAME_ID = 'd9467f457f53f2c7'  # Call of Duty: World at War (USA), NDS
 SGC_GEMS_ID = 'fc5914e3ddb540c4'  # Sonic Gems Collection (USA), platform=gamecube
 SGC_GEMS_PLATFORM = 'gamecube'
+TUROK_EVOLUTION_ID = '103baa3f4d8cea89'  # Turok - Evolution (USA), platform=gamecube
+TUROK_EVOLUTION_PLATFORM = 'gamecube'
 
 
 def pre_launch(game: dict, ctx, mod: str = '') -> dict:
@@ -43,6 +45,17 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
             gate = sgc_gems_probe.profile_gate()
             return {'state': 'research_pending', 'applied': False,
                     'reason': gate['reason'], 'scope': list(sgc_gems_probe.CATEGORIES),
+                    'evidence': gate['evidence'], 'blockers': gate['blockers'],
+                    'next': gate['next']}
+        if game.get('game_id') == TUROK_EVOLUTION_ID and game.get('platform') == TUROK_EVOLUTION_PLATFORM:
+            # Turok - Evolution (USA): the exact owned GTKE51 build is identified and
+            # hashed and its category inventory is measured, but no lock flag, save
+            # layout or runtime selection is verified yet. Report that state; never
+            # write a save here.
+            from . import turok_evolution_unlock
+            gate = turok_evolution_unlock.profile_gate()
+            return {'state': 'research_pending', 'applied': False,
+                    'reason': gate['reason'], 'scope': list(turok_evolution_unlock.CATEGORIES),
                     'evidence': gate['evidence'], 'blockers': gate['blockers'],
                     'next': gate['next']}
         return {'state': 'research_pending', 'applied': False, 'reason': profile['reason']}
@@ -82,6 +95,14 @@ def profile_for(game: dict) -> dict:
         from . import sgc_gems_probe
         return {'status': 'pending_research', 'profile': None, 'verified': False,
                 'scope': list(sgc_gems_probe.CATEGORIES), **sgc_gems_probe.profile_gate()}
+    if game.get('game_id') == TUROK_EVOLUTION_ID and game.get('platform') == TUROK_EVOLUTION_PLATFORM:
+        # Read-only inventory for the exact owned Turok - Evolution (USA) GameCube
+        # build: identity and every category are measured from the disc, but no save
+        # layout or runtime selection is verified yet, so no writer is reachable.
+        from . import turok_evolution_unlock
+        return {'status': 'pending_research', 'profile': None, 'verified': False,
+                'scope': list(turok_evolution_unlock.CATEGORIES),
+                **turok_evolution_unlock.profile_gate()}
     if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,
                 'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}
