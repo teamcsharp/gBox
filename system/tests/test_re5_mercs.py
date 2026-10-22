@@ -1706,3 +1706,53 @@ def test_a_running_combo_never_sends_him_straight_into_a_wall_when_the_mesh_has_
     bot.bonus_skip[("enemy", ENEMIES[0])] = now[0] + 60.0        # route failed lately: pursuit has nobody
     bot.tick(_snap(mem, mesh))
     assert bot.stats["phase"] != "keep_combo" and not bot.stats.get("combo_chases")
+
+
+class _FakeMesh:
+    def __init__(self, lengths):
+        self.lengths = lengths
+
+    def route_length(self, a, b, avoid=None):
+        return self.lengths.get(b)
+
+
+def _driver_for_combo():
+    d = R.Bot.__new__(R.Bot)
+    d.stats, d.bonus_skip, d.avoid, d.pursuit, d.route_len = {}, {}, None, None, None
+    return d
+
+
+def test_combo_pursuit_prefers_the_majini_reachable_inside_the_window():
+    d = _driver_for_combo()
+    near_far_route = {"slot": 1, "ptr": 1, "pos": (100.0, 0.0, 0.0)}   # straight-line nearest, long way round
+    far_short_route = {"slot": 2, "ptr": 2, "pos": (900.0, 0.0, 0.0)}
+    mesh = _FakeMesh({near_far_route["pos"]: 2000.0, far_short_route["pos"]: 400.0})
+    p = {"pos": (0.0, 0.0, 0.0)}
+    snap = {"combo": 3, "combo_timer": 5.0}
+    got = d._pursuit_target(p, [near_far_route, far_short_route], mesh, 10.0, snap)
+    assert got["ptr"] == 2
+    assert d.stats["combo_pursuits"] == 1 and d.stats["combo_pursuit_fits"] == 1
+
+
+def test_combo_pursuit_repicks_at_once_when_the_held_route_no_longer_fits():
+    d = _driver_for_combo()
+    a = {"slot": 1, "ptr": 1, "pos": (100.0, 0.0, 0.0)}
+    b = {"slot": 2, "ptr": 2, "pos": (200.0, 0.0, 0.0)}
+    d.pursuit, d._pursuit_route = (10.0, 1), 5000.0     # 20 s of running left for the held one
+    mesh = _FakeMesh({a["pos"]: 5000.0, b["pos"]: 300.0})
+    snap = {"combo": 2, "combo_timer": 3.0}
+    got = d._pursuit_target({"pos": (0.0, 0.0, 0.0)}, [a, b], mesh, 10.3, snap)
+    assert got["ptr"] == 2
+    # without a combo the held pick stands for PURSUE_PICK_S
+    d.pursuit, d._pursuit_route = (10.0, 1), 5000.0
+    assert d._pursuit_target({"pos": (0.0, 0.0, 0.0)}, [a, b], mesh, 10.3, {})["ptr"] == 1
+
+
+def test_combo_lengths_are_measured_per_round_and_lapses_counted():
+    d = _driver_for_combo()
+    d.combo_log, d._combo_prev, d._combo_prev_window = [], 0, None
+    for combo, window in ((1, 9.0), (2, 8.0), (3, 0.3), (0, 0.0), (1, 9.0), (0, 0.0)):
+        d._track_combo({"combo": combo, "combo_timer": window})
+    log = d.combo_log[-1]
+    assert log["lengths"] == [3, 1] and log["lost"] == 2 and log["lapsed"] == 1
+    assert d.stats["combos_lost"] == 2
