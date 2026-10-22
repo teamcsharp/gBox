@@ -64,6 +64,9 @@ def profile_for(game: dict) -> dict:
         # pre_launch below short-circuits on verified=False, so no writer is reachable.
         return {'status': 'pending_research', 'profile': None, 'verified': False,
                 'scope': list(doax2_unlock.CATEGORIES), **doax2_unlock.profile_gate()}
+    from . import smb3_unlock
+    if game.get('game_id') == smb3_unlock.GAME_ID and game.get('platform') == smb3_unlock.PLATFORM:
+        return smb3_unlock.profile_gate()
     if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,
                 'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}
