@@ -60,3 +60,13 @@ its route following cannot progress and these are decisions, not outcomes):
 
 The live measurement of the deployed code (idle / wall seconds per round against the baseline above) follows in
 this file once the change runs in the worker.
+
+## Per-stage view (request #3027)
+
+`python -m gbox.mercs.titles.re5_scoreboard <rounds.jsonl>` groups the sampler's rounds by stage and shows best / median /
+gap to S (60,000), idle and wall seconds and the dominant idle cause (tests: `tests/test_re5_scoreboard.py`).
+Over the 94 logged rounds (87 completed): only **one** of the eight Reunion stages (`1638-2187/9`, Public Assembly) has
+ever been measured; best 40,450 (A, Chris Heavy Metal, +239 s time bonuses), median 12,580, no S; 74.9 idle s and 55.7
+wall s per round; top idle cause `fight: front candidate; visibility unconfirmed` (26.2 s/round). The other seven stages
+have no data, so the stage picker must produce them live before per-stage route work can be measured. No S-rank
+claim is made for any stage.
