@@ -456,6 +456,40 @@ class Roster:
 ROSTER = Roster()
 
 
+class StagePick:
+    """A random stage each visit to STAGE SELECT (operator 2026-10-22: "have the bot go between the stages randomly
+    during the select and have him play on different levels"). RAM doesn't name the stage cursor yet, so the pick is
+    a random number of D-pad rights (the row of stages, 0..MAX_MOVES) before cross; mercs_bot's Navigator reports each
+    press it sends (pressed()), so a press held back for a settle never counts."""
+    MAX_MOVES = 7                              # Reunion's eight stages: any of them from wherever the cursor is
+
+    def __init__(self, rng=None):
+        import random
+        self.rng = rng or random.Random()
+        self.left = None                       # moves still to make on this visit; None: not on STAGE SELECT
+
+    def key(self, scr: dict) -> str:
+        if self.left is None:
+            self.left = self.rng.randint(0, self.MAX_MOVES)
+        return "dright" if self.left > 0 else "cross"
+
+    def pressed(self, scr: dict, key: str) -> None:
+        if scr.get("where") != "select_stage":
+            return
+        if key == "dright" and self.left:
+            self.left -= 1
+        elif key == "cross":
+            self.left = None                   # the stage is taken: the next visit draws again
+
+
+STAGE_PICK = StagePick()
+
+
+def pressed(scr: dict, key: str) -> None:
+    """mercs_bot's Navigator: a key it sent on this screen."""
+    STAGE_PICK.pressed(scr, key)
+
+
 def step(scr: dict) -> str | None:
     """The one press towards the next round. From the title: START, circle on the sign-in question, cross on "Load
     successful", then the cursor (read from RAM) moved to PLAY GAME, EXTRA CONTENT, THE MERCENARIES REUNION and taken,
@@ -473,6 +507,8 @@ def step(scr: dict) -> str | None:
         if where == "play_game" and cur == 0:
             return "dup"                                 # up from the top wraps to EXTRA CONTENT, the last entry
         return "ddown" if cur < tgt else "dup"
+    if where == "select_stage":
+        return STAGE_PICK.key(scr)
     return STEPS.get(where)
 
 

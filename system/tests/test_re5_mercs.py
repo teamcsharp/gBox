@@ -340,7 +340,7 @@ def test_the_screens_between_rounds_come_from_the_interface_units():
 
 def test_it_presses_only_on_the_reunion_screens():
     assert R.step({"where": "results"}) == "start"
-    assert R.step({"where": "select_stage"}) == "cross"
+    assert R.step({"where": "select_stage"}) in ("dright", "cross")   # a random stage (StagePick)
     assert R.step({"where": "select_player", "cursor": 6, "target": 6}) == "cross"          # Barry picked, on him
     assert R.step({"where": "select_player", "cursor": 2, "target": 6}) == "dright"
     assert R.step({"where": "select_player", "cursor": 7, "target": 6}) == "dleft"
@@ -1348,7 +1348,7 @@ def test_from_the_title_into_reunion_by_ram():
     assert where_and_key([("uIdStartUp01", extra | {R.EXTRA_CURSOR: 3})]) == ("extra_content", "cross")  # REUNION
     assert where_and_key(["uIdStartUp29"], line=1) == ("reunion_title", "cross")                      # START
     assert where_and_key([("uIdStartUp29", {R.MENU_SUB: 1})], line=1) == ("reunion_solo", "cross")    # SOLO
-    assert where_and_key(["uIdStartUp21", "uIdTopMenu00"]) == ("select_stage", "cross")
+    assert where_and_key(["uIdStartUp21", "uIdTopMenu00"]) in (("select_stage", "cross"), ("select_stage", "dright"))
 
 
 def test_re5_plays_through_the_deployment_before_the_engine_is_ready():
@@ -1552,3 +1552,26 @@ def test_a_time_bonus_is_taken_even_when_the_strategy_would_keep_the_combo(monke
     act = bot.tick(R.snapshot(m))
     assert bot.stats["phase"] == "gather_time" and {"lup", "cross"} <= act["hold"]
     assert bot.stats["strategy_decision"].startswith("time bonus first")
+
+def test_stage_select_takes_a_random_stage_each_visit():
+    # operator 2026-10-22: "have the bot go between the stages randomly during the select"
+    import random
+    pick = R.StagePick(rng=random.Random(4))
+    scr = {"where": "select_stage"}
+    sent = []
+    for _ in range(40):                                    # the Navigator: step, then pressed() for each key it sends
+        key = pick.key(scr)
+        sent.append(key)
+        pick.pressed(scr, key)
+        if key == "cross":
+            break
+    assert sent[-1] == "cross" and set(sent[:-1]) <= {"dright"} and len(sent) - 1 <= R.StagePick.MAX_MOVES
+    assert pick.left is None                               # the next visit draws again
+    held = pick.key(scr)                                   # a key the Navigator held back (settle) is not counted
+    left = pick.left
+    assert pick.key(scr) == held and pick.left == left
+    pick.pressed({"where": "select_player"}, "cross")      # presses elsewhere never touch the stage pick
+    assert pick.left == left
+    draws = {R.StagePick(rng=random.Random(s)).key(scr) for s in range(30)}
+    assert draws == {"dright", "cross"}                    # some visits move, some take the stage under the cursor
+    assert R.step({"where": "select_stage"}) in ("dright", "cross")
