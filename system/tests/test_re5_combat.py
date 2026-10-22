@@ -664,10 +664,12 @@ def test_wall_in_front_off_axis_ray_is_cover_and_holds_fire(tmp_path):
         act = bot.tick(s, s["player"], s["enemies"][0], 1.0)
         assert bot.blocked_until[ENEMY] > 1.0, dot
         assert "r1" not in act["hold"], dot
-    # a wide miss (beside him, well off the cone) stays unknown and keeps firing
+    # a wide miss (beside him, well off the cone) stays unknown, not cover: no candidate switch. The trigger still
+    # waits for the dot to come onto him (#869: no shots off the aim point) while the stick turns.
     m = world(laser_dot=(300.0, 120.0, 400.0), enemy=(0.0, 0.0, 1000.0))
     bot = C.Combat(m, {}, learn_dir=tmp_path, lessons=lambda row: None)
     s = snap(m, enemy=(0.0, 0.0, 1000.0))
     s["laser"] = {"from": (0.0, 149.0, 46.0), "at": (300.0, 120.0, 400.0)}
-    assert "r1" in bot.tick(s, s["player"], s["enemies"][0], 1.0)["hold"]
+    act = bot.tick(s, s["player"], s["enemies"][0], 1.0)
+    assert "l1" in act["hold"] and "r1" not in act["hold"] and bot.stats["los_held_fire"] > 0
     assert not bot.blocked_until
