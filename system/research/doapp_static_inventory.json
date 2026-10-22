@@ -1,0 +1,58 @@
+{
+ "schema": 1,
+ "game_id": "a19b4e641b155364",
+ "request": "5f6e01acd6cd4777",
+ "method": "static string scan of decoded main RAM image (capstone MIPS-LE cross-checks); no runtime test",
+ "source_archive_dir": "gbox-cache/59c55e95af61abbe",
+ "ram_sha256": "6feec6ff4e6ab3bd51d477cecc6431ebdc8f55726760f94d0c5bf87c5286678c",
+ "ram_size": 2097152,
+ "mode_menu_table": {
+  "ram_addr": "0x80088a90",
+  "stride_bytes": 19,
+  "entries": [
+   "TOURNAMENT",
+   "TIME ATTACK",
+   "VERSUS",
+   "SURVIVAL",
+   "KUMITE",
+   "TRAINING",
+   "TEAM BATTLE",
+   "OPTION"
+  ],
+  "status": "present; lock conditions not yet traced -> unknown"
+ },
+ "unlock_notifications": [
+  {
+   "text": "NEW COSTUME GET!",
+   "addr": "0x80088aa4"
+  },
+  {
+   "text": "EXTRA CONFIG OPEN!",
+   "addr": "0x80088ab8"
+  }
+ ],
+ "inventory": {
+  "modes": {
+   "TOURNAMENT": "unknown",
+   "TIME ATTACK": "unknown",
+   "VERSUS": "unknown",
+   "SURVIVAL": "unknown",
+   "KUMITE": "unknown",
+   "TRAINING": "unknown",
+   "TEAM BATTLE": "unknown",
+   "OPTION": "unknown"
+  },
+  "costumes": "unknown (unlock notice string present, so a costume unlock mechanism exists)",
+  "extras": "unknown (EXTRA CONFIG gated by notice)",
+  "characters": "unknown",
+  "hidden_characters": "unknown",
+  "stages": "unknown",
+  "levels": "unknown",
+  "items": "not_present (no item system string evidence)"
+ },
+ "findings": [
+  "Menu strings are not referenced by direct lui/addiu or pointer words; accessed through indexed table (lh at 0x80088a8c, code 0x8007a9b4).",
+  "Mode var at 0x800962ec has ~167 code refs; unlock flags/save offsets not yet located."
+ ],
+ "next": "locate save-flag reads behind costume/extra notices; runtime tests on i9-NUC/Spark with isolated save"
+}
