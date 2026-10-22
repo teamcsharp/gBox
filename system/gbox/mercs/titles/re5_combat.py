@@ -152,6 +152,26 @@ def ray_error(origin, dot, target) -> tuple[float, float]:
     return wrap(want_yaw - have_yaw), want_pitch - have_pitch
 
 
+AIM_FIRE_YAW, AIM_FIRE_PITCH = math.radians(7), math.radians(5)   # fire only with the dot this close to the aim point
+
+
+def line_of_sight_aim(ray, aim_at, where, foot) -> bool:
+    """Whether the shot may leave the gun: the dot sits on him, or the ray points at the aim point within a few
+    degrees and does not end on the floor short of him. Coaching note 3: R1 held while the dot was on the ground
+    (turning toward him, or aimed below him) fired the magazine into the floor and lost time."""
+    if where is not None:
+        return True
+    if ray is None:
+        return False
+    origin, dot = ray
+    yaw, pitch = ray_error(origin, dot, aim_at)
+    if abs(yaw) > AIM_FIRE_YAW or abs(pitch) > AIM_FIRE_PITCH:
+        return False
+    flat_dot, flat_tgt = math.hypot(dot[0] - origin[0], dot[2] - origin[2]), math.hypot(foot[0] - origin[0], foot[2] - origin[2])
+    short_on_floor = flat_dot < flat_tgt - BODY_R * 2 and dot[1] < foot[1] + KNEE_H
+    return not short_on_floor
+
+
 def valid_ray(origin, dot):
     """Keep endpoint evidence separate from whether its short baseline can guide the stick."""
     try:
@@ -642,7 +662,9 @@ class Combat:
         permitted, policy = fire_policy(wid, snap, tgt, lz[1] if lz else None)
         self.stats["weapon_policy"] = policy
         loaded = rounds is not None and rounds > 0
-        tracking_fire = direct and permitted and loaded
+        tracking_fire = direct and permitted and loaded and (lz is None or not steering_ray(lz, aim_at) or line_of_sight_aim(lz, aim_at, where, foot))
+        # no ray yet, or a near-origin ray too short to judge: the trigger stays as before; a reliable ray off the aim
+        # point (the ground, beside or past him) holds fire while the stick turns the dot onto him
         rapid = self._rapid_fire(wid, now)              # observed package status, independent of fire intent
         if p.get("action") == 4:                      # prompts own escape from a grab
             self.stats["combat"] = "waiting: grab animation"
@@ -686,6 +708,7 @@ class Combat:
             keys |= self._pitch(pl, p, pitch_err, now)
         # Direct fire continues while the stick corrects aim. Splash/unknown policies remain separate.
         firing = tracking_fire or (where in ("head", "body", "leg") and loaded and permitted)
+        self.stats["los_held_fire"] = self.stats.get("los_held_fire", 0) + (0 if firing or not (direct and permitted and loaded) else 1)
         trig = self.triggers.get(wid)
         if trig is None:
             trig = self.triggers[wid] = Trigger(tune["mode"])
