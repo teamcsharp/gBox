@@ -1522,3 +1522,19 @@ def test_stage_select_takes_a_random_stage_each_visit():
     draws = {R.StagePick(rng=random.Random(s)).key(scr) for s in range(30)}
     assert draws == {"dright", "cross"}                    # some visits move, some take the stage under the cursor
     assert R.step({"where": "select_stage"}) in ("dright", "cross")
+
+
+def test_a_bot_standing_still_off_the_stand_breaks_out_of_the_spot(tmp_path):
+    mem, bot, now = _pursuit_bot(tmp_path, (260.0, 0.0, 50.0))
+    bot.spawn, bot.at_stand = (5000.0, 0.0, 5000.0), False
+    mesh = corner_mesh()
+    snap = _snap(mem, mesh)
+    bot.enemies_seen = None
+    acts = []
+    for t in (10.0, 12.0, 14.0, 16.5, 17.0, 17.5):
+        now[0] = t
+        acts.append(bot._idle_breakout(snap, {"hold": set()}))
+    assert bot.stats["idle_breakouts"] == 1
+    assert {"lup"} <= acts[-1]["hold"] or acts[-1]["hold"] & {"rleft", "rright"}
+    now[0] = 25.0                                   # the walk is over: the normal decision resumes
+    assert bot._idle_breakout(snap, {"hold": {"x"}}) == {"hold": {"x"}} and bot._idle_walk is None
