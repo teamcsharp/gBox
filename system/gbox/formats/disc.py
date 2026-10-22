@@ -137,6 +137,19 @@ def listing(path: str | Path, *, head: int = 64, max_files: int = 4000, exe_limi
         L = Listing(str(p), "gdrom", files)
     elif suf == ".chd":
         return _chd_listing(p, head, max_files, exe_limit, deep, deep_bytes)
+    elif suf == ".wbfs":
+        from .wbfs import WBFS
+        w = WBFS(p)
+        files = [{"path": "disc/header.bin", "size": 0x440, "_off": 0},
+                 {"path": "disc/partition_table.bin", "size": 0x20, "_off": 0x40000}]
+        for i, part in enumerate(w.partitions()):
+            files.append({"path": f"disc/partition{i}_type{part['type']}.bin", "size": 0x8000, "_off": part["offset"]})
+        offs = {f["path"]: f["_off"] for f in files}
+
+        def read(name, n):
+            size = next(f["size"] for f in files if f["path"] == name)
+            return w.read(offs[name], min(size, exe_limit if n is None else n))
+        L = Listing(str(p), "wii_disc", files, notes=[f"{w.game_id} {w.title}", "WBFS v1 container; Wii partition data is AES-encrypted, only unencrypted disc regions are listed"])
     elif suf == ".gcz":
         from ..gcz import GCZ
         z = GCZ(str(p))
