@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 from gbox.tetris_ds_overlay import (OVERLAY_ASSETS, PROFILE_PATH, SUPPORT_ASSETS,
-                                    asset_digests, verify)
+                                    asset_digests, pinned, verify)
 
 REAL_ROM = Path(os.environ.get(
     "GBX_TETRIS_DS_ROM",
@@ -23,15 +23,26 @@ class FakeRom:
         return self.blobs[path.lower()]
 
 
-def test_profile_pins_every_tracked_asset():
-    prof = json.loads(PROFILE_PATH.read_text())
-    assets = prof["archive_assets"]
+def test_source_pins_every_tracked_asset():
+    pins = pinned()
     for name in list(OVERLAY_ASSETS) + list(SUPPORT_ASSETS):
-        assert name in assets, name
-        assert len(assets[name]["sha256"]) == 64
-        assert assets[name]["size"] > 0
-    assert len(prof["arm9_sha256"]) == 64
-    assert len(prof["rom_sha256"]) == 64
+        assert name in pins["assets"], name
+        assert len(pins["assets"][name]["sha256"]) == 64
+        assert pins["assets"][name]["size"] > 0
+    assert len(pins["arm9_sha256"]) == 64
+    assert len(pins["rom_sha256"]) == 64
+
+
+def test_profile_file_agrees_with_source_pins_when_present():
+    if not PROFILE_PATH.exists():
+        return
+    prof = json.loads(PROFILE_PATH.read_text())
+    assert prof["rom_sha256"] == pinned()["rom_sha256"]
+    for key in ("arm9_sha256",):
+        if key in prof:
+            assert prof[key] == pinned()[key]
+    for name, a in prof.get("archive_assets", {}).items():
+        assert a["sha256"] == pinned()["assets"][name]["sha256"]
 
 
 def test_asset_digests_hashes_only_tracked_members():

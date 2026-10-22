@@ -19,6 +19,21 @@ from pathlib import Path
 
 PROFILE_PATH = Path(__file__).resolve().parent.parent / "profiles" / "tetris-ds-us.json"
 
+# Digests of the owned Tetris DS (USA) revision, pinned in source so the check
+# works without the profile file (profiles/*.json mirrors these values).
+PINNED = {
+    "rom_sha256": "4e443f9b03363900dda6fa308229a3b14631b0fedd14f1c2e4cc1d5b3224db68",
+    "arm9_sha256": "395348597da9fdda6db2956f9e9f0fd1575f27f70e0c3e7afb2b90adb3edb4e4",
+    "assets": {
+        "ct.srl": {"size": 1022088, "sha256": "ba034cb067b35306aaf0a7443376570c4d1a98a6123e305887db9445f75adab5"},
+        "od.srl": {"size": 1051784, "sha256": "83126c8e59bdce68137949f8f2c3d6d5a63408541755596ae0ca173937ba8dee"},
+        "pt.srl": {"size": 883336, "sha256": "d701ab250b62d11226593a266b2a8102bfaa532e38f868ac701b2ade5fbae5eb"},
+        "push1.pak": {"size": 197120, "sha256": "55fbe43d91fc622a83ba9bfdb2762028da3dfdaae7606bbec2e3e8bbc419bce8"},
+        "quiz.dat": {"size": 4850, "sha256": "ab65703ad03ca26c2bb077053f0b6a5d9bdd9fc43871be18b12d87c0ab15725f"},
+        "title.pak": {"size": 197120, "sha256": "251c67bb41fcfae0df018b75e7dd2bcb79b21fc526e937e907f1d96ef31212f7"},
+    },
+}
+
 OVERLAY_ASSETS = {
     "ct.srl": "Standard mode data (Marathon / Line Clear / VS CPU)",
     "od.srl": "Option-mode data",
@@ -69,10 +84,9 @@ def rom_digests(rom_bytes: bytes) -> dict:
 
 
 def pinned() -> dict:
-    """The digests pinned in the Tetris DS profile."""
-    prof = json.loads(PROFILE_PATH.read_text())
-    return {"rom_sha256": prof.get("rom_sha256"), "arm9_sha256": prof.get("arm9_sha256"),
-            "assets": prof.get("archive_assets", {})}
+    """The digests pinned for the owned revision (source-pinned)."""
+    return {"rom_sha256": PINNED["rom_sha256"], "arm9_sha256": PINNED["arm9_sha256"],
+            "assets": dict(PINNED["assets"])}
 
 
 def verify(rom, rom_bytes: bytes) -> dict:
