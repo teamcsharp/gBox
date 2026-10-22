@@ -71,11 +71,19 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
 
 def profile_for(game: dict) -> dict:
     from . import doax2_unlock
+    from . import tetris_psp_unlock
     if game.get('game_id') == doax2_unlock.GAME_ID and game.get('platform') == doax2_unlock.PLATFORM:
         # Honest gate for DOAX2: research pending, no verified write targets exist.
         # pre_launch below short-circuits on verified=False, so no writer is reachable.
         return {'status': 'pending_research', 'profile': None, 'verified': False,
                 'scope': list(doax2_unlock.CATEGORIES), **doax2_unlock.profile_gate()}
+    if game.get('game_id') == tetris_psp_unlock.GAME_ID and game.get('platform') == tetris_psp_unlock.PLATFORM:
+        # Revision-pinned inventory only: the owned disc and executable are hash-pinned and
+        # the shipped content is inventoried, but no lock flag, save target or verified write
+        # routine exists for this PSP Minis title. pre_launch short-circuits on verified=False,
+        # so no writer is reachable from the Play path for this game.
+        return {'status': 'pending_research', 'profile': None, 'verified': False,
+                'scope': list(tetris_psp_unlock.CATEGORIES), **tetris_psp_unlock.profile_gate()}
     if game.get('game_id') == SGC_GEMS_ID and game.get('platform') == SGC_GEMS_PLATFORM:
         # Read-only probe only: pre_launch short-circuits on verified=False,
         # so no writer is reachable from the Play path for this game.

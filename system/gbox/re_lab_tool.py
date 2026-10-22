@@ -39,6 +39,7 @@ PLATFORM_CPU = {
     "dreamcast": ("sh4", "SuperH4:LE:32:default", 42, False),
     "psx": ("mips_le", "MIPS:LE:32:default", 8, False),
     "ps2": ("r5900", "MIPS:LE:64:64-32addr", 8, False),
+    "psp": ("mips_le", "MIPS:LE:32:default", 8, False),   # Allegrex (MIPS32r2 LE)
     "n64": ("mips_be", "MIPS:BE:32:default", 8, True),
     "gba": ("arm", "ARM:LE:32:v4t", 40, False),
     "xbox360": ("ppc64", None, 20, True),      # Xenon: ELF loader's PowerPC:BE:32 default; VMX128 opcodes won't decode
@@ -258,6 +259,22 @@ def extract_from_disc(cfg, game: dict, rom: Path, progress=lambda p, m: None) ->
             "source_file": "default.xex", "format": "XEX2 -> PE image", "base": im["base"], "entry": im["entry"],
             "notes": ["Xenon VMX128 opcodes don't decode in Ghidra's PowerPC; function starts come from auto-analysis "
                       "only (Xbox360Pdata.java needs a raw import, not available through ghidra_script)"]}
+    if plat == "psp":
+        from .cso import CSO
+        from .romexport import iso_files
+        f = CSO(rom) if rom.suffix.lower() in (".cso", ".ciso") else open(rom, "rb")
+        try:
+            exe = _iso_read(f, iso_files(f), "PSP_GAME/SYSDIR/EBOOT.BIN")
+        finally:
+            f.close()
+        if exe[:4] == b"\x7fELF":
+            entry = struct.unpack_from("<I", exe, 0x18)[0]
+            return exe, exe, {"source_file": "PSP_GAME/SYSDIR/EBOOT.BIN", "format": "PSP ELF/PRX", "entry": entry}
+        if exe[:4] == b"~PSP":
+            raise ValueError("PSP_GAME/SYSDIR/EBOOT.BIN is an encrypted ~PSP module (tag 0x%08x): decrypt it first "
+                             "(source=path with the decrypted ELF, or source=ram from a running PSP session)"
+                             % struct.unpack_from("<I", exe, 0xD0)[0])
+        raise ValueError(f"PSP EBOOT.BIN has unknown magic {exe[:4]!r}")
     raise ValueError(f"no executable reader for platform {plat!r}: use source=ram with a running session "
                      "(or path=<an extracted executable the worker can read>)")
 
