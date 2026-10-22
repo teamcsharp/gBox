@@ -125,3 +125,25 @@ def test_real_tequila(tmp_path):
     assert st["textures"][0] == "tequila01_all_diffuse" and 1.8 < st["height_m"] < 2.1
     mesh = r["mesh"]
     assert sum(sg["nv"] for g in mesh["groups"] for sg in g) >= mesh["vertices"]
+
+
+def _mk_cooked(base):
+    d = base / "PS3_GAME" / "USRDIR" / "StrangleholdGame" / "CookedPS3"
+    d.mkdir(parents=True)
+    return d
+
+
+def test_cooked_root_from_rom_extracted_sibling(tmp_path):
+    """Catalog entry points at the .7z; the extracted disc folder (archive stem) sits beside it."""
+    rom = tmp_path / "John Woo Presents Stranglehold (USA) (Collector's Edition).7z"
+    rom.write_bytes(b"7z")
+    want = _mk_cooked(tmp_path / rom.stem)
+    assert M.cooked_root_from_rom(rom) == want
+
+
+def test_cooked_root_from_rom_flat_and_missing(tmp_path):
+    flat = tmp_path / "a" / "StrangleholdGame" / "CookedPS3"
+    flat.mkdir(parents=True)
+    assert M.cooked_root_from_rom(tmp_path / "a" / "EBOOT.BIN") == flat
+    (tmp_path / "b" / "c").mkdir(parents=True)
+    assert M.cooked_root_from_rom(tmp_path / "b" / "c" / "x.7z") is None
