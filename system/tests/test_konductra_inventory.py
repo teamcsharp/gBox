@@ -32,7 +32,7 @@ def _synthetic_nds() -> bytes:
     fat = struct.pack("<II", 0x200 + len(fnt) + 16, 0x200 + len(fnt) + 21) \
          + struct.pack("<II", 0x200 + len(fnt) + 21, 0x200 + len(fnt) + 26)
     header = bytearray(0x200)
-    header[0x00:0x0C] = b"KONDUCTRA" + b"\x00" * 4
+    header[0x00:0x0C] = b"KONDUCTRA" + b"\x00" * 3
     header[0x0C:0x10] = b"KDCT"
     header[0x12] = 0
     struct.pack_into("<II", header, 0x40, 0x200, len(fnt))
@@ -108,3 +108,12 @@ def test_inventory_reports_identity_and_target_candidates():
     for cand in inv["census"]["target_candidates"]:
         assert cand["size"] > 0
         assert os.path.splitext(cand["path"])[1].lower() in ASSET_EXTS
+
+
+def test_owned_rom_target_asset_menublocks_nsbmd():
+    """Only 3D model in the build: BMD0 magic, identified native target asset."""
+    nds = KonductraNDS(_owned_rom().read_bytes())
+    blob = nds.raw("menublocks.nsbmd")
+    assert blob[:4] == b"BMD0"
+    assert len(blob) == 55328
+    assert struct.unpack_from("<I", blob, 8)[0] == len(blob)
