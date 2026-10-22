@@ -342,3 +342,25 @@ def test_agent_re5_dispatches_to_the_session_worker_or_the_windows_node():
                         None, "nuc123")
     a.re5("status")
     assert sent[-1][2] == "windows" and sent[-1][3] is None
+
+
+def test_random_loadout_draws_guns_with_their_ammo_and_repeats_by_seed(monkeypatch):
+    ad, g = gc_game()
+    tbl = [(0x23, 4), (0x2C, 0x18), (0x37, 0x1A), (0x38, 0), (0x30, 0x20)]       # knife is never drawn
+    blob = b"".join(struct.pack(">HBBBBH", i, 0, k, 0, 0, a) + bytes(14) for k, (i, a) in enumerate(tbl))
+    ad.put(g.V.WEAPON_TBL, blob)
+    monkeypatch.setattr(g.V, "WEAPON_N", len(tbl), raising=False)
+    monkeypatch.setattr(g.V, "WEAPON_SZ", 22, raising=False)
+    ad.put(R.RECS, b"\xfe" + bytes(5))
+    monkeypatch.setattr(T, "install_weapon_code", lambda g: None)
+    monkeypatch.setattr(T, "weapon_classes", lambda g: {i: (k, 0) for k, (i, _) in enumerate(tbl)})
+    assert 0x38 not in [i for i, _ in T.random_pool(g)]
+    a = T.run(ad, "random_loadout", character="leon", seed=5, g=g)
+    recs_a = T.read_recs(g)
+    b = T.run(ad, "random_loadout", character="leon", seed=5, g=g)
+    assert a["verified"] and a["op"] == "random_loadout" and a["picked"] == b["picked"] and T.read_recs(g) == recs_a
+    gun = next(i for i, _ in tbl if R.item_name(i) == a["picked"][0])
+    ammo = dict(tbl)[gun]
+    assert any(r[1] == 1 and r[2] == gun for r in recs_a) and any(r[2] == ammo and r[3] == 200 for r in recs_a)
+    seen = {tuple(T.run(ad, "random_loadout", seed=s, g=g)["picked"]) for s in range(30)}
+    assert len(seen) > 1                                                    # not one fixed gun

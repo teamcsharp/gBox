@@ -737,6 +737,49 @@ def merc_loadout_list(g) -> dict:
             "note": "records run right after the game's own Merc loadout routine (0x80018CC4) when a run starts"}
 
 
+RANDOM_SKIP = {0x03, 0x0D, 0x38, 0x52, 0x72}      # Matilda, Krauser's knife, combat knife, Krauser's bow, arrows: not a gun to shoot Ganados with
+
+
+def random_pool(g) -> list[tuple[int, int | None]]:
+    """(weapon id, its ammo item id or None) for every givable gun in the game's weapon table."""
+    d = g.m.rd(g.V.WEAPON_TBL, g.V.WEAPON_N * g.V.WEAPON_SZ)
+    out, seen = [], set()
+    for k in range(g.V.WEAPON_N):
+        e = d[k * g.V.WEAPON_SZ:(k + 1) * g.V.WEAPON_SZ]
+        iid, ammo = struct.unpack_from(">H", e)[0], struct.unpack_from(">H", e, 6)[0]
+        if iid in seen or iid >= 0x100 or iid in RANDOM_SKIP or iid in R.NOT_GIVABLE or iid not in R.ITEMS:
+            continue
+        if R.item_kind(iid) != "weapon":
+            continue
+        seen.add(iid)
+        out.append((iid, ammo if ammo in R.ITEMS and R.item_kind(ammo) == "ammo" else None))
+    return sorted(out)
+
+
+def random_loadout(ad, g, character: str = "leon", seed=None, guns: int = 1, ammo: int = 200, on: bool = True,
+                   damage=None) -> dict:
+    """The per-round randomizer (like re5 random_cheats / loadout): `guns` random distinct guns from the weapon table
+    with their ammo, written as this character's Merc loadout records (the first is equipped); seed repeats a draw.
+    damage (a firepower multiplier) is applied to every drawn gun's class so a weak pick still kills."""
+    import random
+    rng = random.Random(seed)
+    pool = random_pool(g)
+    if not pool:
+        raise RuntimeError("no givable weapons in the weapon table")
+    picks = rng.sample(pool, min(max(1, int(guns)), len(pool)))
+    items = []
+    for iid, am in picks:
+        items.append(R.item_name(iid))
+        if am is not None:
+            items.append(f"0x{am:02X}:{int(ammo)}")
+    res = run(ad, "merc_loadout", character=character, items=items, on=on, g=g)
+    res.update(op="random_loadout", seed=seed, picked=[R.item_name(i) for i, _ in picks])
+    if damage not in (None, ""):
+        res["weapon_mod"] = [weapon_mod(g, i, None, damage, True)["verified"] for i, _ in picks]
+        res["verified"] = bool(res.get("verified")) and all(res["weapon_mod"])
+    return res
+
+
 def run(ad, op: str, item: str = "", count: int = 0, target: str = "", on: bool = True, seconds: float = 0,
         character: str = "", items: list | None = None, fire_rate=None, damage=None, reset: bool = False,
         multiplier: float = 2.0, melee_only: bool = True, kind: str = "", force: float = 0, direction: str = "",
@@ -753,7 +796,8 @@ def run(ad, op: str, item: str = "", count: int = 0, target: str = "", on: bool 
           "grenades_safe": "grenade_safe", "grenade_immunity": "grenade_safe", "punch_enemies": "punch",
           "punches": "punch", "loadout": "merc_loadout", "loadouts": "merc_loadout_list",
           "merc_loadouts": "merc_loadout_list", "item_table": "item_ids", "items": "item_ids",
-          "address_table": "addresses"}.get(op, op)
+          "address_table": "addresses", "random_loadouts": "random_loadout", "random_weapons": "random_loadout",
+          "random_weapon": "random_loadout", "randomize": "random_loadout"}.get(op, op)
     res: dict = {"op": op}
     if op == "status":
         pass
@@ -765,6 +809,9 @@ def run(ad, op: str, item: str = "", count: int = 0, target: str = "", on: bool 
         res.update(combo_time(g, (extra.get("factor") or multiplier) if on else 1.0))
     elif op == "grenade_safe":
         res.update(grenade_safe(g, on))
+    elif op == "random_loadout":
+        res.update(random_loadout(ad, g, character or "leon", extra.get("seed"), extra.get("guns") or 1,
+                                  count or 200, on, damage))
     elif op == "merc_loadout_list":
         res.update(merc_loadout_list(g))
     elif op == "item_ids":
@@ -885,7 +932,7 @@ def run(ad, op: str, item: str = "", count: int = 0, target: str = "", on: bool 
                          "teleport | flashbang | grenade | flashbang_loop | explosive_rounds | unlock_all | mercenaries_unlock | "
                          "infinite_ammo | combo_freeze | merc_timer_freeze | unlimited_health | merc_time | merc_time_bonus | "
                          "explosive_melee | super_melee | auto_spin | aim_turn_speed | combo_time | grenade_safe | punch | "
-                         "merc_loadout_list | item_ids | addresses")
+                         "merc_loadout_list | random_loadout | item_ids | addresses")
     res["status"] = g.status()
     return res
 
@@ -895,7 +942,7 @@ class REModsIn(BaseModel):
     op: str = "status"      # status|list|give|replace|equip|weapon_mod|merc_loadout|spawn_multiplier|flashbang|grenade|
                             # flashbang_loop|explosive_rounds|warp|teleport|mercenaries_unlock|infinite_ammo|combo_freeze|
                             # merc_timer_freeze|unlimited_health|merc_time|combo_time|grenade_safe|punch|
-                            # merc_loadout_list|item_ids|addresses
+                            # merc_loadout_list|random_loadout|item_ids|addresses
     item: str = ""          # give/replace: item name or id ("rocket launcher", "flash grenade", "0x37")
     count: int = 0          # give: amount (0 = the game's default); spawn_multiplier: factor 2..8
     target: str = ""        # replace: case item (name, id or slot); warp: room "r102"; flashbang/grenade: player|aim
@@ -913,6 +960,8 @@ class REModsIn(BaseModel):
     force: float = 0        # super_melee: feet (height for up/both, distance for away); default 100
     direction: str = ""     # super_melee: up | away | both
     speed: float = 0        # auto_spin: degrees per second (default 360)
+    seed: int | None = None # random_loadout: repeat a draw
+    guns: int = 1           # random_loadout: how many random guns (count = ammo rounds each, default 200; damage = firepower x)
 
 
 class REModsOut(BaseModel):
@@ -941,4 +990,4 @@ def re_mods(inp: REModsIn, ctx):
                           f"({g.get('platform')}): see docs/mercenaries.md for what each Mercenaries release has.{hint}")
     return {"result": run(ad, inp.op, inp.item, inp.count, inp.target, inp.on, inp.seconds, inp.character, inp.items,
                           inp.fire_rate, inp.damage, inp.reset, inp.multiplier, inp.melee_only, inp.kind, inp.force,
-                          inp.direction, inp.speed)}
+                          inp.direction, inp.speed, seed=inp.seed, guns=inp.guns)}
