@@ -14,8 +14,10 @@ def test_inventory_all_unknown():
     assert all(v['status'] == 'unknown' for v in inv.values())
 
 
-def test_guard_rejects_while_unpinned():
+def test_guard_exact_build_only():
+    assert t.revision_guard(t.DOL_SHA256, 'USA') is True
     assert t.revision_guard('0' * 64, 'USA') is False
+    assert t.revision_guard(t.DOL_SHA256, 'PAL') is False
 
 
 def test_pre_launch_never_applies():
