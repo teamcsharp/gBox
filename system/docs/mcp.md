@@ -18,6 +18,8 @@ Code: `gbox/mcp_server.py`. Dependency: `pip install "mcp>=2.3"` (the `mcp` extr
 | `get_job(job_id)` | Poll a background job's state, progress, result and error. |
 | `launch_game(game_id, node?, debug?)` | `POST /api/games/{id}/launch`; returns the launch job (output carries the session id). |
 | `list_sessions(include_ended?)` | `/api/sessions`, live ones by default. |
+| `get_broadcast_feeds()` | Current program, available PCs/sessions and stable playback URLs, including frame rate and freshness. |
+| `get_broadcast_status()` | Encoder frame progress, viewers, restarts and isolated emulator audio availability. |
 | `read_memory(session_id, address, length?)` | Session RPC `read_memory` (read-only peek, max 4096 bytes). |
 | `ask_gbox(text, session_id?, chat_id?, timeout_s?)` | Runs gBox's own chat agent (`/api/chat`), waits for the turn, returns `{chat_id, answer, tool_calls, errors, choices}`. Pass `chat_id` back to continue the conversation. Every turn is a metered request in the inbox. |
 | `kb_search(query, game?, k?)` | `/api/kb/search`. |
@@ -31,6 +33,12 @@ Resources: `gbox://sessions` (live sessions), `gbox://games` (first 500 library 
 
 Write/launch tools (`launch_game`, `job_write_memory`, `job_mod`, ...) act on the real games; the job permissions in
 `gbox.toml` (`granted_permissions`) still apply.
+
+For Pine Box on the Spark, `deploy/gbox-mcp.service` is a user service binding only `127.0.0.1:8766/mcp`.
+It uses the deployment's existing bearer token in the Authorization header. Pine's host-network container can
+connect locally; the MCP control interface is not published through the public Tailscale Funnel. Stream discovery
+is read only. Pine relays the selected broadcast feed under its own listener authorization and keeps the gBox
+credential server-side. The standalone reviewer remains available at `/mercenaries` in gBox.
 
 ## Register on this Windows machine
 

@@ -259,6 +259,26 @@ def rig(tmp_path):
     return hub, store, clock, session, frame, tick, logs
 
 
+def test_first_slate_is_not_ready_until_its_picture_exists(rig,monkeypatch):
+    hub,store,clock,session,frame,tick,_=rig
+    feed=hub.attach('pc:jaybuilt')
+    entered,released=threading.Event(),threading.Event()
+    picture=jpg(1280,720)
+    def render(*args,**kwargs):
+        entered.set()
+        assert released.wait(2.)
+        return picture
+    monkeypatch.setattr(B,'render_slate',render)
+    task=threading.Thread(target=tick)
+    task.start()
+    try:
+        assert entered.wait(1.)
+        assert not feed.resolved
+    finally:
+        released.set();task.join(2.)
+    assert feed.resolved and feed.read()==picture
+
+
 def test_program_goes_live_holds_through_a_stall_then_shows_a_slate(rig):
     hub, store, clock, session, frame, tick, _ = rig
     session("spark-a", "Dead or Alive 2", detail={"display": ":91"})
@@ -585,6 +605,22 @@ def test_sink_input_for_finds_the_emulator_stream_by_its_display():
     assert B.sink_input_for(":177", run=run, which=lambda n: None) is None
     bad = lambda argv, **kw: subprocess.CompletedProcess(argv, 1, b"not json", b"")              # noqa: E731
     assert B.sink_input_for(":177", run=bad, which=which) is None
+
+
+def test_audio_stream_pid_isolates_cubeb_and_refuses_ambiguity():
+    items = [{"index": 1, "properties": {"application.process.id": "12", "application.name": "radio"}},
+             {"index": 2, "properties": {"application.process.id": "34", "application.name": "RPCS3"}},
+             {"index": 3, "properties": {"application.process.id": "56", "window.x11.display": ":90"}}]
+    run = lambda argv, **kw: subprocess.CompletedProcess(argv, 0, json.dumps(items).encode(), b"")
+    which = lambda name: "/usr/bin/pactl"
+    assert B.sink_input_for(":90", pid=34, run=run, which=which) == 2
+    assert B.sink_input_for(":90", pid=99, run=run, which=which) is None
+    items.append({"index": 4, "properties": {"application.process.id": "34"}})
+    assert B.sink_input_for(":90", pid=34, run=run, which=which) is None
+    items[:] = [{"index": 5, "properties": {"window.x11.display": ":90"}}]
+    assert B.sink_input_for(":90", pid=34, run=run, which=which) == 5
+    items.append({"index": 6, "properties": {"window.x11.display": ":90"}})
+    assert B.sink_input_for(":90", pid=34, run=run, which=which) is None
 
 
 class PcmProc:

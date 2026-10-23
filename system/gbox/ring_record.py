@@ -1,9 +1,9 @@
-"""Background gameplay ring recording (#1084): clip the last 30 s to 2 min of play after the fact.
+"""Background gameplay ring recording (#1084): clip the last three minutes of play after the fact.
 
 While the operator's pad was used within the last `idle_s` (20 s), the worker records the session's picture into a
 ring of short MPEG-TS segments on local disk (ffmpeg's segment muxer with -segment_wrap); 20 s without pad activity
-stops ffmpeg, the next press starts it again. Nothing is recorded while nobody plays, so idle or agent-driven
-sessions cost nothing. `export(in_s, out_s, target_mb)` picks the segments covering the range, concatenates them,
+stops ffmpeg, the next press starts it again. A live autoplay controller also keeps its ring active. Idle sessions
+cost nothing. `export(in_s, out_s, target_mb)` picks the segments covering the range, concatenates them,
 trims to the exact range and re-encodes to the requested file size (an MP4 artifact the client offers or attaches).
 
     capture   Windows: gdigrab of the emulator window's area on screen (what win_grab's desktop path shows), the
@@ -28,6 +28,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -84,6 +85,25 @@ def last_touch(sid: str) -> float:
     return t
 
 
+def autoplay_active(sid: str) -> bool:
+    """The worker's actual live controller, without importing its tool registry."""
+    module = sys.modules.get('gbox.tools')
+    run = getattr(module, 'AUTOPLAY', {}).get(sid) if module else None
+    thread = (run or {}).get('thread')
+    return bool(thread is not None and thread.is_alive() and not getattr((run or {}).get('driver'), 'stopped', False))
+
+
+def audio_tap_for(ad, process_pid=None):
+    """Copy one owned emulator playback stream; absence is reported, never replaced by a mic or mix."""
+    if HOST_OS == 'windows':
+        return None  # no verified process-loopback capture on Windows; do not record the desktop mix
+    from .broadcast import AudioTap, sink_input_for
+    display = getattr(getattr(ad, 'display', None), 'name', '')
+    pid = process_pid or getattr(getattr(ad, 'proc', None), 'pid', None)
+    index = sink_input_for(display, pid=pid)
+    return AudioTap(index) if index is not None else None
+
+
 # --- encoder choice ------------------------------------------------------------------------------
 
 def _run(run, argv, timeout=20):
@@ -131,7 +151,7 @@ def encoder_args(encoder: str, kbps: int, fps: int, gop: int | None = None, live
         return ["-c:v", encoder, "-preset", "p1" if live else "p5", *(["-tune", "ll"] if live else []), "-rc", "cbr", *rate,
                 *gop_args, "-bf", "0" if live else "2", *([] if live else ["-pix_fmt", "yuv420p"])]
     return ["-c:v", "libx264", "-preset", "ultrafast" if live else "veryfast", *(["-tune", "zerolatency"] if live else []),
-            "-threads", "2" if live else "0", "-pix_fmt", "yuv420p", *rate, *gop_args,
+            "-threads", "2", "-pix_fmt", "yuv420p", *rate, *gop_args,
             *(["-sc_threshold", "0"] if live else [])]
 
 
@@ -305,14 +325,16 @@ class SessionRing:
     """The ring of one session: ffmpeg runs while the pad is in use, its finished segments are indexed in wall time."""
 
     def __init__(self, sid: str, directory: Path, rc, source_fn, ffmpeg: list[str] | None = None, activity=None,
-                 clock=time.time, popen=subprocess.Popen, run=subprocess.run, meta: dict | None = None):
+                 clock=time.time, popen=subprocess.Popen, run=subprocess.run, meta: dict | None = None, audio_fn=None):
         self.sid, self.dir, self.rc, self.source_fn = sid, Path(directory), rc, source_fn
         self.ffmpeg = list(ffmpeg or ffmpeg_cmd())
         self.activity = activity or (lambda: last_touch(sid))
         self.clock, self.popen, self.run = clock, popen, run
         self.meta = dict(meta or {})
+        self.audio_fn, self.audio_tap, self.audio_checked = audio_fn, None, -math.inf
+        self.audio_note = 'Waiting for isolated emulator playback' if audio_fn else 'Isolated emulator audio unavailable'
         self.enabled = bool(getattr(rc, "enabled", True))
-        self.seconds = max(10.0, float(getattr(rc, "seconds", 120)))
+        self.seconds = max(10.0, float(getattr(rc, "seconds", 180)))
         self.segment_s = max(1.0, float(getattr(rc, "segment_s", 5)))
         self.idle_s = max(1.0, float(getattr(rc, "idle_s", 20.0)))
         self.fps = max(5, int(getattr(rc, "fps", 30)))
@@ -332,7 +354,7 @@ class SessionRing:
 
     # --- the gate ---
     def active(self, now: float) -> bool:
-        return self.enabled and not self.ended and now - self.activity() < self.idle_s
+        return self.enabled and not self.ended and (now - self.activity() < self.idle_s or autoplay_active(self.sid))
 
     def tick(self, now: float | None = None) -> None:
         """One monitor step (once a second): start / stop ffmpeg on pad activity, index finished segments, trim."""
@@ -342,6 +364,19 @@ class SessionRing:
                 self._collect(now)
                 self._died(now)
             want = self.active(now)
+            if want and self.proc is not None and self.audio_fn and now - self.audio_checked >= 5:
+                self.audio_checked = now
+                if self.audio_tap is not None and not self.audio_tap.alive():
+                    self._stop(now)
+                elif self.audio_tap is None:
+                    try:
+                        tap = self.audio_fn()
+                    except Exception as exc:
+                        self.audio_note = f'Isolated emulator audio unavailable: {type(exc).__name__}'
+                        tap = None
+                    if tap is not None:
+                        self._stop(now)
+                        self.audio_tap = tap
             if want and self.proc is None and now >= self.retry_at:
                 self._start(now)
             elif not want and self.proc is not None:
@@ -358,6 +393,7 @@ class SessionRing:
         except Exception as exc:                          # noqa: BLE001 - no window yet / no ffmpeg: try again later
             self.error = f"{exc}"
             self.retry_at = now + 10.0
+            self._close_audio()
             return
         self.runs += 1
         no = self.runs
@@ -365,9 +401,22 @@ class SessionRing:
         wrap = wrap_count(self.seconds, self.segment_s, self.kbps, self.max_bytes / 2**20)
         lst = self.dir / f"r{no:03d}.csv"
         gop = int(self.fps * min(self.segment_s, 2.0))
-        argv = [*self.ffmpeg, "-hide_banner", "-loglevel", "error", "-y", *self.source["args"],
+        audio_r = audio_w = None
+        if self.audio_tap is None and self.audio_fn and now - self.audio_checked >= 5:
+            self.audio_checked = now
+            try:
+                self.audio_tap = self.audio_fn()
+            except Exception as exc:
+                self.audio_note = f'Isolated emulator audio unavailable: {type(exc).__name__}'
+        if self.audio_tap is not None and os.name == 'posix':
+            audio_r, audio_w = os.pipe()
+            self.audio_note = 'Isolated emulator playback (48 kHz stereo)'
+        audio_args = ['-thread_queue_size', '512', '-f', 's16le', '-ar', '48000', '-ac', '2', '-i', f'pipe:{audio_r}'] if audio_r is not None else []
+        audio_encode = ['-map', '0:v:0', '-map', '1:a:0', '-c:a', 'aac', '-b:a', '128k', '-ar', '48000', '-ac', '2'] if audio_r is not None else ['-an']
+        argv = [*self.ffmpeg, "-hide_banner", "-loglevel", "error", "-filter_threads", "1", "-y", *self.source["args"],
+                *audio_args,
                 *encoder_args(self.encoder["encoder"], self.kbps, self.fps, gop, live=True),
-                "-force_key_frames", f"expr:gte(t,n_forced*{self.segment_s:g})", "-an",
+                "-force_key_frames", f"expr:gte(t,n_forced*{self.segment_s:g})", *audio_encode,
                 "-f", "segment", "-segment_time", f"{self.segment_s:g}", "-segment_wrap", str(wrap),
                 "-segment_format", "mpegts", "-reset_timestamps", "1",
                 "-segment_list", str(lst), "-segment_list_type", "csv", "-segment_list_size", "0",
@@ -375,17 +424,46 @@ class SessionRing:
         log = open(self.dir / f"r{no:03d}.log", "wb")
         try:
             self.proc = self.popen(argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=log,
+                                   **({'pass_fds': (audio_r,)} if audio_r is not None else {}),
                                    **_low_priority(getattr(self.rc, "priority", "low")))
         except Exception as exc:                          # noqa: BLE001
             log.close()
             self.error, self.retry_at = f"ffmpeg did not start: {exc}", now + 30.0
+            if audio_w is not None:
+                os.close(audio_w)
+            self._close_audio()
             return
         finally:
+            if audio_r is not None:
+                os.close(audio_r)
             if self.proc is None:
                 log.close()
         self._log = log
         self.cur = {"no": no, "prefix": prefix, "list": lst, "pos": 0, "wrap": wrap, "t0": now, "last": None,
-                    "argv": argv, "size": list(self.source["size"])}
+                    "argv": argv, "size": list(self.source["size"]), 'audio': audio_r is not None}
+        if audio_w is not None:
+            threading.Thread(target=self._write_audio, args=(self.proc, audio_w, self.audio_tap), daemon=True,
+                             name=f'ring-audio-{self.sid}').start()
+
+    def _write_audio(self, proc, fd, tap):
+        """Only actual PCM received from the selected playback stream enters the ring."""
+        try:
+            with os.fdopen(fd, 'wb', buffering=0) as out:
+                while self.proc is proc and tap.alive():
+                    data = tap.take(8192)
+                    if not data:
+                        time.sleep(.01)
+                        continue
+                    view = memoryview(data)
+                    while view:
+                        view = view[out.write(view):]
+        except (BrokenPipeError, OSError, ValueError, TypeError):
+            pass
+
+    def _close_audio(self):
+        tap, self.audio_tap = self.audio_tap, None
+        if tap is not None:
+            tap.close()
 
     def _stop(self, now: float) -> None:
         proc, self.proc = self.proc, None
@@ -410,6 +488,7 @@ class SessionRing:
                 pass
         self._collect(now, final=True)
         self._close_log()
+        self._close_audio()
         self.cur = None
         self.failures = 0
 
@@ -417,6 +496,7 @@ class SessionRing:
         code = self.proc.poll()
         self.proc = None
         self._close_log()
+        self._close_audio()
         tail = ""
         if self.cur:
             try:
@@ -477,7 +557,7 @@ class SessionRing:
             # ffmpeg reopens the next file of the wrap right away: an older entry for that file is being overwritten
             self.segments = [s for s in self.segments if s["file"] != path and (final or s["file"] != nxt)]
             seg = {"file": path, "start": start, "end": end, "bytes": st.st_size, "run": cur["no"], "idx": idx,
-                   "size": cur["size"]}
+                   "size": cur["size"], 'audio': cur.get('audio', False)}
             self.segments.append(seg)
             cur["last"] = seg
         self.segments.sort(key=lambda s: s["end"])
@@ -520,7 +600,7 @@ class SessionRing:
             return None
         start = end - dur
         return {"file": path, "start": start, "end": end, "bytes": st.st_size, "run": cur["no"], "idx": idx,
-                "size": cur["size"], "live": True}
+                "size": cur["size"], "live": True, 'audio': cur.get('audio', False)}
 
     # --- the operator's side ---
     def set_enabled(self, on: bool) -> None:
@@ -573,6 +653,9 @@ class SessionRing:
                  "last_touch_age_s": round(touch_age, 1) if touch_age < 1e8 else None,
                  "stops_in_s": round(max(0.0, self.idle_s - touch_age), 1) if self.proc is not None else None,
                  "runs": self.runs, "error": self.error}
+            d.update(audio=bool(self.cur and self.cur.get('audio')), audio_note=self.audio_note,
+                     av_span_s=round(sum(s['end']-s['start'] for s in segs if s.get('audio')), 1),
+                     activity='autoplay' if autoplay_active(self.sid) else 'controller')
             d.update({k: v for k, v in self.meta.items() if k in ("game_id", "title")})
             return d
 
@@ -586,7 +669,12 @@ class SessionRing:
             live = self.live_piece(now)
             if live:
                 segs.append(live)
+            # A pre-audio boot prefix cannot be concatenated as though it contained sound.
+            av = [s for s in segs if s.get('audio')]
+            if av:
+                segs = av
             sel = select_range(segs, in_s, out_s)
+            sel['audio'] = bool(av)
             size = None
             files = []
             by_file = {str(s["file"]): s for s in segs}
@@ -615,7 +703,7 @@ class SessionRing:
         try:
             sel = self.snapshot(in_s, out_s, work)
             seconds = sel["seconds"]
-            kbps = video_kbps(target_mb, seconds, cap_kbps=self.kbps)
+            kbps = video_kbps(target_mb, seconds, cap_kbps=self.kbps, audio_kbps=128 if sel['audio'] else 0)
             w, h = sel["size"]
             height = fit_height(kbps, w, h, self.fps)
             width = _even(round(w * height / max(1, h)))
@@ -631,9 +719,11 @@ class SessionRing:
             while True:
                 vf = (f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
                       f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1")
-                argv = [*self.ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
+                argv = [*self.ffmpeg, "-hide_banner", "-loglevel", "error", "-filter_threads", "1", "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
                         "-ss", f"{sel['offset']:.3f}", "-t", f"{seconds:.3f}", "-vf", vf, "-r", str(self.fps),
-                        *encoder_args(enc, kbps, self.fps, self.fps * 2, live=False), "-an", "-movflags", "+faststart", str(out)]
+                        *encoder_args(enc, kbps, self.fps, self.fps * 2, live=False),
+                        *(['-map', '0:v:0', '-map', '0:a:0', '-c:a', 'aac', '-b:a', '128k'] if sel['audio'] else ['-an']),
+                        "-movflags", "+faststart", str(out)]
                 if progress:
                     progress(30 + 30 * len(attempts), f"Encoding {seconds:.0f} s at {kbps} kb/s ({enc}, {height}p)")
                 out.unlink(missing_ok=True)
@@ -657,7 +747,8 @@ class SessionRing:
                     "out_s": sel["out_s"], "target_mb": target_mb, "kbps": kbps, "width": width, "height": height,
                     "encoder": enc, "encoder_note": self.encoder["note"] if enc == self.encoder["encoder"] else
                     f"libx264 (CPU): {self.encoder['encoder']} failed on the export", "attempts": attempts,
-                    "pieces": len(sel["files"]), "fits": out.stat().st_size <= target_bytes * 1.02}
+                    "pieces": len(sel["files"]), "fits": out.stat().st_size <= target_bytes * 1.02,
+                    'audio': sel['audio'], 'audio_source': 'isolated emulator playback' if sel['audio'] else None}
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
@@ -685,6 +776,8 @@ def start(sid: str, ad, config, game: dict | None = None, alive=None, threads: b
     if rc is None:
         from .config import RecordingConfig
         rc = RecordingConfig()
+    if hasattr(rc, 'model_copy'):
+        rc = rc.model_copy(update={'seconds': max(180, rc.seconds)})
     ffmpeg = kw.pop("ffmpeg", None) or ffmpeg_cmd()
     if not shutil.which(ffmpeg[0]) and not Path(ffmpeg[0]).is_file():
         return {"state": "unsupported", "reason": "ffmpeg not on PATH"}
@@ -699,9 +792,11 @@ def start(sid: str, ad, config, game: dict | None = None, alive=None, threads: b
         if old is not None:
             old.delete()
     run = kw.get("run", subprocess.run)
+    process_pid = kw.pop('process_pid', None)
     ring = SessionRing(sid, ring_dir(config, sid), rc,
                        source_fn=kw.pop("source_fn", None) or (lambda enc, fps: resolve_source(ad, rc, enc, fps, ffmpeg=ffmpeg, run=run)),
-                       ffmpeg=ffmpeg, meta={"game_id": (game or {}).get("game_id"), "title": (game or {}).get("title")}, **kw)
+                       ffmpeg=ffmpeg, meta={"game_id": (game or {}).get("game_id"), "title": (game or {}).get("title")},
+                       audio_fn=kw.pop('audio_fn', None) or ((lambda: audio_tap_for(ad, process_pid)) if getattr(rc, 'audio', True) else None), **kw)
     with _LOCK:
         ACTIVE[sid] = ring
     if threads:

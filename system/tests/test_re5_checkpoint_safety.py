@@ -7,46 +7,93 @@ from gbox.mercs.titles.re5_nav import NavMesh
 def state():
     nav = NavMesh([(-1000.,0.,-1000.),(1000.,0.,-1000.),(1000.,0.,1000.),(-1000.,0.,1000.)],
                   [(0,1,2),(0,2,3)], [[(1,2,1.)],[(0,0,1.)]])
-    p = {"ptr":0x303f8a00,"pos":(100.,0.,0.),"rot":0.,"hp":1000,"action":0}
+    p = {"ptr":0x303f8a00,"pos":(100.,0.,0.),"rot":0.,"hp":1000,"hp_max":1000,"action":0}
     foe = {"ptr":0x30700000,"slot":0,"pos":(100.,0.,250.),"hp":800,"hp_max":800}
-    return {"player":p,"nav":nav,"timer":100.,"enemies":[foe],
+    return {"player":p,"nav":nav,"timer":100.,"kills":0,"enemies":[foe],
             "bonuses":[{"ptr":77,"pos":(800.,0.,0.),"kind":"time","seconds":60}]},foe
 
 
-def test_immunity_crowd_clearing_has_bounded_checkpoint_movement_and_hard_refusals(tmp_path):
+def test_normal_health_crowd_clearing_has_bounded_checkpoint_movement_and_hard_refusals(tmp_path):
     bot = R.Bot(learn_dir=tmp_path)
-    bot.stats.update(immunity_verified=True,hit_immunity=True)
+    bot.stats.update(immunity_verified=False,hit_immunity=False)
     snap,foe = state()
     assert not bot._checkpoint_walk_allowed(snap,[foe],0.)
-    assert not bot._checkpoint_walk_allowed(snap,[foe],1.9)
-    assert bot._checkpoint_walk_allowed(snap,[foe],2.)
-    assert bot._checkpoint_walk_allowed(snap,[foe],4.9)
-    assert not bot._checkpoint_walk_allowed(snap,[foe],5.)
-    assert bot._checkpoint_walk_allowed(snap,[foe],7.)
-    assert not bot._checkpoint_walk_allowed(snap | {"prompt":"mash:circle"},[foe],7.1)
-    assert not bot._checkpoint_walk_allowed(snap,[foe | {"pos":(100.,0.,50.)}],7.2)
+    snap['kills']=1  # native kill increase; stable HP still needs its own observation window.
+    assert not bot._checkpoint_walk_allowed(snap,[foe],1.)
+    assert not bot._checkpoint_walk_allowed(snap,[foe],2.)
+    assert bot._checkpoint_walk_allowed(snap,[foe],2.3)
+    assert bot._checkpoint_walk_allowed(snap,[foe],3.)
+    assert not bot._checkpoint_walk_allowed(snap,[foe],3.2)
+    assert not bot._checkpoint_walk_allowed(snap | {"prompt":"mash:circle"},[foe],3.3)
+    near=foe | {"pos":(100.,0.,50.)}
+    assert not bot._checkpoint_walk_allowed(snap | {'enemies':[near]},[near],3.4)
     imminent = {1:{"pos":(100.,0.,100.),"arming_s":.2,"detonating":False}}
-    assert not bot._checkpoint_walk_allowed(snap | {"ground_mines":imminent},[foe],7.3)
-    bot.stats["immunity_verified"] = False
-    assert not bot._checkpoint_walk_allowed(snap,[foe],20.)
+    assert not bot._checkpoint_walk_allowed(snap | {"ground_mines":imminent},[foe],3.5)
 
 
 def test_continuous_exposed_enemy_still_allows_real_checkpoint_route_ticks(tmp_path):
     now = [10.]
     bot = R.Bot(clock=lambda:now[0],learn_dir=tmp_path)
-    bot.stats.update(immunity_verified=True,hit_immunity=True)
+    bot.stats.update(immunity_verified=False,hit_immunity=False)
     snap,foe = state()
     bot._tick(snap)
     assert bot.stats["phase"] == "clear_nearby"
-    now[0] = 12.1
+    now[0]=11.
+    snap['kills']=1
+    bot._tick(dict(snap))
+    now[0] = 12.3
     action = bot._tick(dict(snap))
     assert bot.stats["phase"] == "gather_time"
     assert bot.route_for == 77 and bot._following_route
     assert "r1" not in action.get("hold",())
-    now[0] = 12.2
+    now[0] = 12.4
     blocked = dict(snap,enemies=[foe | {"pos":(100.,0.,50.)}])
     bot._tick(blocked)
     assert bot.stats["phase"] == "clear_nearby"
+
+
+def test_normal_health_departure_never_advances_towards_enemy_or_after_damage(tmp_path):
+    bot=R.Bot(learn_dir=tmp_path)
+    snap,foe=state()
+    ahead=foe | {'pos':(350.,0.,0.)}
+    snap['enemies']=[ahead]
+    for at in (0.,1.,2.,3.,4.):
+        snap['kills']=int(at>0)
+        assert not bot._checkpoint_walk_allowed(snap,[ahead],at)
+    snap['enemies']=[foe]
+    snap['kills']=2
+    assert not bot._checkpoint_walk_allowed(snap,[foe],4.1)
+    assert bot._checkpoint_walk_allowed(snap,[foe],5.4)
+    hurt=snap | {'player':snap['player'] | {'hp':999}}
+    assert not bot._checkpoint_walk_allowed(hurt,[foe],5.5)
+    low=snap | {'player':snap['player'] | {'hp':300}}
+    assert not bot._checkpoint_walk_allowed(low,[foe],6.5)
+
+
+def test_safe_departure_without_kill_requires_separation_and_fresh_hp_samples(tmp_path):
+    bot=R.Bot(learn_dir=tmp_path)
+    snap,foe=state()
+    foe=foe | {'pos':(100.,0.,300.)}
+    snap['enemies']=[foe]
+    assert not bot._checkpoint_walk_allowed(snap,[foe],0.)
+    assert not bot._checkpoint_walk_allowed(snap,[foe],1.)
+    assert bot._checkpoint_walk_allowed(snap,[foe],2.3)
+    assert not bot._checkpoint_walk_allowed(snap,[foe],8.)  # missing observations reset safety window.
+    off=snap | {'player':snap['player'] | {'pos':(2000.,0.,0.)}}
+    assert not bot._checkpoint_walk_allowed(off,[foe],8.1)
+
+
+def test_departure_checks_committed_checkpoint_instead_of_nearest_other_bonus(tmp_path):
+    bot=R.Bot(learn_dir=tmp_path)
+    snap,foe=state()
+    ahead=foe | {'pos':(400.,0.,0.)}
+    snap['enemies']=[ahead]
+    snap['bonuses'].append({'ptr':88,'pos':(-500.,0.,0.),'kind':'time','seconds':60})
+    bot.bonus_commitment.choose(77,[77,88],0.,700.)
+    for at in (0.,1.,2.,3.):
+        snap['kills']=int(at>0)
+        assert not bot._checkpoint_walk_allowed(snap,[ahead],at)
+    assert bot.bonus_commitment.goal==77  # closer alternate away from foe cannot authorize this unsafe held route.
 
 
 def test_offmesh_mine_escape_uses_existing_bounded_recovery(tmp_path,monkeypatch):

@@ -142,10 +142,16 @@ def create_app(config: Config) -> FastAPI:
     app.state.build_notes = build_notes
     build_notes.watch(app.state.built_mods)
     build_notify.routes(app, store, auth, build_notes)
+    from .mercs import reviewer
+    reviewer.routes(app, config, auth)
 
     # --- shell ---
     @app.get("/")
     def index():
+        return FileResponse(WEB, headers={"cache-control": "no-cache"})
+
+    @app.get("/mercenaries")
+    def mercenaries_reviewer():
         return FileResponse(WEB, headers={"cache-control": "no-cache"})
 
     # --- asset packages (UAP): list, 3D view (GLB with textures), exports for Blender & DCC tools ---

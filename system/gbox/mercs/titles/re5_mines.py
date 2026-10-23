@@ -90,21 +90,29 @@ def _bank(g, address, blocks, key):
             # The constructor accepts an unused record assigned to the vacant quick slot.
             target = next((i for i,r in enumerate(rows) if r[0] == 0 and r[5] < 9), None)
         if target is None: continue
-        if rows[target][0] not in (0, 0x10A):
-            vacant = next((i for i,r in enumerate(rows) if r[0] == 0 and r[5] < 9), None)
-            occupied = {r[5] for r in rows if r[0] and r[5] < 9}
+        updated = [list(row) for row in rows]
+        if updated[target][0] not in (0, 0x10A):
+            vacant = next((i for i,r in enumerate(updated) if i!=target and r[0] == 0 and r[5] < 9), None)
+            occupied = {r[5] for r in updated if r[0] and r[5] < 9}
             free_grid = next((x for x in range(9) if x != 7 and x not in occupied), None)
             if vacant is None or free_grid is None: continue
-            moved = list(rows[target]); moved[5] = free_grid
-            struct.pack_into(">11I", data, base+vacant*M.TEMPLATE_REC, *moved)
-        # Use a quick slot. If the existing mine occupies a different grid, swap grid positions.
-        if mines and rows[target][5] != 7:
-            other = next((i for i,r in enumerate(rows) if r[5] == 7), None)
-            if other is not None:
-                moved = list(rows[other]); moved[5] = rows[target][5]
-                struct.pack_into(">11I", data, base+other*M.TEMPLATE_REC, *moved)
-        struct.pack_into(">11I", data, base+target*M.TEMPLATE_REC,
-                         0x10A, 5, 0xffffffff, 0xffffffff, 0xffffffff, 7, 0, 0, 0, 0, 0)
+            updated[vacant] = list(updated[target]); updated[vacant][5] = free_grid
+        # Sheva Tribal has an empty grid-seven stub AND a shotgun at grid
+        # seven in another record. Preserve the gun and normalize the grid
+        # before the constructor sees the inserted mine.
+        conflict = False
+        for index,row in enumerate(updated):
+            if index == target or not row[0] or row[5] != 7:
+                continue
+            occupied = {r[5] for i,r in enumerate(updated) if i!=target and r[0] and r[5]<9}
+            free_grid = next((x for x in range(9) if x!=7 and x not in occupied),None)
+            if free_grid is None:
+                conflict = True; break
+            row[5] = free_grid
+        if conflict: continue
+        updated[target] = [0x10A,5,0xffffffff,0xffffffff,0xffffffff,7,0,0,0,0,0]
+        for index,row in enumerate(updated):
+            struct.pack_into(">11I",data,base+index*M.TEMPLATE_REC,*row)
         changed += 1
     return g.wr(address, bytes(data)), changed
 
@@ -143,6 +151,46 @@ class Controller:
         self.events = []
         self.owned = {}
         self.scope_player = None
+        self.learning = self.mesh = None
+        self.blast_windows = []
+        self.last_blast_snapshot = None
+        self.last_blast_at = -math.inf
+
+    def bind_learning(self, learning, mesh):
+        if self.mesh is not None and (mesh is None or mesh.learning_sig != self.mesh.learning_sig):
+            self.blast_windows.clear()
+            self.last_blast_snapshot = None
+        self.learning, self.mesh = learning, mesh
+
+    def learn(self, pos, counter, count=1):
+        if self.learning is not None:
+            # The bot flushes this shared Learning every 20 seconds and at
+            # shutdown. Never serialize the complete navigation history once
+            # per nearby death or damage observation on the control tick.
+            self.learning.note_mine(self.mesh,pos,counter,count)
+
+    def observe_blasts(self, snap, now):
+        living = {e['ptr']:e for e in snap.get('enemies',()) if e.get('ptr') is not None}
+        hp = (snap.get('player') or {}).get('hp')
+        for window in list(self.blast_windows):
+            if now-window['at'] > 2.:
+                self.blast_windows.remove(window)
+                continue
+            # A disappearing actor is not a death; require positive->zero HP.
+            dead = [ptr for ptr in window['enemies'] if ptr in living and living[ptr].get('hp') == 0]
+            for ptr in dead:
+                window['enemies'].remove(ptr)
+            if dead:
+                self.learn(window['pos'],'candidate_deaths',len(dead))
+                self.event('mine_death_candidates',now,actor=window['actor'],pos=window['pos'],
+                           enemies=dead,count=len(dead),attribution='unconfirmed: nearby HP deaths in explosion window')
+            if not window['damage'] and hp is not None and hp < window['hp']:
+                window['damage'] = True
+                self.learn(window['pos'],'damage_windows')
+                self.event('mine_damage_window',now,actor=window['actor'],pos=window['pos'],
+                           hp_before=window['hp'],hp_after=hp,attribution='unconfirmed: damage during owned explosion window')
+            if now-window['at'] >= 2.:
+                self.blast_windows.remove(window)
 
     def reset_round(self, now, player=None, reason="new round"):
         """Discard pad/inventory/actor ownership from a completed player scope."""
@@ -153,6 +201,8 @@ class Controller:
         self.retry_at = self.equip_until = self.restore_after = 0.
         self.detonating.clear()
         self.owned.clear()
+        self.blast_windows.clear()
+        self.last_blast_snapshot = None
         self.cadence = Cadence(self.cadence.interval,self.cadence.only,self.cadence.enabled)
         self.scope_player = player
 
@@ -170,6 +220,7 @@ class Controller:
             return False
         self.event('retreat_complete', now, actor=self.escape['actor'], distance=distance,
                    elapsed_s=now-self.escape['at'])
+        self.learn(self.escape['pos'],'retreats')
         self.stats['mine_retreats_completed'] = self.stats.get('mine_retreats_completed', 0)+1
         self.escape = None
         return True
@@ -180,6 +231,10 @@ class Controller:
             if self.scope_player is not None and scope['ptr'] != self.scope_player:
                 self.reset_round(now,scope['ptr'],'player changed')
             self.scope_player = scope['ptr']
+        self.observe_blasts(snap,now)
+        prior = self.last_blast_snapshot if self.last_blast_snapshot and 0 <= now-self.last_blast_at <= 1. else snap
+        self.last_blast_snapshot = {'player':dict(scope), 'enemies':[dict(e) for e in snap.get('enemies',())]}
+        self.last_blast_at = now
         ground = ground_mines(self.m)
         snap['ground_mines'] = ground
         exploding = {ptr for ptr, row in ground.items() if row['detonating']}
@@ -201,6 +256,16 @@ class Controller:
         for ptr in exploding-self.detonating:
             self.event('detonation_observed', now, actor=ptr, pos=ground[ptr]['pos'],
                        owned=ptr in self.owned, combo=snap.get('combo'), score=snap.get('score'))
+            if ptr in self.owned:
+                position = ground[ptr]['pos']
+                self.learn(position,'detonations')
+                p = snap.get('player') or {}
+                self.blast_windows.append({'actor':ptr,'pos':position,'at':now,
+                    'hp':(prior.get('player') or p).get('hp',0),
+                    'damage':False,'enemies':{e['ptr'] for e in prior.get('enemies',()) if e.get('ptr') is not None
+                        and (e.get('hp') or 0)>0 and math.dist(position,e['pos']) <= 1000.}})
+                del self.blast_windows[:-32]
+        self.observe_blasts(snap,now)
         for ptr in set(self.owned)-set(ground):
             old = self.owned.pop(ptr)
             self.event('actor_disappeared', now, actor=ptr, pos=old['pos'],
@@ -265,6 +330,7 @@ class Controller:
                 self.escape = {'pos': tuple(pen['pos']), 'actor': actor, 'at': now}
                 self.event('placement_verified', now, actor=actor, pos=pen['pos'],
                            hp=p.get('hp'), combo=snap.get('combo'), score=snap.get('score'))
+                self.learn(pen['pos'],'placements')
                 self.cadence.acknowledge(now,p["pos"])
                 if ad is not None and not infinite:
                     from ...re5_mods_tool import RE5, INV_OFS, SLOT
@@ -295,6 +361,12 @@ class Controller:
                 return None
         if now < self.retry_at or not self.cadence.due(now,p["pos"]):
             return None
+        if self.learning is not None and self.mesh is not None:
+            site = self.learning.mine_site(self.mesh,p['pos'])
+            self.stats['mine_site_evidence'] = site
+            if site['defer']:
+                self.stats['mine_status'] = 'Moving past a deployment site with repeated observed damage'
+                return None
         # Bot supplies a current measured floor-route preflight before equipping.
         # Legacy standalone callers can omit it; an explicit negative never plants.
         if snap.get('mine_placement_safe') is False:

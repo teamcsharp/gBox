@@ -35,6 +35,7 @@ def main():
     wz.add_argument("--no-browser", action="store_true")
     m = sub.add_parser("mcp", help="MCP server (stdio) so Claude / other agents can drive gBox; --http for streamable HTTP")
     m.add_argument("--server", default=None, help="control plane URL (default: public_url from the config)")
+    m.add_argument("--host", default=None, help="HTTP bind address (default: api_host from the config)")
     m.add_argument("--http", type=int, nargs="?", const=0, default=None, metavar="PORT",
                    help="serve streamable HTTP at /mcp instead of stdio (default port: api_port + 1)")
     a = ap.parse_args()
@@ -69,7 +70,7 @@ def main():
         if a.http is None:
             mcp_server.serve_stdio(server, cfg.token())
         else:
-            mcp_server.serve_http(server, cfg.token(), cfg.api_host, a.http or cfg.api_port + 1)
+            mcp_server.serve_http(server, cfg.token(), a.host or cfg.api_host, a.http or cfg.api_port + 1)
         return
     if a.cmd in ("serve", "worker"):                     # a venv older than a dependency gets it now, before tools import
         from . import deps

@@ -173,6 +173,8 @@ CONVENIENCE = {
     "list_games": ("Search the game library (title words). Returns game_id, title, platform, system, core.",
                    obj({"query": S, "platform": S, "limit": I}, ["query"])),
     "list_workers": ("List all gBox computers, online state, idle time, current agent jobs, and available tools.", obj({})),
+    "get_broadcast_feeds": ("Discover the current program and every gBox gameplay feed on all PCs, including stable session/PC URLs that follow game restarts, frame rate, freshness, resolution and media formats. Pine Box should relay these gameplay feeds; MJPEG is video only, MPEG-TS/HLS include the isolated emulator audio when available. Read only; never changes the on-air program.", obj({})),
+    "get_broadcast_status": ("Read the live broadcast encoders, frame progress, restarts, connected viewers and emulator audio availability. Use this to diagnose lag or silence without interrupting gameplay.", obj({})),
     "select_idle_worker": ("Choose the Windows PC the operator is not using, for a specified tool. Pin later jobs to its returned id.",
                            obj({"tool": S})),
     "capture_worker_screen": ("Capture the other PC's entire desktop as an image. Optionally attach the screenshot and a task step to an inbox request.",
@@ -425,6 +427,10 @@ def build(base_url: str, token: str) -> Server:
             return [{k: g.get(k) for k in ("game_id", "title", "platform", "system", "core", "playable")} for g in games]
         if name == "list_workers":
             return await get("/api/workers")
+        if name == "get_broadcast_feeds":
+            return await get("/api/broadcast/feeds")
+        if name == "get_broadcast_status":
+            return await get("/api/broadcast")
         if name == "select_idle_worker":
             return await select_background_worker(a.get('tool', 'launch_game'))
         if name == "capture_worker_screen":

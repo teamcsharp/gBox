@@ -1139,7 +1139,7 @@ class RetroArchAdapter(CommandAdapter):
         self.granularity = 15 if (platform or "") in COARSE_REWIND else 4
         self.trigger_hotkeys = False                  # the worker owns Select+trigger and D-pad time controls
         # sound (gbox/game_audio.py): the driver of the current attempt and the device it opens ("" = Windows' default)
-        self.audio_driver, self.audio_device = ("null" if HOST_OS == "linux" else "xaudio"), ""
+        self.audio_driver, self.audio_device = ("pulse" if HOST_OS == "linux" else "xaudio"), ""
         if HOST_OS == "windows":
             # local native play: the RetroArch window IS the display; real pads/keyboard go straight in, nothing to stream.
             # send_input (autoplay) types the bound keys into the docked window; get_frame captures that window.
@@ -1163,7 +1163,7 @@ class RetroArchAdapter(CommandAdapter):
                 "network_remote_enable": "true", "network_remote_enable_user_p1": "true", "network_remote_base_port": self._remote_port(),
                 # linux: fill the private Xvfb display exactly, so frames are never cropped; RetroArch letterboxes
                 "video_fullscreen": "true" if HOST_OS == "linux" else "false", "video_windowed_fullscreen": "true",
-                "video_driver": "gl", "audio_driver": "null" if HOST_OS == "linux" else "xaudio",
+                "video_driver": "gl", "audio_driver": "pulse" if HOST_OS == "linux" else "xaudio",
                 "menu_driver": "rgui", "savestate_auto_index": "false", "video_vsync": "false",
                 # no audio clock or vsync on a virtual display: pace emulation to the core's exact frame rate
                 "vrr_runloop_enable": "true", "audio_sync": "false", "video_threaded": "false",
@@ -1541,6 +1541,7 @@ class RetroArchAdapter(CommandAdapter):
             from .gamepads import emulator_environment
             env = emulator_environment(env)
         if HOST_OS == "linux":
+            env.update(provision.linux_audio_env(env))
             self.display = Display()
             env["DISPLAY"] = self.display.name
             # GPU: Xvfb alone renders on the CPU (Mesa llvmpipe). VirtualGL's EGL back end runs the core's OpenGL on
@@ -2168,7 +2169,8 @@ class StandaloneAdapter(Adapter):
         logs = self.config.runtime / "logs"
         logs.mkdir(parents=True, exist_ok=True)
         self.log_path = logs / f"{self.name}-{self.port}.log"
-        env = {**os.environ, "DISPLAY": self.display.name, "QT_QPA_PLATFORM": "xcb", **self.env}
+        env = {**os.environ, **provision.linux_audio_env(), "DISPLAY": self.display.name,
+               "QT_QPA_PLATFORM": "xcb", **self.env}
         self.proc = subprocess.Popen(argv, env=env, stdout=open(self.log_path, "wb"), stderr=subprocess.STDOUT)
         from . import memory_card_sessions
         memory_card_sessions.launched(self)
@@ -3553,7 +3555,10 @@ RPCS3_LINUX_SETTINGS = {
     # RSX thread + 2 SPU threads spinning after sys_rsx_context_iomap. The next boot went through (2026-10-21).
     "Core": {"Accurate RSX reservation access": "true"},
     "Video": {"Renderer": "Vulkan", "Resolution": "1280x720"},
-    "Audio": {"Renderer": '"Null"'},                       # Linux sessions stream video only
+    # The bundled Cubeb Pulse backend aborts on PipeWire's headless output:
+    # cubeb_pulse.c:1177 pulse_stream_get_latency assert(!negative), verified
+    # 2026-10-23. This build includes FAudio/SDL3; use its real playback path.
+    "Audio": {"Renderer": "FAudio", "Microphone type": '"Null"'},
     "Input/Output": {"Keyboard": '"Null"', "Background input enabled": "true"},
     "Miscellaneous": {
         # RPCS3's GDB stub listens on 127.0.0.1:2345 by default: a port probe there ("G..." instead of "$") stopped the

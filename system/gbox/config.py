@@ -132,9 +132,10 @@ class GameAudioConfig(BaseModel):
 
 class RecordingConfig(BaseModel):
     """Background gameplay ring recording (gbox/ring_record.py, #1084): the emulator window is recorded while the
-    operator's pad is in use, so the last `seconds` can be clipped after the fact (right-click the record icon)."""
+    operator's pad or autoplay is active, so the last `seconds` can be clipped after the fact (PiP export icon)."""
     enabled: bool = True              # false: no background capture (the recording tool's op=enable switches it per session)
-    seconds: int = 120                # how far back a clip can reach (the ring keeps this much on disk)
+    seconds: int = 180                # three-minute PiP replay history
+    audio: bool = True                # isolated emulator playback only; never microphone/system monitor
     encoder: str = "auto"             # auto (NVENC when ffmpeg has it, else libx264) | h264_nvenc | hevc_nvenc | libx264
     max_mb: int = 512                 # disk cap per session's ring; the oldest segments go first
     fps: int = 30                     # capture rate

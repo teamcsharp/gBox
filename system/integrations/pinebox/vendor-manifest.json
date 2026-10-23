@@ -1,0 +1,12 @@
+{
+  "name": "hls.js",
+  "version": "1.7.3",
+  "release": "https://github.com/video-dev/hls.js/releases/tag/v1.7.3",
+  "distribution": "https://github.com/video-dev/hls.js/releases/download/v1.7.3/release.zip",
+  "license": "Apache-2.0",
+  "files": [
+    {"path": "frontend/vendor/hls-1.7.3.min.js", "sha256": "a12e7ee1cd64a69dcdb314157e45dafcba705bfb0b1440b7935cb265d374423e"},
+    {"path": "frontend/vendor/LICENSE.hls.js.txt", "sha256": "ca8773cf798c7ed997d4dd7c8e23c348699f8d5b7462636694cc14de6cda12db", "source": "https://raw.githubusercontent.com/video-dev/hls.js/v1.7.3/LICENSE"},
+    {"path": "frontend/vendor/LICENSE-2.0.txt", "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30", "source": "https://www.apache.org/licenses/LICENSE-2.0.txt"}
+  ]
+}

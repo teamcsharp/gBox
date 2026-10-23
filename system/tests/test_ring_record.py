@@ -454,7 +454,7 @@ def test_start_stop_keep_the_ended_ring_for_a_late_export(tmp_path, monkeypatch)
                                                   "linux": str(tmp_path / "rt")})
     ad = SimpleNamespace(display=SimpleNamespace(name=":91", w=640, h=480))
     st = rr.start("w-a", ad, cfg, {"game_id": "g", "title": "T"}, threads=False, ffmpeg=FAKE, run=ok_run())
-    assert st["state"] == "waiting" and st["reach_s"] == 120 and st["idle_s"] == 20
+    assert st["state"] == "waiting" and st["reach_s"] == 180 and st["idle_s"] == 20
     assert rr.start("w-x", SimpleNamespace(display=None), cfg, threads=False, ffmpeg=FAKE)["state"] == "unsupported"
     rr.start("w-b", ad, cfg, threads=False, ffmpeg=FAKE, run=ok_run())
     rr.stop("w-a")

@@ -1245,6 +1245,7 @@ window.taskVizCreate = canvas => {
 <script src="embed-geometry.js"></script>
 <script src="game-surface.js"></script>
 <script src="compact-game.js"></script>
+<script src="pip-media.js"></script>
 <script src="../web/viz/re5-modifiers.js"></script>
 <script src="../web/viz/session-continuity.js"></script>
 <script src="../web/viz/autoplay-coach.js"></script>
@@ -1263,7 +1264,7 @@ window.GBOX_STREAM_FETCH_HEALTH = async src => {
 <script src="../web/viz/stream-watchdog.js"></script>
 <style id="compact-game-style">
   body.gbox-compact { background:#000; }
-  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(#pipmenu):not(script):not(style) { display:none !important; }
+  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(#compact-media):not(#pipmenu):not(script):not(style) { display:none !important; }
   body.gbox-compact:has(#compact-stream[data-stream-state="connected"]) .gbox-stream-badge { display:none !important; }
   #compact-stream { display:none; position:fixed; inset:0; width:100%; height:100%; object-fit:contain; background:#000; }
   body.gbox-compact #compact-stream.on { display:block; }
@@ -3721,6 +3722,22 @@ const compactCoach = GBoxCompactCoach.create({ coach:GBoxAutoplayCoach,
   show:visible => compactHover(visible), focusApp:() => gbox.appFocus?.(),
   gateInput:focused => { document.querySelector('#wv')?.executeJavaScript(`window.gboxPadTextCapture?.(${!!focused})`).catch(() => {}); }
 });
+let compactMedia = null;
+function updateCompactMedia(on) {
+  let host = $('#compact-media');
+  if (on && !compactMedia) {
+    host = document.createElement('div'); host.id = 'compact-media'; document.body.append(host);
+    const style = document.createElement('style'); style.textContent = GBoxPipMedia.CSS; document.head.append(style);
+    compactMedia = GBoxPipMedia.mount(host, {
+      current: () => COMPACT.on ? gboxStreamWatchdog.sessionOf($('#compact-stream')?.getAttribute('src') || '') || COMPACT.sid : null,
+      api: async (url, body, method) => { const r = await gbox.api(url, body, method); if (!r.ok) throw Error(r.error || 'Replay request failed'); return r.data; },
+      preferences: () => gbox.recPreferences(), save: clip => gbox.recSaveClip(clip)
+    });
+  }
+  if (host) host.hidden = !on;
+  if (!on) compactMedia?.poll();
+}
+addEventListener('pagehide', () => compactMedia?.stop());
 const compactController = GBoxCompactGame.create({
   mode: () => VIEW.mode,
   resolve: async requested => {
@@ -3772,6 +3789,7 @@ const compactController = GBoxCompactGame.create({
       if (gboxStreamWatchdog.healthUrl(stream.getAttribute('src') || '') !== gboxStreamWatchdog.healthUrl(compactStreamUrl)) stream.src = compactStreamUrl;
     } else if (stream) { stream.classList.remove('on'); stream.removeAttribute('src'); stream.style.backgroundImage = ''; }
     if (!state.on) compactHover(false);
+    updateCompactMedia(state.on);
     renderClientUpdate();
   },
   pad: sid => miniPadTarget(sid),
@@ -3894,7 +3912,7 @@ function compactHover(show) {
   if (show || !COMPACT.on) apply(); else compactHoverTimer = setTimeout(apply, 450);
 }
 gbox.onCompactView?.(value => compactController.changed(value));
-addEventListener('dblclick', event => { if (COMPACT.on && !event.target.closest?.('#pipmenu') && !GBoxCompactCoach.isCoachTarget(event.target)) { event.preventDefault(); event.stopPropagation(); compactRestore().catch(error => toast(error.message)); } }, true);
+addEventListener('dblclick', event => { if (COMPACT.on && !event.target.closest?.('#pipmenu, #compact-media') && !GBoxCompactCoach.isCoachTarget(event.target)) { event.preventDefault(); event.stopPropagation(); compactRestore().catch(error => toast(error.message)); } }, true);
 addEventListener('pointermove', event => { if (COMPACT.on) compactHover(event.clientY < 32); }, { passive:true });
 addEventListener('resize', () => { if (COMPACT.on) requestAnimationFrame(() => embedTick()); });
 addEventListener('keydown', event => { if (COMPACT.on && event.key === 'Escape' && $('#pipmenu')?.style.display !== 'block' && !GBoxCompactCoach.isCoachTarget(event.target)) { event.preventDefault(); compactRestore().catch(error => toast(error.message)); } });
@@ -4038,7 +4056,7 @@ function pipMenu(x, y) {
   pipModifiers(m, opening);
 }
 document.addEventListener('contextmenu', event => {
-  if (!COMPACT.on || !event.target.closest?.('#compact-stream, #compact-controls, #gpu-game')) return;
+  if (!COMPACT.on || event.target.closest?.('#pipmenu')) return;
   event.preventDefault(); event.stopPropagation(); pipMenu(event.clientX, event.clientY);
 }, true);
 addEventListener('pagehide', closePipMenu);
@@ -4416,6 +4434,7 @@ gbox.onEmbedEvent?.(async ev => {
   if (ev.event === "gameclick") return closePops(null);
   if (ev.event === "whip") return whipSend(ev); if (ev.event === "ptt") return ev.down ? pttDown() : pttUp(); if (ev.event === "rclick") pwRightClick(ev.x, ev.y); if (ev.event === "ctrlclick") eyePoint(ev.x, ev.y); });
 gbox.onHotkey?.(k => { if (k === "eyedropper") return eyeStart();
+  if (k === 'autoplay' && COMPACT.on && compactMedia) return compactMedia.toggleAutobot();
   if (k === "client-refresh" || k === "reset") return clientRefresh.refresh().catch(error => toast(error.message)); // old main processes still name F5 "reset"
   if (k === "fullscreen") return viewAction(isFull() ? "main" : "full"); if (["autoplay", "save", "load", "slot+", "slot-"].includes(k)) gameAction(k); });
 addEventListener("keydown", e => {                            // A / F3 = autoplay, when the app (not a text box) has the keyboard

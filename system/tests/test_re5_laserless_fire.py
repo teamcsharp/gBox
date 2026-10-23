@@ -133,3 +133,57 @@ def test_measured_aim_progress_extends_bounded_acquisition_without_fabricated_sh
     combat.tick(state,state['player'],state['enemies'][0],3.)
     combat.tick(state,state['player'],state['enemies'][0],4.)
     assert not combat.needs_firing_position and combat.stats['shots'] == 0
+
+
+def test_eggs_only_withholds_existing_gun_and_unverified_native_egg(tmp_path):
+    memory,state=scene(0x12);state['rotten_egg_only']=True
+    combat=C.Combat(memory,{},learn_dir=tmp_path)
+    assert 'r1' not in combat.tick(state,state['player'],state['enemies'][0],1.)['hold']
+    state['inventory'][0].update(id=0x136,item=0x36)
+    assert 'r1' not in combat.tick(state,state['player'],state['enemies'][0],1.1)['hold']
+
+
+def test_egg_aligned_throw_ignores_unrelated_gun_laser_but_respects_floor_wall(tmp_path):
+    memory,state=scene(0x36);state.update(rotten_egg_only=True,rotten_egg_native_equipped=True)
+    state['laser']={'from':(0.,140.,0.),'at':(0.,140.,100.)}
+    combat=C.Combat(memory,{},learn_dir=tmp_path)
+    assert {'l1','r1'}<=combat.tick(state,state['player'],state['enemies'][0],1.)['hold']
+    assert 'calibration' in combat.stats['laserless_visibility'] and combat.stats['shots']==0
+    assert not W.fire_policy(0x36,state,state['enemies'][0],(0,0,1000))[0]
+    state['nav'].links=[[],[]]
+    state['player']['pos']=(-300.,0.,0.);state['enemies'][0]['pos']=(300.,0.,0.)
+    assert 'r1' not in combat.tick(state,state['player'],state['enemies'][0],1.2)['hold']
+
+
+def test_native_unequipped_egg_uses_ordinary_quick_equip_without_queuing_more_supply(tmp_path,monkeypatch):
+    from gbox.mercs.titles import re5_eggs as E
+    memory,state=scene(0x0F)
+    egg={'slot':5,'id':0x136,'item':0x36,'type':1,'rounds':5,'grid':7,'hand':False}
+    state['inventory'].append(egg);address=PL+R.P_INV+5*R.INV_SLOT
+    memory.put(address+8,'>I',0x136);memory.put(address+0xC,'>I',5);memory.put(address+0x2D,'>B',1)
+    bot=R.Bot(memory,learn_dir=tmp_path);bot._control_state={'rotten_eggs':{'on':True}}
+    monkeypatch.setattr(E,'queue_supply',lambda ad:pytest.fail('existing native egg must not request more supply'))
+    assert bot._egg_action(state['player'],state,10.)=={'hold':set()}
+    state['player']['action']=0  # A neutral pad has lowered the previously aimed weapon.
+    action=bot._egg_action(state['player'],state,11.1)
+    assert action=={'tap':'ddown'}
+    assert not bot._control_state['rotten_eggs']['native_equipped']
+    assert bot.egg_return_weapon==W.inventory_key(state['inventory'][0])
+
+
+def test_live_off_immediately_clears_native_egg_telemetry_and_pending_status(tmp_path):
+    from gbox.mercs.titles import re5_eggs as E
+    memory,state=scene(0x36);address=PL+R.P_INV;weapon=0x31D00000
+    for offset,value in ((8,0x136),(0xC,5),(0x20,1),(0x30,weapon)):
+        memory.put(address+offset,'>I',value)
+    memory.put(address+0x2D,'>B',1);memory.put(weapon,'>I',E.EGG_VT)
+    memory.put(weapon+0x111C,'>I',PL)
+    bot=R.Bot(memory,learn_dir=tmp_path);cfg={'on':True,'status':'waiting for egg'}
+    bot._control_state={'rotten_eggs':cfg}
+    assert bot._egg_action(state['player'],state,10.) is None
+    assert bot.stats['egg_native_equipped'] and state['rotten_egg_native_equipped']
+    assert bot.stats['egg_status'].startswith('active:')
+    cfg.update(on=False,status='disabled; ordinary weapon restore requested')
+    bot._egg_action(state['player'],state,10.1)
+    assert not bot.stats['egg_native_equipped'] and not state['rotten_egg_native_equipped']
+    assert not cfg['native_equipped'] and bot.stats['egg_status']=='returning to existing gun'

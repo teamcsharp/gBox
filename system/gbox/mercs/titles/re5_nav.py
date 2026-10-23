@@ -594,6 +594,11 @@ class Learning:
             if not isinstance(key, str) or len(key) > 100 or not isinstance(stage, dict):
                 continue
             clean = {"visits": {}, "crossings": {}, "routes": {}}
+            if isinstance(stage.get("mine_sites"), dict):
+                clean["mine_sites"] = {
+                    node: {name:self._count(row.get(name)) for name in self.MINE_COUNTERS}
+                    for node,row in list(stage["mine_sites"].items())[-512:]
+                    if self._index_key(node) and isinstance(row,dict)}
             if isinstance(stage.get("damage_risk"), dict):
                 clean["damage_risk"] = {}
                 for node,row in list(stage["damage_risk"].items())[-self.MAX_DAMAGE_NODES:]:
@@ -737,7 +742,37 @@ class Learning:
                 "nav_failed_portals": sum(v > 0 for v in stage.get("stalls", {}).values()),
                 "nav_oscillating_portals": sum(v > 0 for v in stage.get("oscillations", {}).values()),
                 "nav_damage_risk_nodes": len(stage.get("damage_risk", {})),
-                "nav_damage_incidents_retained": len(stage.get("damage_events", []))}
+                "nav_damage_incidents_retained": len(stage.get("damage_events", [])),
+                "mine_sites_learned": len(stage.get("mine_sites", {}))}
+
+    # Correlated deaths are retained as observations, never labelled mine kills.
+    # Only a future native attacker attribution may populate confirmed_kills.
+    MINE_COUNTERS = ("placements", "detonations", "retreats", "damage_windows",
+                     "candidate_deaths", "confirmed_kills")
+
+    def note_mine(self, mesh, pos, counter, count=1):
+        if mesh is None or counter not in self.MINE_COUNTERS or type(count) is not int or count <= 0:
+            return False
+        node = mesh.member(pos)
+        if node is None:
+            return False
+        sites = self._stage(mesh).setdefault("mine_sites", {})
+        key = str(node)
+        if key not in sites and len(sites) >= 512:
+            del sites[next(iter(sites))]
+        row = sites.setdefault(key,{})
+        row[counter] = min(self.MAX_COUNT,row.get(counter,0)+count)
+        return True
+
+    def mine_site(self, mesh, pos):
+        """A bounded deployment preference; cannot change collision or weapon damage."""
+        node = mesh.member(pos) if mesh is not None else None
+        row = self.stages.get(mesh.learning_sig,{}).get("mine_sites",{}).get(str(node),{}) if mesh else {}
+        placed = row.get("placements",0)
+        damage = row.get("damage_windows",0)
+        return {**{name:row.get(name,0) for name in self.MINE_COUNTERS},
+                "defer": placed >= 2 and damage >= 2 and damage / placed >= .5,
+                "evidence": "observed deployment/retreat and nearby death windows; kills require native attribution"}
 
     def blocked(self, mesh, link):
         if mesh is None or link is None:

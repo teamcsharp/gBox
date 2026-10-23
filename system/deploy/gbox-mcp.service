@@ -1,0 +1,14 @@
+[Unit]
+Description=gBox MCP interface for local agents
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/gBox/system
+ExecStart=%h/gBox/system/.venv-linux-aarch64/bin/python -m gbox --config %h/gBox/system/gbox.toml mcp --http 8766 --host 127.0.0.1 --server http://127.0.0.1:8765
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+
+[Install]
+WantedBy=default.target

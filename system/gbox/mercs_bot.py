@@ -324,6 +324,11 @@ def apply_ops(ad, ops, prof: dict | None = None, stats: dict | None = None) -> l
                 stats["mine_loadout_blocks"] = result["mine_loadout_blocks"]
                 if not result["verified"]:
                     failed.append("mine loadout readback failed")
+            from .mercs.titles import re5_eggs
+            if g.orig.get('rotten_eggs',{}).get('on'):
+                result=re5_eggs.templates(g)
+                stats['egg_loadout_blocks']=result['egg_loadout_blocks']
+                if not result['verified']:failed.append('egg loadout readback failed')
         except Exception as exc:
             failed.append(f"mine loadout: {exc}")
     return failed

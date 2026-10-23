@@ -10,6 +10,20 @@ test('new per-instance preferences capture gameplay and preserve originals',()=>
  assert.equal(R.preferences({capture:'unknown'}).capture,'gameplay');
  assert.throws(()=>R.preferences({exportDir:'relative/folder'}),/absolute/);
 });
+test('publication does not inherit a hidden staging/source attribute on Windows',{skip:process.platform!=='win32'},async()=>fixture(async root=>{
+ const source=path.join(root,'hidden-source.mp4'),destination=path.join(root,'visible-exports');
+ await fsp.writeFile(source,'verified replay bytes');
+ const marked=spawnSync('attrib.exe',['+H',source],{windowsHide:true});
+ assert.equal(marked.status,0,String(marked.stderr));
+ const hidden=file=>{
+  const p=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',`[int][IO.File]::GetAttributes('${file.replace(/'/g,"''")}')`],{windowsHide:true,encoding:'utf8'});
+  assert.equal(p.status,0,p.stderr);return (Number(p.stdout.trim())&2)!==0;
+ };
+ assert.equal(hidden(source),true);
+ const final=await R.publish(source,destination,'visible-replay.mp4');
+ assert.equal(hidden(final),false);assert.equal(await fsp.readFile(final,'utf8'),'verified replay bytes');
+ assert.equal(hidden(source),true);
+}));
 test('verified export keeps the original and avoids another instance filename',async()=>fixture(async root=>{
  const original=path.join(root,'original.mp4'),candidate=path.join(root,'original-20MB.mp4'),destination=path.join(root,'share');
  await fsp.writeFile(original,'full-size original');await fsp.writeFile(candidate,'compressed video');await fsp.mkdir(destination);

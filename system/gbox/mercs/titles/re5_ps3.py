@@ -805,10 +805,38 @@ def enemy_ptrs(m) -> set:
     return {e for e in struct.unpack(f">{n}I", m.rd(arr, 4 * n)) if ptr_ok(e)}
 
 
+def egg_square_blocked(m, request=None):
+    """Fresh carried-ID fence: ordinary Square can eat a rotten egg.
+
+    Only a still-selected enemy-owned/targeted combat request may use Square
+    while holding136. Traversal and item-use requests first require a gun.
+    None means RAM could not establish a stable equipment identity.
+    """
+    try:
+        sp=u32(m,S_PLAYER);pl=u32(m,sp+0x28) if ptr_ok(sp) else 0
+        if not ptr_ok(pl):return None
+        rows=inventory(m,pl)
+        hand=tuple((row['slot'],row['id']) for row in rows if row.get('hand'))
+        if u32(m,S_PLAYER)!=sp or u32(m,sp+0x28)!=pl \
+                or hand!=tuple((row['slot'],row['id']) for row in inventory(m,pl) if row.get('hand')):
+            return None
+        if not any(item==0x136 for slot,item in hand):return False
+        if request and request.get('kind')!=BTN_STAGE and 'square' in str(request.get('token')):
+            enemies=enemy_ptrs(m)
+            if request.get('owner') in enemies or request.get('target') in enemies:
+                latest=selected_prompt(m,include_item_pickups=True)
+                keys=('token','button','kind','mode','label','owner','target')
+                if latest and all(latest.get(key)==request.get(key) for key in keys):return False
+        return True
+    except (ValueError,OSError,struct.error,AttributeError,TypeError):return None
+
+
 def prompt(m) -> str | None:
     """An explicit displayed input request, otherwise the verified grabbed-action stick escape."""
     request = selected_prompt(m)
     if request is not None:
+        if 'square' in request['token'] and egg_square_blocked(m,request) is not False:
+            return None
         return None if mine_pickup(m, request) else request["token"]
     sp = u32(m, S_PLAYER)
     pl = u32(m, sp + 0x28) if ptr_ok(sp) else 0
@@ -964,6 +992,8 @@ class Bot:
         from .. import lessons as lesson_store
         nav_path = (Path(learn_dir) if learn_dir is not None else lesson_store.ROOT) / NAV_LEARNING_FILE
         self.nav_learning = re5_nav.Learning(nav_path)
+        from ..route_guidance import Guidance
+        self.operator_guidance = Guidance(lesson_store.ROOT.parent.parent,'BLUS30491')
         from ..tour import GoalCommitment
         self.bonus_commitment = GoalCommitment()
         self.checkpoint_clear_since = None
@@ -988,6 +1018,13 @@ class Bot:
         self.healing = None
         from .re5_inventory_health import Controller as InventoryHealth
         self.inventory_heal = InventoryHealth(self.stats)
+        self.inventory_egg = InventoryHealth(self.stats,allowed_ids={0x136}|{
+            0x100|wid for wid,spec in re5_weapons.WEAPONS.items()
+            if spec.family in re5_weapons.DIRECT or spec.family=='bow'},prefix='inventory_egg')
+        self.egg_requested = False
+        self.egg_return_weapon = None
+        self.egg_ready_at = None
+        self.egg_rows_at,self.egg_rows,self.egg_pickup_at = -math.inf,[], -math.inf
         self.switch_at = -math.inf
         self.switch_pending = None
         self.switch_blocked, self.switch_failures = {}, {}
@@ -1018,6 +1055,10 @@ class Bot:
 
     # --- the engine's brain interface ---
     def prompt_ok(self, button, snap, now) -> bool:
+        if 'square' in str(button) and self.m is not None \
+                and egg_square_blocked(self.m,selected_prompt(self.m,include_item_pickups=True)) is not False:
+            self.stats['egg_square_prompts_blocked']=self.stats.get('egg_square_prompts_blocked',0)+1
+            return False
         if snap.get('stage_prompt') and 'square' in str(button):
             hazards = [(row['pos'],600.) for row in (snap.get('ground_mines') or {}).values()]
             player = snap.get('player') or {}
@@ -1047,8 +1088,9 @@ class Bot:
             from . import re5_controls
             re5_controls.publish(self._control_state, id(self), {}, False)
         if getattr(self.m, "adapter", None) is not None:
-            from ...re5_mods_tool import maintain_fire_animation
+            from ...re5_mods_tool import maintain_fire_animation,maintain_item_animation
             maintain_fire_animation(self.m.adapter, enabled=False)
+            maintain_item_animation(self.m.adapter, enabled=False)
         save_crossings()
         self.nav_learning.save()
         if self.combat is not None:
@@ -1090,12 +1132,19 @@ class Bot:
             self._stick_token = None
         self.stats["resuscitating"] = bool(snap.get("recovery_active") or snap.get("prompt") == "mash")
         if getattr(self.m, "adapter", None) is not None:
-            from ...re5_mods_tool import maintain_fire_animation
+            from ...re5_mods_tool import maintain_fire_animation,maintain_item_animation
             firing = maintain_fire_animation(self.m.adapter, snap, enabled=(where == "playing"
                 and not self.stats["resuscitating"] and not snap.get("prompt") and not snap.get("stage_prompt")))
             self.stats["fire_animation_active"] = bool(firing.get("active") and firing.get("verified"))
             self.stats["fire_animation_reason"] = firing.get("reason") or ""
             self.stats["fire_animation_writes"] = self.stats.get("fire_animation_writes", 0) + firing.get("writes", 0)
+            item_rates=maintain_item_animation(self.m.adapter,snap,enabled=(where=='playing'
+                and not self.stats['resuscitating'] and not snap.get('prompt') and not snap.get('stage_prompt')))
+            for item in ('mine','egg'):
+                result=item_rates.get(item) or {}
+                self.stats[item+'_animation_active']=bool(result.get('active') and result.get('verified'))
+                self.stats[item+'_animation_reason']=result.get('reason',item_rates.get('error',''))
+                self.stats[item+'_animation_writes']=self.stats.get(item+'_animation_writes',0)+result.get('writes',0)
         if where == "playing" and p and not self.stats["resuscitating"] and getattr(self.m, "adapter", None) is not None:
             from ...re5_mods_tool import maintain_health
             health = maintain_health(self.m.adapter, snap)
@@ -1118,6 +1167,7 @@ class Bot:
         if where != "playing" or not p:
             self.healing = None
             self.inventory_heal.reset()
+            self.inventory_egg.reset()
             if self.combat is not None:
                 self.combat.awareness = []
             if where == "results":
@@ -1141,6 +1191,11 @@ class Bot:
         if not self.round_active:
             self.health_pickup = None
             self.inventory_heal.reset()
+            self.inventory_egg.reset()
+            self.egg_requested=False
+            self.egg_return_weapon=None
+            self.egg_ready_at=None
+            self.egg_rows_at,self.egg_rows,self.egg_pickup_at=-math.inf,[],-math.inf
             self.stats.pop("completed_score_rank", None)
             self.stats.pop("completed_score_rank_source", None)
             self.bonus_commitment.reset()
@@ -1343,6 +1398,10 @@ class Bot:
                 snap["ground_mines"] = re5_mines.ground_mines(self.m)
                 self.nav_dynamic_mines = snap["ground_mines"]
                 placement_safe = self._mine_placement_preflight(snap,self.clock())
+                egg_mode=bool((self._control_state or {}).get('rotten_eggs',{}).get('on'))
+                snap['rotten_egg_only']=egg_mode
+                if egg_mode:
+                    placement_safe,snap['mine_placement_safe']=False,False
                 hp,hp_max = p.get('hp') or 0,p.get('hp_max') or 0
                 heal_needed = self.healing is not None or self.inventory_heal.active or hp_max>0 and 1<hp<=HEAL_AT*hp_max
                 if heal_needed:
@@ -1380,7 +1439,7 @@ class Bot:
                             self.mines.retry_at = self.clock()+2.
                             return self._switch_weapon(gun,self.clock(),"unsafe mine deployment; return to gun") or {"hold":set()}
             act = self._idle_breakout(snap, self._tick(snap))
-            if self.mines.cadence.only and self.mines.cadence.enabled:
+            if self.mines.cadence.only and self.mines.cadence.enabled and not snap.get('rotten_egg_only'):
                 if "r1" in act.get("hold", ()):
                     act = {"hold": set(act.get("hold", ())) - {"l1", "r1"}}
             return self._leave_deployed_mines(act)
@@ -1408,6 +1467,22 @@ class Bot:
         if request and mine_pickup(self.m, request):
             self.stats["mine_pickups_avoided"] = self.stats.get("mine_pickups_avoided", 0) + 1
             return {"hold": set(act.get("hold", ())) - {"square"}}
+        blocked=egg_square_blocked(self.m,request)
+        snap=getattr(self,'_observed_snap',None) or {}
+        if blocked is not False:
+            self.stats['egg_square_uses_blocked']=self.stats.get('egg_square_uses_blocked',0)+1
+            self.stats['egg_status']='Square deferred until an existing gun is confirmed; rotten eggs are thrown only'
+            if blocked is True and hasattr(self,'inventory_egg'):
+                try:
+                    sp=u32(self.m,S_PLAYER);pl=u32(self.m,sp+0x28)
+                    player=dict(snap.get('player') or {})
+                    player.update(ptr=pl,pos=struct.unpack('>3f',self.m.rd(pl+P_POS,12)),
+                        hp=struct.unpack('>h',self.m.rd(pl+P_HP,2))[0],
+                        action=self.m.rd(pl+P_ACTION,1)[0])
+                    fresh=dict(snap,player=player,inventory=inventory(self.m,pl))
+                    return self._egg_action(player,fresh,self.clock(),for_square=True) or {'hold':set()}
+                except (ValueError,OSError,struct.error,TypeError):pass
+            return {'hold':set(act.get('hold',()))-{'square'}}
         return act
 
     def _tick(self, snap: dict) -> dict:
@@ -1426,7 +1501,7 @@ class Bot:
                      and (e.get("hp_max") or 0) > 1 and math.dist(p["pos"], e["pos"]) <= FIGHT_R
                      and (self.combat is None or self.combat.blocked_until.get(e.get("ptr", e.get("slot")), 0) <= now)]
         if getattr(getattr(self, "mines", None), "cadence", None) is not None \
-                and self.mines.cadence.only and self.mines.cadence.enabled:
+                and self.mines.cadence.only and self.mines.cadence.enabled and not snap.get('rotten_egg_only'):
             close_foes = []
         if self.combat is not None:                    # a Majini behind a wall of the mesh is no immediate threat
             close_foes = [e for e in close_foes if self._open(p, e, snap.get("nav"), now)]
@@ -1493,7 +1568,10 @@ class Bot:
             if self.stuck_since is not None:                # and a door). A prompt while stuck = it was blocking him.
                 self.stats["stuck_prompts_cleared"] = self.stats.get("stuck_prompts_cleared", 0) + 1
             return {"tap": "square"}
-        if self._control_state is not None:
+        egg_action=self._egg_action(p,snap,now)
+        if egg_action is not None:
+            return egg_action
+        if self._control_state is not None and not snap.get('rotten_egg_only'):
             from . import re5_controls
             requested = re5_controls.leave_long_gun(snap, self._switch_weapon, now)
             if requested:
@@ -1507,7 +1585,7 @@ class Bot:
         live = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and (e.get("hp_max") or 0) > 1
                 and (abs(e["pos"][1] - p["pos"][1]) < MAX_DY or self._laser_view(snap, e) == "on")]
         if getattr(getattr(self, "mines", None), "cadence", None) is not None \
-                and self.mines.cadence.only and self.mines.cadence.enabled:
+                and self.mines.cadence.only and self.mines.cadence.enabled and not snap.get('rotten_egg_only'):
             live = []
         eq = equipped(snap)
         if eq is not None:
@@ -1552,7 +1630,7 @@ class Bot:
                      (math.dist(p["pos"], e["pos"]) <= SIGHT_R and self._open(p, e, mesh, now))] \
             if self.combat is not None else live
         laserless = self.combat is not None and eq is not None and eq.get("type") == 1 \
-            and (eq.get("item") == 0x0F or (re5_weapons.WEAPONS.get(eq.get("item")) is not None
+            and (eq.get("item") in (0x0F,0x36) or (re5_weapons.WEAPONS.get(eq.get("item")) is not None
                  and re5_weapons.WEAPONS[eq["item"]].family in re5_weapons.DIRECT
                  and self.combat._ray(snap,now) is None))
         if laserless:
@@ -1667,6 +1745,7 @@ class Bot:
                     return self._pursue(p, chase, mesh, snap.get("stage_prompt"), now)
             from . import re5_controls
             if self.switch_pending is None and now - self.switch_at > SWITCH_EVERY_S \
+                    and not snap.get('rotten_egg_only') \
                     and (not close_foes or eq is None or not re5_controls.eligible(eq)) \
                     and not re5_controls.pinned(self._control_state or {}, snap, now):
                 blocked = {key for key, until in self.switch_blocked.items() if until > now}
@@ -2223,6 +2302,169 @@ class Bot:
             return self._switch_weapon(gun, now, "resume after healing")
         return None
 
+    def _egg_action(self,p,snap,now,*,for_square=False):
+        """One input owner for requested egg supply/equip and live-off gun restore."""
+        from . import re5_eggs as E
+        cfg=(self._control_state or {}).get('rotten_eggs') or {}
+        on=bool(cfg.get('on'));snap['rotten_egg_only']=on
+        self.stats['rotten_egg_only']=on
+        self.stats['egg_native_equipped']=snap['rotten_egg_native_equipped']=False
+        self.stats['egg_status']=cfg.get('status','disabled' if not on else 'native egg equip pending')
+        inv=snap.get('inventory') or ();hand=equipped(snap)
+        if on and not self.egg_requested:
+            self.inventory_egg.reset();self.egg_ready_at=None
+            self._egg_departure=None
+            if hand and hand.get('id')!=E.EGG_ID:self.egg_return_weapon=re5_weapons.inventory_key(hand)
+        if not on and self.egg_requested:
+            self.inventory_egg.reset();self.egg_ready_at=None
+            self._egg_departure=None
+        self.egg_requested=on
+        # Square while holding a rotten egg can eat it. Hold an existing gun
+        # for a nearby time-bonus interaction, then return to eggs; never fire it.
+        at_bonus=on and any(b.get('kind','time')=='time' and math.dist(p['pos'],b['pos'])<BONUS_REACH
+                           for b in snap.get('bonuses') or ())
+        restoring=not on or at_bonus or for_square
+        if restoring:
+            cfg['native_equipped']=False
+            if at_bonus or for_square:cfg['status']='safe Square interaction; existing gun required'
+            self.stats['egg_status']=cfg.get('status','returning to existing gun')
+            if not hand or hand.get('id')!=E.EGG_ID:
+                return None
+            choices=[v for v in inv if v.get('id') in self.inventory_egg.allowed_ids
+                     and v.get('id')!=E.EGG_ID and v.get('rounds',0)>0]
+            target=next((v for v in choices if re5_weapons.inventory_key(v)==self.egg_return_weapon),None) \
+                or next(iter(choices),None)
+            cfg['status']='safe Square interaction; existing gun required' if at_bonus or for_square else 'returning to existing gun'
+            self.stats['egg_status']=cfg['status']
+        else:
+            target=E.inventory_item(self.m,p['ptr'],inv) if self.m is not None else None
+            held_native=E.carried(self.m,p['ptr'],inv) if target is not None else None
+            cfg['native_equipped']=snap['rotten_egg_native_equipped']=bool(held_native)
+            if held_native:
+                self.inventory_egg.reset();self.egg_ready_at=None
+                self._egg_departure=None
+                cfg['status']='active: native rotten egg equipped; throw cadence and ballistic calibration unverified'
+                self.stats['egg_native_equipped']=True
+                self.stats['egg_status']=cfg['status']
+                return None
+            if target and target.get('hand'):
+                cfg['status']='native egg selected; waiting for verified game-created uWp36 owner'
+                self.stats['egg_status']=cfg['status']
+                return {'hold':set()}
+            if target:
+                cfg['status']='native egg available; ordinary equip pending'
+                self.stats['egg_status']=cfg['status']
+        if target is not None:
+            self.stats['phase']='egg_inventory' if on and not at_bonus else 'egg_restore_weapon'
+            self.bonus_commitment.pause(now)
+            self.switch_pending=None
+            if re5_weapons.quick_key(target):
+                if self.egg_ready_at is None:self.egg_ready_at=now+1.
+                if now<self.egg_ready_at or p.get('action')==2:return {'hold':set()}
+                self.egg_ready_at=None
+                return self._switch_weapon(target,now,'egg mode selection') or {'hold':set()}
+            return self.inventory_egg.tick(self.m,snap,target,now) or {'hold':set()}
+        if restoring:return {'hold':set()} if hand and hand.get('id')==E.EGG_ID else None
+        self.stats['egg_native_equipped']=False
+        self.stats['egg_status']=cfg.get('status','waiting for native egg supply')
+        ad=getattr(self.m,'adapter',None)
+        if ad is not None:E.queue_supply(ad)
+        if now-self.egg_rows_at>=.4:
+            self.egg_rows=E.world_items(self.m,cfg.get('donor')) if self.m is not None else []
+            self.egg_rows_at=now
+        rows=[v for v in self.egg_rows if v['id']==E.EGG_ID]
+        if not rows or at_bonus:
+            return None if at_bonus else self._pending_egg_departure(p,snap,now)
+        row=min(rows,key=lambda v:math.dist(p['pos'],v['pos']))
+        if now-self.egg_pickup_at<.7:return {'hold':set()}
+        request=selected_prompt(self.m,include_item_pickups=True)
+        if E.pickup_request(self.m,request,row,cfg.get('donor')):
+            self.egg_pickup_at=now
+            self.stats['egg_pickup_presses']=self.stats.get('egg_pickup_presses',0)+1
+            cfg['status']='exact egg pickup pressed; awaiting game-created inventory'
+            self.stats['egg_status']=cfg['status']
+            return {'tap':'square'}
+        mesh=snap.get('nav')
+        if mesh is None:return None
+        if any((e.get('hp') or 0)>0 and math.dist(p['pos'],e['pos'])<350. for e in snap.get('enemies') or ()):
+            return self._pending_egg_departure(p,snap,now)
+        if math.dist(p['pos'],row['pos'])<100.:
+            err=wrap(heading(row['pos'][0]-p['pos'][0],row['pos'][2]-p['pos'][2])-p['rot'])
+            return {'hold':self._turn(err,aiming=False)}
+        self.stats['phase']='acquire_rotten_eggs'
+        self.plan_target={'kind':'item','id':row['handle'],'pos':row['pos']}
+        return self._follow(p,{'ptr':('egg_supply',row['ptr']),'pos':row['pos']},mesh,
+                            snap.get('stage_prompt'),now,learn=False)
+
+    def _pending_egg_departure(self,p,snap,now):
+        """Leave a crowd on measured floor while awaiting native eggs; never authorize a gun or unsafe conversion."""
+        foes=[e for e in snap.get('enemies') or () if (e.get('hp') or 0)>0 and (e.get('hp_max') or 0)>1]
+        close=[e for e in foes if math.dist(p['pos'],e['pos'])<350.]
+        if not close:
+            self._egg_departure=None
+            self.stats['egg_supply_departure_status']='crowd clearance established; native supply may retry'
+            return None
+        if snap.get('prompt') or snap.get('stage_prompt') or snap.get('recovery_active') \
+                or p.get('action') not in (0,1,2) or (p.get('hp') or 0)<=1 \
+                or self.healing is not None or self.inventory_heal.active \
+                or getattr(getattr(self,'mines',None),'escape',None) is not None:
+            self.stats['egg_supply_departure_status']='mandatory action, healing or owned mine escape retains input'
+            return None
+        mesh=snap.get('nav')
+        if mesh is None or any(math.dist(p['pos'],e['pos'])<=TOO_CLOSE for e in close):
+            self.stats['egg_supply_departure_status']='no measured floor or actual contact prevents departure'
+            return None
+        hazards=[(v['pos'],600.) for v in (snap.get('ground_mines') or {}).values()]
+        enemy_margins=[(e['pos'],350.) for e in foes]
+        def safe(route):
+            return bool(route) and all(not isinstance(w,re5_nav.Traversal) for w in route) \
+                and all(mesh.floor_segment(a,b) and mesh.hazard_segment_clear(a,b,hazards)
+                        and mesh.hazard_segment_clear(a,b,enemy_margins,departing=True)
+                        for a,b in zip([p['pos']]+route,route)) \
+                and all(math.dist(route[-1],e['pos'])>=450. for e in close)
+        scope=p.get('ptr'),self.stats.get('rounds',0),mesh.learning_sig
+        state=getattr(self,'_egg_departure',None)
+        if state and (state['scope']!=scope or now<state['at'] or now-state['at']>3.):
+            if state['scope']==scope and math.dist(p['pos'],state['start'])<40.:
+                self.stats['egg_supply_departure_status']='bounded departure made no measured progress; movement released'
+                self._egg_departure=None
+                return {'hold':set()}
+            state=None
+        route=None
+        if state:
+            route=mesh.route(p['pos'],state['goal'],avoid=self.avoid,pull=False,blocked_links=self.blocked_links,
+                             link_penalties=self.nav_learning.link_penalties(mesh))
+            if not safe(route):state=None
+        if state is None:
+            centres=[e['pos'] for e in sorted(close,key=lambda e:math.dist(p['pos'],e['pos']))[:3]]
+            centres.append(tuple(sum(e['pos'][i] for e in close)/len(close) for i in range(3)))
+            options=[]
+            for centre in centres:
+                candidate=mesh.retreat(p['pos'],centre,500.,max_travel=800.,blocked_links=self.blocked_links,
+                                       link_penalties=self.nav_learning.link_penalties(mesh))
+                if safe(candidate):
+                    verified=mesh.route(p['pos'],candidate[-1],avoid=self.avoid,pull=False,blocked_links=self.blocked_links,
+                                        link_penalties=self.nav_learning.link_penalties(mesh))
+                    if safe(verified):options.append(verified)
+            if not options:
+                self._egg_departure=None
+                self.stats['egg_supply_departure_status']='no supported departure clears all enemies and observed mines'
+                return {'hold':set()}
+            route=min(options,key=lambda r:sum(math.dist(a,b) for a,b in zip([p['pos']]+r,r)))
+            state={'scope':scope,'at':now,'start':tuple(p['pos']),'goal':tuple(route[-1])}
+            self.stats['egg_supply_departure_routes']=self.stats.get('egg_supply_departure_routes',0)+1
+        self._egg_departure=state
+        self.bonus_commitment.pause(now)
+        self.stats['phase']='egg_supply_departure'
+        self.stats['egg_supply_departure_status']='supported departure away from crowd; native conversion guard unchanged'
+        self.plan_target={'kind':'egg_supply_departure','id':'clear_crowd','pos':state['goal']}
+        action=self._follow(p,{'ptr':('egg_supply_departure',scope,state['goal']),'pos':state['goal']},mesh,False,now,learn=False)
+        # _follow may replan or consume a portal. Check the actual returned route again before sending input.
+        if not safe(self.route):
+            self.stats['egg_supply_departure_status']='replanned departure failed fresh enemy or floor verification'
+            return {'hold':set()}
+        return {'hold':set(action.get('hold',()))-{'l1','r1','l2','square'}}
+
     def _take(self, p, tgt, stage_prompt, now) -> dict:
         """At a time bonus: walk onto it, then tap square to punch it. The "□ Time bonus" prompt is not the kind-2
         cActionButton the ladders use (the bot stood on a hourglass with stage_prompt False, live 2026-10-21), so the
@@ -2303,6 +2545,13 @@ class Bot:
                     else mesh.route(pos,tgt['pos'],avoid=self.avoid,pull=not self.route_midpoints,
                         blocked_links=self.blocked_links,link_penalties=self.nav_learning.link_penalties(mesh))
                 self.route_at = now
+                if learn and self.route:
+                    hint = self.operator_guidance.route(mesh,pos,tgt['pos'],self.route,now,hazards=hazards,
+                        blocked_links=self.blocked_links,avoid=self.avoid,
+                        penalties=self.nav_learning.link_penalties(mesh))
+                    if hint:
+                        self.route = hint['route']
+                        self.stats['operator_route_suggestion'] = hint['suggestion_id']
         if not self.route:
             if mesh is not None:                           # an explicit no-route result must never mean run through it
                 self._nav_finish("unreachable")
@@ -2428,6 +2677,9 @@ class Bot:
     def _mine_placement_preflight(self, snap, now):
         """Require a supported exit and a conservative observed threat margin, without relying on immunity."""
         p,mesh = snap.get('player'),snap.get('nav')
+        if getattr(self,'mines',None) is not None:
+            bind=getattr(self.mines,'bind_learning',None)
+            if callable(bind):bind(self.nav_learning,mesh)
         allowed = False
         reason = "navigation floor escape unavailable"
         enemies = [e for e in snap.get('enemies') or () if (e.get('hp') or 0)>0]
@@ -2464,36 +2716,81 @@ class Bot:
         return allowed
 
     def _checkpoint_walk_allowed(self, snap, close_foes, now):
-        """Under verified immunity, alternate bounded crowd clearing with checkpoint movement.
+        """Give a supported departure a short movement window after measured safe crowd clearing.
 
-        Contact, mandatory game actions and observed imminent explosives always
-        interrupt the movement lease. Neither immunity nor this lease creates a path.
+        This uses ordinary HP and native kill observations. It never relies on immunity,
+        authorizes walking into a nearby enemy, or substitutes a lease for floor support.
         """
         p = snap.get("player") or {}
-        contact = any((e.get("hp") or 0)>0 and math.dist(p.get("pos",(0,0,0)),e["pos"])<=TOO_CLOSE
-                      for e in close_foes)
-        imminent = any(math.dist(p.get("pos",(0,0,0)),mine["pos"])<600.
-                       and (mine.get("detonating") or 0<=mine.get("arming_s",math.inf)<=.5)
-                       for mine in (snap.get("ground_mines") or {}).values())
-        permitted = self.stats.get("immunity_verified") is True and self.stats.get("hit_immunity") is True \
-            and not contact and not imminent and not snap.get("prompt") and not snap.get("stage_prompt") \
-            and not snap.get("recovery_active") and p.get("action") not in (4,5) and (p.get("hp") or 0)>1 \
-            and snap.get("nav") is not None and any(b.get("kind","time")=="time" for b in snap.get("bonuses") or ())
-        if not permitted or not close_foes:
+        hp,maximum,kills = p.get('hp'),p.get('hp_max'),snap.get('kills')
+        scope = p.get('ptr'),self.stats.get('rounds',0)
+        observed = getattr(self,'_checkpoint_observed',None)
+        if observed is None or observed['scope']!=scope or now<observed['at'] or now-observed['at']>2.:
+            observed = {'scope':scope,'at':now,'hp':hp,'kills':kills,'stable_since':now,'kill_at':-math.inf}
             self.checkpoint_clear_since,self.checkpoint_walk_until = None,0.
-            self.stats["checkpoint_threat_policy"] = "contact/QTE/explosive or unverified immunity" if close_foes else "route normally"
+        else:
+            if isinstance(hp,(int,float)) and isinstance(observed['hp'],(int,float)) and hp<observed['hp']:
+                observed['stable_since']=now
+                self.checkpoint_clear_since,self.checkpoint_walk_until = None,0.
+            if type(kills) is int and type(observed['kills']) is int:
+                if kills>observed['kills']:
+                    observed['kill_at']=now
+                elif kills<observed['kills']:
+                    observed['stable_since'],observed['kill_at']=now,-math.inf
+                    self.checkpoint_clear_since,self.checkpoint_walk_until = None,0.
+            observed.update(at=now,hp=hp,kills=kills)
+        self._checkpoint_observed=observed
+        mesh = snap.get('nav')
+        goals = [b for b in snap.get('bonuses') or () if b.get('kind','time')=='time'
+                 and self.bonus_skip.get(b['ptr'],0)<=now]
+        reason = 'route normally' if not close_foes else 'waiting for stable HP and a measured clear departure'
+        permitted = bool(close_foes and mesh is not None and goals and p.get('pos')
+            and type(hp) in (int,float) and type(maximum) in (int,float) and maximum>0 and hp>maximum*.4
+            and not snap.get('prompt') and not snap.get('stage_prompt') and not snap.get('recovery_active')
+            and p.get('action') not in (4,5))
+        if permitted:
+            # Test the actual first floor segment, not the straight line to an hourglass through a wall.
+            # Use the same held/tour-selected checkpoint that _tick will follow, not a different nearest bonus.
+            goal = self._bonus(p,[],goals,now,mesh,snap.get('timer'),clearance_lease=True)
+            if goal is None:
+                self.checkpoint_clear_since,self.checkpoint_walk_until=None,0.
+                self.stats['checkpoint_threat_policy']='no reachable held time checkpoint'
+                return False
+            route = self.route if self.route_for==goal['ptr'] and self.route else mesh.route(p['pos'],goal['pos'],
+                avoid=self.avoid,blocked_links=self.blocked_links,link_penalties=self.nav_learning.link_penalties(mesh))
+            waypoint = next((w for w in route or () if math.dist(p['pos'],w)>20.),None)
+            permitted = waypoint is not None and not isinstance(waypoint,re5_nav.Traversal)
+            if permitted:
+                distance = math.dist(p['pos'],waypoint)
+                step = tuple(p['pos'][i]+(waypoint[i]-p['pos'][i])*min(1.,200./distance) for i in range(3))
+                enemies = [e for e in snap.get('enemies') or close_foes if (e.get('hp') or 0)>0 and (e.get('hp_max') or 0)>1]
+                mines = [(m['pos'],600.) for m in (snap.get('ground_mines') or {}).values()]
+                permitted = mesh.floor_segment(p['pos'],step) and mesh.hazard_segment_clear(p['pos'],step,mines) \
+                    and mesh.hazard_segment_clear(p['pos'],step,[(e['pos'],220.) for e in enemies]) \
+                    and all(math.dist(step,e['pos'])>=math.dist(p['pos'],e['pos'])-20. for e in close_foes)
+                if not permitted:
+                    reason = 'checkpoint departure blocked by floor, enemy clearance or observed mine'
+                else:
+                    recently_cleared = now-observed['kill_at']<=4.
+                    separated = all(math.dist(p['pos'],e['pos'])>=280. for e in close_foes)
+                    permitted = now-observed['stable_since']>=1. and (recently_cleared or separated)
+            else:
+                reason = 'no supported ordinary floor departure; traversal needs its actual prompt'
+        if not permitted:
+            self.checkpoint_clear_since,self.checkpoint_walk_until = None,0.
+            self.stats['checkpoint_threat_policy']=reason
             return False
         if now < self.checkpoint_walk_until:
-            self.stats["checkpoint_threat_policy"] = "bounded checkpoint movement lease"
+            self.stats['checkpoint_threat_policy']='normal-HP supported departure; movement window <=0.8s'
             return True
         if self.checkpoint_clear_since is None:
             self.checkpoint_clear_since = now
-        if now-self.checkpoint_clear_since >= 2.:
-            self.checkpoint_walk_until,self.checkpoint_clear_since = now+3.,None
-            self.stats["checkpoint_threat_policy"] = "bounded checkpoint movement lease"
+        if now-self.checkpoint_clear_since >= 1.2:
+            self.checkpoint_walk_until,self.checkpoint_clear_since = now+.8,None
+            self.stats['checkpoint_threat_policy']='normal-HP supported departure; movement window <=0.8s'
             self.stats["checkpoint_walk_leases"] = self.stats.get("checkpoint_walk_leases",0)+1
             return True
-        self.stats["checkpoint_threat_policy"] = "bounded two-second exposed-threat clearing"
+        self.stats['checkpoint_threat_policy']='bounded crowd clearing before supported departure'
         return False
 
 
@@ -2789,6 +3086,9 @@ class RE5PS3(Driver):
         self._stats = stats
         def source():
             button = prompt(m)
+            if button and 'square' in str(button) \
+                    and egg_square_blocked(m,selected_prompt(m,include_item_pickups=True)) is not False:
+                return None  # mash requests bypass PromptPresser.ok; fence before that path
             if button == "mash:square":
                 request = selected_prompt(m)
                 if request and request["token"] == button and request["kind"] == BTN_MELEE and request["mode"] == 1:

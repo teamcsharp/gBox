@@ -244,6 +244,11 @@ class RE5:
         st["kill_time_range"] = f"{low:g}-{high:g}" if high > low else f"{low:g}"
         st["fire_animation_enabled"] = bool(self.orig.get("fire_animation_on"))
         st["fire_animation_maintenance"] = self.orig.get("fire_animation_last")
+        eggs=self.orig.get('rotten_eggs') or {}
+        st.update(rotten_egg_only=bool(eggs.get('on')),egg_rate_x=eggs.get('rate',20.),
+                  egg_status=eggs.get('status','disabled'),egg_native_equipped=bool(eggs.get('native_equipped')),
+                  mine_animation_maintenance=self.orig.get('mine_animation_last'),
+                  egg_animation_maintenance=self.orig.get('egg_animation_last'))
         from .mercs.titles import re5_controls
         with re5_controls.LOCK:
             st["capabilities"] = {op: {"available": True, "reason": "Verified build; readback required."}
@@ -251,6 +256,8 @@ class RE5:
             st["capabilities"]["random_weapon"] = re5_controls.capability(self.orig)
             st["capabilities"]["mines"] = {"available": True, "reason": "Mine cadence; loadout takes effect next round."}
             st["capabilities"]["mercs_select"] = {"available": True, "reason": "Choose the next Mercenaries round."}
+            st['capabilities']['rotten_egg_only']={'available':True,
+                'reason':'Native egg pickup/loadout then ordinary equip; active only after actual weapon confirmation.'}
             for op in ("aimbot", "instant_qte", "auto_parry", "knife_knockback"):
                 st["capabilities"][op] = {"available": False, "reason": "No verified live control for this hook."}
             st["operator_overrides"] = {k: dict(v) for k, v in self.orig.get("operator_overrides", {}).items()}
@@ -397,8 +404,8 @@ def _maintain_health(g: RE5, snap=None) -> dict:
 
 # Time per kill: user setting 2026-10-23 is three seconds. Kills come from cGameSys; time belongs to aGame.
 S_MAIN, MAIN_GAMESYS, GS_TIMER, GS_KILLS = 0x0191CEE4, 0x182D4, 0x3E0, 0x3F4
-KILL_TIME_S = 3.0
-KILL_TIME_RANGE = (3.0, 3.0)  # latest operator setting: three seconds per dispatched enemy
+KILL_TIME_S = 10.0
+KILL_TIME_RANGE = (10.0, 10.0)  # operator setting: ten seconds per dispatched enemy
 KILL_TIME_MAX_S = 30.0
 _KILL_LOCK = threading.RLock()
 
@@ -561,6 +568,34 @@ def maintain_fire_animation(ad, snap=None, *, enabled=True) -> dict:
             result.update(verified=False, reason=f"firing animation unavailable: {type(error).__name__}")
         state["fire_animation_last"] = result
         return result
+
+
+def maintain_item_animation(ad,snap=None,*,enabled=True):
+    """Owned rate floats for verified native mine placement or egg FIRE."""
+    with _HEALTH_LOCK:
+        state=ORIG.setdefault(id(ad),{});eggs=state.get('rotten_eggs') or {}
+        output={}
+        try:
+            from .mercs.titles import re5_item_animation as A
+            scope=_animation_scope(ad);game=RE5(ad)
+            class ScopedMemory:
+                def rd(self,address,size):return game.rd(address,size)
+                def wr(self,address,data):
+                    if _animation_scope(ad)!=scope:raise ValueError('item animation process changed')
+                    return game.wr(address,data)
+            memory=ScopedMemory()
+            for key,make,active,rate in (
+                ('mine',A.mine_helper,enabled and not eggs.get('on'),A.MINE_RATE),
+                ('egg',A.egg_helper,enabled and bool(eggs.get('on')),eggs.get('rate',20.))):
+                helper=state.get(key+'_animation_helper')
+                if helper is None:helper=state[key+'_animation_helper']=make()
+                result=helper.update(memory,snap,enabled=bool(active),multiplier=rate,scope=scope)
+                state[key+'_animation_last']=result;output[key]=result
+        except Exception as error:
+            output['error']=type(error).__name__
+        output['verified']='error' not in output and all(
+            result.get('verified',False) for result in output.values() if isinstance(result,dict))
+        return output
 
 
 def _mult(v, default=2.0) -> float:
@@ -862,6 +897,11 @@ def time_bonus_multiplier(g: RE5, mult) -> dict:
 def revert_all(g: RE5) -> dict:
     out = {}
     o = g.orig
+    if o.get('rotten_eggs',{}).get('on'):
+        from .mercs.titles import re5_eggs
+        out['rotten_eggs']=re5_eggs.configure(g,False)['verified']
+    if o.get('mine_animation_helper') is not None or o.get('egg_animation_helper') is not None:
+        out['item_animation']=maintain_item_animation(g.ad,enabled=False)['verified']
     from .mercs.titles.re5_mines import ORIGINAL_BANKS
     for address in ORIGINAL_BANKS:
         key = f"mine_bank_{address:x}"
@@ -937,6 +977,10 @@ def _run(ad, op="status", multiplier=None, on=True, g=None, **extra):
                                         extra.get("stage", 0))
         res.update(verified=True, selection=selected, effective_next_round=True,
                    note="Verified menu selection at the next round boundary; current round continues.")
+    elif op == 'rotten_egg_only':
+        from .mercs.titles import re5_eggs
+        res.update(re5_eggs.configure(g,on,multiplier))
+        if on:re5_eggs.queue_supply(g.ad)
     elif op == "addresses":
         res.update(game=GAME, addresses={k: {**v, "address": f"0x{v['address']:08X}"} for k, v in ADDRESSES.items()},
                    weapons={f"0x{k:02X}": v for k, v in sorted(WEAPONS.items())})

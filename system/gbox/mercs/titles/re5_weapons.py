@@ -36,6 +36,7 @@ _group("mine", 200, [(0x0A, "proximity bomb")], clearance=500)
 _group("launcher", 2500, [(0x0C, "grenade launcher")], clearance=500)
 _group("rocket", 4000, [(0x0D, "rocket launcher")], clearance=700)
 _group("bow", 2000, [(0x0F, "longbow")])
+_group('egg',1000,[(0x36,'rotten egg')])
 _group("flame", 350, [(0x21, "flamethrower")], automatic=True)
 _group("melee", 150, [(0x01, "knife"), (0x0E, "knife (Sheva)"), (0x14, "knife (Excella)"),
                        (0x23, "knife (Wesker)"), (0x22, "stun rod")])
@@ -74,7 +75,7 @@ def fire_policy(wid, snap, target, impact):
         return False, "unknown weapon"
     if weapon.family in DIRECT:
         return True, weapon.family
-    if weapon.family in {"thrown", "mine", "bow", "melee", "flame"}:
+    if weapon.family in {"thrown", "mine", "bow", "egg", "melee", "flame"}:
         return False, "trajectory or contact needs its own verified controller"
     if weapon.family == "launcher" and snap.get("weapon_round_type") not in ROUND_EFFECTS:
         return False, "launcher round type unverified; prefer a direct-fire gun"
@@ -101,6 +102,10 @@ def bow_fire_policy(wid, *, corridor, aligned, loaded):
 
 
 def laserless_fire_policy(wid, *, corridor, aligned, loaded):
+    if wid==0x36:
+        if not corridor or not aligned or not loaded:
+            return False,'rotten egg: supported corridor, camera alignment and stock required'
+        return True,'rotten egg: ordinary aligned throw; ballistic calibration/cover/impact unconfirmed'
     if wid == 0x0F:
         return bow_fire_policy(wid, corridor=corridor, aligned=aligned, loaded=loaded)
     weapon = WEAPONS.get(wid)

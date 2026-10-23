@@ -40,15 +40,27 @@ async function publish(source, directory, basename) {
   try {
     await fsp.copyFile(source, stage, fs.constants.COPYFILE_EXCL);
     if (await fingerprint(source) !== stamp || await digest(stage) !== hash) throw Error('Recording changed or the export copy did not verify');
+    let handle;
     for (let attempt = 0; attempt < 5; attempt++) {
       const parsed = path.parse(basename);
       final = path.join(directory, attempt ? `${parsed.name}-${crypto.randomUUID()}${parsed.ext}` : basename);
-      try { await fsp.copyFile(stage, final, fs.constants.COPYFILE_EXCL); created = true; break; }
+      // CopyFile propagates the hidden attribute of our dot-prefixed staging
+      // file on Windows/SMB. Create the visible destination independently.
+      try { handle = await fsp.open(final, 'wx'); created = true; break; }
       catch (e) { if (e.code !== 'EEXIST') throw e; }
     }
     if (!created) throw Error('Could not reserve a unique export filename');
-    const handle = await fsp.open(final, 'r+');
-    try { await handle.sync(); } finally { await handle.close(); }
+    try {
+      for await (const chunk of fs.createReadStream(stage)) {
+        let offset = 0;
+        while (offset < chunk.length) {
+          const { bytesWritten } = await handle.write(chunk, offset, chunk.length - offset);
+          if (!bytesWritten) throw Error('The export destination stopped accepting data');
+          offset += bytesWritten;
+        }
+      }
+      await handle.sync();
+    } finally { await handle.close(); }
     if (await digest(final) !== hash) throw Error('The published export did not verify');
     return final;
   } catch (e) {
@@ -96,13 +108,19 @@ async function saveReplay({ clip, directory, exportDir, fetchArtifact }) {
     const response = await fetchArtifact(clip.sha256);
     if (!response.ok || !response.body) throw Error(`Replay download failed (${response.status})`);
     const hash = crypto.createHash('sha256'); let bytes = 0;
-    await require('node:stream/promises').pipeline(require('node:stream').Readable.from(response.body), async function* (chunks) {
-      for await (const chunk of chunks) {
-        bytes += chunk.length;
-        if (bytes > clip.bytes) throw Error('Replay download exceeded its expected size');
-        hash.update(chunk); yield chunk;
-      }
-    }, fs.createWriteStream(local, { flags: 'wx' }));
+    // Open before starting the pipeline. A rejected input can otherwise race
+    // createWriteStream's asynchronous open: cleanup sees no file, then the
+    // pending open creates an invalid replay after cleanup has returned.
+    const handle = await fsp.open(local, 'wx');
+    try {
+      await require('node:stream/promises').pipeline(require('node:stream').Readable.from(response.body), async function* (chunks) {
+        for await (const chunk of chunks) {
+          bytes += chunk.length;
+          if (bytes > clip.bytes) throw Error('Replay download exceeded its expected size');
+          hash.update(chunk); yield chunk;
+        }
+      }, handle.createWriteStream());
+    } finally { await handle.close(); }
     if (bytes !== clip.bytes || hash.digest('hex') !== clip.sha256) throw Error('Replay download did not verify');
     verified = true;
     let file;

@@ -369,7 +369,8 @@ async function startWorkerInner(options) {
       { env: { ...process.env, PYTHONPATH: s.repoLocal, GBOX_TOKEN: t, PYTHONUNBUFFERED: "1", GBOX_CLIENT_CONTROL: controlSecret }, cwd: os.homedir(), windowsHide: true });
   }
   const thisWorker = worker;
-  const control = STANDALONE ? null : clientHandoff.workerChannel(thisWorker, controlSecret);
+  const control = STANDALONE ? null : clientHandoff.workerChannel(thisWorker, controlSecret,
+    { verifyPid: pid => verifyWorkerPeer(thisWorker, pid) });
   workerControl = control;
   workerTail = "";
   const out = d => { const t = d.toString(); workerTail = (workerTail + t).slice(-8000); send("task", "win-worker", t); };
@@ -592,10 +593,15 @@ ipcMain.handle("rec:fit", async (_e, file, options) => {
 // Replay export uses this desktop profile's current folder, never a browser download directory.
 ipcMain.handle('rec:save-clip', async (_e, clip) => {
   const o = recordingExport.preferences({ ...RECORDING_DEFAULTS, ...settings().recording });
-  return recordingExport.saveReplay({ clip, directory: REC_DIR, exportDir: o.exportDir,
+  const saved = await recordingExport.saveReplay({ clip, directory: REC_DIR, exportDir: o.exportDir,
     fetchArtifact: async sha => fetch(settings().apiUrl + '/api/artifacts/' + sha, {
       headers: { authorization: `Bearer ${await token()}` }, redirect: 'error', signal: AbortSignal.timeout(120000),
     }) });
+  if (clip.openFolder === true) {
+    try { shell.showItemInFolder(saved.file); saved.folderOpened = true; }
+    catch (error) { saved.warning = 'Replay saved; the folder could not be opened: ' + error.message; }
+  }
+  return saved;
 });
 // chat export: printable HTML -> PDF (Save dialog); a PNG data URL -> the system clipboard as an image
 ipcMain.handle("export:pdf", async (_e, html, name) => {
@@ -618,6 +624,9 @@ app.on("web-contents-created", (_e, wc) => wc.on("before-input-event", (ev, inpu
   }
   if (input.type !== "keyDown") return;
   const toggle = input.key === "F11" || (input.alt && input.key === "Enter");
+  if (input.key === 'F3' && !input.control && !input.alt && !input.shift && mini && wc === mini.webContents) {
+    mini.webContents.send('hotkey', 'autoplay'); ev.preventDefault(); return;
+  }
   if (input.key === "Escape" && compactWindow.state().on) {
     // Shell fields (notably the coach) own Escape. Their guarded DOM handler restores only outside text entry.
     if (wc !== win.webContents) { compactWindow.restore().catch(error => logPush('compact', error.message)); ev.preventDefault(); }
@@ -675,6 +684,53 @@ ipcMain.handle('compact:view', (event, state) => {
   if (!win || event.sender !== win.webContents || (event.senderFrame && event.senderFrame !== win.webContents.mainFrame)) throw Error('Only the gBox app can change picture-in-picture mode.');
   return compactWindow.update(state);
 });
+function canonicalWorkerExe(value) {
+  if (typeof value !== 'string' || !path.win32.isAbsolute(value)) return null;
+  try { return path.win32.normalize(fs.realpathSync(value)).toLowerCase(); } catch { return null; }
+}
+function workerExecutablePaths() {
+  const launcher = venvPython(), allowed = [canonicalWorkerExe(launcher)].filter(Boolean);
+  try {
+    const config = fs.readFileSync(path.join(path.dirname(path.dirname(launcher)), 'pyvenv.cfg'), 'utf8');
+    const home = /^home\s*=\s*(.+?)\s*$/mi.exec(config)?.[1];
+    if (home && path.win32.isAbsolute(home)) {
+      const actual = canonicalWorkerExe(path.win32.join(home, 'python.exe'));
+      if (actual && !allowed.includes(actual)) allowed.push(actual);
+    }
+  } catch {}
+  return allowed;
+}
+function ownedWorkerPids(rows, peerPid, launcherPid, appPid, allowed) {
+  if (![peerPid, launcherPid, appPid].every(v => Number.isSafeInteger(v) && v > 0)) return [];
+  const launcher = rows.find(row => row.ProcessId === launcherPid), peer = rows.find(row => row.ProcessId === peerPid);
+  const launcherExe = canonicalWorkerExe(launcher?.ExecutablePath), peerExe = canonicalWorkerExe(peer?.ExecutablePath);
+  const args = row => /^\s*(?:"[^"]+"|\S+)\s+([\s\S]+)$/.exec(String(row?.CommandLine || ''))?.[1]?.trim();
+  const command = args(launcher);
+  if (!launcher || !peer || launcher.ParentProcessId !== appPid || !launcherExe || !peerExe ||
+      launcherExe !== allowed[0] || !allowed.includes(peerExe) || !command ||
+      !/(?:^|\s)-m\s+gbox\s+.*\bworker\b/.test(command) || args(peer) !== command) return [];
+  if (peerPid !== launcherPid && (peer.ParentProcessId !== launcherPid || peerExe === launcherExe)) return [];
+  return peerPid === launcherPid ? [launcherPid] : [launcherPid, peerPid];
+}
+function readWorkerProcesses(script) {
+  return new Promise((resolve, reject) => execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
+    { windowsHide: true, timeout: 6000 }, (error, out) => {
+      if (error) return reject(Error('Local process activity could not be verified.'));
+      try { const value = JSON.parse(out); if (!Array.isArray(value)) throw Error(); resolve(value); }
+      catch { reject(Error('Local process activity could not be verified.')); }
+    }));
+}
+async function verifyWorkerPeer(owner, pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0 || worker !== owner || owner.exitCode !== null) return false;
+  if (process.platform !== 'win32') return pid === owner.pid;
+  const script = `$ErrorActionPreference='Stop'; $items=@(Get-CimInstance Win32_Process -Filter 'ProcessId=${owner.pid} OR ProcessId=${pid}' |
+    Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine); ConvertTo-Json -InputObject $items -Compress`;
+  try {
+    const rows = await readWorkerProcesses(script);
+    return worker === owner && owner.exitCode === null &&
+      ownedWorkerPids(rows,pid,owner.pid,process.pid,workerExecutablePaths()).includes(pid);
+  } catch { return false; }
+}
 async function inspectClientIdle() {
   if (STANDALONE) return 'This desktop also hosts its control plane; a client-only restart is unavailable.';
   if (startupHandoff?.error) return startupHandoff.error;
@@ -691,18 +747,17 @@ async function inspectClientIdle() {
     }));
   if (disk.reason) return disk.reason;
   const workerPid = worker?.pid || 0;
+  const peerPid = workerControl?.pid?.() || 0;
+  if (workerPid && !peerPid) return 'The local worker has not confirmed a verified desktop control channel.';
   const script = `$ErrorActionPreference='Stop'; $items=@(Get-CimInstance Win32_Process | Where-Object {
-    $_.ProcessId -ne ${process.pid} -and $_.ProcessId -ne ${workerPid} -and (
+    $_.ProcessId -ne ${process.pid} -and (
     ($_.ExecutablePath -and ($_.ExecutablePath -like '*\\gBox\\runtime\\*' -or $_.ExecutablePath.StartsWith(${psq(disk.runtime + path.sep)}, [StringComparison]::OrdinalIgnoreCase))) -or
-    ($_.CommandLine -and $_.CommandLine -match '-m gbox .*\\bworker\\b')) } | Select-Object ProcessId,Name);
+    ($_.CommandLine -and $_.CommandLine -match '-m gbox .*\\bworker\\b')) } | Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine,Name);
     ConvertTo-Json -InputObject $items -Compress`;
-  const found = await new Promise((resolve, reject) => execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
-    { windowsHide: true, timeout: 6000 }, (error, out) => {
-      if (error) return reject(Error('Local process activity could not be verified.'));
-      try { const value = JSON.parse(out); if (!Array.isArray(value)) throw Error(); resolve(value); }
-      catch { reject(Error('Local process activity could not be verified.')); }
-    }));
-  if (found.length) return 'Another local game or worker is still running.';
+  const found = await readWorkerProcesses(script);
+  const owned = workerPid ? ownedWorkerPids(found,peerPid,workerPid,process.pid,workerExecutablePaths()) : [];
+  if (workerPid && !owned.includes(peerPid)) return 'The local worker process ownership could not be verified.';
+  if (found.some(row => !owned.includes(row.ProcessId))) return 'Another local game or worker is still running.';
   // Recheck after the asynchronous process inventory. New work is gated while this runs.
   if (procs.size || rec || recFitBusy || embedded || embedSyncPending || workerStarting) return 'Local activity changed during the desktop refresh check.';
   return null;
@@ -948,6 +1003,11 @@ async function openMini(sid, title, savedBounds, expectedOrigin = clientViews.or
     webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true } });
   mini.loadFile(path.join(__dirname, "mini.html"), { query: { src: `${s.apiUrl}/api/sessions/${encodeURIComponent(sid)}/mjpeg?token=${encodeURIComponent(t)}`, title: title || "" } });
   miniSession = { sid, title, origin: expectedOrigin };
+  const miniWindow = mini;
+  miniWindow.on('system-context-menu', (event, point) => {
+    event.preventDefault(); const bounds = miniWindow.getContentBounds();
+    miniWindow.webContents.send('mini:context', {x:point.x-bounds.x,y:point.y-bounds.y});
+  });
   if (savedBounds) mini.setBounds(savedBounds);
   mini.on("closed", () => { mini = null; miniSession = null; queueClientView(); if (win && !win.isDestroyed()) { win.webContents.send("mini:closed"); win.show(); } });
   mini.on('move', queueClientView); mini.on('resize', queueClientView); queueClientView();

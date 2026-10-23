@@ -487,24 +487,37 @@ def _pulse_env() -> dict:
     return env
 
 
-def sink_input_for(display: str, run=subprocess.run, which=shutil.which) -> int | None:
-    """The PipeWire / PulseAudio playback stream of the emulator on X display `display` (its window.x11.display), or
-    None. Dolphin's streams carry it; RetroArch on the Spark plays no sound (audio_driver null)."""
-    if not display or not which("pactl"):
+def sink_input_for(display: str, run=subprocess.run, which=shutil.which, *, pid: int | None = None) -> int | None:
+    """Find one owned emulator playback stream, never a microphone or the desktop mix.
+
+    Cubeb does not always publish window.x11.display. Its application.process.id
+    still identifies the emulator. Prefer that exact PID and refuse ambiguous
+    display matches or a stream explicitly belonging to a different process.
+    """
+    if not (display or pid) or not which("pactl"):
         return None
     try:
         r = run(["pactl", "-f", "json", "list", "sink-inputs"], capture_output=True, timeout=5, env=_pulse_env())
         items = json.loads(r.stdout or b"[]")
     except Exception:                                            # noqa: BLE001 - no sound server: no sound
         return None
+    exact, by_display = [], []
     for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
         props = item.get("properties") or {}
-        if str(props.get("window.x11.display") or "") == display:
-            try:
-                return int(item.get("index"))
-            except (TypeError, ValueError):
-                return None
-    return None
+        try:
+            index = int(item["index"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        process = str(props.get("application.process.id") or "")
+        if pid and process == str(pid):
+            exact.append(index)
+        elif display and str(props.get("window.x11.display") or "") == display:
+            if not pid or not process:
+                by_display.append(index)
+    matches = exact or by_display
+    return matches[0] if len(matches) == 1 else None
 
 
 class AudioTap:
@@ -1129,10 +1142,11 @@ class Hub:
     def _sink_for(self, feed: Feed) -> int | None:
         """A Spark session's PipeWire stream, when the feed shows one that plays on this machine."""
         row = feed.row or {}
-        display = (row.get("detail") or {}).get("display")
-        if row.get("os") != "linux" or slug(row.get("pc")) != self.host or not display:
+        detail = row.get("detail") or {}
+        display, pid = detail.get("display"), detail.get("pid")
+        if row.get("os") != "linux" or slug(row.get("pc")) != self.host or not (display or pid):
             return None
-        return self.find_sink(str(display))
+        return self.find_sink(str(display or ""), pid=pid)
 
     def ensure_thread(self):
         with self.lock:
@@ -1226,7 +1240,7 @@ class Hub:
         target, why = self.resolve(f, rows)
         if target != f.sid:
             f.sid, f.switched_at, f.since, f.ended_at = target, now, wall, None
-        f.row, f.why, f.resolved = by_id.get(target) if target else None, why, True
+        f.row, f.why = by_id.get(target) if target else None, why
         row = f.row
         if row is None:
             f.kind, f.reader = "none", None
@@ -1240,10 +1254,10 @@ class Hub:
         kind, age = self.source_kind(row)
         f.kind = kind
         if age is not None and age <= self._stale_after(kind):
-            f.reader, f.mode = self._reader(row["session_id"], kind), "live"
+            f.reader, f.mode, f.resolved = self._reader(row["session_id"], kind), "live", True
             return
         if f.last and now - f.switched_at < SWITCH_WAIT_S:       # switched: the previous picture holds a moment
-            f.mode, f.reader = "hold", None
+            f.mode, f.reader, f.resolved = "hold", None, True
             return
         if not row.get("pc_online"):
             line = f"{row['pc']} is offline: waiting for it"
@@ -1270,7 +1284,10 @@ class Hub:
                 self.log(f"gBox broadcast: slate failed: {type(e).__name__}: {e}")
                 f.slate = f.last or BLANK
             f.slate_key = key
-        f.mode, f.reader = "slate", None
+        # Publish initial readiness only after there are actual bytes to show.
+        # Otherwise an HTTP reader can race slow slate rendering and emit the
+        # tiny black bootstrap JPEG as a visible flash.
+        f.mode, f.reader, f.resolved = "slate", None, True
 
     def _cut_desktops(self, feeds: list[Feed], wall: float):
         """Native Windows games that are read: keep their PC's screen coming (as the Other PC view does) and cut each

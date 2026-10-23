@@ -43,8 +43,8 @@ function consume(file, args, { now = Date.now } = {}) {
   } catch (error) { return { requested: true, value: null, error: error.message }; }
 }
 
-function workerChannel(child, secret, { now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
-  let ready = false, buffer = '', pending = null, closed = false;
+function workerChannel(child, secret, { now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout, verifyPid } = {}) {
+  let ready = false, peerPid = null, verifying = null, buffer = '', pending = null, closed = false;
   function finish(error) {
     const p = pending; pending = null;
     if (p) { clearTimer(p.timer); error ? p.reject(Error(error)) : p.resolve(); }
@@ -53,17 +53,33 @@ function workerChannel(child, secret, { now = Date.now, setTimer = setTimeout, c
     closed = true;
     if (pending) finish(pending.accepted && code === 0 ? null : 'The local worker did not confirm a clean idle shutdown.');
   });
+  function accept(v) {
+    if (closed) return;
+    if (v.event === 'ready') { ready = true; peerPid = v.pid; }
+    if (!pending || v.id !== pending.id) return;
+    if (v.event === 'stopping') pending.accepted = true;
+    if (v.event === 'refused') finish(String(v.reason || 'The local worker is busy.').slice(0, 240));
+  }
+  function validateReady(v) {
+    if (verifying !== null) return;
+    let result;
+    try { result = verifyPid ? verifyPid(v.pid) : v.pid === child.pid; }
+    catch { return; }
+    if (!result || typeof result.then !== 'function') { if (result === true) accept(v); return; }
+    verifying = v.pid;
+    Promise.resolve(result).then(ok => { if (ok === true && peerPid === null) accept(v); }, () => {}).finally(() => { verifying = null; });
+  }
   function feed(chunk) {
     buffer += String(chunk); let output = '', i;
     while ((i = buffer.indexOf('\n')) !== -1) {
       const line = buffer.slice(0, i); buffer = buffer.slice(i + 1);
       if (!line.startsWith(PREFIX)) { output += line + '\n'; continue; }
       let v; try { v = JSON.parse(line.slice(PREFIX.length)); } catch { continue; }
-      if (v.v !== 1 || v.pid !== child.pid || v.secret !== secret) continue;
-      if (v.event === 'ready') ready = true;
-      if (!pending || v.id !== pending.id) continue;
-      if (v.event === 'stopping') pending.accepted = true;
-      if (v.event === 'refused') finish(String(v.reason || 'The local worker is busy.').slice(0, 240));
+      if (v.v !== 1 || !Number.isSafeInteger(v.pid) || v.pid <= 0 || v.secret !== secret) continue;
+      if (peerPid !== null) { if (v.pid === peerPid) accept(v); continue; }
+      // A Windows venv redirector owns the stdout pipe but the actual Python
+      // child reports its own PID. Main must prove its lineage/executable first.
+      if (v.event === 'ready') validateReady(v);
     }
     if (buffer.length > 65536) { output += buffer.startsWith(PREFIX) ? '' : buffer; buffer = ''; }
     return output;
@@ -78,7 +94,7 @@ function workerChannel(child, secret, { now = Date.now, setTimer = setTimeout, c
       catch { finish('The local worker control pipe is unavailable.'); }
     });
   }
-  return { feed, stop, ready: () => ready };
+  return { feed, stop, ready: () => ready && !closed, pid: () => ready && !closed ? peerPid : null };
 }
 
 async function perform(io, state) {

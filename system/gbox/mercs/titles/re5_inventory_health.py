@@ -58,9 +58,11 @@ def read_state(memory, player):
 
 class Controller:
     """One bounded, acknowledged menu sequence; it equips but never uses an item."""
-    def __init__(self, stats=None, reader=read_state):
+    def __init__(self, stats=None, reader=read_state, *, allowed_ids=None, prefix='inventory_heal'):
         self.stats=stats if stats is not None else {}
         self.reader=reader
+        self.allowed_ids=HEAL_IDS if allowed_ids is None else frozenset(allowed_ids)
+        self.prefix=prefix
         self.pending=None
         self.retry_at=-math.inf
 
@@ -74,7 +76,7 @@ class Controller:
     def _finish(self, status, now, ui=None):
         pending,self.pending=self.pending,None
         self.retry_at=now+2.
-        self.stats['inventory_heal_status']=status
+        self.stats[self.prefix+'_status']=status
         if pending and pending['opened'] and ui and ui['open']:
             return {'tap':'triangle'}
         return None
@@ -90,12 +92,12 @@ class Controller:
             return self._finish('inventory layout/ownership unverified',now)
         state=self.pending
         if state is None:
-            if now<self.retry_at or not isinstance(item,dict) or item.get('id') not in HEAL_IDS \
+            if now<self.retry_at or not isinstance(item,dict) or item.get('id') not in self.allowed_ids \
                     or item.get('rounds',0)<=0 or type(item.get('grid')) is not int \
                     or not 0<=item['grid']<9 or item['grid'] in QUICK_GRIDS or item.get('hand'):
                 return None
             if ui['open'] or ui['state'] not in (0,1,2):
-                self.stats['inventory_heal_status']='existing menu belongs to another input sequence'
+                self.stats[self.prefix+'_status']='existing menu belongs to another input sequence'
                 return None
             state=self.pending={'player':player['ptr'],'pointer':ui['pointer'],'slot':item.get('slot'),
                 'id':item['id'],'grid':item['grid'],'started':now,'last':-math.inf,'opened':False,
@@ -120,8 +122,8 @@ class Controller:
                    and row.get('id')==state['id'] and row.get('grid')==state['grid']
                    and row.get('rounds',0)>0 and row.get('hand')),None)
         if state['equips'] and held is not None and not ui['open']:
-            self.stats['inventory_heal_equips_confirmed']=self.stats.get('inventory_heal_equips_confirmed',0)+1
-            self.stats['inventory_heal_equipped_slot']=held['slot']
+            self.stats[self.prefix+'_equips_confirmed']=self.stats.get(self.prefix+'_equips_confirmed',0)+1
+            self.stats[self.prefix+'_equipped_slot']=held['slot']
             return self._finish('recovery item confirmed in hand; ordinary use may resume',now)
         if now-state['started']>=4. or state['moves']>=8:
             return self._finish('bounded inventory equip timed out',now,ui)
@@ -132,7 +134,7 @@ class Controller:
                 return {'hold':set()}  # wait for in-hand acknowledgement; never reopen after L1
             if ui['state']==2 and state['opens']<2 and now-state['last']>=.75:
                 state['last'],state['opens']=now,state['opens']+1
-                self.stats['inventory_heal_status']='opening ordinary inventory'
+                self.stats[self.prefix+'_status']='opening ordinary inventory'
                 return {'tap':'triangle'}
             return {'hold':set()}
         if state['opens']==0:
@@ -154,10 +156,10 @@ class Controller:
             key='dup' if row>want_row else 'ddown' if row<want_row else 'dleft' if col>want_col else 'dright'
             state['last'],state['waiting_cursor']=now,cursor
             state['moves']+=1
-            self.stats['inventory_heal_status']='moving observed inventory cursor'
+            self.stats[self.prefix+'_status']='moving observed inventory cursor'
             return {'tap':key}
         if state['equips']>=2:
             return {'hold':set()}
         state['last'],state['equips']=now,state['equips']+1
-        self.stats['inventory_heal_status']='L1 equip; waiting for recovery item in hand'
+        self.stats[self.prefix+'_status']='L1 equip; waiting for selected item in hand'
         return {'tap':'l1'}

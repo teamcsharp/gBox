@@ -1,6 +1,6 @@
 # Replay: the background gameplay ring (#1084)
 
-While you play, gBox keeps the last couple of minutes of the game on disk, so a moment can be clipped **after** it
+While you or autoplay play, gBox keeps the last three minutes of the game on disk, so a moment can be clipped **after** it
 happened. Right-click the title-bar record icon (desktop app; the web client has a **🎬 Replay** button in the session
 panel): a small pop-up shows what the ring holds, lets you set **In** and **Out** on a timeline, a **size goal** in MB,
 and **Export clip**. The clip opens / saves, or attaches to a request (as a message attachment) or a mod card (its
@@ -11,14 +11,19 @@ This includes Replay opened from the embedded Sessions panel. The popup confirms
 continues to offer its normal **Open / save** download.
 The ▾ next to the icon keeps the app recording options (application / gameplay-only recording, size limit).
 
+In picture-in-picture, hover over the game to reveal the recording/export symbol at the bottom right. One click
+exports the last 180 seconds with emulator audio, compresses to the configured size goal, saves to the configured
+export folder, and opens that folder in File Explorer. If a new ring has less history, the saved duration is shown.
+Missing isolated game audio is reported instead of silently capturing a microphone or the desktop mix.
+
 Code: `gbox/ring_record.py` (the ring), `tools.recording` (the worker tool), the hooks in `tools._launch_game`
 (start), `tools._pump` (streamed pad events, session end), `tools.session_op` / `_close_previous_games` (stop).
 Client: the `replay ring pop-up (#1084)` section in both `clients/desktop/index.html` and `clients/web/index.html`.
 
 ## When it records
 
-Only while the controller is in use: capture starts on the first press and stops **20 s** after the last one
-(`[recording] idle_s`). Nothing is recorded while nobody plays, while the agent or autoplay drives the game, or in
+While the controller or a live autoplay thread is active: capture starts on the first press and stops **20 s** after the last one
+(`[recording] idle_s`) unless autoplay is still running. Nothing is recorded while nobody plays or in
 menus you left idle, so an idle session costs nothing. Each active stretch is one ffmpeg run; the clip timeline joins
 the runs and skips the idle gaps.
 
@@ -28,6 +33,7 @@ The pad signal is the one gBox already has; there is no second poller:
 |---|---|
 | Windows (local window) | `padstate.watch_xinput`, the XInput slot-0 poll that feeds the controller glyph, stamps `padstate.PLAYER_TOUCH` |
 | Streamed sessions (the Spark) | the operator's pad events passing through `tools._pump` (`ring_record.touch`, next to `rewind.feed`); only events with a `player` number count (physical pads), not gBox's own presses |
+| Autoplay | the actual worker controller thread is alive and its driver has not stopped |
 
 ## What it captures and how
 
@@ -48,7 +54,11 @@ Linux `nice 10`); on a PC whose CPU is saturated by other work a below-normal ca
 The ring is ffmpeg's segment muxer: MPEG-TS segments of `segment_s` (5 s), `-segment_wrap` so one run rewrites its
 own files, a csv segment list the worker reads incrementally once a second. No frame passes through Python.
 
-**Disk** per session: at most `seconds` (120) of recorded time plus the segment being written, and at most `max_mb`
+**Audio** on Linux is the owned emulator PID's PipeWire playback stream, copied with `parec --monitor-stream` into
+48 kHz stereo AAC. Export reserves audio bitrate and retains the audio track. Windows process-specific audio capture
+is not implemented; PiP AV export reports that limitation instead of substituting whole-PC sound.
+
+**Disk** per session: at most `seconds` (180 minimum for a production PiP ring) of recorded time plus the segment being written, and at most `max_mb`
 (512). The wrap count is chosen so one run fits `max_mb` at the capture bitrate; across runs the oldest segments are
 deleted. Files live under `<runtime>/ring_record/<session id>/`. When a session ends its ring is **kept**
 (`keep_ended`, default 1: the newest ended session) so the last minutes before a crash or a stop can still be
@@ -101,7 +111,7 @@ artifact gBox already holds (`{"sha256", "name", "type"}`), which is how the pop
 ```toml
 [recording]
 enabled = true          # false: no background capture (op=enable switches it on per session)
-seconds = 120           # how far back a clip can reach
+seconds = 180           # workers retain at least 180 s for the PiP replay button
 encoder = "auto"        # auto | h264_nvenc | hevc_nvenc | libx264
 max_mb = 512            # disk cap per session ring
 fps = 30

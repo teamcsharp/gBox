@@ -37,6 +37,86 @@ test('legacy and wrong-process capabilities never authorize worker stop',async()
   x.feed({event:'ready',pid:99}); await assert.rejects(x.control.stop(),/does not support/);
   x.feed({event:'ready',secret:'wrong'});assert.equal(x.control.ready(),false);
 });
+
+test('venv child protocol requires asynchronous process proof and then binds to that exact peer',async()=>{
+  let verify,verified=[];
+  const x=pipe({verifyPid:pid=>{verified.push(pid);return new Promise(resolve=>{verify=resolve;});}});
+  x.feed({event:'ready',pid:99,secret:'wrong'});assert.deepEqual(verified,[]);
+  x.feed({event:'ready',pid:99});
+  assert.equal(x.control.ready(),false);assert.equal(x.control.pid(),null);
+  await assert.rejects(x.control.stop(),/does not support/);
+  x.feed({event:'ready',pid:100});assert.deepEqual(verified,[99],'one lineage probe at a time');
+  verify(true);await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(x.control.ready(),true);assert.equal(x.control.pid(),99);
+  let done=false;const stopping=x.control.stop().then(()=>{done=true;});const id=x.writes[0].id;
+  x.feed({event:'stopping',id,pid:42});assert.equal(done,false,'launcher cannot acknowledge for actual peer');
+  x.feed({event:'stopping',id,pid:99});x.child.emit('close',0);await stopping;
+  assert.equal(x.control.pid(),null);
+});
+
+test('failed process proofs and late ready responses cannot revive a closed worker',async()=>{
+  for(const result of [false,new Error('CIM unavailable')]){
+    const x=pipe({verifyPid:()=>result instanceof Error?Promise.reject(result):Promise.resolve(result)});
+    x.feed({event:'ready',pid:99});await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(x.control.ready(),false);assert.equal(x.control.pid(),null);
+  }
+  let complete;const x=pipe({verifyPid:()=>new Promise(resolve=>{complete=resolve;})});
+  x.feed({event:'ready',pid:99});x.child.emit('close',0);complete(true);
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(x.control.ready(),false);
+});
+
+function workerInspection(extra={}){
+  const main=fs.readFileSync(require.resolve('../clients/desktop/main.js'),'utf8');
+  const source=main.slice(main.indexOf('function canonicalWorkerExe('),main.indexOf('function assertClientSender('));
+  const launcher='C:\\gbox\\venv\\Scripts\\python.exe',base='C:\\uv\\python\\python.exe';
+  const cmd='-P -m gbox --config C:\\repo\\gbox.toml worker --server http://spark:8765 --name mine';
+  const rows=[{ProcessId:42,ParentProcessId:12,ExecutablePath:launcher,CommandLine:`"${launcher}" ${cmd}`},
+    {ProcessId:99,ParentProcessId:42,ExecutablePath:base,CommandLine:`"${base}" ${cmd}`}];
+  const calls=[];
+  const context=vm.createContext({path:path.win32,fs:{realpathSync:v=>v,readFileSync:()=>`home = C:\\uv\\python\n`},
+    venvPython:()=>launcher,process:{pid:12,platform:'win32',env:{}},psq:s=>"'"+s+"'",
+    STANDALONE:false,startupHandoff:null,workerStarting:null,procs:new Map(),rec:null,recFitBusy:false,embedded:null,embedSyncPending:0,
+    worker:{pid:42,exitCode:null},workerControl:{pid:()=>99},settings:()=>({repoLocal:'C:\\repo'}),
+    execFile:(file,args,opts,cb)=>{calls.push({file,args});cb(null,JSON.stringify(file==='powershell.exe'?rows:{runtime:'C:\\repo\\runtime',reason:null}));},...extra});
+  vm.runInContext(source,context);
+  return {context,rows,calls,launcher,base};
+}
+
+test('idle process exclusion requires exact protocol PID, app-owned lineage and canonical venv executable',()=>{
+  const f=workerInspection();const allowed=[f.launcher.toLowerCase(),f.base.toLowerCase()];
+  const verify=()=>[...f.context.ownedWorkerPids(f.rows,99,42,12,allowed)];
+  assert.deepEqual(verify(),[42,99]);
+  assert.deepEqual([...f.context.ownedWorkerPids(f.rows,42,42,12,allowed)],[42]);
+  f.rows[1].ParentProcessId=555;assert.deepEqual(verify(),[]);f.rows[1].ParentProcessId=42;
+  f.rows[1].ExecutablePath='C:\\foreign\\python.exe';assert.deepEqual(verify(),[]);f.rows[1].ExecutablePath=f.base;
+  f.rows[1].CommandLine+=' --different-job';assert.deepEqual(verify(),[]);
+  f.rows[1].CommandLine=f.rows[0].CommandLine.replace(f.launcher,f.base);
+  f.rows[0].ParentProcessId=888;assert.deepEqual(verify(),[]);
+});
+
+test('actual idle preflight excludes only verified launcher and peer, while unknown games and workers still block',async()=>{
+  const f=workerInspection();
+  assert.equal(await f.context.inspectClientIdle(),null);
+  assert.match(f.calls[1].args.at(-1),/ParentProcessId,ExecutablePath,CommandLine/);
+  assert.doesNotMatch(f.calls[1].args.at(-1),/ProcessId -ne 42/,'the PowerShell scan must retain the launcher for lineage proof');
+  f.rows.push({ProcessId:777,ParentProcessId:1,ExecutablePath:'C:\\gBox\\runtime\\game.exe',CommandLine:'game.exe'});
+  assert.match(await f.context.inspectClientIdle(),/Another local game or worker/);
+  f.rows.pop();f.rows[1].ParentProcessId=777;
+  assert.match(await f.context.inspectClientIdle(),/ownership could not be verified/);
+  f.context.workerControl={pid:()=>null};
+  assert.match(await f.context.inspectClientIdle(),/verified desktop control channel/);
+  f.context.worker=null;f.context.workerControl=null;
+  assert.match(await f.context.inspectClientIdle(),/Another local game or worker/,'remaining child is not excused after its owner exits');
+});
+
+test('actual ready PID verification refuses changed worker owner and unavailable process inventory',async()=>{
+  const f=workerInspection();
+  assert.equal(await f.context.verifyWorkerPeer(f.context.worker,99),true);
+  assert.equal(await f.context.verifyWorkerPeer({pid:42,exitCode:null},99),false);
+  f.context.execFile=(_file,_args,_opts,cb)=>cb(Error('denied'));
+  assert.equal(await f.context.verifyWorkerPeer(f.context.worker,99),false);
+  f.context.worker.exitCode=0;assert.equal(await f.context.verifyWorkerPeer(f.context.worker,99),false);
+});
 test('matching acknowledgement must be followed by actual clean child exit',async()=>{
   const x=pipe();x.feed({event:'ready'});let done=false;
   const stopping=x.control.stop().then(()=>{done=true;});const request=x.writes[0];

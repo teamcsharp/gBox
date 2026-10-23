@@ -57,6 +57,32 @@ test('mine cadence and mines-only settings use verified scoped jobs', async () =
   assert.equal(r.commands().length, 2);
 });
 
+test('egg mode uses scoped jobs and accurately retains native supply pending', async () => {
+  const r=rig();r.status.capabilities.rotten_egg_only={available:true};
+  r.status.rotten_egg_only=false;r.status.egg_rate_x=20;
+  r.command=async input=>{
+    r.status.rotten_egg_only=input.on;r.status.egg_rate_x=input.multiplier;
+    r.status.egg_native_equipped=false;return {verified:true};
+  };
+  await r.control.refresh();await r.control.setEggs(true,20);
+  assert.deepEqual(r.commands()[0].body.input,{session_id:'worker-launch',op:'rotten_egg_only',on:true,multiplier:20});
+  assert.match(r.control.state().message,/Waiting for native pickup/);
+  assert.match(M.html(r.control.state()),/Requested animation speed/);
+  assert.match(M.html(r.control.state()),/actual throw cadence and ballistic aim are not yet verified/);
+  assert.match(M.html(r.control.state()),/data-re5-mines[^>]*disabled|fieldset[^>]*disabled/);
+  await r.control.setEggs(false,5);
+  assert.equal(r.commands()[1].body.input.on,false);
+  assert.match(r.control.state().message,/Returning to an existing gun/);
+});
+
+test('egg mode rejects nonfinite or excessive rates and unavailable native capability',async()=>{
+  const r=rig();r.status.capabilities.rotten_egg_only={available:true};await r.control.refresh();
+  for(const rate of [0,20.01,Infinity,NaN]) await r.control.setEggs(true,rate);
+  assert.equal(r.commands().length,0);
+  r.status.capabilities.rotten_egg_only={available:false};await r.control.refresh();
+  await r.control.setEggs(true,20);assert.equal(r.commands().length,0);
+});
+
 test('next Mercenaries selection retains actual mode costume and stage', async () => {
   const r = rig();
   r.status.capabilities.mercs_select = { available: true };
@@ -286,11 +312,12 @@ test('shell binds controls to the exact currently opened session and authenticat
   assert.doesNotMatch(fs.readFileSync(require.resolve('../clients/web/viz/re5-modifiers.js'), 'utf8'), /write_memory|read_memory|Bearer|x-gbox-actor/);
 });
 
-test('time per kill defaults to three seconds and preserves an explicit historical ten-second setting', async () => {
+test('time per kill defaults to ten seconds and preserves explicit historical settings', async () => {
   const row = M.DEFINITIONS.find(d => d.op === 'kill_time');
   assert.equal(row.multiplier, undefined);                     // a toggle never sends seconds, so the range is kept
   assert.match(M.html({ status: { ...BASE, kill_time_on: true } }), /3 s per kill/);
   assert.match(M.html({ status: BASE }), /data-re5-range="kill_time"[^>]*value="3"/);
+  assert.match(M.html({status:{...BASE,kill_time_range:undefined}}), /data-re5-range="kill_time"[^>]*value="10"/);
   const status = { ...structuredClone(BASE), kill_time_on: true, kill_time_range: '10' };
   const on = M.html({ status });
   assert.match(on, /10 s per kill/);
@@ -585,7 +612,7 @@ test('both PiP shells load modifier UI and compact right-click owns the gameplay
   const desktop = desktopPipRig().source, mini = miniPipRig().source;
   for (const source of [desktop, mini])
     assert.match(source, /<script src="\.\.\/web\/viz\/re5-modifiers\.js"><\/script>/);
-  assert.match(desktop, /closest\?\.\('#compact-stream, #compact-controls, #gpu-game'\)/);
+  assert.match(desktop, /if \(!COMPACT\.on \|\| event\.target\.closest\?\.\('#pipmenu'\)\) return/);
   assert.match(desktop, /event\.preventDefault\(\);\s*event\.stopPropagation\(\);\s*pipMenu\(event\.clientX, event\.clientY\)/);
   const follow = desktop.slice(desktop.indexOf('const compactContinuity ='), desktop.indexOf('const compactContinuity =') + 2300);
   assert.match(follow, /closePipMenu\(\)/);

@@ -10,6 +10,7 @@ import os
 import platform
 import re
 import shutil
+import stat
 import subprocess
 import threading
 import time
@@ -579,7 +580,34 @@ def rpcs3_linux_env(cfg: Config) -> dict:
     never the user's ~/.config."""
     home = rpcs3_linux_home(cfg)
     return {"XDG_CONFIG_HOME": str(home / "config"), "XDG_CACHE_HOME": str(home / "cache"),
-            "XDG_DATA_HOME": str(home / "data")}
+            "XDG_DATA_HOME": str(home / "data"), **linux_audio_env(),
+            # FAudio uses bundled SDL3. The exact driver is enumerated by that
+            # binary; Pulse keeps playback individually addressable by PID.
+            "SDL_AUDIO_DRIVER": os.environ.get("SDL_AUDIO_DRIVER") or "pulseaudio"}
+
+
+def linux_audio_env(env=None, *, runtime_dir=None) -> dict:
+    """Connect service-launched games to this user's existing Pulse/PipeWire socket.
+
+    A system service does not inherit a desktop login's runtime directory. Cubeb
+    otherwise falls back to ALSA, which may have no device on a headless node.
+    Explicit operator settings win; never select another user's audio server.
+    """
+    env = os.environ if env is None else env
+    out = {key: env[key] for key in ("XDG_RUNTIME_DIR", "PULSE_SERVER") if env.get(key)}
+    if not hasattr(os, "getuid"):
+        return out
+    uid = os.getuid()
+    runtime = Path(out.get("XDG_RUNTIME_DIR") or runtime_dir or f"/run/user/{uid}")
+    pulse = runtime / "pulse" / "native"
+    try:
+        info = pulse.stat()
+        if info.st_uid == uid and stat.S_ISSOCK(info.st_mode):
+            out.setdefault("XDG_RUNTIME_DIR", str(runtime))
+            out.setdefault("PULSE_SERVER", "unix:" + str(pulse))
+    except OSError:
+        pass
+    return out
 
 
 def rpcs3_linux_dir(cfg: Config) -> Path:

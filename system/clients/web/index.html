@@ -14,6 +14,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <link rel="icon" href="/brand/gbox-logo.svg" type="image/svg+xml">
 <link rel="alternate icon" href="/favicon.ico">
 <link rel="stylesheet" href="/viz/library-home.css">
+<link rel="stylesheet" href="/viz/mercs-reviewer.css">
 <style>
   /* no window-level scrollbars: pages still scroll with the wheel / trackpad */
   html, body { scrollbar-width:none !important; } html::-webkit-scrollbar, body::-webkit-scrollbar { display:none !important; }
@@ -311,6 +312,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/watch-analytics.js"></script>
 <script src="/viz/autoplay-coach.js"></script>
 <script src="/viz/tactical-map.js"></script>
+<script src="/viz/mercs-reviewer.js"></script>
 <script src="/viz/bot-demo.js"></script>
 <script src="/viz/re5-modifiers.js"></script>
 <script src="/viz/re4-spawn.js"></script>
@@ -418,7 +420,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
   <div class="grip" id="pipgrip" title="Drag to resize"></div>
 </div>
 <script>
-const tabs = { Home: homeView, Library: library, Mods: modsView, Builds: buildsView, Models: selfieModelsView, Sessions: sessionsView, Controllers: controllersView, Jobs: jobs, Tools: toolsView, Workers: workersView, Audit: audit, Metrics: metrics };
+const tabs = { Home: homeView, Library: library, Mods: modsView, Builds: buildsView, Models: selfieModelsView, Sessions: sessionsView, Mercenaries: mercsReviewerView, Controllers: controllersView, Jobs: jobs, Tools: toolsView, Workers: workersView, Audit: audit, Metrics: metrics };
 const $ = s => document.querySelector(s), esc = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
 
 // Keep a fixed-position menu inside the window (#1052, #1397): measure it once its content is in, flip it above the pointer
@@ -759,7 +761,10 @@ async function apiRaw(path, body, method, timeoutMs = 0) {
   }
   if (!r.ok) throw new Error(r.status + " " + (await r.text())); return r.json();
 }
-let cur = "Home", timer = null, viewRevision = 0, sessionMode = null;
+let cur = location.pathname === '/mercenaries' ? 'Mercenaries' : "Home", timer = null, viewRevision = 0, sessionMode = null;
+const MERCS_REVIEWER = {ctl:null};
+function mercsReviewerView(){ return '<div id="mercs-reviewer"></div>'; }
+mercsReviewerView.after = () => { MERCS_REVIEWER.ctl = GBoxMercsReviewer.mount(document.getElementById('mercs-reviewer'), {api,visible:()=>cur==='Mercenaries'}); };
 const HOME = { ctl: null, search: "" };
 const EXAM = { sid: null, cache: {}, viewer: null, mod: null, busy: new Map() };   // Examine 3D state (see examineView)
 const GAME_MODELS = { viewer: null, module: null, models: [], selection: 0 };
@@ -794,6 +799,7 @@ async function watchPanel() {
 }
 async function show(t, ...args) {
   const revision = ++viewRevision;
+  MERCS_REVIEWER.ctl?.dispose(); MERCS_REVIEWER.ctl=null;
   HOME.ctl?.dispose(); HOME.ctl = null;
   SELFIE_MODELS.ctl?.dispose(); SELFIE_MODELS.ctl=null;
   COACH.ctl?.dispose(); COACH.ctl = null;       // a note still capturing resumes its status when the header is back

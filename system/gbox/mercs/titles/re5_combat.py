@@ -680,10 +680,16 @@ class Combat:
             # Standalone callers own a new decision, and may reuse a mutable snapshot fixture between ticks.
             self._observed_snap = None
         pl, wid, rounds, shot = self.observe(snap, now)
+        if snap.get('rotten_egg_only') and wid!=0x36:
+            self.stats['combat']='eggs only: awaiting native egg equip; gun trigger withheld'
+            return {'hold':set()}
+        if snap.get('rotten_egg_only') and not snap.get('rotten_egg_native_equipped'):
+            self.stats['combat']='eggs only: native in-hand weapon ownership unverified; trigger withheld'
+            return {'hold':set()}
         from .re5_weapons import DIRECT, WEAPONS
         weapon = WEAPONS.get(wid)
         self.needs_firing_position = False
-        if wid == 0x0F or (weapon is not None and weapon.family in DIRECT and self._ray(snap,now) is None):
+        if wid in (0x0F,0x36) or (weapon is not None and weapon.family in DIRECT and self._ray(snap,now) is None):
             return self._laserless_tick(snap, p, tgt, now, pl, wid, rounds, shot)
         self.laserless_feedback_since = None
         self.laserless_progress = None
@@ -826,7 +832,7 @@ class Combat:
         """A known-wall veto only. A navmesh is not an arrow collision ray."""
         mesh = snap.get("nav")
         try:
-            return (mesh is not None and math.dist(p["pos"], tgt["pos"]) <= (BOW_RANGE if wid == 0x0F else ENGAGE_R)
+            return (mesh is not None and math.dist(p["pos"], tgt["pos"]) <= (1000. if wid==0x36 else BOW_RANGE if wid == 0x0F else ENGAGE_R)
                     and bool(mesh.floor_segment(p["pos"], tgt["pos"])))
         except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
             return False
@@ -838,14 +844,15 @@ class Combat:
         native refire-table verification does not establish the bow animation's achievable firing rate.
         """
         from .re5_weapons import laserless_fire_policy
-        label = "longbow" if wid == 0x0F else "laserless gun"
+        label = 'rotten egg' if wid==0x36 else "longbow" if wid == 0x0F else "laserless gun"
         self._rapid_fire(wid, now)
         self.last_dot = (None, tgt.get("ptr"), None, tgt["pos"], now)
-        self.stats["laserless_visibility"] = "corridor only; projectile cover unconfirmed"
+        self.stats["laserless_visibility"] = ("ordinary aligned throw; ballistic calibration and cover unverified"
+                                             if wid==0x36 else "corridor only; projectile cover unconfirmed")
         corridor = self.firing_corridor(snap, p, tgt,wid)
         if self.blocked_until.get(tgt.get("ptr",tgt.get("slot")),0) > now:
             corridor = False
-        ray = self._ray(snap, now)
+        ray = None if wid==0x36 else self._ray(snap, now)
         if ray is not None and self.ray_blocked(ray, tgt["pos"]):
             corridor = False
         if not corridor:
@@ -893,7 +900,7 @@ class Combat:
         if self._laserless_stalled(p,tgt,wid,math.hypot(yaw,pitch),shot,now):
             return {"hold":set()}
         aligned = abs(yaw) <= BOW_YAW and abs(pitch) <= BOW_PITCH
-        if wid != 0x0F and math.dist(p["pos"],foot) < POINT_BLANK and abs(yaw) <= BOW_YAW:
+        if wid not in (0x0F,0x36) and math.dist(p["pos"],foot) < POINT_BLANK and abs(yaw) <= BOW_YAW:
             aligned = True  # Supported corridor, contact distance: continue firing while correcting elevation.
         fire, policy = laserless_fire_policy(wid, corridor=corridor, aligned=aligned,
                                       loaded=rounds is not None and rounds > 0)
@@ -902,7 +909,7 @@ class Combat:
         # Always release between arrows, even when the separate global refire table is accelerated.
         if not fire:
             self.bow_down_at = None
-        elif wid != 0x0F:
+        elif wid not in (0x0F,0x36):
             keys.add("r1")
         elif self.bow_down_at is not None:
             if now-self.bow_down_at < TAP_DOWN_S:
@@ -912,7 +919,7 @@ class Combat:
         elif now-self.bow_up_at >= TAP_UP_S:
             self.bow_down_at = now
             keys.add("r1")
-        self.stats["fire_gate"] = label+": aimed "+("press/release" if wid == 0x0F else "hold") if fire else policy+"; hold fire"
+        self.stats["fire_gate"] = label+": aimed "+("press/release" if wid in (0x0F,0x36) else "hold") if fire else policy+"; hold fire"
         self.stats["combat"] = (f"{label} yaw {math.degrees(yaw):+.1f} pitch {math.degrees(pitch):+.1f} "
                                 f"{'TRIGGER' if 'r1' in keys else 'release / tracking'}")
         return {"hold": keys}
@@ -987,8 +994,8 @@ class Combat:
         self.shots.fired(now)
         self.round_counts["shots"] += 1
         where, ptr, lz, foot = (self.last_dot or (None, None, None, None))[:4]
-        if self.wid == 0x0F and where is None:
-            where = "projectile"  # No laser is normal for the bow; it cannot classify where an arrow went.
+        if self.wid in (0x0F,0x36) and where is None:
+            where = 'egg_projectile' if self.wid==0x36 else "projectile"
         reach = None
         if lz is not None and foot is not None:            # the dot short of him (a wall, a prop) or past him
             d_dot = math.dist(lz[0], lz[1])
@@ -1021,7 +1028,9 @@ class Combat:
             self._log_shot(t, "headshot" if where == "head" else "hit", where, reach, dist, ptr)
         for _ in range(new_misses):
             t, where, ptr, reach, dist = pend.pop(0) if pend else (now, None, None, None, None)
-            if where == "projectile":
+            if where == 'egg_projectile':
+                cls,key='egg impact unconfirmed: no observed HP loss','egg_unconfirmed_impacts'
+            elif where == "projectile":
                 cls, key = "bow impact unconfirmed: no observed HP loss", "bow_unconfirmed_impacts"
             elif where in ("head", "body"):              # the dot was on him and nothing fell: he moved / a frame late
                 cls, key = "miss: dot on him, he moved", "miss_moved"

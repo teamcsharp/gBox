@@ -1,0 +1,49 @@
+{
+  "date": "2026-10-23",
+  "target": "/home/ehm_eckx/pinevoice-stack/spark-agent",
+  "container": "spark-agent",
+  "backup": "/home/ehm_eckx/pinevoice-stack/spark-agent/backups/gbox-hls-20261023-171240",
+  "activation": "Server activated by the existing Docker service restart; later recovery static updates served immediately, listener reload needed",
+  "restart_performed": true,
+  "station_settings_byte_identical": true,
+  "recovery_static_update": {
+    "backup": "/home/ehm_eckx/pinevoice-stack/spark-agent/backups/gbox-hls-20261023-173025",
+    "mse_preference_backup": "/home/ehm_eckx/pinevoice-stack/spark-agent/backups/gbox-hls-20261023-173240",
+    "restart_performed": false,
+    "tests": {"player_and_real_browser_passed": 13, "python_permissions_and_installer_passed": 18},
+    "files": [
+      {"file": "frontend/pine-hls.js", "sha256": "5c0c731844c207f24805014c2452268643ab476e1bff6b864e80eb5dfdad993b"},
+      {"file": "frontend/gbox-tune.css", "sha256": "4ae1baebf88eafbb170b589564961e8e7a452377367ab1ed58dd21e4b72ab794"}
+    ]
+  },
+  "station_settings": {"on": false, "fps": 12, "broadcast": "", "layout": "one"},
+  "tests": {
+    "new_python": {"passed": 18, "failed": 0},
+    "existing_pine_gboxstream": {"passed": 15, "failed": 0},
+    "new_player_node": {"passed": 8, "failed": 0},
+    "combined_pip_and_pine_node": {"passed": 111, "failed": 0, "skipped": 1},
+    "exact_container_smoke": {
+      "public_missing_token": 403,
+      "public_dead_token": 403,
+      "private_missing_auth": 401,
+      "pinned_vendor": 200,
+      "arbitrary_file": 404
+    }
+  },
+  "deployed": [
+    {"file": "gbox_hls.py", "sha256": "1d5935fe1fe671976ae65a3c839c3fe306e786eec2a4586c537cd40b3c6a9ace"},
+    {"file": "frontend/gbox-tune.js", "sha256": "418701657b879291f957dd4b42a793c4c0fcebe6b44dcfa685ceb5756c0330da"},
+    {"file": "frontend/pine-hls.js", "sha256": "837a1778fbf604506277ed85b8cd04ed7fe24ed9ffa9e840f3a13613d5ae566d"},
+    {"file": "frontend/gbox-tune.css", "sha256": "64f5d0921753092a6def3518e0ffcadbdcdabb211a1bf2bdbef23f43795eab93"},
+    {"file": "frontend/vendor/hls-1.7.3.min.js", "sha256": "a12e7ee1cd64a69dcdb314157e45dafcba705bfb0b1440b7935cb265d374423e"},
+    {"file": "frontend/vendor/LICENSE.hls.js.txt", "sha256": "ca8773cf798c7ed997d4dd7c8e23c348699f8d5b7462636694cc14de6cda12db"},
+    {"file": "frontend/vendor/LICENSE-2.0.txt", "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"},
+    {"file": "app.py", "sha256": "0502dc9f14e69eba6d7be47fa044b4c535a642d199db48c0d43d577995dc30f4"}
+  ],
+  "limitations": [
+    "No station mode was enabled, so live external-listener HLS playback and non-silent game audio are not yet accepted.",
+    "HLS has a bounded 2-to-5-segment live target; normal playback adds several seconds of latency.",
+    "30 fps is the encoder target; slower emulation still repeats source frames.",
+    "Real game audio requires a working isolated emulator playback sink; Windows per-process audio is not supplied by this extension."
+  ]
+}

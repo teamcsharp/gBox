@@ -59,9 +59,13 @@ class _View:
     clocks: tuple
     rates: tuple
     player: int
+    layers: tuple = LAYERS
 
 
-def _view(memory, snapshot):
+def _view(memory, snapshot, *, weapon_words=None, action_vts=None, max_multiplier=MAX_MULTIPLIER,
+          label="magnum", extra_guard=None, action_clock_offsets=(0x1C,0x20), layers=LAYERS):
+    weapon_words = {0x100 | wid for wid in MAGNUMS} if weapon_words is None else weapon_words
+    action_vts = {FIRE_VT} if action_vts is None else action_vts
     if snapshot is not None and (not isinstance(snapshot, dict) or not isinstance(snapshot.get("player"), dict)):
         raise _Reject("waiting for a current player snapshot")
     if any(memory.rd(a, len(expected)) != expected for a, expected in SIGNATURES.items()):
@@ -75,26 +79,28 @@ def _view(memory, snapshot):
     if not 1 < hp <= maximum <= 32767 or snapshot is not None and (snapshot["player"].get("hp") or 0) <= 1:
         raise _Reject("waiting for a living player outside DYING")
     action = _u32(memory, pl + P_ACTION)
-    if not _heap(action, 0x24) or _u32(memory, action) != FIRE_VT or _u32(memory, action + 0x18) != pl:
-        raise _Reject("current player does not own a FIRE action")
+    action_vt = _u32(memory, action) if _heap(action, 0x24) else 0
+    if action_vt not in action_vts or _u32(memory, action + 0x18) != pl:
+        raise _Reject("current player does not own the required action")
     count = _u32(memory, pl + P_LAYER_COUNT)
     if not 3 <= count <= 32:  # 32 is a defensive bound, not a claimed engine capacity.
         raise _Reject("invalid animation layer count")
     hand = _in_hand(memory, pl)
     shown = [row for row in (snapshot or {}).get("inventory") or () if isinstance(row, dict) and row.get("hand")]
-    if len(hand) != 1 or hand[0][1] not in {0x100 | wid for wid in MAGNUMS} \
+    if len(hand) != 1 or hand[0][1] not in weapon_words \
             or snapshot is not None and (len(shown) != 1 or shown[0].get("slot") != hand[0][0]
                                         or shown[0].get("id") != hand[0][1]):
-        raise _Reject("in-hand magnum does not match snapshot")
-    clocks = list(struct.unpack(">2f", memory.rd(action + 0x1C, 8)))
+        raise _Reject(f"in-hand {label} does not match snapshot")
+    extra_identity = extra_guard(memory, pl, action, hand[0]) if extra_guard else ()
+    clocks = [struct.unpack('>f',memory.rd(action+offset,4))[0] for offset in action_clock_offsets]
     ends, rates = [], []
-    for base, motion in LAYERS:
+    for base, motion in layers:
         raw = memory.rd(pl + base, 0x28)
         if struct.unpack_from(">H", raw, 4)[0] != motion:
             raise _Reject("firing motion IDs changed")
         frame, end = struct.unpack_from(">2f", raw, 0x18)
         rate = struct.unpack_from(">f", raw, 0x24)[0]
-        if not math.isfinite(end) or end <= 0 or not math.isfinite(rate) or not 0 < rate <= MAX_MULTIPLIER:
+        if not math.isfinite(end) or end <= 0 or not math.isfinite(rate) or not 0 < rate <= max_multiplier:
             raise _Reject("invalid animation end or playback rate")
         clocks.append(frame)
         ends.append(raw[0x1C:0x20])
@@ -103,7 +109,7 @@ def _view(memory, snapshot):
         raise _Reject("invalid action or animation clock")
     # FIRE's verified +0x18 owner must agree with the player's current-action pointer in both fences.
     if _u32(memory, S_PLAYER) != sp or _u32(memory, sp + 0x28) != pl \
-            or _u32(memory, pl + P_ACTION) != action or _u32(memory, action) != FIRE_VT \
+            or _u32(memory, pl + P_ACTION) != action or _u32(memory, action) != action_vt \
             or _u32(memory, action + 0x18) != pl:
         raise _Reject("player or action changed during observation")
     # HP, equipment and motions can change during the earlier reads even when the owning pointers stay stable.
@@ -111,8 +117,8 @@ def _view(memory, snapshot):
     if not 1 < hp <= latest_max <= 32767 or latest_max != maximum or _in_hand(memory, pl) != hand \
             or _u32(memory, pl + P_LAYER_COUNT) != count:
         raise _Reject("health, equipped weapon or layer count changed during observation")
-    latest_clocks = list(struct.unpack(">2f", memory.rd(action + 0x1C, 8)))
-    for index, (base, motion) in enumerate(LAYERS):
+    latest_clocks = [struct.unpack('>f',memory.rd(action+offset,4))[0] for offset in action_clock_offsets]
+    for index, (base, motion) in enumerate(layers):
         raw = memory.rd(pl + base, 0x28)
         if struct.unpack_from(">H", raw, 4)[0] != motion or raw[0x24:0x28] != rates[index] \
                 or raw[0x1C:0x20] != ends[index]:
@@ -120,7 +126,10 @@ def _view(memory, snapshot):
         latest_clocks.append(struct.unpack_from(">f", raw, 0x18)[0])
     if any(not math.isfinite(new) or new < old for old, new in zip(clocks, latest_clocks)):
         raise _Reject("action or animation clock reset during observation")
-    return _View((sp, pl, action, hand[0], count, tuple(ends)), tuple(latest_clocks), tuple(rates), pl)
+    if extra_guard and extra_guard(memory, pl, action, hand[0]) != extra_identity:
+        raise _Reject("native weapon or item action changed during observation")
+    return _View((sp, pl, action, action_vt, hand[0], count, tuple(ends), extra_identity, tuple(layers)),
+                 tuple(latest_clocks), tuple(rates), pl,tuple(layers))
 
 
 def _continuous(before, after):
@@ -136,10 +145,13 @@ class FireAnimation:
     are never restored. Scope must be checked again by the writer immediately before it touches process memory.
     """
 
-    def __init__(self):
+    def __init__(self, *, observer=None, max_multiplier=MAX_MULTIPLIER, label="magnum"):
         self.scope = None
         self.last = None
         self.owned = {}
+        self.observer = observer or _view
+        self.max_multiplier = max_multiplier
+        self.label = label
 
     def update(self, memory, snapshot, *, enabled, multiplier, scope):
         result = {"enabled": bool(enabled), "active": False, "verified": False, "writes": 0,
@@ -149,13 +161,13 @@ class FireAnimation:
             return {**result, "reason": "a session/PID scope is required"}
         if self.scope != scope:
             self.scope, self.last, self.owned = scope, None, {}
-        if type(multiplier) not in (int, float) or not math.isfinite(multiplier) or not 1 <= multiplier <= MAX_MULTIPLIER:
-            return {**result, "reason": "multiplier must be finite and between 1 and 8"}
+        if type(multiplier) not in (int, float) or not math.isfinite(multiplier) or not 1 <= multiplier <= self.max_multiplier:
+            return {**result, "reason": f"multiplier must be finite and between 1 and {self.max_multiplier:g}"}
         if (enabled is not True or multiplier == 1) and not self.owned:
             return {**result, "verified": True, "owned_layers": 0, "reason": "no owned rates to restore"}
         def observe():
             try:
-                return _view(memory, snapshot)
+                return self.observer(memory, snapshot)
             except (OSError, ValueError, TypeError, struct.error, IndexError):
                 self.last, self.owned = None, {}        # a lost/invalid observation cannot prove instance continuity
                 raise
@@ -175,7 +187,7 @@ class FireAnimation:
             wanted = struct.pack(">f", float(multiplier)) if apply else BASE_RATE
             if apply and any(rate != BASE_RATE and self.owned.get(i) != rate for i, rate in enumerate(current.rates)):
                 raise _Reject("playback rate is neither baseline nor an unchanged owned value")
-            indices = range(len(LAYERS)) if apply else tuple(self.owned)
+            indices = range(len(current.layers)) if apply else tuple(self.owned)
             for index in indices:
                 expected = current.rates[index]
                 if not apply and self.owned.get(index) != expected:
@@ -187,7 +199,7 @@ class FireAnimation:
                     self.last, self.owned = None, {}
                     raise _Reject("animation changed before rate write")
                 current = self.last = fresh            # compare postwrite against the newest observed clocks
-                address = current.player + LAYERS[index][0] + 0x24
+                address = current.player + current.layers[index][0] + 0x24
                 result["write_attempts"] += 1
                 ok = memory.wr(address, wanted)
                 if not ok or memory.rd(address, 4) != wanted:
@@ -207,7 +219,7 @@ class FireAnimation:
                     self.owned[index] = wanted
                 current = self.last = after
             result.update(active=apply and all(rate == wanted for rate in current.rates), verified=True,
-                          reason="scoped magnum playback verified" if apply else "unchanged owned rates restored")
+                          reason=f"scoped {self.label} playback verified" if apply else "unchanged owned rates restored")
         except (OSError, ValueError, TypeError, struct.error, IndexError) as error:
             result["reason"] = str(error) or type(error).__name__
         result["owned_layers"] = len(self.owned)

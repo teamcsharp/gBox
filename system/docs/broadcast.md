@@ -58,17 +58,21 @@ off-screen or a sleeping screen gives the slate ("waiting for the game to show o
 
 The H.264 feeds always carry an AAC track (48 kHz stereo, 128 kbit/s): silence unless the source has sound.
 
-- **Spark sessions**: an emulator that plays through PipeWire (Dolphin does) is copied with
-  `parec --monitor-stream=<its stream>`. The stream is found by the session's X display (`window.x11.display`). The
-  copy does not move the stream or change what plays on the Spark's outputs, and costs almost nothing (0.2% of one
-  core, measured). RetroArch on the Spark plays no sound (`audio_driver = null` in
-  `gbox/adapters.py`), so its games are silent. Giving them sound means launching RetroArch with the `pulse` driver,
-  which would also play their sound out of the Spark's HDMI output.
+- **Spark sessions**: emulator playback is copied with `parec --monitor-stream=<its stream>`. Exact emulator PID
+  identifies streams that omit the X display; an unambiguous session display is the fallback. A different
+  process or ambiguous streams are refused. RPCS3 uses FAudio/SDL3 PulseAudio (the bundled Cubeb Pulse backend
+  aborts on a latency assertion); RetroArch uses PulseAudio. Headless launches discover only the current user's
+  existing Pulse socket and preserve explicit audio settings. Microphone capture stays disabled. The tap copies
+  the emulator stream without moving it or recording the desktop mix.
+  Existing sessions launched with a Null renderer need a relaunch before sound is available.
 - **Windows sessions**: no sound. It plays on that PC; sending it would need a new capture on the worker (WASAPI
   loopback, which is the whole PC's sound, not one game's).
 - MJPEG has no sound by nature.
 
 `[broadcast] audio = "off"` drops the track.
+
+MCP clients, including Pine agents, can call `get_broadcast_feeds` and `get_broadcast_status` to discover the same
+feeds and inspect encoder progress/audio. These tools are read only and cannot change the operator's program.
 
 ## Picking the program
 

@@ -1,0 +1,89 @@
+/* PiP replay export and live autoplay state. No microphone or client-side audio mix. */
+(function(root) {
+  'use strict';
+  const SECONDS = 180;
+  const ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.5"/><path d="M17 17h5m-2.5-2.5V22"/></svg>';
+  const CSS = `.pip-media{position:fixed;inset:auto 0 0;z-index:110;pointer-events:none;height:50px;color:#fff;font:11px system-ui;-webkit-app-region:no-drag}
+    .pip-media[hidden]{display:none!important}.pip-autobot{position:absolute;left:10px;bottom:8px;opacity:.5;text-shadow:0 1px 3px #000;animation:pip-autobot-pulse 3s ease-in-out infinite}
+    .pip-autobot[hidden]{display:none}.pip-replay{position:absolute;right:8px;bottom:7px;width:32px;height:32px;display:grid;place-items:center;padding:5px;border:1px solid #ffffff50;border-radius:6px;background:#111a;color:#fff;cursor:pointer;opacity:0;pointer-events:none;transition:opacity .2s;-webkit-app-region:no-drag}
+    .pip-replay svg{width:22px;height:22px}body:hover .pip-replay,.pip-replay:focus-visible,.pip-media[data-busy=true] .pip-replay{opacity:.85;pointer-events:auto}.pip-replay:disabled{cursor:progress}
+    .pip-replay-status{position:absolute;right:46px;bottom:10px;max-width:calc(100vw - 125px);padding:3px 5px;border-radius:3px;background:#000b;font-size:10px;text-align:right;overflow-wrap:anywhere}.pip-replay-status:empty{display:none}
+    .pip-media[data-error=true] .pip-replay-status{color:#ffb7b7}@keyframes pip-autobot-pulse{50%{opacity:.35}}@media(prefers-reduced-motion:reduce){.pip-autobot{animation:none}}`;
+  const valid = sid => typeof sid === 'string' && /^[a-zA-Z0-9_-]{1,160}$/.test(sid) && sid.includes('-');
+  function create({current, api, save, preferences = async () => ({}), render = () => {},
+                   delay = ms => new Promise(resolve => setTimeout(resolve, ms)), now = Date.now}) {
+    let stopped = false, polling = false, toggling = false;
+    const state = {sid:null,autobot:false,busy:false,progress:0,message:'',error:false};
+    const paint = () => {if(!stopped)render({...state});};
+    async function poll() {
+      if(stopped)return;
+      const sid = current();
+      if(sid !== state.sid){state.sid=sid;state.autobot=false;paint();}
+      if(stopped||polling||!valid(sid))return;
+      polling=true;
+      try {
+        const telemetry=await api('/api/autoplay/telemetry/'+encodeURIComponent(sid),undefined,'GET');
+        if(!stopped&&current()===sid){state.autobot=telemetry?.running===true&&Number.isFinite(telemetry.age_s)&&telemetry.age_s<15;paint();}
+      } catch {if(!stopped&&current()===sid){state.autobot=false;paint();}}
+      finally{polling=false;}
+    }
+    async function job(sid, input, tool='recording') {
+      let result=await api('/api/jobs',{tool,agent_use:false,require_worker:sid.split('-')[0],input:{session_id:sid,...input}},'POST');
+      const deadline=now()+900000;
+      while(['queued','running'].includes(result?.state)){
+        if(!result.id)throw Error('The recording job has no ID');
+        state.progress=Number(result.progress?.pct)||0;state.message=result.progress?.msg||'Preparing the replay…';paint();
+        if(now()>=deadline)throw Error('Replay export is still running. Check the task list before trying again.');
+        await delay(600);
+        result=await api('/api/jobs/'+encodeURIComponent(result.id),undefined,'GET');
+      }
+      if(result?.state!=='succeeded')throw Error(result?.error?.message||result?.error||'Replay export failed');
+      return result.output?.result||result.output||{};
+    }
+    async function toggleAutobot(){
+      const sid=current();if(stopped||toggling||!valid(sid))return;
+      toggling=true;
+      try{
+        const result=await job(sid,{op:'status'},'autoplay'),status=result.result||result;
+        await job(sid,{op:status.running?'stop':'start'},'autoplay');
+        await poll();
+      }catch(error){state.error=true;state.message=error.message||String(error);paint();}
+      finally{toggling=false;}
+    }
+    async function exportLast(){
+      const sid=current();if(stopped||state.busy||!valid(sid))return;
+      state.busy=true;state.error=false;state.message='Preparing the last 3 minutes…';state.progress=0;paint();
+      try{
+        const status=await job(sid,{op:'status'});
+        if(!(status.status?.av_span_s>=.5))throw Error(status.status?.audio_note||'Game audio is not being captured yet. Replay becomes available as the audio/video ring fills.');
+        const options=await preferences(), target=Number(options?.targetMB);
+        const result=await job(sid,{op:'export',in_s:SECONDS,out_s:0,target_mb:Number.isFinite(target)&&target>=1&&target<=100?target:20});
+        const clip=result.clip;
+        if(clip?.audio!==true||!(clip.seconds>=.5&&clip.seconds<=SECONDS+.5))throw Error('The worker did not confirm a three-minute audio/video replay.');
+        state.message='Saving the compressed replay…';state.progress=95;paint();
+        const saved=await save({...clip,openFolder:true});
+        if(!saved?.file)throw Error('The desktop did not confirm a saved replay.');
+        const partial=clip.seconds<SECONDS-1?` (${Math.round(clip.seconds)} seconds available)` : '';
+        state.message=saved.warning||`Replay saved${partial}.${saved.folderOpened?' Folder opened.':''}`;
+        state.error=!!saved.warning;state.progress=100;
+      }catch(error){state.error=true;state.message=error.message||String(error);}
+      finally{state.busy=false;paint();}
+    }
+    return {poll,exportLast,toggleAutobot,state:()=>({...state}),stop:()=>{stopped=true;}};
+  }
+  function mount(host, options){
+    host.classList.add('pip-media');host.innerHTML=`<span class="pip-autobot" hidden>autobot</span><button class="pip-replay" type="button" aria-label="Export last 3 minutes of gameplay with audio" title="Save last 3 minutes and open the export folder">${ICON}</button><span class="pip-replay-status" role="status" aria-live="polite"></span>`;
+    const ctl=create({...options,render:state=>{
+      host.dataset.busy=String(state.busy);host.dataset.error=String(state.error);
+      host.querySelector('.pip-autobot').hidden=!state.autobot;
+      host.querySelector('.pip-replay').disabled=state.busy;
+      host.querySelector('.pip-replay-status').textContent=state.message;
+    }});
+    host.querySelector('button').onclick=event=>{event.preventDefault();event.stopPropagation();ctl.exportLast();};
+    host.addEventListener('dblclick',event=>event.stopPropagation());
+    const timer=setInterval(()=>ctl.poll(),2000);ctl.poll();
+    return {...ctl,stop:()=>{clearInterval(timer);ctl.stop();}};
+  }
+  const api={SECONDS,CSS,ICON,create,mount};
+  if(typeof module==='object'&&module.exports)module.exports=api;else root.GBoxPipMedia=api;
+})(globalThis);

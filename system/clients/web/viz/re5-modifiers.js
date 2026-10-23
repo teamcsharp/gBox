@@ -11,7 +11,7 @@
     { op: "turn_speed", label: "Turning and aiming speed", field: "turn_speed_x", multiplier: 3, min: 0.25, max: 50, step: 0.25 },
     // on / off only: the worker retains the operator's seconds per kill
     { op: "kill_time", label: "Time added per kill", field: "kill_time_on", min: 0.1, max: 30, step: 0.1,
-      note: status => `${String(status?.kill_time_range || "3").includes("-") ? "Random " : ""}${status?.kill_time_range || "3"} s per kill` },
+      note: status => `${String(status?.kill_time_range || "10").includes("-") ? "Random " : ""}${status?.kill_time_range || "10"} s per kill` },
   ];
   const UNAVAILABLE = [
     { op: "aimbot", label: "Aimbot" }, { op: "instant_qte", label: "Instant QTE completion" },
@@ -55,7 +55,7 @@
   }
   function amount(status, definition) {
     const raw = readAmount(status, definition);
-    return typeof raw === "number" && Number.isFinite(raw) ? raw : definition.op === "kill_time" ? 3 : definition.multiplier;
+    return typeof raw === "number" && Number.isFinite(raw) ? raw : definition.op === "kill_time" ? 10 : definition.multiplier;
   }
   function readAmount(status, definition) {
     if (definition.op !== "kill_time") return status?.[definition.field];
@@ -87,7 +87,18 @@
       + `<span>Unavailable</span></div>`).join("");
     const random = capability(state.status, "random_weapon"), weapon = state.status?.in_hand?.weapon;
     const mine = state.status?.mine_settings, mineCap = capability(state.status, "mines");
-    const mineDisabled = state.busy || state.pending || state.stale || !mineCap.available || !mine;
+    const eggOn = state.status?.rotten_egg_only === true;
+    const eggCap = capability(state.status, "rotten_egg_only");
+    const eggDisabled = state.busy || state.pending || state.stale || !eggCap.available;
+    const eggRate = Number.isFinite(state.status?.egg_rate_x) ? state.status.egg_rate_x : 20;
+    const eggControls = `<fieldset class="re5-mine-controls" ${eggDisabled ? "disabled" : ""}><legend>Rotten eggs</legend>`
+      + `<label><input type="checkbox" data-re5-eggs-on ${eggOn ? "checked" : ""}> Rotten eggs only</label>`
+      + `<label>Requested animation speed: <output data-re5-egg-output>${eggRate} times</output>`
+      + `<input style="width:100%" type="range" min="1" max="20" step="1" value="${eggRate}" data-re5-egg-rate aria-label="Rotten egg throw speed"></label>`
+      + `<small>Infinite egg stock. Mines pause; time bonuses remain a priority. Turning this off restores an existing gun.</small>`
+      + `<p class="re5-mod-sub">Experimental: actual throw cadence and ballistic aim are not yet verified.</p>`
+      + `<p class="re5-mod-sub">${ESC(state.status?.egg_status || "Waiting for current egg status.")}</p></fieldset>`;
+    const mineDisabled = state.busy || state.pending || state.stale || !mineCap.available || !mine || eggOn;
     const mineControls = `<fieldset class="re5-mine-controls" ${mineDisabled ? "disabled" : ""}><legend>Proximity mines</legend>`
       + `<label><input type="checkbox" data-re5-mines-enabled ${mine?.enabled ? "checked" : ""}> Unlimited mine supply</label>`
       + `<label>Placement interval: <output data-re5-mine-output>${mine?.interval_s ?? 60} seconds</output>`
@@ -106,7 +117,7 @@
       + `<button class="act" type="button" data-re5-merc-select>Play this selection next</button></fieldset>` : "";
     return `<div class="re5-mod-heading"><b>RE5 modifiers</b><button type="button" class="act" data-re5-refresh `
       + `${state.busy ? "disabled" : ""}>Refresh</button></div><p class="re5-mod-sub">This running session${weapon ? ` · ${ESC(weapon)}` : ""}</p>`
-      + controls + rotationControls + mineControls + `<button class="act re5-mod-random" type="button" data-re5-random `
+      + controls + rotationControls + eggControls + mineControls + `<button class="act re5-mod-random" type="button" data-re5-random `
       + `${state.busy || state.pending || state.weaponPending || state.stale || !random.available ? "disabled" : ""}>Random available weapon</button>`
       + `<p class="re5-mod-sub">${ESC(random.reason || "Equips an eligible gun already in the inventory. Rockets and sniper rifles are excluded.")}</p>`
       + `<details class="re5-mod-extra"><summary>Other requested modifiers</summary>${unavailable}</details>`
@@ -232,6 +243,24 @@
       } catch (error) { state.error = true; state.message = error.message; }
       finally { state.busy = false; paint(); }
     }
+    async function setEggs(enabled, requestedRate) {
+      const rate = Number(requestedRate);
+      if (state.busy || state.pending || state.weaponPending || state.stale || disposed
+          || !capability(state.status, "rotten_egg_only").available || !Number.isFinite(rate) || rate < 1 || rate > 20) return;
+      state.busy = true; state.error = false; state.message = "Updating rotten eggs…"; paint();
+      try {
+        await preflight();
+        const result = await job("rotten_egg_only", { on: Boolean(enabled), multiplier: rate });
+        await read();
+        if (result.verified !== true || state.status.rotten_egg_only !== Boolean(enabled)
+            || Math.abs(state.status.egg_rate_x - rate) > .011)
+          throw new Error(result.reason || "Egg settings were not confirmed.");
+        state.message = enabled ? (state.status.egg_native_equipped ? "Rotten egg equipped. Mines paused. Actual throw cadence unverified."
+          : "Eggs only requested. Waiting for native pickup or the next fresh loadout, then equip.")
+          : "Eggs only disabled. Returning to an existing gun.";
+      } catch (error) { state.error = true; state.stale = true; state.message = error.message; }
+      finally { state.busy = false; paint(); }
+    }
     async function setMultiplier(op, requested) {
       const def = DEFINITIONS.find(row => row.op === op), number = Number(requested);
       if (!def || def.min === undefined || !Number.isFinite(number) || number < def.min || number > def.max
@@ -261,7 +290,7 @@
       } catch (error) { state.error = true; state.message = error.message; }
       finally { state.busy = false; paint(); }
     }
-    return { refresh, change, setMultiplier, setMines, selectMercs, state: () => ({ ...state }), stop: () => { disposed = true; } };
+    return { refresh, change, setMultiplier, setMines, setEggs, selectMercs, state: () => ({ ...state }), stop: () => { disposed = true; } };
   }
 
   const CSS = `.re5-modifiers{display:block!important;height:auto!important;overflow:visible;border-top:1px solid var(--line,#444);margin-top:5px;padding:9px 4px 2px;min-width:min(300px,calc(100vw - 48px));max-width:400px}
@@ -279,6 +308,10 @@
     const ctl = create({ ...options, render: state => { host.innerHTML = html(state); } });
     host.innerHTML = html(ctl.state());
     host.onchange = event => {
+      if (event.target.matches?.("[data-re5-eggs-on], [data-re5-egg-rate]")) {
+        ctl.setEggs(host.querySelector("[data-re5-eggs-on]").checked, host.querySelector("[data-re5-egg-rate]").value);
+        return;
+      }
       if (event.target.matches?.("[data-re5-range]")) {
         ctl.setMultiplier(event.target.dataset.re5Range, event.target.value);
         return;
@@ -300,6 +333,7 @@
       ctl.change(input.dataset.re5Mod, wanted);
     };
     host.oninput = event => {
+      if (event.target.matches?.("[data-re5-egg-rate]")) host.querySelector("[data-re5-egg-output]").textContent = event.target.value + " times";
       if (event.target.matches?.("[data-re5-range]")) {
         const op = event.target.dataset.re5Range;
         host.querySelector(`[data-re5-value="${op}"]`).textContent = event.target.value + (op === "kill_time" ? " seconds" : " times");

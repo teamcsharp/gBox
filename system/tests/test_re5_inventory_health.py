@@ -65,6 +65,17 @@ def test_triangle_observed_cursor_dpad_l1_then_actual_in_hand_confirmation():
     assert stats['inventory_heal_equips_confirmed']==1 and 'heals' not in stats and 'heal_items_used' not in stats
 
 
+def test_explicit_egg_inventory_controller_uses_legal_inputs_and_separate_equip_counters():
+    memory=Memory();stats={};ctl=H.Controller(stats,allowed_ids={0x136},prefix='inventory_egg')
+    s=snap({**HERB,'id':0x136,'grid':4})
+    assert ctl.tick(memory,s,s['inventory'][0],0.)=={'tap':'triangle'}
+    memory.set_ui(state=3,opened=True,cursor=4)
+    assert ctl.tick(memory,s,None,.3)=={'tap':'l1'}
+    memory.set_ui(state=2,cursor=4);s['inventory'][0]['hand']=True
+    assert ctl.tick(memory,s,None,.6) is None
+    assert stats['inventory_egg_equips_confirmed']==1 and 'inventory_heal_equips_confirmed' not in stats
+
+
 def test_existing_identical_populated_grid_sibling_can_acknowledge_legal_equip():
     memory=Memory();stats={};ctl=H.Controller(stats)
     spray={**HERB,'slot':4,'id':0x304,'grid':4}

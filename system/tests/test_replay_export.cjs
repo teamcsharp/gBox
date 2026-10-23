@@ -46,3 +46,11 @@ test('production IPC reads current per-instance folder and fetches only the auth
  assert.equal(requests[0].url,'http://configured-spark:8765/api/artifacts/'+clip.sha256);
  assert.equal(requests[0].opts.headers.authorization,'Bearer private-test-token');assert.equal(requests[0].opts.redirect,'error');
 }));
+test('one-click replay opens Explorer only after verified publication in the configured folder',async()=>fixture(async root=>{
+ const main=fs.readFileSync(path.join(__dirname,'../clients/desktop/main.js'),'utf8'),handlers={},shown=[];
+ const destination=path.join(root,'chosen');const start=main.indexOf("ipcMain.handle('rec:save-clip'"),end=main.indexOf('// chat export:',start);
+ vm.runInNewContext(main.slice(start,end),{ipcMain:{handle:(key,fn)=>handlers[key]=fn},recordingExport:R,RECORDING_DEFAULTS:R.DEFAULTS,
+  REC_DIR:path.join(root,'local'),settings:()=>({recording:{exportDir:destination},apiUrl:'http://configured-spark:8765'}),token:async()=>'test',AbortSignal,
+  shell:{showItemInFolder:file=>{assert.equal(path.dirname(file),destination);assert.deepEqual(fs.readFileSync(file),data);shown.push(file);}},fetch:async()=>new Response(data)});
+ const out=await handlers['rec:save-clip']({}, {...clip,openFolder:true});assert.equal(out.folderOpened,true);assert.deepEqual(shown,[out.file]);
+}));

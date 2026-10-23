@@ -55,12 +55,22 @@
   <button id="full" title="Back to the full app (or double-click the game)">⤢ Full app</button></div>
 <script src="../web/viz/session-continuity.js"></script>
 <script src="../web/viz/re5-modifiers.js"></script>
+<script src="pip-media.js"></script>
 <script>
   const q = new URLSearchParams(location.search), v = document.getElementById("v");
   document.getElementById("t").textContent = q.get("title");
   v.onload = () => { if (!v.dataset.sized && v.naturalWidth) { v.dataset.sized = 1; gbox.miniAspect(v.naturalWidth, v.naturalHeight); } };
   v.src = q.get("src");
   v.dataset.streamFollow = 'game';
+  const mediaStyle = document.createElement('style'); mediaStyle.textContent = GBoxPipMedia.CSS; document.head.append(mediaStyle);
+  const mediaHost = document.createElement('div'); document.body.append(mediaHost);
+  const media = GBoxPipMedia.mount(mediaHost, {
+    current: () => globalThis.gboxStreamWatchdog?.sessionOf(v.src) || null,
+    api: async (url, body, method) => { const r = await gbox.api(url, body, method); if (!r.ok) throw Error(r.error || 'Replay request failed'); return r.data; },
+    preferences: () => gbox.recPreferences(), save: clip => gbox.recSaveClip(clip)
+  });
+  addEventListener('pagehide', () => media.stop(), {once:true});
+  gbox.onHotkey?.(key => { if (key === 'autoplay') media.toggleAutobot(); });
   const continuity = GBoxSessionContinuity.create({
     current: () => ({session_id:gboxStreamWatchdog.sessionOf(v.src)}),
     read: async () => {
@@ -86,7 +96,7 @@
     modifierOpening = null; modifierControl?.stop(); modifierControl = null;
     modifierMenu?.remove(); modifierMenu = null;
   }
-  addEventListener('contextmenu', async event => {
+  async function openModifiers(event) {
     event.preventDefault(); closeModifiers();
     const opening = modifierOpening = {};
     try {
@@ -113,10 +123,12 @@
           return response.data;
         } });
     } catch (error) { console.warn('PiP modifiers:', error.message); }
-  });
+  }
+  addEventListener('contextmenu', openModifiers);
+  gbox.onMiniContext?.(point => openModifiers({clientX:point.x,clientY:point.y,preventDefault(){}}));
   addEventListener('mousedown', event => { if (!event.target.closest?.('#pip-modifiers')) closeModifiers(); });
   addEventListener('pagehide', closeModifiers);
-  addEventListener("dblclick", event => { if (!event.target.closest?.('#pip-modifiers')) gbox.miniRestore(); });
+  addEventListener("dblclick", event => { if (!event.target.closest?.('#pip-modifiers, .pip-media')) gbox.miniRestore(); });
   addEventListener("keydown", e => { if (e.key === "Escape") { if (modifierMenu) closeModifiers(); else gbox.miniRestore(); } });
   // file:// cannot fetch health directly; authenticated IPC avoids CORS and unnecessary timed stream resets.
   window.GBOX_STREAM_FETCH_HEALTH = async src => {

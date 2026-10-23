@@ -49,6 +49,23 @@ def test_mines_use_spawn_templates_preserving_existing_items_and_live_inventory(
     assert g.u32(T.DEF_TABLE+10*T.DEF_STRIDE+T.DEF_NOAMMO)==1
 
 
+def test_empty_grid_seven_stub_cannot_hide_mine_behind_a_shotgun():
+    m=template_game();g=T.RE5(m)
+    base=M.ORIGINAL_BANKS[0]+5*T.TEMPLATE_BLOCK
+    empty=[0,0xffffffff,0xffffffff,0xffffffff,0xffffffff,7,0,0,0,0,0]
+    gun=[0x108,3,0xffffffff,0xffffffff,0xffffffff,7,0,0x01020304,9,8,7]
+    m.put(base+T.TEMPLATE_REC,struct.pack('>11I',*empty))
+    m.put(base+8*T.TEMPLATE_REC,struct.pack('>11I',*gun))
+    assert M.templates(g)['verified']
+    raw=g.rd(base,T.TEMPLATE_BLOCK)
+    rows=[struct.unpack_from('>11I',raw,i*T.TEMPLATE_REC) for i in range(12)]
+    carried=[row for row in rows if row[0] and row[5]<9]
+    assert len({row[5] for row in carried})==len(carried)
+    assert rows[1][0]==0x10a and rows[1][5]==7
+    assert rows[8][:5]==tuple(gun[:5]) and rows[8][6:]==tuple(gun[6:]) and rows[8][5]!=7
+    assert M.templates(g)['verified'] and g.rd(base,T.TEMPLATE_BLOCK)==raw
+
+
 def test_mine_controller_does_not_count_a_press_or_interrupted_attempt(monkeypatch):
     monkeypatch.setattr(M,"settings",lambda:dict(M.DEFAULT,interval_s=2))
     stats={}; c=M.Controller(SimpleNamespace(),stats,lambda *a:{"tap":"ddown"})

@@ -1,5 +1,6 @@
 from gbox.mercs.titles import re5_weapons as W
 from gbox.re5_mods_tool import WEAPONS
+from gbox.mercs.titles.re5_eggs import EGG_ID
 
 
 def slot(wid, n, hand=False):
@@ -12,7 +13,8 @@ def scene(distance=500, weapons=()):
 
 
 def test_all_verified_weapon_ids_have_an_explicit_policy():
-    assert set(WEAPONS) == set(W.WEAPONS)
+    # Eggs live outside the first 0x24 modifiable weapon-table records.
+    assert set(WEAPONS) | {EGG_ID & 0xff} == set(W.WEAPONS)
     assert W.WEAPONS[0x15].automatic
 
 

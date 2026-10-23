@@ -37,6 +37,26 @@ def re5_entry() -> CatalogEntry:
                         profile_id="e7ca89bbeb67360d")
 
 
+def test_service_audio_discovers_only_an_owned_existing_socket(tmp_path, monkeypatch):
+    import os
+    import socket
+    if not hasattr(os, "getuid"):
+        pytest.skip("Linux user-owned Pulse socket")
+    native = tmp_path / "pulse" / "native"
+    native.parent.mkdir()
+    assert provision.linux_audio_env({}, runtime_dir=tmp_path) == {}
+    native.write_text("not a socket")
+    assert provision.linux_audio_env({}, runtime_dir=tmp_path) == {}
+    native.unlink()
+    with socket.socket(socket.AF_UNIX) as listener:
+        listener.bind(str(native))
+        expected = {"XDG_RUNTIME_DIR": str(tmp_path), "PULSE_SERVER": "unix:" + str(native)}
+        assert provision.linux_audio_env({}, runtime_dir=tmp_path) == expected
+        assert provision.linux_audio_env({"PULSE_SERVER": "tcp:operator"}, runtime_dir=tmp_path)["PULSE_SERVER"] == "tcp:operator"
+        monkeypatch.setattr(os, "getuid", lambda: native.stat().st_uid + 1)
+        assert provision.linux_audio_env({}, runtime_dir=tmp_path) == {}
+
+
 def test_linux_routes_ps3_to_rpcs3_appimage(tmp_path, monkeypatch):
     monkeypatch.setattr(adapters, "HOST_OS", "linux")
     ad = adapters.for_game(re5_entry().model_dump(), cfg(tmp_path))
@@ -69,7 +89,8 @@ def test_write_settings_on_rpcs3s_own_config(tmp_path):
     text = (ad.home / "config.yml").read_text()
     assert "  Accurate RSX reservation access: true" in text                # RE5 hung on a black screen without it (ARM)
     assert '  GDB Server: ""' in text and "2345" not in text               # a port probe crashed the emulator
-    assert '  Renderer: "Null"' in text and "Renderer: Cubeb" not in text  # audio off; Video's Renderer stays Vulkan
+    assert '  Renderer: FAudio' in text and '  Microphone type: "Null"' in text
+    assert '  Renderer: Cubeb' not in text
     assert "  Renderer: Vulkan" in text and "  PPU Decoder: Recompiler (LLVM)" in text
     pad = (ad.home / "input_configs" / "global" / "Default.yml").read_text()
     assert pad.startswith("Player 1 Input:\n  Handler: Keyboard\n  Device: Keyboard\n")
@@ -83,6 +104,16 @@ def test_write_settings_on_rpcs3s_own_config(tmp_path):
     ad.write_settings()                                                     # idempotent
     assert (ad.home / "config.yml").read_text() == text
     assert (ad.home / "GuiConfigs" / "CurrentSettings.ini").read_text() == ini
+
+
+def test_rpcs3_faudio_uses_real_sdl_pulse_driver_and_preserves_explicit_override(tmp_path, monkeypatch):
+    monkeypatch.delenv('SDL_AUDIO_DRIVER',raising=False)
+    monkeypatch.setattr(provision,'linux_audio_env',lambda:{'PULSE_SERVER':'unix:/run/user/1000/pulse/native'})
+    env = provision.rpcs3_linux_env(cfg(tmp_path))
+    assert env['SDL_AUDIO_DRIVER'] == 'pulseaudio'
+    assert env['PULSE_SERVER'] == 'unix:/run/user/1000/pulse/native'
+    monkeypatch.setenv('SDL_AUDIO_DRIVER','pipewire')
+    assert provision.rpcs3_linux_env(cfg(tmp_path))['SDL_AUDIO_DRIVER'] == 'pipewire'
 
 
 def test_ini_set_keeps_rpcs3s_own_lines():

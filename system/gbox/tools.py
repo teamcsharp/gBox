@@ -979,7 +979,8 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
             detail["rewind"] = {"rewind": "unsupported", "reason": f"rewind setup failed: {e}"}
         # background gameplay ring (#1084): records while the operator's pad is in use, clipped later with the recording tool
         try:
-            detail["recording"] = ring_record.start(sid, ad, ctx.config, gd, lambda: sid in SESSIONS)
+            detail["recording"] = ring_record.start(sid, ad, ctx.config, gd, lambda: sid in SESSIONS,
+                                                   process_pid=detail.get("pid"))
         except Exception as e:                                 # noqa: BLE001 - never block the launch
             detail["recording"] = {"state": "unsupported", "reason": f"recording setup failed: {e}"}
         # ghost runs (#1098): every run of a profiled game (Super Mario Bros.) recorded from RAM per frame, raced later

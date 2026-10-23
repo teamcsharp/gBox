@@ -1,0 +1,59 @@
+/* [gbox-stream] gBox gameplay on the listener page's stage; the station's own
+   video (the gallery, the endless set) in a corner while the mode is on. */
+.gbox-stage { display:none; position:relative; margin:0 0 14px; background:#070b12;
+  border:1px solid #1b2735; border-radius:10px; overflow:hidden;
+  box-shadow:0 10px 30px rgba(0,0,0,.35); }
+.gbox-stage.show { display:block; }
+.gbox-head { display:flex; align-items:center; gap:8px; min-height:40px; padding:6px 44px 6px 10px;
+  background:#0b111b; border-bottom:1px solid #1b2735; font-size:12px; color:#9fb0c4;
+  user-select:none; -webkit-user-select:none; }
+.gbox-dot { width:7px; height:7px; border-radius:50%; background:#ff4d5e; flex:0 0 auto; }
+.gbox-stage.waiting .gbox-dot { background:#7f8ea3; }
+.gbox-head b { color:#dce8f5; font-weight:600; }
+.gbox-what { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
+.gbox-main { position:relative; aspect-ratio:16/9; background:#000; }
+.gbox-main img { width:100%; height:100%; object-fit:contain; display:block; background:#000; }
+.gbox-main img:not([src]) { visibility:hidden; }
+.gbox-main .gbox-video { width:100%; height:100%; object-fit:contain; display:block; background:#000; }
+.gbox-main [hidden] { display:none; }
+.gbox-audio { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:8px 10px;
+  background:#0b111b; color:#b7c7da; font-size:11px; }
+.gbox-audio button { border:1px solid #34516e; border-radius:6px; padding:5px 8px;
+  background:#122338; color:#e1edff; cursor:pointer; }
+.gbox-audio label { display:flex; align-items:center; gap:6px; }
+.gbox-audio input { width:100px; accent-color:#8ac8ff; }
+.gbox-audio [role=status] { color:#8ba4c0; font-size:10px; }
+.gbox-label { position:absolute; left:0; right:0; bottom:0; padding:5px 9px; background:rgba(4,6,11,.72);
+  color:#dce8f5; font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; z-index:2; }
+.gbox-label b { color:#9fd7ff; font-weight:600; }
+.gbox-pill { position:absolute; left:8px; top:8px; padding:2px 8px; border-radius:10px; font-size:10px;
+  background:rgba(4,6,11,.78); color:#f3c969; pointer-events:none; z-index:2; }
+.gbox-pill[hidden] { display:none; }
+.gbox-strip { display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:4px;
+  padding:4px; background:#04060b; }
+.gbox-strip:empty { display:none; }
+.gbox-tile { position:relative; aspect-ratio:16/9; background:#000; cursor:pointer;
+  border:1px solid #1b2735; border-radius:6px; overflow:hidden; }
+.gbox-tile.is-main { outline:2px solid #4bb3ff; }
+.gbox-tile img { width:100%; height:100%; object-fit:contain; display:block; }
+.gbox-tile img:not([src]) { visibility:hidden; }
+.gbox-tile .gbox-label { font-size:10px; padding:3px 6px; }
+.gbox-veil { position:absolute; left:0; right:0; top:41px; bottom:0; display:flex; align-items:center;
+  justify-content:center; text-align:center; padding:12px; font-size:12px; color:#c7d3e0;
+  background:rgba(4,6,11,.82); }
+.gbox-veil[hidden] { display:none; }
+.gbox-x { position:absolute; top:4px; right:4px; width:36px; height:36px; display:inline-flex;
+  align-items:center; justify-content:center; border-radius:10px; border:1px solid rgba(255,255,255,.16);
+  background:rgba(10,14,20,.78); color:#e6eef4; cursor:pointer; padding:0; font-size:18px; line-height:1; }
+.gbox-chip { display:none; align-items:center; gap:6px; height:34px; padding:0 12px; margin:0 0 14px;
+  border-radius:17px; border:1px solid #1b2735; background:#0b111b; color:#dce8f5;
+  font:600 12px/1 system-ui, sans-serif; cursor:pointer; }
+.gbox-chip.show { display:inline-flex; }
+/* the station's own video, in the corner while gameplay has the stage */
+.gallery-stage.gbox-pip { position:fixed !important; right:14px; top:14px; width:min(280px, 42vw);
+  margin:0; z-index:40; box-shadow:0 10px 30px rgba(0,0,0,.55); border-color:#3a1d22; }
+.gallery-stage.gbox-pip .gallery-caption { font-size:10px; padding:4px 8px; }
+@media (max-width: 520px) {
+  .gallery-stage.gbox-pip { right:8px; top:8px; width:min(200px, 48vw); }
+  .gbox-strip { grid-template-columns:repeat(auto-fit, minmax(110px, 1fr)); }
+}
