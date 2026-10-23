@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "request": "5f6e01acd6cd4777",
+  "game": {"game_id": "a19b4e641b155364", "title": "Dead Or Alive ++ (Japan)", "mame_set": "doapp", "platform": "Tecmo TPS (ZN-1, Sony CXD8530CQ)"},
+  "source": {"archive": "gbox-cache/59c55e95af61abbe (doapp.zip + coh1002m.zip)", "ram_sha256": "17c897096423b03c2843e5559e216520769c003e62e052845b839e4285669650", "program_sha1": "614873868c77e64076730e3525c672f20363d654", "known_program": true},
+  "fighters": [
+    {"id": 0, "name": "ZACK", "models": [59, 60, 61, 62], "hidden_costume_file": 63, "status": "unlocked"},
+    {"id": 1, "name": "TINA", "models": [49, 50, 51, 52], "hidden_costume_file": 53, "status": "unlocked"},
+    {"id": 2, "name": "JANN LEE", "models": [89, 90, 91, 92], "hidden_costume_file": 93, "status": "unlocked"},
+    {"id": 4, "name": "HAYABUSA", "models": [87, 84, 85, 86], "hidden_costume_file": 88, "status": "unlocked"},
+    {"id": 5, "name": "KASUMI", "models": [79, 80, 81, 82], "hidden_costume_file": 83, "status": "unlocked"},
+    {"id": 6, "name": "GEN FU", "models": [74, 75, 76, 77], "hidden_costume_file": 78, "status": "unlocked"},
+    {"id": 8, "name": "BAYMAN", "models": [69, 70, 71, 72], "hidden_costume_file": 73, "status": "unlocked"},
+    {"id": 9, "name": "BASS", "models": [94, 95, 96, 97], "hidden_costume_file": 98, "status": "unlocked"},
+    {"id": 11, "name": "RAIDOU", "models": [64, 65, 66, 67], "hidden_costume_file": 68, "status": "unlocked"},
+    {"id": 12, "name": "LEI FANG", "models": [54, 55, 56, 57], "hidden_costume_file": 58, "status": "unlocked"},
+    {"id": 13, "name": "AYANE", "models": [99, 100, 101, 102], "hidden_costume_file": 103, "status": "unlocked"}
+  ],
+  "fighter_id_slots_unused": [3, 7, 10],
+  "inventory": {
+    "characters": {"count": 11, "status": "unlocked", "evidence": "fighters_from_ram() on decoded owned program; all 11 roster ids present in per-fighter tables at 0x80087334 + CHAR_TABLES; internal ids 3/7/10 are unused slots aliasing existing files"},
+    "hidden_characters": {"status": "not_present", "evidence": "no additional fighter id beyond 0..13 exists in the fighter tables; unused ids 3/7/10 alias existing fighters' files rather than a new character"},
+    "costumes": {"count_per_character": 4, "hidden_costume": "one per character (file index = last table slot; 19-slot table, slots 0-3 distinct, slot 4 zero-size, 5-18 repeat slot 0)", "status": "unlocked", "evidence": "model table at 0x80087334, COSTUME_SLOTS=19; hidden costume file index recorded per fighter; runtime confirmation pending"},
+    "modes": {"status": "unknown", "entries": ["TOURNAMENT", "TIME ATTACK", "VERSUS", "SURVIVAL", "KUMITE", "TRAINING", "TEAM BATTLE", "OPTION"], "evidence": "menu string table at 0x80088a90 (19-byte stride); per-mode lock conditions not yet traced"},
+    "levels": {"status": "unknown"},
+    "stages": {"status": "unknown", "evidence": "stage file groups exist in FILE_TABLE but stage name/lock mapping not yet extracted"},
+    "items": {"status": "not_present", "evidence": "no item-system strings or tables found in the decoded program"},
+    "extras": {"status": "unknown", "evidence": "'EXTRA CONFIG OPEN!' notice at 0x80088ab8 implies a gated extra; gating flag not yet located"}
+  },
+  "unlock_mechanism": {"evidence": ["'NEW COSTUME GET!' at 0x80088aa4", "'EXTRA CONFIG OPEN!' at 0x80088ab8"], "status": "unknown", "note": "save/memory flag offsets behind the notices not yet located; code refs: menu table base 0x800974d8 stride 0x14, mode var 0x800962ec (167 refs)"},
+  "method": "static: decode owned program with gbox.zn_tps_boot (TPS BIOS decode, mg01/mg05), then per-fighter tables + capstring scan + capstone MIPS-LE xref cross-checks; no runtime test",
+  "next_acceptance_step": "trace the flag behind NEW COSTUME GET / EXTRA CONFIG OPEN (writers at 0x8006b928..0x8006bfb0 region), build the revision-guarded unlock routine, register in gbox.game_unlocks.profile_for + pre_launch, then runtime-test on i9-NUC or Spark with an isolated save: select each of the 11 characters and each mode, second launch, rollback."
+}

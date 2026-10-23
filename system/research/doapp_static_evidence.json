@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "request": "5f6e01acd6cd4777",
+  "game": {"title": "Dead Or Alive ++ (Japan)", "platform": "arcade", "board": "NEC PowerPC2 (MIPS RISC Core)", "game_id": "a19b4e641b155364"},
+  "archive": {"path": "gbox-cache/59c55e95af61abbe/doapp.zip", "sha256": "d17c6f40444f4051740e8c2f714dd34ad48e757e54ab1b49f339f89897e4cc06"},
+  "ram_image": {"bytes": 2097152, "sha256": "17c897096423b03c2843e5559e216520769c003e62e052845b839e4285669650"},
+  "discovery_method": "static string scan of decoded main RAM image + capstone MIPS-LE cross-checks (local run; no Ghidra/REA this run)",
+  "mode_menu": {"ram_addr": "0x80088a90", "stride_bytes": 19, "entry_strings": ["TOURNAMENT", "TIME ATTACK", "VERSUS", "SURVIVAL", "KUMITE", "TRAINING", "TEAM BATTLE", "OPTION"], "status": "present; per-mode lock flags not yet traced -> unlocked=unknown"},
+  "unlock_notifications": [
+    {"text": "NEW COSTUME GET!", "ram_addr": "0x80088aa4"},
+    {"text": "EXTRA CONFIG OPEN!", "ram_addr": "0x80088ab8"}
+  ],
+  "inventory": {
+    "characters": {"status": "unknown", "note": "no character-name strings located yet in RAM image"},
+    "hidden_characters": {"status": "unknown"},
+    "modes": {"status": "unknown", "note": "8 menu entries located; lock conditions untraced"},
+    "levels": {"status": "unknown"},
+    "stages": {"status": "unknown"},
+    "costumes": {"status": "unknown", "note": "unlock-notification string present, so a costume unlock mechanism exists"},
+    "items": {"status": "not_present", "note": "no item-system string evidence found"},
+    "extras": {"status": "unknown", "note": "EXTRA CONFIG is gated behind the notice string"}
+  },
+  "code_references": [
+    {"addr": "0x8007a948-0x8007a9b4", "note": "boot/init path touches 0x80097578 flag; menu table base 0x800974d8/0x80097500 stride 0x14"},
+    {"addr": "0x800f1594-0x800f15a8", "note": "mode-var byte at 0x800962ec drives a jump table; 167 code refs to this variable"}
+  ],
+  "limits": ["no runtime test this run", "save-flag byte offsets not yet located", "Ghidra/REA inspection deferred to next run"],
+  "next_acceptance_step": "trace the save/memory flag behind NEW COSTUME GET / EXTRA CONFIG OPEN notices (writer at 0x8006b928 etc.), then runtime-select each character and mode on i9-NUC/Spark with an isolated save, second launch + rollback."
+}
