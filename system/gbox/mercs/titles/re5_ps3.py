@@ -928,6 +928,9 @@ class Bot:
         self.route_effort, self.route_best, self.route_command_at = 0.0, math.inf, None
         self.traversal_started, self.traversal_pressed = None, None
         self.blocked_links, self.route_failures = set(), {}
+        self.blocked_until, self.blocked_goal_retries = {}, set()
+        self.round_input_ready = True
+        self.round_intro_timer = None
         self.nav_last_good, self.nav_recovery = None, None
         self.nav_hazards, self.nav_trail = [], []
         self.nav_sample_at = self.nav_save_at = -math.inf
@@ -1088,6 +1091,10 @@ class Bot:
             if callable(getattr(getattr(self,"mines",None),"reset_round",None)):
                 self.mines.reset_round(now,p.get("ptr"))
             self._round_started = now
+            timer,start = snap.get("timer"),snap.get("timer_start")
+            self.round_intro_timer = timer if isinstance(timer,(int,float)) and isinstance(start,(int,float)) \
+                and start>0 and abs(timer-start)<.02 else None
+            self.round_input_ready = self.round_intro_timer is None
             self._round_ended_at = None
             self._round_baseline = {key: self.stats.get(key, 0) for key in (
                 "deaths", "heals", "headshots", "finishers", "bonus_s", "bonuses_taken", "clock_jumps", "qte_presses")}
@@ -1100,6 +1107,8 @@ class Bot:
                     self.stats["deaths_continued"] = self.stats.get("deaths_continued", 0) + 1
                 self.bonus_fired.clear()
                 self.blocked_links.clear()
+                self.blocked_until.clear()
+                self.blocked_goal_retries.clear()
                 self.route_failures.clear()
                 self.nav_last_good = self.nav_recovery = None
                 self.bonus_skip.clear()
@@ -1125,6 +1134,13 @@ class Bot:
             if self.combat is not None:
                 self.combat.start_round(now)
         self._round_player = p.get("ptr")
+        if not self.round_input_ready:
+            timer = snap.get("timer")
+            if isinstance(timer,(int,float)) and timer < self.round_intro_timer-.02:
+                self.round_input_ready = True
+        self.stats["round_input_ready"] = self.round_input_ready
+        self.stats["round_intro_wait_s"] = round(now-self._round_started,2) if not self.round_input_ready else 0.
+        self._expire_navigation_blocks(now)
         self._round_combo = max(self._round_combo, snap.get("combo") or 0)
         self._track_combo(snap)
         if self.combat is not None:
@@ -1138,6 +1154,8 @@ class Bot:
             self.bonus_commitment.reset()
             self.nav_trail, self.nav_hazards = [], []
             self.blocked_links.clear()
+            self.blocked_until.clear()
+            self.blocked_goal_retries.clear()
             self.route, self.route_for, self.route_len = None, None, None
             self.climb_at = self.climb_pos = self.climb_tick = None
             self.nav_geometry = geometry
@@ -1252,6 +1270,10 @@ class Bot:
             if not hasattr(self, "mines"):
                 self.mines = re5_mines.Controller(self.m, self.stats, self._switch_weapon)
             if own_screen(snap) == "playing":
+                self.observe_round(snap,"playing",self.clock())
+                if not self.round_input_ready:
+                    self.stats["phase"] = "waiting_round_start"
+                    return {"hold":set()}
                 self._observe_weapon_switch(snap, self.clock())
                 self._mine_placement_preflight(snap,self.clock())
                 mine_action = self.mines.tick(snap, self.clock())
@@ -1295,6 +1317,9 @@ class Bot:
         self.stats["max_combo"] = max(self.stats["max_combo"], snap.get("combo") or 0)
         if not p:
             return {"hold": set()}
+        if not self.round_input_ready:
+            self.stats["phase"] = "waiting_round_start"
+            return {"hold":set()}
         self._see_dot(snap, now)
         close_foes = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0
                      and (e.get("hp_max") or 0) > 1 and math.dist(p["pos"], e["pos"]) <= FIGHT_R
@@ -2068,7 +2093,11 @@ class Bot:
         if not self.route:
             if mesh is not None:                           # an explicit no-route result must never mean run through it
                 self._nav_finish("unreachable")
-                self.bonus_skip[tgt["ptr"]] = now + BONUS_SKIP_S
+                until = now+BONUS_SKIP_S
+                if self.blocked_until:
+                    until = min(until,min(self.blocked_until.values()))
+                    self.blocked_goal_retries.add(tgt["ptr"])
+                self.bonus_skip[tgt["ptr"]] = until
                 self.stats["route"] = "unreachable on current mesh"
                 return {"hold": set()}
             self.stats["route"] = "waiting for stage navigation; no blind straight-line pursuit"
@@ -2337,6 +2366,7 @@ class Bot:
         attempts = self.route_failures.get(tgt["ptr"], 0)
         if link is not None and link not in self.blocked_links and attempts < 2:
             self.blocked_links.add(link)
+            self.blocked_until[link] = now+8.
             self.route_failures[tgt["ptr"]] = attempts + 1
             self.route = self.route_len = None
             self.route_at, self.route_best = -math.inf, math.inf
@@ -2351,6 +2381,25 @@ class Bot:
         self.route = self.route_for = self.route_len = None
         self._interrupt_route_walk()
         return {"hold": set()}
+
+    def _expire_navigation_blocks(self, now):
+        """A stationary attempt proves a failed attempt, not a permanent wall.
+
+        Temporary actors and round intro input locks can obstruct a valid portal.
+        Retain measured soft costs, but periodically recheck the game's existing
+        directed floor link with the normal bounded movement budget.
+        """
+        expired = [link for link,until in self.blocked_until.items() if now>=until]
+        if not expired:
+            return
+        for link in expired:
+            self.blocked_links.discard(link)
+            del self.blocked_until[link]
+        for goal in self.blocked_goal_retries:
+            self.bonus_skip.pop(goal,None)
+        self.blocked_goal_retries.clear()
+        self.route_len,self.route_at = None,-math.inf
+        self.stats["nav_portal_rechecks"] = self.stats.get("nav_portal_rechecks",0)+len(expired)
 
 
     @staticmethod

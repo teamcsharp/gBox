@@ -1,0 +1,65 @@
+﻿{
+    "at":  "2026-10-23T20:55:25.5815088Z",
+    "health_before":  {
+                          "state":  "running",
+                          "seq":  31557,
+                          "age_s":  0.0,
+                          "uploads":  1,
+                          "stalls":  [
+
+                                     ],
+                          "events":  [
+
+                                     ],
+                          "session_id":  "64fa91105c7b4104-7bae0c01bef24ec2",
+                          "worker_online":  true,
+                          "local_window":  false,
+                          "gameplay_state":  "analyzing",
+                          "presentation":  {
+                                               "mean_luma":  40.87,
+                                               "near_black_fraction":  0.0055,
+                                               "near_black":  false,
+                                               "sampled_at":  1792788878.283212,
+                                               "dark_since":  null,
+                                               "persistent":  false
+                                           },
+                          "exit":  null
+                      },
+    "measure":  {
+                    "seconds":  20,
+                    "frames":  812,
+                    "fps":  40.6,
+                    "gap_p50_ms":  16.68,
+                    "gap_p95_ms":  45.9,
+                    "gap_max_ms":  1964.37,
+                    "gaps_over_100ms":  13,
+                    "bandwidth_mbps":  11.61
+                },
+    "health_after":  {
+                         "state":  "running",
+                         "seq":  32590,
+                         "age_s":  0.02,
+                         "uploads":  1,
+                         "stalls":  [
+
+                                    ],
+                         "events":  [
+
+                                    ],
+                         "session_id":  "64fa91105c7b4104-7bae0c01bef24ec2",
+                         "worker_online":  true,
+                         "local_window":  false,
+                         "gameplay_state":  "watching",
+                         "presentation":  {
+                                              "mean_luma":  40.87,
+                                              "near_black_fraction":  0.0055,
+                                              "near_black":  false,
+                                              "sampled_at":  1792788878.283212,
+                                              "dark_since":  null,
+                                              "persistent":  false
+                                          },
+                         "exit":  null
+                     },
+    "path":  "Spark to Windows HTTP MJPEG",
+    "session_id":  "64fa91105c7b4104-7bae0c01bef24ec2"
+}

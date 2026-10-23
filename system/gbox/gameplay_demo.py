@@ -486,7 +486,8 @@ def install(app,store,config,auth,submit,workers,archive):
         store.put('gameplay_demo_result',body.job_id,row)
         return row
     def tick():
-        if any(j.get('tool')=='gameplay_demo' and j.get('state') in ('queued','running') for j in store.all('job')):return
+        # The job archive contains large completed results. Only live jobs can prevent a new demonstration.
+        if any(j.get('tool')=='gameplay_demo' for j in store.jobs(states=('queued','running'))):return
         if any(s.get('state')=='running' and (s.get('detail') or {}).get('gameplay_demo') for s in store.running_sessions()):return
         if not getattr(config,'gameplay_memory_enabled',True):return
         # The operator asked every completed PSO run to become a demonstration.

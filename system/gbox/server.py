@@ -3921,12 +3921,13 @@ def create_app(config: Config) -> FastAPI:
 
     @app.get("/api/sessions/{sid}/mjpeg")
     def mjpeg(sid: str, actor=Depends(auth)):
-        from .live_stream import async_mjpeg_parts
+        from .live_stream import async_mjpeg_parts, BackgroundCheck, BackgroundLease
         lv = _live(sid)
 
-        async def alive() -> bool:                   # a store read never blocks delivery to every viewer
+        async def read_alive() -> bool:
             s = await asyncio.to_thread(store.get, "session", sid)
             return s is None or s.get("state") != "ended"
+        alive = BackgroundCheck(read_alive)
         # Wakes on every new frame (stream fps = source fps) and repeats the newest frame while the source pauses,
         # so a state save or upload reconnect can no longer end the response and leave the operator's view black.
         import uuid
@@ -3934,16 +3935,20 @@ def create_app(config: Config) -> FastAPI:
         operator_guard.report_watch(store, viewer, sid)
 
         async def watched_parts():
-            renewed = 0.0
+            renewed = time.time()                       # the route already created the first watch lease
+            lease = BackgroundLease(
+                lambda: asyncio.to_thread(operator_guard.report_watch, store, viewer, sid),
+                lambda: asyncio.to_thread(operator_guard.report_watch, store, viewer, None))
             try:
                 async for part in async_mjpeg_parts(lv, alive=alive):
                     now = time.time()
                     if now - renewed >= 5:
-                        await asyncio.to_thread(operator_guard.report_watch, store, viewer, sid, now=now)
+                        lease.renew()
                         renewed = now
                     yield part
             finally:
-                await asyncio.to_thread(operator_guard.report_watch, store, viewer, None)
+                alive.close()
+                await lease.close()
 
         return StreamingResponse(watched_parts(), media_type="multipart/x-mixed-replace; boundary=f",
                                  headers={"cache-control": "no-store", "x-accel-buffering": "no"})

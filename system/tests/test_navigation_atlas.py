@@ -90,10 +90,11 @@ def test_recorder_writes_atlas_off_input_thread_and_confirms_clock_gained_pickup
     class Bot:
         def plan(self): return {"phase": "gather_time"}
     rec = Recorder(lambda *a,**kw: None, atlas_root=tmp_path, title="RE5", round_id="shared-round")
-    snap = {"player": {"pos": [100,0,100], "hp": 100}, "nav": mesh(), "timer": 100,
+    snap = {"player": {"pos": [100,0,100], "hp": 100}, "nav": mesh(), "timer": 100, "kills": 0,
             "bonuses": [{"ptr": 123, "pos": [300,0,100], "kind": "time"}]}
     rec.observe(snap, Bot(), {}, 0, ["lup"], "before_decision")
     rec.observe(snap | {"bonuses": [], "timer": 129}, Bot(), {}, 1, ["square"], "before_decision")
+    rec.observe(snap | {"bonuses": [], "timer": 128.5}, Bot(), {}, 1.5, [], "before_decision")
     status = rec.finish(2, "completed", {"rank_verified": True, "rank": "S"}, wait_s=5)
     assert not status.get("navigation_atlas_error"), status
     assert status["navigation_atlas_review"]["time_bonuses_acquired"] == 1
@@ -106,7 +107,7 @@ def test_old_disappeared_bonus_is_not_credited_for_a_later_unrelated_kill_clock_
     class Bot:
         def plan(self): return {}
     rec = Recorder(lambda *a,**kw: None, atlas_root=tmp_path, title="RE5")
-    snap = {"player": {"pos": [100,0,100], "hp": 100}, "nav": mesh(), "timer": 100,
+    snap = {"player": {"pos": [100,0,100], "hp": 100}, "nav": mesh(), "timer": 100, "kills": 0,
             "bonuses": [{"ptr": 123, "pos": [300,0,100], "kind": "time"}]}
     rec.observe(snap, Bot(), {}, 0, ["lup"], "before_decision")
     rec.observe(snap | {"bonuses": [], "timer": 99}, Bot(), {}, 1, [], "before_decision")

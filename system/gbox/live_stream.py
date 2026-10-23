@@ -19,6 +19,62 @@ FIRST_FRAME_LIMIT_S = 30.0  # end a response that never got a frame; the client 
 ALIVE_CHECK_S = 1.0    # session-row lookups (a store query) at most this often, not once per frame
 
 
+class BackgroundCheck:
+    """Await the first authorization/state read, then refresh it without putting store latency on each viewer.
+
+    One pending refresh is retained even if a database lock lasts several poll intervals. Confirmed false state
+    remains false; a failed refresh keeps the last successful value until another read can complete.
+    """
+    def __init__(self, check):
+        self.check, self.value, self.pending = check, None, None
+
+    async def __call__(self):
+        if self.value is None:
+            self.value = await self.check()
+        elif self.value and (self.pending is None or self.pending.done()):
+            self.pending = asyncio.create_task(self._refresh())
+        return self.value
+
+    async def _refresh(self):
+        try:
+            self.value = await self.check()
+        except Exception:
+            pass
+
+    def close(self):
+        if self.pending is not None:
+            self.pending.cancel()                       # reads have no late write that can resurrect a viewer
+
+
+class BackgroundLease:
+    """Coalesce renewable watch writes off the frame path, and clear only after an in-flight renewal finishes."""
+    def __init__(self, renew, clear):
+        self._renew, self._clear, self.pending, self.closed = renew, clear, None, False
+
+    def renew(self):
+        if self.closed or self.pending is not None and not self.pending.done():
+            return False
+        self.pending = asyncio.create_task(self._run_renew())
+        return True
+
+    async def _run_renew(self):
+        try:
+            await self._renew()
+        except Exception:
+            pass
+
+    async def close(self):
+        self.closed = True
+        pending = self.pending
+        async def clear_after_renew():
+            if pending is not None:
+                await pending
+            await self._clear()
+        # A cancelled HTTP body must not cancel the clear or allow a late put to recreate a closed watch lease.
+        cleanup = asyncio.create_task(clear_after_renew())
+        await asyncio.shield(cleanup)
+
+
 def part(frame: bytes) -> bytes:
     return b"--f\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n"
 

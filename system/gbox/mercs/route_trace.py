@@ -19,6 +19,10 @@ from . import tactical
 COUNTERS = ("stuck", "routes_blocked", "routes_given_up", "crossings_avoided", "idle_breakouts", "route_replans", "nav_recoveries",
             "hits_taken", "mine_attempts", "mines_placed", "mine_detonations_observed", "mine_retreats_completed",
             "mine_pickups_avoided", "qte_presses")
+BONUS_CORRELATION_S = 3.0
+BONUS_PICKUP_RADIUS = 250.0       # same-floor proximity in game centimetres, at both observations
+BONUS_MIN_CLOCK_GAIN = 25.0       # the smallest hourglass is 30 s; ordinary +5/+10 kill credits are insufficient
+BONUS_ABSENCE_S = .25            # one transient missing actor sample is not a confirmed pickup
 
 
 class Recorder:
@@ -31,10 +35,81 @@ class Recorder:
         self.counters = {}
         self.atlas = _AtlasWriter(atlas_root, title) if atlas_root is not None else None
         self.atlas_stages = set()
-        self.last_timer = None
         self.acquired = set()
-        self.last_clock_gain = -math.inf
+        self.bonus_context = None
+        self.bonus_previous = None
+        self.bonus_gains = []
+        self.bonus_removals = {}
+        self.bonus_missing = set()
         self.mine_event_seen = {}
+
+    def _bonus_acquisitions(self, snap, frame, key, now):
+        """Correlate clock credit and actor removal through the hourglass's destruction animation.
+
+        Both orders occur in independently sampled RAM. Each gain credits only one nearby time actor;
+        stable kill counters exclude kill bonuses, and a brief missing actor must remain absent.
+        """
+        player = (frame.get("player") or {}).get("pos")
+        timer, kills = snap.get("timer"), snap.get("kills")
+        valid = player is not None and type(timer) in (int, float) and math.isfinite(timer) \
+            and type(kills) is int and kills >= 0
+        if key != self.bonus_context or self.bonus_previous is not None \
+                and (now < self.bonus_previous[0] or now-self.bonus_previous[0] > BONUS_CORRELATION_S):
+            self.bonus_previous = None
+            self.bonus_gains.clear()
+            self.bonus_removals.clear()
+            self.bonus_missing.clear()
+        self.bonus_context = key
+        if not valid:
+            self.bonus_previous = None
+            self.bonus_gains.clear()
+            self.bonus_removals.clear()
+            return {}
+        bonuses = [b for b in frame.get("bonuses", ())
+                   if b.get("kind") == "time" and b.get("id") is not None and b.get("pos")]
+        present = {b["id"] for b in bonuses if not b.get("taken")}
+        self.bonus_missing.difference_update(present)
+        for actor in present:
+            self.bonus_removals.pop(actor, None)
+        # Keep a little room for the second absent sample; the two evidence event
+        # timestamps themselves must still be no more than three seconds apart.
+        lifetime = BONUS_CORRELATION_S + .75
+        self.bonus_gains = [g for g in self.bonus_gains if now-g["at"] <= lifetime]
+        self.bonus_removals = {a:r for a,r in self.bonus_removals.items()
+                              if now-r["at"] <= lifetime}
+        if self.bonus_previous is not None:
+            previous_at, previous_timer, previous_kills = self.bonus_previous
+            gain = timer-previous_timer
+            if 0 < now-previous_at <= BONUS_CORRELATION_S and kills == previous_kills and gain >= BONUS_MIN_CLOCK_GAIN:
+                nearby = {b["id"]: math.dist(player, b["pos"]) for b in bonuses
+                          if math.dist(player, b["pos"]) <= BONUS_PICKUP_RADIUS}
+                if nearby:
+                    self.bonus_gains.append({"at": now, "seconds": gain, "kills": kills, "nearby": nearby})
+        self.bonus_previous = (now, timer, kills)
+        for bonus in bonuses:
+            actor = bonus["id"]
+            if not bonus.get("taken") or actor in self.bonus_missing:
+                continue
+            self.bonus_missing.add(actor)
+            distance = math.dist(player, bonus["pos"])
+            if (key, actor) not in self.acquired and distance <= BONUS_PICKUP_RADIUS:
+                self.bonus_removals[actor] = {"at": now, "kills": kills, "distance": distance}
+        confirmed = {}
+        for gain in list(self.bonus_gains):
+            candidates = [(gain["nearby"][actor], actor, removal) for actor, removal in self.bonus_removals.items()
+                          if actor in gain["nearby"] and abs(gain["at"]-removal["at"]) <= BONUS_CORRELATION_S
+                          and gain["kills"] == removal["kills"]
+                          and now-removal["at"] >= BONUS_ABSENCE_S]
+            if not candidates:
+                continue
+            _, actor, removal = min(candidates)
+            self.bonus_gains.remove(gain)
+            del self.bonus_removals[actor]
+            self.acquired.add((key, actor))
+            confirmed[actor] = {"transition": "actor_removed_with_clock_gain", "clock_gain_at": gain["at"],
+                                "clock_gain_s": gain["seconds"], "actor_removed_at": removal["at"],
+                                "kills_unchanged": gain["kills"], "player_distance_cm": removal["distance"]}
+        return confirmed
 
     def finish(self, now, outcome, metrics=None, *, wait_s=2.):
         """Queue durable maps/review on the writer, bounded wait after input is released."""
@@ -87,22 +162,14 @@ class Recorder:
                 if self.atlas.put(("begin", atlas_round, mesh, now, metadata)):
                     self.atlas_stages.add(key)
             observations = []
-            timer = snap.get("timer")
-            if isinstance(timer, (int,float)) and self.last_timer is not None and timer > self.last_timer + 2.:
-                self.last_clock_gain = now
-            self.last_timer = timer if isinstance(timer, (int,float)) else None
+            acquisitions = self._bonus_acquisitions(snap, frame, key, now)
             for bonus in frame.get("bonuses", ()):
                 if not bonus.get("pos"):
                     continue
-                bonus_key = (key, bonus.get("id"))
                 evidence = {"source": "ram_bonus_actor", "actor": bonus.get("id")}
-                removed_at = (self.tracker.taken.get(bonus.get("id")) or {}).get("at", -math.inf)
-                acquired = bool(bonus.get("taken")) and bonus_key not in self.acquired \
-                    and bonus.get("kind") == "time" and now - removed_at <= 1. \
-                    and now - self.last_clock_gain <= 1.
+                acquired = bonus.get("id") in acquisitions
                 if acquired:
-                    self.acquired.add(bonus_key)
-                    evidence["transition"] = "actor_removed_with_clock_gain" if bonus.get("kind") == "time" else "actor_removed"
+                    evidence.update(acquisitions[bonus["id"]])
                 observations.append({"kind": bonus.get("kind", "unclassified_bonus"), "pos": bonus["pos"],
                                      "evidence": evidence, "acquired": acquired})
             for landmark in snap.get("landmarks") or ():
