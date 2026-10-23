@@ -29,7 +29,8 @@ object/script evidence. Character-specific abilities and gestures are not all ma
 The curriculum/notebook retain outcomes, generated guidance and performance vectors;
 the existing semantic outbox publishes round evidence to the knowledge database.
 Only actual completed results can establish a rank. The combined validation passed
-941 Python tests (62 skipped) and 83 UI tests. Sustained all-stage acceptance remains pending.
+972 Python tests (62 skipped), 31 focused inventory/healing checks and 151 UI tests.
+Sustained all-stage acceptance remains pending.
 Live rounds have produced SQLite observations, JSON reviews and SVG maps. A circular
 reference in review metrics originally prevented later exports; detached metrics and
 explicit round finalization now cover repeated rounds in one engine invocation.
@@ -111,8 +112,10 @@ class, item ID, pickup volume and handle. An exact, fresh health prompt can perm
 pickup through the otherwise strict anti-mine-recovery guard. Low HP pauses the
 time goal for a measured health route or carried healing. Nonquick inventory
 selection uses ordinary Triangle, acknowledged cursor moves and L1; item use
-requires observed consumption and HP gain before counting a heal. Its live native
-menu decoder is verified, but full pickup-to-HP-gain acceptance remains pending.
+requires observed consumption and HP gain before counting a heal. The live Sheva
+round confirmed ordinary menu equip, one spray consumed from the duplicate visible
+grid, an HP increase, and return to the bow with health protection disabled. A full
+ground-pickup-to-HP-gain sequence remains separate acceptance.
 
 The measured Prison ladder approach now faces the entry portal rather than the
 offset upper landing. The bot approaches within 35 cm and requires the stage
@@ -131,7 +134,15 @@ intervening navigation boundaries, but does not establish projectile visibility
 through props or overhead cover. Missing feedback and blocked corridors yield
 to route acquisition rather than indefinite aimed waiting. Trigger requests are
 kept separate from native shot events; the bow receives no unverified animation
-rate writes. Live arrow cadence and sustained hit accuracy require gameplay proof.
+rate writes. Live read-only sampling verified at least seven newly active uWp45
+arrow units within 1.006810 seconds, linked through the actual bow to Sheva. Each
+was absent in its preceding scan; four also showed measured movement. This is a
+lower bound on active projectiles, not an exact allocation/shot count. Generic FIRE
+transitions undercount arrows, so their hit-window ratio is not arrow accuracy.
+Evidence: `gbox-data/re5-bow-native-cadence-analysis.json` on Spark. The same normal-
+health Sheva round produced HP-loss-backed hit windows, kills and a native 30-second
+pickup. The preceding Barry round independently confirmed a native 60-second pickup
+with unchanged kills and substantial checkpoint-directed movement through stairs.
 
 ## Guides and unlock coverage
 

@@ -71,7 +71,7 @@
   function html(state = {}) {
     const controls = rows(state).map(row => {
       const raw = state.status?.[row.field];
-      const detail = row.reason || (row.on === null ? "State unavailable" : row.multiplier && row.on ? `Current setting: ${row.unit ? raw + row.unit : "×" + raw}`
+      const detail = (!row.available && row.reason) || (row.on === null ? "State unavailable" : row.multiplier && row.on ? `Current setting: ${row.unit ? raw + row.unit : "×" + raw}`
         : row.note && row.on ? row.note(state.status) : "");
       const setting = amount(state.status, row), unit = row.op === "kill_time" ? "seconds" : "times";
       const slider = row.min === undefined ? "" : `<div class="re5-mod-slider"><label>${ESC(row.label)}: `
@@ -264,8 +264,8 @@
     return { refresh, change, setMultiplier, setMines, selectMercs, state: () => ({ ...state }), stop: () => { disposed = true; } };
   }
 
-  const CSS = `.re5-modifiers{border-top:1px solid var(--line,#444);margin-top:5px;padding:9px 4px 2px;min-width:min(300px,calc(100vw - 48px));max-width:400px}
-    .re5-mod-heading,.re5-mod-row{display:flex;align-items:center;justify-content:space-between;gap:16px}.re5-mod-heading .act{font-size:11px}
+  const CSS = `.re5-modifiers{display:block!important;height:auto!important;overflow:visible;border-top:1px solid var(--line,#444);margin-top:5px;padding:9px 4px 2px;min-width:min(300px,calc(100vw - 48px));max-width:400px}
+    .re5-mod-heading,.re5-mod-row{display:flex;align-items:center;justify-content:space-between;gap:16px}.re5-mod-heading b{white-space:nowrap}.re5-mod-heading .act{font-size:11px;width:auto!important;flex:none;text-align:center!important}
     .re5-mod-row{padding:7px 0;font-size:13px}.re5-mod-row small{display:block;max-width:280px;font-size:11px;color:var(--mut,#aaa);margin-top:3px}
     .re5-mod-row input{accent-color:var(--pri,#8da7ff);width:17px;height:17px;flex:none;cursor:pointer}.re5-mod-row input:disabled{cursor:default;opacity:.55}
     .re5-mod-sub,.re5-mod-status{font-size:11px;line-height:1.45;margin:5px 0;color:var(--mut,#aaa)}.re5-mod-status{max-width:350px;overflow-wrap:anywhere;min-height:16px}
