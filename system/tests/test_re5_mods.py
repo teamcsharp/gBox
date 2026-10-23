@@ -200,8 +200,9 @@ def test_the_re5_profile_loads_assisted_damage_guard_and_ten_seconds_per_kill():
     prof = json.loads(Path(__file__).resolve().parents[1].joinpath("profiles/gamedata/BLUS30491-ram.json").read_text())["mercs"]
     assert [op for op, _ in prof["package"]] == ["turn_speed", "fire_rate", "infinite_ammo", "unlimited_health"] and prof["round_ops"] == [["random_cheats", {}]]
     assert dict(prof["package"])["fire_rate"] == {"multiplier": 80} and dict(prof["package"])["turn_speed"] == {"multiplier": 1}   # regular speed (operator 2026-10-22)
-    assert dict(prof["package"])["unlimited_health"] == {"on": True}   # operator 2026-10-23: avoid own mine damage
-    assert dict(prof['playing_ops'])['unlimited_health'] == {'on': True}
+    # Operator 2026-10-23: danger must cause real damage, with no HP refill or incoming-hit immunity.
+    assert dict(prof["package"])["unlimited_health"] == {"on": False}
+    assert dict(prof['playing_ops'])['unlimited_health'] == {'on': False}
     assert dict(prof['playing_ops'])['kill_time'] == {'on': True, 'seconds': 10}
 
 
@@ -222,7 +223,7 @@ def test_each_kill_adds_two_seconds_to_the_round_clock():
 
     ad, main, gs = Ad(), 0x31000000, 0x32000000
     ad.put(RM.S_MAIN, ">I", main); ad.put(main + RM.MAIN_GAMESYS, ">I", gs)
-    ad.put(gs + RM.GS_TIMER, ">f", 60.0); ad.put(gs + RM.GS_KILLS, ">i", 3)
+    ad.put(gs + RM.GS_TIMER, ">f", 60.0); ad.put(gs + RM.GS_KILLS, ">i", 3); ad.put(gs+0x58,">I",2)
     area, owner=0x387ecfe0,0x31fdd670
     for address,value in ((RM.S_AREA,area),(area,RM.AREA_VT),(area+RM.AREA_GAME,owner),(owner,RM.GAME_VT)):
         ad.put(address,">I",value)
@@ -300,7 +301,7 @@ def test_maintain_kill_time_adds_one_draw_per_kill(monkeypatch):
 
     ad, main, gs = Ad(), 0x31000000, 0x32000000
     ad.put(RM.S_MAIN, ">I", main); ad.put(main + RM.MAIN_GAMESYS, ">I", gs)
-    ad.put(gs + RM.GS_TIMER, ">f", 60.0); ad.put(gs + RM.GS_KILLS, ">i", 0)
+    ad.put(gs + RM.GS_TIMER, ">f", 60.0); ad.put(gs + RM.GS_KILLS, ">i", 0); ad.put(gs+0x58,">I",2)
     area, owner=0x387ecfe0,0x31fdd670
     for address,value in ((RM.S_AREA,area),(area,RM.AREA_VT),(area+RM.AREA_GAME,owner),(owner,RM.GAME_VT)):
         ad.put(address,">I",value)
