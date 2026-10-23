@@ -83,6 +83,34 @@ def fire_policy(wid, snap, target, impact):
     return True, weapon.family
 
 
+def bow_fire_policy(wid, *, corridor, aligned, loaded):
+    """The longbow has no laser. Permit ordinary aimed trigger input only on its own path.
+
+    A linked floor corridor rejects known intervening mesh walls; it does not establish projectile visibility
+    through props, dynamic actors or overhead cover. Keep that uncertainty separate from hitscan permission.
+    """
+    if wid != 0x0F:
+        return False, "not the verified longbow ID"
+    if not corridor:
+        return False, "longbow: no straight supported floor corridor"
+    if not loaded:
+        return False, "longbow: no loaded arrow"
+    if not aligned:
+        return False, "longbow: aligning camera aim"
+    return True, "longbow: ordinary aimed trigger; corridor only, cover unconfirmed"
+
+
+def laserless_fire_policy(wid, *, corridor, aligned, loaded):
+    if wid == 0x0F:
+        return bow_fire_policy(wid, corridor=corridor, aligned=aligned, loaded=loaded)
+    weapon = WEAPONS.get(wid)
+    if not weapon or weapon.family not in DIRECT:
+        return False, "laserless controller supports direct guns and the longbow only"
+    if not corridor or not aligned or not loaded:
+        return False, "laserless gun: corridor, alignment and loaded rounds required"
+    return True, "laserless gun: ordinary aimed trigger; corridor only, cover unconfirmed"
+
+
 def suitability(slot, snap, target):
     weapon = WEAPONS.get(slot.get("item"))
     if slot.get("type") != 1 or not weapon or not slot.get("rounds"):
@@ -118,6 +146,8 @@ def best_quick_slot(snap, target, blocked=()):
     options = [w for w in inventory if not w.get("hand") and quick_key(w)
                and inventory_key(w) not in blocked]
     current_spec = WEAPONS.get((current or {}).get("item"))
+    if current_spec and current_spec.family == "bow" and current.get("rounds", 0) > 0:
+        return None  # Preserve the character's bow; its controller owns aim and trigger pacing.
     if current_spec and current_spec.family in {"rocket", "rifle"}:
         magnums = [w for w in options if w.get("type") == 1 and w.get("rounds", 0) > 0
                    and w.get("item") in (0x0B, 0x1A, 0x1B)]

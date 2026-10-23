@@ -194,7 +194,7 @@ def test_the_playbook_applies_the_re5_package_through_re5_mods(monkeypatch):
     assert st["turn_speed_x"] == 2.0 and st["fire_rate_x"] == 80.0 and st["infinite_ammo"] is True
 
 
-def test_the_re5_profile_loads_assisted_damage_guard_and_ten_seconds_per_kill():
+def test_the_re5_profile_keeps_normal_health_and_three_seconds_per_kill():
     import json
     from pathlib import Path
     prof = json.loads(Path(__file__).resolve().parents[1].joinpath("profiles/gamedata/BLUS30491-ram.json").read_text())["mercs"]
@@ -203,7 +203,7 @@ def test_the_re5_profile_loads_assisted_damage_guard_and_ten_seconds_per_kill():
     # Operator 2026-10-23: danger must cause real damage, with no HP refill or incoming-hit immunity.
     assert dict(prof["package"])["unlimited_health"] == {"on": False}
     assert dict(prof['playing_ops'])['unlimited_health'] == {'on': False}
-    assert dict(prof['playing_ops'])['kill_time'] == {'on': True, 'seconds': 10}
+    assert dict(prof['playing_ops'])['kill_time'] == {'on': True, 'seconds': 3}
 
 
 def test_each_kill_adds_two_seconds_to_the_round_clock():
@@ -248,7 +248,7 @@ def test_the_re5_profile_turns_kill_time_on():
     import json
     from pathlib import Path
     prof = json.loads(Path(__file__).resolve().parents[1].joinpath("profiles/gamedata/BLUS30491-ram.json").read_text())["mercs"]
-    assert dict(prof["playing_ops"])["kill_time"] == {"on": True, "seconds": 10}
+    assert dict(prof["playing_ops"])["kill_time"] == {"on": True, "seconds": 3}
 
 
 def test_kill_time_seconds_is_an_operator_setting_that_is_validated_and_retained():
@@ -267,15 +267,15 @@ def test_kill_time_seconds_is_an_operator_setting_that_is_validated_and_retained
     assert not g.orig["kill_time"]["on"] and g.orig["kill_time"]["seconds"] == 3.5
 
 
-def test_kill_time_adds_ten_seconds_by_default_and_toggle_retains_the_value(monkeypatch):
+def test_kill_time_adds_three_seconds_by_default_and_toggle_retains_the_value(monkeypatch):
     g = type("G", (), {"orig": {}})()
     r = T.kill_time(g, True)                                    # the default
-    assert (r["seconds"], r["seconds_max"]) == T.KILL_TIME_RANGE == (10.0, 10.0)
+    assert (r["seconds"], r["seconds_max"]) == T.KILL_TIME_RANGE == (3.0, 3.0)
     draws = {T._kill_seconds(g.orig["kill_time"]) for _ in range(400)}
-    assert draws == {10.0}
+    assert draws == {3.0}
     T.kill_time(g, False)                                       # the panel's switch: off, then on again
     r = T.kill_time(g, True)
-    assert r["kill_time"] and (r["seconds"], r["seconds_max"]) == (10.0, 10.0)
+    assert r["kill_time"] and (r["seconds"], r["seconds_max"]) == (3.0, 3.0)
     assert T._kill_seconds({"seconds": 3.0}) == 3.0             # a fixed value still works
     for bad in ((5, 2), (0, 3), (2, 31)):
         try:

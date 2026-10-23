@@ -37,6 +37,7 @@ MAIN_GAMESYS = 0x182D4
 P_POS, P_ROT, P_PITCH, P_ACTION, P_HP = 0x30, 0x40, 0x1AA0, 0x845, 0x14A4
 E_POS, E_HP = 0x30, 0x14A4
 GS_TIMER, GS_START, GS_KILLS, GS_COMBO, GS_COMBO_T, GS_SCORE = 0x3E0, 0x3E4, 0x3F4, 0x3FC, 0x404, 0x418
+GS_PHASE = 0x3DC                       # native Mercenaries state3 is terminal, including quota clear with time left
 MAX_ENEMIES = 64
 ACTIONS = {0: "stand", 1: "move", 2: "aim", 4: "grabbed", 5: "hit"}
 P_GRABBED = 4                          # held by a Majini: "Break free" (wiggle the left stick)
@@ -82,9 +83,8 @@ RUN_SPEED = 250.0                      # cm/s running (the route ETAs; measured 
 OM_LINE, OM_MAX = 12, 600
 HOURGLASS_VT = 0x015EF5E0              # uOm0100's vtable (BLUS30491 app 01.01; read live 2026-10-21)
 HG_CENTRE_DY = 13.0                    # its middle, above its position (+0x30)
-HG_CENTRE, HG_KIND = 0x250, 0x194      # +0x250 f32 x4 bounding sphere (centre, radius: 28 cm, 13 cm above the origin);
-HG_COMBO = 0x90                        # the kind byte of the 2 combo bonuses (their clock is the combo's; unconfirmed)
-                                       # +0x194 u32 0x00KK..01: 0x90 on 2 of Public Assembly's 9, 0xA0 on the other 7
+HG_CENTRE, HG_KIND = 0x250, 0x194      # bounding sphere; retained render word, never a bonus-type discriminator
+HG_COLLECTED, HG_SECONDS = 0x13EC, 0x14A4  # native FUN_00723e34 adds signed seconds, then sets collected=1
 BONUS_RANGE = 12000.0                  # go for a time bonus whose route is this long at most (cm)
 FIGHT_R, FIGHT_CONE = 350.0, math.radians(40)   # a Majini this near and this far off the heading blocks the way:
 ON_TOP_R = 160.0                       # fought from where the player stands, as is one this close from any side;
@@ -188,19 +188,27 @@ def hourglass_units(m) -> list:
 
 
 def bonuses(m) -> list:
-    """The time bonuses still standing: [{"ptr", "pos", "r", "kind": "time", "kind_word"}] from the OM line
-    (HOURGLASS_VT): each one's bounding sphere read every call, the line itself once a second."""
+    """Uncollected native time hourglasses from the OM line.
+
+    FUN_00723e34 adds the signed +14A4 seconds to aGame, then marks +13EC=1
+    before its removal animation. Combo chests are a different class; +194 is
+    a render word and its 0x90 byte does not identify a combo bonus.
+    """
     out: list = []
     for u in hourglass_units(m):
         if u32(m, u) != HOURGLASS_VT:                       # gone since the last walk
             continue
+        collected = m.rd(u + HG_COLLECTED, 1)[0]
+        if collected == 1:
+            continue                                     # credited already; do not punch its shrinking actor again
         x, y, z = struct.unpack(">3f", m.rd(u + 0x30, 12))
         r = struct.unpack(">f", m.rd(u + HG_CENTRE + 12, 4))[0]
         r = r if 5.0 < r < 100.0 else 28.0
         kw = u32(m, u + HG_KIND)
-        seconds = struct.unpack(">h", m.rd(u + 0x14A4, 2))[0]
+        seconds = struct.unpack(">h", m.rd(u + HG_SECONDS, 2))[0]
         out.append({"ptr": u, "pos": (x, y + HG_CENTRE_DY, z), "r": r,
-                    "kind": "combo" if (kw >> 16) & 0xFF == HG_COMBO else "time", "kind_word": kw,
+                    "kind": "time", "kind_word": kw,
+                    "collected": False if collected == 0 else None,
                     "seconds": seconds if 0 < seconds <= 3600 else None})
     return out
 
@@ -292,6 +300,11 @@ def snapshot(m) -> dict:
                           "at": struct.unpack(">3f", m.rd(cc + CAM_AT, 12))}
     if snap["player"]:
         snap["bonuses"] = bonuses(m)
+        from . import re5_mines
+        snap["ground_mines"] = re5_mines.ground_mines(m)
+        from . import re5_health
+        ground_health = getattr(re5_health,'ground_items',None)
+        snap['health_items'] = ground_health(m) if callable(ground_health) else []
         snap["prompt"] = prompt(m)
         snap["stage_prompt"] = stage_prompt(m)
         snap["prompt_target"] = prompt_target(m)            # the Majini a finisher prompt is for (the combat layer)
@@ -303,7 +316,8 @@ def snapshot(m) -> dict:
     gs = u32(m, main + MAIN_GAMESYS) if ptr_ok(main) else 0
     if ptr_ok(gs):
         t, t0 = struct.unpack(">2f", m.rd(gs + GS_TIMER, 8))
-        snap.update(timer=round(t, 2), timer_start=t0, kills=struct.unpack(">i", m.rd(gs + GS_KILLS, 4))[0],
+        snap.update(timer=round(t, 2), timer_start=t0, mercenaries_phase=u32(m, gs + GS_PHASE),
+                    kills=struct.unpack(">i", m.rd(gs + GS_KILLS, 4))[0],
                     combo=struct.unpack(">i", m.rd(gs + GS_COMBO, 4))[0],
                     combo_timer=round(struct.unpack(">f", m.rd(gs + GS_COMBO_T, 4))[0], 2),
                     score=struct.unpack(">i", m.rd(gs + GS_SCORE, 4))[0])
@@ -817,11 +831,19 @@ def mine_pickup(m, request):
 
     Label 0x64 with L1 is Place, not pickup: only the scheduled controller may press it.
     """
-    return request.get("token") == "mash:square" and (
-        request.get('kind') == BTN_STAGE and request.get('label') == PICKUP_LABEL
-        or request.get("label") in (LOOSE_ITEM_PICKUP, PLACE_LABEL) or any(
+    if request.get('token') != 'mash:square':
+        return False
+    if any(
         ptr_ok(actor) and u32(m, actor) in MINE_VTABLES
-        for actor in (request.get("target", 0), request.get("owner", 0))))
+        for actor in (request.get("target", 0), request.get("owner", 0))):
+        return True
+    if request.get('kind') == BTN_STAGE and request.get('label') == PICKUP_LABEL \
+            or request.get('label') in (LOOSE_ITEM_PICKUP,PLACE_LABEL):
+        from . import re5_health
+        ground_health,pickup = getattr(re5_health,'ground_items',None),getattr(re5_health,'pickup_request',None)
+        # A fresh exact native health handle is the sole loose-pickup exception.
+        return not (callable(ground_health) and callable(pickup) and pickup(m,request,ground_health(m)))
+    return False
 
 
 def prompt_target(m):
@@ -887,6 +909,8 @@ def own_screen(snap: dict) -> str:
     p = snap.get("player")
     if not p:
         return "loading"
+    if snap.get("mercenaries_phase") == 3 and (p.get("hp") or 0) > 0:
+        return "results"                              # native quota clear keeps a positive countdown
     if snap.get("prompt") == "mash" and (snap.get("timer") or 0) > 0:
         return "playing"                              # explicit RESUSCITATE prompt: HP0 is still recoverable
     if p.get("hp") is not None and p["hp"] <= 0:
@@ -916,6 +940,8 @@ class Bot:
         self.pulse = 0
         self.hist: list = []
         self.hp_seen: dict = {}
+        self.nav_dynamic_mines = {}
+        self.health_pickup = None
         self.unstick_until = 0.0
         self.unstick_dir = 1
         self.dead_tap = 0.0
@@ -942,6 +968,7 @@ class Bot:
         self.bonus_commitment = GoalCommitment()
         self.checkpoint_clear_since = None
         self.checkpoint_walk_until = 0.
+        self.laserless_reacquire_until = 0.
         self.nav_geometry = None
         self.avoid: list = []                  # crossings the player could not take this round (no prompt there)
         self.climb_at = None                   # (the crossing, since when) while waiting at one for its prompt
@@ -959,6 +986,8 @@ class Bot:
         self.reload_until = 0.0
         self.heal_at = -math.inf
         self.healing = None
+        from .re5_inventory_health import Controller as InventoryHealth
+        self.inventory_heal = InventoryHealth(self.stats)
         self.switch_at = -math.inf
         self.switch_pending = None
         self.switch_blocked, self.switch_failures = {}, {}
@@ -989,6 +1018,14 @@ class Bot:
 
     # --- the engine's brain interface ---
     def prompt_ok(self, button, snap, now) -> bool:
+        if snap.get('stage_prompt') and 'square' in str(button):
+            hazards = [(row['pos'],600.) for row in (snap.get('ground_mines') or {}).values()]
+            player = snap.get('player') or {}
+            crossing = next((w for w in (self.route or [])[:2] if isinstance(w,re5_nav.Traversal)),None)
+            if crossing is not None and player.get('pos') and math.dist(player['pos'],crossing.approach)<250. \
+                    and not re5_nav.NavMesh.hazard_segment_clear(crossing,crossing,hazards):
+                self.stats['route'] = 'stage action deferred: observed bomb at its measured landing'
+                return False
         return self.combat.prompt_ok(button, snap, now) if self.combat is not None else True
 
     def recall(self, rows):
@@ -1023,6 +1060,18 @@ class Bot:
             return
         self._observed_snap = snap
         p = snap.get("player")
+        pickup = self.health_pickup
+        if pickup is not None and p and p.get('ptr')==pickup['player']:
+            count = sum(w.get('rounds',0) for w in snap.get('inventory') or () if w.get('id')==pickup['id'])
+            if count>pickup['before']:
+                self.stats['health_pickups_verified'] = self.stats.get('health_pickups_verified',0)+1
+                self.stats['health_seek_status'] = 'health item inventory increase observed after exact pickup request'
+                self.health_pickup = None
+            elif now-pickup['at']>5.:
+                self.stats['health_seek_status'] = 'health pickup inventory increase unconfirmed'
+                self.health_pickup = None
+        if where == "playing" and p and not self.round_active:
+            self.stats["round_used_health_protection"] = False
         if snap.get("stage_prompt"):
             self._remember_traversal_prompt(now)
         priority_prompt = snap.get("prompt") and not (self.combat is not None and self.combat.optional_prompt_blocked(snap))
@@ -1055,6 +1104,9 @@ class Bot:
             self.stats["hit_immunity"] = bool(health.get("hit_immunity"))
             self.stats["immunity_verified"] = bool(health.get("immunity_verified"))
             self.stats["immunity_reason"] = health.get("immunity_reason") or ""
+            self.stats["round_used_health_protection"] = bool(self.stats.get("round_used_health_protection")
+                or health.get("unlimited_health") and health.get("verified")
+                or health.get("hit_immunity") and health.get("immunity_verified"))
             if health.get("refilled"):
                 self.stats["health_refills"] = self.stats.get("health_refills", 0) + 1
             from ...re5_mods_tool import maintain_kill_time
@@ -1065,6 +1117,7 @@ class Bot:
                 self.stats["kill_time_reason"] = bonus.get("reason") or "write not confirmed"
         if where != "playing" or not p:
             self.healing = None
+            self.inventory_heal.reset()
             if self.combat is not None:
                 self.combat.awareness = []
             if where == "results":
@@ -1086,8 +1139,13 @@ class Bot:
                 self.combat.suspend_observation(now)
             return
         if not self.round_active:
+            self.health_pickup = None
+            self.inventory_heal.reset()
+            self.stats.pop("completed_score_rank", None)
+            self.stats.pop("completed_score_rank_source", None)
             self.bonus_commitment.reset()
             self.checkpoint_clear_since, self.checkpoint_walk_until = None, 0.
+            self.laserless_reacquire_until = 0.
             if callable(getattr(getattr(self,"mines",None),"reset_round",None)):
                 self.mines.reset_round(now,p.get("ptr"))
             self._round_started = now
@@ -1171,13 +1229,16 @@ class Bot:
         self._score_hits(snap)
         t = snap.get("timer")
         if self.last_timer is not None and t is not None and self.last_timer > 0 and 2 < t - self.last_timer:
-            self.stats["bonus_s"] = round(self.stats.get("bonus_s", 0.0) + t - self.last_timer, 1)
+            # This clock includes configured kill credits and native time bonuses.
+            # The route recorder owns confirmed hourglass counts/seconds after
+            # matching nearby actor removal with an independent clock gain.
+            self.stats["clock_gain_s"] = round(self.stats.get("clock_gain_s", 0.0) + t - self.last_timer, 1)
             self.stats["clock_jumps"] = self.stats.get("clock_jumps", 0) + 1
         self.last_timer = t
         standing = {b["ptr"] for b in snap.get("bonuses") or ()}
         taken = self.bonus_seen - standing
         if taken:
-            self.stats["bonuses_taken"] = self.stats.get("bonuses_taken", 0) + len(taken)
+            self.stats["bonus_actor_removals"] = self.stats.get("bonus_actor_removals", 0) + len(taken)
         self.bonus_seen = standing
         self._evaluate_round(snap, now)
 
@@ -1201,11 +1262,11 @@ class Bot:
         self.stats["round_evaluation"] = re5_strategy.evaluate_round(observed)
 
     def _observe_result(self, snap):
-        """The score can finish counting after timer0; retain only valid totals from this round's player."""
+        """Retain terminal RAM totals while the results tally finishes; no UI rank is inferred."""
         p, timer = snap.get("player") or {}, snap.get("timer")
         if not (self.round_active or self.round_end == "results") or not self._round_player \
                 or p.get("ptr") != self._round_player or not isinstance(timer, (int, float)) \
-                or not math.isfinite(timer) or timer > 0:
+                or not math.isfinite(timer) or (timer > 0 and snap.get("mercenaries_phase") != 3):
             return
         # Result/menu teardown can clear counters before sPlayer disappears. Never replace a known total with that.
         for key in ("score", "kills"):
@@ -1213,13 +1274,17 @@ class Bot:
             if type(value) is int and 0 <= value <= 0x7FFFFFFF \
                     and (not isinstance(prior, (int, float)) or value >= prior):
                 self.stats[key] = value
-        self.stats["timer"] = 0.0
+        self.stats["timer"] = max(0., timer)
+        self.stats["mercenaries_phase"] = snap.get("mercenaries_phase")
+        self.stats["finished_naturally"] = bool(snap.get("mercenaries_phase") == 3 and (self.stats.get("kills") or 0) >= 150)
         combo = snap.get("combo")
         if type(combo) is int and 0 <= combo <= 0x7FFFFFFF:
             self.stats["max_combo"] = max(self.stats.get("max_combo", 0), combo)
         rank = rank_of(self.stats.get("score"))
         if rank:
             self.stats["rank"] = rank
+            self.stats["completed_score_rank"] = rank
+            self.stats["completed_score_rank_source"] = "terminal_ram_score_and_solo_thresholds"
         self.stats.update(ROSTER.observe({"score": self.stats.get("score"), "kills": self.stats.get("kills"),
                                           "combo": self.stats.get("max_combo")}))
 
@@ -1275,10 +1340,45 @@ class Bot:
                     self.stats["phase"] = "waiting_round_start"
                     return {"hold":set()}
                 self._observe_weapon_switch(snap, self.clock())
-                self._mine_placement_preflight(snap,self.clock())
+                snap["ground_mines"] = re5_mines.ground_mines(self.m)
+                self.nav_dynamic_mines = snap["ground_mines"]
+                placement_safe = self._mine_placement_preflight(snap,self.clock())
+                hp,hp_max = p.get('hp') or 0,p.get('hp_max') or 0
+                heal_needed = self.healing is not None or self.inventory_heal.active or hp_max>0 and 1<hp<=HEAL_AT*hp_max
+                if heal_needed:
+                    placement_safe,snap['mine_placement_safe'] = False,False
                 mine_action = self.mines.tick(snap, self.clock())
+                mandatory = snap.get("prompt") or snap.get("stage_prompt") or snap.get("recovery_active") \
+                    or p.get("action") in (4,5) or (p.get("hp") or 0)<=0
+                if self.mines.escape is not None and not mandatory:
+                    escape_action = self._mine_retreat(p,snap,self.clock())
+                    if escape_action is not None:
+                        # A gun restore can happen while leaving, but its neutral
+                        # animation wait must not hold the player beside a bomb.
+                        if mine_action and mine_action.get("tap") in QUICK.values():
+                            escape_action = {"hold":set(escape_action.get("hold",())) | {mine_action["tap"]}}
+                        return self._leave_deployed_mines(escape_action)
+                if heal_needed and not mandatory:
+                    heal_action = self._heal(p,snap,self.clock())
+                    if heal_action is None:
+                        heal_action = self._seek_health(p,snap,self.clock())
+                    if heal_action is not None:
+                        self.mines.prepare_at = None
+                        self.bonus_commitment.pause(self.clock())
+                        return self._leave_deployed_mines(heal_action)
                 if mine_action is not None:
+                    if not placement_safe and self.mines.pending is not None:
+                        mine_action = {"hold":set(mine_action.get("hold",()))-{"l1","r1"}}
                     return self._leave_deployed_mines(mine_action)
+                if not placement_safe and not mandatory and self.mines.pending is None and self.mines.escape is None:
+                    hand = equipped(snap)
+                    if hand is not None and hand.get("id")==0x10A:
+                        gun = next((w for w in snap.get("inventory",()) if re5_weapons.quick_key(w)
+                                    and w.get("type")==1 and w.get("item") in re5_weapons.WEAPONS
+                                    and re5_weapons.WEAPONS[w["item"]].family in re5_weapons.DIRECT),None)
+                        if gun is not None:
+                            self.mines.retry_at = self.clock()+2.
+                            return self._switch_weapon(gun,self.clock(),"unsafe mine deployment; return to gun") or {"hold":set()}
             act = self._idle_breakout(snap, self._tick(snap))
             if self.mines.cadence.only and self.mines.cadence.enabled:
                 if "r1" in act.get("hold", ()):
@@ -1314,6 +1414,7 @@ class Bot:
         now = self.clock()
         self.observe_round(snap, own_screen(snap), now)
         p = snap.get("player")
+        self.nav_dynamic_mines = snap.get("ground_mines") or {}
         self.stats["max_combo"] = max(self.stats["max_combo"], snap.get("combo") or 0)
         if not p:
             return {"hold": set()}
@@ -1367,12 +1468,15 @@ class Bot:
             self.aiming_since = None                        # stays down between its presses (L1 would cancel it)
             self.stats["prompt_holds"] = self.stats.get("prompt_holds", 0) + 1
             return {"hold": set()}
-        heal = self._heal(p, snap, now)                     # equip, confirm in hand, then Square to actually use it
-        if heal:
-            return heal
         retreat = self._mine_retreat(p, snap, now)
         if retreat is not None:
             return retreat
+        heal = self._heal(p, snap, now)                     # heal after leaving an owned explosive, not beside it
+        if heal:
+            return heal
+        health_route = self._seek_health(p,snap,now)
+        if health_route is not None:
+            return health_route
         if snap.get("stage_prompt") and close_foes:
             self.stage_wait_since = self.stage_wait_since or now
         else:
@@ -1447,6 +1551,14 @@ class Bot:
         sightable = [e for e in live if self._laser_view(snap, e) == "on" or
                      (math.dist(p["pos"], e["pos"]) <= SIGHT_R and self._open(p, e, mesh, now))] \
             if self.combat is not None else live
+        laserless = self.combat is not None and eq is not None and eq.get("type") == 1 \
+            and (eq.get("item") == 0x0F or (re5_weapons.WEAPONS.get(eq.get("item")) is not None
+                 and re5_weapons.WEAPONS[eq["item"]].family in re5_weapons.DIRECT
+                 and self.combat._ray(snap,now) is None))
+        if laserless:
+            # No laser: do not use the generic near-enemy / barely-bending-route visibility shortcuts.
+            # This is only a known-wall veto. Actual projectile cover remains unconfirmed in combat telemetry.
+            sightable = [e for e in sightable if self.combat.firing_corridor(snap,p,e,eq["item"])]
         checkpoint_lease = self._checkpoint_walk_allowed(snap,close_foes,now)
         candidate = self.combat.choose_target(snap, p, sightable, now) if self.combat is not None else None
         if candidate is None and self.combat is not None and sightable:
@@ -1542,6 +1654,13 @@ class Bot:
         else:
             self.close_escape_until = self.close_acquire_until = 0.0
         if self.combat is not None and tgt.get("kind") not in ("time", "combo"):   # the combat layer owns the fight
+            if laserless and mesh is not None:
+                if self.combat.needs_firing_position:
+                    self.laserless_reacquire_until = now+1.
+                    self.combat.needs_firing_position = False
+                if now < self.laserless_reacquire_until:
+                    # Give the bounded, mine-aware router actual movement ticks, not a single-frame pause.
+                    return self._pursue(p,tgt,mesh,snap.get("stage_prompt"),now)
             if self._lost_sight(snap, p, tgt, now):        # the dot stops short of him / never reaches him: go there
                 chase = self._pursuit_target(p, live, mesh, now, snap)
                 if chase is not None:
@@ -1839,6 +1958,8 @@ class Bot:
         did not come or its route led nowhere."""
         px, py, pz = p["pos"]
         now_ptrs = {b["ptr"] for b in standing}
+        self.stats["time_bonuses_remaining"] = sum(b.get("kind", "time") == "time" for b in standing)
+        self.stats["combo_bonuses_remaining"] = sum(b.get("kind") == "combo" for b in standing)
         standing = [b for b in standing if self.bonus_skip.get(b["ptr"], 0.0) <= now]
         if not standing or not BONUS_HUNT:
             self.stats["bonus_target"] = None
@@ -1906,7 +2027,6 @@ class Bot:
         chosen = self.bonus_commitment.choose(b["ptr"], [x["ptr"] for x in cands], now, distance)
         b = next((x for x in cands if x["ptr"] == chosen), b)
         self.stats["bonus_committed"] = hex(b["ptr"]) if isinstance(b["ptr"], int) else str(b["ptr"])
-        self.stats["time_bonuses_remaining"] = len(standing)
         d = math.hypot(b["pos"][0] - px, b["pos"][2] - pz)
         level = abs(b["pos"][1] - py) < BONUS_LEVEL_DY          # on its level, right at it: take it
         walk = d > BONUS_TAKE or not level
@@ -1947,7 +2067,14 @@ class Bot:
             self.stats["items"] = ", ".join(f"{s['id']:#x}x{s['rounds']}@{s['slot']}" for s in items)
         hp, hp_max = p.get("hp") or 0, p.get("hp_max") or 0
         if hp_max <= 0 or hp <= 1 or snap.get("recovery_active") or p.get("action") == P_GRABBED:
+            self.inventory_heal.reset()
             return None
+        if self.inventory_heal.active:
+            self.bonus_commitment.pause(now)
+            action = self.inventory_heal.tick(self.m,snap,None,now)
+            if action is not None or self.inventory_heal.active:
+                self.stats['phase'] = 'healing_inventory'
+                return action or {'hold':set()}
         state, eq = self.healing, equipped(snap)
         if state is not None:
             if state["player"] != p.get("ptr"):
@@ -1985,6 +2112,13 @@ class Bot:
                     self.stats["heal_status"] = "Square use; awaiting consumption and HP"
                     return {"tap": "square"}
                 return {"hold": set()}             # do not raise the gun or switch away while use is pending
+            if now<state.get('ready_at',-math.inf):
+                self.stats['heal_status'] = 'lowering gun before recovery-item selection'
+                return {'hold':set()}
+            if state['equips']==0:
+                state['equip_at'],state['equips'] = now,1
+                self.stats['heal_equip_attempts'] = self.stats.get('heal_equip_attempts',0)+1
+                return {'tap':re5_weapons.quick_key(item)}
             if now - state["equip_at"] >= SWITCH_ACK_S and state["equips"] < 2:
                 key = re5_weapons.quick_key(item)
                 if key:
@@ -2000,20 +2134,85 @@ class Bot:
             return None
         quick = next((s for s in heals if s.get("hand")), None) or next((s for s in heals if re5_weapons.quick_key(s)), None)
         if quick is None:
+            self.switch_pending = None
+            self.bonus_commitment.pause(now)
+            action = self.inventory_heal.tick(self.m,snap,heals[0],now)
+            if action is not None or self.inventory_heal.active:
+                self.stats['phase'] = 'healing_inventory'
+                self.stats.pop('heal_out_of_reach',None)
+                return action or {'hold':set()}
             self.stats["heal_out_of_reach"] = heals[0]["slot"]
+            self.stats['heal_status'] = self.stats.get('inventory_heal_status','recovery item selection unavailable')
             return None
         self.switch_pending = None                 # emergency healing owns selection until this bounded sequence ends
+        settling = not quick.get('hand') and (p.get('action')==2 or self.aiming_since is not None)
         self.healing = {"key": re5_weapons.inventory_key(quick), "player": p.get("ptr"), "id": quick["id"],
                         "count": sum(s.get("rounds", 0) for s in items if s.get("id") == quick["id"]),
                         "hp": hp, "at": now, "last_use": -math.inf, "uses": 0,
-                        "equip_at": now, "equips": 0 if quick.get("hand") else 1,
+                        "equip_at": now, "equips": 0 if quick.get("hand") or settling else 1,
+                        'ready_at':now+1. if settling else now,
                         "return": re5_weapons.inventory_key(eq) if eq and eq.get("type") == 1 else None}
         self.stats["phase"] = "healing"
         if quick.get("hand"):
             return self._heal(p, snap, now)          # the screenshot's already-held spray needs Square, not another D-pad
+        if settling:
+            self.stats['heal_status'] = 'lowering gun before recovery-item selection'
+            return {'hold':set()}
         self.stats["heal_equip_attempts"] = self.stats.get("heal_equip_attempts", 0) + 1
         self.stats["heal_status"] = "equipping recovery item"
         return {"tap": re5_weapons.quick_key(quick)}
+
+    def _seek_health(self,p,snap,now):
+        """Pause the held checkpoint to reach a verified recovery item using existing safe floor paths."""
+        hp,hp_max = p.get('hp') or 0,p.get('hp_max') or 0
+        if hp_max<=0 or hp<=1 or hp>HEAL_AT*hp_max or snap.get('recovery_active'):
+            return None
+        from . import re5_health
+        rows = [row for row in snap.get('health_items') or [] if row.get('id') in HEAL_IDS and row.get('evidence')]
+        if not rows:
+            self.stats['health_seek_status'] = 'no verified ground recovery item observed'
+            return None
+        self.bonus_commitment.pause(now)
+        pickup = getattr(re5_health,'pickup_request',None)
+        request = selected_prompt(self.m,include_item_pickups=True) if self.m is not None else None
+        matched = pickup(self.m,request,rows) if request and callable(pickup) else None
+        if matched is not None and matched.get('id') in HEAL_IDS:
+            prior = self.health_pickup
+            if prior is not None and now-prior['at']<.7:
+                return {'hold':set()}
+            self.health_pickup = {'player':p.get('ptr'),'id':matched['id'],'actor':matched['ptr'],
+                'at':now,'before':sum(w.get('rounds',0) for w in snap.get('inventory') or () if w.get('id')==matched['id'])}
+            self.stats['phase'] = 'acquire_health'
+            self.stats['health_pickup_presses'] = self.stats.get('health_pickup_presses',0)+1
+            self.stats['health_seek_status'] = 'exact displayed recovery-item pickup; awaiting inventory increase'
+            return {'tap':'square'}
+        mesh = snap.get('nav')
+        if mesh is None:
+            self.stats['health_seek_status'] = 'verified recovery item observed; navigation unavailable'
+            return None
+        hazards = [(row['pos'],600.) for row in (snap.get('ground_mines') or {}).values()]
+        candidates = []
+        for item in rows:
+            key = ('health',item['ptr'])
+            if self.bonus_skip.get(key,0.)>now:
+                continue
+            route = mesh.route_avoiding_hazards(p['pos'],item['pos'],hazards,avoid=self.avoid,
+                blocked_links=self.blocked_links,link_penalties=self.nav_learning.link_penalties(mesh))
+            if route:
+                candidates.append((sum(math.dist(a,b) for a,b in zip([p['pos']]+route,route)),item))
+        if not candidates:
+            self.stats['health_seek_status'] = 'no measured safe route to currently observed recovery items'
+            return None
+        distance,item = min(candidates,key=lambda pair:pair[0])
+        self.stats['phase'] = 'seek_health'
+        self.stats['health_seek_status'] = f"{item.get('name','recovery item')}: measured route {distance:.0f}cm"
+        self.plan_target = {'kind':'health','id':item['ptr'],'pos':item['pos']}
+        if math.dist(p['pos'],item['pos'])<100.:
+            err = wrap(heading(item['pos'][0]-p['pos'][0],item['pos'][2]-p['pos'][2])-p['rot'])
+            self.stats['health_seek_status'] = 'at verified recovery item; aligning for its actual pickup prompt'
+            return {'hold':self._turn(err,aiming=False)}
+        self.aiming_since = None
+        return self._follow(p,{'ptr':('health',item['ptr']),'pos':item['pos']},mesh,snap.get('stage_prompt'),now,learn=False)
 
     def _heal_return_weapon(self, inv, state, now):
         guns = [s for s in inv if s.get("type") == 1 and s.get("rounds", 0) > 0 and re5_weapons.quick_key(s)
@@ -2057,6 +2256,18 @@ class Bot:
         self._route_mesh = mesh
         self._route_pos = tuple(p["pos"])
         pos = p["pos"]
+        hazards = [(row['pos'],600.) for row in self.nav_dynamic_mines.values()]
+        if mesh is not None and hazards and retreat_from is None:
+            inside = next((centre for centre,radius in hazards if math.dist(pos,centre)<radius),None)
+            if inside is not None:
+                retreat = mesh.retreat(pos,inside,650.,blocked_links=self.blocked_links)
+                if retreat and all(mesh.hazard_segment_clear(a,b,hazards,departing=True)
+                                   for a,b in zip([pos]+retreat,retreat)):
+                    self.stats['route'] = 'leaving observed bomb margin on supported floor'
+                    return self._follow(p,{'ptr':('observed_mine_escape',tuple(inside)),'pos':retreat[-1]},mesh,
+                                        False,now,learn=False,retreat_from=inside)
+                self.stats['route'] = 'blocked: no supported departure from observed bomb margin'
+                return {'hold':set()}
         if self.route_for != tgt["ptr"]:
             self.nav_learning.begin_route(mesh if learn else None, pos, tgt["pos"])
             self.route, self.route_for, self.route_since = None, tgt["ptr"], now
@@ -2087,9 +2298,11 @@ class Bot:
                                           link_penalties=self.nav_learning.link_penalties(mesh))
                 self.route_at = now
             else:
-                self.route, self.route_at = mesh.route(pos, tgt["pos"], avoid=self.avoid,
-                                                   pull=not self.route_midpoints, blocked_links=self.blocked_links,
-                                                   link_penalties=self.nav_learning.link_penalties(mesh)), now
+                self.route = mesh.route_avoiding_hazards(pos,tgt['pos'],hazards,avoid=self.avoid,
+                    blocked_links=self.blocked_links,link_penalties=self.nav_learning.link_penalties(mesh)) if hazards \
+                    else mesh.route(pos,tgt['pos'],avoid=self.avoid,pull=not self.route_midpoints,
+                        blocked_links=self.blocked_links,link_penalties=self.nav_learning.link_penalties(mesh))
+                self.route_at = now
         if not self.route:
             if mesh is not None:                           # an explicit no-route result must never mean run through it
                 self._nav_finish("unreachable")
@@ -2118,6 +2331,11 @@ class Bot:
                 break                                     # reach the action link's approach before advancing to its height
             self.route.pop(0)
         w = self.route[0]
+        checked = w.approach if isinstance(w,re5_nav.Traversal) else w
+        if mesh is not None and hazards and not mesh.hazard_segment_clear(pos,checked,hazards,departing=retreat_from is not None):
+            self.route,self.route_at = None,-math.inf
+            self.stats['route'] = 'current observed bomb blocks next segment; replanning verified floor detour'
+            return {'hold':set()}
         if isinstance(w, re5_nav.Traversal):
             return self._traverse(p, tgt, mesh, w, stage_prompt, now)
         flat = math.hypot(w[0] - pos[0], w[2] - pos[2])
@@ -2208,10 +2426,20 @@ class Bot:
         return self._follow(p, target, mesh, False, now, learn=False, retreat_from=escape["pos"])
 
     def _mine_placement_preflight(self, snap, now):
-        """Approve deployment only with a measured way out from the current floor."""
+        """Require a supported exit and a conservative observed threat margin, without relying on immunity."""
         p,mesh = snap.get('player'),snap.get('nav')
         allowed = False
-        if p and mesh is not None:
+        reason = "navigation floor escape unavailable"
+        enemies = [e for e in snap.get('enemies') or () if (e.get('hp') or 0)>0]
+        def distance_to_segment(point,a,b):
+            delta = tuple(b[k]-a[k] for k in range(3))
+            length2 = sum(v*v for v in delta)
+            t = max(0.,min(1.,sum((point[k]-a[k])*delta[k] for k in range(3))/max(length2,1e-9)))
+            return math.dist(point,tuple(a[k]+t*delta[k] for k in range(3)))
+        near_enemy = p and any(math.dist(p['pos'],e['pos'])<800. for e in enemies)
+        if near_enemy:
+            reason = "living enemy within 800cm of deployment"
+        elif p and mesh is not None:
             previous = getattr(self,'_mine_preflight',None)
             if previous is not None and previous['geometry'] == mesh.learning_sig and now-previous['at']<2. \
                     and math.dist(previous['pos'],p['pos'])<25.:
@@ -2221,8 +2449,18 @@ class Bot:
                                      link_penalties=self.nav_learning.link_penalties(mesh))
                 self._mine_preflight = {'geometry':mesh.learning_sig,'at':now,'pos':tuple(p['pos']),'route':route}
             allowed = bool(route) and math.dist(p['pos'],route[-1])>=600. and mesh.floor_segment(p['pos'],route[0])
+            if allowed:
+                segments = list(zip([p['pos']]+route,route))
+                if any(distance_to_segment(e['pos'],a,b)<800. for e in enemies for a,b in segments):
+                    allowed,reason = False,"living enemy within 800cm of escape corridor"
+                elif any(distance_to_segment(mine['pos'],a,b)<600.
+                         for mine in (snap.get('ground_mines') or {}).values() for a,b in segments):
+                    allowed,reason = False,"observed ground bomb within 600cm of escape corridor"
+                else:
+                    reason = "supported escape; observed enemy and explosive margins clear"
         snap['mine_placement_safe'] = allowed
         self.stats['mine_placement_route_verified'] = allowed
+        self.stats['mine_placement_safety_reason'] = reason
         return allowed
 
     def _checkpoint_walk_allowed(self, snap, close_foes, now):
@@ -2261,6 +2499,11 @@ class Bot:
 
     def _traverse(self, p, tgt, mesh, crossing, stage_prompt, now):
         pos, approach = p["pos"], crossing.approach
+        hazards = [(row['pos'],600.) for row in self.nav_dynamic_mines.values()]
+        if not mesh.hazard_segment_clear(crossing,crossing,hazards):
+            self.route,self.route_at = None,-math.inf
+            self.stats['route'] = 'stage action deferred: observed bomb at its measured landing'
+            return {'hold':set()}
         landing_radius = 250. if abs(crossing[1] - approach[1]) >= BONUS_LEVEL_DY else WP_REACHED
         if math.dist(pos, crossing) < landing_radius and abs(pos[1] - crossing[1]) < BONUS_LEVEL_DY \
                 and mesh.floor_segment(pos, crossing):
@@ -2273,7 +2516,7 @@ class Bot:
             return {"hold": set()}
         self.stats["route"] = f"traversal {'up' if crossing[1] > approach[1] else 'down/across'}; landing dy {crossing[1] - pos[1]:+.0f}"
         if self.traversal_started is None:
-            if math.dist(pos, approach) > WP_REACHED:
+            if math.dist(pos, approach) > 35.:
                 if not mesh.floor_segment(pos, approach):
                     return self._block_route(tgt, now, "traversal approach is not on reachable floor")
                 return {"hold": self._walk(p, heading(approach[0] - pos[0], approach[2] - pos[2]),
@@ -2296,7 +2539,13 @@ class Bot:
             return {"tap": "square"}
         if abs(pos[1] - approach[1]) >= BONUS_LEVEL_DY:
             return {"hold": set()}  # an in-flight climb is not evidence of a new walkable floor
-        way = heading(crossing[0] - pos[0], crossing[2] - pos[2])
+        # The enemy mesh's landing is inset into the far floor. On Prison
+        # this lies opposite the ladder's entrance, so facing the landing
+        # turns away from the ladder. Face the measured entry portal.
+        dx,dz = crossing.portal[0]-approach[0],crossing.portal[2]-approach[2]
+        if math.hypot(dx,dz)<1.:
+            dx,dz = crossing[0]-approach[0],crossing[2]-approach[2]
+        way = heading(dx,dz)
         err = wrap(way - p["rot"])
         if abs(err) > math.radians(20):
             if self.traversal_pressed is None:
@@ -2325,6 +2574,12 @@ class Bot:
             self.stats["nav_recovery"] = "no safe floor recovery observed; movement stopped"
             return {"hold": set()}
         q = state["points"][state["index"]]
+        hazards = [(row['pos'],600.) for row in self.nav_dynamic_mines.values()]
+        if not mesh.hazard_segment_clear(p['pos'],q,hazards,departing=True):
+            state['index'] += 1
+            state['walking'] = None
+            self.stats['nav_recovery'] = 'recovery probe rejected by current observed bomb margin'
+            return {'hold':set()}
         err = wrap(heading(q[0] - p["pos"][0], q[2] - p["pos"][2]) - p["rot"])
         self.stats["nav_recovery"] = f"probe {state['index'] + 1}: returning to nearby same-level floor"
         if abs(err) > math.radians(20):
@@ -2489,6 +2744,7 @@ class RE5PS3(Driver):
         self.clock = clock
         self._timer = (None, 0.0)              # the round's clock and when it last moved
         self._wiggle_step = 0
+        self._result_tally = None
 
     def snapshot(self, m) -> dict:
         return snapshot(m)
@@ -2499,6 +2755,8 @@ class RE5PS3(Driver):
     def screen(self, m, snap: dict | None) -> str:
         snap = self.snapshot(m) if snap is None else snap
         where = own_screen(snap)
+        if where != "results":
+            self._result_tally = None
         if where == "playing" and (snap.get("prompt") == "mash" or snap.get("recovery_active")):
             self._timer = (snap.get("timer"), self.clock())
         elif where == "playing":
@@ -2508,6 +2766,21 @@ class RE5PS3(Driver):
             elif now - self._timer[1] > HANG_S:
                 return "loading"                            # frozen: the engine calls it lost (its LOST_S later)
         return where
+
+    def result_ready(self, snap, now):
+        """Bounded neutral observation of the terminal score tally before closing evidence.
+
+        The native terminal phase can precede its score count-up. Wait at least
+        two seconds and one unchanged second; fifteen seconds is an explicit
+        evidence bound, not proof that an endlessly changing score is final.
+        """
+        signature = (snap.get("player") or {}).get("ptr"), snap.get("score"), snap.get("kills")
+        state = self._result_tally
+        if state is None or state["player"] != signature[0]:
+            state = self._result_tally = {"player":signature[0],"signature":signature,"started":now,"changed":now}
+        elif state["signature"] != signature:
+            state.update(signature=signature,changed=now)
+        return now-state["started"]>=15. or (now-state["started"]>=2. and now-state["changed"]>=1.)
 
     def brain(self, m, stats: dict, clock, learn_dir=None, nav=None):
         return Bot(m, clock=clock, stats=stats, learn_dir=learn_dir)
@@ -2555,7 +2828,7 @@ class RE5PS3(Driver):
         if ROSTER.round is None and snap.get("player"):
             ROSTER.started()
         out = {"timer": snap.get("timer"), "combo": snap.get("combo"), "score": snap.get("score"),
-               "kills": snap.get("kills"), **ROSTER.observe(snap)}
+               "kills": snap.get("kills"), "mercenaries_phase": snap.get("mercenaries_phase"), **ROSTER.observe(snap)}
         index = snap.get("stage_index")
         if isinstance(index, int) and 0 <= index < len(STAGE_NAMES):
             out.update(stage_index=index, stage=STAGE_NAMES[index])

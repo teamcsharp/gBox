@@ -168,6 +168,9 @@ class Recorder:
                     self.atlas_stages.add(key)
             observations = []
             acquisitions = self._bonus_acquisitions(snap, frame, key, now)
+            if acquisitions:
+                stats["bonuses_taken"] = stats.get("bonuses_taken", 0) + len(acquisitions)
+                stats["bonus_s"] = stats.get("bonus_s", 0) + sum(e["clock_gain_s"] for e in acquisitions.values())
             for bonus in frame.get("bonuses", ()):
                 if not bonus.get("pos"):
                     continue

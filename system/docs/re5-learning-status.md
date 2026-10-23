@@ -36,6 +36,45 @@ explicit round finalization now cover repeated rounds in one engine invocation.
 Three unfinished exports were rebuilt with writers stopped and a database backup:
 two retained matching notebook completion outcomes and one remained interrupted.
 
+Live follow-up found and corrected three concrete learning defects. The opening
+countdown previously consumed the movement timeout and blocked Ship Deck portal
+1337->1338, disconnecting every time goal. Input now waits for the countdown to
+start, and genuine failed portal blocks expire for bounded rechecks. Pickup
+correlation now allows the measured 1.64-2.52 second destruction animation and
+ends learned routes at the actual nearby pickup sample. Finally, the old +0x194
+hourglass classification was unverified: live Prison actors labelled combo had
+native +0x14A4 values of 30/60/90 seconds. Verified hourglass actors are time
+bonuses; native +0x13EC=1 marks collection before the shrinking actor disappears.
+Combo chests require their own object evidence.
+
+The semantic audit found all 22 sampled completed/interrupted notebook rounds in
+the real 768-dimensional knowledge database, with no undelivered round outbox
+rows. Storage alone did not prove recall. Background semantic search now selects
+up to two source IDs that join existing measured reviews with the exact title,
+geometry and mode. Only those local reviews reach the bounded 12/16-second goal
+patience policy; retrieved prose and coordinates cannot control the character.
+Cache selection and actual consumption have separate database/guide receipts.
+The first visit queues retrieval; a later matching recall consumes its result.
+
+## Native kill-time correction
+
+Writing cGameSys+0x3E0 only changed the HUD momentarily. Native countdown function
+0x1361C rewrites it from aGame+0x4DC each frame. The verified getter 0xBBCA0 follows
+sArea [0x0191CA20]+0x3830 to aGame. The modifier now checks both object signatures,
+the active original/Reunion mode and countdown state, and adds time to that owner.
+It never falls back to a HUD-only write or changes score/kills.
+
+Live RAM confirmed kills 15->19 with clock 163.68->203.40 over 0.251 seconds, and
+independent one-kill increments of approximately ten seconds. Evidence and bounded
+RAM witnesses are retained at `gbox-data/analysis/re5-authoritative-timer/` on Spark.
+The latest operator request changes the fixed bonus to **three seconds**. Both the
+launch profile and live setting now use three; the restarted normal-health session
+reported two kills and six seconds added. The earlier ten-second receipt documents
+the native clock correction rather than the current setting.
+Raw clock gains and actor removals are separate from confirmed hourglass counters.
+An active Prison run exceeded 60,000 points; completion and all-time-bonus acceptance
+must still be verified before calling it an S-rank result.
+
 ## Mines, damage and recovery
 
 Earlier live evidence verified actual armed Proximity Bomb actors and enemy-triggered
@@ -54,11 +93,45 @@ has an explicit budget. The native RPCS3 checkpoint is marked skipped because it
 current save-state operation reloads gameplay. No exact resumable incident save is
 claimed. The incident/persistence tests passed 45 focused checks.
 
-The protected profile uses the existing unlimited-health guard, which blocks all
-incoming damage; source-specific self-explosion immunity has not been independently
-recovered. Constant HP under this guard is not proof of expert damage avoidance.
+The operator subsequently rejected infinite life. The current profile explicitly
+disables unlimited health on launch and every round, and the live operator override
+was switched off with all 13 recorded collision entries restored. Native HP/max
+returned to 1000/1000. Five genuine HP-loss reports were observed before the bot
+died and began a fresh round. Earlier scores and zero-loss samples used the health
+guard and do not establish normal-health damage avoidance or an expert S run.
+Conservative deployment gates are now active, with a ten-second operator cadence:
+nearby enemies, unsupported escape paths and existing mine hazards defer planting.
+Routes avoid ground mines and require a supported retreat before gun restoration.
+This does not establish damage-free mine use on every stage.
 Verified resuscitation prompts receive alternating Circle down/up at 1/60 second
 per phase; this does not establish instantaneous revival on every game state.
+
+The native health reader distinguishes active spray/green/mixed-herb actors by
+class, item ID, pickup volume and handle. An exact, fresh health prompt can permit
+pickup through the otherwise strict anti-mine-recovery guard. Low HP pauses the
+time goal for a measured health route or carried healing. Nonquick inventory
+selection uses ordinary Triangle, acknowledged cursor moves and L1; item use
+requires observed consumption and HP gain before counting a heal. Its live native
+menu decoder is verified, but full pickup-to-HP-gain acceptance remains pending.
+
+The measured Prison ladder approach now faces the entry portal rather than the
+offset upper landing. The bot approaches within 35 cm and requires the stage
+climb prompt before Square. A recorded geometry regression covers that stall;
+live traversal acceptance remains separate from the test.
+
+PiP's right-click menu includes session-scoped modifier switches and numeric
+sliders for fire rate, damage, turning, kill time and mine cadence. It also exposes
+mines-only and next-mode/character/stage selection. Fresh verified readback controls
+the displayed state; closed or replaced sessions cannot receive new changes.
+
+Longbow firing uses a separate ordinary-input controller because its projectile
+path supplies no laser ray. Direct guns also have a camera/body-pitch fallback
+when laser feedback is absent. A straight supported floor corridor rejects known
+intervening navigation boundaries, but does not establish projectile visibility
+through props or overhead cover. Missing feedback and blocked corridors yield
+to route acquisition rather than indefinite aimed waiting. Trigger requests are
+kept separate from native shot events; the bow receives no unverified animation
+rate writes. Live arrow cadence and sustained hit accuracy require gameplay proof.
 
 ## Guides and unlock coverage
 
@@ -103,12 +176,24 @@ read-only verification. Initial transient RAM failures receive a bounded 120-sec
 retry; established-game read errors remain visible. These safeguards avoid treating a
 running emulator process or a nonzero host address as proof of readable game state.
 
+Profiling also found idle demo polling decoded a 205 MB / 48,115-document job archive
+every 30 seconds. It now queries only indexed queued/running jobs. MJPEG frame delivery
+no longer awaits recurring session/lease database operations; those use single-flight
+background checks with ordered lease cleanup. A subsequent active gameplay sample
+delivered 55.34 fps, versus 48.89 in the preceding sample, with zero encoder restarts.
+Maximum gaps were 556 ms and 1.13 seconds respectively; these are separate observed
+windows, not a controlled benchmark. Native emulation still slowed to about 18 fps
+under competing GPU/CPU load, so seamless playback remains unproven. A temporary
+RSX affinity experiment was restored because it did not prove a consistent benefit.
+
 Hermes now excludes pool routes with recorded provider cooldowns before assigning
 work (96 focused routing tests). Six existing RE tasks
 were returned to normal gated review/queue routing, retaining their job IDs. MiniMax
 returned HTTP 429 for the account's monthly usage limit and remains unavailable;
 Spark2 remains the available implementation route; existing task #2042 resumed there,
-while the remaining retries await normal review/admission. The inspected Mercenaries PRs
+while the remaining retries await normal review/admission. The later audit found
+SparkDeux review network failures, pending work and a conflicting draft PR; there
+was no additional completed branch ready to merge. The inspected Mercenaries PRs
 retain their branches: skipped bonuses, guessed roster pages and unverified save
 edits are not accepted as completion. Deployment/requeue/test receipts are retained
 under `gbox-data/hermes-re-merge-audit/` on Spark.

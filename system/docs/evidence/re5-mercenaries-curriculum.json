@@ -32,6 +32,8 @@
     "stage_select": {"vtable": "0x015ACD50", "initializer": "0x00612F3C", "cursor": "+0x44"},
     "character_select": {"vtable": "0x015ACCF0", "cursor": "+0x180", "count": "+0x184", "availability": "+0x188"},
     "game_system": {"mode": "+0x58 (2 original, 5 Reunion)", "stage": "+0x348", "character": "+0x364"},
+    "authoritative_countdown": {"chain": "sArea [0x0191CA20] +0x3830 -> aGame +0x4DC", "signatures": ["sArea 0x0157A720", "aGame 0x01576B18"], "getter": "0x000BBCA0", "countdown_update": "0x0001361C", "add_time": "0x00018C64", "hud_only_failure": "cGameSys +0x3E0 is rewritten each frame; immediate readback did not establish persistence", "live_proof": "Session d6911ebe38f341e6-735579884e0b42ea: kills15->19, timer163.68->203.40 in0.251s; separate kills21->22 and29->30 added approximately10s each", "artifacts": "Spark:gbox-data/analysis/re5-authoritative-timer/"},
+    "hourglass": {"vtable": "0x015EF5E0", "native_seconds": "+0x14A4 s16", "collected": "+0x13EC byte1, after native time credit and before shrink destruction", "consumer": "0x00723E34", "classification_correction": "+0x194 words0x900001/0x900401/0x900501 occurred on real30/60/90second time bonuses; the old combo heuristic was invalid. Combo chests need separate native object evidence."},
     "profile_availability": {"stride": "0x7EB8", "original_characters": "+0x108 OR 0x3FF", "original_stages": "+0x10C OR 0xFF", "reunion_stages": "+0x3F70 OR 0xFF"},
     "boot_patches": [
       {"address": "0x005FFEA8", "original": "0x800B0020", "patched": "0x380000F3", "effect": "Enable original Mercenaries in offline Play Game menu"},
@@ -43,6 +45,8 @@
     "guide": "gbox-data/mercs/curriculum/BLUS30491/guide.json",
     "performance_vectors": "gbox-data/mercs/curriculum/BLUS30491/rounds.sqlite",
     "semantic_vectors": "gbox-data/knowledge.sqlite via durable round outbox and local nomic-embed-text",
+    "semantic_recall": "Async KB lookup selects at most2 existing local reviews with exact title/geometry/mode; untrusted prose and coordinates never become controls. Selection, native consumption and derived bounded12/16s goal patience are separately recorded. First visit queues retrieval; next matching recall uses its cache.",
+    "semantic_live_audit": "All22 sampled notebook roundIDs had real768dim semantic chunks and no pending outbox rows. Production ShipDeck original cache warmed with roundsb459d121a1b84c428bbaa817fe0db357 and664ecfb5d10043cb93cc9a45a6c4a47a; actual native consumption requires separate activation evidence.",
     "navigation_atlas": "gbox-data/mercs/navigation/BLUS30491/atlas.sqlite",
     "round_exports": "gbox-data/mercs/navigation/BLUS30491/rounds/<round-hash>/round.json and map.svg",
     "atlas_scope": "Full directed geometry supplied by the loaded-stage RAM reader, measured routes/checkpoints, input/enemy observations and efficiency review; no verified complete census across all eight stages yet",
@@ -57,7 +61,7 @@
     "s_every_round": "Not established. Only completed result-screen evidence counts; no guaranteed perfect score or route is claimed.",
     "all_stage_mapping": "No exhaustive live checkpoint/object census or perfect route across all eight stages is verified.",
     "all_unlock_titles": "RE4 GC/Wii live ops and GC bot early unlock exist; RE5 exact01.01 Mercenaries access exists; RE6 pinned save-template boot support exists. Complete every-state/weapon/costume coverage across all releases remains unverified.",
-    "health_guard": "Protected profile uses existing unlimited health for all incoming damage; selective self-blast attribution/immunity alone is not verified. Constant HP does not prove damage avoidance.",
+    "health_guard": "Latest operator instruction rejects infinite life: launch/playing profiles explicitly disable health refill and hit immunity. Live off-operation restored all13 recorded collider entries and native1000HP cap; five subsequent genuineHP-loss events occurred before death/newround. Earlier protected scores/zeroHP-loss are not normal-health avoidance acceptance. Receipt Spark:gbox-data/re5-normal-health-activation.json.",
     "native_incident_checkpoint": "Skipped: current RPCS3 save-state operation reloads gameplay. Bounded sequential RAM witnesses are not an atomic full-memory or resumable emulator state.",
     "guide_ingestion": "Requested accessible sources were inspected and paraphrased narrowly. FAQ55979 was inaccessible. No claim that full guide text/maps were ingested."
   },
@@ -73,7 +77,8 @@
     "encoder_benchmark": "Spark:gbox-data/re5-stream-encoder-benchmark.json",
     "windows_trace": ".work/stream-client-baseline.json",
     "measurement_script": ".work/measure-stream.ps1",
-    "observed_limits": "Controlled capture73 to25 threads,71.5 to61.3%CPU; production traces still had frame gaps. Different load/windows do not isolate network contribution.",
+    "observed_limits": "Controlled capture73 to25 threads,71.5 to61.3%CPU. After indexed205MB job-archive polling and asynchronous lease checks, active gameplay delivered55.34fps from58.21fps source, maxgap556ms,0encoderrestarts; previous separate window48.89fps/maxgap1.13s. Native emulation still slowed near18fps under competingload; seamless playback unproven.",
+    "current_receipt": "Spark:gbox-data/re5-stream-background-checks-receipt.json",
     "validation": "47 Python and56 UI stream tests passed; seamless playback requires post-activation measurement",
     "telemetry_fix": "Stats validation now uses finite canonical UTF8 JSON up to64KiB; old4000-character limit rejected rich RE5 packets.36 telemetry/screensaver/recovery tests passed.",
     "telemetry_receipt": "Spark:gbox-data/hermes-re-merge-audit/telemetry-current/receipt.xml"
@@ -94,7 +99,7 @@
       {"pr":929,"head":"5deb3b43a72410d2702d7d3f5bb8bcc382b99c79","decision":"Conflicting RE6 driver branch; retain useful source for existing3025 task, no runtime acceptance"}
     ]
   },
-  "kill_bonus_s": 10,
+  "kill_bonus_s": 3,
   "mines": {
     "default_interval_s": 60, "slider_range_s": [2, 300], "only_mode": true,
     "leave_deployed_mines": true, "return_to_gunplay": true,
@@ -105,7 +110,7 @@
     "confirmation": "A new nearby uWp0a ground actor with +0x1CF9=1 is mandatory. Supply evidence is either actual consumption or the exact-build verified mine definition NOAMMO=1 while retaining the game-created stack. Button presses alone never count. Infinite flag prevents exhausting a five-charge stack between observations at rapid fire settings.",
     "ghidra_update": "0x008B6EF4: placed +0x1CF9; arming countdown float +0x1DB4; detonating +0x1DE5; proximity collider +0x1DE8",
     "manual_live_test": "Wesker Midnight, original Public Assembly: L1-only created three placed actors, arming countdown 3 to 0, then +0x1DE5=1 on all three and removal. No R1 or Square was sent. The earlier inventory-only placement claims were insufficient.",
-    "autonomous_live_test": "Session 64fa91105c7b4104-7bae0c01bef24ec2: one new ground actor armed to zero, remained present for over 40 seconds, bot resumed gunfire, no extra recovered mine stack appeared, 60-second interval restored. Four kills added 40 seconds. Full trace: gbox-data/re5-armed-proximity-acceptance.json.",
+    "autonomous_live_test": "Session64fa91105c7b4104-7bae0c01bef24ec2: new ground actor armed to zero, remained over40s, gunfire resumed, no recovered mine stack. Its immediate kill-clock readback did not establish persistent time; the authoritative_countdown evidence supersedes that claim. New session7c75fc7fd3924cd3-d2ea189584054db7 measured610.6cm retreat with the armed bomb left in place.",
     "limits": "Safe-space and recovery gates can delay placement; mine detonation is observed separately from kills and does not establish an S rank."
   },
   "continue_recovery": "Live verified: Right selects No, Cross confirms, save-success alert ID 0x09 requires Cross. Circle alone is ignored."

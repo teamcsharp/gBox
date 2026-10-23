@@ -54,6 +54,7 @@
 <div class="bar"><img src="../../assets/brand/gbox-logo.svg" style="height:16px;width:auto" alt=""><span id="t"></span>
   <button id="full" title="Back to the full app (or double-click the game)">⤢ Full app</button></div>
 <script src="../web/viz/session-continuity.js"></script>
+<script src="../web/viz/re5-modifiers.js"></script>
 <script>
   const q = new URLSearchParams(location.search), v = document.getElementById("v");
   document.getElementById("t").textContent = q.get("title");
@@ -70,6 +71,7 @@
       return result.data;
     },
     follow: async session => {
+      closeModifiers();
       const url = new URL(v.src);
       url.pathname = `/api/sessions/${encodeURIComponent(session.session_id)}/mjpeg`;
       url.searchParams.delete('reconnect'); v.src = url.href;
@@ -79,8 +81,37 @@
   const followTimer = setInterval(() => continuity.poll(), 2000);
   addEventListener('pagehide', () => {clearInterval(followTimer); continuity.cancel();}, {once:true});
   document.getElementById("full").onclick = () => gbox.miniRestore();
-  addEventListener("dblclick", () => gbox.miniRestore());
-  addEventListener("keydown", e => { if (e.key === "Escape") gbox.miniRestore(); });
+  let modifierMenu = null, modifierControl = null, modifierOpening = null;
+  function closeModifiers() {
+    modifierOpening = null; modifierControl?.stop(); modifierControl = null;
+    modifierMenu?.remove(); modifierMenu = null;
+  }
+  addEventListener('contextmenu', async event => {
+    event.preventDefault(); closeModifiers();
+    const opening = modifierOpening = {};
+    try {
+      const sid = gboxStreamWatchdog.sessionOf(v.src);
+      const result = await gbox.api('/api/sessions?include_ended=false');
+      if (!result.ok) throw Error(result.error || 'Session unavailable');
+      const session = result.data.find(row => row.session_id === sid);
+      if (modifierOpening !== opening || !GBoxRE5Modifiers.eligible(session)) return;
+      modifierMenu = document.createElement('div'); modifierMenu.id = 'pip-modifiers';
+      modifierMenu.style.cssText = 'position:fixed;z-index:10;background:#1d1d22;color:#eee;border:1px solid #555;border-radius:8px;padding:8px;max-width:calc(100vw - 32px);max-height:calc(100vh - 32px);overflow:auto';
+      modifierMenu.innerHTML = GBoxRE5Modifiers.sectionHTML(); document.body.append(modifierMenu);
+      modifierMenu.style.left = Math.max(8, Math.min(event.clientX, innerWidth - modifierMenu.offsetWidth - 8)) + 'px';
+      modifierMenu.style.top = Math.max(8, Math.min(event.clientY, innerHeight - modifierMenu.offsetHeight - 8)) + 'px';
+      modifierControl = GBoxRE5Modifiers.mount(modifierMenu.querySelector('.re5-modifiers'), { session,
+        api: async (path, body, method) => {
+          const response = await gbox.api(path, body, method);
+          if (!response.ok) throw Error(response.error || 'Modifier request failed');
+          return response.data;
+        } });
+    } catch (error) { console.warn('PiP modifiers:', error.message); }
+  });
+  addEventListener('mousedown', event => { if (!event.target.closest?.('#pip-modifiers')) closeModifiers(); });
+  addEventListener('pagehide', closeModifiers);
+  addEventListener("dblclick", event => { if (!event.target.closest?.('#pip-modifiers')) gbox.miniRestore(); });
+  addEventListener("keydown", e => { if (e.key === "Escape") { if (modifierMenu) closeModifiers(); else gbox.miniRestore(); } });
   // file:// cannot fetch health directly; authenticated IPC avoids CORS and unnecessary timed stream resets.
   window.GBOX_STREAM_FETCH_HEALTH = async src => {
     const settings = await gbox.settings();

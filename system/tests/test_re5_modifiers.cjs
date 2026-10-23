@@ -1,11 +1,13 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
 const M = require('../clients/web/viz/re5-modifiers.js');
 const BD = require('../clients/web/viz/bot-demo.js');
 const SESSION = { session_id: 'worker-launch', game_id: M.GAME, state: 'running', adapter: 'rpcs3' };
 const BASE = { unlimited_health: false, infinite_ammo: true, fire_rate_x: 1, turn_speed_x: 1,
-  bullet_damage_x: 1, in_hand: { weapon: 'M500' }, capabilities: Object.fromEntries(
+  bullet_damage_x: 1, kill_time_on: false, kill_time_range: '3', in_hand: { weapon: 'M500' }, capabilities: Object.fromEntries(
     [...M.DEFINITIONS.map(row => row.op), 'random_weapon'].map(op => [op, { available: true }])) };
 function rig() {
   const out = { status: structuredClone(BASE), calls: [], paints: [], sessions: [SESSION], active: [], clock: 0 };
@@ -24,6 +26,7 @@ function rig() {
     else {
       const definition = M.DEFINITIONS.find(d => d.op === op);
       out.status[definition.field] = definition.multiplier ? on ? multiplier : 1 : on;
+      if (op === 'kill_time' && multiplier !== undefined) out.status.kill_time_range = String(multiplier);
       result = { verified: true };
     }
     return { id: 'job', state: 'succeeded', output: { result } };
@@ -282,10 +285,11 @@ test('shell binds controls to the exact currently opened session and authenticat
   assert.doesNotMatch(fs.readFileSync(require.resolve('../clients/web/viz/re5-modifiers.js'), 'utf8'), /write_memory|read_memory|Bearer|x-gbox-actor/);
 });
 
-test('time per kill is an on/off switch that retains ten seconds', () => {
-  // The current operator setting is ten seconds; toggling preserves it.
+test('time per kill defaults to three seconds and preserves an explicit historical ten-second setting', async () => {
   const row = M.DEFINITIONS.find(d => d.op === 'kill_time');
   assert.equal(row.multiplier, undefined);                     // a toggle never sends seconds, so the range is kept
+  assert.match(M.html({ status: { ...BASE, kill_time_on: true } }), /3 s per kill/);
+  assert.match(M.html({ status: BASE }), /data-re5-range="kill_time"[^>]*value="3"/);
   const status = { ...structuredClone(BASE), kill_time_on: true, kill_time_range: '10' };
   const on = M.html({ status });
   assert.match(on, /10 s per kill/);
@@ -293,4 +297,248 @@ test('time per kill is an on/off switch that retains ten seconds', () => {
   assert.match(on, /data-re5-mod="kill_time"[^>]*aria-checked="true" checked/);
   const off = M.html({ status: { ...status, kill_time_on: false } });
   assert.match(off, /data-re5-mod="kill_time"[^>]*aria-checked="false" >/);
+  const r = rig(); r.status.kill_time_range = '10'; await r.control.refresh();
+  await r.control.change('kill_time', true);
+  assert.deepEqual(r.commands()[0].body.input, { session_id: SESSION.session_id, op: 'kill_time', on: true });
+  assert.equal(r.control.state().status.kill_time_range, '10');
+});
+
+test('numeric sliders send exact values as scoped operator jobs and confirm three seconds per kill', async () => {
+  for (const [op, number] of [['kill_time', 3], ['fire_rate', 12.5], ['bullet_damage', 2.5], ['turn_speed', 1.5]]) {
+    const r = rig(); await r.control.refresh(); await r.control.setMultiplier(op, String(number));
+    assert.deepEqual(r.commands()[0].body, { tool: 're5_mods', agent_use: false, require_worker: 'worker',
+      input: { session_id: SESSION.session_id, op, on: true, multiplier: number } });
+    assert.equal(r.control.state().error, false);
+    assert.equal(r.control.state().stale, false);
+    assert.match(r.control.state().message, op === 'kill_time' ? /3 seconds per kill/ : new RegExp(number + ' times'));
+  }
+});
+
+test('numeric slider bounds match each verified operation and reject invalid values without jobs', async () => {
+  for (const op of ['fire_rate', 'bullet_damage', 'turn_speed', 'kill_time']) {
+    const def = M.DEFINITIONS.find(row => row.op === op);
+    for (const number of [def.min, def.max]) {
+      const r = rig(); await r.control.refresh(); await r.control.setMultiplier(op, number);
+      assert.equal(r.commands().length, 1, `${op} accepts ${number}`);
+      assert.equal(r.control.state().error, false);
+    }
+    const r = rig(); await r.control.refresh();
+    for (const bad of [def.min - .01, def.max + .01, NaN, Infinity, -Infinity, '', '3 seconds', '1-10'])
+      await r.control.setMultiplier(op, bad);
+    assert.equal(r.commands().length, 0, `${op} rejects out-of-range/non-numeric values`);
+  }
+});
+
+test('requesting multiplier one confirms the actual default value', async () => {
+  for (const op of ['fire_rate', 'bullet_damage', 'turn_speed']) {
+    const r = rig(); await r.control.refresh(); await r.control.setMultiplier(op, 1);
+    assert.equal(r.control.state().error, false);
+    assert.equal(r.commands()[0].body.input.multiplier, 1);
+  }
+});
+
+test('numeric controls require verified actual readback rather than queue success or a fallback value', async () => {
+  for (const [op, number, change] of [
+    ['kill_time', 3, status => { status.kill_time_on = true; delete status.kill_time_range; }],
+    ['kill_time', 3, status => { status.kill_time_on = true; status.kill_time_range = 'not a number'; }],
+    ['kill_time', 3, status => { status.kill_time_on = false; status.kill_time_range = '3'; }],
+    ['kill_time', 3, status => { status.kill_time_on = true; status.kill_time_range = '10'; }],
+    ['fire_rate', 80, status => { delete status.fire_rate_x; }],
+    ['bullet_damage', 10, status => { status.bullet_damage_x = null; }],
+    ['turn_speed', 3, status => { status.turn_speed_x = 1; }],
+  ]) {
+    const r = rig(); await r.control.refresh();
+    r.command = async () => { change(r.status); return { verified: true }; };
+    await r.control.setMultiplier(op, number);
+    assert.equal(r.control.state().error, true, `${op} rejects missing, disabled or mismatching readback`);
+    assert.equal(r.control.state().stale, true);
+    assert.doesNotMatch(r.control.state().message, /seconds per kill\.|times\.$/);
+  }
+  const r = rig(); await r.control.refresh();
+  r.command = async () => { r.status.kill_time_on = true; r.status.kill_time_range = '3'; return { verified: false }; };
+  await r.control.setMultiplier('kill_time', 3);
+  assert.equal(r.control.state().error, true);
+});
+
+test('a pending numeric mutation keeps sliders disabled, preserves readback and blocks duplicate jobs', async () => {
+  const r = rig(); await r.control.refresh();
+  let finish;
+  r.command = () => new Promise(resolve => { finish = () => {
+    r.status.kill_time_on = true; r.status.kill_time_range = '3'; resolve({ verified: true });
+  }; });
+  const pending = r.control.setMultiplier('kill_time', 3);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(r.control.state().status.kill_time_on, false);
+  assert.match(M.html(r.control.state()), /data-re5-range="kill_time"[^>]*disabled/);
+  await r.control.setMultiplier('fire_rate', 20);
+  await r.control.change('unlimited_health', true);
+  assert.equal(r.commands().length, 1);
+  finish(); await pending;
+  assert.equal(r.control.state().busy, false);
+  assert.equal(r.control.state().status.kill_time_on, true);
+});
+
+test('numeric sliders cannot mutate ended, replaced, stale, unavailable or closed sessions', async () => {
+  for (const sessions of [[], [{ ...SESSION, state: 'ended' }], [{ ...SESSION, session_id: 'worker-new' }]]) {
+    const r = rig(); await r.control.refresh(); r.sessions = sessions;
+    await r.control.setMultiplier('kill_time', 3);
+    assert.equal(r.commands().length, 0);
+    assert.equal(r.control.state().error, true);
+  }
+  const r = rig(); await r.control.setMultiplier('kill_time', 3); // no initial status
+  assert.equal(r.commands().length, 0);
+  await r.control.refresh(); r.control.stop(); await r.control.setMultiplier('kill_time', 3);
+  assert.equal(r.commands().length, 0);
+  const denied = rig(); denied.status.capabilities.kill_time.available = false;
+  await denied.control.refresh(); await denied.control.setMultiplier('kill_time', 3);
+  assert.equal(denied.commands().length, 0);
+  const busy = rig(); await busy.control.refresh();
+  busy.active = [{ id: 'existing', tool: 're5_mods', input: { session_id: SESSION.session_id } }];
+  await busy.control.setMultiplier('kill_time', 3);
+  assert.equal(busy.commands().length, 0); assert.equal(busy.control.state().pending, 'existing');
+});
+
+test('mounted slider previews do not mutate gameplay and change uses the requested numeric value', async () => {
+  const r = rig(), output = { textContent: '' };
+  const host = { innerHTML: '', querySelector: selector => {
+    assert.equal(selector, '[data-re5-value="kill_time"]'); return output;
+  } };
+  const control = M.mount(host, { session: SESSION, api: r.api });
+  await new Promise(resolve => setImmediate(resolve));
+  const target = { dataset: { re5Range: 'kill_time' }, value: '3', matches: selector => selector === '[data-re5-range]' };
+  host.oninput({ target });
+  assert.equal(output.textContent, '3 seconds'); assert.equal(r.commands().length, 0);
+  host.onchange({ target }); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(r.commands()[0].body.input.multiplier, 3);
+  assert.equal(control.state().error, false); control.stop();
+});
+
+function desktopPipRig({ compact = true, lookup = async () => SESSION } = {}) {
+  const source = fs.readFileSync(path.join(__dirname, '../clients/desktop/index.html'), 'utf8');
+  const host = {}, menu = { opening: {}, style: {}, querySelector: () => host }, mounts = [], calls = [];
+  const stream = { src: '', getAttribute(name) { return name === 'src' ? this.src : null; } };
+  let stops = 0;
+  const context = vm.createContext({
+    $: selector => selector === '#compact-stream' ? stream : menu,
+    gboxStreamWatchdog: { sessionOf: src => /\/api\/sessions\/([^/]+)\/mjpeg/.exec(src)?.[1] },
+    COMPACT: { on: compact, sid: SESSION.session_id }, EMB: { sid: SESSION.session_id, last: '' },
+    GM: { menu: true }, compactSession: compact ? SESSION : null, sessionById: lookup,
+    GBoxRE5Modifiers: { eligible: M.eligible, sectionHTML: M.sectionHTML,
+      mount: (target, options) => { mounts.push({ target, options }); return { stop: () => { stops++; } }; } },
+    gbox: { api: async (...args) => { calls.push(args); return { ok: true, data: { confirmed: true } }; } },
+  });
+  vm.runInContext(source.slice(source.indexOf('function closePipMenu()'), source.indexOf('function pipMenu(x, y)')), context);
+  return { context, host, menu, stream, mounts, calls, source, stops: () => stops };
+}
+
+test('desktop PiP mounts the exact compact session and unwraps authenticated IPC responses', async () => {
+  const r = desktopPipRig(); await r.context.pipModifiers(r.menu, r.menu.opening);
+  assert.equal(r.mounts.length, 1);
+  assert.equal(r.mounts[0].target, r.host);
+  assert.equal(r.mounts[0].options.session, SESSION);
+  const result = await r.mounts[0].options.api('/api/jobs', { input: { op: 'kill_time' } }, 'POST');
+  assert.deepEqual(result, { confirmed: true });
+  assert.deepEqual(r.calls[0], ['/api/jobs', { input: { op: 'kill_time' } }, 'POST']);
+  r.context.closePipMenu(); assert.equal(r.stops(), 1);
+  assert.equal(r.menu.style.display, 'none'); assert.equal(r.menu.opening, null);
+});
+
+test('desktop PiP closure during a session lookup prevents a late modifier panel', async () => {
+  let finish;
+  const r = desktopPipRig({ compact: false, lookup: () => new Promise(resolve => { finish = resolve; }) });
+  const pending = r.context.pipModifiers(r.menu, r.menu.opening);
+  r.context.closePipMenu(); finish(SESSION); await pending;
+  assert.equal(r.mounts.length, 0);
+  const ended = desktopPipRig({ compact: false, lookup: async () => ({ ...SESSION, state: 'ended' }) });
+  await ended.context.pipModifiers(ended.menu, ended.menu.opening);
+  assert.equal(ended.mounts.length, 0);
+});
+
+test('desktop PiP recovers modifier scope from its displayed stream after runtime metadata is absent', async () => {
+  const lookedUp = [];
+  const r = desktopPipRig({ lookup: async sid => { lookedUp.push(sid); return SESSION; } });
+  r.context.COMPACT.sid = ''; r.context.EMB.sid = ''; r.context.compactSession = null;
+  r.stream.src = `http://spark:8765/api/sessions/${SESSION.session_id}/mjpeg?token=test`;
+  await r.context.pipModifiers(r.menu, r.menu.opening);
+  assert.deepEqual(lookedUp, [SESSION.session_id]);
+  assert.equal(r.mounts.length, 1); assert.equal(r.mounts[0].options.session, SESSION);
+});
+
+test('the actual PiP stream takes precedence over an older still-running metadata session', async () => {
+  const r = desktopPipRig({ lookup: async sid => sid === SESSION.session_id ? SESSION : null });
+  r.context.COMPACT.sid = r.context.EMB.sid = 'worker-old';
+  r.context.compactSession = { ...SESSION, session_id: 'worker-old' };
+  r.stream.src = `http://spark:8765/api/sessions/${SESSION.session_id}/mjpeg`;
+  await r.context.pipModifiers(r.menu, r.menu.opening);
+  assert.equal(r.mounts.length, 1); assert.equal(r.mounts[0].options.session, SESSION);
+  const unrelated = desktopPipRig({ lookup: async () => null });
+  unrelated.stream.src = 'http://spark:8765/api/sessions/unknown-launch/mjpeg';
+  await unrelated.context.pipModifiers(unrelated.menu, unrelated.menu.opening);
+  assert.equal(unrelated.mounts.length, 0, 'unknown displayed stream cannot fall back to another session');
+});
+
+function miniPipRig(readSessions = async () => ({ ok: true, data: [{ ...SESSION, session_id: 'other-launch' }, SESSION] })) {
+  const source = fs.readFileSync(path.join(__dirname, '../clients/desktop/mini.html'), 'utf8');
+  const listeners = {}, mounts = [], menus = [], calls = [];
+  let stops = 0, restored = 0;
+  const host = {}, context = vm.createContext({
+    v: { src: 'http://spark:8765/api/sessions/worker-launch/mjpeg?token=test' }, innerWidth: 1280, innerHeight: 720,
+    addEventListener: (name, fn, options) => { listeners[name] = { fn, options }; },
+    gboxStreamWatchdog: { sessionOf: src => /\/api\/sessions\/([^/]+)\/mjpeg/.exec(src)?.[1] },
+    document: { body: { append: menu => menus.push(menu) }, createElement: () => ({ style: {}, offsetWidth: 300,
+      offsetHeight: 400, querySelector: () => host, remove() { this.removed = true; } }) },
+    GBoxRE5Modifiers: { eligible: M.eligible, sectionHTML: M.sectionHTML,
+      mount: (target, options) => { mounts.push({ target, options }); return { stop: () => { stops++; } }; } },
+    gbox: { api: async (...args) => { calls.push(args); return args[0].startsWith('/api/sessions')
+      ? readSessions() : { ok: true, data: { confirmed: true } }; }, miniRestore: () => { restored++; } },
+    console: { warn() {} },
+  });
+  vm.runInContext(source.slice(source.indexOf('let modifierMenu ='), source.indexOf('// file:// cannot fetch health')), context);
+  const event = { clientX: 1200, clientY: 700, preventDefault() {}, stopPropagation() {} };
+  return { context, listeners, mounts, menus, calls, event, source, stops: () => stops, restored: () => restored };
+}
+
+test('detached PiP right-click binds the displayed session and uses the authenticated modifier API', async () => {
+  const r = miniPipRig(); await r.listeners.contextmenu.fn(r.event);
+  assert.equal(r.mounts.length, 1);
+  assert.equal(r.mounts[0].options.session, SESSION);
+  assert.equal(r.mounts[0].target, r.menus[0].querySelector('.re5-modifiers'));
+  assert.deepEqual(await r.mounts[0].options.api('/api/jobs', { op: 'status' }, 'POST'), { confirmed: true });
+  assert.deepEqual(r.calls.at(-1), ['/api/jobs', { op: 'status' }, 'POST']);
+  assert.equal(r.menus[0].style.left, '972px');
+  assert.equal(r.menus[0].style.top, '312px');
+  r.listeners.pagehide.fn(); assert.equal(r.stops(), 1); assert.equal(r.menus[0].removed, true);
+});
+
+test('detached PiP discards late lookups after closure and refuses ended or unrelated sessions', async () => {
+  let finish;
+  const r = miniPipRig(() => new Promise(resolve => { finish = resolve; }));
+  const opening = r.listeners.contextmenu.fn(r.event);
+  r.listeners.pagehide.fn(); finish({ ok: true, data: [SESSION] }); await opening;
+  assert.equal(r.mounts.length, 0);
+  for (const rows of [[{ ...SESSION, state: 'ended' }], [{ ...SESSION, session_id: 'other-launch' }]]) {
+    const other = miniPipRig(async () => ({ ok: true, data: rows }));
+    await other.listeners.contextmenu.fn(other.event); assert.equal(other.mounts.length, 0);
+  }
+});
+
+test('detached PiP editing keeps the menu open and Escape closes it before restoring the full app', async () => {
+  const r = miniPipRig(); await r.listeners.contextmenu.fn(r.event);
+  const inside = { target: { closest: () => r.menus[0] } };
+  r.listeners.mousedown.fn(inside); r.listeners.dblclick.fn(inside);
+  assert.equal(r.stops(), 0); assert.equal(r.restored(), 0);
+  r.listeners.keydown.fn({ key: 'Escape' });
+  assert.equal(r.stops(), 1); assert.equal(r.restored(), 0);
+  r.listeners.keydown.fn({ key: 'Escape' }); assert.equal(r.restored(), 1);
+});
+
+test('both PiP shells load modifier UI and compact right-click owns the gameplay context menu', () => {
+  const desktop = desktopPipRig().source, mini = miniPipRig().source;
+  for (const source of [desktop, mini])
+    assert.match(source, /<script src="\.\.\/web\/viz\/re5-modifiers\.js"><\/script>/);
+  assert.match(desktop, /closest\?\.\('#compact-stream, #compact-controls, #gpu-game'\)/);
+  assert.match(desktop, /event\.preventDefault\(\);\s*event\.stopPropagation\(\);\s*pipMenu\(event\.clientX, event\.clientY\)/);
+  const follow = desktop.slice(desktop.indexOf('const compactContinuity ='), desktop.indexOf('const compactContinuity =') + 2300);
+  assert.match(follow, /closePipMenu\(\)/);
+  assert.match(mini, /follow: async session => \{\s*closeModifiers\(\)/);
 });

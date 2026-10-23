@@ -813,10 +813,11 @@ def test_bonuses_anywhere_are_walked_to_nearest_first_and_the_clock_jumps_are_co
     monkeypatch.setattr(R, "BONUS_WALK", False)
     act, _ = tick(with_bonuses(world(), [(0.0, 13.0, 1200.0)]))
     assert act == {"hold": set()}                                                 # without routes: out of reach
-    bot.tick(R.snapshot(with_bonuses(world(timer=60.0), [])))                     # gone from the line: taken
-    assert bot.stats["bonuses_taken"] == 1
-    bot.tick(R.snapshot(with_bonuses(world(timer=89.5), [])))                     # the clock +29.5 s: a time bonus
-    assert bot.stats["clock_jumps"] == 1 and bot.stats["bonus_s"] == 29.5
+    bot.tick(R.snapshot(with_bonuses(world(timer=60.0), [])))                     # actor removal alone is ambiguous
+    assert bot.stats["bonus_actor_removals"] == 1 and bot.stats.get("bonuses_taken",0)==0
+    bot.tick(R.snapshot(with_bonuses(world(timer=89.5), [])))                     # unattributed clock credit
+    assert bot.stats["clock_jumps"] == 1 and bot.stats["clock_gain_s"] == 29.5
+    assert bot.stats.get("bonus_s",0)==0
 
 
 def with_inventory(mem, slots, grids=None):

@@ -19,6 +19,7 @@ import hashlib
 import json
 import math
 import struct
+import time
 from pathlib import Path
 
 S_AI, AI_PATHFINDING, PF_NAVMESH = 0x017BD4C8, 0x24, 0x14
@@ -376,6 +377,85 @@ class NavMesh:
         pts = [tuple(start)] + r
         return sum(math.dist(a, b) for a, b in zip(pts, pts[1:]))
 
+    @staticmethod
+    def hazard_segment_clear(start, goal, hazards, *, departing=False):
+        """Exact segment distance to current observed spherical avoidance margins.
+
+        A departure from inside a margin must move monotonically away. This
+        does not invent collision geometry or persist a temporary bomb as a wall.
+        """
+        delta = tuple(goal[k]-start[k] for k in range(3))
+        length2 = sum(v*v for v in delta)
+        for centre,radius in hazards:
+            before = math.dist(start,centre)
+            t = max(0.,min(1.,sum((centre[k]-start[k])*delta[k] for k in range(3))/max(length2,1e-9)))
+            nearest = math.dist(centre,tuple(start[k]+t*delta[k] for k in range(3)))
+            if nearest < radius:
+                away = sum((start[k]-centre[k])*delta[k] for k in range(3)) >= 0
+                if not (departing and before<radius and away and math.dist(goal,centre)>before):
+                    return False
+        return True
+
+    def route_avoiding_hazards(self, start, goal, hazards, *, avoid=(), blocked_links=(), link_penalties=None):
+        """Use a normal route if clear, else find a verified floor detour around transient hazards.
+
+        The alternate graph follows actual directed shared floor edges through
+        their portals and triangle interiors. No action link or unseen sidestep
+        is created. Coarse meshes without a supported detour return None.
+        """
+        hazards = tuple(hazards)
+        route = self.route(start,goal,avoid=avoid,blocked_links=blocked_links,link_penalties=link_penalties)
+        if not hazards or route is None:
+            return route
+        if all(self.hazard_segment_clear(a,b,hazards) for a,b in zip([start]+route,route)):
+            return route
+        if not self.hazard_segment_clear(start,start,hazards) or not self.hazard_segment_clear(goal,goal,hazards):
+            return None
+        source,destination = (self.find(p,floor_only=True,height_slack=61.) for p in (start,goal))
+        if source is None or destination is None:
+            return None
+        costs,previous,queue = {source:0.},{},[(0.,source)]
+        while queue:
+            cost,u = heapq.heappop(queue)
+            if cost != costs[u]:
+                continue
+            if u == destination:
+                break
+            origin = start if u==source else self.centre[u]
+            for v,edge,_ in self.links[u]:
+                if not 0<=v<len(self.tris) or not 0<=edge<3 or (u,v) in blocked_links \
+                        or self.steep[u] or self.steep[v]:
+                    continue
+                shared = {self.tris[u][edge],self.tris[u][(edge+1)%3]}
+                if not shared<=set(self.tris[v]):
+                    continue
+                portal = self._portal(u,edge)
+                if any(math.dist(portal,q)<AVOID_R for q in avoid):
+                    continue
+                endpoint = goal if v==destination else self.centre[v]
+                if not self.hazard_segment_clear(origin,portal,hazards) \
+                        or not self.hazard_segment_clear(portal,endpoint,hazards):
+                    continue
+                distance = cost+math.dist(origin,portal)+math.dist(portal,endpoint)+(link_penalties or {}).get((u,v),0.)
+                if distance < costs.get(v,math.inf):
+                    costs[v],previous[v] = distance,(u,edge)
+                    heapq.heappush(queue,(distance,v))
+        if destination not in previous:
+            return None
+        hops,node = [],destination
+        while node != source:
+            u,edge = previous[node]
+            hops.append((u,edge,node))
+            node = u
+        route = []
+        for u,edge,v in reversed(hops):
+            route.append(FloorWaypoint(self._portal(u,edge),(u,v)))
+            route.append(tuple(goal) if v==destination else self.centre[v])
+        if all(self.floor_segment(a,b) and self.hazard_segment_clear(a,b,hazards)
+               for a,b in zip([start]+route,route)):
+            return route
+        return None
+
     def retreat(self, start, hazard, min_distance=500., *, max_travel=1600., blocked_links=(), link_penalties=None):
         """A measured, monotonic floor route away from an explosive, or None.
 
@@ -479,6 +559,8 @@ class Learning:
     """
     MAX_GEOMETRIES, MAX_VISITS, MAX_CROSSINGS, MAX_ROUTES = 8, 4096, 8192, 512
     MAX_COUNT, MAX_FILE_BYTES = 1_000_000, 4_000_000
+    MAX_DAMAGE_NODES, MAX_DAMAGE_EVENTS = 512, 128
+    DAMAGE_HALF_LIFE_S, DAMAGE_LINK_COST, DAMAGE_MAX_WEIGHT = 1800., 250., 4.
     OUTCOMES = ("started", "arrived", "timed_out", "unreachable", "blocked", "interrupted")
 
     def __init__(self, path=None):
@@ -512,6 +594,21 @@ class Learning:
             if not isinstance(key, str) or len(key) > 100 or not isinstance(stage, dict):
                 continue
             clean = {"visits": {}, "crossings": {}, "routes": {}}
+            if isinstance(stage.get("damage_risk"), dict):
+                clean["damage_risk"] = {}
+                for node,row in list(stage["damage_risk"].items())[-self.MAX_DAMAGE_NODES:]:
+                    if not self._index_key(node) or not isinstance(row,dict):
+                        continue
+                    weight, at, pos = row.get("weight"), row.get("at"), row.get("pos")
+                    if type(weight) not in (int,float) or not math.isfinite(weight) or not 0 < weight <= self.DAMAGE_MAX_WEIGHT \
+                            or type(at) not in (int,float) or not math.isfinite(at) or at < 0 \
+                            or not isinstance(pos,(tuple,list)) or len(pos)!=3 \
+                            or any(type(v) not in (int,float) or not math.isfinite(v) for v in pos):
+                        continue
+                    clean["damage_risk"][node] = {"weight":weight,"at":at,"pos":list(pos)}
+            if isinstance(stage.get("damage_events"), list):
+                clean["damage_events"] = list(dict.fromkeys(event for event in stage["damage_events"][-self.MAX_DAMAGE_EVENTS:]
+                                                            if self._damage_id(event)))
             if isinstance(stage.get("stalls"), dict):
                 clean["stalls"] = {k: self._count(v) for k, v in list(stage["stalls"].items())[-self.MAX_CROSSINGS:]
                                    if self._index_key(k, True) and self._count(v)}
@@ -638,7 +735,9 @@ class Learning:
                 "nav_observed_crossings": sum(stage.get("crossings", {}).values()),
                 "nav_route_arrivals": sum(row.get("arrived", 0) for row in stage.get("routes", {}).values()),
                 "nav_failed_portals": sum(v > 0 for v in stage.get("stalls", {}).values()),
-                "nav_oscillating_portals": sum(v > 0 for v in stage.get("oscillations", {}).values())}
+                "nav_oscillating_portals": sum(v > 0 for v in stage.get("oscillations", {}).values()),
+                "nav_damage_risk_nodes": len(stage.get("damage_risk", {})),
+                "nav_damage_incidents_retained": len(stage.get("damage_events", []))}
 
     def blocked(self, mesh, link):
         if mesh is None or link is None:
@@ -649,7 +748,46 @@ class Learning:
         stage = self._stage(mesh)
         self._increment(stage.setdefault("stalls", {}), f"{a}:{b}", self.MAX_CROSSINGS)
 
-    def link_penalties(self, mesh):
+    @staticmethod
+    def _damage_id(value):
+        return isinstance(value,str) and len(value)==32 and all(c in '0123456789abcdef' for c in value)
+
+    def _damage_weight(self, row, now):
+        return row["weight"] * 2. ** (-max(0., now-row["at"]) / self.DAMAGE_HALF_LIFE_S)
+
+    def note_damage(self, mesh, pos, incident_id, *, observed_at):
+        """An observed HP loss makes this measured floor a soft risk, with no cause attribution.
+
+        Caller must persist the incident first. Geometry membership is exact;
+        off-floor/ambiguous positions cannot train a nearby floor. Event IDs
+        prevent duplicate delivery/replay from increasing the risk repeatedly.
+        Existing periodic/final save persists this bounded state.
+        """
+        if mesh is None or not self._damage_id(incident_id) \
+                or type(observed_at) not in (int,float) or not math.isfinite(observed_at) or observed_at < 0:
+            return False
+        if not isinstance(pos,(tuple,list)) or len(pos)!=3 \
+                or any(type(v) not in (int,float) or not math.isfinite(v) for v in pos):
+            return False
+        node = mesh.member(pos)
+        if node is None:
+            return False
+        stage = self._stage(mesh)
+        events = stage.setdefault("damage_events", [])
+        if incident_id in events:
+            return False
+        risk = stage.setdefault("damage_risk", {})
+        key = str(node)
+        old = risk.get(key)
+        if key not in risk and len(risk) >= self.MAX_DAMAGE_NODES:
+            del risk[next(iter(risk))]
+        risk[key] = {"weight":min(self.DAMAGE_MAX_WEIGHT, 1.+(self._damage_weight(old,observed_at) if old else 0.)),
+                     "at":observed_at,"pos":list(pos)}
+        events.append(incident_id)
+        del events[:-self.MAX_DAMAGE_EVENTS]
+        return True
+
+    def link_penalties(self, mesh, *, now=None):
         stage = self.stages.get(mesh.learning_sig, {})
         out = {tuple(map(int, key.split(":"))): min(3000., 500. * count)
                for key, count in stage.get("stalls", {}).items() if count > 0}
@@ -657,6 +795,20 @@ class Learning:
             link = tuple(map(int, key.split(":")))
             if count > 0:
                 out[link] = min(4000., out.get(link, 0.) + min(1000., 200. * count))
+        at = time.time() if now is None else now
+        # Only entering a measured risk floor incurs cost; leaving it remains
+        # available. No incident can create a link or make a checkpoint unreachable.
+        if stage.get("damage_risk") and type(at) in (int,float) and math.isfinite(at):
+            risks = {int(node):weight for node,row in stage["damage_risk"].items()
+                     if (weight:=self._damage_weight(row,at)) >= .01}
+            for u, links in enumerate(mesh.links):
+                for v, _, _ in links:
+                    weight = risks.get(v,0.)
+                    cost = 25. * round(min(1000., self.DAMAGE_LINK_COST*weight)/25.)
+                    if cost > 0:
+                        # Route-cache signatures must not change every tick as
+                        # time passes; decay only changes meaningful cost steps.
+                        out[(u,v)] = out.get((u,v),0.) + cost
         return out
 
     def save(self):

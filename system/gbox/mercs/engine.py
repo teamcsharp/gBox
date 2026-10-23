@@ -138,6 +138,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
     last_stats = {}
     # Per-round deltas for counters retained by the deployment's live stats dict.
     delta_fields = ("bonuses_taken", "bonus_s", "stuck", "routes_blocked", "routes_given_up", "mines_placed",
+                    "bonus_actor_removals", "clock_gain_s", "clock_jumps",
                     "damage_events", "player_damage_events", "hits_taken", "mine_attempts", "mine_detonations_observed", "mine_retreats_completed",
                     "mine_pickups_avoided", "qte_presses", "resuscitate_presses", "route_replans", "nav_recoveries")
     baseline = {k: stats.get(k, 0) for k in delta_fields}
@@ -148,6 +149,9 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
         from .notebook import Notebook
         notebook = Notebook(lesson_store.ROOT.parent, prof["map_id"])
         round_id = uuid.uuid4().hex
+        config = getattr(getattr(m,"adapter",None),"config",None)
+        if config is not None and callable(getattr(config,"token",None)):
+            notebook.configure_knowledge(config.public_url or "http://127.0.0.1:8765",config.token())
     except Exception as exc:
         stats["round_notebook_error"] = str(exc)[:200]
     if prof.get("map_id") == "BLUS30491":
@@ -199,7 +203,8 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
         remembered = None
         baseline = {key:before.get(key,0) for key in delta_fields}
         round_closed, outcome, last_stats = False, "interrupted", {}
-        for key in ("result_rank","result_rank_observed","rank_verified"):
+        for key in ("result_rank","result_rank_observed","rank_verified","completed_score_rank",
+                    "completed_score_rank_source","finished_naturally"):
             stats.pop(key,None)
         stats.update(round_evidence_id=round_id,round_evidence_closed=False)
         if prof.get("map_id") == "BLUS30491":
@@ -251,11 +256,20 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             if where not in D.IN_ROUND:
                 if where == "results":
                     last_stats = dict(stats)
-                    last_stats.update({key:snap[key] for key in ("timer","kills","score","combo")
-                                       if snap.get(key) is not None})
+                    for key in ("timer","kills","score","combo"):
+                        value = snap.get(key)
+                        if value is not None and (key not in ("kills","score") or
+                                isinstance(value,(int,float)) and value>=max(0,last_stats.get(key) or 0)):
+                            last_stats[key] = value
                     if outcome != "died":
                         outcome = "completed" if last_stats.get("timer") == 0 or (last_stats.get("kills") or 0)>=150 else "ended"
                     hold(set())
+                    result_ready = getattr(drv,"result_ready",None)
+                    if not round_closed and callable(result_ready) and not result_ready(snap,now):
+                        stats["result_tally_status"] = "observing terminal score count-up with inputs released"
+                        sleep(.1)
+                        continue
+                    stats["result_tally_status"] = "terminal evidence closed"
                     finish_evidence(now,outcome,last_stats)
                 hold(set())
                 if where == "loading" or not snap.get("player"):

@@ -253,3 +253,22 @@ recovered gameplay from its stale Save successful screen, and a service restart
 was followed to the replacement RE5 session without closing the PiP. Regression
 coverage includes replacement chains, worker reboots, held frames, black boot
 frames, offline recovery and a user closing PiP during a delayed frame probe.
+
+### Keep recurring database work away from frame delivery
+
+Live profiling found the idle demo poll decoded the entire 205 MB job archive
+every 30 seconds. It now queries indexed queued/running jobs. The stream still
+validates its initial session before returning images; later state checks and
+watch renewals run as single-flight background operations. Disconnect cleanup
+waits for an outstanding renewal before clearing its lease.
+
+After activation, an active 25-second RE5 sample delivered 55.34 fps from a
+58.21 fps source, with p95 interval 28.49 ms, maximum gap 556 ms and no encoder
+restarts. The previous gameplay sample delivered 48.89 fps with a 1.13-second
+maximum gap. Scene and machine load differ, so these are observations rather
+than a controlled performance claim. Native emulation still fell to about
+18 fps under competing load; seamless gameplay is not established.
+
+Receipts: Spark `gbox-data/re5-stream-background-checks-receipt.json` and
+`gbox-data/re5-rsx-affinity-measurement.json`. The temporary render-thread
+affinity diagnostic was restored; it is not a deployed performance setting.

@@ -50,6 +50,21 @@ def test_round_review_preserves_failure_evidence_and_unknown_acceptance(tmp_path
     assert unknown['all_observed_time_bonuses'] is None and unknown['no_sampled_hp_loss'] is None
 
 
+@pytest.mark.parametrize('context,expected',[
+    ({'round_used_health_protection':True},None),
+    ({'health_protection_used':True},None),
+    ({'round_used_health_protection':False},True),
+    ({},None),
+])
+def test_zero_sampled_loss_does_not_claim_damage_avoidance_under_protection(tmp_path,context,expected):
+    n=Notebook(tmp_path,'RE5')
+    n.finish('geometry','original','Jill','completed',{'player_damage_events':0,**context},round_id='round')
+    review=n.recall('geometry','original')[0]['observed']['reflection']
+    assert review['acceptance']['no_sampled_hp_loss'] is expected
+    if context:
+        assert review['health_protection_used'] is next(iter(context.values()))
+
+
 def test_mines_require_acknowledgement_and_resume_after_interruptions():
     c = Cadence(60)
     assert not c.due(0, (0,0,0))

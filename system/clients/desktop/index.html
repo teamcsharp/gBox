@@ -1245,6 +1245,7 @@ window.taskVizCreate = canvas => {
 <script src="embed-geometry.js"></script>
 <script src="game-surface.js"></script>
 <script src="compact-game.js"></script>
+<script src="../web/viz/re5-modifiers.js"></script>
 <script src="../web/viz/session-continuity.js"></script>
 <script src="../web/viz/autoplay-coach.js"></script>
 <script src="compact-coach.js"></script>
@@ -1262,7 +1263,7 @@ window.GBOX_STREAM_FETCH_HEALTH = async src => {
 <script src="../web/viz/stream-watchdog.js"></script>
 <style id="compact-game-style">
   body.gbox-compact { background:#000; }
-  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(script):not(style) { display:none !important; }
+  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(#pipmenu):not(script):not(style) { display:none !important; }
   body.gbox-compact:has(#compact-stream[data-stream-state="connected"]) .gbox-stream-badge { display:none !important; }
   #compact-stream { display:none; position:fixed; inset:0; width:100%; height:100%; object-fit:contain; background:#000; }
   body.gbox-compact #compact-stream.on { display:block; }
@@ -3795,6 +3796,7 @@ const compactContinuity = GBoxSessionContinuity.create({
     const image = $('#compact-stream');
     if (image && frame.poster) Object.assign(image.style,{backgroundImage:`url("${frame.poster}")`,backgroundSize:'contain',backgroundPosition:'center',backgroundRepeat:'no-repeat'});
     compactSession = session; compactTitle = sessionTitle(session);
+    closePipMenu();
     compactStreamUrl = `${S.apiUrl}/api/sessions/${encodeURIComponent(session.session_id)}/mjpeg?token=${encodeURIComponent(token)}`;
     await compactController.follow(from, {sid:session.session_id, local:false});
     document.querySelector('#wv')?.executeJavaScript(`followSession(${JSON.stringify(from)}, ${JSON.stringify(session.session_id)})`).catch(() => {});
@@ -3892,10 +3894,10 @@ function compactHover(show) {
   if (show || !COMPACT.on) apply(); else compactHoverTimer = setTimeout(apply, 450);
 }
 gbox.onCompactView?.(value => compactController.changed(value));
-addEventListener('dblclick', event => { if (COMPACT.on && !GBoxCompactCoach.isCoachTarget(event.target)) { event.preventDefault(); event.stopPropagation(); compactRestore().catch(error => toast(error.message)); } }, true);
+addEventListener('dblclick', event => { if (COMPACT.on && !event.target.closest?.('#pipmenu') && !GBoxCompactCoach.isCoachTarget(event.target)) { event.preventDefault(); event.stopPropagation(); compactRestore().catch(error => toast(error.message)); } }, true);
 addEventListener('pointermove', event => { if (COMPACT.on) compactHover(event.clientY < 32); }, { passive:true });
 addEventListener('resize', () => { if (COMPACT.on) requestAnimationFrame(() => embedTick()); });
-addEventListener('keydown', event => { if (COMPACT.on && event.key === 'Escape' && !GBoxCompactCoach.isCoachTarget(event.target)) { event.preventDefault(); compactRestore().catch(error => toast(error.message)); } });
+addEventListener('keydown', event => { if (COMPACT.on && event.key === 'Escape' && $('#pipmenu')?.style.display !== 'block' && !GBoxCompactCoach.isCoachTarget(event.target)) { event.preventDefault(); compactRestore().catch(error => toast(error.message)); } });
 setInterval(() => {
   if (!COMPACT.on || COMPACT.local) return;
   const image = $('#compact-stream');
@@ -3970,10 +3972,38 @@ function capMissing(op) {
   if (caps[op] !== "unsupported") return "";
   return `${EMB.adapter ? "The " + EMB.adapter + " emulator" : "This emulator"} ${CAP_WORDS[op] || "does not support " + op.replace(/_/g, " ")} in gBox`;
 }
+function closePipMenu() {
+  const m = $("#pipmenu");
+  if (m) { m.modifiers?.stop(); m.modifiers = null; m.style.display = "none"; m.opening = null; }
+  GM.menu = false; EMB.last = "";
+}
+async function pipModifiers(m, opening) {
+  const displayed = globalThis.gboxStreamWatchdog?.sessionOf($('#compact-stream')?.getAttribute?.('src') || '');
+  try {
+    const sid = displayed || (COMPACT.on ? COMPACT.sid : EMB.sid) || (await chatContext().catch(() => ({}))).session_id;
+    if (m.opening !== opening) return;
+    if (!sid) { m.querySelector('[data-pip-modifiers]').textContent = 'Select a running game to adjust modifiers.'; return; }
+    const session = COMPACT.on && compactSession?.session_id === sid ? compactSession : await sessionById(sid);
+    if (m.opening !== opening) return;
+    if (!GBoxRE5Modifiers.eligible(session)) { m.querySelector('[data-pip-modifiers]').textContent = ''; return; }
+    m.querySelector('[data-pip-modifiers]').innerHTML = GBoxRE5Modifiers.sectionHTML();
+    m.modifiers = GBoxRE5Modifiers.mount(m.querySelector('.re5-modifiers'), { session,
+      api: async (path, body, method) => {
+        const result = await gbox.api(path, body, method);
+        if (!result.ok) throw new Error(result.error || 'Modifier request failed');
+        return result.data;
+      } });
+  } catch (error) {
+    if (m.opening === opening) m.querySelector('[data-pip-modifiers]').textContent = error.message;
+  }
+}
 function pipMenu(x, y) {
   let m = $("#pipmenu");
   if (!m) { m = document.createElement("div"); m.id = "pipmenu"; document.body.append(m); dragAnywhere(m);
-    addEventListener("mousedown", e => { if (!e.target.closest("#pipmenu") && m.style.display === "block") { m.style.display = "none"; GM.menu = false; EMB.last = ""; } }, true); }
+    addEventListener("mousedown", e => { if (!e.target.closest("#pipmenu") && m.style.display === "block") closePipMenu(); }, true);
+    addEventListener("keydown", e => { if (e.key === "Escape" && m.style.display === "block") { e.preventDefault(); closePipMenu(); } }); }
+  m.modifiers?.stop(); m.modifiers = null;
+  const opening = m.opening = {};
   const noStates = capMissing("save_state");                   // #2518: Save / Load need an emulator with save states
   GM.at = [x, y];                                              // Report… files a problem at this spot
   const items = [["report", "⚑ Report…"], ["-"], ...(isFull() ? [["main", "⤡ Exit full screen   Alt+Enter"], ["-"]] : []), ["autoplay", GM.auto ? "🤖 Hand control back (stop autoplay)" : "🤖 Take control (autoplay)  F3 · pad: View+A"],
@@ -3993,13 +4023,19 @@ function pipMenu(x, y) {
                  ["pad", "🎮 Controller settings (emulator menu)"], ["mapping", "🕹 Controller mapping"], ["trouble", "🛠 Troubleshoot gameplay…"], ["-"],
                  ["main", "↩ Main view"], ["pip", "▣ Picture-in-picture"], isFull() ? ["main", "⤡ Exit full screen   Alt+Enter"] : ["full", "⛶ Full screen   Alt+Enter"],
                  ["S", "Size: small"], ["M", "Size: medium"], ["L", "Size: large"]];
-  m.innerHTML = items.map(([a, t, off]) => a === "-" ? "<hr>" : off
+  m.innerHTML = '<div data-pip-modifiers>Loading game controls…</div>' + items.map(([a, t, off]) => a === "-" ? "<hr>" : off
     ? `<button data-a="${a}" disabled title="${esc(off)}" style="opacity:.55">${t} <span class="mut">· ${esc(off)}</span></button>`
     : `<button data-a="${a}">${t}</button>`).join("");
-  m.onclick = e => { const a = e.target.closest("button")?.dataset.a; if (a) { m.style.display = "none"; GM.menu = false; EMB.last = ""; gameAction(a); } };
+  m.onclick = e => { const a = e.target.closest("button")?.dataset.a; if (a) { closePipMenu(); gameAction(a); } };
   GM.menu = true; EMB.last = ""; embedTick();
   Object.assign(m.style, { display: "block", left: x + "px", top: y + "px" }); fitMenu(m, x, y, 8, 40);
+  pipModifiers(m, opening);
 }
+document.addEventListener('contextmenu', event => {
+  if (!COMPACT.on || !event.target.closest?.('#compact-stream, #compact-controls, #gpu-game')) return;
+  event.preventDefault(); event.stopPropagation(); pipMenu(event.clientX, event.clientY);
+}, true);
+addEventListener('pagehide', closePipMenu);
 
 async function gameClose() {                                  // ✕ on the game's bar: stop the game, take its window away
   if (!EMB.sid) { pipHandle(null); await gbox.embedKill?.(); await gbox.embedSync(null); EMB.pid = EMB.rect = null; EMB.last = ""; return; }   // a leftover window: just close it
@@ -4473,6 +4509,7 @@ async function pwMenuAt(cx, cy) {                              // the character 
   EMB.last = ""; embedSoon();
 }
 function pwRightClick(x, y) {                                  // right-click on the game: a character there gets its menu
+  if (COMPACT.on || VIEW.mode === 'pip') return pipMenu(x, y);
   const R = EMB.rect;
   if (PW.settings().rclick && EMB.sid && R && x >= R.x && x <= R.x + R.w && y >= R.y && y <= R.y + R.h) return pwMenuAt(x, y);
   pipMenu(x, y);
@@ -6845,7 +6882,7 @@ function closePops(target) {                                 // target null = a 
     if (pop === "#reinv") riStop();
   }
   const pm = $("#pipmenu");                                  // the game's right-click menu
-  if (pm && pm.style.display === "block" && !(target && target.closest("#pipmenu"))) { pm.style.display = "none"; GM.menu = false; EMB.last = ""; }
+  if (pm && pm.style.display === "block" && !(target && target.closest("#pipmenu"))) closePipMenu();
   if (!target) { $("#modelmenu")?.classList.remove("on"); $("#recmenu")?.classList.remove("on"); }
 }
 document.addEventListener("mousedown", e => closePops(e.target), true);

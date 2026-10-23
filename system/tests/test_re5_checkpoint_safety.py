@@ -113,6 +113,7 @@ def test_exact_detonation_and_removal_release_escape_without_false_success(monke
 def test_preflight_rejects_trapped_placement_before_equip_and_accepts_supported_escape(tmp_path,monkeypatch):
     bot = R.Bot(learn_dir=tmp_path)
     snap,_ = state()
+    snap['enemies'] = []
     assert bot._mine_placement_preflight(snap,0.)
     trapped = NavMesh([(0.,0.,0.),(100.,0.,0.),(0.,0.,100.)],[(0,1,2)],[[]])
     assert not bot._mine_placement_preflight({'player':snap['player'] | {'pos':(20.,0.,20.)},'nav':trapped},1.)

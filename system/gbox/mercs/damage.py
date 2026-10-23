@@ -219,6 +219,7 @@ class Observer:
         snapshot, plan = clean(snap), clean(T.take_plan(bot))
         event = {"schema": "gbox.player_damage/1", "event_id": uuid.uuid4().hex, "run_id": self.run_id,
                  "round_id": self.round_id, "title": self.title, "observed_at": at, "screen": screen,
+                 "navigation_geometry": geometry,
                  "player": current[0], "hp_before": previous[1], "hp_after": current[1], "hp_max": current[2],
                  "loss": previous[1] - current[1], "cause": "unknown", "self_damage": "unknown",
                  "snapshot": snapshot, "plan": plan, "held": sorted(held), "logic": clean(dict(self.stats)),
@@ -247,6 +248,23 @@ class Observer:
         self.stats["player_damage_events"] += 1
         self.stats["player_damage_last_id"] = event["event_id"]
         self.stats["player_damage_last_loss"] = event["loss"]
+        learner = getattr(bot, "nav_learning", None)
+        learn = getattr(learner, "note_damage", None)
+        if self.title == 'BLUS30491' and nav is not None and geometry == getattr(nav,'learning_sig',None) and callable(learn):
+            try:
+                # Evidence is durable before this optional bounded policy update.
+                # Use only the exact sampled player/floor, never a guessed cause.
+                p = snap.get('player') or {}
+                accepted = p.get('ptr') == current[0] and p.get('hp') == current[1] and p.get('hp_max') == current[2] \
+                    and learn(nav,p.get('pos'),event['event_id'],observed_at=at)
+                if accepted:
+                    self.stats['nav_damage_samples_learned'] = self.stats.get('nav_damage_samples_learned',0)+1
+                    self.stats['nav_damage_learning_last_id'] = event['event_id']
+                else:
+                    self.stats['nav_damage_samples_rejected'] = self.stats.get('nav_damage_samples_rejected',0)+1
+            except Exception as exc:
+                self.stats["nav_damage_learning_errors"] = self.stats.get("nav_damage_learning_errors", 0) + 1
+                self.stats["nav_damage_learning_error"] = type(exc).__name__
         return event
 
     def _reset_history(self):

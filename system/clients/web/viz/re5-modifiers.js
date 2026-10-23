@@ -6,12 +6,12 @@
   const DEFINITIONS = [
     { op: "unlimited_health", label: "Unlimited life", field: "unlimited_health" },
     { op: "infinite_ammo", label: "Infinite ammo", field: "infinite_ammo" },
-    { op: "fire_rate", label: "Rapid fire", field: "fire_rate_x", multiplier: 80 },
-    { op: "bullet_damage", label: "High damage", field: "bullet_damage_x", multiplier: 10 },
-    { op: "turn_speed", label: "Faster turning and aiming", field: "turn_speed_x", multiplier: 3 },
+    { op: "fire_rate", label: "Fire rate", field: "fire_rate_x", multiplier: 80, min: 0.1, max: 1000, step: 0.1 },
+    { op: "bullet_damage", label: "Bullet damage", field: "bullet_damage_x", multiplier: 10, min: 0.1, max: 1000, step: 0.1 },
+    { op: "turn_speed", label: "Turning and aiming speed", field: "turn_speed_x", multiplier: 3, min: 0.25, max: 50, step: 0.25 },
     // on / off only: the worker retains the operator's seconds per kill
-    { op: "kill_time", label: "Time added per kill", field: "kill_time_on",
-      note: status => `${String(status?.kill_time_range || "10").includes("-") ? "Random " : ""}${status?.kill_time_range || "10"} s per kill` },
+    { op: "kill_time", label: "Time added per kill", field: "kill_time_on", min: 0.1, max: 30, step: 0.1,
+      note: status => `${String(status?.kill_time_range || "3").includes("-") ? "Random " : ""}${status?.kill_time_range || "3"} s per kill` },
   ];
   const UNAVAILABLE = [
     { op: "aimbot", label: "Aimbot" }, { op: "instant_qte", label: "Instant QTE completion" },
@@ -30,8 +30,17 @@
   function value(status, definition) {
     if (!definition) return null;
     const raw = status?.[definition.field];
-    return definition.multiplier ? (typeof raw === "number" && Number.isFinite(raw) ? raw > 1 : null)
+    return definition.multiplier ? (typeof raw === "number" && Number.isFinite(raw) ? raw !== 1 : null)
       : typeof raw === "boolean" ? raw : null;
+  }
+  function amount(status, definition) {
+    const raw = readAmount(status, definition);
+    return typeof raw === "number" && Number.isFinite(raw) ? raw : definition.op === "kill_time" ? 3 : definition.multiplier;
+  }
+  function readAmount(status, definition) {
+    if (definition.op !== "kill_time") return status?.[definition.field];
+    const raw = status?.kill_time_range;
+    return (typeof raw === "number" || typeof raw === "string" && /^\d+(?:\.\d+)?$/.test(raw)) ? Number(raw) : null;
   }
   function rows(state) {
     return DEFINITIONS.map(def => {
@@ -44,9 +53,13 @@
       const raw = state.status?.[row.field];
       const detail = row.reason || (row.on === null ? "State unavailable" : row.multiplier && row.on ? `Current setting: ${row.unit ? raw + row.unit : "×" + raw}`
         : row.note && row.on ? row.note(state.status) : "");
+      const setting = amount(state.status, row), unit = row.op === "kill_time" ? "seconds" : "times";
+      const slider = row.min === undefined ? "" : `<div class="re5-mod-slider"><label>${ESC(row.label)}: `
+        + `<output data-re5-value="${row.op}">${setting} ${unit}</output>`
+        + `<input type="range" data-re5-range="${row.op}" aria-label="${ESC(row.label)} value" min="${row.min}" max="${row.max}" step="${row.step}" value="${setting}" ${row.disabled ? "disabled" : ""}></label></div>`;
       return `<label class="re5-mod-row"><span>${ESC(row.label)}${detail ? `<small>${ESC(detail)}</small>` : ""}</span>`
         + `<input type="checkbox" data-re5-mod="${row.op}" aria-label="${ESC(row.label)}" `
-        + `aria-checked="${row.on === null ? "mixed" : row.on}" ${row.on ? "checked " : ""}${row.disabled ? "disabled" : ""}></label>`;
+        + `aria-checked="${row.on === null ? "mixed" : row.on}" ${row.on ? "checked " : ""}${row.disabled ? "disabled" : ""}></label>` + slider;
     }).join("");
     // These hooks have no verified UI action yet, even if a newer worker advertises a future capability.
     const unavailable = UNAVAILABLE.map(row => `<div class="re5-mod-row re5-mod-unavailable"><span>${row.label}`
@@ -199,6 +212,24 @@
       } catch (error) { state.error = true; state.message = error.message; }
       finally { state.busy = false; paint(); }
     }
+    async function setMultiplier(op, requested) {
+      const def = DEFINITIONS.find(row => row.op === op), number = Number(requested);
+      if (!def || def.min === undefined || !Number.isFinite(number) || number < def.min || number > def.max
+          || state.busy || state.pending || state.weaponPending || state.stale || disposed
+          || !capability(state.status, op).available || value(state.status, def) === null) return;
+      state.busy = true; state.error = false; state.message = "Applying value…"; paint();
+      try {
+        await preflight();
+        const result = await job(op, { on: true, multiplier: number });
+        await read();
+        const actual = readAmount(state.status, def);
+        if (result.verified !== true || typeof actual !== "number" || !Number.isFinite(actual)
+            || Math.abs(actual - number) > 0.011 || op === "kill_time" && state.status.kill_time_on !== true)
+          throw new Error(result.reason || "The game did not confirm the requested value.");
+        state.message = `${def.label}: ${number} ${op === "kill_time" ? "seconds per kill" : "times"}.`;
+      } catch (error) { state.error = true; state.stale = true; state.message = error.message; }
+      finally { state.busy = false; paint(); }
+    }
     async function selectMercs(mode, character, stage) {
       if (state.busy || state.pending || state.stale || disposed || !capability(state.status,"mercs_select").available) return;
       state.busy = true; state.error = false; state.message = "Selecting the next round…"; paint();
@@ -210,7 +241,7 @@
       } catch (error) { state.error = true; state.message = error.message; }
       finally { state.busy = false; paint(); }
     }
-    return { refresh, change, setMines, selectMercs, state: () => ({ ...state }), stop: () => { disposed = true; } };
+    return { refresh, change, setMultiplier, setMines, selectMercs, state: () => ({ ...state }), stop: () => { disposed = true; } };
   }
 
   const CSS = `.re5-modifiers{border-top:1px solid var(--line,#444);margin-top:5px;padding:9px 4px 2px;min-width:min(300px,calc(100vw - 48px));max-width:400px}
@@ -220,12 +251,18 @@
     .re5-mod-sub,.re5-mod-status{font-size:11px;line-height:1.45;margin:5px 0;color:var(--mut,#aaa)}.re5-mod-status{max-width:350px;overflow-wrap:anywhere;min-height:16px}
     .re5-mod-error{color:var(--bad,#f99)}.re5-mod-random{width:100%;margin-top:6px}.re5-mod-extra{margin-top:8px;font-size:11px}
     .re5-mod-extra summary{cursor:pointer}.re5-mod-unavailable{font-size:11px}.re5-mod-unavailable>span:last-child{color:var(--mut,#aaa)}
+    .re5-mod-slider{font-size:11px;padding-bottom:5px}.re5-mod-slider label{display:block}.re5-mod-slider input{display:block;width:100%;accent-color:var(--pri,#8da7ff)}
+    .re5-mine-controls{font-size:12px}.re5-mine-controls label{display:block;margin:6px 0}.re5-modifiers select{display:block;width:100%;margin:5px 0}
     .re5-modifiers button:disabled{opacity:.55;cursor:default}`;
   function mount(host, options) {
     if (!host) return null;
     const ctl = create({ ...options, render: state => { host.innerHTML = html(state); } });
     host.innerHTML = html(ctl.state());
     host.onchange = event => {
+      if (event.target.matches?.("[data-re5-range]")) {
+        ctl.setMultiplier(event.target.dataset.re5Range, event.target.value);
+        return;
+      }
       if (event.target.matches?.("[data-re5-merc-mode]")) {
         const chars = ctl.state().status?.mercs_catalog?.rosters?.[event.target.value] || [];
         host.querySelector("[data-re5-merc-character]").innerHTML = chars.map(c => `<option>${ESC(c)}</option>`).join("");
@@ -243,6 +280,10 @@
       ctl.change(input.dataset.re5Mod, wanted);
     };
     host.oninput = event => {
+      if (event.target.matches?.("[data-re5-range]")) {
+        const op = event.target.dataset.re5Range;
+        host.querySelector(`[data-re5-value="${op}"]`).textContent = event.target.value + (op === "kill_time" ? " seconds" : " times");
+      }
       if (event.target.matches?.("[data-re5-mine-interval]")) host.querySelector("[data-re5-mine-output]").textContent = event.target.value + " seconds";
     };
     host.onclick = event => {

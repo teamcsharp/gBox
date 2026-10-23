@@ -114,6 +114,10 @@ HOURGLASS_VALUES = (30, 60)
 ORIG: dict = {}                                 # id(adapter) -> the tables and values as the game had them
 
 ADDRESSES = {
+    "mercs_authoritative_timer": {"address": S_AREA, "chain": "+0x3830 -> aGame +0x4DC",
+                                  "native_getter": "0x000BBCA0", "native_update": "0x0001361C",
+                                  "source": "Ghidra getter/countdown; native owner writes persist while HUD-only writes vanish",
+                                  "live_checked": True},
     "sParameter_ptr": {"address": S_PARAM_PTR, "source": "executable dump: pool slot 0x0169699C; walk/run turn 0xA1A930, "
                                                           "aim controller 0x86E1EC", "live_checked": True},
     "weapon_definitions": {"address": DEF_TABLE, "source": "pool slot 0x0169CAB4 (can-fire 0x9D4DE4, consume check "
@@ -391,10 +395,10 @@ def _maintain_health(g: RE5, snap=None) -> dict:
             **(_hit_immunity(g, pl, True) if verified else {})}
 
 
-# Time per kill: user setting 2026-10-23 is ten seconds. Kills come from cGameSys; time belongs to aGame.
+# Time per kill: user setting 2026-10-23 is three seconds. Kills come from cGameSys; time belongs to aGame.
 S_MAIN, MAIN_GAMESYS, GS_TIMER, GS_KILLS = 0x0191CEE4, 0x182D4, 0x3E0, 0x3F4
-KILL_TIME_S = 10.0
-KILL_TIME_RANGE = (10.0, 10.0)  # operator 2026-10-23: ten seconds added per kill
+KILL_TIME_S = 3.0
+KILL_TIME_RANGE = (3.0, 3.0)  # latest operator setting: three seconds per dispatched enemy
 KILL_TIME_MAX_S = 30.0
 _KILL_LOCK = threading.RLock()
 
@@ -443,6 +447,8 @@ def maintain_kill_time(ad, snap=None) -> dict:
             if not ptr(gs):
                 return {"kill_time": True, "added": 0.0, "verified": True, "reason": "no round"}
             kills = struct.unpack(">i", rd(gs + GS_KILLS, 4))[0]
+            if not 0 <= kills <= 150:
+                return {"kill_time": True, "added": 0.0, "verified": False, "reason": "invalid Mercenaries kill count"}
             last = state.get("kills")
             if state.get("gs") != gs or last is None or kills < last:
                 state.update(gs=gs, kills=kills)
@@ -461,7 +467,7 @@ def maintain_kill_time(ad, snap=None) -> dict:
                     **({"reason": result["reason"]} if result.get("reason") else {})}
         except Exception as error:         # A lost adapter must not stop the bot's next snapshot.
             return {"kill_time": True, "added": 0.0, "verified": False,
-                    "reason": f"kill time unavailable: {type(error).__name__}"}
+                    "reason": f"kill time unavailable: {type(error).__name__}: {str(error)[:120]}"}
 
 
 def maintain_health(ad, snap=None) -> dict:
@@ -774,6 +780,9 @@ def _add_clock(ad, gs: int, seconds: float) -> dict:
     u32 = lambda address: struct.unpack(">I", rd(address, 4))[0]
     f32 = lambda address: struct.unpack(">f", rd(address, 4))[0]
     ptr = lambda value: 0x30000000 <= value < 0x40000000
+    main = u32(S_MAIN)
+    if not ptr(main) or u32(main + MAIN_GAMESYS) != gs or u32(gs + 0x58) not in (2, 5):
+        raise RuntimeError("active original/Reunion Mercenaries round unavailable")
     area = u32(S_AREA)
     if not ptr(area) or u32(area) != AREA_VT:
         raise RuntimeError("verified sArea timer owner unavailable")
@@ -783,7 +792,8 @@ def _add_clock(ad, gs: int, seconds: float) -> dict:
     clock, before = f32(gs + GS_CLOCK), f32(owner + GAME_CLOCK)
     if not all(math.isfinite(v) and 0 < v < 86400 for v in (clock, before)) or abs(clock-before) > 2:
         raise RuntimeError("authoritative countdown disagrees with the live HUD or round is over")
-    if u32(S_AREA) != area or u32(area + AREA_GAME) != owner or u32(owner) != GAME_VT:
+    if u32(S_AREA) != area or u32(area + AREA_GAME) != owner or u32(owner) != GAME_VT \
+            or u32(S_MAIN) != main or u32(main + MAIN_GAMESYS) != gs:
         raise RuntimeError("timer owner changed before the write")
     ad.write_memory(owner + GAME_CLOCK, struct.pack(">f", before + seconds))
     after = f32(owner + GAME_CLOCK)

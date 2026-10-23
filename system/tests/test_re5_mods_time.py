@@ -12,6 +12,7 @@ AREA, GAME = 0x387E_CFE0, 0x31FD_D670
 def with_round(m, clock=90.0, hourglass_seconds=30):
     m.u32(T.S_MAIN, MAIN)
     m.u32(MAIN + T.MAIN_GAMESYS, GS)
+    m.u32(GS+0x58,2)
     m.f32(GS + T.GS_CLOCK, clock)
     m.f32(GS + T.GS_BONUS_TOTAL, 5.0)
     m.u32(T.S_AREA, AREA)
@@ -64,13 +65,14 @@ def test_a_hud_only_write_disappears_on_the_recorded_native_update():
     assert m.rf(GS+T.GS_CLOCK)<60
 
 
-@pytest.mark.parametrize('corrupt', ['area', 'owner', 'owner_state', 'clock', 'expired'])
+@pytest.mark.parametrize('corrupt', ['area', 'owner', 'owner_state', 'clock', 'expired', 'story'])
 def test_unknown_or_inactive_owner_never_falls_back_to_a_hud_only_write(corrupt):
     m=with_round(FakeRE5(),clock=60)
     if corrupt=='area':m.u32(AREA,0x1234)
     elif corrupt=='owner':m.u32(GAME,0x1234)
     elif corrupt=='owner_state':m.u32(GAME+T.GAME_CLOCK_STATE,1)
     elif corrupt=='clock':m.f32(GAME+T.GAME_CLOCK,30)
+    elif corrupt=='story':m.u32(GS+0x58,0)
     else:m.f32(GS+T.GS_CLOCK,0)
     m.writes.clear()
     with pytest.raises(RuntimeError):T.add_time(T.RE5(m),10)

@@ -110,6 +110,8 @@ FIRE_CONE, FIRE_SLACK = math.radians(4), 60.0   # the ray this close in angle, e
 SWING_TURN = math.radians(45)          # a Majini further off the body's heading than this: turn with the gun down
 POINT_BLANK = 110.0                   # a Majini this near on the player's level needs no ray (hit recovery, the gun
                                        # coming up): nothing fits between them
+BOW_RANGE = 2000.0                    # controller tuning, not a decoded projectile range
+BOW_YAW, BOW_PITCH = math.radians(6), math.radians(7)
 
 
 def line_to(ray, aim_at, foot=None) -> bool:
@@ -418,6 +420,11 @@ class Combat:
         self.infinite = False                 # the rounds don't count (the no-ammo flag): shots from the fire command
         self._fire_cmd_seen = 0
         self._cmd_shot_at = -1e9
+        self.bow_down_at = None
+        self.bow_up_at = -1e9
+        self.laserless_feedback_since = None
+        self.needs_firing_position = False
+        self.laserless_progress = None
         for k in ("shots", "hits", "misses", "headshots", "accuracy", "miss_short", "miss_past", "miss_beside",
                   "miss_moved", "finishers", "reloads", "pitch_writes", "stun_runs"):
             self.stats.setdefault(k, 0)
@@ -673,6 +680,13 @@ class Combat:
             # Standalone callers own a new decision, and may reuse a mutable snapshot fixture between ticks.
             self._observed_snap = None
         pl, wid, rounds, shot = self.observe(snap, now)
+        from .re5_weapons import DIRECT, WEAPONS
+        weapon = WEAPONS.get(wid)
+        self.needs_firing_position = False
+        if wid == 0x0F or (weapon is not None and weapon.family in DIRECT and self._ray(snap,now) is None):
+            return self._laserless_tick(snap, p, tgt, now, pl, wid, rounds, shot)
+        self.laserless_feedback_since = None
+        self.laserless_progress = None
         # the laser dot against him (the driver's snapshot carries it as {"from", "at"} when it read it)
         lz = self._ray(snap, now)
         foot = tgt["pos"]
@@ -807,6 +821,120 @@ class Combat:
                                 f"pitch {math.degrees(pitch_err):+.1f} {'rapid hold' if rapid else trig.mode} {'FIRE' if firing else ''}")
         return {"hold": keys}
 
+    @staticmethod
+    def firing_corridor(snap, p, tgt, wid=0x0F):
+        """A known-wall veto only. A navmesh is not an arrow collision ray."""
+        mesh = snap.get("nav")
+        try:
+            return (mesh is not None and math.dist(p["pos"], tgt["pos"]) <= (BOW_RANGE if wid == 0x0F else ENGAGE_R)
+                    and bool(mesh.floor_segment(p["pos"], tgt["pos"])))
+        except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+            return False
+
+    def _laserless_tick(self, snap, p, tgt, now, pl, wid, rounds, shot):
+        """Aim without laser feedback using the camera or native body/pitch.
+
+        Trigger intent never counts as an arrow. The ordinary RAM observation path alone records shots/hits;
+        native refire-table verification does not establish the bow animation's achievable firing rate.
+        """
+        from .re5_weapons import laserless_fire_policy
+        label = "longbow" if wid == 0x0F else "laserless gun"
+        self._rapid_fire(wid, now)
+        self.last_dot = (None, tgt.get("ptr"), None, tgt["pos"], now)
+        self.stats["laserless_visibility"] = "corridor only; projectile cover unconfirmed"
+        corridor = self.firing_corridor(snap, p, tgt,wid)
+        if self.blocked_until.get(tgt.get("ptr",tgt.get("slot")),0) > now:
+            corridor = False
+        ray = self._ray(snap, now)
+        if ray is not None and self.ray_blocked(ray, tgt["pos"]):
+            corridor = False
+        if not corridor:
+            self.bow_down_at = None
+            self.needs_firing_position = True
+            self.stats.update(weapon_policy=label+": blocked or unknown floor corridor",
+                              fire_gate=label+": known-wall veto / unknown corridor; hold fire",
+                              combat=label+": route to a supported firing position",
+                              aim_feedback="no projectile ray; no blind reposition")
+            return {"hold": set()}
+        foot = tgt["pos"]
+        facing = wrap(heading(foot[0]-p["pos"][0], foot[2]-p["pos"][2])-p["rot"])
+        if abs(facing) > SWING_TURN:
+            self.bow_down_at = None
+            if self._laserless_stalled(p,tgt,wid,abs(facing),shot,now):
+                return {"hold":set()}
+            self.stats.update(weapon_policy=label+": turn before aiming", fire_gate=label+": turning; hold fire",
+                              combat=label+": lower weapon and turn toward target")
+            return {"hold": self._face(p, foot)}
+        aim = (foot[0], foot[1] + CHEST_H, foot[2])
+        cam = snap.get("camera") or {}
+        try:
+            origin, at = tuple(cam["eye"]), tuple(cam["at"])
+            if len(origin) != 3 or len(at) != 3 or not all(math.isfinite(v) for v in (*origin, *at)) \
+                    or math.dist(origin, at) <= 1.0:
+                raise ValueError("invalid camera direction")
+            yaw, pitch = ray_error(origin, at, aim)
+            self.stats["aim_feedback"] = label+" camera direction; no projectile ray"
+        except (KeyError, TypeError, ValueError, OverflowError):
+            origin = (p["pos"][0], p["pos"][1]+140., p["pos"][2])
+            pitch_now = p.get("pitch")
+            if not isinstance(pitch_now, (float, int)) or not math.isfinite(pitch_now):
+                self.bow_down_at = None
+                if self.laserless_feedback_since is None:
+                    self.laserless_feedback_since = now
+                self.needs_firing_position = now-self.laserless_feedback_since >= STEER_REACQUIRE_S
+                self.stats.update(fire_gate=label+": aim feedback unavailable; hold fire",
+                                  combat=label+": route to reacquire native camera/pitch" if self.needs_firing_position
+                                  else label+": waiting briefly for native camera/pitch")
+                return {"hold":set() if self.needs_firing_position else {"l1"}}
+            yaw = facing
+            pitch = math.atan2(aim[1]-origin[1], max(math.hypot(aim[0]-origin[0], aim[2]-origin[2]),1.))-pitch_now
+            self.stats["aim_feedback"] = label+" body/pitch estimate; no projectile ray"
+        self.laserless_feedback_since = None
+        if self._laserless_stalled(p,tgt,wid,math.hypot(yaw,pitch),shot,now):
+            return {"hold":set()}
+        aligned = abs(yaw) <= BOW_YAW and abs(pitch) <= BOW_PITCH
+        if wid != 0x0F and math.dist(p["pos"],foot) < POINT_BLANK and abs(yaw) <= BOW_YAW:
+            aligned = True  # Supported corridor, contact distance: continue firing while correcting elevation.
+        fire, policy = laserless_fire_policy(wid, corridor=corridor, aligned=aligned,
+                                      loaded=rounds is not None and rounds > 0)
+        self.stats["weapon_policy"] = policy
+        keys = {"l1"} | self._yaw(yaw) | self._pitch(pl, p, pitch, now)
+        # Always release between arrows, even when the separate global refire table is accelerated.
+        if not fire:
+            self.bow_down_at = None
+        elif wid != 0x0F:
+            keys.add("r1")
+        elif self.bow_down_at is not None:
+            if now-self.bow_down_at < TAP_DOWN_S:
+                keys.add("r1")
+            else:
+                self.bow_down_at, self.bow_up_at = None, now
+        elif now-self.bow_up_at >= TAP_UP_S:
+            self.bow_down_at = now
+            keys.add("r1")
+        self.stats["fire_gate"] = label+": aimed "+("press/release" if wid == 0x0F else "hold") if fire else policy+"; hold fire"
+        self.stats["combat"] = (f"{label} yaw {math.degrees(yaw):+.1f} pitch {math.degrees(pitch):+.1f} "
+                                f"{'TRIGGER' if 'r1' in keys else 'release / tracking'}")
+        return {"hold": keys}
+
+    def _laserless_stalled(self,p,tgt,wid,error,shot,now):
+        """Finite but static camera/heading feedback must not hold aim or turn in place forever."""
+        key = (p.get("ptr"),tgt.get("ptr",tgt.get("slot")),wid)
+        progress = self.laserless_progress
+        if progress is None or progress["key"] != key:
+            self.laserless_progress = {"key":key,"best":error,"improved":now}
+        elif shot or progress["best"]-error >= math.radians(3):
+            progress.update(best=error,improved=now)
+        elif now-progress["improved"] >= 2.5:
+            self.laserless_progress = None
+            self.bow_down_at = None
+            self.needs_firing_position = True
+            self.stats["laserless_reacquisitions"] = self.stats.get("laserless_reacquisitions",0)+1
+            self.stats.update(combat="laserless: no shot or aim progress; use supported route",
+                              fire_gate="laserless: unproductive aim; release and reacquire")
+            return True
+        return False
+
     def _lead(self, tgt, now) -> tuple:
         """Where his feet will be in HEAD_LEAD_S (his velocity from the last ticks)."""
         hist = getattr(self, "_hist", {})
@@ -859,6 +987,8 @@ class Combat:
         self.shots.fired(now)
         self.round_counts["shots"] += 1
         where, ptr, lz, foot = (self.last_dot or (None, None, None, None))[:4]
+        if self.wid == 0x0F and where is None:
+            where = "projectile"  # No laser is normal for the bow; it cannot classify where an arrow went.
         reach = None
         if lz is not None and foot is not None:            # the dot short of him (a wall, a prop) or past him
             d_dot = math.dist(lz[0], lz[1])
@@ -891,7 +1021,9 @@ class Combat:
             self._log_shot(t, "headshot" if where == "head" else "hit", where, reach, dist, ptr)
         for _ in range(new_misses):
             t, where, ptr, reach, dist = pend.pop(0) if pend else (now, None, None, None, None)
-            if where in ("head", "body"):              # the dot was on him and nothing fell: he moved / a frame late
+            if where == "projectile":
+                cls, key = "bow impact unconfirmed: no observed HP loss", "bow_unconfirmed_impacts"
+            elif where in ("head", "body"):              # the dot was on him and nothing fell: he moved / a frame late
                 cls, key = "miss: dot on him, he moved", "miss_moved"
             elif reach == "short":
                 cls, key = "miss: line of sight blocked (the dot short of him)", "miss_short"
@@ -939,6 +1071,9 @@ class Combat:
         self.round_t0 = now
         self.round_counts = {"shots": 0, "hits": 0, "headshots": 0, "finishers": 0, "time_gained_s": 0.0}
         self.last_timer = None
+        self.bow_down_at, self.bow_up_at = None, -1e9
+        self.laserless_feedback_since, self.needs_firing_position = None, False
+        self.laserless_progress = None
         self.act_seen = self.rounds_seen = self.last_dot = None
         self.dot_head_since = self.dot_body_since = None
         self.shots.hp.clear()

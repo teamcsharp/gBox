@@ -893,6 +893,8 @@ def test_the_aim_offset_counts_only_while_he_aims_and_motion_values_are_not_the_
 def test_leon_is_mortal_in_the_package():
     assert ("unlimited_health", {"on": True}) not in B.PACKAGE
     assert ("unlimited_health", {"on": False}) in B.PACKAGE
+    from gbox.mercs import vocab
+    assert dict(vocab.profile("G4BE08").mercs["package"])["unlimited_health"] == {"on": False}
 
 
 def test_never_fires_at_a_ganado_behind_a_wall_and_goes_for_the_bonus_instead():

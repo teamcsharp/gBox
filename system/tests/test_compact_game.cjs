@@ -77,10 +77,11 @@ test('double click and Escape restore the app; native hover reaches the same con
   vm.runInNewContext(html.slice(start,end),{
     gbox:{onCompactView:f=>changed.push(f)},compactController:{changed(){}},COMPACT:{on:true},
     GBoxCompactCoach:require('../clients/desktop/compact-coach'),
+    $:()=>null,
     compactRestore:()=>{restores.push('restore'); return Promise.resolve();},compactHover(){},addEventListener:(name,fn)=>{events[name]=fn;}
   });
   let prevented=0;
-  events.dblclick({preventDefault(){prevented++;},stopPropagation(){}});
+  events.dblclick({target:{closest:()=>null},preventDefault(){prevented++;},stopPropagation(){}});
   events.keydown({key:'Escape',preventDefault(){prevented++;}});
   assert.equal(restores.length,2); assert.equal(prevented,2);
   assert.match(html,/ev\.event === 'compact-hover'/);
@@ -132,13 +133,13 @@ test('desktop handoff waits for a visible successor frame and respects a PiP clo
       }
     }};
     const context=vm.createContext({GBoxSessionContinuity:{create:value=>{io=value;return {}; }},COMPACT:state,
-      compactSession:null,compactTitle:'old',compactStreamUrl:'old-url',sessionTitle:s=>s.title,
+      compactSession:null,compactTitle:'old',compactStreamUrl:'old-url',sessionTitle:s=>s.title,closePipMenu:()=>changes.push('closed modifiers'),
       S:{apiUrl:'http://spark'},gbox:{token:async()=> 'test'},document:{querySelector:()=>wv},$:()=>image,
       compactController:{follow:async(from,s)=>{changes.push(s.sid);state.sid=s.sid;}}});
     const start=html.indexOf('const compactContinuity =');
     vm.runInContext(html.slice(start,html.indexOf('setInterval(() => compactContinuity',start)),context);
     await io.follow({session_id:'new',title:'RE5'},'old');
-    assert.deepEqual(changes,visible===true?['new']:[]);
+    assert.deepEqual(changes,visible===true?['closed modifiers','new']:[]);
     if(visible!==true)assert.equal(image.style.backgroundImage,'old-picture');
   }
 });

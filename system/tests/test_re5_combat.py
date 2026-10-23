@@ -69,6 +69,15 @@ def snap(m, enemy=(0.0, 0.0, 400.0), hp=800):
             "enemies": [{"slot": 0, "ptr": ENEMY, "pos": enemy, "hp": hp, "hp_max": 800}], "timer": 100.0, "combo": 0, "combo_timer": 0}
 
 
+def supported_laserless(state):
+    """Laser-free decisions also need measured floor support and the native aim pitch."""
+    from gbox.mercs.titles.re5_nav import NavMesh
+    state['nav'] = NavMesh([(-2000.,0.,-2000.),(2000.,0.,-2000.),(2000.,0.,2000.),(-2000.,0.,2000.)],
+                           [(0,1,2),(0,2,3)],[[(1,2,1.)],[(0,0,1.)]])
+    state['player']['pitch'] = 0.
+    return state
+
+
 def test_the_dot_names_where_it_sits_on_a_majini():
     assert C.dot_on((0, 160, 400), (0, 0, 400)) == "head"
     assert C.dot_on((20, 100, 390), (0, 0, 400)) == "body"
@@ -148,7 +157,7 @@ def test_persistent_near_origin_feedback_has_bounded_reacquisition_and_valid_ray
     assert "reacquire" in bot.stats["combat"]
     assert not bot.blocked_until                 # uncertain direction does not invent cover evidence
     s["laser"] = None
-    assert bot.tick(s, s["player"], s["enemies"][0], 1.6)["hold"] == action["hold"]
+    assert bot.tick(s, s["player"], s["enemies"][0], 1.6)["hold"] == set()  # no ray/floor: no blind sidestep
     s["laser"] = {"from": (0, 149, 46), "at": (0, 110, 400)}
     assert bot.tick(s, s["player"], s["enemies"][0], 1.65)["hold"] == {"l1", "r1"}
     assert bot.near_ray_since is None and bot.near_ray_move_until == 0
@@ -180,7 +189,7 @@ def test_malformed_ray_cannot_drive_stick_feedback(tmp_path, bad):
     bot = C.Combat(m, {}, learn_dir=tmp_path, lessons=lambda row: None)
     s = snap(m)
     s["laser"] = {"from": (0, 149, 46), "at": bad}
-    assert bot.tick(s, s["player"], s["enemies"][0], 1.0)["hold"] == {"l1"}   # no ray, no line: the trigger held
+    assert bot.tick(s, s["player"], s["enemies"][0], 1.0)["hold"] == set()   # no ray/floor: request supported reacquisition
     assert bot._ray(s, 1.0) is None
 
 
@@ -520,8 +529,8 @@ def test_confirmed_cover_lowers_the_gun_until_cooldown_then_acquisition_can_fire
     s["laser"] = None
     assert "r1" not in bot.tick(s, s["player"], s["enemies"][0], 0.25)["hold"]
     act = bot.tick(s, s["player"], s["enemies"][0], 1.1)["hold"]
-    assert "l1" in act and "r1" not in act                # the gun comes up; no laser yet, no line: no shot
-    assert "laser=no" in bot.stats["combat"]
+    assert not ({"l1","r1"} & act)                       # without ray or floor, route rather than hold aim forever
+    assert bot.needs_firing_position
     s["laser"] = {"from": (0.0, 149.0, 46.0), "at": (0.0, 110.0, 1000.0)}
     assert {"l1", "r1"} <= bot.tick(s, s["player"], s["enemies"][0], 1.15)["hold"]
 
@@ -639,7 +648,7 @@ def test_loaded_direct_guns_raise_with_trigger_and_hold_while_acquiring(tmp_path
     m = world(aiming=False, act_vt=0)
     m.put(PL + C.P_INV + 3 * C.INV_SLOT + C.INV_ID, ">I", 0x100 | wid)
     bot = C.Combat(m, {}, learn_dir=tmp_path, lessons=lambda row: None)
-    s = snap(m, enemy=(100, 0, 250))                 # 22 deg off the heading: raise and turn
+    s = supported_laserless(snap(m, enemy=(100, 0, 250)))  # 22 deg off: supported floor, native pitch
     s["laser"] = None
     for now in (0.0, 0.05, 0.5, 1.0):               # target 50 deg off the facing, no ray yet: raise and turn, no blind shot
         keys = bot.tick(s, s["player"], s["enemies"][0], now)["hold"]
@@ -698,19 +707,21 @@ def test_bot_priority_actions_override_continuous_fire(tmp_path, override):
                            "grid": 1, "hand": 0, "rounds": 1}]
     result = bot.tick(s)
     assert not ({"l1", "r1"} & result.get("hold", set()))
-    if override == "heal": assert result == {"tap": "dup"}
+    if override == "heal":
+        assert result == {"hold": set()}  # lower the raised gun before the recovery-item D-pad tap
+        assert bot.healing is not None
 
 
 def test_bot_nearby_off_reticle_target_keeps_gun_up_and_fires_only_down_a_line(tmp_path):
     from gbox.mercs.titles import re5_ps3 as R
     m = world(laser_dot=(100, 110, 180), aiming=False, act_vt=0)
     bot = R.Bot(m, clock=lambda: 10.0, learn_dir=tmp_path, lessons=lambda row: None)
-    s = snap(m, enemy=(0, 0, 180))
+    s = supported_laserless(snap(m, enemy=(100, 0, 180)))  # off body/camera aim; no guessed ray
     s["laser"] = None
     keys = bot.tick(s)["hold"]
     assert "l1" in keys and "r1" not in keys              # 1.8 m off, no ray yet: up, not firing
     assert bot.stats["shots"] == 0 and bot.stats["phase"] == "clear_nearby"
-    s["laser"] = {"from": (0.0, 149.0, 46.0), "at": (0.0, 110.0, 180.0)}
+    s["laser"] = {"from": (0.0, 149.0, 46.0), "at": (100.0, 110.0, 180.0)}
     assert {"l1", "r1"} <= bot.tick(s)["hold"]
 
 
@@ -720,7 +731,7 @@ def test_hit_recovery_never_waits_to_reacquire_and_mandatory_escape_still_wins(t
     m = world(aiming=False, act_vt=0)
     bot = R.Bot(m, clock=lambda: now[0], learn_dir=tmp_path, lessons=lambda row: None)
     for pose in (5, 5, 0, 2):
-        s = snap(m, enemy=(0, 0, 60))
+        s = supported_laserless(snap(m, enemy=(0, 0, 60)))
         s["player"]["action"] = pose
         s["laser"] = None
         assert {"l1", "r1"} <= bot.tick(s)["hold"]
@@ -774,13 +785,13 @@ def test_a_close_threat_gets_blasted_from_the_moment_the_gun_comes_up():
     for dot in ((90.0, 120.0, 400.0), (0.0, 30.0, 300.0), None):   # beside him, at his feet, no ray yet
         m = world(laser_dot=dot) if dot else world()
         bot = C.Combat(m, {}, clock=lambda: 0.0)
-        s = snap(m, enemy=(0.0, 0.0, 300.0))                        # 3 m ahead on his level
+        s = supported_laserless(snap(m, enemy=(0.0, 0.0, 300.0)))  # measured corridor also gates laserless firing
         if dot is None:
             s["laser"] = None
         for k in range(5):
             act = bot.tick(s, s["player"], s["enemies"][0], k * 0.02)["hold"]
             assert {"l1", "r1"} <= act, (dot, k)                     # gun up, trigger down, every frame
-        assert bot.stats["fire_gate"] == "threat: blasting"
+        assert bot.stats["fire_gate"] == ("laserless gun: aimed hold" if dot is None else "threat: blasting")
 
 
 def test_blast_stays_off_for_far_majini_and_ones_off_to_the_side():
