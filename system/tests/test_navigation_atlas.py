@@ -76,6 +76,31 @@ def test_loading_jump_cannot_become_a_learned_shortcut(tmp_path):
     atlas.close()
 
 
+def test_animation_delayed_pickup_learns_route_to_measured_clock_gain_and_carries_following_travel(tmp_path):
+    atlas = NavigationAtlas(tmp_path,"RE5")
+    key = atlas.stage(mesh())
+    atlas.begin("delayed",key,0.)
+    for at,x in ((0.,100.),(.5,250.),(1.,350.),(1.5,450.),(2.,600.)):
+        atlas.sample("delayed",at,frame([x,0,100]),inputs=["lup"])
+    observation = {"kind":"time","pos":[350,0,100],"acquired":True,
+                   "evidence":{"source":"ram_bonus_actor","clock_gain_at":1.,"actor_removed_at":2.5}}
+    atlas.sample("delayed",2.5,frame([650,0,100]),observations=[observation])
+    first = atlas.db.execute("SELECT completed,best_seconds,best_distance,best_path FROM checkpoint_routes").fetchone()
+    assert first[:3]==(1,1.,250.)
+    assert json.loads(first[3])[-1]==[1.,350.,0.,100.]
+    # Travel during the removal animation belongs to the next checkpoint trip.
+    second = {"kind":"time","pos":[700,0,100],"acquired":True,
+              "evidence":{"source":"ram_bonus_actor","clock_gain_at":3.,"actor_removed_at":3.}}
+    atlas.sample("delayed",3.,frame([700,0,100]),observations=[second])
+    route = atlas.db.execute("SELECT origin,completed,best_seconds,best_distance,best_path FROM checkpoint_routes WHERE origin=?",
+                            ("time:350:0:100",)).fetchone()
+    assert route[:4]==("time:350:0:100",1,2.,350.)
+    assert json.loads(route[4])[0]==[1.,350.,0.,100.]
+    event = json.loads(atlas.db.execute("SELECT payload FROM events WHERE kind='checkpoint_acquired' ORDER BY seq LIMIT 1").fetchone()[0])
+    assert event["pickup_sample_at"]==1. and event["confirmed_at"]==2.5
+    atlas.close()
+
+
 def test_round_review_identifies_stationary_commands_and_goal_reversals():
     samples = [{"at": i*.5, "frame": frame([100 if i%2 else 220,0,100], i%2), "inputs": ["lup"]}
                for i in range(8)]

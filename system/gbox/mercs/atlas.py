@@ -207,11 +207,26 @@ class NavigationAtlas:
     def _acquire(self, round_id, at, key, pos, observation):
         state = self.active[round_id]
         self.db.execute("UPDATE landmarks SET acquired=acquired+1 WHERE stage=? AND key=?", (state["stage"], key))
-        self.event(round_id, at, "checkpoint_acquired", {"key": key, "pos": pos, "evidence": observation["evidence"]})
+        evidence = observation["evidence"]
+        path = state["checkpoint_path"]
+        pickup_index = len(path)-1
+        gain_at = evidence.get("clock_gain_at") if isinstance(evidence,dict) else None
+        if isinstance(gain_at,(int,float)) and math.isfinite(gain_at) and state["checkpoint_at"]<=gain_at<=at:
+            # Actor removal can lag the clock gain by the punch animation. End
+            # the learned trip at a real nearby position from the pickup, rather
+            # than the later confirmation after the player has already left.
+            candidates = [(abs(point[0]-gain_at),index) for index,point in enumerate(path)
+                          if abs(point[0]-gain_at)<=.6 and math.dist(point[1:],pos)<=200.]
+            if candidates:
+                _,pickup_index = min(candidates)
+        pickup_at = path[pickup_index][0] if path and pickup_index>=0 else at
+        self.event(round_id, at, "checkpoint_acquired", {"key": key, "pos": pos, "evidence": evidence,
+                                                        "pickup_sample_at":pickup_at,"confirmed_at":at})
         if observation.get("kind") != "time":
             return
-        seconds, distance = at - state["checkpoint_at"], state["checkpoint_distance"]
-        route = state["checkpoint_path"]
+        route = path[:pickup_index+1]
+        seconds = pickup_at-state["checkpoint_at"]
+        distance = sum(math.dist(a[1:],b[1:]) for a,b in zip(route,route[1:]))
         # Do not persist a shortcut if the samples are discontinuous or path is missing.
         complete = state["checkpoint_continuous"] and bool(route) and seconds > 0 and len(route) >= 2 \
             and math.dist(route[-1][1:], pos) <= 200.
@@ -226,7 +241,10 @@ class NavigationAtlas:
                         "THEN excluded.best_seconds ELSE best_seconds END",
                         (state["stage"], state["checkpoint"], key, 1, int(complete),
                          seconds if complete else None, distance if complete else None, _json(route) if complete else None))
-        state.update(checkpoint=key, checkpoint_at=at, checkpoint_distance=0., checkpoint_path=[], checkpoint_continuous=True)
+        carry = path[pickup_index:] if path and pickup_index>=0 else []
+        state.update(checkpoint=key,checkpoint_at=pickup_at,
+                     checkpoint_distance=sum(math.dist(a[1:],b[1:]) for a,b in zip(carry,carry[1:])),
+                     checkpoint_path=carry,checkpoint_continuous=True)
 
     def finish(self, round_id, at, outcome, metrics=None):
         state = self.active.get(round_id)

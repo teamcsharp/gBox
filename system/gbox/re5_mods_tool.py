@@ -96,13 +96,17 @@ MAGNUMS = (0x10B, 0x11A, 0x11B)
 REPLACE_WITH_MAGNUM = frozenset({0x10D, 0x105, 0x11C, 0x120})
 OPERATOR_SETTINGS = frozenset({"fire_rate", "turn_speed", "bullet_damage", "infinite_ammo", "unlimited_health", "kill_time"})
 KNIFE_IDS = {0x101, 0x10E, 0x114, 0x123, 0x124, 0x100}
-# The round's clock: sBioMain [0x0191CEE4] +0x182D4 -> cGameSys: +0x3E0 f32 seconds left, +0x3E8 s32 the last bonus
-# (the HUD's "+NN Sec."), +0x3EC u8 show it. The game's own add-time routine 0x18C64(gs, seconds) does exactly those
-# three stores (+ the total at +0x4DC); its callers: the melee finisher's `li r4, 5` at 0x000231A4 (the only +5 site:
+# The HUD clock: sBioMain [0x0191CEE4] +0x182D4 -> cGameSys +0x3E0. The authoritative countdown is a DIFFERENT
+# object: sArea [0x0191CA20] +0x3830 -> aGame +0x4DC. Native getter 0xBBCA0 and countdown 0x1361C prove this chain;
+# 0x1361C rewrites the HUD every frame. Live 2026-10-23: HUD-only writes vanished within 50 ms; owner writes persisted.
+# Native add-time 0x18C64(aGame, seconds) updates that owner and the HUD's +0x3E8/+0x3EC. Its callers: the melee
+# finisher's `li r4, 5` at 0x000231A4 (the only +5 site:
 # a code immediate, so the boot patch gbox/re5_boot_patches.py scales it per session) and the hourglass pickup, which
 # passes the hourglass unit's own +0x14A4 s16 (30 or 60 s): data, scaled per round here.
 S_MAIN, MAIN_GAMESYS = 0x0191CEE4, 0x182D4
 GS_CLOCK, GS_LAST_BONUS, GS_SHOW_BONUS, GS_BONUS_TOTAL = 0x3E0, 0x3E8, 0x3EC, 0x4DC
+S_AREA, AREA_GAME, AREA_VT, GAME_VT = 0x0191CA20, 0x3830, 0x0157A720, 0x01576B18
+GAME_CLOCK, GAME_CLOCK_STATE = 0x4DC, 0x4D4
 MELEE_BONUS_SITE, MELEE_BONUS_ORIG = 0x000231A4, 0x38800005          # li r4, 5
 S_UNIT, UNIT_LINES, LINE_STRIDE, LINE_FIRST, UNIT_NEXT = 0x0191D700, 0x24, 0x20, 0xC, 0x8
 OM_LINE, OM_MAX, HOURGLASS_VT, HG_SECONDS = 12, 600, 0x015EF5E0, 0x14A4
@@ -387,9 +391,7 @@ def _maintain_health(g: RE5, snap=None) -> dict:
             **(_hit_immunity(g, pl, True) if verified else {})}
 
 
-# Time per kill (operator 2026-10-22: "I want every person that they dispatch to add two seconds to the timer just
-# automatically"): sBioMain -> cGameSys, the round clock (f32 seconds left) and the kill count (s32), as
-# gbox/mercs/titles/re5_ps3.py's snapshot reads them.
+# Time per kill: user setting 2026-10-23 is ten seconds. Kills come from cGameSys; time belongs to aGame.
 S_MAIN, MAIN_GAMESYS, GS_TIMER, GS_KILLS = 0x0191CEE4, 0x182D4, 0x3E0, 0x3F4
 KILL_TIME_S = 10.0
 KILL_TIME_RANGE = (10.0, 10.0)  # operator 2026-10-23: ten seconds added per kill
@@ -452,12 +454,11 @@ def maintain_kill_time(ad, snap=None) -> dict:
             if clock <= 0:
                 return {"kill_time": True, "added": 0.0, "verified": True, "kills": kills, "reason": "round over"}
             added = sum(_kill_seconds(state) for _ in range(kills - last))
-            wanted = struct.pack(">f", clock + added)
-            ad.write_memory(gs + GS_TIMER, wanted)
-            after = struct.unpack(">f", rd(gs + GS_TIMER, 4))[0]
-            verified = after > clock                    # the game counts down between the write and this read
+            result = _add_clock(ad, gs, added)
+            verified = result["verified"]
             return {"kill_time": True, "added": added if verified else 0.0, "verified": verified, "kills": kills,
-                    "clock": round(after, 2)}
+                    "clock": result["clock_after"], "clock_owner": result["clock_owner"],
+                    **({"reason": result["reason"]} if result.get("reason") else {})}
         except Exception as error:         # A lost adapter must not stop the bot's next snapshot.
             return {"kill_time": True, "added": 0.0, "verified": False,
                     "reason": f"kill time unavailable: {type(error).__name__}"}
@@ -766,22 +767,43 @@ def gamesys(g: RE5) -> int:
     return gs
 
 
+def _add_clock(ad, gs: int, seconds: float) -> dict:
+    """Mirror the verified native aGame add-time data path; never fall back to a transient HUD-only write."""
+    import math
+    rd = lambda address, size: bytes(ad.read_memory(address, size))
+    u32 = lambda address: struct.unpack(">I", rd(address, 4))[0]
+    f32 = lambda address: struct.unpack(">f", rd(address, 4))[0]
+    ptr = lambda value: 0x30000000 <= value < 0x40000000
+    area = u32(S_AREA)
+    if not ptr(area) or u32(area) != AREA_VT:
+        raise RuntimeError("verified sArea timer owner unavailable")
+    owner = u32(area + AREA_GAME)
+    if not ptr(owner) or u32(owner) != GAME_VT or u32(owner + GAME_CLOCK_STATE) != 0:
+        raise RuntimeError("verified active aGame timer owner unavailable")
+    clock, before = f32(gs + GS_CLOCK), f32(owner + GAME_CLOCK)
+    if not all(math.isfinite(v) and 0 < v < 86400 for v in (clock, before)) or abs(clock-before) > 2:
+        raise RuntimeError("authoritative countdown disagrees with the live HUD or round is over")
+    if u32(S_AREA) != area or u32(area + AREA_GAME) != owner or u32(owner) != GAME_VT:
+        raise RuntimeError("timer owner changed before the write")
+    ad.write_memory(owner + GAME_CLOCK, struct.pack(">f", before + seconds))
+    after = f32(owner + GAME_CLOCK)
+    verified = math.isfinite(after) and before + seconds - .5 <= after <= before + seconds + .01
+    if verified:
+        # The game copies owner -> HUD on its next frame; do not overwrite a concurrently advancing HUD clock.
+        ad.write_memory(gs + GS_LAST_BONUS, struct.pack(">i", int(round(seconds))))
+        ad.write_memory(gs + GS_SHOW_BONUS, b"\x01")
+    return {"verified": verified, "clock_before": round(clock, 2), "clock_after": round(after, 2),
+            "clock_owner": hex(owner), **({"reason": "authoritative countdown write not confirmed"} if not verified else {})}
+
+
 def add_time(g: RE5, seconds: float = 60.0) -> dict:
-    """The operator's "add a minute to the clock at will": what the game's own add-time routine does, as data: the
-    clock + N, the HUD's "+NN Sec." with N, the round's bonus total + N."""
+    """Add to the authoritative aGame countdown and publish the native HUD bonus notification."""
     n = int(round(float(seconds or 60)))
     if not 1 <= n <= 3600:
         raise ValueError("add_time seconds: 1 .. 3600")
     gs = gamesys(g)
-    before = g.f32(gs + GS_CLOCK)
-    if before <= 0:
-        raise RuntimeError("the clock is at 0 (results screen): nothing to add to")
-    total = g.f32(gs + GS_BONUS_TOTAL)
-    ok = g.wr(gs + GS_CLOCK, struct.pack(">f", before + n))
-    ok &= g.wr(gs + GS_LAST_BONUS, struct.pack(">i", n)) and g.wr(gs + GS_SHOW_BONUS, b"\x01")
-    ok &= g.wr(gs + GS_BONUS_TOTAL, struct.pack(">f", total + n))
-    return {"added_seconds": n, "clock_before": round(before, 1), "clock_after": round(g.f32(gs + GS_CLOCK), 1),
-            "verified": ok and abs(g.f32(gs + GS_CLOCK) - (before + n)) < 1.0,
+    result = _add_clock(g.ad, gs, n)
+    return {**result, "added_seconds": n if result["verified"] else 0,
             "note": "the HUD shows +NN Sec. like a finisher's bonus"}
 
 

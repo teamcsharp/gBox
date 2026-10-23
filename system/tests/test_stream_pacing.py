@@ -107,6 +107,83 @@ def test_async_alive_check_can_await_store_lookup_and_stops_ended_session():
     asyncio.run(run())
 
 
+def test_background_state_refresh_cannot_hold_frames_behind_a_slow_store():
+    async def run():
+        lv, clock = live(), [0.]
+        released, started = asyncio.Event(), asyncio.Event()
+        calls = []
+        async def read_alive():
+            calls.append(1)
+            if len(calls)==1:
+                return True
+            started.set()
+            await released.wait()
+            return False
+        check=live_stream.BackgroundCheck(read_alive)
+        gen=live_stream.async_mjpeg_parts(lv,alive=check,clock=lambda:clock[0])
+        assert await anext(gen)==live_stream.part(b'first')
+        clock[0]=1.1;publish(lv,b'second',2)
+        assert await asyncio.wait_for(anext(gen),.1)==live_stream.part(b'second')
+        await started.wait()
+        for seq in range(3,8):
+            clock[0]+=1.1;publish(lv,str(seq).encode(),seq)
+            assert await asyncio.wait_for(anext(gen),.1)==live_stream.part(str(seq).encode())
+        assert len(calls)==2, 'a blocked state lookup must remain a single pending operation'
+        released.set()
+        await asyncio.sleep(0)
+        clock[0]+=1.1
+        with pytest.raises(StopAsyncIteration):await anext(gen)
+        assert not lv['async_waiters']
+        check.close()
+    asyncio.run(run())
+
+
+def test_background_state_initial_read_still_rejects_an_ended_session():
+    async def run():
+        async def ended():return False
+        check=live_stream.BackgroundCheck(ended)
+        assert [part async for part in live_stream.async_mjpeg_parts(live(),alive=check)]==[]
+        check.close()
+    asyncio.run(run())
+
+
+def test_background_watch_renewal_coalesces_and_clear_follows_pending_write():
+    async def run():
+        released, started = asyncio.Event(), asyncio.Event()
+        calls=[]
+        async def renew():
+            calls.append('renew started');started.set();await released.wait();calls.append('renew done')
+        async def clear():calls.append('clear')
+        lease=live_stream.BackgroundLease(renew,clear)
+        assert lease.renew()
+        await started.wait()
+        assert not lease.renew()
+        closing=asyncio.create_task(lease.close())
+        await asyncio.sleep(0)
+        assert not closing.done() and not lease.renew()
+        released.set();await closing
+        assert calls==['renew started','renew done','clear']
+    asyncio.run(run())
+
+
+def test_cancelled_view_still_clears_watch_after_a_delayed_renewal():
+    async def run():
+        released,started=asyncio.Event(),asyncio.Event()
+        calls=[]
+        async def renew():
+            started.set();await released.wait();calls.append('renew')
+        async def clear():calls.append('clear')
+        lease=live_stream.BackgroundLease(renew,clear)
+        lease.renew();await started.wait()
+        closing=asyncio.create_task(lease.close());await asyncio.sleep(0)
+        closing.cancel()
+        with pytest.raises(asyncio.CancelledError):await closing
+        released.set()
+        for _ in range(5):await asyncio.sleep(0)
+        assert calls==['renew','clear']
+    asyncio.run(run())
+
+
 def test_source_pacing_reports_short_stutters_and_keeps_bounded_samples():
     lv = {"ts": 100.0}
     for gap in [1 / 60] * 29 + [.350]:

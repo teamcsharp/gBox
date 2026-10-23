@@ -68,21 +68,26 @@ class Recorder:
         bonuses = [b for b in frame.get("bonuses", ())
                    if b.get("kind") == "time" and b.get("id") is not None and b.get("pos")]
         present = {b["id"] for b in bonuses if not b.get("taken")}
+        returned = self.bonus_missing & present
+        for gain in self.bonus_gains:
+            for actor in returned:
+                gain["nearby"].pop(actor, None)
         self.bonus_missing.difference_update(present)
         for actor in present:
             self.bonus_removals.pop(actor, None)
-        # Keep a little room for the second absent sample; the two evidence event
-        # timestamps themselves must still be no more than three seconds apart.
-        lifetime = BONUS_CORRELATION_S + .75
+        # Confirmation can arrive on a later sampled frame. The gain/removal
+        # evidence timestamps must still be within three seconds of each other.
+        lifetime = 2 * BONUS_CORRELATION_S
         self.bonus_gains = [g for g in self.bonus_gains if now-g["at"] <= lifetime]
         self.bonus_removals = {a:r for a,r in self.bonus_removals.items()
-                              if now-r["at"] <= lifetime}
+                              if now-r["at"] <= BONUS_CORRELATION_S}
         if self.bonus_previous is not None:
             previous_at, previous_timer, previous_kills = self.bonus_previous
             gain = timer-previous_timer
             if 0 < now-previous_at <= BONUS_CORRELATION_S and kills == previous_kills and gain >= BONUS_MIN_CLOCK_GAIN:
                 nearby = {b["id"]: math.dist(player, b["pos"]) for b in bonuses
-                          if math.dist(player, b["pos"]) <= BONUS_PICKUP_RADIUS}
+                          if (key, b["id"]) not in self.acquired
+                          and math.dist(player, b["pos"]) <= BONUS_PICKUP_RADIUS}
                 if nearby:
                     self.bonus_gains.append({"at": now, "seconds": gain, "kills": kills, "nearby": nearby})
         self.bonus_previous = (now, timer, kills)

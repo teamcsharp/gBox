@@ -223,12 +223,17 @@ def test_each_kill_adds_two_seconds_to_the_round_clock():
     ad, main, gs = Ad(), 0x31000000, 0x32000000
     ad.put(RM.S_MAIN, ">I", main); ad.put(main + RM.MAIN_GAMESYS, ">I", gs)
     ad.put(gs + RM.GS_TIMER, ">f", 60.0); ad.put(gs + RM.GS_KILLS, ">i", 3)
+    area, owner=0x387ecfe0,0x31fdd670
+    for address,value in ((RM.S_AREA,area),(area,RM.AREA_VT),(area+RM.AREA_GAME,owner),(owner,RM.GAME_VT)):
+        ad.put(address,">I",value)
+    ad.put(owner+RM.GAME_CLOCK,">f",60.)
     clock = lambda: struct.unpack(">f", ad.read_memory(gs + RM.GS_TIMER, 4))[0]
     assert RM.maintain_kill_time(ad)["added"] == 0.0 and clock() == 60.0            # off unless the op turned it on
     RM.ORIG.setdefault(id(ad), {})["kill_time"] = {"on": True, "seconds": 2.0}
     assert RM.maintain_kill_time(ad)["added"] == 0.0                                  # the first look is the baseline
     ad.put(gs + RM.GS_KILLS, ">i", 5)
     r = RM.maintain_kill_time(ad)
+    ad.mem[gs+RM.GS_TIMER]=ad.mem[owner+RM.GAME_CLOCK]  # native next-frame owner -> HUD
     assert r["added"] == 4.0 and r["verified"] and clock() == 64.0                    # two kills: +4 s
     assert RM.maintain_kill_time(ad)["added"] == 0.0 and clock() == 64.0              # counted once
     ad.put(gs + RM.GS_KILLS, ">i", 0)                                                 # a new round: count afresh
@@ -296,6 +301,10 @@ def test_maintain_kill_time_adds_one_draw_per_kill(monkeypatch):
     ad, main, gs = Ad(), 0x31000000, 0x32000000
     ad.put(RM.S_MAIN, ">I", main); ad.put(main + RM.MAIN_GAMESYS, ">I", gs)
     ad.put(gs + RM.GS_TIMER, ">f", 60.0); ad.put(gs + RM.GS_KILLS, ">i", 0)
+    area, owner=0x387ecfe0,0x31fdd670
+    for address,value in ((RM.S_AREA,area),(area,RM.AREA_VT),(area+RM.AREA_GAME,owner),(owner,RM.GAME_VT)):
+        ad.put(address,">I",value)
+    ad.put(owner+RM.GAME_CLOCK,">f",60.)
     RM.ORIG.setdefault(id(ad), {})["kill_time"] = {"on": True, "seconds": 2.0, "seconds_max": 5.0}
     draws = iter([2.0, 5.0, 3.0])
     monkeypatch.setattr(RM, "_kill_seconds", lambda state: next(draws))
