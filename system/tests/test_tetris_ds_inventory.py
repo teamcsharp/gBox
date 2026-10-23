@@ -137,8 +137,7 @@ def test_roster_consistent_with_reader():
     from gbox.tetris_ds import TetrisDSReader, NDSRom
 
     rom_data = Path(rom_path).read_bytes()
-    rom = NDSRom(rom_data)
-    reader = TetrisDSReader(rom)
+    reader = TetrisDSReader(rom_data)
 
     roster_keys = {e["key"] for e in roster()}
     reader_sets = set(reader.sprite_sets())
