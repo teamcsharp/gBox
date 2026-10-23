@@ -21,6 +21,26 @@
     return session?.game_id === GAME && session.state === "running" && !session.stopping
       && session.adapter === "rpcs3" && typeof session.session_id === "string" && session.session_id.includes("-");
   }
+  function replacementSession(sid, history, anchor, resolve) {
+    const rows = Array.isArray(history) ? history : [], byId = new Map(rows.map(row => [row.session_id, row]));
+    const origin = byId.get(sid) || (anchor?.session_id === sid ? anchor : null);
+    const pc = row => String(row?.detail?.worker_name || row?.pc || "").toLowerCase();
+    const build = row => String(row?.collection_mod || row?.mod_build || row?.mod || "").split("~")[0];
+    const matches = row => row?.game_id === GAME && row.adapter === "rpcs3" && pc(origin)
+      && pc(row) === pc(origin) && build(row) === build(origin);
+    if (!origin || !matches(origin) || typeof resolve !== "function") return null;
+    let current = origin; const seen = new Set();
+    while (current?.replaced_by) {
+      if (seen.has(current.session_id)) return null;
+      seen.add(current.session_id);
+      const next = byId.get(current.replaced_by);
+      if (!next) break;
+      if (!matches(next)) return null;
+      current = next;
+    }
+    const next = resolve(sid, rows, origin);
+    return eligible(next) && matches(next) ? next : null;
+  }
   function capability(status, op) {
     const cap = status?.capabilities?.[op];
     const known = op === "random_weapon" || DEFINITIONS.some(row => row.op === op);
@@ -296,7 +316,7 @@
     ctl.refresh();
     return ctl;
   }
-  const api = { GAME, DEFINITIONS, eligible, capability, rows, html, create, mount,
+  const api = { GAME, DEFINITIONS, eligible, replacementSession, capability, rows, html, create, mount,
     sectionHTML: () => `<style>${CSS}</style><section class="re5-modifiers" aria-label="RE5 modifiers"></section>` };
   root.GBoxRE5Modifiers = api;
   if (typeof module === "object" && module.exports) module.exports = api;

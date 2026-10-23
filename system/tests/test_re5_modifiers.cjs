@@ -5,6 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const M = require('../clients/web/viz/re5-modifiers.js');
 const BD = require('../clients/web/viz/bot-demo.js');
+const CONTINUITY = require('../clients/web/viz/session-continuity.js');
 const SESSION = { session_id: 'worker-launch', game_id: M.GAME, state: 'running', adapter: 'rpcs3' };
 const BASE = { unlimited_health: false, infinite_ammo: true, fire_rate_x: 1, turn_speed_x: 1,
   bullet_damage_x: 1, kill_time_on: false, kill_time_range: '3', in_hand: { weapon: 'M500' }, capabilities: Object.fromEntries(
@@ -413,7 +414,7 @@ test('mounted slider previews do not mutate gameplay and change uses the request
   assert.equal(control.state().error, false); control.stop();
 });
 
-function desktopPipRig({ compact = true, lookup = async () => SESSION } = {}) {
+function desktopPipRig({ compact = true, lookup = async () => SESSION, history = [] } = {}) {
   const source = fs.readFileSync(path.join(__dirname, '../clients/desktop/index.html'), 'utf8');
   const host = {}, menu = { opening: {}, style: {}, querySelector: () => host }, mounts = [], calls = [];
   const stream = { src: '', getAttribute(name) { return name === 'src' ? this.src : null; } };
@@ -423,9 +424,11 @@ function desktopPipRig({ compact = true, lookup = async () => SESSION } = {}) {
     gboxStreamWatchdog: { sessionOf: src => /\/api\/sessions\/([^/]+)\/mjpeg/.exec(src)?.[1] },
     COMPACT: { on: compact, sid: SESSION.session_id }, EMB: { sid: SESSION.session_id, last: '' },
     GM: { menu: true }, compactSession: compact ? SESSION : null, sessionById: lookup,
-    GBoxRE5Modifiers: { eligible: M.eligible, sectionHTML: M.sectionHTML,
+    GBoxSessionContinuity: CONTINUITY,
+    GBoxRE5Modifiers: { eligible: M.eligible, replacementSession: M.replacementSession, sectionHTML: M.sectionHTML,
       mount: (target, options) => { mounts.push({ target, options }); return { stop: () => { stops++; } }; } },
-    gbox: { api: async (...args) => { calls.push(args); return { ok: true, data: { confirmed: true } }; } },
+    gbox: { api: async (...args) => { calls.push(args); return { ok: true,
+      data: args[0].startsWith('/api/sessions?') ? history : { confirmed: true } }; } },
   });
   vm.runInContext(source.slice(source.indexOf('function closePipMenu()'), source.indexOf('function pipMenu(x, y)')), context);
   return { context, host, menu, stream, mounts, calls, source, stops: () => stops };
@@ -438,7 +441,7 @@ test('desktop PiP mounts the exact compact session and unwraps authenticated IPC
   assert.equal(r.mounts[0].options.session, SESSION);
   const result = await r.mounts[0].options.api('/api/jobs', { input: { op: 'kill_time' } }, 'POST');
   assert.deepEqual(result, { confirmed: true });
-  assert.deepEqual(r.calls[0], ['/api/jobs', { input: { op: 'kill_time' } }, 'POST']);
+  assert.deepEqual(r.calls.at(-1), ['/api/jobs', { input: { op: 'kill_time' } }, 'POST']);
   r.context.closePipMenu(); assert.equal(r.stops(), 1);
   assert.equal(r.menu.style.display, 'none'); assert.equal(r.menu.opening, null);
 });
@@ -477,6 +480,40 @@ test('the actual PiP stream takes precedence over an older still-running metadat
   assert.equal(unrelated.mounts.length, 0, 'unknown displayed stream cannot fall back to another session');
 });
 
+function replacedSessions() {
+  const old = { ...SESSION, state: 'ended', started: 1, detail: { worker_name: 'spark' }, replaced_by: 'worker-new' };
+  const fresh = { ...SESSION, session_id: 'worker-new', started: 2, detail: { worker_name: 'spark' } };
+  return { old, fresh };
+}
+
+test('modifier replacement follows the exact historical chain and refuses unrelated targets and cycles', () => {
+  const { old, fresh } = replacedSessions();
+  assert.equal(M.replacementSession(old.session_id, [old, fresh], old, CONTINUITY.resolve), fresh);
+  const middle = { ...old, session_id: 'worker-middle', replaced_by: fresh.session_id };
+  assert.equal(M.replacementSession(old.session_id, [{ ...old, replaced_by: middle.session_id }, middle, fresh], old, CONTINUITY.resolve), fresh);
+  for (const change of [{ game_id: 'another-game' }, { adapter: 'retroarch' },
+    { detail: { worker_name: 'foreign-pc' } }, { collection_mod: 'other-build' }])
+    assert.equal(M.replacementSession(old.session_id, [old, { ...fresh, ...change }], old, CONTINUITY.resolve), null);
+  const foreignMiddle = { ...middle, detail: { worker_name: 'foreign-pc' } };
+  assert.equal(M.replacementSession(old.session_id, [{ ...old, replaced_by: middle.session_id }, foreignMiddle, fresh], old, CONTINUITY.resolve), null);
+  assert.equal(M.replacementSession(old.session_id, [old, { ...fresh, replaced_by: old.session_id }], old, CONTINUITY.resolve), null);
+  assert.equal(M.replacementSession('missing-launch', [fresh], null, CONTINUITY.resolve), null);
+});
+
+test('desktop PiP refreshes its anchor and binds only a verified historical replacement', async () => {
+  const { old, fresh } = replacedSessions(), seen = [];
+  const r = desktopPipRig({ lookup: async sid => { seen.push(sid); return old; }, history: [old, fresh] });
+  r.context.compactSession = { ...old, state: 'running' }; // stale cached metadata must not win
+  r.stream.src = `http://spark:8765/api/sessions/${old.session_id}/mjpeg`;
+  await r.context.pipModifiers(r.menu, r.menu.opening);
+  assert.deepEqual(seen, [old.session_id]);
+  assert.equal(r.mounts.length, 1); assert.equal(r.mounts[0].options.session, fresh);
+  assert.equal(r.calls[0][0], '/api/sessions?limit=200');
+  const foreign = desktopPipRig({ lookup: async () => old, history: [old, { ...fresh, detail: { worker_name: 'other' } }] });
+  await foreign.context.pipModifiers(foreign.menu, foreign.menu.opening);
+  assert.equal(foreign.mounts.length, 0);
+});
+
 function miniPipRig(readSessions = async () => ({ ok: true, data: [{ ...SESSION, session_id: 'other-launch' }, SESSION] })) {
   const source = fs.readFileSync(path.join(__dirname, '../clients/desktop/mini.html'), 'utf8');
   const listeners = {}, mounts = [], menus = [], calls = [];
@@ -487,10 +524,11 @@ function miniPipRig(readSessions = async () => ({ ok: true, data: [{ ...SESSION,
     gboxStreamWatchdog: { sessionOf: src => /\/api\/sessions\/([^/]+)\/mjpeg/.exec(src)?.[1] },
     document: { body: { append: menu => menus.push(menu) }, createElement: () => ({ style: {}, offsetWidth: 300,
       offsetHeight: 400, querySelector: () => host, remove() { this.removed = true; } }) },
-    GBoxRE5Modifiers: { eligible: M.eligible, sectionHTML: M.sectionHTML,
+    GBoxSessionContinuity: CONTINUITY,
+    GBoxRE5Modifiers: { eligible: M.eligible, replacementSession: M.replacementSession, sectionHTML: M.sectionHTML,
       mount: (target, options) => { mounts.push({ target, options }); return { stop: () => { stops++; } }; } },
     gbox: { api: async (...args) => { calls.push(args); return args[0].startsWith('/api/sessions')
-      ? readSessions() : { ok: true, data: { confirmed: true } }; }, miniRestore: () => { restored++; } },
+      ? readSessions(args[0]) : { ok: true, data: { confirmed: true } }; }, miniRestore: () => { restored++; } },
     console: { warn() {} },
   });
   vm.runInContext(source.slice(source.indexOf('let modifierMenu ='), source.indexOf('// file:// cannot fetch health')), context);
@@ -519,6 +557,17 @@ test('detached PiP discards late lookups after closure and refuses ended or unre
   for (const rows of [[{ ...SESSION, state: 'ended' }], [{ ...SESSION, session_id: 'other-launch' }]]) {
     const other = miniPipRig(async () => ({ ok: true, data: rows }));
     await other.listeners.contextmenu.fn(other.event); assert.equal(other.mounts.length, 0);
+  }
+});
+
+test('detached PiP resolves a retired displayed SID through strict history and refuses foreign replacements', async () => {
+  const { old, fresh } = replacedSessions();
+  for (const candidate of [fresh, { ...fresh, game_id: 'another-game' }, { ...fresh, detail: { worker_name: 'foreign' } }]) {
+    const r = miniPipRig(async url => ({ ok: true, data: url.includes('limit=200') ? [old, candidate] : [] }));
+    await r.listeners.contextmenu.fn(r.event);
+    assert.equal(r.mounts.length, candidate === fresh ? 1 : 0);
+    if (candidate === fresh) assert.equal(r.mounts[0].options.session, fresh);
+    assert.deepEqual(r.calls.map(args => args[0]), ['/api/sessions?include_ended=false', '/api/sessions?limit=200']);
   }
 });
 
