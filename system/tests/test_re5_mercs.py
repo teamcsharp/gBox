@@ -158,9 +158,10 @@ def test_death_presses_are_not_deaths_or_clock_bonuses(monkeypatch):
     now = [10.0]
     bot = R.Bot(clock=lambda: now[0], stats={"rounds": 1})
     bot.tick(R.snapshot(with_bonuses(world(timer=60.0), [(0.0, 13.0, 1200.0), (0.0, 13.0, 1800.0)])))
-    for t in (12.0, 14.0, 16.0):
+    R.CONTINUE_PICK.selected_no = False
+    for t,key in ((12.0,'dright'), (14.0,'cross'), (16.0,'cross')):
         now[0] = t
-        assert bot.tick(R.snapshot(world(hp=0, timer=59.0))) == {"tap": "circle"}
+        assert bot.tick(R.snapshot(world(hp=0, timer=59.0))) == {"tap": key}
     assert bot.stats["deaths"] == 1 and bot.stats["continue_declined"] == 3
     assert bot.stats.get("deaths_continued", 0) == 0
     now[0] = 20.0
@@ -295,8 +296,9 @@ def test_aims_on_the_cameras_look_ray_when_there_is_one():
 
 
 def test_declines_continue_after_you_are_dead_and_walks_the_menus():
+    R.CONTINUE_PICK.selected_no = False
     bot = R.Bot(clock=lambda: 10.0)
-    assert bot.tick(R.snapshot(world(hp=0))) == {"tap": "circle"}
+    assert bot.tick(R.snapshot(world(hp=0))) == {"tap": "dright"}
     assert bot.tick(R.snapshot(world(hp=0))) == {"hold": set()}      # not again within 1.5 s
     assert [R.menu_key(n) for n in range(4)] == ["start", "cross", "start", "cross"]
 
@@ -345,7 +347,11 @@ def test_it_presses_only_on_the_reunion_screens():
     assert R.step({"where": "select_player", "cursor": 2, "target": 6}) == "dright"
     assert R.step({"where": "select_player", "cursor": 7, "target": 6}) == "dleft"
     assert R.step({"where": "select_player"}) is None                                       # no cursor read: wait
-    assert R.step({"where": "dead"}) == "circle"            # Continue? No: back to the selects (random stage, character)
+    R.CONTINUE_PICK.selected_no = False
+    assert R.step({"where": "dead"}) == "dright"
+    R.pressed({'where':'dead'}, 'dright')
+    assert R.step({'where':'dead'}) == 'cross'
+    assert R.ALERTS[9] == 'alert_ok'
     for where in ("menu", "loading", "unknown", "playing"):
         assert R.step({"where": where}) is None, where                       # never a press on the title's menus
     assert R.wandered({"where": "menu"}) is None
@@ -746,7 +752,18 @@ def test_time_bonuses_are_read_from_the_om_line(monkeypatch):
     assert R.snapshot(with_bonuses(world(), [(0.0, 0.0, 1000.0)]))["bonuses"] == []
 
 
+def provide_open_navigation(monkeypatch):
+    from gbox.mercs.titles.re5_nav import NavMesh
+    mesh = NavMesh([(-5000.,0.,-5000.), (5000.,0.,-5000.), (5000.,0.,5000.), (-5000.,0.,5000.)],
+                   [(0,1,2), (0,2,3)], [[(1,2,1.)], [(0,0,1.)]])
+    original = R.snapshot
+    def snapshot(memory):
+        return dict(original(memory), nav=mesh)
+    monkeypatch.setattr(R, "snapshot", snapshot)
+
+
 def test_a_time_bonus_is_taken_with_its_prompt(monkeypatch):
+    provide_open_navigation(monkeypatch)
     monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
     assert R.BONUS_HUNT is True
     far_majini = [((3000.0, 0.0, 0.0), 800, 800)]                                # 30 m away at +x
@@ -779,6 +796,7 @@ def test_a_bonus_that_will_not_take_is_left_alone_for_a_while(monkeypatch):
 
 
 def test_bonuses_anywhere_are_walked_to_nearest_first_and_the_clock_jumps_are_counted(monkeypatch):
+    provide_open_navigation(monkeypatch)
     monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
     act, bot = tick(with_bonuses(world(), [(0.0, 13.0, 1200.0)]))                 # 12 m ahead, nobody near, no mesh
     assert {"lup", "cross"} <= act["hold"]                                        # straight at it
@@ -1014,6 +1032,7 @@ def test_handguns_are_tapped_and_the_gatling_held(monkeypatch):
 
 
 def test_gathers_every_bonus_first_then_stands_and_breaks_for_a_late_one(monkeypatch):
+    provide_open_navigation(monkeypatch)
     monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
     bot = R.Bot(clock=lambda: 100.0)
     act = bot.tick(R.snapshot(with_bonuses(world(timer=119.0), [(0.0, 13.0, 1200.0)])))   # start: a bonus 12 m off
@@ -1047,6 +1066,32 @@ def test_a_random_character_each_round_never_the_last_one():
     assert fields["character"] == picks[-1] and "12k 4000p c7" in fields["char_tally"]
 
 
+def test_roster_confirmation_uses_matching_ram_cursor(monkeypatch):
+    import random
+    roster = R.Roster(random.Random(9))
+    monkeypatch.setattr(R, "ROSTER", roster)
+    for _ in range(24):
+        target = roster.want()
+        wrong = (target + 1) % len(R.CHARACTERS)
+        R.pressed({"where": "select_player", "cursor": wrong}, "cross")
+        assert roster.confirmed is None
+        for cursor in range(len(R.CHARACTERS)):
+            key = R.step({"where": "select_player", "cursor": cursor, "target": target})
+            assert key == ("cross" if cursor == target else "dright" if cursor < target else "dleft")
+        R.pressed({"where": "select_player", "cursor": target}, "cross")
+        assert roster.confirmed == target
+        roster.started()
+        fields = roster.observe({})
+        assert fields["character_cursor_verified"] is True
+        assert fields["character_roster_size"] == 8
+        assert fields["mercenaries_mode"] == "reunion"
+
+
+def test_invalid_character_cursor_does_not_send_navigation_input():
+    assert R.step({"where": "select_player", "cursor": 99, "target": 2}) is None
+    assert R.step({"where": "select_player", "cursor": -1, "target": 2}) is None
+
+
 def strip_mesh():
     """A navmesh strip along +z on two levels: quads 0-1 on the roof (y 0, z 0..800), quad 2 a ladder (straight down at
     z 800: y 0 -> -300), quads 3-4 the ground (y -300, z 800..1600); two triangles a quad."""
@@ -1076,7 +1121,7 @@ def test_the_navmesh_routes_over_a_ladder_and_the_bot_takes_it():
     mesh = strip_mesh()
     route = mesh.route((0.0, 0.0, 100.0), (0.0, -300.0, 1500.0))
     assert route and route[-1] == (0.0, -300.0, 1500.0)
-    assert any(abs(w[1] + 150.0) < 1 for w in route)                             # down the ladder's middle
+    assert any(isinstance(w, R.re5_nav.Traversal) and w[1] == -300. for w in route)                             # down the ladder's middle
     assert mesh.route((0.0, 0.0, 100.0), (5000.0, 0.0, 5000.0)) is None          # off the mesh
     bot = R.Bot(clock=lambda: 50.0)
     tgt = {"ptr": 0x3040_0000, "pos": (0.0, -300.0, 1500.0), "kind": "time", "walk": True}
@@ -1088,7 +1133,7 @@ def test_the_navmesh_routes_over_a_ladder_and_the_bot_takes_it():
     assert bot._follow(p, tgt, mesh, False, 50.5) == {"hold": {"lup"}}           # on to the edge
     assert bot._follow(p, tgt, mesh, True, 50.6) == {"tap": "square"}            # the prompt: climb down
     assert bot.stats["climbs"] == 1
-    ladder = next(w for w in route if abs(w[1] + 150.0) < 1)
+    ladder = next(w.portal for w in route if isinstance(w, R.re5_nav.Traversal))
     assert mesh.route((0.0, 0.0, 100.0), (0.0, -300.0, 1500.0), avoid=[ladder]) is None   # the only way down
 
 
@@ -1240,7 +1285,8 @@ def test_repeated_stationary_route_stalls_record_blocked_and_leave_the_target(tm
     for now in (10., 10.4, 10.8, 11.3, 11.6, 12.2, 12.6, 13., 13.5):
         action = bot._follow(p, target, mesh, False, now)
     assert action == {"hold": set()}
-    assert bot.stats["stuck"] == 2 and bot.stats["routes_blocked"] == 1
+    assert bot.stats["stuck"] == 2 and bot.stats["route_replans"] == 1
+    bot._follow(p, target, mesh, False, 13.6)
     assert bot.route is None and bot.bonus_skip[1] > 13.5
     stage = bot.nav_learning.stages[mesh.learning_sig]
     assert sum(row["blocked"] for row in stage["routes"].values()) == 1
@@ -1288,17 +1334,20 @@ def test_subsecond_combat_and_engine_owned_qte_frames_break_route_stall_continui
 def test_unsupported_portal_rechecks_stop_after_three_attempts_instead_of_idling_at_wall(tmp_path):
     mesh, bot = corner_mesh(), R.Bot(learn_dir=tmp_path)
     # find() permits route endpoint height slack, but this position does not prove supported floor travel.
-    p = {"pos": (20., 80., 50.), "rot": math.pi / 2, "action": 0}
+    p = {"pos": (20., 50., 50.), "rot": math.pi / 2, "action": 0}
     target = {"ptr": 1, "pos": (170., 0., 50.)}
     assert mesh.route(p["pos"], target["pos"]) and not mesh.floor_segment(p["pos"], target["pos"])
     for now in (10., 10.1, 10.2):
         assert bot._follow(p, target, mesh, False, now) == {"hold": set()}
-    assert bot.stats["routes_blocked"] == 1 and bot.route is None
-    assert bot.bonus_skip[1] > 10.2 and "three route checks" in bot.stats["route"]
+    assert bot.stats["route_replans"] == 1 and bot.route is None
+    assert "alternate route" in bot.stats["route"]
+    bot._follow(p, target, mesh, False, 10.3)
+    assert bot.bonus_skip[1] > 10.3 and "unreachable" in bot.stats["route"]
     assert not bot.avoid                                   # an unsupported ray is not a newly observed wall edge
 
 
 def test_distant_unsighted_front_candidate_does_not_starve_time_bonus_navigation(monkeypatch):
+    provide_open_navigation(monkeypatch)
     monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
     m = with_bonuses(world(action=2, combo=0, enemies=[((0.0, 0.0, 1800.0), 800, 800)]), [(0.0, 13.0, 2400.0)])
     bot = R.Bot(m, clock=lambda: 10.0, lessons=lambda e: None)
@@ -1522,7 +1571,8 @@ def test_no_mesh_wall_push_gives_up_on_that_bonus():
     while bot.stats["stuck"] < 2 and t < 40.0:                                  # never moves: a wall
         bot._follow(p, tgt, None, False, t)
         t += 0.1
-    assert bot.stats["routes_blocked"] == 1 and bot.bonus_skip[7] > t
+    assert bot.stats["stuck"] == 0
+    assert bot.stats["route"] == "waiting for stage navigation; no blind straight-line pursuit"
 
 
 def test_a_majini_on_the_floor_above_is_not_aimed_at(tmp_path):
@@ -1558,6 +1608,7 @@ def test_open_floor_confirms_sight_only_within_range(tmp_path):
 
 
 def test_a_time_bonus_beats_a_visible_majini_further_off(monkeypatch):
+    provide_open_navigation(monkeypatch)
     """Operator 2026-10-22: "urgently seeking and acquiring time bonuses"; only a close Majini in sight stops it."""
     monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
     m = with_bonuses(world(action=2, combo=0, enemies=[((0.0, 0.0, 900.0), 800, 800)]), [(0.0, 13.0, 2400.0)])
@@ -1571,6 +1622,7 @@ def test_a_time_bonus_beats_a_visible_majini_further_off(monkeypatch):
 
 
 def test_a_time_bonus_is_taken_even_when_the_strategy_would_keep_the_combo(monkeypatch):
+    provide_open_navigation(monkeypatch)
     monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
     m = with_bonuses(world(combo=12, combo_t=1.0), [(0.0, 13.0, 2400.0)])     # the combo window nearly gone
     bot = R.Bot(m, clock=lambda: 10.0, lessons=lambda e: None)
@@ -1623,7 +1675,7 @@ def test_stage_select_takes_a_random_stage_each_visit():
     assert R.step({"where": "select_stage"}) in ("dleft", "dright", "cross")
 
 
-def test_a_bot_standing_still_off_the_stand_breaks_out_of_the_spot(tmp_path):
+def test_a_bot_standing_still_invalidates_stale_routes_without_blind_wall_movement(tmp_path):
     mem, bot, now = _pursuit_bot(tmp_path, (260.0, 0.0, 50.0))
     bot.spawn, bot.at_stand = (5000.0, 0.0, 5000.0), False
     mesh = corner_mesh()
@@ -1633,9 +1685,10 @@ def test_a_bot_standing_still_off_the_stand_breaks_out_of_the_spot(tmp_path):
     for t in (10.0, 12.0, 14.0, 16.5, 17.0, 17.5):
         now[0] = t
         acts.append(bot._idle_breakout(snap, {"hold": set()}))
-    assert bot.stats["idle_breakouts"] == 1
-    assert {"lup"} <= acts[-1]["hold"] or acts[-1]["hold"] & {"rleft", "rright"}
-    now[0] = 25.0                                   # the walk is over: the normal decision resumes
+    assert bot.stats["idle_route_replans"] == 1
+    assert all(act["hold"] == set() for act in acts)
+    assert bot.route_at == -math.inf and bot.route_len is None
+    now[0] = 25.0
     assert bot._idle_breakout(snap, {"hold": {"x"}}) == {"hold": {"x"}} and bot._idle_walk is None
 
 

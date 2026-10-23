@@ -88,8 +88,8 @@ it. A swap's child launch has no parent link before this change; look for a `ses
   Sessions panel) are explicit operator actions or real ends. The desktop's local GPU surface
   (`gpu-game-surface.js`) applies only to games on the operator's own PC, and it falls back to the native window, not
   to black.
-- `clients/desktop/mini.html` now loads the watchdog with `GBOX_STREAM_HEALTH = false`. It is a file:// page and cannot
-  make the cross-origin health request.
+- `clients/desktop/mini.html` reads authenticated health through desktop IPC, since a file:// page cannot fetch it
+  directly. Healthy IPC-monitored streams keep their connection; the previous 60-second reset interrupted gameplay.
 
 ### Worker (`gbox/adapters.py` `MjpegStream`, `gbox/tools.py` `_pump`)
 
@@ -110,15 +110,40 @@ it. A swap's child launch has no parent link before this change; look for a `ses
 
 ### Server (`gbox/live_stream.py`, `gbox/server.py`)
 
+- MJPEG viewers now wait on asynchronous frame notifications. Sending each JPEG no longer needs a worker-thread
+  dispatch, and a blocked viewer resumes from the newest shared picture instead of retaining a queue of old frames.
+  Disconnecting unregisters its notification immediately. Watch leases and held-frame reconnect behavior are retained.
 - Ingest records every source gap of 2 s or more with start and end times, and logs
   `gBox stream: <sid> no new frame for N s (start -> end)`.
 - `GET /api/sessions/{sid}/stream/health` returns:
   - `state`, `seq` and `age_s` (the source frame age);
   - the upload count;
   - the last 10 stalls;
-  - the last 10 encoder events.
+  - the last 10 encoder events;
+  - `pacing`: p50, p95, maximum and count of gaps over 100 ms across the newest 600 source frame intervals;
+  - `delivery`: active async viewers, frames delivered and intermediate frames skipped under backpressure.
 
-  To match an operator report to a cause, read it together with the journal (`journalctl -u gbox --since 04:45`).
+To match an operator report to a cause, read it together with the journal (`journalctl -u gbox --since 04:45`).
+
+### Spark frame pacing investigation (2026-10-23)
+
+The production feed measured 53.52 fps on Spark over 20 seconds, with median frame gap 16.53 ms, p95 34.86 ms,
+maximum 523.23 ms and four gaps over 100 ms. A later Spark-to-Windows sample measured 40.6 fps, p95 45.9 ms,
+maximum 1964.37 ms and 13 gaps over 100 ms. These are different time windows under changing host load, not a
+controlled comparison between network and capture. Both show real stutter that the old two-second stall log missed.
+
+The live encoder had 73 threads on a 20-core Spark. A short controlled capture-only comparison retained 60 fps with
+one filter thread and two encoder threads: 25 process threads and 61.3% CPU, versus 73 threads and 71.5% CPU with
+automatic settings. The p95 gaps were 21.41 and 19.29 ms respectively, so this demonstrates reduced overhead, not a
+proven capture-jitter improvement. Output flushes each JPEG and retains FFmpeg's default timestamp handling. A live
+capture-only stderr trace caught duplicate X11 timestamps with `-fps_mode passthrough`, causing encoder exit 255;
+that option was removed. No unrelated processes
+were stopped or throttled. Host CPU pressure was approximately 32% during the production sample; changing a stream
+cannot guarantee seamless emulation under every competing workload.
+
+Canvas-readable viewers still compare displayed and latest server pictures to detect a silent browser freeze.
+Opaque file:// viewers use IPC source health and image errors; source health alone cannot prove that the browser
+has painted the newest picture. The generic embedding fallback without health access retains bounded renewal.
 
 ### Swap and launch hygiene (`gbox/server.py`, `gbox/operator_guard.py`, `clients/web/index.html`)
 
@@ -195,3 +220,36 @@ it. A swap's child launch has no parent link before this change; look for a `ses
   - the two-step hard reset.
 - `tests/test_hermes_work_queue.py` covers the operator gate and the tick throttling and prompt.
 - `tests/test_session_observers.py` covers stalled-stream waiting and deferred collection on the Linux node.
+
+### Connected views protect the game
+
+An active session MJPEG connection or the app's viewing heartbeat reserves that
+session's worker against new game loads, including watched bot demos. Launch
+submission excludes watched workers; queued launches recheck at claim time and wait
+if viewing began after submission. Session replacements are refused while watched.
+The app continues its heartbeat while hidden because PiP can still be visible.
+Close the connected view before loading another game on that PC. Other workers remain
+available. Each stream has its own lease, released on disconnect; heartbeat leases
+expire after three minutes if a client disappears without closing cleanly.
+
+### Keep the watched game in PiP through a restart
+
+The desktop compact player previously held its original session ID forever, while
+the web PiP cleared its selected game as soon as that session ended. Both now follow
+the replacement chain, including several restarts. When a worker reboot has no
+replacement link, recovery requires the same game, build and named computer; it
+does not select an unrelated running game. Main and PiP selections are checked
+independently. Closing PiP or choosing another game cancels a pending handoff.
+
+The compact window retains its bounds and last picture during an outage. Before
+attaching a replacement stream, it checks a decoded frame in the same-origin game
+webview. Black boot frames keep the previous picture visible; a boot logo or game
+frame permits the handoff. The reconnect badge remains visible in compact mode.
+F5 also resolves saved session IDs to their replacements. These are display and
+input-target updates; they never launch, pause or restart a game.
+
+Validated on 2026-10-23 with the existing 1112-by-625 RE5 PiP: client refresh
+recovered gameplay from its stale Save successful screen, and a service restart
+was followed to the replacement RE5 session without closing the PiP. Regression
+coverage includes replacement chains, worker reboots, held frames, black boot
+frames, offline recovery and a user closing PiP during a delayed frame probe.

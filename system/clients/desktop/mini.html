@@ -53,15 +53,42 @@
 <img id="v" alt="game">
 <div class="bar"><img src="../../assets/brand/gbox-logo.svg" style="height:16px;width:auto" alt=""><span id="t"></span>
   <button id="full" title="Back to the full app (or double-click the game)">⤢ Full app</button></div>
+<script src="../web/viz/session-continuity.js"></script>
 <script>
   const q = new URLSearchParams(location.search), v = document.getElementById("v");
   document.getElementById("t").textContent = q.get("title");
   v.onload = () => { if (!v.dataset.sized && v.naturalWidth) { v.dataset.sized = 1; gbox.miniAspect(v.naturalWidth, v.naturalHeight); } };
   v.src = q.get("src");
+  v.dataset.streamFollow = 'game';
+  const continuity = GBoxSessionContinuity.create({
+    current: () => ({session_id:gboxStreamWatchdog.sessionOf(v.src)}),
+    read: async () => {
+      const settings = await gbox.settings();
+      if (new URL(settings.apiUrl).origin !== new URL(v.src).origin) throw Error('Different server');
+      const result = await gbox.api('/api/sessions?limit=200');
+      if (!result.ok) throw Error('Reconnecting');
+      return result.data;
+    },
+    follow: async session => {
+      const url = new URL(v.src);
+      url.pathname = `/api/sessions/${encodeURIComponent(session.session_id)}/mjpeg`;
+      url.searchParams.delete('reconnect'); v.src = url.href;
+      document.getElementById('t').textContent = session.title || q.get('title');
+    }
+  });
+  const followTimer = setInterval(() => continuity.poll(), 2000);
+  addEventListener('pagehide', () => {clearInterval(followTimer); continuity.cancel();}, {once:true});
   document.getElementById("full").onclick = () => gbox.miniRestore();
   addEventListener("dblclick", () => gbox.miniRestore());
   addEventListener("keydown", e => { if (e.key === "Escape") gbox.miniRestore(); });
-  // The mini player is a file:// page and the stream another origin: keep the last frame and reattach on errors,
-  // without the /stream/health poll (a cross-origin fetch it cannot make). docs/stream-stability.md
-  window.GBOX_STREAM_HEALTH = false;
+  // file:// cannot fetch health directly; authenticated IPC avoids CORS and unnecessary timed stream resets.
+  window.GBOX_STREAM_FETCH_HEALTH = async src => {
+    const settings = await gbox.settings();
+    if (new URL(settings.apiUrl).origin !== new URL(src).origin) throw Error('Different server');
+    const sid = /\/api\/sessions\/([^/?#]+)\/mjpeg/.exec(src)?.[1];
+    if (!sid) throw Error('Unknown stream session');
+    const result = await gbox.api('/api/sessions/' + encodeURIComponent(decodeURIComponent(sid)) + '/stream/health');
+    if (!result.ok) throw Error(result.error || 'Stream health unavailable');
+    return result.data;
+  };
 </script><script src="../web/viz/stream-watchdog.js"></script></body></html>

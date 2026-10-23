@@ -678,7 +678,7 @@ class Combat:
         foot = tgt["pos"]
         lead = self._lead(tgt, now)
         dist = math.hypot(foot[0] - p["pos"][0], foot[2] - p["pos"][2])
-        if dist > ENGAGE_R:
+        if dist > ENGAGE_R and (lz is None or dot_on(lz[1], foot) is None):
             self.stats["combat"] = "target outside engagement range"
             return {"hold": set()}
         zone = zone_for(tgt, dist, snap.get("combo_timer"), snap.get("combo"))

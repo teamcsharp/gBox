@@ -27,6 +27,10 @@ def with_template(m):
     rec(b + 6 * 0x2C, 0x115, -1, 3, 1, 0)
     rec(b + 7 * 0x2C, 0x122, -1, 5, 0, 0)
     rec(b + 3 * 0x2C, 0x101, -1, 9, 0, 0)
+    from gbox.mercs.titles.re5_mines import ORIGINAL_BANKS, ORIGINAL_KNIVES
+    for address in ORIGINAL_BANKS:
+        m.u32(address+3*T.TEMPLATE_REC,ORIGINAL_KNIVES[address])
+        m.u32(address+5*T.TEMPLATE_REC,0x100)
     return m
 
 
@@ -49,7 +53,7 @@ def test_loadout_rewrites_every_characters_guns_with_powerful_ones_and_restores(
 def test_random_cheats_picks_a_set_and_reports_it():
     m = with_template(FakeRE5())
     r = T.run(m, "random_cheats", seed=3)
-    assert r["verified"] and r["telemetry"]["fire_rate_x"] == 80.0 and r["telemetry"]["turn_speed_x"] in (2.0, 3.0)
+    assert r["verified"] and r["telemetry"]["fire_rate_x"] == 80.0 and r["telemetry"]["turn_speed_x"] == 1.0
     assert r["telemetry"]["bullet_damage_x"] in (1.0, 3.0, 10.0) and r["telemetry"]["infinite_ammo"] is True
     st = r["status"]
     assert st["fire_rate_x"] == 80.0 and st["infinite_ammo"] is True and st["turn_speed_x"] == r["telemetry"]["turn_speed_x"]

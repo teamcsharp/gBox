@@ -19,6 +19,7 @@ import threading
 import time
 import uuid
 import weakref
+from collections import deque
 
 EVENT_MAX = 256 * 1024
 OUTBOX_MAX = 64 * 1024 * 1024
@@ -130,6 +131,9 @@ class Observer:
                            "debugger_trace": "not captured; these are driver reads, not a debugger snapshot"}
         self.previous = None
         self.previous_at = None
+        self.history = deque(maxlen=60)
+        self.history_at = -math.inf
+        self.history_player = self.history_geometry = None
         self.stats.setdefault("player_damage_events", 0)
 
     def bind(self, driver, profile):
@@ -162,10 +166,44 @@ class Observer:
 
     def before(self, snap, screen, m, bot=None, held=(), now=None):
         at = self.clock() if now is None else now
+        marker = self.stats.get('rounds')
+        if type(marker) is int and marker != self.round_marker:
+            self.round_id, self.round_marker = uuid.uuid4().hex, marker
+            self.previous = self.previous_at = None
+            self._reset_history()
         current, previous = self.sample(snap, screen), self.previous
         if current is None:
-            self.previous = None
+            self.previous = self.previous_at = None
+            self._reset_history()
             return None
+        nav = snap.get('nav')
+        geometry = getattr(nav, 'learning_sig', None) or getattr(nav, 'sig', None)
+        if geometry is not None and self.history_geometry not in (None, geometry):
+            self.previous = previous = None             # a reused player pointer does not bridge different stages
+            self.previous_at = None
+        if (self.history_player != current[0]
+                or (geometry is not None and self.history_geometry not in (None, geometry))
+                or (self.previous_at is not None and not 0 <= at-self.previous_at <= BASELINE_MAX_AGE_S)):
+            self._reset_history()
+        self.history_player = current[0]
+        if geometry is not None:
+            self.history_geometry = geometry
+        # Keep preceding movement/intent even on engine-owned QTE frames.
+        from . import tactical as T
+        if at-self.history_at >= .2:
+            player = snap['player']
+            mines = getattr(bot, 'mines', None)
+            intent = T.take_plan(bot)
+            intent = {k:v for k,v in intent.items() if k in ('phase','target','note','route')}
+            if isinstance(intent.get('route'), (list, tuple)):
+                intent['route'] = intent['route'][:8]
+            self.history.append(clean({'at': at, 'pos': player.get('pos'), 'rot': player.get('rot'),
+                'hp': player.get('hp'), 'action': player.get('action'), 'held': sorted(held),
+                'plan': intent, 'prompt': snap.get('prompt'), 'score': snap.get('score'),
+                'combo': snap.get('combo'), 'kills': snap.get('kills'),
+                'navigation': {k:v for k,v in self.stats.items() if k in ('route','nav_recovery','stuck','phase')},
+                'mine_events': list(getattr(mines, 'events', ()))[-1:]}))
+            self.history_at = at
         if (previous is None or current[0] != previous[0] or current[2] != previous[2] or previous[1] <= 0
                 or self.previous_at is None or not 0 <= at - self.previous_at <= BASELINE_MAX_AGE_S):
             self.previous = current
@@ -173,7 +211,11 @@ class Observer:
         if current[1] >= previous[1]:
             self.previous = current
             return None
-        from . import tactical as T
+        if self.title == 'BLUS30491':
+            # The engine observes damage before Controller.tick annotates this
+            # fresh snapshot. Read the mine actors at the hit, not last tick.
+            from .titles.re5_mines import ground_mines
+            snap['ground_mines'] = ground_mines(m)
         snapshot, plan = clean(snap), clean(T.take_plan(bot))
         event = {"schema": "gbox.player_damage/1", "event_id": uuid.uuid4().hex, "run_id": self.run_id,
                  "round_id": self.round_id, "title": self.title, "observed_at": at, "screen": screen,
@@ -182,10 +224,17 @@ class Observer:
                  "snapshot": snapshot, "plan": plan, "held": sorted(held), "logic": clean(dict(self.stats)),
                  "frame_at_hit": cached_frame(getattr(m, "adapter", None)),
                  "raw": self.raw(m, self.title, snap), "provenance": dict(self.provenance),
+                 "preceding_history": list(self.history),
                  "limits": ["HP loss between sampled snapshots; multiple physical hits may be combined.",
                             "Zero-damage immunity contacts and damage between unread samples are not observable here.",
                             "Attacker and self-damage attribution are unverified.",
                             "Evidence sources are independent reads, not an atomic emulator state."]}
+        from . import incident
+        event['ram_witness'] = incident.ram_witness(m, self.title, snap)
+        try:
+            event['map_at_observation_svg'] = incident.map_svg(snap, self.history, plan)
+        except Exception as exc:
+            event['map_at_observation_error'] = str(exc)[:200]
         try:
             event["tactical"] = T.Tracker(self.title).frame(snapshot, plan, screen, at)
             if snap.get("nav") is not None:
@@ -200,6 +249,11 @@ class Observer:
         self.stats["player_damage_last_loss"] = event["loss"]
         return event
 
+    def _reset_history(self):
+        self.history.clear()
+        self.history_at = -math.inf
+        self.history_player = self.history_geometry = None
+
     def after(self, snap, screen, now=None):
         marker = self.stats.get("rounds")
         if type(marker) is int and marker != self.round_marker:
@@ -207,6 +261,7 @@ class Observer:
             # Do not infer a round from a time bonus or HP maintenance.
             self.round_id = uuid.uuid4().hex
             self.round_marker = marker
+            self._reset_history()
         # Maintenance may have raised HP/max in this snapshot. Use that same verified post-maintenance baseline.
         self.previous = self.sample(snap, screen)
         self.previous_at = self.clock() if now is None else now
@@ -242,6 +297,10 @@ class Outbox:
             body["frame_at_hit"] = {k: v for k, v in image.items() if k != "data_b64"}
             body["frame_at_hit"].update(state="unavailable-at-hit", detail="JPEG omitted: complete event exceeds 256 KiB")
             data = json.dumps(body, allow_nan=False, separators=(",", ":")).encode()
+        if len(data) > EVENT_MAX:
+            from .incident import pack_context
+            body = pack_context(body)
+            data = json.dumps(body, allow_nan=False, separators=(",", ":")).encode()
         with self.lock:
             files = self.files()
             if len(data) > EVENT_MAX or len(files) >= self.count_limit or sum(p.stat().st_size for p in files) + len(data) > self.byte_limit:
@@ -252,7 +311,7 @@ class Outbox:
                 if not reserve.exists():
                     reduced = {k: body[k] for k in ("schema", "session_id", "event_id", "run_id", "round_id", "title",
                         "observed_at", "hp_before", "hp_after", "hp_max", "loss")}
-                    reduced.update(snapshot={"player": (body.get("snapshot") or {}).get("player")},
+                    reduced.update(snapshot={"player": (event.get("snapshot") or {}).get("player")},
                         raw={"state": "skipped-backpressure", "detail": "full evidence exceeded the durable outbox limit"},
                         evidence_backpressure=True, cause="unknown", self_damage="unknown")
                     emergency = json.dumps(reduced, allow_nan=False, separators=(",", ":")).encode()

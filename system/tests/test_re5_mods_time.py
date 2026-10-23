@@ -30,6 +30,13 @@ def test_add_time_adds_to_the_clock_and_shows_the_bonus_on_the_hud():
     assert T.run(m, "add_minute")["clock_after"] == 210.0                      # the alias, default a minute
 
 
+def test_operator_ten_seconds_survives_an_older_round_profile():
+    m=with_round(FakeRE5());g=T.RE5(m)
+    assert T.run(m,'kill_time',multiplier=10,operator=True,g=g)['seconds']==10
+    result=T.run(m,'kill_time',seconds=2,seconds_max=5,g=g)
+    assert result['seconds']==result['seconds_max']==10
+
+
 def test_time_bonus_multiplier_scales_the_standing_hourglasses_once_and_reads_the_melee_patch():
     m = with_round(FakeRE5(), hourglass_seconds=60)
     r = T.run(m, "time_bonus_multiplier", multiplier=10)

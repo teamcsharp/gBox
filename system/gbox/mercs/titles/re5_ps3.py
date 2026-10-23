@@ -198,8 +198,10 @@ def bonuses(m) -> list:
         r = struct.unpack(">f", m.rd(u + HG_CENTRE + 12, 4))[0]
         r = r if 5.0 < r < 100.0 else 28.0
         kw = u32(m, u + HG_KIND)
+        seconds = struct.unpack(">h", m.rd(u + 0x14A4, 2))[0]
         out.append({"ptr": u, "pos": (x, y + HG_CENTRE_DY, z), "r": r,
-                    "kind": "combo" if (kw >> 16) & 0xFF == HG_COMBO else "time", "kind_word": kw})
+                    "kind": "combo" if (kw >> 16) & 0xFF == HG_COMBO else "time", "kind_word": kw,
+                    "seconds": seconds if 0 < seconds <= 3600 else None})
     return out
 
 
@@ -305,6 +307,8 @@ def snapshot(m) -> dict:
                     combo=struct.unpack(">i", m.rd(gs + GS_COMBO, 4))[0],
                     combo_timer=round(struct.unpack(">f", m.rd(gs + GS_COMBO_T, 4))[0], 2),
                     score=struct.unpack(">i", m.rd(gs + GS_SCORE, 4))[0])
+        snap.update(mercenaries_mode={2: "mercenaries", 5: "reunion"}.get(u32(m, gs + 0x58)),
+                    stage_index=u32(m, gs + 0x348), character_index=u32(m, gs + 0x364))
     return snap
 
 
@@ -337,6 +341,7 @@ UI_VTABLES = {0x015ABAC8: "uIdMerce00",         # the round's Mercenaries HUD (c
                                                 # EXTRA CONTENT list (cursor +0x188, THE MERCENARIES REUNION = 3)
               0x015ACA50: "uIdStartUp29",       # Reunion's title (START first); with +0x174 = 1 SOLO / DUO (SOLO first)
               0x015ACD50: "uIdStartUp21",       # STAGE SELECT (Reunion)
+              0x015ACDB0: "uIdStartUp20",       # Original Mercenaries title / solo selector (Ghidra 0x613940)
               0x015ACCF0: "uIdStartUp22",       # CHARACTER SELECT (Reunion)
               0x015AD690: "uIdTopMenu00",       # the title's menus (around the selects, and the main menu)
               0x015AD638: "uIdTitle00",         # +0x1F8 = 0x48 on PRESS START
@@ -344,6 +349,7 @@ UI_VTABLES = {0x015ABAC8: "uIdMerce00",         # the round's Mercenaries HUD (c
 UI_MAX = 64
 ALERT_ID = 0x3C
 ALERTS = {0x22: "alert_signin",                 # "... without signing in. Sign in?": circle = Continue
+          0x09: "alert_ok",                     # Save successful after declining Continue: Cross = OK
           0x08: "alert_ok"}                     # "Load successful.": cross = OK (0x13: loading the save, wait)
 MENU_CURSOR, MENU_SUB, EXTRA_CURSOR = 0x44, 0x174, 0x188
 TITLE_STEP, TITLE_PRESS_START = 0x1F8, 0x48
@@ -373,28 +379,55 @@ def screen(m, merc=None) -> dict:
     reunion_title, reunion_solo, select_stage, select_player, loading, menu (the title's menus between those: wait),
     results (the clock at 0 and none of those up)."""
     snap = snapshot(m)
+    if own_screen(snap) != 'dead':
+        CONTINUE_PICK.selected_no = False
     out = {"where": own_screen(snap), "cursor": None, "target": None}
     if snap.get("player"):
         if out["where"] == "playing" and (ROSTER.pick is not None or ROSTER.round is None):
+            mode, index = snap.get("mercenaries_mode"), snap.get("character_index")
+            if mode in MODE_ROSTERS and isinstance(index, int) and 0 <= index < len(MODE_ROSTERS[mode]):
+                ROSTER.set_mode(mode)
+                ROSTER.pick = index
+                if getattr(m, "adapter", None) is not None and 0 <= snap.get("stage_index", 99) < 8:
+                    coverage().started(mode, MODE_ROSTERS[mode][index], snap["stage_index"])
             out["character"] = ROSTER.started()
         return out
     ui = ui_units(m, range(N_LINES))
+    plan = coverage().choose() if getattr(m, "adapter", None) is not None else None
+    mode = snap.get("mercenaries_mode")
+    if mode in MODE_ROSTERS:
+        ROSTER.set_mode(mode)
+    if plan is not None:
+        out.update(next_mode=plan["mode"], mode_mismatch=mode in MODE_ROSTERS and mode != plan["mode"],
+                   stage_target=STAGE_NAMES[plan["stage"]])
     alert = u32(m, ui["uIdAlert00"] + ALERT_ID) if "uIdAlert00" in ui else 0
     where, cursor, target = "unknown", None, None
     if alert:
         where = ALERTS.get(alert, "alert")
     elif "uIdStartUp22" in ui:
+        if plan is not None and plan["mode"] == ROSTER.mode:
+            ROSTER.pick = ROSTER.characters.index(plan["character"])
         where, cursor, target = "select_player", u32(m, ui["uIdStartUp22"] + SELECT_CURSOR), ROSTER.want()
+        out.update(mercenaries_mode=ROSTER.mode, character_target=ROSTER.characters[target],
+                   character_cursor=ROSTER.characters[cursor] if 0 <= cursor < len(ROSTER.characters) else None,
+                   character_roster=list(ROSTER.characters),
+                   character_cursor_verified=ROSTER.confirmed == target)
     elif "uIdStartUp21" in ui:
         where = "select_stage"
+        cursor = u32(m, ui["uIdStartUp21"] + MENU_CURSOR)
+        if not 0 <= cursor < 8: cursor = None
+        target = plan["stage"] if plan is not None else None
     elif "uIdStartUp29" in ui:
         where = "reunion_solo" if u32(m, ui["uIdStartUp29"] + MENU_SUB) == 1 else "reunion_title"
+    elif "uIdStartUp20" in ui:
+        where = "mercs_solo" if u32(m, ui["uIdStartUp20"] + MENU_SUB) == 1 else "mercs_title"
     elif "uIdStartUp01" in ui:
         u = ui["uIdStartUp01"]
         if u32(m, u + MENU_SUB) == 1:
             where, cursor, target = "extra_content", u32(m, u + EXTRA_CURSOR), EXTRA_REUNION
         else:
             where, cursor, target = "play_game", u32(m, u + MENU_CURSOR), PLAY_EXTRA_CONTENT
+            if plan is not None and plan["mode"] == "mercenaries": target = 6
     elif "uIdStartUp00" in ui:
         where, cursor, target = "main_menu", u32(m, ui["uIdStartUp00"] + MENU_CURSOR), MAIN_PLAY_GAME
     elif ui.keys() & {"uIdNowLoading00", "uIdSaving00"}:
@@ -409,12 +442,28 @@ def screen(m, merc=None) -> dict:
     return out
 
 
-STEPS = {"results": "start", "select_stage": "cross", "dead": "circle", "title": "start",
+STEPS = {"results": "start", "select_stage": "cross", "title": "start",
          "alert_signin": "circle", "alert_ok": "cross", "reunion_title": "cross", "reunion_solo": "cross"}
 BOOT_KEY = "cross"      # out of a round, a screen RAM can't name (the cold boot's HDD notice, logos): mercs_bot.Boot
 CURSORED = ("main_menu", "play_game", "extra_content", "select_player")
 CHARACTERS = ("Chris (Heavy Metal)", "Sheva (Fairy Tale)", "Josh", "Excella", "Chris (Warrior)", "Sheva (Business)",
               "Barry", "Rebecca")                   # CHARACTER SELECT's row, cursor 0..7 (uIdStartUp22 +0x180)
+ORIGINAL_CHARACTERS = ("Chris (BSAA)", "Chris (Safari)", "Chris (STARS)", "Sheva (BSAA)",
+                       "Sheva (Clubbin)", "Sheva (Tribal)", "Jill (BSAA)", "Jill (Battle Suit)",
+                       "Wesker (Midnight)", "Wesker (STARS)")
+MODE_ROSTERS = {"mercenaries": ORIGINAL_CHARACTERS, "reunion": CHARACTERS}
+STAGE_NAMES = ("Public Assembly", "The Mines", "Village", "Ancient Ruins", "Experimental Facility",
+               "Missile Area", "Ship Deck", "Prison")
+_COVERAGE = None
+
+
+def coverage():
+    global _COVERAGE
+    if _COVERAGE is None:
+        from .. import lessons
+        from ..curriculum import Coverage
+        _COVERAGE = Coverage(lessons.ROOT.parent / "re5-coverage.json", MODE_ROSTERS, range(8))
+    return _COVERAGE
 SELECT_CURSOR = 0x180
 
 
@@ -426,27 +475,44 @@ class Roster:
     def __init__(self, rng=None):
         import random
         self.rng = rng or random.Random()
+        self.characters, self.mode = CHARACTERS, "reunion"
         self.pick = None                       # the cursor target for the coming round
+        self.confirmed = None                  # matching RAM cursor when the confirmation press was sent
         self.last = None                       # the character of the last round started
         self.played: dict = {c: 0 for c in CHARACTERS}
         self.tally: dict = {}                  # name -> {"rounds", "kills", "points", "combo"}
         self.round = None                      # (name, best combo seen) while a round runs
 
+    def set_mode(self, mode):
+        if mode not in MODE_ROSTERS: return
+        if mode != self.mode:
+            self.characters, self.mode = MODE_ROSTERS[mode], mode
+            self.pick, self.confirmed = None, None
+            for name in self.characters: self.played.setdefault(name, 0)
+
     def want(self) -> int:
         if self.pick is None:
-            least = min(self.played[c] for c in CHARACTERS if c != self.last)
-            pool = [i for i, c in enumerate(CHARACTERS) if self.played[c] == least and c != self.last]
+            self.confirmed = None
+            least = min(self.played[c] for c in self.characters if c != self.last)
+            pool = [i for i, c in enumerate(self.characters) if self.played[c] == least and c != self.last]
             self.pick = self.rng.choice(pool)
         return self.pick
 
     def started(self) -> str:
         """A round is up: the pick played (or the last one again when nothing was picked: a Continue)."""
-        name = CHARACTERS[self.pick] if self.pick is not None else (self.last or CHARACTERS[0])
+        name = self.characters[self.pick] if self.pick is not None else (self.last or self.characters[0])
         if self.round is None or self.round[0] != name or self.pick is not None:
             self.played[name] += 1
             self.round = [name, 0]
         self.last, self.pick = name, None
         return name
+
+    def confirm(self, cursor) -> bool:
+        """Record a confirmation only at the requested RAM cursor, never from a guessed press count."""
+        if self.pick is None or cursor != self.pick:
+            return False
+        self.confirmed = cursor
+        return True
 
     def observe(self, snap: dict) -> dict:
         """The live round's counters into the character's tally; returns the stats fields."""
@@ -457,7 +523,11 @@ class Roster:
         t = self.tally.setdefault(name, {"rounds": 0, "kills": 0, "points": 0, "combo": 0})
         t.update(rounds=self.played[name], kills=snap.get("kills") or t["kills"], points=snap.get("score") or t["points"],
                  combo=max(t["combo"], self.round[1]))
-        return {"character": name, "char_tally": "; ".join(f"{c}: {v['rounds']}r {v['kills']}k {v['points']}p c{v['combo']}"
+        return {"character": name, "mercenaries_mode": self.mode,
+                "character_cursor_verified": self.confirmed is not None and self.confirmed < len(self.characters)
+                    and self.characters[self.confirmed] == name,
+                "character_roster_size": len(self.characters),
+                "char_tally": "; ".join(f"{c}: {v['rounds']}r {v['kills']}k {v['points']}p c{v['combo']}"
                                                           for c, v in self.tally.items())}
 
 
@@ -477,36 +547,73 @@ class StagePick:
         import random
         self.rng = rng or random.Random()
         self.plan = None                       # the presses still to make on this visit; None: not on STAGE SELECT
+        self.last = self.target = None
 
     def key(self, scr: dict) -> str:
+        if scr.get("cursor") is not None and scr.get("target") is not None:
+            self.target = scr["target"]
+            return "cross" if scr["cursor"] == self.target else "dright" if scr["cursor"] < self.target else "dleft"
         if self.plan is None:
-            self.plan = ["dleft"] * self.MAX_MOVES + ["dright"] * self.rng.randint(0, self.MAX_MOVES)
+            self.target = self.rng.choice([i for i in range(self.MAX_MOVES + 1) if i != self.last])
+            self.plan = ["dleft"] * self.MAX_MOVES + ["dright"] * self.target
         return self.plan[0] if self.plan else "cross"
 
     def pressed(self, scr: dict, key: str) -> None:
+        if scr.get("where") == "select_stage" and scr.get("cursor") is not None and scr.get("target") is not None:
+            if key == "cross" and scr.get("cursor") == scr.get("target"):
+                self.last, self.target, self.plan = scr["cursor"], scr["target"], None
+            return
         if scr.get("where") != "select_stage" or self.plan is None:
             return
         if self.plan and key == self.plan[0]:
             self.plan.pop(0)
         elif key == "cross":
+            self.last = self.target
             self.plan = None                   # the stage is taken: the next visit draws again
 
 
 STAGE_PICK = StagePick()
 
 
+class ContinuePick:
+    """BLUS30491 Continue accepts Right (No), then Cross; Circle is ignored."""
+    selected_no = False
+
+    def key(self):
+        return 'cross' if self.selected_no else 'dright'
+
+    def pressed(self, key):
+        if key == 'dright':
+            self.selected_no = True
+
+
+CONTINUE_PICK = ContinuePick()
+
+
 def pressed(scr: dict, key: str) -> None:
     """mercs_bot's Navigator: a key it sent on this screen."""
     STAGE_PICK.pressed(scr, key)
+    if scr.get('where') == 'dead':
+        CONTINUE_PICK.pressed(key)
+    if scr.get("where") == "select_player" and key == "cross":
+        ROSTER.confirm(scr.get("cursor"))
 
 
 def step(scr: dict) -> str | None:
     """The one press towards the next round. From the title: START, circle on the sign-in question, cross on "Load
     successful", then the cursor (read from RAM) moved to PLAY GAME, EXTRA CONTENT, THE MERCENARIES REUNION and taken,
     START and SOLO on Reunion's title. Between rounds: START leaves the results, cross takes the stage and the
-    character the cursors are on (the last ones played), circle answers "Continue? No" (back to the selects for a new
-    random stage and character). Nothing anywhere else."""
+    character the cursors are on (the last ones played). Right then Cross answers "Continue? No" and returns through
+    the save confirmation for a new stage and character. Nothing anywhere else."""
     where = scr.get("where")
+    if where == 'dead':
+        return CONTINUE_PICK.key()
+    if where == "extra_content" and scr.get("next_mode") == "mercenaries":
+        return "circle"
+    if scr.get("mode_mismatch") and where in ("select_stage", "select_player", "reunion_title", "reunion_solo", "mercs_title", "mercs_solo"):
+        return "circle"
+    if where in ("mercs_title", "mercs_solo"):
+        return "cross"
     if where in CURSORED:
         cur, tgt = scr.get("cursor"), scr.get("target")
         if cur is None or tgt is None:
@@ -514,6 +621,8 @@ def step(scr: dict) -> str | None:
         if cur == tgt:
             return "cross"
         if where == "select_player":                     # the characters' row: left / right
+            if not (isinstance(cur, int) and 0 <= cur < len(ROSTER.characters)):
+                return None
             return "dright" if cur < tgt else "dleft"
         if where == "play_game" and cur == 0:
             return "dup"                                 # up from the top wraps to EXTRA CONTENT, the last entry
@@ -533,6 +642,10 @@ WIGGLE = (("lleft",), ("lright",), ("lleft",), ("lright",))
 # visibility and actual requested keys. cActionButton+4 owner/+14 kind/+40 target describe the action, not the input.
 BTN_OWNER, BTN_KIND, BTN_TARGET = 0x04, 0x14, 0x40
 BTN_MELEE, BTN_STAGE = 3, 2
+MINE_VTABLES = frozenset({0x015B44B8, 0x0162E5F8, 0x01629DB0})  # live getDTI: uIt050A, uWp0a, uWpMine
+LOOSE_ITEM_PICKUP = 0x3B
+PLACE_LABEL = 0x64  # L1 Place belongs exclusively to the mine controller, never the prompt presser
+PICKUP_LABEL = 1  # live Square Pick up; target is a small item handle (36/39), not an actor pointer
 AB_ENABLED, AB_PLAYER_ENABLED, AB_PLAYER_INDEX = 0x2C, 0x4C, 0x50
 AB_INPUT_MODE, AB_ALTERNATE_CONTROLLER = 0x60, 0x24C
 QTE_UNITS = (0x298, 0x2DC)
@@ -599,7 +712,7 @@ def prompt_chord(token, prefix):
     return tuple(keys) if keys and len(keys) == len(set(keys)) and all(k in known for k in keys) else None
 
 
-def selected_prompt(m):
+def selected_prompt(m, *, include_item_pickups=False):
     """The first player's active displayed input request, verified against BLUS30491's immutable mask table.
 
     sActionButton+0x34 is an array count, not HUD flags. Its two selected display units carry the actual input.
@@ -633,7 +746,8 @@ def selected_prompt(m):
                     or struct.unpack_from(">I", button, 0x70)[0] & 1 \
                     or not button[0x0A] or button[0x0C] or not players & 1 or mode != button_mode \
                     or (mode not in QTE_MODES and mode not in QTE_STICK_MODES) or not 0 < index < len(QTE_MASKS) \
-                    or mask != QTE_MASKS[index] or label > 0xFF or label == 0x3B:
+                    or mask != QTE_MASKS[index] or label > 0xFF \
+                    or (label in (LOOSE_ITEM_PICKUP, PLACE_LABEL) and not include_item_pickups):
                 continue
             chord = ()
             if mode in QTE_STICK_MODES:
@@ -645,6 +759,8 @@ def selected_prompt(m):
                     continue
                 chord = tuple(key for bit, key in QTE_KEYS if mask & bit)
                 token = QTE_MODES[mode] + ":" + "+".join(chord)
+            if not include_item_pickups and kind == BTN_STAGE and label == PICKUP_LABEL and token == 'mash:square':
+                continue
             hp = struct.unpack(">h", m.rd(pl + P_HP, 2))[0]
             countdown = struct.unpack(">f", m.rd(pl + P_DYING_TIMER, 4))[0]
             if QTE_MODES.get(mode) == "mash" and chord == ("circle",) and hp == 1 \
@@ -655,6 +771,8 @@ def selected_prompt(m):
             if m.rd(unit, 0x1C) != raw or m.rd(btn + 0x0A, 3) != button[0x0A:0x0D]:
                 continue
             requests.append((priority, offset, {"token": token, "button": btn, "kind": kind, "mode": mode,
+                                                "label": label,
+                                                "owner": struct.unpack_from(">I", button, BTN_OWNER)[0],
                                                 "target": struct.unpack_from(">I", button, BTN_TARGET)[0]}))
         if u32(m, S_ACTION) != ab or u32(m, sp + 0x28) != pl:
             return None
@@ -677,7 +795,7 @@ def prompt(m) -> str | None:
     """An explicit displayed input request, otherwise the verified grabbed-action stick escape."""
     request = selected_prompt(m)
     if request is not None:
-        return request["token"]
+        return None if mine_pickup(m, request) else request["token"]
     sp = u32(m, S_PLAYER)
     pl = u32(m, sp + 0x28) if ptr_ok(sp) else 0
     if not ptr_ok(pl):
@@ -690,7 +808,20 @@ def prompt(m) -> str | None:
 def stage_prompt(m) -> bool:
     """A prompt on the stage is up (the player's own cActionButton of kind 2: a ladder, a drop, Jump over)."""
     request = selected_prompt(m)
-    return bool(request and request["kind"] == BTN_STAGE and request["token"] == "mash:square")
+    return bool(request and request["kind"] == BTN_STAGE and request["token"] == "mash:square"
+                and not mine_pickup(m, request))
+
+
+def mine_pickup(m, request):
+    """Decline loose-item recovery, including player-owned requests without a target pointer.
+
+    Label 0x64 with L1 is Place, not pickup: only the scheduled controller may press it.
+    """
+    return request.get("token") == "mash:square" and (
+        request.get('kind') == BTN_STAGE and request.get('label') == PICKUP_LABEL
+        or request.get("label") in (LOOSE_ITEM_PICKUP, PLACE_LABEL) or any(
+        ptr_ok(actor) and u32(m, actor) in MINE_VTABLES
+        for actor in (request.get("target", 0), request.get("owner", 0))))
 
 
 def prompt_target(m):
@@ -794,10 +925,20 @@ class Bot:
         self.last_timer = None
         self.route, self.route_for, self.route_at, self.route_since = None, None, 0.0, 0.0
         self.route_midpoints, self.route_stall, self.route_walk_at = False, None, None
+        self.route_effort, self.route_best, self.route_command_at = 0.0, math.inf, None
+        self.traversal_started, self.traversal_pressed = None, None
+        self.blocked_links, self.route_failures = set(), {}
+        self.nav_last_good, self.nav_recovery = None, None
+        self.nav_hazards, self.nav_trail = [], []
+        self.nav_sample_at = self.nav_save_at = -math.inf
         self.route_rechecks, self._following_route = 0, False
         from .. import lessons as lesson_store
         nav_path = (Path(learn_dir) if learn_dir is not None else lesson_store.ROOT) / NAV_LEARNING_FILE
         self.nav_learning = re5_nav.Learning(nav_path)
+        from ..tour import GoalCommitment
+        self.bonus_commitment = GoalCommitment()
+        self.checkpoint_clear_since = None
+        self.checkpoint_walk_until = 0.
         self.nav_geometry = None
         self.avoid: list = []                  # crossings the player could not take this round (no prompt there)
         self.climb_at = None                   # (the crossing, since when) while waiting at one for its prompt
@@ -847,6 +988,20 @@ class Bot:
     def prompt_ok(self, button, snap, now) -> bool:
         return self.combat.prompt_ok(button, snap, now) if self.combat is not None else True
 
+    def recall(self, rows):
+        self.round_lessons = rows
+        self.stats["prior_stage_rounds"] = len(rows)
+        self.stats["prior_best_bonus_count"] = max((r["observed"].get("bonuses_taken") or 0 for r in rows), default=0)
+        # Notebook.recall already hard-filters title geometry and mode. Consume only
+        # bounded, explicit policy fields; prose and ranks never manufacture routes.
+        reviewed = [r.get("observed", {}) for r in rows
+                    if (r.get("observed", {}).get("reflection") or {}).get("policy", {}).get("bonus_commitment") is True]
+        stalled = any((r.get("stuck") or 0) > 0 or (r.get("nav_oscillations") or 0) > 0
+                      or (r.get("motion_idle_spin_s") or 0) > 3 for r in reviewed)
+        self.bonus_commitment.patience_s = 16. if stalled else 12.
+        self.stats["round_policy_applied"] = "held time checkpoint; measured crossing penalties; verified floor only"
+        self.stats["bonus_commitment_patience_s"] = self.bonus_commitment.patience_s
+
     def save(self):
         if self._control_state is not None:
             from . import re5_controls
@@ -865,6 +1020,8 @@ class Bot:
             return
         self._observed_snap = snap
         p = snap.get("player")
+        if snap.get("stage_prompt"):
+            self._remember_traversal_prompt(now)
         priority_prompt = snap.get("prompt") and not (self.combat is not None and self.combat.optional_prompt_blocked(snap))
         if priority_prompt or snap.get("recovery_active") or (p or {}).get("action") == P_GRABBED \
                 or where != "playing" or not p:
@@ -898,7 +1055,7 @@ class Bot:
             if health.get("refilled"):
                 self.stats["health_refills"] = self.stats.get("health_refills", 0) + 1
             from ...re5_mods_tool import maintain_kill_time
-            bonus = maintain_kill_time(self.m.adapter, snap)    # +2 s on the clock per kill (the profile's playing_ops)
+            bonus = maintain_kill_time(self.m.adapter, snap)    # configured per-kill seconds from playing_ops
             if bonus.get("added"):
                 self.stats["kill_time_added_s"] = round(self.stats.get("kill_time_added_s", 0.0) + bonus["added"], 1)
             elif bonus.get("kill_time") and not bonus.get("verified"):
@@ -926,6 +1083,10 @@ class Bot:
                 self.combat.suspend_observation(now)
             return
         if not self.round_active:
+            self.bonus_commitment.reset()
+            self.checkpoint_clear_since, self.checkpoint_walk_until = None, 0.
+            if callable(getattr(getattr(self,"mines",None),"reset_round",None)):
+                self.mines.reset_round(now,p.get("ptr"))
             self._round_started = now
             self._round_ended_at = None
             self._round_baseline = {key: self.stats.get(key, 0) for key in (
@@ -938,6 +1099,9 @@ class Bot:
                 if self.round_end == "dead":
                     self.stats["deaths_continued"] = self.stats.get("deaths_continued", 0) + 1
                 self.bonus_fired.clear()
+                self.blocked_links.clear()
+                self.route_failures.clear()
+                self.nav_last_good = self.nav_recovery = None
                 self.bonus_skip.clear()
                 self.route, self.route_for, self.route_len = None, None, None
                 self.climb_at = self.take_at = None
@@ -967,12 +1131,23 @@ class Bot:
             self.combat.observe(snap, now)
             self.combat.observe_awareness(snap, p, now)
         mesh = snap.get("nav")
+        if mesh is not None and mesh.find(p["pos"], floor_only=True, height_slack=60.) is not None:
+            self.nav_last_good = tuple(p["pos"])
         geometry = mesh.learning_sig if mesh is not None else None
         if geometry != self.nav_geometry:
+            self.bonus_commitment.reset()
+            self.nav_trail, self.nav_hazards = [], []
+            self.blocked_links.clear()
             self.route, self.route_for, self.route_len = None, None, None
             self.climb_at = self.climb_pos = self.climb_tick = None
             self.nav_geometry = geometry
         self.nav_learning.observe(mesh, p["pos"], now)
+        if now - self.nav_sample_at >= .5:
+            self.nav_trail = (self.nav_trail + [tuple(p["pos"])])[-240:]
+            self.nav_sample_at = now
+        if now - self.nav_save_at >= 20.:
+            self.nav_learning.save()
+            self.nav_save_at = now
         self.stats.update(self.nav_learning.summary())
         self._observe_weapon_switch(snap, now)
         self._score_hits(snap)
@@ -1032,7 +1207,7 @@ class Bot:
 
     def plan(self) -> dict:
         """What the bot is doing, for the tactical map (gbox/mercs/tactical.py): no RAM reads, only state held."""
-        walking = self.route if self.stats.get("phase") in ("gather_time", "break_for_time", "stand", "pursue") else None
+        walking = self.route if self.stats.get("phase") in ("gather_time", "break_for_time", "stand", "pursue", "leave_proximity_bomb") else None
         nb = None
         if self.route_len:
             ptr, d = min(((k, v) for k, v in self.route_len.items() if v is not None), key=lambda kv: kv[1],
@@ -1040,6 +1215,7 @@ class Bot:
             if ptr is not None:
                 nb = {"id": ptr, "kind": "time", "dist": round(d), "eta_s": round(d / RUN_SPEED, 1)}
         return {"phase": self.stats.get("phase"), "target": self.plan_target,
+                "trail": list(self.nav_trail), "hazards": list(self.nav_hazards),
                 "enemy_awareness": getattr(self.combat, "awareness", []),
                 "route": [tuple(w) for w in walking] if walking else None,
                 "stand": {"pos": self.spawn, "r": STAND_R} if self.spawn else None,
@@ -1047,33 +1223,22 @@ class Bot:
                 "note": str(self.stats.get("bonus_target") or self.stats.get("aim") or "")[:80]}
 
     def _idle_breakout(self, snap, act):
-        """Watchdog: standing still IDLE_S away from the stand (nothing hit, no prompt) is the bot staring at a
-        wall / waiting on nothing. Turn 90 deg off (then the other way, then round) and run IDLE_WALK_S; the
-        normal decision resumes afterwards and its own route / pursuit logic takes over from the new spot."""
+        """Stationary decisions invalidate the cached plan, never authorize blind movement."""
         p, now = snap.get("player"), self.clock()
         if not p or snap.get("prompt") or snap.get("stage_prompt") or (p.get("hp") or 1) <= 0:
             self._idle = self._idle_walk = None
             return act
         pos = tuple(p["pos"])
         activity = (self.stats.get("damage_events", 0), self.stats.get("kills_seen", 0), self.at_stand)
-        walk = self._idle_walk
-        if walk is not None:                                 # the break-out walk in progress
-            if now < walk[0]:
-                self.hist = []
-                err = wrap(walk[1] - p["rot"])
-                keys = self._turn(err, aiming=False)
-                return {"hold": keys | ({"lup", "cross"} if abs(err) < math.radians(60) else set())}
-            self._idle_walk = self._idle = None
-            return act
+        self._idle_walk = None
         if self._idle is None or self._idle[2] != activity or math.dist(pos, self._idle[0]) >= STUCK_MOVE:
             self._idle = (pos, now, activity)
             return act
         if now - self._idle[1] >= IDLE_S and not self.at_stand:
-            turn = (math.pi / 2, -math.pi / 2, math.pi)[self._idle_n % 3]
-            self._idle_n += 1
-            self._idle_walk = (now + IDLE_WALK_S, wrap(p["rot"] + turn))
-            self.stats["idle_breakouts"] = self.stats.get("idle_breakouts", 0) + 1
-            self.stats["route"] = "idle: breaking out of a stationary spot"
+            self._idle = (pos, now, activity)
+            self.route_at, self.route_len = -math.inf, None
+            self.stats["idle_route_replans"] = self.stats.get("idle_route_replans", 0) + 1
+            self.stats["route"] = "stationary: discarding stale route; awaiting supported movement"
         return act
 
     def tick(self, snap: dict) -> dict:
@@ -1083,17 +1248,45 @@ class Bot:
             self.meter.observe(self.clock(), p["pos"], p["rot"])
             self.stats.update({"motion_" + k: v for k, v in self.meter.summary().items()})
         try:
-            return self._idle_breakout(snap, self._tick(snap))
+            from . import re5_mines
+            if not hasattr(self, "mines"):
+                self.mines = re5_mines.Controller(self.m, self.stats, self._switch_weapon)
+            if own_screen(snap) == "playing":
+                self._observe_weapon_switch(snap, self.clock())
+                self._mine_placement_preflight(snap,self.clock())
+                mine_action = self.mines.tick(snap, self.clock())
+                if mine_action is not None:
+                    return self._leave_deployed_mines(mine_action)
+            act = self._idle_breakout(snap, self._tick(snap))
+            if self.mines.cadence.only and self.mines.cadence.enabled:
+                if "r1" in act.get("hold", ()):
+                    act = {"hold": set(act.get("hold", ())) - {"l1", "r1"}}
+            return self._leave_deployed_mines(act)
         finally:
+            if not self._following_route or not getattr(self, "_route_learn", True):
+                self.bonus_commitment.pause(self.clock())
             if not self._following_route:
                 self._interrupt_route_walk()
 
     def _interrupt_route_walk(self):
         """Combat, item selection and QTE input break continuous route-motion evidence, even for a single tick."""
+        self.bonus_commitment.pause(self.clock())
         if self.route_walk_at is not None:
             self.hist, self.route_stall, self.route_walk_at = [], None, None
+            self.route_command_at = None
             self.unstick_until, self.stuck_since = 0.0, None
             self.climb_at = self.climb_pos = self.climb_tick = None
+
+    def _leave_deployed_mines(self, act):
+        # Bonus punches and herb-use actions also use Square. Check their final input,
+        # since a nearby mine can become the game's selected interaction after planning.
+        if self.m is None or (act.get("tap") != "square" and "square" not in act.get("hold", ())):
+            return act
+        request = selected_prompt(self.m, include_item_pickups=True)
+        if request and mine_pickup(self.m, request):
+            self.stats["mine_pickups_avoided"] = self.stats.get("mine_pickups_avoided", 0) + 1
+            return {"hold": set(act.get("hold", ())) - {"square"}}
+        return act
 
     def _tick(self, snap: dict) -> dict:
         now = self.clock()
@@ -1106,6 +1299,9 @@ class Bot:
         close_foes = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0
                      and (e.get("hp_max") or 0) > 1 and math.dist(p["pos"], e["pos"]) <= FIGHT_R
                      and (self.combat is None or self.combat.blocked_until.get(e.get("ptr", e.get("slot")), 0) <= now)]
+        if getattr(getattr(self, "mines", None), "cadence", None) is not None \
+                and self.mines.cadence.only and self.mines.cadence.enabled:
+            close_foes = []
         if self.combat is not None:                    # a Majini behind a wall of the mesh is no immediate threat
             close_foes = [e for e in close_foes if self._open(p, e, snap.get("nav"), now)]
         if snap.get("recovery_active") and not snap.get("prompt"):
@@ -1134,14 +1330,13 @@ class Bot:
         if snap.get("prompt") == "mash":
             self.aiming_since = None
             return {"hold": set()}                     # the prompt presser owns rapid circle, never cross/aim/fire
-        if p.get("hp") is not None and p["hp"] <= 0:        # "You Are Dead - Continue? Yes / No": No (circle)
-            # No, not Yes: Yes replays the same stage with the same character, and with infinite life off the bot
-            # retried one stage round after round (operator 2026-10-22: "its Not picking different levels and different
-            # characters. that should be random each time"); No goes back through the selects (StagePick, Roster)
+        if p.get("hp") is not None and p["hp"] <= 0:
             if now - self.dead_tap > 1.5:
                 self.dead_tap = now
                 self.stats["continue_declined"] = self.stats.get("continue_declined", 0) + 1
-                return {"tap": "circle"}
+                key = CONTINUE_PICK.key()
+                CONTINUE_PICK.pressed(key)
+                return {"tap": key}
             return {"hold": set()}
         if snap.get("prompt") and not (self.combat is not None and self.combat.optional_prompt_blocked(snap)):  # a finisher / a grab: the engine presses it; the gun
             self.aiming_since = None                        # stays down between its presses (L1 would cancel it)
@@ -1150,6 +1345,9 @@ class Bot:
         heal = self._heal(p, snap, now)                     # equip, confirm in hand, then Square to actually use it
         if heal:
             return heal
+        retreat = self._mine_retreat(p, snap, now)
+        if retreat is not None:
+            return retreat
         if snap.get("stage_prompt") and close_foes:
             self.stage_wait_since = self.stage_wait_since or now
         else:
@@ -1178,7 +1376,10 @@ class Bot:
         t = snap.get("timer")
         # Majini and the like: alive, more than 1 health (crows are "enemies" with 1), not far above or below
         live = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and (e.get("hp_max") or 0) > 1
-                and abs(e["pos"][1] - p["pos"][1]) < MAX_DY]
+                and (abs(e["pos"][1] - p["pos"][1]) < MAX_DY or self._laser_view(snap, e) == "on")]
+        if getattr(getattr(self, "mines", None), "cadence", None) is not None \
+                and self.mines.cadence.only and self.mines.cadence.enabled:
+            live = []
         eq = equipped(snap)
         if eq is not None:
             self.stats["weapon"] = f"{WEAPON_NAMES.get(eq['item'], 'uWp%02x' % eq['item'])} {eq['rounds']}/{eq['cap']}" \
@@ -1200,6 +1401,16 @@ class Bot:
                 if now < self.reload_until:
                     return {"hold": {"l1", "cross"}}
         mesh = snap.get("nav")
+        if mesh is not None and not close_foes:
+            if mesh.find(p["pos"], floor_only=True, height_slack=60.) is None:
+                if self.traversal_pressed is not None and self.route and isinstance(self.route[0], re5_nav.Traversal):
+                    return self._traverse(p, {"ptr": self.route_for, "pos": self.route[-1]}, mesh,
+                                          self.route[0], snap.get("stage_prompt"), now)
+                return self._recover_nav(p, mesh, now)
+            if self.nav_recovery is not None:
+                self.stats["nav_recoveries"] = self.stats.get("nav_recoveries", 0) + 1
+                self.route, self.route_len, self.route_at = None, None, -math.inf
+            self.nav_recovery = None
         if mesh is not None and self.avoid is not _AVOID.get(mesh_key(mesh)):
             self.avoid = crossings(mesh)
         if self.spawn is None and t is not None and t >= 110:
@@ -1208,15 +1419,17 @@ class Bot:
         self.at_stand = self.spawn is not None and math.hypot(self.spawn[0] - px, self.spawn[2] - pz) < STAND_R \
             and abs(self.spawn[1] - py) < WP_CLIMB
         # only Majini in sight are fought from here (open floor between, or right on him); the rest are walked to
-        sightable = [e for e in live if math.dist(p["pos"], e["pos"]) <= SIGHT_R and self._open(p, e, mesh, now)] \
+        sightable = [e for e in live if self._laser_view(snap, e) == "on" or
+                     (math.dist(p["pos"], e["pos"]) <= SIGHT_R and self._open(p, e, mesh, now))] \
             if self.combat is not None else live
+        checkpoint_lease = self._checkpoint_walk_allowed(snap,close_foes,now)
         candidate = self.combat.choose_target(snap, p, sightable, now) if self.combat is not None else None
         if candidate is None and self.combat is not None and sightable:
             candidate = min(sightable, key=lambda e: math.dist(p["pos"], e["pos"]))   # in sight, off the camera: turn
         # Time bonuses first (operator 2026-10-22: "urgently seeking and acquiring time bonuses and pursuing the S rank
         # score"): only a Majini close and in sight (close_foes, or one in the way: _bonus) stops the gather; a fight
         # further off waits. A time bonus breaks the combo when it must; the strategy keeps only its safety refusals.
-        tgt = self._bonus(p, sightable, snap.get("bonuses") or (), now, mesh, t)
+        tgt = self._bonus(p, sightable, snap.get("bonuses") or (), now, mesh, t, clearance_lease=checkpoint_lease)
         if tgt is not None:
             from . import re5_strategy
             distance = math.dist(p["pos"], tgt["pos"])
@@ -1225,11 +1438,14 @@ class Bot:
             decision = re5_strategy.detour_decision(snap, eta, distance < BONUS_REACH,
                 kind=tgt.get("kind", "time"), immediate_threat=bool(close_foes))
             allowed = decision.allowed or (tgt.get("kind", "time") == "time" and decision.reason not in HARD_REFUSALS)
+            if checkpoint_lease and tgt.get("kind","time") == "time" \
+                    and decision.reason == "dispatch nearby exposed threat first":
+                allowed = True  # only this bounded dispatch refusal; clock and route refusals remain authoritative
             self.stats["strategy_decision"] = decision.reason if decision.allowed or not allowed \
                 else f"time bonus first ({decision.reason})"
             if not allowed:
                 tgt = None
-        if close_foes:
+        if close_foes and not checkpoint_lease:
             tgt = None
             self.stats["phase"] = "clear_nearby"
         threats = [e for e in sightable if self._threat(p, e)]
@@ -1279,7 +1495,7 @@ class Bot:
             if tgt.get("walk"):
                 return self._follow(p, tgt, snap.get("nav"), snap.get("stage_prompt"), now)
             return self._take(p, tgt, snap.get("stage_prompt"), now)
-        if dist > ENGAGE:                                   # nobody near: walk toward the nearest...
+        if dist > ENGAGE and self._laser_view(snap, tgt) != "on":  # a current first hit confirms distant shots
             self.aiming_since = None
             if self.at_stand and not self._combo_running(snap):   # ...unless this is the stand: they come to him
                 return {"hold": set()}                      # (not while a combo window is open: go and keep it)
@@ -1591,7 +1807,7 @@ class Bot:
         self.stats["weapon_policy"] = f"switch to {weapon.name if weapon else 'loaded weapon'}: {why}"
         return {"tap": key}
 
-    def _bonus(self, p, live, standing, now, mesh=None, clock=None):
+    def _bonus(self, p, live, standing, now, mesh=None, clock=None, *, clearance_lease=False):
         """The time bonus to go for now, or None (nothing standing, or a Majini within FIGHT_R: he is fought first).
         The nearest hourglass by the navmesh route (straight line without a mesh), on any level, walked to along the
         route and taken with its "□ Time bonus" prompt (Bot._take); one left alone for BONUS_SKIP_S when its prompt
@@ -1606,14 +1822,15 @@ class Bot:
         near = min(standing, key=lambda b: math.hypot(b["pos"][0] - px, b["pos"][2] - pz))
         at_bonus = math.hypot(near["pos"][0] - px, near["pos"][2] - pz) < BONUS_REACH \
             and abs(near["pos"][1] - py) < BONUS_LEVEL_DY
-        if not at_bonus and any(self._threat(p, e) for e in live):
+        if not at_bonus and not clearance_lease and any(self._threat(p, e) for e in live):
             self.stats["phase"] = "fight"
             return None
         if mesh is not None and (self.route_len is None or now - self.route_len_at > ROUTE_LEN_S
                                  or set(self.route_len) != now_ptrs):
             self.route_len, self.route_len_at = {}, now
             for b in standing:
-                self.route_len[b["ptr"]] = mesh.route_length(p["pos"], b["pos"], avoid=self.avoid)
+                self.route_len[b["ptr"]] = mesh.route_length(p["pos"], b["pos"], avoid=self.avoid,
+                    blocked_links=self.blocked_links, link_penalties=self.nav_learning.link_penalties(mesh))
 
         def cost(b):
             d = self.route_len.get(b["ptr"]) if self.route_len else None
@@ -1633,8 +1850,38 @@ class Bot:
         if not cands:
             self.stats["bonus_target"] = None
             return None
+        # Time checkpoints precede optional combo bonuses. All remaining time actors
+        # are retained in the stage atlas even when this round has not found a route.
+        time_cands = [candidate for candidate in cands if candidate.get("kind", "time") == "time"]
+        cands = time_cands or cands
         b = min(cands, key=lambda b: cost(b) +
                 (self.nav_learning.route_penalty(mesh, p["pos"], b["pos"]) if mesh is not None else 0.0))
+        if mesh is not None and clock is not None and len(cands) > 1:
+            from ..tour import plan
+            cache_key = (mesh_key(mesh), tuple(sorted(tuple(x) for x in self.avoid)), tuple(sorted(self.blocked_links)),
+                         tuple(sorted(self.nav_learning.link_penalties(mesh).items())))
+            if getattr(self, "_tour_key", None) != cache_key:
+                self._tour_key, self._tour_distances = cache_key, {}
+            def travel(a, other):
+                key = (tuple(a["pos"]), tuple(other["pos"]))
+                if key not in self._tour_distances:
+                    self._tour_distances[key] = mesh.route_length(a["pos"], other["pos"], avoid=self.avoid,
+                        blocked_links=self.blocked_links, link_penalties=self.nav_learning.link_penalties(mesh))
+                return self._tour_distances[key]
+            if now - getattr(self, "_tour_at", -math.inf) > 2 or getattr(self, "_tour_live", None) != now_ptrs:
+                tour = plan(cands, travel, lambda a: cost(a) + self.nav_learning.route_penalty(mesh,p["pos"],a["pos"]),
+                            clock, RUN_SPEED)
+                self._tour_goal = tour[0]["ptr"] if tour else None
+                self._tour_at, self._tour_live = now, now_ptrs
+                self.stats["bonus_tour"] = [hex(x["ptr"]) for x in tour]
+                self.stats["bonus_tour_planned"] = len(tour)
+            b = next((x for x in cands if x["ptr"] == self._tour_goal), b)
+        held = self.bonus_commitment.goal
+        distance = (self.route_len or {}).get(held)
+        chosen = self.bonus_commitment.choose(b["ptr"], [x["ptr"] for x in cands], now, distance)
+        b = next((x for x in cands if x["ptr"] == chosen), b)
+        self.stats["bonus_committed"] = hex(b["ptr"]) if isinstance(b["ptr"], int) else str(b["ptr"])
+        self.stats["time_bonuses_remaining"] = len(standing)
         d = math.hypot(b["pos"][0] - px, b["pos"][2] - pz)
         level = abs(b["pos"][1] - py) < BONUS_LEVEL_DY          # on its level, right at it: take it
         walk = d > BONUS_TAKE or not level
@@ -1777,25 +2024,28 @@ class Bot:
             keys = keys | {"lup"}                           # walk onto it (not running: it would overshoot)
         return {"hold": keys}
 
-    def _follow(self, p, tgt, mesh, stage_prompt, now, learn=True) -> dict:
+    def _follow(self, p, tgt, mesh, stage_prompt, now, learn=True, retreat_from=None) -> dict:
         """One step along the navmesh to a time bonus: the route drawn again every REPLAN_S; the next waypoint walked
         to (turn, then run); at a ladder or a drop (the next waypoint straight above / below) the stage's square
         prompt is taken; a bonus followed ROUTE_STALE_S without being reached is left for BONUS_SKIP_S."""
         self._following_route, self._route_learn = True, learn
+        self._route_mesh = mesh
+        self._route_pos = tuple(p["pos"])
         pos = p["pos"]
         if self.route_for != tgt["ptr"]:
-            if learn:                                      # enemy pursuits are not route learning
-                self.nav_learning.begin_route(mesh, pos, tgt["pos"])
-            else:
-                self.nav_learning.finish_route("interrupted")
+            self.nav_learning.begin_route(mesh if learn else None, pos, tgt["pos"])
             self.route, self.route_for, self.route_since = None, tgt["ptr"], now
             self.route_at = -math.inf
             self.climb_at = self.climb_pos = self.climb_tick = None
-            self.route_midpoints, self.route_stall, self.route_walk_at = False, None, None
+            self.route_midpoints, self.route_stall, self.route_walk_at = True, None, None
             self.route_rechecks = 0
+            self.route_effort, self.route_best, self.route_command_at = 0.0, math.inf, None
+            self.traversal_started = self.traversal_pressed = None
         if self.route_walk_at is None or now - self.route_walk_at > 1.0:
             self.hist, self.route_stall = [], None           # combat / a prompt is not stationary walking evidence
             self.unstick_until = 0.0
+            if self.traversal_pressed is None:
+                self.traversal_started = None
         self.route_walk_at = now
         if self.route_stall is not None and math.dist(pos, self.route_stall) >= STUCK_MOVE:
             self.route_stall = None
@@ -1805,25 +2055,33 @@ class Bot:
             self.stats["routes_given_up"] = self.stats.get("routes_given_up", 0) + 1
             self.route_for = None
             return {"hold": set()}
-        if mesh is not None and now - self.route_at > REPLAN_S:
-            self.route, self.route_at = mesh.route(pos, tgt["pos"], avoid=self.avoid,
-                                                   pull=not self.route_midpoints), now
+        crossing = self.route and any(isinstance(w, re5_nav.Traversal) for w in self.route[:2])
+        if mesh is not None and now - self.route_at > REPLAN_S and not crossing:
+            if retreat_from is not None:
+                self.route = mesh.retreat(pos, retreat_from, 600., blocked_links=self.blocked_links,
+                                          link_penalties=self.nav_learning.link_penalties(mesh))
+                self.route_at = now
+            else:
+                self.route, self.route_at = mesh.route(pos, tgt["pos"], avoid=self.avoid,
+                                                   pull=not self.route_midpoints, blocked_links=self.blocked_links,
+                                                   link_penalties=self.nav_learning.link_penalties(mesh)), now
         if not self.route:
             if mesh is not None:                           # an explicit no-route result must never mean run through it
                 self._nav_finish("unreachable")
                 self.bonus_skip[tgt["ptr"]] = now + BONUS_SKIP_S
                 self.stats["route"] = "unreachable on current mesh"
                 return {"hold": set()}
-            stuck = self.stats["stuck"]
-            keys = self._walk(p, heading(tgt["pos"][0] - pos[0], tgt["pos"][2] - pos[2]), now, precise=True)
-            if self.stats["stuck"] > stuck:                # pushing at a wall with no mesh to route round it
-                if self.route_stall is not None:
-                    return self._block_route(tgt, now, "no mesh and walled in: trying another bonus")
-                self.route_stall = tuple(pos)
-            return {"hold": keys}
-        while len(self.route) > 1 and math.hypot(self.route[0][0] - pos[0], self.route[0][2] - pos[2]) < WP_REACHED \
+            self.stats["route"] = "waiting for stage navigation; no blind straight-line pursuit"
+            return {"hold": set()}
+        while len(self.route) > 1 and not isinstance(self.route[0], re5_nav.Traversal) \
+                and math.hypot(self.route[0][0] - pos[0], self.route[0][2] - pos[2]) < WP_REACHED \
                 and abs(self.route[0][1] - pos[1]) < WP_CLIMB:
             following = self.route[1]
+            if isinstance(following, re5_nav.Traversal):
+                if mesh is None or not mesh.floor_segment(pos, following.approach):
+                    break
+                self.route.pop(0)
+                continue
             if abs(following[1] - pos[1]) < WP_CLIMB:
                 if mesh is not None and not mesh.floor_segment(pos, following):
                     break                                 # being near a corner does not permit cutting across its wall
@@ -1831,6 +2089,8 @@ class Bot:
                 break                                     # reach the action link's approach before advancing to its height
             self.route.pop(0)
         w = self.route[0]
+        if isinstance(w, re5_nav.Traversal):
+            return self._traverse(p, tgt, mesh, w, stage_prompt, now)
         flat = math.hypot(w[0] - pos[0], w[2] - pos[2])
         self.stats["route"] = f"{len(self.route)} wp, next d {flat:.0f} dy {w[1] - pos[1]:+.0f}"
         if flat < WP_CLIMB and abs(w[1] - pos[1]) >= WP_CLIMB:  # a ladder / a drop: the game's own action
@@ -1864,14 +2124,25 @@ class Bot:
             self.route_rechecks += 1
             if self.route_rechecks >= 3:
                 return self._block_route(tgt, now, "no supported floor segment after three route checks")
+            if not self.route_midpoints:
+                self.route_best, self.route_effort = math.inf, 0.0
             self.route_midpoints = True
-            self.route = mesh.route(pos, tgt["pos"], avoid=self.avoid, pull=False)
+            self.route = mesh.retreat(pos, retreat_from, 600., blocked_links=self.blocked_links) if retreat_from is not None \
+                else mesh.route(pos, tgt["pos"], avoid=self.avoid, pull=False, blocked_links=self.blocked_links)
             self.route_at, self.hist = now, []
             self.stats["route"] = "rechecking route through recorded portals"
             return {"hold": set()}
         self.route_rechecks = 0
+        remaining = sum(math.dist(a, b) for a, b in zip([pos] + self.route, self.route))
+        if remaining < self.route_best - 80.0:
+            self.route_best, self.route_effort = remaining, 0.0
+        if self.route_command_at is not None and 0 < now - self.route_command_at <= 0.5:
+            self.route_effort += now - self.route_command_at
+        if self.route_effort >= 6.0:
+            return self._block_route(tgt, now, "no route progress after six seconds of commanded movement")
         stuck = self.stats["stuck"]
         keys = self._walk(p, heading(w[0] - pos[0], w[2] - pos[2]), now, precise=True, run=flat >= WP_REACHED)
+        self.route_command_at = now  # repeated turns/unstick jitter without progress also consume the route budget
         if self.stats["stuck"] > stuck:
             if self.route_stall is not None:
                 return self._block_route(tgt, now, "repeated stationary approach; trying another target")
@@ -1879,18 +2150,208 @@ class Bot:
             self.route_midpoints, self.route_at = True, -math.inf
         return {"hold": keys}
 
+    def _mine_retreat(self, p, snap, now):
+        """Leave a verified planted bomb using floor support; resume the held checkpoint afterwards."""
+        controller = getattr(self, "mines", None)
+        escape = getattr(controller, "escape", None)
+        if escape is None or controller.clear_escape(now, p["pos"]):
+            return None
+        self.stats["phase"] = "leave_proximity_bomb"
+        self.stats["mine_retreat_status"] = "seeking supported floor route away from planted bomb"
+        self.bonus_commitment.pause(now)
+        mesh = snap.get("nav")
+        if mesh is None:
+            self.stats["mine_retreat_status"] = "blocked: navigation mesh unavailable; further planting deferred"
+            return {"hold": set()}
+        if mesh.find(p["pos"],floor_only=True,height_slack=60.) is None:
+            self.stats["mine_retreat_status"] = "returning to observed floor before escaping planted bomb"
+            return self._recover_nav(p,mesh,now)
+        route = self.route if self.route_for == "mine_escape:" + str(escape["actor"]) and self.route \
+            and now - self.route_at <= REPLAN_S else mesh.retreat(p["pos"], escape["pos"], 600.,
+                blocked_links=self.blocked_links, link_penalties=self.nav_learning.link_penalties(mesh))
+        if not route:
+            self.stats["mine_retreat_status"] = "blocked: no measured floor escape; further planting deferred"
+            return {"hold": set()}
+        target = {"ptr": "mine_escape:" + str(escape["actor"]), "pos": route[-1]}
+        self.plan_target = {"kind": "waypoint", "id": target["ptr"], "pos": target["pos"]}
+        self.stats["mine_retreat_status"] = "moving away on supported floor; weapon restored"
+        self.aiming_since = None
+        return self._follow(p, target, mesh, False, now, learn=False, retreat_from=escape["pos"])
+
+    def _mine_placement_preflight(self, snap, now):
+        """Approve deployment only with a measured way out from the current floor."""
+        p,mesh = snap.get('player'),snap.get('nav')
+        allowed = False
+        if p and mesh is not None:
+            previous = getattr(self,'_mine_preflight',None)
+            if previous is not None and previous['geometry'] == mesh.learning_sig and now-previous['at']<2. \
+                    and math.dist(previous['pos'],p['pos'])<25.:
+                route = previous['route']
+            else:
+                route = mesh.retreat(p['pos'],p['pos'],650.,blocked_links=self.blocked_links,
+                                     link_penalties=self.nav_learning.link_penalties(mesh))
+                self._mine_preflight = {'geometry':mesh.learning_sig,'at':now,'pos':tuple(p['pos']),'route':route}
+            allowed = bool(route) and math.dist(p['pos'],route[-1])>=600. and mesh.floor_segment(p['pos'],route[0])
+        snap['mine_placement_safe'] = allowed
+        self.stats['mine_placement_route_verified'] = allowed
+        return allowed
+
+    def _checkpoint_walk_allowed(self, snap, close_foes, now):
+        """Under verified immunity, alternate bounded crowd clearing with checkpoint movement.
+
+        Contact, mandatory game actions and observed imminent explosives always
+        interrupt the movement lease. Neither immunity nor this lease creates a path.
+        """
+        p = snap.get("player") or {}
+        contact = any((e.get("hp") or 0)>0 and math.dist(p.get("pos",(0,0,0)),e["pos"])<=TOO_CLOSE
+                      for e in close_foes)
+        imminent = any(math.dist(p.get("pos",(0,0,0)),mine["pos"])<600.
+                       and (mine.get("detonating") or 0<=mine.get("arming_s",math.inf)<=.5)
+                       for mine in (snap.get("ground_mines") or {}).values())
+        permitted = self.stats.get("immunity_verified") is True and self.stats.get("hit_immunity") is True \
+            and not contact and not imminent and not snap.get("prompt") and not snap.get("stage_prompt") \
+            and not snap.get("recovery_active") and p.get("action") not in (4,5) and (p.get("hp") or 0)>1 \
+            and snap.get("nav") is not None and any(b.get("kind","time")=="time" for b in snap.get("bonuses") or ())
+        if not permitted or not close_foes:
+            self.checkpoint_clear_since,self.checkpoint_walk_until = None,0.
+            self.stats["checkpoint_threat_policy"] = "contact/QTE/explosive or unverified immunity" if close_foes else "route normally"
+            return False
+        if now < self.checkpoint_walk_until:
+            self.stats["checkpoint_threat_policy"] = "bounded checkpoint movement lease"
+            return True
+        if self.checkpoint_clear_since is None:
+            self.checkpoint_clear_since = now
+        if now-self.checkpoint_clear_since >= 2.:
+            self.checkpoint_walk_until,self.checkpoint_clear_since = now+3.,None
+            self.stats["checkpoint_threat_policy"] = "bounded checkpoint movement lease"
+            self.stats["checkpoint_walk_leases"] = self.stats.get("checkpoint_walk_leases",0)+1
+            return True
+        self.stats["checkpoint_threat_policy"] = "bounded two-second exposed-threat clearing"
+        return False
+
+
+    def _traverse(self, p, tgt, mesh, crossing, stage_prompt, now):
+        pos, approach = p["pos"], crossing.approach
+        landing_radius = 250. if abs(crossing[1] - approach[1]) >= BONUS_LEVEL_DY else WP_REACHED
+        if math.dist(pos, crossing) < landing_radius and abs(pos[1] - crossing[1]) < BONUS_LEVEL_DY \
+                and mesh.floor_segment(pos, crossing):
+            self.route.pop(0)
+            self.traversal_started = self.traversal_pressed = None
+            self.stats["traversals_completed"] = self.stats.get("traversals_completed", 0) + 1
+            if hasattr(self, "mines"):
+                self.mines.cadence.entrance = True
+            self.stats["route"] = "traversal landing reached on destination floor"
+            return {"hold": set()}
+        self.stats["route"] = f"traversal {'up' if crossing[1] > approach[1] else 'down/across'}; landing dy {crossing[1] - pos[1]:+.0f}"
+        if self.traversal_started is None:
+            if math.dist(pos, approach) > WP_REACHED:
+                if not mesh.floor_segment(pos, approach):
+                    return self._block_route(tgt, now, "traversal approach is not on reachable floor")
+                return {"hold": self._walk(p, heading(approach[0] - pos[0], approach[2] - pos[2]),
+                                             now, precise=True, run=False)}
+        if self.traversal_started is not None and now - self.traversal_started > \
+                (10.0 if self.traversal_pressed is not None else CLIMB_WAIT_S):
+            self._nav_finish("blocked")
+            self.avoid.append(crossing.portal)
+            self.stats["crossings_avoided"] = self.stats.get("crossings_avoided", 0) + 1
+            self.route = self.route_len = None
+            self.route_at = -math.inf
+            self.traversal_started = self.traversal_pressed = None
+            self.stats["route"] = "action link did not complete; replanning through another entrance"
+            return {"hold": set()}
+        if stage_prompt:
+            if self.traversal_started is None:
+                self.traversal_started = now
+            self.traversal_pressed = now
+            self.stats["climbs"] = self.stats.get("climbs", 0) + 1
+            return {"tap": "square"}
+        if abs(pos[1] - approach[1]) >= BONUS_LEVEL_DY:
+            return {"hold": set()}  # an in-flight climb is not evidence of a new walkable floor
+        way = heading(crossing[0] - pos[0], crossing[2] - pos[2])
+        err = wrap(way - p["rot"])
+        if abs(err) > math.radians(20):
+            if self.traversal_pressed is None:
+                self.traversal_started = None
+            return {"hold": self._turn(err, aiming=False)}
+        if self.traversal_started is None:
+            self.traversal_started = now
+        # Approach the action trigger slowly for a bounded interval; never run or fire into the face.
+        return {"hold": {"lup"}}
+
+
+    def _recover_nav(self, p, mesh, now):
+        """Back toward recently observed or nearby same-level floor with bounded movement probes."""
+        self.stats["phase"] = "recover_navigation"
+        self._interrupt_route_walk()
+        state = self.nav_recovery
+        if state is None or math.dist(state["origin"], p["pos"]) > 100.:
+            points = mesh.recovery_points(p["pos"])
+            previous = self.nav_last_good
+            if previous is not None and math.dist(previous, p["pos"]) < 250. \
+                    and abs(previous[1] - p["pos"][1]) < 50.:
+                points.insert(0, previous)
+            state = self.nav_recovery = {"origin": tuple(p["pos"]), "points": points,
+                                         "index": 0, "started": now, "walking": None}
+        if state["index"] >= len(state["points"]) or now - state["started"] > 15.:
+            self.stats["nav_recovery"] = "no safe floor recovery observed; movement stopped"
+            return {"hold": set()}
+        q = state["points"][state["index"]]
+        err = wrap(heading(q[0] - p["pos"][0], q[2] - p["pos"][2]) - p["rot"])
+        self.stats["nav_recovery"] = f"probe {state['index'] + 1}: returning to nearby same-level floor"
+        if abs(err) > math.radians(20):
+            return {"hold": self._turn(err, aiming=False)}
+        if state["walking"] is None:
+            state["walking"] = now
+        if now - state["walking"] > 1.2:
+            state["index"] += 1
+            state["walking"] = None
+            return {"hold": set()}
+        return {"hold": {"lup"}}  # no sprint, aim or fire; actual floor membership must confirm recovery
+
+
+    def _remember_traversal_prompt(self, now):
+        # The engine can answer stage prompts without calling Bot.tick(). Retain the attempt across its animation.
+        if not self.route:
+            return
+        index = next((i for i, w in enumerate(self.route[:2]) if isinstance(w, re5_nav.Traversal)), None)
+        if index is not None:
+            self.route = self.route[index:]
+            if self.traversal_pressed is None:
+                self.stats["traversal_attempts"] = self.stats.get("traversal_attempts", 0) + 1
+            self.traversal_pressed = now
+            if self.traversal_started is None:
+                self.traversal_started = now
+
+
     def _nav_finish(self, outcome):
         if getattr(self, "_route_learn", True):          # a pursuit's route outcome is not the stage's route record
             self.nav_learning.finish_route(outcome)
 
     def _block_route(self, tgt, now, reason):
+        self.nav_hazards = (self.nav_hazards + [{"pos": getattr(self, "_route_pos", tuple(tgt["pos"])),
+                                                "reason": reason[:160], "at": now}])[-64:]
         self._nav_finish("blocked")
+        link = getattr(self.route[0], "link", None) if self.route else None
+        self.nav_learning.blocked(getattr(self, "_route_mesh", None), link)
+        self.nav_learning.save()
+        attempts = self.route_failures.get(tgt["ptr"], 0)
+        if link is not None and link not in self.blocked_links and attempts < 2:
+            self.blocked_links.add(link)
+            self.route_failures[tgt["ptr"]] = attempts + 1
+            self.route = self.route_len = None
+            self.route_at, self.route_best = -math.inf, math.inf
+            self.route_effort = 0.
+            self._interrupt_route_walk()
+            self.stats["route_replans"] = self.stats.get("route_replans", 0) + 1
+            self.stats["route"] = "no progress through recorded portal; trying an alternate route"
+            return {"hold": set()}
         self.bonus_skip[tgt["ptr"]] = now + BONUS_SKIP_S
         self.stats["routes_blocked"] = self.stats.get("routes_blocked", 0) + 1
         self.stats["route"] = reason
         self.route = self.route_for = self.route_len = None
         self._interrupt_route_walk()
         return {"hold": set()}
+
 
     @staticmethod
     def _cost(p, e) -> float:
@@ -2046,6 +2507,9 @@ class RE5PS3(Driver):
             ROSTER.started()
         out = {"timer": snap.get("timer"), "combo": snap.get("combo"), "score": snap.get("score"),
                "kills": snap.get("kills"), **ROSTER.observe(snap)}
+        index = snap.get("stage_index")
+        if isinstance(index, int) and 0 <= index < len(STAGE_NAMES):
+            out.update(stage_index=index, stage=STAGE_NAMES[index])
         rank = rank_of(snap.get("score"))
         if rank:
             out["rank"] = rank

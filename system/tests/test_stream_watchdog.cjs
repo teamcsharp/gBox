@@ -54,6 +54,16 @@ test('a failed poster refresh never replaces the held picture', async () => {
   el.style.backgroundImage = 'url("held")'; h.dog.sweep(); await h.flush(); assert.equal(el.style.backgroundImage, 'url("held")');
 });
 
+test('a followed game keeps its poster during replacement and connects the new stream',async()=>{
+  const h=harness({health:async()=>({state:'ended'})}),el=h.img('/api/sessions/old/mjpeg');
+  el.setAttribute('data-stream-follow','game');el.style.backgroundImage='url("last-game-frame")';
+  await h.dog.checkHealth(el);
+  assert.equal(el.a['data-stream-state'],'reconnecting');
+  assert.equal(el.style.backgroundImage,'url("last-game-frame")');
+  el.setAttribute('src','/api/sessions/new/mjpeg');h.state.health=async()=>({state:'running',age_s:.1});
+  await h.dog.checkHealth(el);assert.equal(el.a['data-stream-state'],'connected');
+});
+
 test('a short source stall shows status and recovers without reconnecting a working view', async () => {
   const h = harness(), el = h.img('/api/sessions/w-s/mjpeg');
   await h.dog.checkHealth(el); h.state.health = async () => ({ state: 'running', age_s: 5 });
@@ -160,19 +170,33 @@ test('stream input gate blocks new presses only for the viewed session until con
   el.a['data-stream-state'] = 'reconnecting'; assert.equal(w.inputAllowed(el, 'w-other'), true); assert.equal(w.inputAllowed(null, 'w-s'), true);
 });
 
-test('mini player loads the watchdog without the cross-origin health poll', () => {
+test('mini player reads authenticated health through IPC and rejects a different server', async () => {
   const html = fs.readFileSync(path.join(__dirname, '../clients/desktop/mini.html'), 'utf8');
-  assert.match(html, /window\.GBOX_STREAM_HEALTH = false;[\s\S]*<script src="\.\.\/web\/viz\/stream-watchdog\.js"><\/script>/);
+  const script = html.match(/window\.GBOX_STREAM_FETCH_HEALTH = async src => \{[\s\S]*?\n  \};/)[0];
+  const calls = [], context = { window: {}, URL, gbox: {
+    settings: async () => ({apiUrl: 'http://spark:8765'}),
+    api: async path => { calls.push(path); return {ok: true, data: {state:'running',age_s:.01,seq:10}}; }
+  }};
+  vm.runInNewContext(script, context);
+  const health = await context.window.GBOX_STREAM_FETCH_HEALTH('http://spark:8765/api/sessions/worker-new/mjpeg?token=x');
+  assert.equal(health.seq, 10); assert.deepEqual(calls, ['/api/sessions/worker-new/stream/health']);
+  await assert.rejects(context.window.GBOX_STREAM_FETCH_HEALTH('http://other:8765/api/sessions/x/mjpeg'), /Different server/);
+  assert.equal(calls.length, 1);
+  context.gbox.api = async () => ({ok:false,error:'offline'});
+  await assert.rejects(context.window.GBOX_STREAM_FETCH_HEALTH('http://spark:8765/api/sessions/x/mjpeg'), /offline/);
 });
 
-test('DOM churn does not accelerate the health poll and opaque desktop pictures recover after renewal', async () => {
+test('DOM churn does not accelerate health polls and healthy opaque desktop pictures keep their connection', async () => {
   let calls = 0; const h = harness({ pixels: false, health: async () => { calls++; return { state: 'running', age_s: .1 }; } });
   const el = h.img('/api/sessions/w-s/mjpeg'); h.doc.imgs.push(el);
   h.dog.sweep(); await h.flush();
   for (let n = 0; n < 30; n++) { h.dog.sweep(); await h.flush(); }
-  assert.equal(calls, 1); h.run(60000); h.dog.sweep(); await h.flush();
-  assert.equal(el.a['data-stream-state'], 'reconnecting'); h.run(61000); await h.dog.checkHealth(el);
-  assert.equal(el.a['data-stream-state'], 'connected'); assert.match(el.a.src, /reconnect=1$/);
+  assert.equal(calls, 1);
+  for (const time of [60000, 120000, 180000]) { h.run(time); h.dog.sweep(); await h.flush(); }
+  assert.equal(el.a['data-stream-state'], 'connected'); assert.equal(el.a.src, '/api/sessions/w-s/mjpeg');
+  assert.equal(h.dog.state(el).pending, false);
+  h.state.health = async () => ({state:'running',age_s:25}); await h.dog.checkHealth(el); h.run(181000);
+  assert.match(el.a.src, /reconnect=1$/);
 });
 
 test('actual keyboard and glyph handlers release held input to its original session when video disconnects', () => {

@@ -21,6 +21,33 @@ from .background_testing import agent_owned
 AGENT_ACTORS = ("agent", "mcp", "gbox-agent", "hermes")
 SANDBOX_MARKERS = ("/.hermes/cache/scratch", "/.hermes/sandbox")   # bwrap roots of Hermes agent tasks
 SANDBOX_NICE = 19
+WATCH_TTL_S = 180
+
+
+def report_watch(store, viewer: str, sid: str | None, *, now=None):
+    """Short renewable viewer lease; applies to bot demos as well as human-owned sessions."""
+    import time
+    if not sid:
+        store.delete("session_watch", viewer)
+        return
+    store.put("session_watch", viewer, {"session_id": sid, "until":
+              (time.time() if now is None else now) + WATCH_TTL_S})
+
+
+def watched_sessions(store, wid: str, *, now=None) -> list[dict]:
+    import time
+    now = time.time() if now is None else now
+    ids = {r.get("session_id") for r in store.all("session_watch") if r.get("until", 0) > now}
+    return [s for sid in ids if sid and worker_of(sid) == wid
+            and (s := store.get("session", sid)) and s.get("state") == "running"]
+
+
+def watching_reason(store, wid: str) -> str | None:
+    watched = watched_sessions(store, wid)
+    if watched:
+        titles = ", ".join(s.get("title") or s["session_id"] for s in watched)
+        return f"Watching {titles} in a connected stream or PiP. Close that view before loading another game on this PC."
+    return None
 
 
 def is_agent(actor: str | None, agent_use: bool = False) -> bool:

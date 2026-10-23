@@ -1504,6 +1504,9 @@ def register(app, store, config, *, live: dict, desktop_frames: dict, desktop_wa
             raise HTTPException(422, "bad session id")
         watch = hub.report_watch(sid, request.headers.get("x-gbox-client", ""),
                                  request.client.host if request.client else "")
+        from .operator_guard import report_watch
+        report_watch(store, "app:" + (request.client.host if request.client else "") + ":" +
+                     request.headers.get("x-gbox-client", ""), sid)
         hub.refresh(force=True)
         hub.wait_tick()
         return {"watch": watch, "program": hub.program_status()}

@@ -9,9 +9,9 @@
     { op: "fire_rate", label: "Rapid fire", field: "fire_rate_x", multiplier: 80 },
     { op: "bullet_damage", label: "High damage", field: "bullet_damage_x", multiplier: 10 },
     { op: "turn_speed", label: "Faster turning and aiming", field: "turn_speed_x", multiplier: 3 },
-    // on / off only: the worker keeps its range (default a random 2-5 s per kill), so a toggle never resets it
+    // on / off only: the worker retains the operator's seconds per kill
     { op: "kill_time", label: "Time added per kill", field: "kill_time_on",
-      note: status => `Random ${status?.kill_time_range || "2-5"} s per kill` },
+      note: status => `${String(status?.kill_time_range || "10").includes("-") ? "Random " : ""}${status?.kill_time_range || "10"} s per kill` },
   ];
   const UNAVAILABLE = [
     { op: "aimbot", label: "Aimbot" }, { op: "instant_qte", label: "Instant QTE completion" },
@@ -53,9 +53,27 @@
       + `<small>${ESC(capability(state.status, row.op).reason || "Unavailable: no verified live control")}</small></span>`
       + `<span>Unavailable</span></div>`).join("");
     const random = capability(state.status, "random_weapon"), weapon = state.status?.in_hand?.weapon;
+    const mine = state.status?.mine_settings, mineCap = capability(state.status, "mines");
+    const mineDisabled = state.busy || state.pending || state.stale || !mineCap.available || !mine;
+    const mineControls = `<fieldset class="re5-mine-controls" ${mineDisabled ? "disabled" : ""}><legend>Proximity mines</legend>`
+      + `<label><input type="checkbox" data-re5-mines-enabled ${mine?.enabled ? "checked" : ""}> Unlimited mine supply</label>`
+      + `<label>Placement interval: <output data-re5-mine-output>${mine?.interval_s ?? 60} seconds</output>`
+      + `<input style="width:100%" type="range" min="2" max="300" step="1" value="${mine?.interval_s ?? 60}" data-re5-mine-interval aria-label="Mine placement interval in seconds"></label>`
+      + `<label><input type="checkbox" data-re5-mines-only ${mine?.only ? "checked" : ""}> Mines only</label>`
+      + `<small>Places mines while travelling and after entrances when there is room. Supply begins next round.</small></fieldset>`;
+    const catalog = state.status?.mercs_catalog, next = state.status?.mercs_rotation?.next;
+    const modes = catalog?.rosters || {}, stages = catalog?.stages || [];
+    const mode = next?.mode || "reunion";
+    const rotationControls = catalog ? `<fieldset ${state.busy || state.stale ? "disabled" : ""}><legend>Next Mercenaries round</legend>`
+      + `<p class="re5-mod-sub">Random rotation covers both modes, every costume and all eight stages. `
+      + `${state.status?.mercs_rotation?.combinations_played || 0}/${state.status?.mercs_rotation?.combinations_total || 144} combinations played.</p>`
+      + `<select data-re5-merc-mode aria-label="Mercenaries mode">${Object.keys(modes).map(m => `<option value="${ESC(m)}" ${mode === m ? "selected" : ""}>${m === "reunion" ? "Mercenaries Reunion" : "The Mercenaries"}</option>`).join("")}</select>`
+      + `<select data-re5-merc-character aria-label="Character and costume">${(modes[mode] || []).map(c => `<option ${c === next?.character ? "selected" : ""}>${ESC(c)}</option>`).join("")}</select>`
+      + `<select data-re5-merc-stage aria-label="Mercenaries stage">${stages.map((s,i) => `<option value="${i}" ${i === next?.stage ? "selected" : ""}>${ESC(s)}</option>`).join("")}</select>`
+      + `<button class="act" type="button" data-re5-merc-select>Play this selection next</button></fieldset>` : "";
     return `<div class="re5-mod-heading"><b>RE5 modifiers</b><button type="button" class="act" data-re5-refresh `
       + `${state.busy ? "disabled" : ""}>Refresh</button></div><p class="re5-mod-sub">This running session${weapon ? ` · ${ESC(weapon)}` : ""}</p>`
-      + controls + `<button class="act re5-mod-random" type="button" data-re5-random `
+      + controls + rotationControls + mineControls + `<button class="act re5-mod-random" type="button" data-re5-random `
       + `${state.busy || state.pending || state.weaponPending || state.stale || !random.available ? "disabled" : ""}>Random available weapon</button>`
       + `<p class="re5-mod-sub">${ESC(random.reason || "Equips an eligible gun already in the inventory. Rockets and sniper rifles are excluded.")}</p>`
       + `<details class="re5-mod-extra"><summary>Other requested modifiers</summary>${unavailable}</details>`
@@ -166,7 +184,33 @@
         if (!state.pending && !state.weaponPending) state.stale = true;
       } finally { state.busy = false; paint(); }
     }
-    return { refresh, change, state: () => ({ ...state }), stop: () => { disposed = true; } };
+    async function setMines(interval, enabled, only) {
+      if (state.busy || state.pending || state.stale || disposed || !capability(state.status, "mines").available) return;
+      interval = Number(interval);
+      if (!Number.isFinite(interval) || interval < 2 || interval > 300) return;
+      state.busy = true; state.error = false; state.message = "Updating mine placement…"; paint();
+      try {
+        await preflight();
+        const result = await job("mines", { on: Boolean(enabled), multiplier: only ? "only" : interval });
+        if (result.verified !== true) throw new Error("Mine settings were not verified.");
+        await read();
+        state.message = only ? "Mines-only round selected. Supply begins next round."
+          : enabled ? `Mines every ${interval} seconds. Supply begins next round.` : "Scheduled mines disabled.";
+      } catch (error) { state.error = true; state.message = error.message; }
+      finally { state.busy = false; paint(); }
+    }
+    async function selectMercs(mode, character, stage) {
+      if (state.busy || state.pending || state.stale || disposed || !capability(state.status,"mercs_select").available) return;
+      state.busy = true; state.error = false; state.message = "Selecting the next round…"; paint();
+      try {
+        await preflight();
+        const result = await job("mercs_select", { mode, character, stage: Number(stage) });
+        if (result.verified !== true) throw new Error("The next selection was not verified.");
+        await read(); state.message = "Next round selected. Random rotation resumes afterward.";
+      } catch (error) { state.error = true; state.message = error.message; }
+      finally { state.busy = false; paint(); }
+    }
+    return { refresh, change, setMines, selectMercs, state: () => ({ ...state }), stop: () => { disposed = true; } };
   }
 
   const CSS = `.re5-modifiers{border-top:1px solid var(--line,#444);margin-top:5px;padding:9px 4px 2px;min-width:min(300px,calc(100vw - 48px));max-width:400px}
@@ -182,13 +226,29 @@
     const ctl = create({ ...options, render: state => { host.innerHTML = html(state); } });
     host.innerHTML = html(ctl.state());
     host.onchange = event => {
+      if (event.target.matches?.("[data-re5-merc-mode]")) {
+        const chars = ctl.state().status?.mercs_catalog?.rosters?.[event.target.value] || [];
+        host.querySelector("[data-re5-merc-character]").innerHTML = chars.map(c => `<option>${ESC(c)}</option>`).join("");
+        return;
+      }
+      if (event.target.matches?.("[data-re5-mine-interval], [data-re5-mines-enabled], [data-re5-mines-only]")) {
+        ctl.setMines(host.querySelector("[data-re5-mine-interval]").value,
+          host.querySelector("[data-re5-mines-enabled]").checked, host.querySelector("[data-re5-mines-only]").checked);
+        return;
+      }
       const input = event.target.closest?.("[data-re5-mod]");
       if (!input || input.disabled) return;
       const wanted = input.checked;
       input.checked = value(ctl.state().status, DEFINITIONS.find(row => row.op === input.dataset.re5Mod)) === true;
       ctl.change(input.dataset.re5Mod, wanted);
     };
+    host.oninput = event => {
+      if (event.target.matches?.("[data-re5-mine-interval]")) host.querySelector("[data-re5-mine-output]").textContent = event.target.value + " seconds";
+    };
     host.onclick = event => {
+      if (event.target.closest?.("[data-re5-merc-select]") && !event.target.disabled) ctl.selectMercs(
+        host.querySelector("[data-re5-merc-mode]").value, host.querySelector("[data-re5-merc-character]").value,
+        host.querySelector("[data-re5-merc-stage]").value);
       if (event.target.closest?.("[data-re5-refresh]") && !event.target.disabled) ctl.refresh();
       if (event.target.closest?.("[data-re5-random]") && !event.target.disabled) ctl.change("random_weapon");
     };

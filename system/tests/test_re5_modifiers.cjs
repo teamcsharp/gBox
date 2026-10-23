@@ -34,6 +34,38 @@ function rig() {
   return out;
 }
 
+test('mine cadence and mines-only settings use verified scoped jobs', async () => {
+  const r = rig();
+  r.status.capabilities.mines = { available: true };
+  r.status.mine_settings = { enabled: true, interval_s: 60, only: false };
+  r.command = async input => {
+    r.status.mine_settings = { enabled: input.on, interval_s: input.multiplier === 'only' ? 2 : input.multiplier,
+      only: input.multiplier === 'only' };
+    return { verified: true };
+  };
+  await r.control.refresh();
+  await r.control.setMines(30, true, false);
+  assert.deepEqual(r.commands()[0].body.input, { session_id: 'worker-launch', op: 'mines', on: true, multiplier: 30 });
+  await r.control.setMines(2, true, true);
+  assert.equal(r.commands()[1].body.input.multiplier, 'only');
+  assert.equal(r.control.state().status.mine_settings.only, true);
+  await r.control.setMines(0, true, false);
+  assert.equal(r.commands().length, 2);
+});
+
+test('next Mercenaries selection retains actual mode costume and stage', async () => {
+  const r = rig();
+  r.status.capabilities.mercs_select = { available: true };
+  r.command = async input => { r.status.mercs_rotation = { next: input }; return { verified: true }; };
+  await r.control.refresh();
+  await r.control.selectMercs('mercenaries', 'Jill (Battle Suit)', 7);
+  assert.deepEqual(r.commands()[0].body.input, { session_id: 'worker-launch', op: 'mercs_select',
+    mode: 'mercenaries', character: 'Jill (Battle Suit)', stage: 7 });
+  r.sessions = [];
+  await r.control.selectMercs('reunion', 'Barry', 0);
+  assert.equal(r.commands().length, 1);
+});
+
 test('only the exact running RE5 RPCS3 session gets controls', () => {
   assert.equal(M.eligible(SESSION), true);
   for (const change of [{ state: 'ended' }, { game_id: 'other' }, { adapter: 'retroarch' }, { stopping: true }, { session_id: '' }])
@@ -250,13 +282,14 @@ test('shell binds controls to the exact currently opened session and authenticat
   assert.doesNotMatch(fs.readFileSync(require.resolve('../clients/web/viz/re5-modifiers.js'), 'utf8'), /write_memory|read_memory|Bearer|x-gbox-actor/);
 });
 
-test('time per kill is an on/off switch that keeps the random 2-5 s range', () => {
-  // operator 2026-10-22: on by default, a random 2-5 s per kill, and a switch to enable and disable it
+test('time per kill is an on/off switch that retains ten seconds', () => {
+  // The current operator setting is ten seconds; toggling preserves it.
   const row = M.DEFINITIONS.find(d => d.op === 'kill_time');
   assert.equal(row.multiplier, undefined);                     // a toggle never sends seconds, so the range is kept
-  const status = { ...structuredClone(BASE), kill_time_on: true, kill_time_range: '2-5' };
+  const status = { ...structuredClone(BASE), kill_time_on: true, kill_time_range: '10' };
   const on = M.html({ status });
-  assert.match(on, /Random 2-5 s per kill/);
+  assert.match(on, /10 s per kill/);
+  assert.doesNotMatch(on, /Random 10/);
   assert.match(on, /data-re5-mod="kill_time"[^>]*aria-checked="true" checked/);
   const off = M.html({ status: { ...status, kill_time_on: false } });
   assert.match(off, /data-re5-mod="kill_time"[^>]*aria-checked="false" >/);

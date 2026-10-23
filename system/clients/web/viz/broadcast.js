@@ -2,7 +2,7 @@
    Operator 2026-10-20: "I need pine box to be able to connect to the active gbox feed of any instance of gbox on the
    network showing gameplay ... stable streaming video via pine box as a media source."
    - watching(sid): the app tells the control plane which game it shows (POST /api/broadcast/watching), on every change
-     and once a minute while the window is visible; in auto the program follows it.
+     and once a minute while connected, including hidden-window PiP; in auto the program follows it.
    - button(sid) / mount(head, {sid, api}): the session header's On air button. Pressed: this game is on air. Click:
      put this game on air (pinned), or, when it is pinned already, give the program back to auto.
    - panelHTML() / mountPanel(el, {api}): the Sessions list's Broadcast bar: what is on air and why, Auto, the program's
@@ -78,7 +78,7 @@
     if (changed) send();
     if (!W.timer && root.setInterval) {
       W.timer = root.setInterval(() => {
-        if (!W.sid || (W.doc && W.doc.hidden)) return;           // a hidden app is not watching
+        if (!W.sid) return;                                  // PiP can remain visible while its app is hidden
         if (Date.now() - W.sent >= HEARTBEAT_MS - 1000) send();
       }, HEARTBEAT_MS);
     }

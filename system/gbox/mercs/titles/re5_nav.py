@@ -42,6 +42,25 @@ def _u32(m, a) -> int:
     return struct.unpack(">I", m.rd(a, 4))[0]
 
 
+class Traversal(tuple):
+    """A candidate action link, never permission to walk across a wall or between storeys.
+
+    Coordinates are the landing; approach stays on the departing floor. Only a game prompt and observed
+    arrival can establish that this enemy-navmesh link is also usable by the player.
+    """
+    def __new__(cls, landing, approach, portal):
+        value = super().__new__(cls, landing)
+        value.approach, value.portal = tuple(approach), tuple(portal)
+        return value
+
+
+class FloorWaypoint(tuple):
+    def __new__(cls, point, link):
+        value = super().__new__(cls, point)
+        value.link = tuple(link)
+        return value
+
+
 class NavMesh:
     def __init__(self, points: list, tris: list, links: list, ptr: int = 0):
         self.points, self.tris, self.links, self.ptr = points, tris, links, ptr
@@ -105,14 +124,16 @@ class NavMesh:
         neg, pos = (d1 < 0) or (d2 < 0) or (d3 < 0), (d1 > 0) or (d2 > 0) or (d3 > 0)
         return not (neg and pos)
 
-    def find(self, pos) -> int | None:
+    def find(self, pos, *, floor_only=False, height_slack=Y_SLACK) -> int | None:
         """The containing triangle with the nearest floor height; no projection across an unknown gap or wall."""
         if len(pos) != 3 or not all(math.isfinite(v) for v in pos):
             return None
         x, y, z = pos
         cell = (int(math.floor(x / CELL)), int(math.floor(z / CELL)))
-        best, best_dy = None, Y_SLACK
+        best, best_dy = None, height_slack
         for i in self.grid.get(cell, ()):
+            if floor_only and self.steep[i]:
+                continue
             if self._inside(i, x, z):
                 height = self._height(i, x, z)
                 if height is None:                        # a vertical face has no floor height at this x/z
@@ -131,6 +152,7 @@ class NavMesh:
             return True
         height = self._height(tri, pos[0], pos[2])
         return height is None or abs(height - pos[1]) >= STEP_DY
+
 
     def floor_segment(self, start, goal) -> bool:
         """Whether a centre-line segment stays on linked, non-steep floors in the recorded direction.
@@ -260,18 +282,17 @@ class NavMesh:
         p, q = self.points[t[edge % 3]], self.points[t[(edge + 1) % 3]]
         return tuple((p[k] + q[k]) / 2.0 for k in range(3))
 
-    def route(self, start, goal, avoid=(), pull=True) -> list | None:
-        """Waypoints from start to goal (positions): the corners of the string-pulled path through the shared edges of
-        the cheapest triangle path (pull=False: every edge's midpoint), then the goal itself; [goal] when both are on
-        one triangle; None when the mesh has no way there. A crossing between levels (the next triangle STEP_DY above
-        or below: a ladder, a drop) is always a waypoint of its own, at the edge's middle. avoid: positions of
+    def route(self, start, goal, avoid=(), pull=True, blocked_links=(), link_penalties=None) -> list | None:
+        """Floor waypoints and explicit candidate Traversal links along the cheapest directed triangle path.
+
+        pull=False uses floor-edge midpoints instead of funnel corners. Steep-face chains and off-mesh links
+        retain a floor approach and landing; they cannot become ordinary walk commands. Endpoints must be on
+        non-steep floors within 60 cm of their own height. avoid: positions of
         crossings the player could not take (an AI-only drop or climb): links through a portal within AVOID_R of one
         are left out."""
-        a, b = self.find(start), self.find(goal)
+        a, b = (self.find(p, floor_only=True, height_slack=61.0) for p in (start, goal))
         if a is None or b is None:
             return None
-        if self.elevated(goal, b):
-            return None                                   # on a bus roof / crate: no floor of the mesh under it
         if a == b:
             return [tuple(goal)]
         if self.component(a) != self.component(b):
@@ -286,12 +307,14 @@ class NavMesh:
                 break
             cu = self.centre[u]
             for v, edge, _cost in self.links[u]:
+                if (u, v) in blocked_links:
+                    continue
                 if not 0 <= v < len(self.tris):
                     continue
                 if avoid and any(math.dist(self._portal(u, edge), q) < AVOID_R for q in avoid):
                     continue
                 cv = self.centre[v]
-                nd = dist[u] + math.dist(cu, cv)
+                nd = dist[u] + math.dist(cu, cv) + (link_penalties or {}).get((u, v), 0.0)
                 if nd < dist.get(v, math.inf):
                     dist[v], came[v] = nd, (u, edge)
                     heapq.heappush(heap, (nd + math.dist(cv, (gx, gy, gz)), v))
@@ -303,18 +326,39 @@ class NavMesh:
             hops.append((u, edge, v))
             v = u
         hops.reverse()
-        if not pull:
-            return [self._portal(u, edge) for u, edge, _ in hops] + [tuple(goal)]
         out, seg_start, seg = [], tuple(start), []
-        for u, edge, v in hops:
-            if abs(self.centre[v][1] - self.centre[u][1]) >= STEP_DY or self.steep[u] or self.steep[v]:
-                # a level change (a ladder's or a drop's face, or a step between flat triangles): its own waypoint
-                mid = self._portal(u, edge)
-                out += funnel(seg_start, seg, mid)
-                seg_start, seg = mid, []
+        index = 0
+        while index < len(hops):
+            u, edge, v = hops[index]
+            shared = {self.tris[u][edge % 3], self.tris[u][(edge + 1) % 3]}
+            action = self.steep[u] or self.steep[v] or not shared <= set(self.tris[v]) \
+                or abs(self.centre[v][1] - self.centre[u][1]) >= STEP_DY
+            if action:
+                portal = self._portal(u, edge)
+                approach = self._inset(u, portal)
+                # Cross a steep face as one prompted action; its intermediate vertices are not walkable floors.
+                while self.steep[v] and index + 1 < len(hops):
+                    index += 1
+                    _, edge, v = hops[index]
+                if self.steep[v]:
+                    return None
+                last_u, last_edge, _ = hops[index]
+                exit_portal = self._portal(last_u, last_edge)
+                shared_exit = {self.tris[last_u][last_edge % 3], self.tris[last_u][(last_edge + 1) % 3]}
+                landing = self._inset(v, exit_portal) if shared_exit <= set(self.tris[v]) else self.centre[v]
+                out += funnel(seg_start, seg, approach) if pull else seg + [approach]
+                out.append(Traversal(landing, approach, portal))
+                seg_start, seg = landing, []
             else:
-                seg.append(self._edge(u, edge, v))
-        return out + funnel(seg_start, seg, tuple(goal))
+                seg.append(self._edge(u, edge, v) if pull else FloorWaypoint(self._portal(u, edge), (u, v)))
+            index += 1
+        return out + (funnel(seg_start, seg, tuple(goal)) if pull else seg + [tuple(goal)])
+
+    def _inset(self, node, portal):
+        centre = self.centre[node]
+        distance = math.dist(centre, portal)
+        t = min(1.0, 30.0 / max(distance, 1.0))
+        return tuple(portal[k] + t * (centre[k] - portal[k]) for k in range(3))
 
     def _edge(self, u: int, edge: int, v: int) -> tuple:
         """The shared edge as (left, right) seen walking from u into v (a consistent handedness, for funnel())."""
@@ -324,13 +368,107 @@ class NavMesh:
         dx, dz = cv[0] - cu[0], cv[2] - cu[2]
         return (p, q) if dx * (p[2] - cu[2]) - dz * (p[0] - cu[0]) > 0 else (q, p)
 
-    def route_length(self, start, goal, avoid=()) -> float | None:
-        """The length (cm, in x / z) of route(start, goal), or None without one."""
-        r = self.route(start, goal, avoid=avoid)
+    def route_length(self, start, goal, avoid=(), blocked_links=(), link_penalties=None) -> float | None:
+        """Three-dimensional route length in cm, including changes of elevation, or None without a route."""
+        r = self.route(start, goal, avoid=avoid, blocked_links=blocked_links, link_penalties=link_penalties)
         if r is None:
             return None
         pts = [tuple(start)] + r
-        return sum(math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][2] - pts[i][2]) for i in range(len(pts) - 1))
+        return sum(math.dist(a, b) for a, b in zip(pts, pts[1:]))
+
+    def retreat(self, start, hazard, min_distance=500., *, max_travel=1600., blocked_links=(), link_penalties=None):
+        """A measured, monotonic floor route away from an explosive, or None.
+
+        This never guesses blast radius or immunity. The caller supplies its safety
+        distance. No ladders, windows, drops or unknown off-mesh links are accepted
+        during the escape; every segment has linked floor support. Candidate triangle
+        centres are inexpensive and leave the character clear of portal boundaries.
+        """
+        if any(len(p) != 3 or not all(math.isfinite(v) for v in p) for p in (start, hazard)) \
+                or min_distance <= 0 or max_travel <= 0:
+            return None
+        if math.dist(start, hazard) >= min_distance:
+            return []
+        node = self.find(start, floor_only=True, height_slack=61.)
+        if node is None:
+            return None
+        # Bounded directed Dijkstra over ordinary floor links, not enemy-only actions.
+        queue, costs, previous = [(0., node)], {node: 0.}, {}
+        best, endpoint = None, None
+        while queue:
+            cost, u = heapq.heappop(queue)
+            if cost != costs[u] or cost > max_travel:
+                continue
+            origin = start if u == node else self.centre[u]
+            # Large floor triangles can contain a safe escape although their
+            # centroid is still inside the safety radius. Probe inset vertices too.
+            candidates = [self.centre[u]]
+            for index in self.tris[u]:
+                vertex, centre = self.points[index], self.centre[u]
+                length = math.dist(vertex, centre)
+                ratio = min(1., 75. / max(length, 1.))
+                candidates.append(tuple(vertex[k] + ratio * (centre[k]-vertex[k]) for k in range(3)))
+            candidates = [q for q in candidates if math.dist(q,hazard) >= min_distance
+                          and cost + math.dist(origin,q) <= max_travel
+                          and sum((q[k]-origin[k])*(origin[k]-hazard[k]) for k in range(3)) >= -20.
+                          and self.floor_segment(origin,q)]
+            if candidates:
+                best, endpoint = u, min(candidates,key=lambda q:math.dist(origin,q))
+                break
+            for v, edge, _ in self.links[u]:
+                if (u, v) in blocked_links or not 0 <= v < len(self.tris) or not 0 <= edge < 3 \
+                        or self.steep[v] or abs(self.centre[u][1] - self.centre[v][1]) >= STEP_DY:
+                    continue
+                shared = {self.tris[u][edge], self.tris[u][(edge + 1) % 3]}
+                if not shared <= set(self.tris[v]):
+                    continue
+                # Never approach the placed mine to reach a purportedly safe endpoint.
+                portal = self._portal(u, edge)
+                origin = start if u == node else self.centre[u]
+                if math.dist(portal, hazard) + 20. < math.dist(origin, hazard) \
+                        or math.dist(self.centre[v], hazard) + 20. < math.dist(portal, hazard):
+                    continue
+                distance = math.dist(origin, portal) + math.dist(portal, self.centre[v])
+                penalty = max(0., (link_penalties or {}).get((u, v), 0.))
+                candidate = cost + distance + penalty
+                if candidate < costs.get(v, math.inf) and candidate <= max_travel:
+                    costs[v], previous[v] = candidate, (u, edge)
+                    heapq.heappush(queue, (candidate, v))
+        if best is None:
+            return None
+        hops, current = [], best
+        while current != node:
+            u, edge = previous[current]
+            hops.append((u, edge, current))
+            current = u
+        hops.reverse()
+        route = [FloorWaypoint(self._portal(u, edge), (u, v)) for u, edge, v in hops] + [endpoint]
+        if all(self.floor_segment(a, b) for a, b in zip([start] + route, route)):
+            return route
+        return None
+
+    def recovery_points(self, pos, radius=180.0):
+        """Nearby same-level floor probes, not proof of collision clearance from an unmapped position."""
+        candidates = []
+        for i, tri in enumerate(self.tris):
+            if self.steep[i]:
+                continue
+            vertices = [self.points[v] for v in tri]
+            for a, b in zip(vertices, vertices[1:] + vertices[:1]):
+                dx, dz = b[0] - a[0], b[2] - a[2]
+                length2 = dx * dx + dz * dz
+                t = max(0., min(1., ((pos[0] - a[0]) * dx + (pos[2] - a[2]) * dz) / max(length2, 1e-9)))
+                edge = tuple(a[k] + t * (b[k] - a[k]) for k in range(3))
+                q = self._inset(i, edge)
+                if abs(q[1] - pos[1]) < 50. and math.dist(q, pos) <= radius:
+                    candidates.append(q)
+        out = []
+        for q in sorted(candidates, key=lambda q: math.dist(q, pos)):
+            if all(math.dist(q, other) > 60. for other in out):
+                out.append(q)
+                if len(out) == 8:
+                    break
+        return out
 
 
 class Learning:
@@ -348,6 +486,7 @@ class Learning:
         self.stages = {}
         self.previous = self.last_visit = self.active_route = None
         self.key = None
+        self.recent_crossings = []
         if self.path is not None:
             try:
                 if self.path.stat().st_size <= self.MAX_FILE_BYTES:
@@ -373,6 +512,12 @@ class Learning:
             if not isinstance(key, str) or len(key) > 100 or not isinstance(stage, dict):
                 continue
             clean = {"visits": {}, "crossings": {}, "routes": {}}
+            if isinstance(stage.get("stalls"), dict):
+                clean["stalls"] = {k: self._count(v) for k, v in list(stage["stalls"].items())[-self.MAX_CROSSINGS:]
+                                   if self._index_key(k, True) and self._count(v)}
+            if isinstance(stage.get("oscillations"), dict):
+                clean["oscillations"] = {k: self._count(v) for k, v in list(stage["oscillations"].items())[-self.MAX_CROSSINGS:]
+                                         if self._index_key(k, True) and self._count(v)}
             for name, cap in (("visits", self.MAX_VISITS), ("crossings", self.MAX_CROSSINGS)):
                 rows = stage.get(name)
                 if isinstance(rows, dict):
@@ -424,6 +569,21 @@ class Learning:
                     and any(v == node for v, _, _ in mesh.links[old]):
                 crossed = f"{old}:{node}"
                 self._increment(stage["crossings"], crossed, self.MAX_CROSSINGS)
+                # A later observed traversal weakens a collision hypothesis (enemies can temporarily block paths).
+                stalls = stage.get("stalls", {})
+                if crossed in stalls:
+                    stalls[crossed] = max(0, stalls[crossed] - 1)
+                # A-B-A-B in a small area is recorded as route indecision, not a new wall.
+                # Two-way links remain traversable and later clean crossings weaken the cost.
+                recent = [(a, b, t) for a, b, t in self.recent_crossings if now - t <= 8.]
+                recent.append((old, node, now))
+                self.recent_crossings = recent[-4:]
+                oscillations = stage.setdefault("oscillations", {})
+                if self.active_route is not None and len(recent) >= 3 and [(a, b) for a, b, _ in recent[-3:]] == \
+                        [(old, node), (node, old), (old, node)]:
+                    self._increment(oscillations, crossed, self.MAX_CROSSINGS)
+                elif crossed in oscillations:
+                    oscillations[crossed] = max(0, oscillations[crossed] - 1)
         self.previous = (node, tuple(pos), now)
         if self.active_route is not None:
             _, _, goal_node, goal = self.active_route
@@ -460,6 +620,7 @@ class Learning:
     def suspend(self):
         self.finish_route("interrupted")
         self.previous = self.last_visit = None
+        self.recent_crossings = []
 
     def route_penalty(self, mesh, start, goal):
         """A small additive cost in cm; cannot make a blocked or absent directed route reachable."""
@@ -475,7 +636,28 @@ class Learning:
         stage = self.stages.get(self.key, {})
         return {"nav_geometry": self.key, "nav_visited_triangles": len(stage.get("visits", {})),
                 "nav_observed_crossings": sum(stage.get("crossings", {}).values()),
-                "nav_route_arrivals": sum(row.get("arrived", 0) for row in stage.get("routes", {}).values())}
+                "nav_route_arrivals": sum(row.get("arrived", 0) for row in stage.get("routes", {}).values()),
+                "nav_failed_portals": sum(v > 0 for v in stage.get("stalls", {}).values()),
+                "nav_oscillating_portals": sum(v > 0 for v in stage.get("oscillations", {}).values())}
+
+    def blocked(self, mesh, link):
+        if mesh is None or link is None:
+            return
+        a, b = link
+        if not (0 <= a < len(mesh.tris)) or not any(v == b for v, _, _ in mesh.links[a]):
+            return
+        stage = self._stage(mesh)
+        self._increment(stage.setdefault("stalls", {}), f"{a}:{b}", self.MAX_CROSSINGS)
+
+    def link_penalties(self, mesh):
+        stage = self.stages.get(mesh.learning_sig, {})
+        out = {tuple(map(int, key.split(":"))): min(3000., 500. * count)
+               for key, count in stage.get("stalls", {}).items() if count > 0}
+        for key, count in stage.get("oscillations", {}).items():
+            link = tuple(map(int, key.split(":")))
+            if count > 0:
+                out[link] = min(4000., out.get(link, 0.) + min(1000., 200. * count))
+        return out
 
     def save(self):
         if self.path is None:

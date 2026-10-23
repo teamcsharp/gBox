@@ -5,6 +5,19 @@ import struct
 from gbox.mercs.titles.re5_nav import Learning, NavMesh
 
 
+def test_failed_portals_are_remembered_without_inventing_geometry(tmp_path):
+    mesh = floor_pair()
+    path = tmp_path / "navigation.json"
+    learned = Learning(path)
+    learned.blocked(mesh, (0, 1))
+    learned.blocked(mesh, (0, 1))
+    learned.blocked(mesh, (0, 999))
+    learned.save()
+    loaded = Learning(path)
+    assert loaded.link_penalties(mesh) == {(0, 1): 1000.}
+    assert len(mesh.links[0]) == 1
+
+
 def test_ramp_lookup_uses_floor_height_at_the_player_not_the_triangle_centroid():
     points = [(-100.0, 0.0, 0.0), (100.0, 0.0, 0.0), (-100.0, 600.0, 1000.0), (100.0, 600.0, 1000.0)]
     mesh = NavMesh(points, [(0, 1, 3), (0, 3, 2)], [[(1, 2, 1.0)], [(0, 0, 1.0)]])

@@ -159,6 +159,55 @@ def test_pool_pins_each_host_and_keeps_durable_handoff(monkeypatch, tmp_path, gl
     assert q.tick(now=1010)['dispatched'] == []
 
 
+@pytest.mark.parametrize('cooldown_until,expected_nodes', [
+    (9999, ['sparkDeux']),
+    (1000, ['sparkDeux', 'claude']),
+    (999, ['sparkDeux', 'claude']),
+])
+def test_pool_quota_cooldown_reroutes_existing_work_without_losing_other_tasks(
+        monkeypatch, tmp_path, cooldown_until, expected_nodes):
+    from gbox import hermes_pool as pool
+    old_rid, other_rid = 'd' * 16, 'e' * 16
+    reqs = [
+        {'id': old_rid, 'number': 2964, 'title': 'Fix navigation', 'status': 'open'},
+        {'id': other_rid, 'number': 2966, 'title': 'Fix time bonus', 'status': 'open'},
+    ]
+    calls = _env(monkeypatch, tmp_path, reqs, [])
+    s = S.model_copy(update={'nodes': {
+        'sparkDeux': {'provider': 'spark-local', 'model': 'gpt-oss:20b', 'max_parallel_jobs': 1,
+                      'shared_with_games': False, 'allow_large_tasks': True},
+        'claude': {'provider': 'gbox-claude', 'model': 'claude-sonnet-5-5', 'max_parallel_jobs': 1,
+                   'shared_with_games': False, 'allow_large_tasks': True},
+    }})
+    monkeypatch.setattr(hermes_local, 'settings', lambda: s)
+    # This failed occurrence is finished. Reuse its job/workspace rather than
+    # creating duplicate ownership just because the provider changes.
+    q.mode._jobs().append({'id': 'old-job', 'name': q.PREFIX + 'inbox ' + old_rid,
+                          'enabled': False, 'provider': 'gbox-claude', 'schedule': {'kind': 'once'}})
+    (tmp_path / 'feedback.json').write_text(json.dumps({
+        'cooldowns': {'gbox-claude/claude-sonnet-5-5': cooldown_until},
+    }))
+    original = q._api
+    monkeypatch.setattr(q, '_api', lambda path, body=None: {'capacity': 2, 'nodes': [
+        {'name': name, 'primary': False, 'enabled': True, 'capable': True,
+         'capacity': v.max_parallel_jobs}
+        for name, v in pool.node_settings().items()
+    ]} if path == '/api/hermes/local/nodes' else original(path, body))
+    result = q.tick(now=1000)
+    assert [d['inference_node'] for d in result['dispatched']] == expected_nodes
+    assert result['capacity'] == len(expected_nodes)
+    edit = next(c for c in calls if c[0] == 'edit')
+    assert edit[1] == 'old-job' and edit[edit.index('--provider') + 1] == 'spark-local'
+    assert ('resume', 'old-job', '--run-now') in calls
+    items = q._read()['items']
+    assert set(items) == {'inbox:' + old_rid, 'inbox:' + other_rid}
+    assert items['inbox:' + old_rid]['job_id'] == 'old-job'
+    assert items['inbox:' + old_rid]['inference_node'] == 'sparkDeux'
+    if cooldown_until > 1000:
+        assert not items['inbox:' + other_rid].get('job_id')
+        assert not any('gbox-claude' in c for c in calls)
+
+
 def test_local_policy_and_the_stream_stability_gate_both_apply(monkeypatch, tmp_path):
     reqs = [{'id': P, 'number': 1, 'title': 'parent', 'status': 'open'},
             {'id': 'd' * 16, 'number': 6, 'title': 'Fix the typo in the inbox tooltip', 'status': 'open', 'created': 2}]

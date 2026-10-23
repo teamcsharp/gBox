@@ -8,6 +8,13 @@ function fixture(rows = [{session_id:'main-A',state:'running'}, {session_id:'pip
     show:async(...args)=>calls.push(['show',...args]),active:s=>calls.push(['active',s?.session_id||null]),pip:()=>calls.push(['pip'])});
   return {ctl,calls};
 }
+
+test('F5 restores the successor of a saved PiP instead of its ended session',async()=>{
+  const x=fixture([{session_id:'old',state:'ended',replaced_by:'new'}, {session_id:'new',state:'running'}]);
+  const out=await x.ctl.restore({playing:'old',active:'old',pip:'old'});
+  assert.deepEqual(x.calls,[['show','Sessions','new'],['active','new'],['pip']]);
+  assert.deepEqual(out.missing,[]);
+});
 test('two exact streams restore in their original main and PiP roles',async()=>{
   const x=fixture(); const out=await x.ctl.restore({tab:'Sessions',playing:'main-A',active:'pip-B',pip:'pip-B'});
   assert.deepEqual(x.calls,[['show','Sessions','main-A'],['active','pip-B'],['pip']]);

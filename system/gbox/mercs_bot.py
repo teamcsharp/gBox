@@ -312,6 +312,16 @@ def apply_ops(ad, ops, prof: dict | None = None, stats: dict | None = None) -> l
                 stats["cheats"] = res["telemetry"]
         except Exception as e:                              # noqa: BLE001 - one failed mod never stops the run
             failed.append(f"{op}: {e}")
+    if (prof or {}).get("map_id") == "BLUS30491" and stats is not None:
+        try:
+            from .mercs.titles import re5_mines
+            if re5_mines.settings()["enabled"]:
+                result = re5_mines.templates(g)
+                stats["mine_loadout_blocks"] = result["mine_loadout_blocks"]
+                if not result["verified"]:
+                    failed.append("mine loadout readback failed")
+        except Exception as exc:
+            failed.append(f"mine loadout: {exc}")
     return failed
 
 
@@ -394,6 +404,9 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
                 round_hooks=(lambda: apply_ops(ad, round_ops, prof, stats)) if ad is not None and round_ops else None)
     run = time.strftime("%Y%m%d-%H%M%S", time.localtime(clock()))
     lessons = lessons_writer(prof["map_id"], run)
+    if prof["map_id"] == "BLUS30491":
+        from .mercs import lessons as local_lessons
+        stats["navigation_log"] = str(local_lessons.path_for(prof["map_id"], run))
     stats.setdefault("rounds", 0)
     stats["profile"] = prof["map_id"]
     pub = tactical_publisher(tactical, prof)
@@ -419,6 +432,15 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
     try:
         while not stopped():
             scr = menus.screen(m)
+            if prof["map_id"] == "BLUS30491" and ad is not None and scr.get("where") not in ("playing", "dead", "results", "unknown"):
+                if clock() - stats.get("_merc_unlock_at", -1e9) >= 5:
+                    from .mercs.titles import re5_hooks
+                    from .re5_mods_tool import RE5
+                    try:
+                        stats["mercs_unlocks"] = re5_hooks.unlock(RE5(ad))
+                    except Exception as exc:
+                        stats["mercs_unlocks"] = {"verified": False, "reason": str(exc)[:160]}
+                    stats["_merc_unlock_at"] = clock()
             if scr.get("where") == "playing" and E is not None:
                 if not playing_initialized and ad is not None and playing_ops:
                     failed = apply_ops(ad, playing_ops, prof, stats)
@@ -444,7 +466,14 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
             fresh = True
             if pub is not None:
                 pub.idle(scr.get("where"))                  # the map says where the game is between rounds
+            before_presses = stats.get("menu_presses", 0)
             why = boot.tick(clock(), scr=scr)
+            if prof["map_id"] == "BLUS30491" and lessons is not None and stats.get("menu_presses", 0) != before_presses:
+                pick = getattr(menus, "STAGE_PICK", None)
+                lessons({"kind": "navigation_menu", "screen": scr, "key": boot.nav.last_key,
+                         "stage_target_index": getattr(pick, "target", None),
+                         "stage_previous_index": getattr(pick, "last", None),
+                         "cursor_verified": scr.get("cursor") is not None})
             if why:
                 stats.update(hung=True, wandered=why)
                 break

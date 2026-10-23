@@ -231,6 +231,14 @@ def _clean_plan(raw: dict, enemies: dict, bonuses: dict) -> dict:
     route = [p for p in (_xyz(w) for w in (raw.get("route") or ())[:MAX_ROUTE]) if p is not None]
     if route:
         out["route"] = route
+    trail = [p for p in (_xyz(w) for w in (raw.get("trail") or ())[-240:]) if p is not None]
+    if trail:
+        out["trail"] = trail
+    hazards = [{"pos": p, "reason": str(row.get("reason", ""))[:160]}
+               for row in (raw.get("hazards") or ())[-64:] if isinstance(row, dict)
+               and (p := _xyz(row.get("pos") or ())) is not None]
+    if hazards:
+        out["hazards"] = hazards
     st = raw.get("stand")
     if isinstance(st, dict) and _xyz(st.get("pos") or ()) is not None:
         out["stand"] = {"pos": _xyz(st["pos"])} | ({"r": _n(st["r"])} if _n(st.get("r")) else {})

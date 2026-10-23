@@ -59,6 +59,9 @@ def requires_admission(job):
     # unticked or loaded: they are how an owned test saves and yields its place.
     # autoplay drives a session that was already admitted (the screensaver's own games): it must not wait behind a busy GPU.
     controls = {'session_op', 'get_frame', 'state_transfer', 'read_memory', 'tasks', 'autoplay'}
+    if job.get('tool') == 'ghidra_bridge' and (job.get('input') or {}).get('op', 'status') in {
+            'status', 'info', 'functions', 'strings', 'xrefs_to', 'xrefs_from', 'containing'}:
+        return False  # bounded inspection of existing analysis never replaces the watched game
     if (job.get('tool') in {'ollama_assist', 'decomp_pipeline', 'xenonrecomp', 'rexglue'}
             and (job.get('input') or {}).get('op') == 'status'):
         # These explicit status operations only discover configured programs.
@@ -78,6 +81,8 @@ def guarded_reason(store, worker, *, now=None, allow_active=False, require_gpu=T
     from .operator_guard import operator_sessions
     owned = operator_sessions(store.running_sessions(), lambda sid: store.get('slabel', sid),
                               lambda jid: store.get('job', jid), [worker['id']])
+    from .screensaver import telemetry_get
+    owned = [s for s in owned if not telemetry_get(s['session_id'], now=now).get('running')]
     if owned:
         return 'Human gameplay is active on this PC; background compute is waiting.'
     return admission_reason(worker, excluded(store), policy(store, worker['name'])['budget_percent'], now=now,

@@ -62,7 +62,7 @@ test('a new link lists its program URLs per network, the token shown once', () =
   assert.deepEqual(BC.links(null), []);
 });
 
-test('watching: reported on every change, then once a minute while the app is visible', async () => {
+test('watching: heartbeat survives a hidden app while PiP remains connected', async () => {
   const sent = [];
   const api = (path, body) => { sent.push([path, body]); return Promise.resolve({}); };
   const d = { hidden: false };
@@ -79,7 +79,7 @@ test('watching: reported on every change, then once a minute while the app is vi
   BC.watching('s3', { api, doc: d });
   BC._W.sent = 0;
   d.hidden = true; beat.fn();
-  assert.equal(sent.length, 4, 'a hidden app is not watching');
+  assert.equal(sent.length, 5, 'a hidden app can still be watching PiP');
   d.hidden = false; beat.fn();
   assert.deepEqual(sent.at(-1), ['/api/broadcast/watching', { session_id: 's3' }]);
   assert.equal(timers.filter(t => t.ms === BC.HEARTBEAT_MS).length, 1);

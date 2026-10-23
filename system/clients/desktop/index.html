@@ -1245,6 +1245,7 @@ window.taskVizCreate = canvas => {
 <script src="embed-geometry.js"></script>
 <script src="game-surface.js"></script>
 <script src="compact-game.js"></script>
+<script src="../web/viz/session-continuity.js"></script>
 <script src="../web/viz/autoplay-coach.js"></script>
 <script src="compact-coach.js"></script>
 <script src="client-refresh.js"></script>
@@ -1261,7 +1262,8 @@ window.GBOX_STREAM_FETCH_HEALTH = async src => {
 <script src="../web/viz/stream-watchdog.js"></script>
 <style id="compact-game-style">
   body.gbox-compact { background:#000; }
-  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(#compact-stream):not(#compact-controls):not(script):not(style) { display:none !important; }
+  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(script):not(style) { display:none !important; }
+  body.gbox-compact:has(#compact-stream[data-stream-state="connected"]) .gbox-stream-badge { display:none !important; }
   #compact-stream { display:none; position:fixed; inset:0; width:100%; height:100%; object-fit:contain; background:#000; }
   body.gbox-compact #compact-stream.on { display:block; }
   #compact-controls { display:none; position:fixed; inset:0 0 auto; height:28px; z-index:100;
@@ -3587,7 +3589,9 @@ async function embedTick() {
     const mine = r.ok && r.data.filter(s => s.state === "running" && s.detail && s.detail.local_window && s.detail.worker_name === S.workerName
                                           && !EMB.closed.has(s.session_id) && (!COMPACT.on || s.session_id === COMPACT.sid)).sort((a, b) => (b.started || 0) - (a.started || 0))[0];
     if (!r.ok) return;                                       // API blip (Spark restarting): leave the game exactly as it is
-    if (COMPACT.on && !r.data.some(s => s.session_id === COMPACT.sid && s.state === "running")) await compactRestore();
+    // Remote PiP keeps its picture while the game restarts. Its continuity poll
+    // reconnects only this game's replacement, without changing window bounds.
+    if (COMPACT.on && COMPACT.local && !r.data.some(s => s.session_id === COMPACT.sid && s.state === "running")) await compactRestore();
     if (COMPACT.on && !COMPACT.local) {
       if (GPU_GAME.pid) await gpuGameDispose();
       pipHandle(null); EMB.rect = null; EMB.vis = false;
@@ -3709,7 +3713,7 @@ addEventListener("resize", () => { EMB.last = ""; });
 // the game window is a native child window (it swallows its own clicks), so the handle is a gBox bar along its top edge
 const VIEW = { mode: "auto", pip: null };                    // mode: auto (game in its slot) | pip (forced) | full
 // Compact PiP uses this same window, game and input path. It never launches another emulator.
-let compactStreamUrl = '', compactTitle = '', compactHoverTimer = null;
+let compactStreamUrl = '', compactTitle = '', compactHoverTimer = null, compactSession = null;
 let clientUpdateState = { pending: false, restart: false };
 const compactCoach = GBoxCompactCoach.create({ coach:GBoxAutoplayCoach,
   api:async(path,body) => { const r=await gbox.api(path,body); if(!r.ok) throw new Error(r.error || 'Coaching request failed'); return r.data; },
@@ -3722,6 +3726,10 @@ const compactController = GBoxCompactGame.create({
     const st = requested?.sid ? {} : await gboxState();
     const sid = requested?.sid || st.playing || st.session || EMB.sid;
     let session = sid ? await sessionById(sid) : null;
+    if (requested?.sid && (!session || session.state !== 'running')) {
+      const history = await gbox.api('/api/sessions?limit=200');
+      if (history.ok) session = GBoxSessionContinuity.resolve(requested.sid, history.data, session) || session;
+    }
     if ((!session || session.state !== 'running') && requested?.sid) throw Error('The selected session is unavailable. Your game was not changed.');
     if (!session || session.state !== 'running') {
       const r = await liveSessions(0);
@@ -3730,6 +3738,7 @@ const compactController = GBoxCompactGame.create({
     if (!session) return null;
     const local = !!session.detail?.local_window && session.detail.worker_name === S.workerName;
     compactTitle = sessionTitle(session);
+    compactSession = session;
     compactStreamUrl = local ? '' : `${S.apiUrl}/api/sessions/${encodeURIComponent(session.session_id)}/mjpeg?token=${encodeURIComponent(await gbox.token())}`;
     if (document.fullscreenElement) await document.exitFullscreen();
     closePops(null); if (EYE.on) eyeStop();
@@ -3757,7 +3766,7 @@ const compactController = GBoxCompactGame.create({
     if (controls) controls.querySelector('.compact-title').textContent = compactTitle;
     compactCoach.update(state, controls?.querySelector('[data-compact-coach]'));
     if (state.on && !state.local) {
-      if (!stream) { stream = document.createElement('img'); stream.id = 'compact-stream'; stream.alt = 'Live emulation session'; document.body.append(stream); }
+      if (!stream) { stream = document.createElement('img'); stream.id = 'compact-stream'; stream.alt = 'Live emulation session'; stream.dataset.streamFollow = 'game'; document.body.append(stream); }
       stream.classList.add('on');
       if (gboxStreamWatchdog.healthUrl(stream.getAttribute('src') || '') !== gboxStreamWatchdog.healthUrl(compactStreamUrl)) stream.src = compactStreamUrl;
     } else if (stream) { stream.classList.remove('on'); stream.removeAttribute('src'); stream.style.backgroundImage = ''; }
@@ -3768,6 +3777,31 @@ const compactController = GBoxCompactGame.create({
   present: () => { EMB.last = ''; embedTick(); }
 });
 const COMPACT = compactController.state;
+const compactContinuity = GBoxSessionContinuity.create({
+  current: () => COMPACT.on && !COMPACT.local ? { ...compactSession, session_id: COMPACT.sid } : null,
+  read: async () => {
+    const r = await gbox.api('/api/sessions?limit=200');
+    if (!r.ok) throw Error('Stream connection unavailable');
+    return r.data;
+  },
+  follow: async (session, from) => {
+    const token = await gbox.token();
+    const webview = document.querySelector('#wv');
+    if (webview?.dataset.ready !== 'true') return;
+    const url = `${S.apiUrl}/api/sessions/${encodeURIComponent(session.session_id)}/frame.jpg?token=${encodeURIComponent(token)}`;
+    const frame = await webview.executeJavaScript(`window.GBoxSessionContinuity.picture(${JSON.stringify(url)})`);
+    if (!frame?.visible) return; // black boot frames do not replace the held gameplay
+    if (!COMPACT.on || COMPACT.sid !== from) return;
+    const image = $('#compact-stream');
+    if (image && frame.poster) Object.assign(image.style,{backgroundImage:`url("${frame.poster}")`,backgroundSize:'contain',backgroundPosition:'center',backgroundRepeat:'no-repeat'});
+    compactSession = session; compactTitle = sessionTitle(session);
+    compactStreamUrl = `${S.apiUrl}/api/sessions/${encodeURIComponent(session.session_id)}/mjpeg?token=${encodeURIComponent(token)}`;
+    await compactController.follow(from, {sid:session.session_id, local:false});
+    document.querySelector('#wv')?.executeJavaScript(`followSession(${JSON.stringify(from)}, ${JSON.stringify(session.session_id)})`).catch(() => {});
+  }
+});
+setInterval(() => compactContinuity.poll(), 2000); // keep polling while hidden/minimized
+addEventListener('pagehide', () => compactContinuity.cancel(), {once:true});
 const compactEnter = () => compactController.enter();
 const compactRestore = () => compactController.restore();
 // create() reads context() at once, before loadSettings() has set S: a throw here would stop the whole page script

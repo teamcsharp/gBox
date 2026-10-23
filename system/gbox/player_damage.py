@@ -43,14 +43,20 @@ def validate(event, sid):
     data = json.dumps(event, allow_nan=False, sort_keys=True, separators=(",", ":")).encode()
     if len(data) > MAX_EVENT:
         raise ValueError("damage event exceeds 256 KiB")
+    from .mercs.incident import unpack_context
+    unpack_context(event)                              # rejects corrupt or unbounded compressed evidence
     return hashlib.sha256(data).hexdigest()
 
 
 def freeze(moment_provider, sid, event, received_at):
+    from .mercs.incident import unpack_context
+    event = unpack_context(event)
     packet = E.capture(moment_provider, sid, received_at)
     packet.update(damage_event_id=event["event_id"], event_observed_at=event["observed_at"],
                   delivery_delay_s=received_at - event["observed_at"], provenance=event.get("provenance"),
                   evidence_backpressure=event.get("evidence_backpressure", False))
+    if event.get('packed_context'):
+        packet['context_compression'] = {key: value for key, value in event['packed_context'].items() if key != 'data_b64'}
     image = event.get("frame_at_hit") or {"state": "unavailable-at-hit", "detail": "worker did not retain a frame"}
     packet["frame_at_hit"] = {k: v for k, v in image.items() if k != "data_b64"}
     if image.get("state") == "cached-at-observation":
@@ -80,6 +86,8 @@ def freeze(moment_provider, sid, event, received_at):
     packet["sources"]["telemetry"] = source | {"data": event.get("logic") or {}}
     packet["sources"]["ram_fields"] = source | {"data": {"snapshot": event.get("snapshot"),
         "raw_hook_bytes": event.get("raw"), "held": event.get("held"), "plan": event.get("plan"),
+        "preceding_history": event.get("preceding_history"), "ram_witness": event.get("ram_witness"),
+        "map_at_observation_svg": event.get("map_at_observation_svg"),
         "cause": "unknown", "self_damage": "unknown", "limits": event.get("limits")}}
     for src in packet["sources"].values():
         if "source_at" in src:
@@ -202,7 +210,11 @@ def materialize(store, create_request, submit, eid):
             if "data_b64" in stream:
                 stream["data"] = base64.b64decode(stream.pop("data_b64"), validate=True)
             rid = request_for(store, create_request, row)
-            E.prepare_map(packet)
+            worker_svg = (packet['sources'].get('ram_fields', {}).get('data') or {}).get('map_at_observation_svg')
+            if isinstance(worker_svg, str) and worker_svg.startswith('<svg') and len(worker_svg.encode()) <= 512*1024:
+                packet['_map'] = worker_svg.encode()      # includes the path preceding damage, frozen on the worker
+            else:
+                E.prepare_map(packet)
             evidence, attachments = E.attach(store, packet, row["event_id"], rid)
             evidence["stream"]["timing"] = stream.get("timing")
             evidence["stream"]["frame_at_hit"] = packet.get("frame_at_hit")

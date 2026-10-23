@@ -287,6 +287,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/session-move.js"></script>
 <script src="/viz/remote-game.js"></script>
 <script src="/viz/session-live.js"></script>
+<script src="/viz/session-continuity.js"></script>
 <script src="/viz/session-refresh.js"></script>
 <script src="/viz/session-follow.js"></script>
 <script src="/viz/broadcast.js"></script>
@@ -1196,6 +1197,7 @@ function pipCoach(sid) {
 function pip() {
   const el = $("#pip"), show_ = active && !active.local && !(cur === "Sessions" && playing === active.sid && EXAM.sid !== playing);   // a different connected game may remain in PiP
   if (show_ && $("#pipimg").dataset.sid !== active.sid) {
+    $("#pipimg").dataset.streamFollow = 'game';
     $("#pipimg").src = `/api/sessions/${encodeURIComponent(active.sid)}/mjpeg?${tq()}`; $("#pipimg").dataset.sid = active.sid;
   }
   if (!show_) { $("#pipimg").removeAttribute("src"); delete $("#pipimg").dataset.sid; }   // close the stream when hidden
@@ -1210,7 +1212,7 @@ window.gboxClientViewState = () => ({ tab: cur, playing, active: active?.sid || 
   session: (cur === 'Sessions' && document.getElementById('session-head')?.dataset.sid) || active?.sid || null,
   pip: $("#pipimg").getAttribute("src") ? $("#pipimg").dataset.sid || null : null });
 const CLIENT_VIEW_RESTORE = GBoxSessionRefresh.create({
-  sessions: () => api('/api/sessions?include_ended=false'), tabs: Object.keys(tabs),
+  sessions: () => api('/api/sessions?limit=200'), tabs: Object.keys(tabs),
   revision: () => viewRevision,
   show: async (tab, sid) => {
     if (tab === 'Sessions') { FOLLOW.pinned = sid || null; FOLLOW.list = !sid; }
@@ -1222,6 +1224,7 @@ const CLIENT_VIEW_RESTORE = GBoxSessionRefresh.create({
     if (session && active?.sid === session.session_id) return; // preserve platform metadata from sessionsView.after
     if (active?.platform) PAD_PLATFORMS.set(active.sid, active.platform);
     active = session ? { sid: session.session_id, title: session.title || '', platform: session.platform || '',
+      game_id: session.game_id, mod:session.mod, detail:session.detail, started:session.started,
       adapter: session.adapter || '', local: sessionIsLocal(session) && !!session.detail?.local_window } : null;
   }, pip
 });
@@ -2289,7 +2292,11 @@ async function followLive(fromSid) {
   const head = $("#session-head");
   if (!Array.isArray(ss) || cur !== "Sessions" || (head?.dataset.sid || null) !== (fromSid || null)) return {};   // moved on
   const shown = fromSid ? ss.find(s => s.session_id === fromSid) || { session_id: fromSid, state: "ended", agent_owned: true } : null;
-  const relaunch = shown?.replaced_by && ss.find(s => s.session_id === shown.replaced_by && s.state === "running");
+  const successor = fromSid && GBoxSessionContinuity.resolve(fromSid, ss, active?.sid === fromSid ? {...active, session_id:fromSid} : null);
+  const relaunch = successor?.session_id !== fromSid ? successor : null;
+  if (fromSid && active?.sid === fromSid && !relaunch) {
+    return {html:'<p class="mut" role="status">Reconnecting to this game. Keeping the last picture while it restarts.</p>', wait_s:3};
+  }
   const program = bc?.program || null;
   const next = relaunch ? { session: relaunch, via: "relaunch" }
     : F.pick(ss, program, { except: fromSid, workers: ws, judge: window.GBoxSessionLive?.judge });
@@ -2336,7 +2343,7 @@ sessionsView.after = (sid, mode) => {
   syncSessionFav();
   const head = $("#session-head");
   sessionBuildMount(head);
-  if (!head || head.dataset.state !== "running") { playing = null; if (active?.sid === sid) { active = null; pip(); } followWatch(sid); return; }
+  if (!head || head.dataset.state !== "running") { playing = null; pip(); followWatch(sid); return; }
   sid = head.dataset.sid; playing = sid;
   followNote(sid, head);
   // notes for the autoplay; a game on this PC (a bot demo here) gets the keyboard back once a note is sent: the bot
@@ -2360,9 +2367,9 @@ sessionsView.after = (sid, mode) => {
     read: () => api(`/api/sessions/${encodeURIComponent(sid)}/stream/health`),
     render: ({ text }) => { status.textContent = text; status.hidden = !text; },
     ended: () => {
-      playing = null;
-      if (active?.sid === sid) { active = null; pip(); }
-      show('Sessions', sid, mode);
+      head.dataset.state = 'ended';
+      status.textContent = 'Reconnecting to this game…'; status.hidden = false;
+      followWatch(sid); // retain the image and selected game through a reboot
     }
   });
   window.sessionPresentation.poll();
@@ -2386,6 +2393,7 @@ sessionsView.after = (sid, mode) => {
   const padSession = SESSIONBUILD.session?.session_id === sid ? SESSIONBUILD.session : {};
   // platform / adapter: the controller map this game's forwarded pad goes through (viz/pad-map.js)
   active = { sid, title, local: mode === "examine" ? $("#exam")?.dataset.local === "1" : !$("#scr") && mode !== "inspect",
+             game_id: padSession.game_id, mod: padSession.mod, detail: padSession.detail, started: padSession.started,
              platform: padSession.platform || "", adapter: padSession.adapter || "" }; pip();   // controllers + PiP follow this game from now on
   if (mode === "inspect") return inspectView.after(sid);
   if (mode === "examine") return examineAfter(sid);
@@ -2488,16 +2496,23 @@ function followSession(from, to) {                         // keep showing / con
   }
 }
 setInterval(async () => {                                  // a session replaced elsewhere (chat agent, character swap): follow it
-  const sid = playing || active?.sid; if (!sid) return;   // not document.hidden: a docked game window makes Chromium call the page hidden
+  const selected = [...new Set([playing, active?.sid].filter(Boolean))]; if (!selected.length) return;
   // #712: while the game runs, the few-KB running list answers; the whole history only once it has ended or been replaced
   let ss = await api("/api/sessions?include_ended=false").catch(() => null); if (!ss) return;
-  if (!ss.some(x => x.session_id === sid)) { ss = await api("/api/sessions").catch(() => null); if (!ss) return; }
-  const s = ss.find(x => x.session_id === sid);
-  if (s?.state === "ended" && s.replaced_by) followSession(sid, s.replaced_by);
-  else if (s && s.state !== "running" && active?.sid === sid && cur !== "Sessions") { active = null; pip(); }   // #1934: a game that ended takes its picture-in-picture with it
-  else if (cur === "Sessions" && sessionMode === "examine" && s?.state !== "running") {
-    const live = liveExamineSession(ss, sid);
-    if (live) followSession(sid, live.session_id); else show("Sessions", sid, "examine");
+  if (selected.some(sid => !ss.some(x => x.session_id === sid))) {
+    ss = await api("/api/sessions?limit=200").catch(() => null); if (!ss) return;
+  }
+  for (const sid of selected) {
+    if (sid !== playing && sid !== active?.sid) continue; // user navigation during the read wins
+    const anchor = active?.sid === sid ? {...active, session_id:sid} : null;
+    const next = GBoxSessionContinuity.resolve(sid, ss, anchor);
+    if (next && next.session_id !== sid) {
+      const frame = await GBoxSessionContinuity.picture(`/api/sessions/${encodeURIComponent(next.session_id)}/frame.jpg?${tq()}`).catch(() => null);
+      if (!frame?.visible || (sid !== playing && sid !== active?.sid)) continue;
+      const image = $("#pipimg");
+      if (active?.sid === sid && frame.poster) image.style.backgroundImage = `url("${frame.poster}")`;
+      followSession(sid, next.session_id);
+    }
   }
 }, 3000);
 const modDisc = m => m.calls.find(c => c.tool === "@launch")?.input.mod;

@@ -677,6 +677,16 @@ def tick(*, now=None):
         from . import hermes_pool
         pooled = local and hermes_pool.configured()
         pool_state = _api('/api/hermes/local/nodes') if pooled else None
+        if pooled:
+            # A provider can list its models while refusing every paid call.
+            # The primary-route gate above does not cover other pool nodes:
+            # honor their observed quota/backoff before reserving more tasks.
+            settings = hermes_pool.node_settings()
+            cooldowns = feedback.get('cooldowns') or {}
+            nodes = [n for n in pool_state['nodes'] if n['name'] in settings and
+                     cooldowns.get(settings[n['name']].provider + '/' + settings[n['name']].model, 0) <= now]
+            pool_state = pool_state | {'nodes': nodes, 'capacity': min(pool_state['capacity'],
+                sum(n['capacity'] for n in nodes if n.get('enabled') and n.get('capable')))}
         if local and not pooled:
             # The Spark's GPU model: one run at a time, never while the operator plays a game on the Spark.
             gate = local_gate()

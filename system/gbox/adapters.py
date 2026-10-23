@@ -274,9 +274,11 @@ class MjpegStream:
         else:
             src = ["-f", "x11grab", "-draw_mouse", "0", "-framerate", str(fps),
                    *(["-video_size", f"{size[0]}x{size[1]}"] if size else []), "-i", display or ":0"]
-        self.argv = ["ffmpeg", "-loglevel", "error", "-fflags", "nobuffer", *src,
+        # Automatic codec/filter threading spawned 73 threads for a 960px stream on the 20-core Spark.
+        # Keep capture work bounded beside the emulator and flush each JPEG as soon as it is encoded.
+        self.argv = ["ffmpeg", "-loglevel", "error", "-fflags", "nobuffer", "-filter_threads", "1", *src,
                      "-vf", f"scale='min({max_width},iw)':-2", "-f", "image2pipe", "-vcodec", "mjpeg", "-pix_fmt", "yuvj420p",
-                     "-q:v", "7", "-"]
+                     "-threads:v", "2", "-q:v", "7", "-flush_packets", "1", "-"]
         self.label, self.clock = label or (display or "desktop"), clock
         self.stall_s = float(stall_s or self.STALL_S)
         self._popen = popen or (lambda argv: subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL))
@@ -3680,6 +3682,9 @@ class RPCS3LinuxAdapter(StandaloneAdapter):
         self.home = provision.rpcs3_linux_dir(config)     # dev_hdd0 lives here (gbox/re5_tool.py finds saves through it)
         self._mem, self.paused, self.generation, self.rom = None, False, 0, None
         self._profile_lease = None
+        self._focus_lock = threading.Lock()
+        self._focus_deadline = self._focus_next = 0.0
+        self._focus_pending, self._focus_done, self._focus_window = False, False, None
 
     def _ensure(self):
         self.write_settings()                             # first: the firmware install then runs without dialogs too
@@ -3689,6 +3694,8 @@ class RPCS3LinuxAdapter(StandaloneAdapter):
         """config.yml (RPCS3_LINUX_SETTINGS), the keyboard pad as player 1, CurrentSettings.ini (RPCS3_LINUX_GUI: no
         welcome dialog or info boxes, the save-state hotkey)."""
         d = self.home
+        from .mercs.titles import re5_hooks
+        re5_hooks.install(d)
         (d / "input_configs" / "global").mkdir(parents=True, exist_ok=True)
         (d / "input_configs" / "global" / "Default.yml").write_text(RPCS3_KEYBOARD_INPUT, encoding="utf-8")
         cfg = d / "config.yml"
@@ -3763,10 +3770,82 @@ class RPCS3LinuxAdapter(StandaloneAdapter):
         return result
 
     def _park_pointer(self):
+        with self._focus_lock:
+            self._focus_deadline, self._focus_next = time.monotonic()+60., 0.
+            self._focus_done, self._focus_window = False, None
+        self._maybe_focus_game_window()
         try:                                              # keys go to the window under the pointer (no window manager)
             self._xdo("mousemove", str(self.display.w // 2), str(self.display.h // 2))
         except Exception:                                 # noqa: BLE001 - the display may still be starting
             pass
+
+    def _maybe_focus_game_window(self):
+        """Launch and early pad input may precede RPCS3's renderer window. Retry off the input thread, at most 1/s."""
+        now = time.monotonic()
+        with self._focus_lock:
+            if (self._focus_done or self._focus_pending or now >= self._focus_deadline or now < self._focus_next
+                    or self.proc is None or self.display is None or self.proc.poll() is not None):
+                return
+            self._focus_pending, self._focus_next = True, now+1.
+            proc, display = self.proc, self.display
+        def run():
+            try:
+                self._focus_game_window(proc, display)
+            finally:
+                with self._focus_lock:
+                    self._focus_pending = False
+        try:
+            threading.Thread(target=run, daemon=True, name='rpcs3-window-focus').start()
+        except RuntimeError:
+            with self._focus_lock:
+                self._focus_pending = False
+
+    @staticmethod
+    def _focus_command(display, args, timeout):
+        return subprocess.run(['xdotool', *args], env={**os.environ, 'DISPLAY': display.name},
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=timeout)
+
+    def _focus_game_window(self, proc, display):
+        """Raise only a visible FPS renderer window whose PID belongs to this session, on its private Xvfb.
+
+        No global window search or WM activation; the entire attempt is bounded and never blocks game input.
+        """
+        deadline = min(time.monotonic()+.75, self._focus_deadline)
+        def command(*args):
+            remaining = deadline-time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('window focus attempt budget elapsed')
+            return self._focus_command(display, args, min(.25, remaining))
+        try:
+            owned = set(_proc_tree(proc.pid))
+            for pid in sorted(owned)[:8]:
+                found = command('search', '--all', '--onlyvisible', '--pid', str(pid), '--name', '^FPS[: ]')
+                if found.returncode:
+                    continue
+                for window in found.stdout.splitlines()[:8]:
+                    if not window.isdigit():
+                        continue
+                    identity = command('getwindowpid', window)
+                    if identity.returncode or identity.stdout.strip() not in {str(p) for p in owned}:
+                        continue
+                    name = command('getwindowname', window)
+                    if (name.returncode or not re.match(r'^FPS[: ]', name.stdout)
+                            or not any(renderer in name.stdout for renderer in ('Vulkan', 'OpenGL'))):
+                        continue
+                    if (self.proc is not proc or self.display is not display or proc.poll() is not None
+                            or time.monotonic() >= self._focus_deadline):
+                        return False
+                    result = command('windowmap', window, 'windowraise', window, 'windowfocus', window,
+                                     'mousemove', str(display.w//2), str(display.h//2))
+                    if result.returncode == 0:
+                        with self._focus_lock:
+                            if self.proc is not proc or self.display is not display:
+                                return False
+                            self._focus_done, self._focus_window = True, window
+                        return True
+        except (OSError, subprocess.SubprocessError, TimeoutError):
+            pass                                          # a missing or late renderer never prevents the game loading
+        return False
 
     def log_tail(self, n: int = 60000) -> str:
         try:
@@ -3887,6 +3966,7 @@ class RPCS3LinuxAdapter(StandaloneAdapter):
     def send_input(self, events: list[dict]) -> dict:
         """Pad names only (self.keys: PS3 names and gBox's RetroPad names); anything else is not a PS3 button here and
         is left out (RPCS3's keyboard pad would ignore it anyway)."""
+        self._maybe_focus_game_window()
         known = [ev for ev in events if ev.get("key") in self.keys]
         out = super().send_input(known)
         skipped = sorted({str(ev.get("key")) for ev in events if ev.get("key") not in self.keys})

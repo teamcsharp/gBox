@@ -28,6 +28,7 @@ or menu shows, the replay from boot is skipped and autoplay starts in the same t
 """
 from __future__ import annotations
 
+import json
 import random
 import threading
 import time
@@ -456,6 +457,7 @@ class Telemetry(BaseModel):
 
 TELEMETRY: dict[str, dict] = {}           # session id -> what autoplay is doing right now (in memory: live view only)
 TELEMETRY_TTL = 600
+TELEMETRY_STATS_MAX_BYTES = 64 * 1024     # rich Mercenaries diagnostics, bounded as actual UTF-8 JSON
 
 
 def telemetry_put(sid: str, body: dict, now: float | None = None) -> None:
@@ -539,7 +541,11 @@ def install(app, store, config, auth, submit, workers, archive):
 
     @app.post("/api/autoplay/telemetry/{sid}")
     def autoplay_telemetry_put(sid: str, body: Telemetry, actor=Depends(auth)):
-        if len(str(body.stats)) > 4000:
+        try:
+            encoded = json.dumps(body.stats, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        except (TypeError, ValueError, OverflowError, RecursionError):
+            raise HTTPException(422, "stats must contain finite JSON values") from None
+        if len(encoded) > TELEMETRY_STATS_MAX_BYTES:
             raise HTTPException(413, "stats too large")
         telemetry_put(sid, body.model_dump())
         return {"ok": True}

@@ -110,7 +110,7 @@ Assembly is about 62 KB.
 | `PUT /api/autoplay/tactical/stage/{key}` | a stage |
 | `GET /api/autoplay/tactical/stage/{key}` | that stage, or 404 |
 
-Frames and stages are held in memory only: it is a live view. After a restart, the next frame's reply says
+The live server's frames and stages are held in memory only. RE5 also retains local navigation evidence as described below. After a restart, the next frame's reply says
 `need_stage` and the worker sends the stage again. Limits are 64 KB per frame and 4 MB per stage, with 24 stages kept.
 
 ### From the bot: `plan()`
@@ -195,3 +195,51 @@ The map above gives the overhead view without any of that.
   - `GBOX_TACTICAL_EVIDENCE=<dir>` keeps its screenshots.
 - `tests/fixtures/tactical_map/` holds Public Assembly's stage and 8 frames, read from the Spark's RPCS3 on 2026-10-21
   (read-only, while the RE5 bot played).
+
+### Local RE5 navigation evidence
+
+RE5 (BLUS30491) automatically appends navigation evidence to the worker's existing
+`gbox-data/mercs/lessons/BLUS30491/runs/<run>.jsonl`, even without a tactical-map server.
+The bot status field `navigation_log` gives the actual path. Files are on the worker
+running the emulator; copy the JSONL here for offline analysis if it runs elsewhere.
+`local_log_errors` increments if a lesson cannot be written. Logs currently require
+manual archival/removal; at two samples per second they grow during long sessions.
+
+Each engine round has a unique `round_id`. `navigation_stage` retains mesh geometry,
+walls and crossings once per round/mesh. `navigation_sample` records game coordinates
+(including height), facing, target, remaining route, enemies/visibility, timer, prompts,
+held inputs and diagnostic reasons at 2 Hz. `before_decision` inputs are the previously
+held keys, not the next decision. `navigation_event` bypasses sampling when stuck,
+blocked-route, timeout, avoided-crossing or idle-breakout counters increase and includes
+the decision's inputs. These are detector events, not proof that every stationary frame
+is a collision. QTE-owned frames are sampled too. Missing navmeshes are recorded explicitly.
+
+Generate an offline map and machine-readable event list from the system directory:
+
+```powershell
+python -m gbox.mercs.route_trace gbox-data/mercs/lessons/BLUS30491/runs/<run>.jsonl --output route-report
+```
+
+Open `route-report/stage-0.svg` (one file per mesh). Gray lines are mesh boundaries,
+cyan is actual travel, yellow is planned travel, and red dots are detector events;
+hover red dots for the recorded context. `summary.json` retains event details and menu
+presses. The SVG is a top-down projection: different floors can overlap; use recorded
+Y coordinates to distinguish them. Unknown mesh samples are kept separately.
+
+`navigation_menu` records the RAM screen, sent key, intended stage index and whether
+RAM exposed a cursor. Stage choices exclude the immediately preceding intended pick.
+The stage cursor is still unverified: its current implementation homes with seven left
+presses and moves right to the requested index. A sent press is not proof the game
+accepted it. Compare menu evidence with the actual round's mesh to diagnose selection.
+
+This uses existing RAM readers and the game's navmesh. Ghidra is the reverse engineering
+source for those readers, not a running visual debugger or a new in-game drawing hook.
+The existing tactical map remains the live view; the local evidence supplies history.
+
+RE5 character selection currently covers Reunion's eight cursor entries. It chooses
+randomly among the least-played entries and excludes the last character. Character
+menu evidence includes the full roster, requested name and RAM cursor name. Status
+reports `character_cursor_verified` when the confirmation press was sent at the
+requested RAM cursor; this does not independently verify the spawned character.
+Original Mercenaries and switching between both modes remain unimplemented: their
+menu/roster mappings and unlock access require verification on the exact game build.

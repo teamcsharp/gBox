@@ -212,12 +212,20 @@ class RE5:
             st["turn"] = str(e)
         flags = [self.u32(DEF_TABLE + w * DEF_STRIDE + DEF_NOAMMO) for w in range(N_WEAPONS)]
         st["no_ammo_weapons"] = [WEAPONS.get(w, hex(w)) for w, f in enumerate(flags) if f == 1]
-        st["infinite_ammo"] = all(flags[w] == 1 for w in WEAPONS if w not in KNIVES)
+        from .mercs.titles import re5_mines
+        mine_config = re5_mines.settings()
+        st["infinite_ammo"] = all(flags[w] == 1 for w in WEAPONS
+                                  if w not in KNIVES and not (w == 0x0A and mine_config["enabled"]))
         dmg = struct.unpack(">f", self.rd(UPG_TABLE + 0x02 * UPG_STRIDE + UPG_GROUP0 + G_DAMAGE * UPG_GROUP + 4, 4))[0]
         st["bullet_damage_x"] = round(dmg / 150.0, 2)                 # the M92F's level-0 firepower is 150
         inv = self.inventory()
         st["in_hand"] = next((x for x in inv if x["in_hand"]), None)
         st["inventory"] = inv
+        from .mercs.titles import re5_mines
+        st["mine_settings"] = mine_config
+        from .mercs.titles import re5_ps3 as rotation
+        st["mercs_rotation"] = rotation.coverage().status()
+        st["mercs_catalog"] = {"rosters": rotation.MODE_ROSTERS, "stages": rotation.STAGE_NAMES}
         st["unlimited_health"] = bool(self.orig.get("health", {}).get("on"))
         st["health_maintenance"] = self.orig.get("health", {}).get("last")
         st["hit_immunity"] = bool((st["health_maintenance"] or {}).get("hit_immunity"))
@@ -233,6 +241,8 @@ class RE5:
             st["capabilities"] = {op: {"available": True, "reason": "Verified build; readback required."}
                                   for op in OPERATOR_SETTINGS}
             st["capabilities"]["random_weapon"] = re5_controls.capability(self.orig)
+            st["capabilities"]["mines"] = {"available": True, "reason": "Mine cadence; loadout takes effect next round."}
+            st["capabilities"]["mercs_select"] = {"available": True, "reason": "Choose the next Mercenaries round."}
             for op in ("aimbot", "instant_qte", "auto_parry", "knife_knockback"):
                 st["capabilities"][op] = {"available": False, "reason": "No verified live control for this hook."}
             st["operator_overrides"] = {k: dict(v) for k, v in self.orig.get("operator_overrides", {}).items()}
@@ -381,9 +391,8 @@ def _maintain_health(g: RE5, snap=None) -> dict:
 # automatically"): sBioMain -> cGameSys, the round clock (f32 seconds left) and the kill count (s32), as
 # gbox/mercs/titles/re5_ps3.py's snapshot reads them.
 S_MAIN, MAIN_GAMESYS, GS_TIMER, GS_KILLS = 0x0191CEE4, 0x182D4, 0x3E0, 0x3F4
-KILL_TIME_S = 2.0
-KILL_TIME_RANGE = (2.0, 5.0)    # the default: a random whole 2-5 s per kill (operator 2026-10-22: "enabled by default and
-                                # randomly be adding a amount of time per kill between two and five seconds")
+KILL_TIME_S = 10.0
+KILL_TIME_RANGE = (10.0, 10.0)  # operator 2026-10-23: ten seconds added per kill
 KILL_TIME_MAX_S = 30.0
 _KILL_LOCK = threading.RLock()
 
@@ -407,7 +416,7 @@ def kill_time(g: RE5, on: bool, seconds=None, seconds_max=None) -> dict:
 
 
 def _kill_seconds(state) -> float:
-    """One kill's seconds: the fixed value, or a random whole number in the range (2, 3, 4 or 5 by default)."""
+    """One kill's seconds: the configured fixed value (ten by default), or an explicit random range."""
     import random
     low, high = state.get("seconds", KILL_TIME_S), state.get("seconds_max", state.get("seconds", KILL_TIME_S))
     if high <= low:
@@ -821,6 +830,11 @@ def time_bonus_multiplier(g: RE5, mult) -> dict:
 def revert_all(g: RE5) -> dict:
     out = {}
     o = g.orig
+    from .mercs.titles.re5_mines import ORIGINAL_BANKS
+    for address in ORIGINAL_BANKS:
+        key = f"mine_bank_{address:x}"
+        if key in o:
+            out[key] = g.wr(address, o[key])
     o.pop("operator_overrides", None)
     if "kill_time" in o:
         o["kill_time"]["on"] = False
@@ -870,6 +884,7 @@ def _run(ad, op="status", multiplier=None, on=True, g=None, **extra):
           "add_minute": "add_time", "merc_time": "add_time", "more_time": "add_time", "time_bonus": "time_bonus_multiplier",
           "merc_time_bonus": "time_bonus_multiplier"}.get(op, op)
     operator = bool(extra.get("operator"))
+    override = None
     if not operator and op in OPERATOR_SETTINGS:
         override = g.orig.get("operator_overrides", {}).get(op)
         if override:
@@ -877,6 +892,19 @@ def _run(ad, op="status", multiplier=None, on=True, g=None, **extra):
     res: dict = {"op": op}
     if op == "status":
         pass
+    elif op == "mines":
+        from .mercs.titles import re5_mines
+        only = str(multiplier).lower() == "only" or multiplier == 0
+        cfg = re5_mines.configure(2 if only else (multiplier if multiplier is not None else 60), only, on)
+        res.update(mine_settings=cfg, verified=True, effective_next_round=True)
+        if on:
+            res.update(re5_mines.templates(g))
+    elif op == "mercs_select":
+        from .mercs.titles import re5_ps3 as R
+        selected = R.coverage().request(extra.get("mode", "reunion"), extra.get("character", R.CHARACTERS[0]),
+                                        extra.get("stage", 0))
+        res.update(verified=True, selection=selected, effective_next_round=True,
+                   note="Verified menu selection at the next round boundary; current round continues.")
     elif op == "addresses":
         res.update(game=GAME, addresses={k: {**v, "address": f"0x{v['address']:08X}"} for k, v in ADDRESSES.items()},
                    weapons={f"0x{k:02X}": v for k, v in sorted(WEAPONS.items())})
@@ -903,12 +931,12 @@ def _run(ad, op="status", multiplier=None, on=True, g=None, **extra):
     elif op == "random_cheats":
         res.update(random_cheats(g, extra.get("seed")))
     elif op == "kill_time":
-        seconds = extra.get("seconds")
+        seconds = multiplier if override and not operator and multiplier is not None else extra.get("seconds")
         if seconds is None and multiplier is not None:
             seconds = multiplier                      # the panel and the retained override carry the seconds as the value
-        res.update(kill_time(g, on, seconds, extra.get("seconds_max")))
+        res.update(kill_time(g, on, seconds, None if override and multiplier is not None else extra.get("seconds_max")))
         # the retained operator override: a fixed value carries its seconds; a range (the default) only the on / off,
-        # so a later playing_ops call keeps its 2-5 s range and the operator's switch
+        # so a later playing_ops call retains the operator's seconds and switch
         multiplier = res["seconds"] if res["seconds_max"] == res["seconds"] else None
     elif op == "add_time":
         res.update(add_time(g, extra.get("seconds") or multiplier or 60))
@@ -930,6 +958,9 @@ class RE5ModsIn(BaseModel):
     op: str = "status"            # status | turn_speed | fire_rate | infinite_ammo | unlimited_health | bullet_damage | revert_all | addresses
     multiplier: str | float | None = None   # turn_speed (2; "max" = 10) / fire_rate (80) / bullet_damage (10); 1 = the game's
     on: bool = True               # infinite_ammo / unlimited_health on/off; multiplier off restores the game's values
+    mode: str = "reunion"
+    character: str = "Chris (Heavy Metal)"
+    stage: int = 0
 
 
 class RE5ModsOut(BaseModel):
@@ -948,4 +979,5 @@ def re5_mods(inp: RE5ModsIn, ctx):
     ad, g = SESSIONS[inp.session_id]
     if g.get("platform") != "ps3":
         raise Unsupported(f"re5_mods: Resident Evil 5 on PS3 (RPCS3); this session is {g.get('title')} ({g.get('platform')})")
-    return {"result": run(ad, inp.op, inp.multiplier, inp.on, operator=True)}
+    return {"result": run(ad, inp.op, inp.multiplier, inp.on, operator=True,
+                           mode=inp.mode, character=inp.character, stage=inp.stage)}

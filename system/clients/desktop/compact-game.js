@@ -43,6 +43,14 @@
     function restore() {
       return serial(async () => { const result = await io.windowMode({ on: false }); clear(); return result; });
     }
+    function follow(from, session) {
+      return serial(async () => {
+        if (!state.on || state.sid !== from || !session?.sid) return false;
+        state.sid = session.sid; state.local = !!session.local;
+        io.render(state); io.pad(state.local ? null : state.sid); io.present();
+        return true; // same window, bounds, aspect and return mode
+      });
+    }
     function picture(width, height) {
       return serial(async () => {
         if (!state.on || !width || !height || !validAspect(width / height) || Math.abs(width / height - state.aspect) < 0.002) return;
@@ -50,7 +58,7 @@
         return io.windowMode({ on: true, aspect: state.aspect });
       });
     }
-    return { state, enter, restore, changed, picture };
+    return { state, enter, restore, changed, picture, follow };
   }
   const api = { fit, create };
   if (typeof module === 'object' && module.exports) module.exports = api;

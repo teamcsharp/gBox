@@ -186,7 +186,11 @@
       try {
         const h = await bounded(s, opts => fetchHealth(src, opts));
         if (!current(el, s) || !h) return;
-        if (h.state === 'ended') { s.ended = true; cancelRetry(s); status(el, 'ended'); return; }
+        if (h.state === 'ended') {
+          s.ended = true; cancelRetry(s);
+          status(el, el.getAttribute('data-stream-follow') === 'game' ? 'reconnecting' : 'ended');
+          return; // the continuity poll supplies the successor URL; keep this frame meanwhile
+        }
         const age = h.age_s == null ? null : h.age_s * 1000;
         if (h.worker_online === false || age === null || !Number.isFinite(age) || age >= stallAfter) {
           s.stale = true; trouble(el, 'source stalled');
@@ -198,9 +202,10 @@
         if (shown !== null && shown !== s.hash) { s.hash = shown; s.renderAt = now(); calm(el); }
         else if (shown !== null && (s.trouble || now() - s.renderAt >= blankAfter)) await refreshPoster(el, true);
         else if (shown === null && el.naturalWidth > 0) {
-          // No pixel access (file:// mini or browser limitation): periodically renew the socket.
-          if (now() - s.since >= renewAfter) reconnect(el, 'connection renewal');
-          else if (!s.pending) calm(el);
+          // file:// players can use authenticated IPC health even though canvas pixel reads are forbidden.
+          // A healthy source and decoded picture do not need a periodic connection reset (it interrupts playback).
+          // Errors, missing first pictures and stale source health still reconnect this opaque image.
+          if (!s.pending) calm(el);
         }
         if (!el.naturalWidth && now() - s.since >= blankAfter) reconnect(el, 'no picture');
       } catch { if (current(el, s) && !s.ended) reconnect(el, 'server unreachable'); }

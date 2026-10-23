@@ -84,6 +84,43 @@ def test_authenticated_switch_and_failover_preserve_tools(pool, monkeypatch):
     assert client.post('/api/llm/local/nodes/sparkDeux/v1/chat/completions', headers=headers, json=body).status_code == 503
 
 
+@pytest.mark.parametrize('cooldown_delta', [60, 0, -60])
+def test_pre_stream_failover_does_not_retry_a_known_credit_exhausted_node(pool, monkeypatch, cooldown_delta):
+    from gbox.llm_proxy import Busy
+    settings = pool.model_copy(update={'nodes': {
+        'sparkDeux': {'provider': 'gbox-sparkDeux', 'model': 'qwen', 'max_parallel_jobs': 4,
+                      'shared_with_games': False},
+        'claude': {'provider': 'gbox-claude', 'model': 'claude-sonnet-5-5', 'max_parallel_jobs': 4,
+                   'shared_with_games': False},
+    }})
+    monkeypatch.setattr(L, 'settings', lambda: settings)
+    monkeypatch.setattr(P.time, 'time', lambda: 1000.0)
+    # /models still reports both nodes ready even though paid inference is denied.
+    monkeypatch.setattr(P, 'health', lambda *a, **k: {'capable': True})
+    path = P.D.state_dir() / 'feedback.json'
+    path.write_text(json.dumps({'cooldowns': {'gbox-claude/claude-sonnet-5-5': 1000 + cooldown_delta}}))
+    before = path.read_bytes()
+    seen = []
+
+    class Spark:
+        async def complete(self, body, *args):
+            seen.append('sparkDeux')
+            raise Busy(503, 'upstream temporarily unavailable')
+
+    class Claude:
+        async def complete(self, body, *args):
+            seen.append('claude')
+            return {'ok': True}
+
+    P._PROXIES.update(sparkDeux=Spark(), claude=Claude())
+    client, headers = _app(monkeypatch)
+    response = client.post('/api/llm/local/nodes/sparkDeux/v1/chat/completions',
+                           headers=headers, json={'messages': [{'role': 'user', 'content': 'resume'}]})
+    assert response.status_code == (503 if cooldown_delta > 0 else 200)
+    assert seen == (['sparkDeux'] if cooldown_delta > 0 else ['sparkDeux', 'claude'])
+    assert path.read_bytes() == before and P.node_settings()['claude'].enabled
+
+
 def test_capacity_slider_persists_and_drains_without_disabling(pool, monkeypatch):
     cron = []
     monkeypatch.setattr(P, '_sync_cron_capacity', cron.append)

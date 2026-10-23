@@ -378,6 +378,56 @@ def test_agent_test_sessions_do_not_block_automated_launches(swap_app):
     assert r["state"] == "queued" and r["require_worker"] == "spark"
 
 
+@pytest.mark.parametrize("actor", [None, "gbox-agent", "mcp"])
+def test_watched_bot_session_blocks_launches_for_every_actor(swap_app, actor):
+    app, store, _, _ = swap_app
+    store.put("slabel", "spark-op", {"owner": "agent"})
+    operator_guard.report_watch(store, "pip-viewer", "spark-op")
+    with client(app, actor) as c:
+        result = c.post("/api/jobs", json={"tool": "launch_game", "input": {"game": GAME},
+                                         "require_worker": "spark"}).json()
+    assert result["state"] == "rejected" and "PiP" in result["error"]
+
+
+def test_watch_lease_is_per_viewer_and_expires(swap_app):
+    _, store, _, _ = swap_app
+    operator_guard.report_watch(store, "first", "spark-op", now=100)
+    operator_guard.report_watch(store, "second", "spark-op", now=110)
+    operator_guard.report_watch(store, "first", None, now=111)
+    assert operator_guard.watched_sessions(store, "spark", now=112)
+    assert not operator_guard.watched_sessions(store, "other", now=112)
+    assert not operator_guard.watched_sessions(store, "spark", now=291)
+
+
+def test_queued_launch_is_held_if_viewing_starts_before_claim(swap_app):
+    app, store, _, _ = swap_app
+    with client(app) as c:
+        job = c.post("/api/jobs", json={"tool": "launch_game", "input": {"game": GAME},
+                                      "require_worker": "spark"}).json()
+        assert job["state"] == "queued"
+        operator_guard.report_watch(store, "pip", "spark-op")
+        response = c.post("/api/workers/spark/claim")
+    assert response.status_code == 204
+    assert "PiP" in store.get("job", job["id"])["admission_wait"]["reason"]
+
+
+def test_connected_mjpeg_view_protects_bot_until_stream_closes(swap_app, monkeypatch):
+    import asyncio
+    app, store, _, _ = swap_app
+    store.put("slabel", "spark-op", {"owner": "agent"})
+    async def frames(*a, **kw):
+        yield JPEG
+    monkeypatch.setattr(live_stream, "async_mjpeg_parts", frames)
+    response = route(app, "/api/sessions/{sid}/mjpeg", "GET").endpoint("spark-op", actor="operator")
+    assert operator_guard.watched_sessions(store, "spark")
+
+    async def consume():
+        return [part async for part in response.body_iterator]
+
+    assert asyncio.run(consume()) == [JPEG]
+    assert not operator_guard.watched_sessions(store, "spark")
+
+
 def test_jobs_record_actor_and_client_origin(swap_app):
     app, store, _, _ = swap_app
     with client(app, None, **{"x-gbox-client": "web", "user-agent": "Mozilla/5.0 Electron/31"}) as c:

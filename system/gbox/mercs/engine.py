@@ -22,6 +22,7 @@ as well through here as through the title's own playbook).
 from __future__ import annotations
 
 import time
+import uuid
 
 from . import driver as D
 from .reactions import PromptPresser
@@ -32,6 +33,7 @@ TAP_DOWN_S, TAP_REST_S = 0.25, 0.4
 FRAME_WAIT_S, FRAME_POLL_S = 0.05, 0.002      # frame sync: wait for the game's next frame this long, polling this often
 MASH_DOWN_S, MASH_UP_S = 0.045, 0.035         # a mash (a grab's SHAKE OFF): each press down / up this long - two game
                                               # frames down, one up, so every press is a new one to the game
+RECOVERY_DOWN_S = RECOVERY_UP_S = 1. / 60.    # verified RE5 self-recovery: one game frame down, one released
 
 
 class Latency:
@@ -126,13 +128,96 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             try:
                 lessons({"kind": kind, **fields})
             except Exception:                        # noqa: BLE001 - a lesson lost never stops the round
-                pass
+                stats["local_log_errors"] = stats.get("local_log_errors", 0) + 1
+
+    trace = None
+    notebook = None
+    remembered = None
+    round_id = None
+    outcome = "interrupted"
+    last_stats = {}
+    # Per-round deltas for counters retained by the deployment's live stats dict.
+    delta_fields = ("bonuses_taken", "bonus_s", "stuck", "routes_blocked", "routes_given_up", "mines_placed",
+                    "damage_events", "player_damage_events", "hits_taken", "mine_attempts", "mine_detonations_observed", "mine_retreats_completed",
+                    "mine_pickups_avoided", "qte_presses", "resuscitate_presses", "route_replans", "nav_recoveries")
+    baseline = {k: stats.get(k, 0) for k in delta_fields}
+    round_closed = False
+    last_round_marker = None
+    try:
+        from . import lessons as lesson_store
+        from .notebook import Notebook
+        notebook = Notebook(lesson_store.ROOT.parent, prof["map_id"])
+        round_id = uuid.uuid4().hex
+    except Exception as exc:
+        stats["round_notebook_error"] = str(exc)[:200]
+    if prof.get("map_id") == "BLUS30491":
+        from .route_trace import Recorder
+        from . import lessons as lesson_store
+        trace = Recorder(log, atlas_root=lesson_store.ROOT.parent / "navigation", title=prof["map_id"], round_id=round_id)
+
+    def finish_evidence(at, reason, final_stats):
+        nonlocal trace, round_closed
+        if round_closed:
+            return
+        round_closed = True
+        row = dict(final_stats)
+        for key in delta_fields:
+            row[key] = max(0, (row.get(key) or 0) - baseline[key])
+        if row.get('round_accuracy') is not None:
+            row['accuracy'] = row['round_accuracy']
+        if trace is not None:
+            try:
+                # The writer owns this detached metric snapshot. Attaching its
+                # returned review to row must never make review.metrics refer
+                # back to row (a cycle breaks every later round's JSON output).
+                metrics = {key:value for key,value in row.items()
+                           if isinstance(value,(str,int,float,bool,type(None)))}
+                navigation = trace.finish(at, reason, metrics)
+                stats.update(navigation)
+                row.update(navigation)
+                log("navigation_round_review", **navigation)
+            except Exception as exc:
+                stats["navigation_atlas_error"] = str(exc)[:200]
+            finally:
+                trace = None
+        if notebook is not None and remembered is not None:
+            try:
+                saved = notebook.finish(*remembered, reason, row, round_id=round_id)
+                stats["round_memory_saved"] = saved["id"]
+                stats["round_evidence_finalized"] = stats.get("round_evidence_finalized",0)+1
+                log("round_learning", **saved)
+                config = getattr(getattr(m, "adapter", None), "config", None)
+                if config is not None and callable(getattr(config, "token", None)):
+                    notebook.publish(config.public_url or "http://127.0.0.1:8765", config.token())
+            except Exception as exc:
+                stats["round_notebook_error"] = str(exc)[:200]
+        stats["round_evidence_closed"] = True
+
+    def start_evidence(before):
+        nonlocal trace, remembered, round_id, baseline, round_closed, outcome, last_stats
+        round_id = uuid.uuid4().hex
+        remembered = None
+        baseline = {key:before.get(key,0) for key in delta_fields}
+        round_closed, outcome, last_stats = False, "interrupted", {}
+        for key in ("result_rank","result_rank_observed","rank_verified"):
+            stats.pop(key,None)
+        stats.update(round_evidence_id=round_id,round_evidence_closed=False)
+        if prof.get("map_id") == "BLUS30491":
+            from .route_trace import Recorder
+            from . import lessons as lesson_store
+            trace = Recorder(log,atlas_root=lesson_store.ROOT.parent/"navigation",title=prof["map_id"],round_id=round_id)
+
+    stats.update(round_evidence_id=round_id,round_evidence_closed=False)
 
     try:
         while not stopped():
             now = clock()
+            before_observation = dict(stats)
             snap = drv.snapshot(m)
             where = drv.screen(m, snap)
+            stats["screen"] = where
+            if where == "playing":
+                stats.pop("screen_note", None)
             if damage is not None:
                 from .damage import Backpressure
                 try:
@@ -144,6 +229,18 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             observe_round = getattr(bot, "observe_round", None)
             if observe_round is not None:
                 observe_round(snap, where, now)
+            if where == "playing":
+                # A fast retry can begin inside this invocation: DEAD is IN_ROUND,
+                # and short menus/loading gaps do not satisfy ROUND_GONE_S.
+                marker = getattr(bot,"_round_started",None)
+                changed_round = last_round_marker is not None and marker is not None and marker != last_round_marker
+                if round_closed or changed_round:
+                    hold(set())
+                    if not round_closed:
+                        finish_evidence(now,outcome if outcome != "interrupted" else "ended",last_stats)
+                    start_evidence(before_observation)
+                if marker is not None:
+                    last_round_marker = marker
             if damage is not None:
                 damage.after(snap, where, now)
             if tactical is not None:                  # the tactical map: who is where, what the bot means to do
@@ -152,14 +249,26 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                 except Exception:                     # noqa: BLE001 - the map never costs the round a tick
                     pass
             if where not in D.IN_ROUND:
+                if where == "results":
+                    last_stats = dict(stats)
+                    last_stats.update({key:snap[key] for key in ("timer","kills","score","combo")
+                                       if snap.get(key) is not None})
+                    if outcome != "died":
+                        outcome = "completed" if last_stats.get("timer") == 0 or (last_stats.get("kills") or 0)>=150 else "ended"
+                    hold(set())
+                    finish_evidence(now,outcome,last_stats)
                 hold(set())
                 if where == "loading" or not snap.get("player"):
                     lost_since = lost_since or now
                     if now - lost_since > LOST_S:
+                        outcome = "lost"
                         return "lost"
                 else:
                     gone_since = gone_since or now
                     if now - gone_since > ROUND_GONE_S:
+                        if outcome != "died":
+                            outcome = "completed" if where == "results" and (last_stats.get("timer") == 0
+                                or (last_stats.get("kills") or 0) >= 150) else "ended"
                         log("round", stats={k: v for k, v in stats.items() if isinstance(v, (int, float, str))})
                         return "round"
                 sleep(0.1)
@@ -167,21 +276,58 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             gone_since = lost_since = None
             progress += 1
             stats.update(drv.progress(snap))
+            if where == "dead":
+                outcome = "died"
+            last_stats = dict(stats)
+            if where == "dead":
+                hold(set())
+                finish_evidence(now,outcome,last_stats)
+            if notebook is not None and remembered is None and where == "playing":
+                mesh = snap.get("nav")
+                stage = getattr(mesh, "learning_sig", None) or str(getattr(snap.get("stage"), "key", "unknown"))
+                mode = stats.get("mercenaries_mode", "mercenaries")
+                remembered = (stage, mode, stats.get("character", "unknown"))
+                try:
+                    recalled = notebook.recall(stage, mode, stats)
+                    stats.update(round_memory_recalled=len(recalled), round_memory_db=str(notebook.path),
+                                 round_guide=str(notebook.root / "guide.json"))
+                    log("round_recall", stage=stage, mode=mode, lessons=recalled)
+                    if callable(getattr(bot, "recall", None)):
+                        bot.recall(recalled)
+                except Exception as exc:
+                    stats["round_notebook_error"] = str(exc)[:200]
             stats["ram_progress"] = progress
+            if trace is not None:
+                trace.observe(snap, bot, stats, now, held, "before_decision")
             chords = pp.step(now, ok=lambda b: bot.prompt_ok(b, snap, now))
             if chords:                                # the game asks for a button: let go, press it
                 hold(set())
                 mash = getattr(pp, "mashing", False)  # a grab: as fast as the game takes new presses (30 a second)
                 for chord in chords:
+                    recovery = False
+                    if mash and tuple(chord) == ("circle",) and snap.get("recovery_active") \
+                            and callable(getattr(drv, "recovery_active", None)):
+                        try:
+                            recovery = bool(drv.recovery_active(m))
+                        except (ValueError, OSError):
+                            recovery = False
+                        if not recovery:
+                            continue  # the live signature ended; do not press into the next game state
+                    # This fast path is authorized only by the live recovery signature,
+                    # and reread on every pulse. Other Circle QTEs keep their normal cadence.
                     send([{"key": k, "down": True} for k in chord])
-                    sleep(MASH_DOWN_S if mash else (0.12 if len(chords) == 1 else 0.06))
+                    sleep(RECOVERY_DOWN_S if recovery else MASH_DOWN_S if mash else (0.12 if len(chords) == 1 else 0.06))
                     send([{"key": k, "down": False} for k in chord])
                     if mash or len(chords) > 1:
-                        sleep(MASH_UP_S if mash else 0.04)
+                        sleep(RECOVERY_UP_S if recovery else MASH_UP_S if mash else 0.04)
+                    if recovery:
+                        stats["resuscitate_fast_pulses"] = stats.get("resuscitate_fast_pulses", 0) + 1
                 if not mash:
                     sleep(0.15)
                 continue
             act = bot.tick(snap)
+            if trace is not None:
+                trace.observe(snap, bot, stats, now, act.get("hold", ()), "decision", act.get("tap"))
             vi = frame_fn.vi(m) if frame_fn is not None and hasattr(frame_fn, "vi") else None
             lat.observe(bot, snap, act, held, vi)
             if stats.get("hits_taken", 0) > hits_seen:   # what hit him, for the lessons
@@ -206,6 +352,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
         try:
             hold(set())
         finally:
+            finish_evidence(clock(),outcome,last_stats)
             try:
                 bot.save()
             except Exception:                        # noqa: BLE001

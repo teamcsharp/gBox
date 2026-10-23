@@ -194,14 +194,15 @@ def test_the_playbook_applies_the_re5_package_through_re5_mods(monkeypatch):
     assert st["turn_speed_x"] == 2.0 and st["fire_rate_x"] == 80.0 and st["infinite_ammo"] is True
 
 
-def test_the_re5_profile_package_keeps_the_fire_cheats_and_turns_infinite_life_off():
+def test_the_re5_profile_loads_assisted_damage_guard_and_ten_seconds_per_kill():
     import json
     from pathlib import Path
     prof = json.loads(Path(__file__).resolve().parents[1].joinpath("profiles/gamedata/BLUS30491-ram.json").read_text())["mercs"]
     assert [op for op, _ in prof["package"]] == ["turn_speed", "fire_rate", "infinite_ammo", "unlimited_health"] and prof["round_ops"] == [["random_cheats", {}]]
     assert dict(prof["package"])["fire_rate"] == {"multiplier": 80} and dict(prof["package"])["turn_speed"] == {"multiplier": 1}   # regular speed (operator 2026-10-22)
-    assert dict(prof["package"])["unlimited_health"] == {"on": False}   # operator 2026-10-22: "turn off infinite life"
-    assert dict(prof["playing_ops"])["unlimited_health"] == {"on": False}
+    assert dict(prof["package"])["unlimited_health"] == {"on": True}   # operator 2026-10-23: avoid own mine damage
+    assert dict(prof['playing_ops'])['unlimited_health'] == {'on': True}
+    assert dict(prof['playing_ops'])['kill_time'] == {'on': True, 'seconds': 10}
 
 
 def test_each_kill_adds_two_seconds_to_the_round_clock():
@@ -241,7 +242,7 @@ def test_the_re5_profile_turns_kill_time_on():
     import json
     from pathlib import Path
     prof = json.loads(Path(__file__).resolve().parents[1].joinpath("profiles/gamedata/BLUS30491-ram.json").read_text())["mercs"]
-    assert dict(prof["playing_ops"])["kill_time"] == {"on": True, "seconds": 2, "seconds_max": 5}   # random 2-5 s, on by default
+    assert dict(prof["playing_ops"])["kill_time"] == {"on": True, "seconds": 10}
 
 
 def test_kill_time_seconds_is_an_operator_setting_that_is_validated_and_retained():
@@ -260,17 +261,15 @@ def test_kill_time_seconds_is_an_operator_setting_that_is_validated_and_retained
     assert not g.orig["kill_time"]["on"] and g.orig["kill_time"]["seconds"] == 3.5
 
 
-def test_kill_time_draws_a_random_two_to_five_seconds_per_kill_and_the_switch_keeps_the_range(monkeypatch):
-    # operator 2026-10-22: "enabled by default and to randomly be adding a amount of time per kill between two and five
-    # seconds per kill. But I want to be able to enable and disable this."
+def test_kill_time_adds_ten_seconds_by_default_and_toggle_retains_the_value(monkeypatch):
     g = type("G", (), {"orig": {}})()
     r = T.kill_time(g, True)                                    # the default
-    assert (r["seconds"], r["seconds_max"]) == T.KILL_TIME_RANGE == (2.0, 5.0)
+    assert (r["seconds"], r["seconds_max"]) == T.KILL_TIME_RANGE == (10.0, 10.0)
     draws = {T._kill_seconds(g.orig["kill_time"]) for _ in range(400)}
-    assert draws == {2.0, 3.0, 4.0, 5.0}                          # whole seconds, every value in the range
+    assert draws == {10.0}
     T.kill_time(g, False)                                       # the panel's switch: off, then on again
     r = T.kill_time(g, True)
-    assert r["kill_time"] and (r["seconds"], r["seconds_max"]) == (2.0, 5.0)
+    assert r["kill_time"] and (r["seconds"], r["seconds_max"]) == (10.0, 10.0)
     assert T._kill_seconds({"seconds": 3.0}) == 3.0             # a fixed value still works
     for bad in ((5, 2), (0, 3), (2, 31)):
         try:

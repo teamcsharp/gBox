@@ -7,6 +7,9 @@ long time; the client stream watchdog (clients/web/viz/stream-watchdog.js) recon
 """
 from __future__ import annotations
 
+import asyncio
+import collections
+import inspect
 import time
 from typing import Callable, Iterator
 
@@ -18,6 +21,76 @@ ALIVE_CHECK_S = 1.0    # session-row lookups (a store query) at most this often,
 
 def part(frame: bytes) -> bytes:
     return b"--f\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n"
+
+
+def notify_frame(lv: dict) -> None:
+    """Wake existing readers after publishing a frame, with lv['cond'] held.
+
+    Async viewers retain only an event and the shared newest JPEG. A slow HTTP consumer never accumulates a
+    private queue of old pictures. The legacy condition still serves synchronous/internal consumers.
+    """
+    lv["cond"].notify_all()
+    try:
+        current_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        current_loop = None
+    for loop, event in tuple(lv.get("async_waiters", ())):
+        try:
+            if loop is current_loop:
+                event.set()
+            else:
+                loop.call_soon_threadsafe(event.set)
+        except RuntimeError:                            # the disconnected viewer's loop already closed
+            pass
+
+
+async def async_mjpeg_parts(lv: dict, *, keepalive: float = KEEPALIVE_S, idle_limit: float = IDLE_LIMIT_S,
+                            first_frame_limit: float = FIRST_FRAME_LIMIT_S, alive=lambda: True,
+                            clock=time.monotonic, wait: float = 1.0):
+    """Stream the newest available frame without dispatching a thread for every JPEG.
+
+    HTTP backpressure suspends this generator. On resumption it reads the shared newest frame, dropping any
+    intermediate pictures rather than replaying a backlog. Cancellation unregisters the viewer immediately.
+    ``alive`` may be async so a session lookup never blocks the serving event loop.
+    """
+    event, loop = asyncio.Event(), asyncio.get_running_loop()
+    waiter = (loop, event)
+    seq, last_new = -1, clock()
+    last_sent, check_at = last_new, last_new
+    with lv["cond"]:
+        lv.setdefault("async_waiters", set()).add(waiter)
+    try:
+        while clock() - last_new < (idle_limit if seq != -1 else first_frame_limit):
+            if clock() >= check_at:
+                running = alive()
+                if inspect.isawaitable(running):
+                    running = await running
+                if not running:
+                    return
+                check_at = clock() + ALIVE_CHECK_S
+            with lv["cond"]:
+                event.clear()                           # clear and snapshot together: no lost frame wakeup
+                frame, current = lv["frame"], lv["seq"]
+            now = clock()
+            if frame is not None and current != seq:
+                with lv["cond"]:
+                    lv["viewer_frames"] = lv.get("viewer_frames", 0) + 1
+                    if seq >= 0:
+                        lv["viewer_skips"] = lv.get("viewer_skips", 0) + max(0, current - seq - 1)
+                seq, last_new, last_sent = current, now, now
+                yield part(frame)
+                continue
+            if frame is not None and now - last_sent >= keepalive:
+                last_sent = now
+                yield part(frame)
+                continue
+            try:
+                await asyncio.wait_for(event.wait(), min(wait, keepalive))
+            except asyncio.TimeoutError:
+                pass
+    finally:
+        with lv["cond"]:
+            lv["async_waiters"].discard(waiter)
 
 
 def mjpeg_parts(lv: dict, *, keepalive: float = KEEPALIVE_S, idle_limit: float = IDLE_LIMIT_S,
@@ -83,6 +156,7 @@ def meter(lv: dict, now: float, source: str) -> None:
     prev = lv.get("ts") or 0
     if prev and now > prev:
         dt = min(now - prev, 10.0)
+        lv.setdefault("frame_gaps", collections.deque(maxlen=600)).append(now - prev)
         avg = lv.get("dt")
         lv["dt"] = dt if avg is None else avg + 0.1 * (dt - avg)
         lv["fps"] = 1.0 / lv["dt"] if lv["dt"] > 0 else None
@@ -103,6 +177,14 @@ def health(lv: dict, state: str | None, now: float | None = None) -> dict:
     """What the client stream watchdog needs to tell a frozen picture from a quiet scene: the source frame age."""
     now = time.time() if now is None else now
     ts = lv.get("ts") or 0
+    gaps = sorted(lv.get("frame_gaps") or ())
+    pacing = ({"samples": len(gaps), "gap_p50_ms": round(gaps[(len(gaps) - 1) // 2] * 1000, 2),
+               "gap_p95_ms": round(gaps[int((len(gaps) - 1) * .95)] * 1000, 2),
+               "gap_max_ms": round(gaps[-1] * 1000, 2), "gaps_over_100ms": sum(g > .1 for g in gaps)}
+              if gaps else {"samples": 0})
     return {"state": state or "missing", "seq": lv.get("seq", 0), "age_s": round(now - ts, 2) if ts else None,
             "uploads": lv.get("uploads", 0),
+            "pacing": pacing,
+            "delivery": {"viewers": len(lv.get("async_waiters") or ()), "frames": lv.get("viewer_frames", 0),
+                         "skipped_frames": lv.get("viewer_skips", 0)},
             "stalls": list(lv.get("stalls") or [])[-10:], "events": list(lv.get("events") or [])[-10:]}

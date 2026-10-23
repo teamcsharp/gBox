@@ -1127,6 +1127,8 @@ def create_app(config: Config) -> FastAPI:
         seen = set()
         while sess.get('state') != 'running' and sess.get('replaced_by') and sid not in seen:
             seen.add(sid); sid = sess['replaced_by']; sess = store.get('session', sid) or _404()
+        if why := operator_guard.watching_reason(store, operator_guard.worker_of(sid)):
+            raise HTTPException(409, why)
         if _automated(actor, origin) and sess.get('state') == 'running':
             from .background_testing import agent_owned
             if not agent_owned(store.get('slabel', sid), store.get('job', sid.split('-', 1)[-1])):
@@ -2473,6 +2475,9 @@ def create_app(config: Config) -> FastAPI:
                         and j["require_os"] in (None, w["os"]) and j["require_worker"] in (None, wid, w["name"])):   # by name: launched while that worker was restarting
                     if _demo_preempted(j, wid):
                         continue
+                    if j["tool"] == "launch_game" and (why := operator_guard.watching_reason(store, wid)):
+                        store.put('job', j['id'], j | {'admission_wait': {'worker': w['name'], 'reason': why}})
+                        continue
                     from .savemgo import claim_reason as savemgo_claim_reason
                     savemgo_wait = savemgo_claim_reason(w, j)
                     if savemgo_wait:
@@ -2926,6 +2931,17 @@ def create_app(config: Config) -> FastAPI:
             from .job_routing import conflict
             if why := conflict(job.require_os, store.get("worker", job.require_worker)):
                 raise HTTPException(422, why)
+        if t.name == "launch_game" and job.state == JobState.QUEUED:
+            online = [w for w in workers() if w["online"] and t.name in (w.get("tools") or [])]
+            candidates = [w for w in online if (not job.require_worker or w["id"] == job.require_worker)
+                          and (not job.require_os or w.get("os") == job.require_os)]
+            if job.require_worker and not candidates:
+                candidates = [{"id": job.require_worker}]
+            available = [w for w in candidates if not operator_guard.watched_sessions(store, w["id"])]
+            if candidates and not available:
+                job.state, job.error = JobState.REJECTED, operator_guard.watching_reason(store, candidates[0]["id"])
+            elif not job.require_worker and available and len(available) < len(candidates):
+                job.require_worker = available[0]["id"]
         if t.name == "launch_game" and job.agent_use and actor != "gbox-agent" and job.state == JobState.QUEUED:
             # One emulator per PC: an automated launch where the operator is playing would save and close their game
             # (a black screen mid-match). The in-app chat agent (gbox-agent) acts on the operator's own words and is
@@ -3833,19 +3849,19 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/api/sessions/{sid}/frame")
     async def put_frame(sid: str, request: Request, actor=Depends(auth)):
-        from .live_stream import meter
+        from .live_stream import meter, notify_frame
         lv, body = _live(sid), await request.body()
         with lv["cond"]:
             now = time.time()
             meter(lv, now, "still")                       # a native game's window still (broadcast: kind "stills")
             lv["frame"], lv["seq"], lv["ts"] = body, lv["seq"] + 1, now
-            lv["cond"].notify_all()
+            notify_frame(lv)
         return {"seq": lv["seq"]}
 
     @app.post("/api/sessions/{sid}/stream")
     async def ingest_stream(sid: str, request: Request, actor=Depends(auth)):
         """Worker uploads a session's frames as one stream: [4-byte length][JPEG]...; parsed on the event loop."""
-        from .live_stream import meter, note_frame
+        from .live_stream import meter, note_frame, notify_frame
         lv, buf, n = _live(sid), bytearray(), 0
         lv["sid"], lv["uploads"] = sid, lv.get("uploads", 0) + 1
         async for chunk in request.stream():
@@ -3861,7 +3877,7 @@ def create_app(config: Config) -> FastAPI:
                         note_frame(lv, now)               # a gap of 2 s+ is logged with timestamps (stream-stability)
                         meter(lv, now, "stream")          # the frame rate the broadcast feed list reports
                         lv["frame"], lv["seq"], lv["ts"] = frame, lv["seq"] + 1, now
-                        lv["cond"].notify_all()
+                        notify_frame(lv)
                     n += 1
         return {"frames": n}
 
@@ -3905,15 +3921,31 @@ def create_app(config: Config) -> FastAPI:
 
     @app.get("/api/sessions/{sid}/mjpeg")
     def mjpeg(sid: str, actor=Depends(auth)):
-        from .live_stream import mjpeg_parts
+        from .live_stream import async_mjpeg_parts
         lv = _live(sid)
 
-        def alive() -> bool:                         # stop streaming once the session has ended or was replaced
-            s = store.get("session", sid)
+        async def alive() -> bool:                   # a store read never blocks delivery to every viewer
+            s = await asyncio.to_thread(store.get, "session", sid)
             return s is None or s.get("state") != "ended"
         # Wakes on every new frame (stream fps = source fps) and repeats the newest frame while the source pauses,
         # so a state save or upload reconnect can no longer end the response and leave the operator's view black.
-        return StreamingResponse(mjpeg_parts(lv, alive=alive), media_type="multipart/x-mixed-replace; boundary=f",
+        import uuid
+        viewer = "mjpeg:" + uuid.uuid4().hex
+        operator_guard.report_watch(store, viewer, sid)
+
+        async def watched_parts():
+            renewed = 0.0
+            try:
+                async for part in async_mjpeg_parts(lv, alive=alive):
+                    now = time.time()
+                    if now - renewed >= 5:
+                        await asyncio.to_thread(operator_guard.report_watch, store, viewer, sid, now=now)
+                        renewed = now
+                    yield part
+            finally:
+                await asyncio.to_thread(operator_guard.report_watch, store, viewer, None)
+
+        return StreamingResponse(watched_parts(), media_type="multipart/x-mixed-replace; boundary=f",
                                  headers={"cache-control": "no-store", "x-accel-buffering": "no"})
 
     # --- broadcast: the program and per-PC / per-session feeds for Pine Box and media sources (docs/broadcast.md) ---

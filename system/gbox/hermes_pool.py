@@ -142,6 +142,17 @@ def _metric(text, name):
     return sum(float(v) for v in values) if values else None
 
 
+def _cooldown_active(settings):
+    """Models can remain listed after credit exhaustion; do not fail over to that route."""
+    from .hermes_quota import number
+    try:
+        feedback = json.loads((D.state_dir() / 'feedback.json').read_text())
+        until = number((feedback.get('cooldowns') or {}).get(settings.provider + '/' + settings.model))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+    return until is not None and until > time.time()
+
+
 def health(name, s, *, refresh=False):
     now = time.time()
     key = (s.upstream, s.model, s.enabled)
@@ -311,7 +322,7 @@ def routes(app, config, auth, gate):
         retry_headers = {'Retry-After': '30'}
         for target in candidates:
             s = settings[target]
-            if not s.enabled:
+            if not s.enabled or _cooldown_active(s):
                 continue
             import asyncio
             ready = await asyncio.to_thread(health, target, s)

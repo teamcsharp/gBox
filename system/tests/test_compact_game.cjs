@@ -115,6 +115,44 @@ test('remote compact view hides a local native surface without stopping its game
   const x=embedding({remote:true}); await x.tick();
   assert.deepEqual(x.seen.syncs,[null]); assert.equal(x.seen.surfaces.length,0); assert.equal(x.compact.on,true);
 });
+
+test('remote compact PiP remains open through a game restart',async()=>{
+  const x=embedding({remote:true,ended:true});await x.tick();
+  assert.equal(x.seen.restores,0);assert.equal(x.compact.on,true);
+});
+
+test('desktop handoff waits for a visible successor frame and respects a PiP closed during the probe',async()=>{
+  for(const visible of [false,true,'closed']){
+    let io;const image={style:{backgroundImage:'old-picture'}};
+    const state={on:true,sid:'old',local:false};const changes=[];
+    const wv={dataset:{ready:'true'},executeJavaScript:async code=>{
+      if(code.includes('.picture(')){
+        if(visible==='closed')state.on=false;
+        return {visible:visible!==false,poster:'data:image/jpeg;base64,frame'};
+      }
+    }};
+    const context=vm.createContext({GBoxSessionContinuity:{create:value=>{io=value;return {}; }},COMPACT:state,
+      compactSession:null,compactTitle:'old',compactStreamUrl:'old-url',sessionTitle:s=>s.title,
+      S:{apiUrl:'http://spark'},gbox:{token:async()=> 'test'},document:{querySelector:()=>wv},$:()=>image,
+      compactController:{follow:async(from,s)=>{changes.push(s.sid);state.sid=s.sid;}}});
+    const start=html.indexOf('const compactContinuity =');
+    vm.runInContext(html.slice(start,html.indexOf('setInterval(() => compactContinuity',start)),context);
+    await io.follow({session_id:'new',title:'RE5'},'old');
+    assert.deepEqual(changes,visible===true?['new']:[]);
+    if(visible!==true)assert.equal(image.style.backgroundImage,'old-picture');
+  }
+});
+
+test('replacement changes only the game stream and pad target, preserving PiP window state',async()=>{
+  const x=fixture({resolve:async()=>({sid:'remote-old',local:false}),mode:()=> 'full'});
+  await x.ctl.enter();await x.ctl.picture(1920,1080);
+  const calls=x.calls.length;
+  assert.equal(await x.ctl.follow('remote-old',{sid:'remote-new',local:false}),true);
+  assert.equal(x.ctl.state.sid,'remote-new');assert.equal(x.ctl.state.aspect,16/9);
+  assert.equal(x.ctl.state.returnMode,'full');assert.equal(x.calls.length,calls);
+  assert.equal(x.pads.at(-1),'remote-new');
+  await x.ctl.restore();assert.equal(await x.ctl.follow('remote-new',{sid:'late',local:false}),false);
+});
 test('session ending restores the app; a temporary service error leaves PiP intact',async()=>{
   const x=embedding({ended:true}); await x.tick(); assert.equal(x.seen.restores,1);
   const y=embedding({ok:false}); await y.tick(); assert.equal(y.seen.restores,0); assert.equal(y.compact.on,true);
