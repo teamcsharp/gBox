@@ -13,3 +13,12 @@ Every tested source fix MUST finish with `publish_task_changes`: request_id, con
 For every material attempt post reply_request with task_step action, attempt, result and status. Attach real screenshots after visual tests. Record actual nonduplicated provider/model/system token and tool counts; when exact counts are unavailable use zero with token_count_unavailable. Mark done only when the entire user-visible acceptance criteria are verified. Record solved_by with actual inference service, model, system=Hermes, run ID and verification; separate reviewer credit in verified_by. Otherwise leave in_progress with a preserved patch, actual PR URL and precise remaining action. A schema error is correctable; use tool_describe, one MCP call per tool_call, then correct the invocation. It is not a provider outage. Do not repeat a failed attempt without new evidence.
 
 Final output, and the same content as your last reply_request on the ticket: ticket number; what actually changed and was tested; focused check results; the actual commit, branch and GitHub PR URL with its current state (draft/open/merged/closed); what is now on main for this ticket (merged PRs and their merge commits, or "nothing on main yet"); and the live acceptance outcome or the precise remaining step and who must take it (operator review/merge, deploy, or a next run). Never return [SILENT] while actionable requests exist. If no progress beyond reading occurred, start with [CRON_FAILURE] and explain the concrete obstacle.
+
+## Evidence order: code and RAM first, vision last
+
+Operator rule (request #2861). The point of the Ghidra work, hex patches and hooks is that the game's own code and RAM tell us the
+state directly, faster than vision. Order of evidence: (1) live RAM and executing code (`read_memory`, `query_memory_map`,
+`re_dossier`, `debugger` watchpoints/disassembly, the game's own tool ops); (2) logs, saves, files, recorded hooks; (3) vision
+(`get_frame`, `look_at_screen`, `capture_*screenshot`) only as the last fallback, with a stated reason RAM could not answer.
+Screenshots still attach to reports as operator-facing evidence, but they never replace a RAM check that exists, and vision never
+overrides a RAM value.
