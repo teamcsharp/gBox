@@ -69,7 +69,18 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
     return {'state': 'implementation_pending', 'applied': False}
 
 
+TETRIS_PARTY_WII_ID = '6ad5e998536407a3'
+TETRIS_PARTY_WII_PLATFORM = 'wii'
+
 def profile_for(game: dict) -> dict:
+    if game.get('game_id') == TETRIS_PARTY_WII_ID and game.get('platform') == TETRIS_PARTY_WII_PLATFORM:
+        # Tetris Party Deluxe (USA): the owned image, the executable and the game's own
+        # save file are pinned, but the save payload is not mapped and no writer exists.
+        # Read-only probe only: the unlock hook short-circuits on verified=False, so no
+        # writer is reachable from the Play path for this game.
+        from . import tetris_party_wii
+        return {'status': 'pending_research', 'profile': None, 'verified': False,
+                'scope': list(tetris_party_wii.CATEGORIES), **tetris_party_wii.profile_gate()}
     from . import doax2_unlock
     if game.get('game_id') == doax2_unlock.GAME_ID and game.get('platform') == doax2_unlock.PLATFORM:
         # Honest gate for DOAX2: research pending, no verified write targets exist.
