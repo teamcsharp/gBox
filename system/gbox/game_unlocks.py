@@ -37,31 +37,39 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
 
 
 def profile_for(game: dict) -> dict:
-    if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
-        return {'status': 'unsupported', 'profile': None, 'verified': False,
-                'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}
-    path = Path(__file__).resolve().parent.parent / 'profiles/gamedata' / f'{RE6_ID}-unlock.json'
-    try:
-        template = json.loads(path.read_text(encoding='utf-8'))
-        digest = hashlib.sha256(json.dumps(template, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
-    except (OSError, ValueError) as error:
-        return {'status': 'unavailable', 'profile': None, 'verified': False, 'scope': [],
-                'reason': f'Verified RE6 template unavailable: {error}'}
-    if digest != RE6_TEMPLATE_SHA256:
-        return {'status': 'unverified', 'profile': None, 'verified': False, 'scope': [],
-                'reason': 'RE6 template changed; this profile requires new verification.'}
-    return {'status': 'verified_profile', 'profile': 're6-x360-native-save-template-v1', 'verified': True,
-            'game_id': RE6_ID, 'template_sha256': digest,
-            'scope': ['campaign chapters/difficulties present on this Xbox 360 disc', 'skills',
-                      'Mercenaries: 9 characters with EX costumes and 3 stages on this disc',
-                      'figures/emblems/titles/special features'],
-            'exclusions': ['No Hope difficulty', 'Mercenaries No Mercy', 'DLC stages and retro costumes absent from this build'],
-            'evidence': {'implementation': 'gbox.re6_tool.unlock_all', 'native_routine': '0x824d8800',
-                         'template': 'profiles/gamedata/0871eee3b68cdea3-unlock.json',
-                         'verification': 'Native routine invoked in the game and its resulting save recorded.'},
-            'source_verification': 'Registered Xbox 360 catalog ID and pinned template; the existing live tool guards the native build before editing memory.',
-            'save_effect': 'Existing RE6 tool monotonically upgrades the save and keeps its original backup.',
-            'requires_save_upgrade_opt_in': True}
+    if game.get('game_id') == RE6_ID and game.get('platform') == 'xbox360':
+        path = Path(__file__).resolve().parent.parent / 'profiles/gamedata' / f'{RE6_ID}-unlock.json'
+        try:
+            template = json.loads(path.read_text(encoding='utf-8'))
+            digest = hashlib.sha256(json.dumps(template, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        except (OSError, ValueError) as error:
+            return {'status': 'unavailable', 'profile': None, 'verified': False, 'scope': [],
+                    'reason': f'Verified RE6 template unavailable: {error}'}
+        if digest != RE6_TEMPLATE_SHA256:
+            return {'status': 'unverified', 'profile': None, 'verified': False, 'scope': [],
+                    'reason': 'RE6 template changed; this profile requires new verification.'}
+        return {'status': 'verified_profile', 'profile': 're6-x360-native-save-template-v1', 'verified': True,
+                'game_id': RE6_ID, 'template_sha256': digest,
+                'scope': ['campaign chapters/difficulties present on this Xbox 360 disc', 'skills',
+                          'Mercenaries: 9 characters with EX costumes and 3 stages on this disc',
+                          'figures/emblems/titles/special features'],
+                'exclusions': ['No Hope difficulty', 'Mercenaries No Mercy', 'DLC stages and retro costumes absent from this build'],
+                'evidence': {'implementation': 'gbox.re6_tool.unlock_all', 'native_routine': '0x824d8800',
+                             'template': 'profiles/gamedata/0871eee3b68cdea3-unlock.json',
+                             'verification': 'Native routine invoked in the game and its resulting save recorded.'},
+                'source_verification': 'Registered Xbox 360 catalog ID and pinned template; the existing live tool guards the native build before editing memory.',
+                'save_effect': 'Existing RE6 tool monotonically upgrades the save and keeps its original backup.',
+                'requires_save_upgrade_opt_in': True}
+    if game.get('game_id') in ('a19b4e641b155364', '59c55e95af61abbe'):
+        from . import doapp_unlock
+        return {'status': 'research_pending', 'profile': 'doapp-jp-static-inventory-v1', 'verified': False,
+                'game_id': game.get('game_id'),
+                'scope': doapp_unlock.INVENTORY,
+                'exclusions': ['no write is applied until the save/memory flag offsets behind the '
+                               'NEW COSTUME GET / EXTRA CONFIG OPEN notices are located and runtime-verified'],
+                'reason': doapp_unlock.pre_launch(game, None)['reason']}
+    return {'status': 'unsupported', 'profile': None, 'verified': False,
+            'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}
 
 
 def launch_plan(game: dict, worker: dict, *, mod: str = '', enable_unlock: bool = False,
