@@ -119,17 +119,20 @@ def test_guest_base_probe():
     assert adapters.rpcs3_guest_base(1, read=read, maps=[]) == 0x300000000
     mem = {0x7F2000010000: b"\x01" * 16}                                     # an unusual reservation: from the maps
     read = lambda a, n: mem.get(a, b"\0" * n)                                  # noqa: E731
-    maps = ["7f2000010000-7f2001bc0000 rw-s 00000000 00:01 5 /memfd:rpcs3 (deleted)"]
+    maps = ["7f2000000000-7f2000010000 ---p 00000000 00:00 0",
+            "7f2000010000-7f2001bc0000 rw-s 00000000 00:01 5 /memfd:rpcs3 (deleted)",
+            "7f2001bc0000-7f2100000000 ---p 00000000 00:00 0"]
     assert adapters.rpcs3_guest_base(1, read=read, maps=maps) == 0x7F2000000000
     with pytest.raises(RuntimeError, match="guest memory not found"):
         adapters.rpcs3_guest_base(1, read=lambda a, n: b"\0" * n, maps=[])
 
 
-def test_read_and_write_guest_memory(tmp_path):
+def test_read_and_write_guest_memory(tmp_path, monkeypatch):
     ad = adapters.RPCS3LinuxAdapter(cfg(tmp_path))
     mem = tmp_path / "mem"
     mem.write_bytes(bytes(0x3000))
     ad.MEM, ad._mem = str(tmp_path / "mem"), (1234, 0x1000)                 # base 0x1000 in the stand-in file
+    monkeypatch.setattr(ad, '_guest', lambda: (1234, 0x1000))             # I/O fixture is not a live RPCS3 reservation
     ad.proc = SimpleNamespace(pid=1234, poll=lambda: None)
     assert ad.write_memory(0x10, b"\x00\x00\x03\xe8") == {"address": 0x10, "written": 4, "verified": True}
     assert mem.read_bytes()[0x1010:0x1014] == b"\x00\x00\x03\xe8"

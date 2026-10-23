@@ -23,6 +23,8 @@ worker, beside the emulator; menus are polled every POLL_S, rounds run on the en
 from __future__ import annotations
 
 import importlib
+import errno
+import math
 import time
 
 MENU_LOST_S = 30.0          # out of a round and RAM can't name the screen this long: end the run
@@ -37,6 +39,8 @@ LOADING_S = 420.0           # a named "loading" screen (NOW LOADING / saving: a 
                             # MENU_STUCK_S (120 s) ended the run and relaunched a game that was only loading (operator
                             # coaching note 13, RE5: "did the game freeze" on a NOW LOADING screen)
 POLL_S = 0.25               # how often the menus are read out of a round
+BOOT_RAM_READ_S = 120.0     # unmapped RPCS3 guest pages before the first successful menu read
+BOOT_RAM_TRANSIENT = frozenset({errno.EIO,errno.EFAULT,errno.EAGAIN,errno.EINTR})
 
 
 class Navigator:
@@ -429,9 +433,33 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
     fresh = True                                            # a round counts once, however often the engine hands back
     playing_ops = [tuple(x) for x in prof.get("playing_ops") or []]
     playing_initialized = False
+    first_screen_read = False
+    boot_read_started = clock()
+    boot_read_attempts = 0
     try:
         while not stopped():
-            scr = menus.screen(m)
+            try:
+                scr = menus.screen(m)
+            except OSError as exc:
+                # RPCS3 can expose its process before the title's guest pages
+                # exist. Retry those reads only during initial attachment; an
+                # established game's RAM failure remains an observable error.
+                if first_screen_read or exc.errno not in BOOT_RAM_TRANSIENT:
+                    raise
+                boot_read_attempts += 1
+                waited = max(0.,clock()-boot_read_started)
+                stats.update(boot_ram_read_retries=boot_read_attempts,boot_ram_wait_s=round(waited,2),
+                             boot_ram_status="waiting",boot_ram_last_error=str(exc)[:200])
+                # The attempt bound also terminates if an injected/adjusted
+                # wall clock stops advancing. No missing bytes become zeros.
+                if waited>=BOOT_RAM_READ_S or boot_read_attempts>math.ceil(BOOT_RAM_READ_S/POLL_S):
+                    stats.update(boot_ram_status="timeout",stopped_reason="initial guest RAM remained unreadable for the bounded boot window")
+                    raise
+                sleep(min(POLL_S,max(0.,BOOT_RAM_READ_S-waited)))
+                continue
+            first_screen_read = True
+            if boot_read_attempts:
+                stats.update(boot_ram_status="ready",boot_ram_wait_s=round(max(0.,clock()-boot_read_started),2))
             if prof["map_id"] == "BLUS30491" and ad is not None and scr.get("where") not in ("playing", "dead", "results", "unknown"):
                 if clock() - stats.get("_merc_unlock_at", -1e9) >= 5:
                     from .mercs.titles import re5_hooks
@@ -479,6 +507,8 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
                 break
             sleep(POLL_S)
     finally:
+        if not first_screen_read and stats.get("boot_ram_status")=="waiting":
+            stats["boot_ram_status"] = "stopped"
         if damage_outbox is not None:
             damage_outbox.close()
         if pub is not None:

@@ -48,7 +48,7 @@
     "atlas_scope": "Full directed geometry supplied by the loaded-stage RAM reader, measured routes/checkpoints, input/enemy observations and efficiency review; no verified complete census across all eight stages yet",
     "geometry_labels": "Boundary means no ordinary directed floor link; off-mesh links remain candidates. Physical wall/window/door/stair/item labels require independent adapter evidence.",
     "policy": "Held time-bonus goal, time before combo, measured crossing penalties, continuous checkpoint-route recall, supported mine departure; relocations never create learned shortcuts",
-    "navigation_validation": "234 focused atlas/nav/trace/curriculum/Bot/combat/engine tests passed in gbox-data/nav-agent-check; no fresh all-stage gameplay acceptance from these tests",
+    "navigation_validation": "941 integrated Python tests passed, 62 skipped, plus 83 UI tests. Includes navigation, round rotation, incident persistence, stream recovery, guest mapping, boot retry, telemetry and Hermes. Tests do not establish all-stage gameplay acceptance.",
     "navigation": "Measured successful and failed directed crossings persist by stage geometry and alter later link penalties",
     "transfer": "Coverage, cadence, tour planning, notebook and engine are reusable; coordinates, inputs, signatures and title adapters remain game-specific",
     "re6_limit": "Existing RE6 adapter reports unmeasured menu state and lacks the RE5-level verified navigation driver; this deployment does not establish RE6 mastery"

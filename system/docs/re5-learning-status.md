@@ -28,15 +28,22 @@ object/script evidence. Character-specific abilities and gestures are not all ma
 
 The curriculum/notebook retain outcomes, generated guidance and performance vectors;
 the existing semantic outbox publishes round evidence to the knowledge database.
-Only actual completed results can establish a rank. The new navigation integration
-passed 234 focused tests; fresh deployment and sustained all-stage acceptance are pending.
+Only actual completed results can establish a rank. The combined validation passed
+941 Python tests (62 skipped) and 83 UI tests. Sustained all-stage acceptance remains pending.
+Live rounds have produced SQLite observations, JSON reviews and SVG maps. A circular
+reference in review metrics originally prevented later exports; detached metrics and
+explicit round finalization now cover repeated rounds in one engine invocation.
+Three unfinished exports were rebuilt with writers stopped and a database backup:
+two retained matching notebook completion outcomes and one remained interrupted.
 
 ## Mines, damage and recovery
 
 Earlier live evidence verified actual armed Proximity Bomb actors and enemy-triggered
 detonation, followed by gunplay without recovery. New movement takes a supported
-floor route at least 600 game units away; absence of an escape route defers further
-planting. Round maps/reviews retain verified plants, observed detonations and escape
+floor route at least 600 game units away. Deployment preflight requires a supported
+escape route; absence of one defers equipping and planting. An observed detonation
+followed by disappearance can release an obsolete escape goal, while recording that
+the retreat was unachieved. Round maps/reviews retain plants, detonations and escape
 segments; kills and damage remain unattributed unless the reader can prove the source.
 
 An observed HP loss now records preceding movement, goals, inputs, combo/QTE state,
@@ -79,14 +86,29 @@ A controlled capture reduced 73 threads to 25 and CPU from 71.5% to 61.3%; obser
 client traces still contained stalls, so seamless playback is not yet established.
 Telemetry now accepts finite UTF-8 JSON stats up to 64 KiB: the former 4,000-character
 limit rejected rich RE5 packets and falsely displayed a stopped bot. Its focused
-telemetry/screensaver/recovery suite passed 36 tests. These source changes await the
-coordinated activation and another measured stream trace.
+telemetry/screensaver/recovery suite passed 36 tests. PiP was observed retaining its
+last picture and following replacement sessions, including a visible Capcom boot logo.
+An added FFmpeg passthrough timestamp setting caused duplicate-PTS encoder exits under
+load; it was removed after stderr tracing, with an actual duplicate-PTS regression test.
+The subsequent capture had no encoder restarts, but still showed intermittent gaps;
+that is not proof of a seamless gameplay stream. RPCS3 focus recovery targets only the
+owned visible renderer on its private display. Startup mapping and RAM-read checks are
+tracked separately from video connectivity.
+
+Live startup exposed a separate cached-RAM bug: a nonzero NVIDIA host mapping at
+`0xe22b00000000` was mistaken for guest memory before the real reservation existed.
+The finder now requires a complete guest reservation, rejects device/library mappings,
+and revalidates cached bases. It selected the live PS3 base `0x300000000` during
+read-only verification. Initial transient RAM failures receive a bounded 120-second
+retry; established-game read errors remain visible. These safeguards avoid treating a
+running emulator process or a nonzero host address as proof of readable game state.
 
 Hermes now excludes pool routes with recorded provider cooldowns before assigning
-work (93 focused tests; deployed without restarting gameplay). Six existing RE tasks
+work (96 focused routing tests). Six existing RE tasks
 were returned to normal gated review/queue routing, retaining their job IDs. MiniMax
 returned HTTP 429 for the account's monthly usage limit and remains unavailable;
-Spark2 remains the available implementation route. The inspected Mercenaries PRs
+Spark2 remains the available implementation route; existing task #2042 resumed there,
+while the remaining retries await normal review/admission. The inspected Mercenaries PRs
 retain their branches: skipped bonuses, guessed roster pages and unverified save
 edits are not accepted as completion. Deployment/requeue/test receipts are retained
 under `gbox-data/hermes-re-merge-audit/` on Spark.

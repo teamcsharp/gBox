@@ -3618,10 +3618,50 @@ def ini_set(text: str, section: str, key: str, value: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+RPCS3_GUEST_BASES = (0x300000000, 0x200000000, 0x100000000, 0x10000000000)
+
+
+def _rpcs3_guest_reservations(lines):
+    """Recognize a complete guest reservation, excluding host libraries and device allocations.
+
+    On the Spark the first 64 KiB is a guard, followed by shared memfd code at offset zero. The whole aligned
+    4 GiB remains covered by shared memfd pages and inaccessible anonymous guards, even before a game loads.
+    """
+    regions = []
+    for line in lines:
+        try:
+            fields = line.split(maxsplit=5)
+            start, end = (int(value, 16) for value in fields[0].split('-'))
+            regions.append((start, end, fields[1], int(fields[2], 16), fields[5] if len(fields)>5 else ''))
+        except (ValueError, IndexError):
+            continue
+    regions.sort()
+    candidates = {start-0x10000 for start, end, flags, offset, path in regions
+                  if start & 0xFFFFFFFF == 0x10000 and flags.startswith('r') and flags.endswith('s')
+                  and offset == 0 and path.startswith('/memfd:')}
+    valid = set()
+    for base in candidates:
+        cursor, limit = base, base+(1<<32)
+        for start, end, flags, offset, path in regions:
+            if end <= cursor:
+                continue
+            if start > cursor or start >= limit:
+                break
+            if not (path.startswith('/memfd:') and flags.endswith('s') or not path and flags.startswith('---')):
+                break
+            cursor = min(limit, end)
+            if cursor == limit:
+                valid.add(base)
+                break
+    return valid
+
+
 def rpcs3_guest_base(pid: int, read=None, maps: list[str] | None = None) -> int:
-    """RPCS3 maps the PS3's 4 GiB address space at one 4 GiB-aligned host address (vm::g_base_addr): the first
-    candidate whose guest 0x10000 (the game's first ELF segment) holds code. RPCS3's usual reservations first, then
-    every 4 GiB boundary that has a mapping (read / maps: the process's memory and /proc/<pid>/maps lines, for tests)."""
+    """Find loaded guest bytes only within an actual PS3 reservation, never an arbitrary nonzero host mapping.
+
+    Prefer RPCS3's known bases. Nonstandard bases require a complete 4 GiB guest mapping; a host NVIDIA mapping
+    at an unrelated aligned address previously passed the nonzero-byte test during boot and poisoned the cache.
+    """
     def rd(a, n):
         with open(f"/proc/{pid}/mem", "rb", 0) as f:
             f.seek(a)
@@ -3629,15 +3669,18 @@ def rpcs3_guest_base(pid: int, read=None, maps: list[str] | None = None) -> int:
     read = read or rd
     try:
         lines = maps if maps is not None else open(f"/proc/{pid}/maps").read().splitlines()
-        starts = sorted({int(ln.split("-", 1)[0], 16) & ~0xFFFFFFFF for ln in lines if ln.strip()})
     except OSError:
-        starts = []
-    for b in [0x300000000, 0x200000000, 0x100000000, 0x10000000000] + [s for s in starts if s]:
+        lines = []
+    reservations = _rpcs3_guest_reservations(lines)
+    # With no map access only the fixed known reservations can be probed; arbitrary host candidates never qualify.
+    candidates = [base for base in RPCS3_GUEST_BASES if not lines or base in reservations]
+    candidates += sorted(reservations-set(candidates))
+    for b in candidates:
         try:
             d = read(b + 0x10000, 16)
         except (OSError, ValueError):
             continue
-        if d and any(d):
+        if len(d) == 16 and any(d):
             return b
     raise RuntimeError("PS3 guest memory not found in the RPCS3 process (game still booting?)")
 
@@ -3682,6 +3725,7 @@ class RPCS3LinuxAdapter(StandaloneAdapter):
         self.home = provision.rpcs3_linux_dir(config)     # dev_hdd0 lives here (gbox/re5_tool.py finds saves through it)
         self._mem, self.paused, self.generation, self.rom = None, False, 0, None
         self._profile_lease = None
+        self._mem_verified, self._mem_checked_at = None, -1e9
         self._focus_lock = threading.Lock()
         self._focus_deadline = self._focus_next = 0.0
         self._focus_pending, self._focus_done, self._focus_window = False, False, None
@@ -3863,6 +3907,14 @@ class RPCS3LinuxAdapter(StandaloneAdapter):
 
     # --- guest memory ---
     def _guest(self):
+        now = time.monotonic()
+        if self._mem is not None and (self._mem_verified != self._mem or now-self._mem_checked_at >= 1.):
+            pid, _ = self._mem
+            try:
+                self._mem = (pid, rpcs3_guest_base(pid))
+                self._mem_verified, self._mem_checked_at = self._mem, now
+            except (RuntimeError, OSError):
+                self._mem = self._mem_verified = None
         if self._mem is None:
             if not self.proc or self.proc.poll() is not None:
                 raise RuntimeError("RPCS3 is not running")
@@ -3870,6 +3922,7 @@ class RPCS3LinuxAdapter(StandaloneAdapter):
             for pid in _proc_tree(self.proc.pid):
                 try:
                     self._mem = (pid, rpcs3_guest_base(pid))
+                    self._mem_verified, self._mem_checked_at = self._mem, now
                     break
                 except (RuntimeError, OSError) as e:
                     err = e
