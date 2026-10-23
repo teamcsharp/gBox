@@ -12,6 +12,11 @@ from pathlib import Path
 RE6_ID = '0871eee3b68cdea3'
 RE6_TEMPLATE_SHA256 = '194cb5b71858f65feeb2b1703642ddc4ffde09b9a087119189b29b0ad7b83f11'
 
+DOA2_ID = '3dd7e33362597f85'
+DOA2_FIRST_READ_SHA256 = '105056d9ffef86bf5e470fa28dc5907443156f9ab1c6bc009f73661d9c047a85'
+DOA2_PRODUCT = 'T3601N'
+DOA2_VERSION = 'V1.100'
+
 
 def pre_launch(game: dict, ctx, mod: str = '') -> dict:
     """Fast reviewed launch hooks; background research supplies additional games.
@@ -37,6 +42,56 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
 
 
 def profile_for(game: dict) -> dict:
+    if game.get('game_id') == DOA2_ID and game.get('platform') == 'dreamcast':
+        return {
+            'status': 'research_pending',
+            'profile': 'doa2-us-research-stub-v1',
+            'verified': False,
+            'game_id': DOA2_ID,
+            'product': DOA2_PRODUCT,
+            'version': DOA2_VERSION,
+            'first_read_sha256': DOA2_FIRST_READ_SHA256,
+            'scope': [
+                '17 characters: 13 regular + Tengu + Ein (KAS AYA LEI TIN BAS JAN GEN BAY '
+                'RYU ZAC HIK TNG KTE) plus LOR MAM WBA YTI story variants',
+                'no SAM/Leon, no PDG variant (Limited Edition only)',
+            ],
+            'exclusions': [
+                'No SAM/Leon family',
+                'No PDG variant',
+                'No runtime verification performed',
+            ],
+            'reason': (
+                'Research pending: owned DOA2 US .7z disc set (first-read SHA256 '
+                '105056d9ffef86bf5e470fa28dc5907443156f9ab1c6bc009f73661d9c047a85) not '
+                'extracted on this node; Ghidra/REA lock/progress xref analysis not yet '
+                'performed on the resolved T3601N V1.100 1ST_READ.BIN executable. '
+                'Hash-only result from job 2fdd3f0e1c21459d is preserved but insufficient.'
+            ),
+            'evidence': {
+                'hash_job': '2fdd3f0e1c21459d',
+                'hash_job_output': {
+                    'crc32': '684f5179',
+                    'sha1': '4349ed13d350d1297011729306879a7f5befc396',
+                    'size': 252886868,
+                },
+                'inventory': 'gbox.doa2usa_inventory (build_matches=True on owned disc)',
+                'expected_roster': ['KAS', 'AYA', 'LEI', 'TIN', 'BAS', 'JAN', 'GEN', 'BAY',
+                                     'RYU', 'ZAC', 'HIK', 'TNG', 'KTE', 'LOR', 'MAM', 'WBA', 'YTI'],
+            },
+            'blocker': (
+                'Owned DOA2 US .7z not extracted on this node; no runtime launch test '
+                'performed. A bounded Ghidra/REA inspection on i9-NUC (worker '
+                'eb99ab24ec5e420c) is needed to resolve lock/progress xrefs before '
+                'the profile can be marked verified.'
+            ),
+            'source_verification': (
+                'Registered Dreamcast catalog ID 3dd7e33362597f85; pinned first-read '
+                'SHA256 105056d9ffef86bf5e470fa28dc5907443156f9ab1c6bc009f73661d9c047a85; '
+                'product T3601N V1.100. No verified unlock profile yet.'
+            ),
+            'requires_save_upgrade_opt_in': False,
+        }
     if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,
                 'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}
