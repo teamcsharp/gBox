@@ -80,6 +80,10 @@ class DesktopLocalTests(unittest.TestCase):
         one=D.installation_key(self.root/'gbox.toml',self.cfg)
         other=D.installation_key(self.root/'different.toml',self.cfg)
         self.assertEqual(len(one),64);self.assertNotEqual(one,other)
+        # the same checkout path on two PCs must not pair as one authority
+        nuc=D.installation_key(self.root/'gbox.toml',self.cfg,machine='i9-NUC')
+        jay=D.installation_key(self.root/'gbox.toml',self.cfg,machine='JAYBUILTFINALE')
+        self.assertNotEqual(nuc,jay);self.assertEqual(jay,D.installation_key(self.root/'gbox.toml',self.cfg,machine='jaybuiltfinale'))
 
     def test_a_live_native_owner_blocks_new_worker_without_kill_or_adoption(self):
         from gbox import worker

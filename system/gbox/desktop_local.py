@@ -36,8 +36,13 @@ def local_config(source, port=DEFAULT_PORT):
                                            'public_url':f'http://127.0.0.1:{port}'})
 
 
-def installation_key(config_path, cfg):
-    return hashlib.sha256((str(Path(config_path).resolve())+'\n'+str(cfg.data_dir.resolve())).encode()).hexdigest()
+def installation_key(config_path, cfg, machine=None):
+    """This PC's install identity for the central pairing. The computer's name is part of it: two PCs with the same
+    checkout path (C:\\_tools\\gBox\\system on JAYBUILTFINALE and the i9-NUC) made the same key, so the second was refused
+    as "already paired to another key" and never showed online on the Spark or in its bot-demo menus (2026-10-24)."""
+    import platform
+    node = (machine if machine is not None else platform.node()).strip().lower()
+    return hashlib.sha256((str(Path(config_path).resolve())+'\n'+str(cfg.data_dir.resolve())+'\n'+node).encode()).hexdigest()
 
 
 def local_entry(row, cfg):

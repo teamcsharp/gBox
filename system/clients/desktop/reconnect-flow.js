@@ -48,27 +48,15 @@
       return 'reloading';
     }
     async function mercmode() {
-      set('mercmode', 'run', 'Looking for the MercMode game…');
-      const pick = data => io.pickHost(data);
-      // a busy control plane can be slow to answer: keep asking for a minute before calling it a failure
-      let data = await waitFor(() => io.api('/api/mercmode'), 60000, 2000);
-      if (!data) throw Object.assign(Error('The Spark did not answer the MercMode status for a minute.'), { step: 'mercmode' });
-      let host = pick(data);
-      if (!host) throw Object.assign(Error('No gBox PC is registered for MercMode.'), { step: 'mercmode' });
-      if (!host.settings?.enabled) {
-        set('mercmode', 'run', `Turning MercMode on for ${host.name}…`);
-        await io.api('/api/mercmode', { host: host.name, enabled: true });
-      }
-      const sid = await waitFor(async () => {
-        data = await io.api('/api/mercmode'); host = (data.hosts || []).find(h => h.name === host.name) || host;
-        const run = host.current_run;
-        if (run?.session_id && ['playing', 'starting'].includes(run.phase)) return run.session_id;
-        set('mercmode', 'run', run?.phase ? `${run.title || 'Next title'}: ${run.phase}…` : `Waiting for ${host.name} to start a game…`);
-        return null;
-      }, 180000, 3000);
-      if (!sid) throw Object.assign(Error(`${host.name} did not start a MercMode game in 3 minutes.`), { step: 'mercmode' });
-      set('mercmode', 'ok', `${host.current_run?.title || 'Game'} on ${host.name}`);
-      return sid;
+      // Only a MercMode game that is already running is put on screen (operator 2026-10-24: "if it's not started, it
+      // shouldn't even mention it ... it should just be trying to reconnect to the central server").
+      set('mercmode', 'run', 'Checking for a running MercMode game…');
+      const data = await waitFor(() => io.api('/api/mercmode'), 20000, 2000);
+      const host = data ? io.pickHost(data) : null;
+      const run = host?.current_run;
+      if (!run?.session_id || !['playing', 'starting'].includes(run.phase)) return null;
+      set('mercmode', 'ok', `${run.title || 'Game'} on ${host.name}`);
+      return run.session_id;
     }
     async function stream(sid) {
       set('stream', 'run', 'Checking the picture…');
@@ -91,15 +79,15 @@
     async function run({ quiet = false } = {}) {
       if (busy) return busy;
       busy = (async () => {
-        state.steps.forEach(s => Object.assign(s, { status: 'wait', detail: '' })); state.done = false; state.error = '';
+        state.steps = STEPS.map(([id, label, sub]) => ({ id, label, sub, status: 'wait', detail: '' })); state.done = false; state.error = '';
         io.show?.(!quiet);
         try {
           await spark();
           if (await library() === 'reloading') return clone();
           io.forget(RESUME_KEY);
           const sid = await mercmode();
-          await stream(sid);
-          await pip(sid);
+          if (sid) { await stream(sid); await pip(sid); }
+          else state.steps = state.steps.filter(s => ['spark', 'library'].includes(s.id));   // connected; no game to show
           state.done = true; render(clone()); io.show?.(false);
         } catch (error) {
           state.error = error.message || String(error);

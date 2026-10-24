@@ -3234,6 +3234,9 @@ def create_app(config: Config) -> FastAPI:
                        recent: bool = False, local: str = "", letter: str = "", exclude_platforms: str = "", actor=Depends(auth)):
         kw = dict(sort=sort, favorites=favorites, recent=recent, local=local, letter=letter, exclude_platforms=exclude_platforms)
         total, items = store.search(q, platform, system, library, min(limit, 500), offset, **kw)
+        for e in items:                                   # an attached online cover (art/<gid>/) is artwork too
+            if not e.get("media") and (art_dir / e["game_id"]).is_dir():
+                e["media"] = {"boxart": "attached"}
         # build the thumbnail cache ahead of the user: this page, then the next one
         _warm([e["game_id"] for e in items])
         _, nxt = store.search(q, platform, system, library, min(limit, 500), offset + limit, **kw)
@@ -3474,19 +3477,29 @@ def create_app(config: Config) -> FastAPI:
                 thumb_busy.add(gid)
                 thumb_pool.submit(warm, gid)
 
+    def _art_response(request: Request, f: Path, media_type: str | None = None):
+        """Artwork that every PC re-checks on each view (operator 2026-10-24: a chosen cover shows "on all systems and
+        immediately"; the old 7-day immutable cache kept the previous cover). An unchanged picture costs a 304."""
+        st = f.stat()
+        tag = f'"{st.st_mtime_ns:x}-{st.st_size:x}"'
+        headers = {"cache-control": "no-cache", "etag": tag}
+        if tag in [t.strip() for t in request.headers.get("if-none-match", "").split(",")]:
+            return Response(status_code=304, headers=headers)
+        return FileResponse(f, media_type=media_type, headers=headers)
+
     @app.get("/api/media/{gid}/{kind}")
-    def media(gid: str, kind: str, w: int = 0, actor=Depends(auth)):
+    def media(gid: str, kind: str, request: Request, w: int = 0, actor=Depends(auth)):
         """Library artwork. kind = boxart | snap | wheel | cartart | best (box art > snap > wheel > cart art).
         w>0 returns a cached JPEG thumbnail (generated once, then served from the local thumbnail cache)."""
         if w:
             f = _thumb(gid, kind, min(max(w, 64), 1024))
-            return FileResponse(f, media_type="image/jpeg", headers={"cache-control": "max-age=604800, immutable"}) if f else _404()
+            return _art_response(request, f, "image/jpeg") if f else _404()
         key = (gid, kind)
         if key not in art_hits:
             e = store.catalog_get(gid) or _404()
             art_hits[key] = _resolve_art(e, BEST if kind == "best" else (kind,))
         f = art_hits[key]
-        return FileResponse(f, headers={"cache-control": "max-age=86400"}) if f else _404()
+        return _art_response(request, f) if f else _404()
 
     class CoverIn(BaseModel):
         url: str = Field(default="", max_length=8192)  # online picture or a path-checked gBox image
