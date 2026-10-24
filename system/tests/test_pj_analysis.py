@@ -15,6 +15,8 @@ from gbox.pj_analysis import (
     CHARACTER_RECORD_SIZE,
     NPC_NAMES,
     PLAYABLE_ROSTER,
+    afs_descriptors,
+    character_pointer_table,
     character_table,
     classify_entry,
     playable_roster,
@@ -164,3 +166,42 @@ def test_real_uplmdl_and_wplmot_tables():
     offs = wplmot_offsets(m0)
     assert len(offs) == 16  # entry 0 has 16 motion clips on this build
     assert offs == sorted(offs)
+
+
+def test_afs_descriptors_synthetic():
+    from gbox.pj_analysis import AFS_DESC_VA, AFS_DESC_COUNT, _va_to_off
+    blob = bytearray(_va_to_off(AFS_DESC_VA) + AFS_DESC_COUNT * 12 + 0x1000)
+    name_off = _va_to_off(AFS_DESC_VA) + AFS_DESC_COUNT * 12
+    blob[name_off:name_off + 10] = b"uplmdl.afs"
+    for i in range(AFS_DESC_COUNT):
+        struct.pack_into("<III", blob, _va_to_off(AFS_DESC_VA) + i * 12,
+                         0x0C000000 + 0x10000 + name_off, 0x0C300000 + i, 42 + i)
+    d = afs_descriptors(bytes(blob))
+    assert len(d) == AFS_DESC_COUNT
+    assert d[0]["name"] == "uplmdl.afs" and d[0]["count"] == 42
+    assert d[3]["toc_va"] == 0x8C300003
+
+
+@pytest.mark.skipif(not (CACHE / "disc.gdi").exists(),
+                    reason="staged Project Justice GDI not present")
+def test_real_afs_descriptors_match_disc_and_char_ptrs():
+    from gbox.gdrom import GDRom
+    g = GDRom(CACHE / "disc.gdi")
+    try:
+        exe = g.read("1ST_READ.BIN")
+        counts = {}
+        for nm in ("UPLMDL", "XPLTEX", "WPLMOT", "YPLPACK", "UGMEDMDL"):
+            counts[nm.lower() + ".afs"] = len(afs_entries(g.read(nm + ".AFS"))[1])
+    finally:
+        for f in g._fh.values():
+            f.close()
+    desc = {d["name"]: d for d in afs_descriptors(exe)}
+    assert len(desc) == 14
+    for name, n in counts.items():
+        assert desc[name]["count"] == n, name
+    assert [desc[k]["slot"] for k in ("yplpack.afs", "xpltex.afs", "uplmdl.afs",
+                                      "wplmot.afs", "ugmedmdl.afs")] == [5, 6, 7, 8, 13]
+    ptrs = character_pointer_table(exe)
+    recs = character_table(exe)
+    assert ptrs[0] == ptrs[1] == recs[0]["va"]
+    assert ptrs[1:] == [r["va"] for r in recs]

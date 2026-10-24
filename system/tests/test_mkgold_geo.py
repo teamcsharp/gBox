@@ -133,3 +133,29 @@ def test_owned_disc_parts_texels_and_skeletons():
     for c in table["characters"]:
         sk = mg.node_table(exe, int(c["variants"][0]["nodes_a"], 16))
         assert sk and sk[0]["flags"] & mg.ROOT, c["name"]
+
+
+
+def _tri(off):
+    return _strip(0, [_v((off[0] + x, off[1] + y, off[2]), st=(0.25, 0.5)) for x, y in ((0, 0), (0, 1), (1, 0))])
+
+
+def test_part_record_identity_and_joint_only_nodes():
+    geo = _geo([[_tri((0, 0, 0))], [_tri((0, 0, 0))], [_tri((0, 0, 0))]])
+    nodes = [{"part": 2}, {"part": -1}, {"part": 0}, {"part": 7}]
+    assert mg.part_record(geo, nodes) == [2, None, 0, None]
+
+
+def test_rig_obj_places_parts_at_rest_joints_y_up():
+    geo = _geo([[_tri((0, 0, 0))], [_tri((0, 0, 0))]])
+    nodes = [{"part": 0, "offset": (0.0, 1.0, 0.0)}, {"part": 1, "offset": (0.5, 2.0, 0.0)}]
+    parents = [None, 0]
+    assert mg.rest_joints(nodes, parents) == [(0.0, 1.0, 0.0), (0.5, 3.0, 0.0)]
+    obj = mg.rig_obj(geo, nodes, parents, "t")
+    v = [tuple(map(float, l.split()[1:])) for l in obj.splitlines() if l.startswith("v ")]
+    assert len(v) == 6
+    # y-down joint offsets are flipped to y-up: part 1 translated by (0.5, -3, 0) relative to local -y
+    assert v[3] == (0.5, -3.0, -0.0) and v[4] == (0.5, -4.0, -0.0)
+    assert sum(l.startswith("o ") for l in obj.splitlines()) == 2
+    faces = [l for l in obj.splitlines() if l.startswith("f ")]
+    assert faces[-1].split()[1].split("/")[0] in {"4", "5", "6"}  # indices offset by earlier part

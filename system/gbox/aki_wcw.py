@@ -38,7 +38,7 @@ from . import aki_wrestling as A
 
 WORLD_TOUR = {"59bf059d2eadd372": "WCW vs. nWo: World Tour (USA)"}
 REVENGE = {"bca7ec4ecf71d164": "WCW-nWo Revenge (USA)", "061264c636cc284d": "WCW-nWo Revenge (Europe)"}
-GAME_IDS = {**WORLD_TOUR, "bca7ec4ecf71d164": REVENGE["bca7ec4ecf71d164"]}   # games with a writer (Revenge: USA)
+GAME_IDS = {**WORLD_TOUR, **REVENGE}   # games with a writer (Revenge: USA + Europe; EU no-op/donor round-trip in tests/test_aki_wcw_revenge_writer.py)
 
 RAM_EXP = 0x80700000
 
@@ -87,6 +87,36 @@ PROFILES = {
         "profile_area": (0x80035000, 0x80046000),
     },
 }
+
+# WCW vs. nWo: World Tour (Europe) -- NWNP rev 0 (PAL).  Derived from the owned
+# bytes against the NWNE rev 1 profile (see
+# tests/test_aki_wcw_worldtour_europe.py); the asset/file tables sit 0x70
+# lower and the code tables 0x20 lower than the USA build.
+PROFILES[("NWNP", 0)] =     {'game': 'worldtour',
+     'layout': 'wt',
+     'first': 234640,
+     'ft': 8133632,
+     'nfiles': 5498,
+     'nmodels': 19,
+     'costume_tbl': 2147691408,
+     'groups': 8,
+     'head_tbl': 2147676576,
+     'body_tbl': 2147673424,
+     'bodies': 44,
+     'part_map': 2147671681,
+     'slot_code': 2147841200,
+     'slot_costume': 2147841232,
+     'patch': [(2147503124, 201327101, 'malloc'),
+               (2147503140, 1006895228, 'ft_hi'),
+               (2147503148, 612637696, 'ft_lo'),
+               (2147503160, 604394988, 'total'),
+               (2147503168, 604263912, 'sizes'),
+               (2147503216, 605443560, 'loop_bytes'),
+               (2147503384, 700519803, 'bound'),
+               (2147531876, 1007386627, 'body_hi'),
+               (2147531908, 2372658512, 'body_lo')],
+     'profile_area': (2147696640, 2147713024)}
+
 
 # body model index -> (name, joint); 19 body models + the head's face / back (keys 19, 20)
 WPARTS = {0: ("pelvis", "hip"), 1: ("waist", "waist"), 2: ("chest", "chest"),

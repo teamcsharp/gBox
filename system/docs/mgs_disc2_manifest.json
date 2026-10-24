@@ -1,0 +1,74 @@
+{
+ "source": "/mnt/gbox/hyperspin/Arcade/collections/Sony Playstation/roms/Metal Gear Solid (USA) (Disc 2).chd",
+ "source_sha256": "8837b20ddff61e5527fe95cbd186169e724f40409dd873cd549e489398b1d9ef",
+ "source_bytes": 474878219,
+ "member_count": 11,
+ "members": [
+  {
+   "path": "DUMMY3M.DAT",
+   "lba": 297536,
+   "size": 27648001,
+   "sha256": "557f1e82b80f1372ce88182f941b882ecd38d36db7bc81ea56a6a8de04841ee9"
+  },
+  {
+   "path": "MGS/BRF.DAT",
+   "lba": 343,
+   "size": 5797888,
+   "sha256": "1f2b20ed3ed465c695847c51c875a90163101208cee87ecf05403f9cab9337a2"
+  },
+  {
+   "path": "MGS/DEMO.DAT",
+   "lba": 3174,
+   "size": 194002944,
+   "sha256": "9ef5f3cba5c10884e31dc906f5a881fd42b598f066dd09025765f898a9cd0976"
+  },
+  {
+   "path": "MGS/FACE.DAT",
+   "lba": 97902,
+   "size": 3508224,
+   "sha256": "d40fe909477ff59c7c15001fb15950a850e787ee87a804ed148c3689d2649f4e"
+  },
+  {
+   "path": "MGS/RADIO.DAT",
+   "lba": 99615,
+   "size": 1776851,
+   "sha256": "e6cf1b353db0bc7620251b6916577527debfdd5bdcd125b3ca9ef5c9a0aef61e"
+  },
+  {
+   "path": "MGS/SLUS_007.76",
+   "lba": 100483,
+   "size": 651264,
+   "sha256": "3342f75717c5134aec832547691c2354e67a253abfcfa9e0e823e2133bb1fc32"
+  },
+  {
+   "path": "MGS/STAGE.DIR",
+   "lba": 100801,
+   "size": 71888896,
+   "sha256": "c1657e57fc2c51b034342fccb61f36ec8b8546e5f8e486da5cdd69ae0b44fd4a"
+  },
+  {
+   "path": "MGS/VOX.DAT",
+   "lba": 135903,
+   "size": 188934144,
+   "sha256": "d7cde910b5cbb63dc64f419c1442dccaeb5761dda52a49d7e3573d25fb4bb6c5"
+  },
+  {
+   "path": "MGS/ZMOVIE.STR",
+   "lba": 228156,
+   "size": 142090240,
+   "sha256": "922ae25003e33702cd4c1497474e3cd891023be838740d851a52a81a54f4e0b6"
+  },
+  {
+   "path": "SLUS_007.76",
+   "lba": 24,
+   "size": 651264,
+   "sha256": "3342f75717c5134aec832547691c2354e67a253abfcfa9e0e823e2133bb1fc32"
+  },
+  {
+   "path": "SYSTEM.CNF",
+   "lba": 23,
+   "size": 70,
+   "sha256": "d664226b4a54b47ab46b362e87a75db7020d55b31cab3bde202f21a1a7f1f1f3"
+  }
+ ]
+}

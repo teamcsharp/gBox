@@ -151,13 +151,13 @@ async function forwarding() {
   const source = html.slice(html.indexOf('const RETRO ='), html.indexOf('async function snap(sid)'));
   assert.match(html, /<script src="\/viz\/pad-map\.js"><\/script>/, 'the page loads the map module');
   assert.match(html, /closest\("[^"]*#padglyph[^"]*"\)\) return;\s+\/\/ game and editor surfaces/, 'right-click on the picture never opens the report menu');
-  assert.match(html, /pg\.onpointerdown = e => \{ if \(e\.button !== 0\) return;/, 'a right-click presses nothing in the game');
+  assert.match(html, /pg\.onpointerdown = e => \{ if \(e\.button !== 0 \|\| !streamInputAllowed\(sid\)\) return;/, 'a right-click presses nothing in the game');
   assert.match(html, /pg\.oncontextmenu = e => padMapMenu\(e, sid\)/, 'native and streamed games both get the dialog');
   const storage = new Map(), sent = [];
   const ctx = vm.createContext({ navigator: { getGamepads: () => ctx.devices }, devices: [], console,
     localStorage: { getItem: k => storage.get(k), setItem: (k, v) => storage.set(k, v) },
     api: async (url, body) => { sent.push({ url, ...body }); return { map: body && body.map }; },
-    requestAnimationFrame() {}, addEventListener() {}, setInterval() {}, $: () => null, cur: 'Sessions', show() {},
+    requestAnimationFrame() {}, addEventListener() {}, setInterval() {}, $: () => null, cur: 'Sessions', playing: null, show() {},
     esc: v => String(v), GBoxPadMap: P });
   ctx.window = ctx;
   vm.runInContext(source, ctx);

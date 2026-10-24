@@ -62,6 +62,10 @@ WRITERS = [
     ("clayfighter_swap", ["fighter:<name>", "player"],
      "Clay Fighter: Sculptor's Cut (N64): every sprite frame of one fighter re-drawn from a collection sprites entry "
      "(frame sizes, hotspots, moves, hit boxes and sounds kept; patched ROM with the header CRC fixed)"),
+    ("sonic1_swap", ["sonic", "player"],
+     "Shadow In Sonic 1 (Mega Drive): all 130 player frames re-drawn from a collection sprites entry on the game's own "
+     "mappings/animations and Pal_Sonic line 0 (new art + DPLC in the ROM tail, two code operands patched, checksum "
+     "fixed; title/ending/special-stage art untouched); unverified in game"),
     ("auf_swap", ["player", "model:<body>", "enemies", "bosses", "npcs", "bots", "all", "cast"],
      "007 Agent Under Fire GC: Bond (every outfit), any of the 45 body models in every level, the mission enemies, "
      "bosses, other people, the multiplayer bots, or a cast plan (pairs [{target, donor}], the rest dealt at random): "

@@ -127,7 +127,12 @@ def assemble(art: bytes, pieces: list[dict], cues: list[tuple[int, int]]):
 
 def read_player(src) -> dict:
     """Decode the player (Shadow in the Sonic slot) from a ROM / zip / bytes."""
-    d, info = I.read_rom(src)
+    if isinstance(src, (bytes, bytearray)):
+        import hashlib
+        d = bytes(src)
+        info = {"container": None, "member": None, "rom_sha256": hashlib.sha256(d).hexdigest(), "rom_size": len(d)}
+    else:
+        d, info = I.read_rom(src)
     loc = I.locate(d)
     maps = I.mapping_frames(d, loc["mappings"])
     cues = I.dplc_frames(d, loc["dplc"])

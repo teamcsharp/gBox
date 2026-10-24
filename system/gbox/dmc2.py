@@ -253,7 +253,64 @@ def mesh_probe(b: bytes) -> dict:
 # literal run reproduces the container header before the first back-reference.  The AFS
 # loader that feeds these buffers is the CRI ADXT library in SLUS_204.84 (ADXT_EntryAfs
 # FUN_00131aa8, ADXT_StartAfs FUN_00139968, read FUN_00131260, AFS index globals 0x548220 /
-# 0x548340); the LZ back-ref decoder itself is the remaining analysis gap.
+# 0x548340).  The "flag" is really the first 16-bit control word of the LZ stream below.
+#
+# LZ format (derived from the data and verified on all 442 compressed X_DATA entries, see
+# lz_decompress): the stream is groups of one little-endian u16 control word followed by 16
+# 2-byte units.  Control bits are consumed MSB first: 0 = copy the next 2 input bytes as a
+# literal; 1 = the next 2 bytes (b0, b1) are a back-reference with
+#   dist = (b0 | (b1 & 7) << 8) * 2 bytes, len = (b1 >> 3) * 2 bytes;
+# len == 0 is the long form: the following u16 is the length in 2-byte units.  Copies may
+# overlap (byte-wise).  The stream just ends at the end of the entry (the last control word
+# is zero-padded).  Not yet proved: the exact IOP/EE routine address (decoder body in
+# SLUS_204.84 still unlocated; format proved by output, not by the routine).
+
+
+def lz_decompress(b: bytes) -> bytes:
+    """Decode a compressed X_DATA entry (the whole entry incl. its first control word)."""
+    out = bytearray()
+    i, n = 0, len(b)
+    while i + 2 <= n:
+        ctrl = b[i] | b[i + 1] << 8
+        i += 2
+        for bit in range(15, -1, -1):
+            if i + 2 > n:
+                return bytes(out)
+            if (ctrl >> bit) & 1:
+                b0, b1 = b[i], b[i + 1]
+                i += 2
+                dist = (b0 | (b1 & 7) << 8) * 2
+                length = (b1 >> 3) * 2
+                if length == 0:
+                    if i + 2 > n:
+                        raise ValueError("truncated long back-reference")
+                    length = (b[i] | b[i + 1] << 8) * 2
+                    i += 2
+                if dist == 0 or dist > len(out) or length == 0:
+                    if i >= n and not any(b[i - 4:i]):
+                        return bytes(out)  # zero padding after the final control word
+                    raise ValueError(f"bad back-reference at input {i - 2}: dist={dist} len={length}")
+                for _ in range(length):
+                    out.append(out[-dist])
+            else:
+                out += b[i:i + 2]
+                i += 2
+    return bytes(out)
+
+
+def decompress_entry(b: bytes) -> bytes:
+    """Decompress a compressed MOMO/TIM2 X_DATA entry and sanity-check the result."""
+    compressed_entry_probe(b)  # raises ValueError unless magic is at +2
+    out = lz_decompress(b)
+    if out[:4] != b[2:6]:
+        raise ValueError("decompressed container magic mismatch")
+    if out[:4] == b"MOMO":
+        n = struct.unpack_from("<I", out, 4)[0]
+        for j in range(n):
+            o, z = struct.unpack_from("<II", out, 8 + 8 * j)
+            if o + z > len(out):
+                raise ValueError(f"MOMO child {j} runs past decompressed size")
+    return out
 
 MOMO_FLAGS = (0x00, 0x02, 0x04, 0x06, 0x08, 0x20, 0x24, 0x8c)
 TIM2_FLAGS = (0x00, 0x40, 0x41)

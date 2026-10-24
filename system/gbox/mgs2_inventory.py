@@ -37,6 +37,7 @@ import struct
 import sys
 import zlib
 from dataclasses import dataclass, field
+import os
 from pathlib import Path
 
 GAME_ID = "cb7aae71edb10cd3"
@@ -61,6 +62,37 @@ TYPES = {0x01: "stage program overlay", 0x02: "per-mesh hull (float vertices + u
          0x12: "motion table", 0x13: "texture pack (GS pages + CLUTs)", 0x15: "unknown 0x15", 0x19: "unknown 0x19",
          0x7E: "page (compressed size, data offset)", 0x7F: "page marker (id, decompressed size)"}
 T_KMS, T_HULL, T_TEX = 0x0A, 0x02, 0x13
+
+
+def owned_disc_paths(cfg=None) -> list[Path]:
+    """Candidate paths of the owned MGS2 disc: the GBOX_MGS2_PS2_DISC override, the configured HyperSpin
+    library root for this host (per-OS path from gbox.toml, e.g. /mnt/gbox/hyperspin/Arcade on Linux), the
+    Windows UNC share and the local modbase cache. The catalog-relative path is CATALOG_REL."""
+    out: list[Path] = []
+    if env := os.environ.get("GBOX_MGS2_PS2_DISC"):
+        out.append(Path(env))
+    try:
+        try:
+            from . import config as _config
+        except ImportError:
+            from gbox import config as _config
+        cfg = cfg or _config.load()
+        for lib in cfg.libraries:
+            paths = dict(lib.paths or {})
+            host = paths.pop(_config.HOST_OS, None)
+            for p in ([host] if host else []) + list(paths.values()):
+                out.append(Path(p) / CATALOG_REL)
+    except Exception:
+        pass
+    out.append(Path("//10.89.1.125/HyperSpin Attraction/Arcade") / CATALOG_REL)
+    out.append(Path("D:/gBox/cache/modbase") / GAME_ID / "Metal Gear Solid 2 - Substance (USA).iso")
+    seen, uniq = set(), []
+    for p in out:
+        s = str(p)
+        if s not in seen:
+            seen.add(s)
+            uniq.append(p)
+    return uniq
 
 
 class FormatError(ValueError):

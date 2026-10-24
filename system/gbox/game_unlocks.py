@@ -13,9 +13,11 @@ RE6_ID = '0871eee3b68cdea3'
 ACV_ID = '0d09faf82c4c77d8'
 RE6_TEMPLATE_SHA256 = '194cb5b71858f65feeb2b1703642ddc4ffde09b9a087119189b29b0ad7b83f11'
 DOAPP_ID = '59c55e95af61abbe'  # Dead Or Alive ++ (Korea), platform=arcade
+MERC3D_ID = '0ed22ae742e1b56b'  # Resident Evil: The Mercenaries 3D (3DS)
 NDS_WCW_GAME_ID = 'd9467f457f53f2c7'  # Call of Duty: World at War (USA), NDS
 SGC_GEMS_ID = 'fc5914e3ddb540c4'  # Sonic Gems Collection (USA), platform=gamecube
 SGC_GEMS_PLATFORM = 'gamecube'
+GE007_PORT_ID = '6e4d417eef84e49b'  # GoldenEye 007 (PC port + bots)
 
 
 def pre_launch(game: dict, ctx, mod: str = '') -> dict:
@@ -25,7 +27,19 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
     opt-out settings remain authoritative and its writer retains the save backup.
     """
     profile = profile_for(game)
+    if game.get('game_id') == GE007_PORT_ID:
+        from . import ge007_unlock
+        return ge007_unlock.pre_launch(ctx)
     if not profile['verified']:
+        if (game.get('game_id') == MERC3D_ID and
+                str(game.get('platform') or '').lower() in ('3ds', 'n3ds')):
+            from . import merc3d_unlock
+            record = merc3d_unlock.profile()
+            return {'state': 'research_pending', 'applied': False,
+                    'reason': record['reason'],
+                    'scope': record['scope'],
+                    'exclusions': record['exclusions'],
+                    'evidence': record['evidence']}
         if game.get('game_id') == DOAPP_ID and game.get('platform') == 'arcade':
             # Registration point for the DOA++ (Korea) arcade unlock work. The
             # fast Play path must never guess a write: report the live static
@@ -45,7 +59,12 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
             return {'state': 'research_pending', 'applied': False,
                     'reason': gate['reason'], 'scope': list(sgc_gems_probe.CATEGORIES),
                     'evidence': gate['evidence'], 'blockers': gate['blockers'],
-                    'next': gate['next']}
+                    'next': gate['next'],
+                    'additional_blockers': [
+                        'class->category mapping of the 0x80 records is a hypothesis (no xref to the record writer yet)',
+                        '.stm and .stg stores differ per slot; both need mapping',
+                        'no runtime acceptance (boot, select, second launch, rollback)'],
+                    'next_step': 'xref fn@0x80010810 in Ghidra project pop_sot_main to the 0x80 record writer and museum-menu eligibility test'}
         return {'state': 'research_pending', 'applied': False, 'reason': profile['reason']}
     if game.get('game_id') == RE6_ID and game.get('platform') == 'xbox360':
         from . import re6_tool
@@ -67,6 +86,12 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
                 'scope': nds_wcw_unlock.profile()['scope'],
                 'ops': nds_wcw_unlock.unlock_ops(),
                 'next': 'Run live_acceptance_plan on an authorized agent session (i9-NUC/Spark, 2% audio).'}
+    if game.get('game_id') == '84c4cf28c565aa5e' and game.get('platform') == 'nds':
+        from . import nds_dogs_unlock
+        return {'state': 'research_pending', 'applied': False,
+                'profile': 'nds-dogs-database-candidate-v1',
+                'scope': nds_dogs_unlock.profile()['scope'],
+                'reason': 'ROM/ARM9 hash pin and lock-check trace pending; no write is applied.'}
     return {'state': 'implementation_pending', 'applied': False}
 
 
@@ -86,7 +111,17 @@ def profile_for(game: dict) -> dict:
                              'lock_surface': acv_evidence.LOCK_SURFACE,
                              'inventory': inv},
                 'unresolved_categories': pending}
+    if game.get('game_id') == GE007_PORT_ID:
+        from . import ge007_unlock
+        return ge007_unlock.profile()
     from . import doax2_unlock
+    from . import popww_unlock
+    if game.get('game_id') == popww_unlock.GAME_ID and game.get('platform') == popww_unlock.PLATFORM:
+        # Prince of Persia - Warrior Within (GameCube, disc G2OE41): the exact owned
+        # revision is bound and its category inventory is attached, but no native
+        # unlock flag or save write path is proven, so no writer is reachable.
+        return {'status': 'pending_research', 'profile': None, 'verified': False,
+                'scope': list(popww_unlock.CATEGORIES), **popww_unlock.profile_gate()}
     if game.get('game_id') == doax2_unlock.GAME_ID and game.get('platform') == doax2_unlock.PLATFORM:
         # Honest gate for DOAX2: research pending, no verified write targets exist.
         # pre_launch below short-circuits on verified=False, so no writer is reachable.
@@ -95,9 +130,16 @@ def profile_for(game: dict) -> dict:
     if game.get('game_id') == SGC_GEMS_ID and game.get('platform') == SGC_GEMS_PLATFORM:
         # Read-only probe only: pre_launch short-circuits on verified=False,
         # so no writer is reachable from the Play path for this game.
-        from . import sgc_gems_probe
+        from . import sgc_gems_probe, sgc_gems_layout
         return {'status': 'pending_research', 'profile': None, 'verified': False,
-                'scope': list(sgc_gems_probe.CATEGORIES), **sgc_gems_probe.profile_gate()}
+                'scope': list(sgc_gems_probe.CATEGORIES), **sgc_gems_probe.profile_gate(),
+                'inventory': dict(sgc_gems_layout.CATEGORY_STATUS),
+                'inventory_evidence': dict(sgc_gems_layout.CATEGORY_EVIDENCE),
+                'state_layout': {'record_table_offset': sgc_gems_layout.RECORD_TABLE_OFFSET,
+                                 'record_size': sgc_gems_layout.RECORD_SIZE,
+                                 'class_values': list(sgc_gems_layout.CLASS_BYTE_VALUES),
+                                 'loader_fn': hex(sgc_gems_layout.STATE_LOADER_FN_VA),
+                                 'mapping_proven': False}}
     if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,
                 'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}

@@ -168,6 +168,7 @@ def decode(platform: str, code: str) -> tuple[list[tuple], list[str]]:
     memory at addr equals bytes). Returns (ops, unsupported parts). Multi-line codes use ';' or '+' or newlines."""
     parts = [p.strip() for p in re.split(r"[;+\n]", code) if p.strip()]
     ops, bad = [], []
+    rep = None
     if platform in ("gamecube", "wii") and parts and all(ar_decrypt.is_encrypted(p) for p in parts):
         # a published Action Replay code (encrypted, its first line the verification line): one batch -> raw pairs
         try:
@@ -188,10 +189,24 @@ def decode(platform: str, code: str) -> tuple[list[tuple], list[str]]:
         if platform in ("n64", "n64dd"):                     # GameShark / Action Replay N64
             addr = 0x80000000 | (a & 0x00FFFFFF)             # libretro N64 cores hold RDRAM as host-endian 32-bit words:
             b8, b16 = addr ^ 3, addr ^ 2                      # byte a lives at a^3, halfword a at a^2 (byte-reversed)
-            if t in (0x80, 0xA0):
-                ops.append(("w", b8, bytes([v & 0xFF])))
+            if t == 0x50:                                    # GameShark repeater 50CCSSSS VVVV: apply the NEXT 80/81 line
+                if (a >> 16) & 0xFF or not ((a >> 8) & 0xFF):  # CC times, address step SS, value step VVVV
+                    bad.append(p)                            # (high bytes must be 00, count >= 1)
+                else:
+                    rep = ((a >> 8) & 0xFF, a & 0xFF, v & 0xFFFF)
+                continue
+            n, step, vinc = rep or (1, 0, 0)
+            rep = None
+            if t in (0x80, 0xA0, 0x81, 0xA1) and n > 1 and not step:
+                bad.append(p)                                # a repeater with step 0 is meaningless; refuse, don't guess
+            elif t in (0x80, 0xA0):
+                for i in range(n):
+                    ad = (addr + i * step) & 0x00FFFFFF | 0x80000000
+                    ops.append(("w", ad ^ 3, bytes([(v + i * vinc) & 0xFF])))
             elif t in (0x81, 0xA1):
-                ops.append(("w", b16, struct.pack("<H", v & 0xFFFF)))
+                for i in range(n):
+                    ad = (addr + i * step) & 0x00FFFFFF | 0x80000000
+                    ops.append(("w", ad ^ 2, struct.pack("<H", (v + i * vinc) & 0xFFFF)))
             elif t == 0xD0:
                 ops.append(("if", b8, bytes([v & 0xFF])))
             elif t == 0xD1:

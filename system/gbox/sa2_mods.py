@@ -150,6 +150,8 @@ def _gc():
         "ring_finish_levels": (60, 70),
         "score_tables": {0: 0x801B34C8, 3: 0x801B35F8, 4: 0x801B3728}, "time_tables": {1: 0x801B3858, 2: 0x801B398C},
         "save": save, "level_ranks": (0x38, 0xC4), "routes": (0x2E28, 0x2EEC),
+        # unlock flag byte array (index = unlock id); getter 0x8001AE58, setter 0x8001AE84 (r3 = id, 0x62 = Green Hill via 180 emblems)
+        "unlock_array": 0x801E50B4, "unlock_ids_recount": tuple(range(0x5A, 0x63)),
         "emblem_flags": [(0x3224 + i, "extra") for i in range(5)] + [(0x3231 + i, "extra") for i in range(4)]
                         + [(0x2FBC + 13 * i, "kart race") for i in range(3)] + [(0x348D + i, "extra") for i in range(13)],
         "code": "gecko", "live_checked": False,

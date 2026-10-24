@@ -282,6 +282,19 @@ class Model:
         return result
 
 
+def part_bone_census(model):
+    """Native mesh-part versus EMR-bone census for one parsed PLD.
+
+    A PLD whose MD1 object count equals its EMR bone count exports a 1:1
+    bind-pose mesh. A larger object count means extra MD1 parts whose
+    part-to-bone attachment is only provable from loader analysis.
+    """
+    objects = len(model.objects)
+    bones = model.skeleton['bones']
+    return {'objects': objects, 'bones': bones, 'extra_parts': objects - bones,
+            'bind_pose_exportable': objects == bones}
+
+
 def inventory(path):
     from .gcdisc import GCDisc
     disc = GCDisc(path)

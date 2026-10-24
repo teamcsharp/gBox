@@ -23,7 +23,7 @@
   // the running game to show instead of `except`: the broadcast program's, else the newest with a picture, else the
   // newest. judge(s, workers, now) (session-live.js) says whether a running game has a picture now.
   function pick(ss, program, { except = null, workers = null, now = Date.now() / 1000, judge = null } = {}) {
-    const live = (Array.isArray(ss) ? ss : []).filter(s => s && s.state === "running" && !s.stopping && s.session_id !== except);
+    const live = (Array.isArray(ss) ? ss : []).filter(s => s && s.state === "running" && !s.stopping && s.worker_online !== false && s.session_id !== except);   // not one on an offline PC (#2870)
     if (!live.length) return null;
     const prog = program && program.session_id && live.find(s => s.session_id === program.session_id);
     if (prog) return { session: prog, via: "broadcast" };

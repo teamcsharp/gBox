@@ -350,3 +350,11 @@ def test_agent_call_dispatches_a_worker_job():
     assert a.sonic_adventure_2("worker-abc123", op="rank", rank="S")["verified"]
     assert sent == [("sonic_adventure_2", {"session_id": "worker-abc123", "op": "rank", "rank": "S", "count": 0,
                                            "finish": True, "timeout_s": 3.0}, "worker")]
+
+
+def test_gc_unlock_ids_documented():
+    from gbox import sa2_mods
+    gc = sa2_mods.LAYOUTS["gc_us"]
+    assert gc["unlock_array"] == 0x801E50B4
+    assert gc["unlock_ids_recount"][0] == 0x5A and gc["unlock_ids_recount"][-1] == 0x62
+    assert len(gc["unlock_ids_recount"]) == 9

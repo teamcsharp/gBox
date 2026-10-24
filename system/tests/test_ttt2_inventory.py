@@ -10,7 +10,7 @@ import struct
 
 import pytest
 
-from gbox.ttt2_inventory import PACK_MAGIC, XDVDFS_MAGIC, Xdvdfs, pack_header
+from gbox.ttt2_inventory import PACK_MAGIC, XDVDFS_MAGIC, Xdvdfs, classify_root_file, pack_header, pack_table_scrambled, parse_nrfo
 
 
 def _pack(magic=PACK_MAGIC, version=0x01000000, f1=0, f2=0, records=()):
@@ -74,3 +74,41 @@ def test_xdvdfs_rejects_directory_cycles_and_out_of_range_reads(tmp_path):
             dvd.read(0, -1)
     finally:
         dvd.close()
+
+
+def _nrfo(sizes):
+    off = 4 + 8 * len(sizes)
+    blob = struct.pack(">I", len(sizes))
+    members = b""
+    for n in sizes:
+        blob += struct.pack(">II", off + len(members), n)
+        members += b"\x00" * n
+    return blob + members
+
+
+def test_parse_nrfo_contiguous_members():
+    assert parse_nrfo(_nrfo([5, 7])) == [(20, 5), (25, 7)]
+
+
+def test_parse_nrfo_rejects_gap_and_truncation():
+    good = _nrfo([5, 7])
+    with pytest.raises(ValueError):
+        parse_nrfo(good[:-1])
+    with pytest.raises(ValueError):
+        parse_nrfo(good + b"x")
+    with pytest.raises(ValueError):
+        parse_nrfo(struct.pack(">I", 1000))
+
+
+def test_classify_root_file():
+    assert classify_root_file(b"\x00\x00\x00\x14ftypnrfi") == "nrfi"
+    assert classify_root_file(b"\x00\x00\x00\x14ftypnrfo") == "nrfo"
+    assert classify_root_file(struct.pack(">I", PACK_MAGIC)) == "pack"
+    assert classify_root_file(b"XEX2") == "xex"
+
+
+def test_pack_table_scrambled_heuristic():
+    plain = _pack(records=[(1000 + i, 10) for i in range(300)])
+    assert not pack_table_scrambled(plain)
+    noisy = _pack() + bytes([0xFF, 0xEE, 0xDD, 0xCC]) * 600
+    assert pack_table_scrambled(noisy)

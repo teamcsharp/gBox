@@ -68,12 +68,23 @@ def test_bin_mesh_partition_and_glb():
     assert len(m["bones"]) == 2 and m["bones"][0]["parent"] == 0xFF
     obj = m["objects"][0]
     assert len(obj["parts"]) == 1 and obj["parts"][0]["param"]["triangle_count"] == 1
+    assert [e["bones"][0] for e in obj["parts"][0]["skin"]] == [0, 8]   # weight table survives param qword
+    assert obj["parts"][0]["skin"][1]["weights"][:2] == [0.5, 0.5]
     assert obj["parts"][0]["vertices"] == [(0, 0, 0, 0), (16, 0, 0, 0), (0, 16, 0, 0)]
     glb = r.to_glb(bytes(b))
     assert glb[:4] == b"glTF"
     g = json.loads(glb[12 + 8:12 + 8 + struct.unpack_from("<I", glb, 12)[0]])
-    assert len(g["nodes"]) == 2 and g["nodes"][1]["translation"] == [0.0, 16.0, 0.0]
+    assert len(g["nodes"]) == 3 and g["nodes"][1]["translation"] == [0.0, 16.0, 0.0]
+    mesh_node = next(i for i, n in enumerate(g["nodes"]) if "mesh" in n)
+    assert mesh_node in g["scenes"][0]["nodes"]           # mesh is actually in the scene
     assert g["meshes"][0]["primitives"][0]["attributes"]["POSITION"] == 0
+
+
+def test_rgb565_linear():
+    w = h = 8
+    img = struct.pack("<64H", *([0xF800] * 64))          # pure red, linear
+    t = r._decode_texture(img, {"w": w, "h": h, "format": 4, "image_offset": 0, "palette_offset": 0})
+    assert t["rgba"][:4] == bytes((0xF8, 0, 0, 255)) and t["rgba"][-4:] == bytes((0xF8, 0, 0, 255))
 
 
 @pytest.mark.skipif(not (RE / "pl00.dat").exists(), reason="owned RE4 PS2 pl00.dat not staged")
@@ -100,7 +111,7 @@ def test_owned_leon_reader():
     glb = r.to_glb(bin_bytes, tpl_bytes)
     assert glb[:4] == b"glTF"
     g = json.loads(glb[12 + 8:12 + 8 + struct.unpack_from("<I", glb, 12)[0]])
-    assert len(g["nodes"]) == 119
+    assert len(g["nodes"]) == 120 and any("mesh" in n for n in g["nodes"])
     npos = g["meshes"][0]["primitives"][0]["attributes"]["POSITION"]
     assert g["accessors"][npos]["count"] > 500   # 864 vertices across the 7 parts
     json.dumps(g)

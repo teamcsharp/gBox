@@ -74,3 +74,40 @@ def test_real_rom_inventory():
     assert m["object_table"]["in_code_dma_index"] == 31
     for c in m["playable_forms"].values():
         assert c["size_raw"] > 0
+
+
+def _synthetic_player_object(pad: int = 0) -> bytes:
+    """21 standard-ish limbs (16-byte LOD) + limb table + flex header at the tail, like ZAPD output."""
+    n = 21
+    limbs = bytearray()
+    for i in range(n):
+        child = i + 1 if i < n - 1 else 0xFF
+        limbs += struct.pack(">hhhBBII", 0, 0, 0, child, 0xFF, 0, 0)
+    tbl = b"".join(struct.pack(">I", 0x06000000 + 16 * i) for i in range(n))
+    obj = bytearray(limbs) + tbl
+    hdr_at = len(obj) + pad
+    obj += b"\x00" * pad + struct.pack(">IBBBBBBBB", 0x06000000 + len(limbs), n, 0, 0, 0, 18, 0, 0, 0)
+    return bytes(obj + b"\x00" * ((-len(obj)) % 16)), hdr_at
+
+
+@pytest.mark.parametrize("pad", [0, 12])
+def test_tail_skeleton_finds_zapd_header(pad):
+    obj, hdr = _synthetic_player_object(pad)
+    assert mm.tail_skeleton(obj) == hdr
+
+
+def test_tail_skeleton_rejects_non_skeleton():
+    assert mm.tail_skeleton(b"\x00" * 0x100) is None
+
+
+@pytest.mark.skipif(not __import__("os").environ.get("GBOX_MM_ROM"), reason="set GBOX_MM_ROM to the owned .z64")
+def test_real_rom_player_skeletons():
+    rom = mm.Rom(open(__import__("os").environ["GBOX_MM_ROM"], "rb").read())
+    rom.object_table()
+    from gbox.oot_writer import skeleton
+    for key in ("link_human", "link_fierce_deity", "link_goron", "link_zora", "link_deku"):
+        obj_id = next(c[1] for c in mm.CHARACTERS if c[0] == key)
+        obj = rom.object(obj_id)
+        sk = skeleton(obj, mm.tail_skeleton(obj))
+        assert sk["count"] == 21 and sk["dlcount"] == 18 and sk["lod"]
+        assert [(l["child"], l["sibling"]) for l in sk["limbs"]][:3] == [(1, 255), (2, 9), (3, 255)]

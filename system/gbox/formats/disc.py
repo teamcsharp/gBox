@@ -5,6 +5,7 @@ every file and the main executable: what the fingerprinter (gbox.assimilate) and
   .iso (PS1/PS2), .bin      formats.iso9660      .chd (v4/v5)   psxdisc.PSXDisc / chd.ChdDisc
   .gdi / .cdi (Dreamcast)   gdrom.GDRom          .z64/.v64/.n64  n64_rom (no filesystem: magic scan of the ROM)
   .nds (Nintendo DS)         formats.nitro NitroFS (LZ77 members listed decompressed)
+  .xci (Switch card)         formats.xci classify + formats.nsw card tables
   .7z                       its members (system 7z, streamed heads)
   .zip                      its members          folder (PC/Steam, extracted disc)  the files
 
@@ -80,6 +81,9 @@ def listing(path: str | Path, *, head: int = 64, max_files: int = 4000, exe_limi
             raise ValueError(f'{name} must be a nonnegative integer')
     p = Path(path)
     suf = p.suffix.lower()
+    if suf == ".xci":
+        return _listing_xci(p, head=head, max_files=max_files, exe_limit=exe_limit,
+                             deep=deep, deep_bytes=deep_bytes)
     from .. import rom_archives
     if p.is_dir():
         files = [{"path": q.relative_to(p).as_posix(), "size": q.stat().st_size} for q in sorted(p.rglob("*")) if q.is_file()]
@@ -137,6 +141,22 @@ def listing(path: str | Path, *, head: int = 64, max_files: int = 4000, exe_limi
         L = Listing(str(p), "gdrom", files)
     elif suf == ".chd":
         return _chd_listing(p, head, max_files, exe_limit, deep, deep_bytes)
+    elif suf == ".cso":
+        from .cso import Cso
+        c = Cso(p)
+        reader = iso9660.sector_reader(lambda lba: c.read(lba * 2048, 2048))
+        pvd = reader(16, 2048)
+        if pvd[1:6] != b"CD001":
+            raise ValueError(f"{p.name}: decompressed CISO has no ISO9660 PVD at LBA 16")
+        lba, size = iso9660.pvd_root(pvd)
+        table = iso9660.files(reader, lba, size, max_depth=16, max_dir_size=1 << 22)
+        files = [{"path": k, "size": v[1]} for k, v in table.items()]
+
+        def read(name, n):
+            off, s = table[name]
+            return c.read(off * 2048, min(s, exe_limit if n is None else n))
+        L = Listing(str(p), "iso9660", files,
+                    notes=[f"CISO v{c.version} (block {c.block_size}, {c.total_blocks} blocks)"])
     elif suf == ".gcz":
         from ..gcz import GCZ
         z = GCZ(str(p))
@@ -371,3 +391,51 @@ def xdvdfs_stream_listing(fh, *, head: int = 64, exe_limit: int = 64 << 20, deep
     for f in files:
         f.pop("_exe", None)
     return files, exe_name, exe, notes
+
+
+def _listing_xci(p: Path, *, head: int, max_files: int, exe_limit: int, deep: int, deep_bytes: int) -> "Listing":
+    """List an owned Nintendo Switch card image (.xci).
+
+    gBox used to answer "not a disc image, ROM, archive or folder gBox can list" for every
+    .xci, which buried the real prerequisite (a card whose header is not plaintext) inside a
+    generic error.  The card is now classified with gbox.formats.xci and, when its header is
+    plaintext, enumerated with gbox.formats.nsw (partition -> HFS0 -> file entries).
+
+    A card whose header is not plaintext is reported with its observed magic bytes and the
+    layout gBox could establish, never silently mis-listed.
+    """
+    from . import nsw, xci
+    size = p.stat().st_size
+    with open(p, "rb") as fh:
+        raw = fh.read(0x7040)
+    card = xci.classify(raw, size, str(p))
+    if not card.partition_table_readable:
+        notes = "; ".join(card.notes) or "no plaintext partition table"
+        raise ValueError(
+            f"{p.name}: XCI card header is not plaintext (layout={card.layout}, "
+            f"header_key_required={card.header_key_required}, magic={raw[:4].hex()}): {notes}"
+        )
+    try:
+        info = nsw.list_xci(str(p))
+    except Exception as exc:                                # noqa: BLE001
+        raise ValueError(f"{p.name}: XCI partition tables are unreadable "
+                         f"({type(exc).__name__}: {exc})") from exc
+    entries: dict[str, tuple[int, int]] = {}
+    files: list[dict] = []
+    for part_name, part_entries in (getattr(info, "hfs0", None) or {}).items():
+        for e in part_entries:
+            name = f"{part_name}/{getattr(e, 'name', '')}"
+            off = int(getattr(e, "offset", 0) or 0)
+            sz = int(getattr(e, "size", 0) or 0)
+            entries[name] = (off, sz)
+            files.append({"path": name, "size": sz})
+
+    def read(name: str, n: int | None) -> bytes:
+        off, sz = entries[name]
+        want = min(sz, exe_limit) if n is None else min(sz, n)
+        with open(p, "rb") as fh:
+            fh.seek(off)
+            return fh.read(want)
+
+    L = Listing(str(p), "xci", files, notes=list(card.notes))
+    return _populate(L, read, head, max_files, deep, deep_bytes)

@@ -38,6 +38,14 @@ BRAND = Path(__file__).resolve().parent.parent / "assets" / "brand"
 # adapters whose second copy can't run beside the first on one PC (mGBA's GDB stub port is fixed): a relaunch closes
 # the running copy first there (launch_game saves it before closing, and refuses if it can't)
 RELAUNCH_BESIDE_UNSAFE = {"mgba"}
+# Cloud memory cards (gbox/memory_card_sessions.py) are leased to ONE session: a copy started beside the running one
+# asks for the same lease and is refused ("This card is already inserted in another session", #3052, RE4 Reset on
+# i9-NUC). Those games close the running copy first (after its moment is saved), which syncs and releases the card.
+CARD_ADAPTERS = {("gamecube", "dolphin"), ("dreamcast", "retroarch")}
+
+
+def holds_cloud_card(game: dict, sess: dict) -> bool:
+    return (str(game.get("platform") or ""), str(sess.get("adapter") or "")) in CARD_ADAPTERS
 
 # The replacement launch child runs up to its registered tool timeout once claimed (launch_game:
 # 900 s) and may spend up to SWAP_LAUNCH_QUEUE_S queued first. Waiting exactly that long races the
@@ -1009,7 +1017,7 @@ def create_app(config: Config) -> FastAPI:
             _stop_rpcs3_for_restart(sid, old_w, actor, stop)
             stopped_first = True
         say(66, f"Starting {game['title']} " + (f"with {mod}" if mod else "(original)") + f" on {tw['name']}")
-        beside = keep_old and running and not exclusive and tw["id"] == _wid(old_w) and sess.get("adapter") not in RELAUNCH_BESIDE_UNSAFE
+        beside = keep_old and running and not exclusive and tw["id"] == _wid(old_w) and sess.get("adapter") not in RELAUNCH_BESIDE_UNSAFE and not holds_cloud_card(game, sess)
         try:
             new = _run_job("launch_game", {"game": game, "mod": launch_mod, **({"keep_session": sid} if beside else {})},
                            actor, worker=tw["id"], wait=swap_launch_wait_s(SWAP_LAUNCH_QUEUE_S),
@@ -1241,7 +1249,8 @@ def create_app(config: Config) -> FastAPI:
         launch_mod = "" if original else (sess.get("launch_mod") or sess.get("staged_mod") or sess.get("mod") or "")
         build = "" if original else BM.session_build(sess)
         exclusive = _exclusive_rpcs3_restart(sess, old_w, tw)
-        beside = sess.get("adapter") not in RELAUNCH_BESIDE_UNSAFE and save_moment and not exclusive
+        card = holds_cloud_card(game, sess)
+        beside = sess.get("adapter") not in RELAUNCH_BESIDE_UNSAFE and save_moment and not exclusive and not card
         what = f"{game['title']}" + (f" ({build})" if build else " (original game)" if original else "")
         notes, stopped_first = [], False
         if not save_moment and not exclusive:
@@ -1268,6 +1277,16 @@ def create_app(config: Config) -> FastAPI:
                     raise
             except (KeyError, TypeError):
                 pass
+        if card and not stopped_first:
+            say(15, "Closing the game so its memory card is saved and free for the fresh copy")
+            try:
+                _run_job("session_op", {"session_id": sid, "op": "stop_game", "args": {}}, actor, worker=old_w, wait=60,
+                         should_stop=should_stop)
+                stopped_first = True
+            except HTTPException as e:
+                if str(e.detail).startswith("cancelled by the operator"):
+                    raise
+                notes.append(f"The previous copy did not confirm it closed ({e.detail}); it is replaced anyway.")
         if exclusive:
             say(15, "Closing this RPCS3 session before starting it fresh")
             _stop_rpcs3_for_restart(sid, old_w, actor, should_stop)
@@ -3730,6 +3749,8 @@ def create_app(config: Config) -> FastAPI:
         names = built_mods.display_names(store)       # a session of a renamed build: mod_title (Mini window title)
         favs = built_mods.favorites(store)            # the session header's "★ Favorite this build" offer
         running = store.running_sessions()
+        # #2870: a "running" row whose PC has gone offline can't be connected to (it showed a blank view). Say so.
+        pcs = {w["id"]: bool(w.get("online")) for w in workers()} if running else {}
         if not include_ended:
             rows = sorted(running, key=lambda s: s.get("started") or 0, reverse=True)
         elif limit > 0:
@@ -3759,6 +3780,10 @@ def create_app(config: Config) -> FastAPI:
                     row["mod_title"] = named
                 if f"{s_.get('game_id')}/{build}" in favs:
                     row["mod_favorite"] = True
+            if s_.get("state") == "running":
+                wid = s_.get("worker_id") or str(s_["session_id"]).split("-")[0]
+                if wid in pcs and not pcs[wid]:
+                    row["worker_online"] = False     # its PC is offline: the Sessions view never follows it
             if s_.get("state") == "running" and _stopping(s_["session_id"]):
                 row["stopping"] = True              # Stop was pressed; the worker is killing the emulator (#1504)
             # Hermes / observers keep heavy work off the operator's game; the Sessions view leaves an ended demo or agent
