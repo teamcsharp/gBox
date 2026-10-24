@@ -838,6 +838,9 @@ def tick(*, now=None):
             run_route = hermes_local.route(run_settings) if node else dict(primary)
             if node and item.get('required_inference_node') is not None:
                 run_settings = hermes_pool.strict(run_settings)
+            if node:
+                # a no-op when present; a Hermes update rewrote config.yaml without gbox-deepseek (2026-10-24) and
+                # every pinned run was then "BLOCKED by pre-dispatch config validation: Unknown provider"
                 hermes_local.register_provider(mode._home() / 'config.yaml', run_settings)
             pin = ['--model', run_settings.model, '--provider', run_settings.provider] if node else []
             if local:
