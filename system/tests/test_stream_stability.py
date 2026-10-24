@@ -508,3 +508,18 @@ def test_a_still_never_replaces_a_fresh_stream_frame(app):
         assert r["ignored"] and r["seq"] == 1
         assert c.get("/api/sessions/w-s/frame.jpg").content == JPEG
         assert c.post("/api/sessions/w-t/frame", content=b"\xff\xd8still\xff\xd9").json() == {"seq": 1}
+
+
+def test_operator_restart_replaces_a_live_but_frozen_encoder_at_once_and_keeps_the_last_frame():
+    clock, procs, killed, events = Clock(), [], [], []
+    s = make_stream(clock, procs, killed)
+    s.on_event = events.append
+    procs[0].emit(); wait_seq(s, 1)
+    r = s.restart_now("operator F5")                 # no backoff, no waiting for the stall timer
+    assert r == {"restarted": True, "restarts": 1} and killed and len(procs) == 2 and s.latest == JPEG
+    procs[0].emit(b"\xff\xd8late\xff\xd9")           # the replaced encoder's late output is dropped
+    procs[1].emit(b"\xff\xd8new\xff\xd9"); wait_seq(s, 2)
+    assert s.latest == b"\xff\xd8new\xff\xd9"
+    assert events[-1]["kind"] == "encoder_restart" and events[-1]["reason"] == "operator F5"
+    s.close()
+    assert s.restart_now()["restarted"] is False

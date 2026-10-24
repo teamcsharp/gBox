@@ -193,3 +193,16 @@ test('the watch panel shows the newest note and how long ago', () => {
   assert.equal(W.ago(45), '45 s ago');
   assert.equal(W.ago(7200), '2 h ago');
 });
+
+test('the chat has an instant-command dropdown that posts the exact command for this session', async () => {
+  const C = require('../clients/web/viz/autoplay-coach.js');
+  assert.match(C.html('w-1'), /data-coach-cmds/);
+  assert.deepEqual(C.COMMANDS.map(c => c[0]), ['fight', 'next_area', 'explore', 'hunt', 'score', 'repetitive', 'mine', 'missing']);
+  const calls = [], states = [];
+  const host = { ownerDocument: undefined, matches: () => true, querySelector: sel => sel === 'input' ? input : sel === '[data-coach-status]' ? status : sel === '[data-coach-cmds]' ? button : null };
+  const input = { addEventListener() {}, value: '', setAttribute() {} }, status = { dataset: {} }, button = { addEventListener() {}, setAttribute() {}, getBoundingClientRect: () => ({}) };
+  const ctl = C.mount(host, { sid: 'w-1', api: async (path, body) => { calls.push([path, body]); return { directive: { label: 'x' } }; }, onState: v => states.push(v) });
+  await ctl.command('fight');
+  assert.deepEqual(calls[0], ['/api/sessions/w-1/directive', { command: 'fight' }]);
+  assert.equal(states.at(-1).state, 'done'); assert.match(states.at(-1).text, /Fight them!.*sent/);
+});

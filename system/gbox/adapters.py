@@ -329,6 +329,22 @@ class MjpegStream:
                 if gap >= self.SLOW_S and self.seq > 1:
                     self._event("slow_frames", gap_s=round(gap, 2))
 
+    def restart_now(self, reason: str = "operator") -> dict:
+        """Replace the encoder at once (the operator's F5 on a frozen picture), with no backoff; the emulator is never
+        touched and `latest` keeps the last good frame until the new encoder's first one."""
+        with self.cond:
+            if self.closed:
+                return {"restarted": False, "reason": "stream closed"}
+            old, self.proc = self.proc, None
+        if old is not None:
+            self._kill(old)
+        self._fails, self._next_spawn = 0, 0.0
+        self.restarts += 1
+        self._event("encoder_restart", restart=self.restarts, reason=reason)
+        self.last_frame = self.clock()
+        self._spawn()
+        return {"restarted": True, "restarts": self.restarts}
+
     def check(self, now: float | None = None) -> str | None:
         """One supervision step (the supervisor thread calls it every CHECK_S): restart a dead or hung encoder."""
         now = self.clock() if now is None else now

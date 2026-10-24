@@ -606,6 +606,10 @@ def routes(app, store, auth, create_request, submit, moment_provider=None):
         moment = coaching_evidence.capture(moment_provider, sid, received_at) if moment_provider is not None else None
         out = add_note(store, create_request, submit, sid, text, actor, now=received_at, client_id=body.client_id,
                        frozen_moment=moment)
+        from .mercs import directives
+        command = directives.match(text)                    # "fight!", "go to the next time bonus": acted on at once too
+        if command and not out.get("deduplicated"):
+            out["directive"] = directives.post(sid, command, now=received_at, source="chat")
         if not out.get("deduplicated") and any(c.get("state") == "pending" for c in out["captures"].values()):
             _spawn(watch, store, out["request_id"], out["message_id"])
         return out

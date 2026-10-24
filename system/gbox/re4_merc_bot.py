@@ -87,6 +87,7 @@ try:
 except ImportError:                              # a tree without it: vision only
     re4_ram_prompts = None
 from . import re4_threats as threats_ram         # who is attacking right now, what is thrown at him (RAM)
+from .mercs import directives as operator_commands   # the chat's instant commands (fight, next area, explore ...)
 try:
     from . import re4_menus                       # the title and the menus from RAM: boot -> a Mercenaries round
 except ImportError:                              # a tree without it: no presses out of a round
@@ -160,6 +161,7 @@ BLOCKED_MISSES, BLOCKED_SKIP_S = 3, 5.0          # misses in a row at one Ganado
 BLOCKED_R = 2500.0                               # ... when he is this close and on Leon's level (a level shot)
 PITCH_STEPS = (0.0, -0.05, 0.05, -0.1, 0.1, -0.15, 0.15)   # aim-height offsets tried in turn after misses (radians)
 CELL = 400.0                                     # the learned map's grid (world units)
+EXPLORE_R = 2400.0                               # "navigate more of the level": the distance of each exploring leg
 WALLS_PER_SAVE, STUCK_LOG_MAX = 5, 200           # save the learned map after this many new walls; stuck events kept
 DETOUR_S = 1.0                                   # a learned detour round a wall is planned again this often at most
 STUCK_S, STUCK_MOVE = 0.9, 250.0                 # running but moved less than this in that long (any way): blocked
@@ -479,6 +481,8 @@ class Bot:
         self.unstick = None                           # {"stage": "detour" | "back", "until", "dir"}
         self.detour_dir = 1
         self.stuck_n = 0
+        self.commands = operator_commands.Reader()    # the operator's instant commands (stats directive*)
+        self.explore = None                           # {"goal": (x, z), "at"}: where "navigate more of the level" is heading
         self.stuck_log: list = []                     # every stuck this run (the last STUCK_LOG_MAX): where, why, what he did
         self._stuck_pending: list = []                # ... not yet written to r<room>-stuck.jsonl (save())
         self._new_walls = 0                           # learned walls since the map was last saved
@@ -1055,6 +1059,87 @@ class Bot:
             keys -= {"up", "b"}
         return {"hold": keys}
 
+    def _operator(self, p, s, near, dist, now):
+        """The operator's instant commands (gbox.mercs.directives; the chat's dropdown or typed words). One-shots change the
+        plan on the tick they arrive; standing modes steer until they expire. None: no command applies, play as usual."""
+        cmd, fresh = self.commands.current(self.stats, time.time())
+        if cmd is None:
+            if self.explore and now - self.explore["at"] > 20:
+                self.explore = None
+            return None
+        self.stats["directive_active"] = cmd
+        if fresh:
+            self.stats["directive_status"] = "acting: " + cmd
+        if cmd == "mine":
+            self.stats["directive_status"] = "RE4 Mercenaries has no mines to drop"
+            return None
+        if cmd == "missing":
+            if fresh:                                                      # the next aim-height offset, misses forgotten
+                self.pitch_i = (self.pitch_i + 1) % len(PITCH_STEPS)
+                self.stats["pitch_offset"] = PITCH_STEPS[self.pitch_i]
+                self.miss_by = {}
+                self.stats["directive_status"] = f"aim height offset now {PITCH_STEPS[self.pitch_i]:+.2f} rad"
+            return None
+        if cmd == "next_area":
+            if fresh:                                                      # drop this goal for the next one
+                for pool_ in (self.items, self.bonus):
+                    if len(pool_) > 1:
+                        pool_.append(pool_.pop(0))
+                self.goal, self.ordered = None, True
+                self.stats["directive_status"] = "skipped to the next time bonus"
+            return None
+        if cmd == "repetitive":
+            if fresh:                                                      # forget this target and route, back off, move on
+                if near:
+                    self.skip[near["slot"]] = now + 10.0
+                for pool_ in (self.items, self.bonus):
+                    if len(pool_) > 1:
+                        pool_.append(pool_.pop(0))
+                self.goal, self.hist, self.stuck_n = None, [], 0
+                self.unstick = {"stage": "back", "until": now + BACK_S}
+                self.explore = None
+                self.stats["directive_status"] = "dropped the repeated action: backing off, then forward"
+            if self.unstick and now < self.unstick["until"]:
+                return {"hold": {"down"}}
+            return self._explore(p, now, force=fresh)
+        if cmd == "explore":
+            if near and dist < ENGAGE and self._sight(p, (near["pos"][0], near["pos"][1] + HEAD_H, near["pos"][2])):
+                return self._fight(p, near, now, s)
+            return self._explore(p, now, force=fresh)
+        # fight / hunt / score: the Ganados first, ahead of time bonuses and the route
+        if near is None:
+            self.stats["directive_status"] = "no enemy seen yet: exploring to find them"
+            return self._explore(p, now, force=fresh)
+        if dist < ENGAGE and self._sight(p, (near["pos"][0], near["pos"][1] + HEAD_H, near["pos"][2])):
+            self.stats["directive_status"] = f"fighting at {dist:.0f}"
+            return self._fight(p, near, now, s)
+        self.stats["directive_status"] = f"going after the nearest enemy ({dist:.0f} away)"
+        self.r_since = None
+        return self._go(p, (near["pos"][0], near["pos"][2]), now)
+
+    def _explore(self, p, now, force=False) -> dict:
+        """Head for ground Leon has not walked: the open heading (of 16) whose ray ahead crosses the fewest walked cells and
+        no learned wall, EXPLORE_R away; picked again on arrival or every few seconds."""
+        px, _, pz = p["pos"]
+        e = self.explore
+        if force or e is None or now - e["at"] > 4.0 or math.hypot(e["goal"][0] - px, e["goal"][1] - pz) < ARRIVE:
+            learned, best = self.learned, None
+            for k in range(16):
+                ang = 2 * math.pi * k / 16
+                gx, gz = px + math.sin(ang) * EXPLORE_R, pz + math.cos(ang) * EXPLORE_R
+                if learned is not None and learned.crosses((px, pz), (gx, gz)) is not None:
+                    continue
+                known = sum(1 for c in (learned.cells_between((px, pz), (gx, gz)) if learned else []) if c in learned.walked)
+                score = known * 3 + abs(wrap(ang - p["rot"])) * 2 + (k * 0.6180339887 % 1.0) * 0.5   # stable tie-break
+                if best is None or score < best[0]:
+                    best = (score, (gx, gz))
+            if best is None:                                               # boxed in by learned walls: back out
+                self.stats["directive_status"] = "boxed in by learned walls: backing out"
+                return {"hold": {"down"}}
+            e = self.explore = {"goal": best[1], "at": now}
+        self.r_since = None
+        return self._go(p, e["goal"], now)
+
     def _learn_wall(self, p) -> list:
         """The wall he ran into, into the learned map: the cell half a cell ahead of him and the cell directly in front
         of his own (his heading snapped to the eight neighbours) - never his own cell: he stands on it, so it is floor
@@ -1172,6 +1257,9 @@ class Bot:
         pool = [e for e in s["enemies"] if self.skip.get(e["slot"], float("-inf")) < now and not threats_ram.dying(e)]
         near = min(pool, key=lambda e: (e["pos"][0] - px) ** 2 + (e["pos"][2] - pz) ** 2) if pool else None
         dist = math.hypot(near["pos"][0] - px, near["pos"][2] - pz) if near else None
+        order = self._operator(p, s, near, dist, now)                     # the operator's instant command, if any
+        if order is not None:
+            return order
         crowd = sum(1 for e in pool if math.hypot(e["pos"][0] - px, e["pos"][2] - pz) < COMBO_NEAR)
         if self.st is not None and self.combos and crowd >= COMBO_CROWD:     # a combo window while they crowd in
             c = min(self.combos, key=lambda h: math.hypot(h["stand"][0] - px, h["stand"][2] - pz))
