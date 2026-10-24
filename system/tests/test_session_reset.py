@@ -25,7 +25,7 @@ def reset_route(tmp_path, monkeypatch):
     cfg = Config(data_dir=tmp_path / 'data', cache_dir=tmp_path / 'cache')
     app = server.create_app(cfg)
     store = app.state.store
-    store.upsert_catalog([{'game_id': 'ts', 'title': 'MGS: The Twin Snakes', 'platform': 'gamecube',
+    store.upsert_catalog([{'game_id': 'ts', 'title': 'MGS: The Twin Snakes', 'platform': 'wii',
                            'source_paths': [], 'format': 'iso'}])
     store.put('worker', 'w', {'id': 'w', 'name': 'JAYBUILTFINALE', 'os': 'windows', 'last_seen': time.time()})
     store.put('session', 'w-live', {'session_id': 'w-live', 'game_id': 'ts', 'state': 'running', 'adapter': 'dolphin',
@@ -58,7 +58,8 @@ def transport(reset_route, *, native=None, launch_fails=False):
                                            'mod': inp.get('mod', ''), 'adapter': 'dolphin'})
             return {'session_id': 'w-new'}
         if tool == 'session_op' and inp['op'] == 'stop_game':
-            assert store.get('session', 'w-new'), 'the old copy is closed only after the new one runs'
+            if inp['session_id'] == 'w-live' and not store.get('session', 'w-new'):   # a cloud-card game: closed first (#3052)
+                assert any(c[0] == 'launch_game' for c in calls) is False
             return {'ended': True}
         if tool == 'prepare_mod':
             return {'ready': True, 'mod': inp['mod']}
@@ -351,3 +352,25 @@ def test_a_relaunched_agent_session_stays_the_agents(tmp_path, monkeypatch):
     assert (label['owner'], label['task']) == ('agent', 'RE4 Mercenaries playbook test')
     from gbox import last_played
     assert last_played.is_agent_session(store, store.get('session', 'w-new'))
+
+
+def test_a_cloud_card_game_closes_the_running_copy_first_so_the_card_is_free(reset_route):
+    """#3052 (RE4 Reset, i9-NUC): a copy started beside the running one asked for the same cloud memory card and
+    was refused ("This card is already inserted in another session"). The moment is saved, the old copy closed
+    (which syncs and releases the card), then the fresh copy launched without keep_session."""
+    store = reset_route[2]
+    store.upsert_catalog([{'game_id': 'ts', 'title': 'Resident Evil 4', 'platform': 'gamecube', 'source_paths': [], 'format': 'iso'}])
+    calls = transport(reset_route)
+    r = post(reset_route)
+    assert r.status_code == 200, r.text
+    assert [(t, i.get('op')) for t, i in calls] == [('session_op', 'reset'), ('state_transfer', 'snapshot'),
+                                                    ('session_op', 'stop_game'), ('launch_game', None)]
+    assert 'keep_session' not in calls[3][1]
+    assert store.get('session', 'w-live')['state'] == 'ended' and store.get('session', 'w-live')['replaced_by'] == 'w-new'
+
+
+def test_only_cloud_card_adapters_hold_a_card():
+    assert server.holds_cloud_card({'platform': 'gamecube'}, {'adapter': 'dolphin'})
+    assert server.holds_cloud_card({'platform': 'dreamcast'}, {'adapter': 'retroarch'})
+    assert not server.holds_cloud_card({'platform': 'wii'}, {'adapter': 'dolphin'})
+    assert not server.holds_cloud_card({'platform': 'gamecube'}, {'adapter': 'rpcs3'})
