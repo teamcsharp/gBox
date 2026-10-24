@@ -53,12 +53,14 @@
     var source = '', engine = null, generation = 0, timer = null, attempt = 0, audio = false, level = 0.5;
     var forceJs = false, transport = '', phase = 'stopped', errors = [], lastTime = -1, lastCapture = -Infinity;
     var lastMediaRecovery = -Infinity, hold = options.holdFrame || canvasHold(video), now = options.now || Date.now;
+    var attachments = 0, stalls = 0;
     var schedule = options.setTimeout || setTimeout, cancel = options.clearTimeout || clearTimeout;
     video.autoplay = true; video.playsInline = true; video.muted = true; video.volume = level;
     function report(message) { status({message:message, audio:audio && level > 0, enabled:audio, volume:level, source:source,
       phase:phase, transport:transport, holding:hold.held()}); }
     function audioMessage() { return audio ? (level ? 'Gameplay audio on' : 'Gameplay muted') : 'Click Enable gameplay audio for game sound'; }
     function noteError(kind, details, fatal) {
+      if (details === 'bufferStalledError') stalls++;
       errors.push({at:now(), type:String(kind || 'unknown').slice(0,80), details:String(details || '').slice(0,160),
         fatal:!!fatal, transport:transport, time:Number(video.currentTime)||0});
       if (errors.length > 12) errors.shift();
@@ -109,6 +111,7 @@
     async function attach(epoch, preserve) {
       cleanup(preserve);
       if (!source || epoch !== generation) return;
+      attachments++;
       phase = preserve ? 'recovering' : 'loading'; lastTime = -1;
       video.muted = !audio || level === 0;
       function nativeFallback() {
@@ -132,9 +135,12 @@
           throw new Error('This browser cannot play H.264 gameplay');
         }
         transport = 'hls.js';
-        engine = new Hls({enableWorker:true, lowLatencyMode:false, liveSyncDurationCount:2,
-          liveMaxLatencyDurationCount:5, maxLiveSyncPlaybackRate:1.1, backBufferLength:10,
-          maxBufferLength:6, maxMaxBufferLength:12, maxBufferSize:12 * 1024 * 1024});
+        // Wait for a real startup cushion instead of chasing a two-segment
+        // cold playlist. Never seek the live playhead into an unbuffered hole.
+        engine = new Hls({enableWorker:true, lowLatencyMode:false, initialLiveManifestSize:4,
+          liveSyncMode:'buffered', liveSyncDurationCount:4,
+          liveMaxLatencyDurationCount:12, maxLiveSyncPlaybackRate:1.03, backBufferLength:10,
+          maxBufferLength:12, maxMaxBufferLength:20, maxBufferSize:12 * 1024 * 1024});
         var owned = engine;
         owned.on(Hls.Events.MANIFEST_PARSED, function () {
           if (epoch !== generation || owned !== engine) return;
@@ -163,8 +169,9 @@
       source:function (url) {
         url = String(url || '');
         if (url === source) return;
-        source = url; generation++; attempt = 0; lastCapture = -Infinity; hold.reset();
-        if (source) attach(generation); else cleanup();
+        source = url; generation++; attempt = 0; attachments = 0; stalls = 0;
+        lastCapture = -Infinity; hold.reset();
+        if (source) attach(generation); else { phase = 'stopped'; cleanup(); }
       },
       volume:function (value) {
         var next = Number(value);
@@ -178,8 +185,13 @@
         if (source) play();
       },
       stop:function () { source = ''; generation++; phase = 'stopped'; cleanup(); },
-      state:function () { return {source:source, audio:audio, volume:level, bufferedSeconds:12,
-        phase:phase, transport:transport, holding:hold.held(), errors:errors.slice()}; }
+      state:function () {
+        var ahead = 0, at = Number(video.currentTime) || 0;
+        try { for (var i=0; i<video.buffered.length; i++)
+          if (video.buffered.start(i)<=at && video.buffered.end(i)>at) ahead=video.buffered.end(i)-at; } catch (_) {}
+        return {source:source, audio:audio, volume:level, bufferedSeconds:20, bufferAheadSeconds:ahead,
+          liveTargetSegments:4, attachments:attachments, stalls:stalls,
+          phase:phase, transport:transport, holding:hold.held(), errors:errors.slice()}; }
     };
   }
   return {VERSION:VERSION, create:create, loadHls:loadHls};

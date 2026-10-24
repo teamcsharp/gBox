@@ -629,6 +629,7 @@ class Encoder:
         self.tap_sid: str | None = None
         self.tap_checked = -1e9
         self.next_segment = 0
+        self._media = None
 
     # argv -----------------------------------------------------------------------------------------------------
     def argv(self, audio_fd: int | None = None, start_number: int = 0) -> list[str]:
@@ -636,10 +637,10 @@ class Encoder:
         kbps, fps = int(self.s.video_kbps), self.fps
         nice = (["nice", "-n", str(int(self.s.nice))]
                 if os.name == "posix" and int(self.s.nice) and shutil.which("nice") else [])
-        a = [*nice, self.ffmpeg, "-hide_banner", "-loglevel", "error", "-threads", "1",
+        a = [*nice, self.ffmpeg, "-hide_banner", "-loglevel", "error", "-threads", "1", "-thread_queue_size", "64",
              "-f", "mjpeg", "-framerate", str(fps), "-i", "pipe:0"]
         if audio_fd is not None:
-            a += ["-f", "s16le", "-ar", str(AUDIO_RATE), "-ac", str(AUDIO_CH), "-i", f"pipe:{audio_fd}"]
+            a += ["-thread_queue_size", "256", "-f", "s16le", "-ar", str(AUDIO_RATE), "-ac", str(AUDIO_CH), "-i", f"pipe:{audio_fd}"]
         a += ["-map", "0:v"] + (["-map", "1:a"] if audio_fd is not None else [])
         a += ["-filter_threads", "1", "-vf",
               f"scale={w}:{h}:force_original_aspect_ratio=decrease:flags=bilinear,"
@@ -653,10 +654,12 @@ class Encoder:
         if audio_fd is not None:
             a += ["-c:a", "aac", "-b:a", f"{int(self.s.audio_kbps)}k", "-ar", str(AUDIO_RATE), "-ac", str(AUDIO_CH)]
         seg = max(1, int(self.s.hls_segment_s))
+        window = max(6, min(60, int(self.s.hls_window_segments)))
+        retained = max(2, min(120, int(self.s.hls_retained_segments)))
         flags = "delete_segments+omit_endlist+independent_segments+temp_file" + ("+discont_start" if start_number else "")
         a += ["-f", "tee",
               f"[f=mpegts:mpegts_flags=+pat_pmt_at_frames:mpegts_start_pid={VIDEO_PID}]pipe:1|"
-              f"[f=hls:hls_time={seg}:hls_list_size=6:hls_flags={flags}:start_number={start_number}"
+              f"[f=hls:hls_time={seg}:hls_list_size={window}:hls_delete_threshold={retained}:hls_flags={flags}:start_number={start_number}"
               f":hls_segment_filename=seg_%05d.ts]index.m3u8"]
         return a
 
@@ -693,6 +696,7 @@ class Encoder:
             if audio_r is not None:
                 os.close(audio_r)
         self.proc, self.last_write = proc, self.clock()
+        self._reset_media(proc)
         self.state = "running"
         name = self.feed.key
         threading.Thread(target=self._write_video, args=(proc,), daemon=True, name=f"broadcast-v-{name}").start()
@@ -715,8 +719,8 @@ class Encoder:
                 proc.stdin.flush()
             except (BrokenPipeError, OSError, ValueError, AttributeError):
                 return
-            self.frames_in += 1
-            self.last_write = self.clock()
+            if not self._accept_video(proc):
+                return
             next_t += period
             delay = next_t - self.clock()
             if delay > 0:
@@ -725,30 +729,66 @@ class Encoder:
                 self.late += 1
                 next_t = self.clock()
 
+    def _reset_media(self, proc):
+        with self.lock:
+            self._media={'proc':proc,'video_frames':0,'audio_samples':0,'last_video_at':self.clock(),
+                         'last_audio_at':None,'last_output_at':None,'audio_discarded_bytes':0}
+
+    def _accept_video(self, proc):
+        """Advance only after the entire JPEG has entered this process's pipe."""
+        with self.lock:
+            media=self._media
+            if proc is not self.proc or media is None or media['proc'] is not proc:
+                return False
+            media['video_frames']+=1
+            media['last_video_at']=self.last_write=self.clock()
+            self.frames_in+=1
+            return True
+
     def _write_audio(self, proc, fd: int):
-        """Sound on the same clock as the picture: every 20 ms the samples due by now, from the session's PipeWire
-        stream when there is one (Spark sessions), else silence, so the track never has a gap."""
+        """PCM duration follows accepted video frames, not an independent wall clock.
+
+        A starved video writer pauses both encoded timelines. Writes remain at
+        most 20 ms; audio cannot accumulate a permanent lead after video resets
+        its wall-clock pacing, and old writers cannot advance a new process.
+        """
         try:
             out = os.fdopen(fd, "wb", buffering=0)
         except OSError:
             return
-        t0, written = self.clock(), 0
+        written = 0
         try:
             while not self.closed and proc is self.proc:
-                need = int((self.clock() - t0) * AUDIO_RATE) - written
+                with self.lock:
+                    media=self._media
+                    if media is None or media['proc'] is not proc:
+                        return
+                    target=media['video_frames']*AUDIO_RATE//self.fps
+                    video_age=self.clock()-media['last_video_at']
+                need=min(AUDIO_RATE//50,target-written)
                 if need <= 0:
+                    if video_age>.1 and self.tap is not None:
+                        # The tap's ring is bounded, but even .4 s of old sound
+                        # should not replay against the newest picture on resume.
+                        discarded=self.tap.take(int(AUDIO_BYTES_S*AUDIO_BUFFER_S))
+                        with self.lock:
+                            if self._media is media:media['audio_discarded_bytes']+=len(discarded)
                     time.sleep(0.02)
                     continue
-                if need > AUDIO_RATE:                            # the writer was starved: drop the backlog
-                    t0, written, need = self.clock(), 0, AUDIO_RATE // 50
                 tap = self.tap
                 data = tap.take(need * 4) if tap else b""
                 if len(data) < need * 4:
                     data += bytes(need * 4 - len(data))
                 view = memoryview(data)
                 while view:
-                    view = view[out.write(view):]
+                    count=out.write(view)
+                    if not count:raise BrokenPipeError('PCM pipe made no progress')
+                    view = view[count:]
                 written += need
+                with self.lock:
+                    if self._media is not media or proc is not self.proc:return
+                    media['audio_samples']=written
+                    media['last_audio_at']=self.clock()
         except (BrokenPipeError, OSError, ValueError, TypeError):
             pass
         finally:
@@ -792,6 +832,9 @@ class Encoder:
             if not data:
                 break
             self.bytes_out += len(data)
+            with self.lock:
+                if self._media is not None and self._media['proc'] is proc:
+                    self._media['last_output_at']=self.clock()
             for piece, key in scan.feed(data):
                 self._deliver(piece, key)
         for piece, key in scan.flush():
@@ -926,12 +969,21 @@ class Encoder:
     def status(self) -> dict:
         with self.lock:
             viewers = len(self.subs)
+            media=dict(self._media or {})
+        video_s=media.get('video_frames',0)/self.fps
+        audio_s=media.get('audio_samples',0)/AUDIO_RATE
         return {"feed": self.feed.key, "state": self.state, "pid": getattr(self.proc, "pid", None),
                 "ts_viewers": viewers, "hls_active": bool(self.hls_at) and self.clock() - self.hls_at < 30,
                 "frames_in": self.frames_in, "bytes_out": self.bytes_out, "late": self.late,
+                'media_video_s':round(video_s,3),'media_audio_s':round(audio_s,3),
+                'audio_lead_s':round(audio_s-video_s,3),
+                'audio_write_age_s':round(self.clock()-media['last_audio_at'],3) if media.get('last_audio_at') is not None else None,
+                'output_age_s':round(self.clock()-media['last_output_at'],3) if media.get('last_output_at') is not None else None,
                 "restarts": self.restarts, "audio": bool(self.tap and self.tap.alive()),
                 "audio_session": self.tap_sid if self.tap else None, "errors": list(self.errors)[-3:],
                 "size": "%dx%d" % self.size, "fps": self.fps, "kbps": int(self.s.video_kbps),
+                "hls_window_segments": self.s.hls_window_segments,
+                "hls_retained_segments": self.s.hls_retained_segments,
                 "encoder": str(self.s.encoder)}
 
 
@@ -1060,7 +1112,7 @@ class Hub:
                    "adapter": s.get("adapter"), "started": s.get("started") or 0, "detail": detail, "pc_id": wid,
                    "pc": str(w.get("name") or detail.get("staged_on") or detail.get("worker_name") or wid),
                    "os": w.get("os") or "", "pc_online": bool(w) and wall - (w.get("last_seen") or 0) < WORKER_TTL_S,
-                   "agent_owned": owned[0]}
+                   "agent_owned": owned[0], "federation": s.get("federation") or {}}
             row["kind"], row["age"] = self.source_kind(row)
             row["fresh"] = row["age"] is not None and row["age"] <= self._stale_after(row["kind"])
             rows.append(row)
@@ -1091,7 +1143,8 @@ class Hub:
             return "desktop_crop", crop_age
         if lv_age is not None:
             return "stills", lv_age
-        if row.get("os") == "windows" and (row.get("detail") or {}).get("local_window"):
+        if row.get("os") == "windows" and (row.get("detail") or {}).get("local_window") \
+                and (row.get("federation") or {}).get("media") != "session_stream":
             return "desktop_crop", crop_age                      # nothing yet: a crop is what gets asked for
         return ("spark_capture" if row.get("os") == "linux" else "windows_stream"), None
 
@@ -1295,7 +1348,8 @@ class Hub:
         want: dict[str, set[str]] = {}
         for f in feeds:
             row = f.row
-            if row and f.users() and row.get("os") == "windows" and (row.get("detail") or {}).get("local_window"):
+            if row and f.users() and row.get("os") == "windows" and (row.get("detail") or {}).get("local_window") \
+                    and (row.get("federation") or {}).get("media") != "session_stream":
                 want.setdefault(row["pc_id"], set()).add(row["session_id"])
         for wid, sids in want.items():
             self.desktop_watch[wid] = wall + DESKTOP_RENEW_S

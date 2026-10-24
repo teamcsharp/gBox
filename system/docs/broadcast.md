@@ -23,7 +23,7 @@ Each feed in four formats. Append the suffix to the path:
 | `.mjpg` | MJPEG over HTTP (`multipart/x-mixed-replace; boundary=gboxframe`, each part with `Content-Length`) | A constant frame rate (default 30; `?fps=1..60`): the newest picture every tick, so a quiet source repeats its picture. Zero encoding cost: the frames the PCs already send pass through. The picture keeps the source's own size, so it changes size when the program switches between games. |
 | `.jpg` | One JPEG | The newest picture. Headers `x-gbox-session` and `x-gbox-state` (`live`, `hold`, `slate`). |
 | `.ts` | H.264 (+ AAC) in MPEG-TS over HTTP | 1280x720, 30 fps, 2.5 Mbit/s constant, 1 s GOP, every source fitted inside the canvas (letterbox or pillarbox), so the size never changes. A new reader starts on a keyframe at once (the newest GOP is kept for it). |
-| `/hls/index.m3u8` | HLS (the same H.264 encode) | 1 s segments, a list of 6. Expect a few seconds of latency (players start about three segments from the live end); `.ts` and `.mjpg` add well under a second on the server side, plus the player's own buffer. |
+| `/hls/index.m3u8` | HLS (the same H.264 encode) | 1 s segments, a list of 12 plus 12 recently referenced segments retained for delayed readers. Pine starts four segments behind the live edge; `.ts` and `.mjpg` add less server-side delay, plus the player's buffer. |
 
 None of these responses ends while its reader stays: not on a program switch, not when a session ends, not when a
 source stalls. What it shows meanwhile:
@@ -203,6 +203,8 @@ encoder = "libx264"    # libx264 (ultrafast, zerolatency) | h264_nvenc
 audio = "auto"         # auto | off
 audio_kbps = 128
 hls_segment_s = 1
+hls_window_segments = 12
+hls_retained_segments = 12
 hold_s = 8.0           # a silent source's last frame holds this long, then the slate
 end_hold_s = 2.0       # an ended session's last frame holds this long, then the program moves on
 watch_ttl_s = 900.0    # the operator's "watching" report counts this long

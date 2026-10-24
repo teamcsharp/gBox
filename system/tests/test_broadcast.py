@@ -499,14 +499,28 @@ def test_encoder_argv_tee_mpegts_and_hls(tmp_path):
     assert a[a.index("-f", a.index("-bf")) + 1] == "tee"
     assert a[-1].startswith("[f=mpegts:mpegts_flags=+pat_pmt_at_frames") and "]pipe:1|[f=hls:" in a[-1]
     assert a[-1].endswith("]index.m3u8") and "start_number=0" in a[-1] and "discont_start" not in a[-1]
+    assert 'hls_list_size=12' in a[-1] and 'hls_delete_threshold=12' in a[-1]
     if os.name == "posix" and shutil.which("nice"):
         assert a[:3] == ["nice", "-n", "10"]
     with_audio = " ".join(enc.argv(audio_fd=7, start_number=12))
+    assert '-thread_queue_size 64 -f mjpeg' in with_audio
+    assert '-thread_queue_size 256 -f s16le' in with_audio
     assert "-f s16le -ar 48000 -ac 2 -i pipe:7" in with_audio and "-map 1:a" in with_audio and "-c:a aac" in with_audio
     assert "start_number=12" in with_audio and "discont_start" in with_audio
     nv, _, _ = make_encoder(tmp_path, encoder="h264_nvenc", size="960x540", ts_fps=25, video_kbps=1800)
     j = " ".join(nv.argv())
     assert "-c:v h264_nvenc" in j and "scale=960:540" in j and "-framerate 25" in j and "-b:v 1800k" in j
+
+
+def test_hls_window_and_recently_referenced_segment_grace_are_configured_together(tmp_path):
+    enc, _, _ = make_encoder(tmp_path, hls_window_segments=18, hls_retained_segments=24)
+    assert 'hls_list_size=18' in enc.argv()[-1]
+    assert 'hls_delete_threshold=24' in enc.argv()[-1]
+    from pydantic import ValidationError
+    for settings in ({'hls_window_segments':0}, {'hls_retained_segments':1},
+                     {'hls_window_segments':61}, {'hls_retained_segments':121}):
+        with pytest.raises(ValidationError):
+            BroadcastConfig(**settings)
 
 
 def test_encoder_feeds_pictures_and_restarts_a_dead_or_stuck_ffmpeg(tmp_path):
@@ -689,6 +703,7 @@ def test_audio_writer_keeps_time_with_silence_and_the_tap(tmp_path):
     r, w = os.pipe()
     sentinel = object()
     enc.proc, enc.tap = sentinel, Tap()
+    enc._reset_media(sentinel)
     got = bytearray()
 
     def drain():
@@ -699,6 +714,11 @@ def test_audio_writer_keeps_time_with_silence_and_the_tap(tmp_path):
     reader.start()
     writer = threading.Thread(target=enc._write_audio, args=(sentinel, w), daemon=True)
     writer.start()
+    def video():
+        while not enc.closed:
+            enc._accept_video(sentinel)
+            time.sleep(1/enc.fps)
+    video_writer=threading.Thread(target=video,daemon=True);video_writer.start()
     time.sleep(0.5)
     enc.closed = True
     writer.join(5)
@@ -706,6 +726,78 @@ def test_audio_writer_keeps_time_with_silence_and_the_tap(tmp_path):
     seconds = len(got) / B.AUDIO_BYTES_S
     assert 0.3 < seconds < 0.75 and len(got) % 4 == 0
     assert b"\x05\x00" in got and b"\x00\x00\x00\x00" in got, "the tap's samples, padded with silence"
+
+
+def test_media_clock_is_per_process_and_does_not_advance_after_restart(tmp_path):
+    enc,_,_=make_encoder(tmp_path)
+    old,new=object(),object();enc.proc=old;enc._reset_media(old)
+    for _ in range(30):assert enc._accept_video(old)
+    assert enc.status()['media_video_s']==1
+    enc.proc=new;enc._reset_media(new)
+    assert not enc._accept_video(old)
+    assert enc.status()['media_video_s']==0 and enc.status()['media_audio_s']==0
+
+
+@pytest.mark.skipif(os.environ.get('GBOX_LIVE_FFMPEG')!='1' or not shutil.which('ffprobe'),
+                    reason='set GBOX_LIVE_FFMPEG=1 for real large-MJPEG/audio starvation regression')
+def test_real_large_mjpeg_audio_startup_and_video_only_starvation_recover_on_same_timeline(tmp_path):
+    # Deliberately larger than a pipe, so first-frame acceptance cannot merely
+    # mean a small JPEG sat in an OS buffer while FFmpeg waited for audio.
+    image=Image.frombytes('RGB',(640,480),__import__('random').Random(31).randbytes(640*480*3))
+    stream=io.BytesIO();image.save(stream,'JPEG',quality=95);jpeg=stream.getvalue()
+    assert len(jpeg)>65536
+    trigger,blocked=threading.Event(),threading.Event()
+    class Source:
+        key='private-av-regression'
+        def read(self):
+            if trigger.is_set():
+                trigger.clear();blocked.set();time.sleep(2.)
+            return jpeg
+    captured=bytearray();processes=[]
+    class Output:
+        def __init__(self,raw):self.raw=raw
+        def read1(self,n):
+            data=self.raw.read1(n);captured.extend(data);return data
+        def __getattr__(self,name):return getattr(self.raw,name)
+    def popen(argv,**kw):
+        proc=subprocess.Popen(argv,**kw);proc.stdout=Output(proc.stdout);processes.append(proc);return proc
+    cfg=BroadcastConfig(audio='auto',ts_fps=10,size='320x240',video_kbps=400,nice=19)
+    enc=B.Encoder(Source(),cfg,tmp_path/'encode',audio_for=lambda feed:None,popen=popen,
+                  clock=time.monotonic,log=lambda m:None,ffmpeg=shutil.which('ffmpeg') or 'ffmpeg')
+    startup=time.monotonic();snapshots=[]
+    try:
+        enc.dir.mkdir(parents=True);enc._spawn()
+        deadline=startup+18
+        while time.monotonic()<deadline and (enc.bytes_out==0 or enc._media['video_frames']<20):
+            assert enc.proc.poll() is None,list(enc.errors)
+            time.sleep(.05)
+        assert enc.bytes_out>0,'Large first MJPEG + actual PCM must start without input-probe deadlock'
+        trigger.set();assert blocked.wait(2)
+        before=enc.status();time.sleep(1.)
+        during=enc.status()
+        assert during['media_video_s']==before['media_video_s']
+        assert during['media_audio_s']<=during['media_video_s']+.021
+        until=time.monotonic()+4
+        while time.monotonic()<until:
+            snapshots.append(enc.status());time.sleep(.1)
+        final=enc.status()
+        assert final['media_video_s']>before['media_video_s']+1
+        assert -.15<=final['audio_lead_s']<=.021
+        assert final['output_age_s'] is not None and final['output_age_s']<1
+        assert enc.playlist() and len(list(enc.dir.glob('seg_*.ts')))>=2
+    finally:
+        enc.stop()
+        for proc in processes:proc.wait(timeout=5)
+    path=tmp_path/'actual-av.ts';path.write_bytes(captured)
+    result=subprocess.run(['ffprobe','-v','error','-show_packets','-show_entries',
+        'packet=codec_type,pts_time','-of','json',str(path)],capture_output=True,text=True,timeout=15)
+    assert result.returncode==0,result.stderr[-2000:]
+    packets=json.loads(result.stdout)['packets']
+    ends={kind:max(float(p['pts_time']) for p in packets if p.get('codec_type')==kind and 'pts_time' in p)
+          for kind in ('video','audio')}
+    assert min(ends.values())>2 and abs(ends['video']-ends['audio'])<.2,ends
+    (tmp_path/'real-av-receipt.json').write_text(json.dumps({'jpeg_bytes':len(jpeg),'ends':ends,
+        'before_stall':before,'during_stall':during,'after_recovery':final,'samples':snapshots}))
 
 
 # --- routes ------------------------------------------------------------------------------------------------------------

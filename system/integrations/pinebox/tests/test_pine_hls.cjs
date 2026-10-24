@@ -39,9 +39,11 @@ test('compressed live main video uses a bounded buffer without periodic healthy 
   assert.equal(f.engines.length,1);
   const e=f.engines[0];
   assert.equal(e.source,'/api/gbox/hls?k=pc-spark1&t=listener');
-  assert.equal(e.config.liveSyncDurationCount,2);
-  assert.equal(e.config.liveMaxLatencyDurationCount,5);
-  assert.equal(e.config.maxMaxBufferLength,12);
+  assert.equal(e.config.initialLiveManifestSize,4);
+  assert.equal(e.config.liveSyncMode,'buffered');
+  assert.equal(e.config.liveSyncDurationCount,4);
+  assert.equal(e.config.liveMaxLatencyDurationCount,12);
+  assert.equal(e.config.maxMaxBufferLength,20);
   assert.equal(e.config.backBufferLength,10);
   e.events.manifest();
   for(let i=0;i<20;i++) f.p.source(e.source);
@@ -189,5 +191,33 @@ test('browser: a decoded frame remains visible after video cleanup and never cro
     await evaluate(`player.source('/second')`);
     assert.equal(await evaluate(`document.querySelector('.gbox-hold').hidden`),true,'old source picture cannot leak onto another selected feed');
     await evaluate(`player.stop()`);
+  },{timeoutMs:30000});
+});
+
+test('browser: station metadata changes and failed polls retain a healthy decoder; explicit off stops it',async()=>{
+  const {withPage}=require('../../../scripts/browser_lifecycle.cjs');
+  await withPage(async evaluate=>{
+    await evaluate(`window.pendingTimers=[];window.realNow=Date.now;window.offset=0;
+      Date.now=()=>realNow()+offset;
+      window.setTimeout=(fn,ms)=>{const row={fn,ms};pendingTimers.push(row);return row};
+      window.clearTimeout=row=>{if(row)row.cancelled=true};
+      window.calls={sources:[],stops:0};
+      window.PineGBoxHls={create:()=>({volume(){},source(url){calls.sources.push(url)},
+        stop(){calls.stops++},state(){return{phase:'playing'}}})};
+      window.api=async()=>{throw Error('temporary metadata outage')};`);
+    await evaluate(fs.readFileSync(path.join(__dirname,'../frontend/gbox-tune.js'),'utf8'));
+    await evaluate(`window.tile={key:'program',device:'spark1',title:'RE5',hls:'/hls?k=program',frame:'/frame?revision=1'};
+      GBoxTune.news({show:true,state:'live',tiles:[tile]});Promise.resolve();`);
+    assert.deepEqual(await evaluate(`calls.sources`),['/hls?k=program']);
+    await evaluate(`GBoxTune.news({show:true,state:'live',tiles:[{...tile,title:'next round',frame:'/frame?revision=2'}]});Promise.resolve();`);
+    assert.equal(await evaluate(`calls.stops`),0,'thumbnail metadata must not reset gameplay');
+    assert.deepEqual(await evaluate(`calls.sources`),['/hls?k=program']);
+    await evaluate(`offset=13000;pendingTimers.find(t=>t.ms===15000).fn();(async()=>{for(let i=0;i<5;i++)await Promise.resolve()})()`);
+    const state=await evaluate(`GBoxTune.state()`);
+    assert.equal(state.on,true);assert.equal(state.metadataDelayed,true);
+    assert.equal(await evaluate(`calls.stops`),0,'failed metadata poll must not stop a working feed');
+    await evaluate(`GBoxTune.news({show:false,state:'off',tiles:[]})`);
+    assert.equal(await evaluate(`GBoxTune.state().on`),false);
+    assert.equal(await evaluate(`calls.stops`),1,'the station still owns its explicit off switch');
   },{timeoutMs:30000});
 });

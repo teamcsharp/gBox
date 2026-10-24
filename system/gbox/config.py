@@ -159,6 +159,8 @@ class BroadcastConfig(BaseModel):
     audio: str = "auto"               # auto: a Spark session's own PipeWire stream goes into the H.264 feeds | off
     audio_kbps: int = 128
     hls_segment_s: int = 1            # HLS segment length (latency is about three of them)
+    hls_window_segments: int = Field(default=12, ge=6, le=60)
+    hls_retained_segments: int = Field(default=12, ge=2, le=120)
     hold_s: float = 8.0               # a silent source keeps its last frame this long, then the slate (that frame dimmed)
     end_hold_s: float = 2.0           # an ended session's last frame stays this long before the program moves on
     watch_ttl_s: float = 900.0        # the operator's "watching" report counts this long after their app last said so

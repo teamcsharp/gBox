@@ -30,7 +30,7 @@
   var strip = null, veil = null, chip = null, mainVideo = null, player = null, playerLoad = null;
   var audioButton = null, gameplayLevel = null, audioStatus = null, playbackKey = "", gameplayVolume = 0.5;
   var on = false, hidden = false, state = "off", fps = 30, tiles = [], stationPip = true, why = "";
-  var lastFlips = null, newsAt = 0, localMain = "";
+  var lastFlips = null, newsAt = 0, localMain = "", metadataDelayed = false;
   var views = {};                     /* key -> {img, tile, live, retryAt, pending, timer} */
   try { hidden = localStorage.getItem(HIDE_KEY) === "1"; } catch (e) { hidden = false; }
   try { var savedLevel = localStorage.getItem("pbfm.gbox.volume"); if (savedLevel !== null && Number.isFinite(Number(savedLevel))) gameplayVolume = Math.max(0, Math.min(1, Number(savedLevel))); } catch (e) {}
@@ -300,6 +300,7 @@
   function news(got) {
     newsAt = Date.now();
     if (!got || typeof got !== "object") return;
+    metadataDelayed = false;
     var want = !!got.show;
     var nextState = String(got.state || (want ? "waiting" : "off"));
     fps = Number(got.fps) || 30;
@@ -308,7 +309,9 @@
     var nextTiles = Array.isArray(got.tiles) ? got.tiles.filter(function (t) { return t && t.key; }) : [];
     var changed = JSON.stringify(nextTiles.map(function (t) { return [t.key, t.hls, t.stream, t.frame]; }))
       !== JSON.stringify(tiles.map(function (t) { return [t.key, t.hls, t.stream, t.frame]; }));
-    if (changed) { stopAll(); localMain = ""; }
+    // Feed identity belongs to draw(): title/thumbnail/list changes must not
+    // destroy the healthy main decoder on every station metadata refresh.
+    if (changed && localMain && !nextTiles.some(function (t) { return t.key === localMain; })) localMain = "";
     tiles = nextTiles;
     state = nextState;
     var sw = got.switch || null;
@@ -327,7 +330,11 @@
   async function fallback() {
     if (Date.now() - newsAt < 12000) return;
     try { news(await api("/api/gbox/mine")); }
-    catch (e) { newsAt = Date.now(); if (on) { on = false; stopAll(); vcr(false, 0); paint(); } }
+    catch (e) {
+      newsAt = Date.now(); metadataDelayed = true;
+      // Only an explicit station show:false stops gameplay. A failed status
+      // request is not evidence that an already-playing media feed ended.
+    }
   }
   function fallbackLoop() {
     try { fallback(); } catch (e) {}
@@ -338,6 +345,7 @@
     news: news, show: show, hide: hide,
     state: function () {
       return {on: on, hidden: hidden, picture: state, fps: fps, tiles: tiles.length, main: (mainTile() || {}).key || "",
+              metadataDelayed: metadataDelayed,
               transport: (mainTile() || {}).hls ? "hls-h264-aac" : (onRoad() ? "snapshots" : "live"),
               gameplay: player ? player.state() : null, pip: !!(gallery() && gallery().classList.contains("gbox-pip"))};
     }
