@@ -13,7 +13,7 @@ from ..deployables import Cadence
 from . import re5_weapons as W
 
 DEFAULT = {"enabled": True, "interval_s": 60., "only": False}
-DEPARTURE_CM = 600.  # conservative controller spacing, not a decoded blast radius
+DEPARTURE_CM = 300.  # spacing from the last mine / site (was 600: a standing bot never got a second mine down)
 
 
 def settings_path():

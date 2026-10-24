@@ -13,7 +13,7 @@ def test_mine_preflight_rechecks_approaching_enemies_even_when_floor_route_is_ca
     snap['enemies'] = [foe]
     assert not bot._mine_placement_preflight(snap,.1)
     assert snap['mine_placement_safe'] is False
-    assert '800cm' in bot.stats['mine_placement_safety_reason']
+    assert f'{R.MINE_ENEMY_CM:g}cm' in bot.stats['mine_placement_safety_reason']
     assert not bot.stats.get('immunity_verified')
 
 
@@ -24,7 +24,7 @@ def test_mine_preflight_checks_full_exit_corridor_for_enemies_and_other_bombs(tm
     assert bot._mine_placement_preflight(snap,0.)
     origin = snap['player']['pos']
     endpoint = bot._mine_preflight['route'][-1]
-    beyond = tuple(origin[k]+1.6*(endpoint[k]-origin[k]) for k in range(3))
+    beyond = tuple(origin[k]+1.2*(endpoint[k]-origin[k]) for k in range(3))
     snap['enemies'] = [foe | {'pos':beyond}]
     assert not bot._mine_placement_preflight(snap,.1)
     assert 'escape corridor' in bot.stats['mine_placement_safety_reason']
