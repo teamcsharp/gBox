@@ -467,7 +467,7 @@ def choose(options, data):
 
 
 EMULATOR_STAGES = ('runtime',)   # favorite stages whose agents start emulators (replacement testing in a game)
-PRIORITY_PER_GAME = 6            # runs sharing one game when the operator prioritized the requests (candidates; RE6 has six tickets)
+PRIORITY_PER_GAME = 12           # runs sharing one game when the operator prioritized the requests (candidates; RE6 has ~15 tickets)
 ANALYSIS_PER_GAME = 12           # read-only verified round analyses running at once for one game (candidates)
 
 
@@ -833,7 +833,14 @@ def tick(*, now=None):
             key, item = chosen
             options.remove(chosen)
             if item.get('game_id'):
-                options = [v for v in options if v[1].get('game_id') != item['game_id']]
+                # one run per game per tick, except operator-prioritized work that starts no emulator: it fills up to
+                # PRIORITY_PER_GAME in the same tick (operator 2026-10-24: "more RE6 tasks pumped into it")
+                game, listed = item['game_id'], {str(x) for x in data.get('priority') or []}
+                shared = lambda i: i.get('lane') == 'inbox' and i.get('request_id') in listed and not launches_emulator(i)
+                running = sum(i.get('game_id') == game and i.get('dispatch_state') in ('queued', 'uncertain')
+                              for i in data['items'].values())
+                options = [v for v in options if v[1].get('game_id') != game
+                           or shared(item) and shared(v[1]) and running + 1 < PRIORITY_PER_GAME]
             _ensure_request(data, item, requests)
             name = PREFIX + ('favorite ' + item['game_id'] if item['lane'] == 'favorite' else 'inbox ' + item['request_id'])
             prompt = _prompt(item, titles)

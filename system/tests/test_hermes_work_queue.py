@@ -878,3 +878,14 @@ def test_many_verified_round_analyses_of_one_game_run_in_parallel(env,monkeypatc
     env['items']['inbox:'+reqs[0]['id']].update(dispatch_state='queued',job_id='running-analysis')
     options=[item['request_id'] for _,item in q.candidates(env,reqs,[],set(),set(),now=1001)]
     assert sorted(options)==sorted(r['id'] for r in reqs[1:])
+
+
+def test_prioritized_work_on_one_game_fills_several_slots_in_one_tick(env, monkeypatch):
+    # operator 2026-10-24: "more RE6 tasks pumped into it" - one run per game per tick took ~25 min to fill the lanes
+    ids = [str(i) * 16 for i in range(1, 4)]
+    reqs = [request(rid, context={'game_id': G}) for rid in ids]
+    calls, _ = _required_node_tick(monkeypatch, reqs)
+    monkeypatch.setattr(q, '_operator_playing', lambda: [])
+    data = q._read(); data['priority'] = ids; q._save(data)
+    result = q.tick(now=1000)
+    assert len([d for d in result['dispatched'] if d['game_id'] == G]) >= 2
