@@ -896,7 +896,12 @@ class LocalLLM:
                        'top_p', 'stop', 'response_format', 'presence_penalty', 'frequency_penalty') if k in body}
             payload.update(model=model, messages=capped, max_tokens=max_out)
             if s.enable_thinking is not None:
-                payload['chat_template_kwargs'] = {'enable_thinking': s.enable_thinking}
+                if 'api.deepseek.com' in (s.upstream or ''):
+                    # DeepSeek's own switch; its V4 models think by default, and a thinking turn must have its
+                    # reasoning_content replayed, which Hermes does not send (2026-10-24: every multi-turn run failed)
+                    payload['thinking'] = {'type': 'enabled' if s.enable_thinking else 'disabled'}
+                else:
+                    payload['chat_template_kwargs'] = {'enable_thinking': s.enable_thinking}
             if final:
                 payload['tool_choice'] = 'none'
         elif s.api_format == 'anthropic':
