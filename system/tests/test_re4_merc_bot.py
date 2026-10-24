@@ -1038,3 +1038,33 @@ def test_a_downed_ganado_at_his_feet_gets_a_step_back_into_the_aim():
     bot = B.Bot(m, clock=lambda: now[0], nav=False)
     acts = run(bot, m, now, 0.0, n=3)
     assert any(a.get("hold") == {"down"} for a in acts) and bot.stats["low_target_backsteps"] >= 1
+
+
+def test_a_goal_inside_his_turning_circle_is_turned_to_on_the_spot_not_orbited():
+    # operator 2026-10-24: "Leon is running into a circle"
+    now = [0.0]
+    m = world([])
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    p = {"pos": (0.0, 0.0, 0.0), "rot": 0.0}
+    keys = bot._go(p, (1500.0, 800.0), 0.0)["hold"]                          # near, ~60 degrees off: no running
+    assert not keys & {"up", "b"} and keys & {"left", "right"}
+    far = bot._go(p, (9000.0, 5000.0), 0.1)["hold"]                          # far away: run while turning
+    assert {"up", "b"} <= far
+
+
+def test_running_round_in_circles_turns_on_the_spot_then_drops_the_goal():
+    now = [0.0]
+    m = world([])
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    bot.items = [{"pos": (5000.0, 0.0, 0.0)}, {"pos": (-5000.0, 0.0, 0.0)}]
+    bot.goal = {"pos": (5000.0, 0.0, 5000.0)}
+    first = bot.items[0]
+    def lap(t0):
+        for i in range(17):                                                   # a full turn in a 1.5 m circle, 4 s
+            a = i * (2 * math.pi / 16)
+            bot._circling({"pos": (750 * math.cos(a), 0.0, 750 * math.sin(a)), "rot": B.wrap(a)}, (5000.0, 5000.0),
+                          t0 + i * 0.25)
+    lap(0.0)
+    assert bot.stats["circles_broken"] == 1 and bot.turn_first and bot.goal is not None
+    lap(10.0)
+    assert bot.stats["circle_goals_dropped"] == 1 and bot.goal is None and bot.items[0] is not first

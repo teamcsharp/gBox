@@ -170,6 +170,10 @@ WALLS_PER_SAVE, STUCK_LOG_MAX = 5, 200           # save the learned map after th
 DETOUR_S = 1.0                                   # a learned detour round a wall is planned again this often at most
 STUCK_S, STUCK_MOVE = 0.9, 250.0                 # running but moved less than this in that long (any way): blocked
 BACK_S = 0.6                                     # still blocked after a vault and a detour: back off this long
+ORBIT_R, ORBIT_ERR = 2500.0, 0.6                 # a goal this near and this far off his heading is inside his turning
+                                                 # circle (run ~4 m/s, turn ~2 rad/s): turn on the spot, don't orbit it
+CIRCLE_TURN, CIRCLE_BOX, CIRCLE_S = 2 * math.pi, 3000.0, 8.0   # a whole turn inside this box in this long: circling
+                                                 # (operator 2026-10-24: "Leon is running into a circle")
 BONUS_MAX = 400.0                                # the clock jumps up to this much for one bonus (time pickups x3: 270 s)
 ARRIVE = 650.0                                   # a waypoint this close is reached
 COLLECT_R, COLLECT_TRY_S = 1500.0, 4.0           # shoot an hourglass from this close; give up on it after this long
@@ -497,6 +501,7 @@ class Bot:
         self.bonus: list = []                         # time bonuses left this round [(x, z)]
         self.goal = None                              # {"pos", "since", "path"} the time bonus Leon is going for
         self.unstick = None                           # {"stage": "detour" | "back", "until", "dir"}
+        self.turns, self.circles, self.turn_first = [], {}, False   # circle detection (heading history, per goal)
         self.detour_dir = 1
         self.stuck_n = 0
         self.commands = operator_commands.Reader()    # the operator's instant commands (stats directive*)
@@ -1084,16 +1089,50 @@ class Bot:
             self.learned.walk(px, pz)
             self.stats["learned_floor_cells"] = len(self.learned.walked)
             goal_xz = self._around(p, goal_xz, now)                       # a learned wall on the straight line: round it
+        final = getattr(self, "_detour", None) is None                   # the goal itself, not a corner on the way
         gx, gz = goal_xz
         err = wrap(heading(gx - px, gz - pz) - p["rot"])
+        if self._circling(p, (gx, gz), now):
+            if self.goal is None:                                        # twice round the same goal: it is dropped
+                return {"hold": set()}
         keys = {"up", "b"}
         if err > TURN_TOL / 2:
             keys.add("left")
         elif err < -TURN_TOL / 2:
             keys.add("right")
-        if abs(err) > 1.6:                                               # behind him: turn on the spot first
-            keys -= {"up", "b"}
+        # inside his turning circle (radius ORBIT_R / 2): running while turning can never reach it, only orbit it
+        inside = final and abs(err) > ORBIT_ERR and math.hypot(gx - px, gz - pz) < ORBIT_R * math.sin(min(abs(err), 1.57))
+        if self.turn_first and abs(err) < TURN_TOL:
+            self.turn_first = False
+        if abs(err) > 1.6 or self.turn_first or inside:                  # behind him, circling, or inside his
+            keys -= {"up", "b"}                                                     # turning circle: turn on the spot
         return {"hold": keys}
+
+    def _circling(self, p, goal_xz, now) -> bool:
+        """A whole turn (CIRCLE_TURN of heading change) inside CIRCLE_BOX within CIRCLE_S: he is running in a circle.
+        The first time he turns on the spot towards the goal; the second time round the same goal it is dropped (the
+        next hourglass / target), so the round goes on instead of orbiting."""
+        px, _, pz = p["pos"]
+        self.turns = [t for t in self.turns if now - t[0] < CIRCLE_S] + [(now, p["rot"], px, pz)]
+        if len(self.turns) < 3:
+            return False
+        turned = sum(abs(wrap(b[1] - a[1])) for a, b in zip(self.turns, self.turns[1:]))
+        xs, zs = [t[2] for t in self.turns], [t[3] for t in self.turns]
+        if turned < CIRCLE_TURN or max(max(xs) - min(xs), max(zs) - min(zs)) > CIRCLE_BOX:
+            return False
+        self.turns = []
+        key = (round(goal_xz[0], -2), round(goal_xz[1], -2))
+        self.circles[key] = self.circles.get(key, 0) + 1
+        self.stats["circles_broken"] = self.stats.get("circles_broken", 0) + 1
+        if self.circles[key] >= 2:
+            for pool_ in (self.items, self.bonus):
+                if len(pool_) > 1:
+                    pool_.append(pool_.pop(0))
+            self.goal, self.circles[key] = None, 0
+            self.stats["circle_goals_dropped"] = self.stats.get("circle_goals_dropped", 0) + 1
+        else:
+            self.turn_first = True
+        return True
 
     def _operator(self, p, s, near, dist, now):
         """The operator's instant commands (gbox.mercs.directives; the chat's dropdown or typed words). One-shots change the

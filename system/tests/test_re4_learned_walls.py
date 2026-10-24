@@ -85,7 +85,8 @@ def test_a_straight_run_honours_a_learned_wall(tmp_path):
     assert bot.stats["wall_detours"] == 1 and bot._detour is not None
     assert bot._go(p, (100.0, 2200.0), now[0])["hold"] == act["hold"]     # the detour is kept, not planned again
     assert bot.stats["wall_detours"] == 1
-    assert bot._go(p, (2100.0, 200.0), now[0]) == {"hold": {"up", "b", "left"}} and bot._detour is None   # a clear line
+    # a clear line, 2 m away at 90 degrees: inside his turning circle, so he turns on the spot first (no orbit)
+    assert bot._go(p, (2100.0, 200.0), now[0]) == {"hold": {"left"}} and bot._detour is None
     assert bot.stats["wall_detours"] == 1                                 # (+x is +heading: the stick's left)
 
 

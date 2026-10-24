@@ -49,6 +49,12 @@ HEAD_H, GUN_H = 160.0, 140.0           # above the feet: a Majini's head, the pl
 # the body's yaw +-7: the upper body aims inside a cone)
 FX_LINE, LASER_VT, LASER_FROM, LASER_AT = 18, 0x015BD958, 0x200, 0x30
 SWITCH_EVERY_S, SWITCH_ACK_S, SWITCH_FAIL_S = 1.0, 1.5, 8.0
+MINE_ENEMY_CM, MINE_ESCAPE_CM = 400.0, 450.0   # mine preflight: no Majini this near (deployment or the escape), an
+                                              # escape route this long (operator 2026-10-24: "placing a mine when the
+                                              # setting specifies"; 800 / 600 held 91 placements back in one round)
+STAGE_LOOP_R, STAGE_LOOP_N, STAGE_LOOP_S, STAGE_BAN_S = 400.0, 3, 40.0, 60.0   # the same ladder / ledge this near taken
+                                              # this often in this long: left alone this long (operator 2026-10-24: "jumping
+                                              # down the ladder, putting back up the ladder ... repeatedly")
 # The inventory: embedded in the player at +0x22E0 (live 2026-10-21, with the RE5 mods agent): INV_SLOTS slots of 0x30,
 # a slot: +0x08 u32 id word 0x0TII (T 1 = weapon, uWpII; 2 = ammo / items), +0x0C rounds loaded, +0x10 capacity,
 # +0x1C u32 UI grid position, +0x20 u32 1 = in hand, +0x2D u8 != 0 = in use. Storage order differs from
@@ -1771,6 +1777,8 @@ class Bot:
             self.stage_wait_since = None
         stage_yield = bool(snap.get("stage_prompt") and close_foes and self.stage_wait_since is not None
                            and now - self.stage_wait_since >= STAGE_YIELD_S)
+        if snap.get("stage_prompt") and self._stage_loop(p, now):
+            snap["stage_prompt"] = False                    # the same ladder / ledge again: left alone, the level goes on
         if snap.get("stage_prompt") and (not close_foes or stage_yield):     # a ladder / jump-down / vault / door / "□ Time bonus" /
             self.aiming_since = None                        # pick up: take it at once, before anything else (operator
             self.stats["stage_presses"] = self.stats.get("stage_presses", 0) + 1   # 2026-10-21: he ignored a ledge
@@ -2604,6 +2612,31 @@ class Bot:
             return self._switch_weapon(gun, now, "resume after healing")
         return None
 
+    def _stage_loop(self, p, now) -> bool:
+        """The same ladder / ledge (ground distance: a ladder's top and foot) taken STAGE_LOOP_N times in STAGE_LOOP_S:
+        left alone there for STAGE_BAN_S, and the bonus / waypoint the route chased through it is skipped, so the
+        level goes on instead of up-down-up-down (operator 2026-10-24)."""
+        x, _, z = p["pos"]
+        ban = getattr(self, "stage_ban", None)
+        if ban and now < ban[2] and math.hypot(x - ban[0], z - ban[1]) < STAGE_LOOP_R:
+            self.stats["stage_loops_refused"] = self.stats.get("stage_loops_refused", 0) + 1
+            return True
+        presses = [(t, px, pz) for t, px, pz in getattr(self, "stage_uses", []) if now - t < STAGE_LOOP_S]
+        near = [u for u in presses if math.hypot(x - u[1], z - u[2]) < STAGE_LOOP_R]
+        if not near or now - near[-1][0] > 2.0:                 # one use per prompt, not one per tick it is up
+            presses.append((now, x, z))
+            near.append((now, x, z))
+        self.stage_uses = presses
+        if len(near) < STAGE_LOOP_N:
+            return False
+        self.stage_ban, self.stage_uses = (x, z, now + STAGE_BAN_S), []
+        self.stats["stage_loops_broken"] = self.stats.get("stage_loops_broken", 0) + 1
+        target = self.plan_target or {}
+        if target.get("kind") in ("bonus", "time") and target.get("id") is not None:
+            self.bonus_skip[target["id"]] = now + STAGE_BAN_S
+        self.route = None
+        return True
+
     def _egg_action(self,p,snap,now,*,for_square=False):
         """One input owner for requested egg supply/equip and live-off gun restore."""
         from . import re5_eggs as E
@@ -3013,23 +3046,23 @@ class Bot:
             length2 = sum(v*v for v in delta)
             t = max(0.,min(1.,sum((point[k]-a[k])*delta[k] for k in range(3))/max(length2,1e-9)))
             return math.dist(point,tuple(a[k]+t*delta[k] for k in range(3)))
-        near_enemy = p and any(math.dist(p['pos'],e['pos'])<800. for e in enemies)
+        near_enemy = p and any(math.dist(p['pos'],e['pos'])<MINE_ENEMY_CM for e in enemies)
         if near_enemy:
-            reason = "living enemy within 800cm of deployment"
+            reason = f"living enemy within {MINE_ENEMY_CM:g}cm of deployment"
         elif p and mesh is not None:
             previous = getattr(self,'_mine_preflight',None)
             if previous is not None and previous['geometry'] == mesh.learning_sig and now-previous['at']<2. \
                     and math.dist(previous['pos'],p['pos'])<25.:
                 route = previous['route']
             else:
-                route = mesh.retreat(p['pos'],p['pos'],650.,blocked_links=self.blocked_links,
+                route = mesh.retreat(p['pos'],p['pos'],MINE_ESCAPE_CM+50.,blocked_links=self.blocked_links,
                                      link_penalties=self.nav_learning.link_penalties(mesh))
                 self._mine_preflight = {'geometry':mesh.learning_sig,'at':now,'pos':tuple(p['pos']),'route':route}
-            allowed = bool(route) and math.dist(p['pos'],route[-1])>=600. and mesh.floor_segment(p['pos'],route[0])
+            allowed = bool(route) and math.dist(p['pos'],route[-1])>=MINE_ESCAPE_CM and mesh.floor_segment(p['pos'],route[0])
             if allowed:
                 segments = list(zip([p['pos']]+route,route))
-                if any(distance_to_segment(e['pos'],a,b)<800. for e in enemies for a,b in segments):
-                    allowed,reason = False,"living enemy within 800cm of escape corridor"
+                if any(distance_to_segment(e['pos'],a,b)<MINE_ENEMY_CM for e in enemies for a,b in segments):
+                    allowed,reason = False,f"living enemy within {MINE_ENEMY_CM:g}cm of escape corridor"
                 elif any(distance_to_segment(mine['pos'],a,b)<600.
                          for mine in (snap.get('ground_mines') or {}).values() for a,b in segments):
                     allowed,reason = False,"observed ground bomb within 600cm of escape corridor"

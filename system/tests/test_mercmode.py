@@ -785,12 +785,10 @@ def preloaded(**cfg):
     return store,w,saver,calls,now,tick,run,job,calls[-1]
 
 
-def test_next_title_preloads_paused_beside_the_playing_one_at_thirty_seconds():
+def test_next_title_preloads_paused_beside_the_playing_one_while_its_last_round_plays():
+    # operator 2026-10-24: "precaching of the next rom during the playing of the current rom" - not in the last 30 s
     store,w,saver,calls,now,tick,run,job=warm_playing()
-    before=len(calls)
-    tick(1);clock(run,now,31);tick(1)
-    assert len(calls)==before                                                # more than 30 s left: nothing yet
-    clock(run,now,25);tick(1)
+    clock(run,now,600);tick(1)
     pre=calls[-1]
     assert pre['tool']=='launch_game' and pre['actor']==S.ACTOR and pre['agent_use']
     assert pre['input']['warm'] is True and pre['input']['keep_sessions']==[run['session_id']]   # never closes this game
@@ -1011,3 +1009,12 @@ def test_configure_relay_carries_keep_warm_only_to_a_warm_capable_worker(cfg):
     assert client.post('/api/mercmode',json={'host':w['name'],'enabled':True,'keep_warm':2}).status_code==200
     job=next(job for job in store.all('job') if job['tool']=='mercmode')
     assert job['input']['keep_warm']==2
+
+
+def test_a_title_still_loading_in_the_background_means_another_round_of_this_one():
+    # "they could play a 2nd round of mercenaries and continue gaming while the game loads"
+    store,w,saver,calls,now,tick,run,job,pre=preloaded()
+    run=store.get(S.STATE,w['name'])
+    body=boundary(run,now[0])
+    assert saver.round_boundary(body,job,now[0])['rotate_requested'] is False      # its preload has not finished
+    assert store.get(S.STATE,w['name'])['mercmode_extra_rounds']==1
