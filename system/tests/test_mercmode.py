@@ -1018,3 +1018,14 @@ def test_a_title_still_loading_in_the_background_means_another_round_of_this_one
     body=boundary(run,now[0])
     assert saver.round_boundary(body,job,now[0])['rotate_requested'] is False      # its preload has not finished
     assert store.get(S.STATE,w['name'])['mercmode_extra_rounds']==1
+
+
+def test_parking_a_title_stops_its_bot_before_pausing_the_game():
+    # 2026-10-24: a bot left on a parked (paused) game reported a freeze and the parked game was relaunched cold
+    store,w,saver,calls,now,tick,run,job,pre=preloaded()
+    up(store,pre,w);tick(1)
+    saver.round_boundary(boundary(run,now[0]),job,now[0]);tick(1)
+    sid=run['session_id']
+    stop=[i for i,c in enumerate(calls) if c['tool']=='autoplay' and c['input']=={'session_id':sid,'op':'stop'}]
+    pause=[i for i,c in enumerate(calls) if c['tool']=='session_op' and c['input'].get('session_id')==sid and c['input']['op']=='pause']
+    assert stop and pause and stop[0] < pause[0]
