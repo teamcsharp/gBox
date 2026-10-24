@@ -25,10 +25,14 @@ reads Leon and never writes him - no facing, aim pitch or position writes:
     point (they are items: "TAKE"); a Combo Bonus when COMBO_CROWD Ganados are near (every kill in its 30 s scores
     more); then makes its stand: goes after the nearest Ganados; it fires only with a clear line of sight from the gun
     to the head. Without the map: the hourglass events in HOURGLASS, shot from range;
-  * a learned map per stage (LearnedMap, saved after every round): every cell Leon walks is floor, the cell ahead of
-    him when he runs into something is wall; paths are planned on it (A*) when the disc's level map is not there, so
-    every round knows more of the level than the one before (operator 2026-10-20: "with every round that is played,
-    the navigation map needs to improve");
+  * a learned map per stage (LearnedMap, saved after every round and every WALLS_PER_SAVE new walls): every cell Leon
+    walks is floor, the cell ahead of him when he runs into something is wall (never the cell he stands on); the
+    learned walls are authoritative over the disc's map: a path leg, or a straight run at a Ganado, that crosses one
+    goes round it on the learned map (A*), navmap or not, and a stuck re-plans the goal's path, so a crate or cart
+    the disc's collision does not know is hit once, not every round (operator 2026-10-24: "map the world like a
+    Roomba: anytime they run into a wall it adds to the database"; 2026-10-20: "with every round that is played,
+    the navigation map needs to improve"); every stuck is explained (stats stuck_reason: the cell, room, heading
+    and what he did) and kept (Bot.stuck_log -> <learn_dir>/r<room>-stuck.jsonl at save());
   * presses what the screen asks for (operator 2026-10-20: "the characters ignore QTE opportunities ... detect that a
     press A dialogue is being required of them and press it"): prompt() (gbox.screen_prompt.Watcher on the session's
     picture: the button icon RE4 draws for JUMP OVER / JUMP THROUGH / TAKE / KICK / CLIMB / a grab) -> R let go,
@@ -156,6 +160,8 @@ BLOCKED_MISSES, BLOCKED_SKIP_S = 3, 5.0          # misses in a row at one Ganado
 BLOCKED_R = 2500.0                               # ... when he is this close and on Leon's level (a level shot)
 PITCH_STEPS = (0.0, -0.05, 0.05, -0.1, 0.1, -0.15, 0.15)   # aim-height offsets tried in turn after misses (radians)
 CELL = 400.0                                     # the learned map's grid (world units)
+WALLS_PER_SAVE, STUCK_LOG_MAX = 5, 200           # save the learned map after this many new walls; stuck events kept
+DETOUR_S = 1.0                                   # a learned detour round a wall is planned again this often at most
 STUCK_S, STUCK_MOVE = 0.9, 250.0                 # running but moved less than this in that long (any way): blocked
 BACK_S = 0.6                                     # still blocked after a vault and a detour: back off this long
 BONUS_MAX = 400.0                                # the clock jumps up to this much for one bonus (time pickups x3: 270 s)
@@ -361,13 +367,39 @@ class LearnedMap:
         k = self.cell(x, z)
         self.walked[k] = min(self.walked.get(k, 0) + 1, 10000)
 
-    def block(self, x: float, z: float) -> None:
-        k = self.cell(x, z)
+    def block(self, x: float, z: float) -> bool:
+        return self.block_cell(self.cell(x, z))
+
+    def block_cell(self, k: tuple) -> bool:
+        """One more run into cell k; True when it is a new wall (never blocked before)."""
+        new = k not in self.blocked
         self.blocked[k] = self.blocked.get(k, 0) + 1
+        return new
 
     def wall(self, k: tuple) -> bool:
         b = self.blocked.get(k, 0)
         return b > 0 and b * 40 > self.walked.get(k, 0)
+
+    @classmethod
+    def cells_between(cls, a: tuple, b: tuple) -> list:
+        """The cells a straight run from a to b ((x, z)) passes, sampled every half cell, a's own cell first."""
+        n = max(1, int(math.ceil(math.hypot(b[0] - a[0], b[1] - a[1]) / (CELL * 0.5))))
+        out = []
+        for i in range(n + 1):
+            k = cls.cell(a[0] + (b[0] - a[0]) * i / n, a[1] + (b[1] - a[1]) * i / n)
+            if not out or out[-1] != k:
+                out.append(k)
+        return out
+
+    def crosses(self, a: tuple, b: tuple) -> tuple | None:
+        """The first learned wall a straight run from a to b would hit, else None. Neither end's own cell counts: he
+        stands on a's, and b is where he wants to be (a stand point against a wall is in the wall's cell)."""
+        if not self.blocked:
+            return None
+        for k in self.cells_between(a, b)[1:-1]:
+            if self.wall(k):
+                return k
+        return None
 
     def path(self, start: tuple, goal: tuple) -> list:
         """[(x, z)] waypoints from start to goal round the learned walls; [goal] when nothing is known."""
@@ -445,6 +477,10 @@ class Bot:
         self.unstick = None                           # {"stage": "detour" | "back", "until", "dir"}
         self.detour_dir = 1
         self.stuck_n = 0
+        self.stuck_log: list = []                     # every stuck this run (the last STUCK_LOG_MAX): where, why, what he did
+        self._stuck_pending: list = []                # ... not yet written to r<room>-stuck.jsonl (save())
+        self._new_walls = 0                           # learned walls since the map was last saved
+        self._detour = None                           # {"goal", "at", "way"}: a straight run's way round a learned wall
         self.dead = False                              # on the death screen (counted once per death)
         self.tracker = threats_ram.Tracker(m)         # who is attacking, what is thrown (RAM)
         self.shots = threats_ram.Shots()              # every shot scored by the Ganados' health
@@ -462,16 +498,20 @@ class Bot:
                       "shots_s": 0.0, "learned_walls": 0, "replans": 0, "hits": 0, "misses": 0, "accuracy": 0.0,
                       "pitch_offset": 0.0, "shots": 0, "kills": 0, "hits_taken": 0, "evades": 0,
                       "attacks_seen": 0, "attacks_prevented": 0, "attacks_avoided": 0, "attacks_landed": 0,
-                      "thrown_seen": 0, "thrown_shot": 0, "quick_turns": 0}
+                      "thrown_seen": 0, "thrown_shot": 0, "quick_turns": 0,
+                      "stuck_events": 0, "stuck_reason": "", "wall_detours": 0,   # the obstruction database at work
+                      "learned_map": None, "learned_floor_cells": 0}
 
     # -- the round's time bonuses --
     def _round(self, room):
         if room != self.room:
-            if self.learned is not None:
-                self.learned.save()
+            self.save()                               # the last room's map and stuck log
             self.room = room
             self.learned = LearnedMap(self.learn_dir / f"r{room:03x}.json" if self.learn_dir else None)
             self.stats["learned_walls"] = len(self.learned.blocked)
+            self.stats["learned_floor_cells"] = len(self.learned.walked)
+            self.stats["learned_map"] = str(self.learned.path_file) if self.learned.path_file else None
+            self._detour = None
             self.st, self.items, self.combos = None, [], []
             if self.nav is not None:
                 try:
@@ -487,23 +527,43 @@ class Bot:
             self.goal = None
 
     def _path(self, start, goal):
+        """The way to goal: the disc's map, with every leg that crosses a learned wall taken round it (_round_walls);
+        without the map, the learned map alone."""
         if self.st is not None:
             try:
                 way = self.nav.path(self.st, start, goal)
                 if way:
-                    return [(w.x, w.z, w.action) if hasattr(w, "action") else tuple(w) for w in way]
+                    return self._round_walls(start, [(w.x, w.z, w.action) if hasattr(w, "action") else tuple(w) for w in way])
             except Exception:                         # noqa: BLE001
                 pass
         elif self.nav is not None and self.room is not None:
             try:
                 way = self.nav.path(self.nav.stage(f"r{self.room:03x}"), start, goal)
                 if way:
-                    return [tuple(w) for w in way]
+                    return self._round_walls(start, [tuple(w) for w in way])
             except Exception:                         # noqa: BLE001
                 pass
         if self.learned is not None:
-            return self.learned.path(start[0::2] if len(start) == 3 else start, goal)
+            return self.learned.path(start[0::2] if len(start) == 3 else start, goal[0::2] if len(goal) == 3 else goal)
         return [goal]
+
+    def _round_walls(self, start, way: list) -> list:
+        """The planned path with the learned walls honoured: a leg that crosses a cell Leon has run into (the disc's
+        collision does not know every crate and cart; a round's worth of them is the obstruction database) gets the
+        learned map's corners round it spliced in before its waypoint (which keeps its action: a vault, a ladder)."""
+        if self.learned is None or not self.learned.blocked:
+            return way
+        a = (start[0], start[2]) if len(start) == 3 else tuple(start)
+        out = []
+        for w in way:
+            b = (w[0], w[1])
+            corners = self.learned.path(a, b)[:-1] if self.learned.crosses(a, b) is not None else []
+            if corners:
+                out += corners
+                self.stats["wall_detours"] += 1
+            out.append(w)
+            a = b
+        return out
 
     def _sight(self, p, target_xyz) -> bool:
         """A clear line from Leon's gun to target_xyz on the level map (True without a map)."""
@@ -516,9 +576,24 @@ class Bot:
             return True
 
     def save(self):
-        """Keep what this round taught (the caller calls it between rounds and at the end)."""
+        """Keep what this round taught (the caller calls it between rounds and at the end; _go every WALLS_PER_SAVE
+        new walls): the learned map, and the stuck events appended to <learn_dir>/r<room>-stuck.jsonl, one JSON object
+        a line (at, pos, rot, heading_deg, cell(s) learned, room, action, replanned), for the round's report."""
         if self.learned is not None:
             self.learned.save()
+            self._new_walls = 0
+        if not self._stuck_pending:
+            return
+        if self.learn_dir is None or self.room is None:
+            self._stuck_pending = []
+            return
+        try:
+            self.learn_dir.mkdir(parents=True, exist_ok=True)
+            with open(self.learn_dir / f"r{self.room:03x}-stuck.jsonl", "a", encoding="utf-8") as f:
+                f.writelines(json.dumps(e) + "\n" for e in self._stuck_pending)
+            self._stuck_pending = []
+        except OSError:
+            pass
 
     # -- steering --
     def _turn(self, err: float, aiming: bool, tol: float | None = None) -> set:
@@ -936,27 +1011,37 @@ class Bot:
         if span >= STUCK_S and moved < STUCK_MOVE:                       # running into something
             self.hist = []
             self.stuck_n += 1
-            if self.learned is not None:                                 # learn the wall ahead of him; plan round it
-                self.learned.block(px + math.sin(p["rot"]) * CELL * 0.8, pz + math.cos(p["rot"]) * CELL * 0.8)
-                self.stats["learned_walls"] = len(self.learned.blocked)
-                if self.goal and self.goal.get("pos") and self.st is None:
-                    self.goal["path"] = self._path((px, pz), self.goal["pos"])
+            cells, replanned = [], None
+            if self.learned is not None:                                 # learn the wall ahead of him (never his own
+                cells = self._learn_wall(p)                              # cell); plan the goal's path round it, the
+                self.stats["learned_walls"] = len(self.learned.blocked)  # disc's map or not (it does not know this wall)
+                self._detour = None
+                if self.goal and self.goal.get("pos"):
+                    self.goal["path"] = self._path((px, py, pz), self.goal["pos"])
                     self.stats["replans"] += 1
+                    replanned = len(self.goal["path"])
             if self.stuck_n == 1:
                 self.stats["vaults"] += 1
-                return {"tap": "a"}                                       # a fence / window: JUMP OVER
-            if self.stuck_n % 3 == 0:                                     # a vault and a detour didn't do it: back
+                act, action = {"tap": "a"}, "vault"                       # a fence / window: JUMP OVER
+            elif self.stuck_n % 3 == 0:                                   # a vault and a detour didn't do it: back
                 self.unstick = {"stage": "back", "until": now + BACK_S}   # off, then the other side
                 self.stats["backoffs"] += 1
-                return {"hold": {"down"}}
-            self.detour_dir = -self.detour_dir
-            self.unstick = {"stage": "detour", "until": now + 0.8, "dir": self.detour_dir}
-            self.stats["detours"] += 1
-            return {"hold": {"up", "b", "left" if self.detour_dir > 0 else "right"}}
+                act, action = {"hold": {"down"}}, "back"
+            else:
+                self.detour_dir = -self.detour_dir
+                self.unstick = {"stage": "detour", "until": now + 0.8, "dir": self.detour_dir}
+                self.stats["detours"] += 1
+                act, action = {"hold": {"up", "b", "left" if self.detour_dir > 0 else "right"}}, "detour"
+            self._stuck_event(p, now, goal_xz, cells, action, replanned)
+            if self.learned is not None and self._new_walls >= WALLS_PER_SAVE:   # a crash mid-round keeps what he learned
+                self.save()
+            return act
         if span >= STUCK_S and moved > 3 * STUCK_MOVE:
             self.stuck_n = 0                                              # running freely again
         if self.learned is not None:
             self.learned.walk(px, pz)
+            self.stats["learned_floor_cells"] = len(self.learned.walked)
+            goal_xz = self._around(p, goal_xz, now)                       # a learned wall on the straight line: round it
         gx, gz = goal_xz
         err = wrap(heading(gx - px, gz - pz) - p["rot"])
         keys = {"up", "b"}
@@ -967,6 +1052,60 @@ class Bot:
         if abs(err) > 1.6:                                               # behind him: turn on the spot first
             keys -= {"up", "b"}
         return {"hold": keys}
+
+    def _learn_wall(self, p) -> list:
+        """The wall he ran into, into the learned map: the cell half a cell ahead of him and the cell directly in front
+        of his own (his heading snapped to the eight neighbours) - never his own cell: he stands on it, so it is floor
+        (the old mark 0.8 cell ahead landed in his own cell when he stood at its near edge, and the wall was never
+        learned). The cells marked; counts the new walls towards the next save."""
+        px, _, pz = p["pos"]
+        here = self.learned.cell(px, pz)
+        sx, cz = math.sin(p["rot"]), math.cos(p["rot"])
+        snap = lambda c: 1 if c > 0.3827 else -1 if c < -0.3827 else 0       # noqa: E731 - sin(22.5 deg): 8 ways
+        ahead = self.learned.cell(px + sx * CELL * 0.5, pz + cz * CELL * 0.5)
+        front = (here[0] + snap(sx), here[1] + snap(cz))
+        marked = []
+        for k in (ahead, front):
+            if k != here and k not in marked:
+                if self.learned.block_cell(k):
+                    self._new_walls += 1
+                marked.append(k)
+        return marked
+
+    def _stuck_event(self, p, now, goal_xz, cells: list, action: str, replanned) -> None:
+        """Why he stopped, in words for the watch panel (stats stuck_reason) and as a record (stuck_log, the last
+        STUCK_LOG_MAX; save() appends them to r<room>-stuck.jsonl): where he stood, his heading, the cell(s) learned as
+        wall, what he did about it (vault / detour / back) and how many waypoints the re-planned path has."""
+        px, py, pz = p["pos"]
+        deg = round(math.degrees(p["rot"])) % 360
+        room = f"r{self.room:03x}" if self.room is not None else "?"
+        ev = {"at": round(now, 2), "pos": [round(px), round(py), round(pz)], "rot": round(p["rot"], 3),
+              "heading_deg": deg, "cell": list(cells[0]) if cells else None, "cells": [list(k) for k in cells],
+              "room": room, "goal": [round(g) for g in goal_xz], "action": action, "replanned": replanned,
+              "stuck_n": self.stuck_n}
+        self.stuck_log.append(ev)
+        del self.stuck_log[:-STUCK_LOG_MAX]
+        self._stuck_pending.append(ev)
+        self.stats["stuck_events"] += 1
+        what = f"wall learned at cell {cells[0]}" if cells else "blocked, no learned map"
+        plan = f", replanned {replanned} waypoints" if replanned is not None else ""
+        self.stats["stuck_reason"] = f"{what} room {room} heading {deg}°: {action}{plan}"
+
+    def _around(self, p, goal_xz, now):
+        """Where to run for goal_xz: goal_xz itself when the straight line crosses no learned wall, else the first
+        corner of the learned map's way round (planned again when he reaches it, the goal moves a cell, or after
+        DETOUR_S) - so a straight run (at a Ganado, the next waypoint) honours the walls too."""
+        px, _, pz = p["pos"]
+        if self.learned.crosses((px, pz), goal_xz) is None:
+            self._detour = None
+            return goal_xz
+        d = self._detour
+        if d is None or math.dist(d["goal"], goal_xz) > CELL or now - d["at"] > DETOUR_S \
+                or math.hypot(d["way"][0][0] - px, d["way"][0][1] - pz) < CELL * 0.5:
+            if d is None:
+                self.stats["wall_detours"] += 1
+            d = self._detour = {"goal": goal_xz, "at": now, "way": self.learned.path((px, pz), goal_xz)}
+        return d["way"][0]
 
     def _learn_turn(self, p, now):
         """How fast the stick turns him (radians a second, not aiming), from what the last tick's turn did: the pad's
