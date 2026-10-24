@@ -292,7 +292,9 @@ def snapshot(m) -> dict:
                   "aim_off": aim_off, "pitch": pitch, "r": r, "stick": struct.unpack(">bb", m.rd(GAME_PAD, 2))}
     base, n, stride = u32(m, EMMGR), u32(m, EMMGR + 4), u32(m, EMMGR + 8)
     enemies, thrown = [], []
-    if ptr_ok(base) and 0 < n <= 128 and 0x100 < stride < 0x2000:
+    # Spawn multipliers expand the native table beyond 128 (150 live slots on
+    # r404). Validate the whole MEM1 span rather than hiding every enemy.
+    if ptr_ok(base) and 0 < n <= 512 and 0x100 < stride < 0x2000 and base + n * stride <= 0x81800000:
         d = m.rd(base, n * stride)
         for k in range(1, n):
             o = k * stride

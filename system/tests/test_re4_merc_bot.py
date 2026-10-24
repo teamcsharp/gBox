@@ -69,6 +69,19 @@ def test_snapshot_player_health_is_not_overwritten_by_last_enemy():
     assert snap['hp']==73 and snap['enemies'][0]['hp']==0
 
 
+def test_snapshot_reads_expanded_native_enemy_table():
+    m = world([((1000, 0, 0), True)] * 149)
+    snap = B.snapshot(m)
+    assert len(snap['enemies']) == 149
+    assert snap['enemies'][-1]['slot'] == 149
+
+
+def test_snapshot_rejects_enemy_table_outside_mem1():
+    m = world([])
+    m.put(B.EMMGR, '>3I', 0x817FFF00, 150, STRIDE)
+    assert B.snapshot(m)['enemies'] == []
+
+
 def facing(m, rot):
     m.put(PL + 0xA4, ">f", rot)
 
