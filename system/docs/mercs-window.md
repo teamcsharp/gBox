@@ -12,6 +12,14 @@ runs remain available with no game running. Playback, route teaching and validat
 practice selection reuse the existing reviewer. **Always on top** and bounded
 window position persist in the local desktop profile's `mercs-window.json`.
 
+When the selected session ends, the viewer follows only its server-recorded
+`replaced_by` chain to a currently listed live session with the same game ID.
+Only when that session disappears from the live list, it reads the latest 60
+history entries through the existing sessions API. It checks at most eight
+returned links, rejects cycles or missing/mismatched lineage,
+and preserves any manual selection made while a check is pending. It never
+substitutes another session merely because it is playing the same game.
+
 Opening, switching tabs or closing the window sends no gameplay input, pauses
 no game and changes no emulator parenting. Its keyboard events do not become
 gameplay shortcuts. The window stays bound to its original server if the main

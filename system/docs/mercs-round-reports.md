@@ -34,6 +34,14 @@ structured analysis are separate states. Global auxiliary inference remains
 independent of the primary route; the report never claims that its entire agent
 execution was confined to Spark2 without corresponding evidence.
 
+A verified round report may share its game's reservation with existing work,
+with at most one active round analysis per game. This exception requires the
+server's exact report/request/round/session identity and source provenance;
+arbitrary read-only tickets do not qualify. Existing global and Spark2 capacity,
+claims and cooldowns remain authoritative. The no-agent controller imports the
+queue in a fresh script subprocess each occurrence, so this admission correction
+can be installed without restarting a running game or the gBox service.
+
 Analysis is bounded text-only advisory work. Image tools, production changes,
 arbitrary routes/coordinates and automatic source/RAM patches are prohibited.
 Structured proposals remain `analysis_only` and `evaluation_pending`.

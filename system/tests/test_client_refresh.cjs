@@ -86,6 +86,53 @@ test('file fingerprints detect equal-size edits independent of timestamps and re
   assert.equal((await ctl.read()).restart, true); etag = 'server-2'; assert.notEqual((await ctl.read()).remote, c.remote);
   assert.ok(requests.every(r => r.method === 'GET' && r.signal && r.cache === 'no-store'));
 });
+test('backend source stamp caches hot polls and reads only changed Python source, never credentials or config', async t => {
+  const parent=path.resolve(os.tmpdir()),dir=await fs.mkdtemp(path.join(parent,'gbox-backend-stamp-'));
+  t.after(()=>{assert.equal(path.dirname(path.resolve(dir)),parent);return fs.rm(dir,{recursive:true,force:true});});
+  const a=path.join(dir,'worker.py'),b=path.join(dir,'server.py');
+  await fs.writeFile(a,'worker1');await fs.writeFile(b,'server1');
+  await fs.writeFile(path.join(dir,'api_token'),'PRIVATE');await fs.writeFile(path.join(dir,'settings.json'),'PRIVATE');
+  let at=1000,walks=0;const reads=[];
+  const stamp=V.sourceStamp(dir,{now:()=>at,io:{...fs,
+    readdir:async(...args)=>{walks++;return fs.readdir(...args);},
+    readFile:async file=>{reads.push(path.basename(file));return fs.readFile(file);}}});
+  const original=await stamp.read();assert.deepEqual(reads,['server.py','worker.py']);
+  for(let i=0;i<9;i++){at+=2000;assert.equal(await stamp.read(),original);}
+  assert.equal(walks,1,'two-second polling must not traverse or rehash the backend');
+  at+=2000;assert.equal(await stamp.read(),original);assert.equal(walks,2);assert.equal(reads.length,2);
+  await fs.writeFile(a,'worker2');const changed=await stamp.read({fresh:true});assert.notEqual(changed,original);
+  assert.deepEqual(reads,['server.py','worker.py','worker.py'],'unchanged modules remain cached');
+  await fs.writeFile(a,'worker2');assert.equal(await stamp.read({fresh:true}),changed,'touching unchanged content is not an update');
+  const c=path.join(dir,'added.py');await fs.writeFile(c,'new');const added=await stamp.read({fresh:true});
+  assert.notEqual(added,changed);await fs.unlink(c);assert.equal(await stamp.read({fresh:true}),changed);
+  assert.ok(reads.every(file=>file.endsWith('.py')));
+});
+test('backend-only changes request the normal guarded F5 handoff and an owned game retains the desktop', async t => {
+  const parent=path.resolve(os.tmpdir()),dir=await fs.mkdtemp(path.join(parent,'gbox-backend-refresh-'));
+  t.after(()=>{assert.equal(path.dirname(path.resolve(dir)),parent);return fs.rm(dir,{recursive:true,force:true});});
+  const desktop=path.join(dir,'desktop'),web=path.join(dir,'web'),backend=path.join(dir,'gbox');
+  for(const folder of [desktop,web,backend])await fs.mkdir(folder);
+  const mainFile=path.join(desktop,'main.js'),module=path.join(backend,'desktop_local.py');
+  await fs.writeFile(mainFile,'desktop');await fs.writeFile(path.join(web,'index.html'),'web');await fs.writeFile(module,'old backend');
+  const versions=V.create({desktop,web,runtimeFiles:[mainFile],backendRoot:backend,apiUrl:()=> 'http://spark:8765',
+    fetch:async()=>({ok:true,headers:new Map([['etag','same-server']])})});
+  const initial=await versions.read();assert.equal(initial.restart,false);
+  await fs.writeFile(module,'new backend');
+  assert.equal((await versions.read()).restart,false,'hot poll uses its bounded source cache');
+  const current=await versions.read({freshBackend:true});assert.equal(current.restart,true);assert.equal(current.renderer,initial.renderer);
+  const main=await fs.readFile(path.join(__dirname,'../clients/desktop/main.js'),'utf8');
+  const source=main.slice(main.indexOf('function assertClientSender('),main.indexOf('let clientVersions ='));
+  let handler;const calls=[],wc={mainFrame:{},reloadIgnoringCache:()=>calls.push('renderer')};
+  const context=vm.createContext({ipcMain:{handle:(_n,fn)=>{handler=fn;}},win:{webContents:wc},clientReloading:false,
+    clientVersions:versions,clientActivation:{},worker:{pid:42},workerControl:{stop:()=>assert.fail('Owned game forbids worker stop')},
+    clientHandoff:require('../clients/desktop/client-handoff.cjs'),inspectClientIdle:async()=> 'An owned local game is active.',
+    process:{pid:12},mini:null,startWorker:async()=>calls.push('resume'),settings:()=>({autoStartWorker:true})});
+  vm.runInContext(source,context);
+  const result=await handler({sender:wc,senderFrame:wc.mainFrame},{v:1,sid:'watched-remote',compact:true});
+  assert.equal(result.state,'pending');assert.match(result.reason,/owned local game/);assert.deepEqual(calls,['renderer']);
+  assert.equal(context.worker.pid,42);assert.equal(context.clientHandoffBusy,false);
+  assert.equal((await versions.read()).restart,true,'renderer refresh cannot clear the backend update');
+});
 test('desktop reload IPC is main-frame only and reloads without restarting jobs or dropping compact state', async () => {
   const main = await fs.readFile(path.join(__dirname, '../clients/desktop/main.js'), 'utf8');
   const src = main.slice(main.indexOf('function assertClientSender('), main.indexOf('let clientVersions ='));

@@ -3,6 +3,7 @@ const {test}=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),vm=require('node:vm');
 const {EventEmitter}=require('node:events'),{pathToFileURL}=require('node:url');
 const create=require('../clients/desktop/mercs-window.cjs');
+const viewer=require('../clients/desktop/mercs-window.js');
 const FOLDER=path.resolve(__dirname,'../clients/desktop'),sid='a'.repeat(16)+'-'+'b'.repeat(16),jid='1'.repeat(16),route='2'.repeat(32);
 function fixture(t){
   const temp=fs.mkdtempSync(path.join(os.tmpdir(),'gbox-mercs-window-'));t.after(()=>fs.rmSync(temp,{recursive:true,force:true}));
@@ -59,7 +60,7 @@ test('foreign renderer, child frame and navigated renderer cannot access the vie
 });
 
 test('allowlist permits measured viewer reads but refuses input, launch, foreign jobs and URL tricks',()=>{
-  const allow=['/api/mercs/reviewer/catalog','/api/mercs/reviewer/runs?title=BLUS30491','/api/sessions?include_ended=false',
+  const allow=['/api/mercs/reviewer/catalog','/api/mercs/reviewer/runs?title=BLUS30491','/api/sessions?include_ended=false','/api/sessions?include_ended=true&limit=60',
     '/api/autoplay/tactical/'+sid,'/api/autoplay/tactical/stage/BLUS30491%3Astage'];
   for(const p of allow)assert.equal(create.request({path:p},new Set()).method,'GET');
   for(const p of ['https://attacker/api/sessions','//attacker/api/sessions','/api/jobs/'+jid,'/api/../settings','/api/sessions?token=x','/api/sessions#x','/api/sessions\\x'])
@@ -67,6 +68,96 @@ test('allowlist permits measured viewer reads but refuses input, launch, foreign
   for(const body of [{tool:'launch_game',input:{}},{tool:'autoplay',input:{op:'start'}},{tool:'mercs_team',agent_use:false,input:{session_id:sid,op:'configure',role:'teammate_p2'}}])
     assert.throws(()=>create.request({path:'/api/jobs',body},new Set()),/only select/);
   assert.throws(()=>create.request({path:'/api/sessions/'+sid+'/input',body:{events:[]}},new Set()),/Unsupported/);
+  for(const p of ['/api/sessions/'+sid,'/api/sessions/'+sid+'?include_ended=true','/api/sessions/%2e%2e','/api/sessions/'+sid+'/','/api/sessions/'+('x'.repeat(97))])
+    assert.throws(()=>create.request({path:p},new Set()),/Unsupported/);
+});
+
+test('replacement follows only authoritative same-game links to a listed live session',async()=>{
+  const next='new-session',middle='middle-session',calls=[];
+  const live={session_id:next,game_id:'RE5',state:'running'};
+  const records=[
+    {session_id:sid,game_id:'RE5',state:'ended',replaced_by:middle},
+    {session_id:middle,game_id:'RE5',state:'ended',replaced_by:next}];
+  const result=await viewer.replacement(sid,[live],async p=>{calls.push(p);return records;},()=>true,'RE5');
+  assert.equal(result,live);
+  assert.deepEqual(calls,['/api/sessions?include_ended=true&limit=60']);
+});
+
+test('replacement refuses cycles, wrong game, unknown lineage and arbitrary same-game adoption',async()=>{
+  const live={session_id:'new-session',game_id:'RE5',state:'running'},old={session_id:sid,game_id:'RE5',state:'ended'};
+  const check=record=>viewer.replacement(sid,[live],async()=>[record]);
+  assert.equal(await check(old),null);
+  assert.equal(await check({...old,replaced_by:sid}),null);
+  assert.equal(await check({...old,replaced_by:'http://foreign/session'}),null);
+  assert.equal(await check({...old,game_id:undefined,replaced_by:live.session_id}),null);
+  assert.equal(await check({...old,game_id:'RE6',replaced_by:live.session_id}),null);
+  assert.equal(await check({...old,session_id:'foreign',replaced_by:live.session_id}),null);
+  assert.equal(await check({...old,state:'running',replaced_by:live.session_id}),null);
+  assert.equal(await viewer.replacement(sid,[live],async()=>[{...old,replaced_by:live.session_id}],()=>true,'RE6'),null);
+  let calls=0;
+  assert.equal(await viewer.replacement(sid,[live],async()=>{calls++;return [
+    {...old,replaced_by:'middle'},{...old,session_id:'middle',replaced_by:sid}];}),null);
+  assert.equal(calls,1);
+  assert.equal(await viewer.replacement(sid,[{...live,stopping:true}],async()=>[{...old,replaced_by:live.session_id}]),null);
+  assert.equal(await viewer.replacement(sid,[live],async()=>({sessions:[old]})),null,'API contract is a history array');
+  assert.equal(await viewer.replacement(sid,[live],async()=>[{...old,replaced_by:'missing-intermediate'}]),null);
+  assert.equal(await viewer.replacement(sid,[live],async()=>[{...old,replaced_by:'middle'},
+    {...old,session_id:'middle',game_id:'RE6',replaced_by:live.session_id}]),null);
+});
+
+test('replacement bounds history to sixty records and eight links without following unlisted live rows',async()=>{
+  let calls=0;
+  const live={session_id:'target',game_id:'RE5',state:'running'},record=(id,next)=>({session_id:id,game_id:'RE5',state:'ended',replaced_by:next});
+  const history=Array.from({length:8},(_,i)=>record(i?'step-'+i:sid,i===7?'target':'step-'+(i+1)));
+  assert.equal(await viewer.replacement(sid,[live],async()=>{calls++;return history;}),live);
+  assert.equal(calls,1);
+  history[7].replaced_by='step-8';history.push(record('step-8','target'));
+  assert.equal(await viewer.replacement(sid,[live],async()=>history),null);
+  assert.equal(await viewer.replacement(sid,[],async()=>[record(sid,'target'),live]),null);
+  const oversized=Array.from({length:60},(_,i)=>record('other-'+i,'target'));
+  oversized.push(record(sid,'target'));
+  assert.equal(await viewer.replacement(sid,[live],async()=>oversized),null,'never use an archive row outside the bounded sixty');
+});
+
+function rendererFixture(){
+  const nodes=new Map(),maps=[],requests=[];let read=async()=>[],scopeChanged;
+  const node=id=>{if(!nodes.has(id))nodes.set(id,{value:'',children:[],hidden:false,checked:false,textContent:'',
+    replaceChildren(){this.children=[];},append(item){this.children.push(item);},setAttribute(){}});return nodes.get(id);};
+  const doc={getElementById:node,createElement:()=>({})};
+  const bridge={info:async()=>({origin:'http://spark:8765',sid,mode:'map'}),
+    onScope:fn=>{scopeChanged=fn;return()=>{};},alwaysOnTop:async on=>on,
+    api:async p=>{requests.push(p);return read(p);}};
+  const control=viewer.mount(doc,bridge,{reviewer:null,tactical:{html:id=>id,mount:(_doc,{sid})=>{maps.push(sid);return {stop(){}};},detach(){}},
+    setTimer:()=>1,clearTimer(){}});
+  return {node,maps,requests,control,setRead:fn=>read=fn,scope:value=>scopeChanged(value)};
+}
+const settle=()=>new Promise(resolve=>setImmediate(resolve));
+
+test('viewer map follows replacement lineage while preserving server and live selector',async()=>{
+  const f=rendererFixture(),next='replacement-live';
+  const live={session_id:next,game_id:'RE5',state:'running',title:'RE5'};
+  f.setRead(async p=>p==='/api/sessions?include_ended=false'?[live]:[{session_id:sid,game_id:'RE5',state:'ended',replaced_by:next}]);
+  try{await f.control.ready;await settle();
+    assert.deepEqual(f.maps,[sid,next]);assert.equal(f.node('sessions').value,next);
+    assert.equal(f.node('authority').textContent,'http://spark:8765');
+    assert.deepEqual(f.requests,['/api/sessions?include_ended=false','/api/sessions?include_ended=true&limit=60']);
+  }finally{f.control.dispose();}
+});
+
+test('manual session selection wins a pending lineage request without another map attachment',async()=>{
+  const f=rendererFixture(),manual='manual-live',next='replacement-live';
+  const live=id=>({session_id:id,game_id:'RE5',state:'running',title:'RE5'});
+  f.setRead(async()=>[live(sid),live(manual)]);
+  try{await f.control.ready;await settle();let resolve;
+    assert.deepEqual(f.requests,['/api/sessions?include_ended=false'],'live selection never reads history');
+    const history=new Promise(yes=>resolve=yes);
+    f.setRead(async p=>p==='/api/sessions?include_ended=false'?[live(next),live(manual)]:history);
+    const poll=f.control.sessions();await settle();
+    f.node('sessions').value=manual;f.node('sessions').onchange();
+    resolve([{session_id:sid,game_id:'RE5',state:'ended',replaced_by:next}]);await poll;
+    assert.deepEqual(f.maps,[sid,manual]);assert.equal(f.node('sessions').value,manual);
+    assert.equal(f.node('authority').textContent,'http://spark:8765');
+  }finally{f.control.dispose();}
 });
 
 test('practice-route binding requires exact live worker and grants polling only its created job',async t=>{
@@ -118,8 +209,9 @@ test('browser: real reviewer and tactical map mount in their own local window an
   const {withPage}=require('../scripts/browser_lifecycle.cjs');
   await withPage(async(evaluate,send)=>{
     await send('Page.addScriptToEvaluateOnNewDocument',{source:`window.calls=[];window.scopeValue={origin:'http://spark:8765',sid:${JSON.stringify(sid)},mode:'map',top:false};
+      window.sessionLive=[{session_id:scopeValue.sid,game_id:'RE5',state:'running',title:'Resident Evil 5',detail:{worker_name:'lilspark'}}];window.sessionHistory=[];
       window.mercsWindow={info:async()=>scopeValue,onScope:fn=>{window.scopeChanged=fn;return()=>{}},alwaysOnTop:async on=>on,
-      api:async p=>{calls.push(p);if(p.startsWith('/api/sessions'))return [{session_id:scopeValue.sid,state:'running',title:'Resident Evil 5',detail:{worker_name:'lilspark'}}];
+      api:async p=>{calls.push(p);if(p==='/api/sessions?include_ended=false')return sessionLive;if(p==='/api/sessions?include_ended=true&limit=60')return sessionHistory;
       if(p.endsWith('/catalog'))return {games:[]};if(p.includes('/tactical/stage/'))return {v:1,key:'stage',units:'cm',bounds:[-1000,-1000,1000,1000],points:[],triangles:[],walls:[],links:[]};
       if(p.includes('/tactical/'))return {v:1,seq:1,t:Date.now()/1000,screen:'playing',units:'cm',stage:'stage',player:{pos:[0,0,0],hp:804,hp_max:1000,facing:0},clock:{left:120,score:1234,combo:2},enemies:[],bonuses:[],plan:{phase:'gather_time'}};
       throw Error(p);}};`});
@@ -129,6 +221,14 @@ test('browser: real reviewer and tactical map mount in their own local window an
     assert.equal(await evaluate(`document.querySelector('#live-view').hidden`),false);
     assert.equal(await evaluate(`document.querySelector('#map canvas')!==null`),true);
     assert.equal(await evaluate(`document.querySelector('[data-tm=score]').textContent.includes('1,234')`),true);
+    const replacement='c'.repeat(16)+'-'+'d'.repeat(16);
+    await evaluate(`sessionHistory=[{session_id:scopeValue.sid,game_id:'RE5',state:'ended',replaced_by:${JSON.stringify(replacement)}}];
+      sessionLive=[{session_id:${JSON.stringify(replacement)},game_id:'RE5',state:'running',title:'Resident Evil 5'}];document.querySelector('#refresh').click();`);
+    for(let i=0;i<80&&!await evaluate(`document.querySelector('#sessions').value===${JSON.stringify(replacement)}`);i++)await new Promise(r=>setTimeout(r,20));
+    assert.equal(await evaluate(`document.querySelector('#sessions').value`),replacement);
+    assert.equal(await evaluate(`calls.some(p=>p==='/api/sessions?include_ended=true&limit=60')`),true);
+    assert.equal(await evaluate(`calls.some(p=>p.includes('/tactical/'+${JSON.stringify(replacement)}))`),true);
+    assert.equal(await evaluate(`calls.some(p=>/^\\/api\\/sessions\\//.test(p))`),false,'no nonexistent detail endpoint');
     await evaluate(`document.querySelector('#top').checked=true;document.querySelector('#top').dispatchEvent(new Event('change'));document.querySelector('#review-tab').click()`);
     for(let i=0;i<80&&!await evaluate(`document.querySelector('.mr-empty')?.textContent.includes('No recorded')`);i++)await new Promise(r=>setTimeout(r,20));
     assert.equal(await evaluate(`document.querySelector('#review-view').hidden`),false);

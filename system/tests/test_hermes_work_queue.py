@@ -654,6 +654,109 @@ def _required_node_tick(monkeypatch, requests, *, pooled=True, cloud=False, unav
     return calls, jobs
 
 
+def _verified_round_analysis(monkeypatch, requests):
+    game='e7ca89bbeb67360d'
+    saved={}
+    for req in requests:
+        key=req['id']*4;round_id=req['id']*2
+        req.update(source='mercs_round_analysis',author='agent',kind='report',automated=True,
+            context={'auto_report':True,'operator_requested':True,'read_only':True,
+                     'required_inference_node':'sparkDeux','mercs_round_report_id':key,
+                     'mercs_round_id':round_id,'game_id':game,'session_id':'native-session'})
+        saved[key]={'id':key,'request_id':req['id'],'round_id':round_id,'report':{
+            'schema':'gbox.mercs.round-report/1','id':key,'round_id':round_id,'title':'BLUS30491',
+            'source':{'game_id':game,'session_id':'native-session','provenance':{'verified':True}},
+            'eligibility':{'eligible':True,'needs_analysis':True}}}
+    monkeypatch.setattr(q,'_api',lambda path,body=None:saved[path.rsplit('/',1)[-1]])
+    return saved
+
+
+def test_verified_read_only_round_analysis_shares_existing_game_owner_without_touching_claim(env,monkeypatch):
+    review=request();_verified_round_analysis(monkeypatch,[review])
+    engineering=request('9'*16,context={'game_id':review['context']['game_id']})
+    reqs=[engineering,review]
+    q.sync(env,{'count':0,'items':[]},reqs,now=1000)
+    owner=env['items']['inbox:'+engineering['id']]
+    owner.update(dispatch_state='queued',job_id='existing-engineering')
+    before=dict(owner)
+    options=q.candidates(env,reqs,[],set(),set(),now=1001)
+    assert [item['request_id'] for _,item in options]==[review['id']]
+    assert owner==before and env.get('priority',[])==[]
+
+
+def test_only_one_verified_analysis_per_game_even_when_original_game_owner_is_busy(env,monkeypatch):
+    first,second=request(),request('1'*16)
+    _verified_round_analysis(monkeypatch,[first,second])
+    reqs=[first,second];q.sync(env,{'count':0,'items':[]},reqs,now=1000)
+    active=env['items']['inbox:'+first['id']]
+    active.update(dispatch_state='queued',job_id='existing-analysis')
+    assert q.candidates(env,reqs,[],set(),set(),now=1001)==[]
+    active['dispatch_state']='finished'
+    assert q.candidates(env,reqs,[],{first['id']},set(),now=1001)==[]
+    options=q.candidates(env,reqs,[],set(),set(),now=1001)
+    assert second['id'] in [item['request_id'] for _,item in options]
+
+
+@pytest.mark.parametrize('defect',['other_readonly','wrong_request','wrong_round','unverified_source','not_eligible','ledger_offline'])
+def test_fake_or_unverified_round_reviews_cannot_bypass_game_exclusivity(env,monkeypatch,defect):
+    review=request();saved=_verified_round_analysis(monkeypatch,[review]);doc=saved[review['id']*4]
+    if defect=='other_readonly':review['source']='api'
+    elif defect=='wrong_request':doc['request_id']='f'*16
+    elif defect=='wrong_round':doc['report']['round_id']='f'*32
+    elif defect=='unverified_source':doc['report']['source']['provenance']['verified']=False
+    elif defect=='not_eligible':doc['report']['eligibility']['eligible']=False
+    else:monkeypatch.setattr(q,'_api',lambda *args,**kw:(_ for _ in ()).throw(RuntimeError('offline')))
+    engineering=request('9'*16,context={'game_id':review['context']['game_id']})
+    reqs=[engineering,review];q.sync(env,{'count':0,'items':[]},reqs,now=1000)
+    env['items']['inbox:'+engineering['id']].update(dispatch_state='queued',job_id='existing-engineering')
+    assert q.candidates(env,reqs,[],set(),set(),now=1001)==[]
+    assert not env['items']['inbox:'+review['id']]['round_analysis_verified']
+
+
+def test_later_missing_ledger_does_not_release_an_existing_analysis_reservation(env,monkeypatch):
+    first,second=request(),request('1'*16)
+    saved=_verified_round_analysis(monkeypatch,[first,second])
+    reqs=[first,second];q.sync(env,{'count':0,'items':[]},reqs,now=1000)
+    env['items']['inbox:'+first['id']].update(dispatch_state='queued',job_id='existing-analysis')
+    saved[first['id']*4]['report']['eligibility']['eligible']=False
+    q.sync(env,{'count':0,'items':[]},reqs,now=1001)
+    assert not env['items']['inbox:'+first['id']]['round_analysis_verified']
+    assert q.candidates(env,reqs,[],set(),set(),now=1002)==[]
+
+
+@pytest.mark.parametrize('node_full',[False,True])
+def test_verified_analysis_sharing_still_obeys_node_capacity_and_preserves_all_claims(env,monkeypatch,node_full):
+    first,second=request(),request('1'*16)
+    engineering=request('9'*16,context={'game_id':'e7ca89bbeb67360d'})
+    reqs=[engineering,first,second]
+    calls,jobs=_required_node_tick(monkeypatch,reqs)
+    api=q._api
+    _verified_round_analysis(monkeypatch,[first,second])
+    reports=q._api
+    monkeypatch.setattr(q,'_api',lambda path,body=None:
+        reports(path,body) if path.startswith('/api/mercs/round-reports/') else api(path,body))
+    q.sync(env,{'count':0,'items':[]},reqs,now=999)
+    owner=env['items']['inbox:'+engineering['id']]
+    owner.update(dispatch_state='queued',job_id='active-job',inference_node='sparkDeux')
+    if node_full:
+        jobs.append({'id':'other-active','enabled':True,'schedule':{'kind':'once'}})
+        env['items']['inbox:'+'8'*16]={'lane':'inbox','request_id':'8'*16,
+            'game_id':'8'*16,'dispatch_state':'queued','job_id':'other-active',
+            'inference_node':'sparkDeux','attempts':0}
+        monkeypatch.setattr(q,'_executions',lambda:({}, {'active-job','other-active'}))
+    claims={key:dict(item) for key,item in env['items'].items() if item.get('job_id')}
+    q._save(env)
+    result=q.tick(now=1000)
+    assert len(result['dispatched'])==(0 if node_full else 1)
+    assert len(calls)==(0 if node_full else 1)
+    if not node_full:
+        assert result['dispatched'][0]['inference_node']=='sparkDeux'
+        assert result['dispatched'][0]['request_id'] in {first['id'],second['id']}
+    current=q._read()
+    for key,before in claims.items():
+        assert all(current['items'][key][field]==value for field,value in before.items())
+
+
 def _round_analysis_request(node='sparkDeux'):
     return request(source='mercs_round_analysis', automated=True, author='agent', context={
         'auto_report': True, 'read_only': True, 'required_inference_node': node,

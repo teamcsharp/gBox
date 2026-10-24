@@ -108,6 +108,38 @@ def requested_player_damage(request) -> bool:
         return False                               # missing/unreachable durable owner is not authorization
 
 
+def requested_round_analysis(request) -> bool:
+    """Only the server's exact durable solo-round/request pair may share game ownership."""
+    context = request.get('context') or {}
+    if not isinstance(context, dict) or request.get('source') != 'mercs_round_analysis' \
+            or request.get('author') != 'agent' or request.get('kind') != 'report' \
+            or context.get('operator_requested') is not True or context.get('read_only') is not True \
+            or context.get('required_inference_node') != 'sparkDeux' \
+            or not ID.fullmatch(str(request.get('id',''))) \
+            or not HASH.fullmatch(str(context.get('mercs_round_report_id',''))) \
+            or not re.fullmatch('[a-f0-9]{32}', str(context.get('mercs_round_id',''))):
+        return False
+    try:
+        from .mercs.round_reports import TITLES
+        saved = _api('/api/mercs/round-reports/'+context['mercs_round_report_id'])
+        report = saved.get('report') or {}
+        source = report.get('source') or {}
+        return (saved.get('request_id') == request['id']
+                and saved.get('id') == context['mercs_round_report_id'] == report.get('id')
+                and saved.get('round_id') == context['mercs_round_id'] == report.get('round_id')
+                and report.get('schema') == 'gbox.mercs.round-report/1'
+                and report.get('title') in TITLES
+                and context.get('game_id') in TITLES[report['title']]
+                and source.get('game_id') == context.get('game_id')
+                and isinstance(context.get('session_id'),str)
+                and source.get('session_id') == context['session_id']
+                and (source.get('provenance') or {}).get('verified') is True
+                and (report.get('eligibility') or {}).get('eligible') is True
+                and (report.get('eligibility') or {}).get('needs_analysis') is True)
+    except Exception:
+        return False  # Missing/offline evidence never relaxes ownership.
+
+
 def _prioritized_handoff(data, request) -> bool:
     """A dated agent handoff explicitly selected by request, not just by its game."""
     handoff = (request.get('context') or {}).get('handoff')
@@ -157,6 +189,7 @@ def sync(data, favorites, requests, *, now):
         body = str(request.get('body') or request.get('title') or '').lstrip()
         actionable = request.get('source') in ('gap', 'characters')
         damage_report = requested_player_damage(request)
+        round_analysis = requested_round_analysis(request)
         if request.get('source') == 'player_damage' and not damage_report:
             old = data['items'].get('inbox:' + request['id'])
             if old is not None:
@@ -195,6 +228,7 @@ def sync(data, favorites, requests, *, now):
                     launch_failure=bool(context.get('launch_failure')),
                     operator_requested=bool(context.get('replacement_requested') or damage_report),
                     read_only=context.get('read_only') is True,
+                    round_analysis_verified=round_analysis,
                     required_inference_node=context.get('required_inference_node'),
                     game_id=context.get('game_id'), target=context.get('target'),
                     character=context.get('character'))
@@ -298,6 +332,10 @@ def candidates(data, requests, native, owned, on_main, *, now):
                   ((j.get('input') or {}).get('game') or {}).get('game_id') for j in native}
     running = [i.get('game_id') for i in data['items'].values()
                if i.get('dispatch_state') in ('queued', 'uncertain') or i.get('request_id') in owned]
+    analysis_running = [i.get('game_id') for i in data['items'].values()
+        if (i.get('dispatch_state') in ('queued','uncertain') or i.get('request_id') in owned)
+        and (i.get('round_analysis_verified') or
+             by_id.get(i.get('request_id'),{}).get('source') == 'mercs_round_analysis')]
     # an operator-prioritized request that starts no emulator shares its game with up to PRIORITY_PER_GAME runs in all
     # (operator 2026-10-22: "pumping hard" on the RE5 bot's coaching tickets); other work keeps one run per game
     native_games = set(busy_games)
@@ -316,6 +354,10 @@ def candidates(data, requests, native, owned, on_main, *, now):
         shared = (item.get('lane') == 'inbox' and rid in priority and not launches_emulator(item)
                   and item.get('game_id') not in native_games
                   and running.count(item.get('game_id')) < PRIORITY_PER_GAME)
+        if item.get('round_analysis_verified'):
+            # Read-only evidence analysis does not own the emulator or source.
+            # It gets one separate per-game slot, still under global/node capacity.
+            shared = requested_round_analysis(by_id.get(rid,{})) and analysis_running.count(item.get('game_id')) == 0
         if (rid and rid in busy_requests or item.get('retry_at', 0) > now
                 or item.get('game_id') and item['game_id'] in busy_games and not shared
                 or item.get('request_uncertain') or item.get('dispatch_state') in ('queued', 'uncertain')):

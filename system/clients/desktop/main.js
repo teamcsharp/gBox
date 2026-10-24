@@ -930,7 +930,7 @@ ipcMain.handle('client:reload', async (event, state) => {
   if (clientReloading) return false;
   clientReloading = true;
   try {
-    const version = await clientVersions?.read();
+    const version = await clientVersions?.read({ freshBackend: true });
     if (version?.restart) {
       const hadWorker = !!worker||(typeof localControlProcess!=='undefined'&&!!localControlProcess);
       if (!state || state.v !== 1) clientActivation = { state: 'pending', reason: 'The saved stream view is unavailable; refreshed views only.' };
@@ -1302,6 +1302,7 @@ if (!FIRST) app.quit();
 app.on("second-instance", () => { if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); } });
 app.whenReady().then(() => {
   clientVersions = require('./client-version.cjs').create({ desktop: __dirname, web: path.join(__dirname, '../web'),
+    backendRoot: path.join(configuredSettings().repoLocal, 'gbox'),
     runtimeFiles: [...new Set([path.join(__dirname, 'main.js'), ...Object.keys(require.cache).filter(p => p.startsWith(__dirname + path.sep))])], apiUrl: () => settings().apiUrl });
   if (!FIRST) return;
   startupHandoff = clientHandoff.consume(CLIENT_HANDOFF_FILE, process.argv);
