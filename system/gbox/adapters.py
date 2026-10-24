@@ -253,6 +253,54 @@ def _wall(ts: float | None = None) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(time.time() if ts is None else ts))
 
 
+# JPEG markers that are standalone (no length field) vs. those that carry a two-byte segment length. Walking
+# marker-by-marker (instead of byte-searching for FF D8 / FF D9) is what makes frame boundaries trustworthy: the
+# FF D8 (SOI) and FF D9 (EOI) byte pairs can also appear inside an entropy-coded scan, and the old raw search split
+# a valid picture into a torn fragment the viewer painted as a flash/glitch/"rewind" mid-stream (operator report
+# 2026-10-24, #3253). Walking the real structure finds the frame's true EOI and never re-parses a mid-scan marker.
+_SOI, _EOI, _SOS = 0xD8, 0xD9, 0xDA
+# The RST0..RST7 restart markers (D0..D7) carry no length field: they are single markers that may appear between
+# entropy-coded segments. Everything else — including SOS (start of scan) — carries a 2-byte big-endian length
+# (counting itself). Once the SOS segment's header is skipped, the entropy-coded scan begins and runs until EOI.
+_STANDALONE = frozenset(range(0xD0, 0xD8))  # RST0..RST7
+
+
+def _next_jpeg_frame(buf: bytes) -> tuple[int, int] | None:
+    """Find the first *complete* JPEG frame in `buf`, walking its marker structure.
+
+    Returns ``(start, end)`` (byte offsets, end exclusive) where ``buf[start:end]`` is one full JPEG from
+    SOI to the matching EOI, or ``None`` when a complete frame is not yet present (caller waits for more data).
+    Bytes before the SOI are dropped (they are a torn leading fragment)."""
+    soi = buf.find(b"\xff\xd8")
+    if soi < 0:
+        return None  # no SOI yet: keep the buffer (a torn leading FF could be mid-way to the next frame's SOI)
+    i = soi + 2
+    n = len(buf)
+    scan_started = False
+    while i + 1 < n:
+        if buf[i] == 0xFF:
+            m = buf[i + 1]
+            if m == 0xFF:                 # stuffed byte: not a marker, skip the extra FF
+                i += 1
+                continue
+            if m == _EOI:                 # end of the frame
+                return soi, i + 2
+            if scan_started:              # entropy-coded scan runs until EOI: RST markers may appear, nothing else
+                i += 2 if m in _STANDALONE else 1
+                continue
+            if m == _SOS:                 # SOS has a length field; after its header the scan begins
+                scan_started = True
+            if i + 3 >= n:                # need the marker's length bytes before we can skip the segment
+                return None
+            length = buf[i + 2] << 8 | buf[i + 3]
+            if length < 2:                # malformed: refuse to walk past a zero/negative length
+                return None
+            i = i + 2 + length
+        else:
+            i += 1
+    return None                          # frame incomplete: wait for more data
+
+
 class MjpegStream:
     """Persistent ffmpeg grab -> MJPEG pipe; `latest` always holds the newest complete JPEG.
     ponytail: MJPEG over HTTP (~60 fps on LAN, no audio); move to H.264/NVENC over WebRTC if bandwidth/latency bite.
@@ -317,13 +365,17 @@ class MjpegStream:
         buf = b""
         while chunk := proc.stdout.read1(262144):
             buf += chunk
-            while (s := buf.find(b"\xff\xd8")) >= 0 and (e := buf.find(b"\xff\xd9", s + 2)) >= 0:
+            while True:
+                edge = _next_jpeg_frame(buf)
+                if not edge:
+                    break  # need more data; wait for the next chunk
+                s, e = edge
                 now = self.clock()
                 gap = now - self.last_frame
                 with self.cond:
                     if proc is not self.proc or self.closed:  # a replaced encoder's late output is dropped
                         return
-                    self.latest, self.seq, buf = buf[s:e + 2], self.seq + 1, buf[e + 2:]
+                    self.latest, self.seq, buf = buf[s:e], self.seq + 1, buf[e:]
                     self.last_frame, self._fails = now, 0
                     self.cond.notify_all()
                 if gap >= self.SLOW_S and self.seq > 1:
