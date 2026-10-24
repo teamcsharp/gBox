@@ -804,3 +804,17 @@ def test_blast_stays_off_for_far_majini_and_ones_off_to_the_side():
     bot = C.Combat(m, {}, clock=lambda: 0.0)
     s = snap(m, enemy=(300.0, 0.0, 100.0))                           # close but 70 deg off the facing: turn first
     assert "r1" not in bot.tick(s, s["player"], s["enemies"][0], 0.0)["hold"]
+
+
+def test_laserless_gun_fires_when_off_axis_but_camera_ray_already_on_his_chest():
+    # Direct gun, no laser dot read, but the native camera is already aimed at his chest. Even though the body faces
+    # ~72 deg off to the side, the aim line is on him: fire now instead of lowering the gun to swing the body round.
+    m = world()
+    bot = C.Combat(m, {}, clock=lambda: 0.0)
+    s = supported_laserless(snap(m, enemy=(300.0, 0.0, 100.0)))
+    s["laser"] = None
+    s["camera"] = {"eye": (0.0, 140.0, 0.0), "at": (300.0, 110.0, 100.0)}   # CHEST_H above his feet: on target
+    act = bot.tick(s, s["player"], s["enemies"][0], 0.0)
+    assert "r1" in act["hold"], act                                     # on-target aim: fire, do not swing
+    assert "swing" not in bot.stats.get("combat", "")
+    assert "camera direction" in bot.stats.get("aim_feedback", "")
