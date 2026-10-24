@@ -86,3 +86,15 @@ test('a running session on an offline PC is never followed (#2870)', () => {
   assert.equal(F.pick([ghost], { session_id: 'jay-x' }), null);
   assert.equal(F.pick([ghost, NEW_DARK], null).session, NEW_DARK);
 });
+
+// operator 2026-10-24: "why is the game always idle?" - a parked MercMode game (warm) is left for the one playing
+{
+  const F = require("../clients/web/viz/session-follow.js");
+  const parked = { session_id: "w-1", state: "running", warm: true, agent_owned: true };
+  const playing = { session_id: "w-2", state: "running", agent_owned: true, last_frame_age: 1 };
+  if (!F.decide(parked, {}).follow) throw new Error("a parked game must be left");
+  const p = F.pick([parked, playing], null, { except: "w-1" });
+  if (!p || p.session.session_id !== "w-2") throw new Error("the playing game is picked, never the parked one");
+  if (F.pick([parked], null, {}) !== null) throw new Error("a parked game is never picked");
+  console.log("warm follow ok");
+}
