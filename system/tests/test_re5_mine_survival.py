@@ -175,11 +175,14 @@ def test_removed_bomb_dead_end_uses_real_checkpoint_route_without_waiving_depart
     assert bot.mines.escape is escape and escape['checkpoint_exit']
     # Before positive detonation/removal evidence the same turnaround is unsafe.
     escape.pop('removal_recorded');bot.route=None
-    assert bot._mine_retreat(player,snap,2.) is None  # normal guarded gunplay is still available
+    # Before removal evidence the checkpoint turnaround is unsafe; with no measured way off it he still walks straight
+    # away from the bomb, never stands on it (operator 2026-10-24)
+    act=bot._mine_retreat(player,snap,2.)
+    assert act is not None and 'walking straight away' in bot.stats['mine_retreat_status']
     assert len(calls)==1
 
 
-def test_blocked_escape_does_not_suppress_gunplay_or_allow_another_plant(tmp_path,monkeypatch):
+def test_blocked_escape_walks_away_and_never_allows_another_plant(tmp_path,monkeypatch):
     snap,_=state();snap['enemies']=[]
     bot=R.Bot(learn_dir=tmp_path,clock=lambda:1.)
     escape={'actor':9,'pos':snap['player']['pos'],'at':0.}
@@ -188,5 +191,6 @@ def test_blocked_escape_does_not_suppress_gunplay_or_allow_another_plant(tmp_pat
     monkeypatch.setattr(snap['nav'],'retreat',lambda *args,**kwargs:None)
     monkeypatch.setattr(M,'ground_mines',lambda _: {})
     monkeypatch.setattr(bot,'_tick',lambda _: {'hold':{'l1','r1'}})
-    assert bot.tick(snap)=={'hold':{'l1','r1'}}
-    assert bot.mines.escape is escape and 'planting deferred' in bot.stats['mine_retreat_status']
+    act=bot.tick(snap)
+    assert act!={'hold':{'l1','r1'}} and act.get('hold')                    # off the bomb first (operator 2026-10-24)
+    assert bot.mines.escape is escape and 'walking straight away' in bot.stats['mine_retreat_status']
