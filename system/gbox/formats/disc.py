@@ -13,6 +13,7 @@ size only), so it is safe on a slow share.
 """
 from __future__ import annotations
 
+import os
 import struct
 import zipfile
 from dataclasses import dataclass, field
@@ -165,6 +166,22 @@ def listing(path: str | Path, *, head: int = 64, max_files: int = 4000, exe_limi
                 return g._r(o, min(s, exe_limit if n is None else n))
             L = Listing(str(p), "gc_disc", files, notes=[f"{g.game_id} {g.title}"])
             L.executable_name, L.executable = "main.dol", g.dol()
+        elif hdr[0x100:0x104] == b"HEAD":
+            from . import hfs0
+            fh = open(p, "rb")
+
+            def _ra(o, n):
+                fh.seek(o)
+                return fh.read(n)
+            parts = hfs0.list_card(_ra, os.path.getsize(p))
+            files = [{"path": f"{pn}/{e.name}", "size": e.size, "sha256": e.sha256, "_off": e.offset}
+                     for pn, es in parts.items() for e in es]
+            offs = {f["path"]: (f["_off"], f["size"]) for f in files}
+
+            def read(name, n):
+                o, s = offs[name]
+                return _ra(o, min(s, exe_limit if n is None else n))
+            L = Listing(str(p), "switch_xci", files, notes=["XCI card: " + ", ".join(f"{k}={len(v)}" for k, v in parts.items())])
         elif pvd[1:6] == b"CD001":
             fh = open(p, "rb")
             lba, size = iso9660.pvd_root(pvd)

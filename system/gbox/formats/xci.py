@@ -1,11 +1,12 @@
-"""Nintendo Switch game-card (XCI) container classification and HFS0 table reading.
+"""Nintendo Switch game-card (XCI) container classification.
 
 Two on-disk layouts exist and only one is readable without the console header key:
 
   standard  : bytes[0:4] == b"XCI0".  A plaintext header sits at 0x100 (image size,
               sector size, header size) and the NCSD partition table at 0x7000.  The
               HFS0 "secure" / "update" / "normal" partition tables are plaintext and
-              walkable with :func:`read_hfs0`.
+              walkable via :func:`gbox.formats.hfs0`.
+
   headerless: bytes[0x100:0x104] == b"HEAD" (the "headless" card dump produced by
               some flashers).  The NCSD partition table at 0x7000 is stored **encrypted
               (AES-XTS with the per-console header key)**, so the partition layout and
@@ -15,17 +16,20 @@ Two on-disk layouts exist and only one is readable without the console header ke
               of megabytes).
 
 This module deliberately does **not** attempt to decrypt anything.  It classifies the
-container, reports whether the partition table is readable, and parses only plaintext
-HFS0 tables it can actually find.  An encrypted container is reported as a concrete
-prerequisite (``header_key_required``), never silently mis-listed.
+container, reports whether the partition table is readable, and points plaintext HFS0
+walking at the shared :mod:`gbox.formats.hfs0` reader (which implements the real
+0x40-byte entry layout, not the stale 24-byte layout this module once bundled).
 
-gBox never bypasses ownership or decryption; :func:`classify` is the honest gate a
-title reader calls before claiming it can inventory a Switch card.
+``classify`` is the honest gate a title reader calls before claiming it can inventory a
+Switch card: a headerless card whose NCSD slot is 0xFF-filled is reported as a concrete
+prerequisite (``header_key_required``), never silently mis-listed.
 """
 from __future__ import annotations
 
 import struct
 from dataclasses import dataclass, field
+
+from . import hfs0
 
 # XCI header magic (standard card) and headerless signature (at 0x100).
 XCI_MAGIC = b"XCI0"
@@ -35,26 +39,7 @@ NCSD_OFFSET = 0x7000
 # A header is "encrypted" when its NCSD slot is blank-filled.
 _FILL = b"\xff"
 
-HFS0_MAGIC = b"HFS0"
-
-
-@dataclass(frozen=True)
-class Hfs0Entry:
-    """One file inside a plaintext HFS0 table."""
-
-    name: str
-    offset: int   # file start relative to the HFS0 header
-    size: int
-    hash_offset: int
-    hash_size: int
-
-
-@dataclass
-class Hfs0Table:
-    header_offset: int
-    file_count: int
-    string_table_size: int
-    entries: list[Hfs0Entry] = field(default_factory=list)
+HFS0_MAGIC = hfs0.MAGIC
 
 
 @dataclass
@@ -68,7 +53,7 @@ class XciInfo:
     # headerless header fields (raw, for audit -- meaningless when encrypted)
     image_size: int = 0
     sector_size: int = 0
-    # plaintext HFS0 tables discovered by a scan of the head region (audit aid)
+    # plaintext HFS0 magic offsets in the head region (audit aid)
     plaintext_hfs0: list[dict] = field(default_factory=list)
 
 
@@ -145,32 +130,10 @@ def _find_hfs0_offsets(head: bytes) -> list[int]:
     return out
 
 
-def read_hfs0(read_at, base: int, max_files: int = 100_000) -> Hfs0Table:
-    """Parse a plaintext HFS0 table whose header starts at ``base``.
+def read_hfs0(read_at, base: int, file_size: int | None = None) -> list[hfs0.Hfs0Entry]:
+    """Parse a plaintext HFS0 table at ``base`` via the shared reader; raises ValueError if absent/invalid.
 
-    ``read_at(offset, size) -> bytes`` reads absolute bytes from the image.  Raises
-    ValueError if the magic is absent or the header is not self-consistent.
+    ``read_at(offset, size) -> bytes`` reads absolute bytes from the image.  Returned
+    ``Hfs0Entry.offset`` fields are absolute image offsets.
     """
-    hdr = read_at(base, 16)
-    if len(hdr) < 16 or hdr[0:4] != HFS0_MAGIC:
-        raise ValueError(f"no HFS0 magic at {base}")
-    file_count = _u32(hdr, 4)
-    string_table_size = _u32(hdr, 8)
-    if file_count == 0 or file_count > max_files:
-        raise ValueError(f"implausible HFS0 file_count={file_count}")
-    entries_bytes = read_at(base + 16, file_count * 24)
-    if len(entries_bytes) < file_count * 24:
-        raise ValueError("truncated HFS0 entry table")
-    names_bytes = read_at(base + 16 + file_count * 24, string_table_size)
-    if len(names_bytes) < string_table_size:
-        raise ValueError("truncated HFS0 string table")
-    entries: list[Hfs0Entry] = []
-    for i in range(file_count):
-        s = i * 24
-        (name_off, name_size, hash_off, hash_size) = struct.unpack_from(
-            "<IIII", entries_bytes, s)[:4]
-        name = names_bytes[name_off:name_off + name_size].decode("utf-8", "replace")
-        data_off = base + 16 + file_count * 24 + string_table_size
-        entries.append(Hfs0Entry(name, data_off + hash_off, hash_size,
-                                 hash_off, hash_size))
-    return Hfs0Table(base, file_count, string_table_size, entries)
+    return hfs0.parse_hfs0(read_at, base, file_size)
