@@ -2508,7 +2508,8 @@ def create_app(config: Config) -> FastAPI:
                         and j["require_os"] in (None, w["os"]) and j["require_worker"] in (None, wid, w["name"])):   # by name: launched while that worker was restarting
                     if _demo_preempted(j, wid):
                         continue
-                    if j["tool"] == "launch_game" and (why := operator_guard.watching_reason(store, wid)):
+                    if j["tool"] == "launch_game" and (why := operator_guard.watching_reason(
+                            store, wid, keep=operator_guard.kept_by(j))):
                         store.put('job', j['id'], j | {'admission_wait': {'worker': w['name'], 'reason': why}})
                         continue
                     from .savemgo import claim_reason as savemgo_claim_reason
@@ -2978,9 +2979,10 @@ def create_app(config: Config) -> FastAPI:
                           and (not job.require_os or w.get("os") == job.require_os)]
             if job.require_worker and not candidates:
                 candidates = [{"id": job.require_worker}]
-            available = [w for w in candidates if not operator_guard.watched_sessions(store, w["id"])]
+            kept = operator_guard.kept_by({"input": job.input})
+            available = [w for w in candidates if not operator_guard.watched_sessions(store, w["id"], keep=kept)]
             if candidates and not available:
-                job.state, job.error = JobState.REJECTED, operator_guard.watching_reason(store, candidates[0]["id"])
+                job.state, job.error = JobState.REJECTED, operator_guard.watching_reason(store, candidates[0]["id"], keep=kept)
             elif not job.require_worker and available and len(available) < len(candidates):
                 job.require_worker = available[0]["id"]
         if t.name == "launch_game" and job.agent_use and actor != "gbox-agent" and job.state == JobState.QUEUED:
