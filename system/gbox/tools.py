@@ -916,7 +916,7 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         memory_card_sessions.recover_pending(ctx)
         ad.memory_card_rom=str(src)
         memory_card_sessions.checkout(f'{ctx.worker}-{ctx.job_id}',ad,g.model_dump(),ctx,
-                                      operator_cards=inp.memory_cards == "operator", keep=inp.keep_session)
+                                      operator_cards=inp.memory_cards == "operator")
         if inp.jump and not inp.capture_backend:            # a demo: straight into gameplay (gbox.jumpstate)
             from . import jumpstate
             ad.demo = True                                  # unattended: no modal dialogs, no on-screen messages
