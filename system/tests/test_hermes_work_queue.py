@@ -283,6 +283,23 @@ def test_completed_occurrence_backoff_and_idempotence(env):
     assert item['no_progress_runs'] == 1 and item['retry_at'] == 500
 
 
+def test_run_hermes_refused_to_start_is_not_a_failed_attempt_or_a_review(env, monkeypatch):
+    # 2026-10-24: after a Hermes update every DeepSeek run was "[blocked_config:silent] ... Unknown provider"; they
+    # counted as no-progress runs and then waited on reviews of runs that never executed
+    from gbox import hermes_result_review
+    recorded = []
+    monkeypatch.setattr(hermes_result_review, 'record_result', lambda item, run: recorded.append(run['id']))
+    monkeypatch.setattr(hermes_result_review, 'config', lambda: {'enabled': True})
+    q.sync(env, {'count': 1, 'items': [favorite()]}, [], now=10)
+    item = env['items']['favorite:' + G]
+    item.update(job_id='job', dispatch_state='queued', last_dispatched=100, no_progress_runs=2)
+    run = {'id': 'run', 'started_at': '1970-01-01T00:01:40+00:00', 'status': 'failed',
+           'error': "[blocked_config:silent] provider credential missing: Unknown provider 'gbox-deepseek'"}
+    q.reconcile(env, [{'id': 'job', 'enabled': False}], {'job': run}, set(), now=200)
+    assert item['dispatch_state'] == 'finished' and item['no_progress_runs'] == 2 and item['retry_at'] == 320
+    assert recorded == [] and hermes_result_review.gate(item) is None
+
+
 def test_uncertain_launch_is_not_blindly_repeated(env):
     q.sync(env, {'count': 1, 'items': [favorite()]}, [], now=1)
     item = env['items']['favorite:' + G]

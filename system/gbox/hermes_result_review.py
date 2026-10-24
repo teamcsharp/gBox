@@ -144,6 +144,8 @@ def gate(item):
     """No previous result => fresh work. Every subsequent dispatch needs guidance."""
     if not config().get('enabled') or not item.get('last_run_id'):
         return None
+    if item.get('blocked_run') == item['last_run_id']:
+        return None                                        # Hermes never started it: nothing to review
     row = result('run:' + item['last_run_id'])
     if not row:
         # The ledger never saw this run (its execution row is gone, or it ended before the gate was enabled), so no
