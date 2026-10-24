@@ -16,7 +16,17 @@ PREPARATION = 'mercmode_preparation'
 OBSERVED = 'mercmode_observed'
 COMMAND = 'mercmode_command'
 DEFAULT = {'enabled': False, 'titles': ['re4', 're5', 're6'], 'rounds_per_title': 1,
-           'presentation_priority': False, 'queue': []}
+           'presentation_priority': False, 'queue': [], 'keep_warm': 1}
+# Warm pool (operator 2026-10-24: "now that there is more ram on the spark, get the swapping of mercenary modes more
+# seamless by having emulators ready to swap in for merc mode fully prepared"). keep_warm = how many titles besides the
+# one playing may wait in memory, paused and off-screen (0 = off: every switch is a cold launch, as before).
+WARM = 'mercmode_warm'          # host -> {title: {session_id, game_id, job, worker_id, state: prelaunch|parked, at}}
+NEXT = 'mercmode_next'          # host -> the pick made ahead of the round's end (prelaunch), honoured at the switch
+PRELAUNCH_S = 30.0              # seconds left on the round clock when the next title starts loading in the background
+WARM_MAX = 2                    # keep_warm upper bound (three titles at most: the playing one plus two waiting)
+WARM_FEATURE = 'mercmode_warm_launch'   # worker feature: launch_game keep_sessions/warm and session_op pause warm
+WARM_MIN_FREE_BYTES = 8 * 1024**3       # memory guard: an extra emulator needs this much free RAM on the host ...
+WARM_MAX_MEMORY_PERCENT = 80            # ... and the host under this much used, both measured in the last 30 s
 QUEUE_MAX = 20
 TITLES = {
     're4': {'name': 'Resident Evil 4', 'map_id': 'G4BE08', 'platform': 'gamecube',
@@ -35,6 +45,10 @@ def normalize(patch, current=None):
     if not isinstance(patch, dict) or set(patch)-DEFAULT.keys():
         raise ValueError('Unknown MercMode setting')
     out = {**DEFAULT, **(current or {}), **patch}
+    if type(out.get('keep_warm')) is bool:            # true/false from an older client: one title kept warm, or none
+        out['keep_warm'] = int(out['keep_warm'])
+    if type(out.get('keep_warm')) is not int or not 0 <= out['keep_warm'] <= WARM_MAX:
+        raise ValueError(f'MercMode keep_warm is how many titles wait ready: 0..{WARM_MAX}')
     if type(out['enabled']) is not bool or type(out['presentation_priority']) is not bool or type(out['rounds_per_title']) is not int \
             or not 1 <= out['rounds_per_title'] <= 20:
         raise ValueError('MercMode needs enabled true/false and 1..20 rounds per title')
@@ -91,6 +105,54 @@ def resolve_selection(entry, rng):
             'stage_name': known['stages'][stage]}
 
 
+def warm_pool(store, host, running=None):
+    """This host's kept-warm MercMode games (operator 2026-10-24: "the emulators should be kept in memory if they are going
+    to keep being used ... I feel like this shader dialog wouldn't even have to show"). With `running`, entries whose
+    session ended are dropped (a prelaunch whose launch is still pending stays). Ownership is checked by the scheduler
+    (gbox.screensaver.Screensaver._warm) before any of these sessions is paused, resumed or stopped."""
+    pool = dict(store.get(WARM, host) or {})
+    if running is None:
+        return pool
+    alive = {s.get('session_id') for s in running}
+    kept = {t: row for t, row in pool.items()
+            if row.get('session_id') in alive or (row.get('state') == 'prelaunch' and not row.get('session_id'))}
+    if kept != pool:
+        store.put(WARM, host, kept)
+    return kept
+
+
+def warm_sessions(store, host):
+    """Session ids waiting in this host's pool, never one the operator took over (label owner "you")."""
+    return {sid for row in (store.get(WARM, host) or {}).values() if (sid := row.get('session_id'))
+            and (store.get('slabel', sid) or {}).get('owner') != 'you'}
+
+
+def keep_warm(store, host, title, row):
+    store.put(WARM, host, warm_pool(store, host) | {title: row})
+
+
+def take_warm(store, host, title):
+    pool = warm_pool(store, host)
+    row = pool.pop(title, None)
+    store.put(WARM, host, pool)
+    return row
+
+
+def memory_reason(worker, now=None):
+    """Why this host may not hold one more emulator in memory now (None = it may): fresh measured free RAM only."""
+    now = time.time() if now is None else now
+    res = (worker or {}).get('resources') or {}
+    stamp, free, used = res.get('sampled_at'), res.get('memory_available_bytes'), res.get('memory_percent')
+    if type(stamp) not in (int, float) or not 0 <= now - stamp <= 30:
+        return 'no current memory measurement from this host'
+    if type(free) not in (int, float) or type(used) not in (int, float):
+        return 'no measured memory headroom on this host'
+    if free < WARM_MIN_FREE_BYTES or used >= WARM_MAX_MEMORY_PERCENT:
+        return (f'only {free / 1024**3:.1f} GiB free ({used:g}% used); a warm emulator needs '
+                f'{WARM_MIN_FREE_BYTES / 1024**3:g} GiB free and under {WARM_MAX_MEMORY_PERCENT}% used')
+    return None
+
+
 def pop_queue(store, host):
     cfg = settings(store, host)
     if cfg['queue']:
@@ -123,6 +185,14 @@ def presentation_launch(store, worker, job):
     cfg=settings(store,worker['name']);run=store.get(STATE,worker['name']) or {}
     title=(run.get('mercmode') or {}).get('title');spec=TITLES.get(title) or {}
     game=(job.get('input') or {}).get('game') or {}
+    ahead=run.get('mercmode_prelaunch') or {}
+    if job.get('id') and job.get('id')==ahead.get('job'):
+        # the next title's warm preload during this run's last seconds: the same foreground priority as its launch
+        nxt=TITLES.get(ahead.get('title')) or {}
+        return bool(cfg['enabled'] and cfg['presentation_priority'] and ahead.get('title') in cfg['titles']
+            and nxt.get('playable') and job.get('actor')==ACTOR and (job.get('input') or {}).get('warm') is True
+            and run.get('phase')=='playing' and run.get('worker_id')==worker.get('id')==job.get('require_worker')
+            and game.get('game_id') in nxt.get('game_ids',()))
     return bool(cfg['enabled'] and cfg['presentation_priority'] and title in cfg['titles']
         and spec.get('playable') and job.get('tool')=='launch_game' and job.get('actor')==ACTOR
         and job.get('id')==run.get('job') and run.get('phase')=='launching'
@@ -336,7 +406,8 @@ def inventory(store, worker, cfg=None, sessions=None):
 def preparation(platform):
     return ({'strategy': 'persistent_install_and_shader_cache', 'instant_state_supported': False,
              'reason': 'RPCS3 uses its installed data and retained caches, then verified native menus. '
-                       'No save-state capture/reload or second emulator is started for prewarming.'}
+                       'No save-state capture/reload. With keep_warm the next title boots paused in the round\'s last '
+                       f'{PRELAUNCH_S:g} s and the switch resumes it (gbox.screensaver warm pool).'}
             if platform == 'ps3' else
             {'strategy': 'existing_dolphin_menu_jump_if_available', 'instant_state_supported': True,
              'reason': 'An existing matching Dolphin menu jump may be reused; otherwise native menus boot normally.'})
@@ -345,6 +416,12 @@ def preparation(platform):
 def choose(store, worker, rng, cfg=None):
     cfg = cfg or settings(store, worker['name'])
     rows = inventory(store, worker, cfg)
+    ahead = store.get(NEXT, worker['name'])
+    if ahead:                                    # picked (and preloaded) before the round ended: keep that promise
+        store.delete(NEXT, worker['name'])
+        row = next((r for r in rows if r['playable'] and r['title'] == ahead.get('title')), None)
+        if row:
+            return row | ({'selection': ahead['selection']} if ahead.get('selection') else {})
     head = (cfg.get('queue') or [None])[0]
     queued = next((r for r in rows if head and r['playable'] and r['title'] == head['title']), None)
     if queued:                                   # the DJ's next round comes first, even for an unchecked title

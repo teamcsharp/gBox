@@ -110,6 +110,34 @@ bounded host receipt. It does not launch a second emulator, capture a disruptive
 RPCS3 state, or claim instant gameplay. Dolphin may reuse an existing matching
 menu jump state through its established boot mechanism.
 
+### Warm pool (`keep_warm`)
+
+`keep_warm` (0..2, default 1; `true`/`false` mean 1/0) is how many titles may wait
+in memory beside the one playing. When the round clock shows 30 s or less on the
+title's last round, the scheduler picks the next title (`mercmode_next`) and
+launches it with `launch_game warm=true keep_sessions=[current, waiting...]`: the
+worker keeps those sessions, boots the new one and pauses it as soon as it runs
+(RPCS3 SIGSTOP / suspended process, Dolphin halted emulation: no emulation, no
+audio). Nothing shows it: the clients follow `current_run`, and its session label
+says it waits. At the verified native round boundary the finished title is paused
+(`session_op pause args.warm=true`, "parked") instead of stopped, and the waiting
+one is resumed and becomes the run; autoplay starts once the resume succeeded.
+A parked title is resumed on its next turn without any launch.
+
+Only the scheduler's own agent launches on that exact PC (same worker id and name,
+launch actor `autoplay-screensaver`, `agent_use`, exact launch identity, label not
+taken over by the operator) are ever paused, resumed or stopped from the pool;
+anything else is dropped from the pool untouched. The pool stays at `keep_warm`
+titles besides the next one (oldest closed first). Every failure falls back to the
+normal cold launch of the promised title: a failed or timed-out preload, a game
+that could not pause, a failed resume, less than 8 GiB free or 80% RAM used (then
+no preload and no park), `keep_warm` 0, a federated PC, or a worker without the
+`mercmode_warm_launch` feature (older workers would close the playing game).
+Turning MercMode off or the operator taking over closes the waiting games. A warm
+game closes without a save (nothing was played in it). The preload has the same
+presentation priority as the launch it replaces. `GET /api/mercmode` lists each
+host's `warm` pool and `next` pick.
+
 `GET /api/mercmode` reports host settings and exact readiness reasons.
 `POST /api/mercmode` saves `{host, enabled, titles, rounds_per_title}`.
 `POST /api/mercmode/prepare` queues a tracked read-only check for an exact
