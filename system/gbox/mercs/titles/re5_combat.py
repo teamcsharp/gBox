@@ -115,13 +115,18 @@ BOW_RANGE = 2000.0                    # controller tuning, not a decoded project
 BOW_YAW, BOW_PITCH = math.radians(6), math.radians(7)
 BOW_BURST_S = 3.0                     # observed target HP progress, never trigger/FIRE activity, renews this lease
 BOW_OUTCOME_S = 2.0                   # observation retention only; expiry is unknown, never a confirmed miss
+BOW_TOL_MIN, BOW_TOL_MAX = math.radians(1.5), math.radians(8)   # the longbow's release window, whatever the range
+BOW_TRACK = .25                       # the aim keeps correcting inside this share of the release window
+BOW_STAND_R = 800.0                   # a Majini this near: the longbow stands and shoots, never leaves to reposition
 
 
 def bow_tolerance(distance):
-    """Aim inside half the existing centre-mass model; these are controller bounds, not native hitboxes."""
+    """Release while the aim is on his body (the full centre-mass capsule), never narrower than BOW_TOL_MIN.
+    Operator 2026-10-24: "have Sheva rapid firing these arrows at foes. She is sitting there not even fighting back"
+    - inside half the body, capped at 2 deg, she aligned for seconds and loosed 5 arrows a round."""
     distance = max(float(distance), 1.)
-    return min(math.radians(2), math.atan2(BODY_R*.5, distance)), \
-        min(math.radians(2), math.atan2((SHOULDER_H-CHEST_H)*.5, distance))
+    return min(BOW_TOL_MAX, max(BOW_TOL_MIN, math.atan2(BODY_R, distance))), \
+        min(BOW_TOL_MAX, max(BOW_TOL_MIN, math.atan2((SHOULDER_H-KNEE_H)*.5, distance)))
 
 
 def line_to(ray, aim_at, foot=None) -> bool:
@@ -1020,8 +1025,8 @@ class Combat:
         fire, policy = laserless_fire_policy(wid, corridor=corridor, aligned=aligned,
                                       loaded=rounds is not None and rounds > 0)
         self.stats["weapon_policy"] = policy
-        keys = {"l1"} | self._yaw(yaw,deadzone=yaw_tol if wid==0x0F else None) \
-            | self._pitch(pl,p,pitch,now,deadzone=pitch_tol if wid==0x0F else None)
+        keys = {"l1"} | self._yaw(yaw,deadzone=yaw_tol*BOW_TRACK if wid==0x0F else None) \
+            | self._pitch(pl,p,pitch,now,deadzone=pitch_tol*BOW_TRACK if wid==0x0F else None)
         # Always release between arrows, even when the separate global refire table is accelerated.
         if not fire:
             self.bow_down_at = None
@@ -1046,6 +1051,8 @@ class Combat:
         progress = self.laserless_progress
         if progress is None or progress["key"] != key:
             self.laserless_progress = {"key":key,"best":error,"improved":now,"started":now}
+        elif wid==0x0F and math.dist(p["pos"],tgt["pos"]) < BOW_STAND_R:
+            progress.update(improved=now,started=now)    # a near Majini: keep shooting him, never walk off
         elif wid==0x0F and now-max(progress['started'],self.bow_target_damage.get(tgt.get('ptr'),-math.inf)) >= BOW_BURST_S:
             self.laserless_progress = None
             self.bow_down_at = None
