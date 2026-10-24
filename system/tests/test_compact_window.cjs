@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const { create, fitBounds } = require('../clients/desktop/compact-window.cjs');
+const { create, fitBounds, wideBounds } = require('../clients/desktop/compact-window.cjs');
 
 function fixture(options = {}) {
   class Window extends EventEmitter {
@@ -37,17 +37,18 @@ test('compact mode resizes the same live window and restores all prior desktop s
 
 test('source changes retain window bounds; explicit width changes preserve the chosen window ratio', async () => {
   const {win,ctl,chrome} = fixture(), original = win.getBounds();
-  await ctl.update({on:true}); assert.equal(win.aspect,4/3);
+  await ctl.update({on:true}); assert.equal(win.aspect,16/9);
+  assert.equal(ctl.state().aspect,4/3,'native picture ratio remains independent of the widescreen window');
   win.bounds.x = 400; win.bounds.y = 300;
   await ctl.update({on:true}); assert.equal(win.bounds.x,400);
   const bounds=win.getBounds();
   for(const aspect of [16/9,4/3,2,16/9]){
     await ctl.update({on:true,aspect});
     assert.deepEqual(win.getBounds(),bounds,'title/frame aspect must never resize or move PiP');
-    assert.equal(win.aspect,4/3,'native resize constraint belongs to the window');
+    assert.equal(win.aspect,16/9,'native resize constraint belongs to the window');
     assert.equal(ctl.state().aspect,aspect,'the picture can still letterbox correctly');
   }
-  await ctl.update({on:true,aspect:2,width:800}); assert.equal(win.bounds.height,600);
+  await ctl.update({on:true,aspect:2,width:800}); assert.equal(win.bounds.height,450);
   await ctl.restore(); assert.deepEqual(win.bounds,original); assert.deepEqual(chrome,[true,false]);
   assert.equal(win.top,false);
 });
@@ -71,6 +72,15 @@ test('client restart opens at retained PiP size and keeps its separate full-wind
   await ctl.update({on:true,aspect:4/3});assert.deepEqual(win.getBounds(),bounds);
   await ctl.update({on:true,aspect:16/9});assert.deepEqual(win.getBounds(),bounds);
   await ctl.restore();assert.deepEqual(win.getBounds(),full);
+});
+
+test('older 4:3 windows become widescreen once, retaining height and the right edge',async()=>{
+  const old={x:800,y:90,width:480,height:360},wide={x:640,y:90,width:640,height:360};
+  assert.deepEqual(wideBounds(old),wide);assert.deepEqual(old,{x:800,y:90,width:480,height:360});
+  assert.deepEqual(wideBounds(wide),wide);
+  const {win,ctl}=fixture();ctl.seedBounds(old);await ctl.update({on:true,aspect:4/3});
+  assert.deepEqual(win.getBounds(),wide);
+  for(const aspect of [16/9,4/3,2]){await ctl.update({on:true,aspect});assert.deepEqual(win.getBounds(),wide);}
 });
 
 test('a failed native caption change rolls back bounds, fullscreen and controls without entering compact mode', async () => {

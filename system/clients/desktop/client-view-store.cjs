@@ -3,11 +3,12 @@
 const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
 const handoff = require('./client-handoff.cjs');
 const { origin } = require('./client-refresh.js');
+const { wideBounds } = require('./compact-window.cjs');
 function matches(value, server) { const key = origin(server); return !!key && origin(value?.state?.origin) === key; }
 function mini(value, server) { const key = origin(server); return key && origin(value?.origin) === key ? value : null; }
 function startupWindow(value) {
   return value?.state?.compact && value.compactBounds
-    ? {bounds:value.compactBounds,top:true,maximized:false,fullscreen:false} : value?.window || null;
+    ? {bounds:wideBounds(value.compactBounds),top:true,maximized:false,fullscreen:false} : value?.window || null;
 }
 function view(value, at) {
   const { startWorker, ...saved } = handoff.view(value, at);

@@ -3,8 +3,15 @@
 // Keep the existing app, game child, GPU surface and controller route alive while
 // the desktop window becomes a small game-only player. No second stream/window.
 const DEFAULT_ASPECT = 4 / 3;
+const WINDOW_ASPECT = 16 / 9;
 const validAspect = value => Number.isFinite(+value) && +value >= .1 && +value <= 10;
 const clamp = (value, lo, hi) => Math.max(lo, Math.min(hi, value));
+
+function wideBounds(bounds) {
+  if (!bounds || Math.abs(bounds.width / bounds.height - WINDOW_ASPECT) < .002) return bounds;
+  const width = Math.round(bounds.height * WINDOW_ASPECT);
+  return { ...bounds, x: bounds.x + bounds.width - width, width };
+}
 
 function fitBounds(bounds, aspect, work, width) {
   const w0 = Number.isFinite(+width) ? +width : bounds.width;
@@ -67,15 +74,14 @@ function create({ getWin, screen, nativeChrome = async () => ({ ok: true }), emi
       if (!result?.ok) throw Error(result?.error || 'Could not hide the gBox window controls.');
       aspect = validAspect(request.aspect) ? +request.aspect : validAspect(result.aspect) ? +result.aspect : DEFAULT_ASPECT;
       w.setMinimumSize(160, 90); w.setMaximumSize(0, 0);
-      const windowAspect = compactBounds?.width > 0 && compactBounds?.height > 0
-        ? compactBounds.width / compactBounds.height : aspect;
+      const windowAspect = WINDOW_ASPECT;
       w.setAlwaysOnTop(true); w.setAspectRatio(windowAspect);
       // Electron exposes overlay styling, rather than a runtime visibility API.
       // The native helper removes caption controls; transparent overlay styling
       // also avoids a flash while Chromium processes that style change.
       w.setTitleBarOverlay?.({ color: '#00000000', symbolColor: '#00000000', height: 0 });
       const work = workArea(w), width = Number.isFinite(+request.width) ? +request.width : compactBounds?.width || 480;
-      const candidate = compactBounds || { x: work.x + work.width - width - 24, y: work.y + work.height - width / aspect - 24, width };
+      const candidate = compactBounds || { x: work.x + work.width - width - 24, y: work.y + work.height - width / windowAspect - 24, width };
       w.setBounds(fitBounds(candidate, windowAspect, work, width));
       saved = before; restoreSeed = null;
       return publish();
@@ -97,8 +103,8 @@ function create({ getWin, screen, nativeChrome = async () => ({ ok: true }), emi
       return { window: saved || { bounds: w.getNormalBounds(), maximized: w.isMaximized(), fullscreen: w.isFullScreen(), top: w.isAlwaysOnTop() },
         compactBounds: saved ? w.getBounds() : compactBounds };
     },
-    seedBounds: (value, restore) => { compactBounds = value || null; restoreSeed = restore || null; }
+    seedBounds: (value, restore) => { compactBounds = wideBounds(value) || null; restoreSeed = restore || null; }
   };
 }
 
-module.exports = { create, fitBounds, validAspect };
+module.exports = { create, fitBounds, validAspect, wideBounds };

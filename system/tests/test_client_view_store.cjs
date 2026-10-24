@@ -12,9 +12,9 @@ function disk(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gbox-view-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true })); return dir;
 }
-test('PiP startup uses its exact outer bounds without restoring the full window first',()=>{
+test('PiP startup uses widescreen bounds without restoring the full window first',()=>{
  const saved=value(),original=structuredClone(saved);
- assert.deepEqual(V.startupWindow(saved),{bounds:saved.compactBounds,top:true,maximized:false,fullscreen:false});
+ assert.deepEqual(V.startupWindow(saved),{bounds:{x:640,y:500,width:640,height:360},top:true,maximized:false,fullscreen:false});
  assert.deepEqual(saved,original);
  assert.deepEqual(V.startupWindow({...saved,state:{compact:false}}),saved.window);
  assert.equal(V.startupWindow(null),null);
