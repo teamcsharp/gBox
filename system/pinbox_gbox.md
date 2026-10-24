@@ -1,5 +1,9 @@
 # Pine Box → central gBox on Spark1
 
+For the current jitter/frozen-frame investigation and the instructions to give the Pine agent, see
+[stream stability handoff](docs/PINEBOX-STREAM-STABILITY-HANDOFF.md). For the missing RE6 native integration,
+see [RE6 MercMode handoff](docs/RE6-MERCMODE-HANDOFF.md).
+
 Use **lilspark (Spark1)** as Pine Box's single gBox discovery and media origin. It aggregates gameplay from
 lilspark, i9-NUC and JAYBUILTFINALE. Discover streams from this service; do not have Pine discover emulator windows
 or connect separately to each computer's desktop capture.
