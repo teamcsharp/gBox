@@ -1,0 +1,499 @@
+{
+ "game_id": "45e9455ca5487e7d",
+ "title": "Crazy Taxi 2",
+ "platform": "dreamcast",
+ "product": "MK-51136",
+ "source": {
+  "path": "/mnt/gbox/quickswap2/Emulation/_emulation/_dc iso/Crazy Taxi 2.cdi",
+  "relative": "quickswap2/Emulation/_emulation/_dc iso/Crazy Taxi 2.cdi",
+  "container": "DiscJuggler .cdi, read by gbox.gdrom.CDIRom",
+  "bytes": 787688567,
+  "sha256": "1dec31e925ef7db31031575b419150d5afd21096d1ecc049bec92d848cfb0bf7"
+ },
+ "reader": {
+  "module": "gbox.crazy_taxi2",
+  "version": 1
+ },
+ "members": 247,
+ "executable": {
+  "member": "1ST_READ.BIN",
+  "bytes": 1460116,
+  "sha256": "69f7bd24cc82752d0b4995290e91b2e0de8eeda7efefadd4bd227ec6ba2b9042",
+  "elf_magic": false
+ },
+ "byte_order": null,
+ "offset_base": {
+  "slots": 202593412,
+  "textures": 202631656,
+  "alloc": 202595984
+ },
+ "banks": {
+  "PP1A": {
+   "driver": "Axel",
+   "slot": "driver:axel",
+   "model": "POLPP1A.BIN",
+   "high_model": "POLPP1AH.BIN",
+   "texture": "TEXPP1A.BIN",
+   "high_texture": "TEXPP1AH.BIN",
+   "model_bytes": 26632,
+   "model_sha256": "53c493c915903e0d3a625ef6e3eb9244866679ce03019755b98b3d7a7117cfb0",
+   "high_model_bytes": 38864,
+   "high_model_sha256": "bc3a0feb4f6dab952471902f41c4d3d235e9f7e51783d40f27796fd3a8625605",
+   "texture_bytes": 52768,
+   "texture_sha256": "df1815f684f15a7d8790bd799f1764297d1b05e9ae552e2f88d870fbc4c4832d",
+   "high_texture_bytes": 52768,
+   "high_texture_sha256": "df1815f684f15a7d8790bd799f1764297d1b05e9ae552e2f88d870fbc4c4832d"
+  },
+  "PP1B": {
+   "driver": "B.D. Joe",
+   "slot": "driver:bd_joe",
+   "model": "POLPP1B.BIN",
+   "high_model": "POLPP1BH.BIN",
+   "texture": "TEXPP1B.BIN",
+   "high_texture": "TEXPP1BH.BIN",
+   "model_bytes": 26912,
+   "model_sha256": "5480490042bced79e24fd4d22a6fcf56bfc8ca1d64538bd4391b678281ee9452",
+   "high_model_bytes": 45576,
+   "high_model_sha256": "85c3c55359f3e65809176d7b8416bdf0eb81951716434da88d7b2a662bddb726",
+   "texture_bytes": 29696,
+   "texture_sha256": "c67b59da20d623e227179cecb7cb657c8ffc9aba88b1cd0d14b6451bd1eb3276",
+   "high_texture_bytes": 29696,
+   "high_texture_sha256": "c67b59da20d623e227179cecb7cb657c8ffc9aba88b1cd0d14b6451bd1eb3276"
+  },
+  "PP1C": {
+   "driver": "Gena",
+   "slot": "driver:gena",
+   "model": "POLPP1C.BIN",
+   "high_model": "POLPP1CH.BIN",
+   "texture": "TEXPP1C.BIN",
+   "high_texture": "TEXPP1CH.BIN",
+   "model_bytes": 28856,
+   "model_sha256": "c5095bf2dafd8875c36b171ccebf712a5ffc05e94f25676b845de8fd80ecba08",
+   "high_model_bytes": 36032,
+   "high_model_sha256": "998c52bd258fce503447c017cc5161f822f59eb5748cd4414220a205b96fea96",
+   "texture_bytes": 54112,
+   "texture_sha256": "eb0707ad1ad9b87a2be1b03910a8e171218f66ab0d1be8f5edf23ddd4fe95d79",
+   "high_texture_bytes": 54112,
+   "high_texture_sha256": "eb0707ad1ad9b87a2be1b03910a8e171218f66ab0d1be8f5edf23ddd4fe95d79"
+  },
+  "PP1D": {
+   "driver": "Gus",
+   "slot": "driver:gus",
+   "model": "POLPP1D.BIN",
+   "high_model": "POLPP1DH.BIN",
+   "texture": "TEXPP1D.BIN",
+   "high_texture": "TEXPP1DH.BIN",
+   "model_bytes": 27408,
+   "model_sha256": "fce827ee18fcc3de34d5b9238724d40d88e96ca865686ecbb82001d52226bc7f",
+   "high_model_bytes": 38064,
+   "high_model_sha256": "82f94c370a73ec0f79c32bbc9d7a214353ea05765984670de4629699862f29e1",
+   "texture_bytes": 33888,
+   "texture_sha256": "2ee72711f1c749b7c319a29cd3a91141fe1642cd049f9cc45539cc63bafdb8e4",
+   "high_texture_bytes": 33888,
+   "high_texture_sha256": "2ee72711f1c749b7c319a29cd3a91141fe1642cd049f9cc45539cc63bafdb8e4"
+  },
+  "PP2A": {
+   "driver": "Slash",
+   "slot": "driver:slash",
+   "model": "POLPP2A.BIN",
+   "high_model": "POLPP2AH.BIN",
+   "texture": "TEXPP2A.BIN",
+   "high_texture": "TEXPP2AH.BIN",
+   "model_bytes": 33072,
+   "model_sha256": "5bef8e591478f5faf0d623b126ba1ab06ca52ea3f9e29d4148e161e57f3cd213",
+   "high_model_bytes": 90168,
+   "high_model_sha256": "c12348fe98d778d58438497c81a41dfd4da691429dbfd58b03cba02253630475",
+   "texture_bytes": 48928,
+   "texture_sha256": "bcd4676a9f14d3ba953bf4879cbbdfa8a743b6ca842ad0a5feabd08add1fda53",
+   "high_texture_bytes": 48544,
+   "high_texture_sha256": "b9c1788158a43c95d75b5fa032025f87caa5b3b53ad72cc37ee5c5ba02e3a33e"
+  },
+  "PP2B": {
+   "driver": "Iceman",
+   "slot": "driver:iceman",
+   "model": "POLPP2B.BIN",
+   "high_model": "POLPP2BH.BIN",
+   "texture": "TEXPP2B.BIN",
+   "high_texture": "TEXPP2BH.BIN",
+   "model_bytes": 30496,
+   "model_sha256": "42264fc1ee71fb633a995493afc6a73dd0547919215a38cf2ccea28811c093fe",
+   "high_model_bytes": 86032,
+   "high_model_sha256": "f7472bc6825898183165768e3753191fdfe680a8c51888b0a17a5e0a0f3b94e4",
+   "texture_bytes": 45856,
+   "texture_sha256": "921187e28562e95420a7472d3390886484487035f0867ba0924f654f05b33ff7",
+   "high_texture_bytes": 47008,
+   "high_texture_sha256": "d9f2c78daa56f3526daff38c52465d01443b0bd41e992af8111ea8371459b899"
+  },
+  "PP2C": {
+   "driver": "Cinnamon",
+   "slot": "driver:cinnamon",
+   "model": "POLPP2C.BIN",
+   "high_model": "POLPP2CH.BIN",
+   "texture": "TEXPP2C.BIN",
+   "high_texture": "TEXPP2CH.BIN",
+   "model_bytes": 33320,
+   "model_sha256": "f029a9ae259545629ecbbf7480a67229ec76d6d50d0ec94b5210a453b6332d64",
+   "high_model_bytes": 70064,
+   "high_model_sha256": "318baf12a31f603d6182af9e04c2ef0640d069f743ef5a108647d60204a870c5",
+   "texture_bytes": 72160,
+   "texture_sha256": "a655fee8f0ce209e270a6a1971f06750df9f6633641086c1821aa26af984711b",
+   "high_texture_bytes": 93792,
+   "high_texture_sha256": "ce670b23681da37bbe52ed7eacb4bc8520d46a947391248da895110161aa1223"
+  },
+  "PP2D": {
+   "driver": "Hot-D",
+   "slot": "driver:hot_d",
+   "model": "POLPP2D.BIN",
+   "high_model": "POLPP2DH.BIN",
+   "texture": "TEXPP2D.BIN",
+   "high_texture": "TEXPP2DH.BIN",
+   "model_bytes": 32824,
+   "model_sha256": "8c5948c87c48a80436c7f3518b21a53d5149f192e17d8d53bc7f1c746411b2b1",
+   "high_model_bytes": 86328,
+   "high_model_sha256": "88f1b445a948a66c5f008ce1d8b0711145583ef163b2004430555c78371c96e0",
+   "texture_bytes": 43392,
+   "texture_sha256": "7933ae51e482b4431f8b50ad89f7ea4d7270948bd84fc0e30aee284912b15b65",
+   "high_texture_bytes": 49152,
+   "high_texture_sha256": "6f8aeec844e5dfb85b93ef50ce2d81939eff615693fb1b2387682e9df36b6098"
+  }
+ },
+ "pinned_comparison": {
+  "pinned_count": 6,
+  "identical": [
+   "1ST_READ.BIN",
+   "POLDC0.BIN",
+   "POLPP1A.BIN",
+   "POLPP2A.BIN",
+   "POLPPL0.BIN",
+   "POLPSG0.BIN"
+  ],
+  "different": [],
+  "missing": [],
+  "same_build": true
+ },
+ "walk": {
+  "POLDC0.BIN": {
+   "ok": true,
+   "objects": 353
+  },
+  "POLDC1.BIN": {
+   "ok": true,
+   "objects": 34
+  },
+  "POLDC2.BIN": {
+   "ok": true,
+   "objects": 160
+  },
+  "POLDC3.BIN": {
+   "ok": true,
+   "objects": 14
+  },
+  "POLPC1A1.BIN": {
+   "ok": true,
+   "objects": 6
+  },
+  "POLPC1A2.BIN": {
+   "ok": true,
+   "objects": 8
+  },
+  "POLPC1B.BIN": {
+   "ok": true,
+   "objects": 6
+  },
+  "POLPC1C.BIN": {
+   "ok": true,
+   "objects": 14
+  },
+  "POLPC1D.BIN": {
+   "ok": true,
+   "objects": 14
+  },
+  "POLPC1E.BIN": {
+   "ok": true,
+   "objects": 8
+  },
+  "POLPC2A.BIN": {
+   "ok": true,
+   "objects": 6
+  },
+  "POLPC2B.BIN": {
+   "ok": true,
+   "objects": 14
+  },
+  "POLPC2C.BIN": {
+   "ok": true,
+   "objects": 14
+  },
+  "POLPC2D.BIN": {
+   "ok": true,
+   "objects": 14
+  },
+  "POLPC2E.BIN": {
+   "ok": true,
+   "objects": 10
+  },
+  "POLPC2F.BIN": {
+   "ok": true,
+   "objects": 13
+  },
+  "POLPP1A.BIN": {
+   "ok": true,
+   "objects": 47
+  },
+  "POLPP1AH.BIN": {
+   "ok": true,
+   "objects": 47
+  },
+  "POLPP1B.BIN": {
+   "ok": true,
+   "objects": 47
+  },
+  "POLPP1BH.BIN": {
+   "ok": true,
+   "objects": 47
+  },
+  "POLPP1C.BIN": {
+   "ok": true,
+   "objects": 47
+  },
+  "POLPP1CH.BIN": {
+   "ok": true,
+   "objects": 47
+  },
+  "POLPP1D.BIN": {
+   "ok": true,
+   "objects": 48
+  },
+  "POLPP1DH.BIN": {
+   "ok": true,
+   "objects": 47
+  },
+  "POLPP2A.BIN": {
+   "ok": true,
+   "objects": 47
+  },
+  "POLPP2AH.BIN": {
+   "ok": true,
+   "objects": 47
+  },
+  "POLPP2B.BIN": {
+   "ok": true,
+   "objects": 47
+  },
+  "POLPP2BH.BIN": {
+   "ok": true,
+   "objects": 47
+  },
+  "POLPP2C.BIN": {
+   "ok": true,
+   "objects": 47
+  },
+  "POLPP2CH.BIN": {
+   "ok": true,
+   "objects": 41
+  },
+  "POLPP2D.BIN": {
+   "ok": true,
+   "objects": 47
+  },
+  "POLPP2DH.BIN": {
+   "ok": true,
+   "objects": 47
+  },
+  "POLPPL0.BIN": {
+   "ok": true,
+   "objects": 429
+  },
+  "POLPPTST.BIN": {
+   "ok": true,
+   "objects": 47
+  },
+  "POLPSG0.BIN": {
+   "ok": true,
+   "objects": 1200
+  }
+ },
+ "target": {
+  "key": "PP1A",
+  "driver": "Axel",
+  "slot": "driver:axel",
+  "model": "POLPP1AH.BIN",
+  "texture": "TEXPP1AH.BIN",
+  "tables": {
+   "slots": [
+    38832,
+    32,
+    31040,
+    36832,
+    5816,
+    38800,
+    25272,
+    13184,
+    20600,
+    27112,
+    32784,
+    0,
+    36864,
+    20632,
+    9864,
+    17232,
+    31008,
+    36800,
+    13152,
+    20568,
+    29440,
+    35112,
+    10720,
+    18088,
+    5784,
+    38768,
+    25240,
+    25304,
+    31072,
+    10752,
+    18120,
+    36896,
+    29472,
+    35144,
+    20664,
+    27144,
+    32816,
+    8944,
+    6816,
+    7976,
+    5848,
+    16312,
+    14184,
+    15344,
+    13216,
+    9896,
+    17264
+   ],
+   "textures": [
+    {
+     "w": 64,
+     "h": 64,
+     "pix": 1,
+     "fmt": 4,
+     "offset": 0,
+     "size": 3414
+    },
+    {
+     "w": 64,
+     "h": 64,
+     "pix": 1,
+     "fmt": 4,
+     "offset": 3424,
+     "size": 3414
+    },
+    {
+     "w": 128,
+     "h": 64,
+     "pix": 1,
+     "fmt": 13,
+     "offset": 6848,
+     "size": 16384
+    },
+    {
+     "w": 16,
+     "h": 16,
+     "pix": 1,
+     "fmt": 2,
+     "offset": 23232,
+     "size": 688
+    },
+    {
+     "w": 64,
+     "h": 32,
+     "pix": 2,
+     "fmt": 13,
+     "offset": 23936,
+     "size": 4096
+    },
+    {
+     "w": 32,
+     "h": 32,
+     "pix": 2,
+     "fmt": 2,
+     "offset": 28032,
+     "size": 2736
+    },
+    {
+     "w": 32,
+     "h": 32,
+     "pix": 2,
+     "fmt": 2,
+     "offset": 30784,
+     "size": 2736
+    },
+    {
+     "w": 32,
+     "h": 32,
+     "pix": 1,
+     "fmt": 2,
+     "offset": 33536,
+     "size": 2736
+    },
+    {
+     "w": 64,
+     "h": 64,
+     "pix": 1,
+     "fmt": 4,
+     "offset": 36288,
+     "size": 3414
+    },
+    {
+     "w": 64,
+     "h": 64,
+     "pix": 1,
+     "fmt": 4,
+     "offset": 39712,
+     "size": 3414
+    },
+    {
+     "w": 16,
+     "h": 16,
+     "pix": 2,
+     "fmt": 2,
+     "offset": 43136,
+     "size": 688
+    },
+    {
+     "w": 64,
+     "h": 64,
+     "pix": 1,
+     "fmt": 4,
+     "offset": 43840,
+     "size": 3414
+    },
+    {
+     "w": 32,
+     "h": 32,
+     "pix": 2,
+     "fmt": 2,
+     "offset": 47264,
+     "size": 2736
+    },
+    {
+     "w": 32,
+     "h": 32,
+     "pix": 1,
+     "fmt": 2,
+     "offset": 50016,
+     "size": 2736
+    }
+   ],
+   "alloc": 38880,
+   "va": {
+    "slots": 202593412,
+    "textures": 202631656,
+    "alloc": 202595984
+   }
+  },
+  "error": null,
+  "pol_sha256": "bc3a0feb4f6dab952471902f41c4d3d235e9f7e51783d40f27796fd3a8625605",
+  "tex_sha256": "df1815f684f15a7d8790bd799f1764297d1b05e9ae552e2f88d870fbc4c4832d",
+  "executable_sha256": "69f7bd24cc82752d0b4995290e91b2e0de8eeda7efefadd4bd227ec6ba2b9042"
+ },
+ "elapsed_s": 224.87
+}
