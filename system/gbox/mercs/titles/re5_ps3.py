@@ -71,7 +71,7 @@ HEAL_IDS = {0x304, 0x305, 0x307, 0x309}
 HEAL_AT = 0.4                          # use one below this share of health
 HEAL_USE_EVERY_S, HEAL_ATTEMPT_S, HEAL_RETRY_S = 0.35, 4.0, 1.0
 WEAPON_NAMES = {0x02: "M92F", 0x03: "VZ61", 0x0B: "M29", 0x12: "Barry's handgun", 0x15: "Gatling", 0x20: "Dragunov"}
-ENGAGE, SHOOT_RANGE, TOO_CLOSE = re5_combat.ENGAGE_R, 2200.0, 110.0
+ENGAGE, SHOOT_RANGE, TOO_CLOSE = re5_combat.ENGAGE_R, re5_combat.ENGAGE_R, 110.0   # long shots across the yard (operator 2026-10-24)
 CLOSE_ESCAPE_S, CLOSE_ACQUIRE_S = 0.25, 1.0  # escape briefly, then give the gun time to become ready
 BODY_R = 35.0                          # half a body: a shot inside atan(BODY_R / dist) hits
 TURN_TOL = math.radians(12)            # turn with the stick (not aiming) until within this
@@ -125,6 +125,7 @@ BREAK_AT_S, BREAK_MARGIN_S = 60.0, 15.0   # leave the stand for time at this clo
 # the rest are walked to along the navmesh. One fought while the laser dot stops short of him (a wall, a fence) for
 # BLOCKED_VIEW_S, or without the dot ever reaching him for UNSIGHTED_S, is left out of sight for PURSUE_S and walked to.
 SIGHT_R = 2200.0                       # open-floor Majini within this are fought (= SHOOT_RANGE)
+IN_VIEW_CONE = math.radians(60)        # ...and any Majini within ENGAGE this close to his heading (Bot._in_view)
 SIGHT_CACHE_S = 0.3                    # a floor_segment answer is kept this long per Majini
 SIGHT_BEND, SIGHT_SLACK = 1.1, 50.0    # ...or a navmesh route at most this much longer than the straight line: open
 PURSUE_NEAR = 200.0                    # this close he is fought whatever the floor says (a doorway, a corner)
@@ -1850,7 +1851,8 @@ class Bot:
             and abs(self.spawn[1] - py) < WP_CLIMB
         # only Majini in sight are fought from here (open floor between, or right on him); the rest are walked to
         sightable = [e for e in live if self._laser_view(snap, e) == "on" or
-                     (math.dist(p["pos"], e["pos"]) <= SIGHT_R and self._open(p, e, mesh, now))] \
+                     (math.dist(p["pos"], e["pos"]) <= SIGHT_R and self._open(p, e, mesh, now)) or
+                     self._in_view(p, e)] \
             if self.combat is not None else live
         laserless = self.combat is not None and eq is not None and eq.get("type") == 1 \
             and (eq.get("item") in (0x0F,0x36) or (re5_weapons.WEAPONS.get(eq.get("item")) is not None
@@ -2423,6 +2425,17 @@ class Bot:
         self.stats["bonus_target"] = f"{b['ptr']:#x} d {d:.0f} route {cost(b):.0f}" + (" walk" if walk else " take")
         return {"slot": f"bonus {b['ptr']:#x}", "ptr": b["ptr"], "pos": b["pos"], "aim_h": 0.0, "r": b.get("r"),
                 "kind": b.get("kind", "time"), "walk": walk}
+
+    @staticmethod
+    def _in_view(p, e) -> bool:
+        """A Majini in front of him within ENGAGE (a walkway, a roof, a rocket launcher across the yard): taken on while
+        navigating, the laser confirming the shot (operator 2026-10-24: "why is she afraid to take on these opponents that
+        are long distance but shooting rocket launchers at her? ... if the enemy is open and in their sight. They need to
+        take shots to dispatch them while navigating"). Open floor between them is not required; known walls still veto."""
+        px, _, pz = p["pos"]
+        d = math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+        off = abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"]))
+        return d <= ENGAGE and off <= IN_VIEW_CONE
 
     @staticmethod
     def _threat(p, e) -> bool:
