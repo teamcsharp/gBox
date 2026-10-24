@@ -134,3 +134,15 @@ def test_back_to_a_gun_tries_another_loaded_gun_while_the_first_switch_waits(tmp
     picked = []
     monkeypatch.setattr(bot,'_switch_weapon',lambda gun,now,why: picked.append(gun['grid']) or {'tap':'x'})
     assert bot._heal_return_weapon(inv,{'return':None},10.)=={'tap':'x'} and picked==[5]
+
+
+def test_the_same_ladder_three_times_is_left_alone_and_its_bonus_skipped(tmp_path):
+    # operator 2026-10-24: "jumping down the ladder, putting back up the ladder ... repeatedly. They need to progress"
+    bot = R.Bot(learn_dir=tmp_path,clock=lambda:10.)
+    bot.plan_target = {'kind':'time','id':0x304029c0,'pos':(900.,0.,0.)}
+    foot, top = {'pos':(100.,0.,0.)}, {'pos':(150.,300.,40.)}
+    assert not bot._stage_loop(foot,10.) and not bot._stage_loop(foot,10.5)   # one use per prompt
+    assert not bot._stage_loop(top,14.)
+    assert bot._stage_loop(foot,18.)                                         # third use: banned
+    assert bot.bonus_skip[0x304029c0] > 18. and bot.stats['stage_loops_broken'] == 1
+    assert bot._stage_loop(top,30.) and not bot._stage_loop({'pos':(2000.,0.,0.)},31.)

@@ -231,7 +231,7 @@ def test_verified_mine_requires_measured_escape_before_more_placement(monkeypatc
     c.tick(snap,3.5)
     assert c.escape['actor']==0x30800000
     assert c.tick(snap,12) is None and stats['mine_attempts']==1
-    assert not c.clear_escape(12,(0,0,500))
+    assert not c.clear_escape(12,(0,0,250))
     assert c.clear_escape(13,(0,0,650)) and c.escape is None
     assert stats['mine_retreats_completed']==1
     assert c.events[-1]['kind']=='retreat_complete' and c.events[-1]['distance']==650
