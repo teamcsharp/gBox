@@ -1219,6 +1219,12 @@ class Bot:
                 or health.get("hit_immunity") and health.get("immunity_verified"))
             if health.get("refilled"):
                 self.stats["health_refills"] = self.stats.get("health_refills", 0) + 1
+            from ...re5_mods_tool import maintain_spray
+            spray = maintain_spray(self.m.adapter, snap)       # the infinite First Aid Spray (playing_ops infinite_spray)
+            self.stats["infinite_spray"] = bool(spray.get("infinite_spray"))
+            self.stats["spray_status"] = spray.get("reason") or ("restored" if spray.get("restored") else "")
+            if spray.get("restored"):
+                self.stats["sprays_restored"] = self.stats.get("sprays_restored", 0) + 1
             from ...re5_mods_tool import maintain_kill_time
             bonus = maintain_kill_time(self.m.adapter, snap)    # configured per-kill seconds from playing_ops
             if bonus.get("added"):

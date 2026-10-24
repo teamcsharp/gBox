@@ -7,6 +7,7 @@
   const DEFINITIONS = [
     { op: "unlimited_health", label: "Unlimited life", field: "unlimited_health" },
     { op: "infinite_ammo", label: "Infinite ammo", field: "infinite_ammo" },
+    { op: "infinite_spray", label: "Infinite first aid spray", field: "infinite_spray" },
     { op: "fire_rate", label: "Fire rate", field: "fire_rate_x", multiplier: 80, min: 0.1, max: 1000, step: 0.1 },
     { op: "bullet_damage", label: "Bullet damage", field: "bullet_damage_x", multiplier: 10, min: 0.1, max: 1000, step: 0.1 },
     { op: "turn_speed", label: "Turning and aiming speed", field: "turn_speed_x", multiplier: 3, min: 0.25, max: 50, step: 0.25 },

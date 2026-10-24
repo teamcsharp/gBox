@@ -173,6 +173,8 @@ PACKAGE = [("mercenaries_unlock", {"on": True}),
            ("merc_loadout", {"character": "leon", "items": ["handcannon", "handcannon ammo:200"], "on": True}),
            ("weapon_mod", {"item": "handcannon", "reset": True, "damage": "99.9"}),   # its own fire rate (see above)
            ("infinite_ammo", {"on": True}), ("unlimited_health", {"on": False}),   # Leon can die now (operator 2026-10-22)
+           ("auto_first_aid", {"on": True}),     # ... but carries an infinite First Aid Spray (operator 2026-10-24): hp back
+                                                 # to full under 35% once per 2.5 s, from play() every tick (first_aid)
            ("merc_time_bonus", {"multiplier": 3}), ("combo_time", {"multiplier": 3}),
            ("combo_freeze", {"on": True}), ("spawn_multiplier", {"count": 3, "on": True}),
            ("aim_turn_speed", {"multiplier": AIM_SPEED_X})]   # the game's aim sensitivity (a constant, not Leon)
@@ -1120,6 +1122,18 @@ def apply_package(ad, only=None, skip=()) -> list[str]:
     return failed
 
 
+def first_aid(ad, s: dict, stats: dict, now: float | None = None, round_id=None) -> dict:
+    """The package's auto_first_aid, one tick (re_mods_tool.maintain_first_aid): with Leon in a round and under 35% of
+    his full health, one verified write puts it back to full (what using a First Aid Spray does), once per 2.5 s. Nothing
+    happens unless the op is on for this adapter (PACKAGE turns it on at Select Player); never raises."""
+    from . import re_mods_tool as RM
+    try:
+        return RM.maintain_first_aid(ad, s, stats, now=now, round_id=round_id)
+    except Exception as e:                           # noqa: BLE001 - the loop goes on without the spray
+        stats["first_aid_status"] = f"first aid unavailable: {type(e).__name__}"
+        return {"auto_first_aid": False, "active": False, "verified": False}
+
+
 def _room_on(m) -> bool:
     """The game runs a room (gbox.re4_menus.in_room); True when that can't be read (the clock decides, as before)."""
     if re4_menus is None:
@@ -1299,6 +1313,8 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
             playing_observed=True
         out_since = None
         bot.stats.update(combo=s["combo"], timer=s["timer"])
+        if ad is not None:                             # the infinite First Aid Spray: hp -> full when low (auto_first_aid)
+            first_aid(ad, s, bot.stats, now=now, round_id=bot.stats["rounds"])
         if recorder is not None and s.get('hp',0)>0:
             recorder.observe(s,bot,held,now,boundary_id,bot.stats.get('character','Unknown'))
         resting = now < prompt_rest
