@@ -106,3 +106,17 @@ def test_native_boundaries_exclude_open_floor_and_repeated_stalls_back_off(tmp_p
     learn.save();loaded=Learning(tmp_path/'nav.json')
     assert loaded.stages[mesh.learning_sig]['obstructions'][0]['source']=='native_navmesh'
 
+
+def test_collection_endpoint_requires_auth_and_limits_body(cfg):
+    from fastapi.testclient import TestClient
+    from gbox.server import create_app
+    app=create_app(cfg)
+    path='/api/autoplay/tactical/w-s/goal'
+    f=frame();app.state.tactical_map.put_frame('w-s',f)
+    body={'round':f['goal_round'],'stage':f['stage'],'seq':1,'kind':'bonus','id':77}
+    assert TestClient(app).post(path,json=body).status_code==401
+    c=TestClient(app,headers={'Authorization':'Bearer '+cfg.token()})
+    assert c.post(path,json=body).json()['state']=='queued'
+    assert c.post(path,json=body|{'pos':[0,0,0]}).status_code==422
+    assert c.post(path,json={'extra':'x'*2050}).status_code==413
+    assert c.post(path,json={'cancel':True}).json()['state']=='cancelled'
