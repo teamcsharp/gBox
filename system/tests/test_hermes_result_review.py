@@ -54,6 +54,15 @@ class ResultReviewTests(ReviewFixture, unittest.TestCase):
         self.assertEqual(R.summary()['counts'], {'pending': 2})
         self.assertIn('Waiting', R.gate(self.item))
 
+    def test_operator_priority_ticket_does_not_wait_on_a_pending_review_but_blocked_still_holds(self):
+        # 2026-10-24: 798 reviews pending on a saturated spark2 held 11 of 15 RE6 tickets
+        R.record_result(self.item, self.run)
+        self.assertIn('Waiting', R.gate(self.item))
+        (self.root / 'work-queue.json').write_text(json.dumps({'priority': ['a' * 16]}))
+        self.assertIsNone(R.gate(self.item))
+        self.accept(verdict=self.verdict(verdict='blocked'))
+        self.assertEqual(R.gate(self.item), 'Missing parser bounds check')
+
     def test_scan_catches_run_that_finishes_after_later_row(self):
         cron = R.M._home() / 'cron'
         cron.mkdir(parents=True)
