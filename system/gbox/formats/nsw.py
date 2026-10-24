@@ -1,17 +1,23 @@
-"""Nintendo Switch game-card images: XCI0 header, HFS0 partition table, NCA header names.
+"""Nintendo Switch game-card images: XCI partition table, HFS0 file table, NCA header names.
 
 This is a LISTING reader only -- it parses plaintext headers to enumerate what a card holds. It never decrypts
-content: Hash0/HashIV/NAVI tables and NCA body sections (where asset data actually lives) areAES-encrypted with
+content: Hash0/HashIV/NAVI tables and NCA body sections (where asset data actually lives) are AES-encrypted with
 titlekeys and out of scope here. It answers the assimilation question "what containers does this owned build
 actually contain" for .xci files, which gbox.formats.disc refuses to list
 ("not a disc image, ROM, archive or folder gBox can list").
 
 Layout facts used (plaintext regions):
-  XCI0: magic "XCI0" at 0; partition table at 0x1000: u64 LE image start offset, u64 LE image size,
+  XCI0 (classic card): magic "XCI0" at 0; partition table at 0x1000: u64 LE image start offset, u64 LE image size,
         u16 LE header size, u8 header version, u8 flags, ASCII name padded with spaces to 16 ("HFS0PARTT").
-  HFS0: magic "HFS0" at 0; u32 LE file count (+8); u32 LE string pool size (+12);
-        64-byte entries at 0x1000 each: name@0, extents@8, size@16, sha256@24; then the string pool.
-  NCA:  magic "NCA3" at 0 with plaintext header-name strings at 0x200/0x220/0x240
+  XCI HEAD variant (Switch cartridge image per `file`): "HEAD" magic at 0x100 (0..0xFF is an RSA signature), root HFS0 address at
+        0x130 (u64 LE) pointing to a top-level HFS0 whose children are the real partitions (update/normal/secure).
+        The secure partition contains the game's NCA files.
+  HFS0: magic "HFS0" at 0; u32 LE file count (+4); u32 LE string pool size (+8);
+        64-byte entries at +16 each: u64 LE data offset (relative to file-data start), u64 LE size,
+        u32 LE name offset (into string pool), u32 LE header size, u64 LE ext; sha256 at +32.
+        File data starts at base + 16 + count*64 + pool_size.
+  NCA:  (NOTE: on retail cards NCA headers are AES-XTS encrypted, so header_names is usually empty.)
+        magic "NCA3" at 0 with plaintext header-name strings at 0x200/0x220/0x240
         (main/program/control, e.g. "Qnv9CtUJy...").
 
 Failure policy: truncated images and out-of-range offsets/counts raise ValueError; a non-XCI stream raises
@@ -21,15 +27,19 @@ from __future__ import annotations
 
 import struct
 from dataclasses import dataclass, field
-from typing import BinaryIO, Callable, Iterator, List
+from typing import BinaryIO, Callable, List
 
 XCI0_MAGIC = b"XCI0"
+HEAD_MAGIC = b"HEAD"
 HFS0_MAGIC = b"HFS0"
 NCA3_MAGIC = b"NCA3"
 XCI_PARTITION_TABLE_OFFSET = 0x1000
 XCI_PARTITION_HEADER_SIZE = 0x20
+# HEAD variant: root HFS0 address is a u64 LE at this offset
+XCI_HEAD_MAGIC_OFFSET = 0x100
+XCI_HEAD_ROOT_HFS0_OFFSET = 0x130
 HFS0_ENTRY_SIZE = 64
-HFS0_FILE_TABLE_OFFSET = 0x1000
+HFS0_HEADER_SIZE = 16  # magic(4) + count(4) + pool_size(4) + pad(4)
 # plaintext header-name slots inside an NCA header (main/program/control), fixed offsets
 NCA_HEADER_NAME_SLOTS = (0x200, 0x220, 0x240)
 
@@ -71,50 +81,87 @@ def _ascii(data: bytes) -> str:
 
 
 def parse_xci_header(read_at: Callable[[int, int], bytes]) -> List[XciPartition]:
-    """XCI0 magic + partition table. Raises ValueError on non-XCI or truncation."""
-    if _read_at(read_at, 0, 4) != XCI0_MAGIC:
-        raise ValueError("not an XCI0 image (magic %r at 0)" % read_at(0, 4))
-    parts = []
-    off = XCI_PARTITION_TABLE_OFFSET
-    while True:
-        head = _read_at(read_at, off, XCI_PARTITION_HEADER_SIZE)
-        start, size = struct.unpack_from("<QQ", head, 0)
-        header_size, version, flags = struct.unpack_from("<HBB", head, 16)
-        name = head[20:36].decode("ascii", "replace")
-        if name.strip() == "HFS0PARTT":
-            parts.append(XciPartition("HFS0PARTT", start, size, version, flags))
-        if not flags & 1:  # bit 0 = more entries follow
-            break
-        off += max(header_size, XCI_PARTITION_HEADER_SIZE)
-    if not parts:
-        raise ValueError("XCI0 partition table has no HFS0PARTT entry")
+    """Parse the XCI partition table. Handles both classic XCI0 and HEAD variants."""
+    magic = _read_at(read_at, 0, 4)
+    parts: List[XciPartition] = []
+    # Real cards: bytes 0..0xFF are an RSA signature; the "HEAD" magic sits at 0x100.
+    if magic != XCI0_MAGIC and _read_at(read_at, XCI_HEAD_MAGIC_OFFSET, 4) == HEAD_MAGIC:
+        magic = HEAD_MAGIC
+
+    if magic == XCI0_MAGIC:
+        # Classic XCI0: partition table at 0x1000
+        off = XCI_PARTITION_TABLE_OFFSET
+        while True:
+            head = _read_at(read_at, off, XCI_PARTITION_HEADER_SIZE)
+            start, size = struct.unpack_from("<QQ", head, 0)
+            header_size, version, flags = struct.unpack_from("<HBB", head, 16)
+            name = head[20:36].decode("ascii", "replace")
+            if name.strip() == "HFS0PARTT":
+                parts.append(XciPartition("HFS0PARTT", start, size, version, flags))
+            if not flags & 1:  # bit 0 = more entries follow
+                break
+            off += max(header_size, XCI_PARTITION_HEADER_SIZE)
+        if not parts:
+            raise ValueError("XCI0 partition table has no HFS0PARTT entry")
+
+    elif magic == HEAD_MAGIC:
+        # HEAD variant: root HFS0 at offset stored at 0x130
+        root_hfs0 = struct.unpack_from("<Q", _read_at(read_at, XCI_HEAD_ROOT_HFS0_OFFSET, 8), 0)[0]
+        if root_hfs0 == 0:
+            raise ValueError("HEAD variant: root HFS0 address is 0")
+        # The root HFS0 contains sub-partitions (update, normal, secure).
+        # Each is itself an HFS0 partition. We list them as XciPartition entries.
+        entries = parse_hfs0(read_at, root_hfs0)
+        for e in entries:
+            parts.append(XciPartition(e.name, e.offset, e.size, 0, 0))
+        if not parts:
+            raise ValueError("HEAD variant: root HFS0 has no entries")
+
+    else:
+        raise ValueError("not an XCI image (magic %r at 0)" % magic)
+
     return parts
 
 
 def parse_hfs0(read_at: Callable[[int, int], bytes], base: int) -> List[Hfs0Entry]:
-    """HFS0 partition at absolute offset `base`: file table + string pool -> entries with absolute offsets."""
+    """HFS0 partition at absolute offset `base`: file table + string pool -> entries with absolute offsets.
+
+    HFS0 layout:
+      +0   magic "HFS0" (4 bytes)
+      +4   u32 LE file count
+      +8   u32 LE string pool size
+      +12  u32 LE padding
+      +16  64-byte file entries (count of them)
+      +16 + count*64   string pool (pool_size bytes)
+      +16 + count*64 + pool_size   file data
+    """
     if _read_at(read_at, base, 4) != HFS0_MAGIC:
         raise ValueError("no HFS0 magic at 0x%x (found %r)" % (base, read_at(base, 4)))
-    head8 = _read_at(read_at, base + 8, 8)
-    count, pool_size = struct.unpack_from("<II", head8, 0)
-    table_size = count * HFS0_ENTRY_SIZE
-    pool_off = base + HFS0_FILE_TABLE_OFFSET + table_size
+    count, pool_size = struct.unpack_from("<II", _read_at(read_at, base + 4, 8), 0)
     if count == 0 and pool_size == 0:
         return []
     if pool_size > 1 << 28:
         raise ValueError("implausible HFS0 string pool size %d at 0x%x" % (pool_size, base))
+
+    table_off = base + HFS0_HEADER_SIZE
+    pool_off = table_off + count * HFS0_ENTRY_SIZE
+    data_base = pool_off + pool_size
     pool = _read_at(read_at, pool_off, pool_size)
+
     entries = []
     for i in range(count):
-        rec = _read_at(read_at, base + HFS0_FILE_TABLE_OFFSET + i * HFS0_ENTRY_SIZE, HFS0_ENTRY_SIZE)
-        name_off, ext_off, size = struct.unpack_from("<III", rec, 0)
+        rec = _read_at(read_at, table_off + i * HFS0_ENTRY_SIZE, HFS0_ENTRY_SIZE)
+        ext_off, size, name_off, _header_sz, _ext = struct.unpack_from("<QQIIQ", rec, 0)
         sha = rec[32:64].hex()
         if name_off >= pool_size:
             raise ValueError("HFS0 entry %d name offset %d outside pool (%d)" % (i, name_off, pool_size))
         end = pool.index(b"\0", name_off) if b"\0" in pool[name_off:] else pool_size
-        entries.append(Hfs0Entry(pool[name_off:end].decode("ascii", "replace"),
-                                 base + HFS0_FILE_TABLE_OFFSET + table_size + pool_size + ext_off,
-                                 size, sha))
+        entries.append(Hfs0Entry(
+            pool[name_off:end].decode("ascii", "replace"),
+            data_base + ext_off,
+            size,
+            sha,
+        ))
     return entries
 
 
