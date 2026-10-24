@@ -281,6 +281,24 @@ def choose(store, worker, rng, cfg=None):
     return rng.choice(fresh or pool) if pool else None
 
 
+def successor_autoplay(run, job, original):
+    """The scheduler's own autoplay start, or a strictly later start of the autobot in this same owned session.
+
+    The operator's PiP menu (F3 / "Take control") and the bot's own hang relaunch restart autoplay inside the
+    MercMode session under a new job; the game, worker and session are unchanged, so its native round
+    boundaries still belong to this run (live lilspark 2026-10-24: every boundary after such a restart was
+    refused with 422 and the rotation stalled). A start for another session or worker, or one not created
+    after the run's accepted job, never qualifies.
+    """
+    if job.get('id') == run.get('autoplay_job'):
+        return True
+    created, before = job.get('created'), (original or {}).get('created')
+    return bool(job.get('id') and (job.get('input') or {}).get('session_id') == run.get('session_id')
+                and job.get('worker_id') in (None, run.get('worker_id'))
+                and job.get('require_worker') == run.get('worker_id')
+                and isinstance(created, (int, float)) and isinstance(before, (int, float)) and created > before)
+
+
 def accept_boundary(store, run, body, *, parent_job, now=None):
     """Check an active worker autoplay job and native terminal witness, not a flag.
 
@@ -294,7 +312,7 @@ def accept_boundary(store, run, body, *, parent_job, now=None):
             or (parent_job.get('input') or {}).get('session_id') != run.get('session_id') \
             or (parent_job.get('input') or {}).get('op') != 'start' \
             or parent_job.get('require_worker') != run.get('worker_id') \
-            or parent_job.get('id') != run.get('autoplay_job'):
+            or not successor_autoplay(run, parent_job, store.get('job', run.get('autoplay_job'))):
         raise ValueError('The boundary does not belong to this active MercMode autoplay job')
     if body.get('session_id') != run.get('session_id') or not run.get('mercmode'):
         raise ValueError('The boundary does not belong to an owned MercMode session')

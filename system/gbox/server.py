@@ -3933,6 +3933,15 @@ def create_app(config: Config) -> FastAPI:
         f = _live(sid)["frame"]
         return Response(f, media_type="image/jpeg", headers={"cache-control": "no-store"}) if f else _404()
 
+    @app.get("/api/sessions/{sid}/picture")
+    def get_picture(sid: str, actor=Depends(auth)):
+        """The game picture's box inside the latest frame (black bars measured), for PiP fitting."""
+        from . import picture_bounds
+        f = _live(sid)["frame"]
+        if not f:
+            return _404()
+        return picture_bounds.cached(sid, f)
+
     @app.get("/api/sessions/{sid}/mjpeg")
     def mjpeg(sid: str, actor=Depends(auth)):
         from .live_stream import async_mjpeg_parts, BackgroundCheck, BackgroundLease

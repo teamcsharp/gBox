@@ -222,6 +222,26 @@ def test_actual_boundary_rotates_once_then_waits_for_owned_game_stop():
     assert calls[-1]['input']['game']['game_id']!=run['game_id']
 
 
+def test_autobot_restarted_inside_the_owned_session_keeps_rotating():
+    """The operator's F3 / "Take control" or the bot's hang relaunch starts autoplay again under a new job; the
+    game, worker and session are the same, so its native boundaries still rotate (live 2026-10-24: 422s)."""
+    store,w,saver,calls,now,tick,run,job=playing()
+    store.put('job',job['id'],job|{'created':now[0]-60})
+    later={'id':'restart','tool':'autoplay','state':'succeeded','actor':'operator','worker_id':w['id'],
+           'require_worker':w['id'],'input':{'session_id':run['session_id'],'op':'start'},'created':now[0]-5}
+    store.put('job','restart',later)
+    with pytest.raises(ValueError,match='does not belong'):     # not later than the accepted job: not a restart
+        saver.round_boundary(boundary(run,now[0]),later|{'id':'stale','created':now[0]-61},now[0])
+    assert saver.round_boundary(boundary(run,now[0]),later,now[0])=={'saved':True,'rotate_requested':True}
+    assert store.get(S.STATE,w['name'])['autoplay_job']=='restart'
+    foreign=later|{'id':'elsewhere','input':{'session_id':'w1-other','op':'start'}}
+    with pytest.raises(ValueError,match='does not belong'):
+        saver.round_boundary(boundary(run,now[0])|{'round_id':'c'*32},foreign,now[0])
+    other_pc=later|{'id':'otherpc','require_worker':'w2','worker_id':'w2'}
+    with pytest.raises(ValueError,match='does not belong'):
+        saver.round_boundary(boundary(run,now[0])|{'round_id':'d'*32},other_pc,now[0])
+
+
 def test_one_ready_title_keeps_warm_session_and_native_character_cycle():
     store,w,saver,calls,now,tick,run,job=playing()
     M.configure(store,w['name'],{'titles':[run['mercmode']['title'],'re6']})

@@ -65,5 +65,57 @@
     await api('/api/mercmode',{host:host.name,enabled:false});
     return host.name;
   }
-  return {render,mount,stay};
+  // --- the picture-in-picture menu (operator 2026-10-24): one toggle between staying in this game and MercMode
+  // rotating across titles, and an arrow that opens the titles it rotates through ---
+  function hostFor(data,sid,worker){
+    const hosts=data?.hosts||[];
+    return hosts.find(h=>sid&&h.current_run?.session_id===sid)
+      ||hosts.find(h=>sid&&h.current_run?.mercmode_predecessor?.session_id===sid)
+      ||hosts.find(h=>sid&&h.id&&String(sid).startsWith(h.id+'-'))
+      ||hosts.find(h=>worker&&h.name===worker)||null;
+  }
+  function menuHTML(host,open=false){
+    if(!host)return `<div class="pip-mercmode"><small>MercMode: no gBox PC owns this game.</small></div>`;
+    const on=!!host.settings?.enabled,chosen=host.settings?.titles||[];
+    const label=on?'🔁 MercMode: rotating titles · click to stay in this game':'▶ MercMode: play across titles · click to turn on';
+    const titles=(host.titles||[]).map(t=>`<label${t.playable?'':' class="pip-mercmode-off"'}><input type="checkbox" data-mm-title="${escape(t.title)}" ${chosen.includes(t.title)?'checked':''} ${t.playable?'':'disabled'}> ${escape(t.name)}${t.playable?'':` <small>· unavailable: ${escape(t.reason||'')}</small>`}</label>`).join('');
+    return `<div class="pip-mercmode" data-mm-host="${escape(host.name)}"><div class="pip-mercmode-row"><button type="button" data-mm-toggle aria-pressed="${on}">${label}</button><button type="button" data-mm-arrow aria-expanded="${open}" aria-label="Choose the titles MercMode rotates through">${open?'▾':'▸'}</button></div>`+
+      `<div class="pip-mercmode-titles"${open?'':' hidden'}>${titles}<label>Rounds before switching <input type="number" data-mm-rounds min="1" max="20" value="${Number(host.settings?.rounds_per_title)||1}"></label>`+
+      `${host.current_run?.mercmode?`<small>${escape(host.current_run.phase)}: ${escape(host.current_run.title)} · ${Number(host.current_run.mercmode_rounds)||0} verified rounds</small>`:''}</div></div>`;
+  }
+  async function menuAction(api,host,action,value){
+    if(!host?.name)throw Error('No gBox PC owns this game.');
+    if(action==='toggle'){
+      const enabled=!host.settings?.enabled;
+      await api('/api/mercmode',{host:host.name,enabled});
+      return enabled?'MercMode on: the next native round end switches titles.':'MercMode rotation off. Autobot continues in this game.';
+    }
+    if(action==='title'){
+      const chosen=new Set(host.settings?.titles||[]);
+      if(value.checked)chosen.add(value.title);else chosen.delete(value.title);
+      if(!chosen.size)throw Error('Keep at least one title in the rotation.');
+      await api('/api/mercmode',{host:host.name,titles:[...chosen]});
+      return `Rotation: ${[...chosen].join(', ')}`;
+    }
+    if(action==='rounds'){
+      const rounds=Math.max(1,Math.min(20,Number(value)||1));
+      await api('/api/mercmode',{host:host.name,rounds_per_title:rounds});
+      return `${rounds} round${rounds===1?'':'s'} before switching`;
+    }
+    throw Error('Unknown MercMode action');
+  }
+  // --- between titles: what the PiP shows while the next game boots in the background ---
+  function transition(host,sid,now=Date.now()/1000){
+    const run=host?.current_run;
+    if(!host?.settings?.enabled||!run?.mercmode)return {show:false};
+    const since=t=>Math.max(0,now-(Number(t)||now));
+    let progress=null;
+    if(run.phase==='launching')progress=8+Math.min(52,52*since(run.started)/90);
+    else if(run.phase==='starting')progress=65+Math.min(20,20*since(run.up||run.started)/30);
+    else if(run.phase==='playing'&&run.session_id&&run.session_id!==sid)progress=92;
+    if(progress===null)return {show:false};
+    return {show:true,phase:run.phase,title:run.title||'',progress:Math.round(progress),
+      text:`Loading ${run.title||'the next title'}…`,sub:'MercMode is switching titles; the next game boots in the background.'};
+  }
+  return {render,mount,stay,hostFor,menuHTML,menuAction,transition};
 });

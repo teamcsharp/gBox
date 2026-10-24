@@ -1,5 +1,21 @@
 # MercMode
 
+The picture-in-picture menu (right-click the PiP) carries one MercMode toggle for the PC
+that owns the displayed game: **rotating titles · click to stay in this game** or **play
+across titles · click to turn on**; its arrow opens the titles that rotate (uncheck one to
+drop it; unavailable editions show their reason) and the rounds before switching. The web
+client's Mercenaries tab shows the same per-PC panel above the run reviewer. Between titles
+the PiP shows one of gBox's random visualizations with a loading bar that follows the
+scheduler's phase (launching, starting, playing) while the next game boots in the background.
+The PiP scales the game picture, not the frame, to its window: the server measures the
+frame's pure-black bars (`GET /api/sessions/<sid>/picture`) and the client crops RE4's
+letterboxed 16:9 picture out of its 4:3 frame after three agreeing measurements.
+
+A boundary from an autoplay start job that restarted the autobot inside the same owned
+session (the operator's F3 / "Take control", the bot's hang relaunch) is accepted when that
+job is for the same session and PC and was created after the run's accepted job; the run
+then follows that job. Starts for another session or PC are still refused.
+
 For an already playing solo autobot, enable the host and choose **Use current solo bot**.
 For a dedicated stream, select **Continuous presentation**. This admits only the exact
 scheduler-owned MercMode launch despite busy CPU/GPU measurements. Other background jobs

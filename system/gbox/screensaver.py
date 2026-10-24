@@ -547,7 +547,8 @@ class Screensaver:
             rotate = bool(cfg['enabled'] and not run.get('mercmode_pinned') and alternatives and count>=cfg['rounds_per_title'])
             self.store.put(mercmode.HISTORY,run['worker'],{'last_game_id':run['game_id'],
                 'last_round':receipt,'at':now})
-            self.store.put(STATE,run['worker'],run | {'mercmode_round_ids':ids,
+            # a restarted autobot in this same session (the operator's F3, the hang relaunch) owns the run from here
+            self.store.put(STATE,run['worker'],run | {'mercmode_round_ids':ids,'autoplay_job':parent_job['id'],
                 'mercmode_rounds':count,'mercmode_last_round':receipt,'mercmode_rotate_requested':rotate})
             return {'saved': True, 'rotate_requested': rotate}
 

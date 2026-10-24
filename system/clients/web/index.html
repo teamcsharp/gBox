@@ -313,6 +313,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/autoplay-coach.js"></script>
 <script src="/viz/tactical-map.js"></script>
 <script src="/viz/mercs-reviewer.js"></script>
+<script src="/viz/mercmode.js"></script>
 <script src="/viz/bot-demo.js"></script>
 <script src="/viz/re5-modifiers.js"></script>
 <script src="/viz/re4-spawn.js"></script>
@@ -763,8 +764,13 @@ async function apiRaw(path, body, method, timeoutMs = 0) {
 }
 let cur = location.pathname === '/mercenaries' ? 'Mercenaries' : "Home", timer = null, viewRevision = 0, sessionMode = null;
 const MERCS_REVIEWER = {ctl:null};
-function mercsReviewerView(){ return '<div id="mercs-reviewer"></div>'; }
-mercsReviewerView.after = () => { MERCS_REVIEWER.ctl = GBoxMercsReviewer.mount(document.getElementById('mercs-reviewer'), {api,visible:()=>cur==='Mercenaries'}); };
+// The Mercenaries tab: MercMode per PC (on/off, which titles rotate, rounds per title) above the run reviewer
+function mercsReviewerView(){ return '<details id="mercmode-web" class="pane" open><summary>MercMode: which PCs rotate through which Resident Evil Mercenaries titles</summary><div id="mercmode-web-panel"></div></details><div id="mercs-reviewer"></div>'; }
+mercsReviewerView.after = () => {
+  MERCS_REVIEWER.ctl = GBoxMercsReviewer.mount(document.getElementById('mercs-reviewer'), {api,visible:()=>cur==='Mercenaries'});
+  const root = document.getElementById('mercmode-web-panel');
+  if (root && window.GBoxMercMode) GBoxMercMode.mount({ root, api: (path, body) => api(path, body) }).ready.catch(() => {});
+};
 const HOME = { ctl: null, search: "" };
 const EXAM = { sid: null, cache: {}, viewer: null, mod: null, busy: new Map() };   // Examine 3D state (see examineView)
 const GAME_MODELS = { viewer: null, module: null, models: [], selection: 0 };
