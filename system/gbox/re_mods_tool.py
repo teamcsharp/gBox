@@ -893,6 +893,14 @@ def run(ad, op: str, item: str = "", count: int = 0, target: str = "", on: bool 
         res.update(equip_item(g, _item_id(item)))
     elif op == "weapon_mod":
         res.update(weapon_mod(g, _item_id(item), fire_rate, damage, reset))
+    elif op == "mercs_select":
+        from . import re4_menus
+        stage = target.strip() if target else ""                 # a stage name or its index; empty = random
+        stage = (int(stage) if stage.isdigit() else next((i for i, n in enumerate(re4_menus.STAGES)
+                                                          if n.lower() == stage.lower()), stage)) if stage else None
+        res.update(re4_menus.request(id(ad), character or None, stage),
+                   queued=True, effective_next_round=True,
+                   note="taken at the next Select Player / Select Stage; later rounds are random again")
     elif op == "merc_loadout":
         ch = g.V.CHARACTERS.get((character or "any").strip().lower())
         if ch is None:

@@ -294,15 +294,32 @@ def step(scr: dict) -> str | None:
     return None
 
 
+# The next round someone asked for (the MercMode DJ queue, re_mods mercs_select): adapter key -> {"player", "stage"}
+# (indexes into PLAYERS / STAGES, None = random). RandomSelections takes it at the next Select Player / Select Stage.
+REQUESTS: dict = {}
+
+
+def request(key, character=None, stage=None) -> dict:
+    player = PLAYERS.index(character) if character in PLAYERS else None
+    if character is not None and player is None:
+        raise ValueError(f"character: {', '.join(PLAYERS)}")
+    if stage is not None and (type(stage) is not int or not 0 <= stage < len(STAGES)):
+        raise ValueError(f"stage: 0..{len(STAGES) - 1} ({', '.join(STAGES)})")
+    REQUESTS[key] = {"player": player, "stage": stage}
+    return {"character": PLAYERS[player] if player is not None else "random",
+            "stage": STAGES[stage] if stage is not None else "random"}
+
+
 class RandomSelections:
-    """Per-run cursor targets. No shared globals or blind press counting."""
+    """Per-run cursor targets: random each round, or the requested next round (REQUESTS[key]). No blind counting."""
     BOOT_KEY = 'start'
     wandered = staticmethod(wandered)
     step = staticmethod(step)
 
-    def __init__(self,rng=None):
+    def __init__(self,rng=None,key=None):
         import random
         self.rng=rng or random.Random()
+        self.key=key
         self.player=self.stage=None
         self.previous_player=self.previous_stage=None
         self.where=None
@@ -310,14 +327,21 @@ class RandomSelections:
     def screen(self,m,merc=None):
         out=screen(m,merc=merc)
         where=out.get('where')
+        asked=REQUESTS.get(self.key) if self.key is not None else None
         if where=='select_player':
+            if asked and asked.get('player') is not None:
+                self.player=asked['player']
             if self.player is None:
                 self.player=self.rng.choice([i for i in range(5) if i!=self.previous_player])
             out['target']=self.player
         elif where=='select_stage':
+            if asked and asked.get('stage') is not None:
+                self.stage=asked['stage']
             if self.stage is None:
                 self.stage=self.rng.choice([i for i in range(4) if i!=self.previous_stage])
             out['target']=self.stage
+        elif where=='playing' and asked and self.player is not None:
+            REQUESTS.pop(self.key,None)          # the requested round is up: later rounds are random again
         elif where in ('playing','results','dead'):
             if self.player is not None:self.previous_player=self.player
             if self.stage is not None:self.previous_stage=self.stage

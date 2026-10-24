@@ -1141,8 +1141,16 @@ class _Menus:
         if hooks is None and ad is not None:         # the default: the package, and a random loadout at every Select Player
             hooks = lambda: apply_package(ad, skip=EARLY_OPS + LOADOUT_OPS)          # noqa: E731
             rounds = lambda: apply_round(ad)                                         # noqa: E731
-        random_selections=((game or {}).get('launch') or {}).get('mercmode')
-        selected = re4_menus.RandomSelections() if re4_menus is not None and random_selections else re4_menus
+        # a random character and stage every round (operator 2026-10-24: "it keeps picking the same character"),
+        # unless a launch explicitly asks for the game's own default; a MercMode launch can carry the DJ's pick
+        merc = ((game or {}).get('launch') or {}).get('mercmode')
+        selected = re4_menus.RandomSelections(key=id(ad)) if re4_menus is not None and merc is not False else re4_menus
+        pick = merc.get('selection') if isinstance(merc, dict) else None
+        if re4_menus is not None and isinstance(pick, dict) and pick.get('title') == 're4':
+            try:
+                re4_menus.request(id(ad), pick.get('character'), pick.get('stage'))
+            except ValueError:
+                pass
         self.boot = Boot(selected, m, send, sleep=sleep, clock=clock, stats=stats, ad=ad, game=game, hooks=hooks,
                          jump_at="select_player", round_hooks=rounds) if re4_menus is not None else None
 

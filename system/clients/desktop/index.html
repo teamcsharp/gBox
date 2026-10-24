@@ -1253,6 +1253,8 @@ window.taskVizCreate = canvas => {
 <script src="pip-media.js"></script>
 <script src="../web/viz/re5-modifiers.js"></script>
 <script src="../web/viz/mercmode.js"></script>
+<script src="../web/viz/mercmode-transition.js"></script>
+<script src="../web/viz/picture-fit.js"></script>
 <script src="../web/viz/session-continuity.js"></script>
 <script src="../web/viz/autoplay-coach.js"></script>
 <script src="compact-coach.js"></script>
@@ -1273,8 +1275,18 @@ window.GBOX_STREAM_FETCH_HEALTH = async src => {
 </script>
 <script src="../web/viz/stream-watchdog.js"></script>
 <style id="compact-game-style">
-  body.gbox-compact { background:#000; }
-  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(#compact-media):not(#pipmenu):not(script):not(style) { display:none !important; }
+  body.gbox-compact { background:#000; overflow:hidden; }
+  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(#compact-media):not(#compact-transition):not(#pipmenu):not(script):not(style) { display:none !important; }
+  /* MercMode in the PiP menu: one toggle (stay here / rotate titles) and an arrow that opens the title list */
+  #pipmenu .pip-mercmode { padding:2px 0; } #pipmenu .pip-mercmode-row { display:flex; align-items:stretch; }
+  #pipmenu .pip-mercmode-row [data-mm-toggle] { flex:1; } #pipmenu .pip-mercmode-row [data-mm-arrow] { width:34px; text-align:center; flex:0 0 auto; }
+  #pipmenu .pip-mercmode-titles { padding:2px 10px 6px 26px; font-size:12px; }
+  #pipmenu .pip-mercmode-titles label { display:block; padding:3px 0; } #pipmenu .pip-mercmode-titles label.pip-mercmode-off { opacity:.55; }
+  #pipmenu .pip-mercmode-titles input[type=number] { width:3.5em; margin-left:4px; }
+  .mm-queue { margin-top:6px; font-size:12px; } .mm-queue b { display:block; margin-top:4px; } .mm-queue ol { margin:2px 0 4px 18px; padding:0; }
+  .mm-queue li button { display:inline; width:auto; padding:0 5px; } .mm-queue-form { display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; }
+  .mm-queue-form select { flex:1 1 45%; min-width:0; background:#111; color:#eee; border:1px solid var(--line); border-radius:4px; font-size:12px; }
+  #pipmenu .mm-queue-form button { display:inline-block; width:auto; flex:1 1 30%; border:1px solid var(--line); text-align:center; } #pipmenu .pip-mercmode small { display:block; color:var(--mut); }
   body.gbox-compact:has(#compact-stream[data-stream-state="connected"]) .gbox-stream-badge { display:none !important; }
   #compact-stream { display:none; position:fixed; inset:0; width:100%; height:100%; object-fit:contain; background:#000; }
   body.gbox-compact #compact-stream.on { display:block; }
@@ -3789,21 +3801,44 @@ const compactCoach = GBoxCompactCoach.create({ coach:GBoxAutoplayCoach,
   show:visible => compactHover(visible), focusApp:() => gbox.appFocus?.(),
   gateInput:focused => { document.querySelector('#wv')?.executeJavaScript(`window.gboxPadTextCapture?.(${!!focused})`).catch(() => {}); }
 });
-let compactMedia = null;
+let compactMedia = null, compactTransition = null, compactFit = null;
+const compactCurrentSid = () => COMPACT.on ? gboxStreamWatchdog.sessionOf($('#compact-stream')?.getAttribute('src') || '') || COMPACT.sid : null;
+const compactApi = async (url, body, method) => { const r = await gbox.api(url, body, method); if (!r.ok) throw Error(r.error || 'PiP request failed'); return r.data; };
+// one of gBox's random visualizations on the PiP while MercMode boots the next title (viz.js, demo signal: no audio)
+const compactVisual = { ctl: null,
+  async start(canvas) {
+    try { const { createViz } = await import('../web/viz/viz.js'); this.stop();
+      this.ctl = await createViz(canvas, { mode: 'random', palette: 'PlayStation Blue', quality: 'low', provider: 'demo', maxFps: 24 }); this.ctl.start(); }
+    catch (error) { console.warn('MercMode transition visual:', error.message); }
+  },
+  stop() { this.ctl?.dispose(); this.ctl = null; } };
 function updateCompactMedia(on) {
   let host = $('#compact-media');
   if (on && !compactMedia) {
     host = document.createElement('div'); host.id = 'compact-media'; document.body.append(host);
-    const style = document.createElement('style'); style.textContent = GBoxPipMedia.CSS; document.head.append(style);
+    const style = document.createElement('style'); style.textContent = GBoxPipMedia.CSS + GBoxMercModeTransition.CSS; document.head.append(style);
     compactMedia = GBoxPipMedia.mount(host, {
-      current: () => COMPACT.on ? gboxStreamWatchdog.sessionOf($('#compact-stream')?.getAttribute('src') || '') || COMPACT.sid : null,
-      api: async (url, body, method) => { const r = await gbox.api(url, body, method); if (!r.ok) throw Error(r.error || 'Replay request failed'); return r.data; },
+      current: compactCurrentSid, api: compactApi,
       preferences: () => gbox.recPreferences(), save: clip => gbox.recSaveClip(clip)
     });
   }
   if (host) host.hidden = !on;
+  if (on && !compactTransition) {
+    const overlay = document.createElement('div'); document.body.append(overlay);
+    compactTransition = GBoxMercModeTransition.mount(overlay, { mercmode: GBoxMercMode, api: compactApi, current: compactCurrentSid,
+      worker: () => compactSession?.detail?.worker_name || null, visual: compactVisual });
+  } else if (!on && compactTransition) { compactTransition.stop(); $('#compact-transition')?.remove(); compactTransition = null; }
+  // the game picture, not the frame, fills the PiP window (RE4's letterboxed 16:9 picture in its 4:3 frame)
+  if (on && !COMPACT.local && !compactFit) {
+    const apply = rect => { const img = $('#compact-stream'); if (!img) return;
+      if (rect) Object.assign(img.style, { inset: 'auto', objectFit: 'fill', left: rect.left + 'px', top: rect.top + 'px', width: rect.width + 'px', height: rect.height + 'px' });
+      else Object.assign(img.style, { inset: '0', objectFit: 'contain', left: '', top: '', width: '100%', height: '100%' }); };
+    compactFit = GBoxPictureFit.create({ api: compactApi, current: compactCurrentSid, window: () => ({ w: innerWidth, h: innerHeight }), apply });
+    compactFit.timer = setInterval(() => compactFit?.poll(), 3000); compactFit.poll();
+  } else if (!on && compactFit) { clearInterval(compactFit.timer); compactFit.stop(); compactFit = null; }
   if (!on) compactMedia?.poll();
 }
+addEventListener('resize', () => compactFit?.refit());
 addEventListener('pagehide', () => compactMedia?.stop());
 const compactController = GBoxCompactGame.create({
   mode: () => VIEW.mode,
@@ -4142,7 +4177,7 @@ function pipMenu(x, y) {
                  ["pwrclick", `⌖ Right-click a character: character menu (${GBoxPickWhip.settings().rclick ? "on" : "off"})`],
                  ["pwpause", `⏸ Pause the game while picking (${GBoxPickWhip.settings().pause ? "on" : "off"})`],
                  ["ask", "❓ Ask a question…"], ["-"],
-                 ["mercs-map", "🗺 Mercenaries live map ↗"], ["mercs-review", "📊 Mercenaries run reviewer ↗"], ["mercmode-stay", "Stay in this game (autobot) · turn MercMode off"], ["-"],
+                 ["mercs-map", "🗺 Mercenaries live map ↗"], ["mercs-review", "📊 Mercenaries run reviewer ↗"], ["mercmode", ""], ["-"],
                  // "🤖 Bot demo on <PC>" for this game, every online PC (this one included): it plays itself from boot
                  ...(EMB.game ? botDemoItems().map(p => [`bot:${p.name}`, esc(p.label)]) : []), ...(EMB.game && botDemoItems().length ? [["-"]] : []),
                  ["save", "💾 Save state", noStates], ["load", "📂 Load state", noStates], ["slot+", `Save slot: ${GM.slot}  ▸ next`, noStates], ["slot-", "Save slot ◂ previous", noStates],
@@ -4153,13 +4188,42 @@ function pipMenu(x, y) {
                  ["pad", "🎮 Controller settings (emulator menu)"], ["mapping", "🕹 Controller mapping"], ["trouble", "🛠 Troubleshoot gameplay…"], ["-"],
                  ["main", "↩ Main view"], ["pip", "▣ Picture-in-picture"], isFull() ? ["main", "⤡ Exit full screen   Alt+Enter"] : ["full", "⛶ Full screen   Alt+Enter"],
                  ["S", "Size: small"], ["M", "Size: medium"], ["L", "Size: large"]];
-  m.innerHTML = '<div data-pip-modifiers>Loading game controls…</div>' + items.map(([a, t, off]) => a === "-" ? "<hr>" : off
+  m.innerHTML = '<div data-pip-modifiers>Loading game controls…</div>' + items.map(([a, t, off]) => a === "-" ? "<hr>" : a === "mercmode"
+    ? '<div data-pip-mercmode class="pip-mercmode"><small>MercMode…</small></div>' : off
     ? `<button data-a="${a}" disabled title="${esc(off)}" style="opacity:.55">${t} <span class="mut">· ${esc(off)}</span></button>`
     : `<button data-a="${a}">${t}</button>`).join("");
   m.onclick = e => { const a = e.target.closest("button")?.dataset.a; if (a) { closePipMenu(); gameAction(a); } };
   GM.menu = true; EMB.last = ""; embedTick();
   Object.assign(m.style, { display: "block", left: x + "px", top: y + "px" }); fitMenu(m, x, y, 8, 40);
   pipModifiers(m, opening);
+  pipMercMode(m, opening);
+}
+// MercMode in the PiP menu (operator 2026-10-24): a toggle between staying in this game and rotating across titles,
+// and an arrow opening the titles it rotates through. Every change is one exact host setting; nothing launches here.
+async function pipMercMode(m, opening, open = false) {
+  const slot = m.querySelector('[data-pip-mercmode]');
+  if (!slot || m.opening !== opening) return;
+  const api = async (path, body, method) => { const r = await gbox.api(path, body, method); if (!r.ok) throw Error(r.error || 'MercMode request failed'); return r.data; };
+  try {
+    if (EMB.authority && EMB.authority !== S.apiUrl) throw Error('Reconnect to this game’s service before changing MercMode.');
+    const sid = globalThis.gboxStreamWatchdog?.sessionOf($('#compact-stream')?.getAttribute?.('src') || '') || (COMPACT.on ? COMPACT.sid : EMB.sid);
+    const data = await api('/api/mercmode', undefined, 'GET');
+    const host = GBoxMercMode.hostFor(data, sid, compactSession?.detail?.worker_name || S.workerName);
+    if (m.opening !== opening) return;
+    slot.innerHTML = GBoxMercMode.menuHTML(host, open, data.catalog);
+    const queue = slot.querySelector('[data-mm-queue]');
+    if (queue) GBoxMercMode.wireQueue(queue, { api, host, catalog: data.catalog,
+      done: async message => { toast(message); await pipMercMode(m, opening, true); }, fail: error => toast(error.message) });
+    slot.addEventListener('change', e => e.stopPropagation()); slot.addEventListener('click', e => { if (e.target.closest('select')) e.stopPropagation(); });
+    const act = async (action, value) => {
+      try { toast(await GBoxMercMode.menuAction(api, host, action, value)); await pipMercMode(m, opening, true); }
+      catch (error) { toast(error.message); }
+    };
+    slot.querySelector('[data-mm-toggle]')?.addEventListener('click', e => { e.stopPropagation(); act('toggle'); });
+    slot.querySelector('[data-mm-arrow]')?.addEventListener('click', e => { e.stopPropagation(); pipMercMode(m, opening, !open); });
+    slot.querySelectorAll('[data-mm-title]').forEach(box => box.addEventListener('change', () => act('title', { title: box.dataset.mmTitle, checked: box.checked })));
+    slot.querySelector('[data-mm-rounds]')?.addEventListener('change', e => act('rounds', e.target.value));
+  } catch (error) { if (m.opening === opening) slot.innerHTML = `<small>MercMode: ${esc(error.message)}</small>`; }
 }
 document.addEventListener('contextmenu', event => {
   if (!COMPACT.on || event.target.closest?.('#pipmenu')) return;

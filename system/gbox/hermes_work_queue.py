@@ -357,7 +357,9 @@ def candidates(data, requests, native, owned, on_main, *, now):
         if item.get('round_analysis_verified'):
             # Read-only evidence analysis does not own the emulator or source.
             # It gets one separate per-game slot, still under global/node capacity.
-            shared = requested_round_analysis(by_id.get(rid,{})) and analysis_running.count(item.get('game_id')) == 0
+            # Up to ANALYSIS_PER_GAME at once (operator 2026-10-24: every Mercenaries report worked as it comes,
+            # spark2 at full load; one at a time left 112 reports waiting).
+            shared = requested_round_analysis(by_id.get(rid,{})) and analysis_running.count(item.get('game_id')) < ANALYSIS_PER_GAME
         if (rid and rid in busy_requests or item.get('retry_at', 0) > now
                 or item.get('game_id') and item['game_id'] in busy_games and not shared
                 or item.get('request_uncertain') or item.get('dispatch_state') in ('queued', 'uncertain')):
@@ -457,6 +459,7 @@ def choose(options, data):
 
 EMULATOR_STAGES = ('runtime',)   # favorite stages whose agents start emulators (replacement testing in a game)
 PRIORITY_PER_GAME = 3            # runs sharing one game when the operator prioritized the requests (candidates)
+ANALYSIS_PER_GAME = 12           # read-only verified round analyses running at once for one game (candidates)
 
 
 def _operator_playing():

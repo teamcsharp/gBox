@@ -224,6 +224,10 @@ def test_a_moment_between_two_screens_is_never_pressed_on():
     assert sent == [] and nav.stats["ram_progress"] == 3
 
 
+# a launch that explicitly keeps the game's own default picks (the bot is random by default since 2026-10-24)
+CLASSIC = {"launch": {"mercmode": False}}
+
+
 def test_play_walks_from_the_title_to_a_round_picking_only_the_mercenaries():
     g = FakeRE4(routine=4, step=0, menu_cursor=3)
     now, hooked = [0.0], []
@@ -233,7 +237,7 @@ def test_play_walks_from_the_title_to_a_round_picking_only_the_mercenaries():
         return next(steps, None) is None or B.in_mercenaries(B.snapshot(g))
     stats = {}
     B.play(None, g.send, stopped, sleep=lambda s: now.__setitem__(0, now[0] + s), m=g, stats=stats,
-           clock=lambda: now[0], hooks=lambda: hooked.append(g.u8(TW + 1)) or [])
+           clock=lambda: now[0], hooks=lambda: hooked.append(g.u8(TW + 1)) or [], game=CLASSIC)
     assert g.picks == ["THE MERCENARIES", "GAME START", "Leon", "Village"]     # nothing else, ever
     assert B.in_mercenaries(B.snapshot(g))
     assert hooked == [8]                                   # the hooks went in at Select Player, once
@@ -259,7 +263,7 @@ def test_play_ends_the_run_when_ram_cannot_name_the_menus():
     g.put(STACK_TOP - 0x38, ">II", 0, 0)                   # the title task, but no work area on its stack
     now = [0.0]
     stats = B.play(None, g.send, lambda: now[0] > 700, sleep=lambda s: now.__setitem__(0, now[0] + s), m=g,
-                   clock=lambda: now[0])
+                   clock=lambda: now[0], game=CLASSIC)
     assert stats["hung"] is True and "did not name" in stats["wandered"] and not g.events
 
 

@@ -400,6 +400,16 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
     if ad is not None:
         m.adapter = ad
     E = title_engine(prof)
+    pick = (((game or {}).get('launch') or {}).get('mercmode') or {})
+    pick = pick.get('selection') if isinstance(pick, dict) else None
+    if isinstance(pick, dict) and pick.get('title') == 're5' and prof['map_id'] == 'BLUS30491':
+        # the MercMode DJ queue chose this round: the native menus select it (curriculum.Coverage confirms the start)
+        try:
+            from .mercs.titles import re5_ps3
+            re5_ps3.coverage().request(pick.get('mode'), pick.get('character'), pick.get('stage'))
+            stats['queued_selection'] = f"{pick.get('mode')} / {pick.get('character')} / {pick.get('stage_name', pick.get('stage'))}"
+        except (ValueError, OSError) as exc:
+            stats['queued_selection_error'] = str(exc)[:160]
     runtime, base_driver = None, None
     if session_id and ad is not None and prof['map_id'] in ('BLUS30491', 'BH6'):
         from .mercs.session_runtime import SessionRuntime

@@ -684,7 +684,8 @@ def test_verified_read_only_round_analysis_shares_existing_game_owner_without_to
     assert owner==before and env.get('priority',[])==[]
 
 
-def test_only_one_verified_analysis_per_game_even_when_original_game_owner_is_busy(env,monkeypatch):
+def test_verified_analyses_per_game_are_bounded_even_when_original_game_owner_is_busy(env,monkeypatch):
+    monkeypatch.setattr(q,'ANALYSIS_PER_GAME',1)
     first,second=request(),request('1'*16)
     _verified_round_analysis(monkeypatch,[first,second])
     reqs=[first,second];q.sync(env,{'count':0,'items':[]},reqs,now=1000)
@@ -714,6 +715,7 @@ def test_fake_or_unverified_round_reviews_cannot_bypass_game_exclusivity(env,mon
 
 
 def test_later_missing_ledger_does_not_release_an_existing_analysis_reservation(env,monkeypatch):
+    monkeypatch.setattr(q,'ANALYSIS_PER_GAME',1)     # the unverified run still holds its slot
     first,second=request(),request('1'*16)
     saved=_verified_round_analysis(monkeypatch,[first,second])
     reqs=[first,second];q.sync(env,{'count':0,'items':[]},reqs,now=1000)
@@ -844,3 +846,12 @@ def test_prioritized_requests_share_their_game_up_to_the_cap():
     data['items']['inbox:' + ids[3]]['repair'] = False
     assert q.candidates(data, reqs, native, set(), set(), now=1000) == []
     assert [k for k, _ in q.candidates(data, reqs, [], set(), set(), now=1000)] == ['inbox:' + ids[3]]
+
+
+def test_many_verified_round_analyses_of_one_game_run_in_parallel(env,monkeypatch):
+    reqs=[request(str(i)*16) for i in range(1,6)]
+    _verified_round_analysis(monkeypatch,reqs)
+    q.sync(env,{'count':0,'items':[]},reqs,now=1000)
+    env['items']['inbox:'+reqs[0]['id']].update(dispatch_state='queued',job_id='running-analysis')
+    options=[item['request_id'] for _,item in q.candidates(env,reqs,[],set(),set(),now=1001)]
+    assert sorted(options)==sorted(r['id'] for r in reqs[1:])

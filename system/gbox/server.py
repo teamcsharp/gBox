@@ -18,6 +18,8 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field, StrictBool
 
+STREAM_FRESH_S = 2.0       # a session's continuous stream newer than this owns its picture (stills wait)
+
 from . import tools as _builtin  # noqa: F401  (registers tools)
 from . import padstate
 from . import fit_events
@@ -3867,6 +3869,11 @@ def create_app(config: Config) -> FastAPI:
         lv, body = _live(sid), await request.body()
         with lv["cond"]:
             now = time.time()
+            # A still is captured, encoded and uploaded seconds before it lands; dropped into a live stream it
+            # showed viewers an older picture for a frame ("the stream rewinds back randomly", operator
+            # 2026-10-24). While the continuous stream is fresh the still is not the session's picture.
+            if now - lv.get("stream_ts", 0) < STREAM_FRESH_S:
+                return {"seq": lv["seq"], "ignored": "a live stream is the session's picture"}
             meter(lv, now, "still")                       # a native game's window still (broadcast: kind "stills")
             lv["frame"], lv["seq"], lv["ts"] = body, lv["seq"] + 1, now
             notify_frame(lv)
@@ -3890,7 +3897,7 @@ def create_app(config: Config) -> FastAPI:
                         now = time.time()
                         note_frame(lv, now)               # a gap of 2 s+ is logged with timestamps (stream-stability)
                         meter(lv, now, "stream")          # the frame rate the broadcast feed list reports
-                        lv["frame"], lv["seq"], lv["ts"] = frame, lv["seq"] + 1, now
+                        lv["frame"], lv["seq"], lv["ts"], lv["stream_ts"] = frame, lv["seq"] + 1, now, now
                         notify_frame(lv)
                     n += 1
         return {"frames": n}
@@ -3932,6 +3939,15 @@ def create_app(config: Config) -> FastAPI:
     def get_frame(sid: str, actor=Depends(auth)):
         f = _live(sid)["frame"]
         return Response(f, media_type="image/jpeg", headers={"cache-control": "no-store"}) if f else _404()
+
+    @app.get("/api/sessions/{sid}/picture")
+    def get_picture(sid: str, actor=Depends(auth)):
+        """The game picture's box inside the latest frame (black bars measured), for PiP fitting."""
+        from . import picture_bounds
+        f = _live(sid)["frame"]
+        if not f:
+            return _404()
+        return picture_bounds.cached(sid, f)
 
     @app.get("/api/sessions/{sid}/mjpeg")
     def mjpeg(sid: str, actor=Depends(auth)):

@@ -1,5 +1,21 @@
 # MercMode
 
+The picture-in-picture menu (right-click the PiP) carries one MercMode toggle for the PC
+that owns the displayed game: **rotating titles · click to stay in this game** or **play
+across titles · click to turn on**; its arrow opens the titles that rotate (uncheck one to
+drop it; unavailable editions show their reason) and the rounds before switching. The web
+client's Mercenaries tab shows the same per-PC panel above the run reviewer. Between titles
+the PiP shows one of gBox's random visualizations with a loading bar that follows the
+scheduler's phase (launching, starting, playing) while the next game boots in the background.
+The PiP scales the game picture, not the frame, to its window: the server measures the
+frame's pure-black bars (`GET /api/sessions/<sid>/picture`) and the client crops RE4's
+letterboxed 16:9 picture out of its 4:3 frame after three agreeing measurements.
+
+A boundary from an autoplay start job that restarted the autobot inside the same owned
+session (the operator's F3 / "Take control", the bot's hang relaunch) is accepted when that
+job is for the same session and PC and was created after the run's accepted job; the run
+then follows that job. Starts for another session or PC are still refused.
+
 For an already playing solo autobot, enable the host and choose **Use current solo bot**.
 For a dedicated stream, select **Continuous presentation**. This admits only the exact
 scheduler-owned MercMode launch despite busy CPU/GPU measurements. Other background jobs
@@ -130,3 +146,23 @@ New round artifacts also retain the exact session ID and scoped autoplay job ID
 provided by their invocation. Older artifacts without that origin remain
 unattributed; a current session playing the same title cannot supply the missing
 identity for export to another control plane.
+
+## DJ queue
+
+When MercMode is on you can choose exactly what plays next. In the PiP menu's MercMode section,
+or in the Mercenaries tab, pick a game, mode, character and stage. Leaving a field blank means
+random. Then press **Play next** (front of the queue) or **Add to queue**. The section shows
+what is playing now and the queue ahead, with ✕ to remove an entry. Each entry is checked
+against that title's verified roster (`gbox.mercmode.catalog`: RE4 five characters / four
+stages; RE5 Mercenaries and Reunion rosters / eight stages). RE6 has no verified roster yet.
+At the next native round end, the head of the queue decides what happens:
+
+- **Another game:** MercMode switches after this round, even if fewer than "rounds before
+  switching" have been played and even if that game is unchecked. The launch carries the
+  selection, and the bot picks it from the native menus.
+- **The same game:** nothing relaunches. The running bot gets the pick through
+  `re5_mods mercs_select` or `re_mods mercs_select`, then later rounds are random again.
+
+RE4 now picks a random character and stage every round by default. Before this change it
+chose randomly only in MercMode launches; launches with the game's own default always took
+the same character. A launch with `launch.mercmode: false` keeps the old default picks.
