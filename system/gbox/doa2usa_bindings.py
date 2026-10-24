@@ -7,12 +7,12 @@ version-specific" because the tables are not a simple address re-map:
 
 * the USA name table carries a ``c:/doa2/`` path prefix on every resource name
   (LE names are bare ``kas00.chr``), and
-* the USA name table is followed by UTF-16 text data, not by the render file table
-  (in LE, ``FILE_TABLE`` sits immediately after the 928-entry ``FILE_NAMES``).
+* USA file records are six u16 indices (LE: five), but as in LE the FILE_TABLE
+  sits immediately after FILE_NAMES (0x141264 + 4*642 = 0x141C6C).
 
 This module derives the USA name table from the owned executable and resolves its
-642-name roster. It deliberately does *not* invent the part script/file table
-addresses: those are the next analysis step (Ghidra xref of the script-loading
+642-name roster. It also decodes the fighter file table and ACS table; it deliberately does *not*
+invent the part SCRIPT_TABLE address: that is the next analysis step (Ghidra xref of the script-loading
 function; the USA script-data region is already narrowed to ~0x1A9450-0x1A9DE0).
 
     python - <<'PY'
@@ -140,8 +140,90 @@ def fighter_families(names: list[bytes]) -> dict[str, list[str]]:
     return {k: sorted(v, key=int) for k, v in fam.items()}
 
 
+# ---------------------------------------------------------------------------
+# Render file table (derived this run; cross-validated against LE structure).
+#
+# In LE, FILE_TABLE sits immediately after the FILE_NAMES pointer table
+# (FILE_NAMES + 4*928 == 0x8C17F5F4). The same contiguity holds in USA:
+# 0x141264 + 4*642 == 0x141C6C. (The earlier "UTF-16 follows the table"
+# claim was wrong -- the u16 index records start right at that offset.)
+# USA records are six u16 name indices (12 bytes), 18 body slots x 6 costumes,
+# costume-major (record = costume*18 + slot), then 20 stage records, etc.
+# ---------------------------------------------------------------------------
+USA_FILE_TABLE_OFFSET = USA_FILE_NAMES_OFFSET + 4 * USA_NAME_COUNT   # 0x141C6C
+USA_FILE_TABLE_ADDRESS = BASE + USA_FILE_TABLE_OFFSET
+USA_RECORD_FIELDS = ("control", "motion", "textures", "geometry", "skin", "sup")
+USA_RECORD_SIZE = 12
+USA_SLOT_ORDER = ("ZAC", "TIN", "JAN", "KTE", "RYU", "KAS", "GEN", "HIK", "BAY",
+                  "BAS", "MAM", "RAI", "LEI", "AYA", "WBA", "IND", "LOR", "TNG")
+USA_COSTUME_COUNT = 6
+USA_FIGHTER_RECORDS = len(USA_SLOT_ORDER) * USA_COSTUME_COUNT        # 108
+# Accessory (.acs) table: plain 6 x 18 u16 name indices (36-byte rows), directly
+# after the stage/voice/movie records.
+USA_ACS_TABLE_OFFSET = USA_FILE_TABLE_OFFSET + 150 * USA_RECORD_SIZE + 4  # 0x142378
+
+
+def _check_usa(executable: bytes) -> None:
+    if hashlib.sha256(executable).hexdigest() != USA_EXECUTABLE_SHA256:
+        raise ValueError("Unsupported DOA2 executable: part script addresses are version-specific")
+
+
+def parse_file_table(executable: bytes) -> list[dict]:
+    """Resolve the 108 fighter file records to bare file names.
+
+    Returns one dict per (slot, costume): slot index/code, costume, and the six
+    resolved names (control .bin, motion .mot, textures .bin, geometry .chr,
+    skin .apv, sup .sup). Every index is range-checked against the name table.
+    """
+    _check_usa(executable)
+    names = resource_names(executable)
+    out = []
+    for costume in range(USA_COSTUME_COUNT):
+        for slot, code in enumerate(USA_SLOT_ORDER):
+            rec = USA_FILE_TABLE_OFFSET + (costume * len(USA_SLOT_ORDER) + slot) * USA_RECORD_SIZE
+            idx = struct.unpack_from("<6H", executable, rec)
+            if any(i >= len(names) for i in idx):
+                raise ValueError("USA file-table index outside the name table")
+            files = {f: names[i].decode() for f, i in zip(USA_RECORD_FIELDS, idx)}
+            out.append({"slot": slot, "code": code, "costume": costume,
+                        "table_offset": rec, "indices": idx, "files": files})
+    return out
+
+
+def fighter_files(executable: bytes, slot: int, costume: int) -> dict:
+    if not 0 <= slot < len(USA_SLOT_ORDER) or not 0 <= costume < USA_COSTUME_COUNT:
+        raise ValueError("Invalid USA slot/costume")
+    return parse_file_table(executable)[costume * len(USA_SLOT_ORDER) + slot]
+
+
+def resolve_archive_binding(executable: bytes, archive: str) -> dict:
+    """Resolve a CHR filename to its unique (slot, costume) record."""
+    name = archive.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if not name.endswith(".chr"):
+        raise ValueError("Native archive binding requires a CHR filename")
+    hits = [r for r in parse_file_table(executable) if r["files"]["geometry"] == name]
+    if not hits:
+        raise ValueError(f"Archive {name} has no native file-table binding")
+    return hits[0]   # shared (placeholder) CHRs may repeat; first record wins
+
+
+def accessory_table(executable: bytes) -> list[dict]:
+    _check_usa(executable)
+    names = resource_names(executable)
+    out = []
+    for costume in range(USA_COSTUME_COUNT):
+        for slot, code in enumerate(USA_SLOT_ORDER):
+            off = USA_ACS_TABLE_OFFSET + (costume * len(USA_SLOT_ORDER) + slot) * 2
+            i = struct.unpack_from("<H", executable, off)[0]
+            if i >= len(names) or not names[i].endswith(b".acs"):
+                raise ValueError("USA ACS table entry is not an .acs name")
+            out.append({"slot": slot, "code": code, "costume": costume,
+                        "filename": names[i].decode(), "table_offset": off})
+    return out
+
+
 def parse_render_scripts(executable: bytes) -> list[dict]:
-    """Not yet derivable: the USA render file/script tables are not located.
+    """Not yet derivable: the USA SCRIPT_TABLE (part scripts) is not located.
 
     ``doa2_bindings.parse_render_scripts`` is pinned to the LE addresses and raises
     for this executable. The USA FILE_NAMES table is located (see module docstring),
