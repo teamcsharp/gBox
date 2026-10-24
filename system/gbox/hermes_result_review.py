@@ -158,6 +158,10 @@ def gate(item):
             # The reviewer is behind (2026-10-19: 223 results pending on the local model, ten minutes each). A task
             # must not starve for a day waiting on guidance: it goes on, and the review still runs and attaches later.
             return None
+        if item.get('request_id') in priority_requests(limit=100):
+            # the operator's listed tickets never wait on a pending review (2026-10-24: 798 pending on a saturated
+            # spark2 held 11 of 15 RE6 tickets; "I want RE6 in rotation ASAP"); a finished "blocked" verdict still holds
+            return None
         return 'Waiting for the local result review' if reviewer()['local'] else 'Waiting for durable cloud result review'
     review = json.loads(row['verdict'])
     item['review_guidance'] = review
