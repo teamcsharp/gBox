@@ -2373,9 +2373,25 @@ D-Pad/Right = `H`
     def _gecko_write(self, user: Path):
         gs = user / "GameSettings"
         gs.mkdir(parents=True, exist_ok=True)
-        body = ["[Gecko]"] + [ln for c in self.cheats for ln in (f"${c['desc']}", *c["lines"])]
+        ini = gs / f"{self.gecko_id}.ini"
+        # gBox owns only the Gecko sections: everything else in the game INI (Dolphin's Game Properties: [Video_*],
+        # [Core] hacks the operator set) is kept, so it keeps overriding gBox's command-line defaults
+        kept, owned = [], False
+        try:
+            old = ini.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            old = []
+        for ln in old:
+            s = ln.strip()
+            if s.startswith("[") and s.endswith("]"):
+                owned = s[1:-1].strip() in ("Gecko", "Gecko_Enabled")
+            if not owned:
+                kept.append(ln)
+        while kept and not kept[-1].strip():
+            kept.pop()
+        body = kept + ["[Gecko]"] + [ln for c in self.cheats for ln in (f"${c['desc']}", *c["lines"])]
         body += ["[Gecko_Enabled]"] + [f"${c['desc']}" for c in self.cheats if c["enable"]]
-        (gs / f"{self.gecko_id}.ini").write_text("\n".join(body) + "\n", encoding="utf-8")
+        ini.write_text("\n".join(body) + "\n", encoding="utf-8")
         (gs / f"{self.gecko_id}.gbox-enabled.json").write_text(json.dumps([c["desc"] for c in self.cheats if c["enable"]]))
 
     def _title_options(self) -> dict:
@@ -2386,6 +2402,30 @@ D-Pad/Right = `H`
         if getattr(self, 'gecko_id', None) == 'GRSEAF':
             return {'Dolphin.Core.CPUThread': 'False'}
         return {}
+
+    # The Spark streams a 640x480 private display (screen): past 2x native the extra pixels never reach the stream and
+    # only take GPU time from the operator's services. The Windows window is docked and resizable: no cap there.
+    MAX_RES_SCALE: int | None = 200
+
+    def _graphics_options(self) -> dict:
+        """Per-game graphics (internal resolution, MSAA, anisotropic filtering) on every launch path: play, MercMode /
+        autoplay, demos. A title preset (graphics.PRESETS, e.g. RE4 G4BE08) and this host's saved Graphics panel
+        choice for the game (data_dir/graphics.json) are merged; a game with neither gets no overrides. Agent-owned
+        capture sessions keep Dolphin's own settings so Examine 3D captures stay as they were."""
+        if getattr(self, "capture_backend", None):
+            return {}
+        from . import graphics
+        serial = getattr(self, "gecko_id", None) or getattr(self, "serial", None)
+        preset = graphics.preset_for("dolphin", serial)
+        cfg = getattr(self, "config", None)
+        mine = {k: v for k, v in (graphics.saved(cfg, getattr(self, "game_id", None)) if cfg else {}).items()
+                if k in graphics.EMULATOR_FIELDS["dolphin"]}
+        if not (preset or mine):
+            return {}
+        try:
+            return graphics.dolphin_opts(graphics.DEFAULT | preset | mine, self.MAX_RES_SCALE)
+        except (TypeError, ValueError):          # a hand-edited graphics.json must never stop a launch
+            return graphics.dolphin_opts(graphics.DEFAULT | preset, self.MAX_RES_SCALE) if preset else {}
 
     def cheat_set(self, index: int, on: bool) -> dict:
         """Dolphin applies Gecko codes when the game boots: the choice is saved now and takes effect on the next start."""
@@ -2426,6 +2466,7 @@ D-Pad/Right = `H`
         extra=[f'--filesystem={getattr(self,"memory_card_context",{}).get("work_dir")}'] if getattr(self,'memory_card_context',None) else []
         if self.jump_from:                       # the flatpak reads host files read-only already; say so for this one
             extra.append(f"--filesystem={Path(self.jump_from).parent}:ro")
+        opts.update(self._graphics_options())
         opts.update(self._title_options())
         opts.update(self._jump_opts())
         return ["flatpak", "run", "--die-with-parent", f"--filesystem={user}", *extra, self.flatpak, "-b", "-u", str(user),
@@ -2533,6 +2574,7 @@ class DolphinWinAdapter(DolphinAdapter):
     GameCube pad; memory + breakpoints through Dolphin's GDB stub, exactly like on the Spark."""
     name = "dolphin"
     supported = (DolphinAdapter.supported - {"stream_session"}) | {"local_window", "fast_forward"}   # native window, frames via get_frame
+    MAX_RES_SCALE = None                         # docked, resizable window on the operator's own screen
     # XInput pad (positional, like RetroArch's autoconfig) with the keyboard keys gBox sends as an alternative
     PAD_INI_WIN = """[GCPad1]
 Device = XInput/0/Gamepad
@@ -2681,6 +2723,7 @@ D-Pad/Right = `Pad E` | `DInput/0/Keyboard Mouse:H`
         if getattr(self,'memory_card_context',None):
             from . import memory_card_sessions
             memory_card_sessions.journal(self.memory_card_context)
+        opts.update(self._graphics_options())
         opts.update(self._title_options())
         opts.update(self._jump_opts())
         return [str(exe), "-b", "-u", str(user), *[a for k, v in opts.items() for a in ("-C", f"{k}={v}")],

@@ -4444,12 +4444,15 @@ def graphics_tool(inp: GraphicsIn, ctx: Ctx):
         ad, running_game = SESSIONS[inp.session_id]
         if running_game.get("game_id") != inp.game_id:
             raise ValueError("graphics session does not match the selected game")
+        serial = getattr(ad, "gecko_id", None) or getattr(ad, "serial", None) or running_game.get("serial")
     else:
         r = httpx.get(f"{ctx.server}/api/catalog/{inp.game_id}", headers=ctx.headers, timeout=30)
         r.raise_for_status()
         ad = adapters.for_game(r.json(), ctx.config)
+        serial = r.json().get("serial")
     emulator = ad.name
     choices = graphics.choices_for(emulator)
+    preset = graphics.preset_for(emulator, serial if isinstance(serial, str) else None)   # e.g. RE4 on Dolphin
     gp = graphics.gpu()
     if inp.op == "set":
         if not choices:
@@ -4457,14 +4460,14 @@ def graphics_tool(inp: GraphicsIn, ctx: Ctx):
         unsupported = set(inp.prefs) - set(choices)
         if unsupported:
             raise ValueError(f"{emulator} does not use graphics controls: {', '.join(sorted(unsupported))}")
-        p = graphics.save(ctx.config, inp.game_id, inp.prefs)
+        p = graphics.save(ctx.config, inp.game_id, inp.prefs, preset)
     elif inp.op == "best":
         if not choices:
             raise Unsupported(graphics.note_for(emulator))
         p = graphics.save(ctx.config, inp.game_id,
-                          {k: v for k, v in graphics.best_for_gpu(gp["vram_mb"]).items() if k in choices})
+                          {k: v for k, v in graphics.best_for_gpu(gp["vram_mb"]).items() if k in choices}, preset)
     elif inp.op == "get":
-        p = graphics.get(ctx.config, inp.game_id)
+        p = graphics.get(ctx.config, inp.game_id, preset)
     else:
         raise ValueError(f"unknown graphics operation {inp.op}")
     return {"result": {"emulator": emulator, "prefs": {k: p[k] for k in choices}, "gpu": gp,
