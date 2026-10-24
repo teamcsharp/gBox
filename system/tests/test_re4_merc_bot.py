@@ -764,6 +764,19 @@ def test_a_kick_prompt_waits_while_another_attack_lands():
     assert not bot.prompt_ok("a", B.snapshot(m)) and bot.prompt_ok("wiggle", B.snapshot(m))
 
 
+def test_a_take_prompt_for_dropped_ammo_is_ignored_but_an_hourglass_goal_takes_it():
+    # operator 2026-10-24: "dont have the bot pick up ammo in any mode, he has infinite ammo ... Just fight"
+    now = [0.0]
+    m = world([])
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    bot.stats["ram_action"] = "TAKE"
+    assert not bot.prompt_ok("a", B.snapshot(m)) and bot.stats["pickups_skipped"] == 1
+    bot.goal = {"item": {"pos": (0, 0, 100)}}                               # walking to a time-bonus hourglass
+    assert bot.prompt_ok("a", B.snapshot(m))
+    bot.goal, bot.stats["ram_action"] = None, "KICK"
+    assert bot.prompt_ok("a", B.snapshot(m))
+
+
 def test_a_ganado_behind_him_gets_the_quick_turn():
     now = [0.0]
     m = world([((0, 0, -1200), True)])                                       # right behind him, walking

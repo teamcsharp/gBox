@@ -724,6 +724,11 @@ class Bot:
         QTE (two buttons), a SHAKE OFF are always pressed."""
         if button not in ("a",):
             return True
+        if self.stats.get("ram_action") == "TAKE" and not (self.goal or {}).get("item"):
+            # ammo / grenades a Ganado dropped: infinite ammo, never worth Leon's second (operator 2026-10-24: "dont
+            # have the bot pick up ammo in any mode ... Just fight"); hourglasses are taken by _take's own goal
+            self.stats["pickups_skipped"] = self.stats.get("pickups_skipped", 0) + 1
+            return False
         for t in self._threats:                                    # as of the last tick
             if t.kind not in ("near", "down") and t.eta < PROMPT_GUARD_S and t.dist < 2500:
                 self.stats["prompts_held"] = self.stats.get("prompts_held", 0) + 1
