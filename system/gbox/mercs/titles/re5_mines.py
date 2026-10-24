@@ -13,6 +13,7 @@ from ..deployables import Cadence
 from . import re5_weapons as W
 
 DEFAULT = {"enabled": True, "interval_s": 60., "only": False}
+DEPARTURE_CM = 600.  # conservative controller spacing, not a decoded blast radius
 
 
 def settings_path():
@@ -163,6 +164,7 @@ class Controller:
         self.blast_windows = []
         self.last_blast_snapshot = None
         self.last_blast_at = -math.inf
+        self.last_attempt_position = None
 
     def bind_learning(self, learning, mesh):
         if self.mesh is not None and (mesh is None or mesh.learning_sig != self.mesh.learning_sig):
@@ -207,6 +209,7 @@ class Controller:
                        new_player=player, abandoned_escape=self.escape is not None)
         self.pending = self.restore = self.escape = self.prepare_at = None
         self.home_weapon = None
+        self.last_attempt_position = None
         self.retry_at = self.equip_until = self.restore_after = 0.
         self.detonating.clear()
         self.owned.clear()
@@ -224,7 +227,7 @@ class Controller:
         if selected is not None:return selected
         guns=[w for w in snap.get('inventory') or () if W.quick_key(w) and w.get('type')==1
               and (w.get('rounds',0)>0 or w.get('cap',0)>0) and w.get('item') in W.WEAPONS
-              and W.WEAPONS[w['item']].family in W.DIRECT]
+              and W.WEAPONS[w['item']].family in W.DIRECT|{'bow'}]
         return next((w for w in guns if W.inventory_key(w)==self.restore),None) \
             or next((w for w in guns if W.inventory_key(w)==self.home_weapon),None) \
             or next((w for w in guns if w.get('hand')),None) or next(iter(guns),None)
@@ -235,7 +238,7 @@ class Controller:
             return True
         distance = math.dist(position, self.escape['pos'])
         self.stats['mine_retreat_distance'] = round(distance, 1)
-        if distance < 600:
+        if distance < DEPARTURE_CM:
             return False
         self.event('retreat_complete', now, actor=self.escape['actor'], distance=distance,
                    elapsed_s=now-self.escape['at'])
@@ -243,6 +246,15 @@ class Controller:
         self.stats['mine_retreats_completed'] = self.stats.get('mine_retreats_completed', 0)+1
         self.escape = None
         return True
+
+    def deferred_gun(self,snap,now):
+        """A spacing/route refusal must not leave an optional mine equipped."""
+        player=snap.get('player') or {}
+        if not self.cadence.only and player.get('action') in (0,1) \
+                and any(w.get('hand') and w.get('id')==0x10A for w in snap.get('inventory') or ()):
+            gun=self.return_gun(snap)
+            if gun is not None:return self.switch(gun,now,'mine placement deferred; resume ranged weapon')
+        return None
 
     def tick(self, snap, now):
         scope = snap.get('player') or {}
@@ -265,13 +277,12 @@ class Controller:
                 self.escape['detonation_observed'] = True
             player = snap.get('player') or {}
             position = player.get('pos')
-            nearby = position is not None and any(math.dist(position,row['pos'])<600. for row in ground.values())
-            if actor not in ground and self.escape.get('detonation_observed') and position is not None and not nearby:
+            if actor not in ground and self.escape.get('detonation_observed') \
+                    and not self.escape.get('removal_recorded'):
+                self.escape['removal_recorded'] = True
                 self.event('retreat_hazard_removed',now,actor=actor,pos=position,
-                           reason='exact actor detonation witnessed then actor removed; no nearby mine remains',
-                           escape_completed=False,distance=math.dist(position,self.escape['pos']))
-                self.stats['mine_escapes_unachieved'] = self.stats.get('mine_escapes_unachieved',0)+1
-                self.escape = None
+                           reason='exact actor removed after witnessed detonation; departure still required',
+                           escape_completed=False,distance=math.dist(position,self.escape['pos']) if position else None)
         for ptr in exploding-self.detonating:
             self.event('detonation_observed', now, actor=ptr, pos=ground[ptr]['pos'],
                        owned=ptr in self.owned, combo=snap.get('combo'), score=snap.get('score'))
@@ -300,7 +311,7 @@ class Controller:
         self.stats.update(mine_interval_s=self.cadence.interval, mines_only=self.cadence.only,
                           mines_enabled=self.cadence.enabled)
         held=next((w for w in snap.get('inventory') or () if w.get('hand')),None)
-        if held and held.get('item') in W.WEAPONS and W.WEAPONS[held['item']].family in W.DIRECT:
+        if held and held.get('item') in W.WEAPONS and W.WEAPONS[held['item']].family in W.DIRECT|{'bow'}:
             self.home_weapon=W.inventory_key(held)
         if not self.cadence.enabled:
             self.pending = None
@@ -377,6 +388,9 @@ class Controller:
                 self.event('placement_unconfirmed', now, pos=pen['pos'])
                 self.stats["mine_status"] = "Placement unconfirmed; retry deferred"
                 self.pending=None; self.retry_at=now+5
+                gun=self.return_gun(snap)
+                if gun is not None and not self.cadence.only:
+                    self.restore,self.restore_after=W.inventory_key(gun),now
                 return {"hold":set()}
             age=now-pen["at"]
             # Type D's displayed "L1 Place" is the whole command. R1 can cancel it.
@@ -386,25 +400,38 @@ class Controller:
             self.clear_escape(now, p['pos'])
             if self.escape is not None:
                 self.stats['mine_status'] = 'Leaving planted mine; further placement deferred'
-                return None
+                return self.deferred_gun(snap,now)
         if now < self.retry_at or not self.cadence.due(now,p["pos"]):
             return None
+        # Scope this to every observed ground actor, including a human's mine.
+        # A stale/no placement preflight from a standalone caller cannot allow stacking.
+        near_mine = any(math.dist(p['pos'],row['pos']) < DEPARTURE_CM for row in ground.values())
+        near_site = self.cadence.position is not None and math.dist(p['pos'],self.cadence.position) < DEPARTURE_CM
+        if near_mine or near_site:
+            self.prepare_at = None
+            self.stats['mine_status'] = 'Moving away from prior mine site; placement spacing required'
+            self.stats['mine_spacing_deferrals'] = self.stats.get('mine_spacing_deferrals',0)+1
+            return self.deferred_gun(snap,now)
+        if self.last_attempt_position is not None and math.dist(p['pos'],self.last_attempt_position)<DEPARTURE_CM:
+            self.prepare_at = None
+            self.stats['mine_status'] = 'Unconfirmed prior attempt; move to a different deployment site'
+            return self.deferred_gun(snap,now)
         if self.learning is not None and self.mesh is not None:
             site = self.learning.mine_site(self.mesh,p['pos'])
             self.stats['mine_site_evidence'] = site
             if site['defer']:
                 self.stats['mine_status'] = 'Moving past a deployment site with repeated observed damage'
-                return None
+                return self.deferred_gun(snap,now)
         # Bot supplies a current measured floor-route preflight before equipping.
         # Legacy standalone callers can omit it; an explicit negative never plants.
         if snap.get('mine_placement_safe') is False:
             self.stats['mine_status'] = 'Placement deferred: no measured floor escape route'
             self.prepare_at = None
-            return None
+            return self.deferred_gun(snap,now)
         # Leave room to retreat; a nearby explosion can stagger even a modified character.
         if any((e.get("hp") or 0)>0 and math.dist(p["pos"],e["pos"])<350 for e in snap.get("enemies",())):
             self.stats["mine_status"] = "Waiting for deployment space"
-            return None
+            return self.deferred_gun(snap,now)
         if not mine.get("hand"):
             self.stats["mine_status"] = "Equipping proximity bomb"
             if now < self.equip_until:
@@ -431,6 +458,7 @@ class Controller:
             return action
         self.pending={"at":now,"count":mine["rounds"],"slot":mine["slot"],"player":p["ptr"],
                       'pos':p['pos'], 'before':set(ground), 'deployed':set()}
+        self.last_attempt_position = tuple(p['pos'])
         self.stats["mine_attempts"]=self.stats.get("mine_attempts",0)+1
         self.event('placement_attempt', now, pos=p['pos'], hp=p.get('hp'),
                    combo=snap.get('combo'), score=snap.get('score'))

@@ -137,7 +137,7 @@ def test_new_round_resets_controller_even_when_player_pointer_is_reused(tmp_path
     assert calls == [(0.,snap["player"]["ptr"]),(2.,snap["player"]["ptr"])]
 
 
-def test_exact_detonation_and_removal_release_escape_without_false_success(monkeypatch):
+def test_exact_detonation_and_removal_keep_departure_required_without_false_success(monkeypatch):
     ground = {9:{'pos':(0,0,0),'arming_s':0.,'detonating':True}}
     monkeypatch.setattr(M,'ground_mines',lambda _:ground)
     monkeypatch.setattr(M,'settings',lambda:dict(M.DEFAULT))
@@ -149,9 +149,11 @@ def test_exact_detonation_and_removal_release_escape_without_false_success(monke
     assert controller.escape is not None
     ground.clear()
     controller.tick(snap,2.)
-    assert controller.escape is None and stats['mine_escapes_unachieved']==1
+    assert controller.escape is not None and controller.escape['removal_recorded']
     assert not stats.get('mine_retreats_completed')
     assert any(event['kind']=='retreat_hazard_removed' and not event['escape_completed'] for event in controller.events)
+    assert controller.clear_escape(2.5,(0.,0.,650.))
+    assert stats['mine_retreats_completed']==1
     controller.escape = {'actor':10,'pos':(0,0,0),'at':3.}
     controller.tick(snap,4.)
     assert controller.escape is not None  # unexplained disappearance alone cannot release it

@@ -29,8 +29,9 @@ class Cadence:
             return self.only
         elapsed = now - self.last
         moved = self.position is None or math.dist(position, self.position) >= 250
-        return elapsed >= (max(2., min(5., self.interval)) if self.only else self.interval) \
-            and (moved or elapsed >= self.interval * 2) or self.entrance and elapsed >= 5 and moved
+        # Waiting longer never substitutes for leaving the last verified site.
+        return moved and (elapsed >= (max(2., min(5., self.interval)) if self.only else self.interval)
+                          or self.entrance and elapsed >= 5)
 
     def acknowledge(self, now, position):
         self.last, self.position, self.entrance = now, tuple(position), False

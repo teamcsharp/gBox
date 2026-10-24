@@ -10,6 +10,16 @@ SHA = 'd' * 64
 ART = 'e' * 64
 
 
+def test_read_only_round_analysis_prompt_never_inherits_native_writer_or_helper_work():
+    prompt = q._prompt({'request_id':R,'number':42,'lane':'inbox','read_only':True,
+                        'repair':True,'game_id':G,'required_inference_node':'sparkDeux'}, ['Resident Evil 5'])
+    assert 'READ-ONLY TEXT EVIDENCE ANALYSIS' in prompt
+    assert 'exact recorded round/report IDs' in prompt and 'sparkDeux' in prompt
+    for forbidden in ('unfinished native character work','ollama_assist','Implement the missing reader/writer',
+                      'inspection_builds','prepare_task_workspace','publish_task_changes'):
+        assert forbidden not in prompt
+
+
 def favorite(gid=G, **kw):
     return {'game_id': gid, 'title': 'Game', 'platform': 'dreamcast', 'in_catalog': True, **kw}
 
@@ -597,6 +607,118 @@ def test_tick_creates_and_re_edits_runs_with_their_worktree(env, monkeypatch):
     create = calls[0]
     assert create[0] == 'create' and create[create.index('--workdir') + 1] == f'/tasks/{R}/system'
     assert str(q.mode._PROMPT.parents[2]) not in create
+
+
+def _required_node_tick(monkeypatch, requests, *, pooled=True, cloud=False, unavailable=False):
+    from gbox import hermes_local, hermes_pool, hermes_recovery
+    from gbox.config import HermesLocalConfig
+    settings = HermesLocalConfig(proxy_url='http://127.0.0.1:8765/api/llm/local/v1',
+        allow_large_tasks=True, shared_with_games=False, max_parallel_jobs=4,
+        nodes={'lilspark': {'provider': 'prime', 'max_parallel_jobs': 1},
+               'sparkDeux': {'provider': 'second', 'model': 'qwen', 'max_parallel_jobs': 2,
+                             'shared_with_games': False, 'allow_large_tasks': True}} if pooled else {})
+    monkeypatch.setattr(hermes_local, 'settings', lambda: settings)
+    jobs = [{'id': 'controller', 'enabled': True, 'no_agent': True},
+            {'id': 'active-job', 'name': 'existing owner', 'enabled': False}]
+    monkeypatch.setattr(q.mode, '_job', lambda: jobs[0])
+    monkeypatch.setattr(q.mode, '_jobs', lambda: jobs)
+    monkeypatch.setattr(q.mode, '_config', lambda: {'cron': {
+        'model_provider': 'nous' if cloud else 'spark-local',
+        'model': 'opus' if cloud else 'gpt-oss:20b', 'max_parallel_jobs': 4}})
+    monkeypatch.setattr(q, '_executions', lambda: ({}, {'active-job'}))
+    monkeypatch.setattr(q, '_native_jobs', lambda: [])
+    monkeypatch.setattr(q, '_operator_playing', lambda: [{'title': 'Resident Evil 5'}])
+    monkeypatch.setattr(q, 'throttle_sandboxes', lambda _: {'throttled': []})
+    monkeypatch.setattr(q.mode, '_handoff', lambda: '')
+    monkeypatch.setattr(q.mode, '_workdir', lambda rid, _: '/tasks/' + rid)
+    monkeypatch.setattr(hermes_recovery, '_active_requests', lambda: set())
+    def api(path, body=None):
+        if path == '/api/favorites': return {'count': 0, 'items': []}
+        if path == '/api/requests': return requests
+        if path == '/api/chat': return []
+        if path == '/api/llm/local/status': return {'enabled': True, 'gated': None}
+        if path == '/api/hermes/local/nodes':
+            return {'capacity': 3, 'nodes': [
+                {'name': name, 'primary': s.shared_with_games, 'enabled': True,
+                 'capable': not (unavailable and name == 'sparkDeux'), 'capacity': s.max_parallel_jobs}
+                for name, s in hermes_pool.node_settings().items()]}
+        raise AssertionError(path)
+    monkeypatch.setattr(q, '_api', api)
+    calls = []
+    def run(*args):
+        calls.append(args)
+        if args[0] == 'create':
+            jobs.append({'id': 'new-job', 'name': args[args.index('--name') + 1],
+                         'enabled': True, 'schedule': {'kind': 'once'}})
+    monkeypatch.setattr(q.mode, '_run', run)
+    return calls, jobs
+
+
+def _round_analysis_request(node='sparkDeux'):
+    return request(source='mercs_round_analysis', automated=True, author='agent', context={
+        'auto_report': True, 'read_only': True, 'required_inference_node': node,
+        'mercs_round_report_id': ART, 'game_id': G})
+
+
+@pytest.mark.parametrize('target', ['missing', '', False, {'node': 'sparkDeux'}])
+def test_required_unknown_or_invalid_inference_node_stays_pending(env, monkeypatch, target):
+    calls, jobs = _required_node_tick(monkeypatch, [_round_analysis_request(target)])
+    before = dict(jobs[1])
+    result = q.tick(now=1000)
+    assert result['dispatched'] == [] and calls == [] and jobs[1] == before
+    item = q._read()['items']['inbox:' + R]
+    assert item['required_inference_node'] == target and item['attempts'] == 0
+    assert not item.get('job_id') and item['read_only']
+
+
+@pytest.mark.parametrize('cloud', [False, True])
+def test_required_node_never_dispatches_on_unpooled_or_cloud_route(env, monkeypatch, cloud):
+    calls, jobs = _required_node_tick(monkeypatch, [_round_analysis_request()], pooled=False, cloud=cloud)
+    monkeypatch.setattr(q, '_operator_playing', lambda: [])
+    before = dict(jobs[1])
+    assert q.tick(now=1000)['dispatched'] == [] and calls == [] and jobs[1] == before
+    assert q._read()['items']['inbox:' + R]['attempts'] == 0
+
+
+def test_node_constraint_does_not_block_ordinary_work_on_the_free_prime_slot(env, monkeypatch):
+    calls, _ = _required_node_tick(monkeypatch, [
+        _round_analysis_request('missing'), request('9' * 16, title='Fix typo')])
+    result = q.tick(now=1000)
+    assert [d['request_id'] for d in result['dispatched']] == ['9' * 16]
+    assert result['dispatched'][0]['inference_node'] == 'lilspark'
+    assert len(calls) == 1 and '--base-url' not in calls[0]
+    assert q._read()['items']['inbox:' + R]['attempts'] == 0
+
+
+def test_required_node_waits_for_headroom_without_using_other_free_node(env, monkeypatch):
+    calls, _ = _required_node_tick(monkeypatch, [_round_analysis_request()], unavailable=True)
+    assert q.tick(now=1000)['dispatched'] == [] and calls == []
+    assert q._read()['items']['inbox:' + R]['required_inference_node'] == 'sparkDeux'
+
+
+@pytest.mark.parametrize('reuse', [False, True])
+def test_round_review_pins_strict_node_and_preserves_active_claims(env, monkeypatch, reuse):
+    req = _round_analysis_request()
+    calls, jobs = _required_node_tick(monkeypatch, [req])
+    before = dict(jobs[1])
+    if reuse:
+        jobs.append({'id': 'old-job', 'name': q.PREFIX + 'inbox ' + R,
+                     'enabled': False, 'schedule': {'kind': 'once'}})
+    result = q.tick(now=1000)
+    assert [d['inference_node'] for d in result['dispatched']] == ['sparkDeux']
+    command = calls[0]
+    assert command[0] == ('edit' if reuse else 'create')
+    assert command[command.index('--provider') + 1] == 'second'
+    assert command[command.index('--model') + 1] == 'qwen'
+    assert command[command.index('--base-url') + 1] == (
+        'http://127.0.0.1:8765/api/llm/local/strict-nodes/sparkDeux/v1')
+    prompt = command[command.index('--prompt') + 1] if reuse else command[2]
+    assert 'READ-ONLY REQUEST' in prompt and 'do not edit source, saves or memory' in prompt
+    assert jobs[1] == before
+    item = q._read()['items']['inbox:' + R]
+    assert item['required_inference_node'] == item['inference_node'] == 'sparkDeux'
+    assert item['dispatch_state'] == 'queued' and item['job_id'] == ('old-job' if reuse else 'new-job')
+    assert q.tick(now=1010)['dispatched'] == [], 'A queued review retains its exact job claim'
 
 
 def test_prioritized_requests_share_their_game_up_to_the_cap():

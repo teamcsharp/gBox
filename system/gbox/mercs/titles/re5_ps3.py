@@ -1130,6 +1130,9 @@ class Bot:
         # bounded, explicit policy fields; prose and ranks never manufacture routes.
         reviewed = [r.get("observed", {}) for r in rows
                     if (r.get("observed", {}).get("reflection") or {}).get("policy", {}).get("bonus_commitment") is True]
+        self.stats['round_policy_source_ids'] = [r['id'] for r in rows[:5]
+            if isinstance(r.get('id'),str) and len(r['id']) == 32 and all(c in '0123456789abcdef' for c in r['id'])
+            and (r.get('observed',{}).get('reflection') or {}).get('policy',{}).get('bonus_commitment') is True]
         stalled = any((r.get("stuck") or 0) > 0 or (r.get("nav_oscillations") or 0) > 0
                       or (r.get("motion_idle_spin_s") or 0) > 3 for r in reviewed)
         self.bonus_commitment.patience_s = 16. if stalled else 12.
@@ -1257,6 +1260,8 @@ class Bot:
             self.stats.pop("completed_score_rank", None)
             self.stats.pop("completed_score_rank_source", None)
             self.bonus_commitment.reset()
+            self.stats['round_policy_source_ids'] = []
+            self.stats['round_semantic_round_ids'] = []
             self.checkpoint_clear_since, self.checkpoint_walk_until = None, 0.
             self.laserless_reacquire_until = 0.
             if callable(getattr(getattr(self,"mines",None),"reset_round",None)):
@@ -2792,22 +2797,39 @@ class Bot:
         self.bonus_commitment.pause(now)
         mesh = snap.get("nav")
         if mesh is None:
-            self.stats["mine_retreat_status"] = "blocked: navigation mesh unavailable; further planting deferred"
-            return {"hold": set()}
+            self.stats["mine_retreat_status"] = "blocked: no escape mesh; retain departure requirement and allow gunplay"
+            return None
         if mesh.find(p["pos"],floor_only=True,height_slack=60.) is None:
             self.stats["mine_retreat_status"] = "returning to observed floor before escaping planted bomb"
             return self._recover_nav(p,mesh,now)
-        route = self.route if self.route_for == "mine_escape:" + str(escape["actor"]) and self.route \
-            and now - self.route_at <= REPLAN_S else mesh.retreat(p["pos"], escape["pos"], 600.,
+        cached = self.route_for == "mine_escape:" + str(escape["actor"]) and self.route and now-self.route_at<=REPLAN_S
+        route = self.route if cached else mesh.retreat(p["pos"], escape["pos"], 600.,
                 blocked_links=self.blocked_links, link_penalties=self.nav_learning.link_penalties(mesh))
+        checkpoint_exit = bool(cached and escape.get('checkpoint_exit'))
+        if not route and escape.get('removal_recorded'):
+            # A vanished, previously detonating actor removes that hazard, not
+            # the obligation to leave its site. A real checkpoint path can now
+            # turn around a dead end instead of requiring monotonic separation.
+            hazards = [(row['pos'],600.) for row in (snap.get('ground_mines') or {}).values()]
+            for bonus in sorted((b for b in snap.get('bonuses') or () if b.get('kind')=='time'
+                    and self.bonus_skip.get(b.get('ptr'),0)<=now),key=lambda b:math.dist(p['pos'],b['pos'])):
+                if math.dist(bonus['pos'],escape['pos'])<600.:continue
+                candidate = mesh.route_avoiding_hazards(p['pos'],bonus['pos'],hazards,avoid=self.avoid,
+                    blocked_links=self.blocked_links,link_penalties=self.nav_learning.link_penalties(mesh))
+                if candidate and not any(isinstance(point,re5_nav.Traversal) for point in candidate) \
+                        and all(mesh.floor_segment(a,b) for a,b in zip([p['pos']]+candidate,candidate)):
+                    route,checkpoint_exit = candidate,True
+                    break
         if not route:
-            self.stats["mine_retreat_status"] = "blocked: no measured floor escape; further planting deferred"
-            return {"hold": set()}
+            self.stats["mine_retreat_status"] = "blocked: no measured escape; gunplay/checkpoints resume, planting deferred"
+            return None
+        escape['checkpoint_exit'] = checkpoint_exit
         target = {"ptr": "mine_escape:" + str(escape["actor"]), "pos": route[-1]}
         self.plan_target = {"kind": "waypoint", "id": target["ptr"], "pos": target["pos"]}
         self.stats["mine_retreat_status"] = "moving away on supported floor; weapon restored"
         self.aiming_since = None
-        return self._follow(p, target, mesh, False, now, learn=False, retreat_from=escape["pos"])
+        return self._follow(p, target, mesh, False, now, learn=False,
+                            retreat_from=None if checkpoint_exit else escape["pos"])
 
     def _mine_placement_preflight(self, snap, now):
         """Require a supported exit and a conservative observed threat margin, without relying on immunity."""

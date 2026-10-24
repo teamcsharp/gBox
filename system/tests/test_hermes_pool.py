@@ -172,6 +172,91 @@ def test_partial_tool_stream_is_never_replayed(pool, monkeypatch):
 
 
 @pytest.mark.parametrize('stream', [False, True])
+@pytest.mark.parametrize('unavailable', ['disabled', 'cooldown', 'health', 'upstream'])
+def test_strict_node_never_fails_over(pool, monkeypatch, stream, unavailable):
+    from gbox.llm_proxy import Busy
+    client, headers = _app(monkeypatch)
+    monkeypatch.setattr(P, 'health', lambda name, *a, **k: {
+        'capable': not (name == 'sparkDeux' and unavailable == 'health')})
+    calls = []
+    class Spark:
+        async def complete(self, *args):
+            calls.append('sparkDeux')
+            raise Busy(502, 'bounded upstream failure', 17)
+        stream = complete
+    class Prime:
+        async def complete(self, *args):
+            raise AssertionError('Strict Spark2 work must never use the prime GPU')
+        stream = complete
+    P._PROXIES.update(sparkDeux=Spark(), lilspark=Prime())
+    if unavailable == 'disabled':
+        P.set_node('sparkDeux', False)
+    if unavailable == 'cooldown':
+        (P.D.state_dir() / 'feedback.json').write_text(json.dumps({
+            'cooldowns': {'second/large': P.time.time() + 60}}))
+    response = client.post('/api/llm/local/strict-nodes/sparkDeux/v1/chat/completions',
+                           headers=headers, json={'stream': stream, 'messages': []})
+    assert response.status_code == 503
+    assert response.headers['retry-after'] == ('17' if unavailable == 'upstream' else '30')
+    assert calls == (['sparkDeux'] if unavailable == 'upstream' else [])
+
+
+def test_strict_node_models_and_chat_require_access_and_known_target(pool, monkeypatch):
+    mounted, headers = _app(monkeypatch)
+    client = TestClient(mounted.app, client=('192.0.2.1', 1234))
+    root = '/api/llm/local/strict-nodes/'
+    assert client.get(root + 'sparkDeux/v1/models').status_code == 401
+    assert client.post(root + 'sparkDeux/v1/chat/completions', json={}).status_code == 401
+    response = client.get(root + 'sparkDeux/v1/models', headers=headers)
+    assert response.status_code == 200 and response.json()['data'][0]['id'] == 'large'
+    assert client.get(root + 'unknown/v1/models', headers=headers).status_code == 404
+    assert client.post(root + 'unknown/v1/chat/completions', headers=headers, json={}).status_code == 404
+    monkeypatch.setattr(L, 'settings', lambda: pool.model_copy(update={'enabled': False}))
+    assert client.post(root + 'sparkDeux/v1/chat/completions', headers=headers, json={}).status_code == 503
+
+
+def test_strict_and_normal_calls_share_the_real_node_admission_limiter(pool, monkeypatch):
+    import httpx
+    from gbox import llm_proxy
+    # All ten admissions can enter the queue before its acquisition tasks run.
+    # Exercise permit sharing without deliberately overflowing that queue.
+    monkeypatch.setattr(L, 'settings', lambda: pool.model_copy(update={'queue_limit': 16}))
+    actual = llm_proxy.LocalLLM
+    created, seen = [], []
+    active, maximum = 0, 0
+    async def upstream(request):
+        nonlocal active, maximum
+        active += 1
+        maximum = max(maximum, active)
+        seen.append(json.loads(request.content))
+        await asyncio.sleep(.02)
+        active -= 1
+        return httpx.Response(200, json={'model': 'large', 'choices': [
+            {'message': {'role': 'assistant', 'content': 'bounded review'}, 'finish_reason': 'stop'}]})
+    def make_proxy(settings, **kw):
+        proxy = actual(settings, transport=httpx.MockTransport(upstream), **kw)
+        created.append(proxy)
+        return proxy
+    monkeypatch.setattr(llm_proxy, 'LocalLLM', make_proxy)
+    monkeypatch.setattr(P, 'health', lambda *a, **kw: {'capable': True})
+    client, headers = _app(monkeypatch)
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=client.app),
+                                     base_url='http://testserver', headers=headers) as http:
+            responses = await asyncio.gather(*(http.post(
+                '/api/llm/local/' + ('strict-nodes' if i % 2 else 'nodes') +
+                '/sparkDeux/v1/chat/completions',
+                json={'messages': [{'role': 'user', 'content': 'Analyze one round'}]}) for i in range(10)))
+            bad = [(r.status_code, r.headers.get('x-gbox-inference-host'), r.text) for r in responses
+                   if r.status_code != 200 or r.headers.get('x-gbox-inference-host') != 'sparkDeux']
+            assert not bad, bad
+    asyncio.run(run())
+    assert len(created) == 1 and P._PROXIES['sparkDeux'] is created[0]
+    assert maximum == 4 and len(seen) == 10
+    assert created[0].active == created[0].waiting == 0
+
+
+@pytest.mark.parametrize('stream', [False, True])
 @pytest.mark.parametrize('hint,expected', [
     (19, '19'), ('0', '0'), ('Wed, 21 Oct 2026 19:00:00 GMT', 'Wed, 21 Oct 2026 19:00:00 GMT'),
     ('invalid', None), ('-4', None), ('20\r\nInjected: true', None), (None, None),

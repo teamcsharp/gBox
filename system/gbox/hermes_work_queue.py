@@ -194,6 +194,8 @@ def sync(data, favorites, requests, *, now):
                     session_observer=bool(context.get('session_observer')),
                     launch_failure=bool(context.get('launch_failure')),
                     operator_requested=bool(context.get('replacement_requested') or damage_report),
+                    read_only=context.get('read_only') is True,
+                    required_inference_node=context.get('required_inference_node'),
                     game_id=context.get('game_id'), target=context.get('target'),
                     character=context.get('character'))
         if damage_report:
@@ -430,6 +432,8 @@ def _operator_playing():
 def launches_emulator(item) -> bool:
     """Queue items whose agents start an emulator on this machine: the favorite runtime stage (replacement tested
     in a running game) and inbox repairs that need gameplay acceptance."""
+    if item.get('read_only') is True:
+        return False
     if item.get('lane') == 'favorite':
         return next_stage(item) in EMULATOR_STAGES
     return bool(item.get('repair')) and not item.get('extraction_engineering')
@@ -469,6 +473,15 @@ def _prompt(item, playing=None):
                    + json.dumps(item['review_guidance'])
                    + '\nResolve the diagnosed cause and run its focused verification before retrying. '
                    'Preserve the previous work and pending job IDs; do not repeat the same failed action. ')
+    if item.get('read_only') is True:
+        return header + ('READ-ONLY TEXT EVIDENCE ANALYSIS. Read only this request and its bounded recorded '
+            'round report. Use request read/reply tools only; do not inspect images, invoke vision or auxiliary '
+            'models, delegate inference, launch games, send input, edit source/config/RAM/saves, prepare a '
+            'workspace, publish changes or alter production. The required inference node is '
+            + str(item.get('required_inference_node') or 'the admitted route') + '. '
+            'Return the requested bounded structured analysis with the exact recorded round/report IDs and '
+            'explicit unknowns. Proposals are advisory: do not claim policy application or gameplay improvement. '
+            'Post the result on this request and finish. Do not begin native character or replacement work. ')
     if item.get('unlock_work'):
         scope = ('This is exact-game unlock research for the original favorite and its current builds. '
                  if item.get('favorite_unlock_work') else 'This is the standing exact-build custom unlock requirement. ')
@@ -739,14 +752,18 @@ def tick(*, now=None):
         slots = slots[:free]
         by_id = {r['id']: r for r in requests}
         for node in slots:
+            # Required nodes are admission constraints, including while the
+            # controller uses an unpooled/cloud route. Unknown targets wait.
+            node_options = [v for v in options if v[1].get('required_inference_node') is None
+                            or node is not None and v[1]['required_inference_node'] == node['name']]
             # Give both backlogs capacity; spare slots go to whichever has work.
             counts = {lane: sum(j.get('name', '').startswith(PREFIX + lane + ' ') and
                                j['id'] in reserved for j in jobs) +
                       sum(d['lane'] == lane for d in dispatched) for lane in ('inbox', 'favorite')}
-            least = min((counts[v[1]['lane']] for v in options), default=0)
-            choices = [v for v in options if counts[v[1]['lane']] == least]
+            least = min((counts[v[1]['lane']] for v in node_options), default=0)
+            choices = [v for v in node_options if counts[v[1]['lane']] == least]
             if node and node.get('primary'):
-                narrow = [v for v in options if hermes_local.dispatch_size(v[1], by_id.get(v[1].get('request_id')))['size'] == 'small']
+                narrow = [v for v in node_options if hermes_local.dispatch_size(v[1], by_id.get(v[1].get('request_id')))['size'] == 'small']
                 choices = narrow or (choices if node.get('allow_large_tasks') else [])
             # read from this tick's own node settings (the toml), so the switch needs no gBox restart
             if node and (node.get('priority_only') or getattr(hermes_pool.node_settings().get(node['name']),
@@ -774,6 +791,8 @@ def tick(*, now=None):
             run_settings = hermes_pool.node_settings()[node['name']] if node else local_settings
             run_route = hermes_local.route(run_settings) if node else dict(primary)
             pin = ['--model', run_settings.model, '--provider', run_settings.provider] if node else []
+            if item.get('required_inference_node') is not None:
+                pin += ['--base-url', run_settings.proxy_url.replace('/nodes/', '/strict-nodes/')]
             if local:
                 prompt = hermes_local.local_prompt(prompt, run_settings, lane=item['lane'])
                 if node:

@@ -144,6 +144,8 @@ def create_app(config: Config) -> FastAPI:
     build_notify.routes(app, store, auth, build_notes)
     from .mercs import reviewer
     reviewer.routes(app, config, auth)
+    from .mercs import round_reports
+    round_reports.install(app, store, config, auth)
 
     # --- shell ---
     @app.get("/")

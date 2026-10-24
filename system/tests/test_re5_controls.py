@@ -198,3 +198,30 @@ def test_tool_selection_status_and_auto_never_change_health(monkeypatch):
     automatic=M.run(memory,'select_weapon',on=False)
     assert automatic['verified'] and automatic['status']['preferred_weapon'] is None
     assert automatic['status']['unlimited_health']==before
+
+
+def test_explicit_bow_selection_is_persistent_and_restored_after_mine(monkeypatch):
+    from types import SimpleNamespace
+    from gbox.mercs.titles import re5_mines as mines, re5_weapons as weapons
+    monkeypatch.setattr(mines,'settings',lambda:dict(mines.DEFAULT))
+    state,snap={},world()
+    bow={'slot':4,'grid':3,'type':1,'item':0x0F,'id':0x10F,'rounds':1,'cap':1,'hand':False}
+    mine={'slot':7,'grid':7,'type':1,'item':0x0A,'id':0x10A,'rounds':5,'hand':False}
+    snap['inventory']=[snap['inventory'][0]|{'grid':5},bow,mine]
+    C.publish(state,7,snap,True,now=10)
+    assert any(row['item']==0x0F for row in C.available(state,now=10))
+    assert 'longbow' in C.capability(state,now=10)['reason']
+    assert C.request(state,now=10,weapon=0x0F)['preference_saved']
+    switch=lambda item,*args:{'tap':weapons.quick_key(item)}
+    assert C.consume(state,7,snap,switch,11,monotonic=11)=={'tap':'dleft'}
+    snap['inventory'][0]['hand']=False;bow['hand']=True
+    C.consume(state,7,snap,switch,12,monotonic=12)
+    assert state['random_weapon_request']['state']=='confirmed' and C.pinned(state,snap,12)
+    bow['hand']=False;mine['hand']=True
+    controller=mines.Controller(SimpleNamespace(),{},switch)
+    controller.preferred_gun=lambda current:C.preferred(state,current)
+    assert controller.return_gun(snap) is bow
+    assert controller.deferred_gun(snap|{'player':snap['player']|{'action':0}},13)=={'tap':'dleft'}
+    assert state['preferred_weapon']['item']==0x0F
+    assert not C.eligible({'type':1,'item':0x0D,'rounds':1,'grid':3})
+    assert not C.eligible({'type':1,'item':0x20,'rounds':1,'grid':3})

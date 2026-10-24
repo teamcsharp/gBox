@@ -320,3 +320,89 @@ def test_ground_reader_excludes_held_weapons_and_reads_arming_and_explosion():
     assert read_ground(m)=={ground:{'pos':(1,2,3),'arming_s':3,'detonating':False}}
     raw.put(ground+M.ARMING,struct.pack('>f',0));raw.put(ground+M.DETONATING,b'\x01')
     assert read_ground(m)[ground]['detonating']
+
+
+@pytest.mark.parametrize('only',[False,True])
+def test_placement_cadence_never_uses_elapsed_time_instead_of_departure(only):
+    from gbox.mercs.deployables import Cadence
+    cadence=Cadence(3,only)
+    cadence.acknowledge(0,(0.,0.,0.))
+    cadence.entrance=True
+    assert not cadence.due(10000,(0.,0.,0.))
+    assert not cadence.due(10000,(249.,0.,0.))
+    assert cadence.due(10000,(650.,0.,0.))
+
+
+def test_exploded_removed_mine_still_requires_departure_and_cannot_stack(monkeypatch,observed_ground):
+    monkeypatch.setattr(M,'settings',lambda:dict(M.DEFAULT,interval_s=3))
+    stats={};controller=M.Controller(SimpleNamespace(),stats,lambda *a:None)
+    mine={'id':0x10a,'item':10,'type':1,'slot':2,'grid':7,'rounds':5,'hand':True}
+    state={'player':{'ptr':123,'pos':(0.,0.,0.),'hp':1000,'action':0},'inventory':[mine]}
+    controller.tick(state,0);controller.tick(state,3)
+    mine['rounds']=4;deployed(observed_ground);controller.tick(state,3.5)
+    observed_ground[0x30800000]['detonating']=True
+    controller.tick(state,4)
+    observed_ground.clear()
+    for now in (4.1,10.,100.):controller.tick(state,now)
+    assert controller.escape is not None and controller.escape['removal_recorded']
+    assert stats['mine_attempts']==stats['mines_placed']==1
+    assert stats.get('mine_retreats_completed',0)==0
+    assert len([e for e in controller.events if e['kind']=='retreat_hazard_removed'])==1
+    state['player']['pos']=(650.,0.,0.)
+    controller.tick(state,101.)
+    assert stats['mine_retreats_completed']==1 and stats['mine_attempts']==2
+
+
+def test_unowned_ground_mine_blocks_plant_even_without_driver_preflight(monkeypatch,observed_ground):
+    monkeypatch.setattr(M,'settings',lambda:dict(M.DEFAULT,interval_s=3))
+    controller=M.Controller(SimpleNamespace(),{},lambda *a:None)
+    mine={'id':0x10a,'item':10,'type':1,'slot':2,'grid':7,'rounds':5,'hand':True}
+    state={'player':{'ptr':123,'pos':(0.,0.,0.),'hp':1000,'action':0},'inventory':[mine]}
+    deployed(observed_ground)
+    controller.tick(state,0)
+    assert controller.tick(state,4.) is None
+    assert controller.pending is None and controller.stats.get('mine_attempts',0)==0
+    state['player']['pos']=(650.,0.,0.)
+    assert controller.tick(state,5.)=={'hold':{'l1'}}
+
+
+def test_failed_unconfirmed_attempt_must_move_before_retry(monkeypatch):
+    monkeypatch.setattr(M,'settings',lambda:dict(M.DEFAULT,interval_s=3))
+    controller=M.Controller(SimpleNamespace(),{},lambda *a:None)
+    mine={'id':0x10a,'item':10,'type':1,'slot':2,'grid':7,'rounds':5,'hand':True}
+    state={'player':{'ptr':123,'pos':(0.,0.,0.),'hp':1000,'action':0},'inventory':[mine]}
+    controller.tick(state,0);controller.tick(state,3)
+    controller.tick(state,9.)
+    assert controller.tick(state,20.) is None and controller.stats['mine_attempts']==1
+    state['player']['pos']=(650.,0.,0.)
+    assert controller.tick(state,21.)=={'hold':{'l1'}}
+    assert controller.stats['mine_attempts']==2
+
+
+def test_tribal_bow_and_mine_inventory_restores_exact_bow_after_placement(monkeypatch,observed_ground):
+    monkeypatch.setattr(M,'settings',lambda:dict(M.DEFAULT,interval_s=3))
+    calls=[]
+    controller=M.Controller(SimpleNamespace(),{},lambda item,*args:calls.append(item) or {'tap':W.quick_key(item)})
+    bow={'id':0x10f,'item':0xf,'type':1,'slot':6,'grid':3,'rounds':1,'cap':1,'hand':True}
+    mine={'id':0x10a,'item':10,'type':1,'slot':2,'grid':7,'rounds':5,'hand':False}
+    state={'player':{'ptr':123,'pos':(0.,0.,0.),'hp':1000,'action':0},'inventory':[bow,mine]}
+    controller.tick(state,0)
+    assert controller.home_weapon==W.inventory_key(bow)
+    bow['hand']=False;mine['hand']=True
+    assert controller.tick(state,3)=={'hold':{'l1'}}
+    mine['rounds']=4;deployed(observed_ground);controller.tick(state,3.5)
+    assert controller.restore==W.inventory_key(bow)
+    assert controller.tick(state,5.)=={'tap':'dleft'}
+    assert calls[-1] is bow and controller.escape is not None
+
+
+def test_spacing_refusal_restores_available_bow_without_waiting_for_another_plant(monkeypatch,observed_ground):
+    monkeypatch.setattr(M,'settings',lambda:dict(M.DEFAULT,interval_s=3))
+    bow={'id':0x10f,'item':0xf,'type':1,'slot':6,'grid':3,'rounds':1,'cap':1,'hand':False}
+    mine={'id':0x10a,'item':10,'type':1,'slot':2,'grid':7,'rounds':5,'hand':True}
+    controller=M.Controller(SimpleNamespace(),{},lambda item,*args:{'tap':W.quick_key(item)})
+    state={'player':{'ptr':123,'pos':(0.,0.,0.),'hp':1000,'action':0},'inventory':[bow,mine]}
+    deployed(observed_ground)
+    controller.tick(state,0)
+    assert controller.tick(state,4.)=={'tap':'dleft'}
+    assert controller.pending is None and controller.stats.get('mine_attempts',0)==0

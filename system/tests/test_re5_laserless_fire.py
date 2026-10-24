@@ -93,9 +93,10 @@ def test_actual_bow_native_fire_action_counts_once_without_inventing_dot_miss(tm
     combat.tick(state,state['player'],state['enemies'][0],1.1)
     combat.tick(state,state['player'],state['enemies'][0],1.2)
     assert combat.stats['shots'] == 1
-    combat.observe(dict(state),2.)
+    combat.observe(dict(state),3.2)
     assert combat.stats['bow_unconfirmed_impacts'] == 1
     assert combat.stats['miss_beside'] == 0
+    assert combat.stats['misses'] == 0 and combat.stats['accuracy'] is None
 
 
 def test_no_laser_does_not_enable_unverified_splash_or_mine_controllers(tmp_path):
@@ -124,15 +125,17 @@ def test_finite_but_unmoving_camera_releases_aim_and_yields_real_route_movement(
     assert bot.stats['shots'] == 0
 
 
-def test_measured_aim_progress_extends_bounded_acquisition_without_fabricated_shots(tmp_path):
+def test_measured_aim_progress_extends_acquisition_within_finite_bow_lease(tmp_path):
     memory,state = scene()
     state['camera']['at'] = (1000.,140.,1000.)
     combat = C.Combat(memory,{},learn_dir=tmp_path)
     combat.tick(state,state['player'],state['enemies'][0],1.)
     state['camera']['at'] = (500.,140.,1000.)
     combat.tick(state,state['player'],state['enemies'][0],3.)
-    combat.tick(state,state['player'],state['enemies'][0],4.)
+    combat.tick(state,state['player'],state['enemies'][0],3.9)
     assert not combat.needs_firing_position and combat.stats['shots'] == 0
+    combat.tick(state,state['player'],state['enemies'][0],4.1)
+    assert combat.needs_firing_position  # aiming progress alone cannot sustain an ineffective burst forever
 
 
 def test_eggs_only_withholds_existing_gun_and_unverified_native_egg(tmp_path):

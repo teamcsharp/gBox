@@ -89,6 +89,7 @@ class _Writer:
             metrics['observed_terminal_outcome']=outcome
             outcome='interrupted'
         metrics.update(units_per_m=1000,geometry_available=False,score=None,kills=None,result_rank=None,
+                       team_role='solo_p1',control_source='legacy_bot_input_route',
                        assistance={'classification':'unknown','verified':False,'effects':[]})
         self.closing=(now,outcome,metrics)
         self.thread.join(5.)                  # only between rounds, never on the input tick

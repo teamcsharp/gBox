@@ -67,8 +67,9 @@ def test_mine_retreat_holds_checkpoint_and_walks_only_measured_floor(tmp_path):
     assert "l1" not in act.get("hold",()) and "r1" not in act.get("hold",())
     assert bot.bonus_commitment.goal == 77
     assert all(open_mesh().floor_segment(a,b) for a,b in zip([p["pos"]]+bot.route,bot.route))
-    assert bot._mine_retreat(p,{},11.) == {"hold": set()}
+    assert bot._mine_retreat(p,{},11.) is None  # blocked escape cannot permanently suppress ordinary gunplay
     assert "blocked:" in bot.stats["mine_retreat_status"]
+    assert bot.mines.escape is not None  # optional placement still requires actual departure
     assert bot._mine_retreat(p | {"pos": (100.,0.,700.)},{},12.) is None
     assert bot.mines.escape is None
 

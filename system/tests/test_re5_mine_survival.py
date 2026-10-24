@@ -158,3 +158,35 @@ def test_stage_action_and_engine_prompt_cannot_land_on_a_current_ground_bomb(tmp
     assert bot.prompt_ok('circle',snap | {'stage_prompt':True,'ground_mines':bomb},1.)
     assert bot._traverse(snap['player'],{'ptr':77},snap['nav'],crossing,True,1.)=={'hold':set()}
     assert not bot.blocked_links
+
+
+def test_removed_bomb_dead_end_uses_real_checkpoint_route_without_waiving_departure(tmp_path,monkeypatch):
+    mesh=grid_mesh();bot=R.Bot(learn_dir=tmp_path)
+    player={'pos':(100.,0.,1400.),'rot':0.,'action':0}
+    bonus={'ptr':77,'kind':'time','pos':(2900.,0.,1400.)}
+    escape={'actor':9,'pos':(0.,0.,1400.),'at':0.,'removal_recorded':True}
+    bot.mines=SimpleNamespace(escape=escape,clear_escape=lambda *args:False)
+    snap={'nav':mesh,'player':player,'bonuses':[bonus],'ground_mines':{}}
+    monkeypatch.setattr(mesh,'retreat',lambda *args,**kwargs:None)
+    calls=[]
+    monkeypatch.setattr(bot,'_follow',lambda *args,**kwargs:calls.append((args,kwargs)) or {'hold':{'lup'}})
+    assert bot._mine_retreat(player,snap,1.)=={'hold':{'lup'}}
+    assert calls[-1][0][1]['pos']==bonus['pos'] and calls[-1][1]['retreat_from'] is None
+    assert bot.mines.escape is escape and escape['checkpoint_exit']
+    # Before positive detonation/removal evidence the same turnaround is unsafe.
+    escape.pop('removal_recorded');bot.route=None
+    assert bot._mine_retreat(player,snap,2.) is None  # normal guarded gunplay is still available
+    assert len(calls)==1
+
+
+def test_blocked_escape_does_not_suppress_gunplay_or_allow_another_plant(tmp_path,monkeypatch):
+    snap,_=state();snap['enemies']=[]
+    bot=R.Bot(learn_dir=tmp_path,clock=lambda:1.)
+    escape={'actor':9,'pos':snap['player']['pos'],'at':0.}
+    bot.mines=SimpleNamespace(escape=escape,pending=None,clear_escape=lambda *args:False,
+        cadence=SimpleNamespace(only=False,enabled=True),tick=lambda *args:None)
+    monkeypatch.setattr(snap['nav'],'retreat',lambda *args,**kwargs:None)
+    monkeypatch.setattr(M,'ground_mines',lambda _: {})
+    monkeypatch.setattr(bot,'_tick',lambda _: {'hold':{'l1','r1'}})
+    assert bot.tick(snap)=={'hold':{'l1','r1'}}
+    assert bot.mines.escape is escape and 'planting deferred' in bot.stats['mine_retreat_status']

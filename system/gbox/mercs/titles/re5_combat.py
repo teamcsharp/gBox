@@ -12,10 +12,11 @@ anything but the dot misses. So every tick:
   * a loaded direct-fire gun holds L1 + R1 during acquisition and tracking, including off-reticle frames. This is
     the operator's later continuous-fire policy, not a claim that every shot will land. Confirmed cover lowers the
     gun for repositioning. Splash weapons still require first-hit overlap and safe impact clearance;
-  * every shot the game fires is seen in RAM (the player's current action object, player +0x30B0, entering the
+  * direct-gun firing is observed in RAM (the player's current action object, player +0x1238, entering the
     weapon-fire action 0x0163DFC0 / its frame counter +0x20 starting over) and scored: a hit when any Majini's health
     fell within HIT_S, a headshot when the dot was on the head as it left; a miss is classified by what the dot was on
-    (the audit the operator asked for: stats and the run-lessons log);
+    (the audit the operator asked for: stats and the run-lessons log). Accelerated bow action observations can
+    undercount arrows; bow outcomes remain unknown/confounded without native collision ownership and never tune aim;
   * an empty weapon (the in-hand inventory slot's rounds at 0, player +0x22E0 + 0x30 n: +0x8 id, +0xC rounds, +0x20
     in hand) is reloaded (L1 + cross); the weapon switch is the title driver's;
   * a Majini stunned by a headshot (his health fell with the dot on his head; he stands) is closed in on for the
@@ -112,6 +113,15 @@ POINT_BLANK = 110.0                   # a Majini this near on the player's level
                                        # coming up): nothing fits between them
 BOW_RANGE = 2000.0                    # controller tuning, not a decoded projectile range
 BOW_YAW, BOW_PITCH = math.radians(6), math.radians(7)
+BOW_BURST_S = 3.0                     # observed target HP progress, never trigger/FIRE activity, renews this lease
+BOW_OUTCOME_S = 2.0                   # observation retention only; expiry is unknown, never a confirmed miss
+
+
+def bow_tolerance(distance):
+    """Aim inside half the existing centre-mass model; these are controller bounds, not native hitboxes."""
+    distance = max(float(distance), 1.)
+    return min(math.radians(2), math.atan2(BODY_R*.5, distance)), \
+        min(math.radians(2), math.atan2((SHOULDER_H-CHEST_H)*.5, distance))
 
 
 def line_to(ray, aim_at, foot=None) -> bool:
@@ -427,6 +437,15 @@ class Combat:
         self.laserless_feedback_since = None
         self.needs_firing_position = False
         self.laserless_progress = None
+        self.bow_pending = []
+        self.bow_aim = None
+        self.bow_hp = {}
+        self.bow_hp_at = None
+        self.bow_target_damage = {}
+        self.bow_round_observations = 0
+        self.shot_evidence = None
+        self.stats.update(bow_confirmed_hits=0,bow_confirmed_misses=0,
+                          bow_ballistic_calibration='unavailable; no native projectile impact ownership')
         for k in ("shots", "hits", "misses", "headshots", "accuracy", "miss_short", "miss_past", "miss_beside",
                   "miss_moved", "finishers", "reloads", "pitch_writes", "stun_runs"):
             self.stats.setdefault(k, 0)
@@ -486,15 +505,19 @@ class Combat:
         the action entering weapon_fire / its frames starting over (where the action pointer is one), else the fire
         command word (one frame) on a tick while aiming with a loaded gun. Infinite ammo (the package's no-ammo flag:
         the rounds stand while the fire command keeps coming) is noticed after INFINITE_AFTER such frames."""
+        self.shot_evidence = None
         was_rounds, self.rounds_seen = getattr(self, "rounds_seen", None), rounds
         if rounds is not None and was_rounds is not None and 0 < was_rounds - rounds <= 3:
             self.act_seen = self._action(pl)
             self._fire_cmd_seen = 0
+            self.shot_evidence = 'native_ammo_decrease'
             return True
         a = self._action(pl)
         was, self.act_seen = self.act_seen, a
         if a is not None and was is not None and a[0] in (FIRE_VT, READY_VT, RELOAD_VT):
-            return a[0] == FIRE_VT and (was[0] != FIRE_VT or a[1] < was[1] - 0.5)
+            fired = a[0] == FIRE_VT and (was[0] != FIRE_VT or a[1] < was[1] - 0.5)
+            if fired:self.shot_evidence = 'native_fire_action_entry_or_reset'
+            return fired
         try:
             cmd = u32(self.m, pl + P_FIRE_CMD) if pl else 0
         except (ValueError, OSError, struct.error):
@@ -509,6 +532,7 @@ class Combat:
                 self.infinite = True
                 self.stats["infinite_ammo"] = True
             return False
+        self.shot_evidence = 'native_fire_command_inferred_infinite'
         return True
 
     def _update_attribution(self, snap, index):
@@ -580,6 +604,7 @@ class Combat:
         shot = active and self._shot(pl, rounds, p.get("action") == AIMING, now)
         if shot:
             self._on_shot(now)
+        self._observe_bow(snap, now)
         self._observe_impacts(snap.get("enemies") or [], now)
         self._score(now)
         if active:
@@ -592,6 +617,11 @@ class Combat:
         """A missing/loading snapshot cannot establish damage or time gained across its gap."""
         self.last_timer = None
         self.act_seen = self.rounds_seen = self.last_dot = None
+        self.bow_hp.clear()
+        self.bow_hp_at = None
+        self.bow_target_damage.clear()
+        self.bow_aim = None
+        self._observe_bow({},now)
         self._observed_snap = self._observation = None
         self._observe_impacts([], now)
         self._score(now)
@@ -945,12 +975,14 @@ class Combat:
             return {"hold": self._face(p, foot)}
         aim = (foot[0], foot[1] + CHEST_H, foot[2])
         cam = snap.get("camera") or {}
+        camera_direction = None
         try:
             origin, at = tuple(cam["eye"]), tuple(cam["at"])
             if len(origin) != 3 or len(at) != 3 or not all(math.isfinite(v) for v in (*origin, *at)) \
                     or math.dist(origin, at) <= 1.0:
                 raise ValueError("invalid camera direction")
             yaw, pitch = ray_error(origin, at, aim)
+            camera_direction = list(at)
             self.stats["aim_feedback"] = label+" camera direction; no projectile ray"
         except (KeyError, TypeError, ValueError, OverflowError):
             origin = (p["pos"][0], p["pos"][1]+140., p["pos"][2])
@@ -970,13 +1002,26 @@ class Combat:
         self.laserless_feedback_since = None
         if self._laserless_stalled(p,tgt,wid,math.hypot(yaw,pitch),shot,now):
             return {"hold":set()}
-        aligned = abs(yaw) <= BOW_YAW and abs(pitch) <= BOW_PITCH
+        distance = math.dist(origin,aim)
+        yaw_tol,pitch_tol = bow_tolerance(distance) if wid==0x0F else (BOW_YAW,BOW_PITCH)
+        aligned = abs(yaw) <= yaw_tol and abs(pitch) <= pitch_tol
+        if wid==0x0F:
+            self.bow_aim = {'at':now,'target':tgt.get('ptr'),'player':p.get('ptr'),
+                'player_pos':list(p['pos']),'target_pos':list(foot),'origin':list(origin),
+                'camera_at':camera_direction,
+                'distance_cm':round(distance,1),'yaw_error_rad':yaw,'pitch_error_rad':pitch,
+                'yaw_tolerance_rad':yaw_tol,'pitch_tolerance_rad':pitch_tol,
+                'corridor_supported':bool(corridor),'cover':'projectile collision unverified',
+                'ballistic_calibration':'unavailable; no owned impact/flight model'}
+            self.stats.update(bow_aim_tolerance_deg=[round(math.degrees(yaw_tol),3),round(math.degrees(pitch_tol),3)],
+                              bow_aim_error_deg=[round(math.degrees(yaw),3),round(math.degrees(pitch),3)])
         if wid not in (0x0F,0x36) and math.dist(p["pos"],foot) < POINT_BLANK and abs(yaw) <= BOW_YAW:
             aligned = True  # Supported corridor, contact distance: continue firing while correcting elevation.
         fire, policy = laserless_fire_policy(wid, corridor=corridor, aligned=aligned,
                                       loaded=rounds is not None and rounds > 0)
         self.stats["weapon_policy"] = policy
-        keys = {"l1"} | self._yaw(yaw) | self._pitch(pl, p, pitch, now)
+        keys = {"l1"} | self._yaw(yaw,deadzone=yaw_tol if wid==0x0F else None) \
+            | self._pitch(pl,p,pitch,now,deadzone=pitch_tol if wid==0x0F else None)
         # Always release between arrows, even when the separate global refire table is accelerated.
         if not fire:
             self.bow_down_at = None
@@ -1000,8 +1045,18 @@ class Combat:
         key = (p.get("ptr"),tgt.get("ptr",tgt.get("slot")),wid)
         progress = self.laserless_progress
         if progress is None or progress["key"] != key:
-            self.laserless_progress = {"key":key,"best":error,"improved":now}
-        elif shot or progress["best"]-error >= math.radians(3):
+            self.laserless_progress = {"key":key,"best":error,"improved":now,"started":now}
+        elif wid==0x0F and now-max(progress['started'],self.bow_target_damage.get(tgt.get('ptr'),-math.inf)) >= BOW_BURST_S:
+            self.laserless_progress = None
+            self.bow_down_at = None
+            self.needs_firing_position = True
+            self.stats['bow_ineffective_bursts'] = self.stats.get('bow_ineffective_bursts',0)+1
+            self.stats.update(combat='longbow: no measured target HP progress; resume supported route',
+                              fire_gate='longbow: bounded burst ended; reposition / checkpoint routing')
+            return True
+        elif wid==0x0F and self.bow_target_damage.get(tgt.get('ptr'),-math.inf)>progress.get('damage',-math.inf):
+            progress.update(improved=now,damage=self.bow_target_damage[tgt.get('ptr')])
+        elif (shot and wid!=0x0F) or progress["best"]-error >= math.radians(3):
             progress.update(best=error,improved=now)
         elif now-progress["improved"] >= 2.5:
             self.laserless_progress = None
@@ -1031,8 +1086,8 @@ class Combat:
             return set()
         return {"rleft"} if err > 0 else {"rright"}
 
-    def _yaw(self, err: float) -> set:
-        if abs(err) <= math.radians(0.6):
+    def _yaw(self, err: float, *, deadzone=None) -> set:
+        if abs(err) <= (math.radians(0.6) if deadzone is None else deadzone):
             return set()
         if abs(err) < FINE:
             self.yaw_pulse ^= 1
@@ -1040,9 +1095,9 @@ class Combat:
                 return set()
         return {"rleft"} if err > 0 else {"rright"}
 
-    def _pitch(self, pl: int, p: dict, err: float, now: float) -> set:
+    def _pitch(self, pl: int, p: dict, err: float, now: float, *, deadzone=None) -> set:
         """The aim pitch: written into the player (+0x1AA0, + = down) by the dot's own error, else the stick."""
-        if abs(err) <= math.radians(0.5):
+        if abs(err) <= (math.radians(0.5) if deadzone is None else deadzone):
             return set()
         if PITCH_WRITE and self.writer.ok and pl:
             try:
@@ -1060,8 +1115,66 @@ class Combat:
         return {"rup"} if err > 0 else {"rdown"}
 
     # --- scoring and learning ---
+    def _bow_event(self, event):
+        try:self.lessons(event)
+        except Exception:pass  # lost analytics never blocks control
+
+    def _observe_bow(self, snap, now):
+        """HP changes are progress/correlation, not proof of an individual arrow hit or miss."""
+        current = {e.get('ptr'):e['hp'] for e in snap.get('enemies') or ()
+                   if e.get('ptr') and type(e.get('hp')) in (int,float) and math.isfinite(e['hp'])}
+        continuous = self.bow_hp_at is not None and 0 <= now-self.bow_hp_at <= .5
+        losses = {ptr:self.bow_hp[ptr]-hp for ptr,hp in current.items()
+                  if continuous and ptr in self.bow_hp and hp<self.bow_hp[ptr]}
+        self.bow_hp,self.bow_hp_at = current,now
+        self.bow_target_damage = {ptr:at for ptr,at in self.bow_target_damage.items() if now-at<=BOW_BURST_S}
+        for ptr,loss in losses.items():
+            if self.wid!=0x0F:continue
+            self.bow_target_damage[ptr] = now
+            candidates = [row for row in self.bow_pending if row.get('target')==ptr and 0<=now-row['t']<=BOW_OUTCOME_S]
+            if candidates:
+                row = candidates[0]
+                row['damage_correlation'] = True
+                self.stats['bow_damage_correlations'] = self.stats.get('bow_damage_correlations',0)+1
+                self._bow_event({'kind':'bow_damage_observation','t':now,'target':ptr,'hp_loss':loss,
+                    'firing_observations_in_window':len(candidates),
+                    'attribution':'unconfirmed; native projectile collision/source unavailable',
+                    'multiple_players':self.damage_unattributed,'ground_mines_present':bool(snap.get('ground_mines')),
+                    'calibration_applied':False})
+        for row in list(self.bow_pending):
+            if now-row['t']<BOW_OUTCOME_S:continue
+            self.bow_pending.remove(row)
+            correlated = bool(row.get('damage_correlation'))
+            key = 'bow_confounded_outcomes' if correlated else 'bow_unconfirmed_impacts'
+            self.stats[key] = self.stats.get(key,0)+1
+            self._bow_event({'kind':'shot','weapon':0x0F,'character':row['character'],**row,
+                'outcome':'confounded' if correlated else 'unknown',
+                'result':'bow damage correlated; source unconfirmed' if correlated else 'bow impact unconfirmed: no attributable impact',
+                'confirmed_hit':False,'confirmed_miss':False,'calibration_applied':False})
+        self.stats['bow_pending_observations'] = len(self.bow_pending)
+
     def _on_shot(self, now):
         """A shot left: remember what the dot was on (the class the hit / miss gets scored with)."""
+        if self.wid==0x0F:
+            # Accelerated bow spawns can outnumber action transitions. Preserve this
+            # legacy count as observations, never claim it is an arrow/impact count.
+            self.shots.stats['shots'] += 1
+            self.round_counts['shots'] += 1
+            self.bow_round_observations += 1
+            self.stats['bow_firing_observations'] = self.stats.get('bow_firing_observations',0)+1
+            self.stats['bow_count_basis'] = 'native firing observations; individual arrow count unknown'
+            aim = self.bow_aim if self.bow_aim and 0<=now-self.bow_aim['at']<=.5 else {}
+            row = {**aim,'t':now,'character':self.character,'native_evidence':self.shot_evidence,
+                   'individual_arrow_count':None,'outcome':'pending_unattributed'}
+            self.bow_pending.append(row)
+            if len(self.bow_pending)>32:
+                old = self.bow_pending.pop(0)
+                self.stats['bow_unconfirmed_impacts'] = self.stats.get('bow_unconfirmed_impacts',0)+1
+                self._bow_event({'kind':'shot','weapon':0x0F,**old,'outcome':'unknown',
+                    'result':'bow observation capacity reached; impact unknown',
+                    'confirmed_hit':False,'confirmed_miss':False,'calibration_applied':False})
+            self._bow_event({'kind':'bow_firing_observation',**row})
+            return
         self.shots.fired(now)
         self.round_counts["shots"] += 1
         where, ptr, lz, foot = (self.last_dot or (None, None, None, None))[:4]
@@ -1115,10 +1228,11 @@ class Combat:
             self.stats[key] = self.stats.get(key, 0) + 1
             self._log_shot(t, cls, where, reach, dist, ptr)
         self.stats["shots"], self.stats["hits"], self.stats["misses"] = st["shots"], hits, misses
-        self.stats["accuracy"] = None if self.damage_unattributed else st["accuracy"]
+        self.stats["accuracy"] = None if self.damage_unattributed or self.wid==0x0F or self.bow_round_observations else st["accuracy"]
         self.stats.update(round_shots=self.round_counts["shots"], round_hits=self.round_counts["hits"],
                           round_accuracy=(round(self.round_counts["hits"] / self.round_counts["shots"], 3)
-                                          if self.round_counts["shots"] and not self.damage_unattributed else None))
+                                          if self.round_counts["shots"] and not self.damage_unattributed
+                                          and not self.bow_round_observations else None))
 
     def _log_shot(self, t, cls, where, reach, dist, ptr):
         """Every shot into the title's run-lessons log (operator: "why did he miss" -> its class)."""
@@ -1144,8 +1258,9 @@ class Combat:
     def _headshot_metrics(self):
         shots, kills = self.stats.get("shots") or 0, self.stats.get("kills_seen_by_combat") or 0
         self.stats["headshot_pct"] = (round(100.0 * (self.stats.get("headshots") or 0) / shots, 1)
-                                      if shots and not self.damage_unattributed else None)
-        self.stats["shots_per_kill"] = round(shots / kills, 2) if kills and not self.damage_unattributed else None
+                                      if shots and not self.damage_unattributed and not self.bow_round_observations else None)
+        self.stats["shots_per_kill"] = round(shots / kills, 2) \
+            if kills and not self.damage_unattributed and not self.bow_round_observations else None
 
     def start_round(self, now):
         """Called on an observed playing transition, never inferred from a clock bonus."""
@@ -1159,6 +1274,12 @@ class Combat:
         self.bow_down_at, self.bow_up_at = None, -1e9
         self.laserless_feedback_since, self.needs_firing_position = None, False
         self.laserless_progress = None
+        self.bow_pending.clear()
+        self.bow_aim = None
+        self.bow_hp.clear()
+        self.bow_hp_at = None
+        self.bow_target_damage.clear()
+        self.bow_round_observations = 0
         self.act_seen = self.rounds_seen = self.last_dot = None
         self.dot_head_since = self.dot_body_since = None
         self.shots.hp.clear()
@@ -1173,6 +1294,7 @@ class Combat:
             return
         # A pending shot must be resolved before the next spawn can change enemy health or reuse its slots.
         self._observe_impacts([], now + HIT_S + 1)
+        self._observe_bow({},now+BOW_OUTCOME_S+1)
         self._score(now)
         self._round_over()
         self.round_t0 = None
@@ -1196,13 +1318,15 @@ class Combat:
 
     def _round_over(self):
         rc = self.round_counts
-        if self.damage_unattributed:
+        if self.damage_unattributed or self.bow_round_observations:
             # Preserve measured shots/team time without turning shared HP changes
             # into personal accuracy or adapting the P2 weapon's aim settings.
             if self.lessons:
                 try:
                     self.lessons({'kind':'combat_round','character':self.character,'weapon':self.wid,**rc,
-                                  'hit_rate':None,'damage_attribution':'unattributed_multiple_players'})
+                                  'hit_rate':None,'damage_attribution':('unattributed_multiple_players' if self.damage_unattributed
+                                      else 'bow projectile impact ownership unavailable'),
+                                  'bow_firing_observations':self.bow_round_observations,'calibration_applied':False})
                 except Exception:
                     pass
             return

@@ -297,6 +297,7 @@ def routes(app, config, auth, gate):
             _PROXIES[name]._lock()
         return result
 
+    @app.get('/api/llm/local/strict-nodes/{name}/v1/models')
     @app.get('/api/llm/local/nodes/{name}/v1/models')
     def models(name: str, actor=Depends(access)):
         s = node_settings().get(name)
@@ -304,8 +305,7 @@ def routes(app, config, auth, gate):
             raise HTTPException(404, 'Unknown inference machine')
         return {'object': 'list', 'data': [{'id': s.model, 'object': 'model', 'context_length': s.context_tokens}]}
 
-    @app.post('/api/llm/local/nodes/{name}/v1/chat/completions')
-    async def chat(name: str, request: Request, actor=Depends(access)):
+    async def dispatch(name: str, request: Request, *, strict=False):
         settings = node_settings()
         if name not in settings:
             raise HTTPException(404, 'Unknown inference machine')
@@ -316,7 +316,7 @@ def routes(app, config, auth, gate):
         if not isinstance(body, dict):
             raise HTTPException(400, 'Expected a JSON object')
         # Fail over before inference begins. Never replay a partially emitted tool-call stream.
-        candidates = [name] + [n for n in settings if n != name]
+        candidates = [name] if strict else [name] + [n for n in settings if n != name]
         if not L.settings().enabled:
             raise HTTPException(503, 'Local task pool is disabled')
         retry_headers = {'Retry-After': '30'}
@@ -344,8 +344,20 @@ def routes(app, config, auth, gate):
                 if headers:
                     retry_headers = headers
                 continue
-        return JSONResponse({'error': {'message': 'Enabled local inference machines are unavailable; task retained'}},
+        message = ('Requested inference machine is unavailable; task retained' if strict else
+                   'Enabled local inference machines are unavailable; task retained')
+        return JSONResponse({'error': {'message': message}},
                             status_code=503, headers=retry_headers)
+
+    @app.post('/api/llm/local/nodes/{name}/v1/chat/completions')
+    async def chat(name: str, request: Request, actor=Depends(access)):
+        return await dispatch(name, request)
+
+    @app.post('/api/llm/local/strict-nodes/{name}/v1/chat/completions')
+    async def strict_chat(name: str, request: Request, actor=Depends(access)):
+        # Share the exact node proxy and limiter with ordinary pool calls. A
+        # pinned analysis never spends a permit or credit on another machine.
+        return await dispatch(name, request, strict=True)
 
     from . import hermes_models
     hermes_models.routes(app, auth)

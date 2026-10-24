@@ -10,7 +10,7 @@ from . import re5_weapons as weapons
 
 LOCK = threading.RLock()
 FRESH_S, REQUEST_S = 5.0, 30.0
-FAMILIES = {"handgun", "automatic", "shotgun", "magnum"}
+FAMILIES = {"handgun", "automatic", "shotgun", "magnum", "bow"}
 
 
 def eligible(item):
@@ -92,8 +92,8 @@ def capability(state, now=None):
     if not ctl.get("active") or not 0 <= now - ctl.get("seen", -1e9) <= FRESH_S:
         return {"available": False, "reason": "Waiting for a fresh active RE5 bot."}
     if not ctl.get("inventory"):
-        return {"available": False, "reason": "No supported loaded gun in a quick slot."}
-    return {"available": True, "reason": "Equips a loaded quick-slot gun; excludes rockets and sniper rifles."}
+        return {"available": False, "reason": "No supported loaded gun or longbow in a quick slot."}
+    return {"available": True, "reason": "Equips a loaded quick-slot gun or longbow; excludes rockets and sniper rifles."}
 
 
 def request_status(state, now=None):
