@@ -28,7 +28,7 @@ from .hermes_availability import _api
 STATE = 'result-review.json'
 UNREVIEWED_GRACE_S = 2 * 3600     # a last run the ledger never recorded stops holding the task after this long
 TRANSCRIPT_ATTEMPTS = 3           # transcript-less attempts before the review proceeds from the request thread
-REVIEW_WAIT_MAX_S = 6 * 3600      # a review this late no longer holds its task; its guidance still attaches when it arrives
+REVIEW_WAIT_MAX_S = 3600          # a review this late no longer holds its task (operator 2026-10-24: results, full throttle; 6 h held tasks behind a stalled reviewer); its guidance still attaches when it arrives
 NAME = 'gBox DeepSeek result review'
 TERMINAL = ('completed', 'failed', 'cancelled', 'canceled', 'success', 'succeeded', 'error', 'finished',
             'timed_out', 'interrupted', 'abandoned')

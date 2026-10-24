@@ -826,8 +826,9 @@ def test_round_review_pins_strict_node_and_preserves_active_claims(env, monkeypa
     assert q.tick(now=1010)['dispatched'] == [], 'A queued review retains its exact job claim'
 
 
-def test_prioritized_requests_share_their_game_up_to_the_cap():
+def test_prioritized_requests_share_their_game_up_to_the_cap(monkeypatch):
     # operator 2026-10-22: the RE5 coaching tickets ran one at a time behind a single RE5 run
+    monkeypatch.setattr(q, 'PRIORITY_PER_GAME', 3)                         # the cap's behaviour, at a small cap
     ids = [str(i) * 16 for i in range(1, 6)]
     data = {'version': 1, 'priority': ids[:4], 'items': {
         'inbox:' + rid: {'lane': 'inbox', 'request_id': rid, 'game_id': G, 'attempts': 0} for rid in ids}}
