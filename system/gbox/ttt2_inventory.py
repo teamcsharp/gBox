@@ -158,6 +158,62 @@ def pack_header(blob: bytes, file_size: int) -> dict:
             "records": records}
 
 
+def parse_nrfo(blob: bytes) -> list[tuple[int, int]]:
+    """Parse ``nrfo.bin``: ``u32 count`` then ``count`` big-endian ``(offset, size)``
+    pairs.  Verified on the owned disc: count=42, members are contiguous from
+    ``4 + 8*count`` to EOF and each begins ``00000014 'ftyp' 'nrfo'`` (ISO-BMFF).
+    Every bound is checked against ``len(blob)``; overlaps/gaps raise ValueError.
+    """
+    if len(blob) < 4:
+        raise ValueError("nrfo too short")
+    count = struct.unpack_from(">I", blob, 0)[0]
+    table_end = 4 + 8 * count
+    if count == 0 or table_end > len(blob):
+        raise ValueError(f"nrfo count {count} exceeds file")
+    out = []
+    expect = table_end
+    for i in range(count):
+        off, size = struct.unpack_from(">II", blob, 4 + 8 * i)
+        if off != expect or size == 0 or off + size > len(blob):
+            raise ValueError(f"nrfo entry {i} not contiguous/in range: {off}+{size}")
+        out.append((off, size))
+        expect = off + size
+    if expect != len(blob):
+        raise ValueError("nrfo members do not end at EOF")
+    return out
+
+
+def classify_root_file(head: bytes) -> str:
+    """Classify a root file by its first bytes.
+
+    ``data026/027/034..047`` are ISO-BMFF ``ftyp nrfi`` movie/stream stubs, NOT
+    0x0FF512ED asset packs, so the character-bearing packs are the 0x0FF512ED set.
+    """
+    if head[:4] == b"XEX2":
+        return "xex"
+    if len(head) >= 4 and struct.unpack(">I", head[:4])[0] == PACK_MAGIC:
+        return "pack"
+    if head[:4] == b"PIRS":
+        return "pirs"
+    if head[4:12] == b"ftypnrfi":
+        return "nrfi"
+    if head[4:12] == b"ftypnrfo":
+        return "nrfo"
+    if head[4:8] == b"ftyp":
+        return "isobmff"
+    return "other"
+
+
+def pack_table_scrambled(blob: bytes) -> bool:
+    """Heuristic (measured on the disc): packs whose bytes after the 16-byte header
+    are near-random (<=5% in-range u32 words in the first 1000) have a scrambled /
+    compressed table rather than a plaintext (offset,size) table.  Hypothesis only.
+    """
+    words = struct.unpack_from(">%dI" % ((len(blob) - 16) // 4), blob, 16)[:1000]
+    inr = sum(1 for x in words if 0 < x < (1 << 30))
+    return inr < len(words) * 0.5
+
+
 def main(argv: list[str]) -> int:
     args = [a for a in argv[1:]]
     source_sha256 = None
@@ -210,12 +266,15 @@ def main(argv: list[str]) -> int:
                 info["records"] = info["records"][:8]  # sample only; re-run for full table
             elif head[:4] == b"PIRS":
                 kind = "pirs"
+            elif head[4:12] == b"ftypnrfi":
+                kind = "nrfi"
             elif head[4:8] == b"ftyp":
                 kind = "isobmff"
             elif path == "nrfo.bin":
                 kind = "table"
+                info = {"nrfo_members": len(parse_nrfo(dvd.read(sec, size)))}
             entry = {"path": path, "sector": sec, "size": size, "kind": kind}
-            if kind == "pack":
+            if kind in ("pack", "table"):
                 entry.update(info)
             containers.append(entry)
 
