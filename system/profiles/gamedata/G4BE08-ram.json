@@ -16,7 +16,7 @@
     "package": [["mercenaries_unlock", {"on": true}],
                 ["merc_loadout", {"character": "leon", "items": ["handcannon", "handcannon ammo:200"], "on": true}],
                 ["weapon_mod", {"item": "handcannon", "reset": true, "damage": "99.9"}],
-                ["infinite_ammo", {"on": true}], ["unlimited_health", {"on": false}],
+                ["infinite_ammo", {"on": true}], ["unlimited_health", {"on": false}], ["auto_first_aid", {"on": true}],
                 ["merc_time_bonus", {"multiplier": 3}], ["combo_time", {"multiplier": 3}],
                 ["combo_freeze", {"on": true}], ["spawn_multiplier", {"count": 3, "on": true}],
                 ["aim_turn_speed", {"multiplier": 3.0}]],

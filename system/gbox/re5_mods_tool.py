@@ -9,6 +9,10 @@ package through run() at round start, gbox/mercs_bot.py):
   fire_rate multiplier=N          scales firing tables and the re-fire timer (80); measured shot rate may differ
   infinite_ammo on=true|false     no weapon spends rounds (the HUD shows the infinity sign; the Gatling's own flag)
   unlimited_health on=true|false full living HP each snapshot, plus exact-signature-verified Muteki hit immunity
+  infinite_spray on=true|false    an infinite First Aid Spray (alias auto_first_aid): every character's loadout template
+                                  gets a spray record (the game builds the item at the round start), and when the bot has
+                                  used its last recovery item the spray's own game-made record is replayed into its freed
+                                  inventory slot, byte for byte (maintain_spray, each bot snapshot); the bot heals with it
   bullet_damage multiplier=N      every weapon's firepower x N at every upgrade level
   addresses                       this release's address table, with the evidence
 Everything is RAM only: a relaunch of the game is the full revert.
@@ -98,8 +102,20 @@ POWERFUL = {0x11B: "S&W M500", 0x11A: "Lightning Hawk", 0x119: "Hydra", 0x115: "
             0x10B: "S&W M29"}
 MAGNUMS = (0x10B, 0x11A, 0x11B)
 REPLACE_WITH_MAGNUM = frozenset({0x10D, 0x105, 0x11C, 0x120})
-OPERATOR_SETTINGS = frozenset({"fire_rate", "turn_speed", "bullet_damage", "infinite_ammo", "unlimited_health", "kill_time"})
+OPERATOR_SETTINGS = frozenset({"fire_rate", "turn_speed", "bullet_damage", "infinite_ammo", "unlimited_health", "kill_time",
+                               "infinite_spray"})
 KNIFE_IDS = {0x101, 0x10E, 0x114, 0x123, 0x124, 0x100}
+# infinite_spray: the First Aid Spray is item word 0x304 (type 3 = recovery items; the herbs are 0x305 / 0x307 / 0x309:
+# the same set as mercs/titles/re5_inventory_health.HEAL_IDS, which the bot heals with). An inventory slot (0x30 bytes
+# at player + INV_OFS) keeps its id word at +0x8, its count at +0xC, its grid position at +0x1C, "in hand" at +0x20 and
+# the in-use byte at +0x2D. A free template record's grid: the D-pad quick slots first (the bot equips those with one
+# tap: re5_weapons.quick_key), 7 last (the mine / egg loadouts take grid 7).
+SPRAY_ID = 0x304
+HEAL_IDS = frozenset({0x304, 0x305, 0x307, 0x309})
+TEMPLATE_HERBS = frozenset({0x305, 0x307, 0x309})
+SLOT_ID, SLOT_COUNT, SLOT_GRID, SLOT_HAND, SLOT_USED = 0x8, 0xC, 0x1C, 0x20, 0x2D
+SPRAY_GRIDS = (1, 5, 3, 0, 2, 4, 6, 8, 7)
+SPRAY_RESTORE_GAP_S = 2.5                       # two replays of the spray record at least this far apart
 # The HUD clock: sBioMain [0x0191CEE4] +0x182D4 -> cGameSys +0x3E0. The authoritative countdown is a DIFFERENT
 # object: sArea [0x0191CA20] +0x3830 -> aGame +0x4DC. Native getter 0xBBCA0 and countdown 0x1361C prove this chain;
 # 0x1361C rewrites the HUD every frame. Live 2026-10-23: HUD-only writes vanished within 50 ms; owner writes persisted.
@@ -243,6 +259,11 @@ class RE5:
         st["unlimited_health"] = bool(self.orig.get("health", {}).get("on"))
         st["health_maintenance"] = self.orig.get("health", {}).get("last")
         st["hit_immunity"] = bool((st["health_maintenance"] or {}).get("hit_immunity"))
+        spray = self.orig.get("spray", {})
+        st["infinite_spray"] = bool(spray.get("on"))
+        st["sprays_restored"] = spray.get("restored", 0)
+        st["spray_template_blocks"] = spray.get("blocks")
+        st["spray_maintenance"] = spray.get("last")
         kt = self.orig.get("kill_time", {})
         st["kill_time_s"] = kt.get("seconds_max", kt.get("seconds", KILL_TIME_S)) if kt.get("on") else 0.0
         st["kill_time_on"] = bool(kt.get("on"))
@@ -727,15 +748,216 @@ def verify_main_presets(g):
         raise RuntimeError('loadout template signature differs')
 
 
+def spray_model(t: bytes) -> bytes | None:
+    """The game's own First Aid Spray template record (Sheva Business and Rebecca carry one; docs/mercenaries_re5_meta.md),
+    the model for the words of a record this module does not interpret (the flags); None in an image without one."""
+    for off, idw, *_ in template_records(t):
+        if idw == SPRAY_ID:
+            return bytes(t[off:off + TEMPLATE_REC])
+    return None
+
+
+def spray_overlay(t: bytes, model: bytes | None = None) -> tuple[bytearray, list, list]:
+    """Every template block with a First Aid Spray record: (the image, [converted {block, record, grid, source, from}],
+    [skipped {block, reason}]). A block without one gets a spray in the place of one record the round can do without:
+    its last ammo record (type 2; the autobot's guns spend no rounds), else its last herb record (the spray heals more),
+    else its last free record (id 0, a game-owned grid slot: re5_mines) at a free grid position; a block with none of
+    those is left alone and reported. The spray record is the game's own (model) with count 1, that grid position, not
+    in hand, level 0; without a model the shape the mine / egg loadouts use (flags 0)."""
+    t = bytearray(t)
+    base_rec = list(struct.unpack(">11I", model)) if model else [SPRAY_ID, 1, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0, 0, 0, 0]
+    converted, skipped = [], []
+    for b in range(TEMPLATE_BLOCKS):
+        base = b * TEMPLATE_BLOCK
+        rows = [list(struct.unpack_from(">11I", t, base + r * TEMPLATE_REC)) for r in range(12)]
+        if any(r[0] == SPRAY_ID for r in rows):
+            continue
+
+        def item(r):                                  # a carried item record, placed on the grid, not the one in hand
+            return r[0] and r[0] != 0xFFFFFFFF and r[2] == r[3] == r[4] == 0xFFFFFFFF and r[5] < 9 and r[6] == 0
+
+        ammo = [i for i, r in enumerate(rows) if item(r) and r[0] >> 8 == 2]
+        herbs = [i for i, r in enumerate(rows) if item(r) and r[0] in TEMPLATE_HERBS]
+        if ammo:
+            idx, source, grid = ammo[-1], "ammo", rows[ammo[-1]][5]
+        elif herbs:
+            idx, source, grid = herbs[-1], "herb", rows[herbs[-1]][5]
+        else:
+            occupied = {r[5] for r in rows if r[0] and r[0] != 0xFFFFFFFF and r[5] < 9}
+            free = [i for i, r in enumerate(rows) if r[0] == 0 and r[5] < 9]
+            grid = next((x for x in SPRAY_GRIDS if x not in occupied), None)
+            if not free or grid is None:
+                skipped.append({"block": b, "reason": "no ammo, herb or free record to turn into a spray"})
+                continue
+            idx, source = free[-1], "free"
+        rec = list(base_rec)
+        rec[0], rec[1], rec[5], rec[6], rec[7] = SPRAY_ID, 1, grid, 0, 0
+        struct.pack_into(">11I", t, base + idx * TEMPLATE_REC, *rec)
+        converted.append({"block": b, "record": idx, "grid": grid, "source": source, "from": f"0x{rows[idx][0]:X}"})
+    return t, converted, skipped
+
+
+def _with_spray(g: RE5, t: bytearray) -> bytearray:
+    """A template image about to be written, with infinite_spray's records in it when that op is on (the per-round
+    loadout rewrites the whole template from the original: the sprays go back in on the same write). The records'
+    first-seen bytes are kept per offset for infinite_spray on=false."""
+    state = g.orig.get("spray") or {}
+    if not state.get("on"):
+        return t
+    model = state.get("model") or spray_model(g.orig.get("template") or bytes(t))
+    out, converted, skipped = spray_overlay(t, model)
+    owned = state.setdefault("template_records", {})
+    for c in converted:
+        off = c["block"] * TEMPLATE_BLOCK + c["record"] * TEMPLATE_REC
+        rec = owned.setdefault(off, {"before": bytes(t[off:off + TEMPLATE_REC])})
+        rec["after"] = bytes(out[off:off + TEMPLATE_REC])
+    state.update(blocks=sum(1 for b in range(TEMPLATE_BLOCKS)
+                            if any(idw == SPRAY_ID for off, idw, *_ in template_records(out) if off // TEMPLATE_BLOCK == b)),
+                 converted=len(converted), skipped=skipped)
+    return out
+
+
+def infinite_spray(g: RE5, on: bool) -> dict:
+    """The operator's infinite First Aid Spray for the autobot (2026-10-24), with unlimited_health off: (a) every
+    character's loadout template holds a spray record, so each round starts with one the game itself builds
+    (spray_overlay: an ammo, herb or free record becomes the spray; takes effect at the next round start); (b) each bot
+    snapshot maintain_spray replays the game-made spray record into its slot once the bot has used it and carries no
+    other recovery item. on=false puts the converted template records back (the ones still holding our bytes) and stops
+    the replay; the live inventory is never touched by off."""
+    with _HEALTH_LOCK:
+        verify_main_presets(g)
+        current = g.rd(TEMPLATE, TEMPLATE_BLOCKS * TEMPLATE_BLOCK)
+        t0 = g.keep("template", lambda: current)
+        state = g.orig.setdefault("spray", {})
+        state.setdefault("restored", 0)
+        if not on:
+            state["on"] = False
+            state.pop("spray_record", None)
+            owned, ok, back = state.pop("template_records", {}), True, 0
+            for off, rec in owned.items():
+                if g.rd(TEMPLATE + off, TEMPLATE_REC) == rec["after"]:
+                    ok &= g.wr(TEMPLATE + off, rec["before"])
+                    back += 1
+            state.update(blocks=None, converted=0, skipped=[])
+            return {"infinite_spray": False, "verified": ok, "template_records_restored": back,
+                    "sprays_restored": state["restored"], "effective_next_round": True,
+                    "note": "the template records this op converted are the game's again (next round start); a spray "
+                            "already built into the inventory stays until used"}
+        state["on"] = True
+        state["model"] = spray_model(t0) or spray_model(current)
+        t = _with_spray(g, bytearray(current))
+        ok, written = True, 0
+        for off, rec in state.get("template_records", {}).items():
+            if current[off:off + TEMPLATE_REC] != rec["after"]:
+                if g.rd(TEMPLATE + off, TEMPLATE_REC) != current[off:off + TEMPLATE_REC]:
+                    raise RuntimeError("infinite_spray: template changed during validation")
+                ok &= g.wr(TEMPLATE + off, rec["after"])
+                written += 1
+        return {"infinite_spray": True, "verified": bool(ok), "blocks_with_spray": state.get("blocks"),
+                "blocks_converted": state.get("converted", 0), "records_written": written, "skipped": state.get("skipped"),
+                "model": "the game's own spray record" if state["model"] else "mine/egg record shape (flags 0)",
+                "sprays_restored": state["restored"], "effective_next_round": True,
+                "note": "every character's loadout template now holds one First Aid Spray (built by the game at the "
+                        "round start; an ammo or herb record made room for it); the bot's snapshots replay the spray's "
+                        "game-made record into its slot after each use (maintain_spray). Live RAM check pending."}
+
+
+def _slot_rows(raw: bytes) -> list[dict]:
+    """The used inventory slots of a raw player + INV_OFS image: slot, id, count, grid, hand."""
+    rows = []
+    for k in range(INV_SLOTS):
+        s = raw[k * SLOT:(k + 1) * SLOT]
+        if not s[SLOT_USED]:
+            continue
+        rows.append({"slot": k, "id": struct.unpack_from(">I", s, SLOT_ID)[0], "count": struct.unpack_from(">I", s, SLOT_COUNT)[0],
+                     "grid": struct.unpack_from(">I", s, SLOT_GRID)[0], "hand": struct.unpack_from(">I", s, SLOT_HAND)[0] == 1,
+                     "bytes": bytes(s)})
+    return rows
+
+
+def _maintain_spray(g: RE5, state: dict, snap, now: float) -> dict:
+    result = {"infinite_spray": True, "active": False, "restored": False, "verified": True,
+              "sprays_restored": state.get("restored", 0)}
+    pl = _health_player(g)
+    if not pl or (snap is not None and (snap.get("player") or {}).get("ptr") != pl):
+        return {**result, "reason": "waiting for the current player"}
+    hp, maximum = struct.unpack(">hh", g.rd(pl + P_HP, 4))
+    if not 0 < hp <= maximum <= 32767:
+        return {**result, "reason": "waiting for a living player with valid health", "hp": hp}
+    rec = state.get("spray_record")
+    if rec and rec.get("player") != pl:                     # another player allocation: its records are not this one's
+        state.pop("spray_record", None)
+        rec = None
+    rows = _slot_rows(g.rd(pl + INV_OFS, INV_SLOTS * SLOT))
+    carried = [r for r in rows if r["id"] in HEAL_IDS and r["count"] > 0]
+    for r in rows:                                          # the spray as the game made it, unequipped: remembered
+        if r["id"] == SPRAY_ID and r["count"] >= 1 and not r["hand"]:
+            state["spray_record"] = rec = {"player": pl, "slot": r["slot"], "grid": r["grid"], "bytes": r["bytes"], "armed": True}
+    result["active"] = True
+    if carried:
+        return {**result, "carried": len(carried)}
+    if rec is None:
+        return {**result, "reason": "no game-created First Aid Spray record seen for this player yet"}
+    if not rec.get("armed"):
+        return {**result, "reason": "spray record replayed; waiting for the game to hold it again"}
+    last = state.get("last_restore_at")
+    if last is not None and now - last < SPRAY_RESTORE_GAP_S:
+        return {**result, "reason": f"restore gap ({SPRAY_RESTORE_GAP_S - (now - last):.1f} s left)"}
+    k, grid = rec["slot"], rec["grid"]
+    held = next((r for r in rows if r["slot"] == k), None)
+    if held is not None:
+        return {**result, "reason": f"slot {k} is in use (0x{held['id']:X}); a held record is never overwritten"}
+    taken = next((r for r in rows if r["grid"] == grid), None)
+    if taken is not None:
+        return {**result, "reason": f"grid {grid} is held by slot {taken['slot']} (0x{taken['id']:X}); not restoring over it"}
+    at = pl + INV_OFS + k * SLOT
+    if _health_player(g) != pl or g.rd(at + SLOT_USED, 1) != b"\0":   # re-checked right before the write
+        return {**result, "reason": "player or slot changed before the write"}
+    if not g.wr(at, rec["bytes"]):
+        return {**result, "verified": False, "reason": "spray record readback failed"}
+    rec["armed"] = False
+    state["restored"] = state.get("restored", 0) + 1
+    state["last_restore_at"] = now
+    if snap is not None and isinstance(snap.get("inventory"), list):     # this snapshot's heal logic sees it
+        snap["inventory"].append({"slot": k, "id": SPRAY_ID, "type": SPRAY_ID >> 8, "item": SPRAY_ID & 0xFF,
+                                  "rounds": struct.unpack_from(">I", rec["bytes"], SLOT_COUNT)[0], "cap": 1,
+                                  "grid": grid if grid < INV_SLOTS else None, "grid_raw": grid, "hand": False})
+    return {**result, "restored": True, "slot": k, "grid": grid, "sprays_restored": state["restored"]}
+
+
+def maintain_spray(ad, snap=None, now: float | None = None) -> dict:
+    """The Mercenaries observer calls this each playing snapshot; only a session with infinite_spray on is written.
+
+    The restore is an exact byte replay of a record the game itself created: the First Aid Spray's 0x30-byte inventory
+    slot as it was observed, unequipped, in this player's inventory. It goes back into that same slot only when the slot
+    is free (its in-use byte is 0), no record holds its grid position, the player is alive and carries no recovery item,
+    and at least SPRAY_RESTORE_GAP_S passed since the last replay. Nothing is ever created from scratch, and nothing is
+    written while the slot or the grid is in use.
+    """
+    import time
+    with _HEALTH_LOCK:
+        state = ORIG.get(id(ad), {}).get("spray", {})
+        if not state.get("on"):
+            return {"infinite_spray": False, "active": False, "verified": True}
+        try:
+            result = _maintain_spray(RE5(ad), state, snap, time.monotonic() if now is None else now)
+        except Exception as error:         # A lost adapter must not stop the bot's next snapshot.
+            result = {"infinite_spray": True, "active": False, "restored": False, "verified": False,
+                      "reason": f"spray maintenance unavailable: {type(error).__name__}"}
+        state["last"] = result
+        return result
+
+
 def loadout(g: RE5, weapons=None, seed=None, on: bool = True) -> dict:
     """Every character's Mercenaries loadout template: each gun (table 1, not the knives) becomes one of the powerful
     campaign weapons, drawn at random per record without repeats inside a block (seed for a repeatable draw); the
-    packed upgrade levels are reset to 0 so no level indexes past the new weapon's table. on=false restores."""
+    packed upgrade levels are reset to 0 so no level indexes past the new weapon's table. on=false restores (with
+    infinite_spray's records kept in either case: the whole template is rewritten from the original here)."""
     import random
     verify_main_presets(g)
     t0 = g.keep("template", lambda: g.rd(TEMPLATE, TEMPLATE_BLOCKS * TEMPLATE_BLOCK))
     if not on:
-        return {"loadout": "the game's", "verified": g.wr(TEMPLATE, t0)}
+        return {"loadout": "the game's", "verified": g.wr(TEMPLATE, bytes(_with_spray(g, bytearray(t0))))}
     pool = [int(str(w), 0) if isinstance(w, str) and str(w).startswith("0x") else w for w in (weapons or [])]
     pool = [w for w in pool if w in POWERFUL or w in REPLACE_WITH_MAGNUM] or list(POWERFUL)
     rng = random.Random(seed)
@@ -752,7 +974,7 @@ def loadout(g: RE5, weapons=None, seed=None, on: bool = True) -> dict:
         used.append(choice)
         struct.pack_into(">I", t, off, choice)
         struct.pack_into(">I", t, off + 7 * 4, 0)
-    ok = g.wr(TEMPLATE, bytes(t))
+    ok = g.wr(TEMPLATE, bytes(_with_spray(g, t)))
     named = {b: [POWERFUL[w] for w in ws] for b, ws in picks.items()}
     return {"loadout": "random powerful campaign weapons", "verified": ok, "blocks": len(picks),
             "barry": named.get(24), "chris_heavy_metal": named.get(18), "picks": named,
@@ -949,6 +1171,10 @@ def revert_all(g: RE5) -> dict:
     if "turn" in o:
         p = g.param()
         out["turn"] = all(g.wr(p + k, struct.pack(">f", v)) for k, v in o["turn"].items())
+    if "spray" in o:
+        o["spray"].update(on=False, template_records={})
+        o["spray"].pop("spray_record", None)
+        out["infinite_spray"] = True
     if "template" in o:
         out["loadout"] = g.wr(TEMPLATE, o["template"])
     if "health" in o:
@@ -974,7 +1200,8 @@ def _run(ad, op="status", multiplier=None, on=True, g=None, **extra):
           "random": "random_cheats", "unlimited_life": "unlimited_health", "infinite_health": "unlimited_health",
           "infinite_life": "unlimited_health", "time_per_kill": "kill_time", "kill_bonus": "kill_time",
           "add_minute": "add_time", "merc_time": "add_time", "more_time": "add_time", "time_bonus": "time_bonus_multiplier",
-          "merc_time_bonus": "time_bonus_multiplier"}.get(op, op)
+          "merc_time_bonus": "time_bonus_multiplier", "auto_first_aid": "infinite_spray", "first_aid": "infinite_spray",
+          "first_aid_spray": "infinite_spray", "infinite_first_aid": "infinite_spray"}.get(op, op)
     operator = bool(extra.get("operator"))
     override = None
     if not operator and op in OPERATOR_SETTINGS:
@@ -1018,6 +1245,8 @@ def _run(ad, op="status", multiplier=None, on=True, g=None, **extra):
         res.update(infinite_ammo(g, on))
     elif op == "unlimited_health":
         res.update(unlimited_health(g, on))
+    elif op == "infinite_spray":
+        res.update(infinite_spray(g, on))
     elif op == "bullet_damage":
         res.update(bullet_damage(g, (multiplier if multiplier is not None else 10.0) if on else 1.0))
     elif op == "loadout":
@@ -1055,8 +1284,8 @@ def _run(ad, op="status", multiplier=None, on=True, g=None, **extra):
     elif op == "revert_all":
         res.update(revert_all(g))
     else:
-        raise ValueError("op: status | turn_speed | fire_rate | infinite_ammo | unlimited_health | bullet_damage | loadout | replace_rockets | random_cheats | "
-                         "kill_time | add_time | time_bonus_multiplier | revert_all | addresses")
+        raise ValueError("op: status | turn_speed | fire_rate | infinite_ammo | unlimited_health | infinite_spray | bullet_damage | loadout | "
+                         "replace_rockets | random_cheats | kill_time | add_time | time_bonus_multiplier | revert_all | addresses")
     if operator and op in OPERATOR_SETTINGS and res.get("verified"):
         g.orig.setdefault("operator_overrides", {})[op] = {"multiplier": multiplier, "on": bool(on)}
     res["status"] = g.status()

@@ -189,7 +189,7 @@ def test_the_playbook_applies_the_re5_package_through_re5_mods(monkeypatch):
     prof = {"platform": "ps3", "map_id": "BLUS30491"}
     failed = MB.apply_ops(m, [["turn_speed", {"multiplier": 2}], ["fire_rate", {"multiplier": 80}],
                              ["infinite_ammo", {"on": True}], ["no_such_op", {}]], prof)
-    assert failed == ["no_such_op: op: status | turn_speed | fire_rate | infinite_ammo | unlimited_health | bullet_damage | loadout | replace_rockets | random_cheats | kill_time | add_time | time_bonus_multiplier | revert_all | addresses"]
+    assert failed == ["no_such_op: op: status | turn_speed | fire_rate | infinite_ammo | unlimited_health | infinite_spray | bullet_damage | loadout | replace_rockets | random_cheats | kill_time | add_time | time_bonus_multiplier | revert_all | addresses"]
     st = T.run(m, "status")["status"]
     assert st["turn_speed_x"] == 2.0 and st["fire_rate_x"] == 80.0 and st["infinite_ammo"] is True
 
@@ -198,11 +198,12 @@ def test_the_re5_profile_keeps_normal_health_and_ten_seconds_per_kill():
     import json
     from pathlib import Path
     prof = json.loads(Path(__file__).resolve().parents[1].joinpath("profiles/gamedata/BLUS30491-ram.json").read_text())["mercs"]
-    assert [op for op, _ in prof["package"]] == ["turn_speed", "fire_rate", "infinite_ammo", "unlimited_health"] and prof["round_ops"] == [["random_cheats", {}]]
+    assert [op for op, _ in prof["package"]] == ["turn_speed", "fire_rate", "infinite_ammo", "unlimited_health", "infinite_spray"] and prof["round_ops"] == [["random_cheats", {}]]
     assert dict(prof["package"])["fire_rate"] == {"multiplier": 80} and dict(prof["package"])["turn_speed"] == {"multiplier": 1}   # regular speed (operator 2026-10-22)
     # Operator 2026-10-23: danger must cause real damage, with no HP refill or incoming-hit immunity.
     assert dict(prof["package"])["unlimited_health"] == {"on": False}
     assert dict(prof['playing_ops'])['unlimited_health'] == {'on': False}
+    assert dict(prof['playing_ops'])['infinite_spray'] == {'on': True}            # the autobot's infinite First Aid Spray
     assert dict(prof['playing_ops'])['kill_time'] == {'on': True, 'seconds': 10}
 
 

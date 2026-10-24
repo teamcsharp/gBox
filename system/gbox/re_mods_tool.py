@@ -10,6 +10,10 @@ Resident Evil 4 (GameCube NTSC-U, G4BE08) ops:
                                  is built from these flags: they show the next time the title screen opens)
   infinite_ammo / combo_freeze / merc_timer_freeze / unlimited_health  on=true|false  (code patches, original bytes
                                  checked first, restored on off)
+  auto_first_aid on=.. [threshold=0.35] [seconds=2.5]   an infinite First Aid Spray for the autobot: Leon takes damage
+                                 as usual; below threshold x his full health the bot's tick writes hp = full (what one
+                                 spray does), at most once per `seconds`; never dead, never out of a Mercenaries round
+                                 (aliases first_aid, infinite_spray; status: auto_first_aid, sprays_used)
   merc_time seconds=N            set the Mercenaries clock
   equip item=<weapon>            give it if missing, then the game's weapon-change path (model + code reload)
   weapon_mod item=<weapon> fire_rate=<frames|auto> damage=<x> reset=..   per-class fire interval / firepower tables
@@ -50,6 +54,15 @@ def _bl(src: int, dst: int) -> bytes:
     return struct.pack(">I", (18 << 26) | ((dst - src) & 0x3FFFFFC) | 1)
 
 
+STATE: dict = {}                    # id(adapter) -> this session's mod state that lives in gBox, not in the game's RAM
+                                    # (auto_first_aid's switch, threshold, cooldown, sprays_used), like re5_mods_tool.ORIG
+# auto_first_aid: the share of full health under which the bot sprays, the least time between two sprays, and the
+# health one spray restores to when the round has shown no higher value. RE4 has no verified max-health field in the
+# G4BE08 map (profiles/gamedata/G4BE08-ram.json knows only the enemies' +0x322), so "full" is the highest hp seen this
+# round, never under 1200 (Leon's health at a Mercenaries start; a First Aid Spray refills to full).
+FIRST_AID_THRESHOLD, FIRST_AID_COOLDOWN_S, FIRST_AID_HP_FLOOR = 0.35, 2.5, 1200
+
+
 class Mem:
     """Session memory with retries: Dolphin's GDB stub refuses (E00) an access that lands while the CPU is in an
     exception handler (address translation off); a moment later it works."""
@@ -82,7 +95,9 @@ class Mem:
 
 class RE4:
     def __init__(self, ad):
+        self.ad = ad
         self.m = Mem(ad)
+        self.state = STATE.setdefault(id(ad), {})
         self.V = R.GC
         try:
             gid = self.m.rd(0x80000000, 6)
@@ -94,6 +109,11 @@ class RE4:
             raise Unsupported(f"re_mods: Resident Evil 4 GameCube NTSC-U (G4BE08) or Wii PAL (RB4P08) so far; this disc "
                               f"is {gid!r}")
         self.V = R.VERSIONS[gid]
+
+    def wr(self, a: int, data: bytes) -> bool:
+        """A data write read back: True when RAM holds it (the patches' own write-then-read check as one call)."""
+        self.m.wr(a, data)
+        return self.m.rd(a, len(data)) == data
 
     # ---- dispatcher ------------------------------------------------------------------------------------------
     def hooked(self) -> bool:
@@ -215,6 +235,11 @@ class RE4:
             st["merc_seconds_left"] = round(self.m.u32(V.MERC_TIMER) / V.FPS, 2)
             if V.has("MERC"):
                 st["merc_combo"] = self.m.u32(V.MERC + 0x28)
+        fa = self.state.get("first_aid") or {}
+        st["auto_first_aid"] = bool(fa.get("on"))
+        st["first_aid_threshold"] = fa.get("threshold", FIRST_AID_THRESHOLD)
+        st["sprays_used"] = fa.get("sprays_used", 0)
+        st["first_aid_last"] = fa.get("last")
         return st
 
 
@@ -435,6 +460,106 @@ def unlock_all(g, on: bool = True, everything: bool = True) -> dict:
             "flags_this_release": R.UNLOCK_SCOPE.get(_gid(g)),
             "note": "The menus are built from these flags when the title menu opens (title screen; in game: Options > "
                     "Retry or Load > Game Reset). Saved with the next system save; on=false clears them."}
+
+
+def auto_first_aid(g: "RE4", on: bool, threshold=None, cooldown_s=None) -> dict:
+    """The operator's infinite First Aid Spray for the autobot (2026-10-24: "give him an infinite first aid spray to
+    ensure he always survives the round"), with unlimited_health off: Leon takes every hit as usual, and when his health
+    falls under threshold x full the bot's next tick (maintain_first_aid, called from re4_merc_bot.play every pass)
+    writes it back to full - what using one spray does - at most once per cooldown_s. gBox state only: nothing in the
+    game's RAM changes until a spray is due, and on=false stops it at once."""
+    state = g.state.setdefault("first_aid", {})
+    if threshold not in (None, ""):
+        t = float(threshold)
+        if not 0.05 <= t <= 0.95:
+            raise ValueError("auto_first_aid threshold: 0.05 .. 0.95 of full health (0.35 = the default)")
+        state["threshold"] = t
+    if cooldown_s not in (None, "", 0):
+        c = float(cooldown_s)
+        if not 0.5 <= c <= 60:
+            raise ValueError("auto_first_aid cooldown (seconds): 0.5 .. 60 (2.5 = the default)")
+        state["cooldown_s"] = c
+    state.setdefault("threshold", FIRST_AID_THRESHOLD)
+    state.setdefault("cooldown_s", FIRST_AID_COOLDOWN_S)
+    state.setdefault("sprays_used", 0)
+    state["on"] = bool(on)
+    if not on:
+        state["hp_max_seen"] = None
+    return {"auto_first_aid": state["on"], "threshold": state["threshold"], "cooldown_s": state["cooldown_s"],
+            "sprays_used": state["sprays_used"], "verified": True,
+            "note": "a healing mechanic, not immortality: hp under threshold x full -> hp = full (one First Aid Spray) "
+                    "on the bot's next tick in a Mercenaries round; never when dead (hp 0: Continue Yes / No stays the "
+                    "bot's), never out of a round; full = this round's highest hp, at least "
+                    f"{FIRST_AID_HP_FLOOR} (no verified max-health field in this release's map)"}
+
+
+def maintain_first_aid(ad_or_g, snap: dict, stats: dict | None = None, now: float | None = None, round_id=None) -> dict:
+    """One tick of auto_first_aid over a fresh re4_merc_bot.snapshot: {"auto_first_aid", "active", "healed", ...}.
+    Nothing is read or written unless the op is on for this adapter; the heal is one verified data write (RE4.wr) of
+    Leon's hp (pG+0x4FB0 s16) after a re-read shows him still alive and still low. round_id (the bot's round count)
+    starts the observed full health afresh each round (another character has another full). Never raises: the bot's
+    loop goes on."""
+    if isinstance(ad_or_g, RE4):
+        g, ad = ad_or_g, ad_or_g.ad
+    else:
+        g, ad = None, ad_or_g
+    st = STATE.get(id(ad)) or {}
+    state = st.get("first_aid") or {}
+    if not state.get("on"):
+        return {"auto_first_aid": False, "active": False, "verified": True}
+    result = {"auto_first_aid": True, "active": False, "healed": False, "verified": True,
+              "sprays_used": state.get("sprays_used", 0)}
+    try:
+        if round_id is not None and state.get("round_id") != round_id:
+            state["round_id"], state["hp_max_seen"] = round_id, None
+        room, hp, player, timer = snap.get("room"), snap.get("hp"), snap.get("player"), snap.get("timer")
+        in_round = room is not None and (room >> 8) == 4 and player is not None and (timer is None or timer > 0)
+        if not in_round or hp is None:
+            state["hp_max_seen"] = None                       # a new round shows its own full health
+            return {**result, "reason": "not in a Mercenaries round"}
+        if hp <= 0:
+            state["hp_max_seen"] = None
+            return {**result, "reason": "Leon is dead: the Continue prompt is the bot's, not a spray"}
+        seen = state.get("hp_max_seen")
+        if seen is None or hp > seen:
+            state["hp_max_seen"] = seen = hp
+        hp_max = max(FIRST_AID_HP_FLOOR, seen)
+        threshold = float(state.get("threshold", FIRST_AID_THRESHOLD))
+        limit = threshold * hp_max
+        result.update(active=True, hp=hp, hp_max=hp_max, threshold=threshold)
+        if hp >= limit:
+            return result
+        now = time.monotonic() if now is None else now
+        cooldown = float(state.get("cooldown_s", FIRST_AID_COOLDOWN_S))
+        last_at = state.get("last_at")
+        if last_at is not None and now - last_at < cooldown:
+            return {**result, "reason": f"spray cooldown ({cooldown - (now - last_at):.1f} s left)"}
+        g = g or st.get("g")
+        if g is None:
+            g = st["g"] = RE4(ad)
+        pg = g.pg()
+        if not 0x80000000 <= pg < 0x81800000:
+            return {**result, "verified": False, "reason": "pG is not a MEM1 pointer"}
+        a = pg + g.V.G_HP
+        cur = struct.unpack(">h", g.m.rd(a, 2))[0]                 # re-read right before the write: alive and low still
+        if not 0 < cur < limit:
+            return {**result, "hp": cur, "reason": "health changed before the spray (dead, or recovered)"}
+        ok = g.wr(a, struct.pack(">h", hp_max))
+        if not ok:
+            return {**result, "verified": False, "reason": "hp write did not read back"}
+        state["sprays_used"] = state.get("sprays_used", 0) + 1
+        state["last_at"] = now
+        state["last"] = {"from": cur, "to": hp_max, "room": f"r{room:03x}"}
+        snap["hp"] = hp_max                                      # this tick's bot sees him healed
+        result.update(healed=True, hp=hp_max, sprays_used=state["sprays_used"], **{"from": cur})
+        if stats is not None:
+            stats["sprays_used"] = state["sprays_used"]
+            stats["first_aid_status"] = f"first aid spray: {cur} -> {hp_max}"
+        return result
+    except Exception as e:                                    # noqa: BLE001 - a lost adapter never stops the bot
+        if stats is not None:
+            stats["first_aid_status"] = f"first aid unavailable: {type(e).__name__}"
+        return {**result, "verified": False, "reason": f"first aid unavailable: {type(e).__name__}: {str(e)[:120]}"}
 
 
 def merc_time_bonus(g, mult: float, melee_only: bool = True) -> dict:
@@ -797,10 +922,14 @@ def run(ad, op: str, item: str = "", count: int = 0, target: str = "", on: bool 
           "punches": "punch", "loadout": "merc_loadout", "loadouts": "merc_loadout_list",
           "merc_loadouts": "merc_loadout_list", "item_table": "item_ids", "items": "item_ids",
           "address_table": "addresses", "random_loadouts": "random_loadout", "random_weapons": "random_loadout",
-          "random_weapon": "random_loadout", "randomize": "random_loadout"}.get(op, op)
+          "random_weapon": "random_loadout", "randomize": "random_loadout", "first_aid": "auto_first_aid",
+          "infinite_spray": "auto_first_aid", "first_aid_spray": "auto_first_aid", "infinite_first_aid": "auto_first_aid",
+          "auto_heal": "auto_first_aid"}.get(op, op)
     res: dict = {"op": op}
     if op == "status":
         pass
+    elif op == "auto_first_aid":
+        res.update(auto_first_aid(g, on, extra.get("threshold"), seconds or extra.get("cooldown_s")))
     elif op == "punch":
         res.update(possible=False, statement=PUNCH_STATEMENT,
                    instead=["explosive_melee on=true kind=grenade", "super_melee on=true force=100 direction=both",
@@ -938,9 +1067,9 @@ def run(ad, op: str, item: str = "", count: int = 0, target: str = "", on: bool 
     else:
         raise ValueError("op: status | list | give | replace | equip | weapon_mod | merc_loadout | spawn_multiplier | warp | "
                          "teleport | flashbang | grenade | flashbang_loop | explosive_rounds | unlock_all | mercenaries_unlock | "
-                         "infinite_ammo | combo_freeze | merc_timer_freeze | unlimited_health | merc_time | merc_time_bonus | "
-                         "explosive_melee | super_melee | auto_spin | aim_turn_speed | combo_time | grenade_safe | punch | "
-                         "merc_loadout_list | random_loadout | item_ids | addresses")
+                         "infinite_ammo | combo_freeze | merc_timer_freeze | unlimited_health | auto_first_aid | merc_time | "
+                         "merc_time_bonus | explosive_melee | super_melee | auto_spin | aim_turn_speed | combo_time | "
+                         "grenade_safe | punch | merc_loadout_list | random_loadout | item_ids | addresses")
     res["status"] = g.status()
     return res
 
@@ -949,13 +1078,14 @@ class REModsIn(BaseModel):
     session_id: str
     op: str = "status"      # status|list|give|replace|equip|weapon_mod|merc_loadout|spawn_multiplier|flashbang|grenade|
                             # flashbang_loop|explosive_rounds|warp|teleport|mercenaries_unlock|infinite_ammo|combo_freeze|
-                            # merc_timer_freeze|unlimited_health|merc_time|combo_time|grenade_safe|punch|
+                            # merc_timer_freeze|unlimited_health|auto_first_aid|merc_time|combo_time|grenade_safe|punch|
                             # merc_loadout_list|random_loadout|item_ids|addresses
     item: str = ""          # give/replace: item name or id ("rocket launcher", "flash grenade", "0x37")
     count: int = 0          # give: amount (0 = the game's default); spawn_multiplier: factor 2..8
     target: str = ""        # replace: case item (name, id or slot); warp: room "r102"; flashbang/grenade: player|aim
     on: bool = True         # patches / unlock: on or off
-    seconds: float = 0      # merc_time; flashbang_loop period
+    seconds: float = 0      # merc_time; flashbang_loop period; auto_first_aid: the least seconds between two sprays (2.5)
+    threshold: float | None = None  # auto_first_aid: spray under this share of full health (0.35)
     character: str = ""     # merc_loadout: leon | ada | hunk | krauser | wesker | any
     items: list[str] = []   # merc_loadout: item names, "name:amount" for ammo/counts ("handgun ammo:200");
                             # explosive_rounds: item names; warp / teleport: [x, y, z]
@@ -983,7 +1113,8 @@ def re_mods(inp: REModsIn, ctx):
     (+ Professional); merc_time_bonus multiplier=N scales every Mercenaries time pickup; explosive_melee kind=grenade|
     flash|rocket = knife hits explode (player-owned blast, never hurts Leon); super_melee force=<feet> direction=up|away|
     both = knife hits throw the enemy (explodes where it lands with explosive_melee); auto_spin speed=<deg/s> target=
-    fire|aim|always; aim_turn_speed multiplier=N. give items by name (auto-placed in the attache
+    fire|aim|always; aim_turn_speed multiplier=N; auto_first_aid on= (the autobot's infinite First Aid Spray: hp back to
+    full when it falls under threshold x full, never when dead). give items by name (auto-placed in the attache
     case by the game's own take-item routine), replace a case item, unlock The Mercenaries + all characters,
     infinite ammo, Mercenaries combo never ends, freeze/set the Mercenaries timer, unlimited health, equip any weapon
     now, per-character Mercenaries loadouts (items "name:amount" for ammo), weapon fire rate / damage (e.g. a full-auto
@@ -998,4 +1129,4 @@ def re_mods(inp: REModsIn, ctx):
                           f"({g.get('platform')}): see docs/mercenaries.md for what each Mercenaries release has.{hint}")
     return {"result": run(ad, inp.op, inp.item, inp.count, inp.target, inp.on, inp.seconds, inp.character, inp.items,
                           inp.fire_rate, inp.damage, inp.reset, inp.multiplier, inp.melee_only, inp.kind, inp.force,
-                          inp.direction, inp.speed, seed=inp.seed, guns=inp.guns)}
+                          inp.direction, inp.speed, seed=inp.seed, guns=inp.guns, threshold=inp.threshold)}
