@@ -3898,6 +3898,7 @@ class RPCS3LinuxAdapter(StandaloneAdapter):
         lease = rpcs3_profile.Lease(provision.rpcs3_linux_home(self.config), self.env['XDG_CACHE_HOME']).acquire()
         self._profile_lease = lease
         self._mem = None
+        self.reunion_unlock = self._unlock_reunion_roster()
         try:
             d = super().launch_game(rom)
             self._wait_guest_ready()
@@ -3909,6 +3910,19 @@ class RPCS3LinuxAdapter(StandaloneAdapter):
         except BaseException:
             self.stop_game()                 # Only our process/display; never stop an existing profile owner.
             raise
+
+    def _unlock_reunion_roster(self) -> dict | None:
+        """Before RE5 Gold loads its save (the game is not running yet, so it cannot write old flags back): open every
+        Mercenaries Reunion character and stage in DATA0.DAT, so the bot's random roster (all 8) never lands on a
+        locked slot. gbox.re5_tool keeps DATA0.DAT.gbox-backup; a refused or failed edit never blocks the launch."""
+        from . import re5_tool
+        serial = (getattr(self, "serial", None) or "").upper()
+        if serial not in re5_tool.VERSIONS:
+            return None
+        try:
+            return re5_tool.run(self.home, serial, "unlock_all", groups=["mercenaries_reunion"])
+        except Exception as exc:                          # noqa: BLE001 - no save yet (first boot) / other layout
+            return {"op": "unlock_all", "applied": False, "error": f"{type(exc).__name__}: {exc}"[:300]}
 
     def _wait_guest_ready(self):
         """A living error dialog is not a booted game; require this process's guest memory."""
