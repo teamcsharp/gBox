@@ -44,6 +44,18 @@ test('late telemetry from an old stream cannot mark the replacement as an autobo
 });
 test('PiP media is available in both shells, hover export uses SVG and gentle half-opacity autobot text',()=>{
  for(const name of ['index.html','mini.html']){const src=fs.readFileSync(path.join(__dirname,'../clients/desktop',name),'utf8');assert.match(src,/<script src="pip-media.js"><\/script>/);assert.match(src,/GBoxPipMedia\.mount/);assert.match(src,/recSaveClip\(clip\)/);}
- assert.match(P.ICON,/<svg/);assert.match(P.CSS,/left:10px;bottom:8px;opacity:\.5/);assert.match(P.CSS,/body:hover \.pip-replay/);assert.match(P.CSS,/prefers-reduced-motion/);
+ assert.match(P.ICON,/<svg/);assert.match(P.CSS,/left:10px;bottom:8px;opacity:\.5/);assert.match(P.CSS,/\.pip-corner:hover \.pip-replay/);assert.doesNotMatch(P.CSS,/body:hover \.pip-replay|data-busy=true\] \.pip-replay/);assert.match(P.CSS,/prefers-reduced-motion/);
  const main=fs.readFileSync(path.join(__dirname,'../clients/desktop/main.js'),'utf8');assert.match(main,/clip\.openFolder === true/);assert.match(main,/shell\.showItemInFolder\(saved\.file\)/);assert.match(main,/system-context-menu/);
+});
+
+test('a status read that never answers ends the attempt instead of showing Preparing forever',async()=>{
+ let clock=0;const calls=[];const c=P.create({current:()=> 'worker-game',api:async(url,body)=>{if(body)calls.push(body);return {id:'j',state:'queued'};},
+  save:async()=>{throw Error('must not save');},delay:async ms=>{clock+=ms;},now:()=>clock});
+ await c.exportLast();assert.equal(c.state().busy,false);assert.equal(c.state().error,true);
+ assert.match(c.state().message,/did not answer; no replay was started/);assert.ok(clock<=P.ARM_MS+31000+12000);
+ assert.equal(calls.length,1);assert.equal(calls[0].input.op,'status');
+});
+test('the mounted icon lives in a corner zone and exports only once armed by hovering it',async()=>{
+ const src=fs.readFileSync(path.join(__dirname,'../clients/desktop/pip-media.js'),'utf8');
+ assert.match(src,/class="pip-corner"><button class="pip-replay"/);assert.match(src,/dataset\.armed==='true'\|\|event\.detail===0/);
 });

@@ -495,3 +495,16 @@ def test_spark_operator_sessions_use_linux_workers_and_ownership():
                 {"session_id": "spark-2", "state": "running", "agent_owned": True},
                 {"session_id": "pc-3", "state": "running"}]
     assert [s["session_id"] for s in operator_guard.spark_operator_sessions(sessions, workers)] == ["spark-1"]
+
+
+def test_a_still_never_replaces_a_fresh_stream_frame(app):
+    """A still lands seconds after capture; while the stream is live it must not flash an older picture."""
+    store = app.state.store
+    store.put("session", "w-s", {"session_id": "w-s", "state": "running", "game_id": "g"})
+    with client(app) as c:
+        body = len(JPEG).to_bytes(4, "big") + JPEG + b"\0\0\0\0"
+        assert c.post("/api/sessions/w-s/stream", content=body).json() == {"frames": 1}
+        r = c.post("/api/sessions/w-s/frame", content=b"\xff\xd8older\xff\xd9").json()
+        assert r["ignored"] and r["seq"] == 1
+        assert c.get("/api/sessions/w-s/frame.jpg").content == JPEG
+        assert c.post("/api/sessions/w-t/frame", content=b"\xff\xd8still\xff\xd9").json() == {"seq": 1}

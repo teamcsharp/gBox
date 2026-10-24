@@ -1282,7 +1282,11 @@ window.GBOX_STREAM_FETCH_HEALTH = async src => {
   #pipmenu .pip-mercmode-row [data-mm-toggle] { flex:1; } #pipmenu .pip-mercmode-row [data-mm-arrow] { width:34px; text-align:center; flex:0 0 auto; }
   #pipmenu .pip-mercmode-titles { padding:2px 10px 6px 26px; font-size:12px; }
   #pipmenu .pip-mercmode-titles label { display:block; padding:3px 0; } #pipmenu .pip-mercmode-titles label.pip-mercmode-off { opacity:.55; }
-  #pipmenu .pip-mercmode-titles input[type=number] { width:3.5em; margin-left:4px; } #pipmenu .pip-mercmode small { display:block; color:var(--mut); }
+  #pipmenu .pip-mercmode-titles input[type=number] { width:3.5em; margin-left:4px; }
+  .mm-queue { margin-top:6px; font-size:12px; } .mm-queue b { display:block; margin-top:4px; } .mm-queue ol { margin:2px 0 4px 18px; padding:0; }
+  .mm-queue li button { display:inline; width:auto; padding:0 5px; } .mm-queue-form { display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; }
+  .mm-queue-form select { flex:1 1 45%; min-width:0; background:#111; color:#eee; border:1px solid var(--line); border-radius:4px; font-size:12px; }
+  #pipmenu .mm-queue-form button { display:inline-block; width:auto; flex:1 1 30%; border:1px solid var(--line); text-align:center; } #pipmenu .pip-mercmode small { display:block; color:var(--mut); }
   body.gbox-compact:has(#compact-stream[data-stream-state="connected"]) .gbox-stream-badge { display:none !important; }
   #compact-stream { display:none; position:fixed; inset:0; width:100%; height:100%; object-fit:contain; background:#000; }
   body.gbox-compact #compact-stream.on { display:block; }
@@ -4203,9 +4207,14 @@ async function pipMercMode(m, opening, open = false) {
   try {
     if (EMB.authority && EMB.authority !== S.apiUrl) throw Error('Reconnect to this game’s service before changing MercMode.');
     const sid = globalThis.gboxStreamWatchdog?.sessionOf($('#compact-stream')?.getAttribute?.('src') || '') || (COMPACT.on ? COMPACT.sid : EMB.sid);
-    const host = GBoxMercMode.hostFor(await api('/api/mercmode', undefined, 'GET'), sid, compactSession?.detail?.worker_name || S.workerName);
+    const data = await api('/api/mercmode', undefined, 'GET');
+    const host = GBoxMercMode.hostFor(data, sid, compactSession?.detail?.worker_name || S.workerName);
     if (m.opening !== opening) return;
-    slot.innerHTML = GBoxMercMode.menuHTML(host, open);
+    slot.innerHTML = GBoxMercMode.menuHTML(host, open, data.catalog);
+    const queue = slot.querySelector('[data-mm-queue]');
+    if (queue) GBoxMercMode.wireQueue(queue, { api, host, catalog: data.catalog,
+      done: async message => { toast(message); await pipMercMode(m, opening, true); }, fail: error => toast(error.message) });
+    slot.addEventListener('change', e => e.stopPropagation()); slot.addEventListener('click', e => { if (e.target.closest('select')) e.stopPropagation(); });
     const act = async (action, value) => {
       try { toast(await GBoxMercMode.menuAction(api, host, action, value)); await pipMercMode(m, opening, true); }
       catch (error) { toast(error.message); }

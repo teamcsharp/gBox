@@ -146,3 +146,23 @@ New round artifacts also retain the exact session ID and scoped autoplay job ID
 provided by their invocation. Older artifacts without that origin remain
 unattributed; a current session playing the same title cannot supply the missing
 identity for export to another control plane.
+
+## DJ queue
+
+When MercMode is on you can choose exactly what plays next. In the PiP menu's MercMode section,
+or in the Mercenaries tab, pick a game, mode, character and stage. Leaving a field blank means
+random. Then press **Play next** (front of the queue) or **Add to queue**. The section shows
+what is playing now and the queue ahead, with ✕ to remove an entry. Each entry is checked
+against that title's verified roster (`gbox.mercmode.catalog`: RE4 five characters / four
+stages; RE5 Mercenaries and Reunion rosters / eight stages). RE6 has no verified roster yet.
+At the next native round end, the head of the queue decides what happens:
+
+- **Another game:** MercMode switches after this round, even if fewer than "rounds before
+  switching" have been played and even if that game is unchecked. The launch carries the
+  selection, and the bot picks it from the native menus.
+- **The same game:** nothing relaunches. The running bot gets the pick through
+  `re5_mods mercs_select` or `re_mods mercs_select`, then later rounds are random again.
+
+RE4 now picks a random character and stage every round by default. Before this change it
+chose randomly only in MercMode launches; launches with the game's own default always took
+the same character. A launch with `launch.mercmode: false` keeps the old default picks.

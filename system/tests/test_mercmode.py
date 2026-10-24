@@ -646,7 +646,7 @@ def test_central_settings_delegate_once_and_manual_prepare_tracks_exact_job(cfg)
     jobs=[job for job in store.all('job') if job['tool']=='mercmode']
     assert len(jobs)==1 and jobs[0]['require_worker']==w['id']
     assert jobs[0]['input']=={'op':'configure','host':w['name'],'enabled':True,
-        'titles':['re5'],'rounds_per_title':1,'presentation_priority':False}
+        'titles':['re5'],'rounds_per_title':1,'presentation_priority':False,'queue':[]}
     assert store.get(M.COMMAND,w['name'])['job']==jobs[0]['id']
     response=client.post('/api/mercmode/prepare',json={'worker_id':w['id']})
     assert response.status_code==200,response.text
@@ -672,3 +672,60 @@ def test_native_handover_cancels_only_queued_owned_stops_after_rotation_state_wa
     assert store.get('slabel',run['session_id'])['owner']=='you'
     for control in controls:assert store.get('job',control['id'])['state']==control['state']
     assert saver.yield_to_operator(run['session_id'],'duplicate native pad') is True
+
+
+def test_dj_queue_validates_rounds_against_each_titles_roster():
+    store,w,saver,calls,now,tick=rig()
+    cfg=M.configure(store,w['name'],{'queue':[{'title':'re5','mode':'mercenaries','character':'Wesker (STARS)','stage':7},
+                                              {'title':'re4','character':'HUNK'},{'title':'re4'}]})
+    assert [e['title'] for e in cfg['queue']]==['re5','re4','re4'] and cfg['queue'][1]['stage'] is None
+    for bad in ({'title':'re4','character':'Chris (BSAA)'},{'title':'re5','stage':8},{'title':'re5','mode':'story'},
+                {'title':'re6','character':'Leon'},{'title':'nope'},{'title':'re4','extra':1}):
+        with pytest.raises(ValueError):M.configure(store,w['name'],{'queue':[bad]})
+    with pytest.raises(ValueError,match='at most'):M.configure(store,w['name'],{'queue':[{'title':'re4'}]*21})
+    sel=M.resolve_selection({'title':'re4','mode':None,'character':None,'stage':None},random.Random(1))
+    assert sel['mode']=='mercenaries' and sel['character'] in M.catalog()['re4']['modes']['mercenaries'] and 0<=sel['stage']<4
+
+
+def test_dj_queue_launches_the_queued_game_with_its_selection_and_pops_it():
+    store,w,saver,calls,now,tick=rig()
+    M.configure(store,w['name'],{'enabled':True,'titles':['re4'],
+        'queue':[{'title':'re5','mode':'reunion','character':'Barry','stage':2},{'title':'re4','character':'Ada','stage':1}]})
+    tick()
+    launch=calls[0]['input']['game']
+    assert launch['game_id']==RE5                  # the DJ's pick even though only RE4 is checked for rotation
+    sel=launch['launch']['mercmode']['selection']
+    assert (sel['mode'],sel['character'],sel['stage'],sel['stage_name'])==('reunion','Barry',2,'Village')
+    assert [e['title'] for e in M.settings(store,w['name'])['queue']]==['re4']
+    assert store.get(S.STATE,w['name'])['mercmode']['selection']['character']=='Barry'
+
+
+def test_dj_queue_same_game_next_sends_the_selection_without_relaunching():
+    store,w,saver,calls,now,tick,run,job=playing()
+    title=run['mercmode']['title']
+    pick={'title':title,'character':'Ada','stage':1} if title=='re4' else {'title':title,'mode':'reunion','character':'Josh','stage':3}
+    M.configure(store,w['name'],{'queue':[pick]})
+    assert saver.round_boundary(boundary(run,now[0]),job,now[0])['rotate_requested'] is False
+    sent=calls[-1]
+    assert sent['tool']==('re_mods' if title=='re4' else 're5_mods') and sent['input']['op']=='mercs_select'
+    assert sent['input']['session_id']==run['session_id'] and sent['input']['character']==pick['character']
+    assert M.settings(store,w['name'])['queue']==[]
+
+
+def test_dj_queue_other_game_next_rotates_after_this_round_regardless_of_rounds_per_title():
+    store,w,saver,calls,now,tick,run,job=playing()
+    other='re5' if run['mercmode']['title']=='re4' else 're4'
+    M.configure(store,w['name'],{'rounds_per_title':5,'queue':[{'title':other}]})
+    assert saver.round_boundary(boundary(run,now[0]),job,now[0])['rotate_requested'] is True
+
+
+def test_re4_menu_layer_honours_a_requested_round_once_then_returns_to_random():
+    from gbox import re4_menus as R
+    sel=R.RandomSelections(rng=random.Random(3),key='ad1')
+    R.request('ad1','Wesker',3)
+    import unittest.mock as um
+    with um.patch.object(R,'screen',side_effect=[{'where':'select_player'},{'where':'select_stage'},{'where':'playing'}]):
+        assert sel.screen(None)['target']==4 and sel.screen(None)['target']==3
+        sel.screen(None)
+    assert 'ad1' not in R.REQUESTS
+    with pytest.raises(ValueError):R.request('ad1','Leon',9)

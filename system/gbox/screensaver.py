@@ -364,7 +364,10 @@ class Screensaver:
         # you need to use it with screensaver for playing the game"); their own launch elsewhere takes a card back
         if merc_pick:
             game = game | {'launch':dict(game.get('launch') or {}) | {
-                'mercmode': {'random_characters': True, 'random_stages': True}}}
+                'mercmode': {'random_characters': True, 'random_stages': True,
+                             **({'selection': merc_pick['selection']} if merc_pick.get('selection') else {})}}}
+            if merc_pick.get('selection'):
+                mercmode.pop_queue(self.store, w['name'])        # the DJ's queued round is on its way
         inp = {"game": game, "jump": True, "memory_cards": "operator"} | ({"mod": build["name"]} if build else {})
         job = self.submit(JobRequest(tool="launch_game", input=inp, agent_use=True, low_priority=True,
                                      require_worker=w["id"]), actor=ACTOR,
@@ -375,7 +378,9 @@ class Screensaver:
                                           "game_id": g["game_id"], "title": g["title"], "started": now,
                                           **({'mercmode_predecessor':mercmode.rotation_predecessor(self.store,w,now),
                                               'mercmode': {'title': merc_pick['title'], 'map_id': merc_pick['map_id'],
-                                               'rounds_per_title': merc_cfg['rounds_per_title']}} if merc_pick else {}),
+                                               'rounds_per_title': merc_cfg['rounds_per_title'],
+                                               **({'selection': merc_pick['selection']} if merc_pick.get('selection') else {})}}
+                                              if merc_pick else {}),
                                           **({"mod": build["name"], "build": label} if build else {})})
         return f"launching {g['title']}" + (f" ({label})" if build else "")
 
@@ -545,6 +550,21 @@ class Screensaver:
             alternatives = [r for r in mercmode.inventory(self.store,worker,cfg) if r['playable']
                             and r['title'] in cfg['titles'] and r['game_id']!=run['game_id']] if worker else []
             rotate = bool(cfg['enabled'] and not run.get('mercmode_pinned') and alternatives and count>=cfg['rounds_per_title'])
+            head = (cfg.get('queue') or [None])[0] if cfg['enabled'] and not run.get('mercmode_pinned') else None
+            if head and head['title'] == run['mercmode']['title']:
+                # the DJ queued this same game next: no relaunch, the running bot takes the selection at its menus
+                rotate = False
+                selection = mercmode.resolve_selection(head, self.rng)
+                spec = mercmode.selection_job(head['title'], run['session_id'], selection)
+                if spec:
+                    from .server import JobRequest
+                    self.submit(JobRequest(tool=spec[0], input=spec[1], agent_use=True, require_worker=run['worker_id']),
+                                actor=ACTOR, origin={'via': 'MercMode queue', 'session_id': run['session_id']})
+                mercmode.pop_queue(self.store, run['worker'])
+                run = run | {'mercmode': run['mercmode'] | {'selection': selection}}
+            elif head and worker and any(r['playable'] and r['title'] == head['title']
+                                         for r in mercmode.inventory(self.store, worker, cfg)):
+                rotate = True                    # the DJ's next round is another game: switch after this round
             self.store.put(mercmode.HISTORY,run['worker'],{'last_game_id':run['game_id'],
                 'last_round':receipt,'at':now})
             # a restarted autobot in this same session (the operator's F3, the hang relaunch) owns the run from here
@@ -611,7 +631,16 @@ class Screensaver:
                 'titles':mercmode.inventory(self.store,w),'preparation':mercmode.host_preparation(self.store,w),
                 'history':observed.get('history',self.store.get(mercmode.HISTORY,w['name']) or {})})
         from .mercs.research_profiles import coverage, VERSION
-        out['mercmode']={'hosts':hosts,'experience_coverage':coverage(),'research_version':VERSION}
+        for h in hosts:
+            sid = (h['current_run'] or {}).get('session_id')
+            stats = (telemetry_get(sid).get('stats') or {}) if sid else {}
+            h['now_playing'] = {k: stats.get(k) for k in ('character', 'stage', 'mercenaries_mode', 'screen', 'timer', 'score')
+                                if stats.get(k) is not None} or None
+        try:
+            queue_catalog = mercmode.catalog()
+        except Exception:                                   # noqa: BLE001 - a title module missing: no picks for it
+            queue_catalog = {}
+        out['mercmode']={'hosts':hosts,'experience_coverage':coverage(),'research_version':VERSION,'catalog':queue_catalog}
         if self.builder is not None:
             out["roulette"] = self.builder.status()
         return out
@@ -645,6 +674,7 @@ class MercModeSettings(BaseModel):
     titles: list[str] | None = None
     rounds_per_title: int | None = None
     presentation_priority: bool | None = None
+    queue: list[dict] | None = None             # the DJ queue: [{title, mode, character, stage}], None fields = random
 
 
 class MercModeAdopt(BaseModel):

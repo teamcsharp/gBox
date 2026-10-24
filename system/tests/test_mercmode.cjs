@@ -85,3 +85,27 @@ test('between titles the transition shows a loading bar that follows the schedul
  assert.deepEqual(M.transition({settings:{enabled:false},current_run:{phase:'launching',mercmode:{}}},'w1-cur',1),{show:false});
  assert.deepEqual(M.transition(null,'w1-cur',1),{show:false});
 });
+test('the DJ queue shows now playing, the queue ahead and a form built from each title roster',()=>{
+ const catalog={re4:{modes:{mercenaries:['Leon','Ada']},stages:['Village','Castle']},re5:{modes:{mercenaries:['Chris (BSAA)'],reunion:['Barry']},stages:['Public Assembly','The Mines']}};
+ const host={name:'lilspark',settings:{enabled:true,queue:[{title:'re5',mode:'reunion',character:'Barry',stage:1},{title:'re4',mode:null,character:null,stage:null}]},
+  current_run:{title:'Resident Evil 4',mercmode:{title:'re4'}},now_playing:{character:'Ada',stage:'Castle'},
+  titles:[{title:'re4',name:'Resident Evil 4',playable:true},{title:'re5',name:'Resident Evil 5',playable:true},{title:'re6',name:'Resident Evil 6',playable:false}]};
+ const html=M.queueHTML(host,catalog);
+ assert.match(html,/Now playing<\/b> <small>Resident Evil 4 · Ada · Castle/);
+ assert.match(html,/Resident Evil 5 · reunion · Barry · The Mines/);assert.match(html,/Resident Evil 4 · random character · random stage/);
+ assert.match(html,/data-mm-unqueue="1"/);assert.doesNotMatch(html,/value="re6"/);
+ const opts=M.formOptions(catalog,'re5','reunion');assert.match(opts.characters,/Barry/);assert.doesNotMatch(opts.characters,/Chris/);
+ assert.match(M.formOptions(catalog,'re5','').characters,/Chris \(BSAA\).*Barry/s);assert.match(opts.stages,/value="1">The Mines/);
+ assert.match(M.queueHTML({settings:{queue:[]},titles:[]},catalog),/Random rotation/);
+});
+test('queue actions post the whole queue for the exact host',async()=>{
+ const calls=[],api=async(path,body)=>{calls.push(body);return {};};
+ const host={name:'lilspark',settings:{enabled:true,queue:[{title:'re4',character:'Ada'}]}};
+ assert.match(await M.queueAction(api,host,'next',{title:'re5',mode:'reunion',character:'Barry',stage:0}),/Up next/);
+ assert.deepEqual(calls[0],{host:'lilspark',queue:[{title:'re5',mode:'reunion',character:'Barry',stage:0},{title:'re4',character:'Ada'}]});
+ await M.queueAction(api,host,'add',{title:'re4'});assert.equal(calls[1].queue.length,2);assert.equal(calls[1].queue[1].title,'re4');
+ await M.queueAction(api,host,'remove','0');assert.deepEqual(calls[2].queue,[]);
+ assert.match(await M.queueAction(api,host,'clear'),/random rotation/);
+ assert.match(await M.queueAction(api,{name:'x',settings:{enabled:false}},'add',{title:'re4'}),/turn MercMode on/);
+ await assert.rejects(M.queueAction(api,null,'add',{}),/No gBox PC/);
+});

@@ -13,6 +13,7 @@ class MercModeIn(BaseModel):
     titles: list[Literal['re4','re5','re6']] | None=None
     rounds_per_title: int | None=None
     presentation_priority: StrictBool | None=None
+    queue: list[dict] | None=None         # the DJ queue (gbox.mercmode.queue_entry validates each round)
 
 
 class MercModeOut(BaseModel):

@@ -29,12 +29,18 @@ ROUND = re.compile(r'[a-f0-9]{32}\Z')
 MAX_REPORT = 24*1024
 METRICS = {
     'route': ('stuck', 'routes_blocked', 'routes_given_up', 'route_replans', 'nav_recoveries',
-              'nav_oscillations', 'navigation_distance_m', 'motion_idle_spin_s'),
+              'nav_oscillations', 'navigation_distance_m', 'motion_idle_spin_s',
+              # RE4: the obstruction database at work (re4_merc_bot stuck log / learned walls)
+              'stuck_events', 'stuck_reason', 'learned_walls', 'learned_floor_cells', 'wall_detours',
+              'detours', 'backoffs', 'vaults', 'replans', 'blocked_skips'),
     'checkpoints': ('bonuses_taken', 'bonus_s', 'time_bonuses_remaining', 'bonus_actor_removals'),
     'damage': ('player_damage_events', 'hits_taken', 'round_used_health_protection'),
     'mines': ('mines_placed', 'mine_attempts', 'mine_detonations_observed', 'mine_retreats_completed',
               'mine_pickups_avoided'),
-    'aim': ('round_shots', 'round_hits', 'round_accuracy', 'accuracy', 'bow_ineffective_bursts',
+    'engagement': ('kills', 'attacks_seen', 'attacks_prevented', 'attacks_avoided', 'attacks_landed', 'evades',
+                   'thrown_seen', 'thrown_shot', 'max_combo', 'react_vi_med', 'respond_vi_med'),
+    'aim': ('round_shots', 'round_hits', 'round_accuracy', 'accuracy', 'shots', 'hits', 'misses', 'shots_s',
+            'pitch_offset', 'bow_ineffective_bursts',
             'bow_navigation_handoffs', 'bow_firing_observations', 'bow_unconfirmed_impacts',
             'bow_confounded_outcomes', 'bow_damage_correlations', 'bow_aim_tolerance_deg', 'bow_aim_error_deg'),
     'qte': ('qte_presses', 'resuscitate_presses'),

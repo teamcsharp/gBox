@@ -16,7 +16,8 @@ PREPARATION = 'mercmode_preparation'
 OBSERVED = 'mercmode_observed'
 COMMAND = 'mercmode_command'
 DEFAULT = {'enabled': False, 'titles': ['re4', 're5', 're6'], 'rounds_per_title': 1,
-           'presentation_priority': False}
+           'presentation_priority': False, 'queue': []}
+QUEUE_MAX = 20
 TITLES = {
     're4': {'name': 'Resident Evil 4', 'map_id': 'G4BE08', 'platform': 'gamecube',
             'game_ids': ('78ab9efa2e310db4', 'e42c9b780c07c437'), 'playable': True,
@@ -40,7 +41,71 @@ def normalize(patch, current=None):
     if not isinstance(out['titles'], list) or not out['titles'] or len(out['titles']) > 3 \
             or any(t not in TITLES for t in out['titles']) or len(set(out['titles'])) != len(out['titles']):
         raise ValueError('Choose distinct titles from re4, re5 and re6')
+    out['queue'] = [queue_entry(e) for e in (out.get('queue') or [])]
+    if len(out['queue']) > QUEUE_MAX:
+        raise ValueError(f'The MercMode queue holds at most {QUEUE_MAX} rounds')
     return out
+
+
+def catalog():
+    """What the DJ queue can ask for, per verified title: modes -> characters (native roster order), stages."""
+    from . import re4_menus
+    from .mercs.titles import re5_ps3
+    return {'re4': {'modes': {'mercenaries': list(re4_menus.PLAYERS)}, 'stages': list(re4_menus.STAGES)},
+            're5': {'modes': {m: list(r) for m, r in re5_ps3.MODE_ROSTERS.items()}, 'stages': list(re5_ps3.STAGE_NAMES)}}
+
+
+def queue_entry(entry):
+    """One queued round (operator 2026-10-24: "be the DJ ... what mode is being played next, who's being played next
+    ... and see the queue ahead"): {title, mode, character, stage}; mode / character / stage None = random."""
+    if not isinstance(entry, dict) or set(entry) - {'title', 'mode', 'character', 'stage'} or entry.get('title') not in TITLES:
+        raise ValueError('A queued round needs a known title and only mode, character and stage')
+    title = entry['title']
+    out = {'title': title, 'mode': entry.get('mode'), 'character': entry.get('character'), 'stage': entry.get('stage')}
+    known = catalog().get(title)
+    if known is None:
+        if out['mode'] or out['character'] or out['stage'] is not None:
+            raise ValueError(f"{TITLES[title]['name']} has no verified roster or stage list yet")
+        return out
+    if out['mode'] is not None and out['mode'] not in known['modes']:
+        raise ValueError('Unknown mode for ' + TITLES[title]['name'])
+    if out['character'] is not None:
+        rosters = [known['modes'][out['mode']]] if out['mode'] else list(known['modes'].values())
+        if not any(out['character'] in r for r in rosters):
+            raise ValueError(f"{out['character']} is not in that roster")
+    if out['stage'] is not None and (type(out['stage']) is not int or not 0 <= out['stage'] < len(known['stages'])):
+        raise ValueError('Unknown stage for ' + TITLES[title]['name'])
+    return out
+
+
+def resolve_selection(entry, rng):
+    """A queued round's random parts drawn now, so the game receives an exact mode, character and stage."""
+    known = catalog().get(entry['title'])
+    if known is None:
+        return dict(entry)
+    mode = entry.get('mode') or next((m for m, r in known['modes'].items() if entry.get('character') in r), None) \
+        or rng.choice(sorted(known['modes']))
+    character = entry.get('character') or rng.choice(known['modes'][mode])
+    stage = entry['stage'] if entry.get('stage') is not None else rng.randrange(len(known['stages']))
+    return {'title': entry['title'], 'mode': mode, 'character': character, 'stage': stage,
+            'stage_name': known['stages'][stage]}
+
+
+def pop_queue(store, host):
+    cfg = settings(store, host)
+    if cfg['queue']:
+        store.put(SETTING, host, cfg | {'queue': cfg['queue'][1:]})
+
+
+def selection_job(title, sid, selection):
+    """(tool, input) that queues `selection` at the running game's next native menu visit, or None."""
+    if title == 're5':
+        return 're5_mods', {'session_id': sid, 'op': 'mercs_select', 'mode': selection['mode'],
+                            'character': selection['character'], 'stage': selection['stage']}
+    if title == 're4':
+        return 're_mods', {'session_id': sid, 'op': 'mercs_select', 'character': selection['character'],
+                           'target': str(selection['stage'])}
+    return None
 
 
 def settings(store, host):
@@ -63,7 +128,8 @@ def presentation_launch(store, worker, job):
         and job.get('id')==run.get('job') and run.get('phase')=='launching'
         and run.get('worker_id')==worker.get('id')==job.get('require_worker')
         and game.get('game_id')==run.get('game_id') and run.get('game_id') in spec.get('game_ids',())
-        and ((game.get('launch') or {}).get('mercmode') or {})=={'random_characters':True,'random_stages':True})
+        and {k:v for k,v in ((game.get('launch') or {}).get('mercmode') or {}).items() if k!='selection'}
+            =={'random_characters':True,'random_stages':True})
 
 
 def adopt_current(store, worker, session, telemetry, *, now=None):
@@ -275,7 +341,12 @@ def preparation(platform):
 
 def choose(store, worker, rng, cfg=None):
     cfg = cfg or settings(store, worker['name'])
-    pool = [r for r in inventory(store, worker, cfg) if r['playable'] and r['title'] in cfg['titles']]
+    rows = inventory(store, worker, cfg)
+    head = (cfg.get('queue') or [None])[0]
+    queued = next((r for r in rows if head and r['playable'] and r['title'] == head['title']), None)
+    if queued:                                   # the DJ's next round comes first, even for an unchecked title
+        return queued | {'selection': resolve_selection(head, rng)}
+    pool = [r for r in rows if r['playable'] and r['title'] in cfg['titles']]
     history = store.get(HISTORY, worker['name']) or {}
     fresh = [r for r in pool if r['game_id'] != history.get('last_game_id')]
     return rng.choice(fresh or pool) if pool else None
