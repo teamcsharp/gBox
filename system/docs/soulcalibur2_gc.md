@@ -376,7 +376,7 @@ All on the Spark's Dolphin, P1 Talim, keys through xdotool as gBox's Linux `send
   queued-move look-ahead and the distance book, 4 in 6 minutes after.
 
 So P1 is not yet "never hit". What still gets through: lows with long active windows, unblockables that the
-sidestep does not clear (Astaroth's 0x41 thrust: it does not hit a crouching fighter, so crouching is the next fix),
+sidestep does not clear (Astaroth's 0x41 thrust: it does not hit a crouching fighter, so since the follow-up an unblockable without the crouch-hit bit 0x02 is ducked, not sidestepped; not yet re-run live),
 a Raphael throw (0xC1) the crouch did not beat, and mids that land while P1 is in its own move (a GI that met
 nothing, or a punish the CPU impacted). First sightings of a move are guarded until the book knows its reach.
 

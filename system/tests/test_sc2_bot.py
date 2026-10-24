@@ -197,6 +197,18 @@ def test_unblockables_are_sidestepped():
     assert b.stats["steps"] == 1
 
 
+def test_unblockable_that_misses_a_crouching_fighter_is_ducked():
+    # Astaroth's 0x41 thrust: hits standing / downed only, no guard bits: crouch under it instead of sidestepping
+    assert S.classify(0x41) == "unblockable"
+    b = S.Brain()
+    assert b.decide(snap(p2={"atk": (0x41, 50, 52), "f": 10.0}), 0.0) == set()
+    assert b.decide(snap(p2={"atk": (0x41, 50, 52), "f": 50 - S.DUCK_LEAD}), 0.1) == {"down", S.G}
+    assert b.stats["ducks"] == 1 and b.stats["steps"] == 0
+    # one that reaches a crouching fighter (0x03) is still sidestepped
+    b = S.Brain()
+    assert b.decide(snap(p2={"atk": (0x03, 50, 52), "f": 50 - S.STEP_LEAD}), 0.0) == {"up"}
+
+
 def test_no_gi_when_busy_far_or_flagged():
     for p1, p2 in (({"m1": 0x21A3}, {}), ({}, {"dist": S.GI_RANGE + 0.5}), ({}, {"atk": (0x14B, 13, 15)})):
         b = S.Brain()
