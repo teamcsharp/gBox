@@ -16,6 +16,7 @@ from . import hermes_delivery as delivery, hermes_task_mode as mode, hermes_quot
 PREFIX = 'gBox queue '
 STAGES = ('inventory', 'analysis', 'reader', 'writer', 'runtime')
 ACTIVE = ('claimed', 'running')
+BLOCKED_RUN = '[blocked_config'   # execution error of a run Hermes's pre-dispatch validation refused to start
 HASH = re.compile(r'^[0-9a-f]{64}$')
 ID = re.compile(r'^[0-9a-f]{16}$')
 
@@ -47,7 +48,7 @@ def _executions():
     p = mode._home() / 'cron/executions.db'
     with sqlite3.connect(f'file:{p.as_posix()}?mode=ro', uri=True, timeout=3) as db:
         db.row_factory = sqlite3.Row
-        rows = db.execute('SELECT id,job_id,status,started_at,finished_at FROM executions '
+        rows = db.execute('SELECT id,job_id,status,started_at,finished_at,substr(error,1,64) AS error FROM executions '
                           'ORDER BY rowid DESC').fetchall()
     latest, active = {}, set()
     for row in rows:
@@ -313,10 +314,18 @@ def reconcile(data, jobs, latest, active, *, now):
             continue  # Old history cannot settle a newer queued occurrence.
         _preserve_report(item, run)
         from . import hermes_result_review
-        hermes_result_review.record_result(item, run)
+        # Hermes refused to start it (2026-10-24: "[blocked_config:silent] ... Unknown provider 'gbox-deepseek'"):
+        # no agent work happened, so it is neither a failed attempt nor a result to review
+        blocked = str(run.get('error') or '').startswith(BLOCKED_RUN)
+        if not blocked:
+            hermes_result_review.record_result(item, run)
         if run['id'] == item.get('last_run_id'):
             continue
         item.update(last_run_id=run['id'], dispatch_state='finished', last_finished=now)
+        if blocked:
+            item['blocked_run'] = run['id']
+            item['retry_at'] = max(item.get('retry_at', 0), now + 120)
+            continue
         advanced = item.get('checkpoint_at', 0) >= item.get('last_dispatched', 0)
         failures = 0 if advanced else item.get('no_progress_runs', 0) + 1
         item['no_progress_runs'] = failures
