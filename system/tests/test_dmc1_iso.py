@@ -73,3 +73,17 @@ def test_real_groups_present():
     assert len(emd) == 178
     assert len(pld) == 80
     assert any(n == "PL00.PLD" and s == 1547616 and e == 1043291 for n, s, _, e in pld)
+
+
+def test_parse_child_table_synthetic():
+    import struct
+    from gbox.dmc1_iso import parse_child_table
+    blob = struct.pack("<I3I", 3, 0, 16, 20) + b"\0" * 32
+    assert parse_child_table(blob) == [0, 16, 20]
+
+
+def test_parse_child_table_rejects_bad():
+    import struct, pytest
+    from gbox.dmc1_iso import parse_child_table
+    with pytest.raises(ValueError):
+        parse_child_table(struct.pack("<I", 99) + b"\0" * 8)
