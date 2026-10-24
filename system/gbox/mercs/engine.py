@@ -83,12 +83,16 @@ class Latency:
 
 
 def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sleep, clock=time.time,
-               tick_s: float = 0.05, driver=None, brain=None, learn_dir=None, tactical=None, damage=None) -> str:
+               tick_s: float = 0.05, driver=None, brain=None, learn_dir=None, tactical=None, damage=None,
+               session_runtime=None, observe_only=False) -> str:
     drv = driver or D.load(prof)
     if damage is not None:
         damage.bind(drv, prof)
-    bot = brain or drv.brain(m, stats, clock, learn_dir=learn_dir)
-    pp = PromptPresser(drv.prompt_source(m, stats), keys=drv.prompt_keys, stats=stats,
+    from .training import HumanObserver, RoundAssistance, round_fields
+    assistance = RoundAssistance()
+    role_signature = session_runtime.signature() if session_runtime is not None else None
+    bot = brain or (HumanObserver(stats) if observe_only else drv.brain(m, stats, clock, learn_dir=learn_dir))
+    pp = PromptPresser(None if observe_only else drv.prompt_source(m, stats), keys=drv.prompt_keys, stats=stats,
                        unknown=getattr(drv, "prompt_unknown", (LookupError,)))
     held: set = set()
     gone_since = lost_since = None
@@ -165,6 +169,9 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             return
         round_closed = True
         row = dict(final_stats)
+        row['assistance'] = round_fields(stats, assistance)
+        row['assistance_classification'] = row['assistance']['classification']
+        row['assistance_verified'] = row['assistance']['verified']
         for key in delta_fields:
             row[key] = max(0, (row.get(key) or 0) - baseline[key])
         if row.get('round_accuracy') is not None:
@@ -176,6 +183,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                 # back to row (a cycle breaks every later round's JSON output).
                 metrics = {key:value for key,value in row.items()
                            if isinstance(value,(str,int,float,bool,type(None)))}
+                metrics['assistance'] = row['assistance']
                 navigation = trace.finish(at, reason, metrics)
                 stats.update(navigation)
                 row.update(navigation)
@@ -198,11 +206,12 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
         stats["round_evidence_closed"] = True
 
     def start_evidence(before):
-        nonlocal trace, remembered, round_id, baseline, round_closed, outcome, last_stats
+        nonlocal trace, remembered, round_id, baseline, round_closed, outcome, last_stats, assistance
         round_id = uuid.uuid4().hex
         remembered = None
         baseline = {key:before.get(key,0) for key in delta_fields}
         round_closed, outcome, last_stats = False, "interrupted", {}
+        assistance = RoundAssistance()
         for key in ("result_rank","result_rank_observed","rank_verified","completed_score_rank",
                     "completed_score_rank_source","finished_naturally"):
             stats.pop(key,None)
@@ -216,10 +225,18 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
 
     try:
         while not stopped():
+            if session_runtime is not None:
+                status = session_runtime.poll(m, drv)
+                if session_runtime.signature() != role_signature:
+                    return 'role_changed'
+                if not observe_only and status['control_player'] is None:
+                    return 'control_unavailable'
             now = clock()
             before_observation = dict(stats)
             snap = drv.snapshot(m)
             where = drv.screen(m, snap)
+            if session_runtime is not None:
+                session_runtime.poll(m, drv, snap)
             stats["screen"] = where
             if where == "playing":
                 stats.pop("screen_note", None)
@@ -246,6 +263,8 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                     start_evidence(before_observation)
                 if marker is not None:
                     last_round_marker = marker
+            assistance.observe(snap.get('assistance'))
+            round_fields(stats, assistance)
             if damage is not None:
                 damage.after(snap, where, now)
             if tactical is not None:                  # the tactical map: who is where, what the bot means to do
@@ -313,6 +332,9 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             stats["ram_progress"] = progress
             if trace is not None:
                 trace.observe(snap, bot, stats, now, held, "before_decision")
+            if observe_only:
+                next_frame()
+                continue
             chords = pp.step(now, ok=lambda b: bot.prompt_ok(b, snap, now))
             if chords:                                # the game asks for a button: let go, press it
                 hold(set())

@@ -14,11 +14,91 @@ import re
 import sqlite3
 import time
 import uuid
+import hashlib
 
 LIMITS = (1, 5, 10, 20, 100)
 MAX_SAMPLES = 2000
 TITLE = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
-NAMES = {"BLUS30491": "Resident Evil 5", "G4BE08": "Resident Evil 4"}
+NAMES = {"BLUS30491": "Resident Evil 5", "G4BE08": "Resident Evil 4", "BH6": "Resident Evil 6"}
+CONTROLS = {"human", "bot", "unknown"}
+ASSISTANCE = {"unmodified", "mod_assisted", "unknown"}
+
+
+def recorded_players(frame):
+    """Controller ownership is recorded evidence; an old player trace is never called human."""
+    players = frame.get("players")
+    if not isinstance(players, list):
+        player = frame.get("player")
+        return [{**player, "id": "legacy", "control": "unknown"}] if isinstance(player, dict) else []
+    result, seen = [], set()
+    for player in players[:4]:
+        if not isinstance(player, dict) or not isinstance(player.get("id"), str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", player["id"]):
+            continue
+        if player["id"] in seen:
+            continue
+        seen.add(player["id"])
+        result.append({**player, "control": player.get("control") if player.get("control") in CONTROLS else "unknown"})
+    return result
+
+
+def assistance_context(value):
+    value = value if isinstance(value, dict) else {}
+    classification = value.get("classification")
+    # Missing or unverified context is unknown, including old zero-damage rounds.
+    if classification not in ASSISTANCE or classification == "unmodified" and value.get("verified") is not True:
+        classification = "unknown"
+    return {**value, "classification": classification, "verified": value.get("verified") is True}
+
+
+def _point(value):
+    return isinstance(value, (list, tuple)) and len(value) == 3 and all(type(v) in (int, float) and math.isfinite(v) for v in value)
+
+
+def _load_mesh(raw, geometry):
+    from .titles.re5_nav import NavMesh
+    links = [[] for _ in raw["triangles"]]
+    for u, v, edge, cost in raw["links"]:
+        links[u].append((v, edge, cost if cost is not None else 1.))
+    mesh = NavMesh(raw["points"], raw["triangles"], links)
+    if mesh.learning_sig != geometry:
+        raise ValueError("stored geometry/topology identity does not match")
+    return mesh
+
+
+def traversal_allowed(mesh, waypoint, proofs):
+    """A recorded completion may identify a candidate link; live prompts still own its execution."""
+    if not hasattr(waypoint, "approach"):
+        return False
+    for proof in proofs:
+        if proof.get("verified") is not True or proof.get("geometry") != mesh.learning_sig \
+                or (proof.get("evidence") or {}).get("source") != "native_player_traversal":
+            continue
+        if not all(_point(proof.get(k)) for k in ("approach", "landing", "portal")):
+            continue
+        if mesh.find(proof["approach"], floor_only=True, height_slack=40.) != proof.get("from") \
+                or mesh.find(proof["landing"], floor_only=True, height_slack=40.) != proof.get("to"):
+            continue
+        if all(math.dist(a, b) <= 30. for a,b in ((waypoint.approach,proof["approach"]),
+                (waypoint,proof["landing"]),(waypoint.portal,proof["portal"]))):
+            return True
+    return False
+
+
+def demonstrated_segment(mesh, a, b, proofs):
+    if mesh.floor_segment(a, b):
+        return True
+    route = mesh.route(a, b)
+    if not route or sum(hasattr(p, "approach") for p in route) != 1:
+        return False
+    previous = a
+    for point in route:
+        if hasattr(point, "approach"):
+            if not mesh.floor_segment(previous, point.approach) or not traversal_allowed(mesh, point, proofs):
+                return False
+        elif not mesh.floor_segment(previous, point):
+            return False
+        previous = point
+    return True
 
 
 def decode(raw, fallback=None):
@@ -103,6 +183,8 @@ class Reviewer:
                            "mode": meta.get("mode") or (notebook or {}).get("mode"),
                            "started": row["started"], "ended": row["ended"], "outcome": row["outcome"],
                            "active": row["outcome"] is None, "review": review,
+                           "participants": meta.get("participants") or [],
+                           "assistance": assistance_context(meta.get("assistance")),
                            "source_id": f"atlas:{title}:{row['id']}",
                            "notebook_source_id": f"gbox:mercs:{title}:{rid}" if notebook else None, "spatial": True})
         # Titles without an atlas still expose genuine saved reviews, with spatial playback explicitly absent.
@@ -113,6 +195,7 @@ class Reviewer:
                            "geometry": row["stage"], "stage": row["stage"], "mode": row["mode"],
                            "character": row["character"], "started": row["ts"], "ended": row["ts"],
                            "timestamp_meaning": "review saved at", "outcome": row["outcome"], "active": False,
+                           "participants": [], "assistance": assistance_context(None),
                            "spatial": False, "source_id": f"gbox:mercs:{title}:{row['id']}"})
         return sorted(result, key=lambda r: (r["started"], r["id"]), reverse=True)[:100]
 
@@ -150,15 +233,25 @@ class Reviewer:
                 count = self.read("navigation",title,"atlas.sqlite","SELECT count(*) AS n,MAX(seq) AS last FROM samples WHERE round_id=?",(row["id"],)) if row["spatial"] else []
                 stride = max(1, math.ceil((count[0]["n"] if count else 0)/2000))
                 chosen = self.read("navigation",title,"atlas.sqlite",
-                    "SELECT at,json_extract(payload,'$.frame.player.pos') AS pos FROM samples WHERE round_id=? AND (seq % ?=0 OR seq=?) ORDER BY seq",
+                    "SELECT seq,at,payload FROM samples WHERE round_id=? AND (seq % ?=0 OR seq=?) ORDER BY seq",
                     (row["id"],stride,count[0]["last"])) if count else []
-                row["path"] = [{"at": s["at"], "pos": decode(s["pos"])} for s in chosen if s["pos"]]
-                previous = None
-                for sample in row["path"]:
-                    if previous is not None:
-                        dt = sample["at"]-previous["at"]
-                        sample["break"] = not (0<dt<=2.*stride and math.dist(sample["pos"],previous["pos"])<=800.*dt+30.)
-                    previous = sample
+                tracks = {}
+                for sample in chosen:
+                    for player in recorded_players((decode(sample["payload"], {}) or {}).get("frame") or {}):
+                        if not _point(player.get("pos")):
+                            continue
+                        track = tracks.setdefault(player["id"], {"id":player["id"],"control":player["control"],"slot":player.get("slot"),"path":[]})
+                        previous = track["path"][-1] if track["path"] else None
+                        point = {"at":sample["at"],"seq":sample["seq"],"pos":player["pos"],"actor":player.get("actor",player.get("ptr")),"control":player["control"]}
+                        if previous is not None:
+                            dt = point["at"]-previous["at"]
+                            point["break"] = not (0<dt<=2.*stride and math.dist(point["pos"],previous["pos"])<=800.*dt+30.
+                                and point["actor"]==previous["actor"] and point["control"]==previous["control"])
+                        track["path"].append(point)
+                        if track["control"] != player["control"]:
+                            track["control"] = "unknown"
+                row["paths"] = list(tracks.values())
+                row["path"] = row["paths"][0]["path"] if row["paths"] else []
                 row["path_sampled"] = stride > 1
         return {"runs": rows, "retention": "latest 100 per title; no stored runs deleted"}
 
@@ -189,6 +282,8 @@ class Reviewer:
         out["next_after"] = out["samples"][-1]["seq"] if out["samples"] else after
         out["more"] = len(out["samples"]) == MAX_SAMPLES
         out["suggestions"] = self.suggestions(title, summary["geometry"])
+        out["players"] = list({player["id"]: {k:player.get(k) for k in ("id","slot","control","provenance")}
+                               for sample in out["samples"] for player in recorded_players(sample.get("frame") or {})}.values())
         out["navigation_learning"] = None
         for path in (self.root/"lessons"/(title+"-navigation.json"), self.root/"learned"/title/(title+"-navigation.json")):
             if path.resolve().is_relative_to(self.root.resolve()) and path.is_file() and path.stat().st_size<=4*1024*1024:
@@ -238,14 +333,8 @@ class Reviewer:
         rows = self.read("navigation", title, "atlas.sqlite", "SELECT geometry FROM stages WHERE key=?", (geometry,))
         if not rows:
             raise FileNotFoundError("measured geometry not available for this title")
-        from .titles.re5_nav import NavMesh
         raw = decode(rows[0]["geometry"], {})
-        links = [[] for _ in raw["triangles"]]
-        for u,v,edge,cost in raw["links"]:
-            links[u].append((v,edge,cost if cost is not None else 1.))
-        mesh = NavMesh(raw["points"], raw["triangles"], links)
-        if mesh.learning_sig != geometry:
-            raise ValueError("stored geometry/topology identity does not match")
+        mesh = _load_mesh(raw, geometry)
         checks = []
         for index,(a,b) in enumerate(zip(clean,clean[1:])):
             floor = mesh.floor_segment(a,b)
@@ -266,11 +355,161 @@ class Reviewer:
         valid = all(c["valid_floor"] for c in checks)
         row = {"id": uuid.uuid4().hex, "title": title, "geometry": geometry, "created": time.time(),
                "name": str(body.get("name") or "Suggested route")[:100], "actor": str(actor)[:100],
+               "kind": "drawn_suggestion",
                "points": points, "validation": checks, "status": "validated_floor_suggestion" if valid else "draft",
                "provenance": "operator-drawn annotation; not a measured optimal route", "bot_eligible": valid}
         with closing(self._annotations()) as db:
             db.execute("INSERT INTO suggestions VALUES(?,?,?,?,?)", (row["id"],title,geometry,row["created"],json.dumps(row,allow_nan=False)))
             db.commit()
+        return row
+
+    def demonstration(self, identifier):
+        if not isinstance(identifier, str) or not re.fullmatch(r"[a-f0-9]{32}", identifier):
+            raise ValueError("invalid demonstration identifier")
+        path = self.root/"reviewer.sqlite"
+        if path.is_file():
+            with closing(sqlite3.connect(path.resolve().as_uri()+"?mode=ro", uri=True, timeout=2.)) as db:
+                found = db.execute("SELECT payload FROM suggestions WHERE id=?", (identifier,)).fetchone()
+            row = decode(found[0], {}) if found else {}
+            if row.get("kind") == "recorded_demonstration":
+                return row
+        raise FileNotFoundError("recorded demonstration not found")
+
+    def teach(self, body, actor):
+        """Select durable human samples. Client-supplied coordinates/ownership never become evidence."""
+        title, rid, player_id = body.get("title"), body.get("round_id"), body.get("player_id")
+        if not isinstance(rid, str) or len(rid)>512 or not isinstance(player_id, str):
+            raise ValueError("an exact recorded round and player identifier are required")
+        summary = next((row for row in self.summaries(title) if row["id"] == rid and row["spatial"]), None)
+        if summary is None:
+            raise FileNotFoundError("recorded spatial round not found in this title's latest 100")
+        if not summary.get("mode"):
+            raise ValueError("a recorded mode is required before teaching a route")
+        first, last = body.get("start_seq"), body.get("end_seq")
+        if type(first) is not int or type(last) is not int or not 0<=first<last<=2**63-1:
+            raise ValueError("choose an increasing recorded start/end sample range")
+        saved = self.read("navigation", title, "atlas.sqlite",
+            "SELECT seq,at,payload FROM samples WHERE round_id=? AND seq BETWEEN ? AND ? ORDER BY seq LIMIT 20001", (rid,first,last))
+        if len(saved)<2 or len(saved)>20000 or saved[0]["seq"]!=first or saved[-1]["seq"]!=last:
+            raise ValueError("choose 2 to 20000 existing recorded samples")
+        frames, actor_id, contexts = [], None, []
+        for sample in saved:
+            frame = (decode(sample["payload"], {}) or {}).get("frame") or {}
+            player = next((p for p in recorded_players(frame) if p["id"]==player_id), None)
+            if player is None or player["control"]!="human":
+                raise ValueError("every selected sample must identify the same recorded human player")
+            provenance = player.get("provenance") or {}
+            if provenance.get("native_actor_verified") is not True \
+                    or provenance.get("control_source") != "operator_assignment_and_bot_input_fence":
+                raise ValueError("human teaching requires recorded native actor and controller-ownership provenance")
+            owner = player.get("actor", player.get("ptr"))
+            if owner is None or not _point(player.get("pos")) or frame.get("title",title)!=title:
+                raise ValueError("recorded player identity and finite positions are required")
+            if actor_id is None:
+                actor_id = owner
+            if actor_id != owner:
+                raise ValueError("player actor changed inside the selected demonstration")
+            if frames:
+                previous = frames[-1]
+                dt = sample["at"]-previous["at"]
+                max_speed = 8000. if frame.get("units")=="mm" else 800.
+                if sample["seq"]!=previous["seq"]+1 or not 0<dt<=2. \
+                        or math.dist(player["pos"], previous["pos"])>max_speed*dt+30.:
+                    raise ValueError("the selected path has a recording gap or discontinuity; choose a continuous segment")
+            frames.append({"seq":sample["seq"],"at":sample["at"],"pos":tuple(player["pos"]),"player":player,
+                           "input_provenance":frame.get("input_provenance")})
+            contexts.append(assistance_context(frame.get("assistance")))
+        stage = self.read("navigation",title,"atlas.sqlite","SELECT geometry FROM stages WHERE key=?",(summary["geometry"],))
+        if not stage:
+            raise FileNotFoundError("measured stage geometry is unavailable")
+        raw = decode(stage[0]["geometry"], {})
+        mesh = _load_mesh(raw, summary["geometry"])
+        events = self.read("navigation",title,"atlas.sqlite",
+            "SELECT at,payload FROM events WHERE round_id=? AND kind='traversal_completed' AND at BETWEEN ? AND ? ORDER BY seq LIMIT 1000",
+            (rid,frames[0]["at"],frames[-1]["at"]))
+        by_seq = {f["seq"]:f for f in frames}
+        proofs = []
+        for event in events:
+            proof = decode(event["payload"], {})
+            a, b = by_seq.get(proof.get("start_seq")), by_seq.get(proof.get("end_seq"))
+            if proof.get("player_id")!=player_id or proof.get("player_actor")!=actor_id or a is None or b is None \
+                    or not a["seq"]<b["seq"] or not all(_point(proof.get(k)) for k in ("approach","landing","portal")):
+                continue
+            if math.dist(a["pos"],proof["approach"])>80. or math.dist(b["pos"],proof["landing"])>80.:
+                continue
+            if demonstrated_segment(mesh,a["pos"],b["pos"],[proof]) and not mesh.floor_segment(a["pos"],b["pos"]):
+                proofs.append({**proof,"source_event_at":event["at"]})
+        # Keep recorded action endpoints and drop only their already-proven animation samples.
+        collapsed, index = [], 0
+        while index<len(frames):
+            sample = frames[index]
+            collapsed.append(sample)
+            proof = next((p for p in proofs if p["start_seq"]==sample["seq"]), None)
+            if proof:
+                index = next(i for i,f in enumerate(frames) if f["seq"]==proof["end_seq"])
+            else:
+                index += 1
+        points, source_points = [], []
+        protected = {p[k] for p in proofs for k in ("start_seq","end_seq")}
+        for sample in collapsed:
+            if points and math.dist(points[-1],sample["pos"])<1. and sample["seq"] not in protected:
+                continue
+            if len(points)>=2 and source_points[-1] not in protected and math.dist(points[-2],sample["pos"])<=300. \
+                    and mesh.floor_segment(points[-2],sample["pos"]):
+                points[-1], source_points[-1] = sample["pos"], sample["seq"]
+            else:
+                points.append(sample["pos"]); source_points.append(sample["seq"])
+        if not 2<=len(points)<=4096:
+            raise ValueError("choose a shorter segment containing at least two distinct positions")
+        checks = []
+        for i,(a,b) in enumerate(zip(points,points[1:])):
+            floor = mesh.floor_segment(a,b)
+            valid = floor or demonstrated_segment(mesh,a,b,proofs)
+            checks.append({"segment":i,"valid_floor":floor,"valid_action":bool(valid and not floor),
+                           "reason":"measured directed floor support" if floor else
+                           "recorded native player traversal; live prompt required" if valid else
+                           "unsupported segment or missing native player traversal completion"})
+        eligible = all(c["valid_floor"] or c["valid_action"] for c in checks)
+        classes = {c["classification"] for c in contexts}
+        classification = "mod_assisted" if "mod_assisted" in classes else "unmodified" if classes=={"unmodified"} else "unknown"
+        source = {"round_id":rid,"round_source_id":summary["source_id"],"title":title,"geometry":summary["geometry"],
+                  "mode":summary["mode"],"player_id":player_id,"control":"human","player_actor":actor_id,
+                  "start_seq":first,"end_seq":last,"started":frames[0]["at"],"ended":frames[-1]["at"],
+                  "sample_count":len(frames),"input_replay":False,
+                  "inputs_observed":all(f["player"].get("provenance",{}).get("inputs_observed") is True for f in frames),
+                  "input_provenance":frames[0].get("input_provenance"),
+                  "ownership_provenance":frames[0]["player"].get("provenance"),
+                  "sample_digest_scope":"selected recorded sequence, time and position",
+                  "sample_digest":hashlib.sha256(json.dumps([{k:f[k] for k in ("seq","at","pos")} for f in frames],sort_keys=True).encode()).hexdigest()}
+        row = {"id":uuid.uuid4().hex,"title":title,"geometry":summary["geometry"],"mode":summary["mode"],
+               "created":time.time(),"name":str(body.get("name") or "Recorded human route")[:100],"actor":str(actor)[:100],
+               "kind":"recorded_demonstration","source":source,"points":points,"point_sample_seqs":source_points,
+               "traversals":proofs,"validation":checks,"bot_eligible":eligible,
+               "adopted":body.get("adopt") is True and eligible,
+               "status":"validated_recorded_demonstration" if eligible else "draft",
+               "assistance":{"classification":classification,"verified":classification!="unknown" and all(c["verified"] for c in contexts),
+                             "source":"all selected durable sample contexts","effects":sorted({effect[:100] for c in contexts for effect in c.get("effects",[]) if isinstance(effect,str)})[:100]},
+               "provenance":"recorded human positions; current floor, hazards and live action prompts remain authoritative"}
+        with closing(self._annotations()) as db:
+            db.execute("INSERT INTO suggestions VALUES(?,?,?,?,?)",(row["id"],title,row["geometry"],row["created"],json.dumps(row,allow_nan=False)))
+            db.commit()
+        return row
+
+    def adopt(self, identifier, adopted):
+        if type(adopted) is not bool:
+            raise ValueError("adopted must be a boolean")
+        row = self.demonstration(identifier)
+        if adopted:
+            stage = self.read("navigation",row["title"],"atlas.sqlite","SELECT geometry FROM stages WHERE key=?",(row["geometry"],))
+            if not stage:
+                raise FileNotFoundError("recorded geometry unavailable")
+            mesh = _load_mesh(decode(stage[0]["geometry"],{}),row["geometry"])
+            if not row.get("bot_eligible") or not all(demonstrated_segment(mesh,a,b,row.get("traversals") or [])
+                    for a,b in zip(row["points"],row["points"][1:])):
+                raise ValueError("a draft or invalidated route cannot be adopted for practice")
+        row["adopted"] = adopted
+        with closing(self._annotations()) as db:
+            db.execute("UPDATE suggestions SET payload=? WHERE id=?",(json.dumps(row,allow_nan=False),identifier));db.commit()
         return row
 
 
@@ -280,7 +519,12 @@ def validated_suggestions(data_dir, title, mesh):
     out = []
     for row in reviewer.suggestions(title, mesh.learning_sig):
         points = row.get("points") or []
-        if row.get("bot_eligible") and len(points)>=2 and all(mesh.floor_segment(a,b) for a,b in zip(points,points[1:])):
+        demo = row.get("kind")=="recorded_demonstration"
+        if demo and (not row.get("adopted") or not row.get("mode") or (row.get("source") or {}).get("control")!="human"):
+            continue
+        if row.get("bot_eligible") and 2<=len(points)<=4096 and all(_point(p) for p in points) \
+                and all(demonstrated_segment(mesh,a,b,row.get("traversals") or []) if demo else mesh.floor_segment(a,b)
+                        for a,b in zip(points,points[1:])):
             out.append(row)
     return out
 
@@ -339,3 +583,15 @@ def routes(app, config, auth):
     @app.post("/api/mercs/reviewer/suggestions")
     def suggest(body: dict, actor=Depends(auth)):
         return call(service.save,body,actor)
+
+    @app.post("/api/mercs/reviewer/demonstrations")
+    def teach(body: dict, actor=Depends(auth)):
+        return call(service.teach,body,actor)
+
+    @app.get("/api/mercs/reviewer/demonstrations/{identifier}")
+    def demonstration(identifier: str, actor=Depends(auth)):
+        return call(service.demonstration,identifier)
+
+    @app.post("/api/mercs/reviewer/demonstrations/{identifier}/adopt")
+    def adopt(identifier: str, body: dict, actor=Depends(auth)):
+        return call(service.adopt,identifier,body.get("adopted"))

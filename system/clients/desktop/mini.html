@@ -105,12 +105,12 @@
       if (!result.ok) throw Error(result.error || 'Session unavailable');
       let session = result.data.find(row => row.session_id === sid);
       if (modifierOpening !== opening) return;
-      if (!GBoxRE5Modifiers.eligible(session)) {
+      if (!GBoxRE5Modifiers.panelEligible(session)) {
         const history = await gbox.api('/api/sessions?limit=200');
         if (!history.ok) throw Error(history.error || 'Session history unavailable');
         session = GBoxRE5Modifiers.replacementSession(sid, history.data, session, GBoxSessionContinuity.resolve);
       }
-      if (modifierOpening !== opening || !GBoxRE5Modifiers.eligible(session)) return;
+      if (modifierOpening !== opening || !GBoxRE5Modifiers.panelEligible(session)) return;
       modifierMenu = document.createElement('div'); modifierMenu.id = 'pip-modifiers';
       modifierMenu.style.cssText = 'position:fixed;z-index:10;background:#1d1d22;color:#eee;border:1px solid #555;border-radius:8px;padding:8px;max-width:calc(100vw - 32px);max-height:calc(100vh - 32px);overflow:auto';
       modifierMenu.innerHTML = GBoxRE5Modifiers.sectionHTML(); document.body.append(modifierMenu);

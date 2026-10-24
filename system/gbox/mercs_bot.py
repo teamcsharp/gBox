@@ -386,7 +386,7 @@ def tactical_publisher(sink, prof: dict):
 
 
 def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sleep, clock=time.time, m=None,
-         tactical=None, **_kw) -> dict:
+         tactical=None, session_id=None, **_kw) -> dict:
     """Boot to a round from RAM, hand each round to the engine, back to the menus for the next; stats is filled
     live (screen, cursor, menu_presses, rounds, ram_progress, hooks, menu_moment; hung + wandered when it ends early).
     tactical: the tactical map's sink (gbox.mercs.tactical.HttpSink): each round's frames, the screen between rounds."""
@@ -400,17 +400,36 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
     if ad is not None:
         m.adapter = ad
     E = title_engine(prof)
+    runtime, base_driver = None, None
+    if session_id and ad is not None and prof['map_id'] in ('BLUS30491', 'BH6'):
+        from .mercs.session_runtime import SessionRuntime
+        from .mercs.driver import load
+        base_driver = load(prof)
+        runtime = SessionRuntime(ad, session_id, (game or {}).get('game_id'), prof['map_id'], send, stats)
+        # Cleanup can release exactly the bot's held port, without touching a
+        # human P1 controller. tools._release_all uses this only for this run.
+        ad._mercs_bot_runtime = runtime
+        send = runtime.send
+        runtime.poll(m, base_driver)
+
+    def training_ops(ops, collect=None):
+        if runtime is not None:
+            intent = runtime.refresh()
+            if intent['role'] != 'solo_p1' or intent['training_profile'] != 'assisted':
+                return []
+        return apply_ops(ad, ops, prof) if collect is None else apply_ops(ad, ops, prof, collect)
+
     package = [tuple(x) for x in prof.get("package") or []]
     early = set(prof.get("early_ops") or [])
     if ad is not None and early:
-        failed = apply_ops(ad, [x for x in package if x[0] in early], prof)
+        failed = training_ops([x for x in package if x[0] in early])
         if failed:
             stats["early_failed"] = "; ".join(failed)[:300]
     round_ops = [tuple(x) for x in prof.get("round_ops") or []]
     boot = Boot(menus, m, send, sleep=sleep, clock=clock, stats=stats, ad=ad, game=game,
-                hooks=(lambda: apply_ops(ad, [x for x in package if x[0] not in early], prof)) if ad is not None else None,
+                hooks=(lambda: training_ops([x for x in package if x[0] not in early])) if ad is not None else None,
                 jump_at=prof.get("jump_at") or "select_player",
-                round_hooks=(lambda: apply_ops(ad, round_ops, prof, stats)) if ad is not None and round_ops else None)
+                round_hooks=(lambda: training_ops(round_ops, stats)) if ad is not None and round_ops else None)
     run = time.strftime("%Y%m%d-%H%M%S", time.localtime(clock()))
     lessons = lessons_writer(prof["map_id"], run)
     if prof["map_id"] == "BLUS30491":
@@ -441,8 +460,14 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
     first_screen_read = False
     boot_read_started = clock()
     boot_read_attempts = 0
+    previous_assignment = None
     try:
         while not stopped():
+            team = runtime.poll(m, base_driver) if runtime is not None else None
+            assignment = runtime.signature() if runtime is not None else None
+            if previous_assignment is not None and assignment != previous_assignment:
+                playing_initialized = False
+            previous_assignment = assignment
             try:
                 scr = menus.screen(m)
             except OSError as exc:
@@ -465,7 +490,17 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
             first_screen_read = True
             if boot_read_attempts:
                 stats.update(boot_ram_status="ready",boot_ram_wait_s=round(max(0.,clock()-boot_read_started),2))
-            if prof["map_id"] == "BLUS30491" and ad is not None and scr.get("where") not in ("playing", "dead", "results", "unknown"):
+            human_observation = team is not None and team['config']['role'] == 'observe_human'
+            if team is not None and not human_observation and team['control_player'] is None:
+                runtime.release()
+                stats['screen'] = scr.get('where')
+                if pub is not None:
+                    pub.idle(team['phase'])
+                sleep(POLL_S)
+                continue
+            if prof["map_id"] == "BLUS30491" and ad is not None and (runtime is None or
+                    team['config']['role'] == 'solo_p1' and team['config']['training_profile'] == 'assisted') \
+                    and scr.get("where") not in ("playing", "dead", "results", "unknown"):
                 if clock() - stats.get("_merc_unlock_at", -1e9) >= 5:
                     from .mercs.titles import re5_hooks
                     from .re5_mods_tool import RE5
@@ -476,13 +511,24 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
                     stats["_merc_unlock_at"] = clock()
             if scr.get("where") == "playing" and E is not None:
                 if not playing_initialized and ad is not None and playing_ops:
-                    failed = apply_ops(ad, playing_ops, prof, stats)
+                    failed = training_ops(playing_ops, stats)
                     stats["playing_hooks"] = "applied" if not failed else "; ".join(failed)[:300]
                     playing_initialized = not failed
                 if fresh:
                     stats["rounds"] += 1
                     fresh = False
                 options = {"tactical": pub} if pub else {}
+                if runtime is not None:
+                    options.update(session_runtime=runtime, observe_only=human_observation, driver=base_driver)
+                    if team['control_player'] == 2:
+                        scoped = getattr(base_driver, 'for_player', None)
+                        selected = scoped(m, player=2, stats=stats) if callable(scoped) else None
+                        if selected is None:
+                            stats.update(team_phase='waiting_p2', team_reason='Player 2 scoped camera and prompts are not verified.')
+                            runtime.release()
+                            sleep(POLL_S)
+                            continue
+                        options['driver'] = selected
                 if damage_outbox is not None:
                     options["damage"] = damage_reports.Observer(damage_outbox.emit, damage_run, prof["map_id"], stats)
                 out = E.play_round(prof, m, send, stopped, stats, lessons, **options)
@@ -499,6 +545,13 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
             fresh = True
             if pub is not None:
                 pub.idle(scr.get("where"))                  # the map says where the game is between rounds
+            if team is not None and team['config']['role'] != 'solo_p1':
+                # Local co-op menus belong to the human, including joining and
+                # selecting characters. Observation never advances their menu.
+                runtime.release()
+                stats['screen'] = scr.get('where')
+                sleep(POLL_S)
+                continue
             before_presses = stats.get("menu_presses", 0)
             why = boot.tick(clock(), scr=scr)
             if prof["map_id"] == "BLUS30491" and lessons is not None and stats.get("menu_presses", 0) != before_presses:
@@ -512,6 +565,8 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
                 break
             sleep(POLL_S)
     finally:
+        if runtime is not None:
+            runtime.release()
         if not first_screen_read and stats.get("boot_ram_status")=="waiting":
             stats["boot_ram_status"] = "stopped"
         if damage_outbox is not None:

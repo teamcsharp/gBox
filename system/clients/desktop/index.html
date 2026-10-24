@@ -4003,13 +4003,13 @@ async function pipModifiers(m, opening) {
     if (!sid) { m.querySelector('[data-pip-modifiers]').textContent = 'Select a running game to adjust modifiers.'; return; }
     let session = await sessionById(sid);
     if (m.opening !== opening) return;
-    if (!GBoxRE5Modifiers.eligible(session)) {
+    if (!GBoxRE5Modifiers.panelEligible(session)) {
       const history = await gbox.api('/api/sessions?limit=200');
       if (!history.ok) throw new Error(history.error || 'Session history unavailable');
       session = GBoxRE5Modifiers.replacementSession(sid, history.data, session, GBoxSessionContinuity.resolve);
     }
     if (m.opening !== opening) return;
-    if (!GBoxRE5Modifiers.eligible(session)) { m.querySelector('[data-pip-modifiers]').textContent = ''; return; }
+    if (!GBoxRE5Modifiers.panelEligible(session)) { m.querySelector('[data-pip-modifiers]').textContent = ''; return; }
     m.querySelector('[data-pip-modifiers]').innerHTML = GBoxRE5Modifiers.sectionHTML();
     m.modifiers = GBoxRE5Modifiers.mount(m.querySelector('.re5-modifiers'), { session,
       api: async (path, body, method) => {

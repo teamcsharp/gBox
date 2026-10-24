@@ -327,3 +327,62 @@ Mercenaries clock and combo, the player and partner, the enemies' state / act / 
 the melee prompts (RE5's stun melee, counters) as `prompt` signatures, the stages in the stage DB. Its driver maps the
 same Intent to RE5's buttons. What RE5 teaches (a counter window, a combo rule, a route idea) goes into the shared tags,
 so RE4 gets it where the same thing exists.
+
+## Player assignment, demonstrations and original-rules qualification
+
+The target is repeated S ranks under the game's original gameplay rules. Current
+training aids are intentional operator choices. Saving team/training preferences
+does not revert them, and a high assisted score does not qualify as unmodified
+mastery. `Notebook` retains the observed rank separately from
+`unmodified_s_rank_verified`. Missing historical settings remain `unknown`.
+`RoundAssistance` latches known aids and unknown readback for the entire round;
+turning a switch off at the results screen cannot change that history. The guide
+counts assisted, unknown and positively verified unmodified results separately.
+Automatic reduction is off; opting in records intent, without treating an
+assisted score as evidence that a reduction is warranted.
+
+The shared PiP RE controls use the worker tool `mercs_team`, scoped to an exact
+live session, with roles `solo_p1`, `teammate_p2` and `observe_human`. Preferences
+live under `gbox-data/mercs/teamplay`. `SessionRuntime` fences every bot input by
+the selected role, releases only its actual held keys during transitions and on
+F3, and never sends a pending P2 action to P1. Human/co-op sessions retain their
+menus and are excluded from automatic black-screen resets. Observation constructs
+no gameplay brain, prompt presser or modifier-maintenance loop. A requested
+unmodified evaluation waits without input until original gameplay settings can
+be positively verified; an unchecked UI alone cannot provide that proof.
+
+For BLUS30491 01.01, `re5_coop.participants` verifies sPlayer's vtable, its
+`+0x28/+0x2C` array, each actor's native `+0x2F14` player index, finite position
+and HP, and stable pointer readback. Native functions `001AD7B4` and `001AE010`
+establish that relationship. Frames preserve separate `players` with actor,
+slot, control assignment, HP and ownership provenance, plus assistance context.
+Positions observed under an explicit human role are RAM-position demonstrations;
+they do not claim to contain physical controller input or a replayable save state.
+
+The reviewer selects a recorded player and inclusive timeline sample range.
+`POST /api/mercs/reviewer/demonstrations` derives all route points from stored
+samples and preserves source run, player, mode, full geometry identity, sample
+digest and assistance. Bot/unknown ownership, actor changes, gaps and teleports
+cannot be relabeled as human teaching. Only validated adopted routes can be
+assigned to a live instance. `Guidance.practice` advances checkpoints on measured
+arrival, retains progress through combat interruptions and revalidates native
+floor, action links and current mine margins. QTEs, healing, leaving a planted
+mine and immediate threats take priority. An unverified traversal stays draft;
+neither an annotation nor a demonstration licenses walking through a wall.
+
+Current capability limits are explicit: separate RPCS3 P2 keyboard preparation
+persists for a future launch, preserves P1 and validates conflicts/readback, but
+does not claim that the running emulator reloaded its controller configuration.
+RE5 P2 actor discovery is verified; P2 camera/displayed-prompt ownership and live
+controller response still require validation before teammate combat is enabled.
+RE6 has no verified equivalent runtime yet. These roles remain pending instead
+of starting a solo P1 bot. Full pristine-rule verification is also pending, so
+the present readback can positively identify assistance without certifying a
+clean run from an incomplete sample of tables.
+
+Co-op join behavior must follow the appropriate edition's official manuals:
+[RE5 PS3](https://static.capcom.com/manuals/re5/RE5_PS3_DMNL_EN.pdf) and
+[RE6 manuals](https://www.capcom-support.com/hc/en-us/articles/6586143302684-Resident-Evil-6-Online-Manual).
+The operator's GameWith link covers Mercenaries United, while the running PS3
+Gold build has separate original/Reunion modes. Its edition-specific menu and
+loadout instructions must not be silently substituted for this build's rules.

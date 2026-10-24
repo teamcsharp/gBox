@@ -26,6 +26,8 @@ def reflect(outcome, stats):
     """Diagnose measured failures; acceptance requires positive observations."""
     remaining = stats.get('time_bonuses_remaining')
     rank = outcome == 'completed' and stats.get('result_rank') in ('S','SS','S+','S++')
+    assistance = stats.get('assistance') or {}
+    clean = assistance.get('classification') == 'unmodified' and assistance.get('verified') is True
     damage = stats.get('player_damage_events')
     protection = stats.get('round_used_health_protection', stats.get('health_protection_used'))
     findings, changes = [], []
@@ -43,8 +45,12 @@ def reflect(outcome, stats):
         changes.append('Review each incident map, prior inputs, and bounded RAM witness before attributing cause.')
     if not rank:
         findings.append('completed S-rank result not verified')
+    if rank and not clean:
+        findings.append('observed rank does not establish unmodified mastery: assistance is '+
+                        str(assistance.get('classification', 'unknown')))
     return {'schema': 'gbox.mercs.round-review/1', 'findings': findings, 'next_run_actions': changes,
             'acceptance': {'completed_s_rank': rank,
+                'unmodified_s_rank': rank and clean,
                 'all_observed_time_bonuses': remaining == 0 if remaining is not None else None,
                 'no_sampled_hp_loss': (False if isinstance(damage,(int,float)) and damage > 0
                                        else True if damage == 0 and protection is False else None)},
@@ -202,6 +208,12 @@ class Notebook:
         data = {k: v for k, v in stats.items() if isinstance(v, (str, int, float, bool, type(None)))}
         data["result_rank_observed"] = stats.get("result_rank")
         data["s_rank_verified"] = outcome == "completed" and stats.get("result_rank") in ("S", "SS", "S+", "S++")
+        assistance = stats.get('assistance')
+        if not isinstance(assistance, dict):
+            assistance = {'classification': 'unknown', 'verified': False, 'effects': []}
+        data['assistance'] = assistance
+        data['unmodified_s_rank_verified'] = bool(data['s_rank_verified']
+            and assistance.get('classification') == 'unmodified' and assistance.get('verified') is True)
         data['reflection'] = reflect(outcome, stats)
         row = {"id": rid, "ts": time.time(), "stage": str(stage), "mode": mode,
                "character": character, "outcome": outcome, "observed": data}
@@ -251,12 +263,17 @@ class Notebook:
         for stage, mode, char, outcome, raw in rows:
             data = json.loads(raw)
             entry = stages.setdefault(f"{mode}/{stage}", {"rounds": 0, "completed": 0,
-                "best_score": 0, "best_bonus_count": 0, "verified_s_ranks": 0, "characters": []})
+                "best_score": 0, "best_bonus_count": 0, "verified_s_ranks": 0, "characters": [],
+                'unmodified_s_ranks': 0, 'assisted_rounds': 0, 'unknown_rules_rounds': 0})
             entry["rounds"] += 1
             entry["completed"] += outcome == "completed"
             entry["best_score"] = max(entry["best_score"], data.get("score") or 0)
             entry["best_bonus_count"] = max(entry["best_bonus_count"], data.get("bonuses_taken") or 0)
             entry["verified_s_ranks"] += bool(data.get("s_rank_verified"))
+            entry['unmodified_s_ranks'] += bool(data.get('unmodified_s_rank_verified'))
+            classification = (data.get('assistance') or {}).get('classification', 'unknown')
+            entry['assisted_rounds'] += classification == 'mod_assisted'
+            entry['unknown_rules_rounds'] += classification == 'unknown'
             if char not in entry["characters"]: entry["characters"].append(char)
         guide = {"version": 1, "updated": time.time(), "rounds": len(rows), "stages": stages,
                  "policy": "Use verified directed navmesh routes. Avoid recorded failed crossings; "
@@ -265,6 +282,11 @@ class Notebook:
         guide['latest_reviews'] = {f'{mode}/{stage}': json.loads(raw).get('reflection')
                                   for stage,mode,char,outcome,raw in rows}
         guide['semantic_recall'] = semantic
+        guide['training_policy'] = {'target': 'Repeated S ranks under original gameplay rules',
+            'automatic_modifier_reduction': False,
+            'assisted_scores_qualify_as_unmodified': False,
+            'legacy_rules': 'unknown',
+            'reason': 'Retain operator training aids until a separately verified unmodified evaluation.'}
         temp = self.root / "guide.tmp"
         temp.write_text(json.dumps(guide, indent=2), encoding="utf-8")
         temp.replace(self.root / "guide.json")

@@ -338,7 +338,7 @@ class Controller:
                            hp=p.get('hp'), combo=snap.get('combo'), score=snap.get('score'))
                 self.learn(pen['pos'],'placements')
                 self.cadence.acknowledge(now,p["pos"])
-                if ad is not None and not infinite:
+                if ad is not None and not infinite and not getattr(self.m, 'mercs_no_modifications', False):
                     from ...re5_mods_tool import RE5, INV_OFS, SLOT
                     g=RE5(ad); addr=p["ptr"]+INV_OFS+mine["slot"]*SLOT+0xC
                     if g.u32(addr) == mine["rounds"]:

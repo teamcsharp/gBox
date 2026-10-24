@@ -41,7 +41,7 @@ def test_round_review_preserves_failure_evidence_and_unknown_acceptance(tmp_path
         'score': 120000, 'rank': 'SS', 'time_bonuses_remaining': 7,
         'player_damage_events': 2, 'stuck': 3, 'nav_oscillations': 2}, round_id='failure')
     review = n.recall('geometry', 'original')[0]['observed']['reflection']
-    assert review['acceptance'] == {'completed_s_rank': False, 'all_observed_time_bonuses': False,
+    assert review['acceptance'] == {'completed_s_rank': False, 'unmodified_s_rank': False, 'all_observed_time_bonuses': False,
                                     'no_sampled_hp_loss': False}
     assert len(review['next_run_actions']) == 4
     assert review['policy']['bonus_commitment'] and not review['policy']['allow_unverified_routes']

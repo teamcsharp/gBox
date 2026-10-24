@@ -2432,6 +2432,12 @@ def autoplay(inp: AutoplayIn, ctx: Ctx):
     d.owns_keyboard = bool(inp.owns_keyboard)
     d.agent_use = bool(getattr(ctx, "agent_use", True))       # the next autoplay job after a relaunch keeps it
     ad, g = SESSIONS[inp.session_id]
+    if g.get('game_id') in ('e7ca89bbeb67360d', '0871eee3b68cdea3'):
+        from .mercs.teamplay import TeamStore
+        team_intent = TeamStore(ad.config.data_dir).get(inp.session_id)
+        d.mercs_team_role = team_intent['role']
+        if g.get('game_id') == '0871eee3b68cdea3' and team_intent['role'] != 'solo_p1':
+            raise Unsupported('RE6 Player 2 actor, camera and independent input ownership are not verified; no Player 1 fallback.')
     if inp.screensaver:
         _front(ad)                                             # idle PC: the game in front (Dolphin input needs it)
     elif d.demo:
@@ -2538,7 +2544,7 @@ def _takeover(run, d, sid, since):
     def watch():
         nonlocal cursor
         while not d.stopped and running():
-            if padstate.touched_after(sid, since):           # they play: autoplay lets go of the pad
+            if padstate.touched_after(sid, since) and not _mercs_human_controls(sid):
                 d.stopped, run["took_over"] = True, True
                 _release_all(sid)
                 _saver_post(d, "yield", {"session_id": sid, "reason": "pad"})
@@ -2626,6 +2632,10 @@ def _black_watch(run, d, ad, clock=time.time, sleep=time.sleep):
     def watch():
         since, seen = None, progress()
         while not d.stopped and (run.get("thread") is None or run["thread"].is_alive()):
+            if _mercs_human_controls(run.get('sid', '')):
+                since = None
+                sleep(5)
+                continue
             b = _black(ad)
             now = clock()
             prog = progress()
@@ -2655,6 +2665,9 @@ def _bad_end(run, sleep=time.sleep):
     the operator's own games (only bot demos and agent test sessions are relaunched)."""
     ctx, sid, inp = run.get("ctx"), run.get("sid", ""), run.get("inp")
     if ctx is None or not sid:
+        return
+    if _mercs_human_controls(sid):
+        run['recovery'] = 'Human/co-op session retained; automatic reset is disabled.'
         return
     headers = _ap_headers(ctx)
     try:
@@ -2701,6 +2714,12 @@ AUTOPLAY_HACKS = MISSIONS.parent / "autoplay"            # profiles/autoplay/<ga
 def _autoplay_hacks(sid: str, g: dict) -> list[str]:
     """Hold the game's autoplay hacks (infinite health for the side autoplay plays, one-hit KOs...) in this session,
     once per session; returns what is held. Never applied to the operator's own play: only autoplay calls it."""
+    if g.get('game_id') in ('e7ca89bbeb67360d', '0871eee3b68cdea3'):
+        from .mercs.teamplay import TeamStore
+        adapter = SESSIONS[sid][0]
+        intent = TeamStore(adapter.config.data_dir).get(sid)
+        if intent['role'] != 'solo_p1' or intent['training_profile'] != 'assisted':
+            return []
     path = AUTOPLAY_HACKS / f"{g.get('game_id')}.json"
     if not path.is_file():
         return []
@@ -2795,6 +2814,8 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
                     pass
             if "game" in inspect.signature(pb.play).parameters:
                 kw["game"] = dict(g or {})                     # its game and build (a playbook's own jump / menu state)
+            if 'session_id' in inspect.signature(pb.play).parameters:
+                kw['session_id'] = sid
             if "tactical" in inspect.signature(pb.play).parameters and ctx is not None:
                 from .mercs import tactical as T               # the tactical map beside the stream (docs/tactical_map.md)
                 kw["tactical"] = T.HttpSink(ctx.server, _ap_headers(ctx), sid)
@@ -3413,9 +3434,28 @@ def _sid_of(run, ad) -> str:
     return run.get("sid") or next((k for k, v in SESSIONS.items() if v[0] is ad), "")
 
 
+def _mercs_human_controls(sid: str) -> bool:
+    try:
+        ad, game = SESSIONS[sid]
+        if game.get('game_id') not in ('e7ca89bbeb67360d', '0871eee3b68cdea3'):
+            return False
+        from .mercs.teamplay import TeamStore
+        return TeamStore(ad.config.data_dir).get(sid)['role'] != 'solo_p1'
+    except KeyError:
+        return False
+    except Exception:
+        return True  # unreadable control assignment never authorizes P1 takeover
+
+
 def _release_all(sid: str) -> None:
     try:
         ad, _ = SESSIONS[sid]
+        runtime = getattr(ad, '_mercs_bot_runtime', None)
+        if runtime is not None and runtime.sid == sid:
+            runtime.release()
+            return
+        if _mercs_human_controls(sid):
+            return
         if "send_input" in ad.supported:
             ad.send_input([{"key": k, "down": False} for k in ("a", "b", "x", "y", "l", "r", "l2", "r2", "l3", "r3", "start", "select", "up", "down",
                                                    "left", "right", "lup", "ldown", "lleft", "lright")])
@@ -5112,6 +5152,7 @@ def _load_tool_modules(names=("cxbx_diagnostics_tool", "native_face_editor", "au
                               "re6_tool",   # re6_tool: Resident Evil 6 (X360 in Xenia): Mercenaries loadouts, items, swaps
                               "re5_tool",   # re5_tool: Resident Evil 5 Gold (PS3 in RPCS3): unlock all (save edit)
                               "re5_mods_tool",   # re5_mods: RE5 Gold (PS3) live mods: turn speed, fire rate, infinite ammo, damage
+                              "mercs_team_tool", # exact-session player assignment, human demonstrations and training intent
                               "oot_live",   # oot_live: OoT actors at a picture point, statues kept in rooms (gbox.oot_swap)
                               "twin_snakes_live",   # twin_snakes_live: Twin Snakes GC loaded cast + live body writes
                               "re_inventory",   # re_inventory: any Resident Evil's live inventory (give/remove/set/loadout)

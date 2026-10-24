@@ -2,6 +2,7 @@
 (function (root) {
   "use strict";
   const GAME = "e7ca89bbeb67360d";
+  const RE6 = "0871eee3b68cdea3";
   const ESC = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
   const DEFINITIONS = [
     { op: "unlimited_health", label: "Unlimited life", field: "unlimited_health" },
@@ -21,12 +22,16 @@
     return session?.game_id === GAME && session.state === "running" && !session.stopping
       && session.adapter === "rpcs3" && typeof session.session_id === "string" && session.session_id.includes("-");
   }
+  function panelEligible(session) {
+    return eligible(session) || session?.game_id === RE6 && session.state === "running" && !session.stopping
+      && session.adapter === "xenia" && typeof session.session_id === "string" && session.session_id.includes("-");
+  }
   function replacementSession(sid, history, anchor, resolve) {
     const rows = Array.isArray(history) ? history : [], byId = new Map(rows.map(row => [row.session_id, row]));
     const origin = byId.get(sid) || (anchor?.session_id === sid ? anchor : null);
     const pc = row => String(row?.detail?.worker_name || row?.pc || "").toLowerCase();
     const build = row => String(row?.collection_mod || row?.mod_build || row?.mod || "").split("~")[0];
-    const matches = row => row?.game_id === GAME && row.adapter === "rpcs3" && pc(origin)
+    const matches = row => [GAME, RE6].includes(origin?.game_id) && row?.game_id === origin.game_id && row.adapter === origin.adapter && pc(origin)
       && pc(row) === pc(origin) && build(row) === build(origin);
     if (!origin || !matches(origin) || typeof resolve !== "function") return null;
     let current = origin; const seen = new Set();
@@ -39,7 +44,7 @@
       current = next;
     }
     const next = resolve(sid, rows, origin);
-    return eligible(next) && matches(next) ? next : null;
+    return panelEligible(next) && matches(next) ? next : null;
   }
   function capability(status, op) {
     const cap = status?.capabilities?.[op];
@@ -69,6 +74,28 @@
     });
   }
   function html(state = {}) {
+    const team = state.team, config = team?.config || {}, teamDisabled = state.busy || state.pending || state.stale || !team;
+    const p2 = team?.capabilities?.teammate_p2;
+    const teamControls = `<fieldset class="re5-team-controls" ${teamDisabled ? "disabled" : ""}><legend>Team and training</legend>`
+      + `<label>Requested bot role<select data-re5-team-role aria-label="Bot player assignment">`
+      + `<option value="solo_p1" ${config.role === "solo_p1" ? "selected" : ""}>Autobot Player 1 (solo)</option>`
+      + `<option value="teammate_p2" ${config.role === "teammate_p2" ? "selected" : ""}>Player 2: follow and protect human Player 1</option>`
+      + `<option value="observe_human" ${config.role === "observe_human" ? "selected" : ""}>Observe human Player 1; no bot input</option></select></label>`
+      + `<p class="re5-mod-sub">${ESC(p2?.available ? "Player 2 actor and separate controller verified." : p2?.reason || state.teamError || "Team controls require an updated worker.")}</p>`
+      + `<button type="button" class="act" data-re5-team-prepare ${!team?.capabilities?.prepare_player2?.available ? "disabled" : ""}>Prepare Player 2 controller for next launch</button>`
+      + `<p class="re5-mod-sub">${ESC(team?.player2_preparation?.reason || "Controller preparation never restarts this game or changes Player 1 controls.")}</p>`
+      + `<label>Training profile<select data-re5-team-profile aria-label="Training profile">`
+      + `<option value="assisted" ${config.training_profile === "assisted" ? "selected" : ""}>Assisted training: keep current modifiers</option>`
+      + `<option value="unmodified_evaluation" ${config.training_profile === "unmodified_evaluation" ? "selected" : ""}>Unmodified evaluation: wait for verification</option></select></label>`
+      + `<label><input type="checkbox" data-re5-team-reduce ${config.auto_reduce_mods ? "checked" : ""}> Allow gradual modifier reduction after verified improvement</label>`
+      + `<p class="re5-mod-sub">Saving roles preserves current modifiers. Evaluation pauses until original settings are verified. Player 2 never falls back to Player 1.</p>`
+      + `<p class="re5-mod-sub">${ESC(config.selected_route_id ? "Selected reviewer demonstration: " + config.selected_route_id : "Select an adopted human route in the run reviewer to teach a route.")}</p>`
+      + (config.selected_route_id ? `<button type="button" class="act" data-re5-team-clear-route>Clear selected demonstration</button>` : "")
+      + `<p class="re5-mod-sub" data-re5-team-phase>${ESC(team ? "Runtime: " + team.phase + "; controls " + (team.control_player ? "Player " + team.control_player : "paused") : "Runtime state unavailable")}</p>`
+      + (team?.evaluation_pending ? `<p class="re5-mod-sub">${ESC(team.capabilities?.unmodified_evaluation?.reason || "Waiting for verified original settings. Selecting this profile does not revert current modifiers.")}</p>` : "")
+      + `<button type="button" class="act" data-re5-team-save>Save team and training choices</button></fieldset>`;
+    if (state.teamOnly) return `<div class="re5-mod-heading"><b>RE6 team and training</b><button type="button" class="act" data-re5-refresh ${state.busy ? "disabled" : ""}>Refresh</button></div>`
+      + teamControls + `<p class="re5-mod-status${state.error ? " re5-mod-error" : ""}" role="status">${ESC(state.message || "Read current team settings.")}</p>`;
     const controls = rows(state).map(row => {
       const raw = state.status?.[row.field];
       const detail = (!row.available && row.reason) || (row.on === null ? "State unavailable" : row.multiplier && row.on ? `Current setting: ${row.unit ? raw + row.unit : "×" + raw}`
@@ -117,7 +144,7 @@
       + `<button class="act" type="button" data-re5-merc-select>Play this selection next</button></fieldset>` : "";
     return `<div class="re5-mod-heading"><b>RE5 modifiers</b><button type="button" class="act" data-re5-refresh `
       + `${state.busy ? "disabled" : ""}>Refresh</button></div><p class="re5-mod-sub">This running session${weapon ? ` · ${ESC(weapon)}` : ""}</p>`
-      + controls + rotationControls + eggControls + mineControls + `<button class="act re5-mod-random" type="button" data-re5-random `
+      + teamControls + controls + rotationControls + eggControls + mineControls + `<button class="act re5-mod-random" type="button" data-re5-random `
       + `${state.busy || state.pending || state.weaponPending || state.stale || !random.available ? "disabled" : ""}>Random available weapon</button>`
       + `<p class="re5-mod-sub">${ESC(random.reason || "Equips an eligible gun already in the inventory. Rockets and sniper rifles are excluded.")}</p>`
       + `<details class="re5-mod-extra"><summary>Other requested modifiers</summary>${unavailable}</details>`
@@ -125,18 +152,19 @@
       + `${ESC(state.message || "Read current settings from the game.")}</p>`;
   }
 
-  function create({ session, api, render = () => {}, delay = ms => new Promise(r => setTimeout(r, ms)), now = Date.now }) {
+  function create({ session, api, render = () => {}, delay = ms => new Promise(r => setTimeout(r, ms)), now = Date.now, teamControls = false }) {
     const sid = session?.session_id, worker = String(sid || "").split("-")[0];
     let state = { status: null, busy: false, pending: null, weaponPending: null, stale: true, message: "Reading current settings…", error: false };
+    state.team = null; state.teamOnly = session?.game_id === RE6; state.teamError = "";
     let disposed = false;
     const paint = () => { if (!disposed) render({ ...state }); };
     const alive = () => { if (disposed) throw new Error("Modifier panel closed."); };
     async function currentSession() {
       alive();
-      if (!eligible(session)) throw new Error("Open a running RE5 RPCS3 session to change modifiers.");
+      if (!panelEligible(session)) throw new Error("Open a running RE5 or RE6 session to change game controls.");
       const sessions = await api("/api/sessions?include_ended=false", undefined, "GET", 15000);
       const current = Array.isArray(sessions) && sessions.find(s => s.session_id === sid);
-      if (!eligible(current)) throw new Error("This RE5 session has ended or changed. Reopen its controls.");
+      if (!panelEligible(current) || current.game_id !== session.game_id || current.adapter !== session.adapter) throw new Error("This RE5/RE6 session has ended or changed. Reopen its controls.");
       alive();
     }
     async function finish(job) {
@@ -154,18 +182,28 @@
       if (!result || typeof result !== "object") throw new Error("Server returned no modifier result.");
       return result;
     }
-    async function job(op, extra = {}) {
+    async function job(op, extra = {}, tool = "re5_mods") {
       alive();
-      const submitted = await api("/api/jobs", { tool: "re5_mods", agent_use: false, require_worker: worker,
+      const submitted = await api("/api/jobs", { tool, agent_use: false, require_worker: worker,
         input: { session_id: sid, op, ...extra } }, "POST", 15000);
       return finish(submitted);
     }
     async function read() {
-      const result = await job("status");
+      const result = state.teamOnly ? { status: {} } : await job("status");
       if (!result.status || typeof result.status !== "object") throw new Error("Current modifier state is unavailable.");
       state.status = result.status;
       state.weaponPending = result.status.random_weapon_request?.state === "pending" ? result.status.random_weapon_request.id : null;
       state.stale = false;
+      if (teamControls) {
+        try { await readTeam(); }
+        catch (error) { state.team = null; state.teamError = error.message; }
+      }
+      return result.status;
+    }
+    async function readTeam() {
+      const result = await job("status", {}, "mercs_team");
+      if (!result.status?.config || typeof result.status.phase !== "string") throw new Error("Team runtime state is unavailable.");
+      state.team = result.status; state.teamError = "";
       return result.status;
     }
     async function preflight() {
@@ -175,7 +213,7 @@
       }
       // A panel reopened while a previous request is running must not send a second mutation.
       const active = await api("/api/jobs?state=queued,running&limit=500", undefined, "GET", 15000);
-      const pending = Array.isArray(active) && active.find(j => j.tool === "re5_mods" && j.input?.session_id === sid);
+      const pending = Array.isArray(active) && active.find(j => (j.tool === "re5_mods" || teamControls && j.tool === "mercs_team") && j.input?.session_id === sid);
       if (pending) {
         state.pending = pending.id;
         throw new Error("A modifier job is already running for this session. Refresh to check it.");
@@ -290,7 +328,37 @@
       } catch (error) { state.error = true; state.message = error.message; }
       finally { state.busy = false; paint(); }
     }
-    return { refresh, change, setMultiplier, setMines, setEggs, selectMercs, state: () => ({ ...state }), stop: () => { disposed = true; } };
+    async function setTeam(patch) {
+      if (!teamControls || !state.team || state.busy || state.pending || state.stale || disposed || !patch || typeof patch !== "object") return;
+      const allowed = ["role", "training_profile", "auto_reduce_mods", "selected_route_id"];
+      if (!Object.keys(patch).length || Object.keys(patch).some(k => !allowed.includes(k))
+          || "role" in patch && !["solo_p1", "teammate_p2", "observe_human"].includes(patch.role)
+          || "training_profile" in patch && !["assisted", "unmodified_evaluation"].includes(patch.training_profile)
+          || "auto_reduce_mods" in patch && typeof patch.auto_reduce_mods !== "boolean"
+          || "selected_route_id" in patch && patch.selected_route_id !== null && !/^[a-f0-9]{32}$/.test(patch.selected_route_id)) return;
+      state.busy = true; state.error = false; state.message = "Saving team and training choices…"; paint();
+      try {
+        await preflight();
+        const result = await job("configure", patch, "mercs_team");
+        await readTeam();
+        if (result.configuration_verified !== true || Object.entries(patch).some(([key, val]) => state.team.config[key] !== val))
+          throw new Error("Team/training choices were not confirmed by fresh readback.");
+        state.message = state.team.phase === "active" ? "Team choices saved. Current modifiers are retained."
+          : `Choices saved; runtime ${state.team.phase}. Current modifiers are retained; no Player 1 fallback.`;
+      } catch (error) { state.error = true; state.stale = true; state.message = error.message; }
+      finally { state.busy = false; paint(); }
+    }
+    async function preparePlayer2() {
+      if (!teamControls || !state.team?.capabilities?.prepare_player2?.available || state.busy || state.pending || state.stale || disposed) return;
+      state.busy = true; state.error = false; state.message = "Preparing a separate Player 2 controller…"; paint();
+      try {
+        await preflight(); await job("prepare_player2", {}, "mercs_team"); await readTeam();
+        if (!state.team.player2_preparation) throw new Error("Controller preparation was not confirmed.");
+        state.message = state.team.player2_preparation.reason || "Controller preparation saved for next launch. This game continues unchanged.";
+      } catch (error) { state.error = true; state.stale = true; state.message = error.message; }
+      finally { state.busy = false; paint(); }
+    }
+    return { refresh, change, setMultiplier, setMines, setEggs, selectMercs, setTeam, preparePlayer2, state: () => ({ ...state }), stop: () => { disposed = true; } };
   }
 
   const CSS = `.re5-modifiers{display:block!important;height:auto!important;overflow:visible;border-top:1px solid var(--line,#444);margin-top:5px;padding:9px 4px 2px;min-width:min(300px,calc(100vw - 48px));max-width:400px}
@@ -301,11 +369,11 @@
     .re5-mod-error{color:var(--bad,#f99)}.re5-mod-random{width:100%;margin-top:6px}.re5-mod-extra{margin-top:8px;font-size:11px}
     .re5-mod-extra summary{cursor:pointer}.re5-mod-unavailable{font-size:11px}.re5-mod-unavailable>span:last-child{color:var(--mut,#aaa)}
     .re5-mod-slider{font-size:11px;padding-bottom:5px}.re5-mod-slider label{display:block}.re5-mod-slider input{display:block;width:100%;accent-color:var(--pri,#8da7ff)}
-    .re5-mine-controls{font-size:12px}.re5-mine-controls label{display:block;margin:6px 0}.re5-modifiers select{display:block;width:100%;margin:5px 0}
+    .re5-mine-controls,.re5-team-controls{font-size:12px}.re5-mine-controls label,.re5-team-controls label{display:block;margin:6px 0}.re5-modifiers select{display:block;width:100%;margin:5px 0}
     .re5-modifiers button:disabled{opacity:.55;cursor:default}`;
   function mount(host, options) {
     if (!host) return null;
-    const ctl = create({ ...options, render: state => { host.innerHTML = html(state); } });
+    const ctl = create({ ...options, teamControls: true, render: state => { host.innerHTML = html(state); } });
     host.innerHTML = html(ctl.state());
     host.onchange = event => {
       if (event.target.matches?.("[data-re5-eggs-on], [data-re5-egg-rate]")) {
@@ -341,6 +409,12 @@
       if (event.target.matches?.("[data-re5-mine-interval]")) host.querySelector("[data-re5-mine-output]").textContent = event.target.value + " seconds";
     };
     host.onclick = event => {
+      if (event.target.closest?.("[data-re5-team-clear-route]") && !event.target.disabled) ctl.setTeam({ selected_route_id: null });
+      if (event.target.closest?.("[data-re5-team-prepare]") && !event.target.disabled) ctl.preparePlayer2();
+      if (event.target.closest?.("[data-re5-team-save]") && !event.target.disabled) ctl.setTeam({
+        role: host.querySelector("[data-re5-team-role]").value,
+        training_profile: host.querySelector("[data-re5-team-profile]").value,
+        auto_reduce_mods: host.querySelector("[data-re5-team-reduce]").checked });
       if (event.target.closest?.("[data-re5-merc-select]") && !event.target.disabled) ctl.selectMercs(
         host.querySelector("[data-re5-merc-mode]").value, host.querySelector("[data-re5-merc-character]").value,
         host.querySelector("[data-re5-merc-stage]").value);
@@ -350,7 +424,7 @@
     ctl.refresh();
     return ctl;
   }
-  const api = { GAME, DEFINITIONS, eligible, replacementSession, capability, rows, html, create, mount,
+  const api = { GAME, RE6, DEFINITIONS, eligible, panelEligible, replacementSession, capability, rows, html, create, mount,
     sectionHTML: () => `<style>${CSS}</style><section class="re5-modifiers" aria-label="RE5 modifiers"></section>` };
   root.GBoxRE5Modifiers = api;
   if (typeof module === "object" && module.exports) module.exports = api;

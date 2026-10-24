@@ -255,6 +255,9 @@ class NavigationAtlas:
         events = [{"at": t, "kind": kind, **json.loads(raw)} for t, kind, raw in self.db.execute(
             "SELECT at,kind,payload FROM events WHERE round_id=? ORDER BY seq", (round_id,))]
         review = self.review(samples, events, metrics or {})
+        metadata = json.loads(self.db.execute('SELECT metadata FROM rounds WHERE id=?', (round_id,)).fetchone()[0])
+        if isinstance((metrics or {}).get('assistance'), dict):
+            metadata['assistance'] = metrics['assistance']
         geometry = json.loads(self.db.execute("SELECT geometry FROM stages WHERE key=?", (state["stage"],)).fetchone()[0])
         landmarks = [{"key": k, "kind": kind, "pos": [x,y,z], "acquired": acquired}
                      for k,kind,x,y,z,acquired in self.db.execute(
@@ -262,7 +265,7 @@ class NavigationAtlas:
         dest = self.root / "rounds" / _safe(round_id)
         dest.mkdir(parents=True, exist_ok=True)
         artifact = {"version": 1, "round_id": round_id, "title": self.title, "stage": state["stage"],
-                    "outcome": outcome, "review": review, "geometry": geometry,
+                    "outcome": outcome, "review": review, "geometry": geometry, "metadata": metadata,
                     "landmarks": landmarks, "samples": samples, "events": events}
         json_path, map_path = dest / "round.json", dest / "map.svg"
         json_path.write_text(_json(artifact), encoding="utf-8")
@@ -270,6 +273,7 @@ class NavigationAtlas:
         self.db.execute("UPDATE rounds SET ended=?,outcome=?,review=?,json_path=?,map_path=? WHERE id=?",
                         (at, str(outcome), _json(review), str(json_path), str(map_path), round_id))
         self.db.execute("UPDATE stages SET rounds=rounds+1 WHERE key=?", (state["stage"],))
+        self.db.execute('UPDATE rounds SET metadata=? WHERE id=?', (_json(metadata), round_id))
         self.db.commit()
         del self.active[round_id]
         return {"review": review, "json": str(json_path), "map": str(map_path), "database": str(self.root / "atlas.sqlite")}

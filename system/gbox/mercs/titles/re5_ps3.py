@@ -1087,7 +1087,7 @@ class Bot:
         if self._control_state is not None:
             from . import re5_controls
             re5_controls.publish(self._control_state, id(self), {}, False)
-        if getattr(self.m, "adapter", None) is not None:
+        if getattr(self.m, "adapter", None) is not None and not getattr(self.m, 'mercs_no_modifications', False):
             from ...re5_mods_tool import maintain_fire_animation,maintain_item_animation
             maintain_fire_animation(self.m.adapter, enabled=False)
             maintain_item_animation(self.m.adapter, enabled=False)
@@ -1123,7 +1123,7 @@ class Bot:
         if self.healing is not None and (priority_prompt or snap.get("recovery_active")
                                          or (p or {}).get("action") == P_GRABBED):
             self.healing["at"] = now           # observed mandatory interruptions pause only the bounded healing window
-        if getattr(self.m, "adapter", None) is not None:
+        if getattr(self.m, "adapter", None) is not None and not getattr(self.m, 'mercs_no_modifications', False):
             from ...re5_mods_tool import ORIG
             from . import re5_controls
             self._control_state = ORIG.setdefault(id(self.m.adapter), {})
@@ -1131,7 +1131,7 @@ class Bot:
         if where != "playing" or snap.get("prompt") not in ("stick:rotate", "stick:x", "stick:y"):
             self._stick_token = None
         self.stats["resuscitating"] = bool(snap.get("recovery_active") or snap.get("prompt") == "mash")
-        if getattr(self.m, "adapter", None) is not None:
+        if getattr(self.m, "adapter", None) is not None and not getattr(self.m, 'mercs_no_modifications', False):
             from ...re5_mods_tool import maintain_fire_animation,maintain_item_animation
             firing = maintain_fire_animation(self.m.adapter, snap, enabled=(where == "playing"
                 and not self.stats["resuscitating"] and not snap.get("prompt") and not snap.get("stage_prompt")))
@@ -1145,7 +1145,8 @@ class Bot:
                 self.stats[item+'_animation_active']=bool(result.get('active') and result.get('verified'))
                 self.stats[item+'_animation_reason']=result.get('reason',item_rates.get('error',''))
                 self.stats[item+'_animation_writes']=self.stats.get(item+'_animation_writes',0)+result.get('writes',0)
-        if where == "playing" and p and not self.stats["resuscitating"] and getattr(self.m, "adapter", None) is not None:
+        if where == "playing" and p and not self.stats["resuscitating"] and getattr(self.m, "adapter", None) is not None \
+                and not getattr(self.m, 'mercs_no_modifications', False):
             from ...re5_mods_tool import maintain_health
             health = maintain_health(self.m.adapter, snap)
             self.stats["unlimited_health_enabled"] = health.get("unlimited_health", False)
@@ -1189,6 +1190,9 @@ class Bot:
                 self.combat.suspend_observation(now)
             return
         if not self.round_active:
+            guidance = getattr(self, 'operator_guidance', None)
+            if guidance is not None:
+                guidance.practice_state = None
             self.health_pickup = None
             self.inventory_heal.reset()
             self.inventory_egg.reset()
@@ -1345,7 +1349,7 @@ class Bot:
 
     def plan(self) -> dict:
         """What the bot is doing, for the tactical map (gbox/mercs/tactical.py): no RAM reads, only state held."""
-        walking = self.route if self.stats.get("phase") in ("gather_time", "break_for_time", "stand", "pursue", "leave_proximity_bomb") else None
+        walking = self.route if self.stats.get("phase") in ("gather_time", "break_for_time", "stand", "pursue", "leave_proximity_bomb", "practice_human_route") else None
         nb = None
         if self.route_len:
             ptr, d = min(((k, v) for k, v in self.route_len.items() if v is not None), key=lambda kv: kv[1],
@@ -1641,6 +1645,40 @@ class Bot:
         candidate = self.combat.choose_target(snap, p, sightable, now) if self.combat is not None else None
         if candidate is None and self.combat is not None and sightable:
             candidate = min(sightable, key=lambda e: math.dist(p["pos"], e["pos"]))   # in sight, off the camera: turn
+        selected_demo = self.stats.get('selected_route_id')
+        if selected_demo and mesh is not None and not close_foes:
+            mine_margins = [(row['pos'],600.) for row in self.nav_dynamic_mines.values()]
+            nearby_bonus = next((bonus for bonus in snap.get('bonuses') or ()
+                if bonus.get('kind') == 'time' and bonus.get('ptr') is not None
+                and self.bonus_skip.get(bonus['ptr'],0) <= now
+                and abs(bonus['pos'][1]-p['pos'][1]) < 60.
+                and math.dist(bonus['pos'],p['pos']) <= BONUS_PUNCH_R
+                and mesh.floor_segment(p['pos'],bonus['pos'])
+                and mesh.hazard_segment_clear(p['pos'],bonus['pos'],mine_margins)), None)
+            if nearby_bonus is not None:
+                # A recorded path supplies positions, not button playback. Take
+                # a currently observed, reachable hourglass through the normal
+                # face-and-punch policy before continuing the demonstration.
+                self.stats['phase'] = 'practice_take_time'
+                self.plan_target = {'kind':'time','id':nearby_bonus['ptr'],'pos':nearby_bonus['pos']}
+                return self._take(p,nearby_bonus,snap.get('stage_prompt'),now)
+            practice = self.operator_guidance.practice(mesh, p['pos'], now,
+                mode=self.stats.get('mercenaries_mode'), selected_route_id=selected_demo,
+                hazards=mine_margins,
+                blocked_links=self.blocked_links, avoid=self.avoid,
+                penalties=self.nav_learning.link_penalties(mesh))
+            if practice is not None:
+                self.stats['demonstration_status'] = practice['status']
+                self.stats['demonstration_progress'] = f"{practice['index']}/{practice['point_count']}"
+                if practice['status'] in ('approach', 'practice'):
+                    # Preserve the held hourglass goal across this explicit
+                    # practice excursion. Live prompts, healing, mine escape and
+                    # immediate exposed threats have already taken precedence.
+                    target = {'ptr': practice['id'], 'pos': practice['pos']}
+                    self.stats['phase'] = 'practice_human_route'
+                    self.plan_target = {'kind':'waypoint', 'id':practice['id'], 'pos':practice['pos']}
+                    return self._follow(p,target,mesh,snap.get('stage_prompt'),now,learn=False,
+                                        approved_route=practice['route'])
         # Time bonuses first (operator 2026-10-22: "urgently seeking and acquiring time bonuses and pursuing the S rank
         # score"): only a Majini close and in sight (close_foes, or one in the way: _bonus) stops the gather; a fight
         # further off waits. A time bonus breaks the combo when it must; the strategy keeps only its safety refusals.
@@ -2490,7 +2528,7 @@ class Bot:
             keys = keys | {"lup"}                           # walk onto it (not running: it would overshoot)
         return {"hold": keys}
 
-    def _follow(self, p, tgt, mesh, stage_prompt, now, learn=True, retreat_from=None) -> dict:
+    def _follow(self, p, tgt, mesh, stage_prompt, now, learn=True, retreat_from=None, approved_route=None) -> dict:
         """One step along the navmesh to a time bonus: the route drawn again every REPLAN_S; the next waypoint walked
         to (turn, then run); at a ladder or a drop (the next waypoint straight above / below) the stage's square
         prompt is taken; a bonus followed ROUTE_STALE_S without being reached is left for BONUS_SKIP_S."""
@@ -2524,6 +2562,9 @@ class Bot:
             self.unstick_until = 0.0
             if self.traversal_pressed is None:
                 self.traversal_started = None
+        if approved_route is not None:
+            self.route = list(approved_route)
+            self.route_at = now
         self.route_walk_at = now
         if self.route_stall is not None and math.dist(pos, self.route_stall) >= STUCK_MOVE:
             self.route_stall = None
@@ -2548,7 +2589,8 @@ class Bot:
                 if learn and self.route:
                     hint = self.operator_guidance.route(mesh,pos,tgt['pos'],self.route,now,hazards=hazards,
                         blocked_links=self.blocked_links,avoid=self.avoid,
-                        penalties=self.nav_learning.link_penalties(mesh))
+                        penalties=self.nav_learning.link_penalties(mesh), mode=self.stats.get('mercenaries_mode'),
+                        selected_route_id=self.stats.get('selected_route_id') or None)
                     if hint:
                         self.route = hint['route']
                         self.stats['operator_route_suggestion'] = hint['suggestion_id']
@@ -2615,6 +2657,9 @@ class Bot:
             return {"hold": {"lup"}}                        # on to the edge until the prompt shows
         self.climb_at = self.climb_pos = self.climb_tick = None
         if mesh is not None and not mesh.floor_segment(pos, w):
+            if approved_route is not None:
+                self.stats['route'] = 'demonstrated segment no longer has supported floor; awaiting revalidation'
+                return {'hold':set()}
             # A funnel path or stale position that cannot be justified by the current floor must not drive ahead.
             # Edge midpoints stay inside the original triangle corridor; the next tick checks those too.
             self.route_rechecks += 1
@@ -3045,6 +3090,18 @@ class RE5PS3(Driver):
 
     def snapshot(self, m) -> dict:
         return snapshot(m)
+
+    def participants(self, m, snap=None):
+        from .re5_coop import participants
+        return participants(m,snap)
+
+    def readiness(self, m):
+        from .re5_coop import readiness
+        return readiness(m)
+
+    def for_player(self, m, player=2, stats=None):
+        from .re5_coop import for_player
+        return for_player(m,player,stats)
 
     def recovery_active(self, m) -> bool:
         return recovery_active(m)

@@ -163,6 +163,9 @@ class Recorder:
             atlas_round = self.round + ":" + key
             metadata = {"mode": stats.get("mercenaries_mode"), "character": stats.get("character"),
                         "stage_name": stats.get("stage_name"), "game_stage": stats.get("stage")}
+            metadata['participants'] = [{k:v for k,v in player.items() if k != 'pos'}
+                                        for player in frame.get('players', ())]
+            metadata['assistance'] = dict(frame.get('assistance') or {'classification':'unknown','verified':False,'effects':[]})
             if key not in self.atlas_stages:
                 if self.atlas.put(("begin", atlas_round, mesh, now, metadata)):
                     self.atlas_stages.add(key)

@@ -3213,7 +3213,28 @@ class RPCS3Adapter(Adapter):
         return getattr(self, "input_pad", "") == "keyboard" or bool(getattr(self, "demo", False))
 
     def _pad_args(self) -> list[str]:
+        if getattr(self,'_teammate_pad_config',None):
+            from .rpcs3_coop import CONFIG_NAME
+            return ["--input-config",CONFIG_NAME]
         return ["--input-config", self.PAD_CONFIG] if self.keyboard_pad else []
+
+    def prepare_teammate_pad(self, player=2, enabled=True):
+        from .rpcs3_coop import prepare
+        return prepare(self,player,enabled)
+
+    def teammate_pad_status(self):
+        from .rpcs3_coop import readiness
+        return readiness(self)
+
+    def send_input_player(self, events, player=2):
+        from . import rpcs3_coop as C
+        rows=C.events(self,events,player,RPCS3_PAD_ALIASES)
+        hwnd=self._game_window();pressed=set()
+        for key,down in rows:
+            if not down and key in pressed:time.sleep(.06)
+            if down:pressed.add(key)
+            self._post_key(hwnd,C.VK.get(key) or ord(key),down)
+        return {"sent":len(rows),"player":2}
 
     def prepare_audio(self):
         if not getattr(self, "capture_backend", None):
@@ -3223,6 +3244,7 @@ class RPCS3Adapter(Adapter):
         prog = getattr(self, "progress", None)
         provision.ensure_rpcs3(self.config, prog)
         home = provision.rpcs3_free_home(self.config)      # a second PS3 game gets its own RPCS3 folder (one per lock)
+        self.home = home
         pad = home / "config" / "input_configs" / "global" / "Default.yml"
         if not pad.exists():                               # fresh install has no pad: Xbox controller as player 1
             pad.parent.mkdir(parents=True, exist_ok=True)
@@ -3231,6 +3253,10 @@ class RPCS3Adapter(Adapter):
         # operator's Default.yml (and every launch of theirs) is untouched
         (pad.parent / f"{self.PAD_CONFIG}.yml").write_text(RPCS3_KEYBOARD_INPUT, encoding="utf-8")
         self.keyboard_pad = self.bot_pad()
+        from . import rpcs3_coop as coop_pad
+        coop_pad.install(self,pad.parent/f'{coop_pad.CONFIG_NAME}.yml',
+                         RPCS3_KEYBOARD_INPUT if self.keyboard_pad else pad.read_text(encoding='utf-8'),
+                         _RPCS3_CFG_NAMES)
         if self.keyboard_pad:
             self.supported = type(self).supported | {"send_input"}
         if getattr(self, "serial", None):                  # per-game graphics settings (Sessions -> Graphics)
@@ -3278,6 +3304,7 @@ class RPCS3Adapter(Adapter):
         else:
             self.proc = subprocess.Popen([*argv, rom], cwd=home, startupinfo=hidden_start())
         keep_offscreen(self.proc.pid, **({"limit_s": 1800.0, "give_up_s": float("inf")} if cap else {}))
+        coop_pad.launched(self)
         _audio_release(self)
         from . import game_audio
         sel = getattr(self, "audio_sel", None)
@@ -3480,6 +3507,8 @@ class RPCS3Adapter(Adapter):
         keep_offscreen(self.proc.pid)
         self._handle, self.base, self.paused = None, None, False
         self.generation += 1
+        from .rpcs3_coop import launched
+        launched(self)
         return {"loaded": states[-1].name, "pid": self.proc.pid}
 
     def slowmo(self, rate: float = 0.1, period_ms: int = 40) -> dict:
@@ -3746,7 +3775,14 @@ class RPCS3LinuxAdapter(StandaloneAdapter):
         from .mercs.titles import re5_hooks
         re5_hooks.install(d)
         (d / "input_configs" / "global").mkdir(parents=True, exist_ok=True)
-        (d / "input_configs" / "global" / "Default.yml").write_text(RPCS3_KEYBOARD_INPUT, encoding="utf-8")
+        pad=d / "input_configs" / "global" / "Default.yml"
+        from . import rpcs3_coop as coop_pad
+        # P1 remains the session's existing keyboard/controller configuration.
+        # The opt-in P2 mapping is disjoint and applies only before launch.
+        previous=pad.read_text(encoding='utf-8') if pad.exists() else RPCS3_KEYBOARD_INPUT
+        if not coop_pad.install(self,pad,previous,_RPCS3_CFG_NAMES):
+            pad.write_text(coop_pad.without_owned_p2(previous,_RPCS3_CFG_NAMES)
+                           if coop_pad.preparation(self) is not None else RPCS3_KEYBOARD_INPUT, encoding="utf-8")
         cfg = d / "config.yml"
         text = cfg.read_text(encoding="utf-8") if cfg.exists() else ""
         for section, kv in RPCS3_LINUX_SETTINGS.items():
@@ -3783,6 +3819,8 @@ class RPCS3LinuxAdapter(StandaloneAdapter):
             d = super().launch_game(rom)
             self._wait_guest_ready()
             self._park_pointer()
+            from .rpcs3_coop import launched
+            launched(self)
             return d | {"emulator": "rpcs3 (linux)", "ready": "guest_memory",
                         "rpcs3_log": str(Path(self.env["XDG_CACHE_HOME"]) / "rpcs3" / "RPCS3.log")}
         except BaseException:
@@ -4016,6 +4054,8 @@ class RPCS3LinuxAdapter(StandaloneAdapter):
             self.generation += 1
             self._wait_guest_ready()
             self._park_pointer()
+            from .rpcs3_coop import launched
+            launched(self)
         except BaseException:
             self.stop_game()
             raise
@@ -4029,6 +4069,26 @@ class RPCS3LinuxAdapter(StandaloneAdapter):
         out = super().send_input(known)
         skipped = sorted({str(ev.get("key")) for ev in events if ev.get("key") not in self.keys})
         return out | ({"skipped": skipped} if skipped else {})
+
+    def prepare_teammate_pad(self, player=2, enabled=True):
+        from .rpcs3_coop import prepare
+        return prepare(self,player,enabled)
+
+    def teammate_pad_status(self):
+        from .rpcs3_coop import readiness
+        return readiness(self)
+
+    def send_input_player(self, events, player=2):
+        from . import rpcs3_coop as C
+        rows=C.events(self,events,player,RPCS3_PAD_ALIASES)
+        self._maybe_focus_game_window()
+        args=[];pressed=set()
+        for key,down in rows:
+            if not down and key in pressed:args += ['sleep','.06']
+            if down:pressed.add(key)
+            args += ['keydown' if down else 'keyup',key]
+        if args:self._xdo(*args)
+        return {'sent':len(rows),'player':2}
 
 
 class SteamAdapter(Adapter):

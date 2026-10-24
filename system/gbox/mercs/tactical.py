@@ -340,6 +340,15 @@ class Tracker:
                  if v is not None}
         if clock:
             out["clock"] = clock
+        # Explicit native identities and control assignment are optional for old
+        # readers. Absence stays unknown; never infer human play from a path.
+        if isinstance(snap.get('players'), list):
+            out['players'] = [{**row, 'pos': _xyz(row.get('pos') or ())}
+                              for row in snap['players'][:2] if isinstance(row, dict)]
+        if isinstance(snap.get('assistance'), dict):
+            out['assistance'] = dict(snap['assistance'])
+        if isinstance(snap.get('input_provenance'), dict):
+            out['input_provenance'] = dict(snap['input_provenance'])
         if not p or _xyz(p.get("pos") or ()) is None:
             self._forget_round()                            # between rounds: the next round's hourglasses are new
             return out
