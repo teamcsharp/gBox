@@ -1755,6 +1755,16 @@ class Bot:
         health_route = self._seek_health(p,snap,now)
         if health_route is not None:
             return health_route
+        held = equipped(snap)
+        if held is not None and held.get("type") == 3 and self.healing is None \
+                and not getattr(self.inventory_heal, "active", False):
+            # A recovery item in hand outside a heal (the infinite spray's restored record, a pickup) is not a gun:
+            # live 2026-10-24 rounds ended holding the First Aid Spray, "laserless gun: turning; hold fire" at a Majini
+            # in front of him. Back to a gun before anything else.
+            back = self._heal_return_weapon(snap.get("inventory") or (), {"return": None}, now)
+            if back:
+                self.stats["weapon_policy"] = "recovery item in hand outside a heal: back to a gun"
+                return back
         if snap.get("stage_prompt") and close_foes:
             self.stage_wait_since = self.stage_wait_since or now
         else:
