@@ -3755,10 +3755,14 @@ const compactController = GBoxCompactGame.create({
     }
     if (!session) return null;
     const local = !!session.detail?.local_window && session.detail.worker_name === S.workerName;
+    const streamUrl = local ? '' : `${S.apiUrl}/api/sessions/${encodeURIComponent(session.session_id)}/mjpeg?token=${encodeURIComponent(await gbox.token())}`;
+    const restoreCurrent = () => requested?.restoreNavigation === undefined || requested.restoreNavigation === clientViewNavigation;
+    if (!restoreCurrent()) throw Error('Saved view restoration was superseded by your navigation.');
+    if (document.fullscreenElement) await document.exitFullscreen();
+    if (!restoreCurrent()) throw Error('Saved view restoration was superseded by your navigation.');
     compactTitle = sessionTitle(session);
     compactSession = session;
-    compactStreamUrl = local ? '' : `${S.apiUrl}/api/sessions/${encodeURIComponent(session.session_id)}/mjpeg?token=${encodeURIComponent(await gbox.token())}`;
-    if (document.fullscreenElement) await document.exitFullscreen();
+    compactStreamUrl = streamUrl;
     closePops(null); if (EYE.on) eyeStop();
     document.querySelector('aside button[data-s="play"]')?.click();
     const wv = document.querySelector('#wv');
@@ -3841,9 +3845,15 @@ document.addEventListener('click', event => {
   if (event.isTrusted && event.target.closest?.('aside button[data-s]')) clientViewNavigation++;
 }, true);
 async function restoreClientView() {
+  if (restoreClientView.busy) return;
+  restoreClientView.busy = true;
+  clientViewRestoring = true;
   let value, observed;
   const navigation = clientViewNavigation;
   try {
+  if (restoreClientView.retryAt && restoreClientView.navigation !== navigation) {
+    clientRefresh.done(); return;
+  }
   if (gbox.clientHandoff) {
     try {
       const handoff = await gbox.clientHandoff();
@@ -3868,22 +3878,45 @@ async function restoreClientView() {
   clientRefresh.remember(observed); // Ctrl+R may arrive before the first periodic guest checkpoint
   if (restored?.cancelled || navigation !== clientViewNavigation) { clientRefresh.done(); return; } // operator navigation supersedes saved intent
   if (value.compact) {
-    try { await compactController.enter({ ...value, preserveGuest: true }); }
+    try { await compactController.enter({ ...value, preserveGuest: true, restoreNavigation: navigation }); }
     catch (error) {
-      // The requested game may have ended while the client loaded. Restore its app bounds, never pick another game.
-      await gbox.compactView({ on: false }).catch(() => {});
-      toast(error.message + ' Press F5 to retry the view.', 10000); return;
+      if (navigation !== clientViewNavigation) { clientRefresh.done(); return; }
+      // Keep the current window and any held picture during the replacement gap.
+      // The retry retains the exact saved selection; it never chooses a newer game.
+      if (!restoreClientView.retryAt) toast(error.message + ' Reconnecting your saved view automatically.', 10000);
+      return;
     }
   }
   if (restored?.missing?.length) {
-    toast('Waiting for saved stream' + (restored.missing.length > 1 ? 's' : '') + ': ' + restored.missing.join(', ') + '. Press F5 to retry.', 10000);
+    if (!restoreClientView.retryAt) toast('Waiting for saved stream' + (restored.missing.length > 1 ? 's' : '') + ': ' + restored.missing.join(', ') + '. Reconnecting automatically.', 10000);
     return; // keep the original pair for retry; never replace it with whichever session happens to be newest
   }
   clientRefresh.done();
   } finally {
-    if (value && clientRefresh.pending()) clientRefresh.retain(value, observed);
-    clientViewRestoring = false;
+    try {
+      value ||= clientRefresh.pending();
+      if (value && clientRefresh.pending() && navigation === clientViewNavigation) {
+        restoreClientView.navigation = navigation;
+        restoreClientView.retryAt = Date.now() + 2000;
+        clientRefresh.retain(value, observed);
+      } else {
+        restoreClientView.retryAt = 0;
+        if (navigation !== clientViewNavigation) clientRefresh.done();
+      }
+    } finally {
+      clientViewRestoring = false;
+      restoreClientView.busy = false;
+    }
   }
+}
+async function retryClientView() {
+  if (clientViewRestoring || restoreClientView.busy || !restoreClientView.retryAt
+      || Date.now() < restoreClientView.retryAt || !clientRefresh.pending()) return false;
+  if (restoreClientView.navigation !== clientViewNavigation) {
+    clientRefresh.done(); restoreClientView.retryAt = 0; return false;
+  }
+  await restoreClientView();
+  return true;
 }
 // Native desktop PiP has no browser gesture restriction. The same BrowserWindow keeps its original bounds.
 // Also retain the view for Ctrl+R/navigation reloads that bypass the F5 command.
@@ -3893,10 +3926,15 @@ addEventListener('beforeunload', () => {
 // Ctrl+R cannot await a guest IPC call during unload. Keep its last confirmed pair, including the hidden main view.
 let clientViewReading = false;
 setInterval(() => {
-  if (clientViewRestoring || clientViewReading || document.querySelector('#wv')?.dataset.ready !== 'true') return;
+  if (clientViewRestoring || clientViewReading) return;
+  if (document.querySelector('#wv')?.dataset.ready !== 'true') {
+    retryClientView().catch(() => {}); return;
+  }
   clientViewReading = true;
   gboxState().then(async guest => {
     const value = clientRefresh.observe(guest);
+    // observe() cancels retained intent when the operator selects another view.
+    if (await retryClientView()) return;
     if (value && guest.origin && gbox.clientViewSave) await gbox.clientViewSave(value, guest.origin);
   }).catch(error => { if (!/No handler registered/.test(String(error))) console.warn('Saved view:', error.message); })
     .finally(() => { clientViewReading = false; });
