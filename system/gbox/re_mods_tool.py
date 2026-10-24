@@ -882,7 +882,7 @@ def random_pool(g) -> list[tuple[int, int | None]]:
 
 
 def random_loadout(ad, g, character: str = "leon", seed=None, guns: int = 1, ammo: int = 200, on: bool = True,
-                   damage=None) -> dict:
+                   damage=None, fire_x=None, equip_now: bool = False) -> dict:
     """The per-round randomizer (like re5 random_cheats / loadout): `guns` random distinct guns from the weapon table
     with their ammo, written as this character's Merc loadout records (the first is equipped); seed repeats a draw.
     damage (a firepower multiplier) is applied to every drawn gun's class so a weak pick still kills."""
@@ -899,9 +899,22 @@ def random_loadout(ad, g, character: str = "leon", seed=None, guns: int = 1, amm
             items.append(f"0x{am:02X}:{int(ammo)}")
     res = run(ad, "merc_loadout", character=character, items=items, on=on, g=g)
     res.update(op="random_loadout", seed=seed, picked=[R.item_name(i) for i, _ in picks])
-    if damage not in (None, ""):
-        res["weapon_mod"] = [weapon_mod(g, i, None, damage, True)["verified"] for i, _ in picks]
-        res["verified"] = bool(res.get("verified")) and all(res["weapon_mod"])
+    if damage not in (None, "") or fire_x:
+        mods = []
+        for i, _ in picks:
+            rate = None
+            if fire_x:                  # x N fire rate: the class's own shot interval / N (operator 2026-10-24: 20x)
+                c = weapon_classes(g)[i][0]
+                orig = struct.unpack(">f", g.V.FIRE_RATE_ORIG[c * 0x14:c * 0x14 + 4])[0]
+                rate = max(1.0, orig / float(fire_x))
+            mods.append(weapon_mod(g, i, rate, damage if damage not in (None, "") else None, True)["verified"])
+        res["weapon_mod"] = mods
+        res["verified"] = bool(res.get("verified")) and all(mods)
+    if equip_now:                       # a round already running: the Merc loadout records apply only at the next start
+        try:
+            res["equipped_now"] = equip_item(g, picks[0][0]).get("verified", True)
+        except Exception as exc:        # noqa: BLE001 - the records still arm the next round
+            res["equipped_now"] = f"failed: {exc}"[:120]
     return res
 
 
@@ -940,7 +953,7 @@ def run(ad, op: str, item: str = "", count: int = 0, target: str = "", on: bool 
         res.update(grenade_safe(g, on))
     elif op == "random_loadout":
         res.update(random_loadout(ad, g, character or "leon", extra.get("seed"), extra.get("guns") or 1,
-                                  count or 200, on, damage))
+                                  count or 200, on, damage, extra.get("fire_x"), bool(extra.get("equip_now"))))
     elif op == "merc_loadout_list":
         res.update(merc_loadout_list(g))
     elif op == "item_ids":
